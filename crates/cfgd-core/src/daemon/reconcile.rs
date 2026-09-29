@@ -695,11 +695,10 @@ fn reconcile_tick(
     // protect and no reason to pay for the walk.
     let drift_policy = drift_policy_override.clone().unwrap_or_else(|| {
         cfg.spec
-            .daemon
-            .as_ref()
-            .and_then(|d| d.reconcile.as_ref())
-            .map(|r| r.drift_policy.clone())
-            .unwrap_or_default()
+            .daemon_effective()
+            .reconcile_effective()
+            .drift_policy
+            .clone()
     });
 
     // A tick has nobody to ask, so it settles every unmanaged target the way
@@ -1442,13 +1441,7 @@ fn check_in_after_tick(report: TickReport<'_>, state: &Arc<Mutex<DaemonState>>, 
     // The snapshot is the compliance tick's, reported only while compliance is
     // on in the config this tick loaded: a machine that stopped observing it
     // has nothing current to say.
-    let compliance_snapshot = if report
-        .cfg
-        .spec
-        .compliance
-        .as_ref()
-        .is_some_and(|c| c.enabled)
-    {
+    let compliance_snapshot = if report.cfg.spec.compliance_effective().enabled {
         rt.block_on(async { state.lock().await.reported_compliance.clone() })
     } else {
         None

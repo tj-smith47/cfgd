@@ -191,7 +191,7 @@ pub fn run_source_update(
 
     let cache_dir = source_cache_dir(cli)?;
     let mut mgr = SourceManager::new(&cache_dir);
-    mgr.set_allow_unsigned(cfg.spec.security.as_ref().is_some_and(|s| s.allow_unsigned));
+    mgr.set_allow_unsigned(cfg.spec.security_effective().allow_unsigned);
     let state = open_state_store(cli.state_dir.as_deref(), cli.scope())?;
 
     let sources_to_update: Vec<&config::SourceSpec> = if let Some(name) = name {

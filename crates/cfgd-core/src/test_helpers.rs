@@ -6291,6 +6291,160 @@ pub fn production_sources_per_root(
         .collect()
 }
 
+/// What omitting one `Option<…Config>` section of a config document means to
+/// the build, for every such field a struct under `config/` declares.
+pub struct OmittedSection {
+    /// The struct declaring the field, as Rust spells it.
+    pub owner: &'static str,
+    /// The field, as Rust spells it.
+    pub field: &'static str,
+    /// The `spec`-relative key `cfgd config get` addresses the section by.
+    pub key: &'static str,
+    /// The section's `<field>_effective` accessor serialized on a spec that
+    /// omits every section, or `None` for a section whose omission turns its
+    /// feature off, which has no accessor.
+    pub omitted: Option<fn(&crate::config::ConfigSpec) -> serde_yaml::Value>,
+}
+
+fn section_value<T: serde::Serialize>(value: &T) -> serde_yaml::Value {
+    serde_yaml::to_value(value).unwrap_or_else(|e| panic!("a config section serializes: {e}"))
+}
+
+/// Every `Option<…Config>` section of a config document, classified by what
+/// production does when it is omitted. A section is defaults-apply when a
+/// production reader substitutes a value for `None`; that reader goes through
+/// the accessor, and the accessor's omitted value is what `cfgd config get`
+/// reports. The private deserialization mirror `RawConfigSpec` is moved into
+/// `ConfigSpec` field for field and is not a row.
+///
+/// Defaults apply:
+/// - `daemon`, omitted as `daemon: {}`. Read by `build_pre_loop_setup`,
+///   `cmd_daemon_install`, `read_event_log_flag`, `reconcile_tick`,
+///   `configured_auto_apply` and `review_source_policies`.
+/// - `daemon.reconcile`, omitted as `reconcile: {}` (`5m`, `NotifyOnly`). Read
+///   by `parse_daemon_config`, `build_reconcile_tasks`, `reconcile_tick`,
+///   `configured_auto_apply` and `review_source_policies`.
+/// - `daemon.reconcile.policy`, omitted as `policy: {}`. Read by
+///   `review_source_policies`.
+/// - `daemon.sync`, omitted as no pull or push on a `5m` loop (a declared
+///   `sync: {}` is `1h`). Read by `parse_daemon_config`.
+/// - `daemon.notify`, omitted as no drift notice and `Stdout` (a declared
+///   `notify: {}` is `Desktop`). Read by `parse_daemon_config`.
+/// - `output`, omitted as `output: {}`, and `output.theme`, omitted as the
+///   `default` preset. Read by `resolve_theme_config`.
+/// - `modules`, omitted as no registries, and `modules.security`, omitted as no
+///   signature required. Read by the `module registry` verbs and the module
+///   signature check.
+/// - `security`, omitted as unsigned source content refused. Read by every
+///   source manager's unsigned-content check.
+/// - `ai`, omitted as `ai: {}`. Read by `cmd_generate`.
+/// - `compliance`, omitted as `compliance: {}` (no snapshots). Read by the
+///   compliance snapshot and export.
+/// - `update`, omitted as `update: {}`. Read by `cmd_upgrade`,
+///   `startup_update_config` and the daemon's version check.
+///
+/// Feature off:
+/// - `secrets`: no secret backend is configured.
+/// - `secrets.sops`: no sops settings are read.
+pub const OMITTED_SECTIONS: &[OmittedSection] = &[
+    OmittedSection {
+        owner: "ConfigSpec",
+        field: "daemon",
+        key: "daemon",
+        omitted: Some(|s| section_value(s.daemon_effective())),
+    },
+    OmittedSection {
+        owner: "DaemonConfig",
+        field: "reconcile",
+        key: "daemon.reconcile",
+        omitted: Some(|s| section_value(s.daemon_effective().reconcile_effective())),
+    },
+    OmittedSection {
+        owner: "ReconcileConfig",
+        field: "policy",
+        key: "daemon.reconcile.policy",
+        omitted: Some(|s| {
+            section_value(
+                s.daemon_effective()
+                    .reconcile_effective()
+                    .policy_effective(),
+            )
+        }),
+    },
+    OmittedSection {
+        owner: "DaemonConfig",
+        field: "sync",
+        key: "daemon.sync",
+        omitted: Some(|s| section_value(s.daemon_effective().sync_effective())),
+    },
+    OmittedSection {
+        owner: "DaemonConfig",
+        field: "notify",
+        key: "daemon.notify",
+        omitted: Some(|s| section_value(s.daemon_effective().notify_effective())),
+    },
+    OmittedSection {
+        owner: "ConfigSpec",
+        field: "output",
+        key: "output",
+        omitted: Some(|s| section_value(s.output_effective())),
+    },
+    OmittedSection {
+        owner: "OutputConfig",
+        field: "theme",
+        key: "output.theme",
+        omitted: Some(|s| section_value(s.output_effective().theme_effective())),
+    },
+    OmittedSection {
+        owner: "ConfigSpec",
+        field: "modules",
+        key: "modules",
+        omitted: Some(|s| section_value(s.modules_effective())),
+    },
+    OmittedSection {
+        owner: "ModulesConfig",
+        field: "security",
+        key: "modules.security",
+        omitted: Some(|s| section_value(s.modules_effective().security_effective())),
+    },
+    OmittedSection {
+        owner: "ConfigSpec",
+        field: "security",
+        key: "security",
+        omitted: Some(|s| section_value(s.security_effective())),
+    },
+    OmittedSection {
+        owner: "ConfigSpec",
+        field: "ai",
+        key: "ai",
+        omitted: Some(|s| section_value(s.ai_effective())),
+    },
+    OmittedSection {
+        owner: "ConfigSpec",
+        field: "compliance",
+        key: "compliance",
+        omitted: Some(|s| section_value(s.compliance_effective())),
+    },
+    OmittedSection {
+        owner: "ConfigSpec",
+        field: "update",
+        key: "update",
+        omitted: Some(|s| section_value(s.update_effective())),
+    },
+    OmittedSection {
+        owner: "ConfigSpec",
+        field: "secrets",
+        key: "secrets",
+        omitted: None,
+    },
+    OmittedSection {
+        owner: "SecretsConfig",
+        field: "sops",
+        key: "secrets.sops",
+        omitted: None,
+    },
+];
+
 /// Every crate of the workspace, for a walk reading all of them through
 /// [`workspace_declarations`] or [`production_sources_per_root`], which check
 /// it against `crates/` on every call.

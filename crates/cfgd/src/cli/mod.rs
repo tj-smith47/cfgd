@@ -839,11 +839,12 @@ pub fn resolve_theme_config(
     doc: Option<&cfgd_core::config::CfgdConfig>,
     preset: Option<&str>,
 ) -> Option<cfgd_core::config::ThemeConfig> {
-    let stored = doc.and_then(|c| c.spec.theme().cloned());
     match preset {
-        None => stored,
+        None => doc.and_then(|c| c.spec.theme().cloned()),
         Some(name) => {
-            let mut theme = stored.unwrap_or_default();
+            let mut theme = doc
+                .map(|c| c.spec.output_effective().theme_effective().clone())
+                .unwrap_or_default();
             theme.name = name.to_string();
             Some(theme)
         }

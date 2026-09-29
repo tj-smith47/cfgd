@@ -4522,7 +4522,7 @@ fn sync_task_local_defaults() {
         auto_pull: false,
         auto_push: false,
         auto_apply: true,
-        interval: Duration::from_secs(DEFAULT_SYNC_SECS),
+        interval: Duration::from_secs(5 * 60),
         last_synced: None,
         require_signed_commits: false,
         allow_unsigned: false,
@@ -7753,7 +7753,7 @@ fn parse_daemon_config_defaults() {
         parsed.reconcile_interval,
         Duration::from_secs(DEFAULT_RECONCILE_SECS)
     );
-    assert_eq!(parsed.sync_interval, Duration::from_secs(DEFAULT_SYNC_SECS));
+    assert_eq!(parsed.sync_interval, Duration::from_secs(5 * 60));
     assert!(!parsed.auto_pull);
     assert!(!parsed.auto_push);
     assert!(!parsed.on_change_reconcile);
@@ -11626,7 +11626,7 @@ fn parse_daemon_config_all_defaults() {
         parsed.reconcile_interval,
         Duration::from_secs(DEFAULT_RECONCILE_SECS)
     );
-    assert_eq!(parsed.sync_interval, Duration::from_secs(DEFAULT_SYNC_SECS));
+    assert_eq!(parsed.sync_interval, Duration::from_secs(5 * 60));
     assert!(!parsed.auto_pull);
     assert!(!parsed.auto_push);
     assert!(!parsed.on_change_reconcile);

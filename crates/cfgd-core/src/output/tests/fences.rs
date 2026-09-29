@@ -8949,3 +8949,459 @@ fn no_scan_hand_copies_the_test_source_naming_rule() {
         offenders.join("\n")
     );
 }
+
+/// The methods that substitute a value for a `None` they are handed.
+const DEFAULTING_METHODS: [&str; 7] = [
+    "unwrap_or",
+    "unwrap_or_else",
+    "unwrap_or_default",
+    "map_or",
+    "map_or_else",
+    "is_some_and",
+    "is_none_or",
+];
+
+/// The methods an `Option` passes through on its way to one of
+/// [`DEFAULTING_METHODS`]: a field read just ahead of one of them is the
+/// `Option` that call defaults.
+const OPTION_STEPS: [&str; 9] = [
+    "as_ref", "as_deref", "as_mut", "clone", "cloned", "copied", "and_then", "map", "filter",
+];
+
+/// The mark a defaulting read carries when the field it names belongs to a
+/// struct outside `config/` that shares a section's field name.
+const SECTION_HATCH: &str = "option-section-ok:";
+
+/// The private deserialization mirror of `ConfigSpec`, moved into it field for
+/// field by `parse_config`, so its `Option<…Config>` fields are no sections.
+const DESERIALIZATION_MIRRORS: [&str; 1] = ["RawConfigSpec"];
+
+/// Whether `attrs` carry a `cfg` that holds only in a test build.
+fn test_gated(attrs: &[syn::Attribute]) -> bool {
+    attrs.iter().any(|attr| {
+        attr.path().is_ident("cfg")
+            && attr
+                .meta
+                .require_list()
+                .is_ok_and(|list| crate::test_helpers::cfg_requires_test(&list.tokens.to_string()))
+    })
+}
+
+/// The last segment of an `impl` block's self type.
+fn impl_owner(item: &syn::ItemImpl) -> Option<String> {
+    match &*item.self_ty {
+        syn::Type::Path(owner) => owner.path.segments.last().map(|s| s.ident.to_string()),
+        _ => None,
+    }
+}
+
+/// What the files under `crates/cfgd-core/src/config/` declare about their
+/// `Option<…Config>` sections.
+#[derive(Default)]
+struct ConfigSections {
+    /// Every `Option<…Config>` field, as `(struct, field)`.
+    fields: std::collections::BTreeSet<(String, String)>,
+    /// Every `<field>_effective` method, as `(impl type, field)`.
+    accessors: std::collections::BTreeSet<(String, String)>,
+    /// The `<field>_effective` methods `ConfigSpec::effective` calls, by field.
+    filled: std::collections::BTreeSet<String>,
+}
+
+/// The `<field>_effective` methods an expression calls, by field.
+struct AccessorCalls<'s>(&'s mut std::collections::BTreeSet<String>);
+
+impl<'ast> syn::visit::Visit<'ast> for AccessorCalls<'_> {
+    fn visit_expr_method_call(&mut self, call: &'ast syn::ExprMethodCall) {
+        if let Some(field) = call.method.to_string().strip_suffix("_effective") {
+            self.0.insert(field.to_string());
+        }
+        syn::visit::visit_expr_method_call(self, call);
+    }
+}
+
+impl<'ast> syn::visit::Visit<'ast> for ConfigSections {
+    fn visit_item_struct(&mut self, item: &'ast syn::ItemStruct) {
+        if test_gated(&item.attrs) {
+            return;
+        }
+        for field in &item.fields {
+            let (Some(ident), syn::Type::Path(ty)) = (&field.ident, &field.ty) else {
+                continue;
+            };
+            let Some(outer) = ty.path.segments.last() else {
+                continue;
+            };
+            let syn::PathArguments::AngleBracketed(args) = &outer.arguments else {
+                continue;
+            };
+            let section = args.args.iter().any(|arg| match arg {
+                syn::GenericArgument::Type(syn::Type::Path(inner)) => inner
+                    .path
+                    .segments
+                    .last()
+                    .is_some_and(|s| s.ident.to_string().ends_with("Config")),
+                _ => false,
+            });
+            if outer.ident == "Option" && section {
+                self.fields
+                    .insert((item.ident.to_string(), ident.to_string()));
+            }
+        }
+    }
+
+    fn visit_item_impl(&mut self, item: &'ast syn::ItemImpl) {
+        if test_gated(&item.attrs) {
+            return;
+        }
+        let Some(owner) = impl_owner(item) else {
+            return;
+        };
+        for inner in &item.items {
+            let syn::ImplItem::Fn(func) = inner else {
+                continue;
+            };
+            let name = func.sig.ident.to_string();
+            if let Some(field) = name.strip_suffix("_effective") {
+                self.accessors.insert((owner.clone(), field.to_string()));
+            }
+            if owner == "ConfigSpec" && name == "effective" {
+                syn::visit::Visit::visit_block(&mut AccessorCalls(&mut self.filled), &func.block);
+            }
+        }
+    }
+}
+
+/// One read that defaults a section's `None`: the field it names, the 0-based
+/// row of the defaulting call, and the `impl` type and function it sits in.
+struct DefaultingRead {
+    field: String,
+    row: usize,
+    owner: Option<String>,
+    function: Option<String>,
+}
+
+/// Every read in one source that hands a section field's `Option` to one of
+/// [`DEFAULTING_METHODS`]: a field read (or a no-argument method named like
+/// the field, `spec.theme()`) directly ahead of the defaulting call or of the
+/// [`OPTION_STEPS`] leading to it, inside an `and_then` closure along that
+/// chain, or through a `let` binding that holds such a read.
+struct DefaultingReads<'f> {
+    fields: &'f std::collections::BTreeSet<String>,
+    owner: Option<String>,
+    function: Option<String>,
+    bindings: Vec<std::collections::HashMap<String, Vec<String>>>,
+    found: Vec<DefaultingRead>,
+}
+
+impl DefaultingReads<'_> {
+    /// The section fields `expr` yields as its `Option`, where `counted` says
+    /// the value `expr` produces is the `Option` being defaulted.
+    fn chain(&self, expr: &syn::Expr, counted: bool, out: &mut Vec<String>) {
+        match peel(expr) {
+            syn::Expr::MethodCall(call) => {
+                let method = call.method.to_string();
+                if counted && call.args.is_empty() && self.fields.contains(&method) {
+                    out.push(method.clone());
+                }
+                if counted && method == "and_then" {
+                    for arg in &call.args {
+                        if let syn::Expr::Closure(closure) = peel(arg) {
+                            let body = match &*closure.body {
+                                syn::Expr::Block(block) => match block.block.stmts.last() {
+                                    Some(syn::Stmt::Expr(tail, None)) => tail,
+                                    _ => continue,
+                                },
+                                body => body,
+                            };
+                            self.chain(body, true, out);
+                        }
+                    }
+                }
+                let passes = OPTION_STEPS.contains(&method.as_str())
+                    || DEFAULTING_METHODS.contains(&method.as_str());
+                self.chain(&call.receiver, counted && passes, out);
+            }
+            syn::Expr::Field(field) => {
+                if let (true, syn::Member::Named(name)) = (counted, &field.member) {
+                    out.push(name.to_string());
+                }
+                self.chain(&field.base, false, out);
+            }
+            syn::Expr::Path(path) if counted => {
+                if let Some(name) = path.path.get_ident().map(ToString::to_string)
+                    && let Some(held) = self.bindings.iter().rev().find_map(|s| s.get(&name))
+                {
+                    out.extend(held.iter().cloned());
+                }
+            }
+            syn::Expr::Try(tried) => self.chain(&tried.expr, counted, out),
+            _ => {}
+        }
+    }
+
+    fn in_function(&mut self, name: String, visit: impl FnOnce(&mut Self)) {
+        let outer = self.function.replace(name);
+        self.bindings.push(Default::default());
+        visit(self);
+        self.bindings.pop();
+        self.function = outer;
+    }
+}
+
+impl<'ast> syn::visit::Visit<'ast> for DefaultingReads<'_> {
+    fn visit_item_mod(&mut self, item: &'ast syn::ItemMod) {
+        if !test_gated(&item.attrs) {
+            syn::visit::visit_item_mod(self, item);
+        }
+    }
+
+    fn visit_item_impl(&mut self, item: &'ast syn::ItemImpl) {
+        if test_gated(&item.attrs) {
+            return;
+        }
+        let outer = std::mem::replace(&mut self.owner, impl_owner(item));
+        syn::visit::visit_item_impl(self, item);
+        self.owner = outer;
+    }
+
+    fn visit_impl_item_fn(&mut self, func: &'ast syn::ImplItemFn) {
+        if !test_gated(&func.attrs) {
+            self.in_function(func.sig.ident.to_string(), |walk| {
+                syn::visit::visit_impl_item_fn(walk, func);
+            });
+        }
+    }
+
+    fn visit_item_fn(&mut self, func: &'ast syn::ItemFn) {
+        if test_gated(&func.attrs) {
+            return;
+        }
+        let outer = self.owner.take();
+        self.in_function(func.sig.ident.to_string(), |walk| {
+            syn::visit::visit_item_fn(walk, func);
+        });
+        self.owner = outer;
+    }
+
+    fn visit_local(&mut self, local: &'ast syn::Local) {
+        let pat = match &local.pat {
+            syn::Pat::Type(typed) => &*typed.pat,
+            pat => pat,
+        };
+        if let (syn::Pat::Ident(name), Some(init)) = (pat, &local.init) {
+            let mut held = Vec::new();
+            self.chain(&init.expr, true, &mut held);
+            if !held.is_empty()
+                && let Some(scope) = self.bindings.last_mut()
+            {
+                scope.insert(name.ident.to_string(), held);
+            }
+        }
+        syn::visit::visit_local(self, local);
+    }
+
+    fn visit_expr_method_call(&mut self, call: &'ast syn::ExprMethodCall) {
+        if DEFAULTING_METHODS.contains(&call.method.to_string().as_str()) {
+            let mut read = Vec::new();
+            self.chain(&call.receiver, true, &mut read);
+            read.sort();
+            read.dedup();
+            for field in read.into_iter().filter(|f| self.fields.contains(f)) {
+                self.found.push(DefaultingRead {
+                    field,
+                    row: row_of(call.method.span()),
+                    owner: self.owner.clone(),
+                    function: self.function.clone(),
+                });
+            }
+        }
+        syn::visit::visit_expr_method_call(self, call);
+    }
+}
+
+/// Every `Option<…Config>` section of a config document means one of two
+/// things when a document omits it, and the build reads it one way for each.
+/// A section production substitutes a value for (defaults apply) is read
+/// through ONE `<field>_effective` accessor on the struct declaring it, and
+/// `ConfigSpec::effective`, which `cfgd config get` answers from, fills it in
+/// through that accessor; a section whose omission turns its feature off has
+/// no accessor, and no production read substitutes a value for it.
+/// [`crate::test_helpers::OMITTED_SECTIONS`] records which is which, with the
+/// readers and the omitted value of each, and this walk holds the tree to it:
+///
+/// - every `Option<…Config>` field a struct under `config/` declares is a
+///   row, and every row is such a field;
+/// - a row with an omitted value is a field with an accessor, and a row
+///   without one is a field without;
+/// - a defaulting read of a section field (a field read handed to
+///   `unwrap_or`, `unwrap_or_else`, `unwrap_or_default`, `map_or`,
+///   `map_or_else`, `is_some_and` or `is_none_or`, directly, through the
+///   `Option` steps between, inside an `and_then` closure, or through a
+///   `let` binding) sits inside that field's accessor, and every accessor
+///   holds one;
+/// - `ConfigSpec::effective` calls every accessor.
+///
+/// Fields are matched by name, so a read of a same-named field on a struct
+/// outside `config/` carries `// option-section-ok: <why>` on its line or the
+/// one above. Every production source of every crate is parsed whole with
+/// its test-gated items skipped, a source `syn` cannot parse fails the walk,
+/// and each crate's count of parsed sources has a floor.
+#[test]
+fn every_option_config_section_is_read_through_its_effective_accessor_or_never_defaulted() {
+    const CONFIG_FILES_FLOOR: usize = 21;
+    const WALK_ROOTS: &[(&str, usize)] = &[
+        ("cfgd", 145),
+        ("cfgd-core", 193),
+        ("cfgd-crd", 1),
+        ("cfgd-csi", 8),
+        ("cfgd-operator", 42),
+        ("cfgd-schema", 2),
+        ("cfgd-test-fixtures", 1),
+    ];
+    let mut sections = ConfigSections::default();
+    let mut unparsed = Vec::new();
+    let mut parsed: Vec<(&str, &Path, syn::File)> = Vec::new();
+    let mut config_files = 0;
+    for (root, files) in
+        crate::test_helpers::production_sources_per_root(crate::test_helpers::WORKSPACE_CRATES)
+    {
+        for (path, production) in files {
+            if production.trim().is_empty() {
+                continue;
+            }
+            // unfloored-slice-ok: syn parses whole items; test-gated ones are skipped by attribute.
+            match syn::parse_file(&walked_file_body(path)) {
+                Ok(file) => {
+                    if crate::to_posix_string(path).contains("crates/cfgd-core/src/config/") {
+                        config_files += 1;
+                        syn::visit::Visit::visit_file(&mut sections, &file);
+                    }
+                    parsed.push((root, path.as_path(), file));
+                }
+                Err(e) => unparsed.push(format!("{}: {e}", source_label(path))),
+            }
+        }
+    }
+    assert!(
+        unparsed.is_empty(),
+        "a source syn cannot parse is a source this walk cannot judge:\n{}",
+        unparsed.join("\n")
+    );
+    assert!(
+        config_files >= CONFIG_FILES_FLOOR,
+        "the walk read {config_files} sources under config/, below the floor of {CONFIG_FILES_FLOOR}"
+    );
+    let short: Vec<String> = WALK_ROOTS
+        .iter()
+        .filter_map(|&(root, floor)| {
+            let read = parsed.iter().filter(|(r, ..)| *r == root).count();
+            (read < floor).then(|| format!("{root}: {read} sources parsed, floor {floor}"))
+        })
+        .collect();
+    assert!(
+        short.is_empty(),
+        "the walk stopped reading sources:\n{}",
+        short.join("\n")
+    );
+
+    let fields: std::collections::BTreeSet<(String, String)> = sections
+        .fields
+        .iter()
+        .filter(|(owner, _)| !DESERIALIZATION_MIRRORS.contains(&owner.as_str()))
+        .cloned()
+        .collect();
+    let rows: std::collections::BTreeSet<(String, String)> = crate::test_helpers::OMITTED_SECTIONS
+        .iter()
+        .map(|row| (row.owner.to_string(), row.field.to_string()))
+        .collect();
+    assert_eq!(
+        fields, rows,
+        "every Option<…Config> field under config/ is a row of OMITTED_SECTIONS, classified \
+         by what production does when a document omits it"
+    );
+    let defaulted: std::collections::BTreeSet<(String, String)> =
+        crate::test_helpers::OMITTED_SECTIONS
+            .iter()
+            .filter(|row| row.omitted.is_some())
+            .map(|row| (row.owner.to_string(), row.field.to_string()))
+            .collect();
+    assert_eq!(
+        sections.accessors, defaulted,
+        "a section whose omission production reads as a value has a `<field>_effective` \
+         accessor on its struct, and a feature-off section has none"
+    );
+    let accessor_fields: std::collections::BTreeSet<String> = sections
+        .accessors
+        .iter()
+        .map(|(_, field)| field.clone())
+        .collect();
+    assert_eq!(
+        sections.filled, accessor_fields,
+        "ConfigSpec::effective fills every section in through its accessor"
+    );
+
+    let names: std::collections::BTreeSet<String> =
+        fields.iter().map(|(_, field)| field.clone()).collect();
+    let mut offenders = Vec::new();
+    let mut held: std::collections::BTreeSet<(String, String)> = Default::default();
+    for (_, path, file) in &parsed {
+        let mut walk = DefaultingReads {
+            fields: &names,
+            owner: None,
+            function: None,
+            bindings: Vec::new(),
+            found: Vec::new(),
+        };
+        syn::visit::Visit::visit_file(&mut walk, file);
+        if walk.found.is_empty() {
+            continue;
+        }
+        // unfloored-slice-ok: rows are judged against the file syn parsed.
+        let body = walked_file_body(path);
+        let lines: Vec<&str> = body.lines().collect();
+        for read in walk.found {
+            let accessor = read
+                .function
+                .as_deref()
+                .and_then(|f| f.strip_suffix("_effective"));
+            let owner = read.owner.as_deref().unwrap_or_default();
+            if accessor == Some(read.field.as_str())
+                && sections
+                    .accessors
+                    .contains(&(owner.to_string(), read.field.clone()))
+            {
+                held.insert((owner.to_string(), read.field));
+                continue;
+            }
+            let above = read
+                .row
+                .checked_sub(1)
+                .map(|i| lines[i])
+                .unwrap_or_default();
+            if carries_hatch(lines[read.row], SECTION_HATCH) || carries_hatch(above, SECTION_HATCH)
+            {
+                continue;
+            }
+            offenders.push(format!(
+                "{}:{}: `{}` defaulted in {}",
+                source_label(path),
+                read.row + 1,
+                read.field,
+                read.function
+                    .as_deref()
+                    .unwrap_or("an item outside any function"),
+            ));
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "a section's omitted value is read through its `<field>_effective` accessor, and a \
+         feature-off section is never defaulted; a same-named field on another struct \
+         carries `// {SECTION_HATCH} <why>`:\n{}",
+        offenders.join("\n")
+    );
+    assert_eq!(
+        held, sections.accessors,
+        "every accessor substitutes its section's omitted value itself"
+    );
+}

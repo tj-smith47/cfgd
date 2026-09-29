@@ -448,7 +448,7 @@ pub fn cmd_source_show(
         manifest: None,
     };
 
-    let allow_unsigned = cfg.spec.security.as_ref().is_some_and(|s| s.allow_unsigned);
+    let allow_unsigned = cfg.spec.security_effective().allow_unsigned;
     let cache_dir = source_cache_dir(cli)?;
     let mut mgr = SourceManager::new(&cache_dir);
     mgr.set_allow_unsigned(allow_unsigned);

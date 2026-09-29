@@ -90,7 +90,7 @@ pub fn cmd_upgrade(
     let update_cfg = match config::load_config(config_path) {
         Ok(mut c) => {
             crate::cli::helpers::drain_config_deprecations(printer, &mut c);
-            c.spec.update.unwrap_or_default()
+            c.spec.update_effective().clone()
         }
         Err(_) => Default::default(),
     };
@@ -280,7 +280,9 @@ pub(crate) fn startup_update_config(
 ) -> cfgd_core::config::UpdateConfig {
     // Cloned: `effective_update_config` takes the block by value to replace its
     // `policy`, and the document it comes from is shared with the other readers.
-    let declared = doc.and_then(|c| c.spec.update.clone()).unwrap_or_default();
+    let declared = doc
+        .map(|c| c.spec.update_effective().clone())
+        .unwrap_or_default();
     cfgd_core::upgrade::effective_update_config(declared, override_policy)
 }
 
@@ -393,11 +395,8 @@ fn surface_stale_skills(
 ) -> cfgd_core::upgrade::StandaloneSkillOutcome {
     use cfgd_core::upgrade::{self, StandaloneSkillOutcome};
 
-    let binary_available = outcome
-        .update
-        .as_ref()
-        .map(|u| u.update_available)
-        .unwrap_or(false);
+    // option-section-ok: `outcome.update` is the version check's result.
+    let binary_available = outcome.update.as_ref().is_some_and(|u| u.update_available);
     let result = upgrade::run_standalone_skill_action(
         update_cfg,
         binary_available,

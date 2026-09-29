@@ -738,8 +738,7 @@ pub(super) async fn handle_version_check_tick(ctx: &DaemonLoopContext) -> Result
     // failure degrades to the default policy (Prompt → Notify in the daemon's
     // non-interactive context) rather than skipping the check entirely.
     let declared = config::load_config(&ctx.config_path)
-        .ok()
-        .and_then(|c| c.spec.update)
+        .map(|c| c.spec.update_effective().clone())
         .unwrap_or_default();
     let update_cfg = crate::upgrade::effective_update_config(declared, ctx.update_policy_override);
     handle_version_check(&update_cfg, &ctx.state, &ctx.notifier, &ctx.cfgd_version).await;

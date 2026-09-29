@@ -233,7 +233,7 @@
             }
           ],
           "default": null,
-          "description": "The background daemon that watches for drift between reconciles. Omitted, no daemon runs and every reconcile is an explicit `cfgd apply`."
+          "description": "The background daemon that watches for drift between reconciles. Omitted, a daemon started with `cfgd daemon` runs every default: a `5m` reconcile that reports drift and applies nothing, with no pull or push."
         },
         "fileStrategy": {
           "default": "Symlink",

@@ -45,6 +45,19 @@ pub struct ComplianceConfig {
     pub export: ComplianceExport,
 }
 
+impl Default for ComplianceConfig {
+    /// The block `compliance: {}` declares.
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            interval: default_compliance_interval(),
+            retention: default_compliance_retention(),
+            scope: ComplianceScope::default(),
+            export: ComplianceExport::default(),
+        }
+    }
+}
+
 fn default_compliance_interval() -> String {
     "1h".into()
 }

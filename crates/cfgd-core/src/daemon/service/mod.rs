@@ -110,11 +110,7 @@ pub fn install_service(
 #[cfg(windows)]
 fn read_event_log_flag(config_path: &Path) -> bool {
     use crate::config;
-    config::load_config(config_path)
-        .ok()
-        .and_then(|cfg| cfg.spec.daemon)
-        .map(|d| d.windows_event_log)
-        .unwrap_or(false)
+    config::load_config(config_path).is_ok_and(|cfg| cfg.spec.daemon_effective().windows_event_log)
 }
 
 /// Enable and start the just-installed service so the daemon runs immediately,

@@ -103,7 +103,7 @@ pub(super) fn run_source_add(
     let mut mgr = SourceManager::new(&cache_dir);
     let allow_unsigned = config_path.exists()
         && config::load_config(&config_path)
-            .is_ok_and(|c| c.spec.security.as_ref().is_some_and(|s| s.allow_unsigned));
+            .is_ok_and(|c| c.spec.security_effective().allow_unsigned);
     mgr.set_allow_unsigned(allow_unsigned);
     let mut spec = SourceManager::build_source_spec(&source_name, url, profile);
     if let Some(b) = branch {

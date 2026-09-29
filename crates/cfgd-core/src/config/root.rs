@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::LazyLock;
 
 use serde::{Deserialize, Serialize};
 
@@ -112,8 +113,9 @@ pub struct ConfigSpec {
     pub origin: Vec<OriginSpec>,
 
     /// The background daemon that watches for drift between reconciles.
-    /// Omitted, no daemon runs and every reconcile is an explicit
-    /// `cfgd apply`.
+    /// Omitted, a daemon started with `cfgd daemon` runs every default: a
+    /// `5m` reconcile that reports drift and applies nothing, with no pull or
+    /// push.
     #[serde(default)]
     pub daemon: Option<DaemonConfig>,
 
@@ -175,7 +177,103 @@ pub struct ConfigSpec {
     pub migration_policy: MigrationPolicy,
 }
 
+/// One accessor per `spec` section whose omission production reads as a
+/// value: each returns the declared block, or the block the build uses where
+/// the document omits it. A section whose omission turns its feature off
+/// (`secrets`) has no accessor, and its readers handle `None` themselves.
 impl ConfigSpec {
+    /// The daemon settings: the declared block, or `daemon: {}` where the
+    /// document omits it.
+    #[must_use]
+    pub fn daemon_effective(&self) -> &DaemonConfig {
+        static OMITTED: LazyLock<DaemonConfig> = LazyLock::new(DaemonConfig::default);
+        self.daemon.as_ref().unwrap_or(&OMITTED)
+    }
+
+    /// The output settings: the declared block, or `output: {}` where the
+    /// document omits it.
+    #[must_use]
+    pub fn output_effective(&self) -> &OutputConfig {
+        static OMITTED: OutputConfig = OutputConfig {
+            theme: None,
+            usage_hints: None,
+            mask_env_values: None,
+        };
+        self.output.as_ref().unwrap_or(&OMITTED)
+    }
+
+    /// The module settings: the declared block, or no registries and no
+    /// signature requirement where the document omits it.
+    #[must_use]
+    pub fn modules_effective(&self) -> &ModulesConfig {
+        static OMITTED: ModulesConfig = ModulesConfig {
+            registries: Vec::new(),
+            security: None,
+        };
+        self.modules.as_ref().unwrap_or(&OMITTED)
+    }
+
+    /// The source signature settings: the declared block, or unsigned content
+    /// refused where the document omits it.
+    #[must_use]
+    pub fn security_effective(&self) -> &SecurityConfig {
+        static OMITTED: SecurityConfig = SecurityConfig {
+            allow_unsigned: false,
+        };
+        self.security.as_ref().unwrap_or(&OMITTED)
+    }
+
+    /// The AI settings `cfgd generate` runs with: the declared block, or
+    /// `ai: {}` where the document omits it.
+    #[must_use]
+    pub fn ai_effective(&self) -> &AiConfig {
+        static OMITTED: LazyLock<AiConfig> = LazyLock::new(AiConfig::default);
+        self.ai.as_ref().unwrap_or(&OMITTED)
+    }
+
+    /// The compliance settings: the declared block, or `compliance: {}` (no
+    /// snapshots taken) where the document omits it.
+    #[must_use]
+    pub fn compliance_effective(&self) -> &ComplianceConfig {
+        static OMITTED: LazyLock<ComplianceConfig> = LazyLock::new(ComplianceConfig::default);
+        self.compliance.as_ref().unwrap_or(&OMITTED)
+    }
+
+    /// The update settings: the declared block, or `update: {}` where the
+    /// document omits it.
+    #[must_use]
+    pub fn update_effective(&self) -> &UpdateConfig {
+        static OMITTED: LazyLock<UpdateConfig> = LazyLock::new(UpdateConfig::default);
+        self.update.as_ref().unwrap_or(&OMITTED)
+    }
+
+    /// This spec with every section the build reads through an `_effective`
+    /// accessor filled in with that accessor's value, nested sections
+    /// included. `cfgd config get` answers from it, so a key under an omitted
+    /// section reports what the build uses.
+    #[must_use]
+    pub fn effective(&self) -> ConfigSpec {
+        let mut spec = self.clone();
+        let mut daemon = self.daemon_effective().clone();
+        let mut reconcile = daemon.reconcile_effective().clone();
+        reconcile.policy = Some(reconcile.policy_effective().clone());
+        daemon.sync = Some(daemon.sync_effective().clone());
+        daemon.notify = Some(daemon.notify_effective().clone());
+        daemon.reconcile = Some(reconcile);
+        spec.daemon = Some(daemon);
+        let mut output = self.output_effective().clone();
+        output.theme = Some(output.theme_effective().clone());
+        spec.output = Some(output);
+        let mut modules = self.modules_effective().clone();
+        modules.security = Some(modules.security_effective().clone());
+        spec.modules = Some(modules);
+        spec.security = Some(self.security_effective().clone());
+        spec.ai = Some(self.ai_effective().clone());
+        spec.compliance = Some(self.compliance_effective().clone());
+        spec.update = Some(self.update_effective().clone());
+        spec
+    }
+
     /// The theme block `spec.output.theme` declares.
     #[must_use]
     pub fn theme(&self) -> Option<&ThemeConfig> {

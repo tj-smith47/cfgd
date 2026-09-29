@@ -660,12 +660,7 @@ impl WithheldDecisions {
 /// here so a policy that declines an item in the daemon declines it in
 /// `cfgd plan` and `cfgd apply` too.
 pub fn configured_auto_apply(cfg: &CfgdConfig) -> bool {
-    cfg.spec
-        .daemon
-        .as_ref()
-        .and_then(|d| d.reconcile.as_ref())
-        .map(|r| r.auto_apply)
-        .unwrap_or(false)
+    cfg.spec.daemon_effective().reconcile_effective().auto_apply
 }
 
 /// A row an auto-apply policy wants minted for review.
@@ -1389,14 +1384,11 @@ pub fn review_source_policies(
     if !auto_apply || cfg.spec.sources.is_empty() {
         return Ok(review);
     }
-    let default_policy = AutoApplyPolicyConfig::default();
     let policy = cfg
         .spec
-        .daemon
-        .as_ref()
-        .and_then(|d| d.reconcile.as_ref())
-        .and_then(|r| r.policy.as_ref())
-        .unwrap_or(&default_policy);
+        .daemon_effective()
+        .reconcile_effective()
+        .policy_effective();
 
     for source in &cfg.spec.sources {
         let one = review_source_policy(

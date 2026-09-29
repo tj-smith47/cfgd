@@ -31,12 +31,7 @@ pub fn cmd_module_add_from_registry(
     let mut cfg = config::load_config(&cli.config)?;
     drain_config_deprecations(printer, &mut cfg);
 
-    let registries = cfg
-        .spec
-        .modules
-        .as_ref()
-        .map(|m| &m.registries[..])
-        .unwrap_or(&[]);
+    let registries = &cfg.spec.modules_effective().registries[..];
     let registry_entry = match registries.iter().find(|s| s.name == reg_ref.registry) {
         Some(r) => r,
         None => {
@@ -739,12 +734,7 @@ pub fn cmd_module_search(cli: &Cli, printer: &Printer, query: &str) -> anyhow::R
 
     let mut cfg = config::load_config(&cli.config)?;
     drain_config_deprecations(printer, &mut cfg);
-    let registries = cfg
-        .spec
-        .modules
-        .as_ref()
-        .map(|m| &m.registries[..])
-        .unwrap_or(&[]);
+    let registries = &cfg.spec.modules_effective().registries[..];
     if registries.is_empty() {
         // The same element type a found listing serializes, so one payload shape
         // answers both outcomes.
@@ -1080,12 +1070,7 @@ pub fn cmd_module_registry_rename(
 
     let mut cfg = config::load_config(&cli.config)?;
     drain_config_deprecations(printer, &mut cfg);
-    let registries = cfg
-        .spec
-        .modules
-        .as_ref()
-        .map(|m| &m.registries[..])
-        .unwrap_or(&[]);
+    let registries = &cfg.spec.modules_effective().registries[..];
 
     if !registries.iter().any(|s| s.name == name) {
         // Carry the typed RegistryNotFound so the exit-code downcast resolves to
@@ -1208,12 +1193,7 @@ pub fn cmd_module_registry_list(cli: &Cli, printer: &Printer) -> anyhow::Result<
 
     let mut cfg = config::load_config(&cli.config)?;
     drain_config_deprecations(printer, &mut cfg);
-    let registries = cfg
-        .spec
-        .modules
-        .as_ref()
-        .map(|m| &m.registries[..])
-        .unwrap_or(&[]);
+    let registries = &cfg.spec.modules_effective().registries[..];
     if registries.is_empty() {
         printer.emit(
             Doc::new()

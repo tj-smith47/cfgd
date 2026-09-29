@@ -26,12 +26,7 @@ pub(super) fn collect_and_store_compliance_snapshot<'a>(
         .as_deref()
         .unwrap_or_else(|| cfg.active_profile().unwrap_or("default"));
 
-    let scope = cfg
-        .spec
-        .compliance
-        .as_ref()
-        .map(|c| c.scope.clone())
-        .unwrap_or_default();
+    let scope = cfg.spec.compliance_effective().scope.clone();
 
     let sources: Vec<String> = cfg.spec.sources.iter().map(|s| s.name.clone()).collect();
 
@@ -179,12 +174,7 @@ pub(super) fn cmd_compliance_export(cli: &Cli, printer: &Printer) -> anyhow::Res
     let ctx = RunContext::new(cli, printer);
     let (cfg, snapshot) = collect_and_store_compliance_snapshot(&ctx)?;
 
-    let export = cfg
-        .spec
-        .compliance
-        .as_ref()
-        .map(|c| c.export.clone())
-        .unwrap_or_default();
+    let export = cfg.spec.compliance_effective().export.clone();
 
     let export_path = cfgd_core::compliance::export_snapshot_to_file(&snapshot, &export)?;
     printer.emit(build_compliance_export_doc(&snapshot, &export_path));

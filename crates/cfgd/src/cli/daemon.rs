@@ -394,10 +394,7 @@ pub(super) fn cmd_daemon_install(cli: &Cli, printer: &Printer) -> anyhow::Result
         let event_log_on = match cfgd_core::config::load_config(&cli.config) {
             Ok(mut cfg) => {
                 drain_config_deprecations(printer, &mut cfg);
-                cfg.spec
-                    .daemon
-                    .map(|d| d.windows_event_log)
-                    .unwrap_or(false)
+                cfg.spec.daemon_effective().windows_event_log
             }
             Err(_) => false,
         };

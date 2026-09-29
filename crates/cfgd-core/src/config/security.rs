@@ -41,8 +41,20 @@ pub struct ModulesConfig {
     pub security: Option<ModuleSecurityConfig>,
 }
 
+impl ModulesConfig {
+    /// The signature requirements module pulls are checked against: the
+    /// declared block, or none required where the document omits it.
+    #[must_use]
+    pub fn security_effective(&self) -> &ModuleSecurityConfig {
+        static OMITTED: ModuleSecurityConfig = ModuleSecurityConfig {
+            require_signatures: false,
+        };
+        self.security.as_ref().unwrap_or(&OMITTED)
+    }
+}
+
 /// `spec.modules.security`: signature requirements for modules pulled from a registry.
-#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ModuleSecurityConfig {
     /// Require GPG/SSH signatures on all remote module tags.

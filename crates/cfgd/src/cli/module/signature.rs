@@ -54,9 +54,9 @@ pub(crate) fn enforce_signature_policy(
             Ok(mut c) => {
                 drain_config_deprecations(printer, &mut c);
                 c.spec
-                    .modules
-                    .and_then(|m| m.security)
-                    .is_some_and(|s| s.require_signatures)
+                    .modules_effective()
+                    .security_effective()
+                    .require_signatures
             }
             Err(_) => false,
         }

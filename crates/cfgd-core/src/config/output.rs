@@ -38,6 +38,17 @@ pub struct OutputConfig {
     pub mask_env_values: Option<MaskEnvValues>,
 }
 
+impl OutputConfig {
+    /// The theme block cfgd renders with: the declared block, or the
+    /// `default` preset with no overrides where the document omits it.
+    #[must_use]
+    pub fn theme_effective(&self) -> &ThemeConfig {
+        static OMITTED: std::sync::LazyLock<ThemeConfig> =
+            std::sync::LazyLock::new(ThemeConfig::default);
+        self.theme.as_ref().unwrap_or(&OMITTED)
+    }
+}
+
 /// Which declared env values cfgd masks on the surfaces that render one
 /// (`module show`, `profile show`, `source show`, `status <module>`).
 ///

@@ -212,6 +212,7 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
     // on a fresh machine, none. Adopt the theme just written so the rest of this
     // run renders in it, instead of `--theme` taking effect only next command.
     let rethemed = args.theme.map(|t| printer.rethemed(t));
+    // option-section-ok: `rethemed` holds the `--theme` flag's printer.
     let printer = rethemed.as_ref().unwrap_or(printer);
 
     // The load-time gate is withheld from init because the document did not

@@ -281,7 +281,7 @@ pub(crate) fn compose_daemon_desired_state(
         .map(|d| d.join("sources"))
         .unwrap_or_else(|_| PathBuf::from(".cfgd-sources"));
     let mut mgr = crate::sources::SourceManager::new(&cache_dir);
-    mgr.set_allow_unsigned(cfg.spec.security.as_ref().is_some_and(|s| s.allow_unsigned));
+    mgr.set_allow_unsigned(cfg.spec.security_effective().allow_unsigned);
     mgr.load_sources_cached(&cfg.spec.sources, printer)?;
     let result = mgr.compose(&cfg.spec.sources, local, mode)?;
     Ok(DaemonComposition {
@@ -380,7 +380,6 @@ pub fn resolve_default_ipc_path(runtime_over: Option<&Path>, scope: crate::Scope
 /// this is exactly how far behind "now" the recorded state can be and still be
 /// current, so a `status` reading past it is worth a hint toward `--scan`.
 pub const DEFAULT_RECONCILE_SECS: u64 = 300; // 5m
-const DEFAULT_SYNC_SECS: u64 = 300; // 5m
 #[cfg(unix)]
 const LAUNCHD_LABEL: &str = "com.cfgd.daemon";
 #[cfg(unix)]
@@ -872,13 +871,7 @@ pub(super) fn build_pre_loop_setup(
     // config on every tick to detect drift, and re-draining there would repeat
     // the same notice every interval for as long as the daemon runs.
     cfg.drain_deprecations(printer);
-    let daemon_cfg = cfg.spec.daemon.clone().unwrap_or(config::DaemonConfig {
-        enabled: true,
-        reconcile: None,
-        sync: None,
-        notify: None,
-        windows_event_log: false,
-    });
+    let daemon_cfg = cfg.spec.daemon_effective().clone();
     let parsed = parse_daemon_config(&daemon_cfg);
     let notifier = Arc::new(Notifier::new(
         parsed.notify_method.clone(),
@@ -895,7 +888,7 @@ pub(super) fn build_pre_loop_setup(
         .parent()
         .unwrap_or_else(|| Path::new("."))
         .to_path_buf();
-    let allow_unsigned = cfg.spec.security.as_ref().is_some_and(|s| s.allow_unsigned);
+    let allow_unsigned = cfg.spec.security_effective().allow_unsigned;
 
     let source_cache_dir = crate::resolve_cache_dir(cache_dir, scope)
         .map(|d| d.join("sources"))

@@ -1,8 +1,10 @@
+use std::sync::LazyLock;
+
 use serde::{Deserialize, Serialize};
 
 use cfgd_schema::case_insensitive_enum;
 
-use super::sync_secrets::{NotifyConfig, SyncConfig};
+use super::sync_secrets::{NotifyConfig, NotifyMethod, SyncConfig};
 
 /// `spec.daemon`: settings for `cfgd daemon`'s background reconcile loop.
 ///
@@ -17,7 +19,7 @@ use super::sync_secrets::{NotifyConfig, SyncConfig};
 ///   notify:
 ///     drift: true
 /// ```
-#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DaemonConfig {
     /// Whether the daemon runs at all. Default: `false`.
@@ -82,6 +84,76 @@ pub struct ReconcileConfig {
     /// individual reconcile fields. Precedence: Module patch > Profile patch > global.
     #[serde(default)]
     pub patches: Vec<ReconcilePatch>,
+}
+
+impl DaemonConfig {
+    /// The reconcile settings the daemon runs on: the declared block, or the
+    /// block `reconcile: {}` declares where the document omits it (every `5m`,
+    /// notifying without applying).
+    #[must_use]
+    pub fn reconcile_effective(&self) -> &ReconcileConfig {
+        static OMITTED: LazyLock<ReconcileConfig> = LazyLock::new(ReconcileConfig::default);
+        self.reconcile.as_ref().unwrap_or(&OMITTED)
+    }
+
+    /// The sync settings the daemon runs on: the declared block, or, where the
+    /// document omits it, no automatic pull or push on a `5m` loop.
+    ///
+    /// The omitted loop is `5m` where a declared `sync: {}` is `1h`: the
+    /// daemon's sync loop has always run at `5m` for a document with no `sync`
+    /// block, and this is that value.
+    #[must_use]
+    pub fn sync_effective(&self) -> &SyncConfig {
+        static OMITTED: LazyLock<SyncConfig> = LazyLock::new(|| SyncConfig {
+            auto_push: false,
+            auto_pull: false,
+            interval: "5m".to_string(),
+        });
+        self.sync.as_ref().unwrap_or(&OMITTED)
+    }
+
+    /// The drift notification settings the daemon runs on: the declared block,
+    /// or, where the document omits it, no drift notification and every other
+    /// notice written to the daemon's own output.
+    ///
+    /// The omitted method is `Stdout` where a declared `notify: {}` is
+    /// `Desktop`: a daemon with no `notify` block has always written its
+    /// notices to its log, and this is that value.
+    #[must_use]
+    pub fn notify_effective(&self) -> &NotifyConfig {
+        static OMITTED: LazyLock<NotifyConfig> = LazyLock::new(|| NotifyConfig {
+            drift: false,
+            method: NotifyMethod::Stdout,
+            webhook_url: None,
+        });
+        self.notify.as_ref().unwrap_or(&OMITTED)
+    }
+}
+
+impl Default for ReconcileConfig {
+    /// The block `reconcile: {}` declares.
+    fn default() -> Self {
+        Self {
+            interval: default_reconcile_interval(),
+            on_change: false,
+            auto_apply: false,
+            policy: None,
+            drift_policy: DriftPolicy::default(),
+            patches: Vec::new(),
+        }
+    }
+}
+
+impl ReconcileConfig {
+    /// The auto-apply policy the daemon decides recommendations by: the
+    /// declared block, or the block `policy: {}` declares where the document
+    /// omits it.
+    #[must_use]
+    pub fn policy_effective(&self) -> &AutoApplyPolicyConfig {
+        static OMITTED: LazyLock<AutoApplyPolicyConfig> =
+            LazyLock::new(AutoApplyPolicyConfig::default);
+        self.policy.as_ref().unwrap_or(&OMITTED)
+    }
 }
 
 /// A kustomize-style reconcile patch targeting a specific module or profile.

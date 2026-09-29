@@ -1528,7 +1528,7 @@ pub(in crate::cli) fn compose_with_sources(
 
     let cache_dir = source_cache_dir(cli)?;
     let mut mgr = SourceManager::new(&cache_dir);
-    mgr.set_allow_unsigned(cfg.spec.security.as_ref().is_some_and(|s| s.allow_unsigned));
+    mgr.set_allow_unsigned(cfg.spec.security_effective().allow_unsigned);
     mgr.set_announce_cache_skips(ctx.announce_cache_skips());
     if refresh {
         mgr.load_sources(&cfg.spec.sources, printer)?;
