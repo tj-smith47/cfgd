@@ -1,6 +1,6 @@
 use super::*;
 use crate::config::ScriptCommand;
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::Path;
 use std::str::FromStr;
 
@@ -27316,31 +27316,372 @@ fn to_hash_string_is_stable_across_group_permutation() {
     );
 }
 
-/// Every `Action` variant survives the plan-file round trip.
+/// The serde names `E` accepts for its variants, read off its own
+/// deserializer's refusal of a name it does not know. Serde spells the whole
+/// accepted list in that refusal, so the population comes from the type and
+/// never from a list written beside it.
+fn serde_variant_names<E: serde::de::DeserializeOwned + std::fmt::Debug>() -> BTreeSet<String> {
+    let refusal = serde_json::from_value::<E>(serde_json::json!("__no_such_variant__"))
+        .expect_err("no variant is spelled `__no_such_variant__`")
+        .to_string();
+    let (_, accepted) = refusal.split_once("expected").unwrap_or_else(|| {
+        panic!("an unknown-variant refusal lists the accepted names: {refusal}")
+    });
+    let names: BTreeSet<String> = accepted
+        .split('`')
+        .skip(1)
+        .step_by(2)
+        .map(str::to_string)
+        .collect();
+    assert!(!names.is_empty(), "no variant name read off: {refusal}");
+    names
+}
+
+/// Every variant of a fieldless enum, each built by deserializing one of the
+/// names [`serde_variant_names`] reads off the type.
+fn every_unit_variant<E: serde::de::DeserializeOwned + std::fmt::Debug>() -> Vec<E> {
+    serde_variant_names::<E>()
+        .into_iter()
+        .map(|name| {
+            serde_json::from_value(serde_json::json!(name))
+                .unwrap_or_else(|e| panic!("`{name}` reads back as a variant: {e}"))
+        })
+        .collect()
+}
+
+/// The serde variant name of every enum a plan file carries, recorded per enum
+/// by one exhaustive match each: a variant added to any of them fails to
+/// COMPILE until its arm names it here.
+#[derive(Default)]
+struct PlanVariantsSeen(BTreeMap<&'static str, BTreeSet<String>>);
+
+impl PlanVariantsSeen {
+    fn saw(&mut self, owner: &'static str, variant: &str) {
+        self.0.entry(owner).or_default().insert(variant.to_string());
+    }
+
+    fn strategy(&mut self, strategy: &FileStrategy) {
+        let name = match strategy {
+            FileStrategy::Symlink => "Symlink",
+            FileStrategy::Copy => "Copy",
+            FileStrategy::Template => "Template",
+            FileStrategy::Hardlink => "Hardlink",
+            FileStrategy::Patch => "Patch",
+        };
+        self.saw("FileStrategy", name);
+    }
+
+    fn patch(&mut self, patch: &PatchSpec) {
+        if let Some(format) = &patch.format {
+            let name = match format {
+                PatchFormat::Ini => "Ini",
+                PatchFormat::Json => "Json",
+                PatchFormat::Yaml => "Yaml",
+                PatchFormat::Toml => "Toml",
+            };
+            self.saw("PatchFormat", name);
+        }
+    }
+
+    fn content(&mut self, strategy: &FileStrategy, patch: Option<&PatchSpec>) {
+        self.strategy(strategy);
+        if let Some(patch) = patch {
+            self.patch(patch);
+        }
+    }
+
+    fn phase(&mut self, phase: &ScriptPhase) {
+        let name = match phase {
+            ScriptPhase::PreApply => "PreApply",
+            ScriptPhase::PostApply => "PostApply",
+            ScriptPhase::PreReconcile => "PreReconcile",
+            ScriptPhase::PostReconcile => "PostReconcile",
+            ScriptPhase::OnDrift => "OnDrift",
+            ScriptPhase::OnChange => "OnChange",
+            ScriptPhase::Patch => "Patch",
+            ScriptPhase::PreBackup => "PreBackup",
+            ScriptPhase::PostBackup => "PostBackup",
+        };
+        self.saw("ScriptPhase", name);
+    }
+
+    fn entry(&mut self, entry: &ScriptEntry) {
+        match entry {
+            ScriptEntry::Simple(_) => self.saw("ScriptEntry", "Simple"),
+            ScriptEntry::Full(command) => {
+                self.saw("ScriptEntry", "Full");
+                let name = match command.shell {
+                    ScriptShell::Auto => "auto",
+                    ScriptShell::Sh => "sh",
+                    ScriptShell::Bash => "bash",
+                    ScriptShell::Zsh => "zsh",
+                    ScriptShell::Pwsh => "pwsh",
+                    ScriptShell::Cmd => "cmd",
+                };
+                self.saw("ScriptShell", name);
+            }
+        }
+    }
+
+    fn resolved_file(&mut self, file: &ResolvedFile) {
+        if let Some(strategy) = &file.strategy {
+            self.strategy(strategy);
+        }
+        if let Some(patch) = &file.patch {
+            self.patch(patch);
+        }
+        if let Some(encryption) = &file.encryption {
+            let name = match encryption.mode {
+                EncryptionMode::InRepo => "InRepo",
+                EncryptionMode::Always => "Always",
+            };
+            self.saw("EncryptionMode", name);
+        }
+    }
+
+    fn action(&mut self, action: &Action) {
+        match action {
+            Action::File(file) => {
+                self.saw("Action", "File");
+                let name = match file {
+                    FileAction::Create {
+                        strategy, patch, ..
+                    } => {
+                        self.content(strategy, patch.as_ref());
+                        "Create"
+                    }
+                    FileAction::Update {
+                        strategy, patch, ..
+                    } => {
+                        self.content(strategy, patch.as_ref());
+                        "Update"
+                    }
+                    FileAction::Delete { .. } => "Delete",
+                    FileAction::SetPermissions { .. } => "SetPermissions",
+                    FileAction::Skip { .. } => "Skip",
+                };
+                self.saw("FileAction", name);
+            }
+            Action::Package(package) => {
+                self.saw("Action", "Package");
+                let name = match package {
+                    PackageAction::Install { .. } => "Install",
+                    PackageAction::Uninstall { .. } => "Uninstall",
+                    PackageAction::Skip { .. } => "Skip",
+                };
+                self.saw("PackageAction", name);
+            }
+            Action::Secret(secret) => {
+                self.saw("Action", "Secret");
+                let name = match secret {
+                    SecretAction::Decrypt { .. } => "Decrypt",
+                    SecretAction::Resolve { .. } => "Resolve",
+                    SecretAction::ResolveEnv { .. } => "ResolveEnv",
+                    SecretAction::Skip { .. } => "Skip",
+                };
+                self.saw("SecretAction", name);
+            }
+            Action::System(system) => {
+                self.saw("Action", "System");
+                let name = match system {
+                    SystemAction::SetValue { .. } => "SetValue",
+                    SystemAction::Skip { .. } => "Skip",
+                    SystemAction::ConfigureAfterInstall { .. } => "ConfigureAfterInstall",
+                };
+                self.saw("SystemAction", name);
+            }
+            Action::Script(ScriptAction::Run { entry, phase, .. }) => {
+                self.saw("Action", "Script");
+                self.saw("ScriptAction", "Run");
+                self.entry(entry);
+                self.phase(phase);
+            }
+            Action::Module(module) => {
+                self.saw("Action", "Module");
+                let name = match &module.kind {
+                    ModuleActionKind::InstallPackages { .. } => "InstallPackages",
+                    ModuleActionKind::DeployFiles { files, .. } => {
+                        for file in files {
+                            self.resolved_file(file);
+                        }
+                        "DeployFiles"
+                    }
+                    ModuleActionKind::RunScript { script, phase } => {
+                        self.entry(script);
+                        self.phase(phase);
+                        "RunScript"
+                    }
+                    ModuleActionKind::Skip { .. } => "Skip",
+                    ModuleActionKind::FilesRefused { .. } => "FilesRefused",
+                };
+                self.saw("ModuleActionKind", name);
+            }
+            Action::Env(env) => {
+                self.saw("Action", "Env");
+                let name = match env {
+                    EnvAction::WriteEnvFile { .. } => "WriteEnvFile",
+                    EnvAction::InjectSourceLine { .. } => "InjectSourceLine",
+                    EnvAction::RefreshLiveSession { .. } => "RefreshLiveSession",
+                };
+                self.saw("EnvAction", name);
+            }
+            Action::Manager(manager) => {
+                self.saw("Action", "Manager");
+                let name = match manager {
+                    ManagerAction::RefreshIndex { .. } => "refreshIndex",
+                    ManagerAction::Provision { .. } => "provision",
+                    ManagerAction::Prerequisite { .. } => "prerequisite",
+                    ManagerAction::Refuse { .. } => "refuse",
+                    ManagerAction::HeldFloor { .. } => "heldFloor",
+                };
+                self.saw("ManagerAction", name);
+            }
+        }
+    }
+}
+
+/// Every variant of every enum a plan file carries survives the plan-file
+/// round trip: `Action`, each action enum under it (`FileAction`,
+/// `PackageAction`, `SecretAction`, `SystemAction`, `ScriptAction`,
+/// `ModuleActionKind`, `EnvAction`, `ManagerAction`), and the value enums
+/// those carry (`FileStrategy`, `PatchFormat`, `EncryptionMode`, `ScriptEntry`,
+/// `ScriptShell`, `ScriptPhase`).
 ///
-/// The match takes no wildcard, so a ninth variant fails to COMPILE here and
-/// never ships a plan file cfgd cannot read back. Every optional field is left
-/// empty, which is the case a `skip_serializing_if` with no `#[serde(default)]`
-/// fails on: the key is absent from the wire entirely.
+/// [`PlanVariantsSeen`] names each sampled variant through one exhaustive
+/// match per enum, and the names it saw must equal the ones serde accepts for
+/// that enum, read off the type itself. A new variant fails to compile until
+/// it is named, and fails here until it is sampled. `ScriptEntry` is untagged,
+/// so serde lists no names for it; its count comes off its published schema.
+///
+/// Optional fields are left empty except where one carries a nested enum, and
+/// each of those also appears empty in a sibling sample: an empty field is the
+/// case a `skip_serializing_if` with no `#[serde(default)]` fails on, since the
+/// key is absent from the wire entirely.
 #[test]
 fn every_action_variant_survives_the_plan_file_round_trip() {
-    let actions = vec![
+    let path = |p: &str| std::path::PathBuf::from(p);
+    let patch = |format: PatchFormat| PatchSpec {
+        format: Some(format),
+        ensure: None,
+        script: None,
+        blocked_by: None,
+    };
+    let resolved_file = |target: &str| ResolvedFile {
+        source: path("/cfg/files/m"),
+        target: path(target),
+        is_git_source: false,
+        strategy: None,
+        encryption: None,
+        permissions: None,
+        patch: None,
+    };
+    let mut files: Vec<ResolvedFile> = vec![resolved_file("/home/u/plain")];
+    files.extend(
+        every_unit_variant::<FileStrategy>()
+            .into_iter()
+            .map(|strategy| ResolvedFile {
+                strategy: Some(strategy),
+                ..resolved_file("/home/u/strategy")
+            }),
+    );
+    files.extend(
+        every_unit_variant::<PatchFormat>()
+            .into_iter()
+            .map(|format| ResolvedFile {
+                patch: Some(patch(format)),
+                ..resolved_file("/home/u/patch")
+            }),
+    );
+    files.extend(
+        every_unit_variant::<EncryptionMode>()
+            .into_iter()
+            .map(|mode| ResolvedFile {
+                encryption: Some(EncryptionSpec {
+                    backend: "sops".into(),
+                    mode,
+                }),
+                ..resolved_file("/home/u/secret")
+            }),
+    );
+
+    let mut actions = vec![
         Action::File(FileAction::Create {
-            source: std::path::PathBuf::from("/cfg/files/a"),
-            target: std::path::PathBuf::from("/home/u/a"),
+            source: path("/cfg/files/a"),
+            target: path("/home/u/a"),
             origin: String::new(),
-            strategy: crate::config::FileStrategy::Copy,
+            strategy: FileStrategy::Copy,
+            source_hash: None,
+            patch: Some(patch(PatchFormat::Ini)),
+        }),
+        Action::File(FileAction::Update {
+            source: path("/cfg/files/a"),
+            target: path("/home/u/a"),
+            diff: "-a\n+b\n".into(),
+            origin: String::new(),
+            strategy: FileStrategy::Symlink,
             source_hash: None,
             patch: None,
+        }),
+        Action::File(FileAction::Delete {
+            target: path("/home/u/a"),
+            origin: String::new(),
+        }),
+        Action::File(FileAction::SetPermissions {
+            target: path("/home/u/a"),
+            mode: 0o600,
+            origin: String::new(),
+            chmod_path: None,
+        }),
+        Action::File(FileAction::Skip {
+            target: path("/home/u/a"),
+            reason: "r".into(),
+            origin: String::new(),
         }),
         Action::Package(PackageAction::Install {
             manager: "brew".into(),
             packages: vec!["jq".into()],
             origin: String::new(),
         }),
+        Action::Package(PackageAction::Uninstall {
+            manager: "brew".into(),
+            packages: vec!["jq".into()],
+            origin: String::new(),
+        }),
+        Action::Package(PackageAction::Skip {
+            manager: "brew".into(),
+            reason: "r".into(),
+            origin: String::new(),
+        }),
+        Action::Secret(SecretAction::Decrypt {
+            source: path("/cfg/secrets/s"),
+            target: path("/home/u/s"),
+            backend: "sops".into(),
+            origin: String::new(),
+        }),
+        Action::Secret(SecretAction::Resolve {
+            provider: "op".into(),
+            reference: "op://v/i".into(),
+            target: path("/home/u/s"),
+            template: None,
+            origin: String::new(),
+        }),
+        Action::Secret(SecretAction::ResolveEnv {
+            provider: "op".into(),
+            reference: "op://v/i".into(),
+            envs: vec!["TOKEN".into()],
+            template: None,
+            origin: String::new(),
+        }),
         Action::Secret(SecretAction::Skip {
             source: "s".into(),
             reason: "r".into(),
+            origin: String::new(),
+        }),
+        Action::System(SystemAction::SetValue {
+            configurator: "sysctl".into(),
+            key: "vm.swappiness".into(),
+            desired: "10".into(),
+            current: "60".into(),
             origin: String::new(),
         }),
         Action::System(SystemAction::Skip {
@@ -27349,10 +27690,37 @@ fn every_action_variant_survives_the_plan_file_round_trip() {
             origin: String::new(),
             unknown: false,
         }),
-        Action::Script(ScriptAction::Run {
-            entry: ScriptEntry::Simple("echo hi".into()),
-            phase: ScriptPhase::PreApply,
+        Action::System(SystemAction::ConfigureAfterInstall {
+            configurator: "gsettings".into(),
+            tool: "gsettings".into(),
             origin: String::new(),
+            prerequisite_withheld: false,
+        }),
+        Action::Module(ModuleAction {
+            module_name: "nvim".into(),
+            kind: ModuleActionKind::InstallPackages {
+                resolved: vec![ResolvedPackage {
+                    canonical_name: "neovim".into(),
+                    resolved_name: "neovim".into(),
+                    manager: "brew".into(),
+                    version: None,
+                    script: None,
+                    creates: None,
+                    only_if: None,
+                    unless: None,
+                    manager_declared: false,
+                    min_version: None,
+                }],
+            },
+            origin: None,
+        }),
+        Action::Module(ModuleAction {
+            module_name: "nvim".into(),
+            kind: ModuleActionKind::DeployFiles {
+                declared_total: files.len(),
+                files,
+            },
+            origin: None,
         }),
         Action::Module(ModuleAction {
             module_name: "nvim".into(),
@@ -27361,33 +27729,134 @@ fn every_action_variant_survives_the_plan_file_round_trip() {
             },
             origin: None,
         }),
+        Action::Module(ModuleAction {
+            module_name: "nvim".into(),
+            kind: ModuleActionKind::FilesRefused {
+                reason: "unencrypted".into(),
+            },
+            origin: None,
+        }),
+        Action::Env(EnvAction::WriteEnvFile {
+            path: path("/home/u/.cfgd.env"),
+            content: "export A=1\n".into(),
+            vars: 0,
+            aliases: 0,
+        }),
         Action::Env(EnvAction::InjectSourceLine {
-            rc_path: std::path::PathBuf::from("/home/u/.zshrc"),
+            rc_path: path("/home/u/.zshrc"),
             line: "source ~/.cfgd.env".into(),
+        }),
+        Action::Env(EnvAction::RefreshLiveSession {
+            vars: vec![("A".into(), "1".into())],
         }),
         Action::Manager(ManagerAction::RefreshIndex {
             manager: "brew".into(),
         }),
+        Action::Manager(ManagerAction::Provision {
+            manager: "brew".into(),
+            via: "homebrew installer".into(),
+            declared: None,
+            floor: None,
+            batched: Vec::new(),
+            depends_on: Vec::new(),
+        }),
+        Action::Manager(ManagerAction::Prerequisite {
+            tool: "curl".into(),
+            package: "curl".into(),
+            installer: "apt".into(),
+            required_by: vec!["brew".into()],
+            depends_on: Vec::new(),
+        }),
+        Action::Manager(ManagerAction::Refuse {
+            manager: "nix".into(),
+            reason: "r".into(),
+        }),
+        Action::Manager(ManagerAction::HeldFloor {
+            manager: "cargo".into(),
+            floor: "1.85".into(),
+            declared: Vec::new(),
+        }),
     ];
-    let sampled: HashSet<_> = actions.iter().map(std::mem::discriminant).collect();
-    assert_eq!(
-        sampled.len(),
-        actions.len(),
-        "no variant is sampled twice, or the count below vouches for a variant nothing built"
+    actions.extend(
+        every_unit_variant::<ScriptPhase>()
+            .into_iter()
+            .map(|phase| {
+                Action::Script(ScriptAction::Run {
+                    entry: ScriptEntry::Simple("echo hi".into()),
+                    phase,
+                    origin: String::new(),
+                })
+            }),
     );
-    assert_eq!(actions.len(), 8, "one sample per Action variant");
+    actions.extend(
+        every_unit_variant::<ScriptShell>()
+            .into_iter()
+            .map(|shell| {
+                Action::Module(ModuleAction {
+                    module_name: "nvim".into(),
+                    kind: ModuleActionKind::RunScript {
+                        script: ScriptEntry::Full(ScriptCommand {
+                            run: "echo hi".into(),
+                            shell,
+                            ..Default::default()
+                        }),
+                        phase: ScriptPhase::PreApply,
+                    },
+                    origin: None,
+                })
+            }),
+    );
+
+    let mut seen = PlanVariantsSeen::default();
     for action in &actions {
-        match action {
-            Action::File(_)
-            | Action::Package(_)
-            | Action::Secret(_)
-            | Action::System(_)
-            | Action::Script(_)
-            | Action::Module(_)
-            | Action::Env(_)
-            | Action::Manager(_) => {}
-        }
+        seen.action(action);
     }
+    let accepted: BTreeMap<&str, BTreeSet<String>> = BTreeMap::from([
+        ("Action", serde_variant_names::<Action>()),
+        ("FileAction", serde_variant_names::<FileAction>()),
+        ("PackageAction", serde_variant_names::<PackageAction>()),
+        ("SecretAction", serde_variant_names::<SecretAction>()),
+        ("SystemAction", serde_variant_names::<SystemAction>()),
+        ("ScriptAction", serde_variant_names::<ScriptAction>()),
+        (
+            "ModuleActionKind",
+            serde_variant_names::<ModuleActionKind>(),
+        ),
+        ("EnvAction", serde_variant_names::<EnvAction>()),
+        ("ManagerAction", serde_variant_names::<ManagerAction>()),
+        ("FileStrategy", serde_variant_names::<FileStrategy>()),
+        ("PatchFormat", serde_variant_names::<PatchFormat>()),
+        ("EncryptionMode", serde_variant_names::<EncryptionMode>()),
+        ("ScriptShell", serde_variant_names::<ScriptShell>()),
+        ("ScriptPhase", serde_variant_names::<ScriptPhase>()),
+    ]);
+    let mut seen = seen.0;
+    let entries = seen
+        .remove("ScriptEntry")
+        .expect("a script entry was sampled");
+    let entry_shapes = serde_json::to_value(schemars::schema_for!(ScriptEntry))
+        .expect("the ScriptEntry schema serializes")["anyOf"]
+        .as_array()
+        .map(Vec::len)
+        .expect("an untagged enum publishes one schema per variant");
+    assert_eq!(
+        entries.len(),
+        entry_shapes,
+        "every ScriptEntry shape is sampled: saw {entries:?}"
+    );
+    assert_eq!(
+        seen.keys().copied().collect::<BTreeSet<_>>(),
+        accepted.keys().copied().collect::<BTreeSet<_>>(),
+        "every enum the samples reach is judged against its serde names"
+    );
+    for (owner, names) in &accepted {
+        assert_eq!(
+            &seen[owner], names,
+            "every {owner} variant serde accepts is sampled, and the match names each as serde \
+             spells it"
+        );
+    }
+
     let plan = Plan {
         phases: vec![Phase::from_actions(
             PhaseName::Files,
