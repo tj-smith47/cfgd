@@ -1348,6 +1348,41 @@ pub(crate) fn run_state_dir(
     })
 }
 
+/// The absolute path of the config document an invocation names, from the
+/// `--config` value clap parsed (`CFGD_CONFIG` included), whether that value
+/// was supplied, the `--config-dir` override and the scope.
+///
+/// The startup path and the alias pass both settle the path through here, so
+/// the aliases a run expands come from the document every later reader reads.
+pub fn settle_config_path(
+    config: PathBuf,
+    config_is_explicit: bool,
+    config_dir: Option<&Path>,
+    scope: cfgd_core::Scope,
+) -> PathBuf {
+    // Under `--scope system` only the bare default moves to the system config
+    // root, before the `--config-dir` fold, so an explicit `--config` or
+    // `--config-dir` (or their env twins) still wins.
+    let config = if scope.is_system() && !config_is_explicit && config_dir.is_none() {
+        cfgd_core::config::config_document_in(&cfgd_core::resolve_config_dir(
+            None,
+            cfgd_core::Scope::System,
+        ))
+    } else {
+        config
+    };
+    let config = effective_config_file(&config, config_is_explicit, config_dir);
+    // A directory names the document inside it. Inferred once, here, so every
+    // consumer (theme load, profiles-dir derivation, dispatch) agrees on the
+    // file, where `load_config` inferring alone would leave `config_dir()`
+    // deriving `profiles/` from the wrong parent.
+    let config = cfgd_core::config::resolve_config_path(&config);
+    // A relative path would otherwise reach every derivation of the config
+    // directory verbatim, and a script hook resolves against that directory
+    // while its process runs in the home directory.
+    cfgd_core::absolutize_path(&config)
+}
+
 /// Resolve the effective config-file path honoring `--config` > `--config-dir` > default.
 /// `config_is_explicit` is true when the user supplied `--config`/`CFGD_CONFIG`
 /// (not the clap default). When the config arg is the default and a `config_dir`

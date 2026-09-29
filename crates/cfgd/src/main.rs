@@ -128,14 +128,6 @@ fn main() -> anyhow::Result<()> {
     let raw_args: Vec<String> = std::env::args().collect();
     let (expanded, startup) = cli::expand_aliases(raw_args);
 
-    // Gate for the macOS config-location migration prompt (evaluated below,
-    // after the Printer exists): an explicit `--config`/`CFGD_CONFIG` pins the
-    // location.
-    let explicit_config = std::env::var_os(cfgd_core::CFGD_CONFIG_ENV).is_some()
-        || expanded
-            .iter()
-            .any(|a| a == "--config" || a.starts_with("--config="));
-
     let brontes_cfg = cfgd::mcp::brontes::config();
     let mcp_command = brontes::command(Some(&brontes_cfg)).after_help(MCP_HELP_EXAMPLES);
     let augmented = cli::Cli::command().subcommand(mcp_command);
@@ -183,36 +175,15 @@ fn main() -> anyhow::Result<()> {
     let config_is_explicit =
         matches.value_source("config") != Some(clap::parser::ValueSource::DefaultValue);
 
-    // `--config` defaults to the per-user config file at clap-parse time. Under
-    // `--scope system`, redirect that default to the system config root BEFORE the
-    // `--config` / `--config-dir` fold so an explicit `--config`/`--config-dir`
-    // (or `$CFGD_CONFIG*`) still wins — only the bare default is repointed.
-    if cli.scope().is_system() && !config_is_explicit && cli.config_dir.is_none() {
-        cli.config = cfgd_core::config::config_document_in(&cfgd_core::resolve_config_dir(
-            None,
-            cfgd_core::Scope::System,
-        ));
-    }
-
-    cli.config =
-        cli::effective_config_file(&cli.config, config_is_explicit, cli.config_dir.as_deref());
-
-    // A `--config <dir>` / `CFGD_CONFIG=<dir>` argument names the config directory;
-    // infer the discovery file inside it once, up front, so every downstream
-    // consumer (theme load, profiles-dir derivation, dispatch) agrees on the same
-    // resolved file rather than load_config silently inferring while config_dir()
-    // derives `profiles/` from the wrong parent.
-    cli.config = cfgd_core::config::resolve_config_path(&cli.config);
-
-    // A relative `--config`/`CFGD_CONFIG`/`--config-dir` value stays relative
-    // past this point otherwise: every downstream derivation of the config
-    // directory (`config_dir(cli)`, in turn a script hook's resolution base)
-    // inherits it verbatim, and a script's process `cwd` is the home
-    // directory rather than the config dir — a relative `run:` script then
-    // resolves against the wrong location whenever cfgd itself isn't invoked
-    // from that same directory. Absolutizing once, here, makes every later
-    // reader agree regardless of how `--config` was spelled.
-    cli.config = cfgd_core::absolutize_path(&cli.config);
+    // The alias pass settled its document through the same call, so the two
+    // agree on the file wherever the location was spelled.
+    let scope = cli.scope();
+    cli.config = cli::settle_config_path(
+        std::mem::take(&mut cli.config),
+        config_is_explicit,
+        cli.config_dir.as_deref(),
+        scope,
+    );
 
     // A `--config-dir` override also makes the resolved config path
     // user-directed: a missing config there is the user's typo, not a fresh
@@ -220,8 +191,8 @@ fn main() -> anyhow::Result<()> {
     // derived default.
     cli.config_explicit = config_is_explicit || cli.config_dir.is_some();
 
-    // The alias pass read `--config` off the raw argv; clap settled the path
-    // from the same flag and from everything the alias pass cannot see.
+    // The alias pass settled the same path, so this keeps its read; it reads
+    // again only for a location the alias pass could not parse.
     let startup = startup.reload_if_moved(&cli.config);
 
     // Resolve output format with --jsonpath backwards compat.
@@ -357,8 +328,11 @@ fn main() -> anyhow::Result<()> {
     // sessions; re-resolve the config path when the dir was moved. Skipped for
     // the daemon, which must never block on a prompt when run in the foreground.
     if !is_daemon
-        && let Some(new_config) =
-            cli::config_migration::maybe_migrate_macos_config(&printer, explicit_config, assume_yes)
+        && let Some(new_config) = cli::config_migration::maybe_migrate_macos_config(
+            &printer,
+            config_is_explicit,
+            assume_yes,
+        )
     {
         cli.config = cfgd_core::config::resolve_config_path(&new_config);
     }

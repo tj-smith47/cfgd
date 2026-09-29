@@ -57,9 +57,9 @@ pub use error::{
     cli_error_ctx_with_hints_and_block, cli_error_with_hints, emit_not_found_ignored,
     exit_code_for_anyhow, invalid_argument, invalid_argument_among,
 };
-pub use helpers::effective_config_file;
 pub(crate) use helpers::run_state_dir;
 pub(in crate::cli) use helpers::*;
+pub use helpers::{effective_config_file, settle_config_path};
 pub(in crate::cli) use output_types::*;
 pub(in crate::cli) use plan_ops::*;
 pub(in crate::cli) use registry::*;
@@ -713,12 +713,118 @@ pub(super) fn find_subcommand_index(args: &[String]) -> Option<usize> {
 /// arguments after the alias name are appended.
 ///
 /// Returns the potentially-expanded args, and the config document the
-/// `--config` in them names: the one read every reader before dispatch shares,
-/// loaded whether or not an alias applies.
+/// invocation names: the one read every reader before dispatch shares, loaded
+/// whether or not an alias applies.
 pub fn expand_aliases(args: Vec<String>) -> (Vec<String>, startup::StartupDocument) {
-    let startup = startup::StartupDocument::load(&extract_config_path(&args));
+    expand_aliases_with(args, Cli::command())
+}
+
+/// `command` with no help or version flag at any level, so a `--help`
+/// written anywhere reads as an unknown argument the alias pass drops, where
+/// clap would stop the parse to print help.
+fn without_help(command: clap::Command) -> clap::Command {
+    command
+        .disable_help_flag(true)
+        .disable_version_flag(true)
+        .disable_help_subcommand(true)
+        .mut_subcommands(without_help)
+}
+
+/// [`expand_aliases`] against `command`, the definition the config location
+/// is parsed from.
+fn expand_aliases_with(
+    args: Vec<String>,
+    command: clap::Command,
+) -> (Vec<String>, startup::StartupDocument) {
+    let startup = startup::StartupDocument::load(&alias_pass_config_path(&args, command));
     let expanded = expand_aliases_from(args, startup.config());
     (expanded, startup)
+}
+
+/// The subcommand an alias token is parsed under while the alias pass reads
+/// the config location, so the arguments after it are still parsed.
+const ALIAS_SLOT: &str = "__cfgd_alias";
+
+/// The config document `args` names, read through clap's own definition of
+/// the global flags and their env bindings, and settled the way the startup
+/// path settles it.
+///
+/// The argv has not been expanded yet, so the alias token stands where clap
+/// expects a subcommand; it is parsed as a hidden one taking any arguments.
+/// A flag only the expansion's target command knows is dropped and the parse
+/// retried, so a `--config` written after it is still read.
+fn alias_pass_config_path(args: &[String], command: clap::Command) -> PathBuf {
+    let mut argv = args.to_vec();
+    if let Some(at) = find_subcommand_index(&argv)
+        && command.find_subcommand(&argv[at]).is_none()
+    {
+        argv[at] = ALIAS_SLOT.to_string();
+    }
+    let command = without_help(command).subcommand(
+        clap::Command::new(ALIAS_SLOT).hide(true).arg(
+            clap::Arg::new("args")
+                .num_args(0..)
+                .action(clap::ArgAction::Append),
+        ),
+    );
+    let matches = loop {
+        match command.clone().try_get_matches_from(&argv) {
+            Ok(matches) => break Some(matches),
+            Err(error) => {
+                let unknown = (error.kind() == clap::error::ErrorKind::UnknownArgument)
+                    .then(|| error.get(clap::error::ContextKind::InvalidArg))
+                    .flatten()
+                    .and_then(|value| match value {
+                        clap::error::ContextValue::String(arg) => Some(arg.clone()),
+                        _ => None,
+                    });
+                let at = unknown.and_then(|arg| {
+                    let inline = format!("{arg}=");
+                    argv.iter()
+                        .skip(1)
+                        .position(|a| *a == arg || a.starts_with(&inline))
+                        .map(|i| i + 1)
+                });
+                match at {
+                    Some(at) => {
+                        argv.remove(at);
+                    }
+                    // A malformed value or a missing required argument
+                    // still leaves the flags around it parsed.
+                    None => {
+                        break command
+                            .clone()
+                            .ignore_errors(true)
+                            .try_get_matches_from(&argv)
+                            .ok();
+                    }
+                }
+            }
+        }
+    };
+    let Some(matches) = matches else {
+        return settle_config_path(default_config_file(), false, None, cfgd_core::Scope::User);
+    };
+    let explicit = matches.value_source("config") != Some(clap::parser::ValueSource::DefaultValue);
+    // clap computes a derived default once per process; asking again honours
+    // a home redirected since, and names the same file in a real run.
+    let config = matches
+        .get_one::<PathBuf>("config")
+        .filter(|_| explicit)
+        .cloned()
+        .unwrap_or_else(default_config_file);
+    let scope = matches
+        .get_one::<ScopeArg>("scope_arg")
+        .copied()
+        .unwrap_or_default();
+    settle_config_path(
+        config,
+        explicit,
+        matches
+            .get_one::<PathBuf>("config_dir")
+            .map(PathBuf::as_path),
+        scope.into(),
+    )
 }
 
 fn expand_aliases_from(
@@ -747,22 +853,6 @@ fn expand_aliases_from(
     result.extend(expansion.split_whitespace().map(String::from));
     result.extend_from_slice(&args[subcommand_idx + 1..]);
     result
-}
-
-/// Extract the --config path from raw args, or use the default.
-fn extract_config_path(args: &[String]) -> PathBuf {
-    for (i, arg) in args.iter().enumerate() {
-        if arg == "--config" {
-            if let Some(val) = args.get(i + 1) {
-                return PathBuf::from(val);
-            }
-            break;
-        }
-        if let Some(val) = arg.strip_prefix("--config=") {
-            return PathBuf::from(val);
-        }
-    }
-    default_config_file()
 }
 
 /// When to colorize output, in the `auto`/`always`/`never` spelling every
@@ -943,8 +1033,8 @@ pub fn migration_policy_override(flag: Option<&str>) -> Option<cfgd_schema::Migr
 }
 
 /// Resolve whether closing `→` usage hints render, folding the
-/// `--hints`/`--no-hints` pair, `CFGD_USAGE_HINTS` and `spec.usageHints` into
-/// the one decision every entry point's printer is built from
+/// `--hints`/`--no-hints` pair, `CFGD_USAGE_HINTS` and `spec.output.usageHints`
+/// into the one decision every entry point's printer is built from
 /// (`Printer::with_hints_enabled`).
 ///
 /// Only a TUTORIAL hint asks this. A refusal's remediation carries
@@ -3782,8 +3872,18 @@ pub trait HermeticParse: Parser {
         I: IntoIterator<Item = T>,
         T: Into<std::ffi::OsString> + Clone,
     {
-        let matches = keep_env_bindings(Self::command(), env).try_get_matches_from(argv)?;
+        let matches = Self::try_matches_reading_env(argv, env)?;
         <Self as clap::FromArgMatches>::from_arg_matches(&matches)
+    }
+
+    /// The matches [`HermeticParse::try_parse_reading_env`] builds `Self`
+    /// from, for a test that reads where a value came from.
+    fn try_matches_reading_env<I, T>(argv: I, env: &[&str]) -> Result<clap::ArgMatches, clap::Error>
+    where
+        I: IntoIterator<Item = T>,
+        T: Into<std::ffi::OsString> + Clone,
+    {
+        keep_env_bindings(Self::command(), env).try_get_matches_from(argv)
     }
 }
 

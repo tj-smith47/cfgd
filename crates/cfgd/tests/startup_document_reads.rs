@@ -1,5 +1,6 @@
-//! The alias pass and clap settle on one startup document, and its reload
-//! count says whether clap moved it.
+//! The alias pass and clap settle on one startup document under every
+//! spelling of the config location, and its reload count says whether clap
+//! moved it.
 //!
 //! The alias pass reads the document before the tracing subscriber exists, so
 //! `main` reports the startup document in one `loaded config document` debug
@@ -36,6 +37,17 @@ fn stderr_of(config: Config<'_>, verb: &[&str]) -> String {
     }
     let output = cmd.args(verb).output().expect("cfgd runs");
     String::from_utf8_lossy(&output.stderr).into_owned()
+}
+
+/// The config home `cfgd_bin` points this test's runs at.
+fn config_home() -> std::path::PathBuf {
+    cfgd_bin()
+        .expect("the cfgd binary builds")
+        .get_envs()
+        .find(|(var, _)| *var == "XDG_CONFIG_HOME")
+        .and_then(|(_, value)| value)
+        .map(std::path::PathBuf::from)
+        .expect("cfgd_bin isolates XDG_CONFIG_HOME")
 }
 
 fn write_fixture(dir: &std::path::Path) {
@@ -83,29 +95,122 @@ fn the_alias_pass_and_clap_settle_on_one_document_for_every_verb() {
 /// document under the isolated config home.
 #[test]
 fn a_run_without_config_settles_on_the_default_document_with_no_reload() {
-    let probe = cfgd_bin().expect("the cfgd binary builds");
-    let config_home = probe
-        .get_envs()
-        .find(|(var, _)| *var == "XDG_CONFIG_HOME")
-        .and_then(|(_, value)| value)
-        .map(std::path::PathBuf::from)
-        .expect("cfgd_bin isolates XDG_CONFIG_HOME");
+    let config_home = config_home();
     write_fixture(&config_home.join("cfgd"));
     assert_reads(&["status"], &stderr_of(Config::Default, &["status"]), 1);
 }
 
-/// `CFGD_CONFIG` is clap's alone: the alias pass reads the default document,
-/// and the summary line counts the second read that lands on the named one.
+/// A document named in the environment is the one the alias pass reads, so
+/// clap settles on it with no reload.
 #[test]
-fn a_config_named_only_in_the_environment_counts_as_one_reload() {
+fn a_config_named_only_in_the_environment_is_read_once() {
     let dir = tempfile::tempdir().expect("tempdir");
     write_fixture(dir.path());
     let config = dir.path().join("cfgd.yaml");
     let stderr = stderr_of(Config::Env(&config), &["status"]);
-    assert_reads(&["status"], &stderr, 2);
+    assert_reads(&["status"], &stderr, 1);
     assert!(
         stderr.contains(&config.display().to_string()),
         "the line names the document clap settled on:\n{stderr}"
+    );
+}
+
+/// A config document declaring `profile` and a `who` alias that prints it.
+fn write_alias_fixture(dir: &std::path::Path, profile: &str) {
+    std::fs::create_dir_all(dir).expect("mkdir");
+    std::fs::write(
+        dir.join("cfgd.yaml"),
+        format!(
+            "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: aliases\nspec:\n  profile: {profile}\n  aliases:\n    who: config get profile\n"
+        ),
+    )
+    .expect("write config");
+}
+
+/// Every spelling of the config location expands the aliases of the document
+/// it names: `who` is declared in that document alone, and prints its profile.
+/// The default document carries no aliases, so a pass that read it instead
+/// refuses `who` as an unknown command.
+#[test]
+fn every_spelling_of_the_config_location_expands_that_documents_aliases() {
+    let config_home = config_home();
+    write_fixture(&config_home.join("cfgd"));
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    write_alias_fixture(dir.path(), "named");
+    let x = dir.path().join("cfgd.yaml");
+    let x_flag = format!("--config={}", x.display());
+    let d = dir.path().as_os_str();
+
+    type Row<'a> = (
+        &'a str,
+        Vec<&'a std::ffi::OsStr>,
+        Option<(&'a str, &'a std::ffi::OsStr)>,
+    );
+    let rows: Vec<Row<'_>> = vec![
+        ("--config X", vec!["--config".as_ref(), x.as_os_str()], None),
+        ("--config=X", vec![x_flag.as_ref()], None),
+        (
+            "CFGD_CONFIG=X",
+            vec![],
+            Some((cfgd_core::CFGD_CONFIG_ENV, x.as_os_str())),
+        ),
+        ("--config-dir D", vec!["--config-dir".as_ref(), d], None),
+        (
+            "CFGD_CONFIG_DIR=D",
+            vec![],
+            Some((cfgd_core::CFGD_CONFIG_DIR_ENV, d)),
+        ),
+        (
+            "--scope system",
+            vec!["--scope".as_ref(), "system".as_ref()],
+            Some(("CONFIGURATION_DIRECTORY", d)),
+        ),
+    ];
+    let mut wrong = Vec::new();
+    for (shape, args, env) in rows {
+        let mut cmd = cfgd_bin().expect("the cfgd binary builds");
+        cmd.env_remove("RUST_LOG").arg("-v").args(&args).arg("who");
+        if let Some((var, value)) = env {
+            cmd.env(var, value);
+        }
+        let output = cmd.output().expect("cfgd runs");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let summary = stderr
+            .lines()
+            .filter(|l| l.contains(SUMMARY_LINE))
+            .collect::<Vec<_>>();
+        if !output.status.success()
+            || stdout.trim() != "named"
+            || summary.len() != 1
+            || !summary[0].contains("reads=1 ")
+        {
+            wrong.push(format!("{shape}: stdout {stdout:?}\n{stderr}"));
+        }
+    }
+    assert!(
+        wrong.is_empty(),
+        "the alias did not run from the named document once:\n{}",
+        wrong.join("\n")
+    );
+}
+
+/// With no location spelled, the aliases come from the default document.
+#[test]
+fn a_run_without_config_expands_the_default_documents_aliases() {
+    let config_home = config_home();
+    write_alias_fixture(&config_home.join("cfgd"), "fromdefault");
+    let output = cfgd_bin()
+        .expect("the cfgd binary builds")
+        .arg("who")
+        .output()
+        .expect("cfgd runs");
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout).trim(),
+        "fromdefault",
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
     );
 }
 

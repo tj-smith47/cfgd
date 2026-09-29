@@ -925,6 +925,10 @@ Default aliases (scaffolded by `cfgd init`):
 
 These are not hardcoded: they live in your cfgd.yaml and can be changed or removed.
 
+cfgd expands an alias from the config document the invocation names, through any spelling of its
+location (`--config`, `CFGD_CONFIG`, `--config-dir`, `CFGD_CONFIG_DIR`, `--scope system`), so
+`CFGD_CONFIG=~/work/cfgd.yaml cfgd up` runs the `up` declared in `~/work/cfgd.yaml`.
+
 ## AI Configuration
 
 Configure the AI provider for `cfgd generate`:

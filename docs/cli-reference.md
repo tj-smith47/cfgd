@@ -2956,6 +2956,16 @@ cfgd alias delete pu                        # alias: rm
 No command-specific flags. `set` takes `<NAME> <COMMAND>`, where `COMMAND` is the argument string
 the alias expands to. Aliases live in the config file, so they travel with the config repository.
 
+An alias expands from the same config document every other command reads, wherever its location
+is spelled: `--config` (before or after the alias), `CFGD_CONFIG`, `--config-dir`,
+`CFGD_CONFIG_DIR` or `--scope system`. An alias declared only in another document runs under
+that document's location:
+
+```sh
+CFGD_CONFIG=~/work/cfgd.yaml cfgd pu ~/.gitconfig   # expands `pu` from ~/work/cfgd.yaml
+cfgd --config-dir ~/work pu ~/.gitconfig            # the same document, spelled as a directory
+```
+
 An alias name is one word with no `.`; `set`, `show` and `delete` refuse any other name as
 `invalid_value`. `show` and `delete` refuse a name with no alias as a missing alias, exit `6`.
 Every refusal names the alias as you typed it, in the message and as the `-o json` `name`:

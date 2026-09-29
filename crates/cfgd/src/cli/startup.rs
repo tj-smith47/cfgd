@@ -63,11 +63,12 @@ impl StartupDocument {
     /// This document, when `path` names the same file; the document at `path`
     /// otherwise.
     ///
-    /// The alias pass reads `--config` off the raw argv before clap runs, and
-    /// clap can settle on another file: the flag written after the
-    /// subcommand, `CFGD_CONFIG`, `--config-dir`, `--scope system`. The same
-    /// file keeps the one read already made and takes the caller's spelling of
-    /// the path, so [`Self::path`] always names what the caller asked for.
+    /// The alias pass settles the config location through the same call the
+    /// startup path makes, so the two name one file whenever the alias pass
+    /// could parse the argv; clap moves the path only for an argv it could
+    /// not. The same file keeps the one read already made and takes the
+    /// caller's spelling of the path, so [`Self::path`] always names what the
+    /// caller asked for.
     pub fn reload_if_moved(self, path: &Path) -> Self {
         let resolved = cfgd_core::config::resolve_config_path(path);
         if cfgd_core::absolutize_path(&resolved) == cfgd_core::absolutize_path(&self.path) {

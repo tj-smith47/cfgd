@@ -2558,7 +2558,7 @@ fn resolve_hints_enabled_precedence_flag_beats_env_beats_spec_beats_default() {
     )
     .expect("write config");
 
-    // spec.usageHints: false, no env, no flag -> off.
+    // spec.output.usageHints: false, no env, no flag -> off.
     let _unset = EnvVarGuard::unset(cfgd_core::CFGD_USAGE_HINTS_ENV);
     assert!(!super::resolve_hints_enabled(
         StartupDocument::load(&path).config(),
@@ -2569,7 +2569,7 @@ fn resolve_hints_enabled_precedence_flag_beats_env_beats_spec_beats_default() {
     let _on_env = EnvVarGuard::set(cfgd_core::CFGD_USAGE_HINTS_ENV, "true");
     assert!(
         super::resolve_hints_enabled(StartupDocument::load(&path).config(), None),
-        "CFGD_USAGE_HINTS=true must outrank spec.usageHints: false"
+        "CFGD_USAGE_HINTS=true must outrank spec.output.usageHints: false"
     );
 
     // The flag beats an env var that says the opposite, in both directions.
@@ -7200,31 +7200,6 @@ spec:
     ];
     let expanded = super::expand_aliases(args.clone()).0;
     assert_eq!(expanded, args);
-}
-
-// --- extract_config_path ---
-
-#[test]
-fn extract_config_path_explicit() {
-    let args = vec![
-        "cfgd".into(),
-        "--config".into(),
-        "/tmp/my.yaml".into(),
-        "status".into(),
-    ];
-    assert_eq!(
-        super::extract_config_path(&args),
-        PathBuf::from("/tmp/my.yaml")
-    );
-}
-
-#[test]
-fn extract_config_path_equals() {
-    let args = vec!["cfgd".into(), "--config=/tmp/my.yaml".into()];
-    assert_eq!(
-        super::extract_config_path(&args),
-        PathBuf::from("/tmp/my.yaml")
-    );
 }
 
 // --- resolve_profile_name ---
@@ -56042,11 +56017,12 @@ fn reload_if_moved_reloads_only_when_the_document_differs() {
     assert_eq!(document.path(), other);
 }
 
-/// The alias pass reads `--config` off the raw argv, and clap reads it from
-/// the argv and from `CFGD_CONFIG`. Every shape ends on the document clap
-/// settled on, read once when the alias pass found the same file.
+/// The alias pass parses the config location through clap's own definition
+/// and settles it the way the startup path does, so every spelling of the
+/// location expands the aliases of the document clap settles on, and that
+/// document is read once. `xonly` is declared only in X.
 ///
-/// The argv with no `--config` at all is pinned against the real binary
+/// The argv with no location at all is pinned against the real binary
 /// (`tests/startup_document_reads.rs`): clap caches the default path the first
 /// parse in a process computes, so an in-process parse cannot see this
 /// test's home.
@@ -56054,57 +56030,137 @@ fn reload_if_moved_reloads_only_when_the_document_differs() {
 #[serial_test::serial]
 fn expand_aliases_and_clap_agree_on_the_config_path() {
     let _config = cfgd_core::test_helpers::EnvVarGuard::unset(cfgd_core::CFGD_CONFIG_ENV);
+    let _config_dir = cfgd_core::test_helpers::EnvVarGuard::unset(cfgd_core::CFGD_CONFIG_DIR_ENV);
+    let _scope = cfgd_core::test_helpers::EnvVarGuard::unset(cfgd_core::CFGD_SCOPE_ENV);
     let _xdg = cfgd_core::test_helpers::EnvVarGuard::unset("XDG_CONFIG_HOME");
     let _systemd = cfgd_core::test_helpers::EnvVarGuard::unset("CONFIGURATION_DIRECTORY");
     let home = tempfile::tempdir().expect("tempdir");
     cfgd_core::with_test_home(home.path(), || {
-        let named = |name: &str| {
+        let named = |name: &str, aliases: &str| {
             format!(
-                "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: {name}\nspec:\n  profile: default\n"
+                "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: {name}\nspec:\n  profile: default\n{aliases}"
             )
         };
         let default = super::default_config_file();
         std::fs::create_dir_all(default.parent().expect("a parent")).expect("mkdir");
-        std::fs::write(&default, named("default")).expect("write default");
+        std::fs::write(&default, named("default", "")).expect("write default");
         let x_dir = tempfile::tempdir().expect("tempdir");
         let x = x_dir.path().join("cfgd.yaml");
-        std::fs::write(&x, named("x")).expect("write x");
+        std::fs::write(
+            &x,
+            named(
+                "x",
+                "  aliases:\n    xonly: config get profile\n    xst: status\n",
+            ),
+        )
+        .expect("write x");
         let x_arg = x.to_string_lossy().into_owned();
+        let x_dir_arg = x_dir.path().to_string_lossy().into_owned();
 
-        let settle = |argv: Vec<String>, env: &[&str]| {
-            let (expanded, startup) = super::expand_aliases(argv);
-            let cli = Cli::try_parse_reading_env(expanded, env).expect("the argv parses");
-            let startup = startup.reload_if_moved(&cli.config);
+        const ENV: [&str; 3] = [
+            cfgd_core::CFGD_CONFIG_ENV,
+            cfgd_core::CFGD_CONFIG_DIR_ENV,
+            cfgd_core::CFGD_SCOPE_ENV,
+        ];
+        let settle = |argv: Vec<String>| {
+            let (expanded, startup) =
+                super::expand_aliases_with(argv, super::keep_env_bindings(Cli::command(), &ENV));
+            let matches = Cli::try_matches_reading_env(expanded.clone(), &ENV)
+                .unwrap_or_else(|e| panic!("{expanded:?} parses: {e}"));
+            let cli = Cli::try_parse_reading_env(expanded.clone(), &ENV).expect("parses");
+            let settled = super::settle_config_path(
+                cli.config.clone(),
+                matches.value_source("config") != Some(clap::parser::ValueSource::DefaultValue),
+                cli.config_dir.as_deref(),
+                cli.scope(),
+            );
+            let startup = startup.reload_if_moved(&settled);
             (
+                expanded,
                 startup.config().map(|config| config.metadata.name.clone()),
                 startup.reads(),
             )
         };
         let argv = |parts: &[&str]| parts.iter().map(|p| (*p).to_string()).collect::<Vec<_>>();
-        let x_name = Some("x".to_string());
 
-        assert_eq!(
-            settle(argv(&["cfgd", "--config", &x_arg, "status"]), &[]),
-            (x_name.clone(), 1)
-        );
-        assert_eq!(
-            settle(argv(&["cfgd", &format!("--config={x_arg}"), "status"]), &[]),
-            (x_name.clone(), 1)
-        );
-        assert_eq!(
-            settle(argv(&["cfgd", "status", "--config", &x_arg]), &[]),
-            (x_name.clone(), 1),
-            "the alias pass reads `--config` after the subcommand too"
-        );
-        {
+        type Row<'a> = (&'a str, Vec<String>, Option<(&'a str, &'a str)>);
+        let rows: Vec<Row<'_>> = vec![
+            (
+                "--config X",
+                argv(&["cfgd", "--config", &x_arg, "xonly"]),
+                None,
+            ),
+            (
+                "--config=X",
+                argv(&["cfgd", &format!("--config={x_arg}"), "xonly"]),
+                None,
+            ),
+            (
+                "--config X after the alias",
+                argv(&["cfgd", "xonly", "--config", &x_arg]),
+                None,
+            ),
+            (
+                "--config X after a flag only the expansion knows",
+                argv(&["cfgd", "xst", "--scan", "--config", &x_arg]),
+                None,
+            ),
+            (
+                "--config X after --help",
+                argv(&["cfgd", "xonly", "--help", "--config", &x_arg]),
+                None,
+            ),
+            (
+                "CFGD_CONFIG=X",
+                argv(&["cfgd", "xonly"]),
+                Some((cfgd_core::CFGD_CONFIG_ENV, &x_arg)),
+            ),
+            (
+                "--config-dir D",
+                argv(&["cfgd", "--config-dir", &x_dir_arg, "xonly"]),
+                None,
+            ),
+            (
+                "CFGD_CONFIG_DIR=D",
+                argv(&["cfgd", "xonly"]),
+                Some((cfgd_core::CFGD_CONFIG_DIR_ENV, &x_dir_arg)),
+            ),
+            (
+                "--scope system",
+                argv(&["cfgd", "--scope", "system", "xonly"]),
+                Some(("CONFIGURATION_DIRECTORY", &x_dir_arg)),
+            ),
+        ];
+        let mut wrong = Vec::new();
+        for (shape, args, env) in rows {
             let _env =
-                cfgd_core::test_helpers::EnvVarGuard::set(cfgd_core::CFGD_CONFIG_ENV, &x_arg);
-            assert_eq!(
-                settle(argv(&["cfgd", "status"]), &[cfgd_core::CFGD_CONFIG_ENV]),
-                (x_name.clone(), 2),
-                "CFGD_CONFIG is clap's alone, so the document is read again"
-            );
+                env.map(|(var, value)| cfgd_core::test_helpers::EnvVarGuard::set(var, value));
+            if shape.ends_with("--help") {
+                let (expanded, startup) = super::expand_aliases_with(
+                    args,
+                    super::keep_env_bindings(Cli::command(), &ENV),
+                );
+                if expanded.iter().any(|a| a == "xonly") {
+                    wrong.push(format!("{shape}: X's alias did not expand: {expanded:?}"));
+                }
+                if startup.config().map(|c| c.metadata.name.as_str()) != Some("x") {
+                    wrong.push(format!("{shape}: the alias pass read {:?}", startup.path()));
+                }
+                continue;
+            }
+            let (expanded, name, reads) = settle(args);
+            if expanded.iter().any(|a| a == "xonly" || a == "xst") {
+                wrong.push(format!("{shape}: X's alias did not expand: {expanded:?}"));
+            }
+            if name.as_deref() != Some("x") || reads != 1 {
+                wrong.push(format!("{shape}: settled on {name:?} after {reads} reads"));
+            }
         }
+        assert!(
+            wrong.is_empty(),
+            "the alias pass and clap disagree on the config document:\n{}",
+            wrong.join("\n")
+        );
     });
 }
 
