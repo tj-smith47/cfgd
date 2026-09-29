@@ -30655,7 +30655,7 @@ fn configurator_narration_settles_on_its_own_when_no_caller_drains_it() {
 
     assert!(
         out.contains("sysctl -w net.ipv4.ip_forward=1"),
-        "an undrained report still settles rather than vanishing: {out}"
+        "an undrained report still settles into a row: {out}"
     );
     assert!(
         out.contains("reload deferred: /proc is read-only"),
@@ -30746,7 +30746,7 @@ fn a_provisions_planned_via_reaches_the_bootstrap_that_executes_it() {
     assert_eq!(
         seen.lock().unwrap().as_deref(),
         Some("apt"),
-        "bootstrap must see the method the plan resolved, not None"
+        "bootstrap must see the method the plan resolved"
     );
 }
 
