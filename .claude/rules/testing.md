@@ -305,6 +305,15 @@ captured, so nothing later reads a tree still carrying a deliberate defect. The 
 target dir (`~/.cache/cfgd-debug/red-target`) is retained: a fresh tree is copied per
 probe, so a kept target dir changes only rebuild cost and leaves what a probe measures alone.
 
+## An expectation built from host-dependent bytes goes through the producer's own fold
+
+A test runs on Linux, macOS and Windows, so an expected line is built the way the
+product builds it:
+
+| Expected bytes | Build them with | Pin (`output/tests/fences.rs`) |
+|---|---|---|
+| a path the renderer home-folds | `fold_home_in_text(&to_posix_string(p))` | `no_home_fold_is_handed_a_native_path_render` |
+
 ## Fixture versions: use the 9.9.x sentinel range
 
 When a test hardcodes a version string as a scaffold (mock upgrade

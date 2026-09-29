@@ -795,7 +795,6 @@ impl ResolvedDirs {
 /// caller of either must land where the other writes.
 pub(crate) const MODULE_CACHE_SEGMENT: &str = "modules";
 
-/// Expand `~` and `~/...` paths to the user's home directory.
 /// Fold every absolute path under the home directory in `text` to its `~/`
 /// spelling — the DISPLAY inverse of [`expand_tilde`], for a subject a person
 /// reads (`write ~/.cfgd.env`, `deploy ~/.config/nvim/init.lua`).
@@ -806,6 +805,11 @@ pub(crate) const MODULE_CACHE_SEGMENT: &str = "modules";
 /// absolute, the `source ~/.cfgd.env` hint beside it folded — and the absolute
 /// form is what pushed a two-target deploy row past the room its own elision
 /// respects. Folded on the POSIX spelling, so a Windows home folds too.
+///
+/// `text` must spell its paths with `/` as well: a native Windows render
+/// (`Path::display`, `to_string_lossy`) never contains the folded home, so it
+/// passes through unfolded. Render a path with `to_posix_string` or
+/// `display_posix` before handing it here.
 pub fn fold_home_in_text(text: &str) -> String {
     let Some(home) = home_dir_var() else {
         return text.to_string();
@@ -818,6 +822,7 @@ pub fn fold_home_in_text(text: &str) -> String {
     text.replace(&format!("{home}/"), "~/")
 }
 
+/// Expand `~` and `~/...` paths to the user's home directory.
 pub fn expand_tilde(path: &std::path::Path) -> std::path::PathBuf {
     let path_str = path.display().to_string();
     let home = home_dir_var();

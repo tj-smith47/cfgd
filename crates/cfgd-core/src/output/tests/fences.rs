@@ -1399,6 +1399,125 @@ fn no_core_env_file_fixture_hardcodes_the_primary_env_files_name_or_dialect() {
     );
 }
 
+/// Every source under the crate roots `floors` names, tests and integration
+/// tests included, each paired with the root it sits under. The cross-OS
+/// fixture fences below read the two crates the Windows test leg builds.
+fn cross_os_fence_sources(floors: &[(&'static str, usize)]) -> Vec<(&'static str, PathBuf)> {
+    let crates = workspace_root().join("crates");
+    workspace_rust_files()
+        .into_iter()
+        .filter_map(|path| {
+            let krate = floors
+                .iter()
+                .map(|(krate, _)| *krate)
+                .find(|krate| path.starts_with(crates.join(krate)))?;
+            Some((krate, path))
+        })
+        .collect()
+}
+
+/// Fails unless every root in `floors` contributed at least its floor to
+/// `counts`, so one tree going dark fails on its own name; the other tree's
+/// total cannot cover for it.
+fn assert_each_root_read(
+    floors: &[(&'static str, usize)],
+    counts: &std::collections::BTreeMap<&str, usize>,
+    what: &str,
+) {
+    for (krate, floor) in floors {
+        let read = counts.get(krate).copied().unwrap_or(0);
+        assert!(
+            read >= *floor,
+            "the walk read {read} {what} under `{krate}`, fewer than it holds \
+             ({counts:?}); it has stopped seeing them"
+        );
+    }
+}
+
+/// The end of the call whose argument list opens at `open` in `code`, a body
+/// with its literals and comments blanked, and the byte offset of the first
+/// comma at the call's own depth when it has one.
+fn call_span(code: &str, open: usize) -> (usize, Option<usize>) {
+    let mut depth = 1usize;
+    let mut first_comma = None;
+    for (i, c) in code[open..].char_indices() {
+        match c {
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return (open + i, first_comma);
+                }
+            }
+            ',' if depth == 1 && first_comma.is_none() => first_comma = Some(open + i),
+            _ => {}
+        }
+    }
+    (code.len(), first_comma)
+}
+
+/// Every `fold_home_in_text` call in `code` (literals and comments blanked),
+/// and the 1-based lines of those whose argument renders a path natively.
+fn home_folds_of_native_renders(code: &str) -> (usize, Vec<usize>) {
+    let needle = "fold_home_in_text(";
+    let mut calls = 0usize;
+    let mut offenders = Vec::new();
+    for (at, _) in code.match_indices(needle) {
+        if code[..at].ends_with("fn ") {
+            continue;
+        }
+        calls += 1;
+        let open = at + needle.len();
+        let (close, _) = call_span(code, open);
+        let arg = &code[open..close];
+        if arg.contains(".display()") || arg.contains("to_string_lossy()") {
+            offenders.push(code[..at].matches('\n').count() + 1);
+        }
+    }
+    (calls, offenders)
+}
+
+/// `fold_home_in_text` folds the home directory on its POSIX spelling, so a
+/// path rendered natively reaches it on Windows as `C:\Users\…` and passes
+/// through unfolded. A test expectation built that way named the absolute
+/// path where the header row it compared against read `~/…`, and failed on
+/// Windows alone; a production row built that way would show the absolute
+/// path to every Windows user. The argument goes through `to_posix_string`
+/// or `display_posix` first, in production code and tests alike.
+#[test]
+fn no_home_fold_is_handed_a_native_path_render() {
+    let fixture = "fn f(p: &Path) {\n    a(&fold_home_in_text(&p.display().to_string()));\n    b(&fold_home_in_text(&format!(\n        \"{}\",\n        p.to_string_lossy()\n    )));\n    c(&fold_home_in_text(&to_posix_string(p)));\n    d(\"fold_home_in_text(&p.display())\");\n}\n";
+    assert_eq!(
+        home_folds_of_native_renders(&crate::test_helpers::blank_non_code(fixture)),
+        (3, vec![2, 3]),
+        "the scan reads a call's whole argument, across lines, and never a literal"
+    );
+    const FLOORS: [(&str, usize); 2] = [("cfgd", 120), ("cfgd-core", 30)];
+    let mut per_crate: std::collections::BTreeMap<&str, usize> = Default::default();
+    let mut offenders = Vec::new();
+    for (krate, path) in cross_os_fence_sources(&FLOORS) {
+        // unfloored-slice-ok: a call anywhere, tests included, is the subject.
+        let body = walked_file_body(&path);
+        let shown = source_label(&path);
+        let (calls, lines) =
+            home_folds_of_native_renders(&crate::test_helpers::blank_non_code(&body));
+        *per_crate.entry(krate).or_default() += calls;
+        offenders.extend(lines.into_iter().map(|n| {
+            format!(
+                "{shown}:{n}: {}",
+                body.lines().nth(n - 1).unwrap_or("").trim()
+            )
+        }));
+    }
+    assert_each_root_read(&FLOORS, &per_crate, "home folds");
+    assert!(
+        offenders.is_empty(),
+        "`fold_home_in_text` folds the POSIX spelling of the home directory; \
+         render the path with `to_posix_string` or `display_posix` first:\n{}",
+        offenders.join("\n")
+    );
+}
+
 /// The function-open recognizer behind [`source_functions`], one case per
 /// qualifier shape, so the next modifier added in front of a `fn` regresses
 /// here instead of silently folding that function into its predecessor's

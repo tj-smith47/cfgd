@@ -61,7 +61,8 @@ native separator — a Windows user reading a log wants `\`. A `tracing` line al
 keeps the ABSOLUTE path: a journal is read by scripts and from other hosts, and as
 another user `~` is ambiguous there in a way it is not in a report addressed to
 whoever ran the command — the same reason `-o json` keeps it. `fold_home_in_text`
-is for a DISPLAY slot and never reaches a `tracing!` argument
+is for a DISPLAY slot, takes text that already spells its paths with `/` (a native
+Windows render never matches the home's POSIX spelling), and never reaches a `tracing!` argument
 (`no_journal_line_folds_the_home_directory` walks both crates). To keep one of those
 when the post-edit hook flags it, append a justification on the same line:
 

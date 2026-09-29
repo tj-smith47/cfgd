@@ -5624,7 +5624,7 @@ mod tests {
                 from,
                 ..header_apply_args()
             };
-            let config = cfgd_core::fold_home_in_text(&document.display().to_string());
+            let config = cfgd_core::fold_home_in_text(&cfgd_core::to_posix_string(&document));
             for verb in ["plan", "apply"] {
                 let (printer, buf) = test_printers();
                 if verb == "plan" {
