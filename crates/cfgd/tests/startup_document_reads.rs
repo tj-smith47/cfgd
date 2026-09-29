@@ -192,8 +192,8 @@ fn every_spelling_of_the_config_location_expands_that_documents_aliases() {
 }
 
 /// Under the system scope the alias pass reads the system document, the one
-/// clap settles on, so the user default's `who` stays unexpanded and the
-/// system document is read once. The system root is the real one, left
+/// clap settles on, so the user default's `who` stays unexpanded (clap refuses
+/// it as an unknown subcommand) and the system document is read once. The system root is the real one, left
 /// unwritten: the user default is the document a scope-blind pass would read.
 #[test]
 fn a_system_scope_run_reads_the_system_document_once() {
@@ -235,9 +235,11 @@ fn a_system_scope_run_reads_the_system_document_once() {
             ));
         }
         let who = run(&["who"]);
-        let stdout = String::from_utf8_lossy(&who.stdout);
-        if stdout.contains("fromdefault") {
-            wrong.push(format!("{shape}: the user default's alias ran: {stdout:?}"));
+        let refusal = String::from_utf8_lossy(&who.stderr);
+        if who.status.success() || !refusal.contains("unrecognized subcommand 'who'") {
+            wrong.push(format!(
+                "{shape}: clap did not refuse `who`, so the user default's alias ran:\n{refusal}"
+            ));
         }
     }
     assert!(wrong.is_empty(), "{}", wrong.join("\n"));
