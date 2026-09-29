@@ -297,10 +297,9 @@ fn as_asked(error: anyhow::Error, asked: &str, resolved: &str) -> anyhow::Error 
     error
 }
 
-/// The value the typed config holds at the `spec`-relative `key`, as the
-/// build reads it: the typed value's own serialization carries every serde
-/// default, so a key the document leaves out still has one. `None` where the
-/// typed value has no such key.
+/// The value `spec` holds at the `spec`-relative `key`: its serialization
+/// carries every serde default, so a key the document leaves out still has
+/// one. `None` where `spec` has no such key.
 fn typed_value_at(spec: &cfgd_core::config::ConfigSpec, key: &str) -> Option<serde_yaml::Value> {
     let tree = serde_yaml::to_value(spec).ok()?;
     walk_yaml_path(&tree, key).ok().cloned()
@@ -690,16 +689,17 @@ pub fn cmd_config_get(cli: &Cli, printer: &Printer, key: &str) -> anyhow::Result
         }
         _ => Err(e),
     });
-    // A key the document leaves out still has the value this build reads for
-    // it, so it is answered from the typed config. A key the schema does not
-    // know, or whose typed value is null (an unset optional, a section left
-    // out), stays the missing key the walk reported. A document that does not
-    // parse as a config has no typed value, and keeps that refusal too.
+    // A key the document leaves out is answered with the value the build
+    // uses for it: the typed config with every omitted section the build
+    // substitutes filled in. A key the schema does not know, an unset
+    // optional, or a key under a section whose omission turns its feature off
+    // has no value there, and stays the missing key the walk reported, as
+    // does every key of a document that does not parse as a config.
     let typed_default = match &walked {
         Err(e) if classify_config_error(e) == "key_not_found" => {
             cfgd_core::config::parse_config(&contents, config_path)
                 .ok()
-                .and_then(|config| typed_value_at(&config.spec, &resolved))
+                .and_then(|config| typed_value_at(&config.spec.effective(), &resolved))
                 .filter(|value| !value.is_null())
         }
         _ => None,
@@ -2621,9 +2621,9 @@ spec:
                 "get",
                 get,
                 &bare_cli,
-                "theme.name",
+                "usageHints",
                 "key_not_found",
-                "key 'theme.name' not found",
+                "key 'usageHints' not found",
             ),
             (
                 "get",
@@ -2696,4 +2696,109 @@ spec:
             );
         }
     }
+
+    /// Every scalar leaf, asked for on a document whose `spec` is empty,
+    /// answers with what the build uses there. A leaf under a section
+    /// production fills in when it is omitted reads that section's omitted
+    /// value from `OMITTED_SECTIONS`; a leaf under a section whose omission
+    /// turns its feature off is refused as not found, under the key the
+    /// caller wrote; any other leaf answers with its serde default.
+    #[test]
+    fn every_key_under_an_omitted_section_answers_what_the_build_uses() {
+        use cfgd_core::test_helpers::OMITTED_SECTIONS;
+        let dir = tempfile::tempdir().unwrap();
+        let path = document_with_spec(dir.path(), &serde_yaml::from_str("{}").unwrap());
+        let bytes = std::fs::read_to_string(&path).unwrap();
+        let bare = cfgd_core::config::parse_config(&bytes, &path).expect("an empty spec parses");
+        let typed = serde_json::to_value(&bare.spec).unwrap();
+        let cli = test_cli_for(path);
+        let mut answered = Vec::new();
+        let mut refused = Vec::new();
+        for (segments, node) in addressable_config_fields() {
+            if node.type_desc == "object" || node.type_desc.starts_with("[]") {
+                continue;
+            }
+            let key = segments.join(".");
+            let under = |row_key: &str| key.starts_with(&format!("{row_key}."));
+            let feature_off = OMITTED_SECTIONS
+                .iter()
+                .any(|row| row.omitted.is_none() && under(row.key));
+            let expected = if feature_off {
+                serde_json::Value::Null
+            } else if let Some(row) = OMITTED_SECTIONS
+                .iter()
+                .filter(|row| under(row.key))
+                .max_by_key(|row| row.key.len())
+            {
+                let omitted =
+                    (row.omitted.expect("feature-off rows are handled above"))(&bare.spec);
+                let pointer = format!("/{}", segments[row.key.split('.').count()..].join("/"));
+                serde_json::to_value(&omitted)
+                    .unwrap()
+                    .pointer(&pointer)
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Null)
+            } else {
+                typed
+                    .pointer(&format!("/{}", segments.join("/")))
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Null)
+            };
+            let (printer, cap) = Printer::for_test_doc_with_format(OutputFormat::Json);
+            let result = cmd_config_get(&cli, &printer, &key);
+            drop(printer);
+            if expected.is_null() {
+                let err = result.err().unwrap_or_else(|| {
+                    panic!("{key}: the build uses no value, yet `get` answered")
+                });
+                let meta = refusal(&err);
+                assert_eq!(meta.error_kind, "key_not_found", "{key}: {}", meta.message);
+                assert_eq!(meta.name, key, "{key}: the -o json name");
+                refused.push(key);
+                continue;
+            }
+            if let Err(err) = result {
+                panic!("{key}: the build uses {expected}, yet `get` refused: {err:#}");
+            }
+            assert_eq!(
+                cap.json().expect("doc captured json"),
+                serde_json::json!({ "key": key, "value": expected }),
+                "{key}"
+            );
+            answered.push(key);
+        }
+        for (named, value) in [
+            ("daemon.reconcile.interval", serde_json::json!("5m")),
+            ("daemon.sync.interval", serde_json::json!("5m")),
+            ("output.theme.name", serde_json::json!("default")),
+        ] {
+            let (printer, cap) = Printer::for_test_doc_with_format(OutputFormat::Json);
+            cmd_config_get(&cli, &printer, named).unwrap_or_else(|e| panic!("{named}: {e:#}"));
+            drop(printer);
+            assert_eq!(
+                cap.json().expect("doc captured json"),
+                serde_json::json!({ "key": named, "value": value }),
+                "{named}"
+            );
+        }
+        assert!(
+            refused.iter().any(|key| key == "secrets.backend"),
+            "secrets.backend was answered on a document with no secrets section: {refused:?}"
+        );
+        assert!(
+            answered.len() >= OMITTED_ANSWERED_FLOOR,
+            "{} leaves answered, below the floor of {OMITTED_ANSWERED_FLOOR}: {answered:?}",
+            answered.len()
+        );
+        assert!(
+            refused.len() >= OMITTED_REFUSED_FLOOR,
+            "{} leaves refused, below the floor of {OMITTED_REFUSED_FLOOR}: {refused:?}",
+            refused.len()
+        );
+    }
+
+    /// How many leaves the walk above answers and refuses today, so a schema
+    /// walk that stopped descending fails by count as well as by name.
+    const OMITTED_ANSWERED_FLOOR: usize = 34;
+    const OMITTED_REFUSED_FLOOR: usize = 29;
 }
