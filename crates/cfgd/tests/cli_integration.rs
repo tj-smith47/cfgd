@@ -3036,7 +3036,7 @@ fn create_hint_producing_config(dir: &std::path::Path, usage_hints: Option<bool>
     std::fs::create_dir_all(dir.join("profiles")).unwrap();
     std::fs::create_dir_all(dir.join("modules/example/files")).unwrap();
     let hints_line = match usage_hints {
-        Some(v) => format!("  usageHints: {v}\n"),
+        Some(v) => format!("  output:\n    usageHints: {v}\n"),
         None => String::new(),
     };
     std::fs::write(
@@ -3143,7 +3143,7 @@ fn cfgd_usage_hints_env_true_renders_the_hint_end_to_end() {
     );
 }
 
-/// `spec.usageHints: true` reaching a real command's rendered output.
+/// `spec.output.usageHints: true` reaching a real command's rendered output.
 #[test]
 fn spec_usage_hints_true_renders_the_hint_end_to_end() {
     let dir = tempfile::tempdir().unwrap();
@@ -3162,7 +3162,7 @@ fn spec_usage_hints_true_renders_the_hint_end_to_end() {
     let out = cfgd_core::output::strip_ansi(&String::from_utf8_lossy(&assert.get_output().stderr));
     assert!(
         out.contains("\n\n→ Run `cfgd apply`"),
-        "spec.usageHints: true must render the hint behind its leading blank, got:\n{out}"
+        "spec.output.usageHints: true must render the hint behind its leading blank, got:\n{out}"
     );
 }
 
