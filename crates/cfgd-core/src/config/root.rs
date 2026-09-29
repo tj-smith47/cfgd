@@ -150,8 +150,8 @@ pub struct ConfigSpec {
     #[serde(default)]
     pub security: Option<SecurityConfig>,
 
-    /// CLI aliases: map of alias name → command string.
-    /// Built-in defaults (add, remove) can be overridden or extended.
+    /// CLI aliases: map of alias name → command string. `cfgd init` scaffolds
+    /// `add` and `remove`; cfgd defines no alias of its own.
     #[serde(default, deserialize_with = "crate::config::null_as_default")]
     #[schemars(with = "Option<std::collections::HashMap<String, String>>")]
     pub aliases: HashMap<String, String>,

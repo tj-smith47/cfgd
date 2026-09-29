@@ -205,7 +205,7 @@
             "type": "string"
           },
           "default": {},
-          "description": "CLI aliases: map of alias name → command string. Built-in defaults (add, remove) can be overridden or extended.",
+          "description": "CLI aliases: map of alias name → command string. `cfgd init` scaffolds `add` and `remove`; cfgd defines no alias of its own.",
           "type": [
             "object",
             "null"
