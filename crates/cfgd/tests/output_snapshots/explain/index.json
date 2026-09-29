@@ -6831,7 +6831,7 @@
             "typeName": "SopsConfig"
           }
         ],
-        "description": "Which backend resolves a `${secret:…}` reference, and how it is reached. Omitted, no backend is configured and a declared secret reference fails to resolve.",
+        "description": "Which backend resolves a `${secret:…}` reference, and how it is reached. Omitted, the `sops` backend resolves it through sops's own key search.",
         "name": "secrets",
         "required": false,
         "type": "object",

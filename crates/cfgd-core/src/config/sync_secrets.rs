@@ -108,6 +108,18 @@ pub struct SecretsConfig {
     pub integrations: Vec<SecretIntegration>,
 }
 
+impl Default for SecretsConfig {
+    /// The block `secrets: {}` declares: the `sops` backend, reached through
+    /// sops's own key search, with no integrations.
+    fn default() -> Self {
+        Self {
+            backend: default_secrets_backend(),
+            sops: None,
+            integrations: Vec::new(),
+        }
+    }
+}
+
 fn default_secrets_backend() -> String {
     "sops".to_string()
 }

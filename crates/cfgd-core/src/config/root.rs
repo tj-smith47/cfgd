@@ -120,8 +120,8 @@ pub struct ConfigSpec {
     pub daemon: Option<DaemonConfig>,
 
     /// Which backend resolves a `${secret:…}` reference, and how it is
-    /// reached. Omitted, no backend is configured and a declared secret
-    /// reference fails to resolve.
+    /// reached. Omitted, the `sops` backend resolves it through sops's own
+    /// key search.
     #[serde(default)]
     pub secrets: Option<SecretsConfig>,
 
@@ -230,6 +230,14 @@ impl ConfigSpec {
         self.compliance.as_ref().unwrap_or(&OMITTED)
     }
 
+    /// The secrets settings: the declared block, or `secrets: {}` (the `sops`
+    /// backend) where the document omits it.
+    #[must_use]
+    pub fn secrets_effective(&self) -> &SecretsConfig {
+        static OMITTED: LazyLock<SecretsConfig> = LazyLock::new(SecretsConfig::default);
+        self.secrets.as_ref().unwrap_or(&OMITTED)
+    }
+
     /// The update settings: the declared block, or `update: {}` where the
     /// document omits it.
     #[must_use]
@@ -262,6 +270,7 @@ impl ConfigSpec {
         spec.ai = Some(self.ai_effective().clone());
         spec.compliance = Some(self.compliance_effective().clone());
         spec.update = Some(self.update_effective().clone());
+        spec.secrets = Some(self.secrets_effective().clone());
         spec
     }
 

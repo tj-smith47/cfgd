@@ -147,7 +147,7 @@ nested form and drops the flat key it read.
 
 All fields can be read and written programmatically via `cfgd config get <key>` and `cfgd config set <key> <value>`. See the [CLI reference](cli-reference.md) for details.
 
-A section the document leaves out still has the values this build uses for it, and `cfgd config get` answers them: with no `daemon` block, `cfgd config get daemon.reconcile.interval` prints `5m`. An omitted block has the values an empty one (`daemon: {}`) declares. Leaving `spec.secrets` out turns secret handling off, so `cfgd config get` refuses every key under it as missing.
+A section the document leaves out still has the values this build uses for it, and `cfgd config get` answers them: with no `daemon` block, `cfgd config get daemon.reconcile.interval` prints `5m`. An omitted block has the values an empty one (`daemon: {}`) declares. Leaving `spec.secrets.sops` out leaves sops to its own key search, so `cfgd config get` refuses every key under it as missing.
 
 Enum-valued fields (e.g. `spec.fileStrategy`, `spec.daemon.reconcile.driftPolicy`, `spec.daemon.notify.method`, the profile-level `spec.envScope`, `spec.compliance.export.format`) are parsed case-insensitively: `Symlink`, `symlink`, and `SYMLINK` are all accepted. The documented PascalCase form is canonical and is what cfgd writes back.
 

@@ -2733,8 +2733,8 @@ or `daemon`, `config get migrationPolicy` prints `Prompt` and
 `config get daemon.reconcile.interval` prints `5m`. A key the build holds no value
 for is refused as a missing key, exit `6`, and the refusal names the key as you
 wrote it. That covers an optional key with no default (`profile`,
-`output.usageHints`) and every key under `secrets`, since leaving `secrets` out
-turns secret handling off.
+`output.usageHints`) and every key under a block the build reads only when it is
+declared, such as `secrets.sops.ageKey` on a document with no `secrets.sops`.
 
 ```sh
 cfgd config get profile                      # → work

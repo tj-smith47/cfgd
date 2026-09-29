@@ -2858,6 +2858,7 @@ spec:
             ("daemon.sync.interval", serde_json::json!("1h")),
             ("daemon.notify.method", serde_json::json!("Desktop")),
             ("output.theme.name", serde_json::json!("default")),
+            ("secrets.backend", serde_json::json!("sops")),
         ] {
             let (printer, cap) = Printer::for_test_doc_with_format(OutputFormat::Json);
             cmd_config_get(&cli, &printer, named).unwrap_or_else(|e| panic!("{named}: {e:#}"));
@@ -2869,8 +2870,8 @@ spec:
             );
         }
         assert!(
-            refused.iter().any(|key| key == "secrets.backend"),
-            "secrets.backend was answered on a document with no secrets section: {refused:?}"
+            refused.iter().any(|key| key == "secrets.sops.ageKey"),
+            "secrets.sops.ageKey was answered on a document with no secrets section: {refused:?}"
         );
         assert!(
             answered.len() >= OMITTED_ANSWERED_FLOOR,
@@ -2886,8 +2887,8 @@ spec:
 
     /// How many leaves the walk above answers and refuses today, so a schema
     /// walk that stopped descending fails by count as well as by name.
-    const OMITTED_ANSWERED_FLOOR: usize = 34;
-    const OMITTED_REFUSED_FLOOR: usize = 29;
+    const OMITTED_ANSWERED_FLOOR: usize = 35;
+    const OMITTED_REFUSED_FLOOR: usize = 28;
 
     /// Every `alias` verb builds the key `aliases.<name>` from the name the
     /// caller typed, and refuses by that name: the `-o json` name is the

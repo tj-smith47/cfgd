@@ -5,20 +5,15 @@ use cfgd_core::output::Printer;
 
 // --- Provider registry, daemon hooks, state store ---
 
-/// Extract secret backend name and age key path from config.
-/// Returns ("sops", None) as defaults when no secrets config is present.
+/// Extract secret backend name and age key path from config, reading an
+/// omitted config or `secrets` block as `secrets: {}` declares it.
 pub(in crate::cli) fn secret_backend_from_config(
     cfg: Option<&CfgdConfig>,
 ) -> (String, Option<PathBuf>) {
-    if let Some(cfg) = cfg
-        && let Some(ref secrets_cfg) = cfg.spec.secrets
-    {
-        let name = secrets_cfg.backend.as_str().to_string();
-        let key = secrets_cfg.sops.as_ref().and_then(|s| s.age_key.clone());
-        (name, key)
-    } else {
-        ("sops".to_string(), None)
-    }
+    let omitted = cfgd_core::config::ConfigSpec::default();
+    let secrets = cfg.map_or(&omitted, |c| &c.spec).secrets_effective();
+    let key = secrets.sops.as_ref().and_then(|s| s.age_key.clone());
+    (secrets.backend.clone(), key)
 }
 
 pub(in crate::cli) fn build_registry() -> ProviderRegistry {

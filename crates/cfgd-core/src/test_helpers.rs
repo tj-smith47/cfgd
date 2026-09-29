@@ -6342,9 +6342,10 @@ fn section_value<T: serde::Serialize>(value: &T) -> serde_yaml::Value {
 ///   compliance snapshot and export.
 /// - `update`, omitted as `update: {}`. Read by `cmd_upgrade`,
 ///   `startup_update_config` and the daemon's version check.
+/// - `secrets`, omitted as `secrets: {}` (the `sops` backend). Read by the
+///   secret backend the provider registry builds.
 ///
 /// Feature off:
-/// - `secrets`: no secret backend is configured.
 /// - `secrets.sops`: no sops settings are read.
 pub const OMITTED_SECTIONS: &[OmittedSection] = &[
     OmittedSection {
@@ -6435,7 +6436,7 @@ pub const OMITTED_SECTIONS: &[OmittedSection] = &[
         owner: "ConfigSpec",
         field: "secrets",
         key: "secrets",
-        omitted: None,
+        omitted: Some(|s| section_value(s.secrets_effective())),
     },
     OmittedSection {
         owner: "SecretsConfig",
