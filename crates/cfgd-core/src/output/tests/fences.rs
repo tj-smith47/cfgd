@@ -9005,6 +9005,49 @@ struct ConfigSections {
     accessors: std::collections::BTreeSet<(String, String)>,
     /// The `<field>_effective` methods `ConfigSpec::effective` calls, by field.
     filled: std::collections::BTreeSet<String>,
+    /// Every value an accessor writes out itself instead of taking its type's
+    /// `Default`, as `impl type::accessor: what`.
+    hand_written: Vec<String>,
+}
+
+/// The values a `<field>_effective` accessor spells itself: a struct literal,
+/// a literal, or a `static` built by anything other than
+/// `LazyLock::new(<type>::default)`. The omitted value is the one the type's
+/// `Default` gives, which is also what the schema publishes and what a
+/// declared empty block holds, so a second spelling of it can only drift.
+#[derive(Default)]
+struct HandWrittenDefaults(Vec<String>);
+
+impl<'ast> syn::visit::Visit<'ast> for HandWrittenDefaults {
+    fn visit_expr_struct(&mut self, expr: &'ast syn::ExprStruct) {
+        let at = row_of(syn::spanned::Spanned::span(expr)) + 1;
+        self.0.push(format!("a struct literal on line {at}"));
+    }
+
+    fn visit_expr_lit(&mut self, expr: &'ast syn::ExprLit) {
+        let at = row_of(syn::spanned::Spanned::span(expr)) + 1;
+        self.0.push(format!("a literal on line {at}"));
+    }
+
+    fn visit_item_static(&mut self, item: &'ast syn::ItemStatic) {
+        let by_default = match peel(&item.expr) {
+            syn::Expr::Call(call) => {
+                let lazy = matches!(peel(&call.func), syn::Expr::Path(p)
+                    if p.path.segments.len() >= 2
+                        && p.path.segments[p.path.segments.len() - 2].ident == "LazyLock"
+                        && p.path.segments.last().is_some_and(|s| s.ident == "new"));
+                lazy && call.args.len() == 1
+                    && matches!(peel(&call.args[0]), syn::Expr::Path(p)
+                        if p.path.segments.last().is_some_and(|s| s.ident == "default"))
+            }
+            _ => false,
+        };
+        if !by_default {
+            let at = row_of(syn::spanned::Spanned::span(&item.expr)) + 1;
+            self.0.push(format!("a static built by hand on line {at}"));
+        }
+        syn::visit::visit_item_static(self, item);
+    }
 }
 
 /// The `<field>_effective` methods an expression calls, by field.
@@ -9063,6 +9106,14 @@ impl<'ast> syn::visit::Visit<'ast> for ConfigSections {
             let name = func.sig.ident.to_string();
             if let Some(field) = name.strip_suffix("_effective") {
                 self.accessors.insert((owner.clone(), field.to_string()));
+                let mut spelled = HandWrittenDefaults::default();
+                syn::visit::Visit::visit_block(&mut spelled, &func.block);
+                self.hand_written.extend(
+                    spelled
+                        .0
+                        .into_iter()
+                        .map(|what| format!("{owner}::{name}: {what}")),
+                );
             }
             if owner == "ConfigSpec" && name == "effective" {
                 syn::visit::Visit::visit_block(&mut AccessorCalls(&mut self.filled), &func.block);
@@ -9239,6 +9290,8 @@ impl<'ast> syn::visit::Visit<'ast> for DefaultingReads<'_> {
 ///   `Option` steps between, inside an `and_then` closure, or through a
 ///   `let` binding) sits inside that field's accessor, and every accessor
 ///   holds one;
+/// - every accessor's omitted value is `LazyLock::new(<type>::default)`, so
+///   its body holds no struct literal, no literal and no other `static`;
 /// - `ConfigSpec::effective` calls every accessor.
 ///
 /// Fields are matched by name, so a read of a same-named field on a struct
@@ -9329,6 +9382,13 @@ fn every_option_config_section_is_read_through_its_effective_accessor_or_never_d
         sections.accessors, defaulted,
         "a section whose omission production reads as a value has a `<field>_effective` \
          accessor on its struct, and a feature-off section has none"
+    );
+    assert!(
+        sections.hand_written.is_empty(),
+        "an accessor's omitted value is `LazyLock::new(<type>::default)`, the value the \
+         schema publishes and a declared empty block holds; a value the accessor spells \
+         itself is a second copy of that default:\n{}",
+        sections.hand_written.join("\n")
     );
     let accessor_fields: std::collections::BTreeSet<String> = sections
         .accessors

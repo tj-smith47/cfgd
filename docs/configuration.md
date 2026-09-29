@@ -115,7 +115,7 @@ spec:
 | `spec.daemon.reconcile.patches` | no | `[]` | Per-module/profile reconcile overrides (see [daemon.md](daemon.md#reconcile-patches)) |
 | `spec.daemon.sync.autoPull` | no | `false` | Auto-pull from remote |
 | `spec.daemon.sync.autoPush` | no | `false` | Auto-commit and push local changes |
-| `spec.daemon.notify.method` | no | `Desktop` (`Stdout` when `spec.daemon.notify` is omitted) | `Desktop`, `Stdout`, or `Webhook` |
+| `spec.daemon.notify.method` | no | `Desktop` | `Desktop`, `Stdout`, or `Webhook` |
 | `spec.update.policy` | no | `Prompt` | cfgd binary self-update behavior: `Auto`, `Prompt`, `Notify`, or `Manual`. `--update-policy` / `CFGD_UPDATE_POLICY` override it for one invocation (see [Update behavior](#update-behavior-specupdate)) |
 | `spec.update.interval` | no | `24h` | Update-check cadence when `policy != Manual` (e.g. `30m`, `24h`, `7d`) |
 | `spec.update.channel` | no | — | Release channel to track (e.g. `stable`, `prerelease`); unset uses cfgd's built-in default channel |
@@ -147,7 +147,7 @@ nested form and drops the flat key it read.
 
 All fields can be read and written programmatically via `cfgd config get <key>` and `cfgd config set <key> <value>`. See the [CLI reference](cli-reference.md) for details.
 
-A section the document leaves out still has the values this build uses for it, and `cfgd config get` answers them: with no `daemon` block, `cfgd config get daemon.reconcile.interval` prints `5m`. Two of those values differ from what an empty block declares. An omitted `spec.daemon.sync` checks every `5m` where a declared `sync: {}` checks every `1h`, and an omitted `spec.daemon.notify` reports to `Stdout` where a declared `notify: {}` uses `Desktop`. Leaving `spec.secrets` out turns secret handling off, so `cfgd config get` refuses every key under it as missing.
+A section the document leaves out still has the values this build uses for it, and `cfgd config get` answers them: with no `daemon` block, `cfgd config get daemon.reconcile.interval` prints `5m`. An omitted block has the values an empty one (`daemon: {}`) declares. Leaving `spec.secrets` out turns secret handling off, so `cfgd config get` refuses every key under it as missing.
 
 Enum-valued fields (e.g. `spec.fileStrategy`, `spec.daemon.reconcile.driftPolicy`, `spec.daemon.notify.method`, the profile-level `spec.envScope`, `spec.compliance.export.format`) are parsed case-insensitively: `Symlink`, `symlink`, and `SYMLINK` are all accepted. The documented PascalCase form is canonical and is what cfgd writes back.
 

@@ -46,9 +46,8 @@ impl ModulesConfig {
     /// declared block, or none required where the document omits it.
     #[must_use]
     pub fn security_effective(&self) -> &ModuleSecurityConfig {
-        static OMITTED: ModuleSecurityConfig = ModuleSecurityConfig {
-            require_signatures: false,
-        };
+        static OMITTED: std::sync::LazyLock<ModuleSecurityConfig> =
+            std::sync::LazyLock::new(ModuleSecurityConfig::default);
         self.security.as_ref().unwrap_or(&OMITTED)
     }
 }

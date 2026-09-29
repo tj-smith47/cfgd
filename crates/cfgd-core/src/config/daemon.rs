@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use cfgd_schema::case_insensitive_enum;
 
-use super::sync_secrets::{NotifyConfig, NotifyMethod, SyncConfig};
+use super::sync_secrets::{NotifyConfig, SyncConfig};
 
 /// `spec.daemon`: settings for `cfgd daemon`'s background reconcile loop.
 ///
@@ -96,36 +96,20 @@ impl DaemonConfig {
         self.reconcile.as_ref().unwrap_or(&OMITTED)
     }
 
-    /// The sync settings the daemon runs on: the declared block, or, where the
-    /// document omits it, no automatic pull or push on a `5m` loop.
-    ///
-    /// The omitted loop is `5m` where a declared `sync: {}` is `1h`: the
-    /// daemon's sync loop has always run at `5m` for a document with no `sync`
-    /// block, and this is that value.
+    /// The sync settings the daemon runs on: the declared block, or the block
+    /// `sync: {}` declares where the document omits it (no pull or push).
     #[must_use]
     pub fn sync_effective(&self) -> &SyncConfig {
-        static OMITTED: LazyLock<SyncConfig> = LazyLock::new(|| SyncConfig {
-            auto_push: false,
-            auto_pull: false,
-            interval: "5m".to_string(),
-        });
+        static OMITTED: LazyLock<SyncConfig> = LazyLock::new(SyncConfig::default);
         self.sync.as_ref().unwrap_or(&OMITTED)
     }
 
     /// The drift notification settings the daemon runs on: the declared block,
-    /// or, where the document omits it, no drift notification and every other
-    /// notice written to the daemon's own output.
-    ///
-    /// The omitted method is `Stdout` where a declared `notify: {}` is
-    /// `Desktop`: a daemon with no `notify` block has always written its
-    /// notices to its log, and this is that value.
+    /// or the block `notify: {}` declares where the document omits it (no
+    /// drift notification).
     #[must_use]
     pub fn notify_effective(&self) -> &NotifyConfig {
-        static OMITTED: LazyLock<NotifyConfig> = LazyLock::new(|| NotifyConfig {
-            drift: false,
-            method: NotifyMethod::Stdout,
-            webhook_url: None,
-        });
+        static OMITTED: LazyLock<NotifyConfig> = LazyLock::new(NotifyConfig::default);
         self.notify.as_ref().unwrap_or(&OMITTED)
     }
 }

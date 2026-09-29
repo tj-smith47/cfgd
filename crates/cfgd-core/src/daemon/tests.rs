@@ -7753,12 +7753,12 @@ fn parse_daemon_config_defaults() {
         parsed.reconcile_interval,
         Duration::from_secs(DEFAULT_RECONCILE_SECS)
     );
-    assert_eq!(parsed.sync_interval, Duration::from_secs(5 * 60));
+    assert_eq!(parsed.sync_interval, Duration::from_secs(60 * 60));
     assert!(!parsed.auto_pull);
     assert!(!parsed.auto_push);
     assert!(!parsed.on_change_reconcile);
     assert!(!parsed.notify_on_drift);
-    assert!(matches!(parsed.notify_method, NotifyMethod::Stdout));
+    assert!(matches!(parsed.notify_method, NotifyMethod::Desktop));
     assert!(parsed.webhook_url.is_none());
     assert!(!parsed.auto_apply);
 }
@@ -11626,12 +11626,12 @@ fn parse_daemon_config_all_defaults() {
         parsed.reconcile_interval,
         Duration::from_secs(DEFAULT_RECONCILE_SECS)
     );
-    assert_eq!(parsed.sync_interval, Duration::from_secs(5 * 60));
+    assert_eq!(parsed.sync_interval, Duration::from_secs(60 * 60));
     assert!(!parsed.auto_pull);
     assert!(!parsed.auto_push);
     assert!(!parsed.on_change_reconcile);
     assert!(!parsed.notify_on_drift);
-    assert!(matches!(parsed.notify_method, NotifyMethod::Stdout));
+    assert!(matches!(parsed.notify_method, NotifyMethod::Desktop));
     assert!(parsed.webhook_url.is_none());
     assert!(!parsed.auto_apply);
 }
@@ -15808,9 +15808,10 @@ spec:
 
         let setup = pre_loop(&config_path, None).expect("happy setup");
 
-        // Default reconcile + sync interval = 300s (5m)
+        // An omitted daemon block reconciles every 5m and syncs every 1h,
+        // the intervals `reconcile: {}` and `sync: {}` declare.
         assert_eq!(setup.parsed.reconcile_interval, Duration::from_secs(300));
-        assert_eq!(setup.parsed.sync_interval, Duration::from_secs(300));
+        assert_eq!(setup.parsed.sync_interval, Duration::from_secs(3600));
         assert!(!setup.parsed.auto_pull);
         assert!(!setup.parsed.auto_push);
         assert!(!setup.parsed.auto_apply);
@@ -15830,11 +15831,11 @@ spec:
         assert!(setup.managed_paths.is_empty());
         // No server origin → no startup check-in URL
         assert!(setup.server_checkin_url.is_none());
-        // Stdout notifier by default
-        assert!(matches!(setup.parsed.notify_method, NotifyMethod::Stdout));
+        // The notifier `notify: {}` declares
+        assert!(matches!(setup.parsed.notify_method, NotifyMethod::Desktop));
         // shortest_* == defaults when no per-module patches narrow them
         assert_eq!(setup.shortest_reconcile, Duration::from_secs(300));
-        assert_eq!(setup.shortest_sync, Duration::from_secs(300));
+        assert_eq!(setup.shortest_sync, Duration::from_secs(3600));
         // config_dir matches the parent of config_path
         assert_eq!(setup.config_dir, tmp.path());
     }

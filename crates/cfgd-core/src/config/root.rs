@@ -194,11 +194,7 @@ impl ConfigSpec {
     /// document omits it.
     #[must_use]
     pub fn output_effective(&self) -> &OutputConfig {
-        static OMITTED: OutputConfig = OutputConfig {
-            theme: None,
-            usage_hints: None,
-            mask_env_values: None,
-        };
+        static OMITTED: LazyLock<OutputConfig> = LazyLock::new(OutputConfig::default);
         self.output.as_ref().unwrap_or(&OMITTED)
     }
 
@@ -206,10 +202,7 @@ impl ConfigSpec {
     /// signature requirement where the document omits it.
     #[must_use]
     pub fn modules_effective(&self) -> &ModulesConfig {
-        static OMITTED: ModulesConfig = ModulesConfig {
-            registries: Vec::new(),
-            security: None,
-        };
+        static OMITTED: LazyLock<ModulesConfig> = LazyLock::new(ModulesConfig::default);
         self.modules.as_ref().unwrap_or(&OMITTED)
     }
 
@@ -217,9 +210,7 @@ impl ConfigSpec {
     /// refused where the document omits it.
     #[must_use]
     pub fn security_effective(&self) -> &SecurityConfig {
-        static OMITTED: SecurityConfig = SecurityConfig {
-            allow_unsigned: false,
-        };
+        static OMITTED: LazyLock<SecurityConfig> = LazyLock::new(SecurityConfig::default);
         self.security.as_ref().unwrap_or(&OMITTED)
     }
 

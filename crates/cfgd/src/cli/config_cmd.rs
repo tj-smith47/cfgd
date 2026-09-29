@@ -2855,7 +2855,8 @@ spec:
         }
         for (named, value) in [
             ("daemon.reconcile.interval", serde_json::json!("5m")),
-            ("daemon.sync.interval", serde_json::json!("5m")),
+            ("daemon.sync.interval", serde_json::json!("1h")),
+            ("daemon.notify.method", serde_json::json!("Desktop")),
             ("output.theme.name", serde_json::json!("default")),
         ] {
             let (printer, cap) = Printer::for_test_doc_with_format(OutputFormat::Json);
