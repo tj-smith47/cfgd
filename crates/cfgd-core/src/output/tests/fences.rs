@@ -5504,11 +5504,10 @@ const FLOORS: [(&str, usize); 2] = [("cfgd", 79), ("cfgd-core", 28)];
 /// Every fence in this file is a claim about a POPULATION, so the walk that
 /// enumerates it fails when it cannot return all of it.
 ///
-/// Both failures are read off the panic's message: a walk that
-/// swallowed the directory it could not open still ends up with nothing to
-/// return, so "I could not look" and "there was nothing there" arrive as the
-/// same empty list, and only the wording — the directory's own name included —
-/// tells them apart.
+/// Both failures are read off the panic's message: a walk that swallowed the directory it could not
+/// open still ends up with nothing to return, so "I could not look" and "there was nothing there"
+/// arrive as the same empty list, and only the wording — the directory's own name included — tells
+/// them apart.
 ///
 /// The success arm asserts the whole vector, because the three properties
 /// every caller reads off this list are separable and each fails silently on

@@ -5847,13 +5847,12 @@ pub fn plant_managed_env_files(
 /// The whole text of a file a walk ENUMERATED, read here so the read failure
 /// cannot be separated from the population's floor.
 ///
-/// A file a walk cannot open is otherwise indistinguishable from one holding
-/// nothing: the walk judges it by no rule, reports no offender and passes having
-/// read less than its floor promised. The WHOLE-file twin of
-/// [`production_slice_of`], for a walk whose subject is a source's test region,
-/// a golden or a markdown page. A read
-/// whose absence is a legitimate state — an artifact the test itself decided not
-/// to write — stays a silent read and says so with `// absent-file-ok: <why>`.
+/// A file a walk cannot open is otherwise indistinguishable from one holding nothing: the walk
+/// judges it by no rule, reports no offender and passes having read less than its floor promised.
+/// The WHOLE-file twin of [`production_slice_of`], for a walk whose subject is a source's test
+/// region, a golden or a markdown page. A read whose absence is a legitimate state — an artifact
+/// the test itself decided not to write — stays a silent read and says so with
+/// `// absent-file-ok: <why>`.
 ///
 /// A Rust source of the workspace is read once per test process: every walk
 /// and every scan of it borrows that one body, so a file's text, its gates and
