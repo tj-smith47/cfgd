@@ -30661,8 +30661,8 @@ fn configurator_narration_settles_on_its_own_when_no_caller_drains_it() {
         out.contains("reload deferred: /proc is read-only"),
         "including the warning: {out}"
     );
-    // The second render point of a note: settled on the printer rather than
-    // collected, it folds the home directory the way `ActionNote::body` does,
+    // The second render point of a note: a note settled on the printer folds
+    // the home directory the way `ActionNote::body` does for a collected one,
     // so one run cannot spell the home two ways depending on who drained it.
     let home = crate::to_posix_string(staging.path());
     assert!(
