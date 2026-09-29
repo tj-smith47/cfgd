@@ -5510,11 +5510,10 @@ const FLOORS: [(&str, usize); 2] = [("cfgd", 79), ("cfgd-core", 28)];
 /// same empty list, and only the wording — the directory's own name included —
 /// tells them apart.
 ///
-/// The success arm asserts the whole vector rather than a count, because the
-/// three properties every caller reads off this list are separable and each
-/// fails silently on its own: a walk that stopped descending, one that stopped
-/// filtering, and one that returned the filesystem's order all answer a length
-/// check.
+/// The success arm asserts the whole vector, because the three properties
+/// every caller reads off this list are separable and each fails silently on
+/// its own: a walk that stopped descending, one that stopped filtering, and
+/// one that returned the filesystem's order all answer a length check.
 #[test]
 fn the_source_walk_fails_on_a_root_it_cannot_open_and_lists_every_source_under_one_it_can() {
     fn walk_failure(root: &Path) -> String {
@@ -5711,7 +5710,7 @@ fn a_declaration_after_a_literals_close_opens_a_slice() {
     );
 }
 
-/// A slice ends at its declaration's own close, not at the next `fn`.
+/// A slice ends at its declaration's own close.
 ///
 /// Everything between two declarations is file scope, and cut at the next `fn`
 /// it lands in the first one's slice: a `const` holding a YAML fixture then
@@ -5785,7 +5784,7 @@ fn an_uncalled_entry_hatch_is_read_only_inside_the_roster() {
 /// It stood at 4 while [`source_functions`] cut a slice at the next `fn`: the
 /// file-scope consts under `module_upgrade_happy_human_json` carry a YAML
 /// fixture, so its slice held a declaration the test itself does not make and
-/// it counted as a member. What moved is the SLICE, not the population — the
+/// it counted as a member. The SLICE moved and the population stayed: the
 /// three below are the tests that ever declared shell items and drove a verb.
 const TEST_HOME_JUDGED_FLOOR: usize = 3;
 
@@ -5862,7 +5861,7 @@ fn the_literal_fold_reports_the_physical_line_a_logical_line_opens_on() {
     assert_eq!(
         at("let after"),
         Some(6),
-        "the physical line, not the folded one: {folded:?}"
+        "the physical line `let after` sits on: {folded:?}"
     );
 }
 
@@ -5895,7 +5894,7 @@ fn the_literal_fold_reports_the_physical_line_a_logical_line_opens_on() {
 /// because the child's `HOME` is not what the in-process check reads, and the
 /// guard belongs in the body that runs the verb.
 ///
-/// Lines are read through [`literal_folded_lines`], not raw: a fixture written
+/// Lines are read through [`literal_folded_lines`]: a fixture written
 /// as `r#"…"#` carries the declaration's two tells on two physical lines.
 ///
 /// The verb is ANY `cmd_*`, which over-approximates on purpose: the guard is
@@ -6001,7 +6000,7 @@ const DOCS_HEADER_FLOOR: usize = 1;
 /// capture saved under a listed extension passes unjudged, and widening the
 /// roster silences the walk exactly as well as classifying honestly does.
 /// What the roster buys is that the widening is a visible edit reviewed
-/// against this sentence, not a file appearing under a root unnoticed.
+/// against this sentence, where a new file under a root goes unnoticed.
 const NON_GOLDEN_SNAPSHOT_EXTENSIONS: &[&str] = &["json", "md", "mdc", "toml"];
 
 /// Every file under `dir`. `target/` is skipped: a build tree mirrors
@@ -6041,7 +6040,7 @@ fn files_under(dir: &Path) -> Vec<PathBuf> {
 /// then says which population the floors are floors OVER, so a later rename of
 /// it shrinks the walk by however many goldens it held while every floor still
 /// passes. The equality is what makes each root's disappearance loud on its
-/// own name rather than only in aggregate.
+/// own name.
 #[test]
 fn every_golden_root_is_named() {
     let root = workspace_root();
@@ -6074,7 +6073,7 @@ fn trailing_space_lines(path: &Path) -> (usize, Vec<String>) {
     let text = walked_file_body(path);
     // `str::lines` drops a trailing `\r` only where the line ended in `\n`, so
     // a CRLF checkout does not read every line as whitespace-terminated, and it
-    // borrows rather than minting a second copy of every file. A file whose
+    // borrows each line with no second copy of the file. A file whose
     // last line ends on a lone `\r` therefore reads as whitespace-terminated by
     // design — no golden carries a `\r` byte, and `.gitattributes` pins
     // `eol=lf` on every checkout. Collected because a header is read off the
@@ -6113,21 +6112,21 @@ fn trailing_space_lines(path: &Path) -> (usize, Vec<String>) {
 /// render pasted into the documentation. `Renderer::render_table` ends a data
 /// row on its last glyph; this walk is what says so for the SHIPPED
 /// population, so a golden re-blessed from a regressed renderer, or a doc
-/// block pasted from one, is caught by the shipped bytes rather than by the
-/// eye.
+/// block pasted from one, is caught by the shipped bytes with no reader
+/// having to spot it.
 ///
 /// The roots are DERIVED — every directory under `crates/` named `snapshots`,
 /// `output_snapshots` or `golden` — so a render-golden root joins the
 /// population the day it is created, and every one of them is asserted by name
-/// ([`every_golden_root_is_named`]), so a rename is loud rather than silently
-/// shrinking the walk. The derivation is
+/// ([`every_golden_root_is_named`]), so a rename fails loudly and the walk
+/// cannot shrink in silence. The derivation is
 /// [`crate::test_helpers::snapshot_golden_roots`], which the `cfgd` crate's
 /// own golden walks read too: the crates compile separately, and a second
 /// derivation one crate over is what left eleven goldens guarded by this walk
 /// and by neither of those. The goldens are the `.txt` files under those
 /// roots, and the walk states the COMPLEMENT too: every other file under one
 /// carries an extension [`NON_GOLDEN_SNAPSHOT_EXTENSIONS`] names, so a render
-/// captured under a new one is classified rather than silently skipped.
+/// captured under a new one has to be classified before the walk passes.
 #[test]
 fn every_trailing_space_in_a_golden_belongs_to_a_table_header() {
     let root = workspace_root();
@@ -6218,7 +6217,7 @@ fn labelled_schema_types() -> Vec<(&'static str, Vec<(&'static str, &'static str
 }
 
 /// Whether a source line declares a display label, judged on the SHAPE of the
-/// name rather than on the two spellings that exist today: a third accessor
+/// name, whatever spellings exist today: a third accessor
 /// called `owner_label` or `phase_label` joins the population without editing
 /// this walk.
 fn declares_a_display_label(line: &str) -> bool {
@@ -6380,8 +6379,8 @@ const GC_COLLECT_ENTRIES: &[&str] = &[
     "\"backup\", \"gc\"",
 ];
 
-/// The engine harness's own collect call, matched by its argument rather than by
-/// the identifier the harness happens to be bound to (an iterator's own
+/// The engine harness's own collect call, matched by its argument whatever
+/// identifier the harness happens to be bound to (an iterator's own
 /// `collect()` takes no argument). The harness is private to `backup/tests.rs`,
 /// so this spelling means a gc collection only inside a file that already pins
 /// the arm and is read there alone.
@@ -6390,7 +6389,7 @@ const GC_ENGINE_COLLECT: &str = ".collect(&";
 /// The shapes that make a backup payload unremovable, read off
 /// [`crate::test_helpers::hold_payload_unremovable`]'s own source, so renaming
 /// the stand-in's contents or switching the Windows sharing call moves this
-/// walk with the producer instead of blinding it.
+/// walk along with the producer.
 fn unremovable_payload_tells() -> Vec<String> {
     let path = workspace_root().join("crates/cfgd-core/src/test_helpers.rs");
     let label = source_label(&path);
@@ -6577,7 +6576,7 @@ fn every_path_based_chmod_in_the_workspace_says_why_the_follow_is_safe() {
          crate root leaves its chmods judged by nobody",
         population.roots
     );
-    // A root the walk never reported on reads as zero rather than as absent:
+    // A root the walk never reported on reads as zero:
     // a missing entry is the whole tree going dark, which is the state this
     // floor exists to catch.
     let short: Vec<(&str, usize, usize)> = CHMOD_WALK_ROOTS
@@ -6626,8 +6625,8 @@ fn every_path_based_chmod_in_the_workspace_says_why_the_follow_is_safe() {
 ///
 /// `std` offers three ways to start that child and all three are judged here.
 /// `status` is also the name of an HTTP response's own code, which starts
-/// nothing; such a line carries [`NOT_A_CHILD`] rather than the spawn hatch,
-/// because the two say different things about the same row.
+/// nothing; such a line carries [`NOT_A_CHILD`] and no spawn hatch, because
+/// the two say different things about the same row.
 #[test]
 fn every_production_spawn_in_the_workspace_goes_through_the_one_ladder() {
     const HATCH: &str = "direct-spawn-ok:";
@@ -6759,11 +6758,11 @@ fn every_production_spawn_in_the_workspace_goes_through_the_one_ladder() {
 /// asserted.
 ///
 /// Both readings judge the WHOLE argument: the accumulation runs to the balanced
-/// `]` rather than the first `]` CHARACTER, since a value may hold a bracket of
+/// `]`, past any earlier `]` CHARACTER, since a value may hold a bracket of
 /// its own, and the array's own brackets are stripped before the entries are
 /// split, since a closing `]);` left on the last entry's value makes it parse as
 /// no integer and reads as a product. An argument shape neither reading covers is
-/// refused rather than passed over. `// slots-literal-ok: <why>` on the call's
+/// refused. `// slots-literal-ok: <why>` on the call's
 /// line or the one above hatches a genuine exception.
 #[test]
 fn every_distinctness_premise_reads_the_values_its_fixture_asserts() {
@@ -6903,8 +6902,8 @@ const SILENT_READ_TELLS: &[&str] = &["let Ok(", ".ok()", "unwrap_or_default()", 
 /// dropped eleven files holding nothing but test declarations.
 /// A production read whose file may legitimately be absent
 /// (`/etc/os-release`, a cached credential, a target a check is asking about)
-/// falls outside the REGION rather than outside the filename, and is never
-/// hatched one at a time.
+/// falls outside the REGION whatever its filename, and is never hatched one at
+/// a time.
 ///
 /// `// absent-file-ok: <why>` hatches a read inside a test region whose absence
 /// is itself a legitimate state: the argv log a shim writes on its first
@@ -7355,8 +7354,8 @@ fn without_call_name(line: &str) -> String {
 /// reached, and let the pod webhook build an init container around a command
 /// that was never there.
 ///
-/// Each holder names the files that validate it rather than validating in
-/// place, because a spec merged from layers is refused where the merge lands.
+/// Each holder names the files that validate it, because a spec merged from
+/// layers is refused where the merge lands.
 /// The file declaring the field never sees it. The validating call must NAME
 /// the holder's field in its subject or its argument: a file already refusing
 /// one field would otherwise vouch for a second holder nothing reads.

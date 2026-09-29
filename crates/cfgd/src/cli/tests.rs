@@ -3112,7 +3112,7 @@ fn cli_has_alias_subcommand() {
 
     // Pin the clap-level aliases on the canonical subcommand definitions —
     // each alias is part of the contractual CLI surface (mc-style ergonomic
-    // entry points), not just sugar.
+    // entry points).
     let find_sub = |name: &str| {
         alias_cmd
             .get_subcommands()
@@ -3199,8 +3199,8 @@ fn status_scan_is_a_plain_flag_that_composes_with_exit_code_and_module() {
     assert!(show_scripts, "`-s` is the retired `--show-scripts`");
 }
 
-/// `--model` / `--provider` / `--yes` govern every `generate` target, not just
-/// the bare form, so they are `global = true`. Declared beside the subcommand
+/// `--model` / `--provider` / `--yes` govern every `generate` target and the
+/// bare form alike, so they are `global = true`. Declared beside the subcommand
 /// without that, they parse only BEFORE it — and the invocation the docs and
 /// `--help` both show, `cfgd generate profile <name> --model <m>`, errored.
 #[test]
