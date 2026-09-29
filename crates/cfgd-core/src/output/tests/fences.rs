@@ -1518,6 +1518,85 @@ fn no_home_fold_is_handed_a_native_path_render() {
     );
 }
 
+/// The functions that ask the generator for the env files THIS host writes,
+/// in whichever dialect this host writes them.
+const RUNNING_PLATFORM_ENV_GENERATORS: [&str; 2] = ["plant_managed_env_files", "managed_env_files"];
+
+/// Whether `func` (comments blanked) spells one assignment of a generated env
+/// file by hand: a POSIX `export NAME=` or a PowerShell `$env:NAME`.
+fn spells_an_env_assignment(func: &str) -> bool {
+    let named = |rest: &str| rest.starts_with(|c: char| c.is_ascii_uppercase() || c == '_');
+    func.match_indices("export ").any(|(at, m)| {
+        let rest = &func[at + m.len()..];
+        named(rest)
+            && rest
+                .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+                .is_some_and(|end| rest[end..].starts_with('='))
+    }) || func
+        .match_indices("$env:")
+        .any(|(at, m)| named(&func[at + m.len()..]))
+}
+
+/// A fixture that plants the env files a converged machine holds takes them
+/// from the generator for the RUNNING platform: `~/.cfgd.env` in POSIX syntax
+/// on Unix, `~/.cfgd-env.ps1` in PowerShell on Windows. An expectation it
+/// hand-spells in one dialect is the other platform's wrong answer, and a
+/// verify premise written as `export EDITOR="vim"` failed on Windows alone,
+/// where the planted line read `$env:EDITOR = 'vim'`. A line the fixture needs
+/// comes from the same composer the generator writes with
+/// (`MergedEnvItems::declared_line`).
+#[test]
+fn no_fixture_hand_spells_a_line_of_the_env_file_this_host_generates() {
+    let fixture = "fn planted() {\n    let files = plant_managed_env_files(&m, home, scope);\n    assert!(body.contains(\"export EDITOR=\\\"vim\\\"\"));\n}\nfn derived() {\n    let files = plant_managed_env_files(&m, home, scope);\n    let line = m.declared_line(\"env-var\", \"EDITOR\");\n}\nfn powershell() {\n    let f = x.managed_env_files(home, scope);\n    // export FOO=1 in a comment is prose\n    let line = \"$env:EDITOR = 'vim'\";\n}\n";
+    let judged: Vec<bool> = source_functions(&FIXTURE_SOURCE, fixture)
+        .iter()
+        .map(|(_, func)| spells_an_env_assignment(&crate::test_helpers::blank_comments(func)))
+        .collect();
+    assert_eq!(
+        judged,
+        [true, false, true],
+        "the tell reads literals and skips comments"
+    );
+
+    const FLOORS: [(&str, usize); 2] = [("cfgd", 8), ("cfgd-core", 4)];
+    let mut planting: std::collections::BTreeMap<&str, usize> = Default::default();
+    let mut offenders = Vec::new();
+    for (krate, path) in cross_os_fence_sources(&FLOORS) {
+        if path.ends_with(Path::new("output/tests/fences.rs")) {
+            continue;
+        }
+        // unfloored-slice-ok: the fixtures judged here live in test regions.
+        let body = walked_file_body(&path);
+        let shown = source_label(&path);
+        for (open, func) in source_functions(&shown, &body) {
+            if !RUNNING_PLATFORM_ENV_GENERATORS
+                .iter()
+                .any(|name| names_identifier(&func, name))
+            {
+                continue;
+            }
+            *planting.entry(krate).or_default() += 1;
+            if spells_an_env_assignment(&crate::test_helpers::blank_comments(&func)) {
+                offenders.push(format!(
+                    "{shown}:{open}: {}",
+                    body.lines().nth(open - 1).unwrap_or("").trim()
+                ));
+            }
+        }
+    }
+    assert_each_root_read(
+        &FLOORS,
+        &planting,
+        "functions naming the running platform's env generator",
+    );
+    assert!(
+        offenders.is_empty(),
+        "a fixture reading the env files this host generates takes each line \
+         from `MergedEnvItems::declared_line`, which spells this host's dialect:\n{}",
+        offenders.join("\n")
+    );
+}
+
 /// The function-open recognizer behind [`source_functions`], one case per
 /// qualifier shape, so the next modifier added in front of a `fn` regresses
 /// here instead of silently folding that function into its predecessor's

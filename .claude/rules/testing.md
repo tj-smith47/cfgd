@@ -313,6 +313,7 @@ product builds it:
 | Expected bytes | Build them with | Pin (`output/tests/fences.rs`) |
 |---|---|---|
 | a path the renderer home-folds | `fold_home_in_text(&to_posix_string(p))` | `no_home_fold_is_handed_a_native_path_render` |
+| a line of an env file this host generates | `MergedEnvItems::declared_line(kind, name)` | `no_fixture_hand_spells_a_line_of_the_env_file_this_host_generates` |
 
 ## Fixture versions: use the 9.9.x sentinel range
 

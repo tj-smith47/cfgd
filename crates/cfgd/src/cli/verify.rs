@@ -873,9 +873,21 @@ mod tests {
                 ..Default::default()
             },
         };
-        let layers = vec![tier(500, "vim"), tier(501, "nvim")];
-        let merged = cfgd_core::config::merge_layers(&layers);
-        let resolved = cfgd_core::config::ResolvedProfile { layers, merged };
+        let resolve = |layers: Vec<cfgd_core::config::ProfileLayer>| {
+            let merged = cfgd_core::config::merge_layers(&layers);
+            cfgd_core::config::ResolvedProfile { layers, merged }
+        };
+        // Each value's line as this host's generator composes it, so the
+        // premise reads the dialect the planted file is written in.
+        let line_of = |value: &str| {
+            let resolved = resolve(vec![tier(500, value)]);
+            let layered = cfgd_core::reconciler::LayeredEnv::of(&resolved, &[]);
+            cfgd_core::reconciler::MergedEnvItems::new(&layered, &[])
+                .declared_line("env-var", "EDITOR")
+                .expect("EDITOR renders a line")
+        };
+        let (vim, nvim, emacs) = (line_of("vim"), line_of("nvim"), line_of("emacs"));
+        let resolved = resolve(vec![tier(500, "vim"), tier(501, "nvim")]);
         let layered = cfgd_core::reconciler::LayeredEnv::of(&resolved, &[]);
         let files = cfgd_core::test_helpers::plant_managed_env_files(
             &cfgd_core::reconciler::MergedEnvItems::new(&layered, &[]),
@@ -889,7 +901,8 @@ mod tests {
             .map(|(_, body)| body.clone())
             .unwrap_or_else(|| panic!("the generator wrote no {}", primary.display()));
         assert!(
-            body.find("export EDITOR=\"vim\"") < body.find("export EDITOR=\"nvim\""),
+            body.find(&vim)
+                .is_some_and(|at| Some(at) < body.find(&nvim)),
             "the premise is the outranked tier's line standing ABOVE the winner's:\n{body}"
         );
 
@@ -918,10 +931,10 @@ mod tests {
             "a converged two-tier file must report equal operands: {converged}"
         );
 
-        // Edit the OVERRIDE tier's line alone: the outranked `"vim"` is a
-        // different token, so it stays exactly where the generator put it.
+        // Edit the OVERRIDE tier's line alone: the outranked `vim` line is a
+        // different line, so it stays exactly where the generator put it.
         for (path, content) in &files {
-            std::fs::write(path, content.replace("\"nvim\"", "\"emacs\"")).unwrap();
+            std::fs::write(path, content.replace(&nvim, &emacs)).unwrap();
         }
         let (printer, cap) = Printer::for_test_doc();
         cmd_verify(&cli, &printer, None, false).unwrap();
@@ -929,12 +942,12 @@ mod tests {
         let drifted = editor_row(&cap);
         assert_eq!(
             drifted["actual"],
-            serde_json::json!("export EDITOR=\"emacs\""),
+            serde_json::json!(emacs),
             "the reader must report the override tier's line: {drifted}"
         );
         assert_eq!(
             drifted["expected"],
-            serde_json::json!("export EDITOR=\"nvim\""),
+            serde_json::json!(nvim),
             "the expectation is the profile's own winner: {drifted}"
         );
     }
