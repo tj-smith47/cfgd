@@ -137,8 +137,8 @@ variable key, in the body or anywhere else, is an "unresolvable key" error. The
 repository run also fails when the scan cannot read `tests/e2e/`, finds no file
 there, or exempts no `fs.inotify` raise, so a scan that stops seeing the daemon
 starts cannot report clean. The `bad_e2e_sysctl_*` and `good_e2e_sysctl_*`
-fixtures under `.claude/scripts/audit-tests/` hold one case per form for `task
-audit:test`.
+fixtures under `.claude/scripts/audit-tests/` hold one case per form for
+`task audit:test`.
 
 ## A test never inherits its terminal shape from the ambient one
 

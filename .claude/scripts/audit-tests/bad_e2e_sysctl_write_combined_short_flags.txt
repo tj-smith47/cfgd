@@ -1,0 +1,1 @@
+exec_in_pod sysctl -wq vm.max_map_count=65530
