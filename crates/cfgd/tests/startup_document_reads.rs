@@ -108,3 +108,22 @@ fn a_config_named_only_in_the_environment_counts_as_one_reload() {
         "the line names the document clap settled on:\n{stderr}"
     );
 }
+
+/// `config get` of a key the document leaves out answers from the startup
+/// document's parsed config: the verb parses nothing itself. The alias pass
+/// parses the startup document before the tracing subscriber exists, so any
+/// `parsing config document` line is a second parse.
+#[test]
+fn config_get_of_an_undeclared_key_parses_the_document_once() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    write_fixture(dir.path());
+    let config = dir.path().join("cfgd.yaml");
+    let verb = &["config", "get", "daemon.reconcile.interval"][..];
+    let stderr = stderr_of(Config::Flag(&config), verb);
+    assert_reads(verb, &stderr, 1);
+    let parses: Vec<&str> = stderr
+        .lines()
+        .filter(|l| l.contains("parsing config document"))
+        .collect();
+    assert!(parses.is_empty(), "{verb:?}: a second parse:\n{stderr}");
+}

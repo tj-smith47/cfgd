@@ -689,18 +689,27 @@ pub(super) fn flat_output_key(key: &str) -> Option<String> {
     Some(format!("{old}{}", &key[new.len()..]))
 }
 
-pub fn cmd_config_get(cli: &Cli, printer: &Printer, key: &str) -> anyhow::Result<()> {
+pub fn cmd_config_get(
+    cli: &Cli,
+    printer: &Printer,
+    startup: &crate::cli::startup::StartupDocument,
+    key: &str,
+) -> anyhow::Result<()> {
     // The `spec.` prefix the docs and `cfgd explain` print is folded away
     // first, so every later read of the key — the walk, the confirmation, the
     // `-o json` payload and the error — names one field.
     let key = spec_relative_key(key);
-    config_get_as(cli, printer, key, Asked::key(key))
+    config_get_as(cli, printer, startup, key, Asked::key(key))
 }
 
 /// `config get` of the `spec`-relative `key`, refusing by `asked`.
+///
+/// Where `startup` is the document `cli.config` names, its text and parsed
+/// config answer the verb, so the file is read and parsed once per run.
 pub(super) fn config_get_as(
     cli: &Cli,
     printer: &Printer,
+    startup: &crate::cli::startup::StartupDocument,
     key: &str,
     asked: Asked<'_>,
 ) -> anyhow::Result<()> {
@@ -709,7 +718,12 @@ pub(super) fn config_get_as(
         return Err(no_config_error(printer, config_path));
     }
 
-    let contents = std::fs::read_to_string(config_path)?;
+    let on_hand = (startup.path() == config_path.as_path()).then_some(startup);
+    let contents = match on_hand.and_then(|doc| doc.on_disk()) {
+        Some(text) => std::borrow::Cow::Borrowed(text),
+        // startup-load-ok: the startup document names another file, or did not load
+        None => std::borrow::Cow::Owned(std::fs::read_to_string(config_path)?),
+    };
     let raw = match crate::cli::source::config_tree(&contents, config_path) {
         Ok(v) => v,
         Err(e) => {
@@ -763,8 +777,15 @@ pub(super) fn config_get_as(
     // does every key of a document that does not parse as a config.
     let typed_default = match &walked {
         Err(e) if classify_config_error(e) == "key_not_found" => {
-            cfgd_core::config::parse_config(&contents, config_path)
-                .ok()
+            let parsed;
+            let config = match on_hand {
+                Some(doc) => doc.config(),
+                None => {
+                    parsed = cfgd_core::config::parse_config(&contents, config_path).ok();
+                    parsed.as_ref()
+                }
+            };
+            config
                 .and_then(|config| typed_value_at(&config.spec.effective(), &resolved))
                 .filter(|value| !value.is_null())
         }
@@ -1807,7 +1828,13 @@ spec:
         let cli = test_cli_for(path.clone());
         let printer = test_printer();
 
-        let err = cmd_config_get(&cli, &printer, "profile").unwrap_err();
+        let err = cmd_config_get(
+            &cli,
+            &printer,
+            &crate::cli::startup::StartupDocument::load(&cli.config),
+            "profile",
+        )
+        .unwrap_err();
         assert_no_config_error(&err, &path);
     }
 
@@ -1819,7 +1846,13 @@ spec:
         let cli = test_cli_for(write_sample_config(dir.path()));
         let (printer, cap) = Printer::for_test_doc();
 
-        cmd_config_get(&cli, &printer, "theme.name").unwrap();
+        cmd_config_get(
+            &cli,
+            &printer,
+            &crate::cli::startup::StartupDocument::load(&cli.config),
+            "theme.name",
+        )
+        .unwrap();
         drop(printer);
 
         assert_eq!(cap.human().trim(), "monokai");
@@ -1839,7 +1872,13 @@ spec:
         let cli = test_cli_for(path);
         let (printer, cap) = Printer::for_test_doc();
 
-        cmd_config_get(&cli, &printer, "output.theme.name").unwrap();
+        cmd_config_get(
+            &cli,
+            &printer,
+            &crate::cli::startup::StartupDocument::load(&cli.config),
+            "output.theme.name",
+        )
+        .unwrap();
         drop(printer);
 
         assert_eq!(cap.human().trim(), "nord");
@@ -1909,7 +1948,13 @@ spec:
         let cli = test_cli_for(write_sample_config(dir.path()));
         let (printer, cap) = Printer::for_test_doc();
 
-        cmd_config_get(&cli, &printer, "profile").unwrap();
+        cmd_config_get(
+            &cli,
+            &printer,
+            &crate::cli::startup::StartupDocument::load(&cli.config),
+            "profile",
+        )
+        .unwrap();
         drop(printer);
 
         let captured = cap.human();
@@ -1926,7 +1971,13 @@ spec:
         let cli = test_cli_for(write_sample_config(dir.path()));
         let (printer, cap) = Printer::for_test_doc();
 
-        cmd_config_get(&cli, &printer, "theme.name").unwrap();
+        cmd_config_get(
+            &cli,
+            &printer,
+            &crate::cli::startup::StartupDocument::load(&cli.config),
+            "theme.name",
+        )
+        .unwrap();
         drop(printer);
 
         let captured = cap.human();
@@ -1939,7 +1990,13 @@ spec:
         let cli = test_cli_for(write_sample_config(dir.path()));
         let printer = test_printer();
 
-        let err = cmd_config_get(&cli, &printer, "missing").unwrap_err();
+        let err = cmd_config_get(
+            &cli,
+            &printer,
+            &crate::cli::startup::StartupDocument::load(&cli.config),
+            "missing",
+        )
+        .unwrap_err();
         assert!(
             err.to_string().contains("'missing' not found"),
             "expected key-not-found error, got: {err}"
@@ -1975,7 +2032,13 @@ spec:
         let cli = test_cli_for(path);
         let printer = test_printer();
 
-        let err = cmd_config_get(&cli, &printer, "profile").unwrap_err();
+        let err = cmd_config_get(
+            &cli,
+            &printer,
+            &crate::cli::startup::StartupDocument::load(&cli.config),
+            "profile",
+        )
+        .unwrap_err();
         assert!(
             err.to_string().contains("no 'spec' section"),
             "expected 'no spec section' error, got: {err}"
@@ -1988,7 +2051,13 @@ spec:
         let cli = test_cli_for(write_sample_config(dir.path()));
         let (printer, cap) = Printer::for_test_doc_with_format(OutputFormat::Json);
 
-        cmd_config_get(&cli, &printer, "theme").unwrap();
+        cmd_config_get(
+            &cli,
+            &printer,
+            &crate::cli::startup::StartupDocument::load(&cli.config),
+            "theme",
+        )
+        .unwrap();
         drop(printer);
 
         let parsed = cap.json().expect("doc captured json");
@@ -2012,23 +2081,47 @@ spec:
         let cli = test_cli_for(path.clone());
 
         let (printer, cap) = Printer::for_test_doc();
-        cmd_config_get(&cli, &printer, "profile").unwrap();
+        cmd_config_get(
+            &cli,
+            &printer,
+            &crate::cli::startup::StartupDocument::load(&cli.config),
+            "profile",
+        )
+        .unwrap();
         drop(printer);
         assert_eq!(cap.human().trim(), "work");
 
         let (printer, cap) = Printer::for_test_doc();
-        cmd_config_get(&cli, &printer, "theme.name").unwrap();
+        cmd_config_get(
+            &cli,
+            &printer,
+            &crate::cli::startup::StartupDocument::load(&cli.config),
+            "theme.name",
+        )
+        .unwrap();
         drop(printer);
         assert_eq!(cap.human().trim(), "monokai");
 
         let (printer, cap) = Printer::for_test_doc_with_format(OutputFormat::Json);
-        cmd_config_get(&cli, &printer, "theme").unwrap();
+        cmd_config_get(
+            &cli,
+            &printer,
+            &crate::cli::startup::StartupDocument::load(&cli.config),
+            "theme",
+        )
+        .unwrap();
         drop(printer);
         let parsed = cap.json().expect("doc captured json");
         assert_eq!(parsed["value"]["name"], "monokai");
 
         std::fs::write(&path, "[spec\nprofile = \"work\"\n").unwrap();
-        let err = cmd_config_get(&cli, &test_printer(), "profile").unwrap_err();
+        let err = cmd_config_get(
+            &cli,
+            &test_printer(),
+            &crate::cli::startup::StartupDocument::load(&cli.config),
+            "profile",
+        )
+        .unwrap_err();
         let meta = err
             .downcast_ref::<crate::cli::CliErrorMeta>()
             .expect("CliErrorMeta carrier on parse_failed");
@@ -2237,7 +2330,13 @@ spec:
         let cli = test_cli_for(write_sample_config(dir.path()));
         let (printer, cap) = Printer::for_test_doc();
 
-        cmd_config_get(&cli, &printer, "theme").unwrap();
+        cmd_config_get(
+            &cli,
+            &printer,
+            &crate::cli::startup::StartupDocument::load(&cli.config),
+            "theme",
+        )
+        .unwrap();
         drop(printer);
 
         let captured = cap.human();
@@ -2261,7 +2360,13 @@ spec:
         let cli = test_cli_for(path);
         let (printer, cap) = Printer::for_test_doc();
 
-        cmd_config_get(&cli, &printer, "profile").unwrap();
+        cmd_config_get(
+            &cli,
+            &printer,
+            &crate::cli::startup::StartupDocument::load(&cli.config),
+            "profile",
+        )
+        .unwrap();
         drop(printer);
 
         let captured = cap.human();
@@ -2283,7 +2388,13 @@ spec:
         let cli = test_cli_for(path);
         let printer = test_printer();
 
-        let err = cmd_config_get(&cli, &printer, "profile").unwrap_err();
+        let err = cmd_config_get(
+            &cli,
+            &printer,
+            &crate::cli::startup::StartupDocument::load(&cli.config),
+            "profile",
+        )
+        .unwrap_err();
         let meta = err
             .downcast_ref::<crate::cli::CliErrorMeta>()
             .expect("CliErrorMeta carrier on parse_failed");
@@ -2466,12 +2577,24 @@ spec:
         // does, and the `-o json` envelope keys it the folded way.
         let cli = test_cli_for(write_sample_config(dir.path()));
         let (printer, cap) = Printer::for_test_doc();
-        cmd_config_get(&cli, &printer, "spec.theme.name").unwrap();
+        cmd_config_get(
+            &cli,
+            &printer,
+            &crate::cli::startup::StartupDocument::load(&cli.config),
+            "spec.theme.name",
+        )
+        .unwrap();
         drop(printer);
         assert_eq!(cap.human().trim(), "monokai");
 
         let (printer, cap) = Printer::for_test_doc_with_format(OutputFormat::Json);
-        cmd_config_get(&cli, &printer, "spec.output.theme.name").unwrap();
+        cmd_config_get(
+            &cli,
+            &printer,
+            &crate::cli::startup::StartupDocument::load(&cli.config),
+            "spec.output.theme.name",
+        )
+        .unwrap();
         drop(printer);
         let parsed = cap.json().expect("doc captured json");
         assert_eq!(parsed["key"], "output.theme.name");
@@ -2578,12 +2701,24 @@ spec:
         let cli = test_cli_for(path);
 
         let (printer, cap) = Printer::for_test_doc();
-        cmd_config_get(&cli, &printer, "migrationPolicy").unwrap();
+        cmd_config_get(
+            &cli,
+            &printer,
+            &crate::cli::startup::StartupDocument::load(&cli.config),
+            "migrationPolicy",
+        )
+        .unwrap();
         drop(printer);
         assert_eq!(cap.human().trim(), "Prompt");
 
         let (printer, cap) = Printer::for_test_doc_with_format(OutputFormat::Json);
-        cmd_config_get(&cli, &printer, "spec.migrationPolicy").unwrap();
+        cmd_config_get(
+            &cli,
+            &printer,
+            &crate::cli::startup::StartupDocument::load(&cli.config),
+            "spec.migrationPolicy",
+        )
+        .unwrap();
         drop(printer);
         assert_eq!(
             cap.json().expect("doc captured json"),
@@ -2591,7 +2726,13 @@ spec:
         );
 
         for (key, named) in [("nope", "nope"), ("profile", "profile")] {
-            let err = cmd_config_get(&cli, &test_printer(), key).unwrap_err();
+            let err = cmd_config_get(
+                &cli,
+                &test_printer(),
+                &crate::cli::startup::StartupDocument::load(&cli.config),
+                key,
+            )
+            .unwrap_err();
             let meta = refusal(&err);
             assert_eq!(meta.error_kind, "key_not_found", "{key}: {}", meta.message);
             assert!(
@@ -2646,7 +2787,12 @@ spec:
             };
             let cli = test_cli_for(path);
             let (printer, cap) = Printer::for_test_doc_with_format(OutputFormat::Json);
-            let result = cmd_config_get(&cli, &printer, &key);
+            let result = cmd_config_get(
+                &cli,
+                &printer,
+                &crate::cli::startup::StartupDocument::load(&cli.config),
+                &key,
+            );
             drop(printer);
             if typed.is_null() {
                 let err = result
@@ -2715,7 +2861,14 @@ spec:
         let leaf_cli = test_cli_for(leaf);
 
         type Verb = fn(&Cli, &Printer, &str) -> anyhow::Result<()>;
-        let get: Verb = cmd_config_get;
+        let get: Verb = |cli, printer, key| {
+            cmd_config_get(
+                cli,
+                printer,
+                &crate::cli::startup::StartupDocument::load(&cli.config),
+                key,
+            )
+        };
         let set: Verb = |cli, printer, key| cmd_config_set(cli, printer, key, "dracula");
         let unset: Verb = cmd_config_unset;
         let cases: [(&str, Verb, &Cli, &str, &str, &str); 9] = [
@@ -2859,7 +3012,12 @@ spec:
                     .unwrap_or(serde_json::Value::Null)
             };
             let (printer, cap) = Printer::for_test_doc_with_format(OutputFormat::Json);
-            let result = cmd_config_get(&cli, &printer, &key);
+            let result = cmd_config_get(
+                &cli,
+                &printer,
+                &crate::cli::startup::StartupDocument::load(&cli.config),
+                &key,
+            );
             drop(printer);
             if expected.is_null() {
                 let err = result.err().unwrap_or_else(|| {
@@ -2897,7 +3055,13 @@ spec:
             ("update.channel", serde_json::json!("stable")),
         ] {
             let (printer, cap) = Printer::for_test_doc_with_format(OutputFormat::Json);
-            cmd_config_get(&cli, &printer, named).unwrap_or_else(|e| panic!("{named}: {e:#}"));
+            cmd_config_get(
+                &cli,
+                &printer,
+                &crate::cli::startup::StartupDocument::load(&cli.config),
+                named,
+            )
+            .unwrap_or_else(|e| panic!("{named}: {e:#}"));
             drop(printer);
             assert_eq!(
                 cap.json().expect("doc captured json"),
@@ -2997,6 +3161,7 @@ spec:
                 &cli,
                 &test_printer(),
                 &crate::cli::paths::DirSources::all_default(),
+                &crate::cli::startup::StartupDocument::load(&cli.config),
             )
             .err()
             .unwrap_or_else(|| panic!("{args:?} was not refused"));

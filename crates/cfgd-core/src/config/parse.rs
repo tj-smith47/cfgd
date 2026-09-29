@@ -408,6 +408,7 @@ pub fn read_config_document(path: &Path) -> Result<(CfgdConfig, String)> {
 
 /// Parse config from string, supporting both YAML and TOML based on file extension
 pub fn parse_config(contents: &str, path: &Path) -> Result<CfgdConfig> {
+    tracing::debug!(path = %path.display(), "parsing config document"); // native-ok: log line
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("yaml");
 
     let mut deprecations = if ext != "toml" {

@@ -3223,6 +3223,7 @@ pub fn execute(
     cli: &Cli,
     printer: &cfgd_core::output::Printer,
     dir_sources: &paths::DirSources,
+    startup: &startup::StartupDocument,
 ) -> anyhow::Result<()> {
     // No subcommand: print help and exit 0. Required for package-manager
     // validators (winget, chocolatey) that smoke-test the installed binary
@@ -3634,7 +3635,7 @@ pub fn execute(
         Command::Config { command } => match command {
             ConfigCommand::Show => config_cmd::cmd_config_show(cli, printer),
             ConfigCommand::Edit => config_cmd::cmd_config_edit(cli, printer),
-            ConfigCommand::Get { key } => config_cmd::cmd_config_get(cli, printer, key),
+            ConfigCommand::Get { key } => config_cmd::cmd_config_get(cli, printer, startup, key),
             ConfigCommand::Set { key, value } => {
                 config_cmd::cmd_config_set(cli, printer, key, value)
             }
@@ -3656,7 +3657,7 @@ pub fn execute(
                 }
                 AliasCommand::Show { name } => {
                     let key = alias_key(name)?;
-                    config_cmd::config_get_as(cli, printer, &key, Asked::alias(name))
+                    config_cmd::config_get_as(cli, printer, startup, &key, Asked::alias(name))
                 }
                 AliasCommand::List => alias::cmd_alias_list(cli, printer),
             }

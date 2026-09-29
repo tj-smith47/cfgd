@@ -789,8 +789,13 @@ fn inventory_flag_output(args: &[&str]) -> String {
     ];
     argv.extend(args.iter().map(|a| (*a).to_string()));
     let cli = Cli::try_parse_hermetic(&argv).expect("the inventory flags parse");
-    super::execute(&cli, h.printer(), &super::paths::DirSources::all_default())
-        .expect("the invocation runs");
+    super::execute(
+        &cli,
+        h.printer(),
+        &super::paths::DirSources::all_default(),
+        &super::startup::StartupDocument::load(&cli.config),
+    )
+    .expect("the invocation runs");
     h.output()
 }
 
@@ -6930,7 +6935,12 @@ fn config_get_reads_value() {
     };
     let printer = test_printer();
 
-    let result = super::config_cmd::cmd_config_get(&cli, &printer, "profile");
+    let result = super::config_cmd::cmd_config_get(
+        &cli,
+        &printer,
+        &crate::cli::startup::StartupDocument::load(&cli.config),
+        "profile",
+    );
     assert!(
         result.is_ok(),
         "config get should read profile value without error: {:?}",
@@ -6955,7 +6965,15 @@ fn cmd_config_get_missing_key_errors() {
     };
     let printer = test_printer();
 
-    assert!(super::config_cmd::cmd_config_get(&cli, &printer, "nonexistent").is_err());
+    assert!(
+        super::config_cmd::cmd_config_get(
+            &cli,
+            &printer,
+            &crate::cli::startup::StartupDocument::load(&cli.config),
+            "nonexistent"
+        )
+        .is_err()
+    );
 }
 
 #[test]
@@ -8163,8 +8181,13 @@ fn execute_with_no_subcommand_prints_help_and_returns_ok() {
     // writes directly to stdout (not through Printer), so this does not assert
     // on captured output here — exit-code 0 is the part of the contract that
     // moves the needle if it regresses.
-    super::execute(&cli, h.printer(), &super::paths::DirSources::all_default())
-        .expect("no-subcommand must return Ok(())");
+    super::execute(
+        &cli,
+        h.printer(),
+        &super::paths::DirSources::all_default(),
+        &super::startup::StartupDocument::load(&cli.config),
+    )
+    .expect("no-subcommand must return Ok(())");
 }
 
 #[test]
@@ -8178,7 +8201,13 @@ fn execute_status_command() {
         show_scripts: false,
         show_all: false,
     });
-    super::execute(&cli, h.printer(), &super::paths::DirSources::all_default()).unwrap();
+    super::execute(
+        &cli,
+        h.printer(),
+        &super::paths::DirSources::all_default(),
+        &super::startup::StartupDocument::load(&cli.config),
+    )
+    .unwrap();
     h.assert_header("Status");
 }
 
@@ -8189,7 +8218,13 @@ fn execute_log_command() {
         limit: 10,
         show_output: None,
     });
-    super::execute(&cli, h.printer(), &super::paths::DirSources::all_default()).unwrap();
+    super::execute(
+        &cli,
+        h.printer(),
+        &super::paths::DirSources::all_default(),
+        &super::startup::StartupDocument::load(&cli.config),
+    )
+    .unwrap();
     let output = h.output();
     assert!(
         output.contains("Apply History") || output.contains("No applies"),
@@ -8204,7 +8239,13 @@ fn execute_verify_command() {
         module: None,
         exit_code: false,
     });
-    super::execute(&cli, h.printer(), &super::paths::DirSources::all_default()).unwrap();
+    super::execute(
+        &cli,
+        h.printer(),
+        &super::paths::DirSources::all_default(),
+        &super::startup::StartupDocument::load(&cli.config),
+    )
+    .unwrap();
     h.assert_header("Verify");
 }
 
@@ -8215,7 +8256,13 @@ fn execute_diff_command() {
         module: None,
         exit_code: false,
     });
-    super::execute(&cli, h.printer(), &super::paths::DirSources::all_default()).unwrap();
+    super::execute(
+        &cli,
+        h.printer(),
+        &super::paths::DirSources::all_default(),
+        &super::startup::StartupDocument::load(&cli.config),
+    )
+    .unwrap();
     h.assert_header("Diff");
 }
 
@@ -8223,7 +8270,13 @@ fn execute_diff_command() {
 fn execute_doctor_command() {
     let h = CliTestHarness::builder().build();
     let cli = h.cli_with_command(Command::Doctor { fix: false });
-    super::execute(&cli, h.printer(), &super::paths::DirSources::all_default()).unwrap();
+    super::execute(
+        &cli,
+        h.printer(),
+        &super::paths::DirSources::all_default(),
+        &super::startup::StartupDocument::load(&cli.config),
+    )
+    .unwrap();
     h.assert_header("Doctor");
 }
 
@@ -8233,7 +8286,13 @@ fn execute_profile_list() {
     let cli = h.cli_with_command(Command::Profile {
         command: ProfileCommand::List,
     });
-    super::execute(&cli, h.printer(), &super::paths::DirSources::all_default()).unwrap();
+    super::execute(
+        &cli,
+        h.printer(),
+        &super::paths::DirSources::all_default(),
+        &super::startup::StartupDocument::load(&cli.config),
+    )
+    .unwrap();
     h.assert_output_contains("default");
 }
 
@@ -8247,7 +8306,13 @@ fn execute_profile_show() {
             show_values: false,
         },
     });
-    super::execute(&cli, h.printer(), &super::paths::DirSources::all_default()).unwrap();
+    super::execute(
+        &cli,
+        h.printer(),
+        &super::paths::DirSources::all_default(),
+        &super::startup::StartupDocument::load(&cli.config),
+    )
+    .unwrap();
     h.assert_output_contains("default");
 }
 
@@ -8257,7 +8322,13 @@ fn execute_config_show() {
     let cli = h.cli_with_command(Command::Config {
         command: ConfigCommand::Show,
     });
-    super::execute(&cli, h.printer(), &super::paths::DirSources::all_default()).unwrap();
+    super::execute(
+        &cli,
+        h.printer(),
+        &super::paths::DirSources::all_default(),
+        &super::startup::StartupDocument::load(&cli.config),
+    )
+    .unwrap();
     h.assert_header("Configuration");
 }
 
@@ -8269,7 +8340,13 @@ fn execute_config_get() {
             key: "profile".to_string(),
         },
     });
-    super::execute(&cli, h.printer(), &super::paths::DirSources::all_default()).unwrap();
+    super::execute(
+        &cli,
+        h.printer(),
+        &super::paths::DirSources::all_default(),
+        &super::startup::StartupDocument::load(&cli.config),
+    )
+    .unwrap();
     h.assert_output_contains("default");
 }
 
@@ -8282,7 +8359,13 @@ fn execute_config_set() {
             value: "work".to_string(),
         },
     });
-    super::execute(&cli, h.printer(), &super::paths::DirSources::all_default()).unwrap();
+    super::execute(
+        &cli,
+        h.printer(),
+        &super::paths::DirSources::all_default(),
+        &super::startup::StartupDocument::load(&cli.config),
+    )
+    .unwrap();
 
     let cfg = config::load_config(&h.config_path().join("cfgd.yaml")).unwrap();
     assert_eq!(cfg.spec.profile.as_deref(), Some("work"));
@@ -8301,8 +8384,13 @@ fn execute_alias_show_unknown_name_is_a_typed_not_found_error() {
             name: "no-such-alias".to_string(),
         },
     });
-    let err =
-        super::execute(&cli, h.printer(), &super::paths::DirSources::all_default()).unwrap_err();
+    let err = super::execute(
+        &cli,
+        h.printer(),
+        &super::paths::DirSources::all_default(),
+        &super::startup::StartupDocument::load(&cli.config),
+    )
+    .unwrap_err();
     let cfgd_err = err
         .downcast_ref::<cfgd_core::errors::CfgdError>()
         .expect("alias show of an unknown name must carry the typed ConfigError::KeyNotFound");
@@ -8329,8 +8417,13 @@ fn execute_alias_delete_unknown_name_is_a_typed_not_found_error() {
             name: "no-such-alias".to_string(),
         },
     });
-    let err =
-        super::execute(&cli, h.printer(), &super::paths::DirSources::all_default()).unwrap_err();
+    let err = super::execute(
+        &cli,
+        h.printer(),
+        &super::paths::DirSources::all_default(),
+        &super::startup::StartupDocument::load(&cli.config),
+    )
+    .unwrap_err();
     let cfgd_err = err
         .downcast_ref::<cfgd_core::errors::CfgdError>()
         .expect("alias delete of an unknown name must carry the typed ConfigError::KeyNotFound");
@@ -8358,7 +8451,13 @@ fn execute_apply_dry_run() {
         context: "apply".to_string(),
         shell: None,
     }));
-    super::execute(&cli, h.printer(), &super::paths::DirSources::all_default()).unwrap();
+    super::execute(
+        &cli,
+        h.printer(),
+        &super::paths::DirSources::all_default(),
+        &super::startup::StartupDocument::load(&cli.config),
+    )
+    .unwrap();
     let output = h.output();
     assert!(
         output.contains("Plan") || output.contains("Nothing"),
@@ -8378,7 +8477,12 @@ fn execute_completions_bash() {
     let printer = test_printer();
     // Completions write directly to stdout via clap_complete, not through Printer.
     // This verifies execution succeeds; output content is clap_complete's responsibility.
-    let result = super::execute(&cli, &printer, &super::paths::DirSources::all_default());
+    let result = super::execute(
+        &cli,
+        &printer,
+        &super::paths::DirSources::all_default(),
+        &super::startup::StartupDocument::load(&cli.config),
+    );
     assert!(
         result.is_ok(),
         "bash completions failed: {:?}",
@@ -8396,7 +8500,12 @@ fn execute_completions_zsh() {
         ..test_cli(dir.path())
     };
     let printer = test_printer();
-    let result = super::execute(&cli, &printer, &super::paths::DirSources::all_default());
+    let result = super::execute(
+        &cli,
+        &printer,
+        &super::paths::DirSources::all_default(),
+        &super::startup::StartupDocument::load(&cli.config),
+    );
     assert!(result.is_ok(), "zsh completions failed: {:?}", result.err());
 }
 
@@ -8410,7 +8519,12 @@ fn execute_completions_fish() {
         ..test_cli(dir.path())
     };
     let printer = test_printer();
-    let result = super::execute(&cli, &printer, &super::paths::DirSources::all_default());
+    let result = super::execute(
+        &cli,
+        &printer,
+        &super::paths::DirSources::all_default(),
+        &super::startup::StartupDocument::load(&cli.config),
+    );
     assert!(
         result.is_ok(),
         "fish completions failed: {:?}",
@@ -8425,7 +8539,13 @@ fn execute_explain_command() {
         resource: Some("config".to_string()),
         recursive: false,
     });
-    super::execute(&cli, h.printer(), &super::paths::DirSources::all_default()).unwrap();
+    super::execute(
+        &cli,
+        h.printer(),
+        &super::paths::DirSources::all_default(),
+        &super::startup::StartupDocument::load(&cli.config),
+    )
+    .unwrap();
     let output = h.output();
     assert!(
         output.contains("Config") || output.contains("cfgd.yaml"),
@@ -8440,7 +8560,13 @@ fn execute_explain_profile() {
         resource: Some("profile".to_string()),
         recursive: false,
     });
-    super::execute(&cli, h.printer(), &super::paths::DirSources::all_default()).unwrap();
+    super::execute(
+        &cli,
+        h.printer(),
+        &super::paths::DirSources::all_default(),
+        &super::startup::StartupDocument::load(&cli.config),
+    )
+    .unwrap();
     let output = h.output();
     assert!(
         output.contains("Profile") || output.contains("profile"),
@@ -8455,7 +8581,13 @@ fn execute_explain_module() {
         resource: Some("module".to_string()),
         recursive: false,
     });
-    super::execute(&cli, h.printer(), &super::paths::DirSources::all_default()).unwrap();
+    super::execute(
+        &cli,
+        h.printer(),
+        &super::paths::DirSources::all_default(),
+        &super::startup::StartupDocument::load(&cli.config),
+    )
+    .unwrap();
     let output = h.output();
     assert!(
         output.contains("Module") || output.contains("module"),
@@ -8472,7 +8604,13 @@ fn execute_explain_no_resource_json_format_writes_structured_array() {
         resource: None,
         recursive: false,
     });
-    super::execute(&cli, h.printer(), &super::paths::DirSources::all_default()).unwrap();
+    super::execute(
+        &cli,
+        h.printer(),
+        &super::paths::DirSources::all_default(),
+        &super::startup::StartupDocument::load(&cli.config),
+    )
+    .unwrap();
     let output = h.output();
     assert!(
         output.trim().starts_with('[') && output.contains("\"kind\""),
@@ -8489,7 +8627,13 @@ fn execute_explain_resource_json_format_writes_structured_object() {
         resource: Some("module".to_string()),
         recursive: false,
     });
-    super::execute(&cli, h.printer(), &super::paths::DirSources::all_default()).unwrap();
+    super::execute(
+        &cli,
+        h.printer(),
+        &super::paths::DirSources::all_default(),
+        &super::startup::StartupDocument::load(&cli.config),
+    )
+    .unwrap();
     let output = h.output();
     assert!(
         output.trim().starts_with('{') && output.contains("\"kind\""),
@@ -8504,7 +8648,13 @@ fn execute_explain_no_resource() {
         resource: None,
         recursive: false,
     });
-    super::execute(&cli, h.printer(), &super::paths::DirSources::all_default()).unwrap();
+    super::execute(
+        &cli,
+        h.printer(),
+        &super::paths::DirSources::all_default(),
+        &super::startup::StartupDocument::load(&cli.config),
+    )
+    .unwrap();
     let output = h.output();
     assert!(
         output.contains("Available Resource Types")
@@ -9477,7 +9627,8 @@ fn execute_profile_switch() {
         super::execute(
             &cli,
             &test_printer(),
-            &super::paths::DirSources::all_default()
+            &super::paths::DirSources::all_default(),
+            &super::startup::StartupDocument::load(&cli.config)
         )
         .is_ok(),
         "execute should dispatch Profile Switch command successfully"
@@ -9503,7 +9654,13 @@ fn execute_module_list() {
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
-    super::execute(&cli, &printer, &super::paths::DirSources::all_default()).unwrap();
+    super::execute(
+        &cli,
+        &printer,
+        &super::paths::DirSources::all_default(),
+        &super::startup::StartupDocument::load(&cli.config),
+    )
+    .unwrap();
     drop(printer);
     let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
@@ -9524,7 +9681,13 @@ fn execute_workflow_generate() {
     };
     let (printer, buf) = test_printer_capture();
 
-    super::execute(&cli, &printer, &super::paths::DirSources::all_default()).unwrap();
+    super::execute(
+        &cli,
+        &printer,
+        &super::paths::DirSources::all_default(),
+        &super::startup::StartupDocument::load(&cli.config),
+    )
+    .unwrap();
     drop(printer);
     let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
@@ -10547,7 +10710,13 @@ fn execute_plan_command() {
     };
     let (printer, buf) = test_printer_capture();
 
-    super::execute(&cli, &printer, &super::paths::DirSources::all_default()).unwrap();
+    super::execute(
+        &cli,
+        &printer,
+        &super::paths::DirSources::all_default(),
+        &super::startup::StartupDocument::load(&cli.config),
+    )
+    .unwrap();
     printer.flush();
     let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
@@ -10567,7 +10736,13 @@ fn execute_compliance_snapshot() {
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
-    super::execute(&cli, &printer, &super::paths::DirSources::all_default()).unwrap();
+    super::execute(
+        &cli,
+        &printer,
+        &super::paths::DirSources::all_default(),
+        &super::startup::StartupDocument::load(&cli.config),
+    )
+    .unwrap();
     printer.flush();
     let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
@@ -10589,7 +10764,13 @@ fn execute_compliance_export() {
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
-    super::execute(&cli, &printer, &super::paths::DirSources::all_default()).unwrap();
+    super::execute(
+        &cli,
+        &printer,
+        &super::paths::DirSources::all_default(),
+        &super::startup::StartupDocument::load(&cli.config),
+    )
+    .unwrap();
     printer.flush();
     let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
@@ -10613,7 +10794,13 @@ fn execute_compliance_history() {
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
-    super::execute(&cli, &printer, &super::paths::DirSources::all_default()).unwrap();
+    super::execute(
+        &cli,
+        &printer,
+        &super::paths::DirSources::all_default(),
+        &super::startup::StartupDocument::load(&cli.config),
+    )
+    .unwrap();
     printer.flush();
     let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
@@ -10639,6 +10826,7 @@ fn execute_rollback_invalid() {
         &cli,
         &test_printer(),
         &super::paths::DirSources::all_default(),
+        &super::startup::StartupDocument::load(&cli.config),
     );
     let err = result.unwrap_err();
     let msg = err.to_string();
@@ -15017,7 +15205,13 @@ fn execute_explain_recursive() {
         resource: Some("config".to_string()),
         recursive: true,
     });
-    super::execute(&cli, h.printer(), &super::paths::DirSources::all_default()).unwrap();
+    super::execute(
+        &cli,
+        h.printer(),
+        &super::paths::DirSources::all_default(),
+        &super::startup::StartupDocument::load(&cli.config),
+    )
+    .unwrap();
     let output = h.output();
     assert!(
         output.contains("Config") || output.contains("config") || output.contains("spec"),
@@ -15036,7 +15230,13 @@ fn execute_compliance_command() {
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
-    super::execute(&cli, &printer, &super::paths::DirSources::all_default()).unwrap();
+    super::execute(
+        &cli,
+        &printer,
+        &super::paths::DirSources::all_default(),
+        &super::startup::StartupDocument::load(&cli.config),
+    )
+    .unwrap();
     printer.flush();
     let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
@@ -15057,7 +15257,13 @@ fn execute_source_list() {
     };
     let (printer, cap) = cfgd_core::output::Printer::for_test_doc();
 
-    super::execute(&cli, &printer, &super::paths::DirSources::all_default()).unwrap();
+    super::execute(
+        &cli,
+        &printer,
+        &super::paths::DirSources::all_default(),
+        &super::startup::StartupDocument::load(&cli.config),
+    )
+    .unwrap();
     drop(printer);
     let output = cap.human();
     assert!(
@@ -15088,7 +15294,13 @@ fn execute_decide_accept_all() {
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
-    super::execute(&cli, &printer, &super::paths::DirSources::all_default()).unwrap();
+    super::execute(
+        &cli,
+        &printer,
+        &super::paths::DirSources::all_default(),
+        &super::startup::StartupDocument::load(&cli.config),
+    )
+    .unwrap();
     drop(printer);
     let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
@@ -15109,7 +15321,13 @@ fn execute_sync_command() {
     };
     let (printer, buf) = test_printer_capture();
 
-    super::execute(&cli, &printer, &super::paths::DirSources::all_default()).unwrap();
+    super::execute(
+        &cli,
+        &printer,
+        &super::paths::DirSources::all_default(),
+        &super::startup::StartupDocument::load(&cli.config),
+    )
+    .unwrap();
     drop(printer);
     let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
@@ -15128,7 +15346,13 @@ fn execute_pull_command() {
     };
     let (printer, buf) = test_printer_capture();
 
-    super::execute(&cli, &printer, &super::paths::DirSources::all_default()).unwrap();
+    super::execute(
+        &cli,
+        &printer,
+        &super::paths::DirSources::all_default(),
+        &super::startup::StartupDocument::load(&cli.config),
+    )
+    .unwrap();
     drop(printer);
     let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
@@ -15997,7 +16221,13 @@ fn cmd_config_get_reads_profile() {
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
     let (printer, cap) = cfgd_core::output::Printer::for_test_doc();
 
-    super::config_cmd::cmd_config_get(&cli, &printer, "profile").unwrap();
+    super::config_cmd::cmd_config_get(
+        &cli,
+        &printer,
+        &crate::cli::startup::StartupDocument::load(&cli.config),
+        "profile",
+    )
+    .unwrap();
     drop(printer);
 
     let output = cap.human();
@@ -16013,7 +16243,13 @@ fn cmd_config_get_nested_key() {
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
     let (printer, cap) = cfgd_core::output::Printer::for_test_doc();
 
-    super::config_cmd::cmd_config_get(&cli, &printer, "daemon.enabled").unwrap();
+    super::config_cmd::cmd_config_get(
+        &cli,
+        &printer,
+        &crate::cli::startup::StartupDocument::load(&cli.config),
+        "daemon.enabled",
+    )
+    .unwrap();
     drop(printer);
 
     let output = cap.human();
@@ -16033,7 +16269,13 @@ fn cmd_config_get_structured_json() {
     let (printer, cap) =
         cfgd_core::output::Printer::for_test_doc_with_format(cfgd_core::output::OutputFormat::Json);
 
-    super::config_cmd::cmd_config_get(&cli, &printer, "profile").unwrap();
+    super::config_cmd::cmd_config_get(
+        &cli,
+        &printer,
+        &crate::cli::startup::StartupDocument::load(&cli.config),
+        "profile",
+    )
+    .unwrap();
     drop(printer);
 
     let parsed = cap.json().expect("doc captured json");
@@ -16050,7 +16292,12 @@ fn cmd_config_get_missing_key_fails() {
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
     let printer = test_printer();
 
-    let result = super::config_cmd::cmd_config_get(&cli, &printer, "nonexistent.path");
+    let result = super::config_cmd::cmd_config_get(
+        &cli,
+        &printer,
+        &crate::cli::startup::StartupDocument::load(&cli.config),
+        "nonexistent.path",
+    );
     let err = result.unwrap_err();
     let msg = err.to_string();
     assert!(
@@ -16065,7 +16312,12 @@ fn cmd_config_get_no_config_fails() {
     let cli = test_cli(dir.path());
     let printer = test_printer();
 
-    let result = super::config_cmd::cmd_config_get(&cli, &printer, "profile");
+    let result = super::config_cmd::cmd_config_get(
+        &cli,
+        &printer,
+        &crate::cli::startup::StartupDocument::load(&cli.config),
+        "profile",
+    );
     assert!(result.is_err());
     assert!(
         result
@@ -26875,7 +27127,12 @@ fn cmd_config_show_missing_file_errors() {
 #[test]
 fn cmd_config_get_string_value() {
     let h = CliTestHarness::builder().build();
-    let result = super::config_cmd::cmd_config_get(&h.cli(), h.printer(), "profile");
+    let result = super::config_cmd::cmd_config_get(
+        &h.cli(),
+        h.printer(),
+        &crate::cli::startup::StartupDocument::load(&h.cli().config),
+        "profile",
+    );
     assert!(
         result.is_ok(),
         "config get profile should succeed: {:?}",
@@ -26891,7 +27148,12 @@ fn cmd_config_get_string_value() {
 #[test]
 fn cmd_config_get_missing_key_errors_no_config() {
     let h = CliTestHarness::builder().build();
-    let result = super::config_cmd::cmd_config_get(&h.cli(), h.printer(), "nonexistent.key");
+    let result = super::config_cmd::cmd_config_get(
+        &h.cli(),
+        h.printer(),
+        &crate::cli::startup::StartupDocument::load(&h.cli().config),
+        "nonexistent.key",
+    );
     assert!(result.is_err(), "missing key should error");
     assert!(
         result.unwrap_err().to_string().contains("not found"),
@@ -26902,7 +27164,12 @@ fn cmd_config_get_missing_key_errors_no_config() {
 #[test]
 fn cmd_config_get_json_output() {
     let h = CliTestHarness::builder().json().build();
-    let result = super::config_cmd::cmd_config_get(&h.cli(), h.printer(), "profile");
+    let result = super::config_cmd::cmd_config_get(
+        &h.cli(),
+        h.printer(),
+        &crate::cli::startup::StartupDocument::load(&h.cli().config),
+        "profile",
+    );
     assert!(result.is_ok(), "JSON config get should succeed");
     let output = h.output();
     // JSON output should contain the value
@@ -30544,7 +30811,12 @@ fn execute_dispatch_checkin() {
         api_key: None,
         device_id: Some("test-device".to_string()),
     });
-    let result = super::execute(&cli, h.printer(), &super::paths::DirSources::all_default());
+    let result = super::execute(
+        &cli,
+        h.printer(),
+        &super::paths::DirSources::all_default(),
+        &super::startup::StartupDocument::load(&cli.config),
+    );
     // Checkin fails because server is unreachable, but dispatch arm was exercised
     assert!(result.is_err());
     let err_msg = result.unwrap_err().to_string();
@@ -30577,7 +30849,13 @@ spec:
             no_allow_scripts: false,
         },
     });
-    super::execute(&cli, h.printer(), &super::paths::DirSources::all_default()).unwrap();
+    super::execute(
+        &cli,
+        h.printer(),
+        &super::paths::DirSources::all_default(),
+        &super::startup::StartupDocument::load(&cli.config),
+    )
+    .unwrap();
     h.assert_header("Update Sources");
     h.assert_output_contains("No sources configured");
 }
@@ -30606,7 +30884,13 @@ spec:
             value: None,
         },
     });
-    super::execute(&cli, h.printer(), &super::paths::DirSources::all_default()).unwrap();
+    super::execute(
+        &cli,
+        h.printer(),
+        &super::paths::DirSources::all_default(),
+        &super::startup::StartupDocument::load(&cli.config),
+    )
+    .unwrap();
     h.assert_output_contains("my-source");
     h.assert_output_contains("500");
 }
@@ -30636,7 +30920,12 @@ spec:
         },
     });
     // Dispatches through execute -> source::cmd_source_replace
-    let result = super::execute(&cli, h.printer(), &super::paths::DirSources::all_default());
+    let result = super::execute(
+        &cli,
+        h.printer(),
+        &super::paths::DirSources::all_default(),
+        &super::startup::StartupDocument::load(&cli.config),
+    );
     // Replace will fail on the add step, but dispatch arm is exercised
     assert!(result.is_err());
     h.assert_output_contains("Replace source:replaceable");
@@ -30648,7 +30937,13 @@ fn execute_dispatch_compliance_export() {
     let cli = h.cli_with_command(Command::Compliance {
         command: Some(ComplianceCommand::Export),
     });
-    super::execute(&cli, h.printer(), &super::paths::DirSources::all_default()).unwrap();
+    super::execute(
+        &cli,
+        h.printer(),
+        &super::paths::DirSources::all_default(),
+        &super::startup::StartupDocument::load(&cli.config),
+    )
+    .unwrap();
     h.assert_output_contains("Wrote compliance snapshot to");
 }
 
@@ -32444,8 +32739,13 @@ fn execute_profile_create_dispatch() {
             ..test_profile_create_args("newprof")
         })),
     });
-    super::execute(&cli, h.printer(), &super::paths::DirSources::all_default())
-        .expect("Profile Create dispatch must succeed");
+    super::execute(
+        &cli,
+        h.printer(),
+        &super::paths::DirSources::all_default(),
+        &super::startup::StartupDocument::load(&cli.config),
+    )
+    .expect("Profile Create dispatch must succeed");
     let profiles_dir = h.config_path().join("profiles");
     assert!(
         profiles_dir.join("newprof").join("profile.yaml").exists(),
@@ -32459,8 +32759,13 @@ fn execute_profile_update_dispatch() {
     let cli = h.cli_with_command(Command::Profile {
         command: ProfileCommand::Update(Box::new(empty_profile_update_args())),
     });
-    super::execute(&cli, h.printer(), &super::paths::DirSources::all_default())
-        .expect("Profile Update dispatch must succeed");
+    super::execute(
+        &cli,
+        h.printer(),
+        &super::paths::DirSources::all_default(),
+        &super::startup::StartupDocument::load(&cli.config),
+    )
+    .expect("Profile Update dispatch must succeed");
 }
 
 #[test]
@@ -32473,8 +32778,13 @@ fn execute_profile_delete_dispatch() {
             ignore_not_found: false,
         },
     });
-    super::execute(&cli, h.printer(), &super::paths::DirSources::all_default())
-        .expect("Profile Delete dispatch must succeed");
+    super::execute(
+        &cli,
+        h.printer(),
+        &super::paths::DirSources::all_default(),
+        &super::startup::StartupDocument::load(&cli.config),
+    )
+    .expect("Profile Delete dispatch must succeed");
 }
 
 #[test]
@@ -32491,8 +32801,13 @@ fn execute_module_show_dispatch() {
             show_all: false,
         },
     });
-    super::execute(&cli, h.printer(), &super::paths::DirSources::all_default())
-        .expect("Module Show dispatch must succeed");
+    super::execute(
+        &cli,
+        h.printer(),
+        &super::paths::DirSources::all_default(),
+        &super::startup::StartupDocument::load(&cli.config),
+    )
+    .expect("Module Show dispatch must succeed");
     h.assert_output_contains("test-mod");
 }
 
@@ -32506,8 +32821,13 @@ fn execute_module_create_dispatch() {
             ..test_module_create_args("new-mod")
         })),
     });
-    super::execute(&cli, h.printer(), &super::paths::DirSources::all_default())
-        .expect("Module Create dispatch must succeed");
+    super::execute(
+        &cli,
+        h.printer(),
+        &super::paths::DirSources::all_default(),
+        &super::startup::StartupDocument::load(&cli.config),
+    )
+    .expect("Module Create dispatch must succeed");
     assert!(
         h.config_path()
             .join("modules")
@@ -32526,8 +32846,13 @@ fn execute_module_update_dispatch() {
     let cli = h.cli_with_command(Command::Module {
         command: ModuleCommand::Update(Box::new(empty_module_update_args("test-mod"))),
     });
-    super::execute(&cli, h.printer(), &super::paths::DirSources::all_default())
-        .expect("Module Update dispatch must succeed");
+    super::execute(
+        &cli,
+        h.printer(),
+        &super::paths::DirSources::all_default(),
+        &super::startup::StartupDocument::load(&cli.config),
+    )
+    .expect("Module Update dispatch must succeed");
 }
 
 #[test]
@@ -32543,8 +32868,13 @@ fn execute_module_delete_dispatch() {
             ignore_not_found: false,
         },
     });
-    super::execute(&cli, h.printer(), &super::paths::DirSources::all_default())
-        .expect("Module Delete dispatch must succeed");
+    super::execute(
+        &cli,
+        h.printer(),
+        &super::paths::DirSources::all_default(),
+        &super::startup::StartupDocument::load(&cli.config),
+    )
+    .expect("Module Delete dispatch must succeed");
 }
 
 #[test]
@@ -32555,8 +32885,13 @@ fn execute_module_search_dispatch() {
             query: "networking".to_string(),
         },
     });
-    super::execute(&cli, h.printer(), &super::paths::DirSources::all_default())
-        .expect("Module Search dispatch must succeed");
+    super::execute(
+        &cli,
+        h.printer(),
+        &super::paths::DirSources::all_default(),
+        &super::startup::StartupDocument::load(&cli.config),
+    )
+    .expect("Module Search dispatch must succeed");
 }
 
 #[test]
@@ -32567,8 +32902,13 @@ fn execute_module_registry_list_dispatch() {
             command: ModuleRegistryCommand::List,
         },
     });
-    super::execute(&cli, h.printer(), &super::paths::DirSources::all_default())
-        .expect("Module Registry List dispatch must succeed");
+    super::execute(
+        &cli,
+        h.printer(),
+        &super::paths::DirSources::all_default(),
+        &super::startup::StartupDocument::load(&cli.config),
+    )
+    .expect("Module Registry List dispatch must succeed");
 }
 
 #[test]
@@ -32583,7 +32923,12 @@ fn execute_module_registry_add_dispatch() {
         },
     });
     // Add may fail (network) but dispatch arm is exercised.
-    let result = super::execute(&cli, h.printer(), &super::paths::DirSources::all_default());
+    let result = super::execute(
+        &cli,
+        h.printer(),
+        &super::paths::DirSources::all_default(),
+        &super::startup::StartupDocument::load(&cli.config),
+    );
     let _ = result;
 }
 
@@ -32600,7 +32945,12 @@ fn execute_module_registry_remove_dispatch() {
     });
     // Removing a nonexistent registry is now a strict not-found error (exit 6),
     // uniform with every other named-resource miss — not an idempotent no-op.
-    let result = super::execute(&cli, h.printer(), &super::paths::DirSources::all_default());
+    let result = super::execute(
+        &cli,
+        h.printer(),
+        &super::paths::DirSources::all_default(),
+        &super::startup::StartupDocument::load(&cli.config),
+    );
     assert!(result.is_err(), "removing nonexistent registry should fail");
 }
 
@@ -32615,7 +32965,12 @@ fn execute_module_registry_rename_dispatch() {
             },
         },
     });
-    let result = super::execute(&cli, h.printer(), &super::paths::DirSources::all_default());
+    let result = super::execute(
+        &cli,
+        h.printer(),
+        &super::paths::DirSources::all_default(),
+        &super::startup::StartupDocument::load(&cli.config),
+    );
     assert!(result.is_err(), "renaming nonexistent registry should fail");
 }
 
@@ -32632,7 +32987,12 @@ fn execute_module_export_dispatch() {
             dir: Some(out.path().to_string_lossy().into_owned()),
         },
     });
-    let result = super::execute(&cli, h.printer(), &super::paths::DirSources::all_default());
+    let result = super::execute(
+        &cli,
+        h.printer(),
+        &super::paths::DirSources::all_default(),
+        &super::startup::StartupDocument::load(&cli.config),
+    );
     let _ = result;
 }
 
@@ -32650,7 +33010,12 @@ fn execute_module_push_dispatch() {
             attest: false,
         },
     });
-    let result = super::execute(&cli, h.printer(), &super::paths::DirSources::all_default());
+    let result = super::execute(
+        &cli,
+        h.printer(),
+        &super::paths::DirSources::all_default(),
+        &super::startup::StartupDocument::load(&cli.config),
+    );
     // Fails because dir doesn't contain module.yaml, but dispatch arm was reached.
     assert!(
         result.is_err(),
@@ -32673,7 +33038,12 @@ fn execute_module_pull_dispatch() {
             certificate_oidc_issuer: None,
         },
     });
-    let result = super::execute(&cli, h.printer(), &super::paths::DirSources::all_default());
+    let result = super::execute(
+        &cli,
+        h.printer(),
+        &super::paths::DirSources::all_default(),
+        &super::startup::StartupDocument::load(&cli.config),
+    );
     // Fails on network/registry, but dispatch arm was reached.
     assert!(result.is_err(), "pull of unreachable artifact should fail");
 }
@@ -32691,7 +33061,12 @@ fn execute_module_build_dispatch() {
             key: None,
         },
     });
-    let result = super::execute(&cli, h.printer(), &super::paths::DirSources::all_default());
+    let result = super::execute(
+        &cli,
+        h.printer(),
+        &super::paths::DirSources::all_default(),
+        &super::startup::StartupDocument::load(&cli.config),
+    );
     // Fails because dir doesn't contain module.yaml, but dispatch arm was reached.
     assert!(result.is_err(), "build of nonexistent dir should fail");
     let msg = result.unwrap_err().to_string();
@@ -32709,8 +33084,13 @@ fn execute_module_keys_list_dispatch() {
             command: ModuleKeysCommand::List { dir: None },
         },
     });
-    super::execute(&cli, h.printer(), &super::paths::DirSources::all_default())
-        .expect("Module Keys List dispatch must succeed");
+    super::execute(
+        &cli,
+        h.printer(),
+        &super::paths::DirSources::all_default(),
+        &super::startup::StartupDocument::load(&cli.config),
+    )
+    .expect("Module Keys List dispatch must succeed");
 }
 
 #[test]
@@ -32730,7 +33110,12 @@ fn execute_module_keys_generate_dispatch() {
         },
     });
     // Fails when cosign is absent; still exercises the dispatch arm.
-    let result = super::execute(&cli, h.printer(), &super::paths::DirSources::all_default());
+    let result = super::execute(
+        &cli,
+        h.printer(),
+        &super::paths::DirSources::all_default(),
+        &super::startup::StartupDocument::load(&cli.config),
+    );
     let _ = result;
 }
 
@@ -32749,7 +33134,12 @@ fn execute_module_keys_rotate_dispatch() {
             },
         },
     });
-    let result = super::execute(&cli, h.printer(), &super::paths::DirSources::all_default());
+    let result = super::execute(
+        &cli,
+        h.printer(),
+        &super::paths::DirSources::all_default(),
+        &super::startup::StartupDocument::load(&cli.config),
+    );
     let _ = result;
 }
 
@@ -32767,7 +33157,12 @@ fn execute_module_upgrade_dispatch() {
         },
     });
     // Upgrade of a local (non-locked-remote) module fails, but dispatch arm reached.
-    let result = super::execute(&cli, h.printer(), &super::paths::DirSources::all_default());
+    let result = super::execute(
+        &cli,
+        h.printer(),
+        &super::paths::DirSources::all_default(),
+        &super::startup::StartupDocument::load(&cli.config),
+    );
     let _ = result;
 }
 
@@ -32785,6 +33180,7 @@ fn execute_config_unset_dispatch() {
         &set_cli,
         h.printer(),
         &super::paths::DirSources::all_default(),
+        &super::startup::StartupDocument::load(&set_cli.config),
     )
     .expect("Config Set must succeed");
 
@@ -32797,6 +33193,7 @@ fn execute_config_unset_dispatch() {
         &unset_cli,
         h.printer(),
         &super::paths::DirSources::all_default(),
+        &super::startup::StartupDocument::load(&unset_cli.config),
     )
     .expect("Config Unset dispatch must succeed");
 }
@@ -32825,8 +33222,13 @@ spec:
             show_values: false,
         },
     });
-    super::execute(&cli, h.printer(), &super::paths::DirSources::all_default())
-        .expect("Source Show dispatch must succeed");
+    super::execute(
+        &cli,
+        h.printer(),
+        &super::paths::DirSources::all_default(),
+        &super::startup::StartupDocument::load(&cli.config),
+    )
+    .expect("Source Show dispatch must succeed");
     h.assert_output_contains("my-src");
 }
 
@@ -32857,8 +33259,13 @@ spec:
             ignore_not_found: false,
         },
     });
-    super::execute(&cli, h.printer(), &super::paths::DirSources::all_default())
-        .expect("Source Remove dispatch must succeed");
+    super::execute(
+        &cli,
+        h.printer(),
+        &super::paths::DirSources::all_default(),
+        &super::startup::StartupDocument::load(&cli.config),
+    )
+    .expect("Source Remove dispatch must succeed");
 }
 
 #[test]
@@ -32887,8 +33294,13 @@ spec:
             value: None,
         },
     });
-    super::execute(&cli, h.printer(), &super::paths::DirSources::all_default())
-        .expect("Source Override dispatch must succeed");
+    super::execute(
+        &cli,
+        h.printer(),
+        &super::paths::DirSources::all_default(),
+        &super::startup::StartupDocument::load(&cli.config),
+    )
+    .expect("Source Override dispatch must succeed");
 }
 
 #[test]
@@ -32908,8 +33320,13 @@ fn execute_source_create_dispatch() {
             version: Some("1.0.0".to_string()),
         },
     });
-    super::execute(&cli, h.printer(), &super::paths::DirSources::all_default())
-        .expect("Source Create dispatch must succeed");
+    super::execute(
+        &cli,
+        h.printer(),
+        &super::paths::DirSources::all_default(),
+        &super::startup::StartupDocument::load(&cli.config),
+    )
+    .expect("Source Create dispatch must succeed");
     assert!(
         dir.path().join("cfgd-source.yaml").exists(),
         "manifest must land in the CWD tempdir, not the harness's config dir"
@@ -32922,8 +33339,13 @@ fn execute_daemon_status_dispatch() {
     let cli = h.cli_with_command(Command::Daemon {
         command: Some(DaemonCommand::Status),
     });
-    super::execute(&cli, h.printer(), &super::paths::DirSources::all_default())
-        .expect("Daemon Status dispatch must succeed");
+    super::execute(
+        &cli,
+        h.printer(),
+        &super::paths::DirSources::all_default(),
+        &super::startup::StartupDocument::load(&cli.config),
+    )
+    .expect("Daemon Status dispatch must succeed");
 }
 
 #[test]
@@ -32932,8 +33354,13 @@ fn execute_compliance_history_dispatch() {
     let cli = h.cli_with_command(Command::Compliance {
         command: Some(ComplianceCommand::History { since: None }),
     });
-    super::execute(&cli, h.printer(), &super::paths::DirSources::all_default())
-        .expect("Compliance History dispatch must succeed");
+    super::execute(
+        &cli,
+        h.printer(),
+        &super::paths::DirSources::all_default(),
+        &super::startup::StartupDocument::load(&cli.config),
+    )
+    .expect("Compliance History dispatch must succeed");
 }
 
 #[test]
@@ -32946,7 +33373,12 @@ fn execute_compliance_diff_dispatch() {
         }),
     });
     // Fails when snapshots 1 and 2 don't exist, but dispatch arm is exercised.
-    let result = super::execute(&cli, h.printer(), &super::paths::DirSources::all_default());
+    let result = super::execute(
+        &cli,
+        h.printer(),
+        &super::paths::DirSources::all_default(),
+        &super::startup::StartupDocument::load(&cli.config),
+    );
     let _ = result;
 }
 
@@ -32961,7 +33393,12 @@ fn execute_enroll_dispatch() {
         username: None,
     });
     // Fails because server is unreachable, but dispatch arm is exercised.
-    let result = super::execute(&cli, h.printer(), &super::paths::DirSources::all_default());
+    let result = super::execute(
+        &cli,
+        h.printer(),
+        &super::paths::DirSources::all_default(),
+        &super::startup::StartupDocument::load(&cli.config),
+    );
     assert!(
         result.is_err(),
         "enroll with unreachable server should fail"

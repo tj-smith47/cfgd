@@ -410,7 +410,7 @@ fn main() -> anyhow::Result<()> {
         );
     }
 
-    if let Err(e) = cli::execute(&cli, &printer, &dir_sources) {
+    if let Err(e) = cli::execute(&cli, &printer, &dir_sources, &startup) {
         cli::error::render_cli_error(&printer, &e).exit();
     }
 
