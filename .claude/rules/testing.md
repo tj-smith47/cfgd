@@ -115,22 +115,28 @@ case fails for a reason that has nothing to do with cfgd. Every `sysctl -w`
 under `tests/e2e/` that introduces or restores drift writes
 `net.ipv4.ip_forward` (declared `"1"` by every profile a drift case runs
 against; `net.*` lives in the pod's own network namespace because no test pod
-sets `hostNetwork`). The
-one host-global write allowed is the `fs.inotify.*` raise ahead of a daemon
-start, which every job sets to the same value and no case reads back. A
-compliance before/after case goes through `sysctl_drift_case` in
+sets `hostNetwork`). The one host-global write allowed is the `fs.inotify.*`
+raise ahead of a daemon start, which every job sets to the same value and no
+case reads back. A compliance before/after case goes through `sysctl_drift_case` in
 `tests/e2e/common/helpers.sh`, which fails the case outright for any key
-outside `net.*` and `fs.inotify.*`. The audit gate "e2e sysctl writes stay
-pod-private" (`e2e_host_global_sysctl_writes` in `.claude/scripts/audit.sh`)
-reads every file under `tests/e2e/` and judges each written key on its own, in
-three forms: every `key=` token after a `sysctl` whose flags include `-w`
-(alone or combined, as `-q -w` or `-wq`) or `--write`, up to the end of that
-command; a redirect into `/proc/sys/<path>`, the path read as a dotted key;
-and the key argument of each `sysctl_drift_case` call. Any key outside `net.*`
-and `fs.inotify.*` is an error naming the file, line and key. A key written as
-a shell variable (the helper's own `"$key=$drift"`) is judged at its call
-sites. The `bad_e2e_sysctl_*` and `good_e2e_sysctl_*` fixtures under
-`.claude/scripts/audit-tests/` hold one case per form for `task audit:test`.
+outside `net.*`: a drift case reads its key back, so the `fs.inotify.*`
+exemption does not reach it. The audit gate "e2e sysctl writes stay
+pod-private" (`e2e_sysctl_write_scan` in `.claude/scripts/audit.sh`) reads
+every file under `tests/e2e/`, joins backslash-continued lines, and judges each
+written key on its own, in four forms: every `key=` token after a `sysctl`
+whose flags include `-w` (alone or combined, as `-q -w` or `-wq`) or
+`--write`, up to the end of that command; a redirect into `/proc/sys/<path>`;
+a `tee` or `tee -a` into `/proc/sys/<path>` (both paths read as a dotted key);
+and the key argument of each `sysctl_drift_case` call. Only the bare `sysctl`
+form may write `fs.inotify.*`; every other form takes `net.*` alone. Any other
+key is an error naming the file, line and key. A key held in a shell variable
+is exempt only on the helper's own write inside the `sysctl_drift_case()`
+body, whose callers are judged instead; anywhere else it is an "unresolvable
+key" error. The repository run also fails when the scan cannot read
+`tests/e2e/`, finds no file there, or exempts no `fs.inotify` raise, so a scan
+that stops seeing the daemon starts cannot report clean. The `bad_e2e_sysctl_*`
+and `good_e2e_sysctl_*` fixtures under `.claude/scripts/audit-tests/` hold one
+case per form for `task audit:test`.
 
 ## A test never inherits its terminal shape from the ambient one
 

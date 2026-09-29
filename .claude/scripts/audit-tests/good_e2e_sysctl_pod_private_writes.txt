@@ -7,3 +7,6 @@ sysctl_drift_case() {
     exec_in_pod sysctl -w "$key=$drift" > /dev/null 2>&1 || true
 }
 sysctl_drift_case "DAEMON-06" /etc/cfgd/e2e-compliance-cfgd.yaml net.ipv4.ip_forward 0 1
+sysctl_drift_case "FS-DRIFT-07" /etc/cfgd/e2e-compliance-cfgd.yaml \
+    net.ipv4.ip_forward 0 1
+exec_in_pod bash -c 'echo 1 | tee -a /proc/sys/net/ipv4/ip_forward'

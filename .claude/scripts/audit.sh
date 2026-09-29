@@ -2309,23 +2309,43 @@ fi
 # share a worker, so a host-global sysctl written as drift by one job can be
 # moved by the other mid-case. net.* keys live in the pod's network namespace;
 # the fs.inotify raise before a daemon start is the same value in every job and
-# is never read back.
+# is never read back, which is why it is allowed on a bare sysctl write only.
 #
-# Prints `file:line: key` for every written key outside net.* and fs.inotify.*.
-# A write is any of: a `sysctl` whose flags include -w (alone or combined, as
-# -wq) or --write, judged on every `key=` token up to the end of that command;
-# a redirect into /proc/sys/<path>, the path folded to a dotted key; the key
-# argument of a sysctl_drift_case call. A key spelled as a variable (the
-# helper's own `"$key=$drift"`) is skipped: its value is judged at the call.
-e2e_host_global_sysctl_writes() {
+# A key held in a variable can only be judged where its value is spelled, so
+# the helper's own write inside sysctl_drift_case() is exempt (its callers are
+# judged) and a variable key anywhere else is an error. Each fs.inotify raise
+# the scan exempts prints a CANARY line: the repository run requires at least
+# one, so a scan that stops reading the daemon starts fails loudly.
+e2e_sysctl_write_scan() {
     find "$1" -type f -exec awk '
-        function emit(k) {
+        function judge(k, allow, ln) {
             gsub(/["'\'']/, "", k)
-            if (k == "" || k ~ /^\$/ || k ~ /^(net\.|fs\.inotify\.)/) return
-            print FILENAME ":" FNR ": " k
+            if (k == "") return
+            if (k ~ /\$/) {
+                if (!helper) print FILENAME ":" ln ": unresolvable key " k
+                return
+            }
+            if (k ~ allow) {
+                if (k ~ /^fs\.inotify\./) print "CANARY " FILENAME ":" ln
+                return
+            }
+            print FILENAME ":" ln ": " k
         }
+        function proc_key(m) {
+            sub(/^.*\/proc\/sys\//, "", m)
+            gsub(/\//, ".", m)
+            return m
+        }
+        FNR == 1 { helper = 0; buf = "" }
         {
-            s = $0
+            if (buf == "") start = FNR
+            line = buf $0
+            if (line ~ /\\[ \t]*$/) { sub(/\\[ \t]*$/, " ", line); buf = line; next }
+            buf = ""
+            if (line ~ /^[ \t]*sysctl_drift_case\(\)/) helper = 1
+            else if (line ~ /^}/) helper = 0
+
+            s = line
             while (match(s, /(^|[^A-Za-z0-9_.-])sysctl([ \t]+-[-A-Za-z]+)*[ \t]+/)) {
                 flags = substr(s, RSTART, RLENGTH)
                 s = substr(s, RSTART + RLENGTH)
@@ -2334,30 +2354,47 @@ e2e_host_global_sysctl_writes() {
                 if (match(args, /[;|&)]/)) args = substr(args, 1, RSTART - 1)
                 n = split(args, tok, /[ \t]+/)
                 for (i = 1; i <= n; i++)
-                    if (index(tok[i], "=") > 1) emit(substr(tok[i], 1, index(tok[i], "=") - 1))
+                    if (index(tok[i], "=") > 1)
+                        judge(substr(tok[i], 1, index(tok[i], "=") - 1), "^(net|fs\\.inotify)\\.", start)
             }
-            s = $0
-            while (match(s, />>?[ \t]*["'\'']?\/proc\/sys\/[A-Za-z0-9_.\/-]+/)) {
-                key = substr(s, RSTART, RLENGTH)
+            s = line
+            while (match(s, />>?[ \t]*["'\'']?\/proc\/sys\/[^ \t"'\''|;&)<>]+/)) {
+                m = substr(s, RSTART, RLENGTH)
                 s = substr(s, RSTART + RLENGTH)
-                sub(/^>>?[ \t]*["'\'']?\/proc\/sys\//, "", key)
-                gsub(/\//, ".", key)
-                emit(key)
+                judge(proc_key(m), "^net\\.", start)
             }
-            if ($0 ~ /(^|[^A-Za-z0-9_])sysctl_drift_case[ \t]/ && $0 !~ /sysctl_drift_case\(\)/) {
-                match($0, /sysctl_drift_case[ \t].*/)
-                split(substr($0, RSTART), tok, /[ \t]+/)
-                emit(tok[4])
+            s = line
+            while (match(s, /(^|[^A-Za-z0-9_-])tee([ \t]+-a)?[ \t]+["'\'']?\/proc\/sys\/[^ \t"'\''|;&)<>]+/)) {
+                m = substr(s, RSTART, RLENGTH)
+                s = substr(s, RSTART + RLENGTH)
+                judge(proc_key(m), "^net\\.", start)
+            }
+            if (line ~ /(^|[^A-Za-z0-9_])sysctl_drift_case[ \t]/ && line !~ /sysctl_drift_case\(\)/) {
+                match(line, /sysctl_drift_case[ \t].*/)
+                split(substr(line, RSTART), tok, /[ \t]+/)
+                judge(tok[4], "^net\\.", start)
             }
         }' {} +
 }
 
 log_section "e2e sysctl writes (pod-private keys only)"
-if sw=$(e2e_host_global_sysctl_writes "${CFGD_AUDIT_PATH:-tests/e2e}") && [ -n "$sw" ]; then
-  log_error "A tests/e2e sysctl write moves a host-global key (drift net.ipv4.ip_forward instead):"
-  echo "$sw"
+e2e_sysctl_root="${CFGD_AUDIT_PATH:-tests/e2e}"
+if ! e2e_sysctl_out=$(e2e_sysctl_write_scan "$e2e_sysctl_root" 2>&1); then
+  log_error "The e2e sysctl write scan could not read $e2e_sysctl_root:"
+  echo "$e2e_sysctl_out"
+elif [ -z "$(find "$e2e_sysctl_root" -type f -print -quit)" ]; then
+  log_error "The e2e sysctl write scan found no files under $e2e_sysctl_root"
 else
-  log_ok "e2e sysctl writes stay pod-private"
+  e2e_sysctl_hits=$(grep -v '^CANARY ' <<<"$e2e_sysctl_out" || true)
+  e2e_sysctl_canary=$(grep -c '^CANARY ' <<<"$e2e_sysctl_out" || true)
+  if [ -n "$e2e_sysctl_hits" ]; then
+    log_error "A tests/e2e sysctl write moves a host-global or unresolvable key (drift net.ipv4.ip_forward instead):"
+    echo "$e2e_sysctl_hits"
+  elif [ -z "${CFGD_AUDIT_PATH:-}" ] && [ "$e2e_sysctl_canary" -eq 0 ]; then
+    log_error "The e2e sysctl write scan judged no fs.inotify raise under $e2e_sysctl_root; the daemon-start writes it must read are missing from the scan"
+  else
+    log_ok "e2e sysctl writes stay pod-private ($e2e_sysctl_canary fs.inotify raises exempted)"
+  fi
 fi
 
 # --- Summary ---

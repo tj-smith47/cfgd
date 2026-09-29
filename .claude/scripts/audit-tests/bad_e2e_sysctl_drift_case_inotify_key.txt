@@ -1,0 +1,1 @@
+sysctl_drift_case "DAEMON-06" /etc/cfgd/e2e-compliance-cfgd.yaml fs.inotify.max_user_watches 1 524288

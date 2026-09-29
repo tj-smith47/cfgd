@@ -541,7 +541,7 @@ sysctl_drift_case() {
     local id="$1" config="$2" key="$3" drift="$4" restore="$5"
     local before after json
     case "$key" in
-        net.*|fs.inotify.*) ;;
+        net.*) ;;
         *) fail_test "$id" "$key is host-global; drift a pod-private net.* key instead"; return ;;
     esac
     before=$(sysctl_compliance_status "$(pod_compliance_json "$config")" "$key")
