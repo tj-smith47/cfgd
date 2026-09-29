@@ -2726,6 +2726,13 @@ A key is relative to `spec`, and `get`, `set` and `unset` all accept the
 `spec.` prefix that `cfgd explain` prints, so `spec.theme.name` and
 `theme.name` name one field.
 
+A key the document does not declare answers with the value this build reads for
+it (the field's default), on the human and `-o json` channels alike: on a
+document that never names `migrationPolicy`, `config get migrationPolicy` prints
+`Prompt`. A key with no default (an optional key such as `profile`, or a field
+inside a section the document leaves out) is refused as a missing key, exit `6`,
+and the refusal names the key as you wrote it.
+
 ```sh
 cfgd config get profile                      # → work
 cfgd config get spec.theme.name              # → dracula (the prefixed spelling)

@@ -269,6 +269,43 @@ fn key_not_found(asked: &[&str]) -> anyhow::Error {
     ))
 }
 
+/// A key walk's refusal on `resolved`, restated for the key the caller wrote as
+/// `asked`, which [`nested_output_key`] rewrote into `resolved`.
+///
+/// A missing key is reported under `asked`: the first segment the walk found
+/// missing belongs to the rewritten path, which the caller never typed. A
+/// document whose shape blocks the walk keeps the path that holds the wrong
+/// shape, since that path is where the reader has to look, and adds where the
+/// key they asked for lives. Every other refusal is about the document or the
+/// file and names no key, so it passes through as it is.
+fn as_asked(error: anyhow::Error, asked: &str, resolved: &str) -> anyhow::Error {
+    if asked == resolved {
+        return error;
+    }
+    if matches!(
+        error.downcast_ref::<cfgd_core::errors::CfgdError>(),
+        Some(cfgd_core::errors::CfgdError::Config(
+            cfgd_core::errors::ConfigError::KeyNotFound { .. }
+        ))
+    ) {
+        return key_not_found(&[asked]);
+    }
+    if error.downcast_ref::<ShapeBlocked>().is_some() {
+        let message = format!("{error}; '{asked}' is stored at '{resolved}'");
+        return error.context(message);
+    }
+    error
+}
+
+/// The value the typed config holds at the `spec`-relative `key`, as the
+/// build reads it: the typed value's own serialization carries every serde
+/// default, so a key the document leaves out still has one. `None` where the
+/// typed value has no such key.
+fn typed_value_at(spec: &cfgd_core::config::ConfigSpec, key: &str) -> Option<serde_yaml::Value> {
+    let tree = serde_yaml::to_value(spec).ok()?;
+    walk_yaml_path(&tree, key).ok().cloned()
+}
+
 /// The refusal a key path holding an empty segment (`a..b`, a trailing `.`)
 /// earns: no key is spelled that way, so the path itself is the bad input.
 fn empty_segment(path: &str) -> anyhow::Error {
@@ -564,6 +601,11 @@ pub(super) fn spec_relative_key(key: &str) -> &str {
 /// key in a document that has not been migrated, which is why `get` falls back
 /// to it and `set` removes it once it has written the nested one.
 pub(super) fn nested_output_key(key: &str) -> Option<String> {
+    // A path no field is spelled as is refused by the walk under the spelling
+    // the caller wrote, so it is never rewritten first.
+    if key.split('.').any(str::is_empty) {
+        return None;
+    }
     let (head, rest) = match key.split_once('.') {
         Some((head, rest)) => (head, Some(rest)),
         None => (key, None),
@@ -637,7 +679,7 @@ pub fn cmd_config_get(cli: &Cli, printer: &Printer, key: &str) -> anyhow::Result
     // asking for its own twin again would leave `theme.name` — the spelling the
     // docs print — with no fallback at all on a document nothing has migrated.
     let alias = flat_output_key(&resolved);
-    let value = match walk_yaml_path(spec, &resolved).or_else(|e| match alias.as_deref() {
+    let walked = walk_yaml_path(spec, &resolved).or_else(|e| match alias.as_deref() {
         // Only a key that is not there is worth asking the other spelling
         // about: a shape the walk refused is a fact about the document, and
         // the legacy path would answer for it with a missing key.
@@ -647,9 +689,26 @@ pub fn cmd_config_get(cli: &Cli, printer: &Printer, key: &str) -> anyhow::Result
             walk_yaml_path(spec, alias).map_err(|_| e)
         }
         _ => Err(e),
-    }) {
-        Ok(v) => v,
-        Err(e) => {
+    });
+    // A key the document leaves out still has the value this build reads for
+    // it, so it is answered from the typed config. A key the schema does not
+    // know, or whose typed value is null (an unset optional, a section left
+    // out), stays the missing key the walk reported. A document that does not
+    // parse as a config has no typed value, and keeps that refusal too.
+    let typed_default = match &walked {
+        Err(e) if classify_config_error(e) == "key_not_found" => {
+            cfgd_core::config::parse_config(&contents, config_path)
+                .ok()
+                .and_then(|config| typed_value_at(&config.spec, &resolved))
+                .filter(|value| !value.is_null())
+        }
+        _ => None,
+    };
+    let value = match (walked, typed_default.as_ref()) {
+        (Ok(v), _) => v,
+        (Err(_), Some(default)) => default,
+        (Err(e), None) => {
+            let e = as_asked(e, key, &resolved);
             let msg = format!("{}", e);
             let kind = classify_config_error(&e);
             return Err(crate::cli::cli_error_ctx(
@@ -760,6 +819,7 @@ pub fn cmd_config_set(cli: &Cli, printer: &Printer, key: &str, value: &str) -> a
     });
 
     if let Err(e) = mutate_result {
+        let e = as_asked(e, key, &written_key);
         let kind = classify_config_error(&e);
         let msg = format!("{}", e);
         let hints = writability_hint(kind, config_path);
@@ -838,6 +898,7 @@ pub fn cmd_config_unset(cli: &Cli, printer: &Printer, key: &str) -> anyhow::Resu
     let written = match mutate_result {
         Ok(written) => written,
         Err(e) => {
+            let e = as_asked(e, key, &written_key);
             let kind = classify_config_error(&e);
             let msg = format!("{}", e);
             let hints = writability_hint(kind, config_path);
@@ -864,10 +925,8 @@ pub fn cmd_config_unset(cli: &Cli, printer: &Printer, key: &str) -> anyhow::Resu
                 .is_some_and(|rest| rest.starts_with('.'))
     });
     let doc = if reset {
-        let default = serde_yaml::to_value(&written.config.spec)
-            .ok()
-            .and_then(|spec| walk_yaml_path(&spec, &written_key).ok().cloned())
-            .unwrap_or(serde_yaml::Value::Null);
+        let default =
+            typed_value_at(&written.config.spec, &written_key).unwrap_or(serde_yaml::Value::Null);
         let shown = match &default {
             serde_yaml::Value::String(s) => s.clone(),
             other => serde_json::to_string(other).unwrap_or_default(),
@@ -2391,5 +2450,250 @@ spec:
             "these key verbs never fold the `spec.` prefix, so the spelling the docs print \
              is a usage error there: {missing:?}"
         );
+    }
+
+    /// A config document whose `spec` is `spec`.
+    fn document_text(spec: &serde_yaml::Value) -> String {
+        let body: String = serde_yaml::to_string(spec)
+            .unwrap()
+            .lines()
+            .map(|l| format!("  {l}\n"))
+            .collect();
+        format!("apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n{body}")
+    }
+
+    /// [`document_text`] written to `dir/cfgd.yaml`, returning its path.
+    fn document_with_spec(dir: &std::path::Path, spec: &serde_yaml::Value) -> std::path::PathBuf {
+        let path = dir.join("cfgd.yaml");
+        std::fs::write(&path, document_text(spec)).unwrap();
+        path
+    }
+
+    /// The refusal meta a `config` verb's error carries.
+    fn refusal(err: &anyhow::Error) -> &crate::cli::CliErrorMeta {
+        err.downcast_ref::<crate::cli::CliErrorMeta>()
+            .unwrap_or_else(|| panic!("a typed refusal, got: {err:#}"))
+    }
+
+    /// `spec.migrationPolicy` has a default the load-time gate already runs
+    /// under, so `config get` answers it on a document that never names it,
+    /// on both channels. A key the schema does not know, and an optional key
+    /// with no value, stay the missing key.
+    #[test]
+    fn cmd_config_get_answers_an_undeclared_migration_policy_with_the_build_default() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cfgd.yaml");
+        std::fs::write(
+            &path,
+            "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  daemon:\n    enabled: true\n",
+        )
+        .unwrap();
+        let cli = test_cli_for(path);
+
+        let (printer, cap) = Printer::for_test_doc();
+        cmd_config_get(&cli, &printer, "migrationPolicy").unwrap();
+        drop(printer);
+        assert_eq!(cap.human().trim(), "Prompt");
+
+        let (printer, cap) = Printer::for_test_doc_with_format(OutputFormat::Json);
+        cmd_config_get(&cli, &printer, "spec.migrationPolicy").unwrap();
+        drop(printer);
+        assert_eq!(
+            cap.json().expect("doc captured json"),
+            serde_json::json!({ "key": "migrationPolicy", "value": "Prompt" })
+        );
+
+        for (key, named) in [("nope", "nope"), ("profile", "profile")] {
+            let err = cmd_config_get(&cli, &test_printer(), key).unwrap_err();
+            let meta = refusal(&err);
+            assert_eq!(meta.error_kind, "key_not_found", "{key}: {}", meta.message);
+            assert!(
+                meta.message.contains(&format!("key '{named}' not found")),
+                "{key}: {}",
+                meta.message
+            );
+        }
+    }
+
+    /// Every scalar leaf the `Config` schema addresses, asked for on a document
+    /// that declares the sections above it and nothing else, answers with the
+    /// value the typed config carries there, read off its JSON serialization:
+    /// a default where serde fills one, the missing key where the typed value
+    /// is null.
+    #[test]
+    fn every_config_leaf_the_document_leaves_out_answers_with_the_typed_default() {
+        let leaves: Vec<Vec<String>> = addressable_config_fields()
+            .into_iter()
+            .filter(|(_, node)| node.type_desc != "object" && !node.type_desc.starts_with("[]"))
+            .map(|(segments, _)| segments)
+            .collect();
+        let mut answered = Vec::new();
+        for segments in &leaves {
+            let key = segments.join(".");
+            let dir = tempfile::tempdir().unwrap();
+            let sections = spec_holding(
+                &segments[..segments.len() - 1],
+                serde_yaml::Value::Mapping(serde_yaml::Mapping::new()),
+            );
+            let bytes = document_text(&sections);
+            let path = dir.path().join("cfgd.yaml");
+            std::fs::write(&path, &bytes).unwrap();
+            let config = cfgd_core::config::parse_config(&bytes, &path)
+                .unwrap_or_else(|e| panic!("{key}: the sections above it parse empty: {e}"));
+            let pointer = format!("/{}", segments.join("/"));
+            let typed = serde_json::to_value(&config.spec)
+                .unwrap()
+                .pointer(&pointer)
+                .cloned()
+                .unwrap_or(serde_json::Value::Null);
+            let cli = test_cli_for(path);
+            let (printer, cap) = Printer::for_test_doc_with_format(OutputFormat::Json);
+            let result = cmd_config_get(&cli, &printer, &key);
+            drop(printer);
+            if typed.is_null() {
+                let err = result
+                    .err()
+                    .unwrap_or_else(|| panic!("{key} holds no typed value, yet `get` answered"));
+                assert_eq!(refusal(&err).error_kind, "key_not_found", "{key}");
+                continue;
+            }
+            if let Err(err) = result {
+                panic!("{key} carries the typed default {typed}, yet `get` refused: {err:#}");
+            }
+            assert_eq!(
+                cap.json().expect("doc captured json"),
+                serde_json::json!({ "key": key, "value": typed }),
+                "{key}"
+            );
+            answered.push(key);
+        }
+        for named in [
+            "migrationPolicy",
+            "fileStrategy",
+            "daemon.enabled",
+            "daemon.reconcile.interval",
+            "output.theme.name",
+        ] {
+            assert!(
+                answered.iter().any(|key| key == named),
+                "{named} was not answered from its default; answered: {answered:?}"
+            );
+        }
+        assert!(
+            answered.len() >= ANSWERED_FLOOR,
+            "{} defaulted leaves answered, below the floor of {ANSWERED_FLOOR}: {answered:?}",
+            answered.len()
+        );
+    }
+
+    /// How many leaves the walk above answers from a default today, so a
+    /// schema walk that stopped descending fails by count as well as by name.
+    const ANSWERED_FLOOR: usize = 35;
+
+    /// A key `nested_output_key` rewrote is refused under the spelling the
+    /// caller wrote, by every verb and on every refusal a rewritten key can
+    /// earn: a missing key, a shape that blocks the walk, and a path with an
+    /// empty segment.
+    #[test]
+    fn every_key_verb_refuses_a_rewritten_key_by_the_spelling_the_caller_wrote() {
+        let dir = tempfile::tempdir().unwrap();
+        let bare = document_with_spec(dir.path(), &serde_yaml::from_str("profile: work").unwrap());
+        let bare_cli = test_cli_for(bare);
+        let shape_dir = tempfile::tempdir().unwrap();
+        let blocked = document_with_spec(
+            shape_dir.path(),
+            &serde_yaml::from_str("output: 5").unwrap(),
+        );
+        let blocked_cli = test_cli_for(blocked);
+        let leaf_dir = tempfile::tempdir().unwrap();
+        let leaf = document_with_spec(
+            leaf_dir.path(),
+            &serde_yaml::from_str("output:\n  theme:\n    name: nord").unwrap(),
+        );
+        let leaf_cli = test_cli_for(leaf);
+
+        type Verb = fn(&Cli, &Printer, &str) -> anyhow::Result<()>;
+        let get: Verb = cmd_config_get;
+        let set: Verb = |cli, printer, key| cmd_config_set(cli, printer, key, "dracula");
+        let unset: Verb = cmd_config_unset;
+        let cases: [(&str, Verb, &Cli, &str, &str, &str); 8] = [
+            (
+                "get",
+                get,
+                &bare_cli,
+                "theme.name",
+                "key_not_found",
+                "key 'theme.name' not found",
+            ),
+            (
+                "get",
+                get,
+                &blocked_cli,
+                "theme.name",
+                "parse_failed",
+                "'output' holds a scalar where a mapping belongs; 'theme.name' is stored at 'output.theme.name'",
+            ),
+            (
+                "get",
+                get,
+                &bare_cli,
+                "theme..name",
+                "invalid_value",
+                "invalid key path 'theme..name'",
+            ),
+            (
+                "set",
+                set,
+                &leaf_cli,
+                "theme.name.x",
+                "key_not_found",
+                "key 'theme.name.x' not found",
+            ),
+            (
+                "set",
+                set,
+                &blocked_cli,
+                "theme.name",
+                "parse_failed",
+                "'output' holds a scalar where a mapping belongs; 'theme.name' is stored at 'output.theme.name'",
+            ),
+            (
+                "set",
+                set,
+                &bare_cli,
+                "theme..name",
+                "invalid_value",
+                "invalid key path 'theme..name'",
+            ),
+            (
+                "unset",
+                unset,
+                &leaf_cli,
+                "theme.name.x",
+                "key_not_found",
+                "key 'theme.name.x' not found",
+            ),
+            (
+                "unset",
+                unset,
+                &blocked_cli,
+                "theme.name",
+                "parse_failed",
+                "'output' holds a scalar where a mapping belongs; 'theme.name' is stored at 'output.theme.name'",
+            ),
+        ];
+        for (verb, run, cli, key, kind, message) in cases {
+            let err = run(cli, &test_printer(), key)
+                .err()
+                .unwrap_or_else(|| panic!("{verb} {key} was not refused"));
+            let meta = refusal(&err);
+            assert_eq!(meta.error_kind, kind, "{verb} {key}: {}", meta.message);
+            assert_eq!(meta.name, key, "{verb} {key}: the -o json name");
+            assert!(
+                meta.message.contains(message),
+                "{verb} {key}: {:?} does not carry {message:?}",
+                meta.message
+            );
+        }
     }
 }
