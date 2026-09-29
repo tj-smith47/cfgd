@@ -31,7 +31,7 @@ else fail_test "RB03"; fi
 
 begin_test "RB04: rollback valid apply ID"
 # Get the most recent apply ID from the log
-APPLY_ID=$("$CFGD" $C log -n 1 --output json 2>&1 | grep -oE '"id":\s*[0-9]+' | head -1 | grep -oE '[0-9]+' || echo "")
+APPLY_ID=$("$CFGD" $C log -n 1 --output json 2>/dev/null | grep -oE '"id":\s*[0-9]+' | head -1 | grep -oE '[0-9]+' || echo "")
 if [ -z "$APPLY_ID" ]; then
     APPLY_ID=$("$CFGD" $C log -n 1 2>&1 | grep -E '^[0-9]' | awk '{print $1}' | head -1 || echo "")
 fi
@@ -79,7 +79,7 @@ if [ "$RC" -ne 0 ]; then
     fail_test "RB05" "v1 apply failed (exit $RC)"
 else
     # Get v1 apply ID
-    RB05_V1_ID=$("$CFGD" $RB05_C log -n 1 --output json 2>&1 | grep -oE '"id":\s*[0-9]+' | head -1 | grep -oE '[0-9]+' || echo "")
+    RB05_V1_ID=$("$CFGD" $RB05_C log -n 1 --output json 2>/dev/null | grep -oE '"id":\s*[0-9]+' | head -1 | grep -oE '[0-9]+' || echo "")
     if [ -z "$RB05_V1_ID" ]; then
         RB05_V1_ID=$("$CFGD" $RB05_C log -n 1 2>&1 | grep -E '^[0-9]' | awk '{print $1}' | head -1 || echo "")
     fi
@@ -143,7 +143,7 @@ run $RB06_C apply --yes
 if [ "$RC" -ne 0 ]; then
     fail_test "RB06" "initial apply failed (exit $RC)"
 else
-    RB06_ID=$("$CFGD" $RB06_C log -n 1 --output json 2>&1 | grep -oE '"id":\s*[0-9]+' | head -1 | grep -oE '[0-9]+' || echo "")
+    RB06_ID=$("$CFGD" $RB06_C log -n 1 --output json 2>/dev/null | grep -oE '"id":\s*[0-9]+' | head -1 | grep -oE '[0-9]+' || echo "")
     if [ -z "$RB06_ID" ]; then
         RB06_ID=$("$CFGD" $RB06_C log -n 1 2>&1 | grep -E '^[0-9]' | awk '{print $1}' | head -1 || echo "")
     fi
@@ -212,7 +212,7 @@ run $RB07_C apply --yes
 if [ "$RC" -ne 0 ]; then
     fail_test "RB07" "initial apply failed (exit $RC)"
 else
-    RB07_ID=$("$CFGD" $RB07_C log -n 1 --output json 2>&1 | grep -oE '"id":\s*[0-9]+' | head -1 | grep -oE '[0-9]+' || echo "")
+    RB07_ID=$("$CFGD" $RB07_C log -n 1 --output json 2>/dev/null | grep -oE '"id":\s*[0-9]+' | head -1 | grep -oE '[0-9]+' || echo "")
     if [ -z "$RB07_ID" ]; then
         RB07_ID=$("$CFGD" $RB07_C log -n 1 2>&1 | grep -E '^[0-9]' | awk '{print $1}' | head -1 || echo "")
     fi
@@ -237,7 +237,7 @@ fi
 
 begin_test "RB08: rollback log entry"
 # Use the main config dir — we just need to verify that rollback creates a log entry
-RB08_ID=$("$CFGD" $C log -n 1 --output json 2>&1 | grep -oE '"id":\s*[0-9]+' | head -1 | grep -oE '[0-9]+' || echo "")
+RB08_ID=$("$CFGD" $C log -n 1 --output json 2>/dev/null | grep -oE '"id":\s*[0-9]+' | head -1 | grep -oE '[0-9]+' || echo "")
 if [ -z "$RB08_ID" ]; then
     RB08_ID=$("$CFGD" $C log -n 1 2>&1 | grep -E '^[0-9]' | awk '{print $1}' | head -1 || echo "")
 fi
@@ -286,7 +286,7 @@ RB09_C="--config $RB09_CFG/cfgd.yaml --state-dir $RB09_STATE --no-color"
 # v1
 echo "rb09-v1" > "$RB09_CFG/files/rb09-file"
 run $RB09_C apply --yes
-RB09_V1_ID=$("$CFGD" $RB09_C log -n 1 --output json 2>&1 | grep -oE '"id":\s*[0-9]+' | head -1 | grep -oE '[0-9]+' || echo "")
+RB09_V1_ID=$("$CFGD" $RB09_C log -n 1 --output json 2>/dev/null | grep -oE '"id":\s*[0-9]+' | head -1 | grep -oE '[0-9]+' || echo "")
 if [ -z "$RB09_V1_ID" ]; then
     RB09_V1_ID=$("$CFGD" $RB09_C log -n 1 2>&1 | grep -E '^[0-9]' | awk '{print $1}' | head -1 || echo "")
 fi
@@ -355,7 +355,7 @@ run $RB10_C apply --yes
 if [ "$RC" -ne 0 ]; then
     fail_test "RB10" "initial apply failed (exit $RC)"
 else
-    RB10_ID=$("$CFGD" $RB10_C log -n 1 --output json 2>&1 | grep -oE '"id":\s*[0-9]+' | head -1 | grep -oE '[0-9]+' || echo "")
+    RB10_ID=$("$CFGD" $RB10_C log -n 1 --output json 2>/dev/null | grep -oE '"id":\s*[0-9]+' | head -1 | grep -oE '[0-9]+' || echo "")
     if [ -z "$RB10_ID" ]; then
         RB10_ID=$("$CFGD" $RB10_C log -n 1 2>&1 | grep -E '^[0-9]' | awk '{print $1}' | head -1 || echo "")
     fi
