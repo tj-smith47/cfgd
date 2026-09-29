@@ -1141,8 +1141,7 @@ fn resolve_theme_config_carries_the_whole_block_not_just_the_preset_name() {
     )
     .expect("write config");
 
-    let theme = super::resolve_theme_config(StartupDocument::load(&path).config(), None)
-        .expect("spec.output.theme must resolve");
+    let theme = super::resolve_theme_config(StartupDocument::load(&path).config(), None);
     assert_eq!(theme.name, "dracula");
     assert_eq!(
         theme.overrides.header.as_deref(),
@@ -1153,8 +1152,7 @@ fn resolve_theme_config_carries_the_whole_block_not_just_the_preset_name() {
     // `--theme` replaces the name and nothing else, exactly what
     // `cfgd config set theme.name nord` would have persisted.
     let overridden =
-        super::resolve_theme_config(StartupDocument::load(&path).config(), Some("nord"))
-            .expect("override resolves");
+        super::resolve_theme_config(StartupDocument::load(&path).config(), Some("nord"));
     assert_eq!(overridden.name, "nord");
     assert_eq!(overridden.overrides.header.as_deref(), Some("#ff0000"));
 }
@@ -1165,8 +1163,7 @@ fn resolve_theme_config_override_stands_alone_without_a_config() {
     let theme = super::resolve_theme_config(
         StartupDocument::load(&dir.path().join("absent.yaml")).config(),
         Some("minimal"),
-    )
-    .expect("the flag needs no config file behind it");
+    );
     assert_eq!(theme.name, "minimal");
     assert!(theme.overrides.is_empty());
 }
@@ -1176,20 +1173,39 @@ fn resolve_theme_config_falls_back_to_the_default_theme_when_it_cannot_read_one(
     // A printer has to exist before there is anything to report a config
     // failure ON, so neither absence nor malformed YAML may be an error here.
     let dir = tempfile::tempdir().expect("tempdir");
+    let is_default = |theme: cfgd_core::config::ThemeConfig| {
+        theme.name == "default" && theme.overrides.is_empty()
+    };
     assert!(
-        super::resolve_theme_config(
+        is_default(super::resolve_theme_config(
             StartupDocument::load(&dir.path().join("absent.yaml")).config(),
             None
-        )
-        .is_none(),
-        "a missing config resolves no theme rather than failing"
+        )),
+        "a missing config resolves the default theme rather than failing"
     );
 
     let broken = dir.path().join("broken.yaml");
     std::fs::write(&broken, "spec: 'this is not a mapping\n").expect("write broken config");
     assert!(
-        super::resolve_theme_config(StartupDocument::load(&broken).config(), None).is_none(),
-        "an unparseable config resolves no theme rather than failing"
+        is_default(super::resolve_theme_config(
+            StartupDocument::load(&broken).config(),
+            None
+        )),
+        "an unparseable config resolves the default theme rather than failing"
+    );
+
+    let unthemed = dir.path().join("unthemed.yaml");
+    std::fs::write(
+        &unthemed,
+        "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: default\n",
+    )
+    .expect("write config");
+    assert!(
+        is_default(super::resolve_theme_config(
+            StartupDocument::load(&unthemed).config(),
+            None
+        )),
+        "a document that omits spec.output.theme resolves the block theme_effective states"
     );
 }
 
@@ -55973,10 +55989,7 @@ fn every_pre_dispatch_reader_answers_the_same_from_the_shared_document() {
         super::expand_aliases_from(alias.clone(), doc),
         ["cfgd", "status", "--verbose"]
     );
-    assert_eq!(
-        super::resolve_theme_config(doc, None).map(|theme| theme.name),
-        Some("nord".to_string())
-    );
+    assert_eq!(super::resolve_theme_config(doc, None).name, "nord");
     assert!(super::resolve_hints_enabled(doc, None));
     assert!(!super::resolve_mask_env_values(doc, None).masks());
     // The default policy reports a document behind the schema, so only the
@@ -55999,7 +56012,7 @@ fn every_pre_dispatch_reader_answers_the_same_from_the_shared_document() {
     let doc = absent.config();
     assert!(doc.is_none());
     assert_eq!(super::expand_aliases_from(alias.clone(), doc), alias);
-    assert!(super::resolve_theme_config(doc, None).is_none());
+    assert_eq!(super::resolve_theme_config(doc, None).name, "default");
     assert!(!super::resolve_hints_enabled(doc, None));
     assert!(super::resolve_mask_env_values(doc, None).masks());
     assert!(gate_says(&absent_path, None).trim().is_empty());

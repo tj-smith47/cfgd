@@ -820,8 +820,8 @@ pub fn resolve_color_choice(no_color: bool, color: ColorWhen) -> cfgd_core::outp
 /// off the document the process read at startup ([`startup::StartupDocument`]).
 ///
 /// Best-effort by design: a missing, unreadable or malformed config (`doc` is
-/// `None`) falls back to the default theme: a printer has to exist before
-/// there is anything to report the failure ON.
+/// `None`) reads as an empty document, so the block is the `default` preset: a
+/// printer has to exist before there is anything to report the failure ON.
 ///
 /// The whole block travels, not just its name — `overrides` is a documented
 /// field, and a printer built from the preset name alone drops it. Shared by
@@ -833,22 +833,21 @@ pub fn resolve_color_choice(no_color: bool, color: ColorWhen) -> cfgd_core::outp
 /// `preset` is the `--theme` / `CFGD_THEME` override. It replaces the block's
 /// `name` and nothing else, so the flag means exactly what `cfgd config set
 /// theme.name <preset>` would have persisted: the config's `overrides` still
-/// layer on top. With no config to read it stands alone as the whole block.
-// knob-resolver-ok: composes a whole ThemeConfig block; no single value has a default here.
+/// layer on top.
+// knob-resolver-ok: composes a whole ThemeConfig block; its default comes from theme_effective.
 pub fn resolve_theme_config(
     doc: Option<&cfgd_core::config::CfgdConfig>,
     preset: Option<&str>,
-) -> Option<cfgd_core::config::ThemeConfig> {
-    match preset {
-        None => doc.and_then(|c| c.spec.theme().cloned()),
-        Some(name) => {
-            let mut theme = doc
-                .map(|c| c.spec.output_effective().theme_effective().clone())
-                .unwrap_or_default();
-            theme.name = name.to_string();
-            Some(theme)
-        }
+) -> cfgd_core::config::ThemeConfig {
+    let mut theme = doc
+        .map_or(&*UNREAD_SPEC, |c| &c.spec)
+        .output_effective()
+        .theme_effective()
+        .clone();
+    if let Some(name) = preset {
+        theme.name = name.to_string();
     }
+    theme
 }
 
 /// The accepted preset list for a theme name no palette answers to, or `None`
@@ -918,10 +917,13 @@ where
             return value;
         }
     }
-    static UNREAD: std::sync::LazyLock<cfgd_core::config::ConfigSpec> =
-        std::sync::LazyLock::new(cfgd_core::config::ConfigSpec::default);
-    stored(doc.map_or(&*UNREAD, |c| &c.spec))
+    stored(doc.map_or(&*UNREAD_SPEC, |c| &c.spec))
 }
+
+/// The spec a missing or unreadable document reads as, so a resolver takes its
+/// default from the same `_effective` accessor a declared document goes through.
+static UNREAD_SPEC: std::sync::LazyLock<cfgd_core::config::ConfigSpec> =
+    std::sync::LazyLock::new(cfgd_core::config::ConfigSpec::default);
 
 /// What this invocation says the migration policy is, over whatever the
 /// document declares: `--migration-policy` first, then

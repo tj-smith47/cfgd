@@ -311,7 +311,7 @@ fn main() -> anyhow::Result<()> {
         cli::resolve_mask_env_values(startup.config(), cli.mask_env_values.as_deref());
     let printer = cfgd_core::output::Printer::with_theme_config(
         verbosity,
-        theme_config.as_ref(),
+        &theme_config,
         output_format,
         color_choice,
     )
@@ -324,12 +324,10 @@ fn main() -> anyhow::Result<()> {
     // nothing else on the surface says so. It is a warning and no refusal:
     // the config may not be this user's to edit, and every command must still
     // run under it.
-    if let Some(theme) = theme_config.as_ref()
-        && let Some(accepted) = cli::unknown_theme_preset(&theme.name)
-    {
+    if let Some(accepted) = cli::unknown_theme_preset(&theme_config.name) {
         printer.alert(format!(
             "spec.output.theme.name `{}` is not a theme preset; rendering the default palette (accepted names: {accepted})",
-            theme.name
+            theme_config.name
         ));
     }
 

@@ -964,10 +964,7 @@ impl Theme {
         }
     }
 
-    pub fn from_config(config: Option<&crate::config::ThemeConfig>) -> Self {
-        let Some(cfg) = config else {
-            return Self::default();
-        };
+    pub fn from_config(cfg: &crate::config::ThemeConfig) -> Self {
         let mut t = Self::from_preset(&cfg.name);
         let ov = &cfg.overrides;
         // Style overrides
@@ -1726,8 +1723,8 @@ mod tests {
     }
 
     #[test]
-    fn from_config_none_yields_default_theme() {
-        let t = Theme::from_config(None);
+    fn from_config_of_the_omitted_block_yields_default_theme() {
+        let t = Theme::from_config(&crate::config::ThemeConfig::default());
         assert_eq!(t.icon_ok, "✓");
         assert!(
             t.success.rgb.is_none(),
@@ -1741,7 +1738,7 @@ mod tests {
             name: "dracula".to_string(),
             overrides: crate::config::ThemeOverrides::default(),
         };
-        let t = Theme::from_config(Some(&cfg));
+        let t = Theme::from_config(&cfg);
         // Dracula's success is the green hex #50fa7b.
         assert_eq!(t.success.rgb, Some((0x50, 0xfa, 0x7b)));
     }
@@ -1752,7 +1749,7 @@ mod tests {
             name: "no-such-preset".to_string(),
             overrides: crate::config::ThemeOverrides::default(),
         };
-        let t = Theme::from_config(Some(&cfg));
+        let t = Theme::from_config(&cfg);
         assert!(t.success.rgb.is_none(), "fallback to default → no rgb");
     }
 
@@ -1779,7 +1776,7 @@ mod tests {
                 ..Default::default()
             },
         };
-        let t = Theme::from_config(Some(&cfg));
+        let t = Theme::from_config(&cfg);
         assert_eq!(t.header.rgb, Some((0x01, 0x02, 0x03)));
         assert_eq!(t.success.rgb, Some((0x04, 0x05, 0x06)));
         assert_eq!(t.warning.rgb, Some((0x07, 0x08, 0x09)));
@@ -1809,7 +1806,7 @@ mod tests {
                 ..Default::default()
             },
         };
-        let t = Theme::from_config(Some(&cfg));
+        let t = Theme::from_config(&cfg);
         assert_eq!(t.error.rgb, Some((0xab, 0xcd, 0xef)));
         assert!(
             !t.error.attrs.bold,
@@ -1833,7 +1830,7 @@ mod tests {
                 ..Default::default()
             },
         };
-        let t = Theme::from_config(Some(&cfg));
+        let t = Theme::from_config(&cfg);
         assert_eq!(t.icon_ok, "[ok]");
         assert_eq!(t.icon_warn, "[!]");
         assert_eq!(t.icon_fail, "[X]");
@@ -1857,7 +1854,7 @@ mod tests {
                 ..Default::default()
             },
         };
-        let t = Theme::from_config(Some(&cfg));
+        let t = Theme::from_config(&cfg);
         assert_eq!(
             t.header.rgb, original_rgb,
             "invalid override must not mutate the slot"
@@ -1874,7 +1871,7 @@ mod tests {
                 ..Default::default()
             },
         };
-        let t = Theme::from_config(Some(&cfg));
+        let t = Theme::from_config(&cfg);
         assert_eq!(t.header.rgb, Some((0x11, 0x22, 0x33)));
         // Dracula's success stays at #50fa7b.
         assert_eq!(t.success.rgb, Some((0x50, 0xfa, 0x7b)));
@@ -1938,7 +1935,7 @@ mod tests {
                 ..Default::default()
             },
         };
-        let t = Theme::from_config(Some(&cfg));
+        let t = Theme::from_config(&cfg);
         assert_eq!(
             t.primary.as_ref().and_then(|s| s.rgb),
             Some((0xff, 0x00, 0x00))

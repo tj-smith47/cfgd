@@ -6334,7 +6334,8 @@ fn section_value<T: serde::Serialize>(value: &T) -> serde_yaml::Value {
 /// - `daemon.notify`, omitted as `notify: {}` (no drift notice). Read by
 ///   `parse_daemon_config`.
 /// - `output`, omitted as `output: {}`, and `output.theme`, omitted as the
-///   `default` preset. Read by `resolve_theme_config`.
+///   `default` preset. Read by `resolve_theme_config`, with or without
+///   `--theme`, which hands the block to `Theme::from_config`.
 /// - `modules`, omitted as no registries, and `modules.security`, omitted as no
 ///   signature required. Read by the `module registry` verbs and the module
 ///   signature check.

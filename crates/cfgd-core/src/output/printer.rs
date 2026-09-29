@@ -249,7 +249,7 @@ impl Printer {
     /// decision instead of this printer's.
     pub fn with_theme_config(
         verbosity: Verbosity,
-        theme: Option<&crate::config::ThemeConfig>,
+        theme: &crate::config::ThemeConfig,
         output_format: OutputFormat,
         colors: ColorChoice,
     ) -> Self {
@@ -1630,7 +1630,7 @@ mod tests {
 
         let p = Printer::with_theme_config(
             Verbosity::Normal,
-            Some(&config),
+            &config,
             OutputFormat::Table,
             ColorChoice::Always,
         );
@@ -1653,10 +1653,10 @@ mod tests {
              printer's colour decision, not the default colour-off one"
         );
 
-        // No config at all is the default theme, not a panic or an empty one.
+        // The block an omitted `spec.output.theme` reads as is the default theme.
         let bare = Printer::with_theme_config(
             Verbosity::Normal,
-            None,
+            &crate::config::ThemeConfig::default(),
             OutputFormat::Table,
             ColorChoice::Always,
         );

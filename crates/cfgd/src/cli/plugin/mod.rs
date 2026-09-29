@@ -346,26 +346,20 @@ pub fn plugin_main() -> anyhow::Result<()> {
         .unwrap_or_else(crate::cli::default_config_file);
     let startup = crate::cli::startup::StartupDocument::load(&config_path);
     let theme_config = crate::cli::resolve_theme_config(startup.config(), cli.theme.as_deref());
-    let printer = Printer::with_theme_config(
-        Verbosity::Normal,
-        theme_config.as_ref(),
-        cli.output.0,
-        color_choice,
-    )
-    // No hints flag in the plugin's global-flag subset, so the decision comes
-    // from the persistent halves alone, whatever a printer happened to start
-    // at.
-    .with_hints_enabled(crate::cli::resolve_hints_enabled(startup.config(), None));
+    let printer =
+        Printer::with_theme_config(Verbosity::Normal, &theme_config, cli.output.0, color_choice)
+            // No hints flag in the plugin's global-flag subset, so the decision comes
+            // from the persistent halves alone, whatever a printer happened to start
+            // at.
+            .with_hints_enabled(crate::cli::resolve_hints_enabled(startup.config(), None));
     tracing_writer.attach(&printer);
 
     // The same warning the primary CLI raises for a stored name no preset
     // answers to: both entry points read one config, so both say so.
-    if let Some(theme) = theme_config.as_ref()
-        && let Some(accepted) = crate::cli::unknown_theme_preset(&theme.name)
-    {
+    if let Some(accepted) = crate::cli::unknown_theme_preset(&theme_config.name) {
         printer.alert(format!(
             "spec.output.theme.name `{}` is not a theme preset; rendering the default palette (accepted names: {accepted})",
-            theme.name
+            theme_config.name
         ));
     }
 

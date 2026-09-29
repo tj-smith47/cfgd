@@ -179,8 +179,9 @@ pub struct ConfigSpec {
 
 /// One accessor per `spec` section whose omission production reads as a
 /// value: each returns the declared block, or the block the build uses where
-/// the document omits it. A section whose omission turns its feature off
-/// (`secrets`) has no accessor, and its readers handle `None` themselves.
+/// the document omits it. A block whose omission turns its settings off
+/// (`secrets.sops`, where sops then runs its own key search) has no accessor,
+/// and its readers handle `None` themselves.
 impl ConfigSpec {
     /// The daemon settings: the declared block, or `daemon: {}` where the
     /// document omits it.
