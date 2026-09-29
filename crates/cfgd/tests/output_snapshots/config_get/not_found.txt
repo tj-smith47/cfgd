@@ -1,1 +1,1 @@
-✗ config error: key 'ghost.path' not found
+✗ config error: key 'ghost.path' not found ('ghost' is not declared)

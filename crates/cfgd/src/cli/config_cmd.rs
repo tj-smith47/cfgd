@@ -266,6 +266,7 @@ fn key_not_found(asked: &[&str]) -> anyhow::Error {
     anyhow::Error::new(cfgd_core::errors::CfgdError::Config(
         cfgd_core::errors::ConfigError::KeyNotFound {
             key: asked.join("."),
+            undeclared: None,
         },
     ))
 }
@@ -319,35 +320,51 @@ pub(super) fn alias_key(name: &str) -> anyhow::Result<String> {
     Ok(format!("aliases.{name}"))
 }
 
-/// A key walk's refusal on `resolved`, restated for what the caller wrote
+/// A key verb's refusal on `resolved`, restated for what the caller wrote
 /// (`asked`), which is `resolved` itself unless [`nested_output_key`] or an
 /// `alias` verb built `resolved` from it.
 ///
 /// A missing key is reported under `asked` whole, so the message names the
-/// same key the `-o json` payload does: the walk reports the first segment it
-/// found missing (`secrets` for `secrets.sops.ageKey`), and on a built path
-/// that segment is one the caller never typed. A document whose shape blocks
-/// the walk keeps the path that holds the wrong shape, since that path is
-/// where the reader has to look, and adds where what they asked for lives.
-/// Every other refusal is about the document or the file and names no key,
-/// so it passes through as it is.
+/// same key the `-o json` payload does. The walk reports the first segment it
+/// found missing (`secrets` for `secrets.sops.ageKey`); that segment is named
+/// as the one not declared where it is a prefix of what the caller typed, and
+/// left out where it belongs to a built path the caller never typed. A
+/// refusal on a built path that names the stored path (a shape that blocks
+/// the walk, or a write that would leave the document invalid) keeps it,
+/// since that path is where the reader has to look, and adds where what they
+/// asked for lives. Every other refusal names no key and passes through as
+/// it is.
 fn as_asked(error: anyhow::Error, asked: Asked<'_>, resolved: &str) -> anyhow::Error {
-    if matches!(
-        error.downcast_ref::<cfgd_core::errors::CfgdError>(),
-        Some(cfgd_core::errors::CfgdError::Config(
-            cfgd_core::errors::ConfigError::KeyNotFound { .. }
-        ))
-    ) {
-        let missing = key_not_found(&[asked.spelling]);
+    let built = asked.alias || asked.spelling != resolved;
+    let stored_at = |error: &dyn std::fmt::Display| {
+        format!("{error}; {} is stored at '{resolved}'", asked.described())
+    };
+    if let Some(cfgd_core::errors::CfgdError::Config(
+        cfgd_core::errors::ConfigError::KeyNotFound { key, .. },
+    )) = error.downcast_ref::<cfgd_core::errors::CfgdError>()
+    {
+        let undeclared = asked
+            .spelling
+            .strip_prefix(key.as_str())
+            .is_some_and(|rest| rest.starts_with('.'))
+            .then(|| key.clone());
+        let missing = anyhow::Error::new(cfgd_core::errors::CfgdError::Config(
+            cfgd_core::errors::ConfigError::KeyNotFound {
+                key: asked.spelling.to_string(),
+                undeclared,
+            },
+        ));
         return if asked.alias {
             missing.context(format!("{} not found", asked.described()))
+        } else if built {
+            let message = stored_at(&missing);
+            missing.context(message)
         } else {
             missing
         };
     }
-    if error.downcast_ref::<ShapeBlocked>().is_some() && (asked.alias || asked.spelling != resolved)
-    {
-        let message = format!("{error}; {} is stored at '{resolved}'", asked.described());
+    if built && classify_config_error(&error) == "parse_failed" {
+        let message = stored_at(&error);
         return error.context(message);
     }
     error
@@ -998,6 +1015,7 @@ pub(super) fn config_unset_as(
             None => Err(anyhow::Error::new(cfgd_core::errors::CfgdError::Config(
                 cfgd_core::errors::ConfigError::KeyNotFound {
                     key: key.to_string(),
+                    undeclared: None,
                 },
             ))),
         }
@@ -2494,7 +2512,7 @@ spec:
         let err = walk_yaml_path(&yaml, "daemon.reconcile").unwrap_err();
         match err.downcast_ref::<cfgd_core::errors::CfgdError>() {
             Some(cfgd_core::errors::CfgdError::Config(
-                cfgd_core::errors::ConfigError::KeyNotFound { key },
+                cfgd_core::errors::ConfigError::KeyNotFound { key, .. },
             )) => assert_eq!(key, "daemon.reconcile"),
             other => panic!("expected KeyNotFound, got {other:?}"),
         }
@@ -2839,9 +2857,12 @@ spec:
     /// A key `nested_output_key` rewrote is refused under the spelling the
     /// caller wrote, by every verb and on every refusal a rewritten key can
     /// earn: a missing key, a shape that blocks the walk, and a path with an
-    /// empty segment. A key under a section the document leaves out, which no
-    /// rewrite touched, is refused under that same whole spelling in the
-    /// message and the `-o json` name alike.
+    /// empty segment, and a write the document would not parse after. A key
+    /// under a section the document leaves out, which no rewrite touched, is
+    /// refused under that same whole spelling in the message and the `-o json`
+    /// name alike, and the message names the first segment it does not
+    /// declare. `unset` only removes a key, so it earns no refusal for a
+    /// document left invalid.
     #[test]
     fn every_key_verb_refuses_a_rewritten_key_by_the_spelling_the_caller_wrote() {
         let dir = tempfile::tempdir().unwrap();
@@ -2871,7 +2892,7 @@ spec:
         };
         let set: Verb = |cli, printer, key| cmd_config_set(cli, printer, key, "dracula");
         let unset: Verb = cmd_config_unset;
-        let cases: [(&str, Verb, &Cli, &str, &str, &str); 9] = [
+        let cases: [(&str, Verb, &Cli, &str, &str, &str); 12] = [
             (
                 "get",
                 get,
@@ -2886,7 +2907,31 @@ spec:
                 &bare_cli,
                 "theme.overrides.primary",
                 "key_not_found",
-                "key 'theme.overrides.primary' not found",
+                "key 'theme.overrides.primary' not found; 'theme.overrides.primary' is stored at 'output.theme.overrides.primary'",
+            ),
+            (
+                "get",
+                get,
+                &bare_cli,
+                "ghost.path",
+                "key_not_found",
+                "key 'ghost.path' not found ('ghost' is not declared)",
+            ),
+            (
+                "set",
+                set,
+                &bare_cli,
+                "usageHints",
+                "parse_failed",
+                "config would become invalid: config error: yaml parse error: spec.output.usageHints: invalid type: string \"dracula\", expected a boolean",
+            ),
+            (
+                "set",
+                set,
+                &bare_cli,
+                "usageHints",
+                "parse_failed",
+                "; 'usageHints' is stored at 'output.usageHints'",
             ),
             (
                 "get",
@@ -3103,7 +3148,20 @@ spec:
             shape_dir.path(),
             &serde_yaml::from_str("aliases: 5").unwrap(),
         );
-        let cases: [(&[&str], &std::path::Path, &str, &str); 7] = [
+        let toml_dir = tempfile::tempdir().unwrap();
+        let toml = toml_dir.path().join("cfgd.toml");
+        std::fs::write(
+            &toml,
+            "apiVersion = \"cfgd.io/v1alpha1\"\nkind = \"Config\"\n[metadata]\nname = \"t\"\n[spec]\n",
+        )
+        .unwrap();
+        let cases: [(&[&str], &std::path::Path, &str, &str); 8] = [
+            (
+                &["alias", "set", "n", "~"],
+                &toml,
+                "parse_failed",
+                "config would become invalid: spec.aliases.n is null, and TOML has no null value; alias 'n' is stored at 'aliases.n'",
+            ),
             (
                 &["alias", "show", "nope"],
                 &bare,

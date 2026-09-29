@@ -2733,7 +2733,8 @@ document that never names `migrationPolicy`, `daemon` or `output`,
 `config get migrationPolicy` prints `Prompt`, `config get daemon.reconcile.interval`
 prints `5m` and `config get output.usageHints` prints `false`. A key the build
 holds no value for is refused as a missing key, exit `6`, and the refusal names
-the key as you wrote it. That covers an optional key whose absence means nothing
+the key as you wrote it, with the first part of it the document does not declare
+(`key 'deamon.reconcile.interval' not found ('deamon' is not declared)`). That covers an optional key whose absence means nothing
 is set (`profile`, `daemon.notify.webhookUrl`, a theme override) and every key
 under a block the build reads only when it is declared, such as
 `secrets.sops.ageKey` on a document with no `secrets.sops`.

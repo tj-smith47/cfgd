@@ -142,8 +142,16 @@ pub enum ConfigError {
 
     // No "in config" here: this variant renders under `CfgdError::Config`'s own
     // "config error: " prefix, and the two together said config twice.
-    #[error("key '{key}' not found")]
-    KeyNotFound { key: String },
+    #[error(
+        "key '{key}' not found{}",
+        undeclared.as_ref().map(|segment| format!(" ('{segment}' is not declared)")).unwrap_or_default()
+    )]
+    KeyNotFound {
+        key: String,
+        /// The first segment of `key` the document does not declare, where
+        /// it is shorter than `key`.
+        undeclared: Option<String>,
+    },
 
     #[error(
         "ambiguous profile '{name}': multiple forms exist ({forms}) — delete or rename one of them (the canonical form is '{name}/profile.yaml')",
