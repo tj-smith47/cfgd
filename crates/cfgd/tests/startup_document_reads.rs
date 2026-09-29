@@ -193,8 +193,9 @@ fn every_spelling_of_the_config_location_expands_that_documents_aliases() {
 
 /// Under the system scope the alias pass reads the system document, the one
 /// clap settles on, so the user default's `who` stays unexpanded (clap refuses
-/// it as an unknown subcommand) and the system document is read once. The system root is the real one, left
-/// unwritten: the user default is the document a scope-blind pass would read.
+/// it as an unknown subcommand) and the system document is read once. The
+/// system root is the real one, left unwritten: the user default is the
+/// document a scope-blind pass would read.
 #[test]
 fn a_system_scope_run_reads_the_system_document_once() {
     let config_home = config_home();
