@@ -2868,7 +2868,8 @@ spec:
     /// A key `nested_output_key` rewrote is refused under the spelling the
     /// caller wrote, by every verb and on every refusal a rewritten key can
     /// earn: a missing key, a shape that blocks the walk, and a path with an
-    /// empty segment, and a write the document would not parse after. A key
+    /// empty segment, and a write the document would not parse after, a null
+    /// in a `cfgd.toml` among them. A key
     /// under a section the document leaves out, which no rewrite touched, is
     /// refused under that same whole spelling in the message and the `-o json`
     /// name alike, and the message names the first segment it does not
@@ -2891,6 +2892,8 @@ spec:
             &serde_yaml::from_str("output:\n  theme:\n    name: nord").unwrap(),
         );
         let leaf_cli = test_cli_for(leaf);
+        let toml_dir = tempfile::tempdir().unwrap();
+        let toml_cli = test_cli_for(toml_scaffolded(toml_dir.path()));
 
         type Verb = fn(&Cli, &Printer, &str) -> anyhow::Result<()>;
         let get: Verb = |cli, printer, key| {
@@ -2902,8 +2905,9 @@ spec:
             )
         };
         let set: Verb = |cli, printer, key| cmd_config_set(cli, printer, key, "dracula");
+        let set_null: Verb = |cli, printer, key| cmd_config_set(cli, printer, key, "~");
         let unset: Verb = cmd_config_unset;
-        let cases: [(&str, Verb, &Cli, &str, &str, &str); 13] = [
+        let cases: [(&str, Verb, &Cli, &str, &str, &str); 15] = [
             (
                 "get",
                 get,
@@ -2959,6 +2963,22 @@ spec:
                 "theme..name",
                 "invalid_value",
                 "invalid key path 'theme..name'",
+            ),
+            (
+                "set",
+                set_null,
+                &toml_cli,
+                "theme.name",
+                "invalid_value",
+                "`~` is not a theme preset",
+            ),
+            (
+                "set",
+                set_null,
+                &toml_cli,
+                "usageHints",
+                "parse_failed",
+                "config would become invalid: spec.output.usageHints is null, and TOML has no null value; 'usageHints' is stored at 'output.usageHints'",
             ),
             (
                 "set",
