@@ -390,9 +390,8 @@ sudo cfgd --scope system --state-dir /srv/cfgd/state daemon install
 #           --state-dir /srv/cfgd/state --quiet daemon
 ```
 
-`--update-policy` is not baked in, and the service does not see an exported `CFGD_UPDATE_POLICY`
-from the installing shell: the installed daemon checks under `spec.update.policy`, re-read on
-every tick, so set the posture in the config.
+The installed daemon checks for updates under `spec.update.policy`, re-read from the config on
+every version-check tick, so set the posture in the config.
 
 Path defaults under system scope:
 
