@@ -1240,7 +1240,7 @@
       "description": "Configuration for cfgd self-update checks and authored-skill updates.",
       "properties": {
         "channel": {
-          "description": "Release channel to track (e.g. `stable`, `beta`). When unset, cfgd uses\nits built-in default channel.",
+          "description": "Release channel to track: `stable` (releases GitHub marks latest) or\n`prerelease` (the newest release, prereleases included). Omitted,\n`stable`.",
           "type": [
             "string",
             "null"

@@ -241,6 +241,7 @@ pub fn cmd_module_add_remote(
     if cli.config.exists() {
         let mut cfg = config::load_config(&cli.config)?;
         drain_config_deprecations(printer, &mut cfg);
+        // option-section-ok: the `--profile` flag, answered by the active profile
         let profile_name = match cli.profile.as_deref() {
             Some(p) => p,
             None => cfg.active_profile()?,

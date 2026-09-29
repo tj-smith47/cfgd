@@ -77,8 +77,8 @@ pub use resolve::{
     desired_packages_for_spec, merge_layers, package_schema_path, resolve_profile,
 };
 pub use root::{
-    CfgdConfig, ConfigMetadata, ConfigSpec, SkillUpdateConfig, SkillUpdatePolicy, UpdateConfig,
-    UpdatePolicy, minimal_config,
+    CfgdConfig, ConfigMetadata, ConfigSpec, STABLE_UPDATE_CHANNEL, SkillUpdateConfig,
+    SkillUpdatePolicy, UpdateConfig, UpdatePolicy, minimal_config,
 };
 pub use security::{ModuleSecurityConfig, ModulesConfig, SecurityConfig};
 pub use source::{

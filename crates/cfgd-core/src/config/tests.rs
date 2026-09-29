@@ -3402,7 +3402,10 @@ spec:
         Some("dracula"),
         "the flat theme must be readable at spec.output.theme"
     );
-    assert_eq!(cfg.spec.usage_hints(), Some(false));
+    assert_eq!(
+        cfg.spec.output.as_ref().and_then(|o| o.usage_hints),
+        Some(false)
+    );
     assert_eq!(
         cfg.legacy_output_keys,
         vec!["spec.theme".to_string(), "spec.usageHints".to_string()]
@@ -3476,9 +3479,12 @@ spec:
 "#;
     let cfg = super::parse_config(yaml, std::path::Path::new("cfgd.yaml")).expect("parses");
     assert_eq!(cfg.spec.theme().map(|t| t.name.as_str()), Some("nord"));
-    assert_eq!(cfg.spec.usage_hints(), Some(false));
     assert_eq!(
-        cfg.spec.mask_env_values(),
+        cfg.spec.output.as_ref().and_then(|o| o.usage_hints),
+        Some(false)
+    );
+    assert_eq!(
+        cfg.spec.output.as_ref().and_then(|o| o.mask_env_values),
         Some(super::MaskEnvValues::None),
         "maskEnvValues has no flat spelling and reads only from the nested block"
     );

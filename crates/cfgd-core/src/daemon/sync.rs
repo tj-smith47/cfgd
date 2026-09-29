@@ -187,10 +187,10 @@ pub(crate) async fn handle_version_check(
 
     tracing::info!("daemon: checking for cfgd updates");
 
-    let channel = update_cfg.channel.clone();
+    let channel = update_cfg.channel_effective().to_string();
     let version_for_check = cfgd_version.to_string();
     let check_result = crate::spawn_blocking_with_test_home(move || {
-        crate::upgrade::check_latest(&version_for_check, None, channel.as_deref(), None)
+        crate::upgrade::check_latest(&version_for_check, None, &channel, None)
     })
     .await;
 

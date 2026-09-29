@@ -47,6 +47,20 @@ impl OutputConfig {
             std::sync::LazyLock::new(ThemeConfig::default);
         self.theme.as_ref().unwrap_or(&OMITTED)
     }
+
+    /// Whether closing `→` usage hints render: the declared value, or `false`
+    /// where the document omits it.
+    #[must_use]
+    pub fn usage_hints_effective(&self) -> bool {
+        self.usage_hints.unwrap_or_default()
+    }
+
+    /// Which declared env values cfgd masks: the declared value, or
+    /// [`MaskEnvValues::All`] where the document omits it.
+    #[must_use]
+    pub fn mask_env_values_effective(&self) -> MaskEnvValues {
+        self.mask_env_values.unwrap_or_default()
+    }
 }
 
 /// Which declared env values cfgd masks on the surfaces that render one

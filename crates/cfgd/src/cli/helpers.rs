@@ -423,6 +423,7 @@ pub(in crate::cli) fn resolve_profile_for(
     cli: &Cli,
     cfg: &CfgdConfig,
 ) -> anyhow::Result<(String, ResolvedProfile)> {
+    // option-section-ok: the `--profile` flag, answered by the active profile
     let profile_name = match cli.profile.as_deref() {
         Some(p) => p.to_string(),
         None => cfg.active_profile()?.to_string(),
@@ -1393,6 +1394,7 @@ pub(in crate::cli) fn resolve_profile_name(
     }
     let mut cfg = config::load_config(config_path)?;
     drain_config_deprecations(printer, &mut cfg);
+    // option-section-ok: the `--profile` flag, answered by the active profile
     if let Some(ref profile_override) = cli.profile {
         Ok(profile_override.clone())
     } else {

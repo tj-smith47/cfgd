@@ -9001,6 +9001,8 @@ fn impl_owner(item: &syn::ItemImpl) -> Option<String> {
 struct ConfigSections {
     /// Every `Option<…Config>` field, as `(struct, field)`.
     fields: std::collections::BTreeSet<(String, String)>,
+    /// Every struct's named fields with their types, by struct.
+    structs: std::collections::BTreeMap<String, Vec<(String, syn::Type)>>,
     /// Every `<field>_effective` method, as `(impl type, field)`.
     accessors: std::collections::BTreeSet<(String, String)>,
     /// The `<field>_effective` methods `ConfigSpec::effective` calls, by field.
@@ -9013,8 +9015,9 @@ struct ConfigSections {
 /// The values a `<field>_effective` accessor spells itself: a struct literal,
 /// a literal, or a `static` built by anything other than
 /// `LazyLock::new(<type>::default)`. The omitted value is the one the type's
-/// `Default` gives, which is also what the schema publishes and what a
-/// declared empty block holds, so a second spelling of it can only drift.
+/// `Default` gives, or for a leaf a named constant the release code reads as
+/// well, which is also what the schema publishes and what a declared empty
+/// block holds, so a second spelling of it can only drift.
 #[derive(Default)]
 struct HandWrittenDefaults(Vec<String>);
 
@@ -9050,6 +9053,58 @@ impl<'ast> syn::visit::Visit<'ast> for HandWrittenDefaults {
     }
 }
 
+impl ConfigSections {
+    /// Every `Option` field reached from `ConfigSpec` whose type is no struct
+    /// under `config/`, as `(struct, field)`. The walk steps through a field
+    /// typed as a struct or an `Option` of one; a `Vec` or a map holds
+    /// entries a document lists, which are no part of its own shape.
+    fn leaves(&self) -> std::collections::BTreeSet<(String, String)> {
+        let mut leaves = std::collections::BTreeSet::new();
+        let mut seen = std::collections::BTreeSet::new();
+        let mut queue = vec!["ConfigSpec".to_string()];
+        while let Some(owner) = queue.pop() {
+            if !seen.insert(owner.clone()) {
+                continue;
+            }
+            for (field, ty) in self.structs.get(&owner).into_iter().flatten() {
+                let inner = option_inner(ty);
+                match plain_type_name(inner.unwrap_or(ty)) {
+                    Some(name) if self.structs.contains_key(&name) => queue.push(name),
+                    _ if inner.is_some() => {
+                        leaves.insert((owner.clone(), field.clone()));
+                    }
+                    _ => {}
+                }
+            }
+        }
+        leaves
+    }
+}
+
+/// The `T` of an `Option<T>`.
+fn option_inner(ty: &syn::Type) -> Option<&syn::Type> {
+    let syn::Type::Path(path) = ty else {
+        return None;
+    };
+    let last = path.path.segments.last()?;
+    let syn::PathArguments::AngleBracketed(args) = &last.arguments else {
+        return None;
+    };
+    match args.args.first()? {
+        syn::GenericArgument::Type(inner) if last.ident == "Option" => Some(inner),
+        _ => None,
+    }
+}
+
+/// The name of a type written as a bare path with no generic arguments.
+fn plain_type_name(ty: &syn::Type) -> Option<String> {
+    let syn::Type::Path(path) = ty else {
+        return None;
+    };
+    let last = path.path.segments.last()?;
+    last.arguments.is_none().then(|| last.ident.to_string())
+}
+
 /// The `<field>_effective` methods an expression calls, by field.
 struct AccessorCalls<'s>(&'s mut std::collections::BTreeSet<String>);
 
@@ -9067,6 +9122,13 @@ impl<'ast> syn::visit::Visit<'ast> for ConfigSections {
         if test_gated(&item.attrs) {
             return;
         }
+        self.structs.insert(
+            item.ident.to_string(),
+            item.fields
+                .iter()
+                .filter_map(|f| Some((f.ident.as_ref()?.to_string(), f.ty.clone())))
+                .collect(),
+        );
         for field in &item.fields {
             let (Some(ident), syn::Type::Path(ty)) = (&field.ident, &field.ty) else {
                 continue;
@@ -9447,21 +9509,24 @@ impl<'ast> syn::visit::Visit<'ast> for DefaultingReads<'_> {
     }
 }
 
-/// Every `Option<…Config>` section of a config document means one of two
-/// things when a document omits it, and the build reads it one way for each.
-/// A section production substitutes a value for (defaults apply) is read
-/// through ONE `<field>_effective` accessor on the struct declaring it, and
+/// Every `Option<…Config>` section of a config document, and every `Option`
+/// leaf reached from `ConfigSpec` through them, means one of two things when
+/// a document omits it, and the build reads it one way for each. A field
+/// production substitutes a value for (defaults apply) is read through ONE
+/// `<field>_effective` accessor on the struct declaring it, and
 /// `ConfigSpec::effective`, which `cfgd config get` answers from, fills it in
-/// through that accessor; a section whose omission turns its feature off has
-/// no accessor, and no production read substitutes a value for it.
-/// [`crate::test_helpers::OMITTED_SECTIONS`] records which is which, with the
+/// through that accessor; a section whose omission turns its feature off, or
+/// a leaf whose absence means nothing is set, has no accessor, and no
+/// production read substitutes a value for it.
+/// [`crate::test_helpers::OMITTED_FIELDS`] records which is which, with the
 /// readers and the omitted value of each, and this walk holds the tree to it:
 ///
-/// - every `Option<…Config>` field a struct under `config/` declares is a
-///   row, and every row is such a field;
+/// - every `Option<…Config>` field a struct under `config/` declares, and
+///   every `Option` leaf reached from `ConfigSpec` through struct fields
+///   (never through a `Vec` or a map), is a row, and every row is one;
 /// - a row with an omitted value is a field with an accessor, and a row
 ///   without one is a field without;
-/// - a defaulting read of a section field (a field read handed to
+/// - a defaulting read of a row's field (a field read handed to
 ///   `unwrap_or`, `unwrap_or_else`, `unwrap_or_default`, `map_or`,
 ///   `map_or_else`, `is_some_and` or `is_none_or`, directly, through the
 ///   `Option` steps between, inside an `and_then` closure, or through a
@@ -9471,8 +9536,10 @@ impl<'ast> syn::visit::Visit<'ast> for DefaultingReads<'_> {
 ///   accessor, and every accessor holds one. A branch that is empty, logs,
 ///   panics, continues, or returns an error, a `None` or `Ok(())` puts no
 ///   value there;
-/// - every accessor's omitted value is `LazyLock::new(<type>::default)`, so
-///   its body holds no struct literal, no literal and no other `static`;
+/// - every section accessor's omitted value is
+///   `LazyLock::new(<type>::default)` and every leaf accessor's is its type's
+///   `Default` or a named constant, so no accessor body holds a struct
+///   literal, a literal or another `static`;
 /// - `ConfigSpec::effective` calls every accessor.
 ///
 /// Fields are matched by name, so a read of a same-named field on a struct
@@ -9543,32 +9610,35 @@ fn every_option_config_section_is_read_through_its_effective_accessor_or_never_d
         .iter()
         .filter(|(owner, _)| !DESERIALIZATION_MIRRORS.contains(&owner.as_str()))
         .cloned()
+        .chain(sections.leaves())
         .collect();
-    let rows: std::collections::BTreeSet<(String, String)> = crate::test_helpers::OMITTED_SECTIONS
+    let rows: std::collections::BTreeSet<(String, String)> = crate::test_helpers::OMITTED_FIELDS
         .iter()
         .map(|row| (row.owner.to_string(), row.field.to_string()))
         .collect();
     assert_eq!(
         fields, rows,
-        "every Option<…Config> field under config/ is a row of OMITTED_SECTIONS, classified \
-         by what production does when a document omits it"
+        "every Option<…Config> field under config/ and every Option leaf reached from \
+         ConfigSpec is a row of OMITTED_FIELDS, classified by what production does when a \
+         document omits it"
     );
     let defaulted: std::collections::BTreeSet<(String, String)> =
-        crate::test_helpers::OMITTED_SECTIONS
+        crate::test_helpers::OMITTED_FIELDS
             .iter()
             .filter(|row| row.omitted.is_some())
             .map(|row| (row.owner.to_string(), row.field.to_string()))
             .collect();
     assert_eq!(
         sections.accessors, defaulted,
-        "a section whose omission production reads as a value has a `<field>_effective` \
+        "a field whose omission production reads as a value has a `<field>_effective` \
          accessor on its struct, and a feature-off section has none"
     );
     assert!(
         sections.hand_written.is_empty(),
-        "an accessor's omitted value is `LazyLock::new(<type>::default)`, the value the \
-         schema publishes and a declared empty block holds; a value the accessor spells \
-         itself is a second copy of that default:\n{}",
+        "an accessor's omitted value is its type's `Default` (through \
+         `LazyLock::new(<type>::default)` for a section) or a named constant, the value \
+         the schema publishes and a declared empty block holds; a value the accessor \
+         spells itself is a second copy of that default:\n{}",
         sections.hand_written.join("\n")
     );
     let accessor_fields: std::collections::BTreeSet<String> = sections
@@ -9578,7 +9648,7 @@ fn every_option_config_section_is_read_through_its_effective_accessor_or_never_d
         .collect();
     assert_eq!(
         sections.filled, accessor_fields,
-        "ConfigSpec::effective fills every section in through its accessor"
+        "ConfigSpec::effective fills every field in through its accessor"
     );
 
     let names: std::collections::BTreeSet<String> =
@@ -9636,14 +9706,15 @@ fn every_option_config_section_is_read_through_its_effective_accessor_or_never_d
     }
     assert!(
         offenders.is_empty(),
-        "a section's omitted value is read through its `<field>_effective` accessor, and a \
-         feature-off section is never defaulted; a same-named field on another struct \
+        "an omitted field's value is read through its `<field>_effective` accessor, and a \
+         feature-off section or a leaf whose absence means nothing is set is never \
+         defaulted; a same-named field on another struct \
          carries `// {SECTION_HATCH} <why>`:\n{}",
         offenders.join("\n")
     );
     assert_eq!(
         held, sections.accessors,
-        "every accessor substitutes its section's omitted value itself"
+        "every accessor substitutes its field's omitted value itself"
     );
 }
 

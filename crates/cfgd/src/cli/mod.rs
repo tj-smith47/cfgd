@@ -866,8 +866,10 @@ pub fn unknown_theme_preset(name: &str) -> Option<String> {
 }
 
 /// Resolve one per-invocation knob the way every other one resolves: the flag
-/// beats `env`, which beats the `spec.*` field `stored` reads, which beats the
-/// type's own default. `doc` is the document the process read at startup
+/// beats `env`, which beats what `stored` reads off the `spec`. `stored` reads
+/// the field's `_effective` accessor, so a document that omits the field, or
+/// no document at all, answers with the value `cfgd config get` reports.
+/// `doc` is the document the process read at startup
 /// ([`startup::StartupDocument::config`]), `None` when it did not load.
 ///
 /// The variable is read HERE: clap's `env =` binding does not see it,
@@ -894,10 +896,10 @@ pub fn resolve_knob<T>(
     doc: Option<&cfgd_core::config::CfgdConfig>,
     flag: Option<T>,
     env: &str,
-    stored: impl FnOnce(&cfgd_core::config::ConfigSpec) -> Option<T>,
+    stored: impl FnOnce(&cfgd_core::config::ConfigSpec) -> T,
 ) -> T
 where
-    T: std::str::FromStr + Default,
+    T: std::str::FromStr,
 {
     if let Some(value) = flag {
         return value;
@@ -916,7 +918,9 @@ where
             return value;
         }
     }
-    doc.and_then(|c| stored(&c.spec)).unwrap_or_default()
+    static UNREAD: std::sync::LazyLock<cfgd_core::config::ConfigSpec> =
+        std::sync::LazyLock::new(cfgd_core::config::ConfigSpec::default);
+    stored(doc.map_or(&*UNREAD, |c| &c.spec))
 }
 
 /// What this invocation says the migration policy is, over whatever the
@@ -964,7 +968,9 @@ pub fn resolve_hints_enabled(
     doc: Option<&cfgd_core::config::CfgdConfig>,
     hints: Option<bool>,
 ) -> bool {
-    resolve_knob(doc, hints, CFGD_USAGE_HINTS_ENV, |spec| spec.usage_hints())
+    resolve_knob(doc, hints, CFGD_USAGE_HINTS_ENV, |spec| {
+        spec.output_effective().usage_hints_effective()
+    })
 }
 
 /// Resolve which declared env values this run renders masked, folding
@@ -987,7 +993,7 @@ pub fn resolve_mask_env_values(
         doc,
         flag.and_then(|raw| cfgd_core::config::MaskEnvValues::from_str(raw).ok()),
         CFGD_MASK_ENV_VALUES_ENV,
-        |spec| spec.mask_env_values(),
+        |spec| spec.output_effective().mask_env_values_effective(),
     )
 }
 

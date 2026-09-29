@@ -79,11 +79,13 @@ pub fn cmd_profile_list(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
     let profiles = cfgd_core::config::scan_profiles(&profiles_dir)
         .map_err(cfgd_core::errors::CfgdError::Config)?;
 
+    // option-section-ok: the `--profile` flag, answered by the document
     let active = match &cli.profile {
         Some(p) => p.clone(),
         None => match config::load_config(&cli.config) {
             Ok(mut c) => {
                 drain_config_deprecations(printer, &mut c);
+                // option-section-ok: an empty name marks no profile active
                 c.spec.profile.unwrap_or_default()
             }
             Err(_) => String::new(),

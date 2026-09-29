@@ -875,7 +875,7 @@ fn check_with_cache_returns_error_when_cached_version_is_unparseable() {
     let err = check_with_cache(
         env!("CARGO_PKG_VERSION"),
         Some("does/not/matter"),
-        None,
+        crate::config::STABLE_UPDATE_CHANNEL,
         None,
     )
     .expect_err("unparseable cached version must surface as Err, not silent fallthrough");
@@ -2376,7 +2376,7 @@ fn check_with_cache_returns_cached_when_within_ttl() {
     let result = check_with_cache(
         env!("CARGO_PKG_VERSION"),
         Some("does/not/matter"),
-        None,
+        crate::config::STABLE_UPDATE_CHANNEL,
         None,
     )
     .expect("cache hit must short-circuit to local data, never touch the network");
@@ -4023,8 +4023,13 @@ mod api_base_env_shim {
         let mock = mock_release_response(&mut server);
         let _env = EnvVarGuard::set(crate::CFGD_GITHUB_API_BASE_ENV, &server.url());
 
-        let result = check_latest(env!("CARGO_PKG_VERSION"), Some("test/repo"), None, None)
-            .expect("env-shim redirect should make the call succeed against mockito");
+        let result = check_latest(
+            env!("CARGO_PKG_VERSION"),
+            Some("test/repo"),
+            crate::config::STABLE_UPDATE_CHANNEL,
+            None,
+        )
+        .expect("env-shim redirect should make the call succeed against mockito");
         mock.assert();
 
         assert_eq!(result.latest, Version::new(999, 0, 0));
@@ -4054,8 +4059,13 @@ mod api_base_env_shim {
         let mock = mock_release_response(&mut server);
         let _env = EnvVarGuard::set(crate::CFGD_GITHUB_API_BASE_ENV, &server.url());
 
-        let result = check_with_cache(env!("CARGO_PKG_VERSION"), Some("test/repo"), None, None)
-            .expect("cache miss + env-shim redirect should succeed");
+        let result = check_with_cache(
+            env!("CARGO_PKG_VERSION"),
+            Some("test/repo"),
+            crate::config::STABLE_UPDATE_CHANNEL,
+            None,
+        )
+        .expect("cache miss + env-shim redirect should succeed");
         mock.assert();
         assert_eq!(result.latest, Version::new(999, 0, 0));
 
@@ -4107,8 +4117,13 @@ mod api_base_env_shim {
             .create();
         let _env = EnvVarGuard::set(crate::CFGD_GITHUB_API_BASE_ENV, &server.url());
 
-        let result = check_with_cache(env!("CARGO_PKG_VERSION"), Some("test/repo"), None, None)
-            .expect("expired cache + API success should succeed");
+        let result = check_with_cache(
+            env!("CARGO_PKG_VERSION"),
+            Some("test/repo"),
+            crate::config::STABLE_UPDATE_CHANNEL,
+            None,
+        )
+        .expect("expired cache + API success should succeed");
         mock.assert();
         assert_eq!(
             result.latest,
@@ -4139,8 +4154,13 @@ mod api_base_env_shim {
             .create();
         let _env = EnvVarGuard::set(crate::CFGD_GITHUB_API_BASE_ENV, &server.url());
 
-        let result = check_latest(env!("CARGO_PKG_VERSION"), None, None, None)
-            .expect("None repo should use default and hit mockito");
+        let result = check_latest(
+            env!("CARGO_PKG_VERSION"),
+            None,
+            crate::config::STABLE_UPDATE_CHANNEL,
+            None,
+        )
+        .expect("None repo should use default and hit mockito");
         mock.assert();
         assert_eq!(result.latest, Version::new(777, 0, 0));
     }
@@ -4161,8 +4181,13 @@ mod api_base_env_shim {
             .create();
         let _env = EnvVarGuard::set(crate::CFGD_GITHUB_API_BASE_ENV, &server.url());
 
-        let result = check_with_cache(env!("CARGO_PKG_VERSION"), None, None, None)
-            .expect("None repo should use default and hit mockito");
+        let result = check_with_cache(
+            env!("CARGO_PKG_VERSION"),
+            None,
+            crate::config::STABLE_UPDATE_CHANNEL,
+            None,
+        )
+        .expect("None repo should use default and hit mockito");
         mock.assert();
         assert_eq!(result.latest, Version::new(666, 0, 0));
     }
@@ -4218,7 +4243,7 @@ mod api_base_env_shim {
         let result = check_latest(
             env!("CARGO_PKG_VERSION"),
             Some("test/repo"),
-            Some("prerelease"),
+            "prerelease",
             None,
         )
         .expect("prerelease channel should hit the list endpoint");
@@ -4258,13 +4283,8 @@ mod api_base_env_shim {
             .create();
         let _env = EnvVarGuard::set(crate::CFGD_GITHUB_API_BASE_ENV, &server.url());
 
-        let result = check_latest(
-            env!("CARGO_PKG_VERSION"),
-            Some("test/repo"),
-            Some("stable"),
-            None,
-        )
-        .expect("stable channel should hit releases/latest");
+        let result = check_latest(env!("CARGO_PKG_VERSION"), Some("test/repo"), "stable", None)
+            .expect("stable channel should hit releases/latest");
         latest_mock.assert();
         list_mock.assert();
         assert_eq!(
@@ -4273,10 +4293,11 @@ mod api_base_env_shim {
         );
     }
 
-    /// `channel: None` behaves like stable — hits `releases/latest` only.
+    /// The channel an `update` block that names none tracks hits
+    /// `releases/latest` only.
     #[test]
     #[serial]
-    fn channel_none_uses_releases_latest_endpoint() {
+    fn channel_an_update_block_omits_uses_releases_latest_endpoint() {
         let mut server = mockito::Server::new();
         let latest_mock = server
             .mock("GET", "/repos/test/repo/releases/latest")
@@ -4293,8 +4314,13 @@ mod api_base_env_shim {
             .create();
         let _env = EnvVarGuard::set(crate::CFGD_GITHUB_API_BASE_ENV, &server.url());
 
-        let result = check_latest(env!("CARGO_PKG_VERSION"), Some("test/repo"), None, None)
-            .expect("None channel should hit releases/latest");
+        let result = check_latest(
+            env!("CARGO_PKG_VERSION"),
+            Some("test/repo"),
+            crate::config::UpdateConfig::default().channel_effective(),
+            None,
+        )
+        .expect("the omitted channel should hit releases/latest");
         latest_mock.assert();
         list_mock.assert();
         assert_eq!(
@@ -4327,7 +4353,7 @@ mod api_base_env_shim {
         let result = check_latest(
             env!("CARGO_PKG_VERSION"),
             Some("test/repo"),
-            Some("nightly"),
+            "nightly",
             None,
         )
         .expect("unknown channel must fall back to stable, never error");
@@ -4356,7 +4382,7 @@ mod api_base_env_shim {
         let err = check_latest(
             env!("CARGO_PKG_VERSION"),
             Some("test/repo"),
-            Some("prerelease"),
+            "prerelease",
             None,
         )
         .expect_err("invalid JSON body must surface as an error");
@@ -4384,7 +4410,7 @@ mod api_base_env_shim {
         let err = check_latest(
             env!("CARGO_PKG_VERSION"),
             Some("test/repo"),
-            Some("prerelease"),
+            "prerelease",
             None,
         )
         .expect_err("a JSON object is not a releases array");
@@ -4412,7 +4438,7 @@ mod api_base_env_shim {
         let err = check_latest(
             env!("CARGO_PKG_VERSION"),
             Some("test/repo"),
-            Some("prerelease"),
+            "prerelease",
             None,
         )
         .expect_err("an empty releases array yields no parseable release");
@@ -4440,7 +4466,7 @@ mod api_base_env_shim {
         let err = check_latest(
             env!("CARGO_PKG_VERSION"),
             Some("test/repo"),
-            Some("prerelease"),
+            "prerelease",
             None,
         )
         .expect_err("all-unparseable tags leave no selectable release");

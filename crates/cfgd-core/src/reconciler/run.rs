@@ -188,6 +188,7 @@ impl ComposedSource {
     /// The header's rendering: `team (profile team)`, or the bare name when the
     /// subscription named no profile.
     pub(crate) fn display(&self) -> String {
+        // option-section-ok: a subscription's profile; renders its absence
         match &self.profile {
             Some(profile) => format!("{} (profile {profile})", self.name),
             None => self.name.clone(),

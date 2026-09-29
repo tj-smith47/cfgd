@@ -7010,7 +7010,7 @@
       {
         "children": [
           {
-            "description": "Release channel to track (e.g. `stable`, `beta`). When unset, cfgd uses its built-in default channel.",
+            "description": "Release channel to track: `stable` (releases GitHub marks latest) or `prerelease` (the newest release, prereleases included). Omitted, `stable`.",
             "name": "channel",
             "required": false,
             "type": "string"

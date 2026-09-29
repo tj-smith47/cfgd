@@ -9,7 +9,7 @@ use super::ai::AiConfig;
 use super::compliance::ComplianceConfig;
 use super::daemon::DaemonConfig;
 use super::origin::OriginSpec;
-use super::output::{MaskEnvValues, OutputConfig};
+use super::output::OutputConfig;
 use super::security::{ModulesConfig, SecurityConfig};
 use super::source::SourceSpec;
 use super::sync_secrets::SecretsConfig;
@@ -262,6 +262,8 @@ impl ConfigSpec {
         spec.daemon = Some(daemon);
         let mut output = self.output_effective().clone();
         output.theme = Some(output.theme_effective().clone());
+        output.usage_hints = Some(output.usage_hints_effective());
+        output.mask_env_values = Some(output.mask_env_values_effective());
         spec.output = Some(output);
         let mut modules = self.modules_effective().clone();
         modules.security = Some(modules.security_effective().clone());
@@ -269,7 +271,9 @@ impl ConfigSpec {
         spec.security = Some(self.security_effective().clone());
         spec.ai = Some(self.ai_effective().clone());
         spec.compliance = Some(self.compliance_effective().clone());
-        spec.update = Some(self.update_effective().clone());
+        let mut update = self.update_effective().clone();
+        update.channel = Some(update.channel_effective().to_string());
+        spec.update = Some(update);
         spec.secrets = Some(self.secrets_effective().clone());
         spec
     }
@@ -278,18 +282,6 @@ impl ConfigSpec {
     #[must_use]
     pub fn theme(&self) -> Option<&ThemeConfig> {
         self.output.as_ref().and_then(|o| o.theme.as_ref())
-    }
-
-    /// What `spec.output.usageHints` declares.
-    #[must_use]
-    pub fn usage_hints(&self) -> Option<bool> {
-        self.output.as_ref().and_then(|o| o.usage_hints)
-    }
-
-    /// What `spec.output.maskEnvValues` declares.
-    #[must_use]
-    pub fn mask_env_values(&self) -> Option<MaskEnvValues> {
-        self.output.as_ref().and_then(|o| o.mask_env_values)
     }
 }
 
@@ -374,8 +366,9 @@ pub struct UpdateConfig {
     #[serde(default = "default_update_interval")]
     pub interval: String,
 
-    /// Release channel to track (e.g. `stable`, `beta`). When unset, cfgd uses
-    /// its built-in default channel.
+    /// Release channel to track: `stable` (releases GitHub marks latest) or
+    /// `prerelease` (the newest release, prereleases included). Omitted,
+    /// `stable`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub channel: Option<String>,
 
@@ -383,6 +376,18 @@ pub struct UpdateConfig {
     #[serde(default, deserialize_with = "crate::config::null_as_default")]
     #[schemars(with = "Option<SkillUpdateConfig>")]
     pub skills: SkillUpdateConfig,
+}
+
+/// The release channel an `update` block that names none tracks.
+pub const STABLE_UPDATE_CHANNEL: &str = "stable";
+
+impl UpdateConfig {
+    /// The release channel to track: the declared one, or
+    /// [`STABLE_UPDATE_CHANNEL`] where the document omits it.
+    #[must_use]
+    pub fn channel_effective(&self) -> &str {
+        self.channel.as_deref().unwrap_or(STABLE_UPDATE_CHANNEL)
+    }
 }
 
 impl Default for UpdateConfig {

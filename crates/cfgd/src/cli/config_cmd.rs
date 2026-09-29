@@ -14,6 +14,7 @@ pub fn build_config_show_doc(cfg: &CfgdConfig, config_path: &Path) -> Doc {
         )
         .kv(
             "Profile",
+            // option-section-ok: renders the absence of a profile
             cfg.spec.profile.as_deref().unwrap_or("(none)").to_string(),
         );
 
@@ -2604,8 +2605,9 @@ spec:
     /// Every scalar leaf the `Config` schema addresses, asked for on a document
     /// that declares the sections above it and nothing else, answers with the
     /// value the typed config carries there, read off its JSON serialization:
-    /// a default where serde fills one, the missing key where the typed value
-    /// is null.
+    /// a default where serde fills one, the value its `OMITTED_FIELDS` row
+    /// reads where the typed value is null and the build fills it in, and the
+    /// missing key where it is null and nothing is set.
     #[test]
     fn every_config_leaf_the_document_leaves_out_answers_with_the_typed_default() {
         let leaves: Vec<Vec<String>> = addressable_config_fields()
@@ -2632,6 +2634,16 @@ spec:
                 .pointer(&pointer)
                 .cloned()
                 .unwrap_or(serde_json::Value::Null);
+            let filled = cfgd_core::test_helpers::OMITTED_FIELDS
+                .iter()
+                .find(|row| row.key == key)
+                .and_then(|row| row.omitted);
+            let typed = match filled {
+                Some(omitted) if typed.is_null() => {
+                    serde_json::to_value(omitted(&config.spec)).unwrap()
+                }
+                _ => typed,
+            };
             let cli = test_cli_for(path);
             let (printer, cap) = Printer::for_test_doc_with_format(OutputFormat::Json);
             let result = cmd_config_get(&cli, &printer, &key);
@@ -2659,6 +2671,8 @@ spec:
             "daemon.enabled",
             "daemon.reconcile.interval",
             "output.theme.name",
+            "output.usageHints",
+            "update.channel",
         ] {
             assert!(
                 answered.iter().any(|key| key == named),
@@ -2674,7 +2688,7 @@ spec:
 
     /// How many leaves the walk above answers from a default today, so a
     /// schema walk that stopped descending fails by count as well as by name.
-    const ANSWERED_FLOOR: usize = 35;
+    const ANSWERED_FLOOR: usize = 38;
 
     /// A key `nested_output_key` rewrote is refused under the spelling the
     /// caller wrote, by every verb and on every refusal a rewritten key can
@@ -2707,9 +2721,9 @@ spec:
                 "get",
                 get,
                 &bare_cli,
-                "usageHints",
+                "theme.overrides.primary",
                 "key_not_found",
-                "key 'usageHints' not found",
+                "key 'theme.overrides.primary' not found",
             ),
             (
                 "get",
@@ -2784,14 +2798,14 @@ spec:
     }
 
     /// Every scalar leaf, asked for on a document whose `spec` is empty,
-    /// answers with what the build uses there. A leaf under a section
-    /// production fills in when it is omitted reads that section's omitted
-    /// value from `OMITTED_SECTIONS`; a leaf under a section whose omission
-    /// turns its feature off is refused as not found, under the key the
-    /// caller wrote; any other leaf answers with its serde default.
+    /// answers with what the build uses there. A leaf with its own
+    /// `OMITTED_FIELDS` row, or under a section production fills in when it
+    /// is omitted, reads the nearest row's omitted value; a leaf whose row,
+    /// or whose section's row, has none is refused as not found, under the
+    /// key the caller wrote; any other leaf answers with its serde default.
     #[test]
     fn every_key_under_an_omitted_section_answers_what_the_build_uses() {
-        use cfgd_core::test_helpers::OMITTED_SECTIONS;
+        use cfgd_core::test_helpers::OMITTED_FIELDS;
         let dir = tempfile::tempdir().unwrap();
         let path = document_with_spec(dir.path(), &serde_yaml::from_str("{}").unwrap());
         let bytes = std::fs::read_to_string(&path).unwrap();
@@ -2805,20 +2819,24 @@ spec:
                 continue;
             }
             let key = segments.join(".");
-            let under = |row_key: &str| key.starts_with(&format!("{row_key}."));
-            let feature_off = OMITTED_SECTIONS
+            let under = |row_key: &str| key == row_key || key.starts_with(&format!("{row_key}."));
+            let feature_off = OMITTED_FIELDS
                 .iter()
                 .any(|row| row.omitted.is_none() && under(row.key));
             let expected = if feature_off {
                 serde_json::Value::Null
-            } else if let Some(row) = OMITTED_SECTIONS
+            } else if let Some(row) = OMITTED_FIELDS
                 .iter()
                 .filter(|row| under(row.key))
                 .max_by_key(|row| row.key.len())
             {
                 let omitted =
                     (row.omitted.expect("feature-off rows are handled above"))(&bare.spec);
-                let pointer = format!("/{}", segments[row.key.split('.').count()..].join("/"));
+                let below = &segments[row.key.split('.').count()..];
+                let pointer = below
+                    .iter()
+                    .map(|segment| format!("/{segment}"))
+                    .collect::<String>();
                 serde_json::to_value(&omitted)
                     .unwrap()
                     .pointer(&pointer)
@@ -2859,6 +2877,9 @@ spec:
             ("daemon.notify.method", serde_json::json!("Desktop")),
             ("output.theme.name", serde_json::json!("default")),
             ("secrets.backend", serde_json::json!("sops")),
+            ("output.usageHints", serde_json::json!(false)),
+            ("output.maskEnvValues", serde_json::json!("All")),
+            ("update.channel", serde_json::json!("stable")),
         ] {
             let (printer, cap) = Printer::for_test_doc_with_format(OutputFormat::Json);
             cmd_config_get(&cli, &printer, named).unwrap_or_else(|e| panic!("{named}: {e:#}"));
@@ -2887,8 +2908,8 @@ spec:
 
     /// How many leaves the walk above answers and refuses today, so a schema
     /// walk that stopped descending fails by count as well as by name.
-    const OMITTED_ANSWERED_FLOOR: usize = 35;
-    const OMITTED_REFUSED_FLOOR: usize = 28;
+    const OMITTED_ANSWERED_FLOOR: usize = 38;
+    const OMITTED_REFUSED_FLOOR: usize = 25;
 
     /// Every `alias` verb builds the key `aliases.<name>` from the name the
     /// caller typed, and refuses by that name: the `-o json` name is the

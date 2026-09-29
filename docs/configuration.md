@@ -84,7 +84,7 @@ spec:
   update:
     policy: Prompt         # cfgd binary self-update behavior (default: Prompt)
     interval: 24h          # check cadence when policy != Manual (default: 24h)
-    channel: stable        # release channel (default: cfgd's built-in channel)
+    channel: stable        # release channel: stable (default) or prerelease
     skills:
       policy: Inherit      # follows spec.update.policy unless overridden (default: Inherit)
 
@@ -118,7 +118,7 @@ spec:
 | `spec.daemon.notify.method` | no | `Desktop` | `Desktop`, `Stdout`, or `Webhook` |
 | `spec.update.policy` | no | `Prompt` | cfgd binary self-update behavior: `Auto`, `Prompt`, `Notify`, or `Manual`. `--update-policy` / `CFGD_UPDATE_POLICY` override it for one invocation (see [Update behavior](#update-behavior-specupdate)) |
 | `spec.update.interval` | no | `24h` | Update-check cadence when `policy != Manual` (e.g. `30m`, `24h`, `7d`) |
-| `spec.update.channel` | no | — | Release channel to track (e.g. `stable`, `prerelease`); unset uses cfgd's built-in default channel |
+| `spec.update.channel` | no | `stable` | Release channel to track: `stable` or `prerelease` |
 | `spec.update.skills.policy` | no | `Inherit` | Authored-skill refresh policy: `Inherit` (follow `spec.update.policy`), `Auto`, `Prompt`, `Notify`, or `Manual` |
 | `spec.migrationPolicy` | no | `Prompt` | What cfgd does when this document is behind the schema the running binary reads: `Prompt` asks once on an interactive run, `Warn` reports only, `Update` writes the alignment, `Ignore` says nothing. `--migration-policy` / `CFGD_MIGRATION_POLICY` override for one invocation. The check is withheld from the invocations whose own subject it is (`cfgd config migrate`, `cfgd config edit`, and `cfgd config set` / `cfgd config unset` on `migrationPolicy`), so the remediation and the knob's own setters are never acted on first. `cfgd init` runs it against the config it writes, once that file is on disk and before its `--apply` step. Under a preview (`cfgd plan`, `cfgd apply --dry-run`, `cfgd profile migrate --dry-run` and `cfgd init --dry-run`) the check adds no field to the document, answering `Prompt` and `Update` the way `Warn` does. A write cfgd makes to the document (a `cfgd config set`, a `cfgd source add`, a `cfgd profile switch`) declares every field this build reads in a section the write creates, so the prompt never asks about a section cfgd itself just wrote |
 | `spec.secrets.backend` | no | `sops` | `sops` or `age` (see [secrets.md](secrets.md) for when to use which) |
@@ -147,7 +147,7 @@ nested form and drops the flat key it read.
 
 All fields can be read and written programmatically via `cfgd config get <key>` and `cfgd config set <key> <value>`. See the [CLI reference](cli-reference.md) for details.
 
-A section the document leaves out still has the values this build uses for it, and `cfgd config get` answers them: with no `daemon` block, `cfgd config get daemon.reconcile.interval` prints `5m`. An omitted block has the values an empty one (`daemon: {}`) declares. Leaving `spec.secrets.sops` out leaves sops to its own key search, so `cfgd config get` refuses every key under it as missing.
+A section the document leaves out still has the values this build uses for it, and `cfgd config get` answers them: with no `daemon` block, `cfgd config get daemon.reconcile.interval` prints `5m`. An omitted block has the values an empty one (`daemon: {}`) declares, and an omitted optional field the build fills in answers with that value: `cfgd config get update.channel` prints `stable`. Leaving `spec.secrets.sops` out leaves sops to its own key search, so `cfgd config get` refuses every key under it as missing.
 
 Enum-valued fields (e.g. `spec.fileStrategy`, `spec.daemon.reconcile.driftPolicy`, `spec.daemon.notify.method`, the profile-level `spec.envScope`, `spec.compliance.export.format`) are parsed case-insensitively: `Symlink`, `symlink`, and `SYMLINK` are all accepted. The documented PascalCase form is canonical and is what cfgd writes back.
 
@@ -169,7 +169,7 @@ spec:
   update:
     policy: Prompt         # cfgd binary self-update behavior (default: Prompt)
     interval: 24h          # check cadence when policy != Manual (default: 24h)
-    channel: stable        # release channel (default: cfgd's built-in channel)
+    channel: stable        # release channel: stable (default) or prerelease
     skills:
       policy: Inherit      # follows spec.update.policy unless overridden (default: Inherit)
 ```

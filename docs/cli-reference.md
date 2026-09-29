@@ -2728,13 +2728,15 @@ A key is relative to `spec`, and `get`, `set` and `unset` all accept the
 
 A key the document does not declare answers with the value this build uses for
 it, on the human and `-o json` channels alike. That includes a field inside a
-section the document leaves out: on a document that never names `migrationPolicy`
-or `daemon`, `config get migrationPolicy` prints `Prompt` and
-`config get daemon.reconcile.interval` prints `5m`. A key the build holds no value
-for is refused as a missing key, exit `6`, and the refusal names the key as you
-wrote it. That covers an optional key with no default (`profile`,
-`output.usageHints`) and every key under a block the build reads only when it is
-declared, such as `secrets.sops.ageKey` on a document with no `secrets.sops`.
+section the document leaves out and an optional field the build fills in: on a
+document that never names `migrationPolicy`, `daemon` or `output`,
+`config get migrationPolicy` prints `Prompt`, `config get daemon.reconcile.interval`
+prints `5m` and `config get output.usageHints` prints `false`. A key the build
+holds no value for is refused as a missing key, exit `6`, and the refusal names
+the key as you wrote it. That covers an optional key whose absence means nothing
+is set (`profile`, `daemon.notify.webhookUrl`, a theme override) and every key
+under a block the build reads only when it is declared, such as
+`secrets.sops.ageKey` on a document with no `secrets.sops`.
 
 ```sh
 cfgd config get profile                      # → work

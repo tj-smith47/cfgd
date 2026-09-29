@@ -8,6 +8,7 @@ use std::time::Duration;
 use semver::Version;
 
 use crate::PathDisplayExt;
+use crate::config::STABLE_UPDATE_CHANNEL;
 use crate::errors::{Result, UpgradeError};
 use crate::output::{Printer, Role};
 
@@ -225,21 +226,23 @@ fn fetch_newest_release_from(
         })
 }
 
-/// Dispatch the release fetch by channel. `None`, `"stable"`, and any
+/// Dispatch the release fetch by channel. [`STABLE_UPDATE_CHANNEL`] and any
 /// unrecognized value resolve to the stable `releases/latest` path;
 /// `"prerelease"` resolves to the prerelease-inclusive list path. Matching is
-/// case-insensitive. An unrecognized non-stable channel logs a warning and
-/// falls back to stable.
+/// case-insensitive. An unrecognized channel logs a warning and falls back to
+/// stable.
 fn fetch_release_for_channel(
     api_base: &str,
     repo: &str,
-    channel: Option<&str>,
+    channel: &str,
     printer: Option<&Printer>,
 ) -> Result<ReleaseInfo> {
-    match channel.map(str::to_ascii_lowercase).as_deref() {
-        Some("prerelease") => fetch_newest_release_from(api_base, repo, printer),
-        None | Some("stable") => fetch_latest_release_from(api_base, repo, printer),
-        Some(other) => {
+    match channel.to_ascii_lowercase().as_str() {
+        "prerelease" => fetch_newest_release_from(api_base, repo, printer),
+        stable if stable == STABLE_UPDATE_CHANNEL => {
+            fetch_latest_release_from(api_base, repo, printer)
+        }
+        other => {
             tracing::warn!(
                 channel = other,
                 "unknown update channel; tracking stable releases"
@@ -1207,7 +1210,7 @@ pub fn cleanup_old_binary() {
 pub fn check_with_cache(
     cfgd_version: &str,
     repo: Option<&str>,
-    channel: Option<&str>,
+    channel: &str,
     printer: Option<&Printer>,
 ) -> Result<UpdateCheck> {
     let repo = repo.unwrap_or(DEFAULT_REPO);
@@ -1253,14 +1256,14 @@ pub fn check_with_cache(
 ///
 /// `cfgd_version` is the running binary's version (see
 /// [`parse_current_version`]). `channel` selects which release stream to
-/// track: `None`, `Some("stable")`, or any unrecognized value tracks stable
-/// releases (`releases/latest`, which excludes prereleases);
-/// `Some("prerelease")` tracks the newest release including prereleases.
+/// track: [`STABLE_UPDATE_CHANNEL`] or any unrecognized value tracks stable
+/// releases (`releases/latest`, which excludes prereleases); `"prerelease"`
+/// tracks the newest release including prereleases.
 /// Matching is case-insensitive.
 pub fn check_latest(
     cfgd_version: &str,
     repo: Option<&str>,
-    channel: Option<&str>,
+    channel: &str,
     printer: Option<&Printer>,
 ) -> Result<UpdateCheck> {
     let repo = repo.unwrap_or(DEFAULT_REPO);

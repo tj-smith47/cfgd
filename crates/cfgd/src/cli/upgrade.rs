@@ -94,7 +94,7 @@ pub fn cmd_upgrade(
         }
         Err(_) => Default::default(),
     };
-    let channel = update_cfg.channel.as_deref();
+    let channel = update_cfg.channel_effective();
 
     if check_only {
         let check = upgrade::check_latest(env!("CARGO_PKG_VERSION"), None, channel, Some(printer))

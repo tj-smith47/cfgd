@@ -24,6 +24,7 @@ pub(super) fn collect_and_store_compliance_snapshot<'a>(
     let profile_name = cli
         .profile
         .as_deref()
+        // option-section-ok: the `--profile` flag, answered by the active profile
         .unwrap_or_else(|| cfg.active_profile().unwrap_or("default"));
 
     let scope = cfg.spec.compliance_effective().scope.clone();

@@ -181,9 +181,8 @@ pub fn resolve_action(policy: UpdatePolicy, interactive: bool, assume_yes: bool)
 }
 
 /// Network-fetch effect: resolve the latest [`UpdateCheck`] for a release
-/// channel (`None` = default stream).
-pub type FetchFn<'a> =
-    Box<dyn FnMut(Option<&str>) -> Result<UpdateCheck, super::UpgradeError> + 'a>;
+/// channel, as [`UpdateConfig::channel_effective`] names it.
+pub type FetchFn<'a> = Box<dyn FnMut(&str) -> Result<UpdateCheck, super::UpgradeError> + 'a>;
 /// Confirm/apply effect: a `&UpdateCheck` predicate returning yes/no (prompt
 /// answer, or install success).
 pub type CheckPredicateFn<'a> = Box<dyn FnMut(&UpdateCheck) -> bool + 'a>;
@@ -239,7 +238,7 @@ pub fn run_update_check(
         return UpdateCheckOutcome::no_check();
     }
 
-    let update = match (effects.fetch)(config.channel.as_deref()) {
+    let update = match (effects.fetch)(config.channel_effective()) {
         Ok(u) => u,
         Err(e) => {
             tracing::warn!(error = %e, "self-update check failed");
@@ -338,7 +337,7 @@ mod tests {
     /// Effects wired to canned closures with shared counters so a test can both
     /// drive the orchestrator and assert which closures fired.
     struct Spy {
-        fetched_channel: std::cell::RefCell<Option<Option<String>>>,
+        fetched_channel: std::cell::RefCell<Option<String>>,
         surfaced: std::cell::Cell<u32>,
         applied: std::cell::Cell<u32>,
         confirmed: std::cell::Cell<u32>,
@@ -369,7 +368,7 @@ mod tests {
                 interactive,
                 assume_yes,
                 fetch: Box::new(move |ch| {
-                    *self.fetched_channel.borrow_mut() = Some(ch.map(str::to_string));
+                    *self.fetched_channel.borrow_mut() = Some(ch.to_string());
                     if fetch_ok {
                         Ok(result.clone())
                     } else {
@@ -694,7 +693,7 @@ mod tests {
         run_update_check(&cfg, 100, None, &mut effects);
         assert_eq!(
             spy.fetched_channel.borrow().clone(),
-            Some(Some("beta".to_string())),
+            Some("beta".to_string()),
             "configured channel must reach the fetch closure",
         );
     }

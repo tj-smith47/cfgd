@@ -6291,28 +6291,31 @@ pub fn production_sources_per_root(
         .collect()
 }
 
-/// What omitting one `Option<…Config>` section of a config document means to
-/// the build, for every such field a struct under `config/` declares.
-pub struct OmittedSection {
+/// What omitting one `Option` field of a config document means to the build:
+/// an `Option<…Config>` section any struct under `config/` declares, or an
+/// `Option` leaf reached from `ConfigSpec` through its sections.
+pub struct OmittedField {
     /// The struct declaring the field, as Rust spells it.
     pub owner: &'static str,
     /// The field, as Rust spells it.
     pub field: &'static str,
     /// The `spec`-relative key `cfgd config get` addresses the section by.
     pub key: &'static str,
-    /// The section's `<field>_effective` accessor serialized on a spec that
+    /// The field's `<field>_effective` accessor serialized on a spec that
     /// omits every section, or `None` for a section whose omission turns its
-    /// feature off, which has no accessor.
+    /// feature off or a leaf whose omission means nothing is set, neither of
+    /// which has an accessor.
     pub omitted: Option<fn(&crate::config::ConfigSpec) -> serde_yaml::Value>,
 }
 
 fn section_value<T: serde::Serialize>(value: &T) -> serde_yaml::Value {
-    serde_yaml::to_value(value).unwrap_or_else(|e| panic!("a config section serializes: {e}"))
+    serde_yaml::to_value(value).unwrap_or_else(|e| panic!("a config field serializes: {e}"))
 }
 
-/// Every `Option<…Config>` section of a config document, classified by what
-/// production does when it is omitted. A section is defaults-apply when a
-/// production reader substitutes a value for `None`; that reader goes through
+/// Every `Option<…Config>` section of a config document and every `Option`
+/// leaf reached from `ConfigSpec` through them, classified by what production
+/// does when it is omitted. A field is defaults-apply when a production
+/// reader substitutes a value for `None`; that reader goes through
 /// the accessor, and the accessor's omitted value is what `cfgd config get`
 /// reports. The private deserialization mirror `RawConfigSpec` is moved into
 /// `ConfigSpec` field for field and is not a row.
@@ -6345,22 +6348,32 @@ fn section_value<T: serde::Serialize>(value: &T) -> serde_yaml::Value {
 /// - `secrets`, omitted as `secrets: {}` (the `sops` backend). Read by the
 ///   secret backend the provider registry builds.
 ///
-/// Feature off:
+/// - `output.usageHints`, omitted as `false`. Read by `resolve_hints_enabled`.
+/// - `output.maskEnvValues`, omitted as `All`. Read by
+///   `resolve_mask_env_values`.
+/// - `update.channel`, omitted as `STABLE_UPDATE_CHANNEL`. Read by
+///   `cmd_upgrade`, `run_update_check` and the daemon's version check.
+///
+/// Feature off, or nothing set:
 /// - `secrets.sops`: no sops settings are read.
-pub const OMITTED_SECTIONS: &[OmittedSection] = &[
-    OmittedSection {
+/// - `profile`: no profile is active.
+/// - `daemon.notify.webhookUrl`: no webhook is posted to.
+/// - `secrets.sops.ageKey`: sops searches for its key itself.
+/// - every `output.theme.overrides` slot: the preset's own value renders.
+pub const OMITTED_FIELDS: &[OmittedField] = &[
+    OmittedField {
         owner: "ConfigSpec",
         field: "daemon",
         key: "daemon",
         omitted: Some(|s| section_value(s.daemon_effective())),
     },
-    OmittedSection {
+    OmittedField {
         owner: "DaemonConfig",
         field: "reconcile",
         key: "daemon.reconcile",
         omitted: Some(|s| section_value(s.daemon_effective().reconcile_effective())),
     },
-    OmittedSection {
+    OmittedField {
         owner: "ReconcileConfig",
         field: "policy",
         key: "daemon.reconcile.policy",
@@ -6372,76 +6385,244 @@ pub const OMITTED_SECTIONS: &[OmittedSection] = &[
             )
         }),
     },
-    OmittedSection {
+    OmittedField {
         owner: "DaemonConfig",
         field: "sync",
         key: "daemon.sync",
         omitted: Some(|s| section_value(s.daemon_effective().sync_effective())),
     },
-    OmittedSection {
+    OmittedField {
         owner: "DaemonConfig",
         field: "notify",
         key: "daemon.notify",
         omitted: Some(|s| section_value(s.daemon_effective().notify_effective())),
     },
-    OmittedSection {
+    OmittedField {
         owner: "ConfigSpec",
         field: "output",
         key: "output",
         omitted: Some(|s| section_value(s.output_effective())),
     },
-    OmittedSection {
+    OmittedField {
         owner: "OutputConfig",
         field: "theme",
         key: "output.theme",
         omitted: Some(|s| section_value(s.output_effective().theme_effective())),
     },
-    OmittedSection {
+    OmittedField {
         owner: "ConfigSpec",
         field: "modules",
         key: "modules",
         omitted: Some(|s| section_value(s.modules_effective())),
     },
-    OmittedSection {
+    OmittedField {
         owner: "ModulesConfig",
         field: "security",
         key: "modules.security",
         omitted: Some(|s| section_value(s.modules_effective().security_effective())),
     },
-    OmittedSection {
+    OmittedField {
         owner: "ConfigSpec",
         field: "security",
         key: "security",
         omitted: Some(|s| section_value(s.security_effective())),
     },
-    OmittedSection {
+    OmittedField {
         owner: "ConfigSpec",
         field: "ai",
         key: "ai",
         omitted: Some(|s| section_value(s.ai_effective())),
     },
-    OmittedSection {
+    OmittedField {
         owner: "ConfigSpec",
         field: "compliance",
         key: "compliance",
         omitted: Some(|s| section_value(s.compliance_effective())),
     },
-    OmittedSection {
+    OmittedField {
         owner: "ConfigSpec",
         field: "update",
         key: "update",
         omitted: Some(|s| section_value(s.update_effective())),
     },
-    OmittedSection {
+    OmittedField {
         owner: "ConfigSpec",
         field: "secrets",
         key: "secrets",
         omitted: Some(|s| section_value(s.secrets_effective())),
     },
-    OmittedSection {
+    OmittedField {
         owner: "SecretsConfig",
         field: "sops",
         key: "secrets.sops",
+        omitted: None,
+    },
+    OmittedField {
+        owner: "OutputConfig",
+        field: "usage_hints",
+        key: "output.usageHints",
+        omitted: Some(|s| section_value(&s.output_effective().usage_hints_effective())),
+    },
+    OmittedField {
+        owner: "OutputConfig",
+        field: "mask_env_values",
+        key: "output.maskEnvValues",
+        omitted: Some(|s| section_value(&s.output_effective().mask_env_values_effective())),
+    },
+    OmittedField {
+        owner: "UpdateConfig",
+        field: "channel",
+        key: "update.channel",
+        omitted: Some(|s| section_value(&s.update_effective().channel_effective())),
+    },
+    OmittedField {
+        owner: "ConfigSpec",
+        field: "profile",
+        key: "profile",
+        omitted: None,
+    },
+    OmittedField {
+        owner: "NotifyConfig",
+        field: "webhook_url",
+        key: "daemon.notify.webhookUrl",
+        omitted: None,
+    },
+    OmittedField {
+        owner: "SopsConfig",
+        field: "age_key",
+        key: "secrets.sops.ageKey",
+        omitted: None,
+    },
+    OmittedField {
+        owner: "ThemeOverrides",
+        field: "primary",
+        key: "output.theme.overrides.primary",
+        omitted: None,
+    },
+    OmittedField {
+        owner: "ThemeOverrides",
+        field: "header",
+        key: "output.theme.overrides.header",
+        omitted: None,
+    },
+    OmittedField {
+        owner: "ThemeOverrides",
+        field: "success",
+        key: "output.theme.overrides.success",
+        omitted: None,
+    },
+    OmittedField {
+        owner: "ThemeOverrides",
+        field: "warning",
+        key: "output.theme.overrides.warning",
+        omitted: None,
+    },
+    OmittedField {
+        owner: "ThemeOverrides",
+        field: "error",
+        key: "output.theme.overrides.error",
+        omitted: None,
+    },
+    OmittedField {
+        owner: "ThemeOverrides",
+        field: "info",
+        key: "output.theme.overrides.info",
+        omitted: None,
+    },
+    OmittedField {
+        owner: "ThemeOverrides",
+        field: "muted",
+        key: "output.theme.overrides.muted",
+        omitted: None,
+    },
+    OmittedField {
+        owner: "ThemeOverrides",
+        field: "running",
+        key: "output.theme.overrides.running",
+        omitted: None,
+    },
+    OmittedField {
+        owner: "ThemeOverrides",
+        field: "diff_add",
+        key: "output.theme.overrides.diffAdd",
+        omitted: None,
+    },
+    OmittedField {
+        owner: "ThemeOverrides",
+        field: "diff_remove",
+        key: "output.theme.overrides.diffRemove",
+        omitted: None,
+    },
+    OmittedField {
+        owner: "ThemeOverrides",
+        field: "diff_context",
+        key: "output.theme.overrides.diffContext",
+        omitted: None,
+    },
+    OmittedField {
+        owner: "ThemeOverrides",
+        field: "accent",
+        key: "output.theme.overrides.accent",
+        omitted: None,
+    },
+    OmittedField {
+        owner: "ThemeOverrides",
+        field: "secondary",
+        key: "output.theme.overrides.secondary",
+        omitted: None,
+    },
+    OmittedField {
+        owner: "ThemeOverrides",
+        field: "type_hint",
+        key: "output.theme.overrides.typeHint",
+        omitted: None,
+    },
+    OmittedField {
+        owner: "ThemeOverrides",
+        field: "icon_ok",
+        key: "output.theme.overrides.iconOk",
+        omitted: None,
+    },
+    OmittedField {
+        owner: "ThemeOverrides",
+        field: "icon_warn",
+        key: "output.theme.overrides.iconWarn",
+        omitted: None,
+    },
+    OmittedField {
+        owner: "ThemeOverrides",
+        field: "icon_fail",
+        key: "output.theme.overrides.iconFail",
+        omitted: None,
+    },
+    OmittedField {
+        owner: "ThemeOverrides",
+        field: "icon_pending",
+        key: "output.theme.overrides.iconPending",
+        omitted: None,
+    },
+    OmittedField {
+        owner: "ThemeOverrides",
+        field: "icon_running",
+        key: "output.theme.overrides.iconRunning",
+        omitted: None,
+    },
+    OmittedField {
+        owner: "ThemeOverrides",
+        field: "icon_skipped",
+        key: "output.theme.overrides.iconSkipped",
+        omitted: None,
+    },
+    OmittedField {
+        owner: "ThemeOverrides",
+        field: "icon_arrow",
+        key: "output.theme.overrides.iconArrow",
+        omitted: None,
+    },
+    OmittedField {
+        owner: "ThemeOverrides",
+        field: "icon_info",
+        key: "output.theme.overrides.iconInfo",
         omitted: None,
     },
 ];
