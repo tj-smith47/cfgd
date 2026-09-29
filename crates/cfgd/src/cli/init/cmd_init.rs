@@ -369,7 +369,7 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
                 // No --apply-profile: use whatever the config document names, or pick interactively
                 let mut cfg = config::load_config(&config_path)?;
                 drain_config_deprecations(printer, &mut cfg);
-                // option-section-ok: an omitted profile is asked for, never assumed
+                // option-section-ok: an omitted profile is asked for at the prompt
                 if let Some(ref p) = cfg.spec.profile {
                     p.clone()
                 } else {

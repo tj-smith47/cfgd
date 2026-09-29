@@ -692,7 +692,7 @@ fn build_config_section(s: SectionBuilder, cfg: &DoctorConfigCheck) -> SectionBu
         }),
         DoctorConfigState::Invalid => s.status_with(Role::Fail, "Config file", |f| {
             f.qualifier(cfgd_core::fold_home_in_text(&cfg.path))
-                // option-section-ok: a doctor state's parse error, not a config field
+                // option-section-ok: a doctor state's parse error message
                 .detail(cfg.error.as_deref().unwrap_or("invalid").to_string())
         }),
     }
@@ -829,7 +829,7 @@ fn build_managers_section(s: SectionBuilder, managers: &[DoctorManagerCheck]) ->
 fn build_modules_section(s: SectionBuilder, modules: &[DoctorModuleCheck]) -> SectionBuilder {
     modules.iter().fold(s, |s, m| {
         if !m.valid {
-            // option-section-ok: a doctor state's error, not a config field
+            // option-section-ok: a doctor state's error message
             let detail = m.error.clone().unwrap_or_else(|| "invalid".into());
             return s.status_with(Role::Fail, m.name.clone(), |sf| sf.detail(detail));
         }
@@ -889,7 +889,7 @@ fn build_profiles_section(
         return s.status(Role::Ok, "All profiles use the canonical bundle layout");
     }
     profiles.iter().fold(s, |s, p| {
-        // option-section-ok: a doctor state's error, not a config field
+        // option-section-ok: a doctor state's error message
         if let Some(err) = p.error.as_deref() {
             // Ambiguous / unscannable profiles are hard-broken (every load of
             // them errors), unlike the supported legacy form — Fail, not Warn.
@@ -920,7 +920,7 @@ fn build_installation_section(mut s: SectionBuilder, extras: &DoctorExtras) -> S
         };
     }
     if let Some(pd) = extras.profiles_dir.as_ref() {
-        // option-section-ok: a doctor state's error, not a config field
+        // option-section-ok: a doctor state's error message
         s = if let Some(err) = pd.error.as_deref() {
             s.status_with(Role::Fail, "Profiles directory", |sf| {
                 sf.qualifier(cfgd_core::fold_home_in_text(&pd.path))

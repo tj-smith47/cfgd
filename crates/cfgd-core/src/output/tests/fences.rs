@@ -9007,8 +9007,8 @@ struct ConfigSections {
     accessors: std::collections::BTreeSet<(String, String)>,
     /// The `<field>_effective` methods `ConfigSpec::effective` calls, by field.
     filled: std::collections::BTreeSet<String>,
-    /// Every value an accessor writes out itself instead of taking its type's
-    /// `Default`, as `impl type::accessor: what`.
+    /// Every omitted value an accessor spells out in its own body, as
+    /// `impl type::accessor: what`.
     hand_written: Vec<String>,
 }
 
