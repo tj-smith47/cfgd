@@ -2312,17 +2312,18 @@ fi
 # is never read back, which is why it is allowed on a bare sysctl write only.
 #
 # A key held in a variable can only be judged where its value is spelled, so
-# the helper's own write inside sysctl_drift_case() is exempt (its callers are
-# judged) and a variable key anywhere else is an error. Each fs.inotify raise
-# the scan exempts prints a CANARY line: the repository run requires at least
-# one, so a scan that stops reading the daemon starts fails loudly.
+# the helper's own `sysctl -w "$key=..."` inside sysctl_drift_case() is exempt
+# (its callers are judged) and any other variable key is an error. Each
+# fs.inotify raise the scan exempts prints a CANARY line: the repository run
+# requires at least one, so a scan that stops reading the daemon starts fails
+# loudly.
 e2e_sysctl_write_scan() {
     find "$1" -type f -exec awk '
-        function judge(k, allow, ln) {
+        function judge(k, allow, ln, exempt) {
             gsub(/["'\'']/, "", k)
             if (k == "") return
             if (k ~ /\$/) {
-                if (!helper) print FILENAME ":" ln ": unresolvable key " k
+                if (!(exempt && helper && k == "$key")) print FILENAME ":" ln ": unresolvable key " k
                 return
             }
             if (k ~ allow) {
@@ -2355,37 +2356,48 @@ e2e_sysctl_write_scan() {
                 n = split(args, tok, /[ \t]+/)
                 for (i = 1; i <= n; i++)
                     if (index(tok[i], "=") > 1)
-                        judge(substr(tok[i], 1, index(tok[i], "=") - 1), "^(net|fs\\.inotify)\\.", start)
+                        judge(substr(tok[i], 1, index(tok[i], "=") - 1), "^(net|fs\\.inotify)\\.", start, 1)
             }
             s = line
-            while (match(s, />>?[ \t]*["'\'']?\/proc\/sys\/[^ \t"'\''|;&)<>]+/)) {
+            while (match(s, />[>|]?[ \t]*["'\'']?\/proc\/sys\/[^ \t"'\''|;&)<>]+/)) {
                 m = substr(s, RSTART, RLENGTH)
                 s = substr(s, RSTART + RLENGTH)
-                judge(proc_key(m), "^net\\.", start)
+                judge(proc_key(m), "^net\\.", start, 0)
             }
             s = line
-            while (match(s, /(^|[^A-Za-z0-9_-])tee([ \t]+-a)?[ \t]+["'\'']?\/proc\/sys\/[^ \t"'\''|;&)<>]+/)) {
-                m = substr(s, RSTART, RLENGTH)
+            while (match(s, /(^|[^A-Za-z0-9_-])tee([ \t]|$)/)) {
                 s = substr(s, RSTART + RLENGTH)
-                judge(proc_key(m), "^net\\.", start)
+                args = s
+                if (match(args, /[;|&)<>]/)) args = substr(args, 1, RSTART - 1)
+                n = split(args, tok, /[ \t]+/)
+                for (i = 1; i <= n; i++) {
+                    t = tok[i]
+                    gsub(/["'\'']/, "", t)
+                    if (t ~ /^\/proc\/sys\//) judge(proc_key(t), "^net\\.", start, 0)
+                }
             }
             if (line ~ /(^|[^A-Za-z0-9_])sysctl_drift_case[ \t]/ && line !~ /sysctl_drift_case\(\)/) {
                 match(line, /sysctl_drift_case[ \t].*/)
                 split(substr(line, RSTART), tok, /[ \t]+/)
-                judge(tok[4], "^net\\.", start)
+                judge(tok[4], "^net\\.", start, 0)
             }
         }' {} +
+}
+
+# Drops the CANARY lines from the scan output, leaving hits and tool errors.
+e2e_sysctl_findings() {
+    grep -v '^CANARY ' <<<"$1" || true
 }
 
 log_section "e2e sysctl writes (pod-private keys only)"
 e2e_sysctl_root="${CFGD_AUDIT_PATH:-tests/e2e}"
 if ! e2e_sysctl_out=$(e2e_sysctl_write_scan "$e2e_sysctl_root" 2>&1); then
   log_error "The e2e sysctl write scan could not read $e2e_sysctl_root:"
-  echo "$e2e_sysctl_out"
+  e2e_sysctl_findings "$e2e_sysctl_out"
 elif [ -z "$(find "$e2e_sysctl_root" -type f -print -quit)" ]; then
   log_error "The e2e sysctl write scan found no files under $e2e_sysctl_root"
 else
-  e2e_sysctl_hits=$(grep -v '^CANARY ' <<<"$e2e_sysctl_out" || true)
+  e2e_sysctl_hits=$(e2e_sysctl_findings "$e2e_sysctl_out")
   e2e_sysctl_canary=$(grep -c '^CANARY ' <<<"$e2e_sysctl_out" || true)
   if [ -n "$e2e_sysctl_hits" ]; then
     log_error "A tests/e2e sysctl write moves a host-global or unresolvable key (drift net.ipv4.ip_forward instead):"
