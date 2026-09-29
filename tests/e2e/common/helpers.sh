@@ -534,12 +534,16 @@ sysctl_compliance_status() {
 # read Compliant while it holds its applied value, and Violation after it is
 # written to $4, so the case fails when compliance stops noticing the drift as
 # well as when it stops reporting the key. $5 is written back afterwards. The
-# key should be one only this pod can move (a network-namespaced net.* key):
-# a host-global key can be written by another suite's pod on the same node
-# between the two reads.
+# key MUST be one only this pod can move (a network-namespaced net.* key): a
+# host-global key can be written by another suite's pod on the same node
+# between the two reads, so any other key fails the case without running it.
 sysctl_drift_case() {
     local id="$1" config="$2" key="$3" drift="$4" restore="$5"
     local before after json
+    case "$key" in
+        net.*|fs.inotify.*) ;;
+        *) fail_test "$id" "$key is host-global; drift a pod-private net.* key instead"; return ;;
+    esac
     before=$(sysctl_compliance_status "$(pod_compliance_json "$config")" "$key")
     exec_in_pod sysctl -w "$key=$drift" > /dev/null 2>&1 || true
     json=$(pod_compliance_json "$config")

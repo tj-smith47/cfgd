@@ -1,0 +1,9 @@
+exec_in_pod sysctl -wq net.ipv4.ip_forward=0 > /dev/null 2>&1 || true
+exec_in_pod bash -c 'sysctl -w fs.inotify.max_user_instances=512 fs.inotify.max_user_watches=524288 > /dev/null 2>&1; nohup cfgd daemon > /var/log/d.log 2>&1 &'
+exec_in_pod bash -c 'echo 1 > /proc/sys/net/ipv4/ip_forward'
+ORIG=$(exec_in_pod cat /proc/sys/vm/max_map_count 2>/dev/null || echo "1")
+exec_in_pod sysctl -n vm.max_map_count
+sysctl_drift_case() {
+    exec_in_pod sysctl -w "$key=$drift" > /dev/null 2>&1 || true
+}
+sysctl_drift_case "DAEMON-06" /etc/cfgd/e2e-compliance-cfgd.yaml net.ipv4.ip_forward 0 1

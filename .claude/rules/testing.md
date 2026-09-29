@@ -113,13 +113,24 @@ test pods can land on the same worker. A host-global sysctl such as
 by one job can be restored by the other between a case's two reads, and the
 case fails for a reason that has nothing to do with cfgd. Every `sysctl -w`
 under `tests/e2e/` that introduces or restores drift writes
-`net.ipv4.ip_forward` (declared `"1"` by every test profile; `net.*` lives in
-the pod's own network namespace because no test pod sets `hostNetwork`). The
+`net.ipv4.ip_forward` (declared `"1"` by every profile a drift case runs
+against; `net.*` lives in the pod's own network namespace because no test pod
+sets `hostNetwork`). The
 one host-global write allowed is the `fs.inotify.*` raise ahead of a daemon
 start, which every job sets to the same value and no case reads back. A
 compliance before/after case goes through `sysctl_drift_case` in
-`tests/e2e/common/helpers.sh`. The audit gate "e2e sysctl writes stay
-pod-private" fails on any other `sysctl -w` key under `tests/e2e/`.
+`tests/e2e/common/helpers.sh`, which fails the case outright for any key
+outside `net.*` and `fs.inotify.*`. The audit gate "e2e sysctl writes stay
+pod-private" (`e2e_host_global_sysctl_writes` in `.claude/scripts/audit.sh`)
+reads every file under `tests/e2e/` and judges each written key on its own, in
+three forms: every `key=` token after a `sysctl` whose flags include `-w`
+(alone or combined, as `-q -w` or `-wq`) or `--write`, up to the end of that
+command; a redirect into `/proc/sys/<path>`, the path read as a dotted key;
+and the key argument of each `sysctl_drift_case` call. Any key outside `net.*`
+and `fs.inotify.*` is an error naming the file, line and key. A key written as
+a shell variable (the helper's own `"$key=$drift"`) is judged at its call
+sites. The `bad_e2e_sysctl_*` and `good_e2e_sysctl_*` fixtures under
+`.claude/scripts/audit-tests/` hold one case per form for `task audit:test`.
 
 ## A test never inherits its terminal shape from the ambient one
 

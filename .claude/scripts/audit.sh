@@ -2310,15 +2310,54 @@ fi
 # moved by the other mid-case. net.* keys live in the pod's network namespace;
 # the fs.inotify raise before a daemon start is the same value in every job and
 # is never read back.
-if gate_is_in_scope; then
+#
+# Prints `file:line: key` for every written key outside net.* and fs.inotify.*.
+# A write is any of: a `sysctl` whose flags include -w (alone or combined, as
+# -wq) or --write, judged on every `key=` token up to the end of that command;
+# a redirect into /proc/sys/<path>, the path folded to a dotted key; the key
+# argument of a sysctl_drift_case call. A key spelled as a variable (the
+# helper's own `"$key=$drift"`) is skipped: its value is judged at the call.
+e2e_host_global_sysctl_writes() {
+    find "$1" -type f -exec awk '
+        function emit(k) {
+            gsub(/["'\'']/, "", k)
+            if (k == "" || k ~ /^\$/ || k ~ /^(net\.|fs\.inotify\.)/) return
+            print FILENAME ":" FNR ": " k
+        }
+        {
+            s = $0
+            while (match(s, /(^|[^A-Za-z0-9_.-])sysctl([ \t]+-[-A-Za-z]+)*[ \t]+/)) {
+                flags = substr(s, RSTART, RLENGTH)
+                s = substr(s, RSTART + RLENGTH)
+                if (flags !~ /[ \t]-[A-Za-z]*w[A-Za-z]*[ \t]/ && flags !~ /--write/) continue
+                args = s
+                if (match(args, /[;|&)]/)) args = substr(args, 1, RSTART - 1)
+                n = split(args, tok, /[ \t]+/)
+                for (i = 1; i <= n; i++)
+                    if (index(tok[i], "=") > 1) emit(substr(tok[i], 1, index(tok[i], "=") - 1))
+            }
+            s = $0
+            while (match(s, />>?[ \t]*["'\'']?\/proc\/sys\/[A-Za-z0-9_.\/-]+/)) {
+                key = substr(s, RSTART, RLENGTH)
+                s = substr(s, RSTART + RLENGTH)
+                sub(/^>>?[ \t]*["'\'']?\/proc\/sys\//, "", key)
+                gsub(/\//, ".", key)
+                emit(key)
+            }
+            if ($0 ~ /(^|[^A-Za-z0-9_])sysctl_drift_case[ \t]/ && $0 !~ /sysctl_drift_case\(\)/) {
+                match($0, /sysctl_drift_case[ \t].*/)
+                split(substr($0, RSTART), tok, /[ \t]+/)
+                emit(tok[4])
+            }
+        }' {} +
+}
+
 log_section "e2e sysctl writes (pod-private keys only)"
-if sw=$(rg -n --no-heading 'sysctl -w' tests/e2e 2>/dev/null \
-      | grep -vE 'sysctl -w "?\$(key|KEY)=|sysctl -w "?net\.|sysctl -w fs\.inotify\.' ) && [ -n "$sw" ]; then
+if sw=$(e2e_host_global_sysctl_writes "${CFGD_AUDIT_PATH:-tests/e2e}") && [ -n "$sw" ]; then
   log_error "A tests/e2e sysctl write moves a host-global key (drift net.ipv4.ip_forward instead):"
   echo "$sw"
 else
   log_ok "e2e sysctl writes stay pod-private"
-fi
 fi
 
 # --- Summary ---
