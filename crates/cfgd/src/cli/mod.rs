@@ -760,7 +760,7 @@ fn alias_pass_config_path(args: &[String], command: clap::Command) -> PathBuf {
     {
         argv[at] = ALIAS_SLOT.to_string();
     }
-    let command = without_help(command).subcommand(
+    let mut command = without_help(command).subcommand(
         clap::Command::new(ALIAS_SLOT).hide(true).arg(
             clap::Arg::new("args")
                 .num_args(0..)
@@ -768,7 +768,7 @@ fn alias_pass_config_path(args: &[String], command: clap::Command) -> PathBuf {
         ),
     );
     let matches = loop {
-        match command.clone().try_get_matches_from(&argv) {
+        match command.try_get_matches_from_mut(&argv) {
             Ok(matches) => break Some(matches),
             Err(error) => {
                 let unknown = (error.kind() == clap::error::ErrorKind::UnknownArgument)
@@ -792,11 +792,7 @@ fn alias_pass_config_path(args: &[String], command: clap::Command) -> PathBuf {
                     // A malformed value or a missing required argument
                     // still leaves the flags around it parsed.
                     None => {
-                        break command
-                            .clone()
-                            .ignore_errors(true)
-                            .try_get_matches_from(&argv)
-                            .ok();
+                        break command.ignore_errors(true).try_get_matches_from(&argv).ok();
                     }
                 }
             }
