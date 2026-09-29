@@ -39,10 +39,13 @@ esac
 
 # Run resolve_install_dir in a child shell and print what it echoed. $1 is the
 # CFGD_INSTALL_DIR value, $2 the scratch system directory, $3 DRY_RUN, and $4
-# a directory put first on PATH (for a sudo stand-in), or empty.
+# a directory put first on PATH (for a sudo stand-in), or empty. SUDO_EXIT is
+# forwarded by name because a caller sets it as a prefix on this function, and
+# FreeBSD's sh keeps such an assignment out of the environment of the
+# function's children, so the stand-in would never see it.
 resolve() {
     printf '%s\n' "$body" | sed "s#$system_dir_literal#$2#g" > "$scratch/fn.sh"
-    INSTALL_DIR="$1" DRY_RUN="$3" HOME="$scratch/home" PATH="${4:+$4:}$PATH" \
+    INSTALL_DIR="$1" DRY_RUN="$3" HOME="$scratch/home" PATH="${4:+$4:}$PATH" SUDO_EXIT="${SUDO_EXIT-}" \
         sh -c '. "$1"; resolve_install_dir' sh "$scratch/fn.sh"
 }
 
