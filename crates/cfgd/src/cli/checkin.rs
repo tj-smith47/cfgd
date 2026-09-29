@@ -822,11 +822,12 @@ spec:
                 continue;
             }
 
-            let script_saw = std::fs::read_to_string(&seen).unwrap_or_default();
-            if script_saw != *expected {
-                wrong.push(format!(
+            match std::fs::read_to_string(&seen) {
+                Ok(script_saw) if script_saw == *expected => {}
+                Ok(script_saw) => wrong.push(format!(
                     "{row}: the patch script saw CFGD_PROFILE={script_saw:?}, expected {expected:?}"
-                ));
+                )),
+                Err(e) => wrong.push(format!("{row}: the patch script did not run: {e}")),
             }
             if args.contains(&"compliance") {
                 let state = open_state_store(Some(state_dir.path()), cfgd_core::Scope::User)
