@@ -497,14 +497,20 @@ assert_equals() {
     return 1
 }
 
+# Print the head of a command's captured stderr ($1), indented, so a case that
+# kept stderr out of the document it parses still shows it for diagnosis.
+print_stderr_head() {
+    head -c 400 "$1" | sed 's/^/    stderr: /'
+}
+
 # Run `cfgd compliance -o json` in the test pod against config $1 and print
 # its stdout alone, the document jq reads. stderr carries advisories that
 # would corrupt the JSON if merged into it, so it goes to a scratch file and is
-# echoed to this shell's stderr for diagnosis.
+# echoed to this shell's stderr: this function's stdout is what callers capture.
 pod_compliance_json() {
     local err="$CLI_SCRATCH/pod-compliance.stderr"
     exec_in_pod cfgd --config "$1" compliance -o json --no-color 2> "$err" || true
-    head -c 400 "$err" | sed 's/^/    stderr: /' >&2
+    print_stderr_head "$err" >&2
 }
 
 # The compliance status of one sysctl key ($2) in a `compliance -o json`
@@ -514,12 +520,39 @@ pod_compliance_json() {
 # Compliant when only other sysctl keys did. Prints `absent` when the document
 # holds no sysctl answer and `unparsable` when it is not JSON.
 sysctl_compliance_status() {
+    # jq reads an empty input as no document at all and exits 0 silently.
+    [ -n "$1" ] || { echo unparsable; return 0; }
     printf '%s' "$1" | jq -r --arg key "sysctl.$2" '
         [.snapshot.checks[] | select(.category == "system")] as $system
         | ($system | map(select(.key == $key)) | first | .status)
           // ($system | map(select(.key == "sysctl")) | first | .status)
           // (if any($system[]; .key | startswith("sysctl.")) then "Compliant" else "absent" end)
     ' 2>/dev/null || echo unparsable
+}
+
+# One sysctl drift case, run against config $2 in the test pod: key $3 must
+# read Compliant while it holds its applied value, and Violation after it is
+# written to $4, so the case fails when compliance stops noticing the drift as
+# well as when it stops reporting the key. $5 is written back afterwards. The
+# key should be one only this pod can move (a network-namespaced net.* key):
+# a host-global key can be written by another suite's pod on the same node
+# between the two reads.
+sysctl_drift_case() {
+    local id="$1" config="$2" key="$3" drift="$4" restore="$5"
+    local before after json
+    before=$(sysctl_compliance_status "$(pod_compliance_json "$config")" "$key")
+    exec_in_pod sysctl -w "$key=$drift" > /dev/null 2>&1 || true
+    json=$(pod_compliance_json "$config")
+    after=$(sysctl_compliance_status "$json" "$key")
+    echo "  $key: before=$before after=$after"
+    echo "$json" | jq -c '.snapshot.checks[]? | select(.category == "system")' 2>/dev/null | sed 's/^/    /' || true
+
+    if assert_equals "$before" "Compliant" && assert_equals "$after" "Violation"; then
+        pass_test "$id"
+    else
+        fail_test "$id" "Compliance should read $key Compliant when applied and Violation once drifted"
+    fi
+    exec_in_pod sysctl -w "$key=$restore" > /dev/null 2>&1 || true
 }
 
 assert_rejected() {

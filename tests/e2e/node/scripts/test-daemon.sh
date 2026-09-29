@@ -40,16 +40,16 @@ else
     sleep 3
 
     # Introduce drift
-    exec_in_pod sysctl -w vm.max_map_count=65530 > /dev/null 2>&1 || true
-    echo "  Introduced drift: vm.max_map_count=65530"
+    exec_in_pod sysctl -w net.ipv4.ip_forward=0 > /dev/null 2>&1 || true
+    echo "  Introduced drift: net.ipv4.ip_forward=0"
 
     # Wait for daemon to fix it (should happen within 10s with 5s interval)
     echo "  Waiting up to 15s for daemon to reconcile..."
     FIXED=false
     for i in $(seq 1 15); do
-        VAL=$(exec_in_pod cat /proc/sys/vm/max_map_count 2>/dev/null || echo "error")
-        if [ "$VAL" = "262144" ]; then
-            echo "  Reconciled after ${i}s: vm.max_map_count=$VAL"
+        VAL=$(exec_in_pod cat /proc/sys/net/ipv4/ip_forward 2>/dev/null || echo "error")
+        if [ "$VAL" = "1" ]; then
+            echo "  Reconciled after ${i}s: net.ipv4.ip_forward=$VAL"
             FIXED=true
             break
         fi
@@ -72,7 +72,7 @@ else
     elif echo "$DAEMON_LOG" | grep -q "reconcile: drift detected in"; then
         pass_test "DAEMON-01"  # daemon detected drift and attempted reconciliation
     else
-        FINAL=$(exec_in_pod cat /proc/sys/vm/max_map_count 2>/dev/null || echo "error")
+        FINAL=$(exec_in_pod cat /proc/sys/net/ipv4/ip_forward 2>/dev/null || echo "error")
         fail_test "DAEMON-01" "Daemon did not reconcile drift (final value: $FINAL)"
     fi
 fi
@@ -161,7 +161,7 @@ fi
 # DAEMON-03: compliance -o json produces valid JSON
 # =================================================================
 begin_test "DAEMON-03: compliance -o json produces valid JSON"
-OUTPUT=$(exec_in_pod cfgd --config /etc/cfgd/e2e-compliance-cfgd.yaml compliance -o json --no-color 2>&1) || true
+OUTPUT=$(pod_compliance_json /etc/cfgd/e2e-compliance-cfgd.yaml)
 if assert_contains "$OUTPUT" '"snapshot"' && assert_contains "$OUTPUT" '"checks"'; then
     pass_test "DAEMON-03"
 else
@@ -208,24 +208,7 @@ fi
 begin_test "DAEMON-06: compliance detects sysctl drift as violation"
 # Ensure desired state applied
 exec_in_pod cfgd --config /etc/cfgd/e2e-compliance-cfgd.yaml apply --yes --no-color > /dev/null 2>&1 || true
-# The applied value reads Compliant before the write and Violation after it, so
-# the case fails when compliance stops noticing the drift as well as when it
-# stops reporting the key at all.
-DAEMON_06_BEFORE=$(sysctl_compliance_status "$(pod_compliance_json /etc/cfgd/e2e-compliance-cfgd.yaml)" vm.max_map_count)
-exec_in_pod sysctl -w vm.max_map_count=65530 > /dev/null 2>&1 || true
-DAEMON_06_JSON=$(pod_compliance_json /etc/cfgd/e2e-compliance-cfgd.yaml)
-DAEMON_06_AFTER=$(sysctl_compliance_status "$DAEMON_06_JSON" vm.max_map_count)
-echo "  vm.max_map_count: before=$DAEMON_06_BEFORE after=$DAEMON_06_AFTER"
-echo "$DAEMON_06_JSON" | jq -c '.snapshot.checks[]? | select(.category == "system")' 2>/dev/null | sed 's/^/    /' || true
-
-if assert_equals "$DAEMON_06_BEFORE" "Compliant" && assert_equals "$DAEMON_06_AFTER" "Violation"; then
-    pass_test "DAEMON-06"
-else
-    fail_test "DAEMON-06" "Compliance should read vm.max_map_count Compliant when applied and Violation once drifted"
-fi
-
-# Restore
-exec_in_pod sysctl -w vm.max_map_count=262144 > /dev/null 2>&1 || true
+sysctl_drift_case "DAEMON-06" /etc/cfgd/e2e-compliance-cfgd.yaml net.ipv4.ip_forward 0 1
 
 # =================================================================
 # DAEMON-07: daemon writes compliance snapshot on timer
@@ -293,9 +276,9 @@ fi
 # =================================================================
 begin_test "DAEMON-09: compliance diff between two snapshots"
 # Introduce drift to create a different snapshot
-exec_in_pod sysctl -w vm.max_map_count=65530 > /dev/null 2>&1 || true
+exec_in_pod sysctl -w net.ipv4.ip_forward=0 > /dev/null 2>&1 || true
 exec_in_pod cfgd --config /etc/cfgd/e2e-compliance-cfgd.yaml compliance --no-color > /dev/null 2>&1 || true
-exec_in_pod sysctl -w vm.max_map_count=262144 > /dev/null 2>&1 || true
+exec_in_pod sysctl -w net.ipv4.ip_forward=1 > /dev/null 2>&1 || true
 
 OUTPUT=$(exec_in_pod cfgd --config /etc/cfgd/e2e-compliance-cfgd.yaml compliance diff 1 2 --no-color 2>&1) && DIFF_RC=0 || DIFF_RC=$?
 echo "  Diff output: $(echo "$OUTPUT" | head -5 | sed 's/^/    /')"
@@ -439,16 +422,16 @@ else
     sleep 3
 
     # Introduce drift on a managed sysctl value
-    exec_in_pod sysctl -w vm.max_map_count=65530 > /dev/null 2>&1 || true
-    echo "  Introduced drift: vm.max_map_count=65530"
+    exec_in_pod sysctl -w net.ipv4.ip_forward=0 > /dev/null 2>&1 || true
+    echo "  Introduced drift: net.ipv4.ip_forward=0"
 
     # Wait for daemon to auto-restore the value
     echo "  Waiting up to 20s for daemon to restore drifted value..."
     RESTORED=false
     for i in $(seq 1 20); do
-        VAL=$(exec_in_pod cat /proc/sys/vm/max_map_count 2>/dev/null || echo "error")
-        if [ "$VAL" = "262144" ]; then
-            echo "  Value restored after ${i}s: vm.max_map_count=$VAL"
+        VAL=$(exec_in_pod cat /proc/sys/net/ipv4/ip_forward 2>/dev/null || echo "error")
+        if [ "$VAL" = "1" ]; then
+            echo "  Value restored after ${i}s: net.ipv4.ip_forward=$VAL"
             RESTORED=true
             break
         fi
@@ -467,7 +450,7 @@ else
     elif echo "$DAEMON_LOG" | grep -q "reconcile: drift detected in"; then
         pass_test "DAEMON-11"  # daemon detected drift and attempted auto-apply
     else
-        FINAL=$(exec_in_pod cat /proc/sys/vm/max_map_count 2>/dev/null || echo "error")
+        FINAL=$(exec_in_pod cat /proc/sys/net/ipv4/ip_forward 2>/dev/null || echo "error")
         fail_test "DAEMON-11" "Daemon did not restore drifted value (final: $FINAL)"
     fi
 fi
@@ -508,8 +491,8 @@ else
     sleep 3
 
     # Introduce drift
-    exec_in_pod sysctl -w vm.max_map_count=65530 > /dev/null 2>&1 || true
-    echo "  Introduced drift: vm.max_map_count=65530"
+    exec_in_pod sysctl -w net.ipv4.ip_forward=0 > /dev/null 2>&1 || true
+    echo "  Introduced drift: net.ipv4.ip_forward=0"
 
     # Wait for daemon to detect drift (at least one reconcile cycle)
     echo "  Waiting 12s for daemon to detect drift..."
@@ -523,19 +506,19 @@ else
     echo "$DAEMON_LOG" | tail -15 | sed 's/^/    /'
 
     # Verify: drift was logged but value was NOT restored
-    FINAL_VAL=$(exec_in_pod cat /proc/sys/vm/max_map_count 2>/dev/null || echo "error")
-    echo "  Final vm.max_map_count: $FINAL_VAL"
+    FINAL_VAL=$(exec_in_pod cat /proc/sys/net/ipv4/ip_forward 2>/dev/null || echo "error")
+    echo "  Final net.ipv4.ip_forward: $FINAL_VAL"
 
-    if echo "$DAEMON_LOG" | grep -q "policy is notify-only, nothing applied" && [ "$FINAL_VAL" = "65530" ]; then
+    if echo "$DAEMON_LOG" | grep -q "policy is notify-only, nothing applied" && [ "$FINAL_VAL" = "0" ]; then
         pass_test "DAEMON-12"
-    elif echo "$DAEMON_LOG" | grep -q "drifted" && echo "$DAEMON_LOG" | grep -q "none applied" && [ "$FINAL_VAL" = "65530" ]; then
+    elif echo "$DAEMON_LOG" | grep -q "drifted" && echo "$DAEMON_LOG" | grep -q "none applied" && [ "$FINAL_VAL" = "0" ]; then
         pass_test "DAEMON-12"  # drift detected, not auto-applied
     else
         fail_test "DAEMON-12" "Expected drift logged + value unchanged (final: $FINAL_VAL)"
     fi
 
     # Restore sysctl
-    exec_in_pod sysctl -w vm.max_map_count=262144 > /dev/null 2>&1 || true
+    exec_in_pod sysctl -w net.ipv4.ip_forward=1 > /dev/null 2>&1 || true
 fi
 exec_in_pod rm -f /tmp/daemon12.log /etc/cfgd/e2e-daemon12-cfgd.yaml 2>/dev/null || true
 
@@ -574,8 +557,8 @@ else
     sleep 3
 
     # Introduce drift
-    exec_in_pod sysctl -w vm.max_map_count=65530 > /dev/null 2>&1 || true
-    echo "  Introduced drift: vm.max_map_count=65530"
+    exec_in_pod sysctl -w net.ipv4.ip_forward=0 > /dev/null 2>&1 || true
+    echo "  Introduced drift: net.ipv4.ip_forward=0"
 
     # Wait through multiple reconcile cycles
     echo "  Waiting 12s to confirm daemon does not auto-apply..."
@@ -589,17 +572,17 @@ else
     echo "$DAEMON_LOG" | tail -15 | sed 's/^/    /'
 
     # Verify: value was NOT restored (daemon did not take action)
-    FINAL_VAL=$(exec_in_pod cat /proc/sys/vm/max_map_count 2>/dev/null || echo "error")
-    echo "  Final vm.max_map_count: $FINAL_VAL"
+    FINAL_VAL=$(exec_in_pod cat /proc/sys/net/ipv4/ip_forward 2>/dev/null || echo "error")
+    echo "  Final net.ipv4.ip_forward: $FINAL_VAL"
 
-    if [ "$FINAL_VAL" = "65530" ]; then
+    if [ "$FINAL_VAL" = "0" ]; then
         pass_test "DAEMON-13"
     else
         fail_test "DAEMON-13" "Value was unexpectedly restored (final: $FINAL_VAL)"
     fi
 
     # Restore sysctl
-    exec_in_pod sysctl -w vm.max_map_count=262144 > /dev/null 2>&1 || true
+    exec_in_pod sysctl -w net.ipv4.ip_forward=1 > /dev/null 2>&1 || true
 fi
 exec_in_pod rm -f /tmp/daemon13.log /etc/cfgd/e2e-daemon13-cfgd.yaml 2>/dev/null || true
 
@@ -704,7 +687,7 @@ INNEREOF'
 exec_in_pod rm -f /tmp/cfgd-pre-reconcile-ran /tmp/cfgd-post-reconcile-ran 2>/dev/null || true
 
 # Introduce drift so the reconciler has work to do (triggers pre/post hooks)
-exec_in_pod sysctl -w vm.max_map_count=65530 > /dev/null 2>&1 || true
+exec_in_pod sysctl -w net.ipv4.ip_forward=0 > /dev/null 2>&1 || true
 
 # Start daemon
 exec_in_pod bash -c 'sysctl -w fs.inotify.max_user_instances=512 fs.inotify.max_user_watches=524288 > /dev/null 2>&1; nohup cfgd --config /etc/cfgd/e2e-daemon15-cfgd.yaml daemon --no-color > /tmp/daemon15.log 2>&1 &'
@@ -745,6 +728,7 @@ else
         fi
     fi
 fi
+exec_in_pod sysctl -w net.ipv4.ip_forward=1 > /dev/null 2>&1 || true
 exec_in_pod rm -f /tmp/daemon15.log /etc/cfgd/e2e-daemon15-cfgd.yaml /tmp/cfgd-pre-reconcile-ran /tmp/cfgd-post-reconcile-ran 2>/dev/null || true
 exec_in_pod rm -f /etc/cfgd/profiles/k8s-worker-hooks.yaml 2>/dev/null || true
 
@@ -791,8 +775,8 @@ INNEREOF'
 # Apply desired state first, then introduce drift
 exec_in_pod cfgd --config /etc/cfgd/e2e-daemon16-cfgd.yaml apply --yes --no-color > /dev/null 2>&1 || true
 exec_in_pod rm -f /tmp/cfgd-ondrift-fired 2>/dev/null || true
-exec_in_pod sysctl -w vm.max_map_count=65530 > /dev/null 2>&1 || true
-echo "  Introduced drift: vm.max_map_count=65530"
+exec_in_pod sysctl -w net.ipv4.ip_forward=0 > /dev/null 2>&1 || true
+echo "  Introduced drift: net.ipv4.ip_forward=0"
 
 # Start daemon
 exec_in_pod bash -c 'sysctl -w fs.inotify.max_user_instances=512 fs.inotify.max_user_watches=524288 > /dev/null 2>&1; nohup cfgd --config /etc/cfgd/e2e-daemon16-cfgd.yaml daemon --no-color > /tmp/daemon16.log 2>&1 &'
@@ -829,6 +813,7 @@ else
         fail_test "DAEMON-16" "onDrift hook artifact not found"
     fi
 fi
+exec_in_pod sysctl -w net.ipv4.ip_forward=1 > /dev/null 2>&1 || true
 exec_in_pod rm -f /tmp/daemon16.log /etc/cfgd/e2e-daemon16-cfgd.yaml /tmp/cfgd-ondrift-fired 2>/dev/null || true
 exec_in_pod rm -f /etc/cfgd/profiles/k8s-worker-ondrift.yaml 2>/dev/null || true
 

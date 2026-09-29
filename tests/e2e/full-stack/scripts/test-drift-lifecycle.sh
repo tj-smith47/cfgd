@@ -10,8 +10,8 @@ echo "=== Drift Lifecycle Tests ==="
 begin_test "FS-DRIFT-01: Drift detection and server reporting"
 
 # Introduce sysctl drift on the test pod
-ORIG=$(exec_in_pod cat /proc/sys/vm/max_map_count 2>/dev/null || echo "262144")
-exec_in_pod sysctl -w vm.max_map_count=65530 > /dev/null 2>&1 || true
+ORIG=$(exec_in_pod cat /proc/sys/net/ipv4/ip_forward 2>/dev/null || echo "1")
+exec_in_pod sysctl -w net.ipv4.ip_forward=0 > /dev/null 2>&1 || true
 
 # Checkin — should detect and report drift
 OUTPUT=$(exec_in_pod cfgd \
@@ -30,7 +30,7 @@ DRIFT_EVENTS=$(exec_in_pod curl -sf \
 echo "  Drift events: $(echo "$DRIFT_EVENTS" | head -c 200)"
 
 # Restore
-exec_in_pod sysctl -w "vm.max_map_count=$ORIG" > /dev/null 2>&1 || true
+exec_in_pod sysctl -w "net.ipv4.ip_forward=$ORIG" > /dev/null 2>&1 || true
 
 if echo "$OUTPUT" | grep -qi "drift" || [ "$DRIFT_EVENTS" != "[]" ]; then
     pass_test "FS-DRIFT-01"
@@ -196,7 +196,7 @@ exec_in_pod cfgd --config /etc/cfgd/e2e-compliance-cfgd.yaml apply --yes --no-co
 # =================================================================
 begin_test "FS-DRIFT-06: compliance snapshot after device apply"
 
-OUTPUT=$(exec_in_pod cfgd --config /etc/cfgd/e2e-compliance-cfgd.yaml compliance -o json --no-color 2>&1) || true
+OUTPUT=$(pod_compliance_json /etc/cfgd/e2e-compliance-cfgd.yaml)
 if assert_contains "$OUTPUT" '"snapshot"' && assert_contains "$OUTPUT" '"checks"'; then
     pass_test "FS-DRIFT-06"
 else
@@ -206,23 +206,7 @@ fi
 # =================================================================
 begin_test "FS-DRIFT-07: compliance detects introduced drift end-to-end"
 
-# The applied value reads Compliant before the write and Violation after it, so
-# the case fails when compliance stops noticing the drift as well as when it
-# stops reporting the key at all.
-FS_DRIFT_07_BEFORE=$(sysctl_compliance_status "$(pod_compliance_json /etc/cfgd/e2e-compliance-cfgd.yaml)" vm.max_map_count)
-exec_in_pod sysctl -w vm.max_map_count=65530 > /dev/null 2>&1 || true
-FS_DRIFT_07_JSON=$(pod_compliance_json /etc/cfgd/e2e-compliance-cfgd.yaml)
-FS_DRIFT_07_AFTER=$(sysctl_compliance_status "$FS_DRIFT_07_JSON" vm.max_map_count)
-echo "  vm.max_map_count: before=$FS_DRIFT_07_BEFORE after=$FS_DRIFT_07_AFTER"
-echo "$FS_DRIFT_07_JSON" | jq -c '.snapshot.checks[]? | select(.category == "system")' 2>/dev/null | sed 's/^/    /' || true
-
-if assert_equals "$FS_DRIFT_07_BEFORE" "Compliant" && assert_equals "$FS_DRIFT_07_AFTER" "Violation"; then
-    pass_test "FS-DRIFT-07"
-else
-    fail_test "FS-DRIFT-07" "Compliance should read vm.max_map_count Compliant when applied and Violation once drifted"
-fi
-
-exec_in_pod sysctl -w vm.max_map_count=262144 > /dev/null 2>&1 || true
+sysctl_drift_case "FS-DRIFT-07" /etc/cfgd/e2e-compliance-cfgd.yaml net.ipv4.ip_forward 0 1
 
 # =================================================================
 begin_test "FS-DRIFT-08: device checkin after compliance carries state"

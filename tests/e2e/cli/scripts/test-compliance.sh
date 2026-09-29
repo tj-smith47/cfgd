@@ -216,7 +216,8 @@ CO13="--config $CO13_CONF --state-dir $CO13_STATE --no-color"
 run $CO13 apply --yes
 run_stdout $CO13 -o json compliance
 if assert_ok; then
-    # Files alone are in scope: at least one check, and every one a file category.
+    # `scope.files` alone admits only file-family rows. `all` is true on an
+    # empty list, so the length check keeps a run with no rows from passing.
     CO13_CATEGORIES=$(printf '%s' "$OUTPUT" | jq -r '[.snapshot.checks[].category] | unique | join(",")' 2>/dev/null || echo unparsable)
     echo "  categories: ${CO13_CATEGORIES:-none}"
     if printf '%s' "$OUTPUT" | jq -e '[.snapshot.checks[].category] | length > 0 and all(startswith("file"))' > /dev/null 2>&1; then

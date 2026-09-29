@@ -182,7 +182,7 @@ else
     echo "  enroll rc=$GW32_RC"
     echo "$GW32_OUT" | head -c 400 | sed 's/^/    /'
     echo ""
-    head -c 400 "$GW32_ERR" | sed 's/^/    stderr: /'
+    print_stderr_head "$GW32_ERR"
 
     GW32_CRED="$DP_STATE/device-credential.json"
     GW32_CRED_PRESENT=absent

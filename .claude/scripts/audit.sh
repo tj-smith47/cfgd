@@ -2304,6 +2304,23 @@ fi
 rm -f "$guard_out"
 fi
 
+# --- e2e sysctl writes stay pod-private ---
+# The node and full-stack e2e jobs run in parallel and their test pods can
+# share a worker, so a host-global sysctl written as drift by one job can be
+# moved by the other mid-case. net.* keys live in the pod's network namespace;
+# the fs.inotify raise before a daemon start is the same value in every job and
+# is never read back.
+if gate_is_in_scope; then
+log_section "e2e sysctl writes (pod-private keys only)"
+if sw=$(rg -n --no-heading 'sysctl -w' tests/e2e 2>/dev/null \
+      | grep -vE 'sysctl -w "?\$(key|KEY)=|sysctl -w "?net\.|sysctl -w fs\.inotify\.' ) && [ -n "$sw" ]; then
+  log_error "A tests/e2e sysctl write moves a host-global key (drift net.ipv4.ip_forward instead):"
+  echo "$sw"
+else
+  log_ok "e2e sysctl writes stay pod-private"
+fi
+fi
+
 # --- Summary ---
 printf "\n"
 _bold; printf "=== Audit Complete: %d errors, %d warnings ===\n" "$ERRORS" "$WARNINGS"; _reset

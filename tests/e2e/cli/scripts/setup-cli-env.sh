@@ -79,7 +79,7 @@ run_stdout() {
     local err="$SCRATCH/run-stdout.stderr"
     OUTPUT=$("$CFGD" "$@" 2> "$err") || rc=$?
     RC=$rc
-    head -c 400 "$err" | sed 's/^/    stderr: /'
+    print_stderr_head "$err"
 }
 
 assert_ok() {

@@ -106,8 +106,8 @@ fi
 # =================================================================
 begin_test "T33: Drift reporting to device gateway"
 # Introduce drift on a sysctl value
-ORIG_MAX=$(exec_in_pod cat /proc/sys/vm/max_map_count 2>/dev/null || echo "262144")
-exec_in_pod sysctl -w vm.max_map_count=65530 > /dev/null 2>&1 || true
+ORIG_FWD=$(exec_in_pod cat /proc/sys/net/ipv4/ip_forward 2>/dev/null || echo "1")
+exec_in_pod sysctl -w net.ipv4.ip_forward=0 > /dev/null 2>&1 || true
 
 # Checkin again — should detect and report drift
 OUTPUT=$(exec_in_pod cfgd \
@@ -121,7 +121,7 @@ echo "  Checkin with drift output:"
 echo "$OUTPUT" | head -10 | sed 's/^/    /'
 
 # Restore sysctl
-exec_in_pod sysctl -w "vm.max_map_count=$ORIG_MAX" > /dev/null 2>&1 || true
+exec_in_pod sysctl -w "net.ipv4.ip_forward=$ORIG_FWD" > /dev/null 2>&1 || true
 
 if assert_contains "$OUTPUT" "drift"; then
     pass_test "T33"

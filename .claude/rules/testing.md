@@ -105,6 +105,22 @@ neither one was enough: an e2e `apply --from` pointed at a scratch `--config`
 cloned its fixture into a developer's `~/.config/cfgd`, and `secret` wrote an
 age key beside it.
 
+## An e2e drift case moves only a key its own pod owns
+
+The node and full-stack e2e jobs run at the same time, and their privileged
+test pods can land on the same worker. A host-global sysctl such as
+`vm.max_map_count` is one value for every pod on that node, so a drift written
+by one job can be restored by the other between a case's two reads, and the
+case fails for a reason that has nothing to do with cfgd. Every `sysctl -w`
+under `tests/e2e/` that introduces or restores drift writes
+`net.ipv4.ip_forward` (declared `"1"` by every test profile; `net.*` lives in
+the pod's own network namespace because no test pod sets `hostNetwork`). The
+one host-global write allowed is the `fs.inotify.*` raise ahead of a daemon
+start, which every job sets to the same value and no case reads back. A
+compliance before/after case goes through `sysctl_drift_case` in
+`tests/e2e/common/helpers.sh`. The audit gate "e2e sysctl writes stay
+pod-private" fails on any other `sysctl -w` key under `tests/e2e/`.
+
 ## A test never inherits its terminal shape from the ambient one
 
 `cargo test` from a pipe and `script -qec "cargo test" /dev/null` (a real pty)
