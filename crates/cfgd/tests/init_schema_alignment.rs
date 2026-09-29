@@ -127,8 +127,13 @@ fn init_without_yes_off_a_terminal_warns_and_leaves_the_cloned_config_alone() {
         1,
         "init reports the field once, and the load-time gate stays out of it: {said}"
     );
+    // The clone checks the file out under the user's git config, which on
+    // Windows turns the committed LF into CRLF; what init must leave alone is
+    // the committed content.
     assert_eq!(
-        std::fs::read_to_string(dest.join("cfgd.yaml")).unwrap(),
+        cfgd_core::normalize_line_endings(
+            &std::fs::read_to_string(dest.join("cfgd.yaml")).unwrap()
+        ),
         BEHIND,
         "a report writes nothing"
     );

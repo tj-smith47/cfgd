@@ -1585,6 +1585,7 @@ fn git_clone_with_fallback_refuses_a_populated_destination_without_deleting_it()
         err.contains("not empty"),
         "refusal must name the non-empty destination as the cause, got: {err}"
     );
+    // eol-exact-ok: the test wrote this file itself; the refused clone checked nothing out
     assert_eq!(
         std::fs::read_to_string(&keeper).unwrap(),
         body,

@@ -314,6 +314,10 @@ product builds it:
 |---|---|---|
 | a path the renderer home-folds | `fold_home_in_text(&to_posix_string(p))` | `no_home_fold_is_handed_a_native_path_render` |
 | a line of an env file this host generates | `MergedEnvItems::declared_line(kind, name)` | `no_fixture_hand_spells_a_line_of_the_env_file_this_host_generates` |
+| a file a clone checked out | `normalize_line_endings(&read)` (the user's git config decides EOL) | `no_cloned_file_is_compared_byte_for_byte` |
+
+A byte-exact compare of a file the test wrote itself in a cloning test carries
+`// eol-exact-ok: <why>` on the line above the `assert_eq!`.
 
 ## Fixture versions: use the 9.9.x sentinel range
 

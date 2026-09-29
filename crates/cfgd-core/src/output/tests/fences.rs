@@ -1597,6 +1597,100 @@ fn no_fixture_hand_spells_a_line_of_the_env_file_this_host_generates() {
     );
 }
 
+/// The marker that exempts one byte-exact read from the fence below, with
+/// the reason written after it.
+const EOL_EXACT_HATCH: &str = "eol-exact-ok:";
+
+/// The 1-based lines, within `func`, of each `assert_eq!` whose first operand
+/// reads a file byte for byte and carries no hatch on its own line or the one
+/// above.
+fn byte_exact_reads(func: &str) -> Vec<usize> {
+    let code = crate::test_helpers::blank_non_code(func);
+    let hatches = crate::test_helpers::blank_literals(func);
+    let hatch_lines: Vec<&str> = hatches.lines().collect();
+    let needle = "assert_eq!(";
+    code.match_indices(needle)
+        .filter_map(|(at, _)| {
+            let open = at + needle.len();
+            let (close, comma) = call_span(&code, open);
+            let first = &code[open..comma.unwrap_or(close)];
+            let line = code[..at].matches('\n').count();
+            let hatched = [line.checked_sub(1), Some(line)]
+                .into_iter()
+                .flatten()
+                .any(|n| {
+                    hatch_lines
+                        .get(n)
+                        .is_some_and(|l| carries_hatch(l, EOL_EXACT_HATCH))
+                });
+            (first.contains("read_to_string(")
+                && !first.contains("normalize_line_endings")
+                && !hatched)
+                .then_some(line + 1)
+        })
+        .collect()
+}
+
+/// A clone checks files out under the cloning user's git config, and on
+/// Windows that is `core.autocrlf=true`: a committed LF file lands as CRLF.
+/// `cfgd init --from` and every source clone run the git CLI under that
+/// config, so cfgd promises the committed content and leaves the line endings
+/// to git. A test comparing a cloned file byte for byte therefore passed on
+/// Unix and failed on Windows; it compares through `normalize_line_endings`.
+/// A read of a file the test wrote itself (a refused clone checks nothing
+/// out) keeps its exact bytes under `// eol-exact-ok: <why>`.
+#[test]
+fn no_cloned_file_is_compared_byte_for_byte() {
+    let fixture = "fn cloned() {\n    run(\"--from\");\n    assert_eq!(\n        std::fs::read_to_string(dest.join(\"cfgd.yaml\")).unwrap(),\n        BEHIND\n    );\n    assert_eq!(\n        normalize_line_endings(&std::fs::read_to_string(p).unwrap()),\n        BEHIND\n    );\n    // eol-exact-ok: the test wrote this file itself\n    assert_eq!(std::fs::read_to_string(mine).unwrap(), \"x\\n\");\n    assert_eq!(n, std::fs::read_to_string(q).unwrap().len());\n}\n";
+    let funcs = source_functions(&FIXTURE_SOURCE, fixture);
+    assert_eq!(
+        byte_exact_reads(&funcs[0].1),
+        [3],
+        "only the bare, unhatched first operand is a byte-exact read"
+    );
+
+    let clones = |func: &str| {
+        let code = crate::test_helpers::blank_non_code(func);
+        func.contains("\"--from\"")
+            || ["clone_into", "git_clone_with_fallback"]
+                .iter()
+                .any(|name| names_identifier(&code, name))
+            || code.contains("Repository::clone(")
+    };
+    const FLOORS: [(&str, usize); 2] = [("cfgd", 24), ("cfgd-core", 20)];
+    let mut cloning: std::collections::BTreeMap<&str, usize> = Default::default();
+    let mut offenders = Vec::new();
+    for (krate, path) in cross_os_fence_sources(&FLOORS) {
+        if path.ends_with(Path::new("output/tests/fences.rs")) {
+            continue;
+        }
+        // unfloored-slice-ok: the clones judged here live in test regions.
+        let body = walked_file_body(&path);
+        let shown = source_label(&path);
+        for (open, func) in source_functions(&shown, &body) {
+            if !clones(&func) {
+                continue;
+            }
+            *cloning.entry(krate).or_default() += 1;
+            for line in byte_exact_reads(&func) {
+                let at = open + line - 1;
+                offenders.push(format!(
+                    "{shown}:{at}: {}",
+                    body.lines().nth(at - 1).unwrap_or("").trim()
+                ));
+            }
+        }
+    }
+    assert_each_root_read(&FLOORS, &cloning, "cloning functions");
+    assert!(
+        offenders.is_empty(),
+        "a cloned file's line endings are the cloning user's git config; \
+         compare through `normalize_line_endings`, or mark a file the test \
+         wrote itself `// {EOL_EXACT_HATCH} <why>`:\n{}",
+        offenders.join("\n")
+    );
+}
+
 /// The function-open recognizer behind [`source_functions`], one case per
 /// qualifier shape, so the next modifier added in front of a `fn` regresses
 /// here instead of silently folding that function into its predecessor's
