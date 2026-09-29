@@ -5502,9 +5502,9 @@ fn every_hatch_a_walk_reads_comes_from_the_one_line_reader() {
 const FLOORS: [(&str, usize); 2] = [("cfgd", 79), ("cfgd-core", 28)];
 
 /// Every fence in this file is a claim about a POPULATION, so the walk that
-/// enumerates it fails rather than returning a shorter one.
+/// enumerates it fails when it cannot return all of it.
 ///
-/// Both failures are read off the message, not off the panic: a walk that
+/// Both failures are read off the panic's message: a walk that
 /// swallowed the directory it could not open still ends up with nothing to
 /// return, so "I could not look" and "there was nothing there" arrive as the
 /// same empty list, and only the wording — the directory's own name included —
@@ -5646,8 +5646,8 @@ fn a_declaration_after_a_literals_close_opens_a_slice() {
     );
 
     // Each holder closes on the same line its literal does: a slice ends at its
-    // own brace, so a fixture leaving one open is a body with no end, which the
-    // scan reports as the desync it is rather than cutting somewhere it can.
+    // own brace, so a fixture leaving one open is a body with no end, and the
+    // scan reports it as a desync.
     let closing = concat!(
         "fn holder() {\n",
         "    let banner = r#\"\n",
@@ -6367,8 +6367,8 @@ const GC_FAILED_REMOVAL_PINS: &[(&str, usize)] = &[
 /// argv of the real binary.
 ///
 /// Any function driving one of these is a candidate pin of gc's failed-removal
-/// arm, in EVERY file, so a future one is judged on what it DOES rather than on
-/// a name a needle has to guess, and no file has to be named ahead of it. Each
+/// arm, in EVERY file, so a future one is judged on what it DOES, whatever its
+/// name, and no file has to be named ahead of it. Each
 /// spelling names gc and nothing else, so judging the whole workspace on them
 /// costs no hatch. `orphaned_snapshots` is deliberately absent — it reads rows
 /// and removes nothing, so no pin of the failed-removal arm can be driven
@@ -6738,8 +6738,8 @@ fn every_production_spawn_in_the_workspace_goes_through_the_one_ladder() {
     );
 }
 
-/// A distinctness premise proves the numbers its fixture ASSERTS, never a
-/// second set written beside them.
+/// A distinctness premise judges the array its fixture ASSERTS on. A second
+/// set written beside that array proves nothing.
 ///
 /// [`crate::test_helpers::assert_slots_discriminate`] can only judge the array
 /// it is handed, so an array of literals typed next to an assertion that retypes
@@ -6801,7 +6801,7 @@ fn every_distinctness_premise_reads_the_values_its_fixture_asserts() {
                 // answers for its own call, so counting it would let the call
                 // above pass on a read-back that never reads the array it was
                 // handed. A COMMENT naming the array is not a read either, so a
-                // line that is one is passed over rather than counted.
+                // comment line is passed over.
                 let rebound = format!("let {name} ");
                 let rebound_mut = format!("let mut {name} ");
                 let read_back = lines[idx + 1..]
@@ -6875,14 +6875,14 @@ fn every_distinctness_premise_reads_the_values_its_fixture_asserts() {
 /// The call a walk reads an enumerated file with.
 const WALK_FILE_READ: &str = "read_to_string";
 
-/// Spellings that drop that call's failure instead of reporting it.
+/// Spellings that drop that call's failure unreported.
 const SILENT_READ_TELLS: &[&str] = &["let Ok(", ".ok()", "unwrap_or_default()", "unwrap_or("];
 
-/// A walk that cannot read a file it enumerated FAILS, rather than reading less
-/// than its floor promises.
+/// A walk that cannot read a file it enumerated FAILS: reading less than its
+/// floor promises would pass silently.
 ///
-/// A walk's floor counts the population it found on disk, not the members it
-/// managed to open, so a file whose read failed is indistinguishable from a file
+/// A walk's floor counts the population it found on disk, including members it
+/// could not open, so a file whose read failed is indistinguishable from a file
 /// holding nothing: no rule judges it, no offender is reported, and the walk
 /// passes. [`crate::test_helpers::walked_file_body`] and
 /// [`crate::test_helpers::production_slice_of`] are the two readers that refuse
@@ -6943,8 +6943,8 @@ fn no_walk_silently_drops_a_file_it_enumerated() {
                 continue;
             }
             // rustfmt breaks a long read onto its own line and leaves the
-            // combinator on the next one, so the tell is looked for across the
-            // pair rather than on the call's line alone.
+            // combinator on the next one, so the tell is looked for across
+            // both lines.
             let window = format!("{line}{}", lines.get(idx + 1).copied().unwrap_or_default());
             if !SILENT_READ_TELLS.iter().any(|tell| window.contains(tell)) {
                 continue;
@@ -7092,7 +7092,7 @@ fn a_hand_substitution_split_over_rows_is_judged_like_an_inline_one() {
         ");",
     ];
     let marked = [
-        "// hand-substitution-ok: the subject is a registry name, not a path",
+        "// hand-substitution-ok: the subject is a registry name",
         "let s = captured.replace(",
         "    dir,",
         "    \"<DIR>\",",
@@ -7321,7 +7321,7 @@ fn declares_a_script_body_field(line: &str) -> Option<&str> {
 /// prefix both the list form and the scalar form share.
 const VALIDATE_BODY_CALL: &str = "validate_script_bod";
 
-/// Whether `text` names `token` on its own rather than inside a longer name.
+/// Whether `text` names `token` as a whole word, outside any longer name.
 ///
 /// A holder field called `script` is spelled inside the call token
 /// `validate_script_bod` itself, so a plain substring test lets the call vouch
@@ -7435,10 +7435,10 @@ fn every_deserialized_script_body_is_refused_an_empty_run() {
     );
 }
 
-/// The field matcher reads the declaration shape, not the type name: a struct
-/// literal, a parameter and a return type mention a script-body type without
-/// accepting one from YAML, and a private field accepts one as much as a `pub`
-/// one does only where serde can reach it.
+/// The field matcher reads the declaration shape. A struct literal, a parameter
+/// and a return type mention a script-body type without accepting one from
+/// YAML, and a private field accepts one as much as a `pub` one does only where
+/// serde can reach it.
 #[test]
 fn the_script_body_field_matcher_reads_a_declaration_and_nothing_else() {
     for line in [

@@ -2512,8 +2512,8 @@ fn every_enum_knob_under_spec_is_classified_against_the_global_flag_table() {
     }
 }
 
-/// An unreadable config masks rather than failing, which is the safe
-/// direction: a config cfgd cannot parse never reveals a value.
+/// An unreadable config still masks, which is the safe direction: a config
+/// cfgd cannot parse never reveals a value.
 #[test]
 #[serial_test::serial]
 fn an_unparseable_config_still_masks_every_env_value() {

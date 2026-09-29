@@ -124,8 +124,8 @@ pub(crate) fn clamp_at_token(text: &str, max: usize) -> String {
 
 /// Display width of the line's marker column — a leading one-column glyph
 /// (`✓`, `◉`, `-`, …) plus the space after it. Zero when the line does not
-/// open with one, so a plain sentence wraps flush rather than hanging off its
-/// own first word.
+/// open with one, so the continuation rows of a plain sentence start flush at
+/// column zero.
 fn marker_width(visible: &str) -> usize {
     let Some(first) = visible.split(' ').next() else {
         return 0;

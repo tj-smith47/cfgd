@@ -327,7 +327,7 @@ mod tests {
                         entered_tx.send(()).ok();
                         // Both racers block here under a broken protocol; the
                         // gate is opened for all of them, so a regression fails
-                        // the count assertion rather than hanging the suite.
+                        // the count assertion and the suite never hangs.
                         gate.wait();
                         Ok(listing(&["curl"]))
                     })

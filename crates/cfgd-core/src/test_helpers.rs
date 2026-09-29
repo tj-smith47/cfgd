@@ -5851,7 +5851,7 @@ pub fn plant_managed_env_files(
 /// nothing: the walk judges it by no rule, reports no offender and passes having
 /// read less than its floor promised. The WHOLE-file twin of
 /// [`production_slice_of`], for a walk whose subject is a source's test region,
-/// a golden or a markdown page rather than a source's production region. A read
+/// a golden or a markdown page. A read
 /// whose absence is a legitimate state — an artifact the test itself decided not
 /// to write — stays a silent read and says so with `// absent-file-ok: <why>`.
 ///
