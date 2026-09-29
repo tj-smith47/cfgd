@@ -161,11 +161,6 @@ fn every_spelling_of_the_config_location_expands_that_documents_aliases() {
             vec![],
             Some((cfgd_core::CFGD_CONFIG_DIR_ENV, d)),
         ),
-        (
-            "--scope system",
-            vec!["--scope".as_ref(), "system".as_ref()],
-            Some(("CONFIGURATION_DIRECTORY", d)),
-        ),
     ];
     let mut wrong = Vec::new();
     for (shape, args, env) in rows {
@@ -194,6 +189,58 @@ fn every_spelling_of_the_config_location_expands_that_documents_aliases() {
         "the alias did not run from the named document once:\n{}",
         wrong.join("\n")
     );
+}
+
+/// Under the system scope the alias pass reads the system document, the one
+/// clap settles on, so the user default's `who` stays unexpanded and the
+/// system document is read once. The system root is the real one, left
+/// unwritten: the user default is the document a scope-blind pass would read.
+#[test]
+fn a_system_scope_run_reads_the_system_document_once() {
+    let config_home = config_home();
+    write_alias_fixture(&config_home.join("cfgd"), "fromdefault");
+    let user_default = config_home.join("cfgd").display().to_string();
+
+    type Row<'a> = (&'a str, &'a [&'a str], Option<(&'a str, &'a str)>);
+    let rows: [Row<'_>; 2] = [
+        ("--scope system", &["--scope", "system"], None),
+        (
+            "CFGD_SCOPE=system",
+            &[],
+            Some((cfgd_core::CFGD_SCOPE_ENV, "system")),
+        ),
+    ];
+    let mut wrong = Vec::new();
+    for (shape, args, env) in rows {
+        let run = |verb: &[&str]| {
+            let mut cmd = cfgd_bin().expect("the cfgd binary builds");
+            cmd.env_remove("RUST_LOG").arg("-v").args(args).args(verb);
+            if let Some((var, value)) = env {
+                cmd.env(var, value);
+            }
+            cmd.output().expect("cfgd runs")
+        };
+        let stderr =
+            String::from_utf8_lossy(&run(&["config", "get", "profile"]).stderr).into_owned();
+        let summary = stderr
+            .lines()
+            .filter(|l| l.contains(SUMMARY_LINE))
+            .collect::<Vec<_>>();
+        if summary.len() != 1
+            || !summary[0].contains("reads=1 ")
+            || summary[0].contains(&user_default)
+        {
+            wrong.push(format!(
+                "{shape}: want one read of the system document:\n{stderr}"
+            ));
+        }
+        let who = run(&["who"]);
+        let stdout = String::from_utf8_lossy(&who.stdout);
+        if stdout.contains("fromdefault") {
+            wrong.push(format!("{shape}: the user default's alias ran: {stdout:?}"));
+        }
+    }
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
 }
 
 /// With no location spelled, the aliases come from the default document.

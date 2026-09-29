@@ -51974,10 +51974,11 @@ fn every_in_process_parse_goes_through_the_hermetic_parser() {
     ];
     /// Production entry points, which parse the real process argv and env,
     /// and the hermetic parser, which clears the bindings before it matches.
-    const ENTRY_POINTS: [(&str, &str); 5] = [
+    const ENTRY_POINTS: [(&str, &str); 6] = [
         ("src/main.rs", "get_matches_from("),
         ("src/main.rs", "from_arg_matches("),
         ("src/cli/mod.rs", "try_get_matches_from("),
+        ("src/cli/mod.rs", "try_get_matches_from_mut("),
         ("src/cli/mod.rs", "from_arg_matches("),
         ("src/cli/plugin/mod.rs", "PluginCli::parse("),
     ];
@@ -56020,12 +56021,13 @@ fn reload_if_moved_reloads_only_when_the_document_differs() {
 /// The alias pass parses the config location through clap's own definition
 /// and settles it the way the startup path does, so every spelling of the
 /// location expands the aliases of the document clap settles on, and that
-/// document is read once. `xonly` is declared only in X.
+/// document is read once. `xonly` is declared only in X, `donly` only in the
+/// user default.
 ///
-/// The argv with no location at all is pinned against the real binary
-/// (`tests/startup_document_reads.rs`): clap caches the default path the first
-/// parse in a process computes, so an in-process parse cannot see this
-/// test's home.
+/// The system scope is judged against the real system root with
+/// `CONFIGURATION_DIRECTORY` unset, since that variable names the directory
+/// for both scopes. Nothing is written there: the row asserts the path the
+/// alias pass read and that the user default's alias stayed unexpanded.
 #[test]
 #[serial_test::serial]
 fn expand_aliases_and_clap_agree_on_the_config_path() {
@@ -56043,7 +56045,11 @@ fn expand_aliases_and_clap_agree_on_the_config_path() {
         };
         let default = super::default_config_file();
         std::fs::create_dir_all(default.parent().expect("a parent")).expect("mkdir");
-        std::fs::write(&default, named("default", "")).expect("write default");
+        std::fs::write(
+            &default,
+            named("default", "  aliases:\n    donly: config get profile\n"),
+        )
+        .expect("write default");
         let x_dir = tempfile::tempdir().expect("tempdir");
         let x = x_dir.path().join("cfgd.yaml");
         std::fs::write(
@@ -56125,11 +56131,6 @@ fn expand_aliases_and_clap_agree_on_the_config_path() {
                 argv(&["cfgd", "xonly"]),
                 Some((cfgd_core::CFGD_CONFIG_DIR_ENV, &x_dir_arg)),
             ),
-            (
-                "--scope system",
-                argv(&["cfgd", "--scope", "system", "xonly"]),
-                Some(("CONFIGURATION_DIRECTORY", &x_dir_arg)),
-            ),
         ];
         let mut wrong = Vec::new();
         for (shape, args, env) in rows {
@@ -56154,6 +56155,68 @@ fn expand_aliases_and_clap_agree_on_the_config_path() {
             }
             if name.as_deref() != Some("x") || reads != 1 {
                 wrong.push(format!("{shape}: settled on {name:?} after {reads} reads"));
+            }
+        }
+
+        let system = super::settle_config_path(
+            super::default_config_file(),
+            false,
+            None,
+            cfgd_core::Scope::System,
+        );
+        /// Shape, argv, env, the document the alias pass reads, whether
+        /// `donly` expands.
+        type ScopeRow<'a> = (
+            &'a str,
+            Vec<String>,
+            Option<(&'a str, &'a str)>,
+            &'a std::path::Path,
+            bool,
+        );
+        let scope_rows: [ScopeRow<'_>; 3] = [
+            (
+                "the bare default",
+                argv(&["cfgd", "donly"]),
+                None,
+                &default,
+                true,
+            ),
+            (
+                "--scope system",
+                argv(&["cfgd", "--scope", "system", "donly"]),
+                None,
+                &system,
+                false,
+            ),
+            (
+                "CFGD_SCOPE=system",
+                argv(&["cfgd", "donly"]),
+                Some((cfgd_core::CFGD_SCOPE_ENV, "system")),
+                &system,
+                false,
+            ),
+        ];
+        if system == default {
+            wrong.push(format!(
+                "the system document is the user default: {system:?}"
+            ));
+        }
+        for (shape, args, env, document, expands) in scope_rows {
+            let _env =
+                env.map(|(var, value)| cfgd_core::test_helpers::EnvVarGuard::set(var, value));
+            let (expanded, startup) =
+                super::expand_aliases_with(args, super::keep_env_bindings(Cli::command(), &ENV));
+            if startup.path() != document || startup.reads() != 1 {
+                wrong.push(format!(
+                    "{shape}: the alias pass read {:?} {} times, want {document:?} once",
+                    startup.path(),
+                    startup.reads()
+                ));
+            }
+            if expanded.iter().any(|a| a == "donly") == expands {
+                wrong.push(format!(
+                    "{shape}: the user default's alias gave {expanded:?}"
+                ));
             }
         }
         assert!(
