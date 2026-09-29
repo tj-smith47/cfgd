@@ -269,17 +269,67 @@ fn key_not_found(asked: &[&str]) -> anyhow::Error {
     ))
 }
 
-/// A key walk's refusal on `resolved`, restated for the key the caller wrote as
-/// `asked`, which [`nested_output_key`] rewrote into `resolved`.
+/// What a `config` verb's refusal names: the key the caller wrote, or the
+/// alias name an `alias` verb built its key from.
+#[derive(Clone, Copy)]
+pub(super) struct Asked<'a> {
+    spelling: &'a str,
+    alias: bool,
+}
+
+impl<'a> Asked<'a> {
+    /// A key the caller wrote, after its `spec.` prefix is folded away.
+    pub(super) fn key(spelling: &'a str) -> Self {
+        Self {
+            spelling,
+            alias: false,
+        }
+    }
+
+    /// An alias name, which the verb addresses as `aliases.<name>`.
+    pub(super) fn alias(name: &'a str) -> Self {
+        Self {
+            spelling: name,
+            alias: true,
+        }
+    }
+
+    fn described(self) -> String {
+        if self.alias {
+            format!("alias '{}'", self.spelling)
+        } else {
+            format!("'{}'", self.spelling)
+        }
+    }
+}
+
+/// The `spec`-relative key an `alias` verb addresses `name` by, or the
+/// refusal a name no alias can be stored under earns: the key would hold an
+/// empty segment or a `.` that nests the alias one level down.
+pub(super) fn alias_key(name: &str) -> anyhow::Result<String> {
+    if name.is_empty() || name.contains('.') {
+        return Err(crate::cli::cli_error(
+            name,
+            "invalid_value",
+            format!("invalid alias name '{name}': an alias name is one word with no '.'"),
+            serde_json::json!({}),
+        ));
+    }
+    Ok(format!("aliases.{name}"))
+}
+
+/// A key walk's refusal on `resolved`, restated for what the caller wrote
+/// (`asked`), where [`nested_output_key`] or an `alias` verb built `resolved`
+/// from it.
 ///
 /// A missing key is reported under `asked`: the first segment the walk found
-/// missing belongs to the rewritten path, which the caller never typed. A
+/// missing belongs to the built path, which the caller never typed. A
 /// document whose shape blocks the walk keeps the path that holds the wrong
-/// shape, since that path is where the reader has to look, and adds where the
-/// key they asked for lives. Every other refusal is about the document or the
-/// file and names no key, so it passes through as it is.
-fn as_asked(error: anyhow::Error, asked: &str, resolved: &str) -> anyhow::Error {
-    if asked == resolved {
+/// shape, since that path is where the reader has to look, and adds where
+/// what they asked for lives. Every other refusal is about the document or
+/// the file and names no key, so it passes through as it is.
+fn as_asked(error: anyhow::Error, asked: Asked<'_>, resolved: &str) -> anyhow::Error {
+    if !asked.alias && asked.spelling == resolved {
         return error;
     }
     if matches!(
@@ -288,10 +338,15 @@ fn as_asked(error: anyhow::Error, asked: &str, resolved: &str) -> anyhow::Error 
             cfgd_core::errors::ConfigError::KeyNotFound { .. }
         ))
     ) {
-        return key_not_found(&[asked]);
+        let missing = key_not_found(&[asked.spelling]);
+        return if asked.alias {
+            missing.context(format!("{} not found", asked.described()))
+        } else {
+            missing
+        };
     }
     if error.downcast_ref::<ShapeBlocked>().is_some() {
-        let message = format!("{error}; '{asked}' is stored at '{resolved}'");
+        let message = format!("{error}; {} is stored at '{resolved}'", asked.described());
         return error.context(message);
     }
     error
@@ -638,6 +693,16 @@ pub fn cmd_config_get(cli: &Cli, printer: &Printer, key: &str) -> anyhow::Result
     // first, so every later read of the key — the walk, the confirmation, the
     // `-o json` payload and the error — names one field.
     let key = spec_relative_key(key);
+    config_get_as(cli, printer, key, Asked::key(key))
+}
+
+/// `config get` of the `spec`-relative `key`, refusing by `asked`.
+pub(super) fn config_get_as(
+    cli: &Cli,
+    printer: &Printer,
+    key: &str,
+    asked: Asked<'_>,
+) -> anyhow::Result<()> {
     let config_path = &cli.config;
     if !config_path.exists() {
         return Err(no_config_error(printer, config_path));
@@ -650,7 +715,7 @@ pub fn cmd_config_get(cli: &Cli, printer: &Printer, key: &str) -> anyhow::Result
             let msg = format!("failed to parse config: {}", e);
             return Err(crate::cli::cli_error_ctx(
                 e,
-                key,
+                asked.spelling,
                 "parse_failed",
                 msg,
                 serde_json::json!({ "path": cfgd_core::to_posix_string(config_path) }),
@@ -662,7 +727,7 @@ pub fn cmd_config_get(cli: &Cli, printer: &Printer, key: &str) -> anyhow::Result
         Some(s) => s,
         None => {
             return Err(crate::cli::cli_error(
-                key,
+                asked.spelling,
                 "parse_failed",
                 "config has no 'spec' section",
                 serde_json::json!({ "path": cfgd_core::to_posix_string(config_path) }),
@@ -708,12 +773,12 @@ pub fn cmd_config_get(cli: &Cli, printer: &Printer, key: &str) -> anyhow::Result
         (Ok(v), _) => v,
         (Err(_), Some(default)) => default,
         (Err(e), None) => {
-            let e = as_asked(e, key, &resolved);
+            let e = as_asked(e, asked, &resolved);
             let msg = format!("{}", e);
             let kind = classify_config_error(&e);
             return Err(crate::cli::cli_error_ctx(
                 e,
-                key,
+                asked.spelling,
                 kind,
                 msg,
                 serde_json::json!({ "path": cfgd_core::to_posix_string(config_path) }),
@@ -760,6 +825,17 @@ pub fn cmd_config_set(cli: &Cli, printer: &Printer, key: &str, value: &str) -> a
     // first, so every later read of the key — the walk, the confirmation, the
     // `-o json` payload and the error — names one field.
     let key = spec_relative_key(key);
+    config_set_as(cli, printer, key, value, Asked::key(key))
+}
+
+/// `config set` of the `spec`-relative `key` to `value`, refusing by `asked`.
+pub(super) fn config_set_as(
+    cli: &Cli,
+    printer: &Printer,
+    key: &str,
+    value: &str,
+    asked: Asked<'_>,
+) -> anyhow::Result<()> {
     let config_path = &cli.config;
     if !config_path.exists() {
         return Err(no_config_error(printer, config_path));
@@ -786,7 +862,7 @@ pub fn cmd_config_set(cli: &Cli, printer: &Printer, key: &str, value: &str) -> a
         && let Some(accepted) = crate::cli::unknown_theme_preset(value)
     {
         return Err(crate::cli::cli_error(
-            key,
+            asked.spelling,
             "invalid_value",
             format!("`{value}` is not a theme preset; accepted names: {accepted}"),
             serde_json::json!({
@@ -819,13 +895,13 @@ pub fn cmd_config_set(cli: &Cli, printer: &Printer, key: &str, value: &str) -> a
     });
 
     if let Err(e) = mutate_result {
-        let e = as_asked(e, key, &written_key);
+        let e = as_asked(e, asked, &written_key);
         let kind = classify_config_error(&e);
         let msg = format!("{}", e);
         let hints = writability_hint(kind, config_path);
         return Err(crate::cli::cli_error_ctx_with_hints(
             e,
-            key,
+            asked.spelling,
             kind,
             msg,
             serde_json::json!({ "path": cfgd_core::to_posix_string(config_path) }),
@@ -854,6 +930,16 @@ pub fn cmd_config_unset(cli: &Cli, printer: &Printer, key: &str) -> anyhow::Resu
     // first, so every later read of the key — the walk, the confirmation, the
     // `-o json` payload and the error — names one field.
     let key = spec_relative_key(key);
+    config_unset_as(cli, printer, key, Asked::key(key))
+}
+
+/// `config unset` of the `spec`-relative `key`, refusing by `asked`.
+pub(super) fn config_unset_as(
+    cli: &Cli,
+    printer: &Printer,
+    key: &str,
+    asked: Asked<'_>,
+) -> anyhow::Result<()> {
     let config_path = &cli.config;
     if !config_path.exists() {
         return Err(no_config_error(printer, config_path));
@@ -898,13 +984,13 @@ pub fn cmd_config_unset(cli: &Cli, printer: &Printer, key: &str) -> anyhow::Resu
     let written = match mutate_result {
         Ok(written) => written,
         Err(e) => {
-            let e = as_asked(e, key, &written_key);
+            let e = as_asked(e, asked, &written_key);
             let kind = classify_config_error(&e);
             let msg = format!("{}", e);
             let hints = writability_hint(kind, config_path);
             return Err(crate::cli::cli_error_ctx_with_hints(
                 e,
-                key,
+                asked.spelling,
                 kind,
                 msg,
                 serde_json::json!({ "path": cfgd_core::to_posix_string(config_path) }),
@@ -2801,4 +2887,89 @@ spec:
     /// walk that stopped descending fails by count as well as by name.
     const OMITTED_ANSWERED_FLOOR: usize = 34;
     const OMITTED_REFUSED_FLOOR: usize = 29;
+
+    /// Every `alias` verb builds the key `aliases.<name>` from the name the
+    /// caller typed, and refuses by that name: the `-o json` name is the
+    /// alias, and the message says which alias. Each verb is driven through
+    /// the real `cfgd alias` dispatch.
+    #[test]
+    fn every_alias_verb_refuses_by_the_alias_name_the_caller_typed() {
+        let dir = tempfile::tempdir().unwrap();
+        let bare = document_with_spec(dir.path(), &serde_yaml::from_str("profile: work").unwrap());
+        let shape_dir = tempfile::tempdir().unwrap();
+        let blocked = document_with_spec(
+            shape_dir.path(),
+            &serde_yaml::from_str("aliases: 5").unwrap(),
+        );
+        let cases: [(&[&str], &std::path::Path, &str, &str); 7] = [
+            (
+                &["alias", "show", "nope"],
+                &bare,
+                "key_not_found",
+                "alias 'nope' not found",
+            ),
+            (
+                &["alias", "delete", "nope"],
+                &bare,
+                "key_not_found",
+                "alias 'nope' not found",
+            ),
+            (
+                &["alias", "show", "nope"],
+                &blocked,
+                "parse_failed",
+                "'aliases' holds a scalar where a mapping belongs; alias 'nope' is stored at 'aliases.nope'",
+            ),
+            (
+                &["alias", "set", "nope", "apply"],
+                &blocked,
+                "parse_failed",
+                "'aliases' holds a scalar where a mapping belongs; alias 'nope' is stored at 'aliases.nope'",
+            ),
+            (
+                &["alias", "delete", "nope"],
+                &blocked,
+                "parse_failed",
+                "'aliases' holds a scalar where a mapping belongs; alias 'nope' is stored at 'aliases.nope'",
+            ),
+            (
+                &["alias", "set", "a.b", "apply"],
+                &bare,
+                "invalid_value",
+                "invalid alias name 'a.b'",
+            ),
+            (
+                &["alias", "show", "a.b"],
+                &bare,
+                "invalid_value",
+                "invalid alias name 'a.b'",
+            ),
+        ];
+        for (args, path, kind, message) in cases {
+            let subject = if args[1] == "set" {
+                args[args.len() - 2]
+            } else {
+                args[args.len() - 1]
+            };
+            let mut argv = vec!["cfgd", "--config", path.to_str().unwrap()];
+            argv.extend_from_slice(args);
+            let cli = <Cli as crate::cli::HermeticParse>::try_parse_hermetic(&argv)
+                .unwrap_or_else(|e| panic!("{argv:?} parses: {e}"));
+            let err = crate::cli::execute(
+                &cli,
+                &test_printer(),
+                &crate::cli::paths::DirSources::all_default(),
+            )
+            .err()
+            .unwrap_or_else(|| panic!("{args:?} was not refused"));
+            let meta = refusal(&err);
+            assert_eq!(meta.error_kind, kind, "{args:?}: {}", meta.message);
+            assert_eq!(meta.name, subject, "{args:?}: the -o json name");
+            assert!(
+                meta.message.contains(message),
+                "{args:?}: {:?} does not carry {message:?}",
+                meta.message
+            );
+        }
+    }
 }

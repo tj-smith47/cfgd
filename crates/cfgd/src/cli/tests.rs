@@ -8290,8 +8290,8 @@ fn execute_config_set() {
 
 #[test]
 fn execute_alias_show_unknown_name_is_a_typed_not_found_error() {
-    // `alias show`/`alias delete` dispatch straight into cmd_config_get/unset
-    // with an "aliases." prefix (see the Command::Alias match arm in mod.rs) —
+    // `alias show`/`alias delete` dispatch into config_get_as/config_unset_as
+    // with an "aliases." key (see the Command::Alias match arm in mod.rs) —
     // this proves that dispatch path, not just the underlying config_cmd
     // functions, resolves to the typed ConfigError::KeyNotFound and exit 6,
     // matching every other named-resource lookup in the CLI.
@@ -49412,8 +49412,9 @@ fn show_and_list_population() -> Vec<(String, String)> {
 }
 
 /// The one member whose renderer does not carry its own name: `alias show` is
-/// dispatched straight into `cmd_config_get` (`cli/mod.rs`), which is the
-/// function that renders it, so the walk reads that body for it.
+/// dispatched into `config_get_as` (`cli/mod.rs`), the body `cmd_config_get`
+/// hands every read to, so the walk starts at `cmd_config_get` and follows
+/// that call.
 const DISPATCHED_RENDERERS: &[(&str, &str)] = &[("alias show", "cmd_config_get")];
 
 /// A dispatched renderer still owes the structured-output table a row: the
@@ -55667,4 +55668,54 @@ fn expand_aliases_and_clap_agree_on_the_config_path() {
             );
         }
     });
+}
+
+/// A verb that builds a `config` key from a subject the caller typed (`alias
+/// show <name>` reads `aliases.<name>`) calls the `*_as` form of the `config`
+/// verb with an `Asked` naming that subject, so its refusals name what the
+/// caller typed. The `cmd_config_*` entry points refuse by the key they are
+/// handed, so every production call of one passes the caller's key through
+/// unbuilt; a call handing one a `format!` fails here.
+#[test]
+fn every_config_verb_call_passes_the_key_the_caller_typed() {
+    const VERBS: [&str; 3] = ["cmd_config_get(", "cmd_config_set(", "cmd_config_unset("];
+    let mut calls = 0usize;
+    let mut offenders = Vec::new();
+    for (path, body) in cli_production_sources() {
+        for verb in VERBS {
+            for (at, _) in body.match_indices(verb) {
+                if body[..at].ends_with("fn ") {
+                    continue;
+                }
+                let args = &body[at + verb.len()..];
+                let mut depth = 1usize;
+                let end = args
+                    .char_indices()
+                    .find(|&(_, c)| {
+                        match c {
+                            '(' => depth += 1,
+                            ')' => depth -= 1,
+                            _ => {}
+                        }
+                        depth == 0
+                    })
+                    .map_or(args.len(), |(i, _)| i);
+                calls += 1;
+                if args[..end].contains("format!") {
+                    let line = body[..at].lines().count();
+                    offenders.push(format!("{}:{line}: {verb}{}", path.display(), &args[..end]));
+                }
+            }
+        }
+    }
+    assert!(
+        calls >= 3,
+        "the walk found {calls} production calls of a `config` verb; `cfgd config` alone makes 3"
+    );
+    assert!(
+        offenders.is_empty(),
+        "these calls build the key a `config` verb refuses by, so a refusal names a key the \
+         caller never typed; call the verb's `*_as` form with an `Asked` naming the subject:\n{}",
+        offenders.join("\n")
+    );
 }

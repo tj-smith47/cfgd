@@ -2948,6 +2948,14 @@ cfgd alias delete pu                        # alias: rm
 No command-specific flags. `set` takes `<NAME> <COMMAND>`, where `COMMAND` is the argument string
 the alias expands to. Aliases live in the config file, so they travel with the config repository.
 
+An alias name is one word with no `.`; `set`, `show` and `delete` refuse any other name as
+`invalid_value`. `show` and `delete` refuse a name with no alias as a missing alias, exit `6`.
+Every refusal names the alias as you typed it, in the message and as the `-o json` `name`:
+
+```sh
+cfgd alias show nope      # → ✗ alias 'nope' not found (exit 6)
+```
+
 ### `cfgd man`
 
 Emit a `roff(7)` man page for cfgd on stdout.

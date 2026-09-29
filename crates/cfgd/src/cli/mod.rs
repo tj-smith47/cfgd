@@ -3638,17 +3638,19 @@ pub fn execute(
             }
         },
         Command::Alias { command } => {
-            // cmd_config_* peels `spec` first before walking the dotted path, so the
-            // prefix here is `aliases.` (not `spec.aliases.`) to land at spec.aliases.<name>.
+            use config_cmd::{Asked, alias_key};
             match command {
                 AliasCommand::Set { name, command: cmd } => {
-                    config_cmd::cmd_config_set(cli, printer, &format!("aliases.{name}"), cmd)
+                    let key = alias_key(name)?;
+                    config_cmd::config_set_as(cli, printer, &key, cmd, Asked::alias(name))
                 }
                 AliasCommand::Delete { name } => {
-                    config_cmd::cmd_config_unset(cli, printer, &format!("aliases.{name}"))
+                    let key = alias_key(name)?;
+                    config_cmd::config_unset_as(cli, printer, &key, Asked::alias(name))
                 }
                 AliasCommand::Show { name } => {
-                    config_cmd::cmd_config_get(cli, printer, &format!("aliases.{name}"))
+                    let key = alias_key(name)?;
+                    config_cmd::config_get_as(cli, printer, &key, Asked::alias(name))
                 }
                 AliasCommand::List => alias::cmd_alias_list(cli, printer),
             }

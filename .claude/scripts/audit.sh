@@ -1312,8 +1312,9 @@ if [ -f "$rule_file" ]; then
     # there looking answered.
     stale=$(LC_ALL=C comm -13 <(echo "$cmds_in_code") <(echo "$cmds_in_table" | tr ' ' '_'))
     # A dispatched renderer is a command whose body lives under another
-    # command's name: `alias show` is dispatched straight into `cmd_config_get`,
-    # so no `cmd_alias_show` is ever declared and its row would read as stale.
+    # command's name: `alias show` is dispatched into `config_get_as`, the body
+    # `cmd_config_get` hands every read to, so no `cmd_alias_show` is ever
+    # declared and its row would read as stale.
     # The pairs are the ones `DISPATCHED_RENDERERS` (crates/cfgd/src/cli/tests.rs)
     # holds. `every_dispatched_renderer_has_a_coverage_row` reads the assignment
     # below and asserts the two sets are equal, so a pair added to one list and
