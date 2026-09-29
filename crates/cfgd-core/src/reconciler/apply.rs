@@ -1984,11 +1984,7 @@ impl<'a> super::Reconciler<'a> {
 
         // --- onChange detection: run profile onChange scripts if anything changed ---
         let any_changed = results.iter().any(|r| r.changed);
-        let profile_name = resolved
-            .layers
-            .last()
-            .map(|l| l.profile_name.as_str())
-            .unwrap_or("unknown");
+        let profile_name = resolved.profile_name();
         // Hooks the plan could not name open their own group, the shape the repo
         // rules for unplanned work, instead of printing at the run's own depth
         // between the phase tree and the rollup. One phase over both loops: a

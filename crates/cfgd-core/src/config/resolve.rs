@@ -116,6 +116,12 @@ impl EntryOwners {
     }
 }
 
+/// The profile name a run reports when it cannot derive one: a synthesized
+/// layer-free resolution, or a module-only command under a config that names
+/// no profile. Scripts see it as `CFGD_PROFILE`, and a status row refuses it as
+/// a profile nothing has.
+pub const UNKNOWN_PROFILE: &str = "unknown";
+
 #[derive(Debug, Clone, Serialize)]
 pub struct ResolvedProfile {
     pub layers: Vec<ProfileLayer>,
@@ -125,13 +131,13 @@ pub struct ResolvedProfile {
 impl ResolvedProfile {
     /// Name of the profile this resolution is *for*: the last layer in the
     /// chain (bases are resolved first, the requested profile last). Falls back
-    /// to `"unknown"` for a synthesized layer-free profile so callers that stamp
-    /// the name into script metadata always have a value.
+    /// to [`UNKNOWN_PROFILE`] for a synthesized layer-free profile so callers
+    /// that stamp the name into script metadata always have a value.
     pub fn profile_name(&self) -> &str {
         self.layers
             .last()
             .map(|l| l.profile_name.as_str())
-            .unwrap_or("unknown")
+            .unwrap_or(UNKNOWN_PROFILE)
     }
 
     /// The requested profile's resolved `inherits:` chain, nearest parent

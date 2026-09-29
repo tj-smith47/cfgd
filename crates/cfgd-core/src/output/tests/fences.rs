@@ -9921,3 +9921,220 @@ fn every_defaulting_shape_of_a_section_read_is_found_and_no_other() {
         wrong.join("\n")
     );
 }
+
+/// The marker that exempts one profile read whose literal fallback names a real
+/// profile to resolve, which no placeholder constant stands for.
+const PROFILE_FALLBACK_HATCH: &str = "profile-fallback-ok:";
+
+/// The constants a profile read may fall back to: the name a run reports when
+/// it cannot derive one, and the word a surface prints for a document that
+/// names none.
+const PROFILE_PLACEHOLDERS: &[&str] = &["UNKNOWN_PROFILE", "NO_PROFILE_LABEL"];
+
+/// Reads of a profile name that fall back to a string literal, and reads that
+/// fall back to one of [`PROFILE_PLACEHOLDERS`], across one source.
+#[derive(Default)]
+struct ProfileFallbacks {
+    literals: Vec<usize>,
+    readers: usize,
+}
+
+impl ProfileFallbacks {
+    /// Whether `expr` reads a field, method or binding whose name carries
+    /// `profile`, along its receiver chain or inside a closure that chain
+    /// passes (`.and_then(|c| c.active_profile().ok())`).
+    fn reads_profile(expr: &syn::Expr) -> bool {
+        match peel(expr) {
+            syn::Expr::MethodCall(call) => {
+                call.method.to_string().contains("profile")
+                    || Self::reads_profile(&call.receiver)
+                    || call.args.iter().any(|arg| match peel(arg) {
+                        syn::Expr::Closure(closure) => Self::reads_profile(&closure.body),
+                        _ => false,
+                    })
+            }
+            syn::Expr::Field(field) => {
+                matches!(&field.member, syn::Member::Named(name) if name.to_string().contains("profile"))
+                    || Self::reads_profile(&field.base)
+            }
+            syn::Expr::Path(path) => path
+                .path
+                .segments
+                .last()
+                .is_some_and(|seg| seg.ident.to_string().contains("profile")),
+            syn::Expr::Try(tried) => Self::reads_profile(&tried.expr),
+            _ => false,
+        }
+    }
+
+    /// The fallback value past a closure and any `.to_string()` /
+    /// `.to_owned()` / `.into()` that turns it into an owned string.
+    fn fallback_value(expr: &syn::Expr) -> &syn::Expr {
+        match peel(expr) {
+            syn::Expr::Closure(closure) => Self::fallback_value(&closure.body),
+            syn::Expr::MethodCall(call)
+                if call.args.is_empty()
+                    && ["to_string", "to_owned", "into"]
+                        .contains(&call.method.to_string().as_str()) =>
+            {
+                Self::fallback_value(&call.receiver)
+            }
+            other => other,
+        }
+    }
+}
+
+impl<'ast> syn::visit::Visit<'ast> for ProfileFallbacks {
+    fn visit_expr_method_call(&mut self, call: &'ast syn::ExprMethodCall) {
+        let takes_fallback = matches!(
+            call.method.to_string().as_str(),
+            "unwrap_or" | "unwrap_or_else" | "map_or" | "map_or_else"
+        );
+        if takes_fallback
+            && let Some(fallback) = call.args.first().map(Self::fallback_value)
+            && Self::reads_profile(&call.receiver)
+        {
+            match fallback {
+                syn::Expr::Lit(syn::ExprLit {
+                    lit: syn::Lit::Str(_),
+                    ..
+                }) => self.literals.push(row_of(call.method.span())),
+                syn::Expr::Path(path)
+                    if path.path.segments.last().is_some_and(|seg| {
+                        PROFILE_PLACEHOLDERS.contains(&seg.ident.to_string().as_str())
+                    }) =>
+                {
+                    self.readers += 1;
+                }
+                _ => {}
+            }
+        }
+        syn::visit::visit_expr_method_call(self, call);
+    }
+}
+
+/// With no profile configured, one compliance snapshot was labelled `default`
+/// by `cfgd compliance` and `unknown` by the check-in, and four reconciler
+/// paths spelled `ResolvedProfile::profile_name`'s placeholder out by hand.
+/// Every production read of a profile name that falls back to a word takes it
+/// from one of [`PROFILE_PLACEHOLDERS`]. A fallback that names a real profile
+/// to resolve says so with `// profile-fallback-ok: <why>` on its line or the
+/// one above.
+#[test]
+fn every_absent_profile_is_spelled_by_a_named_placeholder() {
+    const READERS_FLOOR: usize = 4;
+    let mut literals = Vec::new();
+    let mut readers = 0;
+    for (_, files) in
+        crate::test_helpers::production_sources_per_root(crate::test_helpers::WORKSPACE_CRATES)
+    {
+        for (path, production) in files {
+            if production.trim().is_empty() {
+                continue;
+            }
+            // unfloored-slice-ok: syn parses whole items; test-gated ones are skipped by attribute.
+            let body = walked_file_body(path);
+            let file =
+                syn::parse_file(&body).unwrap_or_else(|e| panic!("{}: {e}", source_label(path)));
+            let lines: Vec<&str> = body.lines().collect();
+            let mut walk = ProfileFallbacks::default();
+            syn::visit::Visit::visit_file(&mut walk, &file);
+            readers += walk.readers;
+            literals.extend(
+                walk.literals
+                    .into_iter()
+                    .filter(|&row| !hatched(&lines, row, PROFILE_FALLBACK_HATCH))
+                    .map(|row| format!("{}:{}", source_label(path), row + 1)),
+            );
+        }
+    }
+    assert!(
+        literals.is_empty(),
+        "a profile read falls back to a string literal; use UNKNOWN_PROFILE or NO_PROFILE_LABEL:\n{}",
+        literals.join("\n")
+    );
+    assert!(
+        readers >= READERS_FLOOR,
+        "the walk found {readers} fallbacks to a named placeholder, below the floor of \
+         {READERS_FLOOR}"
+    );
+}
+
+#[test]
+fn every_profile_fallback_shape_is_found_and_no_other() {
+    const SHAPES: &[(&str, &str, (usize, usize))] = &[
+        (
+            "method literal",
+            r#"cfg.active_profile().unwrap_or("x")"#,
+            (1, 0),
+        ),
+        (
+            "field literal",
+            r#"cfg.spec.profile.as_deref().unwrap_or("x")"#,
+            (1, 0),
+        ),
+        (
+            "closure literal",
+            r#"cli.profile.as_deref().unwrap_or_else(|| "x")"#,
+            (1, 0),
+        ),
+        (
+            "owned literal",
+            r#"profile.unwrap_or_else(|| "x".to_string())"#,
+            (1, 0),
+        ),
+        ("map_or literal", r#"profile.map_or("x", |p| p)"#, (1, 0)),
+        (
+            "read inside a closure",
+            r#"c.ok().and_then(|c| c.active_profile().ok()).unwrap_or("x")"#,
+            (1, 0),
+        ),
+        (
+            "layer field in a closure",
+            r#"r.layers.last().map(|l| l.profile_name.as_str()).unwrap_or("x")"#,
+            (1, 0),
+        ),
+        (
+            "label",
+            "cfg.profile.as_deref().unwrap_or(NO_PROFILE_LABEL)",
+            (0, 1),
+        ),
+        (
+            "qualified",
+            "profile.unwrap_or(config::UNKNOWN_PROFILE)",
+            (0, 1),
+        ),
+        (
+            "owned label",
+            "profile.unwrap_or(UNKNOWN_PROFILE).to_string()",
+            (0, 1),
+        ),
+        (
+            "another field",
+            r#"cfg.name.as_deref().unwrap_or("x")"#,
+            (0, 0),
+        ),
+        ("another constant", "profile.unwrap_or(OTHER)", (0, 0)),
+        (
+            "empty default",
+            "cfg.spec.profile.unwrap_or_default()",
+            (0, 0),
+        ),
+    ];
+    let mut wrong = Vec::new();
+    for (shape, body, expected) in SHAPES {
+        let source = format!("fn f() {{ {body}; }}");
+        let file = syn::parse_file(&source).unwrap_or_else(|e| panic!("{shape}: {e}"));
+        let mut walk = ProfileFallbacks::default();
+        syn::visit::Visit::visit_file(&mut walk, &file);
+        let found = (walk.literals.len(), walk.readers);
+        if found != *expected {
+            wrong.push(format!("{shape}: found {found:?}, expected {expected:?}"));
+        }
+    }
+    assert!(
+        wrong.is_empty(),
+        "the profile fallback walk misreads these shapes:\n{}",
+        wrong.join("\n")
+    );
+}

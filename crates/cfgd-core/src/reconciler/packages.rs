@@ -864,12 +864,7 @@ impl<'x> PackageExec<'x> {
             if first.manager == crate::SCRIPT_SENTINEL {
                 for pkg in pkgs {
                     if let Some(ref script_content) = pkg.script {
-                        let profile_name = mcx
-                            .resolved
-                            .layers
-                            .last()
-                            .map(|l| l.profile_name.as_str())
-                            .unwrap_or("unknown");
+                        let profile_name = mcx.resolved.profile_name();
                         let env_vars = build_module_script_env(
                             &ScriptEnvContext {
                                 config_dir: mcx.config_dir,

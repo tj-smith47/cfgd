@@ -822,13 +822,6 @@ fn unknown_package_prefix(
     crate::cli::invalid_argument("--package", token, message)
 }
 
-/// Best-effort name of the profile a module-only command runs under: the
-/// explicit `--profile`, else the config's active profile, else `"unknown"`.
-///
-/// Module-only commands never resolve a profile, but the scripts they run
-/// (a `patch.script` filter, a lifecycle hook) still receive `CFGD_PROFILE`,
-/// so the name must be the real one wherever the config knows it. Pass `cfg`
-/// when it is already loaded to avoid a second read.
 /// The `spec.backups[]` units an apply runs unconditionally.
 ///
 /// A schedule-less unit has no timer to fire it, so every non-dry-run apply is
@@ -844,18 +837,30 @@ pub(in crate::cli) fn pending_backups(
         .collect()
 }
 
+/// Best-effort name of the profile a module-only command runs under: the
+/// explicit `--profile`, else the config's active profile, else
+/// [`cfgd_core::config::UNKNOWN_PROFILE`].
+///
+/// Module-only commands never resolve a profile, but the scripts they run
+/// (a `patch.script` filter, a lifecycle hook) still receive `CFGD_PROFILE`,
+/// so the name must be the real one wherever the config knows it. Pass `cfg`
+/// when it is already loaded to avoid a second read; with `None` the config is
+/// read here.
 pub(in crate::cli) fn active_profile_name(cli: &Cli, cfg: Option<&CfgdConfig>) -> String {
     if let Some(p) = cli.profile.as_deref() {
         return p.to_string();
     }
-    let from_loaded = cfg.and_then(|c| c.active_profile().ok().map(str::to_string));
-    from_loaded
-        .or_else(|| {
-            config::load_config(&cli.config)
-                .ok()
-                .and_then(|c| c.active_profile().ok().map(str::to_string))
-        })
-        .unwrap_or_else(|| "unknown".to_string())
+    let loaded;
+    let cfg = match cfg {
+        Some(cfg) => Some(cfg),
+        None => {
+            loaded = config::load_config(&cli.config).ok();
+            loaded.as_ref()
+        }
+    };
+    cfg.and_then(|c| c.active_profile().ok())
+        .unwrap_or(cfgd_core::config::UNKNOWN_PROFILE)
+        .to_string()
 }
 
 /// Build an empty ResolvedProfile for module-only operations that don't need

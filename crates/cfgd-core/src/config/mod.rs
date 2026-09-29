@@ -73,7 +73,7 @@ pub(crate) use resolve::fold_preferences;
 pub use resolve::{
     ALL_MANAGER_NAMES, DEFAULT_PACKAGE_NOUN, EntryOwners, LOCAL_LAYER, LOCAL_LAYER_PRIORITY,
     LayerPolicy, LayerSources, MergedProfile, PACKAGE_SCHEMA_PATHS, PackageClaim,
-    PackageSchemaPath, ProfileLayer, ResolvedProfile, desired_packages_for,
+    PackageSchemaPath, ProfileLayer, ResolvedProfile, UNKNOWN_PROFILE, desired_packages_for,
     desired_packages_for_spec, merge_layers, package_schema_path, resolve_profile,
 };
 pub use root::{

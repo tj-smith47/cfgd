@@ -1013,7 +1013,7 @@ fn render_module_drift_section(
 /// older cfgd still holds rows carrying it.
 pub(super) fn derivable_profile(name: &str) -> Option<&str> {
     match name.trim() {
-        "" | "unknown" => None,
+        "" | cfgd_core::config::UNKNOWN_PROFILE => None,
         name => Some(name),
     }
 }

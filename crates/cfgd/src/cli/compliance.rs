@@ -9,9 +9,8 @@ use cfgd_core::state::ComplianceHistoryRow;
 pub(super) fn collect_and_store_compliance_snapshot<'a>(
     ctx: &'a RunContext<'_>,
 ) -> anyhow::Result<(&'a CfgdConfig, ComplianceSnapshot)> {
-    let cli = ctx.cli();
     let printer = ctx.printer();
-    let (cfg, _profile_name, local_resolved) = ctx.config_and_profile()?;
+    let (cfg, profile_name, local_resolved) = ctx.config_and_profile()?;
     let config_dir = ctx.config_dir();
 
     let quiet_printer = printer.at_verbosity(cfgd_core::output::Verbosity::Quiet);
@@ -20,12 +19,6 @@ pub(super) fn collect_and_store_compliance_snapshot<'a>(
     if let Some(e) = inputs.take_manifest_error() {
         return Err(e.into());
     }
-
-    let profile_name = cli
-        .profile
-        .as_deref()
-        // option-section-ok: the `--profile` flag, answered by the active profile
-        .unwrap_or_else(|| cfg.active_profile().unwrap_or("default"));
 
     let scope = cfg.spec.compliance_effective().scope.clone();
 

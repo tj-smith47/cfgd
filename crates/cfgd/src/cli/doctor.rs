@@ -654,8 +654,11 @@ fn build_config_section(s: SectionBuilder, cfg: &DoctorConfigCheck) -> SectionBu
             }
             pairs.push((
                 "Profile".into(),
-                // option-section-ok: a doctor config state's profile; renders its absence
-                cfg.profile.as_deref().unwrap_or("(none)").into(),
+                cfg.profile
+                    .as_deref()
+                    // option-section-ok: a doctor config state's profile; renders its absence
+                    .unwrap_or(super::NO_PROFILE_LABEL)
+                    .into(),
             ));
             // facts-block-ok: the block closes this arm's section; the rows
             // below are the match's other arms, not rows after it

@@ -14,8 +14,12 @@ pub fn build_config_show_doc(cfg: &CfgdConfig, config_path: &Path) -> Doc {
         )
         .kv(
             "Profile",
-            // option-section-ok: renders the absence of a profile
-            cfg.spec.profile.as_deref().unwrap_or("(none)").to_string(),
+            cfg.spec
+                .profile
+                .as_deref()
+                // option-section-ok: renders the absence of a profile
+                .unwrap_or(super::NO_PROFILE_LABEL)
+                .to_string(),
         );
 
     doc = doc.section_if_nonempty("Origins", &cfg.spec.origin, |s, origins| {

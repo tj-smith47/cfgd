@@ -39,6 +39,7 @@ This file is an **INDEX**. The reasoning — why a helper exists, what breaks wi
 - `PROFILE_SCRIPT_TIMEOUT` (5m) / `COMMAND_TIMEOUT` (2m) / `GIT_NETWORK_TIMEOUT` (5m) — never hardcode the durations.
 - `ENROLL_RATE_LIMIT_BURST` / `ENROLL_RATE_LIMIT_PER_MIN` / `ENROLL_RATE_LIMIT_REFILL` — the device gateway's per-IP enrollment quota and the interval it hands one token back in; the gateway's limiter and the client's 429 retry ladder (`BackoffConfig::RATE_LIMITED`) both read it, and neither keeps a hand copy.
 - `DURATION_BUCKETS_SHORT` / `DURATION_BUCKETS_LONG` — Prometheus histogram bucket presets.
+- `config::UNKNOWN_PROFILE` (`config/resolve.rs`) — the profile name a run reports when it cannot derive one (`ResolvedProfile::profile_name`, `active_profile_name`, `CFGD_PROFILE`), and the name `derivable_profile` refuses. A surface printing the document's absent `spec.profile` uses `cli::NO_PROFILE_LABEL` (`(none)`). `every_absent_profile_is_spelled_by_a_named_placeholder` walks every crate for a profile read falling back to a string literal; a fallback naming a real profile to resolve carries `// profile-fallback-ok: <why>`.
 
 ## Time
 

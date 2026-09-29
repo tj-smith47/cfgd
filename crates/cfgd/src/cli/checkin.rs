@@ -19,7 +19,7 @@ pub fn cmd_checkin(
     printer.heading("Checkin");
 
     let ctx = RunContext::new(cli, printer);
-    let (cfg, _profile_name, local_resolved) = ctx.config_and_profile()?;
+    let (cfg, profile_name, local_resolved) = ctx.config_and_profile()?;
     let config_dir = ctx.config_dir();
 
     // The same resolution `cfgd compliance` collects against, so the compliance
@@ -68,7 +68,6 @@ pub fn cmd_checkin(
         .filter(|c| c.enabled && manifest_error.is_none())
     {
         Some(compliance_cfg) => {
-            let profile_name = cfg.active_profile().unwrap_or("unknown");
             let checkin_state = ctx.state()?;
             match inputs.collect(
                 profile_name,

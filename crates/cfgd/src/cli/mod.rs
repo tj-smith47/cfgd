@@ -920,6 +920,10 @@ where
     stored(doc.map_or(&*UNREAD_SPEC, |c| &c.spec))
 }
 
+/// What a surface that prints the document's `spec.profile` shows where the
+/// document names none.
+pub(crate) const NO_PROFILE_LABEL: &str = "(none)";
+
 /// The spec a missing or unreadable document reads as, so a resolver takes its
 /// default from the same `_effective` accessor a declared document goes through.
 static UNREAD_SPEC: std::sync::LazyLock<cfgd_core::config::ConfigSpec> =

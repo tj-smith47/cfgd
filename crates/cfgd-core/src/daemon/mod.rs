@@ -1657,6 +1657,7 @@ pub(super) fn profile_context<'a>(
 ) -> (PathBuf, &'a str) {
     let profile_name = profile_override
         .or(cfg.spec.profile.as_deref())
+        // profile-fallback-ok: the daemon resolves the profile named `default`, a real one
         .unwrap_or("default");
     (profiles_dir_for(config_path), profile_name)
 }

@@ -519,11 +519,7 @@ impl<'a> super::Reconciler<'a> {
                 script,
                 phase: script_phase,
             } => {
-                let profile_name = resolved
-                    .layers
-                    .last()
-                    .map(|l| l.profile_name.as_str())
-                    .unwrap_or("unknown");
+                let profile_name = resolved.profile_name();
                 let env_vars = build_module_script_env(
                     &ScriptEnvContext {
                         config_dir,
