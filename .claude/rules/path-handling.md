@@ -25,6 +25,7 @@ Do not invent a new normalizer. The crate already standardizes this in one place
 | `path.posix()` (via `use crate::PathDisplayExt;`) | `path.display()` | a `Display` that always emits `/` |
 | `crate::to_posix_string(path)` | `path.to_string_lossy().into_owned()` | an owned `String` with `\`→`/` folded, for a key that is only ever COMPARED |
 | `crate::to_posix_fs_key(path)` | `crate::to_posix_string(path)` | a persisted key that is also REOPENED as a path (`file_backups.file_path`, `module_file_manifest.file_path`); folds on Windows only |
+| `#[serde(serialize_with = "crate::serialize_fs_path")]` / `serialize_opt_fs_path` | a derived `PathBuf` field | a path a serialized document carries and a reader reopens (every path field of the plan format); the `to_posix_fs_key` rule applied through serde |
 | `crate::normalize_for_snapshot(captured, &[(path, label)])` | hand-rolled `.replace('\\', "/")` | snapshot goldens (also folds CRLF→LF + substitutes paths) |
 | `crate::strip_windows_verbatim(s)` | inline `s.strip_prefix(r"\\?\")` | dropping the Windows `\\?\` verbatim prefix |
 

@@ -128,6 +128,7 @@ impl FromStr for PhaseName {
 pub enum EnvAction {
     /// Write the generated env file (bash/zsh or fish).
     WriteEnvFile {
+        #[serde(serialize_with = "crate::serialize_fs_path")]
         path: std::path::PathBuf,
         content: String,
         /// How many variables and aliases `content` renders, for the action
@@ -153,6 +154,7 @@ pub enum EnvAction {
     },
     /// Inject a source line into a shell rc file (idempotent).
     InjectSourceLine {
+        #[serde(serialize_with = "crate::serialize_fs_path")]
         rc_path: std::path::PathBuf,
         line: String,
     },

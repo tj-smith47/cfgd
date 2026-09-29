@@ -1375,6 +1375,50 @@ pub fn to_posix_fs_key(path: impl AsRef<std::path::Path>) -> String {
     }
 }
 
+/// `serialize_with` for a path a plan file carries and a replay reopens:
+/// written with `/` on Windows, exactly as it stands on POSIX.
+///
+/// The [`to_posix_fs_key`] rule applied to serde: `\` cannot occur in a
+/// Windows filename, so the fold is lossless there, and a backslash is an
+/// ordinary POSIX filename character, so nothing is folded on POSIX. A path
+/// that is not valid UTF-8 is refused with serde's own error, as the derived
+/// impl refuses it.
+pub fn serialize_fs_path<S: serde::Serializer>(
+    path: &std::path::Path,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    let text = path
+        .to_str()
+        .ok_or_else(|| serde::ser::Error::custom("path contains invalid UTF-8 characters"))?;
+    let text = if cfg!(windows) {
+        posixify_text(text)
+    } else {
+        std::borrow::Cow::Borrowed(text)
+    };
+    serializer.serialize_str(&text)
+}
+
+/// [`serialize_fs_path`] for an optional path.
+pub fn serialize_opt_fs_path<S: serde::Serializer>(
+    path: &Option<std::path::PathBuf>,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    match path {
+        Some(path) => serializer.serialize_some(&FsPath(path)),
+        None => serializer.serialize_none(),
+    }
+}
+
+/// A borrowed path serialized through [`serialize_fs_path`], so the optional
+/// form wraps the same fold.
+struct FsPath<'a>(&'a std::path::Path);
+
+impl serde::Serialize for FsPath<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serialize_fs_path(self.0, serializer)
+    }
+}
+
 /// Strip a leading Windows extended-length (`\\?\`) verbatim prefix from a
 /// path string, returning the rest unchanged.
 ///

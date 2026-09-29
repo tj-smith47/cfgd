@@ -1792,7 +1792,9 @@ pub enum FileDiffKind {
 #[derive(Debug, Serialize, Deserialize)]
 pub enum FileAction {
     Create {
+        #[serde(serialize_with = "crate::serialize_fs_path")]
         source: PathBuf,
+        #[serde(serialize_with = "crate::serialize_fs_path")]
         target: PathBuf,
         origin: String,
         strategy: crate::config::FileStrategy,
@@ -1805,7 +1807,9 @@ pub enum FileAction {
         patch: Option<crate::config::PatchSpec>,
     },
     Update {
+        #[serde(serialize_with = "crate::serialize_fs_path")]
         source: PathBuf,
+        #[serde(serialize_with = "crate::serialize_fs_path")]
         target: PathBuf,
         diff: String,
         origin: String,
@@ -1817,10 +1821,12 @@ pub enum FileAction {
         patch: Option<crate::config::PatchSpec>,
     },
     Delete {
+        #[serde(serialize_with = "crate::serialize_fs_path")]
         target: PathBuf,
         origin: String,
     },
     SetPermissions {
+        #[serde(serialize_with = "crate::serialize_fs_path")]
         target: PathBuf,
         mode: u32,
         origin: String,
@@ -1837,10 +1843,15 @@ pub enum FileAction {
         /// an elevated chmod at any file on the machine. The planner names the
         /// path from the resolved strategy: a probe at apply time would lose
         /// that race.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            serialize_with = "crate::serialize_opt_fs_path"
+        )]
         chmod_path: Option<PathBuf>,
     },
     Skip {
+        #[serde(serialize_with = "crate::serialize_fs_path")]
         target: PathBuf,
         reason: String,
         origin: String,
@@ -2032,7 +2043,9 @@ pub trait SecretProvider: Send + Sync {
 #[derive(Debug, Serialize, Deserialize)]
 pub enum SecretAction {
     Decrypt {
+        #[serde(serialize_with = "crate::serialize_fs_path")]
         source: PathBuf,
+        #[serde(serialize_with = "crate::serialize_fs_path")]
         target: PathBuf,
         backend: String,
         origin: String,
@@ -2040,6 +2053,7 @@ pub enum SecretAction {
     Resolve {
         provider: String,
         reference: String,
+        #[serde(serialize_with = "crate::serialize_fs_path")]
         target: PathBuf,
         /// `spec.secrets[].template`: rendered around the resolved value
         /// before it is written (see [`render_secret_template`]).

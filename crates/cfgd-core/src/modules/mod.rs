@@ -136,8 +136,10 @@ pub struct ResolvedPackage {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResolvedFile {
     /// Local source path (after git clone if needed).
+    #[serde(serialize_with = "crate::serialize_fs_path")]
     pub source: PathBuf,
     /// Target path on the machine.
+    #[serde(serialize_with = "crate::serialize_fs_path")]
     pub target: PathBuf,
     /// Whether the source was fetched from git.
     pub is_git_source: bool,

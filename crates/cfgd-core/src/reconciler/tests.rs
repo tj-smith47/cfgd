@@ -27540,26 +27540,9 @@ impl PlanVariantsSeen {
     }
 }
 
-/// Every variant of every enum a plan file carries survives the plan-file
-/// round trip: `Action`, each action enum under it (`FileAction`,
-/// `PackageAction`, `SecretAction`, `SystemAction`, `ScriptAction`,
-/// `ModuleActionKind`, `EnvAction`, `ManagerAction`), and the value enums
-/// those carry (`FileStrategy`, `PatchFormat`, `EncryptionMode`, `ScriptEntry`,
-/// `ScriptShell`, `ScriptPhase`).
-///
-/// [`PlanVariantsSeen`] names each sampled variant through one exhaustive
-/// match per enum, and the names it saw must equal the ones serde accepts for
-/// that enum, read off the type itself. A new variant fails to compile until
-/// it is named, and fails here until it is sampled. `ScriptEntry` is untagged,
-/// so serde lists no names for it; its count comes off its published schema.
-///
-/// Optional fields are left empty except where one carries a nested enum, and
-/// each of those also appears empty in a sibling sample: an empty field is the
-/// case a `skip_serializing_if` with no `#[serde(default)]` fails on, since the
-/// key is absent from the wire entirely.
-#[test]
-fn every_action_variant_survives_the_plan_file_round_trip() {
-    let path = |p: &str| std::path::PathBuf::from(p);
+/// One action of every variant a plan file can carry, and one of every value
+/// enum those reach, each path spelled by `path` from its POSIX literal.
+fn every_action_variant_sample(path: impl Fn(&str) -> std::path::PathBuf) -> Vec<Action> {
     let patch = |format: PatchFormat| PatchSpec {
         format: Some(format),
         ensure: None,
@@ -27806,6 +27789,29 @@ fn every_action_variant_survives_the_plan_file_round_trip() {
                 })
             }),
     );
+    actions
+}
+
+/// Every variant of every enum a plan file carries survives the plan-file
+/// round trip: `Action`, each action enum under it (`FileAction`,
+/// `PackageAction`, `SecretAction`, `SystemAction`, `ScriptAction`,
+/// `ModuleActionKind`, `EnvAction`, `ManagerAction`), and the value enums
+/// those carry (`FileStrategy`, `PatchFormat`, `EncryptionMode`, `ScriptEntry`,
+/// `ScriptShell`, `ScriptPhase`).
+///
+/// [`PlanVariantsSeen`] names each sampled variant through one exhaustive
+/// match per enum, and the names it saw must equal the ones serde accepts for
+/// that enum, read off the type itself. A new variant fails to compile until
+/// it is named, and fails here until it is sampled. `ScriptEntry` is untagged,
+/// so serde lists no names for it; its count comes off its published schema.
+///
+/// Optional fields are left empty except where one carries a nested enum, and
+/// each of those also appears empty in a sibling sample: an empty field is the
+/// case a `skip_serializing_if` with no `#[serde(default)]` fails on, since the
+/// key is absent from the wire entirely.
+#[test]
+fn every_action_variant_survives_the_plan_file_round_trip() {
+    let actions = every_action_variant_sample(|p| std::path::PathBuf::from(p));
 
     let mut seen = PlanVariantsSeen::default();
     for action in &actions {
@@ -27877,6 +27883,63 @@ fn every_action_variant_survives_the_plan_file_round_trip() {
         wire,
         "the whole plan returns as the same bytes, phases and owner groups included",
     );
+}
+
+/// Every path a plan file carries is written with `/`, the separator every
+/// other serialized path in cfgd uses, so a Windows plan file never spells a
+/// path `C:\Users\…` beside `configInputs` rows reading `C:/Users/…`. The
+/// sample's paths are spelled with this host's separator, the way a planner
+/// joins them, so a path field that serializes natively fails here on Windows.
+/// On POSIX nothing is folded: a backslash is an ordinary filename character
+/// there, and a replay reopens the path it reads.
+#[test]
+fn every_path_a_plan_file_carries_is_written_with_forward_slashes() {
+    let native = |p: &str| std::path::PathBuf::from(p.replace('/', std::path::MAIN_SEPARATOR_STR));
+    let mut actions = every_action_variant_sample(native);
+    actions.push(Action::File(FileAction::SetPermissions {
+        target: native("/home/u/link"),
+        mode: 0o600,
+        origin: String::new(),
+        chmod_path: Some(native("/cfg/files/link-source")),
+    }));
+    fn strings<'a>(value: &'a serde_json::Value, out: &mut Vec<&'a str>) {
+        match value {
+            serde_json::Value::String(s) => out.push(s),
+            serde_json::Value::Array(items) => items.iter().for_each(|v| strings(v, out)),
+            serde_json::Value::Object(map) => map.values().for_each(|v| strings(v, out)),
+            _ => {}
+        }
+    }
+    let wire = serde_json::to_value(&actions).expect("a plan's actions serialize");
+    let mut seen = Vec::new();
+    strings(&wire, &mut seen);
+    let native_spelled: Vec<&str> = seen.iter().copied().filter(|s| s.contains('\\')).collect();
+    assert!(
+        native_spelled.is_empty(),
+        "a plan file writes every path with `/`: {native_spelled:?}"
+    );
+    let paths: Vec<&str> = seen
+        .iter()
+        .copied()
+        .filter(|s| s.starts_with("/cfg/") || s.starts_with("/home/"))
+        .collect();
+    assert!(
+        paths.len() >= 20 && paths.contains(&"/cfg/files/link-source"),
+        "the sample must reach every path field, the optional one included: {paths:?}"
+    );
+
+    #[cfg(not(windows))]
+    {
+        let odd = Action::File(FileAction::Delete {
+            target: std::path::PathBuf::from("/home/u/od\\d.conf"),
+            origin: String::new(),
+        });
+        assert_eq!(
+            serde_json::to_value(&odd).expect("the action serializes")["File"]["Delete"]["target"],
+            "/home/u/od\\d.conf",
+            "on POSIX a backslash is part of the filename and is written as it stands"
+        );
+    }
 }
 
 /// A plan file's phase reads back as one `Phase::from_actions` could have built.
