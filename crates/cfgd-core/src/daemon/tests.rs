@@ -16656,7 +16656,7 @@ spec: {}
 
         // Stamp a check "now" into the test-home version cache; with the default
         // 24h interval, the next tick is well within the window.
-        crate::upgrade::record_check_at(env!("CARGO_PKG_VERSION"), crate::unix_secs_now());
+        crate::upgrade::record_check_at(crate::unix_secs_now());
 
         // No mock server: a network call would error, proving the gate short-circuits.
         let state = Arc::new(Mutex::new(DaemonState::new()));

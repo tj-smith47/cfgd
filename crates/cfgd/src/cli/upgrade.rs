@@ -361,7 +361,7 @@ pub fn startup_update_check(
             );
         }),
         apply: Box::new(|c| apply_startup_update(printer, &update_cfg, c)),
-        record_checked: Box::new(|now| upgrade::record_check_at(env!("CARGO_PKG_VERSION"), now)),
+        record_checked: Box::new(upgrade::record_check_at),
     };
 
     let outcome = upgrade::run_update_check(&update_cfg, now, None, &mut effects);

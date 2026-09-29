@@ -1,5 +1,4 @@
 use super::*;
-use std::time::SystemTime;
 
 #[test]
 fn current_version_is_valid_semver() {
@@ -339,56 +338,14 @@ fn atomic_replace_creates_target() {
 }
 
 #[test]
-fn version_cache_disk_persistence_camel_case() {
-    // Write VersionCache to a temp file, read it back, verify camelCase keys on disk
+fn version_cache_writes_only_the_check_timestamp() {
     let cache = VersionCache {
         checked_at_secs: 1711800000,
-        latest_tag: "v0.5.0".into(),
-        latest_version: "0.5.0".into(),
-        current_version: "0.4.0".into(),
     };
-
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("version-check.json");
-
-    // Serialize and write to disk
-    let json = serde_json::to_string(&cache).expect("serialize");
-    fs::write(&path, &json).expect("write");
-
-    // Verify the on-disk JSON uses camelCase keys
-    let raw = fs::read_to_string(&path).expect("read");
-    assert!(
-        raw.contains("checkedAtSecs"),
-        "expected camelCase key 'checkedAtSecs', got: {}",
-        raw
+    assert_eq!(
+        serde_json::to_string(&cache).expect("serialize"),
+        r#"{"checkedAtSecs":1711800000}"#
     );
-    assert!(
-        raw.contains("latestTag"),
-        "expected camelCase key 'latestTag', got: {}",
-        raw
-    );
-    assert!(
-        raw.contains("latestVersion"),
-        "expected camelCase key 'latestVersion', got: {}",
-        raw
-    );
-    assert!(
-        raw.contains("currentVersion"),
-        "expected camelCase key 'currentVersion', got: {}",
-        raw
-    );
-    // Ensure snake_case keys are NOT present
-    assert!(
-        !raw.contains("checked_at_secs"),
-        "should not contain snake_case key 'checked_at_secs'"
-    );
-
-    // Read back and deserialize
-    let restored: VersionCache = serde_json::from_str(&raw).expect("deserialize from disk");
-    assert_eq!(restored.checked_at_secs, 1711800000);
-    assert_eq!(restored.latest_tag, "v0.5.0");
-    assert_eq!(restored.latest_version, "0.5.0");
-    assert_eq!(restored.current_version, "0.4.0");
 }
 
 #[test]
@@ -424,102 +381,21 @@ fn find_asset_wrong_platform_returns_error() {
     );
 }
 
+/// A cache file written when the cache also held the version strings still
+/// gates the next check on its timestamp.
 #[test]
-fn cache_ttl_fresh_cache_is_valid() {
-    // Simulate a cache entry that was just written — should be within TTL
-    let now_secs = SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap()
-        .as_secs();
-
-    let cache = VersionCache {
-        checked_at_secs: now_secs, // just now
-        latest_tag: "v0.3.0".into(),
-        latest_version: "0.3.0".into(),
-        current_version: "0.2.0".into(),
-    };
-
-    let elapsed = now_secs.saturating_sub(cache.checked_at_secs);
-    assert!(
-        elapsed < CACHE_TTL_SECS,
-        "fresh cache should be within TTL: elapsed={}, ttl={}",
-        elapsed,
-        CACHE_TTL_SECS
-    );
-
-    // The cached version should parse and be usable for comparison
-    let cached_version = Version::parse(&cache.latest_version).expect("parse cached version");
-    let current = Version::parse(&cache.current_version).expect("parse current version");
-    assert!(cached_version > current, "0.3.0 > 0.2.0");
-}
-
-#[test]
-fn cache_ttl_expired_cache_is_stale() {
-    // Simulate a cache entry from 25 hours ago — should exceed the 24h TTL
-    let now_secs = SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap()
-        .as_secs();
-
-    let twenty_five_hours_ago = now_secs - (25 * 3600);
-
-    let cache = VersionCache {
-        checked_at_secs: twenty_five_hours_ago,
-        latest_tag: "v0.3.0".into(),
-        latest_version: "0.3.0".into(),
-        current_version: "0.2.0".into(),
-    };
-
-    let elapsed = now_secs.saturating_sub(cache.checked_at_secs);
-    assert!(
-        elapsed >= CACHE_TTL_SECS,
-        "25h-old cache should exceed TTL: elapsed={}, ttl={}",
-        elapsed,
-        CACHE_TTL_SECS
-    );
-}
-
-#[test]
-fn cache_ttl_boundary_just_expired() {
-    // Cache is exactly at TTL boundary + 1 second — should be expired
-    let now_secs = SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap()
-        .as_secs();
-
-    let just_past_ttl = now_secs - CACHE_TTL_SECS - 1;
-
-    let cache = VersionCache {
-        checked_at_secs: just_past_ttl,
-        latest_tag: "v0.3.0".into(),
-        latest_version: "0.3.0".into(),
-        current_version: "0.2.0".into(),
-    };
-
-    let elapsed = now_secs.saturating_sub(cache.checked_at_secs);
-    assert!(
-        elapsed >= CACHE_TTL_SECS,
-        "cache at TTL+1s should be expired"
-    );
-
-    // One second before expiry should still be valid
-    let at_boundary = now_secs - CACHE_TTL_SECS + 1;
-    let boundary_elapsed = now_secs.saturating_sub(at_boundary);
-    assert!(
-        boundary_elapsed < CACHE_TTL_SECS,
-        "cache at TTL-1s should still be valid"
-    );
-}
-
-#[test]
-fn version_cache_deserialization_from_known_json() {
-    // Ensure a known JSON payload deserializes (simulates reading from disk)
-    let json = r#"{"checkedAtSecs":1700000000,"latestTag":"v1.2.3","latestVersion":"1.2.3","currentVersion":"1.0.0"}"#;
-    let cache: VersionCache = serde_json::from_str(json).expect("deserialize known JSON");
-    assert_eq!(cache.checked_at_secs, 1700000000);
-    assert_eq!(cache.latest_tag, "v1.2.3");
-    assert_eq!(cache.latest_version, "1.2.3");
-    assert_eq!(cache.current_version, "1.0.0");
+#[serial_test::serial]
+fn a_version_cache_written_with_the_version_strings_still_reads() {
+    let home = tempfile::tempdir().unwrap();
+    let _guard = crate::with_test_home_guard(home.path());
+    let dir = cache_dir().expect("the test home has a cache dir");
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(
+        dir.join(CACHE_FILENAME),
+        r#"{"checkedAtSecs":1700000000,"latestTag":"v1.2.3","latestVersion":"1.2.3","currentVersion":"1.0.0"}"#,
+    )
+    .unwrap();
+    assert_eq!(last_checked_secs(), Some(1_700_000_000));
 }
 
 #[test]
@@ -579,31 +455,6 @@ fn download_and_install_checksum_mismatch_detection() {
         matches!(err, crate::errors::UpgradeError::ChecksumMismatch { .. }),
         "wrong published hash must surface as mismatch: {err:?}"
     );
-}
-
-#[test]
-fn version_cache_disk_persistence() {
-    let dir = tempfile::tempdir().unwrap();
-    let cache = VersionCache {
-        checked_at_secs: 1711234567,
-        latest_tag: "v1.2.3".into(),
-        latest_version: "1.2.3".into(),
-        current_version: "1.0.0".into(),
-    };
-    let json = serde_json::to_string(&cache).unwrap();
-    let path = dir.path().join("version-cache.json");
-    std::fs::write(&path, &json).unwrap();
-
-    let content = std::fs::read_to_string(&path).unwrap();
-    let restored: VersionCache = serde_json::from_str(&content).unwrap();
-    assert_eq!(restored.checked_at_secs, 1711234567);
-    assert_eq!(restored.latest_tag, "v1.2.3");
-    assert_eq!(restored.latest_version, "1.2.3");
-    assert_eq!(restored.current_version, "1.0.0");
-
-    // Verify camelCase serialization
-    assert!(json.contains("checkedAtSecs"));
-    assert!(json.contains("latestTag"));
 }
 
 #[test]
@@ -952,7 +803,7 @@ fn record_check_at_creates_cache_when_none_exists() {
         last_checked_secs().is_none(),
         "precondition: no cache means no recorded check"
     );
-    record_check_at(env!("CARGO_PKG_VERSION"), 1_700_000_000);
+    record_check_at(1_700_000_000);
     assert_eq!(
         last_checked_secs(),
         Some(1_700_000_000),
@@ -966,28 +817,17 @@ fn record_check_at_updates_timestamp_on_existing_cache() {
     let home = tempfile::tempdir().unwrap();
     let _guard = crate::with_test_home_guard(home.path());
 
-    // Seed a cache with real version fields, then re-stamp the timestamp.
-    let seeded = VersionCache {
+    write_version_cache(&VersionCache {
         checked_at_secs: 1_700_000_000,
-        latest_tag: "v9.9.0".into(),
-        latest_version: "9.9.0".into(),
-        current_version: env!("CARGO_PKG_VERSION").into(),
-    };
-    write_version_cache(&seeded).expect("seed cache write must succeed");
+    })
+    .expect("seed cache write must succeed");
 
-    record_check_at(env!("CARGO_PKG_VERSION"), 1_700_009_999);
+    record_check_at(1_700_009_999);
     assert_eq!(
         last_checked_secs(),
         Some(1_700_009_999),
-        "the Some branch must update the timestamp in place"
+        "a later check replaces the recorded timestamp"
     );
-    // Re-stamping preserves the version fields from the prior cache.
-    let after = read_version_cache().expect("cache must still parse after update");
-    assert_eq!(
-        after.latest_version, "9.9.0",
-        "record_check_at must preserve the cached version fields"
-    );
-    assert_eq!(after.latest_tag, "v9.9.0");
 }
 
 #[test]
@@ -1025,43 +865,13 @@ fn update_check_fields_are_coherent() {
 
 #[test]
 #[serial_test::serial]
-fn version_cache_write_and_read_roundtrip() {
-    let home = tempfile::tempdir().unwrap();
-    let _guard = crate::with_test_home_guard(home.path());
-
-    let cache = VersionCache {
-        checked_at_secs: SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .unwrap()
-            .as_secs(),
-        latest_tag: "v99.99.99".into(),
-        latest_version: "99.99.99".into(),
-        current_version: env!("CARGO_PKG_VERSION").into(),
-    };
-
-    write_version_cache(&cache).expect("write into tempdir cache should succeed");
-
-    let read = read_version_cache().expect("should be able to read back written cache");
-    assert_eq!(read.latest_tag, "v99.99.99");
-    assert_eq!(read.latest_version, "99.99.99");
-    assert_eq!(read.current_version, env!("CARGO_PKG_VERSION"));
-    assert_eq!(read.checked_at_secs, cache.checked_at_secs);
-}
-
-#[test]
-#[serial_test::serial]
 fn read_version_cache_returns_none_after_invalidation() {
     let home = tempfile::tempdir().unwrap();
     let _guard = crate::with_test_home_guard(home.path());
 
     // Seed a cache file so invalidation has something to remove — the
     // post-invalidation None must reflect a real removal, not absence.
-    let cache = VersionCache {
-        checked_at_secs: 1,
-        latest_tag: "v0".into(),
-        latest_version: "0.0.0".into(),
-        current_version: "0.0.0".into(),
-    };
+    let cache = VersionCache { checked_at_secs: 1 };
     write_version_cache(&cache).expect("seed cache write must succeed");
     assert!(
         read_version_cache().is_some(),
@@ -1957,69 +1767,6 @@ fn atomic_replace_target_is_a_directory_fails_at_persist() {
     assert!(
         result.is_err(),
         "renaming the staged file over an existing directory must fail at persist"
-    );
-}
-
-// --- version_cache serialization/deserialization ---
-
-#[test]
-fn version_cache_with_prerelease() {
-    let cache = VersionCache {
-        checked_at_secs: 1700000000,
-        latest_tag: "v2.0.0-beta.3".into(),
-        latest_version: "2.0.0-beta.3".into(),
-        current_version: "1.9.0".into(),
-    };
-
-    let json = serde_json::to_string(&cache).unwrap();
-    let restored: VersionCache = serde_json::from_str(&json).unwrap();
-    assert_eq!(restored.latest_tag, "v2.0.0-beta.3");
-    assert_eq!(restored.latest_version, "2.0.0-beta.3");
-
-    // Verify the prerelease version parses and compares correctly
-    let latest = Version::parse(&restored.latest_version).unwrap();
-    let current = Version::parse(&restored.current_version).unwrap();
-    assert!(latest > current, "2.0.0-beta.3 > 1.9.0");
-}
-
-#[test]
-fn version_cache_tolerates_extra_json_fields() {
-    // Forward compatibility: ignore unknown fields
-    let json = r#"{"checkedAtSecs":100,"latestTag":"v1","latestVersion":"1.0.0","currentVersion":"0.9.0","extraField":"ignored"}"#;
-    let cache: VersionCache = serde_json::from_str(json).unwrap();
-    assert_eq!(cache.checked_at_secs, 100);
-    assert_eq!(cache.latest_version, "1.0.0");
-}
-
-// --- cache TTL: zero elapsed ---
-
-#[test]
-fn cache_ttl_zero_seconds_ago_is_fresh() {
-    let now_secs = SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap()
-        .as_secs();
-
-    let elapsed = now_secs.saturating_sub(now_secs);
-    assert!(
-        elapsed < CACHE_TTL_SECS,
-        "zero-elapsed cache should be fresh"
-    );
-}
-
-#[test]
-fn cache_ttl_exactly_at_boundary_is_fresh() {
-    let now_secs = SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap()
-        .as_secs();
-
-    // Exactly at TTL boundary (== CACHE_TTL_SECS) should NOT be fresh (uses <, not <=)
-    let at_boundary = now_secs - CACHE_TTL_SECS;
-    let elapsed = now_secs.saturating_sub(at_boundary);
-    assert!(
-        elapsed >= CACHE_TTL_SECS,
-        "cache exactly at TTL boundary should be expired (uses strict <)"
     );
 }
 
@@ -3630,9 +3377,6 @@ fn write_version_cache_creates_dir_and_writes_file() {
 
     let cache = VersionCache {
         checked_at_secs: 1234567890,
-        latest_tag: "v5.0.0".into(),
-        latest_version: "5.0.0".into(),
-        current_version: "4.0.0".into(),
     };
 
     write_version_cache(&cache).expect("write_version_cache should create dir and file");
@@ -3643,7 +3387,6 @@ fn write_version_cache_creates_dir_and_writes_file() {
     let content = fs::read_to_string(&cache_path).unwrap();
     let restored: VersionCache = serde_json::from_str(&content).unwrap();
     assert_eq!(restored.checked_at_secs, 1234567890);
-    assert_eq!(restored.latest_version, "5.0.0");
 }
 
 #[test]
@@ -3654,23 +3397,16 @@ fn write_version_cache_overwrites_existing_file() {
 
     let first = VersionCache {
         checked_at_secs: 100,
-        latest_tag: "v1.0.0".into(),
-        latest_version: "1.0.0".into(),
-        current_version: "0.9.0".into(),
     };
     write_version_cache(&first).unwrap();
 
     let second = VersionCache {
         checked_at_secs: 200,
-        latest_tag: "v2.0.0".into(),
-        latest_version: "2.0.0".into(),
-        current_version: "1.0.0".into(),
     };
     write_version_cache(&second).unwrap();
 
     let read = read_version_cache().expect("should read back second write");
     assert_eq!(read.checked_at_secs, 200);
-    assert_eq!(read.latest_version, "2.0.0");
 }
 
 #[test]
@@ -3749,9 +3485,6 @@ fn cache_dir_honors_cfgd_cache_dir_env() {
 
     write_version_cache(&VersionCache {
         checked_at_secs: 42,
-        latest_tag: "v9.9.0".into(),
-        latest_version: "9.9.0".into(),
-        current_version: "9.8.0".into(),
     })
     .expect("write_version_cache must succeed under a redirected cache dir");
     assert!(
@@ -4598,9 +4331,6 @@ fn write_version_cache_errors_when_cache_dir_path_is_blocked_by_a_file() {
 
     let cache = VersionCache {
         checked_at_secs: 42,
-        latest_tag: "v9.9.0".into(),
-        latest_version: "9.9.0".into(),
-        current_version: "9.8.0".into(),
     };
 
     let err = write_version_cache(&cache).unwrap_err();

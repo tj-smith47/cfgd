@@ -80,14 +80,14 @@ pub struct ReleaseAsset {
     pub size: u64,
 }
 
-/// Cached version check result, persisted to disk.
+/// When the last version check ran, persisted to disk.
+///
+/// Files written before the cache held only the timestamp also carry
+/// `latestTag`, `latestVersion` and `currentVersion`; serde skips them.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct VersionCache {
     checked_at_secs: u64,
-    latest_tag: String,
-    latest_version: String,
-    current_version: String,
 }
 
 /// How the upgrade checksum file was verified. Surfaced in the structured
@@ -1277,28 +1277,12 @@ pub fn last_checked_secs() -> Option<u64> {
     read_version_cache().map(|c| c.checked_at_secs)
 }
 
-/// Record that a version check ran at `now` (Unix seconds), updating only the
-/// timestamp on the persisted cache. Best-effort: a write failure is logged and
-/// swallowed so a non-writable cache dir never fails a normal command.
-///
-/// `cfgd_version` is the running binary's version (see
-/// [`parse_current_version`]). Preserves the cached version strings when a
-/// prior cache exists; otherwise it stamps the timestamp against the running
-/// version with an empty latest tag.
-pub fn record_check_at(cfgd_version: &str, now: u64) {
-    let cache = match read_version_cache() {
-        Some(mut c) => {
-            c.checked_at_secs = now;
-            c
-        }
-        None => VersionCache {
-            checked_at_secs: now,
-            latest_tag: String::new(),
-            latest_version: parse_current_version(cfgd_version)
-                .map(|v| v.to_string())
-                .unwrap_or_default(),
-            current_version: cfgd_version.to_string(),
-        },
+/// Record that a version check ran at `now` (Unix seconds). Best-effort: a
+/// write failure is logged and swallowed so a non-writable cache dir never
+/// fails a normal command.
+pub fn record_check_at(now: u64) {
+    let cache = VersionCache {
+        checked_at_secs: now,
     };
     if let Err(e) = write_version_cache(&cache) {
         tracing::warn!(error = %e, "failed to record update-check timestamp");

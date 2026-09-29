@@ -194,7 +194,7 @@ pub(crate) async fn handle_version_check(
     })
     .await;
 
-    crate::upgrade::record_check_at(cfgd_version, now);
+    crate::upgrade::record_check_at(now);
 
     let check = match check_result {
         Ok(Ok(c)) => c,
