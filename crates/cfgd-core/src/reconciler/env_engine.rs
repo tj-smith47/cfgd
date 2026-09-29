@@ -273,10 +273,10 @@ impl<'a> EnvContent<'a> {
 /// because that assignment has as many authors as fed it and no single block
 /// header can name them. Every other line's owner is the header above it.
 ///
-/// The per-entry comment half ([`Self::env_comment`], [`Self::alias_comment`])
-/// has no production caller left: it renders what a cfgd BEFORE the layered
-/// blocks wrote, which is what a migration fixture needs and nothing else
-/// does.
+/// The per-entry comment half (`EnvOrigins::env_comment`,
+/// `EnvOrigins::alias_comment`) has no production caller left: it renders what
+/// a cfgd BEFORE the layered blocks wrote, which is what a migration fixture
+/// needs and nothing else does.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub(super) struct EnvOrigins(crate::config::EntryOwners);
 

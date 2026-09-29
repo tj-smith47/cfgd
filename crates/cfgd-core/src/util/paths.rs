@@ -1030,8 +1030,9 @@ pub fn lexically_normalized(path: &std::path::Path) -> std::path::PathBuf {
 /// fold ([`absolutize_path`] then [`lexically_normalized`]) equates a relative
 /// spelling, a `.` component and a `..` walking back through a component that
 /// does not exist. That last one stats nothing, so no inode question can be
-/// asked about it at all. [`is_same_inode`] then catches what the fold cannot:
-/// two genuinely different spellings of one path, reached through a symlink.
+/// asked about it at all. [`is_same_inode`](crate::is_same_inode) then
+/// catches what the fold cannot: two genuinely different spellings of one
+/// path, reached through a symlink.
 ///
 /// COMPARISON only. Both halves discard the spelling the caller wrote, so a
 /// slot rendering a path still renders the caller's own.

@@ -1511,7 +1511,7 @@ pub fn code_span(line: &str) -> &str {
 /// A whole source body as CODE, byte-for-byte: every literal body blanked
 /// (quotes kept, as [`blank_string_literals`] does per line), every `//` and
 /// `/* … */` comment blanked WHOLE (delimiters included), newlines kept, and
-/// the masking state carried across rows by [`LineMask`], so a brace or a
+/// the masking state carried across rows by `LineMask`, so a brace or a
 /// tell found on the result indexes the raw body exactly.
 ///
 /// [`code_line`] answers the same question for ONE line, and that bound is
@@ -1873,7 +1873,7 @@ pub fn callers_reaching<D: std::borrow::Borrow<(String, Option<String>, String)>
 /// and a RAW literal has no escapes at all, so neither the line opening one
 /// nor any line inside it can be continued.
 ///
-/// Which rows are source at all is [`LineMask`]'s answer: an `r#` written
+/// Which rows are source at all is `LineMask`'s answer: an `r#` written
 /// inside an ordinary literal or a comment is masked, so the scan stays in step
 /// with the rows below it. A scan tracking raw literals alone reads the `r"`
 /// ending a word like `"…provider"` as one, and the rows below it are glued
@@ -1916,7 +1916,7 @@ pub fn logical_source_lines(body: &str) -> Vec<(usize, String)> {
 ///
 /// A raw literal spanning rows is left alone, and so is every row inside one:
 /// it reproduces another file's bytes, where a quote is that fixture's text
-/// and delimits nothing. [`LineMask`] is what earns that claim — a quote
+/// and delimits nothing. `LineMask` is what earns that claim — a quote
 /// inside an ordinary literal or a comment is not a delimiter either, and a
 /// scanner reading bytes alone takes the `r"` at the end of `"…provider"` for
 /// an opener and desynchronizes every row below it.
@@ -6253,7 +6253,7 @@ type SeamSources = std::collections::BTreeMap<PathBuf, String>;
 
 /// Every crate root's production sources, keyed by the crate's own name, for a
 /// walk whose population is the WHOLE workspace, in the order `roots` names
-/// them and borrowed from [`WORKSPACE_SOURCES`].
+/// them and borrowed from `WORKSPACE_SOURCES`.
 ///
 /// The named set is checked against `crates/` itself, so a crate joining the
 /// workspace fails the caller's walk and never goes unread, and each root
@@ -6852,14 +6852,14 @@ pub fn fixture_declarations(src: &'static str) -> Vec<(String, Option<String>, S
     fn_declarations(src)
 }
 
-/// [`WORKSPACE_DECLARATIONS`], after [`production_sources_per_root`] has checked
+/// `WORKSPACE_DECLARATIONS`, after [`production_sources_per_root`] has checked
 /// `roots` against the workspace and each root's sources for this caller.
 pub fn workspace_declarations(roots: &[&str]) -> &'static WorkspaceDeclarations {
     production_sources_per_root(roots);
     &WORKSPACE_DECLARATIONS
 }
 
-/// [`WORKSPACE_SEAM_DECLARATIONS`], checked against `roots` the way
+/// `WORKSPACE_SEAM_DECLARATIONS`, checked against `roots` the way
 /// [`workspace_declarations`] is, for a walk asking which functions a test can
 /// drive: production's, and every [`Gate::TestHelpers`] seam's.
 pub fn workspace_seam_declarations(roots: &[&str]) -> &'static WorkspaceDeclarations {

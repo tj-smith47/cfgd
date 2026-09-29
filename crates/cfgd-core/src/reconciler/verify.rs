@@ -734,7 +734,7 @@ fn fold_layers_of_one_owner(layers: Vec<EnvLayer>) -> Vec<EnvLayer> {
 ///
 /// The blocks read the merge's INPUTS — each `ProfileLayer`'s own `spec.env` /
 /// `spec.aliases`, then each module's — and the winners stay the merge's own
-/// answer, taken off `resolved.merged` through [`merge_module_env_aliases`].
+/// answer, taken off `resolved.merged` through `merge_module_env_aliases`.
 /// Neither half re-derives the other, so nothing here is a second
 /// implementation of last-writer-wins; what could still drift is the two
 /// halves disagreeing about the result, which is what

@@ -1323,7 +1323,7 @@ pub struct Phase {
 /// whole reason it is: a derive would hand a file's own shape straight into the
 /// field every surface renders. A plan file is an input like any other, so the
 /// four facts [`Phase::from_actions`] establishes are established again here —
-/// each action under the owner [`determined_owner`] names for it, one group per
+/// each action under the owner `determined_owner` names for it, one group per
 /// owner, no empty group, owners in [`Owner::sort_key`] order — leaving a phase
 /// no reader can tell from one the planner built.
 ///
@@ -1332,7 +1332,7 @@ pub struct Phase {
 /// `daemon::reconcile::narrow_to_module` both ask `Owner::is_managers`), so a
 /// misplaced action would be dispatched and filtered unlike every planner-built
 /// one. It is refused, with no correction attempted, because a file disagreeing
-/// with [`determined_owner`] is a file cfgd did not write. An action whose
+/// with `determined_owner` is a file cfgd did not write. An action whose
 /// owner is the planning PROFILE names no owner of its own, and the file's
 /// answer is taken as given — nothing in the phase says which profile planned
 /// it.
