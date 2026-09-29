@@ -264,13 +264,14 @@ impl std::fmt::Display for ShapeBlocked {
 
 impl std::error::Error for ShapeBlocked {}
 
-/// The typed missing-key refusal every walker and `unset` mint, naming the
-/// path that is not there.
-fn key_not_found(asked: &[&str]) -> anyhow::Error {
+/// The typed missing-key refusal every walker, `unset` and `as_asked` mint, naming
+/// the path that is not there and, when known, the first segment the document
+/// does not declare.
+fn key_not_found(asked: &[&str], undeclared: Option<String>) -> anyhow::Error {
     anyhow::Error::new(cfgd_core::errors::CfgdError::Config(
         cfgd_core::errors::ConfigError::KeyNotFound {
             key: asked.join("."),
-            undeclared: None,
+            undeclared,
         },
     ))
 }
@@ -352,12 +353,7 @@ fn as_asked(error: anyhow::Error, asked: Asked<'_>, resolved: &str) -> anyhow::E
             .strip_prefix(key.as_str())
             .is_some_and(|rest| rest.starts_with('.'))
             .then(|| key.clone());
-        let missing = anyhow::Error::new(cfgd_core::errors::CfgdError::Config(
-            cfgd_core::errors::ConfigError::KeyNotFound {
-                key: asked.spelling.to_string(),
-                undeclared,
-            },
-        ));
+        let missing = key_not_found(&[asked.spelling], undeclared);
         return if asked.alias {
             missing.context(format!("{} not found", asked.described()))
         } else if built {
@@ -508,7 +504,7 @@ fn descent_blocked(path: &[&str], asked: &[&str], found: &'static str) -> anyhow
             | (SHAPE_SEQUENCE, DeclaredShape::Sequence)
     );
     if document_agrees_with_schema {
-        return key_not_found(asked);
+        return key_not_found(asked, None);
     }
     anyhow::Error::new(ShapeBlocked {
         // The root of the walk is `spec` itself, which every path is relative
@@ -562,13 +558,13 @@ pub(super) fn walk_yaml_path<'a>(
                 let key = serde_yaml::Value::String((*segment).to_string());
                 current = map
                     .get(&key)
-                    .ok_or_else(|| key_not_found(&segments[..=i]))?;
+                    .ok_or_else(|| key_not_found(&segments[..=i], None))?;
             }
             // `daemon:` with nothing beneath it parses as Null and means the
             // section is absent, so a key asked for under it is not found —
             // only a value standing in the way is a shape error.
             serde_yaml::Value::Null => {
-                return Err(key_not_found(&segments[..=i]));
+                return Err(key_not_found(&segments[..=i], None));
             }
             other => {
                 // A union's scalar arm is its mapping with one field set, so
@@ -580,7 +576,7 @@ pub(super) fn walk_yaml_path<'a>(
                     if *segment == field && i + 1 == segments.len() {
                         return Ok(other);
                     }
-                    return Err(key_not_found(&segments[..=i]));
+                    return Err(key_not_found(&segments[..=i], None));
                 }
                 return Err(descent_blocked(
                     &segments[..i],
@@ -1023,7 +1019,7 @@ pub(super) fn config_unset_as(
             None if removed_flat => Ok(()),
             // Named at the first segment the document lacks, as `get`'s walk
             // does, so `as_asked` says which part of the key is not declared.
-            None => Err(key_not_found(&[inserted.as_deref().unwrap_or(key)])),
+            None => Err(key_not_found(&[inserted.as_deref().unwrap_or(key)], None)),
         }
     });
 
@@ -3037,6 +3033,49 @@ spec:
                 meta.message
             );
         }
+    }
+
+    /// `key_not_found` is the one place this file builds a missing-key
+    /// refusal, so the key, the undeclared segment and the error wrapping
+    /// cannot drift between the walkers, `unset` and `as_asked`. A
+    /// `KeyNotFound` carrying `key:` anywhere else in production code fails
+    /// here, naming its line.
+    #[test]
+    fn every_missing_key_refusal_in_this_file_is_built_by_key_not_found() {
+        let production = cfgd_core::test_helpers::production_slice_of(std::path::Path::new(
+            concat!(env!("CARGO_MANIFEST_DIR"), "/src/cli/config_cmd.rs"),
+        ));
+        let open = production
+            .find("fn key_not_found(")
+            .expect("config_cmd.rs defines key_not_found");
+        let close = open
+            + production[open..]
+                .find("\n}\n")
+                .expect("key_not_found's body closes");
+        let mut built = 0;
+        let mut elsewhere = Vec::new();
+        for (at, _) in production.match_indices("KeyNotFound {") {
+            let fields = &production[at..];
+            let fields = &fields[..fields.find('}').unwrap_or(fields.len())];
+            if !fields.contains("key:") {
+                continue;
+            }
+            built += 1;
+            if !(open..close).contains(&at) {
+                let line = production[..at].lines().count();
+                elsewhere.push(format!("config_cmd.rs:{line}: {}", fields.trim()));
+            }
+        }
+        assert_eq!(
+            built - elsewhere.len(),
+            1,
+            "key_not_found builds the refusal once"
+        );
+        assert!(
+            elsewhere.is_empty(),
+            "a missing-key refusal is built outside key_not_found; call it instead:\n{}",
+            elsewhere.join("\n")
+        );
     }
 
     /// Every scalar leaf, asked for on a document whose `spec` is empty,
