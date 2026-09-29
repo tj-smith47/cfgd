@@ -309,6 +309,7 @@ fn collect_doctor_output(
     // resolution walks the inheritance chain off disk each time.
     let doctor_profile = loaded_cfg.as_ref().and_then(|cfg| {
         let profiles_dir = profiles_dir(cli);
+        // option-section-ok: the `--profile` flag, answered by the active profile
         let profile_name = cli.profile.as_deref().or(cfg.spec.profile.as_deref())?;
         config::resolve_profile(profile_name, &profiles_dir).ok()
     });

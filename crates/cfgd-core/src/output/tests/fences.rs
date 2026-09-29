@@ -8950,8 +8950,10 @@ fn no_scan_hand_copies_the_test_source_naming_rule() {
     );
 }
 
-/// The methods that substitute a value for a `None` they are handed.
-const DEFAULTING_METHODS: [&str; 7] = [
+/// The methods that substitute a value for a `None` they are handed, whether
+/// they return the value (`unwrap_or`), a filled `Option` (`or`) or write it
+/// into the `Option` in place (`get_or_insert`).
+const DEFAULTING_METHODS: [&str; 11] = [
     "unwrap_or",
     "unwrap_or_else",
     "unwrap_or_default",
@@ -8959,6 +8961,10 @@ const DEFAULTING_METHODS: [&str; 7] = [
     "map_or_else",
     "is_some_and",
     "is_none_or",
+    "or",
+    "or_else",
+    "get_or_insert",
+    "get_or_insert_with",
 ];
 
 /// The methods an `Option` passes through on its way to one of
@@ -9756,6 +9762,34 @@ fn every_defaulting_shape_of_a_section_read_is_found_and_no_other() {
             "is_some_and",
             "cfg.daemon.as_ref().is_some_and(|d| d.on)",
             1,
+        ),
+        ("or", "cfg.daemon.as_ref().or(Some(&D))", 1),
+        ("or on another field", "cfg.name.as_ref().or(Some(&N))", 0),
+        (
+            "or_else",
+            "cfg.daemon.clone().or_else(|| Some(D::default()))",
+            1,
+        ),
+        (
+            "or_else on another field",
+            "cfg.name.clone().or_else(|| Some(N::default()))",
+            0,
+        ),
+        ("get_or_insert", "cfg.daemon.get_or_insert(D::default())", 1),
+        (
+            "get_or_insert on another field",
+            "cfg.name.get_or_insert(N::default())",
+            0,
+        ),
+        (
+            "get_or_insert_with",
+            "cfg.daemon.get_or_insert_with(D::default)",
+            1,
+        ),
+        (
+            "get_or_insert_with on another field",
+            "cfg.name.get_or_insert_with(N::default)",
+            0,
         ),
         ("map alone", "cfg.daemon.as_ref().map(|d| d.n)", 0),
         (

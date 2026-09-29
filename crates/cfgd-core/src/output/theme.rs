@@ -973,6 +973,7 @@ impl Theme {
         {
             // The slot is optional, so an override on a preset that answers
             // `None` fills it rather than adjusting an existing colour.
+            // option-section-ok: the rendered Theme's slot, not the config's override leaf
             apply_color(t.primary.get_or_insert_with(ThemedStyle::plain), c);
         }
         if let Some(c) = &ov.header {
