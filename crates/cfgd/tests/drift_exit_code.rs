@@ -342,6 +342,7 @@ fn versionless_apk(dir: &Path) -> std::path::PathBuf {
 const PINNED_ON_APK: &str = "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: pinned\nspec:\n  packages:\n    - name: demo\n      minVersion: \"2\"\n      prefer: [apk]\n";
 
 /// The same module pinned onto the below-floor `dnf` further down.
+#[cfg(unix)] // see `below_floor_dnf`: rpm's newline-bearing argv is unshimmable on Windows
 const PINNED_ON_DNF: &str = "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: pinned\nspec:\n  packages:\n    - name: demo\n      minVersion: \"2\"\n      prefer: [dnf]\n";
 
 /// `module` as the `pinned` module, and a profile that resolves it.
