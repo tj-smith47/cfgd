@@ -497,6 +497,31 @@ assert_equals() {
     return 1
 }
 
+# Run `cfgd compliance -o json` in the test pod against config $1 and print
+# its stdout alone, the document jq reads. stderr carries advisories that
+# would corrupt the JSON if merged into it, so it goes to a scratch file and is
+# echoed to this shell's stderr for diagnosis.
+pod_compliance_json() {
+    local err="$CLI_SCRATCH/pod-compliance.stderr"
+    exec_in_pod cfgd --config "$1" compliance -o json --no-color 2> "$err" || true
+    head -c 400 "$err" | sed 's/^/    stderr: /' >&2
+}
+
+# The compliance status of one sysctl key ($2) in a `compliance -o json`
+# document ($1). A drifted key is a `system` row of its own keyed
+# `sysctl.<key>`. A key that is not drifted has no row of its own, so it takes
+# the sysctl configurator's answer: its `sysctl` row when nothing drifted, or
+# Compliant when only other sysctl keys did. Prints `absent` when the document
+# holds no sysctl answer and `unparsable` when it is not JSON.
+sysctl_compliance_status() {
+    printf '%s' "$1" | jq -r --arg key "sysctl.$2" '
+        [.snapshot.checks[] | select(.category == "system")] as $system
+        | ($system | map(select(.key == $key)) | first | .status)
+          // ($system | map(select(.key == "sysctl")) | first | .status)
+          // (if any($system[]; .key | startswith("sysctl.")) then "Compliant" else "absent" end)
+    ' 2>/dev/null || echo unparsable
+}
+
 assert_rejected() {
     local output="$1"
     local description="$2"

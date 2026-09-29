@@ -206,16 +206,20 @@ fi
 # =================================================================
 begin_test "FS-DRIFT-07: compliance detects introduced drift end-to-end"
 
+# The applied value reads Compliant before the write and Violation after it, so
+# the case fails when compliance stops noticing the drift as well as when it
+# stops reporting the key at all.
+FS_DRIFT_07_BEFORE=$(sysctl_compliance_status "$(pod_compliance_json /etc/cfgd/e2e-compliance-cfgd.yaml)" vm.max_map_count)
 exec_in_pod sysctl -w vm.max_map_count=65530 > /dev/null 2>&1 || true
+FS_DRIFT_07_JSON=$(pod_compliance_json /etc/cfgd/e2e-compliance-cfgd.yaml)
+FS_DRIFT_07_AFTER=$(sysctl_compliance_status "$FS_DRIFT_07_JSON" vm.max_map_count)
+echo "  vm.max_map_count: before=$FS_DRIFT_07_BEFORE after=$FS_DRIFT_07_AFTER"
+echo "$FS_DRIFT_07_JSON" | jq -c '.snapshot.checks[]? | select(.category == "system")' 2>/dev/null | sed 's/^/    /' || true
 
-OUTPUT=$(exec_in_pod cfgd --config /etc/cfgd/e2e-compliance-cfgd.yaml compliance -o json --no-color 2>&1) || true
-
-if assert_contains "$OUTPUT" "Violation" || assert_contains "$OUTPUT" "violation" || \
-   assert_contains "$OUTPUT" "Warning" || assert_contains "$OUTPUT" "warning" || \
-   assert_contains "$OUTPUT" "drift" || assert_contains "$OUTPUT" "Drift"; then
+if assert_equals "$FS_DRIFT_07_BEFORE" "Compliant" && assert_equals "$FS_DRIFT_07_AFTER" "Violation"; then
     pass_test "FS-DRIFT-07"
 else
-    fail_test "FS-DRIFT-07" "Compliance should detect sysctl drift"
+    fail_test "FS-DRIFT-07" "Compliance should read vm.max_map_count Compliant when applied and Violation once drifted"
 fi
 
 exec_in_pod sysctl -w vm.max_map_count=262144 > /dev/null 2>&1 || true

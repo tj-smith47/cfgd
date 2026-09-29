@@ -487,10 +487,12 @@ YAML
     fi
 
     begin_test "EC04: compliance -o json includes file-encryption checks"
-    SOPS_AGE_KEY_FILE="$EC_AGE_KEY" run $EC -o json compliance
-    if assert_ok && assert_contains "$OUTPUT" "checks" && assert_contains "$OUTPUT" "summary"; then
+    SOPS_AGE_KEY_FILE="$EC_AGE_KEY" run_stdout $EC -o json compliance
+    EC04_CATEGORIES=$(printf '%s' "$OUTPUT" | jq -r '[.snapshot.checks[].category] | unique | join(",")' 2>/dev/null || echo unparsable)
+    echo "  categories: ${EC04_CATEGORIES:-none}"
+    if assert_ok && printf '%s' "$OUTPUT" | jq -e 'any(.snapshot.checks[]; .category == "file-encryption")' > /dev/null 2>&1; then
         pass_test "EC04"
-    else fail_test "EC04"; fi
+    else fail_test "EC04" "No file-encryption check in the compliance JSON"; fi
 else
     skip_test "EC01" "age-keygen or sops not available"
     skip_test "EC02" "age-keygen or sops not available"

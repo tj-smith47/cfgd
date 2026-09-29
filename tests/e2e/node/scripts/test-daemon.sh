@@ -208,17 +208,20 @@ fi
 begin_test "DAEMON-06: compliance detects sysctl drift as violation"
 # Ensure desired state applied
 exec_in_pod cfgd --config /etc/cfgd/e2e-compliance-cfgd.yaml apply --yes --no-color > /dev/null 2>&1 || true
-# Introduce drift
+# The applied value reads Compliant before the write and Violation after it, so
+# the case fails when compliance stops noticing the drift as well as when it
+# stops reporting the key at all.
+DAEMON_06_BEFORE=$(sysctl_compliance_status "$(pod_compliance_json /etc/cfgd/e2e-compliance-cfgd.yaml)" vm.max_map_count)
 exec_in_pod sysctl -w vm.max_map_count=65530 > /dev/null 2>&1 || true
+DAEMON_06_JSON=$(pod_compliance_json /etc/cfgd/e2e-compliance-cfgd.yaml)
+DAEMON_06_AFTER=$(sysctl_compliance_status "$DAEMON_06_JSON" vm.max_map_count)
+echo "  vm.max_map_count: before=$DAEMON_06_BEFORE after=$DAEMON_06_AFTER"
+echo "$DAEMON_06_JSON" | jq -c '.snapshot.checks[]? | select(.category == "system")' 2>/dev/null | sed 's/^/    /' || true
 
-OUTPUT=$(exec_in_pod cfgd --config /etc/cfgd/e2e-compliance-cfgd.yaml compliance -o json --no-color 2>&1) || true
-
-if assert_contains "$OUTPUT" "Violation" || assert_contains "$OUTPUT" "violation" || \
-   assert_contains "$OUTPUT" "Warning" || assert_contains "$OUTPUT" "warning" || \
-   assert_contains "$OUTPUT" "drift" || assert_contains "$OUTPUT" "Drift"; then
+if assert_equals "$DAEMON_06_BEFORE" "Compliant" && assert_equals "$DAEMON_06_AFTER" "Violation"; then
     pass_test "DAEMON-06"
 else
-    fail_test "DAEMON-06" "Compliance should detect sysctl drift"
+    fail_test "DAEMON-06" "Compliance should read vm.max_map_count Compliant when applied and Violation once drifted"
 fi
 
 # Restore

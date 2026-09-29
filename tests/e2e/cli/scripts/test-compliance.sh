@@ -214,19 +214,26 @@ spec:
 YAML
 CO13="--config $CO13_CONF --state-dir $CO13_STATE --no-color"
 run $CO13 apply --yes
-run $CO13 -o json compliance
+run_stdout $CO13 -o json compliance
 if assert_ok; then
-    # Verify checks only contain file category (no package/system/secret)
-    if assert_contains "$OUTPUT" "file" && assert_not_contains "$OUTPUT" "\"category\":\"package\""; then
+    # Files alone are in scope: at least one check, and every one a file category.
+    CO13_CATEGORIES=$(printf '%s' "$OUTPUT" | jq -r '[.snapshot.checks[].category] | unique | join(",")' 2>/dev/null || echo unparsable)
+    echo "  categories: ${CO13_CATEGORIES:-none}"
+    if printf '%s' "$OUTPUT" | jq -e '[.snapshot.checks[].category] | length > 0 and all(startswith("file"))' > /dev/null 2>&1; then
         pass_test "CO13"
     else fail_test "CO13" "Scope filtering did not restrict to files only"; fi
 else fail_test "CO13"; fi
 
 begin_test "CO14: compliance JSON output matches table content"
-run $CO -o json compliance
-if assert_ok && assert_contains "$OUTPUT" "checks" && assert_contains "$OUTPUT" "summary" \
-    && assert_contains "$OUTPUT" "compliant" && assert_contains "$OUTPUT" "warning" \
-    && assert_contains "$OUTPUT" "violation"; then
+# The table's summary line is rebuilt from the JSON's own counts, so the case
+# fails when the two modes disagree about a single check.
+run_stdout $CO -o json compliance
+CO14_RC=$RC
+CO14_COUNTS=$(printf '%s' "$OUTPUT" | jq -r '.snapshot.summary | "\(.compliant) compliant, \(.warning) warning, \(.violation) violation"' 2>/dev/null || echo "")
+echo "  JSON counts: ${CO14_COUNTS:-none}"
+run $CO compliance
+if assert_exit_code "$CO14_RC" 0 && assert_ok && [ -n "$CO14_COUNTS" ] \
+    && assert_contains "$OUTPUT" "Summary: $CO14_COUNTS"; then
     pass_test "CO14"
 else fail_test "CO14"; fi
 

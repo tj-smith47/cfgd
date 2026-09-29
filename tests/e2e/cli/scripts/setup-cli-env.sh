@@ -71,6 +71,17 @@ run() {
     RC=$rc
 }
 
+# Like `run`, but OUTPUT holds stdout alone: a case that parses a structured
+# document cannot have an advisory on stderr merged ahead of it. stderr is
+# printed after the command so a failing case still shows it.
+run_stdout() {
+    local rc=0
+    local err="$SCRATCH/run-stdout.stderr"
+    OUTPUT=$("$CFGD" "$@" 2> "$err") || rc=$?
+    RC=$rc
+    head -c 400 "$err" | sed 's/^/    stderr: /'
+}
+
 assert_ok() {
     if [ "$RC" -ne 0 ]; then
         echo "  ASSERT FAILED: expected exit 0, got $RC"
