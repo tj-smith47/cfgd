@@ -10018,6 +10018,30 @@ impl ProfileFallbacks {
 }
 
 impl<'ast> syn::visit::Visit<'ast> for ProfileFallbacks {
+    fn visit_item_mod(&mut self, item: &'ast syn::ItemMod) {
+        if !test_gated(&item.attrs) {
+            syn::visit::visit_item_mod(self, item);
+        }
+    }
+
+    fn visit_item_impl(&mut self, item: &'ast syn::ItemImpl) {
+        if !test_gated(&item.attrs) {
+            syn::visit::visit_item_impl(self, item);
+        }
+    }
+
+    fn visit_impl_item_fn(&mut self, func: &'ast syn::ImplItemFn) {
+        if !test_gated(&func.attrs) {
+            syn::visit::visit_impl_item_fn(self, func);
+        }
+    }
+
+    fn visit_item_fn(&mut self, func: &'ast syn::ItemFn) {
+        if !test_gated(&func.attrs) {
+            syn::visit::visit_item_fn(self, func);
+        }
+    }
+
     fn visit_expr_method_call(&mut self, call: &'ast syn::ExprMethodCall) {
         let takes_fallback = matches!(
             call.method.to_string().as_str(),
@@ -10065,7 +10089,7 @@ fn every_absent_profile_is_spelled_by_a_named_placeholder() {
             if production.trim().is_empty() {
                 continue;
             }
-            // unfloored-slice-ok: syn parses whole items; test-gated ones are skipped by attribute.
+            // unfloored-slice-ok: syn parses whole items; the walk skips test-gated ones.
             let body = walked_file_body(path);
             let file =
                 syn::parse_file(&body).unwrap_or_else(|e| panic!("{}: {e}", source_label(path)));
@@ -10158,6 +10182,60 @@ fn every_profile_fallback_shape_is_found_and_no_other() {
     for (shape, body, expected) in SHAPES {
         let source = format!("fn f() {{ {body}; }}");
         let file = syn::parse_file(&source).unwrap_or_else(|e| panic!("{shape}: {e}"));
+        let mut walk = ProfileFallbacks::default();
+        syn::visit::Visit::visit_file(&mut walk, &file);
+        let found = (walk.literals.len(), walk.readers);
+        if found != *expected {
+            wrong.push(format!("{shape}: found {found:?}, expected {expected:?}"));
+        }
+    }
+    // The gated sources are split at the gate so this file spells no test gate whole.
+    const ITEMS: &[(&str, &str, (usize, usize))] = &[
+        (
+            "production module",
+            r#"mod t { fn f() { profile.unwrap_or("x"); } }"#,
+            (1, 0),
+        ),
+        (
+            "test module",
+            concat!(
+                "#[cfg",
+                r#"(test)] mod t { fn f() { profile.unwrap_or("x"); } }"#
+            ),
+            (0, 0),
+        ),
+        (
+            "test module reading a placeholder",
+            concat!(
+                "#[cfg",
+                "(test)] mod t { fn f() { profile.unwrap_or(UNKNOWN_PROFILE); } }"
+            ),
+            (0, 0),
+        ),
+        (
+            "test fn",
+            concat!("#[cfg", r#"(test)] fn f() { profile.unwrap_or("x"); }"#),
+            (0, 0),
+        ),
+        (
+            "test impl",
+            concat!(
+                "#[cfg",
+                r#"(test)] impl T { fn f() { profile.unwrap_or("x"); } }"#
+            ),
+            (0, 0),
+        ),
+        (
+            "test method",
+            concat!(
+                "impl T { #[cfg",
+                r#"(test)] fn f() { profile.unwrap_or("x"); } }"#
+            ),
+            (0, 0),
+        ),
+    ];
+    for (shape, source, expected) in ITEMS {
+        let file = syn::parse_file(source).unwrap_or_else(|e| panic!("{shape}: {e}"));
         let mut walk = ProfileFallbacks::default();
         syn::visit::Visit::visit_file(&mut walk, &file);
         let found = (walk.literals.len(), walk.readers);
