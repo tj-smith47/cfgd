@@ -1202,56 +1202,6 @@ pub fn cleanup_old_binary() {
     // Unix atomic_replace doesn't leave old files
 }
 
-/// Check for an update, using a 24h disk cache to avoid excessive API calls.
-///
-/// `cfgd_version` is the running binary's version (see
-/// [`parse_current_version`]). `channel` selects which release stream to track
-/// on a cache miss (see [`check_latest`]).
-pub fn check_with_cache(
-    cfgd_version: &str,
-    repo: Option<&str>,
-    channel: &str,
-    printer: Option<&Printer>,
-) -> Result<UpdateCheck> {
-    let repo = repo.unwrap_or(DEFAULT_REPO);
-    let current = parse_current_version(cfgd_version)?;
-
-    // Try reading from cache
-    if let Some(cache) = read_version_cache() {
-        let now = crate::unix_secs_now();
-
-        if now.saturating_sub(cache.checked_at_secs) < CACHE_TTL_SECS {
-            let cached_version =
-                Version::parse(&cache.latest_version).map_err(|e| UpgradeError::VersionParse {
-                    message: format!("cached version: {}", e),
-                })?;
-
-            return Ok(UpdateCheck {
-                update_available: cached_version > current,
-                current,
-                latest: cached_version,
-                release: None,
-            });
-        }
-    }
-
-    // Cache miss or expired — fall through to fresh check + update cache
-    let check = check_latest(cfgd_version, Some(repo), channel, printer)?;
-
-    let _ = write_version_cache(&VersionCache {
-        checked_at_secs: crate::unix_secs_now(),
-        latest_tag: check
-            .release
-            .as_ref()
-            .map(|r| r.tag.clone())
-            .unwrap_or_default(),
-        latest_version: check.latest.to_string(),
-        current_version: check.current.to_string(),
-    });
-
-    Ok(check)
-}
-
 /// Check for an update without using cache. Always queries the API.
 ///
 /// `cfgd_version` is the running binary's version (see
@@ -1334,8 +1284,7 @@ pub fn last_checked_secs() -> Option<u64> {
 /// `cfgd_version` is the running binary's version (see
 /// [`parse_current_version`]). Preserves the cached version strings when a
 /// prior cache exists; otherwise it stamps the timestamp against the running
-/// version with empty latest fields (which a subsequent real check overwrites
-/// via [`check_with_cache`]).
+/// version with an empty latest tag.
 pub fn record_check_at(cfgd_version: &str, now: u64) {
     let cache = match read_version_cache() {
         Some(mut c) => {

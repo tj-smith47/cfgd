@@ -76,7 +76,6 @@ pub(in crate::cli) use source::{
 };
 use workflow::{generate_release_workflow_yaml, maybe_update_workflow};
 
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use clap::{CommandFactory, Parser, Subcommand};
@@ -617,12 +616,6 @@ pub fn default_config_file() -> PathBuf {
     cfgd_core::config::config_document_in(&cfgd_core::default_config_dir())
 }
 
-/// No built-in aliases — all aliases come from cfgd.yaml spec.aliases.
-/// Default aliases are scaffolded by `cfgd init`.
-fn builtin_aliases() -> HashMap<String, String> {
-    HashMap::new()
-}
-
 /// Returns true if `flag` is a global flag on `Cli` that consumes the next
 /// argv slot as its value (space form: `--flag value` or `-x value`).
 ///
@@ -743,12 +736,7 @@ fn expand_aliases_from(
 
     let candidate = &args[subcommand_idx];
 
-    // A user alias overrides a built-in one of the same name.
-    let builtins = builtin_aliases();
-    let expansion = match doc
-        .and_then(|config| config.spec.aliases.get(candidate))
-        .or_else(|| builtins.get(candidate))
-    {
+    let expansion = match doc.and_then(|config| config.spec.aliases.get(candidate)) {
         Some(cmd) => cmd,
         None => return args,
     };

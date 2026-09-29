@@ -7118,7 +7118,7 @@ fn expand_aliases_passthrough() {
 
 #[test]
 fn expand_aliases_no_alias_passthrough() {
-    // With empty builtin_aliases, no expansion happens
+    // A subcommand no alias names passes through unchanged.
     let args = vec!["cfgd".into(), "apply".into(), "--dry-run".into()];
     let result = super::expand_aliases(args.clone()).0;
     assert_eq!(result, args);
@@ -7237,18 +7237,6 @@ fn resolve_profile_name_explicit_from_name() {
     let cli = test_cli(dir.path());
     let result = super::resolve_profile_name(&cli, &test_printer(), Some("work")).unwrap();
     assert_eq!(result, "work");
-}
-
-// --- builtin_aliases ---
-
-#[test]
-fn builtin_aliases_returns_map() {
-    let aliases = super::builtin_aliases();
-    assert_eq!(
-        aliases.len(),
-        0,
-        "builtin_aliases should return an empty map (no built-in aliases yet)"
-    );
 }
 
 // --- cmd_doctor basic ---

@@ -844,48 +844,6 @@ fn extract_tarball_skips_symlink_entries_without_failing() {
     );
 }
 
-// Cache tests isolate via the `with_test_home_guard` thread-local, but
-// `default_cache_dir_for` honors the process-global `CFGD_CACHE_DIR` env above
-// that thread-local. Under threaded `cargo test`, a concurrent test that sets
-// `CFGD_CACHE_DIR` (e.g. `cache_dir_honors_cfgd_cache_dir_env`) hijacks this
-// test's cache path; `serial` joins them into one exclusion group. nextest's
-// process-per-test masks the leak, so this only bites the plain-`cargo test` runner.
-#[test]
-#[serial_test::serial]
-fn check_with_cache_returns_error_when_cached_version_is_unparseable() {
-    let home = tempfile::tempdir().unwrap();
-    let _guard = crate::with_test_home_guard(home.path());
-
-    // Seed a fresh cache entry whose latest_version field is not a valid
-    // semver. The TTL check passes (just-now), so the function reaches
-    // Version::parse which must surface UpgradeError::VersionParse rather
-    // than silently fall through to the API.
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::SystemTime::UNIX_EPOCH)
-        .unwrap()
-        .as_secs();
-    write_version_cache(&VersionCache {
-        checked_at_secs: now,
-        latest_tag: "vBOGUS".into(),
-        latest_version: "not-a-semver".into(),
-        current_version: env!("CARGO_PKG_VERSION").into(),
-    })
-    .expect("cache seed");
-
-    let err = check_with_cache(
-        env!("CARGO_PKG_VERSION"),
-        Some("does/not/matter"),
-        crate::config::STABLE_UPDATE_CHANNEL,
-        None,
-    )
-    .expect_err("unparseable cached version must surface as Err, not silent fallthrough");
-    let msg = err.to_string();
-    assert!(
-        msg.contains("cached version") && msg.contains("parse"),
-        "error must point at the cache file's version field so triage looks there first: {msg}"
-    );
-}
-
 #[test]
 fn find_checksum_asset_picks_matching_per_artifact_sha256() {
     let archive = "cfgd-1.0.0-linux-amd64.tar.gz";
@@ -2320,112 +2278,6 @@ fn find_cosign_cert_asset_ignores_lookalike_names() {
     assert!(find_cosign_cert_asset(&release, &checksum).is_none());
 }
 
-// --- check_with_cache + check_latest via mockito ---
-
-#[test]
-#[serial_test::serial]
-fn check_with_cache_falls_back_to_api_on_cache_miss() {
-    let home = tempfile::tempdir().unwrap();
-    let _guard = crate::with_test_home_guard(home.path());
-    // No cache file written — code path takes the API branch and writes
-    // a fresh entry on the way out.
-
-    let mut server = mockito::Server::new();
-    let mock = server
-        .mock("GET", "/repos/test/repo/releases/latest")
-        .with_status(200)
-        .with_header("content-type", "application/json")
-        .with_body(
-            r#"{
-                "tag_name": "v99.0.0",
-                "assets": []
-            }"#,
-        )
-        .create();
-
-    // check_with_cache uses fetch_latest_release internally which goes to
-    // GITHUB_API_BASE — exercise the API path indirectly via check_latest
-    // pointed at the mock server.
-    let result = fetch_latest_release_from(&server.url(), "test/repo", None);
-    mock.assert();
-    let release = result.expect("mock release must parse");
-    assert_eq!(release.tag, "v99.0.0");
-    assert_eq!(release.version, Version::new(99, 0, 0));
-}
-
-#[test]
-#[serial_test::serial]
-fn check_with_cache_returns_cached_when_within_ttl() {
-    let home = tempfile::tempdir().unwrap();
-    let _guard = crate::with_test_home_guard(home.path());
-
-    // Seed a fresh cache entry — checked just now, well within the 24h TTL.
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::SystemTime::UNIX_EPOCH)
-        .unwrap()
-        .as_secs();
-    let cached = VersionCache {
-        checked_at_secs: now,
-        latest_tag: "v123.0.0".into(),
-        latest_version: "123.0.0".into(),
-        current_version: env!("CARGO_PKG_VERSION").into(),
-    };
-    write_version_cache(&cached).expect("cache seed must succeed in tempdir");
-
-    // No mock server — if the call reaches the API it will fail loudly.
-    let result = check_with_cache(
-        env!("CARGO_PKG_VERSION"),
-        Some("does/not/matter"),
-        crate::config::STABLE_UPDATE_CHANNEL,
-        None,
-    )
-    .expect("cache hit must short-circuit to local data, never touch the network");
-    assert_eq!(
-        result.latest,
-        Version::new(123, 0, 0),
-        "latest must come from the cache, not a remote call"
-    );
-    assert!(
-        result.release.is_none(),
-        "cache hit returns just the version summary, no full ReleaseInfo"
-    );
-}
-
-#[test]
-#[serial_test::serial]
-fn check_with_cache_ignores_expired_entry() {
-    let home = tempfile::tempdir().unwrap();
-    let _guard = crate::with_test_home_guard(home.path());
-
-    // Seed an expired cache entry — far enough in the past that CACHE_TTL_SECS
-    // has lapsed. The function must fall through to the API branch.
-    let stale_secs = std::time::SystemTime::now()
-        .duration_since(std::time::SystemTime::UNIX_EPOCH)
-        .unwrap()
-        .as_secs()
-        .saturating_sub(CACHE_TTL_SECS + 60);
-    let stale = VersionCache {
-        checked_at_secs: stale_secs,
-        latest_tag: "v0.0.1".into(),
-        latest_version: "0.0.1".into(),
-        current_version: env!("CARGO_PKG_VERSION").into(),
-    };
-    write_version_cache(&stale).expect("seed stale cache");
-
-    // Read it back to confirm — the cache file *is* present and parseable;
-    // the freshness check is what must reject it.
-    let read = read_version_cache().expect("seeded entry must be readable");
-    assert_eq!(read.latest_tag, "v0.0.1");
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::SystemTime::UNIX_EPOCH)
-        .unwrap()
-        .as_secs();
-    assert!(
-        now.saturating_sub(read.checked_at_secs) >= CACHE_TTL_SECS,
-        "test setup: stale entry must be older than CACHE_TTL_SECS"
-    );
-}
-
 // ---------------------------------------------------------------------------
 // run_cosign_verify_blob — driven through the fake-cosign shim. Mirrors the
 // pattern in `oci/sign/tests.rs`: serial_test::serial gates env-var mutation,
@@ -3854,9 +3706,10 @@ fn read_version_cache_returns_none_for_invalid_json() {
 }
 
 // `cache_dir` reads the process-global `CFGD_CACHE_DIR` above the
-// `with_test_home_guard` thread-local, so a concurrent setter hands this test
-// another test's tempdir. See the note above
-// `check_with_cache_returns_error_when_cached_version_is_unparseable`.
+// `with_test_home_guard` thread-local, so under threaded `cargo test` a
+// concurrent setter (`cache_dir_honors_cfgd_cache_dir_env`) hands this test
+// another test's tempdir; `serial` joins them into one exclusion group.
+// nextest's process-per-test masks the leak.
 #[test]
 #[serial_test::serial]
 fn cache_dir_returns_test_home_scoped_path() {
@@ -3985,10 +3838,10 @@ fn parse_release_json_empty_tag_name_fails_version_parse() {
 }
 
 // ---------------------------------------------------------------------------
-// check_latest + check_with_cache through the CFGD_GITHUB_API_BASE env shim.
+// check_latest through the CFGD_GITHUB_API_BASE env shim.
 // fetch_latest_release internally calls github_api_base() which reads the
 // env var; setting it to a mockito URL redirects the entire production path
-// (check_with_cache → check_latest → fetch_latest_release → API) without
+// (check_latest → fetch_latest_release → API) without
 // needing fetch_latest_release_from at the test boundary.
 //
 // Tests must be #[serial] because the env var is process-global.
@@ -4047,101 +3900,6 @@ mod api_base_env_shim {
 
     #[test]
     #[serial]
-    fn check_with_cache_falls_through_to_api_and_writes_fresh_cache_entry() {
-        // No cache file present in test_home → cache-miss branch fires →
-        // check_latest is called → write_version_cache persists the result.
-        // Covers lines 697-712 of mod.rs (the API-fallback + cache-write
-        // segment that has been uncovered for many sessions).
-        let home = tempfile::tempdir().unwrap();
-        let _home_guard = crate::with_test_home_guard(home.path());
-
-        let mut server = mockito::Server::new();
-        let mock = mock_release_response(&mut server);
-        let _env = EnvVarGuard::set(crate::CFGD_GITHUB_API_BASE_ENV, &server.url());
-
-        let result = check_with_cache(
-            env!("CARGO_PKG_VERSION"),
-            Some("test/repo"),
-            crate::config::STABLE_UPDATE_CHANNEL,
-            None,
-        )
-        .expect("cache miss + env-shim redirect should succeed");
-        mock.assert();
-        assert_eq!(result.latest, Version::new(999, 0, 0));
-
-        // Cache file must now exist on disk under the test home — write
-        // _version_cache succeeded; subsequent calls within TTL will read
-        // it back without hitting the network.
-        let cache_path = home.path().join(".cache").join("cfgd").join(CACHE_FILENAME);
-        assert!(
-            cache_path.exists(),
-            "fresh cache must be written to {cache_path:?} after API success"
-        );
-        let cache = read_version_cache().expect("written cache must parse back");
-        assert_eq!(cache.latest_version, "999.0.0");
-        assert_eq!(cache.latest_tag, "v999.0.0");
-    }
-
-    #[test]
-    #[serial]
-    fn check_with_cache_expired_entry_falls_through_to_api_and_refreshes() {
-        // Pre-write an EXPIRED cache entry (25 hours ago), set up mockito for
-        // the API, call check_with_cache, assert mock was hit and cache was
-        // updated with fresh data.
-        let home = tempfile::tempdir().unwrap();
-        let _home_guard = crate::with_test_home_guard(home.path());
-
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::SystemTime::UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
-        let expired = VersionCache {
-            checked_at_secs: now.saturating_sub(CACHE_TTL_SECS + 3600),
-            latest_tag: "v0.0.1".into(),
-            latest_version: "0.0.1".into(),
-            current_version: env!("CARGO_PKG_VERSION").into(),
-        };
-        write_version_cache(&expired).expect("seed stale cache");
-
-        let mut server = mockito::Server::new();
-        let mock = server
-            .mock("GET", "/repos/test/repo/releases/latest")
-            .with_status(200)
-            .with_header("content-type", "application/json")
-            .with_body(
-                r#"{
-                    "tag_name": "v888.0.0",
-                    "assets": []
-                }"#,
-            )
-            .create();
-        let _env = EnvVarGuard::set(crate::CFGD_GITHUB_API_BASE_ENV, &server.url());
-
-        let result = check_with_cache(
-            env!("CARGO_PKG_VERSION"),
-            Some("test/repo"),
-            crate::config::STABLE_UPDATE_CHANNEL,
-            None,
-        )
-        .expect("expired cache + API success should succeed");
-        mock.assert();
-        assert_eq!(
-            result.latest,
-            Version::new(888, 0, 0),
-            "must return fresh API data, not stale cache"
-        );
-
-        let refreshed = read_version_cache().expect("cache must be refreshed after API");
-        assert_eq!(refreshed.latest_version, "888.0.0");
-        assert_eq!(refreshed.latest_tag, "v888.0.0");
-        assert!(
-            refreshed.checked_at_secs >= now,
-            "cache timestamp must be updated to ~now"
-        );
-    }
-
-    #[test]
-    #[serial]
     fn check_latest_with_none_repo_uses_default() {
         // check_latest(env!("CARGO_PKG_VERSION"), None, ...) should use DEFAULT_REPO
         // ("tj-smith47/cfgd").
@@ -4163,33 +3921,6 @@ mod api_base_env_shim {
         .expect("None repo should use default and hit mockito");
         mock.assert();
         assert_eq!(result.latest, Version::new(777, 0, 0));
-    }
-
-    #[test]
-    #[serial]
-    fn check_with_cache_none_repo_uses_default() {
-        // check_with_cache(env!("CARGO_PKG_VERSION"), None, ...) should use DEFAULT_REPO.
-        let home = tempfile::tempdir().unwrap();
-        let _home_guard = crate::with_test_home_guard(home.path());
-
-        let mut server = mockito::Server::new();
-        let mock = server
-            .mock("GET", "/repos/tj-smith47/cfgd/releases/latest")
-            .with_status(200)
-            .with_header("content-type", "application/json")
-            .with_body(r#"{"tag_name": "v666.0.0", "assets": []}"#)
-            .create();
-        let _env = EnvVarGuard::set(crate::CFGD_GITHUB_API_BASE_ENV, &server.url());
-
-        let result = check_with_cache(
-            env!("CARGO_PKG_VERSION"),
-            None,
-            crate::config::STABLE_UPDATE_CHANNEL,
-            None,
-        )
-        .expect("None repo should use default and hit mockito");
-        mock.assert();
-        assert_eq!(result.latest, Version::new(666, 0, 0));
     }
 
     #[test]
