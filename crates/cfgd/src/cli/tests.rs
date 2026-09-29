@@ -16054,7 +16054,7 @@ fn cmd_config_get_missing_key_fails() {
     let err = result.unwrap_err();
     let msg = err.to_string();
     assert!(
-        msg == "config error: key 'nonexistent' not found",
+        msg == "config error: key 'nonexistent.path' not found",
         "expected a missing-key error that says config once, got: {msg}"
     );
 }

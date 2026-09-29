@@ -320,19 +320,18 @@ pub(super) fn alias_key(name: &str) -> anyhow::Result<String> {
 }
 
 /// A key walk's refusal on `resolved`, restated for what the caller wrote
-/// (`asked`), where [`nested_output_key`] or an `alias` verb built `resolved`
-/// from it.
+/// (`asked`), which is `resolved` itself unless [`nested_output_key`] or an
+/// `alias` verb built `resolved` from it.
 ///
-/// A missing key is reported under `asked`: the first segment the walk found
-/// missing belongs to the built path, which the caller never typed. A
-/// document whose shape blocks the walk keeps the path that holds the wrong
-/// shape, since that path is where the reader has to look, and adds where
-/// what they asked for lives. Every other refusal is about the document or
-/// the file and names no key, so it passes through as it is.
+/// A missing key is reported under `asked` whole, so the message names the
+/// same key the `-o json` payload does: the walk reports the first segment it
+/// found missing (`secrets` for `secrets.sops.ageKey`), and on a built path
+/// that segment is one the caller never typed. A document whose shape blocks
+/// the walk keeps the path that holds the wrong shape, since that path is
+/// where the reader has to look, and adds where what they asked for lives.
+/// Every other refusal is about the document or the file and names no key,
+/// so it passes through as it is.
 fn as_asked(error: anyhow::Error, asked: Asked<'_>, resolved: &str) -> anyhow::Error {
-    if !asked.alias && asked.spelling == resolved {
-        return error;
-    }
     if matches!(
         error.downcast_ref::<cfgd_core::errors::CfgdError>(),
         Some(cfgd_core::errors::CfgdError::Config(
@@ -346,7 +345,8 @@ fn as_asked(error: anyhow::Error, asked: Asked<'_>, resolved: &str) -> anyhow::E
             missing
         };
     }
-    if error.downcast_ref::<ShapeBlocked>().is_some() {
+    if error.downcast_ref::<ShapeBlocked>().is_some() && (asked.alias || asked.spelling != resolved)
+    {
         let message = format!("{error}; {} is stored at '{resolved}'", asked.described());
         return error.context(message);
     }
@@ -2693,7 +2693,9 @@ spec:
     /// A key `nested_output_key` rewrote is refused under the spelling the
     /// caller wrote, by every verb and on every refusal a rewritten key can
     /// earn: a missing key, a shape that blocks the walk, and a path with an
-    /// empty segment.
+    /// empty segment. A key under a section the document leaves out, which no
+    /// rewrite touched, is refused under that same whole spelling in the
+    /// message and the `-o json` name alike.
     #[test]
     fn every_key_verb_refuses_a_rewritten_key_by_the_spelling_the_caller_wrote() {
         let dir = tempfile::tempdir().unwrap();
@@ -2716,7 +2718,15 @@ spec:
         let get: Verb = cmd_config_get;
         let set: Verb = |cli, printer, key| cmd_config_set(cli, printer, key, "dracula");
         let unset: Verb = cmd_config_unset;
-        let cases: [(&str, Verb, &Cli, &str, &str, &str); 8] = [
+        let cases: [(&str, Verb, &Cli, &str, &str, &str); 9] = [
+            (
+                "get",
+                get,
+                &bare_cli,
+                "secrets.sops.ageKey",
+                "key_not_found",
+                "key 'secrets.sops.ageKey' not found",
+            ),
             (
                 "get",
                 get,
@@ -2858,6 +2868,11 @@ spec:
                 let meta = refusal(&err);
                 assert_eq!(meta.error_kind, "key_not_found", "{key}: {}", meta.message);
                 assert_eq!(meta.name, key, "{key}: the -o json name");
+                assert!(
+                    meta.message.contains(&format!("key '{key}' not found")),
+                    "{key}: the message names another key than the -o json name: {:?}",
+                    meta.message
+                );
                 refused.push(key);
                 continue;
             }
