@@ -798,7 +798,6 @@ fn record_check_at_creates_cache_when_none_exists() {
     let home = tempfile::tempdir().unwrap();
     let _guard = crate::with_test_home_guard(home.path());
 
-    // No prior cache → the None branch stamps a fresh entry at `now`.
     assert!(
         last_checked_secs().is_none(),
         "precondition: no cache means no recorded check"

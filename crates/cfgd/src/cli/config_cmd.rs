@@ -264,8 +264,8 @@ impl std::fmt::Display for ShapeBlocked {
 
 impl std::error::Error for ShapeBlocked {}
 
-/// The typed missing-key refusal both walkers mint, naming the path that is
-/// not there.
+/// The typed missing-key refusal every walker and `unset` mint, naming the
+/// path that is not there.
 fn key_not_found(asked: &[&str]) -> anyhow::Error {
     anyhow::Error::new(cfgd_core::errors::CfgdError::Config(
         cfgd_core::errors::ConfigError::KeyNotFound {
@@ -1023,12 +1023,7 @@ pub(super) fn config_unset_as(
             None if removed_flat => Ok(()),
             // Named at the first segment the document lacks, as `get`'s walk
             // does, so `as_asked` says which part of the key is not declared.
-            None => Err(anyhow::Error::new(cfgd_core::errors::CfgdError::Config(
-                cfgd_core::errors::ConfigError::KeyNotFound {
-                    key: inserted.unwrap_or_else(|| key.to_string()),
-                    undeclared: None,
-                },
-            ))),
+            None => Err(key_not_found(&[inserted.as_deref().unwrap_or(key)])),
         }
     });
 
