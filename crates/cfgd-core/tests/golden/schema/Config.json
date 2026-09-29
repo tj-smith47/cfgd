@@ -301,7 +301,7 @@
             }
           ],
           "default": null,
-          "description": "Which backend resolves a `${secret:…}` reference, and how it is reached. Omitted, no backend is configured and a declared secret reference fails to resolve."
+          "description": "Which backend resolves a `${secret:…}` reference, and how it is reached. Omitted, the `sops` backend resolves it through sops's own key search."
         },
         "security": {
           "anyOf": [
@@ -1239,7 +1239,7 @@
       "description": "Configuration for cfgd self-update checks and authored-skill updates.",
       "properties": {
         "channel": {
-          "description": "Release channel to track (e.g. `stable`, `beta`). When unset, cfgd uses its built-in default channel.",
+          "description": "Release channel to track: `stable` (releases GitHub marks latest) or `prerelease` (the newest release, prereleases included). Omitted, `stable`.",
           "type": [
             "string",
             "null"
