@@ -9122,6 +9122,139 @@ impl<'ast> syn::visit::Visit<'ast> for ConfigSections {
     }
 }
 
+/// The macros whose expansion puts no value in a `None`'s place: a panic,
+/// an early `bail!`, or a log line.
+const VALUELESS_MACROS: [&str; 14] = [
+    "panic",
+    "unreachable",
+    "todo",
+    "unimplemented",
+    "bail",
+    "trace",
+    "debug",
+    "info",
+    "warn",
+    "error",
+    "print",
+    "println",
+    "eprint",
+    "eprintln",
+];
+
+/// Whether `mac` is one of [`VALUELESS_MACROS`].
+fn valueless_macro(mac: &syn::Macro) -> bool {
+    mac.path
+        .segments
+        .last()
+        .is_some_and(|s| VALUELESS_MACROS.contains(&s.ident.to_string().as_str()))
+}
+
+/// Whether a `return` carries no value of the section's own: nothing, an
+/// `Err(..)`, a `None`, or `Ok(())`.
+fn valueless_return(expr: &syn::Expr) -> bool {
+    match peel(expr) {
+        syn::Expr::Path(path) => path.path.is_ident("None"),
+        syn::Expr::Call(call) => match peel(&call.func) {
+            syn::Expr::Path(func) if func.path.is_ident("Err") => true,
+            syn::Expr::Path(func) if func.path.is_ident("Ok") => {
+                call.args.len() == 1
+                    && matches!(peel(&call.args[0]), syn::Expr::Tuple(t) if t.elems.is_empty())
+            }
+            _ => false,
+        },
+        _ => false,
+    }
+}
+
+/// Whether the branch that runs for a `None` puts a value in its place: its
+/// tail is a value, it assigns one, or it returns one. An empty branch, a
+/// log line, a panic, `continue`, a valueless `break`, and a `return` of an
+/// error, a `None` or `Ok(())` put none there.
+fn substitutes(expr: &syn::Expr) -> bool {
+    match peel(expr) {
+        syn::Expr::Block(block) => block_substitutes(&block.block),
+        syn::Expr::Return(ret) => ret.expr.as_deref().is_some_and(|e| !valueless_return(e)),
+        syn::Expr::Continue(_) => false,
+        syn::Expr::Path(path) if path.path.is_ident("None") => false,
+        syn::Expr::Break(brk) => brk.expr.is_some(),
+        syn::Expr::Tuple(tuple) => !tuple.elems.is_empty(),
+        syn::Expr::Macro(mac) => !valueless_macro(&mac.mac),
+        _ => true,
+    }
+}
+
+/// [`substitutes`] for a block: an assignment anywhere in it, or its tail.
+fn block_substitutes(block: &syn::Block) -> bool {
+    let assigns = block
+        .stmts
+        .iter()
+        .any(|stmt| matches!(stmt, syn::Stmt::Expr(syn::Expr::Assign(_), _)));
+    assigns
+        || match block.stmts.last() {
+            Some(syn::Stmt::Expr(tail, None)) => substitutes(tail),
+            Some(syn::Stmt::Expr(tail @ syn::Expr::Return(_), Some(_))) => substitutes(tail),
+            Some(syn::Stmt::Macro(mac)) if mac.semi_token.is_none() => !valueless_macro(&mac.mac),
+            _ => false,
+        }
+}
+
+/// Whether a `match` arm's pattern takes the `None`: `None` itself or `_`.
+fn takes_none(pat: &syn::Pat) -> bool {
+    match pat {
+        syn::Pat::Wild(_) => true,
+        syn::Pat::Ident(ident) => ident.ident == "None" && ident.subpat.is_none(),
+        syn::Pat::Path(path) => path.path.is_ident("None"),
+        syn::Pat::Or(or) => or.cases.iter().any(takes_none),
+        _ => false,
+    }
+}
+
+/// The `let` conditions of an `if` condition, through its `&&` chain.
+fn let_conditions(cond: &syn::Expr) -> Vec<&syn::ExprLet> {
+    match cond {
+        syn::Expr::Let(cond) => vec![cond],
+        syn::Expr::Binary(bin) if matches!(bin.op, syn::BinOp::And(_)) => {
+            let mut lets = let_conditions(&bin.left);
+            lets.extend(let_conditions(&bin.right));
+            lets
+        }
+        syn::Expr::Paren(paren) => let_conditions(&paren.expr),
+        _ => Vec::new(),
+    }
+}
+
+/// The value a `None` test asks about and whether the test is true for a
+/// `None`: `x.is_none()`, `x.is_some()`, `matches!(x, None)` or
+/// `matches!(x, Some(..))`, each possibly behind `!`.
+fn none_test(cond: &syn::Expr) -> Option<(syn::Expr, bool)> {
+    match peel(cond) {
+        syn::Expr::Unary(unary) if matches!(unary.op, syn::UnOp::Not(_)) => {
+            none_test(&unary.expr).map(|(tested, on_none)| (tested, !on_none))
+        }
+        syn::Expr::MethodCall(call) if call.args.is_empty() => {
+            match call.method.to_string().as_str() {
+                "is_none" => Some(((*call.receiver).clone(), true)),
+                "is_some" => Some(((*call.receiver).clone(), false)),
+                _ => None,
+            }
+        }
+        syn::Expr::Macro(mac) if mac.mac.path.is_ident("matches") => {
+            let (tested, pat) = mac
+                .mac
+                .parse_body_with(|input: syn::parse::ParseStream<'_>| {
+                    let tested: syn::Expr = input.parse()?;
+                    input.parse::<syn::Token![,]>()?;
+                    let pat = syn::Pat::parse_multi_with_leading_vert(input)?;
+                    input.parse::<proc_macro2::TokenStream>()?;
+                    Ok((tested, pat))
+                })
+                .ok()?;
+            Some((tested, takes_none(&pat)))
+        }
+        _ => None,
+    }
+}
+
 /// One read that defaults a section's `None`: the field it names, the 0-based
 /// row of the defaulting call, and the `impl` type and function it sits in.
 struct DefaultingRead {
@@ -9190,6 +9323,22 @@ impl DefaultingReads<'_> {
         }
     }
 
+    /// Record every section field `expr` yields as a read defaulted at `span`.
+    fn record(&mut self, expr: &syn::Expr, span: proc_macro2::Span) {
+        let mut read = Vec::new();
+        self.chain(expr, true, &mut read);
+        read.sort();
+        read.dedup();
+        for field in read.into_iter().filter(|f| self.fields.contains(f)) {
+            self.found.push(DefaultingRead {
+                field,
+                row: row_of(span),
+                owner: self.owner.clone(),
+                function: self.function.clone(),
+            });
+        }
+    }
+
     fn in_function(&mut self, name: String, visit: impl FnOnce(&mut Self)) {
         let outer = self.function.replace(name);
         self.bindings.push(Default::default());
@@ -9235,6 +9384,12 @@ impl<'ast> syn::visit::Visit<'ast> for DefaultingReads<'_> {
     }
 
     fn visit_local(&mut self, local: &'ast syn::Local) {
+        if let Some(init) = &local.init
+            && let Some((_, otherwise)) = &init.diverge
+            && substitutes(otherwise)
+        {
+            self.record(&init.expr, local.let_token.span);
+        }
         let pat = match &local.pat {
             syn::Pat::Type(typed) => &*typed.pat,
             pat => pat,
@@ -9253,20 +9408,42 @@ impl<'ast> syn::visit::Visit<'ast> for DefaultingReads<'_> {
 
     fn visit_expr_method_call(&mut self, call: &'ast syn::ExprMethodCall) {
         if DEFAULTING_METHODS.contains(&call.method.to_string().as_str()) {
-            let mut read = Vec::new();
-            self.chain(&call.receiver, true, &mut read);
-            read.sort();
-            read.dedup();
-            for field in read.into_iter().filter(|f| self.fields.contains(f)) {
-                self.found.push(DefaultingRead {
-                    field,
-                    row: row_of(call.method.span()),
-                    owner: self.owner.clone(),
-                    function: self.function.clone(),
-                });
-            }
+            self.record(&call.receiver, call.method.span());
         }
         syn::visit::visit_expr_method_call(self, call);
+    }
+
+    fn visit_expr_if(&mut self, expr: &'ast syn::ExprIf) {
+        let otherwise = expr.else_branch.as_ref().map(|(_, e)| &**e);
+        let lets = let_conditions(&expr.cond);
+        if !lets.is_empty() {
+            if otherwise.is_some_and(substitutes) {
+                for cond in lets {
+                    self.record(&cond.expr, expr.if_token.span);
+                }
+            }
+        } else if let Some((tested, on_none)) = none_test(&expr.cond) {
+            let branch = if on_none {
+                block_substitutes(&expr.then_branch)
+            } else {
+                otherwise.is_some_and(substitutes)
+            };
+            if branch {
+                self.record(&tested, expr.if_token.span);
+            }
+        }
+        syn::visit::visit_expr_if(self, expr);
+    }
+
+    fn visit_expr_match(&mut self, expr: &'ast syn::ExprMatch) {
+        if expr
+            .arms
+            .iter()
+            .any(|arm| takes_none(&arm.pat) && substitutes(&arm.body))
+        {
+            self.record(&expr.expr, expr.match_token.span);
+        }
+        syn::visit::visit_expr_match(self, expr);
     }
 }
 
@@ -9288,8 +9465,12 @@ impl<'ast> syn::visit::Visit<'ast> for DefaultingReads<'_> {
 ///   `unwrap_or`, `unwrap_or_else`, `unwrap_or_default`, `map_or`,
 ///   `map_or_else`, `is_some_and` or `is_none_or`, directly, through the
 ///   `Option` steps between, inside an `and_then` closure, or through a
-///   `let` binding) sits inside that field's accessor, and every accessor
-///   holds one;
+///   `let` binding; an `if let`, a `let … else` or a `match` whose `None`
+///   branch puts a value in its place; or an `is_none`, `is_some` or
+///   `matches!` test whose `None` branch does) sits inside that field's
+///   accessor, and every accessor holds one. A branch that is empty, logs,
+///   panics, continues, or returns an error, a `None` or `Ok(())` puts no
+///   value there;
 /// - every accessor's omitted value is `LazyLock::new(<type>::default)`, so
 ///   its body holds no struct literal, no literal and no other `static`;
 /// - `ConfigSpec::effective` calls every accessor.
@@ -9463,5 +9644,209 @@ fn every_option_config_section_is_read_through_its_effective_accessor_or_never_d
     assert_eq!(
         held, sections.accessors,
         "every accessor substitutes its section's omitted value itself"
+    );
+}
+
+/// Every shape that puts a value in a section's `None` place is a defaulting
+/// read of that field, and the same shape that puts none there is not: each
+/// row is a function body over a `cfg` whose `daemon` is a section, with the
+/// number of defaulting reads the walk must find in it.
+#[test]
+fn every_defaulting_shape_of_a_section_read_is_found_and_no_other() {
+    const SHAPES: &[(&str, &str, usize)] = &[
+        ("unwrap_or", "cfg.daemon.as_ref().unwrap_or(&D)", 1),
+        (
+            "unwrap_or_else",
+            "cfg.daemon.clone().unwrap_or_else(make)",
+            1,
+        ),
+        (
+            "unwrap_or_default",
+            "cfg.daemon.clone().unwrap_or_default()",
+            1,
+        ),
+        (
+            "cloned then unwrap_or_default",
+            "cfg.daemon.as_ref().cloned().unwrap_or_default()",
+            1,
+        ),
+        (
+            "as_deref then unwrap_or",
+            "cfg.daemon.as_deref().unwrap_or(\"x\")",
+            1,
+        ),
+        ("map_or", "cfg.daemon.as_ref().map_or(5, |d| d.n)", 1),
+        (
+            "map_or_else",
+            "cfg.daemon.as_ref().map_or_else(make, |d| d.n)",
+            1,
+        ),
+        (
+            "is_some_and",
+            "cfg.daemon.as_ref().is_some_and(|d| d.on)",
+            1,
+        ),
+        ("map alone", "cfg.daemon.as_ref().map(|d| d.n)", 0),
+        (
+            "match passing None through",
+            "match cfg.daemon.as_ref() { Some(d) => Some(d.n), None => None }",
+            0,
+        ),
+        (
+            "if let with a value in else",
+            "if let Some(d) = cfg.daemon.as_ref() { d.n } else { 5 }",
+            1,
+        ),
+        (
+            "if let with an assignment in else",
+            "let mut n = 0; if let Some(d) = &cfg.daemon { n = d.n; } else { n = 5; } n",
+            1,
+        ),
+        (
+            "if let with no else",
+            "if let Some(d) = &cfg.daemon { run(d); }",
+            0,
+        ),
+        (
+            "if let with an error in else",
+            "if let Some(d) = &cfg.daemon { d.n } else { return Err(e); }",
+            0,
+        ),
+        (
+            "if let with a log line in else",
+            "if let Some(d) = &cfg.daemon { run(d); } else { tracing::warn!(\"none\"); }",
+            0,
+        ),
+        (
+            "if let chain with a value in else",
+            "if let Some(d) = &cfg.daemon && d.on { d.n } else { 5 }",
+            1,
+        ),
+        (
+            "match with a value for None",
+            "match &cfg.daemon { Some(d) => d.n, None => 5 }",
+            1,
+        ),
+        (
+            "match with a value for _",
+            "match cfg.daemon { Some(d) => d.n, _ => 5 }",
+            1,
+        ),
+        (
+            "match with nothing for None",
+            "match &cfg.daemon { Some(d) => run(d), None => {} }",
+            0,
+        ),
+        (
+            "match that returns an error for None",
+            "match &cfg.daemon { Some(d) => d.n, None => return Err(e) }",
+            0,
+        ),
+        (
+            "match that continues for None",
+            "for c in cs { match &c.daemon { Some(d) => run(d), None => continue } }",
+            0,
+        ),
+        (
+            "let else returning a value",
+            "let Some(d) = &cfg.daemon else { return 5; }; d.n",
+            1,
+        ),
+        (
+            "let else returning an error",
+            "let Some(d) = &cfg.daemon else { return Err(e); }; d.n",
+            0,
+        ),
+        (
+            "let else continuing",
+            "for c in cs { let Some(d) = &c.daemon else { continue; }; run(d); }",
+            0,
+        ),
+        (
+            "is_none picking a value",
+            "if cfg.daemon.is_none() { 5 } else { 6 }",
+            1,
+        ),
+        (
+            "is_none refusing",
+            "if cfg.daemon.is_none() { return Err(e); } 6",
+            0,
+        ),
+        (
+            "is_some with a value in else",
+            "if cfg.daemon.is_some() { 6 } else { 5 }",
+            1,
+        ),
+        (
+            "negated is_some picking a value",
+            "if !cfg.daemon.is_some() { 5 } else { run(); }",
+            1,
+        ),
+        (
+            "negated is_none refusing",
+            "if !cfg.daemon.is_none() { 6 } else { return Err(e) }",
+            0,
+        ),
+        (
+            "matches None picking a value",
+            "if matches!(cfg.daemon, None) { 5 } else { 6 }",
+            1,
+        ),
+        (
+            "matches None refusing",
+            "if matches!(cfg.daemon, None) { bail!(\"no daemon\") } 6",
+            0,
+        ),
+        (
+            "matches None as a plain bool",
+            "let off = matches!(cfg.daemon, None); off",
+            0,
+        ),
+        (
+            "is_none as a plain bool",
+            "let off = cfg.daemon.is_none(); off",
+            0,
+        ),
+        (
+            "a let binding defaulted later",
+            "let d = cfg.daemon.as_ref(); d.unwrap_or(&D)",
+            1,
+        ),
+        (
+            "inside a closure",
+            "cs.iter().map(|c| c.daemon.clone().unwrap_or_default())",
+            1,
+        ),
+        (
+            "another field",
+            "if let Some(s) = &cfg.secrets { s.n } else { 5 }",
+            0,
+        ),
+    ];
+    let fields: std::collections::BTreeSet<String> =
+        std::iter::once("daemon".to_string()).collect();
+    let mut wrong = Vec::new();
+    for (shape, body, expected) in SHAPES {
+        let source = format!("fn f(cfg: &C) -> T {{ {body} }}");
+        let file = syn::parse_file(&source).unwrap_or_else(|e| panic!("{shape}: {e}"));
+        let mut walk = DefaultingReads {
+            fields: &fields,
+            owner: None,
+            function: None,
+            bindings: Vec::new(),
+            found: Vec::new(),
+        };
+        syn::visit::Visit::visit_file(&mut walk, &file);
+        if walk.found.len() != *expected {
+            wrong.push(format!(
+                "{shape}: found {}, expected {expected}",
+                walk.found.len()
+            ));
+        }
+    }
+    assert!(
+        wrong.is_empty(),
+        "the defaulting walk misreads these shapes:\n{}",
+        wrong.join("\n")
     );
 }

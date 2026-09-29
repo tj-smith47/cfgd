@@ -142,9 +142,11 @@ fn fold_legacy_output(
         LEGACY_OUTPUT_KEYS[1].0,
         LEGACY_OUTPUT_KEYS[1].1,
     );
+    // option-section-ok: folds the legacy flat key into the nested block
     if block.theme.is_none() {
         block.theme = theme;
     }
+    // option-section-ok: folds the legacy flat key into the nested block
     if block.usage_hints.is_none() {
         block.usage_hints = usage_hints;
     }
