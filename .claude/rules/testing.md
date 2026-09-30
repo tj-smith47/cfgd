@@ -177,9 +177,9 @@ lease read again each time. The lease names a pod only because every operator
 workload manifest passes `POD_NAME` and `POD_NAMESPACE` through the downward
 API outside any template conditional;
 `every_operator_workload_manifest_names_its_pod_through_the_downward_api`
-(`crates/cfgd-operator/src/runtime.rs`) walks the repository for them. A Service routes
-each connection to any replica, and a `# HELP` line is absent until the first
-sample, so a check reads neither.
+(`crates/cfgd-operator/src/runtime.rs`) scans every YAML file in the
+repository for them. A Service routes each connection to any replica, and a
+`# HELP` line is absent until the first sample, so a check reads neither.
 `a_family_with_no_sample_is_not_rendered` in `crates/cfgd-csi/src/metrics.rs`
 holds the library to this.
 

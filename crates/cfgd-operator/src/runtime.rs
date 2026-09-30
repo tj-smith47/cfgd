@@ -244,12 +244,12 @@ mod tests {
     /// Every YAML file under `dir`, skipping build output and dot-directories.
     fn yaml_files_below(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
         let entries = std::fs::read_dir(dir).unwrap_or_else(|e| {
-            panic!("{}: the walk must read every directory: {e}", dir.display())
+            panic!("{}: the scan must read every directory: {e}", dir.display())
         });
         for entry in entries {
             let path = entry
                 .unwrap_or_else(|e| {
-                    panic!("{}: the walk must read every entry: {e}", dir.display())
+                    panic!("{}: the scan must read every entry: {e}", dir.display())
                 })
                 .path();
             let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
@@ -274,14 +274,18 @@ mod tests {
         let mut found = Vec::new();
         for (i, line) in lines.iter().enumerate() {
             let t = line.trim();
-            if t.starts_with("{{- if")
-                || t.starts_with("{{ if")
-                || t.starts_with("{{- with")
-                || t.starts_with("{{- range")
-            {
-                depth += 1;
-            } else if t.starts_with("{{- end") || t.starts_with("{{ end") {
-                depth -= 1;
+            for (at, _) in line.match_indices("{{") {
+                let action = line[at + 2..].strip_prefix('-').unwrap_or(&line[at + 2..]);
+                let keyword = action
+                    .trim_start()
+                    .split(|c: char| !c.is_ascii_alphabetic())
+                    .next()
+                    .unwrap_or("");
+                match keyword {
+                    "if" | "with" | "range" | "define" | "block" => depth += 1,
+                    "end" => depth -= 1,
+                    _ => {}
+                }
             }
             if t == "containers:" {
                 containers_depth = Some(depth);
@@ -317,7 +321,7 @@ mod tests {
         let root = cfgd_core::test_helpers::workspace_root();
         let mut files = Vec::new();
         yaml_files_below(&root, &mut files);
-        let mut walked = Vec::new();
+        let mut scanned = Vec::new();
         let mut gaps = Vec::new();
         for path in files {
             let text = std::fs::read_to_string(&path)
@@ -336,7 +340,7 @@ mod tests {
             if let Some(gap) = downward_identity_gap(&text) {
                 gaps.push(format!("{rel}: {gap}"));
             }
-            walked.push(rel);
+            scanned.push(rel);
         }
         for anchor in [
             "chart/cfgd/templates/operator-deployment.yaml",
@@ -345,8 +349,8 @@ mod tests {
             "ecosystem/olm/manifests/cfgd-operator.clusterserviceversion.yaml",
         ] {
             assert!(
-                walked.iter().any(|w| w == anchor),
-                "the walk missed {anchor}: {walked:?}"
+                scanned.iter().any(|w| w == anchor),
+                "the scan missed {anchor}: {scanned:?}"
             );
         }
         assert!(gaps.is_empty(), "{gaps:#?}");
@@ -373,6 +377,18 @@ mod tests {
         ) + "    {{- end }}\n";
         assert_eq!(
             downward_identity_gap(&conditional),
+            Some("POD_NAME sits inside a template conditional".to_string())
+        );
+        let balanced_dashless = sound.replace(
+            "  env:\n",
+            "  env:\n    {{ with .Values.extra }}\n    - name: EXTRA\n    {{ end }}\n    {{ range .Values.more }}{{ end }}\n",
+        );
+        assert_eq!(downward_identity_gap(&balanced_dashless), None);
+        let dashless_range = sound
+            .replace("  env:\n", "  env:\n    {{ range .Values.replicas }}\n")
+            + "    {{ end }}\n";
+        assert_eq!(
+            downward_identity_gap(&dashless_range),
             Some("POD_NAME sits inside a template conditional".to_string())
         );
     }
