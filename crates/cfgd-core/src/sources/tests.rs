@@ -1485,10 +1485,7 @@ fn git_clone_with_fallback_local_repo() {
     // Create a bare repo as the origin
     let repo = git2::Repository::init(&origin_path).unwrap();
     let sig = git2::Signature::now("Test", "test@example.com").unwrap();
-    // Use content without a trailing newline. Git for Windows defaults to
-    // core.autocrlf=true, which rewrites LF → CRLF on checkout and would
-    // make the byte comparison below platform-dependent.
-    std::fs::write(origin_path.join("file.txt"), "hello").unwrap();
+    std::fs::write(origin_path.join("file.txt"), "hello\n").unwrap();
     let mut index = repo.index().unwrap();
     index.add_path(std::path::Path::new("file.txt")).unwrap();
     index.write().unwrap();
@@ -1507,8 +1504,16 @@ fn git_clone_with_fallback_local_repo() {
         clone_path.join("file.txt").exists(),
         "cloned file should exist"
     );
-    let content = std::fs::read_to_string(clone_path.join("file.txt")).unwrap();
-    assert_eq!(content, "hello", "cloned file should have original content");
+    // Git for Windows checks out under core.autocrlf=true, so the clone's
+    // line endings are the cloning user's git config.
+    let content = crate::normalize_line_endings(
+        &std::fs::read_to_string(clone_path.join("file.txt")).unwrap(),
+    )
+    .into_owned();
+    assert_eq!(
+        content, "hello\n",
+        "cloned file should have original content"
+    );
 
     // Verify it is a valid git repo
     assert!(

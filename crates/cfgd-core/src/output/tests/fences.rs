@@ -1601,19 +1601,55 @@ fn no_fixture_hand_spells_a_line_of_the_env_file_this_host_generates() {
 /// the reason written after it.
 const EOL_EXACT_HATCH: &str = "eol-exact-ok:";
 
-/// The 1-based lines, within `func`, of each `assert_eq!` whose first operand
-/// reads a file byte for byte and carries no hatch on its own line or the one
-/// above.
+/// The 1-based lines, within `func`, of each equality assert (`assert_eq!`,
+/// `assert_ne!`, or `assert!` over `==` / `!=`) with an operand that reads a
+/// file byte for byte, and no hatch on its own line or the one above. An
+/// operand reads one when it calls `read_to_string` itself or names a `let`
+/// binding whose initializer did, in either case with no
+/// `normalize_line_endings` in between.
 fn byte_exact_reads(func: &str) -> Vec<usize> {
+    static BINDING: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r"\blet\s+(?:mut\s+)?(\w+)\s*(?::[^=;]*)?=([^;]*);")
+            .expect("the binding shape compiles")
+    });
     let code = crate::test_helpers::blank_non_code(func);
     let hatches = crate::test_helpers::blank_literals(func);
     let hatch_lines: Vec<&str> = hatches.lines().collect();
-    let needle = "assert_eq!(";
-    code.match_indices(needle)
-        .filter_map(|(at, _)| {
+    let exact =
+        |text: &str| text.contains("read_to_string(") && !text.contains("normalize_line_endings");
+    let bound: Vec<&str> = BINDING
+        .captures_iter(&code)
+        .filter(|caps| exact(&caps[2]))
+        .map(|caps| caps.get(1).map_or("", |name| name.as_str()))
+        .collect();
+    let reads_exact = |operand: &str| {
+        !operand.contains("normalize_line_endings")
+            && (operand.contains("read_to_string(")
+                || bound.iter().any(|name| names_identifier(operand, name)))
+    };
+    let mut lines = Vec::new();
+    for needle in ["assert_eq!(", "assert_ne!(", "assert!("] {
+        for (at, _) in code.match_indices(needle) {
+            if at > 0
+                && matches!(code.as_bytes()[at - 1], b'_' | b'0'..=b'9' | b'a'..=b'z' | b'A'..=b'Z')
+            {
+                continue;
+            }
             let open = at + needle.len();
             let (close, comma) = call_span(&code, open);
             let first = &code[open..comma.unwrap_or(close)];
+            let operands: Vec<&str> = if needle == "assert!(" {
+                match first.find("==").or_else(|| first.find("!=")) {
+                    Some(op) => vec![&first[..op], &first[op + 2..]],
+                    None => continue,
+                }
+            } else {
+                let second = comma.map_or("", |comma| {
+                    let (end, next) = call_span(&code, comma + 1);
+                    &code[comma + 1..next.unwrap_or(end)]
+                });
+                vec![first, second]
+            };
             let line = code[..at].matches('\n').count();
             let hatched = [line.checked_sub(1), Some(line)]
                 .into_iter()
@@ -1623,12 +1659,13 @@ fn byte_exact_reads(func: &str) -> Vec<usize> {
                         .get(n)
                         .is_some_and(|l| carries_hatch(l, EOL_EXACT_HATCH))
                 });
-            (first.contains("read_to_string(")
-                && !first.contains("normalize_line_endings")
-                && !hatched)
-                .then_some(line + 1)
-        })
-        .collect()
+            if !hatched && operands.iter().any(|operand| reads_exact(operand)) {
+                lines.push(line + 1);
+            }
+        }
+    }
+    lines.sort_unstable();
+    lines
 }
 
 /// A clone checks files out under the cloning user's git config, and on
@@ -1641,12 +1678,13 @@ fn byte_exact_reads(func: &str) -> Vec<usize> {
 /// out) keeps its exact bytes under `// eol-exact-ok: <why>`.
 #[test]
 fn no_cloned_file_is_compared_byte_for_byte() {
-    let fixture = "fn cloned() {\n    run(\"--from\");\n    assert_eq!(\n        std::fs::read_to_string(dest.join(\"cfgd.yaml\")).unwrap(),\n        BEHIND\n    );\n    assert_eq!(\n        normalize_line_endings(&std::fs::read_to_string(p).unwrap()),\n        BEHIND\n    );\n    // eol-exact-ok: the test wrote this file itself\n    assert_eq!(std::fs::read_to_string(mine).unwrap(), \"x\\n\");\n    assert_eq!(n, std::fs::read_to_string(q).unwrap().len());\n}\n";
+    let fixture = "fn cloned() {\n    run(\"--from\");\n    assert_eq!(\n        std::fs::read_to_string(dest.join(\"cfgd.yaml\")).unwrap(),\n        BEHIND\n    );\n    assert_eq!(\n        normalize_line_endings(&std::fs::read_to_string(p).unwrap()),\n        BEHIND\n    );\n    // eol-exact-ok: the test wrote this file itself\n    assert_eq!(std::fs::read_to_string(mine).unwrap(), \"x\\n\");\n    assert_eq!(n, std::fs::read_to_string(q).unwrap().len());\n    let bound = std::fs::read_to_string(dest.join(\"a\")).unwrap();\n    assert_eq!(bound, BEHIND);\n    assert_eq!(BEHIND, std::fs::read_to_string(r).unwrap());\n    assert!(std::fs::read_to_string(s).unwrap() == BEHIND);\n    assert_ne!(std::fs::read_to_string(t).unwrap(), AHEAD);\n    let folded = normalize_line_endings(&std::fs::read_to_string(u).unwrap());\n    assert_eq!(folded, BEHIND);\n    assert!(normalize_line_endings(&bound) == BEHIND);\n    assert!(std::fs::read_to_string(v).unwrap().contains(\"x\"));\n}\n";
     let funcs = source_functions(&FIXTURE_SOURCE, fixture);
     assert_eq!(
         byte_exact_reads(&funcs[0].1),
-        [3],
-        "only the bare, unhatched first operand is a byte-exact read"
+        [3, 13, 15, 16, 17, 18],
+        "an unhatched read reaching either operand of an equality assert, bare \
+         or through a binding, is a byte-exact read"
     );
 
     let clones = |func: &str| {
