@@ -716,7 +716,6 @@ fn bash_inline_prepends_env_source() {
         "echo $TEST_VAR",
         tmp.path(),
         Some(&env_file),
-        true,
     );
     let args: Vec<_> = cmd
         .get_args()
@@ -752,7 +751,6 @@ fn zsh_inline_prepends_env_source() {
         "echo $TEST_VAR",
         tmp.path(),
         Some(&env_file),
-        true,
     );
     let args: Vec<_> = cmd
         .get_args()
@@ -783,13 +781,7 @@ fn sh_inline_ignores_cfgd_env_path() {
     let env_file = tmp.path().join(".cfgd.env");
     std::fs::write(&env_file, "export TEST_VAR=hello\n").unwrap();
 
-    let cmd = build_inline_command(
-        ScriptShell::Sh,
-        "echo hello",
-        tmp.path(),
-        Some(&env_file),
-        true,
-    );
+    let cmd = build_inline_command(ScriptShell::Sh, "echo hello", tmp.path(), Some(&env_file));
     let args: Vec<_> = cmd
         .get_args()
         .map(|a| a.to_string_lossy().to_string())
@@ -810,7 +802,7 @@ fn sh_inline_ignores_cfgd_env_path() {
 fn bash_inline_no_env_file_skips_preamble() {
     let tmp = tempfile::tempdir().unwrap();
 
-    let cmd = build_inline_command(ScriptShell::Bash, "echo hello", tmp.path(), None, true);
+    let cmd = build_inline_command(ScriptShell::Bash, "echo hello", tmp.path(), None);
     let args: Vec<_> = cmd
         .get_args()
         .map(|a| a.to_string_lossy().to_string())
@@ -818,43 +810,39 @@ fn bash_inline_no_env_file_skips_preamble() {
     assert_eq!(args, vec!["-c", "echo hello"], "no env file → no preamble");
 }
 
-// set_process_group=true (every non-interactive spawn arm) still puts the
-// child in its OWN new process group — child pgid == child pid — so a
-// timeout/idle kill can `kill(-pid, …)` the whole subtree without hitting
-// cfgd itself. This is the behavior every arm had before the interactive
-// fix, and must stay unchanged.
+// Every non-interactive spawn goes through `spawn_tree`, which puts the child
+// in its OWN new process group — child pgid == child pid — so a timeout/idle
+// kill reaches the whole subtree without hitting cfgd itself.
 #[cfg(unix)]
 #[test]
-fn build_inline_command_default_spawns_own_process_group() {
+fn a_tree_spawn_leads_its_own_process_group() {
     use nix::unistd::{Pid, getpgid};
 
     let _path_guard = crate::test_helpers::path_env_read_guard();
     let tmp = tempfile::tempdir().unwrap();
-    let mut cmd = build_inline_command(ScriptShell::Sh, "sleep 0.3", tmp.path(), None, true);
-    let mut child = cmd.spawn().expect("spawn must succeed");
+    let mut cmd = build_inline_command(ScriptShell::Sh, "sleep 0.3", tmp.path(), None);
+    let (mut child, tree) = crate::spawn_tree(&mut cmd).expect("spawn must succeed");
     let child_pid = Pid::from_raw(child.id() as i32);
     let child_pgid = getpgid(Some(child_pid)).expect("child must still be alive");
     assert_eq!(
         child_pgid, child_pid,
-        "set_process_group=true must make the child its own group leader"
+        "a tree spawn must make the child its own group leader"
     );
-    // Signal the GROUP, not the leader: whether `sh -c 'sleep …'` execs the
+    // Kill the whole group: whether `sh -c 'sleep …'` execs the
     // sleep or forks it is the host's choice of /bin/sh (dash execs, bash
     // forks), and killing only the leader leaves a bash host's grandchild
     // holding the test's stdio — which is what nextest reports as a leak.
-    // Safe here precisely because the assertion above proved the group is the
-    // child's own.
-    let _ = nix::sys::signal::killpg(child_pgid, nix::sys::signal::Signal::SIGKILL);
+    tree.force_kill();
     let _ = child.wait();
 }
 
-// set_process_group=false (the interactive `Run` arm only) leaves the
-// child in cfgd's OWN process group instead of a new one — the fix that
-// restores terminal Ctrl-C delivery and raw-mode TUI reads to an
-// interactive script (see execute_script_inner's `Run` arm doc comment).
+// The interactive `Run` arm spawns with `spawn_child`, which leaves the child
+// in cfgd's own process group, which is what keeps terminal
+// Ctrl-C delivery and raw-mode TUI reads working for an interactive script
+// (see execute_script_inner's `Run` arm doc comment).
 #[cfg(unix)]
 #[test]
-fn build_inline_command_interactive_shares_callers_process_group() {
+fn an_interactive_spawn_shares_the_callers_process_group() {
     use nix::unistd::{Pid, getpgid, getpgrp};
 
     let _path_guard = crate::test_helpers::path_env_read_guard();
@@ -862,19 +850,64 @@ fn build_inline_command_interactive_shares_callers_process_group() {
     let own_pgid = getpgrp();
     // `exec` so the shell REPLACES itself instead of possibly forking the
     // sleep (bash forks, dash execs): this child shares the caller's process
-    // group by design, so the sibling test's killpg escape is not available
-    // here — a forked grandchild would outlive `child.kill()` holding the
-    // test's stdio, which nextest reports as a leak.
-    let mut cmd = build_inline_command(ScriptShell::Sh, "exec sleep 5", tmp.path(), None, false);
-    let mut child = cmd.spawn().expect("spawn must succeed");
+    // group by design, so no group kill is available here — a forked
+    // grandchild would outlive `child.kill()` holding the test's stdio, which
+    // nextest reports as a leak.
+    let mut cmd = build_inline_command(ScriptShell::Sh, "exec sleep 5", tmp.path(), None);
+    let mut child = crate::spawn_child(&mut cmd).expect("spawn must succeed");
     let child_pid = Pid::from_raw(child.id() as i32);
     let child_pgid = getpgid(Some(child_pid)).expect("child must still be alive");
     assert_eq!(
         child_pgid, own_pgid,
-        "set_process_group=false must leave the child in the caller's own group"
+        "an interactive spawn must leave the child in the caller's own group"
     );
     let _ = child.kill();
     let _ = child.wait();
+}
+
+/// A guard that times out is killed with everything it started. The body
+/// starts a grandchild that writes a marker once the timeout has long fired;
+/// killing only the shell cfgd spawned leaves that grandchild running, holding
+/// the guard's pipes, and the marker appears. On Unix the tree is the child's
+/// process group, on Windows its job object.
+#[test]
+fn a_timed_out_guard_kills_every_process_it_started() {
+    let tmp = tempfile::tempdir().unwrap();
+    let marker = tmp.path().join("grandchild-outlived-the-guard");
+    let shown = marker.display();
+    // The grandchild writes about two seconds after it starts.
+    #[cfg(unix)]
+    let body = format!("sh -c 'sleep 2; echo x > \"{shown}\"'; true");
+    #[cfg(windows)]
+    let body = format!("cmd /C \"ping -n 3 127.0.0.1 >NUL & echo x> {shown}\" & exit 0");
+
+    let err = run_guard_command(
+        &body,
+        ScriptShell::Auto,
+        tmp.path(),
+        &[],
+        std::time::Duration::from_millis(300),
+    )
+    .expect_err("a guard outliving its timeout is an error");
+    assert!(
+        err.to_string().contains("timed out"),
+        "the guard must fail on its timeout: {err}"
+    );
+
+    // One second past the moment the grandchild would have written.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    while std::time::Instant::now() < deadline {
+        assert!(
+            !marker.exists(),
+            "the guard's grandchild outlived the timeout and wrote {shown}"
+        );
+        // sleep-ok: a write that never happens raises no event to wait on.
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    assert!(
+        !marker.exists(),
+        "the guard's grandchild outlived the timeout and wrote {shown}"
+    );
 }
 
 // Auto-detection picks the file's shebang-implied interpreter (`sh`),
@@ -2061,7 +2094,7 @@ fn execute_script_spawn_enoent_maps_to_interpreter_hint() {
 #[test]
 fn pwsh_inline_command_argv_shape() {
     let tmp = tempfile::tempdir().unwrap();
-    let cmd = build_inline_command(ScriptShell::Pwsh, "Get-Date", tmp.path(), None, true);
+    let cmd = build_inline_command(ScriptShell::Pwsh, "Get-Date", tmp.path(), None);
     assert_eq!(
         cmd.get_program().to_string_lossy(),
         "pwsh",

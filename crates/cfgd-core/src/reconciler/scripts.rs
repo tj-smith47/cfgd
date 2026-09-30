@@ -752,12 +752,6 @@ fn execute_script_inner(
         })
     );
     let disposition = interactive_disposition(interactive, stdin_is_tty);
-    // Every other arm still gets its own process group, so a timeout/idle
-    // kill (`kill_script_child`) can `kill(-pid, …)` the whole subtree
-    // without hitting cfgd itself. The attached-to-terminal `Run` arm is the
-    // one exception: it must share cfgd's own group so the terminal's
-    // foreground group still includes the child (see the `Run` arm below).
-    let set_process_group = !matches!(disposition, InteractiveDisposition::Run);
 
     let target = resolve_run_target(run_str, script_dir, shell);
 
@@ -805,22 +799,11 @@ fn execute_script_inner(
             }
             let mut c = std::process::Command::new(&resolved);
             c.current_dir(working_dir);
-            #[cfg(unix)]
-            if set_process_group {
-                use std::os::unix::process::CommandExt;
-                c.process_group(0);
-            }
             c
         }
         RunTarget::Inline(command) => {
             // Inline command — interpreter selected by shell field
-            build_inline_command(
-                shell,
-                &command,
-                working_dir,
-                cfgd_env_path.as_deref(),
-                set_process_group,
-            )
+            build_inline_command(shell, &command, working_dir, cfgd_env_path.as_deref())
         }
     };
 
@@ -835,8 +818,8 @@ fn execute_script_inner(
             // user (e.g. `read`, `sudo`, a full-screen TUI). No spinner and
             // no capture — the user drives the pace.
             //
-            // The child stays in cfgd's own process group (`set_process_group`
-            // is false for this arm, above): a blanket `process_group(0)` put
+            // The child stays in cfgd's own process group (`spawn_child`, where
+            // every other arm spawns through `spawn_tree`): a blanket group put
             // every interactive child in a brand-new, non-foreground group,
             // so the terminal driver never delivered a terminal-generated
             // Ctrl-C to it, and a background-group terminal read stalls on
@@ -892,7 +875,7 @@ fn execute_script_inner(
     // (e.g. `shell: bash` on a FreeBSD base that ships only POSIX sh) or
     // because a `spec.env` PATH entry overwrote PATH. Name the real causes
     // instead of a bare os error 2.
-    let mut child = crate::spawn_child(&mut cmd).map_err(|e| {
+    let (mut child, tree) = crate::spawn_tree(&mut cmd).map_err(|e| {
         if e.kind() == std::io::ErrorKind::NotFound {
             CfgdError::Config(ConfigError::Invalid {
                 message: format!(
@@ -1009,7 +992,7 @@ fn execute_script_inner(
                         st.push_line(&line);
                     }
                     st.finish_fail("Interrupted", Some(elapsed));
-                    kill_script_child(&mut child, false);
+                    kill_script_child(&mut child, &tree, false);
                     let _ = stdout_handle.join();
                     let _ = stderr_handle.join();
                     return Err(CfgdError::Config(ConfigError::Invalid {
@@ -1024,7 +1007,7 @@ fn execute_script_inner(
                         &format!("{reason} after {}s", duration.as_secs()),
                         Some(elapsed),
                     );
-                    kill_script_child(&mut child, true);
+                    kill_script_child(&mut child, &tree, true);
                     // Join reader threads to capture partial output
                     let _ = stdout_handle.join();
                     let _ = stderr_handle.join();
@@ -1154,17 +1137,10 @@ pub(crate) fn run_filter_script(
             }
             let mut c = std::process::Command::new(&resolved);
             c.current_dir(working_dir);
-            #[cfg(unix)]
-            {
-                use std::os::unix::process::CommandExt;
-                c.process_group(0);
-            }
             c
         }
         RunTarget::Inline(command) => {
-            // A filter script is never interactive — always its own process
-            // group so a timeout kill can reach the whole subtree.
-            build_inline_command(ScriptShell::Auto, &command, working_dir, None, true)
+            build_inline_command(ScriptShell::Auto, &command, working_dir, None)
         }
     };
 
@@ -1175,7 +1151,9 @@ pub(crate) fn run_filter_script(
     cmd.stdout(std::process::Stdio::piped());
     cmd.stderr(std::process::Stdio::piped());
 
-    let mut child = crate::spawn_child(&mut cmd)?;
+    // A filter script is never interactive, so it runs as a tree of its own
+    // and a timeout kill reaches everything it started.
+    let (mut child, tree) = crate::spawn_tree(&mut cmd)?;
 
     // Feed stdin from its own thread while stdout/stderr drain on theirs: a
     // filter whose output exceeds the pipe buffer would deadlock against a
@@ -1199,7 +1177,7 @@ pub(crate) fn run_filter_script(
             Some(status) => break (Some(status), false),
             None => {
                 if start.elapsed() > timeout {
-                    kill_script_child(&mut child, true);
+                    kill_script_child(&mut child, &tree, true);
                     break (None, true);
                 }
                 std::thread::sleep(std::time::Duration::from_millis(50));
@@ -1269,12 +1247,7 @@ fn build_inline_command(
     run_str: &str,
     working_dir: &std::path::Path,
     cfgd_env_path: Option<&std::path::Path>,
-    set_process_group: bool,
 ) -> std::process::Command {
-    // Process groups are a POSIX concept: the flag is only acted on inside the
-    // `#[cfg(unix)]` block below, and there is no non-unix arm to consume it in.
-    #[cfg(not(unix))]
-    let _ = set_process_group;
     let mut c = match shell {
         ScriptShell::Auto => {
             #[cfg(unix)]
@@ -1329,11 +1302,6 @@ fn build_inline_command(
         ScriptShell::Cmd => cmd_command(run_str),
     };
     c.current_dir(working_dir);
-    #[cfg(unix)]
-    if set_process_group {
-        use std::os::unix::process::CommandExt;
-        c.process_group(0);
-    }
     c
 }
 
@@ -1381,13 +1349,13 @@ fn run_guard_command(
     timeout: std::time::Duration,
 ) -> Result<bool> {
     let cfgd_env_path = cfgd_env_path_for(shell);
-    // Guard commands are never interactive — always run in their own process
-    // group so a timeout kill can reach the whole subtree.
-    let mut cmd = build_inline_command(shell, cmd_str, working_dir, cfgd_env_path.as_deref(), true);
+    let mut cmd = build_inline_command(shell, cmd_str, working_dir, cfgd_env_path.as_deref());
     for (key, value) in env_vars {
         cmd.env(key, value);
     }
-    let outcome = crate::command_output_with_timeout_outcome(&mut cmd, timeout)?;
+    // A guard is never interactive, so it runs as a tree of its own and a
+    // timeout kill reaches everything it started.
+    let outcome = crate::command_tree_output_with_timeout_outcome(&mut cmd, timeout)?;
     if outcome.timed_out {
         return Err(CfgdError::Config(ConfigError::Invalid {
             message: format!("guard command timed out after {timeout:?}: {cmd_str}"),
@@ -1396,45 +1364,32 @@ fn run_guard_command(
     Ok(outcome.output.status.success())
 }
 
-/// Kill a script's process group.
+/// Kill a script and every process it started.
 ///
-/// `graceful=true` sends SIGTERM then waits 5 s before SIGKILL (for timeout/idle
-/// kill paths). `graceful=false` sends SIGKILL immediately — used on the
-/// abort path where cfgd itself received a signal and must exit quickly.
-pub(super) fn kill_script_child(child: &mut std::process::Child, graceful: bool) {
-    #[cfg(unix)]
-    {
-        use nix::sys::signal::{Signal, kill};
-        use nix::unistd::Pid;
-        let signal = if graceful {
-            Signal::SIGTERM
-        } else {
-            Signal::SIGKILL
-        };
-        // Negative PID targets the entire process group
-        let _ = kill(Pid::from_raw(-(child.id() as i32)), signal);
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = child.kill();
-    }
+/// `graceful=true` asks the tree to exit, then waits 5 s before killing it
+/// (for timeout/idle kill paths). `graceful=false` kills it at once — used on
+/// the abort path where cfgd itself received a signal and must exit quickly.
+pub(super) fn kill_script_child(
+    child: &mut std::process::Child,
+    tree: &crate::TreeKill,
+    graceful: bool,
+) {
     if graceful {
+        tree.terminate();
         std::thread::sleep(std::time::Duration::from_secs(5));
     }
-    let _ = child.kill();
+    tree.force_kill();
     let _ = child.wait();
 }
 
 /// Terminate an interactive script's child directly by PID (SIGTERM, then,
 /// after a grace period, SIGKILL).
 ///
-/// Deliberately NOT `kill_script_child`: that helper targets the child's
-/// process GROUP (`kill(-pid, …)`), which only reaches the intended process
-/// when the child is its own group leader. The interactive `Run` arm
-/// intentionally skips `process_group(0)` (see its own doc comment in
-/// `execute_script_inner`) so the child shares cfgd's own foreground group —
-/// `child.id()` is therefore not a process-group leader, and a negative-PID
-/// kill would silently miss it.
+/// Kept apart from `kill_script_child`, which kills the tree `spawn_tree`
+/// set up: the interactive `Run` arm spawns with `spawn_child` (see its own
+/// doc comment in `execute_script_inner`) so the child shares cfgd's own
+/// foreground group. There is no tree of the
+/// child's own to kill, and a signal to cfgd's group would reach cfgd itself.
 #[cfg(unix)]
 fn kill_interactive_timeout_child(child: &mut std::process::Child) {
     use nix::sys::signal::{Signal, kill};

@@ -1757,6 +1757,101 @@ fn no_test_reads_the_env_reminder_under_the_ambient_shell() {
     );
 }
 
+/// Whether blanked `code` starts a child as the root of a process tree of its
+/// own: a new process group on Unix, a suspended start ahead of a job on
+/// Windows.
+fn starts_a_process_tree(code: &str) -> bool {
+    code.contains(".process_group(") || names_identifier(code, "CREATE_SUSPENDED")
+}
+
+/// Whether blanked `code` throws away the kill `spawn_tree` hands back with
+/// the child, leaving nothing that can end the tree.
+fn discards_the_tree_kill(code: &str) -> bool {
+    static DISCARD: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(
+            r"let\s*\(\s*(?:mut\s+)?\w+\s*,\s*_\w*\s*\)\s*=[^;]*\bspawn_tree\(|let\s+_\w*\s*=[^;]*\bspawn_tree\(|\bspawn_tree\([^;]*?\)\??\s*\.0\b",
+        )
+        .expect("the discard shapes compile")
+    });
+    DISCARD.is_match(code)
+}
+
+/// A child that leads a process group of its own is out of reach of a signal
+/// to its pid alone: a timed-out guard whose shell forked its last command
+/// left that grandchild running, holding the pipes the guard was handed.
+/// `spawn_tree` is the one place a tree is set up, and it records the fact in
+/// the `TreeKill` it returns, so the kill signals the group (Unix) or ends the
+/// job (Windows). Every other spawn is killed alone, and no caller of
+/// `spawn_tree` drops the kill it hands back.
+#[test]
+fn every_spawn_that_starts_a_process_tree_is_killed_as_one() {
+    let fixture = "fn spawn_tree() {\n    cmd.process_group(0);\n}\n\nfn rogue() {\n    cmd.process_group(0);\n}\n\nfn suspended() {\n    cmd.creation_flags(CREATE_SUSPENDED);\n}\n\nfn quoted() {\n    // cmd.process_group(0);\n    let s = \"CREATE_SUSPENDED\";\n}\n\nfn drops() {\n    let (child, _kill) = crate::spawn_tree(&mut cmd)?;\n}\n\nfn first() {\n    let child = crate::spawn_tree(&mut cmd)?.0;\n}\n\nfn keeps() {\n    let (mut child, tree) = crate::spawn_tree(&mut cmd)?;\n}\n";
+    let judged: Vec<(String, bool, bool)> = crate::test_helpers::fixture_declarations(fixture)
+        .into_iter()
+        .map(|(name, _, code)| {
+            let code = crate::test_helpers::blank_non_code(&code);
+            (
+                name,
+                starts_a_process_tree(&code),
+                discards_the_tree_kill(&code),
+            )
+        })
+        .collect();
+    let expect = |name: &str, tree: bool, discard: bool| (name.to_string(), tree, discard);
+    assert_eq!(
+        judged,
+        [
+            expect("spawn_tree", true, false),
+            expect("rogue", true, false),
+            expect("suspended", true, false),
+            expect("quoted", false, false),
+            expect("drops", false, true),
+            expect("first", false, true),
+            expect("keeps", false, false),
+        ],
+        "the tells skip comments and literals and read a tree setup and a dropped kill in code"
+    );
+
+    let workspace =
+        crate::test_helpers::workspace_declarations(crate::test_helpers::WORKSPACE_CRATES);
+    let mut tree_setups = Vec::new();
+    let mut offenders = Vec::new();
+    for (row, (name, _, _)) in workspace.rows.iter().enumerate() {
+        let code = workspace.code_of(row);
+        let (_, path, _) = workspace.sites[row];
+        let at = format!(
+            "{}:{}",
+            source_label(path),
+            workspace.span_of(row).start() + 1
+        );
+        if starts_a_process_tree(&code) {
+            if name == "spawn_tree" && path.ends_with("util/process.rs") {
+                tree_setups.push(at.clone());
+            } else {
+                offenders.push(format!(
+                    "{at}: `{name}` starts a process tree outside `spawn_tree`"
+                ));
+            }
+        }
+        if discards_the_tree_kill(&code) {
+            offenders.push(format!(
+                "{at}: `{name}` drops the kill `spawn_tree` returned"
+            ));
+        }
+    }
+    assert_eq!(
+        tree_setups.len(),
+        1,
+        "the walk stopped seeing `spawn_tree` set up a tree: {tree_setups:?}"
+    );
+    assert!(
+        offenders.is_empty(),
+        "a child that leads its own process tree is killed through the \
+         `TreeKill` `spawn_tree` returns; spawn through it and keep the kill:\n{}",
+        offenders.join("\n")
+    );
+}
+
 /// The function-open recognizer behind [`source_functions`], one case per
 /// qualifier shape, so the next modifier added in front of a `fn` regresses
 /// here instead of silently folding that function into its predecessor's
