@@ -138,7 +138,7 @@ grep -q "Cannot create install directory $blocked" "$scratch/dry-stderr" \
 # A dangling symlink where a parent directory should be: the install's mkdir
 # cannot create through it, and the dry run refuses with the same words.
 # Git Bash's ln copies its target unless MSYS asks for a native link, so a
-# target that does not exist fails outright there; every other sh ignores MSYS.
+# target that does not exist fails outright there; ln anywhere else ignores MSYS.
 MSYS=winsymlinks:nativestrict ln -s "$scratch/nowhere" "$scratch/dangling"
 dangling="$scratch/dangling/bin"
 if got="$(SUDO_EXIT=1 resolve "$dangling" "$missing_system" false "$shim" 2> "$scratch/stderr")"; then
