@@ -37788,12 +37788,10 @@ fn every_two_root_walk_guards_each_root_it_reads() {
         ("cfgd-schema", 2),
         ("cfgd-test-fixtures", 1),
     ];
-    /// Each file holding multi-root walks today, with a floor under the 25 and
-    /// the 2 they hold, so retiring one walk is free and a file dropping out of
-    /// the population fails on its own name. Each floor is a minimum the file
-    /// must keep, and a count above it passes; the second is set at its count,
-    /// because two is already the smallest number that can state the rule, and
-    /// a file that stops holding one at all is what this table is for.
+    /// Each file holding multi-root walks today, with a floor under the walks
+    /// it holds, so retiring one walk is free and a file dropping out of the
+    /// population fails on its own name. Each floor is a minimum the file must
+    /// keep, and a count above it passes.
     const WALK_FILES: &[(&str, usize)] = &[
         ("cfgd/src/cli/tests.rs", 20),
         ("cfgd-core/src/output/tests/fences.rs", 2),
