@@ -1248,7 +1248,8 @@ async fn unusable_paths_are_rejected_with_the_value_and_the_reason() {
 
 /// A mount served from the node cache counts a hit on whichever call makes it:
 /// kubelet sends an inline ephemeral volume, the webhook's injection, straight
-/// to NodePublishVolume, and a persistent one through NodeStageVolume.
+/// to NodePublishVolume, and a persistent one through NodeStageVolume. A
+/// publish that follows a stage is the same mount and counts nothing.
 #[tokio::test]
 #[serial_test::serial]
 async fn a_cache_hit_counts_once_per_mount_at_an_unstaged_publish_or_a_stage() {

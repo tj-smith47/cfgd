@@ -27,8 +27,8 @@ use crate::metrics::{CsiMetrics, ModuleLabels, PublishLabels, PullLabels};
 /// NodePublishVolume only when kubelet did not stage the volume (an inline
 /// ephemeral one, which is how the webhook injects modules): then the pull's
 /// duration is observed (labelled with whether the entry was cached) and a
-/// hit counted. A publish after a stage records nothing unless it had to pull
-/// again, since the entry was evicted after the stage, and then its miss.
+/// hit counted. A publish after a stage records nothing, unless the entry was
+/// evicted after the stage and it had to pull again: then it records that miss.
 fn pull_through_cache(
     cache: &Cache,
     metrics: &CsiMetrics,
