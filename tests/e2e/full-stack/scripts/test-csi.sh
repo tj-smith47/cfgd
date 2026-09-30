@@ -1,8 +1,12 @@
+# shellcheck shell=bash
 # Full-stack E2E tests: CSI
 # Sourced by run-all.sh — do NOT set traps or pipefail here.
 
 echo ""
 echo "=== CSI Tests ==="
+
+# The node FS-CSI-01's pod ran on, whose driver has the module cached.
+CSI01_NODE=""
 
 # =================================================================
 # FS-CSI-01: CSI driver — deploy DaemonSet, mount module content, verify
@@ -74,20 +78,22 @@ EOF
         POD_RUNNING=false
         wait_for_k8s_field pod csi-mount-test "e2e-csi-test-${E2E_RUN_ID}" \
             '{.status.phase}' Running 180 > /dev/null && POD_RUNNING=true || true
+        CSI01_NODE=$(kubectl get pod csi-mount-test -n "e2e-csi-test-${E2E_RUN_ID}" \
+            -o jsonpath='{.spec.nodeName}' 2>/dev/null || echo "")
 
         if $POD_RUNNING; then
             # Verify module content is mounted
             MODULE_FILE=$(kubectl exec csi-mount-test -n "e2e-csi-test-${E2E_RUN_ID}" -- \
-                cat /cfgd-modules/csi-test-mod-${E2E_RUN_ID}/module.yaml 2>/dev/null || echo "")
+                cat "/cfgd-modules/csi-test-mod-${E2E_RUN_ID}/module.yaml" 2>/dev/null || echo "")
             HELLO_SH=$(kubectl exec csi-mount-test -n "e2e-csi-test-${E2E_RUN_ID}" -- \
-                cat /cfgd-modules/csi-test-mod-${E2E_RUN_ID}/bin/hello.sh 2>/dev/null || echo "")
+                cat "/cfgd-modules/csi-test-mod-${E2E_RUN_ID}/bin/hello.sh" 2>/dev/null || echo "")
 
             echo "  module.yaml present: $([ -n "$MODULE_FILE" ] && echo 'yes' || echo 'no')"
             echo "  bin/hello.sh present: $([ -n "$HELLO_SH" ] && echo 'yes' || echo 'no')"
 
             # Verify read-only mount
             RO_TEST=$(kubectl exec csi-mount-test -n "e2e-csi-test-${E2E_RUN_ID}" -- \
-                touch /cfgd-modules/csi-test-mod-${E2E_RUN_ID}/test-write 2>&1 || echo "read-only")
+                touch "/cfgd-modules/csi-test-mod-${E2E_RUN_ID}/test-write" 2>&1 || echo "read-only")
 
             if [ -n "$MODULE_FILE" ] && echo "$RO_TEST" | grep -qi "read-only"; then
                 pass_test "FS-CSI-01"
@@ -117,7 +123,7 @@ else
 
     # Wait for pod to be deleted
     echo "  Waiting for pod deletion..."
-    for i in $(seq 1 30); do
+    for _ in $(seq 1 30); do
         POD_EXISTS=$(kubectl get pod csi-mount-test -n "e2e-csi-test-${E2E_RUN_ID}" 2>/dev/null || echo "")
         if [ -z "$POD_EXISTS" ]; then
             break
@@ -225,9 +231,9 @@ EOF
 
         if $POD_RUNNING; then
             MOD_A_FILE=$(kubectl exec csi-multi-test -n "$CSI03_NS" -- \
-                cat /cfgd-modules/csi-multi-a-${E2E_RUN_ID}/module.yaml 2>/dev/null || echo "")
+                cat "/cfgd-modules/csi-multi-a-${E2E_RUN_ID}/module.yaml" 2>/dev/null || echo "")
             MOD_B_FILE=$(kubectl exec csi-multi-test -n "$CSI03_NS" -- \
-                cat /cfgd-modules/csi-multi-b-${E2E_RUN_ID}/module.yaml 2>/dev/null || echo "")
+                cat "/cfgd-modules/csi-multi-b-${E2E_RUN_ID}/module.yaml" 2>/dev/null || echo "")
 
             echo "  Module A mounted: $([ -n "$MOD_A_FILE" ] && echo 'yes' || echo 'no')"
             echo "  Module B mounted: $([ -n "$MOD_B_FILE" ] && echo 'yes' || echo 'no')"
@@ -252,29 +258,52 @@ fi
 # =================================================================
 begin_test "FS-CSI-04: CSI driver — module cache hit"
 
+# Print the module's cache-hit count scraped off CSI driver pod $1, keeping
+# the response in $2 for a fail reason; returns 1 without a count when the
+# scrape did not answer 2xx. No sample for the module yet counts as 0.
+csi04_hits() {
+    local pod="$1" body="$2" pid code content_type
+    pid=$(port_forward cfgd-system "pod/$pod" 19094 9090) || return 1
+    read -r code content_type <<<"$(http_get_to_file "http://localhost:19094/metrics" "$body")"
+    stop_port_forward "$pid"
+    printf '%s %s\n' "$code" "${content_type:-}" > "$body.meta"
+    [[ "$code" == 2* ]] || return 1
+    awk -v s="cfgd_csi_cache_hits_total{module=\"csi-test-mod-${E2E_RUN_ID}\"}" \
+        '$1 == s { v = $2 } END { print v + 0 }' "$body"
+}
+
+csi04_evidence() {
+    local code content_type
+    read -r code content_type < "$1.meta" || code="000"
+    http_evidence "${code:-000}" "${content_type:-}" "$1"
+}
+
 if ! $CSI_AVAILABLE; then
     skip_test "FS-CSI-04" "CSI driver not ready"
+elif [ -z "$CSI01_NODE" ]; then
+    fail_test "FS-CSI-04" "FS-CSI-01 recorded no node for its pod, so there is no warm cache to mount from"
 else
-    # Reuse the module from FS-CSI-01 (already pushed and CRD exists).
-    # Mount it in a fresh namespace — this should be a cache hit since
-    # FS-CSI-01 already pulled it.
+    # A second mount of FS-CSI-01's module on the node that already pulled it
+    # must be served from that node's cache, so its driver counts one more hit.
     CSI04_NS="e2e-csi-cache-${E2E_RUN_ID}"
+    CSI04_BEFORE_BODY="$CLI_SCRATCH/fs-csi-04-before.txt"
+    CSI04_AFTER_BODY="$CLI_SCRATCH/fs-csi-04-after.txt"
     ensure_namespace "$CSI04_NS"
     ensure_label namespace "$CSI04_NS" cfgd.io/inject-modules=true --overwrite
 
     sleep 3
 
-    # Scrape cache_hits metric before the mount
-    CSI_POD=$(kubectl get pods -n cfgd-system -l app.kubernetes.io/component=csi-driver \
+    CSI04_DRIVER=$(kubectl get pods -n cfgd-system -l app.kubernetes.io/component=csi-driver \
+        --field-selector "spec.nodeName=$CSI01_NODE" \
         -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
-    HITS_BEFORE=""
-    if [ -n "$CSI_POD" ]; then
-        HITS_BEFORE=$(kubectl exec "$CSI_POD" -n cfgd-system -c cfgd-csi -- \
-            wget -qO- http://127.0.0.1:9090/metrics 2>/dev/null \
-            | grep "^cfgd_csi_cache_hits_total" | head -1 || echo "")
-    fi
+    echo "  Node: $CSI01_NODE, CSI driver pod: ${CSI04_DRIVER:-<none>}"
 
-    kubectl apply -n "$CSI04_NS" -f - <<EOF
+    if [ -z "$CSI04_DRIVER" ]; then
+        fail_test "FS-CSI-04" "No CSI driver pod on node $CSI01_NODE"
+    elif ! CSI04_HITS_BEFORE=$(csi04_hits "$CSI04_DRIVER" "$CSI04_BEFORE_BODY"); then
+        fail_test "FS-CSI-04" "Scrape of pod/$CSI04_DRIVER before the mount failed: $(csi04_evidence "$CSI04_BEFORE_BODY")"
+    else
+        kubectl apply -n "$CSI04_NS" -f - <<EOF
 apiVersion: v1
 kind: Pod
 metadata:
@@ -282,6 +311,8 @@ metadata:
   annotations:
     cfgd.io/modules: "csi-test-mod-${E2E_RUN_ID}:v1.0"
 spec:
+  nodeSelector:
+    kubernetes.io/hostname: "${CSI01_NODE}"
   containers:
     - name: app
       image: busybox:1.36
@@ -289,35 +320,24 @@ spec:
   restartPolicy: Never
 EOF
 
-    echo "  Waiting for cache-test pod..."
-    POD_RUNNING=false
-    wait_for_k8s_field pod csi-cache-test "$CSI04_NS" \
-        '{.status.phase}' Running 180 > /dev/null && POD_RUNNING=true || true
+        echo "  Waiting for cache-test pod..."
+        POD_RUNNING=false
+        wait_for_k8s_field pod csi-cache-test "$CSI04_NS" \
+            '{.status.phase}' Running 180 > /dev/null && POD_RUNNING=true || true
 
-    if $POD_RUNNING; then
-        # Scrape cache_hits metric after the mount
-        HITS_AFTER=""
-        if [ -n "$CSI_POD" ]; then
-            HITS_AFTER=$(kubectl exec "$CSI_POD" -n cfgd-system -c cfgd-csi -- \
-                wget -qO- http://127.0.0.1:9090/metrics 2>/dev/null \
-                | grep "^cfgd_csi_cache_hits_total" | head -1 || echo "")
-        fi
-
-        echo "  cache_hits before: ${HITS_BEFORE:-<none>}"
-        echo "  cache_hits after:  ${HITS_AFTER:-<none>}"
-
-        # A cache hit metric line appearing (or increasing) confirms the cache was used
-        if [ -n "$HITS_AFTER" ]; then
-            pass_test "FS-CSI-04"
+        if ! $POD_RUNNING; then
+            fail_test "FS-CSI-04" "Pod did not reach Running state"
+            kubectl describe pod csi-cache-test -n "$CSI04_NS" 2>/dev/null | tail -20
+        elif ! CSI04_HITS_AFTER=$(csi04_hits "$CSI04_DRIVER" "$CSI04_AFTER_BODY"); then
+            fail_test "FS-CSI-04" "Scrape of pod/$CSI04_DRIVER after the mount failed: $(csi04_evidence "$CSI04_AFTER_BODY")"
         else
-            # The metric family may not appear until first hit; if the pod ran
-            # successfully the cache path was exercised — pass with note
-            echo "  Note: cache_hits_total metric not yet exported (may require prometheus_client exposition)"
-            pass_test "FS-CSI-04"
+            echo "  cache hits for csi-test-mod-${E2E_RUN_ID}: before $CSI04_HITS_BEFORE, after $CSI04_HITS_AFTER"
+            if [ "$CSI04_HITS_AFTER" -gt "$CSI04_HITS_BEFORE" ]; then
+                pass_test "FS-CSI-04"
+            else
+                fail_test "FS-CSI-04" "Cache hits did not rise (before $CSI04_HITS_BEFORE, after $CSI04_HITS_AFTER). Before: $(csi04_evidence "$CSI04_BEFORE_BODY") After: $(csi04_evidence "$CSI04_AFTER_BODY")"
+            fi
         fi
-    else
-        fail_test "FS-CSI-04" "Pod did not reach Running state"
-        kubectl describe pod csi-cache-test -n "$CSI04_NS" 2>/dev/null | tail -20
     fi
 
     # Cleanup
@@ -458,10 +478,10 @@ EOF
         if $POD_RUNNING; then
             # Verify the v2 marker file is present
             V2_CONTENT=$(kubectl exec csi-update-test -n "$CSI06_NS" -- \
-                cat /cfgd-modules/csi-update-mod-${E2E_RUN_ID}/v2-marker.txt 2>/dev/null || echo "")
+                cat "/cfgd-modules/csi-update-mod-${E2E_RUN_ID}/v2-marker.txt" 2>/dev/null || echo "")
             # Also verify module.yaml reflects v2
             MOD_YAML=$(kubectl exec csi-update-test -n "$CSI06_NS" -- \
-                cat /cfgd-modules/csi-update-mod-${E2E_RUN_ID}/module.yaml 2>/dev/null || echo "")
+                cat "/cfgd-modules/csi-update-mod-${E2E_RUN_ID}/module.yaml" 2>/dev/null || echo "")
 
             echo "  v2-marker.txt: ${V2_CONTENT:-<not found>}"
             echo "  module.yaml present: $([ -n "$MOD_YAML" ] && echo 'yes' || echo 'no')"
@@ -510,9 +530,9 @@ else
 
             if [[ "$CSI07_CODE" != 2* ]]; then
                 fail_test "FS-CSI-07" "/metrics did not answer 2xx: $CSI07_EVIDENCE"
-            elif grep -q "cfgd_csi_volume_publish_total" "$CSI07_BODY"; then
+            elif grep -qE '^cfgd_csi_volume_publish_total(\{| )' "$CSI07_BODY"; then
                 pass_test "FS-CSI-07"
-            elif grep -q "cfgd_csi_" "$CSI07_BODY"; then
+            elif grep -q '^cfgd_csi_' "$CSI07_BODY"; then
                 # Metrics endpoint works and has cfgd_csi_ metrics, but
                 # volume_publish_total only appears after first publish event
                 echo "  Note: volume_publish_total not yet emitted (no publishes yet)"
@@ -595,7 +615,7 @@ EOF
     if $POD_RUNNING; then
         # Verify mount exists before delete
         PRE_MOUNT=$(kubectl exec csi-unmount-test -n "$CSI09_NS" -- \
-            cat /cfgd-modules/csi-test-mod-${E2E_RUN_ID}/module.yaml 2>/dev/null || echo "")
+            cat "/cfgd-modules/csi-test-mod-${E2E_RUN_ID}/module.yaml" 2>/dev/null || echo "")
         echo "  Mount before delete: $([ -n "$PRE_MOUNT" ] && echo 'present' || echo 'absent')"
 
         # Delete the pod
@@ -603,7 +623,7 @@ EOF
 
         # Wait for pod to be gone
         echo "  Waiting for pod deletion..."
-        for i in $(seq 1 30); do
+        for _ in $(seq 1 30); do
             POD_EXISTS=$(kubectl get pod csi-unmount-test -n "$CSI09_NS" 2>/dev/null || echo "")
             if [ -z "$POD_EXISTS" ]; then
                 break
@@ -676,7 +696,7 @@ EOF
         if echo "$WRITE_RESULT" | grep -qi "read.only\|permission denied\|not permitted"; then
             pass_test "FS-CSI-10"
         elif [ -n "$WRITE_RESULT" ] && ! kubectl exec csi-ro-test -n "$CSI10_NS" -- \
-            test -f /cfgd-modules/csi-test-mod-${E2E_RUN_ID}/write-test 2>/dev/null; then
+            test -f "/cfgd-modules/csi-test-mod-${E2E_RUN_ID}/write-test" 2>/dev/null; then
             # Write failed (file doesn't exist) even if error message differs
             pass_test "FS-CSI-10"
         else
