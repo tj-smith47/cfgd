@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # Full-stack E2E tests: Helm Chart Lifecycle
 # Sourced by run-all.sh — do NOT set traps or pipefail here.
 
@@ -82,15 +83,13 @@ if [ -n "$OPERATOR_DEPLOY" ]; then
     if [ "$OPERATOR_AVAIL" = "True" ]; then
         pass_test "FS-HELM-01"
     else
+        # helm install --wait has already waited for the Deployment to become
+        # ready, so a Deployment that is still not Available failed to start.
         PODS=$(kubectl get pods -n "$HELM_NS" -l app.kubernetes.io/component=operator \
-            -o jsonpath='{.items[*].status.phase}' 2>/dev/null || echo "")
-        echo "  Operator pod phases: ${PODS:-<none>}"
-        if echo "$PODS" | grep -q "Running"; then
-            echo "  Operator pod Running (not yet Available — normal for fresh install)"
-            pass_test "FS-HELM-01"
-        else
-            fail_test "FS-HELM-01" "Operator deployment exists but pod not Running"
-        fi
+            -o jsonpath='{range .items[*]}{.metadata.name}={.status.phase} {end}' 2>/dev/null || echo "")
+        echo "  Helm install output:"
+        echo "$INSTALL_OUTPUT" | head -20 | sed 's/^/    /'
+        fail_test "FS-HELM-01" "Operator deployment is not Available after helm install --wait (Available=${OPERATOR_AVAIL:-unset}); pods: ${PODS:-<none>}"
     fi
 else
     echo "  Helm install output:"
@@ -260,6 +259,7 @@ MC_BEFORE=$(kubectl get machineconfig "helm-upgrade-test-${E2E_RUN_ID}" \
 echo "  MachineConfig before upgrade: ${MC_BEFORE:-<not found>}"
 
 # Perform Helm upgrade
+UPGRADE_RC=0
 UPGRADE_OUTPUT=$(helm upgrade cfgd-test "$CHART_DIR" \
     -n "$HELM_NS" \
     --set "operator.image.repository=$(e2e_image_repo cfgd-operator)" \
@@ -272,7 +272,7 @@ UPGRADE_OUTPUT=$(helm upgrade cfgd-test "$CHART_DIR" \
     --set mutatingWebhook.enabled=false \
     --set agent.enabled=false \
     --set operator.leaderElection.enabled=false \
-    --wait --timeout 120s 2>&1) || true
+    --wait --timeout 120s 2>&1) || UPGRADE_RC=$?
 
 # Verify CRD instance survived the upgrade
 MC_AFTER=$(kubectl get machineconfig "helm-upgrade-test-${E2E_RUN_ID}" \
@@ -285,11 +285,15 @@ OPERATOR_AVAIL=$(kubectl get deployment -n "$HELM_NS" \
     -o jsonpath='{.items[0].status.conditions[?(@.type=="Available")].status}' 2>/dev/null || echo "")
 echo "  Operator available after upgrade: ${OPERATOR_AVAIL:-unknown}"
 
-if [ "$MC_BEFORE" = "helm-upgrade-test-${E2E_RUN_ID}" ] && \
-   [ "$MC_AFTER" = "helm-upgrade-test-${E2E_RUN_ID}" ]; then
-    pass_test "FS-HELM-05"
-else
+if [ "$UPGRADE_RC" -ne 0 ]; then
+    fail_test "FS-HELM-05" "helm upgrade exited $UPGRADE_RC: $(echo "$UPGRADE_OUTPUT" | head -20)"
+elif [ "$MC_BEFORE" != "helm-upgrade-test-${E2E_RUN_ID}" ] || \
+   [ "$MC_AFTER" != "helm-upgrade-test-${E2E_RUN_ID}" ]; then
     fail_test "FS-HELM-05" "CRD instance did not survive Helm upgrade"
+elif [ "$OPERATOR_AVAIL" != "True" ]; then
+    fail_test "FS-HELM-05" "Operator deployment is not Available after helm upgrade --wait (Available=${OPERATOR_AVAIL:-unset})"
+else
+    pass_test "FS-HELM-05"
 fi
 
 # Clean up the CRD instance

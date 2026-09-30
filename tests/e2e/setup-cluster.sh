@@ -16,16 +16,6 @@ for img in cfgd cfgd-operator cfgd-csi function-cfgd; do
     echo "  $(e2e_image "$img")"
 done
 
-# The image a live cfgd-system workload runs, read off the object itself. The
-# container is chosen by name so a sidecar listed first is never reported as
-# the component.
-running_image() {
-    local kind="$1" name="$2" container="$3" image
-    image="$(kubectl get "$kind" "$name" -n cfgd-system \
-        -o jsonpath="{.spec.template.spec.containers[?(@.name==\"$container\")].image}" 2>/dev/null || true)"
-    printf '%s\n' "${image:-not deployed}"
-}
-
 # Where something other than setup owns a component's spec, a tag override for
 # it cannot take effect there, so setup says so.
 warn_override_unused() {

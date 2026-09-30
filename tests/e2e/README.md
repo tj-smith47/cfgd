@@ -60,3 +60,10 @@ Because those suites run a release, a check reads a counter through
 accept both the `<family>_total` sample and the `<family>_total_total` sample an
 older release renders. `common/test-metrics.sh` (run by `task e2e:tags:check`)
 fails when a script matches a counter sample by hand.
+
+A check for behaviour that only a newer build than the pinned release has reads
+the running component's capability first and calls `skip_test` naming the image
+(`running_image` in `common/helpers.sh`) when the release lacks it; FS-CSI-04
+does this for publish-path cache hits. No case passes on a note that the thing
+it checks did not happen: `common/test-verdicts.sh` fails on a `pass_test` that
+follows such a note in the same branch.

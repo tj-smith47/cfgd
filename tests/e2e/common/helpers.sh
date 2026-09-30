@@ -301,6 +301,16 @@ wait_for_daemonset() {
     return 1
 }
 
+# The image a live cfgd-system workload runs, read off the object itself. The
+# container is chosen by name so a sidecar listed first is never reported as
+# the component.
+running_image() {
+    local kind="$1" name="$2" container="$3" image
+    image="$(kubectl get "$kind" "$name" -n cfgd-system \
+        -o jsonpath="{.spec.template.spec.containers[?(@.name==\"$container\")].image}" 2>/dev/null || true)"
+    printf '%s\n' "${image:-not deployed}"
+}
+
 # Port-forward to `svc/<name>` or `pod/<name>` in the background and echo the
 # kubectl PID once the local port accepts a connection; stop it with
 # stop_port_forward. A fixed sleep races a slow kubectl start. On timeout, or

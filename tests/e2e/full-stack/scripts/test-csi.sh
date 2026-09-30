@@ -312,6 +312,11 @@ else
         fail_test "FS-CSI-04" "No CSI driver pod on node $CSI01_NODE"
     elif ! CSI04_HITS_BEFORE=$(csi04_hits "$CSI04_DRIVER" "$CSI04_BEFORE_BODY"); then
         fail_test "FS-CSI-04" "Scrape of pod/$CSI04_DRIVER before the mount failed: $(csi04_evidence "$CSI04_BEFORE_BODY" "$CSI04_DRIVER")"
+    elif ! grep -E '^# HELP cfgd_csi_cache_hits(_total)? ' "$CSI04_BEFORE_BODY" | grep -qF 'counted once per mount'; then
+        # The driver under test is the release ArgoCD pins, and only a driver
+        # whose help text says so counts a hit on the inline publish path this
+        # pod's mount takes.
+        skip_test "FS-CSI-04" "driver $(running_image daemonset cfgd-csi-csi cfgd-csi) predates publish-path cache hits; the next cfgd-csi release carries them"
     else
         kubectl apply -n "$CSI04_NS" -f - <<EOF
 apiVersion: v1
@@ -520,39 +525,38 @@ begin_test "FS-CSI-07: CSI driver — /metrics returns cfgd_csi_volume_publish_t
 if ! $CSI_AVAILABLE; then
     skip_test "FS-CSI-07" "CSI driver not ready"
 else
-    CSI_POD=$(kubectl get pods -n cfgd-system -l app.kubernetes.io/component=csi-driver \
+    CSI07_POD=""
+    [ -z "$CSI01_NODE" ] || CSI07_POD=$(kubectl get pods -n cfgd-system -l app.kubernetes.io/component=csi-driver \
+        --field-selector "spec.nodeName=$CSI01_NODE" \
         -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
+    CSI07_LABELS="module=\"csi-test-mod-${E2E_RUN_ID}\",result=\"success\""
 
-    if [ -z "$CSI_POD" ]; then
-        fail_test "FS-CSI-07" "No CSI driver pod found"
+    if [ -z "$CSI01_NODE" ]; then
+        fail_test "FS-CSI-07" "FS-CSI-01 recorded no node for its pod, so no driver is known to have published"
+    elif [ -z "$CSI07_POD" ]; then
+        fail_test "FS-CSI-07" "No CSI driver pod on node $CSI01_NODE"
     else
         # CSI container is distroless — no wget/curl. Port-forward to scrape metrics.
         CSI07_PORT=19090
         CSI07_BODY="$CLI_SCRATCH/fs-csi-07-metrics.txt"
-        echo "  CSI pod: $CSI_POD"
-        if CSI07_PF_PID=$(port_forward cfgd-system "pod/$CSI_POD" "$CSI07_PORT" 9090); then
+        echo "  Node: $CSI01_NODE, CSI driver pod: $CSI07_POD"
+        if CSI07_PF_PID=$(port_forward cfgd-system "pod/$CSI07_POD" "$CSI07_PORT" 9090); then
             read -r CSI07_CODE CSI07_CONTENT_TYPE \
                 <<<"$(http_get_to_file "http://localhost:$CSI07_PORT/metrics" "$CSI07_BODY")"
             stop_port_forward "$CSI07_PF_PID"
             CSI07_EVIDENCE="$(http_evidence "$CSI07_CODE" "${CSI07_CONTENT_TYPE:-}" "$CSI07_BODY")"
-            echo "  Metrics lines: $(wc -l < "$CSI07_BODY" | tr -d ' ')"
+            CSI07_PUBLISHES="$(metric_sample_value cfgd_csi_volume_publish "$CSI07_LABELS" "$CSI07_BODY")"
+            echo "  Successful publishes of csi-test-mod-${E2E_RUN_ID}: $CSI07_PUBLISHES"
 
             if [[ "$CSI07_CODE" != 2* ]]; then
                 fail_test "FS-CSI-07" "/metrics did not answer 2xx: $CSI07_EVIDENCE"
-            elif metric_sample_lines cfgd_csi_volume_publish "$CSI07_BODY" > /dev/null; then
+            elif [ "$CSI07_PUBLISHES" -ge 1 ]; then
                 pass_test "FS-CSI-07"
-            elif grep -q '^cfgd_csi_' "$CSI07_BODY"; then
-                # Metrics endpoint works and has cfgd_csi_ metrics, but
-                # volume_publish_total only appears after first publish event
-                echo "  Note: volume_publish_total not yet emitted (no publishes yet)"
-                pass_test "FS-CSI-07"
-            elif [ -s "$CSI07_BODY" ]; then
-                fail_test "FS-CSI-07" "Metrics endpoint responded but no cfgd_csi_ metrics found: $CSI07_EVIDENCE"
             else
-                fail_test "FS-CSI-07" "/metrics endpoint returned empty response: $CSI07_EVIDENCE"
+                fail_test "FS-CSI-07" "pod/$CSI07_POD, the driver on FS-CSI-01's node, reports no cfgd_csi_volume_publish sample {$CSI07_LABELS} of 1 or more: $CSI07_EVIDENCE"
             fi
         else
-            fail_test "FS-CSI-07" "Port-forward to pod/$CSI_POD never opened localhost:$CSI07_PORT (kubectl output above)"
+            fail_test "FS-CSI-07" "Port-forward to pod/$CSI07_POD never opened localhost:$CSI07_PORT (kubectl output above)"
         fi
     fi
 fi

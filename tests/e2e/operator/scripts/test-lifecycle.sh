@@ -26,18 +26,12 @@ if LC01_PF_PID=$(port_forward cfgd-system svc/cfgd-metrics "$LC01_LOCAL_PORT" 84
 
     if [[ "$LC01_CODE" != 2* ]]; then
         fail_test "OP-LC-01" "Failed to reach metrics endpoint: $LC01_EVIDENCE"
+    # The suite has reconciled MachineConfigs long before this runs, so the
+    # reconciliations counter has a sample on whichever pod answered.
     elif metric_sample_lines cfgd_operator_reconciliations "$LC01_BODY" > /dev/null; then
         pass_test "OP-LC-01"
     else
-        echo "  Metrics endpoint responded ($(wc -l < "$LC01_BODY" | tr -d ' ') lines)"
-        echo "  Looking for cfgd_operator_ prefix..."
-        # prometheus-client omits a family until its first observation, so any
-        # other cfgd_operator_ family proves the registry is served.
-        if grep -q '^cfgd_operator_' "$LC01_BODY"; then
-            pass_test "OP-LC-01"
-        else
-            fail_test "OP-LC-01" "Metrics endpoint responded but no cfgd_operator_ metrics found: $LC01_EVIDENCE"
-        fi
+        fail_test "OP-LC-01" "Metrics endpoint responded but carries no cfgd_operator_reconciliations sample: $LC01_EVIDENCE"
     fi
 else
     fail_test "OP-LC-01" "Port-forward to svc/cfgd-metrics never opened localhost:$LC01_LOCAL_PORT (kubectl output above)"

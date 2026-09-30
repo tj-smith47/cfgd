@@ -152,14 +152,31 @@ case failing with nothing to diagnose. `stop_port_forward` sends SIGKILL to a
 kubectl still running 5s after SIGTERM. A case that scrapes an endpoint and
 asserts on the body fetches it with `http_get_to_file` and puts
 `http_evidence` (status, content type, line count, first 15 lines, and curl's
-exit code and error when nothing answered) in every fail reason; a metric
-check matches the sample line (`^name(\{| )`), since the bare name also
-matches the `# HELP` and `# TYPE` lines. A `run-all.sh` whose setup starts a
+exit code and error when nothing answered) in every fail reason; a counter
+check reads the body through `metric_sample_lines <family> <body>` or
+`metric_sample_value <family> <labels> <body>` (absent reads 0), which match
+the sample line only (never `# HELP`/`# TYPE`) under both `<family>_total` and
+the `<family>_total_total` an older ArgoCD-pinned release renders;
+`tests/e2e/common/test-metrics.sh` fails on a counter sample matched by hand
+anywhere under `tests/e2e/`. A `run-all.sh` whose setup starts a
 port-forward installs its EXIT trap before sourcing that setup.
 `tests/e2e/common/test-port-forward.sh`, run by `task e2e:tags:check`, drives
 the helpers against a stand-in kubectl, fails on any port-forward started
 outside them (a line continued from the one before and `"$KUBECTL"` included),
 and fails on a runner that sources such a setup before its trap.
+
+## An e2e case asserts what it names, against the release that runs
+
+The operator, gateway and CSI suites run the images ArgoCD pins, never the
+branch's build. A case for behaviour only a newer build has reads the running
+component's capability first (a help string, a field, a version) and calls
+`skip_test` naming `running_image <kind> <name> <container>` when the release
+lacks it; that skip is its only non-asserting branch. No case calls
+`pass_test` after printing why the thing it checks did not happen ("Note: ...
+not yet emitted", "acceptable", "may still be propagating"): the branch asserts
+what the note excuses or fails. `tests/e2e/common/test-verdicts.sh`, run by
+`task e2e:tags:check`, fails on an excuse echo followed by `pass_test` in the
+same branch.
 
 ## A test never inherits its terminal shape from the ambient one
 

@@ -6,6 +6,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=tests/e2e/common/helpers.sh
 source "$SCRIPT_DIR/../../common/helpers.sh"
 MANIFESTS_DIR="$SCRIPT_DIR/../manifests"
 CROSSPLANE_DIR="$REPO_ROOT/manifests/crossplane"
@@ -687,21 +688,16 @@ done
 echo "  function-cfgd pod status: ${FUNC_STATUS:-not found}"
 
 if [ "$FUNC_STATUS" = "Running" ]; then
-    # Also verify the Function resource is healthy/installed
-    FUNC_HEALTHY=$(kubectl get function function-cfgd \
-        -o jsonpath='{.status.conditions[?(@.type=="Healthy")].status}' 2>/dev/null || echo "")
-    FUNC_INSTALLED=$(kubectl get function function-cfgd \
-        -o jsonpath='{.status.conditions[?(@.type=="Installed")].status}' 2>/dev/null || echo "")
+    # A Running pod can still fail its package health check, so the Function's
+    # own Healthy condition is what the test title claims.
+    FUNC_HEALTHY=$(wait_for_k8s_field function function-cfgd "" \
+        '{.status.conditions[?(@.type=="Healthy")].status}' True 60 || true)
     echo "  Function healthy: ${FUNC_HEALTHY:-unknown}"
-    echo "  Function installed: ${FUNC_INSTALLED:-unknown}"
 
-    if [ "$FUNC_HEALTHY" = "True" ] || [ "$FUNC_INSTALLED" = "True" ]; then
+    if [ "$FUNC_HEALTHY" = "True" ]; then
         pass_test "XP-14"
     else
-        # Pod is Running, which is the primary assertion — pass even if conditions aren't populated
-        # yet
-        echo "  Pod is Running (conditions may still be propagating)"
-        pass_test "XP-14"
+        fail_test "XP-14" "function-cfgd pod is Running but the Function's Healthy condition is '${FUNC_HEALTHY:-unset}' after 60s: $(kubectl get function function-cfgd -o jsonpath='{range .status.conditions[*]}{.type}={.status} ({.reason}: {.message}); {end}' 2>&1)"
     fi
 else
     fail_test "XP-14" "Expected function-cfgd pod Running, got '${FUNC_STATUS:-not found}'"
