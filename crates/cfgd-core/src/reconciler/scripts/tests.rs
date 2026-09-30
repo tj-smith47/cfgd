@@ -881,41 +881,18 @@ fn guard_timed_out(body: &str, dir: &std::path::Path, timeout: std::time::Durati
 /// process group, on Windows its job object.
 #[test]
 fn a_timed_out_guard_kills_every_process_it_started() {
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = crate::test_helpers::spaced_marker_dir();
     let marker = tmp.path().join("grandchild-outlived-the-guard");
     let shown = marker.display();
-    // The grandchild writes about two seconds after it starts.
     #[cfg(unix)]
     let body = format!("sh -c 'sleep 2; echo x > \"{shown}\"'; true");
     #[cfg(windows)]
-    let body = format!("cmd /C \"ping -n 3 127.0.0.1 >NUL & echo x> {shown}\" & exit 0");
+    let body = format!("cmd /C \"ping -n 3 127.0.0.1 >NUL & echo x> \"{shown}\"\" & exit 0");
 
-    let err = run_guard_command(
-        &body,
-        ScriptShell::Auto,
-        tmp.path(),
-        &[],
-        std::time::Duration::from_millis(300),
-    )
-    .expect_err("a guard outliving its timeout is an error");
-    assert!(
-        err.to_string().contains("timed out"),
-        "the guard must fail on its timeout: {err}"
-    );
-
-    // One second past the moment the grandchild would have written.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
-    while std::time::Instant::now() < deadline {
-        assert!(
-            !marker.exists(),
-            "the guard's grandchild outlived the timeout and wrote {shown}"
-        );
-        // sleep-ok: a write that never happens raises no event to wait on.
-        std::thread::sleep(std::time::Duration::from_millis(100));
-    }
-    assert!(
-        !marker.exists(),
-        "the guard's grandchild outlived the timeout and wrote {shown}"
+    crate::test_helpers::assert_a_timeout_kill_stops_the_write(
+        &marker,
+        std::time::Duration::from_secs(3),
+        |timeout| guard_timed_out(&body, tmp.path(), timeout),
     );
 }
 
@@ -925,7 +902,7 @@ fn a_timed_out_guard_kills_every_process_it_started() {
 #[cfg(unix)]
 #[test]
 fn a_timed_out_guard_kills_a_grandchild_that_ignores_sigterm() {
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = crate::test_helpers::spaced_marker_dir();
     let marker = tmp.path().join("grandchild-ignored-sigterm");
     let shown = marker.display();
     // An ignored signal stays ignored across exec, so `sleep` ignores it too.

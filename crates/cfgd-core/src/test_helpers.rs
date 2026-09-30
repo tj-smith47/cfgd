@@ -7390,6 +7390,15 @@ pub fn snapshot_goldens(exts: &[&str]) -> Vec<PathBuf> {
         .collect()
 }
 
+/// A directory for a timeout-kill marker whose path holds a space, so a
+/// command body that leaves the marker path unquoted cannot write it.
+pub fn spaced_marker_dir() -> tempfile::TempDir {
+    tempfile::Builder::new()
+        .prefix("tree kill ")
+        .tempdir()
+        .expect("a temp dir for the marker")
+}
+
 /// Hold a timeout kill to ending a process that writes `marker` about two
 /// seconds after it starts.
 ///

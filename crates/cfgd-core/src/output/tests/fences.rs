@@ -1735,9 +1735,9 @@ const ENV_REMINDER_RENDERERS: [&str; 2] = ["print_caveats", "cmd_apply"];
 
 /// Whether `func` (comments blanked) asserts on the env reminder a run
 /// renders, ``Run `source …` `` or ``Run `. …` ``, through one of the real
-/// renderers, and whether it states the shell it stands in: a set `MSYSTEM`
-/// decides the shell on its own, and otherwise both `MSYSTEM` and `SHELL`
-/// carry an `EnvVarGuard`.
+/// renderers, and whether it states the shell it stands in: `MSYSTEM` set to
+/// a non-blank literal decides the shell on its own, and otherwise both
+/// `MSYSTEM` and `SHELL` carry an `EnvVarGuard`.
 fn reads_the_env_reminder(func: &str) -> Option<bool> {
     let asserts = (func.contains("Run `source ") || func.contains("Run `. "))
         && ENV_REMINDER_RENDERERS
@@ -1748,9 +1748,14 @@ fn reads_the_env_reminder(func: &str) -> Option<bool> {
             .expect("the guard shape compiles")
             .is_match(func)
     };
+    // `preferred_env_file` reads a blank `MSYSTEM` as unset and goes on to
+    // `SHELL`, so only a non-blank literal decides the shell alone.
+    let sets_msystem = regex::Regex::new(r#"EnvVarGuard::set\(\s*"MSYSTEM"\s*,\s*"\s*[^"\s]"#)
+        .expect("the set shape compiles")
+        .is_match(func);
     asserts.then(|| {
         let states = |var: &str| guards("set|unset", var);
-        guards("set", "MSYSTEM") || (states("MSYSTEM") && states("SHELL"))
+        sets_msystem || (states("MSYSTEM") && states("SHELL"))
     })
 }
 
@@ -1763,16 +1768,23 @@ fn reads_the_env_reminder(func: &str) -> Option<bool> {
 /// the shell through `EnvVarGuard` (unset, the platform alone decides).
 #[test]
 fn no_test_reads_the_env_reminder_under_the_ambient_shell() {
-    let fixture = "fn a() {\n    print_caveats(&r, &p);\n    assert!(out.contains(\"Run `source ~/.cfgd.env`\"));\n}\n\nfn b() {\n    let _m = EnvVarGuard::unset(\"MSYSTEM\");\n    let _s = EnvVarGuard::unset(\"SHELL\");\n    cmd_apply(&c, &p, &a);\n    assert!(out.contains(\"Run `. ~/.cfgd-env.ps1`\"));\n}\n\nfn c() {\n    // Run `source ~/.cfgd.env` is what print_caveats says.\n    print_caveats(&r, &p);\n}\n\nfn d() {\n    let _m = EnvVarGuard::unset(\"MSYSTEM\");\n    cmd_apply(&c, &p, &a);\n    assert!(out.contains(\"Run `. ~/.cfgd-env.ps1`\"));\n}\n\nfn e() {\n    let _m = EnvVarGuard::set(\"MSYSTEM\", \"MINGW64\");\n    cmd_apply(&c, &p, &a);\n    assert!(out.contains(\"Run `source ~/.cfgd.env`\"));\n}\n";
+    let fixture = "fn a() {\n    print_caveats(&r, &p);\n    assert!(out.contains(\"Run `source ~/.cfgd.env`\"));\n}\n\nfn b() {\n    let _m = EnvVarGuard::unset(\"MSYSTEM\");\n    let _s = EnvVarGuard::unset(\"SHELL\");\n    cmd_apply(&c, &p, &a);\n    assert!(out.contains(\"Run `. ~/.cfgd-env.ps1`\"));\n}\n\nfn c() {\n    // Run `source ~/.cfgd.env` is what print_caveats says.\n    print_caveats(&r, &p);\n}\n\nfn d() {\n    let _m = EnvVarGuard::unset(\"MSYSTEM\");\n    cmd_apply(&c, &p, &a);\n    assert!(out.contains(\"Run `. ~/.cfgd-env.ps1`\"));\n}\n\nfn e() {\n    let _m = EnvVarGuard::set(\"MSYSTEM\", \"MINGW64\");\n    cmd_apply(&c, &p, &a);\n    assert!(out.contains(\"Run `source ~/.cfgd.env`\"));\n}\n\nfn f() {\n    let _m = EnvVarGuard::set(\"MSYSTEM\", \"\");\n    cmd_apply(&c, &p, &a);\n    assert!(out.contains(\"Run `. ~/.cfgd-env.ps1`\"));\n}\n";
     let judged: Vec<Option<bool>> = source_functions(&FIXTURE_SOURCE, fixture)
         .into_iter()
         .map(|(_, func)| reads_the_env_reminder(&crate::test_helpers::blank_comments(&func)))
         .collect();
     assert_eq!(
         judged,
-        [Some(false), Some(true), None, Some(false), Some(true)],
-        "the tell reads the reminder's literal and both guards (or a set `MSYSTEM`), \
-         and skips comments"
+        [
+            Some(false),
+            Some(true),
+            None,
+            Some(false),
+            Some(true),
+            Some(false)
+        ],
+        "the tell reads the reminder's literal and both guards (or `MSYSTEM` set to a \
+         non-blank value), and skips comments"
     );
 
     const FLOORS: [(&str, usize); 1] = [("cfgd", 4)];
@@ -1801,7 +1813,8 @@ fn no_test_reads_the_env_reminder_under_the_ambient_shell() {
     assert!(
         offenders.is_empty(),
         "the env reminder names the running shell's env file; state the shell \
-         with `EnvVarGuard` on both `MSYSTEM` and `SHELL`, or set `MSYSTEM`:\n{}",
+         with `EnvVarGuard` on both `MSYSTEM` and `SHELL`, or set `MSYSTEM` to a \
+         non-blank value:\n{}",
         offenders.join("\n")
     );
 }

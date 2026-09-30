@@ -472,9 +472,8 @@ fn exited_unreaped(_child: &std::process::Child) -> bool {
 ///
 /// Returned by the spawn that made the child, so whether the child leads a
 /// tree of its own is a fact recorded when the tree was set up and never
-/// re-derived from the pid later. Cloned into a watchdog thread, so it holds
-/// nothing a second owner could close early.
-#[derive(Clone)]
+/// re-derived from the pid later. Moved into the watchdog thread that kills
+/// it, so it has one owner.
 pub struct TreeKill {
     pid: u32,
     /// The child leads its own process group (Unix), so a signal to `-pid`
@@ -483,7 +482,7 @@ pub struct TreeKill {
     grouped: bool,
     /// The job every process of the tree belongs to (Windows).
     #[cfg(windows)]
-    job: Option<std::sync::Arc<job::Job>>,
+    job: Option<job::Job>,
 }
 
 impl TreeKill {
@@ -583,7 +582,7 @@ pub fn spawn_tree(
         }
         let kill = TreeKill {
             pid: child.id(),
-            job: job.map(std::sync::Arc::new),
+            job,
         };
         Ok((child, kill))
     }
@@ -601,8 +600,6 @@ mod job {
     // SAFETY: a job handle is a kernel object reference; every call made
     // through it (`TerminateJobObject`, `CloseHandle`) is thread-safe.
     unsafe impl Send for Job {}
-    // SAFETY: as above; `&Job` only ever reaches `TerminateJobObject`.
-    unsafe impl Sync for Job {}
 
     impl Job {
         /// A new job holding `child`, or `None` when either step fails.
