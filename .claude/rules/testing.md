@@ -173,7 +173,9 @@ trace of the family. An e2e metrics assertion therefore drives the event first
 and then scrapes `pod/<name>` of the pod that performed it: the CSI driver on
 the mounting node; for the operator, the pod the leader lease names, after
 touching a MachineConfig, retried up to `E2E_METRICS_TRIES` times with the
-lease read again each time. The lease names a pod only because every operator
+lease read again each time. OP-LC-02 reads the lease up to `E2E_LEASE_TRIES`
+times (6 by default, 5 s apart), since a deleted pod keeps the lease until it
+expires. The lease names a pod only because every operator
 workload manifest passes `POD_NAME` and `POD_NAMESPACE` through the downward
 API outside any template conditional;
 `every_operator_workload_manifest_names_its_pod_through_the_downward_api`

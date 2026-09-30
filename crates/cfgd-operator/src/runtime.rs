@@ -282,7 +282,7 @@ mod tests {
                     .next()
                     .unwrap_or("");
                 match keyword {
-                    "if" | "with" | "range" | "define" | "block" => depth += 1,
+                    "if" | "with" | "range" => depth += 1,
                     "end" => depth -= 1,
                     _ => {}
                 }
