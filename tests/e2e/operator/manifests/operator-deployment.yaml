@@ -36,6 +36,16 @@ spec:
               value: "/etc/webhook/certs"
             - name: WEBHOOK_PORT
               value: "9443"
+            - name: LEADER_ELECTION_ENABLED
+              value: "true"
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
           volumeMounts:
             - name: webhook-certs
               mountPath: /etc/webhook/certs

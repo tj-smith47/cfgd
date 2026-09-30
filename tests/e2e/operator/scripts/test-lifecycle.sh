@@ -5,11 +5,27 @@
 echo ""
 echo "=== Controller Lifecycle Tests ==="
 
-# Print the pod holding the operator's leader lease (the operator takes the
-# lease under its POD_NAME); prints nothing when the lease has no holder.
+# Print the lease cfgd-operator-leader's holderIdentity, or nothing when the
+# lease has no holder.
 operator_leader() {
     kubectl get lease cfgd-operator-leader -n cfgd-system \
         -o jsonpath='{.spec.holderIdentity}' 2>/dev/null || true
+}
+
+# Print the operator pod the leader lease names. When the holder matches no
+# pod labelled app=cfgd-operator, print the identity and the pod list instead
+# and return 1.
+operator_leader_pod() {
+    local holder pods
+    holder="$(operator_leader)"
+    pods="$(kubectl get pods -n cfgd-system -l app=cfgd-operator -o name 2>&1 || true)"
+    if [ -n "$holder" ] && grep -qxF "pod/$holder" <<<"$pods"; then
+        printf '%s\n' "$holder"
+        return 0
+    fi
+    printf "lease cfgd-operator-leader holderIdentity '%s' names no pod among the operator pods: %s\n" \
+        "$holder" "$(tr '\n' ' ' <<<"${pods:-none}")"
+    return 1
 }
 
 # =================================================================
@@ -17,47 +33,82 @@ operator_leader() {
 # =================================================================
 begin_test "OP-LC-01: Operator metrics endpoint"
 
-# Only the leader reconciles, and prometheus-client renders no line for a
-# family with no sample, so a standby replica serves no reconciliation sample.
+# A MachineConfig change makes the leader reconcile, and its counter has no
+# sample until it has counted one, so each attempt touches this case's
+# MachineConfig and then scrapes the pod holding the lease. The lease is read
+# again every attempt because an operator restart hands it to a new pod.
 LC01_LOCAL_PORT=18443
 LC01_BODY="$CLI_SCRATCH/op-lc-01-metrics.txt"
-LC01_LEADER="$(operator_leader)"
-echo "  Leader pod: ${LC01_LEADER:-none}"
-if [ -z "$LC01_LEADER" ]; then
-    fail_test "OP-LC-01" "Leader election lease cfgd-operator-leader has no holderIdentity, so no pod is known to reconcile"
-elif LC01_PF_PID=$(port_forward cfgd-system "pod/$LC01_LEADER" "$LC01_LOCAL_PORT" 8443); then
-    read -r LC01_CODE LC01_CONTENT_TYPE \
-        <<<"$(http_get_to_file "http://localhost:$LC01_LOCAL_PORT/metrics" "$LC01_BODY")"
-    stop_port_forward "$LC01_PF_PID"
-    LC01_EVIDENCE="$(http_evidence "$LC01_CODE" "${LC01_CONTENT_TYPE:-}" "$LC01_BODY"
-        echo "scraped pod/$LC01_LEADER; operator pods:"
-        kubectl get pods -n cfgd-system -l app=cfgd-operator -o wide 2>&1 | sed 's/^/    /')"
+LC01_MC="e2e-lc01-mc-${E2E_RUN_ID}"
+LC01_TRIES="${E2E_METRICS_TRIES:-12}"
+LC01_PASSED=false
+LC01_REASON=""
+LC01_LEADER=""
+LC01_ATTEMPT=0
+if ! [[ $LC01_TRIES =~ ^[1-9][0-9]*$ ]]; then
+    fail_test "OP-LC-01" "E2E_METRICS_TRIES must be a positive integer, got '$LC01_TRIES'"
+elif ! kubectl apply -n "$E2E_NAMESPACE" -f - <<EOF; then
+apiVersion: cfgd.io/v1alpha1
+kind: MachineConfig
+metadata:
+  name: ${LC01_MC}
+  namespace: ${E2E_NAMESPACE}
+  labels:
+    ${E2E_RUN_LABEL_YAML}
+    ${E2E_JOB_LABEL_YAML}
+spec:
+  hostname: e2e-lc01-host
+  profile: dev-workstation
+  packages:
+    - name: vim
+  systemSettings: {}
+EOF
+    fail_test "OP-LC-01" "Could not create MachineConfig $LC01_MC to drive a reconcile (kubectl output above)"
+else
+    while [ "$LC01_ATTEMPT" -lt "$LC01_TRIES" ] && ! $LC01_PASSED; do
+        [ "$LC01_ATTEMPT" -eq 0 ] || sleep 5
+        LC01_ATTEMPT=$((LC01_ATTEMPT + 1))
+        if ! kubectl annotate machineconfig "$LC01_MC" -n "$E2E_NAMESPACE" \
+            "cfgd.io/e2e-touch=$LC01_ATTEMPT" --overwrite > /dev/null; then
+            LC01_REASON="Could not annotate MachineConfig $LC01_MC to drive a reconcile (kubectl output above)"
+        elif ! LC01_LEADER="$(operator_leader_pod)"; then
+            LC01_REASON="$LC01_LEADER"
+            LC01_LEADER=""
+        elif ! LC01_PF_PID=$(port_forward cfgd-system "pod/$LC01_LEADER" "$LC01_LOCAL_PORT" 8443); then
+            LC01_REASON="Port-forward to pod/$LC01_LEADER never opened localhost:$LC01_LOCAL_PORT (kubectl output above)"
+        else
+            read -r LC01_CODE LC01_CONTENT_TYPE \
+                <<<"$(http_get_to_file "http://localhost:$LC01_LOCAL_PORT/metrics" "$LC01_BODY")"
+            stop_port_forward "$LC01_PF_PID"
+            if [[ "$LC01_CODE" == 2* ]] && metric_sample_lines cfgd_operator_reconciliations "$LC01_BODY" > /dev/null; then
+                LC01_PASSED=true
+            else
+                LC01_REASON="pod/$LC01_LEADER served no cfgd_operator_reconciliations sample: $(http_evidence "$LC01_CODE" "${LC01_CONTENT_TYPE:-}" "$LC01_BODY")"
+            fi
+        fi
+    done
+    echo "  Leader pod: ${LC01_LEADER:-unresolved}, attempts: $LC01_ATTEMPT of $LC01_TRIES"
 
-    if [[ "$LC01_CODE" != 2* ]]; then
-        fail_test "OP-LC-01" "Failed to reach metrics endpoint: $LC01_EVIDENCE"
-    # MachineConfigs are reconciled before this case runs.
-    elif metric_sample_lines cfgd_operator_reconciliations "$LC01_BODY" > /dev/null; then
+    if $LC01_PASSED; then
         pass_test "OP-LC-01"
     else
-        fail_test "OP-LC-01" "Leader's metrics endpoint responded but carries no cfgd_operator_reconciliations sample: $LC01_EVIDENCE"
+        LC01_POD_STATE=""
+        [ -z "$LC01_LEADER" ] || LC01_POD_STATE=" Pod (age, restarts): $(kubectl get pod "$LC01_LEADER" -n cfgd-system -o wide 2>&1 | tr '\n' ' ' || true)"
+        fail_test "OP-LC-01" "No reconciliation sample after $LC01_TRIES attempts touching MachineConfig $LC01_MC.$LC01_POD_STATE Last attempt: $LC01_REASON"
     fi
-else
-    fail_test "OP-LC-01" "Port-forward to pod/$LC01_LEADER never opened localhost:$LC01_LOCAL_PORT (kubectl output above)"
 fi
+kubectl delete machineconfig "$LC01_MC" -n "$E2E_NAMESPACE" --ignore-not-found > /dev/null 2>&1 || true
 
 # =================================================================
 # OP-LC-02: Leader election lease
 # =================================================================
 begin_test "OP-LC-02: Leader election lease"
 
-HOLDER_IDENTITY="$(operator_leader)"
-
-echo "  Lease holderIdentity: ${HOLDER_IDENTITY:-not set}"
-
-if [ -n "$HOLDER_IDENTITY" ]; then
+if LC02_LEADER="$(operator_leader_pod)"; then
+    echo "  Lease holder: pod/$LC02_LEADER"
     pass_test "OP-LC-02"
 else
-    fail_test "OP-LC-02" "Leader election lease has no holderIdentity"
+    fail_test "OP-LC-02" "$LC02_LEADER"
 fi
 
 # =================================================================

@@ -64,6 +64,14 @@ spec:
               value: /var/tmp/cfgd
             - name: HEALTH_PORT
               value: {{ .Values.probes.port | quote }}
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
             {{- if .Values.operator.leaderElection.enabled }}
             - name: LEADER_ELECTION_ENABLED
               value: "true"
@@ -73,14 +81,6 @@ spec:
               value: {{ .Values.operator.leaderElection.renewDeadline | quote }}
             - name: LEADER_RETRY_PERIOD
               value: {{ .Values.operator.leaderElection.retryPeriod | quote }}
-            - name: POD_NAMESPACE
-              valueFrom:
-                fieldRef:
-                  fieldPath: metadata.namespace
-            - name: POD_NAME
-              valueFrom:
-                fieldRef:
-                  fieldPath: metadata.name
             {{- end }}
             {{- if .Values.metrics.enabled }}
             - name: METRICS_PORT

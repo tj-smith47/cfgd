@@ -69,8 +69,10 @@ mount and runs an image other than this run's.
 
 prometheus-client renders no line at all for a metric family with no sample, so
 a metrics check drives the event first and then scrapes the pod that performed
-it: FS-CSI-04 and FS-CSI-07 the driver on the mounting node, OP-LC-01 the
-operator pod holding the leader lease. No case passes on a note that the thing
+it: FS-CSI-04 and FS-CSI-07 the driver on the mounting node. OP-LC-01 touches
+its own MachineConfig and scrapes the operator pod the leader lease names, up to
+`E2E_METRICS_TRIES` attempts (12 by default, 5s apart), reading the lease again
+on each attempt. No case passes on a note that the thing
 it checks did not happen: `common/test-verdicts.sh` fails on a `pass_test` that
 follows such a note in the same branch, unless that line carries
 `# verdict-ok: <why>`.

@@ -170,8 +170,14 @@ and fails on a runner that sources such a setup before its trap.
 prometheus-client encodes no `# HELP`, `# TYPE` or sample line for a family
 with no label set, so a component that has not yet counted the event serves no
 trace of the family. An e2e metrics assertion therefore drives the event first
-and then scrapes `pod/<name>` of the pod that performed it (the CSI driver on
-the mounting node, the operator holding the leader lease). A Service routes
+and then scrapes `pod/<name>` of the pod that performed it: the CSI driver on
+the mounting node; for the operator, the pod the leader lease names, after
+touching a MachineConfig, retried up to `E2E_METRICS_TRIES` times with the
+lease read again each time. The lease names a pod only because every operator
+workload manifest passes `POD_NAME` and `POD_NAMESPACE` through the downward
+API outside any template conditional;
+`every_operator_workload_manifest_names_its_pod_through_the_downward_api`
+(`crates/cfgd-operator/src/runtime.rs`) walks the repository for them. A Service routes
 each connection to any replica, and a `# HELP` line is absent until the first
 sample, so a check reads neither.
 `a_family_with_no_sample_is_not_rendered` in `crates/cfgd-csi/src/metrics.rs`

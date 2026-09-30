@@ -240,4 +240,140 @@ mod tests {
             );
         });
     }
+
+    /// Every YAML file under `dir`, skipping build output and dot-directories.
+    fn yaml_files_below(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+        let entries = std::fs::read_dir(dir).unwrap_or_else(|e| {
+            panic!("{}: the walk must read every directory: {e}", dir.display())
+        });
+        for entry in entries {
+            let path = entry
+                .unwrap_or_else(|e| {
+                    panic!("{}: the walk must read every entry: {e}", dir.display())
+                })
+                .path();
+            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            if path.is_dir() {
+                if !name.starts_with('.') && !name.starts_with('-') && name != "target" {
+                    yaml_files_below(&path, out);
+                }
+            } else if name.ends_with(".yaml") || name.ends_with(".yml") {
+                out.push(path);
+            }
+        }
+    }
+
+    /// Why an operator workload manifest fails to hand its container the pod's
+    /// name and namespace through the downward API unconditionally, or `None`.
+    /// A Helm conditional around the entry counts as a failure: the event
+    /// recorder reads `POD_NAME` whether or not leader election is on.
+    fn downward_identity_gap(text: &str) -> Option<String> {
+        let lines: Vec<&str> = text.lines().collect();
+        let mut depth = 0i32;
+        let mut containers_depth = None;
+        let mut found = Vec::new();
+        for (i, line) in lines.iter().enumerate() {
+            let t = line.trim();
+            if t.starts_with("{{- if")
+                || t.starts_with("{{ if")
+                || t.starts_with("{{- with")
+                || t.starts_with("{{- range")
+            {
+                depth += 1;
+            } else if t.starts_with("{{- end") || t.starts_with("{{ end") {
+                depth -= 1;
+            }
+            if t == "containers:" {
+                containers_depth = Some(depth);
+            }
+            for (var, field) in [
+                ("POD_NAME", "metadata.name"),
+                ("POD_NAMESPACE", "metadata.namespace"),
+            ] {
+                if t == format!("- name: {var}") {
+                    let window = lines[i + 1..(i + 4).min(lines.len())].join("\n");
+                    if !window.contains(&format!("fieldPath: {field}")) {
+                        return Some(format!("{var} is not read from {field}"));
+                    }
+                    if Some(depth) != containers_depth {
+                        return Some(format!("{var} sits inside a template conditional"));
+                    }
+                    found.push(var);
+                }
+            }
+        }
+        ["POD_NAME", "POD_NAMESPACE"]
+            .iter()
+            .find(|var| !found.contains(var))
+            .map(|var| format!("no {var} entry"))
+    }
+
+    /// The operator names its leader lease and its events after `POD_NAME`,
+    /// falling back to a random UUID, so a manifest that omits it leaves the
+    /// lease holder naming no pod. Every workload in the repository running
+    /// the operator container carries both downward-API entries.
+    #[test]
+    fn every_operator_workload_manifest_names_its_pod_through_the_downward_api() {
+        let root = cfgd_core::test_helpers::workspace_root();
+        let mut files = Vec::new();
+        yaml_files_below(&root, &mut files);
+        let mut walked = Vec::new();
+        let mut gaps = Vec::new();
+        for path in files {
+            let text = std::fs::read_to_string(&path)
+                .unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+            let workload = text.lines().any(|l| {
+                let t = l.trim();
+                t == "kind: Deployment" || t == "kind: ClusterServiceVersion"
+            });
+            let runs_operator = text
+                .lines()
+                .any(|l| matches!(l.trim(), "- name: operator" | "- name: cfgd-operator"));
+            if !(workload && runs_operator) {
+                continue;
+            }
+            let rel = cfgd_core::to_posix_string(path.strip_prefix(&root).unwrap_or(&path));
+            if let Some(gap) = downward_identity_gap(&text) {
+                gaps.push(format!("{rel}: {gap}"));
+            }
+            walked.push(rel);
+        }
+        for anchor in [
+            "chart/cfgd/templates/operator-deployment.yaml",
+            "tests/e2e/operator/manifests/operator-deployment.yaml",
+            "tests/e2e/node/manifests/cfgd-server.yaml",
+            "ecosystem/olm/manifests/cfgd-operator.clusterserviceversion.yaml",
+        ] {
+            assert!(
+                walked.iter().any(|w| w == anchor),
+                "the walk missed {anchor}: {walked:?}"
+            );
+        }
+        assert!(gaps.is_empty(), "{gaps:#?}");
+    }
+
+    /// Each way a manifest can fail to name its pod is reported.
+    #[test]
+    fn downward_identity_gap_reports_each_missing_or_conditional_entry() {
+        let sound = "containers:\n  env:\n    - name: POD_NAME\n      valueFrom:\n        fieldRef:\n          fieldPath: metadata.name\n    - name: POD_NAMESPACE\n      valueFrom:\n        fieldRef:\n          fieldPath: metadata.namespace\n";
+        assert_eq!(downward_identity_gap(sound), None);
+        assert_eq!(
+            downward_identity_gap(&sound.replace("    - name: POD_NAME\n", "    - name: OTHER\n")),
+            Some("no POD_NAME entry".to_string())
+        );
+        assert_eq!(
+            downward_identity_gap(
+                &sound.replace("fieldPath: metadata.name\n", "fieldPath: spec.nodeName\n")
+            ),
+            Some("POD_NAME is not read from metadata.name".to_string())
+        );
+        let conditional = sound.replace(
+            "  env:\n",
+            "  env:\n    {{- if .Values.operator.leaderElection.enabled }}\n",
+        ) + "    {{- end }}\n";
+        assert_eq!(
+            downward_identity_gap(&conditional),
+            Some("POD_NAME sits inside a template conditional".to_string())
+        );
+    }
 }
