@@ -313,9 +313,12 @@ running_image() {
 
 # True when ArgoCD tracks the cfgd-system workload $1/$2 (its tracking-id
 # annotation is set), so it runs what /db/manifests pins and reverts changes.
+# A workload kubectl cannot read is not tracked.
 argocd_managed() {
-    kubectl get "$1" "$2" -n cfgd-system \
-        -o jsonpath='{.metadata.annotations.argocd\.argoproj\.io/tracking-id}' 2>/dev/null | grep -q .
+    local id
+    id="$(kubectl get "$1" "$2" -n cfgd-system \
+        -o jsonpath='{.metadata.annotations.argocd\.argoproj\.io/tracking-id}' 2>/dev/null)" || return 1
+    [ -n "$id" ]
 }
 
 # Port-forward to `svc/<name>` or `pod/<name>` in the background and echo the
