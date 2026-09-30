@@ -7498,7 +7498,9 @@ pub struct CounterSamples {
 /// least one `<family>_total` sample, a bare `<family>` sample is a violation,
 /// and no line anywhere carries `_total_total`. Only a sample named `<family>`
 /// or `<family>_total` is judged as the family's, so `<family>_created` and a
-/// neighbour such as a gauge `<family>_bytes` pass untouched.
+/// neighbour such as a gauge `<family>_bytes` pass untouched. A `# HELP` line
+/// of any metric ending in `..` is a violation too: prometheus-client appends
+/// a period to the registered help, so help text must not end in one.
 pub fn counter_samples(encoded: &str, prefix: &str) -> CounterSamples {
     let mut report = CounterSamples::default();
     let prefix = format!("{prefix}_");
@@ -7525,6 +7527,11 @@ pub fn counter_samples(encoded: &str, prefix: &str) -> CounterSamples {
     }
     let mut sampled = vec![false; report.families.len()];
     for line in encoded.lines() {
+        if line.starts_with("# HELP ") && line.ends_with("..") {
+            report.violations.push(format!(
+                "{line:?} ends in \"..\": prometheus-client appends the period"
+            ));
+        }
         if line.contains("_total_total") {
             report
                 .violations
@@ -7568,6 +7575,7 @@ mod tests {
     #[test]
     fn counter_samples_reports_each_broken_counter_and_passes_a_sound_one() {
         let encoded = concat!(
+            "# HELP app_hits Hits.\n",
             "# TYPE app_hits counter\n",
             "app_hits_total{route=\"/\"} 1\n",
             "# TYPE app_runs_total counter\n",
@@ -7579,6 +7587,7 @@ mod tests {
             "app_bare 4\n",
             "# TYPE app_hits_bytes gauge\n",
             "app_hits_bytes 5\n",
+            "# HELP app_depth Depth..\n",
             "# TYPE app_depth gauge\n",
             "app_depth 2\n",
             "# EOF\n",
@@ -7601,6 +7610,7 @@ mod tests {
             "counter family app_idle has no sample",
             "counter family other_errors is not app_[a-z_]+",
             "\"app_bare 4\" is a sample of counter app_bare, which renders as app_bare_total",
+            "\"# HELP app_depth Depth..\" ends in \"..\": prometheus-client appends the period",
         ] {
             assert!(joined.contains(want), "missing {want:?} in:\n{joined}");
         }
