@@ -312,15 +312,6 @@ else
         fail_test "FS-CSI-04" "No CSI driver pod on node $CSI01_NODE"
     elif ! CSI04_HITS_BEFORE=$(csi04_hits "$CSI04_DRIVER" "$CSI04_BEFORE_BODY"); then
         fail_test "FS-CSI-04" "Scrape of pod/$CSI04_DRIVER before the mount failed: $(csi04_evidence "$CSI04_BEFORE_BODY" "$CSI04_DRIVER")"
-    elif ! CSI04_HELP=$(grep -E '^# HELP cfgd_csi_cache_hits(_total)? ' "$CSI04_BEFORE_BODY"); then
-        # prometheus-client writes HELP for a family with no samples, so a
-        # missing line means the family was renamed or dropped.
-        fail_test "FS-CSI-04" "pod/$CSI04_DRIVER serves no cfgd_csi_cache_hits HELP line: $(csi04_evidence "$CSI04_BEFORE_BODY" "$CSI04_DRIVER")"
-    elif ! grep -qF 'counted once per mount' <<<"$CSI04_HELP"; then
-        # The driver under test is the release ArgoCD pins, and only a driver
-        # whose help text says so counts a hit on the inline publish path this
-        # pod's mount takes.
-        skip_test "FS-CSI-04" "driver $(running_image daemonset cfgd-csi-csi cfgd-csi) predates publish-path cache hits; the next cfgd-csi release carries them"
     else
         kubectl apply -n "$CSI04_NS" -f - <<EOF
 apiVersion: v1
@@ -350,10 +341,21 @@ EOF
             fail_test "FS-CSI-04" "Scrape of pod/$CSI04_DRIVER after the mount failed: $(csi04_evidence "$CSI04_AFTER_BODY" "$CSI04_DRIVER")"
         else
             echo "  cache hits for csi-test-mod-${E2E_RUN_ID}: before $CSI04_HITS_BEFORE, after $CSI04_HITS_AFTER"
-            if [ "$CSI04_HITS_AFTER" -gt "$CSI04_HITS_BEFORE" ]; then
-                pass_test "FS-CSI-04"
+            CSI04_RUNNING="$(running_image daemonset cfgd-csi-csi cfgd-csi)"
+            # prometheus-client renders no line at all for a family with no
+            # sample, so a body without this module's sample says only that
+            # the driver counted no hit for it.
+            if metric_sample_lines cfgd_csi_cache_hits "$CSI04_AFTER_BODY" \
+                | grep -qF "{module=\"csi-test-mod-${E2E_RUN_ID}\"}"; then
+                if [ "$CSI04_HITS_AFTER" -gt "$CSI04_HITS_BEFORE" ]; then
+                    pass_test "FS-CSI-04"
+                else
+                    fail_test "FS-CSI-04" "Cache hits did not rise (before $CSI04_HITS_BEFORE, after $CSI04_HITS_AFTER). Before: $(csi04_evidence "$CSI04_BEFORE_BODY" "$CSI04_DRIVER") After: $(csi04_evidence "$CSI04_AFTER_BODY" "$CSI04_DRIVER")"
+                fi
+            elif [ "$CSI04_RUNNING" = "$(e2e_image cfgd-csi)" ]; then
+                fail_test "FS-CSI-04" "driver under test counted no cache hit for the second mount: $(csi04_evidence "$CSI04_AFTER_BODY" "$CSI04_DRIVER")"
             else
-                fail_test "FS-CSI-04" "Cache hits did not rise (before $CSI04_HITS_BEFORE, after $CSI04_HITS_AFTER). Before: $(csi04_evidence "$CSI04_BEFORE_BODY" "$CSI04_DRIVER") After: $(csi04_evidence "$CSI04_AFTER_BODY" "$CSI04_DRIVER")"
+                skip_test "FS-CSI-04" "driver $CSI04_RUNNING is the release ArgoCD pins (this run's image is $(e2e_image cfgd-csi)) and served no cfgd_csi_cache_hits sample for csi-test-mod-${E2E_RUN_ID} after the mount"
             fi
         fi
     fi
