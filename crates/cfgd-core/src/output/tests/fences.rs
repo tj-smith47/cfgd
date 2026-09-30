@@ -1838,15 +1838,21 @@ fn discards_the_tree_kill(code: &str) -> bool {
     DISCARD.is_match(code)
 }
 
-/// Whether blanked `code` kills a child alone at a point no `#[cfg(unix)]`
-/// covers: `.kill()` on a `Child`, a `TreeKill::child_alone`, or
-/// `terminate_process`, declarations of those names aside. A `#[cfg(unix)]`
-/// covers the statement or the braced block it is attached to; `unix_only`
-/// says the declaration itself carries one.
-fn kills_a_child_alone_off_unix(code: &str, unix_only: bool) -> bool {
+/// Whether a declaration kills a child alone at a point no `#[cfg(unix)]`
+/// covers: `.kill()` on a `Child`, a `TreeKill::child_alone`,
+/// `terminate_process` or a raw `TerminateProcess`, declarations of those
+/// names aside, read off the blanked `code`; or a `taskkill` spawn, read off
+/// `literals`, the same text with its comments alone blanked (both blankings
+/// keep every byte at its offset). A `#[cfg(unix)]` covers the statement or
+/// the braced block it is attached to; `unix_only` says the declaration
+/// itself carries one.
+fn kills_a_child_alone_off_unix(code: &str, literals: &str, unix_only: bool) -> bool {
     static KILL: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
-        regex::Regex::new(r"\.kill\(\)|\bchild_alone\(|\bterminate_process\(")
+        regex::Regex::new(r"\.kill\(\)|\bchild_alone\(|\bterminate_process\(|\bTerminateProcess\(")
             .expect("the kill shapes compile")
+    });
+    static TASKKILL: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r#""taskkill(?:\.exe)?""#).expect("the taskkill spawn compiles")
     });
     if unix_only {
         return false;
@@ -1879,10 +1885,10 @@ fn kills_a_child_alone_off_unix(code: &str, unix_only: bool) -> bool {
             from..end
         })
         .collect();
-    KILL.find_iter(code).any(|m| {
-        !code[..m.start()].trim_end().ends_with("fn")
-            && !covered.iter().any(|r| r.contains(&m.start()))
-    })
+    let uncovered = |at: usize| !covered.iter().any(|r| r.contains(&at));
+    KILL.find_iter(code)
+        .any(|m| !code[..m.start()].trim_end().ends_with("fn") && uncovered(m.start()))
+        || TASKKILL.find_iter(literals).any(|m| uncovered(m.start()))
 }
 
 /// Whether the attribute lines directly above a declaration (`above`, nearest
@@ -1908,6 +1914,11 @@ const LONE_KILLS_OFF_UNIX: &[(&str, &str, &str)] = &[
         "util/process.rs",
         "terminate",
         "the fallback for a job cfgd could not create or join",
+    ),
+    (
+        "util/process.rs",
+        "terminate_process",
+        "the lone kill `terminate` and `terminate_daemon_if_running` reach, each listed with its reason",
     ),
     (
         "upgrade/mod.rs",
@@ -1957,12 +1968,21 @@ fn every_spawn_that_starts_a_process_tree_is_killed_as_one() {
         "the tells skip comments and literals and read a tree setup and a dropped kill in code"
     );
 
-    let lone = "fn block() {\n    #[cfg(unix)]\n    {\n        let k = TreeKill::child_alone(pid);\n    }\n}\n\nfn statement() {\n    #[cfg(unix)]\n    let k = TreeKill::child_alone(child.id());\n}\n\nfn windows() {\n    #[cfg(windows)]\n    {\n        let _ = child.kill();\n    }\n}\n\nfn bare() {\n    let _ = child.kill();\n}\n\nfn after() {\n    #[cfg(unix)]\n    {\n        a();\n    }\n    let _ = child.kill();\n}\n\nfn stops() {\n    crate::terminate_process(pid);\n}\n\nfn quoted() {\n    // let _ = child.kill();\n    let s = \"terminate_process(\";\n}\n\npub fn child_alone(pid: u32) -> Self {\n    Self { pid }\n}\n";
-    let judged: Vec<(String, bool)> = crate::test_helpers::fixture_declarations(lone)
+    let lone = "fn block() {\n    #[cfg(unix)]\n    {\n        let k = TreeKill::child_alone(pid);\n    }\n}\n\nfn statement() {\n    #[cfg(unix)]\n    let k = TreeKill::child_alone(child.id());\n}\n\nfn windows() {\n    #[cfg(windows)]\n    {\n        let _ = child.kill();\n    }\n}\n\nfn bare() {\n    let _ = child.kill();\n}\n\nfn after() {\n    #[cfg(unix)]\n    {\n        a();\n    }\n    let _ = child.kill();\n}\n\nfn stops() {\n    crate::terminate_process(pid);\n}\n\nfn quoted() {\n    // let _ = child.kill();\n    let s = \"terminate_process(\";\n}\n\npub fn child_alone(pid: u32) -> Self {\n    Self { pid }\n}\n\nfn raw_terminate() {\n    unsafe { TerminateProcess(handle, 1) };\n}\n\nfn taskkill() {\n    Command::new(\"taskkill\").args([\"/PID\", &pid]);\n}\n\nfn says_taskkill() {\n    // Command::new(\"taskkill\")\n    let s = \"TerminateProcess(\";\n}\n";
+    let names = crate::test_helpers::fixture_declarations(lone);
+    let raws = source_functions(&FIXTURE_SOURCE, lone);
+    assert_eq!(
+        names.len(),
+        raws.len(),
+        "both scans read every fixture declaration"
+    );
+    let judged: Vec<(String, bool)> = names
         .into_iter()
-        .map(|(name, _, code)| {
-            let code = crate::test_helpers::blank_non_code(&code);
-            let off_unix = kills_a_child_alone_off_unix(&code, false);
+        .zip(raws)
+        .map(|((name, _, _), (_, raw))| {
+            let code = crate::test_helpers::blank_non_code(&raw);
+            let literals = crate::test_helpers::blank_comments(&raw);
+            let off_unix = kills_a_child_alone_off_unix(&code, &literals, false);
             (name, off_unix)
         })
         .collect();
@@ -1978,11 +1998,14 @@ fn every_spawn_that_starts_a_process_tree_is_killed_as_one() {
             expect("stops", true),
             expect("quoted", false),
             expect("child_alone", false),
+            expect("raw_terminate", true),
+            expect("taskkill", true),
+            expect("says_taskkill", false),
         ],
         "a lone kill counts as Unix-only inside the statement or block a `#[cfg(unix)]` gates"
     );
     assert!(
-        !kills_a_child_alone_off_unix("let _ = child.kill();", true),
+        !kills_a_child_alone_off_unix("let _ = child.kill();", "let _ = child.kill();", true),
         "a declaration gated to Unix holds no lone kill off Unix"
     );
     assert!(
@@ -2022,8 +2045,17 @@ fn every_spawn_that_starts_a_process_tree_is_killed_as_one() {
                 "{at}: `{name}` drops the kill `spawn_tree` returned"
             ));
         }
-        let above: Vec<&str> = body.lines().take(*workspace.span_of(row).start()).collect();
-        if kills_a_child_alone_off_unix(&code, declared_unix_only(&above)) {
+        let span = workspace.span_of(row);
+        let above: Vec<&str> = body.lines().take(*span.start()).collect();
+        let literals = crate::test_helpers::blank_comments(
+            &body
+                .lines()
+                .skip(*span.start())
+                .take(span.end() - span.start() + 1)
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
+        if kills_a_child_alone_off_unix(&code, &literals, declared_unix_only(&above)) {
             match LONE_KILLS_OFF_UNIX
                 .iter()
                 .position(|(file, func, _)| path.ends_with(file) && name == func)

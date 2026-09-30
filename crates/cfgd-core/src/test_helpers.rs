@@ -7399,8 +7399,9 @@ pub fn spaced_marker_dir() -> tempfile::TempDir {
         .expect("a temp dir for the marker")
 }
 
-/// Hold a timeout kill to ending a process that writes `marker` about two
-/// seconds after it starts.
+/// Hold a timeout kill to ending a process that writes `marker` once the kill
+/// would have happened: past the timeout and any grace period, and within
+/// `window` of the command returning.
 ///
 /// `run(timeout)` runs the command under test and returns whether its timeout
 /// fired. It runs twice: with room to finish, which must write the marker (a
