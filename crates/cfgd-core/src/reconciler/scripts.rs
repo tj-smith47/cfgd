@@ -823,8 +823,8 @@ fn execute_script_inner(
             // `spawn_tree`): a blanket group put every interactive child in a
             // brand-new, non-foreground group, so the terminal driver never
             // delivered a terminal-generated Ctrl-C to it, and a
-            // background-group terminal read stalls on SIGTTIN instead of
-            // prompting. Sharing cfgd's group restores both.
+            // background-group terminal read stalls on SIGTTIN and never
+            // prompts. Sharing cfgd's group restores both.
             //
             // No idle timeout: the user drives the pace and a lull is
             // expected. No absolute timeout unless the author declares one:

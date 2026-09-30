@@ -1840,9 +1840,9 @@ fn discards_the_tree_kill(code: &str) -> bool {
 
 /// Whether blanked `code` kills a child alone at a point no `#[cfg(unix)]`
 /// covers: `.kill()` on a `Child`, a `TreeKill::child_alone`, or
-/// `terminate_process`, declarations of those names aside. A `#[cfg(unix)]` covers the statement or the braced
-/// block it is attached to; `unix_only` says the declaration itself carries
-/// one.
+/// `terminate_process`, declarations of those names aside. A `#[cfg(unix)]`
+/// covers the statement or the braced block it is attached to; `unix_only`
+/// says the declaration itself carries one.
 fn kills_a_child_alone_off_unix(code: &str, unix_only: bool) -> bool {
     static KILL: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
         regex::Regex::new(r"\.kill\(\)|\bchild_alone\(|\bterminate_process\(")
