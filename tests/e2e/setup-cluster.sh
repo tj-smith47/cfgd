@@ -859,13 +859,12 @@ GW_API_KEY=$(kubectl get deployment cfgd-server -n cfgd-system \
     -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="CFGD_API_KEY")].value}' 2>/dev/null || echo "")
 if [ -n "$GW_API_KEY" ]; then
     # Port-forward to gateway, reset, then clean up
-    kubectl port-forward -n cfgd-system svc/cfgd-server 18099:8080 >/dev/null 2>&1 &
-    PF_PID=$!
-    sleep 2
-    RESET_RESP=$(curl -sf -X POST "http://localhost:18099/api/v1/admin/reset" \
-        -H "Authorization: Bearer $GW_API_KEY" 2>/dev/null || echo "")
-    kill "$PF_PID" 2>/dev/null || true
-    wait "$PF_PID" 2>/dev/null || true
+    RESET_RESP=""
+    if PF_PID=$(port_forward cfgd-system svc/cfgd-server 18099 8080); then
+        RESET_RESP=$(curl -sf -X POST "http://localhost:18099/api/v1/admin/reset" \
+            -H "Authorization: Bearer $GW_API_KEY" 2>/dev/null || echo "")
+        stop_port_forward "$PF_PID"
+    fi
     if [ -n "$RESET_RESP" ]; then
         echo "  Gateway DB reset: $RESET_RESP"
     else

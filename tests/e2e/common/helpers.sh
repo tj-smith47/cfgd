@@ -300,18 +300,80 @@ wait_for_daemonset() {
     return 1
 }
 
-# Port-forward in the background. Echoes the PID; caller should kill it later.
+# Port-forward to `svc/<name>` or `pod/<name>` in the background and echo the
+# kubectl PID once the local port accepts a connection; stop it with
+# stop_port_forward. A fixed sleep races a slow kubectl start. On timeout, or
+# when kubectl exits first, prints kubectl's own output to stderr and returns 1.
 port_forward() {
     local namespace="$1"
-    local service="$2"
+    local target="$2"
     local local_port="$3"
     local remote_port="${4:-$local_port}"
 
-    kubectl port-forward -n "$namespace" "svc/$service" \
-        "$local_port:$remote_port" > /dev/null 2>&1 &
+    case "$target" in
+        svc/?* | pod/?*) ;;
+        *)
+            echo "port_forward: target must be svc/<name> or pod/<name>, got '$target'" >&2
+            return 1
+            ;;
+    esac
+
+    local log
+    log="$(mktemp "$CLI_SCRATCH/port-forward.XXXXXX")"
+    kubectl port-forward -n "$namespace" "$target" \
+        "$local_port:$remote_port" > "$log" 2>&1 &
     local pid=$!
-    sleep 2  # let port-forward establish
-    echo "$pid"
+    local tries=0
+    while [ "$tries" -lt 30 ]; do
+        if ! kill -0 "$pid" 2>/dev/null; then
+            echo "port_forward: kubectl port-forward $target exited before localhost:$local_port opened:" >&2
+            sed 's/^/    /' "$log" >&2
+            return 1
+        fi
+        if (: < "/dev/tcp/127.0.0.1/$local_port") 2>/dev/null; then
+            echo "$pid"
+            return 0
+        fi
+        sleep 0.5
+        tries=$((tries + 1))
+    done
+    echo "port_forward: localhost:$local_port for $target did not accept a connection within 15s; kubectl said:" >&2
+    sed 's/^/    /' "$log" >&2
+    stop_port_forward "$pid"
+    return 1
+}
+
+# Stop a port_forward and return once kubectl has exited. A PID captured
+# through a command substitution is not this shell's child, so `wait` cannot
+# reap it and its exit is watched for instead, for up to 5s.
+stop_port_forward() {
+    local pid="$1" tries=0
+    kill "$pid" 2>/dev/null || return 0
+    wait "$pid" 2>/dev/null || true
+    while kill -0 "$pid" 2>/dev/null && [ "$tries" -lt 50 ]; do
+        sleep 0.1
+        tries=$((tries + 1))
+    done
+}
+
+# GET $1 into file $2 and print "<http_code> <content_type>"; the code is 000
+# when no response arrived. The body is kept whatever the status, so a failed
+# check can show what the endpoint actually served.
+http_get_to_file() {
+    local meta
+    meta="$(curl -s --max-time 10 -o "$2" -w '%{http_code} %{content_type}' "$1" 2>/dev/null)" || true
+    [ -f "$2" ] || : > "$2"
+    meta="${meta% }"
+    printf '%s\n' "${meta:-000}"
+}
+
+# Describe a response kept by http_get_to_file for a fail reason: status,
+# content type, line count and the first 15 lines of the body.
+http_evidence() {
+    local code="$1" content_type="$2" body="$3"
+    printf 'HTTP %s, content-type %s, %s body lines; first 15:\n' \
+        "$code" "${content_type:-none}" "$(wc -l < "$body" | tr -d ' ')"
+    head -n 15 "$body" | sed 's/^/    | /'
 }
 
 wait_for_url() {

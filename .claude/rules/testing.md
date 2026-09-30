@@ -140,6 +140,20 @@ starts cannot report clean. The `bad_e2e_sysctl_*` and `good_e2e_sysctl_*`
 fixtures under `.claude/scripts/audit-tests/` hold one case per form for
 `task audit:test`.
 
+## An e2e port-forward goes through `port_forward`
+
+Every `kubectl port-forward` under `tests/e2e/` is started by `port_forward`
+in `tests/e2e/common/helpers.sh` (target `svc/<name>` or `pod/<name>`) and
+ended by `stop_port_forward`. The helper returns the PID only once the local
+port accepts a connection, and on a timeout or an early kubectl exit prints
+kubectl's own output and returns 1; a fixed `sleep` and a discarded stderr are
+what left a metrics case failing with nothing to diagnose. A case that scrapes
+an endpoint and asserts on the body fetches it with `http_get_to_file` and puts
+`http_evidence` (status, content type, line count, first 15 lines) in every
+fail reason. `tests/e2e/common/test-port-forward.sh`, run by
+`task e2e:tags:check`, drives the helpers against a stand-in kubectl and fails
+on any port-forward started outside them.
+
 ## A test never inherits its terminal shape from the ambient one
 
 `cargo test` from a pipe and `script -qec "cargo test" /dev/null` (a real pty)

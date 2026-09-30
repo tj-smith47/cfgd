@@ -25,8 +25,8 @@ create_e2e_namespace
 GW_PORT=18080
 GW_HEALTH_PORT=18081
 echo "Port-forwarding to gateway on localhost:$GW_PORT..."
-PF_PID=$(port_forward cfgd-system cfgd-server "$GW_PORT" 8080)
-PF_HEALTH_PID=$(port_forward cfgd-system cfgd-server "$GW_HEALTH_PORT" 8081)
+PF_PID=$(port_forward cfgd-system svc/cfgd-server "$GW_PORT" 8080)
+PF_HEALTH_PID=$(port_forward cfgd-system svc/cfgd-server "$GW_HEALTH_PORT" 8081)
 GW_URL="http://localhost:$GW_PORT"
 
 # Wait for gateway to be reachable via port-forward (use health endpoint — API requires auth)

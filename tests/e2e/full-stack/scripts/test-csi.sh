@@ -499,30 +499,31 @@ else
     else
         # CSI container is distroless — no wget/curl. Port-forward to scrape metrics.
         CSI07_PORT=19090
-        kubectl port-forward -n cfgd-system "pod/$CSI_POD" "$CSI07_PORT:9090" > /dev/null 2>&1 &
-        CSI07_PF_PID=$!
-        sleep 2
-        METRICS_OUTPUT=$(curl -sf "http://localhost:$CSI07_PORT/metrics" 2>/dev/null || echo "")
-        kill "$CSI07_PF_PID" 2>/dev/null || true
-        wait "$CSI07_PF_PID" 2>/dev/null || true
-
+        CSI07_BODY="$CLI_SCRATCH/fs-csi-07-metrics.txt"
         echo "  CSI pod: $CSI_POD"
-        echo "  Metrics lines: $(echo "$METRICS_OUTPUT" | wc -l)"
+        if CSI07_PF_PID=$(port_forward cfgd-system "pod/$CSI_POD" "$CSI07_PORT" 9090); then
+            read -r CSI07_CODE CSI07_CONTENT_TYPE \
+                <<<"$(http_get_to_file "http://localhost:$CSI07_PORT/metrics" "$CSI07_BODY")"
+            stop_port_forward "$CSI07_PF_PID"
+            CSI07_EVIDENCE="$(http_evidence "$CSI07_CODE" "${CSI07_CONTENT_TYPE:-}" "$CSI07_BODY")"
+            echo "  Metrics lines: $(wc -l < "$CSI07_BODY" | tr -d ' ')"
 
-        if echo "$METRICS_OUTPUT" | grep -q "cfgd_csi_volume_publish_total"; then
-            pass_test "FS-CSI-07"
-        elif echo "$METRICS_OUTPUT" | grep -q "cfgd_csi_"; then
-            # Metrics endpoint works and has cfgd_csi_ metrics, but
-            # volume_publish_total only appears after first publish event
-            echo "  Note: volume_publish_total not yet emitted (no publishes yet)"
-            pass_test "FS-CSI-07"
-        elif [ -n "$METRICS_OUTPUT" ]; then
-            # Endpoint responded but no cfgd metrics — prometheus not wired
-            fail_test "FS-CSI-07" "Metrics endpoint responded but no cfgd_csi_ metrics found"
-            echo "  First 10 lines:"
-            echo "$METRICS_OUTPUT" | head -10 | sed 's/^/    /'
+            if [[ "$CSI07_CODE" != 2* ]]; then
+                fail_test "FS-CSI-07" "/metrics did not answer 2xx: $CSI07_EVIDENCE"
+            elif grep -q "cfgd_csi_volume_publish_total" "$CSI07_BODY"; then
+                pass_test "FS-CSI-07"
+            elif grep -q "cfgd_csi_" "$CSI07_BODY"; then
+                # Metrics endpoint works and has cfgd_csi_ metrics, but
+                # volume_publish_total only appears after first publish event
+                echo "  Note: volume_publish_total not yet emitted (no publishes yet)"
+                pass_test "FS-CSI-07"
+            elif [ -s "$CSI07_BODY" ]; then
+                fail_test "FS-CSI-07" "Metrics endpoint responded but no cfgd_csi_ metrics found: $CSI07_EVIDENCE"
+            else
+                fail_test "FS-CSI-07" "/metrics endpoint returned empty response: $CSI07_EVIDENCE"
+            fi
         else
-            fail_test "FS-CSI-07" "/metrics endpoint returned empty response"
+            fail_test "FS-CSI-07" "Port-forward to pod/$CSI_POD never opened localhost:$CSI07_PORT (kubectl output above)"
         fi
     fi
 fi

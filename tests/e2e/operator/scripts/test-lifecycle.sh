@@ -9,34 +9,31 @@ echo "=== Controller Lifecycle Tests ==="
 # =================================================================
 begin_test "OP-LC-01: Operator metrics endpoint"
 
-# Port-forward to operator metrics service
 LC01_LOCAL_PORT=18443
-kubectl port-forward -n cfgd-system svc/cfgd-metrics \
-    "$LC01_LOCAL_PORT:8443" &
-LC01_PF_PID=$!
-sleep 2
+LC01_BODY="$CLI_SCRATCH/op-lc-01-metrics.txt"
+if LC01_PF_PID=$(port_forward cfgd-system svc/cfgd-metrics "$LC01_LOCAL_PORT" 8443); then
+    read -r LC01_CODE LC01_CONTENT_TYPE \
+        <<<"$(http_get_to_file "http://localhost:$LC01_LOCAL_PORT/metrics" "$LC01_BODY")"
+    stop_port_forward "$LC01_PF_PID"
+    LC01_EVIDENCE="$(http_evidence "$LC01_CODE" "${LC01_CONTENT_TYPE:-}" "$LC01_BODY")"
 
-METRICS_OUTPUT=$(curl -sf "http://localhost:$LC01_LOCAL_PORT/metrics" 2>/dev/null || echo "")
-
-kill "$LC01_PF_PID" 2>/dev/null || true
-wait "$LC01_PF_PID" 2>/dev/null || true
-
-if echo "$METRICS_OUTPUT" | grep -q "cfgd_operator_reconciliations_total"; then
-    pass_test "OP-LC-01"
-elif [ -n "$METRICS_OUTPUT" ]; then
-    # Metrics endpoint responded but metric not found — check if family exists
-    # (prometheus-client omits families with zero observations)
-    echo "  Metrics endpoint responded ($(echo "$METRICS_OUTPUT" | wc -l) lines)"
-    echo "  Looking for cfgd_operator_ prefix..."
-    if echo "$METRICS_OUTPUT" | grep -q "cfgd_operator_"; then
-        # Other cfgd metrics present; reconciliations_total may not have been
-        # incremented yet (family only appears after first observation)
+    if [[ "$LC01_CODE" != 2* ]]; then
+        fail_test "OP-LC-01" "Failed to reach metrics endpoint: $LC01_EVIDENCE"
+    elif grep -q "cfgd_operator_reconciliations_total" "$LC01_BODY"; then
         pass_test "OP-LC-01"
     else
-        fail_test "OP-LC-01" "Metrics endpoint responded but no cfgd_operator_ metrics found"
+        echo "  Metrics endpoint responded ($(wc -l < "$LC01_BODY" | tr -d ' ') lines)"
+        echo "  Looking for cfgd_operator_ prefix..."
+        # prometheus-client omits a family until its first observation, so any
+        # other cfgd_operator_ family proves the registry is served.
+        if grep -q "cfgd_operator_" "$LC01_BODY"; then
+            pass_test "OP-LC-01"
+        else
+            fail_test "OP-LC-01" "Metrics endpoint responded but no cfgd_operator_ metrics found: $LC01_EVIDENCE"
+        fi
     fi
 else
-    fail_test "OP-LC-01" "Failed to reach metrics endpoint"
+    fail_test "OP-LC-01" "Port-forward to svc/cfgd-metrics never opened localhost:$LC01_LOCAL_PORT (kubectl output above)"
 fi
 
 # =================================================================
@@ -359,16 +356,12 @@ if [ -z "$LC08_POD" ]; then
     fail_test "OP-LC-08" "No operator pod found for health probe check"
 else
     LC08_LOCAL_PORT=18181
-    kubectl port-forward -n cfgd-system "pod/$LC08_POD" \
-        "$LC08_LOCAL_PORT:8081" > /dev/null 2>&1 &
-    LC08_PF_PID=$!
-    sleep 3
+    LC08_PF_PID=$(port_forward cfgd-system "pod/$LC08_POD" "$LC08_LOCAL_PORT" 8081) || LC08_PF_PID=""
 
     HEALTHZ_CODE=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "http://localhost:$LC08_LOCAL_PORT/healthz" 2>/dev/null) || HEALTHZ_CODE="000"
     READYZ_CODE=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "http://localhost:$LC08_LOCAL_PORT/readyz" 2>/dev/null) || READYZ_CODE="000"
 
-    kill "$LC08_PF_PID" 2>/dev/null || true
-    wait "$LC08_PF_PID" 2>/dev/null || true
+    if [ -n "$LC08_PF_PID" ]; then stop_port_forward "$LC08_PF_PID"; fi
 
     echo "  /healthz: HTTP $HEALTHZ_CODE"
     echo "  /readyz:  HTTP $READYZ_CODE"
