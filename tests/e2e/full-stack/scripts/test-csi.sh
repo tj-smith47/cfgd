@@ -312,7 +312,11 @@ else
         fail_test "FS-CSI-04" "No CSI driver pod on node $CSI01_NODE"
     elif ! CSI04_HITS_BEFORE=$(csi04_hits "$CSI04_DRIVER" "$CSI04_BEFORE_BODY"); then
         fail_test "FS-CSI-04" "Scrape of pod/$CSI04_DRIVER before the mount failed: $(csi04_evidence "$CSI04_BEFORE_BODY" "$CSI04_DRIVER")"
-    elif ! grep -E '^# HELP cfgd_csi_cache_hits(_total)? ' "$CSI04_BEFORE_BODY" | grep -qF 'counted once per mount'; then
+    elif ! CSI04_HELP=$(grep -E '^# HELP cfgd_csi_cache_hits(_total)? ' "$CSI04_BEFORE_BODY"); then
+        # prometheus-client writes HELP for a family with no samples, so a
+        # missing line means the family was renamed or dropped.
+        fail_test "FS-CSI-04" "pod/$CSI04_DRIVER serves no cfgd_csi_cache_hits HELP line: $(csi04_evidence "$CSI04_BEFORE_BODY" "$CSI04_DRIVER")"
+    elif ! grep -qF 'counted once per mount' <<<"$CSI04_HELP"; then
         # The driver under test is the release ArgoCD pins, and only a driver
         # whose help text says so counts a hit on the inline publish path this
         # pod's mount takes.

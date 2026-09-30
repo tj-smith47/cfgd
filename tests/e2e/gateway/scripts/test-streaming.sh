@@ -34,7 +34,9 @@ else
     echo "  Drift report HTTP status: $GW21_TRIGGER_CODE"
 
     GW21_TRIES=0
-    while [ "$GW21_TRIES" -lt 20 ] && ! grep -qx 'event: drift' "$GW21_TMPFILE"; do
+    # The gateway is shared across runs, so another run's drift event can
+    # arrive first; the wait is for this device's.
+    while [ "$GW21_TRIES" -lt 20 ] && ! grep -qF "\"deviceId\":\"${GW_DEVICE_ID}\"" "$GW21_TMPFILE"; do
         sleep 0.5
         GW21_TRIES=$((GW21_TRIES + 1))
     done
@@ -50,10 +52,10 @@ else
 
     if [ "$GW21_TRIGGER_CODE" != "201" ]; then
         fail_test "GW-21" "Drift report returned HTTP $GW21_TRIGGER_CODE, expected 201, so no event was raised"
-    elif ! grep -qx 'event: drift' <<<"$GW21_OUTPUT"; then
-        fail_test "GW-21" "No 'event: drift' arrived on the stream within 10s of the drift report"
     elif ! grep -E '^data:' <<<"$GW21_OUTPUT" | grep -qF "\"deviceId\":\"${GW_DEVICE_ID}\""; then
-        fail_test "GW-21" "The drift event's data does not name device ${GW_DEVICE_ID}"
+        fail_test "GW-21" "No event for device ${GW_DEVICE_ID} arrived on the stream within 10s of its drift report"
+    elif ! grep -B1 -F "\"deviceId\":\"${GW_DEVICE_ID}\"" <<<"$GW21_OUTPUT" | grep -qx 'event: drift'; then
+        fail_test "GW-21" "The event for device ${GW_DEVICE_ID} is not an 'event: drift'"
     else
         pass_test "GW-21"
     fi
