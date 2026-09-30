@@ -224,6 +224,39 @@ mod tests {
         );
     }
 
+    /// prometheus-client renders no `# HELP`, `# TYPE` or sample line for a
+    /// family with no label set, so an e2e scrape of a driver that has not
+    /// counted a hit sees no trace of the family.
+    #[test]
+    fn a_family_with_no_sample_is_not_rendered() {
+        let mut registry = Registry::default();
+        let metrics = CsiMetrics::new(&mut registry);
+        let mut empty = String::new();
+        encode(&mut empty, &registry).unwrap();
+        assert!(
+            empty.contains("# HELP cfgd_csi_cache_size_bytes "),
+            "the registry encoded nothing: {empty}"
+        );
+        assert!(!empty.contains("cfgd_csi_cache_hits"), "{empty}");
+
+        metrics
+            .cache_hits_total
+            .get_or_create(&ModuleLabels {
+                module: "nettools".to_string(),
+            })
+            .inc();
+        let mut counted = String::new();
+        encode(&mut counted, &registry).unwrap();
+        assert!(
+            counted.contains("\n# HELP cfgd_csi_cache_hits "),
+            "{counted}"
+        );
+        assert!(
+            counted.contains("\ncfgd_csi_cache_hits_total{module=\"nettools\"} 1\n"),
+            "{counted}"
+        );
+    }
+
     /// A name registered with `_total` renders `_total_total`, so the walk
     /// holds every registration in this source to its bare name.
     #[test]

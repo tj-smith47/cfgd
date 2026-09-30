@@ -165,6 +165,18 @@ the helpers against a stand-in kubectl, fails on any port-forward started
 outside them (a line continued from the one before and `"$KUBECTL"` included),
 and fails on a runner that sources such a setup before its trap.
 
+## An e2e metrics check drives the event, then scrapes the pod that did it
+
+prometheus-client encodes no `# HELP`, `# TYPE` or sample line for a family
+with no label set, so a component that has not yet counted the event serves no
+trace of the family. An e2e metrics assertion therefore drives the event first
+and then scrapes `pod/<name>` of the pod that performed it (the CSI driver on
+the mounting node, the operator holding the leader lease). A Service routes
+each connection to any replica, and a `# HELP` line is absent until the first
+sample, so a check reads neither.
+`a_family_with_no_sample_is_not_rendered` in `crates/cfgd-csi/src/metrics.rs`
+holds the library to this.
+
 ## An e2e case asserts what it names, against the release that runs
 
 The operator, gateway and CSI suites run ArgoCD's pinned images. A case for

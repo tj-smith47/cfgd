@@ -63,8 +63,14 @@ fails when a script matches a counter sample by hand.
 
 A check for behaviour that only a newer build than the pinned release has reads
 the running component's capability first and calls `skip_test` naming the image
-(`running_image` in `common/helpers.sh`) when the release lacks it; FS-CSI-04
-does this for publish-path cache hits. No case passes on a note that the thing
+(`running_image` in `common/helpers.sh`) when the release lacks it. FS-CSI-04
+skips only when the driver served no cache-hit sample for its module after the
+mount and runs an image other than this run's.
+
+prometheus-client renders no line at all for a metric family with no sample, so
+a metrics check drives the event first and then scrapes the pod that performed
+it: FS-CSI-04 and FS-CSI-07 the driver on the mounting node, OP-LC-01 the
+operator pod holding the leader lease. No case passes on a note that the thing
 it checks did not happen: `common/test-verdicts.sh` fails on a `pass_test` that
 follows such a note in the same branch, unless that line carries
 `# verdict-ok: <why>`.
