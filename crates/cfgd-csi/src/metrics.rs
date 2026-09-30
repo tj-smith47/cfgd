@@ -46,7 +46,7 @@ impl CsiMetrics {
     pub fn new(registry: &mut Registry) -> Self {
         let volume_publish_total = Family::<PublishLabels, Counter>::default();
         registry.register(
-            "cfgd_csi_volume_publish_total",
+            "cfgd_csi_volume_publish",
             "Total CSI volume publish operations",
             volume_publish_total.clone(),
         );
@@ -68,7 +68,7 @@ impl CsiMetrics {
 
         let cache_hits_total = Family::<ModuleLabels, Counter>::default();
         registry.register(
-            "cfgd_csi_cache_hits_total",
+            "cfgd_csi_cache_hits",
             "Total cache hit count",
             cache_hits_total.clone(),
         );
@@ -176,10 +176,67 @@ mod tests {
 
         let mut buf = String::new();
         prometheus_client::encoding::text::encode(&mut buf, &registry).unwrap();
-        assert!(buf.contains("cfgd_csi_volume_publish_total"));
-        assert!(buf.contains("cfgd_csi_cache_hits_total"));
+        assert!(
+            buf.contains(
+                "\ncfgd_csi_volume_publish_total{module=\"nettools\",result=\"success\"} 1\n"
+            ),
+            "{buf}"
+        );
+        assert!(
+            buf.contains("\ncfgd_csi_cache_hits_total{module=\"nettools\"} 1\n"),
+            "{buf}"
+        );
         assert!(buf.contains("cfgd_csi_cache_size_bytes"));
         assert!(buf.contains("cfgd_csi_pull_duration_seconds"));
+    }
+
+    /// prometheus-client appends `_total` to every counter sample, so each
+    /// counter family renders the name the docs promise exactly once.
+    #[test]
+    fn every_counter_sample_renders_total_once() {
+        let mut registry = Registry::default();
+        let metrics = CsiMetrics::new(&mut registry);
+        metrics
+            .volume_publish_total
+            .get_or_create(&PublishLabels {
+                module: "nettools".to_string(),
+                result: "success".to_string(),
+            })
+            .inc();
+        metrics
+            .cache_hits_total
+            .get_or_create(&ModuleLabels {
+                module: "nettools".to_string(),
+            })
+            .inc();
+
+        let mut buf = String::new();
+        prometheus_client::encoding::text::encode(&mut buf, &registry).unwrap();
+        let report = cfgd_core::test_helpers::counter_samples(&buf, "cfgd_csi");
+        assert_eq!(
+            report.families,
+            ["cfgd_csi_volume_publish", "cfgd_csi_cache_hits"]
+        );
+        assert!(
+            report.violations.is_empty(),
+            "{:#?}\n{buf}",
+            report.violations
+        );
+    }
+
+    /// A name registered with `_total` renders `_total_total`, so the walk
+    /// holds every registration in this source to its bare name.
+    #[test]
+    fn no_registered_metric_name_ends_in_total() {
+        let names = cfgd_core::test_helpers::registered_metric_names(std::path::Path::new(
+            concat!(env!("CARGO_MANIFEST_DIR"), "/src/metrics.rs"),
+        ));
+        assert!(
+            names.iter().any(|n| n == "cfgd_csi_volume_publish"),
+            "the walk read no registration: {names:?}"
+        );
+        let suffixed: Vec<_> = names.iter().filter(|n| n.ends_with("_total")).collect();
+        assert!(suffixed.is_empty(), "registered with _total: {suffixed:?}");
     }
 
     #[tokio::test(flavor = "current_thread")]

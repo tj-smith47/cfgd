@@ -7445,11 +7445,191 @@ pub fn assert_a_timeout_kill_stops_the_write(
     );
 }
 
+// ---------------------------------------------------------------------------
+// Prometheus exposition
+// ---------------------------------------------------------------------------
+
+/// The name literal of every prometheus-client `register(` or
+/// `register_with_unit(` call in the production slice of the Rust source at
+/// `path` (read through [`production_slice_of`]), in source order.
+///
+/// prometheus-client appends `_total` to every counter sample, so a metrics
+/// source registers a counter under its bare name; a walk over one holds that no
+/// name returned here ends in `_total`.
+///
+/// # Panics
+///
+/// When a call's first argument is not a string literal, which the walk could
+/// not judge.
+pub fn registered_metric_names(path: &Path) -> Vec<String> {
+    let production = production_slice_of(path);
+    let mut names = Vec::new();
+    for (at, _) in production.match_indices(".register") {
+        let rest = &production[at + ".register".len()..];
+        let rest = rest.strip_prefix("_with_unit").unwrap_or(rest);
+        let Some(args) = rest.strip_prefix('(') else {
+            continue;
+        };
+        let args = args.trim_start();
+        let name = args
+            .strip_prefix('"')
+            .and_then(|lit| lit.split_once('"'))
+            .map(|(name, _)| name.to_string())
+            .unwrap_or_else(|| {
+                let call: String = args.chars().take(60).collect();
+                panic!("a register( call names its metric with no string literal: {call}")
+            });
+        names.push(name);
+    }
+    names
+}
+
+/// What an encoded registry says about its counters.
+#[derive(Debug, Default)]
+pub struct CounterSamples {
+    /// Every family a `# TYPE <name> counter` line declares, in encoded order.
+    pub families: Vec<String>,
+    /// Every line breaking the counter sample convention, with the reason.
+    pub violations: Vec<String>,
+}
+
+/// Read an encoded registry against the counter sample convention: a counter
+/// family is named `<prefix>_[a-z_]+` without a `_total` suffix, has at least
+/// one sample, and renders each one as `<family>_total{…}` or
+/// `<family>_total <value>`; no line anywhere carries `_total_total`.
+pub fn counter_samples(encoded: &str, prefix: &str) -> CounterSamples {
+    let mut report = CounterSamples::default();
+    let prefix = format!("{prefix}_");
+    for line in encoded.lines() {
+        if let Some(family) = line
+            .strip_prefix("# TYPE ")
+            .and_then(|rest| rest.strip_suffix(" counter"))
+        {
+            report.families.push(family.to_string());
+        }
+    }
+    for family in &report.families {
+        let bare = family.strip_prefix(&prefix).unwrap_or("");
+        if bare.is_empty() || !bare.chars().all(|c| c.is_ascii_lowercase() || c == '_') {
+            report
+                .violations
+                .push(format!("counter family {family} is not {prefix}[a-z_]+"));
+        }
+        if family.ends_with("_total") {
+            report.violations.push(format!(
+                "counter family {family} is registered with the _total prometheus-client appends"
+            ));
+        }
+    }
+    let mut sampled = vec![false; report.families.len()];
+    for line in encoded.lines() {
+        if line.contains("_total_total") {
+            report
+                .violations
+                .push(format!("{line:?} carries _total_total"));
+        }
+        if line.starts_with('#') {
+            continue;
+        }
+        let sample = line.split(['{', ' ']).next().unwrap_or("");
+        for (i, family) in report.families.iter().enumerate() {
+            let Some(suffix) = sample.strip_prefix(family.as_str()) else {
+                continue;
+            };
+            if !suffix.is_empty() && !suffix.starts_with('_') {
+                continue;
+            }
+            sampled[i] = true;
+            let rendered = format!("{family}_total");
+            let after = &line[sample.len()..];
+            if suffix != "_total" || !(after.starts_with('{') || after.starts_with(' ')) {
+                report.violations.push(format!(
+                    "{line:?} is a sample of counter {family}, which renders as {rendered}"
+                ));
+            }
+        }
+    }
+    for (family, seen) in report.families.iter().zip(sampled) {
+        if !seen {
+            report
+                .violations
+                .push(format!("counter family {family} has no sample"));
+        }
+    }
+    report
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::providers::FileManager;
     use secrecy::ExposeSecret;
+
+    /// Each way a counter can break the sample convention is reported, and a
+    /// family rendering `_total` once is not.
+    #[test]
+    fn counter_samples_reports_each_broken_counter_and_passes_a_sound_one() {
+        let encoded = concat!(
+            "# TYPE app_hits counter\n",
+            "app_hits_total{route=\"/\"} 1\n",
+            "# TYPE app_runs_total counter\n",
+            "app_runs_total_total 3\n",
+            "# TYPE app_idle counter\n",
+            "# TYPE other_errors counter\n",
+            "other_errors_total 1\n",
+            "# TYPE app_depth gauge\n",
+            "app_depth 2\n",
+            "# EOF\n",
+        );
+        let report = counter_samples(encoded, "app");
+        assert_eq!(
+            report.families,
+            ["app_hits", "app_runs_total", "app_idle", "other_errors"]
+        );
+        let joined = report.violations.join("\n");
+        for want in [
+            "counter family app_runs_total is registered with the _total",
+            "\"app_runs_total_total 3\" carries _total_total",
+            "counter family app_idle has no sample",
+            "counter family other_errors is not app_[a-z_]+",
+        ] {
+            assert!(joined.contains(want), "missing {want:?} in:\n{joined}");
+        }
+        assert!(
+            !joined.contains("app_hits"),
+            "a counter rendering _total once is sound:\n{joined}"
+        );
+    }
+
+    /// Every register call's name literal is read, a test region is not, and a
+    /// name the walk cannot read stops it.
+    #[test]
+    fn registered_metric_names_reads_each_production_register_call() {
+        let src = concat!(
+            "fn new(r: &mut Registry) {\n",
+            "    r.register(\"hits\", \"help\", c.clone());\n",
+            "    r.register_with_unit(\n",
+            "        \"bytes\",\n",
+            "        \"help\",\n",
+            "        Unit::Bytes,\n",
+            "        g.clone(),\n",
+            "    );\n",
+            "}\n",
+            "\n",
+            "#[cfg(test)]\n",
+            "mod tests {\n",
+            "    fn t() { r.register(\"hits_total\", \"h\", c); }\n",
+            "}\n",
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let sound = dir.path().join("counters");
+        std::fs::write(&sound, src).unwrap();
+        assert_eq!(registered_metric_names(&sound), ["hits", "bytes"]);
+        let non_literal = dir.path().join("gauges");
+        std::fs::write(&non_literal, "fn f() { r.register(NAME, \"h\", c); }\n").unwrap();
+        let unreadable = std::panic::catch_unwind(|| registered_metric_names(&non_literal));
+        assert!(unreadable.is_err(), "a non-literal name must stop the walk");
+    }
 
     /// The literal shapes the blanker has to tell apart, and the
     /// byte-for-byte promise every walk reading it indexes the raw line with.

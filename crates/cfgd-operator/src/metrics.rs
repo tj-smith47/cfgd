@@ -70,7 +70,7 @@ impl Metrics {
 
         let reconciliations_total = Family::<ReconcileLabels, Counter>::default();
         sub.register(
-            "reconciliations_total",
+            "reconciliations",
             "Total number of reconciliation attempts",
             reconciliations_total.clone(),
         );
@@ -85,14 +85,14 @@ impl Metrics {
 
         let drift_events_total = Family::<DriftLabels, Counter>::default();
         sub.register(
-            "drift_events_total",
+            "drift_events",
             "Total number of drift events detected",
             drift_events_total.clone(),
         );
 
         let webhook_requests_total = Family::<WebhookLabels, Counter>::default();
         sub.register(
-            "webhook_requests_total",
+            "webhook_requests",
             "Total number of webhook requests",
             webhook_requests_total.clone(),
         );
@@ -114,7 +114,7 @@ impl Metrics {
 
         let devices_enrolled_total = Counter::default();
         sub.register(
-            "devices_enrolled_total",
+            "devices_enrolled",
             "Total device enrollments",
             devices_enrolled_total.clone(),
         );
@@ -233,7 +233,75 @@ mod tests {
             .inc();
         let mut buf = String::new();
         encode(&mut buf, &registry).unwrap();
-        assert!(buf.contains("cfgd_operator_reconciliations_total"));
+        assert!(
+            buf.contains(
+                "\ncfgd_operator_reconciliations_total{controller=\"test\",result=\"success\"} 1\n"
+            ),
+            "{buf}"
+        );
+    }
+
+    /// prometheus-client appends `_total` to every counter sample, so each
+    /// counter family renders the name the docs promise exactly once.
+    #[test]
+    fn every_counter_sample_renders_total_once() {
+        let mut registry = Registry::default();
+        let metrics = Metrics::new(&mut registry);
+        metrics
+            .reconciliations_total
+            .get_or_create(&ReconcileLabels {
+                controller: "machineconfig".to_string(),
+                result: "success".to_string(),
+            })
+            .inc();
+        metrics
+            .drift_events_total
+            .get_or_create(&DriftLabels {
+                severity: "critical".to_string(),
+                namespace: "default".to_string(),
+            })
+            .inc();
+        metrics
+            .webhook_requests_total
+            .get_or_create(&WebhookLabels {
+                operation: "CREATE".to_string(),
+                result: "allowed".to_string(),
+            })
+            .inc();
+        metrics.devices_enrolled_total.inc();
+
+        let mut buf = String::new();
+        encode(&mut buf, &registry).unwrap();
+        let report = cfgd_core::test_helpers::counter_samples(&buf, "cfgd_operator");
+        assert_eq!(
+            report.families,
+            [
+                "cfgd_operator_reconciliations",
+                "cfgd_operator_drift_events",
+                "cfgd_operator_webhook_requests",
+                "cfgd_operator_devices_enrolled",
+            ]
+        );
+        assert!(
+            report.violations.is_empty(),
+            "{:#?}\n{buf}",
+            report.violations
+        );
+    }
+
+    /// A name registered with `_total` renders `_total_total`, so the walk
+    /// holds every registration in this source to its bare name.
+    #[test]
+    fn no_registered_metric_name_ends_in_total() {
+        let names = cfgd_core::test_helpers::registered_metric_names(std::path::Path::new(
+            concat!(env!("CARGO_MANIFEST_DIR"), "/src/metrics.rs"),
+        ));
+        assert!(
+            names.iter().any(|n| n == "reconciliations"),
+            "the walk read no registration: {names:?}"
+        );
+        let suffixed: Vec<_> = names.iter().filter(|n| n.ends_with("_total")).collect();
+        assert!(suffixed.is_empty(), "registered with _total: {suffixed:?}");
     }
 
     #[test]
@@ -282,11 +350,11 @@ mod tests {
 
         let mut buf = String::new();
         encode(&mut buf, &registry).unwrap();
-        assert!(buf.contains("cfgd_operator_reconciliations_total"));
-        // The encoded value should show 2
         assert!(
-            buf.contains("2"),
-            "expected counter value 2 in output: {buf}"
+            buf.contains(
+                "\ncfgd_operator_reconciliations_total{controller=\"machineconfig\",result=\"success\"} 2\n"
+            ),
+            "expected the counter sample at 2 in: {buf}"
         );
     }
 
@@ -304,8 +372,12 @@ mod tests {
 
         let mut buf = String::new();
         encode(&mut buf, &registry).unwrap();
-        assert!(buf.contains("cfgd_operator_drift_events_total"));
-        assert!(buf.contains("critical"));
+        assert!(
+            buf.contains(
+                "\ncfgd_operator_drift_events_total{severity=\"critical\",namespace=\"default\"} 1\n"
+            ),
+            "{buf}"
+        );
     }
 
     #[test]
@@ -322,7 +394,12 @@ mod tests {
 
         let mut buf = String::new();
         encode(&mut buf, &registry).unwrap();
-        assert!(buf.contains("cfgd_operator_webhook_requests_total"));
+        assert!(
+            buf.contains(
+                "\ncfgd_operator_webhook_requests_total{operation=\"CREATE\",result=\"allowed\"} 1\n"
+            ),
+            "{buf}"
+        );
     }
 
     #[test]
@@ -387,8 +464,10 @@ mod tests {
 
         let mut buf = String::new();
         encode(&mut buf, &registry).unwrap();
-        assert!(buf.contains("cfgd_operator_devices_enrolled_total"));
-        assert!(buf.contains("3"), "expected counter value 3 in: {buf}");
+        assert!(
+            buf.contains("\ncfgd_operator_devices_enrolled_total 3\n"),
+            "expected the counter sample at 3 in: {buf}"
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -413,8 +492,12 @@ mod tests {
         assert_eq!(status, axum::http::StatusCode::OK);
         assert_eq!(headers[0].0, axum::http::header::CONTENT_TYPE);
         assert!(headers[0].1.contains("openmetrics-text"));
-        assert!(body.contains("cfgd_operator_reconciliations_total"));
-        assert!(body.contains("metrics_handler_test"));
+        assert!(
+            body.contains(
+                "\ncfgd_operator_reconciliations_total{controller=\"metrics_handler_test\",result=\"success\"} 1\n"
+            ),
+            "{body}"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
