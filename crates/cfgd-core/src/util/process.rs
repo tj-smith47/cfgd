@@ -320,19 +320,7 @@ fn output_with_timeout(
             return;
         }
         timed_out_watchdog.store(true, Ordering::SeqCst);
-        kill.terminate();
-        let grace_ends = std::time::Instant::now() + KILL_GRACE_PERIOD;
-        if rx.recv_timeout(KILL_GRACE_PERIOD).is_ok() {
-            if !kill.group_outlives_its_leader() {
-                return;
-            }
-            // The leader exiting on SIGTERM says nothing about the rest of its
-            // group: a descendant that ignores SIGTERM is still running. The
-            // descendants that do exit on it get the whole grace period.
-            // sleep-ok: the end of a grace period raises no event to wait on.
-            std::thread::sleep(grace_ends.saturating_duration_since(std::time::Instant::now()));
-        }
-        kill.force_kill();
+        kill.end(KILL_GRACE_PERIOD, |bound| rx.recv_timeout(bound).is_ok());
     });
 
     // The leader is reaped only after the watchdog is done with its group:
@@ -438,6 +426,13 @@ pub fn command_output_with_timeout(
 /// platform or the call cannot do that, and the caller reaps as it waits.
 #[cfg(unix)]
 fn exited_unreaped(child: &std::process::Child) -> bool {
+    waitid_exited(child, 0)
+}
+
+/// Whether `child` has exited, read by `waitid` with `WNOWAIT` plus `flags`
+/// (`WNOHANG` to answer at once instead of blocking), leaving it unreaped.
+#[cfg(unix)]
+fn waitid_exited(child: &std::process::Child, flags: libc::c_int) -> bool {
     loop {
         // SAFETY: an all-zero `siginfo_t` is a valid value of that plain C
         // struct.
@@ -450,11 +445,13 @@ fn exited_unreaped(child: &std::process::Child) -> bool {
                 libc::P_PID,
                 child.id() as libc::id_t,
                 &mut info,
-                libc::WEXITED | libc::WNOWAIT,
+                libc::WEXITED | libc::WNOWAIT | flags,
             )
         };
         if rc == 0 {
-            return true;
+            // Under `WNOHANG` a child still running also returns 0; only a
+            // reported exit fills in `si_signo`, which starts zeroed.
+            return info.si_signo == libc::SIGCHLD;
         }
         if std::io::Error::last_os_error().kind() != std::io::ErrorKind::Interrupted {
             return false;
@@ -467,6 +464,38 @@ fn exited_unreaped(child: &std::process::Child) -> bool {
 #[cfg(windows)]
 fn exited_unreaped(_child: &std::process::Child) -> bool {
     false
+}
+
+/// How long [`TreeKill::end`] waits on Windows for a child whose job (or
+/// process) was just terminated to report its exit before terminating it
+/// again. Termination is final there, so the wait only covers the kernel
+/// tearing the processes down.
+#[cfg(windows)]
+const TERMINATED_EXIT_BOUND: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// Wait up to `bound` for `child` to exit, answering whether it did. The
+/// child is left unreaped, so a group kill after this still names its pid.
+#[cfg(unix)]
+pub fn exits_within(child: &std::process::Child, bound: std::time::Duration) -> bool {
+    let deadline = std::time::Instant::now() + bound;
+    loop {
+        if waitid_exited(child, libc::WNOHANG) {
+            return true;
+        }
+        let left = deadline.saturating_duration_since(std::time::Instant::now());
+        if left.is_zero() {
+            return false;
+        }
+        // sleep-ok: an exit seen without reaping raises no event to wait on.
+        std::thread::sleep(left.min(std::time::Duration::from_millis(50)));
+    }
+}
+
+/// Wait up to `bound` for `child` to exit, answering whether it did, and
+/// leave it unreaped.
+#[cfg(windows)]
+pub fn exits_within(child: &std::process::Child, bound: std::time::Duration) -> bool {
+    job::exits_within(child, bound)
 }
 
 /// How a spawned child is killed: alone, or with every process it started.
@@ -510,14 +539,45 @@ impl TreeKill {
         }
     }
 
-    /// Whether processes of the tree can still be running after the child
-    /// itself exited on [`TreeKill::terminate`]: a Unix group can, since
-    /// SIGTERM can be caught or ignored. A job ends as a whole on terminate.
-    pub fn group_outlives_its_leader(&self) -> bool {
-        #[cfg(unix)]
-        return self.grouped;
+    /// End the tree after a timeout: [`TreeKill::terminate`], then, while
+    /// the tree may still be acting on that request, up to `grace` before
+    /// [`TreeKill::force_kill`].
+    ///
+    /// On Unix the request is a SIGTERM, which the tree may catch and act on,
+    /// so it gets the grace period. A group whose leader exits early still
+    /// waits the period out and is sent SIGKILL: a descendant may ignore
+    /// SIGTERM. On Windows the terminate already ended the job (or the
+    /// child), so this returns as soon as the child has exited, and waits no
+    /// longer than a second for that.
+    ///
+    /// `exited(bound)` waits up to `bound` for the child to exit and says
+    /// whether it did, without reaping it: [`exits_within`], or the answer of
+    /// a thread that waits on the child.
+    pub fn end(
+        &self,
+        grace: std::time::Duration,
+        mut exited: impl FnMut(std::time::Duration) -> bool,
+    ) {
+        self.terminate();
         #[cfg(windows)]
-        return false;
+        {
+            let _ = grace;
+            if !exited(TERMINATED_EXIT_BOUND) {
+                self.force_kill();
+            }
+        }
+        #[cfg(unix)]
+        {
+            let grace_ends = std::time::Instant::now() + grace;
+            if exited(grace) {
+                if !self.grouped {
+                    return;
+                }
+                // sleep-ok: the end of a grace period raises no event to wait on.
+                std::thread::sleep(grace_ends.saturating_duration_since(std::time::Instant::now()));
+            }
+            self.force_kill();
+        }
     }
 
     /// End the tree after the grace period: SIGKILL to the group (or the
@@ -666,6 +726,17 @@ mod job {
             // closed exactly once, here.
             unsafe { CloseHandle(self.0) };
         }
+    }
+
+    /// Wait on `child`'s process handle for up to `bound`.
+    pub(super) fn exits_within(child: &std::process::Child, bound: std::time::Duration) -> bool {
+        use std::os::windows::io::AsRawHandle;
+        use windows_sys::Win32::Foundation::{HANDLE, WAIT_OBJECT_0};
+        use windows_sys::Win32::System::Threading::WaitForSingleObject;
+        let millis = u32::try_from(bound.as_millis()).unwrap_or(u32::MAX - 1);
+        // SAFETY: the process handle is borrowed from `child`, which outlives
+        // the call; the wait only reads it.
+        unsafe { WaitForSingleObject(child.as_raw_handle() as HANDLE, millis) == WAIT_OBJECT_0 }
     }
 
     /// Resume the one thread of a process spawned with `CREATE_SUSPENDED`.

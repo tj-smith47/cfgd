@@ -1366,21 +1366,27 @@ fn run_guard_command(
     Ok(outcome.output.status.success())
 }
 
+/// How long a timed-out script may act on a request to exit before it is
+/// killed outright.
+pub(super) const SCRIPT_KILL_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
+
 /// Kill a script and every process it started.
 ///
-/// `graceful=true` asks the tree to exit, then waits 5 s before killing it
-/// (for timeout/idle kill paths). `graceful=false` kills it at once — used on
-/// the abort path where cfgd itself received a signal and must exit quickly.
+/// `graceful=true` ends the tree through [`crate::TreeKill::end`] with
+/// [`SCRIPT_KILL_GRACE`] (for timeout/idle kill paths): on Unix the tree gets
+/// up to the grace period after SIGTERM, on Windows the job is ended at once.
+/// `graceful=false` kills it at once — used on the abort path where cfgd
+/// itself received a signal and must exit quickly.
 pub(super) fn kill_script_child(
     child: &mut std::process::Child,
     tree: &crate::TreeKill,
     graceful: bool,
 ) {
     if graceful {
-        tree.terminate();
-        std::thread::sleep(std::time::Duration::from_secs(5));
+        tree.end(SCRIPT_KILL_GRACE, |bound| crate::exits_within(child, bound));
+    } else {
+        tree.force_kill();
     }
-    tree.force_kill();
     let _ = child.wait();
 }
 

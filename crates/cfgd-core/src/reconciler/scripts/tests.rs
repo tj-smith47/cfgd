@@ -865,6 +865,71 @@ fn an_interactive_spawn_shares_the_callers_process_group() {
     let _ = child.wait();
 }
 
+/// Time out an interactive script started as the `Run` arm starts one,
+/// returning how long the timed-out wait took once its timeout had fired.
+fn interactive_kill_takes(body: &str) -> std::time::Duration {
+    let _path_guard = crate::test_helpers::path_env_read_guard();
+    let tmp = tempfile::tempdir().unwrap();
+    let mut cmd = build_inline_command(ScriptShell::Auto, body, tmp.path(), None);
+    cmd.stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    let (mut child, kill) = crate::spawn_sharing_terminal(&mut cmd).expect("spawn must succeed");
+    let timeout = std::time::Duration::from_millis(300);
+    let start = std::time::Instant::now();
+    let err = wait_interactive_with_timeout(&mut child, &kill, timeout, "slow")
+        .expect_err("a script outliving its timeout must fail");
+    let took = start.elapsed().saturating_sub(timeout);
+    assert!(
+        err.to_string().contains("timed out"),
+        "the failure must name the timeout: {err}"
+    );
+    took
+}
+
+/// A child killed alone on Unix is sent SIGTERM, which it may be acting on,
+/// so it gets the whole grace period before SIGKILL. The body ignores
+/// SIGTERM, so only the escalation ends it.
+#[cfg(unix)]
+#[test]
+fn a_timed_out_interactive_script_gets_the_grace_period_on_unix() {
+    // `exec` keeps the SIGTERM-ignoring sleep as the one process: it shares
+    // the test's process group, so a forked grandchild would outlive the kill.
+    let took = interactive_kill_takes("trap '' TERM; exec sleep 30");
+    assert!(
+        took >= SCRIPT_KILL_GRACE,
+        "the escalation must wait the {SCRIPT_KILL_GRACE:?} grace period, took {took:?}"
+    );
+    assert!(
+        took < SCRIPT_KILL_GRACE * 3,
+        "SIGKILL must end the script once the grace period is over, took {took:?}"
+    );
+}
+
+/// A lone child that exits on SIGTERM ends the wait there, without the rest
+/// of the grace period.
+#[cfg(unix)]
+#[test]
+fn a_timed_out_interactive_script_that_exits_on_sigterm_ends_the_wait_on_unix() {
+    let took = interactive_kill_takes("exec sleep 30");
+    assert!(
+        took < SCRIPT_KILL_GRACE / 2,
+        "a script that exited on SIGTERM must not wait out the {SCRIPT_KILL_GRACE:?} grace \
+         period, took {took:?}"
+    );
+}
+
+/// Ending a job on Windows is final, so nothing is left to act on a request
+/// to exit and the timed-out wait returns without the grace period.
+#[cfg(windows)]
+#[test]
+fn a_timed_out_interactive_script_returns_without_a_grace_wait_on_windows() {
+    let took = interactive_kill_takes("ping -n 30 127.0.0.1");
+    assert!(
+        took < SCRIPT_KILL_GRACE / 2,
+        "ending the job must not wait out the {SCRIPT_KILL_GRACE:?} grace period, took {took:?}"
+    );
+}
+
 /// Run `body` as a guard in `dir`, returning whether its timeout fired.
 fn guard_timed_out(body: &str, dir: &std::path::Path, timeout: std::time::Duration) -> bool {
     match run_guard_command(body, ScriptShell::Auto, dir, &[], timeout) {
