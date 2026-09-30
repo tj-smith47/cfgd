@@ -34128,13 +34128,24 @@ fn apply_closes_on_the_decisions_hint_after_its_caveats() {
         ..Default::default()
     });
     f.with_pending_decision();
+    // The reminder names the env file of the shell the run stands in, read off
+    // `MSYSTEM` and `SHELL`: Windows writes both files, so a runner launched
+    // from Git Bash and one launched from PowerShell would expect two commands.
+    // Unset, the choice is the platform's alone.
+    let _msystem = cfgd_core::test_helpers::EnvVarGuard::unset("MSYSTEM");
+    let _shell = cfgd_core::test_helpers::EnvVarGuard::unset("SHELL");
+    let reminder = if cfg!(windows) {
+        "\u{25c9} Run `. ~/.cfgd-env.ps1`"
+    } else {
+        "\u{25c9} Run `source ~/.cfgd.env`"
+    };
 
     super::apply::cmd_apply(&f.h.cli(), f.h.printer(), &apply_args(false)).unwrap();
     let output = cfgd_core::output::strip_ansi(&f.h.output());
 
     let caveat = output
         .lines()
-        .position(|l| l.trim_start().starts_with("\u{25c9} Run `source "))
+        .position(|l| l.trim_start().starts_with(reminder))
         .unwrap_or_else(|| panic!("the fixture earns a caveat of its own:\n{output}"));
     let hint = output
         .lines()

@@ -3655,6 +3655,8 @@ fn a_reserved_target_is_still_the_users_file_until_the_write_runs() {
 #[test]
 #[serial_test::serial]
 fn shell_env_reminder_names_the_written_env_file() {
+    let _msystem = cfgd_core::test_helpers::EnvVarGuard::unset("MSYSTEM");
+    let _shell = cfgd_core::test_helpers::EnvVarGuard::unset("SHELL");
     let tmp = tempfile::tempdir().unwrap();
     let (out, home) = cfgd_core::with_test_home(tmp.path(), || {
         let home = cfgd_core::to_posix_string(cfgd_core::expand_tilde(std::path::Path::new("~")));

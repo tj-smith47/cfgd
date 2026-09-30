@@ -1691,6 +1691,72 @@ fn no_cloned_file_is_compared_byte_for_byte() {
     );
 }
 
+/// The functions that run the real caveat composer and read its env reminder
+/// back.
+const ENV_REMINDER_RENDERERS: [&str; 2] = ["print_caveats", "cmd_apply"];
+
+/// Whether `func` (comments blanked) asserts on the env reminder a run
+/// renders, ``Run `source …` `` or ``Run `. …` ``, through one of the real
+/// renderers, and whether it states the shell it stands in (`MSYSTEM`).
+fn reads_the_env_reminder(func: &str) -> Option<bool> {
+    let asserts = (func.contains("Run `source ") || func.contains("Run `. "))
+        && ENV_REMINDER_RENDERERS
+            .iter()
+            .any(|name| names_identifier(func, name));
+    asserts.then(|| func.contains("EnvVarGuard::") && func.contains("\"MSYSTEM\""))
+}
+
+/// The env reminder an apply prints names the env file of the shell the run
+/// stands in, read off `MSYSTEM` and `SHELL`, and Windows writes both files.
+/// A test inheriting those variables asserts about how its runner was
+/// launched: an apply test expecting ``Run `source ~/.cfgd.env` `` passed under
+/// CI's Git Bash and failed from a PowerShell console, where the reminder
+/// read ``Run `. ~/.cfgd-env.ps1` ``. A test reading the reminder back states
+/// the shell through `EnvVarGuard` (unset, the platform alone decides).
+#[test]
+fn no_test_reads_the_env_reminder_under_the_ambient_shell() {
+    let fixture = "fn a() {\n    print_caveats(&r, &p);\n    assert!(out.contains(\"Run `source ~/.cfgd.env`\"));\n}\n\nfn b() {\n    let _m = EnvVarGuard::unset(\"MSYSTEM\");\n    cmd_apply(&c, &p, &a);\n    assert!(out.contains(\"Run `. ~/.cfgd-env.ps1`\"));\n}\n\nfn c() {\n    // Run `source ~/.cfgd.env` is what print_caveats says.\n    print_caveats(&r, &p);\n}\n";
+    let judged: Vec<Option<bool>> = source_functions(&FIXTURE_SOURCE, fixture)
+        .into_iter()
+        .map(|(_, func)| reads_the_env_reminder(&crate::test_helpers::blank_comments(&func)))
+        .collect();
+    assert_eq!(
+        judged,
+        [Some(false), Some(true), None],
+        "the tell reads the reminder's literal and the guard, and skips comments"
+    );
+
+    const FLOORS: [(&str, usize); 1] = [("cfgd", 4)];
+    let mut reading: std::collections::BTreeMap<&str, usize> = Default::default();
+    let mut offenders = Vec::new();
+    for (krate, path) in cross_os_fence_sources(&FLOORS) {
+        // unfloored-slice-ok: the tests judged here live in test regions.
+        let body = walked_file_body(&path);
+        let shown = source_label(&path);
+        for (open, func) in source_functions(&shown, &body) {
+            let Some(states_the_shell) =
+                reads_the_env_reminder(&crate::test_helpers::blank_comments(&func))
+            else {
+                continue;
+            };
+            *reading.entry(krate).or_default() += 1;
+            if !states_the_shell {
+                offenders.push(format!(
+                    "{shown}:{open}: {}",
+                    body.lines().nth(open - 1).unwrap_or("").trim()
+                ));
+            }
+        }
+    }
+    assert_each_root_read(&FLOORS, &reading, "tests reading the env reminder");
+    assert!(
+        offenders.is_empty(),
+        "the env reminder names the running shell's env file; state the shell \
+         with `EnvVarGuard` on `MSYSTEM` and `SHELL`:\n{}",
+        offenders.join("\n")
+    );
+}
+
 /// The function-open recognizer behind [`source_functions`], one case per
 /// qualifier shape, so the next modifier added in front of a `fn` regresses
 /// here instead of silently folding that function into its predecessor's
