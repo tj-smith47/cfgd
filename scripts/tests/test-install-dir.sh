@@ -137,7 +137,9 @@ grep -q "Cannot create install directory $blocked" "$scratch/dry-stderr" \
 
 # A dangling symlink where a parent directory should be: the install's mkdir
 # cannot create through it, and the dry run refuses with the same words.
-ln -s "$scratch/nowhere" "$scratch/dangling"
+# Git Bash's ln copies its target unless MSYS asks for a native link, so a
+# target that does not exist fails outright there; every other sh ignores MSYS.
+MSYS=winsymlinks:nativestrict ln -s "$scratch/nowhere" "$scratch/dangling"
 dangling="$scratch/dangling/bin"
 if got="$(SUDO_EXIT=1 resolve "$dangling" "$missing_system" false "$shim" 2> "$scratch/stderr")"; then
     fail "a directory under a dangling link: resolve_install_dir succeeded, echoing '$got'"
@@ -153,12 +155,14 @@ grep -q "Cannot create install directory $dangling" "$scratch/dry-stderr" \
 
 # A missing directory whose nearest existing parent the user cannot write is
 # created through sudo, and the copy into it needs sudo too; the plan says both.
-# Root ignores mode bits (the FreeBSD guest runs this as root), so the case only
-# means something for an ordinary user.
-if [ "$(id -u)" -ne 0 ]; then
-    locked="$scratch/locked"
-    mkdir -p "$locked"
-    chmod 555 "$locked"
+# The case only means something where mode bits bind this user: root ignores
+# them (the FreeBSD guest runs this as root), and so does Windows, whose ACLs
+# leave a 555 directory writable under Git Bash. A probe write decides, since
+# `id -u` answers only for root.
+locked="$scratch/locked"
+mkdir -p "$locked"
+chmod 555 "$locked"
+if ! touch "$locked/probe" 2>/dev/null; then
     dry_out="$(DRY_RUN=true REPO=o/r VERSION=v0 sh -c '. "$1"; download_and_install linux x86_64 "$2"' \
         sh "$scratch/dry-install.sh" "$locked/bin")" || fail "a dry run's sudo plan: download_and_install failed"
     chmod 755 "$locked"
@@ -167,7 +171,9 @@ if [ "$(id -u)" -ne 0 ]; then
         *) fail "a dry run's plan does not name sudo for creating and filling $locked/bin: $dry_out" ;;
     esac
 else
-    printf 'skip: the sudo plan case needs a non-root user (root ignores mode bits)\n'
+    rm -f "$locked/probe"
+    chmod 755 "$locked"
+    printf 'skip: the sudo plan case needs a user a 555 directory refuses (root and Windows write through it)\n'
 fi
 
 if [ "$failures" -ne 0 ]; then
