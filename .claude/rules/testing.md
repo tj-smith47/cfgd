@@ -167,11 +167,14 @@ and fails on a runner that sources such a setup before its trap.
 
 ## An e2e case asserts what it names, against the release that runs
 
-The operator, gateway and CSI suites run ArgoCD's pinned images. A case for behaviour only a newer build has reads the
-running capability and calls `skip_test` naming `running_image <kind> <name> <container>` when it is missing. No case
-calls `pass_test` after printing why the checked thing did not happen ("Note:", "not yet", "acceptable", ...); it asserts
-what the note excuses or fails. `tests/e2e/common/test-verdicts.sh` (`task e2e:tags:check`) enforces this; a pass
-that is sound anyway carries `# verdict-ok: <why>` on its `pass_test` line.
+The operator, gateway and CSI suites run ArgoCD's pinned images. A case for
+behaviour only a newer build has reads the running capability and calls
+`skip_test` naming `running_image <kind> <name> <container>` when it is
+missing. No case calls `pass_test` after printing why the checked thing did not
+happen ("Note:", "not yet", "acceptable", ...); it asserts what the note
+excuses or fails. `tests/e2e/common/test-verdicts.sh` (`task e2e:tags:check`)
+enforces this; a pass that is sound anyway carries `# verdict-ok: <why>` on its
+`pass_test` line.
 
 ## A test never inherits its terminal shape from the ambient one
 

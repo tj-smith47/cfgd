@@ -63,8 +63,8 @@ check_value 'module="c"' 0
 check_value 'module="absent"' 0
 check_value '' 11
 
-# There are far more scripts than this under tests/e2e/ (85 when the floor was
-# set), so a count below it means the scan lost its files.
+# There are about twice this many scripts under tests/e2e/, so a count below
+# it means the scan lost its files.
 min_scanned_files=40
 
 # Print file:line for each line outside helpers.sh and this file that names a
