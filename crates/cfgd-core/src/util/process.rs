@@ -430,7 +430,7 @@ fn exited_unreaped(child: &std::process::Child) -> bool {
 }
 
 /// Whether `child` has exited, read by `waitid` with `WNOWAIT` plus `flags`
-/// (`WNOHANG` to answer at once instead of blocking), leaving it unreaped.
+/// (`WNOHANG` returns at once while it still runs), leaving it unreaped.
 #[cfg(unix)]
 fn waitid_exited(child: &std::process::Child, flags: libc::c_int) -> bool {
     loop {
