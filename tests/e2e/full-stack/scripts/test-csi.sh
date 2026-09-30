@@ -258,10 +258,10 @@ fi
 # =================================================================
 begin_test "FS-CSI-04: CSI driver — module cache hit"
 
-# Print the module's cache-hit count scraped off CSI driver pod $1, keeping
-# the response in $2 for a fail reason; returns 1 without a count when the
-# port-forward did not open or the scrape did not answer 2xx. No sample for
-# the module yet counts as 0.
+# Print the cache-hit count for label set $CSI04_LABELS scraped off CSI
+# driver pod $1, keeping the response in $2 for a fail reason; returns 1
+# without a count when the port-forward did not open or the scrape did not
+# answer 2xx. No sample for the label set yet counts as 0.
 csi04_hits() {
     local pod="$1" body="$2" pid code content_type
     printf '000 \n' > "$body.meta"
@@ -274,7 +274,7 @@ csi04_hits() {
     stop_port_forward "$pid"
     printf '%s %s\n' "$code" "${content_type:-}" > "$body.meta"
     [[ "$code" == 2* ]] || return 1
-    metric_sample_value cfgd_csi_cache_hits "module=\"csi-test-mod-${E2E_RUN_ID}\"" "$body"
+    metric_sample_value cfgd_csi_cache_hits "$CSI04_LABELS" "$body"
 }
 
 # Describe what csi04_hits kept in $1 for scraping pod $2.
@@ -296,6 +296,7 @@ else
     # A second mount of FS-CSI-01's module on the node that already pulled it
     # must be served from that node's cache, so its driver counts one more hit.
     CSI04_NS="e2e-csi-cache-${E2E_RUN_ID}"
+    CSI04_LABELS="module=\"csi-test-mod-${E2E_RUN_ID}\""
     CSI04_BEFORE_BODY="$CLI_SCRATCH/fs-csi-04-before.txt"
     CSI04_AFTER_BODY="$CLI_SCRATCH/fs-csi-04-after.txt"
     ensure_namespace "$CSI04_NS"
@@ -346,7 +347,7 @@ EOF
             # sample, so a body without this module's sample says only that
             # the driver counted no hit for it.
             if metric_sample_lines cfgd_csi_cache_hits "$CSI04_AFTER_BODY" \
-                | grep -qF "{module=\"csi-test-mod-${E2E_RUN_ID}\"}"; then
+                | grep -qF "{$CSI04_LABELS}"; then
                 if [ "$CSI04_HITS_AFTER" -gt "$CSI04_HITS_BEFORE" ]; then
                     pass_test "FS-CSI-04"
                 else
@@ -354,8 +355,10 @@ EOF
                 fi
             elif [ "$CSI04_RUNNING" = "$(e2e_image cfgd-csi)" ]; then
                 fail_test "FS-CSI-04" "driver under test counted no cache hit for the second mount: $(csi04_evidence "$CSI04_AFTER_BODY" "$CSI04_DRIVER")"
+            elif argocd_managed daemonset cfgd-csi-csi; then
+                skip_test "FS-CSI-04" "driver $CSI04_RUNNING is the release ArgoCD pins (this run's image is $(e2e_image cfgd-csi)) and served no cfgd_csi_cache_hits sample {$CSI04_LABELS} after the mount"
             else
-                skip_test "FS-CSI-04" "driver $CSI04_RUNNING is the release ArgoCD pins (this run's image is $(e2e_image cfgd-csi)) and served no cfgd_csi_cache_hits sample for csi-test-mod-${E2E_RUN_ID} after the mount"
+                fail_test "FS-CSI-04" "DaemonSet cfgd-csi-csi carries no ArgoCD tracking-id and runs $CSI04_RUNNING while this run wants $(e2e_image cfgd-csi); it served no cfgd_csi_cache_hits sample {$CSI04_LABELS} after the mount: $(csi04_evidence "$CSI04_AFTER_BODY" "$CSI04_DRIVER")"
             fi
         fi
     fi

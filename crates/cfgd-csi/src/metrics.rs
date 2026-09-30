@@ -252,6 +252,10 @@ mod tests {
             "{counted}"
         );
         assert!(
+            counted.contains("\n# TYPE cfgd_csi_cache_hits counter\n"),
+            "{counted}"
+        );
+        assert!(
             counted.contains("\ncfgd_csi_cache_hits_total{module=\"nettools\"} 1\n"),
             "{counted}"
         );

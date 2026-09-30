@@ -563,8 +563,7 @@ echo "Updating operator image..."
 # the release /db/manifests pins, reverting anything applied here, so nothing
 # this run builds reaches them and a restart would only re-pull that release.
 ARGOCD_MANAGED=false
-if kubectl get deployment cfgd-operator -n cfgd-system \
-    -o jsonpath='{.metadata.annotations.argocd\.argoproj\.io/tracking-id}' 2>/dev/null | grep -q .; then
+if argocd_managed deployment cfgd-operator; then
     ARGOCD_MANAGED=true
 fi
 
@@ -785,8 +784,7 @@ rm -f "$WEBHOOK_FILE"
 # ArgoCD does not own that DaemonSet; an upgrade there would be reverted on the
 # next sync.
 CSI_ARGOCD_MANAGED=false
-if kubectl get daemonset cfgd-csi-csi -n cfgd-system \
-    -o jsonpath='{.metadata.annotations.argocd\.argoproj\.io/tracking-id}' 2>/dev/null | grep -q .; then
+if argocd_managed daemonset cfgd-csi-csi; then
     CSI_ARGOCD_MANAGED=true
 fi
 

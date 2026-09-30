@@ -65,7 +65,9 @@ A check for behaviour that only a newer build than the pinned release has reads
 the running component's capability first and calls `skip_test` naming the image
 (`running_image` in `common/helpers.sh`) when the release lacks it. FS-CSI-04
 skips only when the driver served no cache-hit sample for its module after the
-mount and runs an image other than this run's.
+mount, runs an image other than this run's, and its DaemonSet carries ArgoCD's
+tracking-id annotation (`argocd_managed` in `common/helpers.sh`); without that
+annotation the mismatch fails, naming the running and wanted images.
 
 prometheus-client renders no line at all for a metric family with no sample, so
 a metrics check drives the event first and then scrapes the pod that performed

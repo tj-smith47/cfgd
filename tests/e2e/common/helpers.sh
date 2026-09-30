@@ -311,6 +311,13 @@ running_image() {
     printf '%s\n' "${image:-not deployed}"
 }
 
+# True when ArgoCD tracks the cfgd-system workload $1/$2 (its tracking-id
+# annotation is set), so it runs what /db/manifests pins and reverts changes.
+argocd_managed() {
+    kubectl get "$1" "$2" -n cfgd-system \
+        -o jsonpath='{.metadata.annotations.argocd\.argoproj\.io/tracking-id}' 2>/dev/null | grep -q .
+}
+
 # Port-forward to `svc/<name>` or `pod/<name>` in the background and echo the
 # kubectl PID once the local port accepts a connection; stop it with
 # stop_port_forward. A fixed sleep races a slow kubectl start. On timeout, or
