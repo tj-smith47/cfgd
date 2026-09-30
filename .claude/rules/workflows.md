@@ -225,7 +225,8 @@ single-source-of-truth wiring.
   `tests/e2e/common/test-port-forward.sh`, which drives `port_forward`,
   `stop_port_forward`, `http_get_to_file` and `http_evidence` against a
   stand-in kubectl and fails when any script under `tests/e2e/` starts a
-  `kubectl port-forward` outside `common/helpers.sh`.
+  `kubectl port-forward` outside `common/helpers.sh`, or when a `run-all.sh`
+  sources a setup that starts one before installing its EXIT trap.
 - The `rustdoc` job runs `task doc` (`cargo doc --workspace --no-deps
   --document-private-items --all-features` under `RUSTDOCFLAGS="-D warnings"`,
   the flag spelled once as the Taskfile's `RUSTDOC_DENY_WARNINGS` var) as its

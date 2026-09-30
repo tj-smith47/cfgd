@@ -6,9 +6,8 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+# shellcheck source=tests/e2e/common/helpers.sh
 source "$SCRIPT_DIR/common/helpers.sh"
-
-RESET="${1:-}"
 
 echo "=== cfgd E2E Setup ==="
 echo "Registry: $REGISTRY"
@@ -220,7 +219,9 @@ release_lease() {
         kubectl delete lease "$LEASE_NAME" -n "$LEASE_NS" --ignore-not-found >/dev/null 2>&1 || true
     fi
 }
-trap release_lease EXIT
+# The scratch root helpers.sh made is this script's to remove: it exits
+# through this trap, never through cleanup_e2e.
+trap 'release_lease; [ -z "${E2E_SCRATCH_OWNED:-}" ] || rm -rf "$E2E_SCRATCH_OWNED"' EXIT
 
 acquire_lease
 start_lease_renewer
@@ -232,7 +233,8 @@ for check in \
     "create clusterroles" \
     "get nodes" \
     "create csidrivers"; do
-    if ! kubectl auth can-i $check --all-namespaces >/dev/null 2>&1; then
+    read -ra verb <<<"$check"
+    if ! kubectl auth can-i "${verb[@]}" --all-namespaces >/dev/null 2>&1; then
         echo "  MISSING: $check"
         PREFLIGHT_OK=false
     fi
@@ -619,7 +621,7 @@ echo "Applying webhook configurations..."
 # Get the CA bundle from the cert-manager-generated secret
 echo "  Waiting for webhook TLS secret..."
 CA_BUNDLE=""
-for i in $(seq 1 60); do
+for _ in $(seq 1 60); do
     CA_BUNDLE=$(kubectl get secret cfgd-webhook-certs -n cfgd-system \
         -o jsonpath='{.data.ca\.crt}' 2>/dev/null || echo "")
     if [ -n "$CA_BUNDLE" ]; then
@@ -638,7 +640,7 @@ export CA_BUNDLE
 WEBHOOK_FILE=$(mktemp "${RUNNER_TEMP:-/tmp}/cfgd-e2e-webhooks.XXXXXX.yaml")
 # Chain both cleanups into the single EXIT trap (the lease release is already
 # registered) — a bare `trap ... EXIT` here would drop the lease release.
-trap 'rm -f "$WEBHOOK_FILE"; release_lease' EXIT
+trap 'rm -f "$WEBHOOK_FILE"; release_lease; [ -z "${E2E_SCRATCH_OWNED:-}" ] || rm -rf "$E2E_SCRATCH_OWNED"' EXIT
 cat >"$WEBHOOK_FILE" <<WEBHOOKEOF
 apiVersion: v1
 kind: Service

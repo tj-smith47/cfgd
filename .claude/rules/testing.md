@@ -145,14 +145,21 @@ fixtures under `.claude/scripts/audit-tests/` hold one case per form for
 Every `kubectl port-forward` under `tests/e2e/` is started by `port_forward`
 in `tests/e2e/common/helpers.sh` (target `svc/<name>` or `pod/<name>`) and
 ended by `stop_port_forward`. The helper returns the PID only once the local
-port accepts a connection, and on a timeout or an early kubectl exit prints
-kubectl's own output and returns 1; a fixed `sleep` and a discarded stderr are
-what left a metrics case failing with nothing to diagnose. A case that scrapes
-an endpoint and asserts on the body fetches it with `http_get_to_file` and puts
-`http_evidence` (status, content type, line count, first 15 lines) in every
-fail reason. `tests/e2e/common/test-port-forward.sh`, run by
-`task e2e:tags:check`, drives the helpers against a stand-in kubectl and fails
-on any port-forward started outside them.
+port accepts a connection (`E2E_PORT_FORWARD_TRIES` half-second probes, 30 by
+default), and on a timeout or an early kubectl exit prints kubectl's own output
+and returns 1; a fixed `sleep` and a discarded stderr are what left a metrics
+case failing with nothing to diagnose. `stop_port_forward` sends SIGKILL to a
+kubectl still running 5s after SIGTERM. A case that scrapes an endpoint and
+asserts on the body fetches it with `http_get_to_file` and puts
+`http_evidence` (status, content type, line count, first 15 lines, and curl's
+exit code and error when nothing answered) in every fail reason; a metric
+check matches the sample line (`^name(\{| )`), never the bare name, which the
+`# HELP` and `# TYPE` lines also carry. A `run-all.sh` whose setup starts a
+port-forward installs its EXIT trap before sourcing that setup.
+`tests/e2e/common/test-port-forward.sh`, run by `task e2e:tags:check`, drives
+the helpers against a stand-in kubectl, fails on any port-forward started
+outside them (a line continued from the one before and `"$KUBECTL"` included),
+and fails on a runner that sources such a setup before its trap.
 
 ## A test never inherits its terminal shape from the ambient one
 

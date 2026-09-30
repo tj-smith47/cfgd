@@ -2,7 +2,8 @@
 # Checks the port-forward and scrape helpers in helpers.sh without a cluster:
 # port_forward returns only once the local port accepts a connection and keeps
 # kubectl's output for a failure, the scrape helpers keep a response's status,
-# content type and body, and no suite starts a port-forward of its own.
+# content type and body, no suite starts a port-forward of its own, and a
+# runner installs its EXIT trap before a setup that starts one.
 #
 # Usage: tests/e2e/common/test-port-forward.sh
 set -euo pipefail
@@ -20,15 +21,16 @@ fail() {
 }
 
 # A stand-in kubectl on PATH. FAKE_PF_MODE picks how its port-forward behaves:
-# listen binds the local port, exit fails the way a missing service does, and
-# silent stays up without ever binding.
+# listen binds the local port, stubborn does too but ignores SIGTERM, exit
+# fails the way a missing service does, and silent stays up without binding.
 mkdir -p "$scratch/bin"
 cat > "$scratch/bin/kubectl" <<'FAKE'
 #!/usr/bin/env bash
 local_port="${*: -1}"
 local_port="${local_port%%:*}"
 case "$FAKE_PF_MODE" in
-    listen)
+    listen | stubborn)
+        [ "$FAKE_PF_MODE" = listen ] || trap '' TERM
         echo "Forwarding from 127.0.0.1:$local_port -> 1"
         exec python3 -c '
 import socket, sys
@@ -90,16 +92,30 @@ fi
 
 port="$(free_port)"
 # shellcheck disable=SC2016 # the inner script expands its own positional args
-out="$(in_helpers FAKE_PF_MODE=silent FAKE_PF_PIDFILE="$scratch/silent.pid" bash -c '
+out="$(in_helpers FAKE_PF_MODE=silent FAKE_PF_PIDFILE="$scratch/silent.pid" E2E_PORT_FORWARD_TRIES=2 bash -c '
     source "$1/common/helpers.sh"
     if port_forward ns pod/cfgd-x "$2" 80 >/dev/null; then echo returned-0; else echo returned-1; fi
     if kill -0 "$(cat "$3")" 2>/dev/null; then echo leaked; else echo reaped; fi
 ' _ "$e2e_root" "$port" "$scratch/silent.pid" 2>&1)"
-if grep -qx 'returned-1' <<<"$out" && grep -qF 'did not accept a connection' <<<"$out" \
+if grep -qx 'returned-1' <<<"$out" && grep -qF 'did not accept a connection within 1s' <<<"$out" \
     && grep -qx 'reaped' <<<"$out"; then
-    pass "port_forward times out, says so and stops kubectl when the port never opens"
+    pass "port_forward times out after E2E_PORT_FORWARD_TRIES probes, says so and stops kubectl"
 else
-    fail "port_forward silent: got '$out' (want returned-1, the timeout message, reaped)"
+    fail "port_forward silent: got '$out' (want returned-1, the 1s timeout message, reaped)"
+fi
+
+port="$(free_port)"
+# shellcheck disable=SC2016 # the inner script expands its own positional args
+out="$(in_helpers FAKE_PF_MODE=stubborn bash -c '
+    source "$1/common/helpers.sh"
+    pid="$(port_forward ns svc/cfgd-metrics "$2" 8443)" || { echo "returned $?"; exit 0; }
+    stop_port_forward "$pid"
+    if kill -0 "$pid" 2>/dev/null; then echo alive; else echo stopped; fi
+' _ "$e2e_root" "$port" 2>&1)"
+if grep -q 'ignored SIGTERM, sending SIGKILL$' <<<"$out" && [ "$(tail -n 1 <<<"$out")" = stopped ]; then
+    pass "stop_port_forward sends SIGKILL to a kubectl that ignores SIGTERM"
+else
+    fail "stop_port_forward stubborn: got '$out' (want the SIGKILL message, then stopped)"
 fi
 
 # shellcheck disable=SC2016 # the inner script expands its own positional args
@@ -119,11 +135,14 @@ out="$(in_helpers bash -c '
     source "$1/common/helpers.sh"
     http_get_to_file "http://127.0.0.1:$2/metrics" "$3"
     [ -f "$3" ] && echo body-kept
+    http_evidence 000 "" "$3"
 ' _ "$e2e_root" "$port" "$scratch/unreachable.txt" 2>&1)"
-if [ "$out" = "$(printf '000\nbody-kept')" ]; then
-    pass "http_get_to_file reports 000 and leaves an empty body when nothing answers"
+if [ "$(head -n 2 <<<"$out")" = "$(printf '000\nbody-kept')" ] \
+    && grep -qE '^curl exit 7: curl: \(7\) ' <<<"$out" \
+    && grep -qFx 'HTTP 000, content-type none, 0 body lines; first 15:' <<<"$out"; then
+    pass "http_get_to_file reports 000, keeps an empty body, and http_evidence shows curl's error"
 else
-    fail "http_get_to_file unreachable: got '$out' (want 000, body-kept)"
+    fail "http_get_to_file unreachable: got '$out' (want 000, body-kept, curl exit 7 with its error)"
 fi
 
 seq 1 20 | sed 's/^/line /' > "$scratch/body.txt"
@@ -140,11 +159,13 @@ else
 fi
 
 # A port-forward started outside port_forward goes back to a fixed sleep and a
-# discarded stderr, so the helper is the only place one may start. grep exits 1
-# for no match and 2 for an error; an error must fail the check.
+# discarded stderr, so the helper is the only place one may start. The word is
+# matched on its own so a command continued from the line before, or run
+# through "$KUBECTL", is still caught. grep exits 1 for no match and 2 for an
+# error; an error must fail the check.
 scan_strays() {
     local out rc=0 line
-    out="$(grep -rnE --include='*.sh' 'kubectl[^#]*port-forward' "$1" 2>&1)" || rc=$?
+    out="$(grep -rnE --include='*.sh' '(^|[[:space:]"])port-forward([[:space:]"]|$)' "$1" 2>&1)" || rc=$?
     if [ "$rc" -gt 1 ]; then
         printf 'grep exited %s: %s\n' "$rc" "$out" >&2
         return 2
@@ -173,9 +194,12 @@ mkdir -p "$fixtures"
 printf '%s\n' 'kubectl port-forward -n ns svc/x 1:1 >/dev/null 2>&1 &' > "$fixtures/bare.sh"
 # shellcheck disable=SC2016 # the fixture holds the literal text a script would contain
 printf '%s\n' 'kubectl -n ns port-forward "pod/$P" 1:1 &' > "$fixtures/reordered.sh"
+printf '%s\n' "kubectl -n ns \\" '    port-forward svc/x 1:1 &' > "$fixtures/continued.sh"
+# shellcheck disable=SC2016 # the fixture holds the literal text a script would contain
+printf '%s\n' '"$KUBECTL" port-forward svc/x 1:1 &' > "$fixtures/variable.sh"
 printf '%s\n' '    # kubectl port-forward is started by the helper' > "$fixtures/comment.sh"
 if found="$(scan_strays "$fixtures")"; then
-    for name in bare.sh reordered.sh; do
+    for name in bare.sh reordered.sh continued.sh variable.sh; do
         if grep -qF -- "$fixtures/$name:" <<<"$found"; then
             pass "scan reports $name"
         else
@@ -190,6 +214,20 @@ if found="$(scan_strays "$fixtures")"; then
 else
     fail "the port-forward scan could not read its fixtures"
 fi
+
+# A setup that starts a port-forward can fail part way under set -e, so the
+# run-all.sh that sources it must already have the EXIT trap that stops it.
+for runner in "$e2e_root"/*/scripts/run-all.sh; do
+    setup_line="$(grep -nE '^source .*/setup-[a-z-]+-env\.sh"$' "$runner" | head -n 1)" || continue
+    setup="$(dirname "$runner")/$(basename "$(sed -E 's/.*\/(setup-[a-z-]+-env\.sh)"$/\1/' <<<"$setup_line")")"
+    grep -q 'port_forward ' "$setup" || continue
+    trap_at="$(grep -nE '^trap .* EXIT$' "$runner" | head -n 1 | cut -d: -f1)"
+    if [ -n "$trap_at" ] && [ "$trap_at" -lt "${setup_line%%:*}" ]; then
+        pass "${runner#"$e2e_root"/} installs its EXIT trap before sourcing $(basename "$setup")"
+    else
+        fail "${runner#"$e2e_root"/} sources $(basename "$setup"), which starts a port-forward, before its EXIT trap"
+    fi
+done
 
 if scan_strays "$scratch/no-such-dir" >/dev/null 2>&1; then
     fail "scan of an unreadable path passed"

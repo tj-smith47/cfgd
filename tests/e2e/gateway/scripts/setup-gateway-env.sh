@@ -6,6 +6,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=tests/e2e/common/helpers.sh
 source "$SCRIPT_DIR/../../common/helpers.sh"
 
 command -v jq >/dev/null 2>&1 || { echo "ERROR: jq is required for gateway tests"; exit 1; }

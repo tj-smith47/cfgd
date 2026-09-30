@@ -8,6 +8,7 @@ E2E_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 REPO_ROOT="$(cd "$E2E_ROOT/../.." && pwd)"
 
 # Before anything below reads $HOME, a registry credential or a tool config.
+# shellcheck source=tests/e2e/common/scratch-home.sh
 source "$E2E_ROOT/common/scratch-home.sh"
 
 CFGD_NAMESPACE="${CFGD_NAMESPACE:-cfgd-system}"
@@ -86,8 +87,8 @@ E2E_RUN_LABEL="cfgd.io/e2e-run=$E2E_RUN_ID"
 # Job-specific label for cluster-scoped resources (prevents parallel job cleanup races)
 E2E_JOB_LABEL="cfgd.io/e2e-job=$E2E_NAMESPACE"
 # YAML-friendly forms for embedding in heredoc labels (key: "value" instead of key=value)
-E2E_RUN_LABEL_YAML="cfgd.io/e2e-run: \"$E2E_RUN_ID\""
-E2E_JOB_LABEL_YAML="cfgd.io/e2e-job: \"$E2E_NAMESPACE\""
+export E2E_RUN_LABEL_YAML="cfgd.io/e2e-run: \"$E2E_RUN_ID\""
+export E2E_JOB_LABEL_YAML="cfgd.io/e2e-job: \"$E2E_NAMESPACE\""
 
 TEST_POD=""
 
@@ -304,6 +305,7 @@ wait_for_daemonset() {
 # kubectl PID once the local port accepts a connection; stop it with
 # stop_port_forward. A fixed sleep races a slow kubectl start. On timeout, or
 # when kubectl exits first, prints kubectl's own output to stderr and returns 1.
+# E2E_PORT_FORWARD_TRIES sets how many half-second probes are made (default 30).
 port_forward() {
     local namespace="$1"
     local target="$2"
@@ -323,8 +325,8 @@ port_forward() {
     kubectl port-forward -n "$namespace" "$target" \
         "$local_port:$remote_port" > "$log" 2>&1 &
     local pid=$!
-    local tries=0
-    while [ "$tries" -lt 30 ]; do
+    local tries=0 max_tries="${E2E_PORT_FORWARD_TRIES:-30}"
+    while [ "$tries" -lt "$max_tries" ]; do
         if ! kill -0 "$pid" 2>/dev/null; then
             echo "port_forward: kubectl port-forward $target exited before localhost:$local_port opened:" >&2
             sed 's/^/    /' "$log" >&2
@@ -337,7 +339,7 @@ port_forward() {
         sleep 0.5
         tries=$((tries + 1))
     done
-    echo "port_forward: localhost:$local_port for $target did not accept a connection within 15s; kubectl said:" >&2
+    echo "port_forward: localhost:$local_port for $target did not accept a connection within $((max_tries / 2))s; kubectl said:" >&2
     sed 's/^/    /' "$log" >&2
     stop_port_forward "$pid"
     return 1
@@ -345,12 +347,24 @@ port_forward() {
 
 # Stop a port_forward and return once kubectl has exited. A PID captured
 # through a command substitution is not this shell's child, so `wait` cannot
-# reap it and its exit is watched for instead, for up to 5s.
+# reap it and its exit is watched for instead: up to 5s after SIGTERM, then
+# SIGKILL and up to 1s more, so no tunnel outlives the suite.
 stop_port_forward() {
-    local pid="$1" tries=0
+    local pid="$1"
     kill "$pid" 2>/dev/null || return 0
     wait "$pid" 2>/dev/null || true
-    while kill -0 "$pid" 2>/dev/null && [ "$tries" -lt 50 ]; do
+    if ! _wait_gone "$pid" 50; then
+        echo "stop_port_forward: $pid ignored SIGTERM, sending SIGKILL" >&2
+        kill -9 "$pid" 2>/dev/null || true
+        _wait_gone "$pid" 10 || echo "stop_port_forward: $pid still running after SIGKILL" >&2
+    fi
+}
+
+# Return 0 once PID $1 no longer exists, checking every 0.1s up to $2 times.
+_wait_gone() {
+    local tries=0
+    while kill -0 "$1" 2>/dev/null; do
+        [ "$tries" -lt "$2" ] || return 1
         sleep 0.1
         tries=$((tries + 1))
     done
@@ -358,19 +372,26 @@ stop_port_forward() {
 
 # GET $1 into file $2 and print "<http_code> <content_type>"; the code is 000
 # when no response arrived. The body is kept whatever the status, so a failed
-# check can show what the endpoint actually served.
+# check can show what the endpoint actually served; curl's exit code and
+# stderr go to "$2.err" for the case where nothing did.
 http_get_to_file() {
-    local meta
-    meta="$(curl -s --max-time 10 -o "$2" -w '%{http_code} %{content_type}' "$1" 2>/dev/null)" || true
+    local meta rc=0
+    meta="$(curl -sS --max-time 10 -o "$2" -w '%{http_code} %{content_type}' "$1" 2> "$2.err.tmp")" || rc=$?
+    { echo "$rc"; cat "$2.err.tmp"; } > "$2.err"
+    rm -f "$2.err.tmp"
     [ -f "$2" ] || : > "$2"
     meta="${meta% }"
     printf '%s\n' "${meta:-000}"
 }
 
 # Describe a response kept by http_get_to_file for a fail reason: status,
-# content type, line count and the first 15 lines of the body.
+# content type, line count and the first 15 lines of the body, or curl's exit
+# code and error when no response arrived.
 http_evidence() {
     local code="$1" content_type="$2" body="$3"
+    if [ "$code" = "000" ] && [ -f "$body.err" ]; then
+        printf 'curl exit %s: %s\n' "$(head -n 1 "$body.err")" "$(tail -n +2 "$body.err" | tr '\n' ' ' | sed 's/ *$//')"
+    fi
     printf 'HTTP %s, content-type %s, %s body lines; first 15:\n' \
         "$code" "${content_type:-none}" "$(wc -l < "$body" | tr -d ' ')"
     head -n 15 "$body" | sed 's/^/    | /'
@@ -394,8 +415,8 @@ wait_for_url() {
 
 # --- OCI / Module helpers ---
 
-CSI_DRIVER_NAME="csi.cfgd.io"
-MODULES_ANNOTATION="cfgd.io/modules"
+export CSI_DRIVER_NAME="csi.cfgd.io"
+export MODULES_ANNOTATION="cfgd.io/modules"
 
 # Create a minimal test module directory for OCI push testing.
 # Usage: create_test_module_dir /tmp/test-module "my-module" "1.0.0"
@@ -441,14 +462,14 @@ wait_for_k8s_field() {
     local expected="${5:-}"
     local timeout="${6:-60}"
 
-    local ns_flag=""
-    [ -n "$namespace" ] && ns_flag="-n $namespace"
+    local ns_args=()
+    [ -z "$namespace" ] || ns_args=(-n "$namespace")
 
     local deadline=$((SECONDS + timeout))
     local value=""
 
     while [ $SECONDS -lt $deadline ]; do
-        value=$(kubectl get "$kind" "$name" $ns_flag \
+        value=$(kubectl get "$kind" "$name" "${ns_args[@]}" \
             -o jsonpath="$jsonpath" 2>/dev/null || echo "")
 
         if [ -z "$expected" ]; then
