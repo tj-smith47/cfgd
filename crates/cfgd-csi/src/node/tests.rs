@@ -1245,3 +1245,71 @@ async fn unusable_paths_are_rejected_with_the_value_and_the_reason() {
         );
     }
 }
+
+/// A mount served from the node cache counts a hit on whichever call makes it:
+/// kubelet sends an inline ephemeral volume, the webhook's injection, straight
+/// to NodePublishVolume, and a persistent one through NodeStageVolume.
+#[tokio::test]
+#[serial_test::serial]
+async fn a_cache_hit_counts_on_the_publish_path_and_the_stage_path() {
+    let _g =
+        cfgd_core::test_helpers::EnvVarGuard::unset(cfgd_core::CFGD_CSI_ALLOWED_REGISTRIES_ENV);
+    let dir = tempfile::tempdir().unwrap();
+    let cache_root = dir.path().join("cache");
+    let entry = cache_root.join("m").join("v1");
+    std::fs::create_dir_all(&entry).unwrap();
+    std::fs::write(entry.join(crate::cache::COMPLETE_SENTINEL), "").unwrap();
+
+    let mut registry = prometheus_client::registry::Registry::default();
+    let metrics = Arc::new(CsiMetrics::new(&mut registry));
+    let node = CfgdNode::new(test_cache(&cache_root), metrics, "test-node".to_string());
+    let context: HashMap<String, String> = [
+        ("module".to_string(), "m".to_string()),
+        ("version".to_string(), "v1".to_string()),
+    ]
+    .into_iter()
+    .collect();
+
+    // A target under a regular file cannot be created, so the publish stops
+    // after the cache lookup and before any bind mount.
+    let blocker = dir.path().join("blocker");
+    std::fs::write(&blocker, "").unwrap();
+    let publish = NodePublishVolumeRequest {
+        volume_id: "vol-1".to_string(),
+        target_path: blocker.join("target").to_str().unwrap().to_string(),
+        volume_context: context.clone(),
+        ..Default::default()
+    };
+    let err = node
+        .node_publish_volume(Request::new(publish))
+        .await
+        .expect_err("a target under a regular file cannot be created");
+    assert!(
+        err.message().contains("cannot create target dir"),
+        "the publish must stop at the target, after the cache lookup: {}",
+        err.message()
+    );
+    let hits = |registry: &prometheus_client::registry::Registry| {
+        let mut buf = String::new();
+        prometheus_client::encoding::text::encode(&mut buf, registry).unwrap();
+        buf
+    };
+    let after_publish = hits(&registry);
+    assert!(
+        after_publish.contains("\ncfgd_csi_cache_hits_total{module=\"m\"} 1\n"),
+        "{after_publish}"
+    );
+
+    let stage = NodeStageVolumeRequest {
+        volume_id: "vol-2".to_string(),
+        staging_target_path: dir.path().join("staging").to_str().unwrap().to_string(),
+        volume_context: context,
+        ..Default::default()
+    };
+    node.node_stage_volume(Request::new(stage)).await.unwrap();
+    let after_stage = hits(&registry);
+    assert!(
+        after_stage.contains("\ncfgd_csi_cache_hits_total{module=\"m\"} 2\n"),
+        "{after_stage}"
+    );
+}

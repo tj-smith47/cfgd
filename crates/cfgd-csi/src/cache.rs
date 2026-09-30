@@ -5,7 +5,7 @@ use cfgd_core::PathDisplayExt;
 use crate::errors::CsiError;
 
 const LAST_ACCESS_FILE: &str = ".cfgd-last-access";
-const COMPLETE_SENTINEL: &str = ".cfgd-complete";
+pub(crate) const COMPLETE_SENTINEL: &str = ".cfgd-complete";
 
 /// Node-level LRU cache for OCI module artifacts.
 ///

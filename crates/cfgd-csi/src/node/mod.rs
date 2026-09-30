@@ -20,6 +20,47 @@ use crate::csi::v1::{
 };
 use crate::metrics::{CsiMetrics, ModuleLabels, PublishLabels, PullLabels};
 
+/// Resolve `module@version` through the node cache, pulling on a miss, and
+/// record the pull's duration (labelled with whether the entry was already
+/// cached), a cache hit when it was, and the cache's size afterwards.
+///
+/// Both NodeStageVolume and NodePublishVolume go through here: kubelet never
+/// stages an inline ephemeral volume, which is how the webhook injects modules,
+/// so a publish is the only call such a mount makes.
+fn pull_through_cache(
+    cache: &Cache,
+    metrics: &CsiMetrics,
+    module: &str,
+    version: &str,
+    oci_ref: &str,
+) -> Result<std::path::PathBuf, Status> {
+    let start = std::time::Instant::now();
+    let cached = cache.get(module, version).is_some();
+    let source = cache
+        .get_or_pull(module, version, oci_ref)
+        .map_err(|e| Status::internal(format!("cache pull failed: {e}")))?;
+
+    metrics
+        .pull_duration_seconds
+        .get_or_create(&PullLabels {
+            module: module.to_string(),
+            cached: cached.to_string(),
+        })
+        .observe(start.elapsed().as_secs_f64());
+    if cached {
+        metrics
+            .cache_hits_total
+            .get_or_create(&ModuleLabels {
+                module: module.to_string(),
+            })
+            .inc();
+    }
+    metrics
+        .cache_size_bytes
+        .set(cache.current_size_bytes() as i64);
+    Ok(source)
+}
+
 pub struct CfgdNode {
     cache: Arc<Cache>,
     metrics: Arc<CsiMetrics>,
@@ -176,33 +217,7 @@ impl Node for CfgdNode {
             "staging volume — pulling to cache"
         );
 
-        let start = std::time::Instant::now();
-        let cached = self.cache.get(module, version).is_some();
-        self.cache
-            .get_or_pull(module, version, &oci_ref)
-            .map_err(|e| Status::internal(format!("cache pull failed: {e}")))?;
-
-        let duration = start.elapsed().as_secs_f64();
-        self.metrics
-            .pull_duration_seconds
-            .get_or_create(&PullLabels {
-                module: module.to_string(),
-                cached: cached.to_string(),
-            })
-            .observe(duration);
-
-        if cached {
-            self.metrics
-                .cache_hits_total
-                .get_or_create(&ModuleLabels {
-                    module: module.to_string(),
-                })
-                .inc();
-        }
-
-        self.metrics
-            .cache_size_bytes
-            .set(self.cache.current_size_bytes() as i64);
+        pull_through_cache(&self.cache, &self.metrics, module, version, &oci_ref)?;
 
         Ok(Response::new(NodeStageVolumeResponse {}))
     }
@@ -297,9 +312,7 @@ impl Node for CfgdNode {
         // long-line-ok: a hatch is read off its own line, so it cannot wrap
         // spawn-blocking-ok: closure resolves no home paths (cache pull + bind mount on kubelet-supplied paths)
         tokio::task::spawn_blocking(move || {
-            let source = cache
-                .get_or_pull(&module, &version, &oci_ref_owned)
-                .map_err(|e| Status::internal(format!("cache pull failed: {e}")))?;
+            let source = pull_through_cache(&cache, &metrics, &module, &version, &oci_ref_owned)?;
 
             std::fs::create_dir_all(&target_path_owned)
                 .map_err(|e| Status::internal(format!("cannot create target dir: {e}")))?;
