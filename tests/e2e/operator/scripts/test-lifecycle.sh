@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # Operator E2E tests: Controller Lifecycle
 # Sourced by run-all.sh — do NOT set traps or pipefail here.
 
@@ -15,18 +16,24 @@ if LC01_PF_PID=$(port_forward cfgd-system svc/cfgd-metrics "$LC01_LOCAL_PORT" 84
     read -r LC01_CODE LC01_CONTENT_TYPE \
         <<<"$(http_get_to_file "http://localhost:$LC01_LOCAL_PORT/metrics" "$LC01_BODY")"
     stop_port_forward "$LC01_PF_PID"
-    LC01_EVIDENCE="$(http_evidence "$LC01_CODE" "${LC01_CONTENT_TYPE:-}" "$LC01_BODY")"
+    # The service picks a pod per connection, so a failure names the endpoints
+    # and pods behind it to show which one could have served the body.
+    LC01_EVIDENCE="$(http_evidence "$LC01_CODE" "${LC01_CONTENT_TYPE:-}" "$LC01_BODY"
+        echo "endpointslices behind svc/cfgd-metrics:"
+        kubectl get endpointslices -n cfgd-system -l kubernetes.io/service-name=cfgd-metrics -o wide 2>&1 | sed 's/^/    /'
+        echo "operator pods:"
+        kubectl get pods -n cfgd-system -l app=cfgd-operator -o wide 2>&1 | sed 's/^/    /')"
 
     if [[ "$LC01_CODE" != 2* ]]; then
         fail_test "OP-LC-01" "Failed to reach metrics endpoint: $LC01_EVIDENCE"
-    elif grep -q "cfgd_operator_reconciliations_total" "$LC01_BODY"; then
+    elif grep -qE '^cfgd_operator_reconciliations_total(\{| )' "$LC01_BODY"; then
         pass_test "OP-LC-01"
     else
         echo "  Metrics endpoint responded ($(wc -l < "$LC01_BODY" | tr -d ' ') lines)"
         echo "  Looking for cfgd_operator_ prefix..."
         # prometheus-client omits a family until its first observation, so any
         # other cfgd_operator_ family proves the registry is served.
-        if grep -q "cfgd_operator_" "$LC01_BODY"; then
+        if grep -q '^cfgd_operator_' "$LC01_BODY"; then
             pass_test "OP-LC-01"
         else
             fail_test "OP-LC-01" "Metrics endpoint responded but no cfgd_operator_ metrics found: $LC01_EVIDENCE"
