@@ -277,10 +277,11 @@ tasks:
       - sh scripts/tests/test-install-dir.sh
 
   e2e:tags:check:
-    desc: Verify the e2e image tag map resolves each image to IMAGE_TAG or its own override, that port_forward waits for its tunnel and keeps kubectl's output, and that no e2e script composes an image reference or starts a port-forward outside common/helpers.sh (no cluster needed).
+    desc: Verify the e2e image tag map resolves each image to IMAGE_TAG or its own override, that port_forward waits for its tunnel and keeps kubectl's output, that the counter readers accept both sample spellings, and that no e2e script composes an image reference, starts a port-forward or matches a counter sample outside common/helpers.sh (no cluster needed).
     cmds:
       - bash tests/e2e/common/test-image-tags.sh
       - bash tests/e2e/common/test-port-forward.sh
+      - bash tests/e2e/common/test-metrics.sh
 
   chart:tags:check:
     desc: Verify every first-party image the chart renders by default names the version its crate has released, or the one the release cut from this commit publishes (CI drift guard).

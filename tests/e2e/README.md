@@ -54,3 +54,9 @@ them, and installs the CSI plugin with Helm only on a cluster where ArgoCD does
 not own the `cfgd-csi-csi` DaemonSet. When `CFGD_DEPLOY_MANIFESTS` names a tree that
 `task deploy:operator` applied, that tree owns the operator and gateway Deployments,
 and setup warns the same way when `OPERATOR_IMAGE_TAG` is set.
+
+Because those suites run a release, a check reads a counter through
+`metric_sample_lines` or `metric_sample_value` in `common/helpers.sh`, which
+accept both the `<family>_total` sample and the `<family>_total_total` sample an
+older release renders. `common/test-metrics.sh` (run by `task e2e:tags:check`)
+fails when a script matches a counter sample by hand.

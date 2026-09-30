@@ -274,8 +274,7 @@ csi04_hits() {
     stop_port_forward "$pid"
     printf '%s %s\n' "$code" "${content_type:-}" > "$body.meta"
     [[ "$code" == 2* ]] || return 1
-    awk -v s="cfgd_csi_cache_hits_total{module=\"csi-test-mod-${E2E_RUN_ID}\"}" \
-        '$1 == s { v = $2 } END { print v + 0 }' "$body"
+    metric_sample_value cfgd_csi_cache_hits "module=\"csi-test-mod-${E2E_RUN_ID}\"" "$body"
 }
 
 # Describe what csi04_hits kept in $1 for scraping pod $2.
@@ -540,7 +539,7 @@ else
 
             if [[ "$CSI07_CODE" != 2* ]]; then
                 fail_test "FS-CSI-07" "/metrics did not answer 2xx: $CSI07_EVIDENCE"
-            elif grep -qE '^cfgd_csi_volume_publish_total(\{| )' "$CSI07_BODY"; then
+            elif metric_sample_lines cfgd_csi_volume_publish "$CSI07_BODY" > /dev/null; then
                 pass_test "FS-CSI-07"
             elif grep -q '^cfgd_csi_' "$CSI07_BODY"; then
                 # Metrics endpoint works and has cfgd_csi_ metrics, but

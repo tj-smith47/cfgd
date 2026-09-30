@@ -402,6 +402,26 @@ http_evidence() {
     head -n 15 "$body" | sed 's/^/    | /'
 }
 
+# Print every sample line of counter family $1 in the exposition body in file
+# $2; returns 1 when there is none. A counter family renders its samples as
+# `<family>_total`, but a release registered with the name already ending in
+# `_total` renders `<family>_total_total`, and the operator and CSI suites run
+# whichever release ArgoCD pins, so both spellings are read.
+metric_sample_lines() {
+    grep -E "^$1_total(_total)?(\{| )" "$2"
+}
+
+# Print the value of counter family $1's sample with label set $2 (the text
+# between the braces, e.g. `module="m",result="success"`; empty for a sample
+# without labels) in the body in file $3, or 0 when that sample is absent.
+# Reads the same two spellings as metric_sample_lines.
+metric_sample_value() {
+    local labels=""
+    [ -z "$2" ] || labels="{$2}"
+    awk -v a="$1_total$labels" -v b="$1_total_total$labels" \
+        '$1 == a || $1 == b { v = $2 } END { print v + 0 }' "$3"
+}
+
 wait_for_url() {
     local url="$1"
     local timeout="${2:-60}"

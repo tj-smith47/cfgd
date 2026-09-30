@@ -26,7 +26,7 @@ if LC01_PF_PID=$(port_forward cfgd-system svc/cfgd-metrics "$LC01_LOCAL_PORT" 84
 
     if [[ "$LC01_CODE" != 2* ]]; then
         fail_test "OP-LC-01" "Failed to reach metrics endpoint: $LC01_EVIDENCE"
-    elif grep -qE '^cfgd_operator_reconciliations_total(\{| )' "$LC01_BODY"; then
+    elif metric_sample_lines cfgd_operator_reconciliations "$LC01_BODY" > /dev/null; then
         pass_test "OP-LC-01"
     else
         echo "  Metrics endpoint responded ($(wc -l < "$LC01_BODY" | tr -d ' ') lines)"
