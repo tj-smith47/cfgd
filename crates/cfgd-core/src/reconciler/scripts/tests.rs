@@ -865,6 +865,15 @@ fn an_interactive_spawn_shares_the_callers_process_group() {
     let _ = child.wait();
 }
 
+/// Run `body` as a guard in `dir`, returning whether its timeout fired.
+fn guard_timed_out(body: &str, dir: &std::path::Path, timeout: std::time::Duration) -> bool {
+    match run_guard_command(body, ScriptShell::Auto, dir, &[], timeout) {
+        Ok(_) => false,
+        Err(e) if e.to_string().contains("timed out") => true,
+        Err(e) => panic!("the guard failed on something other than its timeout: {e}"),
+    }
+}
+
 /// A guard that times out is killed with everything it started. The body
 /// starts a grandchild that writes a marker once the timeout has long fired;
 /// killing only the shell cfgd spawned leaves that grandchild running, holding
@@ -907,6 +916,25 @@ fn a_timed_out_guard_kills_every_process_it_started() {
     assert!(
         !marker.exists(),
         "the guard's grandchild outlived the timeout and wrote {shown}"
+    );
+}
+
+/// The shell a timed-out guard started exits on SIGTERM, but a grandchild
+/// ignoring SIGTERM does not, so the group is sent SIGKILL once the grace
+/// period is up whether or not its leader is still there.
+#[cfg(unix)]
+#[test]
+fn a_timed_out_guard_kills_a_grandchild_that_ignores_sigterm() {
+    let tmp = tempfile::tempdir().unwrap();
+    let marker = tmp.path().join("grandchild-ignored-sigterm");
+    let shown = marker.display();
+    // An ignored signal stays ignored across exec, so `sleep` ignores it too.
+    let body = format!("sh -c 'trap \"\" TERM; sleep 4; echo x > \"{shown}\"'; true");
+
+    crate::test_helpers::assert_a_timeout_kill_stops_the_write(
+        &marker,
+        std::time::Duration::from_secs(4),
+        |timeout| guard_timed_out(&body, tmp.path(), timeout),
     );
 }
 

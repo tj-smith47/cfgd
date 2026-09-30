@@ -314,20 +314,39 @@ fn output_with_timeout(
     let timed_out = Arc::new(AtomicBool::new(false));
     let timed_out_watchdog = Arc::clone(&timed_out);
 
-    std::thread::spawn(move || {
-        if rx.recv_timeout(timeout).is_err() {
-            timed_out_watchdog.store(true, Ordering::SeqCst);
-            kill.terminate();
-            // SIGTERM-trapping children can hang the wait below indefinitely.
-            // Give them a grace window to flush, then escalate.
-            if rx.recv_timeout(KILL_GRACE_PERIOD).is_err() {
-                kill.force_kill();
-            }
+    let watchdog = std::thread::spawn(move || {
+        if rx.recv_timeout(timeout).is_ok() {
+            return;
         }
+        timed_out_watchdog.store(true, Ordering::SeqCst);
+        kill.terminate();
+        let grace_ends = std::time::Instant::now() + KILL_GRACE_PERIOD;
+        if rx.recv_timeout(KILL_GRACE_PERIOD).is_ok() {
+            if !kill.group_outlives_its_leader() {
+                return;
+            }
+            // The leader exiting on SIGTERM says nothing about the rest of its
+            // group: a descendant that ignores SIGTERM is still running. The
+            // descendants that do exit on it get the whole grace period.
+            // sleep-ok: the end of a grace period raises no event to wait on.
+            std::thread::sleep(grace_ends.saturating_duration_since(std::time::Instant::now()));
+        }
+        kill.force_kill();
     });
 
-    let status = child.wait();
-    let _ = tx.send(());
+    // The leader is reaped only after the watchdog is done with its group:
+    // while it is an unreaped zombie its pid cannot be reused, so the
+    // SIGKILL to `-pid` cannot reach an unrelated group that took the number.
+    let status = if exited_unreaped(&child) {
+        let _ = tx.send(());
+        let _ = watchdog.join();
+        child.wait()
+    } else {
+        let status = child.wait();
+        let _ = tx.send(());
+        let _ = watchdog.join();
+        status
+    };
     let status = status?;
 
     let deadline = std::time::Instant::now() + PIPE_DRAIN_GRACE;
@@ -413,6 +432,42 @@ pub fn command_output_with_timeout(
     command_output_with_timeout_outcome(cmd, timeout).map(|o| o.output)
 }
 
+/// Block until `child` has exited, leaving it unreaped, so its pid stays
+/// reserved until [`std::process::Child::wait`] collects it. `false` when the
+/// platform or the call cannot do that, and the caller reaps as it waits.
+#[cfg(unix)]
+fn exited_unreaped(child: &std::process::Child) -> bool {
+    loop {
+        // SAFETY: an all-zero `siginfo_t` is a valid value of that plain C
+        // struct.
+        let mut info = unsafe { std::mem::zeroed::<libc::siginfo_t>() };
+        // SAFETY: `info` is a writable `siginfo_t` this frame owns, which
+        // `waitid` only writes and does not retain; `WNOWAIT` leaves the child
+        // waitable for the `Child::wait` that follows.
+        let rc = unsafe {
+            libc::waitid(
+                libc::P_PID,
+                child.id() as libc::id_t,
+                &mut info,
+                libc::WEXITED | libc::WNOWAIT,
+            )
+        };
+        if rc == 0 {
+            return true;
+        }
+        if std::io::Error::last_os_error().kind() != std::io::ErrorKind::Interrupted {
+            return false;
+        }
+    }
+}
+
+/// Windows holds the pid for as long as the `Child`'s process handle is open,
+/// and a job is ended by its handle, so nothing needs the child unreaped.
+#[cfg(windows)]
+fn exited_unreaped(_child: &std::process::Child) -> bool {
+    false
+}
+
 /// How a spawned child is killed: alone, or with every process it started.
 ///
 /// Returned by the spawn that made the child, so whether the child leads a
@@ -453,6 +508,16 @@ impl TreeKill {
             Some(job) => job.terminate(),
             None => terminate_process(self.pid),
         }
+    }
+
+    /// Whether processes of the tree can still be running after the child
+    /// itself exited on [`TreeKill::terminate`]: a Unix group can, since
+    /// SIGTERM can be caught or ignored. A job ends as a whole on terminate.
+    pub fn group_outlives_its_leader(&self) -> bool {
+        #[cfg(unix)]
+        return self.grouped;
+        #[cfg(windows)]
+        return false;
     }
 
     /// End the tree after the grace period: SIGKILL to the group (or the

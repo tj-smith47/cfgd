@@ -7390,6 +7390,51 @@ pub fn snapshot_goldens(exts: &[&str]) -> Vec<PathBuf> {
         .collect()
 }
 
+/// Hold a timeout kill to ending a process that writes `marker` about two
+/// seconds after it starts.
+///
+/// `run(timeout)` runs the command under test and returns whether its timeout
+/// fired. It runs twice: with room to finish, which must write the marker (a
+/// body that can never write it would pass the second half whatever the kill
+/// did), then with a 300 ms timeout, after which the marker must stay absent
+/// for `window`.
+pub fn assert_a_timeout_kill_stops_the_write(
+    marker: &Path,
+    window: std::time::Duration,
+    run: impl Fn(std::time::Duration) -> bool,
+) {
+    assert!(
+        !run(std::time::Duration::from_secs(30)),
+        "the command timed out with room to finish"
+    );
+    assert!(
+        marker.exists(),
+        "the command never wrote {}, so a survivor could not be seen",
+        marker.display()
+    );
+    std::fs::remove_file(marker).expect("remove the control run's marker");
+
+    assert!(
+        run(std::time::Duration::from_millis(300)),
+        "the command must outlive a 300 ms timeout"
+    );
+    let deadline = std::time::Instant::now() + window;
+    while std::time::Instant::now() < deadline {
+        assert!(
+            !marker.exists(),
+            "a process the timed-out command started outlived the kill and wrote {}",
+            marker.display()
+        );
+        // sleep-ok: a write that never happens raises no event to wait on.
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    assert!(
+        !marker.exists(),
+        "a process the timed-out command started outlived the kill and wrote {}",
+        marker.display()
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
