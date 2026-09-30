@@ -5,23 +5,32 @@
 echo ""
 echo "=== Controller Lifecycle Tests ==="
 
+# Print the pod holding the operator's leader lease (the operator takes the
+# lease under its POD_NAME); prints nothing when the lease has no holder.
+operator_leader() {
+    kubectl get lease cfgd-operator-leader -n cfgd-system \
+        -o jsonpath='{.spec.holderIdentity}' 2>/dev/null || true
+}
+
 # =================================================================
 # OP-LC-01: Operator metrics endpoint
 # =================================================================
 begin_test "OP-LC-01: Operator metrics endpoint"
 
+# Only the leader reconciles, and prometheus-client renders no line for a
+# family with no sample, so a standby replica serves no reconciliation sample.
 LC01_LOCAL_PORT=18443
 LC01_BODY="$CLI_SCRATCH/op-lc-01-metrics.txt"
-if LC01_PF_PID=$(port_forward cfgd-system svc/cfgd-metrics "$LC01_LOCAL_PORT" 8443); then
+LC01_LEADER="$(operator_leader)"
+echo "  Leader pod: ${LC01_LEADER:-none}"
+if [ -z "$LC01_LEADER" ]; then
+    fail_test "OP-LC-01" "Leader election lease cfgd-operator-leader has no holderIdentity, so no pod is known to reconcile"
+elif LC01_PF_PID=$(port_forward cfgd-system "pod/$LC01_LEADER" "$LC01_LOCAL_PORT" 8443); then
     read -r LC01_CODE LC01_CONTENT_TYPE \
         <<<"$(http_get_to_file "http://localhost:$LC01_LOCAL_PORT/metrics" "$LC01_BODY")"
     stop_port_forward "$LC01_PF_PID"
-    # The service picks a pod per connection, so a failure names the endpoints
-    # and pods behind it to show which one could have served the body.
     LC01_EVIDENCE="$(http_evidence "$LC01_CODE" "${LC01_CONTENT_TYPE:-}" "$LC01_BODY"
-        echo "endpointslices behind svc/cfgd-metrics:"
-        kubectl get endpointslices -n cfgd-system -l kubernetes.io/service-name=cfgd-metrics -o wide 2>&1 | sed 's/^/    /'
-        echo "operator pods:"
+        echo "scraped pod/$LC01_LEADER; operator pods:"
         kubectl get pods -n cfgd-system -l app=cfgd-operator -o wide 2>&1 | sed 's/^/    /')"
 
     if [[ "$LC01_CODE" != 2* ]]; then
@@ -30,10 +39,10 @@ if LC01_PF_PID=$(port_forward cfgd-system svc/cfgd-metrics "$LC01_LOCAL_PORT" 84
     elif metric_sample_lines cfgd_operator_reconciliations "$LC01_BODY" > /dev/null; then
         pass_test "OP-LC-01"
     else
-        fail_test "OP-LC-01" "Metrics endpoint responded but carries no cfgd_operator_reconciliations sample: $LC01_EVIDENCE"
+        fail_test "OP-LC-01" "Leader's metrics endpoint responded but carries no cfgd_operator_reconciliations sample: $LC01_EVIDENCE"
     fi
 else
-    fail_test "OP-LC-01" "Port-forward to svc/cfgd-metrics never opened localhost:$LC01_LOCAL_PORT (kubectl output above)"
+    fail_test "OP-LC-01" "Port-forward to pod/$LC01_LEADER never opened localhost:$LC01_LOCAL_PORT (kubectl output above)"
 fi
 
 # =================================================================
@@ -41,8 +50,7 @@ fi
 # =================================================================
 begin_test "OP-LC-02: Leader election lease"
 
-HOLDER_IDENTITY=$(kubectl get lease cfgd-operator-leader -n cfgd-system \
-    -o jsonpath='{.spec.holderIdentity}' 2>/dev/null || echo "")
+HOLDER_IDENTITY="$(operator_leader)"
 
 echo "  Lease holderIdentity: ${HOLDER_IDENTITY:-not set}"
 
