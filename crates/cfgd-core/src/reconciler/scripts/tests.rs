@@ -854,7 +854,7 @@ fn an_interactive_spawn_shares_the_callers_process_group() {
     // grandchild would outlive `child.kill()` holding the test's stdio, which
     // nextest reports as a leak.
     let mut cmd = build_inline_command(ScriptShell::Sh, "exec sleep 5", tmp.path(), None);
-    let mut child = crate::spawn_child(&mut cmd).expect("spawn must succeed");
+    let (mut child, _kill) = crate::spawn_sharing_terminal(&mut cmd).expect("spawn must succeed");
     let child_pid = Pid::from_raw(child.id() as i32);
     let child_pgid = getpgid(Some(child_pid)).expect("child must still be alive");
     assert_eq!(

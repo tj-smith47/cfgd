@@ -1838,13 +1838,96 @@ fn discards_the_tree_kill(code: &str) -> bool {
     DISCARD.is_match(code)
 }
 
+/// Whether blanked `code` kills a child alone at a point no `#[cfg(unix)]`
+/// covers: `.kill()` on a `Child`, a `TreeKill::child_alone`, or
+/// `terminate_process`, declarations of those names aside. A `#[cfg(unix)]` covers the statement or the braced
+/// block it is attached to; `unix_only` says the declaration itself carries
+/// one.
+fn kills_a_child_alone_off_unix(code: &str, unix_only: bool) -> bool {
+    static KILL: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r"\.kill\(\)|\bchild_alone\(|\bterminate_process\(")
+            .expect("the kill shapes compile")
+    });
+    if unix_only {
+        return false;
+    }
+    let covered: Vec<std::ops::Range<usize>> = code
+        .match_indices("#[cfg(unix)]")
+        .map(|(at, attr)| {
+            let from = at + attr.len();
+            let rest = &code[from..];
+            let block = rest.trim_start().starts_with('{');
+            let mut depth = 0i32;
+            let mut end = code.len();
+            for (i, c) in rest.char_indices() {
+                match c {
+                    '{' | '(' | '[' => depth += 1,
+                    '}' | ')' | ']' => {
+                        depth -= 1;
+                        if depth < 0 || (block && depth == 0) {
+                            end = from + i + 1;
+                            break;
+                        }
+                    }
+                    ';' if depth == 0 => {
+                        end = from + i + 1;
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+            from..end
+        })
+        .collect();
+    KILL.find_iter(code).any(|m| {
+        !code[..m.start()].trim_end().ends_with("fn")
+            && !covered.iter().any(|r| r.contains(&m.start()))
+    })
+}
+
+/// Whether the attribute lines directly above a declaration (`above`, nearest
+/// last) gate it to Unix.
+fn declared_unix_only(above: &[&str]) -> bool {
+    above
+        .iter()
+        .rev()
+        .map(|line| line.trim())
+        .take_while(|line| line.starts_with("#[") || line.starts_with("//"))
+        .any(|line| line == "#[cfg(unix)]")
+}
+
+/// Lone-child kills that stay on Windows, each with the reason no job is
+/// involved: (file suffix, function, reason).
+const LONE_KILLS_OFF_UNIX: &[(&str, &str, &str)] = &[
+    (
+        "util/process.rs",
+        "spawn_tree",
+        "a child whose resume failed is still suspended and has started nothing",
+    ),
+    (
+        "util/process.rs",
+        "terminate",
+        "the fallback for a job cfgd could not create or join",
+    ),
+    (
+        "upgrade/mod.rs",
+        "terminate_daemon_if_running",
+        "stops the daemon for an upgrade so its service manager restarts it; no timeout",
+    ),
+];
+
 /// A child that leads a process group of its own is out of reach of a signal
 /// to its pid alone: a timed-out guard whose shell forked its last command
 /// left that grandchild running, holding the pipes the guard was handed.
 /// `spawn_tree` is the one place a tree is set up, and it records the fact in
 /// the `TreeKill` it returns, so the kill signals the group (Unix) or ends the
-/// job (Windows). Every other spawn is killed alone, and no caller of
-/// `spawn_tree` drops the kill it hands back.
+/// job (Windows). No caller of `spawn_tree` drops the kill it hands back.
+///
+/// A child is killed alone only on Unix, where it shares cfgd's foreground
+/// process group so a prompt can read the terminal (`spawn_sharing_terminal`).
+/// Console input on Windows does not depend on job membership, so there every
+/// timeout kill goes through the job; the few lone kills left off Unix are
+/// listed with their reasons in `LONE_KILLS_OFF_UNIX`.
 #[test]
 fn every_spawn_that_starts_a_process_tree_is_killed_as_one() {
     let fixture = "fn spawn_tree() {\n    cmd.process_group(0);\n}\n\nfn rogue() {\n    cmd.process_group(0);\n}\n\nfn suspended() {\n    cmd.creation_flags(CREATE_SUSPENDED);\n}\n\nfn quoted() {\n    // cmd.process_group(0);\n    let s = \"CREATE_SUSPENDED\";\n}\n\nfn drops() {\n    let (child, _kill) = crate::spawn_tree(&mut cmd)?;\n}\n\nfn first() {\n    let child = crate::spawn_tree(&mut cmd)?.0;\n}\n\nfn keeps() {\n    let (mut child, tree) = crate::spawn_tree(&mut cmd)?;\n}\n";
@@ -1874,13 +1957,52 @@ fn every_spawn_that_starts_a_process_tree_is_killed_as_one() {
         "the tells skip comments and literals and read a tree setup and a dropped kill in code"
     );
 
+    let lone = "fn block() {\n    #[cfg(unix)]\n    {\n        let k = TreeKill::child_alone(pid);\n    }\n}\n\nfn statement() {\n    #[cfg(unix)]\n    let k = TreeKill::child_alone(child.id());\n}\n\nfn windows() {\n    #[cfg(windows)]\n    {\n        let _ = child.kill();\n    }\n}\n\nfn bare() {\n    let _ = child.kill();\n}\n\nfn after() {\n    #[cfg(unix)]\n    {\n        a();\n    }\n    let _ = child.kill();\n}\n\nfn stops() {\n    crate::terminate_process(pid);\n}\n\nfn quoted() {\n    // let _ = child.kill();\n    let s = \"terminate_process(\";\n}\n\npub fn child_alone(pid: u32) -> Self {\n    Self { pid }\n}\n";
+    let judged: Vec<(String, bool)> = crate::test_helpers::fixture_declarations(lone)
+        .into_iter()
+        .map(|(name, _, code)| {
+            let code = crate::test_helpers::blank_non_code(&code);
+            let off_unix = kills_a_child_alone_off_unix(&code, false);
+            (name, off_unix)
+        })
+        .collect();
+    let expect = |name: &str, off_unix: bool| (name.to_string(), off_unix);
+    assert_eq!(
+        judged,
+        [
+            expect("block", false),
+            expect("statement", false),
+            expect("windows", true),
+            expect("bare", true),
+            expect("after", true),
+            expect("stops", true),
+            expect("quoted", false),
+            expect("child_alone", false),
+        ],
+        "a lone kill counts as Unix-only inside the statement or block a `#[cfg(unix)]` gates"
+    );
+    assert!(
+        !kills_a_child_alone_off_unix("let _ = child.kill();", true),
+        "a declaration gated to Unix holds no lone kill off Unix"
+    );
+    assert!(
+        declared_unix_only(&["", "#[cfg(unix)]", "/// doc", "#[test]"]),
+        "a `#[cfg(unix)]` among the attributes gates the declaration"
+    );
+    assert!(
+        !declared_unix_only(&["#[cfg(unix)]", "fn other() {}", "#[test]"]),
+        "an attribute above an earlier item does not gate this one"
+    );
+
     let workspace =
         crate::test_helpers::workspace_declarations(crate::test_helpers::WORKSPACE_CRATES);
     let mut tree_setups = Vec::new();
     let mut offenders = Vec::new();
+    let mut listed_seen = std::collections::BTreeSet::new();
+    let mut lone_offenders = Vec::new();
     for (row, (name, _, _)) in workspace.rows.iter().enumerate() {
         let code = workspace.code_of(row);
-        let (_, path, _) = workspace.sites[row];
+        let (_, path, body) = workspace.sites[row];
         let at = format!(
             "{}:{}",
             source_label(path),
@@ -1900,7 +2022,37 @@ fn every_spawn_that_starts_a_process_tree_is_killed_as_one() {
                 "{at}: `{name}` drops the kill `spawn_tree` returned"
             ));
         }
+        let above: Vec<&str> = body.lines().take(*workspace.span_of(row).start()).collect();
+        if kills_a_child_alone_off_unix(&code, declared_unix_only(&above)) {
+            match LONE_KILLS_OFF_UNIX
+                .iter()
+                .position(|(file, func, _)| path.ends_with(file) && name == func)
+            {
+                Some(listed) => {
+                    listed_seen.insert(listed);
+                }
+                None => lone_offenders.push(format!("{at}: `{name}`")),
+            }
+        }
     }
+    assert!(
+        lone_offenders.is_empty(),
+        "these kill a child alone outside Unix-only code; on Windows a timeout kill \
+         ends the job `spawn_sharing_terminal` or `spawn_tree` set up, so spawn \
+         through one and kill through the `TreeKill` it returns:\n{}",
+        lone_offenders.join("\n")
+    );
+    let stale: Vec<&str> = LONE_KILLS_OFF_UNIX
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| !listed_seen.contains(i))
+        .map(|(_, (_, func, _))| *func)
+        .collect();
+    assert!(
+        stale.is_empty(),
+        "these listed lone kills no longer kill a child alone; drop them from \
+         `LONE_KILLS_OFF_UNIX`: {stale:?}"
+    );
     assert_eq!(
         tree_setups.len(),
         1,

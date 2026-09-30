@@ -818,13 +818,13 @@ fn execute_script_inner(
             // user (e.g. `read`, `sudo`, a full-screen TUI). No spinner and
             // no capture — the user drives the pace.
             //
-            // The child stays in cfgd's own process group (`spawn_child`, where
-            // every other arm spawns through `spawn_tree`): a blanket group put
-            // every interactive child in a brand-new, non-foreground group,
-            // so the terminal driver never delivered a terminal-generated
-            // Ctrl-C to it, and a background-group terminal read stalls on
-            // SIGTTIN instead of prompting. Sharing cfgd's group restores
-            // both.
+            // On Unix the child stays in cfgd's own process group
+            // (`spawn_sharing_terminal`, where every other arm spawns through
+            // `spawn_tree`): a blanket group put every interactive child in a
+            // brand-new, non-foreground group, so the terminal driver never
+            // delivered a terminal-generated Ctrl-C to it, and a
+            // background-group terminal read stalls on SIGTTIN instead of
+            // prompting. Sharing cfgd's group restores both.
             //
             // No idle timeout: the user drives the pace and a lull is
             // expected. No absolute timeout unless the author declares one:
@@ -836,13 +836,15 @@ fn execute_script_inner(
             cmd.stdin(std::process::Stdio::inherit());
             cmd.stdout(std::process::Stdio::inherit());
             cmd.stderr(std::process::Stdio::inherit());
-            // Spawn-then-wait rather than `command_status`: the timeout arm
-            // below needs the child handle. Both route through the one ladder
-            // (a held program file, a full descriptor table) and the
-            // descriptor-limit raise.
-            let mut child = crate::spawn_child(&mut cmd)?;
+            // Spawned and then waited on, since the timeout arm below needs
+            // the child handle. Both route through the one ladder (a held
+            // program file, a full descriptor table) and the descriptor-limit
+            // raise.
+            let (mut child, kill) = crate::spawn_sharing_terminal(&mut cmd)?;
             let status = match explicit_timeout {
-                Some(timeout) => wait_interactive_with_timeout(&mut child, timeout, &run_label)?,
+                Some(timeout) => {
+                    wait_interactive_with_timeout(&mut child, &kill, timeout, &run_label)?
+                }
                 None => child.wait()?,
             };
             if !status.success() {
@@ -1382,36 +1384,13 @@ pub(super) fn kill_script_child(
     let _ = child.wait();
 }
 
-/// Terminate an interactive script's child directly by PID (SIGTERM, then,
-/// after a grace period, SIGKILL).
-///
-/// Kept apart from `kill_script_child`, which kills the tree `spawn_tree`
-/// set up: the interactive `Run` arm spawns with `spawn_child` (see its own
-/// doc comment in `execute_script_inner`) so the child shares cfgd's own
-/// foreground group. There is no tree of the
-/// child's own to kill, and a signal to cfgd's group would reach cfgd itself.
-#[cfg(unix)]
-fn kill_interactive_timeout_child(child: &mut std::process::Child) {
-    use nix::sys::signal::{Signal, kill};
-    use nix::unistd::Pid;
-    let _ = kill(Pid::from_raw(child.id() as i32), Signal::SIGTERM);
-    std::thread::sleep(std::time::Duration::from_secs(5));
-    let _ = child.kill();
-    let _ = child.wait();
-}
-
-#[cfg(not(unix))]
-fn kill_interactive_timeout_child(child: &mut std::process::Child) {
-    let _ = child.kill();
-    let _ = child.wait();
-}
-
 /// Poll an interactive script's child for exit, force-killing it once
 /// `timeout` elapses. Only reached when the author declared an explicit
 /// `timeout:` on an `interactive: true` entry — see the `Run` arm's doc
 /// comment in `execute_script_inner` for why the default is unbounded.
 fn wait_interactive_with_timeout(
     child: &mut std::process::Child,
+    kill: &crate::TreeKill,
     timeout: std::time::Duration,
     run_label: &str,
 ) -> Result<std::process::ExitStatus> {
@@ -1421,7 +1400,7 @@ fn wait_interactive_with_timeout(
             return Ok(status);
         }
         if start.elapsed() > timeout {
-            kill_interactive_timeout_child(child);
+            kill_script_child(child, kill, true);
             return Err(CfgdError::Config(ConfigError::Invalid {
                 message: format!(
                     "script '{}' timed out after {}s (interactive)",

@@ -238,8 +238,15 @@ pub fn command_status(
 /// Run a [`std::process::Command`] with a timeout, surfacing whether the timeout fired.
 ///
 /// On timeout the watchdog sends SIGTERM, waits [`KILL_GRACE_PERIOD`] for the
-/// child to exit cleanly, then escalates to SIGKILL (Unix) / `TerminateProcess`
-/// retry (Windows), and the returned [`CommandOutcome::timed_out`] is `true`.
+/// child to exit cleanly, then escalates to SIGKILL (Unix); on Windows the
+/// first kill already ended the child's job. The returned
+/// [`CommandOutcome::timed_out`] is `true`.
+///
+/// The child is spawned through [`spawn_sharing_terminal`]: on Unix it stays
+/// in cfgd's foreground process group, so a `sudo` password prompt or an ssh
+/// host-key question can still read the terminal, and the kill reaches the
+/// child alone. On Windows it joins a job, and the kill ends everything it
+/// started.
 ///
 /// Stdio is configured here, not by callers: stdout and stderr are piped and
 /// stdin is null, matching [`std::process::Command::output`]. `spawn` alone
@@ -260,13 +267,7 @@ pub fn command_output_with_timeout_outcome(
     cmd: &mut std::process::Command,
     timeout: std::time::Duration,
 ) -> std::io::Result<CommandOutcome> {
-    output_with_timeout(cmd, timeout, |cmd| {
-        let (spawned, _attempts) = spawn_past_a_transient_refusal(cmd);
-        spawned.map(|child| {
-            let kill = TreeKill::child_alone(child.id());
-            (child, kill)
-        })
-    })
+    output_with_timeout(cmd, timeout, spawn_sharing_terminal)
 }
 
 /// [`command_output_with_timeout_outcome`] for a command spawned through
@@ -585,6 +586,30 @@ pub fn spawn_tree(
             job,
         };
         Ok((child, kill))
+    }
+}
+
+/// Spawn a command that may prompt on the controlling terminal, together with
+/// the kill that ends it on a timeout.
+///
+/// On Unix the child stays in cfgd's own foreground process group, where a
+/// read of the terminal (`read`, a `sudo` password, pinentry) prompts; in a
+/// group of its own it would stop on SIGTTIN instead. The kill therefore
+/// reaches the child alone. On Windows console input does not depend on job
+/// membership, so the child is spawned through [`spawn_tree`] and a timeout
+/// ends everything it started.
+pub fn spawn_sharing_terminal(
+    cmd: &mut std::process::Command,
+) -> std::io::Result<(std::process::Child, TreeKill)> {
+    #[cfg(unix)]
+    {
+        let child = spawn_child(cmd)?;
+        let kill = TreeKill::child_alone(child.id());
+        Ok((child, kill))
+    }
+    #[cfg(windows)]
+    {
+        spawn_tree(cmd)
     }
 }
 
@@ -1931,6 +1956,33 @@ mod tests {
         );
         let output = result.unwrap();
         assert!(!output.status.success());
+    }
+
+    /// On Windows a timed-out command is killed with everything it started,
+    /// whatever path ran it: job membership leaves console input alone, so
+    /// nothing there needs the child killed alone. The direct child is a
+    /// `cmd` waiting on a second `cmd` that writes the marker.
+    #[cfg(windows)]
+    #[test]
+    fn a_timed_out_command_on_windows_kills_every_process_it_started() {
+        use std::os::windows::process::CommandExt;
+        let _path = crate::test_helpers::path_env_read_guard();
+        let tmp = crate::test_helpers::spaced_marker_dir();
+        let marker = tmp.path().join("grandchild-outlived-the-command");
+        let shown = marker.display();
+        crate::test_helpers::assert_a_timeout_kill_stops_the_write(
+            &marker,
+            std::time::Duration::from_secs(3),
+            |timeout| {
+                let mut cmd = std::process::Command::new("cmd");
+                cmd.raw_arg(format!(
+                    "/C cmd /C \"ping -n 3 127.0.0.1 >NUL & echo x> \"{shown}\"\" & exit 0"
+                ));
+                command_output_with_timeout_outcome(&mut cmd, timeout)
+                    .expect("cmd runs")
+                    .timed_out
+            },
+        );
     }
 
     #[cfg(unix)]
