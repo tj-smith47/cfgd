@@ -34,10 +34,14 @@ min_pass_tests=330
 # `<<-W`) queues a body, the bodies follow in order, and a terminator may be
 # indented with tabs only after `<<-`. A terminator may be followed by the
 # quote that closes a `bash -c '...'` or the `)` that closes a `$(...)` holding
-# the heredoc. A `<<` inside a double-quoted string without `$(`, a trailing
-# comment or a `((...))` arithmetic span opens nothing. A heredoc still open
-# at the end of a file is reported, so a misread terminator cannot hide the
-# rest of the file. Exits 1 when no file matched.
+# the heredoc. Openers are looked for in the line as one pass over its
+# characters reduces it: a `'...'` span is kept as written, `\x` is one unit, a
+# `#` after whitespace ends the line, a `((...))` span is dropped, and a
+# `"..."` span is dropped unless it follows `<<` or is still open at the end of
+# the line. Inside a `"..."` span, a `$(...)` is read like the top level, so
+# the `"<<W"` in `"$(echo "<<W")"` opens nothing. A heredoc still open at the
+# end of a file is reported, so a misread terminator cannot hide the rest of
+# the file. Exits 1 when no file matched.
 scan_excuses() {
     local files="$scratch/scan-files"
     find "$@" -name '*.sh' ! -name test-verdicts.sh -type f > "$files"
@@ -47,6 +51,47 @@ scan_excuses() {
     fi
     # shellcheck disable=SC2016 # the single-quoted text is an awk program
     tr '\n' '\0' < "$files" | xargs -0 awk -v excuse="$excuse" '
+        function skip_arith(   d, c) {
+            for (d = 0; pos <= N; pos++) {
+                c = substr(S, pos, 1)
+                if (c == "(") d++
+                else if (c == ")" && --d == 0) { pos++; return }
+            }
+        }
+        function cmd(nested,   out, d, c, j) {
+            out = ""; d = 0
+            while (pos <= N) {
+                c = substr(S, pos, 1)
+                if (c == "\\") { out = out substr(S, pos, 2); pos += 2 }
+                else if (c == "\047") {
+                    j = index(substr(S, pos + 1), "\047")
+                    if (j == 0) j = N - pos
+                    out = out substr(S, pos, j + 1); pos += j + 1
+                }
+                else if (c == "#" && (pos == 1 || substr(S, pos - 1, 1) ~ /[[:space:]]/)) pos = N + 1
+                else if (c == "\"") out = out dq(out)
+                else if (substr(S, pos, 2) == "((") skip_arith()
+                else if (nested && c == ")" && d-- == 0) { pos++; return out }
+                else { if (c == "(") d++; out = out c; pos++ }
+            }
+            return out
+        }
+        function dq(before,   start, red, c, keep) {
+            start = pos++; red = "\""; keep = 0
+            while (pos <= N) {
+                c = substr(S, pos, 1)
+                if (c == "\\") { red = red substr(S, pos, 2); pos += 2 }
+                else if (c == "\"") {
+                    pos++
+                    if (before ~ /<<-?[[:space:]]*$/) return substr(S, start, pos - start)
+                    return keep ? red "\"" : ""
+                }
+                else if (substr(S, pos, 3) == "$((") { pos++; skip_arith() }
+                else if (substr(S, pos, 2) == "$(") { pos += 2; keep = 1; red = red "$(" cmd(1) ")" }
+                else { red = red c; pos++ }
+            }
+            return substr(S, start, N)
+        }
         BEGIN { qh = 1 }
         FNR == 1 {
             if (qn >= qh) print prev ": heredoc " q[qh] " never closes"
@@ -59,16 +104,8 @@ scan_excuses() {
             next
         }
         $0 !~ /^[[:space:]]*#/ {
-            rest = ""; s = $0
-            while (match(s, /"[^"]*"/)) {
-                pre = substr(s, 1, RSTART - 1); span = substr(s, RSTART, RLENGTH)
-                rest = rest pre
-                if (pre ~ /<<-?[[:space:]]*$/ || span ~ /\$\(/) rest = rest span
-                s = substr(s, RSTART + RLENGTH)
-            }
-            rest = rest s
-            sub(/[[:space:]]#.*$/, "", rest)
-            gsub(/\(\([^)]*\)\)/, "", rest)
+            S = $0; N = length(S); pos = 1
+            rest = cmd(0)
             while (match(rest, /(^|[^<])<<-?[[:space:]]*\\?[\047"]?[A-Za-z_0-9][A-Za-z_0-9]*/)) {
                 word = substr(rest, RSTART, RLENGTH)
                 rest = substr(rest, RSTART + RLENGTH)
@@ -306,7 +343,78 @@ if a; then
     pass_test "X-27"
 fi
 PROBE
+cat > "$probe/bash-c-word.sh" <<'PROBE'
+if a; then
+    echo "  Note: x"
+    kubectl exec p -- bash -c 'cat > f << "INNEREOF"
+}
+INNEREOF'
+    pass_test "X-28"
+fi
+PROBE
+cat > "$probe/double-quoted-word.sh" <<'PROBE'
+if a; then
+    echo "  Note: x"
+    cat <<"EOF"
+}
+EOF
+    pass_test "X-29"
+fi
+PROBE
+cat > "$probe/escaped-quote.sh" <<'PROBE'
+if a; then
+    echo "  Note: x"
+    echo "a\"b" x; cat <<EOF; echo "c"
+}
+EOF
+    pass_test "X-30"
+fi
+PROBE
+cat > "$probe/quote-in-single.sh" <<'PROBE'
+if a; then
+    echo "  Note: x"
+    echo 'a"b' ; cat <<EOF ; echo "c"
+}
+EOF
+    pass_test "X-31"
+fi
+PROBE
+cat > "$probe/open-string.sh" <<'PROBE'
+if a; then
+    echo "  Note: x"
+    bash -c "cat <<\"EOF\"
+}
+EOF"
+    pass_test "X-32"
+fi
+PROBE
+cat > "$probe/hash-in-single.sh" <<'PROBE'
+if a; then
+    echo "  Note: x"
+    sed 's/ #.*//' <<EOF
+}
+EOF
+    pass_test "X-33"
+fi
+PROBE
+cat > "$probe/nested-string.sh" <<'PROBE'
+v="$(echo "<<EOF")"
+if a; then
+    echo "  Note: x"
+    cat <<EOF
+}
+EOF
+    pass_test "X-34"
+fi
+PROBE
 want="$(printf '%s\n' \
+    "$probe/bash-c-word.sh:2" \
+    "$probe/double-quoted-word.sh:2" \
+    "$probe/escaped-quote.sh:2" \
+    "$probe/quote-in-single.sh:2" \
+    "$probe/open-string.sh:2" \
+    "$probe/hash-in-single.sh:2" \
+    "$probe/nested-string.sh:3" \
     "$probe/strfalse.sh:3" \
     "$probe/trailcomment.sh:3" \
     "$probe/digit-heredoc.sh:2" \
@@ -330,10 +438,10 @@ want="$(printf '%s\n' \
     "$probe/inner-loop.sh:2" \
     "$probe/hatch-elsewhere.sh:2" \
     "$probe/hatch-on-excuse.sh:2" \
-    "scanned 27 28" | sort)"
+    "scanned 34 35" | sort)"
 got="$(scan_excuses "$probe" | sort)"
 if [ "$got" = "$want" ]; then
-    pass "the scan flags else, elif, function, comment, same-line, printf, heredoc, after-here-string, after-quoted-heredoc, backslash, paired, indented-terminator, tab-stripped and digit-word heredoc, after-string, after-comment, arithmetic-shift, loop-body, stderr, inner-loop and misplaced-hatch excuses and an unclosed heredoc, clears case, loop, ended-branch and hatched ones, and counts 28 calls in 27 files"
+    pass "the scan flags else, elif, function, comment, same-line, printf, heredoc, after-here-string, after-quoted-heredoc, backslash, paired, indented-terminator, tab-stripped and digit-word heredoc, after-string, after-comment, arithmetic-shift, after-escaped-quote, after-single-quote, open-string, bash -c word, double-quoted word and nested-string, loop-body, stderr, inner-loop and misplaced-hatch excuses and an unclosed heredoc, clears case, loop, ended-branch and hatched ones, and counts 35 calls in 34 files"
 else
     fail "the scan on the placement probes printed:"
     printf '%s\n' "$got" | sed 's/^/    /'
