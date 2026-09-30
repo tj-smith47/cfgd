@@ -97,12 +97,29 @@ out="$(in_helpers FAKE_PF_MODE=silent FAKE_PF_PIDFILE="$scratch/silent.pid" E2E_
     if port_forward ns pod/cfgd-x "$2" 80 >/dev/null; then echo returned-0; else echo returned-1; fi
     if kill -0 "$(cat "$3")" 2>/dev/null; then echo leaked; else echo reaped; fi
 ' _ "$e2e_root" "$port" "$scratch/silent.pid" 2>&1)"
-if grep -qx 'returned-1' <<<"$out" && grep -qF 'did not accept a connection within 1s' <<<"$out" \
+if grep -qx 'returned-1' <<<"$out" && grep -qF 'did not accept a connection within 1.0s' <<<"$out" \
     && grep -qx 'reaped' <<<"$out"; then
     pass "port_forward times out after E2E_PORT_FORWARD_TRIES probes, says so and stops kubectl"
 else
-    fail "port_forward silent: got '$out' (want returned-1, the 1s timeout message, reaped)"
+    fail "port_forward silent: got '$out' (want returned-1, the 1.0s timeout message, reaped)"
 fi
+
+# A deadline that is not a positive integer is refused before kubectl starts,
+# which in exit mode would otherwise print its "not found" error.
+for tries in abc 0 -3 1.5; do
+    # shellcheck disable=SC2016 # the inner script expands its own positional args
+    out="$(in_helpers FAKE_PF_MODE=exit E2E_PORT_FORWARD_TRIES="$tries" bash -c '
+        source "$1/common/helpers.sh"
+        if port_forward ns svc/cfgd-missing 1 1 >/dev/null; then echo returned-0; else echo returned-1; fi
+    ' _ "$e2e_root" 2>&1)" || true
+    if grep -qx 'returned-1' <<<"$out" \
+        && grep -qF "E2E_PORT_FORWARD_TRIES must be a positive integer, got '$tries'" <<<"$out" \
+        && ! grep -qF 'not found' <<<"$out"; then
+        pass "port_forward refuses E2E_PORT_FORWARD_TRIES='$tries' before starting kubectl"
+    else
+        fail "port_forward E2E_PORT_FORWARD_TRIES='$tries': got '$out' (want the refusal and no kubectl run)"
+    fi
+done
 
 port="$(free_port)"
 # shellcheck disable=SC2016 # the inner script expands its own positional args
@@ -217,8 +234,10 @@ fi
 
 # A setup that starts a port-forward can fail part way under set -e, so the
 # run-all.sh that sources it must already have the EXIT trap that stops it.
+judged=0
 for runner in "$e2e_root"/*/scripts/run-all.sh; do
     setup_line="$(grep -nE '^source .*/setup-[a-z-]+-env\.sh"$' "$runner" | head -n 1)" || continue
+    judged=$((judged + 1))
     setup="$(dirname "$runner")/$(basename "$(sed -E 's/.*\/(setup-[a-z-]+-env\.sh)"$/\1/' <<<"$setup_line")")"
     grep -q 'port_forward ' "$setup" || continue
     trap_at="$(grep -nE '^trap .* EXIT$' "$runner" | head -n 1 | cut -d: -f1)"
@@ -228,6 +247,10 @@ for runner in "$e2e_root"/*/scripts/run-all.sh; do
         fail "${runner#"$e2e_root"/} sources $(basename "$setup"), which starts a port-forward, before its EXIT trap"
     fi
 done
+# A renamed setup file or a `. ` source would leave the loop reading nothing.
+if [ "$judged" -eq 0 ]; then
+    fail "the trap-order check found no run-all.sh sourcing a setup-*-env.sh"
+fi
 
 if scan_strays "$scratch/no-such-dir" >/dev/null 2>&1; then
     fail "scan of an unreadable path passed"

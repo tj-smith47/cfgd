@@ -260,10 +260,16 @@ begin_test "FS-CSI-04: CSI driver — module cache hit"
 
 # Print the module's cache-hit count scraped off CSI driver pod $1, keeping
 # the response in $2 for a fail reason; returns 1 without a count when the
-# scrape did not answer 2xx. No sample for the module yet counts as 0.
+# port-forward did not open or the scrape did not answer 2xx. No sample for
+# the module yet counts as 0.
 csi04_hits() {
     local pod="$1" body="$2" pid code content_type
-    pid=$(port_forward cfgd-system "pod/$pod" 19094 9090) || return 1
+    printf '000 \n' > "$body.meta"
+    : > "$body"
+    if ! pid=$(port_forward cfgd-system "pod/$pod" 19094 9090); then
+        echo "no-tunnel" > "$body.meta"
+        return 1
+    fi
     read -r code content_type <<<"$(http_get_to_file "http://localhost:19094/metrics" "$body")"
     stop_port_forward "$pid"
     printf '%s %s\n' "$code" "${content_type:-}" > "$body.meta"
@@ -272,10 +278,15 @@ csi04_hits() {
         '$1 == s { v = $2 } END { print v + 0 }' "$body"
 }
 
+# Describe what csi04_hits kept in $1 for scraping pod $2.
 csi04_evidence() {
     local code content_type
-    read -r code content_type < "$1.meta" || code="000"
-    http_evidence "${code:-000}" "${content_type:-}" "$1"
+    read -r code content_type < "$1.meta"
+    if [ "$code" = no-tunnel ]; then
+        echo "port_forward to pod/$2 did not open (kubectl output above)"
+    else
+        http_evidence "$code" "${content_type:-}" "$1"
+    fi
 }
 
 if ! $CSI_AVAILABLE; then
@@ -301,7 +312,7 @@ else
     if [ -z "$CSI04_DRIVER" ]; then
         fail_test "FS-CSI-04" "No CSI driver pod on node $CSI01_NODE"
     elif ! CSI04_HITS_BEFORE=$(csi04_hits "$CSI04_DRIVER" "$CSI04_BEFORE_BODY"); then
-        fail_test "FS-CSI-04" "Scrape of pod/$CSI04_DRIVER before the mount failed: $(csi04_evidence "$CSI04_BEFORE_BODY")"
+        fail_test "FS-CSI-04" "Scrape of pod/$CSI04_DRIVER before the mount failed: $(csi04_evidence "$CSI04_BEFORE_BODY" "$CSI04_DRIVER")"
     else
         kubectl apply -n "$CSI04_NS" -f - <<EOF
 apiVersion: v1
@@ -311,8 +322,7 @@ metadata:
   annotations:
     cfgd.io/modules: "csi-test-mod-${E2E_RUN_ID}:v1.0"
 spec:
-  nodeSelector:
-    kubernetes.io/hostname: "${CSI01_NODE}"
+  nodeName: "${CSI01_NODE}"
   containers:
     - name: app
       image: busybox:1.36
@@ -329,13 +339,13 @@ EOF
             fail_test "FS-CSI-04" "Pod did not reach Running state"
             kubectl describe pod csi-cache-test -n "$CSI04_NS" 2>/dev/null | tail -20
         elif ! CSI04_HITS_AFTER=$(csi04_hits "$CSI04_DRIVER" "$CSI04_AFTER_BODY"); then
-            fail_test "FS-CSI-04" "Scrape of pod/$CSI04_DRIVER after the mount failed: $(csi04_evidence "$CSI04_AFTER_BODY")"
+            fail_test "FS-CSI-04" "Scrape of pod/$CSI04_DRIVER after the mount failed: $(csi04_evidence "$CSI04_AFTER_BODY" "$CSI04_DRIVER")"
         else
             echo "  cache hits for csi-test-mod-${E2E_RUN_ID}: before $CSI04_HITS_BEFORE, after $CSI04_HITS_AFTER"
             if [ "$CSI04_HITS_AFTER" -gt "$CSI04_HITS_BEFORE" ]; then
                 pass_test "FS-CSI-04"
             else
-                fail_test "FS-CSI-04" "Cache hits did not rise (before $CSI04_HITS_BEFORE, after $CSI04_HITS_AFTER). Before: $(csi04_evidence "$CSI04_BEFORE_BODY") After: $(csi04_evidence "$CSI04_AFTER_BODY")"
+                fail_test "FS-CSI-04" "Cache hits did not rise (before $CSI04_HITS_BEFORE, after $CSI04_HITS_AFTER). Before: $(csi04_evidence "$CSI04_BEFORE_BODY" "$CSI04_DRIVER") After: $(csi04_evidence "$CSI04_AFTER_BODY" "$CSI04_DRIVER")"
             fi
         fi
     fi

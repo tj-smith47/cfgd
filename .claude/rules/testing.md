@@ -145,8 +145,8 @@ fixtures under `.claude/scripts/audit-tests/` hold one case per form for
 Every `kubectl port-forward` under `tests/e2e/` is started by `port_forward`
 in `tests/e2e/common/helpers.sh` (target `svc/<name>` or `pod/<name>`) and
 ended by `stop_port_forward`. The helper returns the PID only once the local
-port accepts a connection (`E2E_PORT_FORWARD_TRIES` half-second probes, 30 by
-default), and on a timeout or an early kubectl exit prints kubectl's own output
+port accepts a connection (`E2E_PORT_FORWARD_TRIES` half-second probes, a
+positive integer, 30 by default), and on a timeout or an early kubectl exit prints kubectl's own output
 and returns 1; a fixed `sleep` and a discarded stderr are what left a metrics
 case failing with nothing to diagnose. `stop_port_forward` sends SIGKILL to a
 kubectl still running 5s after SIGTERM. A case that scrapes an endpoint and

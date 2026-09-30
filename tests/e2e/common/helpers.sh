@@ -319,13 +319,18 @@ port_forward() {
             return 1
             ;;
     esac
+    local max_tries="${E2E_PORT_FORWARD_TRIES:-30}"
+    if ! [[ $max_tries =~ ^[1-9][0-9]*$ ]]; then
+        echo "port_forward: E2E_PORT_FORWARD_TRIES must be a positive integer, got '$max_tries'" >&2
+        return 1
+    fi
 
     local log
     log="$(mktemp "$CLI_SCRATCH/port-forward.XXXXXX")"
     kubectl port-forward -n "$namespace" "$target" \
         "$local_port:$remote_port" > "$log" 2>&1 &
     local pid=$!
-    local tries=0 max_tries="${E2E_PORT_FORWARD_TRIES:-30}"
+    local tries=0
     while [ "$tries" -lt "$max_tries" ]; do
         if ! kill -0 "$pid" 2>/dev/null; then
             echo "port_forward: kubectl port-forward $target exited before localhost:$local_port opened:" >&2
@@ -339,7 +344,7 @@ port_forward() {
         sleep 0.5
         tries=$((tries + 1))
     done
-    echo "port_forward: localhost:$local_port for $target did not accept a connection within $((max_tries / 2))s; kubectl said:" >&2
+    echo "port_forward: localhost:$local_port for $target did not accept a connection within $((max_tries / 2)).$((max_tries % 2 * 5))s; kubectl said:" >&2
     sed 's/^/    /' "$log" >&2
     stop_port_forward "$pid"
     return 1
