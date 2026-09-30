@@ -7494,9 +7494,11 @@ pub struct CounterSamples {
 }
 
 /// Read an encoded registry against the counter sample convention: a counter
-/// family is named `<prefix>_[a-z_]+` without a `_total` suffix, has at least
-/// one sample, and renders each one as `<family>_total{…}` or
-/// `<family>_total <value>`; no line anywhere carries `_total_total`.
+/// family is named `<prefix>_[a-z_]+` without a `_total` suffix and has at
+/// least one `<family>_total` sample, a bare `<family>` sample is a violation,
+/// and no line anywhere carries `_total_total`. Only a sample named `<family>`
+/// or `<family>_total` is judged as the family's, so `<family>_created` and a
+/// neighbour such as a gauge `<family>_bytes` pass untouched.
 pub fn counter_samples(encoded: &str, prefix: &str) -> CounterSamples {
     let mut report = CounterSamples::default();
     let prefix = format!("{prefix}_");
@@ -7536,16 +7538,12 @@ pub fn counter_samples(encoded: &str, prefix: &str) -> CounterSamples {
             let Some(suffix) = sample.strip_prefix(family.as_str()) else {
                 continue;
             };
-            if !suffix.is_empty() && !suffix.starts_with('_') {
-                continue;
-            }
-            sampled[i] = true;
-            let rendered = format!("{family}_total");
-            let after = &line[sample.len()..];
-            if suffix != "_total" || !(after.starts_with('{') || after.starts_with(' ')) {
-                report.violations.push(format!(
-                    "{line:?} is a sample of counter {family}, which renders as {rendered}"
-                ));
+            match suffix {
+                "_total" => sampled[i] = true,
+                "" => report.violations.push(format!(
+                    "{line:?} is a sample of counter {family}, which renders as {family}_total"
+                )),
+                _ => {}
             }
         }
     }
@@ -7577,6 +7575,10 @@ mod tests {
             "# TYPE app_idle counter\n",
             "# TYPE other_errors counter\n",
             "other_errors_total 1\n",
+            "# TYPE app_bare counter\n",
+            "app_bare 4\n",
+            "# TYPE app_hits_bytes gauge\n",
+            "app_hits_bytes 5\n",
             "# TYPE app_depth gauge\n",
             "app_depth 2\n",
             "# EOF\n",
@@ -7584,7 +7586,13 @@ mod tests {
         let report = counter_samples(encoded, "app");
         assert_eq!(
             report.families,
-            ["app_hits", "app_runs_total", "app_idle", "other_errors"]
+            [
+                "app_hits",
+                "app_runs_total",
+                "app_idle",
+                "other_errors",
+                "app_bare"
+            ]
         );
         let joined = report.violations.join("\n");
         for want in [
@@ -7592,12 +7600,13 @@ mod tests {
             "\"app_runs_total_total 3\" carries _total_total",
             "counter family app_idle has no sample",
             "counter family other_errors is not app_[a-z_]+",
+            "\"app_bare 4\" is a sample of counter app_bare, which renders as app_bare_total",
         ] {
             assert!(joined.contains(want), "missing {want:?} in:\n{joined}");
         }
         assert!(
             !joined.contains("app_hits"),
-            "a counter rendering _total once is sound:\n{joined}"
+            "a counter rendering _total once, and a gauge sharing its stem, are sound:\n{joined}"
         );
     }
 
