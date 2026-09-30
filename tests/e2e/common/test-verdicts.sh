@@ -29,10 +29,13 @@ min_pass_tests=330
 # Print file:line for each excuse echo or printf followed by pass_test before
 # its block ends (if/elif/else/fi, a case arm or esac, done, or a closing
 # brace), then a last line `scanned <files> <pass_test calls>`. Heredoc bodies
-# are skipped, since a `}` in a manifest ends no shell block; a terminator may
-# be followed by the quote that closes a `bash -c '...'` holding the heredoc.
-# A heredoc still open at the end of a file is reported, so a misread
-# terminator cannot hide the rest of the file. Exits 1 when no file matched.
+# are skipped, since a `}` in a manifest ends no shell block. They are read the
+# way bash reads them: every opener on a line (`<<W`, `<<'W'`, `<<"W"`, `<<\W`,
+# `<<-W`) queues a body, the bodies follow in order, and a terminator may be
+# indented with tabs only after `<<-`. A terminator may be followed by the
+# quote that closes a `bash -c '...'` holding the heredoc. A heredoc still open
+# at the end of a file is reported, so a misread terminator cannot hide the
+# rest of the file. Exits 1 when no file matched.
 scan_excuses() {
     local files="$scratch/scan-files"
     find "$@" -name '*.sh' ! -name test-verdicts.sh -type f > "$files"
@@ -42,16 +45,27 @@ scan_excuses() {
     fi
     # shellcheck disable=SC2016 # the single-quoted text is an awk program
     tr '\n' '\0' < "$files" | xargs -0 awk -v excuse="$excuse" '
+        BEGIN { qh = 1 }
         FNR == 1 {
-            if (doc != "") print prev ": heredoc " doc " never closes"
-            held = ""; doc = ""; prev = FILENAME; files++
+            if (qn >= qh) print prev ": heredoc " q[qh] " never closes"
+            held = ""; qn = 0; qh = 1; prev = FILENAME; files++
         }
         /(^|[;&|[:space:]])pass_test[[:space:]]/ { calls++ }
         /(^|[;&|[:space:]])pass_test[[:space:]].*# verdict-ok: [^[:space:]]/ { held = ""; next }
-        doc != "" { if ($0 ~ "^[[:space:]]*" doc "[\047\")]*$") doc = ""; next }
-        $0 !~ /^[[:space:]]*#/ && match($0, /(^|[^<])<<-?[[:space:]]*[\047"]?[A-Za-z_]+/) {
-            doc = substr($0, RSTART, RLENGTH)
-            gsub(/^[^<]?<<-?[[:space:]]*[\047"]?/, "", doc)
+        qn >= qh {
+            if ($0 ~ ((qdash[qh] ? "^\t*" : "^") q[qh] "[\047\")]*$")) qh++
+            next
+        }
+        $0 !~ /^[[:space:]]*#/ {
+            rest = $0
+            while (match(rest, /(^|[^<])<<-?[[:space:]]*\\?[\047"]?[A-Za-z_][A-Za-z_0-9]*/)) {
+                word = substr(rest, RSTART, RLENGTH)
+                rest = substr(rest, RSTART + RLENGTH)
+                qn++
+                qdash[qn] = (word ~ /<<-/)
+                gsub(/^[^<]?<<-?[[:space:]]*\\?[\047"]?/, "", word)
+                q[qn] = word
+            }
         }
         $0 ~ excuse {
             if ($0 ~ /(^|[;&|[:space:]])pass_test[[:space:]]/) { print FILENAME ":" FNR; held = "" }
@@ -61,7 +75,7 @@ scan_excuses() {
         /^[[:space:]]*(if|elif|else|fi|esac|done)([[:space:];]|$)/ || /^[[:space:]]*\}/ || /;;[[:space:]]*$/ { held = ""; next }
         /(^|[;&|[:space:]])pass_test[[:space:]]/ && held != "" { print held; held = "" }
         END {
-            if (doc != "") print prev ": heredoc " doc " never closes"
+            if (qn >= qh) print prev ": heredoc " q[qh] " never closes"
             print "scanned " files + 0 " " calls + 0
         }
     '
@@ -190,6 +204,29 @@ cat > "$probe/unclosed.sh" <<'PROBE'
 cat <<DOC
 never closed
 PROBE
+cat > "$probe/backslash-heredoc.sh" <<'PROBE'
+if a; then
+    echo "  Note: applying anyway"
+    kubectl apply -f - <<\EOF
+{
+}
+EOF
+    pass_test "X-20"
+fi
+PROBE
+cat > "$probe/paired-heredoc.sh" <<'PROBE'
+if a; then
+    echo "  Note: two bodies"
+    paste /dev/fd/3 3<<A <<B
+{
+A
+}
+B
+    pass_test "X-21"
+fi
+PROBE
+printf 'if a; then\n    echo "  Note: tab-indented EOF inside"\n    cat <<EOF\n\tEOF\n}\nEOF\n    pass_test "X-22"\nfi\n' > "$probe/indented-terminator.sh"
+printf 'if a; then\n    echo "  Note: tab-stripped"\n    cat <<-EOF\n\t{\n\t}\n\tEOF\n    pass_test "X-23"\nfi\n' > "$probe/dash-heredoc.sh"
 cat > "$probe/while-body.sh" <<'PROBE'
 while read -r l; do
     echo "  not yet: $l"
@@ -232,16 +269,20 @@ want="$(printf '%s\n' \
     "$probe/heredoc-brace.sh:2" \
     "$probe/herestring.sh:3" \
     "$probe/quoted-heredoc.sh:5" \
+    "$probe/backslash-heredoc.sh:2" \
+    "$probe/paired-heredoc.sh:2" \
+    "$probe/indented-terminator.sh:2" \
+    "$probe/dash-heredoc.sh:2" \
     "$probe/unclosed.sh: heredoc DOC never closes" \
     "$probe/while-body.sh:2" \
     "$probe/stderr.sh:2" \
     "$probe/inner-loop.sh:2" \
     "$probe/hatch-elsewhere.sh:2" \
     "$probe/hatch-on-excuse.sh:2" \
-    "scanned 19 20" | sort)"
+    "scanned 23 24" | sort)"
 got="$(scan_excuses "$probe" | sort)"
 if [ "$got" = "$want" ]; then
-    pass "the scan flags else, elif, function, comment, same-line, printf, heredoc, after-here-string, after-quoted-heredoc, loop-body, stderr, inner-loop and misplaced-hatch excuses and an unclosed heredoc, clears case, loop, ended-branch and hatched ones, and counts 20 calls in 19 files"
+    pass "the scan flags else, elif, function, comment, same-line, printf, heredoc, after-here-string, after-quoted-heredoc, backslash, paired, indented-terminator and tab-stripped heredoc, loop-body, stderr, inner-loop and misplaced-hatch excuses and an unclosed heredoc, clears case, loop, ended-branch and hatched ones, and counts 24 calls in 23 files"
 else
     fail "the scan on the placement probes printed:"
     printf '%s\n' "$got" | sed 's/^/    /'
