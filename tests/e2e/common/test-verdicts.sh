@@ -39,9 +39,11 @@ min_pass_tests=330
 # `#` after whitespace ends the line, a `((...))` span is dropped, and a
 # `"..."` span is dropped unless it follows `<<` or is still open at the end of
 # the line. Inside a `"..."` span, a `$(...)` is read like the top level, so
-# the `"<<W"` in `"$(echo "<<W")"` opens nothing. A heredoc still open at the
-# end of a file is reported, so a misread terminator cannot hide the rest of
-# the file. Exits 1 when no file matched.
+# the `"<<W"` in `"$(echo "<<W")"` opens nothing. Its `(` and `)` are counted
+# without shell grammar, so a `case` pattern `x)` or a `((cmd) )` subshell on
+# one line inside `$(...)` closes the span early and hides a later opener. A
+# heredoc still open at the end of a file is reported, so a misread terminator
+# cannot hide the rest of the file. Exits 1 when no file matched.
 scan_excuses() {
     local files="$scratch/scan-files"
     find "$@" -name '*.sh' ! -name test-verdicts.sh -type f > "$files"
@@ -361,6 +363,25 @@ EOF
     pass_test "X-29"
 fi
 PROBE
+cat > "$probe/inner-paren.sh" <<'PROBE'
+v="$( (echo x); echo "<<X")"
+if a; then
+    echo "  Note: x"
+    cat <<EOF
+}
+EOF
+    pass_test "X-35"
+fi
+PROBE
+cat > "$probe/sq-open-hash.sh" <<'PROBE'
+if a; then
+    echo "  Note: x"
+    bash -c 'true # x; cat <<EOF
+}
+EOF'
+    pass_test "X-36"
+fi
+PROBE
 cat > "$probe/escaped-quote.sh" <<'PROBE'
 if a; then
     echo "  Note: x"
@@ -411,6 +432,8 @@ want="$(printf '%s\n' \
     "$probe/bash-c-word.sh:2" \
     "$probe/double-quoted-word.sh:2" \
     "$probe/escaped-quote.sh:2" \
+    "$probe/inner-paren.sh:3" \
+    "$probe/sq-open-hash.sh:2" \
     "$probe/quote-in-single.sh:2" \
     "$probe/open-string.sh:2" \
     "$probe/hash-in-single.sh:2" \
@@ -438,10 +461,10 @@ want="$(printf '%s\n' \
     "$probe/inner-loop.sh:2" \
     "$probe/hatch-elsewhere.sh:2" \
     "$probe/hatch-on-excuse.sh:2" \
-    "scanned 34 35" | sort)"
+    "scanned 36 37" | sort)"
 got="$(scan_excuses "$probe" | sort)"
 if [ "$got" = "$want" ]; then
-    pass "the scan flags else, elif, function, comment, same-line, printf, heredoc, after-here-string, after-quoted-heredoc, backslash, paired, indented-terminator, tab-stripped and digit-word heredoc, after-string, after-comment, arithmetic-shift, after-escaped-quote, after-single-quote, open-string, bash -c word, double-quoted word and nested-string, loop-body, stderr, inner-loop and misplaced-hatch excuses and an unclosed heredoc, clears case, loop, ended-branch and hatched ones, and counts 35 calls in 34 files"
+    pass "the scan flags else, elif, function, comment, same-line, printf, heredoc, after-here-string, after-quoted-heredoc, backslash, paired, indented-terminator, tab-stripped and digit-word heredoc, after-string, after-comment, arithmetic-shift, after-escaped-quote, after-single-quote, open-string, bash -c word, double-quoted word and nested-string, inner-paren, open-single-quote-hash, loop-body, stderr, inner-loop and misplaced-hatch excuses and an unclosed heredoc, clears case, loop, ended-branch and hatched ones, and counts 37 calls in 36 files"
 else
     fail "the scan on the placement probes printed:"
     printf '%s\n' "$got" | sed 's/^/    /'
