@@ -33,7 +33,9 @@ min_pass_tests=330
 # way bash reads them: every opener on a line (`<<W`, `<<'W'`, `<<"W"`, `<<\W`,
 # `<<-W`) queues a body, the bodies follow in order, and a terminator may be
 # indented with tabs only after `<<-`. A terminator may be followed by the
-# quote that closes a `bash -c '...'` holding the heredoc. A heredoc still open
+# quote that closes a `bash -c '...'` or the `)` that closes a `$(...)` holding
+# the heredoc. A `<<` inside a double-quoted string without `$(`, a trailing
+# comment or a `((...))` arithmetic span opens nothing. A heredoc still open
 # at the end of a file is reported, so a misread terminator cannot hide the
 # rest of the file. Exits 1 when no file matched.
 scan_excuses() {
@@ -57,8 +59,17 @@ scan_excuses() {
             next
         }
         $0 !~ /^[[:space:]]*#/ {
-            rest = $0
-            while (match(rest, /(^|[^<])<<-?[[:space:]]*\\?[\047"]?[A-Za-z_][A-Za-z_0-9]*/)) {
+            rest = ""; s = $0
+            while (match(s, /"[^"]*"/)) {
+                pre = substr(s, 1, RSTART - 1); span = substr(s, RSTART, RLENGTH)
+                rest = rest pre
+                if (pre ~ /<<-?[[:space:]]*$/ || span ~ /\$\(/) rest = rest span
+                s = substr(s, RSTART + RLENGTH)
+            }
+            rest = rest s
+            sub(/[[:space:]]#.*$/, "", rest)
+            gsub(/\(\([^)]*\)\)/, "", rest)
+            while (match(rest, /(^|[^<])<<-?[[:space:]]*\\?[\047"]?[A-Za-z_0-9][A-Za-z_0-9]*/)) {
                 word = substr(rest, RSTART, RLENGTH)
                 rest = substr(rest, RSTART + RLENGTH)
                 qn++
@@ -259,7 +270,47 @@ if a; then
     pass_test "X-17"
 fi
 PROBE
+cat > "$probe/strfalse.sh" <<'PROBE'
+echo "usage: cat <<EOF"
+if a; then
+    echo "  Note: x"
+    cat <<EOF
+}
+EOF
+    pass_test "X-24"
+fi
+PROBE
+cat > "$probe/trailcomment.sh" <<'PROBE'
+f # feed <<EOF
+if a; then
+    echo "  Note: x"
+    cat <<EOF
+}
+EOF
+    pass_test "X-25"
+fi
+PROBE
+cat > "$probe/digit-heredoc.sh" <<'PROBE'
+if a; then
+    echo "  Note: x"
+    cat <<1
+}
+1
+    pass_test "X-26"
+fi
+PROBE
+cat > "$probe/arithmetic.sh" <<'PROBE'
+if a; then
+    echo "  Note: x"
+    n=$(( x << y )) m=$((1<<20))
+    pass_test "X-27"
+fi
+PROBE
 want="$(printf '%s\n' \
+    "$probe/strfalse.sh:3" \
+    "$probe/trailcomment.sh:3" \
+    "$probe/digit-heredoc.sh:2" \
+    "$probe/arithmetic.sh:2" \
     "$probe/comment.sh:2" \
     "$probe/elif.sh:4" \
     "$probe/else.sh:4" \
@@ -279,10 +330,10 @@ want="$(printf '%s\n' \
     "$probe/inner-loop.sh:2" \
     "$probe/hatch-elsewhere.sh:2" \
     "$probe/hatch-on-excuse.sh:2" \
-    "scanned 23 24" | sort)"
+    "scanned 27 28" | sort)"
 got="$(scan_excuses "$probe" | sort)"
 if [ "$got" = "$want" ]; then
-    pass "the scan flags else, elif, function, comment, same-line, printf, heredoc, after-here-string, after-quoted-heredoc, backslash, paired, indented-terminator and tab-stripped heredoc, loop-body, stderr, inner-loop and misplaced-hatch excuses and an unclosed heredoc, clears case, loop, ended-branch and hatched ones, and counts 24 calls in 23 files"
+    pass "the scan flags else, elif, function, comment, same-line, printf, heredoc, after-here-string, after-quoted-heredoc, backslash, paired, indented-terminator, tab-stripped and digit-word heredoc, after-string, after-comment, arithmetic-shift, loop-body, stderr, inner-loop and misplaced-hatch excuses and an unclosed heredoc, clears case, loop, ended-branch and hatched ones, and counts 28 calls in 27 files"
 else
     fail "the scan on the placement probes printed:"
     printf '%s\n' "$got" | sed 's/^/    /'
