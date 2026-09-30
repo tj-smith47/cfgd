@@ -69,7 +69,7 @@ impl CsiMetrics {
         let cache_hits_total = Family::<ModuleLabels, Counter>::default();
         registry.register(
             "cfgd_csi_cache_hits",
-            "Total cache hit count",
+            "Mounts served from the node cache without a pull, counted once per mount: at NodeStageVolume for a staged volume, at NodePublishVolume for an inline ephemeral one.",
             cache_hits_total.clone(),
         );
 

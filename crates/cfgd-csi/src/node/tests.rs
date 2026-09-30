@@ -1251,7 +1251,7 @@ async fn unusable_paths_are_rejected_with_the_value_and_the_reason() {
 /// to NodePublishVolume, and a persistent one through NodeStageVolume.
 #[tokio::test]
 #[serial_test::serial]
-async fn a_cache_hit_counts_on_the_publish_path_and_the_stage_path() {
+async fn a_cache_hit_counts_once_per_mount_at_an_unstaged_publish_or_a_stage() {
     let _g =
         cfgd_core::test_helpers::EnvVarGuard::unset(cfgd_core::CFGD_CSI_ALLOWED_REGISTRIES_ENV);
     let dir = tempfile::tempdir().unwrap();
@@ -1303,7 +1303,7 @@ async fn a_cache_hit_counts_on_the_publish_path_and_the_stage_path() {
     let stage = NodeStageVolumeRequest {
         volume_id: "vol-2".to_string(),
         staging_target_path: dir.path().join("staging").to_str().unwrap().to_string(),
-        volume_context: context,
+        volume_context: context.clone(),
         ..Default::default()
     };
     node.node_stage_volume(Request::new(stage)).await.unwrap();
@@ -1311,5 +1311,27 @@ async fn a_cache_hit_counts_on_the_publish_path_and_the_stage_path() {
     assert!(
         after_stage.contains("\ncfgd_csi_cache_hits_total{module=\"m\"} 2\n"),
         "{after_stage}"
+    );
+
+    // The publish that follows a stage is the same mount, already counted.
+    let staged_publish = NodePublishVolumeRequest {
+        volume_id: "vol-2".to_string(),
+        staging_target_path: dir.path().join("staging").to_str().unwrap().to_string(),
+        target_path: blocker.join("target2").to_str().unwrap().to_string(),
+        volume_context: context,
+        ..Default::default()
+    };
+    node.node_publish_volume(Request::new(staged_publish))
+        .await
+        .expect_err("a target under a regular file cannot be created");
+    let after_staged_publish = hits(&registry);
+    assert!(
+        after_staged_publish.contains("\ncfgd_csi_cache_hits_total{module=\"m\"} 2\n"),
+        "{after_staged_publish}"
+    );
+    assert!(
+        after_staged_publish
+            .contains("\ncfgd_csi_pull_duration_seconds_count{module=\"m\",cached=\"true\"} 2\n"),
+        "{after_staged_publish}"
     );
 }

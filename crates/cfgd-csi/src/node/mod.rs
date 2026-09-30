@@ -21,39 +21,43 @@ use crate::csi::v1::{
 use crate::metrics::{CsiMetrics, ModuleLabels, PublishLabels, PullLabels};
 
 /// Resolve `module@version` through the node cache, pulling on a miss, and
-/// record the pull's duration (labelled with whether the entry was already
-/// cached), a cache hit when it was, and the cache's size afterwards.
+/// record the cache's size afterwards.
 ///
-/// Both NodeStageVolume and NodePublishVolume go through here: kubelet never
-/// stages an inline ephemeral volume, which is how the webhook injects modules,
-/// so a publish is the only call such a mount makes.
+/// A mount is counted once. `record` is true at NodeStageVolume, and at
+/// NodePublishVolume only when kubelet did not stage the volume (an inline
+/// ephemeral one, which is how the webhook injects modules): then the pull's
+/// duration is observed (labelled with whether the entry was cached) and a
+/// hit counted. A publish after a stage records nothing unless it had to pull
+/// again, since the entry was evicted after the stage, and then its miss.
 fn pull_through_cache(
     cache: &Cache,
     metrics: &CsiMetrics,
     module: &str,
     version: &str,
     oci_ref: &str,
+    record: bool,
 ) -> Result<std::path::PathBuf, Status> {
     let start = std::time::Instant::now();
-    let cached = cache.get(module, version).is_some();
-    let source = cache
+    let (source, hit) = cache
         .get_or_pull(module, version, oci_ref)
         .map_err(|e| Status::internal(format!("cache pull failed: {e}")))?;
 
-    metrics
-        .pull_duration_seconds
-        .get_or_create(&PullLabels {
-            module: module.to_string(),
-            cached: cached.to_string(),
-        })
-        .observe(start.elapsed().as_secs_f64());
-    if cached {
+    if record || !hit {
         metrics
-            .cache_hits_total
-            .get_or_create(&ModuleLabels {
+            .pull_duration_seconds
+            .get_or_create(&PullLabels {
                 module: module.to_string(),
+                cached: hit.to_string(),
             })
-            .inc();
+            .observe(start.elapsed().as_secs_f64());
+        if hit {
+            metrics
+                .cache_hits_total
+                .get_or_create(&ModuleLabels {
+                    module: module.to_string(),
+                })
+                .inc();
+        }
     }
     metrics
         .cache_size_bytes
@@ -217,7 +221,7 @@ impl Node for CfgdNode {
             "staging volume — pulling to cache"
         );
 
-        pull_through_cache(&self.cache, &self.metrics, module, version, &oci_ref)?;
+        pull_through_cache(&self.cache, &self.metrics, module, version, &oci_ref, true)?;
 
         Ok(Response::new(NodeStageVolumeResponse {}))
     }
@@ -295,7 +299,6 @@ impl Node for CfgdNode {
             "publishing volume"
         );
 
-        // Get cached content (should have been staged already, but pull if needed)
         let oci_ref = resolve_oci_ref(attrs, module, version);
         check_registry_allowed(&oci_ref, self.allowed_registries.as_deref())?;
 
@@ -308,11 +311,19 @@ impl Node for CfgdNode {
         let module = module.to_string();
         let version = version.to_string();
         let oci_ref_owned = oci_ref.clone();
+        let unstaged = req.staging_target_path.is_empty();
         let target_path_owned: std::path::PathBuf = target.to_path_buf();
         // long-line-ok: a hatch is read off its own line, so it cannot wrap
         // spawn-blocking-ok: closure resolves no home paths (cache pull + bind mount on kubelet-supplied paths)
         tokio::task::spawn_blocking(move || {
-            let source = pull_through_cache(&cache, &metrics, &module, &version, &oci_ref_owned)?;
+            let source = pull_through_cache(
+                &cache,
+                &metrics,
+                &module,
+                &version,
+                &oci_ref_owned,
+                unstaged,
+            )?;
 
             std::fs::create_dir_all(&target_path_owned)
                 .map_err(|e| Status::internal(format!("cannot create target dir: {e}")))?;
