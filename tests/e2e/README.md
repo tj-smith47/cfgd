@@ -66,4 +66,5 @@ the running component's capability first and calls `skip_test` naming the image
 (`running_image` in `common/helpers.sh`) when the release lacks it; FS-CSI-04
 does this for publish-path cache hits. No case passes on a note that the thing
 it checks did not happen: `common/test-verdicts.sh` fails on a `pass_test` that
-follows such a note in the same branch.
+follows such a note in the same branch, unless that line carries
+`# verdict-ok: <why>`.

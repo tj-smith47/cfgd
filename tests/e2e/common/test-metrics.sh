@@ -63,24 +63,73 @@ check_value 'module="c"' 0
 check_value 'module="absent"' 0
 check_value '' 11
 
+# There are far more scripts than this under tests/e2e/ (85 when the floor was
+# set), so a count below it means the scan lost its files.
+min_scanned_files=40
+
+# Print file:line for each line outside helpers.sh and this file that names a
+# counter sample (`cfgd_<name>_total` as a whole word, or any `_total{` / `_total(\{` match),
+# skipping comments and begin_test titles, then a last line `scanned <files>`.
+# Exits 1 when no file matched.
+scan_hand_matches() {
+    local files="$scratch/scan-files"
+    find "$@" -name '*.sh' ! -name helpers.sh ! -name test-metrics.sh -type f > "$files"
+    if [ ! -s "$files" ]; then
+        echo "scan_hand_matches: no .sh file under $*" >&2
+        return 1
+    fi
+    # shellcheck disable=SC2016 # the single-quoted text is an awk program
+    tr '\n' '\0' < "$files" | xargs -0 awk '
+        FNR == 1 { files++ }
+        /^[[:space:]]*#/ || /^[[:space:]]*begin_test[[:space:]]/ { next }
+        /cfgd_[a-z_]+_total([^a-z_]|$)/ || /_total(\(\\\{|\\?\{)/ { print FILENAME ":" FNR }
+        END { print "scanned " files + 0 }
+    '
+}
+
 # Every counter read goes through the helpers, so a release that renders a
 # different spelling is handled in one place.
-strays="$(grep -rnE --include='*.sh' '_total(\(\\\{|\\?\{)' "$e2e_root" \
-    | grep -vE "^$e2e_root/common/(helpers|test-metrics)\.sh:" || true)"
-if [ -z "$strays" ]; then
-    pass "no e2e script matches a counter sample by hand"
+report="$(scan_hand_matches "$e2e_root")"
+strays="$(grep -v '^scanned ' <<<"$report" || true)"
+scanned_files="$(sed -n 's/^scanned //p' <<<"$report")"
+if [ "$scanned_files" -lt "$min_scanned_files" ]; then
+    fail "the hand-match scan read $scanned_files files, fewer than $min_scanned_files"
+elif [ -z "$strays" ]; then
+    pass "no e2e script matches a counter sample by hand ($scanned_files files)"
 else
     fail "counter samples matched outside metric_sample_lines/metric_sample_value:"
     printf '%s\n' "$strays" | sed 's/^/    /'
 fi
 
-# The scan must be able to see a hand match, or the check above proves nothing.
-mkdir -p "$scratch/probe"
-printf '%s\n' "grep -qE '^cfgd_x_hits_total(\\{| )' body" "awk -v s='cfgd_x_hits_total{module=\"a\"}'" > "$scratch/probe/p.sh"
-if [ "$(grep -rcE --include='*.sh' '_total(\(\\\{|\\?\{)' "$scratch/probe" | cut -d: -f2)" = 2 ]; then
-    pass "the hand-match scan finds both a grep and an awk match"
+if scan_hand_matches "$scratch/no-such-dir" > /dev/null 2>&1; then
+    fail "a hand-match scan of a path with no .sh file passed"
 else
-    fail "the hand-match scan missed a planted grep or awk match"
+    pass "a hand-match scan of a path with no .sh file fails"
+fi
+
+# One probe line per placement; the flagged ones are listed with their line.
+probe="$scratch/probe"
+mkdir -p "$probe"
+cat > "$probe/p.sh" <<'PROBE'
+grep -qE '^cfgd_x_hits_total(\{| )' body
+awk -v s='cfgd_x_hits_total{module="a"}' '$1 == s' body
+grep -q cfgd_x_hits_total body
+grep -q '^cfgd_x_hits_total ' body
+grep -q "^${family}_total{" body
+begin_test "X-01: /metrics returns cfgd_x_hits_total"
+# cfgd_x_hits_total is read through the helper below
+metric_sample_lines cfgd_x_hits body
+curl -H "Authorization: Bearer cfgd_dk_totally_invalid_key"
+PROBE
+want="$(printf '%s\n' "$probe/p.sh:1" "$probe/p.sh:2" "$probe/p.sh:3" "$probe/p.sh:4" "$probe/p.sh:5" "scanned 1")"
+got="$(scan_hand_matches "$probe")"
+if [ "$got" = "$want" ]; then
+    pass "the hand-match scan flags anchored, awk, unanchored, space and templated matches, and skips titles, comments, helper calls and a longer word such as totally"
+else
+    fail "the hand-match scan on the probe printed:"
+    printf '%s\n' "$got" | sed 's/^/    /'
+    echo "    want:"
+    printf '%s\n' "$want" | sed 's/^/    /'
 fi
 
 if [ "$failures" -ne 0 ]; then
