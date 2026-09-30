@@ -1841,7 +1841,8 @@ fn discards_the_tree_kill(code: &str) -> bool {
 /// Whether a declaration kills a child alone at a point no `#[cfg(unix)]`
 /// covers: `.kill()` on a `Child`, a `TreeKill::child_alone`,
 /// `terminate_process` or a raw `TerminateProcess`, declarations of those
-/// names aside, read off the blanked `code`; or a `taskkill` spawn, read off
+/// names aside, read off the blanked `code`; or a `taskkill` spawn (any case,
+/// any directory prefix, with or without `.exe`), read off
 /// `literals`, the same text with its comments alone blanked (both blankings
 /// keep every byte at its offset). A `#[cfg(unix)]` covers the statement or
 /// the braced block it is attached to; `unix_only` says the declaration
@@ -1852,7 +1853,8 @@ fn kills_a_child_alone_off_unix(code: &str, literals: &str, unix_only: bool) -> 
             .expect("the kill shapes compile")
     });
     static TASKKILL: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
-        regex::Regex::new(r#""taskkill(?:\.exe)?""#).expect("the taskkill spawn compiles")
+        regex::Regex::new(r#"(?i)"(?:[^"]*[\\/])?taskkill(?:\.exe)?""#)
+            .expect("the taskkill spawn compiles")
     });
     if unix_only {
         return false;
@@ -1968,7 +1970,7 @@ fn every_spawn_that_starts_a_process_tree_is_killed_as_one() {
         "the tells skip comments and literals and read a tree setup and a dropped kill in code"
     );
 
-    let lone = "fn block() {\n    #[cfg(unix)]\n    {\n        let k = TreeKill::child_alone(pid);\n    }\n}\n\nfn statement() {\n    #[cfg(unix)]\n    let k = TreeKill::child_alone(child.id());\n}\n\nfn windows() {\n    #[cfg(windows)]\n    {\n        let _ = child.kill();\n    }\n}\n\nfn bare() {\n    let _ = child.kill();\n}\n\nfn after() {\n    #[cfg(unix)]\n    {\n        a();\n    }\n    let _ = child.kill();\n}\n\nfn stops() {\n    crate::terminate_process(pid);\n}\n\nfn quoted() {\n    // let _ = child.kill();\n    let s = \"terminate_process(\";\n}\n\npub fn child_alone(pid: u32) -> Self {\n    Self { pid }\n}\n\nfn raw_terminate() {\n    unsafe { TerminateProcess(handle, 1) };\n}\n\nfn taskkill() {\n    Command::new(\"taskkill\").args([\"/PID\", &pid]);\n}\n\nfn says_taskkill() {\n    // Command::new(\"taskkill\")\n    let s = \"TerminateProcess(\";\n}\n";
+    let lone = "fn block() {\n    #[cfg(unix)]\n    {\n        let k = TreeKill::child_alone(pid);\n    }\n}\n\nfn statement() {\n    #[cfg(unix)]\n    let k = TreeKill::child_alone(child.id());\n}\n\nfn windows() {\n    #[cfg(windows)]\n    {\n        let _ = child.kill();\n    }\n}\n\nfn bare() {\n    let _ = child.kill();\n}\n\nfn after() {\n    #[cfg(unix)]\n    {\n        a();\n    }\n    let _ = child.kill();\n}\n\nfn stops() {\n    crate::terminate_process(pid);\n}\n\nfn quoted() {\n    // let _ = child.kill();\n    let s = \"terminate_process(\";\n}\n\npub fn child_alone(pid: u32) -> Self {\n    Self { pid }\n}\n\nfn raw_terminate() {\n    unsafe { TerminateProcess(handle, 1) };\n}\n\nfn taskkill() {\n    Command::new(\"taskkill\").args([\"/PID\", &pid]);\n}\n\nfn says_taskkill() {\n    // Command::new(\"taskkill\")\n    let s = \"TerminateProcess(\";\n}\n\nfn full_path_taskkill() {\n    Command::new(\"C:\\\\Windows\\\\System32\\\\TASKKILL.EXE\").args([\"/PID\", &pid]);\n}\n";
     let names = crate::test_helpers::fixture_declarations(lone);
     let raws = source_functions(&FIXTURE_SOURCE, lone);
     assert_eq!(
@@ -2001,6 +2003,7 @@ fn every_spawn_that_starts_a_process_tree_is_killed_as_one() {
             expect("raw_terminate", true),
             expect("taskkill", true),
             expect("says_taskkill", false),
+            expect("full_path_taskkill", true),
         ],
         "a lone kill counts as Unix-only inside the statement or block a `#[cfg(unix)]` gates"
     );
