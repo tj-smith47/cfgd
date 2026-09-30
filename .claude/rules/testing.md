@@ -167,8 +167,8 @@ and fails on a runner that sources such a setup before its trap.
 
 ## An e2e case asserts what it names, against the release that runs
 
-The operator, gateway and CSI suites run the images ArgoCD pins, never the
-branch's build. A case for behaviour only a newer build has reads the running
+The operator, gateway and CSI suites run the images ArgoCD pins, which can
+be older than the branch's build. A case for behaviour only a newer build has reads the running
 component's capability first (a help string, a field, a version) and calls
 `skip_test` naming `running_image <kind> <name> <container>` when the release
 lacks it; that skip is its only non-asserting branch. No case calls

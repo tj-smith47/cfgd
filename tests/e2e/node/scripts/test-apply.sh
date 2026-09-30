@@ -137,7 +137,7 @@ OUTPUT=$(exec_in_pod cfgd --config /etc/cfgd/cfgd.yaml apply --yes --no-color 2>
 if [ "$RC" -eq 0 ] && assert_contains "$OUTPUT" "Nothing to do — everything is up to date"; then
     pass_test "BIN-07"
 else
-    fail_test "BIN-07" "A second apply (exit $RC) planned work instead of reporting nothing to do"
+    fail_test "BIN-07" "A second apply (exit $RC) did not report that there is nothing to do"
 fi
 
 echo ""
