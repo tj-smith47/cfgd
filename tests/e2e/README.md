@@ -74,7 +74,9 @@ a metrics check drives the event first and then scrapes the pod that performed
 it: FS-CSI-04 and FS-CSI-07 the driver on the mounting node. OP-LC-01 touches
 its own MachineConfig and scrapes the operator pod the leader lease names, up to
 `E2E_METRICS_TRIES` attempts (12 by default, 5s apart), reading the lease again
-on each attempt. No case passes on a note that the thing
-it checks did not happen: `common/test-verdicts.sh` fails on a `pass_test` that
+on each attempt. OP-LC-02 reads the lease up to `E2E_LEASE_TRIES` times (6 by
+default, 5s apart) until its holder names an operator pod, since a deleted pod
+keeps the lease until it expires. No case passes on a note that the thing it
+checks did not happen: `common/test-verdicts.sh` fails on a `pass_test` that
 follows such a note in the same branch, unless that line carries
 `# verdict-ok: <why>`.

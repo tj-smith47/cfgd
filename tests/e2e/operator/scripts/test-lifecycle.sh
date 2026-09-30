@@ -104,11 +104,30 @@ kubectl delete machineconfig "$LC01_MC" -n "$E2E_NAMESPACE" --ignore-not-found >
 # =================================================================
 begin_test "OP-LC-02: Leader election lease"
 
-if LC02_LEADER="$(operator_leader_pod)"; then
-    echo "  Lease holder: pod/$LC02_LEADER"
-    pass_test "OP-LC-02"
+# The operator does not release the lease on shutdown, so after an operator
+# pod is deleted the holder names that pod until the lease expires (15s by
+# default) and a new pod takes it. The default attempts span 25s, past one
+# lease duration plus the 2s retry period.
+LC02_TRIES="${E2E_LEASE_TRIES:-6}"
+LC02_ATTEMPT=0
+LC02_PASSED=false
+LC02_LEADER=""
+if ! [[ $LC02_TRIES =~ ^[1-9][0-9]*$ ]]; then
+    fail_test "OP-LC-02" "E2E_LEASE_TRIES must be a positive integer, got '$LC02_TRIES'"
 else
-    fail_test "OP-LC-02" "$LC02_LEADER"
+    while [ "$LC02_ATTEMPT" -lt "$LC02_TRIES" ] && ! $LC02_PASSED; do
+        [ "$LC02_ATTEMPT" -eq 0 ] || sleep 5
+        LC02_ATTEMPT=$((LC02_ATTEMPT + 1))
+        if LC02_LEADER="$(operator_leader_pod)"; then
+            LC02_PASSED=true
+        fi
+    done
+    if $LC02_PASSED; then
+        echo "  Lease holder: pod/$LC02_LEADER (attempt $LC02_ATTEMPT of $LC02_TRIES)"
+        pass_test "OP-LC-02"
+    else
+        fail_test "OP-LC-02" "After $LC02_TRIES attempts: $LC02_LEADER"
+    fi
 fi
 
 # =================================================================
