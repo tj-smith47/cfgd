@@ -153,8 +153,8 @@ kubectl still running 5s after SIGTERM. A case that scrapes an endpoint and
 asserts on the body fetches it with `http_get_to_file` and puts
 `http_evidence` (status, content type, line count, first 15 lines, and curl's
 exit code and error when nothing answered) in every fail reason; a metric
-check matches the sample line (`^name(\{| )`), never the bare name, which the
-`# HELP` and `# TYPE` lines also carry. A `run-all.sh` whose setup starts a
+check matches the sample line (`^name(\{| )`), since the bare name also
+matches the `# HELP` and `# TYPE` lines. A `run-all.sh` whose setup starts a
 port-forward installs its EXIT trap before sourcing that setup.
 `tests/e2e/common/test-port-forward.sh`, run by `task e2e:tags:check`, drives
 the helpers against a stand-in kubectl, fails on any port-forward started

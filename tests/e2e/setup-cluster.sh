@@ -219,8 +219,8 @@ release_lease() {
         kubectl delete lease "$LEASE_NAME" -n "$LEASE_NS" --ignore-not-found >/dev/null 2>&1 || true
     fi
 }
-# The scratch root helpers.sh made is this script's to remove: it exits
-# through this trap, never through cleanup_e2e.
+# The scratch root helpers.sh made is removed here: this script exits through
+# this trap, which does not call cleanup_e2e.
 trap 'release_lease; [ -z "${E2E_SCRATCH_OWNED:-}" ] || rm -rf "$E2E_SCRATCH_OWNED"' EXIT
 
 acquire_lease
