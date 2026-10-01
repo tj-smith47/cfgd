@@ -311,10 +311,12 @@ fn acquire_lock_at(lock_path: &std::path::Path, wait: LockWait) -> errors::Resul
             Ok(locked) => locked,
             // The open itself lost a race with a removal: the file (or its
             // directory) went away, or on Windows sits in the delete-pending
-            // window, which refuses opens with ERROR_ACCESS_DENIED. The
-            // backoff is what gives the retry a chance at the second case —
-            // delete-pending clears only when the deleter's last handle
-            // closes, and back-to-back attempts all land inside one window.
+            // window. A delete-pending FILE refuses opens with
+            // ERROR_ACCESS_DENIED; a delete-pending DIRECTORY makes the
+            // re-create fail with ERROR_ALREADY_EXISTS while no directory can
+            // be read there. The backoff is what gives the retry a chance at
+            // both windows: delete-pending clears only when the deleter's last
+            // handle closes, and back-to-back attempts all land inside one.
             Err(e) if !last_attempt && is_transient_open_error(&e) => {
                 std::thread::sleep(stale_retry_backoff(attempt));
                 attempt += 1;
@@ -346,17 +348,25 @@ fn acquire_lock_at(lock_path: &std::path::Path, wait: LockWait) -> errors::Resul
 }
 
 /// Whether an open failure is worth re-trying: the lock file or its directory
-/// was removed, or the open landed in Windows delete-pending, which reports
-/// `PermissionDenied`. The retry cannot tell delete-pending from a genuine
-/// EACCES; the backoff between attempts gives a pending delete time to finish,
-/// and a denial that outlives the budget surfaces as the io error it is.
+/// was removed (`NotFound`), or the open landed in a Windows delete-pending
+/// window. A delete-pending lock FILE refuses the open with `PermissionDenied`.
+/// A delete-pending DIRECTORY fails the re-create with `AlreadyExists`: its
+/// `mkdir` finds the name taken, and `create_dir_all` accepts that only when
+/// `is_dir()` holds, which it does not for a directory nothing can open.
+///
+/// The retry cannot tell delete-pending from a genuine EACCES, or from a
+/// regular file sitting where the directory belongs; the backoff between
+/// attempts gives a pending delete time to finish, and a failure that outlives
+/// the budget surfaces as the io error it is.
 fn is_transient_open_error(err: &errors::CfgdError) -> bool {
     let errors::CfgdError::Io(io) = err else {
         return false;
     };
     matches!(
         io.kind(),
-        std::io::ErrorKind::NotFound | std::io::ErrorKind::PermissionDenied
+        std::io::ErrorKind::NotFound
+            | std::io::ErrorKind::PermissionDenied
+            | std::io::ErrorKind::AlreadyExists
     )
 }
 
@@ -507,7 +517,6 @@ fn locked_file_is_current(file: &LockFile, lock_path: &std::path::Path) -> bool 
 /// holding PID when another `cfgd apply` (or the daemon's reconcile) already
 /// holds it. Released when the returned guard drops.
 pub fn acquire_apply_lock(state_dir: &std::path::Path) -> errors::Result<FileLockGuard> {
-    std::fs::create_dir_all(state_dir)?;
     acquire_lock_at(&state_dir.join(APPLY_LOCK_FILENAME), LockWait::Refuse)
 }
 
@@ -534,7 +543,6 @@ pub fn acquire_source_lock(
     cache_dir: &std::path::Path,
     on_wait: impl FnOnce(),
 ) -> errors::Result<FileLockGuard> {
-    std::fs::create_dir_all(cache_dir)?;
     let lock_path = cache_dir.join(SOURCE_CACHE_LOCK_FILENAME);
     match acquire_lock_at(&lock_path, LockWait::Refuse) {
         Err(errors::CfgdError::State(errors::StateError::ApplyLockHeld { .. })) => {
@@ -574,6 +582,40 @@ pub fn acquire_backup_lock(
 ) -> errors::Result<FileLockGuard> {
     crate::config::validate_backup_name(name)?;
     let dir = state_dir.join(LOCKS_SUBDIR);
-    std::fs::create_dir_all(&dir)?;
     acquire_lock_at(&dir.join(format!("backup-{name}.lock")), LockWait::Refuse)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn io(kind: std::io::ErrorKind) -> errors::CfgdError {
+        std::io::Error::from(kind).into()
+    }
+
+    #[test]
+    fn a_removed_lock_file_or_directory_is_transient() {
+        assert!(is_transient_open_error(&io(std::io::ErrorKind::NotFound)));
+    }
+
+    #[test]
+    fn a_delete_pending_lock_file_is_transient() {
+        assert!(is_transient_open_error(&io(
+            std::io::ErrorKind::PermissionDenied
+        )));
+    }
+
+    #[test]
+    fn a_delete_pending_lock_directory_is_transient() {
+        assert!(is_transient_open_error(&io(
+            std::io::ErrorKind::AlreadyExists
+        )));
+    }
+
+    #[test]
+    fn an_unrelated_open_failure_is_not_transient() {
+        assert!(!is_transient_open_error(&io(
+            std::io::ErrorKind::InvalidInput
+        )));
+    }
 }
