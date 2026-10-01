@@ -276,8 +276,17 @@ strip_test_blocks_from_file() {
 }
 
 _strip_test_blocks_uncached() {
-    local filepath="$1"
-    awk -v filepath="$filepath" "$AWK_LIB"'
+    _split_test_spans "$1" prod
+}
+
+# The ONE reading of where a `#[cfg(test)]` span starts and ends, printing the
+# lines outside every span (`prod`) or inside one (`test`). The strip and the
+# extract are two views of the same split, so they share this program: with a
+# copy each, a brace-less `#[cfg(test)]` statement can end at its `;` in one
+# view and run on to the enclosing block's closing brace in the other, which
+# files the production lines after it under "test code".
+_split_test_spans() {
+    awk -v filepath="$1" -v want="$2" "$AWK_LIB"'
     BEGIN { in_test = 0; test_depth = 0 }
     { code = code_only($0) }
     /^[[:space:]]*#\[cfg\(test\)\]/ {
@@ -289,6 +298,7 @@ _strip_test_blocks_uncached() {
         opens = gsub(/{/, "{", code)
         closes = gsub(/}/, "}", code)
         test_depth += opens - closes
+        if (want == "test") print filepath ":" NR ":" $0
         if (test_depth <= 0 && opens + closes > 0) {
             in_test = 0
             test_depth = 0
@@ -297,8 +307,8 @@ _strip_test_blocks_uncached() {
         }
         next
     }
-    { print filepath ":" NR ":" $0 }
-    ' "$filepath"
+    want == "prod" { print filepath ":" NR ":" $0 }
+    ' "$1"
 }
 
 # --- Drop the lines inside every `impl <Trait> for <Type>` block ---
@@ -412,26 +422,7 @@ _extract_test_blocks_uncached() {
         awk -v filepath="$filepath" '{ print filepath ":" NR ":" $0 }' "$filepath"
         return 0
     fi
-    awk -v filepath="$filepath" "$AWK_LIB"'
-    BEGIN { in_test = 0; test_depth = 0 }
-    { code = code_only($0) }
-    /^[[:space:]]*#\[cfg\(test\)\]/ {
-        in_test = 1
-        test_depth = 0
-        next
-    }
-    in_test {
-        opens = gsub(/{/, "{", code)
-        closes = gsub(/}/, "}", code)
-        test_depth += opens - closes
-        print filepath ":" NR ":" $0
-        if (test_depth <= 0 && opens + closes > 0) {
-            in_test = 0
-            test_depth = 0
-        }
-        next
-    }
-    ' "$filepath"
+    _split_test_spans "$filepath" test
 }
 
 # --- Core check function ---
