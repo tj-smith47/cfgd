@@ -302,7 +302,7 @@ _split_test_spans() {
         if (test_depth <= 0 && opens + closes > 0) {
             in_test = 0
             test_depth = 0
-        } else if (test_depth == 0 && opens + closes == 0 && code ~ /;[[:space:]]*$/) {
+        } else if (test_depth == 0 && opens + closes == 0 && code ~ /;[[:space:]\001]*$/) {
             in_test = 0
         }
         next
@@ -999,7 +999,7 @@ FN_DEFINITIONS_AWK='
     }
     while (open_count > 0) {
         i = open_count
-        if (!opened[i] && code ~ /;[[:space:]]*$/) { open_count--; continue }
+        if (!opened[i] && code ~ /;[[:space:]\001]*$/) { open_count--; continue }
         if (!opened[i] || depth > start[i]) break
         printf "%s\037%s\037%s\n", name[i], body[i], file
         open_count--
