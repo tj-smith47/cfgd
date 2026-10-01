@@ -12,21 +12,21 @@ const LOCKS_SUBDIR: &str = "locks";
 
 /// Filename of the source-cache mutex inside the sources cache directory.
 ///
-/// Lives beside the per-source checkouts rather than in the state dir because
-/// the cache is what it guards: a cache directory carried to another machine,
+/// Lives beside the per-source checkouts, in the cache directory, because the
+/// cache is what it guards: a cache directory carried to another machine,
 /// or wiped, takes its lock with it. `validate_source_name` rejects this name,
 /// so no source's checkout can ever occupy the path.
 ///
-/// Deliberately NOT `sources.lock`: the SHA lockfile beside the user's config
-/// (`sources/lockfile.rs`) already owns that name, and two unrelated files
-/// sharing it invites the wrong one being inspected or deleted. The cache
+/// The name `sources.lock` is taken: the SHA lockfile beside the user's config
+/// (`sources/lockfile.rs`) owns it, and two unrelated files sharing one name
+/// invite the wrong one being inspected or deleted. The cache
 /// directory the file sits in already says what this lock is for.
 pub const SOURCE_CACHE_LOCK_FILENAME: &str = "cache.lock";
 
 /// High half of the byte offset `LockFileEx` locks, i.e. the lock sits one byte
 /// past 2^63 into the file.
 ///
-/// `LockFileEx` ranges are **mandatory**, not advisory: while one process holds
+/// `LockFileEx` ranges are **mandatory**: while one process holds
 /// a range exclusively, no other process may even READ those bytes. Locking
 /// byte 0 — the obvious choice, and what this did — therefore made the PID
 /// stored in the file unreadable by precisely the caller that needs it, the one
@@ -53,7 +53,7 @@ type LockFile = std::fs::File;
 /// as confidently as a correct answer, which is strictly worse than admitting
 /// the holder is unknown: nothing in the message tells the operator to distrust
 /// it. Requiring the terminator makes the record self-delimiting, so a torn
-/// read is detectable rather than plausible.
+/// read is detectable.
 const PID_RECORD_TERMINATOR: char = '\n';
 
 /// Describe whoever holds `lock_path`, for the error a refused acquire returns.
@@ -97,7 +97,7 @@ impl Drop for FileLockGuard {
         // Clear the PID so stale reads aren't confusing.
         // Lock is released when LockFile is dropped after this.
         //
-        // Through the HELD handle, never through the path. The path can name a
+        // Through the HELD handle. The path can name a
         // different file by now (the lock file removed by a user wiping the
         // cache, and re-created by the next process), and truncating THAT one
         // erases a live holder's record — or, with `fs::write`, plants an
@@ -120,15 +120,15 @@ fn held_file(lock: &LockFile) -> &std::fs::File {
 /// Record this process's PID in the locked file, through the handle that holds
 /// the lock.
 ///
-/// Addressed by handle rather than by path for the reason [`acquire_lock_at`]
-/// re-checks identity at all: a path-addressed write does not inherit the
-/// identity the re-check established, so it can land in a file this process
-/// does not hold. The write goes through a `try_clone` of the held handle (a
-/// second descriptor over the same open file description) rather than through
-/// `Flock`'s own `DerefMut`: a write through the `DerefMut` path was observed
-/// dropped on macOS ARM64, and the dup keeps the write on a plain `File` code
-/// path. Whether that avoids the dropped write there is evidence only the
-/// real-OS runs can give; the exclusion itself is unaffected either way.
+/// Addressed by handle for the reason [`acquire_lock_at`] re-checks identity at
+/// all: a path-addressed write does not inherit the identity the re-check
+/// established, so it can land in a file this process does not hold. The write
+/// goes through a `try_clone` of the held handle (a second descriptor over the
+/// same open file description): a write through `Flock`'s own `DerefMut` was
+/// observed dropped on macOS ARM64, and the dup keeps the write on a plain
+/// `File` code path. Whether that avoids the dropped write there is evidence
+/// only the real-OS runs can give; the exclusion itself is unaffected either
+/// way.
 fn record_pid(lock: &LockFile) -> errors::Result<()> {
     use std::io::{Seek, Write};
     let mut file = held_file(lock).try_clone()?;
@@ -178,8 +178,8 @@ mod blocking_witness {
     }
 
     /// Block until some thread is inside a blocking source-lock acquire.
-    /// `timeout` is a deadlock escape, never a timing assertion: the answer is
-    /// the returned bool, and a caller asserts on that.
+    /// `timeout` is a deadlock escape. The answer is the returned bool, and a
+    /// caller asserts on that.
     pub fn await_blocking_source_acquire(timeout: std::time::Duration) -> bool {
         await_blocking_source_acquires(1, timeout)
     }
@@ -188,8 +188,8 @@ mod blocking_witness {
     ///
     /// The counting form is what lets a test put two contenders in ONE window
     /// before the holder releases: released on the single-waiter signal, the
-    /// second contender may not have reached the acquire yet, and the two run
-    /// one after another instead of racing.
+    /// second contender may not have reached the acquire yet, and the two would
+    /// run one after another with no race between them.
     pub fn await_blocking_source_acquires(wanted: usize, timeout: std::time::Duration) -> bool {
         let (count, signal) = &*GATE;
         let guard = count.lock().unwrap_or_else(PoisonError::into_inner);
@@ -280,8 +280,8 @@ mod open_injection {
 ///
 /// The machine-wide mutexes ([`acquire_apply_lock`], [`acquire_backup_lock`])
 /// [`Refuse`](LockWait::Refuse), so a scheduled fire colliding with a hand-run
-/// is skipped rather than queued behind it. The source-cache mutex
-/// [`Block`](LockWait::Block)s instead: its critical section is short, both
+/// is skipped. The source-cache mutex [`Block`](LockWait::Block)s: its
+/// critical section is short, both
 /// contenders want the same end state, and refusing would turn a benign
 /// overlap between `cfgd sync` and `cfgd apply` into a failed run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -316,8 +316,8 @@ pub(crate) const STALE_LOCK_ATTEMPTS: usize = 8;
 /// Windows delete-pending window is different: it lasts until the deleter's
 /// LAST handle closes, so back-to-back retries all land inside one window and
 /// the attempt budget buys nothing. The backoff gives that handle time to
-/// close. It is a chance, not a guarantee; a window outliving the whole budget
-/// still surfaces the real io error.
+/// close. A window outliving the whole budget still surfaces the real io
+/// error.
 fn stale_retry_backoff(attempt: usize) -> std::time::Duration {
     const BASE_MS: u64 = 4;
     const CAP_MS: u64 = 64;
@@ -333,25 +333,25 @@ fn stale_retry_backoff(attempt: usize) -> std::time::Duration {
 /// The identity re-check is what keeps a REMOVED lock file from splitting the
 /// section in two. Nothing in cfgd deletes one, but a user wiping a cache
 /// directory does, and both platforms allow it while handles are open (`flock`
-/// and `LockFileEx` lock an open FILE, not a path, and Rust's Windows opens
-/// carry `FILE_SHARE_DELETE`). A contender blocked on the removed file would
-/// otherwise wake holding an exclusive lock on an orphan nothing can open
-/// again, while the next process creates a fresh file at the same path and
-/// locks that one: two holders in one section, the interleaving the lock exists
-/// to prevent. Re-opening on a mismatch settles it — the holder is whoever
-/// holds the file the path currently names.
+/// and `LockFileEx` lock an open FILE, whatever its path later names, and
+/// Rust's Windows opens carry `FILE_SHARE_DELETE`). A contender blocked on the
+/// removed file would otherwise wake holding an exclusive lock on an orphan
+/// nothing can open again, while the next process creates a fresh file at the
+/// same path and locks that one: two holders in one section, the interleaving
+/// the lock exists to prevent. Re-opening on a mismatch settles it — the holder
+/// is whoever holds the file the path currently names.
 ///
 /// A removal takes the lock file's DIRECTORY with it as often as not, so the
-/// re-open recreates the directory too (in [`open_lock_file`]), so waiting
-/// politely never fails the contender with `ENOENT`.
+/// re-open recreates the directory too (in [`open_lock_file`]). A contender
+/// that waited politely then finds a directory to open into, and no `ENOENT`.
 ///
-/// Exhausting the attempts reports
-/// [`errors::StateError::LockFileUnstable`] rather than handing back a guard
-/// over a file the path no longer names: that guard would be the very
-/// double-holder state the re-check exists to prevent. Deliberately NOT the
-/// held-lock error: nobody is known to hold anything, so the caller must not
-/// be sent looking for a holder, and [`acquire_source_lock`] must not read
-/// the exhaustion as contention and announce a wait for it.
+/// Exhausting the attempts reports [`errors::StateError::LockFileUnstable`]. A
+/// guard over a file the path no longer names would be the very double-holder
+/// state the re-check exists to prevent, so none is handed back. The error is
+/// also distinct from the held-lock error: nobody is known to hold anything, so
+/// the caller must not be sent looking for a holder, and
+/// [`acquire_source_lock`] must not read the exhaustion as contention and
+/// announce a wait for it.
 fn acquire_lock_at(lock_path: &std::path::Path, wait: LockWait) -> errors::Result<FileLockGuard> {
     let mut attempt = 1;
     loop {
@@ -367,8 +367,8 @@ fn acquire_lock_at(lock_path: &std::path::Path, wait: LockWait) -> errors::Resul
                 _path: lock_path.to_path_buf(),
             });
         }
-        // Dropped bare, never through `FileLockGuard`, whose drop would clear a
-        // PID record this process does not own.
+        // Dropped bare: `FileLockGuard`'s drop would clear a PID record this
+        // process does not own.
         drop(locked);
         if last_attempt {
             return Err(errors::StateError::LockFileUnstable {
@@ -646,11 +646,11 @@ pub fn acquire_apply_lock(state_dir: &std::path::Path) -> errors::Result<FileLoc
 /// `cfgd status`) must not be refused because an apply is running, and an apply
 /// must not be refused because a `cfgd sync` is warming the cache.
 ///
-/// Blocking rather than refusing: the critical section is one clone, both
-/// contenders want the same end state, and a refusal would fail a run over an
-/// overlap that resolves itself. `on_wait` is called at most once, only when a
-/// holder is already in the section, so a caller can say so before the wait
-/// begins rather than appearing to hang.
+/// Blocking: the critical section is one clone, both contenders want the same
+/// end state, and a refusal would fail a run over an overlap that resolves
+/// itself. `on_wait` is called at most once, only when a holder is already in
+/// the section, so a caller can say so before the wait begins and the run does
+/// not look hung.
 pub fn acquire_source_lock(
     cache_dir: &std::path::Path,
     on_wait: impl FnOnce(),
@@ -670,24 +670,22 @@ pub fn acquire_source_lock(
 /// Acquire the exclusive lock for one `spec.backups[]` unit at
 /// `<state_dir>/locks/backup-<name>.lock`.
 ///
-/// Per-unit rather than global so two different backups still run
-/// concurrently, and taken by every surface (CLI, apply, daemon timer) with no
-/// opt-out: the backup engine's staging path is derived from the destination
-/// alone, so two runs of ONE unit share `.<name>.partial` and the second run's
-/// staging wipe lands inside the first run's in-flight tree. Retention pruning
-/// has the same shape — it reads the run list, then deletes — so a concurrent
-/// run can slip a row in between.
+/// One lock per unit, so two different backups still run concurrently. Every
+/// surface (CLI, apply, daemon timer) takes it, with no opt-out: the backup
+/// engine's staging path is derived from the destination alone, so two runs of
+/// ONE unit share `.<name>.partial` and the second run's staging wipe lands
+/// inside the first run's in-flight tree. Retention pruning has the same shape
+/// — it reads the run list, then deletes — so a concurrent run can slip a row
+/// in between.
 ///
-/// Non-blocking, like [`acquire_apply_lock`]: a held lock is reported as
-/// [`crate::errors::StateError::ApplyLockHeld`] with the holding PID rather
-/// than waited on, so a scheduled fire that collides with a hand-run is skipped
-/// instead of queued behind it.
+/// Non-blocking, like [`acquire_apply_lock`]: a held lock is reported at once
+/// as [`crate::errors::StateError::ApplyLockHeld`] with the holding PID, so a
+/// scheduled fire that collides with a hand-run is skipped.
 ///
-/// `name` is interpolated into the lock filename, so it is re-validated here
-/// rather than trusted. Every in-tree caller passes a name
-/// `config::validate_backup_specs` already accepted, but this is a `pub`
-/// cfgd-core API and a `..`, `/`, or `.` slipping through would aim the lock
-/// outside `locks/`.
+/// `name` is interpolated into the lock filename, so it is re-validated here.
+/// Every in-tree caller passes a name `config::validate_backup_specs` already
+/// accepted, but this is a `pub` cfgd-core API and a `..`, `/`, or `.` slipping
+/// through would aim the lock outside `locks/`.
 pub fn acquire_backup_lock(
     state_dir: &std::path::Path,
     name: &str,
