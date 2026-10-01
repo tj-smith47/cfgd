@@ -331,8 +331,8 @@ fn stale_retry_backoff(attempt: usize) -> std::time::Duration {
 /// holds the file the path currently names.
 ///
 /// A removal takes the lock file's DIRECTORY with it as often as not, so the
-/// re-open recreates the directory too (in [`open_lock_file`]) rather than
-/// failing the contender with `ENOENT` for waiting politely.
+/// re-open recreates the directory too (in [`open_lock_file`]), so waiting
+/// politely never fails the contender with `ENOENT`.
 ///
 /// Exhausting the attempts reports
 /// [`errors::StateError::LockFileUnstable`] rather than handing back a guard
