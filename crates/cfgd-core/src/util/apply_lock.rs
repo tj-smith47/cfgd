@@ -471,10 +471,11 @@ fn retry_transient_open<T>(mut op: impl FnMut() -> std::io::Result<T>) -> std::i
     }
 }
 
-/// `create_dir_all`, except that a regular file or a dangling symlink standing
-/// at `dir` or at one of its ancestors fails as `NotADirectory` naming it.
+/// `create_dir_all`, except that a regular file, or a symlink whose target
+/// cannot be reached, standing at `dir` or at one of its ancestors fails as
+/// `NotADirectory` naming it.
 ///
-/// `create_dir_all` reports a file or a dangling symlink at `dir` itself as
+/// `create_dir_all` reports either one at `dir` itself as
 /// `AlreadyExists` on every platform, and one at an ancestor as
 /// `AlreadyExists` on Windows (Unix already reports `NotADirectory` there).
 /// `AlreadyExists` is also what a Windows delete-pending directory produces,
@@ -483,7 +484,9 @@ fn retry_transient_open<T>(mut op: impl FnMut() -> std::io::Result<T>) -> std::i
 /// - readable and a directory: nothing is in the way, so the error stays as it
 ///   is and the retry may wait;
 /// - readable and anything else: a file is in the way;
-/// - unreadable, but a symlink itself: a dangling symlink is in the way;
+/// - unreadable, but a symlink itself: a symlink whose target cannot be
+///   reached (dangling, looping, or behind a denied component) is in the way,
+///   and the error names why;
 /// - unreadable and no symlink: a delete-pending directory (it cannot be read
 ///   at all) or nothing yet, so the walk moves on to the parent.
 fn create_dir_all_once(dir: &std::path::Path) -> std::io::Result<()> {
@@ -503,8 +506,10 @@ fn create_dir_all_once(dir: &std::path::Path) -> std::io::Result<()> {
         match std::fs::metadata(ancestor) {
             Ok(meta) if meta.is_dir() => break,
             Ok(_) => return Err(in_the_way(ancestor, "exists and is not a directory")),
-            Err(_) if std::fs::symlink_metadata(ancestor).is_ok_and(|m| m.is_symlink()) => {
-                return Err(in_the_way(ancestor, "is a symlink to no directory"));
+            Err(target) if std::fs::symlink_metadata(ancestor).is_ok_and(|m| m.is_symlink()) => {
+                let why =
+                    format!("is a symlink whose target is not a reachable directory ({target})");
+                return Err(in_the_way(ancestor, &why));
             }
             Err(_) => {}
         }
@@ -828,6 +833,7 @@ mod tests {
                 assert_eq!(e.kind(), ErrorKind::NotADirectory);
                 let named = state_dir.display().to_string();
                 assert!(e.to_string().contains(&named), "{e}");
+                assert!(e.to_string().contains("not a reachable directory"), "{e}");
             }
             other => panic!("expected NotADirectory, got {other:?}"),
         }
