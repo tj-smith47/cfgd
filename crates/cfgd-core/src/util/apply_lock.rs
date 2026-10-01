@@ -234,6 +234,44 @@ mod stale_injection {
 #[cfg(test)]
 pub use stale_injection::force_stale_lock_rechecks;
 
+/// Fault injection for the lock file's open, so the transient-retry arm runs
+/// on every platform without reproducing a Windows delete-pending window.
+#[cfg(test)]
+mod open_injection {
+    use std::cell::Cell;
+
+    thread_local! {
+        static FORCED: Cell<(usize, std::io::ErrorKind)> =
+            const { Cell::new((0, std::io::ErrorKind::Other)) };
+        static ATTEMPTS: Cell<usize> = const { Cell::new(0) };
+    }
+
+    /// Make the next `count` lock-file opens on THIS thread fail with `kind`
+    /// before they touch the filesystem, and restart the attempt count.
+    pub fn force_open_failures(count: usize, kind: std::io::ErrorKind) {
+        FORCED.with(|forced| forced.set((count, kind)));
+        ATTEMPTS.with(|attempts| attempts.set(0));
+    }
+
+    /// How many lock-file opens THIS thread has attempted since the last
+    /// [`force_open_failures`].
+    pub fn open_attempts() -> usize {
+        ATTEMPTS.with(Cell::get)
+    }
+
+    pub(super) fn next_open() -> std::io::Result<()> {
+        ATTEMPTS.with(|attempts| attempts.set(attempts.get() + 1));
+        FORCED.with(|forced| {
+            let (remaining, kind) = forced.get();
+            if remaining == 0 {
+                return Ok(());
+            }
+            forced.set((remaining - 1, kind));
+            Err(std::io::Error::from(kind))
+        })
+    }
+}
+
 /// What a contended acquire does about the holder.
 ///
 /// The machine-wide mutexes ([`acquire_apply_lock`], [`acquire_backup_lock`])
@@ -293,7 +331,7 @@ fn stale_retry_backoff(attempt: usize) -> std::time::Duration {
 /// holds the file the path currently names.
 ///
 /// A removal takes the lock file's DIRECTORY with it as often as not, so the
-/// re-open recreates the directory too (in [`lock_file_at`]) rather than
+/// re-open recreates the directory too (in [`open_lock_file`]) rather than
 /// failing the contender with `ENOENT` for waiting politely.
 ///
 /// Exhausting the attempts reports
@@ -307,23 +345,7 @@ fn acquire_lock_at(lock_path: &std::path::Path, wait: LockWait) -> errors::Resul
     let mut attempt = 1;
     loop {
         let last_attempt = attempt >= STALE_LOCK_ATTEMPTS;
-        let locked = match lock_file_at(lock_path, wait) {
-            Ok(locked) => locked,
-            // The open itself lost a race with a removal: the file (or its
-            // directory) went away, or on Windows sits in the delete-pending
-            // window. A delete-pending FILE refuses opens with
-            // ERROR_ACCESS_DENIED; a delete-pending DIRECTORY makes the
-            // re-create fail with ERROR_ALREADY_EXISTS while no directory can
-            // be read there. The backoff is what gives the retry a chance at
-            // both windows: delete-pending clears only when the deleter's last
-            // handle closes, and back-to-back attempts all land inside one.
-            Err(e) if !last_attempt && is_transient_open_error(&e) => {
-                std::thread::sleep(stale_retry_backoff(attempt));
-                attempt += 1;
-                continue;
-            }
-            Err(e) => return Err(e),
-        };
+        let locked = lock_file_at(lock_path, wait)?;
         let current = locked_file_is_current(&locked, lock_path);
         #[cfg(test)]
         let current = current && !stale_injection::take_forced_stale();
@@ -354,14 +376,12 @@ fn acquire_lock_at(lock_path: &std::path::Path, wait: LockWait) -> errors::Resul
 /// `mkdir` finds the name taken, and `create_dir_all` accepts that only when
 /// `is_dir()` holds, which it does not for a directory nothing can open.
 ///
-/// The retry cannot tell delete-pending from a genuine EACCES, or from a
-/// regular file sitting where the directory belongs; the backoff between
-/// attempts gives a pending delete time to finish, and a failure that outlives
-/// the budget surfaces as the io error it is.
-fn is_transient_open_error(err: &errors::CfgdError) -> bool {
-    let errors::CfgdError::Io(io) = err else {
-        return false;
-    };
+/// The retry cannot tell delete-pending from a genuine EACCES; the backoff
+/// between attempts gives a pending delete time to finish, and a denial that
+/// outlives the budget surfaces as the io error it is. A regular file where a
+/// directory belongs never reaches this question: [`create_dir_all_once`]
+/// reports it as `NotADirectory`.
+fn is_transient_open_error(io: &std::io::Error) -> bool {
     matches!(
         io.kind(),
         std::io::ErrorKind::NotFound
@@ -398,17 +418,81 @@ fn lock_file_at(lock_path: &std::path::Path, wait: LockWait) -> errors::Result<L
 /// The directory matters on a RE-open: a removal that took the lock file is
 /// usually a removal of the directory holding it, and a contender that came
 /// back to find neither would fail with `ENOENT` while doing everything right.
+///
+/// The directory and the file are retried as one step, because a removal can
+/// take the directory again between the two.
 fn open_lock_file(lock_path: &std::path::Path) -> errors::Result<std::fs::File> {
-    if let Some(parent) = lock_path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let file = std::fs::OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .read(true)
-        .write(true)
-        .open(lock_path)?;
+    let file = retry_transient_open(|| {
+        #[cfg(test)]
+        open_injection::next_open()?;
+        if let Some(parent) = lock_path.parent() {
+            create_dir_all_once(parent)?;
+        }
+        std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(lock_path)
+    })?;
     Ok(file)
+}
+
+/// Run `op` until it succeeds, fails with an error [`is_transient_open_error`]
+/// rejects, or has run [`STALE_LOCK_ATTEMPTS`] times, sleeping
+/// [`stale_retry_backoff`] between attempts.
+///
+/// The backoff is what gives a retry a chance at the Windows delete-pending
+/// windows: one clears only when the deleter's last handle closes, and
+/// back-to-back attempts all land inside it.
+fn retry_transient_open<T>(mut op: impl FnMut() -> std::io::Result<T>) -> std::io::Result<T> {
+    let mut attempt = 1;
+    loop {
+        match op() {
+            Err(e) if attempt < STALE_LOCK_ATTEMPTS && is_transient_open_error(&e) => {
+                std::thread::sleep(stale_retry_backoff(attempt));
+                attempt += 1;
+            }
+            done => return done,
+        }
+    }
+}
+
+/// `create_dir_all`, except that a regular file standing at `dir` or at one of
+/// its ancestors fails as `NotADirectory` naming that file.
+///
+/// `create_dir_all` reports such a file as `AlreadyExists`, the same kind a
+/// Windows delete-pending directory produces, and only the second is worth
+/// waiting out. The first ancestor whose metadata can be read tells them
+/// apart: a delete-pending directory cannot be read at all, so the walk passes
+/// over it to its parent, which is a directory.
+fn create_dir_all_once(dir: &std::path::Path) -> std::io::Result<()> {
+    let Err(e) = std::fs::create_dir_all(dir) else {
+        return Ok(());
+    };
+    if e.kind() == std::io::ErrorKind::AlreadyExists
+        && let Some((path, meta)) = dir
+            .ancestors()
+            .find_map(|a| std::fs::metadata(a).ok().map(|meta| (a, meta)))
+        && !meta.is_dir()
+    {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::NotADirectory,
+            format!("{} exists and is not a directory", path.display()),
+        ));
+    }
+    Err(e)
+}
+
+/// Create `dir` and its ancestors, waiting out a Windows delete-pending
+/// directory the way a lock file's own open does.
+///
+/// For a directory a lock is about to be taken in, created before the lock: a
+/// removal racing that creation leaves the same transient state the lock's
+/// re-open retries past, and failing on it at once would refuse a run the lock
+/// would have let through.
+pub(crate) fn create_dir_all_retrying(dir: &std::path::Path) -> std::io::Result<()> {
+    retry_transient_open(|| create_dir_all_once(dir))
 }
 
 /// Whether the locked file is still the one `lock_path` names.
@@ -589,8 +673,11 @@ pub fn acquire_backup_lock(
 mod tests {
     use super::*;
 
-    fn io(kind: std::io::ErrorKind) -> errors::CfgdError {
-        std::io::Error::from(kind).into()
+    use super::open_injection::{force_open_failures, open_attempts};
+    use std::io::ErrorKind;
+
+    fn io(kind: ErrorKind) -> std::io::Error {
+        std::io::Error::from(kind)
     }
 
     #[test]
@@ -617,5 +704,77 @@ mod tests {
         assert!(!is_transient_open_error(&io(
             std::io::ErrorKind::InvalidInput
         )));
+    }
+
+    #[test]
+    fn an_apply_lock_acquire_succeeds_after_a_delete_pending_directory_clears() {
+        let dir = tempfile::tempdir().unwrap();
+        force_open_failures(1, ErrorKind::AlreadyExists);
+        let held = acquire_apply_lock(dir.path());
+        let attempts = open_attempts();
+        force_open_failures(0, ErrorKind::AlreadyExists);
+        assert!(
+            held.is_ok(),
+            "one transient open failure is retried: {held:?}"
+        );
+        assert_eq!(attempts, 2);
+    }
+
+    #[test]
+    fn a_delete_pending_directory_outliving_the_budget_surfaces_as_its_io_error() {
+        let dir = tempfile::tempdir().unwrap();
+        force_open_failures(STALE_LOCK_ATTEMPTS, ErrorKind::AlreadyExists);
+        let held = acquire_apply_lock(dir.path());
+        let attempts = open_attempts();
+        force_open_failures(0, ErrorKind::AlreadyExists);
+        match held {
+            Err(errors::CfgdError::Io(e)) => assert_eq!(e.kind(), ErrorKind::AlreadyExists),
+            other => panic!("expected the io error itself, got {other:?}"),
+        }
+        assert_eq!(attempts, STALE_LOCK_ATTEMPTS);
+    }
+
+    #[test]
+    fn a_source_lock_acquire_past_a_delete_pending_directory_never_announces_a_wait() {
+        let dir = tempfile::tempdir().unwrap();
+        force_open_failures(1, ErrorKind::AlreadyExists);
+        let announced = std::cell::Cell::new(false);
+        let held = acquire_source_lock(dir.path(), || announced.set(true));
+        force_open_failures(0, ErrorKind::AlreadyExists);
+        assert!(
+            held.is_ok(),
+            "one transient open failure is retried: {held:?}"
+        );
+        assert!(
+            !announced.get(),
+            "a transient open failure is not contention"
+        );
+    }
+
+    #[test]
+    fn a_regular_file_where_the_lock_directory_belongs_fails_at_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let state_dir = dir.path().join("state");
+        std::fs::write(&state_dir, b"").unwrap();
+        force_open_failures(0, ErrorKind::AlreadyExists);
+        let held = acquire_apply_lock(&state_dir);
+        match held {
+            Err(errors::CfgdError::Io(e)) => {
+                assert_eq!(e.kind(), ErrorKind::NotADirectory);
+                let named = state_dir.display().to_string();
+                assert!(e.to_string().contains(&named), "{e}");
+            }
+            other => panic!("expected NotADirectory, got {other:?}"),
+        }
+        assert_eq!(open_attempts(), 1, "a regular file is never waited out");
+    }
+
+    #[test]
+    fn a_retrying_directory_create_refuses_a_regular_file_at_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("cache");
+        std::fs::write(&file, b"").unwrap();
+        let err = create_dir_all_retrying(&file.join("nested")).unwrap_err();
+        assert_eq!(err.kind(), ErrorKind::NotADirectory);
     }
 }

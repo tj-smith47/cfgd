@@ -505,7 +505,7 @@ impl SourceManager {
         // residue: the next load reuses both, and neither says anything untrue
         // about the machine.
         let created_cache_root = !self.cache_dir.exists();
-        std::fs::create_dir_all(&self.cache_dir).map_err(|e| SourceError::CacheError {
+        crate::create_dir_all_retrying(&self.cache_dir).map_err(|e| SourceError::CacheError {
             message: format!("cannot create cache dir: {e}"),
         })?;
         if created_cache_root {
