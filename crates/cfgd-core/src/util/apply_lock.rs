@@ -253,14 +253,18 @@ mod open_injection {
         ATTEMPTS.with(|attempts| attempts.set(0));
     }
 
-    /// How many lock-file opens THIS thread has attempted since the last
+    /// How many attempts THIS thread's transient retries (a lock-file open or
+    /// a retried directory create) have made since the last
     /// [`force_open_failures`].
-    pub fn open_attempts() -> usize {
+    pub fn retry_attempts() -> usize {
         ATTEMPTS.with(Cell::get)
     }
 
-    pub(super) fn next_open() -> std::io::Result<()> {
+    pub(super) fn count_attempt() {
         ATTEMPTS.with(|attempts| attempts.set(attempts.get() + 1));
+    }
+
+    pub(super) fn next_open() -> std::io::Result<()> {
         FORCED.with(|forced| {
             let (remaining, kind) = forced.get();
             if remaining == 0 {
@@ -290,12 +294,19 @@ enum LockWait {
     Block,
 }
 
-/// How many times an acquire re-opens a lock file that vanished, or was
-/// replaced, between the open and the lock.
+/// The attempt budget of each of the two retry loops a lock acquire runs.
+///
+/// The loops are bounded separately. [`acquire_lock_at`] re-opens a lock file
+/// that vanished, or was replaced, between the open and the lock, at most this
+/// many times. Each of those opens runs its own transient retry
+/// ([`retry_transient_open`]) with the same budget. The worst case for one
+/// acquire is therefore this number squared in opens, and about two seconds of
+/// backoff (eight full rounds of [`stale_retry_backoff`]).
 ///
 /// One retry covers the real case: somebody removed the lock file (or the
 /// directory holding it) while a contender was blocked on it. The remaining
-/// attempts exist so a repeating removal ends in an error rather than a spin.
+/// attempts make a repeating removal end in an error after a bounded number of
+/// tries.
 pub(crate) const STALE_LOCK_ATTEMPTS: usize = 8;
 
 /// How long a re-open waits before its next attempt: doubles from a few
@@ -448,6 +459,8 @@ fn open_lock_file(lock_path: &std::path::Path) -> errors::Result<std::fs::File> 
 fn retry_transient_open<T>(mut op: impl FnMut() -> std::io::Result<T>) -> std::io::Result<T> {
     let mut attempt = 1;
     loop {
+        #[cfg(test)]
+        open_injection::count_attempt();
         match op() {
             Err(e) if attempt < STALE_LOCK_ATTEMPTS && is_transient_open_error(&e) => {
                 std::thread::sleep(stale_retry_backoff(attempt));
@@ -458,28 +471,43 @@ fn retry_transient_open<T>(mut op: impl FnMut() -> std::io::Result<T>) -> std::i
     }
 }
 
-/// `create_dir_all`, except that a regular file standing at `dir` or at one of
-/// its ancestors fails as `NotADirectory` naming that file.
+/// `create_dir_all`, except that a regular file or a dangling symlink standing
+/// at `dir` or at one of its ancestors fails as `NotADirectory` naming it.
 ///
-/// `create_dir_all` reports such a file as `AlreadyExists`, the same kind a
-/// Windows delete-pending directory produces, and only the second is worth
-/// waiting out. The first ancestor whose metadata can be read tells them
-/// apart: a delete-pending directory cannot be read at all, so the walk passes
-/// over it to its parent, which is a directory.
+/// `create_dir_all` reports a file or a dangling symlink at `dir` itself as
+/// `AlreadyExists` on every platform, and one at an ancestor as
+/// `AlreadyExists` on Windows (Unix already reports `NotADirectory` there).
+/// `AlreadyExists` is also what a Windows delete-pending directory produces,
+/// and only that case is worth waiting out. The walk up from `dir` tells them
+/// apart at the first entry it can see:
+/// - readable and a directory: nothing is in the way, so the error stays as it
+///   is and the retry may wait;
+/// - readable and anything else: a file is in the way;
+/// - unreadable, but a symlink itself: a dangling symlink is in the way;
+/// - unreadable and no symlink: a delete-pending directory (it cannot be read
+///   at all) or nothing yet, so the walk moves on to the parent.
 fn create_dir_all_once(dir: &std::path::Path) -> std::io::Result<()> {
     let Err(e) = std::fs::create_dir_all(dir) else {
         return Ok(());
     };
-    if e.kind() == std::io::ErrorKind::AlreadyExists
-        && let Some((path, meta)) = dir
-            .ancestors()
-            .find_map(|a| std::fs::metadata(a).ok().map(|meta| (a, meta)))
-        && !meta.is_dir()
-    {
-        return Err(std::io::Error::new(
+    if e.kind() != std::io::ErrorKind::AlreadyExists {
+        return Err(e);
+    }
+    let in_the_way = |path: &std::path::Path, what: &str| {
+        std::io::Error::new(
             std::io::ErrorKind::NotADirectory,
-            format!("{} exists and is not a directory", path.display()),
-        ));
+            format!("{} {what}", path.display()),
+        )
+    };
+    for ancestor in dir.ancestors() {
+        match std::fs::metadata(ancestor) {
+            Ok(meta) if meta.is_dir() => break,
+            Ok(_) => return Err(in_the_way(ancestor, "exists and is not a directory")),
+            Err(_) if std::fs::symlink_metadata(ancestor).is_ok_and(|m| m.is_symlink()) => {
+                return Err(in_the_way(ancestor, "is a symlink to no directory"));
+            }
+            Err(_) => {}
+        }
     }
     Err(e)
 }
@@ -673,7 +701,7 @@ pub fn acquire_backup_lock(
 mod tests {
     use super::*;
 
-    use super::open_injection::{force_open_failures, open_attempts};
+    use super::open_injection::{force_open_failures, retry_attempts};
     use std::io::ErrorKind;
 
     fn io(kind: ErrorKind) -> std::io::Error {
@@ -711,7 +739,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         force_open_failures(1, ErrorKind::AlreadyExists);
         let held = acquire_apply_lock(dir.path());
-        let attempts = open_attempts();
+        let attempts = retry_attempts();
         force_open_failures(0, ErrorKind::AlreadyExists);
         assert!(
             held.is_ok(),
@@ -725,7 +753,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         force_open_failures(STALE_LOCK_ATTEMPTS, ErrorKind::AlreadyExists);
         let held = acquire_apply_lock(dir.path());
-        let attempts = open_attempts();
+        let attempts = retry_attempts();
         force_open_failures(0, ErrorKind::AlreadyExists);
         match held {
             Err(errors::CfgdError::Io(e)) => assert_eq!(e.kind(), ErrorKind::AlreadyExists),
@@ -766,7 +794,7 @@ mod tests {
             }
             other => panic!("expected NotADirectory, got {other:?}"),
         }
-        assert_eq!(open_attempts(), 1, "a regular file is never waited out");
+        assert_eq!(retry_attempts(), 1, "a regular file is never waited out");
     }
 
     #[test]
@@ -774,7 +802,41 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("cache");
         std::fs::write(&file, b"").unwrap();
-        let err = create_dir_all_retrying(&file.join("nested")).unwrap_err();
+        force_open_failures(0, ErrorKind::AlreadyExists);
+        let err = create_dir_all_retrying(&file).unwrap_err();
         assert_eq!(err.kind(), ErrorKind::NotADirectory);
+        assert_eq!(retry_attempts(), 1, "a regular file is never waited out");
+
+        // Only Windows reports a file at an ANCESTOR as AlreadyExists; Unix
+        // already answers NotADirectory from the mkdir itself.
+        #[cfg(windows)]
+        {
+            force_open_failures(0, ErrorKind::AlreadyExists);
+            let err = create_dir_all_retrying(&file.join("nested")).unwrap_err();
+            assert_eq!(err.kind(), ErrorKind::NotADirectory);
+            assert_eq!(retry_attempts(), 1, "a regular file is never waited out");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_dangling_symlink_where_the_lock_directory_belongs_fails_at_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let state_dir = dir.path().join("state");
+        std::os::unix::fs::symlink(dir.path().join("missing"), &state_dir).unwrap();
+        force_open_failures(0, ErrorKind::AlreadyExists);
+        match acquire_apply_lock(&state_dir) {
+            Err(errors::CfgdError::Io(e)) => {
+                assert_eq!(e.kind(), ErrorKind::NotADirectory);
+                let named = state_dir.display().to_string();
+                assert!(e.to_string().contains(&named), "{e}");
+            }
+            other => panic!("expected NotADirectory, got {other:?}"),
+        }
+        assert_eq!(
+            retry_attempts(),
+            1,
+            "a dangling symlink is never waited out"
+        );
     }
 }
