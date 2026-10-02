@@ -64,11 +64,11 @@ existing="$scratch/existing"
 mkdir -p "$existing"
 printf 'keep\n' > "$existing/marker"
 chmod 750 "$existing"
-# shellcheck disable=SC2012  # one known path; ls -ld is the mode string that reads the same on GNU and BSD
+# shellcheck disable=SC2012  # one path; ls -ld mode string reads the same on GNU and BSD
 before="$(ls -ld "$existing" | awk '{print $1}')"
 got="$(resolve "$existing" "$missing_system" false "")" || fail "an existing override directory: resolve_install_dir failed"
 [ "$got" = "$existing" ] || fail "an existing override directory: echoed '$got', want '$existing'"
-# shellcheck disable=SC2012  # one known path; ls -ld is the mode string that reads the same on GNU and BSD
+# shellcheck disable=SC2012  # one path; ls -ld mode string reads the same on GNU and BSD
 after="$(ls -ld "$existing" | awk '{print $1}')"
 [ "$before" = "$after" ] || fail "an existing override directory: mode changed from $before to $after"
 [ "$(cat "$existing/marker")" = keep ] || fail "an existing override directory: its contents changed"

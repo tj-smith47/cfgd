@@ -88,7 +88,7 @@ assert_ok() {
         # Unlike the pass-path prints scattered through this suite, this only
         # runs on an unexpected failure — truncating here risks cutting the
         # one line that names the actual error, so print all of it.
-        # shellcheck disable=SC2001  # sed indents every line; an expansion has no per-line anchor
+        # shellcheck disable=SC2001  # sed indents each line; an expansion cannot
         echo "$OUTPUT" | sed 's/^/    /'
         return 1
     fi

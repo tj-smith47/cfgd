@@ -58,7 +58,7 @@ OUTPUT=$(exec_in_pod cfgd \
     --no-color 2>&1) || RC=$?
 
 echo "  Checkin output:"
-# shellcheck disable=SC2001  # sed indents every line; an expansion has no per-line anchor
+# shellcheck disable=SC2001  # sed indents each line; an expansion cannot
 echo "$OUTPUT" | sed 's/^/    /'
 
 if [ "$RC" -eq 0 ] && assert_contains "$OUTPUT" "ok"; then

@@ -71,7 +71,7 @@ first_lines() { awk -v n="$1" 'NR <= n'; }
 # everything after it stops being scanned. A marker inside a message string is
 # not an annotation either — that would let a call exempt itself by naming the
 # escape hatch in its own text.
-# shellcheck disable=SC2016  # an awk program: its $ fields are awk's, never the shell's
+# shellcheck disable=SC2016  # an awk program; the $ fields belong to awk
 AWK_LIB='
 BEGIN { RAW_HASHES = -1; IN_STR = 0 }
 function hashes_str(n,   s) { s = ""; while (n-- > 0) s = s "#"; return s }
@@ -972,7 +972,7 @@ ALLOWED_FN_PAIRS=(
     # each over its own type's fields.
     "counts_line crates/cfgd-crd/src/lib.rs"
 )
-# shellcheck disable=SC2016  # an awk program: its $ fields are awk's, never the shell's
+# shellcheck disable=SC2016  # an awk program; the $ fields belong to awk
 FN_DEFINITIONS_AWK='
 # One `<name>\037<definition>\037<file>` record per function with a body. Every
 # function open at a line (a nested fn inside its parent) takes that line, and
