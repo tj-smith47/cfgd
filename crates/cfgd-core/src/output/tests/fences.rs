@@ -4275,11 +4275,15 @@ fn hand_cut_gate_sites(
 }
 
 /// The rows of `syntax` in test scope (`in_test`) holding a `read_to_string`
-/// call whose path reaches a literal naming a `.rs` file and anchors at the
-/// workspace: a literal holding `CARGO_MANIFEST_DIR`, or a call of
-/// `workspace_root`. The read inside [`THE_ONE_CACHE`] is the cache itself.
+/// call, free or on an opened file, whose path reaches a literal naming a
+/// `.rs` file and anchors at the workspace: a literal holding
+/// `CARGO_MANIFEST_DIR`, or a call of `workspace_root`. An `include_str!` of a
+/// `.rs` file needs no anchor. The read inside [`THE_ONE_CACHE`] is the cache
+/// itself.
 fn workspace_source_reads(syntax: &Syntax, in_test: impl Fn(usize) -> bool) -> Vec<usize> {
-    let mut rows: Vec<usize> = syntax
+    let names_a_source =
+        |literals: &[&str]| literals.iter().any(|literal| literal.ends_with(".rs"));
+    let reads = syntax
         .reads
         .iter()
         .filter(|site| {
@@ -4292,14 +4296,14 @@ fn workspace_source_reads(syntax: &Syntax, in_test: impl Fn(usize) -> bool) -> V
                 .iter()
                 .any(|literal| literal.contains("CARGO_MANIFEST_DIR"))
                 || reached.calls.contains(&"workspace_root");
-            anchored
-                && reached
-                    .literals
-                    .iter()
-                    .any(|literal| literal.ends_with(".rs"))
-        })
-        .map(|site| site.row)
-        .collect();
+            anchored && names_a_source(&reached.literals)
+        });
+    let embeds = syntax
+        .embeds
+        .iter()
+        .filter(|site| in_test(site.row) && names_a_source(&syntax.reach(&site.reads).literals));
+    let mut rows: Vec<usize> = reads.map(|site| site.row).collect();
+    rows.extend(embeds.map(|site| site.row));
     rows.sort_unstable();
     rows.dedup();
     rows
@@ -4396,8 +4400,12 @@ struct Syntax {
     fields: std::collections::HashMap<String, Vec<usize>>,
     /// Needles handed to a string search, and the sides of a comparison.
     searches: Vec<Site>,
-    /// Paths handed to `read_to_string`, under any name `use` gives it.
+    /// Paths handed to `read_to_string`, under any name `use` gives it, and
+    /// the receivers `io::Read::read_to_string` is called on.
     reads: Vec<Site>,
+    /// Paths handed to `include_str!`, which the compiler resolves beside the
+    /// file, so each is a workspace path already.
+    embeds: Vec<Site>,
 }
 
 impl Syntax {
@@ -4936,6 +4944,14 @@ impl<'ast> syn::visit::Visit<'ast> for Builder {
                 reads: args[0].clone(),
             });
         }
+        // `io::Read::read_to_string` reads the file its receiver chain opened.
+        if method == "read_to_string" {
+            self.syntax.reads.push(Site {
+                row: row_of(call.method.span()),
+                function: self.function.clone(),
+                reads: self.reads(&call.receiver),
+            });
+        }
         self.calls.push((method, true, args));
     }
 
@@ -5045,7 +5061,22 @@ impl<'ast> syn::visit::Visit<'ast> for Builder {
     fn visit_macro(&mut self, mac: &'ast syn::Macro) {
         let body = self.macro_body(mac);
         match &*body {
-            MacroBody::Exprs(exprs) => exprs.iter().for_each(|expr| self.visit_expr(expr)),
+            MacroBody::Exprs(exprs) => {
+                exprs.iter().for_each(|expr| self.visit_expr(expr));
+                if mac
+                    .path
+                    .segments
+                    .last()
+                    .is_some_and(|last| last.ident == "include_str")
+                    && let Some(path) = exprs.first()
+                {
+                    self.syntax.embeds.push(Site {
+                        row: row_of(syn::spanned::Spanned::span(&mac.path)),
+                        function: self.function.clone(),
+                        reads: self.reads(path),
+                    });
+                }
+            }
             MacroBody::Stmts(stmts) => {
                 self.scoped(|builder| stmts.iter().for_each(|stmt| builder.visit_stmt(stmt)));
             }
@@ -5651,12 +5682,14 @@ fn a_workspace_source_is_read_once_and_its_views_borrow_that_read() {
 /// however its path reaches it: written into the call, split below the `let`
 /// it initializes, handed to a closure down an iterated array, passed to a
 /// function parameter by a caller, read through a name `use` gives
-/// `read_to_string`, or captured by a format string. A read of any other file
-/// is none.
+/// `read_to_string`, or captured by a format string, and a read of a file the
+/// call's receiver opened or an `include_str!` of a source. A read of any other
+/// file is none.
 #[test]
 fn a_workspace_source_read_is_found_at_its_call_whichever_way_its_path_reaches_it() {
     // Assembled from parts, so the fixture's calls read as literals here.
     let read = concat!("read_to", "_string");
+    let embed = concat!("include", "_str!");
     let fixture = [
         format!("use std::fs::{read} as slurp;"),
         "fn planted() {".to_string(),
@@ -5680,14 +5713,25 @@ fn a_workspace_source_read_is_found_at_its_call_whichever_way_its_path_reaches_i
         "fn source(relative: &str) -> String {".to_string(),
         format!("    std::fs::{read}(workspace_root().join(relative)).unwrap_or_default()"),
         "}".to_string(),
+        "fn opened() -> std::io::Result<()> {".to_string(),
+        "    let mut s = String::new();".to_string(),
+        format!(
+            "    std::fs::File::open(workspace_root().join(\"crates/e/src/lib.rs\"))?.{read}(&mut s)?;"
+        ),
+        format!("    std::io::stdin().{read}(&mut s)?;"),
+        format!("    let embedded = {embed}(\"lib.rs\");"),
+        format!("    let golden = {embed}(\"fixtures/golden.yaml\");"),
+        "    Ok(())".to_string(),
+        "}".to_string(),
     ];
     let syntax = syntax(&fixture.join("\n")).unwrap_or_else(|e| panic!("fixture: {e}"));
     assert_eq!(
         workspace_source_reads(&syntax, |_| true),
-        [2, 4, 7, 11, 13, 16],
+        [2, 4, 7, 11, 13, 16, 20, 22],
         "the written path, the split read, the closure over an iterated array, the \
-         aliased read, the captured path and the parameter a caller hands a source \
-         are each a read at their call; the manifest read is none"
+         aliased read, the captured path, the parameter a caller hands a source, the \
+         read of an opened file and an embedded source are each a read at their \
+         call; the manifest read, stdin and an embedded golden are none"
     );
 }
 

@@ -2385,7 +2385,10 @@ mod outranked_tests {
     /// producer's own match arms — a new arm there is a new row here.
     #[test]
     fn every_decision_kind_states_whether_it_has_an_ownership_record() {
-        let source = include_str!("pending.rs");
+        let source = crate::test_helpers::walked_file_body(
+            &crate::test_helpers::workspace_root()
+                .join("crates/cfgd-core/src/reconciler/pending.rs"),
+        );
         let body = source
             .split_once("pub fn decision_resource_content(")
             .and_then(|(_, rest)| rest.split_once("\n}\n"))

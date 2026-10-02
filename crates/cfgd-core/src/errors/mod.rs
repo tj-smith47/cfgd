@@ -1166,7 +1166,9 @@ mod tests {
             ),
         ];
 
-        let src = include_str!("mod.rs");
+        let src = crate::test_helpers::walked_file_body(
+            &crate::test_helpers::workspace_root().join("crates/cfgd-core/src/errors/mod.rs"),
+        );
         let start = src
             .find("pub enum CfgdError {")
             .expect("CfgdError is declared in this file");

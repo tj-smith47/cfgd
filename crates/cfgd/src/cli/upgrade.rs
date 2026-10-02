@@ -517,7 +517,9 @@ mod tests {
     /// the production half of the file still emits it twice.
     #[test]
     fn the_success_doc_is_minted_in_exactly_one_place() {
-        let source = include_str!("upgrade.rs");
+        let source = cfgd_core::test_helpers::walked_file_body(
+            &cfgd_core::test_helpers::workspace_root().join("crates/cfgd/src/cli/upgrade.rs"),
+        );
         // Split so this test's own literals are not what it counts.
         let sentence = format!("Upgraded {}", "to {version}");
         assert_eq!(
@@ -534,8 +536,9 @@ mod tests {
         );
         // Everything above the test module: this module's own calls must not
         // stand in for the install paths' calls.
-        // unfloored-slice-ok: one compiled-in body, not a walk over files
-        let production = cfgd_core::test_helpers::production_slice(source);
+        let production = cfgd_core::test_helpers::production_slice_of(
+            &cfgd_core::test_helpers::workspace_root().join("crates/cfgd/src/cli/upgrade.rs"),
+        );
         assert_eq!(
             production.matches("printer.emit(upgraded_doc(").count(),
             2,
@@ -597,9 +600,9 @@ mod tests {
     /// its teeth there, and the source pin is what guards the call site here.
     #[test]
     fn the_installed_path_payload_takes_the_fs_key_fold() {
-        let source = include_str!("upgrade.rs");
-        // unfloored-slice-ok: one compiled-in body, not a walk over files
-        let production = cfgd_core::test_helpers::production_slice(source);
+        let production = cfgd_core::test_helpers::production_slice_of(
+            &cfgd_core::test_helpers::workspace_root().join("crates/cfgd/src/cli/upgrade.rs"),
+        );
         // Split so this test's own literals are not what it counts.
         let unconditional = format!("to_posix_{}", "string(");
         assert_eq!(

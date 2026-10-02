@@ -4618,8 +4618,9 @@ mod tests {
         );
         // And the one answerer really is reached, so the walk above cannot
         // pass by this file having stopped classifying env rows at all.
-        // unfloored-slice-ok: one compiled-in body, not a walk over files
-        let production = cfgd_core::test_helpers::production_slice(include_str!("status.rs"));
+        let production = cfgd_core::test_helpers::production_slice_of(
+            &cfgd_core::test_helpers::workspace_root().join("crates/cfgd/src/cli/status.rs"),
+        );
         assert!(
             production.matches("recorded_env_method(").count() >= 2,
             "the Owner column and the erroring-check key both ask the one answerer"
@@ -7208,8 +7209,9 @@ mod tests {
     /// so a rename fails the reader rather than handing back an empty body a
     /// walk would pass over.
     fn production_fn_body(signature: &str) -> String {
-        // unfloored-slice-ok: one compiled-in body, not a walk over files
-        let source = cfgd_core::test_helpers::production_slice(include_str!("status.rs"));
+        let source = cfgd_core::test_helpers::production_slice_of(
+            &cfgd_core::test_helpers::workspace_root().join("crates/cfgd/src/cli/status.rs"),
+        );
         let start = source.find(signature).expect("the named production fn");
         let body = &source[start..];
         let end = body.find("\n}\n").expect("the fn's closing brace");

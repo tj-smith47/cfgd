@@ -2261,7 +2261,10 @@ fn the_platform_skip_outranks_a_debug_mount_policy() {
 /// as likely to appear in a controller as in this file.
 #[test]
 fn the_env_gate_and_the_module_gate_share_one_predicate() {
-    let src = include_str!("mod.rs");
+    // unfloored-slice-ok: the whole of this one module is the subject
+    let src = cfgd_core::test_helpers::walked_file_body(
+        &cfgd_core::test_helpers::workspace_root().join("crates/cfgd-operator/src/webhook/mod.rs"),
+    );
     let root = cfgd_core::test_helpers::workspace_root().join("crates/cfgd-operator/src");
     let mut files_walked = 0usize;
     let mut tag_sites: Vec<String> = Vec::new();

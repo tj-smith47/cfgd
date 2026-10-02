@@ -963,7 +963,9 @@ fn every_type_flag_this_module_spells_is_a_name_the_fold_can_produce() {
         .map(|(uri, _)| attestation_type_name(uri))
         .collect();
 
-    let source = include_str!("mod.rs");
+    let source = crate::test_helpers::walked_file_body(
+        &crate::test_helpers::workspace_root().join("crates/cfgd-core/src/oci/sign/mod.rs"),
+    );
     let mut checked = 0;
     for chunk in source.split(".arg(\"--type\")").skip(1) {
         // A `--type` whose argument is a variable is the caller's to answer for.
@@ -1015,7 +1017,9 @@ fn a_tls_registry_is_not_downgraded_for_cosign() {
 /// names no artifact at all says so with `// no-registry-ok: <why>`.
 #[test]
 fn every_cosign_subcommand_this_module_spells_declares_the_registry_scheme() {
-    let source = include_str!("mod.rs");
+    let source = crate::test_helpers::walked_file_body(
+        &crate::test_helpers::workspace_root().join("crates/cfgd-core/src/oci/sign/mod.rs"),
+    );
     let mut checked = 0;
     for chunk in source.split("let mut cmd = crate::cosign_cmd();").skip(1) {
         // Each factory call opens a function body; the scheme has to be

@@ -2175,7 +2175,9 @@ images:
 /// back to back would read different namespaces from one kubeconfig.
 #[test]
 fn every_namespace_taking_plugin_variant_resolves_through_one_helper() {
-    let source = include_str!("mod.rs");
+    let source = cfgd_core::test_helpers::walked_file_body(
+        &cfgd_core::test_helpers::workspace_root().join("crates/cfgd/src/cli/plugin/mod.rs"),
+    );
     let dispatch = source
         .split_once("match cli.command {")
         .expect("plugin dispatch is a match on cli.command")
