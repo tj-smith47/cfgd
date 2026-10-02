@@ -155,975 +155,7 @@ expect_kubectl "running_image reads the namespace it is given" \
     "running_image daemonset \"\$E2E_CSI_DS\" cfgd-csi \"\$E2E_INSTALL_NS\"" \
     'get daemonset cfgd-e2e-42-csi -n cfgd-e2e-42-sys -o jsonpath={.spec.template.spec.containers[?(@.name=="cfgd-csi")].image}'
 
-# CSI_DRIVER_NAME is the one spelling of the PR install's driver; a csiDriver.name
-# key in the values file, in block or flow form, could drift from it. A file yq
-# cannot read is a failure too, or a broken file would pass as "no key".
-values="$e2e_root/manifests/pr-install-values.yaml"
-has_name="$(yq '.csiDriver | has("name")' "$values" 2>&1 | tr '\n' ' ' | sed 's/ *$//' || true)"
-case "$has_name" in
-    false) pass "pr-install-values.yaml leaves csiDriver.name to --set-string csiDriver.name=\$CSI_DRIVER_NAME" ;;
-    true) fail "$values sets csiDriver.name ($(yq '.csiDriver.name' "$values")); the install passes --set-string csiDriver.name=\$CSI_DRIVER_NAME" ;;
-    *) fail "yq could not read $values: $has_name" ;;
-esac
-
-# Every operator object a suite applies must carry the run label in its own
-# metadata.labels: the PR operator reconciles only objects with that label, so an
-# unlabelled object makes its case fail for a reason unrelated to the case. The
-# operator's kinds come from the CRDs it serves, so a new CRD joins the rule.
 repo_root="$(dirname "$(dirname "$e2e_root")")"
-
-# operator_kinds <crds.yaml>: one kind per line, or a FAIL line.
-operator_kinds() {
-    local kinds
-    if ! kinds="$(yq -N '.spec.names.kind' "$1" 2>&1)"; then
-        echo "FAIL yq could not read $1: $kinds"
-    elif ! grep -qE '^[A-Z][A-Za-z0-9]*$' <<<"$kinds" || grep -qvE '^[A-Z][A-Za-z0-9]*$' <<<"$kinds"; then
-        echo "FAIL $1 names no CRD kinds: ${kinds:-empty}"
-    else
-        printf '%s\n' "$kinds"
-    fi
-}
-
-# render_awk defines render(s): one line of a heredoc body as bash expands it,
-# so a YAML parser reads what the cluster would be sent. ${E2E_RUN_LABEL_YAML}
-# becomes the run label with $label_sentinel as its value, and
-# ${E2E_JOB_LABEL_YAML} the job label, as helpers.sh defines both. Every other
-# $VAR, ${...}, $(...) and `...` becomes the plain word e2e-value, so each line
-# stays one line and a parser's line numbers stay those of the source. A $(...)
-# or ${...} still open at the end of the line takes the rest of it.
-# shellcheck disable=SC2016 # an awk program; the $ signs belong to awk
-render_awk='
-function close_of(s, i, open, shut,   d, c) {
-    for (d = 0; i <= length(s); i++) {
-        c = substr(s, i, 1)
-        if (c == "\\") i++
-        else if (c == open) d++
-        else if (c == shut && --d == 0) return i
-    }
-    return length(s)
-}
-function expand(name) {
-    if (name == "E2E_RUN_LABEL_YAML") return "cfgd.io/e2e-run: \"" sentinel "\""
-    if (name == "E2E_JOB_LABEL_YAML") return "cfgd.io/e2e-job: \"e2e-value\""
-    return "e2e-value"
-}
-function render(s,   out, i, c, j, n) {
-    out = ""
-    for (i = 1; i <= length(s); i++) {
-        c = substr(s, i, 1)
-        n = substr(s, i + 1, 1)
-        if (c == "\\" && n ~ /[$`\\]/) { out = out n; i++ }
-        else if (c == "`") { j = index(substr(s, i + 1), "`"); i = j ? i + j : length(s); out = out "e2e-value" }
-        else if (c != "$") out = out c
-        else if (n == "(") { i = close_of(s, i + 1, "(", ")"); out = out "e2e-value" }
-        else if (n == "{") { j = close_of(s, i + 1, "{", "}"); out = out expand(substr(s, i + 2, j - i - 2)); i = j }
-        else if (match(substr(s, i + 1), /^[A-Za-z_][A-Za-z0-9_]*/)) { out = out expand(substr(s, i + 1, RLENGTH)); i += RLENGTH }
-        else if (n ~ /[0-9*@#?$!-]/) { out = out "e2e-value"; i++ }
-        else out = out c
-    }
-    return out
-}'
-# The run label's rendered value: random per run, so no label written by hand
-# in a script can equal it.
-label_sentinel="run-label-$$-$RANDOM$RANDOM"
-
-# render [dash]: stdin, a heredoc body, rendered line by line; with dash 1 the
-# leading tabs a <<- heredoc drops go first.
-render() {
-    awk -v dash="${1:-0}" -v sentinel="$label_sentinel" "$render_awk"'{ if (dash) sub(/^\t+/, ""); print render($0) }'
-}
-
-# object_query is the yq program that reads one rendered body. It prints one
-# tab-separated line per cfgd.io object, a mapping whose apiVersion is a string
-# starting cfgd.io/, at any depth of any document after aliases are resolved:
-#   body  line of its apiVersion key  depth (0 at the document root)
-#   kind  the document root's kind  metadata.name
-#   whether metadata.labels has cfgd.io/e2e-run  whether that value is the sentinel
-# kind and the names are strings or empty; tabs and newlines in them become a
-# space. An ownerReferences entry is a reference to an object and is skipped.
-# yq collects an empty match into one empty list per document, which the
-# length check drops.
-# shellcheck disable=SC2016 # a yq program; $doc belongs to yq
-object_query='explode(.) as $doc | $doc | ..
-| select(tag == "!!map" and (.apiVersion | tag) == "!!str" and (.apiVersion | test("^cfgd\.io/")))
-| select(path | join("/") | test("(^|/)ownerReferences/[0-9]+$") | not)
-| [filename, (.apiVersion | key | line), (path | length),
-   ((.kind | select(tag == "!!str")) // ""),
-   (($doc | select(tag == "!!map") | .kind | select(tag == "!!str")) // ""),
-   ((.metadata | select(tag == "!!map") | .name | select(tag == "!!str")) // ""),
-   ((.metadata | select(tag == "!!map") | .labels | select(tag == "!!map") | has("cfgd.io/e2e-run")) // false),
-   ((.metadata | select(tag == "!!map") | .labels | select(tag == "!!map") | .["cfgd.io/e2e-run"]
-     | (tag == "!!str" and . == strenv(SENTINEL))) // false)]
-| select(length > 0) | map(tostring | sub("[\t\n]+"; " ")) | join("\t")'
-
-# yq_error <dir> <body>: the first line of yq's last error, without the
-# scratch file name it gives the body.
-yq_error() {
-    local err
-    err="$(head -n1 "$1/yq.err")"
-    printf '%s' "${err#"Error: bad file '$2': "}"
-}
-
-# parse_bodies <dir>: runs object_query over every body <dir>/index names,
-# writing its lines to <dir>/objects and a `body<TAB>error` line for each body
-# yq cannot read to <dir>/unparsed. One yq call reads every body; when it stops
-# at a body it names, that body is set aside and the call goes on from the next,
-# and an error that names no body has each remaining body read on its own.
-parse_bodies() {
-    local dir="$1" bodies out bad i b
-    : > "$dir/objects"
-    : > "$dir/unparsed"
-    mapfile -t bodies < <(cut -f1 "$dir/index")
-    while [ "${#bodies[@]}" -gt 0 ]; do
-        if out="$(cd "$dir" && SENTINEL="$label_sentinel" yq -N "$object_query" "${bodies[@]}" 2>"$dir/yq.err")"; then
-            [ -z "$out" ] || printf '%s\n' "$out" >> "$dir/objects"
-            return 0
-        fi
-        bad="$(sed -n "1s/^Error: bad file '\([^']*\)'.*/\1/p" "$dir/yq.err")"
-        for i in "${!bodies[@]}"; do [ "${bodies[$i]}" != "$bad" ] || break; done
-        if [ -z "$bad" ] || [ "${bodies[$i]}" != "$bad" ]; then
-            for b in "${bodies[@]}"; do
-                if out="$(cd "$dir" && SENTINEL="$label_sentinel" yq -N "$object_query" "$b" 2>"$dir/yq.err")"; then
-                    [ -z "$out" ] || printf '%s\n' "$out" >> "$dir/objects"
-                else
-                    printf '%s\t%s\n' "$b" "$(yq_error "$dir" "$b")" >> "$dir/unparsed"
-                fi
-            done
-            return 0
-        fi
-        # Lines yq printed before it stopped belong to the bodies ahead of the
-        # bad one, apart from any of the bad body's own first documents.
-        [ -z "$out" ] || awk -F '\t' -v bad="$bad" '$1 != bad' <<<"$out" >> "$dir/objects"
-        printf '%s\t%s\n' "$bad" "$(yq_error "$dir" "$bad")" >> "$dir/unparsed"
-        bodies=("${bodies[@]:i+1}")
-    done
-}
-
-# scan_run_labels <kinds> <dir or file...> reads every file in each dir, and
-# each file named, through heredocs.awk. Each heredoc body is rendered the way
-# bash would expand it and read with yq, and every fact about a cfgd.io object
-# (where it sits, its kind, name and labels, the line of its apiVersion) comes
-# from that parse. It prints one line per finding, tag first:
-#   SITE         a heredoc fed to kubectl apply/create/replace or apply_yaml that
-#                holds an operator object
-#   FILEDOC      a heredoc fed to a command that does not apply it (cat > a file,
-#                there or inside a pod), or captured into a variable when its
-#                cfgd.io documents are of kinds the operator does not serve
-#   CAPTURED     an operator object in a heredoc captured into a variable, where
-#                the scan cannot see whether it reaches the cluster
-#   OTHERKIND    a cfgd.io document of a kind the operator does not serve, applied
-#                to the cluster
-#   UNLABELLED   an operator object whose metadata.labels has no cfgd.io/e2e-run
-#   HANDSPELLED  an operator object whose cfgd.io/e2e-run label is not
-#                ${E2E_RUN_LABEL_YAML}
-#   NESTED       a cfgd.io object below the root of a document, such as a List
-#                item, applied or captured; an ownerReferences entry is a
-#                reference and does not count
-#   QUOTED       an operator object in a quoted-delimiter heredoc, where
-#                ${E2E_RUN_LABEL_YAML} cannot expand
-#   NOKIND       a cfgd.io object whose kind is missing or not a string
-#   UNPARSED     a heredoc fed to the cluster or captured that yq cannot read
-#                as YAML once rendered
-#   OUTSIDE      a cfgd.io apiVersion on a shell line outside any heredoc
-#   BYPATH       kubectl apply/create/replace given a manifest by path (-f other
-#                than -, or -k), which the scan cannot read
-#   UNTERMINATED, UNREADABLE, EMPTY   the scan could not read what it was given
-# A heredoc written to a file is read only when it mentions cfgd.io/, and one
-# yq cannot read (a script, say) is not YAML and passes quietly.
-scan_run_labels() {
-    local kinds="$1" dir f files=() found work
-    shift
-    for dir in "$@"; do
-        if [ -f "$dir" ]; then files+=("$dir"); continue; fi
-        found=("$dir"/*)
-        if [ ! -e "${found[0]}" ] && [ ! -L "${found[0]}" ]; then
-            echo "EMPTY $dir: no files to scan"
-            continue
-        fi
-        for f in "${found[@]}"; do
-            if [ -f "$f" ] && [ -r "$f" ]; then files+=("$f"); else echo "UNREADABLE $f"; fi
-        done
-    done
-    [ "${#files[@]}" -gt 0 ] || return 0
-    work="$(mktemp -d "$scratch/scan.XXXXXX")" || { echo "UNREADABLE no scratch directory for the scan"; return 0; }
-    : > "$work/index"
-    { awk -f "$here/heredocs.awk" "${files[@]}" || echo "UNREADABLE heredocs.awk exited $? reading ${files[*]}"; } |
-        awk -F '\t' -v work="$work" -v sentinel="$label_sentinel" "$render_awk"'
-        function rest(n,   i, p) { p = 0; for (i = 1; i <= n; i++) p += length($i) + 1; return substr($0, p + 1) }
-        # by_path(c): c applies a manifest by path when, within the kubectl
-        # command, -f names something other than - or -k names a directory.
-        # A quoted path is dropped from c, so -f with no word after it is one.
-        function by_path(c,   n, t, i, v) {
-            while (match(c, /kubectl([ \t][^|;&)]*)?[ \t](apply|create|replace)([ \t][^|;&)]*)?/)) {
-                n = split(substr(c, RSTART, RLENGTH), t, /[ \t]+/)
-                c = substr(c, RSTART + RLENGTH)
-                for (i = 1; i <= n; i++) {
-                    if (t[i] ~ /^(-k|--kustomize)/) return 1
-                    if (t[i] == "-f" || t[i] == "--filename") v = (i < n) ? t[i + 1] : ""
-                    else if (t[i] ~ /^--filename=/) v = substr(t[i], 12)
-                    else if (t[i] ~ /^-f./) { v = substr(t[i], 3); sub(/^=/, "", v) }
-                    else continue
-                    if (v != "-") return 1
-                }
-            }
-            return 0
-        }
-        function close_heredoc(id,   i, n, yaml, path) {
-            n = count[id]
-            yaml = (cls[id] != "FILE")
-            for (i = 1; i <= n && !yaml; i++) yaml = index(text[id, i], "cfgd.io/") > 0
-            if (n == 0 || !yaml) return
-            path = work "/" (++bodies) ".yaml"
-            for (i = 1; i <= n; i++) print render(text[id, i]) > path
-            close(path)
-            print bodies ".yaml", file, opened[id], cls[id], qtd[id], at[id, 1] > (work "/index")
-        }
-        BEGIN { OFS = "\t" }
-        /^UNREADABLE / { print; next }
-        { file = $2 }
-        $1 == "UNCLOSED" { print "UNTERMINATED " file ":" $3 ": no " $4 " line closes this heredoc"; next }
-        $1 == "OPEN" {
-            id = $4; opened[id] = $3; qtd[id] = $6; dash[id] = $7; count[id] = 0
-            c = rest(7)
-            if (c ~ /kubectl([ \t].*)?[ \t](apply|create|replace)([ \t]|$)/ || c ~ /(^|[^A-Za-z0-9_])apply_yaml([ \t]|$)/) cls[id] = "CLUSTER"
-            else {
-                # A descriptor duplication such as 2>&1 writes no file.
-                gsub(/[0-9]*>&[0-9-]+/, "", c)
-                cls[id] = (c ~ /\$\(/ && c !~ />/) ? "CAPTURE" : "FILE"
-            }
-            next
-        }
-        $1 == "BODY" {
-            id = $4; line = rest(4)
-            if (dash[id]) sub(/^\t+/, "", line)
-            text[id, ++count[id]] = line; at[id, count[id]] = $3
-            next
-        }
-        $1 == "CLOSE" { close_heredoc($4); next }
-        $1 == "CMD" {
-            if (by_path(rest(3))) print "BYPATH " file ":" $3 ": the scan cannot read a manifest applied by path; apply it from a heredoc"
-            next
-        }
-        $1 == "SH" {
-            line = rest(3)
-            if (line !~ /^[ \t]*#/) {
-                sub(/[ \t]+#.*$/, "", line)
-                if (line ~ /(^|[^A-Za-z0-9_])["\047]?apiVersion["\047]?[ \t]*:[ \t]*["\047]?cfgd\.io\//) print "OUTSIDE " file ":" $3 ": a cfgd.io apiVersion outside any heredoc"
-            }
-        }
-        END { close(work "/index") }
-    ' || echo "UNREADABLE the scan's heredoc collector exited $?"
-    parse_bodies "$work"
-    awk -F '\t' -v kinds="$(tr '\n' ' ' <<<"$kinds")" '
-        BEGIN { n = split(kinds, k, " "); for (i = 1; i <= n; i++) operator[k[i]] = 1 }
-        FILENAME == ARGV[1] { src[$1] = $2; opened[$1] = $3; cls[$1] = $4; qtd[$1] = $5; first[$1] = $6; order[++bodies] = $1; next }
-        FILENAME == ARGV[3] {
-            if (cls[$1] == "FILE") next
-            err = $2
-            # yq counts lines from the body; the message names the script line.
-            if (match(err, /at L[0-9]+[^:]*/)) err = substr(err, 1, RSTART - 1) "at line " (first[$1] + substr(err, RSTART + 4, index(substr(err, RSTART + 4), ".") - 1) - 1) substr(err, RSTART + RLENGTH)
-            print "UNPARSED " src[$1] ":" opened[$1] ": yq cannot read this heredoc as YAML once its variables expand (" err "); make it valid YAML, with each $VAR, ${...} and $(...) inside a value, since the scan reads each as one plain word"
-            next
-        }
-        {
-            b = $1; at = src[b] ":" (first[b] + $2 - 1); kind = $4; root = $5; name = $6
-            sub(/ +$/, "", kind); sub(/ +$/, "", root)
-            cfgd[b] = 1
-            if (cls[b] == "FILE") next
-            if ($3 > 0) {
-                print "NESTED " at ": a cfgd.io object nested inside " (root == "" ? "another document" : root) "; apply it as its own document"
-                reported[b] = 1
-                next
-            }
-            if (cls[b] == "CAPTURE") {
-                if (kind in operator) {
-                    print "CAPTURED " at " " kind ": the scan cannot see where a captured heredoc goes; feed it to kubectl apply directly"
-                    reported[b] = 1
-                }
-                next
-            }
-            if (kind == "") { print "NOKIND " at ": a cfgd.io object whose kind is missing or not a string"; next }
-            if (!(kind in operator)) { print "OTHERKIND " at " " kind; next }
-            site[b] = 1
-            if (qtd[b]) print "QUOTED " at " " kind ": the heredoc delimiter is quoted, so ${E2E_RUN_LABEL_YAML} cannot expand"
-            else if ($7 == "true" && $8 != "true") print "HANDSPELLED " at " " kind " " name ": spell the label as ${E2E_RUN_LABEL_YAML}"
-            else if ($7 != "true") print "UNLABELLED " at " " kind " " name ": metadata.labels has no ${E2E_RUN_LABEL_YAML}"
-        }
-        END {
-            for (i = 1; i <= bodies; i++) {
-                b = order[i]
-                if (site[b]) print "SITE " src[b] ":" opened[b]
-                if (cfgd[b] && (cls[b] == "FILE" || (cls[b] == "CAPTURE" && !reported[b]))) print "FILEDOC " src[b] ":" opened[b]
-            }
-        }
-    ' "$work/index" "$work/objects" "$work/unparsed" || echo "UNREADABLE the scan's awk exited $?"
-    rm -rf "$work"
-}
-
-# Suites that apply operator objects today, each with a floor about two thirds
-# of its current count, so one suite losing its sites fails on its own.
-run_label_suites=(operator full-stack gateway)
-run_label_floors=(36 15 3)
-
-# label_dirs <root>: every <root>/*/scripts directory plus each floored suite's,
-# so a floored suite that is missing fails as EMPTY.
-label_dirs() {
-    local root="$1" suite
-    {
-        printf '%s\n' "$root"/*/scripts
-        for suite in "${run_label_suites[@]}"; do printf '%s\n' "$root/$suite/scripts"; done
-    } | sort -u
-}
-
-# by_path_in_scope <root> <scan output>: the BYPATH lines from the floored
-# suites and helpers.sh, the scripts that apply operator objects.
-by_path_in_scope() {
-    local tag where suite
-    while read -r tag where; do
-        [ "$tag" = BYPATH ] || continue
-        for suite in "${run_label_suites[@]}"; do
-            if [[ "$where" == "$1/$suite/scripts/"* ]]; then echo "$tag $where"; continue 2; fi
-        done
-        if [[ "$where" == "$helpers:"* ]]; then echo "$tag $where"; fi
-    done <<<"$2"
-}
-
-# label_verdict <root> <scan output>: prints nothing when the scan is clean and
-# each floored suite holds its floor, otherwise one line per problem.
-label_verdict() {
-    local root="$1" out="$2" i suite floor sites
-    grep -Ev '^(SITE|FILEDOC|OTHERKIND|BYPATH) ' <<<"$out" || true
-    by_path_in_scope "$root" "$out"
-    for i in "${!run_label_suites[@]}"; do
-        suite="${run_label_suites[$i]}" floor="${run_label_floors[$i]}"
-        sites="$(grep -c "^SITE $root/$suite/scripts/" <<<"$out" || true)"
-        if [ "$sites" -lt "$floor" ]; then
-            echo "FLOOR $suite: only $sites heredocs apply an operator object (want at least $floor); the scan has lost its population"
-        fi
-    done
-}
-
-kinds="$(operator_kinds "$repo_root/schemas/crds.yaml")"
-if [[ "$kinds" == FAIL* ]]; then
-    fail "${kinds#FAIL }"
-else
-    pass "the operator serves $(tr '\n' ' ' <<<"$kinds" | sed 's/ $//') (schemas/crds.yaml)"
-fi
-mapfile -t label_scan_dirs < <(label_dirs "$e2e_root")
-helpers="$e2e_root/common/helpers.sh"
-tree_scan="$(scan_run_labels "$kinds" "${label_scan_dirs[@]}" "$helpers")"
-tree_verdict="$(label_verdict "$e2e_root" "$tree_scan")"
-if [ -z "$tree_verdict" ]; then
-    pass "every operator object the e2e suites apply carries the run label ($(grep -c '^SITE ' <<<"$tree_scan") heredocs: $(for s in "${run_label_suites[@]}"; do printf '%s %s, ' "$s" "$(grep -c "^SITE $e2e_root/$s/scripts/" <<<"$tree_scan")"; done | sed 's/, $//'))"
-else
-    fail "operator objects the PR operator would ignore:"
-    printf '      %s\n' "${tree_verdict//$'\n'/$'\n'      }"
-fi
-others="$(grep '^OTHERKIND ' <<<"$tree_scan" | cut -d' ' -f2- | sed "s|$e2e_root/||" | paste -sd ';' - | sed 's/;/; /g' || true)"
-[ -z "$others" ] || pass "cfgd.io objects outside the operator's watch, so no run label: $others"
-by_path="$(grep '^BYPATH ' <<<"$tree_scan" | grep -vxFf <(by_path_in_scope "$e2e_root" "$tree_scan") | cut -d' ' -f2 | sed "s|$e2e_root/||; s|:\$||" | paste -sd ';' - | sed 's/;/; /g' || true)"
-[ -z "$by_path" ] || pass "manifests applied by path outside the suites that apply operator objects: $by_path"
-pass "$(grep -c '^FILEDOC ' <<<"$tree_scan" || true) heredocs hold a cfgd.io document that needs no run label: one fed to a command that does not apply it (cat > a file, there or inside a pod), or a captured document of a kind the operator does not serve"
-
-# The scan against planted fixtures: one per way a suite writes a cfgd.io
-# document, one per place a cfgd.io apiVersion can sit, one per placement of
-# the label and one per YAML spelling of a key or value. Each fixture is
-# checked as shell (bash -n) and its body as YAML, rendered by the scan's own
-# render, before the scan reads it.
-fixtures="$scratch/label-fixtures"
-mkdir -p "$fixtures/scripts"
-# plant <name> <opener> <body> [closer]: a fixture whose rendered body is YAML.
-# plant_unparsed takes the same arguments for one whose rendered body yq must
-# refuse, so the fixture stays invalid if render changes.
-plant() { plant_as yaml "$@"; }
-plant_unparsed() { plant_as not-yaml "$@"; }
-plant_as() {
-    local want="$1" name="$2" opener="$3" body="$4" closer="${5-EOF}" f checked dash=0
-    f="$fixtures/scripts/$name.sh"
-    printf '%s\n%s\n%s\n' "$opener" "$body" "$closer" > "$f"
-    checked="$(bash -n "$f" 2>&1 | grep -v 'delimited by end-of-file' || true)"
-    [ -z "$checked" ] || fail "fixture $name is not valid shell: $checked"
-    [[ "$opener" != *'<<-'* ]] || dash=1
-    if checked="$(printf '%s\n' "$body" | render "$dash" | yq '.' 2>&1 >/dev/null)"; then
-        [ "$want" = yaml ] || fail "fixture $name was meant to be invalid YAML once rendered, and yq read it"
-    else
-        [ "$want" = not-yaml ] || fail "fixture $name is not valid YAML: $checked"
-    fi
-}
-module_labelled="apiVersion: cfgd.io/v1alpha1
-kind: Module
-metadata:
-  name: labelled
-  labels:
-    app.kubernetes.io/part-of: e2e
-    \${E2E_RUN_LABEL_YAML}
-spec:
-  packages: []"
-module_unlabelled='apiVersion: cfgd.io/v1alpha1
-kind: Module
-metadata:
-  name: unlabelled
-spec:
-  packages: []'
-# module_labels <line...>: a Module whose labels block holds exactly the lines.
-module_labels() {
-    printf 'apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: m\n  labels:\n'
-    printf '    %s\n' "$@"
-    printf 'spec:\n  packages: []'
-}
-apply="kubectl apply -n \"\$E2E_NAMESPACE\" -f - <<EOF"
-
-plant labelled "$apply" "$module_labelled"
-plant label-absent "$apply" "$(module_labels 'app.kubernetes.io/part-of: e2e')"
-plant no-labels "$apply" "$module_unlabelled"
-plant quoted-kind "$apply" "apiVersion: \"cfgd.io/v1alpha1\"
-kind: 'Module' # the module
-metadata:
-  name: quoted-kind
-spec:
-  packages: []"
-plant multi-doc "$apply" "$module_labelled
----
-apiVersion: cfgd.io/v1alpha1
-kind: MachineConfig
-metadata:
-  name: second
-spec:
-  hostname: second
----
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: third
-data:
-  k: v"
-plant nested-metadata "$apply" "apiVersion: cfgd.io/v1alpha1
-kind: ClusterConfigPolicy
-metadata:
-  name: nested
-spec:
-  template:
-    metadata:
-      labels:
-        \${E2E_RUN_LABEL_YAML}"
-plant comment "# apiVersion: cfgd.io/v1alpha1 in a shell comment"$'\n'"kubectl apply -f - <<EOF" '# apiVersion: cfgd.io/v1alpha1
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: comment
-data:
-  k: v'
-plant comment-heredoc "# Usage: apply_yaml \"T03\" <<'EOF' ... EOF"$'\n'"kubectl apply -f - <<EOF" "$module_unlabelled"
-plant rc-ok-comment "kubectl apply -n \"\$E2E_NAMESPACE\" -f - 2>&1 <<EOF || true # rc-ok: read back with kubectl exec below" "$module_unlabelled"
-plant quoted "kubectl apply -f - <<'EOF'" "$module_labelled"
-plant in-pod "exec_in_pod bash -c 'cat > /etc/cfgd/in-pod.yaml << \"INNEREOF\"" 'apiVersion: cfgd.io/v1alpha1
-kind: Config
-metadata:
-  name: in-pod
-spec:
-  profile: base' "INNEREOF'"
-plant exec-apply "exec_in_pod kubectl apply -f - <<EOF" "$module_unlabelled"
-plant apply-yaml "apply_yaml \"T01\" <<EOF" "$module_unlabelled"
-plant captured "RESULT=\$(kubectl apply -f - 2>&1 <<EOF || true" "$module_unlabelled" "EOF"$'\n'")"
-plant continued "kubectl apply -n \"\$E2E_NAMESPACE\" \\"$'\n'"    -f - <<EOF" "$module_unlabelled"
-plant dash "kubectl apply -f - <<-EOF" $'\t'"${module_unlabelled//$'\n'/$'\n\t'}" $'\tEOF'
-plant captured-operator-kind "yaml=\$(cat <<EOF" 'apiVersion: cfgd.io/v1alpha1
-kind: MachineConfig
-metadata:
-  name: captured
-spec:
-  hostname: captured' "EOF"$'\n'")"$'\n'"echo \"\$yaml\" | kubectl apply -f -"
-machine_config='apiVersion: cfgd.io/v1alpha1
-kind: MachineConfig
-metadata:
-  name: captured
-spec:
-  hostname: captured'
-plant captured-dup "yaml=\$(cat 2>&1 <<EOF" "$machine_config" "EOF"$'\n'")"
-plant captured-to-file "x=\$(cat <<EOF > f" "$machine_config" "EOF"$'\n'")"
-plant captured-list "yaml=\$(cat <<EOF" 'apiVersion: v1
-kind: List
-items:
-  - apiVersion: cfgd.io/v1alpha1
-    kind: MachineConfig
-    metadata:
-      name: first
-    spec:
-      hostname: first
-  - apiVersion: cfgd.io/v1alpha1
-    kind: MachineConfig
-    metadata:
-      name: second
-    spec:
-      hostname: second' "EOF"$'\n'")"
-plant captured-other-kind "yaml=\$(cat <<EOF" 'apiVersion: cfgd.io/v1alpha1
-kind: TeamConfig
-metadata:
-  name: captured
-spec:
-  team: a' "EOF"$'\n'")"
-plant owner-reference "kubectl apply -f - <<EOF" 'apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: owned
-  ownerReferences:
-  - apiVersion: cfgd.io/v1alpha1
-    kind: MachineConfig
-    name: owner
-    uid: 00000000-0000-0000-0000-000000000000
-data:
-  k: v'
-plant owner-reference-indented "kubectl apply -f - <<EOF" 'apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: owned
-  ownerReferences:
-    - apiVersion: cfgd.io/v1alpha1
-      kind: MachineConfig
-      name: owner
-      uid: 00000000-0000-0000-0000-000000000000
-data:
-  k: v'
-plant file-operator-kind "cat > \"\$dir/mc.yaml\" <<EOF" 'apiVersion: cfgd.io/v1alpha1
-kind: MachineConfig
-metadata:
-  name: in-a-file
-spec:
-  hostname: in-a-file'
-plant other-kind "kubectl apply -f - <<EOF" 'apiVersion: cfgd.io/v1alpha1
-kind: TeamConfig
-metadata:
-  name: team
-spec:
-  team: a'
-plant list "kubectl apply -f - <<EOF" 'apiVersion: v1
-kind: List
-items:
-  - apiVersion: cfgd.io/v1alpha1
-    kind: Module
-    metadata:
-      name: listed
-    spec:
-      packages: []'
-plant labels-comment "$apply" "apiVersion: cfgd.io/v1alpha1
-kind: Module
-metadata:
-  name: labels-comment
-  labels: {app: x}  # want \${E2E_RUN_LABEL_YAML} here
-spec:
-  packages: []"
-plant entry-comment "$apply" "$(module_labels "app: x  # want \${E2E_RUN_LABEL_YAML} here")"
-plant key-prefix "$apply" "$(module_labels 'cfgd.io/e2e-run-foo: "42"')"
-plant var-prefix "$apply" "$(module_labels "\${E2E_RUN_LABEL_YAML_OLD}")"
-plant hand-spelled "$apply" "$(module_labels "cfgd.io/e2e-run: \"\${E2E_RUN_ID}\"")"
-plant flow-labels "$apply" "apiVersion: cfgd.io/v1alpha1
-kind: Module
-metadata:
-  name: flow-labels
-  labels: {app: x, \${E2E_RUN_LABEL_YAML}}
-spec:
-  packages: []"
-plant flow-metadata "$apply" "apiVersion: cfgd.io/v1alpha1
-kind: Module
-metadata: {name: flow, labels: {\${E2E_RUN_LABEL_YAML}}}
-spec:
-  packages: []"
-plant flow-doc "$apply" "{apiVersion: cfgd.io/v1alpha1, kind: Module, metadata: {name: flow, labels: {\${E2E_RUN_LABEL_YAML}}}}"
-plant json-doc "$apply" '{
-  "apiVersion": "cfgd.io/v1alpha1",
-  "kind": "Module",
-  "metadata": {"name": "json"}
-}'
-plant json-not-cfgd "$apply" '{
-  "apiVersion": "v1",
-  "kind": "ConfigMap",
-  "metadata": {"name": "json-not-cfgd"}
-}'
-plant flow-not-cfgd "$apply" "{apiVersion: v1, kind: ConfigMap, metadata: {name: flow-not-cfgd}}"
-plant spaced-colon "$apply" "apiVersion : cfgd.io/v1alpha1
-kind: Module
-metadata:
-  name: spaced-colon"
-plant flow-multiline "$apply" "{
-  apiVersion: cfgd.io/v1alpha1,
-  kind: Module,
-  metadata: {name: flow-multiline}
-}"
-plant spaced-kind "$apply" "apiVersion: cfgd.io/v1alpha1
-kind : Module
-metadata:
-  name: spaced-kind
-spec:
-  packages: []"
-plant no-kind "$apply" "apiVersion: cfgd.io/v1alpha1
-metadata:
-  name: no-kind"
-plant suffix-key "$apply" "apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: suffix-key
-data:
-  myapiVersion: cfgd.io/v1alpha1"
-plant tagged-value "$apply" "apiVersion: !!str cfgd.io/v1alpha1
-kind: Module
-metadata:
-  name: tagged-value"
-plant split-key "$apply" "apiVersion:
-  cfgd.io/v1alpha1
-kind: Module
-metadata:
-  name: split-key"
-plant quoted-key "$apply" "'apiVersion': cfgd.io/v1alpha1
-kind: Module
-metadata:
-  name: quoted-key"
-# kind and apiVersion in every spelling the parser resolves to a string.
-plant tag-kind "$apply" "apiVersion: cfgd.io/v1alpha1
-kind: !!str Module
-metadata:
-  name: tag-kind
-  labels:
-    \${E2E_RUN_LABEL_YAML}
-spec:
-  packages: []"
-plant anchor-kind "$apply" "apiVersion: cfgd.io/v1alpha1
-kind: &k Module
-metadata:
-  name: anchor-kind
-spec:
-  packages: []"
-plant folded-kind "$apply" "apiVersion: cfgd.io/v1alpha1
-kind: >-
-  Module
-metadata:
-  name: folded-kind"
-plant literal-kind "$apply" "apiVersion: cfgd.io/v1alpha1
-kind: |
-  Module
-metadata:
-  name: literal-kind"
-plant seq-kind "$apply" "apiVersion: cfgd.io/v1alpha1
-kind: [Module]
-metadata:
-  name: seq-kind"
-alias_api="metadata:
-  name: alias-api
-  annotations:
-    group: &v cfgd.io/v1alpha1
-apiVersion: *v
-kind: Module"
-plant alias-api "$apply" "$alias_api"
-# Each expansion renders as one word, so text inside it that is not YAML
-# (a ": " in a plain value) never reaches the parser; $VAR names the label too.
-plant substitutions "$apply" "apiVersion: cfgd.io/v1alpha1
-kind: Module
-metadata:
-  name: \$(echo 'a: b')-\`echo 'c: d'\`-\${NAME:-e: f}-\$((1 + 1))
-  labels:
-    \$E2E_RUN_LABEL_YAML
-spec:
-  packages: []"
-# cfgd.io text inside a string is no object.
-cm_block="apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: cm-block
-data:
-  module.yaml: |
-    apiVersion: cfgd.io/v1alpha1
-    kind: Module
-    metadata:
-      name: in-a-string
-      labels:
-        \${E2E_RUN_LABEL_YAML}"
-plant cm-block "$apply" "$cm_block"
-cm_inline='apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: cm-inline
-data: {note: "apiVersion: cfgd.io/v1alpha1"}'
-plant cm-inline "$apply" "$cm_inline"
-captured="yaml=\$(cat <<EOF"
-captured_close="EOF"$'\n'")"
-plant captured-tag-kind "$captured" "apiVersion: cfgd.io/v1alpha1
-kind: !!str Module
-metadata:
-  name: captured-tag-kind" "$captured_close"
-plant captured-anchor-kind "$captured" "apiVersion: cfgd.io/v1alpha1
-kind: &k Module
-metadata:
-  name: captured-anchor-kind" "$captured_close"
-plant captured-folded-kind "$captured" "apiVersion: cfgd.io/v1alpha1
-kind: >-
-  Module
-metadata:
-  name: captured-folded-kind" "$captured_close"
-plant captured-alias-api "$captured" "$alias_api" "$captured_close"
-plant captured-cm-block "$captured" "$cm_block" "$captured_close"
-plant captured-cm-inline "$captured" "$cm_inline" "$captured_close"
-plant nested-map "$apply" 'apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: nested-map
-spec:
-  template:
-    apiVersion: cfgd.io/v1alpha1
-    kind: Module'
-plant flow-list "$apply" "{apiVersion: v1, kind: List, items: [{apiVersion: cfgd.io/v1alpha1, kind: Module, metadata: {name: flow-list}}]}"
-plant json-hand "$apply" '{
-  "apiVersion": "cfgd.io/v1alpha1",
-  "kind": "Module",
-  "metadata": {"name": "json-hand", "labels": {"cfgd.io/e2e-run": "42"}}
-}'
-# A substitution at the start of a line renders as one word in column 0, which
-# ends the block scalar above it.
-key_at_column_0="apiVersion: cfgd.io/v1alpha1
-kind: Module
-metadata:
-  name: unparsed
-  labels:
-    \${E2E_RUN_LABEL_YAML}
-spec:
-  signature:
-    cosign:
-      publicKey: |
-\$(sed 's/^/        /' key.pub)"
-plant_unparsed unparsed "$apply" "$key_at_column_0"
-plant_unparsed captured-unparsed "$captured" "$key_at_column_0" "$captured_close"
-plant_unparsed file-script "cat > \"\$dir/apply.sh\" <<EOF" 'if true; then
-    echo "apiVersion: cfgd.io/v1alpha1" | kubectl apply -f -
-fi'
-plant heredoc-unterminated "$apply" "$module_labelled" ''
-plant by-path-stdin "kubectl apply -n ns -f - <<EOF" "$module_labelled"
-cat > "$fixtures/scripts/by-path.sh" <<'FIXTURE'
-kubectl apply -f manifest.yaml
-kubectl apply -f "$dir/mc.yaml"
-kubectl apply --filename=x.yaml
-kubectl apply --filename x.yaml
-kubectl create -fpath.yaml
-kubectl replace -f=x.yaml
-kubectl apply -k overlays/e2e
-kubectl replace -n ns \
-    -f x.yaml
-kubectl get cm x -o yaml | kubectl apply -f -
-kubectl apply -f- < /dev/null
-kubectl create namespace ns
-FIXTURE
-bash -n "$fixtures/scripts/by-path.sh" || fail "fixture by-path is not valid shell"
-outside_yaml='apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: outside\n'
-printf '%s\n' "printf '$outside_yaml' | kubectl apply -f -" > "$fixtures/scripts/outside.sh"
-bash -n "$fixtures/scripts/outside.sh" || fail "fixture outside is not valid shell"
-printf '%s\n' "echo 'apiVersion: \"cfgd.io/v1alpha1\" # quoted' | kubectl apply -f -" \
-    "echo 'apiVersion : cfgd.io/v1alpha1' | kubectl apply -f -" \
-    "echo \"'apiVersion': cfgd.io/v1alpha1\" | kubectl apply -f -" > "$fixtures/scripts/outside-quoted.sh"
-bash -n "$fixtures/scripts/outside-quoted.sh" || fail "fixture outside-quoted is not valid shell"
-# shellcheck disable=SC2059 # the payload is the printf format the fixture runs
-parsed="$(printf "$outside_yaml" | yq '.' 2>&1 >/dev/null)" || fail "fixture outside is not valid YAML: $parsed"
-
-want_fixture_scan="SITE substitutions.sh:1
-SITE alias-api.sh:1
-UNLABELLED alias-api.sh:6
-SITE anchor-kind.sh:1
-UNLABELLED anchor-kind.sh:2
-SITE apply-yaml.sh:1
-UNLABELLED apply-yaml.sh:2
-BYPATH by-path.sh:1
-BYPATH by-path.sh:2
-BYPATH by-path.sh:3
-BYPATH by-path.sh:4
-BYPATH by-path.sh:5
-BYPATH by-path.sh:6
-BYPATH by-path.sh:7
-BYPATH by-path.sh:8
-SITE by-path-stdin.sh:1
-CAPTURED captured-alias-api.sh:6
-CAPTURED captured-anchor-kind.sh:2
-CAPTURED captured-dup.sh:2
-CAPTURED captured-folded-kind.sh:2
-NESTED captured-list.sh:11
-NESTED captured-list.sh:5
-CAPTURED captured-operator-kind.sh:2
-FILEDOC captured-other-kind.sh:1
-SITE captured.sh:1
-UNLABELLED captured.sh:2
-CAPTURED captured-tag-kind.sh:2
-FILEDOC captured-to-file.sh:1
-UNPARSED captured-unparsed.sh:1
-SITE comment-heredoc.sh:2
-UNLABELLED comment-heredoc.sh:3
-SITE continued.sh:2
-UNLABELLED continued.sh:3
-SITE dash.sh:1
-UNLABELLED dash.sh:2
-SITE entry-comment.sh:1
-UNLABELLED entry-comment.sh:2
-SITE exec-apply.sh:1
-UNLABELLED exec-apply.sh:2
-FILEDOC file-operator-kind.sh:1
-SITE flow-doc.sh:1
-SITE flow-labels.sh:1
-NESTED flow-list.sh:2
-SITE flow-metadata.sh:1
-SITE flow-multiline.sh:1
-UNLABELLED flow-multiline.sh:3
-SITE folded-kind.sh:1
-UNLABELLED folded-kind.sh:2
-SITE hand-spelled.sh:1
-HANDSPELLED hand-spelled.sh:2
-UNTERMINATED heredoc-unterminated.sh:1
-FILEDOC in-pod.sh:1
-SITE json-doc.sh:1
-UNLABELLED json-doc.sh:3
-SITE json-hand.sh:1
-HANDSPELLED json-hand.sh:3
-SITE key-prefix.sh:1
-UNLABELLED key-prefix.sh:2
-SITE label-absent.sh:1
-UNLABELLED label-absent.sh:2
-SITE labelled.sh:1
-SITE labels-comment.sh:1
-UNLABELLED labels-comment.sh:2
-NESTED list.sh:5
-SITE literal-kind.sh:1
-UNLABELLED literal-kind.sh:2
-SITE multi-doc.sh:1
-UNLABELLED multi-doc.sh:12
-NESTED nested-map.sh:8
-SITE nested-metadata.sh:1
-UNLABELLED nested-metadata.sh:2
-NOKIND no-kind.sh:2
-SITE no-labels.sh:1
-UNLABELLED no-labels.sh:2
-OTHERKIND other-kind.sh:2
-OUTSIDE outside-quoted.sh:1
-OUTSIDE outside-quoted.sh:2
-OUTSIDE outside-quoted.sh:3
-OUTSIDE outside.sh:1
-SITE quoted-key.sh:1
-UNLABELLED quoted-key.sh:2
-SITE quoted-kind.sh:1
-UNLABELLED quoted-kind.sh:2
-SITE quoted.sh:1
-QUOTED quoted.sh:2
-SITE rc-ok-comment.sh:1
-UNLABELLED rc-ok-comment.sh:2
-NOKIND seq-kind.sh:2
-SITE spaced-colon.sh:1
-UNLABELLED spaced-colon.sh:2
-SITE spaced-kind.sh:1
-UNLABELLED spaced-kind.sh:2
-SITE split-key.sh:1
-UNLABELLED split-key.sh:2
-SITE tagged-value.sh:1
-UNLABELLED tagged-value.sh:2
-SITE tag-kind.sh:1
-UNPARSED unparsed.sh:1
-SITE var-prefix.sh:1
-UNLABELLED var-prefix.sh:2"
-fixture_scan="$(scan_run_labels "$kinds" "$fixtures/scripts")"
-got_fixture_scan="$(awk '{print $1, $2}' <<<"$fixture_scan" | sed "s|$fixtures/scripts/||; s|:\$||" | sort)"
-if [ "$got_fixture_scan" = "$(sort <<<"$want_fixture_scan")" ]; then
-    pass "the run-label scan reports each planted fixture it should and no other"
-else
-    fail "the run-label scan judged the planted fixtures wrongly (< want, > got):"
-    diff <(sort <<<"$want_fixture_scan") <(printf '%s\n' "$got_fixture_scan") | grep '^[<>]' | sed 's/^/      /' || true
-fi
-
-# expect_red <label> <verdict> <pattern>: the verdict must hold a line matching
-# the pattern.
-expect_red() {
-    if grep -qE -- "$3" <<<"$2"; then pass "$1"; else fail "$1: verdict was: ${2:-clean}"; fi
-}
-
-# copy_tree <dest>: a scratch copy of every suite's scripts directory.
-copy_tree() {
-    local dir suite
-    for dir in "$e2e_root"/*/scripts; do
-        suite="$(basename "$(dirname "$dir")")"
-        mkdir -p "$1/$suite"
-        cp -R "$dir" "$1/$suite/"
-    done
-}
-# tree_verdict_of <root>: the verdict on a scratch tree.
-tree_verdict_of() {
-    local dirs
-    mapfile -t dirs < <(label_dirs "$1")
-    label_verdict "$1" "$(scan_run_labels "$kinds" "${dirs[@]}")"
-}
-
-tree="$scratch/tree"
-copy_tree "$tree"
-probe="$tree/operator/scripts/test-configpolicy.sh"
-label_line="$(grep -nxF "    \${E2E_RUN_LABEL_YAML}" "$probe" | head -n1 | cut -d: -f1)"
-sed -i "${label_line}d" "$probe"
-probe_verdict="$(tree_verdict_of "$tree")"
-if [ "$(wc -l <<<"$probe_verdict")" -eq 1 ] && grep -q "^UNLABELLED $probe:" <<<"$probe_verdict"; then
-    pass "removing one real label line makes the scan report that object"
-else
-    fail "removing line $label_line of test-configpolicy.sh: verdict was: ${probe_verdict:-clean}"
-fi
-
-floored="$scratch/floored"
-copy_tree "$floored"
-mv "$floored/full-stack/scripts" "$scratch/full-stack-moved"
-mkdir -p "$floored/full-stack/scripts"
-printf 'true\n' > "$floored/full-stack/scripts/no-sites.sh"
-floor_verdict="$(tree_verdict_of "$floored")"
-if [ "$floor_verdict" = "FLOOR full-stack: only 0 heredocs apply an operator object (want at least ${run_label_floors[1]}); the scan has lost its population" ]; then
-    pass "a suite emptied of sites fails its own floor while the others hold theirs"
-else
-    fail "full-stack emptied of sites: verdict was: ${floor_verdict:-clean}"
-fi
-missing="$scratch/missing"
-copy_tree "$missing"
-mv "$missing/gateway" "$scratch/gateway-moved"
-missing_verdict="$(tree_verdict_of "$missing")"
-expect_red "a floored suite with no scripts directory fails the scan" "$missing_verdict" "^EMPTY $missing/gateway/scripts"
-expect_red "a floored suite with no scripts directory fails its floor" "$missing_verdict" "^FLOOR gateway: only 0 "
-
-by_path_tree="$scratch/by-path"
-copy_tree "$by_path_tree"
-printf 'kubectl apply -f mc.yaml\n' > "$by_path_tree/operator/scripts/zz-by-path.sh"
-by_path_verdict="$(tree_verdict_of "$by_path_tree")"
-if [ "$by_path_verdict" = "BYPATH $by_path_tree/operator/scripts/zz-by-path.sh:1: the scan cannot read a manifest applied by path; apply it from a heredoc" ]; then
-    pass "a manifest applied by path in a floored suite fails the scan, and the crossplane suite's do not"
-else
-    fail "a manifest applied by path in the operator suite: verdict was: ${by_path_verdict:-clean}"
-fi
-expect_red "a manifest applied by path in helpers.sh fails the scan" \
-    "$(by_path_in_scope "$e2e_root" "BYPATH $helpers:9: applied by path")" "^BYPATH $helpers:9:"
-
-mkdir -p "$scratch/empty" "$scratch/broken"
-ln -s "$scratch/nowhere" "$scratch/broken/gone.sh"
-expect_red "a directory with no files fails the scan" "$(scan_run_labels "$kinds" "$scratch/empty")" "^EMPTY $scratch/empty"
-expect_red "a file the scan cannot read fails it" "$(scan_run_labels "$kinds" "$scratch/broken")" "^UNREADABLE $scratch/broken/gone.sh"
-# fail_awk <dir> <case pattern>: an awk on PATH that exits 2 when its arguments
-# match the pattern and runs the real awk otherwise.
-fail_awk() {
-    mkdir -p "$1"
-    printf '#!/bin/sh\ncase "$*" in %s) exit 2 ;; esac\nexec %s "$@"\n' "$2" "$(command -v awk)" > "$1/awk"
-    chmod +x "$1/awk"
-}
-fail_awk "$scratch/fail-reader" '*heredocs.awk*'
-fail_awk "$scratch/fail-scan" '*kinds=*'
-expect_red "heredocs.awk failing to read the scripts fails the scan" \
-    "$(PATH="$scratch/fail-reader:$PATH" scan_run_labels "$kinds" "$fixtures/scripts")" '^UNREADABLE heredocs.awk exited 2'
-expect_red "the scan's own awk failing fails the scan" \
-    "$(PATH="$scratch/fail-scan:$PATH" scan_run_labels "$kinds" "$fixtures/scripts")" "^UNREADABLE the scan's awk exited 2"
-fail_awk "$scratch/fail-collector" '*work=*'
-expect_red "the scan's heredoc collector failing fails the scan" \
-    "$(PATH="$scratch/fail-collector:$PATH" scan_run_labels "$kinds" "$fixtures/scripts")" "^UNREADABLE the scan's heredoc collector exited 2"
-# A yq that fails without naming a body has each body read on its own, so its
-# error reaches every heredoc the cluster would be sent.
-mkdir -p "$scratch/fail-yq"
-printf '#!/bin/sh\necho "Error: no yq here" >&2\nexit 1\n' > "$scratch/fail-yq/yq"
-chmod +x "$scratch/fail-yq/yq"
-expect_red "yq failing on every body fails the scan" \
-    "$(PATH="$scratch/fail-yq:$PATH" scan_run_labels "$kinds" "$fixtures/scripts/labelled.sh")" "^UNPARSED $fixtures/scripts/labelled.sh:1: .*Error: no yq here"
-
-printf 'a: 1\n' > "$scratch/no-kinds.yaml"
-expect_red "a CRD file that names no kinds fails the kind list" "$(operator_kinds "$scratch/no-kinds.yaml")" "^FAIL $scratch/no-kinds.yaml names no CRD kinds"
-expect_red "a CRD file yq cannot read fails the kind list" "$(operator_kinds "$scratch/no-such.yaml")" "^FAIL yq could not read $scratch/no-such.yaml"
 
 # `set -e` is off inside an if/elif/while/until condition, so a subshell or a
 # brace group there that runs several commands reports only the last one's
@@ -1525,6 +557,1352 @@ elif [ -z "$crd_files" ]; then
 else
     fail "ArgoCD owns the cluster's CRDs, so no tracked manifest under tests/e2e holds one; remove the CRD from: [$crd_files]"
 fi
+
+# yq_v4_problem: prints nothing when the yq on PATH is mikefarah yq v4, and
+# otherwise what it found there.
+yq_v4_problem() {
+    local version
+    if ! command -v yq >/dev/null; then
+        echo "no yq"
+        return 0
+    fi
+    version="$(yq --version 2>&1)" || { echo "$(command -v yq), whose --version failed: $version"; return 0; }
+    [[ "$version" =~ mikefarah/yq.*\ version\ v?4\. ]] || echo "$(command -v yq): $version"
+}
+mkdir -p "$scratch/python-yq" "$scratch/no-yq"
+printf '#!/bin/sh\necho "yq 3.4.3"\n' > "$scratch/python-yq/yq"
+chmod +x "$scratch/python-yq/yq"
+got="$(PATH="$scratch/python-yq:$PATH" yq_v4_problem)"
+if [ "$got" = "$scratch/python-yq/yq: yq 3.4.3" ]; then pass "the yq check names a python yq it finds first on PATH"; else fail "the yq check with python yq first on PATH printed [$got]"; fi
+got="$(PATH="$scratch/no-yq" yq_v4_problem)"
+if [ "$got" = "no yq" ]; then pass "the yq check reports a PATH with no yq"; else fail "the yq check with no yq on PATH printed [$got]"; fi
+
+# Every check below reads YAML with mikefarah yq v4. Another yq, or none, would
+# fail each of them for a reason unrelated to what it checks, so the run stops
+# here with one line naming the yq it found.
+yq_problem="$(yq_v4_problem)"
+if [ -n "$yq_problem" ]; then
+    fail "needs mikefarah yq v4 on PATH (found: $yq_problem)"
+    echo "$failures check(s) failed"
+    exit 1
+fi
+
+# CSI_DRIVER_NAME is the one spelling of the PR install's driver; a csiDriver.name
+# key in the values file, in block or flow form, could drift from it. A file yq
+# cannot read is a failure too, or a broken file would pass as "no key".
+values="$e2e_root/manifests/pr-install-values.yaml"
+has_name="$(yq '.csiDriver | has("name")' "$values" 2>&1 | tr '\n' ' ' | sed 's/ *$//' || true)"
+case "$has_name" in
+    false) pass "pr-install-values.yaml leaves csiDriver.name to --set-string csiDriver.name=\$CSI_DRIVER_NAME" ;;
+    true) fail "$values sets csiDriver.name ($(yq '.csiDriver.name' "$values")); the install passes --set-string csiDriver.name=\$CSI_DRIVER_NAME" ;;
+    *) fail "yq could not read $values: $has_name" ;;
+esac
+
+# Every operator object a suite applies must carry the run label in its own
+# metadata.labels: the PR operator reconciles only objects with that label, so an
+# unlabelled object makes its case fail for a reason unrelated to the case. The
+# operator's kinds come from the CRDs it serves, so a new CRD joins the rule.
+
+# operator_kinds <crds.yaml>: one kind per line, or a FAIL line.
+operator_kinds() {
+    local kinds
+    if ! kinds="$(yq -N '.spec.names.kind' "$1" 2>&1)"; then
+        echo "FAIL yq could not read $1: $kinds"
+    elif ! grep -qE '^[A-Z][A-Za-z0-9]*$' <<<"$kinds" || grep -qvE '^[A-Z][A-Za-z0-9]*$' <<<"$kinds"; then
+        echo "FAIL $1 names no CRD kinds: ${kinds:-empty}"
+    else
+        printf '%s\n' "$kinds"
+    fi
+}
+
+# The words a heredoc body's expansions render to, random per run so no text
+# written by hand in a script can equal either: the run label's value renders as
+# label_sentinel, and every other expansion as expansion_placeholder.
+label_sentinel="run-label-$$-$RANDOM$RANDOM"
+expansion_placeholder="e2e-expansion-$$-$RANDOM$RANDOM"
+
+# yaml_entries_of <helpers.sh>: one NAME=key word per `export NAME_YAML="key: ..."`
+# line, the YAML entries helpers.sh hands heredoc bodies to expand.
+yaml_entries_of() {
+    sed -n 's/^export \([A-Z0-9_]*_YAML\)="\([^: "]*\): .*/\1=\2/p' "$1" | tr '\n' ' '
+}
+helpers="$e2e_root/common/helpers.sh"
+yaml_entries="$(yaml_entries_of "$helpers")"
+
+# render_awk defines render(s): one line of an unquoted heredoc body as bash
+# expands it, so a YAML parser reads what the cluster would be sent. Each
+# ${NAME} that yaml_entries names becomes its entry, `key: "<value>"`, the
+# value being label_sentinel for E2E_RUN_LABEL_YAML and expansion_placeholder
+# for the rest. Every other $VAR, ${...}, $(...) and `...` becomes
+# expansion_placeholder alone, so each line stays one line and a parser's line
+# numbers stay those of the source. A $(...) or ${...} still open at the end of
+# the line takes the rest of it.
+# shellcheck disable=SC2016 # an awk program; the $ signs belong to awk
+render_awk='
+function close_of(s, i, open, shut,   d, c) {
+    for (d = 0; i <= length(s); i++) {
+        c = substr(s, i, 1)
+        if (c == "\\") i++
+        else if (c == open) d++
+        else if (c == shut && --d == 0) return i
+    }
+    return length(s)
+}
+function expand(name) {
+    if (!(name in entry_key)) return placeholder
+    return entry_key[name] ": \"" (name == "E2E_RUN_LABEL_YAML" ? sentinel : placeholder) "\""
+}
+function render(s,   out, i, c, j, n) {
+    out = ""
+    for (i = 1; i <= length(s); i++) {
+        c = substr(s, i, 1)
+        n = substr(s, i + 1, 1)
+        if (c == "\\" && n ~ /[$`\\]/) { out = out n; i++ }
+        else if (c == "`") { j = index(substr(s, i + 1), "`"); i = j ? i + j : length(s); out = out placeholder }
+        else if (c != "$") out = out c
+        else if (n == "(") { i = close_of(s, i + 1, "(", ")"); out = out placeholder }
+        else if (n == "{") { j = close_of(s, i + 1, "{", "}"); out = out expand(substr(s, i + 2, j - i - 2)); i = j }
+        else if (match(substr(s, i + 1), /^[A-Za-z_][A-Za-z0-9_]*/)) { out = out expand(substr(s, i + 1, RLENGTH)); i += RLENGTH }
+        else if (n ~ /[0-9*@#?$!-]/) { out = out placeholder; i++ }
+        else out = out c
+    }
+    return out
+}
+BEGIN {
+    entry_count = split(entries, entry_word, " ")
+    for (entry_i = 1; entry_i <= entry_count; entry_i++) {
+        entry_eq = index(entry_word[entry_i], "=")
+        entry_key[substr(entry_word[entry_i], 1, entry_eq - 1)] = substr(entry_word[entry_i], entry_eq + 1)
+    }
+}'
+
+# render [dash] [quoted]: stdin, a heredoc body, as bash sends it. With dash 1
+# the leading tabs a <<- heredoc drops go first; with quoted 1 the lines stay
+# as written, since bash expands nothing in a quoted-delimiter heredoc.
+render() {
+    awk -v dash="${1:-0}" -v quoted="${2:-0}" -v sentinel="$label_sentinel" -v placeholder="$expansion_placeholder" \
+        -v entries="$yaml_entries" "$render_awk"'{ if (dash) sub(/^\t+/, ""); print (quoted ? $0 : render($0)) }'
+}
+
+# object_query is the yq program that reads one rendered body. It prints one
+# tab-separated line per finding, body and type first:
+#   object  a mapping whose apiVersion is a string starting cfgd.io/ or holding
+#           expansion_placeholder, at any depth of any document after aliases
+#           are resolved: the line of its apiVersion key, its depth (0 at the
+#           document root), its apiVersion, kind, the document root's kind, its
+#           metadata.name, whether metadata.labels has the run label's key and
+#           whether that value is label_sentinel
+#   whole   a document root, or an item of a *List, that is a scalar holding
+#           expansion_placeholder: its line
+# kind and the names are strings or empty; tabs and newlines in them become a
+# space. An ownerReferences entry is a reference to an object and is skipped.
+# yq collects an empty match into one empty list per document, which the
+# length check drops.
+# shellcheck disable=SC2016 # a yq program; $doc belongs to yq
+object_query='explode(.) as $doc | $doc
+| ( ( ..
+      | select(tag == "!!map" and (.apiVersion | tag) == "!!str"
+          and ((.apiVersion | test("^cfgd\.io/")) or (.apiVersion | contains(strenv(PLACEHOLDER)))))
+      | select(path | join("/") | test("(^|/)ownerReferences/[0-9]+$") | not)
+      | [filename, "object", (.apiVersion | key | line), (path | length), .apiVersion,
+         ((.kind | select(tag == "!!str")) // ""),
+         (($doc | select(tag == "!!map") | .kind | select(tag == "!!str")) // ""),
+         ((.metadata | select(tag == "!!map") | .name | select(tag == "!!str")) // ""),
+         ((.metadata | select(tag == "!!map") | .labels | select(tag == "!!map") | has(strenv(LABEL_KEY))) // false),
+         ((.metadata | select(tag == "!!map") | .labels | select(tag == "!!map") | .[strenv(LABEL_KEY)]
+           | (tag == "!!str" and . == strenv(SENTINEL))) // false)] ),
+    ( (., (select(tag == "!!map" and (.kind | tag) == "!!str" and (.kind | test("List$"))) | .items | select(tag == "!!seq") | .[]))
+      | select(tag != "!!map" and tag != "!!seq" and (tostring | contains(strenv(PLACEHOLDER))))
+      | [filename, "whole", line] ) )
+| select(length > 0) | map(tostring | sub("[\t\n]+"; " ")) | join("\t")'
+
+# yq_error <dir> <body>: the first line of yq's last error, without the
+# scratch file name it gives the body.
+yq_error() {
+    local err
+    err="$(head -n1 "$1/yq.err")"
+    printf '%s' "${err#"Error: bad file '$2': "}"
+}
+
+# run_query <dir> <label key> <body...>: object_query over the bodies, from <dir>.
+run_query() {
+    local dir="$1" key="$2"
+    shift 2
+    (cd "$dir" && SENTINEL="$label_sentinel" PLACEHOLDER="$expansion_placeholder" LABEL_KEY="$key" yq -N "$object_query" "$@" 2>"$dir/yq.err")
+}
+
+# parse_bodies <dir> <label key>: runs object_query over every body <dir>/index
+# names, writing its lines to <dir>/objects and a `body<TAB>error` line for each
+# body yq cannot read to <dir>/unparsed. One yq call reads every body; when it
+# stops at a body it names, that body is set aside and the call goes on from
+# the next, and an error that names no body has each remaining body read on its
+# own.
+parse_bodies() {
+    local dir="$1" key="$2" bodies out bad i b
+    : > "$dir/objects"
+    : > "$dir/unparsed"
+    mapfile -t bodies < <(cut -f1 "$dir/index")
+    while [ "${#bodies[@]}" -gt 0 ]; do
+        if out="$(run_query "$dir" "$key" "${bodies[@]}")"; then
+            [ -z "$out" ] || printf '%s\n' "$out" >> "$dir/objects"
+            return 0
+        fi
+        bad="$(sed -n "1s/^Error: bad file '\([^']*\)'.*/\1/p" "$dir/yq.err")"
+        for i in "${!bodies[@]}"; do [ "${bodies[$i]}" != "$bad" ] || break; done
+        if [ -z "$bad" ] || [ "${bodies[$i]}" != "$bad" ]; then
+            for b in "${bodies[@]}"; do
+                if out="$(run_query "$dir" "$key" "$b")"; then
+                    [ -z "$out" ] || printf '%s\n' "$out" >> "$dir/objects"
+                else
+                    printf '%s\t%s\n' "$b" "$(yq_error "$dir" "$b")" >> "$dir/unparsed"
+                fi
+            done
+            return 0
+        fi
+        # Lines yq printed before it stopped belong to the bodies ahead of the
+        # bad one, apart from any of the bad body's own first documents.
+        [ -z "$out" ] || awk -F '\t' -v bad="$bad" '$1 != bad' <<<"$out" >> "$dir/objects"
+        printf '%s\t%s\n' "$bad" "$(yq_error "$dir" "$bad")" >> "$dir/unparsed"
+        bodies=("${bodies[@]:i+1}")
+    done
+}
+
+# scan_run_labels <kinds> <dir or file...> reads every file in each dir, and
+# each file named, through heredocs.awk. Each heredoc body is read with yq as
+# bash would send it: an unquoted one rendered, a quoted one as written. Every
+# fact about a cfgd.io object (where it sits, its kind, name and labels, the
+# line of its apiVersion) comes from that parse. The YAML entries a body can
+# expand come from yaml_entries. It prints one line per finding, tag first:
+#   SITE         a heredoc fed to kubectl apply/create/replace or apply_yaml that
+#                holds an operator object
+#   FILEDOC      a heredoc fed to a command that does not apply it (cat > a file,
+#                there or inside a pod), or captured into a variable when its
+#                cfgd.io documents are of kinds the operator does not serve
+#   CAPTURED     an operator object in a heredoc captured into a variable, where
+#                the scan cannot see whether it reaches the cluster
+#   OTHERKIND    a cfgd.io document of a kind the operator does not serve, applied
+#                to the cluster
+#   UNLABELLED   an operator object whose metadata.labels has no cfgd.io/e2e-run
+#   HANDSPELLED  an operator object whose cfgd.io/e2e-run label is not
+#                ${E2E_RUN_LABEL_YAML}
+#   NESTED       a cfgd.io object below the root of a document, such as a List
+#                item, applied or captured; an ownerReferences entry is a
+#                reference and does not count
+#   QUOTED       an operator object in a quoted-delimiter heredoc, where
+#                ${E2E_RUN_LABEL_YAML} cannot expand
+#   NOKIND       a cfgd.io object whose kind is missing or not a string
+#   EXPANDED     in a heredoc applied or captured, a kind or apiVersion that holds
+#                a shell expansion, or a document or List item that is one
+#   CONTINUED    a line of an unquoted heredoc applied or captured that ends in
+#                an odd number of backslashes, which bash joins to the next line
+#   UNPARSED     a heredoc fed to the cluster or captured that yq cannot read
+#                as YAML once rendered
+#   OUTSIDE      a cfgd.io apiVersion on a shell line outside any heredoc
+#   REDEFINED    a script other than helpers.sh that sets E2E_RUN_LABEL_YAML
+#   BYPATH       an apply the scan cannot read: kubectl apply/create/replace
+#                given a manifest by path (-f other than -, or -k), or an apply
+#                reading stdin (kubectl -f -, or apply_yaml) fed a file by a <
+#                redirect or by a pipe from cat or sed given a file or from a
+#                command with a < redirect
+#   UNTERMINATED, UNREADABLE, EMPTY   the scan could not read what it was given
+# A heredoc written to a file is read only when it mentions cfgd.io/, and one
+# yq cannot read (a script, say) is not YAML and is skipped quietly.
+scan_run_labels() {
+    local kinds="$1" dir f files=() found work label_key=""
+    shift
+    for dir in "$@"; do
+        if [ -f "$dir" ]; then files+=("$dir"); continue; fi
+        found=("$dir"/*)
+        if [ ! -e "${found[0]}" ] && [ ! -L "${found[0]}" ]; then
+            echo "EMPTY $dir: no files to scan"
+            continue
+        fi
+        for f in "${found[@]}"; do
+            if [ -f "$f" ] && [ -r "$f" ]; then files+=("$f"); else echo "UNREADABLE $f"; fi
+        done
+    done
+    [ "${#files[@]}" -gt 0 ] || return 0
+    [[ " $yaml_entries" =~ \ E2E_RUN_LABEL_YAML=([^ ]+) ]] && label_key="${BASH_REMATCH[1]}"
+    if [ -z "$label_key" ]; then
+        echo "UNREADABLE helpers.sh has no export E2E_RUN_LABEL_YAML=\"key: ...\" line (its YAML entries: ${yaml_entries:-none})"
+        return 0
+    fi
+    work="$(mktemp -d "$scratch/scan.XXXXXX")" || { echo "UNREADABLE no scratch directory for the scan"; return 0; }
+    : > "$work/index"
+    { awk -f "$here/heredocs.awk" "${files[@]}" || echo "UNREADABLE heredocs.awk exited $? reading ${files[*]}"; } |
+        awk -F '\t' -v work="$work" -v sentinel="$label_sentinel" -v placeholder="$expansion_placeholder" \
+            -v entries="$yaml_entries" -v helpers="$helpers" "$render_awk"'
+        function rest(n,   i, p) { p = 0; for (i = 1; i <= n; i++) p += length($i) + 1; return substr($0, p + 1) }
+        # by_path(c): c applies a manifest by path when, within the kubectl
+        # command, -f names something other than - or -k names a directory.
+        # A quoted path is dropped from c, so -f with no word after it is one.
+        function by_path(c,   n, t, i, v) {
+            while (match(c, /kubectl([ \t][^|;&)]*)?[ \t](apply|create|replace)([ \t][^|;&)]*)?/)) {
+                n = split(substr(c, RSTART, RLENGTH), t, /[ \t]+/)
+                c = substr(c, RSTART + RLENGTH)
+                for (i = 1; i <= n; i++) {
+                    if (t[i] ~ /^(-k|--kustomize)/) return 1
+                    if (t[i] == "-f" || t[i] == "--filename") v = (i < n) ? t[i + 1] : ""
+                    else if (t[i] ~ /^--filename=/) v = substr(t[i], 12)
+                    else if (t[i] ~ /^-f./) { v = substr(t[i], 3); sub(/^=/, "", v) }
+                    else continue
+                    # The quote that closes a bash -c string is no part of the path.
+                    sub(/\047+$/, "", v)
+                    if (v != "-") return 1
+                }
+            }
+            return 0
+        }
+        # squash(s): one shell line with each quoted span made the word Q, each
+        # escaped character the letter X and a comment dropped, so a | or < in
+        # a string is not read as shell. The string a bash -c or sh -c runs is
+        # shell, so it is read as such. A quote still open at the end of the
+        # line stays open into the next one; a line ending in one backslash
+        # keeps it.
+        function squash(s,   out, i, c) {
+            out = ""
+            for (i = 1; i <= length(s); i++) {
+                c = substr(s, i, 1)
+                if (inq == "\047") { if (c == "\047") inq = ""; continue }
+                if (inq == "\"") { if (c == "\\") i++; else if (c == "\"") inq = ""; continue }
+                if (c == "\\") { if (i == length(s)) out = out c; else { out = out "X"; i++ } }
+                else if (cq != "" && c == cq) { cq = ""; out = out " ; " }
+                else if ((c == "\047" || c == "\"") && cq == "" && out ~ /(^|[^A-Za-z0-9_])(ba)?sh[ \t]+-c[ \t]*$/) { cq = c; out = out " ; " }
+                else if (c == "\047" || c == "\"") { inq = c; out = out "Q" }
+                else if (c == "#" && (i == 1 || substr(s, i - 1, 1) ~ /[ \t]/)) break
+                else out = out c
+            }
+            return out
+        }
+        # stdin_apply(s): the command s applies a manifest it reads on stdin.
+        function stdin_apply(s) {
+            if (s ~ /(^|[ \t])apply_yaml([ \t]|$)/) return 1
+            if (s !~ /(^|[ \t])kubectl[ \t](.*[ \t])?(apply|create|replace)([ \t]|$)/) return 0
+            return s ~ /(^|[ \t])(-f|--filename)([ \t]+|=)?-([ \t]|$)/
+        }
+        # reads_file(s): the command s is cat given a file, or sed given a file
+        # after its script.
+        function reads_file(s,   w, n, i, script, files) {
+            gsub(/[0-9]*>>?[ \t]*[^ \t]+/, " ", s)
+            sub(/^[ \t]+/, "", s)
+            n = split(s, w, /[ \t]+/)
+            for (i = 1; i <= n && (w[i] ~ /^[A-Za-z_][A-Za-z0-9_]*=/ || w[i] ~ /^(!|command|exec|sudo|time|if|then|elif|else|do|while|until)$/); i++) ;
+            if (w[i] != "cat" && w[i] != "sed") return 0
+            script = (w[i] == "sed")
+            for (i++; i <= n; i++) {
+                if (w[i] == "" || w[i] == "-" || w[i] ~ /^HERE(DOC|STR)$/) continue
+                if (w[i] ~ /^-/) {
+                    if (w[i] ~ /^(-e|-f|--expression|--file)$/) { script = 0; i++ }
+                    else if (w[i] ~ /^(-e|--expression=|-f|--file=)/) script = 0
+                    continue
+                }
+                if (script) script = 0
+                else files++
+            }
+            return files > 0
+        }
+        # fed_from_file(c): the squashed command line c holds an apply reading
+        # stdin that a file feeds, by a < redirect on the apply or on a command
+        # piped into it, or by cat or sed piped into it. A heredoc or here-string
+        # is no file.
+        function fed_from_file(c,   lists, nl, l, segs, ns, j, k) {
+            gsub(/[0-9]*>&[0-9-]*|&>/, " ", c)
+            gsub(/<<</, " HERESTR ", c)
+            gsub(/<<-?[ \t]*X?(Q|[A-Za-z_][A-Za-z0-9_]*)/, " HEREDOC ", c)
+            gsub(/\|\||&&/, ";", c)
+            nl = split(c, lists, /[;&(){}`]/)
+            for (l = 1; l <= nl; l++) {
+                ns = split(lists[l], segs, "|")
+                for (j = 1; j <= ns; j++) {
+                    if (!stdin_apply(segs[j])) continue
+                    if (index(segs[j], "<")) return 1
+                    for (k = 1; k < j; k++) if (index(segs[k], "<") || reads_file(segs[k])) return 1
+                }
+            }
+            return 0
+        }
+        # check_command: the stdin check on the command line gathered so far.
+        function check_command() {
+            if (pending != "" && fed_from_file(pending)) {
+                print "BYPATH " file ":" pending_at ": the scan cannot read a file fed to an apply on stdin; apply it from a heredoc"
+                said[file, pending_at] = 1
+            }
+            pending = ""
+        }
+        function close_heredoc(id,   i, n, lead, yaml, path, out) {
+            n = count[id]
+            yaml = (cls[id] != "FILE")
+            for (i = 1; i <= n && !yaml; i++) yaml = index(text[id, i], "cfgd.io/") > 0
+            if (!yaml) return
+            for (i = 1; i <= n; i++) out[i] = qtd[id] ? text[id, i] : render(text[id, i])
+            # yq numbers lines from the first content line of a file, so the
+            # blank, comment and --- lines before it are left out and counted.
+            for (lead = 0; lead < n && out[lead + 1] ~ /^([ \t]*(#.*)?|---([ \t]+#.*)?[ \t]*)$/; lead++) continue
+            if (lead == n) return
+            path = work "/" (++bodies) ".yaml"
+            for (i = lead + 1; i <= n; i++) print out[i] > path
+            close(path)
+            print bodies ".yaml", file, opened[id], cls[id], qtd[id], at[id, lead + 1] > (work "/index")
+        }
+        BEGIN { OFS = "\t" }
+        /^UNREADABLE / { print; next }
+        $1 == "FILE" { check_command(); inq = ""; cq = ""; next }
+        { file = $2 }
+        $1 == "UNCLOSED" { print "UNTERMINATED " file ":" $3 ": no " $4 " line closes this heredoc"; next }
+        $1 == "OPEN" {
+            id = $4; opened[id] = $3; qtd[id] = $6; dash[id] = $7; count[id] = 0
+            c = rest(7)
+            if (c ~ /kubectl([ \t].*)?[ \t](apply|create|replace)([ \t]|$)/ || c ~ /(^|[^A-Za-z0-9_])apply_yaml([ \t]|$)/) cls[id] = "CLUSTER"
+            else {
+                # A descriptor duplication such as 2>&1 writes no file.
+                gsub(/[0-9]*>&[0-9-]+/, "", c)
+                cls[id] = (c ~ /\$\(/ && c !~ />/) ? "CAPTURE" : "FILE"
+            }
+            next
+        }
+        $1 == "BODY" {
+            id = $4; line = rest(4)
+            if (dash[id]) sub(/^\t+/, "", line)
+            if (!qtd[id] && cls[id] != "FILE" && match(line, /\\+$/) && RLENGTH % 2 == 1) print "CONTINUED " file ":" $3 ": a line continued with \\ inside a heredoc; bash joins it to the next line"
+            text[id, ++count[id]] = line; at[id, count[id]] = $3
+            next
+        }
+        $1 == "CLOSE" {
+            close_heredoc($4)
+            # A quote open at the end of the line that opens a heredoc
+            # closes on its terminator line, as in a bash -c string holding
+            # the heredoc.
+            if (inq != "" || cq != "") { inq = ""; cq = ""; check_command() }
+            next
+        }
+        $1 == "CMD" {
+            if (by_path(rest(3)) && !said[file, $3]) print "BYPATH " file ":" $3 ": the scan cannot read a manifest applied by path; apply it from a heredoc"
+            next
+        }
+        $1 == "SH" {
+            line = rest(3)
+            if (line !~ /^[ \t]*#/) {
+                sub(/[ \t]+#.*$/, "", line)
+                if (line ~ /(^|[^A-Za-z0-9_])["\047]?apiVersion["\047]?[ \t]*:[ \t]*["\047]?cfgd\.io\//) print "OUTSIDE " file ":" $3 ": a cfgd.io apiVersion outside any heredoc"
+                if (file != helpers) {
+                    # Reads of the variable go first; a name left over is set.
+                    gsub(/\$E2E_RUN_LABEL_YAML([^A-Za-z0-9_]|$)|\$\{#?E2E_RUN_LABEL_YAML(\}|[-+?\/#%^,][^}]*\}|:[-+?0-9 ][^}]*\})/, " ", line)
+                    if (line ~ /(^|[^A-Za-z0-9_])E2E_RUN_LABEL_YAML([^A-Za-z0-9_]|$)/) print "REDEFINED " file ":" $3 ": only helpers.sh sets E2E_RUN_LABEL_YAML; a script that sets it labels its objects with a value the scan cannot check"
+                }
+            }
+            if (pending == "") pending_at = $3
+            pending = pending squash(rest(3))
+            # bash goes on reading a command past a line ending in one
+            # backslash, a pipe or && or inside a quote.
+            if (inq != "" || cq != "" || pending ~ /\\$/ || pending ~ /(\||&&)[ \t]*$/) { sub(/\\$/, "", pending); pending = pending " "; next }
+            check_command()
+        }
+        END { check_command(); close(work "/index") }
+    ' || echo "UNREADABLE the scan's heredoc collector exited $?"
+    parse_bodies "$work" "$label_key"
+    awk -F '\t' -v kinds="$(tr '\n' ' ' <<<"$kinds")" -v placeholder="$expansion_placeholder" '
+        BEGIN { n = split(kinds, k, " "); for (i = 1; i <= n; i++) operator[k[i]] = 1 }
+        FILENAME == ARGV[1] { src[$1] = $2; opened[$1] = $3; cls[$1] = $4; qtd[$1] = $5; first[$1] = $6; order[++bodies] = $1; next }
+        FILENAME == ARGV[3] {
+            if (cls[$1] == "FILE") next
+            err = $2
+            # yq counts lines from the body; the message names the script line.
+            if (match(err, /at L[0-9]+[^:]*/)) err = substr(err, 1, RSTART - 1) "at line " (first[$1] + substr(err, RSTART + 4, index(substr(err, RSTART + 4), ".") - 1) - 1) substr(err, RSTART + RLENGTH)
+            print "UNPARSED " src[$1] ":" opened[$1] ": yq cannot read this heredoc as YAML once its variables expand (" err "); make it valid YAML, with each $VAR, ${...} and $(...) inside a value, since the scan reads each as one plain word"
+            next
+        }
+        {
+            b = $1; at = src[b] ":" (first[b] + $3 - 1)
+            if ($2 == "whole") {
+                if (cls[b] != "FILE") { print "EXPANDED " at ": a heredoc document that is a whole expansion; the scan cannot read what it applies"; reported[b] = 1 }
+                next
+            }
+            api = $5; kind = $6; root = $7; name = $8
+            sub(/ +$/, "", kind); sub(/ +$/, "", root)
+            if (cls[b] == "FILE") { if (api ~ /^cfgd\.io\//) cfgd[b] = 1; next }
+            if (index(api, placeholder)) { print "EXPANDED " at ": apiVersion is a shell expansion; write it literally"; reported[b] = 1; next }
+            cfgd[b] = 1
+            if ($4 > 0) {
+                print "NESTED " at ": a cfgd.io object nested inside " (root == "" ? "another document" : root) "; apply it as its own document"
+                reported[b] = 1
+                next
+            }
+            if (index(kind, placeholder)) { print "EXPANDED " at ": kind is a shell expansion; write it literally"; reported[b] = 1; next }
+            if (cls[b] == "CAPTURE") {
+                if (kind in operator) {
+                    print "CAPTURED " at " " kind ": the scan cannot see where a captured heredoc goes; feed it to kubectl apply directly"
+                    reported[b] = 1
+                }
+                next
+            }
+            if (kind == "") { print "NOKIND " at ": a cfgd.io object whose kind is missing or not a string"; next }
+            if (!(kind in operator)) { print "OTHERKIND " at " " kind; next }
+            site[b] = 1
+            if (qtd[b]) print "QUOTED " at " " kind ": the heredoc delimiter is quoted, so ${E2E_RUN_LABEL_YAML} cannot expand"
+            else if ($9 == "true" && $10 != "true") print "HANDSPELLED " at " " kind " " name ": spell the label as ${E2E_RUN_LABEL_YAML}"
+            else if ($9 != "true") print "UNLABELLED " at " " kind " " name ": metadata.labels has no ${E2E_RUN_LABEL_YAML}"
+        }
+        END {
+            for (i = 1; i <= bodies; i++) {
+                b = order[i]
+                if (site[b]) print "SITE " src[b] ":" opened[b]
+                if (cfgd[b] && (cls[b] == "FILE" || (cls[b] == "CAPTURE" && !reported[b]))) print "FILEDOC " src[b] ":" opened[b]
+            }
+        }
+    ' "$work/index" "$work/objects" "$work/unparsed" || echo "UNREADABLE the scan's awk exited $?"
+    rm -rf "$work"
+}
+
+# Suites that apply operator objects today, each with a floor about two thirds
+# of its current count, so one suite losing its sites fails on its own.
+run_label_suites=(operator full-stack gateway)
+run_label_floors=(36 15 3)
+
+# label_dirs <root>: every <root>/*/scripts directory plus each floored suite's,
+# so a floored suite that is missing fails as EMPTY.
+label_dirs() {
+    local root="$1" suite
+    {
+        printf '%s\n' "$root"/*/scripts
+        for suite in "${run_label_suites[@]}"; do printf '%s\n' "$root/$suite/scripts"; done
+    } | sort -u
+}
+
+# by_path_in_scope <root> <scan output>: the BYPATH lines from the floored
+# suites and helpers.sh, the scripts that apply operator objects.
+by_path_in_scope() {
+    local tag where suite
+    while read -r tag where; do
+        [ "$tag" = BYPATH ] || continue
+        for suite in "${run_label_suites[@]}"; do
+            if [[ "$where" == "$1/$suite/scripts/"* ]]; then echo "$tag $where"; continue 2; fi
+        done
+        if [[ "$where" == "$helpers:"* ]]; then echo "$tag $where"; fi
+    done <<<"$2"
+}
+
+# label_verdict <root> <scan output>: prints nothing when the scan is clean and
+# each floored suite holds its floor, otherwise one line per problem.
+label_verdict() {
+    local root="$1" out="$2" i suite floor sites
+    grep -Ev '^(SITE|FILEDOC|OTHERKIND|BYPATH) ' <<<"$out" || true
+    by_path_in_scope "$root" "$out"
+    for i in "${!run_label_suites[@]}"; do
+        suite="${run_label_suites[$i]}" floor="${run_label_floors[$i]}"
+        sites="$(grep -c "^SITE $root/$suite/scripts/" <<<"$out" || true)"
+        if [ "$sites" -lt "$floor" ]; then
+            echo "FLOOR $suite: only $sites heredocs apply an operator object (want at least $floor); the scan has lost its population"
+        fi
+    done
+}
+
+kinds="$(operator_kinds "$repo_root/schemas/crds.yaml")"
+if [[ "$kinds" == FAIL* ]]; then
+    fail "${kinds#FAIL }"
+else
+    pass "the operator serves $(tr '\n' ' ' <<<"$kinds" | sed 's/ $//') (schemas/crds.yaml)"
+fi
+mapfile -t label_scan_dirs < <(label_dirs "$e2e_root")
+tree_scan="$(scan_run_labels "$kinds" "${label_scan_dirs[@]}" "$helpers")"
+tree_verdict="$(label_verdict "$e2e_root" "$tree_scan")"
+if [ -z "$tree_verdict" ]; then
+    pass "every operator object the e2e suites apply carries the run label ($(grep -c '^SITE ' <<<"$tree_scan") heredocs: $(for s in "${run_label_suites[@]}"; do printf '%s %s, ' "$s" "$(grep -c "^SITE $e2e_root/$s/scripts/" <<<"$tree_scan")"; done | sed 's/, $//'))"
+else
+    fail "operator objects the PR operator would ignore:"
+    printf '      %s\n' "${tree_verdict//$'\n'/$'\n'      }"
+fi
+others="$(grep '^OTHERKIND ' <<<"$tree_scan" | cut -d' ' -f2- | sed "s|$e2e_root/||" | paste -sd ';' - | sed 's/;/; /g' || true)"
+[ -z "$others" ] || pass "cfgd.io objects outside the operator's watch, so no run label: $others"
+by_path="$(grep '^BYPATH ' <<<"$tree_scan" | grep -vxFf <(by_path_in_scope "$e2e_root" "$tree_scan") | cut -d' ' -f2 | sed "s|$e2e_root/||; s|:\$||" | paste -sd ';' - | sed 's/;/; /g' || true)"
+[ -z "$by_path" ] || pass "manifests applied by path outside the suites that apply operator objects: $by_path"
+pass "$(grep -c '^FILEDOC ' <<<"$tree_scan" || true) heredocs hold a cfgd.io document that needs no run label: one fed to a command that does not apply it (cat > a file, there or inside a pod), or a captured document of a kind the operator does not serve"
+
+# The scan against planted fixtures: one per way a suite writes a cfgd.io
+# document, one per place a cfgd.io apiVersion can sit, one per placement of
+# the label and one per YAML spelling of a key or value. Each fixture is
+# checked as shell (bash -n) and its body as YAML, rendered by the scan's own
+# render, before the scan reads it.
+fixtures="$scratch/label-fixtures"
+mkdir -p "$fixtures/scripts"
+# plant <name> <opener> <body> [closer]: a fixture whose rendered body is YAML.
+# plant_unparsed takes the same arguments for one whose rendered body yq must
+# refuse, so the fixture stays invalid if render changes.
+plant() { plant_as yaml "$@"; }
+plant_unparsed() { plant_as not-yaml "$@"; }
+plant_as() {
+    local want="$1" name="$2" opener="$3" body="$4" closer="${5-EOF}" f checked dash=0 quoted=0
+    f="$fixtures/scripts/$name.sh"
+    printf '%s\n%s\n%s\n' "$opener" "$body" "$closer" > "$f"
+    checked="$(bash -n "$f" 2>&1 | grep -v 'delimited by end-of-file' || true)"
+    [ -z "$checked" ] || fail "fixture $name is not valid shell: $checked"
+    [[ "$opener" != *'<<-'* ]] || dash=1
+    [[ ! "$opener" =~ \<\<-?[[:space:]]*[\'\"\\] ]] || quoted=1
+    if checked="$(printf '%s\n' "$body" | render "$dash" "$quoted" | yq '.' 2>&1 >/dev/null)"; then
+        [ "$want" = yaml ] || fail "fixture $name was meant to be invalid YAML once rendered, and yq read it"
+    else
+        [ "$want" = not-yaml ] || fail "fixture $name is not valid YAML: $checked"
+    fi
+}
+module_labelled="apiVersion: cfgd.io/v1alpha1
+kind: Module
+metadata:
+  name: labelled
+  labels:
+    app.kubernetes.io/part-of: e2e
+    \${E2E_RUN_LABEL_YAML}
+spec:
+  packages: []"
+module_unlabelled='apiVersion: cfgd.io/v1alpha1
+kind: Module
+metadata:
+  name: unlabelled
+spec:
+  packages: []'
+# module_labels <line...>: a Module whose labels block holds exactly the lines.
+module_labels() {
+    printf 'apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: m\n  labels:\n'
+    printf '    %s\n' "$@"
+    printf 'spec:\n  packages: []'
+}
+apply="kubectl apply -n \"\$E2E_NAMESPACE\" -f - <<EOF"
+
+plant labelled "$apply" "$module_labelled"
+plant label-absent "$apply" "$(module_labels 'app.kubernetes.io/part-of: e2e')"
+plant no-labels "$apply" "$module_unlabelled"
+plant quoted-kind "$apply" "apiVersion: \"cfgd.io/v1alpha1\"
+kind: 'Module' # the module
+metadata:
+  name: quoted-kind
+spec:
+  packages: []"
+plant multi-doc "$apply" "$module_labelled
+---
+apiVersion: cfgd.io/v1alpha1
+kind: MachineConfig
+metadata:
+  name: second
+spec:
+  hostname: second
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: third
+data:
+  k: v"
+plant nested-metadata "$apply" "apiVersion: cfgd.io/v1alpha1
+kind: ClusterConfigPolicy
+metadata:
+  name: nested
+spec:
+  template:
+    metadata:
+      labels:
+        \${E2E_RUN_LABEL_YAML}"
+plant comment "# apiVersion: cfgd.io/v1alpha1 in a shell comment"$'\n'"kubectl apply -f - <<EOF" '# apiVersion: cfgd.io/v1alpha1
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: comment
+data:
+  k: v'
+plant comment-heredoc "# Usage: apply_yaml \"T03\" <<'EOF' ... EOF"$'\n'"kubectl apply -f - <<EOF" "$module_unlabelled"
+plant rc-ok-comment "kubectl apply -n \"\$E2E_NAMESPACE\" -f - 2>&1 <<EOF || true # rc-ok: read back with kubectl exec below" "$module_unlabelled"
+plant quoted "kubectl apply -f - <<'EOF'" "$module_unlabelled"
+plant in-pod "exec_in_pod bash -c 'cat > /etc/cfgd/in-pod.yaml << \"INNEREOF\"" 'apiVersion: cfgd.io/v1alpha1
+kind: Config
+metadata:
+  name: in-pod
+spec:
+  profile: base' "INNEREOF'"
+plant exec-apply "exec_in_pod kubectl apply -f - <<EOF" "$module_unlabelled"
+plant apply-yaml "apply_yaml \"T01\" <<EOF" "$module_unlabelled"
+plant captured "RESULT=\$(kubectl apply -f - 2>&1 <<EOF || true" "$module_unlabelled" "EOF"$'\n'")"
+plant continued "kubectl apply -n \"\$E2E_NAMESPACE\" \\"$'\n'"    -f - <<EOF" "$module_unlabelled"
+plant dash "kubectl apply -f - <<-EOF" $'\t'"${module_unlabelled//$'\n'/$'\n\t'}" $'\tEOF'
+plant captured-operator-kind "yaml=\$(cat <<EOF" 'apiVersion: cfgd.io/v1alpha1
+kind: MachineConfig
+metadata:
+  name: captured
+spec:
+  hostname: captured' "EOF"$'\n'")"$'\n'"echo \"\$yaml\" | kubectl apply -f -"
+machine_config='apiVersion: cfgd.io/v1alpha1
+kind: MachineConfig
+metadata:
+  name: captured
+spec:
+  hostname: captured'
+plant captured-dup "yaml=\$(cat 2>&1 <<EOF" "$machine_config" "EOF"$'\n'")"
+plant captured-to-file "x=\$(cat <<EOF > f" "$machine_config" "EOF"$'\n'")"
+plant captured-list "yaml=\$(cat <<EOF" 'apiVersion: v1
+kind: List
+items:
+  - apiVersion: cfgd.io/v1alpha1
+    kind: MachineConfig
+    metadata:
+      name: first
+    spec:
+      hostname: first
+  - apiVersion: cfgd.io/v1alpha1
+    kind: MachineConfig
+    metadata:
+      name: second
+    spec:
+      hostname: second' "EOF"$'\n'")"
+plant captured-other-kind "yaml=\$(cat <<EOF" 'apiVersion: cfgd.io/v1alpha1
+kind: TeamConfig
+metadata:
+  name: captured
+spec:
+  team: a' "EOF"$'\n'")"
+plant owner-reference "kubectl apply -f - <<EOF" 'apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: owned
+  ownerReferences:
+  - apiVersion: cfgd.io/v1alpha1
+    kind: MachineConfig
+    name: owner
+    uid: 00000000-0000-0000-0000-000000000000
+data:
+  k: v'
+plant owner-reference-indented "kubectl apply -f - <<EOF" 'apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: owned
+  ownerReferences:
+    - apiVersion: cfgd.io/v1alpha1
+      kind: MachineConfig
+      name: owner
+      uid: 00000000-0000-0000-0000-000000000000
+data:
+  k: v'
+plant file-operator-kind "cat > \"\$dir/mc.yaml\" <<EOF" 'apiVersion: cfgd.io/v1alpha1
+kind: MachineConfig
+metadata:
+  name: in-a-file
+spec:
+  hostname: in-a-file'
+plant other-kind "kubectl apply -f - <<EOF" 'apiVersion: cfgd.io/v1alpha1
+kind: TeamConfig
+metadata:
+  name: team
+spec:
+  team: a'
+plant list "kubectl apply -f - <<EOF" 'apiVersion: v1
+kind: List
+items:
+  - apiVersion: cfgd.io/v1alpha1
+    kind: Module
+    metadata:
+      name: listed
+    spec:
+      packages: []'
+plant labels-comment "$apply" "apiVersion: cfgd.io/v1alpha1
+kind: Module
+metadata:
+  name: labels-comment
+  labels: {app: x}  # want \${E2E_RUN_LABEL_YAML} here
+spec:
+  packages: []"
+plant entry-comment "$apply" "$(module_labels "app: x  # want \${E2E_RUN_LABEL_YAML} here")"
+plant key-prefix "$apply" "$(module_labels 'cfgd.io/e2e-run-foo: "42"')"
+plant var-prefix "$apply" "$(module_labels "\${E2E_RUN_LABEL_YAML_OLD}")"
+plant default-label "$apply" "$(module_labels "\${LABEL:-\${E2E_RUN_LABEL_YAML}}")"
+plant job-label-only "$apply" "$(module_labels "\${E2E_JOB_LABEL_YAML}")"
+plant hand-spelled "$apply" "$(module_labels "cfgd.io/e2e-run: \"\${E2E_RUN_ID}\"")"
+plant flow-labels "$apply" "apiVersion: cfgd.io/v1alpha1
+kind: Module
+metadata:
+  name: flow-labels
+  labels: {app: x, \${E2E_RUN_LABEL_YAML}}
+spec:
+  packages: []"
+plant flow-metadata "$apply" "apiVersion: cfgd.io/v1alpha1
+kind: Module
+metadata: {name: flow, labels: {\${E2E_RUN_LABEL_YAML}}}
+spec:
+  packages: []"
+plant flow-doc "$apply" "{apiVersion: cfgd.io/v1alpha1, kind: Module, metadata: {name: flow, labels: {\${E2E_RUN_LABEL_YAML}}}}"
+plant json-doc "$apply" '{
+  "apiVersion": "cfgd.io/v1alpha1",
+  "kind": "Module",
+  "metadata": {"name": "json"}
+}'
+plant json-not-cfgd "$apply" '{
+  "apiVersion": "v1",
+  "kind": "ConfigMap",
+  "metadata": {"name": "json-not-cfgd"}
+}'
+plant flow-not-cfgd "$apply" "{apiVersion: v1, kind: ConfigMap, metadata: {name: flow-not-cfgd}}"
+plant spaced-colon "$apply" "apiVersion : cfgd.io/v1alpha1
+kind: Module
+metadata:
+  name: spaced-colon"
+plant flow-multiline "$apply" "{
+  apiVersion: cfgd.io/v1alpha1,
+  kind: Module,
+  metadata: {name: flow-multiline}
+}"
+plant spaced-kind "$apply" "apiVersion: cfgd.io/v1alpha1
+kind : Module
+metadata:
+  name: spaced-kind
+spec:
+  packages: []"
+plant no-kind "$apply" "apiVersion: cfgd.io/v1alpha1
+metadata:
+  name: no-kind"
+plant suffix-key "$apply" "apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: suffix-key
+data:
+  myapiVersion: cfgd.io/v1alpha1"
+plant tagged-value "$apply" "apiVersion: !!str cfgd.io/v1alpha1
+kind: Module
+metadata:
+  name: tagged-value"
+plant split-key "$apply" "apiVersion:
+  cfgd.io/v1alpha1
+kind: Module
+metadata:
+  name: split-key"
+plant quoted-key "$apply" "'apiVersion': cfgd.io/v1alpha1
+kind: Module
+metadata:
+  name: quoted-key"
+# kind and apiVersion in every spelling the parser resolves to a string.
+plant tag-kind "$apply" "apiVersion: cfgd.io/v1alpha1
+kind: !!str Module
+metadata:
+  name: tag-kind
+  labels:
+    \${E2E_RUN_LABEL_YAML}
+spec:
+  packages: []"
+plant anchor-kind "$apply" "apiVersion: cfgd.io/v1alpha1
+kind: &k Module
+metadata:
+  name: anchor-kind
+spec:
+  packages: []"
+plant folded-kind "$apply" "apiVersion: cfgd.io/v1alpha1
+kind: >-
+  Module
+metadata:
+  name: folded-kind"
+plant literal-kind "$apply" "apiVersion: cfgd.io/v1alpha1
+kind: |
+  Module
+metadata:
+  name: literal-kind"
+plant seq-kind "$apply" "apiVersion: cfgd.io/v1alpha1
+kind: [Module]
+metadata:
+  name: seq-kind"
+alias_api="metadata:
+  name: alias-api
+  annotations:
+    group: &v cfgd.io/v1alpha1
+apiVersion: *v
+kind: Module"
+plant alias-api "$apply" "$alias_api"
+# Each expansion renders as one word, so text inside it that is not YAML
+# (a ": " in a plain value) never reaches the parser; $VAR names the label too.
+plant substitutions "$apply" "apiVersion: cfgd.io/v1alpha1
+kind: Module
+metadata:
+  name: \$(echo 'a: b')-\`echo 'c: d'\`-\${NAME:-e: f}-\$((1 + 1))
+  labels:
+    \$E2E_RUN_LABEL_YAML
+spec:
+  packages: []"
+# cfgd.io text inside a string is no object.
+cm_block="apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cm-block
+data:
+  module.yaml: |
+    apiVersion: cfgd.io/v1alpha1
+    kind: Module
+    metadata:
+      name: in-a-string
+      labels:
+        \${E2E_RUN_LABEL_YAML}"
+plant cm-block "$apply" "$cm_block"
+cm_inline='apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cm-inline
+data: {note: "apiVersion: cfgd.io/v1alpha1"}'
+plant cm-inline "$apply" "$cm_inline"
+captured="yaml=\$(cat <<EOF"
+captured_close="EOF"$'\n'")"
+plant captured-tag-kind "$captured" "apiVersion: cfgd.io/v1alpha1
+kind: !!str Module
+metadata:
+  name: captured-tag-kind" "$captured_close"
+plant captured-anchor-kind "$captured" "apiVersion: cfgd.io/v1alpha1
+kind: &k Module
+metadata:
+  name: captured-anchor-kind" "$captured_close"
+plant captured-folded-kind "$captured" "apiVersion: cfgd.io/v1alpha1
+kind: >-
+  Module
+metadata:
+  name: captured-folded-kind" "$captured_close"
+plant captured-alias-api "$captured" "$alias_api" "$captured_close"
+plant captured-cm-block "$captured" "$cm_block" "$captured_close"
+plant captured-cm-inline "$captured" "$cm_inline" "$captured_close"
+plant nested-map "$apply" 'apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nested-map
+spec:
+  template:
+    apiVersion: cfgd.io/v1alpha1
+    kind: Module'
+plant flow-list "$apply" "{apiVersion: v1, kind: List, items: [{apiVersion: cfgd.io/v1alpha1, kind: Module, metadata: {name: flow-list}}]}"
+plant json-hand "$apply" '{
+  "apiVersion": "cfgd.io/v1alpha1",
+  "kind": "Module",
+  "metadata": {"name": "json-hand", "labels": {"cfgd.io/e2e-run": "42"}}
+}'
+# A substitution at the start of a line renders as one word in column 0, which
+# ends the block scalar above it.
+key_at_column_0="apiVersion: cfgd.io/v1alpha1
+kind: Module
+metadata:
+  name: unparsed
+  labels:
+    \${E2E_RUN_LABEL_YAML}
+spec:
+  signature:
+    cosign:
+      publicKey: |
+\$(sed 's/^/        /' key.pub)"
+plant_unparsed unparsed "$apply" "$key_at_column_0"
+plant_unparsed captured-unparsed "$captured" "$key_at_column_0" "$captured_close"
+plant_unparsed file-script "cat > \"\$dir/apply.sh\" <<EOF" 'if true; then
+    echo "apiVersion: cfgd.io/v1alpha1" | kubectl apply -f -
+fi'
+plant heredoc-unterminated "$apply" "$module_labelled" ''
+plant by-path-stdin "kubectl apply -n ns -f - <<EOF" "$module_labelled"
+cat > "$fixtures/scripts/by-path.sh" <<'FIXTURE'
+kubectl apply -f manifest.yaml
+kubectl apply -f "$dir/mc.yaml"
+kubectl apply --filename=x.yaml
+kubectl apply --filename x.yaml
+kubectl create -fpath.yaml
+kubectl replace -f=x.yaml
+kubectl apply -k overlays/e2e
+kubectl replace -n ns \
+    -f x.yaml
+kubectl get cm x -o yaml | kubectl apply -f -
+echo "$yaml" | kubectl apply -f-
+kubectl create namespace ns
+FIXTURE
+bash -n "$fixtures/scripts/by-path.sh" || fail "fixture by-path is not valid shell"
+outside_yaml='apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: outside\n'
+printf '%s\n' "printf '$outside_yaml' | kubectl apply -f -" > "$fixtures/scripts/outside.sh"
+bash -n "$fixtures/scripts/outside.sh" || fail "fixture outside is not valid shell"
+printf '%s\n' "echo 'apiVersion: \"cfgd.io/v1alpha1\" # quoted' | kubectl apply -f -" \
+    "echo 'apiVersion : cfgd.io/v1alpha1' | kubectl apply -f -" \
+    "echo \"'apiVersion': cfgd.io/v1alpha1\" | kubectl apply -f -" > "$fixtures/scripts/outside-quoted.sh"
+bash -n "$fixtures/scripts/outside-quoted.sh" || fail "fixture outside-quoted is not valid shell"
+# shellcheck disable=SC2059 # the payload is the printf format the fixture runs
+parsed="$(printf "$outside_yaml" | yq '.' 2>&1 >/dev/null)" || fail "fixture outside is not valid YAML: $parsed"
+
+# Bash sends a quoted body as written, backticks included, and joins a line
+# of an unquoted body ending in one backslash to the next.
+# shellcheck disable=SC2016 # the backticks are the body's text, sent as written
+plant quoted-backtick "kubectl apply -f - <<'EOF'" '{
+  "kind": "Module", "a": "`", "apiVersion": "cfgd.io/v1alpha1", "b": "`",
+  "metadata": {"name": "quoted-backtick"}
+}'
+plant quoted-continued "kubectl apply -f - <<'EOF'" 'apiVersion: cfgd.io/v1alpha1
+kind: Module # \
+metadata:
+  name: quoted-continued'
+plant continued-label "$apply" "apiVersion: cfgd.io/v1alpha1
+kind: Module
+metadata:
+  name: continued-label
+  annotations:
+    note: ends-in-an-escaped-backslash\\\\
+  labels:
+    # the run label \\
+    \${E2E_RUN_LABEL_YAML}"
+plant kind-var "$apply" "apiVersion: cfgd.io/v1alpha1
+kind: \$KIND
+metadata:
+  name: kind-var"
+plant kind-default "$apply" "apiVersion: cfgd.io/v1alpha1
+kind: \${KIND:-Module}
+metadata:
+  name: kind-default"
+plant api-var "$apply" "apiVersion: \$GROUP/v1alpha1
+kind: Module
+metadata:
+  name: api-var"
+plant captured-kind-var "$captured" "apiVersion: cfgd.io/v1alpha1
+kind: \$KIND
+metadata:
+  name: captured-kind-var" "$captured_close"
+plant whole-var "$apply" "---
+\$MODULE_DOC"
+plant whole-subst "$apply" "\$(cat \"\$dir/module.yaml\")"
+plant whole-backtick "$apply" "\`cat module.yaml\`"
+plant whole-item "$apply" "apiVersion: v1
+kind: List
+items:
+  - \$MODULE_DOC"
+plant captured-whole "$captured" "\$MODULE_DOC" "$captured_close"
+plant block-scalar-expansion "$apply" "apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: block-scalar-expansion
+data:
+  module.yaml: |
+    \$(cat module.yaml)"
+# yq numbers lines from a file's first content line; the scan gives the
+# script's.
+plant lead-lines "$apply" "---
+# a comment
+
+$module_unlabelled"
+plant lead-marker "$apply" "--- # a comment
+$module_unlabelled"
+cat > "$fixtures/scripts/by-stdin.sh" <<'FIXTURE'
+kubectl apply -f - < "$f"
+kubectl create -f- <"$f"
+kubectl replace --filename=- < manifest.yaml
+cat "$f" | kubectl apply -f -
+sed "s/x/y/" "$f" | kubectl apply -f -
+sed -e 's/x/y/' manifest.yaml | kubectl apply -f -
+envsubst < "$f" | kubectl apply -f -
+apply_yaml "T01" < "$f"
+cat "$f" | apply_yaml "T01"
+kubectl apply -n ns \
+    -f - < "$f"
+cat "$f" |
+    kubectl apply -f -
+out=$(cat "$f" | kubectl apply -f - 2>&1)
+if ! kubectl apply -f - < "$f"; then echo failed; fi
+kubectl apply -f x.yaml -f - < "$f"
+exec_in_pod bash -c 'cat m.yaml | kubectl apply -f -'
+bash -c "kubectl apply -f - < m.yaml"
+exec_in_pod bash -c 'cat > m.yaml <<INNER
+a: b
+INNER'
+kubectl apply -f - < m.yaml
+FIXTURE
+cat > "$fixtures/scripts/by-stdin-negative.sh" <<'FIXTURE'
+cat <<EOF | kubectl apply -f -
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: from-a-heredoc
+EOF
+sed 's/x/y/' <<'EOF' | kubectl apply -f -
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: from-sed-on-a-heredoc
+EOF
+echo "$yaml" | kubectl apply -f -
+printf '%s\n' "$yaml" | kubectl apply -f -
+kubectl apply -f - <<<"$yaml"
+echo "  kubectl apply -f - < $f failed" | tee -a log
+yaml=$(cat)
+kubectl get cm x -o yaml > "$f"
+bash -c 'echo "kubectl apply -f - < x"'
+echo "$yaml" | exec_in_pod bash -c 'kubectl apply -f -'
+FIXTURE
+bash -n "$fixtures/scripts/by-stdin.sh" || fail "fixture by-stdin is not valid shell"
+bash -n "$fixtures/scripts/by-stdin-negative.sh" || fail "fixture by-stdin-negative is not valid shell"
+cat > "$fixtures/scripts/redefine.sh" <<'FIXTURE'
+E2E_RUN_LABEL_YAML="team: x"
+export E2E_RUN_LABEL_YAML="team: x"
+local E2E_RUN_LABEL_YAML="team: x"
+declare E2E_RUN_LABEL_YAML="team: x"
+readonly E2E_RUN_LABEL_YAML="team: x"
+: "${E2E_RUN_LABEL_YAML:=team: x}"
+echo "$E2E_RUN_LABEL_YAML" "${E2E_RUN_LABEL_YAML}" "${#E2E_RUN_LABEL_YAML}" "${E2E_RUN_LABEL_YAML:-x}"
+# E2E_RUN_LABEL_YAML="team: x" in a comment
+FIXTURE
+bash -n "$fixtures/scripts/redefine.sh" || fail "fixture redefine is not valid shell"
+
+want_fixture_scan="SITE substitutions.sh:1
+SITE alias-api.sh:1
+UNLABELLED alias-api.sh:6
+SITE anchor-kind.sh:1
+UNLABELLED anchor-kind.sh:2
+SITE apply-yaml.sh:1
+UNLABELLED apply-yaml.sh:2
+BYPATH by-path.sh:1
+BYPATH by-path.sh:2
+BYPATH by-path.sh:3
+BYPATH by-path.sh:4
+BYPATH by-path.sh:5
+BYPATH by-path.sh:6
+BYPATH by-path.sh:7
+BYPATH by-path.sh:8
+SITE by-path-stdin.sh:1
+CAPTURED captured-alias-api.sh:6
+CAPTURED captured-anchor-kind.sh:2
+CAPTURED captured-dup.sh:2
+CAPTURED captured-folded-kind.sh:2
+NESTED captured-list.sh:11
+NESTED captured-list.sh:5
+CAPTURED captured-operator-kind.sh:2
+FILEDOC captured-other-kind.sh:1
+SITE captured.sh:1
+UNLABELLED captured.sh:2
+CAPTURED captured-tag-kind.sh:2
+FILEDOC captured-to-file.sh:1
+UNPARSED captured-unparsed.sh:1
+SITE comment-heredoc.sh:2
+UNLABELLED comment-heredoc.sh:3
+SITE continued.sh:2
+UNLABELLED continued.sh:3
+SITE dash.sh:1
+SITE default-label.sh:1
+UNLABELLED default-label.sh:2
+SITE job-label-only.sh:1
+UNLABELLED job-label-only.sh:2
+UNLABELLED dash.sh:2
+SITE entry-comment.sh:1
+UNLABELLED entry-comment.sh:2
+SITE exec-apply.sh:1
+UNLABELLED exec-apply.sh:2
+FILEDOC file-operator-kind.sh:1
+SITE flow-doc.sh:1
+SITE flow-labels.sh:1
+NESTED flow-list.sh:2
+SITE flow-metadata.sh:1
+SITE flow-multiline.sh:1
+UNLABELLED flow-multiline.sh:3
+SITE folded-kind.sh:1
+UNLABELLED folded-kind.sh:2
+SITE hand-spelled.sh:1
+HANDSPELLED hand-spelled.sh:2
+UNTERMINATED heredoc-unterminated.sh:1
+FILEDOC in-pod.sh:1
+SITE json-doc.sh:1
+UNLABELLED json-doc.sh:3
+SITE json-hand.sh:1
+HANDSPELLED json-hand.sh:3
+SITE key-prefix.sh:1
+UNLABELLED key-prefix.sh:2
+SITE label-absent.sh:1
+UNLABELLED label-absent.sh:2
+SITE labelled.sh:1
+SITE labels-comment.sh:1
+UNLABELLED labels-comment.sh:2
+NESTED list.sh:5
+SITE literal-kind.sh:1
+UNLABELLED literal-kind.sh:2
+SITE multi-doc.sh:1
+UNLABELLED multi-doc.sh:12
+NESTED nested-map.sh:8
+SITE nested-metadata.sh:1
+UNLABELLED nested-metadata.sh:2
+NOKIND no-kind.sh:2
+SITE no-labels.sh:1
+UNLABELLED no-labels.sh:2
+OTHERKIND other-kind.sh:2
+OUTSIDE outside-quoted.sh:1
+OUTSIDE outside-quoted.sh:2
+OUTSIDE outside-quoted.sh:3
+OUTSIDE outside.sh:1
+SITE quoted-key.sh:1
+UNLABELLED quoted-key.sh:2
+SITE quoted-kind.sh:1
+UNLABELLED quoted-kind.sh:2
+SITE quoted.sh:1
+QUOTED quoted.sh:2
+SITE rc-ok-comment.sh:1
+UNLABELLED rc-ok-comment.sh:2
+NOKIND seq-kind.sh:2
+SITE spaced-colon.sh:1
+UNLABELLED spaced-colon.sh:2
+SITE spaced-kind.sh:1
+UNLABELLED spaced-kind.sh:2
+SITE split-key.sh:1
+UNLABELLED split-key.sh:2
+SITE tagged-value.sh:1
+UNLABELLED tagged-value.sh:2
+SITE tag-kind.sh:1
+UNPARSED unparsed.sh:1
+SITE var-prefix.sh:1
+UNLABELLED var-prefix.sh:2
+BYPATH by-stdin.sh:1
+BYPATH by-stdin.sh:10
+BYPATH by-stdin.sh:12
+BYPATH by-stdin.sh:14
+BYPATH by-stdin.sh:15
+BYPATH by-stdin.sh:16
+BYPATH by-stdin.sh:17
+BYPATH by-stdin.sh:18
+BYPATH by-stdin.sh:22
+BYPATH by-stdin.sh:2
+BYPATH by-stdin.sh:3
+BYPATH by-stdin.sh:4
+BYPATH by-stdin.sh:5
+BYPATH by-stdin.sh:6
+BYPATH by-stdin.sh:7
+BYPATH by-stdin.sh:8
+BYPATH by-stdin.sh:9
+CONTINUED continued-label.sh:9
+EXPANDED api-var.sh:2
+EXPANDED captured-kind-var.sh:2
+EXPANDED captured-whole.sh:2
+EXPANDED kind-default.sh:2
+EXPANDED kind-var.sh:2
+EXPANDED whole-backtick.sh:2
+EXPANDED whole-item.sh:5
+EXPANDED whole-subst.sh:2
+EXPANDED whole-var.sh:3
+QUOTED quoted-backtick.sh:3
+QUOTED quoted-continued.sh:2
+REDEFINED redefine.sh:1
+REDEFINED redefine.sh:2
+REDEFINED redefine.sh:3
+REDEFINED redefine.sh:4
+REDEFINED redefine.sh:5
+REDEFINED redefine.sh:6
+SITE continued-label.sh:1
+SITE lead-lines.sh:1
+SITE lead-marker.sh:1
+SITE quoted-backtick.sh:1
+SITE quoted-continued.sh:1
+UNLABELLED lead-lines.sh:5
+UNLABELLED lead-marker.sh:3"
+fixture_scan="$(scan_run_labels "$kinds" "$fixtures/scripts")"
+got_fixture_scan="$(awk '{print $1, $2}' <<<"$fixture_scan" | sed "s|$fixtures/scripts/||; s|:\$||" | sort)"
+if [ "$got_fixture_scan" = "$(sort <<<"$want_fixture_scan")" ]; then
+    pass "the run-label scan reports each planted fixture it should and no other"
+else
+    fail "the run-label scan judged the planted fixtures wrongly (< want, > got):"
+    diff <(sort <<<"$want_fixture_scan") <(printf '%s\n' "$got_fixture_scan") | grep '^[<>]' | sed 's/^/      /' || true
+fi
+
+# expect_red <label> <verdict> <pattern>: the verdict must hold a line matching
+# the pattern.
+expect_red() {
+    if grep -qE -- "$3" <<<"$2"; then pass "$1"; else fail "$1: verdict was: ${2:-clean}"; fi
+}
+
+# copy_tree <dest>: a scratch copy of every suite's scripts directory.
+copy_tree() {
+    local dir suite
+    for dir in "$e2e_root"/*/scripts; do
+        suite="$(basename "$(dirname "$dir")")"
+        mkdir -p "$1/$suite"
+        cp -R "$dir" "$1/$suite/"
+    done
+}
+# tree_verdict_of <root>: the verdict on a scratch tree.
+tree_verdict_of() {
+    local dirs
+    mapfile -t dirs < <(label_dirs "$1")
+    label_verdict "$1" "$(scan_run_labels "$kinds" "${dirs[@]}")"
+}
+
+tree="$scratch/tree"
+copy_tree "$tree"
+probe="$tree/operator/scripts/test-configpolicy.sh"
+label_line="$(grep -nxF "    \${E2E_RUN_LABEL_YAML}" "$probe" | head -n1 | cut -d: -f1)"
+sed -i "${label_line}d" "$probe"
+probe_verdict="$(tree_verdict_of "$tree")"
+if [ "$(wc -l <<<"$probe_verdict")" -eq 1 ] && grep -q "^UNLABELLED $probe:" <<<"$probe_verdict"; then
+    pass "removing one real label line makes the scan report that object"
+else
+    fail "removing line $label_line of test-configpolicy.sh: verdict was: ${probe_verdict:-clean}"
+fi
+
+floored="$scratch/floored"
+copy_tree "$floored"
+mv "$floored/full-stack/scripts" "$scratch/full-stack-moved"
+mkdir -p "$floored/full-stack/scripts"
+printf 'true\n' > "$floored/full-stack/scripts/no-sites.sh"
+floor_verdict="$(tree_verdict_of "$floored")"
+if [ "$floor_verdict" = "FLOOR full-stack: only 0 heredocs apply an operator object (want at least ${run_label_floors[1]}); the scan has lost its population" ]; then
+    pass "a suite emptied of sites fails its own floor while the others hold theirs"
+else
+    fail "full-stack emptied of sites: verdict was: ${floor_verdict:-clean}"
+fi
+missing="$scratch/missing"
+copy_tree "$missing"
+mv "$missing/gateway" "$scratch/gateway-moved"
+missing_verdict="$(tree_verdict_of "$missing")"
+expect_red "a floored suite with no scripts directory fails the scan" "$missing_verdict" "^EMPTY $missing/gateway/scripts"
+expect_red "a floored suite with no scripts directory fails its floor" "$missing_verdict" "^FLOOR gateway: only 0 "
+
+by_path_tree="$scratch/by-path"
+copy_tree "$by_path_tree"
+printf 'kubectl apply -f mc.yaml\n' > "$by_path_tree/operator/scripts/zz-by-path.sh"
+by_path_verdict="$(tree_verdict_of "$by_path_tree")"
+if [ "$by_path_verdict" = "BYPATH $by_path_tree/operator/scripts/zz-by-path.sh:1: the scan cannot read a manifest applied by path; apply it from a heredoc" ]; then
+    pass "a manifest applied by path in a floored suite fails the scan, and the crossplane suite's do not"
+else
+    fail "a manifest applied by path in the operator suite: verdict was: ${by_path_verdict:-clean}"
+fi
+expect_red "a manifest applied by path in helpers.sh fails the scan" \
+    "$(by_path_in_scope "$e2e_root" "BYPATH $helpers:9: applied by path")" "^BYPATH $helpers:9:"
+
+mkdir -p "$scratch/empty" "$scratch/broken"
+ln -s "$scratch/nowhere" "$scratch/broken/gone.sh"
+expect_red "a directory with no files fails the scan" "$(scan_run_labels "$kinds" "$scratch/empty")" "^EMPTY $scratch/empty"
+expect_red "a file the scan cannot read fails it" "$(scan_run_labels "$kinds" "$scratch/broken")" "^UNREADABLE $scratch/broken/gone.sh"
+# fail_awk <dir> <case pattern>: an awk on PATH that exits 2 when its arguments
+# match the pattern and runs the real awk otherwise.
+fail_awk() {
+    mkdir -p "$1"
+    printf '#!/bin/sh\ncase "$*" in %s) exit 2 ;; esac\nexec %s "$@"\n' "$2" "$(command -v awk)" > "$1/awk"
+    chmod +x "$1/awk"
+}
+fail_awk "$scratch/fail-reader" '*heredocs.awk*'
+fail_awk "$scratch/fail-scan" '*kinds=*'
+expect_red "heredocs.awk failing to read the scripts fails the scan" \
+    "$(PATH="$scratch/fail-reader:$PATH" scan_run_labels "$kinds" "$fixtures/scripts")" '^UNREADABLE heredocs.awk exited 2'
+expect_red "the scan's own awk failing fails the scan" \
+    "$(PATH="$scratch/fail-scan:$PATH" scan_run_labels "$kinds" "$fixtures/scripts")" "^UNREADABLE the scan's awk exited 2"
+fail_awk "$scratch/fail-collector" '*work=*'
+expect_red "the scan's heredoc collector failing fails the scan" \
+    "$(PATH="$scratch/fail-collector:$PATH" scan_run_labels "$kinds" "$fixtures/scripts")" "^UNREADABLE the scan's heredoc collector exited 2"
+# A yq that fails without naming a body has each body read on its own, so its
+# error reaches every heredoc the cluster would be sent.
+mkdir -p "$scratch/fail-yq"
+printf '#!/bin/sh\necho "Error: no yq here" >&2\nexit 1\n' > "$scratch/fail-yq/yq"
+chmod +x "$scratch/fail-yq/yq"
+expect_red "yq failing on every body fails the scan" \
+    "$(PATH="$scratch/fail-yq:$PATH" scan_run_labels "$kinds" "$fixtures/scripts/labelled.sh")" "^UNPARSED $fixtures/scripts/labelled.sh:1: .*Error: no yq here"
+
+# A new `export NAME_YAML="key: ..."` line in helpers.sh renders as its entry
+# with no edit to the scan.
+mkdir -p "$scratch/x-yaml/scripts"
+cp "$helpers" "$scratch/x-yaml/helpers.sh"
+# shellcheck disable=SC2016 # the line is written to a helpers.sh copy as text
+printf '%s\n' 'export E2E_X_YAML="x.io/y: \"$Z\""' >> "$scratch/x-yaml/helpers.sh"
+printf '%s\n' "$apply" "${module_labelled//app.kubernetes.io\/part-of: e2e/\$\{E2E_X_YAML\}}" EOF > "$scratch/x-yaml/scripts/x-yaml.sh"
+x_scan="$(yaml_entries="$(yaml_entries_of "$scratch/x-yaml/helpers.sh")" scan_run_labels "$kinds" "$scratch/x-yaml/scripts")"
+if [ "$x_scan" = "SITE $scratch/x-yaml/scripts/x-yaml.sh:1" ]; then
+    pass "a YAML entry added to helpers.sh renders as its key and a value"
+else
+    fail "a heredoc using a YAML entry added to helpers.sh: scan was: ${x_scan:-nothing}"
+fi
+expect_red "the same heredoc against helpers.sh without that entry fails the scan" \
+    "$(scan_run_labels "$kinds" "$scratch/x-yaml/scripts")" "^UNPARSED $scratch/x-yaml/scripts/x-yaml.sh:1: "
+expect_red "a helpers.sh without the run label's entry fails the scan" \
+    "$(yaml_entries="E2E_JOB_LABEL_YAML=cfgd.io/e2e-job" scan_run_labels "$kinds" "$fixtures/scripts/labelled.sh")" "^UNREADABLE helpers.sh has no export E2E_RUN_LABEL_YAML="
+
+printf 'a: 1\n' > "$scratch/no-kinds.yaml"
+expect_red "a CRD file that names no kinds fails the kind list" "$(operator_kinds "$scratch/no-kinds.yaml")" "^FAIL $scratch/no-kinds.yaml names no CRD kinds"
+expect_red "a CRD file yq cannot read fails the kind list" "$(operator_kinds "$scratch/no-such.yaml")" "^FAIL yq could not read $scratch/no-such.yaml"
 
 if [ "$failures" -gt 0 ]; then
     echo "$failures check(s) failed"

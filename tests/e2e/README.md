@@ -98,27 +98,39 @@ including through `exec_in_pod`. The heredoc delimiter stays unquoted (`<<EOF`) 
 the label expands.
 
 `test-pr-install.sh` reads every `tests/e2e/*/scripts` directory and `common/helpers.sh`
-through `common/heredocs.awk`, the heredoc reader `test-verdicts.sh` uses too. It renders
-each heredoc body the way bash would expand it (`${E2E_RUN_LABEL_YAML}` to the run label,
-any other `$VAR`, `${...}` or `$(...)` to one plain word) and parses it with `yq`, so
-JSON, flow style, quoted keys, tags, anchors and aliases read as block YAML does, and
-cfgd.io text inside a string value is no object. It fails on:
+through `common/heredocs.awk`, the heredoc reader `test-verdicts.sh` uses too. It reads
+each heredoc body as bash sends it and parses it with mikefarah `yq` v4, which the check
+needs on PATH and refuses to run without. A body with an unquoted delimiter is rendered
+first: each `export NAME_YAML="key: ..."` entry of `helpers.sh` to its key and a value (the
+run label's value one the check recognises), any other `$VAR`, `${...}`, `$(...)` or
+backtick span to one plain word. A body with a quoted delimiter is read as written. JSON,
+flow style, quoted keys, tags, anchors and aliases read as block YAML does, and cfgd.io
+text inside a string value is no object. It fails on:
 
 - an object with no `${E2E_RUN_LABEL_YAML}` in its labels, or the label spelled by hand
 - a quoted delimiter, or a cfgd.io object nested inside another document (a `List` item, a map below the root); an `ownerReferences` entry is a reference and passes
 - a cfgd.io object whose kind is missing or not a string
+- a shell expansion in an applied or captured heredoc that the scan cannot see through: in a
+  `kind` or `apiVersion` (`kind: $KIND`), or as a whole document or `List` item
+  (`$MODULE_DOC`, `$(cat module.yaml)`); one inside a block scalar is text and passes
+- a line of an unquoted heredoc applied or captured that ends in one `\`, which bash joins
+  to the next line
 - a heredoc applied or captured that is not valid YAML once rendered, such as a `$(...)` in column 0 inside a block scalar
 - an operator object in a heredoc captured into a variable (`yaml=$(cat <<EOF`), whose destination the scan cannot see
 - a cfgd.io `apiVersion` outside any heredoc
+- a script other than `helpers.sh` that sets `E2E_RUN_LABEL_YAML`
 - in the operator, full-stack and gateway suites or `helpers.sh`, a manifest applied by path
-  (`kubectl apply -f mc.yaml`, `--filename`, `-k`), which the scan cannot read
+  (`kubectl apply -f mc.yaml`, `--filename`, `-k`) or fed from a file on stdin
+  (`kubectl apply -f - < "$f"`, `cat "$f" | kubectl apply -f -`, `apply_yaml < "$f"`),
+  which the scan cannot read; a pipe from a heredoc, `echo` or `printf` passes
 - fewer sites than its suite's floor (the operator, full-stack and gateway suites each carry one)
 
 A cfgd.io document of another kind (the crossplane suite's `TeamConfig`) is listed
 as outside the operator's watch. A heredoc written to a file (`cat >`, or a cfgd
 config file written inside a pod), or captured into a variable when it holds a kind the
-operator does not serve, is counted and needs no label. A manifest another suite applies
-by path (the crossplane suite's) is listed.
+operator does not serve, is counted and needs no label; one written to a file that `yq`
+cannot read (a script, say) is skipped. A manifest another suite applies by path (the
+crossplane suite's) is listed.
 
 ## Components ArgoCD owns
 

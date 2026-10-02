@@ -145,14 +145,62 @@ stop_heartbeat() {
 # Deploy the privileged test pod and wait for it to be Running.
 # Exports TEST_POD with the pod name.
 ensure_test_pod() {
-    local pod_name="cfgd-e2e-node-${E2E_RUN_ID}"
-    local manifest="$E2E_ROOT/manifests/privileged-test-pod.yaml"
+    local pod_name="cfgd-e2e-node-${E2E_RUN_ID}" image
+    image="$(e2e_image cfgd)" || return 1
 
     create_e2e_namespace
 
-    sed "s|IMAGE_PLACEHOLDER|$(e2e_image cfgd)|g; s|RUN_PLACEHOLDER|${E2E_RUN_ID}|g" \
-        "$manifest" | kubectl apply -n "$E2E_NAMESPACE" -f - || {
-        echo "ERROR: could not apply test pod $pod_name in $E2E_NAMESPACE. Check that the runner can create pods there and that $(e2e_image cfgd) is in the registry." >&2
+    kubectl apply -n "$E2E_NAMESPACE" -f - <<EOF || {
+apiVersion: v1
+kind: Pod
+metadata:
+  name: ${pod_name}
+  labels:
+    app: cfgd-e2e-node
+    ${E2E_RUN_LABEL_YAML}
+spec:
+  restartPolicy: Never
+  imagePullSecrets:
+    - name: registry-credentials
+  affinity:
+    nodeAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        nodeSelectorTerms:
+          - matchExpressions:
+              - key: node-role.kubernetes.io/control-plane
+                operator: DoesNotExist
+  containers:
+    - name: cfgd
+      image: ${image}
+      command: ["sleep", "infinity"]
+      securityContext:
+        privileged: true
+        runAsUser: 0
+      volumeMounts:
+        - name: host-proc
+          mountPath: /host-proc
+        - name: host-sys
+          mountPath: /host-sys
+        - name: host-etc
+          mountPath: /host-etc
+        - name: host-lib-modules
+          mountPath: /lib/modules
+          readOnly: true
+  volumes:
+    - name: host-proc
+      hostPath:
+        path: /proc
+    - name: host-sys
+      hostPath:
+        path: /sys
+    - name: host-etc
+      hostPath:
+        path: /etc
+    - name: host-lib-modules
+      hostPath:
+        path: /lib/modules
+EOF
+        echo "ERROR: could not apply test pod $pod_name in $E2E_NAMESPACE. Check that the runner can create pods there and that $image is in the registry." >&2
         return 1
     }
 

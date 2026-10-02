@@ -230,6 +230,27 @@ jobs:
       - name: Install ripgrep
         run: sudo apt-get update && sudo apt-get install -y ripgrep
 
+      # `task e2e:tags:check` reads YAML with mikefarah yq v4. The apt package
+      # named yq is a different, Python tool, so the binary is pinned here;
+      # version and checksum move together. Recompute on a version bump:
+      #   curl -fsSL https://github.com/mikefarah/yq/releases/download/<ver>/yq_linux_amd64 | sha256sum
+      - name: Install yq
+        env:
+          YQ_VERSION: v4.53.4
+          YQ_SHA256: f67d8a6a2dc2308c961f83d5ba8707fd4c7c44ad77902fef87eb3a4646cdfa2a
+        run: |
+          set -euo pipefail
+          dest="${RUNNER_TEMP}/yq-bin"
+          mkdir -p "$dest"
+          curl -fsSL --retry 5 --retry-all-errors --retry-delay 2 --connect-timeout 10 \
+            "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_amd64" \
+            -o "$dest/yq"
+          echo "${YQ_SHA256}  $dest/yq" | sha256sum -c -
+          chmod 0755 "$dest/yq"
+          # Prepended to PATH, so it shadows any yq the runner image ships.
+          echo "$dest" >> "$GITHUB_PATH"
+          "$dest/yq" --version
+
       # This job compiles nothing, but `RUSTC_WRAPPER` is set for the whole
       # workflow, so even `task audit`'s `cargo tree` needs the wrapper binary
       # on PATH or cargo cannot so much as ask rustc for its version.

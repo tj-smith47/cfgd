@@ -196,6 +196,19 @@ excuses or fails. `tests/e2e/common/test-verdicts.sh` (`task e2e:tags:check`)
 enforces this; a pass that is sound anyway carries `# verdict-ok: <why>` on its
 `pass_test` line.
 
+## An e2e operator object carries the run label
+
+Every object of a kind `schemas/crds.yaml` declares that an e2e suite applies
+carries `${E2E_RUN_LABEL_YAML}` in its own `metadata.labels`, from a heredoc
+with an unquoted delimiter fed to `kubectl apply|create|replace -f -` or
+`apply_yaml`, never from a file by path or on stdin.
+`tests/e2e/common/test-pr-install.sh` (`task e2e:tags:check`) reads each
+heredoc body as bash sends it with mikefarah `yq` v4, which it needs on PATH,
+and fails where it cannot see what is applied: an expansion in a kind or
+apiVersion or standing for a whole document, a body line continued with `\`,
+a script that sets `E2E_RUN_LABEL_YAML` itself. `tests/e2e/README.md` lists
+every rule.
+
 ## A test never inherits its terminal shape from the ambient one
 
 `cargo test` from a pipe and `script -qec "cargo test" /dev/null` (a real pty)
