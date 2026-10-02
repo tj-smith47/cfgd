@@ -408,18 +408,18 @@ A pod is a Linux container, so the webhook injects a module when its `spec.platf
 kubectl get pod demo-pod -o jsonpath='{.metadata.annotations.cfgd\.io/skipped-modules}'
 ```
 
-Two settings matter in production:
-
-- `CFGD_CSI_ALLOWED_REGISTRIES` on the CSI driver restricts which registries a pod's `ociRef` may pull from. Unset means any registry is accepted, which the driver warns about at startup.
-- `spec.security` on a `ClusterConfigPolicy` gates which modules may be admitted at all. `trustedRegistries` is a list of registry prefixes (a trailing `*` or `/` widens the match), and `allowUnsigned` decides whether a `Module` may carry an `ociArtifact` whose signature does not verify. Both default to the strict answer: `allowUnsigned` is `false`, so creating any `ClusterConfigPolicy` at all starts rejecting every module whose `SIGNATURE` is not `verified` — including one whose signature could not be checked, since a check that never ran is not evidence of a signature. A cluster with no `ClusterConfigPolicy` enforces neither. See [OCI Artifact Signing](modules.md#oci-artifact-signing-cosign).
-
-`CSI_DRIVER_NAME` sets the name the CSI plugin registers with the kubelet and the name the webhook writes into each injected volume's `csi.driver`. Set it to the same value on the operator container and the cfgd-csi container, and name the `CSIDriver` object the same; a mismatch leaves injected pods waiting on volumes no registered driver serves. Unset or blank means `csi.cfgd.io`. A second install in the same cluster (an e2e run beside the release) gives itself its own name:
+`CSI_DRIVER_NAME` sets the name the CSI plugin registers with the kubelet and the name the webhook writes into each injected volume's `csi.driver`. Set it to the same value on the operator container and the cfgd-csi container, and name the `CSIDriver` object the same; a mismatch leaves injected pods waiting on volumes no registered driver serves. The node-driver-registrar's `--kubelet-registration-path` and the plugin's hostPath directory follow the name too (`/var/lib/kubelet/plugins/<name>/`), so two drivers never share a socket. Unset or blank means `csi.cfgd.io`. A second install in the same cluster (an e2e run beside the release) gives itself its own name:
 
 ```yaml
 env:
   - name: CSI_DRIVER_NAME
     value: e2e.csi.cfgd.io
 ```
+
+Two settings matter in production:
+
+- `CFGD_CSI_ALLOWED_REGISTRIES` on the CSI driver restricts which registries a pod's `ociRef` may pull from. Unset means any registry is accepted, which the driver warns about at startup.
+- `spec.security` on a `ClusterConfigPolicy` gates which modules may be admitted at all. `trustedRegistries` is a list of registry prefixes (a trailing `*` or `/` widens the match), and `allowUnsigned` decides whether a `Module` may carry an `ociArtifact` whose signature does not verify. Both default to the strict answer: `allowUnsigned` is `false`, so creating any `ClusterConfigPolicy` at all starts rejecting every module whose `SIGNATURE` is not `verified` — including one whose signature could not be checked, since a check that never ran is not evidence of a signature. A cluster with no `ClusterConfigPolicy` enforces neither. See [OCI Artifact Signing](modules.md#oci-artifact-signing-cosign).
 
 The operator checks each `Module`'s artifact against the key its `spec.signature.cosign` block declares, by running `cosign verify` against the artifact's own registry. `kubectl get modules` reports what that check concluded in the `SIGNATURE` column, as one of four words:
 
