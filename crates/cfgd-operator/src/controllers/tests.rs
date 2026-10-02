@@ -3587,42 +3587,46 @@ fn call_args<'a>(src: &'a str, opener: &str) -> Vec<&'a str> {
 fn every_cfgd_io_watch_is_held_to_the_watch_label_selector() {
     let production = cfgd_core::test_helpers::production_slice(include_str!("mod.rs"));
 
-    // The Namespace metadata reflector is the one watch left unfiltered:
-    // ClusterConfigPolicy matches on namespace labels the selector never names.
-    let unfiltered: Vec<_> = production
-        .match_indices("WatcherConfig::default()")
-        .collect();
-    assert_eq!(
-        unfiltered.len(),
-        1,
-        "only the Namespace reflector may watch without the selector"
-    );
-    let reflector_call = call_args(&production, "watcher::watcher(");
-    assert!(
-        reflector_call
-            .iter()
-            .any(|args| args.contains("PartialObjectMeta<Namespace>")
-                && args.contains("WatcherConfig::default()")),
-        "the unfiltered watch must be the Namespace metadata reflector"
-    );
-
-    let mut sites = 0;
-    for opener in ["Controller::new(", ".owns(", ".watches("] {
+    // Each kind holds its own floor, so a lost site of one kind cannot be
+    // hidden by a new site of another.
+    for (opener, floor) in [("Controller::new(", 6), (".owns(", 1), (".watches(", 2)] {
         let calls = call_args(&production, opener);
         assert!(
-            !calls.is_empty(),
-            "no `{opener}` call found in controllers/mod.rs"
+            calls.len() >= floor,
+            "expected at least {floor} `{opener}` calls in controllers/mod.rs, found {}",
+            calls.len()
         );
         for args in calls {
             assert!(
                 args.contains("watch_config()"),
                 "`{opener}{args})` must watch through runtime::watch_config()"
             );
-            sites += 1;
         }
     }
-    assert!(
-        sites >= 9,
-        "expected at least nine cfgd.io watches, found {sites}"
+
+    // A standalone reflector is a watch too. The Namespace metadata reflector
+    // is the one exemption: ClusterConfigPolicy matches on namespace labels
+    // the selector never names.
+    let mut exempt = 0;
+    for opener in ["watcher::watcher(", "metadata_watcher("] {
+        for args in call_args(&production, opener) {
+            if args.contains("PartialObjectMeta<Namespace>") {
+                exempt += 1;
+            } else {
+                assert!(
+                    args.contains("watch_config()"),
+                    "`{opener}{args})` must watch through runtime::watch_config()"
+                );
+            }
+        }
+    }
+    assert_eq!(
+        exempt, 1,
+        "exactly one reflector, the Namespace metadata one, may watch without the selector"
+    );
+    assert_eq!(
+        production.matches("WatcherConfig::default()").count(),
+        1,
+        "only the Namespace reflector may watch without the selector"
     );
 }
