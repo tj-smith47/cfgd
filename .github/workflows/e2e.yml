@@ -204,29 +204,12 @@ jobs:
     runs-on: arc-cfgd
     needs: [setup]
     timeout-minutes: 20
-    # run-crossplane-tests.sh renders the CRDs with `cargo run --release --bin
-    # cfgd-gen-crds`, so this job compiles the workspace instead of riding the
-    # setup job's images — the same compile-cache layering, because a cold build
-    # is what the budget cannot absorb.
     env:
       CFGD_E2E_SETUP_DONE: "1"
       IMAGE_TAG: ${{ needs.setup.outputs.image-tag }}
-      SCCACHE_GHA_ENABLED: "true"
-      RUSTC_WRAPPER: "sccache"
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Install sccache
-        uses: mozilla-actions/sccache-action@v0.0.11
-
-      - name: Restore cargo cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          key: e2e-crossplane
 
       - name: Install go-task
         uses: go-task/setup-task@v2

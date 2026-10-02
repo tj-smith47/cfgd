@@ -12,6 +12,7 @@
 #     description text and API server defaults aside, and stops on a changed
 #     spec, a CRD that is missing, unreadable or not Established, or a manifest
 #     with nothing to compare
+#   - no e2e script writes a CRD, apart from the exempt Helm installs
 # kubectl is a stub on PATH, so nothing reaches a cluster; the CRD check's stub
 # hands YAML reading to the real kubectl, which reads it offline.
 #
@@ -992,6 +993,55 @@ exec "$REAL_KUBECTL" "$@"
 STUB
     chmod +x "$scratch/crd-bin/kubectl"
     crd_cases
+fi
+
+# ArgoCD owns the cluster's CRDs, so no e2e script writes one. crd-writes.awk
+# reads heredocs.awk's records and reports each kubectl write that names a CRD,
+# each helm install without --skip-crds and each applied heredoc holding a CRD.
+scan_crd_writes() {
+    awk -f "$here/heredocs.awk" "$@" | awk -f "$here/crd-writes.awk"
+}
+
+writes_fixtures="$here/fixtures/crd-writes"
+writes_got="$(cd "$writes_fixtures" && scan_crd_writes writes.bash reads.bash 2>&1 | cut -f1,2)"
+writes_want="$(printf '%s\t%s\n' \
+    KUBECTL writes.bash:1 KUBECTL writes.bash:2 KUBECTL writes.bash:3 KUBECTL writes.bash:4 \
+    KUBECTL writes.bash:6 HELM writes.bash:7 HELM writes.bash:8 HELM writes.bash:9 \
+    HEREDOC writes.bash:11 HEREDOC writes.bash:17)"
+if [ "$writes_got" = "$writes_want" ]; then
+    pass "the CRD-write scan reports each planted kubectl write, helm install and applied CRD heredoc once and stays quiet on reads, --local, --dry-run, --skip-crds, messages, comments and a heredoc written to a file"
+else
+    fail "the CRD-write scan printed [$writes_got], want [$writes_want]"
+fi
+
+# Helm creates a CRD from a chart's crds/ only where the cluster lacks one.
+# Crossplane's chart holds none of the CRDs in cfgd-crds.yaml, and setup stops
+# on any cfgd CRD the cluster lacks, so on a run setup passed these lines
+# create no CRD that ArgoCD owns. Each entry is TAG file:line.
+crd_write_exempt="HELM	tests/e2e/crossplane/scripts/run-crossplane-tests.sh:21
+HELM	tests/e2e/full-stack/scripts/test-helm.sh:58
+HELM	tests/e2e/full-stack/scripts/test-helm.sh:108
+HELM	tests/e2e/full-stack/scripts/test-helm.sh:148
+HELM	tests/e2e/full-stack/scripts/test-helm.sh:191
+HELM	tests/e2e/full-stack/scripts/test-helm.sh:226
+HELM	tests/e2e/full-stack/scripts/test-helm.sh:309
+HELM	tests/e2e/full-stack/scripts/test-helm.sh:379
+HELM	tests/e2e/full-stack/scripts/test-helm.sh:448
+HELM	tests/e2e/node/scripts/test-helm.sh:20"
+
+if [ "${#e2e_scripts[@]}" -eq 0 ]; then
+    fail "git ls-files 'tests/e2e/*.sh' matched no script, so the CRD-write scan read nothing"
+elif ! crd_writes="$(cd "$repo_root" && scan_crd_writes "${e2e_scripts[@]}")"; then
+    fail "the CRD-write scan failed over tests/e2e"
+else
+    crd_write_sites="$(cut -f1,2 <<<"$crd_writes")"
+    unexempt="$(grep -vxF -f <(printf '%s\n' "$crd_write_exempt") <<<"$crd_write_sites" || true)" # rc-ok: no line left is the passing outcome, judged below
+    stale="$(grep -vxF -f <(printf '%s\n' "$crd_write_sites") <<<"$crd_write_exempt" || true)" # rc-ok: no line left is the passing outcome, judged below
+    if [ -z "$unexempt" ] && [ -z "$stale" ]; then
+        pass "no script in tests/e2e writes a CRD outside the exempt Helm installs (${#e2e_scripts[@]} scripts)"
+    else
+        fail "ArgoCD owns the cluster's CRDs, so no e2e script writes one; remove the write, or if it moved, update its exempt line. Writes: [${unexempt}] Exempt lines that match no write: [${stale}]"
+    fi
 fi
 
 if [ "$failures" -gt 0 ]; then

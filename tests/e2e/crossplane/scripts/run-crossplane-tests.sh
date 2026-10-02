@@ -23,13 +23,9 @@ helm upgrade --install crossplane crossplane-stable/crossplane \
 wait_for_deployment crossplane-system crossplane 120
 pass_test "XP-01"
 
-# --- Setup: Install cfgd CRDs ---
-echo "Generating and installing cfgd CRDs..."
-CRD_YAML=$(cargo run --release --bin cfgd-gen-crds --manifest-path "$REPO_ROOT/Cargo.toml" 2>/dev/null)
-echo "$CRD_YAML" | kubectl apply -f -
-for crd in machineconfigs.cfgd.io configpolicies.cfgd.io driftalerts.cfgd.io clusterconfigpolicies.cfgd.io; do
-    kubectl wait --for=condition=established "crd/$crd" --timeout=30s 2>/dev/null || true
-done
+# --- Setup: the cfgd CRDs ArgoCD applied ---
+echo "Checking the cfgd CRDs on the cluster..."
+check_pr_crds < "$REPO_ROOT/schemas/crds.yaml" || exit 1
 
 # --- Setup: Apply Crossplane XRD, Composition, and Function ---
 echo "Applying XRD, Composition, and Function..."

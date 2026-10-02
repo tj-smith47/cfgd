@@ -278,19 +278,20 @@ single-source-of-truth wiring.
   rust-analyzer beside it). A broken link blocks the merge and does not block
   a commit — CI refuses it before it lands.
 - **Every e2e job that cargo-builds carries the compile-cache layering, under its
-  own key.** Six e2e jobs compile on the runner and do not ride the
+  own key.** Five e2e jobs compile on the runner and do not ride the
   setup job's images: `setup` (e2e-setup.yml, building the three images),
   `operator-tests` (`test-oci.sh` → `ensure_cfgd_binary`), `full-stack-tests`
-  (`setup-fullstack-env.sh` → `ensure_cfgd_binary`), `crossplane-tests`
-  (`run-crossplane-tests.sh` renders the CRDs with `cargo run --release --bin
-  cfgd-gen-crds`), `gateway-tests` (`test-device-projection.sh` drives a real
-  binary against the gateway) and `cli-tests` (the suite is native). Each carries
+  (`setup-fullstack-env.sh` → `ensure_cfgd_binary`), `gateway-tests`
+  (`test-device-projection.sh` drives a real binary against the gateway) and
+  `cli-tests` (the suite is native). Each carries
   four parts — `SCCACHE_GHA_ENABLED` + `RUSTC_WRAPPER: sccache` in its env,
   `mozilla-actions/sccache-action`, and `Swatinem/rust-cache` under a `key:` no
-  sibling shares (`e2e-setup`, `e2e-operator`, `e2e-full-stack`, `e2e-crossplane`,
+  sibling shares (`e2e-setup`, `e2e-operator`, `e2e-full-stack`,
   `e2e-gateway`, `e2e-cli`) — because two jobs on one key is one cache their
-  different `target/` trees evict each other from. `node-tests`, `helm-tests` and
-  `server-tests` compile nothing and carry no Rust toolchain at all. A new e2e job
+  different `target/` trees evict each other from. `node-tests`, `helm-tests`,
+  `server-tests` and `crossplane-tests` (which checks the CRDs ArgoCD applied
+  against the committed `schemas/crds.yaml`) compile nothing and carry no Rust
+  toolchain at all. A new e2e job
   that builds joins the list with its own key. A cold build is what the per-job
   budget cannot absorb: raising the timeout hides a missing cache and leaves
   it missing.

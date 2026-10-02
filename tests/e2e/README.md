@@ -128,7 +128,7 @@ set while ArgoCD owns the gateway, which the override then does not reach. When
 owns the operator and gateway Deployments, and setup warns the same way.
 
 ArgoCD also owns the cluster's CRDs, applied from
-`/db/manifests/k3s/namespaces/crossplane-system/cfgd-crds.yaml`, so setup never
+`/db/manifests/k3s/namespaces/crossplane-system/cfgd-crds.yaml`, and no e2e script
 writes them. It compares the spec of each CRD that `cfgd-gen-crds` prints with the
 cluster's copy, with description text dropped and the API server's defaults
 (`names.listKind`, `names.singular`, `conversion: {strategy: None}`,
@@ -140,6 +140,17 @@ setup. `crd_docs_json`, `crd_shape` and `check_pr_crds` in `common/helpers.sh` d
 the comparison, and `common/test-pr-install.sh` drives them against the fixtures in
 `common/fixtures/crd-schema/` with a stub `kubectl get`. It needs `kubectl`, which
 reads the fixtures' YAML offline (`annotate --local`), and `jq`.
+The Crossplane suite runs the same `check_pr_crds` against `schemas/crds.yaml` before
+it applies its XRD.
+
+`test-pr-install.sh` also reads every tracked `tests/e2e/*.sh` through
+`common/crd-writes.awk` and fails on a `kubectl` write that names a CRD (`apply`,
+`create`, `replace`, `patch`, `delete` and the like, outside `--local` and
+`--dry-run`), a `helm install` or `helm upgrade --install` without `--skip-crds`, or a
+heredoc holding `kind: CustomResourceDefinition` fed to `kubectl apply`. The Helm
+suites' installs of `chart/cfgd` and the Crossplane suite's install of Crossplane are
+listed as exempt by line in the test: Helm creates a chart's CRDs only where the
+cluster lacks them, and setup has already stopped on any cfgd CRD the cluster lacks.
 
 Because the gateway suite, and each suite not yet moved to the PR install, runs a
 release, a check reads a counter through
