@@ -1,9 +1,9 @@
 # gif                    tape                 commit-recorded-at
-cfgd-author.gif          author.tape          c8125bc68c87bc893e0910df1f6b88b53e3434f7
-cfgd-backup.gif          backup.tape          c8125bc68c87bc893e0910df1f6b88b53e3434f7
-cfgd-connect.gif         connect.tape         c8125bc68c87bc893e0910df1f6b88b53e3434f7
-cfgd-demo.gif            init.tape            c8125bc68c87bc893e0910df1f6b88b53e3434f7
-cfgd-drift.gif           drift.tape           c8125bc68c87bc893e0910df1f6b88b53e3434f7
-cfgd-k8s.gif             k8s.tape             c8125bc68c87bc893e0910df1f6b88b53e3434f7
-cfgd-source-trust.gif    source-trust.tape    c8125bc68c87bc893e0910df1f6b88b53e3434f7
-cfgd-sync.gif            sync.tape            c8125bc68c87bc893e0910df1f6b88b53e3434f7
+cfgd-author.gif          author.tape          edd4325fcaa4002c6bda7093fa95424783461aff
+cfgd-backup.gif          backup.tape          edd4325fcaa4002c6bda7093fa95424783461aff
+cfgd-connect.gif         connect.tape         edd4325fcaa4002c6bda7093fa95424783461aff
+cfgd-demo.gif            init.tape            edd4325fcaa4002c6bda7093fa95424783461aff
+cfgd-drift.gif           drift.tape           edd4325fcaa4002c6bda7093fa95424783461aff
+cfgd-k8s.gif             k8s.tape             edd4325fcaa4002c6bda7093fa95424783461aff
+cfgd-source-trust.gif    source-trust.tape    edd4325fcaa4002c6bda7093fa95424783461aff
+cfgd-sync.gif            sync.tape            edd4325fcaa4002c6bda7093fa95424783461aff
