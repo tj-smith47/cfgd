@@ -1739,7 +1739,7 @@ plant wrapper-order-heredoc "outer() {"$'\n'"    inner \"\$1\""$'\n'"}"$'\n'"inn
 plant wrapper-chain-heredoc "a() {"$'\n'"    b \"\$1\""$'\n'"}"$'\n'"b() {"$'\n'"    c \"\$1\""$'\n'"}"$'\n'"c() {"$'\n'"    kubectl apply -f -"$'\n'"}"$'\n'"a T1 <<EOF" "$module_unlabelled"
 plant wrapper-call-fed "outer() {"$'\n'"    inner < \"\$f\""$'\n'"}"$'\n'"inner() {"$'\n'"    kubectl apply -f -"$'\n'"}"$'\n'"outer T1 <<EOF" "$module_unlabelled"
 plant wrapper-call-heredoc "inner() { kubectl apply -f -; }"$'\n'"outer() {"$'\n'"    inner <<X" "a: b" "X"$'\n'"}"$'\n'"outer < \"\$f\""
-# The same function name in two files: a wrapper in one, not in the other.
+# One function name defined in two files, a wrapper only in the first.
 plant same-name-wrapper "w() { kubectl apply -f -; }"$'\n'"w <<EOF" "$module_unlabelled"
 plant same-name-other "w() { echo; }"$'\n'"w <<EOF" "$module_unlabelled"
 plant fd3-heredoc "kubectl apply -f - 3<<EOF" "$module_labelled"
