@@ -3562,9 +3562,17 @@ fn every_kind_with_conditions_exposes_its_readiness_condition_as_a_column() {
 
 /// The top-level arguments of each call to `opener` in `code`, split on the
 /// commas outside any bracket. `code` has its comments and literals blanked,
-/// so a bracket or comma written inside one is not read as syntax.
+/// so a bracket or comma written inside one is not read as syntax. An opener
+/// that starts with an identifier matches only at an identifier boundary, so
+/// `watcher(` finds `watcher::watcher(` and a bare `watcher(` but not
+/// `metadata_watcher(`.
 fn call_args<'a>(code: &'a str, opener: &str) -> Vec<Vec<&'a str>> {
+    let is_ident = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
+    let needs_boundary = opener.bytes().next().is_some_and(is_ident);
     code.match_indices(opener)
+        .filter(|(start, _)| {
+            !needs_boundary || *start == 0 || !is_ident(code.as_bytes()[start - 1])
+        })
         .map(|(start, _)| {
             let open = start + opener.len();
             let mut depth = 0usize;
@@ -3593,12 +3601,12 @@ fn call_args<'a>(code: &'a str, opener: &str) -> Vec<Vec<&'a str>> {
 
 #[test]
 fn every_cfgd_io_watch_is_held_to_the_watch_label_selector() {
-    use cfgd_core::test_helpers::{blank_non_code, production_slice_of, rust_sources_under};
+    use cfgd_core::test_helpers::{production_code_of, rust_sources_under};
 
     let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let code: String = rust_sources_under(&src)
         .iter()
-        .map(|path| blank_non_code(&production_slice_of(path)) + "\n")
+        .map(|path| production_code_of(path) + "\n")
         .collect();
 
     // Each opener with the position of its `watcher::Config` argument, as
@@ -3607,7 +3615,7 @@ fn every_cfgd_io_watch_is_held_to_the_watch_label_selector() {
     // site of another. The reflectors come first so a misplaced exemption is
     // reported as such.
     let openers = [
-        ("watcher::watcher(", 1, 0),
+        ("watcher(", 1, 0),
         ("metadata_watcher(", 1, 0),
         ("Controller::new(", 1, 6),
         ("Controller::new_with(", 1, 0),
@@ -3643,7 +3651,7 @@ fn every_cfgd_io_watch_is_held_to_the_watch_label_selector() {
                 );
             } else {
                 assert!(
-                    config.ends_with("watch_config()"),
+                    config.ends_with("runtime::watch_config()"),
                     "`{opener}` must take runtime::watch_config() as its watcher config, got `{config}`"
                 );
             }
