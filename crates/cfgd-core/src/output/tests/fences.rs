@@ -24,7 +24,7 @@ fn workspace_rust_files() -> Vec<PathBuf> {
 fn suspend_is_never_called() {
     let mut offenders = Vec::new();
     for path in workspace_rust_files() {
-        if path.ends_with(Path::new("output/tests/fences.rs")) {
+        if path.ends_with(Path::new(OWN_GATE_SEARCH_FILE)) {
             continue;
         }
         // unfloored-slice-ok: a call anywhere, tests included, is the subject.
@@ -77,7 +77,7 @@ const HATCH: &str = "unfolded-writer-ok:";
 fn every_subscriber_writes_through_a_folding_writer() {
     let mut offenders = Vec::new();
     for path in workspace_rust_files() {
-        if path.ends_with(Path::new("output/tests/fences.rs")) {
+        if path.ends_with(Path::new(OWN_GATE_SEARCH_FILE)) {
             continue;
         }
         // unfloored-slice-ok: a subscriber anywhere, tests included, is the subject.
@@ -123,7 +123,7 @@ const UNSTAMPED_HATCH: &str = "unstamped-log-ok:";
 fn no_subscriber_drops_its_timestamp() {
     let mut offenders = Vec::new();
     for path in workspace_rust_files() {
-        if path.ends_with(Path::new("output/tests/fences.rs")) {
+        if path.ends_with(Path::new(OWN_GATE_SEARCH_FILE)) {
             continue;
         }
         // unfloored-slice-ok: a subscriber anywhere, tests included, is the subject.
@@ -625,7 +625,7 @@ fn emit_collectors_take_no_sink() {
     let files: Vec<PathBuf> = workspace_rust_files()
         .into_iter()
         .filter(|p| p.components().any(|c| c.as_os_str() == "output"))
-        .filter(|p| !p.ends_with(Path::new("output/tests/fences.rs")))
+        .filter(|p| !p.ends_with(Path::new(OWN_GATE_SEARCH_FILE)))
         .collect();
     let banned = ["Writer", "self.state.lock(", "write_line("];
     let mut regions = Vec::new();
@@ -670,7 +670,7 @@ fn package_context_is_only_built_through_its_constructors() {
     let mut offenders = Vec::new();
     for path in workspace_rust_files() {
         if path.ends_with(Path::new("providers/mod.rs"))
-            || path.ends_with(Path::new("output/tests/fences.rs"))
+            || path.ends_with(Path::new(OWN_GATE_SEARCH_FILE))
         {
             continue;
         }
@@ -1320,7 +1320,7 @@ fn no_core_env_file_fixture_hardcodes_the_primary_env_files_name_or_dialect() {
     let mut items = 0usize;
     for path in workspace_rust_files() {
         // This file spells every tell in order to hunt for it.
-        if !path.starts_with(&core_src) || path.ends_with(Path::new("output/tests/fences.rs")) {
+        if !path.starts_with(&core_src) || path.ends_with(Path::new(OWN_GATE_SEARCH_FILE)) {
             continue;
         }
         // unfloored-slice-ok: the env-file fixtures judged here live in test regions.
@@ -1562,7 +1562,7 @@ fn no_fixture_hand_spells_a_line_of_the_env_file_this_host_generates() {
     let mut planting: std::collections::BTreeMap<&str, usize> = Default::default();
     let mut offenders = Vec::new();
     for (krate, path) in cross_os_fence_sources(&FLOORS) {
-        if path.ends_with(Path::new("output/tests/fences.rs")) {
+        if path.ends_with(Path::new(OWN_GATE_SEARCH_FILE)) {
             continue;
         }
         // unfloored-slice-ok: the fixtures judged here live in test regions.
@@ -1699,7 +1699,7 @@ fn no_cloned_file_is_compared_byte_for_byte() {
     let mut cloning: std::collections::BTreeMap<&str, usize> = Default::default();
     let mut offenders = Vec::new();
     for (krate, path) in cross_os_fence_sources(&FLOORS) {
-        if path.ends_with(Path::new("output/tests/fences.rs")) {
+        if path.ends_with(Path::new(OWN_GATE_SEARCH_FILE)) {
             continue;
         }
         // unfloored-slice-ok: the clones judged here live in test regions.
@@ -2319,7 +2319,7 @@ fn every_source_label_is_workspace_relative_and_posix_folded() {
 /// declaration would otherwise match itself.
 #[test]
 fn no_walk_folding_a_label_spells_an_offender_path_natively() {
-    let own_path = workspace_root().join("crates/cfgd-core/src/output/tests/fences.rs");
+    let own_path = workspace_root().join("crates").join(OWN_GATE_SEARCH_FILE);
     let own = walked_file_body(&own_path);
     let label = source_label(&own_path);
     let native = format!("path.{}()", "display");
@@ -2735,7 +2735,7 @@ fn every_test_mutating_the_process_environment_serializes_itself() {
 
     for path in workspace_rust_files() {
         // This file spells every needle in order to hunt for it.
-        if path.ends_with(Path::new("output/tests/fences.rs")) {
+        if path.ends_with(Path::new(OWN_GATE_SEARCH_FILE)) {
             continue;
         }
         // unfloored-slice-ok: the tests judged here live in test regions.
@@ -2874,7 +2874,7 @@ fn every_test_mutating_the_process_environment_serializes_itself() {
     // An entry matching nothing is the silent uncounting this walk exists to
     // prevent, worn as a green roster: it satisfies the derived walk while
     // watching no test at all.
-    let own_path = root.join("crates/cfgd-core/src/output/tests/fences.rs");
+    let own_path = root.join("crates").join(OWN_GATE_SEARCH_FILE);
     // unfloored-slice-ok: the roster and its hatches live in this file's tests.
     let own = walked_file_body(&own_path);
     let own_lines: Vec<&str> = own.lines().collect();
@@ -3092,7 +3092,7 @@ fn every_test_pinning_a_serialized_seam_joins_its_own_group() {
     for path in workspace_rust_files() {
         // This file spells every needle in order to hunt for it, and
         // the files built only for tests are where the guards are declared.
-        if path.ends_with(Path::new("output/tests/fences.rs"))
+        if path.ends_with(Path::new(OWN_GATE_SEARCH_FILE))
             || crate::test_helpers::is_test_only_file(&path)
         {
             continue;
@@ -3283,7 +3283,7 @@ fn every_declaration_taking_two_serial_locks_takes_them_in_one_order() {
 
     for path in workspace_rust_files() {
         // This file spells the attribute in fixtures rather than wearing it.
-        if path.ends_with(Path::new("output/tests/fences.rs")) {
+        if path.ends_with(Path::new(OWN_GATE_SEARCH_FILE)) {
             continue;
         }
         let labelled = source_label(&path);
@@ -3362,7 +3362,7 @@ fn every_scoped_tracing_capture_installs_the_journal_under_it() {
     for path in workspace_rust_files() {
         // This file spells every needle in order to hunt for it, and
         // the files built only for tests declare the floor itself.
-        if path.ends_with(Path::new("output/tests/fences.rs"))
+        if path.ends_with(Path::new(OWN_GATE_SEARCH_FILE))
             || crate::test_helpers::is_test_only_file(&path)
         {
             continue;
@@ -3568,7 +3568,7 @@ fn unguarded_env_reads(
     for path in workspace_rust_files() {
         // This file spells every needle in order to hunt for it, and the test
         // corpus mutates the environment on purpose.
-        if path.ends_with(Path::new("output/tests/fences.rs"))
+        if path.ends_with(Path::new(OWN_GATE_SEARCH_FILE))
             || crate::test_helpers::is_test_source(&path)
             || crate::test_helpers::is_test_only_file(&path)
         {
@@ -3631,7 +3631,7 @@ fn no_item_outside_a_function_body_mutates_the_process_environment() {
     let mut offenders = Vec::new();
     for path in workspace_rust_files() {
         // This file spells every needle in order to hunt for it.
-        if path.ends_with(Path::new("output/tests/fences.rs")) {
+        if path.ends_with(Path::new(OWN_GATE_SEARCH_FILE)) {
             continue;
         }
         // unfloored-slice-ok: an item anywhere, tests included, is the subject.
@@ -4020,7 +4020,8 @@ fn every_multi_file_production_walk_reads_through_the_floored_helper() {
         // PRODUCTION region is judged, because the unit tests of the cut below
         // hold one body each and legitimately call the pure form, and a
         // declaration line names the cut rather than reaching it.
-        let own_file = crate::to_posix_string(&path).ends_with("cfgd-core/src/test_helpers.rs");
+        let posix = crate::to_posix_string(&path);
+        let own_file = posix.ends_with(SCANNER_FILE);
         let label = source_label(&path);
         let body = if own_file {
             crate::test_helpers::test_module_cut_of(&path).into()
@@ -4094,7 +4095,6 @@ fn every_multi_file_production_walk_reads_through_the_floored_helper() {
                 in_test(n)
             }
         };
-        let posix = crate::to_posix_string(&path);
         match syntax_of(&path) {
             Ok(syntax) => {
                 for site in hand_cut_gate_sites(syntax, cut_scope) {
@@ -5472,15 +5472,17 @@ fn a_gate_spelled_by_concat_or_as_bytes_is_a_hand_cut() {
         "    body.contains(&attr);".to_string(),
         "    let other = format!(\"#[cfg({})]\", \"unix\");".to_string(),
         "    body.contains(&other);".to_string(),
+        "    let braced = format!(\"#[cfg({})] {{}}\", \"test\");".to_string(),
+        "    body.contains(&braced);".to_string(),
         "}".to_string(),
     ];
     let syntax = syntax(&fixture.join("\n")).unwrap_or_else(|e| panic!("fixture: {e}"));
     assert_eq!(
         hand_cut_gate_rows(&syntax, |_| true),
-        [1, 3, 5, 6, 8, 10, 11, 14],
+        [1, 3, 5, 6, 8, 10, 11, 14, 18],
         "a joined concat!, a nested one, a let holding one, a byte string searched, \
          compared, handed to a macro and held among a macro's tokens, and a format! \
-         of literals are each a hand cut; other text is none"
+         of literals, escaped braces included, are each a hand cut; other text is none"
     );
 }
 
@@ -7578,7 +7580,7 @@ const GC_ENGINE_COLLECT: &str = ".collect(&";
 /// the stand-in's contents or switching the Windows sharing call moves this
 /// walk along with the producer.
 fn unremovable_payload_tells() -> Vec<String> {
-    let path = workspace_root().join("crates/cfgd-core/src/test_helpers.rs");
+    let path = workspace_root().join("crates").join(SCANNER_FILE);
     let label = source_label(&path);
     let body = walked_file_body(&path);
     let slice = source_functions(&label, &body)
@@ -7618,9 +7620,7 @@ fn every_gc_failed_removal_pin_holds_its_payload_through_the_one_fixture() {
         let posix = crate::to_posix_string(&path);
         // The producer states both shapes by definition, and this walk quotes
         // them to find the others.
-        if posix.ends_with("cfgd-core/src/test_helpers.rs")
-            || posix.ends_with("output/tests/fences.rs")
-        {
+        if posix.ends_with(SCANNER_FILE) || posix.ends_with(OWN_GATE_SEARCH_FILE) {
             continue;
         }
         let relative = source_label(&path);
@@ -7960,9 +7960,7 @@ fn every_distinctness_premise_reads_the_values_its_fixture_asserts() {
     for path in workspace_rust_files() {
         let posix = crate::to_posix_string(&path);
         // The helper's own file declares it; this one quotes the call shape.
-        if posix.ends_with("cfgd-core/src/test_helpers.rs")
-            || posix.ends_with("cfgd-core/src/output/tests/fences.rs")
-        {
+        if posix.ends_with(SCANNER_FILE) || posix.ends_with(OWN_GATE_SEARCH_FILE) {
             continue;
         }
         // unfloored-slice-ok: the premises judged here are tests.
@@ -8552,7 +8550,7 @@ fn every_deserialized_script_body_is_refused_an_empty_run() {
     let mut read = 0usize;
     for path in workspace_rust_files() {
         // This file spells the holders' declarations in its own table.
-        if path.ends_with(Path::new("output/tests/fences.rs"))
+        if path.ends_with(Path::new(OWN_GATE_SEARCH_FILE))
             || crate::test_helpers::is_test_source(&path)
         {
             continue;
@@ -10091,7 +10089,7 @@ fn no_scan_hand_copies_the_test_source_naming_rule() {
         concat!("contains(\"/", "tests/\")"),
         concat!("\"test", "s_"),
     ];
-    let helper_home = Path::new("cfgd-core/src/test_helpers.rs");
+    let helper_home = Path::new(SCANNER_FILE);
     let mut files = 0usize;
     let mut asks = 0usize;
     let mut offenders = Vec::new();
@@ -11885,6 +11883,11 @@ fn every_defaulting_shape_of_a_section_read_is_found_and_no_other() {
         (
             "a map's value of the row's struct",
             "fn g(m: &HashMap<K, C>, k: &K) -> X { m.get(k).unwrap().daemon.clone().unwrap_or_default() }",
+            1,
+        ),
+        (
+            "a method on a map's value of the row's struct",
+            "fn g(m: &HashMap<K, C>, k: &K) -> X { m.get(k).unwrap().daemon_ref().copied().unwrap_or(X0) }",
             1,
         ),
     ];

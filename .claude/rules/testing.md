@@ -274,9 +274,11 @@ string search for a gate's spelling (`.starts_with("#[cfg(test)]")`, `.contains(
 or a needle any binding carries to one: `let`, `let … else`, `const`, `static`, `for`, `if let`,
 `while let`, `match` arm, assignment, closure or function parameter, macro argument, format
 capture; or a function's return, a `self.f` field or `self.m()` return, a `const` another source
-declares, a `concat!` of literals or a byte string) is a second cut beside the scanner, and the
-floored-helper walk fails it in test scope. The walk's own detector and fixtures in fences.rs are
-declared by function in `OWN_GATE_SEARCHES`.
+declares, a `concat!` of literals or a byte string, or a `format!` whose template holds only bare
+`{}` placeholders over literal arguments) is a second cut beside the scanner, and the
+floored-helper walk fails it in test scope. The walks' own searches reaching a gate's spelling, in
+fences.rs and in test_helpers.rs's test region, are declared by file and function, with their
+count, in `OWN_GATE_SEARCHES`.
 
 Colour off means NO escapes — attributes included. `ThemedStyle::apply_to` is the ONE
 gate a styled span becomes bytes through, and a printer whose `ColorChoice` resolved
