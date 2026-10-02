@@ -535,21 +535,21 @@ fi
 
 # (Namespace and RBAC already created in Step 1b above)
 
-# --- Step 4: Generate and apply CRDs ---
-echo "Generating and applying CRDs..."
+# --- Step 4: Check the PR's CRDs against the cluster's ---
+echo "Comparing the PR's CRDs with the cluster's..."
 CRD_YAML=$("$REPO_ROOT/target/release/cfgd-gen-crds")
 if [ -z "$CRD_YAML" ]; then
     echo "ERROR: cfgd-gen-crds produced no output"
     exit 1
 fi
-# Use kubectl replace to ensure full CRD schema updates (kubectl apply can
-# fail to update nested schema fields due to 3-way merge conflicts).
-# Fall back to apply for the initial creation (replace fails if CRD doesn't exist).
-echo "$CRD_YAML" | kubectl replace -f - 2>/dev/null || echo "$CRD_YAML" | kubectl apply -f -
+if ! pr_crd_docs=$(printf '%s\n' "$CRD_YAML" | crd_docs_json); then
+    echo "ERROR: could not read the cfgd-gen-crds output as CRDs. Check that it is valid YAML and that jq is on PATH, then rerun setup." >&2
+    exit 1
+fi
+check_pr_crds "$pr_crd_docs" || exit 1
 
-# Wait for CRDs to be established
-for crd in machineconfigs.cfgd.io configpolicies.cfgd.io driftalerts.cfgd.io \
-    modules.cfgd.io clusterconfigpolicies.cfgd.io; do
+mapfile -t pr_crd_names < <(jq -r '.metadata.name' <<<"$pr_crd_docs")
+for crd in "${pr_crd_names[@]}"; do
     kubectl wait --for=condition=established "crd/$crd" --timeout=30s 2>/dev/null || true
 done
 

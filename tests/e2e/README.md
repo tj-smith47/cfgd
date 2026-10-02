@@ -127,6 +127,16 @@ set while ArgoCD owns the gateway, which the override then does not reach. When
 `CFGD_DEPLOY_MANIFESTS` names a tree that `task deploy:operator` applied, that tree
 owns the operator and gateway Deployments, and setup warns the same way.
 
+ArgoCD also owns the cluster's CRDs, applied from
+`/db/manifests/k3s/namespaces/crossplane-system/cfgd-crds.yaml`, so setup never
+writes them. It compares each CRD that `cfgd-gen-crds` prints with the one on the
+cluster, ignoring description text, and stops when a CRD is missing from the
+cluster or its schema differs, printing the difference. To run a PR that changes a
+schema, copy `schemas/crds.yaml` over that file, push `/db/manifests`, let ArgoCD
+sync, then rerun setup. `crd_docs_json`, `crd_shape` and `check_pr_crds` in
+`common/helpers.sh` do the comparison, and `common/test-pr-install.sh` drives them
+against the fixtures in `common/fixtures/crd-schema/` with a stub `kubectl get`.
+
 Because the gateway suite, and each suite not yet moved to the PR install, runs a
 release, a check reads a counter through
 `metric_sample_lines` or `metric_sample_value` in `common/helpers.sh`, which

@@ -1,0 +1,60 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: widgets.example.io
+spec:
+  group: example.io
+  names:
+    kind: Widget
+    plural: widgets
+  scope: Namespaced
+  versions:
+  - name: v1alpha1
+    served: true
+    storage: true
+    additionalPrinterColumns:
+    - jsonPath: .spec.size
+      name: Size
+      type: integer
+    subresources:
+      status: {}
+    schema:
+      openAPIV3Schema:
+        description: A widget.
+        type: object
+        properties:
+          spec:
+            description: What the widget should be.
+            type: object
+            properties:
+              size:
+                description: How big the widget is.
+                type: integer
+              description:
+                description: A property named description, which the comparison keeps.
+                type: string
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: gadgets.example.io
+spec:
+  group: example.io
+  names:
+    kind: Gadget
+    plural: gadgets
+  scope: Cluster
+  versions:
+  - name: v1alpha1
+    served: true
+    storage: true
+    schema:
+      openAPIV3Schema:
+        description: A gadget.
+        type: object
+        properties:
+          spec:
+            type: object
+            properties:
+              color:
+                type: string

@@ -369,6 +369,81 @@ argocd_managed() {
     [ -n "$id" ]
 }
 
+# --- CRD schema check ---
+
+# ArgoCD applies the cluster's CRDs from this file, so setup only compares the
+# PR's CRDs with them and never writes them.
+export E2E_CRD_MANIFEST="/db/manifests/k3s/namespaces/crossplane-system/cfgd-crds.yaml"
+
+# CRD YAML on stdin; one compact JSON object per CustomResourceDefinition on
+# stdout. `kubectl create --dry-run=client` asks the API server to map each
+# kind, while `annotate --local` reads the YAML offline; removing an annotation
+# the documents do not carry leaves them as written.
+crd_docs_json() {
+    kubectl annotate --local -o json -f - cfgd.io/e2e-unset- \
+        | jq -c '.items[]? // . | select(.kind == "CustomResourceDefinition")'
+}
+
+# One CRD as JSON on stdin; its versions with every description string removed
+# and keys sorted, so a CRD whose only change is documentation compares equal.
+# A key named `description` inside `properties` holds an object, so it stays.
+crd_shape() {
+    jq -S 'walk(if type == "object" and (.description | type) == "string" then del(.description) else . end)
+           | .spec.versions | map({name, served, storage, schema, subresources, additionalPrinterColumns})'
+}
+
+# check_pr_crds <crd_docs_json output>: compares each CRD the PR ships with the
+# one on the cluster and prints an ERROR to stderr for each that is missing or
+# differs, followed by up to 40 lines of diff (cluster first). Returns 1 when
+# any CRD is missing, differs or cannot be read, or when there is none to compare.
+check_pr_crds() {
+    local docs="$1" doc name want live_doc live status=0 checked=0
+    local fix="ArgoCD owns the cluster's CRDs; copy schemas/crds.yaml over $E2E_CRD_MANIFEST and push, then re-run."
+    while IFS= read -r doc; do
+        [ -n "$doc" ] || continue
+        name="$(jq -r '.metadata.name // empty' <<<"$doc")"
+        if [ -z "$name" ]; then
+            echo "ERROR: a CRD in the PR's manifest has no metadata.name. Check the cfgd-gen-crds output." >&2
+            status=1
+            continue
+        fi
+        checked=$((checked + 1))
+        want="$(crd_shape <<<"$doc")" || want=""
+        case "$want" in
+            "" | "[]" | null)
+                echo "ERROR: the PR's $name has no versions to compare. Check the cfgd-gen-crds output." >&2
+                status=1
+                continue
+                ;;
+        esac
+        if ! live_doc="$(kubectl get crd "$name" --ignore-not-found -o json)"; then
+            echo "ERROR: could not read crd/$name. Check that the runner can get customresourcedefinitions, then rerun setup." >&2
+            status=1
+            continue
+        fi
+        if [ -z "$live_doc" ]; then
+            echo "ERROR: this PR adds $name, which the cluster does not have. $fix" >&2
+            status=1
+            continue
+        fi
+        if ! live="$(crd_shape <<<"$live_doc")"; then
+            echo "ERROR: could not read the versions of the cluster's crd/$name. Check that it is a CustomResourceDefinition, then rerun setup." >&2
+            status=1
+            continue
+        fi
+        if [ "$want" != "$live" ]; then
+            echo "ERROR: this PR changes the $name schema. $fix" >&2
+            diff <(printf '%s\n' "$live") <(printf '%s\n' "$want") | head -40 >&2 || true # rc-ok: diff exits 1 on the difference being shown
+            status=1
+        fi
+    done <<<"$docs"
+    if [ "$checked" -eq 0 ]; then
+        echo "ERROR: the PR's CRD manifest holds no CustomResourceDefinition to compare with the cluster. Check the cfgd-gen-crds output." >&2
+        return 1
+    fi
+    return "$status"
+}
+
 # Port-forward to `svc/<name>` or `pod/<name>` in the background and echo the
 # kubectl PID once the local port accepts a connection; stop it with
 # stop_port_forward. A fixed sleep races a slow kubectl start. On timeout, or
