@@ -233,7 +233,8 @@ jobs:
       # `task e2e:tags:check` reads YAML with mikefarah yq v4. The apt package
       # named yq is a different, Python tool, so the binary is pinned here;
       # version and checksum move together. Recompute on a version bump:
-      #   curl -fsSL https://github.com/mikefarah/yq/releases/download/<ver>/yq_linux_amd64 | sha256sum
+      #   v=<ver>; base=https://github.com/mikefarah/yq/releases/download
+      #   curl -fsSL "$base/$v/yq_linux_amd64" | sha256sum
       - name: Install yq
         env:
           YQ_VERSION: v4.53.4
