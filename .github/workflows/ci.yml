@@ -453,3 +453,16 @@ jobs:
           args: release --snapshot --single-target --clean --dry-run
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install go-task
+        uses: go-task/setup-task@v2
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install ShellCheck
+        uses: ./.github/actions/setup-shellcheck
+
+      # The dry-run above rendered dist/install.sh from scripts/install.sh.tpl;
+      # the template itself does not parse as shell.
+      - name: ShellCheck the rendered installer
+        run: task installer:shellcheck

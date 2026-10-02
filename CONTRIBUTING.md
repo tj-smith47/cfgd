@@ -41,7 +41,7 @@ Open a [feature request](https://github.com/tj-smith47/cfgd/issues/new?template=
 - Rust 1.94+ (install via [rustup](https://rustup.rs/))
 - `sops` (for secrets tests)
 - `age` (for encryption tests)
-- `shellcheck` 0.11.0 (for `task shellcheck`; CI pins the same version)
+- `shellcheck`, at the version pinned in `.github/actions/setup-shellcheck/action.yml` (`task shellcheck` refuses any other)
 
 ### Building
 
@@ -63,6 +63,7 @@ cargo fmt --check                 # check formatting
 cargo clippy -- -D warnings       # lint
 bash .claude/scripts/audit.sh     # project-specific audit
 task shellcheck                   # every tracked *.sh script
+task installer:shellcheck         # the installer rendered by `task snapshot`
 ```
 
 ### Project Structure

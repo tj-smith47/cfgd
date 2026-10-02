@@ -260,11 +260,9 @@ tasks:
       - bash .claude/scripts/audit.sh
 
   shellcheck:
-    desc: Run shellcheck over every tracked shell script (`git ls-files '*.sh'`) with the repo's .shellcheckrc; CI installs the version pinned in .github/actions/setup-shellcheck.
-    preconditions:
-      - sh: command -v shellcheck
-        msg: "shellcheck is not installed; install the version pinned in .github/actions/setup-shellcheck."
+    desc: Run shellcheck over every tracked shell script (`git ls-files '*.sh'`) with the repo's .shellcheckrc, refusing any version but the one pinned in .github/actions/setup-shellcheck/action.yml.
     cmds:
+      - task: _shellcheck:pin
       - |
         n=$(git ls-files '*.sh' | wc -l | tr -d ' ')
         # An empty population would pass on zero files, so a broken pathspec fails here.
@@ -274,6 +272,39 @@ tasks:
         fi
         git ls-files -z '*.sh' | xargs -0 shellcheck
         echo "shellcheck $(shellcheck --version | sed -n 's/^version: //p'): $n scripts clean"
+
+  installer:shellcheck:
+    desc: Run shellcheck as POSIX sh over the installer `task snapshot` renders from scripts/install.sh.tpl (dist/install.sh), refusing any version but the pinned one.
+    preconditions:
+      - sh: test -f dist/install.sh
+        msg: "dist/install.sh is missing; run `task snapshot` first, which renders it from scripts/install.sh.tpl."
+    cmds:
+      - task: _shellcheck:pin
+      # The template is not shell until rendered; the installer runs under dash, ash and FreeBSD sh.
+      - shellcheck --shell=sh dist/install.sh
+      - |
+        echo "shellcheck $(shellcheck --version | sed -n 's/^version: //p') (sh): dist/install.sh clean"
+
+  _shellcheck:pin:
+    internal: true
+    desc: "Internal: fail unless the shellcheck on PATH is the version CI installs; another version reports a different set of findings."
+    vars:
+      PIN_FILE: .github/actions/setup-shellcheck/action.yml
+    preconditions:
+      - sh: command -v shellcheck
+        msg: "shellcheck is not installed; install the version pinned in {{.PIN_FILE}}."
+    cmds:
+      - |
+        pin=$(awk '/^  version:/ { inside = 1 } inside && /default:/ { split($0, q, "\""); print q[2]; exit }' {{.PIN_FILE}})
+        if [ -z "$pin" ]; then
+          echo "shellcheck: no version default found under version: in {{.PIN_FILE}}" >&2
+          exit 1
+        fi
+        have="v$(shellcheck --version | sed -n 's/^version: //p')"
+        if [ "$have" != "$pin" ]; then
+          echo "shellcheck: $have is on PATH, and {{.PIN_FILE}} pins $pin; install $pin" >&2
+          exit 1
+        fi
 
   version-files:check:
     desc: Verify every file enrolled in .anodizer.yaml version_files still carries its crate's current version (CI drift guard).
@@ -559,7 +590,7 @@ tasks:
       - task: fmt
 
   lint:
-    desc: Local pre-commit check (tidy, clippy, audit, shellcheck, build, snapshot dry-run); the rustdoc gate runs in CI and ahead of `task push`, never here
+    desc: Local pre-commit check (tidy, clippy, audit, shellcheck, build, snapshot dry-run, installer:shellcheck); the rustdoc gate runs in CI and ahead of `task push`.
     cmds:
       - task: tidy
       - task: clippy
@@ -567,6 +598,7 @@ tasks:
       - task: shellcheck
       - task: build
       - task: snapshot
+      - task: installer:shellcheck
 
   commit:
     desc: "Lint (regenerates artifacts), re-stage only the user's intended files, then commit. A breaking signal (a `!` subject marker, a `BREAKING CHANGE` footer or `#major`) on a crate below 1.0 is refused unless BREAKING_CHANGE_APPROVED=1, which only the user sets. Usage: stage with `git add` first, then `task commit -- -m 'msg'`."

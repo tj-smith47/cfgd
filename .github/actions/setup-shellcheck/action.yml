@@ -4,9 +4,11 @@ description: "Download a pinned ShellCheck release and verify it against a known
 # The defaults below are the repo's single source of truth for the ShellCheck
 # pin; version and checksum move together. The runner image's own shellcheck
 # is older and reports a different set of findings than the version the
-# scripts are kept clean against, so `task shellcheck` would pass locally and
-# fail in CI, or the other way round. Recompute on a version bump:
-#   curl -fsSL https://github.com/koalaman/shellcheck/releases/download/<ver>/shellcheck-<ver>.linux.x86_64.tar.xz | sha256sum
+# scripts are kept clean against. `task shellcheck` and `task
+# installer:shellcheck` read the `default:` under `version:` and refuse any
+# other local version, so keep that shape. Recompute on a version bump:
+#   v=<ver>; base=https://github.com/koalaman/shellcheck/releases/download
+#   curl -fsSL "$base/$v/shellcheck-$v.linux.x86_64.tar.xz" | sha256sum
 inputs:
   version:
     description: "ShellCheck version to install (with leading 'v')."

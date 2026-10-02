@@ -18,8 +18,10 @@ paths: ["crates/**/*.rs", "**/*.sh"]
 
 ## Shell scripts
 
-- Every tracked `*.sh` passes `task shellcheck`, which `task lint`, `task ci` and the CI `audit` job run. The population is `git ls-files '*.sh'`, so a new script is checked the moment it is added; CI pins the version in `.github/actions/setup-shellcheck`.
-- `.shellcheckrc` at the repo root sets `shell=bash`, `source-path=SCRIPTDIR` and `external-sources=true`. It disables no code. Unquoted expansions (SC2086) and unused variables (SC2034) are fixed, never silenced tree-wide.
-- A sourced file with no shebang starts with `# shellcheck shell=bash`.
-- An argument list that is meant to split into several words is an array, expanded as `"${args[@]}"`; never an unquoted string.
-- A `# shellcheck disable=SCxxxx` covers one command, is for a false positive only, and gives its reason on the same line: `# shellcheck disable=SC2016  # an awk program: its $ fields are awk's`.
+- Every tracked `*.sh` passes `task shellcheck`, which `task lint`, `task ci` and the CI `audit` job run. The population is `git ls-files '*.sh'`, so a new script is checked the moment it is added.
+- The installer `task snapshot` renders from `scripts/install.sh.tpl` passes `task installer:shellcheck`, which lints `dist/install.sh` as POSIX sh. `task lint` runs it after `task snapshot`; CI runs it in the `snapshot` job.
+- The shellcheck version is pinned once, as the `version` default in `.github/actions/setup-shellcheck/action.yml`. Both tasks refuse a local shellcheck of any other version.
+- `.shellcheckrc` at the repo root sets `source-path=SCRIPTDIR` and `external-sources=true`, and disables no code. Each script's shebang picks its dialect, so a `#!/bin/sh` script is held to POSIX sh. SC2086 and SC2034 findings are fixed in the script; `.shellcheckrc` does not disable them.
+- A sourced file with no shebang starts with `# shellcheck shell=bash` (shellcheck reports SC2148 until it does).
+- An argument list meant to split into several words is an array, expanded as `"${args[@]}"`.
+- A `# shellcheck disable=SCxxxx` covers one command, is for a false positive only, and gives its reason on the same line: `# shellcheck disable=SC2016  # an awk program; the $ fields belong to awk`.
