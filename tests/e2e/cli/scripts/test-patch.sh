@@ -56,11 +56,11 @@ spec:
         patch:
           script: scripts/upper.sh
 YAML
-PC="--config $PT_CFG/cfgd.yaml --state-dir $PT_STATE --no-color"
+PC=(--config "$PT_CFG/cfgd.yaml" --state-dir "$PT_STATE" --no-color)
 printf 'quiet text\n' > "$PT_TGT/shout.txt"
 
 begin_test "PT01: apply with Patch entries succeeds"
-run $PC apply --yes
+run "${PC[@]}" apply --yes
 if assert_ok; then
     pass_test "PT01"
 else fail_test "PT01"; fi
@@ -87,7 +87,7 @@ else fail_test "PT05" "$(cat "$PT_TGT/shout.txt")"; fi
 
 begin_test "PT06: second apply is idempotent"
 SNAP_BEFORE=$(cat "$PT_TGT/settings.json" "$PT_TGT/prefs.yaml" "$PT_TGT/shout.txt")
-run $PC apply --yes
+run "${PC[@]}" apply --yes
 SNAP_AFTER=$(cat "$PT_TGT/settings.json" "$PT_TGT/prefs.yaml" "$PT_TGT/shout.txt")
 if assert_ok && [ "$SNAP_BEFORE" = "$SNAP_AFTER" ]; then
     pass_test "PT06"

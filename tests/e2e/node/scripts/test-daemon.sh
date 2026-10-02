@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # Node E2E tests: Daemon & Compliance
 # Sourced by run-all.sh — do NOT set traps or pipefail here.
 
@@ -839,8 +840,6 @@ done
 if [ "$GATEWAY_REACHABLE" = "false" ]; then
     skip_test "DAEMON-17" "Device gateway not reachable"
 else
-    DAEMON17_DEVICE_ID="e2e-daemon17-$(date +%s)"
-
     # Create daemon config with server origin
     exec_in_pod bash -c "cat > /etc/cfgd/e2e-daemon17-cfgd.yaml << INNEREOF
 apiVersion: cfgd.io/v1alpha1

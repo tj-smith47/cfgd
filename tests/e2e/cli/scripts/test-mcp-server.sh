@@ -12,7 +12,7 @@ mcp_send() {
     local input="$1"
     local rc=0
     local out
-    out=$(echo "$input" | timeout 10 "$CFGD" $C mcp-server 2>/dev/null) || rc=$?
+    out=$(echo "$input" | timeout 10 "$CFGD" "${C[@]}" mcp-server 2>/dev/null) || rc=$?
     # timeout exits 124 when it kills the process; the server exits 0 on EOF.
     # Both are acceptable — we care about the stdout content.
     if [ "$rc" -ne 0 ] && [ "$rc" -ne 124 ]; then
@@ -29,7 +29,7 @@ INIT_REQ='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersi
 # --- MCP01: mcp-server --help ---
 
 begin_test "MCP01: mcp-server --help"
-run $C mcp-server --help
+run "${C[@]}" mcp-server --help
 if assert_ok && assert_contains "$OUTPUT" "MCP"; then
     pass_test "MCP01"
 else fail_test "MCP01"; fi

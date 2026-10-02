@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # Operator E2E tests: OCI
 # Sourced by run-all.sh — do NOT set traps or pipefail here.
 

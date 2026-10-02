@@ -7,12 +7,12 @@ source "$SCRIPT_DIR/setup-cli-env.sh"
 echo "=== cfgd doctor tests ==="
 
 # State prerequisite: apply so doctor has state to check
-run $C apply --yes
+run "${C[@]}" apply --yes
 
 # Tests extracted verbatim from run-exhaustive-tests.sh
 
 begin_test "DR01: doctor"
-run $C doctor
+run "${C[@]}" doctor
 if assert_ok; then
     pass_test "DR01"
 else fail_test "DR01"; fi

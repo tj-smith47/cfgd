@@ -25,10 +25,12 @@ echo "All persistent components running"
 # Check CSI driver
 CSI_READY=$(kubectl get ds -n cfgd-system -l app.kubernetes.io/component=csi-driver \
     -o jsonpath='{.items[0].status.numberReady}' 2>/dev/null || echo "0")
-CSI_AVAILABLE=true
+# shellcheck disable=SC2034  # read by the test files run-all.sh sources after this one
 if [ "$CSI_READY" = "0" ] || [ -z "$CSI_READY" ]; then
     echo "WARN: CSI driver not ready, CSI tests will be skipped"
     CSI_AVAILABLE=false
+else
+    CSI_AVAILABLE=true
 fi
 
 # Set up ephemeral namespace and test pod
@@ -86,7 +88,7 @@ echo "Device gateway URL: $SERVER_URL"
 # Wait for gateway reachability from test pod (use health endpoint — API requires auth)
 echo "Waiting for device gateway..."
 GATEWAY_READY=false
-for i in $(seq 1 60); do
+for _ in $(seq 1 60); do
     if exec_in_pod curl -sf "${HEALTH_URL}/readyz" > /dev/null 2>&1; then
         GATEWAY_READY=true
         break

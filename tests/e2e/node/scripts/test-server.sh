@@ -30,7 +30,7 @@ echo "Device gateway URL: $SERVER_URL"
 # Verify device gateway is reachable from the test pod (use health endpoint — API requires auth)
 echo "Verifying device gateway reachability from test pod..."
 GATEWAY_READY=false
-for i in $(seq 1 30); do
+for _ in $(seq 1 30); do
     if exec_in_pod curl -sf "${HEALTH_URL}/readyz" > /dev/null 2>&1; then
         GATEWAY_READY=true
         break
@@ -58,6 +58,7 @@ OUTPUT=$(exec_in_pod cfgd \
     --no-color 2>&1) || RC=$?
 
 echo "  Checkin output:"
+# shellcheck disable=SC2001  # sed indents every line; an expansion has no per-line anchor
 echo "$OUTPUT" | sed 's/^/    /'
 
 if [ "$RC" -eq 0 ] && assert_contains "$OUTPUT" "ok"; then

@@ -88,6 +88,7 @@ assert_ok() {
         # Unlike the pass-path prints scattered through this suite, this only
         # runs on an unexpected failure — truncating here risks cutting the
         # one line that names the actual error, so print all of it.
+        # shellcheck disable=SC2001  # sed indents every line; an expansion has no per-line anchor
         echo "$OUTPUT" | sed 's/^/    /'
         return 1
     fi
@@ -107,7 +108,8 @@ STATE="$SCRATCH/state"
 mkdir -p "$STATE"
 setup_config_dir "$CFG" "$TGT"
 CONF="$CFG/cfgd.yaml"
-C="--config $CONF --state-dir $STATE --no-color"
+# shellcheck disable=SC2034  # read by the test file that sources this one
+C=(--config "$CONF" --state-dir "$STATE" --no-color)
 
 # Allow file:// source URLs for E2E test repos (dev/test only)
 export CFGD_ALLOW_LOCAL_SOURCES=1

@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # Full-stack E2E tests: OCI Supply Chain
 # Sourced by run-all.sh — do NOT set traps or pipefail here.
 
@@ -68,9 +69,9 @@ EOF
 
         if $POD_RUNNING; then
             MODULE_FILE=$(kubectl exec oci01-pod -n "$OCI01_NS" -- \
-                cat /cfgd-modules/${OCI01_MOD}/module.yaml 2>/dev/null || echo "")
+                cat "/cfgd-modules/${OCI01_MOD}/module.yaml" 2>/dev/null || echo "")
             HELLO_SH=$(kubectl exec oci01-pod -n "$OCI01_NS" -- \
-                cat /cfgd-modules/${OCI01_MOD}/bin/hello.sh 2>/dev/null || echo "")
+                cat "/cfgd-modules/${OCI01_MOD}/bin/hello.sh" 2>/dev/null || echo "")
 
             echo "  module.yaml present: $([ -n "$MODULE_FILE" ] && echo 'yes' || echo 'no')"
             echo "  bin/hello.sh present: $([ -n "$HELLO_SH" ] && echo 'yes' || echo 'no')"
@@ -134,6 +135,7 @@ else
         rm -rf "$OCI02_KEYDIR"
 
         if [ -n "$PUB_KEY" ]; then
+            # shellcheck disable=SC2001  # sed indents every line; an expansion has no per-line anchor
             kubectl apply -f - <<EOF
 apiVersion: cfgd.io/v1alpha1
 kind: Module
@@ -197,7 +199,7 @@ EOF
 
         if $POD_RUNNING; then
             MODULE_FILE=$(kubectl exec oci02-pod -n "$OCI02_NS" -- \
-                cat /cfgd-modules/${OCI02_MOD}/module.yaml 2>/dev/null || echo "")
+                cat "/cfgd-modules/${OCI02_MOD}/module.yaml" 2>/dev/null || echo "")
 
             echo "  module.yaml present: $([ -n "$MODULE_FILE" ] && echo 'yes' || echo 'no')"
 
@@ -438,7 +440,7 @@ EOF
 
         if $POD_RUNNING; then
             MODULE_FILE=$(kubectl exec oci05-pod -n "$OCI05_NS" -- \
-                cat /cfgd-modules/${OCI05_MOD}/module.yaml 2>/dev/null || echo "")
+                cat "/cfgd-modules/${OCI05_MOD}/module.yaml" 2>/dev/null || echo "")
 
             echo "  module.yaml present: $([ -n "$MODULE_FILE" ] && echo 'yes' || echo 'no')"
 
@@ -537,7 +539,7 @@ EOF
 
         if $POD_RUNNING; then
             MODULE_FILE=$(kubectl exec oci06-pod -n "$OCI06_NS" -- \
-                cat /cfgd-modules/${OCI06_MOD}/module.yaml 2>/dev/null || echo "")
+                cat "/cfgd-modules/${OCI06_MOD}/module.yaml" 2>/dev/null || echo "")
 
             # Verify the pod has imagePullSecrets set
             PULL_SECRETS=$(kubectl get pod oci06-pod -n "$OCI06_NS" \

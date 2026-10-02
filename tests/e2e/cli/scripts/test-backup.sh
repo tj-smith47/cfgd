@@ -37,23 +37,24 @@ spec:
       postBackup:
         - echo "post \$CFGD_OPERATION" >> $BK_MARKER
 YAML
-BC="--config $BK_CFG/cfgd.yaml --state-dir $BK_STATE --no-color"
+BC=(--config "$BK_CFG/cfgd.yaml" --state-dir "$BK_STATE" --no-color)
 SNAP_DIR="$BK_STATE/backups/notes"
+snap_count() { find "$SNAP_DIR" -mindepth 1 -maxdepth 1 ! -name '.*' | wc -l; }
 
 begin_test "BK01: backup --help"
-run $BC backup --help
+run "${BC[@]}" backup --help
 if assert_ok && assert_contains "$OUTPUT" "backup"; then
     pass_test "BK01"
 else fail_test "BK01"; fi
 
 begin_test "BK02: backup list shows the declared unit"
-run $BC backup list
+run "${BC[@]}" backup list
 if assert_ok && assert_contains "$OUTPUT" "notes" && assert_contains "$OUTPUT" "$BK_SRC"; then
     pass_test "BK02"
 else fail_test "BK02"; fi
 
 begin_test "BK03: backup run creates a snapshot in the state dir"
-run $BC backup run notes
+run "${BC[@]}" backup run notes
 if assert_ok && [ -n "$(ls "$SNAP_DIR" 2>/dev/null)" ]; then
     pass_test "BK03"
 else fail_test "BK03" "no snapshot under $SNAP_DIR"; fi
@@ -64,53 +65,53 @@ if grep -q "pre backup" "$BK_MARKER" && grep -q "post backup" "$BK_MARKER"; then
 else fail_test "BK04" "marker: $(cat "$BK_MARKER" 2>/dev/null)"; fi
 
 begin_test "BK05: backup run unknown name fails and names valid units"
-run $BC backup run missing-name
+run "${BC[@]}" backup run missing-name
 if assert_fail && assert_contains "$OUTPUT" "notes"; then
     pass_test "BK05"
 else fail_test "BK05"; fi
 
 begin_test "BK06: backup list <name> --snapshots lists snapshot names"
-run $BC backup list notes --snapshots
+run "${BC[@]}" backup list notes --snapshots
 if assert_ok && assert_contains "$OUTPUT" "notes.txt."; then
     pass_test "BK06"
 else fail_test "BK06"; fi
 
 begin_test "BK07: bare backup list --snapshots is a usage error"
-run $BC backup list --snapshots
+run "${BC[@]}" backup list --snapshots
 if assert_fail; then
     pass_test "BK07"
 else fail_test "BK07"; fi
 
 begin_test "BK08: -o json backup run reports destinationPath"
-run $BC --output json backup run notes
+run "${BC[@]}" --output json backup run notes
 if assert_ok && assert_contains "$OUTPUT" '"destinationPath"'; then
     pass_test "BK08"
 else fail_test "BK08"; fi
 
 begin_test "BK09: retention prunes to the declared count"
 echo "generation-two" > "$BK_SRC"
-run $BC backup run notes
+run "${BC[@]}" backup run notes
 echo "generation-three" > "$BK_SRC"
-run $BC backup run notes
-COUNT=$(ls "$SNAP_DIR" | wc -l)
+run "${BC[@]}" backup run notes
+COUNT=$(snap_count)
 if [ "$COUNT" -eq 2 ]; then
     pass_test "BK09"
 else fail_test "BK09" "expected 2 snapshots after retention, got $COUNT"; fi
 
 begin_test "BK10: restore without --yes on non-interactive stdin is an error"
-run $BC backup restore notes < /dev/null
+run "${BC[@]}" backup restore notes < /dev/null
 if assert_fail; then
     pass_test "BK10"
 else fail_test "BK10"; fi
 
 begin_test "BK11: restore --yes puts the newest snapshot back and leaves a sidecar safety copy"
 echo "clobbered-live-data" > "$BK_SRC"
-SNAP_COUNT_BEFORE=$(ls "$SNAP_DIR" | wc -l)
-run $BC backup restore notes --yes
+SNAP_COUNT_BEFORE=$(snap_count)
+run "${BC[@]}" backup restore notes --yes
 # The displaced contents go beside the source as the <source>.cfgd-backup
 # sidecar, never into the unit's snapshot history — so the snapshot set the
 # operator restores FROM does not grow when they restore.
-SNAP_COUNT_AFTER=$(ls "$SNAP_DIR" | wc -l)
+SNAP_COUNT_AFTER=$(snap_count)
 if assert_ok && [ "$(cat "$BK_SRC")" = "generation-three" ] \
     && grep -q "clobbered-live-data" "$BK_SRC.cfgd-backup" \
     && [ "$SNAP_COUNT_AFTER" -eq "$SNAP_COUNT_BEFORE" ]; then
@@ -124,13 +125,13 @@ else fail_test "BK12" "marker: $(cat "$BK_MARKER" 2>/dev/null)"; fi
 
 begin_test "BK13: restore --to elsewhere leaves the live source untouched"
 echo "live-stays" > "$BK_SRC"
-run $BC backup restore notes --to "$BK_DIR/inspect" --yes
+run "${BC[@]}" backup restore notes --to "$BK_DIR/inspect" --yes
 if assert_ok && [ "$(cat "$BK_SRC")" = "live-stays" ] && ls "$BK_DIR/inspect" >/dev/null 2>&1; then
     pass_test "BK13"
 else fail_test "BK13"; fi
 
 begin_test "BK14: restore --at with an unknown value fails and lists snapshots"
-run $BC backup restore notes --at 19990101T000000Z --yes
+run "${BC[@]}" backup restore notes --at 19990101T000000Z --yes
 if assert_fail && assert_contains "$OUTPUT" "notes.txt."; then
     pass_test "BK14"
 else fail_test "BK14"; fi
@@ -171,7 +172,7 @@ if assert_ok && [ ! -d "$AP_DIR/state/backups/appdb" ]; then
 else fail_test "BK16"; fi
 
 begin_test "BK17: bare backup rollback lists what has a copy to put back"
-run $BC backup rollback
+run "${BC[@]}" backup rollback
 if assert_ok && assert_contains "$OUTPUT" "notes" && assert_contains "$OUTPUT" "cfgd-backup"; then
     pass_test "BK17"
 else fail_test "BK17"; fi
@@ -182,18 +183,18 @@ begin_test "BK18: rollback --yes puts the sidecar copy back over the source"
 # an earlier cell happened to write.
 RB_COPY=$(cat "$BK_SRC.cfgd-backup")
 RB_DISPLACED=$(cat "$BK_SRC")
-SNAP_COUNT_BEFORE=$(ls "$SNAP_DIR" | wc -l)
+SNAP_COUNT_BEFORE=$(snap_count)
 # Both cells assert a swap, so equal fixture values would let a rollback that
 # moved nothing pass either one.
-run $BC backup rollback notes --yes
+run "${BC[@]}" backup rollback notes --yes
 if assert_ok && [ "$RB_COPY" != "$RB_DISPLACED" ] \
     && [ "$(cat "$BK_SRC")" = "$RB_COPY" ] \
-    && [ "$(ls "$SNAP_DIR" | wc -l)" -eq "$SNAP_COUNT_BEFORE" ]; then
+    && [ "$(snap_count)" -eq "$SNAP_COUNT_BEFORE" ]; then
     pass_test "BK18"
 else fail_test "BK18" "content=$(cat "$BK_SRC"), expected=$RB_COPY, displaced=$RB_DISPLACED"; fi
 
 begin_test "BK19: a second rollback undoes the first"
-run $BC backup rollback notes --yes
+run "${BC[@]}" backup rollback notes --yes
 if assert_ok && [ "$RB_COPY" != "$RB_DISPLACED" ] \
     && [ "$(cat "$BK_SRC")" = "$RB_DISPLACED" ]; then
     pass_test "BK19"

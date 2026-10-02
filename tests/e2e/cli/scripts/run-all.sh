@@ -6,7 +6,8 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 echo "=== cfgd Exhaustive CLI Tests ==="
 
 # Create shared scratch once (domain files will create subdirs)
-export CLI_SCRATCH=$(mktemp -d)
+CLI_SCRATCH=$(mktemp -d)
+export CLI_SCRATCH
 trap 'rm -rf "$CLI_SCRATCH"' EXIT
 
 # Every suite below runs the real binary as the invoking user: the redirect that

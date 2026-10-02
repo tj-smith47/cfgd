@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # Operator E2E tests: ClusterConfigPolicy
 # Sourced by run-all.sh — do NOT set traps or pipefail here.
 
@@ -280,7 +281,7 @@ sleep 10
 
 NS03_COMPLIANT=""
 NS03_TOTAL=0
-for i in $(seq 1 60); do
+for _ in $(seq 1 60); do
     NS03_COMPLIANT=$(kubectl get clusterconfigpolicy "e2e-cross-ns-${E2E_RUN_ID}" \
         -o jsonpath='{.status.compliantCount}' 2>/dev/null || echo "0")
     NS03_NON_COMPLIANT=$(kubectl get clusterconfigpolicy "e2e-cross-ns-${E2E_RUN_ID}" \
@@ -379,7 +380,7 @@ kubectl delete namespace "$NS_A" --wait=false --ignore-not-found 2>/dev/null || 
 
 echo "  Waiting for namespace $NS_A deletion to propagate..."
 # Wait for the namespace to actually be gone
-for i in $(seq 1 60); do
+for _ in $(seq 1 60); do
     if ! kubectl get namespace "$NS_A" > /dev/null 2>&1; then
         break
     fi
@@ -391,7 +392,7 @@ sleep 10
 
 NS06_COMPLIANT=""
 NS06_TOTAL=0
-for i in $(seq 1 60); do
+for _ in $(seq 1 60); do
     NS06_COMPLIANT=$(kubectl get clusterconfigpolicy "e2e-cross-ns-${E2E_RUN_ID}" \
         -o jsonpath='{.status.compliantCount}' 2>/dev/null || echo "0")
     NS06_NON_COMPLIANT=$(kubectl get clusterconfigpolicy "e2e-cross-ns-${E2E_RUN_ID}" \

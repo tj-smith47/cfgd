@@ -9,7 +9,7 @@ echo "=== cfgd sync tests ==="
 # Tests extracted verbatim from run-exhaustive-tests.sh
 
 begin_test "SY01: sync"
-run $C sync
+run "${C[@]}" sync
 if assert_ok; then
     pass_test "SY01"
 else fail_test "SY01"; fi

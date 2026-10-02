@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # Full-stack E2E tests: Drift Lifecycle
 # Sourced by run-all.sh — do NOT set traps or pipefail here.
 
@@ -225,14 +226,14 @@ else
     if [ "$CHECKIN_RC" -le 1 ]; then
         pass_test "FS-DRIFT-08"
     else
-        fail_test "FS-DRIFT-08" "Device not registered after compliance+checkin (exit $CHECKIN_RC)"
+        fail_test "FS-DRIFT-08" "Device not registered after compliance+checkin (exit $CHECKIN_RC): $CHECKIN_OUTPUT"
     fi
 fi
 
 # =================================================================
 begin_test "FS-DRIFT-09: MachineConfig with compliance-relevant spec"
 
-kubectl apply -n "$E2E_NAMESPACE" -f - <<EOF
+if ! kubectl apply -n "$E2E_NAMESPACE" -f - <<EOF
 apiVersion: cfgd.io/v1alpha1
 kind: MachineConfig
 metadata:
@@ -253,8 +254,7 @@ spec:
     "vm.max_map_count": "262144"
     "net.ipv4.ip_forward": "1"
 EOF
-
-if [ $? -ne 0 ]; then
+then
     fail_test "FS-DRIFT-09" "kubectl apply failed"
 else
     if wait_for_k8s_field machineconfig "e2e-compliance-mc-${E2E_RUN_ID}" "$E2E_NAMESPACE" \
@@ -268,7 +268,7 @@ fi
 # =================================================================
 begin_test "FS-DRIFT-10: ConfigPolicy enforces compliance on MachineConfig"
 
-kubectl apply -n "$E2E_NAMESPACE" -f - <<EOF
+if ! kubectl apply -n "$E2E_NAMESPACE" -f - <<EOF
 apiVersion: cfgd.io/v1alpha1
 kind: ConfigPolicy
 metadata:
@@ -287,8 +287,7 @@ spec:
   settings:
     "net.ipv4.ip_forward": "1"
 EOF
-
-if [ $? -ne 0 ]; then
+then
     fail_test "FS-DRIFT-10" "kubectl apply failed"
 else
     if wait_for_k8s_field configpolicy "e2e-compliance-policy-${E2E_RUN_ID}" "$E2E_NAMESPACE" \
@@ -309,7 +308,7 @@ fi
 # =================================================================
 begin_test "FS-DRIFT-11: non-compliant MachineConfig detected"
 
-kubectl apply -n "$E2E_NAMESPACE" -f - <<EOF
+if ! kubectl apply -n "$E2E_NAMESPACE" -f - <<EOF
 apiVersion: cfgd.io/v1alpha1
 kind: MachineConfig
 metadata:
@@ -325,8 +324,7 @@ spec:
   packages:
     - name: curl
 EOF
-
-if [ $? -ne 0 ]; then
+then
     fail_test "FS-DRIFT-11" "kubectl apply failed"
 else
     # Wait for the policy controller to re-evaluate (watches MachineConfig changes)
@@ -356,7 +354,7 @@ fi
 # =================================================================
 begin_test "FS-DRIFT-12: DriftAlert propagates to MachineConfig compliance status"
 
-kubectl apply -n "$E2E_NAMESPACE" -f - <<EOF
+if ! kubectl apply -n "$E2E_NAMESPACE" -f - <<EOF
 apiVersion: cfgd.io/v1alpha1
 kind: DriftAlert
 metadata:
@@ -375,8 +373,7 @@ spec:
       expected: "262144"
       actual: "65530"
 EOF
-
-if [ $? -ne 0 ]; then
+then
     fail_test "FS-DRIFT-12" "kubectl apply failed"
 else
     sleep 5

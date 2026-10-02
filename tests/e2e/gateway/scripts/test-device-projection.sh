@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # Gateway device-projection tests (GW-32 through GW-36).
 # Sourced by run-all.sh — no shebang, no set, no source, no traps, no print_summary.
 #

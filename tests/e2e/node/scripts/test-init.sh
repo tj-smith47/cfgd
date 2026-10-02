@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # Node E2E tests: Init
 # Sourced by run-all.sh — do NOT set traps or pipefail here.
 
@@ -32,6 +33,6 @@ if [ "$RC" -eq 0 ] && \
    exec_in_pod test -f /tmp/e2e-init-test/profiles/k8s-worker-minimal.yaml; then
     pass_test "BIN-08"
 else
-    fail_test "BIN-08" "Init failed or files missing (exit code: $RC)"
+    fail_test "BIN-08" "Init failed or files missing (exit code: $RC): $OUTPUT"
 fi
 fi  # end git availability check

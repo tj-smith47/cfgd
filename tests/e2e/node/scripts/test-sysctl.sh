@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # Node E2E tests: Sysctl
 # Sourced by run-all.sh — do NOT set traps or pipefail here.
 
