@@ -295,7 +295,7 @@ tasks:
         msg: "shellcheck is not installed; install the version pinned in {{.PIN_FILE}}."
     cmds:
       - |
-        pin=$(awk '/^  version:/ { inside = 1 } inside && /default:/ { split($0, q, "\""); print q[2]; exit }' {{.PIN_FILE}})
+        pin=$(awk '/^  version:/ { inside = 1; next } inside && /^  [^ ]/ { exit } inside && /default:/ { split($0, q, "\""); print q[2]; exit }' {{.PIN_FILE}})
         if [ -z "$pin" ]; then
           echo "shellcheck: no version default found under version: in {{.PIN_FILE}}" >&2
           exit 1
