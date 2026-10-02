@@ -127,8 +127,8 @@ set while ArgoCD owns the gateway, which the override then does not reach. When
 `CFGD_DEPLOY_MANIFESTS` names a tree that `task deploy:operator` applied, that tree
 owns the operator and gateway Deployments, and setup warns the same way.
 
-Because the gateway suite and the suites that still run against the ArgoCD release
-run a release, a check reads a counter through
+Because the gateway suite, and each suite not yet moved to the PR install, runs a
+release, a check reads a counter through
 `metric_sample_lines` or `metric_sample_value` in `common/helpers.sh`, which
 accept both the `<family>_total` sample and the `<family>_total_total` sample an
 older release renders. `common/test-metrics.sh` (run by `task e2e:tags:check`)

@@ -151,11 +151,18 @@ ensure_test_pod() {
     create_e2e_namespace
 
     sed "s|IMAGE_PLACEHOLDER|$(e2e_image cfgd)|g; s|RUN_PLACEHOLDER|${E2E_RUN_ID}|g" \
-        "$manifest" | kubectl apply -n "$E2E_NAMESPACE" -f -
+        "$manifest" | kubectl apply -n "$E2E_NAMESPACE" -f - || {
+        echo "ERROR: could not apply test pod $pod_name in $E2E_NAMESPACE. Check that the runner can create pods there and that $(e2e_image cfgd) is in the registry." >&2
+        return 1
+    }
 
     echo "  Waiting for test pod $pod_name..."
     kubectl wait --for=condition=Ready "pod/$pod_name" \
-        -n "$E2E_NAMESPACE" --timeout=120s
+        -n "$E2E_NAMESPACE" --timeout=120s || {
+        kubectl describe pod "$pod_name" -n "$E2E_NAMESPACE" >&2 || true
+        echo "ERROR: test pod $pod_name is not Ready after 120s. Read the description above (image pull, scheduling, privileged admission) and rerun." >&2
+        return 1
+    }
 
     TEST_POD="$pod_name"
     export TEST_POD
@@ -186,7 +193,7 @@ ensure_label() {
   local rc=0
   kubectl label "$@" >/dev/null 2>&1 || rc=$?
   if [ "$rc" -ne 0 ]; then
-    echo "FAIL: could not label: kubectl label $* (rc=$rc)" >&2
+    echo "FAIL: could not label: kubectl label $* (rc=$rc). Check that the runner can label $1 objects." >&2
     return 1
   fi
 }
