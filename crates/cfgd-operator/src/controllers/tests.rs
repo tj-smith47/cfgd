@@ -3560,73 +3560,97 @@ fn every_kind_with_conditions_exposes_its_readiness_condition_as_a_column() {
     );
 }
 
-/// The text of each call to `opener` in `src`, from the open paren to its
-/// matching close.
-fn call_args<'a>(src: &'a str, opener: &str) -> Vec<&'a str> {
-    src.match_indices(opener)
+/// The top-level arguments of each call to `opener` in `code`, split on the
+/// commas outside any bracket. `code` has its comments and literals blanked,
+/// so a bracket or comma written inside one is not read as syntax.
+fn call_args<'a>(code: &'a str, opener: &str) -> Vec<Vec<&'a str>> {
+    code.match_indices(opener)
         .map(|(start, _)| {
             let open = start + opener.len();
-            let mut depth = 1usize;
-            let close = src[open..]
-                .char_indices()
-                .find_map(|(i, c)| {
-                    match c {
-                        '(' => depth += 1,
-                        ')' => depth -= 1,
-                        _ => {}
+            let mut depth = 0usize;
+            let mut args = Vec::new();
+            let mut arg_start = open;
+            for (i, c) in code[open..].char_indices() {
+                let at = open + i;
+                match c {
+                    '(' | '[' | '{' => depth += 1,
+                    ')' | ']' | '}' if depth > 0 => depth -= 1,
+                    ')' => {
+                        args.push(&code[arg_start..at]);
+                        return args;
                     }
-                    (depth == 0).then_some(open + i)
-                })
-                .unwrap_or_else(|| panic!("unclosed `{opener}` call"));
-            &src[open..close]
+                    ',' if depth == 0 => {
+                        args.push(&code[arg_start..at]);
+                        arg_start = at + 1;
+                    }
+                    _ => {}
+                }
+            }
+            panic!("unclosed `{opener}` call");
         })
         .collect()
 }
 
 #[test]
 fn every_cfgd_io_watch_is_held_to_the_watch_label_selector() {
-    let production = cfgd_core::test_helpers::production_slice(include_str!("mod.rs"));
+    use cfgd_core::test_helpers::{blank_non_code, production_slice_of, rust_sources_under};
 
-    // Each kind holds its own floor, so a lost site of one kind cannot be
-    // hidden by a new site of another.
-    for (opener, floor) in [("Controller::new(", 6), (".owns(", 1), (".watches(", 2)] {
-        let calls = call_args(&production, opener);
+    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let code: String = rust_sources_under(&src)
+        .iter()
+        .map(|path| blank_non_code(&production_slice_of(path)) + "\n")
+        .collect();
+
+    // Each opener with the position of its `watcher::Config` argument, as
+    // kube-runtime declares it, and the fewest calls the operator makes today.
+    // A floor per kind keeps a lost site of one kind from being hidden by a new
+    // site of another. The reflectors come first so a misplaced exemption is
+    // reported as such.
+    let openers = [
+        ("watcher::watcher(", 1, 0),
+        ("metadata_watcher(", 1, 0),
+        ("Controller::new(", 1, 6),
+        ("Controller::new_with(", 1, 0),
+        (".owns(", 1, 1),
+        (".owns_with(", 2, 0),
+        (".watches(", 1, 2),
+        (".watches_with(", 2, 0),
+    ];
+    let mut exempt = 0;
+    for (opener, config_at, floor) in openers {
+        let calls = call_args(&code, opener);
         assert!(
             calls.len() >= floor,
-            "expected at least {floor} `{opener}` calls in controllers/mod.rs, found {}",
+            "expected at least {floor} `{opener}` calls in the operator, found {}",
             calls.len()
         );
         for args in calls {
-            assert!(
-                args.contains("watch_config()"),
-                "`{opener}{args})` must watch through runtime::watch_config()"
-            );
-        }
-    }
-
-    // A standalone reflector is a watch too. The Namespace metadata reflector
-    // is the one exemption: ClusterConfigPolicy matches on namespace labels
-    // the selector never names.
-    let mut exempt = 0;
-    for opener in ["watcher::watcher(", "metadata_watcher("] {
-        for args in call_args(&production, opener) {
-            if args.contains("PartialObjectMeta<Namespace>") {
+            let config = args
+                .get(config_at)
+                .unwrap_or_else(|| panic!("`{opener}` call with no argument {config_at}: {args:?}"))
+                .trim();
+            // The Namespace metadata reflector is the one unfiltered watch:
+            // ClusterConfigPolicy matches on namespace labels the selector
+            // never names.
+            if args
+                .iter()
+                .any(|a| a.contains("PartialObjectMeta<Namespace>"))
+            {
                 exempt += 1;
+                assert_eq!(
+                    config, "WatcherConfig::default()",
+                    "the Namespace reflector is the one watch that holds the unfiltered default"
+                );
             } else {
                 assert!(
-                    args.contains("watch_config()"),
-                    "`{opener}{args})` must watch through runtime::watch_config()"
+                    config.ends_with("watch_config()"),
+                    "`{opener}` must take runtime::watch_config() as its watcher config, got `{config}`"
                 );
             }
         }
     }
     assert_eq!(
         exempt, 1,
-        "exactly one reflector, the Namespace metadata one, may watch without the selector"
-    );
-    assert_eq!(
-        production.matches("WatcherConfig::default()").count(),
-        1,
-        "only the Namespace reflector may watch without the selector"
+        "exactly one watch, the Namespace metadata reflector, may skip the selector"
     );
 }
