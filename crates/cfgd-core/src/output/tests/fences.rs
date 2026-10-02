@@ -10050,12 +10050,24 @@ const DEFAULTING_METHODS: [&str; 11] = [
 /// The methods an `Option` passes through on its way to one of
 /// [`DEFAULTING_METHODS`]: a field read just ahead of one of them is the
 /// `Option` that call defaults.
-const OPTION_STEPS: [&str; 9] = [
-    "as_ref", "as_deref", "as_mut", "clone", "cloned", "copied", "and_then", "map", "filter",
+const OPTION_STEPS: [&str; 12] = [
+    "as_ref",
+    "as_deref",
+    "as_mut",
+    "clone",
+    "cloned",
+    "copied",
+    "and_then",
+    "map",
+    "filter",
+    "ok",
+    "ok_or",
+    "ok_or_else",
 ];
 
-/// The mark a defaulting read carries when the field it names belongs to a
-/// struct outside `config/` that shares a section's field name.
+/// The mark a defaulting read of a row carries when the value it puts in the
+/// `None`'s place comes from somewhere other than a default: a legacy key
+/// folded in, or an answer the user gives at a prompt.
 const SECTION_HATCH: &str = "option-section-ok:";
 
 /// The private deserialization mirror of `ConfigSpec`, moved into it field for
@@ -10412,40 +10424,469 @@ struct DefaultingRead {
     function: Option<String>,
 }
 
-/// Every read in one source that hands a section field's `Option` to one of
+/// The methods whose value the walk types as its receiver's: an `Option` or
+/// `Result` step, an unwrap, or the item a collection hands out.
+const TYPE_STEPS: [&str; 26] = [
+    "as_ref",
+    "as_deref",
+    "as_mut",
+    "as_deref_mut",
+    "clone",
+    "cloned",
+    "copied",
+    "filter",
+    "ok",
+    "ok_or",
+    "ok_or_else",
+    "unwrap",
+    "expect",
+    "unwrap_or",
+    "unwrap_or_else",
+    "unwrap_or_default",
+    "or",
+    "or_else",
+    "get_or_insert",
+    "get_or_insert_with",
+    "iter",
+    "iter_mut",
+    "into_iter",
+    "first",
+    "last",
+    "get",
+];
+
+/// The types the walk sees through to the one they hold: a field typed
+/// `Option<Vec<Arc<T>>>` holds a `T`.
+const TYPE_WRAPPERS: [&str; 15] = [
+    "Option", "Result", "Box", "Arc", "Rc", "Vec", "VecDeque", "Cow", "RefCell", "Mutex", "RwLock",
+    "LazyLock", "OnceLock", "BTreeSet", "HashSet",
+];
+
+/// The name of the type `ty` holds past references, slices and
+/// [`TYPE_WRAPPERS`], with `Self` read as `owner`.
+fn held_type(ty: &syn::Type, owner: Option<&str>) -> Option<String> {
+    match ty {
+        syn::Type::Reference(r) => held_type(&r.elem, owner),
+        syn::Type::Paren(p) => held_type(&p.elem, owner),
+        syn::Type::Group(g) => held_type(&g.elem, owner),
+        syn::Type::Slice(s) => held_type(&s.elem, owner),
+        syn::Type::Array(a) => held_type(&a.elem, owner),
+        syn::Type::Path(path) => {
+            let last = path.path.segments.last()?;
+            if last.ident == "Self" {
+                return owner.map(str::to_string);
+            }
+            if !TYPE_WRAPPERS.contains(&last.ident.to_string().as_str()) {
+                return Some(last.ident.to_string());
+            }
+            let syn::PathArguments::AngleBracketed(args) = &last.arguments else {
+                return None;
+            };
+            args.args.iter().find_map(|arg| match arg {
+                syn::GenericArgument::Type(inner) => held_type(inner, owner),
+                _ => None,
+            })
+        }
+        _ => None,
+    }
+}
+
+/// The types each name is declared with, by name.
+type Declared = std::collections::HashMap<String, std::collections::BTreeSet<Option<String>>>;
+
+/// Records that `name` is declared with `ty`.
+fn agree(slot: &mut Declared, name: String, ty: Option<String>) {
+    slot.entry(name).or_default().insert(ty);
+}
+
+/// The one type every declaration of a name gives it; a name two
+/// declarations type apart stays untyped.
+fn agreed(types: &std::collections::BTreeSet<Option<String>>) -> Option<String> {
+    match types.len() {
+        1 => types.first()?.clone(),
+        _ => None,
+    }
+}
+
+/// What the defaulting walk knows of the tree's types: the rows it judges,
+/// each struct's field types and each function's return type by name, and
+/// the row fields each method hands back as their `Option`.
+#[derive(Default)]
+struct WalkTypes {
+    /// Every row's field, by the struct declaring it.
+    rows: std::collections::HashMap<String, std::collections::BTreeSet<String>>,
+    /// Every row's field name, judged by name on a receiver the walk cannot type.
+    names: std::collections::BTreeSet<String>,
+    /// Each struct's field types, by struct and field.
+    fields: std::collections::HashMap<String, Declared>,
+    /// Each function's return type, by `impl` type (empty for a free
+    /// function) and name.
+    returns: std::collections::HashMap<String, Declared>,
+    /// Each method's return type by name alone, where every `impl` agrees.
+    methods: Declared,
+    /// The row fields a method's returned value carries as their `Option`,
+    /// by `impl` type and method.
+    reads: std::collections::HashMap<String, std::collections::HashMap<String, Vec<String>>>,
+    /// The same by method name alone, across every `impl`.
+    reads_by_name: std::collections::HashMap<String, Vec<String>>,
+}
+
+impl WalkTypes {
+    /// The types `files` declare, judged against `rows` as `(struct, field)`.
+    fn new(rows: &[(&str, &str)], files: &[&syn::File]) -> Self {
+        let mut types = Self::default();
+        for &(owner, field) in rows {
+            types
+                .rows
+                .entry(owner.to_string())
+                .or_default()
+                .insert(field.to_string());
+            types.names.insert(field.to_string());
+        }
+        for file in files {
+            let mut decls = TypeDecls {
+                types: &mut types,
+                owner: None,
+            };
+            syn::visit::Visit::visit_file(&mut decls, file);
+        }
+        let mut returned = Vec::new();
+        for file in files {
+            let mut walk = DefaultingReads::new(&types);
+            syn::visit::Visit::visit_file(&mut walk, file);
+            returned.append(&mut walk.returned);
+        }
+        for (owner, method, fields) in returned {
+            types
+                .reads_by_name
+                .entry(method.clone())
+                .or_default()
+                .extend(fields.iter().cloned());
+            types.reads.entry(owner).or_default().insert(method, fields);
+        }
+        types
+    }
+
+    /// Whether `field` on a value of type `owner` is a row; on a value the
+    /// walk cannot type, whether any row's field has that name.
+    fn row_read(&self, owner: Option<&str>, field: &str) -> bool {
+        match owner {
+            Some(owner) => self.rows.get(owner).is_some_and(|f| f.contains(field)),
+            None => self.names.contains(field),
+        }
+    }
+
+    /// The type `method` returns on a receiver of type `receiver`.
+    fn method(&self, receiver: Option<String>, method: &str) -> Option<String> {
+        if let Some(found) = receiver
+            .as_deref()
+            .and_then(|r| self.returns.get(r)?.get(method))
+        {
+            return agreed(found);
+        }
+        if TYPE_STEPS.contains(&method) {
+            return receiver;
+        }
+        match receiver {
+            Some(_) => None,
+            None => self.methods.get(method).and_then(agreed),
+        }
+    }
+
+    /// The type a call of the function at `path` returns: `Type::f` through
+    /// `Type`'s `impl` (`Self::f` through `within`'s), anything else as a
+    /// free function.
+    fn call(&self, path: &syn::Path, within: Option<&str>) -> Option<String> {
+        let mut segments = path.segments.iter().rev();
+        let name = segments.next()?.ident.to_string();
+        let owner = segments.next().map(|s| match within {
+            Some(within) if s.ident == "Self" => within.to_string(),
+            _ => s.ident.to_string(),
+        });
+        owner
+            .and_then(|o| self.returns.get(&o)?.get(&name))
+            .or_else(|| self.returns.get("")?.get(&name))
+            .and_then(agreed)
+    }
+}
+
+/// The struct field types and function return types one source declares,
+/// with its test-gated items skipped.
+struct TypeDecls<'t> {
+    types: &'t mut WalkTypes,
+    owner: Option<String>,
+}
+
+impl TypeDecls<'_> {
+    fn returns(&mut self, sig: &syn::Signature) {
+        let ty = match &sig.output {
+            syn::ReturnType::Type(_, ty) => held_type(ty, self.owner.as_deref()),
+            syn::ReturnType::Default => None,
+        };
+        let name = sig.ident.to_string();
+        if self.owner.is_some() {
+            agree(&mut self.types.methods, name.clone(), ty.clone());
+        }
+        let owner = self.owner.clone().unwrap_or_default();
+        agree(self.types.returns.entry(owner).or_default(), name, ty);
+    }
+}
+
+impl<'ast> syn::visit::Visit<'ast> for TypeDecls<'_> {
+    fn visit_item_mod(&mut self, item: &'ast syn::ItemMod) {
+        if !test_gated(&item.attrs) {
+            syn::visit::visit_item_mod(self, item);
+        }
+    }
+
+    fn visit_item_struct(&mut self, item: &'ast syn::ItemStruct) {
+        if test_gated(&item.attrs) {
+            return;
+        }
+        let owner = item.ident.to_string();
+        for field in &item.fields {
+            if let Some(name) = &field.ident {
+                let ty = held_type(&field.ty, Some(&owner));
+                let slot = self.types.fields.entry(owner.clone()).or_default();
+                agree(slot, name.to_string(), ty);
+            }
+        }
+    }
+
+    fn visit_item_impl(&mut self, item: &'ast syn::ItemImpl) {
+        if test_gated(&item.attrs) {
+            return;
+        }
+        let outer = std::mem::replace(&mut self.owner, impl_owner(item));
+        syn::visit::visit_item_impl(self, item);
+        self.owner = outer;
+    }
+
+    fn visit_impl_item_fn(&mut self, func: &'ast syn::ImplItemFn) {
+        if !test_gated(&func.attrs) {
+            self.returns(&func.sig);
+            syn::visit::visit_impl_item_fn(self, func);
+        }
+    }
+
+    fn visit_item_fn(&mut self, func: &'ast syn::ItemFn) {
+        if !test_gated(&func.attrs) {
+            let outer = self.owner.take();
+            self.returns(&func.sig);
+            syn::visit::visit_item_fn(self, func);
+            self.owner = outer;
+        }
+    }
+}
+
+/// Whether a call of `path` hands back its argument wrapped: `Some`, `Ok`,
+/// or a `Box`, `Arc` or `Rc` built by `new`.
+fn wraps_its_argument(path: &syn::Path) -> bool {
+    let mut segments = path.segments.iter().rev();
+    match (segments.next(), segments.next()) {
+        (Some(last), None) => last.ident == "Some" || last.ident == "Ok",
+        (Some(last), Some(owner)) => {
+            last.ident == "new" && ["Box", "Arc", "Rc"].iter().any(|w| owner.ident == w)
+        }
+        _ => false,
+    }
+}
+
+/// Whether a defaulting call's fallback is one of [`PROFILE_PLACEHOLDERS`]:
+/// the word a surface prints for an absent profile, which renders the
+/// absence and puts no profile in its place.
+fn renders_absence(fallback: &syn::Expr) -> bool {
+    matches!(ProfileFallbacks::fallback_value(fallback), syn::Expr::Path(path)
+    if path.path.segments.last().is_some_and(|seg| {
+        PROFILE_PLACEHOLDERS.contains(&seg.ident.to_string().as_str())
+    }))
+}
+
+/// Every read in one source that hands a row's `Option` to one of
 /// [`DEFAULTING_METHODS`]: a field read (or a no-argument method named like
 /// the field, `spec.theme()`) directly ahead of the defaulting call or of the
 /// [`OPTION_STEPS`] leading to it, inside an `and_then` closure along that
-/// chain, or through a `let` binding that holds such a read.
+/// chain, through a `let` binding that holds such a read, or through a call
+/// of a method whose returned value is such a read (`active_profile()`).
+/// A receiver is judged by its type where the walk can tell it, from a
+/// parameter, `self`, a `let`, a pattern, a loop or closure binding, a field
+/// or a call's return, and by the field's name where it cannot.
 struct DefaultingReads<'f> {
-    fields: &'f std::collections::BTreeSet<String>,
+    types: &'f WalkTypes,
     owner: Option<String>,
     function: Option<String>,
     bindings: Vec<std::collections::HashMap<String, Vec<String>>>,
+    /// The type each binding in scope holds, `None` where the walk cannot tell.
+    typed: Vec<std::collections::HashMap<String, Option<String>>>,
     found: Vec<DefaultingRead>,
+    /// The row fields each method's returned value carries, as
+    /// `(impl type, method, fields)`.
+    returned: Vec<(String, String, Vec<String>)>,
 }
 
-impl DefaultingReads<'_> {
-    /// The section fields `expr` yields as its `Option`, where `counted` says
+impl<'f> DefaultingReads<'f> {
+    fn new(types: &'f WalkTypes) -> Self {
+        Self {
+            types,
+            owner: None,
+            function: None,
+            bindings: Vec::new(),
+            typed: Vec::new(),
+            found: Vec::new(),
+            returned: Vec::new(),
+        }
+    }
+
+    /// The type of the value `expr` produces, as far as the walk can tell.
+    fn type_of(&self, expr: &syn::Expr) -> Option<String> {
+        match peel(expr) {
+            syn::Expr::Path(path) if path.path.is_ident("self") => self.owner.clone(),
+            syn::Expr::Path(path) => {
+                let name = path.path.get_ident()?.to_string();
+                self.typed
+                    .iter()
+                    .rev()
+                    .find_map(|s| s.get(&name))
+                    .cloned()
+                    .flatten()
+            }
+            syn::Expr::Field(field) => {
+                let syn::Member::Named(name) = &field.member else {
+                    return None;
+                };
+                let base = self.type_of(&field.base)?;
+                self.types
+                    .fields
+                    .get(&base)?
+                    .get(&name.to_string())
+                    .and_then(agreed)
+            }
+            syn::Expr::MethodCall(call) => self
+                .types
+                .method(self.type_of(&call.receiver), &call.method.to_string()),
+            syn::Expr::Call(call) => match peel(&call.func) {
+                syn::Expr::Path(func) if wraps_its_argument(&func.path) => {
+                    call.args.first().and_then(|arg| self.type_of(arg))
+                }
+                syn::Expr::Path(func) => self.types.call(&func.path, self.owner.as_deref()),
+                _ => None,
+            },
+            syn::Expr::Try(tried) => self.type_of(&tried.expr),
+            syn::Expr::Unary(unary) if matches!(unary.op, syn::UnOp::Deref(_)) => {
+                self.type_of(&unary.expr)
+            }
+            syn::Expr::Index(index) => self.type_of(&index.expr),
+            syn::Expr::Struct(lit) => lit.path.segments.last().map(|s| s.ident.to_string()),
+            syn::Expr::Cast(cast) => held_type(&cast.ty, self.owner.as_deref()),
+            _ => None,
+        }
+    }
+
+    /// Binds every name `pat` introduces to the type it holds, where `ty` is
+    /// the type of the value it matches.
+    fn bind(&mut self, pat: &syn::Pat, ty: Option<String>) {
+        match pat {
+            syn::Pat::Ident(ident) => {
+                if let Some((_, sub)) = &ident.subpat {
+                    self.bind(sub, ty.clone());
+                }
+                if let Some(scope) = self.typed.last_mut() {
+                    scope.insert(ident.ident.to_string(), ty);
+                }
+            }
+            syn::Pat::Type(typed) => {
+                let annotated = held_type(&typed.ty, self.owner.as_deref());
+                self.bind(&typed.pat, annotated);
+            }
+            syn::Pat::Reference(r) => self.bind(&r.pat, ty),
+            syn::Pat::Paren(p) => self.bind(&p.pat, ty),
+            syn::Pat::Or(or) => {
+                for case in &or.cases {
+                    self.bind(case, ty.clone());
+                }
+            }
+            syn::Pat::Slice(slice) => {
+                for elem in &slice.elems {
+                    self.bind(elem, ty.clone());
+                }
+            }
+            syn::Pat::TupleStruct(tuple) => {
+                let holds = tuple.elems.len() == 1
+                    && (tuple.path.is_ident("Some") || tuple.path.is_ident("Ok"));
+                for elem in &tuple.elems {
+                    self.bind(elem, if holds { ty.clone() } else { None });
+                }
+            }
+            syn::Pat::Struct(lit) => {
+                let owner = lit.path.segments.last().map(|s| s.ident.to_string());
+                for field in &lit.fields {
+                    let held = match (&owner, &field.member) {
+                        (Some(owner), syn::Member::Named(name)) => self
+                            .types
+                            .fields
+                            .get(owner)
+                            .and_then(|f| f.get(&name.to_string()))
+                            .and_then(agreed),
+                        _ => None,
+                    };
+                    self.bind(&field.pat, held);
+                }
+            }
+            syn::Pat::Tuple(tuple) => {
+                for elem in &tuple.elems {
+                    self.bind(elem, None);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Binds a closure's parameters, its last one to `item`: the value an
+    /// `Option` or an iterator over its receiver hands it, and the item a
+    /// `fold` hands its last parameter.
+    fn bind_closure(&mut self, closure: &syn::ExprClosure, item: Option<String>) {
+        let last = closure.inputs.len().saturating_sub(1);
+        for (at, input) in closure.inputs.iter().enumerate() {
+            self.bind(input, if at == last { item.clone() } else { None });
+        }
+    }
+
+    /// The row fields a call of `method` on a receiver of type `owner` yields
+    /// as their `Option`: the field itself for a no-argument method named
+    /// like it, and whatever the method's own returned value reads.
+    fn method_reads(&self, owner: Option<&str>, method: &str, bare: bool, out: &mut Vec<String>) {
+        if bare && self.types.row_read(owner, method) {
+            out.push(method.to_string());
+        }
+        let reads = match owner {
+            Some(owner) => self.types.reads.get(owner).and_then(|m| m.get(method)),
+            None => self.types.reads_by_name.get(method),
+        };
+        out.extend(reads.into_iter().flatten().cloned());
+    }
+
+    /// The row fields `expr` yields as their `Option`, where `counted` says
     /// the value `expr` produces is the `Option` being defaulted.
-    fn chain(&self, expr: &syn::Expr, counted: bool, out: &mut Vec<String>) {
+    fn chain(&mut self, expr: &syn::Expr, counted: bool, out: &mut Vec<String>) {
         match peel(expr) {
             syn::Expr::MethodCall(call) => {
                 let method = call.method.to_string();
-                if counted && call.args.is_empty() && self.fields.contains(&method) {
-                    out.push(method.clone());
-                }
-                if counted && method == "and_then" {
-                    for arg in &call.args {
-                        if let syn::Expr::Closure(closure) = peel(arg) {
-                            let body = match &*closure.body {
-                                syn::Expr::Block(block) => match block.block.stmts.last() {
-                                    Some(syn::Stmt::Expr(tail, None)) => tail,
-                                    _ => continue,
-                                },
-                                body => body,
-                            };
-                            self.chain(body, true, out);
+                if counted {
+                    let receiver = self.type_of(&call.receiver);
+                    self.method_reads(receiver.as_deref(), &method, call.args.is_empty(), out);
+                    if method == "and_then" {
+                        for arg in &call.args {
+                            if let syn::Expr::Closure(closure) = peel(arg) {
+                                self.bind_closure(closure, receiver.clone());
+                                let body = match &*closure.body {
+                                    syn::Expr::Block(block) => match block.block.stmts.last() {
+                                        Some(syn::Stmt::Expr(tail, None)) => tail,
+                                        _ => continue,
+                                    },
+                                    body => body,
+                                };
+                                self.chain(body, true, out);
+                            }
                         }
                     }
                 }
@@ -10455,7 +10896,13 @@ impl DefaultingReads<'_> {
             }
             syn::Expr::Field(field) => {
                 if let (true, syn::Member::Named(name)) = (counted, &field.member) {
-                    out.push(name.to_string());
+                    let name = name.to_string();
+                    if self
+                        .types
+                        .row_read(self.type_of(&field.base).as_deref(), &name)
+                    {
+                        out.push(name);
+                    }
                 }
                 self.chain(&field.base, false, out);
             }
@@ -10471,13 +10918,13 @@ impl DefaultingReads<'_> {
         }
     }
 
-    /// Record every section field `expr` yields as a read defaulted at `span`.
+    /// Record every row field `expr` yields as a read defaulted at `span`.
     fn record(&mut self, expr: &syn::Expr, span: proc_macro2::Span) {
         let mut read = Vec::new();
         self.chain(expr, true, &mut read);
         read.sort();
         read.dedup();
-        for field in read.into_iter().filter(|f| self.fields.contains(f)) {
+        for field in read.into_iter().filter(|f| self.types.names.contains(f)) {
             self.found.push(DefaultingRead {
                 field,
                 row: row_of(span),
@@ -10487,10 +10934,49 @@ impl DefaultingReads<'_> {
         }
     }
 
-    fn in_function(&mut self, name: String, visit: impl FnOnce(&mut Self)) {
+    /// Notes the row fields a method's tail hands back as their `Option`; a
+    /// tail that defaults its `Option` hands back a value.
+    fn note_returned(&mut self, func: &syn::ImplItemFn) {
+        let (Some(owner), Some(_), Some(syn::Stmt::Expr(tail, None))) = (
+            self.owner.clone(),
+            func.sig.receiver(),
+            func.block.stmts.last(),
+        ) else {
+            return;
+        };
+        if matches!(peel(tail), syn::Expr::MethodCall(call)
+            if DEFAULTING_METHODS.contains(&call.method.to_string().as_str()))
+        {
+            return;
+        }
+        let mut read = Vec::new();
+        self.chain(tail, true, &mut read);
+        read.retain(|f| self.types.names.contains(f));
+        read.sort();
+        read.dedup();
+        if !read.is_empty() {
+            self.returned
+                .push((owner, func.sig.ident.to_string(), read));
+        }
+    }
+
+    fn in_function<'a>(
+        &mut self,
+        name: String,
+        inputs: impl IntoIterator<Item = &'a syn::FnArg>,
+        visit: impl FnOnce(&mut Self),
+    ) {
         let outer = self.function.replace(name);
         self.bindings.push(Default::default());
+        self.typed.push(Default::default());
+        for input in inputs {
+            if let syn::FnArg::Typed(typed) = input {
+                let ty = held_type(&typed.ty, self.owner.as_deref());
+                self.bind(&typed.pat, ty);
+            }
+        }
         visit(self);
+        self.typed.pop();
         self.bindings.pop();
         self.function = outer;
     }
@@ -10514,8 +11000,9 @@ impl<'ast> syn::visit::Visit<'ast> for DefaultingReads<'_> {
 
     fn visit_impl_item_fn(&mut self, func: &'ast syn::ImplItemFn) {
         if !test_gated(&func.attrs) {
-            self.in_function(func.sig.ident.to_string(), |walk| {
+            self.in_function(func.sig.ident.to_string(), &func.sig.inputs, |walk| {
                 syn::visit::visit_impl_item_fn(walk, func);
+                walk.note_returned(func);
             });
         }
     }
@@ -10525,7 +11012,7 @@ impl<'ast> syn::visit::Visit<'ast> for DefaultingReads<'_> {
             return;
         }
         let outer = self.owner.take();
-        self.in_function(func.sig.ident.to_string(), |walk| {
+        self.in_function(func.sig.ident.to_string(), &func.sig.inputs, |walk| {
             syn::visit::visit_item_fn(walk, func);
         });
         self.owner = outer;
@@ -10551,14 +11038,49 @@ impl<'ast> syn::visit::Visit<'ast> for DefaultingReads<'_> {
                 scope.insert(name.ident.to_string(), held);
             }
         }
+        let ty = local
+            .init
+            .as_ref()
+            .and_then(|init| self.type_of(&init.expr));
         syn::visit::visit_local(self, local);
+        self.bind(&local.pat, ty);
+    }
+
+    fn visit_expr_let(&mut self, expr: &'ast syn::ExprLet) {
+        let ty = self.type_of(&expr.expr);
+        syn::visit::visit_expr_let(self, expr);
+        self.bind(&expr.pat, ty);
+    }
+
+    fn visit_expr_for_loop(&mut self, expr: &'ast syn::ExprForLoop) {
+        let ty = self.type_of(&expr.expr);
+        self.visit_expr(&expr.expr);
+        self.bind(&expr.pat, ty);
+        self.visit_block(&expr.body);
+    }
+
+    fn visit_expr_closure(&mut self, closure: &'ast syn::ExprClosure) {
+        self.bind_closure(closure, None);
+        syn::visit::visit_expr_closure(self, closure);
     }
 
     fn visit_expr_method_call(&mut self, call: &'ast syn::ExprMethodCall) {
-        if DEFAULTING_METHODS.contains(&call.method.to_string().as_str()) {
+        if DEFAULTING_METHODS.contains(&call.method.to_string().as_str())
+            && !call.args.first().is_some_and(renders_absence)
+        {
             self.record(&call.receiver, call.method.span());
         }
-        syn::visit::visit_expr_method_call(self, call);
+        self.visit_expr(&call.receiver);
+        let item = self.type_of(&call.receiver);
+        for arg in &call.args {
+            match arg {
+                syn::Expr::Closure(closure) => {
+                    self.bind_closure(closure, item.clone());
+                    syn::visit::visit_expr_closure(self, closure);
+                }
+                arg => self.visit_expr(arg),
+            }
+        }
     }
 
     fn visit_expr_if(&mut self, expr: &'ast syn::ExprIf) {
@@ -10591,7 +11113,12 @@ impl<'ast> syn::visit::Visit<'ast> for DefaultingReads<'_> {
         {
             self.record(&expr.expr, expr.match_token.span);
         }
-        syn::visit::visit_expr_match(self, expr);
+        self.visit_expr(&expr.expr);
+        let ty = self.type_of(&expr.expr);
+        for arm in &expr.arms {
+            self.bind(&arm.pat, ty.clone());
+            syn::visit::visit_arm(self, arm);
+        }
     }
 }
 
@@ -10615,22 +11142,27 @@ impl<'ast> syn::visit::Visit<'ast> for DefaultingReads<'_> {
 /// - a defaulting read of a row's field (a field read handed to
 ///   `unwrap_or`, `unwrap_or_else`, `unwrap_or_default`, `map_or`,
 ///   `map_or_else`, `is_some_and` or `is_none_or`, directly, through the
-///   `Option` steps between, inside an `and_then` closure, or through a
-///   `let` binding; an `if let`, a `let … else` or a `match` whose `None`
+///   `Option` steps between, inside an `and_then` closure, through a `let`
+///   binding, or through a method whose returned value is such a read
+///   (`active_profile()`); an `if let`, a `let … else` or a `match` whose `None`
 ///   branch puts a value in its place; or an `is_none`, `is_some` or
 ///   `matches!` test whose `None` branch does) sits inside that field's
 ///   accessor, and every accessor holds one. A branch that is empty, logs,
 ///   panics, continues, or returns an error, a `None` or `Ok(())` puts no
-///   value there;
+///   value there, and neither does a fallback to one of
+///   [`PROFILE_PLACEHOLDERS`], which renders the absence;
 /// - every section accessor's omitted value is
 ///   `LazyLock::new(<type>::default)` and every leaf accessor's is its type's
 ///   `Default` or a named constant, so no accessor body holds a struct
 ///   literal, a literal or another `static`;
 /// - `ConfigSpec::effective` calls every accessor.
 ///
-/// Fields are matched by name, so a read of a same-named field on a struct
-/// outside `config/` carries `// option-section-ok: <why>` on its line or the
-/// one above. Every production source of every crate is parsed whole with
+/// A read is judged by its receiver's type, which the walk takes from the
+/// struct fields and return types the tree declares, and by the field's name
+/// only where it cannot tell the type. A defaulting read whose value comes
+/// from no default carries `// option-section-ok: <why>` on its line or the
+/// one above, and a marker that marks no such read fails the walk. Every
+/// production source of every crate is parsed whole with
 /// its test-gated items skipped, a source `syn` cannot parse fails the walk,
 /// and each crate's count of parsed sources has a floor.
 #[test]
@@ -10737,24 +11269,30 @@ fn every_option_config_section_is_read_through_its_effective_accessor_or_never_d
         "ConfigSpec::effective fills every field in through its accessor"
     );
 
-    let names: std::collections::BTreeSet<String> =
-        fields.iter().map(|(_, field)| field.clone()).collect();
+    let row_pairs: Vec<(&str, &str)> = crate::test_helpers::OMITTED_FIELDS
+        .iter()
+        .map(|row| (row.owner, row.field))
+        .collect();
+    let files: Vec<&syn::File> = parsed.iter().map(|(_, _, file)| file).collect();
+    let types = WalkTypes::new(&row_pairs, &files);
     let mut offenders = Vec::new();
     let mut held: std::collections::BTreeSet<(String, String)> = Default::default();
+    let mut honored: std::collections::BTreeSet<(String, usize)> = Default::default();
+    let mut markers: std::collections::BTreeSet<(String, usize)> = Default::default();
     for (_, path, file) in &parsed {
-        let mut walk = DefaultingReads {
-            fields: &names,
-            owner: None,
-            function: None,
-            bindings: Vec::new(),
-            found: Vec::new(),
-        };
+        // unfloored-slice-ok: a marker is judged on the file syn parsed.
+        let body = walked_file_body(path);
+        markers.extend(
+            body.lines()
+                .enumerate()
+                .filter(|(_, line)| carries_hatch(line, SECTION_HATCH))
+                .map(|(at, _)| (source_label(path).to_string(), at)),
+        );
+        let mut walk = DefaultingReads::new(&types);
         syn::visit::Visit::visit_file(&mut walk, file);
         if walk.found.is_empty() {
             continue;
         }
-        // unfloored-slice-ok: rows are judged against the file syn parsed.
-        let body = walked_file_body(path);
         let lines: Vec<&str> = body.lines().collect();
         for read in walk.found {
             let accessor = read
@@ -10770,13 +11308,12 @@ fn every_option_config_section_is_read_through_its_effective_accessor_or_never_d
                 held.insert((owner.to_string(), read.field));
                 continue;
             }
-            let above = read
-                .row
-                .checked_sub(1)
-                .map(|i| lines[i])
-                .unwrap_or_default();
-            if carries_hatch(lines[read.row], SECTION_HATCH) || carries_hatch(above, SECTION_HATCH)
-            {
+            let marked = [Some(read.row), read.row.checked_sub(1)]
+                .into_iter()
+                .flatten()
+                .find(|&at| carries_hatch(lines[at], SECTION_HATCH));
+            if let Some(at) = marked {
+                honored.insert((source_label(path).to_string(), at));
                 continue;
             }
             offenders.push(format!(
@@ -10794,7 +11331,7 @@ fn every_option_config_section_is_read_through_its_effective_accessor_or_never_d
         offenders.is_empty(),
         "an omitted field's value is read through its `<field>_effective` accessor, and a \
          feature-off section or a leaf whose absence means nothing is set is never \
-         defaulted; a same-named field on another struct \
+         defaulted; a value that comes from no default \
          carries `// {SECTION_HATCH} <why>`:\n{}",
         offenders.join("\n")
     );
@@ -10802,11 +11339,22 @@ fn every_option_config_section_is_read_through_its_effective_accessor_or_never_d
         held, sections.accessors,
         "every accessor substitutes its field's omitted value itself"
     );
+    let stale: Vec<String> = markers
+        .difference(&honored)
+        .map(|(label, at)| format!("{label}:{}", at + 1))
+        .collect();
+    assert!(
+        stale.is_empty(),
+        "`// {SECTION_HATCH}` marks a defaulting read of a row the walk would \
+         otherwise report, and these mark none:\n{}",
+        stale.join("\n")
+    );
 }
 
 /// Every shape that puts a value in a section's `None` place is a defaulting
 /// read of that field, and the same shape that puts none there is not: each
-/// row is a function body over a `cfg` whose `daemon` is a section, with the
+/// row is a function body over a `cfg: &C` whose `daemon` is a section and an
+/// `h: &H` that reaches it and a same-named field of another struct, with the
 /// number of defaulting reads the walk must find in it.
 #[test]
 fn every_defaulting_shape_of_a_section_read_is_found_and_no_other() {
@@ -11007,20 +11555,186 @@ fn every_defaulting_shape_of_a_section_read_is_found_and_no_other() {
             "if let Some(s) = &cfg.secrets { s.n } else { 5 }",
             0,
         ),
+        (
+            "a field typed as the row's struct",
+            "h.c.daemon.clone().unwrap_or_default()",
+            1,
+        ),
+        (
+            "a field typed as another struct",
+            "h.d.daemon.clone().unwrap_or_default()",
+            0,
+        ),
+        (
+            "a let typed as the row's struct",
+            "let x: &C = pick(); x.daemon.clone().unwrap_or_default()",
+            1,
+        ),
+        (
+            "a let typed as another struct",
+            "let x: &D = pick(); x.daemon.clone().unwrap_or_default()",
+            0,
+        ),
+        (
+            "a method returning the row's struct",
+            "h.conf().daemon.clone().unwrap_or_default()",
+            1,
+        ),
+        (
+            "a method returning another struct",
+            "h.spare().daemon.clone().unwrap_or_default()",
+            0,
+        ),
+        (
+            "an if let over the row's structs",
+            "if let Some(x) = h.cs.first() { x.daemon.clone().unwrap_or_default() } else { D0 }",
+            1,
+        ),
+        (
+            "an if let over other structs",
+            "if let Some(x) = h.ds.first() { x.daemon.clone().unwrap_or_default() } else { D0 }",
+            0,
+        ),
+        (
+            "a match over the row's structs",
+            "match h.cs.last() { Some(x) => x.daemon.clone().unwrap_or_default(), None => D0 }",
+            1,
+        ),
+        (
+            "a match over other structs",
+            "match h.ds.last() { Some(x) => x.daemon.clone().unwrap_or_default(), None => D0 }",
+            0,
+        ),
+        (
+            "a loop over the row's structs",
+            "for x in &h.cs { x.daemon.clone().unwrap_or_default(); }",
+            1,
+        ),
+        (
+            "a loop over other structs",
+            "for x in &h.ds { x.daemon.clone().unwrap_or_default(); }",
+            0,
+        ),
+        (
+            "a closure over the row's structs",
+            "h.cs.iter().map(|x| x.daemon.clone().unwrap_or_default())",
+            1,
+        ),
+        (
+            "a closure over other structs",
+            "h.ds.iter().map(|x| x.daemon.clone().unwrap_or_default())",
+            0,
+        ),
+        (
+            "a fold over the row's structs",
+            "h.cs.iter().fold(0, |n, x| x.daemon.clone().map_or(n, |d| d.n))",
+            1,
+        ),
+        (
+            "a fold over other structs",
+            "h.ds.iter().fold(0, |n, x| x.daemon.clone().map_or(n, |d| d.n))",
+            0,
+        ),
+        (
+            "self on the row's struct",
+            "impl C { fn g(&self) -> X { self.daemon.clone().unwrap_or_default() } }",
+            1,
+        ),
+        (
+            "self on another struct",
+            "impl D { fn g(&self) -> X { self.daemon.clone().unwrap_or_default() } }",
+            0,
+        ),
+        (
+            "a Self call on the row's struct",
+            "impl C { fn make() -> Self { todo!() } \
+             fn g() -> X { Self::make().daemon.clone().unwrap_or_default() } }",
+            1,
+        ),
+        (
+            "a Self call on another struct",
+            "impl D { fn make() -> Self { todo!() } \
+             fn g() -> X { Self::make().daemon.clone().unwrap_or_default() } }",
+            0,
+        ),
+        (
+            "a struct pattern taking the row's struct",
+            "let H { c, .. } = h; c.daemon.clone().unwrap_or_default()",
+            1,
+        ),
+        (
+            "a struct pattern taking another struct",
+            "let H { d, .. } = h; d.daemon.clone().unwrap_or_default()",
+            0,
+        ),
+        (
+            "a field two declarations type apart",
+            "mod m { struct K { k: A } } struct K { k: C } \
+             fn g(x: &K) -> X { x.k.daemon.clone().unwrap_or_default() }",
+            1,
+        ),
+        (
+            "a method handing back the row",
+            "cfg.daemon_ref().unwrap_or(&X0)",
+            1,
+        ),
+        (
+            "a method handing back another struct's field",
+            "h.d.daemon_ref().unwrap_or(&X0)",
+            0,
+        ),
+        (
+            "a method handing back the row on an untyped receiver",
+            "pick().daemon_ref().unwrap_or(&X0)",
+            1,
+        ),
+        (
+            "a method handing back the row as a Result",
+            "cfg.need().unwrap_or(&X0)",
+            1,
+        ),
+        (
+            "a method handing back another struct's field as a Result",
+            "h.d.need().unwrap_or(&X0)",
+            0,
+        ),
+        (
+            "a method handing back a value it defaulted",
+            "impl C { fn settled(&self) -> X { self.daemon.clone().unwrap_or_default() } } \
+             cfg.settled().is_some_and(on)",
+            1,
+        ),
+        (
+            "a fallback to an absent-profile placeholder",
+            "cfg.daemon.as_deref().unwrap_or(NO_PROFILE_LABEL)",
+            0,
+        ),
+        (
+            "a closure fallback to an absent-profile placeholder",
+            "cfg.daemon.clone().unwrap_or_else(|| UNKNOWN_PROFILE.to_string())",
+            0,
+        ),
+        (
+            "a fallback to another constant",
+            "cfg.daemon.as_deref().unwrap_or(OTHER_LABEL)",
+            1,
+        ),
     ];
-    let fields: std::collections::BTreeSet<String> =
-        std::iter::once("daemon".to_string()).collect();
+    // `C` declares the row; `D` declares a field of the same name that is no row.
+    const TYPES: &str = "struct C { daemon: Option<X> } \
+        struct D { daemon: Option<X> } \
+        struct H { c: C, d: D, cs: Vec<C>, ds: Vec<Arc<D>> } \
+        impl H { fn conf(&self) -> &C { &self.c } fn spare(&self) -> &D { &self.d } } \
+        impl C { fn daemon_ref(&self) -> Option<&X> { self.daemon.as_ref() } \
+            fn need(&self) -> Result<&X, E> { self.daemon.as_ref().ok_or(E) } } \
+        impl D { fn daemon_ref(&self) -> Option<&X> { self.daemon.as_ref() } \
+            fn need(&self) -> Result<&X, E> { self.daemon.as_ref().ok_or(E) } }";
     let mut wrong = Vec::new();
     for (shape, body, expected) in SHAPES {
-        let source = format!("fn f(cfg: &C) -> T {{ {body} }}");
+        let source = format!("{TYPES} fn f(cfg: &C, h: &H) -> T {{ {body} }}");
         let file = syn::parse_file(&source).unwrap_or_else(|e| panic!("{shape}: {e}"));
-        let mut walk = DefaultingReads {
-            fields: &fields,
-            owner: None,
-            function: None,
-            bindings: Vec::new(),
-            found: Vec::new(),
-        };
+        let types = WalkTypes::new(&[("C", "daemon")], &[&file]);
+        let mut walk = DefaultingReads::new(&types);
         syn::visit::Visit::visit_file(&mut walk, &file);
         if walk.found.len() != *expected {
             wrong.push(format!(

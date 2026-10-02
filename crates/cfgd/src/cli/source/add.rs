@@ -240,7 +240,6 @@ pub(super) fn run_source_add(
             .parent()
             .unwrap_or_else(|| Path::new("."))
             .join("profiles");
-        // option-section-ok: the `--profile` flag, answered by the active profile
         let profile_name = cli.profile.as_deref().or(cfg.spec.profile.as_deref());
 
         if let Some(pn) = profile_name

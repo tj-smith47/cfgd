@@ -395,7 +395,6 @@ fn surface_stale_skills(
 ) -> cfgd_core::upgrade::StandaloneSkillOutcome {
     use cfgd_core::upgrade::{self, StandaloneSkillOutcome};
 
-    // option-section-ok: `outcome.update` is the version check's result.
     let binary_available = outcome.update.as_ref().is_some_and(|u| u.update_available);
     let result = upgrade::run_standalone_skill_action(
         update_cfg,

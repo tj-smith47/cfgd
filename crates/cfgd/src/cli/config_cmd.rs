@@ -17,7 +17,6 @@ pub fn build_config_show_doc(cfg: &CfgdConfig, config_path: &Path) -> Doc {
             cfg.spec
                 .profile
                 .as_deref()
-                // option-section-ok: renders the absence of a profile
                 .unwrap_or(super::NO_PROFILE_LABEL)
                 .to_string(),
         );
