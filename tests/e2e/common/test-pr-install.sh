@@ -197,8 +197,10 @@ operator_kinds() {
 #                to the cluster
 #   UNLABELLED   an operator object whose metadata.labels lacks ${E2E_RUN_LABEL_YAML}
 #   HANDSPELLED  an operator object whose label is spelled by hand
-#   FLOWDOC      a cfgd.io object written as JSON, as a flow mapping or with
-#                quoted keys
+#   FLOWDOC      a cfgd.io object written as JSON or a flow mapping, or with a
+#                quoted key, a space before the colon, a tag or an anchor
+#   SPLITKEY     an apiVersion key whose value sits on the next line
+#   NOKIND       a cfgd.io document with no top-level kind
 #   FLOWMETA     an operator object whose metadata is in flow form
 #   NESTED       a cfgd.io object nested in another document, such as a List,
 #                applied or captured; an ownerReferences entry is a reference
@@ -231,6 +233,8 @@ scan_run_labels() {
         function strip(s) { sub(/^[ \t]+/, "", s); sub(/[ \t]+#.*$/, "", s); sub(/[ \t]+$/, "", s); return s }
         function blank_or_comment(s) { s = strip(s); return s == "" || substr(s, 1, 1) == "#" }
         function cfgd_api(s) { return s ~ /^(- )?apiVersion:[ \t]*["\047]?cfgd\.io\// }
+        function any_cfgd_api(s) { return s ~ /(^|[^A-Za-z0-9_])["\047]?apiVersion["\047]?[ \t]*:[ \t]*([!&][^ \t]*[ \t]+)*["\047]?cfgd\.io\// }
+        function split_api(s) { return s ~ /(^|[^A-Za-z0-9_])["\047]?apiVersion["\047]?[ \t]*:[ \t]*([!&|>][^ \t]*[ \t]*)*$/ }
         function hand(s) { return s ~ /^["\047]?cfgd\.io\/e2e-run["\047]?:/ }
         function label_entry(s) {
             if (s == "${E2E_RUN_LABEL_YAML}") labelled = 1
@@ -241,26 +245,27 @@ scan_run_labels() {
             n = split(s, parts, ",")
             for (i = 1; i <= n; i++) { sub(/^[ \t]+/, "", parts[i]); sub(/[ \t]+$/, "", parts[i]); label_entry(parts[i]) }
         }
-        function check_doc(first, last,    i, base, s, api, nested, flow, kind, name, inmeta, flowmeta, mchild, inlab, lind, owner) {
+        function check_doc(first, last,    i, base, s, api, nested, flow, bracket, kind, name, inmeta, flowmeta, mchild, inlab, lind, owner) {
             base = -1; labelled = 0; handspelled = 0; owner = -1
             for (i = first; i <= last; i++) {
                 if (blank_or_comment(body[i])) continue
-                if (base < 0) base = indent(body[i])
                 s = strip(body[i])
+                if (base < 0) { base = indent(body[i]); bracket = (s ~ /^[{[]/) }
                 if (owner >= 0 && (indent(body[i]) > owner || (indent(body[i]) == owner && s ~ /^- /))) continue
                 owner = (s ~ /^ownerReferences:/) ? indent(body[i]) : -1
-                if (s ~ /^(- )?\{.*apiVersion"?:[ \t]*["\047]?cfgd\.io\//) flow = bline[i]
-                if (s ~ /^(- )?["\047]apiVersion["\047][ \t]*:[ \t]*["\047]?cfgd\.io\//) flow = bline[i]
+                if (any_cfgd_api(s) && (bracket || !cfgd_api(s))) flow = bline[i]
+                if (split_api(s) && class == "FILE") has_cfgd = 1
+                else if (split_api(s)) { print "SPLITKEY " file ":" bline[i] ": an apiVersion whose value is not on its own line, so the scan cannot tell whether this is a cfgd.io object; write the value beside the key"; reported = 1 }
                 if (indent(body[i]) != base) { if (cfgd_api(s)) nested = bline[i]; continue }
                 if (cfgd_api(s)) api = bline[i]
-                if (s ~ /^kind:/) { kind = s; sub(/^kind:[ \t]*/, "", kind); gsub(/["\047]/, "", kind) }
+                if (s ~ /^["\047]?kind["\047]?[ \t]*:/) { kind = s; sub(/^[^:]*:[ \t]*/, "", kind); gsub(/["\047]/, "", kind) }
                 if (s ~ /^metadata:[ \t]*\{/) flowmeta = 1
             }
             if (!api && !nested && !flow) return
             has_cfgd = 1
             if (class == "FILE") return
             if (flow) {
-                print "FLOWDOC " file ":" flow ": a cfgd.io object written as JSON, as a flow mapping or with quoted keys; write it as block-style YAML with bare keys so the scan can read its labels"
+                print "FLOWDOC " file ":" flow ": a cfgd.io object in a spelling the scan does not read (JSON, a flow mapping, a quoted key, a space before the colon, a tag or an anchor); write it as block-style YAML with bare keys so the scan can read its labels"
                 reported = 1
                 return
             }
@@ -276,6 +281,7 @@ scan_run_labels() {
                 }
                 return
             }
+            if (kind == "") { print "NOKIND " file ":" api ": a cfgd.io object with no kind the scan can read; write kind as a bare top-level key"; reported = 1; return }
             if (!((" " kind " ") in operator)) { print "OTHERKIND " file ":" api " " kind; return }
             site = 1
             if (quoted) {
@@ -653,6 +659,39 @@ plant json-not-cfgd "$apply" '{
   "metadata": {"name": "json-not-cfgd"}
 }'
 plant flow-not-cfgd "$apply" "{apiVersion: v1, kind: ConfigMap, metadata: {name: flow-not-cfgd}}"
+plant spaced-colon "$apply" "apiVersion : cfgd.io/v1alpha1
+kind: Module
+metadata:
+  name: spaced-colon"
+plant flow-multiline "$apply" "{
+  apiVersion: cfgd.io/v1alpha1,
+  kind: Module,
+  metadata: {name: flow-multiline}
+}"
+plant spaced-kind "$apply" "apiVersion: cfgd.io/v1alpha1
+kind : Module
+metadata:
+  name: spaced-kind
+spec:
+  packages: []"
+plant no-kind "$apply" "apiVersion: cfgd.io/v1alpha1
+metadata:
+  name: no-kind"
+plant suffix-key "$apply" "apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: suffix-key
+data:
+  myapiVersion: cfgd.io/v1alpha1"
+plant tagged-value "$apply" "apiVersion: !!str cfgd.io/v1alpha1
+kind: Module
+metadata:
+  name: tagged-value"
+plant split-key "$apply" "apiVersion:
+  cfgd.io/v1alpha1
+kind: Module
+metadata:
+  name: split-key"
 plant quoted-key "$apply" "'apiVersion': cfgd.io/v1alpha1
 kind: Module
 metadata:
@@ -720,6 +759,13 @@ HANDSPELLED hand-spelled.sh:2
 UNTERMINATED heredoc-unterminated.sh:1
 FILEDOC in-pod.sh:1
 FLOWDOC json-doc.sh:3
+FLOWDOC spaced-colon.sh:2
+FLOWDOC flow-multiline.sh:3
+NOKIND no-kind.sh:2
+FLOWDOC tagged-value.sh:2
+SPLITKEY split-key.sh:2
+SITE spaced-kind.sh:1
+UNLABELLED spaced-kind.sh:2
 SITE key-prefix.sh:1
 UNLABELLED key-prefix.sh:2
 SITE label-absent.sh:1
