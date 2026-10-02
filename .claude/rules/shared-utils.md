@@ -31,7 +31,7 @@ This file is an **INDEX**. The reasoning — why a helper exists, what breaks wi
 
 - `API_VERSION` — canonical API version (`cfgd.io/v1alpha1`); never a string literal.
 - `API_VERSION_CONVERSIONS` + `config::convertible_from(table, found)` / `readable_api_versions(table)` (`config/parse.rs`) — the ONE table of every `apiVersion` a document may be written under, each row landing on `API_VERSION`, and the ONE composition of the set a refusal names. `validate_api_version` and the refusal's `Display` (`errors/mod.rs`) are the two production readers; every other site asks the validator and holds no version string of its own. `no_production_site_compares_an_api_version_by_hand` walks every `<crate>/src`, exempting the two readers by name and holding the validator to a `convertible_from` call with no comparison beside it (`// api-version-compare-ok: <why>`).
-- `CSI_DRIVER_NAME` — canonical CSI driver name (`csi.cfgd.io`).
+- `csi_driver_name()` — the CSI driver name the plugin registers and the webhook injects: env `CSI_DRIVER_NAME` (trimmed; blank = unset), else the `CSI_DRIVER_NAME` constant (`csi.cfgd.io`). Both sides call it so they agree; never spell the constant at a runtime site.
 - `MODULES_ANNOTATION` — canonical annotation key (`cfgd.io/modules`).
 - `SKIPPED_MODULES_ANNOTATION` — the pod annotation naming what the mutating webhook declined to inject (`cfgd.io/skipped-modules`); never a raw string.
 - `LABEL_MACHINE_CONFIG` / `LABEL_DEVICE_ID` — k8s label keys; gateway/controllers use these and spell no raw strings.

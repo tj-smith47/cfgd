@@ -559,6 +559,7 @@ fn build_injection_patches<'m>(
         .unwrap_or_default();
     let has_volumes = pod.pointer("/spec/volumes").is_some();
     let has_init_containers = pod.pointer("/spec/initContainers").is_some();
+    let driver = cfgd_core::csi_driver_name();
 
     if modules.is_empty() {
         return (patches, Vec::new());
@@ -626,7 +627,7 @@ fn build_injection_patches<'m>(
             value: serde_json::json!({
                 "name": vol_name,
                 "csi": {
-                    "driver": cfgd_core::CSI_DRIVER_NAME,
+                    "driver": driver,
                     "readOnly": true,
                     "volumeAttributes": vol_attrs
                 }

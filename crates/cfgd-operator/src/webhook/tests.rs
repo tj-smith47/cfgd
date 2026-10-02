@@ -657,6 +657,50 @@ fn build_patches_multiple_containers() {
     assert!(patch_json.contains("/spec/containers/1/volumeMounts/-"));
 }
 
+/// The `driver` the injected CSI volume names, with `CSI_DRIVER_NAME` set to `value`.
+fn injected_driver_with_env(value: Option<&str>) -> String {
+    let pod = serde_json::json!({
+        "spec": {"containers": [{"name": "app", "image": "busybox"}]}
+    });
+    let modules = vec![(
+        "nettools".to_string(),
+        "1.0".to_string(),
+        ModuleSpec {
+            oci_artifact: Some("ghcr.io/org/nettools:1.0".to_string()),
+            ..Default::default()
+        },
+    )];
+    let mut driver = String::new();
+    cfgd_core::test_helpers::with_test_env_var("CSI_DRIVER_NAME", value, || {
+        let (patches, _skipped) = build_injection_patches(&pod, &modules);
+        let patches = serde_json::to_value(&patches).unwrap();
+        let drivers: Vec<&str> = patches
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|p| p.pointer("/value/csi/driver").and_then(|d| d.as_str()))
+            .collect();
+        assert_eq!(drivers.len(), 1, "one CSI volume expected: {patches}");
+        driver = drivers[0].to_string();
+    });
+    driver
+}
+
+#[test]
+#[serial_test::serial]
+fn build_patches_injects_default_csi_driver_name() {
+    assert_eq!(injected_driver_with_env(None), "csi.cfgd.io");
+}
+
+#[test]
+#[serial_test::serial]
+fn build_patches_injects_csi_driver_name_from_env() {
+    assert_eq!(
+        injected_driver_with_env(Some("e2e.csi.cfgd.io")),
+        "e2e.csi.cfgd.io"
+    );
+}
+
 #[test]
 fn build_patches_debug_module_volume_only() {
     let pod = serde_json::json!({

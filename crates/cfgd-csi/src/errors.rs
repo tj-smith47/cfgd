@@ -63,6 +63,8 @@ mod tests {
 
     #[test]
     fn invalid_attribute_display_uses_exact_key() {
+        // Any key works: the test checks the key is echoed verbatim, and no volume
+        // attribute is namespaced by the driver name.
         let key = format!("{}/oci-uri", cfgd_core::CSI_DRIVER_NAME);
         let e = CsiError::InvalidAttribute { key: key.clone() };
         assert_eq!(format!("{e}"), format!("invalid volume attribute: {key}"));

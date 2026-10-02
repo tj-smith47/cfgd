@@ -1,6 +1,24 @@
 /// The canonical API version string used in all cfgd YAML documents (local and CRD).
 pub const API_VERSION: &str = "cfgd.io/v1alpha1";
+/// The default CSI driver name, used when `CSI_DRIVER_NAME` is unset or blank.
 pub const CSI_DRIVER_NAME: &str = "csi.cfgd.io";
+
+/// The CSI driver name this process registers or injects: `CSI_DRIVER_NAME`, else
+/// [`CSI_DRIVER_NAME`]. The CSI binary and the operator webhook must read the same value,
+/// or pods get volumes no registered driver serves.
+///
+/// The name is read on every call so tests can override the variable per case; the read
+/// is one environment lookup, far below the cost of the gRPC call or admission review
+/// it serves.
+pub fn csi_driver_name() -> String {
+    // A blank value would register or inject an empty driver name, which the kubelet
+    // rejects, so blank means the default, matching `WATCH_LABEL_SELECTOR`.
+    let name = crate::env_or("CSI_DRIVER_NAME", CSI_DRIVER_NAME);
+    match name.trim() {
+        "" => CSI_DRIVER_NAME.to_owned(),
+        trimmed => trimmed.to_owned(),
+    }
+}
 pub const MODULES_ANNOTATION: &str = "cfgd.io/modules";
 
 /// The pod annotation naming every module the mutating webhook declined to
@@ -85,5 +103,36 @@ mod tests {
     #[test]
     fn api_version_const_matches_crd_derive() {
         assert_eq!(super::API_VERSION, cfgd_crd::api_version());
+    }
+}
+
+#[cfg(test)]
+mod csi_driver_name_tests {
+    use super::{CSI_DRIVER_NAME, csi_driver_name};
+    use crate::test_helpers::with_test_env_var;
+    use serial_test::serial;
+
+    #[test]
+    #[serial]
+    fn unset_is_the_default() {
+        with_test_env_var("CSI_DRIVER_NAME", None, || {
+            assert_eq!(csi_driver_name(), CSI_DRIVER_NAME);
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn blank_is_the_default() {
+        with_test_env_var("CSI_DRIVER_NAME", Some("  \t"), || {
+            assert_eq!(csi_driver_name(), CSI_DRIVER_NAME);
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn set_value_is_trimmed_and_used() {
+        with_test_env_var("CSI_DRIVER_NAME", Some(" e2e.csi.cfgd.io\n"), || {
+            assert_eq!(csi_driver_name(), "e2e.csi.cfgd.io");
+        });
     }
 }
