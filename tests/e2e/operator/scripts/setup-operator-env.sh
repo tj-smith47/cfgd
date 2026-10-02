@@ -24,10 +24,8 @@ wait_for_service_endpoints cfgd-system cfgd-operator 120
 # Usage: apply_yaml "T03" <<EOF ... EOF
 apply_yaml() {
     local test_id="$1"
-    local yaml
-    yaml=$(cat)
     local output
-    if ! output=$(echo "$yaml" | kubectl apply -f - 2>&1); then
+    if ! output=$(kubectl apply -f - 2>&1); then
         echo "  kubectl apply failed: $output"
         fail_test "$test_id" "kubectl apply failed"
         return 1

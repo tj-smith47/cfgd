@@ -21,7 +21,7 @@ single-source-of-truth wiring.
 | crossplane version + sha256 | `.github/actions/setup-crossplane` input defaults | release (function/push jobs), e2e-setup; `tests/e2e/setup-cluster.sh` fallback mirrors it for local runs |
 | cosign version | `COSIGN_VERSION` env in e2e.yml | both cosign-installer steps |
 | shellcheck version + sha256 | `.github/actions/setup-shellcheck` input defaults | ci.yml `audit` job (ahead of `task shellcheck`) and `snapshot` job (ahead of `task installer:shellcheck`); both tasks read the version default and refuse any other local version (the runner image's own shellcheck is older and reports different findings) |
-| yq version + sha256 | `YQ_VERSION` / `YQ_SHA256` env on the ci.yml `audit` job's `Install yq` step | `task e2e:tags:check` in that job; `test-pr-install.sh` refuses any yq but mikefarah v4 (the apt `yq` on ubuntu runners is the Python wrapper) |
+| yq version + sha256 | `YQ_VERSION` / `YQ_SHA256` env on the ci.yml `audit` job's `Install yq` step | `task e2e:tags:check` in that job; `test-pr-install.sh` refuses any yq but mikefarah v4. The runner image ships a mikefarah v4 of its own that moves on the image's schedule; the pin makes the check's yq change only with this line |
 | MSRV | `rust-version` in root Cargo.toml | ci.yml msrv job reads it with sed |
 | FreeBSD guest packages, `safe.directory` trust, synced `.git` | ci.yml `test-freebsd` vmactions `prepare:` | Taskfile `test:freebsd` (`npm` is CI-only: only `test:freebsd:npm-prefix` reads it); compared by `the_local_freebsd_leg_prepares_the_guest_ci_prepares` |
 

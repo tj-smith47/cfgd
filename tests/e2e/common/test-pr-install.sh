@@ -773,8 +773,9 @@ parse_bodies() {
 # fact about a cfgd.io object (where it sits, its kind, name and labels, the
 # line of its apiVersion) comes from that parse. The YAML entries a body can
 # expand come from yaml_entries. It prints one line per finding, tag first:
-#   SITE         a heredoc fed to kubectl apply/create/replace or apply_yaml that
-#                holds an operator object
+#   SITE         a heredoc fed to an apply (kubectl apply, create or replace
+#                reading stdin, or a wrapper function around one) that holds an
+#                operator object
 #   FILEDOC      a heredoc fed to a command that does not apply it (cat > a file,
 #                there or inside a pod), or captured into a variable when its
 #                cfgd.io documents are of kinds the operator does not serve
@@ -799,11 +800,9 @@ parse_bodies() {
 #                as YAML once rendered
 #   OUTSIDE      a cfgd.io apiVersion on a shell line outside any heredoc
 #   REDEFINED    a script other than helpers.sh that sets E2E_RUN_LABEL_YAML
-#   BYPATH       an apply the scan cannot read: kubectl apply/create/replace
-#                given a manifest by path (-f other than -, or -k), or an apply
-#                reading stdin (kubectl -f -, or apply_yaml) fed a file by a <
-#                redirect or by a pipe from cat or sed given a file or from a
-#                command with a < redirect
+#   BYPATH       an apply the scan cannot read: one given a manifest by path
+#                (-f other than -, or -k), or one reading stdin fed by anything
+#                but a heredoc on the apply command itself
 #   UNTERMINATED, UNREADABLE, EMPTY   the scan could not read what it was given
 # A heredoc written to a file is read only when it mentions cfgd.io/, and one
 # yq cannot read (a script, say) is not YAML and is skipped quietly.
@@ -829,30 +828,10 @@ scan_run_labels() {
     fi
     work="$(mktemp -d "$scratch/scan.XXXXXX")" || { echo "UNREADABLE no scratch directory for the scan"; return 0; }
     : > "$work/index"
-    { awk -f "$here/heredocs.awk" "${files[@]}" || echo "UNREADABLE heredocs.awk exited $? reading ${files[*]}"; } |
-        awk -F '\t' -v work="$work" -v sentinel="$label_sentinel" -v placeholder="$expansion_placeholder" \
-            -v entries="$yaml_entries" -v helpers="$helpers" "$render_awk"'
+    awk -f "$here/heredocs.awk" "${files[@]}" > "$work/records" || echo "UNREADABLE heredocs.awk exited $? reading ${files[*]}"
+    awk -F '\t' -v work="$work" -v sentinel="$label_sentinel" -v placeholder="$expansion_placeholder" \
+        -v entries="$yaml_entries" -v helpers="$helpers" "$render_awk"'
         function rest(n,   i, p) { p = 0; for (i = 1; i <= n; i++) p += length($i) + 1; return substr($0, p + 1) }
-        # by_path(c): c applies a manifest by path when, within the kubectl
-        # command, -f names something other than - or -k names a directory.
-        # A quoted path is dropped from c, so -f with no word after it is one.
-        function by_path(c,   n, t, i, v) {
-            while (match(c, /kubectl([ \t][^|;&)]*)?[ \t](apply|create|replace)([ \t][^|;&)]*)?/)) {
-                n = split(substr(c, RSTART, RLENGTH), t, /[ \t]+/)
-                c = substr(c, RSTART + RLENGTH)
-                for (i = 1; i <= n; i++) {
-                    if (t[i] ~ /^(-k|--kustomize)/) return 1
-                    if (t[i] == "-f" || t[i] == "--filename") v = (i < n) ? t[i + 1] : ""
-                    else if (t[i] ~ /^--filename=/) v = substr(t[i], 12)
-                    else if (t[i] ~ /^-f./) { v = substr(t[i], 3); sub(/^=/, "", v) }
-                    else continue
-                    # The quote that closes a bash -c string is no part of the path.
-                    sub(/\047+$/, "", v)
-                    if (v != "-") return 1
-                }
-            }
-            return 0
-        }
         # squash(s): one shell line with each quoted span made the word Q, each
         # escaped character the letter X and a comment dropped, so a | or < in
         # a string is not read as shell. The string a bash -c or sh -c runs is
@@ -874,60 +853,92 @@ scan_run_labels() {
             }
             return out
         }
-        # stdin_apply(s): the command s applies a manifest it reads on stdin.
-        function stdin_apply(s) {
-            if (s ~ /(^|[ \t])apply_yaml([ \t]|$)/) return 1
-            if (s !~ /(^|[ \t])kubectl[ \t](.*[ \t])?(apply|create|replace)([ \t]|$)/) return 0
-            return s ~ /(^|[ \t])(-f|--filename)([ \t]+|=)?-([ \t]|$)/
-        }
-        # reads_file(s): the command s is cat given a file, or sed given a file
-        # after its script.
-        function reads_file(s,   w, n, i, script, files) {
-            gsub(/[0-9]*>>?[ \t]*[^ \t]+/, " ", s)
-            sub(/^[ \t]+/, "", s)
-            n = split(s, w, /[ \t]+/)
-            for (i = 1; i <= n && (w[i] ~ /^[A-Za-z_][A-Za-z0-9_]*=/ || w[i] ~ /^(!|command|exec|sudo|time|if|then|elif|else|do|while|until)$/); i++) ;
-            if (w[i] != "cat" && w[i] != "sed") return 0
-            script = (w[i] == "sed")
-            for (i++; i <= n; i++) {
-                if (w[i] == "" || w[i] == "-" || w[i] ~ /^HERE(DOC|STR)$/) continue
-                if (w[i] ~ /^-/) {
-                    if (w[i] ~ /^(-e|-f|--expression|--file)$/) { script = 0; i++ }
-                    else if (w[i] ~ /^(-e|--expression=|-f|--file=)/) script = 0
-                    continue
-                }
-                if (script) script = 0
-                else files++
+        # runs_apply(w, v): the verb w[v] belongs to a command that sends
+        # manifests to a cluster. The word that runs it is the nearest one
+        # before the verb that is not an option or an option argument: kubectl,
+        # a variable or array expansion ($KUBECTL, "${kc[@]}") or a function
+        # the scanned scripts define is a kubectl; any other word names another
+        # tool (cfgd, helm, git) whose apply is not one. kubectl anywhere before
+        # the verb settles it, so sudo -E kubectl is a kubectl.
+        function runs_apply(w, v,   i) {
+            for (i = v - 1; i >= 1; i--) {
+                if (w[i] == "") continue
+                if (w[i] ~ /(^|\/)kubectl$/) return 1
+                if (w[i] ~ /^-/) continue
+                if (i > 1 && w[i - 1] ~ /^-[^=]*$/) { i--; continue }
+                return w[i] ~ /^(Q|\$)/ || (w[i] in defined)
             }
-            return files > 0
+            return 0
         }
-        # fed_from_file(c): the squashed command line c holds an apply reading
-        # stdin that a file feeds, by a < redirect on the apply or on a command
-        # piped into it, or by cat or sed piped into it. A heredoc or here-string
-        # is no file.
-        function fed_from_file(c,   lists, nl, l, segs, ns, j, k) {
+        # judge(c): the apply commands on the squashed command line c. A command
+        # holding apply, create or replace and a -f, --filename, -k or
+        # --kustomize argument is an apply when runs_apply says so, and a call
+        # of a wrapper (a function whose body is an apply reading stdin) is an
+        # apply reading stdin. One with --dry-run=client sends nothing and is
+        # left alone. The scan can read one shape: an apply reading stdin from
+        # a heredoc on the same command. A manifest by path (-f other than -,
+        # or -k) sets verdict to "path". An apply reading stdin with no heredoc
+        # on its own command (fed by a pipe, or by nothing on the line), or with
+        # a < beside it (a redirect, a here-string, a process substitution),
+        # sets it to "stdin", apart from one with no feeder at all inside a
+        # function body, which makes the function a wrapper and sets bare.
+        # applies counts the applies reading stdin. A here-string (<<<) keeps a
+        # < once its heredoc token is made, so it counts as a redirect.
+        function judge(c,   lists, nl, l, segs, ns, j, w, n, i, v, val, stdin, path) {
+            verdict = ""; applies = 0; bare = 0
             gsub(/[0-9]*>&[0-9-]*|&>/, " ", c)
-            gsub(/<<</, " HERESTR ", c)
             gsub(/<<-?[ \t]*X?(Q|[A-Za-z_][A-Za-z0-9_]*)/, " HEREDOC ", c)
             gsub(/\|\||&&/, ";", c)
             nl = split(c, lists, /[;&(){}`]/)
             for (l = 1; l <= nl; l++) {
                 ns = split(lists[l], segs, "|")
                 for (j = 1; j <= ns; j++) {
-                    if (!stdin_apply(segs[j])) continue
-                    if (index(segs[j], "<")) return 1
-                    for (k = 1; k < j; k++) if (index(segs[k], "<") || reads_file(segs[k])) return 1
+                    if (segs[j] ~ /--dry-run([ \t]+|=)client/) continue
+                    n = split(segs[j], w, /[ \t]+/)
+                    stdin = 0; path = 0
+                    for (v = 1; v <= n; v++) {
+                        if (w[v] in wrapper) stdin = 1
+                        if (w[v] ~ /^(apply|create|replace)$/ && runs_apply(w, v)) break
+                    }
+                    for (i = v + 1; i <= n; i++) {
+                        if (w[i] ~ /^(-k|--kustomize)/) { path = 1; continue }
+                        if (w[i] == "-f" || w[i] == "--filename") val = w[++i]
+                        else if (w[i] ~ /^--filename=/) val = substr(w[i], 12)
+                        else if (w[i] ~ /^-f/ && w[i] !~ /^--/) { val = substr(w[i], 3); sub(/^=/, "", val) }
+                        else continue
+                        if (val == "-") stdin = 1; else path = 1
+                    }
+                    if (path) verdict = "path"
+                    if (!stdin) continue
+                    applies++
+                    if (segs[j] ~ /HEREDOC/ && !index(segs[j], "<")) continue
+                    if (fns && j == 1 && !index(segs[j], "<")) { bare = 1; continue }
+                    if (verdict == "") verdict = "stdin"
                 }
             }
-            return 0
         }
-        # check_command: the stdin check on the command line gathered so far.
-        function check_command() {
-            if (pending != "" && fed_from_file(pending)) {
-                print "BYPATH " file ":" pending_at ": the scan cannot read a file fed to an apply on stdin; apply it from a heredoc"
-                said[file, pending_at] = 1
+        # check_command: judges the command line gathered so far, keeping track
+        # of the function bodies it opens and closes.
+        function check_command(   c, name, opens, l) {
+            if (pending == "") return
+            c = pending; pending = ""
+            gsub(/\$\{[^}]*\}/, "$V", c)
+            if (match(c, /^[ \t]*(function[ \t]+[A-Za-z_][A-Za-z0-9_:.-]*|[A-Za-z_][A-Za-z0-9_:.-]*[ \t]*\(\))/)) {
+                name = substr(c, RSTART, RLENGTH)
+                sub(/^[ \t]*(function[ \t]+)?/, "", name); sub(/[ \t]*\(\)$/, "", name)
+                fn[++fns] = name; fnat[fns] = depth; fnopen[fns] = 0
             }
-            pending = ""
+            judge(c)
+            if (pass == 2 && bare) wrapper[fn[fns]] = 1
+            if (pass == 3) {
+                if (verdict == "path") print "BYPATH " file ":" pending_at ": the scan cannot read a manifest applied by path; apply it from a heredoc"
+                if (verdict == "stdin") print "BYPATH " file ":" pending_at ": the scan cannot read what feeds this apply on stdin; feed it a heredoc on the apply command itself"
+                if (applies) for (l = pending_at; l <= pending_last; l++) cluster_line[file, l] = 1
+            }
+            opens = gsub(/\{/, "{", c)
+            depth += opens - gsub(/\}/, "}", c)
+            if (fns && opens) fnopen[fns] = 1
+            while (fns && fnopen[fns] && depth <= fnat[fns]) fns--
         }
         function close_heredoc(id,   i, n, lead, yaml, path, out) {
             n = count[id]
@@ -944,15 +955,56 @@ scan_run_labels() {
             close(path)
             print bodies ".yaml", file, opened[id], cls[id], qtd[id], at[id, lead + 1] > (work "/index")
         }
-        BEGIN { OFS = "\t" }
-        /^UNREADABLE / { print; next }
-        $1 == "FILE" { check_command(); inq = ""; cq = ""; next }
+        # The records are read four times: for the functions the scripts
+        # define, for the wrappers among them, for the commands, and for the
+        # heredocs, whose class rests on the command that opens them.
+        # apply_yaml stays a wrapper when the script defining it is not among
+        # those scanned, so a heredoc fed to it is still judged.
+        BEGIN { OFS = "\t"; wrapper["apply_yaml"] = 1 }
+        FNR == 1 { check_command(); pass++ }
+        $1 == "FILE" { check_command(); inq = ""; cq = ""; depth = 0; fns = 0; next }
         { file = $2 }
+        pass == 1 {
+            if ($1 == "SH" && match(rest(3), /^[ \t]*(function[ \t]+[A-Za-z_][A-Za-z0-9_:.-]*|[A-Za-z_][A-Za-z0-9_:.-]*[ \t]*\(\))/)) {
+                name = substr(rest(3), RSTART, RLENGTH)
+                sub(/^[ \t]*(function[ \t]+)?/, "", name); sub(/[ \t]*\(\)$/, "", name)
+                defined[name] = 1
+            }
+            next
+        }
+        pass < 4 && $1 == "CLOSE" {
+            # A quote open at the end of the line that opens a heredoc
+            # closes on its terminator line, as in a bash -c string holding
+            # the heredoc.
+            if (inq != "" || cq != "") { inq = ""; cq = ""; check_command() }
+            next
+        }
+        pass < 4 && $1 == "SH" {
+            line = rest(3)
+            if (pass == 3 && line !~ /^[ \t]*#/) {
+                sub(/[ \t]+#.*$/, "", line)
+                if (line ~ /(^|[^A-Za-z0-9_])["\047]?apiVersion["\047]?[ \t]*:[ \t]*["\047]?cfgd\.io\//) print "OUTSIDE " file ":" $3 ": a cfgd.io apiVersion outside any heredoc"
+                if (file != helpers) {
+                    # Reads of the variable go first; a name left over is set.
+                    gsub(/\$E2E_RUN_LABEL_YAML([^A-Za-z0-9_]|$)|\$\{#?E2E_RUN_LABEL_YAML(\}|[-+?\/#%^,][^}]*\}|:[-+?0-9 ][^}]*\})/, " ", line)
+                    if (line ~ /(^|[^A-Za-z0-9_])E2E_RUN_LABEL_YAML([^A-Za-z0-9_]|$)/) print "REDEFINED " file ":" $3 ": only helpers.sh sets E2E_RUN_LABEL_YAML; a script that sets it labels its objects with a value the scan cannot check"
+                }
+            }
+            if (pending == "") pending_at = $3
+            pending_last = $3
+            pending = pending squash(rest(3))
+            # bash goes on reading a command past a line ending in one
+            # backslash, a pipe or && or inside a quote.
+            if (inq != "" || cq != "" || pending ~ /\\$/ || pending ~ /(\||&&)[ \t]*$/) { sub(/\\$/, "", pending); pending = pending " "; next }
+            check_command()
+            next
+        }
+        pass < 4 { next }
         $1 == "UNCLOSED" { print "UNTERMINATED " file ":" $3 ": no " $4 " line closes this heredoc"; next }
         $1 == "OPEN" {
             id = $4; opened[id] = $3; qtd[id] = $6; dash[id] = $7; count[id] = 0
             c = rest(7)
-            if (c ~ /kubectl([ \t].*)?[ \t](apply|create|replace)([ \t]|$)/ || c ~ /(^|[^A-Za-z0-9_])apply_yaml([ \t]|$)/) cls[id] = "CLUSTER"
+            if (cluster_line[file, $3]) cls[id] = "CLUSTER"
             else {
                 # A descriptor duplication such as 2>&1 writes no file.
                 gsub(/[0-9]*>&[0-9-]+/, "", c)
@@ -967,38 +1019,9 @@ scan_run_labels() {
             text[id, ++count[id]] = line; at[id, count[id]] = $3
             next
         }
-        $1 == "CLOSE" {
-            close_heredoc($4)
-            # A quote open at the end of the line that opens a heredoc
-            # closes on its terminator line, as in a bash -c string holding
-            # the heredoc.
-            if (inq != "" || cq != "") { inq = ""; cq = ""; check_command() }
-            next
-        }
-        $1 == "CMD" {
-            if (by_path(rest(3)) && !said[file, $3]) print "BYPATH " file ":" $3 ": the scan cannot read a manifest applied by path; apply it from a heredoc"
-            next
-        }
-        $1 == "SH" {
-            line = rest(3)
-            if (line !~ /^[ \t]*#/) {
-                sub(/[ \t]+#.*$/, "", line)
-                if (line ~ /(^|[^A-Za-z0-9_])["\047]?apiVersion["\047]?[ \t]*:[ \t]*["\047]?cfgd\.io\//) print "OUTSIDE " file ":" $3 ": a cfgd.io apiVersion outside any heredoc"
-                if (file != helpers) {
-                    # Reads of the variable go first; a name left over is set.
-                    gsub(/\$E2E_RUN_LABEL_YAML([^A-Za-z0-9_]|$)|\$\{#?E2E_RUN_LABEL_YAML(\}|[-+?\/#%^,][^}]*\}|:[-+?0-9 ][^}]*\})/, " ", line)
-                    if (line ~ /(^|[^A-Za-z0-9_])E2E_RUN_LABEL_YAML([^A-Za-z0-9_]|$)/) print "REDEFINED " file ":" $3 ": only helpers.sh sets E2E_RUN_LABEL_YAML; a script that sets it labels its objects with a value the scan cannot check"
-                }
-            }
-            if (pending == "") pending_at = $3
-            pending = pending squash(rest(3))
-            # bash goes on reading a command past a line ending in one
-            # backslash, a pipe or && or inside a quote.
-            if (inq != "" || cq != "" || pending ~ /\\$/ || pending ~ /(\||&&)[ \t]*$/) { sub(/\\$/, "", pending); pending = pending " "; next }
-            check_command()
-        }
-        END { check_command(); close(work "/index") }
-    ' || echo "UNREADABLE the scan's heredoc collector exited $?"
+        $1 == "CLOSE" { close_heredoc($4); next }
+        END { close(work "/index") }
+    ' "$work/records" "$work/records" "$work/records" "$work/records" || echo "UNREADABLE the scan's heredoc collector exited $?"
     parse_bodies "$work" "$label_key"
     awk -F '\t' -v kinds="$(tr '\n' ' ' <<<"$kinds")" -v placeholder="$expansion_placeholder" '
         BEGIN { n = split(kinds, k, " "); for (i = 1; i <= n; i++) operator[k[i]] = 1 }
@@ -1599,7 +1622,7 @@ a: b
 INNER'
 kubectl apply -f - < m.yaml
 FIXTURE
-cat > "$fixtures/scripts/by-stdin-negative.sh" <<'FIXTURE'
+cat >> "$fixtures/scripts/by-stdin.sh" <<'FIXTURE'
 cat <<EOF | kubectl apply -f -
 apiVersion: v1
 kind: ConfigMap
@@ -1615,14 +1638,72 @@ EOF
 echo "$yaml" | kubectl apply -f -
 printf '%s\n' "$yaml" | kubectl apply -f -
 kubectl apply -f - <<<"$yaml"
+echo "$yaml" | exec_in_pod bash -c 'kubectl apply -f -'
+FIXTURE
+# probe <name> <script>: a fixture holding one command line the scan must
+# report, or for the ones named here, the script around it.
+probe() {
+    printf '%s\n' "$2" > "$fixtures/scripts/$1.sh"
+    bash -n "$fixtures/scripts/$1.sh" || fail "fixture $1 is not valid shell"
+}
+# shellcheck disable=SC2016 # each script is a fixture's text, written as it is
+{
+    probe awk-pipe 'awk 1 "$dir/m.yaml" | kubectl apply -f -'
+    probe jq-pipe 'jq . "$dir/m.json" | kubectl apply -f -'
+    probe yq-pipe 'yq ".items[]" "$dir/m.yaml" | kubectl apply -f -'
+    probe head-pipe 'head -n 50 "$dir/m.yaml" | kubectl apply -f -'
+    probe kustomize-pipe 'kustomize build "$dir" | kubectl apply -f -'
+    probe curl-pipe 'curl -fsSL "$url" | kubectl apply -f -'
+    probe tee-pipe 'tee /dev/null < "$dir/m.yaml" | kubectl apply -f -'
+    probe cat-in-pod 'exec_in_pod sh -c "cat m.yaml | kubectl apply -f -"'
+    probe here-string-subst 'kubectl apply -f - <<<"$(cat "$dir/m.yaml")"'
+    probe var-echo 'y=$(cat "$dir/m.yaml")'$'\n''echo "$y" | kubectl apply -f -'
+    probe var-printf 'y=$(< "$dir/m.yaml")'$'\n''printf "%s" "$y" | kubectl apply -f -'
+    probe var-here-string 'y=$(cat "$dir/m.yaml")'$'\n''kubectl apply -f - <<<"$y"'
+    probe lt-procsub 'kubectl apply -f - < <(cat "$dir/m.yaml")'
+    probe procsub 'kubectl apply -f <(cat "$dir/m.yaml")'
+    probe dev-stdin 'kubectl apply -f /dev/stdin < "$dir/m.yaml"'
+    probe no-feeder 'kubectl apply -f -'
+    probe kubectl-var 'KUBECTL=kubectl'$'\n''$KUBECTL apply -f "$dir/m.yaml"'$'\n''${KUBECTL} apply -f "$dir/m.yaml"'
+    probe kubectl-option 'kubectl --context=e2e apply -f "$dir/m.yaml"'
+    probe heredoc-then-here-string "kubectl apply -f - <<EOF <<<\"\$y\""$'\n''a: b'$'\n''EOF'
+    probe heredoc-then-redirect "kubectl apply -f - <<EOF < \"\$f\""$'\n''a: b'$'\n''EOF'
+    probe function-fed 'fed() {'$'\n''    kubectl apply -f - <<<"$y"'$'\n''    kubectl apply -f - < "$f"'$'\n''    cat "$f" | kubectl apply -f -'$'\n''}'
+    probe after-function 'f() { kubectl get ns; }'$'\n''kubectl apply -f -'$'\n''g() {'$'\n''    true'$'\n''}'$'\n''kubectl apply -f -'
+    probe kubectl-array 'kc=(kubectl --context e2e)'$'\n''"${kc[@]}" apply -f "$dir/m.yaml"'
+    probe kubectl-function 'k() { kubectl "$@"; }'$'\n''k apply -k "$dir"'
+    probe sudo-kubectl 'sudo -E kubectl --context e2e apply -f - < "$dir/m.yaml"'
+    probe wrapper-redirect 'apply_it() {'$'\n''    kubectl apply -f -'$'\n''}'$'\n''apply_it < "$dir/m.yaml"'
+}
+plant kubectl-var-heredoc "KUBECTL=kubectl"$'\n'"\$KUBECTL apply -f - <<EOF" "$module_unlabelled"
+plant pipe-then-heredoc "cat \"\$f\" | kubectl apply -f - <<EOF" "$module_labelled"
+plant wrapper-heredoc "apply_it() { kubectl apply -f -; }"$'\n'"apply_it <<EOF" "$module_unlabelled"
+# Commands the scan must leave alone: the body of a wrapper, an apply that
+# sends nothing, the other tools the suites run with an apply verb or a -f,
+# and text that only mentions an apply.
+cat > "$fixtures/scripts/apply-negative.sh" <<'FIXTURE'
+apply_yaml() {
+    local test_id="$1" output
+    if ! output=$(kubectl apply -f - 2>&1); then
+        echo "  kubectl apply failed: $output"
+        return 1
+    fi
+}
+echo "$yaml" | kubectl apply --dry-run=client -f -
+kubectl apply --dry-run=client -f manifest.yaml
+run "${C[@]}" apply --yes
+exec_in_pod cfgd --config "$c" apply --yes
+cfgd --config "$c" apply -f x.yaml
+helm upgrade --install r chart -f values.yaml
+crossplane xpkg push "$img" -f "$xpkg"
+kubectl create namespace ns
 echo "  kubectl apply -f - < $f failed" | tee -a log
 yaml=$(cat)
 kubectl get cm x -o yaml > "$f"
 bash -c 'echo "kubectl apply -f - < x"'
-echo "$yaml" | exec_in_pod bash -c 'kubectl apply -f -'
 FIXTURE
 bash -n "$fixtures/scripts/by-stdin.sh" || fail "fixture by-stdin is not valid shell"
-bash -n "$fixtures/scripts/by-stdin-negative.sh" || fail "fixture by-stdin-negative is not valid shell"
+bash -n "$fixtures/scripts/apply-negative.sh" || fail "fixture apply-negative is not valid shell"
 cat > "$fixtures/scripts/redefine.sh" <<'FIXTURE'
 E2E_RUN_LABEL_YAML="team: x"
 export E2E_RUN_LABEL_YAML="team: x"
@@ -1642,6 +1723,52 @@ SITE anchor-kind.sh:1
 UNLABELLED anchor-kind.sh:2
 SITE apply-yaml.sh:1
 UNLABELLED apply-yaml.sh:2
+BYPATH captured-operator-kind.sh:10
+BYPATH outside.sh:1
+BYPATH outside-quoted.sh:1
+BYPATH outside-quoted.sh:2
+BYPATH outside-quoted.sh:3
+BYPATH by-stdin.sh:23
+BYPATH by-stdin.sh:29
+BYPATH by-stdin.sh:35
+BYPATH by-stdin.sh:36
+BYPATH by-stdin.sh:37
+BYPATH by-stdin.sh:38
+BYPATH awk-pipe.sh:1
+BYPATH jq-pipe.sh:1
+BYPATH yq-pipe.sh:1
+BYPATH head-pipe.sh:1
+BYPATH kustomize-pipe.sh:1
+BYPATH curl-pipe.sh:1
+BYPATH tee-pipe.sh:1
+BYPATH cat-in-pod.sh:1
+BYPATH here-string-subst.sh:1
+BYPATH var-echo.sh:2
+BYPATH var-printf.sh:2
+BYPATH var-here-string.sh:2
+BYPATH lt-procsub.sh:1
+BYPATH procsub.sh:1
+BYPATH dev-stdin.sh:1
+BYPATH no-feeder.sh:1
+BYPATH kubectl-var.sh:2
+BYPATH kubectl-var.sh:3
+BYPATH kubectl-option.sh:1
+BYPATH heredoc-then-here-string.sh:1
+BYPATH heredoc-then-redirect.sh:1
+BYPATH function-fed.sh:2
+BYPATH function-fed.sh:3
+BYPATH function-fed.sh:4
+BYPATH after-function.sh:2
+BYPATH after-function.sh:6
+SITE pipe-then-heredoc.sh:1
+BYPATH kubectl-array.sh:2
+BYPATH kubectl-function.sh:2
+BYPATH sudo-kubectl.sh:1
+BYPATH wrapper-redirect.sh:4
+SITE kubectl-var-heredoc.sh:2
+UNLABELLED kubectl-var-heredoc.sh:3
+SITE wrapper-heredoc.sh:2
+UNLABELLED wrapper-heredoc.sh:3
 BYPATH by-path.sh:1
 BYPATH by-path.sh:2
 BYPATH by-path.sh:3
@@ -1650,6 +1777,8 @@ BYPATH by-path.sh:5
 BYPATH by-path.sh:6
 BYPATH by-path.sh:7
 BYPATH by-path.sh:8
+BYPATH by-path.sh:10
+BYPATH by-path.sh:11
 SITE by-path-stdin.sh:1
 CAPTURED captured-alias-api.sh:6
 CAPTURED captured-anchor-kind.sh:2
@@ -1851,6 +1980,8 @@ if [ "$by_path_verdict" = "BYPATH $by_path_tree/operator/scripts/zz-by-path.sh:1
 else
     fail "a manifest applied by path in the operator suite: verdict was: ${by_path_verdict:-clean}"
 fi
+expect_red "a call of apply_yaml is judged when the script that defines it is not scanned" \
+    "$(scan_run_labels "$kinds" "$fixtures/scripts/by-stdin.sh")" "^BYPATH $fixtures/scripts/by-stdin.sh:9: "
 expect_red "a manifest applied by path in helpers.sh fails the scan" \
     "$(by_path_in_scope "$e2e_root" "BYPATH $helpers:9: applied by path")" "^BYPATH $helpers:9:"
 

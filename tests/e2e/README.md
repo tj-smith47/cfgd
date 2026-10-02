@@ -93,8 +93,9 @@ metadata:
 The kinds are the ones `schemas/crds.yaml` declares (`.spec.names.kind`: today
 BackupPolicy, ClusterConfigPolicy, ConfigPolicy, DriftAlert, MachineConfig and
 Module), read when the check runs, so a new CRD joins the rule. An object is applied
-when its heredoc feeds `kubectl apply`, `create` or `replace` or `apply_yaml`,
-including through `exec_in_pod`. The heredoc delimiter stays unquoted (`<<EOF`) so
+when its heredoc feeds `kubectl apply`, `create` or `replace` on the same command
+(directly, through `exec_in_pod`, `$KUBECTL` or a function) or a wrapper such as
+`apply_yaml`. The heredoc delimiter stays unquoted (`<<EOF`) so
 the label expands.
 
 `test-pr-install.sh` reads every `tests/e2e/*/scripts` directory and `common/helpers.sh`
@@ -119,10 +120,18 @@ text inside a string value is no object. It fails on:
 - an operator object in a heredoc captured into a variable (`yaml=$(cat <<EOF`), whose destination the scan cannot see
 - a cfgd.io `apiVersion` outside any heredoc
 - a script other than `helpers.sh` that sets `E2E_RUN_LABEL_YAML`
-- in the operator, full-stack and gateway suites or `helpers.sh`, a manifest applied by path
-  (`kubectl apply -f mc.yaml`, `--filename`, `-k`) or fed from a file on stdin
-  (`kubectl apply -f - < "$f"`, `cat "$f" | kubectl apply -f -`, `apply_yaml < "$f"`),
-  which the scan cannot read; a pipe from a heredoc, `echo` or `printf` passes
+- in the operator, full-stack and gateway suites or `helpers.sh`, an apply the scan cannot
+  read. An operator object reaches the cluster only from a heredoc on the apply command
+  itself (`kubectl apply -f - <<EOF`, `apply_yaml "T01" <<EOF`). A manifest applied by path
+  (`-f mc.yaml`, `--filename`, `-k`, `-f <(...)`) fails, and so does an apply reading stdin
+  from anything else: a `<` redirect, a here-string, a process substitution, a pipe (from
+  `cat`, `echo`, `printf`, or a heredoc fed to another command), or nothing on the line. An
+  apply is a command with an `apply`, `create` or `replace` word and a `-f`, `--filename`,
+  `-k` or `--kustomize` argument, run by `kubectl`, a variable or array (`$KUBECTL`,
+  `"${kc[@]}"`) or a function the scripts define; another tool's `apply` (`cfgd apply`)
+  is not one. A wrapper is a function whose body is an apply reading stdin with nothing
+  feeding it, such as `apply_yaml`: its body passes, and a call of it is an apply reading
+  stdin. An apply with `--dry-run=client` sends nothing and passes
 - fewer sites than its suite's floor (the operator, full-stack and gateway suites each carry one)
 
 A cfgd.io document of another kind (the crossplane suite's `TeamConfig`) is listed

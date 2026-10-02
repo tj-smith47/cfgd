@@ -230,9 +230,11 @@ jobs:
       - name: Install ripgrep
         run: sudo apt-get update && sudo apt-get install -y ripgrep
 
-      # `task e2e:tags:check` reads YAML with mikefarah yq v4. The apt package
-      # named yq is a different, Python tool, so the binary is pinned here;
-      # version and checksum move together. Recompute on a version bump:
+      # `task e2e:tags:check` reads YAML with mikefarah yq v4. The runner
+      # image ships one too, but it moves on the image's own schedule; this
+      # pin makes the yq the check runs under change only with this line, and
+      # a Python yq from apt would fail the check. Version and checksum move
+      # together. Recompute on a version bump:
       #   v=<ver>; base=https://github.com/mikefarah/yq/releases/download
       #   curl -fsSL "$base/$v/yq_linux_amd64" | sha256sum
       - name: Install yq
