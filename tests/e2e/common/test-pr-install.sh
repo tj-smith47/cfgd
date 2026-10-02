@@ -865,19 +865,13 @@ scan_run_labels() {
         # the scanned scripts define is a kubectl; any other word names another
         # tool (cfgd, helm, git) whose apply is not one. kubectl anywhere before
         # the verb settles it, so sudo -E kubectl is a kubectl.
-        # known(set, name): name is in set for the file being read, or for
-        # every file: a function helpers.sh defines is visible to the scripts
-        # that source it, and apply_yaml is a wrapper everywhere. A function
-        # another script defines is not, as the scan cannot see what sources
-        # what.
-        function known(set, name) { return ((scope, name) in set) || (("", name) in set) }
         function runs_apply(w, v,   i) {
             for (i = v - 1; i >= 1; i--) {
                 if (w[i] == "") continue
                 if (w[i] ~ /(^|\/)kubectl$/) return 1
                 if (w[i] ~ /^-/) continue
                 if (i > 1 && w[i - 1] ~ /^-[^=]*$/) { i--; continue }
-                return w[i] ~ /^(Q|\$)/ || known(defined, w[i])
+                return w[i] ~ /^(Q|\$)/ || (w[i] in defined)
             }
             return 0
         }
@@ -896,8 +890,8 @@ scan_run_labels() {
         # fed counts the applies fed a heredoc, whose body reaches the cluster.
         # A here-string (<<<) keeps a < once its heredoc token is made, so it
         # counts as a redirect. A heredoc on a descriptor other than 0 (3<<EOF)
-        # is no stdin. Inside a function body, a call of another function the
-        # file defines with no feeder is recorded, as the caller is a wrapper
+        # is no stdin. Inside a function body, a call of another function a
+        # scanned script defines with no feeder is recorded, as the caller is a wrapper
         # when the callee is one.
         function judge(c,   lists, nl, l, segs, ns, j, w, n, i, v, val, stdin, path, d) {
             verdict = ""; fed = 0; bare = 0
@@ -917,9 +911,9 @@ scan_run_labels() {
                     n = split(segs[j], w, /[ \t]+/)
                     stdin = 0; path = 0
                     if (pass == 2 && fns && j == 1 && segs[j] !~ /HEREDOC/ && !index(segs[j], "<"))
-                        for (v = 1; v <= n; v++) if (known(defined, w[v])) { ++calls; caller[calls] = fn[fns]; callee[calls] = w[v]; at_file[calls] = scope }
+                        for (v = 1; v <= n; v++) if (w[v] in defined) { ++calls; caller[calls] = fn[fns]; callee[calls] = w[v] }
                     for (v = 1; v <= n; v++) {
-                        if (known(wrapper, w[v])) stdin = 1
+                        if (w[v] in wrapper) stdin = 1
                         if (w[v] ~ /^(apply|create|replace)$/ && runs_apply(w, v)) break
                     }
                     for (i = v + 1; i <= n; i++) {
@@ -938,12 +932,35 @@ scan_run_labels() {
                 }
             }
         }
+        # braces(s): sets ob and cb to the { and } of the command line s that
+        # bash reads as reserved words: the first word of a command, after a
+        # separator or a keyword that starts one. A { or } anywhere else is a
+        # plain word, as in echo {.
+        function braces(s,   t, n, i, cmd) {
+            gsub(/[;&|()]/, " ; ", s)
+            n = split(s, t, /[ \t]+/); cmd = 1; ob = 0; cb = 0
+            for (i = 1; i <= n; i++) {
+                if (t[i] == "") continue
+                if (cmd && t[i] == "{") ob++
+                else if (cmd && t[i] == "}") cb++
+                else cmd = (t[i] == ";") || (cmd && t[i] ~ /^(!|if|then|else|elif|do|while|until)$/)
+            }
+        }
+        # body_done(k): the function on stack slot k has closed. A name another
+        # scanned script defines with another body (whitespace folded) fails,
+        # as every definition is visible to every script.
+        function body_done(k,   t) {
+            t = fnbody[k]
+            gsub(/[ \t\n]+/, " ", t)
+            if (!(fn[k] in body_of)) { body_of[fn[k]] = t; body_at[fn[k]] = file ":" fnline[k]; return }
+            if (body_of[fn[k]] != t) print "DUPLICATE " file ":" fnline[k] ": function " fn[k] " is also defined at " body_at[fn[k]] " with another body; every script sees every definition, so rename one"
+        }
         # check_command: judges the command line gathered so far, keeping track
         # of the function bodies it opens and closes. A body is a { } or a
         # ( ) group, counted on the line with its quoted text dropped.
-        function check_command(   c, cc, name, l, kind, ob, cb, op, cp) {
-            if (pending == "") return
-            c = pending; pending = ""
+        function check_command(   c, cc, name, l, kind, op, cp, k, top) {
+            if (pending == "") { pending_raw = ""; return }
+            c = pending; pending = ""; top = fns
             gsub(/\$\{[^}]*\}/, "$V", c)
             cc = c
             if (match(c, /^[ \t]*(function[ \t]+[A-Za-z_][A-Za-z0-9_:.-]*([ \t]*\(\))?|[A-Za-z_][A-Za-z0-9_:.-]*[ \t]*\(\))/)) {
@@ -951,20 +968,29 @@ scan_run_labels() {
                 sub(/^[ \t]*(function[ \t]+)?/, "", name); sub(/[ \t]*\(\)$/, "", name)
                 cc = substr(c, RSTART + RLENGTH)
                 fn[++fns] = name; fnline[fns] = pending_at; fnat[fns] = depth; fnpat[fns] = pdepth; fnkind[fns] = ""; fnopen[fns] = 0
+                # A body is compared without its opener, so function f { and
+                # f() { open the same body.
+                fnbody[fns] = pending_raw
+                sub(/^\n[ \t]*(function[ \t]+[A-Za-z_][A-Za-z0-9_:.-]*([ \t]*\(\))?|[A-Za-z_][A-Za-z0-9_:.-]*[ \t]*\(\))/, "", fnbody[fns])
             }
+            for (k = 1; k <= top; k++) fnbody[k] = fnbody[k] "\n" pending_raw
+            pending_raw = ""
             if (fns && fnkind[fns] == "" && match(cc, /^[ \t]*[({]/)) fnkind[fns] = substr(cc, RSTART + RLENGTH - 1, 1)
             judge(c)
-            if (pass == 2 && bare) wrapper[scope, fn[fns]] = 1
+            if (pass == 2 && bare) wrapper[fn[fns]] = 1
             if (pass == 3) {
                 if (verdict == "path") print "BYPATH " file ":" pending_at ": the scan cannot read a manifest applied by path; apply it from a heredoc"
                 if (verdict == "stdin") print "BYPATH " file ":" pending_at ": the scan cannot read what feeds this apply on stdin; feed it a heredoc on the apply command itself"
                 if (fed) for (l = pending_at; l <= pending_last; l++) cluster_line[file, l] = 1
             }
-            ob = gsub(/\{/, "{", cc); cb = gsub(/\}/, "}", cc)
+            braces(cc)
             op = gsub(/\(/, "(", cc); cp = gsub(/\)/, ")", cc)
             depth += ob - cb; pdepth += op - cp
             if (fns && (fnkind[fns] == "{" ? ob : op)) fnopen[fns] = 1
-            while (fns && fnopen[fns] && (fnkind[fns] == "{" ? depth <= fnat[fns] : pdepth <= fnpat[fns])) fns--
+            while (fns && fnopen[fns] && (fnkind[fns] == "{" ? depth <= fnat[fns] : pdepth <= fnpat[fns])) {
+                if (pass == 2) body_done(fns)
+                fns--
+            }
         }
         # close_wrappers: a function whose body calls a wrapper with no feeder
         # is a wrapper too, whatever order the two are defined in.
@@ -972,8 +998,8 @@ scan_run_labels() {
             do {
                 added = 0
                 for (k = 1; k <= calls; k++) {
-                    if ((at_file[k], caller[k]) in wrapper) continue
-                    if ((at_file[k], callee[k]) in wrapper || ("", callee[k]) in wrapper) { wrapper[at_file[k], caller[k]] = 1; added = 1 }
+                    if (caller[k] in wrapper || !(callee[k] in wrapper)) continue
+                    wrapper[caller[k]] = 1; added = 1
                 }
             } while (added)
         }
@@ -999,7 +1025,7 @@ scan_run_labels() {
         # inside a function, so it fails.
         # apply_yaml stays a wrapper when the script defining it is not among
         # those scanned, so a heredoc fed to it is still judged.
-        BEGIN { OFS = "\t"; wrapper["", "apply_yaml"] = 1 }
+        BEGIN { OFS = "\t"; wrapper["apply_yaml"] = 1 }
         $1 == "FILE" {
             check_command()
             if (pass == 2 && fns) print "UNREADABLE " file ":" fnline[1] ": a function body opened at line " fnline[1] " never closes for the scan"
@@ -1007,12 +1033,12 @@ scan_run_labels() {
             inq = ""; cq = ""; depth = 0; pdepth = 0; fns = 0
             next
         }
-        { file = $2; scope = (file == helpers) ? "" : file }
+        { file = $2 }
         pass == 1 {
             if ($1 == "SH" && match(rest(3), /^[ \t]*(function[ \t]+[A-Za-z_][A-Za-z0-9_:.-]*|[A-Za-z_][A-Za-z0-9_:.-]*[ \t]*\(\))/)) {
                 name = substr(rest(3), RSTART, RLENGTH)
                 sub(/^[ \t]*(function[ \t]+)?/, "", name); sub(/[ \t]*\(\)$/, "", name)
-                defined[scope, name] = 1
+                defined[name] = 1
             }
             next
         }
@@ -1036,6 +1062,7 @@ scan_run_labels() {
             }
             if (pending == "") pending_at = $3
             pending_last = $3
+            pending_raw = pending_raw "\n" rest(3)
             pending = pending squash(rest(3))
             # bash goes on reading a command past a line ending in one
             # backslash, a pipe or && or inside a quote.
@@ -1043,6 +1070,7 @@ scan_run_labels() {
             check_command()
             next
         }
+        pass == 2 && $1 == "BODY" { for (k = 1; k <= fns; k++) fnbody[k] = fnbody[k] "\n" rest(4); next }
         pass < 4 { next }
         $1 == "UNCLOSED" { print "UNTERMINATED " file ":" $3 ": no " $4 " line closes this heredoc"; next }
         $1 == "OPEN" {
@@ -1713,39 +1741,51 @@ probe() {
     probe heredoc-then-here-string "kubectl apply -f - <<EOF <<<\"\$y\""$'\n''a: b'$'\n''EOF'
     probe heredoc-then-redirect "kubectl apply -f - <<EOF < \"\$f\""$'\n''a: b'$'\n''EOF'
     probe function-fed 'fed() {'$'\n''    kubectl apply -f - <<<"$y"'$'\n''    kubectl apply -f - < "$f"'$'\n''    cat "$f" | kubectl apply -f -'$'\n''}'
-    probe wrapper-order 'outer() {'$'\n''    inner "$1"'$'\n''}'$'\n''inner() {'$'\n''    kubectl apply -f -'$'\n''}'$'\n''outer T1 < "$f"'
-    probe wrapper-chain 'a() {'$'\n''    b "$1"'$'\n''}'$'\n''b() {'$'\n''    kubectl apply -f -'$'\n''}'$'\n''a T1 < "$f"'$'\n''c() { echo; }'
-    probe wrapper-chain-forward 'c() {'$'\n''    kubectl apply -f -'$'\n''}'$'\n''b() {'$'\n''    c "$1"'$'\n''}'$'\n''a() {'$'\n''    b "$1"'$'\n''}'$'\n''a T1 < "$f"'
-    probe wrapper-call-piped 'inner() { kubectl apply -f -; }'$'\n''outer() {'$'\n''    cat "$f" | inner'$'\n''}'$'\n''outer T1 < "$f"'
-    probe function-keyword 'function g() {'$'\n''    kubectl apply -f -'$'\n''}'$'\n''g < "$f"'
-    probe lone-brace 'f() {'$'\n''    echo {'$'\n''}'$'\n''kubectl apply -f -'
-    probe subshell-body 'f() ('$'\n''    echo x'$'\n'')'$'\n''kubectl apply -f -'
-    probe subshell-body-group 'f() ('$'\n''    { echo x; }'$'\n''    kubectl apply -f -'$'\n'')'$'\n''f < "$f"'
-    probe brace-after-subshell 'f() ( echo x; )'$'\n''g()'$'\n''{'$'\n''    kubectl apply -f -'$'\n''}'$'\n''g < "$f"'
-    probe subshell-body-one-line 'f() ( echo x; )'$'\n''kubectl apply -f -'
-    probe subshell-then-brace 'f() ( echo x; )'$'\n''g() {'$'\n''    echo y'$'\n''}'$'\n''main() {'$'\n''    echo z'$'\n''}'$'\n''kubectl apply -f -'$'\n''cat "$f" | kubectl apply -f -'
+    probe wrapper-order 'wo_outer() {'$'\n''    wo_inner "$1"'$'\n''}'$'\n''wo_inner() {'$'\n''    kubectl apply -f -'$'\n''}'$'\n''wo_outer T1 < "$f"'
+    probe wrapper-chain 'wc_a() {'$'\n''    wc_b "$1"'$'\n''}'$'\n''wc_b() {'$'\n''    kubectl apply -f -'$'\n''}'$'\n''wc_a T1 < "$f"'$'\n''wc_c() { echo; }'
+    probe wrapper-chain-forward 'wf_c() {'$'\n''    kubectl apply -f -'$'\n''}'$'\n''wf_b() {'$'\n''    wf_c "$1"'$'\n''}'$'\n''wf_a() {'$'\n''    wf_b "$1"'$'\n''}'$'\n''wf_a T1 < "$f"'
+    probe wrapper-call-piped 'wp_inner() { kubectl apply -f -; }'$'\n''wp_outer() {'$'\n''    cat "$f" | wp_inner'$'\n''}'$'\n''wp_outer T1 < "$f"'
+    probe function-keyword 'function fk_g() {'$'\n''    kubectl apply -f -'$'\n''}'$'\n''fk_g < "$f"'
+    # A { or } is a body brace only where bash reads it as a reserved word.
+    probe lone-pair 'lb_f() {'$'\n''    echo {'$'\n''}'$'\n''kubectl apply -f -'$'\n''echo }'
+    probe brace-word-pair 'bw_f() {'$'\n''    echo a{b'$'\n''}'$'\n''cat "$f" | kubectl apply -f -'$'\n''kubectl apply -f -'$'\n''echo c}d'
+    probe default-json 'dj_f() {'$'\n''    local b=${body:-{}}'$'\n''    kubectl apply -f -'$'\n''}'$'\n''dj_f < "$f"'
+    probe brace-groups 'grp() {'$'\n''    if { true; }; then { true; }; elif { true; }; then true; else { true; }; fi'$'\n''    while { false; }; do { true; }; done'$'\n''    until { true; }; do true; done'$'\n''    ! { false; }'$'\n''    true & { true; }'$'\n''    true | { cat; }'$'\n''    ( { true; } )'$'\n''    case x in x) { true; } ;; esac'$'\n''    { { true; } }'$'\n''    echo then {'$'\n''    kubectl apply -f -'$'\n''}'$'\n''grp < "$f"'
+    # Bash refuses this one, so it skips the probe's syntax check.
+    printf '%s\n' 'ub_f() {' '    kubectl apply -f -' > "$fixtures/scripts/unclosed-body.sh"
+    # One body defined in two files, spaced and opened differently.
+    probe same-body-one 'sb() { kubectl apply -f -; }'$'\n''sb < "$f"'
+    probe same-body-two '# The same body, spaced out.'$'\n''function sb {'$'\n''    kubectl apply -f -;'$'\n''}'$'\n''sb < "$f"'
+    probe subshell-body 'sbody_f() ('$'\n''    echo x'$'\n'')'$'\n''kubectl apply -f -'
+    probe subshell-body-group 'sg_f() ('$'\n''    { echo x; }'$'\n''    kubectl apply -f -'$'\n'')'$'\n''sg_f < "$f"'
+    probe brace-after-subshell 'ba_f() ( echo x; )'$'\n''ba_g()'$'\n''{'$'\n''    kubectl apply -f -'$'\n''}'$'\n''ba_g < "$f"'
+    probe subshell-body-one-line 'so_f() ( echo x; )'$'\n''kubectl apply -f -'
+    probe subshell-then-brace 'st_f() ( echo x; )'$'\n''st_g() {'$'\n''    echo y'$'\n''}'$'\n''st_main() {'$'\n''    echo z'$'\n''}'$'\n''kubectl apply -f -'$'\n''cat "$f" | kubectl apply -f -'
     probe dry-run-spaced 'kubectl apply --dry-run client -f m.yaml'
     probe dry-run-bare 'kubectl apply --dry-run -f m.yaml'
     probe dry-run-server 'kubectl apply --dry-run=server -f m.yaml'
     probe dry-run-none 'kubectl apply --dry-run=none -f m.yaml'
-    probe after-function 'f() { kubectl get ns; }'$'\n''kubectl apply -f -'$'\n''g() {'$'\n''    true'$'\n''}'$'\n''kubectl apply -f -'
+    probe after-function 'af_f() { kubectl get ns; }'$'\n''kubectl apply -f -'$'\n''af_g() {'$'\n''    true'$'\n''}'$'\n''kubectl apply -f -'
     probe kubectl-array 'kc=(kubectl --context e2e)'$'\n''"${kc[@]}" apply -f "$dir/m.yaml"'
     probe kubectl-function 'k() { kubectl "$@"; }'$'\n''k apply -k "$dir"'
     probe sudo-kubectl 'sudo -E kubectl --context e2e apply -f - < "$dir/m.yaml"'
-    probe wrapper-redirect 'apply_it() {'$'\n''    kubectl apply -f -'$'\n''}'$'\n''apply_it < "$dir/m.yaml"'
+    probe wrapper-redirect 'wr_apply_it() {'$'\n''    kubectl apply -f -'$'\n''}'$'\n''wr_apply_it < "$dir/m.yaml"'
 }
 plant kubectl-var-heredoc "KUBECTL=kubectl"$'\n'"\$KUBECTL apply -f - <<EOF" "$module_unlabelled"
-plant wrapper-order-heredoc "outer() {"$'\n'"    inner \"\$1\""$'\n'"}"$'\n'"inner() {"$'\n'"    kubectl apply -f -"$'\n'"}"$'\n'"outer T1 <<EOF" "$module_unlabelled"
-plant wrapper-chain-heredoc "a() {"$'\n'"    b \"\$1\""$'\n'"}"$'\n'"b() {"$'\n'"    c \"\$1\""$'\n'"}"$'\n'"c() {"$'\n'"    kubectl apply -f -"$'\n'"}"$'\n'"a T1 <<EOF" "$module_unlabelled"
-plant wrapper-call-fed "outer() {"$'\n'"    inner < \"\$f\""$'\n'"}"$'\n'"inner() {"$'\n'"    kubectl apply -f -"$'\n'"}"$'\n'"outer T1 <<EOF" "$module_unlabelled"
-plant wrapper-call-heredoc "inner() { kubectl apply -f -; }"$'\n'"outer() {"$'\n'"    inner <<X" "a: b" "X"$'\n'"}"$'\n'"outer < \"\$f\""
-# One function name defined in two files, a wrapper only in the first.
+plant wrapper-order-heredoc "woh_outer() {"$'\n'"    woh_inner \"\$1\""$'\n'"}"$'\n'"woh_inner() {"$'\n'"    kubectl apply -f -"$'\n'"}"$'\n'"woh_outer T1 <<EOF" "$module_unlabelled"
+plant wrapper-chain-heredoc "wch_a() {"$'\n'"    wch_b \"\$1\""$'\n'"}"$'\n'"wch_b() {"$'\n'"    wch_c \"\$1\""$'\n'"}"$'\n'"wch_c() {"$'\n'"    kubectl apply -f -"$'\n'"}"$'\n'"wch_a T1 <<EOF" "$module_unlabelled"
+plant wrapper-call-fed "wcf_outer() {"$'\n'"    wcf_inner < \"\$f\""$'\n'"}"$'\n'"wcf_inner() {"$'\n'"    kubectl apply -f -"$'\n'"}"$'\n'"wcf_outer T1 <<EOF" "$module_unlabelled"
+plant wrapper-call-heredoc "wchd_inner() { kubectl apply -f -; }"$'\n'"wchd_outer() {"$'\n'"    wchd_inner <<X" "a: b" "X"$'\n'"}"$'\n'"wchd_outer < \"\$f\""
+# One function name defined in two files with two bodies, a wrapper in one.
 plant same-name-wrapper "w() { kubectl apply -f -; }"$'\n'"w <<EOF" "$module_unlabelled"
 plant same-name-other "w() { echo; }"$'\n'"w <<EOF" "$module_unlabelled"
+# Two bodies that differ only inside their heredocs.
+plant heredoc-body-one "hb() {"$'\n'"    kubectl apply -f - <<EOF" "a: 1" "EOF"$'\n'"}"
+plant heredoc-body-two "hb() {"$'\n'"    kubectl apply -f - <<EOF" "a: 2" "EOF"$'\n'"}"
 plant fd3-heredoc "kubectl apply -f - 3<<EOF" "$module_labelled"
 plant fd0-heredoc "kubectl apply -f - 0<<EOF" "$module_labelled"
 plant pipe-then-heredoc "cat \"\$f\" | kubectl apply -f - <<EOF" "$module_labelled"
-plant wrapper-heredoc "apply_it() { kubectl apply -f -; }"$'\n'"apply_it <<EOF" "$module_unlabelled"
+plant wrapper-heredoc "wh_apply_it() { kubectl apply -f -; }"$'\n'"wh_apply_it <<EOF" "$module_unlabelled"
 # Commands the scan must leave alone: the body of a wrapper, an apply that
 # sends nothing, the other tools the suites run with an apply verb or a -f,
 # and text that only mentions an apply.
@@ -1836,7 +1876,14 @@ BYPATH wrapper-chain.sh:7
 BYPATH wrapper-chain-forward.sh:10
 BYPATH wrapper-call-piped.sh:3
 BYPATH function-keyword.sh:4
-UNREADABLE lone-brace.sh:1
+BYPATH lone-pair.sh:4
+BYPATH brace-word-pair.sh:4
+BYPATH brace-word-pair.sh:5
+BYPATH default-json.sh:5
+BYPATH brace-groups.sh:14
+UNREADABLE unclosed-body.sh:1
+BYPATH same-body-one.sh:2
+BYPATH same-body-two.sh:5
 BYPATH subshell-body.sh:4
 BYPATH subshell-body-one-line.sh:2
 BYPATH subshell-body-group.sh:5
@@ -1853,9 +1900,12 @@ SITE wrapper-chain-heredoc.sh:10
 UNLABELLED wrapper-chain-heredoc.sh:11
 BYPATH wrapper-call-fed.sh:2
 FILEDOC wrapper-call-fed.sh:7
+DUPLICATE same-name-wrapper.sh:1
 SITE same-name-wrapper.sh:2
 UNLABELLED same-name-wrapper.sh:3
-FILEDOC same-name-other.sh:2
+SITE same-name-other.sh:2
+UNLABELLED same-name-other.sh:3
+DUPLICATE heredoc-body-two.sh:1
 BYPATH fd3-heredoc.sh:1
 FILEDOC fd3-heredoc.sh:1
 SITE fd0-heredoc.sh:1
@@ -2081,7 +2131,23 @@ fi
 expect_red "a call of apply_yaml is judged when the script that defines it is not scanned" \
     "$(scan_run_labels "$kinds" "$fixtures/scripts/by-stdin.sh")" "^BYPATH $fixtures/scripts/by-stdin.sh:9: "
 expect_red "a function body still open when the last file scanned ends fails the scan" \
-    "$(scan_run_labels "$kinds" "$fixtures/scripts/lone-brace.sh")" "^UNREADABLE $fixtures/scripts/lone-brace.sh:1: "
+    "$(scan_run_labels "$kinds" "$fixtures/scripts/unclosed-body.sh")" "^UNREADABLE $fixtures/scripts/unclosed-body.sh:1: "
+expect_red "a function name two scanned scripts define with two bodies names both definitions" \
+    "$(scan_run_labels "$kinds" "$fixtures/scripts/same-name-other.sh" "$fixtures/scripts/same-name-wrapper.sh")" \
+    "^DUPLICATE $fixtures/scripts/same-name-wrapper.sh:1: function w is also defined at $fixtures/scripts/same-name-other.sh:1 "
+mkdir -p "$scratch/visible/a/scripts" "$scratch/visible/b/scripts"
+# shellcheck disable=SC2016 # the lines are fixture scripts' text
+{
+    printf '%s\n' 'w2() {' '    kubectl apply -f -' '}' > "$scratch/visible/a/scripts/defs.sh"
+    printf '%s\n' 'w2 < "$f"' > "$scratch/visible/a/scripts/same-dir.sh"
+    printf '%s\n' 'source "$SCRIPT_DIR/../../a/scripts/defs.sh"' 'w2 < "$f"' > "$scratch/visible/b/scripts/use.sh"
+}
+visible="$(scan_run_labels "$kinds" "$scratch/visible/a/scripts" "$scratch/visible/b/scripts" | cut -d: -f1-2 | sort)"
+if [ "$visible" = "BYPATH $scratch/visible/a/scripts/same-dir.sh:1"$'\n'"BYPATH $scratch/visible/b/scripts/use.sh:2" ]; then
+    pass "a wrapper one suite defines is a wrapper in every scanned script"
+else
+    fail "a wrapper called from its own suite and from another: verdict was: ${visible:-clean}"
+fi
 mkdir -p "$scratch/helpers-wrapper/scripts"
 printf '%s\n' 'hw() { kubectl apply -f -; }' > "$scratch/helpers-wrapper/helpers.sh"
 # shellcheck disable=SC2016 # the line is a fixture script's text

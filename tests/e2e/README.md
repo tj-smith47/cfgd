@@ -128,13 +128,18 @@ text inside a string value is no object. It fails on:
   another descriptor (`3<<EOF`), a pipe (from `cat`, `echo`, `printf`, or a heredoc fed to
   another command), or nothing on the line. An apply is a command with an `apply`, `create`
   or `replace` word and a `-f`, `--filename`, `-k` or `--kustomize` argument, run by
-  `kubectl`, a variable or array (`$KUBECTL`, `"${kc[@]}"`) or a function the same script
-  or `helpers.sh` defines; another tool's `apply` (`cfgd apply`) is not one. A wrapper is a
-  function whose body reads stdin with nothing feeding it into an apply or into another
-  wrapper, such as `apply_yaml`: its body passes, and a call of it is an apply reading
-  stdin. An apply with `--dry-run=client` sends nothing and passes
+  `kubectl`, a variable or array (`$KUBECTL`, `"${kc[@]}"`) or a function a scanned script
+  defines; another tool's `apply` (`cfgd apply`) is not one. A wrapper is a function whose
+  body reads stdin with nothing feeding it into an apply or into another wrapper, such as
+  `apply_yaml`: its body passes, and a call of it is an apply reading stdin. Every function
+  the floored suites' scripts and `helpers.sh` define is visible to all of them, so one
+  name defined twice with different bodies (spacing aside) fails, naming both definitions.
+  An apply with `--dry-run=client` sends nothing and passes
 - a function body (`{ }` or `( )`) still open at the end of its script, where the scan
-  cannot tell which commands are inside it
+  cannot tell which commands are inside it. A `{` or `}` counts only where bash reads it as
+  a reserved word, the first word of a command (`echo {` opens nothing). Every function
+  the floored suites' scripts and `helpers.sh` define is visible to all of them, so one
+  name defined twice with different bodies (spacing aside) fails, naming both definitions
 - fewer sites than its suite's floor (the operator, full-stack and gateway suites each carry one)
 
 A cfgd.io document of another kind (the crossplane suite's `TeamConfig`) is listed
