@@ -124,14 +124,17 @@ text inside a string value is no object. It fails on:
   read. An operator object reaches the cluster only from a heredoc on the apply command
   itself (`kubectl apply -f - <<EOF`, `apply_yaml "T01" <<EOF`). A manifest applied by path
   (`-f mc.yaml`, `--filename`, `-k`, `-f <(...)`) fails, and so does an apply reading stdin
-  from anything else: a `<` redirect, a here-string, a process substitution, a pipe (from
-  `cat`, `echo`, `printf`, or a heredoc fed to another command), or nothing on the line. An
-  apply is a command with an `apply`, `create` or `replace` word and a `-f`, `--filename`,
-  `-k` or `--kustomize` argument, run by `kubectl`, a variable or array (`$KUBECTL`,
-  `"${kc[@]}"`) or a function the scripts define; another tool's `apply` (`cfgd apply`)
-  is not one. A wrapper is a function whose body is an apply reading stdin with nothing
-  feeding it, such as `apply_yaml`: its body passes, and a call of it is an apply reading
+  from anything else: a `<` redirect, a here-string, a process substitution, a heredoc on
+  another descriptor (`3<<EOF`), a pipe (from `cat`, `echo`, `printf`, or a heredoc fed to
+  another command), or nothing on the line. An apply is a command with an `apply`, `create`
+  or `replace` word and a `-f`, `--filename`, `-k` or `--kustomize` argument, run by
+  `kubectl`, a variable or array (`$KUBECTL`, `"${kc[@]}"`) or a function the same script
+  or `helpers.sh` defines; another tool's `apply` (`cfgd apply`) is not one. A wrapper is a
+  function whose body reads stdin with nothing feeding it into an apply or into another
+  wrapper, such as `apply_yaml`: its body passes, and a call of it is an apply reading
   stdin. An apply with `--dry-run=client` sends nothing and passes
+- a function body (`{ }` or `( )`) still open at the end of its script, where the scan
+  cannot tell which commands are inside it
 - fewer sites than its suite's floor (the operator, full-stack and gateway suites each carry one)
 
 A cfgd.io document of another kind (the crossplane suite's `TeamConfig`) is listed
