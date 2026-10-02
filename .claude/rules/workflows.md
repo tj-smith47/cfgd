@@ -20,6 +20,7 @@ single-source-of-truth wiring.
 | protoc version | `.github/actions/setup-protoc` input default | setup-rust composite, release/nightly/determinism-shards (call bare, no `version:`) |
 | crossplane version + sha256 | `.github/actions/setup-crossplane` input defaults | release (function/push jobs), e2e-setup; `tests/e2e/setup-cluster.sh` fallback mirrors it for local runs |
 | cosign version | `COSIGN_VERSION` env in e2e.yml | both cosign-installer steps |
+| shellcheck version + sha256 | `.github/actions/setup-shellcheck` input defaults | ci.yml `audit` job, ahead of `task shellcheck` (the runner image's own shellcheck is older and reports different findings) |
 | MSRV | `rust-version` in root Cargo.toml | ci.yml msrv job reads it with sed |
 | FreeBSD guest packages, `safe.directory` trust, synced `.git` | ci.yml `test-freebsd` vmactions `prepare:` | Taskfile `test:freebsd` (`npm` is CI-only: only `test:freebsd:npm-prefix` reads it); compared by `the_local_freebsd_leg_prepares_the_guest_ci_prepares` |
 
@@ -227,6 +228,11 @@ single-source-of-truth wiring.
   stand-in kubectl and fails when any script under `tests/e2e/` starts a
   `kubectl port-forward` outside `common/helpers.sh`, or when a `run-all.sh`
   sources a setup that starts one before installing its EXIT trap.
+- The `audit` job also runs `task shellcheck`, after `task audit:test`: the
+  lint gate over every tracked `*.sh` (`git ls-files '*.sh'`, the same
+  population `task lint` and `task ci` check). It sits in this job because it
+  needs no Rust toolchain, only `task` and the pinned shellcheck that
+  `./.github/actions/setup-shellcheck` puts first on PATH.
 - The `rustdoc` job runs `task doc` (`cargo doc --workspace --no-deps
   --document-private-items --all-features` under `RUSTDOCFLAGS="-D warnings"`,
   the flag spelled once as the Taskfile's `RUSTDOC_DENY_WARNINGS` var) as its

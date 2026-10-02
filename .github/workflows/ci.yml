@@ -251,6 +251,14 @@ jobs:
       - name: Validate audit rules
         run: task audit:test
 
+      - name: Install ShellCheck
+        uses: ./.github/actions/setup-shellcheck
+
+      # Every tracked *.sh, the population `task lint` and `task ci` check
+      # locally.
+      - name: ShellCheck
+        run: task shellcheck
+
       # Mirrors `task version-files:check` in `task ci`: a release that fails after the
       # tag never lands its bump, and the next sweep silently leaves the old literal.
       - name: Check enrolled version files via anodizer

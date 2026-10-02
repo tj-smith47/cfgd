@@ -96,12 +96,13 @@ tasks:
   # --- Quality ---
 
   check:
-    desc: Run all quality checks (fmt:check, clippy, test, audit); the rustdoc gate runs in CI and ahead of `task push`
+    desc: Run all quality checks (fmt:check, clippy, test, audit, shellcheck); the rustdoc gate runs in CI and ahead of `task push`
     cmds:
       - task: fmt:check
       - task: clippy
       - task: test
       - task: audit
+      - task: shellcheck
 
   fmt:
     desc: Format code
@@ -257,6 +258,22 @@ tasks:
     desc: Run project-specific code quality audit
     cmds:
       - bash .claude/scripts/audit.sh
+
+  shellcheck:
+    desc: Run shellcheck over every tracked shell script (`git ls-files '*.sh'`) with the repo's .shellcheckrc; CI installs the version pinned in .github/actions/setup-shellcheck.
+    preconditions:
+      - sh: command -v shellcheck
+        msg: "shellcheck is not installed; install the version pinned in .github/actions/setup-shellcheck."
+    cmds:
+      - |
+        n=$(git ls-files '*.sh' | wc -l | tr -d ' ')
+        # An empty population would pass on zero files, so a broken pathspec fails here.
+        if [ "$n" -eq 0 ]; then
+          echo "shellcheck: git ls-files '*.sh' matched no tracked script" >&2
+          exit 1
+        fi
+        git ls-files -z '*.sh' | xargs -0 shellcheck
+        echo "shellcheck $(shellcheck --version | sed -n 's/^version: //p'): $n scripts clean"
 
   version-files:check:
     desc: Verify every file enrolled in .anodizer.yaml version_files still carries its crate's current version (CI drift guard).
@@ -542,11 +559,12 @@ tasks:
       - task: fmt
 
   lint:
-    desc: Local pre-commit check (tidy, clippy, audit, build, snapshot dry-run); the rustdoc gate runs in CI and ahead of `task push`, never here
+    desc: Local pre-commit check (tidy, clippy, audit, shellcheck, build, snapshot dry-run); the rustdoc gate runs in CI and ahead of `task push`, never here
     cmds:
       - task: tidy
       - task: clippy
       - task: audit
+      - task: shellcheck
       - task: build
       - task: snapshot
 
@@ -652,6 +670,7 @@ tasks:
       - task: test:threads
       - task: audit
       - task: audit:test
+      - task: shellcheck
       - task: package
 
   # --- E2E ---

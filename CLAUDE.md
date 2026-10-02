@@ -19,7 +19,7 @@ See `.claude/PLAN.md` for the phased plan. Do not add features outside the curre
 - `.claude/rules/shared-utils.md` — catalog of `cfgd-core/src/lib.rs` helpers; check before adding any new helper
 - `.claude/rules/structured-output-coverage.md` — `cmd_*` → `has_data_payload?` table (loads for `crates/cfgd/src/cli/**`)
 - `.claude/rules/database.md` — SQLite conventions (WAL, foreign_keys, versioned migrations)
-- `.claude/rules/style.md` — formatting, linting, naming, serde
+- `.claude/rules/style.md` — formatting, linting, naming, serde; shell-script lint (loads for `*.sh` too)
 - `.claude/rules/patterns.md` — builder, trait objects, tracing
 - `.claude/rules/testing.md` — `cargo test` gating and test placement
 - `.claude/rules/workflows.md` — GitHub Actions SSOT map + job invariants (loads for `.github/**`)

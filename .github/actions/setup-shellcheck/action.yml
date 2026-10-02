@@ -1,0 +1,40 @@
+name: "Setup ShellCheck"
+description: "Download a pinned ShellCheck release and verify it against a known SHA256 before use (composite, no Node runtime)."
+
+# The defaults below are the repo's single source of truth for the ShellCheck
+# pin; version and checksum move together. The runner image's own shellcheck
+# is older and reports a different set of findings than the version the
+# scripts are kept clean against, so `task shellcheck` would pass locally and
+# fail in CI, or the other way round. Recompute on a version bump:
+#   curl -fsSL https://github.com/koalaman/shellcheck/releases/download/<ver>/shellcheck-<ver>.linux.x86_64.tar.xz | sha256sum
+inputs:
+  version:
+    description: "ShellCheck version to install (with leading 'v')."
+    required: false
+    default: "v0.11.0"
+  sha256:
+    description: "Expected SHA256 of the linux x86_64 release tarball; the download is rejected on mismatch. Must be recomputed together with any version bump."
+    required: false
+    default: "8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198"
+
+runs:
+  using: "composite"
+  steps:
+    - name: Install ShellCheck
+      # Prepended to PATH, so it shadows the runner image's /usr/bin/shellcheck.
+      shell: bash
+      env:
+        SHELLCHECK_VERSION: ${{ inputs.version }}
+        SHELLCHECK_SHA256: ${{ inputs.sha256 }}
+      run: |
+        set -euo pipefail
+        dest="${RUNNER_TEMP}/shellcheck"
+        mkdir -p "$dest"
+        tarball="$dest/shellcheck.tar.xz"
+        curl -fsSL --retry 5 --retry-all-errors --retry-delay 2 --connect-timeout 10 \
+          "https://github.com/koalaman/shellcheck/releases/download/${SHELLCHECK_VERSION}/shellcheck-${SHELLCHECK_VERSION}.linux.x86_64.tar.xz" \
+          -o "$tarball"
+        echo "${SHELLCHECK_SHA256}  ${tarball}" | sha256sum -c -
+        tar -xJf "$tarball" -C "$dest" --strip-components=1 "shellcheck-${SHELLCHECK_VERSION}/shellcheck"
+        echo "$dest" >> "$GITHUB_PATH"
+        "$dest/shellcheck" --version
