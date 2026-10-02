@@ -1,20 +1,20 @@
 - kind: ClusterRole
-  name: cfgd-csi
+  name: cfgd-e2e-42-csi
   selectors: []
 - kind: ClusterRole
-  name: cfgd-operator
+  name: cfgd-e2e-42-operator
   selectors: []
 - kind: ClusterRoleBinding
-  name: cfgd-csi
+  name: cfgd-e2e-42-csi
   selectors: []
 - kind: ClusterRoleBinding
-  name: cfgd-operator
+  name: cfgd-e2e-42-operator
   selectors: []
 - kind: CSIDriver
   name: e2e.csi.cfgd.io
   selectors: []
 - kind: MutatingWebhookConfiguration
-  name: cfgd-pod-injector
+  name: cfgd-e2e-42-pod-injector
   selectors:
     - name: inject-modules.cfgd.io
       objectSelector:
@@ -32,7 +32,7 @@
             values:
               - "42"
 - kind: ValidatingWebhookConfiguration
-  name: cfgd
+  name: cfgd-e2e-42
   selectors:
     - name: validate-machineconfig.cfgd.io
       objectSelector:
@@ -65,20 +65,20 @@
           cfgd.io/e2e-run: "42"
       namespaceSelector: null
 - kind: DaemonSet
-  name: cfgd-csi
+  name: cfgd-e2e-42-csi
   registrationPath:
     - "--kubelet-registration-path=/var/lib/kubelet/plugins/e2e.csi.cfgd.io/csi.sock"
   pluginHostPath:
     - /var/lib/kubelet/plugins/e2e.csi.cfgd.io/
 - kind: DaemonSet
-  name: cfgd-csi
+  name: cfgd-e2e-42-csi
   env:
     - container: cfgd-csi
       values:
         - name: CSI_DRIVER_NAME
           value: "e2e.csi.cfgd.io"
 - kind: Deployment
-  name: cfgd-operator
+  name: cfgd-e2e-42-operator
   env:
     - container: operator
       values:

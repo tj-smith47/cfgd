@@ -49,13 +49,16 @@ for entry in "${deployment_cases[@]}"; do
 done
 
 # The e2e case carries JSON values, which a whitespace-split string cannot hold,
-# so each case sets its own argument array.
+# so each case sets its own argument array. Each case also sets its release
+# name, because the cluster-scoped object names derive from it.
 cluster_scoped_args() {
   case "$1" in
     cluster-scoped-default)
+      release=cfgd
       args=(--set csiDriver.enabled=true)
       ;;
     cluster-scoped-e2e)
+      release=cfgd-e2e-42
       args=(
         -f "$repo/tests/e2e/manifests/pr-install-values.yaml"
         --set operator.image.repository=registry.example/cfgd-operator --set operator.image.tag=pr
@@ -90,6 +93,6 @@ cluster_scoped_query='[.] |
 
 for name in cluster-scoped-default cluster-scoped-e2e; do
   cluster_scoped_args "$name"
-  check "$name" "$(helm template cfgd "$chart" "${args[@]}" | yq ea "$cluster_scoped_query")"
+  check "$name" "$(helm template "$release" "$chart" "${args[@]}" | yq ea "$cluster_scoped_query")"
 done
 exit "$failed"
