@@ -197,6 +197,7 @@ operator_kinds() {
 #                to the cluster
 #   UNLABELLED   an operator object whose metadata.labels lacks ${E2E_RUN_LABEL_YAML}
 #   HANDSPELLED  an operator object whose label is spelled by hand
+#   FLOWDOC      a cfgd.io object written as one flow mapping
 #   FLOWMETA     an operator object whose metadata is in flow form
 #   NESTED       a cfgd.io object nested in another document, such as a List,
 #                applied or captured; an ownerReferences entry is a reference
@@ -239,7 +240,7 @@ scan_run_labels() {
             n = split(s, parts, ",")
             for (i = 1; i <= n; i++) { sub(/^[ \t]+/, "", parts[i]); sub(/[ \t]+$/, "", parts[i]); label_entry(parts[i]) }
         }
-        function check_doc(first, last,    i, base, s, api, nested, kind, name, inmeta, flowmeta, mchild, inlab, lind, owner) {
+        function check_doc(first, last,    i, base, s, api, nested, flow, kind, name, inmeta, flowmeta, mchild, inlab, lind, owner) {
             base = -1; labelled = 0; handspelled = 0; owner = -1
             for (i = first; i <= last; i++) {
                 if (blank_or_comment(body[i])) continue
@@ -247,14 +248,20 @@ scan_run_labels() {
                 s = strip(body[i])
                 if (owner >= 0 && (indent(body[i]) > owner || (indent(body[i]) == owner && s ~ /^- /))) continue
                 owner = (s ~ /^ownerReferences:/) ? indent(body[i]) : -1
+                if (s ~ /^(- )?\{.*apiVersion"?:[ \t]*["\047]?cfgd\.io\//) flow = bline[i]
                 if (indent(body[i]) != base) { if (cfgd_api(s)) nested = bline[i]; continue }
                 if (cfgd_api(s)) api = bline[i]
                 if (s ~ /^kind:/) { kind = s; sub(/^kind:[ \t]*/, "", kind); gsub(/["\047]/, "", kind) }
                 if (s ~ /^metadata:[ \t]*\{/) flowmeta = 1
             }
-            if (!api && !nested) return
+            if (!api && !nested && !flow) return
             has_cfgd = 1
             if (class == "FILE") return
+            if (flow) {
+                print "FLOWDOC " file ":" flow ": a cfgd.io object written as a flow mapping; write it in block style so the scan can read its labels"
+                reported = 1
+                return
+            }
             if (!api) {
                 print "NESTED " file ":" nested ": a cfgd.io object nested inside " kind "; apply it as its own document"
                 reported = 1
@@ -632,6 +639,7 @@ kind: Module
 metadata: {name: flow, labels: {\${E2E_RUN_LABEL_YAML}}}
 spec:
   packages: []"
+plant flow-doc "$apply" "{apiVersion: cfgd.io/v1alpha1, kind: Module, metadata: {name: flow, labels: {\${E2E_RUN_LABEL_YAML}}}}"
 plant heredoc-unterminated "$apply" "$module_labelled" ''
 plant by-path-stdin "kubectl apply -n ns -f - <<EOF" "$module_labelled"
 cat > "$fixtures/scripts/by-path.sh" <<'FIXTURE'
@@ -686,6 +694,7 @@ UNLABELLED exec-apply.sh:2
 SITE entry-comment.sh:1
 UNLABELLED entry-comment.sh:2
 FILEDOC file-operator-kind.sh:1
+FLOWDOC flow-doc.sh:2
 SITE flow-labels.sh:1
 SITE flow-metadata.sh:1
 FLOWMETA flow-metadata.sh:2
@@ -958,7 +967,7 @@ if [ "$(sed -n 's/^rc=//p' <<<"$out")" = 2 ] &&
 else
     fail "argocd_owner on an unreadable namespaced object: got [$out] with calls [$(cat "$scratch/argo.log")], want rc=2 and the ERROR naming daemonset/cfgd-csi-csi in e2e-ns"
 fi
-out="$(argo_case unreadable 'argocd_owner validatingwebhookconfiguration cfgd-validating-webhooks "" "rerun setup"')"
+out="$(argo_case unreadable 'argocd_owner validatingwebhookconfiguration cfgd-validating-webhooks - "rerun setup"')"
 if [ "$(sed -n 's/^rc=//p' <<<"$out")" = 2 ] &&
     [ "$(argo_errors "$out")" = "ERROR: could not read validatingwebhookconfiguration/cfgd-validating-webhooks. Check that the runner can get validatingwebhookconfiguration objects, then rerun setup." ] &&
     grep -qx 'kubectl get validatingwebhookconfiguration cfgd-validating-webhooks --ignore-not-found .*' "$scratch/argo.log"; then
@@ -967,6 +976,14 @@ else
     fail "argocd_owner on an unreadable cluster-scoped object: got [$out] with calls [$(cat "$scratch/argo.log")], want rc=2, an ERROR with no namespace and a get without -n"
 fi
 
+for argo_empty in 'argocd_owner deployment cfgd-operator "" "rerun setup"' 'argocd_owner deployment cfgd-operator cfgd-system' 'argocd_managed deployment cfgd-operator ""'; do
+    out="$(argo_case untracked "$argo_empty")"
+    if [ "$(sed -n 's/^rc=//p' <<<"$out")" = 2 ] && [ "$(argo_errors "$out" | wc -l)" -eq 1 ] && [ ! -s "$scratch/argo.log" ]; then
+        pass "[$argo_empty] is refused with status 2 and one ERROR, and kubectl is not called"
+    else
+        fail "[$argo_empty]: got [$out] with calls [$(cat "$scratch/argo.log")], want rc=2, one ERROR and no kubectl call"
+    fi
+done
 out="$(argo_case tracked crossplane_install)"
 if [ "$(sed -n 's/^rc=//p' <<<"$out")" = 0 ] && ! grep -q '^helm' "$scratch/argo.log" &&
     grep -q "ArgoCD's; installing nothing" <<<"$out"; then
@@ -1119,9 +1136,10 @@ fi
 # reads heredocs.awk's records and reports each kubectl write that names a CRD,
 # each helm install without --skip-crds and each heredoc holding a CRD.
 # crd_kind matches a line setting kind to CustomResourceDefinition in YAML, its
-# value bare, quoted or followed by a comment, a list item's first key
-# included, or as a JSON member. Both the scan and the manifest check read it.
-crd_kind="^[[:space:]]*(-[[:space:]]+)?kind:[[:space:]]*[\"']?CustomResourceDefinition[\"']?[[:space:]]*(#.*)?\$|\"kind\"[[:space:]]*:[[:space:]]*\"CustomResourceDefinition\""
+# value bare, quoted or followed by a comment, as a list item's first key or
+# inside a flow mapping, or as a JSON member. Both the scan and the manifest
+# check read it.
+crd_kind="^([^#]*[{,[:space:]-])?kind:[[:space:]]*[\"']?CustomResourceDefinition[\"']?[[:space:]]*([,}#].*)?\$|\"kind\"[[:space:]]*:[[:space:]]*\"CustomResourceDefinition\""
 scan_crd_writes() {
     awk -f "$here/heredocs.awk" "$@" | awk -v crd_kind="$crd_kind" -f "$here/crd-writes.awk"
 }
@@ -1134,9 +1152,10 @@ writes_want="$(printf '%s\t%s\n' \
     KUBECTL writes.bash:1 KUBECTL writes.bash:2 KUBECTL writes.bash:3 KUBECTL writes.bash:4 \
     KUBECTL writes.bash:6 HELM writes.bash:7 HELM writes.bash:8 HELM writes.bash:9 \
     HEREDOC writes.bash:11 HEREDOC writes.bash:17 HEREDOC writes.bash:24 HEREDOC writes.bash:27 \
-    HEREDOC writes.bash:30 HEREDOC writes.bash:33 HEREDOC writes.bash:36 HEREDOC writes.bash:40)"
+    HEREDOC writes.bash:30 HEREDOC writes.bash:33 HEREDOC writes.bash:36 HEREDOC writes.bash:40 \
+    HEREDOC writes.bash:43)"
 if [ "$writes_got" = "$writes_want" ]; then
-    pass "the CRD-write scan reports each planted kubectl write, helm install and CRD heredoc once, with bare, quoted, comment-tailed, list-item and JSON kinds, and stays quiet on reads, --local, --dry-run, --skip-crds, messages, comments and quoted values"
+    pass "the CRD-write scan reports each planted kubectl write, helm install and CRD heredoc once, with bare, quoted, comment-tailed, list-item, flow-style and JSON kinds, and stays quiet on reads, --local, --dry-run, --skip-crds, messages, comments and quoted values"
 else
     fail "the CRD-write scan printed [$writes_got], want [$writes_want]"
 fi
@@ -1183,7 +1202,7 @@ crd_manifests() {
 manifest_fixtures="$here/fixtures/crd-manifests"
 manifests_want="$(cd "$manifest_fixtures" && printf '%s\n' hit*)"
 if manifests_got="$(cd "$manifest_fixtures" && crd_manifests hit* miss*)" && [ -n "$manifests_want" ] && [ "$manifests_got" = "$manifests_want" ]; then
-    pass "the CRD-manifest check reports bare, quoted, comment-tailed, list-item and JSON CRD kinds and stays quiet on a quoted value and a commented-out kind line"
+    pass "the CRD-manifest check reports bare, quoted, comment-tailed, list-item, flow-style and JSON CRD kinds and stays quiet on a quoted value and a commented-out kind line"
 else
     fail "the CRD-manifest check printed [$manifests_got], want [$manifests_want]"
 fi

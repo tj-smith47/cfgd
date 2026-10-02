@@ -40,3 +40,6 @@ EOF
 cat > crd.json <<EOF
 {"apiVersion": "apiextensions.k8s.io/v1", "kind": "CustomResourceDefinition"}
 EOF
+cat > flow.yaml <<EOF
+{apiVersion: apiextensions.k8s.io/v1, kind: CustomResourceDefinition, metadata: {name: widgets.example.io}}
+EOF

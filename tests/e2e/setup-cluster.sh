@@ -740,7 +740,7 @@ fi
 for release_webhook in validatingwebhookconfiguration/cfgd-validating-webhooks \
     mutatingwebhookconfiguration/cfgd-mutating-webhooks; do
     argocd_rc=0
-    argocd_owner "${release_webhook%%/*}" "${release_webhook#*/}" "" "rerun setup" || argocd_rc=$?
+    argocd_owner "${release_webhook%%/*}" "${release_webhook#*/}" - "rerun setup" || argocd_rc=$?
     case "$argocd_rc" in
         0)
             echo "ERROR: $release_webhook carries an argocd.argoproj.io/tracking-id annotation, so ArgoCD owns it and would revert what setup applies."

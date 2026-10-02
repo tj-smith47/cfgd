@@ -363,24 +363,33 @@ running_image() {
 # (its tracking-id annotation is set), so it runs what /db/manifests pins and
 # reverts changes; 1 when it does not, or the object is absent; 2 when kubectl
 # cannot read it, whose error is left on stderr. The namespace defaults to
-# cfgd-system when omitted and is left off when given empty, for a
-# cluster-scoped kind. A caller that writes on 1 stops on 2, which says nothing
-# about who owns it.
+# cfgd-system when omitted; `-` names a cluster-scoped kind. An empty namespace
+# is refused with 2: read in the kubeconfig's own namespace, a namespaced
+# object would look absent, and absent is the answer a caller writes on.
 argocd_managed() {
     local id ns="${3-cfgd-system}"
+    if [ -z "$ns" ]; then
+        echo "ERROR: argocd_managed $1 $2 was given an empty namespace. Pass the namespace, or - for a cluster-scoped kind." >&2
+        return 2
+    fi
+    [ "$ns" != - ] || ns=""
     id="$(kubectl get "$1" "$2" ${ns:+-n "$ns"} --ignore-not-found \
         -o jsonpath='{.metadata.annotations.argocd\.argoproj\.io/tracking-id}')" || return 2
     [ -n "$id" ]
 }
 
-# argocd_owner <kind> <name> <namespace, empty when cluster-scoped> <rerun>:
+# argocd_owner <kind> <name> <namespace, - when cluster-scoped> <rerun>:
 # argocd_managed's status, with the ERROR every caller stops or fails on when
 # the object cannot be read printed to stderr.
 argocd_owner() {
     local rc=0 where=""
+    if [ "$#" -ne 4 ] || [ -z "$3" ]; then
+        echo "ERROR: argocd_owner takes a kind, a name, a namespace (- for a cluster-scoped kind) and the rerun advice; got [$*]." >&2
+        return 2
+    fi
     argocd_managed "$1" "$2" "$3" || rc=$?
     if [ "$rc" -eq 2 ]; then
-        [ -z "$3" ] || where=" in $3"
+        [ "$3" = - ] || where=" in $3"
         echo "ERROR: could not read $1/$2$where. Check that the runner can get $1 objects${where:+ there}, then $4." >&2
     fi
     return "$rc"
