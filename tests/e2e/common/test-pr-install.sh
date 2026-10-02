@@ -109,14 +109,16 @@ expect_kubectl "running_image reads the namespace it is given" \
     "running_image daemonset \"\$E2E_CSI_DS\" cfgd-csi \"\$E2E_INSTALL_NS\"" \
     'get daemonset cfgd-e2e-42-csi -n cfgd-e2e-42-sys -o jsonpath={.spec.template.spec.containers[?(@.name=="cfgd-csi")].image}'
 
-# CSI_DRIVER_NAME is the one spelling of the PR install's driver; a second one
-# in the values file could drift from it.
+# CSI_DRIVER_NAME is the one spelling of the PR install's driver; a csiDriver.name
+# key in the values file, in block or flow form, could drift from it. A file yq
+# cannot read is a failure too, or a broken file would pass as "no key".
 values="$e2e_root/manifests/pr-install-values.yaml"
-if grep -n 'csi\.cfgd\.io' "$values" > "$scratch/driver-name"; then
-    fail "$values spells a CSI driver name ($(tr '\n' ';' < "$scratch/driver-name")); the install passes --set-string csiDriver.name=\$CSI_DRIVER_NAME"
-else
-    pass "pr-install-values.yaml leaves csiDriver.name to --set-string csiDriver.name=\$CSI_DRIVER_NAME"
-fi
+has_name="$(yq '.csiDriver | has("name")' "$values" 2>&1 | tr '\n' ' ' | sed 's/ *$//' || true)"
+case "$has_name" in
+    false) pass "pr-install-values.yaml leaves csiDriver.name to --set-string csiDriver.name=\$CSI_DRIVER_NAME" ;;
+    true) fail "$values sets csiDriver.name ($(yq '.csiDriver.name' "$values")); the install passes --set-string csiDriver.name=\$CSI_DRIVER_NAME" ;;
+    *) fail "yq could not read $values: $has_name" ;;
+esac
 
 if [ "$failures" -gt 0 ]; then
     echo "$failures check(s) failed"

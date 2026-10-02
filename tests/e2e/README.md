@@ -68,8 +68,8 @@ the name is spelled.
 
 `ensure_namespace` labels each namespace it creates with `cfgd.io/e2e-run=<run id>`,
 which the PR install's mutating webhook selects on, the heartbeat refreshes and the
-janitor reaps by. It never labels `cfgd-system` or `$CFGD_NAMESPACE`. `running_image` takes the namespace
-as an optional fourth argument (default `cfgd-system`), so
+janitor reaps by. It never labels `cfgd-system` or `$CFGD_NAMESPACE`. `running_image`
+takes the namespace as an optional fourth argument (default `cfgd-system`), so
 `running_image daemonset "$E2E_CSI_DS" cfgd-csi "$E2E_INSTALL_NS"` reads the PR
 install's driver. `common/test-pr-install.sh` (run by `task e2e:tags:check`) checks
 these names, the run id, both helpers and the values file with a stub `kubectl`, so it
