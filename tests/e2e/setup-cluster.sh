@@ -42,7 +42,8 @@ ensure_namespace cfgd-system
 
 # --- Step 1c: Serialize on shared cluster state via a coordination Lease ---
 # Two near-simultaneous setups mutate the same cluster-scoped state (CRDs,
-# webhooks, the singleton operator/server deployments, the CSI release). A
+# webhooks, the singleton operator/server deployments, the PR install's
+# CSIDriver). A
 # coordination.k8s.io/Lease named cfgd-e2e-setup serializes them: the holder
 # identity is GITHUB_RUN_ID and a background renewer advances renewTime every
 # third of the duration. If the holder dies, renewTime stops and any waiter
@@ -389,8 +390,8 @@ build_image() {
 RUST_SHARED_PATHS=(Cargo.lock Cargo.toml crates/cfgd-core)
 
 # IMAGE_BUILT[<image>] = "true" when this run rebuilt+pushed the image, "false"
-# when it was skipped. Downstream steps (rollout restart, CSI Helm redeploy)
-# read it to skip no-op restarts on unchanged images.
+# when it was skipped. The operator rollout restart reads it to skip a no-op
+# restart on an unchanged image.
 declare -A IMAGE_BUILT
 
 # An overridden image is used as it is: never built, pushed or retagged. Setup
@@ -535,7 +536,7 @@ fi
 
 # (Namespace and RBAC already created in Step 1b above)
 
-# --- Step 6: Generate and apply CRDs ---
+# --- Step 4: Generate and apply CRDs ---
 echo "Generating and applying CRDs..."
 CRD_YAML=$("$REPO_ROOT/target/release/cfgd-gen-crds")
 if [ -z "$CRD_YAML" ]; then
@@ -553,11 +554,133 @@ for crd in machineconfigs.cfgd.io configpolicies.cfgd.io driftalerts.cfgd.io \
     kubectl wait --for=condition=established "crd/$crd" --timeout=30s 2>/dev/null || true
 done
 
-# --- Step 7: Apply cert-manager webhook TLS ---
+# --- Step 5: Apply cert-manager webhook TLS ---
 echo "Applying webhook TLS (cert-manager)..."
 kubectl apply -f "$SCRIPT_DIR/manifests/e2e-webhook-tls.yaml"
 
-# --- Step 8: Update operator image ---
+# --- Step 6: Install the PR's operator and CSI driver ---
+# The live release in cfgd-system runs whatever its owner pins, so this run's
+# operator and CSI images are installed as a second release beside it. That
+# release watches, validates and injects only for objects and namespaces that
+# carry this run's label, and registers its own CSIDriver.
+echo "Installing the PR operator and CSI driver ($E2E_INSTALL_RELEASE in $E2E_INSTALL_NS)..."
+
+# Every run's install registers the same CSIDriver name, and Helm's
+# release-namespace annotation says whose it is. An owner whose namespace is
+# gone died without uninstalling, so its CSIDriver is removed.
+if ! csi_driver_obj=$(kubectl get csidriver "$CSI_DRIVER_NAME" --ignore-not-found -o name); then
+    echo "ERROR: could not read csidriver/$CSI_DRIVER_NAME. Check that the runner can get csidrivers, then rerun setup."
+    exit 1
+fi
+if [ -n "$csi_driver_obj" ]; then
+    if ! csi_owner_ns=$(kubectl get csidriver "$CSI_DRIVER_NAME" \
+        -o jsonpath='{.metadata.annotations.meta\.helm\.sh/release-namespace}'); then
+        echo "ERROR: could not read the Helm owner of csidriver/$CSI_DRIVER_NAME. Check that the runner can get csidrivers, then rerun setup."
+        exit 1
+    fi
+    if [ -z "$csi_owner_ns" ]; then
+        echo "ERROR: csidriver/$CSI_DRIVER_NAME exists and no Helm release owns it, so the PR install cannot take it over."
+        echo "  Delete it (kubectl delete csidriver $CSI_DRIVER_NAME) and rerun setup."
+        exit 1
+    fi
+    if [ "$csi_owner_ns" != "$E2E_INSTALL_NS" ]; then
+        if ! csi_owner_ns_obj=$(kubectl get namespace "$csi_owner_ns" --ignore-not-found -o name); then
+            echo "ERROR: could not check whether namespace $csi_owner_ns, which owns csidriver/$CSI_DRIVER_NAME, still exists. Check that the runner can get namespaces, then rerun setup."
+            exit 1
+        fi
+        if [ -n "$csi_owner_ns_obj" ]; then
+            echo "ERROR: $CSI_DRIVER_NAME belongs to the live install in $csi_owner_ns; one PR install runs at a time"
+            echo "  Rerun setup once that run has finished. If that run is dead, delete namespace $csi_owner_ns and csidriver/$CSI_DRIVER_NAME first."
+            exit 1
+        fi
+        echo "  csidriver/$CSI_DRIVER_NAME was left by an install in $csi_owner_ns, which no longer exists; deleting it"
+        if ! kubectl delete csidriver "$CSI_DRIVER_NAME"; then
+            echo "ERROR: could not delete the leftover csidriver/$CSI_DRIVER_NAME. Delete it by hand and rerun setup."
+            exit 1
+        fi
+    fi
+fi
+
+# The subshell lets the namespace helper act on the install namespace without
+# changing $E2E_NAMESPACE for the rest of setup. Its heartbeat loop is stopped
+# there because its PID would be lost when the subshell returns; each suite's
+# own heartbeat refreshes every namespace with the run label. The helper only
+# warns on a missing pull secret, so both outcomes are checked after it.
+if ! (E2E_NAMESPACE="$E2E_INSTALL_NS"; create_e2e_namespace; stop_heartbeat); then
+    echo "ERROR: creating namespace $E2E_INSTALL_NS failed. Check that the runner can create and label namespaces, then rerun setup."
+    exit 1
+fi
+if ! install_ns_run=$(kubectl get namespace "$E2E_INSTALL_NS" \
+    -o jsonpath='{.metadata.labels.cfgd\.io/e2e-run}') || [ "$install_ns_run" != "$E2E_RUN_ID" ]; then
+    echo "ERROR: namespace $E2E_INSTALL_NS is missing or does not carry $E2E_RUN_LABEL. Check that the runner can create and label namespaces, then rerun setup."
+    exit 1
+fi
+if ! kubectl get secret registry-credentials -n "$E2E_INSTALL_NS" -o name >/dev/null; then
+    echo "ERROR: secret registry-credentials did not reach $E2E_INSTALL_NS within 30s; the PR install pulls its images and the CSI driver's registry login with it."
+    echo "  Check that Reflector is running and that registry-credentials allows reflection to every namespace, then rerun setup."
+    exit 1
+fi
+
+if ! helm upgrade --install "$E2E_INSTALL_RELEASE" "$REPO_ROOT/chart/cfgd" -n "$E2E_INSTALL_NS" \
+    --skip-crds -f "$SCRIPT_DIR/manifests/pr-install-values.yaml" \
+    --set "operator.image.repository=$(e2e_image_repo cfgd-operator)" \
+    --set "operator.image.tag=$(e2e_image_tag cfgd-operator)" \
+    --set "csiDriver.image.repository=$(e2e_image_repo cfgd-csi)" \
+    --set "csiDriver.image.tag=$(e2e_image_tag cfgd-csi)" \
+    --set "csiDriver.extraEnv[0].name=OCI_INSECURE_REGISTRIES" \
+    --set "csiDriver.extraEnv[0].value=${REGISTRY}:5000" \
+    --set "csiDriver.extraEnv[1].name=DOCKER_CONFIG" \
+    --set "csiDriver.extraEnv[1].value=/etc/cfgd/docker" \
+    --set-string "csiDriver.name=$CSI_DRIVER_NAME" \
+    --set-string "operator.watchLabelSelector=cfgd.io/e2e-run=${E2E_RUN_ID}" \
+    --set-json "webhook.objectSelector={\"matchLabels\":{\"cfgd.io/e2e-run\":\"${E2E_RUN_ID}\"}}" \
+    --set-json "mutatingWebhook.namespaceSelector={\"matchExpressions\":[{\"key\":\"cfgd.io/inject-modules\",\"operator\":\"In\",\"values\":[\"true\"]},{\"key\":\"cfgd.io/e2e-run\",\"operator\":\"In\",\"values\":[\"${E2E_RUN_ID}\"]}]}" \
+    --wait --timeout=180s; then
+    echo "ERROR: helm upgrade --install $E2E_INSTALL_RELEASE in $E2E_INSTALL_NS failed. Read the Helm error above and the pods in $E2E_INSTALL_NS (kubectl get pods -n $E2E_INSTALL_NS), fix the cause and rerun setup."
+    exit 1
+fi
+
+# The webhooks fail closed, so until cert-manager's CA injector fills in their
+# caBundle the API server rejects every labelled object the suites create.
+for pr_webhook in "validatingwebhookconfiguration/$E2E_VALIDATING_WEBHOOK" \
+    "mutatingwebhookconfiguration/$E2E_MUTATING_WEBHOOK"; do
+    pr_ca_bundle=""
+    for _ in $(seq 1 60); do
+        pr_ca_bundle=$(kubectl get "$pr_webhook" \
+            -o jsonpath='{.webhooks[0].clientConfig.caBundle}' 2>/dev/null || echo "")
+        if [ -n "$pr_ca_bundle" ]; then
+            break
+        fi
+        sleep 2
+    done
+    if [ -z "$pr_ca_bundle" ]; then
+        echo "ERROR: $pr_webhook has no caBundle after 120s, so the API server cannot call it."
+        echo "  certificate/$E2E_WEBHOOK_CERT in $E2E_INSTALL_NS reports:"
+        kubectl get certificate "$E2E_WEBHOOK_CERT" -n "$E2E_INSTALL_NS" \
+            -o jsonpath='{range .status.conditions[*]}    {.type}={.status} {.reason}: {.message}{"\n"}{end}' \
+            || echo "    (the certificate could not be read)"
+        echo "  Check that cert-manager and its CA injector are running, then rerun setup."
+        exit 1
+    fi
+done
+
+if ! wait_for_daemonset "$E2E_INSTALL_NS" "$E2E_CSI_DS" 120; then
+    echo "ERROR: daemonset/$E2E_CSI_DS in $E2E_INSTALL_NS is not ready after 120s. Read the description above, fix the cause and rerun setup."
+    exit 1
+fi
+pr_operator_image="$(running_image deployment "$E2E_OPERATOR_DEPLOY" operator "$E2E_INSTALL_NS")"
+pr_csi_image="$(running_image daemonset "$E2E_CSI_DS" cfgd-csi "$E2E_INSTALL_NS")"
+if [ "$pr_operator_image" != "$(e2e_image cfgd-operator)" ] || [ "$pr_csi_image" != "$(e2e_image cfgd-csi)" ]; then
+    echo "ERROR: the PR install does not run this run's images."
+    echo "  deployment/$E2E_OPERATOR_DEPLOY runs $pr_operator_image, want $(e2e_image cfgd-operator)"
+    echo "  daemonset/$E2E_CSI_DS runs $pr_csi_image, want $(e2e_image cfgd-csi)"
+    echo "  Check the image flags of the helm upgrade above, then rerun setup."
+    exit 1
+fi
+echo "  PR operator runs $pr_operator_image"
+echo "  PR CSI driver runs $pr_csi_image"
+
+# --- Step 7: Update operator image ---
 echo "Updating operator image..."
 # ArgoCD owns the shared cluster's operator and gateway Deployments and runs
 # the release /db/manifests pins, reverting anything applied here, so nothing
@@ -605,7 +728,18 @@ else
         "$SCRIPT_DIR/node/manifests/cfgd-server.yaml" | kubectl apply -f -
 fi
 
-# --- Step 10: Apply webhook configurations ---
+# --- Step 8: Apply webhook configurations ---
+# The release's webhooks leave every object and namespace carrying a run label
+# to that run's install. Setup can only keep that scoping on objects it owns: an
+# object ArgoCD tracks gets reverted on the next sync, so setup stops there.
+for release_webhook in validatingwebhookconfiguration/cfgd-validating-webhooks \
+    mutatingwebhookconfiguration/cfgd-mutating-webhooks; do
+    if argocd_managed "${release_webhook%%/*}" "${release_webhook#*/}"; then
+        echo "ERROR: $release_webhook carries an argocd.argoproj.io/tracking-id annotation, so ArgoCD owns it and would revert what setup applies."
+        echo "  Add the cfgd.io/e2e-run DoesNotExist selectors from this step to its manifest in the GitOps repo, drop it from the heredoc this step applies, then rerun setup."
+        exit 1
+    fi
+done
 echo "Applying webhook configurations..."
 # Get the CA bundle from the cert-manager-generated secret
 echo "  Waiting for webhook TLS secret..."
@@ -665,6 +799,10 @@ webhooks:
         resources: [machineconfigs]
     failurePolicy: Fail
     sideEffects: None
+    objectSelector:
+      matchExpressions:
+        - key: cfgd.io/e2e-run
+          operator: DoesNotExist
   - name: validate-configpolicy.cfgd.io
     admissionReviewVersions: [v1]
     clientConfig:
@@ -680,6 +818,10 @@ webhooks:
         resources: [configpolicies]
     failurePolicy: Fail
     sideEffects: None
+    objectSelector:
+      matchExpressions:
+        - key: cfgd.io/e2e-run
+          operator: DoesNotExist
   - name: validate-clusterconfigpolicy.cfgd.io
     admissionReviewVersions: [v1]
     clientConfig:
@@ -695,6 +837,10 @@ webhooks:
         resources: [clusterconfigpolicies]
     failurePolicy: Fail
     sideEffects: None
+    objectSelector:
+      matchExpressions:
+        - key: cfgd.io/e2e-run
+          operator: DoesNotExist
   - name: validate-driftalert.cfgd.io
     admissionReviewVersions: [v1]
     clientConfig:
@@ -710,6 +856,10 @@ webhooks:
         resources: [driftalerts]
     failurePolicy: Fail
     sideEffects: None
+    objectSelector:
+      matchExpressions:
+        - key: cfgd.io/e2e-run
+          operator: DoesNotExist
   - name: validate-module.cfgd.io
     admissionReviewVersions: [v1]
     clientConfig:
@@ -725,6 +875,10 @@ webhooks:
         resources: [modules]
     failurePolicy: Fail
     sideEffects: None
+    objectSelector:
+      matchExpressions:
+        - key: cfgd.io/e2e-run
+          operator: DoesNotExist
   - name: validate-backuppolicy.cfgd.io
     admissionReviewVersions: [v1]
     clientConfig:
@@ -740,6 +894,10 @@ webhooks:
         resources: [backuppolicies]
     failurePolicy: Fail
     sideEffects: None
+    objectSelector:
+      matchExpressions:
+        - key: cfgd.io/e2e-run
+          operator: DoesNotExist
 ---
 apiVersion: admissionregistration.k8s.io/v1
 kind: MutatingWebhookConfiguration
@@ -764,6 +922,7 @@ webhooks:
         - key: cfgd.io/inject-modules
           operator: In
           values: ["true"]
+        - {key: cfgd.io/e2e-run, operator: DoesNotExist}
     objectSelector:
       matchExpressions:
         - key: cfgd.io/skip-injection
@@ -777,71 +936,16 @@ WEBHOOKEOF
 kubectl apply -f "$WEBHOOK_FILE"
 rm -f "$WEBHOOK_FILE"
 
-# --- Step 11: Deploy CSI driver via Helm ---
-# The shared cluster's CSI node plugin is deployed by ArgoCD from
-# /db/manifests/k3s/namespaces/cfgd-system/csi-daemonset.yaml, under the same
-# object names this release uses. Helm installs it only on an e2e cluster where
-# ArgoCD does not own that DaemonSet; an upgrade there would be reverted on the
-# next sync.
-CSI_ARGOCD_MANAGED=false
-if argocd_managed daemonset cfgd-csi-csi; then
-    CSI_ARGOCD_MANAGED=true
-fi
-
-# Skip the Helm redeploy only when the image was not rebuilt, a release exists
-# (fresh clusters with no release still install) and the DaemonSet already runs
-# the reference this run wants. An image that was not rebuilt can still be a
-# different reference, such as a tag override, and only an upgrade deploys it.
-CSI_WANTED_IMAGE="$(e2e_image cfgd-csi)"
-CSI_HELM_NEEDED=true
-if [ "${IMAGE_BUILT[cfgd-csi]:-true}" != "true" ] \
-    && helm status cfgd-csi -n cfgd-system >/dev/null 2>&1 \
-    && [ "$(running_image daemonset cfgd-csi-csi cfgd-csi)" = "$CSI_WANTED_IMAGE" ]; then
-    CSI_HELM_NEEDED=false
-fi
-
-if [ "$CSI_ARGOCD_MANAGED" = "true" ]; then
-    echo "Deploying CSI driver... daemonset/cfgd-csi-csi is managed by ArgoCD and runs $(running_image daemonset cfgd-csi-csi cfgd-csi) — skipping Helm install"
-    warn_override_unused cfgd-csi ArgoCD daemonset cfgd-csi-csi cfgd-csi
-elif [ "$CSI_HELM_NEEDED" != "true" ]; then
-    echo "Deploying CSI driver... daemonset/cfgd-csi-csi already runs $CSI_WANTED_IMAGE — skipping Helm upgrade"
-else
-echo "Deploying CSI driver..."
-helm upgrade --install cfgd-csi "$REPO_ROOT/chart/cfgd" \
-    -n cfgd-system \
-    --set operator.enabled=false \
-    --set agent.enabled=false \
-    --set webhook.enabled=false \
-    --set mutatingWebhook.enabled=false \
-    --set installCRDs=false \
-    --set csiDriver.enabled=true \
-    --set "csiDriver.image.repository=$(e2e_image_repo cfgd-csi)" \
-    --set "csiDriver.image.tag=$(e2e_image_tag cfgd-csi)" \
-    --set csiDriver.image.pullPolicy=Always \
-    --set "csiDriver.extraEnv[0].name=OCI_INSECURE_REGISTRIES" \
-    --set "csiDriver.extraEnv[0].value=${REGISTRY}:5000" \
-    --set "csiDriver.imagePullSecrets[0].name=registry-credentials" \
-    --set "csiDriver.extraEnv[1].name=DOCKER_CONFIG" \
-    --set "csiDriver.extraEnv[1].value=/etc/cfgd/docker" \
-    --set "csiDriver.extraVolumes[0].name=docker-config" \
-    --set "csiDriver.extraVolumes[0].secret.secretName=registry-credentials" \
-    --set "csiDriver.extraVolumes[0].secret.items[0].key=.dockerconfigjson" \
-    --set "csiDriver.extraVolumes[0].secret.items[0].path=config.json" \
-    --set "csiDriver.extraVolumeMounts[0].name=docker-config" \
-    --set "csiDriver.extraVolumeMounts[0].mountPath=/etc/cfgd/docker" \
-    --set "csiDriver.extraVolumeMounts[0].readOnly=true" \
-    --wait --timeout=120s 2>&1 || {
-    echo "WARN: CSI driver Helm install failed — full-stack CSI tests will be skipped"
-}
-fi
-
-# --- Step 12: Wait for all components ---
+# --- Step 9: Wait for all components ---
 echo "Waiting for components..."
 wait_for_deployment cfgd-system cfgd-operator 120
 wait_for_deployment cfgd-system cfgd-server 120
-# CSI DaemonSet readiness is optional — full-stack tests gracefully skip if CSI isn't ready
+wait_for_deployment "$E2E_INSTALL_NS" "$E2E_OPERATOR_DEPLOY" 120
+wait_for_daemonset "$E2E_INSTALL_NS" "$E2E_CSI_DS" 120
+echo "  PR operator: $(running_image deployment "$E2E_OPERATOR_DEPLOY" operator "$E2E_INSTALL_NS")"
+echo "  PR CSI:      $(running_image daemonset "$E2E_CSI_DS" cfgd-csi "$E2E_INSTALL_NS")"
 
-# --- Step 13: Reset gateway DB for clean E2E state ---
+# --- Step 10: Reset gateway DB for clean E2E state ---
 # Call the admin reset endpoint to wipe stale device/event data from prior runs.
 # This is safe: the endpoint is behind admin auth and only deletes data rows,
 # not the SQLite file (avoids Longhorn volume corruption from rm -f on live DB).
@@ -862,7 +966,7 @@ if [ -n "$GW_API_KEY" ]; then
     fi
 fi
 
-# --- Step 14: Record last-green SHA per image ---
+# --- Step 11: Record last-green SHA per image ---
 # Reached only after every prior step succeeded (set -e). Persisting HEAD as the
 # last-green SHA here is what lets the NEXT run's image_decision skip unchanged
 # images. Best-effort writes — a ConfigMap write failure just forces a rebuild
@@ -884,5 +988,8 @@ echo "  CSI:       $(kubectl get ds -n cfgd-system -l app.kubernetes.io/componen
 echo "  Running:   operator $(running_image deployment cfgd-operator cfgd-operator)"
 echo "             gateway $(running_image deployment cfgd-server cfgd-operator)"
 echo "             csi $(running_image daemonset cfgd-csi-csi cfgd-csi)"
+echo "  PR install: $E2E_INSTALL_RELEASE in $E2E_INSTALL_NS, CSI driver $CSI_DRIVER_NAME"
+echo "             operator $(running_image deployment "$E2E_OPERATOR_DEPLOY" operator "$E2E_INSTALL_NS")"
+echo "             csi $(running_image daemonset "$E2E_CSI_DS" cfgd-csi "$E2E_INSTALL_NS")"
 echo "  Test pod:  $(e2e_image cfgd)"
 echo "  Function:  $(e2e_image function-cfgd)"

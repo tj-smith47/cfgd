@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Checks without a cluster that helpers.sh names the PR-owned install (its
-# release, namespace, workloads, pod selectors and CSI driver) from one run id,
+# release, namespace, workloads, pod selectors, webhook configurations, webhook
+# certificate and CSI driver) from one run id,
 # that a local run id is the same in every process of one checkout, and that
 # ensure_namespace and running_image address the namespaces they are given, and
 # that every cfgd.io object the operator and full-stack suites apply carries the
@@ -50,6 +51,9 @@ expect_var E2E_INSTALL_NS cfgd-e2e-42-sys
 expect_var E2E_OPERATOR_DEPLOY cfgd-e2e-42-operator
 expect_var E2E_CSI_DS cfgd-e2e-42-csi
 expect_var E2E_WEBHOOK_SVC cfgd-e2e-42-webhook
+expect_var E2E_WEBHOOK_CERT cfgd-e2e-42-webhook-tls
+expect_var E2E_VALIDATING_WEBHOOK cfgd-e2e-42
+expect_var E2E_MUTATING_WEBHOOK cfgd-e2e-42-pod-injector
 expect_var E2E_OPERATOR_PODS "app.kubernetes.io/instance=cfgd-e2e-42,app.kubernetes.io/component=operator"
 expect_var E2E_CSI_PODS "app.kubernetes.io/instance=cfgd-e2e-42,app.kubernetes.io/component=csi-driver"
 expect_var CSI_DRIVER_NAME e2e.csi.cfgd.io
