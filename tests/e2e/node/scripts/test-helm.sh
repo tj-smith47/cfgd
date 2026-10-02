@@ -17,7 +17,7 @@ trap 'helm uninstall cfgd -n "$E2E_NAMESPACE" 2>/dev/null || true; cleanup_e2e' 
 # T20: Helm install creates DaemonSet
 # =================================================================
 begin_test "T20: Helm install"
-helm install cfgd "$CHART_DIR" \
+helm install cfgd "$CHART_DIR" --skip-crds \
     -f "$VALUES_FILE" \
     -n "$E2E_NAMESPACE" \
     --set "agent.image.repository=$(e2e_image_repo cfgd)" \

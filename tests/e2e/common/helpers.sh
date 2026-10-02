@@ -359,14 +359,44 @@ running_image() {
     printf '%s\n' "${image:-not deployed}"
 }
 
-# True when ArgoCD tracks the object $1/$2 (looked up in cfgd-system when
-# namespaced; its tracking-id annotation is set), so it runs what /db/manifests
-# pins and reverts changes. An object kubectl cannot read is not tracked.
+# argocd_managed <kind> <name> [namespace, default cfgd-system]: 0 when ArgoCD
+# tracks the object (its tracking-id annotation is set), so it runs what
+# /db/manifests pins and reverts changes; 1 when it does not, or the object is
+# absent; 2 when kubectl cannot read it, whose error is left on stderr. A
+# caller that writes on 1 stops on 2, which says nothing about who owns it.
 argocd_managed() {
     local id
-    id="$(kubectl get "$1" "$2" -n cfgd-system \
-        -o jsonpath='{.metadata.annotations.argocd\.argoproj\.io/tracking-id}' 2>/dev/null)" || return 1
+    id="$(kubectl get "$1" "$2" -n "${3:-cfgd-system}" --ignore-not-found \
+        -o jsonpath='{.metadata.annotations.argocd\.argoproj\.io/tracking-id}')" || return 2
     [ -n "$id" ]
+}
+
+# Installs Crossplane into crossplane-system with Helm unless ArgoCD runs it
+# there. Returns 1 with an ERROR when the crossplane Deployment cannot be read
+# or the install fails, before or after any Helm call.
+crossplane_install() {
+    local rc=0
+    argocd_managed deployment crossplane crossplane-system || rc=$?
+    case "$rc" in
+        0)
+            echo "  deployment/crossplane in crossplane-system is ArgoCD's; installing nothing"
+            ;;
+        1)
+            helm repo add crossplane-stable https://charts.crossplane.io/stable || {
+                echo "ERROR: helm could not add the crossplane-stable repository. Read the Helm error above, then rerun the Crossplane suite." >&2
+                return 1
+            }
+            helm upgrade --install crossplane crossplane-stable/crossplane \
+                --namespace crossplane-system --create-namespace --wait --timeout 120s || {
+                echo "ERROR: helm could not install Crossplane into crossplane-system. Read the Helm error above, then rerun the Crossplane suite." >&2
+                return 1
+            }
+            ;;
+        *)
+            echo "ERROR: could not read deployment/crossplane in crossplane-system. Check that the runner can get deployments there, then rerun the Crossplane suite." >&2
+            return 1
+            ;;
+    esac
 }
 
 # --- CRD check ---
@@ -408,35 +438,37 @@ crd_not_established() {
              else .reason // "Established is \(.status)" end'
 }
 
-# check_pr_crds < <CRD YAML>: compares the spec of each CRD in the PR's
-# manifest, descriptions aside, with the cluster's copy, and checks that copy
-# is Established. Prints an ERROR to stderr for each CRD that is missing,
-# differs (followed by up to 40 lines of diff, cluster first), is not
-# Established or cannot be read. Returns 1 when any did, or when the manifest
-# holds no CRD to compare.
+# check_pr_crds [source] [rerun] < <CRD YAML>: compares the spec of each CRD in
+# the YAML, descriptions aside, with the cluster's copy, and checks that copy is
+# Established. source names the YAML in messages (default: the cfgd-gen-crds
+# output) and rerun is the advice that ends them (default: rerun setup).
+# Prints an ERROR to stderr for each CRD that is missing, differs (followed by
+# up to 40 lines of diff, cluster first), is not Established or cannot be read.
+# Returns 1 when any did, or when the YAML holds no CRD to compare.
 check_pr_crds() {
+    local source="${1:-the cfgd-gen-crds output}" rerun="${2:-rerun setup}"
     local docs doc name want live_doc live why status=0 checked=0
-    local fix="ArgoCD owns the cluster's CRDs; copy schemas/crds.yaml over $E2E_CRD_MANIFEST, push it and let ArgoCD sync, then rerun setup."
+    local fix="ArgoCD owns the cluster's CRDs; copy schemas/crds.yaml over $E2E_CRD_MANIFEST, push it and let ArgoCD sync, then $rerun."
     if ! docs="$(crd_docs_json)"; then
-        echo "ERROR: could not read the PR's CRD manifest. Check that it is valid YAML and that kubectl and jq are on PATH, then rerun setup." >&2
+        echo "ERROR: could not read $source as CRDs. Check that it is valid YAML and that kubectl and jq are on PATH, then $rerun." >&2
         return 1
     fi
     while IFS= read -r doc; do
         [ -n "$doc" ] || continue
         name="$(jq -r '.metadata.name // empty' <<<"$doc")"
         if [ -z "$name" ]; then
-            echo "ERROR: a CRD in the PR's manifest has no metadata.name. Check the cfgd-gen-crds output, then rerun setup." >&2
+            echo "ERROR: a CRD in $source has no metadata.name. Check $source, then $rerun." >&2
             status=1
             continue
         fi
         checked=$((checked + 1))
         if ! want="$(crd_shape <<<"$doc")" || ! jq -e '(.versions | length) > 0' <<<"$want" >/dev/null; then
-            echo "ERROR: the PR's $name has no versions to compare. Check the cfgd-gen-crds output, then rerun setup." >&2
+            echo "ERROR: $name in $source has no versions to compare. Check $source, then $rerun." >&2
             status=1
             continue
         fi
         if ! live_doc="$(kubectl get crd "$name" --ignore-not-found -o json)"; then
-            echo "ERROR: could not read crd/$name. Check that the runner can get customresourcedefinitions, then rerun setup." >&2
+            echo "ERROR: could not read crd/$name. Check that the runner can get customresourcedefinitions, then $rerun." >&2
             status=1
             continue
         fi
@@ -446,7 +478,7 @@ check_pr_crds() {
             continue
         fi
         if ! live="$(crd_shape <<<"$live_doc")" || ! why="$(crd_not_established <<<"$live_doc")"; then
-            echo "ERROR: could not read the cluster's crd/$name as JSON. Check that kubectl get crd $name -o json prints a CustomResourceDefinition, then rerun setup." >&2
+            echo "ERROR: could not read the cluster's crd/$name as JSON. Check that kubectl get crd $name -o json prints a CustomResourceDefinition, then $rerun." >&2
             status=1
             continue
         fi
@@ -456,12 +488,12 @@ check_pr_crds() {
             status=1
         fi
         if [ -n "$why" ]; then
-            echo "ERROR: crd/$name is not Established on the cluster ($why). Check ArgoCD's cfgd-crds sync and the CRD's status.conditions, then rerun setup." >&2
+            echo "ERROR: crd/$name is not Established on the cluster ($why). Check ArgoCD's cfgd-crds sync and the CRD's status.conditions, then $rerun." >&2
             status=1
         fi
     done <<<"$docs"
     if [ "$checked" -eq 0 ]; then
-        echo "ERROR: the PR's CRD manifest holds no CustomResourceDefinition to compare with the cluster. Check the cfgd-gen-crds output, then rerun setup." >&2
+        echo "ERROR: $source holds no CustomResourceDefinition to compare with the cluster. Check $source, then $rerun." >&2
         return 1
     fi
     return "$status"

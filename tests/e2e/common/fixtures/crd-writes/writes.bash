@@ -21,3 +21,6 @@ kind: ConfigMap
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 EOF
+cat > crd.yaml <<EOF
+kind: CustomResourceDefinition
+EOF

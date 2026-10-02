@@ -12,7 +12,12 @@
 #     description text and API server defaults aside, and stops on a changed
 #     spec, a CRD that is missing, unreadable or not Established, or a manifest
 #     with nothing to compare
-#   - no e2e script writes a CRD, apart from the exempt Helm installs
+#   - argocd_managed tells a tracked, untracked and unreadable object apart in
+#     the namespace it is given, and the Crossplane suite installs Crossplane
+#     only where ArgoCD does not track it and stops when it cannot tell
+#   - the CRD check names the source and rerun advice its caller passes
+#   - no e2e script writes a CRD outside the exempt list, and no tracked
+#     manifest under tests/e2e holds one
 # kubectl is a stub on PATH, so nothing reaches a cluster; the CRD check's stub
 # hands YAML reading to the real kubectl, which reads it offline.
 #
@@ -878,6 +883,74 @@ else
     fail "set -e is off inside a condition, so only the last command's status is read: ${cond_found:-the scan failed}"
 fi
 
+# argocd_managed and the Crossplane install against stubs: kubectl answers a
+# get as ARGO_STATE says (tracked prints a tracking id, untracked prints
+# nothing, unreadable fails) and helm only records its call.
+mkdir -p "$scratch/argo-bin"
+cat > "$scratch/argo-bin/kubectl" <<'STUB'
+#!/usr/bin/env bash
+echo "kubectl $*" >> "$ARGO_LOG"
+case "$ARGO_STATE" in
+    tracked) printf '%s' 'crossplane:apps/Deployment:crossplane-system/crossplane' ;;
+    untracked) ;;
+    *) echo 'Error from server (Forbidden): deployments.apps "crossplane" is forbidden' >&2; exit 1 ;;
+esac
+STUB
+cat > "$scratch/argo-bin/helm" <<'STUB'
+#!/usr/bin/env bash
+echo "helm $*" >> "$ARGO_LOG"
+STUB
+chmod +x "$scratch/argo-bin/kubectl" "$scratch/argo-bin/helm"
+
+# argo_case <state> <script>: runs the script after sourcing helpers.sh and
+# prints its output, then `rc=<status>`; the calls the stubs saw are in
+# $scratch/argo.log.
+# shellcheck disable=SC2016 # the inner script expands its own positional args
+argo_case() {
+    : > "$scratch/argo.log"
+    env -u GITHUB_RUN_ID -u CFGD_NAMESPACE PATH="$scratch/argo-bin:$PATH" \
+        ARGO_STATE="$1" ARGO_LOG="$scratch/argo.log" REGISTRY=r.example CLI_SCRATCH="$scratch" \
+        bash -c 'source "$1/common/helpers.sh"; rc=0; eval "$2" 2>&1 || rc=$?; echo "rc=$rc"' _ "$e2e_root" "$2"
+}
+
+for argo_want in tracked:0 untracked:1 unreadable:2; do
+    out="$(argo_case "${argo_want%%:*}" 'argocd_managed deployment crossplane crossplane-system')"
+    if [ "$(sed -n 's/^rc=//p' <<<"$out")" = "${argo_want##*:}" ] &&
+        grep -qx 'kubectl get deployment crossplane -n crossplane-system .*' "$scratch/argo.log"; then
+        pass "argocd_managed returns ${argo_want##*:} on a ${argo_want%%:*} object in the namespace it is given"
+    else
+        fail "argocd_managed on a ${argo_want%%:*} object: got [$out] with kubectl calls [$(cat "$scratch/argo.log")], want rc=${argo_want##*:} from a get in crossplane-system"
+    fi
+done
+argo_case untracked 'argocd_managed deployment cfgd-operator' >/dev/null
+if grep -qx 'kubectl get deployment cfgd-operator -n cfgd-system .*' "$scratch/argo.log"; then
+    pass "argocd_managed reads cfgd-system when given no namespace"
+else
+    fail "argocd_managed with no namespace called [$(cat "$scratch/argo.log")], want a get in cfgd-system"
+fi
+
+out="$(argo_case tracked crossplane_install)"
+if [ "$(sed -n 's/^rc=//p' <<<"$out")" = 0 ] && ! grep -q '^helm' "$scratch/argo.log" &&
+    grep -q "ArgoCD's; installing nothing" <<<"$out"; then
+    pass "the Crossplane install leaves an ArgoCD-tracked Crossplane alone and calls no helm"
+else
+    fail "the Crossplane install on a tracked Crossplane: got [$out] with calls [$(cat "$scratch/argo.log")], want rc=0, the ArgoCD line and no helm call"
+fi
+out="$(argo_case untracked crossplane_install)"
+if [ "$(sed -n 's/^rc=//p' <<<"$out")" = 0 ] &&
+    grep -qx "helm upgrade --install crossplane crossplane-stable/crossplane .*" "$scratch/argo.log"; then
+    pass "the Crossplane install runs helm upgrade --install where ArgoCD does not track Crossplane"
+else
+    fail "the Crossplane install on an untracked Crossplane: got [$out] with calls [$(cat "$scratch/argo.log")], want rc=0 and a helm upgrade --install"
+fi
+out="$(argo_case unreadable crossplane_install)"
+if [ "$(sed -n 's/^rc=//p' <<<"$out")" = 1 ] && ! grep -q '^helm' "$scratch/argo.log" &&
+    grep -qx "ERROR: could not read deployment/crossplane in crossplane-system. Check that the runner can get deployments there, then rerun the Crossplane suite." <<<"$out"; then
+    pass "the Crossplane install stops with an ERROR and calls no helm when it cannot read deployment/crossplane"
+else
+    fail "the Crossplane install on an unreadable Crossplane: got [$out] with calls [$(cat "$scratch/argo.log")], want rc=1, the ERROR line and no helm call"
+fi
+
 # The CRD check against fixture CRDs. A stub `kubectl get crd <name>` prints
 # the fixture named <name>.yaml in CRD_LIVE_DIR as the cluster's copy, prints
 # nothing when there is none and fails when CRD_GET_FAIL is set; every other
@@ -887,7 +960,8 @@ crd_fixtures="$here/fixtures/crd-schema"
 crd_fix="ArgoCD owns the cluster's CRDs; copy schemas/crds.yaml over /db/manifests/k3s/namespaces/crossplane-system/cfgd-crds.yaml, push it and let ArgoCD sync, then rerun setup."
 
 # crd_case <live dir> <PR manifest> [VAR=value...]: prints check_pr_crds's
-# output, then `rc=<status>`.
+# output, then `rc=<status>`. CRD_SOURCE and CRD_RERUN, when set, are passed
+# as the check's source label and rerun advice.
 # shellcheck disable=SC2016 # the inner script expands its own positional args
 crd_case() {
     local live="$1" pr="$2"; shift 2
@@ -895,7 +969,12 @@ crd_case() {
         REAL_KUBECTL="$real_kubectl" CRD_LIVE_DIR="$live" \
         REGISTRY=r.example CLI_SCRATCH="$scratch" "$@" \
         bash -c 'source "$1/common/helpers.sh"
-            rc=0; check_pr_crds < "$2" 2>&1 || rc=$?
+            rc=0
+            if [ -n "${CRD_SOURCE:-}" ]; then
+                check_pr_crds "$CRD_SOURCE" "$CRD_RERUN" < "$2" 2>&1 || rc=$?
+            else
+                check_pr_crds < "$2" 2>&1 || rc=$?
+            fi
             echo "rc=$rc"' _ "$e2e_root" "$pr"
 }
 
@@ -969,10 +1048,13 @@ crd_cases() {
 ERROR: could not read crd/gadgets.example.io. Check that the runner can get customresourcedefinitions, then rerun setup."
     out="$(crd_case "$(crd_live empty "")" "$crd_fixtures/not-a-crd.yaml")"
     expect_crd "the CRD check fails on a manifest with no CRD in it" "$out" 1 \
-        "ERROR: the PR's CRD manifest holds no CustomResourceDefinition to compare with the cluster. Check the cfgd-gen-crds output, then rerun setup."
+        "ERROR: the cfgd-gen-crds output holds no CustomResourceDefinition to compare with the cluster. Check the cfgd-gen-crds output, then rerun setup."
+    out="$(crd_case "$(crd_live empty-suite "")" "$crd_fixtures/not-a-crd.yaml" CRD_SOURCE=schemas/crds.yaml CRD_RERUN="rerun the Crossplane suite")"
+    expect_crd "the CRD check names the source and rerun advice its caller passes" "$out" 1 \
+        "ERROR: schemas/crds.yaml holds no CustomResourceDefinition to compare with the cluster. Check schemas/crds.yaml, then rerun the Crossplane suite."
     out="$(crd_case "$(crd_live noversions widgets.yaml)" "$crd_fixtures/no-versions.yaml")"
     expect_crd "the CRD check fails on a PR CRD with no versions" "$out" 1 \
-        "ERROR: the PR's widgets.example.io has no versions to compare. Check the cfgd-gen-crds output, then rerun setup."
+        "ERROR: widgets.example.io in the cfgd-gen-crds output has no versions to compare. Check the cfgd-gen-crds output, then rerun setup."
 }
 
 if ! real_kubectl="$(command -v kubectl)" || ! command -v jq >/dev/null; then
@@ -997,51 +1079,84 @@ fi
 
 # ArgoCD owns the cluster's CRDs, so no e2e script writes one. crd-writes.awk
 # reads heredocs.awk's records and reports each kubectl write that names a CRD,
-# each helm install without --skip-crds and each applied heredoc holding a CRD.
+# each helm install without --skip-crds and each heredoc holding a CRD.
 scan_crd_writes() {
     awk -f "$here/heredocs.awk" "$@" | awk -f "$here/crd-writes.awk"
 }
 
 writes_fixtures="$here/fixtures/crd-writes"
-writes_got="$(cd "$writes_fixtures" && scan_crd_writes writes.bash reads.bash 2>&1 | cut -f1,2)"
+writes_out="$(cd "$writes_fixtures" && scan_crd_writes writes.bash reads.bash 2>&1)"
+writes_got="$(cut -f1,2 <<<"$writes_out")"
 writes_want="$(printf '%s\t%s\n' \
     KUBECTL writes.bash:1 KUBECTL writes.bash:2 KUBECTL writes.bash:3 KUBECTL writes.bash:4 \
     KUBECTL writes.bash:6 HELM writes.bash:7 HELM writes.bash:8 HELM writes.bash:9 \
-    HEREDOC writes.bash:11 HEREDOC writes.bash:17)"
+    HEREDOC writes.bash:11 HEREDOC writes.bash:17 HEREDOC writes.bash:24)"
 if [ "$writes_got" = "$writes_want" ]; then
-    pass "the CRD-write scan reports each planted kubectl write, helm install and applied CRD heredoc once and stays quiet on reads, --local, --dry-run, --skip-crds, messages, comments and a heredoc written to a file"
+    pass "the CRD-write scan reports each planted kubectl write, helm install and CRD heredoc once and stays quiet on reads, --local, --dry-run, --skip-crds, messages and comments"
 else
     fail "the CRD-write scan printed [$writes_got], want [$writes_want]"
 fi
+heredoc_got="$(grep '^HEREDOC' <<<"$writes_out" | cut -f2,3 || true)" # rc-ok: no HEREDOC line is a failing outcome, compared below
+heredoc_want="$(cat "$writes_fixtures/heredoc-commands.tsv")"
+if [ "$heredoc_got" = "$heredoc_want" ]; then
+    pass "the CRD-write scan prints the command that opened each CRD heredoc"
+else
+    fail "the CRD-write scan printed heredoc commands [$heredoc_got], want [$heredoc_want]"
+fi
 
-# Helm creates a CRD from a chart's crds/ only where the cluster lacks one.
-# Crossplane's chart holds none of the CRDs in cfgd-crds.yaml, and setup stops
-# on any cfgd CRD the cluster lacks, so on a run setup passed these lines
-# create no CRD that ArgoCD owns. Each entry is TAG file:line.
-crd_write_exempt="HELM	tests/e2e/crossplane/scripts/run-crossplane-tests.sh:21
-HELM	tests/e2e/full-stack/scripts/test-helm.sh:58
-HELM	tests/e2e/full-stack/scripts/test-helm.sh:108
-HELM	tests/e2e/full-stack/scripts/test-helm.sh:148
-HELM	tests/e2e/full-stack/scripts/test-helm.sh:191
-HELM	tests/e2e/full-stack/scripts/test-helm.sh:226
-HELM	tests/e2e/full-stack/scripts/test-helm.sh:309
-HELM	tests/e2e/full-stack/scripts/test-helm.sh:379
-HELM	tests/e2e/full-stack/scripts/test-helm.sh:448
-HELM	tests/e2e/node/scripts/test-helm.sh:20"
+# Each entry is TAG, file and the command as crd-writes.awk prints it, so an
+# entry follows its command when lines move and goes stale when it changes.
+# Crossplane's Helm install runs only where ArgoCD does not run Crossplane,
+# and Crossplane's chart holds none of the CRDs in cfgd-crds.yaml.
+crd_write_exempt="HELM	tests/e2e/common/helpers.sh	helm upgrade --install crossplane crossplane-stable/crossplane --namespace crossplane-system --create-namespace --wait --timeout 120s || {"
 
 if [ "${#e2e_scripts[@]}" -eq 0 ]; then
     fail "git ls-files 'tests/e2e/*.sh' matched no script, so the CRD-write scan read nothing"
 elif ! crd_writes="$(cd "$repo_root" && scan_crd_writes "${e2e_scripts[@]}")"; then
     fail "the CRD-write scan failed over tests/e2e"
 else
-    crd_write_sites="$(cut -f1,2 <<<"$crd_writes")"
-    unexempt="$(grep -vxF -f <(printf '%s\n' "$crd_write_exempt") <<<"$crd_write_sites" || true)" # rc-ok: no line left is the passing outcome, judged below
-    stale="$(grep -vxF -f <(printf '%s\n' "$crd_write_sites") <<<"$crd_write_exempt" || true)" # rc-ok: no line left is the passing outcome, judged below
+    crd_write_keys="$(awk 'BEGIN { FS = OFS = "\t" } { sub(/:[0-9]+$/, "", $2); print }' <<<"$crd_writes")"
+    unexempt="$(awk -v exempt="$crd_write_exempt" 'BEGIN { FS = "\t"; n = split(exempt, e, "\n"); for (i = 1; i <= n; i++) ok[e[i]] = 1 }
+        NF { file = $2; sub(/:[0-9]+$/, "", file); if (!ok[$1 "\t" file "\t" $3]) print }' <<<"$crd_writes")"
+    stale="$(grep -vxF -f <(printf '%s\n' "$crd_write_keys") <<<"$crd_write_exempt" || true)" # rc-ok: no line left is the passing outcome, judged below
     if [ -z "$unexempt" ] && [ -z "$stale" ]; then
-        pass "no script in tests/e2e writes a CRD outside the exempt Helm installs (${#e2e_scripts[@]} scripts)"
+        pass "no script in tests/e2e writes a CRD outside the exempt list (${#e2e_scripts[@]} scripts)"
     else
-        fail "ArgoCD owns the cluster's CRDs, so no e2e script writes one; remove the write, or if it moved, update its exempt line. Writes: [${unexempt}] Exempt lines that match no write: [${stale}]"
+        fail "ArgoCD owns the cluster's CRDs, so no e2e script writes one. Remove the write; if the line writes no CRD, add TAG, file and command to crd_write_exempt with the reason; if an exempt command changed, update its entry. Writes: [${unexempt}] Exempt entries that match no write: [${stale}]"
     fi
+fi
+
+# A CRD in a tracked manifest under tests/e2e can be applied by a path that
+# names no CRD, so none may hold one; the fixtures under common/fixtures are
+# read only by these checks.
+# crd_manifests FILE...: the files holding kind: CustomResourceDefinition.
+crd_manifests() {
+    local rc=0
+    grep -lE '^[[:space:]]*kind:[[:space:]]*CustomResourceDefinition[[:space:]]*$' "$@" || rc=$?
+    [ "$rc" -le 1 ]
+}
+
+manifest_fixtures="$here/fixtures/crd-manifests"
+if manifests_got="$(cd "$manifest_fixtures" && crd_manifests hit.yaml miss.yaml)" && [ "$manifests_got" = "hit.yaml" ]; then
+    pass "the CRD-manifest check reports a manifest holding a CRD and stays quiet on quoted and commented kind lines"
+else
+    fail "the CRD-manifest check printed [$manifests_got], want [hit.yaml]"
+fi
+if crd_manifests "$manifest_fixtures/hit.yaml" "$manifest_fixtures/absent.yaml" >/dev/null 2>&1; then
+    fail "the CRD-manifest check passed over a file it could not read"
+else
+    pass "the CRD-manifest check fails over a file it cannot read"
+fi
+
+mapfile -t e2e_manifests < <(git -C "$repo_root" ls-files 'tests/e2e/*.yaml' 'tests/e2e/*.yml' | grep -v '^tests/e2e/common/fixtures/')
+if [ "${#e2e_manifests[@]}" -eq 0 ]; then
+    fail "git ls-files 'tests/e2e/*.yaml' 'tests/e2e/*.yml' matched no manifest outside common/fixtures, so the CRD-manifest check read nothing"
+elif ! crd_files="$(cd "$repo_root" && crd_manifests "${e2e_manifests[@]}")"; then
+    fail "the CRD-manifest check could not read the manifests under tests/e2e"
+elif [ -z "$crd_files" ]; then
+    pass "no tracked manifest in tests/e2e holds a CRD (${#e2e_manifests[@]} manifests)"
+else
+    fail "ArgoCD owns the cluster's CRDs, so no tracked manifest under tests/e2e holds one; remove the CRD from: [$crd_files]"
 fi
 
 if [ "$failures" -gt 0 ]; then

@@ -2,7 +2,8 @@
 # E2E tests for Crossplane TeamConfig composition: XRD installation,
 # MachineConfig fan-out via function-cfgd, ConfigPolicy generation,
 # and member add/remove lifecycle.
-# Prereqs: kind cluster running, cfgd CRDs installed, Crossplane installed.
+# Prereqs: cluster running with the cfgd CRDs ArgoCD applies; XP-01 installs
+# Crossplane where ArgoCD does not run it.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -14,18 +15,16 @@ CROSSPLANE_DIR="$REPO_ROOT/manifests/crossplane"
 echo "=== Crossplane E2E Tests ==="
 
 # =================================================================
-# XP-01: Install Crossplane
+# XP-01: Crossplane is running (Helm installs it where ArgoCD does not)
 # =================================================================
 begin_test "XP-01: Crossplane installation"
-helm repo add crossplane-stable https://charts.crossplane.io/stable
-helm upgrade --install crossplane crossplane-stable/crossplane \
-    --namespace crossplane-system --create-namespace --wait --timeout 120s
+crossplane_install || exit 1
 wait_for_deployment crossplane-system crossplane 120
 pass_test "XP-01"
 
 # --- Setup: the cfgd CRDs ArgoCD applied ---
 echo "Checking the cfgd CRDs on the cluster..."
-check_pr_crds < "$REPO_ROOT/schemas/crds.yaml" || exit 1
+check_pr_crds schemas/crds.yaml "rerun the Crossplane suite" < "$REPO_ROOT/schemas/crds.yaml" || exit 1
 
 # --- Setup: Apply Crossplane XRD, Composition, and Function ---
 echo "Applying XRD, Composition, and Function..."

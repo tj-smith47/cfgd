@@ -687,9 +687,16 @@ echo "Updating operator image..."
 # the release /db/manifests pins, reverting anything applied here, so nothing
 # this run builds reaches them and a restart would only re-pull that release.
 ARGOCD_MANAGED=false
-if argocd_managed deployment cfgd-operator; then
-    ARGOCD_MANAGED=true
-fi
+argocd_rc=0
+argocd_managed deployment cfgd-operator || argocd_rc=$?
+case "$argocd_rc" in
+    0) ARGOCD_MANAGED=true ;;
+    1) ;;
+    *)
+        echo "ERROR: could not read deployment/cfgd-operator in cfgd-system. Check that the runner can get deployments there, then rerun setup."
+        exit 1
+        ;;
+esac
 
 if [ "$ARGOCD_MANAGED" = "true" ]; then
     for deploy in cfgd-operator cfgd-server; do
@@ -735,9 +742,14 @@ fi
 # object ArgoCD tracks gets reverted on the next sync, so setup stops there.
 for release_webhook in validatingwebhookconfiguration/cfgd-validating-webhooks \
     mutatingwebhookconfiguration/cfgd-mutating-webhooks; do
-    if argocd_managed "${release_webhook%%/*}" "${release_webhook#*/}"; then
+    argocd_rc=0
+    argocd_managed "${release_webhook%%/*}" "${release_webhook#*/}" || argocd_rc=$?
+    if [ "$argocd_rc" -eq 0 ]; then
         echo "ERROR: $release_webhook carries an argocd.argoproj.io/tracking-id annotation, so ArgoCD owns it and would revert what setup applies."
         echo "  Add the cfgd.io/e2e-run DoesNotExist selectors from this step to its manifest in the GitOps repo, drop it from the heredoc this step applies, then rerun setup."
+        exit 1
+    elif [ "$argocd_rc" -ne 1 ]; then
+        echo "ERROR: could not read $release_webhook. Check that the runner can get ${release_webhook%%/*}s there, then rerun setup."
         exit 1
     fi
 done

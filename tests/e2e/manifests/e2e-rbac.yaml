@@ -9,10 +9,10 @@ kind: ClusterRole
 metadata:
   name: cfgd-e2e
 rules:
-  # CRD management — required by setup-cluster.sh to install/update cfgd CRDs
+  # Read-only: ArgoCD applies the CRDs; setup and the suites compare them
   - apiGroups: ["apiextensions.k8s.io"]
     resources: ["customresourcedefinitions"]
-    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+    verbs: ["get", "list", "watch"]
   # cfgd.io CRDs — full access including status subresources
   - apiGroups: ["cfgd.io"]
     resources: ["*", "*/status"]

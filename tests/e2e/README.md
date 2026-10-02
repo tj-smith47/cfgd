@@ -140,17 +140,21 @@ setup. `crd_docs_json`, `crd_shape` and `check_pr_crds` in `common/helpers.sh` d
 the comparison, and `common/test-pr-install.sh` drives them against the fixtures in
 `common/fixtures/crd-schema/` with a stub `kubectl get`. It needs `kubectl`, which
 reads the fixtures' YAML offline (`annotate --local`), and `jq`.
-The Crossplane suite runs the same `check_pr_crds` against `schemas/crds.yaml` before
-it applies its XRD.
+The Crossplane suite runs the same `check_pr_crds` against `schemas/crds.yaml` once
+XP-01 has found Crossplane running, before it applies its XRD. The Helm suites install
+`chart/cfgd` with `--skip-crds`; FS-HELM-05 and FS-HELM-08 run `check_pr_crds` after
+the upgrade and the uninstall to show the CRDs ArgoCD applied are still in place.
 
-`test-pr-install.sh` also reads every tracked `tests/e2e/*.sh` through
-`common/crd-writes.awk` and fails on a `kubectl` write that names a CRD (`apply`,
-`create`, `replace`, `patch`, `delete` and the like, outside `--local` and
-`--dry-run`), a `helm install` or `helm upgrade --install` without `--skip-crds`, or a
-heredoc holding `kind: CustomResourceDefinition` fed to `kubectl apply`. The Helm
-suites' installs of `chart/cfgd` and the Crossplane suite's install of Crossplane are
-listed as exempt by line in the test: Helm creates a chart's CRDs only where the
-cluster lacks them, and setup has already stopped on any cfgd CRD the cluster lacks.
+The CRD-write scan in `test-pr-install.sh` reads the `kubectl` and `helm` write
+commands and heredoc bodies of every tracked `tests/e2e/*.sh`, through
+`common/crd-writes.awk`, and every tracked manifest under `tests/e2e`. It fails on a
+`kubectl` write that names a CRD (`apply`, `create`, `replace`, `patch`, `delete` and
+the like, outside `--local` and `--dry-run`), a `helm install` or `helm upgrade
+--install` without `--skip-crds`, a heredoc holding `kind: CustomResourceDefinition`
+whatever reads it, or a tracked `.yaml`/`.yml` outside `common/fixtures/` holding one.
+An exempt write is listed in the test by tag, file and command text, with its reason;
+the one entry is XP-01's Helm install of Crossplane, which runs only where ArgoCD does
+not run Crossplane and whose chart holds none of the CRDs in `cfgd-crds.yaml`.
 
 Because the gateway suite, and each suite not yet moved to the PR install, runs a
 release, a check reads a counter through
@@ -165,7 +169,12 @@ the running component's capability first and calls `skip_test` naming the image
 skips only when the driver served no cache-hit sample for its module after the
 mount, runs an image other than this run's, and its DaemonSet carries ArgoCD's
 tracking-id annotation (`argocd_managed` in `common/helpers.sh`); without that
-annotation the mismatch fails, naming the running and wanted images.
+annotation the mismatch fails, naming the running and wanted images, and when the
+DaemonSet cannot be read the case fails saying so. XP-01 reads the same annotation on
+`deployment/crossplane` in `crossplane-system`: where ArgoCD tracks it the suite
+installs nothing, where it does not the suite runs `helm upgrade --install`, and where
+it cannot be read the suite stops before calling Helm. Setup stops the same way when
+it cannot read the operator Deployment or a webhook configuration.
 
 prometheus-client renders no line at all for a metric family with no sample, so
 a metrics check drives the event first and then scrapes the pod that performed

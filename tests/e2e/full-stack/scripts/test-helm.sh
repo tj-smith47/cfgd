@@ -55,7 +55,7 @@ begin_test "FS-HELM-01: Fresh Helm install creates operator deployment"
 # A second Helm install with csiDriver.enabled=true in a different namespace will fail because
 # the CSIDriver "csi.cfgd.io" is already owned by the cfgd-csi release. Test operator only.
 helm_test_ns "01"
-INSTALL_OUTPUT=$(helm install cfgd-test "$CHART_DIR" \
+INSTALL_OUTPUT=$(helm install cfgd-test "$CHART_DIR" --skip-crds \
     -n "$HELM_NS" \
     --set "operator.image.repository=$(e2e_image_repo cfgd-operator)" \
     --set "operator.image.tag=$(e2e_image_tag cfgd-operator)" \
@@ -105,7 +105,7 @@ helm_test_cleanup "cfgd-test"
 begin_test "FS-HELM-02: Gateway enabled creates gateway service"
 
 helm_test_ns "02"
-helm install cfgd-test "$CHART_DIR" \
+helm install cfgd-test "$CHART_DIR" --skip-crds \
     -n "$HELM_NS" \
     --set "operator.image.repository=$(e2e_image_repo cfgd-operator)" \
     --set "operator.image.tag=$(e2e_image_tag cfgd-operator)" \
@@ -145,7 +145,7 @@ helm_test_cleanup "cfgd-test"
 begin_test "FS-HELM-03: Gateway disabled creates no gateway service"
 
 helm_test_ns "03"
-helm install cfgd-test "$CHART_DIR" \
+helm install cfgd-test "$CHART_DIR" --skip-crds \
     -n "$HELM_NS" \
     --set "operator.image.repository=$(e2e_image_repo cfgd-operator)" \
     --set "operator.image.tag=$(e2e_image_tag cfgd-operator)" \
@@ -188,7 +188,7 @@ helm_test_cleanup "cfgd-test"
 begin_test "FS-HELM-04: CSI disabled creates no CSI daemonset"
 
 helm_test_ns "04"
-helm install cfgd-test "$CHART_DIR" \
+helm install cfgd-test "$CHART_DIR" --skip-crds \
     -n "$HELM_NS" \
     --set "operator.image.repository=$(e2e_image_repo cfgd-operator)" \
     --set "operator.image.tag=$(e2e_image_tag cfgd-operator)" \
@@ -216,14 +216,14 @@ fi
 helm_test_cleanup "cfgd-test"
 
 # =================================================================
-# FS-HELM-05: Upgrade preserves CRDs — existing instances survive
+# FS-HELM-05: Upgrade keeps MachineConfig instances and leaves the CRDs ArgoCD applied Established
 # =================================================================
-begin_test "FS-HELM-05: Helm upgrade preserves CRDs and instances"
+begin_test "FS-HELM-05: Helm upgrade keeps instances and the CRDs ArgoCD applied"
 
 helm_test_ns "05"
 
 # Install initial release
-helm install cfgd-test "$CHART_DIR" \
+helm install cfgd-test "$CHART_DIR" --skip-crds \
     -n "$HELM_NS" \
     --set "operator.image.repository=$(e2e_image_repo cfgd-operator)" \
     --set "operator.image.tag=$(e2e_image_tag cfgd-operator)" \
@@ -237,7 +237,7 @@ helm install cfgd-test "$CHART_DIR" \
     --set operator.leaderElection.enabled=false \
     --wait --timeout 120s 2>&1 || true
 
-# Create a CRD instance to verify it survives the upgrade
+# Create a MachineConfig to verify it survives the upgrade
 kubectl apply -f - <<EOF
 apiVersion: cfgd.io/v1alpha1
 kind: MachineConfig
@@ -253,7 +253,7 @@ spec:
   packages: []
 EOF
 
-# Verify the CRD instance was created
+# Verify the MachineConfig was created
 MC_BEFORE=$(kubectl get machineconfig "helm-upgrade-test-${E2E_RUN_ID}" \
     -n "$HELM_NS" -o jsonpath='{.metadata.name}' 2>/dev/null || echo "")
 echo "  MachineConfig before upgrade: ${MC_BEFORE:-<not found>}"
@@ -274,7 +274,7 @@ UPGRADE_OUTPUT=$(helm upgrade cfgd-test "$CHART_DIR" \
     --set operator.leaderElection.enabled=false \
     --wait --timeout 120s 2>&1) || UPGRADE_RC=$?
 
-# Verify CRD instance survived the upgrade
+# Verify the MachineConfig survived the upgrade
 MC_AFTER=$(kubectl get machineconfig "helm-upgrade-test-${E2E_RUN_ID}" \
     -n "$HELM_NS" -o jsonpath='{.metadata.name}' 2>/dev/null || echo "")
 echo "  MachineConfig after upgrade: ${MC_AFTER:-<not found>}"
@@ -285,18 +285,25 @@ OPERATOR_AVAIL=$(kubectl get deployment -n "$HELM_NS" \
     -o jsonpath='{.items[0].status.conditions[?(@.type=="Available")].status}' 2>/dev/null || echo "")
 echo "  Operator available after upgrade: ${OPERATOR_AVAIL:-unknown}"
 
+# The release installs with --skip-crds, so the CRDs are ArgoCD's; they must
+# still match schemas/crds.yaml and be Established after the upgrade.
+CRDS_RC=0
+CRDS_REPORT=$(check_pr_crds schemas/crds.yaml "rerun the full-stack suite" < "$REPO_ROOT/schemas/crds.yaml" 2>&1) || CRDS_RC=$?
+
 if [ "$UPGRADE_RC" -ne 0 ]; then
     fail_test "FS-HELM-05" "helm upgrade exited $UPGRADE_RC: $(echo "$UPGRADE_OUTPUT" | head -20)"
 elif [ "$MC_BEFORE" != "helm-upgrade-test-${E2E_RUN_ID}" ] || \
    [ "$MC_AFTER" != "helm-upgrade-test-${E2E_RUN_ID}" ]; then
-    fail_test "FS-HELM-05" "CRD instance did not survive Helm upgrade"
+    fail_test "FS-HELM-05" "MachineConfig did not survive Helm upgrade"
+elif [ "$CRDS_RC" -ne 0 ]; then
+    fail_test "FS-HELM-05" "the CRDs ArgoCD applied fail the CRD check after helm upgrade: $CRDS_REPORT"
 elif [ "$OPERATOR_AVAIL" != "True" ]; then
     fail_test "FS-HELM-05" "Operator deployment is not Available after helm upgrade --wait (Available=${OPERATOR_AVAIL:-unset})"
 else
     pass_test "FS-HELM-05"
 fi
 
-# Clean up the CRD instance
+# Clean up the MachineConfig
 kubectl delete machineconfig "helm-upgrade-test-${E2E_RUN_ID}" -n "$HELM_NS" --ignore-not-found 2>/dev/null || true
 helm_test_cleanup "cfgd-test"
 
@@ -306,7 +313,7 @@ helm_test_cleanup "cfgd-test"
 begin_test "FS-HELM-06: Values override — custom replica count"
 
 helm_test_ns "06"
-helm install cfgd-test "$CHART_DIR" \
+helm install cfgd-test "$CHART_DIR" --skip-crds \
     -n "$HELM_NS" \
     --set "operator.image.repository=$(e2e_image_repo cfgd-operator)" \
     --set "operator.image.tag=$(e2e_image_tag cfgd-operator)" \
@@ -369,14 +376,14 @@ else
 fi
 
 # =================================================================
-# FS-HELM-08: Helm uninstall cleanup — resources removed, CRDs preserved
+# FS-HELM-08: Helm uninstall removes the release and leaves the CRDs ArgoCD applied Established
 # =================================================================
-begin_test "FS-HELM-08: Helm uninstall removes resources but preserves CRDs"
+begin_test "FS-HELM-08: Helm uninstall removes resources and leaves the CRDs ArgoCD applied"
 
 helm_test_ns "08"
 
 # Install
-helm install cfgd-test "$CHART_DIR" \
+helm install cfgd-test "$CHART_DIR" --skip-crds \
     -n "$HELM_NS" \
     --set "operator.image.repository=$(e2e_image_repo cfgd-operator)" \
     --set "operator.image.tag=$(e2e_image_tag cfgd-operator)" \
@@ -406,17 +413,12 @@ DEPLOY_AFTER=$(kubectl get deployment -n "$HELM_NS" \
     -o jsonpath='{.items[*].metadata.name}' 2>/dev/null || echo "")
 echo "  Deployment after uninstall: ${DEPLOY_AFTER:-<none>}"
 
-# Verify CRDs still exist (Helm does not delete CRDs on uninstall)
-CRDS_EXIST=true
-for crd in machineconfigs.cfgd.io configpolicies.cfgd.io modules.cfgd.io driftalerts.cfgd.io; do
-    if ! kubectl get crd "$crd" > /dev/null 2>&1; then
-        echo "  CRD missing: $crd"
-        CRDS_EXIST=false
-    fi
-done
-echo "  CRDs preserved: $CRDS_EXIST"
+# The release installs with --skip-crds, so the CRDs are ArgoCD's; they must
+# still match schemas/crds.yaml and be Established after the uninstall.
+CRDS_RC=0
+CRDS_REPORT=$(check_pr_crds schemas/crds.yaml "rerun the full-stack suite" < "$REPO_ROOT/schemas/crds.yaml" 2>&1) || CRDS_RC=$?
 
-if [ -n "$DEPLOY_BEFORE" ] && [ -z "$DEPLOY_AFTER" ] && [ "$CRDS_EXIST" = "true" ]; then
+if [ -n "$DEPLOY_BEFORE" ] && [ -z "$DEPLOY_AFTER" ] && [ "$CRDS_RC" -eq 0 ]; then
     pass_test "FS-HELM-08"
 else
     if [ -z "$DEPLOY_BEFORE" ]; then
@@ -424,7 +426,7 @@ else
     elif [ -n "$DEPLOY_AFTER" ]; then
         fail_test "FS-HELM-08" "Deployment still present after uninstall"
     else
-        fail_test "FS-HELM-08" "CRDs were removed after uninstall"
+        fail_test "FS-HELM-08" "the CRDs ArgoCD applied fail the CRD check after helm uninstall: $CRDS_REPORT"
     fi
 fi
 
@@ -445,7 +447,7 @@ begin_test "FS-HELM-09: An operator roll keeps the webhook Service backed"
 # install, so it goes first.
 kubectl delete validatingwebhookconfiguration cfgd-test --ignore-not-found 2>/dev/null || true
 helm_test_ns "09"
-helm install cfgd-test "$CHART_DIR" \
+helm install cfgd-test "$CHART_DIR" --skip-crds \
     -n "$HELM_NS" \
     --set "operator.image.repository=$(e2e_image_repo cfgd-operator)" \
     --set "operator.image.tag=$(e2e_image_tag cfgd-operator)" \

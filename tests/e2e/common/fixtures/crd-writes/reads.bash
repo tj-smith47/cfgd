@@ -14,6 +14,3 @@ kind: ConfigMap
 data:
   note: "kind: CustomResourceDefinition"
 EOF
-cat > crd.yaml <<EOF
-kind: CustomResourceDefinition
-EOF
