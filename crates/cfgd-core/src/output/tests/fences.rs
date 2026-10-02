@@ -4000,7 +4000,7 @@ fn every_multi_file_production_walk_reads_through_the_floored_helper() {
         ("cfgd-operator", 2, 2, 0),
     ];
     let mut hand_cuts = Vec::new();
-    let mut own_searches: std::collections::BTreeMap<&str, usize> = Default::default();
+    let mut own_searches: std::collections::BTreeMap<(&str, &str), usize> = Default::default();
     let mut unparsed = Vec::new();
     let crates_dir = workspace_root().join("crates");
     let mut floored: std::collections::BTreeMap<String, usize> = Default::default();
@@ -4079,22 +4079,41 @@ fn every_multi_file_production_walk_reads_through_the_floored_helper() {
             crate::test_helpers::line_gates_of(&path)
         };
         let in_test = |n: usize| whole_test || gates.get(n).is_some_and(Option::is_some);
-        if !own_file {
-            let detector = crate::to_posix_string(&path).ends_with(OWN_GATE_SEARCH_FILE);
-            match syntax_of(&path) {
-                Ok(syntax) => {
-                    for site in hand_cut_gate_sites(syntax, &in_test) {
-                        let function = site.function.as_deref().unwrap_or_default();
-                        if detector && OWN_GATE_SEARCHES.iter().any(|(f, _)| *f == function) {
-                            *own_searches.entry(function).or_default() += 1;
-                            continue;
-                        }
-                        let n = site.row;
-                        hand_cuts.push(format!("{label}:{}: {}", n + 1, lines[n].trim()));
-                    }
-                }
-                Err(e) => unparsed.push(format!("{label}: {e}")),
+        // `test_helpers.rs` is test scope end to end, and its production
+        // region holds the one scanner the rule points at, so only its own
+        // test region is judged for hand cuts.
+        let own_gates = if own_file {
+            crate::test_helpers::line_gates_of(&path)
+        } else {
+            Default::default()
+        };
+        let cut_scope = |n: usize| {
+            if own_file {
+                own_gates.get(n).is_some_and(Option::is_some)
+            } else {
+                in_test(n)
             }
+        };
+        let posix = crate::to_posix_string(&path);
+        match syntax_of(&path) {
+            Ok(syntax) => {
+                for site in hand_cut_gate_sites(syntax, cut_scope) {
+                    let function = site.function.as_deref().unwrap_or_default();
+                    if let Some(&(file, declared, _)) = OWN_GATE_SEARCHES
+                        .iter()
+                        .find(|(file, f, _)| posix.ends_with(file) && *f == function)
+                    {
+                        *own_searches.entry((file, declared)).or_default() += 1;
+                        continue;
+                    }
+                    let n = site.row;
+                    // unfloored-slice-ok: a report quotes the whole file's row the tree names.
+                    let whole = walked_file_body(&path);
+                    let row = whole.lines().nth(n).unwrap_or_default().trim().to_string();
+                    hand_cuts.push(format!("{label}:{}: {row}", n + 1));
+                }
+            }
+            Err(e) => unparsed.push(format!("{label}: {e}")),
         }
         for (open, func) in source_functions(&label, &body) {
             // `open` is 1-based and the slice starts on the declaration's line.
@@ -4156,9 +4175,12 @@ fn every_multi_file_production_walk_reads_through_the_floored_helper() {
     );
     assert_eq!(
         own_searches,
-        OWN_GATE_SEARCHES.into_iter().collect(),
-        "{OWN_GATE_SEARCH_FILE}'s own searches reaching a gate's spelling are each \
-         declared in OWN_GATE_SEARCHES at the count the function holds"
+        OWN_GATE_SEARCHES
+            .into_iter()
+            .map(|(file, function, count)| ((file, function), count))
+            .collect(),
+        "the walks' own searches reaching a gate's spelling are each declared in \
+         OWN_GATE_SEARCHES at the count the function holds"
     );
     let unfloored: Vec<&String> = walks
         .keys()
@@ -4209,30 +4231,54 @@ const GATE_SPELLINGS: [&str; 4] = [
 ];
 
 /// The file holding the hand-cut detector and the fixtures of every walk over
-/// gate spellings, the one file [`OWN_GATE_SEARCHES`] applies to.
+/// gate spellings.
 const OWN_GATE_SEARCH_FILE: &str = "cfgd-core/src/output/tests/fences.rs";
 
-/// The functions of [`OWN_GATE_SEARCH_FILE`] whose searches reach a gate's
-/// spelling, each with the number it holds. `opens_on_a_gate` is the detector
-/// itself. The others reach the fixture text this file builds from the
-/// spellings through the approximations the resolver makes: a parameter is fed
-/// by every caller of a function of its name, a call by a bare name by every
-/// function of that name, and a loop over fixture rows by every column of the
-/// row.
-const OWN_GATE_SEARCHES: [(&str, usize); 7] = [
-    ("assert_reassembles", 1),
+/// The file holding the one scanner, whose unit tests build gate spellings to
+/// drive it.
+const SCANNER_FILE: &str = "cfgd-core/src/test_helpers.rs";
+
+/// The test functions of the walks' own files whose searches reach a gate's
+/// spelling, as `(file, function, count)`. `opens_on_a_gate` is the detector
+/// itself. The others reach the fixture text their file builds from the
+/// spellings, directly or through the approximations the resolver makes: a
+/// parameter is fed by every caller of a function of its name, a call by a
+/// bare name by every function of that name, and a loop over fixture rows by
+/// every column of the row.
+const OWN_GATE_SEARCHES: [(&str, &str, usize); 9] = [
+    (OWN_GATE_SEARCH_FILE, "assert_reassembles", 1),
     (
+        OWN_GATE_SEARCH_FILE,
         "every_gc_failed_removal_pin_holds_its_payload_through_the_one_fixture",
         1,
     ),
     (
+        OWN_GATE_SEARCH_FILE,
         "every_multi_file_production_walk_reads_through_the_floored_helper",
         1,
     ),
-    ("every_pin_that_runs_at_one_uid_says_so_in_its_name", 1),
-    ("every_profile_fallback_shape_is_found_and_no_other", 1),
-    ("opens_on_a_gate", 1),
-    ("unremovable_payload_tells", 1),
+    (
+        OWN_GATE_SEARCH_FILE,
+        "every_pin_that_runs_at_one_uid_says_so_in_its_name",
+        1,
+    ),
+    (
+        OWN_GATE_SEARCH_FILE,
+        "every_profile_fallback_shape_is_found_and_no_other",
+        1,
+    ),
+    (OWN_GATE_SEARCH_FILE, "opens_on_a_gate", 1),
+    (OWN_GATE_SEARCH_FILE, "unremovable_payload_tells", 1),
+    (
+        SCANNER_FILE,
+        "a_functions_owner_is_the_impl_it_sits_in_generic_or_plain",
+        1,
+    ),
+    (
+        SCANNER_FILE,
+        "production_slice_cuts_at_the_inline_block_past_a_mid_file_declaration",
+        1,
+    ),
 ];
 
 /// Whether `text` opens on a test gate's spelling, or on the attribute holding
@@ -4279,15 +4325,20 @@ fn hand_cut_gate_sites(
 /// `.rs` file and anchors at the workspace: a literal holding
 /// `CARGO_MANIFEST_DIR`, or a call of `workspace_root`. An `include_str!` of a
 /// `.rs` file needs no anchor. The read inside [`THE_ONE_CACHE`] is the cache
-/// itself.
-fn workspace_source_reads(syntax: &Syntax, in_test: impl Fn(usize) -> bool) -> Vec<usize> {
+/// itself where `holds_the_cache` says the source is [`SCANNER_FILE`].
+fn workspace_source_reads(
+    syntax: &Syntax,
+    in_test: impl Fn(usize) -> bool,
+    holds_the_cache: bool,
+) -> Vec<usize> {
     let names_a_source =
         |literals: &[&str]| literals.iter().any(|literal| literal.ends_with(".rs"));
     let reads = syntax
         .reads
         .iter()
         .filter(|site| {
-            in_test(site.row) && !matches!(site.function.as_deref(), Some(THE_ONE_CACHE))
+            in_test(site.row)
+                && !(holds_the_cache && matches!(site.function.as_deref(), Some(THE_ONE_CACHE)))
         })
         .filter(|site| {
             let reached = syntax.reach(&site.reads);
@@ -4595,6 +4646,40 @@ fn concatenated(exprs: &[syn::Expr]) -> Option<String> {
         }
     }
     Some(joined)
+}
+
+/// The text a `format!` writes when its template's every placeholder is a bare
+/// `{}` and every argument a literal [`concatenated`] reads, as
+/// `format!("#[cfg({})]", "test")`; a capture, a named or positioned
+/// placeholder, a format spec or any other argument leaves it unread.
+fn formatted(exprs: &[syn::Expr]) -> Option<String> {
+    let (template, args) = exprs.split_first()?;
+    let syn::Expr::Lit(syn::ExprLit {
+        lit: syn::Lit::Str(template),
+        ..
+    }) = peel(template)
+    else {
+        return None;
+    };
+    let mut args = args.iter();
+    let mut written = String::new();
+    let template = template.value();
+    let mut chars = template.chars().peekable();
+    while let Some(c) = chars.next() {
+        match (c, chars.peek()) {
+            ('{', Some('{')) | ('}', Some('}')) => {
+                written.push(c);
+                chars.next();
+            }
+            ('{', Some('}')) => {
+                chars.next();
+                written.push_str(&concatenated(std::slice::from_ref(args.next()?))?);
+            }
+            ('{' | '}', _) => return None,
+            _ => written.push(c),
+        }
+    }
+    args.next().is_none().then_some(written)
 }
 
 /// The names `use` gives `read_to_string`.
@@ -5211,8 +5296,13 @@ impl<'ast> syn::visit::Visit<'ast> for ReadsOf<'_> {
     fn visit_macro(&mut self, mac: &'ast syn::Macro) {
         let body = self.builder.macro_body(mac);
         if let MacroBody::Exprs(exprs) = &*body
-            && mac.path.is_ident("concat")
-            && let Some(joined) = concatenated(exprs)
+            && let Some(joined) = if mac.path.is_ident("concat") {
+                concatenated(exprs)
+            } else if mac.path.is_ident("format") {
+                formatted(exprs)
+            } else {
+                None
+            }
         {
             self.reads.literals.push(joined);
             return;
@@ -5357,9 +5447,10 @@ fn a_gate_search_is_a_hand_cut_whichever_binding_carries_its_needle() {
     );
 }
 
-/// A `concat!` of literals is the one string the compiler joins, and a byte
-/// string is its text, so a gate spelled either way is a hand cut; the same
-/// shapes spelling other text are none.
+/// A `concat!` of literals is the one string the compiler joins, a `format!`
+/// of literals the one string it writes, and a byte string is its text, so a
+/// gate spelled any of these ways is a hand cut; the same shapes spelling
+/// other text are none.
 #[test]
 fn a_gate_spelled_by_concat_or_as_bytes_is_a_hand_cut() {
     let (head, tail) = ("#[cfg", "(test)]");
@@ -5377,15 +5468,19 @@ fn a_gate_spelled_by_concat_or_as_bytes_is_a_hand_cut() {
         format!("    assert!(bytes.starts_with(b\"{head}{tail}\"));"),
         format!("    bytes.starts_with(pick!(bytes => b\"{head}{tail}\"));"),
         "    bytes.starts_with(pick!(bytes => b\"production\"));".to_string(),
+        "    let attr = format!(\"#[cfg({})]\", \"test\");".to_string(),
+        "    body.contains(&attr);".to_string(),
+        "    let other = format!(\"#[cfg({})]\", \"unix\");".to_string(),
+        "    body.contains(&other);".to_string(),
         "}".to_string(),
     ];
     let syntax = syntax(&fixture.join("\n")).unwrap_or_else(|e| panic!("fixture: {e}"));
     assert_eq!(
         hand_cut_gate_rows(&syntax, |_| true),
-        [1, 3, 5, 6, 8, 10, 11],
+        [1, 3, 5, 6, 8, 10, 11, 14],
         "a joined concat!, a nested one, a let holding one, a byte string searched, \
-         compared, handed to a macro and held among a macro's tokens are each a hand \
-         cut; other text is none"
+         compared, handed to a macro and held among a macro's tokens, and a format! \
+         of literals are each a hand cut; other text is none"
     );
 }
 
@@ -5723,15 +5818,26 @@ fn a_workspace_source_read_is_found_at_its_call_whichever_way_its_path_reaches_i
         format!("    let golden = {embed}(\"fixtures/golden.yaml\");"),
         "    Ok(())".to_string(),
         "}".to_string(),
+        "fn walked_file_body() -> String {".to_string(),
+        format!(
+            "    std::fs::{read}(workspace_root().join(\"crates/f/src/lib.rs\")).unwrap_or_default()"
+        ),
+        "}".to_string(),
     ];
     let syntax = syntax(&fixture.join("\n")).unwrap_or_else(|e| panic!("fixture: {e}"));
     assert_eq!(
-        workspace_source_reads(&syntax, |_| true),
+        workspace_source_reads(&syntax, |_| true, true),
         [2, 4, 7, 11, 13, 16, 20, 22],
+        "the cache's own read is the cache filling, in the one file holding it"
+    );
+    assert_eq!(
+        workspace_source_reads(&syntax, |_| true, false),
+        [2, 4, 7, 11, 13, 16, 20, 22, 27],
         "the written path, the split read, the closure over an iterated array, the \
          aliased read, the captured path, the parameter a caller hands a source, the \
-         read of an opened file and an embedded source are each a read at their \
-         call; the manifest read, stdin and an embedded golden are none"
+         read of an opened file, an embedded source and a read in a function named \
+         like the cache in another file are each a read at their call; the manifest \
+         read, stdin and an embedded golden are none"
     );
 }
 
@@ -5760,7 +5866,8 @@ fn no_test_reads_a_workspace_source_past_the_one_cache() {
                 // unfloored-slice-ok: a report quotes the whole file's row the tree names.
                 let body = walked_file_body(&path);
                 let lines: Vec<&str> = body.lines().collect();
-                for n in workspace_source_reads(syntax, in_test) {
+                let holds_the_cache = crate::to_posix_string(&path).ends_with(SCANNER_FILE);
+                for n in workspace_source_reads(syntax, in_test, holds_the_cache) {
                     offenders.push(format!("{label}:{}: {}", n + 1, lines[n].trim()));
                 }
             }
@@ -10526,9 +10633,12 @@ struct WalkTypes {
     methods: Declared,
     /// The row fields a method's returned value carries as their `Option`,
     /// by `impl` type and method.
-    reads: std::collections::HashMap<String, std::collections::HashMap<String, Vec<String>>>,
+    reads: std::collections::HashMap<
+        String,
+        std::collections::HashMap<String, std::collections::BTreeSet<String>>,
+    >,
     /// The same by method name alone, across every `impl`.
-    reads_by_name: std::collections::HashMap<String, Vec<String>>,
+    reads_by_name: std::collections::HashMap<String, std::collections::BTreeSet<String>>,
 }
 
 impl WalkTypes {
@@ -10550,27 +10660,48 @@ impl WalkTypes {
             };
             syn::visit::Visit::visit_file(&mut decls, file);
         }
-        let mut returned = Vec::new();
-        for file in files {
-            let mut walk = DefaultingReads::new(&types);
-            syn::visit::Visit::visit_file(&mut walk, file);
-            returned.append(&mut walk.returned);
+        // A method whose tail calls another row-returning method hands back
+        // that method's rows, so the pass repeats until no method gains one.
+        loop {
+            let mut returned = Vec::new();
+            for file in files {
+                let mut walk = DefaultingReads::new(&types);
+                syn::visit::Visit::visit_file(&mut walk, file);
+                returned.append(&mut walk.returned);
+            }
+            let mut grew = false;
+            for (owner, method, fields) in returned {
+                types
+                    .reads_by_name
+                    .entry(method.clone())
+                    .or_default()
+                    .extend(fields.iter().cloned());
+                let held = types
+                    .reads
+                    .entry(owner)
+                    .or_default()
+                    .entry(method)
+                    .or_default();
+                for field in fields {
+                    grew |= held.insert(field);
+                }
+            }
+            if !grew {
+                return types;
+            }
         }
-        for (owner, method, fields) in returned {
-            types
-                .reads_by_name
-                .entry(method.clone())
-                .or_default()
-                .extend(fields.iter().cloned());
-            types.reads.entry(owner).or_default().insert(method, fields);
-        }
-        types
+    }
+
+    /// `owner` where the tree declares a struct of that name with fields; a
+    /// map, an alias or a generic the walk sees by name is no type it can judge.
+    fn declared<'o>(&self, owner: Option<&'o str>) -> Option<&'o str> {
+        owner.filter(|owner| self.fields.contains_key(*owner))
     }
 
     /// Whether `field` on a value of type `owner` is a row; on a value the
     /// walk cannot type, whether any row's field has that name.
     fn row_read(&self, owner: Option<&str>, field: &str) -> bool {
-        match owner {
+        match self.declared(owner) {
             Some(owner) => self.rows.get(owner).is_some_and(|f| f.contains(field)),
             None => self.names.contains(field),
         }
@@ -10691,6 +10822,10 @@ fn wraps_its_argument(path: &syn::Path) -> bool {
         _ => false,
     }
 }
+
+/// The field of `ConfigSpec`'s profile row, the one row whose absence a
+/// [`PROFILE_PLACEHOLDERS`] fallback renders.
+const PROFILE_FIELD: &str = "profile";
 
 /// Whether a defaulting call's fallback is one of [`PROFILE_PLACEHOLDERS`]:
 /// the word a surface prints for an absent profile, which renders the
@@ -10858,7 +10993,7 @@ impl<'f> DefaultingReads<'f> {
         if bare && self.types.row_read(owner, method) {
             out.push(method.to_string());
         }
-        let reads = match owner {
+        let reads = match self.types.declared(owner) {
             Some(owner) => self.types.reads.get(owner).and_then(|m| m.get(method)),
             None => self.types.reads_by_name.get(method),
         };
@@ -11065,10 +11200,18 @@ impl<'ast> syn::visit::Visit<'ast> for DefaultingReads<'_> {
     }
 
     fn visit_expr_method_call(&mut self, call: &'ast syn::ExprMethodCall) {
-        if DEFAULTING_METHODS.contains(&call.method.to_string().as_str())
-            && !call.args.first().is_some_and(renders_absence)
-        {
+        if DEFAULTING_METHODS.contains(&call.method.to_string().as_str()) {
+            let before = self.found.len();
             self.record(&call.receiver, call.method.span());
+            if call.args.first().is_some_and(renders_absence) {
+                let kept: Vec<DefaultingRead> = self
+                    .found
+                    .split_off(before)
+                    .into_iter()
+                    .filter(|read| read.field != PROFILE_FIELD)
+                    .collect();
+                self.found.extend(kept);
+            }
         }
         self.visit_expr(&call.receiver);
         let item = self.type_of(&call.receiver);
@@ -11273,6 +11416,16 @@ fn every_option_config_section_is_read_through_its_effective_accessor_or_never_d
         .iter()
         .map(|row| (row.owner, row.field))
         .collect();
+    let profile_rows: Vec<&str> = row_pairs
+        .iter()
+        .filter(|(_, field)| *field == PROFILE_FIELD)
+        .map(|(owner, _)| *owner)
+        .collect();
+    assert_eq!(
+        profile_rows,
+        ["ConfigSpec"],
+        "a placeholder fallback clears the one row named `{PROFILE_FIELD}`, ConfigSpec's"
+    );
     let files: Vec<&syn::File> = parsed.iter().map(|(_, _, file)| file).collect();
     let types = WalkTypes::new(&row_pairs, &files);
     let mut offenders = Vec::new();
@@ -11705,35 +11858,51 @@ fn every_defaulting_shape_of_a_section_read_is_found_and_no_other() {
             1,
         ),
         (
-            "a fallback to an absent-profile placeholder",
+            "a profile falling back to an absent-profile placeholder",
+            "cfg.profile.as_deref().unwrap_or(NO_PROFILE_LABEL)",
+            0,
+        ),
+        (
+            "a profile falling back to a placeholder through a closure",
+            "cfg.profile.clone().unwrap_or_else(|| UNKNOWN_PROFILE.to_string())",
+            0,
+        ),
+        (
+            "a profile falling back to another constant",
+            "cfg.profile.as_deref().unwrap_or(OTHER_LABEL)",
+            1,
+        ),
+        (
+            "another row falling back to an absent-profile placeholder",
             "cfg.daemon.as_deref().unwrap_or(NO_PROFILE_LABEL)",
-            0,
+            1,
         ),
         (
-            "a closure fallback to an absent-profile placeholder",
-            "cfg.daemon.clone().unwrap_or_else(|| UNKNOWN_PROFILE.to_string())",
-            0,
+            "a method handing back what another method hands back",
+            "cfg.outer().unwrap_or(&X0)",
+            1,
         ),
         (
-            "a fallback to another constant",
-            "cfg.daemon.as_deref().unwrap_or(OTHER_LABEL)",
+            "a map's value of the row's struct",
+            "fn g(m: &HashMap<K, C>, k: &K) -> X { m.get(k).unwrap().daemon.clone().unwrap_or_default() }",
             1,
         ),
     ];
     // `C` declares the row; `D` declares a field of the same name that is no row.
-    const TYPES: &str = "struct C { daemon: Option<X> } \
+    const TYPES: &str = "struct C { daemon: Option<X>, profile: Option<String> } \
         struct D { daemon: Option<X> } \
         struct H { c: C, d: D, cs: Vec<C>, ds: Vec<Arc<D>> } \
         impl H { fn conf(&self) -> &C { &self.c } fn spare(&self) -> &D { &self.d } } \
         impl C { fn daemon_ref(&self) -> Option<&X> { self.daemon.as_ref() } \
-            fn need(&self) -> Result<&X, E> { self.daemon.as_ref().ok_or(E) } } \
+            fn need(&self) -> Result<&X, E> { self.daemon.as_ref().ok_or(E) } \
+            fn outer(&self) -> Option<&X> { self.daemon_ref() } } \
         impl D { fn daemon_ref(&self) -> Option<&X> { self.daemon.as_ref() } \
             fn need(&self) -> Result<&X, E> { self.daemon.as_ref().ok_or(E) } }";
     let mut wrong = Vec::new();
     for (shape, body, expected) in SHAPES {
         let source = format!("{TYPES} fn f(cfg: &C, h: &H) -> T {{ {body} }}");
         let file = syn::parse_file(&source).unwrap_or_else(|e| panic!("{shape}: {e}"));
-        let types = WalkTypes::new(&[("C", "daemon")], &[&file]);
+        let types = WalkTypes::new(&[("C", "daemon"), ("C", PROFILE_FIELD)], &[&file]);
         let mut walk = DefaultingReads::new(&types);
         syn::visit::Visit::visit_file(&mut walk, &file);
         if walk.found.len() != *expected {

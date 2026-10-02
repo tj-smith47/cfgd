@@ -2073,6 +2073,68 @@ fn profile_list_json_schema() {
     assert_eq!(active_count, 1, "exactly one profile should be active");
 }
 
+/// A document naming no profile leaves every listed profile inactive, in the
+/// table's `Active` column and in the structured documents alike.
+#[test]
+fn profile_list_marks_no_profile_active_when_the_document_names_none() {
+    let dir = setup_config_dir();
+    let unnamed = TEST_CONFIG_YAML.replace("  profile: default\n", "");
+    assert_ne!(
+        unnamed, TEST_CONFIG_YAML,
+        "the fixture names a profile to drop"
+    );
+    std::fs::write(dir.path().join("cfgd.yaml"), &unnamed).unwrap();
+
+    let cli = test_cli(dir.path());
+    let (printer, buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    cmd_profile_list(&cli, &printer).unwrap();
+    drop(printer);
+    let table = cfgd_core::test_helpers::captured_text(&buf);
+    for name in ["default", "work"] {
+        let row = table
+            .lines()
+            .find(|line| line.split_whitespace().next() == Some(name))
+            .unwrap_or_else(|| panic!("no row for {name}:\n{table}"));
+        let cells: Vec<&str> = row.split_whitespace().collect();
+        assert_eq!(
+            cells.get(1),
+            Some(&cfgd_core::yes_no(Some(false))),
+            "{name} is inactive in the Active column:\n{table}"
+        );
+    }
+
+    for format in [
+        cfgd_core::output::OutputFormat::Json,
+        cfgd_core::output::OutputFormat::Yaml,
+    ] {
+        let cli = super::super::Cli {
+            output: super::super::OutputFormatArg(format.clone()),
+            ..test_cli(dir.path())
+        };
+        let (printer, buf) = cfgd_core::output::Printer::for_test_with_format(format.clone());
+        cmd_profile_list(&cli, &printer).unwrap();
+        drop(printer);
+        let output = cfgd_core::test_helpers::captured_text(&buf);
+        let entries: Vec<serde_json::Value> =
+            serde_yaml::from_str(&output).unwrap_or_else(|e| panic!("{format:?}: {e}\n{output}"));
+        let flags: Vec<(&str, Option<bool>)> = entries
+            .iter()
+            .map(|e| {
+                (
+                    e["name"].as_str().unwrap_or_default(),
+                    e["active"].as_bool(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            flags,
+            [("default", Some(false)), ("work", Some(false))],
+            "{format:?} marks no profile active"
+        );
+    }
+}
+
 #[test]
 fn profile_list_json_empty() {
     let dir = tempfile::tempdir().unwrap();
