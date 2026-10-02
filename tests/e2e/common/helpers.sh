@@ -208,29 +208,42 @@ ensure_namespace() {
   kubectl create namespace "$ns" >/dev/null 2>&1 || rc=$?
   if [ "$rc" -ne 0 ]; then
     if ! kubectl get namespace "$ns" >/dev/null 2>&1; then
-      echo "FAIL: namespace $ns could not be created (rc=$rc)" >&2
+      echo "FAIL: namespace $ns could not be created (rc=$rc). Check that the runner can create and label namespaces." >&2
       return 1
     fi
   else
     case "$ns" in
       cfgd-system | "$CFGD_NAMESPACE") ;;
-      *) ensure_label namespace "$ns" "$E2E_RUN_LABEL" --overwrite ;;
+      *)
+        ensure_label namespace "$ns" "$E2E_RUN_LABEL" --overwrite || {
+          echo "FAIL: could not label namespace $ns. Check that the runner can create and label namespaces." >&2
+          return 1
+        }
+        ;;
     esac
   fi
 }
 
+# Each write returns on its own failure, so the message names the step and no
+# heartbeat loop starts for a namespace that is not there. A plain return also
+# works where the caller runs it inside a condition, where set -e is off.
 create_e2e_namespace() {
+    local hint="Check that the runner can create, label and annotate namespaces."
     if ! kubectl get namespace "$E2E_NAMESPACE" > /dev/null 2>&1; then
-        kubectl create namespace "$E2E_NAMESPACE"
-        kubectl label namespace "$E2E_NAMESPACE" "$E2E_RUN_LABEL" --overwrite
+        kubectl create namespace "$E2E_NAMESPACE" || {
+            echo "ERROR: could not create namespace $E2E_NAMESPACE. $hint" >&2; return 1; }
+        kubectl label namespace "$E2E_NAMESPACE" "$E2E_RUN_LABEL" --overwrite || {
+            echo "ERROR: could not label namespace $E2E_NAMESPACE. $hint" >&2; return 1; }
         # Stamp creation time so the cfgd-e2e-janitor CronJob can age out
         # leaked namespaces from crashed runs (RFC3339 UTC).
         kubectl annotate namespace "$E2E_NAMESPACE" \
-            "cfgd.io/created-at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" --overwrite
+            "cfgd.io/created-at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" --overwrite || {
+            echo "ERROR: could not annotate namespace $E2E_NAMESPACE. $hint" >&2; return 1; }
         # Seed a heartbeat immediately so the namespace is protected before the
         # background loop's first tick, then keep it refreshed for the run.
         kubectl annotate namespace "$E2E_NAMESPACE" \
-            "cfgd.io/heartbeat=$(date -u +%s)" --overwrite
+            "cfgd.io/heartbeat=$(date -u +%s)" --overwrite || {
+            echo "ERROR: could not annotate namespace $E2E_NAMESPACE. $hint" >&2; return 1; }
     fi
     start_heartbeat
     # Wait for Reflector to replicate registry-credentials (annotated on source secret)

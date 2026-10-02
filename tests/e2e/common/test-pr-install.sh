@@ -7,7 +7,7 @@
 #   - ensure_namespace and running_image address the namespaces they are given
 #   - every cfgd.io object the operator and full-stack suites apply carries the
 #     run label
-#   - no e2e script runs a multi-command subshell as a condition
+#   - no e2e script runs a multi-command subshell or brace group as a condition
 # kubectl is a stub on PATH that logs its arguments, so nothing reaches a cluster.
 #
 # Usage: tests/e2e/common/test-pr-install.sh
@@ -26,9 +26,17 @@ fail() {
 }
 
 mkdir -p "$scratch/bin"
+# KUBECTL_FAIL holds glob patterns separated by `|`; a call whose arguments
+# match one of them exits 1.
 cat > "$scratch/bin/kubectl" <<'STUB'
 #!/usr/bin/env bash
 echo "$*" >> "$KUBECTL_LOG"
+IFS='|' read -ra fail_patterns <<<"${KUBECTL_FAIL:-}"
+for pattern in "${fail_patterns[@]}"; do
+    # shellcheck disable=SC2053 # the pattern is meant to glob
+    [[ "$*" == $pattern ]] && exit 1
+done
+exit 0
 STUB
 chmod +x "$scratch/bin/kubectl"
 log="$scratch/kubectl.log"
@@ -109,6 +117,25 @@ expect_unlabelled "ensure_namespace leaves the shared cfgd-system namespace unla
 expect_unlabelled "ensure_namespace leaves cfgd-system unlabelled when CFGD_NAMESPACE names another" \
     cfgd-system CFGD_NAMESPACE=other
 expect_unlabelled "ensure_namespace leaves \$CFGD_NAMESPACE unlabelled" live-ns CFGD_NAMESPACE=live-ns
+
+# create_e2e_namespace stops at the write that failed, names it, and starts no
+# heartbeat loop, also when called as a condition, where set -e is off. The
+# inner script stops any loop it did start, so a regression fails the check and
+# leaves no process behind.
+expect_namespace_write_stop() {
+    local verb="$1" pattern="$2" out rc=0
+    # shellcheck disable=SC2016 # the inner script expands its own variables
+    out="$(in_helpers 'rc=0; create_e2e_namespace || rc=$?; hb="${HEARTBEAT_PID:-none}"; stop_heartbeat; echo "returned $rc, heartbeat $hb"; exit "$rc"' \
+        GITHUB_RUN_ID=42 E2E_NAMESPACE=ns-x KUBECTL_FAIL="$pattern" 2>&1)" || rc=$?
+    if [ "$rc" -ne 0 ] && grep -qxF "returned 1, heartbeat none" <<<"$out" && grep -qxF "ERROR: could not $verb namespace ns-x. Check that the runner can create, label and annotate namespaces." <<<"$out"; then
+        pass "create_e2e_namespace stops with a message when it cannot $verb the namespace"
+    else
+        fail "create_e2e_namespace with a failing $verb: rc=$rc, printed [$out]"
+    fi
+}
+expect_namespace_write_stop create 'get namespace*|create namespace*'
+expect_namespace_write_stop label 'get namespace*|label namespace*'
+expect_namespace_write_stop annotate 'get namespace*|annotate namespace*'
 
 expect_kubectl "running_image reads cfgd-system by default" \
     'running_image daemonset cfgd-csi-csi cfgd-csi' \
@@ -764,77 +791,74 @@ printf 'a: 1\n' > "$scratch/no-kinds.yaml"
 expect_red "a CRD file that names no kinds fails the kind list" "$(operator_kinds "$scratch/no-kinds.yaml")" "^FAIL $scratch/no-kinds.yaml names no CRD kinds"
 expect_red "a CRD file yq cannot read fails the kind list" "$(operator_kinds "$scratch/no-such.yaml")" "^FAIL yq could not read $scratch/no-such.yaml"
 
-# `set -e` is off inside an if/elif/while/until condition, so a subshell there
-# that runs several commands reports only the last one's status, and a failure
-# before it goes unseen. scan_subshell_conditions <file...> prints
-# `COND file:line` for each condition whose subshell holds more than one command
-# (a `;`, `&&` or newline before its closing paren). A paren after the keyword
-# with no `then` or `do` after it is awk inside a quoted program, and is skipped.
+# `set -e` is off inside an if/elif/while/until condition, so a subshell or a
+# brace group there that runs several commands reports only the last one's
+# status, and a failure before it goes unseen. scan_subshell_conditions
+# <file...> reads the shell lines heredocs.awk finds outside heredoc bodies and
+# prints `COND file:line` for each condition whose subshell or brace group holds
+# more than one command (a `;`, `&&` or newline inside it). A paren after the
+# keyword with no `then` or `do` after it is awk inside a quoted program, and is
+# skipped.
 # shellcheck disable=SC2016 # an awk program; the $ fields belong to awk
 scan_subshell_conditions() {
-    awk '
+    { awk -f "$here/heredocs.awk" "$@" || echo "UNREADABLE heredocs.awk exited $?"; } | awk -F '\t' '
+        function reset() { state = 0; q = ""; depth = 0; inner = ""; after = ""; start = 0; open = ""; shut = "" }
         function feed(line,    i, c) {
             for (i = 1; i <= length(line); i++) {
                 c = substr(line, i, 1)
+                if (c == "\\" && q != "\047") { inner = inner substr(line, i, 2); i++; continue }
                 if (q != "") { if (c == q) q = ""; inner = inner c; continue }
                 if (c == "\"" || c == "\047") { q = c; inner = inner c; continue }
-                if (c == "(") depth++
-                else if (c == ")" && --depth == 0) return i
+                if (c == open) depth++
+                else if (c == shut && --depth == 0) return i
                 inner = inner c
             }
             inner = inner "\n"
             return 0
         }
         function opens_body(text) { return text ~ /(^|[ \t;])(then|do)([ \t;]|$)/ }
-        function judge() { if (inner ~ /;|&&|\n/) print "COND " FILENAME ":" start }
-        FNR == 1 { state = 0 }
+        function judge() {
+            sub(/^[[:space:];]+/, "", inner)
+            sub(/[[:space:];]+$/, "", inner)
+            if (inner ~ /;|&&|\n/) print "COND " file ":" start
+        }
+        $1 == "UNREADABLE" { print; next }
+        $1 == "FILE" { reset(); file = $2; next }
+        $1 != "SH" { next }
+        { raw = $0; sub(/^[^\t]*\t[^\t]*\t[^\t]*\t/, "", raw) }
         state == 2 {
             state = 0
-            if (after !~ /[^ \t]/ || after ~ /^[ \t]*[0-9]*>/) if ($0 ~ /^[ \t]*(then|do)([ \t]|$)/) judge()
+            if ((after !~ /[^ \t]/ || after ~ /^[ \t]*[0-9]*>/) && raw ~ /^[ \t]*(then|do)([ \t]|$)/) judge()
         }
         state == 1 {
-            i = feed($0)
-            if (i) { after = substr($0, i + 1); if (opens_body(after)) { judge(); state = 0 } else state = 2 }
+            i = feed(raw)
+            if (i) { after = substr(raw, i + 1); if (opens_body(after)) { judge(); state = 0 } else state = 2 }
             next
         }
-        match($0, /^[ \t]*(if|elif|while|until)[ \t]+(![ \t]+)?\(/) {
-            start = FNR; inner = ""; depth = 1; q = ""
-            rest = substr($0, RSTART + RLENGTH)
+        match(raw, /^[ \t]*(if|elif|while|until)[ \t]+(![ \t]+)?[({]/) {
+            start = $3; inner = ""; depth = 1; q = ""
+            open = substr(raw, RSTART + RLENGTH - 1, 1); shut = (open == "(") ? ")" : "}"
+            rest = substr(raw, RSTART + RLENGTH)
             i = feed(rest)
             if (!i) state = 1
             else { after = substr(rest, i + 1); if (opens_body(after)) judge(); else state = 2 }
         }
-    ' "$@"
+    '
 }
 
-conditions="$scratch/conditions.sh"
-cat > "$conditions" <<'SH'
-if ! (E2E_NAMESPACE="$E2E_INSTALL_NS"; create_e2e_namespace; stop_heartbeat); then
-    exit 1
-fi
-if (: < "/dev/tcp/127.0.0.1/$local_port") 2>/dev/null; then
-    echo open
-fi
-    if (: < "/dev/tcp/127.0.0.1/$2") 2>/dev/null; then echo open; else echo closed; fi
-while (kubectl get ns x && false)
-do
-    break
-done
-until ! (
-    create_e2e_namespace
-    stop_heartbeat
-); do
-    break
-done
-awk '{ if (line ~ /(^|[;&|[:space:]])pass_test/) { print; next } }'
-if (true) 2>/dev/null; then :; fi
-SH
-cond_got="$(scan_subshell_conditions "$conditions")"
-cond_want="COND $conditions:1
-COND $conditions:8
-COND $conditions:12"
+# The fixtures are .bash files, so the live population below never lists them.
+cond_fixtures="$here/fixtures/subshell-conditions"
+cond_got="$(cd "$cond_fixtures" && scan_subshell_conditions conditions.bash reset-a.bash reset-b.bash 2>&1)"
+cond_want="COND conditions.bash:3
+COND conditions.bash:11
+COND conditions.bash:16
+COND conditions.bash:24
+COND conditions.bash:25
+COND conditions.bash:27
+COND conditions.bash:29
+COND reset-b.bash:1"
 if [ "$cond_got" = "$cond_want" ]; then
-    pass "the subshell-condition scan reports the planted multi-command conditions and no single-command or awk one"
+    pass "the subshell-condition scan reports each planted multi-command condition once and stays quiet on single commands, awk, heredoc bodies and a file left mid-condition"
 else
     fail "the subshell-condition scan printed [$cond_got], want [$cond_want]"
 fi
@@ -843,7 +867,7 @@ mapfile -t e2e_scripts < <(git -C "$repo_root" ls-files 'tests/e2e/*.sh')
 if [ "${#e2e_scripts[@]}" -eq 0 ]; then
     fail "git ls-files 'tests/e2e/*.sh' matched no script, so the subshell-condition scan read nothing"
 elif cond_found="$(cd "$repo_root" && scan_subshell_conditions "${e2e_scripts[@]}")" && [ -z "$cond_found" ]; then
-    pass "no condition in tests/e2e runs a multi-command subshell (${#e2e_scripts[@]} scripts)"
+    pass "no condition in tests/e2e runs a multi-command subshell or brace group (${#e2e_scripts[@]} scripts)"
 else
     fail "set -e is off inside a condition, so only the last command's status is read: ${cond_found:-the scan failed}"
 fi
