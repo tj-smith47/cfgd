@@ -4967,8 +4967,8 @@ impl<'ast> syn::visit::Visit<'ast> for ReadsOf<'_> {
 /// `match` pattern, a closure's parameter fed by the receiver it is handed to,
 /// by the other arguments of a call, or by the calls of the local it is bound
 /// to, a function's or a method's parameter fed by its callers, a macro's
-/// argument, and a name a format string captures. Each form's twin fed only
-/// other text is no cut, a comparison with a character literal compares no
+/// argument, a name a format string captures, and a `let … else` pattern. Each
+/// form's twin fed only other text is no cut, a comparison with a character literal compares no
 /// text, and a row outside test scope is outside the rule.
 #[test]
 fn a_gate_search_is_a_hand_cut_whichever_binding_carries_its_needle() {
@@ -5053,10 +5053,31 @@ fn a_gate_search_is_a_hand_cut_whichever_binding_carries_its_needle() {
         "        .trim_start()".to_string(),
         "        .starts_with(LOUD)".to_string(),
         "}".to_string(),
+        "fn twins(body: &str, lines: &[&str], quiet: &Quiet) -> bool {".to_string(),
+        "    const MUTED: &str = \"production\";".to_string(),
+        "    body.contains(MUTED);".to_string(),
+        "    let hushed;".to_string(),
+        "    hushed = \"production\";".to_string(),
+        "    body.contains(hushed);".to_string(),
+        "    let other = \"production\";".to_string(),
+        "    assert!(body.ends_with(other));".to_string(),
+        "    let label = format!(\"{other}\");".to_string(),
+        "    body.contains(&label);".to_string(),
+        "    quiet.hold(\"production\");".to_string(),
+        "    let Some(gate) = Some(LOUD) else { return false; };".to_string(),
+        "    body.contains(gate);".to_string(),
+        "    let Some(word) = lines.first() else { return false; };".to_string(),
+        "    body.contains(word)".to_string(),
+        "}".to_string(),
+        "impl Quiet {".to_string(),
+        "    fn hold(&self, needle: &str) -> bool {".to_string(),
+        "        self.0.contains(needle)".to_string(),
+        "    }".to_string(),
+        "}".to_string(),
     ];
     let syntax = syntax(&fixture.join("\n")).unwrap_or_else(|e| panic!("fixture: {e}"));
     let cuts = [
-        5, 7, 9, 11, 12, 14, 16, 18, 20, 22, 26, 32, 35, 36, 38, 40, 49, 54, 59, 66, 74,
+        5, 7, 9, 11, 12, 14, 16, 18, 20, 22, 26, 32, 35, 36, 38, 40, 49, 54, 59, 66, 74, 88,
     ];
     assert_eq!(
         hand_cut_gate_rows(&syntax, |_| true),
