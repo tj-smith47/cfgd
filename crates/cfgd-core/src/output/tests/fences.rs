@@ -4000,6 +4000,7 @@ fn every_multi_file_production_walk_reads_through_the_floored_helper() {
         ("cfgd-operator", 2, 2, 0),
     ];
     let mut hand_cuts = Vec::new();
+    let mut own_searches: std::collections::BTreeMap<&str, usize> = Default::default();
     let mut unparsed = Vec::new();
     let crates_dir = workspace_root().join("crates");
     let mut floored: std::collections::BTreeMap<String, usize> = Default::default();
@@ -4079,9 +4080,16 @@ fn every_multi_file_production_walk_reads_through_the_floored_helper() {
         };
         let in_test = |n: usize| whole_test || gates.get(n).is_some_and(Option::is_some);
         if !own_file {
+            let detector = crate::to_posix_string(&path).ends_with(OWN_GATE_SEARCH_FILE);
             match syntax_of(&path) {
                 Ok(syntax) => {
-                    for n in hand_cut_gate_rows(syntax, in_test) {
+                    for site in hand_cut_gate_sites(syntax, &in_test) {
+                        let function = site.function.as_deref().unwrap_or_default();
+                        if detector && OWN_GATE_SEARCHES.iter().any(|(f, _)| *f == function) {
+                            *own_searches.entry(function).or_default() += 1;
+                            continue;
+                        }
+                        let n = site.row;
                         hand_cuts.push(format!("{label}:{}: {}", n + 1, lines[n].trim()));
                     }
                 }
@@ -4146,6 +4154,12 @@ fn every_multi_file_production_walk_reads_through_the_floored_helper() {
          attribute with `attribute_gate`:\n{}",
         hand_cuts.join("\n")
     );
+    assert_eq!(
+        own_searches,
+        OWN_GATE_SEARCHES.into_iter().collect(),
+        "{OWN_GATE_SEARCH_FILE}'s own searches reaching a gate's spelling are each \
+         declared in OWN_GATE_SEARCHES at the count the function holds"
+    );
     let unfloored: Vec<&String> = walks
         .keys()
         .chain(sources.keys())
@@ -4184,12 +4198,32 @@ fn every_multi_file_production_walk_reads_through_the_floored_helper() {
     );
 }
 
-/// The spellings a test gate opens on, split so this file spells none whole.
+/// The spellings a test gate opens on, split so no text scan of this file
+/// meets one whole. The hand-cut walk reads each `concat!` joined, so this
+/// file's own searches reaching them are declared in [`OWN_GATE_SEARCHES`].
 const GATE_SPELLINGS: [&str; 4] = [
     concat!("cfg", "(test"),
     concat!("cfg", "(all(test"),
     concat!("cfg", "(any(test"),
     concat!("mod ", "tests"),
+];
+
+/// The file holding the hand-cut detector and the fixtures of every walk over
+/// gate spellings, the one file [`OWN_GATE_SEARCHES`] applies to.
+const OWN_GATE_SEARCH_FILE: &str = "cfgd-core/src/output/tests/fences.rs";
+
+/// The functions of [`OWN_GATE_SEARCH_FILE`] whose searches reach a gate's
+/// spelling, each with the number it holds. `opens_on_a_gate` is the detector
+/// itself. The others reach the spelling through the approximations the
+/// resolver makes: a method parameter is fed by every call of a method of its
+/// name (`chain` by each iterator `.chain(…)`), a function parameter by the
+/// fixture text every caller hands it, and a loop over fixture rows by every
+/// column of the row, the source text with it.
+const OWN_GATE_SEARCHES: [(&str, usize); 4] = [
+    ("assert_reassembles", 1),
+    ("chain", 4),
+    ("every_profile_fallback_shape_is_found_and_no_other", 1),
+    ("opens_on_a_gate", 1),
 ];
 
 /// Whether `text` opens on a test gate's spelling, or on the attribute holding
@@ -4208,22 +4242,27 @@ fn opens_on_a_gate(text: &str) -> bool {
 /// `==` / `!=` comparison, whose needle reaches a literal opening on a test
 /// gate's spelling. Each cuts test text from production beside the one scanner.
 fn hand_cut_gate_rows(syntax: &Syntax, in_test: impl Fn(usize) -> bool) -> Vec<usize> {
-    let mut rows: Vec<usize> = syntax
-        .searches
-        .iter()
-        .filter(|site| in_test(site.row))
-        .filter(|site| {
-            syntax
-                .reach(&site.reads)
-                .literals
-                .iter()
-                .any(|literal| opens_on_a_gate(literal))
-        })
+    let mut rows: Vec<usize> = hand_cut_gate_sites(syntax, in_test)
         .map(|site| site.row)
         .collect();
     rows.sort_unstable();
     rows.dedup();
     rows
+}
+
+/// The sites [`hand_cut_gate_rows`] reports, in the order the pass found them.
+fn hand_cut_gate_sites(
+    syntax: &Syntax,
+    in_test: impl Fn(usize) -> bool,
+) -> impl Iterator<Item = &Site> {
+    syntax.searches.iter().filter(move |site| {
+        in_test(site.row)
+            && syntax
+                .reach(&site.reads)
+                .literals
+                .iter()
+                .any(|literal| opens_on_a_gate(literal))
+    })
 }
 
 /// The rows of `syntax` in test scope (`in_test`) holding a `read_to_string`
@@ -4281,10 +4320,11 @@ struct Reads {
     parts: Vec<std::sync::Arc<Reads>>,
 }
 
-/// A call a walk judges: the 0-based row its call node starts on, and what the
-/// argument it judges reads.
+/// A call a walk judges: the 0-based row its call node starts on, the
+/// function it is written in, and what the argument it judges reads.
 struct Site {
     row: usize,
+    function: Option<String>,
     reads: std::sync::Arc<Reads>,
 }
 
@@ -4368,6 +4408,7 @@ fn syntax(body: &str) -> Result<Syntax, String> {
                 calls: Vec::new(),
                 closures: Default::default(),
                 read_names: aliases.0,
+                function: None,
                 memo: Default::default(),
                 macros: Default::default(),
             };
@@ -4450,6 +4491,32 @@ fn macro_body(mac: &syn::Macro) -> MacroBody {
         .map_or(MacroBody::Tokens, MacroBody::Stmts)
 }
 
+/// The one string a `concat!` of `exprs` spells, when every argument is a
+/// literal or a `concat!` of them, as the compiler joins it.
+fn concatenated(exprs: &[syn::Expr]) -> Option<String> {
+    let mut joined = String::new();
+    for expr in exprs {
+        match peel(expr) {
+            syn::Expr::Lit(lit) => match &lit.lit {
+                syn::Lit::Str(s) => joined.push_str(&s.value()),
+                syn::Lit::Char(c) => joined.push(c.value()),
+                syn::Lit::Int(i) => joined.push_str(i.base10_digits()),
+                syn::Lit::Float(f) => joined.push_str(f.base10_digits()),
+                syn::Lit::Bool(b) => joined.push_str(if b.value { "true" } else { "false" }),
+                _ => return None,
+            },
+            syn::Expr::Macro(inner) if inner.mac.path.is_ident("concat") => {
+                let MacroBody::Exprs(nested) = macro_body(&inner.mac) else {
+                    return None;
+                };
+                joined.push_str(&concatenated(&nested)?);
+            }
+            _ => return None,
+        }
+    }
+    Some(joined)
+}
+
 /// The names `use` gives `read_to_string`.
 struct ReadAliases(Vec<String>);
 
@@ -4490,6 +4557,8 @@ struct Builder {
     /// The parameter bindings of each closure a `let` binds, by that binding.
     closures: std::collections::HashMap<usize, Vec<Vec<usize>>>,
     read_names: Vec<String>,
+    /// The name of the function the pass is inside.
+    function: Option<String>,
     /// The reads worked out for each expression visited so far. Every key
     /// stays alive for the whole pass: it is a node of the file's tree or of a
     /// macro body `macros` holds.
@@ -4582,6 +4651,7 @@ impl Builder {
     /// the code around it.
     fn function(&mut self, sig: &syn::Signature, body: &syn::Block) {
         let outer = std::mem::replace(&mut self.scopes, vec![Vec::new()]);
+        let outer_function = self.function.replace(sig.ident.to_string());
         let mut method = false;
         let mut params = Vec::new();
         for input in &sig.inputs {
@@ -4596,6 +4666,7 @@ impl Builder {
             .push(Function { method, params });
         syn::visit::Visit::visit_block(self, body);
         self.scopes = outer;
+        self.function = outer_function;
     }
 
     fn item(&mut self, ident: &syn::Ident, expr: &syn::Expr) {
@@ -4742,6 +4813,7 @@ impl<'ast> syn::visit::Visit<'ast> for Builder {
         {
             self.syntax.searches.push(Site {
                 row: row_of(call.method.span()),
+                function: self.function.clone(),
                 reads: args[0].clone(),
             });
         }
@@ -4776,6 +4848,7 @@ impl<'ast> syn::visit::Visit<'ast> for Builder {
         {
             self.syntax.reads.push(Site {
                 row: row_of(last.ident.span()),
+                function: self.function.clone(),
                 reads: path.clone(),
             });
         }
@@ -4786,7 +4859,10 @@ impl<'ast> syn::visit::Visit<'ast> for Builder {
         syn::visit::visit_expr_binary(self, binary);
         // A side written as a character or number literal compares no text.
         let compares_text = [&binary.left, &binary.right].iter().all(|side| {
-            !matches!(peel(side), syn::Expr::Lit(lit) if !matches!(lit.lit, syn::Lit::Str(_)))
+            !matches!(
+                peel(side),
+                syn::Expr::Lit(lit) if !matches!(lit.lit, syn::Lit::Str(_) | syn::Lit::ByteStr(_))
+            )
         });
         if compares_text && matches!(binary.op, syn::BinOp::Eq(_) | syn::BinOp::Ne(_)) {
             let reads = Reads {
@@ -4795,6 +4871,7 @@ impl<'ast> syn::visit::Visit<'ast> for Builder {
             };
             self.syntax.searches.push(Site {
                 row: row_of(syn::spanned::Spanned::span(&binary.op)),
+                function: self.function.clone(),
                 reads: std::sync::Arc::new(reads),
             });
         }
@@ -4880,8 +4957,14 @@ impl ReadsOf<'_> {
                 proc_macro2::TokenTree::Group(group) => self.tokens(group.stream()),
                 proc_macro2::TokenTree::Literal(literal) => {
                     let token = proc_macro2::TokenTree::Literal(literal);
-                    if let Ok(literal) = syn::parse2::<syn::LitStr>(token.into()) {
-                        syn::visit::Visit::visit_lit_str(self, &literal);
+                    match syn::parse2::<syn::Lit>(token.into()) {
+                        Ok(syn::Lit::Str(literal)) => {
+                            syn::visit::Visit::visit_lit_str(self, &literal)
+                        }
+                        Ok(syn::Lit::ByteStr(literal)) => {
+                            syn::visit::Visit::visit_lit_byte_str(self, &literal);
+                        }
+                        _ => {}
                     }
                 }
                 proc_macro2::TokenTree::Ident(ident) => {
@@ -4915,6 +4998,12 @@ impl<'ast> syn::visit::Visit<'ast> for ReadsOf<'_> {
             }
         }
         self.reads.literals.push(value);
+    }
+
+    fn visit_lit_byte_str(&mut self, literal: &'ast syn::LitByteStr) {
+        self.reads
+            .literals
+            .push(String::from_utf8_lossy(&literal.value()).into_owned());
     }
 
     fn visit_expr_path(&mut self, path: &'ast syn::ExprPath) {
@@ -4952,6 +5041,13 @@ impl<'ast> syn::visit::Visit<'ast> for ReadsOf<'_> {
 
     fn visit_macro(&mut self, mac: &'ast syn::Macro) {
         let body = self.builder.macro_body(mac);
+        if let MacroBody::Exprs(exprs) = &*body
+            && mac.path.is_ident("concat")
+            && let Some(joined) = concatenated(exprs)
+        {
+            self.reads.literals.push(joined);
+            return;
+        }
         match &*body {
             MacroBody::Exprs(exprs) => exprs.iter().for_each(|expr| self.visit_expr(expr)),
             MacroBody::Stmts(stmts) => stmts.iter().for_each(|stmt| self.visit_stmt(stmt)),
@@ -5089,6 +5185,38 @@ fn a_gate_search_is_a_hand_cut_whichever_binding_carries_its_needle() {
         hand_cut_gate_rows(&syntax, |n| n != 7),
         cuts.into_iter().filter(|&n| n != 7).collect::<Vec<_>>(),
         "a row outside test scope is outside the rule"
+    );
+}
+
+/// A `concat!` of literals is the one string the compiler joins, and a byte
+/// string is its text, so a gate spelled either way is a hand cut; the same
+/// shapes spelling other text are none.
+#[test]
+fn a_gate_spelled_by_concat_or_as_bytes_is_a_hand_cut() {
+    let (head, tail) = ("#[cfg", "(test)]");
+    let fixture = [
+        "fn planted(body: &str, bytes: &[u8]) {".to_string(),
+        format!("    body.starts_with(concat!(\"{head}\", \"{tail}\"));"),
+        "    body.starts_with(concat!(\"pro\", \"duction\"));".to_string(),
+        format!("    body.starts_with(concat!(concat!(\"{head}\"), \"{tail}\"));"),
+        format!("    let joined = concat!(\"{head}\", \"{tail}\");"),
+        "    body.contains(joined);".to_string(),
+        format!("    bytes.starts_with(b\"{head}{tail}\");"),
+        "    bytes.starts_with(b\"production\");".to_string(),
+        format!("    bytes == b\"{head}{tail}\";"),
+        "    bytes == b\"production\";".to_string(),
+        format!("    assert!(bytes.starts_with(b\"{head}{tail}\"));"),
+        format!("    bytes.starts_with(pick!(bytes => b\"{head}{tail}\"));"),
+        "    bytes.starts_with(pick!(bytes => b\"production\"));".to_string(),
+        "}".to_string(),
+    ];
+    let syntax = syntax(&fixture.join("\n")).unwrap_or_else(|e| panic!("fixture: {e}"));
+    assert_eq!(
+        hand_cut_gate_rows(&syntax, |_| true),
+        [1, 3, 5, 6, 8, 10, 11],
+        "a joined concat!, a nested one, a let holding one, a byte string searched, \
+         compared, handed to a macro and held among a macro's tokens are each a hand \
+         cut; other text is none"
     );
 }
 
