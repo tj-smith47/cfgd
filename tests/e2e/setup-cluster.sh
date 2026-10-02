@@ -43,12 +43,11 @@ ensure_namespace cfgd-system
 # --- Step 1c: Serialize on shared cluster state via a coordination Lease ---
 # Two near-simultaneous setups mutate the same cluster-scoped state (CRDs,
 # webhooks, the singleton operator/server deployments, the PR install's
-# CSIDriver). A
-# coordination.k8s.io/Lease named cfgd-e2e-setup serializes them: the holder
-# identity is GITHUB_RUN_ID and a background renewer advances renewTime every
-# third of the duration. If the holder dies, renewTime stops and any waiter
-# steals the lease once it expires — auto-release on holder death without a
-# permanent lock.
+# CSIDriver). A coordination.k8s.io/Lease named cfgd-e2e-setup serializes
+# them: the holder identity is GITHUB_RUN_ID and a background renewer advances
+# renewTime every third of the duration. If the holder dies, renewTime stops
+# and any waiter steals the lease once it expires — auto-release on holder
+# death without a permanent lock.
 LEASE_NAME="cfgd-e2e-setup"
 LEASE_NS="cfgd-system"
 LEASE_HOLDER="${GITHUB_RUN_ID:-local-$$}"
@@ -584,11 +583,16 @@ if [ -n "$csi_driver_obj" ]; then
         exit 1
     fi
     if [ "$csi_owner_ns" != "$E2E_INSTALL_NS" ]; then
-        if ! csi_owner_ns_obj=$(kubectl get namespace "$csi_owner_ns" --ignore-not-found -o name); then
+        if ! csi_owner_ns_phase=$(kubectl get namespace "$csi_owner_ns" --ignore-not-found \
+            -o jsonpath='{.status.phase}'); then
             echo "ERROR: could not check whether namespace $csi_owner_ns, which owns csidriver/$CSI_DRIVER_NAME, still exists. Check that the runner can get namespaces, then rerun setup."
             exit 1
         fi
-        if [ -n "$csi_owner_ns_obj" ]; then
+        if [ "$csi_owner_ns_phase" = "Terminating" ]; then
+            echo "ERROR: namespace $csi_owner_ns, which owns csidriver/$CSI_DRIVER_NAME, is being deleted; rerun setup once it is gone"
+            exit 1
+        fi
+        if [ -n "$csi_owner_ns_phase" ]; then
             echo "ERROR: $CSI_DRIVER_NAME belongs to the live install in $csi_owner_ns; one PR install runs at a time"
             echo "  Rerun setup once that run has finished. If that run is dead, delete namespace $csi_owner_ns and csidriver/$CSI_DRIVER_NAME first."
             exit 1
@@ -604,15 +608,21 @@ fi
 # The subshell lets the namespace helper act on the install namespace without
 # changing $E2E_NAMESPACE for the rest of setup. Its heartbeat loop is stopped
 # there because its PID would be lost when the subshell returns; each suite's
-# own heartbeat refreshes every namespace with the run label. The helper only
-# warns on a missing pull secret, so both outcomes are checked after it.
-if ! (E2E_NAMESPACE="$E2E_INSTALL_NS"; create_e2e_namespace; stop_heartbeat); then
-    echo "ERROR: creating namespace $E2E_INSTALL_NS failed. Check that the runner can create and label namespaces, then rerun setup."
-    exit 1
+# own heartbeat refreshes every namespace with the run label. The helper skips
+# a namespace that already exists and only warns on a missing pull secret, so
+# the label, the janitor's two annotations and the secret are read back after it.
+(E2E_NAMESPACE="$E2E_INSTALL_NS"; create_e2e_namespace; stop_heartbeat)
+if ! install_ns_meta=$(kubectl get namespace "$E2E_INSTALL_NS" \
+    -o jsonpath='{.metadata.labels.cfgd\.io/e2e-run}|{.metadata.annotations.cfgd\.io/created-at}|{.metadata.annotations.cfgd\.io/heartbeat}'); then
+    install_ns_meta="||"
 fi
-if ! install_ns_run=$(kubectl get namespace "$E2E_INSTALL_NS" \
-    -o jsonpath='{.metadata.labels.cfgd\.io/e2e-run}') || [ "$install_ns_run" != "$E2E_RUN_ID" ]; then
-    echo "ERROR: namespace $E2E_INSTALL_NS is missing or does not carry $E2E_RUN_LABEL. Check that the runner can create and label namespaces, then rerun setup."
+IFS='|' read -r install_ns_run install_ns_created install_ns_heartbeat <<<"$install_ns_meta"
+install_ns_missing=()
+[ "$install_ns_run" = "$E2E_RUN_ID" ] || install_ns_missing+=("label $E2E_RUN_LABEL")
+[ -n "$install_ns_created" ] || install_ns_missing+=("annotation cfgd.io/created-at")
+[ -n "$install_ns_heartbeat" ] || install_ns_missing+=("annotation cfgd.io/heartbeat")
+if [ "${#install_ns_missing[@]}" -gt 0 ]; then
+    echo "ERROR: namespace $E2E_INSTALL_NS is missing or does not carry: $(printf '%s, ' "${install_ns_missing[@]}" | sed 's/, $//'). Check that the runner can create, label and annotate namespaces, then rerun setup."
     exit 1
 fi
 if ! kubectl get secret registry-credentials -n "$E2E_INSTALL_NS" -o name >/dev/null; then
@@ -694,14 +704,14 @@ if [ "$ARGOCD_MANAGED" = "true" ]; then
     for deploy in cfgd-operator cfgd-server; do
         echo "  deployment/$deploy is managed by ArgoCD and runs $(running_image deployment "$deploy" cfgd-operator)"
     done
-    warn_override_unused cfgd-operator ArgoCD deployment cfgd-operator cfgd-operator
+    warn_override_unused cfgd-operator ArgoCD deployment cfgd-server cfgd-operator
 elif [ -n "${CFGD_DEPLOY_MANIFESTS:-}" ] && [ -d "$CFGD_DEPLOY_MANIFESTS" ]; then
     # A tree `task deploy:operator` applied owns these Deployments, so setup
     # leaves their spec alone. They name the :latest tag this run pushes, and a
     # restart is what makes them pull a rebuilt image. Skipping it when the
     # image was not rebuilt is the bulk of the no-source-change time saving.
     warn_override_unused cfgd-operator "the tree at $CFGD_DEPLOY_MANIFESTS" \
-        deployment cfgd-operator cfgd-operator
+        deployment cfgd-server cfgd-operator
     if [ "${IMAGE_BUILT[cfgd-operator]:-true}" != "true" ]; then
         echo "  cfgd-operator image unchanged — skipping operator/server rollout restart"
     else
@@ -940,10 +950,6 @@ rm -f "$WEBHOOK_FILE"
 echo "Waiting for components..."
 wait_for_deployment cfgd-system cfgd-operator 120
 wait_for_deployment cfgd-system cfgd-server 120
-wait_for_deployment "$E2E_INSTALL_NS" "$E2E_OPERATOR_DEPLOY" 120
-wait_for_daemonset "$E2E_INSTALL_NS" "$E2E_CSI_DS" 120
-echo "  PR operator: $(running_image deployment "$E2E_OPERATOR_DEPLOY" operator "$E2E_INSTALL_NS")"
-echo "  PR CSI:      $(running_image daemonset "$E2E_CSI_DS" cfgd-csi "$E2E_INSTALL_NS")"
 
 # --- Step 10: Reset gateway DB for clean E2E state ---
 # Call the admin reset endpoint to wipe stale device/event data from prior runs.
@@ -988,7 +994,7 @@ echo "  CSI:       $(kubectl get ds -n cfgd-system -l app.kubernetes.io/componen
 echo "  Running:   operator $(running_image deployment cfgd-operator cfgd-operator)"
 echo "             gateway $(running_image deployment cfgd-server cfgd-operator)"
 echo "             csi $(running_image daemonset cfgd-csi-csi cfgd-csi)"
-echo "  PR install: $E2E_INSTALL_RELEASE in $E2E_INSTALL_NS, CSI driver $CSI_DRIVER_NAME"
+echo "  PR:        $E2E_INSTALL_RELEASE in $E2E_INSTALL_NS, CSI driver $CSI_DRIVER_NAME"
 echo "             operator $(running_image deployment "$E2E_OPERATOR_DEPLOY" operator "$E2E_INSTALL_NS")"
 echo "             csi $(running_image daemonset "$E2E_CSI_DS" cfgd-csi "$E2E_INSTALL_NS")"
 echo "  Test pod:  $(e2e_image cfgd)"

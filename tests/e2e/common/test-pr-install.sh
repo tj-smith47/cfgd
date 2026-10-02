@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
-# Checks without a cluster that helpers.sh names the PR-owned install (its
-# release, namespace, workloads, pod selectors, webhook configurations, webhook
-# certificate and CSI driver) from one run id,
-# that a local run id is the same in every process of one checkout, and that
-# ensure_namespace and running_image address the namespaces they are given, and
-# that every cfgd.io object the operator and full-stack suites apply carries the
-# run label. kubectl is a stub on PATH that logs its arguments, so nothing reaches a cluster.
+# Checks without a cluster that:
+#   - helpers.sh names the PR-owned install (its release, namespace, workloads,
+#     pod selectors, webhook configurations, webhook certificate and CSI driver)
+#     from one run id
+#   - a local run id is the same in every process of one checkout
+#   - ensure_namespace and running_image address the namespaces they are given
+#   - every cfgd.io object the operator and full-stack suites apply carries the
+#     run label
+#   - no e2e script runs a multi-command subshell as a condition
+# kubectl is a stub on PATH that logs its arguments, so nothing reaches a cluster.
 #
 # Usage: tests/e2e/common/test-pr-install.sh
 set -euo pipefail
@@ -760,6 +763,90 @@ expect_red "the scan's own awk failing fails the scan" \
 printf 'a: 1\n' > "$scratch/no-kinds.yaml"
 expect_red "a CRD file that names no kinds fails the kind list" "$(operator_kinds "$scratch/no-kinds.yaml")" "^FAIL $scratch/no-kinds.yaml names no CRD kinds"
 expect_red "a CRD file yq cannot read fails the kind list" "$(operator_kinds "$scratch/no-such.yaml")" "^FAIL yq could not read $scratch/no-such.yaml"
+
+# `set -e` is off inside an if/elif/while/until condition, so a subshell there
+# that runs several commands reports only the last one's status, and a failure
+# before it goes unseen. scan_subshell_conditions <file...> prints
+# `COND file:line` for each condition whose subshell holds more than one command
+# (a `;`, `&&` or newline before its closing paren). A paren after the keyword
+# with no `then` or `do` after it is awk inside a quoted program, and is skipped.
+# shellcheck disable=SC2016 # an awk program; the $ fields belong to awk
+scan_subshell_conditions() {
+    awk '
+        function feed(line,    i, c) {
+            for (i = 1; i <= length(line); i++) {
+                c = substr(line, i, 1)
+                if (q != "") { if (c == q) q = ""; inner = inner c; continue }
+                if (c == "\"" || c == "\047") { q = c; inner = inner c; continue }
+                if (c == "(") depth++
+                else if (c == ")" && --depth == 0) return i
+                inner = inner c
+            }
+            inner = inner "\n"
+            return 0
+        }
+        function opens_body(text) { return text ~ /(^|[ \t;])(then|do)([ \t;]|$)/ }
+        function judge() { if (inner ~ /;|&&|\n/) print "COND " FILENAME ":" start }
+        FNR == 1 { state = 0 }
+        state == 2 {
+            state = 0
+            if (after !~ /[^ \t]/ || after ~ /^[ \t]*[0-9]*>/) if ($0 ~ /^[ \t]*(then|do)([ \t]|$)/) judge()
+        }
+        state == 1 {
+            i = feed($0)
+            if (i) { after = substr($0, i + 1); if (opens_body(after)) { judge(); state = 0 } else state = 2 }
+            next
+        }
+        match($0, /^[ \t]*(if|elif|while|until)[ \t]+(![ \t]+)?\(/) {
+            start = FNR; inner = ""; depth = 1; q = ""
+            rest = substr($0, RSTART + RLENGTH)
+            i = feed(rest)
+            if (!i) state = 1
+            else { after = substr(rest, i + 1); if (opens_body(after)) judge(); else state = 2 }
+        }
+    ' "$@"
+}
+
+conditions="$scratch/conditions.sh"
+cat > "$conditions" <<'SH'
+if ! (E2E_NAMESPACE="$E2E_INSTALL_NS"; create_e2e_namespace; stop_heartbeat); then
+    exit 1
+fi
+if (: < "/dev/tcp/127.0.0.1/$local_port") 2>/dev/null; then
+    echo open
+fi
+    if (: < "/dev/tcp/127.0.0.1/$2") 2>/dev/null; then echo open; else echo closed; fi
+while (kubectl get ns x && false)
+do
+    break
+done
+until ! (
+    create_e2e_namespace
+    stop_heartbeat
+); do
+    break
+done
+awk '{ if (line ~ /(^|[;&|[:space:]])pass_test/) { print; next } }'
+if (true) 2>/dev/null; then :; fi
+SH
+cond_got="$(scan_subshell_conditions "$conditions")"
+cond_want="COND $conditions:1
+COND $conditions:8
+COND $conditions:12"
+if [ "$cond_got" = "$cond_want" ]; then
+    pass "the subshell-condition scan reports the planted multi-command conditions and no single-command or awk one"
+else
+    fail "the subshell-condition scan printed [$cond_got], want [$cond_want]"
+fi
+
+mapfile -t e2e_scripts < <(git -C "$repo_root" ls-files 'tests/e2e/*.sh')
+if [ "${#e2e_scripts[@]}" -eq 0 ]; then
+    fail "git ls-files 'tests/e2e/*.sh' matched no script, so the subshell-condition scan read nothing"
+elif cond_found="$(cd "$repo_root" && scan_subshell_conditions "${e2e_scripts[@]}")" && [ -z "$cond_found" ]; then
+    pass "no condition in tests/e2e runs a multi-command subshell (${#e2e_scripts[@]} scripts)"
+else
+    fail "set -e is off inside a condition, so only the last command's status is read: ${cond_found:-the scan failed}"
+fi
 
 if [ "$failures" -gt 0 ]; then
     echo "$failures check(s) failed"

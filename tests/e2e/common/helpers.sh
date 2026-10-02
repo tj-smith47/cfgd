@@ -339,9 +339,9 @@ running_image() {
     printf '%s\n' "${image:-not deployed}"
 }
 
-# True when ArgoCD tracks the cfgd-system workload $1/$2 (its tracking-id
-# annotation is set), so it runs what /db/manifests pins and reverts changes.
-# A workload kubectl cannot read is not tracked.
+# True when ArgoCD tracks the object $1/$2 (looked up in cfgd-system when
+# namespaced; its tracking-id annotation is set), so it runs what /db/manifests
+# pins and reverts changes. An object kubectl cannot read is not tracked.
 argocd_managed() {
     local id
     id="$(kubectl get "$1" "$2" -n cfgd-system \

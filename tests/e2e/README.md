@@ -11,8 +11,8 @@ each `task e2e:<suite>` target runs one suite.
 | `REGISTRY` | required | Registry every image is pulled from and pushed to |
 | `IMAGE_TAG` | `e2e-<short HEAD sha>` | Tag of every image that has no override below |
 | `CFGD_IMAGE_TAG` | `IMAGE_TAG` | Tag of `cfgd` (agent, test pod) |
-| `OPERATOR_IMAGE_TAG` | `IMAGE_TAG` | Tag of `cfgd-operator` (operator, device gateway) |
-| `CSI_IMAGE_TAG` | `IMAGE_TAG` | Tag of `cfgd-csi` (CSI node plugin) |
+| `OPERATOR_IMAGE_TAG` | `IMAGE_TAG` | Tag of `cfgd-operator` (the PR install's operator; the device gateway where setup deploys it) |
+| `CSI_IMAGE_TAG` | `IMAGE_TAG` | Tag of `cfgd-csi` (the PR install's CSI node plugin) |
 | `FUNCTION_IMAGE_TAG` | `IMAGE_TAG` | Tag of `function-cfgd` (Crossplane function) |
 
 A release tags each image at its own crate's version, so a released set needs the
@@ -52,14 +52,17 @@ on a workstation, so the setup process and every suite process of one checkout
 agree on it. For run 42:
 
 ```bash
-E2E_INSTALL_RELEASE   # cfgd-e2e-42 (the Helm release)
-E2E_INSTALL_NS        # cfgd-e2e-42-sys
-E2E_OPERATOR_DEPLOY   # cfgd-e2e-42-operator
-E2E_CSI_DS            # cfgd-e2e-42-csi
-E2E_WEBHOOK_SVC       # cfgd-e2e-42-webhook
-E2E_OPERATOR_PODS     # app.kubernetes.io/instance=cfgd-e2e-42,app.kubernetes.io/component=operator
-E2E_CSI_PODS          # app.kubernetes.io/instance=cfgd-e2e-42,app.kubernetes.io/component=csi-driver
-CSI_DRIVER_NAME       # e2e.csi.cfgd.io
+E2E_INSTALL_RELEASE     # cfgd-e2e-42 (the Helm release)
+E2E_INSTALL_NS          # cfgd-e2e-42-sys
+E2E_OPERATOR_DEPLOY     # cfgd-e2e-42-operator
+E2E_CSI_DS              # cfgd-e2e-42-csi
+E2E_WEBHOOK_SVC         # cfgd-e2e-42-webhook
+E2E_WEBHOOK_CERT        # cfgd-e2e-42-webhook-tls (the cert-manager Certificate)
+E2E_VALIDATING_WEBHOOK  # cfgd-e2e-42
+E2E_MUTATING_WEBHOOK    # cfgd-e2e-42-pod-injector
+E2E_OPERATOR_PODS       # app.kubernetes.io/instance=cfgd-e2e-42,app.kubernetes.io/component=operator
+E2E_CSI_PODS            # app.kubernetes.io/instance=cfgd-e2e-42,app.kubernetes.io/component=csi-driver
+CSI_DRIVER_NAME         # e2e.csi.cfgd.io
 ```
 
 The values file leaves the CSI driver name out, and the install passes
@@ -113,15 +116,16 @@ by path (the crossplane suite's) is listed.
 
 ## Components ArgoCD owns
 
-On the shared cluster ArgoCD deploys the operator, the device gateway and the CSI
-node plugin from `/db/manifests/k3s/namespaces/cfgd-system/` (the CSI plugin from
-`csi-daemonset.yaml`), so the operator and CSI suites there run the release those
-manifests pin, whatever this run built. `setup-cluster.sh` prints the image each
-of them runs, warns when `OPERATOR_IMAGE_TAG` or `CSI_IMAGE_TAG` is set for one of
-them, and installs the CSI plugin with Helm only on a cluster where ArgoCD does
-not own the `cfgd-csi-csi` DaemonSet. When `CFGD_DEPLOY_MANIFESTS` names a tree that
-`task deploy:operator` applied, that tree owns the operator and gateway Deployments,
-and setup warns the same way when `OPERATOR_IMAGE_TAG` is set.
+On the shared cluster ArgoCD deploys the live operator, the device gateway and the
+CSI node plugin from `/db/manifests/k3s/namespaces/cfgd-system/`, so those run the
+release the manifests pin, whatever this run built. This run's operator and CSI
+images run in the PR install instead: Helm release `$E2E_INSTALL_RELEASE` in
+`$E2E_INSTALL_NS`, with CSI driver `e2e.csi.cfgd.io`, scoped to the objects and
+namespaces that carry the run label. `setup-cluster.sh` prints the image each live
+component and each PR install workload runs, and warns when `OPERATOR_IMAGE_TAG` is
+set while ArgoCD owns the gateway, which the override then does not reach. When
+`CFGD_DEPLOY_MANIFESTS` names a tree that `task deploy:operator` applied, that tree
+owns the operator and gateway Deployments, and setup warns the same way.
 
 Because those suites run a release, a check reads a counter through
 `metric_sample_lines` or `metric_sample_value` in `common/helpers.sh`, which
