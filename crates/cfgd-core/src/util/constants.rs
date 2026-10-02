@@ -11,8 +11,9 @@ pub const CSI_DRIVER_NAME: &str = "csi.cfgd.io";
 /// is one environment lookup, far below the cost of the gRPC call or admission review
 /// it serves.
 pub fn csi_driver_name() -> String {
-    // A blank value would register or inject an empty driver name, which the kubelet
-    // rejects, so blank means the default, matching `WATCH_LABEL_SELECTOR`.
+    // A blank value would register or inject an empty driver name, which fails plugin
+    // registration and pod validation, so blank means the default, matching
+    // `WATCH_LABEL_SELECTOR`.
     let name = crate::env_or("CSI_DRIVER_NAME", CSI_DRIVER_NAME);
     match name.trim() {
         "" => CSI_DRIVER_NAME.to_owned(),

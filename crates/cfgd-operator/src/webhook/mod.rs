@@ -559,11 +559,11 @@ fn build_injection_patches<'m>(
         .unwrap_or_default();
     let has_volumes = pod.pointer("/spec/volumes").is_some();
     let has_init_containers = pod.pointer("/spec/initContainers").is_some();
-    let driver = cfgd_core::csi_driver_name();
 
     if modules.is_empty() {
         return (patches, Vec::new());
     }
+    let driver = cfgd_core::csi_driver_name();
 
     // Ensure /spec/volumes exists
     if !has_volumes {

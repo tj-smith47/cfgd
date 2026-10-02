@@ -71,8 +71,8 @@ mod tests {
         CfgdIdentity::new(dir.to_path_buf())
     }
 
-    // The env override is set around a synchronous closure, so these tests drive the
-    // async call on their own runtime instead of `#[tokio::test]`'s.
+    // `with_test_env_var` takes a synchronous closure, so each test builds a runtime
+    // to drive the async call inside it.
     fn plugin_info_with_env(value: Option<&str>) -> GetPluginInfoResponse {
         let mut info = None;
         with_test_env_var("CSI_DRIVER_NAME", value, || {
