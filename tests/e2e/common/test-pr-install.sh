@@ -197,7 +197,8 @@ operator_kinds() {
 #                to the cluster
 #   UNLABELLED   an operator object whose metadata.labels lacks ${E2E_RUN_LABEL_YAML}
 #   HANDSPELLED  an operator object whose label is spelled by hand
-#   FLOWDOC      a cfgd.io object written as one flow mapping
+#   FLOWDOC      a cfgd.io object written as JSON, as a flow mapping or with
+#                quoted keys
 #   FLOWMETA     an operator object whose metadata is in flow form
 #   NESTED       a cfgd.io object nested in another document, such as a List,
 #                applied or captured; an ownerReferences entry is a reference
@@ -249,6 +250,7 @@ scan_run_labels() {
                 if (owner >= 0 && (indent(body[i]) > owner || (indent(body[i]) == owner && s ~ /^- /))) continue
                 owner = (s ~ /^ownerReferences:/) ? indent(body[i]) : -1
                 if (s ~ /^(- )?\{.*apiVersion"?:[ \t]*["\047]?cfgd\.io\//) flow = bline[i]
+                if (s ~ /^(- )?["\047]apiVersion["\047][ \t]*:[ \t]*["\047]?cfgd\.io\//) flow = bline[i]
                 if (indent(body[i]) != base) { if (cfgd_api(s)) nested = bline[i]; continue }
                 if (cfgd_api(s)) api = bline[i]
                 if (s ~ /^kind:/) { kind = s; sub(/^kind:[ \t]*/, "", kind); gsub(/["\047]/, "", kind) }
@@ -258,7 +260,7 @@ scan_run_labels() {
             has_cfgd = 1
             if (class == "FILE") return
             if (flow) {
-                print "FLOWDOC " file ":" flow ": a cfgd.io object written as a flow mapping; write it in block style so the scan can read its labels"
+                print "FLOWDOC " file ":" flow ": a cfgd.io object written as JSON, as a flow mapping or with quoted keys; write it as block-style YAML with bare keys so the scan can read its labels"
                 reported = 1
                 return
             }
@@ -640,6 +642,21 @@ metadata: {name: flow, labels: {\${E2E_RUN_LABEL_YAML}}}
 spec:
   packages: []"
 plant flow-doc "$apply" "{apiVersion: cfgd.io/v1alpha1, kind: Module, metadata: {name: flow, labels: {\${E2E_RUN_LABEL_YAML}}}}"
+plant json-doc "$apply" '{
+  "apiVersion": "cfgd.io/v1alpha1",
+  "kind": "Module",
+  "metadata": {"name": "json"}
+}'
+plant json-not-cfgd "$apply" '{
+  "apiVersion": "v1",
+  "kind": "ConfigMap",
+  "metadata": {"name": "json-not-cfgd"}
+}'
+plant flow-not-cfgd "$apply" "{apiVersion: v1, kind: ConfigMap, metadata: {name: flow-not-cfgd}}"
+plant quoted-key "$apply" "'apiVersion': cfgd.io/v1alpha1
+kind: Module
+metadata:
+  name: quoted-key"
 plant heredoc-unterminated "$apply" "$module_labelled" ''
 plant by-path-stdin "kubectl apply -n ns -f - <<EOF" "$module_labelled"
 cat > "$fixtures/scripts/by-path.sh" <<'FIXTURE'
@@ -702,6 +719,7 @@ SITE hand-spelled.sh:1
 HANDSPELLED hand-spelled.sh:2
 UNTERMINATED heredoc-unterminated.sh:1
 FILEDOC in-pod.sh:1
+FLOWDOC json-doc.sh:3
 SITE key-prefix.sh:1
 UNLABELLED key-prefix.sh:2
 SITE label-absent.sh:1
@@ -719,6 +737,7 @@ UNLABELLED no-labels.sh:2
 OTHERKIND other-kind.sh:2
 OUTSIDE outside.sh:1
 OUTSIDE outside-quoted.sh:1
+FLOWDOC quoted-key.sh:2
 SITE quoted.sh:1
 SITE quoted-kind.sh:1
 UNLABELLED quoted-kind.sh:2
