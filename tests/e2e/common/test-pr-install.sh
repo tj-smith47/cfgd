@@ -125,8 +125,8 @@ esac
 # metadata.labels: the PR operator reconciles only objects with that label, so an
 # unlabelled object makes its case fail for a reason unrelated to the case.
 #
-# scan_run_labels <dir...> reads every file in each dir and prints one line per
-# finding, tag first:
+# scan_run_labels <dir...> reads every file in each dir through heredocs.awk and
+# prints one line per finding, tag first:
 #   SITE        a heredoc applied to the cluster that holds a cfgd.io document
 #   INPOD       a heredoc written inside a pod (exec_in_pod, kubectl exec): a cfgd
 #               config file in the pod, which needs no run label
@@ -150,8 +150,9 @@ scan_run_labels() {
         done
     done
     [ "${#files[@]}" -gt 0 ] || return 0
-    # POSIX awk only: CI runners ship mawk.
-    awk '
+    { awk -f "$here/heredocs.awk" "${files[@]}" || echo "UNREADABLE heredocs.awk exited $? reading ${files[*]}"; } |
+        awk -F '\t' '
+        function rest(n,   i, p) { p = 0; for (i = 1; i <= n; i++) p += length($i) + 1; return substr($0, p + 1) }
         function indent(s) { match(s, /^[ \t]*/); return RLENGTH }
         function strip(s) { sub(/^[ \t]+/, "", s); return s }
         function blank_or_comment(s) { s = strip(s); return s == "" || substr(s, 1, 1) == "#" }
@@ -189,13 +190,16 @@ scan_run_labels() {
             if (class == "INPOD") return 1
             if (class == "NOSINK") return 1
             if (quoted) {
-                print "QUOTED " FILENAME ":" api " " kind " " name ": the heredoc delimiter is quoted, so ${E2E_RUN_LABEL_YAML} cannot expand"
+                print "QUOTED " file ":" api " " kind " " name ": the heredoc delimiter is quoted, so ${E2E_RUN_LABEL_YAML} cannot expand"
             } else if (!labelled) {
-                print "UNLABELLED " FILENAME ":" api " " kind " " name ": metadata.labels has no cfgd.io/e2e-run; add ${E2E_RUN_LABEL_YAML}"
+                print "UNLABELLED " file ":" api " " kind " " name ": metadata.labels has no cfgd.io/e2e-run; add ${E2E_RUN_LABEL_YAML}"
             }
             return 1
         }
-        function close_heredoc(    i, first, has) {
+        function close_heredoc(id,   i, first, has, n) {
+            n = count[id]
+            for (i = 1; i <= n; i++) { body[i] = text[id, i]; bline[i] = at[id, i] }
+            class = cls[id]; quoted = qtd[id]
             first = 1
             for (i = 1; i <= n + 1; i++) {
                 if (i == n + 1 || body[i] ~ /^---([ \t]|$)/) {
@@ -203,37 +207,33 @@ scan_run_labels() {
                     first = i + 1
                 }
             }
-            if (has && class == "SITE") print "SITE " FILENAME ":" open
-            if (has && class == "INPOD") print "INPOD " FILENAME ":" open " (" delim "): a cfgd config file written inside a pod, which needs no run label"
-            if (has && class == "NOSINK") print "NOSINK " FILENAME ":" open ": a heredoc holding a cfgd.io document that is not piped to kubectl apply/create/replace or apply_yaml"
-            inh = 0; n = 0
+            if (has && class == "SITE") print "SITE " file ":" opened[id]
+            if (has && class == "INPOD") print "INPOD " file ":" opened[id] " (" delim[id] "): a cfgd config file written inside a pod, which needs no run label"
+            if (has && class == "NOSINK") print "NOSINK " file ":" opened[id] ": a heredoc holding a cfgd.io document that is not piped to kubectl apply/create/replace or apply_yaml"
         }
-        function unterminated() { print "UNTERMINATED " curfile ":" open ": no " delim " line closes this heredoc"; inh = 0 }
-        FNR == 1 { if (inh) unterminated(); curfile = FILENAME; cont = "" }
-        inh {
-            if ($0 == delim || (class == "INPOD" && ($0 == delim "\047" || $0 == delim "\""))) { close_heredoc(); next }
-            body[++n] = $0; bline[n] = FNR
+        /^UNREADABLE / { print; next }
+        { file = $2 }
+        $1 == "UNCLOSED" { print "UNTERMINATED " file ":" $3 ": no " $4 " line closes this heredoc"; next }
+        $1 == "OPEN" {
+            id = $4; opened[id] = $3; delim[id] = $5; qtd[id] = $6; dash[id] = $7; count[id] = 0
+            c = rest(7)
+            if (c ~ /exec_in_pod|kubectl([ \t].*)?[ \t]exec([ \t]|$)/) cls[id] = "INPOD"
+            else if (c ~ /kubectl([ \t].*)?[ \t](apply|create|replace)([ \t]|$)/ || c ~ /(^|[^A-Za-z0-9_])apply_yaml([ \t]|$)/) cls[id] = "SITE"
+            else cls[id] = "NOSINK"
             next
         }
-        blank_or_comment($0) { cont = ""; next }
-        {
-            cmd = cont $0
-            cont = ($0 ~ /\\$/) ? substr(cmd, 1, length(cmd) - 1) " " : ""
-            if (match($0, /<<[ \t]*[\\\047"]?[A-Za-z_][A-Za-z0-9_]*/) && substr($0, RSTART + 2, 1) != "<" && (RSTART == 1 || substr($0, RSTART - 1, 1) != "<")) {
-                delim = substr($0, RSTART + 2, RLENGTH - 2)
-                sub(/^[ \t]*/, "", delim)
-                quoted = (delim ~ /^[\\\047"]/)
-                sub(/^[\\\047"]/, "", delim)
-                if (cmd ~ /exec_in_pod|kubectl([ \t].*)?[ \t]exec([ \t]|$)/) class = "INPOD"
-                else if (cmd ~ /kubectl([ \t].*)?[ \t](apply|create|replace)([ \t]|$)/ || cmd ~ /(^|[^A-Za-z0-9_])apply_yaml([ \t]|$)/) class = "SITE"
-                else class = "NOSINK"
-                inh = 1; n = 0; open = FNR; cont = ""
-                next
-            }
-            if ($0 ~ /apiVersion"?:[ \t]*["\047]?cfgd\.io\//) print "OUTSIDE " FILENAME ":" FNR ": a cfgd.io apiVersion outside any heredoc"
+        $1 == "BODY" {
+            id = $4; line = rest(4)
+            if (dash[id]) sub(/^\t+/, "", line)
+            text[id, ++count[id]] = line; at[id, count[id]] = $3
+            next
         }
-        END { if (inh) unterminated() }
-    ' "${files[@]}" || echo "UNREADABLE awk exited $? reading ${files[*]}"
+        $1 == "CLOSE" { close_heredoc($4); next }
+        $1 == "SH" {
+            line = rest(3)
+            if (line !~ /^[ \t]*#/ && line ~ /apiVersion"?:[ \t]*["\047]?cfgd\.io\//) print "OUTSIDE " file ":" $3 ": a cfgd.io apiVersion outside any heredoc"
+        }
+    ' || echo "UNREADABLE awk exited $?"
 }
 
 run_label_floor=40

@@ -28,106 +28,45 @@ min_pass_tests=330
 
 # Print file:line for each excuse echo or printf followed by pass_test before
 # its block ends (if/elif/else/fi, a case arm or esac, done, or a closing
-# brace), then a last line `scanned <files> <pass_test calls>`. Heredoc bodies
-# are skipped, since a `}` in a manifest ends no shell block. They are read the
-# way bash reads them: every opener on a line (`<<W`, `<<'W'`, `<<"W"`, `<<\W`,
-# `<<-W`) queues a body, the bodies follow in order, and a terminator may be
-# indented with tabs only after `<<-`. A terminator may be followed by the
-# quote that closes a `bash -c '...'` or the `)` that closes a `$(...)` holding
-# the heredoc. Openers are looked for in the line as one pass over its
-# characters reduces it: a `'...'` span is kept as written, `\x` is one unit, a
-# `#` after whitespace ends the line, a `((...))` span is dropped, and a
-# `"..."` span is dropped unless it follows `<<` or is still open at the end of
-# the line. Inside a `"..."` span, a `$(...)` is read like the top level, so
-# the `"<<W"` in `"$(echo "<<W")"` opens nothing. Its `(` and `)` are counted
-# without shell grammar, so a `case` pattern `x)` or a `((cmd) )` subshell on
-# one line inside `$(...)` closes the span early and hides a later opener. A
-# heredoc still open at the end of a file is reported, so a misread terminator
-# cannot hide the rest of the file. Exits 1 when no file matched.
+# brace), then a last line `scanned <files> <pass_test calls>`. Lines come from
+# heredocs.awk, so heredoc bodies are skipped: a `}` in a manifest ends no shell
+# block. A heredoc still open at the end of a file is reported, so a misread
+# terminator cannot hide the rest of the file. A file that cannot be read is
+# reported too. Exits 1 when no file matched.
 scan_excuses() {
-    local files="$scratch/scan-files"
-    find "$@" -name '*.sh' ! -name test-verdicts.sh -type f > "$files"
+    local files="$scratch/scan-files" readable="$scratch/scan-readable" f
+    find "$@" -name '*.sh' ! -name test-verdicts.sh \( -type f -o -type l \) > "$files"
     if [ ! -s "$files" ]; then
         echo "scan_excuses: no .sh file under $*" >&2
         return 1
     fi
+    : > "$readable"
+    while IFS= read -r f; do
+        if [ -f "$f" ] && [ -r "$f" ]; then printf '%s\0' "$f" >> "$readable"; else echo "$f: unreadable"; fi
+    done < "$files"
+    [ -s "$readable" ] || { echo "scanned 0 0"; return 0; }
     # shellcheck disable=SC2016 # the single-quoted text is an awk program
-    tr '\n' '\0' < "$files" | xargs -0 awk -v excuse="$excuse" '
-        function skip_arith(   d, c) {
-            for (d = 0; pos <= N; pos++) {
-                c = substr(S, pos, 1)
-                if (c == "(") d++
-                else if (c == ")" && --d == 0) { pos++; return }
-            }
+    { xargs -0 awk -f "$here/heredocs.awk" < "$readable" || echo "UNREADABLE"; } | awk -F '\t' -v excuse="$excuse" '
+        function rest(n,   i, p) { p = 0; for (i = 1; i <= n; i++) p += length($i) + 1; return substr($0, p + 1) }
+        $1 == "FILE" { files++; held = ""; next }
+        $1 == "UNREADABLE" { print "heredocs.awk could not read the scripts"; next }
+        $1 == "UNCLOSED" { print $2 ": heredoc " $4 " never closes"; next }
+        $1 != "SH" && $1 != "BODY" { next }
+        {
+            where = $2 ":" $3
+            line = ($1 == "SH") ? rest(3) : rest(4)
         }
-        function cmd(nested,   out, d, c, j) {
-            out = ""; d = 0
-            while (pos <= N) {
-                c = substr(S, pos, 1)
-                if (c == "\\") { out = out substr(S, pos, 2); pos += 2 }
-                else if (c == "\047") {
-                    j = index(substr(S, pos + 1), "\047")
-                    if (j == 0) j = N - pos
-                    out = out substr(S, pos, j + 1); pos += j + 1
-                }
-                else if (c == "#" && (pos == 1 || substr(S, pos - 1, 1) ~ /[[:space:]]/)) pos = N + 1
-                else if (c == "\"") out = out dq(out)
-                else if (substr(S, pos, 2) == "((") skip_arith()
-                else if (nested && c == ")" && d-- == 0) { pos++; return out }
-                else { if (c == "(") d++; out = out c; pos++ }
-            }
-            return out
-        }
-        function dq(before,   start, red, c, keep) {
-            start = pos++; red = "\""; keep = 0
-            while (pos <= N) {
-                c = substr(S, pos, 1)
-                if (c == "\\") { red = red substr(S, pos, 2); pos += 2 }
-                else if (c == "\"") {
-                    pos++
-                    if (before ~ /<<-?[[:space:]]*$/) return substr(S, start, pos - start)
-                    return keep ? red "\"" : ""
-                }
-                else if (substr(S, pos, 3) == "$((") { pos++; skip_arith() }
-                else if (substr(S, pos, 2) == "$(") { pos += 2; keep = 1; red = red "$(" cmd(1) ")" }
-                else { red = red c; pos++ }
-            }
-            return substr(S, start, N)
-        }
-        BEGIN { qh = 1 }
-        FNR == 1 {
-            if (qn >= qh) print prev ": heredoc " q[qh] " never closes"
-            held = ""; qn = 0; qh = 1; prev = FILENAME; files++
-        }
-        /(^|[;&|[:space:]])pass_test[[:space:]]/ { calls++ }
-        /(^|[;&|[:space:]])pass_test[[:space:]].*# verdict-ok: [^[:space:]]/ { held = ""; next }
-        qn >= qh {
-            if ($0 ~ ((qdash[qh] ? "^\t*" : "^") q[qh] "[\047\")]*$")) qh++
+        line ~ /(^|[;&|[:space:]])pass_test[[:space:]]/ { calls++ }
+        line ~ /(^|[;&|[:space:]])pass_test[[:space:]].*# verdict-ok: [^[:space:]]/ { held = ""; next }
+        $1 == "BODY" { next }
+        line ~ excuse {
+            if (line ~ /(^|[;&|[:space:]])pass_test[[:space:]]/) { print where; held = "" }
+            else { held = where }
             next
         }
-        $0 !~ /^[[:space:]]*#/ {
-            S = $0; N = length(S); pos = 1
-            rest = cmd(0)
-            while (match(rest, /(^|[^<])<<-?[[:space:]]*\\?[\047"]?[A-Za-z_0-9][A-Za-z_0-9]*/)) {
-                word = substr(rest, RSTART, RLENGTH)
-                rest = substr(rest, RSTART + RLENGTH)
-                qn++
-                qdash[qn] = (word ~ /<<-/)
-                gsub(/^[^<]?<<-?[[:space:]]*\\?[\047"]?/, "", word)
-                q[qn] = word
-            }
-        }
-        $0 ~ excuse {
-            if ($0 ~ /(^|[;&|[:space:]])pass_test[[:space:]]/) { print FILENAME ":" FNR; held = "" }
-            else { held = FILENAME ":" FNR }
-            next
-        }
-        /^[[:space:]]*(if|elif|else|fi|esac|done)([[:space:];]|$)/ || /^[[:space:]]*\}/ || /;;[[:space:]]*$/ { held = ""; next }
-        /(^|[;&|[:space:]])pass_test[[:space:]]/ && held != "" { print held; held = "" }
-        END {
-            if (qn >= qh) print prev ": heredoc " q[qh] " never closes"
-            print "scanned " files + 0 " " calls + 0
-        }
+        line ~ /^[[:space:]]*(if|elif|else|fi|esac|done)([[:space:];]|$)/ || line ~ /^[[:space:]]*\}/ || line ~ /;;[[:space:]]*$/ { held = ""; next }
+        line ~ /(^|[;&|[:space:]])pass_test[[:space:]]/ && held != "" { print held; held = "" }
+        END { print "scanned " files + 0 " " calls + 0 }
     '
 }
 
@@ -470,6 +409,136 @@ else
     printf '%s\n' "$got" | sed 's/^/    /'
     echo "    want:"
     printf '%s\n' "$want" | sed 's/^/    /'
+fi
+
+mkdir -p "$scratch/dangling"
+ln -s "$scratch/nowhere.sh" "$scratch/dangling/gone.sh"
+dangling="$(scan_excuses "$scratch/dangling" 2>&1 || true)"
+if grep -qxF "$scratch/dangling/gone.sh: unreadable" <<<"$dangling"; then
+    pass "a script the scan cannot read is reported"
+else
+    fail "a dangling symlink was not reported unreadable: $dangling"
+fi
+
+# heredocs.awk on one fixture per way a script opens, fills and closes a
+# heredoc, and per text that only looks like an opener. Every fixture is valid
+# shell, so the reader is judged on what bash would read. Tabs in the record
+# stream show as " | ".
+reader="$scratch/reader"
+mkdir -p "$reader"
+printf 'paste /dev/fd/3 3<<A <<B\na\nA\nb\nB\n' > "$reader/paired.sh"
+printf 'cat <<-EOF\n\tx\n\tEOF\n' > "$reader/dash.sh"
+cat > "$reader/backslash.sh" <<'FIXTURE'
+cat <<\EOF
+$x
+EOF
+FIXTURE
+printf "cat <<'EOF'\n\$x\nEOF\ncat << \"END\"\n\$y\nEND\n" > "$reader/quoted.sh"
+printf 'cat <<DOC\nnever closed\n' > "$reader/unclosed.sh"
+printf 'grep -q x <<<abc\n' > "$reader/herestring.sh"
+printf 'cat <<EOF\n\tEOF\nEOF\n' > "$reader/indented-terminator.sh"
+printf 'kubectl apply -n ns \\\n    -f - <<EOF\nx: 1\nEOF\n' > "$reader/continued.sh"
+cat > "$reader/captured.sh" <<'FIXTURE'
+r=$(kubectl apply -f - 2>&1 <<EOF || true
+x: 1
+EOF
+)
+FIXTURE
+printf '# usage: f <<EOF\ntrue # feed <<EOF\n' > "$reader/comment.sh"
+printf 'echo "usage: cat <<EOF"\n' > "$reader/double-quoted.sh"
+cat > "$reader/arithmetic.sh" <<'FIXTURE'
+n=$((a<<b))
+FIXTURE
+printf "bash -c 'cat <<A\nx\nA'\nbash -c \"cat <<B\nx\nB\"\nv=\$(cat <<C\nx\nC)\n" > "$reader/terminator-suffix.sh"
+printf 'cat <<1\nx\n1\n' > "$reader/digit.sh"
+for f in "$reader"/*.sh; do
+    bash -n "$f" 2>/dev/null || fail "reader fixture $(basename "$f") is not valid shell"
+done
+want_records="$(cat <<'WANT'
+FILE | arithmetic.sh
+SH | arithmetic.sh | 1 | n=$((a<<b))
+FILE | backslash.sh
+SH | backslash.sh | 1 | cat <<\EOF
+OPEN | backslash.sh | 1 | 1 | EOF | 1 | 0 | cat <<\EOF
+BODY | backslash.sh | 2 | 1 | $x
+CLOSE | backslash.sh | 3 | 1
+FILE | captured.sh
+SH | captured.sh | 1 | r=$(kubectl apply -f - 2>&1 <<EOF || true
+OPEN | captured.sh | 1 | 1 | EOF | 0 | 0 | r=$(kubectl apply -f - 2>&1 <<EOF || true
+BODY | captured.sh | 2 | 1 | x: 1
+CLOSE | captured.sh | 3 | 1
+SH | captured.sh | 4 | )
+FILE | comment.sh
+SH | comment.sh | 1 | # usage: f <<EOF
+SH | comment.sh | 2 | true # feed <<EOF
+FILE | continued.sh
+SH | continued.sh | 1 | kubectl apply -n ns \
+SH | continued.sh | 2 |     -f - <<EOF
+OPEN | continued.sh | 2 | 1 | EOF | 0 | 0 | kubectl apply -n ns      -f - <<EOF
+BODY | continued.sh | 3 | 1 | x: 1
+CLOSE | continued.sh | 4 | 1
+FILE | dash.sh
+SH | dash.sh | 1 | cat <<-EOF
+OPEN | dash.sh | 1 | 1 | EOF | 0 | 1 | cat <<-EOF
+BODY | dash.sh | 2 | 1 |  | x
+CLOSE | dash.sh | 3 | 1
+FILE | digit.sh
+SH | digit.sh | 1 | cat <<1
+OPEN | digit.sh | 1 | 1 | 1 | 0 | 0 | cat <<1
+BODY | digit.sh | 2 | 1 | x
+CLOSE | digit.sh | 3 | 1
+FILE | double-quoted.sh
+SH | double-quoted.sh | 1 | echo "usage: cat <<EOF"
+FILE | herestring.sh
+SH | herestring.sh | 1 | grep -q x <<<abc
+FILE | indented-terminator.sh
+SH | indented-terminator.sh | 1 | cat <<EOF
+OPEN | indented-terminator.sh | 1 | 1 | EOF | 0 | 0 | cat <<EOF
+BODY | indented-terminator.sh | 2 | 1 |  | EOF
+CLOSE | indented-terminator.sh | 3 | 1
+FILE | paired.sh
+SH | paired.sh | 1 | paste /dev/fd/3 3<<A <<B
+OPEN | paired.sh | 1 | 1 | A | 0 | 0 | paste /dev/fd/3 3<<A <<B
+OPEN | paired.sh | 1 | 2 | B | 0 | 0 | paste /dev/fd/3 3<<A <<B
+BODY | paired.sh | 2 | 1 | a
+CLOSE | paired.sh | 3 | 1
+BODY | paired.sh | 4 | 2 | b
+CLOSE | paired.sh | 5 | 2
+FILE | quoted.sh
+SH | quoted.sh | 1 | cat <<'EOF'
+OPEN | quoted.sh | 1 | 1 | EOF | 1 | 0 | cat <<'EOF'
+BODY | quoted.sh | 2 | 1 | $x
+CLOSE | quoted.sh | 3 | 1
+SH | quoted.sh | 4 | cat << "END"
+OPEN | quoted.sh | 4 | 2 | END | 1 | 0 | cat << "END"
+BODY | quoted.sh | 5 | 2 | $y
+CLOSE | quoted.sh | 6 | 2
+FILE | terminator-suffix.sh
+SH | terminator-suffix.sh | 1 | bash -c 'cat <<A
+OPEN | terminator-suffix.sh | 1 | 1 | A | 0 | 0 | bash -c 'cat <<A
+BODY | terminator-suffix.sh | 2 | 1 | x
+CLOSE | terminator-suffix.sh | 3 | 1
+SH | terminator-suffix.sh | 4 | bash -c "cat <<B
+OPEN | terminator-suffix.sh | 4 | 2 | B | 0 | 0 | bash -c "cat <<B
+BODY | terminator-suffix.sh | 5 | 2 | x
+CLOSE | terminator-suffix.sh | 6 | 2
+SH | terminator-suffix.sh | 7 | v=$(cat <<C
+OPEN | terminator-suffix.sh | 7 | 3 | C | 0 | 0 | v=$(cat <<C
+BODY | terminator-suffix.sh | 8 | 3 | x
+CLOSE | terminator-suffix.sh | 9 | 3
+FILE | unclosed.sh
+SH | unclosed.sh | 1 | cat <<DOC
+OPEN | unclosed.sh | 1 | 1 | DOC | 0 | 0 | cat <<DOC
+BODY | unclosed.sh | 2 | 1 | never closed
+UNCLOSED | unclosed.sh | 1 | DOC
+WANT
+)"
+got_records="$(cd "$reader" && awk -f "$here/heredocs.awk" ./*.sh 2>&1 | sed 's|\./||; s|\t| \| |g')"
+if [ "$got_records" = "$want_records" ]; then
+    pass "heredocs.awk reads paired, tab-stripped, backslash, quoted, unclosed, indented-terminator, continued, captured, digit and quote- or paren-closed heredocs, and opens none for a here-string, a comment, a double-quoted string or an arithmetic shift"
+else
+    fail "heredocs.awk printed records that differ (< want, > got):"
+    diff <(printf '%s\n' "$want_records") <(printf '%s\n' "$got_records") | grep '^[<>]' | sed 's/^/    /' || true
 fi
 
 if [ "$failures" -ne 0 ]; then
