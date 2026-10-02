@@ -3559,3 +3559,70 @@ fn every_kind_with_conditions_exposes_its_readiness_condition_as_a_column() {
         "every kind carries conditions; the walk reached {judged}"
     );
 }
+
+/// The text of each call to `opener` in `src`, from the open paren to its
+/// matching close.
+fn call_args<'a>(src: &'a str, opener: &str) -> Vec<&'a str> {
+    src.match_indices(opener)
+        .map(|(start, _)| {
+            let open = start + opener.len();
+            let mut depth = 1usize;
+            let close = src[open..]
+                .char_indices()
+                .find_map(|(i, c)| {
+                    match c {
+                        '(' => depth += 1,
+                        ')' => depth -= 1,
+                        _ => {}
+                    }
+                    (depth == 0).then_some(open + i)
+                })
+                .unwrap_or_else(|| panic!("unclosed `{opener}` call"));
+            &src[open..close]
+        })
+        .collect()
+}
+
+#[test]
+fn every_cfgd_io_watch_is_held_to_the_watch_label_selector() {
+    let production = cfgd_core::test_helpers::production_slice(include_str!("mod.rs"));
+
+    // The Namespace metadata reflector is the one watch left unfiltered:
+    // ClusterConfigPolicy matches on namespace labels the selector never names.
+    let unfiltered: Vec<_> = production
+        .match_indices("WatcherConfig::default()")
+        .collect();
+    assert_eq!(
+        unfiltered.len(),
+        1,
+        "only the Namespace reflector may watch without the selector"
+    );
+    let reflector_call = call_args(&production, "watcher::watcher(");
+    assert!(
+        reflector_call
+            .iter()
+            .any(|args| args.contains("PartialObjectMeta<Namespace>")
+                && args.contains("WatcherConfig::default()")),
+        "the unfiltered watch must be the Namespace metadata reflector"
+    );
+
+    let mut sites = 0;
+    for opener in ["Controller::new(", ".owns(", ".watches("] {
+        let calls = call_args(&production, opener);
+        assert!(
+            !calls.is_empty(),
+            "no `{opener}` call found in controllers/mod.rs"
+        );
+        for args in calls {
+            assert!(
+                args.contains("watch_config()"),
+                "`{opener}{args})` must watch through runtime::watch_config()"
+            );
+            sites += 1;
+        }
+    }
+    assert!(
+        sites >= 9,
+        "expected at least nine cfgd.io watches, found {sites}"
+    );
+}

@@ -44,14 +44,24 @@ pub fn leader_namespace() -> String {
     cfgd_core::env_or("POD_NAMESPACE", cfgd_core::CFGD_SYSTEM_NAMESPACE)
 }
 
+/// The label selector read from `WATCH_LABEL_SELECTOR`, trimmed. `None` when
+/// the variable is unset or blank.
+pub fn watch_label_selector() -> Option<String> {
+    // The API server parses a whitespace-only selector as "match everything",
+    // so passing one through would silently undo the confinement.
+    let raw = std::env::var("WATCH_LABEL_SELECTOR").ok()?;
+    let trimmed = raw.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_owned())
+}
+
 /// The watch every controller lists and watches its `cfgd.io` kinds through.
 /// `WATCH_LABEL_SELECTOR` confines this operator to the objects it names, so
 /// two installs in one cluster (the release and an e2e run) never reconcile
-/// the same object. Unset or empty watches everything.
+/// the same object. Unset or blank watches everything.
 pub fn watch_config() -> WatcherConfig {
-    match std::env::var("WATCH_LABEL_SELECTOR") {
-        Ok(s) if !s.is_empty() => WatcherConfig::default().labels(&s),
-        _ => WatcherConfig::default(),
+    match watch_label_selector() {
+        Some(selector) => WatcherConfig::default().labels(&selector),
+        None => WatcherConfig::default(),
     }
 }
 
@@ -161,6 +171,15 @@ mod tests {
         });
         with_test_env_var("WATCH_LABEL_SELECTOR", Some(""), || {
             assert_eq!(watch_config().label_selector, None);
+        });
+        with_test_env_var("WATCH_LABEL_SELECTOR", Some("  "), || {
+            assert_eq!(watch_config().label_selector, None);
+        });
+        with_test_env_var("WATCH_LABEL_SELECTOR", Some(" cfgd.io/e2e-run=42 "), || {
+            assert_eq!(
+                watch_config().label_selector.as_deref(),
+                Some("cfgd.io/e2e-run=42")
+            );
         });
         with_test_env_var("WATCH_LABEL_SELECTOR", Some("cfgd.io/e2e-run=42"), || {
             assert_eq!(

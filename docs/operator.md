@@ -285,7 +285,7 @@ env:
     value: cfgd.io/e2e-run=42
 ```
 
-Unset or empty, the operator watches every object. Namespaces are always read in full, since ClusterConfigPolicy selectors match on namespace labels.
+Unset or blank, the operator watches every object. Namespaces are always read in full, since ClusterConfigPolicy selectors match on namespace labels.
 
 ## Admission Webhook
 
