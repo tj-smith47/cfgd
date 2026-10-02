@@ -271,9 +271,12 @@ test takes through it. A walk judging code folds nothing itself: it reads
 A walk asking about TEST text reads `test_region_of(path)`, or `line_gates_of(path)` when it
 partitions a file by index; one attribute is judged by `attribute_gate`. A
 string search for a gate's spelling (`.starts_with("#[cfg(test)]")`, `.contains("mod tests")`,
-or a needle any binding carries to one: `let`, `const`, `static`, `for`, `if let`, `while let`,
-`match` arm, assignment, closure or function parameter, macro argument, format capture) is a
-second cut beside the scanner, and the floored-helper walk fails it in test scope.
+or a needle any binding carries to one: `let`, `let … else`, `const`, `static`, `for`, `if let`,
+`while let`, `match` arm, assignment, closure or function parameter, macro argument, format
+capture; or a function's return, a `self.f` field or `self.m()` return, a `const` another source
+declares, a `concat!` of literals or a byte string) is a second cut beside the scanner, and the
+floored-helper walk fails it in test scope. The walk's own detector and fixtures in fences.rs are
+declared by function in `OWN_GATE_SEARCHES`.
 
 Colour off means NO escapes — attributes included. `ThemedStyle::apply_to` is the ONE
 gate a styled span becomes bytes through, and a printer whose `ColorChoice` resolved

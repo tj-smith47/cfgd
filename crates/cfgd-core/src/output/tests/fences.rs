@@ -4214,16 +4214,25 @@ const OWN_GATE_SEARCH_FILE: &str = "cfgd-core/src/output/tests/fences.rs";
 
 /// The functions of [`OWN_GATE_SEARCH_FILE`] whose searches reach a gate's
 /// spelling, each with the number it holds. `opens_on_a_gate` is the detector
-/// itself. The others reach the spelling through the approximations the
-/// resolver makes: a method parameter is fed by every call of a method of its
-/// name (`chain` by each iterator `.chain(…)`), a function parameter by the
-/// fixture text every caller hands it, and a loop over fixture rows by every
-/// column of the row, the source text with it.
-const OWN_GATE_SEARCHES: [(&str, usize); 4] = [
+/// itself. The others reach the fixture text this file builds from the
+/// spellings through the approximations the resolver makes: a parameter is fed
+/// by every caller of a function of its name, a call by a bare name by every
+/// function of that name, and a loop over fixture rows by every column of the
+/// row.
+const OWN_GATE_SEARCHES: [(&str, usize); 7] = [
     ("assert_reassembles", 1),
-    ("chain", 4),
+    (
+        "every_gc_failed_removal_pin_holds_its_payload_through_the_one_fixture",
+        1,
+    ),
+    (
+        "every_multi_file_production_walk_reads_through_the_floored_helper",
+        1,
+    ),
+    ("every_pin_that_runs_at_one_uid_says_so_in_its_name", 1),
     ("every_profile_fallback_shape_is_found_and_no_other", 1),
     ("opens_on_a_gate", 1),
+    ("unremovable_payload_tells", 1),
 ];
 
 /// Whether `text` opens on a test gate's spelling, or on the attribute holding
@@ -4268,12 +4277,14 @@ fn hand_cut_gate_sites(
 /// The rows of `syntax` in test scope (`in_test`) holding a `read_to_string`
 /// call whose path reaches a literal naming a `.rs` file and anchors at the
 /// workspace: a literal holding `CARGO_MANIFEST_DIR`, or a call of
-/// `workspace_root`.
+/// `workspace_root`. The read inside [`THE_ONE_CACHE`] is the cache itself.
 fn workspace_source_reads(syntax: &Syntax, in_test: impl Fn(usize) -> bool) -> Vec<usize> {
     let mut rows: Vec<usize> = syntax
         .reads
         .iter()
-        .filter(|site| in_test(site.row))
+        .filter(|site| {
+            in_test(site.row) && !matches!(site.function.as_deref(), Some(THE_ONE_CACHE))
+        })
         .filter(|site| {
             let reached = syntax.reach(&site.reads);
             let anchored = reached
@@ -4294,6 +4305,10 @@ fn workspace_source_reads(syntax: &Syntax, in_test: impl Fn(usize) -> bool) -> V
     rows
 }
 
+/// The function holding the one read of a workspace source every other reader
+/// borrows, so its own read is the cache filling.
+const THE_ONE_CACHE: &str = "walked_file_body";
+
 /// The string searches a hand cut hands a needle to, named as the method.
 const SEARCH_METHODS: [&str; 9] = [
     "starts_with",
@@ -4308,13 +4323,18 @@ const SEARCH_METHODS: [&str; 9] = [
 ];
 
 /// What an expression reads in the scope it is written in: the string literals
-/// it holds, the functions it calls, the local bindings it names, the names no
-/// local binding in scope holds, which a `const` or `static` item may, and the
-/// reads of the subexpressions already worked out.
+/// it holds, the functions it calls by path (and those it calls by a bare
+/// name), the methods it calls on `self` and the fields of `self` it reads, the
+/// local bindings it names, the names no local binding in scope holds, which a
+/// `const` or `static` item may, and the reads of the subexpressions already
+/// worked out.
 #[derive(Default)]
 struct Reads {
     literals: Vec<String>,
     calls: Vec<String>,
+    bare_calls: Vec<String>,
+    self_calls: Vec<String>,
+    self_fields: Vec<String>,
     locals: Vec<usize>,
     items: Vec<String>,
     parts: Vec<std::sync::Arc<Reads>>,
@@ -4349,7 +4369,14 @@ struct Reached<'s> {
 ///   every call of that function in the file, whether called by path or as a
 ///   method;
 /// - a `const` or `static` item holds its value and is read by name anywhere
-///   in the file.
+///   in the file, and a name no item of the file declares is read from the
+///   items of that name in every other workspace source.
+///
+/// Three carriers that bind no name are followed the same way: a call by a bare
+/// name reaches the expressions every function of that name in the file
+/// returns, a
+/// `self.m()` call those of every function of its name taking `self`, and a
+/// field read `self.f` every `f: …` a struct expression in the file writes.
 ///
 /// Macro arguments are read as expressions, or as statements, and otherwise as
 /// the literals, names and calls among their tokens; a name a string literal
@@ -4360,6 +4387,13 @@ struct Syntax {
     sources: Vec<Vec<std::sync::Arc<Reads>>>,
     /// The bindings each `const` or `static` name declares.
     items: std::collections::HashMap<String, Vec<usize>>,
+    /// The binding holding what each function of a name returns.
+    returns: std::collections::HashMap<String, Vec<usize>>,
+    /// The same, for the functions of a name taking `self`.
+    method_returns: std::collections::HashMap<String, Vec<usize>>,
+    /// The binding holding each value a struct expression writes to a field
+    /// of a name.
+    fields: std::collections::HashMap<String, Vec<usize>>,
     /// Needles handed to a string search, and the sides of a comparison.
     searches: Vec<Site>,
     /// Paths handed to `read_to_string`, under any name `use` gives it.
@@ -4373,26 +4407,58 @@ impl Syntax {
             calls: Vec::new(),
         };
         let mut seen = std::collections::HashSet::new();
-        let mut frontier = vec![reads];
-        while let Some(reads) = frontier.pop() {
+        let mut frontier = vec![(self, reads)];
+        let mut bindings: Vec<(&'s Syntax, usize)> = Vec::new();
+        while let Some((syntax, reads)) = frontier.pop() {
             reached
                 .literals
                 .extend(reads.literals.iter().map(String::as_str));
             reached.calls.extend(reads.calls.iter().map(String::as_str));
-            frontier.extend(reads.parts.iter().map(|part| &**part));
-            let items = reads
-                .items
-                .iter()
-                .filter_map(|name| self.items.get(name))
-                .flatten();
-            for &binding in reads.locals.iter().chain(items) {
-                if seen.insert(binding) {
-                    frontier.extend(self.sources[binding].iter().map(|reads| &**reads));
+            frontier.extend(reads.parts.iter().map(|part| (syntax, &**part)));
+            bindings.extend(reads.locals.iter().map(|&binding| (syntax, binding)));
+            for name in &reads.items {
+                match syntax.items.get(name) {
+                    Some(found) => bindings.extend(found.iter().map(|&binding| (syntax, binding))),
+                    None => bindings.extend(
+                        workspace_items(name).map(|(owner, binding)| (owner as &Syntax, binding)),
+                    ),
+                }
+            }
+            for (names, table) in [
+                (&reads.bare_calls, &syntax.returns),
+                (&reads.self_calls, &syntax.method_returns),
+                (&reads.self_fields, &syntax.fields),
+            ] {
+                let found = names.iter().filter_map(|name| table.get(name)).flatten();
+                bindings.extend(found.map(|&binding| (syntax, binding)));
+            }
+            for (owner, binding) in bindings.drain(..) {
+                if seen.insert((std::ptr::from_ref(owner), binding)) {
+                    frontier.extend(owner.sources[binding].iter().map(|reads| (owner, &**reads)));
                 }
             }
         }
         reached
     }
+}
+
+/// The bindings every workspace source declares as a `const` or `static` item
+/// named `name`.
+fn workspace_items(name: &str) -> impl Iterator<Item = (&'static Syntax, usize)> + '_ {
+    type Items = std::collections::HashMap<&'static str, Vec<(&'static Syntax, usize)>>;
+    static ITEMS: std::sync::LazyLock<Items> = std::sync::LazyLock::new(|| {
+        let mut items = Items::new();
+        for syntax in parsed().values().filter_map(|parsed| parsed.as_ref().ok()) {
+            for (name, bindings) in &syntax.items {
+                items
+                    .entry(name.as_str())
+                    .or_default()
+                    .extend(bindings.iter().map(|&binding| (syntax, binding)));
+            }
+        }
+        items
+    });
+    ITEMS.get(name).into_iter().flatten().copied()
 }
 
 /// The [`Syntax`] of `body`, or the parse error naming the line it stops on.
@@ -4409,6 +4475,7 @@ fn syntax(body: &str) -> Result<Syntax, String> {
                 closures: Default::default(),
                 read_names: aliases.0,
                 function: None,
+                returned: Vec::new(),
                 memo: Default::default(),
                 macros: Default::default(),
             };
@@ -4423,9 +4490,16 @@ fn syntax(body: &str) -> Result<Syntax, String> {
 }
 
 /// The [`Syntax`] of the workspace source at `path`, from the body
-/// [`walked_file_body`] holds. Every workspace source is parsed on the first
-/// call, spread over the machine's cores, since parsing is most of a walk.
+/// [`walked_file_body`] holds.
 fn syntax_of(path: &std::path::Path) -> &'static Result<Syntax, String> {
+    parsed()
+        .get(path)
+        .unwrap_or_else(|| panic!("{}: not a workspace source", path.display()))
+}
+
+/// The [`Syntax`] of every workspace source, parsed on the first call and
+/// spread over the machine's cores, since parsing is most of a walk.
+fn parsed() -> &'static std::collections::HashMap<PathBuf, Result<Syntax, String>> {
     type Parsed = std::collections::HashMap<PathBuf, Result<Syntax, String>>;
     static PARSED: std::sync::LazyLock<Parsed> = std::sync::LazyLock::new(|| {
         let files = workspace_rust_files();
@@ -4454,9 +4528,7 @@ fn syntax_of(path: &std::path::Path) -> &'static Result<Syntax, String> {
                 .collect()
         })
     });
-    PARSED
-        .get(path)
-        .unwrap_or_else(|| panic!("{}: not a workspace source", path.display()))
+    &PARSED
 }
 
 /// The 0-based row a span starts on.
@@ -4559,6 +4631,8 @@ struct Builder {
     read_names: Vec<String>,
     /// The name of the function the pass is inside.
     function: Option<String>,
+    /// What the function the pass is inside returns so far.
+    returned: Vec<std::sync::Arc<Reads>>,
     /// The reads worked out for each expression visited so far. Every key
     /// stays alive for the whole pass: it is a node of the file's tree or of a
     /// macro body `macros` holds.
@@ -4652,6 +4726,7 @@ impl Builder {
     fn function(&mut self, sig: &syn::Signature, body: &syn::Block) {
         let outer = std::mem::replace(&mut self.scopes, vec![Vec::new()]);
         let outer_function = self.function.replace(sig.ident.to_string());
+        let outer_returned = std::mem::take(&mut self.returned);
         let mut method = false;
         let mut params = Vec::new();
         for input in &sig.inputs {
@@ -4664,7 +4739,28 @@ impl Builder {
             .entry(sig.ident.to_string())
             .or_default()
             .push(Function { method, params });
-        syn::visit::Visit::visit_block(self, body);
+        // The tail is read while the body's own scope still holds its locals.
+        self.scoped(|builder| {
+            for stmt in &body.stmts {
+                syn::visit::Visit::visit_stmt(builder, stmt);
+            }
+            if let Some(syn::Stmt::Expr(tail, None)) = body.stmts.last() {
+                let reads = builder.reads(tail);
+                builder.returned.push(reads);
+            }
+        });
+        let returned = std::mem::replace(&mut self.returned, outer_returned);
+        let binding = self.syntax.sources.len();
+        self.syntax.sources.push(returned);
+        let name = sig.ident.to_string();
+        if method {
+            self.syntax
+                .method_returns
+                .entry(name.clone())
+                .or_default()
+                .push(binding);
+        }
+        self.syntax.returns.entry(name).or_default().push(binding);
         self.scopes = outer;
         self.function = outer_function;
     }
@@ -4800,6 +4896,29 @@ impl<'ast> syn::visit::Visit<'ast> for Builder {
 
     fn visit_expr_closure(&mut self, closure: &'ast syn::ExprClosure) {
         self.closure(closure, &[]);
+    }
+
+    fn visit_expr_return(&mut self, ret: &'ast syn::ExprReturn) {
+        syn::visit::visit_expr_return(self, ret);
+        if let Some(value) = &ret.expr {
+            let reads = self.reads(value);
+            self.returned.push(reads);
+        }
+    }
+
+    fn visit_expr_struct(&mut self, expr: &'ast syn::ExprStruct) {
+        syn::visit::visit_expr_struct(self, expr);
+        for field in &expr.fields {
+            if let syn::Member::Named(name) = &field.member {
+                let reads = self.reads(&field.expr);
+                self.syntax
+                    .fields
+                    .entry(name.to_string())
+                    .or_default()
+                    .push(self.syntax.sources.len());
+                self.syntax.sources.push(vec![reads]);
+            }
+        }
     }
 
     fn visit_expr_method_call(&mut self, call: &'ast syn::ExprMethodCall) {
@@ -5022,8 +5141,27 @@ impl<'ast> syn::visit::Visit<'ast> for ReadsOf<'_> {
             && let Some(last) = func.path.segments.last()
         {
             self.reads.calls.push(last.ident.to_string());
+            if let Some(name) = func.path.get_ident() {
+                self.reads.bare_calls.push(name.to_string());
+            }
         }
         syn::visit::visit_expr_call(self, call);
+    }
+
+    fn visit_expr_method_call(&mut self, call: &'ast syn::ExprMethodCall) {
+        if matches!(&*call.receiver, syn::Expr::Path(receiver) if receiver.path.is_ident("self")) {
+            self.reads.self_calls.push(call.method.to_string());
+        }
+        syn::visit::visit_expr_method_call(self, call);
+    }
+
+    fn visit_expr_field(&mut self, field: &'ast syn::ExprField) {
+        if let syn::Member::Named(name) = &field.member
+            && matches!(&*field.base, syn::Expr::Path(base) if base.path.is_ident("self"))
+        {
+            self.reads.self_fields.push(name.to_string());
+        }
+        syn::visit::visit_expr_field(self, field);
     }
 
     fn visit_expr(&mut self, expr: &'ast syn::Expr) {
@@ -5217,6 +5355,54 @@ fn a_gate_spelled_by_concat_or_as_bytes_is_a_hand_cut() {
         "a joined concat!, a nested one, a let holding one, a byte string searched, \
          compared, handed to a macro and held among a macro's tokens are each a hand \
          cut; other text is none"
+    );
+}
+
+/// A needle no binding carries still reaches its search: returned by a
+/// function (by its tail or a `return`, called by a bare name or as `self.m()`),
+/// written to a struct field the search reads back as `self.f`, or held by a
+/// `const` that another workspace source declares. Each carrier's twin holding other text
+/// is no cut.
+#[test]
+fn a_gate_needle_carried_past_every_binding_is_a_hand_cut() {
+    let gate = concat!("#[cfg", "(test)]");
+    let fixture = [
+        "fn gate_needle() -> &'static str {".to_string(),
+        format!("    \"{gate}\""),
+        "}".to_string(),
+        "fn quiet_needle() -> &'static str {".to_string(),
+        "    \"production\"".to_string(),
+        "}".to_string(),
+        "fn early(loud: bool) -> &'static str {".to_string(),
+        format!("    if loud {{ return \"{gate}\"; }}"),
+        "    \"production\"".to_string(),
+        "}".to_string(),
+        "impl Holder {".to_string(),
+        "    fn loud(&self) -> &'static str { self.needle }".to_string(),
+        "    fn hit(&self, body: &str) -> bool { body.contains(self.needle) }".to_string(),
+        "    fn asks(&self, body: &str) -> bool { body.contains(self.loud()) }".to_string(),
+        "}".to_string(),
+        "impl Calm {".to_string(),
+        "    fn quiet(&self) -> &'static str { self.word }".to_string(),
+        "    fn miss(&self, body: &str) -> bool { body.contains(self.word) }".to_string(),
+        "    fn calm(&self, body: &str) -> bool { body.contains(self.quiet()) }".to_string(),
+        "}".to_string(),
+        "fn planted(body: &str) {".to_string(),
+        "    body.starts_with(gate_needle());".to_string(),
+        "    body.starts_with(quiet_needle());".to_string(),
+        "    body.starts_with(early(true));".to_string(),
+        format!("    Holder {{ needle: \"{gate}\" }};"),
+        "    Calm { word: \"production\" };".to_string(),
+        "    body.starts_with(GATE_SPELLINGS[0]);".to_string(),
+        "    body.starts_with(SEARCH_METHODS[0]);".to_string(),
+        "}".to_string(),
+    ];
+    let syntax = syntax(&fixture.join("\n")).unwrap_or_else(|e| panic!("fixture: {e}"));
+    assert_eq!(
+        hand_cut_gate_rows(&syntax, |_| true),
+        [12, 13, 21, 23, 26],
+        "a fn's tail, its early return, a method's return, a field written in a struct \
+         expression and another source's const each carry the gate; their twins are none"
     );
 }
 
