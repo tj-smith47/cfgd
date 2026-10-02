@@ -94,19 +94,22 @@ when its heredoc feeds `kubectl apply`, `create` or `replace` or `apply_yaml`,
 including through `exec_in_pod`. The heredoc delimiter stays unquoted (`<<EOF`) so
 the label expands.
 
-`test-pr-install.sh` reads every `tests/e2e/*/scripts` directory through
-`common/heredocs.awk`, the heredoc reader `test-verdicts.sh` uses too, and fails on:
+`test-pr-install.sh` reads every `tests/e2e/*/scripts` directory and `common/helpers.sh`
+through `common/heredocs.awk`, the heredoc reader `test-verdicts.sh` uses too, and fails on:
 
 - an object with no `${E2E_RUN_LABEL_YAML}` in its labels, or the label spelled by hand
 - metadata in flow form, a quoted delimiter, or a cfgd.io object nested inside another (a `List`); an `ownerReferences` entry is a reference and passes
 - an operator object in a heredoc captured into a variable (`yaml=$(cat <<EOF`), whose destination the scan cannot see
 - a cfgd.io `apiVersion` outside any heredoc
+- in the operator, full-stack and gateway suites or `helpers.sh`, a manifest applied by path
+  (`kubectl apply -f mc.yaml`, `--filename`, `-k`), which the scan cannot read
 - fewer sites than its suite's floor (the operator, full-stack and gateway suites each carry one)
 
 A cfgd.io document of another kind (the crossplane suite's `TeamConfig`) is listed
 as outside the operator's watch. A heredoc written to a file (`cat >`, or a cfgd
 config file written inside a pod), or captured into a variable when it holds a kind the
-operator does not serve, is counted and needs no label.
+operator does not serve, is counted and needs no label. A manifest another suite applies
+by path (the crossplane suite's) is listed.
 
 ## Components ArgoCD owns
 

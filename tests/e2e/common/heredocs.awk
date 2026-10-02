@@ -3,30 +3,31 @@
 #
 #   FILE      file
 #   SH        file line raw          every line outside a body, comments included
+#   CMD       file line cmd          every command outside a body, at its first line
 #   OPEN      file line id delim quoted dash cmd
 #   BODY      file line id raw
 #   CLOSE     file line id
 #   UNCLOSED  file line delim        a heredoc still open at the end of its file
 #
 # id counts the heredocs of one file from 1. quoted is 1 when the delimiter is
-# quoted (<<'W', <<"W", <<\W) and dash is 1 for <<-W. cmd is the command that
-# opened the heredoc, reduced as below, with backslash-continued lines joined.
-# The last field of SH, BODY and OPEN is the rest of the record and may itself
-# hold tabs.
+# quoted (<<'W', <<"W", <<\W) and dash is 1 for <<-W. The cmd of OPEN is the
+# command that opened the heredoc and the cmd of CMD is any command, both
+# reduced as below, with backslash-continued lines joined. The last field of
+# SH, CMD, BODY and OPEN is the rest of the record and may itself hold tabs.
 #
 # Every opener on a line queues a body, and the bodies follow in order. A
 # terminator may be indented with tabs only after <<-, and may be followed by
 # the quote that closes a `bash -c '...'`. A line of the delimiter followed by
-# the `)` of a `$(...)` holding the heredoc is no terminator to bash: it ends the
-# body where the substitution ends, warning "delimited by end-of-file", and the
-# reader closes the body on that line too. Openers are looked for in the line as one pass over its
-# characters reduces it: a '...' span is kept as written, \x is one unit, a #
-# after whitespace ends the line, a ((...)) span is dropped, and a "..." span
-# is dropped unless it follows << or is still open at the end of the line.
-# Inside a "..." span, a $(...) is read like the top level, so the "<<W" in
-# "$(echo "<<W")" opens nothing. Its ( and ) are counted without shell grammar,
-# so a case pattern x) or a ((cmd) ) subshell on one line inside $(...) closes
-# the span early and hides a later opener.
+# the `)` of a `$(...)` holding the heredoc is no terminator to bash: it ends
+# the body where the substitution ends, warning "delimited by end-of-file", and
+# the reader closes the body on that line too. Openers are looked for in the
+# line as one pass over its characters reduces it: a '...' span is kept as
+# written, \x is one unit, a # after whitespace ends the line, a ((...)) span
+# is dropped, and a "..." span is dropped unless it follows << or is still
+# open at the end of the line. Inside a "..." span, a $(...) is read like the
+# top level, so the "<<W" in "$(echo "<<W")" opens nothing. Its ( and ) are
+# counted without shell grammar, so a case pattern x) or a ((cmd) ) subshell
+# on one line inside $(...) closes the span early and hides a later opener.
 #
 # Usage: awk -f tests/e2e/common/heredocs.awk FILE...
 # POSIX awk only: CI runners ship mawk.
@@ -105,6 +106,7 @@ qn >= qh {
 {
     S = $0; N = length(S); pos = 1
     rest = cmd(0)
+    if (cont == "") start = FNR
     logical = cont rest
     if ($0 ~ /\\$/) {
         cont = logical
@@ -112,6 +114,9 @@ qn >= qh {
         cont = cont " "
     } else {
         cont = ""
+        whole = logical
+        sub(/[[:space:]]+$/, "", whole)
+        if (whole != "") print "CMD\t" file "\t" start "\t" whole
     }
     while (match(rest, /(^|[^<])<<-?[[:space:]]*\\?[\047"]?[A-Za-z_0-9][A-Za-z_0-9]*/)) {
         word = substr(rest, RSTART, RLENGTH)

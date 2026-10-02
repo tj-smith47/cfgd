@@ -457,47 +457,59 @@ done
 want_records="$(cat <<'WANT'
 FILE | arithmetic.sh
 SH | arithmetic.sh | 1 | n=$((a<<b))
+CMD | arithmetic.sh | 1 | n=$
 FILE | backslash.sh
 SH | backslash.sh | 1 | cat <<\EOF
+CMD | backslash.sh | 1 | cat <<\EOF
 OPEN | backslash.sh | 1 | 1 | EOF | 1 | 0 | cat <<\EOF
 BODY | backslash.sh | 2 | 1 | $x
 CLOSE | backslash.sh | 3 | 1
 FILE | captured.sh
 SH | captured.sh | 1 | r=$(kubectl apply -f - 2>&1 <<EOF || true
+CMD | captured.sh | 1 | r=$(kubectl apply -f - 2>&1 <<EOF || true
 OPEN | captured.sh | 1 | 1 | EOF | 0 | 0 | r=$(kubectl apply -f - 2>&1 <<EOF || true
 BODY | captured.sh | 2 | 1 | x: 1
 CLOSE | captured.sh | 3 | 1
 SH | captured.sh | 4 | )
+CMD | captured.sh | 4 | )
 FILE | comment.sh
 SH | comment.sh | 1 | # usage: f <<EOF
 SH | comment.sh | 2 | true # feed <<EOF
+CMD | comment.sh | 2 | true
 FILE | continued.sh
 SH | continued.sh | 1 | kubectl apply -n ns \
 SH | continued.sh | 2 |     -f - <<EOF
+CMD | continued.sh | 1 | kubectl apply -n ns      -f - <<EOF
 OPEN | continued.sh | 2 | 1 | EOF | 0 | 0 | kubectl apply -n ns      -f - <<EOF
 BODY | continued.sh | 3 | 1 | x: 1
 CLOSE | continued.sh | 4 | 1
 FILE | dash.sh
 SH | dash.sh | 1 | cat <<-EOF
+CMD | dash.sh | 1 | cat <<-EOF
 OPEN | dash.sh | 1 | 1 | EOF | 0 | 1 | cat <<-EOF
 BODY | dash.sh | 2 | 1 |  | x
 CLOSE | dash.sh | 3 | 1
 FILE | digit.sh
 SH | digit.sh | 1 | cat <<1
+CMD | digit.sh | 1 | cat <<1
 OPEN | digit.sh | 1 | 1 | 1 | 0 | 0 | cat <<1
 BODY | digit.sh | 2 | 1 | x
 CLOSE | digit.sh | 3 | 1
 FILE | double-quoted.sh
 SH | double-quoted.sh | 1 | echo "usage: cat <<EOF"
+CMD | double-quoted.sh | 1 | echo
 FILE | herestring.sh
 SH | herestring.sh | 1 | grep -q x <<<abc
+CMD | herestring.sh | 1 | grep -q x <<<abc
 FILE | indented-terminator.sh
 SH | indented-terminator.sh | 1 | cat <<EOF
+CMD | indented-terminator.sh | 1 | cat <<EOF
 OPEN | indented-terminator.sh | 1 | 1 | EOF | 0 | 0 | cat <<EOF
 BODY | indented-terminator.sh | 2 | 1 |  | EOF
 CLOSE | indented-terminator.sh | 3 | 1
 FILE | paired.sh
 SH | paired.sh | 1 | paste /dev/fd/3 3<<A <<B
+CMD | paired.sh | 1 | paste /dev/fd/3 3<<A <<B
 OPEN | paired.sh | 1 | 1 | A | 0 | 0 | paste /dev/fd/3 3<<A <<B
 OPEN | paired.sh | 1 | 2 | B | 0 | 0 | paste /dev/fd/3 3<<A <<B
 BODY | paired.sh | 2 | 1 | a
@@ -506,28 +518,34 @@ BODY | paired.sh | 4 | 2 | b
 CLOSE | paired.sh | 5 | 2
 FILE | quoted.sh
 SH | quoted.sh | 1 | cat <<'EOF'
+CMD | quoted.sh | 1 | cat <<'EOF'
 OPEN | quoted.sh | 1 | 1 | EOF | 1 | 0 | cat <<'EOF'
 BODY | quoted.sh | 2 | 1 | $x
 CLOSE | quoted.sh | 3 | 1
 SH | quoted.sh | 4 | cat << "END"
+CMD | quoted.sh | 4 | cat << "END"
 OPEN | quoted.sh | 4 | 2 | END | 1 | 0 | cat << "END"
 BODY | quoted.sh | 5 | 2 | $y
 CLOSE | quoted.sh | 6 | 2
 FILE | terminator-suffix.sh
 SH | terminator-suffix.sh | 1 | bash -c 'cat <<A
+CMD | terminator-suffix.sh | 1 | bash -c 'cat <<A
 OPEN | terminator-suffix.sh | 1 | 1 | A | 0 | 0 | bash -c 'cat <<A
 BODY | terminator-suffix.sh | 2 | 1 | x
 CLOSE | terminator-suffix.sh | 3 | 1
 SH | terminator-suffix.sh | 4 | bash -c "cat <<B
+CMD | terminator-suffix.sh | 4 | bash -c "cat <<B
 OPEN | terminator-suffix.sh | 4 | 2 | B | 0 | 0 | bash -c "cat <<B
 BODY | terminator-suffix.sh | 5 | 2 | x
 CLOSE | terminator-suffix.sh | 6 | 2
 SH | terminator-suffix.sh | 7 | v=$(cat <<C
+CMD | terminator-suffix.sh | 7 | v=$(cat <<C
 OPEN | terminator-suffix.sh | 7 | 3 | C | 0 | 0 | v=$(cat <<C
 BODY | terminator-suffix.sh | 8 | 3 | x
 CLOSE | terminator-suffix.sh | 9 | 3
 FILE | unclosed.sh
 SH | unclosed.sh | 1 | cat <<DOC
+CMD | unclosed.sh | 1 | cat <<DOC
 OPEN | unclosed.sh | 1 | 1 | DOC | 0 | 0 | cat <<DOC
 BODY | unclosed.sh | 2 | 1 | never closed
 UNCLOSED | unclosed.sh | 1 | DOC
@@ -535,7 +553,7 @@ WANT
 )"
 got_records="$(cd "$reader" && awk -f "$here/heredocs.awk" ./*.sh 2>&1 | sed 's|\./||; s|\t| \| |g')"
 if [ "$got_records" = "$want_records" ]; then
-    pass "heredocs.awk reads paired, tab-stripped, backslash, quoted, unclosed, indented-terminator, continued, captured, digit and quote- or paren-closed heredocs, and opens none for a here-string, a comment, a double-quoted string or an arithmetic shift"
+    pass "heredocs.awk reads paired, tab-stripped, backslash, quoted, unclosed, indented-terminator, continued, captured, digit and quote- or paren-closed heredocs, and opens none for a here-string, a comment, a double-quoted string or an arithmetic shift; each command outside a body is printed once, at its first line"
 else
     fail "heredocs.awk printed records that differ (< want, > got):"
     diff <(printf '%s\n' "$want_records") <(printf '%s\n' "$got_records") | grep '^[<>]' | sed 's/^/    /' || true

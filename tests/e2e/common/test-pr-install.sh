@@ -139,12 +139,13 @@ operator_kinds() {
     fi
 }
 
-# scan_run_labels <kinds> <dir...> reads every file in each dir through
-# heredocs.awk and prints one line per finding, tag first:
+# scan_run_labels <kinds> <dir or file...> reads every file in each dir, and
+# each file named, through heredocs.awk and prints one line per finding, tag first:
 #   SITE         a heredoc fed to kubectl apply/create/replace or apply_yaml that
 #                holds an operator object
-#   FILEDOC      a heredoc written to a file (cat >, or inside a pod), or captured
-#                into a variable, that holds a cfgd.io document needing no label
+#   FILEDOC      a heredoc fed to a command that does not apply it (cat > a file,
+#                there or inside a pod), or captured into a variable when its
+#                cfgd.io documents are of kinds the operator does not serve
 #   CAPTURED     an operator object in a heredoc captured into a variable, where
 #                the scan cannot see whether it reaches the cluster
 #   OTHERKIND    a cfgd.io document of a kind the operator does not serve, applied
@@ -152,16 +153,20 @@ operator_kinds() {
 #   UNLABELLED   an operator object whose metadata.labels lacks ${E2E_RUN_LABEL_YAML}
 #   HANDSPELLED  an operator object whose label is spelled by hand
 #   FLOWMETA     an operator object whose metadata is in flow form
-#   NESTED       a cfgd.io object nested in another document, such as a List;
-#                an ownerReferences entry is a reference and does not count
+#   NESTED       a cfgd.io object nested in another document, such as a List,
+#                applied or captured; an ownerReferences entry is a reference
+#                and does not count
 #   QUOTED       an operator object in a quoted-delimiter heredoc, where
 #                ${E2E_RUN_LABEL_YAML} cannot expand
 #   OUTSIDE      a cfgd.io apiVersion outside any heredoc
+#   BYPATH       kubectl apply/create/replace given a manifest by path (-f other
+#                than -, or -k), which the scan cannot read
 #   UNTERMINATED, UNREADABLE, EMPTY   the scan could not read what it was given
 scan_run_labels() {
     local kinds="$1" dir f files=() found
     shift
     for dir in "$@"; do
+        if [ -f "$dir" ]; then files+=("$dir"); continue; fi
         found=("$dir"/*)
         if [ ! -e "${found[0]}" ] && [ ! -L "${found[0]}" ]; then
             echo "EMPTY $dir: no files to scan"
@@ -205,15 +210,16 @@ scan_run_labels() {
             if (!api && !nested) return
             has_cfgd = 1
             if (class == "FILE") return
-            if (class == "CAPTURE") {
-                if (api && ((" " kind " ") in operator)) {
-                    print "CAPTURED " file ":" api " " kind ": the scan cannot see where a captured heredoc goes; feed it to kubectl apply directly"
-                    captured = 1
-                }
-                return
-            }
             if (!api) {
                 print "NESTED " file ":" nested ": a cfgd.io object nested inside " kind "; apply it as its own document"
+                reported = 1
+                return
+            }
+            if (class == "CAPTURE") {
+                if ((" " kind " ") in operator) {
+                    print "CAPTURED " file ":" api " " kind ": the scan cannot see where a captured heredoc goes; feed it to kubectl apply directly"
+                    reported = 1
+                }
                 return
             }
             if (!((" " kind " ") in operator)) { print "OTHERKIND " file ":" api " " kind; return }
@@ -251,16 +257,34 @@ scan_run_labels() {
                 print "UNLABELLED " file ":" api " " kind " " name ": metadata.labels has no ${E2E_RUN_LABEL_YAML}"
             }
         }
+        # by_path(c): c applies a manifest by path when, within the kubectl
+        # command, -f names something other than - or -k names a directory.
+        # A quoted path is dropped from c, so -f with no word after it is one.
+        function by_path(c,   n, t, i, v) {
+            while (match(c, /kubectl([ \t][^|;&)]*)?[ \t](apply|create|replace)([ \t][^|;&)]*)?/)) {
+                n = split(substr(c, RSTART, RLENGTH), t, /[ \t]+/)
+                c = substr(c, RSTART + RLENGTH)
+                for (i = 1; i <= n; i++) {
+                    if (t[i] ~ /^(-k|--kustomize)/) return 1
+                    if (t[i] == "-f" || t[i] == "--filename") v = (i < n) ? t[i + 1] : ""
+                    else if (t[i] ~ /^--filename=/) v = substr(t[i], 12)
+                    else if (t[i] ~ /^-f./) { v = substr(t[i], 3); sub(/^=/, "", v) }
+                    else continue
+                    if (v != "-") return 1
+                }
+            }
+            return 0
+        }
         function close_heredoc(id,   i, first, n) {
             n = count[id]
             for (i = 1; i <= n; i++) { body[i] = text[id, i]; bline[i] = at[id, i] }
-            class = cls[id]; quoted = qtd[id]; has_cfgd = 0; site = 0; captured = 0
+            class = cls[id]; quoted = qtd[id]; has_cfgd = 0; site = 0; reported = 0
             first = 1
             for (i = 1; i <= n + 1; i++) {
                 if (i == n + 1 || body[i] ~ /^---([ \t]|$)/) { check_doc(first, i - 1); first = i + 1 }
             }
             if (site) print "SITE " file ":" opened[id]
-            if (has_cfgd && (class == "FILE" || (class == "CAPTURE" && !captured))) print "FILEDOC " file ":" opened[id]
+            if (has_cfgd && (class == "FILE" || (class == "CAPTURE" && !reported))) print "FILEDOC " file ":" opened[id]
         }
         BEGIN { n = split(kinds, k, " "); for (i = 1; i <= n; i++) operator[" " k[i] " "] = 1 }
         /^UNREADABLE / { print; next }
@@ -284,6 +308,10 @@ scan_run_labels() {
             next
         }
         $1 == "CLOSE" { close_heredoc($4); next }
+        $1 == "CMD" {
+            if (by_path(rest(3))) print "BYPATH " file ":" $3 ": the scan cannot read a manifest applied by path; apply it from a heredoc"
+            next
+        }
         $1 == "SH" {
             line = rest(3)
             if (line !~ /^[ \t]*#/) {
@@ -309,11 +337,25 @@ label_dirs() {
     } | sort -u
 }
 
+# by_path_in_scope <root> <scan output>: the BYPATH lines from the floored
+# suites and helpers.sh, the scripts that apply operator objects.
+by_path_in_scope() {
+    local tag where suite
+    while read -r tag where; do
+        [ "$tag" = BYPATH ] || continue
+        for suite in "${run_label_suites[@]}"; do
+            if [[ "$where" == "$1/$suite/scripts/"* ]]; then echo "$tag $where"; continue 2; fi
+        done
+        if [[ "$where" == "$helpers:"* ]]; then echo "$tag $where"; fi
+    done <<<"$2"
+}
+
 # label_verdict <root> <scan output>: prints nothing when the scan is clean and
 # each floored suite holds its floor, otherwise one line per problem.
 label_verdict() {
     local root="$1" out="$2" i suite floor sites
-    grep -Ev '^(SITE|FILEDOC|OTHERKIND) ' <<<"$out" || true
+    grep -Ev '^(SITE|FILEDOC|OTHERKIND|BYPATH) ' <<<"$out" || true
+    by_path_in_scope "$root" "$out"
     for i in "${!run_label_suites[@]}"; do
         suite="${run_label_suites[$i]}" floor="${run_label_floors[$i]}"
         sites="$(grep -c "^SITE $root/$suite/scripts/" <<<"$out" || true)"
@@ -330,7 +372,8 @@ else
     pass "the operator serves $(tr '\n' ' ' <<<"$kinds" | sed 's/ $//') (schemas/crds.yaml)"
 fi
 mapfile -t label_scan_dirs < <(label_dirs "$e2e_root")
-tree_scan="$(scan_run_labels "$kinds" "${label_scan_dirs[@]}")"
+helpers="$e2e_root/common/helpers.sh"
+tree_scan="$(scan_run_labels "$kinds" "${label_scan_dirs[@]}" "$helpers")"
 tree_verdict="$(label_verdict "$e2e_root" "$tree_scan")"
 if [ -z "$tree_verdict" ]; then
     pass "every operator object the e2e suites apply carries the run label ($(grep -c '^SITE ' <<<"$tree_scan") heredocs: $(for s in "${run_label_suites[@]}"; do printf '%s %s, ' "$s" "$(grep -c "^SITE $e2e_root/$s/scripts/" <<<"$tree_scan")"; done | sed 's/, $//'))"
@@ -340,7 +383,9 @@ else
 fi
 others="$(grep '^OTHERKIND ' <<<"$tree_scan" | cut -d' ' -f2- | sed "s|$e2e_root/||" | paste -sd ';' - | sed 's/;/; /g' || true)"
 [ -z "$others" ] || pass "cfgd.io objects outside the operator's watch, so no run label: $others"
-pass "$(grep -c '^FILEDOC ' <<<"$tree_scan" || true) heredocs hold a cfgd.io document that needs no run label: a file written with cat > or inside a pod, or a captured document of a kind the operator does not serve"
+by_path="$(grep '^BYPATH ' <<<"$tree_scan" | grep -vxFf <(by_path_in_scope "$e2e_root" "$tree_scan") | cut -d' ' -f2 | sed "s|$e2e_root/||; s|:\$||" | paste -sd ';' - | sed 's/;/; /g' || true)"
+[ -z "$by_path" ] || pass "manifests applied by path outside the suites that apply operator objects: $by_path"
+pass "$(grep -c '^FILEDOC ' <<<"$tree_scan" || true) heredocs hold a cfgd.io document that needs no run label: one fed to a command that does not apply it (cat > a file, there or inside a pod), or a captured document of a kind the operator does not serve"
 
 # The scan against planted fixtures: one per way a suite writes a cfgd.io
 # document, one per placement of the label and one per spelling the rule
@@ -441,6 +486,29 @@ metadata:
   name: captured
 spec:
   hostname: captured' "EOF"$'\n'")"$'\n'"echo \"\$yaml\" | kubectl apply -f -"
+machine_config='apiVersion: cfgd.io/v1alpha1
+kind: MachineConfig
+metadata:
+  name: captured
+spec:
+  hostname: captured'
+plant captured-dup "yaml=\$(cat 2>&1 <<EOF" "$machine_config" "EOF"$'\n'")"
+plant captured-to-file "x=\$(cat <<EOF > f" "$machine_config" "EOF"$'\n'")"
+plant captured-list "yaml=\$(cat <<EOF" 'apiVersion: v1
+kind: List
+items:
+  - apiVersion: cfgd.io/v1alpha1
+    kind: MachineConfig
+    metadata:
+      name: first
+    spec:
+      hostname: first
+  - apiVersion: cfgd.io/v1alpha1
+    kind: MachineConfig
+    metadata:
+      name: second
+    spec:
+      hostname: second' "EOF"$'\n'")"
 plant captured-other-kind "yaml=\$(cat <<EOF" 'apiVersion: cfgd.io/v1alpha1
 kind: TeamConfig
 metadata:
@@ -514,6 +582,22 @@ metadata: {name: flow, labels: {\${E2E_RUN_LABEL_YAML}}}
 spec:
   packages: []"
 plant heredoc-unterminated "$apply" "$module_labelled" ''
+plant by-path-stdin "kubectl apply -n ns -f - <<EOF" "$module_labelled"
+cat > "$fixtures/scripts/by-path.sh" <<'FIXTURE'
+kubectl apply -f manifest.yaml
+kubectl apply -f "$dir/mc.yaml"
+kubectl apply --filename=x.yaml
+kubectl apply --filename x.yaml
+kubectl create -fpath.yaml
+kubectl replace -f=x.yaml
+kubectl apply -k overlays/e2e
+kubectl replace -n ns \
+    -f x.yaml
+kubectl get cm x -o yaml | kubectl apply -f -
+kubectl apply -f- < /dev/null
+kubectl create namespace ns
+FIXTURE
+bash -n "$fixtures/scripts/by-path.sh" || fail "fixture by-path is not valid shell"
 outside_yaml='apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: outside\n'
 printf '%s\n' "printf '$outside_yaml' | kubectl apply -f -" > "$fixtures/scripts/outside.sh"
 bash -n "$fixtures/scripts/outside.sh" || fail "fixture outside is not valid shell"
@@ -521,8 +605,20 @@ bash -n "$fixtures/scripts/outside.sh" || fail "fixture outside is not valid she
 parsed="$(printf "$outside_yaml" | yq '.' 2>&1 >/dev/null)" || fail "fixture outside is not valid YAML: $parsed"
 
 want_fixture_scan="SITE apply-yaml.sh:1
+BYPATH by-path.sh:1
+BYPATH by-path.sh:2
+BYPATH by-path.sh:3
+BYPATH by-path.sh:4
+BYPATH by-path.sh:5
+BYPATH by-path.sh:6
+BYPATH by-path.sh:7
+BYPATH by-path.sh:8
+SITE by-path-stdin.sh:1
+CAPTURED captured-dup.sh:2
+NESTED captured-list.sh:11
 CAPTURED captured-operator-kind.sh:2
 FILEDOC captured-other-kind.sh:1
+FILEDOC captured-to-file.sh:1
 UNLABELLED apply-yaml.sh:2
 SITE captured.sh:1
 UNLABELLED captured.sh:2
@@ -626,6 +722,18 @@ mv "$missing/gateway" "$scratch/gateway-moved"
 missing_verdict="$(tree_verdict_of "$missing")"
 expect_red "a floored suite with no scripts directory fails the scan" "$missing_verdict" "^EMPTY $missing/gateway/scripts"
 expect_red "a floored suite with no scripts directory fails its floor" "$missing_verdict" "^FLOOR gateway: only 0 "
+
+by_path_tree="$scratch/by-path"
+copy_tree "$by_path_tree"
+printf 'kubectl apply -f mc.yaml\n' > "$by_path_tree/operator/scripts/zz-by-path.sh"
+by_path_verdict="$(tree_verdict_of "$by_path_tree")"
+if [ "$by_path_verdict" = "BYPATH $by_path_tree/operator/scripts/zz-by-path.sh:1: the scan cannot read a manifest applied by path; apply it from a heredoc" ]; then
+    pass "a manifest applied by path in a floored suite fails the scan, and the crossplane suite's do not"
+else
+    fail "a manifest applied by path in the operator suite: verdict was: ${by_path_verdict:-clean}"
+fi
+expect_red "a manifest applied by path in helpers.sh fails the scan" \
+    "$(by_path_in_scope "$e2e_root" "BYPATH $helpers:9: applied by path")" "^BYPATH $helpers:9:"
 
 mkdir -p "$scratch/empty" "$scratch/broken"
 ln -s "$scratch/nowhere" "$scratch/broken/gone.sh"
