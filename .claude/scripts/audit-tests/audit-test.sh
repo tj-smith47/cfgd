@@ -46,6 +46,7 @@ fixture_is_clean() {
 # renamed or deleted set of fixtures fails here in place of passing silently.
 shopt -s nullglob
 for kind in 'bad_*.txt' 'bad_*/' 'good_*.txt' 'good_*/'; do
+    # shellcheck disable=SC2206  # $kind is a glob pattern, expanded here on purpose
     found=("$FIXTURE_DIR"/$kind)
     if [ "${#found[@]}" -eq 0 ]; then
         echo "FAIL: no $kind fixtures found in $FIXTURE_DIR"

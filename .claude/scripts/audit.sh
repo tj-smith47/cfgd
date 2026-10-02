@@ -71,6 +71,7 @@ first_lines() { awk -v n="$1" 'NR <= n'; }
 # everything after it stops being scanned. A marker inside a message string is
 # not an annotation either — that would let a call exempt itself by naming the
 # escape hatch in its own text.
+# shellcheck disable=SC2016  # an awk program: its $ fields are awk's, never the shell's
 AWK_LIB='
 BEGIN { RAW_HASHES = -1; IN_STR = 0 }
 function hashes_str(n,   s) { s = ""; while (n-- > 0) s = s "#"; return s }
@@ -881,7 +882,7 @@ for errors_file in $(errors_file_candidates); do
 done
 if [[ -n "$dead_variants" ]]; then
     log_warn "Error variants never constructed (wire up or delete):"
-    printf "$dead_variants"
+    printf '%b' "$dead_variants"
 else
     log_ok "All error variants are constructed somewhere"
 fi
@@ -971,6 +972,7 @@ ALLOWED_FN_PAIRS=(
     # each over its own type's fields.
     "counts_line crates/cfgd-crd/src/lib.rs"
 )
+# shellcheck disable=SC2016  # an awk program: its $ fields are awk's, never the shell's
 FN_DEFINITIONS_AWK='
 # One `<name>\037<definition>\037<file>` record per function with a body. Every
 # function open at a line (a nested fn inside its parent) takes that line, and
@@ -1291,10 +1293,10 @@ if [ -f "$rule_file" ]; then
     # an empty table must be reported as total coverage loss, not swallowed.
     cmds_in_table=$(grep -E '^\| [a-z]' "$rule_file" \
         | awk -F'|' '{print $2}' | tr -d ' ' | LC_ALL=C sort -u) || cmds_in_table=""
-    missing=$(LC_ALL=C comm -23 <(echo "$cmds_in_code") <(echo "$cmds_in_table" | tr ' ' '_'))
-    if [ -n "$missing" ]; then
+    missing_cmds=$(LC_ALL=C comm -23 <(echo "$cmds_in_code") <(echo "$cmds_in_table" | tr ' ' '_'))
+    if [ -n "$missing_cmds" ]; then
         log_error "Commands missing from structured-output coverage table in $rule_file:"
-        echo "$missing"
+        echo "$missing_cmds"
     fi
     # The other direction: a row for a command that no longer exists. The table
     # is read as the inventory of what cfgd exposes, so a stale row describes a
@@ -1341,14 +1343,14 @@ if [ -f "$rule_file" ]; then
     # command's payload, and following one level only would pass the row.
     # Bounded at five rounds so a helper pair calling each other cannot spin.
     _payload_span() {
-        local span_file="$1" span_line="$2" span_body frontier visited round
+        local span_file="$1" span_line="$2" span_body frontier visited
         local helper helper_line helper_body found
         span_body=$(awk -v start="$span_line" \
             'NR < start { next } NR > start && /^}/ { exit } { print }' "$span_file")
         printf '%s\n' "$span_body"
         frontier="$span_body"
         visited=""
-        for round in 1 2 3 4 5; do
+        for _ in 1 2 3 4 5; do
             found=""
             for helper in $(printf '%s\n' "$frontier" \
                               | grep -oE '\bbuild_[a-z0-9_]+' | LC_ALL=C sort -u || true); do
@@ -2235,7 +2237,7 @@ enum_de_file="crates/cfgd-schema/src/enum_de.rs"
 if require_files "case_insensitive_enum! serde-path scan" "$enum_de_file"; then
     bare_serde="$(grep -n 'serde::' "$enum_de_file" \
         | grep -v '^[0-9]*:[[:space:]]*//' \
-        | sed 's/\$crate::serde::/ /g' \
+        | sed 's/[$]crate::serde::/ /g' \
         | grep 'serde::' || true)"
     if [ -n "$bare_serde" ]; then
         log_error "case_insensitive_enum!'s expansion names serde directly (reach it through \`\$crate::serde\`, so a crate without serde can still invoke the macro):"
