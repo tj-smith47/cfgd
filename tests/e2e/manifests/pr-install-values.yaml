@@ -10,7 +10,6 @@ operator:
   imagePullSecrets: [{name: registry-credentials}]
 csiDriver:
   enabled: true
-  name: e2e.csi.cfgd.io
   image: {pullPolicy: Always}
   imagePullSecrets: [{name: registry-credentials}]
   extraVolumes:

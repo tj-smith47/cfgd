@@ -66,6 +66,7 @@ cluster_scoped_args() {
         --set csiDriver.image.repository=registry.example/cfgd-csi --set csiDriver.image.tag=pr
         --set 'csiDriver.extraEnv[0].name=OCI_INSECURE_REGISTRIES' --set 'csiDriver.extraEnv[0].value=registry.example:5000'
         --set 'csiDriver.extraEnv[1].name=DOCKER_CONFIG' --set 'csiDriver.extraEnv[1].value=/etc/cfgd/docker'
+        --set-string csiDriver.name=e2e.csi.cfgd.io
         --set-string operator.watchLabelSelector=cfgd.io/e2e-run=42
         --set-json 'webhook.objectSelector={"matchLabels":{"cfgd.io/e2e-run":"42"}}'
         --set-json 'mutatingWebhook.namespaceSelector={"matchExpressions":[{"key":"cfgd.io/inject-modules","operator":"In","values":["true"]},{"key":"cfgd.io/e2e-run","operator":"In","values":["42"]}]}'

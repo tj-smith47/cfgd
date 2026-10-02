@@ -33,7 +33,7 @@ log="$scratch/kubectl.log"
 # shellcheck disable=SC2016 # the inner script expands its own positional args
 in_helpers() {
     local script="$1"; shift
-    env -u GITHUB_RUN_ID PATH="$scratch/bin:$PATH" KUBECTL_LOG="$log" \
+    env -u GITHUB_RUN_ID -u CFGD_NAMESPACE PATH="$scratch/bin:$PATH" KUBECTL_LOG="$log" \
         REGISTRY=r.example CLI_SCRATCH="$scratch" "$@" \
         bash -c 'source "$1/common/helpers.sh"; eval "$2"' _ "$e2e_root" "$script"
 }
@@ -85,13 +85,22 @@ expect_kubectl "ensure_namespace labels a namespace it creates with the run labe
     'ensure_namespace e2e-x-42' \
     "create namespace e2e-x-42" "label namespace e2e-x-42 cfgd.io/e2e-run=42 --overwrite"
 
-: > "$log"
-in_helpers 'ensure_namespace cfgd-system' GITHUB_RUN_ID=42 >/dev/null 2>&1 || true
-if grep -q '^label' "$log"; then
-    fail "ensure_namespace labelled the shared cfgd-system namespace: $(tr '\n' ';' < "$log")"
-else
-    pass "ensure_namespace leaves the shared cfgd-system namespace unlabelled"
-fi
+# The stub's create succeeds, so ensure_namespace reaches the label branch and
+# only its guard keeps the live namespace unlabelled.
+expect_unlabelled() {
+    local label="$1" ns="$2" rc=0; shift 2
+    : > "$log"
+    in_helpers "ensure_namespace $ns" GITHUB_RUN_ID=42 "$@" >/dev/null 2>&1 || rc=$?
+    if [ "$rc" -ne 0 ] || ! grep -qxF "create namespace $ns" "$log" || grep -q '^label' "$log"; then
+        fail "$label: rc=$rc, kubectl saw $(tr '\n' ';' < "$log")"
+    else
+        pass "$label"
+    fi
+}
+expect_unlabelled "ensure_namespace leaves the shared cfgd-system namespace unlabelled" cfgd-system
+expect_unlabelled "ensure_namespace leaves cfgd-system unlabelled when CFGD_NAMESPACE names another" \
+    cfgd-system CFGD_NAMESPACE=other
+expect_unlabelled "ensure_namespace leaves \$CFGD_NAMESPACE unlabelled" live-ns CFGD_NAMESPACE=live-ns
 
 expect_kubectl "running_image reads cfgd-system by default" \
     'running_image daemonset cfgd-csi-csi cfgd-csi' \
@@ -99,6 +108,15 @@ expect_kubectl "running_image reads cfgd-system by default" \
 expect_kubectl "running_image reads the namespace it is given" \
     "running_image daemonset \"\$E2E_CSI_DS\" cfgd-csi \"\$E2E_INSTALL_NS\"" \
     'get daemonset cfgd-e2e-42-csi -n cfgd-e2e-42-sys -o jsonpath={.spec.template.spec.containers[?(@.name=="cfgd-csi")].image}'
+
+# CSI_DRIVER_NAME is the one spelling of the PR install's driver; a second one
+# in the values file could drift from it.
+values="$e2e_root/manifests/pr-install-values.yaml"
+if grep -n 'csi\.cfgd\.io' "$values" > "$scratch/driver-name"; then
+    fail "$values spells a CSI driver name ($(tr '\n' ';' < "$scratch/driver-name")); the install passes --set-string csiDriver.name=\$CSI_DRIVER_NAME"
+else
+    pass "pr-install-values.yaml leaves csiDriver.name to --set-string csiDriver.name=\$CSI_DRIVER_NAME"
+fi
 
 if [ "$failures" -gt 0 ]; then
     echo "$failures check(s) failed"

@@ -62,13 +62,18 @@ E2E_CSI_PODS          # app.kubernetes.io/instance=cfgd-e2e-42,app.kubernetes.io
 CSI_DRIVER_NAME       # e2e.csi.cfgd.io
 ```
 
+The values file leaves the CSI driver name out, and the install passes
+`--set-string "csiDriver.name=$CSI_DRIVER_NAME"`, so `helpers.sh` is the only place
+the name is spelled.
+
 `ensure_namespace` labels each namespace it creates with `cfgd.io/e2e-run=<run id>`,
 which the PR install's mutating webhook selects on, the heartbeat refreshes and the
-janitor reaps by. It never labels `cfgd-system`. `running_image` takes the namespace
+janitor reaps by. It never labels `cfgd-system` or `$CFGD_NAMESPACE`. `running_image` takes the namespace
 as an optional fourth argument (default `cfgd-system`), so
 `running_image daemonset "$E2E_CSI_DS" cfgd-csi "$E2E_INSTALL_NS"` reads the PR
 install's driver. `common/test-pr-install.sh` (run by `task e2e:tags:check`) checks
-these names, the run id and both helpers with a stub `kubectl`, so it needs no cluster.
+these names, the run id, both helpers and the values file with a stub `kubectl`, so it
+needs no cluster.
 
 ## Components ArgoCD owns
 

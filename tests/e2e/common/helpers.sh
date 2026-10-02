@@ -93,9 +93,8 @@ export E2E_RUN_LABEL_YAML="cfgd.io/e2e-run: \"$E2E_RUN_ID\""
 export E2E_JOB_LABEL_YAML="cfgd.io/e2e-job: \"$E2E_NAMESPACE\""
 
 # The PR-owned install of the operator and CSI driver, beside the live release
-# in cfgd-system. Setup, the suites, teardown and the janitor all read these
-# names, so the chart's fullname rule (<release>-<component>) is spelled here
-# only.
+# in cfgd-system. The chart names each object <release>-<component>; that rule
+# and the run id are spelled here only.
 export E2E_INSTALL_RELEASE="cfgd-e2e-$E2E_RUN_ID"
 export E2E_INSTALL_NS="$E2E_INSTALL_RELEASE-sys"
 export E2E_OPERATOR_DEPLOY="$E2E_INSTALL_RELEASE-operator"
@@ -199,8 +198,8 @@ ensure_label() {
 #
 # A namespace it creates carries the run label: the PR install's mutating
 # webhook selects on it, the heartbeat refreshes by it and the janitor reaps by
-# it. $CFGD_NAMESPACE belongs to the live release and outlives every run, so it
-# never gets the label even on a cluster where setup creates it.
+# it. cfgd-system (or $CFGD_NAMESPACE) belongs to the live release and outlives
+# every run, so it never gets the label even on a cluster where setup creates it.
 ensure_namespace() {
   local ns="$1" rc=0
   kubectl create namespace "$ns" >/dev/null 2>&1 || rc=$?
@@ -209,8 +208,11 @@ ensure_namespace() {
       echo "FAIL: namespace $ns could not be created (rc=$rc)" >&2
       return 1
     fi
-  elif [ "$ns" != "$CFGD_NAMESPACE" ]; then
-    ensure_label namespace "$ns" "$E2E_RUN_LABEL" --overwrite
+  else
+    case "$ns" in
+      cfgd-system | "$CFGD_NAMESPACE") ;;
+      *) ensure_label namespace "$ns" "$E2E_RUN_LABEL" --overwrite ;;
+    esac
   fi
 }
 
@@ -483,9 +485,9 @@ wait_for_url() {
 
 # --- OCI / Module helpers ---
 
-# The CSIDriver the PR install registers (csiDriver.name in
-# manifests/pr-install-values.yaml), so its pods never resolve to the live
-# release's csi.cfgd.io.
+# The CSIDriver the PR install registers, passed to helm as
+# --set-string csiDriver.name=$CSI_DRIVER_NAME, so its pods never resolve to the
+# live release's csi.cfgd.io.
 export CSI_DRIVER_NAME="e2e.csi.cfgd.io"
 export MODULES_ANNOTATION="cfgd.io/modules"
 
