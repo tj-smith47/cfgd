@@ -24,3 +24,19 @@ EOF
 cat > crd.yaml <<EOF
 kind: CustomResourceDefinition
 EOF
+cat > double.yaml <<EOF
+kind: "CustomResourceDefinition"
+EOF
+cat > single.yaml <<EOF
+kind: 'CustomResourceDefinition'
+EOF
+cat > comment.yaml <<EOF
+kind: CustomResourceDefinition # the widgets CRD
+EOF
+cat > list.yaml <<EOF
+items:
+  - kind: CustomResourceDefinition
+EOF
+cat > crd.json <<EOF
+{"apiVersion": "apiextensions.k8s.io/v1", "kind": "CustomResourceDefinition"}
+EOF

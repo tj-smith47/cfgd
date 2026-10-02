@@ -359,16 +359,31 @@ running_image() {
     printf '%s\n' "${image:-not deployed}"
 }
 
-# argocd_managed <kind> <name> [namespace, default cfgd-system]: 0 when ArgoCD
-# tracks the object (its tracking-id annotation is set), so it runs what
-# /db/manifests pins and reverts changes; 1 when it does not, or the object is
-# absent; 2 when kubectl cannot read it, whose error is left on stderr. A
-# caller that writes on 1 stops on 2, which says nothing about who owns it.
+# argocd_managed <kind> <name> [namespace]: 0 when ArgoCD tracks the object
+# (its tracking-id annotation is set), so it runs what /db/manifests pins and
+# reverts changes; 1 when it does not, or the object is absent; 2 when kubectl
+# cannot read it, whose error is left on stderr. The namespace defaults to
+# cfgd-system when omitted and is left off when given empty, for a
+# cluster-scoped kind. A caller that writes on 1 stops on 2, which says nothing
+# about who owns it.
 argocd_managed() {
-    local id
-    id="$(kubectl get "$1" "$2" -n "${3:-cfgd-system}" --ignore-not-found \
+    local id ns="${3-cfgd-system}"
+    id="$(kubectl get "$1" "$2" ${ns:+-n "$ns"} --ignore-not-found \
         -o jsonpath='{.metadata.annotations.argocd\.argoproj\.io/tracking-id}')" || return 2
     [ -n "$id" ]
+}
+
+# argocd_owner <kind> <name> <namespace, empty when cluster-scoped> <rerun>:
+# argocd_managed's status, with the ERROR every caller stops or fails on when
+# the object cannot be read printed to stderr.
+argocd_owner() {
+    local rc=0 where=""
+    argocd_managed "$1" "$2" "$3" || rc=$?
+    if [ "$rc" -eq 2 ]; then
+        [ -z "$3" ] || where=" in $3"
+        echo "ERROR: could not read $1/$2$where. Check that the runner can get $1 objects${where:+ there}, then $4." >&2
+    fi
+    return "$rc"
 }
 
 # Installs Crossplane into crossplane-system with Helm unless ArgoCD runs it
@@ -376,7 +391,7 @@ argocd_managed() {
 # or the install fails, before or after any Helm call.
 crossplane_install() {
     local rc=0
-    argocd_managed deployment crossplane crossplane-system || rc=$?
+    argocd_owner deployment crossplane crossplane-system "rerun the Crossplane suite" || rc=$?
     case "$rc" in
         0)
             echo "  deployment/crossplane in crossplane-system is ArgoCD's; installing nothing"
@@ -393,7 +408,6 @@ crossplane_install() {
             }
             ;;
         *)
-            echo "ERROR: could not read deployment/crossplane in crossplane-system. Check that the runner can get deployments there, then rerun the Crossplane suite." >&2
             return 1
             ;;
     esac

@@ -344,7 +344,7 @@ EOF
             echo "  cache hits for csi-test-mod-${E2E_RUN_ID}: before $CSI04_HITS_BEFORE, after $CSI04_HITS_AFTER"
             CSI04_RUNNING="$(running_image daemonset cfgd-csi-csi cfgd-csi)"
             CSI04_ARGOCD_RC=0
-            argocd_managed daemonset cfgd-csi-csi || CSI04_ARGOCD_RC=$?
+            CSI04_OWNER_ERR="$(argocd_owner daemonset cfgd-csi-csi cfgd-system "rerun the full-stack suite" 2>&1)" || CSI04_ARGOCD_RC=$?
             # prometheus-client renders no line at all for a family with no
             # sample, so a body without this module's sample says only that
             # the driver counted no hit for it.
@@ -358,7 +358,7 @@ EOF
             elif [ "$CSI04_RUNNING" = "$(e2e_image cfgd-csi)" ]; then
                 fail_test "FS-CSI-04" "driver under test counted no cache hit for the second mount: $(csi04_evidence "$CSI04_AFTER_BODY" "$CSI04_DRIVER")"
             elif [ "$CSI04_ARGOCD_RC" -eq 2 ]; then
-                fail_test "FS-CSI-04" "could not read daemonset/cfgd-csi-csi in cfgd-system. Check that the runner can get daemonsets there, then rerun the full-stack suite."
+                fail_test "FS-CSI-04" "$CSI04_OWNER_ERR"
             elif [ "$CSI04_ARGOCD_RC" -eq 0 ]; then
                 skip_test "FS-CSI-04" "driver $CSI04_RUNNING is the release ArgoCD pins (this run's image is $(e2e_image cfgd-csi)) and served no cfgd_csi_cache_hits sample {$CSI04_LABELS} after the mount"
             else

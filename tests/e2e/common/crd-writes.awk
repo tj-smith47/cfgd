@@ -9,9 +9,9 @@
 #   HELM      file:line cmd   helm install, or helm upgrade --install/-i,
 #                             without --skip-crds: Helm creates each CRD in
 #                             the chart's crds/ that the cluster lacks
-#   HEREDOC   file:line cmd   a heredoc holding kind: CustomResourceDefinition,
-#                             whatever reads it: a CRD written to a file can be
-#                             applied later by a path that does not name it
+#   HEREDOC   file:line cmd   a heredoc with a line matching crd_kind, whatever
+#                             reads it: a CRD written to a file can be applied
+#                             later by a path that does not name it
 #
 # cmd is the command as heredocs.awk reduced it, for HEREDOC the one that
 # opened the heredoc, with each run of whitespace made one space so that an
@@ -23,9 +23,16 @@
 # names a CRD is read from its raw lines, where a quoted "$CRD_YAML" survives.
 # The line printed is the command's first.
 #
-# Usage: awk -f heredocs.awk FILE... | awk -f crd-writes.awk
+# crd_kind is the ERE for a line that sets kind to CustomResourceDefinition,
+# passed in so the tracked-manifest check in test-pr-install.sh reads the same
+# spellings.
+#
+# Usage: awk -f heredocs.awk FILE... | awk -v crd_kind=ERE -f crd-writes.awk
 
-BEGIN { FS = "\t" }
+BEGIN {
+    FS = "\t"
+    if (crd_kind == "") { print "crd-writes.awk: crd_kind is not set" > "/dev/stderr"; exit 2 }
+}
 
 function squeeze(s) {
     gsub(/[[:space:]]+/, " ", s)
@@ -68,7 +75,7 @@ $1 == "OPEN" {
     next
 }
 
-$1 == "BODY" && !seen[$2, $4] && $5 ~ /^[[:space:]]*kind:[[:space:]]*CustomResourceDefinition[[:space:]]*$/ {
+$1 == "BODY" && !seen[$2, $4] && $5 ~ crd_kind {
     seen[$2, $4] = 1
     print "HEREDOC\t" $2 ":" opened[$2, $4] "\t" opener[$2, $4]
 }

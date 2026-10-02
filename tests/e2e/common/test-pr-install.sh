@@ -480,6 +480,12 @@ apply="kubectl apply -n \"\$E2E_NAMESPACE\" -f - <<EOF"
 plant labelled "$apply" "$module_labelled"
 plant label-absent "$apply" "$(module_labels 'app.kubernetes.io/part-of: e2e')"
 plant no-labels "$apply" "$module_unlabelled"
+plant quoted-kind "$apply" "apiVersion: \"cfgd.io/v1alpha1\"
+kind: 'Module' # the module
+metadata:
+  name: quoted-kind
+spec:
+  packages: []"
 plant multi-doc "$apply" "$module_labelled
 ---
 apiVersion: cfgd.io/v1alpha1
@@ -646,6 +652,8 @@ bash -n "$fixtures/scripts/by-path.sh" || fail "fixture by-path is not valid she
 outside_yaml='apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: outside\n'
 printf '%s\n' "printf '$outside_yaml' | kubectl apply -f -" > "$fixtures/scripts/outside.sh"
 bash -n "$fixtures/scripts/outside.sh" || fail "fixture outside is not valid shell"
+printf '%s\n' "echo 'apiVersion: \"cfgd.io/v1alpha1\" # quoted' | kubectl apply -f -" > "$fixtures/scripts/outside-quoted.sh"
+bash -n "$fixtures/scripts/outside-quoted.sh" || fail "fixture outside-quoted is not valid shell"
 # shellcheck disable=SC2059 # the payload is the printf format the fixture runs
 parsed="$(printf "$outside_yaml" | yq '.' 2>&1 >/dev/null)" || fail "fixture outside is not valid YAML: $parsed"
 
@@ -701,7 +709,10 @@ SITE no-labels.sh:1
 UNLABELLED no-labels.sh:2
 OTHERKIND other-kind.sh:2
 OUTSIDE outside.sh:1
+OUTSIDE outside-quoted.sh:1
 SITE quoted.sh:1
+SITE quoted-kind.sh:1
+UNLABELLED quoted-kind.sh:2
 QUOTED quoted.sh:2
 SITE rc-ok-comment.sh:1
 UNLABELLED rc-ok-comment.sh:2
@@ -929,6 +940,33 @@ else
     fail "argocd_managed with no namespace called [$(cat "$scratch/argo.log")], want a get in cfgd-system"
 fi
 
+# argo_errors <output>: its ERROR lines, or nothing.
+argo_errors() { grep '^ERROR' <<<"$1" || true; } # rc-ok: no ERROR line is a valid outcome, compared by the caller
+for argo_want in tracked:0 untracked:1; do
+    out="$(argo_case "${argo_want%%:*}" 'argocd_owner daemonset cfgd-csi-csi e2e-ns "rerun the full-stack suite"')"
+    if [ "$(sed -n 's/^rc=//p' <<<"$out")" = "${argo_want##*:}" ] && [ -z "$(argo_errors "$out")" ]; then
+        pass "argocd_owner returns ${argo_want##*:} on a ${argo_want%%:*} object and prints no ERROR"
+    else
+        fail "argocd_owner on a ${argo_want%%:*} object: got [$out], want rc=${argo_want##*:} and no ERROR"
+    fi
+done
+out="$(argo_case unreadable 'argocd_owner daemonset cfgd-csi-csi e2e-ns "rerun the full-stack suite"')"
+if [ "$(sed -n 's/^rc=//p' <<<"$out")" = 2 ] &&
+    [ "$(argo_errors "$out")" = "ERROR: could not read daemonset/cfgd-csi-csi in e2e-ns. Check that the runner can get daemonset objects there, then rerun the full-stack suite." ] &&
+    grep -qx 'kubectl get daemonset cfgd-csi-csi -n e2e-ns .*' "$scratch/argo.log"; then
+    pass "argocd_owner returns 2 with one ERROR naming the object, its namespace and the rerun advice it is given"
+else
+    fail "argocd_owner on an unreadable namespaced object: got [$out] with calls [$(cat "$scratch/argo.log")], want rc=2 and the ERROR naming daemonset/cfgd-csi-csi in e2e-ns"
+fi
+out="$(argo_case unreadable 'argocd_owner validatingwebhookconfiguration cfgd-validating-webhooks "" "rerun setup"')"
+if [ "$(sed -n 's/^rc=//p' <<<"$out")" = 2 ] &&
+    [ "$(argo_errors "$out")" = "ERROR: could not read validatingwebhookconfiguration/cfgd-validating-webhooks. Check that the runner can get validatingwebhookconfiguration objects, then rerun setup." ] &&
+    grep -qx 'kubectl get validatingwebhookconfiguration cfgd-validating-webhooks --ignore-not-found .*' "$scratch/argo.log"; then
+    pass "argocd_owner names no namespace for a cluster-scoped kind, in the ERROR or the get"
+else
+    fail "argocd_owner on an unreadable cluster-scoped object: got [$out] with calls [$(cat "$scratch/argo.log")], want rc=2, an ERROR with no namespace and a get without -n"
+fi
+
 out="$(argo_case tracked crossplane_install)"
 if [ "$(sed -n 's/^rc=//p' <<<"$out")" = 0 ] && ! grep -q '^helm' "$scratch/argo.log" &&
     grep -q "ArgoCD's; installing nothing" <<<"$out"; then
@@ -945,7 +983,7 @@ else
 fi
 out="$(argo_case unreadable crossplane_install)"
 if [ "$(sed -n 's/^rc=//p' <<<"$out")" = 1 ] && ! grep -q '^helm' "$scratch/argo.log" &&
-    grep -qx "ERROR: could not read deployment/crossplane in crossplane-system. Check that the runner can get deployments there, then rerun the Crossplane suite." <<<"$out"; then
+    grep -qx "ERROR: could not read deployment/crossplane in crossplane-system. Check that the runner can get deployment objects there, then rerun the Crossplane suite." <<<"$out"; then
     pass "the Crossplane install stops with an ERROR and calls no helm when it cannot read deployment/crossplane"
 else
     fail "the Crossplane install on an unreadable Crossplane: got [$out] with calls [$(cat "$scratch/argo.log")], want rc=1, the ERROR line and no helm call"
@@ -1080,19 +1118,25 @@ fi
 # ArgoCD owns the cluster's CRDs, so no e2e script writes one. crd-writes.awk
 # reads heredocs.awk's records and reports each kubectl write that names a CRD,
 # each helm install without --skip-crds and each heredoc holding a CRD.
+# crd_kind matches a line setting kind to CustomResourceDefinition in YAML, its
+# value bare, quoted or followed by a comment, a list item's first key
+# included, or as a JSON member. Both the scan and the manifest check read it.
+crd_kind="^[[:space:]]*(-[[:space:]]+)?kind:[[:space:]]*[\"']?CustomResourceDefinition[\"']?[[:space:]]*(#.*)?\$|\"kind\"[[:space:]]*:[[:space:]]*\"CustomResourceDefinition\""
 scan_crd_writes() {
-    awk -f "$here/heredocs.awk" "$@" | awk -f "$here/crd-writes.awk"
+    awk -f "$here/heredocs.awk" "$@" | awk -v crd_kind="$crd_kind" -f "$here/crd-writes.awk"
 }
 
 writes_fixtures="$here/fixtures/crd-writes"
-writes_out="$(cd "$writes_fixtures" && scan_crd_writes writes.bash reads.bash 2>&1)"
+writes_out="$(cd "$writes_fixtures" && scan_crd_writes writes.bash reads.bash 2>&1)" ||
+    fail "the CRD-write scan failed over its fixtures: $writes_out"
 writes_got="$(cut -f1,2 <<<"$writes_out")"
 writes_want="$(printf '%s\t%s\n' \
     KUBECTL writes.bash:1 KUBECTL writes.bash:2 KUBECTL writes.bash:3 KUBECTL writes.bash:4 \
     KUBECTL writes.bash:6 HELM writes.bash:7 HELM writes.bash:8 HELM writes.bash:9 \
-    HEREDOC writes.bash:11 HEREDOC writes.bash:17 HEREDOC writes.bash:24)"
+    HEREDOC writes.bash:11 HEREDOC writes.bash:17 HEREDOC writes.bash:24 HEREDOC writes.bash:27 \
+    HEREDOC writes.bash:30 HEREDOC writes.bash:33 HEREDOC writes.bash:36 HEREDOC writes.bash:40)"
 if [ "$writes_got" = "$writes_want" ]; then
-    pass "the CRD-write scan reports each planted kubectl write, helm install and CRD heredoc once and stays quiet on reads, --local, --dry-run, --skip-crds, messages and comments"
+    pass "the CRD-write scan reports each planted kubectl write, helm install and CRD heredoc once, with bare, quoted, comment-tailed, list-item and JSON kinds, and stays quiet on reads, --local, --dry-run, --skip-crds, messages, comments and quoted values"
 else
     fail "the CRD-write scan printed [$writes_got], want [$writes_want]"
 fi
@@ -1129,18 +1173,19 @@ fi
 # A CRD in a tracked manifest under tests/e2e can be applied by a path that
 # names no CRD, so none may hold one; the fixtures under common/fixtures are
 # read only by these checks.
-# crd_manifests FILE...: the files holding kind: CustomResourceDefinition.
+# crd_manifests FILE...: the files with a line matching crd_kind.
 crd_manifests() {
     local rc=0
-    grep -lE '^[[:space:]]*kind:[[:space:]]*CustomResourceDefinition[[:space:]]*$' "$@" || rc=$?
+    grep -lE "$crd_kind" "$@" || rc=$?
     [ "$rc" -le 1 ]
 }
 
 manifest_fixtures="$here/fixtures/crd-manifests"
-if manifests_got="$(cd "$manifest_fixtures" && crd_manifests hit.yaml miss.yaml)" && [ "$manifests_got" = "hit.yaml" ]; then
-    pass "the CRD-manifest check reports a manifest holding a CRD and stays quiet on quoted and commented kind lines"
+manifests_want="$(cd "$manifest_fixtures" && printf '%s\n' hit*)"
+if manifests_got="$(cd "$manifest_fixtures" && crd_manifests hit* miss*)" && [ -n "$manifests_want" ] && [ "$manifests_got" = "$manifests_want" ]; then
+    pass "the CRD-manifest check reports bare, quoted, comment-tailed, list-item and JSON CRD kinds and stays quiet on a quoted value and a commented-out kind line"
 else
-    fail "the CRD-manifest check printed [$manifests_got], want [hit.yaml]"
+    fail "the CRD-manifest check printed [$manifests_got], want [$manifests_want]"
 fi
 if crd_manifests "$manifest_fixtures/hit.yaml" "$manifest_fixtures/absent.yaml" >/dev/null 2>&1; then
     fail "the CRD-manifest check passed over a file it could not read"
@@ -1148,9 +1193,9 @@ else
     pass "the CRD-manifest check fails over a file it cannot read"
 fi
 
-mapfile -t e2e_manifests < <(git -C "$repo_root" ls-files 'tests/e2e/*.yaml' 'tests/e2e/*.yml' | grep -v '^tests/e2e/common/fixtures/')
+mapfile -t e2e_manifests < <(git -C "$repo_root" ls-files 'tests/e2e/*.yaml' 'tests/e2e/*.yml' 'tests/e2e/*.json' | grep -v '^tests/e2e/common/fixtures/')
 if [ "${#e2e_manifests[@]}" -eq 0 ]; then
-    fail "git ls-files 'tests/e2e/*.yaml' 'tests/e2e/*.yml' matched no manifest outside common/fixtures, so the CRD-manifest check read nothing"
+    fail "git ls-files 'tests/e2e/*.yaml' 'tests/e2e/*.yml' 'tests/e2e/*.json' matched no manifest outside common/fixtures, so the CRD-manifest check read nothing"
 elif ! crd_files="$(cd "$repo_root" && crd_manifests "${e2e_manifests[@]}")"; then
     fail "the CRD-manifest check could not read the manifests under tests/e2e"
 elif [ -z "$crd_files" ]; then

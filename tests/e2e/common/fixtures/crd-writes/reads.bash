@@ -11,6 +11,8 @@ kubectl apply -f app.yaml
 kubectl apply -f - <<EOF
 apiVersion: v1
 kind: ConfigMap
+# kind: CustomResourceDefinition
 data:
   note: "kind: CustomResourceDefinition"
+  json: '{"note": "kind: CustomResourceDefinition"}'
 EOF

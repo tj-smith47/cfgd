@@ -129,7 +129,7 @@ owns the operator and gateway Deployments, and setup warns the same way.
 
 ArgoCD also owns the cluster's CRDs, applied from
 `/db/manifests/k3s/namespaces/crossplane-system/cfgd-crds.yaml`, and no e2e script
-writes them. It compares the spec of each CRD that `cfgd-gen-crds` prints with the
+writes them. Setup compares the spec of each CRD that `cfgd-gen-crds` prints with the
 cluster's copy, with description text dropped and the API server's defaults
 (`names.listKind`, `names.singular`, `conversion: {strategy: None}`,
 `preserveUnknownFields: false`) filled in on both sides. Setup stops, printing the
@@ -151,7 +151,9 @@ commands and heredoc bodies of every tracked `tests/e2e/*.sh`, through
 `kubectl` write that names a CRD (`apply`, `create`, `replace`, `patch`, `delete` and
 the like, outside `--local` and `--dry-run`), a `helm install` or `helm upgrade
 --install` without `--skip-crds`, a heredoc holding `kind: CustomResourceDefinition`
-whatever reads it, or a tracked `.yaml`/`.yml` outside `common/fixtures/` holding one.
+whatever reads it, or a tracked `.yaml`, `.yml` or `.json` outside `common/fixtures/`
+holding one. Both read the kind bare, quoted or followed by a comment, as a list
+item's first key, or as a JSON member.
 An exempt write is listed in the test by tag, file and command text, with its reason;
 the one entry is XP-01's Helm install of Crossplane, which runs only where ArgoCD does
 not run Crossplane and whose chart holds none of the CRDs in `cfgd-crds.yaml`.
@@ -170,7 +172,8 @@ skips only when the driver served no cache-hit sample for its module after the
 mount, runs an image other than this run's, and its DaemonSet carries ArgoCD's
 tracking-id annotation (`argocd_managed` in `common/helpers.sh`); without that
 annotation the mismatch fails, naming the running and wanted images, and when the
-DaemonSet cannot be read the case fails saying so. XP-01 reads the same annotation on
+DaemonSet cannot be read the case fails with the ERROR `argocd_owner` prints, which
+names the object, its namespace and the rerun to do. XP-01 reads the same annotation on
 `deployment/crossplane` in `crossplane-system`: where ArgoCD tracks it the suite
 installs nothing, where it does not the suite runs `helm upgrade --install`, and where
 it cannot be read the suite stops before calling Helm. Setup stops the same way when
