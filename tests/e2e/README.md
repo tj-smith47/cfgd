@@ -80,7 +80,7 @@ needs no cluster.
 
 The PR operator reconciles only objects labelled with the run, so every object of
 a kind the operator serves that a suite applies carries the label in its own
-block-form `metadata.labels`, spelled as the variable:
+`metadata.labels`, spelled as the variable:
 
 ```yaml
 metadata:
@@ -98,10 +98,16 @@ including through `exec_in_pod`. The heredoc delimiter stays unquoted (`<<EOF`) 
 the label expands.
 
 `test-pr-install.sh` reads every `tests/e2e/*/scripts` directory and `common/helpers.sh`
-through `common/heredocs.awk`, the heredoc reader `test-verdicts.sh` uses too, and fails on:
+through `common/heredocs.awk`, the heredoc reader `test-verdicts.sh` uses too. It renders
+each heredoc body the way bash would expand it (`${E2E_RUN_LABEL_YAML}` to the run label,
+any other `$VAR`, `${...}` or `$(...)` to one plain word) and parses it with `yq`, so
+JSON, flow style, quoted keys, tags, anchors and aliases read as block YAML does, and
+cfgd.io text inside a string value is no object. It fails on:
 
 - an object with no `${E2E_RUN_LABEL_YAML}` in its labels, or the label spelled by hand
-- metadata in flow form, a quoted delimiter, or a cfgd.io object nested inside another (a `List`); an `ownerReferences` entry is a reference and passes
+- a quoted delimiter, or a cfgd.io object nested inside another document (a `List` item, a map below the root); an `ownerReferences` entry is a reference and passes
+- a cfgd.io object whose kind is missing or not a string
+- a heredoc applied or captured that is not valid YAML once rendered, such as a `$(...)` in column 0 inside a block scalar
 - an operator object in a heredoc captured into a variable (`yaml=$(cat <<EOF`), whose destination the scan cannot see
 - a cfgd.io `apiVersion` outside any heredoc
 - in the operator, full-stack and gateway suites or `helpers.sh`, a manifest applied by path

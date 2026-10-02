@@ -184,8 +184,126 @@ operator_kinds() {
     fi
 }
 
+# render_awk defines render(s): one line of a heredoc body as bash expands it,
+# so a YAML parser reads what the cluster would be sent. ${E2E_RUN_LABEL_YAML}
+# becomes the run label with $label_sentinel as its value, and
+# ${E2E_JOB_LABEL_YAML} the job label, as helpers.sh defines both. Every other
+# $VAR, ${...}, $(...) and `...` becomes the plain word e2e-value, so each line
+# stays one line and a parser's line numbers stay those of the source. A $(...)
+# or ${...} still open at the end of the line takes the rest of it.
+# shellcheck disable=SC2016 # an awk program; the $ signs belong to awk
+render_awk='
+function close_of(s, i, open, shut,   d, c) {
+    for (d = 0; i <= length(s); i++) {
+        c = substr(s, i, 1)
+        if (c == "\\") i++
+        else if (c == open) d++
+        else if (c == shut && --d == 0) return i
+    }
+    return length(s)
+}
+function expand(name) {
+    if (name == "E2E_RUN_LABEL_YAML") return "cfgd.io/e2e-run: \"" sentinel "\""
+    if (name == "E2E_JOB_LABEL_YAML") return "cfgd.io/e2e-job: \"e2e-value\""
+    return "e2e-value"
+}
+function render(s,   out, i, c, j, n) {
+    out = ""
+    for (i = 1; i <= length(s); i++) {
+        c = substr(s, i, 1)
+        n = substr(s, i + 1, 1)
+        if (c == "\\" && n ~ /[$`\\]/) { out = out n; i++ }
+        else if (c == "`") { j = index(substr(s, i + 1), "`"); i = j ? i + j : length(s); out = out "e2e-value" }
+        else if (c != "$") out = out c
+        else if (n == "(") { i = close_of(s, i + 1, "(", ")"); out = out "e2e-value" }
+        else if (n == "{") { j = close_of(s, i + 1, "{", "}"); out = out expand(substr(s, i + 2, j - i - 2)); i = j }
+        else if (match(substr(s, i + 1), /^[A-Za-z_][A-Za-z0-9_]*/)) { out = out expand(substr(s, i + 1, RLENGTH)); i += RLENGTH }
+        else if (n ~ /[0-9*@#?$!-]/) { out = out "e2e-value"; i++ }
+        else out = out c
+    }
+    return out
+}'
+# The run label's rendered value: random per run, so no label written by hand
+# in a script can equal it.
+label_sentinel="run-label-$$-$RANDOM$RANDOM"
+
+# render [dash]: stdin, a heredoc body, rendered line by line; with dash 1 the
+# leading tabs a <<- heredoc drops go first.
+render() {
+    awk -v dash="${1:-0}" -v sentinel="$label_sentinel" "$render_awk"'{ if (dash) sub(/^\t+/, ""); print render($0) }'
+}
+
+# object_query is the yq program that reads one rendered body. It prints one
+# tab-separated line per cfgd.io object, a mapping whose apiVersion is a string
+# starting cfgd.io/, at any depth of any document after aliases are resolved:
+#   body  line of its apiVersion key  depth (0 at the document root)
+#   kind  the document root's kind  metadata.name
+#   whether metadata.labels has cfgd.io/e2e-run  whether that value is the sentinel
+# kind and the names are strings or empty; tabs and newlines in them become a
+# space. An ownerReferences entry is a reference to an object and is skipped.
+# yq collects an empty match into one empty list per document, which the
+# length check drops.
+# shellcheck disable=SC2016 # a yq program; $doc belongs to yq
+object_query='explode(.) as $doc | $doc | ..
+| select(tag == "!!map" and (.apiVersion | tag) == "!!str" and (.apiVersion | test("^cfgd\.io/")))
+| select(path | join("/") | test("(^|/)ownerReferences/[0-9]+$") | not)
+| [filename, (.apiVersion | key | line), (path | length),
+   ((.kind | select(tag == "!!str")) // ""),
+   (($doc | select(tag == "!!map") | .kind | select(tag == "!!str")) // ""),
+   ((.metadata | select(tag == "!!map") | .name | select(tag == "!!str")) // ""),
+   ((.metadata | select(tag == "!!map") | .labels | select(tag == "!!map") | has("cfgd.io/e2e-run")) // false),
+   ((.metadata | select(tag == "!!map") | .labels | select(tag == "!!map") | .["cfgd.io/e2e-run"]
+     | (tag == "!!str" and . == strenv(SENTINEL))) // false)]
+| select(length > 0) | map(tostring | sub("[\t\n]+"; " ")) | join("\t")'
+
+# yq_error <dir> <body>: the first line of yq's last error, without the
+# scratch file name it gives the body.
+yq_error() {
+    local err
+    err="$(head -n1 "$1/yq.err")"
+    printf '%s' "${err#"Error: bad file '$2': "}"
+}
+
+# parse_bodies <dir>: runs object_query over every body <dir>/index names,
+# writing its lines to <dir>/objects and a `body<TAB>error` line for each body
+# yq cannot read to <dir>/unparsed. One yq call reads every body; when it stops
+# at a body it names, that body is set aside and the call goes on from the next,
+# and an error that names no body has each remaining body read on its own.
+parse_bodies() {
+    local dir="$1" bodies out bad i b
+    : > "$dir/objects"
+    : > "$dir/unparsed"
+    mapfile -t bodies < <(cut -f1 "$dir/index")
+    while [ "${#bodies[@]}" -gt 0 ]; do
+        if out="$(cd "$dir" && SENTINEL="$label_sentinel" yq -N "$object_query" "${bodies[@]}" 2>"$dir/yq.err")"; then
+            [ -z "$out" ] || printf '%s\n' "$out" >> "$dir/objects"
+            return 0
+        fi
+        bad="$(sed -n "1s/^Error: bad file '\([^']*\)'.*/\1/p" "$dir/yq.err")"
+        for i in "${!bodies[@]}"; do [ "${bodies[$i]}" != "$bad" ] || break; done
+        if [ -z "$bad" ] || [ "${bodies[$i]}" != "$bad" ]; then
+            for b in "${bodies[@]}"; do
+                if out="$(cd "$dir" && SENTINEL="$label_sentinel" yq -N "$object_query" "$b" 2>"$dir/yq.err")"; then
+                    [ -z "$out" ] || printf '%s\n' "$out" >> "$dir/objects"
+                else
+                    printf '%s\t%s\n' "$b" "$(yq_error "$dir" "$b")" >> "$dir/unparsed"
+                fi
+            done
+            return 0
+        fi
+        # Lines yq printed before it stopped belong to the bodies ahead of the
+        # bad one, apart from any of the bad body's own first documents.
+        [ -z "$out" ] || awk -F '\t' -v bad="$bad" '$1 != bad' <<<"$out" >> "$dir/objects"
+        printf '%s\t%s\n' "$bad" "$(yq_error "$dir" "$bad")" >> "$dir/unparsed"
+        bodies=("${bodies[@]:i+1}")
+    done
+}
+
 # scan_run_labels <kinds> <dir or file...> reads every file in each dir, and
-# each file named, through heredocs.awk and prints one line per finding, tag first:
+# each file named, through heredocs.awk. Each heredoc body is rendered the way
+# bash would expand it and read with yq, and every fact about a cfgd.io object
+# (where it sits, its kind, name and labels, the line of its apiVersion) comes
+# from that parse. It prints one line per finding, tag first:
 #   SITE         a heredoc fed to kubectl apply/create/replace or apply_yaml that
 #                holds an operator object
 #   FILEDOC      a heredoc fed to a command that does not apply it (cat > a file,
@@ -195,24 +313,25 @@ operator_kinds() {
 #                the scan cannot see whether it reaches the cluster
 #   OTHERKIND    a cfgd.io document of a kind the operator does not serve, applied
 #                to the cluster
-#   UNLABELLED   an operator object whose metadata.labels lacks ${E2E_RUN_LABEL_YAML}
-#   HANDSPELLED  an operator object whose label is spelled by hand
-#   FLOWDOC      a cfgd.io object written as JSON or a flow mapping, or with a
-#                quoted key, a space before the colon, a tag or an anchor
-#   SPLITKEY     an apiVersion key whose value sits on the next line
-#   NOKIND       a cfgd.io document with no top-level kind
-#   FLOWMETA     an operator object whose metadata is in flow form
-#   NESTED       a cfgd.io object nested in another document, such as a List,
-#                applied or captured; an ownerReferences entry is a reference
-#                and does not count
+#   UNLABELLED   an operator object whose metadata.labels has no cfgd.io/e2e-run
+#   HANDSPELLED  an operator object whose cfgd.io/e2e-run label is not
+#                ${E2E_RUN_LABEL_YAML}
+#   NESTED       a cfgd.io object below the root of a document, such as a List
+#                item, applied or captured; an ownerReferences entry is a
+#                reference and does not count
 #   QUOTED       an operator object in a quoted-delimiter heredoc, where
 #                ${E2E_RUN_LABEL_YAML} cannot expand
-#   OUTSIDE      a cfgd.io apiVersion outside any heredoc
+#   NOKIND       a cfgd.io object whose kind is missing or not a string
+#   UNPARSED     a heredoc fed to the cluster or captured that yq cannot read
+#                as YAML once rendered
+#   OUTSIDE      a cfgd.io apiVersion on a shell line outside any heredoc
 #   BYPATH       kubectl apply/create/replace given a manifest by path (-f other
 #                than -, or -k), which the scan cannot read
 #   UNTERMINATED, UNREADABLE, EMPTY   the scan could not read what it was given
+# A heredoc written to a file is read only when it mentions cfgd.io/, and one
+# yq cannot read (a script, say) is not YAML and passes quietly.
 scan_run_labels() {
-    local kinds="$1" dir f files=() found
+    local kinds="$1" dir f files=() found work
     shift
     for dir in "$@"; do
         if [ -f "$dir" ]; then files+=("$dir"); continue; fi
@@ -226,97 +345,11 @@ scan_run_labels() {
         done
     done
     [ "${#files[@]}" -gt 0 ] || return 0
+    work="$(mktemp -d "$scratch/scan.XXXXXX")" || { echo "UNREADABLE no scratch directory for the scan"; return 0; }
+    : > "$work/index"
     { awk -f "$here/heredocs.awk" "${files[@]}" || echo "UNREADABLE heredocs.awk exited $? reading ${files[*]}"; } |
-        awk -F '\t' -v kinds="$(tr '\n' ' ' <<<"$kinds")" '
+        awk -F '\t' -v work="$work" -v sentinel="$label_sentinel" "$render_awk"'
         function rest(n,   i, p) { p = 0; for (i = 1; i <= n; i++) p += length($i) + 1; return substr($0, p + 1) }
-        function indent(s) { match(s, /^[ \t]*/); return RLENGTH }
-        function strip(s) { sub(/^[ \t]+/, "", s); sub(/[ \t]+#.*$/, "", s); sub(/[ \t]+$/, "", s); return s }
-        function blank_or_comment(s) { s = strip(s); return s == "" || substr(s, 1, 1) == "#" }
-        function cfgd_api(s) { return s ~ /^(- )?apiVersion:[ \t]*["\047]?cfgd\.io\// }
-        function any_cfgd_api(s) { return s ~ /(^|[^A-Za-z0-9_])["\047]?apiVersion["\047]?[ \t]*:[ \t]*([!&][^ \t]*[ \t]+)*["\047]?cfgd\.io\// }
-        function split_api(s) { return s ~ /(^|[^A-Za-z0-9_])["\047]?apiVersion["\047]?[ \t]*:[ \t]*([!&|>][^ \t]*[ \t]*)*$/ }
-        function hand(s) { return s ~ /^["\047]?cfgd\.io\/e2e-run["\047]?:/ }
-        function label_entry(s) {
-            if (s == "${E2E_RUN_LABEL_YAML}") labelled = 1
-            else if (hand(s)) handspelled = 1
-        }
-        function flow_labels(s,   n, parts, i) {
-            sub(/^labels:[ \t]*\{/, "", s); sub(/\}[ \t]*$/, "", s)
-            n = split(s, parts, ",")
-            for (i = 1; i <= n; i++) { sub(/^[ \t]+/, "", parts[i]); sub(/[ \t]+$/, "", parts[i]); label_entry(parts[i]) }
-        }
-        function check_doc(first, last,    i, base, s, api, nested, flow, bracket, kind, name, inmeta, flowmeta, mchild, inlab, lind, owner) {
-            base = -1; labelled = 0; handspelled = 0; owner = -1
-            for (i = first; i <= last; i++) {
-                if (blank_or_comment(body[i])) continue
-                s = strip(body[i])
-                if (base < 0) { base = indent(body[i]); bracket = (s ~ /^[{[]/) }
-                if (owner >= 0 && (indent(body[i]) > owner || (indent(body[i]) == owner && s ~ /^- /))) continue
-                owner = (s ~ /^ownerReferences:/) ? indent(body[i]) : -1
-                if (any_cfgd_api(s) && (bracket || !cfgd_api(s))) flow = bline[i]
-                if (split_api(s) && class == "FILE") has_cfgd = 1
-                else if (split_api(s)) { print "SPLITKEY " file ":" bline[i] ": an apiVersion whose value is not on its own line, so the scan cannot tell whether this is a cfgd.io object; write the value beside the key"; reported = 1 }
-                if (indent(body[i]) != base) { if (cfgd_api(s)) nested = bline[i]; continue }
-                if (cfgd_api(s)) api = bline[i]
-                if (s ~ /^["\047]?kind["\047]?[ \t]*:/) { kind = s; sub(/^[^:]*:[ \t]*/, "", kind); gsub(/["\047]/, "", kind) }
-                if (s ~ /^metadata:[ \t]*\{/) flowmeta = 1
-            }
-            if (!api && !nested && !flow) return
-            has_cfgd = 1
-            if (class == "FILE") return
-            if (flow) {
-                print "FLOWDOC " file ":" flow ": a cfgd.io object in a spelling the scan does not read (JSON, a flow mapping, a quoted key, a space before the colon, a tag or an anchor); write it as block-style YAML with bare keys so the scan can read its labels"
-                reported = 1
-                return
-            }
-            if (!api) {
-                print "NESTED " file ":" nested ": a cfgd.io object nested inside " kind "; apply it as its own document"
-                reported = 1
-                return
-            }
-            if (class == "CAPTURE") {
-                if ((" " kind " ") in operator) {
-                    print "CAPTURED " file ":" api " " kind ": the scan cannot see where a captured heredoc goes; feed it to kubectl apply directly"
-                    reported = 1
-                }
-                return
-            }
-            if (kind == "") { print "NOKIND " file ":" api ": a cfgd.io object with no kind the scan can read; write kind as a bare top-level key"; reported = 1; return }
-            if (!((" " kind " ") in operator)) { print "OTHERKIND " file ":" api " " kind; return }
-            site = 1
-            if (quoted) {
-                print "QUOTED " file ":" api " " kind ": the heredoc delimiter is quoted, so ${E2E_RUN_LABEL_YAML} cannot expand"
-                return
-            }
-            if (flowmeta) {
-                print "FLOWMETA " file ":" api " " kind ": write metadata in block form; the scan reads labels from block-form metadata"
-                return
-            }
-            for (i = first; i <= last; i++) {
-                if (blank_or_comment(body[i])) continue
-                s = strip(body[i])
-                if (indent(body[i]) <= base) {
-                    inmeta = (indent(body[i]) == base && s ~ /^metadata:$/)
-                    mchild = -1; inlab = 0
-                    continue
-                }
-                if (!inmeta) continue
-                if (mchild < 0) mchild = indent(body[i])
-                if (indent(body[i]) == mchild) {
-                    if (s ~ /^name:/ && name == "") { name = s; sub(/^name:[ \t]*/, "", name) }
-                    inlab = (s ~ /^labels:$/)
-                    lind = indent(body[i])
-                    if (s ~ /^labels:[ \t]*\{/) flow_labels(s)
-                    continue
-                }
-                if (inlab && indent(body[i]) > lind) label_entry(s)
-            }
-            if (handspelled) {
-                print "HANDSPELLED " file ":" api " " kind " " name ": spell the label as ${E2E_RUN_LABEL_YAML}"
-            } else if (!labelled) {
-                print "UNLABELLED " file ":" api " " kind " " name ": metadata.labels has no ${E2E_RUN_LABEL_YAML}"
-            }
-        }
         # by_path(c): c applies a manifest by path when, within the kubectl
         # command, -f names something other than - or -k names a directory.
         # A quoted path is dropped from c, so -f with no word after it is one.
@@ -335,18 +368,17 @@ scan_run_labels() {
             }
             return 0
         }
-        function close_heredoc(id,   i, first, n) {
+        function close_heredoc(id,   i, n, yaml, path) {
             n = count[id]
-            for (i = 1; i <= n; i++) { body[i] = text[id, i]; bline[i] = at[id, i] }
-            class = cls[id]; quoted = qtd[id]; has_cfgd = 0; site = 0; reported = 0
-            first = 1
-            for (i = 1; i <= n + 1; i++) {
-                if (i == n + 1 || body[i] ~ /^---([ \t]|$)/) { check_doc(first, i - 1); first = i + 1 }
-            }
-            if (site) print "SITE " file ":" opened[id]
-            if (has_cfgd && (class == "FILE" || (class == "CAPTURE" && !reported))) print "FILEDOC " file ":" opened[id]
+            yaml = (cls[id] != "FILE")
+            for (i = 1; i <= n && !yaml; i++) yaml = index(text[id, i], "cfgd.io/") > 0
+            if (n == 0 || !yaml) return
+            path = work "/" (++bodies) ".yaml"
+            for (i = 1; i <= n; i++) print render(text[id, i]) > path
+            close(path)
+            print bodies ".yaml", file, opened[id], cls[id], qtd[id], at[id, 1] > (work "/index")
         }
-        BEGIN { n = split(kinds, k, " "); for (i = 1; i <= n; i++) operator[" " k[i] " "] = 1 }
+        BEGIN { OFS = "\t" }
         /^UNREADABLE / { print; next }
         { file = $2 }
         $1 == "UNCLOSED" { print "UNTERMINATED " file ":" $3 ": no " $4 " line closes this heredoc"; next }
@@ -376,10 +408,56 @@ scan_run_labels() {
             line = rest(3)
             if (line !~ /^[ \t]*#/) {
                 sub(/[ \t]+#.*$/, "", line)
-                if (line ~ /apiVersion"?:[ \t]*["\047]?cfgd\.io\//) print "OUTSIDE " file ":" $3 ": a cfgd.io apiVersion outside any heredoc"
+                if (line ~ /(^|[^A-Za-z0-9_])["\047]?apiVersion["\047]?[ \t]*:[ \t]*["\047]?cfgd\.io\//) print "OUTSIDE " file ":" $3 ": a cfgd.io apiVersion outside any heredoc"
             }
         }
-    ' || echo "UNREADABLE the scan's awk exited $?"
+        END { close(work "/index") }
+    ' || echo "UNREADABLE the scan's heredoc collector exited $?"
+    parse_bodies "$work"
+    awk -F '\t' -v kinds="$(tr '\n' ' ' <<<"$kinds")" '
+        BEGIN { n = split(kinds, k, " "); for (i = 1; i <= n; i++) operator[k[i]] = 1 }
+        FILENAME == ARGV[1] { src[$1] = $2; opened[$1] = $3; cls[$1] = $4; qtd[$1] = $5; first[$1] = $6; order[++bodies] = $1; next }
+        FILENAME == ARGV[3] {
+            if (cls[$1] == "FILE") next
+            err = $2
+            # yq counts lines from the body; the message names the script line.
+            if (match(err, /at L[0-9]+[^:]*/)) err = substr(err, 1, RSTART - 1) "at line " (first[$1] + substr(err, RSTART + 4, index(substr(err, RSTART + 4), ".") - 1) - 1) substr(err, RSTART + RLENGTH)
+            print "UNPARSED " src[$1] ":" opened[$1] ": yq cannot read this heredoc as YAML once its variables expand (" err "); make it valid YAML, with each $VAR, ${...} and $(...) inside a value, since the scan reads each as one plain word"
+            next
+        }
+        {
+            b = $1; at = src[b] ":" (first[b] + $2 - 1); kind = $4; root = $5; name = $6
+            sub(/ +$/, "", kind); sub(/ +$/, "", root)
+            cfgd[b] = 1
+            if (cls[b] == "FILE") next
+            if ($3 > 0) {
+                print "NESTED " at ": a cfgd.io object nested inside " (root == "" ? "another document" : root) "; apply it as its own document"
+                reported[b] = 1
+                next
+            }
+            if (cls[b] == "CAPTURE") {
+                if (kind in operator) {
+                    print "CAPTURED " at " " kind ": the scan cannot see where a captured heredoc goes; feed it to kubectl apply directly"
+                    reported[b] = 1
+                }
+                next
+            }
+            if (kind == "") { print "NOKIND " at ": a cfgd.io object whose kind is missing or not a string"; next }
+            if (!(kind in operator)) { print "OTHERKIND " at " " kind; next }
+            site[b] = 1
+            if (qtd[b]) print "QUOTED " at " " kind ": the heredoc delimiter is quoted, so ${E2E_RUN_LABEL_YAML} cannot expand"
+            else if ($7 == "true" && $8 != "true") print "HANDSPELLED " at " " kind " " name ": spell the label as ${E2E_RUN_LABEL_YAML}"
+            else if ($7 != "true") print "UNLABELLED " at " " kind " " name ": metadata.labels has no ${E2E_RUN_LABEL_YAML}"
+        }
+        END {
+            for (i = 1; i <= bodies; i++) {
+                b = order[i]
+                if (site[b]) print "SITE " src[b] ":" opened[b]
+                if (cfgd[b] && (cls[b] == "FILE" || (cls[b] == "CAPTURE" && !reported[b]))) print "FILEDOC " src[b] ":" opened[b]
+            }
+        }
+    ' "$work/index" "$work/objects" "$work/unparsed" || echo "UNREADABLE the scan's awk exited $?"
+    rm -rf "$work"
 }
 
 # Suites that apply operator objects today, each with a floor about two thirds
@@ -448,26 +526,29 @@ by_path="$(grep '^BYPATH ' <<<"$tree_scan" | grep -vxFf <(by_path_in_scope "$e2e
 pass "$(grep -c '^FILEDOC ' <<<"$tree_scan" || true) heredocs hold a cfgd.io document that needs no run label: one fed to a command that does not apply it (cat > a file, there or inside a pod), or a captured document of a kind the operator does not serve"
 
 # The scan against planted fixtures: one per way a suite writes a cfgd.io
-# document, one per placement of the label and one per spelling the rule
-# refuses. Each fixture is checked as shell (bash -n) and its body as YAML,
-# rendered the way bash would expand it, before the scan reads it.
+# document, one per place a cfgd.io apiVersion can sit, one per placement of
+# the label and one per YAML spelling of a key or value. Each fixture is
+# checked as shell (bash -n) and its body as YAML, rendered by the scan's own
+# render, before the scan reads it.
 fixtures="$scratch/label-fixtures"
 mkdir -p "$fixtures/scripts"
-render() {
-    local s="$1"
-    s="${s//\$\{E2E_RUN_LABEL_YAML_OLD\}/cfgd.io/e2e-run-old: \"41\"}"
-    s="${s//\$\{E2E_RUN_LABEL_YAML\}/cfgd.io/e2e-run: \"42\"}"
-    s="${s//\$\{E2E_RUN_ID\}/42}"
-    printf '%s\n' "$s" | sed 's/^\t*//'
-}
-# plant <name> <opener> <body> [closer]
-plant() {
-    local name="$1" opener="$2" body="$3" closer="${4-EOF}" f checked
+# plant <name> <opener> <body> [closer]: a fixture whose rendered body is YAML.
+# plant_unparsed takes the same arguments for one whose rendered body yq must
+# refuse, so the fixture stays invalid if render changes.
+plant() { plant_as yaml "$@"; }
+plant_unparsed() { plant_as not-yaml "$@"; }
+plant_as() {
+    local want="$1" name="$2" opener="$3" body="$4" closer="${5-EOF}" f checked dash=0
     f="$fixtures/scripts/$name.sh"
     printf '%s\n%s\n%s\n' "$opener" "$body" "$closer" > "$f"
     checked="$(bash -n "$f" 2>&1 | grep -v 'delimited by end-of-file' || true)"
     [ -z "$checked" ] || fail "fixture $name is not valid shell: $checked"
-    checked="$(render "$body" | yq '.' 2>&1 >/dev/null)" || fail "fixture $name is not valid YAML: $checked"
+    [[ "$opener" != *'<<-'* ]] || dash=1
+    if checked="$(printf '%s\n' "$body" | render "$dash" | yq '.' 2>&1 >/dev/null)"; then
+        [ "$want" = yaml ] || fail "fixture $name was meant to be invalid YAML once rendered, and yq read it"
+    else
+        [ "$want" = not-yaml ] || fail "fixture $name is not valid YAML: $checked"
+    fi
 }
 module_labelled="apiVersion: cfgd.io/v1alpha1
 kind: Module
@@ -696,6 +777,122 @@ plant quoted-key "$apply" "'apiVersion': cfgd.io/v1alpha1
 kind: Module
 metadata:
   name: quoted-key"
+# kind and apiVersion in every spelling the parser resolves to a string.
+plant tag-kind "$apply" "apiVersion: cfgd.io/v1alpha1
+kind: !!str Module
+metadata:
+  name: tag-kind
+  labels:
+    \${E2E_RUN_LABEL_YAML}
+spec:
+  packages: []"
+plant anchor-kind "$apply" "apiVersion: cfgd.io/v1alpha1
+kind: &k Module
+metadata:
+  name: anchor-kind
+spec:
+  packages: []"
+plant folded-kind "$apply" "apiVersion: cfgd.io/v1alpha1
+kind: >-
+  Module
+metadata:
+  name: folded-kind"
+plant literal-kind "$apply" "apiVersion: cfgd.io/v1alpha1
+kind: |
+  Module
+metadata:
+  name: literal-kind"
+plant seq-kind "$apply" "apiVersion: cfgd.io/v1alpha1
+kind: [Module]
+metadata:
+  name: seq-kind"
+alias_api="metadata:
+  name: alias-api
+  annotations:
+    group: &v cfgd.io/v1alpha1
+apiVersion: *v
+kind: Module"
+plant alias-api "$apply" "$alias_api"
+# Each expansion renders as one word, so text inside it that is not YAML
+# (a ": " in a plain value) never reaches the parser; $VAR names the label too.
+plant substitutions "$apply" "apiVersion: cfgd.io/v1alpha1
+kind: Module
+metadata:
+  name: \$(echo 'a: b')-\`echo 'c: d'\`-\${NAME:-e: f}-\$((1 + 1))
+  labels:
+    \$E2E_RUN_LABEL_YAML
+spec:
+  packages: []"
+# cfgd.io text inside a string is no object.
+cm_block="apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cm-block
+data:
+  module.yaml: |
+    apiVersion: cfgd.io/v1alpha1
+    kind: Module
+    metadata:
+      name: in-a-string
+      labels:
+        \${E2E_RUN_LABEL_YAML}"
+plant cm-block "$apply" "$cm_block"
+cm_inline='apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cm-inline
+data: {note: "apiVersion: cfgd.io/v1alpha1"}'
+plant cm-inline "$apply" "$cm_inline"
+captured="yaml=\$(cat <<EOF"
+captured_close="EOF"$'\n'")"
+plant captured-tag-kind "$captured" "apiVersion: cfgd.io/v1alpha1
+kind: !!str Module
+metadata:
+  name: captured-tag-kind" "$captured_close"
+plant captured-anchor-kind "$captured" "apiVersion: cfgd.io/v1alpha1
+kind: &k Module
+metadata:
+  name: captured-anchor-kind" "$captured_close"
+plant captured-folded-kind "$captured" "apiVersion: cfgd.io/v1alpha1
+kind: >-
+  Module
+metadata:
+  name: captured-folded-kind" "$captured_close"
+plant captured-alias-api "$captured" "$alias_api" "$captured_close"
+plant captured-cm-block "$captured" "$cm_block" "$captured_close"
+plant captured-cm-inline "$captured" "$cm_inline" "$captured_close"
+plant nested-map "$apply" 'apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nested-map
+spec:
+  template:
+    apiVersion: cfgd.io/v1alpha1
+    kind: Module'
+plant flow-list "$apply" "{apiVersion: v1, kind: List, items: [{apiVersion: cfgd.io/v1alpha1, kind: Module, metadata: {name: flow-list}}]}"
+plant json-hand "$apply" '{
+  "apiVersion": "cfgd.io/v1alpha1",
+  "kind": "Module",
+  "metadata": {"name": "json-hand", "labels": {"cfgd.io/e2e-run": "42"}}
+}'
+# A substitution at the start of a line renders as one word in column 0, which
+# ends the block scalar above it.
+key_at_column_0="apiVersion: cfgd.io/v1alpha1
+kind: Module
+metadata:
+  name: unparsed
+  labels:
+    \${E2E_RUN_LABEL_YAML}
+spec:
+  signature:
+    cosign:
+      publicKey: |
+\$(sed 's/^/        /' key.pub)"
+plant_unparsed unparsed "$apply" "$key_at_column_0"
+plant_unparsed captured-unparsed "$captured" "$key_at_column_0" "$captured_close"
+plant_unparsed file-script "cat > \"\$dir/apply.sh\" <<EOF" 'if true; then
+    echo "apiVersion: cfgd.io/v1alpha1" | kubectl apply -f -
+fi'
 plant heredoc-unterminated "$apply" "$module_labelled" ''
 plant by-path-stdin "kubectl apply -n ns -f - <<EOF" "$module_labelled"
 cat > "$fixtures/scripts/by-path.sh" <<'FIXTURE'
@@ -716,12 +913,20 @@ bash -n "$fixtures/scripts/by-path.sh" || fail "fixture by-path is not valid she
 outside_yaml='apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: outside\n'
 printf '%s\n' "printf '$outside_yaml' | kubectl apply -f -" > "$fixtures/scripts/outside.sh"
 bash -n "$fixtures/scripts/outside.sh" || fail "fixture outside is not valid shell"
-printf '%s\n' "echo 'apiVersion: \"cfgd.io/v1alpha1\" # quoted' | kubectl apply -f -" > "$fixtures/scripts/outside-quoted.sh"
+printf '%s\n' "echo 'apiVersion: \"cfgd.io/v1alpha1\" # quoted' | kubectl apply -f -" \
+    "echo 'apiVersion : cfgd.io/v1alpha1' | kubectl apply -f -" \
+    "echo \"'apiVersion': cfgd.io/v1alpha1\" | kubectl apply -f -" > "$fixtures/scripts/outside-quoted.sh"
 bash -n "$fixtures/scripts/outside-quoted.sh" || fail "fixture outside-quoted is not valid shell"
 # shellcheck disable=SC2059 # the payload is the printf format the fixture runs
 parsed="$(printf "$outside_yaml" | yq '.' 2>&1 >/dev/null)" || fail "fixture outside is not valid YAML: $parsed"
 
-want_fixture_scan="SITE apply-yaml.sh:1
+want_fixture_scan="SITE substitutions.sh:1
+SITE alias-api.sh:1
+UNLABELLED alias-api.sh:6
+SITE anchor-kind.sh:1
+UNLABELLED anchor-kind.sh:2
+SITE apply-yaml.sh:1
+UNLABELLED apply-yaml.sh:2
 BYPATH by-path.sh:1
 BYPATH by-path.sh:2
 BYPATH by-path.sh:3
@@ -731,41 +936,46 @@ BYPATH by-path.sh:6
 BYPATH by-path.sh:7
 BYPATH by-path.sh:8
 SITE by-path-stdin.sh:1
+CAPTURED captured-alias-api.sh:6
+CAPTURED captured-anchor-kind.sh:2
 CAPTURED captured-dup.sh:2
+CAPTURED captured-folded-kind.sh:2
 NESTED captured-list.sh:11
+NESTED captured-list.sh:5
 CAPTURED captured-operator-kind.sh:2
 FILEDOC captured-other-kind.sh:1
-FILEDOC captured-to-file.sh:1
-UNLABELLED apply-yaml.sh:2
 SITE captured.sh:1
 UNLABELLED captured.sh:2
+CAPTURED captured-tag-kind.sh:2
+FILEDOC captured-to-file.sh:1
+UNPARSED captured-unparsed.sh:1
 SITE comment-heredoc.sh:2
 UNLABELLED comment-heredoc.sh:3
 SITE continued.sh:2
 UNLABELLED continued.sh:3
 SITE dash.sh:1
 UNLABELLED dash.sh:2
-SITE exec-apply.sh:1
-UNLABELLED exec-apply.sh:2
 SITE entry-comment.sh:1
 UNLABELLED entry-comment.sh:2
+SITE exec-apply.sh:1
+UNLABELLED exec-apply.sh:2
 FILEDOC file-operator-kind.sh:1
-FLOWDOC flow-doc.sh:2
+SITE flow-doc.sh:1
 SITE flow-labels.sh:1
+NESTED flow-list.sh:2
 SITE flow-metadata.sh:1
-FLOWMETA flow-metadata.sh:2
+SITE flow-multiline.sh:1
+UNLABELLED flow-multiline.sh:3
+SITE folded-kind.sh:1
+UNLABELLED folded-kind.sh:2
 SITE hand-spelled.sh:1
 HANDSPELLED hand-spelled.sh:2
 UNTERMINATED heredoc-unterminated.sh:1
 FILEDOC in-pod.sh:1
-FLOWDOC json-doc.sh:3
-FLOWDOC spaced-colon.sh:2
-FLOWDOC flow-multiline.sh:3
-NOKIND no-kind.sh:2
-FLOWDOC tagged-value.sh:2
-SPLITKEY split-key.sh:2
-SITE spaced-kind.sh:1
-UNLABELLED spaced-kind.sh:2
+SITE json-doc.sh:1
+UNLABELLED json-doc.sh:3
+SITE json-hand.sh:1
+HANDSPELLED json-hand.sh:3
 SITE key-prefix.sh:1
 UNLABELLED key-prefix.sh:2
 SITE label-absent.sh:1
@@ -774,22 +984,40 @@ SITE labelled.sh:1
 SITE labels-comment.sh:1
 UNLABELLED labels-comment.sh:2
 NESTED list.sh:5
+SITE literal-kind.sh:1
+UNLABELLED literal-kind.sh:2
 SITE multi-doc.sh:1
 UNLABELLED multi-doc.sh:12
+NESTED nested-map.sh:8
 SITE nested-metadata.sh:1
 UNLABELLED nested-metadata.sh:2
+NOKIND no-kind.sh:2
 SITE no-labels.sh:1
 UNLABELLED no-labels.sh:2
 OTHERKIND other-kind.sh:2
-OUTSIDE outside.sh:1
 OUTSIDE outside-quoted.sh:1
-FLOWDOC quoted-key.sh:2
-SITE quoted.sh:1
+OUTSIDE outside-quoted.sh:2
+OUTSIDE outside-quoted.sh:3
+OUTSIDE outside.sh:1
+SITE quoted-key.sh:1
+UNLABELLED quoted-key.sh:2
 SITE quoted-kind.sh:1
 UNLABELLED quoted-kind.sh:2
+SITE quoted.sh:1
 QUOTED quoted.sh:2
 SITE rc-ok-comment.sh:1
 UNLABELLED rc-ok-comment.sh:2
+NOKIND seq-kind.sh:2
+SITE spaced-colon.sh:1
+UNLABELLED spaced-colon.sh:2
+SITE spaced-kind.sh:1
+UNLABELLED spaced-kind.sh:2
+SITE split-key.sh:1
+UNLABELLED split-key.sh:2
+SITE tagged-value.sh:1
+UNLABELLED tagged-value.sh:2
+SITE tag-kind.sh:1
+UNPARSED unparsed.sh:1
 SITE var-prefix.sh:1
 UNLABELLED var-prefix.sh:2"
 fixture_scan="$(scan_run_labels "$kinds" "$fixtures/scripts")"
@@ -882,6 +1110,16 @@ expect_red "heredocs.awk failing to read the scripts fails the scan" \
     "$(PATH="$scratch/fail-reader:$PATH" scan_run_labels "$kinds" "$fixtures/scripts")" '^UNREADABLE heredocs.awk exited 2'
 expect_red "the scan's own awk failing fails the scan" \
     "$(PATH="$scratch/fail-scan:$PATH" scan_run_labels "$kinds" "$fixtures/scripts")" "^UNREADABLE the scan's awk exited 2"
+fail_awk "$scratch/fail-collector" '*work=*'
+expect_red "the scan's heredoc collector failing fails the scan" \
+    "$(PATH="$scratch/fail-collector:$PATH" scan_run_labels "$kinds" "$fixtures/scripts")" "^UNREADABLE the scan's heredoc collector exited 2"
+# A yq that fails without naming a body has each body read on its own, so its
+# error reaches every heredoc the cluster would be sent.
+mkdir -p "$scratch/fail-yq"
+printf '#!/bin/sh\necho "Error: no yq here" >&2\nexit 1\n' > "$scratch/fail-yq/yq"
+chmod +x "$scratch/fail-yq/yq"
+expect_red "yq failing on every body fails the scan" \
+    "$(PATH="$scratch/fail-yq:$PATH" scan_run_labels "$kinds" "$fixtures/scripts/labelled.sh")" "^UNPARSED $fixtures/scripts/labelled.sh:1: .*Error: no yq here"
 
 printf 'a: 1\n' > "$scratch/no-kinds.yaml"
 expect_red "a CRD file that names no kinds fails the kind list" "$(operator_kinds "$scratch/no-kinds.yaml")" "^FAIL $scratch/no-kinds.yaml names no CRD kinds"

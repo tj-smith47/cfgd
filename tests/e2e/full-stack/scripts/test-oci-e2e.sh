@@ -135,7 +135,6 @@ else
         rm -rf "$OCI02_KEYDIR"
 
         if [ -n "$PUB_KEY" ]; then
-            # shellcheck disable=SC2001  # sed indents each line; an expansion cannot
             kubectl apply -f - <<EOF
 apiVersion: cfgd.io/v1alpha1
 kind: Module
@@ -151,7 +150,7 @@ spec:
   signature:
     cosign:
       publicKey: |
-$(echo "$PUB_KEY" | sed 's/^/        /')
+        $(sed '2,$s/^/        /' <<<"$PUB_KEY")
 EOF
         else
             kubectl apply -f - <<EOF
