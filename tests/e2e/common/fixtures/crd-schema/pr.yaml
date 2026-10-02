@@ -7,6 +7,9 @@ spec:
   names:
     kind: Widget
     plural: widgets
+    singular: widget
+    shortNames:
+    - wdg
   scope: Namespaced
   versions:
   - name: v1alpha1

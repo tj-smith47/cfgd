@@ -56,7 +56,7 @@ status:
     status: "True"
     reason: NoConflicts
   - type: Established
-    status: "True"
-    reason: InitialNamesAccepted
+    status: "False"
+    reason: NotAccepted
   storedVersions:
   - v1alpha1

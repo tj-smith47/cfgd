@@ -29,7 +29,7 @@ spec:
     additionalPrinterColumns:
     - jsonPath: .spec.size
       name: Size
-      type: integer
+      type: string
     subresources:
       status: {}
     schema:

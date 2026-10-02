@@ -44,9 +44,6 @@ spec:
               size:
                 description: How big the widget is.
                 type: integer
-              description:
-                description: A property named description, which the comparison keeps.
-                type: string
 status:
   acceptedNames:
     kind: Widget

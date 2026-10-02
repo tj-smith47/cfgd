@@ -25,7 +25,7 @@ spec:
   versions:
   - name: v1alpha1
     served: true
-    storage: true
+    storage: false
     additionalPrinterColumns:
     - jsonPath: .spec.size
       name: Size

@@ -21,7 +21,7 @@ spec:
     singular: widget
     shortNames:
     - wdg
-  scope: Namespaced
+  scope: Cluster
   versions:
   - name: v1alpha1
     served: true

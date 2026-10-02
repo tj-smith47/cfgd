@@ -230,6 +230,10 @@ single-source-of-truth wiring.
   stand-in kubectl and fails when any script under `tests/e2e/` starts a
   `kubectl port-forward` outside `common/helpers.sh`, or when a `run-all.sh`
   sources a setup that starts one before installing its EXIT trap.
+  Its `tests/e2e/common/test-pr-install.sh` takes kubectl (an offline
+  `annotate --local` call that reads the CRD fixtures' YAML) and jq from the
+  ubuntu-latest image, with no install step and no cluster, and reports one
+  FAIL when either is missing.
 - The `audit` job also runs `task shellcheck`, after `task audit:test`: the
   lint gate over every tracked `*.sh` (`git ls-files '*.sh'`, the same
   population `task lint` and `task ci` check). It sits in this job because it

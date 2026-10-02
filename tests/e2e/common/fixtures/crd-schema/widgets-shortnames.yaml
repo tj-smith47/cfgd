@@ -20,7 +20,7 @@ spec:
     listKind: WidgetList
     singular: widget
     shortNames:
-    - wdg
+    - wd
   scope: Namespaced
   versions:
   - name: v1alpha1

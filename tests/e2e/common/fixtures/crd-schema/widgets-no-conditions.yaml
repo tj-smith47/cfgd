@@ -51,12 +51,5 @@ status:
   acceptedNames:
     kind: Widget
     plural: widgets
-  conditions:
-  - type: NamesAccepted
-    status: "True"
-    reason: NoConflicts
-  - type: Established
-    status: "True"
-    reason: InitialNamesAccepted
   storedVersions:
   - v1alpha1

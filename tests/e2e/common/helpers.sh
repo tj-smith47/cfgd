@@ -369,10 +369,10 @@ argocd_managed() {
     [ -n "$id" ]
 }
 
-# --- CRD schema check ---
+# --- CRD check ---
 
-# ArgoCD applies the cluster's CRDs from this file, so setup only compares the
-# PR's CRDs with them and never writes them.
+# ArgoCD applies the cluster's CRDs from this file, so no e2e script writes
+# them; setup and the suites that need them compare the PR's CRDs with them.
 export E2E_CRD_MANIFEST="/db/manifests/k3s/namespaces/crossplane-system/cfgd-crds.yaml"
 
 # CRD YAML on stdin; one compact JSON object per CustomResourceDefinition on
@@ -380,42 +380,61 @@ export E2E_CRD_MANIFEST="/db/manifests/k3s/namespaces/crossplane-system/cfgd-crd
 # kind, while `annotate --local` reads the YAML offline; removing an annotation
 # the documents do not carry leaves them as written.
 crd_docs_json() {
-    kubectl annotate --local -o json -f - cfgd.io/e2e-unset- \
-        | jq -c '.items[]? // . | select(.kind == "CustomResourceDefinition")'
+    local json
+    json="$(kubectl annotate --local -o json -f - cfgd.io/e2e-unset-)" || return 1
+    jq -c '.items[]? // . | select(.kind == "CustomResourceDefinition")' <<<"$json"
 }
 
-# One CRD as JSON on stdin; its versions with every description string removed
-# and keys sorted, so a CRD whose only change is documentation compares equal.
-# A key named `description` inside `properties` holds an object, so it stays.
+# One CRD as JSON on stdin; its spec with every description string removed and
+# keys sorted, so a CRD whose only change is documentation compares equal. The
+# API server fills names.listKind, names.singular, conversion and
+# preserveUnknownFields when a CRD omits them, and the generated file omits
+# some of them, so both sides get those defaults before they are compared. A
+# key named `description` inside `properties` holds an object, so it stays.
 crd_shape() {
     jq -S 'walk(if type == "object" and (.description | type) == "string" then del(.description) else . end)
-           | .spec.versions | map({name, served, storage, schema, subresources, additionalPrinterColumns})'
+           | .spec
+           | .names.listKind //= (.names.kind + "List")
+           | .names.singular //= (.names.kind | ascii_downcase)
+           | .conversion //= {strategy: "None"}
+           | .preserveUnknownFields //= false'
 }
 
-# check_pr_crds <crd_docs_json output>: compares each CRD the PR ships with the
-# one on the cluster and prints an ERROR to stderr for each that is missing or
-# differs, followed by up to 40 lines of diff (cluster first). Returns 1 when
-# any CRD is missing, differs or cannot be read, or when there is none to compare.
+# Why a live CRD (JSON on stdin) is not Established, or nothing when it is.
+crd_not_established() {
+    jq -r 'first(.status.conditions[]? | select(.type == "Established")) // {}
+           | if .status == "True" then empty
+             elif .status == null then "no Established condition"
+             else .reason // "Established is \(.status)" end'
+}
+
+# check_pr_crds < <CRD YAML>: compares the spec of each CRD in the PR's
+# manifest, descriptions aside, with the cluster's copy, and checks that copy
+# is Established. Prints an ERROR to stderr for each CRD that is missing,
+# differs (followed by up to 40 lines of diff, cluster first), is not
+# Established or cannot be read. Returns 1 when any did, or when the manifest
+# holds no CRD to compare.
 check_pr_crds() {
-    local docs="$1" doc name want live_doc live status=0 checked=0
-    local fix="ArgoCD owns the cluster's CRDs; copy schemas/crds.yaml over $E2E_CRD_MANIFEST and push, then re-run."
+    local docs doc name want live_doc live why status=0 checked=0
+    local fix="ArgoCD owns the cluster's CRDs; copy schemas/crds.yaml over $E2E_CRD_MANIFEST, push it and let ArgoCD sync, then rerun setup."
+    if ! docs="$(crd_docs_json)"; then
+        echo "ERROR: could not read the PR's CRD manifest. Check that it is valid YAML and that kubectl and jq are on PATH, then rerun setup." >&2
+        return 1
+    fi
     while IFS= read -r doc; do
         [ -n "$doc" ] || continue
         name="$(jq -r '.metadata.name // empty' <<<"$doc")"
         if [ -z "$name" ]; then
-            echo "ERROR: a CRD in the PR's manifest has no metadata.name. Check the cfgd-gen-crds output." >&2
+            echo "ERROR: a CRD in the PR's manifest has no metadata.name. Check the cfgd-gen-crds output, then rerun setup." >&2
             status=1
             continue
         fi
         checked=$((checked + 1))
-        want="$(crd_shape <<<"$doc")" || want=""
-        case "$want" in
-            "" | "[]" | null)
-                echo "ERROR: the PR's $name has no versions to compare. Check the cfgd-gen-crds output." >&2
-                status=1
-                continue
-                ;;
-        esac
+        if ! want="$(crd_shape <<<"$doc")" || ! jq -e '(.versions | length) > 0' <<<"$want" >/dev/null; then
+            echo "ERROR: the PR's $name has no versions to compare. Check the cfgd-gen-crds output, then rerun setup." >&2
+            status=1
+            continue
+        fi
         if ! live_doc="$(kubectl get crd "$name" --ignore-not-found -o json)"; then
             echo "ERROR: could not read crd/$name. Check that the runner can get customresourcedefinitions, then rerun setup." >&2
             status=1
@@ -426,19 +445,23 @@ check_pr_crds() {
             status=1
             continue
         fi
-        if ! live="$(crd_shape <<<"$live_doc")"; then
-            echo "ERROR: could not read the versions of the cluster's crd/$name. Check that it is a CustomResourceDefinition, then rerun setup." >&2
+        if ! live="$(crd_shape <<<"$live_doc")" || ! why="$(crd_not_established <<<"$live_doc")"; then
+            echo "ERROR: could not read the cluster's crd/$name as JSON. Check that kubectl get crd $name -o json prints a CustomResourceDefinition, then rerun setup." >&2
             status=1
             continue
         fi
         if [ "$want" != "$live" ]; then
-            echo "ERROR: this PR changes the $name schema. $fix" >&2
+            echo "ERROR: this PR changes the spec of $name (descriptions aside). $fix" >&2
             diff <(printf '%s\n' "$live") <(printf '%s\n' "$want") | head -40 >&2 || true # rc-ok: diff exits 1 on the difference being shown
+            status=1
+        fi
+        if [ -n "$why" ]; then
+            echo "ERROR: crd/$name is not Established on the cluster ($why). Check ArgoCD's cfgd-crds sync and the CRD's status.conditions, then rerun setup." >&2
             status=1
         fi
     done <<<"$docs"
     if [ "$checked" -eq 0 ]; then
-        echo "ERROR: the PR's CRD manifest holds no CustomResourceDefinition to compare with the cluster. Check the cfgd-gen-crds output." >&2
+        echo "ERROR: the PR's CRD manifest holds no CustomResourceDefinition to compare with the cluster. Check the cfgd-gen-crds output, then rerun setup." >&2
         return 1
     fi
     return "$status"

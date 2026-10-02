@@ -219,7 +219,7 @@ start_lease_renewer
 echo "Checking runner permissions..."
 PREFLIGHT_OK=true
 for check in \
-    "create customresourcedefinitions" \
+    "get customresourcedefinitions" \
     "create clusterroles" \
     "get nodes" \
     "create csidrivers"; do
@@ -542,16 +542,7 @@ if [ -z "$CRD_YAML" ]; then
     echo "ERROR: cfgd-gen-crds produced no output"
     exit 1
 fi
-if ! pr_crd_docs=$(printf '%s\n' "$CRD_YAML" | crd_docs_json); then
-    echo "ERROR: could not read the cfgd-gen-crds output as CRDs. Check that it is valid YAML and that jq is on PATH, then rerun setup." >&2
-    exit 1
-fi
-check_pr_crds "$pr_crd_docs" || exit 1
-
-mapfile -t pr_crd_names < <(jq -r '.metadata.name' <<<"$pr_crd_docs")
-for crd in "${pr_crd_names[@]}"; do
-    kubectl wait --for=condition=established "crd/$crd" --timeout=30s 2>/dev/null || true
-done
+printf '%s\n' "$CRD_YAML" | check_pr_crds || exit 1
 
 # --- Step 5: Apply cert-manager webhook TLS ---
 echo "Applying webhook TLS (cert-manager)..."

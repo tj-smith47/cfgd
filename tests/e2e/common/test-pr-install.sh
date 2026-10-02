@@ -8,9 +8,10 @@
 #   - every cfgd.io object the operator and full-stack suites apply carries the
 #     run label
 #   - no e2e script runs a multi-command subshell or brace group as a condition
-#   - setup's CRD check passes on CRDs that match the cluster's, description text
-#     aside, and stops on a changed schema, a missing or unreadable CRD, or a
-#     manifest with nothing to compare
+#   - setup's CRD check passes on CRDs whose spec matches the cluster's,
+#     description text and API server defaults aside, and stops on a changed
+#     spec, a CRD that is missing, unreadable or not Established, or a manifest
+#     with nothing to compare
 # kubectl is a stub on PATH, so nothing reaches a cluster; the CRD check's stub
 # hands YAML reading to the real kubectl, which reads it offline.
 #
@@ -876,29 +877,13 @@ else
     fail "set -e is off inside a condition, so only the last command's status is read: ${cond_found:-the scan failed}"
 fi
 
-# The CRD schema check against fixture CRDs. A stub `kubectl get crd <name>`
-# prints the fixture named <name>.yaml in CRD_LIVE_DIR as the cluster's copy,
-# prints nothing when there is none and fails when CRD_GET_FAIL is set; every
-# other kubectl call, and the YAML reading of each fixture, goes to the real
-# kubectl, which needs no cluster for `annotate --local`.
+# The CRD check against fixture CRDs. A stub `kubectl get crd <name>` prints
+# the fixture named <name>.yaml in CRD_LIVE_DIR as the cluster's copy, prints
+# nothing when there is none and fails when CRD_GET_FAIL is set; every other
+# kubectl call, and the YAML reading of each fixture, goes to the real kubectl,
+# which needs no cluster for `annotate --local`.
 crd_fixtures="$here/fixtures/crd-schema"
-if ! real_kubectl="$(command -v kubectl)"; then
-    fail "the CRD schema check needs kubectl on PATH to read YAML, and there is none"
-fi
-mkdir -p "$scratch/crd-bin"
-cat > "$scratch/crd-bin/kubectl" <<'STUB'
-#!/usr/bin/env bash
-if [ "$1 $2" = "get crd" ]; then
-    if [ -n "${CRD_GET_FAIL:-}" ]; then
-        echo "Error from server (Forbidden): customresourcedefinitions is forbidden" >&2
-        exit 1
-    fi
-    [ -f "$CRD_LIVE_DIR/$3.yaml" ] || exit 0
-    exec "$REAL_KUBECTL" annotate --local -o json -f "$CRD_LIVE_DIR/$3.yaml" cfgd.io/e2e-unset-
-fi
-exec "$REAL_KUBECTL" "$@"
-STUB
-chmod +x "$scratch/crd-bin/kubectl"
+crd_fix="ArgoCD owns the cluster's CRDs; copy schemas/crds.yaml over /db/manifests/k3s/namespaces/crossplane-system/cfgd-crds.yaml, push it and let ArgoCD sync, then rerun setup."
 
 # crd_case <live dir> <PR manifest> [VAR=value...]: prints check_pr_crds's
 # output, then `rc=<status>`.
@@ -909,8 +894,7 @@ crd_case() {
         REAL_KUBECTL="$real_kubectl" CRD_LIVE_DIR="$live" \
         REGISTRY=r.example CLI_SCRATCH="$scratch" "$@" \
         bash -c 'source "$1/common/helpers.sh"
-            docs="$(crd_docs_json < "$2")" || { echo "crd_docs_json failed"; echo "rc=9"; exit 0; }
-            rc=0; check_pr_crds "$docs" 2>&1 || rc=$?
+            rc=0; check_pr_crds < "$2" 2>&1 || rc=$?
             echo "rc=$rc"' _ "$e2e_root" "$pr"
 }
 
@@ -936,32 +920,79 @@ expect_crd() {
     fi
 }
 
-crd_fix="ArgoCD owns the cluster's CRDs; copy schemas/crds.yaml over /db/manifests/k3s/namespaces/crossplane-system/cfgd-crds.yaml and push, then re-run."
-crd_out="$(crd_case "$(crd_live equal widgets.yaml)" "$crd_fixtures/pr.yaml")"
-expect_crd "the CRD check passes when the cluster's CRDs match the PR's, server fields and status aside" "$crd_out" 0 ""
-crd_out="$(crd_case "$(crd_live description widgets-description.yaml)" "$crd_fixtures/pr.yaml")"
-expect_crd "the CRD check passes when only a description differs" "$crd_out" 0 ""
-crd_out="$(crd_case "$(crd_live changed widgets-changed.yaml)" "$crd_fixtures/pr.yaml")"
-expect_crd "the CRD check stops on a changed schema field and names only that CRD" "$crd_out" 1 \
-    "ERROR: this PR changes the widgets.example.io schema. $crd_fix"
-if grep -q '"type": "string"' <<<"$crd_out" && grep -q '"type": "integer"' <<<"$crd_out"; then
-    pass "the CRD check prints both sides of the schema difference"
-else
-    fail "the CRD check printed no diff showing the size type change: $crd_out"
-fi
-crd_out="$(crd_case "$(crd_live missing "")" "$crd_fixtures/pr.yaml")"
-expect_crd "the CRD check stops on a CRD the cluster does not have and names it" "$crd_out" 1 \
-    "ERROR: this PR adds widgets.example.io, which the cluster does not have. $crd_fix"
-crd_out="$(crd_case "$(crd_live unreadable widgets.yaml)" "$crd_fixtures/pr.yaml" CRD_GET_FAIL=1)"
-expect_crd "the CRD check stops when it cannot read the cluster's CRDs" "$crd_out" 1 \
-    "ERROR: could not read crd/widgets.example.io. Check that the runner can get customresourcedefinitions, then rerun setup.
+# expect_crd_change <live fixture> <what changed>: the check stops on the
+# widgets CRD alone with the "changes the spec" ERROR.
+expect_crd_change() {
+    expect_crd "the CRD check stops when the cluster's widgets CRD differs in $2" \
+        "$(crd_case "$(crd_live "${1%.yaml}" "$1")" "$crd_fixtures/pr.yaml")" 1 \
+        "ERROR: this PR changes the spec of widgets.example.io (descriptions aside). $crd_fix"
+}
+
+crd_cases() {
+    local out
+    out="$(crd_case "$(crd_live equal widgets.yaml)" "$crd_fixtures/pr.yaml")"
+    expect_crd "the CRD check passes on a server-shaped copy (API defaults, last-applied annotation, server metadata, status) of the PR's CRDs" "$out" 0 ""
+    out="$(crd_case "$(crd_live description widgets-description.yaml)" "$crd_fixtures/pr.yaml")"
+    expect_crd "the CRD check passes when only a description differs" "$out" 0 ""
+
+    out="$(crd_case "$(crd_live changed widgets-changed.yaml)" "$crd_fixtures/pr.yaml")"
+    expect_crd "the CRD check stops on a changed schema field and names only that CRD" "$out" 1 \
+        "ERROR: this PR changes the spec of widgets.example.io (descriptions aside). $crd_fix"
+    if grep -q '"type": "string"' <<<"$out" && grep -q '"type": "integer"' <<<"$out"; then
+        pass "the CRD check prints both sides of the spec difference"
+    else
+        fail "the CRD check printed no diff showing the size type change: $out"
+    fi
+    expect_crd_change widgets-property-dropped.yaml "a property named description"
+    expect_crd_change widgets-columns.yaml "a printer column"
+    expect_crd_change widgets-subresources.yaml "its subresources"
+    expect_crd_change widgets-served.yaml "a version's served flag"
+    expect_crd_change widgets-storage.yaml "a version's storage flag"
+    expect_crd_change widgets-scope.yaml "its scope"
+    expect_crd_change widgets-shortnames.yaml "its shortNames"
+    expect_crd_change widgets-group.yaml "its group"
+
+    out="$(crd_case "$(crd_live not-established widgets-not-established.yaml)" "$crd_fixtures/pr.yaml")"
+    expect_crd "the CRD check stops on a CRD whose Established condition is False" "$out" 1 \
+        "ERROR: crd/widgets.example.io is not Established on the cluster (NotAccepted). Check ArgoCD's cfgd-crds sync and the CRD's status.conditions, then rerun setup."
+    out="$(crd_case "$(crd_live no-conditions widgets-no-conditions.yaml)" "$crd_fixtures/pr.yaml")"
+    expect_crd "the CRD check stops on a CRD with no Established condition" "$out" 1 \
+        "ERROR: crd/widgets.example.io is not Established on the cluster (no Established condition). Check ArgoCD's cfgd-crds sync and the CRD's status.conditions, then rerun setup."
+
+    out="$(crd_case "$(crd_live missing "")" "$crd_fixtures/pr.yaml")"
+    expect_crd "the CRD check stops on a CRD the cluster does not have and names it" "$out" 1 \
+        "ERROR: this PR adds widgets.example.io, which the cluster does not have. $crd_fix"
+    out="$(crd_case "$(crd_live unreadable widgets.yaml)" "$crd_fixtures/pr.yaml" CRD_GET_FAIL=1)"
+    expect_crd "the CRD check stops when it cannot read the cluster's CRDs" "$out" 1 \
+        "ERROR: could not read crd/widgets.example.io. Check that the runner can get customresourcedefinitions, then rerun setup.
 ERROR: could not read crd/gadgets.example.io. Check that the runner can get customresourcedefinitions, then rerun setup."
-crd_out="$(crd_case "$(crd_live empty "")" "$crd_fixtures/not-a-crd.yaml")"
-expect_crd "the CRD check fails on a manifest with no CRD in it" "$crd_out" 1 \
-    "ERROR: the PR's CRD manifest holds no CustomResourceDefinition to compare with the cluster. Check the cfgd-gen-crds output."
-crd_out="$(crd_case "$(crd_live noversions widgets.yaml)" "$crd_fixtures/no-versions.yaml")"
-expect_crd "the CRD check fails on a PR CRD with no versions" "$crd_out" 1 \
-    "ERROR: the PR's widgets.example.io has no versions to compare. Check the cfgd-gen-crds output."
+    out="$(crd_case "$(crd_live empty "")" "$crd_fixtures/not-a-crd.yaml")"
+    expect_crd "the CRD check fails on a manifest with no CRD in it" "$out" 1 \
+        "ERROR: the PR's CRD manifest holds no CustomResourceDefinition to compare with the cluster. Check the cfgd-gen-crds output, then rerun setup."
+    out="$(crd_case "$(crd_live noversions widgets.yaml)" "$crd_fixtures/no-versions.yaml")"
+    expect_crd "the CRD check fails on a PR CRD with no versions" "$out" 1 \
+        "ERROR: the PR's widgets.example.io has no versions to compare. Check the cfgd-gen-crds output, then rerun setup."
+}
+
+if ! real_kubectl="$(command -v kubectl)" || ! command -v jq >/dev/null; then
+    fail "the CRD check needs kubectl (it reads YAML offline with annotate --local) and jq on PATH; its cases did not run"
+else
+    mkdir -p "$scratch/crd-bin"
+    cat > "$scratch/crd-bin/kubectl" <<'STUB'
+#!/usr/bin/env bash
+if [ "$1 $2" = "get crd" ]; then
+    if [ -n "${CRD_GET_FAIL:-}" ]; then
+        echo "Error from server (Forbidden): customresourcedefinitions is forbidden" >&2
+        exit 1
+    fi
+    [ -f "$CRD_LIVE_DIR/$3.yaml" ] || exit 0
+    exec "$REAL_KUBECTL" annotate --local -o json -f "$CRD_LIVE_DIR/$3.yaml" cfgd.io/e2e-unset-
+fi
+exec "$REAL_KUBECTL" "$@"
+STUB
+    chmod +x "$scratch/crd-bin/kubectl"
+    crd_cases
+fi
 
 if [ "$failures" -gt 0 ]; then
     echo "$failures check(s) failed"

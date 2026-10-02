@@ -30,8 +30,6 @@ spec:
     - jsonPath: .spec.size
       name: Size
       type: integer
-    subresources:
-      status: {}
     schema:
       openAPIV3Schema:
         description: A widget.

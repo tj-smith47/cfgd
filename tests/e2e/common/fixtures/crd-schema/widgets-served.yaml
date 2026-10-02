@@ -24,7 +24,7 @@ spec:
   scope: Namespaced
   versions:
   - name: v1alpha1
-    served: true
+    served: false
     storage: true
     additionalPrinterColumns:
     - jsonPath: .spec.size
