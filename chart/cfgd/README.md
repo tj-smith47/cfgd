@@ -40,14 +40,17 @@ helm install cfgd oci://ghcr.io/tj-smith47/charts/cfgd -n cfgd-system --create-n
 |---|---|---|
 | `installCRDs` | `true` | Install the cfgd.io CRDs with the chart |
 | `operator.replicaCount` | `1` | Operator replicas; `operator.leaderElection.enabled` (`true`) makes >1 safe |
+| `operator.watchLabelSelector` | `""` | Reconcile only objects matching this label selector; empty reconciles every object |
 | `operator.strategy` | `{}` | Operator Deployment update strategy, rendered as given. Empty derives it from `deviceGateway.enabled`, `deviceGateway.persistence.enabled` and `operator.leaderElection.enabled`; see the table in [Health and Leadership](../../docs/operator.md#health-and-leadership) |
 | `agent.serverUrl` | `""` | Device gateway URL the node agent checks in to |
 | `agent.apiKeySecret.name` | `""` | Secret holding the agent API key (key: `agent.apiKeySecret.key`, default `api-key`) |
 | `agent.reconcileInterval` | `5m` | Node agent reconcile interval |
 | `webhook.failurePolicy` | `Fail` | Validating webhook failure policy |
+| `webhook.objectSelector` | `{}` | Admit only objects matching this selector; empty admits every cfgd.io object |
 | `mutatingWebhook.failurePolicy` | `Ignore` | `Ignore` skips injection silently on webhook failure; set `Fail` to require it |
 | `deviceGateway.enrollmentMethod` | `token` | `token` (bootstrap tokens) or `key` (SSH/GPG challenge-response) |
 | `deviceGateway.persistence.enabled` | `true` | PVC for the gateway SQLite database (`deviceGateway.persistence.size`, default `1Gi`) |
+| `csiDriver.name` | `csi.cfgd.io` | The CSIDriver name, the kubelet plugin directory and the name the operator injects |
 | `csiDriver.cache.maxSizeGi` | `5` | Per-node module cache size |
 | `metrics.enabled` | `true` | Prometheus metrics endpoint; `metrics.serviceMonitor.enabled` (`false`) adds a ServiceMonitor |
 | `rbacExamples.enabled` | `false` | Install example RBAC roles for multi-tenant personas |

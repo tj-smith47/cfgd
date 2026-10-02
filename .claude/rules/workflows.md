@@ -214,8 +214,10 @@ single-source-of-truth wiring.
   anodizer on PATH from the action step, docker, helm, yq, jq), and that job
   checks out with `fetch-depth: 0` because the prediction walks the tags.
   The third chart step in that job is `task chart:test`, which renders the
-  operator Deployment per case in `chart/cfgd/tests/render.sh` and compares
-  its update strategy and readiness probe with `chart/cfgd/tests/golden/`. It
+  chart per case in `chart/cfgd/tests/render.sh` and compares the operator
+  Deployment's update strategy and readiness probe, and the cluster-scoped
+  objects with their webhook selectors, the CSI plugin paths and the env that
+  names the CSI driver, with `chart/cfgd/tests/golden/`. It
   needs only helm and yq, and it sits beside the other chart guards so every
   chart check runs in one place.
   After it, `task e2e:tags:check` runs `tests/e2e/common/test-image-tags.sh`:

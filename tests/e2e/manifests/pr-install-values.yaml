@@ -1,0 +1,20 @@
+agent: {enabled: false}
+deviceGateway: {enabled: false}
+podDisruptionBudget: {enabled: false}
+networkPolicy: {enabled: false}
+metrics: {serviceMonitor: {enabled: false}}
+webhook: {failurePolicy: Fail}
+mutatingWebhook: {failurePolicy: Fail}
+operator:
+  image: {pullPolicy: Always}
+  imagePullSecrets: [{name: registry-credentials}]
+csiDriver:
+  enabled: true
+  name: e2e.csi.cfgd.io
+  image: {pullPolicy: Always}
+  imagePullSecrets: [{name: registry-credentials}]
+  extraVolumes:
+    - name: docker-config
+      secret: {secretName: registry-credentials, items: [{key: .dockerconfigjson, path: config.json}]}
+  extraVolumeMounts:
+    - {name: docker-config, mountPath: /etc/cfgd/docker, readOnly: true}

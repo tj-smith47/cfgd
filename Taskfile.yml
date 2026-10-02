@@ -315,7 +315,7 @@ tasks:
       - '${ANODIZER_BIN:-anodizer} check version-files'
 
   chart:test:
-    desc: Render the chart's operator Deployment per case and compare its update strategy and readiness probe with chart/cfgd/tests/golden (UPDATE=1 rewrites the goldens).
+    desc: Render the chart per case and compare the operator Deployment's update strategy and readiness probe, and the cluster-scoped objects, CSI plugin paths and CSI/watch env, with chart/cfgd/tests/golden (UPDATE=1 rewrites the goldens).
     cmds:
       - bash chart/cfgd/tests/render.sh
 

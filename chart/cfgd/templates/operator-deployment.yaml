@@ -72,6 +72,12 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.name
+            - name: CSI_DRIVER_NAME
+              value: {{ .Values.csiDriver.name | quote }}
+            {{- with .Values.operator.watchLabelSelector }}
+            - name: WATCH_LABEL_SELECTOR
+              value: {{ . | quote }}
+            {{- end }}
             {{- if .Values.operator.leaderElection.enabled }}
             - name: LEADER_ELECTION_ENABLED
               value: "true"

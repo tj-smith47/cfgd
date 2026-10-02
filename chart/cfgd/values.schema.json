@@ -69,7 +69,8 @@
         "topologySpreadConstraints": { "type": "array", "description": "Topology spread constraints for operator pods" },
         "terminationGracePeriodSeconds": { "type": "integer", "description": "Termination grace period for operator pods" },
         "livenessProbe": { "type": "object", "description": "Liveness probe configuration" },
-        "readinessProbe": { "type": "object", "description": "Readiness probe configuration" }
+        "readinessProbe": { "type": "object", "description": "Readiness probe configuration" },
+        "watchLabelSelector": { "type": "string", "description": "Reconcile only objects matching this label selector; empty reconciles every object" }
       },
       "required": ["image"]
     },
@@ -199,7 +200,8 @@
           "type": "integer",
           "minimum": 1,
           "maximum": 30
-        }
+        },
+        "objectSelector": { "type": "object", "description": "Admit only objects matching this selector; empty admits every cfgd.io object" }
       }
     },
     "deviceGateway": {
@@ -262,6 +264,7 @@
       "description": "CSI driver DaemonSet for module volume mounts",
       "properties": {
         "enabled": { "type": "boolean" },
+        "name": { "type": "string", "maxLength": 63, "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$", "description": "The CSIDriver name, the kubelet plugin directory and the name the operator injects" },
         "image": { "type": "object" },
         "cache": { "type": "object" },
         "metricsPort": { "type": "integer" },

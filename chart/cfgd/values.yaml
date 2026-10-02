@@ -51,6 +51,8 @@ operator:
   # any credential environment your registry needs.
   extraEnv: []
   imagePullSecrets: []
+  # Reconcile only objects matching this label selector; empty reconciles every object.
+  watchLabelSelector: ""
   podAnnotations: {}
   podLabels: {}
   topologySpreadConstraints: []
@@ -140,6 +142,8 @@ webhook:
       kind: Issuer
   failurePolicy: Fail
   timeoutSeconds: 10
+  # Admit only objects matching this selector; empty admits every cfgd.io object.
+  objectSelector: {}
 
 # Device gateway
 deviceGateway:
@@ -160,6 +164,8 @@ deviceGateway:
 # CSI driver
 csiDriver:
   enabled: false
+  # The CSIDriver name, the kubelet plugin directory and the name the operator injects.
+  name: csi.cfgd.io
   image:
     repository: ghcr.io/tj-smith47/cfgd-csi
     # Pinned to the cfgd-csi crate's own version; see the operator image comment
