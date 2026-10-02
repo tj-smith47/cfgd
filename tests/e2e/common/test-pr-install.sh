@@ -143,14 +143,17 @@ operator_kinds() {
 # heredocs.awk and prints one line per finding, tag first:
 #   SITE         a heredoc fed to kubectl apply/create/replace or apply_yaml that
 #                holds an operator object
-#   FILEDOC      a heredoc written to a file (cat >, or inside a pod) that holds a
-#                cfgd.io document; such a file is never a cluster object
+#   FILEDOC      a heredoc written to a file (cat >, or inside a pod), or captured
+#                into a variable, that holds a cfgd.io document needing no label
+#   CAPTURED     an operator object in a heredoc captured into a variable, where
+#                the scan cannot see whether it reaches the cluster
 #   OTHERKIND    a cfgd.io document of a kind the operator does not serve, applied
 #                to the cluster
 #   UNLABELLED   an operator object whose metadata.labels lacks ${E2E_RUN_LABEL_YAML}
 #   HANDSPELLED  an operator object whose label is spelled by hand
 #   FLOWMETA     an operator object whose metadata is in flow form
-#   NESTED       a cfgd.io object nested in another document, such as a List
+#   NESTED       a cfgd.io object nested in another document, such as a List;
+#                an ownerReferences entry is a reference and does not count
 #   QUOTED       an operator object in a quoted-delimiter heredoc, where
 #                ${E2E_RUN_LABEL_YAML} cannot expand
 #   OUTSIDE      a cfgd.io apiVersion outside any heredoc
@@ -186,12 +189,14 @@ scan_run_labels() {
             n = split(s, parts, ",")
             for (i = 1; i <= n; i++) { sub(/^[ \t]+/, "", parts[i]); sub(/[ \t]+$/, "", parts[i]); label_entry(parts[i]) }
         }
-        function check_doc(first, last,    i, base, s, api, nested, kind, name, inmeta, flowmeta, mchild, inlab, lind) {
-            base = -1; labelled = 0; handspelled = 0
+        function check_doc(first, last,    i, base, s, api, nested, kind, name, inmeta, flowmeta, mchild, inlab, lind, owner) {
+            base = -1; labelled = 0; handspelled = 0; owner = -1
             for (i = first; i <= last; i++) {
                 if (blank_or_comment(body[i])) continue
                 if (base < 0) base = indent(body[i])
                 s = strip(body[i])
+                if (owner >= 0 && (indent(body[i]) > owner || (indent(body[i]) == owner && s ~ /^- /))) continue
+                owner = (s ~ /^ownerReferences:/) ? indent(body[i]) : -1
                 if (indent(body[i]) != base) { if (cfgd_api(s)) nested = bline[i]; continue }
                 if (cfgd_api(s)) api = bline[i]
                 if (s ~ /^kind:/) { kind = s; sub(/^kind:[ \t]*/, "", kind); gsub(/["\047]/, "", kind) }
@@ -200,8 +205,15 @@ scan_run_labels() {
             if (!api && !nested) return
             has_cfgd = 1
             if (class == "FILE") return
+            if (class == "CAPTURE") {
+                if (api && ((" " kind " ") in operator)) {
+                    print "CAPTURED " file ":" api " " kind ": the scan cannot see where a captured heredoc goes; feed it to kubectl apply directly"
+                    captured = 1
+                }
+                return
+            }
             if (!api) {
-                print "NESTED " file ":" nested ": a cfgd.io object inside a List; apply it as its own document"
+                print "NESTED " file ":" nested ": a cfgd.io object nested inside " kind "; apply it as its own document"
                 return
             }
             if (!((" " kind " ") in operator)) { print "OTHERKIND " file ":" api " " kind; return }
@@ -242,13 +254,13 @@ scan_run_labels() {
         function close_heredoc(id,   i, first, n) {
             n = count[id]
             for (i = 1; i <= n; i++) { body[i] = text[id, i]; bline[i] = at[id, i] }
-            class = cls[id]; quoted = qtd[id]; has_cfgd = 0; site = 0
+            class = cls[id]; quoted = qtd[id]; has_cfgd = 0; site = 0; captured = 0
             first = 1
             for (i = 1; i <= n + 1; i++) {
                 if (i == n + 1 || body[i] ~ /^---([ \t]|$)/) { check_doc(first, i - 1); first = i + 1 }
             }
             if (site) print "SITE " file ":" opened[id]
-            if (has_cfgd && class == "FILE") print "FILEDOC " file ":" opened[id]
+            if (has_cfgd && (class == "FILE" || (class == "CAPTURE" && !captured))) print "FILEDOC " file ":" opened[id]
         }
         BEGIN { n = split(kinds, k, " "); for (i = 1; i <= n; i++) operator[" " k[i] " "] = 1 }
         /^UNREADABLE / { print; next }
@@ -257,7 +269,12 @@ scan_run_labels() {
         $1 == "OPEN" {
             id = $4; opened[id] = $3; qtd[id] = $6; dash[id] = $7; count[id] = 0
             c = rest(7)
-            cls[id] = (c ~ /kubectl([ \t].*)?[ \t](apply|create|replace)([ \t]|$)/ || c ~ /(^|[^A-Za-z0-9_])apply_yaml([ \t]|$)/) ? "CLUSTER" : "FILE"
+            if (c ~ /kubectl([ \t].*)?[ \t](apply|create|replace)([ \t]|$)/ || c ~ /(^|[^A-Za-z0-9_])apply_yaml([ \t]|$)/) cls[id] = "CLUSTER"
+            else {
+                # A descriptor duplication such as 2>&1 writes no file.
+                gsub(/[0-9]*>&[0-9-]+/, "", c)
+                cls[id] = (c ~ /\$\(/ && c !~ />/) ? "CAPTURE" : "FILE"
+            }
             next
         }
         $1 == "BODY" {
@@ -323,7 +340,7 @@ else
 fi
 others="$(grep '^OTHERKIND ' <<<"$tree_scan" | cut -d' ' -f2- | sed "s|$e2e_root/||" | paste -sd ';' - | sed 's/;/; /g' || true)"
 [ -z "$others" ] || pass "cfgd.io objects outside the operator's watch, so no run label: $others"
-pass "$(grep -c '^FILEDOC ' <<<"$tree_scan" || true) heredocs write a cfgd.io document to a file, which needs no run label"
+pass "$(grep -c '^FILEDOC ' <<<"$tree_scan" || true) heredocs hold a cfgd.io document that needs no run label: a file written with cat > or inside a pod, or a captured document of a kind the operator does not serve"
 
 # The scan against planted fixtures: one per way a suite writes a cfgd.io
 # document, one per placement of the label and one per spelling the rule
@@ -418,7 +435,40 @@ plant apply-yaml "apply_yaml \"T01\" <<EOF" "$module_unlabelled"
 plant captured "RESULT=\$(kubectl apply -f - 2>&1 <<EOF || true" "$module_unlabelled" "EOF"$'\n'")"
 plant continued "kubectl apply -n \"\$E2E_NAMESPACE\" \\"$'\n'"    -f - <<EOF" "$module_unlabelled"
 plant dash "kubectl apply -f - <<-EOF" $'\t'"${module_unlabelled//$'\n'/$'\n\t'}" $'\tEOF'
-plant no-sink "yaml=\$(cat <<EOF" "$module_labelled" "EOF"$'\n'")"$'\n'"echo \"\$yaml\" | kubectl apply -f -"
+plant captured-operator-kind "yaml=\$(cat <<EOF" 'apiVersion: cfgd.io/v1alpha1
+kind: MachineConfig
+metadata:
+  name: captured
+spec:
+  hostname: captured' "EOF"$'\n'")"$'\n'"echo \"\$yaml\" | kubectl apply -f -"
+plant captured-other-kind "yaml=\$(cat <<EOF" 'apiVersion: cfgd.io/v1alpha1
+kind: TeamConfig
+metadata:
+  name: captured
+spec:
+  team: a' "EOF"$'\n'")"
+plant owner-reference "kubectl apply -f - <<EOF" 'apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: owned
+  ownerReferences:
+  - apiVersion: cfgd.io/v1alpha1
+    kind: MachineConfig
+    name: owner
+    uid: 00000000-0000-0000-0000-000000000000
+data:
+  k: v'
+plant owner-reference-indented "kubectl apply -f - <<EOF" 'apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: owned
+  ownerReferences:
+    - apiVersion: cfgd.io/v1alpha1
+      kind: MachineConfig
+      name: owner
+      uid: 00000000-0000-0000-0000-000000000000
+data:
+  k: v'
 plant file-operator-kind "cat > \"\$dir/mc.yaml\" <<EOF" 'apiVersion: cfgd.io/v1alpha1
 kind: MachineConfig
 metadata:
@@ -471,6 +521,8 @@ bash -n "$fixtures/scripts/outside.sh" || fail "fixture outside is not valid she
 parsed="$(printf "$outside_yaml" | yq '.' 2>&1 >/dev/null)" || fail "fixture outside is not valid YAML: $parsed"
 
 want_fixture_scan="SITE apply-yaml.sh:1
+CAPTURED captured-operator-kind.sh:2
+FILEDOC captured-other-kind.sh:1
 UNLABELLED apply-yaml.sh:2
 SITE captured.sh:1
 UNLABELLED captured.sh:2
@@ -506,7 +558,6 @@ SITE nested-metadata.sh:1
 UNLABELLED nested-metadata.sh:2
 SITE no-labels.sh:1
 UNLABELLED no-labels.sh:2
-FILEDOC no-sink.sh:1
 OTHERKIND other-kind.sh:2
 OUTSIDE outside.sh:1
 SITE quoted.sh:1

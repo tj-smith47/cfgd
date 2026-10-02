@@ -16,8 +16,10 @@
 #
 # Every opener on a line queues a body, and the bodies follow in order. A
 # terminator may be indented with tabs only after <<-, and may be followed by
-# the quote that closes a `bash -c '...'` or the `)` that closes a `$(...)`
-# holding the heredoc. Openers are looked for in the line as one pass over its
+# the quote that closes a `bash -c '...'`. A line of the delimiter followed by
+# the `)` of a `$(...)` holding the heredoc is no terminator to bash: it ends the
+# body where the substitution ends, warning "delimited by end-of-file", and the
+# reader closes the body on that line too. Openers are looked for in the line as one pass over its
 # characters reduces it: a '...' span is kept as written, \x is one unit, a #
 # after whitespace ends the line, a ((...)) span is dropped, and a "..." span
 # is dropped unless it follows << or is still open at the end of the line.

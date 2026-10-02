@@ -98,13 +98,15 @@ the label expands.
 `common/heredocs.awk`, the heredoc reader `test-verdicts.sh` uses too, and fails on:
 
 - an object with no `${E2E_RUN_LABEL_YAML}` in its labels, or the label spelled by hand
-- metadata in flow form, a quoted delimiter, or a cfgd.io object nested in a `List`
+- metadata in flow form, a quoted delimiter, or a cfgd.io object nested inside another (a `List`); an `ownerReferences` entry is a reference and passes
+- an operator object in a heredoc captured into a variable (`yaml=$(cat <<EOF`), whose destination the scan cannot see
 - a cfgd.io `apiVersion` outside any heredoc
 - fewer sites than its suite's floor (the operator, full-stack and gateway suites each carry one)
 
 A cfgd.io document of another kind (the crossplane suite's `TeamConfig`) is listed
 as outside the operator's watch. A heredoc written to a file (`cat >`, or a cfgd
-config file written inside a pod) is counted and needs no label.
+config file written inside a pod), or captured into a variable when it holds a kind the
+operator does not serve, is counted and needs no label.
 
 ## Components ArgoCD owns
 
