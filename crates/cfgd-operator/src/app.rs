@@ -265,6 +265,9 @@ pub async fn run() -> Result<()> {
     let client = Client::try_default().await?;
 
     let leader_enabled = runtime::is_leader_election_enabled();
+    if let Some(selector) = runtime::watch_config().label_selector {
+        tracing::info!(selector = %selector, "watching only labelled objects");
+    }
     let cert_dir = cfgd_core::env_or("WEBHOOK_CERT_DIR", "/tmp/k8s-webhook-server/serving-certs");
     let webhook_port = env::parse_port_env("WEBHOOK_PORT", 9443);
     let webhook_enabled = runtime::webhook_certs_present(Path::new(&cert_dir));

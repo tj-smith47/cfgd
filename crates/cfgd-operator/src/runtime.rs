@@ -9,6 +9,7 @@
 use std::path::Path;
 
 use kube::Client;
+use kube::runtime::watcher::Config as WatcherConfig;
 use uuid::Uuid;
 
 use crate::controllers::BackupPolicyCache;
@@ -41,6 +42,17 @@ pub fn is_leader_election_enabled() -> bool {
 /// `POD_NAMESPACE`; defaults to `cfgd-system` when unset.
 pub fn leader_namespace() -> String {
     cfgd_core::env_or("POD_NAMESPACE", cfgd_core::CFGD_SYSTEM_NAMESPACE)
+}
+
+/// The watch every controller lists and watches its `cfgd.io` kinds through.
+/// `WATCH_LABEL_SELECTOR` confines this operator to the objects it names, so
+/// two installs in one cluster (the release and an e2e run) never reconcile
+/// the same object. Unset or empty watches everything.
+pub fn watch_config() -> WatcherConfig {
+    match std::env::var("WATCH_LABEL_SELECTOR") {
+        Ok(s) if !s.is_empty() => WatcherConfig::default().labels(&s),
+        _ => WatcherConfig::default(),
+    }
 }
 
 /// The identity string this operator instance uses for leader election.
@@ -139,6 +151,62 @@ mod tests {
         with_test_env_var("LEADER_ELECTION_ENABLED", Some("true"), || {
             assert!(is_leader_election_enabled());
         });
+    }
+
+    #[test]
+    #[serial]
+    fn watch_config_carries_the_label_selector_only_when_set() {
+        with_test_env_var("WATCH_LABEL_SELECTOR", None, || {
+            assert_eq!(watch_config().label_selector, None);
+        });
+        with_test_env_var("WATCH_LABEL_SELECTOR", Some(""), || {
+            assert_eq!(watch_config().label_selector, None);
+        });
+        with_test_env_var("WATCH_LABEL_SELECTOR", Some("cfgd.io/e2e-run=42"), || {
+            assert_eq!(
+                watch_config().label_selector.as_deref(),
+                Some("cfgd.io/e2e-run=42")
+            );
+        });
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn watch_config_selector_reaches_the_machine_config_list_request() {
+        use crate::controllers::test_kube_harness::{ExpectedCall, MockKubeHarness};
+        use crate::crds::MachineConfig;
+        use futures::StreamExt;
+        use kube::Api;
+        use kube::runtime::watcher;
+
+        let mut config = WatcherConfig::default();
+        with_test_env_var("WATCH_LABEL_SELECTOR", Some("cfgd.io/e2e-run=42"), || {
+            config = watch_config();
+        });
+        let empty_list = serde_json::json!({
+            "apiVersion": "cfgd.io/v1alpha1",
+            "kind": "MachineConfigList",
+            "metadata": {"resourceVersion": "1"},
+            "items": [],
+        });
+        let (ctx, _registry, harness) = MockKubeHarness::new(vec![
+            ExpectedCall::list("/apis/cfgd.io/v1alpha1/machineconfigs")
+                .with_query_contains("labelSelector=cfgd.io%2Fe2e-run%3D42")
+                .returning_json(&empty_list),
+        ]);
+
+        // Init, then the first list page answered empty ends in InitDone;
+        // stopping there keeps the watcher from opening its watch request.
+        let events: Vec<_> =
+            watcher::watcher(Api::<MachineConfig>::all(ctx.client.clone()), config)
+                .take(2)
+                .collect()
+                .await;
+        assert!(
+            matches!(events.last(), Some(Ok(watcher::Event::InitDone))),
+            "the list should complete the initial sync: {events:?}"
+        );
+        harness.finish().await;
     }
 
     #[test]

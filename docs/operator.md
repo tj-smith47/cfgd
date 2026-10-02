@@ -277,6 +277,16 @@ The operator runs [kube-rs](https://kube.rs/) controllers that watch and reconci
 - **DriftAlert controller**: tracks acknowledgment and resolution state
 - **BackupPolicy controller**: projects each policy's backup schedules onto every MachineConfig its selector matches, reporting rather than overriding a unit the machine pins locally or reports an owner for that no layer spells. Reconciles every 60s, retries a failed reconcile after 30s
 
+Set `WATCH_LABEL_SELECTOR` to a Kubernetes label selector to confine every controller to the `cfgd.io` objects it matches. Two operators in one cluster with disjoint selectors never reconcile the same object:
+
+```yaml
+env:
+  - name: WATCH_LABEL_SELECTOR
+    value: cfgd.io/e2e-run=42
+```
+
+Unset or empty, the operator watches every object. Namespaces are always read in full, since ClusterConfigPolicy selectors match on namespace labels.
+
 ## Admission Webhook
 
 Validates CRD specs on create/update. Catches invalid configurations (missing required fields, malformed selectors) before they're persisted to etcd.
@@ -632,7 +642,7 @@ cfgd-operator             # run the operator / gateway (no-arg invocation)
 cfgd-operator --unknown   # exit non-zero immediately (no hang)
 ```
 
-All runtime configuration is via environment variables (`DEVICE_GATEWAY_*`, `WEBHOOK_CERT_DIR`, ...); there are no serving-mode flags.
+All runtime configuration is via environment variables (`DEVICE_GATEWAY_*`, `WATCH_LABEL_SELECTOR`, `WEBHOOK_CERT_DIR`, ...); there are no serving-mode flags.
 
 ## DaemonSet Mode
 

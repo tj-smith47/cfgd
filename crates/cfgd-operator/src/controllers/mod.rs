@@ -607,12 +607,12 @@ pub async fn run(
     // Each controller builder owns the reflector behind its primary watch, so
     // taking its store here is what lets every OTHER controller read that
     // resource from a cache instead of listing it per reconcile.
-    let mc_builder = Controller::new(machines, WatcherConfig::default());
-    let da_builder = Controller::new(alerts, WatcherConfig::default());
-    let cp_builder = Controller::new(policies, WatcherConfig::default());
-    let ccp_builder = Controller::new(cluster_policies, WatcherConfig::default());
-    let mod_builder = Controller::new(modules, WatcherConfig::default());
-    let bp_builder = Controller::new(backup_policies, WatcherConfig::default());
+    let mc_builder = Controller::new(machines, crate::runtime::watch_config());
+    let da_builder = Controller::new(alerts, crate::runtime::watch_config());
+    let cp_builder = Controller::new(policies, crate::runtime::watch_config());
+    let ccp_builder = Controller::new(cluster_policies, crate::runtime::watch_config());
+    let mod_builder = Controller::new(modules, crate::runtime::watch_config());
+    let bp_builder = Controller::new(backup_policies, crate::runtime::watch_config());
 
     // Namespaces are read by the ClusterConfigPolicy controller but rooted by
     // no controller, so this cache carries its own reflector. It is a METADATA
@@ -673,7 +673,7 @@ pub async fn run(
     let mc_controller = mc_builder
         .owns(
             Api::<DriftAlert>::all(client.clone()),
-            WatcherConfig::default(),
+            crate::runtime::watch_config(),
         )
         .run(
             reconcile_machine_config,
@@ -693,7 +693,7 @@ pub async fn run(
     let cp_controller = cp_builder
         .watches(
             Api::<MachineConfig>::all(client.clone()),
-            WatcherConfig::default(),
+            crate::runtime::watch_config(),
             move |mc| {
                 // When a MachineConfig changes, requeue all ConfigPolicies in its namespace
                 let ns = mc.namespace().unwrap_or_default();
@@ -731,7 +731,7 @@ pub async fn run(
     let bp_controller = bp_builder
         .watches(
             Api::<MachineConfig>::all(client.clone()),
-            WatcherConfig::default(),
+            crate::runtime::watch_config(),
             move |mc| {
                 // A machine reports which of its backup units it pins locally
                 // in its own status, so a device flipping that ownership must
