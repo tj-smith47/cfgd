@@ -43,6 +43,33 @@ e2e_image_tag cfgd-csi    # 0.7.2
 resolves each image under every override and fails when a script under `tests/e2e/`
 spells `IMAGE_TAG` or a first-party image reference itself.
 
+## The PR install
+
+Each run installs its own operator and CSI driver beside the live release, using
+`manifests/pr-install-values.yaml`. Every name it uses comes from the run id in
+`common/helpers.sh`. The run id is `GITHUB_RUN_ID` in CI and `local-<short HEAD sha>`
+on a workstation, so the setup process and every suite process of one checkout
+agree on it. For run 42:
+
+```bash
+E2E_INSTALL_RELEASE   # cfgd-e2e-42 (the Helm release)
+E2E_INSTALL_NS        # cfgd-e2e-42-sys
+E2E_OPERATOR_DEPLOY   # cfgd-e2e-42-operator
+E2E_CSI_DS            # cfgd-e2e-42-csi
+E2E_WEBHOOK_SVC       # cfgd-e2e-42-webhook
+E2E_OPERATOR_PODS     # app.kubernetes.io/instance=cfgd-e2e-42,app.kubernetes.io/component=operator
+E2E_CSI_PODS          # app.kubernetes.io/instance=cfgd-e2e-42,app.kubernetes.io/component=csi-driver
+CSI_DRIVER_NAME       # e2e.csi.cfgd.io
+```
+
+`ensure_namespace` labels each namespace it creates with `cfgd.io/e2e-run=<run id>`,
+which the PR install's mutating webhook selects on, the heartbeat refreshes and the
+janitor reaps by. It never labels `cfgd-system`. `running_image` takes the namespace
+as an optional fourth argument (default `cfgd-system`), so
+`running_image daemonset "$E2E_CSI_DS" cfgd-csi "$E2E_INSTALL_NS"` reads the PR
+install's driver. `common/test-pr-install.sh` (run by `task e2e:tags:check`) checks
+these names, the run id and both helpers with a stub `kubectl`, so it needs no cluster.
+
 ## Components ArgoCD owns
 
 On the shared cluster ArgoCD deploys the operator, the device gateway and the CSI

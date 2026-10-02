@@ -82,13 +82,27 @@ e2e_image() {
     printf '%s:%s\n' "$(e2e_image_repo "$1")" "$tag"
 }
 E2E_NAMESPACE="${E2E_NAMESPACE:-cfgd-e2e-${GITHUB_RUN_ID:-$(date +%s)-$$}}"
-E2E_RUN_ID="${GITHUB_RUN_ID:-local-$$}"
+# A local run id comes from the checkout, so the setup process and each suite
+# process name the same PR install.
+E2E_RUN_ID="${GITHUB_RUN_ID:-local-$(git -C "$REPO_ROOT" rev-parse --short HEAD 2>/dev/null || echo dev)}"
 E2E_RUN_LABEL="cfgd.io/e2e-run=$E2E_RUN_ID"
 # Job-specific label for cluster-scoped resources (prevents parallel job cleanup races)
 E2E_JOB_LABEL="cfgd.io/e2e-job=$E2E_NAMESPACE"
 # YAML-friendly forms for embedding in heredoc labels (key: "value" instead of key=value)
 export E2E_RUN_LABEL_YAML="cfgd.io/e2e-run: \"$E2E_RUN_ID\""
 export E2E_JOB_LABEL_YAML="cfgd.io/e2e-job: \"$E2E_NAMESPACE\""
+
+# The PR-owned install of the operator and CSI driver, beside the live release
+# in cfgd-system. Setup, the suites, teardown and the janitor all read these
+# names, so the chart's fullname rule (<release>-<component>) is spelled here
+# only.
+export E2E_INSTALL_RELEASE="cfgd-e2e-$E2E_RUN_ID"
+export E2E_INSTALL_NS="$E2E_INSTALL_RELEASE-sys"
+export E2E_OPERATOR_DEPLOY="$E2E_INSTALL_RELEASE-operator"
+export E2E_CSI_DS="$E2E_INSTALL_RELEASE-csi"
+export E2E_WEBHOOK_SVC="$E2E_INSTALL_RELEASE-webhook"
+export E2E_OPERATOR_PODS="app.kubernetes.io/instance=$E2E_INSTALL_RELEASE,app.kubernetes.io/component=operator"
+export E2E_CSI_PODS="app.kubernetes.io/instance=$E2E_INSTALL_RELEASE,app.kubernetes.io/component=csi-driver"
 
 TEST_POD=""
 
@@ -182,12 +196,21 @@ ensure_label() {
 # resource the case creates into it is about to fail with nothing saying why.
 # The rc is captured and re-checked with a `get`, so only the second one stops
 # the case.
+#
+# A namespace it creates carries the run label: the PR install's mutating
+# webhook selects on it, the heartbeat refreshes by it and the janitor reaps by
+# it. $CFGD_NAMESPACE belongs to the live release and outlives every run, so it
+# never gets the label even on a cluster where setup creates it.
 ensure_namespace() {
   local ns="$1" rc=0
   kubectl create namespace "$ns" >/dev/null 2>&1 || rc=$?
-  if [ "$rc" -ne 0 ] && ! kubectl get namespace "$ns" >/dev/null 2>&1; then
-    echo "FAIL: namespace $ns could not be created (rc=$rc)" >&2
-    return 1
+  if [ "$rc" -ne 0 ]; then
+    if ! kubectl get namespace "$ns" >/dev/null 2>&1; then
+      echo "FAIL: namespace $ns could not be created (rc=$rc)" >&2
+      return 1
+    fi
+  elif [ "$ns" != "$CFGD_NAMESPACE" ]; then
+    ensure_label namespace "$ns" "$E2E_RUN_LABEL" --overwrite
   fi
 }
 
@@ -301,12 +324,12 @@ wait_for_daemonset() {
     return 1
 }
 
-# The image a live cfgd-system workload runs, read off the object itself. The
-# container is chosen by name so a sidecar listed first is never reported as
-# the component.
+# The image a live workload runs, read off the object itself: <kind> <name>
+# <container> [namespace, default cfgd-system]. The container is chosen by name
+# so a sidecar listed first is never reported as the component.
 running_image() {
-    local kind="$1" name="$2" container="$3" image
-    image="$(kubectl get "$kind" "$name" -n cfgd-system \
+    local kind="$1" name="$2" container="$3" namespace="${4:-cfgd-system}" image
+    image="$(kubectl get "$kind" "$name" -n "$namespace" \
         -o jsonpath="{.spec.template.spec.containers[?(@.name==\"$container\")].image}" 2>/dev/null || true)"
     printf '%s\n' "${image:-not deployed}"
 }
@@ -460,7 +483,10 @@ wait_for_url() {
 
 # --- OCI / Module helpers ---
 
-export CSI_DRIVER_NAME="csi.cfgd.io"
+# The CSIDriver the PR install registers (csiDriver.name in
+# manifests/pr-install-values.yaml), so its pods never resolve to the live
+# release's csi.cfgd.io.
+export CSI_DRIVER_NAME="e2e.csi.cfgd.io"
 export MODULES_ANNOTATION="cfgd.io/modules"
 
 # Create a minimal test module directory for OCI push testing.
