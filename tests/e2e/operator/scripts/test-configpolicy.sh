@@ -16,6 +16,8 @@ kind: ConfigPolicy
 metadata:
   name: e2e-security-baseline
   namespace: ${E2E_NAMESPACE}
+  labels:
+    ${E2E_RUN_LABEL_YAML}
 spec:
   packages:
     - name: vim
@@ -59,6 +61,8 @@ kind: MachineConfig
 metadata:
   name: e2e-workstation-2
   namespace: ${E2E_NAMESPACE}
+  labels:
+    ${E2E_RUN_LABEL_YAML}
 spec:
   hostname: e2e-host-2
   profile: minimal
@@ -107,6 +111,8 @@ kind: ConfigPolicy
 metadata:
   name: e2e-version-policy
   namespace: ${E2E_NAMESPACE}
+  labels:
+    ${E2E_RUN_LABEL_YAML}
 spec:
   packages:
     - name: vim
@@ -145,6 +151,8 @@ kind: ConfigPolicy
 metadata:
   name: e2e-selector-policy
   namespace: ${E2E_NAMESPACE}
+  labels:
+    ${E2E_RUN_LABEL_YAML}
 spec:
   packages:
     - name: ripgrep

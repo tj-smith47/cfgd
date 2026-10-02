@@ -325,7 +325,7 @@ tasks:
       - sh scripts/tests/test-install-dir.sh
 
   e2e:tags:check:
-    desc: Verify the e2e image tag map resolves each image to IMAGE_TAG or its own override, that port_forward waits for its tunnel and keeps kubectl's output, that the counter readers accept both sample spellings, that no e2e script composes an image reference, starts a port-forward or matches a counter sample outside common/helpers.sh, that no e2e case calls pass_test after printing an excuse, and that helpers.sh names the PR install, its run id and its CSI driver (no cluster needed).
+    desc: Verify the e2e image tag map resolves each image to IMAGE_TAG or its own override, that port_forward waits for its tunnel and keeps kubectl's output, that the counter readers accept both sample spellings, that no e2e script composes an image reference, starts a port-forward or matches a counter sample outside common/helpers.sh, that no e2e case calls pass_test after printing an excuse, that helpers.sh names the PR install, its run id and its CSI driver, and that every cfgd.io object the operator and full-stack suites apply carries the run label (no cluster needed).
     cmds:
       - bash tests/e2e/common/test-image-tags.sh
       - bash tests/e2e/common/test-port-forward.sh

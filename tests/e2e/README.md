@@ -75,6 +75,24 @@ install's driver. `common/test-pr-install.sh` (run by `task e2e:tags:check`) che
 these names, the run id, both helpers and the values file with a stub `kubectl`, so it
 needs no cluster.
 
+The PR operator reconciles only objects labelled with the run, so every cfgd.io
+object a suite applies (a heredoc fed to `kubectl apply`, `create`, `replace` or
+`apply_yaml`) carries the label in its own `metadata.labels`:
+
+```yaml
+metadata:
+  name: e2e-workstation-1
+  namespace: ${E2E_NAMESPACE}
+  labels:
+    ${E2E_RUN_LABEL_YAML}
+```
+
+The heredoc delimiter stays unquoted (`<<EOF`) so the label expands.
+`test-pr-install.sh` scans `operator/scripts` and `full-stack/scripts` and fails on
+an unlabelled object, a quoted delimiter, a cfgd.io document it cannot trace to one
+of those commands, or fewer than 40 such heredocs. A cfgd config file written
+inside a pod (`exec_in_pod`) is no cluster object and needs no label.
+
 ## Components ArgoCD owns
 
 On the shared cluster ArgoCD deploys the operator, the device gateway and the CSI

@@ -38,6 +38,8 @@ kind: DriftAlert
 metadata:
   name: e2e-drift-1
   namespace: ${E2E_NAMESPACE}
+  labels:
+    ${E2E_RUN_LABEL_YAML}
 spec:
   deviceId: e2e-host-1
   machineConfigRef:

@@ -21,7 +21,7 @@ kubectl get validatingwebhookconfiguration cfgd-validating-webhooks > /dev/null 
 wait_for_service_endpoints cfgd-system cfgd-operator 120
 
 # Wrapper: apply YAML and fail the current test (not the whole script) on error.
-# Usage: apply_yaml "T03" <<'EOF' ... EOF
+# Usage: apply_yaml "T03" <<EOF ... EOF
 apply_yaml() {
     local test_id="$1"
     local yaml

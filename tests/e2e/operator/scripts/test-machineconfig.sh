@@ -16,6 +16,8 @@ kind: MachineConfig
 metadata:
   name: e2e-workstation-1
   namespace: ${E2E_NAMESPACE}
+  labels:
+    ${E2E_RUN_LABEL_YAML}
 spec:
   hostname: e2e-host-1
   profile: dev-workstation

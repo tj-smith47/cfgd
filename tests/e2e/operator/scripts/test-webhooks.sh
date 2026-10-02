@@ -38,6 +38,8 @@ kind: DriftAlert
 metadata:
   name: e2e-bad-drift
   namespace: ${E2E_NAMESPACE}
+  labels:
+    ${E2E_RUN_LABEL_YAML}
 spec:
   deviceId: ""
   machineConfigRef:
@@ -59,6 +61,8 @@ kind: MachineConfig
 metadata:
   name: e2e-bad-mc
   namespace: ${E2E_NAMESPACE}
+  labels:
+    ${E2E_RUN_LABEL_YAML}
 spec:
   hostname: ""
   profile: test
@@ -189,6 +193,8 @@ kind: ConfigPolicy
 metadata:
   name: e2e-debug-policy
   namespace: e2e-inject-${E2E_RUN_ID}
+  labels:
+    ${E2E_RUN_LABEL_YAML}
 spec:
   debugModules:
     - name: e2e-debug-mod-${E2E_RUN_ID}

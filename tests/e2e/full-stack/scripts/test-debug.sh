@@ -41,6 +41,8 @@ kind: ConfigPolicy
 metadata:
   name: debug-tools-policy
   namespace: e2e-debug-flow-${E2E_RUN_ID}
+  labels:
+    ${E2E_RUN_LABEL_YAML}
 spec:
   debugModules:
     - name: debug-tools-${E2E_RUN_ID}

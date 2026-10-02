@@ -24,6 +24,8 @@ kind: MachineConfig
 metadata:
   name: mc-worker-1
   namespace: ${ns}
+  labels:
+    ${E2E_RUN_LABEL_YAML}
 spec:
   hostname: worker-1-${ns}
   profile: k8s-worker
@@ -82,6 +84,8 @@ kind: ConfigPolicy
 metadata:
   name: ns-policy-alpha
   namespace: e2e-team-alpha-${E2E_RUN_ID}
+  labels:
+    ${E2E_RUN_LABEL_YAML}
 spec:
   packages:
     - name: vim
