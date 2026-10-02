@@ -71,7 +71,7 @@ kind: Module
 metadata:
   name: e2e-oci-module-${E2E_RUN_ID}
   labels:
-    cfgd.io/e2e-run: "${E2E_RUN_ID}"
+    ${E2E_RUN_LABEL_YAML}
     ${E2E_JOB_LABEL_YAML}
 spec:
   packages: []

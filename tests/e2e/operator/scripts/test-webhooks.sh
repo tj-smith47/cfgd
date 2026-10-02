@@ -19,7 +19,7 @@ kind: ClusterConfigPolicy
 metadata:
   name: e2e-bad-semver-${E2E_RUN_ID}
   labels:
-    cfgd.io/e2e-run: "${E2E_RUN_ID}"
+    ${E2E_RUN_LABEL_YAML}
     ${E2E_JOB_LABEL_YAML}
 spec:
   namespaceSelector: {}
@@ -100,7 +100,7 @@ kind: Module
 metadata:
   name: e2e-inject-mod-${E2E_RUN_ID}
   labels:
-    cfgd.io/e2e-run: "${E2E_RUN_ID}"
+    ${E2E_RUN_LABEL_YAML}
     ${E2E_JOB_LABEL_YAML}
 spec:
   packages:
@@ -176,7 +176,7 @@ kind: Module
 metadata:
   name: e2e-debug-mod-${E2E_RUN_ID}
   labels:
-    cfgd.io/e2e-run: "${E2E_RUN_ID}"
+    ${E2E_RUN_LABEL_YAML}
     ${E2E_JOB_LABEL_YAML}
 spec:
   packages:

@@ -191,7 +191,7 @@ fi
 begin_test "T36: Compliance data included in checkin"
 
 # Create a config with compliance enabled
-exec_in_pod bash -c 'cat > /etc/cfgd/e2e-compliance-checkin.yaml << '"'"'INNEREOF'"'"'
+exec_in_pod bash -c 'cat > /etc/cfgd/e2e-compliance-checkin.yaml << "INNEREOF"
 apiVersion: cfgd.io/v1alpha1
 kind: Config
 metadata:

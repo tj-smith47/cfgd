@@ -43,7 +43,7 @@ kind: ClusterConfigPolicy
 metadata:
   name: e2e-alpha-only-${E2E_RUN_ID}
   labels:
-    cfgd.io/e2e-run: "${E2E_RUN_ID}"
+    ${E2E_RUN_LABEL_YAML}
     ${E2E_JOB_LABEL_YAML}
 spec:
   namespaceSelector:
@@ -100,7 +100,7 @@ kind: ClusterConfigPolicy
 metadata:
   name: e2e-cluster-override-${E2E_RUN_ID}
   labels:
-    cfgd.io/e2e-run: "${E2E_RUN_ID}"
+    ${E2E_RUN_LABEL_YAML}
     ${E2E_JOB_LABEL_YAML}
 spec:
   namespaceSelector:

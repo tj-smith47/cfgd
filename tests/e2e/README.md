@@ -75,9 +75,9 @@ install's driver. `common/test-pr-install.sh` (run by `task e2e:tags:check`) che
 these names, the run id, both helpers and the values file with a stub `kubectl`, so it
 needs no cluster.
 
-The PR operator reconciles only objects labelled with the run, so every cfgd.io
-object a suite applies (a heredoc fed to `kubectl apply`, `create`, `replace` or
-`apply_yaml`) carries the label in its own `metadata.labels`:
+The PR operator reconciles only objects labelled with the run, so every object of
+a kind the operator serves that a suite applies carries the label in its own
+block-form `metadata.labels`, spelled as the variable:
 
 ```yaml
 metadata:
@@ -87,11 +87,24 @@ metadata:
     ${E2E_RUN_LABEL_YAML}
 ```
 
-The heredoc delimiter stays unquoted (`<<EOF`) so the label expands.
-`test-pr-install.sh` scans `operator/scripts` and `full-stack/scripts` and fails on
-an unlabelled object, a quoted delimiter, a cfgd.io document it cannot trace to one
-of those commands, or fewer than 40 such heredocs. A cfgd config file written
-inside a pod (`exec_in_pod`) is no cluster object and needs no label.
+The kinds are the ones `schemas/crds.yaml` declares (`.spec.names.kind`: today
+BackupPolicy, ClusterConfigPolicy, ConfigPolicy, DriftAlert, MachineConfig and
+Module), read when the check runs, so a new CRD joins the rule. An object is applied
+when its heredoc feeds `kubectl apply`, `create` or `replace` or `apply_yaml`,
+including through `exec_in_pod`. The heredoc delimiter stays unquoted (`<<EOF`) so
+the label expands.
+
+`test-pr-install.sh` reads every `tests/e2e/*/scripts` directory through
+`common/heredocs.awk`, the heredoc reader `test-verdicts.sh` uses too, and fails on:
+
+- an object with no `${E2E_RUN_LABEL_YAML}` in its labels, or the label spelled by hand
+- metadata in flow form, a quoted delimiter, or a cfgd.io object nested in a `List`
+- a cfgd.io `apiVersion` outside any heredoc
+- fewer sites than its suite's floor (the operator, full-stack and gateway suites each carry one)
+
+A cfgd.io document of another kind (the crossplane suite's `TeamConfig`) is listed
+as outside the operator's watch. A heredoc written to a file (`cat >`, or a cfgd
+config file written inside a pod) is counted and needs no label.
 
 ## Components ArgoCD owns
 

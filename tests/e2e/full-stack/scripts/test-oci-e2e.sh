@@ -31,7 +31,7 @@ kind: Module
 metadata:
   name: ${OCI01_MOD}
   labels:
-    cfgd.io/e2e-run: "${E2E_RUN_ID}"
+    ${E2E_RUN_LABEL_YAML}
     ${E2E_JOB_LABEL_YAML}
 spec:
   packages: []
@@ -142,7 +142,7 @@ kind: Module
 metadata:
   name: ${OCI02_MOD}
   labels:
-    cfgd.io/e2e-run: "${E2E_RUN_ID}"
+    ${E2E_RUN_LABEL_YAML}
     ${E2E_JOB_LABEL_YAML}
 spec:
   packages: []
@@ -160,7 +160,7 @@ kind: Module
 metadata:
   name: ${OCI02_MOD}
   labels:
-    cfgd.io/e2e-run: "${E2E_RUN_ID}"
+    ${E2E_RUN_LABEL_YAML}
     ${E2E_JOB_LABEL_YAML}
 spec:
   packages: []
@@ -243,7 +243,7 @@ kind: ClusterConfigPolicy
 metadata:
   name: oci03-no-unsigned-${E2E_RUN_ID}
   labels:
-    cfgd.io/e2e-run: "${E2E_RUN_ID}"
+    ${E2E_RUN_LABEL_YAML}
     ${E2E_JOB_LABEL_YAML}
 spec:
   namespaceSelector: {}
@@ -262,7 +262,7 @@ kind: Module
 metadata:
   name: ${OCI03_MOD}
   labels:
-    cfgd.io/e2e-run: "${E2E_RUN_ID}"
+    ${E2E_RUN_LABEL_YAML}
     ${E2E_JOB_LABEL_YAML}
 spec:
   packages: []
@@ -324,7 +324,7 @@ kind: Module
 metadata:
   name: ${OCI04_MOD}
   labels:
-    cfgd.io/e2e-run: "${E2E_RUN_ID}"
+    ${E2E_RUN_LABEL_YAML}
     ${E2E_JOB_LABEL_YAML}
 spec:
   packages: []
@@ -402,7 +402,7 @@ kind: Module
 metadata:
   name: ${OCI05_MOD}
   labels:
-    cfgd.io/e2e-run: "${E2E_RUN_ID}"
+    ${E2E_RUN_LABEL_YAML}
     ${E2E_JOB_LABEL_YAML}
 spec:
   packages: []
@@ -482,7 +482,7 @@ kind: Module
 metadata:
   name: ${OCI06_MOD}
   labels:
-    cfgd.io/e2e-run: "${E2E_RUN_ID}"
+    ${E2E_RUN_LABEL_YAML}
     ${E2E_JOB_LABEL_YAML}
 spec:
   packages: []
