@@ -285,11 +285,13 @@ env:
     value: cfgd.io/e2e-run=42
 ```
 
-Unset or blank, the operator watches every object. Namespaces are always read in full, since ClusterConfigPolicy selectors match on namespace labels.
+Unset or blank, the operator watches every object. Namespaces are always read in full, since ClusterConfigPolicy selectors match on namespace labels. The Helm chart sets it from `operator.watchLabelSelector`.
 
 ## Admission Webhook
 
 Validates CRD specs on create/update. Catches invalid configurations (missing required fields, malformed selectors) before they're persisted to etcd.
+
+A second install in the same cluster scopes its webhooks to its own objects: the Helm chart's `webhook.objectSelector` limits the validating webhooks to the `cfgd.io` objects it matches, and `mutatingWebhook.namespaceSelector` limits pod injection to the namespaces it matches.
 
 ## Health and Leadership
 
@@ -408,7 +410,7 @@ A pod is a Linux container, so the webhook injects a module when its `spec.platf
 kubectl get pod demo-pod -o jsonpath='{.metadata.annotations.cfgd\.io/skipped-modules}'
 ```
 
-`CSI_DRIVER_NAME` sets the name the CSI plugin registers with the kubelet and the name the webhook writes into each injected volume's `csi.driver`. Set it to the same value on the operator container and the cfgd-csi container, and name the `CSIDriver` object the same; a mismatch leaves injected pods waiting on volumes no registered driver serves. The node-driver-registrar's `--kubelet-registration-path` and the plugin's hostPath directory follow the name too (`/var/lib/kubelet/plugins/<name>/`), so two drivers never share a socket. Unset or blank means `csi.cfgd.io`. A second install in the same cluster (an e2e run beside the release) gives itself its own name:
+`CSI_DRIVER_NAME` sets the name the CSI plugin registers with the kubelet and the name the webhook writes into each injected volume's `csi.driver`. Set it to the same value on the operator container and the cfgd-csi container, and name the `CSIDriver` object the same; a mismatch leaves injected pods waiting on volumes no registered driver serves. The node-driver-registrar's `--kubelet-registration-path` and the plugin's hostPath directory follow the name too (`/var/lib/kubelet/plugins/<name>/`), so two drivers never share a socket. Unset or blank means `csi.cfgd.io`. The Helm chart's `csiDriver.name` sets all of it: the env on both containers, the `CSIDriver` name, the registrar path and the hostPath directory. A second install in the same cluster (an e2e run beside the release) gives itself its own name:
 
 ```yaml
 env:

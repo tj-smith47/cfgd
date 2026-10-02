@@ -217,9 +217,9 @@ single-source-of-truth wiring.
   chart per case in `chart/cfgd/tests/render.sh` and compares the operator
   Deployment's update strategy and readiness probe, and the cluster-scoped
   objects with their webhook selectors, the CSI plugin paths and the env that
-  names the CSI driver, with `chart/cfgd/tests/golden/`. It
-  needs only helm and yq, and it sits beside the other chart guards so every
-  chart check runs in one place.
+  names the CSI driver and scopes the operator, with
+  `chart/cfgd/tests/golden/`. It needs only helm and yq, and it sits beside the
+  other chart guards so every chart check runs in one place.
   After it, `task e2e:tags:check` runs `tests/e2e/common/test-image-tags.sh`:
   it needs no cluster, resolves the e2e image tag map (`IMAGE_TAG` plus one
   override per image) for every override, and fails when any script under

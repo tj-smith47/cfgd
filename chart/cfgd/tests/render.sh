@@ -44,8 +44,9 @@ deployment_cases=(
 for entry in "${deployment_cases[@]}"; do
   name="${entry%%|*}"
   read -r -a args <<< "${entry#*|}"
-  check "$name" "$(helm template cfgd "$chart" "${args[@]}" --show-only templates/operator-deployment.yaml \
+  rendered="$(helm template cfgd "$chart" "${args[@]}" --show-only templates/operator-deployment.yaml \
     | yq '{"strategy": .spec.strategy, "readinessProbe": .spec.template.spec.containers[0].readinessProbe}')"
+  check "$name" "$rendered"
 done
 
 # The e2e case carries JSON values, which a whitespace-split string cannot hold,
@@ -93,6 +94,7 @@ cluster_scoped_query='[.] |
 
 for name in cluster-scoped-default cluster-scoped-e2e; do
   cluster_scoped_args "$name"
-  check "$name" "$(helm template "$release" "$chart" "${args[@]}" | yq ea "$cluster_scoped_query")"
+  rendered="$(helm template "$release" "$chart" "${args[@]}" | yq ea "$cluster_scoped_query")"
+  check "$name" "$rendered"
 done
 exit "$failed"
