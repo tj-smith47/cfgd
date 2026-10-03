@@ -30,27 +30,40 @@ check_pr_xrd || exit 1
 
 # --- Setup: this run's Function and Composition ---
 # The E2E workflow's concurrency group serializes runs, so a run-labelled
-# Function or Composition present now is a leftover of a run that did not tear
-# down. Crossplane's package lock keys a Function on its repository, so a
-# leftover installed from the e2e repository holds the lock node this run's
-# Function needs until its revisions are gone.
-echo "Removing Functions and Compositions left by earlier runs..."
-if ! kubectl delete function,composition -l cfgd.io/e2e-run --ignore-not-found --wait=true --timeout=90s; then
-    echo "ERROR: the run-labelled Functions and Compositions of earlier runs were not deleted within 90s. Read the kubectl error above, then rerun the Crossplane suite." >&2
+# TeamConfig, Composition or Function present now is a leftover of a run that
+# did not tear down. A leftover TeamConfig's composed MachineConfigs would count
+# toward this run's cases, and a TeamConfig references its Composition, so the
+# TeamConfigs go first. Crossplane's package lock keys a Function on its
+# repository, so a leftover Function holds the lock node this run's Function
+# needs until its revisions are gone.
+echo "Removing TeamConfigs, Compositions and Functions left by earlier runs..."
+if ! LEFTOVER_FUNCS="$(kubectl get function -l cfgd.io/e2e-run -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}')"; then
+    echo "ERROR: could not list the run-labelled Functions of earlier runs. Read the kubectl error above, then rerun the Crossplane suite." >&2
     exit 1
 fi
-# A revision's pkg.crossplane.io/package label is its Function's name. ArgoCD's
-# Function keeps inactive revisions, so the wait is for the run-scoped
-# Functions' revisions alone: every name that starts as $E2E_FUNCTION does.
-FUNC_PREFIX="${E2E_FUNCTION%"$E2E_RUN_ID"}"
-if ! FUNC_REVISIONS="$(kubectl get functionrevisions -o json | jq -r --arg prefix "$FUNC_PREFIX" \
-    '.items[] | select(.metadata.labels["pkg.crossplane.io/package"] // "" | startswith($prefix)) | "functionrevision/" + .metadata.name')"; then
-    echo "ERROR: could not list the functionrevisions of earlier runs' Functions. Read the kubectl error above, then rerun the Crossplane suite." >&2
-    exit 1
-fi
-if [ -n "$FUNC_REVISIONS" ]; then
+for kind in teamconfigs composition function; do
+    scope=()
+    [ "$kind" != teamconfigs ] || scope=(-A)
+    if ! kubectl delete "$kind" "${scope[@]}" -l cfgd.io/e2e-run --ignore-not-found --wait=true --timeout=90s; then
+        echo "ERROR: the run-labelled $kind of earlier runs were not deleted within 90s. Read the kubectl error above, then rerun the Crossplane suite." >&2
+        exit 1
+    fi
+done
+# A revision's pkg.crossplane.io/package label is its Function's name, so the
+# wait covers the revisions of the Functions removed above and no other's.
+if [ -n "$LEFTOVER_FUNCS" ]; then
+    if ! FUNC_REVISIONS="$(kubectl get functionrevisions -o json | jq -r --arg names "$LEFTOVER_FUNCS" \
+        '[$names | split("\n")[] | select(. != "")] as $funcs
+         | .items[] | select((.metadata.labels["pkg.crossplane.io/package"] // "") as $pkg | any($funcs[]; . == $pkg))
+         | "functionrevision/" + .metadata.name')"; then
+        echo "ERROR: could not list the functionrevisions of earlier runs' Functions. Read the kubectl error above, then rerun the Crossplane suite." >&2
+        exit 1
+    fi
+    # A revision deleted between the list and the wait is NotFound to some
+    # kubectl versions, so a failed wait is read back before it counts.
     # shellcheck disable=SC2086 # one revision name per word
-    if ! kubectl wait --for=delete $FUNC_REVISIONS --timeout=120s; then
+    if [ -n "$FUNC_REVISIONS" ] && ! kubectl wait --for=delete $FUNC_REVISIONS --timeout=120s &&
+        { ! REVISIONS_LEFT="$(kubectl get $FUNC_REVISIONS --ignore-not-found -o name)" || [ -n "$REVISIONS_LEFT" ]; }; then
         echo "ERROR: these functionrevisions of earlier runs' Functions were not removed within 120s: $(paste -sd ' ' <<<"$FUNC_REVISIONS"). Read the kubectl error above and their finalizers, then rerun the Crossplane suite." >&2
         exit 1
     fi
@@ -118,14 +131,16 @@ for i in $(seq 1 60); do
     fi
     sleep 3
 done
+# Every XP case after this one needs the pipeline, so a failed warm-up stops
+# the suite with the composite's conditions; warmup-team carries the run label
+# and pr-install-down.sh removes it.
+if [ "$WARMUP_OK" != "true" ]; then
+    echo "ERROR: teamconfig/warmup-team composed no MachineConfig within 180s: $(kubectl get teamconfig warmup-team -o jsonpath='{range .status.conditions[*]}{.type}={.status} ({.reason}: {.message}); {end}' 2>&1). Read function/$E2E_FUNCTION's conditions and its pod's log, then rerun the Crossplane suite." >&2
+    exit 1
+fi
 kubectl delete teamconfig warmup-team --ignore-not-found 2>/dev/null || true
 sleep 5
 kubectl delete mc -l cfgd.io/team=warmup-team --ignore-not-found -A 2>/dev/null || true
-if [ "$WARMUP_OK" != "true" ]; then
-    echo "  WARN: Composition pipeline did not produce resources in warm-up — tests will likely fail"
-    # Show the composite status for debugging
-    kubectl get teamconfig warmup-team -o yaml 2>/dev/null | grep -A 10 'status:' || true
-fi
 
 # =================================================================
 # XP-02: Create TeamConfig with 2 members
@@ -304,8 +319,6 @@ fi
 echo ""
 echo "Cleaning up XP-01..XP-05 resources before depth tests..."
 kubectl delete teamconfig test-team --ignore-not-found 2>/dev/null || true
-kubectl delete mc -l "cfgd.io/e2e=true" --ignore-not-found -A 2>/dev/null || true
-kubectl delete cpol -l "cfgd.io/e2e=true" --ignore-not-found -A 2>/dev/null || true
 sleep 5
 
 # =================================================================
@@ -496,7 +509,6 @@ fi
 
 kubectl delete teamconfig status-team --ignore-not-found 2>/dev/null || true
 sleep 5
-kubectl delete mc -l "cfgd.io/e2e=true" --ignore-not-found -A 2>/dev/null || true
 
 # =================================================================
 # XP-10: MachineConfig inherits team profile
@@ -549,7 +561,6 @@ fi
 
 kubectl delete teamconfig profile-team --ignore-not-found 2>/dev/null || true
 sleep 5
-kubectl delete mc -l "cfgd.io/e2e=true" --ignore-not-found -A 2>/dev/null || true
 
 # =================================================================
 # XP-11: Duplicate member name rejected
@@ -557,7 +568,7 @@ kubectl delete mc -l "cfgd.io/e2e=true" --ignore-not-found -A 2>/dev/null || tru
 begin_test "XP-11: Duplicate member hostname rejected"
 
 # Two members with the same hostname should cause an error or the
-# composition should deduplicate. We apply and check the outcome.
+# composition should deduplicate. The case applies and checks the outcome.
 DUP_OUTPUT=$(kubectl apply -f - 2>&1 <<EOF || true
 apiVersion: cfgd.io/v1alpha1
 kind: TeamConfig
@@ -600,7 +611,6 @@ fi
 
 kubectl delete teamconfig dup-team --ignore-not-found 2>/dev/null || true
 sleep 5
-kubectl delete mc -l "cfgd.io/e2e=true" --ignore-not-found -A 2>/dev/null || true
 
 # =================================================================
 # XP-12: TeamConfig deletion cascades

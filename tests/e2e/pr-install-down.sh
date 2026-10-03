@@ -81,8 +81,9 @@ if ! run_left=$(kubectl get "function/$E2E_FUNCTION" "composition/$E2E_COMPOSITI
     echo "ERROR: could not read function/$E2E_FUNCTION and composition/$E2E_COMPOSITION to confirm they are gone." >&2
     failed+=("read function")
 elif [ -n "$run_left" ]; then
-    echo "ERROR: the run's Crossplane objects are still on the cluster: $(echo "$run_left" | tr '\n' ' ')" >&2
-    failed+=("function left")
+    echo "ERROR: the run's Crossplane objects are still on the cluster: $(paste -sd ' ' <<<"$run_left"). Read their status.conditions and finalizers, then rerun this teardown." >&2
+    if grep -q '^function' <<<"$run_left"; then failed+=("function left"); fi
+    if grep -q '^composition' <<<"$run_left"; then failed+=("composition left"); fi
 else
     echo "  function/$E2E_FUNCTION and composition/$E2E_COMPOSITION are gone"
 fi

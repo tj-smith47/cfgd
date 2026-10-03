@@ -252,21 +252,27 @@ with the cluster's XRD, Crossplane's `defaultCompositeDeletePolicy: Background` 
 `defaultCompositionUpdatePolicy: Automatic` filled in on both sides, and stops on a
 difference, a missing XRD or one that is not `Established`; to run a PR that changes
 the XRD, copy the file over `xrd-teamconfig.yaml` there (keeping its ArgoCD
-annotations), push and rerun the suite. It then deletes any Function or Composition
-labelled `cfgd.io/e2e-run` (the E2E workflow runs one at a time, so any found is a
-leftover, and Crossplane's package lock admits one Function per repository) and waits
-for their function revisions to go. It installs `$E2E_FUNCTION`
+annotations), push and rerun the suite. It then deletes any TeamConfig (in every
+namespace), Composition and Function labelled `cfgd.io/e2e-run`, in that order (the E2E
+workflow runs one at a time, so any found is a leftover; a leftover TeamConfig's
+MachineConfigs would count toward this run's cases, and Crossplane's package lock admits
+one Function per repository), and waits for the removed Functions' revisions to go. A
+warm-up TeamConfig that composes no MachineConfig within 180s stops the suite with its
+conditions. It installs `$E2E_FUNCTION`
 (`function-cfgd-<run>`) from the run's package with ArgoCD's runtime config, and
 `$E2E_COMPOSITION` (`teamconfig-to-machineconfigs-<run>`), which
 `render_run_composition` renders from `manifests/crossplane/composition.yaml` with its
-name, its Function and the run label changed. Every TeamConfig sets
+name, its Function and the run label changed. Every TeamConfig carries `${E2E_RUN_LABEL_YAML}` and sets
 `spec.crossplane.compositionRef.name: ${E2E_COMPOSITION}`. The suite's end and
 `pr-install-down.sh` delete the run's TeamConfigs, then its Composition and Function,
 and read back that both are gone. `test-pr-install.sh` drives `check_pr_xrd` against
 `common/fixtures/xrd/`, the render against the real Composition, and fails on a
-TeamConfig heredoc without that reference, a tracked manifest holding a TeamConfig, and
-a script line that applies the repo XRD or Composition, runs `kubectl` on
-`function-cfgd` or names a `:latest` function package.
+TeamConfig heredoc without the run label or that reference (or that yq cannot read), a
+tracked manifest holding a TeamConfig, and a script line that applies anything under
+`manifests/crossplane`, runs `kubectl` on `function-cfgd` or
+`teamconfig-to-machineconfigs`, runs a write verb on `teamconfigs.cfgd.io` or names a
+`:latest` function package, and on a heredoc, whatever reads it, holding a Function,
+Composition, XRD or DeploymentRuntimeConfig named after one of ArgoCD's four.
 
 ArgoCD also owns the cluster's CRDs, applied from
 `/db/manifests/k3s/namespaces/crossplane-system/cfgd-crds.yaml`, and no e2e script

@@ -23,10 +23,11 @@
 #     an XRD that is missing, unreadable or not Established
 #   - the run's Composition renders from manifests/crossplane/composition.yaml
 #     with its name, its Function and the run label changed and nothing else,
-#     and the render stops naming a line it cannot find
-#   - every TeamConfig an e2e script applies names the run's Composition, and
-#     no e2e script applies the repo XRD or Composition, writes ArgoCD's
-#     function-cfgd or pushes a :latest function package
+#     and the render stops naming a line it cannot find or finds twice
+#   - every TeamConfig an e2e script applies carries the run label and names
+#     the run's Composition, and no e2e script applies manifests/crossplane,
+#     writes the XRD, Composition, Function or runtime config ArgoCD owns
+#     (on a kubectl line or in a heredoc) or names a :latest function package
 #   - no e2e script writes a CRD outside the exempt list, and no tracked
 #     manifest under tests/e2e holds one
 #   - require_release_webhooks_scoped passes on release webhooks scoped away
@@ -616,6 +617,14 @@ composition_cases() {
         pass "render_run_composition stops naming the line a Composition without its name line lacks"
     else
         fail "render_run_composition on fixtures/composition/renamed.yaml: rc=$rc, printed [$out]"
+    fi
+    rc=0
+    out="$(env -u GITHUB_RUN_ID -u CFGD_NAMESPACE GITHUB_RUN_ID=42 REGISTRY=r.example CLI_SCRATCH="$scratch" \
+        bash -c 'source "$1/common/helpers.sh"; render_run_composition "$2"' _ "$e2e_root" "$here/fixtures/composition/doubled-labels.yaml" 2>&1)" || rc=$?
+    if [ "$rc" -eq 1 ] && [ "$out" = "ERROR: $here/fixtures/composition/doubled-labels.yaml holds the line '  labels:' 2 times (want once), so the run's Composition cannot be rendered from it. Update render_run_composition in tests/e2e/common/helpers.sh to the file's layout." ]; then
+        pass "render_run_composition stops naming a line the Composition holds twice"
+    else
+        fail "render_run_composition on fixtures/composition/doubled-labels.yaml: rc=$rc, printed [$out]"
     fi
 }
 
@@ -3072,31 +3081,44 @@ else
     fi
 fi
 
-# Every TeamConfig names the run's Composition: ArgoCD's Composition for the
-# same XRD stays on the cluster, and a TeamConfig without the reference can be
-# composed by it, which calls ArgoCD's released function-cfgd.
-# scan_teamconfig_refs <file...> prints `NOREF file:line` for each heredoc
-# holding a TeamConfig whose spec.crossplane.compositionRef.name is not
-# $E2E_COMPOSITION as bash sends it (a quoted delimiter sends the word as
-# written), and `UNREADABLE file:line: <yq error>` for one yq cannot read once
-# rendered.
-composition_sentinel="run-composition-$$-$RANDOM$RANDOM"
-scan_teamconfig_refs() {
-    local dir="$scratch/teamconfig-refs" body file line quoted dash refs err
+# heredoc_bodies <dir> <kinds> <file...>: writes each heredoc body of the files
+# that holds a `kind:` line naming one of <kinds> (an awk alternation) to
+# <dir>/<n>.body, and `<n><TAB>file<TAB>line<TAB>quoted<TAB>dash` for it to
+# <dir>/index, through heredocs.awk.
+heredoc_bodies() {
+    local dir="$1" kinds="$2"
+    shift 2
     rm -rf "$dir"
     mkdir -p "$dir"
-    awk -f "$here/heredocs.awk" "$@" | awk -F'\t' -v dir="$dir" '
+    awk -f "$here/heredocs.awk" "$@" | awk -F'\t' -v dir="$dir" -v kinds="$kinds" '
+        BEGIN { kind_line = "(^|\n)[ \t-]*kind:[ \t]*[\"\047]?(" kinds ")[\"\047]?[ \t]*(#[^\n]*)?\n" }
         $1 == "OPEN" { key = $2 SUBSEP $4; open_line[key] = $3; quoted[key] = $6; dash[key] = $7; text[key] = "" }
         $1 == "BODY" { key = $2 SUBSEP $4; raw = $0; sub(/^[^\t]*\t[^\t]*\t[^\t]*\t[^\t]*\t/, "", raw); text[key] = text[key] raw "\n" }
         $1 == "CLOSE" {
             key = $2 SUBSEP $4
-            if (text[key] ~ /(^|\n)[ \t-]*kind:[ \t]*["\047]?TeamConfig["\047]?[ \t]*(#[^\n]*)?\n/) {
+            if (text[key] ~ kind_line) {
                 n++
                 printf "%s", text[key] > (dir "/" n ".body")
                 close(dir "/" n ".body")
                 printf "%s\t%s\t%s\t%s\t%s\n", n, $2, open_line[key], quoted[key], dash[key] > (dir "/index")
             }
         }'
+}
+
+# Every TeamConfig names the run's Composition: ArgoCD's Composition for the
+# same XRD stays on the cluster, and a TeamConfig without the reference can be
+# composed by it, which calls ArgoCD's released function-cfgd. Every TeamConfig
+# also carries the run label, which the suite's end, pr-install-down.sh and the
+# janitor select it by.
+# scan_teamconfig_refs <file...> prints, for each heredoc holding a TeamConfig
+# as bash sends it (a quoted delimiter sends each word as written):
+#   NOREF file:line        spec.crossplane.compositionRef.name is not $E2E_COMPOSITION
+#   NOLABEL file:line      metadata.labels has no ${E2E_RUN_LABEL_YAML}
+#   UNREADABLE file:line: <yq error>   yq cannot read the rendered body
+composition_sentinel="run-composition-$$-$RANDOM$RANDOM"
+scan_teamconfig_refs() {
+    local dir="$scratch/teamconfig-refs" body file line quoted dash refs
+    heredoc_bodies "$dir" TeamConfig "$@"
     [ -f "$dir/index" ] || return 0
     while IFS=$'\t' read -r body file line quoted dash; do
         if [ "$quoted" = 0 ]; then
@@ -3104,24 +3126,34 @@ scan_teamconfig_refs() {
         else
             cat "$dir/$body.body"
         fi | render "$dash" "$quoted" > "$dir/$body.yaml"
-        if ! refs="$(yq -N '.. | select(tag == "!!map" and .kind == "TeamConfig") | (.spec.crossplane.compositionRef.name // "")' "$dir/$body.yaml" 2>"$dir/yq.err")"; then
-            err="$(head -n1 "$dir/yq.err")"
-            echo "UNREADABLE $file:$line: $err"
+        if ! refs="$(yq -N '.. | select(tag == "!!map" and .kind == "TeamConfig")
+                | [(.spec.crossplane.compositionRef.name // ""), (.metadata.labels["cfgd.io/e2e-run"] // "")] | join("\t")' \
+                "$dir/$body.yaml" 2>"$dir/yq.err")"; then
+            echo "UNREADABLE $file:$line: $(head -n1 "$dir/yq.err")"
             continue
         fi
-        if grep -qvxF -- "$composition_sentinel" <<<"$refs"; then
+        if cut -f1 <<<"$refs" | grep -qvxF -- "$composition_sentinel"; then
             echo "NOREF $file:$line"
+        fi
+        if cut -f2 <<<"$refs" | grep -qvxF -- "$label_sentinel"; then
+            echo "NOLABEL $file:$line"
         fi
     done < "$dir/index"
 }
 refs_fixtures="$here/fixtures/teamconfig-refs"
-refs_got="$(cd "$refs_fixtures" && scan_teamconfig_refs with.bash without.bash other.bash)"
+refs_got="$(cd "$refs_fixtures" && scan_teamconfig_refs with.bash without.bash other.bash unlabelled.bash unreadable.bash |
+    sed -E 's/^(UNREADABLE [^:]*:[0-9]+):.*/\1/')"
 refs_want="NOREF without.bash:1
+NOLABEL without.bash:1
 NOREF other.bash:1
-NOREF other.bash:12
-NOREF other.bash:23"
+NOREF other.bash:14
+NOLABEL other.bash:14
+NOREF other.bash:27
+NOLABEL unlabelled.bash:1
+NOLABEL unlabelled.bash:12
+UNREADABLE unreadable.bash:1"
 if [ "$refs_got" = "$refs_want" ]; then
-    pass "the TeamConfig scan passes a reference to \$E2E_COMPOSITION and stops on none, another name, a quoted delimiter and spec.compositionRef"
+    pass "the TeamConfig scan passes the run label and a reference to \$E2E_COMPOSITION, and stops on no reference, another name, a quoted delimiter, spec.compositionRef, no run label, a hand-spelled run label and a body yq cannot read"
 else
     fail "the TeamConfig scan judged fixtures/teamconfig-refs wrongly: got [$refs_got], want [$refs_want]"
 fi
@@ -3130,11 +3162,11 @@ refs_tree="$(cd "$repo_root" && scan_teamconfig_refs "${tracked_scripts[@]}")"
 refs_count=0
 [ ! -f "$scratch/teamconfig-refs/index" ] || refs_count="$(wc -l < "$scratch/teamconfig-refs/index")"
 if [ -n "$refs_tree" ]; then
-    fail "TeamConfigs that do not name the run's Composition (add spec.crossplane.compositionRef.name: \${E2E_COMPOSITION} on an unquoted heredoc): $refs_tree"
+    fail "TeamConfigs without the run label or a reference to the run's Composition (add \${E2E_RUN_LABEL_YAML} under metadata.labels and spec.crossplane.compositionRef.name: \${E2E_COMPOSITION} on an unquoted heredoc): $(paste -sd ';' <<<"$refs_tree")"
 elif [ "$refs_count" -lt 13 ]; then
     fail "the TeamConfig scan found $refs_count TeamConfig heredocs under tests/e2e (want at least 13); it has lost its population"
 else
-    pass "every TeamConfig an e2e script applies names the run's Composition ($refs_count heredocs)"
+    pass "every TeamConfig an e2e script applies carries the run label and names the run's Composition ($refs_count heredocs)"
 fi
 mapfile -t teamconfig_manifests < <(cd "$repo_root" && git ls-files 'tests/e2e/*.yaml' 'tests/e2e/*.yml' 'tests/e2e/*.json' |
     grep -v '^tests/e2e/common/fixtures/' | xargs -r grep -lE "kind\"?[[:space:]]*:[[:space:]]*[\"']?TeamConfig")
@@ -3144,32 +3176,72 @@ else
     fail "apply these TeamConfigs from a heredoc that names \${E2E_COMPOSITION}: ${teamconfig_manifests[*]}"
 fi
 
-# ArgoCD owns the XRD, the Composition and the function-cfgd Function, and
-# its Function pins the released ghcr package. scan_crossplane_writes
-# <file...> prints `file:line` for each non-comment line that applies the repo
-# XRD or Composition, runs kubectl on an object named function-cfgd, or names a
-# :latest function-cfgd package. The patterns are assembled so no line of this
-# script matches them.
+# ArgoCD owns the XRD teamconfigs.cfgd.io, the Composition
+# teamconfig-to-machineconfigs, the Function function-cfgd and its
+# DeploymentRuntimeConfig function-cfgd-runtime, and its Function pins the
+# released ghcr package. scan_crossplane_writes <file...> prints `file:line`
+# for each non-comment line that:
+#   - runs kubectl on an object named function-cfgd or
+#     teamconfig-to-machineconfigs
+#   - runs a kubectl write verb naming teamconfigs.cfgd.io
+#   - applies, creates or replaces anything under manifests/crossplane or
+#     $CROSSPLANE_DIR, a file or the directory
+#   - names a :latest function-cfgd package
+# and `ARGOCD file:line kind/name` for each heredoc holding a Function,
+# Composition, CompositeResourceDefinition or DeploymentRuntimeConfig named
+# after one of ArgoCD's four, whatever reads the heredoc. The names are
+# assembled from parts so no line of this script matches them.
 fn_name="function-cfgd"
-crossplane_writes="kubectl[^#]*[^-A-Za-z0-9_]${fn_name}([^-A-Za-z0-9_]|\$)|kubectl[^#]*[[:space:]](apply|create|replace)[[:space:]][^#]*(xrd-teamconfig|composition)\\.yaml|${fn_name}\\)?:latest"
+comp_name="teamconfig-to-machineconfigs"
+xrd_name="teamconfigs\\.cfgd\\.io"
+write_verbs="apply|create|replace|patch|edit|delete|label|annotate|scale|rollout|set"
+crossplane_writes="kubectl[^#]*[^-A-Za-z0-9_](${fn_name}|${comp_name})([^-A-Za-z0-9_]|\$)"
+crossplane_writes+="|kubectl[^#]*[[:space:]](${write_verbs})[[:space:]][^#]*${xrd_name}"
+crossplane_writes+="|kubectl[^#]*[[:space:]](apply|create|replace)[[:space:]][^#]*(manifests/crossplane|CROSSPLANE_DIR)"
+crossplane_writes+="|${fn_name}\\)?:latest"
+argocd_kinds="Function|Composition|CompositeResourceDefinition|DeploymentRuntimeConfig"
 scan_crossplane_writes() {
+    local dir="$scratch/argocd-heredocs" body file line quoted dash found
     grep -HnE -- "$crossplane_writes" "$@" | grep -vE '^[^:]*:[0-9]+:[[:space:]]*#' | cut -d: -f1,2
+    heredoc_bodies "$dir" "$argocd_kinds" "$@"
+    [ -f "$dir/index" ] || return 0
+    while IFS=$'\t' read -r body file line quoted dash; do
+        render "$dash" "$quoted" < "$dir/$body.body" > "$dir/$body.yaml"
+        # shellcheck disable=SC2016 # a yq program; $n is a yq variable
+        if ! found="$(NAMES="${fn_name} ${fn_name}-runtime ${xrd_name//\\/} ${comp_name}" KINDS="$argocd_kinds" yq -N \
+                '.. | select(tag == "!!map" and (.kind | tag) == "!!str" and (.kind | test("^(" + strenv(KINDS) + ")$")))
+                 | select((.metadata.name // "") as $n | strenv(NAMES) | split(" ") | any_c(. == $n))
+                 | .kind + "/" + .metadata.name' "$dir/$body.yaml" 2>"$dir/yq.err")"; then
+            echo "UNREADABLE $file:$line: $(head -n1 "$dir/yq.err")"
+            continue
+        fi
+        [ -z "$found" ] || echo "ARGOCD $file:$line $(paste -sd ' ' <<<"$found")"
+    done < "$dir/index"
 }
 writes_got="$(cd "$here/fixtures/crossplane-writes" && scan_crossplane_writes sites.bash || true)" # rc-ok: compared below
-if [ "$writes_got" = "sites.bash:1
+writes_want="sites.bash:1
 sites.bash:2
 sites.bash:3
 sites.bash:4
-sites.bash:5" ]; then
-    pass "the Crossplane write scan finds an XRD or Composition apply, a kubectl call on ArgoCD's Function and a :latest package, and passes comments, reads of the repo XRD and the run's Function"
+sites.bash:5
+sites.bash:11
+sites.bash:12
+sites.bash:13
+sites.bash:14
+ARGOCD sites.bash:15 Function/function-cfgd
+ARGOCD sites.bash:23 Composition/teamconfig-to-machineconfigs
+ARGOCD sites.bash:29 CompositeResourceDefinition/teamconfigs.cfgd.io
+ARGOCD sites.bash:35 DeploymentRuntimeConfig/function-cfgd-runtime"
+if [ "$writes_got" = "$writes_want" ]; then
+    pass "the Crossplane write scan finds an XRD or Composition apply, a kubectl call on ArgoCD's Function or Composition, a write to its XRD, an apply of the repo's crossplane manifests directory, a :latest package and a heredoc of any of ArgoCD's four objects, and passes comments, reads of the repo XRD, the run's own objects and a heredoc for the run's Function"
 else
-    fail "the Crossplane write scan judged fixtures/crossplane-writes/sites.bash wrongly: got [$writes_got]"
+    fail "the Crossplane write scan judged fixtures/crossplane-writes/sites.bash wrongly: got [$writes_got], want [$writes_want]"
 fi
 writes_tree="$(cd "$repo_root" && scan_crossplane_writes "${tracked_scripts[@]}" || true)" # rc-ok: no hit is the passing outcome
 if [ -z "$writes_tree" ]; then
-    pass "no e2e script applies the repo XRD or Composition, writes function-cfgd or pushes a :latest function package (${#tracked_scripts[@]} scripts)"
+    pass "no e2e script writes the XRD, Composition, Function or runtime config ArgoCD owns, applies manifests/crossplane or pushes a :latest function package (${#tracked_scripts[@]} scripts)"
 else
-    fail "these lines write an object ArgoCD owns in crossplane-system; use check_pr_xrd, render_run_composition, \$E2E_FUNCTION and e2e_image function-cfgd: $(paste -sd ' ' <<<"$writes_tree")"
+    fail "these lines write an object ArgoCD owns in crossplane-system; use check_pr_xrd, render_run_composition, \$E2E_FUNCTION and e2e_image function-cfgd: $(paste -sd ';' <<<"$writes_tree")"
 fi
 
 # pr-install-down.sh against the stubs in fixtures/pr-install-down/bin: down_case
@@ -3231,6 +3303,16 @@ expect_down "pr-install-down.sh exits 1 when it cannot read back the run's Funct
 $down_uninstall
 $down_rest" "^ERROR: the PR install teardown failed at: read function$" \
     "DOWN_FAIL=get function/*"
+expect_down "pr-install-down.sh exits 1 when the run's Function is still there" \
+    1 "$down_objects
+$down_uninstall
+$down_rest" "^ERROR: the PR install teardown failed at: function left$" \
+    "DOWN_PRINT=get function/*" "DOWN_PRINT_OUT=function.pkg.crossplane.io/function-cfgd-42"
+expect_down "pr-install-down.sh exits 1 when the run's Composition is still there" \
+    1 "$down_objects
+$down_uninstall
+$down_rest" "^ERROR: the PR install teardown failed at: composition left$" \
+    "DOWN_PRINT=get function/*" "DOWN_PRINT_OUT=composition.apiextensions.crossplane.io/teamconfig-to-machineconfigs-42"
 expect_down "pr-install-down.sh treats a release that is not installed as removed and still deletes the namespace" \
     0 "$down_objects
 $down_rest" "^  release cfgd-e2e-42 is not installed in cfgd-e2e-42-sys; nothing to uninstall$" \

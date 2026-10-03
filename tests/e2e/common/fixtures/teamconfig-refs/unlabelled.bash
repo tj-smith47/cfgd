@@ -2,26 +2,23 @@ kubectl apply -f - <<EOF
 apiVersion: cfgd.io/v1alpha1
 kind: TeamConfig
 metadata:
-  name: with
-  labels:
-    ${E2E_RUN_LABEL_YAML}
+  name: unlabelled
 spec:
   crossplane:
     compositionRef:
       name: ${E2E_COMPOSITION}
-  team: with
+  team: unlabelled
 EOF
 kubectl apply -f - <<EOF
 apiVersion: cfgd.io/v1alpha1
 kind: TeamConfig
 metadata:
-  name: with-bare
-  namespace: $NS
+  name: hand-spelled
   labels:
-    ${E2E_RUN_LABEL_YAML}
+    cfgd.io/e2e-run: "42"
 spec:
   crossplane:
     compositionRef:
-      name: $E2E_COMPOSITION
-  team: with-bare
+      name: ${E2E_COMPOSITION}
+  team: hand-spelled
 EOF

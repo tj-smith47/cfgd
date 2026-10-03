@@ -3,6 +3,8 @@ apiVersion: cfgd.io/v1alpha1
 kind: TeamConfig
 metadata:
   name: other-name
+  labels:
+    ${E2E_RUN_LABEL_YAML}
 spec:
   crossplane:
     compositionRef:
@@ -14,6 +16,8 @@ apiVersion: cfgd.io/v1alpha1
 kind: TeamConfig
 metadata:
   name: quoted
+  labels:
+    ${E2E_RUN_LABEL_YAML}
 spec:
   crossplane:
     compositionRef:
@@ -25,6 +29,8 @@ apiVersion: cfgd.io/v1alpha1
 kind: TeamConfig
 metadata:
   name: top-level-ref
+  labels:
+    ${E2E_RUN_LABEL_YAML}
 spec:
   compositionRef:
     name: ${E2E_COMPOSITION}
