@@ -887,9 +887,10 @@ scan_run_labels() {
         # of a wrapper (a function whose body is an apply reading stdin) is an
         # apply reading stdin. A call is a function name standing as the
         # command word, which command_word finds past assignments, redirects
-        # and keywords such as time; the same name as an argument is no call. One with --dry-run=client sends nothing and is
-        # left alone. The scan can read one shape: an apply reading stdin from
-        # a heredoc on the same command. A manifest by path (-f other than -,
+        # and keywords such as time; the same name as an argument is no call.
+        # One with --dry-run=client sends nothing and is left alone. The scan
+        # can read one shape: an apply reading stdin from a heredoc on the
+        # same command. A manifest by path (-f other than -,
         # or -k) sets verdict to "path". An apply reading stdin with no heredoc
         # on its own command (fed by a pipe, or by nothing on the line), or with
         # a < beside it (a redirect, a here-string, a process substitution),
