@@ -131,15 +131,16 @@ text inside a string value is no object. It fails on:
   `kubectl`, a variable or array (`$KUBECTL`, `"${kc[@]}"`) or a function a scanned script
   defines; another tool's `apply` (`cfgd apply`) is not one. A wrapper is a function whose
   body reads stdin with nothing feeding it into an apply or into another wrapper, such as
-  `apply_yaml`: its body passes, and a call of it is an apply reading stdin. Every function
-  the floored suites' scripts and `helpers.sh` define is visible to all of them, so one
-  name defined twice with different bodies (spacing aside) fails, naming both definitions.
-  An apply with `--dry-run=client` sends nothing and passes
+  `apply_yaml`: its body passes, and a call of it is an apply reading stdin. A function is
+  called, or defined, only where bash reads a command word (`FOO=1 w`, `time w`, `true && w`),
+  so `echo w` and `> w` call nothing. An apply with `--dry-run=client` sends nothing and passes
 - a function body (`{ }` or `( )`) still open at the end of its script, where the scan
   cannot tell which commands are inside it. A `{` or `}` counts only where bash reads it as
-  a reserved word, the first word of a command (`echo {` opens nothing). Every function
-  the floored suites' scripts and `helpers.sh` define is visible to all of them, so one
-  name defined twice with different bodies (spacing aside) fails, naming both definitions
+  a reserved word, the first word of a command (`echo {` opens nothing)
+- one function name defined with two different bodies. Every function a scanned script
+  (each `tests/e2e/*/scripts` directory and `helpers.sh`) defines is visible to all of them,
+  so the scan names both definitions. Bodies are compared as bash runs them, with
+  comments, spacing and line breaks aside
 - fewer sites than its suite's floor (the operator, full-stack and gateway suites each carry one)
 
 A cfgd.io document of another kind (the crossplane suite's `TeamConfig`) is listed

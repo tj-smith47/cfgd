@@ -803,6 +803,10 @@ parse_bodies() {
 #   BYPATH       an apply the scan cannot read: one given a manifest by path
 #                (-f other than -, or -k), or one reading stdin fed by anything
 #                but a heredoc on the apply command itself
+#   DUPLICATE    one function name defined with two different bodies; every
+#                function a scanned file defines is visible to all of them, and
+#                the tree check scans each tests/e2e/*/scripts directory and
+#                helpers.sh
 #   UNTERMINATED, UNREADABLE, EMPTY   the scan could not read what it was given
 # A heredoc written to a file is read only when it mentions cfgd.io/, and one
 # yq cannot read (a script, say) is not YAML and is skipped quietly.
@@ -838,9 +842,10 @@ scan_run_labels() {
         # shell, so it is read as such. A quote still open at the end of the
         # line stays open into the next one; a line ending in one backslash
         # keeps it. A quoted client stays the word client, so that
-        # --dry-run="client" reads as --dry-run=client.
+        # --dry-run="client" reads as --dry-run=client. kept is the line as
+        # written with only its comment dropped.
         function squash(s,   out, i, c) {
-            out = ""
+            out = ""; kept = s
             for (i = 1; i <= length(s); i++) {
                 c = substr(s, i, 1)
                 if (inq != "" && c == inq) {
@@ -853,25 +858,26 @@ scan_run_labels() {
                 else if (cq != "" && c == cq) { cq = ""; out = out " ; " }
                 else if ((c == "\047" || c == "\"") && cq == "" && out ~ /(^|[^A-Za-z0-9_])(ba)?sh[ \t]+-c[ \t]*$/) { cq = c; out = out " ; " }
                 else if (c == "\047" || c == "\"") { inq = c; qbuf = ""; out = out "Q" }
-                else if (c == "#" && (i == 1 || substr(s, i - 1, 1) ~ /[ \t]/)) break
+                else if (c == "#" && (i == 1 || substr(s, i - 1, 1) ~ /[ \t]/)) { kept = substr(s, 1, i - 1); break }
                 else out = out c
             }
             return out
         }
-        # runs_apply(w, v): the verb w[v] belongs to a command that sends
+        # runs_apply(w, v, cw): the verb w[v] belongs to a command that sends
         # manifests to a cluster. The word that runs it is the nearest one
         # before the verb that is not an option or an option argument: kubectl,
         # a variable or array expansion ($KUBECTL, "${kc[@]}") or a function
-        # the scanned scripts define is a kubectl; any other word names another
+        # the scanned scripts define, standing as the command word w[cw], is a
+        # kubectl; any other word names another
         # tool (cfgd, helm, git) whose apply is not one. kubectl anywhere before
         # the verb settles it, so sudo -E kubectl is a kubectl.
-        function runs_apply(w, v,   i) {
+        function runs_apply(w, v, cw,   i) {
             for (i = v - 1; i >= 1; i--) {
                 if (w[i] == "") continue
                 if (w[i] ~ /(^|\/)kubectl$/) return 1
                 if (w[i] ~ /^-/) continue
                 if (i > 1 && w[i - 1] ~ /^-[^=]*$/) { i--; continue }
-                return w[i] ~ /^(Q|\$)/ || (w[i] in defined)
+                return w[i] ~ /^(Q|\$)/ || (i == cw && (w[i] in defined))
             }
             return 0
         }
@@ -879,7 +885,9 @@ scan_run_labels() {
         # holding apply, create or replace and a -f, --filename, -k or
         # --kustomize argument is an apply when runs_apply says so, and a call
         # of a wrapper (a function whose body is an apply reading stdin) is an
-        # apply reading stdin. One with --dry-run=client sends nothing and is
+        # apply reading stdin. A call is a function name standing as the
+        # command word, which command_word finds past assignments, redirects
+        # and keywords such as time; the same name as an argument is no call. One with --dry-run=client sends nothing and is
         # left alone. The scan can read one shape: an apply reading stdin from
         # a heredoc on the same command. A manifest by path (-f other than -,
         # or -k) sets verdict to "path". An apply reading stdin with no heredoc
@@ -891,11 +899,11 @@ scan_run_labels() {
         # A here-string (<<<) keeps a < once its heredoc token is made, so it
         # counts as a redirect. A heredoc on a descriptor other than 0 (3<<EOF)
         # is no stdin. Inside a function body, a call of another function a
-        # scanned script defines with no feeder is recorded, as the caller is a wrapper
-        # when the callee is one.
-        function judge(c,   lists, nl, l, segs, ns, j, w, n, i, v, val, stdin, path, d) {
+        # scanned script defines with no feeder is recorded, as the caller is
+        # a wrapper when the callee is one.
+        function judge(c,   lists, nl, l, segs, ns, j, w, n, i, v, val, stdin, path, d, cw) {
             verdict = ""; fed = 0; bare = 0
-            gsub(/[0-9]*>&[0-9-]*|&>/, " ", c)
+            gsub(/[0-9]*[<>]&[0-9-]*/, " ", c); gsub(/&>/, " >", c)
             while (match(c, /(^|[ \t])[0-9]+<<-?[ \t]*X?(Q|[A-Za-z_][A-Za-z0-9_]*)/)) {
                 d = substr(c, RSTART, RLENGTH)
                 if (d ~ /^[ \t]*0+<</) c = substr(c, 1, RSTART - 1) " " substr(c, RSTART + index(d, "<") - 1)
@@ -910,12 +918,11 @@ scan_run_labels() {
                     if (segs[j] ~ /--dry-run=client/) continue
                     n = split(segs[j], w, /[ \t]+/)
                     stdin = 0; path = 0
-                    if (pass == 2 && fns && j == 1 && segs[j] !~ /HEREDOC/ && !index(segs[j], "<"))
-                        for (v = 1; v <= n; v++) if (w[v] in defined) { ++calls; caller[calls] = fn[fns]; callee[calls] = w[v] }
-                    for (v = 1; v <= n; v++) {
-                        if (w[v] in wrapper) stdin = 1
-                        if (w[v] ~ /^(apply|create|replace)$/ && runs_apply(w, v)) break
-                    }
+                    cw = command_word(w, n)
+                    if (pass == 2 && fns && j == 1 && segs[j] !~ /HEREDOC/ && !index(segs[j], "<") && cw && (w[cw] in defined))
+                        { ++calls; caller[calls] = fn[fns]; callee[calls] = w[cw] }
+                    if (cw && (w[cw] in wrapper)) stdin = 1
+                    for (v = 1; v <= n; v++) if (w[v] ~ /^(apply|create|replace)$/ && runs_apply(w, v, cw)) break
                     for (i = v + 1; i <= n; i++) {
                         if (w[i] ~ /^(-k|--kustomize)/) { path = 1; continue }
                         if (w[i] == "-f" || w[i] == "--filename") val = w[++i]
@@ -932,50 +939,100 @@ scan_run_labels() {
                 }
             }
         }
-        # braces(s): sets ob and cb to the { and } of the command line s that
-        # bash reads as reserved words: the first word of a command, after a
-        # separator or a keyword that starts one. A { or } anywhere else is a
-        # plain word, as in echo {.
-        function braces(s,   t, n, i, cmd) {
-            gsub(/[;&|()]/, " ; ", s)
-            n = split(s, t, /[ \t]+/); cmd = 1; ob = 0; cb = 0
-            for (i = 1; i <= n; i++) {
-                if (t[i] == "") continue
-                if (cmd && t[i] == "{") ob++
-                else if (cmd && t[i] == "}") cb++
-                else cmd = (t[i] == ";") || (cmd && t[i] ~ /^(!|if|then|else|elif|do|while|until)$/)
+        # position(tok, st): the state after the word tok, where st is 1 while
+        # the next word stands where bash reads a command word, 2 when it is
+        # the target of a redirect standing there, and 0 inside arguments. A
+        # separator, a keyword that starts a command, a reserved { or }, an
+        # assignment and a redirect all leave the next word at that position.
+        function position(tok, st) {
+            if (tok ~ /^[;()]$/) return 1
+            if (st != 1) return st == 2
+            if (tok ~ /^(!|if|then|else|elif|do|while|until|time|coproc|\{|\}|HEREDOC|FDDOC)$/) return 1
+            if (tok ~ /^[A-Za-z_][A-Za-z0-9_]*(\[[^]]*\])?\+?=/) return 1
+            if (tok ~ /^[0-9]*[<>]/) return (tok ~ /^[0-9]*[<>]+&?$/) ? 2 : 1
+            return 0
+        }
+        # command_word(w, n): the index of the command word among the words
+        # w[1..n] of one simple command, or 0 when it has none.
+        function command_word(w, n,   v, st) {
+            st = 1
+            for (v = 1; v <= n; v++) {
+                if (w[v] == "") continue
+                if (st == 1 && !position(w[v], 1)) return v
+                st = position(w[v], st)
             }
+            return 0
+        }
+        # words(s): reads the command line s at its command words. Bash takes
+        # NAME() as a definition only at a command word, and function NAME at
+        # one is checked here. It sets ob
+        # and cb to the { and } that are reserved words (echo { opens
+        # nothing), op and cp to its ( and ), and defs to the functions it
+        # defines, each defname[d] with the { or ( that opens its body in
+        # defkind[d], empty when the body opens on a later line, and the brace
+        # and paren depth the line has reached at it in defat[d], defpat[d].
+        function words(s,   t, n, i, st, w, nw) {
+            gsub(/\([ \t]*\)/, " FNDEF ", s)
+            # A } before a redirect (}>f) is a word of its own, as < and > end
+            # a word.
+            while (match(s, /[{}][<>]/)) s = substr(s, 1, RSTART) " " substr(s, RSTART + 1)
+            gsub(/[;&|`]/, " ; ", s); gsub(/\(/, " ( ", s); gsub(/\)/, " ) ", s)
+            n = split(s, t, /[ \t]+/); nw = 0
+            for (i = 1; i <= n; i++) if (t[i] != "") w[++nw] = t[i]
+            st = 1; ob = 0; cb = 0; op = 0; cp = 0; defs = 0
+            for (i = 1; i <= nw; i++) {
+                if (w[i] == "(") op++
+                if (w[i] == ")") cp++
+                if (st == 1 && w[i] == "{") ob++
+                if (st == 1 && w[i] == "}") cb++
+                if (st == 1 && w[i] == "function" && w[i + 1] ~ /^[A-Za-z_][A-Za-z0-9_:.-]*$/) i++
+                else if (!(w[i + 1] == "FNDEF" && w[i] ~ /^[A-Za-z_][A-Za-z0-9_:.-]*$/)) { st = position(w[i], st); continue }
+                defname[++defs] = w[i]; defkind[defs] = ""; defat[defs] = ob - cb; defpat[defs] = op - cp
+                if (w[i + 1] == "FNDEF") i++
+                if (w[i + 1] ~ /^[({]$/) defkind[defs] = w[i + 1]
+            }
+            first = w[1]
         }
         # body_done(k): the function on stack slot k has closed. A name another
-        # scanned script defines with another body (whitespace folded) fails,
-        # as every definition is visible to every script.
-        function body_done(k,   t) {
+        # scanned script defines with another body fails, as every definition
+        # is visible to every script. A body is compared as bash runs it, word
+        # by word: its comments are gone, a newline is a ;, and a ; that ends
+        # nothing (one after another, after an opening { or (, or before a
+        # closing one) is dropped.
+        function body_done(k,   t, w, n, i, tk, m) {
             t = fnbody[k]
-            gsub(/[ \t\n]+/, " ", t)
+            gsub(/\n/, ";", t); gsub(/[;{}()]/, " & ", t)
+            n = split(t, w, /[ \t]+/); m = 0
+            for (i = 1; i <= n; i++) if (w[i] != "") tk[++m] = w[i]
+            t = " ;"
+            for (i = 1; i <= m; i++) {
+                if (tk[i] == ";" && t ~ / [;{(]$/) continue
+                if (tk[i] ~ /^[})]$/) sub(/ ;$/, "", t)
+                t = t " " tk[i]
+            }
             if (!(fn[k] in body_of)) { body_of[fn[k]] = t; body_at[fn[k]] = file ":" fnline[k]; return }
             if (body_of[fn[k]] != t) print "DUPLICATE " file ":" fnline[k] ": function " fn[k] " is also defined at " body_at[fn[k]] " with another body; every script sees every definition, so rename one"
         }
         # check_command: judges the command line gathered so far, keeping track
         # of the function bodies it opens and closes. A body is a { } or a
-        # ( ) group, counted on the line with its quoted text dropped.
-        function check_command(   c, cc, name, l, kind, op, cp, k, top) {
-            if (pending == "") { pending_raw = ""; return }
-            c = pending; pending = ""; top = fns
+        # ( ) group, counted on the line with its quoted text dropped, and a
+        # definition is one words() finds at a command word.
+        function check_command(   c, raw, l, k, d, top) {
+            if (pending == "") return
+            c = pending; pending = ""; top = fns; raw = pending_kept; pending_kept = ""
+            for (k = 1; k <= fns; k++) fnbody[k] = fnbody[k] "\n" raw
             gsub(/\$\{[^}]*\}/, "$V", c)
-            cc = c
-            if (match(c, /^[ \t]*(function[ \t]+[A-Za-z_][A-Za-z0-9_:.-]*([ \t]*\(\))?|[A-Za-z_][A-Za-z0-9_:.-]*[ \t]*\(\))/)) {
-                name = substr(c, RSTART, RLENGTH)
-                sub(/^[ \t]*(function[ \t]+)?/, "", name); sub(/[ \t]*\(\)$/, "", name)
-                cc = substr(c, RSTART + RLENGTH)
-                fn[++fns] = name; fnline[fns] = pending_at; fnat[fns] = depth; fnpat[fns] = pdepth; fnkind[fns] = ""; fnopen[fns] = 0
+            words(c)
+            for (d = 1; d <= defs; d++) {
+                if (pass == 1) defined[defname[d]] = 1
+                fn[++fns] = defname[d]; fnline[fns] = pending_at; fnat[fns] = depth + defat[d]; fnpat[fns] = pdepth + defpat[d]
+                fnkind[fns] = defkind[d]; fnopen[fns] = 0
                 # A body is compared without its opener, so function f { and
                 # f() { open the same body.
-                fnbody[fns] = pending_raw
-                sub(/^\n[ \t]*(function[ \t]+[A-Za-z_][A-Za-z0-9_:.-]*([ \t]*\(\))?|[A-Za-z_][A-Za-z0-9_:.-]*[ \t]*\(\))/, "", fnbody[fns])
+                fnbody[fns] = raw
+                sub(".*(function[ \t]+" defname[d] "([ \t]*\\(\\))?|" defname[d] "[ \t]*\\(\\))", "", fnbody[fns])
             }
-            for (k = 1; k <= top; k++) fnbody[k] = fnbody[k] "\n" pending_raw
-            pending_raw = ""
-            if (fns && fnkind[fns] == "" && match(cc, /^[ \t]*[({]/)) fnkind[fns] = substr(cc, RSTART + RLENGTH - 1, 1)
+            if (fns && fnkind[fns] == "" && first ~ /^[({]$/) fnkind[fns] = first
             judge(c)
             if (pass == 2 && bare) wrapper[fn[fns]] = 1
             if (pass == 3) {
@@ -983,10 +1040,9 @@ scan_run_labels() {
                 if (verdict == "stdin") print "BYPATH " file ":" pending_at ": the scan cannot read what feeds this apply on stdin; feed it a heredoc on the apply command itself"
                 if (fed) for (l = pending_at; l <= pending_last; l++) cluster_line[file, l] = 1
             }
-            braces(cc)
-            op = gsub(/\(/, "(", cc); cp = gsub(/\)/, ")", cc)
             depth += ob - cb; pdepth += op - cp
-            if (fns && (fnkind[fns] == "{" ? ob : op)) fnopen[fns] = 1
+            for (k = top + 1; k <= fns; k++) if (fnkind[k] == "{" ? ob : op) fnopen[k] = 1
+            if (top && top == fns && (fnkind[fns] == "{" ? ob : op)) fnopen[fns] = 1
             while (fns && fnopen[fns] && (fnkind[fns] == "{" ? depth <= fnat[fns] : pdepth <= fnpat[fns])) {
                 if (pass == 2) body_done(fns)
                 fns--
@@ -1034,14 +1090,6 @@ scan_run_labels() {
             next
         }
         { file = $2 }
-        pass == 1 {
-            if ($1 == "SH" && match(rest(3), /^[ \t]*(function[ \t]+[A-Za-z_][A-Za-z0-9_:.-]*|[A-Za-z_][A-Za-z0-9_:.-]*[ \t]*\(\))/)) {
-                name = substr(rest(3), RSTART, RLENGTH)
-                sub(/^[ \t]*(function[ \t]+)?/, "", name); sub(/[ \t]*\(\)$/, "", name)
-                defined[name] = 1
-            }
-            next
-        }
         pass < 4 && $1 == "CLOSE" {
             # A quote open at the end of the line that opens a heredoc
             # closes on its terminator line, as in a bash -c string holding
@@ -1062,8 +1110,8 @@ scan_run_labels() {
             }
             if (pending == "") pending_at = $3
             pending_last = $3
-            pending_raw = pending_raw "\n" rest(3)
             pending = pending squash(rest(3))
+            pending_kept = pending_kept "\n" kept
             # bash goes on reading a command past a line ending in one
             # backslash, a pipe or && or inside a quote.
             if (inq != "" || cq != "" || pending ~ /\\$/ || pending ~ /(\||&&)[ \t]*$/) { sub(/\\$/, "", pending); pending = pending " "; next }
@@ -1751,11 +1799,29 @@ probe() {
     probe brace-word-pair 'bw_f() {'$'\n''    echo a{b'$'\n''}'$'\n''cat "$f" | kubectl apply -f -'$'\n''kubectl apply -f -'$'\n''echo c}d'
     probe default-json 'dj_f() {'$'\n''    local b=${body:-{}}'$'\n''    kubectl apply -f -'$'\n''}'$'\n''dj_f < "$f"'
     probe brace-groups 'grp() {'$'\n''    if { true; }; then { true; }; elif { true; }; then true; else { true; }; fi'$'\n''    while { false; }; do { true; }; done'$'\n''    until { true; }; do true; done'$'\n''    ! { false; }'$'\n''    true & { true; }'$'\n''    true | { cat; }'$'\n''    ( { true; } )'$'\n''    case x in x) { true; } ;; esac'$'\n''    { { true; } }'$'\n''    echo then {'$'\n''    kubectl apply -f -'$'\n''}'$'\n''grp < "$f"'
+    probe brace-time 'bt_f() {'$'\n''    time { true; }'$'\n''    coproc { cat; }'$'\n''    echo ` { true; } `'$'\n''    kubectl apply -f -'$'\n''}'$'\n''bt_f < "$f"'
+    probe subshell-same-body-one 'ss() ( kubectl apply -f - )'$'\n''ss < "$f"'
+    probe subshell-same-body-two 'ss() ('$'\n''    kubectl apply -f -'$'\n'')'$'\n''ss < "$f"'
+    probe nested-one-line 'nl_o() { nl_i() { true; }'$'\n''    kubectl apply -f -'$'\n''}'$'\n''nl_o < "$f"'
+    probe two-on-one-line 'md_a() { true; }; md_b() { true; }'$'\n''kubectl apply -f -'
+    probe brace-word-in-body 'bz_f() {'$'\n''    echo }'$'\n''    kubectl apply -f -'$'\n''}'$'\n''bz_f < "$f"'
+    probe nested-subshell-one-line 'po() ( pi() ( true; )'$'\n''    kubectl apply -f -'$'\n'')'$'\n''po < "$f"'
+    # Two bodies that differ only inside a quoted word.
+    probe quoted-body-one 'qb() { echo "a"; }'
+    probe quoted-body-two 'qb() { echo "b"; }'
+    # A function is defined, and called, at any command word.
+    probe def-after-and 'true && ar_k() { kubectl "$@"; }'$'\n''ar_k apply -f m.yaml'
+    probe def-after-semi 'set -e; sr_k() { kubectl "$@"; }'$'\n''sr_k apply -f m.yaml'$'\n''sp_k ( ) { kubectl "$@"; }'$'\n''sp_k apply -f m.yaml'
+    probe def-keyword-after-semi 'true; function fr_k { kubectl "$@"; }'$'\n''fr_k apply -f m.yaml'
+    probe call-prefixes 'cp_w() { kubectl apply -f -; }'$'\n''FOO=1 cp_w T1 < "$f"'$'\n''2>/dev/null cp_w T2 < "$f"'$'\n''time cp_w T3 < "$f"'$'\n''x=`cp_w T4 < "$f"`'$'\n''&>/dev/null cp_w T5 < "$f"'$'\n''> /dev/null cp_w T6 < "$f"'$'\n''A+=1 cp_w T7 < "$f"'$'\n''a[0]=1 cp_w T8 < "$f"'$'\n''0<&3 cp_w T9 < "$f"'
+    # A wrapper name as an argument is no call.
+    probe arg-named-runner 'ra_k() { kubectl "$@"; }'$'\n''echo ra_k apply -f m.yaml'$'\n''ra_k apply -f m.yaml'
+    probe arg-named-wrapper 'an_w() { kubectl apply -f -; }'$'\n''an_o() {'$'\n''    echo an_w'$'\n''}'$'\n''an_o < "$f"'$'\n''echo an_w | kubectl apply -f -'$'\n''true && an_w < "$f"'$'\n''cat "$f" | an_w'
     # Bash refuses this one, so it skips the probe's syntax check.
     printf '%s\n' 'ub_f() {' '    kubectl apply -f -' > "$fixtures/scripts/unclosed-body.sh"
     # One body defined in two files, spaced and opened differently.
-    probe same-body-one 'sb() { kubectl apply -f -; }'$'\n''sb < "$f"'
-    probe same-body-two '# The same body, spaced out.'$'\n''function sb {'$'\n''    kubectl apply -f -;'$'\n''}'$'\n''sb < "$f"'
+    probe same-body-one 'sb() { true; true; kubectl apply -f -; true & } >/dev/null'$'\n''sb < "$f"'
+    probe same-body-two '# The same body, spaced out.'$'\n''function sb {'$'\n''    true;'$'\n''    true'$'\n''    kubectl  apply -f - # reads stdin'$'\n''    true &'$'\n''}>/dev/null'$'\n''sb < "$f"'
     probe subshell-body 'sbody_f() ('$'\n''    echo x'$'\n'')'$'\n''kubectl apply -f -'
     probe subshell-body-group 'sg_f() ('$'\n''    { echo x; }'$'\n''    kubectl apply -f -'$'\n'')'$'\n''sg_f < "$f"'
     probe brace-after-subshell 'ba_f() ( echo x; )'$'\n''ba_g()'$'\n''{'$'\n''    kubectl apply -f -'$'\n''}'$'\n''ba_g < "$f"'
@@ -1780,6 +1846,10 @@ plant wrapper-call-heredoc "wchd_inner() { kubectl apply -f -; }"$'\n'"wchd_oute
 plant same-name-wrapper "w() { kubectl apply -f -; }"$'\n'"w <<EOF" "$module_unlabelled"
 plant same-name-other "w() { echo; }"$'\n'"w <<EOF" "$module_unlabelled"
 # Two bodies that differ only inside their heredocs.
+# A wrapper name as a redirect target is no call.
+plant fd-heredoc-first "fh_w() { kubectl apply -f -; }"$'\n'"3<<EOF fh_w < \"\$f\"" "$module_labelled"
+plant heredoc-first "hf_w() { kubectl apply -f -; }"$'\n'"<<EOF hf_w" "$module_unlabelled"
+plant redirect-named-wrapper "rn_w() { kubectl apply -f -; }"$'\n'"x=\$(cat <<EOF > rn_w" "$machine_config" "EOF"$'\n'")"
 plant heredoc-body-one "hb() {"$'\n'"    kubectl apply -f - <<EOF" "a: 1" "EOF"$'\n'"}"
 plant heredoc-body-two "hb() {"$'\n'"    kubectl apply -f - <<EOF" "a: 2" "EOF"$'\n'"}"
 plant fd3-heredoc "kubectl apply -f - 3<<EOF" "$module_labelled"
@@ -1883,7 +1953,36 @@ BYPATH default-json.sh:5
 BYPATH brace-groups.sh:14
 UNREADABLE unclosed-body.sh:1
 BYPATH same-body-one.sh:2
-BYPATH same-body-two.sh:5
+BYPATH same-body-two.sh:8
+BYPATH subshell-same-body-one.sh:2
+BYPATH subshell-same-body-two.sh:4
+BYPATH nested-one-line.sh:4
+BYPATH brace-word-in-body.sh:5
+BYPATH nested-subshell-one-line.sh:4
+BYPATH two-on-one-line.sh:2
+BYPATH def-after-semi.sh:4
+BYPATH call-prefixes.sh:7
+BYPATH call-prefixes.sh:8
+BYPATH call-prefixes.sh:9
+BYPATH call-prefixes.sh:10
+SITE heredoc-first.sh:2
+BYPATH fd-heredoc-first.sh:2
+FILEDOC fd-heredoc-first.sh:2
+BYPATH arg-named-runner.sh:3
+UNLABELLED heredoc-first.sh:3
+BYPATH brace-time.sh:7
+BYPATH def-after-and.sh:2
+BYPATH def-after-semi.sh:2
+BYPATH def-keyword-after-semi.sh:2
+BYPATH call-prefixes.sh:2
+BYPATH call-prefixes.sh:3
+BYPATH call-prefixes.sh:4
+BYPATH call-prefixes.sh:5
+BYPATH call-prefixes.sh:6
+BYPATH arg-named-wrapper.sh:6
+BYPATH arg-named-wrapper.sh:7
+BYPATH arg-named-wrapper.sh:8
+FILEDOC redirect-named-wrapper.sh:2
 BYPATH subshell-body.sh:4
 BYPATH subshell-body-one-line.sh:2
 BYPATH subshell-body-group.sh:5
@@ -1906,6 +2005,7 @@ UNLABELLED same-name-wrapper.sh:3
 SITE same-name-other.sh:2
 UNLABELLED same-name-other.sh:3
 DUPLICATE heredoc-body-two.sh:1
+DUPLICATE quoted-body-two.sh:1
 BYPATH fd3-heredoc.sh:1
 FILEDOC fd3-heredoc.sh:1
 SITE fd0-heredoc.sh:1
