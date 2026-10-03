@@ -737,8 +737,8 @@ fi
 # The release's webhooks leave every object and namespace carrying a run label
 # to that run's install. Setup can only keep that scoping on objects it owns: an
 # object ArgoCD tracks gets reverted on the next sync, so setup stops there.
-for release_webhook in validatingwebhookconfiguration/cfgd-validating-webhooks \
-    mutatingwebhookconfiguration/cfgd-mutating-webhooks; do
+for release_webhook in "validatingwebhookconfiguration/$E2E_RELEASE_VALIDATING_WEBHOOK" \
+    "mutatingwebhookconfiguration/$E2E_RELEASE_MUTATING_WEBHOOK"; do
     argocd_rc=0
     argocd_owner "${release_webhook%%/*}" "${release_webhook#*/}" - "rerun setup" || argocd_rc=$?
     case "$argocd_rc" in
@@ -793,7 +793,7 @@ spec:
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingWebhookConfiguration
 metadata:
-  name: cfgd-validating-webhooks
+  name: ${E2E_RELEASE_VALIDATING_WEBHOOK}
 webhooks:
   - name: validate-machineconfig.cfgd.io
     admissionReviewVersions: [v1]
@@ -913,7 +913,7 @@ webhooks:
 apiVersion: admissionregistration.k8s.io/v1
 kind: MutatingWebhookConfiguration
 metadata:
-  name: cfgd-mutating-webhooks
+  name: ${E2E_RELEASE_MUTATING_WEBHOOK}
 webhooks:
   - name: inject-modules.cfgd.io
     admissionReviewVersions: [v1]

@@ -11,3 +11,16 @@ kubectl get mutatingwebhookconfiguration cfgd-mutating-webhooks
 echo "expected driver=csi.cfgd.io"
 # the release operator runs in cfgd-system
   namespace: cfgd-system
+kubectl logs deploy/cfgd-operator
+kubectl get deployments/cfgd-operator
+kubectl get deployment.apps/cfgd-operator
+kubectl get deployments.apps cfgd-operator
+kubectl get deployment "cfgd-operator"
+kubectl get ep cfgd-operator
+kubectl get endpoints/cfgd-operator
+kubectl get services cfgd-operator
+kubectl get service/cfgd-operator
+kubectl get svc 'cfgd-operator'
+kubectl get pods -l app.kubernetes.io/name=cfgd-operator
+kubectl get pods -l "app=cfgd-operator"
+echo "the release namespace is cfgd-system."

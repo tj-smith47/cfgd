@@ -105,6 +105,10 @@ export E2E_VALIDATING_WEBHOOK="$E2E_INSTALL_RELEASE"
 export E2E_MUTATING_WEBHOOK="$E2E_INSTALL_RELEASE-pod-injector"
 export E2E_OPERATOR_PODS="app.kubernetes.io/instance=$E2E_INSTALL_RELEASE,app.kubernetes.io/component=operator"
 export E2E_CSI_PODS="app.kubernetes.io/instance=$E2E_INSTALL_RELEASE,app.kubernetes.io/component=csi-driver"
+# The live release's webhook configurations, which setup scopes away from
+# run-labelled objects and namespaces.
+export E2E_RELEASE_VALIDATING_WEBHOOK="cfgd-validating-webhooks"
+export E2E_RELEASE_MUTATING_WEBHOOK="cfgd-mutating-webhooks"
 
 TEST_POD=""
 
@@ -445,16 +449,16 @@ argocd_owner() {
 
 # require_release_webhooks_scoped: 0 when the release's webhook configurations
 # leave every run-labelled object and namespace to the PR install: each
-# cfgd-validating-webhooks entry's objectSelector and each cfgd-mutating-webhooks
-# entry's namespaceSelector holds the cfgd.io/e2e-run DoesNotExist expression.
+# $E2E_RELEASE_VALIDATING_WEBHOOK entry's objectSelector and each
+# $E2E_RELEASE_MUTATING_WEBHOOK entry's namespaceSelector holds the cfgd.io/e2e-run DoesNotExist expression.
 # Otherwise prints an ERROR and returns 1. A setup run from a branch without
 # that scoping re-applies both configurations without it, and the release
 # operator then admits and mutates what this run creates. A configuration
 # ArgoCD tracks is refused as setup refuses it, since setup cannot scope it.
 require_release_webhooks_scoped() {
     local rerun="rerun setup from this branch" entry kind name selector rc doc unscoped
-    for entry in "validatingwebhookconfiguration cfgd-validating-webhooks objectSelector" \
-        "mutatingwebhookconfiguration cfgd-mutating-webhooks namespaceSelector"; do
+    for entry in "validatingwebhookconfiguration $E2E_RELEASE_VALIDATING_WEBHOOK objectSelector" \
+        "mutatingwebhookconfiguration $E2E_RELEASE_MUTATING_WEBHOOK namespaceSelector"; do
         read -r kind name selector <<<"$entry"
         rc=0
         argocd_owner "$kind" "$name" - "$rerun" || rc=$?
@@ -477,7 +481,7 @@ require_release_webhooks_scoped() {
         unscoped="$(jq -r --arg sel "$selector" '.webhooks[]?
             | select([.[$sel].matchExpressions[]? | select(.key == "cfgd.io/e2e-run" and .operator == "DoesNotExist")] | length == 0)
             | .name' <<<"$doc")" || {
-            echo "ERROR: could not read the webhooks of $kind/$name as JSON. Check that jq is on PATH, then $rerun." >&2
+            echo "ERROR: could not read the webhooks of $kind/$name as JSON: kubectl returned something other than JSON, or jq is not on PATH. Check both, then $rerun." >&2
             return 1
         }
         if [ -n "$unscoped" ]; then

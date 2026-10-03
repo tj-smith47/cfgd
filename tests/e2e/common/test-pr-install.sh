@@ -21,7 +21,7 @@
 #   - require_release_webhooks_scoped passes on release webhooks scoped away
 #     from run-labelled objects and stops on an unscoped entry, a configuration
 #     ArgoCD tracks, and one that is missing or unreadable; the operator and
-#     gateway suites call it
+#     gateway suites call it from setups that print each ERROR to stderr
 #   - no operator suite script names the release's operator, namespace,
 #     webhooks or CSI driver by hand
 # kubectl is a stub on PATH, so nothing reaches a cluster; the CRD check's stub
@@ -85,6 +85,8 @@ expect_var E2E_MUTATING_WEBHOOK cfgd-e2e-42-pod-injector
 expect_var E2E_OPERATOR_PODS "app.kubernetes.io/instance=cfgd-e2e-42,app.kubernetes.io/component=operator"
 expect_var E2E_CSI_PODS "app.kubernetes.io/instance=cfgd-e2e-42,app.kubernetes.io/component=csi-driver"
 expect_var CSI_DRIVER_NAME e2e.csi.cfgd.io
+expect_var E2E_RELEASE_VALIDATING_WEBHOOK cfgd-validating-webhooks
+expect_var E2E_RELEASE_MUTATING_WEBHOOK cfgd-mutating-webhooks
 
 # A local setup and a local suite are separate processes; both must name the
 # same install.
@@ -2487,32 +2489,62 @@ expect_wh "require_release_webhooks_scoped stops on a configuration it cannot re
 ERROR: could not read validatingwebhookconfiguration/cfgd-validating-webhooks. Check that the runner can get validatingwebhookconfiguration objects, then rerun setup from this branch.
 rc=1" validating-scoped.json mutating-scoped.json WH_UNREADABLE=cfgd-validating-webhooks
 expect_wh "require_release_webhooks_scoped stops on a configuration whose webhooks are not JSON" \
-    "ERROR: could not read the webhooks of mutatingwebhookconfiguration/cfgd-mutating-webhooks as JSON. Check that jq is on PATH, then rerun setup from this branch.
+    "ERROR: could not read the webhooks of mutatingwebhookconfiguration/cfgd-mutating-webhooks as JSON: kubectl returned something other than JSON, or jq is not on PATH. Check both, then rerun setup from this branch.
 rc=1" validating-scoped.json garbled.json
 
 # The suites that apply run-labelled objects call the check before any case.
 # The exempt suite still drives the release operator in cfgd-system; once its
-# setup calls the check, the entry fails until it is removed.
+# setup calls the check, or it leaves run_label_suites, the entry fails until it
+# is removed.
 webhook_scope_exempt=full-stack
+if [[ " ${run_label_suites[*]} " != *" $webhook_scope_exempt "* ]]; then
+    fail "webhook_scope_exempt names $webhook_scope_exempt, which run_label_suites does not list; remove the entry"
+fi
 for suite in "${run_label_suites[@]}"; do
-    calls=false
-    if grep -qE '^require_release_webhooks_scoped( |$)' "$e2e_root/$suite/scripts/"setup-*-env.sh; then calls=true; fi
-    if [ "$suite" = "$webhook_scope_exempt" ]; then
-        if $calls; then
+    rc=0
+    grep -qE '^require_release_webhooks_scoped( |$)' "$e2e_root/$suite/scripts/"setup-*-env.sh 2>/dev/null || rc=$?
+    if [ "$rc" -gt 1 ]; then
+        fail "could not read the $suite suite's setup-*-env.sh to see whether it calls require_release_webhooks_scoped"
+    elif [ "$suite" = "$webhook_scope_exempt" ]; then
+        if [ "$rc" -eq 0 ]; then
             fail "the $suite suite's setup calls require_release_webhooks_scoped; remove it from webhook_scope_exempt"
         else
             pass "the $suite suite is exempt from require_release_webhooks_scoped: it drives the release operator"
         fi
-    elif $calls; then
+    elif [ "$rc" -eq 0 ]; then
         pass "the $suite suite's setup calls require_release_webhooks_scoped"
     else
         fail "the $suite suite's setup does not call require_release_webhooks_scoped before its cases; a setup from a branch without the PR-install scoping would go unseen"
     fi
 done
 
+# The suites that call require_release_webhooks_scoped stop in their setup
+# when it fails; each ERROR there goes to stderr with the helper's own.
+for suite in "${run_label_suites[@]}"; do
+    [ "$suite" != "$webhook_scope_exempt" ] || continue
+    rc=0
+    stdout_errors="$(grep -nE 'echo[^|]*"[[:space:]]*ERROR' "$e2e_root/$suite/scripts/"setup-*-env.sh 2>/dev/null | grep -v '>&2')" || rc=$?
+    if [ "$rc" -eq 0 ]; then
+        fail "the $suite suite's setup prints an ERROR to stdout; add >&2: [$stdout_errors]"
+    elif ! grep -qE 'echo[^|]*"[[:space:]]*ERROR' "$e2e_root/$suite/scripts/"setup-*-env.sh 2>/dev/null; then
+        fail "the $suite suite's setup-*-env.sh holds no ERROR line or cannot be read, so the stderr check read nothing"
+    else
+        pass "every ERROR the $suite suite's setup prints goes to stderr"
+    fi
+done
+
 # A release target spelled by hand in the operator suite reaches the live
-# release. helpers.sh names this run's install.
-release_target='cfgd-system|\$\{?CFGD_NAMESPACE([^[:alnum:]_]|$)|app=cfgd-operator|(deployment|endpoints|svc|service)[/ ]+cfgd-operator|cfgd-(validating|mutating)-webhooks|csi\.cfgd\.io'
+# release. helpers.sh names this run's install. The scan reads the suite's
+# tracked *.sh files only: the YAML under operator/manifests/ is the release
+# operator's own definition, which setup applies where ArgoCD does not run it.
+# The resource words are kubectl's spellings of a Deployment, Endpoints and a
+# Service, singular, plural, short and group-qualified.
+q="[\"']?"
+release_target='cfgd-system([^[:alnum:]-]|$)'
+release_target+='|\$\{?CFGD_NAMESPACE([^[:alnum:]_]|$)'
+release_target+='|app(\.kubernetes\.io/name)?='"$q"'cfgd-operator([^[:alnum:]-]|$)'
+release_target+='|(^|[^[:alnum:]_.-])(deploy|deployments?(\.apps)?|endpoints|ep|svc|services?)[/ ]+'"$q"'cfgd-operator([^[:alnum:]-]|$)'
+release_target+='|cfgd-(validating|mutating)-webhooks|csi\.cfgd\.io'
 # scan_release_targets FILE...: file:line:text of each line naming one.
 scan_release_targets() {
     local rc=0
@@ -2521,9 +2553,9 @@ scan_release_targets() {
 }
 targets_got="$(cd "$here/fixtures/release-targets" && scan_release_targets spelled.bash clean.bash | cut -d: -f1,2)" ||
     targets_got="(the scan failed)"
-targets_want="$(seq -f 'spelled.bash:%g' 1 13)"
+targets_want="$(seq -f 'spelled.bash:%g' 1 26)"
 if [ "$targets_got" = "$targets_want" ]; then
-    pass "the release-target scan reports the release namespace, CFGD_NAMESPACE, operator selector, deployment, endpoints, service, webhook configurations and CSI driver, in code, comments and heredocs, and stays quiet on the PR install's names, the leader lease and other cfgd.io names"
+    pass "the release-target scan reports the release namespace, CFGD_NAMESPACE, both operator label selectors, every kubectl spelling of the operator Deployment, Endpoints and Service, bare or quoted, the webhook configurations and the CSI driver, in code, comments and heredocs, and stays quiet on the PR install's names, the leader lease, longer names that start the same and other cfgd.io names"
 else
     fail "the release-target scan printed [$targets_got], want [$targets_want]"
 fi

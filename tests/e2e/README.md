@@ -81,10 +81,21 @@ needs no cluster.
 The operator suite runs against the PR install: its pods, Deployment, leader lease
 (`cfgd-operator-leader` in `$E2E_INSTALL_NS`), webhook Service and CSI driver name all
 come from the names above, and OP-PR-01 fails unless `$E2E_OPERATOR_DEPLOY` runs
-`e2e_image cfgd-operator`. `test-pr-install.sh` fails on a script under `operator/`
-that names a release target by hand: `cfgd-system`, `$CFGD_NAMESPACE`,
-`app=cfgd-operator`, the `cfgd-operator` Deployment, endpoints or Service, the
-`cfgd-validating-webhooks` and `cfgd-mutating-webhooks` configurations, or `csi.cfgd.io`.
+`e2e_image cfgd-operator`. `test-pr-install.sh` fails on a tracked `*.sh` under
+`operator/` that names a release target by hand:
+
+- `cfgd-system` or `$CFGD_NAMESPACE` / `${CFGD_NAMESPACE}`
+- `app=cfgd-operator` or `app.kubernetes.io/name=cfgd-operator`
+- `cfgd-operator`, bare or quoted, after `deploy`, `deployment`, `deployments`,
+  `deployment.apps`, `deployments.apps`, `endpoints`, `ep`, `svc`, `service` or
+  `services`, joined by `/` or spaces
+- `cfgd-validating-webhooks`, `cfgd-mutating-webhooks` or `csi.cfgd.io`
+
+A longer name that starts the same (`cfgd-systemd`, `cfgd-operator-leader`) passes. The
+YAML under `operator/manifests/` is the release operator's own definition, which setup
+applies where ArgoCD does not run it, so the scan does not read it. `helpers.sh` names
+the release webhook configurations once, as `$E2E_RELEASE_VALIDATING_WEBHOOK` and
+`$E2E_RELEASE_MUTATING_WEBHOOK`, for setup and the check below.
 
 Setup scopes the release's webhooks away from run-labelled objects and namespaces
 (`cfgd.io/e2e-run DoesNotExist`), and a setup run from a branch without that scoping
@@ -95,7 +106,10 @@ of `cfgd-mutating-webhooks` in its `namespaceSelector`; when either configuratio
 missing or cannot be read; and when ArgoCD tracks either, where setup stops too.
 `test-pr-install.sh` drives it against the fixtures in `common/fixtures/release-webhooks/`
 and fails when a suite that applies operator objects does not call it from its setup,
-the full-stack suite aside while it drives the release operator.
+the full-stack suite aside while it drives the release operator. The exemption fails
+once that suite calls the check, or once it is no longer one of the suites the run-label
+scan holds to a floor. In each suite that calls it, every `ERROR` line its setup prints
+goes to stderr.
 
 The PR operator reconciles only objects labelled with the run, so every object of
 a kind the operator serves that a suite applies carries the label in its own

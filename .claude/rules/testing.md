@@ -190,10 +190,15 @@ holds the library to this.
 The operator suite drives this run's operator in the PR install: every target
 it reads comes from `common/helpers.sh` (`$E2E_INSTALL_NS`,
 `$E2E_OPERATOR_PODS`, `$E2E_OPERATOR_DEPLOY`, `$E2E_WEBHOOK_SVC`,
-`$CSI_DRIVER_NAME`), OP-PR-01 fails when `$E2E_OPERATOR_DEPLOY` runs an image
-other than `e2e_image cfgd-operator`, and `tests/e2e/common/test-pr-install.sh`
-fails on an operator suite script that names `cfgd-system`, the release's
-operator, webhook configurations or `csi.cfgd.io` by hand. A suite that applies
+`$E2E_VALIDATING_WEBHOOK`, `$CSI_DRIVER_NAME`), OP-PR-01 fails when
+`$E2E_OPERATOR_DEPLOY` runs an image other than `e2e_image cfgd-operator`, and
+`tests/e2e/common/test-pr-install.sh` fails on a tracked `*.sh` under
+`tests/e2e/operator/` that spells by hand `cfgd-system`, `$CFGD_NAMESPACE`,
+the `app=` or `app.kubernetes.io/name=` selector for `cfgd-operator`,
+`cfgd-operator` after any kubectl spelling of a Deployment, Endpoints or
+Service (`deploy`, `deployments.apps`, `ep`, `svc`, ...), either release
+webhook configuration, or `csi.cfgd.io`. `tests/e2e/README.md` lists the
+spellings. A suite that applies
 run-labelled objects calls `require_release_webhooks_scoped` in its setup, which
 stops the suite when the release's webhooks are not scoped away from them.
 The gateway and full-stack suites run ArgoCD's pinned images. A case there for

@@ -10,7 +10,7 @@ source "$SCRIPT_DIR/../../common/helpers.sh"
 echo "=== cfgd Operator E2E Tests ==="
 
 kubectl get validatingwebhookconfiguration "$E2E_VALIDATING_WEBHOOK" > /dev/null 2>&1 || {
-    echo "ERROR: validatingwebhookconfiguration $E2E_VALIDATING_WEBHOOK of the PR install not found. Run setup-cluster.sh first."
+    echo "ERROR: validatingwebhookconfiguration $E2E_VALIDATING_WEBHOOK of the PR install not found. Run setup-cluster.sh first." >&2
     exit 1
 }
 
