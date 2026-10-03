@@ -137,6 +137,9 @@ text inside a string value is no object. It fails on:
 - a function body (`{ }` or `( )`) still open at the end of its script, where the scan
   cannot tell which commands are inside it. A `{` or `}` counts only where bash reads it as
   a reserved word, the first word of a command (`echo {` opens nothing)
+- a function whose name holds `{` or `}` (`a{b() {`), whose calls the scan cannot tell from
+  a brace group. Any other name bash takes for a function (`k+x`, `1k`, `function k%x`) is
+  read
 - one function name defined with two different bodies. Every function a scanned script
   (each `tests/e2e/*/scripts` directory and `helpers.sh`) defines is visible to all of them,
   so the scan names both definitions. Bodies are compared as bash runs them, with

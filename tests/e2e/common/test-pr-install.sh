@@ -843,23 +843,25 @@ scan_run_labels() {
         # line stays open into the next one; a line ending in one backslash
         # keeps it. A quoted client stays the word client, so that
         # --dry-run="client" reads as --dry-run=client. kept is the line as
-        # written with only its comment dropped.
+        # written with only its comment dropped, and mask is kept with each
+        # quoted character a Q and each escape XX, so an offset in one is the
+        # same offset in the other.
         function squash(s,   out, i, c) {
-            out = ""; kept = s
+            out = ""; kept = s; mask = ""
             for (i = 1; i <= length(s); i++) {
                 c = substr(s, i, 1)
                 if (inq != "" && c == inq) {
                     if (qbuf == "client") out = substr(out, 1, length(out) - 1) "client"
-                    inq = ""; continue
+                    inq = ""; mask = mask "Q"; continue
                 }
-                if (inq == "\047") { qbuf = qbuf c; continue }
-                if (inq == "\"") { if (c == "\\") i++; else qbuf = qbuf c; continue }
-                if (c == "\\") { if (i == length(s)) out = out c; else { out = out "X"; i++ } }
-                else if (cq != "" && c == cq) { cq = ""; out = out " ; " }
-                else if ((c == "\047" || c == "\"") && cq == "" && out ~ /(^|[^A-Za-z0-9_])(ba)?sh[ \t]+-c[ \t]*$/) { cq = c; out = out " ; " }
-                else if (c == "\047" || c == "\"") { inq = c; qbuf = ""; out = out "Q" }
+                if (inq == "\047") { qbuf = qbuf c; mask = mask "Q"; continue }
+                if (inq == "\"") { if (c == "\\") { i++; mask = mask "QQ" } else { qbuf = qbuf c; mask = mask "Q" }; continue }
+                if (c == "\\") { if (i == length(s)) { out = out c; mask = mask c } else { out = out "X"; mask = mask "XX"; i++ } }
+                else if (cq != "" && c == cq) { cq = ""; out = out " ; "; mask = mask " " }
+                else if ((c == "\047" || c == "\"") && cq == "" && out ~ /(^|[^A-Za-z0-9_])(ba)?sh[ \t]+-c[ \t]*$/) { cq = c; out = out " ; "; mask = mask " " }
+                else if (c == "\047" || c == "\"") { inq = c; qbuf = ""; out = out "Q"; mask = mask "Q" }
                 else if (c == "#" && (i == 1 || substr(s, i - 1, 1) ~ /[ \t]/)) { kept = substr(s, 1, i - 1); break }
-                else out = out c
+                else { out = out c; mask = mask c }
             }
             return out
         }
@@ -977,7 +979,10 @@ scan_run_labels() {
         }
         # words(s): reads the command line s at its command words. Bash takes
         # NAME() as a definition only at a command word, and function NAME at
-        # one is checked here. It sets ob
+        # one is checked here. A NAME is any word bash takes for one: no $
+        # (a command substitution), = (an assignment) or < > (a process
+        # substitution); one holding { or } is put in badname[1..bads], as
+        # judge splits a command there and could not see its calls. It sets ob
         # and cb to the { and } that are reserved words (echo { opens
         # nothing), op and cp to its ( and ), and defs to the functions it
         # defines, each defname[d] with the { or ( that opens its body in
@@ -991,14 +996,15 @@ scan_run_labels() {
             gsub(/[;&|`]/, " ; ", s); gsub(/\(/, " ( ", s); gsub(/\)/, " ) ", s)
             n = split(s, t, /[ \t]+/); nw = 0
             for (i = 1; i <= n; i++) if (t[i] != "") w[++nw] = t[i]
-            st = 1; ob = 0; cb = 0; op = 0; cp = 0; defs = 0
+            st = 1; ob = 0; cb = 0; op = 0; cp = 0; defs = 0; bads = 0
             for (i = 1; i <= nw; i++) {
                 if (w[i] == "(") op++
                 if (w[i] == ")") cp++
                 if (at_command(st) && w[i] == "{") ob++
                 if (at_command(st) && w[i] == "}") cb++
-                if (at_command(st) && w[i] == "function" && w[i + 1] ~ /^[A-Za-z_][A-Za-z0-9_:.-]*$/) i++
-                else if (!(w[i + 1] == "FNDEF" && w[i] ~ /^[A-Za-z_][A-Za-z0-9_:.-]*$/)) { st = position(w[i], st); continue }
+                if (at_command(st) && w[i] == "function" && w[i + 1] !~ /^(FNDEF|[;(){}])?$/) i++
+                else if (!(w[i + 1] == "FNDEF" && w[i] !~ /[$=<>]/)) { st = position(w[i], st); continue }
+                if (w[i] ~ /[{}]/) { badname[++bads] = w[i]; if (w[i + 1] == "FNDEF") i++; continue }
                 defname[++defs] = w[i]; defkind[defs] = ""; defat[defs] = ob - cb; defpat[defs] = op - cp
                 if (w[i + 1] == "FNDEF") i++
                 if (w[i + 1] ~ /^[({]$/) defkind[defs] = w[i + 1]
@@ -1029,22 +1035,27 @@ scan_run_labels() {
         # of the function bodies it opens and closes. A body is a { } or a
         # ( ) group, counted on the line with its quoted text dropped, and a
         # definition is one words() finds at a command word.
-        function check_command(   c, raw, l, k, d, top, e) {
+        function check_command(   c, raw, masked, l, k, d, top, e) {
             if (pending == "") return
             c = pending; pending = ""; top = fns; raw = pending_kept; pending_kept = ""
+            masked = pending_mask; pending_mask = ""
             for (k = 1; k <= fns; k++) fnbody[k] = fnbody[k] "\n" raw
             gsub(/\$\{[^}]*\}/, "$V", c)
             # A clobber redirect (>|) is no pipe.
             gsub(/>\|/, ">", c)
             words(c)
+            if (pass == 3) for (d = 1; d <= bads; d++) print "UNREADABLE " file ":" pending_at ": a function name the scan does not read: " badname[d]
             for (d = 1; d <= defs; d++) {
                 if (pass == 1) defined[defname[d]] = 1
                 fn[++fns] = defname[d]; fnline[fns] = pending_at; fnat[fns] = depth + defat[d]; fnpat[fns] = pdepth + defpat[d]
                 fnkind[fns] = defkind[d]; fnopen[fns] = 0
-                # A body is compared from the end of its first opener on the
-                # line, so function f { and f() { open the same body.
+                # A body is compared from the end of its opener, so function f {
+                # and f() { open the same body. The opener is matched on the
+                # line with its quoted text masked, so an "f()" in a string
+                # before it is no opener, and after a character that ends a
+                # word for words(); the text starts with a newline.
                 e = regex_escape(defname[d]); fnbody[fns] = raw
-                if (match(raw, "(^|[^A-Za-z0-9_:.-])(function[ \t]+" e "([ \t]*\\(\\))?|" e "[ \t]*\\(\\))"))
+                if (match(masked, "[ \t\n;&|()`](function[ \t]+" e "([ \t]*\\(\\))?|" e "[ \t]*\\(\\))"))
                     fnbody[fns] = substr(raw, RSTART + RLENGTH)
             }
             if (fns && fnkind[fns] == "" && first ~ /^[({]$/) fnkind[fns] = first
@@ -1127,6 +1138,7 @@ scan_run_labels() {
             pending_last = $3
             pending = pending squash(rest(3))
             pending_kept = pending_kept "\n" kept
+            pending_mask = pending_mask "\n" mask
             # bash goes on reading a command past a line ending in one
             # backslash, a pipe or && or inside a quote.
             if (inq != "" || cq != "" || pending ~ /\\$/ || pending ~ /(\||&&)[ \t]*$/) { sub(/\\$/, "", pending); pending = pending " "; next }
@@ -1841,6 +1853,22 @@ probe() {
     # A wrapper name as an argument is no call.
     probe arg-named-runner 'ra_k() { kubectl "$@"; }'$'\n''echo ra_k apply -f m.yaml'$'\n''ra_k apply -f m.yaml'
     probe arg-named-wrapper 'an_w() { kubectl apply -f -; }'$'\n''an_o() {'$'\n''    echo an_w'$'\n''}'$'\n''an_o < "$f"'$'\n''echo an_w | kubectl apply -f -'$'\n''true && an_w < "$f"'$'\n''cat "$f" | an_w'
+    # A function name is any word bash takes for one.
+    probe odd-names 'k+x() { kubectl "$@"; }'$'\n''k+x apply -f m.yaml'$'\n''k@() { kubectl "$@"; }'$'\n''k@ apply -f m.yaml'$'\n''1k() { kubectl "$@"; }'$'\n''1k apply -f m.yaml'$'\n''function k%x { kubectl "$@"; }'$'\n''k%x apply -f m.yaml'$'\n''k[1]() { kubectl "$@"; }'$'\n''k[1] apply -f m.yaml'$'\n''w+x() { kubectl apply -f -; }'$'\n''w+x < "$f"'
+    # judge splits a command at a brace, so a name holding one fails.
+    probe brace-name 'bn_o() {'$'\n''    a{b() { :; }'$'\n''    kubectl apply -f -'$'\n''}'
+    # An opener in a string, or after a character that ends no word, opens no body.
+    probe opener-in-string-one $'true \\\n&& echo "x oq()" \'x oq()\' "\\" oq()" \\x && sh -c \'true\' && oq() { kubectl apply -f -; }'
+    probe opener-in-string-two 'oq() { kubectl apply -f -; }'
+    probe plus-prefix-one 'true; k+pq() { :; }; pq() { kubectl apply -f -; }'
+    probe plus-prefix-two 'pq() { kubectl apply -f -; }'
+    probe opener-after-each-one $'true;\tms_tb() { kubectl apply -f -; }\ntrue;ms_sc() { kubectl apply -f -; }\ntrue&&ms_am() { kubectl apply -f -; }\nfalse||ms_pi() { kubectl apply -f -; }\ntrue;(ms_op() { kubectl apply -f -; })\necho `ms_bt() { kubectl apply -f -; }`\ncase x in x)ms_cp() { kubectl apply -f -; };; esac'
+    probe opener-after-each-two $'ms_tb() { kubectl apply -f -; }\nms_sc() { kubectl apply -f -; }\nms_am() { kubectl apply -f -; }\nms_pi() { kubectl apply -f -; }\n (ms_op() { kubectl apply -f -; })\n: `ms_bt() { kubectl apply -f -; }`\ncase y in y)ms_cp() { kubectl apply -f -; };; esac'
+    # The opener is the first one on the line: function NAME later in a body opens nothing.
+    probe later-keyword-one 'fk() { kubectl apply -f -; echo function fk; }'
+    probe later-keyword-two 'fk() {'$'\n''    kubectl apply -f -; echo function fk; }'
+    # An empty substitution, array or process substitution defines nothing.
+    probe empty-groups $'echo $()\na=()\ncat <()\ncat >()'
     # Bash refuses this one, so it skips the probe's syntax check.
     printf '%s\n' 'ub_f() {' '    kubectl apply -f -' > "$fixtures/scripts/unclosed-body.sh"
     # One body defined in two files, spaced and opened differently.
@@ -2000,6 +2028,13 @@ SITE heredoc-first.sh:2
 BYPATH fd-heredoc-first.sh:2
 FILEDOC fd-heredoc-first.sh:2
 BYPATH arg-named-runner.sh:3
+BYPATH odd-names.sh:2
+BYPATH odd-names.sh:4
+BYPATH odd-names.sh:6
+BYPATH odd-names.sh:8
+BYPATH odd-names.sh:10
+BYPATH odd-names.sh:12
+UNREADABLE brace-name.sh:2
 UNLABELLED heredoc-first.sh:3
 BYPATH brace-time.sh:8
 BYPATH def-after-and.sh:2
