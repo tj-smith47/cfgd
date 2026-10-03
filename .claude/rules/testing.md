@@ -208,6 +208,15 @@ it clears; a further line with the same text fails, and so does a row no line
 uses. `tests/e2e/README.md` lists the spellings. A suite that applies
 run-labelled objects calls `require_release_webhooks_scoped` in its setup, which
 stops the suite when the release's webhooks are not scoped away from them.
+Every `helm install` and `helm upgrade` in the full-stack suite passes
+`"${HELM_SCOPE[@]}"`, which `helm_test_ns` composes, and no later flag sets
+`operator.watchLabelSelector`, `webhook.objectSelector`,
+`mutatingWebhook.namespaceSelector` or their parent; the array sets all three to
+the install's own `cfgd.io/e2e-helm=$HELM_NS` label, so a test install's
+operator, validating webhook and pod injector act only on objects and
+namespaces carrying it, and an object a case wants its own install to act on
+carries that label. `tests/e2e/common/test-pr-install.sh` names each install,
+upgrade or array that does not.
 Every `ERROR` line an e2e script prints goes to stderr, on its own command
 (`>&2`, `1>&2`, `>/dev/stderr`) or through the closer of an enclosing compound
 (`} >&2`, `) >&2`, `fi >&2`, `done >&2`, `esac >&2`), whatever prefix words,

@@ -18,3 +18,20 @@ helm template cfgd-test "$CHART_DIR"
 myhelm install cfgd-test "$CHART_DIR"
 helm installed
 helm install cfgd-test "$CHART_DIR" "${HELM_SCOPE[*]}"
+helm install cfgd-test "$CHART_DIR" "${HELM_SCOPE[@]}" --set-string operator.watchLabelSelector=
+helm upgrade cfgd-test "$CHART_DIR" \
+    "${HELM_SCOPE[@]}" \
+    --set-json "mutatingWebhook.namespaceSelector={}"
+helm install cfgd-test "$CHART_DIR" --set webhook.objectSelector.a=b "${HELM_SCOPE[@]}"
+helm install cfgd-test "$CHART_DIR" "${HELM_SCOPE[@]}" --set-json 'webhook={}'
+helm install cfgd-test "$CHART_DIR" "${HELM_SCOPE[@]}" --set webhook.enabled=true --set mutatingWebhook.enabled=true
+    HELM_SCOPE=(
+        --set-string "operator.watchLabelSelector=cfgd.io/e2e-helm=${HELM_NS}"
+        --set-json "webhook.objectSelector={\"matchLabels\":{\"cfgd.io/e2e-helm\":\"${HELM_NS}\"}}"
+        --set-json "mutatingWebhook.namespaceSelector={\"matchExpressions\":null,\"matchLabels\":{\"cfgd.io/e2e-helm\":\"${HELM_NS}\"}}"
+    )
+HELM_SCOPE=(
+    --set-string "operator.watchLabelSelector=cfgd.io/e2e-helm=${HELM_NS}"
+    --set-json "webhook.objectSelector={\"matchLabels\":{\"cfgd.io/e2e-helm\":\"${HELM_NS}\"}}"
+)
+HELM_SCOPE=(--set-json "mutatingWebhook.namespaceSelector={\"matchLabels\":{\"cfgd.io/e2e-helm\":\"${HELM_NS}\"}}")

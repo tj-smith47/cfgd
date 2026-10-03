@@ -240,6 +240,18 @@ The Crossplane suite runs the same `check_pr_crds` against `schemas/crds.yaml` o
 XP-01 has found Crossplane running, before it applies its XRD. The Helm suites install
 `chart/cfgd` with `--skip-crds`; FS-HELM-05 and FS-HELM-08 run `check_pr_crds` after
 the upgrade and the uninstall to show the CRDs ArgoCD applied are still in place.
+The full-stack Helm suite installs the chart as `cfgd-test` beside the PR install, so
+each install and upgrade passes `"${HELM_SCOPE[@]}"` from `helm_test_ns`: it sets
+`operator.watchLabelSelector`, `webhook.objectSelector` and
+`mutatingWebhook.namespaceSelector` to the install's own `cfgd.io/e2e-helm=$HELM_NS`
+label (the injector's default `matchExpressions` nulled, since Helm merges map
+values), and `helm_test_ns` puts that label on the namespace. The test operator,
+validating webhook and pod injector then act only on objects and namespaces carrying
+the label, and an object a case applies for its own install carries it too.
+`test-pr-install.sh` fails on a full-stack `helm install` or `helm upgrade` that does
+not pass the array, one with a later flag that sets one of its keys or their parent,
+and a `HELM_SCOPE` array missing one of the three keys, and fails when `test-helm.sh`
+falls below its floor of sites or defines no complete array.
 
 The CRD-write scan in `test-pr-install.sh` reads the `kubectl` and `helm` write
 commands and heredoc bodies of every tracked `tests/e2e/*.sh`, through

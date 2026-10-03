@@ -24,8 +24,9 @@
 #     full-stack and gateway suites call it
 #   - every ERROR line an e2e script prints goes to stderr
 #   - no full-stack case calls skip_test
-#   - every full-stack helm install and upgrade scopes its operator and
-#     webhook to its own namespace's objects through HELM_SCOPE
+#   - every full-stack helm install and upgrade scopes its operator, validating
+#     webhook and pod injector to its own namespace through HELM_SCOPE, and
+#     overrides none of its keys
 #   - no operator or full-stack suite script names the release's operator,
 #     namespace, webhooks or CSI driver by hand, outside the full-stack
 #     suite's kept gateway lines
@@ -2816,28 +2817,55 @@ else
 fi
 
 # The full-stack Helm suite installs the chart beside the PR install; an
-# install without HELM_SCOPE runs an operator and webhook that reconcile and
-# admit every run's cfgd.io objects. scan_helm_scope FILE...: `SCOPED file:line`
-# or `UNSCOPED file:line` for each helm install or upgrade in command position,
-# its backslash-continued lines joined; fails only when a file cannot be read.
+# install without HELM_SCOPE runs an operator, validating webhook and pod
+# injector that reconcile, admit and inject across every run. scan_helm_scope
+# FILE...: for each helm install or upgrade in command position, its
+# backslash-continued lines joined, `SCOPED file:line` when it passes
+# "${HELM_SCOPE[@]}" and no later flag sets one of the keys HELM_SCOPE sets or
+# their parent, otherwise `UNSCOPED file:line`; for each HELM_SCOPE=( array,
+# `SCOPEDEF file:line` when it sets all three keys to the namespace label, or
+# `BADSCOPE file:line KEY...` naming those it does not. Fails only when a file
+# cannot be read.
 scan_helm_scope() {
     awk '
-        FNR == 1 { cmd = "" }
+        BEGIN {
+            scope = "\"${HELM_SCOPE[@]}\""
+            key[1] = "operator.watchLabelSelector"
+            want[1] = "\"operator.watchLabelSelector=cfgd.io/e2e-helm=${HELM_NS}\""
+            key[2] = "webhook.objectSelector"
+            want[2] = "\"webhook.objectSelector={\\\"matchLabels\\\":{\\\"cfgd.io/e2e-helm\\\":\\\"${HELM_NS}\\\"}}\""
+            key[3] = "mutatingWebhook.namespaceSelector"
+            want[3] = "\"mutatingWebhook.namespaceSelector={\\\"matchExpressions\\\":null,\\\"matchLabels\\\":{\\\"cfgd.io/e2e-helm\\\":\\\"${HELM_NS}\\\"}}\""
+        }
+        FNR == 1 { cmd = ""; def = "" }
+        def == "" && /^[[:space:]]*HELM_SCOPE=\(/ { def = " "; defstart = FNR }
+        def != "" {
+            def = def $0 "\n"
+            if ($0 !~ /\)[[:space:]]*$/) next
+            missing = ""
+            for (k = 1; k <= 3; k++) if (!index(def, want[k])) missing = missing " " key[k]
+            print (missing == "" ? "SCOPEDEF " : "BADSCOPE ") FILENAME ":" defstart missing
+            def = ""
+            next
+        }
         {
             if (cmd == "") start = FNR
             line = $0
             if (sub(/\\$/, "", line)) { cmd = cmd line " "; next }
             cmd = cmd line
-            if (cmd ~ /(^|[;&|(!]|[^[:alnum:]_](if|then|else|elif|do|while|until)|^(if|then|else|elif|do|while|until))[[:space:]]*helm[[:space:]]+(install|upgrade)([[:space:]]|$)/)
-                print (index(cmd, "\"${HELM_SCOPE[@]}\"") ? "SCOPED " : "UNSCOPED ") FILENAME ":" start
+            if (cmd ~ /(^|[;&|(!]|[^[:alnum:]_](if|then|else|elif|do|while|until)|^(if|then|else|elif|do|while|until))[[:space:]]*helm[[:space:]]+(install|upgrade)([[:space:]]|$)/) {
+                at = index(cmd, scope)
+                ok = at && substr(cmd, at + length(scope)) !~ /(^|[^[:alnum:]_.])(operator|webhook|mutatingWebhook)(\.(watchLabelSelector|objectSelector|namespaceSelector)[^=[:space:]]*)?=/
+                print (ok ? "SCOPED " : "UNSCOPED ") FILENAME ":" start
+            }
             cmd = ""
         }
     ' "$@"
 }
 scope_got="$(cd "$here/fixtures/helm-scope" && scan_helm_scope installs.bash)" || scope_got="(the scan failed)"
-scope_want="$(printf '%s\n' 'SCOPED installs.bash:1' 'SCOPED installs.bash:2' 'UNSCOPED installs.bash:6' 'UNSCOPED installs.bash:9' 'UNSCOPED installs.bash:11' 'UNSCOPED installs.bash:12' 'SCOPED installs.bash:13' 'UNSCOPED installs.bash:20')"
+scope_want="$(printf '%s\n' 'SCOPED installs.bash:1' 'SCOPED installs.bash:2' 'UNSCOPED installs.bash:6' 'UNSCOPED installs.bash:9' 'UNSCOPED installs.bash:11' 'UNSCOPED installs.bash:12' 'SCOPED installs.bash:13' 'UNSCOPED installs.bash:20' 'UNSCOPED installs.bash:21' 'UNSCOPED installs.bash:22' 'SCOPED installs.bash:25' 'UNSCOPED installs.bash:26' 'SCOPED installs.bash:27' 'SCOPEDEF installs.bash:28' 'BADSCOPE installs.bash:33 mutatingWebhook.namespaceSelector' 'BADSCOPE installs.bash:37 operator.watchLabelSelector webhook.objectSelector mutatingWebhook.namespaceSelector')"
 if [ "$scope_got" = "$scope_want" ]; then
-    pass "the Helm scope scan reports each Helm install and upgrade, on one line or continued, at line start, after \$(, ! or &&, as scoped only when it passes \"\${HELM_SCOPE[@]}\", and stays quiet on comments, quoted text, uninstall, template and longer words"
+    pass "the Helm scope scan reports each Helm install and upgrade, on one line or continued, at line start, after \$(, ! or &&, as scoped only when it passes \"\${HELM_SCOPE[@]}\" and no later flag sets one of its keys or their parent, reports each HELM_SCOPE array missing a key, and stays quiet on comments, quoted text, uninstall, template and longer words"
 else
     fail "the Helm scope scan printed [$scope_got], want [$scope_want]"
 fi
@@ -2858,18 +2886,21 @@ if ! scope_verdict="$(cd "$repo_root" && scan_helm_scope "${fullstack_scripts[@]
 else
     scope_short=""
     for scope_file in "${!helm_scope_floors[@]}"; do
-        scope_sites="$(grep -c " $scope_file:" <<<"$scope_verdict" || true)" # rc-ok: zero sites is reported against the floor below
+        scope_sites="$(grep -cE "^(UN)?SCOPED $scope_file:" <<<"$scope_verdict" || true)" # rc-ok: zero sites is reported against the floor below
         if [ "$scope_sites" -lt "${helm_scope_floors[$scope_file]}" ]; then
             scope_short+=" $scope_file has $scope_sites Helm installs and upgrades, fewer than its floor of ${helm_scope_floors[$scope_file]};"
         fi
+        if ! grep -q "^SCOPEDEF $scope_file:" <<<"$scope_verdict"; then
+            scope_short+=" $scope_file defines no complete HELM_SCOPE array;"
+        fi
     done
-    scope_unscoped="$(grep '^UNSCOPED ' <<<"$scope_verdict" || true)" # rc-ok: no unscoped install is the passing outcome
-    if [ -n "$scope_short" ]; then
+    scope_unscoped="$(grep -E '^(UNSCOPED|BADSCOPE) ' <<<"$scope_verdict" || true)" # rc-ok: no unscoped install or incomplete array is the passing outcome
+    if [ -n "$scope_unscoped" ]; then
+        fail "a full-stack Helm install or upgrade runs an operator, webhook or pod injector that acts on every run's objects; pass \"\${HELM_SCOPE[@]}\" from helm_test_ns with no later flag setting a key it sets, and keep all three of its keys set to the namespace label: [$scope_unscoped]"
+    elif [ -n "$scope_short" ]; then
         fail "the Helm scope scan has lost its population:$scope_short"
-    elif [ -n "$scope_unscoped" ]; then
-        fail "a full-stack Helm install or upgrade runs an operator and webhook that act on every run's objects; pass \"\${HELM_SCOPE[@]}\" from helm_test_ns: [$scope_unscoped]"
     else
-        pass "every full-stack Helm install and upgrade passes \"\${HELM_SCOPE[@]}\" ($(wc -l <<<"$scope_verdict") sites in ${#fullstack_scripts[@]} scripts)"
+        pass "every full-stack Helm install and upgrade passes \"\${HELM_SCOPE[@]}\" and overrides none of its keys, and HELM_SCOPE scopes the operator, validating webhook and pod injector ($(grep -cE '^(UN)?SCOPED ' <<<"$scope_verdict") sites in ${#fullstack_scripts[@]} scripts)"
     fi
 fi
 
