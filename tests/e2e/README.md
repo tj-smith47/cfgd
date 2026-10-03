@@ -137,6 +137,8 @@ text inside a string value is no object. It fails on:
 - a function body (`{ }` or `( )`) still open at the end of its script, where the scan
   cannot tell which commands are inside it. A `{` or `}` counts only where bash reads it as
   a reserved word, the first word of a command (`echo {` opens nothing)
+- a quote still open at the end of its script, where the scan cannot tell which lines are
+  commands. A backslash escapes the next character inside `"..."` and `$'...'`
 - a function whose name holds `{` or `}` (`a{b() {`), whose calls the scan cannot tell from
   a brace group. Any other name bash takes for a function (`k+x`, `1k`, `function k%x`) is
   read

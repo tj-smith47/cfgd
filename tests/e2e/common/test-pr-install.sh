@@ -836,9 +836,11 @@ scan_run_labels() {
     awk -F '\t' -v work="$work" -v sentinel="$label_sentinel" -v placeholder="$expansion_placeholder" \
         -v entries="$yaml_entries" -v helpers="$helpers" "$render_awk"'
         function rest(n,   i, p) { p = 0; for (i = 1; i <= n; i++) p += length($i) + 1; return substr($0, p + 1) }
-        # squash(s): one shell line with each quoted span made the word Q, each
+        # squash(s, n): shell line n with each quoted span made the word Q, each
         # escaped character the letter X and a comment dropped, so a | or < in
-        # a string is not read as shell. The string a bash -c or sh -c runs is
+        # a string is not read as shell. In an ANSI-C span (a single quote
+        # after an odd run of $), as in a double-quoted one, a backslash
+        # escapes the next character. The string a bash -c or sh -c runs is
         # shell, so it is read as such. A quote still open at the end of the
         # line stays open into the next one; a line ending in one backslash
         # keeps it. A quoted client stays the word client, so that
@@ -846,20 +848,27 @@ scan_run_labels() {
         # written with only its comment dropped, and mask is kept with each
         # quoted character a Q and each escape XX, so an offset in one is the
         # same offset in the other.
-        function squash(s,   out, i, c) {
+        function squash(s, n,   out, i, c) {
             out = ""; kept = s; mask = ""
             for (i = 1; i <= length(s); i++) {
                 c = substr(s, i, 1)
+                if ((inq == "\"" || inq == "\047" && ansi) && c == "\\") {
+                    if (i < length(s)) { i++; mask = mask "QQ" } else mask = mask "Q"
+                    continue
+                }
                 if (inq != "" && c == inq) {
                     if (qbuf == "client") out = substr(out, 1, length(out) - 1) "client"
                     inq = ""; mask = mask "Q"; continue
                 }
                 if (inq == "\047") { qbuf = qbuf c; mask = mask "Q"; continue }
-                if (inq == "\"") { if (c == "\\") { i++; mask = mask "QQ" } else { qbuf = qbuf c; mask = mask "Q" }; continue }
+                if (inq == "\"") { qbuf = qbuf c; mask = mask "Q"; continue }
                 if (c == "\\") { if (i == length(s)) { out = out c; mask = mask c } else { out = out "X"; mask = mask "XX"; i++ } }
                 else if (cq != "" && c == cq) { cq = ""; out = out " ; "; mask = mask " " }
-                else if ((c == "\047" || c == "\"") && cq == "" && out ~ /(^|[^A-Za-z0-9_])(ba)?sh[ \t]+-c[ \t]*$/) { cq = c; out = out " ; "; mask = mask " " }
-                else if (c == "\047" || c == "\"") { inq = c; qbuf = ""; out = out "Q"; mask = mask "Q" }
+                else if ((c == "\047" || c == "\"") && cq == "" && out ~ /(^|[^A-Za-z0-9_])(ba)?sh[ \t]+-c[ \t]*$/) { cq = c; qat = n; out = out " ; "; mask = mask " " }
+                else if (c == "\047" || c == "\"") {
+                    ansi = match(out, /\$+$/) && RLENGTH % 2
+                    inq = c; qat = n; qbuf = ""; out = out "Q"; mask = mask "Q"
+                }
                 else if (c == "#" && (i == 1 || substr(s, i - 1, 1) ~ /[ \t]/)) { kept = substr(s, 1, i - 1); break }
                 else { out = out c; mask = mask c }
             }
@@ -1104,13 +1113,15 @@ scan_run_labels() {
         # define, for the wrappers among them, for the commands, and for the
         # heredocs, whose class rests on the command that opens them. A body
         # still open when a file ends leaves the scan unable to tell what is
-        # inside a function, so it fails.
+        # inside a function, and a quote still open leaves it unable to tell
+        # which lines are commands, so both fail.
         # apply_yaml stays a wrapper when the script defining it is not among
         # those scanned, so a heredoc fed to it is still judged.
         BEGIN { OFS = "\t"; wrapper["apply_yaml"] = 1 }
         $1 == "FILE" {
             check_command()
             if (pass == 2 && fns) print "UNREADABLE " file ":" fnline[1] ": a function body opened at line " fnline[1] " never closes for the scan"
+            if (pass == 3 && (inq != "" || cq != "")) print "UNREADABLE " file ":" qat ": a quote opened at line " qat " never closes for the scan"
             if (FNR == 1 && ++pass == 3) close_wrappers()
             inq = ""; cq = ""; depth = 0; pdepth = 0; fns = 0
             next
@@ -1136,7 +1147,8 @@ scan_run_labels() {
             }
             if (pending == "") pending_at = $3
             pending_last = $3
-            pending = pending squash(rest(3))
+            pending = pending squash(rest(3), $3)
+            if (pass == 3 && length(mask) != length(kept)) print "UNREADABLE " file ":" $3 ": the scan lost its place in the quotes on this line"
             pending_kept = pending_kept "\n" kept
             pending_mask = pending_mask "\n" mask
             # bash goes on reading a command past a line ending in one
@@ -1869,7 +1881,18 @@ probe() {
     probe later-keyword-two 'fk() {'$'\n''    kubectl apply -f -; echo function fk; }'
     # An empty substitution, array or process substitution defines nothing.
     probe empty-groups $'echo $()\na=()\ncat <()\ncat >()'
-    # Bash refuses this one, so it skips the probe's syntax check.
+    # A backslash escapes the next character in an ANSI-C string, and an odd run of $ makes one.
+    probe ansi-swallow $'echo $\'it\\\'s\'\nkubectl apply -f -\necho \'x\''
+    probe ansi-dollars $'echo $$\'a\\\'\nkubectl apply -f -'
+    probe dollar-dq-one 'echo $"dq()"; dq() { kubectl apply -f -; }'
+    probe dollar-dq-two 'dq() { kubectl apply -f -; }'
+    # A double-quoted line ending in a backslash goes on into the next line.
+    probe dq-backslash-one $'echo "a\\\nb"; mq(){ kubectl apply -f -; }'
+    probe dq-backslash-two 'mq(){ kubectl apply -f -; }'
+    # Bash refuses these, so they skip the probe's syntax check.
+    printf '%s\n' 'true' 'true' 'true' "echo 'a" 'kubectl apply -f -' > "$fixtures/scripts/unclosed-single.sh"
+    printf '%s\n' 'true' 'true' 'echo "a' 'kubectl apply -f -' > "$fixtures/scripts/unclosed-double.sh"
+    printf '%s\n' 'echo "a"' "bash -c 'true" 'kubectl apply -f -' > "$fixtures/scripts/unclosed-bash-c.sh"
     printf '%s\n' 'ub_f() {' '    kubectl apply -f -' > "$fixtures/scripts/unclosed-body.sh"
     # One body defined in two files, spaced and opened differently.
     probe same-body-one 'sb() { true; true; kubectl apply -f -; true & } >/dev/null'$'\n''sb < "$f"'
@@ -2035,6 +2058,12 @@ BYPATH odd-names.sh:8
 BYPATH odd-names.sh:10
 BYPATH odd-names.sh:12
 UNREADABLE brace-name.sh:2
+BYPATH ansi-swallow.sh:2
+BYPATH ansi-dollars.sh:2
+UNREADABLE unclosed-single.sh:4
+UNREADABLE unclosed-double.sh:3
+UNREADABLE unclosed-bash-c.sh:2
+BYPATH unclosed-bash-c.sh:2
 UNLABELLED heredoc-first.sh:3
 BYPATH brace-time.sh:8
 BYPATH def-after-and.sh:2
@@ -2346,6 +2375,15 @@ expect_red "the scan's own awk failing fails the scan" \
 fail_awk "$scratch/fail-collector" '*work=*'
 expect_red "the scan's heredoc collector failing fails the scan" \
     "$(PATH="$scratch/fail-collector:$PATH" scan_run_labels "$kinds" "$fixtures/scripts")" "^UNREADABLE the scan's heredoc collector exited 2"
+# An awk whose quote mask runs one character long on every line.
+mkdir -p "$scratch/skew-mask"
+# shellcheck disable=SC2016 # the stub's own text, expanded when it runs
+printf '%s\n' '#!/bin/sh' \
+    'for a; do shift; case "$a" in *"function squash"*) a="$(printf "%s" "$a" | sed "s/kept = s; mask = \"\"/kept = s; mask = \"Z\"/")" ;; esac; set -- "$@" "$a"; done' \
+    "exec $(command -v awk) \"\$@\"" > "$scratch/skew-mask/awk"
+chmod +x "$scratch/skew-mask/awk"
+expect_red "a quote mask out of step with its line fails the scan" \
+    "$(PATH="$scratch/skew-mask:$PATH" scan_run_labels "$kinds" "$fixtures/scripts/labelled.sh")" "^UNREADABLE $fixtures/scripts/labelled.sh:1: the scan lost its place"
 # A yq that fails without naming a body has each body read on its own, so its
 # error reaches every heredoc the cluster would be sent.
 mkdir -p "$scratch/fail-yq"
