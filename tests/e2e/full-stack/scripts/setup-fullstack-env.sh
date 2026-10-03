@@ -97,7 +97,7 @@ for _ in $(seq 1 60); do
 done
 
 if [ "$GATEWAY_READY" = "false" ]; then
-    echo "ERROR: Device gateway not reachable after 120s"
+    echo "ERROR: Device gateway not reachable after 120s" >&2
     exit 1
 fi
 echo "All components are running"

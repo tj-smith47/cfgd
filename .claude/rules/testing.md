@@ -201,6 +201,9 @@ webhook configuration, or `csi.cfgd.io`. `tests/e2e/README.md` lists the
 spellings. A suite that applies
 run-labelled objects calls `require_release_webhooks_scoped` in its setup, which
 stops the suite when the release's webhooks are not scoped away from them.
+Every `ERROR` line an e2e script prints goes to stderr, on its own statement
+or through a redirected group or function body (`} >&2`);
+`tests/e2e/common/test-pr-install.sh` names each one that does not.
 The gateway and full-stack suites run ArgoCD's pinned images. A case there for
 behaviour only a newer build has reads the running capability and calls
 `skip_test` naming `running_image <kind> <name> <container>` when it is

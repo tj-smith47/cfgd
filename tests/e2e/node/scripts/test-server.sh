@@ -38,7 +38,7 @@ for _ in $(seq 1 30); do
     sleep 2
 done
 if [ "$GATEWAY_READY" = "false" ]; then
-    echo "ERROR: device gateway not reachable after 60s"
+    echo "ERROR: device gateway not reachable after 60s" >&2
     exit 1
 fi
 

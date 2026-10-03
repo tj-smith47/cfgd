@@ -31,7 +31,7 @@ warn_override_unused() {
 # /db/manifests/k3s/namespaces/cfgd-system/e2e-cleanup-cronjob.yaml.
 echo "Verifying cluster access..."
 kubectl cluster-info >/dev/null 2>&1 || {
-    echo "ERROR: Cannot reach Kubernetes cluster. Check KUBECONFIG."
+    echo "ERROR: Cannot reach Kubernetes cluster. Check KUBECONFIG." >&2
     exit 1
 }
 
@@ -170,7 +170,7 @@ acquire_lease() {
         fi
         sleep 5
     done
-    echo "ERROR: Could not acquire setup lease within ${LEASE_DURATION_SECONDS}s"
+    echo "ERROR: Could not acquire setup lease within ${LEASE_DURATION_SECONDS}s" >&2
     exit 1
 }
 
@@ -231,14 +231,16 @@ for check in \
 done
 
 if [ "$PREFLIGHT_OK" = "false" ]; then
-    CURRENT_USER=$(kubectl auth whoami -o jsonpath='{.status.userInfo.username}' 2>/dev/null || echo "unknown")
-    echo ""
-    echo "ERROR: Runner SA lacks required permissions."
-    echo "  Identity: $CURRENT_USER"
-    echo ""
-    echo "  Update the cfgd-e2e ClusterRole in your GitOps manifests and ensure"
-    echo "  the runner SA is bound to it. See tests/e2e/manifests/e2e-rbac.yaml"
-    echo "  for the required permissions."
+    {
+        CURRENT_USER=$(kubectl auth whoami -o jsonpath='{.status.userInfo.username}' 2>/dev/null || echo "unknown")
+        echo ""
+        echo "ERROR: Runner SA lacks required permissions."
+        echo "  Identity: $CURRENT_USER"
+        echo ""
+        echo "  Update the cfgd-e2e ClusterRole in your GitOps manifests and ensure"
+        echo "  the runner SA is bound to it. See tests/e2e/manifests/e2e-rbac.yaml"
+        echo "  for the required permissions."
+    } >&2
     exit 1
 fi
 echo "  All pre-flight checks passed"
@@ -539,7 +541,7 @@ fi
 echo "Comparing the PR's CRDs with the cluster's..."
 CRD_YAML=$("$REPO_ROOT/target/release/cfgd-gen-crds")
 if [ -z "$CRD_YAML" ]; then
-    echo "ERROR: cfgd-gen-crds produced no output"
+    echo "ERROR: cfgd-gen-crds produced no output" >&2
     exit 1
 fi
 printf '%s\n' "$CRD_YAML" | check_pr_crds || exit 1
@@ -559,38 +561,42 @@ echo "Installing the PR operator and CSI driver ($E2E_INSTALL_RELEASE in $E2E_IN
 # release-namespace annotation says whose it is. An owner whose namespace is
 # gone died without uninstalling, so its CSIDriver is removed.
 if ! csi_driver_obj=$(kubectl get csidriver "$CSI_DRIVER_NAME" --ignore-not-found -o name); then
-    echo "ERROR: could not read csidriver/$CSI_DRIVER_NAME. Check that the runner can get csidrivers, then rerun setup."
+    echo "ERROR: could not read csidriver/$CSI_DRIVER_NAME. Check that the runner can get csidrivers, then rerun setup." >&2
     exit 1
 fi
 if [ -n "$csi_driver_obj" ]; then
     if ! csi_owner_ns=$(kubectl get csidriver "$CSI_DRIVER_NAME" \
         -o jsonpath='{.metadata.annotations.meta\.helm\.sh/release-namespace}'); then
-        echo "ERROR: could not read the Helm owner of csidriver/$CSI_DRIVER_NAME. Check that the runner can get csidrivers, then rerun setup."
+        echo "ERROR: could not read the Helm owner of csidriver/$CSI_DRIVER_NAME. Check that the runner can get csidrivers, then rerun setup." >&2
         exit 1
     fi
     if [ -z "$csi_owner_ns" ]; then
-        echo "ERROR: csidriver/$CSI_DRIVER_NAME exists and no Helm release owns it, so the PR install cannot take it over."
-        echo "  Delete it (kubectl delete csidriver $CSI_DRIVER_NAME) and rerun setup."
+        {
+            echo "ERROR: csidriver/$CSI_DRIVER_NAME exists and no Helm release owns it, so the PR install cannot take it over."
+            echo "  Delete it (kubectl delete csidriver $CSI_DRIVER_NAME) and rerun setup."
+        } >&2
         exit 1
     fi
     if [ "$csi_owner_ns" != "$E2E_INSTALL_NS" ]; then
         if ! csi_owner_ns_phase=$(kubectl get namespace "$csi_owner_ns" --ignore-not-found \
             -o jsonpath='{.status.phase}'); then
-            echo "ERROR: could not check whether namespace $csi_owner_ns, which owns csidriver/$CSI_DRIVER_NAME, still exists. Check that the runner can get namespaces, then rerun setup."
+            echo "ERROR: could not check whether namespace $csi_owner_ns, which owns csidriver/$CSI_DRIVER_NAME, still exists. Check that the runner can get namespaces, then rerun setup." >&2
             exit 1
         fi
         if [ "$csi_owner_ns_phase" = "Terminating" ]; then
-            echo "ERROR: namespace $csi_owner_ns, which owns csidriver/$CSI_DRIVER_NAME, is being deleted; rerun setup once it is gone"
+            echo "ERROR: namespace $csi_owner_ns, which owns csidriver/$CSI_DRIVER_NAME, is being deleted; rerun setup once it is gone" >&2
             exit 1
         fi
         if [ -n "$csi_owner_ns_phase" ]; then
-            echo "ERROR: $CSI_DRIVER_NAME belongs to the live install in $csi_owner_ns; one PR install runs at a time"
-            echo "  Rerun setup once that run has finished. If that run is dead, delete namespace $csi_owner_ns and csidriver/$CSI_DRIVER_NAME first."
+            {
+                echo "ERROR: $CSI_DRIVER_NAME belongs to the live install in $csi_owner_ns; one PR install runs at a time"
+                echo "  Rerun setup once that run has finished. If that run is dead, delete namespace $csi_owner_ns and csidriver/$CSI_DRIVER_NAME first."
+            } >&2
             exit 1
         fi
         echo "  csidriver/$CSI_DRIVER_NAME was left by an install in $csi_owner_ns, which no longer exists; deleting it"
         if ! kubectl delete csidriver "$CSI_DRIVER_NAME"; then
-            echo "ERROR: could not delete the leftover csidriver/$CSI_DRIVER_NAME. Delete it by hand and rerun setup."
+            echo "ERROR: could not delete the leftover csidriver/$CSI_DRIVER_NAME. Delete it by hand and rerun setup." >&2
             exit 1
         fi
     fi
@@ -613,12 +619,14 @@ install_ns_missing=()
 [ -n "$install_ns_created" ] || install_ns_missing+=("annotation cfgd.io/created-at")
 [ -n "$install_ns_heartbeat" ] || install_ns_missing+=("annotation cfgd.io/heartbeat")
 if [ "${#install_ns_missing[@]}" -gt 0 ]; then
-    echo "ERROR: namespace $E2E_INSTALL_NS is missing or does not carry: $(printf '%s, ' "${install_ns_missing[@]}" | sed 's/, $//'). Check that the runner can create, label and annotate namespaces, then rerun setup."
+    echo "ERROR: namespace $E2E_INSTALL_NS is missing or does not carry: $(printf '%s, ' "${install_ns_missing[@]}" | sed 's/, $//'). Check that the runner can create, label and annotate namespaces, then rerun setup." >&2
     exit 1
 fi
 if ! kubectl get secret registry-credentials -n "$E2E_INSTALL_NS" -o name >/dev/null; then
-    echo "ERROR: secret registry-credentials did not reach $E2E_INSTALL_NS within 30s; the PR install pulls its images and the CSI driver's registry login with it."
-    echo "  Check that Reflector is running and that registry-credentials allows reflection to every namespace, then rerun setup."
+    {
+        echo "ERROR: secret registry-credentials did not reach $E2E_INSTALL_NS within 30s; the PR install pulls its images and the CSI driver's registry login with it."
+        echo "  Check that Reflector is running and that registry-credentials allows reflection to every namespace, then rerun setup."
+    } >&2
     exit 1
 fi
 
@@ -637,7 +645,7 @@ if ! helm upgrade --install "$E2E_INSTALL_RELEASE" "$REPO_ROOT/chart/cfgd" -n "$
     --set-json "webhook.objectSelector={\"matchLabels\":{\"cfgd.io/e2e-run\":\"${E2E_RUN_ID}\"}}" \
     --set-json "mutatingWebhook.namespaceSelector={\"matchExpressions\":[{\"key\":\"cfgd.io/inject-modules\",\"operator\":\"In\",\"values\":[\"true\"]},{\"key\":\"cfgd.io/e2e-run\",\"operator\":\"In\",\"values\":[\"${E2E_RUN_ID}\"]}]}" \
     --wait --timeout=180s; then
-    echo "ERROR: helm upgrade --install $E2E_INSTALL_RELEASE in $E2E_INSTALL_NS failed. Read the Helm error above and the pods in $E2E_INSTALL_NS (kubectl get pods -n $E2E_INSTALL_NS), fix the cause and rerun setup."
+    echo "ERROR: helm upgrade --install $E2E_INSTALL_RELEASE in $E2E_INSTALL_NS failed. Read the Helm error above and the pods in $E2E_INSTALL_NS (kubectl get pods -n $E2E_INSTALL_NS), fix the cause and rerun setup." >&2
     exit 1
 fi
 
@@ -655,27 +663,31 @@ for pr_webhook in "validatingwebhookconfiguration/$E2E_VALIDATING_WEBHOOK" \
         sleep 2
     done
     if [ -z "$pr_ca_bundle" ]; then
-        echo "ERROR: $pr_webhook has no caBundle after 120s, so the API server cannot call it."
-        echo "  certificate/$E2E_WEBHOOK_CERT in $E2E_INSTALL_NS reports:"
-        kubectl get certificate "$E2E_WEBHOOK_CERT" -n "$E2E_INSTALL_NS" \
-            -o jsonpath='{range .status.conditions[*]}    {.type}={.status} {.reason}: {.message}{"\n"}{end}' \
-            || echo "    (the certificate could not be read)"
-        echo "  Check that cert-manager and its CA injector are running, then rerun setup."
+        {
+            echo "ERROR: $pr_webhook has no caBundle after 120s, so the API server cannot call it."
+            echo "  certificate/$E2E_WEBHOOK_CERT in $E2E_INSTALL_NS reports:"
+            kubectl get certificate "$E2E_WEBHOOK_CERT" -n "$E2E_INSTALL_NS" \
+                -o jsonpath='{range .status.conditions[*]}    {.type}={.status} {.reason}: {.message}{"\n"}{end}' \
+                || echo "    (the certificate could not be read)"
+            echo "  Check that cert-manager and its CA injector are running, then rerun setup."
+        } >&2
         exit 1
     fi
 done
 
 if ! wait_for_daemonset "$E2E_INSTALL_NS" "$E2E_CSI_DS" 120; then
-    echo "ERROR: daemonset/$E2E_CSI_DS in $E2E_INSTALL_NS is not ready after 120s. Read the description above, fix the cause and rerun setup."
+    echo "ERROR: daemonset/$E2E_CSI_DS in $E2E_INSTALL_NS is not ready after 120s. Read the description above, fix the cause and rerun setup." >&2
     exit 1
 fi
 pr_operator_image="$(running_image deployment "$E2E_OPERATOR_DEPLOY" operator "$E2E_INSTALL_NS")"
 pr_csi_image="$(running_image daemonset "$E2E_CSI_DS" cfgd-csi "$E2E_INSTALL_NS")"
 if [ "$pr_operator_image" != "$(e2e_image cfgd-operator)" ] || [ "$pr_csi_image" != "$(e2e_image cfgd-csi)" ]; then
-    echo "ERROR: the PR install does not run this run's images."
-    echo "  deployment/$E2E_OPERATOR_DEPLOY runs $pr_operator_image, want $(e2e_image cfgd-operator)"
-    echo "  daemonset/$E2E_CSI_DS runs $pr_csi_image, want $(e2e_image cfgd-csi)"
-    echo "  Check the image flags of the helm upgrade above, then rerun setup."
+    {
+        echo "ERROR: the PR install does not run this run's images."
+        echo "  deployment/$E2E_OPERATOR_DEPLOY runs $pr_operator_image, want $(e2e_image cfgd-operator)"
+        echo "  daemonset/$E2E_CSI_DS runs $pr_csi_image, want $(e2e_image cfgd-csi)"
+        echo "  Check the image flags of the helm upgrade above, then rerun setup."
+    } >&2
     exit 1
 fi
 echo "  PR operator runs $pr_operator_image"
@@ -743,8 +755,10 @@ for release_webhook in "validatingwebhookconfiguration/$E2E_RELEASE_VALIDATING_W
     argocd_owner "${release_webhook%%/*}" "${release_webhook#*/}" - "rerun setup" || argocd_rc=$?
     case "$argocd_rc" in
         0)
-            echo "ERROR: $release_webhook carries an argocd.argoproj.io/tracking-id annotation, so ArgoCD owns it and would revert what setup applies."
-            echo "  Add the cfgd.io/e2e-run DoesNotExist selectors from this step to its manifest in the GitOps repo, drop it from the heredoc this step applies, then rerun setup."
+            {
+                echo "ERROR: $release_webhook carries an argocd.argoproj.io/tracking-id annotation, so ArgoCD owns it and would revert what setup applies."
+                echo "  Add the cfgd.io/e2e-run DoesNotExist selectors from this step to its manifest in the GitOps repo, drop it from the heredoc this step applies, then rerun setup."
+            } >&2
             exit 1
             ;;
         1) ;;
@@ -765,7 +779,7 @@ for _ in $(seq 1 60); do
 done
 
 if [ -z "$CA_BUNDLE" ]; then
-    echo "ERROR: Webhook TLS secret not created by cert-manager after 120s"
+    echo "ERROR: Webhook TLS secret not created by cert-manager after 120s" >&2
     exit 1
 fi
 

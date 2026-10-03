@@ -849,8 +849,10 @@ wait_for_service_endpoints() {
         fi
         sleep 2
     done
-    echo "  ERROR: Service $namespace/$service has no ready endpoints after ${timeout}s"
-    kubectl get endpoints "$service" -n "$namespace" -o yaml 2>&1 | head -20 || true
+    {
+        echo "  ERROR: Service $namespace/$service has no ready endpoints after ${timeout}s"
+        kubectl get endpoints "$service" -n "$namespace" -o yaml 2>&1 | head -20 || true
+    } >&2
     return 1
 }
 
@@ -872,11 +874,11 @@ ensure_cfgd_binary() {
 
     echo "  Building cfgd..."
     if ! cargo build --release --manifest-path "$REPO_ROOT/Cargo.toml" --bin cfgd; then
-        echo "  ERROR: cargo build --release --bin cfgd failed"
+        echo "  ERROR: cargo build --release --bin cfgd failed" >&2
         return 1
     fi
     if [ ! -x "$CFGD_BIN" ]; then
-        echo "  ERROR: no executable at $CFGD_BIN after a successful build"
+        echo "  ERROR: no executable at $CFGD_BIN after a successful build" >&2
         return 1
     fi
 }

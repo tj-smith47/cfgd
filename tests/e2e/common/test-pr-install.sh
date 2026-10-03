@@ -21,7 +21,8 @@
 #   - require_release_webhooks_scoped passes on release webhooks scoped away
 #     from run-labelled objects and stops on an unscoped entry, a configuration
 #     ArgoCD tracks, and one that is missing or unreadable; the operator and
-#     gateway suites call it from setups that print each ERROR to stderr
+#     gateway suites call it
+#   - every ERROR line an e2e script prints goes to stderr
 #   - no operator suite script names the release's operator, namespace,
 #     webhooks or CSI driver by hand
 # kubectl is a stub on PATH, so nothing reaches a cluster; the CRD check's stub
@@ -196,7 +197,7 @@ scan_subshell_conditions() {
             sub(/[[:space:];]+$/, "", inner)
             if (inner ~ /;|&&|\n/) print "COND " file ":" start
         }
-        $1 == "UNREADABLE" { print; next }
+        /^UNREADABLE / { print; next }
         $1 == "FILE" { reset(); file = $2; next }
         $1 != "SH" { next }
         { raw = $0; sub(/^[^\t]*\t[^\t]*\t[^\t]*\t/, "", raw) }
@@ -235,6 +236,13 @@ if [ "$cond_got" = "$cond_want" ]; then
     pass "the subshell-condition scan reports each planted multi-command condition once and stays quiet on single commands, awk, heredoc bodies and a file left mid-condition"
 else
     fail "the subshell-condition scan printed [$cond_got], want [$cond_want]"
+fi
+
+cond_bad="$(scan_subshell_conditions "$cond_fixtures/absent.bash" 2>/dev/null)"
+if [[ "$cond_bad" == UNREADABLE* ]]; then
+    pass "the subshell-condition scan reports a file it cannot read"
+else
+    fail "the subshell-condition scan over a missing file printed [$cond_bad], want an UNREADABLE line"
 fi
 
 mapfile -t e2e_scripts < <(git -C "$repo_root" ls-files 'tests/e2e/*.sh')
@@ -2518,20 +2526,63 @@ for suite in "${run_label_suites[@]}"; do
     fi
 done
 
-# The suites that call require_release_webhooks_scoped stop in their setup
-# when it fails; each ERROR there goes to stderr with the helper's own.
-for suite in "${run_label_suites[@]}"; do
-    [ "$suite" != "$webhook_scope_exempt" ] || continue
-    rc=0
-    stdout_errors="$(grep -nE 'echo[^|]*"[[:space:]]*ERROR' "$e2e_root/$suite/scripts/"setup-*-env.sh 2>/dev/null | grep -v '>&2')" || rc=$?
-    if [ "$rc" -eq 0 ]; then
-        fail "the $suite suite's setup prints an ERROR to stdout; add >&2: [$stdout_errors]"
-    elif ! grep -qE 'echo[^|]*"[[:space:]]*ERROR' "$e2e_root/$suite/scripts/"setup-*-env.sh 2>/dev/null; then
-        fail "the $suite suite's setup-*-env.sh holds no ERROR line or cannot be read, so the stderr check read nothing"
-    else
-        pass "every ERROR the $suite suite's setup prints goes to stderr"
-    fi
-done
+# An ERROR on stdout is lost where a caller captures or discards stdout, and
+# interleaves with the output a case parses. scan_stdout_errors FILE... prints
+# `STDOUT file:line` for each echo or printf of an ERROR line, outside comments
+# and heredoc bodies, whose statement (backslash-continued lines joined) has no
+# >&2 and whose nearest enclosing `}` (the first later line indented less that
+# starts with one: a brace group or a function body) is not redirected to stderr.
+# ponytail: one >&2 anywhere on the statement's lines passes every echo on them;
+# a quote-aware split per command is the upgrade if two share a line.
+# shellcheck disable=SC2016 # an awk program; the $ fields belong to awk
+scan_stdout_errors() {
+    { awk -f "$here/heredocs.awk" "$@" || echo "UNREADABLE heredocs.awk exited $?"; } | awk -F '\t' '
+        function indent(s) { match(s, /^[ \t]*/); return RLENGTH }
+        function judge(   i, j, line, stmt, ind, ok) {
+            for (i = 1; i <= n; i++) {
+                line = raw[i]
+                if (line ~ /^[ \t]*#/) continue
+                if (line !~ /(^|[;&|{(]|then|do|else)[ \t]*(echo|printf)[ \t][^;&|]*ERROR/) continue
+                stmt = line
+                for (j = i; stmt ~ /\\$/ && j < n; ) { j++; stmt = stmt "\n" raw[j] }
+                if (stmt ~ />&2/) continue
+                ok = 0
+                ind = indent(line)
+                for (j = i + 1; j <= n; j++) {
+                    if (raw[j] ~ /^[ \t]*}/ && indent(raw[j]) < ind) { ok = (raw[j] ~ /^[ \t]*}[ \t]*1?>&2/); break }
+                }
+                if (!ok) print "STDOUT " file ":" num[i]
+            }
+            n = 0
+        }
+        /^UNREADABLE / { print; next }
+        $1 == "FILE" { judge(); file = $2; next }
+        $1 == "SH" { r = $0; sub(/^[^\t]*\t[^\t]*\t[^\t]*\t/, "", r); raw[++n] = r; num[n] = $3 }
+        END { judge() }
+    '
+}
+
+stderr_fixtures="$here/fixtures/stderr-errors"
+stderr_got="$(cd "$stderr_fixtures" && scan_stdout_errors hits.bash allowed.bash 2>&1)"
+stderr_want="$(printf 'STDOUT hits.bash:%s\n' 1 2 3 5 10 13 14 15 16 18 19)"
+if [ "$stderr_got" = "$stderr_want" ]; then
+    pass "the stderr scan reports each planted ERROR echo or printf on stdout, in a bare statement, an unredirected group or function, after an option or &&, across a continued line and before a later group of its own, and stays quiet on >&2, 1>&2, groups and function bodies redirected either way, comments, quoted text and heredoc bodies"
+else
+    fail "the stderr scan printed [$stderr_got], want [$stderr_want]"
+fi
+stderr_bad="$(scan_stdout_errors "$stderr_fixtures/absent.bash" 2>/dev/null)"
+if [[ "$stderr_bad" == UNREADABLE* ]]; then
+    pass "the stderr scan reports a file it cannot read"
+else
+    fail "the stderr scan over a missing file printed [$stderr_bad], want an UNREADABLE line"
+fi
+if [ "${#e2e_scripts[@]}" -eq 0 ]; then
+    fail "git ls-files 'tests/e2e/*.sh' matched no script, so the stderr scan read nothing"
+elif stdout_errors="$(cd "$repo_root" && scan_stdout_errors "${e2e_scripts[@]}")" && [ -z "$stdout_errors" ]; then
+    pass "every ERROR line the e2e scripts print goes to stderr (${#e2e_scripts[@]} scripts)"
+else
+    fail "an ERROR on stdout is lost where stdout is captured; add >&2 to: [${stdout_errors:-the scan failed}]"
+fi
 
 # A release target spelled by hand in the operator suite reaches the live
 # release. helpers.sh names this run's install. The scan reads the suite's

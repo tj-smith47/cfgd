@@ -108,8 +108,13 @@ missing or cannot be read; and when ArgoCD tracks either, where setup stops too.
 and fails when a suite that applies operator objects does not call it from its setup,
 the full-stack suite aside while it drives the release operator. The exemption fails
 once that suite calls the check, or once it is no longer one of the suites the run-label
-scan holds to a floor. In each suite that calls it, every `ERROR` line its setup prints
-goes to stderr.
+scan holds to a floor.
+
+Every `ERROR` line an e2e script prints goes to stderr, so a caller that captures or
+discards stdout still shows it. `test-pr-install.sh` reads every tracked `tests/e2e/*.sh`
+and fails, naming file and line, on an `echo` or `printf` of an `ERROR` line outside
+comments and heredoc bodies whose statement carries no `>&2` (or `1>&2`) and whose
+enclosing brace group or function body is not redirected (`} >&2`).
 
 The PR operator reconciles only objects labelled with the run, so every object of
 a kind the operator serves that a suite applies carries the label in its own
