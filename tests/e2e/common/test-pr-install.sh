@@ -2545,7 +2545,8 @@ done
 # redirected so at its closer (}, ), fi, done or esac): one later on the
 # statement, or else on a later line indented less. Such a line that is not a
 # closer, else, elif, then, do, ;; or a case pattern ends the compounds
-# indented more than it.
+# indented more than it, unless it continues the line before it (after an open
+# quote or a trailing backslash), where its indent says nothing.
 # shellcheck disable=SC2016 # an awk program; the $ fields belong to awk
 scan_stdout_errors() {
     { awk -f "$here/heredocs.awk" "$@" || echo "UNREADABLE heredocs.awk exited $?"; } | awk -F '\t' "$squash_awk"'
@@ -2625,7 +2626,7 @@ scan_stdout_errors() {
                 }
                 ind = indent(raw[first + cl[i]])
                 for (j = last + 1; j <= n && !ok; j++) {
-                    if (mask_at[j] ~ /^[ \t]*$/ || indent(raw[j]) >= ind) continue
+                    if (open_at[j - 1] || mask_at[j - 1] ~ /\\$/ || mask_at[j] ~ /^[ \t]*$/ || indent(raw[j]) >= ind) continue
                     if ((p = closer(mask_at[j])) || match(mask_at[j], /^[ \t]*\)/) && (p = RLENGTH)) {
                         if (to_stderr(substr(mask_at[j], p + 1))) ok = 1
                         else ind = indent(raw[j])
@@ -2659,7 +2660,7 @@ stderr_fixtures="$here/fixtures/stderr-errors"
 stderr_got="$(cd "$stderr_fixtures" && scan_stdout_errors hits.bash allowed.bash 2>&1)"
 stderr_want="$(printf 'STDOUT hits.bash:%s\n' 1 2 3 5 10 13 14 15 16 18 19 23 24 25 26 27 29 30 31 33 34 36 37 38 39 40 41 42 43 44 45 46 47 50 54)"
 if [ "$stderr_got" = "$stderr_want" ]; then
-    pass "the stderr scan reports each planted ERROR echo or printf on stdout, in a bare statement, an unredirected group or function, after an option or &&, across a continued line or a quoted newline, before a later group of its own, after a redirected command on its line, in a one-line group closed without a redirect or around an inner group that alone is redirected, beside a quoted >&2 or >&20, after a function header, a case pattern, an assignment, a redirect, if and each prefix word, and in an if, loop, subshell or function closed without a redirect or ended by a plain line, and stays quiet on >&2, 1>&2, >/dev/stderr, separators inside quotes, groups, function bodies, ifs, loops, cases and subshells redirected at their closer on one line or several, branches before an else and case arms before another arm inside them, one-line functions and case arms with their own redirect, comments, quoted text and heredoc bodies"
+    pass "the stderr scan reports each planted ERROR echo or printf on stdout, in a bare statement, an unredirected group or function, after an option or &&, across a continued line or a quoted newline, before a later group of its own, after a redirected command on its line, in a one-line group closed without a redirect or around an inner group that alone is redirected, beside a quoted >&2 or >&20, after a function header, a case pattern, an assignment, a redirect, if and each prefix word, and in an if, loop, subshell or function closed without a redirect or ended by a plain line, and stays quiet on >&2, 1>&2, >/dev/stderr, separators inside quotes, groups, function bodies, ifs, loops, cases and subshells redirected at their closer on one line or several, with a string or command continued at column 0 inside them, branches before an else and case arms before another arm inside them, one-line functions and case arms with their own redirect, comments, quoted text and heredoc bodies"
 else
     fail "the stderr scan printed [$stderr_got], want [$stderr_want]"
 fi

@@ -78,3 +78,13 @@ a)
 b)
     ;;
 esac >&2
+{
+    echo "ERROR: in a redirected group with a string continued at column 0"
+    msg="one
+two"
+} >&2
+{
+    echo "ERROR: in a redirected group with a command continued at column 0"
+    printf '%s\n' \
+--flag
+} >&2
