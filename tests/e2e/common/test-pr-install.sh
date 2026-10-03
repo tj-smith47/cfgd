@@ -70,7 +70,7 @@ done
 exit 0
 STUB
 chmod +x "$scratch/bin/kubectl"
-log="$scratch/kubectl.log"
+log="$scratch/kubectl.calls"
 
 # Each check sources helpers.sh in a fresh shell, the way a suite does, and
 # prints what the inner script echoes.
@@ -187,32 +187,32 @@ fi
 ns_case() {
     # shellcheck disable=SC2016 # the inner script expands its own variables
     env -u GITHUB_RUN_ID -u CFGD_NAMESPACE PATH="$here/fixtures/namespace-phase/bin:$PATH" GITHUB_RUN_ID=42 \
-        E2E_NAMESPACE=ns-x NS_LOG="$scratch/ns-$1.log" NS_PHASE="$2" NS_WAIT_RC="$3" REGISTRY=r.example CLI_SCRATCH="$scratch" \
+        E2E_NAMESPACE=ns-x NS_LOG="$scratch/ns-$1.calls" NS_PHASE="$2" NS_WAIT_RC="$3" REGISTRY=r.example CLI_SCRATCH="$scratch" \
         bash -c 'source "$1/common/helpers.sh"; rc=0; create_e2e_namespace 2>&1 || rc=$?
             [ -z "$HEARTBEAT_PID" ] || echo "heartbeat started"; stop_heartbeat; echo "rc=$rc"' _ "$e2e_root"
 }
 ns_wait="kubectl get namespace ns-x --ignore-not-found -o jsonpath={.status.phase}
 kubectl wait --for=delete namespace/ns-x --timeout=120s"
 out="$(ns_case goes Terminating 0)"
-if [ "$(sed -n 's/^rc=//p' <<<"$out")" = 0 ] && [ "$(head -3 "$scratch/ns-goes.log")" = "$ns_wait
+if [ "$(sed -n 's/^rc=//p' <<<"$out")" = 0 ] && [ "$(head -3 "$scratch/ns-goes.calls")" = "$ns_wait
 kubectl create namespace ns-x" ]; then
     pass "create_e2e_namespace waits for a Terminating namespace to go, then creates it"
 else
-    fail "create_e2e_namespace on a Terminating namespace that goes: got [$out] with calls [$(cat "$scratch/ns-goes.log")], want rc=0 and a wait before the create"
+    fail "create_e2e_namespace on a Terminating namespace that goes: got [$out] with calls [$(cat "$scratch/ns-goes.calls")], want rc=0 and a wait before the create"
 fi
 out="$(ns_case stays Terminating 1)"
-if [ "$(sed -n 's/^rc=//p' <<<"$out")" = 1 ] && [ "$(cat "$scratch/ns-stays.log")" = "$ns_wait" ] &&
+if [ "$(sed -n 's/^rc=//p' <<<"$out")" = 1 ] && [ "$(cat "$scratch/ns-stays.calls")" = "$ns_wait" ] &&
     grep -qxF "ERROR: namespace ns-x is still being deleted after 120s; rerun once it is gone" <<<"$out"; then
     pass "create_e2e_namespace stops with a message when a Terminating namespace outlasts its wait"
 else
-    fail "create_e2e_namespace on a Terminating namespace that stays: got [$out] with calls [$(cat "$scratch/ns-stays.log")], want rc=1, no call after the wait and the ERROR naming ns-x"
+    fail "create_e2e_namespace on a Terminating namespace that stays: got [$out] with calls [$(cat "$scratch/ns-stays.calls")], want rc=1, no call after the wait and the ERROR naming ns-x"
 fi
 out="$(ns_case active Active 0)"
 if [ "$(sed -n 's/^rc=//p' <<<"$out")" = 0 ] && grep -qxF "heartbeat started" <<<"$out" &&
-    ! grep -qE '^kubectl (create|label|annotate) namespace ns-x|^kubectl wait ' "$scratch/ns-active.log"; then
+    ! grep -qE '^kubectl (create|label|annotate) namespace ns-x|^kubectl wait ' "$scratch/ns-active.calls"; then
     pass "create_e2e_namespace takes an Active namespace as created: no wait, create, label or annotate, and its heartbeat starts"
 else
-    fail "create_e2e_namespace on an Active namespace: got [$out] with calls [$(cat "$scratch/ns-active.log")], want rc=0, a heartbeat, and no wait, create, label or annotate of ns-x"
+    fail "create_e2e_namespace on an Active namespace: got [$out] with calls [$(cat "$scratch/ns-active.calls")], want rc=0, a heartbeat, and no wait, create, label or annotate of ns-x"
 fi
 
 expect_kubectl "running_image reads cfgd-system by default" \
@@ -333,29 +333,29 @@ chmod +x "$scratch/argo-bin/kubectl" "$scratch/argo-bin/helm"
 
 # argo_case <state> <script>: runs the script after sourcing helpers.sh and
 # prints its output, then `rc=<status>`; the calls the stubs saw are in
-# $scratch/argo.log.
+# $scratch/argo.calls.
 # shellcheck disable=SC2016 # the inner script expands its own positional args
 argo_case() {
-    : > "$scratch/argo.log"
+    : > "$scratch/argo.calls"
     env -u GITHUB_RUN_ID -u CFGD_NAMESPACE PATH="$scratch/argo-bin:$PATH" \
-        ARGO_STATE="$1" ARGO_LOG="$scratch/argo.log" REGISTRY=r.example CLI_SCRATCH="$scratch" \
+        ARGO_STATE="$1" ARGO_LOG="$scratch/argo.calls" REGISTRY=r.example CLI_SCRATCH="$scratch" \
         bash -c 'source "$1/common/helpers.sh"; rc=0; eval "$2" 2>&1 || rc=$?; echo "rc=$rc"' _ "$e2e_root" "$2"
 }
 
 for argo_want in tracked:0 untracked:1 unreadable:2; do
     out="$(argo_case "${argo_want%%:*}" 'argocd_managed deployment crossplane crossplane-system')"
     if [ "$(sed -n 's/^rc=//p' <<<"$out")" = "${argo_want##*:}" ] &&
-        grep -qx 'kubectl get deployment crossplane -n crossplane-system .*' "$scratch/argo.log"; then
+        grep -qx 'kubectl get deployment crossplane -n crossplane-system .*' "$scratch/argo.calls"; then
         pass "argocd_managed returns ${argo_want##*:} on a ${argo_want%%:*} object in the namespace it is given"
     else
-        fail "argocd_managed on a ${argo_want%%:*} object: got [$out] with kubectl calls [$(cat "$scratch/argo.log")], want rc=${argo_want##*:} from a get in crossplane-system"
+        fail "argocd_managed on a ${argo_want%%:*} object: got [$out] with kubectl calls [$(cat "$scratch/argo.calls")], want rc=${argo_want##*:} from a get in crossplane-system"
     fi
 done
 argo_case untracked 'argocd_managed deployment cfgd-operator' >/dev/null
-if grep -qx 'kubectl get deployment cfgd-operator -n cfgd-system .*' "$scratch/argo.log"; then
+if grep -qx 'kubectl get deployment cfgd-operator -n cfgd-system .*' "$scratch/argo.calls"; then
     pass "argocd_managed reads cfgd-system when given no namespace"
 else
-    fail "argocd_managed with no namespace called [$(cat "$scratch/argo.log")], want a get in cfgd-system"
+    fail "argocd_managed with no namespace called [$(cat "$scratch/argo.calls")], want a get in cfgd-system"
 fi
 
 # argo_errors <output>: its ERROR lines, or nothing.
@@ -371,48 +371,48 @@ done
 out="$(argo_case unreadable 'argocd_owner daemonset cfgd-csi-csi e2e-ns "rerun the full-stack suite"')"
 if [ "$(sed -n 's/^rc=//p' <<<"$out")" = 2 ] &&
     [ "$(argo_errors "$out")" = "ERROR: could not read daemonset/cfgd-csi-csi in e2e-ns. Check that the runner can get daemonset objects there, then rerun the full-stack suite." ] &&
-    grep -qx 'kubectl get daemonset cfgd-csi-csi -n e2e-ns .*' "$scratch/argo.log"; then
+    grep -qx 'kubectl get daemonset cfgd-csi-csi -n e2e-ns .*' "$scratch/argo.calls"; then
     pass "argocd_owner returns 2 with one ERROR naming the object, its namespace and the rerun advice it is given"
 else
-    fail "argocd_owner on an unreadable namespaced object: got [$out] with calls [$(cat "$scratch/argo.log")], want rc=2 and the ERROR naming daemonset/cfgd-csi-csi in e2e-ns"
+    fail "argocd_owner on an unreadable namespaced object: got [$out] with calls [$(cat "$scratch/argo.calls")], want rc=2 and the ERROR naming daemonset/cfgd-csi-csi in e2e-ns"
 fi
 out="$(argo_case unreadable 'argocd_owner validatingwebhookconfiguration cfgd-validating-webhooks - "rerun setup"')"
 if [ "$(sed -n 's/^rc=//p' <<<"$out")" = 2 ] &&
     [ "$(argo_errors "$out")" = "ERROR: could not read validatingwebhookconfiguration/cfgd-validating-webhooks. Check that the runner can get validatingwebhookconfiguration objects, then rerun setup." ] &&
-    grep -qx 'kubectl get validatingwebhookconfiguration cfgd-validating-webhooks --ignore-not-found .*' "$scratch/argo.log"; then
+    grep -qx 'kubectl get validatingwebhookconfiguration cfgd-validating-webhooks --ignore-not-found .*' "$scratch/argo.calls"; then
     pass "argocd_owner names no namespace for a cluster-scoped kind, in the ERROR or the get"
 else
-    fail "argocd_owner on an unreadable cluster-scoped object: got [$out] with calls [$(cat "$scratch/argo.log")], want rc=2, an ERROR with no namespace and a get without -n"
+    fail "argocd_owner on an unreadable cluster-scoped object: got [$out] with calls [$(cat "$scratch/argo.calls")], want rc=2, an ERROR with no namespace and a get without -n"
 fi
 
 for argo_empty in 'argocd_owner deployment cfgd-operator "" "rerun setup"' 'argocd_owner deployment cfgd-operator cfgd-system' 'argocd_managed deployment cfgd-operator ""'; do
     out="$(argo_case untracked "$argo_empty")"
-    if [ "$(sed -n 's/^rc=//p' <<<"$out")" = 2 ] && [ "$(argo_errors "$out" | wc -l)" -eq 1 ] && [ ! -s "$scratch/argo.log" ]; then
+    if [ "$(sed -n 's/^rc=//p' <<<"$out")" = 2 ] && [ "$(argo_errors "$out" | wc -l)" -eq 1 ] && [ ! -s "$scratch/argo.calls" ]; then
         pass "[$argo_empty] is refused with status 2 and one ERROR, and kubectl is not called"
     else
-        fail "[$argo_empty]: got [$out] with calls [$(cat "$scratch/argo.log")], want rc=2, one ERROR and no kubectl call"
+        fail "[$argo_empty]: got [$out] with calls [$(cat "$scratch/argo.calls")], want rc=2, one ERROR and no kubectl call"
     fi
 done
 out="$(argo_case tracked crossplane_install)"
-if [ "$(sed -n 's/^rc=//p' <<<"$out")" = 0 ] && ! grep -q '^helm' "$scratch/argo.log" &&
+if [ "$(sed -n 's/^rc=//p' <<<"$out")" = 0 ] && ! grep -q '^helm' "$scratch/argo.calls" &&
     grep -q "ArgoCD's; installing nothing" <<<"$out"; then
     pass "the Crossplane install leaves an ArgoCD-tracked Crossplane alone and calls no helm"
 else
-    fail "the Crossplane install on a tracked Crossplane: got [$out] with calls [$(cat "$scratch/argo.log")], want rc=0, the ArgoCD line and no helm call"
+    fail "the Crossplane install on a tracked Crossplane: got [$out] with calls [$(cat "$scratch/argo.calls")], want rc=0, the ArgoCD line and no helm call"
 fi
 out="$(argo_case untracked crossplane_install)"
 if [ "$(sed -n 's/^rc=//p' <<<"$out")" = 0 ] &&
-    grep -qx "helm upgrade --install crossplane crossplane-stable/crossplane .*" "$scratch/argo.log"; then
+    grep -qx "helm upgrade --install crossplane crossplane-stable/crossplane .*" "$scratch/argo.calls"; then
     pass "the Crossplane install runs helm upgrade --install where ArgoCD does not track Crossplane"
 else
-    fail "the Crossplane install on an untracked Crossplane: got [$out] with calls [$(cat "$scratch/argo.log")], want rc=0 and a helm upgrade --install"
+    fail "the Crossplane install on an untracked Crossplane: got [$out] with calls [$(cat "$scratch/argo.calls")], want rc=0 and a helm upgrade --install"
 fi
 out="$(argo_case unreadable crossplane_install)"
-if [ "$(sed -n 's/^rc=//p' <<<"$out")" = 1 ] && ! grep -q '^helm' "$scratch/argo.log" &&
+if [ "$(sed -n 's/^rc=//p' <<<"$out")" = 1 ] && ! grep -q '^helm' "$scratch/argo.calls" &&
     grep -qx "ERROR: could not read deployment/crossplane in crossplane-system. Check that the runner can get deployment objects there, then rerun the Crossplane suite." <<<"$out"; then
     pass "the Crossplane install stops with an ERROR and calls no helm when it cannot read deployment/crossplane"
 else
-    fail "the Crossplane install on an unreadable Crossplane: got [$out] with calls [$(cat "$scratch/argo.log")], want rc=1, the ERROR line and no helm call"
+    fail "the Crossplane install on an unreadable Crossplane: got [$out] with calls [$(cat "$scratch/argo.calls")], want rc=1, the ERROR line and no helm call"
 fi
 
 # The CRD check against fixture CRDs. A stub `kubectl get crd <name>` prints
@@ -2978,13 +2978,13 @@ fi
 
 # pr-install-down.sh against the stubs in fixtures/pr-install-down/bin: down_case
 # [VAR=value...] runs it for run 42 and prints its output, then `rc=<status>`;
-# the calls the stubs saw are in $scratch/down.log.
+# the calls the stubs saw are in $scratch/down.calls.
 down_bin="$here/fixtures/pr-install-down/bin"
 down_case() {
-    : > "$scratch/down.log"
+    : > "$scratch/down.calls"
     local rc=0
     env -u GITHUB_RUN_ID -u CFGD_NAMESPACE PATH="$down_bin:$PATH" GITHUB_RUN_ID=42 \
-        DOWN_LOG="$scratch/down.log" REGISTRY=r.example CLI_SCRATCH="$scratch" "$@" \
+        DOWN_LOG="$scratch/down.calls" REGISTRY=r.example CLI_SCRATCH="$scratch" "$@" \
         bash "$e2e_root/pr-install-down.sh" </dev/null 2>&1 || rc=$?
     echo "rc=$rc"
 }
@@ -3001,11 +3001,11 @@ expect_down() {
     local label="$1" want_rc="$2" want_calls="$3" want_out="$4" out
     shift 4
     out="$(down_case "$@")"
-    if [ "$(sed -n 's/^rc=//p' <<<"$out")" = "$want_rc" ] && [ "$(cat "$scratch/down.log")" = "$want_calls" ] &&
+    if [ "$(sed -n 's/^rc=//p' <<<"$out")" = "$want_rc" ] && [ "$(cat "$scratch/down.calls")" = "$want_calls" ] &&
         grep -q -- "$want_out" <<<"$out"; then
         pass "$label"
     else
-        fail "$label: got [$out] with calls [$(cat "$scratch/down.log")], want rc=$want_rc, calls [$want_calls] and a line matching [$want_out]"
+        fail "$label: got [$out] with calls [$(cat "$scratch/down.calls")], want rc=$want_rc, calls [$want_calls] and a line matching [$want_out]"
     fi
 }
 expect_down "pr-install-down.sh deletes the run's objects, uninstalls the release, deletes its namespace and reads back that each is gone" \
@@ -3036,7 +3036,7 @@ down_case >/dev/null
 if ! crd_plurals="$(yq -N '.spec.names.plural' "$repo_root/schemas/crds.yaml" | sort)" || [ -z "$crd_plurals" ]; then
     fail "yq could not read the CRD plurals from schemas/crds.yaml"
 else
-    down_plurals="$(sed -n 's/^kubectl delete \([^ ]*\) -A -l cfgd.io\/e2e-run=42 .*/\1/p' "$scratch/down.log" | tr ',' '\n' | sort)"
+    down_plurals="$(sed -n 's/^kubectl delete \([^ ]*\) -A -l cfgd.io\/e2e-run=42 .*/\1/p' "$scratch/down.calls" | tr ',' '\n' | sort)"
     if [ "$down_plurals" = "$crd_plurals" ]; then
         pass "pr-install-down.sh deletes the run's objects of every kind schemas/crds.yaml declares ($(wc -l <<<"$crd_plurals") kinds)"
     else
