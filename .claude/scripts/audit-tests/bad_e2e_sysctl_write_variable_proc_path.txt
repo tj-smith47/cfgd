@@ -1,0 +1,1 @@
+exec_in_pod bash -c 'p=vm/max_map_count; echo 65530 > /proc/sys/$p'

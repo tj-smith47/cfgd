@@ -71,12 +71,24 @@ run() {
     RC=$rc
 }
 
+# Like `run`, but OUTPUT holds stdout alone: a case that parses a structured
+# document cannot have an advisory on stderr merged ahead of it. stderr is
+# printed after the command so a failing case still shows it.
+run_stdout() {
+    local rc=0
+    local err="$SCRATCH/run-stdout.stderr"
+    OUTPUT=$("$CFGD" "$@" 2> "$err") || rc=$?
+    RC=$rc
+    print_stderr_head "$err"
+}
+
 assert_ok() {
     if [ "$RC" -ne 0 ]; then
         echo "  ASSERT FAILED: expected exit 0, got $RC"
         # Unlike the pass-path prints scattered through this suite, this only
         # runs on an unexpected failure — truncating here risks cutting the
         # one line that names the actual error, so print all of it.
+        # shellcheck disable=SC2001  # sed indents each line; an expansion cannot
         echo "$OUTPUT" | sed 's/^/    /'
         return 1
     fi
@@ -96,7 +108,8 @@ STATE="$SCRATCH/state"
 mkdir -p "$STATE"
 setup_config_dir "$CFG" "$TGT"
 CONF="$CFG/cfgd.yaml"
-C="--config $CONF --state-dir $STATE --no-color"
+# shellcheck disable=SC2034  # read by the test file that sources this one
+C=(--config "$CONF" --state-dir "$STATE" --no-color)
 
 # Allow file:// source URLs for E2E test repos (dev/test only)
 export CFGD_ALLOW_LOCAL_SOURCES=1

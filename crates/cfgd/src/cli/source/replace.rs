@@ -13,12 +13,9 @@ fn restore_subscription(
     name: &str,
     subscription: &config::SubscriptionSpec,
 ) -> anyhow::Result<()> {
-    let value = serde_yaml::to_value(subscription)?;
+    let block: serde_yaml::Mapping = serde_yaml::from_value(serde_yaml::to_value(subscription)?)?;
     with_source_config(config_path, name, |entry| {
-        entry
-            .as_mapping_mut()
-            .ok_or_else(|| anyhow::anyhow!("source '{name}' is not a mapping"))?
-            .insert(serde_yaml::Value::String("subscription".into()), value);
+        *subscription_mapping_mut(entry, config_path, name)? = block;
         Ok(())
     })
 }

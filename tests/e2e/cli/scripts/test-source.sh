@@ -10,19 +10,19 @@ echo "=== cfgd source tests ==="
 # NOTE: SRC01-SRC26 are ORDER-DEPENDENT (later tests depend on sources added by earlier tests)
 
 begin_test "SRC01: source --help"
-run $C source --help
+run "${C[@]}" source --help
 if assert_ok && assert_contains "$OUTPUT" "add" && assert_contains "$OUTPUT" "list"; then
     pass_test "SRC01"
 else fail_test "SRC01"; fi
 
 begin_test "SRC02: source list (empty)"
-run $C source list
+run "${C[@]}" source list
 if assert_ok; then
     pass_test "SRC02"
 else fail_test "SRC02"; fi
 
 begin_test "SRC03: source add (remote)"
-run $C source add "file://$SOURCE_REPO" --yes --name team-config --profile base --priority 500
+run "${C[@]}" source add "file://$SOURCE_REPO" --yes --name team-config --profile base --priority 500
 if assert_ok; then
     pass_test "SRC03"
 else
@@ -30,7 +30,7 @@ else
 fi
 
 begin_test "SRC04: source add --branch"
-run $C source add "file://$SOURCE_REPO" --yes --name team-branch --branch master --profile base --priority 500
+run "${C[@]}" source add "file://$SOURCE_REPO" --yes --name team-branch --branch master --profile base --priority 500
 if assert_ok; then
     pass_test "SRC04"
 else
@@ -38,7 +38,7 @@ else
 fi
 
 begin_test "SRC05: source add --profile"
-run $C source add "file://$SOURCE_REPO" --yes --name team-profile --profile base --priority 500
+run "${C[@]}" source add "file://$SOURCE_REPO" --yes --name team-profile --profile base --priority 500
 if assert_ok; then
     pass_test "SRC05"
 else
@@ -46,7 +46,7 @@ else
 fi
 
 begin_test "SRC06: source add --accept-recommended"
-run $C source add "file://$SOURCE_REPO" --yes --name team-rec --accept-recommended --profile base --priority 500
+run "${C[@]}" source add "file://$SOURCE_REPO" --yes --name team-rec --accept-recommended --profile base --priority 500
 if assert_ok; then
     pass_test "SRC06"
 else
@@ -54,7 +54,7 @@ else
 fi
 
 begin_test "SRC07: source add --priority"
-run $C source add "file://$SOURCE_REPO" --yes --name team-pri --priority 10 --profile base
+run "${C[@]}" source add "file://$SOURCE_REPO" --yes --name team-pri --priority 10 --profile base
 if assert_ok; then
     pass_test "SRC07"
 else
@@ -62,7 +62,7 @@ else
 fi
 
 begin_test "SRC08: source add --opt-in"
-run $C source add "file://$SOURCE_REPO" --yes --name team-opt --opt-in packages --profile base --priority 500
+run "${C[@]}" source add "file://$SOURCE_REPO" --yes --name team-opt --opt-in packages --profile base --priority 500
 if assert_ok; then
     pass_test "SRC08"
 else
@@ -70,7 +70,7 @@ else
 fi
 
 begin_test "SRC09: source add --sync-interval"
-run $C source add "file://$SOURCE_REPO" --yes --name team-sync --sync-interval 1h --profile base --priority 500
+run "${C[@]}" source add "file://$SOURCE_REPO" --yes --name team-sync --sync-interval 1h --profile base --priority 500
 if assert_ok; then
     pass_test "SRC09"
 else
@@ -78,7 +78,7 @@ else
 fi
 
 begin_test "SRC10: source add --auto-apply"
-run $C source add "file://$SOURCE_REPO" --yes --name team-auto --auto-apply --profile base --priority 500
+run "${C[@]}" source add "file://$SOURCE_REPO" --yes --name team-auto --auto-apply --profile base --priority 500
 if assert_ok; then
     pass_test "SRC10"
 else
@@ -86,7 +86,7 @@ else
 fi
 
 begin_test "SRC11: source add --pin-version"
-run $C source add "file://$SOURCE_REPO" --yes --name team-pin --pin-version ">=1.0" --profile base --priority 500
+run "${C[@]}" source add "file://$SOURCE_REPO" --yes --name team-pin --pin-version ">=1.0" --profile base --priority 500
 if assert_ok; then
     pass_test "SRC11"
 else
@@ -123,7 +123,7 @@ metadata:
   name: macos-arm
 YAML
 (cd "$PLATFORM_REPO" && git init -q -b master && git add -A && git commit -qm "init platform source")
-run $C source add "file://$PLATFORM_REPO" --yes --name platform-team --priority 500
+run "${C[@]}" source add "file://$PLATFORM_REPO" --yes --name platform-team --priority 500
 if assert_ok && assert_contains "$OUTPUT" "Auto-selected profile"; then
     pass_test "SRC24"
 else
@@ -131,13 +131,13 @@ else
 fi
 
 begin_test "SRC12: source list (after adds)"
-run $C source list
+run "${C[@]}" source list
 if assert_ok; then
     pass_test "SRC12"
 else fail_test "SRC12"; fi
 
 begin_test "SRC13: source show"
-run $C source show team-config
+run "${C[@]}" source show team-config
 if assert_ok; then
     pass_test "SRC13"
 else
@@ -145,7 +145,7 @@ else
 fi
 
 begin_test "SRC14: source update (all)"
-run $C source update
+run "${C[@]}" source update
 if assert_ok; then
     pass_test "SRC14"
 else
@@ -153,7 +153,7 @@ else
 fi
 
 begin_test "SRC15: source update <name>"
-run $C source update team-config
+run "${C[@]}" source update team-config
 if assert_ok; then
     pass_test "SRC15"
 else
@@ -161,7 +161,7 @@ else
 fi
 
 begin_test "SRC16: source priority set"
-run $C source priority team-config 5
+run "${C[@]}" source priority team-config 5
 if assert_ok; then
     pass_test "SRC16"
 else
@@ -169,7 +169,7 @@ else
 fi
 
 begin_test "SRC17: source priority show"
-run $C source priority team-config
+run "${C[@]}" source priority team-config
 if assert_ok; then
     pass_test "SRC17"
 else
@@ -177,7 +177,7 @@ else
 fi
 
 begin_test "SRC18: source override set"
-run $C source override team-config set packages.brew.formulae '["jq"]'
+run "${C[@]}" source override team-config set packages.brew.formulae '["jq"]'
 if assert_ok; then
     pass_test "SRC18"
 else
@@ -185,7 +185,7 @@ else
 fi
 
 begin_test "SRC19: source override reject"
-run $C source override team-config reject packages.brew.casks
+run "${C[@]}" source override team-config reject packages.brew.casks
 if assert_ok; then
     pass_test "SRC19"
 else
@@ -193,7 +193,7 @@ else
 fi
 
 begin_test "SRC20: source replace"
-run $C source replace team-config "file://$SOURCE_REPO"
+run "${C[@]}" source replace team-config "file://$SOURCE_REPO"
 if assert_ok; then
     pass_test "SRC20"
 else
@@ -207,14 +207,14 @@ begin_test "SRC21: source create"
 SRC21_DIR="$SCRATCH/src21-create"
 mkdir -p "$SRC21_DIR"
 pushd "$SRC21_DIR" >/dev/null
-run $C source create my-source --description "local source" --version "1.0.0"
+run "${C[@]}" source create my-source --description "local source" --version "1.0.0"
 popd >/dev/null
 if assert_ok && [ -f "$SRC21_DIR/cfgd-source.yaml" ]; then
     pass_test "SRC21"
 else fail_test "SRC21"; fi
 
 begin_test "SRC22: source remove --keep-all"
-run $C source remove team-branch --keep-all
+run "${C[@]}" source remove team-branch --keep-all
 if assert_ok; then
     pass_test "SRC22"
 else
@@ -222,7 +222,7 @@ else
 fi
 
 begin_test "SRC23: source remove --remove-all"
-run $C source remove team-profile --remove-all
+run "${C[@]}" source remove team-profile --remove-all
 if assert_ok; then
     pass_test "SRC23"
 else
@@ -232,7 +232,7 @@ fi
 # SECTION 38: source additional flags
 
 begin_test "SRC25: source ls (alias)"
-run $C source ls
+run "${C[@]}" source ls
 if assert_ok; then
     pass_test "SRC25"
 else fail_test "SRC25"; fi
@@ -241,7 +241,7 @@ begin_test "SRC26: source edit"
 # source edit resolves cfgd-source.yaml from the CWD, so run it where SRC21
 # scaffolded one (it previously found the scaffold SRC21 leaked at repo root).
 pushd "$SRC21_DIR" >/dev/null
-EDITOR=true run $C source edit
+EDITOR=true run "${C[@]}" source edit
 popd >/dev/null
 if assert_ok; then
     pass_test "SRC26"
@@ -256,7 +256,7 @@ MERGE_STATE="$SCRATCH/merge-state"
 mkdir -p "$MERGE_CFG" "$MERGE_TGT" "$MERGE_STATE"
 setup_config_dir "$MERGE_CFG" "$MERGE_TGT"
 MERGE_CONF="$MERGE_CFG/cfgd.yaml"
-MERGE_C="--config $MERGE_CONF --state-dir $MERGE_STATE --no-color"
+MERGE_C=(--config "$MERGE_CONF" --state-dir "$MERGE_STATE" --no-color)
 
 # Source A: provides wget via brew
 MERGE_SRC_A=$(mktemp -d "$SCRATCH/merge-src-a.XXXXXX")
@@ -325,21 +325,21 @@ PROFBEOF
 (cd "$MERGE_SRC_B" && git init -q -b master && git add -A && git commit -qm "init src-b")
 
 begin_test "SRC-MERGE-01: Two sources with disjoint packages"
-run $MERGE_C source add "file://$MERGE_SRC_A" --yes --name merge-src-a --profile base --priority 100
+run "${MERGE_C[@]}" source add "file://$MERGE_SRC_A" --yes --name merge-src-a --profile base --priority 100
 SRC_A_OK=$RC
-run $MERGE_C source add "file://$MERGE_SRC_B" --yes --name merge-src-b --profile base --priority 200
+run "${MERGE_C[@]}" source add "file://$MERGE_SRC_B" --yes --name merge-src-b --profile base --priority 200
 if assert_exit_code "$SRC_A_OK" 0 && assert_ok; then
     pass_test "SRC-MERGE-01"
 else fail_test "SRC-MERGE-01" "exit src-a=$SRC_A_OK src-b=$RC"; fi
 
 begin_test "SRC-MERGE-02: Both sources listed"
-run $MERGE_C source list
+run "${MERGE_C[@]}" source list
 if assert_ok && assert_contains "$OUTPUT" "merge-src-a" && assert_contains "$OUTPUT" "merge-src-b"; then
     pass_test "SRC-MERGE-02"
 else fail_test "SRC-MERGE-02"; fi
 
 begin_test "SRC-MERGE-03: File conflict, show conflict"
-run $MERGE_C source show merge-src-b
+run "${MERGE_C[@]}" source show merge-src-b
 if assert_ok; then
     # The source show should succeed; check for conflict-related output or file info
     # Source B provides a file targeting .gitconfig which also exists in local profile (base)
@@ -349,7 +349,7 @@ if assert_ok; then
 else fail_test "SRC-MERGE-03"; fi
 
 begin_test "SRC-MERGE-04: Env var from source"
-run $MERGE_C source show merge-src-b
+run "${MERGE_C[@]}" source show merge-src-b
 if assert_ok; then
     # Source B's manifest has recommended env MY_MERGE_VAR; show should include env/recommended info
     if assert_contains "$OUTPUT" "merge-src-b"; then
@@ -358,25 +358,25 @@ if assert_ok; then
 else fail_test "SRC-MERGE-04"; fi
 
 begin_test "SRC-MERGE-05: Override rejects item"
-run $MERGE_C source override merge-src-b reject packages.brew.formulae
+run "${MERGE_C[@]}" source override merge-src-b reject packages.brew.formulae
 if assert_ok && assert_contains "$OUTPUT" "Rejected"; then
     pass_test "SRC-MERGE-05"
 else fail_test "SRC-MERGE-05"; fi
 
 begin_test "SRC-MERGE-06: Override sets value"
-run $MERGE_C source override merge-src-b set env.MY_KEY my-value
+run "${MERGE_C[@]}" source override merge-src-b set env.MY_KEY my-value
 if assert_ok && assert_contains "$OUTPUT" "Set override:"; then
     pass_test "SRC-MERGE-06"
 else fail_test "SRC-MERGE-06"; fi
 
 begin_test "SRC-MERGE-07: Opt-in filtering"
-run $MERGE_C source add "file://$MERGE_SRC_A" --yes --name merge-opt --opt-in packages --profile base --priority 300
+run "${MERGE_C[@]}" source add "file://$MERGE_SRC_A" --yes --name merge-opt --opt-in packages --profile base --priority 300
 if assert_ok; then
     pass_test "SRC-MERGE-07"
 else fail_test "SRC-MERGE-07"; fi
 
 begin_test "SRC-MERGE-08: Pin version"
-run $MERGE_C source add "file://$MERGE_SRC_A" --yes --name merge-pin --pin-version "~1.0" --profile base --priority 400
+run "${MERGE_C[@]}" source add "file://$MERGE_SRC_A" --yes --name merge-pin --pin-version "~1.0" --profile base --priority 400
 if assert_ok; then
     pass_test "SRC-MERGE-08"
 else fail_test "SRC-MERGE-08"; fi
@@ -385,7 +385,7 @@ else fail_test "SRC-MERGE-08"; fi
 
 begin_test "SRC-MERGE-09: apply --dry-run with two sources shows merged plan"
 # Use the merge config set up by SRC-MERGE-01
-run $MERGE_C apply --dry-run
+run "${MERGE_C[@]}" apply --dry-run
 if assert_ok; then
     pass_test "SRC-MERGE-09"
 else
@@ -398,7 +398,7 @@ else
 fi
 
 begin_test "SRC-MERGE-10: source show reveals conflict details"
-run $MERGE_C source show merge-src-b
+run "${MERGE_C[@]}" source show merge-src-b
 if assert_ok; then
     pass_test "SRC-MERGE-10"
 else

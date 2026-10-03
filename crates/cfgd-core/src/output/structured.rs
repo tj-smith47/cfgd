@@ -167,13 +167,10 @@ pub(crate) fn name_from_value(value: &serde_json::Value) -> Option<String> {
             return Some(s.to_string());
         }
     }
-    // Try numeric identity fields
-    for key in &["applyId"] {
-        if let Some(n) = value.get(key).and_then(|v| v.as_i64()) {
-            return Some(n.to_string());
-        }
-    }
-    None
+    value
+        .get("applyId")
+        .and_then(|v| v.as_i64())
+        .map(|n| n.to_string())
 }
 
 pub(crate) fn walk_jsonpath<'a>(

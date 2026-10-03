@@ -6,7 +6,7 @@ pub fn cmd_profile_switch(cli: &Cli, name: &str, printer: &Printer) -> anyhow::R
     printer.heading("Switch Profile");
 
     let config_dir = super::config_dir(cli);
-    let config_path = config_dir.join("cfgd.yaml");
+    let config_path = cfgd_core::config::resolve_config_path(&cli.config);
     if !config_path.exists() {
         return Err(no_config_error(printer, &config_path));
     }
@@ -42,14 +42,20 @@ pub fn cmd_profile_switch(cli: &Cli, name: &str, printer: &Printer) -> anyhow::R
         Err(e) => return Err(cfgd_core::errors::CfgdError::Config(e).into()),
     }
 
-    // Read current config, update profile field, write back
-    let contents = std::fs::read_to_string(&config_path)?;
-    let mut cfg: config::CfgdConfig = config::parse_config(&contents, &config_path)?;
+    let mut old_profile = String::new();
+    let mut cfg = crate::cli::mutate_config_yaml(&config_path, |raw| {
+        let spec = crate::cli::config_cmd::spec_mapping_mut(raw, &config_path)?;
+        let previous = spec.insert(
+            serde_yaml::Value::String("profile".into()),
+            serde_yaml::Value::String(name.to_string()),
+        );
+        if let Some(previous) = previous.as_ref().and_then(serde_yaml::Value::as_str) {
+            old_profile = previous.to_string();
+        }
+        Ok(())
+    })?
+    .config;
     drain_config_deprecations(printer, &mut cfg);
-    let old_profile = cfg.spec.profile.clone().unwrap_or_default();
-    cfg.spec.profile = Some(name.to_string());
-
-    crate::cli::helpers::rewrite_user_yaml(&config_path, &cfg)?;
 
     let doc = Doc::new()
         .status(

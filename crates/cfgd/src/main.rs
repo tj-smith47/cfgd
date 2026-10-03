@@ -16,10 +16,10 @@ const MCP_HELP_EXAMPLES: &str = "Examples:\n  \
 /// canonical `true`/`false` before parsing — keeping `CFGD_QUIET=1` ergonomic
 /// without touching the per-arg `#[arg(env = …)]` sites.
 const BOOL_ENV_VARS: &[&str] = &[
-    "CFGD_YES",
-    "CFGD_QUIET",
-    "CFGD_REQUIRE_COSIGN",
-    "CFGD_LIST_ENVELOPE",
+    cfgd_core::CFGD_YES_ENV,
+    cfgd_core::CFGD_QUIET_ENV,
+    cfgd_core::CFGD_REQUIRE_COSIGN_ENV,
+    cfgd_core::CFGD_LIST_ENVELOPE_ENV,
 ];
 
 /// Rewrite a boolish env var to the canonical `true`/`false` spelling clap's
@@ -44,13 +44,13 @@ fn normalize_boolish_env(var: &str) {
 /// (`canonical_bool_str` returns `None` for `2`, so `CFGD_VERBOSE=2` still means
 /// trace) and leave unrecognized values for clap to reject.
 fn normalize_cfgd_verbose_env() {
-    if let Ok(raw) = std::env::var("CFGD_VERBOSE")
+    if let Ok(raw) = std::env::var(cfgd_core::CFGD_VERBOSE_ENV)
         && let Some(canonical) = canonical_bool_str(&raw)
     {
         let count = if canonical == "true" { "1" } else { "0" };
         // Safe here: runs at the very start of main(), before any threads spawn.
         unsafe {
-            std::env::set_var("CFGD_VERBOSE", count);
+            std::env::set_var(cfgd_core::CFGD_VERBOSE_ENV, count);
         }
     }
 }
@@ -123,21 +123,10 @@ fn main() -> anyhow::Result<()> {
         return cli::plugin::plugin_main();
     }
 
-    // Expand aliases before clap parsing
+    // Expand aliases before clap parsing. The config document the alias pass
+    // reads is the one every reader below shares until dispatch.
     let raw_args: Vec<String> = std::env::args().collect();
-    let expanded = cli::expand_aliases(raw_args);
-
-    // Gates for the macOS config-location migration prompt (evaluated below,
-    // after the Printer exists). An explicit `--config`/`CFGD_CONFIG` pins the
-    // location, and `--yes`/`CFGD_YES` means "don't prompt".
-    let explicit_config = std::env::var_os("CFGD_CONFIG").is_some()
-        || expanded
-            .iter()
-            .any(|a| a == "--config" || a.starts_with("--config="));
-    let assume_yes = std::env::var("CFGD_YES")
-        .map(|v| v == "true")
-        .unwrap_or(false)
-        || expanded.iter().any(|a| a == "--yes" || a == "-y");
+    let (expanded, startup) = cli::expand_aliases(raw_args);
 
     let brontes_cfg = cfgd::mcp::brontes::config();
     let mcp_command = brontes::command(Some(&brontes_cfg)).after_help(MCP_HELP_EXAMPLES);
@@ -158,6 +147,10 @@ fn main() -> anyhow::Result<()> {
     }
 
     let mut cli = cli::Cli::from_arg_matches(&matches).unwrap_or_else(|e| e.exit());
+    // Read off the parse, which is what every verb reads `--yes` from, so a
+    // `CFGD_YES=1` or a `-qy` means the same thing to the prompts below as to
+    // the command that follows them.
+    let assume_yes = cli.yes;
 
     // Capture the effective source (flag / env / default) of each directory
     // override before the ArgMatches is dropped — `cfgd paths` reports it and
@@ -182,40 +175,25 @@ fn main() -> anyhow::Result<()> {
     let config_is_explicit =
         matches.value_source("config") != Some(clap::parser::ValueSource::DefaultValue);
 
-    // `--config` defaults to the per-user config file at clap-parse time. Under
-    // `--scope system`, redirect that default to the system config root BEFORE the
-    // `--config` / `--config-dir` fold so an explicit `--config`/`--config-dir`
-    // (or `$CFGD_CONFIG*`) still wins — only the bare default is repointed.
-    if cli.scope().is_system() && !config_is_explicit && cli.config_dir.is_none() {
-        cli.config = cfgd_core::resolve_config_dir(None, cfgd_core::Scope::System)
-            .join(cfgd_core::config::CONFIG_FILENAME);
-    }
-
-    cli.config =
-        cli::effective_config_file(&cli.config, config_is_explicit, cli.config_dir.as_deref());
-
-    // A `--config <dir>` / `CFGD_CONFIG=<dir>` argument names the config directory;
-    // infer the discovery file inside it once, up front, so every downstream
-    // consumer (theme load, profiles-dir derivation, dispatch) agrees on the same
-    // resolved file rather than load_config silently inferring while config_dir()
-    // derives `profiles/` from the wrong parent.
-    cli.config = cfgd_core::config::resolve_config_path(&cli.config);
-
-    // A relative `--config`/`CFGD_CONFIG`/`--config-dir` value stays relative
-    // past this point otherwise: every downstream derivation of the config
-    // directory (`config_dir(cli)`, in turn a script hook's resolution base)
-    // inherits it verbatim, and a script's process `cwd` is the home
-    // directory rather than the config dir — a relative `run:` script then
-    // resolves against the wrong location whenever cfgd itself isn't invoked
-    // from that same directory. Absolutizing once, here, makes every later
-    // reader agree regardless of how `--config` was spelled.
-    cli.config = cfgd_core::absolutize_path(&cli.config);
+    // The alias pass settled its document through the same call, so the two
+    // agree on the file wherever the location was spelled.
+    let scope = cli.scope();
+    cli.config = cli::settle_config_path(
+        std::mem::take(&mut cli.config),
+        config_is_explicit,
+        cli.config_dir.as_deref(),
+        scope,
+    );
 
     // A `--config-dir` override also makes the resolved config path
     // user-directed: a missing config there is the user's typo, not a fresh
     // machine. `--scope system` alone does NOT — that repointing is still a
     // derived default.
     cli.config_explicit = config_is_explicit || cli.config_dir.is_some();
+
+    // The alias pass settled the same path, so this keeps its read; it reads
+    // again only for a location the alias pass could not parse.
+    let startup = startup.reload_if_moved(&cli.config);
 
     // Resolve output format with --jsonpath backwards compat.
     // NOTE: --jsonpath is deprecated; --output jsonpath=EXPR is canonical.
@@ -297,16 +275,14 @@ fn main() -> anyhow::Result<()> {
     // `--color always` deliberately outranks them.
     let color_choice = cli::resolve_color_choice(cli.no_color, cli.color);
 
-    let theme_config =
-        cli::resolve_theme_config(std::path::Path::new(&cli.config), cli.theme.as_deref());
-    let hints_enabled = cli::resolve_hints_enabled(std::path::Path::new(&cli.config), cli.no_hints);
-    let mask_env_values = cli::resolve_mask_env_values(
-        std::path::Path::new(&cli.config),
-        cli.mask_env_values.as_deref(),
-    );
+    let theme_config = cli::resolve_theme_config(startup.config(), cli.theme.as_deref());
+    let hints_enabled =
+        cli::resolve_hints_enabled(startup.config(), cli::paired_flag(cli.hints, cli.no_hints));
+    let mask_env_values =
+        cli::resolve_mask_env_values(startup.config(), cli.mask_env_values.as_deref());
     let printer = cfgd_core::output::Printer::with_theme_config(
         verbosity,
-        theme_config.as_ref(),
+        &theme_config,
         output_format,
         color_choice,
     )
@@ -314,6 +290,17 @@ fn main() -> anyhow::Result<()> {
     .with_hints_enabled(hints_enabled)
     .with_mask_env_values(mask_env_values);
     tracing_writer.attach(&printer);
+
+    // A stored name no preset answers to renders as the default palette, and
+    // nothing else on the surface says so. It is a warning and no refusal:
+    // the config may not be this user's to edit, and every command must still
+    // run under it.
+    if let Some(accepted) = cli::unknown_theme_preset(&theme_config.name) {
+        printer.alert(format!(
+            "spec.output.theme.name `{}` is not a theme preset; rendering the default palette (accepted names: {accepted})",
+            theme_config.name
+        ));
+    }
 
     if jsonpath_deprecated {
         // A deprecation notice is a stderr diagnostic, not `-o` data — and
@@ -341,10 +328,38 @@ fn main() -> anyhow::Result<()> {
     // sessions; re-resolve the config path when the dir was moved. Skipped for
     // the daemon, which must never block on a prompt when run in the foreground.
     if !is_daemon
-        && let Some(new_config) =
-            cli::config_migration::maybe_migrate_macos_config(&printer, explicit_config, assume_yes)
+        && let Some(new_config) = cli::config_migration::maybe_migrate_macos_config(
+            &printer,
+            config_is_explicit,
+            assume_yes,
+        )
     {
         cli.config = cfgd_core::config::resolve_config_path(&new_config);
+    }
+    let startup = startup.reload_if_moved(&cli.config);
+    // Here, after the last place the path can move, so the count covers every
+    // read the startup document made.
+    tracing::debug!(
+        path = %startup.path().display(), // native-ok: log line
+        reads = startup.reads(),
+        found = startup.config().is_some(),
+        "loaded config document"
+    );
+
+    // The load-time migration gate, reached once per invocation, after the
+    // config path has settled and before dispatch. It is withheld from the
+    // verbs whose own subject is the migration question, and from `cfgd init`,
+    // which runs it against the document it writes. The daemon fold is
+    // the gate's own: it has to fold the STORED policy too, so folding the
+    // override here as well would be the same decision taken twice. With
+    // nothing overridden the gate reads `spec.migrationPolicy` off the
+    // startup document.
+    if cli::config_schema::gate_exempt(cli.command.as_ref()).is_none() {
+        cli::config_schema::gate_on_load(
+            &printer,
+            &cli::config_schema::GateInvocation::of(&cli, is_daemon),
+            &startup,
+        );
     }
 
     // Policy-driven self-update check (interval-gated, cheap when within
@@ -357,10 +372,17 @@ fn main() -> anyhow::Result<()> {
         Some(cli::Command::Daemon { .. }) | Some(cli::Command::Upgrade { .. }) | None
     );
     if !skip_startup_check {
-        cli::upgrade::startup_update_check(&printer, std::path::Path::new(&cli.config), assume_yes);
+        // Only the override is resolved here; the stored half comes off the
+        // startup document.
+        cli::upgrade::startup_update_check(
+            &printer,
+            startup.config(),
+            assume_yes,
+            cli.update_policy_override(),
+        );
     }
 
-    if let Err(e) = cli::execute(&cli, &printer, &dir_sources) {
+    if let Err(e) = cli::execute(&cli, &printer, &dir_sources, &startup) {
         cli::error::render_cli_error(&printer, &e).exit();
     }
 
@@ -451,10 +473,10 @@ mod tests {
     #[serial]
     fn normalize_boolish_env_rewrites_truthy_to_true() {
         for raw in ["1", "yes", "on", "Y", "True"] {
-            let _g = EnvVarGuard::set("CFGD_QUIET", raw);
-            normalize_boolish_env("CFGD_QUIET");
+            let _g = EnvVarGuard::set(cfgd_core::CFGD_QUIET_ENV, raw);
+            normalize_boolish_env(cfgd_core::CFGD_QUIET_ENV);
             assert_eq!(
-                std::env::var("CFGD_QUIET").as_deref(),
+                std::env::var(cfgd_core::CFGD_QUIET_ENV).as_deref(),
                 Ok("true"),
                 "{raw:?} should normalize to true"
             );
@@ -465,10 +487,10 @@ mod tests {
     #[serial]
     fn normalize_boolish_env_rewrites_falsey_to_false() {
         for raw in ["0", "no", "off", "N", "False"] {
-            let _g = EnvVarGuard::set("CFGD_QUIET", raw);
-            normalize_boolish_env("CFGD_QUIET");
+            let _g = EnvVarGuard::set(cfgd_core::CFGD_QUIET_ENV, raw);
+            normalize_boolish_env(cfgd_core::CFGD_QUIET_ENV);
             assert_eq!(
-                std::env::var("CFGD_QUIET").as_deref(),
+                std::env::var(cfgd_core::CFGD_QUIET_ENV).as_deref(),
                 Ok("false"),
                 "{raw:?} should normalize to false"
             );
@@ -478,27 +500,30 @@ mod tests {
     #[test]
     #[serial]
     fn normalize_boolish_env_leaves_invalid_untouched() {
-        let _g = EnvVarGuard::set("CFGD_QUIET", "garbage");
-        normalize_boolish_env("CFGD_QUIET");
-        assert_eq!(std::env::var("CFGD_QUIET").as_deref(), Ok("garbage"));
+        let _g = EnvVarGuard::set(cfgd_core::CFGD_QUIET_ENV, "garbage");
+        normalize_boolish_env(cfgd_core::CFGD_QUIET_ENV);
+        assert_eq!(
+            std::env::var(cfgd_core::CFGD_QUIET_ENV).as_deref(),
+            Ok("garbage")
+        );
     }
 
     #[test]
     #[serial]
     fn normalize_boolish_env_noop_when_unset() {
-        let _g = EnvVarGuard::unset("CFGD_QUIET");
-        normalize_boolish_env("CFGD_QUIET");
-        assert!(std::env::var("CFGD_QUIET").is_err());
+        let _g = EnvVarGuard::unset(cfgd_core::CFGD_QUIET_ENV);
+        normalize_boolish_env(cfgd_core::CFGD_QUIET_ENV);
+        assert!(std::env::var(cfgd_core::CFGD_QUIET_ENV).is_err());
     }
 
     #[test]
     #[serial]
     fn normalize_cfgd_verbose_env_maps_boolish_on_to_one() {
         for raw in ["on", "yes", "true", "y"] {
-            let _g = EnvVarGuard::set("CFGD_VERBOSE", raw);
+            let _g = EnvVarGuard::set(cfgd_core::CFGD_VERBOSE_ENV, raw);
             normalize_cfgd_verbose_env();
             assert_eq!(
-                std::env::var("CFGD_VERBOSE").as_deref(),
+                std::env::var(cfgd_core::CFGD_VERBOSE_ENV).as_deref(),
                 Ok("1"),
                 "{raw:?} should map to count 1"
             );
@@ -509,10 +534,10 @@ mod tests {
     #[serial]
     fn normalize_cfgd_verbose_env_maps_boolish_off_to_zero() {
         for raw in ["off", "no", "false", "n"] {
-            let _g = EnvVarGuard::set("CFGD_VERBOSE", raw);
+            let _g = EnvVarGuard::set(cfgd_core::CFGD_VERBOSE_ENV, raw);
             normalize_cfgd_verbose_env();
             assert_eq!(
-                std::env::var("CFGD_VERBOSE").as_deref(),
+                std::env::var(cfgd_core::CFGD_VERBOSE_ENV).as_deref(),
                 Ok("0"),
                 "{raw:?} should map to count 0"
             );
@@ -523,10 +548,10 @@ mod tests {
     #[serial]
     fn normalize_cfgd_verbose_env_leaves_integers_untouched() {
         for raw in ["1", "2", "10"] {
-            let _g = EnvVarGuard::set("CFGD_VERBOSE", raw);
+            let _g = EnvVarGuard::set(cfgd_core::CFGD_VERBOSE_ENV, raw);
             normalize_cfgd_verbose_env();
             assert_eq!(
-                std::env::var("CFGD_VERBOSE").as_deref(),
+                std::env::var(cfgd_core::CFGD_VERBOSE_ENV).as_deref(),
                 Ok(raw),
                 "{raw:?} (bare integer) must pass through unchanged"
             );

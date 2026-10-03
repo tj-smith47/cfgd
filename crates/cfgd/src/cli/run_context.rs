@@ -156,24 +156,10 @@ impl<'a> RunContext<'a> {
             .map(|(_, _, resolved)| resolved.secret_env_names())
     }
 
-    /// Best-effort name of the profile a module-only command runs under: the
-    /// explicit `--profile`, else the config's active profile, else
-    /// `"unknown"`.
-    ///
-    /// Module-only commands never resolve a profile, but the scripts they run
-    /// (a `patch.script` filter, a lifecycle hook) still receive
-    /// `CFGD_PROFILE`, so the name must be the real one wherever the config
-    /// knows it. Reads the run's already-parsed config when there is one, and
-    /// otherwise parses it into the same slot rather than off to the side.
+    /// [`super::helpers::active_profile_name`] over the run's already-parsed
+    /// config, parsed into the same slot when it is not read yet.
     pub(in crate::cli) fn active_profile_name(&self) -> String {
-        if let Some(p) = self.cli.profile.as_deref() {
-            return p.to_string();
-        }
-        self.config_unannounced()
-            .ok()
-            .and_then(|cfg| cfg.active_profile().ok())
-            .map(str::to_string)
-            .unwrap_or_else(|| "unknown".to_string())
+        super::helpers::active_profile_name(self.cli, self.config_unannounced().ok())
     }
 
     /// The run's state store, opened at most once.
@@ -256,9 +242,12 @@ mod tests {
             color: crate::cli::ColorWhen::Auto,
             output: crate::cli::OutputFormatArg(cfgd_core::output::OutputFormat::Table),
             list_envelope: false,
+            hints: false,
             no_hints: false,
             theme: None,
             mask_env_values: None,
+            migration_policy: None,
+            update_policy: None,
             jsonpath: None,
             yes: false,
             state_dir: None,

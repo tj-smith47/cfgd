@@ -22,9 +22,12 @@ pub(crate) fn make_cli(config: PathBuf) -> Cli {
         color: crate::cli::ColorWhen::Auto,
         output: OutputFormatArg(OutputFormat::Table),
         list_envelope: false,
+        hints: false,
         no_hints: false,
         theme: None,
         mask_env_values: None,
+        migration_policy: None,
+        update_policy: None,
         jsonpath: None,
         yes: false,
         state_dir: None,
@@ -320,20 +323,20 @@ fn parse_file_spec_empty_target_errors() {
 #[test]
 fn validate_resource_name_accepts_valid_names() {
     for name in &["mymod", "my-mod", "my_mod", "my.mod", "mod123", "m"] {
-        validate_resource_name(name, "module")
+        validate_resource_name(name, "module", "<NAME>")
             .unwrap_or_else(|e| panic!("rejected valid name '{name}': {e}"));
     }
 }
 
 #[test]
 fn validate_resource_name_rejects_empty() {
-    let err = validate_resource_name("", "module").unwrap_err();
+    let err = validate_resource_name("", "module", "<NAME>").unwrap_err();
     assert!(err.to_string().contains("cannot be empty"), "{err}");
 }
 
 #[test]
 fn validate_resource_name_rejects_leading_dot() {
-    let err = validate_resource_name(".hidden", "module").unwrap_err();
+    let err = validate_resource_name(".hidden", "module", "<NAME>").unwrap_err();
     assert!(
         err.to_string().contains("cannot start with"),
         "unexpected: {err}"
@@ -342,7 +345,7 @@ fn validate_resource_name_rejects_leading_dot() {
 
 #[test]
 fn validate_resource_name_rejects_leading_dash() {
-    let err = validate_resource_name("-start", "module").unwrap_err();
+    let err = validate_resource_name("-start", "module", "<NAME>").unwrap_err();
     assert!(
         err.to_string().contains("cannot start with"),
         "unexpected: {err}"
@@ -351,7 +354,7 @@ fn validate_resource_name_rejects_leading_dash() {
 
 #[test]
 fn validate_resource_name_rejects_invalid_chars() {
-    let err = validate_resource_name("my mod", "module").unwrap_err();
+    let err = validate_resource_name("my mod", "module", "<NAME>").unwrap_err();
     assert!(
         err.to_string().contains("invalid characters"),
         "unexpected: {err}"
@@ -361,7 +364,7 @@ fn validate_resource_name_rejects_invalid_chars() {
 #[test]
 fn validate_resource_name_rejects_name_too_long() {
     let long = "a".repeat(129);
-    let err = validate_resource_name(&long, "module").unwrap_err();
+    let err = validate_resource_name(&long, "module", "<NAME>").unwrap_err();
     assert!(err.to_string().contains("too long"), "unexpected: {err}");
 }
 
@@ -376,6 +379,8 @@ fn set_nested_yaml_value_sets_top_level_key() {
         &mut root,
         "name",
         &serde_yaml::Value::String("alice".to_string()),
+        std::path::Path::new("cfgd.yaml"),
+        "root",
     )
     .unwrap();
     assert_eq!(root["name"], serde_yaml::Value::String("alice".to_string()));
@@ -388,6 +393,8 @@ fn set_nested_yaml_value_creates_intermediate_maps() {
         &mut root,
         "a.b.c",
         &serde_yaml::Value::String("deep".to_string()),
+        std::path::Path::new("cfgd.yaml"),
+        "root",
     )
     .unwrap();
     assert_eq!(
@@ -403,6 +410,8 @@ fn set_nested_yaml_value_overwrites_existing_key() {
         &mut root,
         "key",
         &serde_yaml::Value::String("new".to_string()),
+        std::path::Path::new("cfgd.yaml"),
+        "root",
     )
     .unwrap();
     assert_eq!(root["key"], serde_yaml::Value::String("new".to_string()));
@@ -415,12 +424,64 @@ fn set_nested_yaml_value_two_level_path() {
         &mut root,
         "spec.active",
         &serde_yaml::Value::String("new".to_string()),
+        std::path::Path::new("cfgd.yaml"),
+        "root",
     )
     .unwrap();
     assert_eq!(
         root["spec"]["active"],
         serde_yaml::Value::String("new".to_string())
     );
+}
+
+#[test]
+fn set_nested_yaml_value_writes_through_a_bare_section() {
+    let mut root: serde_yaml::Value = serde_yaml::from_str("a:\n").unwrap();
+    set_nested_yaml_value(
+        &mut root,
+        "a.b",
+        &serde_yaml::Value::String("set".to_string()),
+        std::path::Path::new("cfgd.yaml"),
+        "root",
+    )
+    .unwrap();
+    assert_eq!(root["a"]["b"], serde_yaml::Value::String("set".to_string()));
+}
+
+// A write whose parent is not a mapping used to be dropped with no error while
+// the caller reported it made; every parent on the way now refuses by name.
+#[test]
+fn set_nested_yaml_value_refuses_a_parent_of_another_shape_by_name() {
+    for (yaml, path, refusal) in [
+        (
+            "a: 3\n",
+            "a.b",
+            "'root.a' holds a scalar where a mapping belongs",
+        ),
+        (
+            "a: [1]\n",
+            "a.b.c",
+            "'root.a' holds a sequence where a mapping belongs",
+        ),
+        (
+            "just text\n",
+            "b",
+            "'root' holds a scalar where a mapping belongs",
+        ),
+    ] {
+        let mut root: serde_yaml::Value = serde_yaml::from_str(yaml).unwrap();
+        let before = root.clone();
+        let err = set_nested_yaml_value(
+            &mut root,
+            path,
+            &serde_yaml::Value::Null,
+            std::path::Path::new("cfgd.yaml"),
+            "root",
+        )
+        .expect_err(yaml);
+        assert_eq!(err.to_string(), refusal, "{yaml}");
+        assert_eq!(root, before, "{yaml}: a refused write changes nothing");
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -982,7 +1043,7 @@ fn compose_with_sources_with_local_source_merges_source_profile() {
     std::fs::create_dir_all(&profiles_dir).unwrap();
     std::fs::write(profiles_dir.join("default.yaml"), PROFILE_YAML).unwrap();
 
-    let _allow = EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+    let _allow = EnvVarGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
     let mut cli = make_cli(config_path.clone());
     cli.state_dir = Some(tmp.path().join("state"));
     cli.cache_dir = Some(tmp.path().join("cache"));
@@ -1049,7 +1110,7 @@ fn compose_with_sources_merges_canonical_form_source_profile() {
     std::fs::create_dir_all(&profiles_dir).unwrap();
     std::fs::write(profiles_dir.join("default.yaml"), PROFILE_YAML).unwrap();
 
-    let _allow = EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+    let _allow = EnvVarGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
     let mut cli = make_cli(config_path.clone());
     cli.state_dir = Some(tmp.path().join("state"));
     cli.cache_dir = Some(tmp.path().join("cache"));
@@ -1101,7 +1162,7 @@ fn resolve_desired_state_read_path_sees_source_package_and_module() {
     let source_repo = create_local_source_repo(tmp.path(), "team");
     let config_path = write_config_with_local_source(tmp.path(), &source_repo, "team");
 
-    let _allow = EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+    let _allow = EnvVarGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
     let mut cli = make_cli(config_path.clone());
     cli.state_dir = Some(tmp.path().join("state"));
     cli.cache_dir = Some(tmp.path().join("cache"));
@@ -1132,6 +1193,7 @@ fn resolve_desired_state_read_path_sees_source_package_and_module() {
         &printer,
         false,
         composition::ConstraintMode::Enforce,
+        &cfgd_core::modules::refuse_floor_bootstrap,
     )
     .unwrap();
 
@@ -1171,7 +1233,7 @@ fn resolve_desired_state_read_path_cache_miss_falls_back_to_local() {
     let source_repo = create_local_source_repo(tmp.path(), "team");
     let config_path = write_config_with_local_source(tmp.path(), &source_repo, "team");
 
-    let _allow = EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+    let _allow = EnvVarGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
     let mut cli = make_cli(config_path.clone());
     // Point the source cache at a fresh, empty dir so the source is "never
     // synced" — no refresh primes it.
@@ -1202,6 +1264,7 @@ fn resolve_desired_state_read_path_cache_miss_falls_back_to_local() {
         &printer,
         false,
         composition::ConstraintMode::Enforce,
+        &cfgd_core::modules::refuse_floor_bootstrap,
     )
     .unwrap();
 
@@ -1238,7 +1301,7 @@ fn resolve_desired_state_apply_and_read_compute_same_module_set() {
     let source_repo = create_local_source_repo(tmp.path(), "team");
     let config_path = write_config_with_local_source(tmp.path(), &source_repo, "team");
 
-    let _allow = EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+    let _allow = EnvVarGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
     let mut cli = make_cli(config_path.clone());
     cli.state_dir = Some(tmp.path().join("state"));
     cli.cache_dir = Some(tmp.path().join("cache"));
@@ -1257,6 +1320,7 @@ fn resolve_desired_state_apply_and_read_compute_same_module_set() {
         &printer,
         true,
         composition::ConstraintMode::Enforce,
+        &cfgd_core::modules::refuse_floor_bootstrap,
     )
     .unwrap();
     // refresh = false (read path) on the now-primed cache.
@@ -1269,6 +1333,7 @@ fn resolve_desired_state_apply_and_read_compute_same_module_set() {
         &printer,
         false,
         composition::ConstraintMode::Enforce,
+        &cfgd_core::modules::refuse_floor_bootstrap,
     )
     .unwrap();
 
@@ -1319,6 +1384,7 @@ fn resolve_desired_state_no_sources_resolves_local_only() {
         &printer,
         false,
         composition::ConstraintMode::Enforce,
+        &cfgd_core::modules::refuse_floor_bootstrap,
     )
     .unwrap();
     assert!(desired.modules.is_empty());
@@ -1431,6 +1497,7 @@ fn resolve_desired_state_module_only_isolates_every_profile_owned_field() {
         &printer,
         false,
         composition::ConstraintMode::Enforce,
+        &cfgd_core::modules::refuse_floor_bootstrap,
     )
     .unwrap();
 
@@ -1537,6 +1604,7 @@ fn resolve_desired_state_with_profile_unions_module_and_keeps_every_profile_owne
         &printer,
         false,
         composition::ConstraintMode::Enforce,
+        &cfgd_core::modules::refuse_floor_bootstrap,
     )
     .unwrap();
 
@@ -1631,7 +1699,7 @@ fn resolve_desired_state_module_blocked_by_scripts_not_allowed_surfaces_the_real
     // resolves `source-module` directly via `--module`, never through the
     // profile's own module list.
 
-    let _allow = EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+    let _allow = EnvVarGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
     let mut cli = make_cli(config_path.clone());
     cli.state_dir = Some(tmp.path().join("state"));
     cli.cache_dir = Some(tmp.path().join("cache"));
@@ -1653,6 +1721,7 @@ fn resolve_desired_state_module_blocked_by_scripts_not_allowed_surfaces_the_real
         &printer,
         true,
         composition::ConstraintMode::Enforce,
+        &cfgd_core::modules::refuse_floor_bootstrap,
     );
     let err = match result {
         Ok(_) => panic!("expected ScriptsNotAllowed, got Ok"),
@@ -1705,6 +1774,7 @@ fn a_module_free_resolution_builds_no_registry_until_one_is_asked_for() {
         &printer,
         false,
         composition::ConstraintMode::Report,
+        &cfgd_core::modules::refuse_floor_bootstrap,
     )
     .unwrap();
     assert!(
@@ -1735,6 +1805,7 @@ fn a_module_free_resolution_builds_no_registry_until_one_is_asked_for() {
         &printer,
         false,
         composition::ConstraintMode::Report,
+        &cfgd_core::modules::refuse_floor_bootstrap,
     )
     .unwrap();
     assert!(
@@ -2026,6 +2097,7 @@ fn the_desired_state_registers_each_custom_manager_exactly_once() {
         &printer,
         false,
         composition::ConstraintMode::Report,
+        &cfgd_core::modules::refuse_floor_bootstrap,
     )
     .unwrap();
 
@@ -2129,6 +2201,26 @@ fn a_declared_default_scalar_is_kept_and_the_payload_always_carries_it() {
         serde_json::json!("Symlink"),
         "the serialized payload must name the effective strategy even when it is the default"
     );
+}
+
+// Every undeclared default is dropped, however many the struct carries: the
+// prune judges each candidate against the same document, so dropping one does
+// not make the next one look load-bearing.
+#[test]
+fn every_undeclared_default_scalar_is_dropped_not_only_the_first() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("cfgd.yaml");
+    let source = "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: probe\nspec:\n  profile: base\n";
+    std::fs::write(&path, source).unwrap();
+    let doc: CfgdConfig = serde_yaml::from_str(source).unwrap();
+    rewrite_user_yaml(&path, &doc).unwrap();
+    let written = std::fs::read_to_string(&path).unwrap();
+    for litter in ["fileStrategy: Symlink", "migrationPolicy: Prompt"] {
+        assert!(
+            !written.contains(litter),
+            "rewrite kept the undeclared default {litter:?}:\n{written}"
+        );
+    }
 }
 
 // A non-default scalar the author never declared is real content (a

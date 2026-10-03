@@ -8,6 +8,7 @@ E2E_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 REPO_ROOT="$(cd "$E2E_ROOT/../.." && pwd)"
 
 # Before anything below reads $HOME, a registry credential or a tool config.
+# shellcheck source=tests/e2e/common/scratch-home.sh
 source "$E2E_ROOT/common/scratch-home.sh"
 
 CFGD_NAMESPACE="${CFGD_NAMESPACE:-cfgd-system}"
@@ -26,14 +27,88 @@ NC='\033[0m'
 
 REGISTRY="${REGISTRY:?E2E_REGISTRY must be set (e.g. export REGISTRY=your.registry.io)}"
 IMAGE_TAG="${IMAGE_TAG:-e2e-$(git -C "$REPO_ROOT" rev-parse --short HEAD 2>/dev/null || echo latest)}"
+
+# Each crate releases at its own version and its image is tagged with it, so
+# one IMAGE_TAG cannot name a released set.
+# IMAGE_TAG stays every image's default and each override replaces one. Every
+# image reference the suites compose comes from e2e_image / e2e_image_repo /
+# e2e_image_tag, so an override reaches every place its image is named.
+e2e_image_override_var() {
+    case "$1" in
+        cfgd) echo CFGD_IMAGE_TAG ;;
+        cfgd-operator) echo OPERATOR_IMAGE_TAG ;;
+        cfgd-csi) echo CSI_IMAGE_TAG ;;
+        function-cfgd) echo FUNCTION_IMAGE_TAG ;;
+        *)
+            echo "e2e_image_tag: unknown image '$1'" >&2
+            return 1
+            ;;
+    esac
+}
+
+e2e_image_tag() {
+    local var
+    var="$(e2e_image_override_var "$1")" || return 1
+    printf '%s\n' "${!var:-$IMAGE_TAG}"
+}
+
+# An override names an image the caller wants used as it is, often a released
+# one, so setup must never build over it: true when the image's override is set
+# and non-empty.
+e2e_image_overridden() {
+    local var
+    var="$(e2e_image_override_var "$1")" || return 1
+    [ -n "${!var:-}" ]
+}
+
+# The warning setup prints when an override is set for a component whose spec
+# another owner controls: <image> <owner> <object> <image the object runs>.
+# Prints nothing when the image has no override, or when the object already
+# runs the overridden reference, since the override then took effect.
+e2e_override_unused_warning() {
+    local image="$1" owner="$2" object="$3" running="$4"
+    if e2e_image_overridden "$image" && [ "$running" != "$(e2e_image "$image")" ]; then
+        echo "  WARN: $(e2e_image_override_var "$image") is set, but $owner owns $object, which runs $running; the override does not reach it"
+    fi
+}
+
+e2e_image_repo() {
+    printf '%s/%s\n' "$REGISTRY" "$1"
+}
+
+e2e_image() {
+    local tag
+    tag="$(e2e_image_tag "$1")" || return 1
+    printf '%s:%s\n' "$(e2e_image_repo "$1")" "$tag"
+}
 E2E_NAMESPACE="${E2E_NAMESPACE:-cfgd-e2e-${GITHUB_RUN_ID:-$(date +%s)-$$}}"
-E2E_RUN_ID="${GITHUB_RUN_ID:-local-$$}"
+# A local run id comes from the checkout, so the setup process and each suite
+# process name the same PR install.
+E2E_RUN_ID="${GITHUB_RUN_ID:-local-$(git -C "$REPO_ROOT" rev-parse --short HEAD 2>/dev/null || echo dev)}"
 E2E_RUN_LABEL="cfgd.io/e2e-run=$E2E_RUN_ID"
 # Job-specific label for cluster-scoped resources (prevents parallel job cleanup races)
 E2E_JOB_LABEL="cfgd.io/e2e-job=$E2E_NAMESPACE"
 # YAML-friendly forms for embedding in heredoc labels (key: "value" instead of key=value)
-E2E_RUN_LABEL_YAML="cfgd.io/e2e-run: \"$E2E_RUN_ID\""
-E2E_JOB_LABEL_YAML="cfgd.io/e2e-job: \"$E2E_NAMESPACE\""
+export E2E_RUN_LABEL_YAML="cfgd.io/e2e-run: \"$E2E_RUN_ID\""
+export E2E_JOB_LABEL_YAML="cfgd.io/e2e-job: \"$E2E_NAMESPACE\""
+
+# The PR-owned install of the operator and CSI driver, beside the live release
+# in cfgd-system. The chart names each object <release>-<component>; that rule
+# and the run id are spelled here only.
+export E2E_INSTALL_RELEASE="cfgd-e2e-$E2E_RUN_ID"
+export E2E_INSTALL_NS="$E2E_INSTALL_RELEASE-sys"
+export E2E_OPERATOR_DEPLOY="$E2E_INSTALL_RELEASE-operator"
+export E2E_CSI_DS="$E2E_INSTALL_RELEASE-csi"
+export E2E_WEBHOOK_SVC="$E2E_INSTALL_RELEASE-webhook"
+export E2E_WEBHOOK_CERT="$E2E_INSTALL_RELEASE-webhook-tls"
+export E2E_VALIDATING_WEBHOOK="$E2E_INSTALL_RELEASE"
+export E2E_MUTATING_WEBHOOK="$E2E_INSTALL_RELEASE-pod-injector"
+export E2E_OPERATOR_PODS="app.kubernetes.io/instance=$E2E_INSTALL_RELEASE,app.kubernetes.io/component=operator"
+export E2E_CSI_PODS="app.kubernetes.io/instance=$E2E_INSTALL_RELEASE,app.kubernetes.io/component=csi-driver"
+# The live release's webhook configurations, which setup scopes away from
+# run-labelled objects and namespaces.
+export E2E_RELEASE_VALIDATING_WEBHOOK="cfgd-validating-webhooks"
+export E2E_RELEASE_MUTATING_WEBHOOK="cfgd-mutating-webhooks"
 
 TEST_POD=""
 
@@ -74,18 +149,72 @@ stop_heartbeat() {
 # Deploy the privileged test pod and wait for it to be Running.
 # Exports TEST_POD with the pod name.
 ensure_test_pod() {
-    local pod_name="cfgd-e2e-node-${E2E_RUN_ID}"
-    local manifest="$E2E_ROOT/manifests/privileged-test-pod.yaml"
+    local pod_name="cfgd-e2e-node-${E2E_RUN_ID}" image
+    image="$(e2e_image cfgd)" || return 1
 
     create_e2e_namespace
 
-    # Substitute placeholders and apply (image first to avoid double-sub)
-    sed "s|REGISTRY_PLACEHOLDER|${REGISTRY}|g; s|IMAGE_PLACEHOLDER|${IMAGE_TAG}|g; s|RUN_PLACEHOLDER|${E2E_RUN_ID}|g" \
-        "$manifest" | kubectl apply -n "$E2E_NAMESPACE" -f -
+    kubectl apply -n "$E2E_NAMESPACE" -f - <<EOF || {
+apiVersion: v1
+kind: Pod
+metadata:
+  name: ${pod_name}
+  labels:
+    app: cfgd-e2e-node
+    ${E2E_RUN_LABEL_YAML}
+spec:
+  restartPolicy: Never
+  imagePullSecrets:
+    - name: registry-credentials
+  affinity:
+    nodeAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        nodeSelectorTerms:
+          - matchExpressions:
+              - key: node-role.kubernetes.io/control-plane
+                operator: DoesNotExist
+  containers:
+    - name: cfgd
+      image: ${image}
+      command: ["sleep", "infinity"]
+      securityContext:
+        privileged: true
+        runAsUser: 0
+      volumeMounts:
+        - name: host-proc
+          mountPath: /host-proc
+        - name: host-sys
+          mountPath: /host-sys
+        - name: host-etc
+          mountPath: /host-etc
+        - name: host-lib-modules
+          mountPath: /lib/modules
+          readOnly: true
+  volumes:
+    - name: host-proc
+      hostPath:
+        path: /proc
+    - name: host-sys
+      hostPath:
+        path: /sys
+    - name: host-etc
+      hostPath:
+        path: /etc
+    - name: host-lib-modules
+      hostPath:
+        path: /lib/modules
+EOF
+        echo "ERROR: could not apply test pod $pod_name in $E2E_NAMESPACE. Check that the runner can create pods there and that $image is in the registry." >&2
+        return 1
+    }
 
     echo "  Waiting for test pod $pod_name..."
     kubectl wait --for=condition=Ready "pod/$pod_name" \
-        -n "$E2E_NAMESPACE" --timeout=120s
+        -n "$E2E_NAMESPACE" --timeout=120s || {
+        kubectl describe pod "$pod_name" -n "$E2E_NAMESPACE" >&2 || true
+        echo "ERROR: test pod $pod_name is not Ready after 120s. Read the description above (image pull, scheduling, privileged admission) and rerun." >&2
+        return 1
+    }
 
     TEST_POD="$pod_name"
     export TEST_POD
@@ -116,7 +245,7 @@ ensure_label() {
   local rc=0
   kubectl label "$@" >/dev/null 2>&1 || rc=$?
   if [ "$rc" -ne 0 ]; then
-    echo "FAIL: could not label: kubectl label $* (rc=$rc)" >&2
+    echo "FAIL: could not label: kubectl label $* (rc=$rc). Check that the runner can label $1 objects." >&2
     return 1
   fi
 }
@@ -128,27 +257,66 @@ ensure_label() {
 # resource the case creates into it is about to fail with nothing saying why.
 # The rc is captured and re-checked with a `get`, so only the second one stops
 # the case.
+#
+# A namespace it creates carries the run label: the PR install's mutating
+# webhook selects on it, the heartbeat refreshes by it and the janitor reaps by
+# it. cfgd-system (or $CFGD_NAMESPACE) belongs to the live release and outlives
+# every run, so it never gets the label even on a cluster where setup creates it.
 ensure_namespace() {
   local ns="$1" rc=0
   kubectl create namespace "$ns" >/dev/null 2>&1 || rc=$?
-  if [ "$rc" -ne 0 ] && ! kubectl get namespace "$ns" >/dev/null 2>&1; then
-    echo "FAIL: namespace $ns could not be created (rc=$rc)" >&2
-    return 1
+  if [ "$rc" -ne 0 ]; then
+    if ! kubectl get namespace "$ns" >/dev/null 2>&1; then
+      echo "FAIL: namespace $ns could not be created (rc=$rc). Check that the runner can create and label namespaces." >&2
+      return 1
+    fi
+  else
+    case "$ns" in
+      cfgd-system | "$CFGD_NAMESPACE") ;;
+      *)
+        ensure_label namespace "$ns" "$E2E_RUN_LABEL" --overwrite || {
+          echo "FAIL: could not label namespace $ns. Check that the runner can create and label namespaces." >&2
+          return 1
+        }
+        ;;
+    esac
   fi
 }
 
+# Each write returns on its own failure, so the message names the step and no
+# heartbeat loop starts for a namespace that is not there. A plain return also
+# works where the caller runs it inside a condition, where set -e is off.
 create_e2e_namespace() {
-    if ! kubectl get namespace "$E2E_NAMESPACE" > /dev/null 2>&1; then
-        kubectl create namespace "$E2E_NAMESPACE"
-        kubectl label namespace "$E2E_NAMESPACE" "$E2E_RUN_LABEL" --overwrite
+    local hint="Check that the runner can create, label and annotate namespaces." phase
+    if ! phase=$(kubectl get namespace "$E2E_NAMESPACE" --ignore-not-found -o jsonpath='{.status.phase}'); then
+        echo "ERROR: could not read namespace $E2E_NAMESPACE. Check that the runner can get namespaces." >&2
+        return 1
+    fi
+    # A re-run with the same run id names the namespace an earlier teardown is
+    # still deleting. It keeps its labels and annotations but refuses new
+    # objects, so taking it as created fails later on a secret or install that
+    # cannot land in it.
+    if [ "$phase" = Terminating ]; then
+        echo "  namespace $E2E_NAMESPACE is being deleted; waiting up to 120s for it to go"
+        kubectl wait --for=delete "namespace/$E2E_NAMESPACE" --timeout=120s || {
+            echo "ERROR: namespace $E2E_NAMESPACE is still being deleted after 120s; rerun once it is gone" >&2; return 1; }
+        phase=""
+    fi
+    if [ -z "$phase" ]; then
+        kubectl create namespace "$E2E_NAMESPACE" || {
+            echo "ERROR: could not create namespace $E2E_NAMESPACE. $hint" >&2; return 1; }
+        kubectl label namespace "$E2E_NAMESPACE" "$E2E_RUN_LABEL" --overwrite || {
+            echo "ERROR: could not label namespace $E2E_NAMESPACE. $hint" >&2; return 1; }
         # Stamp creation time so the cfgd-e2e-janitor CronJob can age out
         # leaked namespaces from crashed runs (RFC3339 UTC).
         kubectl annotate namespace "$E2E_NAMESPACE" \
-            "cfgd.io/created-at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" --overwrite
+            "cfgd.io/created-at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" --overwrite || {
+            echo "ERROR: could not annotate namespace $E2E_NAMESPACE. $hint" >&2; return 1; }
         # Seed a heartbeat immediately so the namespace is protected before the
         # background loop's first tick, then keep it refreshed for the run.
         kubectl annotate namespace "$E2E_NAMESPACE" \
-            "cfgd.io/heartbeat=$(date -u +%s)" --overwrite
+            "cfgd.io/heartbeat=$(date -u +%s)" --overwrite || {
+            echo "ERROR: could not annotate namespace $E2E_NAMESPACE. $hint" >&2; return 1; }
     fi
     start_heartbeat
     # Wait for Reflector to replicate registry-credentials (annotated on source secret)
@@ -247,18 +415,344 @@ wait_for_daemonset() {
     return 1
 }
 
-# Port-forward in the background. Echoes the PID; caller should kill it later.
+# The image a live workload runs, read off the object itself: <kind> <name>
+# <container> [namespace, default cfgd-system]. The container is chosen by name
+# so a sidecar listed first is never reported as the component.
+running_image() {
+    local kind="$1" name="$2" container="$3" namespace="${4:-cfgd-system}" image
+    image="$(kubectl get "$kind" "$name" -n "$namespace" \
+        -o jsonpath="{.spec.template.spec.containers[?(@.name==\"$container\")].image}" 2>/dev/null || true)"
+    printf '%s\n' "${image:-not deployed}"
+}
+
+# argocd_managed <kind> <name> [namespace]: 0 when ArgoCD tracks the object
+# (its tracking-id annotation is set), so it runs what /db/manifests pins and
+# reverts changes; 1 when it does not, or the object is absent; 2 when kubectl
+# cannot read it, whose error is left on stderr. The namespace defaults to
+# cfgd-system when omitted; `-` names a cluster-scoped kind. An empty namespace
+# is refused with 2: read in the kubeconfig's own namespace, a namespaced
+# object would look absent, and absent is the answer a caller writes on.
+argocd_managed() {
+    local id ns="${3-cfgd-system}"
+    if [ -z "$ns" ]; then
+        echo "ERROR: argocd_managed $1 $2 was given an empty namespace. Pass the namespace, or - for a cluster-scoped kind." >&2
+        return 2
+    fi
+    [ "$ns" != - ] || ns=""
+    id="$(kubectl get "$1" "$2" ${ns:+-n "$ns"} --ignore-not-found \
+        -o jsonpath='{.metadata.annotations.argocd\.argoproj\.io/tracking-id}')" || return 2
+    [ -n "$id" ]
+}
+
+# argocd_owner <kind> <name> <namespace, - when cluster-scoped> <rerun>:
+# argocd_managed's status, with the ERROR every caller stops or fails on when
+# the object cannot be read printed to stderr.
+argocd_owner() {
+    local rc=0 where=""
+    if [ "$#" -ne 4 ] || [ -z "$3" ]; then
+        echo "ERROR: argocd_owner takes a kind, a name, a namespace (- for a cluster-scoped kind) and the rerun advice; got [$*]." >&2
+        return 2
+    fi
+    argocd_managed "$1" "$2" "$3" || rc=$?
+    if [ "$rc" -eq 2 ]; then
+        [ "$3" = - ] || where=" in $3"
+        echo "ERROR: could not read $1/$2$where. Check that the runner can get $1 objects${where:+ there}, then $4." >&2
+    fi
+    return "$rc"
+}
+
+# require_release_webhooks_scoped: 0 when the release's webhook configurations
+# leave every run-labelled object and namespace to the PR install: each
+# $E2E_RELEASE_VALIDATING_WEBHOOK entry's objectSelector and each
+# $E2E_RELEASE_MUTATING_WEBHOOK entry's namespaceSelector holds the
+# cfgd.io/e2e-run DoesNotExist expression. Otherwise prints an ERROR and
+# returns 1. A setup run from a branch without that scoping re-applies both
+# configurations without it, and the release operator then admits and mutates
+# what this run creates. A configuration ArgoCD tracks is refused as setup
+# refuses it, since setup cannot scope it.
+require_release_webhooks_scoped() {
+    local rerun="rerun setup from this branch" entry kind name selector rc doc unscoped
+    for entry in "validatingwebhookconfiguration $E2E_RELEASE_VALIDATING_WEBHOOK objectSelector" \
+        "mutatingwebhookconfiguration $E2E_RELEASE_MUTATING_WEBHOOK namespaceSelector"; do
+        read -r kind name selector <<<"$entry"
+        rc=0
+        argocd_owner "$kind" "$name" - "$rerun" || rc=$?
+        case "$rc" in
+            0)
+                echo "ERROR: $kind/$name carries an argocd.argoproj.io/tracking-id annotation, so ArgoCD owns it and setup does not scope it. Add the cfgd.io/e2e-run DoesNotExist selectors from setup-cluster.sh's webhook step to its manifest in the GitOps repo, drop it from that step's heredoc, then $rerun." >&2
+                return 1
+                ;;
+            1) ;;
+            *) return 1 ;;
+        esac
+        doc="$(kubectl get "$kind" "$name" --ignore-not-found -o json)" || {
+            echo "ERROR: could not read $kind/$name. Check that the runner can get $kind objects, then $rerun." >&2
+            return 1
+        }
+        if [ -z "$doc" ]; then
+            echo "ERROR: $kind/$name is missing; setup applies it, so $rerun." >&2
+            return 1
+        fi
+        unscoped="$(jq -r --arg sel "$selector" '.webhooks[]?
+            | select([.[$sel].matchExpressions[]? | select(.key == "cfgd.io/e2e-run" and .operator == "DoesNotExist")] | length == 0)
+            | .name' <<<"$doc")" || {
+            echo "ERROR: could not read the webhooks of $kind/$name as JSON: kubectl returned something other than JSON, or jq is not on PATH. Check both, then $rerun." >&2
+            return 1
+        }
+        if [ -n "$unscoped" ]; then
+            echo "ERROR: a setup from a branch without the PR-install scoping re-applied the release webhooks; $rerun. $kind/$name entries whose $selector lacks cfgd.io/e2e-run DoesNotExist: $(paste -sd ' ' <<<"$unscoped")" >&2
+            return 1
+        fi
+    done
+}
+
+# Installs Crossplane into crossplane-system with Helm unless ArgoCD runs it
+# there. Returns 1 with an ERROR when the crossplane Deployment cannot be read
+# or the install fails, before or after any Helm call.
+crossplane_install() {
+    local rc=0
+    argocd_owner deployment crossplane crossplane-system "rerun the Crossplane suite" || rc=$?
+    case "$rc" in
+        0)
+            echo "  deployment/crossplane in crossplane-system is ArgoCD's; installing nothing"
+            ;;
+        1)
+            helm repo add crossplane-stable https://charts.crossplane.io/stable || {
+                echo "ERROR: helm could not add the crossplane-stable repository. Read the Helm error above, then rerun the Crossplane suite." >&2
+                return 1
+            }
+            helm upgrade --install crossplane crossplane-stable/crossplane \
+                --namespace crossplane-system --create-namespace --wait --timeout 120s || {
+                echo "ERROR: helm could not install Crossplane into crossplane-system. Read the Helm error above, then rerun the Crossplane suite." >&2
+                return 1
+            }
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+# --- CRD check ---
+
+# ArgoCD applies the cluster's CRDs from this file, so no e2e script writes
+# them; setup and the suites that need them compare the PR's CRDs with them.
+export E2E_CRD_MANIFEST="/db/manifests/k3s/namespaces/crossplane-system/cfgd-crds.yaml"
+
+# CRD YAML on stdin; one compact JSON object per CustomResourceDefinition on
+# stdout. `kubectl create --dry-run=client` asks the API server to map each
+# kind, while `annotate --local` reads the YAML offline; removing an annotation
+# the documents do not carry leaves them as written.
+crd_docs_json() {
+    local json
+    json="$(kubectl annotate --local -o json -f - cfgd.io/e2e-unset-)" || return 1
+    jq -c '.items[]? // . | select(.kind == "CustomResourceDefinition")' <<<"$json"
+}
+
+# One CRD as JSON on stdin; its spec with every description string removed and
+# keys sorted, so a CRD whose only change is documentation compares equal. The
+# API server fills names.listKind, names.singular, conversion and
+# preserveUnknownFields when a CRD omits them, and the generated file omits
+# some of them, so both sides get those defaults before they are compared. A
+# key named `description` inside `properties` holds an object, so it stays.
+crd_shape() {
+    jq -S 'walk(if type == "object" and (.description | type) == "string" then del(.description) else . end)
+           | .spec
+           | .names.listKind //= (.names.kind + "List")
+           | .names.singular //= (.names.kind | ascii_downcase)
+           | .conversion //= {strategy: "None"}
+           | .preserveUnknownFields //= false'
+}
+
+# Why a live CRD (JSON on stdin) is not Established, or nothing when it is.
+crd_not_established() {
+    jq -r 'first(.status.conditions[]? | select(.type == "Established")) // {}
+           | if .status == "True" then empty
+             elif .status == null then "no Established condition"
+             else .reason // "Established is \(.status)" end'
+}
+
+# check_pr_crds [source] [rerun] < <CRD YAML>: compares the spec of each CRD in
+# the YAML, descriptions aside, with the cluster's copy, and checks that copy is
+# Established. source names the YAML in messages (default: the cfgd-gen-crds
+# output) and rerun is the advice that ends them (default: rerun setup).
+# Prints an ERROR to stderr for each CRD that is missing, differs (followed by
+# up to 40 lines of diff, cluster first), is not Established or cannot be read.
+# Returns 1 when any did, or when the YAML holds no CRD to compare.
+check_pr_crds() {
+    local source="${1:-the cfgd-gen-crds output}" rerun="${2:-rerun setup}"
+    local docs doc name want live_doc live why status=0 checked=0
+    local fix="ArgoCD owns the cluster's CRDs; copy schemas/crds.yaml over $E2E_CRD_MANIFEST, push it and let ArgoCD sync, then $rerun."
+    if ! docs="$(crd_docs_json)"; then
+        echo "ERROR: could not read $source as CRDs. Check that it is valid YAML and that kubectl and jq are on PATH, then $rerun." >&2
+        return 1
+    fi
+    while IFS= read -r doc; do
+        [ -n "$doc" ] || continue
+        name="$(jq -r '.metadata.name // empty' <<<"$doc")"
+        if [ -z "$name" ]; then
+            echo "ERROR: a CRD in $source has no metadata.name. Check $source, then $rerun." >&2
+            status=1
+            continue
+        fi
+        checked=$((checked + 1))
+        if ! want="$(crd_shape <<<"$doc")" || ! jq -e '(.versions | length) > 0' <<<"$want" >/dev/null; then
+            echo "ERROR: $name in $source has no versions to compare. Check $source, then $rerun." >&2
+            status=1
+            continue
+        fi
+        if ! live_doc="$(kubectl get crd "$name" --ignore-not-found -o json)"; then
+            echo "ERROR: could not read crd/$name. Check that the runner can get customresourcedefinitions, then $rerun." >&2
+            status=1
+            continue
+        fi
+        if [ -z "$live_doc" ]; then
+            echo "ERROR: this PR adds $name, which the cluster does not have. $fix" >&2
+            status=1
+            continue
+        fi
+        if ! live="$(crd_shape <<<"$live_doc")" || ! why="$(crd_not_established <<<"$live_doc")"; then
+            echo "ERROR: could not read the cluster's crd/$name as JSON. Check that kubectl get crd $name -o json prints a CustomResourceDefinition, then $rerun." >&2
+            status=1
+            continue
+        fi
+        if [ "$want" != "$live" ]; then
+            echo "ERROR: this PR changes the spec of $name (descriptions aside). $fix" >&2
+            diff <(printf '%s\n' "$live") <(printf '%s\n' "$want") | head -40 >&2 || true # rc-ok: diff exits 1 on the difference being shown
+            status=1
+        fi
+        if [ -n "$why" ]; then
+            echo "ERROR: crd/$name is not Established on the cluster ($why). Check ArgoCD's cfgd-crds sync and the CRD's status.conditions, then $rerun." >&2
+            status=1
+        fi
+    done <<<"$docs"
+    if [ "$checked" -eq 0 ]; then
+        echo "ERROR: $source holds no CustomResourceDefinition to compare with the cluster. Check $source, then $rerun." >&2
+        return 1
+    fi
+    return "$status"
+}
+
+# Port-forward to `svc/<name>` or `pod/<name>` in the background and echo the
+# kubectl PID once the local port accepts a connection; stop it with
+# stop_port_forward. A fixed sleep races a slow kubectl start. On timeout, or
+# when kubectl exits first, prints kubectl's own output to stderr and returns 1.
+# E2E_PORT_FORWARD_TRIES sets how many half-second probes are made (default 30).
 port_forward() {
     local namespace="$1"
-    local service="$2"
+    local target="$2"
     local local_port="$3"
     local remote_port="${4:-$local_port}"
 
-    kubectl port-forward -n "$namespace" "svc/$service" \
-        "$local_port:$remote_port" > /dev/null 2>&1 &
+    case "$target" in
+        svc/?* | pod/?*) ;;
+        *)
+            echo "port_forward: target must be svc/<name> or pod/<name>, got '$target'" >&2
+            return 1
+            ;;
+    esac
+    local max_tries="${E2E_PORT_FORWARD_TRIES:-30}"
+    if ! [[ $max_tries =~ ^[1-9][0-9]*$ ]]; then
+        echo "port_forward: E2E_PORT_FORWARD_TRIES must be a positive integer, got '$max_tries'" >&2
+        return 1
+    fi
+
+    local log
+    log="$(mktemp "$CLI_SCRATCH/port-forward.XXXXXX")"
+    kubectl port-forward -n "$namespace" "$target" \
+        "$local_port:$remote_port" > "$log" 2>&1 &
     local pid=$!
-    sleep 2  # let port-forward establish
-    echo "$pid"
+    local tries=0
+    while [ "$tries" -lt "$max_tries" ]; do
+        if ! kill -0 "$pid" 2>/dev/null; then
+            echo "port_forward: kubectl port-forward $target exited before localhost:$local_port opened:" >&2
+            sed 's/^/    /' "$log" >&2
+            return 1
+        fi
+        if (: < "/dev/tcp/127.0.0.1/$local_port") 2>/dev/null; then
+            echo "$pid"
+            return 0
+        fi
+        sleep 0.5
+        tries=$((tries + 1))
+    done
+    echo "port_forward: localhost:$local_port for $target did not accept a connection within $((max_tries / 2)).$((max_tries % 2 * 5))s; kubectl said:" >&2
+    sed 's/^/    /' "$log" >&2
+    stop_port_forward "$pid"
+    return 1
+}
+
+# Stop a port_forward and return once kubectl has exited. A PID captured
+# through a command substitution is not this shell's child, so `wait` cannot
+# reap it and its exit is watched for instead: up to 5s after SIGTERM, then
+# SIGKILL and up to 1s more, so no tunnel outlives the suite.
+stop_port_forward() {
+    local pid="$1"
+    kill "$pid" 2>/dev/null || return 0
+    wait "$pid" 2>/dev/null || true
+    if ! _wait_gone "$pid" 50; then
+        echo "stop_port_forward: $pid ignored SIGTERM, sending SIGKILL" >&2
+        kill -9 "$pid" 2>/dev/null || true
+        _wait_gone "$pid" 10 || echo "stop_port_forward: $pid still running after SIGKILL" >&2
+    fi
+}
+
+# Return 0 once PID $1 no longer exists, checking every 0.1s up to $2 times.
+_wait_gone() {
+    local tries=0
+    while kill -0 "$1" 2>/dev/null; do
+        [ "$tries" -lt "$2" ] || return 1
+        sleep 0.1
+        tries=$((tries + 1))
+    done
+}
+
+# GET $1 into file $2 and print "<http_code> <content_type>"; the code is 000
+# when no response arrived. The body is kept whatever the status, so a failed
+# check can show what the endpoint actually served; curl's exit code and
+# stderr go to "$2.err" for the case where nothing did.
+http_get_to_file() {
+    local meta rc=0
+    meta="$(curl -sS --max-time 10 -o "$2" -w '%{http_code} %{content_type}' "$1" 2> "$2.err.tmp")" || rc=$?
+    { echo "$rc"; cat "$2.err.tmp"; } > "$2.err"
+    rm -f "$2.err.tmp"
+    [ -f "$2" ] || : > "$2"
+    meta="${meta% }"
+    printf '%s\n' "${meta:-000}"
+}
+
+# Describe a response kept by http_get_to_file for a fail reason: status,
+# content type, line count and the first 15 lines of the body, or curl's exit
+# code and error when no response arrived.
+http_evidence() {
+    local code="$1" content_type="$2" body="$3"
+    if [ "$code" = "000" ] && [ -f "$body.err" ]; then
+        printf 'curl exit %s: %s\n' "$(head -n 1 "$body.err")" "$(tail -n +2 "$body.err" | tr '\n' ' ' | sed 's/ *$//')"
+    fi
+    printf 'HTTP %s, content-type %s, %s body lines; first 15:\n' \
+        "$code" "${content_type:-none}" "$(wc -l < "$body" | tr -d ' ')"
+    head -n 15 "$body" | sed 's/^/    | /'
+}
+
+# Print every sample line of counter family $1 in the exposition body in file
+# $2; returns 1 when there is none. Every caller scrapes the PR install's
+# operator or CSI driver, built from this checkout, which render a counter's
+# samples as `<family>_total`, so that is the only sample name read; a sample
+# with a doubled suffix is a registration bug for the check to fail on.
+metric_sample_lines() {
+    grep -E "^$1_total(\{|[[:blank:]])" "$2"
+}
+
+# Print the value of counter family $1's sample with label set $2 (the text
+# between the braces, e.g. `module="m",result="success"`; empty for a sample
+# without labels) in the body in file $3, or 0 when that sample is absent.
+# The lines come from metric_sample_lines so the two readers cannot disagree on
+# which lines are samples; `|| true` keeps an absent family a 0 under pipefail.
+metric_sample_value() {
+    local labels=""
+    [ -z "$2" ] || labels="{$2}"
+    { metric_sample_lines "$1" "$3" || true; } |
+        awk -v a="$1_total$labels" '$1 == a { v = $2 } END { print v + 0 }'
 }
 
 wait_for_url() {
@@ -279,8 +773,11 @@ wait_for_url() {
 
 # --- OCI / Module helpers ---
 
-CSI_DRIVER_NAME="csi.cfgd.io"
-MODULES_ANNOTATION="cfgd.io/modules"
+# The CSIDriver the PR install registers, passed to helm as
+# --set-string csiDriver.name=$CSI_DRIVER_NAME, so its pods never resolve to the
+# live release's csi.cfgd.io.
+export CSI_DRIVER_NAME="e2e.csi.cfgd.io"
+export MODULES_ANNOTATION="cfgd.io/modules"
 
 # Create a minimal test module directory for OCI push testing.
 # Usage: create_test_module_dir /tmp/test-module "my-module" "1.0.0"
@@ -326,14 +823,14 @@ wait_for_k8s_field() {
     local expected="${5:-}"
     local timeout="${6:-60}"
 
-    local ns_flag=""
-    [ -n "$namespace" ] && ns_flag="-n $namespace"
+    local ns_args=()
+    [ -z "$namespace" ] || ns_args=(-n "$namespace")
 
     local deadline=$((SECONDS + timeout))
     local value=""
 
     while [ $SECONDS -lt $deadline ]; do
-        value=$(kubectl get "$kind" "$name" $ns_flag \
+        value=$(kubectl get "$kind" "$name" "${ns_args[@]}" \
             -o jsonpath="$jsonpath" 2>/dev/null || echo "")
 
         if [ -z "$expected" ]; then
@@ -367,8 +864,10 @@ wait_for_service_endpoints() {
         fi
         sleep 2
     done
-    echo "  ERROR: Service $namespace/$service has no ready endpoints after ${timeout}s"
-    kubectl get endpoints "$service" -n "$namespace" -o yaml 2>&1 | head -20 || true
+    {
+        echo "  ERROR: Service $namespace/$service has no ready endpoints after ${timeout}s"
+        kubectl get endpoints "$service" -n "$namespace" -o yaml 2>&1 | head -20 || true
+    } >&2
     return 1
 }
 
@@ -390,11 +889,11 @@ ensure_cfgd_binary() {
 
     echo "  Building cfgd..."
     if ! cargo build --release --manifest-path "$REPO_ROOT/Cargo.toml" --bin cfgd; then
-        echo "  ERROR: cargo build --release --bin cfgd failed"
+        echo "  ERROR: cargo build --release --bin cfgd failed" >&2
         return 1
     fi
     if [ ! -x "$CFGD_BIN" ]; then
-        echo "  ERROR: no executable at $CFGD_BIN after a successful build"
+        echo "  ERROR: no executable at $CFGD_BIN after a successful build" >&2
         return 1
     fi
 }
@@ -442,6 +941,68 @@ assert_equals() {
     fi
     echo "  ASSERT FAILED: expected='$expected' actual='$actual'"
     return 1
+}
+
+# Print the head of a command's captured stderr ($1), indented, so a case that
+# kept stderr out of the document it parses still shows it for diagnosis.
+print_stderr_head() {
+    head -c 400 "$1" | sed 's/^/    stderr: /'
+}
+
+# Run `cfgd compliance -o json` in the test pod against config $1 and print
+# its stdout alone, the document jq reads. stderr carries advisories that
+# would corrupt the JSON if merged into it, so it goes to a scratch file and is
+# echoed to this shell's stderr: this function's stdout is what callers capture.
+pod_compliance_json() {
+    local err="$CLI_SCRATCH/pod-compliance.stderr"
+    exec_in_pod cfgd --config "$1" compliance -o json --no-color 2> "$err" || true
+    print_stderr_head "$err" >&2
+}
+
+# The compliance status of one sysctl key ($2) in a `compliance -o json`
+# document ($1). A drifted key is a `system` row of its own keyed
+# `sysctl.<key>`. A key that is not drifted has no row of its own, so it takes
+# the sysctl configurator's answer: its `sysctl` row when nothing drifted, or
+# Compliant when only other sysctl keys did. Prints `absent` when the document
+# holds no sysctl answer and `unparsable` when it is not JSON.
+sysctl_compliance_status() {
+    # jq reads an empty input as no document at all and exits 0 silently.
+    [ -n "$1" ] || { echo unparsable; return 0; }
+    printf '%s' "$1" | jq -r --arg key "sysctl.$2" '
+        [.snapshot.checks[] | select(.category == "system")] as $system
+        | ($system | map(select(.key == $key)) | first | .status)
+          // ($system | map(select(.key == "sysctl")) | first | .status)
+          // (if any($system[]; .key | startswith("sysctl.")) then "Compliant" else "absent" end)
+    ' 2>/dev/null || echo unparsable
+}
+
+# One sysctl drift case, run against config $2 in the test pod: key $3 must
+# read Compliant while it holds its applied value, and Violation after it is
+# written to $4, so the case fails when compliance stops noticing the drift as
+# well as when it stops reporting the key. $5 is written back afterwards. The
+# key MUST be one only this pod can move (a network-namespaced net.* key): a
+# host-global key can be written by another suite's pod on the same node
+# between the two reads, so any other key fails the case without running it.
+sysctl_drift_case() {
+    local id="$1" config="$2" key="$3" drift="$4" restore="$5"
+    local before after json
+    case "$key" in
+        net.*) ;;
+        *) fail_test "$id" "$key is host-global; drift a pod-private net.* key instead"; return ;;
+    esac
+    before=$(sysctl_compliance_status "$(pod_compliance_json "$config")" "$key")
+    exec_in_pod sysctl -w "$key=$drift" > /dev/null 2>&1 || true
+    json=$(pod_compliance_json "$config")
+    after=$(sysctl_compliance_status "$json" "$key")
+    echo "  $key: before=$before after=$after"
+    echo "$json" | jq -c '.snapshot.checks[]? | select(.category == "system")' 2>/dev/null | sed 's/^/    /' || true
+
+    if assert_equals "$before" "Compliant" && assert_equals "$after" "Violation"; then
+        pass_test "$id"
+    else
+        fail_test "$id" "Compliance should read $key Compliant when applied and Violation once drifted"
+    fi
+    exec_in_pod sysctl -w "$key=$restore" > /dev/null 2>&1 || true
 }
 
 assert_rejected() {

@@ -1,5 +1,4 @@
 use super::*;
-use std::time::SystemTime;
 
 #[test]
 fn current_version_is_valid_semver() {
@@ -339,56 +338,14 @@ fn atomic_replace_creates_target() {
 }
 
 #[test]
-fn version_cache_disk_persistence_camel_case() {
-    // Write VersionCache to a temp file, read it back, verify camelCase keys on disk
+fn version_cache_writes_only_the_check_timestamp() {
     let cache = VersionCache {
         checked_at_secs: 1711800000,
-        latest_tag: "v0.5.0".into(),
-        latest_version: "0.5.0".into(),
-        current_version: "0.4.0".into(),
     };
-
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("version-check.json");
-
-    // Serialize and write to disk
-    let json = serde_json::to_string(&cache).expect("serialize");
-    fs::write(&path, &json).expect("write");
-
-    // Verify the on-disk JSON uses camelCase keys
-    let raw = fs::read_to_string(&path).expect("read");
-    assert!(
-        raw.contains("checkedAtSecs"),
-        "expected camelCase key 'checkedAtSecs', got: {}",
-        raw
+    assert_eq!(
+        serde_json::to_string(&cache).expect("serialize"),
+        r#"{"checkedAtSecs":1711800000}"#
     );
-    assert!(
-        raw.contains("latestTag"),
-        "expected camelCase key 'latestTag', got: {}",
-        raw
-    );
-    assert!(
-        raw.contains("latestVersion"),
-        "expected camelCase key 'latestVersion', got: {}",
-        raw
-    );
-    assert!(
-        raw.contains("currentVersion"),
-        "expected camelCase key 'currentVersion', got: {}",
-        raw
-    );
-    // Ensure snake_case keys are NOT present
-    assert!(
-        !raw.contains("checked_at_secs"),
-        "should not contain snake_case key 'checked_at_secs'"
-    );
-
-    // Read back and deserialize
-    let restored: VersionCache = serde_json::from_str(&raw).expect("deserialize from disk");
-    assert_eq!(restored.checked_at_secs, 1711800000);
-    assert_eq!(restored.latest_tag, "v0.5.0");
-    assert_eq!(restored.latest_version, "0.5.0");
-    assert_eq!(restored.current_version, "0.4.0");
 }
 
 #[test]
@@ -424,102 +381,21 @@ fn find_asset_wrong_platform_returns_error() {
     );
 }
 
+/// A cache file written when the cache also held the version strings still
+/// gates the next check on its timestamp.
 #[test]
-fn cache_ttl_fresh_cache_is_valid() {
-    // Simulate a cache entry that was just written — should be within TTL
-    let now_secs = SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap()
-        .as_secs();
-
-    let cache = VersionCache {
-        checked_at_secs: now_secs, // just now
-        latest_tag: "v0.3.0".into(),
-        latest_version: "0.3.0".into(),
-        current_version: "0.2.0".into(),
-    };
-
-    let elapsed = now_secs.saturating_sub(cache.checked_at_secs);
-    assert!(
-        elapsed < CACHE_TTL_SECS,
-        "fresh cache should be within TTL: elapsed={}, ttl={}",
-        elapsed,
-        CACHE_TTL_SECS
-    );
-
-    // The cached version should parse and be usable for comparison
-    let cached_version = Version::parse(&cache.latest_version).expect("parse cached version");
-    let current = Version::parse(&cache.current_version).expect("parse current version");
-    assert!(cached_version > current, "0.3.0 > 0.2.0");
-}
-
-#[test]
-fn cache_ttl_expired_cache_is_stale() {
-    // Simulate a cache entry from 25 hours ago — should exceed the 24h TTL
-    let now_secs = SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap()
-        .as_secs();
-
-    let twenty_five_hours_ago = now_secs - (25 * 3600);
-
-    let cache = VersionCache {
-        checked_at_secs: twenty_five_hours_ago,
-        latest_tag: "v0.3.0".into(),
-        latest_version: "0.3.0".into(),
-        current_version: "0.2.0".into(),
-    };
-
-    let elapsed = now_secs.saturating_sub(cache.checked_at_secs);
-    assert!(
-        elapsed >= CACHE_TTL_SECS,
-        "25h-old cache should exceed TTL: elapsed={}, ttl={}",
-        elapsed,
-        CACHE_TTL_SECS
-    );
-}
-
-#[test]
-fn cache_ttl_boundary_just_expired() {
-    // Cache is exactly at TTL boundary + 1 second — should be expired
-    let now_secs = SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap()
-        .as_secs();
-
-    let just_past_ttl = now_secs - CACHE_TTL_SECS - 1;
-
-    let cache = VersionCache {
-        checked_at_secs: just_past_ttl,
-        latest_tag: "v0.3.0".into(),
-        latest_version: "0.3.0".into(),
-        current_version: "0.2.0".into(),
-    };
-
-    let elapsed = now_secs.saturating_sub(cache.checked_at_secs);
-    assert!(
-        elapsed >= CACHE_TTL_SECS,
-        "cache at TTL+1s should be expired"
-    );
-
-    // One second before expiry should still be valid
-    let at_boundary = now_secs - CACHE_TTL_SECS + 1;
-    let boundary_elapsed = now_secs.saturating_sub(at_boundary);
-    assert!(
-        boundary_elapsed < CACHE_TTL_SECS,
-        "cache at TTL-1s should still be valid"
-    );
-}
-
-#[test]
-fn version_cache_deserialization_from_known_json() {
-    // Ensure a known JSON payload deserializes (simulates reading from disk)
-    let json = r#"{"checkedAtSecs":1700000000,"latestTag":"v1.2.3","latestVersion":"1.2.3","currentVersion":"1.0.0"}"#;
-    let cache: VersionCache = serde_json::from_str(json).expect("deserialize known JSON");
-    assert_eq!(cache.checked_at_secs, 1700000000);
-    assert_eq!(cache.latest_tag, "v1.2.3");
-    assert_eq!(cache.latest_version, "1.2.3");
-    assert_eq!(cache.current_version, "1.0.0");
+#[serial_test::serial]
+fn a_version_cache_written_with_the_version_strings_still_reads() {
+    let home = tempfile::tempdir().unwrap();
+    let _guard = crate::with_test_home_guard(home.path());
+    let dir = cache_dir().expect("the test home has a cache dir");
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(
+        dir.join(CACHE_FILENAME),
+        r#"{"checkedAtSecs":1700000000,"latestTag":"v1.2.3","latestVersion":"1.2.3","currentVersion":"1.0.0"}"#,
+    )
+    .unwrap();
+    assert_eq!(last_checked_secs(), Some(1_700_000_000));
 }
 
 #[test]
@@ -579,31 +455,6 @@ fn download_and_install_checksum_mismatch_detection() {
         matches!(err, crate::errors::UpgradeError::ChecksumMismatch { .. }),
         "wrong published hash must surface as mismatch: {err:?}"
     );
-}
-
-#[test]
-fn version_cache_disk_persistence() {
-    let dir = tempfile::tempdir().unwrap();
-    let cache = VersionCache {
-        checked_at_secs: 1711234567,
-        latest_tag: "v1.2.3".into(),
-        latest_version: "1.2.3".into(),
-        current_version: "1.0.0".into(),
-    };
-    let json = serde_json::to_string(&cache).unwrap();
-    let path = dir.path().join("version-cache.json");
-    std::fs::write(&path, &json).unwrap();
-
-    let content = std::fs::read_to_string(&path).unwrap();
-    let restored: VersionCache = serde_json::from_str(&content).unwrap();
-    assert_eq!(restored.checked_at_secs, 1711234567);
-    assert_eq!(restored.latest_tag, "v1.2.3");
-    assert_eq!(restored.latest_version, "1.2.3");
-    assert_eq!(restored.current_version, "1.0.0");
-
-    // Verify camelCase serialization
-    assert!(json.contains("checkedAtSecs"));
-    assert!(json.contains("latestTag"));
 }
 
 #[test]
@@ -844,48 +695,6 @@ fn extract_tarball_skips_symlink_entries_without_failing() {
     );
 }
 
-// Cache tests isolate via the `with_test_home_guard` thread-local, but
-// `default_cache_dir_for` honors the process-global `CFGD_CACHE_DIR` env above
-// that thread-local. Under threaded `cargo test`, a concurrent test that sets
-// `CFGD_CACHE_DIR` (e.g. `cache_dir_honors_cfgd_cache_dir_env`) hijacks this
-// test's cache path; `serial` joins them into one exclusion group. nextest's
-// process-per-test masks the leak, so this only bites the plain-`cargo test` runner.
-#[test]
-#[serial_test::serial]
-fn check_with_cache_returns_error_when_cached_version_is_unparseable() {
-    let home = tempfile::tempdir().unwrap();
-    let _guard = crate::with_test_home_guard(home.path());
-
-    // Seed a fresh cache entry whose latest_version field is not a valid
-    // semver. The TTL check passes (just-now), so the function reaches
-    // Version::parse which must surface UpgradeError::VersionParse rather
-    // than silently fall through to the API.
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::SystemTime::UNIX_EPOCH)
-        .unwrap()
-        .as_secs();
-    write_version_cache(&VersionCache {
-        checked_at_secs: now,
-        latest_tag: "vBOGUS".into(),
-        latest_version: "not-a-semver".into(),
-        current_version: env!("CARGO_PKG_VERSION").into(),
-    })
-    .expect("cache seed");
-
-    let err = check_with_cache(
-        env!("CARGO_PKG_VERSION"),
-        Some("does/not/matter"),
-        None,
-        None,
-    )
-    .expect_err("unparseable cached version must surface as Err, not silent fallthrough");
-    let msg = err.to_string();
-    assert!(
-        msg.contains("cached version") && msg.contains("parse"),
-        "error must point at the cache file's version field so triage looks there first: {msg}"
-    );
-}
-
 #[test]
 fn find_checksum_asset_picks_matching_per_artifact_sha256() {
     let archive = "cfgd-1.0.0-linux-amd64.tar.gz";
@@ -989,12 +798,11 @@ fn record_check_at_creates_cache_when_none_exists() {
     let home = tempfile::tempdir().unwrap();
     let _guard = crate::with_test_home_guard(home.path());
 
-    // No prior cache → the None branch stamps a fresh entry at `now`.
     assert!(
         last_checked_secs().is_none(),
         "precondition: no cache means no recorded check"
     );
-    record_check_at(env!("CARGO_PKG_VERSION"), 1_700_000_000);
+    record_check_at(1_700_000_000);
     assert_eq!(
         last_checked_secs(),
         Some(1_700_000_000),
@@ -1008,28 +816,17 @@ fn record_check_at_updates_timestamp_on_existing_cache() {
     let home = tempfile::tempdir().unwrap();
     let _guard = crate::with_test_home_guard(home.path());
 
-    // Seed a cache with real version fields, then re-stamp the timestamp.
-    let seeded = VersionCache {
+    write_version_cache(&VersionCache {
         checked_at_secs: 1_700_000_000,
-        latest_tag: "v9.9.0".into(),
-        latest_version: "9.9.0".into(),
-        current_version: env!("CARGO_PKG_VERSION").into(),
-    };
-    write_version_cache(&seeded).expect("seed cache write must succeed");
+    })
+    .expect("seed cache write must succeed");
 
-    record_check_at(env!("CARGO_PKG_VERSION"), 1_700_009_999);
+    record_check_at(1_700_009_999);
     assert_eq!(
         last_checked_secs(),
         Some(1_700_009_999),
-        "the Some branch must update the timestamp in place"
+        "a later check replaces the recorded timestamp"
     );
-    // Re-stamping preserves the version fields from the prior cache.
-    let after = read_version_cache().expect("cache must still parse after update");
-    assert_eq!(
-        after.latest_version, "9.9.0",
-        "record_check_at must preserve the cached version fields"
-    );
-    assert_eq!(after.latest_tag, "v9.9.0");
 }
 
 #[test]
@@ -1067,43 +864,13 @@ fn update_check_fields_are_coherent() {
 
 #[test]
 #[serial_test::serial]
-fn version_cache_write_and_read_roundtrip() {
-    let home = tempfile::tempdir().unwrap();
-    let _guard = crate::with_test_home_guard(home.path());
-
-    let cache = VersionCache {
-        checked_at_secs: SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .unwrap()
-            .as_secs(),
-        latest_tag: "v99.99.99".into(),
-        latest_version: "99.99.99".into(),
-        current_version: env!("CARGO_PKG_VERSION").into(),
-    };
-
-    write_version_cache(&cache).expect("write into tempdir cache should succeed");
-
-    let read = read_version_cache().expect("should be able to read back written cache");
-    assert_eq!(read.latest_tag, "v99.99.99");
-    assert_eq!(read.latest_version, "99.99.99");
-    assert_eq!(read.current_version, env!("CARGO_PKG_VERSION"));
-    assert_eq!(read.checked_at_secs, cache.checked_at_secs);
-}
-
-#[test]
-#[serial_test::serial]
 fn read_version_cache_returns_none_after_invalidation() {
     let home = tempfile::tempdir().unwrap();
     let _guard = crate::with_test_home_guard(home.path());
 
     // Seed a cache file so invalidation has something to remove — the
     // post-invalidation None must reflect a real removal, not absence.
-    let cache = VersionCache {
-        checked_at_secs: 1,
-        latest_tag: "v0".into(),
-        latest_version: "0.0.0".into(),
-        current_version: "0.0.0".into(),
-    };
+    let cache = VersionCache { checked_at_secs: 1 };
     write_version_cache(&cache).expect("seed cache write must succeed");
     assert!(
         read_version_cache().is_some(),
@@ -1264,6 +1031,131 @@ fn fetch_latest_release_from_handles_prerelease_version() {
 
     let release = result.unwrap();
     assert_eq!(release.version, Version::parse("4.0.0-beta.1").unwrap());
+}
+
+// --- GitHub token and rate limit ---
+
+/// Response headers a mock answers with, as `(name, value)` pairs.
+type MockHeaders = &'static [(&'static str, &'static str)];
+
+/// Runs one latest-release query against a mock whose answer is `status` with
+/// `headers`, with `GITHUB_TOKEN` and `GH_TOKEN` set to `tokens` (`None` unsets
+/// one).
+fn query_with(
+    tokens: [Option<&str>; 2],
+    expect_auth: mockito::Matcher,
+    status: usize,
+    headers: MockHeaders,
+) -> Result<ReleaseInfo> {
+    // The names are written out so a reorder of GITHUB_TOKEN_VARS fails this test.
+    let _vars: Vec<_> = ["GITHUB_TOKEN", "GH_TOKEN"]
+        .into_iter()
+        .zip(tokens)
+        .map(|(var, value)| match value {
+            Some(value) => crate::test_helpers::EnvVarGuard::set(var, value),
+            None => crate::test_helpers::EnvVarGuard::unset(var),
+        })
+        .collect();
+    let mut server = mockito::Server::new();
+    let mut mock = server
+        .mock("GET", "/repos/test/repo/releases/latest")
+        .match_header("authorization", expect_auth)
+        .with_status(status)
+        .with_body(r#"{"tag_name": "v1.0.0", "assets": []}"#);
+    for (name, value) in headers {
+        mock = mock.with_header(*name, value);
+    }
+    let mock = mock.create();
+    let result = fetch_latest_release_from(&server.url(), "test/repo", None);
+    mock.assert();
+    result
+}
+
+#[test]
+#[serial_test::serial]
+fn the_release_query_sends_a_bearer_token_from_github_token_then_gh_token() {
+    use mockito::Matcher;
+    let cases: [([Option<&str>; 2], Matcher); 5] = [
+        ([Some("from-github"), None], "Bearer from-github".into()),
+        ([None, Some("from-gh")], "Bearer from-gh".into()),
+        (
+            [Some("from-github"), Some("from-gh")],
+            "Bearer from-github".into(),
+        ),
+        ([Some(""), Some("from-gh")], "Bearer from-gh".into()),
+        ([None, None], Matcher::Missing),
+    ];
+    for (tokens, expect) in cases {
+        let release = query_with(tokens, expect, 200, &[])
+            .unwrap_or_else(|e| panic!("tokens {tokens:?}: the query failed: {e}"));
+        assert_eq!(release.tag, "v1.0.0", "tokens {tokens:?}");
+    }
+}
+
+#[test]
+#[serial_test::serial]
+fn an_exhausted_rate_limit_is_a_typed_error_naming_its_limit_reset_and_token_variables() {
+    for status in [403, 429] {
+        let err = query_with(
+            [None, None],
+            mockito::Matcher::Missing,
+            status,
+            &[
+                ("x-ratelimit-limit", "60"),
+                ("x-ratelimit-remaining", "0"),
+                ("x-ratelimit-reset", "1790000000"),
+            ],
+        )
+        .expect_err("an exhausted limit fails the query");
+        match &err {
+            crate::errors::CfgdError::Upgrade(UpgradeError::RateLimited { limit, reset_at }) => {
+                assert_eq!(*limit, 60, "status {status}");
+                assert_eq!(reset_at, "2026-09-21T14:13:20Z", "status {status}");
+            }
+            other => panic!("status {status}: expected RateLimited, got {other:?}"),
+        }
+        assert_eq!(
+            err.to_string(),
+            "upgrade error: GitHub API rate limit of 60 requests is used up until \
+             2026-09-21T14:13:20Z; set GITHUB_TOKEN or GH_TOKEN to a GitHub token to raise it",
+            "status {status}"
+        );
+    }
+}
+
+#[test]
+#[serial_test::serial]
+fn a_refusal_that_is_not_an_exhausted_rate_limit_stays_a_plain_status_error() {
+    let cases: [(&str, usize, MockHeaders); 3] = [
+        ("a 403 without rate limit headers", 403, &[]),
+        (
+            "a 403 with requests left",
+            403,
+            &[
+                ("x-ratelimit-limit", "60"),
+                ("x-ratelimit-remaining", "5"),
+                ("x-ratelimit-reset", "1790000000"),
+            ],
+        ),
+        (
+            "a 404 with the limit used up",
+            404,
+            &[
+                ("x-ratelimit-limit", "60"),
+                ("x-ratelimit-remaining", "0"),
+                ("x-ratelimit-reset", "1790000000"),
+            ],
+        ),
+    ];
+    for (case, status, headers) in cases {
+        let err = query_with([None, None], mockito::Matcher::Missing, status, headers)
+            .expect_err("a refusal fails the query");
+        assert_eq!(
+            err.to_string(),
+            format!("upgrade error: failed to query GitHub releases: http status: {status}"),
+            "{case}"
+        );
+    }
 }
 
 // --- download_to_file with mockito ---
@@ -1877,69 +1769,6 @@ fn atomic_replace_target_is_a_directory_fails_at_persist() {
     );
 }
 
-// --- version_cache serialization/deserialization ---
-
-#[test]
-fn version_cache_with_prerelease() {
-    let cache = VersionCache {
-        checked_at_secs: 1700000000,
-        latest_tag: "v2.0.0-beta.3".into(),
-        latest_version: "2.0.0-beta.3".into(),
-        current_version: "1.9.0".into(),
-    };
-
-    let json = serde_json::to_string(&cache).unwrap();
-    let restored: VersionCache = serde_json::from_str(&json).unwrap();
-    assert_eq!(restored.latest_tag, "v2.0.0-beta.3");
-    assert_eq!(restored.latest_version, "2.0.0-beta.3");
-
-    // Verify the prerelease version parses and compares correctly
-    let latest = Version::parse(&restored.latest_version).unwrap();
-    let current = Version::parse(&restored.current_version).unwrap();
-    assert!(latest > current, "2.0.0-beta.3 > 1.9.0");
-}
-
-#[test]
-fn version_cache_tolerates_extra_json_fields() {
-    // Forward compatibility: ignore unknown fields
-    let json = r#"{"checkedAtSecs":100,"latestTag":"v1","latestVersion":"1.0.0","currentVersion":"0.9.0","extraField":"ignored"}"#;
-    let cache: VersionCache = serde_json::from_str(json).unwrap();
-    assert_eq!(cache.checked_at_secs, 100);
-    assert_eq!(cache.latest_version, "1.0.0");
-}
-
-// --- cache TTL: zero elapsed ---
-
-#[test]
-fn cache_ttl_zero_seconds_ago_is_fresh() {
-    let now_secs = SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap()
-        .as_secs();
-
-    let elapsed = now_secs.saturating_sub(now_secs);
-    assert!(
-        elapsed < CACHE_TTL_SECS,
-        "zero-elapsed cache should be fresh"
-    );
-}
-
-#[test]
-fn cache_ttl_exactly_at_boundary_is_fresh() {
-    let now_secs = SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap()
-        .as_secs();
-
-    // Exactly at TTL boundary (== CACHE_TTL_SECS) should NOT be fresh (uses <, not <=)
-    let at_boundary = now_secs - CACHE_TTL_SECS;
-    let elapsed = now_secs.saturating_sub(at_boundary);
-    assert!(
-        elapsed >= CACHE_TTL_SECS,
-        "cache exactly at TTL boundary should be expired (uses strict <)"
-    );
-}
-
 // --- strip_tag_prefix ---
 
 #[test]
@@ -2026,6 +1855,7 @@ fn sha256_file_empty_file() {
         if hash.is_ok() {
             break;
         }
+        // long-line-ok: a hatch is read off its own line, so it cannot wrap
         // sleep-ok: waiting out a foreign scanner's transient handle; no in-process observable exists for another process's handle
         std::thread::sleep(std::time::Duration::from_millis(10));
         hash = sha256_file(tmp.path());
@@ -2192,112 +2022,6 @@ fn find_cosign_cert_asset_ignores_lookalike_names() {
         "cfgd-1.0.0-linux-arm64.tar.gz.sha256.cosign.pem",
     ]);
     assert!(find_cosign_cert_asset(&release, &checksum).is_none());
-}
-
-// --- check_with_cache + check_latest via mockito ---
-
-#[test]
-#[serial_test::serial]
-fn check_with_cache_falls_back_to_api_on_cache_miss() {
-    let home = tempfile::tempdir().unwrap();
-    let _guard = crate::with_test_home_guard(home.path());
-    // No cache file written — code path takes the API branch and writes
-    // a fresh entry on the way out.
-
-    let mut server = mockito::Server::new();
-    let mock = server
-        .mock("GET", "/repos/test/repo/releases/latest")
-        .with_status(200)
-        .with_header("content-type", "application/json")
-        .with_body(
-            r#"{
-                "tag_name": "v99.0.0",
-                "assets": []
-            }"#,
-        )
-        .create();
-
-    // check_with_cache uses fetch_latest_release internally which goes to
-    // GITHUB_API_BASE — exercise the API path indirectly via check_latest
-    // pointed at the mock server.
-    let result = fetch_latest_release_from(&server.url(), "test/repo", None);
-    mock.assert();
-    let release = result.expect("mock release must parse");
-    assert_eq!(release.tag, "v99.0.0");
-    assert_eq!(release.version, Version::new(99, 0, 0));
-}
-
-#[test]
-#[serial_test::serial]
-fn check_with_cache_returns_cached_when_within_ttl() {
-    let home = tempfile::tempdir().unwrap();
-    let _guard = crate::with_test_home_guard(home.path());
-
-    // Seed a fresh cache entry — checked just now, well within the 24h TTL.
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::SystemTime::UNIX_EPOCH)
-        .unwrap()
-        .as_secs();
-    let cached = VersionCache {
-        checked_at_secs: now,
-        latest_tag: "v123.0.0".into(),
-        latest_version: "123.0.0".into(),
-        current_version: env!("CARGO_PKG_VERSION").into(),
-    };
-    write_version_cache(&cached).expect("cache seed must succeed in tempdir");
-
-    // No mock server — if the call reaches the API it will fail loudly.
-    let result = check_with_cache(
-        env!("CARGO_PKG_VERSION"),
-        Some("does/not/matter"),
-        None,
-        None,
-    )
-    .expect("cache hit must short-circuit to local data, never touch the network");
-    assert_eq!(
-        result.latest,
-        Version::new(123, 0, 0),
-        "latest must come from the cache, not a remote call"
-    );
-    assert!(
-        result.release.is_none(),
-        "cache hit returns just the version summary, no full ReleaseInfo"
-    );
-}
-
-#[test]
-#[serial_test::serial]
-fn check_with_cache_ignores_expired_entry() {
-    let home = tempfile::tempdir().unwrap();
-    let _guard = crate::with_test_home_guard(home.path());
-
-    // Seed an expired cache entry — far enough in the past that CACHE_TTL_SECS
-    // has lapsed. The function must fall through to the API branch.
-    let stale_secs = std::time::SystemTime::now()
-        .duration_since(std::time::SystemTime::UNIX_EPOCH)
-        .unwrap()
-        .as_secs()
-        .saturating_sub(CACHE_TTL_SECS + 60);
-    let stale = VersionCache {
-        checked_at_secs: stale_secs,
-        latest_tag: "v0.0.1".into(),
-        latest_version: "0.0.1".into(),
-        current_version: env!("CARGO_PKG_VERSION").into(),
-    };
-    write_version_cache(&stale).expect("seed stale cache");
-
-    // Read it back to confirm — the cache file *is* present and parseable;
-    // the freshness check is what must reject it.
-    let read = read_version_cache().expect("seeded entry must be readable");
-    assert_eq!(read.latest_tag, "v0.0.1");
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::SystemTime::UNIX_EPOCH)
-        .unwrap()
-        .as_secs();
-    assert!(
-        now.saturating_sub(read.checked_at_secs) >= CACHE_TTL_SECS,
-        "test setup: stale entry must be older than CACHE_TTL_SECS"
-    );
 }
 
 // ---------------------------------------------------------------------------
@@ -2484,7 +2208,7 @@ mod cosign_verify_blob {
         // fails with std::io::Error. The function maps that to DownloadFailed.
         // RAII guards restore both vars even if an assertion below panics, so a
         // failed run can't leak a stale CFGD_COSIGN_BIN into sibling tests.
-        let _bin = EnvVarGuard::set("CFGD_COSIGN_BIN", "/no/such/cosign/binary");
+        let _bin = EnvVarGuard::set(crate::COSIGN_BIN_ENV, "/no/such/cosign/binary");
         let _log = EnvVarGuard::unset("CFGD_FAKE_COSIGN_LOG");
         let (_dir, checksums, bundle) = dummy_paths();
         let err =
@@ -3160,13 +2884,13 @@ mod download_and_install_to {
         impl Drop for MissingCosignGuard {
             fn drop(&mut self) {
                 unsafe {
-                    std::env::remove_var("CFGD_COSIGN_BIN");
+                    std::env::remove_var(crate::COSIGN_BIN_ENV);
                 }
             }
         }
         unsafe {
             std::env::set_var(
-                "CFGD_COSIGN_BIN",
+                crate::COSIGN_BIN_ENV,
                 "/nonexistent/cfgd-test-cosign-shim-does-not-exist",
             );
         }
@@ -3250,13 +2974,13 @@ mod download_and_install_to {
         impl Drop for MissingCosignGuard {
             fn drop(&mut self) {
                 unsafe {
-                    std::env::remove_var("CFGD_COSIGN_BIN");
+                    std::env::remove_var(crate::COSIGN_BIN_ENV);
                 }
             }
         }
         unsafe {
             std::env::set_var(
-                "CFGD_COSIGN_BIN",
+                crate::COSIGN_BIN_ENV,
                 "/nonexistent/cfgd-test-strict-cosign-shim-does-not-exist",
             );
         }
@@ -3652,9 +3376,6 @@ fn write_version_cache_creates_dir_and_writes_file() {
 
     let cache = VersionCache {
         checked_at_secs: 1234567890,
-        latest_tag: "v5.0.0".into(),
-        latest_version: "5.0.0".into(),
-        current_version: "4.0.0".into(),
     };
 
     write_version_cache(&cache).expect("write_version_cache should create dir and file");
@@ -3665,7 +3386,6 @@ fn write_version_cache_creates_dir_and_writes_file() {
     let content = fs::read_to_string(&cache_path).unwrap();
     let restored: VersionCache = serde_json::from_str(&content).unwrap();
     assert_eq!(restored.checked_at_secs, 1234567890);
-    assert_eq!(restored.latest_version, "5.0.0");
 }
 
 #[test]
@@ -3676,23 +3396,16 @@ fn write_version_cache_overwrites_existing_file() {
 
     let first = VersionCache {
         checked_at_secs: 100,
-        latest_tag: "v1.0.0".into(),
-        latest_version: "1.0.0".into(),
-        current_version: "0.9.0".into(),
     };
     write_version_cache(&first).unwrap();
 
     let second = VersionCache {
         checked_at_secs: 200,
-        latest_tag: "v2.0.0".into(),
-        latest_version: "2.0.0".into(),
-        current_version: "1.0.0".into(),
     };
     write_version_cache(&second).unwrap();
 
     let read = read_version_cache().expect("should read back second write");
     assert_eq!(read.checked_at_secs, 200);
-    assert_eq!(read.latest_version, "2.0.0");
 }
 
 #[test]
@@ -3728,9 +3441,10 @@ fn read_version_cache_returns_none_for_invalid_json() {
 }
 
 // `cache_dir` reads the process-global `CFGD_CACHE_DIR` above the
-// `with_test_home_guard` thread-local, so a concurrent setter hands this test
-// another test's tempdir. See the note above
-// `check_with_cache_returns_error_when_cached_version_is_unparseable`.
+// `with_test_home_guard` thread-local, so under threaded `cargo test` a
+// concurrent setter (`cache_dir_honors_cfgd_cache_dir_env`) hands this test
+// another test's tempdir; `serial` joins them into one exclusion group.
+// nextest's process-per-test masks the leak.
 #[test]
 #[serial_test::serial]
 fn cache_dir_returns_test_home_scoped_path() {
@@ -3756,8 +3470,10 @@ fn cache_dir_honors_cfgd_cache_dir_env() {
     // falling through to a home-directory lookup that can fail and emit a
     // spurious "cannot determine cache directory" warning.
     let redirect = tempfile::tempdir().unwrap();
-    let _env =
-        crate::test_helpers::EnvVarGuard::set("CFGD_CACHE_DIR", redirect.path().to_str().unwrap());
+    let _env = crate::test_helpers::EnvVarGuard::set(
+        crate::CFGD_CACHE_DIR_ENV,
+        redirect.path().to_str().unwrap(),
+    );
 
     let dir = cache_dir().expect("cache_dir must honor CFGD_CACHE_DIR");
     assert_eq!(
@@ -3768,9 +3484,6 @@ fn cache_dir_honors_cfgd_cache_dir_env() {
 
     write_version_cache(&VersionCache {
         checked_at_secs: 42,
-        latest_tag: "v9.9.0".into(),
-        latest_version: "9.9.0".into(),
-        current_version: "9.8.0".into(),
     })
     .expect("write_version_cache must succeed under a redirected cache dir");
     assert!(
@@ -3857,10 +3570,10 @@ fn parse_release_json_empty_tag_name_fails_version_parse() {
 }
 
 // ---------------------------------------------------------------------------
-// check_latest + check_with_cache through the CFGD_GITHUB_API_BASE env shim.
+// check_latest through the CFGD_GITHUB_API_BASE env shim.
 // fetch_latest_release internally calls github_api_base() which reads the
 // env var; setting it to a mockito URL redirects the entire production path
-// (check_with_cache → check_latest → fetch_latest_release → API) without
+// (check_latest → fetch_latest_release → API) without
 // needing fetch_latest_release_from at the test boundary.
 //
 // Tests must be #[serial] because the env var is process-global.
@@ -3893,10 +3606,15 @@ mod api_base_env_shim {
         // var redirects the whole chain to mockito, covering lines 718-730.
         let mut server = mockito::Server::new();
         let mock = mock_release_response(&mut server);
-        let _env = EnvVarGuard::set(GITHUB_API_BASE_ENV, &server.url());
+        let _env = EnvVarGuard::set(crate::CFGD_GITHUB_API_BASE_ENV, &server.url());
 
-        let result = check_latest(env!("CARGO_PKG_VERSION"), Some("test/repo"), None, None)
-            .expect("env-shim redirect should make the call succeed against mockito");
+        let result = check_latest(
+            env!("CARGO_PKG_VERSION"),
+            Some("test/repo"),
+            crate::config::STABLE_UPDATE_CHANNEL,
+            None,
+        )
+        .expect("env-shim redirect should make the call succeed against mockito");
         mock.assert();
 
         assert_eq!(result.latest, Version::new(999, 0, 0));
@@ -3914,93 +3632,9 @@ mod api_base_env_shim {
 
     #[test]
     #[serial]
-    fn check_with_cache_falls_through_to_api_and_writes_fresh_cache_entry() {
-        // No cache file present in test_home → cache-miss branch fires →
-        // check_latest is called → write_version_cache persists the result.
-        // Covers lines 697-712 of mod.rs (the API-fallback + cache-write
-        // segment that has been uncovered for many sessions).
-        let home = tempfile::tempdir().unwrap();
-        let _home_guard = crate::with_test_home_guard(home.path());
-
-        let mut server = mockito::Server::new();
-        let mock = mock_release_response(&mut server);
-        let _env = EnvVarGuard::set(GITHUB_API_BASE_ENV, &server.url());
-
-        let result = check_with_cache(env!("CARGO_PKG_VERSION"), Some("test/repo"), None, None)
-            .expect("cache miss + env-shim redirect should succeed");
-        mock.assert();
-        assert_eq!(result.latest, Version::new(999, 0, 0));
-
-        // Cache file must now exist on disk under the test home — write
-        // _version_cache succeeded; subsequent calls within TTL will read
-        // it back without hitting the network.
-        let cache_path = home.path().join(".cache").join("cfgd").join(CACHE_FILENAME);
-        assert!(
-            cache_path.exists(),
-            "fresh cache must be written to {cache_path:?} after API success"
-        );
-        let cache = read_version_cache().expect("written cache must parse back");
-        assert_eq!(cache.latest_version, "999.0.0");
-        assert_eq!(cache.latest_tag, "v999.0.0");
-    }
-
-    #[test]
-    #[serial]
-    fn check_with_cache_expired_entry_falls_through_to_api_and_refreshes() {
-        // Pre-write an EXPIRED cache entry (25 hours ago), set up mockito for
-        // the API, call check_with_cache, assert mock was hit and cache was
-        // updated with fresh data.
-        let home = tempfile::tempdir().unwrap();
-        let _home_guard = crate::with_test_home_guard(home.path());
-
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::SystemTime::UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
-        let expired = VersionCache {
-            checked_at_secs: now.saturating_sub(CACHE_TTL_SECS + 3600),
-            latest_tag: "v0.0.1".into(),
-            latest_version: "0.0.1".into(),
-            current_version: env!("CARGO_PKG_VERSION").into(),
-        };
-        write_version_cache(&expired).expect("seed stale cache");
-
-        let mut server = mockito::Server::new();
-        let mock = server
-            .mock("GET", "/repos/test/repo/releases/latest")
-            .with_status(200)
-            .with_header("content-type", "application/json")
-            .with_body(
-                r#"{
-                    "tag_name": "v888.0.0",
-                    "assets": []
-                }"#,
-            )
-            .create();
-        let _env = EnvVarGuard::set(GITHUB_API_BASE_ENV, &server.url());
-
-        let result = check_with_cache(env!("CARGO_PKG_VERSION"), Some("test/repo"), None, None)
-            .expect("expired cache + API success should succeed");
-        mock.assert();
-        assert_eq!(
-            result.latest,
-            Version::new(888, 0, 0),
-            "must return fresh API data, not stale cache"
-        );
-
-        let refreshed = read_version_cache().expect("cache must be refreshed after API");
-        assert_eq!(refreshed.latest_version, "888.0.0");
-        assert_eq!(refreshed.latest_tag, "v888.0.0");
-        assert!(
-            refreshed.checked_at_secs >= now,
-            "cache timestamp must be updated to ~now"
-        );
-    }
-
-    #[test]
-    #[serial]
     fn check_latest_with_none_repo_uses_default() {
-        // check_latest(env!("CARGO_PKG_VERSION"), None, ...) should use DEFAULT_REPO ("tj-smith47/cfgd").
+        // check_latest(env!("CARGO_PKG_VERSION"), None, ...) should use DEFAULT_REPO
+        // ("tj-smith47/cfgd").
         let mut server = mockito::Server::new();
         let mock = server
             .mock("GET", "/repos/tj-smith47/cfgd/releases/latest")
@@ -4008,34 +3642,17 @@ mod api_base_env_shim {
             .with_header("content-type", "application/json")
             .with_body(r#"{"tag_name": "v777.0.0", "assets": []}"#)
             .create();
-        let _env = EnvVarGuard::set(GITHUB_API_BASE_ENV, &server.url());
+        let _env = EnvVarGuard::set(crate::CFGD_GITHUB_API_BASE_ENV, &server.url());
 
-        let result = check_latest(env!("CARGO_PKG_VERSION"), None, None, None)
-            .expect("None repo should use default and hit mockito");
+        let result = check_latest(
+            env!("CARGO_PKG_VERSION"),
+            None,
+            crate::config::STABLE_UPDATE_CHANNEL,
+            None,
+        )
+        .expect("None repo should use default and hit mockito");
         mock.assert();
         assert_eq!(result.latest, Version::new(777, 0, 0));
-    }
-
-    #[test]
-    #[serial]
-    fn check_with_cache_none_repo_uses_default() {
-        // check_with_cache(env!("CARGO_PKG_VERSION"), None, ...) should use DEFAULT_REPO.
-        let home = tempfile::tempdir().unwrap();
-        let _home_guard = crate::with_test_home_guard(home.path());
-
-        let mut server = mockito::Server::new();
-        let mock = server
-            .mock("GET", "/repos/tj-smith47/cfgd/releases/latest")
-            .with_status(200)
-            .with_header("content-type", "application/json")
-            .with_body(r#"{"tag_name": "v666.0.0", "assets": []}"#)
-            .create();
-        let _env = EnvVarGuard::set(GITHUB_API_BASE_ENV, &server.url());
-
-        let result = check_with_cache(env!("CARGO_PKG_VERSION"), None, None, None)
-            .expect("None repo should use default and hit mockito");
-        mock.assert();
-        assert_eq!(result.latest, Version::new(666, 0, 0));
     }
 
     #[test]
@@ -4051,7 +3668,7 @@ mod api_base_env_shim {
             .with_header("content-type", "application/json")
             .with_body(r#"{"tag_name": "v555.0.0", "assets": []}"#)
             .create();
-        let _env = EnvVarGuard::set(GITHUB_API_BASE_ENV, &server.url());
+        let _env = EnvVarGuard::set(crate::CFGD_GITHUB_API_BASE_ENV, &server.url());
 
         let result = fetch_latest_release("tj-smith47/cfgd", None)
             .expect("env shim should redirect to mockito");
@@ -4084,12 +3701,12 @@ mod api_base_env_shim {
             .with_body(r#"{"tag_name": "v9.9.0", "assets": []}"#)
             .expect(0)
             .create();
-        let _env = EnvVarGuard::set(GITHUB_API_BASE_ENV, &server.url());
+        let _env = EnvVarGuard::set(crate::CFGD_GITHUB_API_BASE_ENV, &server.url());
 
         let result = check_latest(
             env!("CARGO_PKG_VERSION"),
             Some("test/repo"),
-            Some("prerelease"),
+            "prerelease",
             None,
         )
         .expect("prerelease channel should hit the list endpoint");
@@ -4127,15 +3744,10 @@ mod api_base_env_shim {
             .with_body(r#"[{"tag_name": "v9.9.1-rc.1", "assets": []}]"#)
             .expect(0)
             .create();
-        let _env = EnvVarGuard::set(GITHUB_API_BASE_ENV, &server.url());
+        let _env = EnvVarGuard::set(crate::CFGD_GITHUB_API_BASE_ENV, &server.url());
 
-        let result = check_latest(
-            env!("CARGO_PKG_VERSION"),
-            Some("test/repo"),
-            Some("stable"),
-            None,
-        )
-        .expect("stable channel should hit releases/latest");
+        let result = check_latest(env!("CARGO_PKG_VERSION"), Some("test/repo"), "stable", None)
+            .expect("stable channel should hit releases/latest");
         latest_mock.assert();
         list_mock.assert();
         assert_eq!(
@@ -4144,10 +3756,11 @@ mod api_base_env_shim {
         );
     }
 
-    /// `channel: None` behaves like stable — hits `releases/latest` only.
+    /// The channel an `update` block that names none tracks hits
+    /// `releases/latest` only.
     #[test]
     #[serial]
-    fn channel_none_uses_releases_latest_endpoint() {
+    fn channel_an_update_block_omits_uses_releases_latest_endpoint() {
         let mut server = mockito::Server::new();
         let latest_mock = server
             .mock("GET", "/repos/test/repo/releases/latest")
@@ -4162,10 +3775,15 @@ mod api_base_env_shim {
             .with_body(r#"[{"tag_name": "v9.9.1-rc.1", "assets": []}]"#)
             .expect(0)
             .create();
-        let _env = EnvVarGuard::set(GITHUB_API_BASE_ENV, &server.url());
+        let _env = EnvVarGuard::set(crate::CFGD_GITHUB_API_BASE_ENV, &server.url());
 
-        let result = check_latest(env!("CARGO_PKG_VERSION"), Some("test/repo"), None, None)
-            .expect("None channel should hit releases/latest");
+        let result = check_latest(
+            env!("CARGO_PKG_VERSION"),
+            Some("test/repo"),
+            crate::config::UpdateConfig::default().channel_effective(),
+            None,
+        )
+        .expect("the omitted channel should hit releases/latest");
         latest_mock.assert();
         list_mock.assert();
         assert_eq!(
@@ -4193,12 +3811,12 @@ mod api_base_env_shim {
             .with_body(r#"[{"tag_name": "v9.9.1-rc.1", "assets": []}]"#)
             .expect(0)
             .create();
-        let _env = EnvVarGuard::set(GITHUB_API_BASE_ENV, &server.url());
+        let _env = EnvVarGuard::set(crate::CFGD_GITHUB_API_BASE_ENV, &server.url());
 
         let result = check_latest(
             env!("CARGO_PKG_VERSION"),
             Some("test/repo"),
-            Some("nightly"),
+            "nightly",
             None,
         )
         .expect("unknown channel must fall back to stable, never error");
@@ -4222,12 +3840,12 @@ mod api_base_env_shim {
             .with_header("content-type", "application/json")
             .with_body("not json")
             .create();
-        let _env = EnvVarGuard::set(GITHUB_API_BASE_ENV, &server.url());
+        let _env = EnvVarGuard::set(crate::CFGD_GITHUB_API_BASE_ENV, &server.url());
 
         let err = check_latest(
             env!("CARGO_PKG_VERSION"),
             Some("test/repo"),
-            Some("prerelease"),
+            "prerelease",
             None,
         )
         .expect_err("invalid JSON body must surface as an error");
@@ -4250,12 +3868,12 @@ mod api_base_env_shim {
             .with_header("content-type", "application/json")
             .with_body("{}")
             .create();
-        let _env = EnvVarGuard::set(GITHUB_API_BASE_ENV, &server.url());
+        let _env = EnvVarGuard::set(crate::CFGD_GITHUB_API_BASE_ENV, &server.url());
 
         let err = check_latest(
             env!("CARGO_PKG_VERSION"),
             Some("test/repo"),
-            Some("prerelease"),
+            "prerelease",
             None,
         )
         .expect_err("a JSON object is not a releases array");
@@ -4278,12 +3896,12 @@ mod api_base_env_shim {
             .with_header("content-type", "application/json")
             .with_body("[]")
             .create();
-        let _env = EnvVarGuard::set(GITHUB_API_BASE_ENV, &server.url());
+        let _env = EnvVarGuard::set(crate::CFGD_GITHUB_API_BASE_ENV, &server.url());
 
         let err = check_latest(
             env!("CARGO_PKG_VERSION"),
             Some("test/repo"),
-            Some("prerelease"),
+            "prerelease",
             None,
         )
         .expect_err("an empty releases array yields no parseable release");
@@ -4306,12 +3924,12 @@ mod api_base_env_shim {
             .with_header("content-type", "application/json")
             .with_body(r#"[{"tag_name": "not-a-version", "assets": []}]"#)
             .create();
-        let _env = EnvVarGuard::set(GITHUB_API_BASE_ENV, &server.url());
+        let _env = EnvVarGuard::set(crate::CFGD_GITHUB_API_BASE_ENV, &server.url());
 
         let err = check_latest(
             env!("CARGO_PKG_VERSION"),
             Some("test/repo"),
-            Some("prerelease"),
+            "prerelease",
             None,
         )
         .expect_err("all-unparseable tags leave no selectable release");
@@ -4440,7 +4058,7 @@ fn github_api_base_falls_back_to_production_constant_when_unset() {
     use crate::test_helpers::EnvVarGuard;
     // Explicitly unset and confirm the production fallback. Pin the URL so
     // an inadvertent edit to GITHUB_API_BASE constant surfaces here.
-    let _guard = EnvVarGuard::unset(GITHUB_API_BASE_ENV);
+    let _guard = EnvVarGuard::unset(crate::CFGD_GITHUB_API_BASE_ENV);
     assert_eq!(github_api_base(), "https://api.github.com");
 }
 
@@ -4448,7 +4066,10 @@ fn github_api_base_falls_back_to_production_constant_when_unset() {
 #[serial_test::serial]
 fn github_api_base_honors_env_override() {
     use crate::test_helpers::EnvVarGuard;
-    let _guard = EnvVarGuard::set(GITHUB_API_BASE_ENV, "https://custom-api.example.com");
+    let _guard = EnvVarGuard::set(
+        crate::CFGD_GITHUB_API_BASE_ENV,
+        "https://custom-api.example.com",
+    );
     assert_eq!(github_api_base(), "https://custom-api.example.com");
 }
 
@@ -4709,9 +4330,6 @@ fn write_version_cache_errors_when_cache_dir_path_is_blocked_by_a_file() {
 
     let cache = VersionCache {
         checked_at_secs: 42,
-        latest_tag: "v9.9.0".into(),
-        latest_version: "9.9.0".into(),
-        current_version: "9.8.0".into(),
     };
 
     let err = write_version_cache(&cache).unwrap_err();

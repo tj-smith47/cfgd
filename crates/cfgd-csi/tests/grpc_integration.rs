@@ -60,19 +60,39 @@ async fn start_server(tmp: &tempfile::TempDir) -> Channel {
         .unwrap()
 }
 
-#[tokio::test]
-async fn identity_get_plugin_info() {
-    let tmp = tempfile::tempdir().unwrap();
-    let channel = start_server(&tmp).await;
-    let mut client = cfgd_csi::csi::v1::identity_client::IdentityClient::new(channel);
+/// `GetPluginInfo` over the real gRPC server, with `CSI_DRIVER_NAME` set to `value`.
+/// The env override wraps a synchronous closure, so the call runs on its own runtime.
+fn plugin_info_with_env(value: Option<&str>) -> cfgd_csi::csi::v1::GetPluginInfoResponse {
+    let mut info = None;
+    cfgd_core::test_helpers::with_test_env_var("CSI_DRIVER_NAME", value, || {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        info = Some(rt.block_on(async {
+            let tmp = tempfile::tempdir().unwrap();
+            let channel = start_server(&tmp).await;
+            let mut client = cfgd_csi::csi::v1::identity_client::IdentityClient::new(channel);
+            client
+                .get_plugin_info(GetPluginInfoRequest {})
+                .await
+                .unwrap()
+                .into_inner()
+        }));
+    });
+    info.unwrap()
+}
 
-    let resp = client
-        .get_plugin_info(GetPluginInfoRequest {})
-        .await
-        .unwrap()
-        .into_inner();
+#[test]
+#[serial_test::serial]
+fn identity_get_plugin_info() {
+    let resp = plugin_info_with_env(None);
     assert_eq!(resp.name, "csi.cfgd.io");
     assert!(!resp.vendor_version.is_empty());
+}
+
+#[test]
+#[serial_test::serial]
+fn identity_get_plugin_info_reads_driver_name_from_env() {
+    let resp = plugin_info_with_env(Some("e2e.csi.cfgd.io"));
+    assert_eq!(resp.name, "e2e.csi.cfgd.io");
 }
 
 #[tokio::test]

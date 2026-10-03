@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # Full-stack E2E tests: kubectl Plugin
 # Sourced by run-all.sh — do NOT set traps or pipefail here.
 

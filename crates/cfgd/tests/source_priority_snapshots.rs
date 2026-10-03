@@ -9,7 +9,7 @@
 //! Goldens live under `tests/output_snapshots/source_priority/`. Regenerate with:
 //!     INSTA_UPDATE=always cargo test -p cfgd --test source_priority_snapshots
 
-mod common;
+use cfgd_test_fixtures as common;
 
 use std::path::Path;
 
@@ -50,6 +50,7 @@ fn source_priority_happy_human() {
     );
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc();
+    let printer = printer.with_hints_enabled(true);
 
     cmd_source_priority(&cli, &printer, "team-config", Some(500)).unwrap();
     drop(printer);
@@ -92,6 +93,7 @@ fn source_priority_view_human() {
     );
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc();
+    let printer = printer.with_hints_enabled(true);
 
     cmd_source_priority(&cli, &printer, "team-config", None).unwrap();
     drop(printer);

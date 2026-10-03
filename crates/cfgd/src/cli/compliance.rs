@@ -9,56 +9,18 @@ use cfgd_core::state::ComplianceHistoryRow;
 pub(super) fn collect_and_store_compliance_snapshot<'a>(
     ctx: &'a RunContext<'_>,
 ) -> anyhow::Result<(&'a CfgdConfig, ComplianceSnapshot)> {
-    let cli = ctx.cli();
     let printer = ctx.printer();
-    let (cfg, _profile_name, local_resolved) = ctx.config_and_profile()?;
+    let (cfg, profile_name, local_resolved) = ctx.config_and_profile()?;
     let config_dir = ctx.config_dir();
 
-    // Compose with sources (cache-only — read paths stay offline) and resolve the
-    // effective module set through the one shared resolver, so the compliance
-    // snapshot reflects the same source-composed desired state that `apply` writes.
     let quiet_printer = printer.at_verbosity(cfgd_core::output::Verbosity::Quiet);
-    // Report mode: a source security-constraint violation surfaces as a compliance
-    // check rather than aborting (exit 4). `compliance` reports state; it does not
-    // gate on it — unlike apply/plan/daemon which compose in Enforce mode.
-    let mut desired = resolve_desired_state(
-        ctx,
-        cfg,
-        local_resolved,
-        &[],
-        false,
-        &quiet_printer,
-        false,
-        composition::ConstraintMode::Report,
-    )?;
-    // Taken before the other fields, because a partial move out of `desired`
-    // would block the `&mut self` this accessor needs.
-    let mut registry = desired.take_registry(cfg);
-    let constraint_violations = desired.constraint_violations;
-    let mut resolved = desired.resolved;
-    let resolved_modules = desired.modules;
+    let mut inputs = ComplianceInputs::of_config(ctx, cfg, local_resolved, &quiet_printer)?;
+    // A snapshot missing a manifest's packages would report them as undeclared.
+    if let Some(e) = inputs.take_manifest_error() {
+        return Err(e.into());
+    }
 
-    ctx.resolve_manifest_packages(
-        &mut resolved.merged.packages,
-        &mut resolved.merged.layer_sources,
-    )?;
-    registry.file_manager = Some(Box::new(build_compliance_file_manager(
-        config_dir,
-        &resolved,
-        Some(ctx),
-    )?));
-
-    let profile_name = cli
-        .profile
-        .as_deref()
-        .unwrap_or_else(|| cfg.active_profile().unwrap_or("default"));
-
-    let scope = cfg
-        .spec
-        .compliance
-        .as_ref()
-        .map(|c| c.scope.clone())
-        .unwrap_or_default();
+    let scope = cfg.spec.compliance_effective().scope.clone();
 
     let sources: Vec<String> = cfg.spec.sources.iter().map(|s| s.name.clone()).collect();
 
@@ -68,13 +30,10 @@ pub(super) fn collect_and_store_compliance_snapshot<'a>(
     // routing the wait through it would suppress the wait too — while a real
     // `-o json` or `--quiet` invocation still shows nothing, because the owning
     // printer suppresses spinners at that verbosity itself.
-    let mut snapshot = printer.narrate("Collecting compliance checks", |_| {
-        cfgd_core::compliance::collect_snapshot(
+    let snapshot = printer.narrate("Collecting compliance checks", |_| {
+        inputs.collect(
             profile_name,
-            &resolved.merged,
-            &resolved_modules,
             config_dir,
-            &registry,
             &scope,
             &sources,
             &quiet_printer,
@@ -83,58 +42,111 @@ pub(super) fn collect_and_store_compliance_snapshot<'a>(
         )
     })?;
 
-    // Fold the Report-mode source-constraint violations into the snapshot as
-    // Violation checks so they appear in the `checks` array and bump
-    // `summary.violation`, then recompute the summary over the combined set.
-    append_constraint_violation_checks(&mut snapshot, &constraint_violations);
-
     state.store_compliance_snapshot(&snapshot)?;
 
     Ok((cfg, snapshot))
 }
 
-/// Map a Report-mode source-constraint violation `kind` to a compliance check
-/// category. Encryption constraints land in `file-encryption` (the category the
-/// file-encryption compliance checks already use); other source constraints
-/// share the `source-constraint` category.
-fn constraint_violation_category(kind: &str) -> &'static str {
-    match kind {
-        "encryption-required" | "encryption-backend-mismatch" | "encryption-mode-mismatch" => {
-            "file-encryption"
-        }
-        _ => "source-constraint",
-    }
+/// The desired state a compliance snapshot is collected against: the
+/// source-composed profile with its manifest packages folded in, the resolved
+/// modules, and a registry whose file manager checks that profile.
+///
+/// `cfgd compliance` and `cfgd checkin` both resolve and collect through it,
+/// so the checks a check-in reports to the fleet are the rows `cfgd compliance`
+/// shows for the same config.
+pub(super) struct ComplianceInputs {
+    pub(super) registry: cfgd_core::providers::ProviderRegistry,
+    pub(super) resolved: ResolvedProfile,
+    pub(super) modules: Vec<cfgd_core::modules::ResolvedModule>,
+    constraint_violations: Vec<cfgd_core::composition::ConstraintViolation>,
+    /// Why a `<manager>.file` manifest could not be folded into `resolved`,
+    /// which then declares fewer packages than the config does.
+    manifest_error: Option<cfgd_core::errors::CfgdError>,
 }
 
-/// Append each Report-mode source-constraint violation to the snapshot as a
-/// `Violation` check, then recompute the summary over the combined set. The
-/// appended checks are sorted (category, then target/detail) for deterministic
-/// output regardless of source-visit order.
-fn append_constraint_violation_checks(
-    snapshot: &mut ComplianceSnapshot,
-    violations: &[cfgd_core::composition::ConstraintViolation],
-) {
-    if violations.is_empty() {
-        return;
-    }
-    let mut extra: Vec<ComplianceCheck> = violations
-        .iter()
-        .map(|v| ComplianceCheck {
-            category: constraint_violation_category(&v.kind).to_string(),
-            target: v.path.clone(),
-            status: ComplianceStatus::Violation,
-            detail: Some(v.detail.clone()),
-            ..Default::default()
+impl ComplianceInputs {
+    pub(super) fn of_config(
+        ctx: &RunContext<'_>,
+        cfg: &CfgdConfig,
+        local_resolved: &ResolvedProfile,
+        printer: &Printer,
+    ) -> anyhow::Result<Self> {
+        // Composed cache-only, because read paths stay offline, and in Report
+        // mode, because a source security-constraint violation is state this
+        // reports as a compliance check; apply, plan and the daemon compose in
+        // Enforce mode and stop on one.
+        let mut desired = resolve_desired_state(
+            ctx,
+            cfg,
+            local_resolved,
+            &[],
+            false,
+            printer,
+            false,
+            composition::ConstraintMode::Report,
+            &cfgd_core::modules::refuse_floor_bootstrap,
+        )?;
+        // Taken before the other fields, because a partial move out of
+        // `desired` would block the `&mut self` this accessor needs.
+        let mut registry = desired.take_registry(cfg);
+        let mut resolved = desired.resolved;
+        // The packages a manifest declares are declared packages like any
+        // other, so they are checked and reported with the rest. A manifest
+        // that cannot be read is held for the caller, which decides what an
+        // incomplete package set still lets it report.
+        let manifest_error = ctx
+            .resolve_manifest_packages(
+                &mut resolved.merged.packages,
+                &mut resolved.merged.layer_sources,
+            )
+            .err();
+        registry.file_manager = Some(Box::new(build_compliance_file_manager(
+            ctx.config_dir(),
+            &resolved,
+            Some(ctx),
+        )?));
+        Ok(Self {
+            registry,
+            resolved,
+            modules: desired.modules,
+            constraint_violations: desired.constraint_violations,
+            manifest_error,
         })
-        .collect();
-    extra.sort_by(|a, b| {
-        a.category
-            .cmp(&b.category)
-            .then(a.target.cmp(&b.target))
-            .then(a.detail.cmp(&b.detail))
-    });
-    snapshot.checks.extend(extra);
-    snapshot.summary = cfgd_core::compliance::compute_summary(&snapshot.checks);
+    }
+
+    /// The manifest read error [`Self::of_config`] held, if any, taken so the
+    /// caller can return it.
+    pub(super) fn take_manifest_error(&mut self) -> Option<cfgd_core::errors::CfgdError> {
+        self.manifest_error.take()
+    }
+
+    /// Collect a snapshot against this desired state, with the resolution's
+    /// source-constraint violations reported as `Violation` checks.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn collect(
+        &self,
+        profile_name: &str,
+        config_dir: &std::path::Path,
+        scope: &cfgd_core::config::ComplianceScope,
+        sources: &[String],
+        printer: &Printer,
+        state: &cfgd_core::state::StateStore,
+        system_diffs: Option<&[cfgd_core::compliance::SystemDiff]>,
+    ) -> cfgd_core::errors::Result<ComplianceSnapshot> {
+        cfgd_core::compliance::collect_snapshot(
+            profile_name,
+            &self.resolved.merged,
+            &self.modules,
+            config_dir,
+            &self.registry,
+            scope,
+            sources,
+            printer,
+            state,
+            system_diffs,
+            &self.constraint_violations,
+        )
+    }
 }
 
 /// Build a snapshot and emit a compliance summary Doc.
@@ -156,12 +168,7 @@ pub(super) fn cmd_compliance_export(cli: &Cli, printer: &Printer) -> anyhow::Res
     let ctx = RunContext::new(cli, printer);
     let (cfg, snapshot) = collect_and_store_compliance_snapshot(&ctx)?;
 
-    let export = cfg
-        .spec
-        .compliance
-        .as_ref()
-        .map(|c| c.export.clone())
-        .unwrap_or_default();
+    let export = cfg.spec.compliance_effective().export.clone();
 
     let export_path = cfgd_core::compliance::export_snapshot_to_file(&snapshot, &export)?;
     printer.emit(build_compliance_export_doc(&snapshot, &export_path));
@@ -178,8 +185,13 @@ pub(super) fn cmd_compliance_history(
 
     let since_ts: Option<String> = since
         .map(|s| {
-            let dur = cfgd_core::parse_duration_str(s)
-                .map_err(|e| anyhow::anyhow!("invalid --since value '{}': {}", s, e))?;
+            let dur = cfgd_core::parse_duration_str(s).map_err(|e| {
+                crate::cli::invalid_argument(
+                    "--since",
+                    s,
+                    format!("invalid --since value '{}': {}", s, e),
+                )
+            })?;
             let cutoff_secs = cfgd_core::unix_secs_now().saturating_sub(dur.as_secs());
             Ok::<String, anyhow::Error>(cfgd_core::unix_secs_to_iso8601(cutoff_secs))
         })
@@ -201,12 +213,20 @@ pub(super) fn cmd_compliance_diff(
     id2: i64,
 ) -> anyhow::Result<()> {
     let state = open_state_store(cli.state_dir.as_deref(), cli.scope())?;
+    let missing = |id: i64| {
+        crate::cli::cli_error(
+            format!("#{id}"),
+            "not_found",
+            format!("snapshot #{} not found", id),
+            serde_json::json!({ "id": id }),
+        )
+    };
     let snap1 = state
         .get_compliance_snapshot(id1)?
-        .ok_or_else(|| anyhow::anyhow!("snapshot #{} not found", id1))?;
+        .ok_or_else(|| missing(id1))?;
     let snap2 = state
         .get_compliance_snapshot(id2)?
-        .ok_or_else(|| anyhow::anyhow!("snapshot #{} not found", id2))?;
+        .ok_or_else(|| missing(id2))?;
 
     let diff = compute_compliance_diff(&snap1, &snap2);
     printer.emit(build_compliance_diff_doc(
@@ -222,14 +242,7 @@ pub(super) fn cmd_compliance_diff(
 
 /// Diff key for a compliance check — first available identifier, prefixed by category.
 pub(super) fn check_key(c: &ComplianceCheck) -> String {
-    let id = c
-        .target
-        .as_deref()
-        .or(c.name.as_deref())
-        .or(c.key.as_deref())
-        .or(c.path.as_deref())
-        .unwrap_or("(unknown)");
-    format!("{}:{}", c.category, id)
+    format!("{}:{}", c.category, c.subject_name())
 }
 
 /// [`check_key`] in a DISPLAY slot: the same identity, with the home
@@ -488,12 +501,11 @@ pub fn build_compliance_summary_doc(snapshot: &ComplianceSnapshot, now: &str, ar
         Role::Ok
     };
     let summary_line = if snapshot.summary.violation > 0 || snapshot.summary.warning > 0 {
-        format!(
-            "Summary: {} compliant, {} warning, {} violation",
-            snapshot.summary.compliant, snapshot.summary.warning, snapshot.summary.violation
-        )
+        format!("Summary: {}", snapshot.summary.counts_line())
     } else {
         format!(
+            // long-line-ok: a hatch is read off its own line, so it cannot wrap
+            // counts-line-ok: an all-pass verdict counts checks, with no warning or violation to state
             "All {} compliant",
             cfgd_core::pluralize(snapshot.summary.compliant, "check")
         )
@@ -619,9 +631,12 @@ mod tests {
             color: crate::cli::ColorWhen::Auto,
             output: OutputFormatArg(OutputFormat::Table),
             list_envelope: false,
+            hints: false,
             no_hints: false,
             theme: None,
             mask_env_values: None,
+            migration_policy: None,
+            update_policy: None,
             jsonpath: None,
             yes: false,
             state_dir: Some(state_dir.to_path_buf()),
@@ -1031,69 +1046,6 @@ mod tests {
         assert_eq!(snapshot.summary.compliant, recomputed.compliant);
         assert_eq!(snapshot.summary.warning, recomputed.warning);
         assert_eq!(snapshot.summary.violation, recomputed.violation);
-    }
-
-    // --- append_constraint_violation_checks ---
-
-    #[test]
-    fn append_constraint_violation_checks_adds_violation_and_bumps_summary() {
-        use cfgd_core::composition::ConstraintViolation;
-
-        let mut snapshot = sample_snapshot(vec![check(
-            "file",
-            "/etc/hosts",
-            ComplianceStatus::Compliant,
-        )]);
-        let before = snapshot.summary.violation;
-
-        let violations = vec![ConstraintViolation {
-            source_name: "ec-source-repo".into(),
-            path: Some("/home/u/.config/secret-unprotected.yaml".into()),
-            kind: "encryption-required".into(),
-            detail: "file '/home/u/.config/secret-unprotected.yaml' matches required-encryption \
-                     target 'secret*' in source 'ec-source-repo' but has no encryption block"
-                .into(),
-        }];
-
-        append_constraint_violation_checks(&mut snapshot, &violations);
-
-        // An encryption-required violation lands in the file-encryption category.
-        let added = snapshot
-            .checks
-            .iter()
-            .find(|c| c.category == "file-encryption")
-            .expect("encryption-required violation must be a file-encryption check");
-        assert_eq!(added.status, ComplianceStatus::Violation);
-        assert_eq!(
-            added.target.as_deref(),
-            Some("/home/u/.config/secret-unprotected.yaml")
-        );
-        assert!(
-            added
-                .detail
-                .as_deref()
-                .unwrap()
-                .contains("no encryption block"),
-            "detail must carry the verbatim constraint message"
-        );
-        assert_eq!(
-            snapshot.summary.violation,
-            before + 1,
-            "summary.violation must bump by the appended violation"
-        );
-    }
-
-    #[test]
-    fn append_constraint_violation_checks_noop_when_empty() {
-        let mut snapshot =
-            sample_snapshot(vec![check("file", "/etc/a", ComplianceStatus::Compliant)]);
-        let n = snapshot.checks.len();
-        append_constraint_violation_checks(&mut snapshot, &[]);
-        assert_eq!(
-            snapshot.checks.len(),
-            n,
-            "empty violations must not add checks"
-        );
     }
 
     /// `cfgd compliance diff` compares two RECORDED snapshots out of the state

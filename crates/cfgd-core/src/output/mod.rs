@@ -12,17 +12,16 @@
 //! **FOLD** ([`cursor_safe`]) is the default and covers every renderer slot
 //! carrying caller text: the status subject, qualifier, detail, label, marker
 //! and target path; the always-visible advisory; both halves of a kv row plus
-//! its annotation; both columns of a `command_list`; the bullet, a hint and
-//! its command lines, the note, paragraph, code-block line and streamed child
-//! line; every table header and
-//! cell; a heading and a section's name and empty-state placeholder; and every
-//! live-region label, which funnels through `spinner.rs`'s composer (that one
-//! folds and then PAINTS, so the fold cannot eat its own coat). Two slots sit
-//! outside the renderer and fold at their own write: `structured.rs`'s human
-//! stderr diagnostic under the selector formats, and
-//! `tracing_writer.rs`'s sink, which folds the whole formatted event on both
-//! destinations and so covers every `warn!`/`error!` site by construction — a
-//! subscriber taking that writer passes `.with_ansi(false)`, since the fold
+//! its annotation; both columns of a `command_list`; the bullet, a hint and its
+//! command lines, the note, paragraph, code-block line and streamed child line;
+//! every table header and cell; a heading and a section's name and empty-state
+//! placeholder; and every live-region label, which funnels through
+//! `spinner.rs`'s composer (that one folds and then PAINTS, so the fold cannot
+//! eat its own coat). Two slots sit outside the renderer and fold at their own
+//! write: `structured.rs`'s human stderr diagnostic under the selector formats,
+//! and `tracing_writer.rs`'s sink, which folds the whole formatted event on
+//! both destinations and so covers every `warn!`/`error!` site by construction
+//! — a subscriber taking that writer passes `.with_ansi(false)`, since the fold
 //! strips ANSI and telling an `ESC [ 0 m` from an `ESC [ 2 K` would mean a
 //! second policy with its own parser.
 //!
@@ -278,12 +277,12 @@ pub fn strip_ansi(s: &str) -> String {
 ///
 /// The ONE sanitation every renderer slot that carries text cfgd did not author
 /// applies — a status subject, its qualifier, its detail, an advisory, a kv key
-/// or value, a bullet, a hint and its command lines, a note, a code-block
-/// line, a table cell, a
-/// heading and a section name. The guarantee is narrow and total: what comes back occupies exactly the
-/// columns it displays, on the line the renderer put it on. Nothing in it can
-/// reposition the cursor, erase what is already on screen, or repaint the
-/// description of the very thing an operator is being asked to approve.
+/// or value, a bullet, a hint and its command lines, a note, a code-block line,
+/// a table cell, a heading and a section name. The guarantee is narrow and
+/// total: what comes back occupies exactly the columns it displays, on the line
+/// the renderer put it on. Nothing in it can reposition the cursor, erase what
+/// is already on screen, or repaint the description of the very thing an
+/// operator is being asked to approve.
 ///
 /// [`strip_ansi`] alone does not give that. It consumes sequences introduced by
 /// `ESC`, so a lone `\r`, a `\x08`, or a C1 `U+009B` walks straight through it
@@ -610,7 +609,7 @@ pub fn env_file_row_is_redundant<'a>(kinds: impl IntoIterator<Item = &'a str>) -
 /// Rendered width cap for [`condense_script_label`], in `char`s.
 ///
 /// Eighty columns is the terminal width a status subject can assume without
-/// wrapping on a standard, unresized terminal; `render_status_immediate`
+/// wrapping on a standard, unresized terminal; `Renderer::render_status`
 /// still appends a role glyph and an optional `(Ns)` duration suffix after
 /// the subject, so the cap leaves that trailing room rather than filling the
 /// full width with script text alone.
@@ -1128,7 +1127,7 @@ mod condense_script_label_tests {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
         let mut files: Vec<_> = crate::test_helpers::rust_sources_under(&root.join("output"))
             .into_iter()
-            .filter(|p| p.file_name().is_none_or(|n| n != "tests.rs"))
+            .filter(|p| !crate::test_helpers::is_test_source(p))
             .collect();
         files.push(root.join("reconciler/format.rs"));
         let idioms = [
@@ -1143,17 +1142,17 @@ mod condense_script_label_tests {
             if path.ends_with("renderer/wrap.rs") {
                 continue;
             }
-            let body = std::fs::read_to_string(&path).unwrap();
+            // unfloored-slice-ok: each test item is skipped below, at the file's own line numbers.
+            let body = crate::test_helpers::walked_file_body(&path);
             let lines: Vec<&str> = body.lines().collect();
-            let mut in_tests = false;
+            // Each test item is skipped where it stands: `output/mod.rs`,
+            // `renderer/mod.rs` and `reconciler/format.rs` each carry a
+            // test-only item above production code that a cut at the first
+            // `#[cfg(test)]` would drop from the walk.
+            let gates = crate::test_helpers::line_gates_of(&path);
             for (n, line) in lines.iter().enumerate() {
                 let code = line.trim_start();
-                // The file's own test module opens at column 0; an indented
-                // `#[cfg(test)]` gates one item inside production code.
-                if line.starts_with("#[cfg(test)]") {
-                    in_tests = true;
-                }
-                if in_tests || code.starts_with("//") || code.starts_with("use ") {
+                if gates[n].is_some() || code.starts_with("//") || code.starts_with("use ") {
                     continue;
                 }
                 if !idioms.iter().any(|i| code.contains(i)) {
@@ -1162,7 +1161,7 @@ mod condense_script_label_tests {
                 seen += 1;
                 let hatched = [line, lines.get(n.wrapping_sub(1)).copied().unwrap_or("")]
                     .iter()
-                    .any(|l| l.contains("// plain-clamp-ok:"));
+                    .any(|l| crate::test_helpers::carries_hatch(l, "// plain-clamp-ok:"));
                 if !hatched {
                     offenders.push(format!("{}:{}: {}", path.display(), n + 1, code.trim()));
                 }

@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # Gateway health probe tests (GW-01).
 # Sourced by run-all.sh — no shebang, no set, no source, no traps, no print_summary.
 

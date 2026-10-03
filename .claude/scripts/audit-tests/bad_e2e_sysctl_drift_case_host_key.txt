@@ -1,0 +1,1 @@
+sysctl_drift_case "DAEMON-06" /etc/cfgd/e2e-compliance-cfgd.yaml vm.max_map_count 65530 262144

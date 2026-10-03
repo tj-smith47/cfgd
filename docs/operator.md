@@ -223,8 +223,9 @@ container.
 
 Created by the gateway when a device reports drifted **system settings** during check-in. A
 device's report covers the answers of its system configurators alone: packages, managed files,
-env vars and aliases are checked on the device by `cfgd diff` and reach the fleet only as the
-aggregate counts of a compliance summary, never as findings.
+env vars and aliases are checked on the device by `cfgd diff` and reach the fleet through the
+check-in's compliance summary (its counts and the first 200 checks that did not pass, on
+`MachineConfig.status.compliance`); no DriftAlert carries it.
 
 ```yaml
 apiVersion: cfgd.io/v1alpha1
@@ -276,9 +277,67 @@ The operator runs [kube-rs](https://kube.rs/) controllers that watch and reconci
 - **DriftAlert controller**: tracks acknowledgment and resolution state
 - **BackupPolicy controller**: projects each policy's backup schedules onto every MachineConfig its selector matches, reporting rather than overriding a unit the machine pins locally or reports an owner for that no layer spells. Reconciles every 60s, retries a failed reconcile after 30s
 
+Set `WATCH_LABEL_SELECTOR` to a Kubernetes label selector to confine every controller to the `cfgd.io` objects it matches. Two operators in one cluster with disjoint selectors never reconcile the same object:
+
+```yaml
+env:
+  - name: WATCH_LABEL_SELECTOR
+    value: cfgd.io/e2e-run=42
+```
+
+Unset or blank, the operator watches every object. Namespaces are always read in full, since ClusterConfigPolicy selectors match on namespace labels. The Helm chart sets it from `operator.watchLabelSelector`.
+
 ## Admission Webhook
 
 Validates CRD specs on create/update. Catches invalid configurations (missing required fields, malformed selectors) before they're persisted to etcd.
+
+A second install in the same cluster scopes its webhooks to its own objects: the Helm chart's `webhook.objectSelector` limits the validating webhooks to the `cfgd.io` objects it matches, and `mutatingWebhook.namespaceSelector` limits pod injection to the namespaces it matches.
+
+## Health and Leadership
+
+The probe server listens on `HEALTH_PORT` (default `8081`) and answers three paths:
+
+| Path | 200 when | 503 when |
+|---|---|---|
+| `/healthz` | the process is up | — |
+| `/readyz` | every listener the pod's Services route to is accepting: the admission webhook when the pod has webhook certificates, and the device gateway when it is enabled (at once when the pod has neither) | the webhook has not loaded its certificates yet, or the gateway has not bound its listener; with the device gateway and leader election on, that includes a pod that does not hold the lease |
+| `/leaderz` | this pod holds the leader lease, or runs with leader election off | this pod is a standby |
+
+Readiness and leadership are separate signals. Only the lease holder runs the controllers, but every pod whose webhook is serving answers admission. With the device gateway off, a standby is therefore ready and stays an endpoint of the webhook Service: during a roll the replacement pod turns ready as soon as its webhook serves, joins the Service while the old pod still holds the lease, and admission (`failurePolicy: Fail`) always has a backend. The next paragraph and the update strategy section describe how the gateway changes this.
+
+With the device gateway enabled, readiness also waits for the gateway's listener to bind, which happens after its database opens, so the gateway Service never routes a request to a port nothing listens on. The gateway starts only on the pod running the controllers, so with leader election on as well, a standby's `/readyz` waits for the lease.
+
+```sh
+$ kubectl -n cfgd-system port-forward pod/<operator-pod> 8081 &
+$ curl -s localhost:8081/leaderz
+standby
+```
+
+The metrics endpoint carries the same fact as a gauge, `cfgd_operator_leader`: `1` on the lease holder and `0` on each standby.
+
+The chart's Deployment probes `/readyz` for readiness and `/healthz` for liveness. Its update strategy (`operator.strategy`, empty by default) is derived from what a replacement pod waits for before it turns ready:
+
+| `deviceGateway.enabled` | `deviceGateway.persistence.enabled` | `operator.leaderElection.enabled` | Derived strategy |
+|---|---|---|---|
+| off | — | on or off | `RollingUpdate`, `maxSurge: 1`, `maxUnavailable: 0` |
+| on | on or off | on | `RollingUpdate`, `maxSurge: 1`, `maxUnavailable: 1` |
+| on | on | off | `Recreate` |
+| on | off | off | `RollingUpdate`, `maxSurge: 1`, `maxUnavailable: 0` |
+
+- `maxUnavailable: 0` keeps the old pod until its replacement serves, so the admission webhook always has a backend.
+- With the gateway and leader election on, readiness waits for a lease the old pod releases only as it terminates, so the old pod has to leave first (`maxUnavailable: 1`).
+- With the gateway on and leader election off, every pod runs the gateway. Its SQLite database lives on one ReadWriteOnce volume that a second pod cannot share, so the old pod stops before the new one starts, and the gateway (and the webhook) are down for the length of the roll.
+
+Set `operator.strategy` to render your own:
+
+```yaml
+operator:
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+```
 
 ## Pod Module Injection
 
@@ -349,6 +408,14 @@ A pod is a Linux container, so the webhook injects a module when its `spec.platf
 
 ```sh
 kubectl get pod demo-pod -o jsonpath='{.metadata.annotations.cfgd\.io/skipped-modules}'
+```
+
+`CSI_DRIVER_NAME` sets the name the CSI plugin registers with the kubelet and the name the webhook writes into each injected volume's `csi.driver`. Set it to the same value on the operator container and the cfgd-csi container, and name the `CSIDriver` object the same; a mismatch leaves injected pods waiting on volumes no registered driver serves. The node-driver-registrar's `--kubelet-registration-path` and the plugin's hostPath directory follow the name too (`/var/lib/kubelet/plugins/<name>/`), so two drivers never share a socket. Unset or blank means `csi.cfgd.io`. The Helm chart's `csiDriver.name` sets all of it: the env on both containers, the `CSIDriver` name, the registrar path and the hostPath directory. A second install in the same cluster (an e2e run beside the release) gives itself its own name:
+
+```yaml
+env:
+  - name: CSI_DRIVER_NAME
+    value: e2e.csi.cfgd.io
 ```
 
 Two settings matter in production:
@@ -428,36 +495,62 @@ CFGD_SERVER_DB_PATH=/data/cfgd-gateway.db \
 ### Checkin API
 
 A check-in carries the device identity (id, hostname, OS, arch) and the hash of its
-desired system configuration. `cfgd checkin` adds a compliance summary when
-[`spec.compliance`](spec/config.md#speccompliance) is enabled, and posts any drifted **system
-settings** it finds to `/api/v1/devices/{id}/drift`. The daemon's own periodic check-in sends
-the identity and hash, and reports the same two device-only facts below; it authenticates with
-the credential `cfgd enroll` stored, and a machine holding none for that gateway logs the skip
-rather than posting anonymously.
+desired system configuration. `cfgd checkin` also posts any drifted **system settings** it finds
+to `/api/v1/devices/{id}/drift`. The daemon's own periodic check-in sends the identity and hash,
+and reports the same device-only facts below; it authenticates with the credential `cfgd enroll`
+stored, and a machine holding none for that gateway logs the skip and posts nothing.
 
-It also carries the two facts only the device can answer: `packageVersions`, the versions it
-holds for the packages it declares (keyed `<manager>/<package>`), and `backupScheduleOwners`,
-which layer owns each backup unit's schedule. A gateway holding a Kubernetes client writes each
-onto the `MachineConfig.status` whose `spec.hostname` matches the device, one server-side apply
-per map, each under its own field manager: `cfgd-operator/gateway/packages` owns
-`status.packageVersions` and `cfgd-operator/gateway/backups` owns `status.backupScheduleOwners`.
+It also carries the facts only the device can answer: `packageVersions`, the versions it holds
+for the packages it declares (keyed `<manager>/<package>`), `backupScheduleOwners`, which layer
+owns each backup unit's schedule, and, when [`spec.compliance`](spec/config.md#speccompliance)
+is enabled, `complianceSummary`: the counts of its compliance snapshot and the first 200 checks that
+did not pass. `cfgd checkin` collects a fresh snapshot (the same one `cfgd compliance` collects); the
+daemon sends the snapshot its most recent compliance tick collected, and none before its first one.
+Both senders compose the check-in through one function, so they report the same hash, the same
+failing checks (source security-constraint violations included) and the same versions, packages
+a manifest declares included.
+
+```json
+"complianceSummary": {
+  "compliant": 12,
+  "warning": 1,
+  "violation": 1,
+  "checks": [
+    {"category": "file", "name": "/home/jane/.zshrc", "status": "Violation", "detail": "managed file missing"},
+    {"category": "watchPath", "name": "/etc/cfgd/watched", "status": "Warning", "detail": "path does not exist"}
+  ]
+}
+```
+
+`checks` lists violations first, then warnings, each with the detail `cfgd compliance` shows for
+that row and the name `cfgd compliance -o json` carries (for a file, its absolute path, where the
+human report writes `~/`); compliant checks are not sent. The list stops at the first 200, the
+most `MachineConfig.status.compliance` holds, and the counts still cover every check. `detail` is
+omitted for a check that has none, and an agent that predates the list sends the counts alone,
+which the gateway reads as a report with no checks.
+
+A gateway holding a Kubernetes client writes each fact onto the `MachineConfig.status` whose
+`spec.hostname` matches the device, one server-side apply per field, each under its own field
+manager: `cfgd-operator/gateway/packages` owns `status.packageVersions`,
+`cfgd-operator/gateway/backups` owns `status.backupScheduleOwners` and
+`cfgd-operator/gateway/compliance` owns `status.compliance`.
 The write is best-effort: a refused patch, an unreachable API server or a hostname no
 MachineConfig names is logged and the check-in still returns `200`, because the device's own
 reconcile does not depend on the cluster accepting a status. A standalone gateway holds no
-client and writes nothing. A map the device did not report is omitted from the body and produces
+client and writes nothing. A fact the device did not report is omitted from the body and produces
 no apply for its manager, so a fact the cluster already holds is never blanked by a device that
 could not observe it.
 
 A map the device DID report arrives whole, empty included, and the gateway applies it whole: a
 key the machine stopped reporting is retired, and a device that now holds none of what it
 declares clears the map. One field per manager is what makes that safe, because an apply also
-removes the fields its own manager stops naming: a single manager holding both maps would delete
-the map this check-in could not observe. Each apply is forced, since its manager is the sole
+removes the fields its own manager stops naming: a single manager holding several fields would
+delete the one this check-in could not observe. Each apply is forced, since its manager is the sole
 writer of its one field and yielding to an ownership entry an older release left behind would
 strand the device's status. The status fields the controllers own are never disturbed, because
-neither gateway manager names them. Both maps are declared `x-kubernetes-map-type: atomic` in the
-CRD schema, so server-side apply treats each as one leaf and a check-in replaces the whole map,
-including keys an earlier operator version or a manual `kubectl patch` wrote. A Module's `system`
+no gateway manager names them. All three fields are declared `x-kubernetes-map-type: atomic` in
+the CRD schema, so server-side apply treats each as one leaf and a check-in replaces the whole
+field, including keys an earlier operator version or a manual `kubectl patch` wrote. A Module's `system`
 map and each package's `aliases` map are declared atomic for the same reason, since
 `cfgd module push --apply` sends the module file on disk whole, and every policy selector
 (`BackupPolicy.spec.selector`, `ConfigPolicy.spec.targetSelector`,
@@ -474,6 +567,10 @@ outage never retires a fleet cadence.
 ```sh
 cfgd checkin --server-url https://cfgd.acme.com --api-key <key>
 ```
+
+The device listing (`GET /api/v1/devices`) and a single device (`GET /api/v1/devices/{id}`)
+return the last `complianceSummary` the device reported, checks included, and omit nothing the
+check-in carried.
 
 ### Device Config Delivery
 
@@ -531,6 +628,15 @@ Device inventory, reported system-settings drift, and compliance posture at a gl
 or file is never reported as a finding, so `Healthy` means "nothing reported", not "verified in
 sync".
 
+The device table's `Compliance` column names the first check the device reported as not passing
+and how many follow it (`file /home/jane/.zshrc: managed file missing (+1 more)`), coloured by
+the most severe outcome. A line longer than 80 characters is cut short with `…`, and hovering
+the cell shows all of it. A device with nothing failing, or whose agent predates the check list,
+shows its counts (`12 compliant, 1 warning, 0 violation`, the spelling `cfgd checkin` and
+`cfgd compliance` print), and one that never reported compliance shows `not reported`. The
+device page lists each check the device reported as not passing, with its status, category, name
+and detail.
+
 ### SSE Streaming
 
 Real-time event feed at `/api/v1/events/stream` for monitoring integrations.
@@ -546,7 +652,7 @@ cfgd-operator             # run the operator / gateway (no-arg invocation)
 cfgd-operator --unknown   # exit non-zero immediately (no hang)
 ```
 
-All runtime configuration is via environment variables (`DEVICE_GATEWAY_*`, `WEBHOOK_CERT_DIR`, ...); there are no serving-mode flags.
+All runtime configuration is via environment variables (`CSI_DRIVER_NAME`, `DEVICE_GATEWAY_*`, `WATCH_LABEL_SELECTOR`, `WEBHOOK_CERT_DIR`, ...); there are no serving-mode flags.
 
 ## DaemonSet Mode
 

@@ -50,7 +50,7 @@ pub fn is_git_source(source: &str) -> bool {
     {
         return true;
     }
-    if source.starts_with("file://") && std::env::var("CFGD_ALLOW_LOCAL_SOURCES").is_ok() {
+    if source.starts_with("file://") && std::env::var(crate::CFGD_ALLOW_LOCAL_SOURCES_ENV).is_ok() {
         return true;
     }
     false
@@ -768,6 +768,9 @@ fn checkout_ref(repo_path: &Path, git_src: &GitSource, module_name: &str) -> Res
 }
 
 /// Get the HEAD commit SHA from a git repo.
+// absolute-path-ok: the string handed back is a commit id, and every path
+// render here fills a `ModuleError` field, which keeps the path a reader can
+// act on, as every other returned error does.
 pub fn get_head_commit_sha(repo_path: &Path) -> Result<String> {
     let path_str = repo_path.display_posix();
     let repo = open_repo(repo_path, &path_str, &path_str)?;
@@ -891,14 +894,15 @@ mod tests {
     #[test]
     #[serial_test::serial]
     fn is_git_source_rejects_file_url_by_default() {
-        let _guard = crate::test_helpers::EnvVarGuard::unset("CFGD_ALLOW_LOCAL_SOURCES");
+        let _guard = crate::test_helpers::EnvVarGuard::unset(crate::CFGD_ALLOW_LOCAL_SOURCES_ENV);
         assert!(!is_git_source("file:///tmp/repo"));
     }
 
     #[test]
     #[serial_test::serial]
     fn is_git_source_accepts_file_url_when_env_set() {
-        let _guard = crate::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+        let _guard =
+            crate::test_helpers::EnvVarGuard::set(crate::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
         assert!(is_git_source("file:///tmp/repo"));
     }
 
@@ -1215,7 +1219,8 @@ mod tests {
     #[test]
     #[serial_test::serial]
     fn fetch_git_source_clones_then_reuses_existing_cache_on_second_call() {
-        let _guard = crate::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+        let _guard =
+            crate::test_helpers::EnvVarGuard::set(crate::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
         let (_src, url) = build_local_fixture_repo();
 
         let cache_base = tempfile::tempdir().unwrap();
@@ -1237,7 +1242,8 @@ mod tests {
     #[test]
     #[serial_test::serial]
     fn fetch_git_source_with_tag_checks_out_tag() {
-        let _guard = crate::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+        let _guard =
+            crate::test_helpers::EnvVarGuard::set(crate::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
         let (_src, url) = build_local_fixture_repo();
 
         let cache_base = tempfile::tempdir().unwrap();
@@ -1258,7 +1264,8 @@ mod tests {
     #[test]
     #[serial_test::serial]
     fn fetch_git_source_with_missing_tag_returns_err() {
-        let _guard = crate::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+        let _guard =
+            crate::test_helpers::EnvVarGuard::set(crate::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
         let (_src, url) = build_local_fixture_repo();
 
         let cache_base = tempfile::tempdir().unwrap();
@@ -1356,7 +1363,8 @@ mod tests {
     #[test]
     #[serial_test::serial]
     fn fetch_git_source_with_bare_repo_branch_checks_out_branch() {
-        let _guard = crate::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+        let _guard =
+            crate::test_helpers::EnvVarGuard::set(crate::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
         let bare = crate::test_helpers::BareGitRepo::builder()
             .commit("init", &[("README.md", "hello")])
             .branch("feature", &[("feature.txt", "feature-data")])
@@ -1384,7 +1392,8 @@ mod tests {
     #[test]
     #[serial_test::serial]
     fn fetch_git_source_with_bare_repo_tag_checks_out_tag() {
-        let _guard = crate::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+        let _guard =
+            crate::test_helpers::EnvVarGuard::set(crate::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
         let bare = crate::test_helpers::BareGitRepo::builder()
             .commit("first", &[("a.txt", "first content")])
             .tag("v1.0.0")
@@ -1451,7 +1460,8 @@ mod tests {
         // upstream *after* the initial clone becomes resolvable on the second
         // fetch, so a checkout against it succeeds. If fetch silently did
         // nothing, the second checkout would fail with "cannot find ref".
-        let _guard = crate::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+        let _guard =
+            crate::test_helpers::EnvVarGuard::set(crate::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
         // Deliberately unpinned: the refresh window is open from the clone, and
         // the second ask still has to transfer because the tag it names is one
         // the cache cannot resolve.
@@ -1502,7 +1512,8 @@ mod tests {
     #[test]
     #[serial_test::serial]
     fn a_pinned_sha_the_cache_already_holds_is_never_fetched_again() {
-        let _guard = crate::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+        let _guard =
+            crate::test_helpers::EnvVarGuard::set(crate::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
         // The per-repository window is pinned SHUT, so the pin itself is the
         // only thing that can spare the second call its fetch.
         let _window = crate::test_helpers::GitRefreshWindowGuard::always_expired();
@@ -1537,7 +1548,8 @@ mod tests {
         // so a tag pin keeps its transfer even when the cache can already resolve
         // the name. Without this, the short-circuit widening to "any ref the
         // cache knows" would go unnoticed.
-        let _guard = crate::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+        let _guard =
+            crate::test_helpers::EnvVarGuard::set(crate::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
         let _window = crate::test_helpers::GitRefreshWindowGuard::always_expired();
         let mut bare = crate::test_helpers::BareGitRepo::builder()
             .commit("init", &[("a.txt", "v1")])
@@ -1564,7 +1576,8 @@ mod tests {
     #[test]
     #[serial_test::serial]
     fn one_repository_is_transferred_once_however_many_sources_name_it() {
-        let _guard = crate::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+        let _guard =
+            crate::test_helpers::EnvVarGuard::set(crate::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
         let _window = crate::test_helpers::GitRefreshWindowGuard::never_expires();
         let mut bare = crate::test_helpers::BareGitRepo::builder()
             .commit("init", &[("a.txt", "v1")])
@@ -1601,7 +1614,8 @@ mod tests {
         // version that did not exist when it did. A window keyed on the
         // repository alone answers the second ask with the first transfer, and
         // the upgrade fails with "cannot find ref".
-        let _guard = crate::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+        let _guard =
+            crate::test_helpers::EnvVarGuard::set(crate::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
         let _window = crate::test_helpers::GitRefreshWindowGuard::never_expires();
         let bare = crate::test_helpers::BareGitRepo::builder()
             .commit("init", &[("a.txt", "v1")])
@@ -1639,7 +1653,8 @@ mod tests {
         // resolve that stopped there left the module's deployed files at the
         // commit the ORIGINAL clone landed on forever — every later run paid the
         // transfer and showed the user nothing for it.
-        let _guard = crate::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+        let _guard =
+            crate::test_helpers::EnvVarGuard::set(crate::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
         let _window = crate::test_helpers::GitRefreshWindowGuard::always_expired();
         let bare = crate::test_helpers::BareGitRepo::builder()
             .commit("init", &[("a.txt", "v1")])
@@ -1730,7 +1745,8 @@ mod tests {
         // The control for the test above: with the window pinned shut the same
         // sequence fails, which is also what proves the removed upstream really
         // does refuse a transfer rather than quietly succeeding.
-        let _guard = crate::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+        let _guard =
+            crate::test_helpers::EnvVarGuard::set(crate::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
         let _window = crate::test_helpers::GitRefreshWindowGuard::always_expired();
         let mut bare = crate::test_helpers::BareGitRepo::builder()
             .commit("init", &[("a.txt", "v1")])
@@ -1960,7 +1976,8 @@ mod tests {
         // reads `tag.or(git_ref)`). The tag points at the root commit;
         // the branch carries an extra commit with feature.txt. Pinning to the
         // tag must yield the tag's tree (no feature.txt), proving precedence.
-        let _guard = crate::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+        let _guard =
+            crate::test_helpers::EnvVarGuard::set(crate::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
         let bare = crate::test_helpers::BareGitRepo::builder()
             .commit("root", &[("base.txt", "base")])
             .tag("v1.0.0")

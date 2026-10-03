@@ -1,8 +1,9 @@
 use std::str::FromStr;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::config::ScriptEntry;
+use crate::errors::Result;
 use crate::providers::{ActionNote, FileAction, PackageAction, SecretAction};
 use crate::state::ApplyStatus;
 use crate::to_posix_string;
@@ -15,7 +16,7 @@ pub enum ReconcileContext {
 }
 
 /// Ordered reconciliation phases.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PhaseName {
     PreScripts,
     /// Everything the rest of the run consumes but no user document declares:
@@ -33,6 +34,33 @@ pub enum PhaseName {
 }
 
 impl PhaseName {
+    /// The phases in the order the planner builds them, which is the order an
+    /// apply runs them in.
+    ///
+    /// It is not the declaration order above: `Modules` leads so a "not for
+    /// this host" answer precedes every step, and `Files` precedes `System` so
+    /// a unit file exists before `systemctl enable` names it. The planner keeps
+    /// no second list: `Reconciler::plan_observed` BUILDS its buckets by
+    /// mapping this const through an exhaustive `match`, so a phase added to
+    /// the enum fails to compile there and never reaches a reader in an
+    /// order it does not expect.
+    /// `every_phase_the_planner_can_name_sits_in_the_execution_order_exactly_once`
+    /// pins that every variant sits here exactly once.
+    ///
+    /// A plan cfgd wrote carries a SUBSEQUENCE of this — an empty phase is
+    /// dropped — which is how a reader of a plan FILE tells a plan cfgd
+    /// produced from one whose phases were reordered or duplicated by hand.
+    pub const EXECUTION_ORDER: [PhaseName; 8] = [
+        PhaseName::Modules,
+        PhaseName::PreScripts,
+        PhaseName::Bootstrap,
+        PhaseName::Packages,
+        PhaseName::Files,
+        PhaseName::System,
+        PhaseName::Secrets,
+        PhaseName::PostScripts,
+    ];
+
     pub fn as_str(&self) -> &str {
         match self {
             PhaseName::PreScripts => "pre-scripts",
@@ -96,10 +124,11 @@ impl FromStr for PhaseName {
 }
 
 /// Environment file action — write ~/.cfgd.env or inject source line into shell rc.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub enum EnvAction {
     /// Write the generated env file (bash/zsh or fish).
     WriteEnvFile {
+        #[serde(serialize_with = "crate::serialize_fs_path")]
         path: std::path::PathBuf,
         content: String,
         /// How many variables and aliases `content` renders, for the action
@@ -113,13 +142,19 @@ pub enum EnvAction {
         /// a serialization of the actions, so a counted field that reached it
         /// would rewrite every stored `plan_hash` for a value nothing matches
         /// on.
+        // plan-skip-ok: a plan file reads both back as 0, and `env_write_summary`
+        // states no detail at 0 — the re-read row names the path alone; a
+        // count there would be wrong. The counts describe `content`, which
+        // the same action carries.
         #[serde(skip)]
         vars: usize,
+        // plan-skip-ok: see `vars` above — the same count, over the same content.
         #[serde(skip)]
         aliases: usize,
     },
     /// Inject a source line into a shell rc file (idempotent).
     InjectSourceLine {
+        #[serde(serialize_with = "crate::serialize_fs_path")]
         rc_path: std::path::PathBuf,
         line: String,
     },
@@ -138,7 +173,7 @@ pub enum EnvAction {
 /// off the plan instead of re-deriving them from provider probes that may
 /// answer differently by the time it runs — and a failed node fails its
 /// dependents transitively by the same edges.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum ManagerAction {
     /// A manager already present on the host: refresh its package index.
@@ -170,8 +205,19 @@ pub enum ManagerAction {
         /// A declared route is never batched: the batch is one mediator
         /// command over `mediated_packages`, and those are the manager's own
         /// names, not the alias the module wrote.
-        #[serde(skip_serializing_if = "Option::is_none")]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         declared: Option<DeclaredProvision>,
+        /// The `minVersion` a `modules::FloorBootstrap` confirmation was given
+        /// for; `None` for every other provision. The node checks what it
+        /// delivered against this before settling, so a run cannot ask "may I
+        /// install a cargo at 1.85?", install something older and report
+        /// success.
+        ///
+        /// Optional on the wire, so `Plan::to_hash_string` (and every
+        /// `applies.plan_hash` already stored) is byte-identical for a plan
+        /// that carries no floor.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        floor: Option<String>,
         /// The other managers this node's ONE `via` command provisions
         /// alongside `manager`, in provision order and never naming `manager`
         /// itself.
@@ -212,6 +258,148 @@ pub enum ManagerAction {
     /// phase the user is told to look at, instead of being a manager that
     /// quietly never appears.
     Refuse { manager: String, reason: String },
+    /// A manager this host already holds, against the floor a module declared
+    /// for it. It installs nothing (a bootstrap cannot raise a manager that is
+    /// already present) and the check runs at execution, against the binary.
+    ///
+    /// The fact rides in the plan, and the run that builds one goes on:
+    /// every drift policy crosses `Reconciler::plan`, the daemon included, so a
+    /// refusal there left a tick that records nothing, heals nothing and fires
+    /// no hook for as long as one toolchain stays short.
+    ///
+    /// For a package whose name is its manager's, the listing pass and the
+    /// binary's own answer can disagree: `verify` reports the listing's verdict
+    /// and suppresses the held row, while this node re-asks the binary and
+    /// fails on what it says. Apply believes the binary.
+    HeldFloor {
+        manager: String,
+        /// The strictest floor any module declared for it, folded with
+        /// `crate::effective::stricter_floor` exactly as a confirmed route's
+        /// is: one copy of the manager satisfies both, and the lower floor
+        /// leaves the stricter module quietly short.
+        floor: String,
+        /// The modules whose declared floor this node judges, each beside the
+        /// number IT wrote, in resolution order. Two modules flooring one
+        /// manager are one fact and one node, and a module-scoped run reads
+        /// this to tell whether the fact is its own.
+        ///
+        /// The per-module numbers are carried beside the fold because
+        /// the fold above answers a question about the MACHINE (one copy of
+        /// the manager satisfies every declarant) while a sentence addressed
+        /// to one module answers a question about that module's own file. A
+        /// node folded to 1.90 telling the author of `minVersion: 1.85` that
+        /// their floor is 1.90 states a number they never wrote.
+        ///
+        /// Optional on the wire, so `Plan::to_hash_string` and every stored
+        /// `applies.plan_hash` are byte-identical for a plan carrying no held
+        /// floor.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        declared: Vec<DeclaredFloor>,
+    },
+}
+
+/// One module's own `minVersion` for a manager this host already holds.
+///
+/// Paired with the module and kept out of the node's `floor`, because
+/// the two answer different questions: see
+/// [`ManagerAction::HeldFloor::declared`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeclaredFloor {
+    pub module: String,
+    pub floor: String,
+}
+
+/// The `declared by` clause every surface naming a held node's declarants
+/// spells: each module with the floor it itself wrote.
+///
+/// One composer, because a row that lists the modules alone reads as though
+/// they all asked for the node's folded number, and two surfaces answering
+/// that differently is how one of them ends up lying.
+pub fn declared_by_clause(declared: &[DeclaredFloor]) -> String {
+    declared
+        .iter()
+        .map(|d| format!("{} ({})", d.module, d.floor))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// One manager's folded held floor: the number a single copy of it has to
+/// reach, and each declarant beside the number it itself wrote.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HeldFloorFold {
+    pub floor: String,
+    pub declared: Vec<DeclaredFloor>,
+}
+
+/// Fold every declarant of one held manager into that manager's one floor.
+///
+/// Two passes answer for the same `<manager>:<manager>` row (the planner
+/// through [`ManagerAction::HeldFloor`], the live re-check through
+/// [`crate::reconciler::held_manager_version_drift`]), and the drift store
+/// UPSERTs on that id, so a second producer folding differently overwrites the
+/// first with a number some other module wrote. The strictest floor is what
+/// one copy of the manager has to reach; the per-module numbers ride beside it
+/// because a refusal addressed to a module quotes its own.
+///
+/// `manager_for` answers with the manager whose version grammar both floors
+/// are written in, or `None` where this host holds none.
+pub fn fold_held_floors<'h, 'm>(
+    held: impl IntoIterator<Item = &'h crate::modules::HeldManager>,
+    manager_for: impl Fn(&str) -> Option<&'m dyn crate::providers::PackageManager>,
+) -> std::collections::BTreeMap<String, HeldFloorFold> {
+    let mut folded: std::collections::BTreeMap<String, HeldFloorFold> =
+        std::collections::BTreeMap::new();
+    for held in held {
+        let entry = folded
+            .entry(held.package.clone())
+            .or_insert_with(|| HeldFloorFold {
+                floor: held.floor.clone(),
+                declared: Vec::new(),
+            });
+        if let Some(kept) = crate::effective::stricter_floor(
+            &Some(entry.floor.clone()),
+            &Some(held.floor.clone()),
+            manager_for(&held.package),
+        ) {
+            entry.floor = kept;
+        }
+        if !entry.declared.iter().any(|d| d.module == held.module) {
+            entry.declared.push(DeclaredFloor {
+                module: held.module.clone(),
+                floor: held.floor.clone(),
+            });
+        }
+    }
+    folded
+}
+
+/// A floor check this run failed, and the modules it holds to that floor.
+///
+/// The cross-phase twin of `Reconciler::unprovisioned` for a manager that IS on
+/// the machine: no DAG edge reaches from the `Bootstrap` node to the `Packages`
+/// work it forbids, and the forbidding is per module.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WithheldFloor {
+    pub manager: String,
+    pub declared: Vec<DeclaredFloor>,
+}
+
+impl WithheldFloor {
+    /// Why a package action belonging to `module` is refused, or `None` where
+    /// this node holds that module to nothing.
+    ///
+    /// ONE sentence, and it quotes the module's OWN number: the row is read by
+    /// someone who has not opened the file the floor is written in, so a floor
+    /// folded up by a stricter sibling would send them looking for a line
+    /// their module does not contain.
+    pub fn refusal(&self, module: &str) -> Option<String> {
+        let declared = self.declared.iter().find(|d| d.module == module)?;
+        Some(format!(
+            "{} is below the minVersion {} module '{}' declared",
+            self.manager, declared.floor, declared.module
+        ))
+    }
 }
 
 /// The route a module declared to a tool cfgd also needs as a MANAGER.
@@ -219,7 +407,7 @@ pub enum ManagerAction {
 /// Built by the planner from the module's already-resolved `spec.packages`
 /// entry, so the `prefer` chain and the `aliases` map are read exactly once,
 /// by the code that owns them.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DeclaredProvision {
     /// The registered manager the entry's `prefer` chain resolved to.
@@ -296,6 +484,10 @@ fn refuse_id(manager: &str) -> String {
     format!("refuse:{manager}")
 }
 
+fn held_floor_id(manager: &str) -> String {
+    format!("floor:{manager}")
+}
+
 fn node_of(resource_id: &str) -> String {
     format!("{MANAGER_RESOURCE_TYPE}:{resource_id}")
 }
@@ -314,6 +506,7 @@ impl ManagerAction {
             ManagerAction::Provision { manager, .. } => provision_id(manager),
             ManagerAction::Prerequisite { tool, .. } => prereq_id(tool),
             ManagerAction::Refuse { manager, .. } => refuse_id(manager),
+            ManagerAction::HeldFloor { manager, .. } => held_floor_id(manager),
         }
     }
 
@@ -370,7 +563,9 @@ impl ManagerAction {
     /// Empty for a refresh, which is always a root.
     pub fn depends_on(&self) -> &[String] {
         match self {
-            ManagerAction::RefreshIndex { .. } | ManagerAction::Refuse { .. } => &[],
+            ManagerAction::RefreshIndex { .. }
+            | ManagerAction::Refuse { .. }
+            | ManagerAction::HeldFloor { .. } => &[],
             ManagerAction::Provision { depends_on, .. }
             | ManagerAction::Prerequisite { depends_on, .. } => depends_on,
         }
@@ -383,7 +578,8 @@ impl ManagerAction {
         match self {
             ManagerAction::RefreshIndex { manager }
             | ManagerAction::Provision { manager, .. }
-            | ManagerAction::Refuse { manager, .. } => manager,
+            | ManagerAction::Refuse { manager, .. }
+            | ManagerAction::HeldFloor { manager, .. } => manager,
             ManagerAction::Prerequisite { installer, .. } => installer,
         }
     }
@@ -403,7 +599,8 @@ impl ManagerAction {
         match self {
             ManagerAction::RefreshIndex { manager }
             | ManagerAction::Provision { manager, .. }
-            | ManagerAction::Refuse { manager, .. } => manager,
+            | ManagerAction::Refuse { manager, .. }
+            | ManagerAction::HeldFloor { manager, .. } => manager,
             ManagerAction::Prerequisite { tool, .. } => tool,
         }
     }
@@ -425,17 +622,86 @@ impl ManagerAction {
         }
     }
 
+    /// This provision re-led by `leader`, delivering `batched` beside it;
+    /// `None` for every other variant.
+    ///
+    /// The ONE rebuild of a provision node, for every site that narrows a batch
+    /// or promotes a member: the elision that drops a leader nobody consumes
+    /// any more, the `--phase` selector that asks for one member's
+    /// provisioning, and the `--skip`/`--only` split. Each of those used to
+    /// overwrite `manager` in place, which left every field scoped to ONE
+    /// manager riding the `..` onto whoever was promoted.
+    ///
+    /// A field scoped to one manager travels only while that manager still
+    /// leads: the module's declared route describes the entry somebody wrote
+    /// for THAT tool, and the floor is the version a confirmation asked of it,
+    /// so handing either to a promoted member fails a node over a demand
+    /// nobody made of it. `via`, the edges and the batch describe the COMMAND,
+    /// which is the same command whoever leads it. The destructure below names
+    /// every field, so a field added later has to be classified here before
+    /// this file compiles.
+    pub fn provision_led_by(&self, leader: &str, batched: Vec<String>) -> Option<ManagerAction> {
+        let ManagerAction::Provision {
+            manager,
+            via,
+            declared,
+            floor,
+            batched: _,
+            depends_on,
+        } = self
+        else {
+            return None;
+        };
+        let leads_as_stated = leader == manager;
+        Some(ManagerAction::Provision {
+            manager: leader.to_string(),
+            via: via.clone(),
+            declared: leads_as_stated.then(|| declared.clone()).flatten(),
+            floor: leads_as_stated.then(|| floor.clone()).flatten(),
+            batched,
+            depends_on: depends_on.clone(),
+        })
+    }
+
     /// Every manager this node FAILING leaves unusable for the rest of the run.
     ///
     /// A provision speaks for its whole batch, and a refusal speaks for the one
     /// manager it refuses. A prerequisite install and an index refresh name
     /// nothing: `apt install curl` failing says nothing about apt, and a stale
     /// index is not a missing binary.
+    ///
+    /// An unmet floor speaks for nothing here. The binary is on the machine and
+    /// would run for anybody; what forbids it is one module's declaration, so
+    /// the withholding is that module's and travels as a
+    /// [`WithheldFloor`] instead.
     pub fn managers_left_unavailable(&self) -> Vec<&str> {
         match self {
             ManagerAction::Provision { .. } => self.provisioned_managers(),
             ManagerAction::Refuse { manager, .. } => vec![manager.as_str()],
-            ManagerAction::Prerequisite { .. } | ManagerAction::RefreshIndex { .. } => Vec::new(),
+            ManagerAction::Prerequisite { .. }
+            | ManagerAction::RefreshIndex { .. }
+            | ManagerAction::HeldFloor { .. } => Vec::new(),
+        }
+    }
+
+    /// The floor this node FAILING holds its declaring modules to, for the rest
+    /// of the run.
+    ///
+    /// Installing the rest of a declaring module through a toolchain below the
+    /// floor is the one thing that module's floor forbids, so its package
+    /// actions are withheld exactly as a manager that failed to arrive withholds
+    /// them. Another module's are not: a floor is the declaring module's
+    /// statement about the toolchain its OWN packages need, and a module that
+    /// declared none has nothing forbidding it.
+    pub fn withheld_floor(&self) -> Option<WithheldFloor> {
+        match self {
+            ManagerAction::HeldFloor {
+                manager, declared, ..
+            } => Some(WithheldFloor {
+                manager: manager.clone(),
+                declared: declared.clone(),
+            }),
+            _ => None,
         }
     }
 
@@ -456,7 +722,7 @@ impl ManagerAction {
 pub const PREREQUISITE_NOT_IN_RUN: &str = "prerequisite install not in this run";
 
 /// A unified action across all resource types.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub enum Action {
     File(FileAction),
     Package(PackageAction),
@@ -546,7 +812,7 @@ impl Action {
 }
 
 /// Module-level action — first-class phase, not flattened into packages/files.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct ModuleAction {
     pub module_name: String,
     pub kind: ModuleActionKind,
@@ -584,7 +850,7 @@ impl ModuleAction {
 }
 
 /// What kind of module action to take.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub enum ModuleActionKind {
     /// Install/update packages resolved from a module.
     InstallPackages {
@@ -634,7 +900,7 @@ pub enum ModuleActionKind {
 pub const MODULE_FACET_FILES_REFUSED: &str = "files-refused";
 
 /// System configuration action.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub enum SystemAction {
     SetValue {
         configurator: String,
@@ -681,7 +947,7 @@ pub enum SystemAction {
 }
 
 /// Script execution action.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub enum ScriptAction {
     Run {
         entry: ScriptEntry,
@@ -691,7 +957,7 @@ pub enum ScriptAction {
 }
 
 /// When a script runs relative to reconciliation.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ScriptPhase {
     PreApply,
     PostApply,
@@ -747,7 +1013,7 @@ pub enum PhaseFilter {
 /// a file's body; the module still owns the action, and making the source an
 /// owner would give an action two parents. Source attribution rides on the
 /// action instead, as the ` <- name` provenance suffix and the `origin` field.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum OwnerKind {
     Profile,
@@ -856,7 +1122,7 @@ fn cfgd_group_rank(kind: &OwnerKind, name: &str) -> u8 {
 }
 
 /// Who declared an action: a kind plus the name of the thing that declared it.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Owner {
     pub kind: OwnerKind,
@@ -988,10 +1254,34 @@ pub fn recorded_source_layers(recorded: &str) -> Vec<&str> {
 
 /// One owner's slice of a phase. Never empty — an owner with no actions in a
 /// phase produces no group.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct OwnerGroup {
     pub owner: Owner,
     pub actions: Vec<Action>,
+}
+
+/// The owner an action names on its own, whatever profile planned it.
+///
+/// `None` for an action whose owner IS the planning profile — a fact the action
+/// does not carry and only its planner knows. Split out from [`owner_of`] so
+/// the [`Phase`] reader can ask the same question of a plan file, where no
+/// profile is in hand.
+fn determined_owner(action: &Action) -> Option<Owner> {
+    match action {
+        Action::Module(ma) => Some(Owner::module(ma.module_name.clone())),
+        // Env surfaces aggregate declarations from the profile *and* every
+        // module, so no single user document owns them — cfgd authored the file
+        // and cfgd owns it. Matched exhaustively rather than through a
+        // wildcard: a fourth env act would otherwise land in whichever group
+        // the wildcard happened to name.
+        Action::Env(EnvAction::WriteEnvFile { .. }) => Some(Owner::cfgd(ENV_GROUP)),
+        Action::Env(EnvAction::InjectSourceLine { .. }) => Some(Owner::cfgd(SHELL_GROUP)),
+        Action::Env(EnvAction::RefreshLiveSession { .. }) => Some(Owner::cfgd(SESSION_GROUP)),
+        // A manager is a prerequisite every owner may be waiting on; cfgd
+        // provisions it, and no user document declares it.
+        Action::Manager(_) => Some(Owner::cfgd(MANAGERS_GROUP)),
+        _ => None,
+    }
 }
 
 /// Which owner an action belongs to, under the profile that planned it.
@@ -999,21 +1289,7 @@ pub struct OwnerGroup {
 /// The single owner-assignment rule: every group in every phase is built
 /// through it, so no surface can attribute the same action to two owners.
 pub fn owner_of(action: &Action, profile: &Owner) -> Owner {
-    match action {
-        Action::Module(ma) => Owner::module(ma.module_name.clone()),
-        // Env surfaces aggregate declarations from the profile *and* every
-        // module, so no single user document owns them — cfgd authored the file
-        // and cfgd owns it. Matched exhaustively rather than through a
-        // wildcard: a fourth env act would otherwise land in whichever group
-        // the wildcard happened to name.
-        Action::Env(EnvAction::WriteEnvFile { .. }) => Owner::cfgd(ENV_GROUP),
-        Action::Env(EnvAction::InjectSourceLine { .. }) => Owner::cfgd(SHELL_GROUP),
-        Action::Env(EnvAction::RefreshLiveSession { .. }) => Owner::cfgd(SESSION_GROUP),
-        // A manager is a prerequisite every owner may be waiting on; cfgd
-        // provisions it, and no user document declares it.
-        Action::Manager(_) => Owner::cfgd(MANAGERS_GROUP),
-        _ => profile.clone(),
-    }
+    determined_owner(action).unwrap_or_else(|| profile.clone())
 }
 
 /// Whether a batching action survives its batch being filtered: dropped only
@@ -1027,17 +1303,81 @@ fn batch_survives(batched: usize, kept: usize) -> bool {
 
 /// A phase in the reconciliation plan, as owner groups in display order.
 ///
-/// `groups` is private and [`Phase::from_actions`] is the only constructor, so
-/// a phase whose owners are out of [`Owner::sort_key`] order is unrepresentable
-/// rather than merely discouraged: no caller can write a struct literal, insert
-/// a group, or re-sort the vec. The mutators below only ever shrink an existing
-/// ordering ([`Phase::retain_groups`], [`Phase::retain_actions`],
-/// [`Phase::retain_actions_and_batches`]) or hand out an owner's action list
-/// ([`Phase::groups_mut`]).
+/// `groups` is private, so a phase whose owners are out of [`Owner::sort_key`]
+/// order is unrepresentable: no caller can write a struct literal, insert a
+/// group, or re-sort the vec. Two constructors reach the field, and both settle
+/// the same facts: [`Phase::from_actions`] from a flat action list, and the
+/// `Deserialize` impl below from a plan file, which re-establishes them and
+/// takes nothing on the file's word. A fact added to one is added to the other,
+/// or a plan file carries the shape the other forbids. The mutators below only
+/// ever shrink an existing ordering ([`Phase::retain_groups`],
+/// [`Phase::retain_actions`], [`Phase::retain_actions_and_batches`]) or hand
+/// out an owner's action list ([`Phase::groups_mut`]).
 #[derive(Debug, Serialize)]
 pub struct Phase {
     pub name: PhaseName,
     groups: Vec<OwnerGroup>,
+}
+
+/// A phase read back from a plan file.
+///
+/// Hand-written because `groups` is private, and the invariants above are the
+/// whole reason it is: a derive would hand a file's own shape straight into the
+/// field every surface renders. A plan file is an input like any other, so the
+/// four facts [`Phase::from_actions`] establishes are established again here —
+/// each action under the owner `determined_owner` names for it, one group per
+/// owner, no empty group, owners in [`Owner::sort_key`] order — leaving a phase
+/// no reader can tell from one the planner built.
+///
+/// The first is the one fact a file can state and the reader cannot repair: an
+/// owner is what a consumer partitions on (`apply::dispatched_in_lanes`,
+/// `daemon::reconcile::narrow_to_module` both ask `Owner::is_managers`), so a
+/// misplaced action would be dispatched and filtered unlike every planner-built
+/// one. It is refused, with no correction attempted, because a file disagreeing
+/// with `determined_owner` is a file cfgd did not write. An action whose
+/// owner is the planning PROFILE names no owner of its own, and the file's
+/// answer is taken as given — nothing in the phase says which profile planned
+/// it.
+impl<'de> Deserialize<'de> for Phase {
+    fn deserialize<D: serde::Deserializer<'de>>(de: D) -> std::result::Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        struct Wire {
+            name: PhaseName,
+            groups: Vec<OwnerGroup>,
+        }
+        let wire = Wire::deserialize(de)?;
+        for group in &wire.groups {
+            for action in &group.actions {
+                let Some(determined) = determined_owner(action) else {
+                    continue;
+                };
+                if determined != group.owner {
+                    let (rtype, rid) = action_resource_info(action);
+                    return Err(serde::de::Error::custom(format!(
+                        "a plan file put the {rtype} action `{rid}` in the `{}` group, \
+                         but that action belongs to `{}`",
+                        group.owner.token(),
+                        determined.token()
+                    )));
+                }
+            }
+        }
+        let mut phase = Self {
+            name: wire.name,
+            groups: Vec::with_capacity(wire.groups.len()),
+        };
+        for group in wire.groups {
+            match phase.groups.iter_mut().find(|g| g.owner == group.owner) {
+                Some(held) => held.actions.extend(group.actions),
+                None => phase.groups.push(group),
+            }
+        }
+        phase
+            .groups
+            .sort_by(|a, b| a.owner.sort_key().cmp(&b.owner.sort_key()));
+        phase.prune_empty_groups();
+        Ok(phase)
+    }
 }
 
 impl Phase {
@@ -1282,14 +1622,14 @@ impl Tier {
 }
 
 /// A complete reconciliation plan.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct Plan {
     pub phases: Vec<Phase>,
     /// Run-level warnings the header renders and the `-o json` payload
     /// carries: shell rc conflicts (env/alias defined before the cfgd source
     /// line) and source batches withheld without a row
     /// (`UndecidableBatch::warning`).
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
 }
 
@@ -1333,15 +1673,27 @@ impl Plan {
     /// the order a particular version happened to walk them in. Uses serde_json
     /// serialization instead of Debug formatting for stability across compiler
     /// versions.
-    pub fn to_hash_string(&self) -> String {
+    ///
+    /// An action serde_json cannot write ends the whole composition, the rest
+    /// included: the string is what `applies.plan_hash` stores, so a
+    /// dropped action would let a run that deploys a file and a run that does
+    /// not record one hash, and every surface comparing stored hashes would
+    /// read them as the same plan. Every action that serializes contributes the
+    /// bytes it always did, so a plan cfgd can write keeps the hash it had.
+    pub fn to_hash_string(&self) -> Result<String> {
         let mut parts: Vec<String> = self
             .phases
             .iter()
             .flat_map(|p| p.actions())
-            .filter_map(|a| serde_json::to_string(a).ok())
-            .collect();
+            .map(|a| {
+                serde_json::to_string(a).map_err(|source| {
+                    let (rtype, rid) = action_resource_info(a);
+                    crate::errors::StateError::PlanActionUnserializable { rtype, rid, source }
+                })
+            })
+            .collect::<std::result::Result<_, _>>()?;
         parts.sort_unstable();
-        parts.join("|")
+        Ok(parts.join("|"))
     }
 }
 
@@ -1474,7 +1826,7 @@ impl AfterPlanState {
     /// The clause naming `count` of `subject` that settled in this state, with
     /// the role it renders at. The ONE composer: the noun names the unit the
     /// count is in, and the count comes first so the line reads as a result.
-    pub fn clause(self, subject: AfterPlan, count: usize) -> (crate::output::Role, String) {
+    pub fn counted_clause(self, subject: AfterPlan, count: usize) -> (crate::output::Role, String) {
         (
             self.clause_role(),
             format!(
@@ -1549,6 +1901,13 @@ pub struct ActionResult {
     /// under the plan, and this is the recording half of the same fact.
     #[serde(skip)]
     pub origin: Option<String>,
+    /// The package manager whose command this action ran, read off the action
+    /// the same way as [`Self::origin`], so the tracking row a module's
+    /// package install writes records the manager `description` never spells.
+    ///
+    /// Not serialized: the apply payload names the manager under the plan.
+    #[serde(skip)]
+    pub manager: Option<String>,
     /// What this result is, when the plan never named it — see [`AfterPlan`].
     /// `None` for every planned action, and the ONE thing that keeps such a
     /// result out of the three counts the header's `Actions N planned` is
@@ -1721,6 +2080,35 @@ pub fn package_entry_drift_id(
     package_drift_resource_id(manager, std::slice::from_ref(&identity))
 }
 
+/// The `<manager>:<manager>` drift row a held manager standing below its
+/// declared floor is recorded as, composed once for the two producers that
+/// mint it.
+///
+/// The planner's [`ManagerAction::HeldFloor`] node and the live re-check
+/// ([`super::verify::held_manager_version_drift`]) both write this row, and the
+/// store UPSERTs on its id, so the two have to agree on every part of it: the
+/// manager name passed to both halves of [`package_entry_drift_id`], the
+/// `package` type, and the FOLDED floor in `expected`, whichever module's own
+/// number the producer happened to be holding. Composed apart from
+/// either of them because a second mint beside one producer is invisible to the
+/// other until a machine records two rows.
+///
+/// `actual` is left empty: the planned node states the floor alone, the version
+/// being what the machine answers when the node runs, and `record_drift`
+/// COALESCEs the empty side over whatever a re-check already measured.
+pub(crate) fn held_floor_drift_row(
+    manager: &str,
+    floor: &str,
+    pm: Option<&dyn crate::providers::PackageManager>,
+) -> DriftRow {
+    DriftRow {
+        resource_type: "package".to_string(),
+        resource_id: package_entry_drift_id(manager, manager, pm),
+        expected: Some(floor.to_string()),
+        actual: None,
+    }
+}
+
 /// The `<manager>:<a>,<b>` identity of a BATCHING package action.
 ///
 /// Never a drift row and never recorded as one — [`action_drift_rows`] mints
@@ -1851,7 +2239,15 @@ pub(crate) fn action_resource_info(action: &Action) -> (String, String) {
             ManagerAction::Provision { .. } | ManagerAction::Refuse { .. } => {
                 ("package".to_string(), ma.resource_id())
             }
-            ManagerAction::RefreshIndex { .. } | ManagerAction::Prerequisite { .. } => {
+            // A floor check keeps the scaffolding type although its FINDING is a
+            // package one: cfgd does not manage the version of a manager it
+            // never installed, so `record_managed_resources` must not write a
+            // row claiming it does. The drift row the same node stands for is
+            // minted by `action_drift_rows`, which has the registry in hand and
+            // words it in the identity the live floor re-check already uses.
+            ManagerAction::RefreshIndex { .. }
+            | ManagerAction::Prerequisite { .. }
+            | ManagerAction::HeldFloor { .. } => {
                 (MANAGER_RESOURCE_TYPE.to_string(), ma.resource_id())
             }
         },
@@ -2016,6 +2412,20 @@ pub fn action_drift_rows(
                     .collect()
             }
         },
+        // The row the live floor re-check (`held_manager_version_drift`) mints
+        // for the same manager, so whichever side looks next settles the other's
+        // row and stands no second one beside it. The version is what
+        // the machine answers at execution, so the operand this side states is
+        // the floor alone; `record_drift` COALESCEs the empty side over
+        // whatever a re-check already wrote.
+        Action::Manager(ManagerAction::HeldFloor { manager, floor, .. }) => {
+            let pm = registry
+                .package_managers()
+                .iter()
+                .find(|m| m.name() == manager)
+                .map(std::convert::AsRef::as_ref);
+            vec![held_floor_drift_row(manager, floor, pm)]
+        }
         // A Skip names the bare manager whose whole block was withheld — a
         // finding about the TOOLING, not about any package in it.
         Action::Package(PackageAction::Skip { .. }) => {
@@ -2208,6 +2618,53 @@ pub fn module_files_unprobed(action: &Action) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A plan FILE is read back against [`PhaseName::EXECUTION_ORDER`], so a
+    /// phase missing from that const would make every plan carrying it refuse
+    /// as a file cfgd did not write. The match is exhaustive, so a variant
+    /// added to the enum fails to compile here until it is placed; the const's
+    /// length is asserted beside it, so a variant DROPPED from the const
+    /// fails too.
+    #[test]
+    fn every_phase_the_planner_can_name_sits_in_the_execution_order_exactly_once() {
+        let variants = [
+            PhaseName::PreScripts,
+            PhaseName::Bootstrap,
+            PhaseName::Modules,
+            PhaseName::Packages,
+            PhaseName::System,
+            PhaseName::Files,
+            PhaseName::Secrets,
+            PhaseName::PostScripts,
+        ];
+        for name in &variants {
+            // Exhaustive, so the array above cannot silently fall behind the
+            // enum: a variant added to it has no arm and does not compile.
+            match name {
+                PhaseName::PreScripts
+                | PhaseName::Bootstrap
+                | PhaseName::Modules
+                | PhaseName::Packages
+                | PhaseName::System
+                | PhaseName::Files
+                | PhaseName::Secrets
+                | PhaseName::PostScripts => {}
+            }
+            assert_eq!(
+                PhaseName::EXECUTION_ORDER
+                    .iter()
+                    .filter(|p| *p == name)
+                    .count(),
+                1,
+                "{name:?} sits in EXECUTION_ORDER exactly once"
+            );
+        }
+        assert_eq!(
+            PhaseName::EXECUTION_ORDER.len(),
+            variants.len(),
+            "EXECUTION_ORDER names every phase and nothing twice"
+        );
+    }
 
     #[test]
     fn phase_name_from_str_round_trips() {

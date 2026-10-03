@@ -110,6 +110,8 @@ golden_doc!(corners, status_with_target, |p, cap| {
 
 // 12. Hint inside a section (indented)
 golden_doc!(corners, hint_inside_section, |p, cap| {
+    // Hints are off by default, as a cfgd run renders them.
+    p.renderer.set_hints_enabled(true);
     let s = p.section("Tips");
     s.hint("run cfgd apply");
 });

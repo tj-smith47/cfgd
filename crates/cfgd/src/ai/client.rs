@@ -80,7 +80,7 @@ pub struct AnthropicClient {
 
 impl AnthropicClient {
     pub fn new(api_key: String, model: String) -> Self {
-        let base_url = std::env::var("CFGD_ANTHROPIC_URL")
+        let base_url = std::env::var(cfgd_core::CFGD_ANTHROPIC_URL_ENV)
             .unwrap_or_else(|_| DEFAULT_ANTHROPIC_BASE_URL.to_string());
         Self {
             api_key,
@@ -283,7 +283,7 @@ mod tests {
     #[serial_test::serial]
     fn send_message_round_trips_via_mockito_base_url() {
         let mut server = mockito::Server::new();
-        let _env = EnvVarGuard::set("CFGD_ANTHROPIC_URL", &server.url());
+        let _env = EnvVarGuard::set(cfgd_core::CFGD_ANTHROPIC_URL_ENV, &server.url());
 
         let mock = server
             .mock("POST", "/v1/messages")
@@ -322,7 +322,7 @@ mod tests {
     #[serial_test::serial]
     fn send_message_surfaces_api_error_status_as_provider_error() {
         let mut server = mockito::Server::new();
-        let _env = EnvVarGuard::set("CFGD_ANTHROPIC_URL", &server.url());
+        let _env = EnvVarGuard::set(cfgd_core::CFGD_ANTHROPIC_URL_ENV, &server.url());
 
         let _mock = server
             .mock("POST", "/v1/messages")

@@ -4,11 +4,14 @@ use axum::http::HeaderMap;
 use axum::response::Html;
 use axum::routing::get;
 
-use cfgd_core::{sha256_hex, xml_escape};
+use cfgd_core::{join_clauses, sha256_hex, xml_escape};
 use subtle::ConstantTimeEq;
+
+use std::fmt::Write;
 
 use super::api::{SharedState, extract_bearer_token};
 use super::errors::GatewayError;
+use crate::crds::{DeviceCompliance, DeviceComplianceStatus};
 
 /// Session cookie lifetime — matches the 24h Max-Age written to the client.
 const SESSION_TTL: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
@@ -76,7 +79,7 @@ async fn web_auth_middleware(
     request: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> Result<axum::response::Response, GatewayError> {
-    if let Ok(expected_key) = std::env::var("CFGD_API_KEY") {
+    if let Ok(expected_key) = std::env::var(cfgd_core::CFGD_API_KEY_ENV) {
         // 1. Authorization header
         if let Some(token) = extract_bearer_token(&headers)
             && secret_eq(&token, &expected_key)
@@ -162,7 +165,9 @@ async fn dashboard(State(state): State<SharedState>) -> Result<Html<String>, Gat
                 <td><span class="status {status_class}">{status}</span></td>
                 <td>{last_checkin}</td>
                 <td><code>{hash}</code></td>
+                <td>{compliance}</td>
             </tr>"#,
+            compliance = compliance_cell(d.compliance_summary.as_ref()),
             id_raw = xml_escape(&d.id),
             id = xml_escape(&d.id),
             hostname = xml_escape(&d.hostname),
@@ -246,6 +251,7 @@ async fn dashboard(State(state): State<SharedState>) -> Result<Html<String>, Gat
                     <th>Status</th>
                     <th>Last Check-in</th>
                     <th>Config Hash</th>
+                    <th>Compliance</th>
                 </tr>
             </thead>
             <tbody>
@@ -292,6 +298,8 @@ async fn device_detail(
         </div>"#
             .to_string()
     };
+
+    let compliance_html = compliance_section(device.compliance_summary.as_ref());
 
     let mut drift_rows = String::new();
     for e in &drift_events {
@@ -476,6 +484,8 @@ async fn device_detail(
             <div id="action-feedback" class="feedback"></div>
         </div>
 
+        {compliance_html}
+
         {desired_config_html}
 
         <div class="section">
@@ -618,6 +628,7 @@ async fn device_detail(
         arch = xml_escape(&device.arch),
         last_checkin = xml_escape(&device.last_checkin),
         config_hash = xml_escape(&device.config_hash),
+        compliance_html = compliance_html,
         desired_config_html = desired_config_html,
         drift_count = drift_events.len(),
         drift_html = drift_html,
@@ -644,21 +655,17 @@ async fn fleet_events(State(state): State<SharedState>) -> Result<Html<String>, 
             if parsed.is_empty() {
                 xml_escape(&e.summary)
             } else {
-                parsed
-                    .iter()
-                    .map(|d| {
-                        let field = d.get("field").and_then(|v| v.as_str()).unwrap_or("?");
-                        let expected = d.get("expected").and_then(|v| v.as_str()).unwrap_or("?");
-                        let actual = d.get("actual").and_then(|v| v.as_str()).unwrap_or("?");
-                        format!(
-                            "{}: {} &rarr; {}",
-                            xml_escape(field),
-                            xml_escape(expected),
-                            xml_escape(actual)
-                        )
-                    })
-                    .collect::<Vec<_>>()
-                    .join(", ")
+                join_clauses(parsed.iter().map(|d| {
+                    let field = d.get("field").and_then(|v| v.as_str()).unwrap_or("?");
+                    let expected = d.get("expected").and_then(|v| v.as_str()).unwrap_or("?");
+                    let actual = d.get("actual").and_then(|v| v.as_str()).unwrap_or("?");
+                    format!(
+                        "{}: {} &rarr; {}",
+                        xml_escape(field),
+                        xml_escape(expected),
+                        xml_escape(actual)
+                    )
+                }))
             }
         } else {
             format!("<code>{}</code>", xml_escape(&e.summary))
@@ -853,6 +860,93 @@ async fn fleet_events(State(state): State<SharedState>) -> Result<Html<String>, 
     );
 
     Ok(Html(html))
+}
+
+/// A compliance report's most severe outcome, as its badge word and colour.
+fn compliance_outcome(report: &DeviceCompliance) -> (String, &'static str) {
+    if report.violation > 0 {
+        check_badge(DeviceComplianceStatus::Violation)
+    } else if report.warning > 0 {
+        check_badge(DeviceComplianceStatus::Warning)
+    } else {
+        ("Compliant".to_string(), "healthy")
+    }
+}
+
+/// A check status's badge: the word is the one the check-in and the
+/// MachineConfig status carry, so the page and `kubectl` read alike.
+fn check_badge(status: DeviceComplianceStatus) -> (String, &'static str) {
+    let word = serde_json::to_value(status)
+        .ok()
+        .and_then(|v| v.as_str().map(str::to_owned))
+        .unwrap_or_default();
+    let class = match status {
+        DeviceComplianceStatus::Violation => "offline",
+        DeviceComplianceStatus::Warning => "drifted",
+    };
+    (word, class)
+}
+
+/// The most characters a device-table Compliance cell shows. A check's detail
+/// can run to several sentences, which would stretch one row over the rest.
+const COMPLIANCE_CELL_CHARS: usize = 80;
+
+/// The device table's Compliance cell: the first check that does not pass and
+/// how many follow it, so a reader sees why a machine is out of compliance
+/// without opening it. An agent that predates the check list, or a machine
+/// with nothing failing, shows its counts. A long line is cut short, and the
+/// whole line is the cell's tooltip.
+fn compliance_cell(report: Option<&DeviceCompliance>) -> String {
+    let Some(report) = report else {
+        return r#"<span class="muted">not reported</span>"#.to_string();
+    };
+    let text = report.headline().unwrap_or_else(|| report.counts_line());
+    let shown = if text.chars().count() > COMPLIANCE_CELL_CHARS {
+        let mut cut: String = text.chars().take(COMPLIANCE_CELL_CHARS - 1).collect();
+        cut.push('…');
+        cut
+    } else {
+        text.clone()
+    };
+    format!(
+        r#"<span class="status {}" title="{}">{}</span>"#,
+        compliance_outcome(report).1,
+        xml_escape(&text),
+        xml_escape(&shown)
+    )
+}
+
+/// The device page's Compliance section: the counts and every check the
+/// device reported as not passing.
+fn compliance_section(report: Option<&DeviceCompliance>) -> String {
+    let body = match report {
+        None => r#"<p class="muted">This device has not reported compliance. It reports it on check-in when its config enables compliance.</p>"#.to_string(),
+        Some(report) => {
+            let (word, class) = compliance_outcome(report);
+            let mut html = format!(
+                r#"<p><span class="status {class}">{word}</span> <span class="muted">{}</span></p>"#,
+                report.counts_line(),
+            );
+            if !report.checks.is_empty() {
+                html.push_str(
+                    "<table><thead><tr><th>Status</th><th>Category</th><th>Name</th><th>Detail</th></tr></thead><tbody>",
+                );
+                for check in &report.checks {
+                    let (word, class) = check_badge(check.status);
+                    let _ = write!(
+                        html,
+                        r#"<tr><td><span class="status {class}">{word}</span></td><td>{}</td><td><code>{}</code></td><td>{}</td></tr>"#,
+                        xml_escape(&check.category),
+                        xml_escape(&check.name),
+                        xml_escape(check.detail.as_deref().unwrap_or("")),
+                    );
+                }
+                html.push_str("</tbody></table>");
+            }
+            html
+        }
+    };
+    format!(r#"<div class="section"><h2>Compliance</h2>{body}</div>"#)
 }
 
 fn status_to_class(status: &str) -> &'static str {

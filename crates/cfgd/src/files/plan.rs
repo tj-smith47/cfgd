@@ -43,6 +43,8 @@ fn is_linked_to(source_path: &Path, target_path: &Path, strategy: FileStrategy) 
             .read_link()
             .map(|link| link == source_path)
             .unwrap_or(false),
+        // Two DISTINCT paths sharing an inode.
+        // same-path-ok: a hardlink convergence check.
         FileStrategy::Hardlink => cfgd_core::is_same_inode(source_path, target_path),
         _ => false,
     }
@@ -196,7 +198,8 @@ impl super::CfgdFileManager {
         })
     }
 
-    /// Build a plan of file actions by comparing desired state (from profile) to actual state (on disk).
+    /// Build a plan of file actions by comparing desired state (from profile) to actual state (on
+    /// disk).
     pub fn plan(&self, profile: &MergedProfile) -> Result<Vec<FileAction>> {
         let mut actions = Vec::new();
 
@@ -1147,7 +1150,7 @@ mod tests {
             layers: vec![ProfileLayer {
                 source: "local".to_string(),
                 profile_name: "test".to_string(),
-                priority: 1000,
+                priority: cfgd_core::config::LOCAL_LAYER_PRIORITY,
                 policy: LayerPolicy::Local,
                 spec: ProfileSpec::default(),
             }],

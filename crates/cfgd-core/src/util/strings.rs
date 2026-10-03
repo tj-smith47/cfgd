@@ -447,6 +447,43 @@ pub fn cmd_double_quoted(value: &str) -> String {
     format!("\"{}\"", value.replace('%', "%%"))
 }
 
+/// A value as one argument of a Windows command line that the MSVC runtime and
+/// `CommandLineToArgvW` split back into the same value.
+///
+/// The escaping matches `Command::arg`: inside the quotes a `"` is written as
+/// `\"`, and a run of backslashes is doubled when a `"` follows it, including
+/// the closing quote. Without that doubling `C:\dir with space\` wrapped bare
+/// ends in `\"`, which the split reads as a literal quote, swallowing every
+/// argument after it.
+///
+/// `Command::arg` quotes a value that is empty or holds a space or a tab; this
+/// also quotes one holding a `"`, a newline or a vertical tab, so a bare `"`
+/// never opens a quoted span of its own and no whitespace is left outside
+/// quotes. Not for `cmd.exe`, which parses its own command line
+/// ([`cmd_double_quoted`]).
+pub fn msvc_argv_quoted(value: &str) -> String {
+    if !value.is_empty() && !value.contains([' ', '\t', '\n', '\u{b}', '"']) {
+        return value.to_string();
+    }
+    let mut out = String::with_capacity(value.len() + 2);
+    out.push('"');
+    let mut backslashes = 0usize;
+    for c in value.chars() {
+        if c == '\\' {
+            backslashes += 1;
+        } else {
+            if c == '"' {
+                out.extend(std::iter::repeat_n('\\', backslashes + 1));
+            }
+            backslashes = 0;
+        }
+        out.push(c);
+    }
+    out.extend(std::iter::repeat_n('\\', backslashes));
+    out.push('"');
+    out
+}
+
 /// The manager family a package manager name belongs to: everything before the
 /// first `-`.
 ///
@@ -603,6 +640,36 @@ pub fn agreeing_verb(count: usize, verb: &str) -> String {
     } else {
         format!("{verb}s")
     }
+}
+
+/// The ONE separator between free-text clauses a surface joins into one line.
+///
+/// A comma joins members a reader can tell apart by the comma alone: names,
+/// identifiers, paths, a count and its noun. A CLAUSE carries punctuation of its
+/// own: `3 of 5 sources, 1 skipped` is one fact, and `, ` glues it to the next
+/// fact into `3 of 5 sources, 1 skipped, local repo not pulled`, three items
+/// where the run reported two. A semicolon is the boundary a comma cannot be,
+/// so every joiner whose members are sentences, `Display`ed errors, or
+/// `format!`s carrying commas reads from here and none spells `"; "` itself.
+///
+/// The rule is about the MEMBERS: a list of package names on
+/// the same report keeps its comma, because no name can hold one.
+pub fn join_clauses(clauses: impl IntoIterator<Item = impl AsRef<str>>) -> String {
+    const SEPARATOR: &str = "; ";
+    let mut iter = clauses.into_iter();
+    let Some(first) = iter.next() else {
+        return String::new();
+    };
+    // No capacity hint: a streaming iterator cannot state a total without a
+    // second pass, and a hint sized from the first member alone would read as
+    // one the whole join has. The growth is amortized instead.
+    let mut out = String::new();
+    out.push_str(first.as_ref());
+    for clause in iter {
+        out.push_str(SEPARATOR);
+        out.push_str(clause.as_ref());
+    }
+    out
 }
 
 /// Escape a string for safe inclusion in XML/plist content (single pass).
@@ -765,6 +832,26 @@ pub fn display_url(url: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The whole point of the helper is that a member carrying a comma of its
+    /// own stays one item, so the pin joins exactly that shape and reads the
+    /// separator back.
+    #[test]
+    fn join_clauses_separates_members_a_comma_could_not() {
+        assert_eq!(
+            join_clauses(["3 of 5 sources, 1 skipped", "local repo not pulled"]),
+            "3 of 5 sources, 1 skipped; local repo not pulled"
+        );
+        // One member is the whole string: nothing is appended to a list of one.
+        assert_eq!(join_clauses(["only this"]), "only this");
+        // An empty list renders the empty string: no separator either.
+        assert_eq!(join_clauses(Vec::<String>::new()), "");
+        // Owned members and borrowed ones reach the same bytes.
+        assert_eq!(
+            join_clauses(vec!["a, b".to_string(), "c".to_string()]),
+            join_clauses(["a, b", "c"])
+        );
+    }
 
     #[test]
     fn display_url_strips_userinfo_and_leaves_every_other_shape_alone() {
@@ -1204,6 +1291,27 @@ mod tests {
         );
         assert_eq!(cmd_double_quoted("%USERPROFILE%"), "\"%%USERPROFILE%%\"");
         assert_eq!(cmd_double_quoted("plain"), "\"plain\"");
+    }
+
+    /// Each row walked by hand through the MSVC argv rules: `\` is literal
+    /// unless a run of them precedes a `"`, where `2n` backslashes and a `"`
+    /// read as `n` backslashes and a delimiter, `2n+1` as `n` and a literal `"`.
+    #[test]
+    fn msvc_argv_quoted_survives_the_msvc_split_rules() {
+        let table: [(&str, &str); 9] = [
+            ("daemon", "daemon"),
+            ("", r#""""#),
+            (r"C:\cfgd\cache\", r"C:\cfgd\cache\"),
+            (r"C:\Program Files\cfgd", r#""C:\Program Files\cfgd""#),
+            (r"C:\cfgd cache\", r#""C:\cfgd cache\\""#),
+            (r"C:\cfgd cache\\", r#""C:\cfgd cache\\\\""#),
+            (r#"say "hi""#, r#""say \"hi\"""#),
+            (r#"a\"b"#, r#""a\\\"b""#),
+            ("tab\there", "\"tab\there\""),
+        ];
+        for (value, quoted) in table {
+            assert_eq!(msvc_argv_quoted(value), quoted, "{value:?}");
+        }
     }
 
     #[test]

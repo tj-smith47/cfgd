@@ -6,7 +6,7 @@
 //!   - `config_set/creates_new.txt` — sets a key that didn't exist before;
 //!     `previousValue` is null.
 
-mod common;
+use cfgd_test_fixtures as common;
 
 use std::path::Path;
 

@@ -7,7 +7,6 @@
 
 use std::path::PathBuf;
 
-use anyhow::anyhow;
 use cfgd_core::output::{Doc, KvPair, Printer, Role, collapse_to_subject_line, renderer::Table};
 use cfgd_core::providers::skill::{
     Detection, InstalledSkill, SkillProvider, SkillScope, all_skill_providers,
@@ -214,6 +213,18 @@ fn resolve_scope(global: bool) -> SkillScope {
 /// Validate an explicit `--provider` list against the registry. Every named id
 /// must exist, else it is a user error (never silently ignored). An empty list
 /// (auto mode) always passes.
+/// A provider whose installed-skill listing errored, named so a script knows
+/// which one to look at.
+fn listing_failed(provider: &str, e: &cfgd_core::errors::CfgdError) -> anyhow::Error {
+    let reason = collapse_to_subject_line(e);
+    crate::cli::cli_error(
+        provider,
+        "list_failed",
+        format!("listing {provider} skills failed: {reason}"),
+        serde_json::json!({ "reason": reason }),
+    )
+}
+
 fn validate_provider_ids(
     all: &[Box<dyn SkillProvider>],
     providers: &[String],
@@ -415,13 +426,7 @@ pub fn cmd_skill_list(printer: &Printer, global: bool) -> anyhow::Result<()> {
     for provider in &all_skill_providers() {
         let listed = provider
             .list(scope, env!("CARGO_PKG_VERSION"))
-            .map_err(|e| {
-                anyhow!(
-                    "listing {} skills failed: {}",
-                    provider.id(),
-                    collapse_to_subject_line(&e)
-                )
-            })?;
+            .map_err(|e| listing_failed(provider.id(), &e))?;
         installed.extend(listed);
     }
 
@@ -609,13 +614,7 @@ pub fn cmd_skill_update(
         for provider in registry.iter().filter(|p| is_target(p.id(), providers)) {
             let listed = provider
                 .list(scope, env!("CARGO_PKG_VERSION"))
-                .map_err(|e| {
-                    anyhow!(
-                        "listing {} skills failed: {}",
-                        provider.id(),
-                        collapse_to_subject_line(&e)
-                    )
-                })?;
+                .map_err(|e| listing_failed(provider.id(), &e))?;
             for s in listed {
                 let r = update_one(provider.as_ref(), s.kind, scope);
                 if matches!(r.status, SkillResultStatus::Failed) {
@@ -626,7 +625,14 @@ pub fn cmd_skill_update(
         }
     } else {
         // Exactly one kind (clap guarantees `kind` is set when `--all` is not).
-        let kind = kind.ok_or_else(|| anyhow!("skill update requires a <kind> or --all"))?;
+        let kind = kind.ok_or_else(|| {
+            crate::cli::cli_error(
+                "kind",
+                "missing_argument",
+                "skill update requires a <kind> or --all",
+                serde_json::json!({}),
+            )
+        })?;
         let core_kind = kind.to_core();
         for provider in registry.iter().filter(|p| is_target(p.id(), providers)) {
             let id = provider.id().to_string();

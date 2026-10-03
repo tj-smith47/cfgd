@@ -5,52 +5,25 @@
 //! installed packages with versions for `installed_packages_with_versions`.
 //! `*_aliases` map canonical package names to their distro-specific aliases.
 //!
-//! Every shell-out IN THIS MODULE routes through `cfgd_core::tool_cmd(env_var,
-//! default)` so the `CFGD_*_BIN` test-shim seams can drive the binaries without
-//! a real package manager installed. `query_version_info` dispatches the seam
-//! per `manager` arg (pacman / dnf / yum / zypper) so each manager has an
-//! independent override knob. The install/uninstall/list paths in
-//! `packages::simple::mod` still shell out via raw `Command::new` and are not
-//! yet seamed.
+//! Every shell-out IN THIS MODULE spawns through `simple::cmd_with_seam`, the
+//! one spawn path over the `PROGRAM_SEAMS` table, so the `CFGD_*_BIN` test-shim
+//! seams drive the binaries without a real package manager installed, and the
+//! install/uninstall/list paths in `packages::simple` read the same seams.
 
 use cfgd_core::errors::Result;
-use cfgd_core::tool_cmd;
 
 use super::shared::{run_pkg_cmd, run_pkg_query};
+use super::simple::cmd_with_seam;
 
-pub(super) const APT_CACHE_BIN_ENV: &str = "CFGD_APT_CACHE_BIN";
-pub(super) const APK_BIN_ENV: &str = "CFGD_APK_BIN";
-pub(super) const PKG_BIN_ENV: &str = "CFGD_PKG_BIN";
-pub(super) const PACMAN_BIN_ENV: &str = "CFGD_PACMAN_BIN";
-pub(super) const DNF_BIN_ENV: &str = "CFGD_DNF_BIN";
-pub(super) const YUM_BIN_ENV: &str = "CFGD_YUM_BIN";
-pub(super) const ZYPPER_BIN_ENV: &str = "CFGD_ZYPPER_BIN";
-pub(super) const DPKG_QUERY_BIN_ENV: &str = "CFGD_DPKG_QUERY_BIN";
-pub(super) const RPM_BIN_ENV: &str = "CFGD_RPM_BIN";
-
-/// Map an `info`-style manager name to its env-var seam. Unknown managers
-/// debug-assert (catches typos in tests) and log a warning, then fall through
-/// to an empty seam so production keeps working via PATH lookup of `default`.
-fn info_bin_env(manager: &str) -> &'static str {
-    match manager {
-        "pacman" => PACMAN_BIN_ENV,
-        "dnf" => DNF_BIN_ENV,
-        "yum" => YUM_BIN_ENV,
-        "zypper" => ZYPPER_BIN_ENV,
-        other => {
-            debug_assert!(
-                false,
-                "query_version_info called with unknown manager {other:?}; CFGD_*_BIN seam silently bypassed"
-            );
-            // tracing-ok: an internal seam gap beside its own debug_assert; nothing user-facing
-            tracing::warn!(
-                manager = other,
-                "query_version_info: no CFGD_*_BIN seam registered; falling through to PATH"
-            );
-            ""
-        }
-    }
-}
+pub const APT_CACHE_BIN_ENV: &str = "CFGD_APT_CACHE_BIN";
+pub const APK_BIN_ENV: &str = "CFGD_APK_BIN";
+pub const PKG_BIN_ENV: &str = "CFGD_PKG_BIN";
+pub const PACMAN_BIN_ENV: &str = "CFGD_PACMAN_BIN";
+pub const DNF_BIN_ENV: &str = "CFGD_DNF_BIN";
+pub const YUM_BIN_ENV: &str = "CFGD_YUM_BIN";
+pub const ZYPPER_BIN_ENV: &str = "CFGD_ZYPPER_BIN";
+pub const DPKG_QUERY_BIN_ENV: &str = "CFGD_DPKG_QUERY_BIN";
+pub const RPM_BIN_ENV: &str = "CFGD_RPM_BIN";
 
 /// Query version via `<cmd> info <pkg>` and parse "Version:" field.
 /// Used by dnf, yum, pacman (-Si), zypper.
@@ -59,10 +32,7 @@ pub(super) fn query_version_info(manager: &str, package: &str) -> Result<Option<
         "pacman" => ("pacman", &["-Si"]),
         _ => (manager, &["info"]),
     };
-    let output = run_pkg_query(
-        manager,
-        tool_cmd(info_bin_env(manager), cmd).args(args).arg(package),
-    )?;
+    let output = run_pkg_query(manager, cmd_with_seam(cmd).args(args).arg(package))?;
     if !output.status.success() {
         return Ok(None);
     }
@@ -81,7 +51,7 @@ pub(super) fn query_version_info(manager: &str, package: &str) -> Result<Option<
 pub(super) fn query_version_apt(manager: &str, package: &str) -> Result<Option<String>> {
     let output = run_pkg_query(
         manager,
-        tool_cmd(APT_CACHE_BIN_ENV, "apt-cache").args(["policy", package]),
+        cmd_with_seam("apt-cache").args(["policy", package]),
     )?;
     if !output.status.success() {
         return Ok(None);
@@ -110,10 +80,7 @@ pub(super) fn query_version_apt(manager: &str, package: &str) -> Result<Option<S
 }
 
 pub(super) fn query_version_apk(manager: &str, package: &str) -> Result<Option<String>> {
-    let output = run_pkg_query(
-        manager,
-        tool_cmd(APK_BIN_ENV, "apk").args(["policy", package]),
-    )?;
+    let output = run_pkg_query(manager, cmd_with_seam("apk").args(["policy", package]))?;
     if !output.status.success() {
         return Ok(None);
     }
@@ -145,7 +112,7 @@ pub(super) fn query_version_pkg(manager: &str, package: &str) -> Result<Option<S
     // packages can never yield a sibling's version.
     let output = run_pkg_query(
         manager,
-        tool_cmd(PKG_BIN_ENV, "pkg").args(["rquery", "%n\t%v", package]),
+        cmd_with_seam("pkg").args(["rquery", "%n\t%v", package]),
     )?;
     if !output.status.success() {
         return Ok(None);
@@ -183,7 +150,7 @@ pub(super) fn query_version_pkg(manager: &str, package: &str) -> Result<Option<S
 pub(super) fn pkg_version_meets_minimum(available: &str, min_version: &str) -> Result<bool> {
     let output = run_pkg_query(
         "pkg",
-        tool_cmd(PKG_BIN_ENV, "pkg").args([
+        cmd_with_seam("pkg").args([
             "version",
             "-t",
             available,
@@ -389,7 +356,7 @@ pub(super) fn list_apt_with_versions(
 ) -> Result<Vec<cfgd_core::providers::PackageInfo>> {
     let output = run_pkg_cmd(
         manager,
-        tool_cmd(DPKG_QUERY_BIN_ENV, "dpkg-query").args(["-W", "-f=${Package}\t${Version}\n"]),
+        cmd_with_seam("dpkg-query").args(["-W", "-f=${Package}\t${Version}\n"]),
         "list",
     )?;
     Ok(parse_apt_versions(&String::from_utf8_lossy(&output.stdout)))
@@ -400,12 +367,7 @@ pub(super) fn list_dnf_with_versions(
 ) -> Result<Vec<cfgd_core::providers::PackageInfo>> {
     let output = run_pkg_cmd(
         manager,
-        tool_cmd(RPM_BIN_ENV, "rpm").args([
-            "--query",
-            "--all",
-            "--queryformat",
-            "%{NAME}\t%{VERSION}\n",
-        ]),
+        cmd_with_seam("rpm").args(["--query", "--all", "--queryformat", "%{NAME}\t%{VERSION}\n"]),
         "list",
     )?;
     Ok(parse_rpm_versions(&String::from_utf8_lossy(&output.stdout)))

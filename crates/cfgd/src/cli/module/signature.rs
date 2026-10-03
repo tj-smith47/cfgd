@@ -23,7 +23,12 @@ fn verify_tag_signature_cryptographic(repo_dir: &Path, tag_name: &str) -> anyhow
             Ok(false) // Signature present but invalid
         } else {
             // gpg not installed, key not in keyring, etc.
-            anyhow::bail!("{}", stderr)
+            Err(crate::cli::cli_error(
+                tag_name,
+                "verify_failed",
+                stderr,
+                serde_json::json!({ "tag": tag_name }),
+            ))
         }
     }
 }
@@ -49,9 +54,9 @@ pub(crate) fn enforce_signature_policy(
             Ok(mut c) => {
                 drain_config_deprecations(printer, &mut c);
                 c.spec
-                    .modules
-                    .and_then(|m| m.security)
-                    .is_some_and(|s| s.require_signatures)
+                    .modules_effective()
+                    .security_effective()
+                    .require_signatures
             }
             Err(_) => false,
         }
@@ -157,9 +162,12 @@ mod tests {
             quiet: true,
             output: crate::cli::OutputFormatArg(cfgd_core::output::OutputFormat::Table),
             list_envelope: false,
+            hints: false,
             no_hints: false,
             theme: None,
             mask_env_values: None,
+            migration_policy: None,
+            update_policy: None,
             jsonpath: None,
             yes: false,
             state_dir: None,

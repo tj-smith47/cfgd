@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: note
+data:
+  note: "kind: CustomResourceDefinition"
+---
+apiVersion: cfgd.io/v1alpha1
+kind: MachineConfig
+metadata:
+  name: names-a-crd
+  # kind: CustomResourceDefinition

@@ -1,0 +1,19 @@
+pub trait Sink {
+    fn fetch(&self) -> u64;
+}
+
+pub struct Reading {
+    pub value: u64,
+}
+
+pub struct Gauge;
+
+impl Gauge {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn fetch(&self) -> u64 {
+        8
+    }
+}

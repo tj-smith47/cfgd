@@ -20,7 +20,7 @@ Package Managers
   ◉ brew: available (not used)
 
 Modules
-  ✗ dotfiles — brew missing (3 packages route to it)
+  ✗ dotfiles — cargo available; brew missing (3 packages route to it)
 
 Installation
   ✓ State store: accessible

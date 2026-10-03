@@ -124,6 +124,7 @@ fn compliance_snapshot_happy_json() {
 fn compliance_snapshot_violations_human() {
     let snap = violations_snapshot();
     let (printer, cap) = Printer::for_test_doc();
+    let printer = printer.with_hints_enabled(true);
     printer.emit(build_compliance_summary_doc(&snap, NOW, printer.arrow()));
     drop(printer);
     cap.assert_human_snapshot_in(

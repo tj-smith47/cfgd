@@ -7,8 +7,8 @@ Shell
     ⚠ alias: gs — want: <ALIAS_LINE>, have: missing
 
 Standing
-  ⚠ script echo hook   — exit 1
   ⚠ script echo silent — drift detected
+  ⚠ script echo hook   — exit 1
 
 ⚠ Drift detected — 1 shell item, 2 rows standing (files, packages, system clean)
 

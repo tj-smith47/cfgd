@@ -9,7 +9,7 @@
 //! Goldens live under `tests/output_snapshots/source_create/`. Regenerate with:
 //!     INSTA_UPDATE=always cargo test -p cfgd --test source_create_snapshots
 
-mod common;
+use cfgd_test_fixtures as common;
 
 use std::path::Path;
 
@@ -44,6 +44,7 @@ fn strip_ansi(s: &str) -> String {
 fn source_create_happy_human() {
     let (config_dir, _state_dir) = source_test_config_setup();
     let (printer, cap) = Printer::for_test_doc();
+    let printer = printer.with_hints_enabled(true);
 
     cmd_source_create(
         &printer,

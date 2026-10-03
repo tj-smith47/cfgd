@@ -8,10 +8,10 @@ use cfgd_core::format_bytes;
 use cfgd_core::output::{Doc, Printer, Role, renderer::Table};
 use cfgd_core::state::BackupRunRecord;
 
-/// How a rollback copy comes to exist, read by both the empty-listing hint
-/// and the "nothing to roll back to" error: a `cfgd backup restore` or an
-/// adopting `cfgd apply` is what leaves one beside a source, never the
-/// rollback itself.
+/// How a rollback copy comes to exist, read by both the empty listing's note
+/// row and the "nothing to roll back to" error's remediation: a `cfgd backup
+/// restore` or an adopting `cfgd apply` is what leaves one beside a source.
+/// The rollback itself leaves none.
 const ROLLBACK_COPY_ORIGIN: &str = "A copy is left beside a source by `cfgd backup restore <name>`, and by any file `cfgd apply` adopts";
 
 fn backup_not_found_error(name: &str, valid: Vec<String>) -> anyhow::Error {
@@ -130,7 +130,15 @@ fn restoring_verb_state(
     let sources = cfgd_core::reconciler::ComposedSource::from_declared(&cfg.spec.sources);
     let backups = composition.resolved.merged.backups.clone();
 
-    match resolve_desired_from_composition(ctx, cfg, composition, &[], false, printer) {
+    match resolve_desired_from_composition(
+        ctx,
+        cfg,
+        composition,
+        &[],
+        false,
+        printer,
+        &cfgd_core::modules::refuse_floor_bootstrap,
+    ) {
         Ok(desired) => Ok((
             sources,
             cfgd_core::output::HeaderModule::of_resolved(&desired.modules),
@@ -737,7 +745,7 @@ pub fn build_backup_rollback_list_doc(entries: &[BackupRollbackEntry], now: &str
 
     if entries.is_empty() {
         doc = doc.status(Role::Info, "Nothing to roll back");
-        doc = doc.hint(ROLLBACK_COPY_ORIGIN);
+        doc = doc.status(Role::Info, ROLLBACK_COPY_ORIGIN);
         return doc.with_data(entries);
     }
 
@@ -1009,6 +1017,7 @@ pub fn run_backup_run(
         printer,
         false,
         composition::ConstraintMode::Enforce,
+        &cfgd_core::modules::refuse_floor_bootstrap,
     )?;
     let sources = desired.sources;
     let header_modules = cfgd_core::output::HeaderModule::of_resolved(&desired.modules);

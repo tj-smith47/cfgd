@@ -17,7 +17,7 @@
 //! with:
 //!     INSTA_UPDATE=always cargo test -p cfgd --test profile_create_snapshots
 
-mod common;
+use cfgd_test_fixtures as common;
 
 use std::path::Path;
 
@@ -53,6 +53,7 @@ fn profile_create_happy_human() {
     let (config_dir, state_dir) = profile_test_config_setup();
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc();
+    let printer = printer.with_hints_enabled(true);
     let mut args = profile_create_args("newprof");
     // Non-empty packages list forces non-interactive mode without adding a
     // package: pass a flag that's a no-op against the default platform mgr.
@@ -95,6 +96,7 @@ fn profile_create_inherits_human() {
     let (config_dir, state_dir) = profile_test_config_setup();
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc();
+    let printer = printer.with_hints_enabled(true);
     let mut args = profile_create_args("child");
     args.inherits = vec!["default".to_string()];
     args.modules = vec!["nvim".to_string()];
@@ -121,6 +123,7 @@ fn profile_create_interactive_human() {
         PromptAnswer::Text(String::new()),
         PromptAnswer::Text(String::new()),
     ]);
+    let printer = printer.with_hints_enabled(true);
     let args = profile_create_args("interactive_prof");
 
     cmd_profile_create(&cli, &printer, &args).unwrap();

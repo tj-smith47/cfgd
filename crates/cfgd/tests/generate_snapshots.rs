@@ -18,8 +18,6 @@
 //!   `settingsCaptured`, `dotfileEntries`, …). The home dir is a tempdir
 //!   so the snapshot is reproducible.
 
-mod common;
-
 use std::path::Path;
 
 use cfgd::cli::generate::{self, GenerateArgs};
@@ -57,9 +55,12 @@ fn cli_for(config_dir: &Path) -> cfgd::cli::Cli {
         quiet: true,
         output: cfgd::cli::OutputFormatArg(cfgd_core::output::OutputFormat::Table),
         list_envelope: false,
+        hints: false,
         no_hints: false,
         theme: None,
         mask_env_values: None,
+        migration_policy: None,
+        update_policy: None,
         jsonpath: None,
         yes: false,
         state_dir: None,

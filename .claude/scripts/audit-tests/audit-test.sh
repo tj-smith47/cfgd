@@ -7,7 +7,9 @@
 # Fixtures are .txt files outside the cargo source tree. The driver tells
 # audit.sh to scope its scan to the fixture directory via CFGD_AUDIT_PATH.
 # rg's --type-add 'rust:*.txt' makes the audit's existing rust-typed regexes
-# match .txt content unchanged.
+# match .txt content unchanged. A fixture that needs more than one file (a gate
+# that compares files, like the duplicated-function check) is a bad_*/ or good_*/
+# directory of .txt files, scanned as one tree.
 set -euo pipefail
 cd "$(dirname "$0")/../../.."
 
@@ -38,7 +40,21 @@ fixture_is_clean() {
     grep -qF '=== Audit Complete: 0 errors, 0 warnings ===' "$TMP/out"
 }
 
-for fix in "$FIXTURE_DIR"/bad_*.txt; do
+# An unmatched glob would otherwise reach the loop as its literal text, a path
+# that does not exist and so audits clean, and a good_ loop over it reports a
+# fixture accepted that was never read. Each kind must also be non-empty, so a
+# renamed or deleted set of fixtures fails here in place of passing silently.
+shopt -s nullglob
+for kind in 'bad_*.txt' 'bad_*/' 'good_*.txt' 'good_*/'; do
+    # shellcheck disable=SC2206  # $kind is a glob pattern, expanded here on purpose
+    found=("$FIXTURE_DIR"/$kind)
+    if [ "${#found[@]}" -eq 0 ]; then
+        echo "FAIL: no $kind fixtures found in $FIXTURE_DIR"
+        FAIL=1
+    fi
+done
+
+for fix in "$FIXTURE_DIR"/bad_*.txt "$FIXTURE_DIR"/bad_*/; do
     name=$(basename "$fix" .txt)
     run_audit_against "$fix"
     if fixture_is_clean; then
@@ -50,7 +66,7 @@ for fix in "$FIXTURE_DIR"/bad_*.txt; do
     fi
 done
 
-for fix in "$FIXTURE_DIR"/good_*.txt; do
+for fix in "$FIXTURE_DIR"/good_*.txt "$FIXTURE_DIR"/good_*/; do
     name=$(basename "$fix" .txt)
     run_audit_against "$fix"
     if fixture_is_clean; then

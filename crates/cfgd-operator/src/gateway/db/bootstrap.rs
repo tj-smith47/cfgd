@@ -88,7 +88,7 @@ pub fn validate_and_consume_bootstrap_token_tx(
 
 pub fn list_bootstrap_tokens_tx(conn: &Connection) -> Result<Vec<BootstrapToken>, GatewayError> {
     let mut stmt = conn.prepare_cached(
-        "SELECT id, username, team, created_at, expires_at, used_at, used_by_device FROM bootstrap_tokens ORDER BY created_at DESC",
+        "SELECT id, username, team, created_at, expires_at, used_at, used_by_device FROM bootstrap_tokens ORDER BY created_at DESC, rowid DESC",
     )?;
     let tokens = stmt
         .query_map([], map_bootstrap_token_row)?

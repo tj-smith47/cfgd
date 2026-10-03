@@ -499,9 +499,12 @@ fn test_cli(dir: &Path) -> super::super::Cli {
         quiet: true,
         output: super::super::OutputFormatArg(cfgd_core::output::OutputFormat::Table),
         list_envelope: false,
+        hints: false,
         no_hints: false,
         theme: None,
         mask_env_values: None,
+        migration_policy: None,
+        update_policy: None,
         jsonpath: None,
         yes: false,
         state_dir: None,
@@ -833,6 +836,29 @@ fn profile_switch_updates_config() {
     // Verify the config file was updated
     let cfg = config::load_config(&dir.path().join("cfgd.yaml")).unwrap();
     assert_eq!(cfg.spec.profile.as_deref(), Some("work"));
+}
+
+// `--config` may name the document itself under any file name; the switch
+// writes that document and reads `profiles/` beside it. A `cfgd.yaml` in the
+// same directory is a different document the invocation never named.
+#[test]
+fn profile_switch_writes_the_document_config_names() {
+    let dir = setup_config_dir();
+    let custom = dir.path().join("custom.yaml");
+    std::fs::write(&custom, TEST_CONFIG_YAML).unwrap();
+    let mut cli = test_cli(dir.path());
+    cli.config = custom.clone();
+    let printer = make_printer();
+
+    cmd_profile_switch(&cli, "work", &printer).unwrap();
+
+    let switched = config::load_config(&custom).unwrap();
+    assert_eq!(switched.spec.profile.as_deref(), Some("work"));
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("cfgd.yaml")).unwrap(),
+        TEST_CONFIG_YAML,
+        "the document the invocation did not name is untouched"
+    );
 }
 
 #[test]
@@ -2047,6 +2073,68 @@ fn profile_list_json_schema() {
     assert_eq!(active_count, 1, "exactly one profile should be active");
 }
 
+/// A document naming no profile leaves every listed profile inactive, in the
+/// table's `Active` column and in the structured documents alike.
+#[test]
+fn profile_list_marks_no_profile_active_when_the_document_names_none() {
+    let dir = setup_config_dir();
+    let unnamed = TEST_CONFIG_YAML.replace("  profile: default\n", "");
+    assert_ne!(
+        unnamed, TEST_CONFIG_YAML,
+        "the fixture names a profile to drop"
+    );
+    std::fs::write(dir.path().join("cfgd.yaml"), &unnamed).unwrap();
+
+    let cli = test_cli(dir.path());
+    let (printer, buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    cmd_profile_list(&cli, &printer).unwrap();
+    drop(printer);
+    let table = cfgd_core::test_helpers::captured_text(&buf);
+    for name in ["default", "work"] {
+        let row = table
+            .lines()
+            .find(|line| line.split_whitespace().next() == Some(name))
+            .unwrap_or_else(|| panic!("no row for {name}:\n{table}"));
+        let cells: Vec<&str> = row.split_whitespace().collect();
+        assert_eq!(
+            cells.get(1),
+            Some(&cfgd_core::yes_no(Some(false))),
+            "{name} is inactive in the Active column:\n{table}"
+        );
+    }
+
+    for format in [
+        cfgd_core::output::OutputFormat::Json,
+        cfgd_core::output::OutputFormat::Yaml,
+    ] {
+        let cli = super::super::Cli {
+            output: super::super::OutputFormatArg(format.clone()),
+            ..test_cli(dir.path())
+        };
+        let (printer, buf) = cfgd_core::output::Printer::for_test_with_format(format.clone());
+        cmd_profile_list(&cli, &printer).unwrap();
+        drop(printer);
+        let output = cfgd_core::test_helpers::captured_text(&buf);
+        let entries: Vec<serde_json::Value> =
+            serde_yaml::from_str(&output).unwrap_or_else(|e| panic!("{format:?}: {e}\n{output}"));
+        let flags: Vec<(&str, Option<bool>)> = entries
+            .iter()
+            .map(|e| {
+                (
+                    e["name"].as_str().unwrap_or_default(),
+                    e["active"].as_bool(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            flags,
+            [("default", Some(false)), ("work", Some(false))],
+            "{format:?} marks no profile active"
+        );
+    }
+}
+
 #[test]
 fn profile_list_json_empty() {
     let dir = tempfile::tempdir().unwrap();
@@ -2161,6 +2249,91 @@ fn profile_show_displays_packages_section() {
 }
 
 #[test]
+#[serial_test::serial]
+fn profile_show_lists_the_declared_ranking_and_the_resolved_view_lists_the_winner() {
+    // No display signal, so both X/Wayland candidates are refused whatever
+    // this host runs, and `osc52` (no tool, every session) is the winner.
+    // Where `ProbePath` exists their tools are installed too, so only the
+    // display gate can refuse them.
+    let _guard = cfgd_core::test_helpers::path_env_mutation_guard();
+    #[cfg(unix)]
+    let _path = cfgd_core::test_helpers::ProbePath::containing(&["wl-copy", "xclip"]);
+    let _w = cfgd_core::test_helpers::EnvVarGuard::unset("WAYLAND_DISPLAY");
+    let _d = cfgd_core::test_helpers::EnvVarGuard::unset("DISPLAY");
+    let _x = cfgd_core::test_helpers::EnvVarGuard::unset("XDG_SESSION_TYPE");
+    let dir = setup_config_dir();
+    std::fs::write(
+        dir.path().join("profiles").join("prefs.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: prefs\n\
+         spec:\n  preferences:\n    clipboard: [wl-clipboard, xclip, osc52]\n",
+    )
+    .unwrap();
+    let cli = test_cli(dir.path());
+    let render = |resolved: bool| {
+        let (printer, buf) =
+            cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+        cmd_profile_show(
+            &cli,
+            &printer,
+            Some("prefs"),
+            resolved,
+            crate::cli::InventoryDetail::default(),
+        )
+        .unwrap();
+        drop(printer);
+        cfgd_core::test_helpers::captured_text(&buf)
+    };
+
+    let declared = render(false);
+    assert!(
+        declared.contains("Preferences"),
+        "the declared view lists the rankings: {declared}"
+    );
+    assert!(
+        declared.contains("clipboard") && declared.contains("wl-clipboard, xclip, osc52"),
+        "the ranking renders in the author's order: {declared}"
+    );
+
+    let resolved = render(true);
+    assert!(
+        resolved.contains("CFGD_CLIPBOARD"),
+        "the resolved view lists the winner under Env: {resolved}"
+    );
+    assert!(
+        !resolved.contains("Preferences"),
+        "the resolved view restates no declared ranking: {resolved}"
+    );
+
+    // The text view masks the value; the JSON payload carries it.
+    let json_cli = test_cli_json(dir.path());
+    let (printer, buf) =
+        cfgd_core::output::Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
+    cmd_profile_show(
+        &json_cli,
+        &printer,
+        Some("prefs"),
+        true,
+        crate::cli::InventoryDetail::default(),
+    )
+    .unwrap();
+    drop(printer);
+    let output = cfgd_core::test_helpers::captured_text(&buf);
+    let start = output.find('{').expect("a JSON object in the output");
+    let json: serde_json::Value = serde_json::from_str(output[start..].trim()).unwrap();
+    let env = json["resolved"]["merged"]["env"]
+        .as_array()
+        .unwrap_or_else(|| panic!("resolved.merged.env is a list: {json}"));
+    let winner = env
+        .iter()
+        .find(|e| e["name"] == "CFGD_CLIPBOARD")
+        .unwrap_or_else(|| panic!("CFGD_CLIPBOARD in the merged env: {env:?}"));
+    assert_eq!(
+        winner["value"], "osc52",
+        "a display-less session exports the only reachable candidate"
+    );
+}
+
+#[test]
 fn profile_show_displays_secrets_section() {
     let dir = setup_config_dir();
     let profile_with_secrets = r#"apiVersion: cfgd.io/v1alpha1
@@ -2271,6 +2444,8 @@ fn profile_create_output_messages() {
     let cli = test_cli(dir.path());
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    // Hints are off by default; the verb's closing next step is asserted.
+    let printer = printer.with_hints_enabled(true);
 
     let mut args = make_profile_create_args("fancy");
     args.inherits = vec!["default".to_string()];
@@ -3322,9 +3497,12 @@ mod profile_update_module_cleanup {
             quiet: true,
             output: super::super::OutputFormatArg(cfgd_core::output::OutputFormat::Table),
             list_envelope: false,
+            hints: false,
             no_hints: false,
             theme: None,
             mask_env_values: None,
+            migration_policy: None,
+            update_policy: None,
             jsonpath: None,
             yes: false,
             state_dir: Some(state_dir.to_path_buf()),
@@ -4258,7 +4436,8 @@ mod profile_update_remote_module_yes {
 
         let work = setup_with_registry("myorg", &reg_url);
         let _home = cfgd_core::with_test_home_guard(work.path());
-        let _env = cfgd_core::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+        let _env =
+            cfgd_core::test_helpers::EnvVarGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
 
         let cli = test_cli(work.path());
         let printer = make_printer();
@@ -4299,7 +4478,8 @@ mod profile_update_remote_module_yes {
 
         let work = setup_with_registry("myorg", &reg_url);
         let _home = cfgd_core::with_test_home_guard(work.path());
-        let _env = cfgd_core::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+        let _env =
+            cfgd_core::test_helpers::EnvVarGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
 
         let cli = test_cli(work.path());
         let printer = make_printer();

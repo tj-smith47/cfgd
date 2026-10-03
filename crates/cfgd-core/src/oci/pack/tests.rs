@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use super::*;
 use crate::oci::test_helpers::registry_from_url;
 
@@ -688,13 +690,13 @@ fn build_layered_manifest_appends_new_layer_last() {
             media_type: "application/vnd.oci.image.layer.v1.tar+gzip".to_string(),
             digest: "sha256:base-layer-1".to_string(),
             size: 111,
-            annotations: HashMap::new(),
+            annotations: Annotations::new(),
         },
         OciDescriptor {
             media_type: "application/vnd.docker.image.rootfs.diff.tar.gzip".to_string(),
             digest: "sha256:base-layer-2".to_string(),
             size: 222,
-            annotations: HashMap::new(),
+            annotations: Annotations::new(),
         },
     ];
     let manifest = build_layered_manifest(
@@ -1113,4 +1115,129 @@ fn pack_image_base_index_no_matching_platform_errors() {
         msg.contains("no manifest for linux/arm64"),
         "error must name the missing platform: {msg}"
     );
+}
+
+/// The nine annotations every determinism pin below packs, written in an
+/// order no sort would produce. Nine keys give an unordered map one chance in
+/// `9!` of reproducing the sorted sequence the expected literal spells, so a
+/// green run cannot be a lucky hash seed; a two-key fixture is a coin flip.
+fn anti_sorted_annotations() -> Vec<(String, String)> {
+    [
+        ("zulu", "1"),
+        ("yankee", "2"),
+        ("xray", "3"),
+        ("whiskey", "4"),
+        ("victor", "5"),
+        ("uniform", "6"),
+        ("tango", "7"),
+        ("sierra", "8"),
+        (crate::OCI_ANNOTATION_CREATED, FIXED_CREATED),
+    ]
+    .into_iter()
+    .map(|(k, v)| (k.to_string(), v.to_string()))
+    .collect()
+}
+
+/// A `created` stamp the caller supplies, so the only thing left varying
+/// between two serializations is the key order under test.
+const FIXED_CREATED: &str = "2026-01-01T00:00:00Z";
+
+/// The nine annotations as the JSON object body a sorted map writes.
+fn sorted_annotations_json() -> String {
+    format!(
+        r#""{}":"{FIXED_CREATED}","sierra":"8","tango":"7","uniform":"6","victor":"5","whiskey":"4","xray":"3","yankee":"2","zulu":"1""#,
+        crate::OCI_ANNOTATION_CREATED
+    )
+}
+
+/// A packed manifest's annotations serialize in one key order, whatever order
+/// the caller built them in, so two packs of identical input produce one
+/// digest.
+///
+/// Compared against a LITERAL: two calls built from one value agree however
+/// wrongly they both order it, which makes a self-comparison green under the
+/// very regression it exists to catch. The literal spells the sorted sequence,
+/// so an unordered map fails it.
+#[test]
+fn build_image_manifest_serializes_its_annotations_in_sorted_key_order() {
+    let opts = PackOptions {
+        annotations: anti_sorted_annotations().into_iter().collect(),
+        ..Default::default()
+    };
+
+    let manifest = build_image_manifest(
+        "sha256:cfg".to_string(),
+        10,
+        "sha256:layer".to_string(),
+        20,
+        &opts,
+    );
+
+    let expected = format!(
+        r#"{{"schemaVersion":2,"mediaType":"{manifest_type}","config":{{"mediaType":"{config_type}","digest":"sha256:cfg","size":10}},"layers":[{{"mediaType":"{layer_type}","digest":"sha256:layer","size":20}}],"annotations":{{{annotations}}}}}"#,
+        manifest_type = MEDIA_TYPE_OCI_MANIFEST,
+        config_type = MEDIA_TYPE_OCI_IMAGE_CONFIG,
+        layer_type = MEDIA_TYPE_OCI_IMAGE_LAYER,
+        annotations = sorted_annotations_json(),
+    );
+    assert_eq!(serde_json::to_string(&manifest).unwrap(), expected);
+}
+
+/// The layered path carries the same contract: `cfgd module push --base` is
+/// the surface that re-pushes an unchanged directory on top of an unchanged
+/// base and must land on the digest it landed on last time.
+#[test]
+fn build_layered_manifest_serializes_its_annotations_in_sorted_key_order() {
+    let opts = PackOptions {
+        annotations: anti_sorted_annotations().into_iter().collect(),
+        ..Default::default()
+    };
+    let base_layers = [OciDescriptor {
+        media_type: MEDIA_TYPE_OCI_IMAGE_LAYER.to_string(),
+        digest: "sha256:base".to_string(),
+        size: 111,
+        annotations: Annotations::new(),
+    }];
+
+    let manifest = build_layered_manifest(
+        &base_layers,
+        "sha256:cfg".to_string(),
+        10,
+        "sha256:layer".to_string(),
+        20,
+        &opts,
+    );
+
+    let expected = format!(
+        r#"{{"schemaVersion":2,"mediaType":"{manifest_type}","config":{{"mediaType":"{config_type}","digest":"sha256:cfg","size":10}},"layers":[{{"mediaType":"{layer_type}","digest":"sha256:base","size":111}},{{"mediaType":"{layer_type}","digest":"sha256:layer","size":20}}],"annotations":{{{annotations}}}}}"#,
+        manifest_type = MEDIA_TYPE_OCI_MANIFEST,
+        config_type = MEDIA_TYPE_OCI_IMAGE_CONFIG,
+        layer_type = MEDIA_TYPE_OCI_IMAGE_LAYER,
+        annotations = sorted_annotations_json(),
+    );
+    assert_eq!(serde_json::to_string(&manifest).unwrap(), expected);
+}
+
+/// A descriptor's own annotation slot answers to the same contract.
+///
+/// Every production construction leaves it empty today and `skip_serializing_if`
+/// elides it, which is exactly why the field's ordering cannot be read off any
+/// manifest pin: an empty map serializes identically whatever its type. The
+/// descriptor is a wire shape a registry reads, so the guarantee belongs to the
+/// type whoever calls it, and it is asserted here directly.
+#[test]
+fn an_oci_descriptor_serializes_its_annotations_in_sorted_key_order() {
+    let descriptor = OciDescriptor {
+        media_type: MEDIA_TYPE_OCI_IMAGE_LAYER.to_string(),
+        digest: "sha256:layer".to_string(),
+        size: 20,
+        annotations: anti_sorted_annotations().into_iter().collect(),
+    };
+
+    let expected = format!(
+        r#"{{"mediaType":"{layer_type}","digest":"sha256:layer","size":20,"annotations":{{{annotations}}}}}"#,
+        layer_type = MEDIA_TYPE_OCI_IMAGE_LAYER,
+        annotations = sorted_annotations_json(),
+    );
+    assert_eq!(serde_json::to_string(&descriptor).unwrap(), expected);
 }

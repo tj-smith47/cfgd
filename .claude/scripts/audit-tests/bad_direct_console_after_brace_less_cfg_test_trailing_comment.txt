@@ -1,0 +1,8 @@
+# EXPECTED: caught by the print!/println! gate. The `#[cfg(test)]` covers only
+# the statement under it, which ends at its `;` even with a trailing comment
+# after it, so the println! on the next line is production code.
+fn _example() {
+    #[cfg(test)]
+    count_attempt(); // counts every attempt
+    println!("x");
+}

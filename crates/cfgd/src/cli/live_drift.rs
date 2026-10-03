@@ -99,8 +99,8 @@ pub fn standing_section(
 /// loops: file and package kinds only) still passes one, and the recompute is
 /// a no-op for any other `resource_type`. The modules folded into it are what
 /// make a module-declared entry renderable at all — its entries live in the
-/// module rather than in the profile's own `env`/`aliases`, and its line
-/// carries the provenance comment the file on disk holds.
+/// module, outside the profile's own `env`/`aliases`, and the block the
+/// file on disk holds them under is headed by the module.
 pub(super) fn drift_event_from(
     r: &VerifyResult,
     merged_env_items: &cfgd_core::reconciler::MergedEnvItems,
@@ -152,11 +152,10 @@ fn record_finding(state: &cfgd_core::state::StateStore, r: &VerifyResult) {
 /// `drift_events` — the daemon's `secret`,
 /// [`cfgd_core::reconciler::ENV_SESSION_RESOURCE_TYPE`] and `manager` rows, the
 /// `script` rows an older cfgd left behind, any class a future writer mints —
-/// is a finding nothing in
-/// this check re-examined, and stands for its own writer to settle. Also the
-/// vocabulary `cli/tests.rs`'s rendered-label walk skips: a `(type, id)`
-/// tuple pushed into a checked/findings vector is a wire key, never a
-/// rendered label.
+/// is a finding nothing in this check re-examined, and stands for its own
+/// writer to settle. Also the vocabulary `cli/tests.rs`'s rendered-label walk
+/// skips: a `(type, id)` tuple pushed into a checked/findings vector is a wire
+/// key that no reader sees rendered.
 pub(in crate::cli) const FULL_CHECK_RESOLVABLE_TYPES: &[&str] = &[
     "file",
     "module",
@@ -185,8 +184,8 @@ pub(in crate::cli) const FULL_CHECK_RESOLVABLE_TYPES: &[&str] = &[
 /// `reconciler::system_resource_key`; and any row whose key a check ERROR names, whichever check
 /// minted it. That last shape is why the errors travel here at all: a
 /// pinned package whose manager states no version is checked for presence
-/// and not for its floor, so healing its recorded row on the presence answer
-/// alone would erase a version finding nothing re-examined.
+/// alone, so healing its recorded row on that answer would erase a version
+/// finding nothing re-examined.
 fn full_check_cannot_refind(
     e: &cfgd_core::state::DriftEvent,
     evaluated_system: &[String],
@@ -312,7 +311,16 @@ pub(super) fn scoped_version_drift(
         modules,
         Some(&registry.manager_map()),
     );
-    cfgd_core::reconciler::package_version_drift(&effective, registry, cx)
+    let (mut results, mut check_errors) =
+        cfgd_core::reconciler::package_version_drift(&effective, registry, cx)?;
+    // The floor of a manager this chain's own entry names is answered by the
+    // binary with no listing consulted, and a scoped run that skipped it would
+    // heal a version row nothing re-examined.
+    let (held, held_errors) =
+        cfgd_core::reconciler::held_manager_version_drift(modules, registry, &results);
+    results.extend(held);
+    check_errors.extend(held_errors);
+    Ok((results, check_errors))
 }
 
 /// One [`cfgd_core::reconciler::ModuleScope`] per member of `chain`, in
@@ -798,8 +806,16 @@ fn live_drift_results_inner(
     );
     let (version_drift, version_check_errors) =
         cfgd_core::reconciler::package_version_drift(&effective, registry, cx)?;
-    drift.extend(version_drift);
     extend_check_errors(&mut package_check_errors, version_check_errors);
+    // A manager the machine already holds at a declared floor answers for
+    // itself: no listing holds a tool its own installer delivered, so this
+    // pass reads the binary and is the only thing that can report a toolchain
+    // that slipped below the floor a module declared.
+    let (held_drift, held_check_errors) =
+        cfgd_core::reconciler::held_manager_version_drift(modules, registry, &version_drift);
+    drift.extend(version_drift);
+    drift.extend(held_drift);
+    extend_check_errors(&mut package_check_errors, held_check_errors);
 
     // Managers: a manager the plan would provision or refuse is itself drift —
     // the same signal `diff`'s `cfgd:managers` group renders, from the same
@@ -842,11 +858,11 @@ fn live_drift_results_inner(
                     }
                 }
                 // A configurator that errors while probing is a first-class
-                // check error, not drift and not silence: it renders its own
-                // row and outranks `DriftDetected` at every `--exit-code`
-                // gate. Indeterminate cuts both ways for the record: the
-                // recorder keeps this configurator's recorded rows standing
-                // rather than resolving what nothing re-checked.
+                // check error: it renders its own row and outranks
+                // `DriftDetected` at every `--exit-code` gate. Indeterminate
+                // cuts both ways for the record: the recorder keeps this
+                // configurator's recorded rows standing, so nothing unchecked
+                // is resolved.
                 Err(e) => check_errors.push(super::output_types::SystemCheckError {
                     key: configurator.name().to_string(),
                     error: cfgd_core::output::collapse_to_subject_line(e),
@@ -870,11 +886,8 @@ fn live_drift_results_inner(
         cfgd_core::reconciler::recorded_manager_path_dirs(state, &resolved.merged, modules);
     drift.extend(
         cfgd_core::reconciler::env_verify_results(
-            &resolved.merged.env,
-            &resolved.merged.aliases,
-            &resolved.merged.entry_owners,
+            &cfgd_core::reconciler::LayeredEnv::of(resolved, modules),
             resolved.merged.env_scope,
-            modules,
             &path_dirs,
         )
         .into_iter()
@@ -987,7 +1000,13 @@ pub(in crate::cli) struct ManagerDriftPhrase {
 /// optimisation instead of a precondition a second caller has to know about.
 pub(in crate::cli) fn manager_drift_phrase(action: &ManagerAction) -> Option<ManagerDriftPhrase> {
     match action {
-        ManagerAction::RefreshIndex { .. } | ManagerAction::Prerequisite { .. } => None,
+        // A held manager below its floor is on the machine, so it is no absence
+        // to report here: `held_manager_version_drift` already gives it a
+        // version row on the very same surfaces, and a second line would name
+        // one fact twice in two grammars.
+        ManagerAction::RefreshIndex { .. }
+        | ManagerAction::Prerequisite { .. }
+        | ManagerAction::HeldFloor { .. } => None,
         ManagerAction::Provision { via, .. } => Some(ManagerDriftPhrase {
             state: cfgd_core::Absence::NotInstalled.as_str(),
             detail: format!("can provision via {via}"),
@@ -1169,7 +1188,7 @@ mod tests {
             layers: vec![ProfileLayer {
                 source: "local".to_string(),
                 profile_name: "test".to_string(),
-                priority: 1000,
+                priority: cfgd_core::config::LOCAL_LAYER_PRIORITY,
                 policy: LayerPolicy::Local,
                 spec: ProfileSpec::default(),
             }],
@@ -1222,6 +1241,8 @@ mod tests {
             .upsert_managed_resource(
                 "file",
                 &cfgd_core::to_posix_string(&target),
+                "file",
+                None,
                 "test",
                 None,
                 None,
@@ -1380,10 +1401,12 @@ mod tests {
             platforms: vec![],
         };
         let hand_edited_line = cfgd_core::reconciler::MergedEnvItems::new(
-            &[],
-            std::slice::from_ref(&hand_edited),
-            &Default::default(),
-            &[],
+            &cfgd_core::reconciler::LayeredEnv::from_parts(
+                "profile:test",
+                &[],
+                std::slice::from_ref(&hand_edited),
+                &[],
+            ),
             &[],
         )
         .declared_line("alias", "ll")
@@ -1398,7 +1421,7 @@ mod tests {
             layers: vec![ProfileLayer {
                 source: "local".to_string(),
                 profile_name: "test".to_string(),
-                priority: 1000,
+                priority: cfgd_core::config::LOCAL_LAYER_PRIORITY,
                 policy: LayerPolicy::Local,
                 spec: ProfileSpec::default(),
             }],
@@ -1444,6 +1467,8 @@ mod tests {
         target: std::path::PathBuf,
     ) -> ResolvedModule {
         ResolvedModule {
+            held_managers: Vec::new(),
+            floor_bootstraps: Vec::new(),
             dep_pulled: false,
             name: name.to_string(),
             packages: Vec::new(),
@@ -1787,7 +1812,7 @@ mod tests {
             layers: vec![ProfileLayer {
                 source: "local".to_string(),
                 profile_name: "test".to_string(),
-                priority: 1000,
+                priority: cfgd_core::config::LOCAL_LAYER_PRIORITY,
                 policy: LayerPolicy::Local,
                 spec: ProfileSpec::default(),
             }],
@@ -1798,6 +1823,8 @@ mod tests {
     /// A `ResolvedModule` carrying a single package, no files.
     fn module_with_package(name: &str, manager: &str, pkg: &str) -> ResolvedModule {
         ResolvedModule {
+            held_managers: Vec::new(),
+            floor_bootstraps: Vec::new(),
             dep_pulled: false,
             name: name.to_string(),
             packages: vec![cfgd_core::modules::ResolvedPackage {

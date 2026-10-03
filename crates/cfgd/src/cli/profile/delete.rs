@@ -57,7 +57,7 @@ pub fn cmd_profile_delete(
     yes: bool,
     ignore_not_found: bool,
 ) -> anyhow::Result<()> {
-    validate_resource_name(name, "Profile")?;
+    validate_resource_name(name, "Profile", "<NAME>")?;
     printer.heading_title(&TitleLabel::new("Delete Profile", name));
 
     let pdir = profiles_dir(cli);

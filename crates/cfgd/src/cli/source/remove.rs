@@ -59,6 +59,27 @@ fn kept_source(recorded: &str, departing: &str) -> String {
     layers.join(cfgd_core::reconciler::Owner::TOKEN_SEPARATOR)
 }
 
+/// Re-record one row under the layers left once `name` goes, keeping every
+/// other recorded fact the row carries.
+fn keep_locally(
+    state: &cfgd_core::state::StateStore,
+    r: &cfgd_core::state::ManagedResource,
+    name: &str,
+) -> cfgd_core::errors::Result<()> {
+    let kind = r.kind.as_deref().unwrap_or_else(|| {
+        cfgd_core::reconciler::recorded_resource_kind(&r.resource_type, &r.resource_id)
+    });
+    state.upsert_managed_resource(
+        &r.resource_type,
+        &r.resource_id,
+        kind,
+        r.manager.as_deref(),
+        &kept_source(&r.source, name),
+        r.last_hash.as_deref(),
+        r.last_applied,
+    )
+}
+
 /// What the departing source itself declares, folded across its own layers and
 /// the modules it delivered, in the merge's order.
 ///
@@ -121,14 +142,10 @@ fn keep_entry_declarations(
         &quiet,
         false,
         composition::ConstraintMode::Report,
+        &cfgd_core::modules::refuse_floor_bootstrap,
     )?;
-    let items = cfgd_core::reconciler::MergedEnvItems::new(
-        &desired.resolved.merged.env,
-        &desired.resolved.merged.aliases,
-        &desired.resolved.merged.entry_owners,
-        &desired.modules,
-        &[],
-    );
+    let layered = cfgd_core::reconciler::LayeredEnv::of(&desired.resolved, &desired.modules);
+    let items = cfgd_core::reconciler::MergedEnvItems::new(&layered, &[]);
     let (own_env, own_aliases) = declared_by_source(&desired.resolved, &desired.modules, name);
 
     let profiles_dir = ctx.config_dir().join("profiles");
@@ -285,13 +302,7 @@ pub(super) fn run_source_remove(
         if choice.starts_with("Keep") {
             // Re-assign resources to local
             for r in &resources {
-                state.upsert_managed_resource(
-                    &r.resource_type,
-                    &r.resource_id,
-                    &kept_source(&r.source, name),
-                    r.last_hash.as_deref(),
-                    r.last_applied,
-                )?;
+                keep_locally(&state, r, name)?;
             }
             printer.status_simple(Role::Info, "Resources transferred to local management");
             disposition = "kept";
@@ -300,13 +311,7 @@ pub(super) fn run_source_remove(
         }
     } else if keep_all {
         for r in &resources {
-            state.upsert_managed_resource(
-                &r.resource_type,
-                &r.resource_id,
-                &kept_source(&r.source, name),
-                r.last_hash.as_deref(),
-                r.last_applied,
-            )?;
+            keep_locally(&state, r, name)?;
         }
         disposition = "kept";
     } else if remove_all {
@@ -460,9 +465,12 @@ mod tests {
             color: crate::cli::ColorWhen::Auto,
             output: crate::cli::OutputFormatArg(OutputFormat::Table),
             list_envelope: false,
+            hints: false,
             no_hints: false,
             theme: None,
             mask_env_values: None,
+            migration_policy: None,
+            update_policy: None,
             jsonpath: None,
             yes: false,
             state_dir: Some(state_dir),
@@ -626,7 +634,7 @@ mod tests {
             })
             .expect("seed config_source");
         state
-            .upsert_managed_resource("file", "/etc/foo", "acme", None, None)
+            .upsert_managed_resource("file", "/etc/foo", "file", None, "acme", None, None)
             .expect("seed managed resource");
         drop(state);
 
@@ -689,7 +697,7 @@ mod tests {
             })
             .expect("seed config_source");
         state
-            .upsert_managed_resource("file", &id, "acme", recorded_hash, None)
+            .upsert_managed_resource("file", &id, "file", None, "acme", recorded_hash, None)
             .expect("seed managed resource");
         id
     }
@@ -831,7 +839,7 @@ mod tests {
             })
             .expect("seed config_source");
         state
-            .upsert_managed_resource("file", "/etc/bar", "acme", None, None)
+            .upsert_managed_resource("file", "/etc/bar", "file", None, "acme", None, None)
             .expect("seed managed resource");
         drop(state);
 
@@ -963,7 +971,15 @@ mod tests {
             (cfgd_core::reconciler::ALIAS_RESOURCE_TYPE, "ll", "local"),
         ] {
             state
-                .upsert_managed_resource(rtype, id, owner, None, None)
+                .upsert_managed_resource(
+                    rtype,
+                    id,
+                    cfgd_core::reconciler::recorded_resource_kind(rtype, id),
+                    None,
+                    owner,
+                    None,
+                    None,
+                )
                 .expect("seed entry row");
         }
         drop(state);
@@ -1012,7 +1028,8 @@ mod tests {
     #[serial_test::serial]
     fn keep_all_copies_the_sources_entries_into_the_local_profile() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let _allow = cfgd_core::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+        let _allow =
+            cfgd_core::test_helpers::EnvVarGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
         let (cli, local_profile) = seed_source_declaring_entries(dir.path());
         prime_source_cache(&cli);
 
@@ -1108,7 +1125,7 @@ mod tests {
             })
             .expect("seed config_source");
         state
-            .upsert_managed_resource("file", "/etc/baz", "acme", None, None)
+            .upsert_managed_resource("file", "/etc/baz", "file", None, "acme", None, None)
             .expect("seed managed resource");
         drop(state);
 
@@ -1149,7 +1166,7 @@ mod tests {
             })
             .expect("seed config_source");
         state
-            .upsert_managed_resource("file", "/etc/keepme", "acme", None, None)
+            .upsert_managed_resource("file", "/etc/keepme", "file", None, "acme", None, None)
             .expect("seed managed resource");
         drop(state);
 

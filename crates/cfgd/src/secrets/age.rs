@@ -13,7 +13,7 @@ use super::{extract_age_recipient, shell_split_editor};
 /// Env-var seam for the `age` binary path. Production code reads no env var
 /// and `Command::new` resolves `"age"` via PATH; tests set this var to a
 /// `cfgd_core::test_helpers::ToolShim` script path. See `tool_binary_name`.
-const AGE_BIN_ENV: &str = "CFGD_AGE_BIN";
+pub const AGE_BIN_ENV: &str = "CFGD_AGE_BIN";
 
 /// Age-based secret backend for encrypting opaque binary files where SOPS
 /// (which operates on structured data) doesn't apply.
@@ -296,8 +296,7 @@ AGE-SECRET-KEY-1QJQF0XE6P3X2P5VFQK8WMZDNW3F6KGPNXS4Y0EKJY3NQVJQQQ9SJ8LKZP\n";
         use cfgd_core::test_helpers::{EnvVarGuard, ToolShim};
 
         use super::{AgeBackend, SAMPLE_RECIPIENT, write_key_file};
-
-        const AGE_BIN_ENV: &str = "CFGD_AGE_BIN";
+        use crate::seams::AGE_BIN_ENV;
 
         #[test]
         #[serial]

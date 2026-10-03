@@ -51,20 +51,21 @@
 //!    unavailable by definition — left in, it would drain the one phase whose
 //!    purpose is that provisioning runs concurrently.
 //!
-//! ## The caller must not hold `path_env_mutation_guard()` across `apply()`
+//! ## A caller holding `path_env_mutation_guard()` lends it to the workers
 //!
 //! `dispatch_lanes` spawns worker threads that read the process `PATH`
 //! (a package manager resolving its own binary, `git`, a script interpreter),
 //! each guarded by `cfgd_core::test_helpers::path_env_read_guard()` at the
 //! actual point of spawn. That guard's thread-locals are per-thread, so a
-//! freshly spawned worker carries neither flag and takes a REAL read lock on
-//! `PATH_ENV_LOCK`. If the thread that called `apply()` already holds the
-//! exclusive `path_env_mutation_guard()` (a test fixture driving `apply()`
-//! from inside a `CwdGuard`/`PathShimGuard` window) that thread goes on to
-//! park in `inbox.recv()` waiting for the very worker that is blocked behind
-//! its own write guard — deadlock, with no timeout. `dispatch_lanes`
-//! asserts against exactly that precondition before spawning anything, so the
-//! violation fails fast instead of hanging.
+//! freshly spawned worker would take a REAL read lock on `PATH_ENV_LOCK`. If
+//! the thread that called `apply()` already holds the exclusive
+//! `path_env_mutation_guard()` (a test fixture driving `apply()` under a
+//! `ToolShim`, `PathShimGuard` or `CwdGuard`), that thread parks in
+//! `inbox.recv()` waiting for a worker blocked behind its own write guard.
+//! So each worker enters the caller's window through
+//! `cfgd_core::test_helpers::enter_inherited_window` before anything else:
+//! the caller is parked and mutates nothing, and every other thread stays shut
+//! out by the lock it still holds.
 use std::collections::{HashMap, HashSet};
 use std::sync::mpsc::{Sender, channel};
 use std::time::{Duration, Instant};
@@ -111,6 +112,10 @@ pub(super) struct LaneRun<'x> {
     /// into that list while these workers run, and a failure inside THIS phase
     /// is `fail_dependents`' to withhold, not this list's.
     pub(super) unprovisioned: &'x [String],
+    /// Floor checks an EARLIER phase of this run judged unmet, taken with the
+    /// snapshot above and for the same reason: see
+    /// `Reconciler::withheld_floors`.
+    pub(super) withheld_floors: &'x [super::types::WithheldFloor],
     /// Managers an EARLIER phase of this run already PUT on the machine, taken
     /// with the snapshot above and for the same reason: see
     /// `Reconciler::provisioned`.
@@ -986,18 +991,10 @@ impl super::Reconciler<'_> {
         run: &LaneRun<'_>,
         collect: &mut LaneCollector<'_, 'p, '_>,
     ) -> Option<u8> {
-        // See the module doc's "caller must not hold `path_env_mutation_guard()`"
-        // section: a worker's own `path_env_read_guard()` would block forever
-        // behind this thread's write guard once this thread parks in
-        // `inbox.recv()` below. Fail fast here rather than hang there.
+        // Read on this thread, before any worker exists: see the module doc's
+        // "lends it to the workers" section.
         #[cfg(any(test, feature = "test-helpers"))]
-        debug_assert!(
-            !crate::test_helpers::path_env_exclusive_guard_held(),
-            "dispatch_lanes() called while this thread already holds \
-             path_env_mutation_guard() — a lane worker's path_env_read_guard() \
-             would deadlock behind it once this thread parks in inbox.recv(). \
-             Release the mutation guard before calling apply()."
-        );
+        let window = crate::test_helpers::path_env_exclusive_guard_held();
 
         let mut slots: Vec<Slot<'p>> = dispatch
             .iter()
@@ -1119,15 +1116,14 @@ impl super::Reconciler<'_> {
                         // the developer's real `$HOME`.
                         let test_home = crate::test_home_override();
                         scope.spawn(move || {
+                            #[cfg(any(test, feature = "test-helpers"))]
+                            let _window = crate::test_helpers::enter_inherited_window(window);
                             let _test_home_guard =
                                 test_home.as_deref().map(crate::with_test_home_guard);
                             // Held across `run_one_action` below, which resolves
                             // a package manager's own binary, `git`, and script
-                            // interpreters — all PATH reads. See the module
-                            // doc's "caller must not hold
-                            // `path_env_mutation_guard()`" section: this is the
-                            // read half of the lock that debug_assert checks
-                            // for at the top of this function. Compiled out of
+                            // interpreters — all PATH reads. A no-op inside a
+                            // window the caller lent above. Compiled out of
                             // release builds, like every other PATH-reading
                             // call site.
                             #[cfg(any(test, feature = "test-helpers"))]
@@ -1529,6 +1525,7 @@ fn run_one_action(
     let exec = PackageExec::new(registry, &proxy, run.printer, &notes)
         .in_lane(lane)
         .withholding_managers(run.unprovisioned)
+        .withholding_floors(run.withheld_floors)
         .delivered_by(run.provisioned_packages);
     let executed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match action {
         Action::Package(pkg) => exec.apply_package_action(pkg),
@@ -1634,6 +1631,7 @@ mod tests {
                 manager: manager.to_string(),
                 via: via.to_string(),
                 declared: None,
+                floor: None,
                 batched: Vec::new(),
                 depends_on,
             })
@@ -1809,6 +1807,7 @@ mod tests {
                 manager: "brew".into(),
                 via: "homebrew installer".into(),
                 declared: None,
+                floor: None,
                 batched: vec![],
                 depends_on: vec![],
             },
@@ -1822,6 +1821,14 @@ mod tests {
             ManagerAction::Refuse {
                 manager: "nix".into(),
                 reason: "curl is missing".into(),
+            },
+            ManagerAction::HeldFloor {
+                manager: "cargo".into(),
+                floor: "1.85".into(),
+                declared: vec![crate::reconciler::DeclaredFloor {
+                    module: "rust".into(),
+                    floor: "1.85".into(),
+                }],
             },
         ];
         for node in variants {
@@ -1846,7 +1853,8 @@ mod tests {
                 }
                 ManagerAction::RefreshIndex { .. }
                 | ManagerAction::Provision { .. }
-                | ManagerAction::Refuse { .. } => assert_eq!(
+                | ManagerAction::Refuse { .. }
+                | ManagerAction::HeldFloor { .. } => assert_eq!(
                     named, rendered,
                     "a blocker is named by the row the reader can see"
                 ),
@@ -2392,6 +2400,7 @@ mod tests {
             manager: manager.to_string(),
             via: via.to_string(),
             declared: None,
+            floor: None,
             batched: vec![],
             depends_on: depends_on.to_vec(),
         })
@@ -2570,6 +2579,7 @@ mod tests {
             manager: "brew-cask".to_string(),
             via: "brew".to_string(),
             declared: None,
+            floor: None,
             batched: vec![],
             depends_on: vec![ManagerAction::provision_node("brew")],
         });

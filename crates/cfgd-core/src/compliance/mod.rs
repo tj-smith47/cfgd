@@ -58,6 +58,24 @@ pub struct ComplianceCheck {
     pub value: Option<String>,
 }
 
+impl ComplianceCheck {
+    /// The one identifier this check is reported under: its target, name, key
+    /// or path, whichever it carries first.
+    ///
+    /// Every surface naming a check reads it here — the `cfgd compliance`
+    /// rows, the diff that pairs two snapshots, and the check-in that tells the
+    /// gateway which checks failed — so the fleet and the machine name a row
+    /// the same way.
+    pub fn subject_name(&self) -> &str {
+        self.target
+            .as_deref()
+            .or(self.name.as_deref())
+            .or(self.key.as_deref())
+            .or(self.path.as_deref())
+            .unwrap_or("(unknown)")
+    }
+}
+
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub enum ComplianceStatus {
     #[default]
@@ -67,6 +85,20 @@ pub enum ComplianceStatus {
 }
 
 impl ComplianceStatus {
+    /// Every status, least severe first.
+    pub const ALL: [Self; 3] = [Self::Compliant, Self::Warning, Self::Violation];
+
+    /// This status's index in [`Self::ALL`]. The match has no wildcard, so a
+    /// new status does not compile until it is given a place here, and the
+    /// test over this index fails until `ALL` holds it.
+    pub const fn ordinal(self) -> usize {
+        match self {
+            Self::Compliant => 0,
+            Self::Warning => 1,
+            Self::Violation => 2,
+        }
+    }
+
     /// The word a person reads for this status, WITH the role that colours it.
     ///
     /// One producer of both halves, for the same reason `ApplyStatus` has one:
@@ -93,6 +125,14 @@ pub struct ComplianceSummary {
     pub violation: usize,
 }
 
+impl ComplianceSummary {
+    /// The counts as every command and the fleet dashboard spell them:
+    /// `12 compliant, 1 warning, 0 violation`.
+    pub fn counts_line(&self) -> String {
+        cfgd_schema::compliance_counts_line(self.compliant, self.warning, self.violation)
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Collection
 // ---------------------------------------------------------------------------
@@ -116,6 +156,10 @@ pub struct ComplianceSummary {
 /// them to the gateway — so the machine is diffed once per command rather than
 /// once per consumer. `None` collects them here.
 ///
+/// `constraint_violations` are the source security-constraint violations a
+/// `ConstraintMode::Report` composition collected; each becomes a `Violation`
+/// check, so every command that collects a snapshot reports them the same way.
+///
 /// Pass what a caller ALREADY has, never a collection made for this call: the
 /// diff shells out to every configurator the profile declares, so a caller that
 /// collects eagerly to fill this argument has paid for a scan whose second
@@ -135,6 +179,7 @@ pub fn collect_snapshot(
     printer: &Printer,
     state: &StateStore,
     system_diffs: Option<&[SystemDiff]>,
+    constraint_violations: &[crate::composition::ConstraintViolation],
 ) -> Result<ComplianceSnapshot> {
     let platform = Platform::current();
     let hostname = crate::hostname_string();
@@ -180,6 +225,7 @@ pub fn collect_snapshot(
             &cx,
         )?);
     }
+    checks.extend(constraint_violation_checks(constraint_violations));
 
     let summary = compute_summary(&checks);
 
@@ -191,6 +237,44 @@ pub fn collect_snapshot(
         checks,
         summary,
     })
+}
+
+/// Map a source-constraint violation `kind` to a compliance check category.
+/// Encryption constraints are filed under `file-encryption`, the category the
+/// file-encryption checks already use; every other constraint shares
+/// `source-constraint`.
+fn constraint_violation_category(kind: &str) -> &'static str {
+    match kind {
+        "encryption-required" | "encryption-backend-mismatch" | "encryption-mode-mismatch" => {
+            "file-encryption"
+        }
+        _ => "source-constraint",
+    }
+}
+
+/// Each source-constraint violation as a `Violation` check, sorted by
+/// category, then target, then detail, so the order does not depend on the
+/// order the sources were visited in.
+fn constraint_violation_checks(
+    violations: &[crate::composition::ConstraintViolation],
+) -> Vec<ComplianceCheck> {
+    let mut checks: Vec<ComplianceCheck> = violations
+        .iter()
+        .map(|v| ComplianceCheck {
+            category: constraint_violation_category(&v.kind).to_string(),
+            target: v.path.clone(),
+            status: ComplianceStatus::Violation,
+            detail: Some(v.detail.clone()),
+            ..Default::default()
+        })
+        .collect();
+    checks.sort_by(|a, b| {
+        a.category
+            .cmp(&b.category)
+            .then(a.target.cmp(&b.target))
+            .then(a.detail.cmp(&b.detail))
+    });
+    checks
 }
 
 /// Compute summary counts from a list of checks.
@@ -645,6 +729,51 @@ pub fn collect_package_checks(
         }
     }
 
+    // A held manager is a declaration no desired-package set can carry: its
+    // delivery IS the manager, so nothing installs it and no listing lists it.
+    // Without a row of its own the control plane sees a module declaring
+    // nothing at all. The name and the manager are the same word, which is the
+    // fact the row reports. The map allocates a key per registered manager and
+    // is read only here, so a profile declaring no held manager never builds it.
+    let mgr_map = if modules.iter().any(|m| !m.held_managers.is_empty()) {
+        registry.manager_map()
+    } else {
+        std::collections::HashMap::new()
+    };
+    for module in modules {
+        for held in &module.held_managers {
+            let suffix = origin_suffix(&Origin::Module(module.name.clone()));
+            let (status, detail) = match &held.judgment {
+                crate::modules::FloorJudgment::Met { version } => (
+                    ComplianceStatus::Compliant,
+                    format!("held at {version}{suffix}"),
+                ),
+                crate::modules::FloorJudgment::Short { .. } => (
+                    ComplianceStatus::Violation,
+                    format!(
+                        "{}{suffix}",
+                        held.clause(mgr_map.get(&held.package).copied())
+                    ),
+                ),
+                crate::modules::FloorJudgment::Unproven { .. } => (
+                    ComplianceStatus::Warning,
+                    format!(
+                        "{}{suffix}",
+                        held.clause(mgr_map.get(&held.package).copied())
+                    ),
+                ),
+            };
+            checks.push(ComplianceCheck {
+                category: "package".into(),
+                name: Some(held.package.clone()),
+                manager: Some(held.package.clone()),
+                status,
+                detail: Some(detail),
+                ..Default::default()
+            });
+        }
+    }
+
     Ok(checks)
 }
 
@@ -770,6 +899,24 @@ pub fn declared_package_versions(
             reported.insert(
                 crate::state::package_resource_id(pm.name(), package),
                 version.to_string(),
+            );
+        }
+    }
+    // A held manager answers for itself: no listing carries the copy its own
+    // installer delivered, so the version comes from the judgment the
+    // resolution already made. An unproven floor contributes no key, for the
+    // same reason a manager stating no version for a package contributes none:
+    // a placeholder is a version a policy would compare against.
+    for module in modules {
+        for held in &module.held_managers {
+            let version = match &held.judgment {
+                crate::modules::FloorJudgment::Met { version }
+                | crate::modules::FloorJudgment::Short { version } => version,
+                crate::modules::FloorJudgment::Unproven { .. } => continue,
+            };
+            reported.insert(
+                crate::state::package_resource_id(&held.package, &held.package),
+                version.clone(),
             );
         }
     }

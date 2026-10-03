@@ -149,6 +149,8 @@ fn an_advisory_cannot_repaint_the_line_it_is_written_on() {
 #[test]
 fn a_bullet_a_hint_and_a_code_block_cannot_repaint_the_lines_they_are_written_on() {
     let (printer, screen) = Printer::for_test_live_terminal(24, 120);
+    // Hints are off by default, and one of the three slots walked is a hint.
+    let printer = printer.with_hints_enabled(true);
     {
         let section = printer.section("Review");
         section.bullet(poisoned("run: install.sh"));

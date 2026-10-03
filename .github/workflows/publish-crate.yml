@@ -5,9 +5,10 @@ name: Publish crate
 # shape: check out the tagged SHA, restore that crate's determinism-preserved
 # dist, run `release --publish-only --skip cargo` — the binary distribution
 # (github-release, docker, homebrew, snap, …). The crates.io publish for ALL
-# crates (these plus the cfgd-crd/cfgd-core libraries, which have no other
-# publish target) runs in the dispatched publish-oidc.yml, because crates.io
-# Trusted Publishing rejects the workflow_run event this reusable inherits.
+# crates (these plus the cfgd-schema/cfgd-crd/cfgd-core libraries, which have no
+# other publish target) runs in the dispatched publish-oidc.yml, because
+# crates.io Trusted Publishing rejects the workflow_run event this reusable
+# inherits.
 
 on:
   workflow_call:
@@ -31,7 +32,7 @@ on:
         type: string
         default: ''
       rollback:
-        description: "Roll back the release tags in-job on failure. TRUE only for legs with no concurrent siblings (crd/core) — parallel matrix legs must leave rollback to release.yml's rollback-trio job, or a failed leg deletes tags out from under still-running siblings."
+        description: "Roll back the release tags in-job on failure. TRUE only for a single-leg recovery dispatch — parallel matrix legs must leave rollback to release.yml's rollback-trio job, or a failed leg deletes tags out from under still-running siblings."
         required: false
         type: boolean
         default: false

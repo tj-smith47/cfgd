@@ -59,8 +59,8 @@ status:
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `name` | string | Yes | | Resource name. |
-| `namespace` | string | Yes | | Kubernetes namespace. |
+| `name` | string | Yes | — | Resource name. |
+| `namespace` | string | Yes | — | Kubernetes namespace. |
 
 ---
 

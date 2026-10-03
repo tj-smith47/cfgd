@@ -5,11 +5,6 @@
 //! - glyph + style lookup via Theme
 //!
 //! Every other module routes terminal writes through here.
-//!
-//! `RenderState::{depth,push,pop}` and `indent_prefix` are reachable only
-//! from tests and from inside the renderer module; the narrow `dead_code`
-//! allow keeps them addressable without a workspace-wide warning.
-#![allow(dead_code)]
 
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering::Relaxed};
@@ -31,9 +26,8 @@ pub use table::Table;
 
 /// The ONE `"  ".repeat(depth)` in the workspace. Every surface that indents
 /// by depth — the renderer's own line pusher, kv blocks, and the three live
-/// primitives (`Spinner`, `OutputWindow`, `LiveRow`) that cannot reach a
-/// `Renderer` to call [`Renderer::indent_prefix`] — calls through here rather
-/// than re-deriving the multiplication at its own site.
+/// primitives (`Spinner`, `OutputWindow`, `LiveRow`) — calls through here, so
+/// no site re-derives the multiplication.
 pub(crate) fn indent_prefix(depth: usize) -> String {
     "  ".repeat(depth)
 }
@@ -407,17 +401,20 @@ pub struct Renderer {
     pub(crate) live: std::sync::Arc<LiveBarState>,
     /// Non-zero while a `DepthInheritGuard` is alive.
     pub(crate) inherit_guards: AtomicUsize,
-    /// Whether [`Self::render_hint`] emits anything. Settled once by
-    /// `Printer::with_hints_enabled` (from `--no-hints` / `CFGD_USAGE_HINTS` /
-    /// `spec.output.usageHints`) and then read by every renderer sharing this
-    /// printer's decision — `SectionGuard` and `Doc` rendering hold their own
-    /// `Arc<Renderer>` clone rather than asking the `Printer`, so the flag has
-    /// to live here, at the one seam every hint producer already reaches.
+    /// Whether [`Self::render_hint`] emits a GATED hint. Settled once by
+    /// `Printer::with_hints_enabled` (from `--hints` / `--no-hints` /
+    /// `CFGD_USAGE_HINTS` / `spec.output.usageHints`) and then read by every
+    /// renderer sharing this printer's decision — `SectionGuard` and `Doc`
+    /// rendering hold their own `Arc<Renderer>` clone and never ask the
+    /// `Printer`, so the flag has to live here, at the one seam every hint
+    /// producer already reaches. An unconditional hint ignores it entirely.
     /// `AtomicBool` rather than a constructor parameter: threading a new
     /// argument through `Renderer::new`/`with_bars` would touch every one of
-    /// their ~70 test call sites for a decision the CLI's one production call
-    /// site ever needs to flip off (the kubectl plugin's minimal global-flag
-    /// subset omits `--no-hints` entirely, so hints there always stay on).
+    /// their ~70 test call sites for a decision one CLI call site settles.
+    /// It starts FALSE, matching the product default, so a printer nobody
+    /// resolved a decision for (the kubectl plugin's minimal global-flag
+    /// subset carries no hints flag at all) renders what a default cfgd run
+    /// renders, with no tutorial nothing asked for.
     pub(crate) hints_enabled: AtomicBool,
 }
 
@@ -430,7 +427,7 @@ impl Renderer {
             bars: None,
             live: std::sync::Arc::new(LiveBarState::new(None)),
             inherit_guards: AtomicUsize::new(0),
-            hints_enabled: AtomicBool::new(true),
+            hints_enabled: AtomicBool::new(false),
         }
     }
 
@@ -509,11 +506,6 @@ impl Renderer {
     pub(crate) fn continuation_seed(&self) -> RenderState {
         let s = self.state.lock().unwrap_or_else(|e| e.into_inner());
         RenderState::continued_from(&s)
-    }
-
-    /// Build the indent prefix for the current depth.
-    pub(crate) fn indent_prefix(&self, depth: usize) -> String {
-        indent_prefix(depth)
     }
 
     /// Called by every top-level emit before writing. Returns the depth at
@@ -1059,18 +1051,6 @@ impl Renderer {
         s.last_top_group = None;
     }
 
-    /// Set blank-pending iff at the root group level (no open section).
-    /// Called at the end of every top-level group emission (heading, kv_block,
-    /// status, hint, note, table) so the next top-level emit gets one blank.
-    /// One blank line precedes every top-level GROUP after the first —
-    /// `open_top_group` decides what continues a group rather than starting one.
-    pub(crate) fn mark_top_level_group(&self, kind: TopGroup) {
-        self.state
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .mark_top_level_group(kind);
-    }
-
     /// Enter buffered `Doc` rendering. Paired with `exit_doc`; nests because a
     /// Doc may render a nested Doc through a component.
     pub(crate) fn enter_doc(&self) {
@@ -1082,16 +1062,6 @@ impl Renderer {
     pub(crate) fn exit_doc(&self) {
         let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
         s.doc_depth = s.doc_depth.saturating_sub(1);
-    }
-
-    /// Drop the pending blank when this emission continues the previous group
-    /// rather than starting a new one. Call before writing, from every
-    /// top-level emitter.
-    pub(crate) fn open_top_group(&self, kind: TopGroup) {
-        self.state
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .open_top_group(kind);
     }
 
     /// Heading: bold styled by Theme::header. No `=== ===` decoration. Always depth 0.
@@ -1263,15 +1233,23 @@ impl Renderer {
     /// `Doc` with no `with_data` serializes its `Component::Hint` text into the
     /// Doc-derived payload, which keeps the absolute path a script can `cat`.
     ///
-    /// Also the ONE seam `spec.output.usageHints: false` / `CFGD_USAGE_HINTS=false` /
-    /// `--no-hints` suppresses through: the early return below fires before
-    /// `open_top_group` arms the leading blank line a hint would otherwise
-    /// own, so turning hints off drops both the hint AND its blank line
-    /// rather than leaving a bare blank behind. `note`/`deprecation`/`alert`
-    /// are NOT hints and do not check this flag — they report what the run
-    /// did or will do, not what to run next, and stay visible with hints off.
-    pub fn render_hint(&self, w: &dyn Writer, depth: usize, text: &str, commands: &[String]) {
-        if self.verbosity == Verbosity::Quiet || !self.hints_enabled() {
+    /// Also the ONE seam `--hints` / `CFGD_USAGE_HINTS` /
+    /// `spec.output.usageHints` decides through: the early return below fires
+    /// before `open_top_group` arms the leading blank line a hint would
+    /// otherwise own, so a suppressed hint drops its blank line with it. Only a
+    /// `gated` hint asks — a remediation an invocation cannot be acted on
+    /// without renders whatever the reader decided about tutorials.
+    /// `note`/`deprecation`/`alert` are NOT hints and never ask — they report
+    /// what the run did or will do.
+    pub fn render_hint(
+        &self,
+        w: &dyn Writer,
+        depth: usize,
+        text: &str,
+        commands: &[String],
+        gated: bool,
+    ) {
+        if self.verbosity == Verbosity::Quiet || (gated && !self.hints_enabled()) {
             return;
         }
         let arrow = self
@@ -1384,10 +1362,9 @@ mod tests {
 
     #[test]
     fn indent_prefix_uses_two_spaces_per_level() {
-        let r = Renderer::new(Theme::default(), Verbosity::Normal);
-        assert_eq!(r.indent_prefix(0), "");
-        assert_eq!(r.indent_prefix(1), "  ");
-        assert_eq!(r.indent_prefix(3), "      ");
+        assert_eq!(indent_prefix(0), "");
+        assert_eq!(indent_prefix(1), "  ");
+        assert_eq!(indent_prefix(3), "      ");
     }
 
     use std::sync::{Arc, Mutex};
@@ -1396,6 +1373,9 @@ mod tests {
         let buf = Arc::new(Mutex::new(String::new()));
         let sink = StringSink(buf.clone());
         let r = Renderer::new(Theme::default(), Verbosity::Normal);
+        // Hints start off, matching the product default, so a render test whose
+        // subject is a hint's LAYOUT has to ask for one first.
+        r.set_hints_enabled(true);
         (r, sink, buf)
     }
 
@@ -1418,7 +1398,10 @@ mod tests {
                 Theme::from_preset("dracula").with_colors(true),
                 Verbosity::Verbose,
             );
+            // `hint` is one of the emitters walked, and hints start off.
+            r.set_hints_enabled(true);
             emit(&r, &sink);
+            // long-line-ok: a hatch is read off its own line, so it cannot wrap
             // raw-capture-ok: asserting a free-text emitter's raw output carries ANSI at all — captured_text would strip the escapes this test exists to check
             let out = buf.lock().unwrap_or_else(|e| e.into_inner()).clone();
             assert!(
@@ -1430,7 +1413,7 @@ mod tests {
         assert_styled("heading", |r, s| r.render_heading(s, "h"));
         assert_styled("bullet", |r, s| r.render_bullet(s, 0, "b", None, None));
         assert_styled("stream_line", |r, s| r.render_stream_line(s, 0, "l"));
-        assert_styled("hint", |r, s| r.render_hint(s, 0, "h", &[]));
+        assert_styled("hint", |r, s| r.render_hint(s, 0, "h", &[], true));
         assert_styled("code_block", |r, s| {
             r.render_code_block(s, 0, &["c".to_string()])
         });
@@ -1689,7 +1672,7 @@ mod tests {
                         },
                     )
                 }),
-                TopGroup::Hint => Some(|r, w| r.render_hint(w, 0, "run cfgd apply", &[])),
+                TopGroup::Hint => Some(|r, w| r.render_hint(w, 0, "run cfgd apply", &[], true)),
                 TopGroup::Bullet => Some(|r, w| r.render_bullet(w, 0, "item", None, None)),
                 TopGroup::CodeBlock => {
                     Some(|r, w| r.render_code_block(w, 0, &["let x = 1;".to_string()]))
@@ -1753,7 +1736,7 @@ mod tests {
     #[test]
     fn hint_uses_arrow_glyph() {
         let (r, sink, buf) = capture();
-        r.render_hint(&sink, 0, "run cfgd apply", &[]);
+        r.render_hint(&sink, 0, "run cfgd apply", &[], true);
         let s = crate::test_helpers::captured_text(&buf);
         assert!(s.contains("→"), "got: {s:?}");
         assert!(s.contains("run cfgd apply"));
@@ -1774,6 +1757,7 @@ mod tests {
                 "git add -A && git commit -m 'initial'".to_string(),
                 "cfgd pull".to_string(),
             ],
+            true,
         );
         let s = crate::test_helpers::captured_text(&buf);
         let rows: Vec<&str> = s.lines().filter(|l| !l.trim().is_empty()).collect();
@@ -1804,6 +1788,7 @@ mod tests {
                 "launchctl bootout gui/$(id -u) {}/Library/LaunchAgents/com.cfgd.daemon.plist",
                 crate::to_posix_string(home.path())
             )],
+            true,
         );
         let s = crate::test_helpers::captured_text(&buf);
         assert!(
@@ -1824,6 +1809,7 @@ mod tests {
         let cmd = "launchctl bootout gui/$(id -u) \
                    ~/Library/LaunchAgents/com.cfgd.daemon.plist";
         let (printer, screen) = crate::output::Printer::for_test_live_terminal(24, 60);
+        let printer = printer.with_hints_enabled(true);
         printer.hint_commands("Stop it later, from a GUI login session:", &[cmd]);
         drop(printer);
         // Soft wrap breaks a row at the terminal's edge and resumes at column
@@ -1853,6 +1839,7 @@ mod tests {
                 crate::to_posix_string(home.path())
             ),
             &[],
+            true,
         );
         let s = crate::test_helpers::captured_text(&buf);
         assert!(s.contains("chmod u+w ~/.config/cfgd"), "got: {s:?}");

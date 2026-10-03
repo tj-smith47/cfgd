@@ -1,5 +1,3 @@
-#![allow(deprecated)] // assert_cmd 2.x cargo_bin deprecation; upgrade path is assert_cmd 3.x
-
 //! Exit-code regression test for `cfgd apply`.
 //!
 //! A partial or total apply failure must surface as a nonzero exit
@@ -12,8 +10,12 @@
 
 use std::path::Path;
 
-use assert_cmd::Command;
 use predicates::prelude::*;
+
+use assert_cmd::prelude::*;
+
+mod cfgd_binary;
+use cfgd_binary::cfgd_bin;
 
 /// Write a config + profile with two managed file actions: one whose target
 /// directory is normal (succeeds), and one whose target's parent is a regular
@@ -93,7 +95,7 @@ fn apply_partial_failure_exits_with_apply_failed_code() {
     let state_tmp = tempfile::tempdir().unwrap();
     partial_failure_config(config_tmp.path());
 
-    Command::cargo_bin("cfgd")
+    cfgd_bin()
         .unwrap()
         .args(["apply", "--yes"])
         .arg("--config")
@@ -111,7 +113,7 @@ fn apply_total_failure_exits_with_apply_failed_code() {
     let state_tmp = tempfile::tempdir().unwrap();
     total_failure_config(config_tmp.path());
 
-    Command::cargo_bin("cfgd")
+    cfgd_bin()
         .unwrap()
         .args(["apply", "--yes"])
         .arg("--config")
@@ -129,7 +131,7 @@ fn apply_full_success_exits_zero() {
     let state_tmp = tempfile::tempdir().unwrap();
     success_config(config_tmp.path());
 
-    Command::cargo_bin("cfgd")
+    cfgd_bin()
         .unwrap()
         .args(["apply", "--yes"])
         .arg("--config")

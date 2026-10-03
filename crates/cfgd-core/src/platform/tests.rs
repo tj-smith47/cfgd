@@ -655,12 +655,8 @@ fn every_platforms_field_in_the_config_types_is_deserialized_through_the_validat
     // liveness floor rather than shipping unvalidated.
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/config");
     let mut found = Vec::new();
-    for entry in std::fs::read_dir(&dir).expect("config dir") {
-        let path = entry.expect("dir entry").path();
-        if path.extension().and_then(|e| e.to_str()) != Some("rs") {
-            continue;
-        }
-        let text = std::fs::read_to_string(&path).expect("read");
+    for path in crate::test_helpers::rust_sources_under(&dir) {
+        let text = crate::test_helpers::production_slice_of(&path);
         for _ in text.matches("pub platforms: Vec<String>") {
             found.push(path.display().to_string());
         }

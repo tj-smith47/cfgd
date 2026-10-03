@@ -137,15 +137,15 @@ fn oci_manifest_serialization() {
             media_type: MEDIA_TYPE_MODULE_CONFIG.to_string(),
             digest: "sha256:abc123".to_string(),
             size: 100,
-            annotations: HashMap::new(),
+            annotations: Annotations::new(),
         },
         layers: vec![OciDescriptor {
             media_type: MEDIA_TYPE_MODULE_LAYER.to_string(),
             digest: "sha256:def456".to_string(),
             size: 2048,
-            annotations: HashMap::new(),
+            annotations: Annotations::new(),
         }],
-        annotations: HashMap::new(),
+        annotations: Annotations::new(),
     };
 
     let json = serde_json::to_string(&manifest).unwrap();
@@ -296,7 +296,7 @@ fn reference_str_digest() {
 
 #[test]
 fn oci_manifest_with_annotations_round_trips() {
-    let mut annotations = HashMap::new();
+    let mut annotations = Annotations::new();
     annotations.insert(
         crate::OCI_ANNOTATION_PLATFORM.to_string(),
         "linux/amd64".to_string(),
@@ -313,13 +313,13 @@ fn oci_manifest_with_annotations_round_trips() {
             media_type: MEDIA_TYPE_MODULE_CONFIG.to_string(),
             digest: "sha256:cfg123".to_string(),
             size: 50,
-            annotations: HashMap::new(),
+            annotations: Annotations::new(),
         },
         layers: vec![OciDescriptor {
             media_type: MEDIA_TYPE_MODULE_LAYER.to_string(),
             digest: "sha256:layer123".to_string(),
             size: 1024,
-            annotations: HashMap::new(),
+            annotations: Annotations::new(),
         }],
         annotations,
     };
@@ -352,14 +352,14 @@ fn oci_manifest_empty_annotations_skipped_in_json() {
             media_type: MEDIA_TYPE_MODULE_CONFIG.to_string(),
             digest: "sha256:cfg".to_string(),
             size: 10,
-            annotations: HashMap::new(),
+            annotations: Annotations::new(),
         },
         layers: vec![],
-        annotations: HashMap::new(),
+        annotations: Annotations::new(),
     };
 
     let json = serde_json::to_string(&manifest).unwrap();
-    // Empty HashMaps have skip_serializing_if = "HashMap::is_empty"
+    // Empty annotation maps have skip_serializing_if = "Annotations::is_empty"
     assert!(
         !json.contains("annotations"),
         "empty annotations should be skipped in serialization"
@@ -370,7 +370,7 @@ fn oci_manifest_empty_annotations_skipped_in_json() {
 
 #[test]
 fn oci_descriptor_with_annotations_round_trips() {
-    let mut anns = HashMap::new();
+    let mut anns = Annotations::new();
     anns.insert(
         "org.opencontainers.image.title".to_string(),
         "my-module".to_string(),
@@ -470,7 +470,7 @@ fn sha256_digest_different_inputs_different_outputs() {
 
 #[test]
 fn oci_manifest_round_trip_with_annotations() {
-    let mut annotations = HashMap::new();
+    let mut annotations = Annotations::new();
     annotations.insert(
         crate::OCI_ANNOTATION_PLATFORM.to_string(),
         "linux/amd64".to_string(),
@@ -487,13 +487,13 @@ fn oci_manifest_round_trip_with_annotations() {
             media_type: MEDIA_TYPE_MODULE_CONFIG.to_string(),
             digest: "sha256:configdigest123".to_string(),
             size: 512,
-            annotations: HashMap::new(),
+            annotations: Annotations::new(),
         },
         layers: vec![OciDescriptor {
             media_type: MEDIA_TYPE_MODULE_LAYER.to_string(),
             digest: "sha256:layer1digest".to_string(),
             size: 4096,
-            annotations: HashMap::new(),
+            annotations: Annotations::new(),
         }],
         annotations: annotations.clone(),
     };
@@ -525,10 +525,10 @@ fn oci_manifest_camel_case_keys() {
             media_type: MEDIA_TYPE_MODULE_CONFIG.to_string(),
             digest: "sha256:abc".to_string(),
             size: 100,
-            annotations: HashMap::new(),
+            annotations: Annotations::new(),
         },
         layers: vec![],
-        annotations: HashMap::new(),
+        annotations: Annotations::new(),
     };
 
     let json = serde_json::to_string(&manifest).unwrap();

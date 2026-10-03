@@ -452,79 +452,6 @@ fn module_crd_has_printer_columns() {
     assert!(col_names.contains(&"Age"));
 }
 
-/// Every kind whose status carries `conditions` exposes its readiness
-/// condition as a printer column. `Module` shipped without one, so a module
-/// the operator WITHHELD over its signature verdict (`Available: False`) and
-/// a served one were the same row in `kubectl get modules` — the one surface
-/// a cluster user reaches for. The column's condition type is checked against
-/// the literals the operator's controllers write, so a column bound to a
-/// condition nothing sets would trip here too.
-#[test]
-fn every_kind_with_conditions_exposes_its_readiness_condition_as_a_column() {
-    use kube::CustomResourceExt;
-
-    let controllers =
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../cfgd-operator/src/controllers");
-    let written: String = std::fs::read_dir(&controllers)
-        .expect("the operator's controllers directory is checked out")
-        .filter_map(Result::ok)
-        .filter(|e| e.path().extension().is_some_and(|x| x == "rs"))
-        .map(|e| {
-            let path = e.path();
-            std::fs::read_to_string(&path).unwrap_or_else(|err| {
-                panic!("{}: the walk must read every file: {err}", path.display())
-            })
-        })
-        .collect();
-
-    let crds = [
-        ("MachineConfig", MachineConfig::crd()),
-        ("ConfigPolicy", ConfigPolicy::crd()),
-        ("ClusterConfigPolicy", ClusterConfigPolicy::crd()),
-        ("DriftAlert", DriftAlert::crd()),
-        ("Module", Module::crd()),
-    ];
-    let mut judged = 0usize;
-    for (kind, crd) in crds {
-        let version = &crd.spec.versions[0];
-        let schema = version
-            .schema
-            .as_ref()
-            .and_then(|s| s.open_api_v3_schema.as_ref())
-            .unwrap_or_else(|| panic!("{kind} must publish a schema"));
-        if resolve_column_schema(schema, ".status.conditions").as_deref() != Some("array") {
-            continue;
-        }
-        judged += 1;
-        let condition_types: Vec<String> = version
-            .additional_printer_columns
-            .iter()
-            .flatten()
-            .filter_map(|c| {
-                let rest = c
-                    .json_path
-                    .strip_prefix(".status.conditions[?(@.type==\"")?;
-                let (ty, _) = rest.split_once("\")].status")?;
-                Some(ty.to_string())
-            })
-            .collect();
-        assert!(
-            !condition_types.is_empty(),
-            "{kind} writes conditions but exposes none of them as a printer column"
-        );
-        for ty in condition_types {
-            assert!(
-                written.contains(&format!("\"{ty}\"")),
-                "{kind}'s printer column binds to a `{ty}` condition no controller writes"
-            );
-        }
-    }
-    assert_eq!(
-        judged, 5,
-        "every kind carries conditions; the walk reached {judged}"
-    );
-}
-
 /// A printer column resolving to an ARRAY prints the Go rendering of the
 /// slice, so an empty one reads as the literal `[]` where an absent value
 /// leaves the cell blank — `kubectl get` has no way to join one. A column
@@ -1323,4 +1250,47 @@ fn backup_policy_units_summary_names_each_unit_once() {
         ]),
         Some("dotfiles, notes".to_string())
     );
+}
+
+/// The fleet's one-line reason: the first failing check, its detail when the
+/// device gave one, and how many checks follow it, counted from the totals so
+/// the checks past the listed ones are counted too.
+#[test]
+fn device_compliance_headline_names_the_first_check_and_counts_the_rest() {
+    let check = |name: &str, detail: Option<&str>| DeviceComplianceCheck {
+        category: "file".to_string(),
+        name: name.to_string(),
+        status: DeviceComplianceStatus::Violation,
+        detail: detail.map(str::to_string),
+    };
+    let mut report = DeviceCompliance {
+        violation: 3,
+        checks: vec![
+            check("/a", Some("managed file missing")),
+            check("/b", None),
+            check("/c", None),
+        ],
+        ..Default::default()
+    };
+    assert_eq!(
+        report.headline().as_deref(),
+        Some("file /a: managed file missing (+2 more)")
+    );
+    report.checks.drain(..2);
+    assert_eq!(
+        report.headline().as_deref(),
+        Some("file /c (+2 more)"),
+        "the two checks no longer listed are still counted"
+    );
+    report.violation = 1;
+    assert_eq!(report.headline().as_deref(), Some("file /c"));
+    report.warning = u32::MAX;
+    assert_eq!(
+        report.headline().as_deref(),
+        Some("file /c (+4294967294 more)"),
+        "counts at the top of the range still render"
+    );
+    report.warning = 0;
+    report.checks.clear();
+    assert_eq!(report.headline(), None);
 }

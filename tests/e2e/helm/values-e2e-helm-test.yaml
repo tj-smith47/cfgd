@@ -6,8 +6,8 @@ operator:
 agent:
   enabled: true
   image:
-    repository: ""  # overridden via --set agent.image.repository=$REGISTRY/cfgd at runtime
-    tag: ""  # overridden via --set agent.image.tag=$IMAGE_TAG at runtime
+    repository: ""  # overridden via --set agent.image.repository=$(e2e_image_repo cfgd) at runtime
+    tag: ""  # overridden via --set agent.image.tag=$(e2e_image_tag cfgd) at runtime
     pullPolicy: Always
   reconcileInterval: "10s"
   profile: "k8s-worker-minimal"

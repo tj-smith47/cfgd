@@ -14,6 +14,7 @@ mod origin;
 mod output;
 mod parse;
 mod platform;
+mod preferences;
 mod profile_spec;
 mod resolve;
 mod root;
@@ -42,14 +43,17 @@ pub use module::{
 };
 pub use origin::{OriginSpec, OriginType, SshHostKeyPolicy};
 pub use output::{MaskEnvValues, OutputConfig};
-pub(crate) use parse::validate_api_version;
+pub(crate) use parse::{API_VERSION_CONVERSIONS, readable_api_versions, validate_api_version};
 pub use parse::{
     CONFIG_FILENAME, CONFIG_FILENAME_TOML, LEGACY_OUTPUT_KEYS, PROFILE_FILENAME, ProfileEntry,
-    ProfileForm, ProfileManifests, ProfileScanEntry, canonical_profile_path, find_profile_path,
-    load_config, load_profile, parse_config, parse_config_source, resolve_config_path,
-    scan_profile_manifests, scan_profiles, scan_profiles_tolerant,
+    ProfileForm, ProfileManifests, ProfileScanEntry, canonical_profile_path, config_document_in,
+    find_profile_path, load_config, load_profile, parse_config, parse_config_source,
+    read_config_document, resolve_config_path, scan_profile_manifests, scan_profiles,
+    scan_profiles_tolerant,
 };
 pub use platform::{PlatformInfo, detect_platform, match_platform_profile, source_profile_names};
+pub(crate) use preferences::ChainPreferences;
+pub use preferences::{PreferencesSpec, resolved_env, validate_preferences};
 pub use profile_spec::{
     AptSpec, BrewSpec, CargoSpec, CustomManagerSpec, EncryptionConstraint, EnvScope, FilesSpec,
     FlatpakSpec, ManagedFileSpec, MergeSpec, NpmSpec, PackagesSpec, ProfileDocument,
@@ -61,19 +65,20 @@ pub use profile_spec::{
 // The value types cfgd-schema owns, kept resolvable at their long-standing
 // `cfgd_core::config::*` paths so the CRD sharing them changes no caller here.
 pub use cfgd_schema::{
-    BackupSpec, EncryptionMode, EncryptionSpec, FileStrategy, PatchFormat, PatchSpec,
-    ScheduleOwner, ScriptCommand, ScriptEntry, ScriptShell, ScriptSpec,
+    BackupSpec, EncryptionMode, EncryptionSpec, FileStrategy, MigrationPolicy, PatchFormat,
+    PatchSpec, ScheduleOwner, ScriptCommand, ScriptEntry, ScriptShell, ScriptSpec,
 };
 pub(crate) use profile_spec::{profile_spec_from_value, validate_backup_name};
+pub(crate) use resolve::fold_preferences;
 pub use resolve::{
-    ALL_MANAGER_NAMES, DEFAULT_PACKAGE_NOUN, EntryOwners, LOCAL_LAYER, LayerPolicy, LayerSources,
-    MergedProfile, PACKAGE_SCHEMA_PATHS, PackageClaim, PackageSchemaPath, ProfileLayer,
-    ResolvedProfile, desired_packages_for, desired_packages_for_spec, merge_layers,
-    package_schema_path, resolve_profile,
+    ALL_MANAGER_NAMES, DEFAULT_PACKAGE_NOUN, EntryOwners, LOCAL_LAYER, LOCAL_LAYER_PRIORITY,
+    LayerPolicy, LayerSources, MergedProfile, PACKAGE_SCHEMA_PATHS, PackageClaim,
+    PackageSchemaPath, ProfileLayer, ResolvedProfile, UNKNOWN_PROFILE, desired_packages_for,
+    desired_packages_for_spec, merge_layers, package_schema_path, resolve_profile,
 };
 pub use root::{
-    CfgdConfig, ConfigMetadata, ConfigSpec, SkillUpdateConfig, SkillUpdatePolicy, UpdateConfig,
-    UpdatePolicy, minimal_config,
+    CfgdConfig, ConfigMetadata, ConfigSpec, STABLE_UPDATE_CHANNEL, SkillUpdateConfig,
+    SkillUpdatePolicy, UpdateConfig, UpdatePolicy, minimal_config,
 };
 pub use security::{ModuleSecurityConfig, ModulesConfig, SecurityConfig};
 pub use source::{
@@ -86,3 +91,14 @@ pub use sync_secrets::{
     NotifyConfig, NotifyMethod, SecretIntegration, SecretsConfig, SopsConfig, SyncConfig,
 };
 pub use theme::{ThemeConfig, ThemeOverrides};
+
+/// Read an explicit `null` as the field's default, the way a bare `key:` with
+/// nothing after it already reads. A writer that serializes an emptied block
+/// prints `null`, and a document holding the file's own output must load.
+pub(crate) fn null_as_default<'de, D, T>(deserializer: D) -> std::result::Result<T, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Default + serde::Deserialize<'de>,
+{
+    Ok(<Option<T> as serde::Deserialize>::deserialize(deserializer)?.unwrap_or_default())
+}

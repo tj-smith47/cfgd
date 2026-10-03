@@ -137,6 +137,7 @@ impl FileAction {
                 origin,
             } => FileAction::Skip {
                 target: target.clone(),
+                // long-line-ok: a hatch is read off its own line, so it cannot wrap
                 // file-skip-reason-unreadable-ok: a structural rebuild of a reason judged at the mint that stated it
                 reason: reason.clone(),
                 origin: origin.clone(),

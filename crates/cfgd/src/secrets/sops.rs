@@ -15,7 +15,7 @@ use cfgd_core::{command_available_with_seam, tool_cmd};
 /// `pub(crate)` because `doctor`'s own sops probe is a second spawn of the same
 /// binary: reading a different seam there is a doctor that reports on one copy
 /// of sops while every decrypt runs another.
-pub(crate) const SOPS_BIN_ENV: &str = "CFGD_SOPS_BIN";
+pub const SOPS_BIN_ENV: &str = "CFGD_SOPS_BIN";
 
 /// SOPS-based secret backend. Encrypts values within structured YAML/JSON files,
 /// keeping keys visible for meaningful diffs. Wraps the `sops` CLI binary.

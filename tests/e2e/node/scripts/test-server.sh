@@ -30,7 +30,7 @@ echo "Device gateway URL: $SERVER_URL"
 # Verify device gateway is reachable from the test pod (use health endpoint — API requires auth)
 echo "Verifying device gateway reachability from test pod..."
 GATEWAY_READY=false
-for i in $(seq 1 30); do
+for _ in $(seq 1 30); do
     if exec_in_pod curl -sf "${HEALTH_URL}/readyz" > /dev/null 2>&1; then
         GATEWAY_READY=true
         break
@@ -38,7 +38,7 @@ for i in $(seq 1 30); do
     sleep 2
 done
 if [ "$GATEWAY_READY" = "false" ]; then
-    echo "ERROR: device gateway not reachable after 60s"
+    echo "ERROR: device gateway not reachable after 60s" >&2
     exit 1
 fi
 
@@ -58,6 +58,7 @@ OUTPUT=$(exec_in_pod cfgd \
     --no-color 2>&1) || RC=$?
 
 echo "  Checkin output:"
+# shellcheck disable=SC2001  # sed indents each line; an expansion cannot
 echo "$OUTPUT" | sed 's/^/    /'
 
 if [ "$RC" -eq 0 ] && assert_contains "$OUTPUT" "ok"; then
@@ -106,8 +107,8 @@ fi
 # =================================================================
 begin_test "T33: Drift reporting to device gateway"
 # Introduce drift on a sysctl value
-ORIG_MAX=$(exec_in_pod cat /proc/sys/vm/max_map_count 2>/dev/null || echo "262144")
-exec_in_pod sysctl -w vm.max_map_count=65530 > /dev/null 2>&1 || true
+ORIG_FWD=$(exec_in_pod cat /proc/sys/net/ipv4/ip_forward 2>/dev/null || echo "1")
+exec_in_pod sysctl -w net.ipv4.ip_forward=0 > /dev/null 2>&1 || true
 
 # Checkin again — should detect and report drift
 OUTPUT=$(exec_in_pod cfgd \
@@ -121,7 +122,7 @@ echo "  Checkin with drift output:"
 echo "$OUTPUT" | head -10 | sed 's/^/    /'
 
 # Restore sysctl
-exec_in_pod sysctl -w "vm.max_map_count=$ORIG_MAX" > /dev/null 2>&1 || true
+exec_in_pod sysctl -w "net.ipv4.ip_forward=$ORIG_FWD" > /dev/null 2>&1 || true
 
 if assert_contains "$OUTPUT" "drift"; then
     pass_test "T33"
@@ -190,7 +191,7 @@ fi
 begin_test "T36: Compliance data included in checkin"
 
 # Create a config with compliance enabled
-exec_in_pod bash -c 'cat > /etc/cfgd/e2e-compliance-checkin.yaml << '"'"'INNEREOF'"'"'
+exec_in_pod bash -c 'cat > /etc/cfgd/e2e-compliance-checkin.yaml << "INNEREOF"
 apiVersion: cfgd.io/v1alpha1
 kind: Config
 metadata:

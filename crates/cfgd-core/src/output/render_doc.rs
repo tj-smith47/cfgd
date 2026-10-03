@@ -120,8 +120,12 @@ fn render_component(
         } => {
             renderer.render_child_row_labeled(sink, depth + 1, subject, detail, label.as_ref());
         }
-        Component::Hint { text, commands } => {
-            renderer.render_hint(sink, depth, text, commands);
+        Component::Hint {
+            text,
+            commands,
+            gated,
+        } => {
+            renderer.render_hint(sink, depth, text, commands, *gated);
         }
         Component::Note { text } => {
             renderer.render_note(sink, depth, text);
@@ -222,6 +226,7 @@ mod row_roles_round_trip_tests {
         let doc = Doc::new().table(t);
         render_doc(&renderer, &sink, &doc, &SyntaxSet::new());
 
+        // long-line-ok: a hatch is read off its own line, so it cannot wrap
         // raw-capture-ok: asserting on the raw truecolor SGR bytes themselves — captured_text would strip the ANSI this test exists to check
         let out = buf.lock().unwrap_or_else(|e| e.into_inner()).clone();
         let dracula_pink = "\x1b[38;2;255;121;198m";
@@ -265,6 +270,7 @@ mod heading_title_tests {
         let doc = Doc::new().heading_title("Status", "dev-tools");
         render_doc(&renderer, &sink, &doc, &SyntaxSet::new());
 
+        // long-line-ok: a hatch is read off its own line, so it cannot wrap
         // raw-capture-ok: comparing against TitleLabel's own styled() output, which carries ANSI — captured_text would strip exactly what this test compares
         let out = buf.lock().unwrap_or_else(|e| e.into_inner()).clone();
         let expected = crate::output::TitleLabel::new("Status", "dev-tools").styled(&theme);
@@ -311,6 +317,7 @@ mod owner_section_restyle_tests {
         });
         render_doc(&renderer, &sink, &doc, &SyntaxSet::new());
 
+        // long-line-ok: a hatch is read off its own line, so it cannot wrap
         // raw-capture-ok: comparing against OwnerLabel's own styled() output, which carries ANSI — stripping it first would hide exactly what this test checks
         let out = buf.lock().unwrap_or_else(|e| e.into_inner()).clone();
         let expected = label.styled(&theme);

@@ -3,8 +3,8 @@ paths: ["crates/**/*.rs"]
 ---
 # cfgd Path Handling — fold to `/` at every cross-OS string boundary
 
-A `Path` rendered with the host-native separator is a **runtime correctness bug**,
-not a cosmetic one. On Windows `Path::display()` / `to_string_lossy()` emit `\`.
+A `Path` rendered with the host-native separator is a **runtime correctness bug** that
+changes behaviour. On Windows `Path::display()` / `to_string_lossy()` emit `\`.
 The moment that string becomes a value compared against, stored, serialized, or
 matched on another OS, it silently disagrees with its Unix-authored counterpart.
 
@@ -25,6 +25,7 @@ Do not invent a new normalizer. The crate already standardizes this in one place
 | `path.posix()` (via `use crate::PathDisplayExt;`) | `path.display()` | a `Display` that always emits `/` |
 | `crate::to_posix_string(path)` | `path.to_string_lossy().into_owned()` | an owned `String` with `\`→`/` folded, for a key that is only ever COMPARED |
 | `crate::to_posix_fs_key(path)` | `crate::to_posix_string(path)` | a persisted key that is also REOPENED as a path (`file_backups.file_path`, `module_file_manifest.file_path`); folds on Windows only |
+| `#[serde(serialize_with = "crate::serialize_fs_path")]` / `serialize_opt_fs_path` | a derived `PathBuf` field | a path a serialized document carries and a reader reopens (every path field of the plan format); the `to_posix_fs_key` rule applied through serde |
 | `crate::normalize_for_snapshot(captured, &[(path, label)])` | hand-rolled `.replace('\\', "/")` | snapshot goldens (also folds CRLF→LF + substitutes paths) |
 | `crate::strip_windows_verbatim(s)` | inline `s.strip_prefix(r"\\?\")` | dropping the Windows `\\?\` verbatim prefix |
 
@@ -61,7 +62,8 @@ native separator — a Windows user reading a log wants `\`. A `tracing` line al
 keeps the ABSOLUTE path: a journal is read by scripts and from other hosts, and as
 another user `~` is ambiguous there in a way it is not in a report addressed to
 whoever ran the command — the same reason `-o json` keeps it. `fold_home_in_text`
-is for a DISPLAY slot and never reaches a `tracing!` argument
+is for a DISPLAY slot, takes text that already spells its paths with `/` (a native
+Windows render never matches the home's POSIX spelling), and never reaches a `tracing!` argument
 (`no_journal_line_folds_the_home_directory` walks both crates). To keep one of those
 when the post-edit hook flags it, append a justification on the same line:
 

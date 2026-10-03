@@ -33,6 +33,9 @@ impl RegKeySnapshot {
     /// registry has nothing to ask, but a `reg` STANDING IN for one is exactly
     /// how the spawn count is proven off Windows, where the suite runs.
     fn read(key_path: &str) -> Self {
+        // A sibling test pins this seam under the PATH lock; the read waits it out.
+        #[cfg(test)]
+        let _seam_guard = cfgd_core::test_helpers::path_env_read_guard();
         if !cfg!(windows) && std::env::var(cfgd_core::REG_BIN_ENV).is_err() {
             return Self::default();
         }
@@ -241,6 +244,7 @@ mod tests {
     /// It is the whole point of the bulk read: every NAME, TYPE and DATA cfgd
     /// asks about is in this one dump, where it used to cost two `reg query
     /// … /v <name>` spawns per value.
+    // space-run-ok: a fixture reproducing `reg query`'s column-aligned output.
     const REG_QUERY_DUMP: &str = "\r\n\
         HKEY_CURRENT_USER\\Software\\cfgd-qp5\r\n\
         \x20   PlainSz    REG_SZ    hello\r\n\
@@ -417,6 +421,7 @@ mod tests {
 
     #[test]
     fn registry_parse_reg_value_dword() {
+        // space-run-ok: a fixture reproducing `reg query`'s column-aligned output.
         let output = "HKEY_CURRENT_USER\\Software\\Test\n\
                       \n\
                           HideFileExt    REG_DWORD    0x0\n";
@@ -428,6 +433,7 @@ mod tests {
 
     #[test]
     fn registry_parse_reg_value_dword_nonzero() {
+        // space-run-ok: a fixture reproducing `reg query`'s column-aligned output.
         let output = "HKEY_CURRENT_USER\\Software\\Test\n\
                       \n\
                           ShowHidden    REG_DWORD    0x1\n";
@@ -439,6 +445,7 @@ mod tests {
 
     #[test]
     fn registry_parse_reg_value_dword_large() {
+        // space-run-ok: a fixture reproducing `reg query`'s column-aligned output.
         let output = "HKEY_CURRENT_USER\\Software\\Test\n\
                       \n\
                           Timeout    REG_DWORD    0xff\n";
@@ -450,6 +457,7 @@ mod tests {
 
     #[test]
     fn registry_parse_reg_value_string() {
+        // space-run-ok: a fixture reproducing `reg query`'s column-aligned output.
         let output = "HKEY_CURRENT_USER\\Software\\Test\n\
                       \n\
                           Theme    REG_SZ    dark\n";
@@ -467,6 +475,7 @@ mod tests {
 
     #[test]
     fn registry_parse_reg_value_wrong_name() {
+        // space-run-ok: a fixture reproducing `reg query`'s column-aligned output.
         let output = "HKEY_CURRENT_USER\\Software\\Test\n\
                       \n\
                           OtherValue    REG_SZ    hello\n";
@@ -510,6 +519,7 @@ mod tests {
 
     #[test]
     fn registry_parse_reg_value_expand_sz() {
+        // space-run-ok: a fixture reproducing `reg query`'s column-aligned output.
         let output = "HKEY_CURRENT_USER\\Environment\n\
                       \n\
                           Path    REG_EXPAND_SZ    %SystemRoot%\\system32\n";
@@ -522,7 +532,7 @@ mod tests {
     #[test]
     fn registry_parse_reg_value_dword_zero_prefix() {
         // Verify proper hex parsing with leading zeros
-        let output = "    Count    REG_DWORD    0x00000010\n";
+        let output = "    Count    REG_DWORD    0x00000010\n"; // space-run-ok: a fixture reproducing `reg query`'s column-aligned output.
         assert_eq!(
             RegKeySnapshot::parse(output).value("Count"),
             Some("16".to_string())
@@ -531,6 +541,7 @@ mod tests {
 
     #[test]
     fn registry_parse_reg_value_multi_line_picks_correct_name() {
+        // space-run-ok: a fixture reproducing `reg query`'s column-aligned output.
         let output = "HKEY_CURRENT_USER\\Software\\Test\n\
                       \n\
                           Alpha    REG_SZ    one\n\
@@ -586,7 +597,7 @@ mod tests {
 
     #[test]
     fn parse_reg_value_output_dword_max_value() {
-        let output = "    MaxVal    REG_DWORD    0xffffffff\n";
+        let output = "    MaxVal    REG_DWORD    0xffffffff\n"; // space-run-ok: a fixture reproducing `reg query`'s column-aligned output.
         assert_eq!(
             RegKeySnapshot::parse(output).value("MaxVal"),
             Some("4294967295".to_string()),
@@ -717,7 +728,7 @@ mod tests {
 
     #[test]
     fn parse_reg_value_output_sz_with_spaces() {
-        let output = "    Description    REG_SZ    A long description with spaces\n";
+        let output = "    Description    REG_SZ    A long description with spaces\n"; // space-run-ok: a fixture reproducing `reg query`'s column-aligned output.
         assert_eq!(
             RegKeySnapshot::parse(output).value("Description"),
             Some("A long description with spaces".to_string()),
@@ -727,6 +738,7 @@ mod tests {
     #[test]
     fn parse_reg_value_output_selects_first_match() {
         // If the same name appears twice, the first one wins
+        // space-run-ok: a fixture reproducing `reg query`'s column-aligned output.
         let output = "\
     Dup    REG_SZ    first\n\
     Dup    REG_SZ    second\n";
@@ -740,7 +752,7 @@ mod tests {
     fn registry_parse_reg_value_dword_invalid_hex_returns_raw() {
         // If the hex string after 0x is not valid, from_str_radix fails,
         // so it falls through to return the raw value
-        let output = "    BadHex    REG_DWORD    0xZZZZ\n";
+        let output = "    BadHex    REG_DWORD    0xZZZZ\n"; // space-run-ok: a fixture reproducing `reg query`'s column-aligned output.
         let result = RegKeySnapshot::parse(output).value("BadHex");
         // The DWORD hex parse fails, so the raw value "0xZZZZ" is returned
         assert_eq!(result, Some("0xZZZZ".to_string()));
@@ -749,7 +761,7 @@ mod tests {
     #[test]
     fn registry_parse_reg_value_dword_no_0x_prefix() {
         // DWORD without 0x prefix — strip_prefix returns None, falls to raw return
-        let output = "    PlainDword    REG_DWORD    42\n";
+        let output = "    PlainDword    REG_DWORD    42\n"; // space-run-ok: a fixture reproducing `reg query`'s column-aligned output.
         let result = RegKeySnapshot::parse(output).value("PlainDword");
         assert_eq!(result, Some("42".to_string()));
     }

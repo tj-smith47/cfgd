@@ -28,6 +28,7 @@ fn rfc3339_micros(ts: Timestamp) -> Result<String, OperatorError> {
 /// collapse into `cfgd_core::parse_duration_str`: those defaults are an
 /// operator leader-election concern, not a core-library one.
 fn parse_duration_secs(env_var: &str, default: u64) -> u64 {
+    // unseamed-read-ok: a lease timing variable, which names no tool
     std::env::var(env_var)
         .ok()
         .and_then(|v| cfgd_core::parse_duration_str(&v).map(|d| d.as_secs()).ok())

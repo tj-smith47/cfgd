@@ -222,6 +222,7 @@ impl Renderer {
         if let Some(term_cols) = w.wrap_columns() {
             fit_widths(&mut widths, wrap::line_budget(term_cols, depth));
         }
+        // long-line-ok: a hatch is read off its own line, so it cannot wrap
         // plain-clamp-ok: a cell's width is the column's, and it has no row above it to match a retreated head against
         let clamped = |cell: &str, i: usize| wrap::clamp(cell, widths[i]);
         // Lay every row out BEFORE any padding is decided. A wrapping column
@@ -426,6 +427,7 @@ mod tests {
             let buf = Arc::new(Mutex::new(String::new()));
             let sink = StringSink(buf.clone());
             Renderer::new(theme.clone(), Verbosity::Normal).render_table(&sink, 0, t);
+            // long-line-ok: a hatch is read off its own line, so it cannot wrap
             // raw-capture-ok: the painted token IS the subject; captured_text strips the escapes this test exists to see
             buf.lock().unwrap_or_else(|e| e.into_inner()).clone()
         };
@@ -558,6 +560,7 @@ mod tests {
         // rather than the column happening to need none.
         let t = Table::new(["Name", "Age"]).row(["Bob", "1000"]);
         r.render_table(&sink, 0, &t);
+        // long-line-ok: a hatch is read off its own line, so it cannot wrap
         // raw-capture-ok: asserting the header row's SGR spans stop at each cell rather than spanning the inter-column gap — captured_text would strip the ANSI this test exists to check
         let raw = buf.lock().unwrap_or_else(|e| e.into_inner()).clone();
         let expected = format!(

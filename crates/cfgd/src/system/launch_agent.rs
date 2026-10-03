@@ -103,6 +103,7 @@ impl SystemConfigurator for LaunchAgentConfigurator {
                 format!("Writing launch agent: {}", plist_path.posix()),
             );
 
+            // long-line-ok: a hatch is read off its own line, so it cannot wrap
             // user-scope-ok: the user's own LaunchAgent plist under their own home, written by their own unprivileged run
             cfgd_core::atomic_write_str(&plist_path, &plist_content)?;
 
@@ -718,7 +719,7 @@ mod tests {
         // No file should exist for the nameless entry.
         let entries: Vec<_> = std::fs::read_dir(&plist_dir)
             .unwrap()
-            .filter_map(|e| e.ok())
+            .map(|entry| entry.expect("the walk must read every directory entry"))
             .collect();
         assert_eq!(
             entries.len(),

@@ -1,0 +1,1 @@
+exec_in_pod sysctl -w net.ipv4.ip_forward=0 vm.max_map_count=65530 > /dev/null 2>&1 || true

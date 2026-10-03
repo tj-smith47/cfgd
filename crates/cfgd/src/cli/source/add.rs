@@ -103,7 +103,7 @@ pub(super) fn run_source_add(
     let mut mgr = SourceManager::new(&cache_dir);
     let allow_unsigned = config_path.exists()
         && config::load_config(&config_path)
-            .is_ok_and(|c| c.spec.security.as_ref().is_some_and(|s| s.allow_unsigned));
+            .is_ok_and(|c| c.spec.security_effective().allow_unsigned);
     mgr.set_allow_unsigned(allow_unsigned);
     let mut spec = SourceManager::build_source_spec(&source_name, url, profile);
     if let Some(b) = branch {
@@ -224,7 +224,7 @@ pub(super) fn run_source_add(
 
     // Interactive priority prompt (when --priority not specified on command line)
     let resolved_priority = if let Some(p) = priority {
-        cfgd_core::config::validate_source_priority(p).map_err(|m| anyhow::anyhow!(m))?
+        checked_priority(p, "--priority")?
     } else if args.yes {
         DEFAULT_NONINTERACTIVE_PRIORITY
     } else {
@@ -426,9 +426,12 @@ mod tests {
             color: crate::cli::ColorWhen::Auto,
             output: crate::cli::OutputFormatArg(OutputFormat::Table),
             list_envelope: false,
+            hints: false,
             no_hints: false,
             theme: None,
             mask_env_values: None,
+            migration_policy: None,
+            update_policy: None,
             jsonpath: None,
             yes: false,
             state_dir: None,

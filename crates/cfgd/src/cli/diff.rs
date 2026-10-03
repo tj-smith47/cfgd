@@ -118,6 +118,7 @@ pub fn cmd_diff(
         printer,
         false,
         composition::ConstraintMode::Report,
+        &cfgd_core::modules::refuse_floor_bootstrap,
     )?;
     // The registry built from this config and these composed packages, taken
     // before the other fields because a partial move out of `desired` would
@@ -312,13 +313,9 @@ pub fn cmd_diff(
             let drop_env_file_row = cfgd_core::output::env_file_row_is_redundant(
                 results.iter().map(|r| r.resource_type.as_str()),
             );
-            let merged_env_items = cfgd_core::reconciler::MergedEnvItems::new(
-                &resolved.merged.env,
-                &resolved.merged.aliases,
-                &resolved.merged.entry_owners,
-                &resolved_modules,
-                &report.path_dirs,
-            );
+            let layered = cfgd_core::reconciler::LayeredEnv::of(&resolved, &resolved_modules);
+            let merged_env_items =
+                cfgd_core::reconciler::MergedEnvItems::new(&layered, &report.path_dirs);
             for r in results {
                 drift = true;
                 // An env-var/alias row's `expected`/`actual` are opaque markers —
@@ -566,6 +563,7 @@ fn cmd_diff_module(ctx: &RunContext<'_>, mod_name: &str, exit_code: bool) -> any
         &mgr_map,
         Some(&pkg_cx),
         printer,
+        &modules::refuse_floor_bootstrap,
     );
     printer.heading_title(&TitleLabel::new("Diff", mod_name));
     let resolved_modules = match resolution {
@@ -754,12 +752,11 @@ fn cmd_diff_module(ctx: &RunContext<'_>, mod_name: &str, exit_code: bool) -> any
         // lines and the folded `PATH` line stay the machine-wide walk's — the
         // whole profile's shared artifacts, which one module's fragment can
         // neither vouch for nor blame.
-        let check = cfgd_core::reconciler::env_item_verify_results(
-            &resolved.merged.env,
-            &resolved.merged.aliases,
-            &resolved.merged.entry_owners,
-            &resolved_modules,
-        );
+        // The isolate's own layered view, built once for both halves of this
+        // section: the per-item check and the display recompute below read one
+        // merge.
+        let layered = cfgd_core::reconciler::LayeredEnv::of(&resolved, &resolved_modules);
+        let check = cfgd_core::reconciler::env_item_verify_results(&layered);
         // The ONE ownership answer, asked once for the whole block: which
         // layer's declaration each checked name belongs to — the same fold
         // the isolate's merge just applied.
@@ -795,13 +792,7 @@ fn cmd_diff_module(ctx: &RunContext<'_>, mod_name: &str, exit_code: bool) -> any
         {
             // `path_dirs` feeds only the folded `PATH` line, which the scoped
             // check never renders a row for.
-            let merged_env_items = cfgd_core::reconciler::MergedEnvItems::new(
-                &resolved.merged.env,
-                &resolved.merged.aliases,
-                &resolved.merged.entry_owners,
-                &resolved_modules,
-                &[],
-            );
+            let merged_env_items = cfgd_core::reconciler::MergedEnvItems::new(&layered, &[]);
             // One pass: every finding lands in exactly one bucket — the
             // fold's recorded winner when that token names a chain module,
             // else the module under report (the only module the caller asked
@@ -1081,7 +1072,9 @@ pub(super) fn print_package_drift(
                             actual: None,
                         });
                     }
-                    ManagerAction::RefreshIndex { .. } | ManagerAction::Prerequisite { .. } => {}
+                    ManagerAction::RefreshIndex { .. }
+                    | ManagerAction::Prerequisite { .. }
+                    | ManagerAction::HeldFloor { .. } => {}
                 }
             }
             continue;
@@ -1415,10 +1408,12 @@ mod tests {
             platforms: vec![],
         };
         let hand_edited_line = cfgd_core::reconciler::MergedEnvItems::new(
-            &[],
-            std::slice::from_ref(&hand_edited),
-            &Default::default(),
-            &[],
+            &cfgd_core::reconciler::LayeredEnv::from_parts(
+                "profile:test",
+                &[],
+                std::slice::from_ref(&hand_edited),
+                &[],
+            ),
             &[],
         )
         .declared_line("alias", "ll")
@@ -1454,19 +1449,13 @@ mod tests {
             command: "ls -la".to_string(),
             platforms: vec![],
         };
-        // The owners the profile-layer merge records: the declared line names
-        // the layer that declared it, so a needle rendered with no owner is a
-        // line production never renders.
-        let declared_owners = {
-            let mut o = cfgd_core::config::EntryOwners::default();
-            o.claim("profile:default", &[], std::slice::from_ref(&declared));
-            o
-        };
         let declared_line = cfgd_core::reconciler::MergedEnvItems::new(
-            &[],
-            std::slice::from_ref(&declared),
-            &declared_owners,
-            &[],
+            &cfgd_core::reconciler::LayeredEnv::from_parts(
+                "profile:default",
+                &[],
+                std::slice::from_ref(&declared),
+                &[],
+            ),
             &[],
         )
         .declared_line("alias", "ll")
@@ -1515,29 +1504,20 @@ mod tests {
             command: "ls -la".to_string(),
             platforms: vec![],
         };
-        let declared_owners = {
-            let mut o = cfgd_core::config::EntryOwners::default();
-            o.claim(
-                "profile:default",
-                &[],
-                std::slice::from_ref(&declared_alias),
-            );
-            o
-        };
-        let declared_line = cfgd_core::reconciler::MergedEnvItems::new(
+        // The converged machine, planted from the generator: a hand-written
+        // file is one headerless block, which is not the shape the planner
+        // writes nor the shape a reader of the file has to resolve.
+        let layered = cfgd_core::reconciler::LayeredEnv::from_parts(
+            "profile:default",
             &[],
             std::slice::from_ref(&declared_alias),
-            &declared_owners,
             &[],
-            &[],
-        )
-        .declared_line("alias", "ll")
-        .expect("alias renders a declared line");
-        std::fs::write(
-            cfgd_core::reconciler::primary_env_file(tmp_home.path()),
-            format!("# managed by cfgd \u{2014} do not edit\n{declared_line}\n"),
-        )
-        .unwrap();
+        );
+        cfgd_core::test_helpers::plant_managed_env_files(
+            &cfgd_core::reconciler::MergedEnvItems::new(&layered, &[]),
+            tmp_home.path(),
+            cfgd_core::config::EnvScope::default(),
+        );
 
         let mut cli = make_cli(config_path);
         cli.state_dir = Some(tmp.path().join("state"));
@@ -1610,25 +1590,15 @@ mod tests {
             "scoop",
             "/opt/scoop/bin",
         )];
-        let written: Vec<String> = cfgd_core::reconciler::MergedEnvItems::new(
-            &[],
-            &[],
-            &Default::default(),
-            &[],
-            &path_dirs,
+        let layered = cfgd_core::reconciler::LayeredEnv::from_parts("profile:test", &[], &[], &[]);
+        let written: Vec<String> = cfgd_core::test_helpers::plant_managed_env_files(
+            &cfgd_core::reconciler::MergedEnvItems::new(&layered, &path_dirs),
+            tmp_home.path(),
+            cfgd_core::config::EnvScope::Interactive,
         )
-        .managed_env_files(tmp_home.path(), cfgd_core::config::EnvScope::Interactive)
-        .into_iter()
-        .map(|(path, content)| {
-            cfgd_core::ensure_parent_dir(&path).unwrap();
-            std::fs::write(&path, content).unwrap();
-            cfgd_core::to_posix_string(&path)
-        })
+        .iter()
+        .map(|(path, _)| cfgd_core::to_posix_string(path))
         .collect();
-        assert!(
-            !written.is_empty(),
-            "a recorded bootstrap dir alone must produce a managed env file"
-        );
 
         let state_dir = tmp.path().join("state");
         let mut cli = make_cli(config_path);
@@ -1962,25 +1932,17 @@ mod tests {
             value: "vim".to_string(),
             platforms: vec![],
         }];
-        let declared_owners = {
-            let mut o = cfgd_core::config::EntryOwners::default();
-            o.claim("module:env-mod", &declared_env, &[]);
-            o
-        };
-        let declared_line = cfgd_core::reconciler::MergedEnvItems::new(
+        let layered = cfgd_core::reconciler::LayeredEnv::from_parts(
+            "module:env-mod",
             &declared_env,
             &[],
-            &declared_owners,
             &[],
-            &[],
-        )
-        .declared_line("env-var", "EDITOR")
-        .expect("EDITOR renders a declared line");
-        std::fs::write(
-            cfgd_core::reconciler::primary_env_file(tmp_home.path()),
-            format!("# managed by cfgd \u{2014} do not edit\n{declared_line}\n"),
-        )
-        .unwrap();
+        );
+        cfgd_core::test_helpers::plant_managed_env_files(
+            &cfgd_core::reconciler::MergedEnvItems::new(&layered, &[]),
+            tmp_home.path(),
+            cfgd_core::config::EnvScope::default(),
+        );
 
         let mut cli = make_cli(config_path);
         let state_dir = tmp.path().join("state");
@@ -2668,6 +2630,7 @@ mod tests {
                 manager: "pipx".into(),
                 via: "pip install pipx".into(),
                 declared: None,
+                floor: None,
                 batched: vec![],
                 depends_on: vec![],
             },

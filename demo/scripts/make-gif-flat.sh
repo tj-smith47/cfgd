@@ -105,3 +105,5 @@ ffmpeg -y -loglevel error "${INPUTS[@]}" -i "$PALETTE" -filter_complex "\
 ${FILTER};[vf][2:v]paletteuse=dither=none:diff_mode=rectangle" "$OUT"
 
 echo "Wrote $OUT ($(du -h "$OUT" | cut -f1), ${frames} frames over a ${dur}s take at 1:1, hidden segments capped)"
+
+bash "$(dirname "$0")/stamp.sh" "$(basename "$OUT")" "$(basename "$TAPE")" "$FRAMES"

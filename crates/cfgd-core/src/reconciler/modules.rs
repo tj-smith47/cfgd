@@ -107,6 +107,9 @@ pub(super) fn planned_file_converged(
         {
             return false;
         }
+        // Two DISTINCT paths sharing an inode: a declared hardlink still
+        // pointing at its source.
+        // same-path-ok: a hardlink convergence check.
         return crate::is_same_inode(&file.source, target);
     }
     converged_content_file(file, target, strategy, None, mode)
@@ -261,6 +264,7 @@ impl<'a> super::Reconciler<'a> {
             match std::fs::read(target) {
                 Ok(bytes) => crate::sha256_hex(&bytes),
                 Err(e) => {
+                    // long-line-ok: a hatch is read off its own line, so it cannot wrap
                     // tracing-ok: the manifest hash degrades to empty; no row carries the read failure
                     tracing::warn!("cannot read {} for hashing: {e}", target.posix());
                     String::new()
@@ -306,9 +310,11 @@ impl<'a> super::Reconciler<'a> {
         match &action.kind {
             ModuleActionKind::InstallPackages { resolved: pkgs } => {
                 let unprovisioned = self.unprovisioned.borrow();
+                let withheld_floors = self.withheld_floors.borrow();
                 let exec =
                     super::packages::PackageExec::new(self.registry, self.state, printer, notes)
-                        .withholding_managers(&unprovisioned);
+                        .withholding_managers(&unprovisioned)
+                        .withholding_floors(&withheld_floors);
                 let outcome = exec.install_module_packages(
                     action,
                     pkgs,
@@ -421,6 +427,7 @@ impl<'a> super::Reconciler<'a> {
                             &file_state,
                         )
                     {
+                        // long-line-ok: a hatch is read off its own line, so it cannot wrap
                         // tracing-ok: the rollback copy could not be stored; the deploy row says nothing about it
                         tracing::warn!("failed to backup module file {}: {}", target.posix(), e);
                     }
@@ -512,11 +519,7 @@ impl<'a> super::Reconciler<'a> {
                 script,
                 phase: script_phase,
             } => {
-                let profile_name = resolved
-                    .layers
-                    .last()
-                    .map(|l| l.profile_name.as_str())
-                    .unwrap_or("unknown");
+                let profile_name = resolved.profile_name();
                 let env_vars = build_module_script_env(
                     &ScriptEnvContext {
                         config_dir,

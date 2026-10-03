@@ -2,10 +2,12 @@
 # E2E tests for Crossplane TeamConfig composition: XRD installation,
 # MachineConfig fan-out via function-cfgd, ConfigPolicy generation,
 # and member add/remove lifecycle.
-# Prereqs: kind cluster running, cfgd CRDs installed, Crossplane installed.
+# Prereqs: cluster running with the cfgd CRDs ArgoCD applies; XP-01 installs
+# Crossplane where ArgoCD does not run it.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=tests/e2e/common/helpers.sh
 source "$SCRIPT_DIR/../../common/helpers.sh"
 MANIFESTS_DIR="$SCRIPT_DIR/../manifests"
 CROSSPLANE_DIR="$REPO_ROOT/manifests/crossplane"
@@ -13,22 +15,16 @@ CROSSPLANE_DIR="$REPO_ROOT/manifests/crossplane"
 echo "=== Crossplane E2E Tests ==="
 
 # =================================================================
-# XP-01: Install Crossplane
+# XP-01: Crossplane is running (Helm installs it where ArgoCD does not)
 # =================================================================
 begin_test "XP-01: Crossplane installation"
-helm repo add crossplane-stable https://charts.crossplane.io/stable
-helm upgrade --install crossplane crossplane-stable/crossplane \
-    --namespace crossplane-system --create-namespace --wait --timeout 120s
+crossplane_install || exit 1
 wait_for_deployment crossplane-system crossplane 120
 pass_test "XP-01"
 
-# --- Setup: Install cfgd CRDs ---
-echo "Generating and installing cfgd CRDs..."
-CRD_YAML=$(cargo run --release --bin cfgd-gen-crds --manifest-path "$REPO_ROOT/Cargo.toml" 2>/dev/null)
-echo "$CRD_YAML" | kubectl apply -f -
-for crd in machineconfigs.cfgd.io configpolicies.cfgd.io driftalerts.cfgd.io clusterconfigpolicies.cfgd.io; do
-    kubectl wait --for=condition=established "crd/$crd" --timeout=30s 2>/dev/null || true
-done
+# --- Setup: the cfgd CRDs ArgoCD applied ---
+echo "Checking the cfgd CRDs on the cluster..."
+check_pr_crds schemas/crds.yaml "rerun the Crossplane suite" < "$REPO_ROOT/schemas/crds.yaml" || exit 1
 
 # --- Setup: Apply Crossplane XRD, Composition, and Function ---
 echo "Applying XRD, Composition, and Function..."
@@ -37,7 +33,7 @@ kubectl apply -f "$CROSSPLANE_DIR/composition.yaml"
 
 # Apply Function CR with the E2E registry image, pull secrets, and runtime config.
 # The xpkg is built by setup-cluster.sh; the DRC passes --insecure to skip mTLS.
-FUNC_IMAGE="${REGISTRY}/function-cfgd:${IMAGE_TAG:-latest}"
+FUNC_IMAGE="$(e2e_image function-cfgd)"
 kubectl apply -f - <<FUNCEOF
 apiVersion: pkg.crossplane.io/v1beta1
 kind: DeploymentRuntimeConfig
@@ -687,20 +683,16 @@ done
 echo "  function-cfgd pod status: ${FUNC_STATUS:-not found}"
 
 if [ "$FUNC_STATUS" = "Running" ]; then
-    # Also verify the Function resource is healthy/installed
-    FUNC_HEALTHY=$(kubectl get function function-cfgd \
-        -o jsonpath='{.status.conditions[?(@.type=="Healthy")].status}' 2>/dev/null || echo "")
-    FUNC_INSTALLED=$(kubectl get function function-cfgd \
-        -o jsonpath='{.status.conditions[?(@.type=="Installed")].status}' 2>/dev/null || echo "")
+    # A Running pod can still fail its package health check, so the Function's
+    # own Healthy condition is what the test title claims.
+    FUNC_HEALTHY=$(wait_for_k8s_field function function-cfgd "" \
+        '{.status.conditions[?(@.type=="Healthy")].status}' True 60 || true)
     echo "  Function healthy: ${FUNC_HEALTHY:-unknown}"
-    echo "  Function installed: ${FUNC_INSTALLED:-unknown}"
 
-    if [ "$FUNC_HEALTHY" = "True" ] || [ "$FUNC_INSTALLED" = "True" ]; then
+    if [ "$FUNC_HEALTHY" = "True" ]; then
         pass_test "XP-14"
     else
-        # Pod is Running, which is the primary assertion — pass even if conditions aren't populated yet
-        echo "  Pod is Running (conditions may still be propagating)"
-        pass_test "XP-14"
+        fail_test "XP-14" "function-cfgd pod is Running but the Function's Healthy condition is '${FUNC_HEALTHY:-unset}' after 60s: $(kubectl get function function-cfgd -o jsonpath='{range .status.conditions[*]}{.type}={.status} ({.reason}: {.message}); {end}' 2>&1)"
     fi
 else
     fail_test "XP-14" "Expected function-cfgd pod Running, got '${FUNC_STATUS:-not found}'"

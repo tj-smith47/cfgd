@@ -7,7 +7,7 @@ Gateway
 
 Server Config
   ✓ Saved to <PATH>
-  → Run 'cfgd plan' to preview changes, then 'cfgd apply'
+  → Run `cfgd plan` to preview changes, then `cfgd apply`
 
 System Settings
   ◉ No system settings drift to report

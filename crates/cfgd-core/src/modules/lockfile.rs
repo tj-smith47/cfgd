@@ -263,21 +263,11 @@ pub fn load_source_modules(
             // per-module signature to check here.
             let mut module = load_module(&root.modules_dir.join(name))?;
             module.origin = Some(root.source_name.clone());
-            // Fail-closed: a source not permitted to run scripts may not deliver a
-            // module body carrying lifecycle scripts or `prefer: [script]` package
-            // installs. This mirrors the profile-layer no_scripts enforcement in
-            // the composition constraint check, applied at the module-delivery
-            // boundary where the per-root `scripts_permitted` decision is known.
-            if !root.scripts_permitted
-                && let Some(kind) = module_script_kind(&module)
-            {
-                return Err(ModuleError::ScriptsNotAllowed {
-                    source_name: root.source_name.clone(),
-                    module: name.clone(),
-                    kind,
-                }
-                .into());
-            }
+            // The noScripts fail-closed check runs in `resolve_modules`, over
+            // only the modules the subscriber's resolved dependency order
+            // actually references — not here. Every name in `offered` reaches
+            // this loop whether or not anything ends up using it, so erroring
+            // here would fail an apply over a script the machine never runs.
             modules.insert(name.clone(), module);
         }
     }
@@ -288,7 +278,7 @@ pub fn load_source_modules(
 /// body runs no source-supplied code: no lifecycle scripts, no `prefer: [script]`
 /// package installs, and no `strategy: Patch` filter script. Used to enforce a
 /// source's `noScripts` constraint over delivered bodies.
-fn module_script_kind(module: &LoadedModule) -> Option<String> {
+pub(super) fn module_script_kind(module: &LoadedModule) -> Option<String> {
     if let Some(ref scripts) = module.spec.scripts {
         for (label, entries) in scripts.hooks() {
             if !entries.is_empty() {
@@ -407,10 +397,9 @@ impl SpecChange {
 /// A change naming a post-apply script carries the script itself rather than
 /// its body in the text, because the approval screen renders that body through
 /// the Scripts composer (see [`SpecChange::script`]).
-///
-/// name-row-ok: every row NAMES the declared kind that changed (`dependency
-/// added: nvim`, `env 'EDITOR': vi -> nvim`), so its subject is a schema noun
-/// and not a past-tense report of something the command did.
+// name-row-ok: every row NAMES the declared kind that changed (`dependency
+// added: nvim`, `env 'EDITOR': vi -> nvim`), so its subject is a schema noun
+// with no past-tense report of something the command did.
 pub fn diff_module_specs(old: &LoadedModule, new: &LoadedModule, arrow: &str) -> Vec<SpecChange> {
     let mut changes = Vec::new();
 

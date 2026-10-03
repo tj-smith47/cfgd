@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # Full-stack E2E tests: Health
 # Sourced by run-all.sh — do NOT set traps or pipefail here.
 
@@ -11,12 +12,12 @@ begin_test "FS-HEALTH-01: All components healthy"
 
 # Wait for rollouts to fully complete (setup may have triggered a rollout restart)
 kubectl rollout status deployment/cfgd-server -n cfgd-system --timeout=120s 2>/dev/null || true
-kubectl rollout status deployment/cfgd-operator -n cfgd-system --timeout=120s 2>/dev/null || true
+kubectl rollout status deployment/"$E2E_OPERATOR_DEPLOY" -n "$E2E_INSTALL_NS" --timeout=120s 2>/dev/null || true
 
 # Check deployment readiness (all replicas updated and available)
 GATEWAY_POD=$(kubectl get deployment cfgd-server -n cfgd-system \
     -o jsonpath='{.status.conditions[?(@.type=="Available")].status}' 2>/dev/null || echo "")
-OPERATOR_POD=$(kubectl get deployment cfgd-operator -n cfgd-system \
+OPERATOR_POD=$(kubectl get deployment "$E2E_OPERATOR_DEPLOY" -n "$E2E_INSTALL_NS" \
     -o jsonpath='{.status.conditions[?(@.type=="Available")].status}' 2>/dev/null || echo "")
 CFGD_AVAIL=$(exec_in_pod cfgd --version 2>&1 || echo "")
 

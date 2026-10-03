@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # Node E2E tests: Apply (binary-level)
 # Sourced by run-all.sh — do NOT set traps or pipefail here.
 
@@ -129,13 +130,14 @@ fi
 # BIN-07: Idempotency — apply again shows nothing to do
 # =================================================================
 begin_test "BIN-07: Apply idempotency"
-OUTPUT=$(exec_in_pod cfgd --config /etc/cfgd/cfgd.yaml apply --yes --no-color 2>&1) || true
-if echo "$OUTPUT" | grep -qi "nothing to apply\|in sync\|0 configurators"; then
+RC=0
+OUTPUT=$(exec_in_pod cfgd --config /etc/cfgd/cfgd.yaml apply --yes --no-color 2>&1) || RC=$?
+# The reconciler's MSG_NOTHING_TO_DO: the apply right before this one left
+# nothing for a second run to change.
+if [ "$RC" -eq 0 ] && assert_contains "$OUTPUT" "Nothing to do — everything is up to date"; then
     pass_test "BIN-07"
 else
-    # May still apply if other configurators aren't available, which is fine
-    echo "  Note: may re-apply if non-sysctl configurators detect drift"
-    pass_test "BIN-07"
+    fail_test "BIN-07" "A second apply (exit $RC) did not report that there is nothing to do"
 fi
 
 echo ""

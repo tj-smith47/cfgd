@@ -20,7 +20,7 @@
 
 #![cfg(unix)]
 
-mod common;
+use cfgd_test_fixtures as common;
 
 use std::path::Path;
 
@@ -76,6 +76,7 @@ fn secret_init_happy_human() {
     let (config_dir, state_dir) = secret_test_setup();
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc();
+    let printer = printer.with_hints_enabled(true);
 
     secret::cmd_secret_init(&cli, &printer).expect("init should succeed");
     drop(printer);
@@ -172,6 +173,7 @@ fn secret_encrypt_happy_human() {
 
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc();
+    let printer = printer.with_hints_enabled(true);
 
     secret::cmd_secret_encrypt(&cli, &printer, &secret_path).expect("encrypt should succeed");
     drop(printer);
@@ -361,6 +363,7 @@ fn secret_edit_happy_human() {
     // sops' edit flow.
     let _editor = EditorGuard::set("/usr/bin/true");
     let (printer, cap) = Printer::for_test_doc();
+    let printer = printer.with_hints_enabled(true);
     secret::cmd_secret_edit(&cli, &printer, &secret_path).expect("edit");
     drop(printer);
 

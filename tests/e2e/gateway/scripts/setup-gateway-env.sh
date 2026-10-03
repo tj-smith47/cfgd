@@ -6,9 +6,12 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=tests/e2e/common/helpers.sh
 source "$SCRIPT_DIR/../../common/helpers.sh"
 
-command -v jq >/dev/null 2>&1 || { echo "ERROR: jq is required for gateway tests"; exit 1; }
+command -v jq >/dev/null 2>&1 || { echo "ERROR: jq is required for gateway tests" >&2; exit 1; }
+
+require_release_webhooks_scoped || exit 1
 
 echo "=== cfgd Gateway E2E Tests ==="
 
@@ -25,8 +28,8 @@ create_e2e_namespace
 GW_PORT=18080
 GW_HEALTH_PORT=18081
 echo "Port-forwarding to gateway on localhost:$GW_PORT..."
-PF_PID=$(port_forward cfgd-system cfgd-server "$GW_PORT" 8080)
-PF_HEALTH_PID=$(port_forward cfgd-system cfgd-server "$GW_HEALTH_PORT" 8081)
+PF_PID=$(port_forward cfgd-system svc/cfgd-server "$GW_PORT" 8080)
+PF_HEALTH_PID=$(port_forward cfgd-system svc/cfgd-server "$GW_HEALTH_PORT" 8081)
 GW_URL="http://localhost:$GW_PORT"
 
 # Wait for gateway to be reachable via port-forward (use health endpoint — API requires auth)

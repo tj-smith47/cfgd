@@ -64,6 +64,7 @@ pub(super) fn cmd_daemon(
             daemon_printer,
             hooks,
             cli.scope(),
+            cli.update_policy_override(),
             env!("CARGO_PKG_VERSION"),
         )
         .await
@@ -309,6 +310,38 @@ fn daemon_source_row(
     }
 }
 
+/// A system-scope service change refused before it starts, because only root
+/// can write the system service directories.
+///
+/// One refusal carrying its own remediation, so the reader sees one failure
+/// line and the command that gets past it.
+fn system_scope_needs_root(
+    error_kind: &'static str,
+    verb: &str,
+    platform: &str,
+    service: &str,
+) -> anyhow::Error {
+    crate::cli::cli_error_with_hints(
+        "cfgd",
+        error_kind,
+        format!("System-scope {verb} requires root privileges"),
+        serde_json::json!({
+            "platform": platform,
+            "service": service,
+            "reason": "insufficient_privileges",
+        }),
+        vec![system_scope_root_hint(verb)],
+    )
+}
+
+/// The way past [`system_scope_needs_root`]. Unconditional: nothing else on
+/// the surface names the command that gets the reader through.
+pub(in crate::cli) fn system_scope_root_hint(verb: &str) -> cfgd_core::output::HintCommands {
+    cfgd_core::output::HintCommands::unconditional(format!(
+        "Re-run with `sudo cfgd --scope system daemon {verb}`"
+    ))
+}
+
 pub(super) fn cmd_daemon_install(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
     // Runtime cfg! so the install_failed error_doc has the platform+service
     // strings available before the lib call. The success payload uses
@@ -325,10 +358,11 @@ pub(super) fn cmd_daemon_install(cli: &Cli, printer: &Printer) -> anyhow::Result
     let scope = cli.scope();
 
     if scope == cfgd_core::Scope::System && !cfgd_core::is_root() {
-        printer.status_simple(Role::Fail, "System-scope install requires root privileges");
-        printer.hint("Re-run with `sudo cfgd --scope system daemon install`");
-        return Err(anyhow::anyhow!(
-            "insufficient privileges for system-scope install"
+        return Err(system_scope_needs_root(
+            "install_failed",
+            "install",
+            platform,
+            service,
         ));
     }
 
@@ -360,10 +394,7 @@ pub(super) fn cmd_daemon_install(cli: &Cli, printer: &Printer) -> anyhow::Result
         let event_log_on = match cfgd_core::config::load_config(&cli.config) {
             Ok(mut cfg) => {
                 drain_config_deprecations(printer, &mut cfg);
-                cfg.spec
-                    .daemon
-                    .map(|d| d.windows_event_log)
-                    .unwrap_or(false)
+                cfg.spec.daemon_effective().windows_event_log
             }
             Err(_) => false,
         };
@@ -487,13 +518,11 @@ pub(super) fn cmd_daemon_uninstall(cli: &Cli, printer: &Printer) -> anyhow::Resu
     let scope = cli.scope();
 
     if scope == cfgd_core::Scope::System && !cfgd_core::is_root() {
-        printer.status_simple(
-            Role::Fail,
-            "System-scope uninstall requires root privileges",
-        );
-        printer.hint("Re-run with `sudo cfgd --scope system daemon uninstall`");
-        return Err(anyhow::anyhow!(
-            "insufficient privileges for system-scope uninstall"
+        return Err(system_scope_needs_root(
+            "uninstall_failed",
+            "uninstall",
+            platform,
+            service,
         ));
     }
 
@@ -563,6 +592,7 @@ pub(super) fn cmd_daemon_service() -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use crate::cli::HermeticParse;
 
     /// The instant every daemon-status render in this suite ages its stamps
     /// against, so a captured age is a fact about the fixture rather than about
@@ -570,6 +600,36 @@ mod tests {
     const DAEMON_STATUS_NOW: &str = "2026-05-14T12:00:00Z";
     use super::*;
     use cfgd_core::test_helpers::test_printer as make_printer;
+
+    /// A system-scope refusal renders as one failure line plus the command that
+    /// gets past it, and reaches `-o json` under the verb's own kind with the
+    /// reason a script branches on. Built directly: the suite runs as root,
+    /// where the command never reaches the refusal.
+    #[test]
+    fn a_system_scope_refusal_renders_one_line_its_hint_and_its_reason() {
+        let err = || system_scope_needs_root("install_failed", "install", "linux", "cfgd.service");
+
+        let (printer, buf) =
+            cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+        crate::cli::error::render_cli_error(&printer, &err());
+        printer.flush();
+        let human = cfgd_core::test_helpers::captured_text(&buf);
+        assert_eq!(human.matches('✗').count(), 1, "one failure line: {human}");
+        assert!(
+            human.contains("sudo cfgd --scope system daemon install"),
+            "the refusal names the command past it: {human}"
+        );
+
+        let (printer, buf) =
+            cfgd_core::output::Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
+        crate::cli::error::render_cli_error(&printer, &err());
+        printer.flush();
+        let json: serde_json::Value =
+            serde_json::from_str(&cfgd_core::test_helpers::captured_text(&buf))
+                .expect("json payload must parse");
+        assert_eq!(json["error"], "install_failed", "{json}");
+        assert_eq!(json["reason"], "insufficient_privileges", "{json}");
+    }
 
     fn make_status(running: bool) -> cfgd_core::daemon::DaemonStatusResponse {
         cfgd_core::daemon::DaemonStatusResponse {
@@ -611,9 +671,12 @@ mod tests {
             quiet: true,
             output: crate::cli::OutputFormatArg(cfgd_core::output::OutputFormat::Table),
             list_envelope: false,
+            hints: false,
             no_hints: false,
             theme: None,
             mask_env_values: None,
+            migration_policy: None,
+            update_policy: None,
             jsonpath: None,
             yes: false,
             state_dir: None,
@@ -637,7 +700,6 @@ mod tests {
     #[test]
     #[serial_test::serial]
     fn windows_service_binpath_argv_parses_via_cli() {
-        use clap::Parser;
         let cfg = std::path::Path::new("C:/ProgramData/cfgd/cfgd.yaml");
         let no_dirs = cfgd_core::daemon::DaemonDirOverrides::default();
         let both_dirs = cfgd_core::daemon::DaemonDirOverrides {
@@ -678,7 +740,7 @@ mod tests {
                 );
             }
             let full = std::iter::once("cfgd".to_string()).chain(argv.iter().cloned());
-            let cli = Cli::try_parse_from(full).unwrap_or_else(|e| {
+            let cli = Cli::try_parse_hermetic(full).unwrap_or_else(|e| {
                 panic!(
                     "baked service argv {argv:?} rejected by the daemon-service clap parser: {e}"
                 )

@@ -23,6 +23,8 @@ const ADDED_COLUMNS: &[(usize, &str, &str)] = &[
     (17, "pending_decisions", "content_hash"),
     (18, "config_sources", "last_commit_signed"),
     (19, "managed_resources", "file_hashes"),
+    (29, "managed_resources", "kind"),
+    (29, "managed_resources", "manager"),
 ];
 
 /// Every `ADD COLUMN` migration must be listed in [`ADDED_COLUMNS`].
@@ -530,7 +532,15 @@ fn snapshot_reset_resolves_healed_resource() {
 fn upsert_managed_resource() {
     let store = StateStore::open_in_memory().unwrap();
     store
-        .upsert_managed_resource("file", "/home/.zshrc", "local", Some("hash1"), None)
+        .upsert_managed_resource(
+            "file",
+            "/home/.zshrc",
+            "file",
+            None,
+            "local",
+            Some("hash1"),
+            None,
+        )
         .unwrap();
 
     let resources = store.managed_resources().unwrap();
@@ -541,7 +551,15 @@ fn upsert_managed_resource() {
 
     // Update with new hash
     store
-        .upsert_managed_resource("file", "/home/.zshrc", "local", Some("hash2"), None)
+        .upsert_managed_resource(
+            "file",
+            "/home/.zshrc",
+            "file",
+            None,
+            "local",
+            Some("hash2"),
+            None,
+        )
         .unwrap();
 
     let resources = store.managed_resources().unwrap();
@@ -554,7 +572,15 @@ fn refresh_managed_resource_hash_writes_only_when_the_hash_moved() {
     use super::HashRefresh;
     let store = StateStore::open_in_memory().unwrap();
     store
-        .upsert_managed_resource("file", "/home/.zshrc", "acme", Some("hash1"), None)
+        .upsert_managed_resource(
+            "file",
+            "/home/.zshrc",
+            "file",
+            None,
+            "acme",
+            Some("hash1"),
+            None,
+        )
         .unwrap();
 
     assert_eq!(
@@ -606,7 +632,15 @@ fn a_row_with_no_breakdown_is_backfilled_once_and_silently() {
     use super::HashRefresh;
     let store = StateStore::open_in_memory().unwrap();
     store
-        .upsert_managed_resource("file", "/home/.zshrc", "local", Some("hash1"), None)
+        .upsert_managed_resource(
+            "file",
+            "/home/.zshrc",
+            "file",
+            None,
+            "local",
+            Some("hash1"),
+            None,
+        )
         .unwrap();
     assert_eq!(
         store
@@ -655,7 +689,8 @@ fn upsert_package_resource_persists_uninstall_cmd() {
     // Scripted manager package — carries a persisted uninstall command.
     store
         .upsert_package_resource(
-            "widgetmgr/widget",
+            "widgetmgr",
+            "widget",
             "local",
             None,
             Some("widgetmgr rm {package}"),
@@ -663,7 +698,7 @@ fn upsert_package_resource_persists_uninstall_cmd() {
         .unwrap();
     // Built-in package — no persisted command (NULL).
     store
-        .upsert_package_resource("cargo/foo", "local", None, None)
+        .upsert_package_resource("cargo", "foo", "local", None, None)
         .unwrap();
 
     let known: std::collections::HashSet<String> = ["cargo".to_string(), "apt".to_string()]
@@ -690,11 +725,23 @@ fn upsert_package_resource_persists_uninstall_cmd() {
 fn upsert_package_resource_refreshes_changed_uninstall_cmd() {
     let store = StateStore::open_in_memory().unwrap();
     store
-        .upsert_package_resource("widgetmgr/widget", "local", None, Some("old rm {package}"))
+        .upsert_package_resource(
+            "widgetmgr",
+            "widget",
+            "local",
+            None,
+            Some("old rm {package}"),
+        )
         .unwrap();
     // Re-install with a changed script must update the persisted command.
     store
-        .upsert_package_resource("widgetmgr/widget", "local", None, Some("new rm {package}"))
+        .upsert_package_resource(
+            "widgetmgr",
+            "widget",
+            "local",
+            None,
+            Some("new rm {package}"),
+        )
         .unwrap();
 
     let known = std::collections::HashSet::new();
@@ -711,7 +758,7 @@ fn upsert_package_resource_refreshes_changed_uninstall_cmd() {
 fn orphaned_package_resources_empty_when_manager_known() {
     let store = StateStore::open_in_memory().unwrap();
     store
-        .upsert_package_resource("widgetmgr/widget", "local", None, Some("widgetmgr rm"))
+        .upsert_package_resource("widgetmgr", "widget", "local", None, Some("widgetmgr rm"))
         .unwrap();
 
     let known: std::collections::HashSet<String> = ["widgetmgr".to_string()].into_iter().collect();
@@ -728,7 +775,7 @@ fn orphaned_package_resources_reports_null_cmd_rows() {
     // A custom-manager package tracked before the persisted-uninstall column
     // existed: NULL command, but still orphaned and must be reported.
     store
-        .upsert_package_resource("legacymgr/legacypkg", "local", None, None)
+        .upsert_package_resource("legacymgr", "legacypkg", "local", None, None)
         .unwrap();
 
     let known = std::collections::HashSet::new();
@@ -748,7 +795,15 @@ fn generic_upsert_managed_resource_leaves_uninstall_cmd_null() {
     // The generic upsert (used for files/system resources) must not touch the
     // new column — it stays NULL.
     store
-        .upsert_managed_resource("package", "widgetmgr/widget", "local", None, None)
+        .upsert_managed_resource(
+            "package",
+            "widgetmgr/widget",
+            "package",
+            None,
+            "local",
+            None,
+            None,
+        )
         .unwrap();
     let known = std::collections::HashSet::new();
     let orphans = store.orphaned_package_resources(&known).unwrap();
@@ -763,7 +818,15 @@ fn is_resource_managed() {
     assert!(!store.is_resource_managed("file", "/home/.zshrc").unwrap());
 
     store
-        .upsert_managed_resource("file", "/home/.zshrc", "local", Some("hash1"), None)
+        .upsert_managed_resource(
+            "file",
+            "/home/.zshrc",
+            "file",
+            None,
+            "local",
+            Some("hash1"),
+            None,
+        )
         .unwrap();
 
     assert!(store.is_resource_managed("file", "/home/.zshrc").unwrap());
@@ -779,7 +842,15 @@ fn is_resource_managed() {
 fn remove_managed_resource_deletes_tracked_row() {
     let store = StateStore::open_in_memory().unwrap();
     store
-        .upsert_managed_resource("package", "apt/fd-find", "local", None, None)
+        .upsert_managed_resource(
+            "package",
+            "apt/fd-find",
+            "package",
+            None,
+            "local",
+            None,
+            None,
+        )
         .unwrap();
     assert!(store.is_resource_managed("package", "apt/fd-find").unwrap());
 
@@ -802,14 +873,30 @@ fn remove_managed_resource_is_idempotent_on_missing_row() {
 fn managed_package_ids_round_trip() {
     let store = StateStore::open_in_memory().unwrap();
     store
-        .upsert_managed_resource("package", "apt/fd-find", "local", None, None)
+        .upsert_managed_resource(
+            "package",
+            "apt/fd-find",
+            "package",
+            None,
+            "local",
+            None,
+            None,
+        )
         .unwrap();
     store
-        .upsert_managed_resource("package", "cargo/ripgrep", "local", None, None)
+        .upsert_managed_resource(
+            "package",
+            "cargo/ripgrep",
+            "package",
+            None,
+            "local",
+            None,
+            None,
+        )
         .unwrap();
     // A non-package resource must never appear in the package id list.
     store
-        .upsert_managed_resource("file", "/home/.zshrc", "local", None, None)
+        .upsert_managed_resource("file", "/home/.zshrc", "file", None, "local", None, None)
         .unwrap();
 
     let mut ids = store.managed_package_ids().unwrap();
@@ -833,10 +920,10 @@ fn managed_package_ids_round_trip() {
 fn managed_resources_unique_constraint() {
     let store = StateStore::open_in_memory().unwrap();
     store
-        .upsert_managed_resource("file", "/a", "local", None, None)
+        .upsert_managed_resource("file", "/a", "file", None, "local", None, None)
         .unwrap();
     store
-        .upsert_managed_resource("package", "/a", "local", None, None)
+        .upsert_managed_resource("package", "/a", "package", None, "local", None, None)
         .unwrap();
 
     let resources = store.managed_resources().unwrap();
@@ -1114,32 +1201,48 @@ fn record_source_conflict() {
 fn managed_resources_by_source() {
     let store = StateStore::open_in_memory().unwrap();
     store
-        .upsert_managed_resource("file", "/a", "local", None, None)
+        .upsert_managed_resource("file", "/a", "file", None, "local", None, None)
         .unwrap();
     store
-        .upsert_managed_resource("file", "/b", "acme", None, None)
+        .upsert_managed_resource("file", "/b", "file", None, "acme", None, None)
         .unwrap();
     store
-        .upsert_managed_resource("package", "git-secrets", "acme", None, None)
+        .upsert_managed_resource(
+            "package",
+            "git-secrets",
+            "package",
+            None,
+            "acme",
+            None,
+            None,
+        )
         .unwrap();
 
     // A row several layers built together names all of them, and belongs to
     // each.
     store
-        .upsert_managed_resource("env-var", "PATH", "local, acme", None, None)
+        .upsert_managed_resource(
+            "env-var",
+            "PATH",
+            "env-var",
+            None,
+            "local, acme",
+            None,
+            None,
+        )
         .unwrap();
     // A name that CONTAINS another layer's name, and one carrying the
     // characters `LIKE` reads as its own wildcards.
     store
-        .upsert_managed_resource("file", "/c", "acme-dev", None, None)
+        .upsert_managed_resource("file", "/c", "file", None, "acme-dev", None, None)
         .unwrap();
     store
-        .upsert_managed_resource("file", "/d", "ac%e_1", None, None)
+        .upsert_managed_resource("file", "/d", "file", None, "ac%e_1", None, None)
         .unwrap();
     // A backslash is the escape character the pattern declares, so a name
     // carrying one is the case an unescaped pattern loses outright.
     store
-        .upsert_managed_resource("file", "/e", r"ac\me", None, None)
+        .upsert_managed_resource("file", "/e", "file", None, r"ac\me", None, None)
         .unwrap();
 
     let acme_resources = store.managed_resources_by_source("acme").unwrap();
@@ -2014,7 +2117,7 @@ fn migration_adds_uninstall_cmd_column() {
     // package-resource helper, rather than pinning a fragile version number.
     let store = StateStore::open_in_memory().unwrap();
     store
-        .upsert_package_resource("widgetmgr/widget", "local", None, Some("widgetmgr rm"))
+        .upsert_package_resource("widgetmgr", "widget", "local", None, Some("widgetmgr rm"))
         .unwrap();
     let known = std::collections::HashSet::new();
     let orphans = store.orphaned_package_resources(&known).unwrap();
@@ -2528,33 +2631,57 @@ fn migration_9_drops_stale_managed_resource_ids_and_apply_recreates_them() {
         let store = StateStore::open(&path).unwrap();
         // Every module collapsed onto the bare verb, so the module name was lost.
         store
-            .upsert_managed_resource("module", "script", "local", None, None)
+            .upsert_managed_resource("module", "script", "module", None, "local", None, None)
             .unwrap();
         // Truncated at the colon inside the script body.
         store
-            .upsert_managed_resource("Running script", " curl https", "local", None, None)
+            .upsert_managed_resource(
+                "Running script",
+                " curl https",
+                "Running script",
+                None,
+                "local",
+                None,
+                None,
+            )
             .unwrap();
         // Truncated at the colon inside the configurator value.
         store
-            .upsert_managed_resource("system", "path.value (a", "local", None, None)
+            .upsert_managed_resource(
+                "system",
+                "path.value (a",
+                "system",
+                None,
+                "local",
+                None,
+                None,
+            )
             .unwrap();
         // Native-separator secret key, as a Windows host would have written it.
         store
-            .upsert_managed_resource("secret", r"C:\Users\me\.env", "local", None, None)
+            .upsert_managed_resource(
+                "secret",
+                r"C:\Users\me\.env",
+                "secret",
+                None,
+                "local",
+                None,
+                None,
+            )
             .unwrap();
         // Every manager's bootstrap/skip collapsed onto the bare verb, losing
         // the manager name. These go through upsert_managed_resource, so they
         // carry no uninstall_cmd.
         store
-            .upsert_managed_resource("package", "skip", "local", None, None)
+            .upsert_managed_resource("package", "skip", "package", None, "local", None, None)
             .unwrap();
         store
-            .upsert_managed_resource("package", "bootstrap", "local", None, None)
+            .upsert_managed_resource("package", "bootstrap", "package", None, "local", None, None)
             .unwrap();
         // A real package row must NOT be swept — it is the one shape carrying an
         // uninstall_cmd that cannot be re-derived once its manager leaves config.
         store
-            .upsert_package_resource("widgetmgr/widget", "local", None, Some("widgetmgr rm"))
+            .upsert_package_resource("widgetmgr", "widget", "local", None, Some("widgetmgr rm"))
             .unwrap();
         // Hardcoded, not `MIGRATIONS.len() - 1`: this test means "replay the
         // id-shape sweep", so appending a later migration must not silently
@@ -3127,13 +3254,13 @@ fn legacy_chmod_tracking_rows_carrying_their_mode_are_swept_on_open() {
             "/etc/config.yaml",
         ] {
             store
-                .upsert_managed_resource("file", rid, "local", None, None)
+                .upsert_managed_resource("file", rid, "file", None, "local", None, None)
                 .unwrap();
         }
         // A path that merely LOOKS mode-prefixed is another type's row and a
         // legal filename either way; the sweep is scoped to `file`.
         store
-            .upsert_managed_resource("env", "0o600:/etc/env", "local", None, None)
+            .upsert_managed_resource("env", "0o600:/etc/env", "env-rc", None, "local", None, None)
             .unwrap();
         rewind_schema_version(&store, 22);
     }
@@ -3347,7 +3474,15 @@ fn a_module_skip_row_from_a_pre_fix_daemon_is_resolved_and_its_tracking_row_drop
                 .record_drift("module", rid, None, None, "local")
                 .unwrap();
             store
-                .upsert_managed_resource("module", rid, "local", None, None)
+                .upsert_managed_resource(
+                    "module",
+                    rid,
+                    crate::reconciler::recorded_resource_kind("module", rid),
+                    None,
+                    "local",
+                    None,
+                    None,
+                )
                 .unwrap();
         }
         // Another type carrying the same tail: the sweep is scoped to `module`.
@@ -3424,7 +3559,15 @@ fn every_script_row_from_a_pre_fix_daemon_is_resolved_and_its_tracking_row_kept(
                 .record_drift("module", rid, None, None, "local")
                 .unwrap();
             store
-                .upsert_managed_resource("module", rid, "local", None, None)
+                .upsert_managed_resource(
+                    "module",
+                    rid,
+                    crate::reconciler::recorded_resource_kind("module", rid),
+                    None,
+                    "local",
+                    None,
+                    None,
+                )
                 .unwrap();
         }
         for rtype in ["script", "Running script"] {
@@ -3432,7 +3575,15 @@ fn every_script_row_from_a_pre_fix_daemon_is_resolved_and_its_tracking_row_kept(
                 .record_drift(rtype, "echo hi", None, None, "local")
                 .unwrap();
             store
-                .upsert_managed_resource(rtype, "echo hi", "local", None, None)
+                .upsert_managed_resource(
+                    rtype,
+                    "echo hi",
+                    crate::reconciler::recorded_resource_kind(rtype, "echo hi"),
+                    None,
+                    "local",
+                    None,
+                    None,
+                )
                 .unwrap();
         }
         store
@@ -3648,6 +3799,8 @@ fn migration_14_undoubles_the_configurator_name_in_persisted_system_ids() {
             .upsert_managed_resource(
                 "system",
                 "sshKeys.sshKeys.default.exists",
+                "system",
+                None,
                 "local",
                 None,
                 Some(apply_id),
@@ -3716,6 +3869,8 @@ fn migration_14_undoubles_the_configurator_name_in_persisted_system_ids() {
             .upsert_managed_resource(
                 "system",
                 "certificates.cert.kubelet-client.cert",
+                "system",
+                None,
                 "local",
                 None,
                 Some(apply_id),
@@ -3725,6 +3880,8 @@ fn migration_14_undoubles_the_configurator_name_in_persisted_system_ids() {
             .upsert_managed_resource(
                 "system",
                 "containerd.containerdx",
+                "system",
+                None,
                 "local",
                 None,
                 Some(apply_id),
@@ -3734,6 +3891,8 @@ fn migration_14_undoubles_the_configurator_name_in_persisted_system_ids() {
             .upsert_managed_resource(
                 "system",
                 "sshkeys.sshkeys.default.exists",
+                "system",
+                None,
                 "local",
                 None,
                 Some(apply_id),
@@ -4491,6 +4650,208 @@ fn open_pins_wal_and_normal_synchronous() {
     assert_eq!(synchronous, 1);
 }
 
+/// A second connection on a database still in rollback mode, holding its
+/// write lock: the state a fresh `state.db` is in while another process is
+/// creating it.
+fn hold_rollback_write_lock(path: &Path) -> Connection {
+    let holder = Connection::open(path).unwrap();
+    holder
+        .execute_batch("CREATE TABLE IF NOT EXISTS probe (x); BEGIN IMMEDIATE;")
+        .unwrap();
+    let mode: String = holder
+        .query_row("PRAGMA journal_mode", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(
+        mode.to_lowercase(),
+        "delete",
+        "the holder must be in rollback mode"
+    );
+    holder
+}
+
+/// Where [`hand_off_to_holder`] tells the lock holder it is waiting.
+static TELL_HOLDER: std::sync::Mutex<Option<std::sync::mpsc::Sender<&'static str>>> =
+    std::sync::Mutex::new(None);
+/// Where [`hand_off_to_holder`] hears that the holder has released its lock.
+static HOLDER_RELEASED: std::sync::Mutex<Option<std::sync::mpsc::Receiver<()>>> =
+    std::sync::Mutex::new(None);
+
+/// A busy handler that, on its first call, tells the lock holder the waiting
+/// connection is inside the handler and blocks until the holder commits, so
+/// the lock is released only once SQLite has actually asked to wait.
+fn hand_off_to_holder(attempt: i32) -> bool {
+    let released = HOLDER_RELEASED.lock().unwrap().take();
+    if let Some(released) = released {
+        if let Some(tell) = TELL_HOLDER.lock().unwrap().take() {
+            let _ = tell.send("busy handler");
+        }
+        let _ = released.recv();
+    }
+    // A bound keeps a lock that is somehow never released from spinning the
+    // test forever once the handoff is spent.
+    attempt < 1000
+}
+
+#[test]
+fn switch_to_wal_waits_in_the_busy_handler_while_another_connection_writes_the_fresh_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("state.db");
+    let holder = hold_rollback_write_lock(&path);
+    let (tell_holder, holder_hears) = std::sync::mpsc::channel();
+    let (released, released_rx) = std::sync::mpsc::channel();
+    *TELL_HOLDER.lock().unwrap() = Some(tell_holder.clone());
+    *HOLDER_RELEASED.lock().unwrap() = Some(released_rx);
+    let release = std::thread::spawn(move || {
+        let first = holder_hears.recv().unwrap();
+        holder.execute_batch("COMMIT").unwrap();
+        let _ = released.send(());
+        first
+    });
+
+    let conn = Connection::open(&path).unwrap();
+    conn.busy_handler(Some(hand_off_to_holder)).unwrap();
+    let switched = switch_to_wal(&conn);
+    // Wakes a holder the busy handler never reached, so a switch that gave
+    // up at once fails the assertion below and the test does not hang.
+    let _ = tell_holder.send("switch returned");
+    let first = release.join().unwrap();
+
+    assert_eq!(
+        first, "busy handler",
+        "the switch returned before SQLite ran the busy handler: {switched:?}"
+    );
+    switched.unwrap_or_else(|e| panic!("switch failed after the lock was released: {e}"));
+    let mode: String = conn
+        .query_row("PRAGMA journal_mode", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(mode.to_lowercase(), "wal");
+}
+
+#[test]
+fn enable_wal_waits_the_whole_busy_timeout_before_it_reports_the_lock() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("state.db");
+    let _holder = hold_rollback_write_lock(&path);
+    let conn = Connection::open(&path).unwrap();
+    let timeout = Duration::from_millis(250);
+
+    let started = std::time::Instant::now();
+    let err = enable_wal(&conn, timeout).expect_err("the lock is never released");
+    let waited = started.elapsed();
+
+    assert_eq!(
+        err.sqlite_error_code(),
+        Some(rusqlite::ErrorCode::DatabaseBusy),
+        "{err}"
+    );
+    assert!(
+        waited >= timeout,
+        "reported the lock after {waited:?}, inside the {timeout:?} busy timeout"
+    );
+}
+
+/// `enable_wal`, through its `switch_to_wal`, is the one place a production
+/// connection switches its journal mode, because a bare
+/// `PRAGMA journal_mode=WAL` fails a second process that opens a fresh
+/// database at the same moment without waiting on it.
+///
+/// Every `<crate>/src` under `crates/` is read off the directory, with a floor
+/// per root so a tree going dark fails by name. Comment rows are skipped, so
+/// prose naming the pragma is not a site.
+#[test]
+fn every_production_journal_mode_switch_goes_through_enable_wal() {
+    use crate::test_helpers::{production_slice_of, rust_sources_under, workspace_root};
+
+    const WALK_ROOTS: &[(&str, usize)] = &[
+        // 196 sources `is_test_source` leaves in, less the 3 built only for tests
+        // (bin/fake_cosign.rs, output/test_capture.rs, test_helpers.rs).
+        ("crates/cfgd-core/src", 193),
+        ("crates/cfgd-crd/src", 1),
+        ("crates/cfgd-csi/src", 8),
+        ("crates/cfgd-operator/src", 42),
+        ("crates/cfgd-schema/src", 2),
+        ("crates/cfgd-test-fixtures/src", 1),
+        ("crates/cfgd/src", 144),
+    ];
+    const HELPER_FILE: &str = "crates/cfgd-core/src/state/mod.rs";
+
+    let workspace = workspace_root();
+    let crates_dir = workspace.join("crates");
+    let mut roots: Vec<String> = std::fs::read_dir(&crates_dir)
+        .unwrap_or_else(|e| panic!("{}: {e}", crates_dir.display()))
+        .map(|entry| {
+            entry
+                .unwrap_or_else(|e| {
+                    panic!(
+                        "{}: the walk must read every entry: {e}",
+                        crates_dir.display()
+                    )
+                })
+                .path()
+                .join("src")
+        })
+        .filter(|src| src.is_dir())
+        .map(|src| crate::to_posix_string(src.strip_prefix(&workspace).unwrap_or(&src)))
+        .collect();
+    roots.sort();
+    let named: Vec<&str> = WALK_ROOTS.iter().map(|(root, _)| *root).collect();
+    assert_eq!(roots, named, "the walk roots are every crate's src");
+
+    let mut sites: Vec<String> = Vec::new();
+    for (root, floor) in WALK_ROOTS {
+        let mut files = 0usize;
+        for path in rust_sources_under(&workspace.join(root)) {
+            if crate::test_helpers::is_test_source(&path)
+                || crate::test_helpers::is_test_only_file(&path)
+            {
+                continue;
+            }
+            files += 1;
+            let relative = crate::to_posix_string(path.strip_prefix(&workspace).unwrap_or(&path));
+            for (n, line) in production_slice_of(&path).lines().enumerate() {
+                if line.trim_start().starts_with("//") {
+                    continue;
+                }
+                if line.to_ascii_lowercase().contains("journal_mode") {
+                    sites.push(format!("{relative}:{}", n + 1));
+                }
+            }
+        }
+        assert!(
+            files >= *floor,
+            "{root}: walked {files} production sources, floor {floor}"
+        );
+    }
+
+    // The helper's body, as the rows from its signature to the `}` that closes
+    // it at column zero, so a second switch written into the same file is
+    // still a site outside it.
+    let helper = production_slice_of(&workspace.join(HELPER_FILE));
+    let rows: Vec<&str> = helper.lines().collect();
+    let opens = rows
+        .iter()
+        .position(|l| l.starts_with("fn switch_to_wal("))
+        .unwrap_or_else(|| panic!("{HELPER_FILE}: no `fn switch_to_wal(`"));
+    let closes = opens
+        + rows[opens..]
+            .iter()
+            .position(|l| *l == "}")
+            .unwrap_or_else(|| panic!("{HELPER_FILE}: `switch_to_wal` never closes"));
+    let inside: Vec<String> = (opens + 1..=closes + 1)
+        .map(|n| format!("{HELPER_FILE}:{n}"))
+        .collect();
+
+    assert_eq!(
+        sites.len(),
+        1,
+        "journal_mode switches outside enable_wal: {sites:?}"
+    );
+    assert!(
+        inside.contains(&sites[0]),
+        "the one journal_mode switch sits outside switch_to_wal: {sites:?}"
+    );
+}
+
 #[test]
 fn in_transaction_batches_every_write_into_one_commit() {
     let dir = tempfile::tempdir().unwrap();
@@ -4500,8 +4861,24 @@ fn in_transaction_batches_every_write_into_one_commit() {
 
     store
         .in_transaction(|| {
-            store.upsert_managed_resource("file", "~/.a", "profile:test", None, None)?;
-            store.upsert_managed_resource("file", "~/.b", "profile:test", None, None)?;
+            store.upsert_managed_resource(
+                "file",
+                "~/.a",
+                "file",
+                None,
+                "profile:test",
+                None,
+                None,
+            )?;
+            store.upsert_managed_resource(
+                "file",
+                "~/.b",
+                "file",
+                None,
+                "profile:test",
+                None,
+                None,
+            )?;
             // Committed per statement, both rows would already be visible to
             // another connection here; inside one transaction neither is.
             assert!(reader.managed_resources().unwrap().is_empty());
@@ -4517,7 +4894,7 @@ fn in_transaction_rolls_back_when_the_batch_fails() {
     let store = StateStore::open_in_memory().unwrap();
 
     let err: Result<()> = store.in_transaction(|| {
-        store.upsert_managed_resource("file", "~/.a", "profile:test", None, None)?;
+        store.upsert_managed_resource("file", "~/.a", "file", None, "profile:test", None, None)?;
         Err(crate::errors::StateError::MigrationFailed {
             message: "batch aborted".to_string(),
         }
@@ -4529,7 +4906,7 @@ fn in_transaction_rolls_back_when_the_batch_fails() {
     // left inside an open transaction: the next write commits on its own.
     assert!(store.managed_resources().unwrap().is_empty());
     store
-        .upsert_managed_resource("file", "~/.c", "profile:test", None, None)
+        .upsert_managed_resource("file", "~/.c", "file", None, "profile:test", None, None)
         .unwrap();
     assert_eq!(store.managed_resources().unwrap().len(), 1);
 }
@@ -4546,7 +4923,7 @@ fn a_failed_bookkeeping_batch_leaves_the_apply_row_in_progress() {
 
     let err: Result<()> = store.in_transaction(|| {
         store.update_apply_status(apply_id, ApplyStatus::Success, Some("{}"))?;
-        store.upsert_managed_resource("file", "~/.a", "profile:work", None, None)?;
+        store.upsert_managed_resource("file", "~/.a", "file", None, "profile:work", None, None)?;
         Err(crate::errors::StateError::MigrationFailed {
             message: "tail aborted".to_string(),
         }
@@ -4567,7 +4944,15 @@ fn in_transaction_rolls_back_when_the_batch_panics() {
     std::panic::set_hook(Box::new(|_| {}));
     let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         store.in_transaction::<()>(|| {
-            store.upsert_managed_resource("file", "~/.a", "profile:test", None, None)?;
+            store.upsert_managed_resource(
+                "file",
+                "~/.a",
+                "file",
+                None,
+                "profile:test",
+                None,
+                None,
+            )?;
             panic!("batch panicked");
         })
     }));
@@ -4576,7 +4961,7 @@ fn in_transaction_rolls_back_when_the_batch_panics() {
 
     assert!(store.managed_resources().unwrap().is_empty());
     store
-        .upsert_managed_resource("file", "~/.c", "profile:test", None, None)
+        .upsert_managed_resource("file", "~/.c", "file", None, "profile:test", None, None)
         .unwrap();
     assert_eq!(store.managed_resources().unwrap().len(), 1);
 }
@@ -4589,7 +4974,7 @@ fn sequential_transactions_after_a_failed_one_still_pass_the_assert() {
     let store = StateStore::open_in_memory().unwrap();
 
     let err: Result<()> = store.in_transaction(|| {
-        store.upsert_managed_resource("file", "~/.a", "profile:test", None, None)?;
+        store.upsert_managed_resource("file", "~/.a", "file", None, "profile:test", None, None)?;
         Err(crate::errors::StateError::MigrationFailed {
             message: "batch aborted".to_string(),
         }
@@ -4601,7 +4986,7 @@ fn sequential_transactions_after_a_failed_one_still_pass_the_assert() {
     // above had left the nesting flag set.
     store
         .in_transaction(|| {
-            store.upsert_managed_resource("file", "~/.c", "profile:test", None, None)
+            store.upsert_managed_resource("file", "~/.c", "file", None, "profile:test", None, None)
         })
         .unwrap();
     assert_eq!(store.managed_resources().unwrap().len(), 1);
@@ -4649,15 +5034,19 @@ fn every_upsert_refreshes_its_own_timestamp() {
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/state");
     let mut files: Vec<_> = std::fs::read_dir(&dir)
         .expect("the state module is checked out")
-        .filter_map(|e| e.ok().map(|e| e.path()))
+        .map(|entry| {
+            entry
+                .expect("the walk must read every directory entry")
+                .path()
+        })
         .filter(|p| p.extension().is_some_and(|x| x == "rs"))
-        .filter(|p| p.file_name().is_some_and(|n| n != "tests.rs"))
+        .filter(|p| !crate::test_helpers::is_test_source(p))
         .collect();
     files.sort();
     let mut upserts = 0usize;
     let mut offenders = Vec::new();
     for path in files {
-        let body = crate::test_helpers::walked_file_body(&path);
+        let body = crate::test_helpers::production_slice_of(&path);
         let lines: Vec<&str> = body.lines().collect();
         for (at, _) in body.match_indices("ON CONFLICT") {
             upserts += 1;
@@ -4671,9 +5060,9 @@ fn every_upsert_refreshes_its_own_timestamp() {
                 || set.contains("last_applied =")
                 || set.contains("last_fetched =");
             let n = body[..at].matches('\n').count();
-            let hatched = lines[n].contains("// stamp-ok:")
+            let hatched = crate::test_helpers::carries_hatch(lines[n], "// stamp-ok:")
                 || n.checked_sub(1)
-                    .is_some_and(|p| lines[p].contains("// stamp-ok:"));
+                    .is_some_and(|p| crate::test_helpers::carries_hatch(lines[p], "// stamp-ok:"));
             if !stamped && !hatched {
                 offenders.push(format!("{}:{}", path.display(), n + 1));
             }
@@ -4722,5 +5111,441 @@ fn a_second_apply_advances_the_module_stamp() {
     assert_ne!(
         record.installed_at, "2020-01-01T00:00:00Z",
         "the second apply must re-stamp the row, not leave the first-seen instant"
+    );
+}
+
+/// The four promises the store makes about a recorded answer: the same
+/// question is reused, a later answer replaces the one whose question it
+/// moved past, two spellings of one config file are one row, and a column
+/// that no longer decodes covers nothing. The answer is per (config file,
+/// apiVersion) pair and per QUESTION: a later release offering a key the
+/// recorded answer never covered asks again, which is what keeps "asked
+/// once" from meaning "never asked after the first upgrade".
+#[test]
+fn a_recorded_migration_answer_is_reused_only_for_the_keys_it_covered() {
+    let store = StateStore::open_in_memory().unwrap();
+    let offered = vec!["spec.migrationPolicy".to_string()];
+    assert_eq!(
+        store
+            .migration_answer(Path::new("/c/cfgd.yaml"), "cfgd.io/v1alpha1", &offered)
+            .unwrap(),
+        None
+    );
+
+    store
+        .record_migration_answer(
+            Path::new("/c/cfgd.yaml"),
+            "cfgd.io/v1alpha1",
+            false,
+            &offered,
+        )
+        .unwrap();
+    assert_eq!(
+        store
+            .migration_answer(Path::new("/c/cfgd.yaml"), "cfgd.io/v1alpha1", &offered)
+            .unwrap(),
+        Some(false),
+        "the same question is not asked twice"
+    );
+
+    let wider = vec![
+        "spec.migrationPolicy".to_string(),
+        "spec.newerField".to_string(),
+    ];
+    assert_eq!(
+        store
+            .migration_answer(Path::new("/c/cfgd.yaml"), "cfgd.io/v1alpha1", &wider)
+            .unwrap(),
+        None,
+        "a key the recorded answer never covered is a new question"
+    );
+    assert_eq!(
+        store
+            .migration_answer(Path::new("/other/cfgd.yaml"), "cfgd.io/v1alpha1", &offered)
+            .unwrap(),
+        None,
+        "the answer is keyed on the config file"
+    );
+
+    store
+        .record_migration_answer(Path::new("/c/cfgd.yaml"), "cfgd.io/v1alpha1", true, &wider)
+        .unwrap();
+    assert_eq!(
+        store
+            .migration_answer(Path::new("/c/cfgd.yaml"), "cfgd.io/v1alpha1", &wider)
+            .unwrap(),
+        Some(true),
+        "a later answer replaces the one whose question it moved past"
+    );
+    assert_eq!(
+        store
+            .migration_answer(Path::new("/c/../c/cfgd.yaml"), "cfgd.io/v1alpha1", &wider)
+            .unwrap(),
+        Some(true),
+        "two spellings of one file are one row"
+    );
+    assert_eq!(
+        store
+            .migration_answer(Path::new("/c/cfgd.yaml"), "cfgd.io/v1alpha1", &[])
+            .unwrap(),
+        None,
+        "a question naming no key has no answer"
+    );
+    store
+        .conn
+        .execute("UPDATE config_migrations SET offered_keys = 'not json'", [])
+        .unwrap();
+    assert_eq!(
+        store
+            .migration_answer(Path::new("/c/cfgd.yaml"), "cfgd.io/v1alpha1", &wider)
+            .unwrap(),
+        None,
+        "a column that no longer decodes covers nothing"
+    );
+}
+
+/// Tracking rows as real stores hold them, with the `kind` and `manager`
+/// migration 29 must backfill for each. The first eleven are copied from real
+/// stores: the dev host's live store, the FreeBSD npm run's `status -o json`,
+/// and the legacy copy `migrate_state_db` left behind. The rest cover the arms
+/// no real store held a row for.
+const KIND_BACKFILL_ROWS: &[(&str, &str, &str, Option<&str>)] = &[
+    ("env", "/root/.bashrc", "env-rc", None),
+    ("env", "/root/.bashrc:skipped", "env-rc", None),
+    ("env", "/root/.zshenv", "env-rc", None),
+    ("env", "/root/.cfgd.env", "env", None),
+    ("env", "/root/.config/environment.d/cfgd.conf", "env", None),
+    ("env", "refresh", "env-session", None),
+    ("module", "test-mod:files:1", "file", None),
+    ("module", "npmtest:packages:cowsay", "package", None),
+    // A pre-grammar id with no module name: its facet is the package list,
+    // so nothing names it a package.
+    (
+        "module",
+        "packages:neovim,fd,zoxide,node,pipx,go,sops,age",
+        "module",
+        None,
+    ),
+    ("package", "npm/cowsay", "package", Some("npm")),
+    (
+        "file",
+        "/tmp/tmp.oJsVi0REHk/init-home/.gitconfig",
+        "file",
+        None,
+    ),
+    ("module", "nvim:script", "script", None),
+    // A skipped package manager's row installed nothing, so it has no
+    // manager; the id carries no `/` to read one from.
+    ("package", "apt:skip", "package", None),
+    (
+        "env",
+        "/Users/me/Library/LaunchAgents/com.cfgd.user-environment.plist",
+        "env",
+        None,
+    ),
+    (
+        "env",
+        "/home/me/.config/fish/conf.d/cfgd-env.fish",
+        "env",
+        None,
+    ),
+    (
+        "env",
+        "C:/Users/me/Documents/PowerShell/.cfgd-env.ps1",
+        "env",
+        None,
+    ),
+    // A package id with no manager half records no manager.
+    ("package", "/orphan", "package", None),
+];
+
+/// Migration 29 gives every existing tracking row the kind and manager a fresh
+/// apply would record, so `status -o json` and the table agree on rows written
+/// before the columns existed.
+#[test]
+fn migration_29_backfills_kind_and_manager_as_the_writer_records_them() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("state.db");
+    {
+        let store = StateStore::open(&path).unwrap();
+        // Hardcoded: this test means "replay the kind backfill", so a later
+        // migration must not re-point it through `MIGRATIONS.len() - 1`.
+        rewind_schema_version(&store, 29);
+        for (rtype, rid, _, _) in KIND_BACKFILL_ROWS {
+            store
+                .conn
+                .execute(
+                    "INSERT INTO managed_resources (resource_type, resource_id, source)
+                     VALUES (?1, ?2, 'local')",
+                    params![rtype, rid],
+                )
+                .unwrap();
+        }
+    }
+
+    let state = StateStore::open(&path).unwrap();
+    assert_eq!(state.schema_version().unwrap(), MIGRATIONS.len());
+    let rows = state.managed_resources().unwrap();
+    assert_eq!(rows.len(), KIND_BACKFILL_ROWS.len(), "{rows:?}");
+    for (rtype, rid, kind, manager) in KIND_BACKFILL_ROWS {
+        let row = rows
+            .iter()
+            .find(|r| r.resource_type == *rtype && r.resource_id == *rid)
+            .unwrap_or_else(|| panic!("row ({rtype}, {rid}) survives the migration"));
+        assert_eq!(row.kind.as_deref(), Some(*kind), "kind of ({rtype}, {rid})");
+        assert_eq!(
+            row.kind.as_deref(),
+            Some(crate::reconciler::recorded_resource_kind(rtype, rid)),
+            "the backfill and the apply-time writer disagree on ({rtype}, {rid})"
+        );
+        assert_eq!(
+            row.manager.as_deref(),
+            *manager,
+            "manager of ({rtype}, {rid})"
+        );
+    }
+}
+
+/// Whether `id` is a canonical lowercase UUIDv4: the version nibble is `4`
+/// and the variant nibble is one of `8`/`9`/`a`/`b`. Shared so a mask bug in
+/// the migration's SQL (`state/mod.rs`'s variant-nibble expression) is judged
+/// the same way whether it minted one id or two hundred.
+fn assert_uuid_v4(id: &str) {
+    let bytes = id.as_bytes();
+    assert!(
+        id.len() == 36
+            && [8, 13, 18, 23].iter().all(|&i| bytes[i] == b'-')
+            && bytes[14] == b'4'
+            && matches!(bytes[19], b'8' | b'9' | b'a' | b'b')
+            && id
+                .chars()
+                .all(|c| c == '-' || c.is_ascii_digit() || ('a'..='f').contains(&c)),
+        "the identity is a canonical lowercase UUIDv4: {id}"
+    );
+}
+
+/// Migration 30 gives a store that predates it an identity, once: re-opening
+/// the upgraded store reads the same id back and mints no second one,
+/// because a saved plan compares against it.
+#[test]
+fn migration_30_mints_one_store_identity_and_reopening_keeps_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("state.db");
+    {
+        let store = StateStore::open(&path).unwrap();
+        store
+            .conn
+            .execute_batch("DROP TABLE store_identity")
+            .unwrap();
+        // Hardcoded: this test means "replay the identity mint", so a later
+        // migration must not re-point it through `MIGRATIONS.len() - 1`.
+        rewind_schema_version(&store, 30);
+    }
+
+    let upgraded = StateStore::open(&path).unwrap();
+    assert_eq!(upgraded.schema_version().unwrap(), MIGRATIONS.len());
+    let rows: i64 = upgraded
+        .conn
+        .query_row("SELECT COUNT(*) FROM store_identity", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(rows, 1, "the upgrade mints exactly one identity");
+    let id = upgraded.store_id().unwrap();
+    assert_uuid_v4(&id);
+    drop(upgraded);
+
+    let reopened = StateStore::open(&path).unwrap();
+    assert_eq!(
+        reopened.store_id().unwrap(),
+        id,
+        "re-opening reads the minted identity back"
+    );
+    assert_ne!(
+        StateStore::open_in_memory().unwrap().store_id().unwrap(),
+        id,
+        "a fresh store mints its own"
+    );
+
+    // The guard keeps a replayed migration from minting a second row: rewind
+    // past it without dropping the table this time, so the INSERT's own
+    // WHERE NOT EXISTS is what stands between one row and two.
+    rewind_schema_version(&reopened, 30);
+    drop(reopened);
+    let replayed = StateStore::open(&path).unwrap();
+    let rows_after_replay: i64 = replayed
+        .conn
+        .query_row("SELECT COUNT(*) FROM store_identity", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(
+        rows_after_replay, 1,
+        "a replayed migration mints no second identity"
+    );
+    assert_eq!(
+        replayed.store_id().unwrap(),
+        id,
+        "the replayed migration keeps the original identity"
+    );
+}
+
+/// One store's shape is not enough to catch a wrong variant-nibble mask: a
+/// bad mask lands on the right nibble by chance about half the time. Two
+/// hundred fresh stores each run migration 30's SQL fresh (`open_in_memory`
+/// runs every migration), so a wrong mask has a 2^-200 chance of passing.
+#[test]
+fn migration_30_mints_a_v4_shape_id_on_two_hundred_fresh_stores() {
+    for _ in 0..200 {
+        let id = StateStore::open_in_memory().unwrap().store_id().unwrap();
+        assert_uuid_v4(&id);
+    }
+}
+
+/// A store whose identity row is gone reports it. Minting one on read would
+/// give two reads of one store two answers.
+#[test]
+fn a_store_with_no_identity_row_is_an_error_on_read() {
+    let store = StateStore::open_in_memory().unwrap();
+    store
+        .conn
+        .execute("DELETE FROM store_identity", [])
+        .unwrap();
+    let err = store.store_id().unwrap_err();
+    assert!(
+        matches!(
+            err,
+            crate::errors::CfgdError::State(crate::errors::StateError::IdentityMissing)
+        ),
+        "{err}"
+    );
+}
+
+/// Two rows stamped in the same second come back newest first. The stamps have
+/// one-second resolution, so without the `id` tiebreak their order is
+/// whatever SQLite's sort leaves them in.
+#[test]
+fn same_second_rows_list_newest_first() {
+    const SAME_SECOND: &str = "2026-01-01T00:00:00Z";
+    let store = StateStore::open_in_memory().unwrap();
+    store
+        .record_drift("file", "older", None, None, "local")
+        .unwrap();
+    store
+        .record_drift("file", "newer", None, None, "local")
+        .unwrap();
+    for resource in ["older", "newer"] {
+        store
+            .upsert_pending_decision("acme", resource, "recommended", "install", resource, None)
+            .unwrap();
+    }
+    store
+        .conn
+        .execute(
+            "UPDATE drift_events SET timestamp = ?1",
+            params![SAME_SECOND],
+        )
+        .unwrap();
+    store
+        .conn
+        .execute(
+            "UPDATE pending_decisions SET created_at = ?1",
+            params![SAME_SECOND],
+        )
+        .unwrap();
+
+    let drift: Vec<String> = store
+        .unresolved_drift()
+        .unwrap()
+        .into_iter()
+        .map(|e| e.resource_id)
+        .collect();
+    assert_eq!(drift, ["newer", "older"], "unresolved_drift");
+    let resources = |rows: Vec<PendingDecision>| -> Vec<String> {
+        rows.into_iter().map(|d| d.resource).collect()
+    };
+    assert_eq!(
+        resources(store.pending_decisions().unwrap()),
+        ["newer", "older"],
+        "pending_decisions"
+    );
+    assert_eq!(
+        resources(store.withheld_decisions().unwrap()),
+        ["newer", "older"],
+        "withheld_decisions"
+    );
+    assert_eq!(
+        resources(store.pending_decisions_for_source("acme").unwrap()),
+        ["newer", "older"],
+        "pending_decisions_for_source"
+    );
+}
+
+/// Every `ORDER BY` in `source` whose leading key is a time column
+/// (`timestamp`, `*_at`) and that has no second key to break a tie.
+fn time_orders_without_a_tiebreak(source: &str) -> (usize, Vec<String>) {
+    let flat = source.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut timed = 0;
+    let mut offenders = Vec::new();
+    for (at, _) in flat.match_indices("ORDER BY ") {
+        let clause = &flat[at + "ORDER BY ".len()..];
+        let end = clause
+            .find(['"', ')'])
+            .into_iter()
+            .chain(clause.find(" LIMIT"))
+            .min()
+            .unwrap_or(clause.len());
+        let clause = &clause[..end];
+        let lead = clause.split(',').next().unwrap_or("").trim();
+        let column = lead.split_whitespace().next().unwrap_or("");
+        let column = column.rsplit('.').next().unwrap_or(column);
+        if column == "timestamp" || column.ends_with("_at") {
+            timed += 1;
+            if !clause.contains(',') {
+                offenders.push(clause.to_string());
+            }
+        }
+    }
+    (timed, offenders)
+}
+
+/// A listing ordered by a one-second stamp names a second key, so rows written
+/// in the same second list in one order on every run. Both SQLite databases
+/// are walked: the state store and the device gateway's.
+#[test]
+fn every_time_ordered_state_listing_breaks_ties() {
+    let root = crate::test_helpers::workspace_root();
+    let mut timed = 0;
+    let mut offenders = Vec::new();
+    let files = [
+        "crates/cfgd-core/src/state",
+        "crates/cfgd-operator/src/gateway/db",
+    ]
+    .into_iter()
+    .flat_map(|dir| crate::test_helpers::rust_sources_under(&root.join(dir)));
+    for file in files {
+        let (seen, found) =
+            time_orders_without_a_tiebreak(&crate::test_helpers::production_slice_of(&file));
+        timed += seen;
+        offenders.extend(
+            found
+                .into_iter()
+                .map(|c| format!("{}: {c}", file.display())),
+        );
+    }
+    assert!(
+        offenders.is_empty(),
+        "name a second key after the stamp (`, id DESC`, or `, rowid DESC` for a TEXT id):\n{}",
+        offenders.join("\n")
+    );
+    assert!(timed >= 9, "the walk found {timed} time-ordered listings");
+}
+
+#[test]
+fn the_tiebreak_scan_reads_the_leading_key_and_its_follower() {
+    let fixture = r#"
+        "SELECT a FROM t WHERE x ORDER BY created_at DESC"
+        "SELECT a FROM t ORDER BY d.timestamp DESC, id DESC LIMIT 1"
+        "SELECT a FROM t ORDER BY id DESC"
+    "#;
+    assert_eq!(
+        time_orders_without_a_tiebreak(fixture),
+        (2, vec!["created_at DESC".to_string()])
     );
 }

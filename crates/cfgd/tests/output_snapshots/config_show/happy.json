@@ -27,6 +27,7 @@
       "windowsEventLog": false
     },
     "fileStrategy": "Symlink",
+    "migrationPolicy": "Prompt",
     "modules": {
       "registries": [
         {
@@ -82,9 +83,7 @@
           "acceptRecommended": false,
           "allowScripts": false,
           "optIn": [],
-          "overrides": null,
           "priority": 500,
-          "reject": null,
           "requireSignedCommits": false
         },
         "sync": {
@@ -105,9 +104,7 @@
           "acceptRecommended": false,
           "allowScripts": false,
           "optIn": [],
-          "overrides": null,
           "priority": 500,
-          "reject": null,
           "requireSignedCommits": false
         },
         "sync": {

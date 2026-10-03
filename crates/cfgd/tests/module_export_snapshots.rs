@@ -5,7 +5,7 @@
 //!     Feature format and emits the buffered Doc with the resulting paths.
 //!   - `module_export/not_found.txt` — error-path Doc for missing module.
 
-mod common;
+use cfgd_test_fixtures as common;
 
 use std::path::Path;
 

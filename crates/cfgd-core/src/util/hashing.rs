@@ -302,7 +302,8 @@ mod tests {
                 let body = crate::test_helpers::production_slice_of(path);
                 body.lines()
                     .find(|line| {
-                        line.contains("format!(\">=") && !line.contains("floor-composer-ok:")
+                        line.contains("format!(\">=")
+                            && !crate::test_helpers::carries_hatch(line, "floor-composer-ok:")
                     })
                     .map(|line| format!("{}: {}", path.display(), line.trim()))
             })

@@ -19,8 +19,9 @@ use crate::cli::{ColorWhen, OutputFormatArg};
                   kubectl cfgd status\n  \
                   kubectl cfgd version"
 )]
-struct PluginCli {
-    /// Output format: table, wide, json, yaml, name, jsonpath=EXPR, template=TMPL, template-file=PATH
+pub(in crate::cli) struct PluginCli {
+    /// Output format: table, wide, json, yaml, name, jsonpath=EXPR, template=TMPL,
+    /// template-file=PATH
     #[arg(long, short = 'o', global = true, default_value = "table")]
     output: OutputFormatArg,
 
@@ -33,17 +34,18 @@ struct PluginCli {
         long,
         global = true,
         value_name = "WHEN",
-        env = "CFGD_COLOR",
+        env = cfgd_core::CFGD_COLOR_ENV,
         default_value = "auto"
     )]
     color: ColorWhen,
 
-    /// Theme preset for this invocation (overrides spec.output.theme.name; spec.output.theme.overrides still apply)
+    /// Theme preset for this invocation (overrides spec.output.theme.name;
+    /// spec.output.theme.overrides still apply)
     #[arg(
         long,
         global = true,
         value_name = "NAME",
-        env = "CFGD_THEME",
+        env = cfgd_core::CFGD_THEME_ENV,
         value_parser = clap::builder::PossibleValuesParser::new(cfgd_core::output::Theme::PRESET_NAMES)
     )]
     theme: Option<String>,
@@ -214,8 +216,13 @@ fn current_context_namespace() -> String {
 }
 
 fn parse_module_arg(arg: &str) -> anyhow::Result<(&str, &str)> {
-    arg.split_once(':')
-        .ok_or_else(|| anyhow::anyhow!("invalid module format '{arg}' — expected name:version"))
+    arg.split_once(':').ok_or_else(|| {
+        crate::cli::invalid_argument(
+            "--module",
+            arg,
+            format!("invalid module format '{arg}' — expected name:version"),
+        )
+    })
 }
 
 fn build_volume_mount(name: &str) -> serde_json::Value {
@@ -334,17 +341,27 @@ pub fn plugin_main() -> anyhow::Result<()> {
     // The plugin carries no `--config` flag of its own, so it honours the rest
     // of the primary CLI's precedence: the environment override first, then the
     // default location.
-    let config_path = std::env::var_os("CFGD_CONFIG")
+    let config_path = std::env::var_os(cfgd_core::CFGD_CONFIG_ENV)
         .map(std::path::PathBuf::from)
         .unwrap_or_else(crate::cli::default_config_file);
-    let theme_config = crate::cli::resolve_theme_config(&config_path, cli.theme.as_deref());
-    let printer = Printer::with_theme_config(
-        Verbosity::Normal,
-        theme_config.as_ref(),
-        cli.output.0,
-        color_choice,
-    );
+    let startup = crate::cli::startup::StartupDocument::load(&config_path);
+    let theme_config = crate::cli::resolve_theme_config(startup.config(), cli.theme.as_deref());
+    let printer =
+        Printer::with_theme_config(Verbosity::Normal, &theme_config, cli.output.0, color_choice)
+            // No hints flag in the plugin's global-flag subset, so the decision comes
+            // from the persistent halves alone, whatever a printer happened to start
+            // at.
+            .with_hints_enabled(crate::cli::resolve_hints_enabled(startup.config(), None));
     tracing_writer.attach(&printer);
+
+    // The same warning the primary CLI raises for a stored name no preset
+    // answers to: both entry points read one config, so both say so.
+    if let Some(accepted) = crate::cli::unknown_theme_preset(&theme_config.name) {
+        printer.alert(format!(
+            "spec.output.theme.name `{}` is not a theme preset; rendering the default palette (accepted names: {accepted})",
+            theme_config.name
+        ));
+    }
 
     let result = match cli.command {
         PluginCommand::Debug {
@@ -502,9 +519,11 @@ pub fn build_debug_doc(
             format!("Created ephemeral debug container on pod {namespace}/{pod}"),
         )
         .kv_block([
+            // long-line-ok: a hatch is read off its own line, so it cannot wrap
             // modules-row-ok: the modules this invocation injects into a POD, named by the caller, not this host's resolved profile
             ("Modules", module_names.join(", ")),
             ("Mount Path", mount_dirs.join(", ")),
+            // long-line-ok: a hatch is read off its own line, so it cannot wrap
             // name-row-ok: PATH is the variable's own spelling; the row names what the container prepends to it
             ("PATH Entry", path_prefix.to_string()),
         ])
@@ -605,9 +624,11 @@ pub fn build_exec_doc(
             format!("Executing in {namespace}/{pod} with modules"),
         )
         .kv_block([
+            // long-line-ok: a hatch is read off its own line, so it cannot wrap
             // modules-row-ok: the modules this invocation injects into a POD, named by the caller, not this host's resolved profile
             ("Modules", module_names.join(", ")),
             ("Mount Path", mount_dirs.join(", ")),
+            // long-line-ok: a hatch is read off its own line, so it cannot wrap
             // name-row-ok: PATH is the variable's own spelling; the row names what the container prepends to it
             ("PATH Entry", path_prefix.to_string()),
         ])
@@ -721,9 +742,11 @@ fn rewrite_image_refs(
     rewrites: &mut Vec<(String, String)>,
 ) {
     match value {
+        // section-write-ok: rewrites image references in a Kubernetes manifest
         serde_yaml::Value::Mapping(mapping) => {
             // If this mapping has an `image` whose value is itself a mapping with
             // a string `reference` present in the map, pin it in place.
+            // section-write-ok: rewrites image references in a Kubernetes manifest
             if let Some(serde_yaml::Value::Mapping(image_map)) =
                 mapping.get_mut(serde_yaml::Value::from("image"))
                 && let Some(serde_yaml::Value::String(reference)) =
@@ -731,6 +754,7 @@ fn rewrite_image_refs(
                 && let Some(pinned) = map.get(reference.as_str())
             {
                 let old = reference.clone();
+                // section-write-ok: rewrites image references in a Kubernetes manifest
                 *reference = (*pinned).to_string();
                 rewrites.push((old, (*pinned).to_string()));
             }
@@ -738,6 +762,7 @@ fn rewrite_image_refs(
                 rewrite_image_refs(v, map, rewrites);
             }
         }
+        // section-write-ok: rewrites image references in a Kubernetes manifest
         serde_yaml::Value::Sequence(seq) => {
             for v in seq.iter_mut() {
                 rewrite_image_refs(v, map, rewrites);
@@ -853,6 +878,7 @@ pub fn cmd_deploy(
             "namespace": namespace,
         });
         if let Some(out) = kubectl_output {
+            // section-write-ok: fills the command's own JSON payload
             payload["kubectlOutput"] = serde_json::Value::String(out);
         }
         printer.emit(

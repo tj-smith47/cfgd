@@ -1,0 +1,1 @@
+key=vm.max_map_count; exec_in_pod sysctl -w "$key=65530"

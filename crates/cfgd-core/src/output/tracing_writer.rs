@@ -460,6 +460,7 @@ mod tests {
         crate::test_helpers::install_tracing_journal();
         let buf = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
         let subscriber = tracing_subscriber::fmt()
+            // long-line-ok: a hatch is read off its own line, so it cannot wrap
             // unfolded-writer-ok: a test capture read back as a String, not a stream anyone is looking at
             .with_writer(Capture(buf.clone()))
             .with_timer(LocalTimeOfDay)
@@ -470,6 +471,7 @@ mod tests {
             tracing::info!("reconcile: complete — nothing to do");
         });
 
+        // long-line-ok: a hatch is read off its own line, so it cannot wrap
         // raw-capture-ok: a tracing writer's buffer, asserted byte-exact — an ANSI-stripping read would pass with `with_ansi` dropped
         let line = buf.lock().unwrap_or_else(|e| e.into_inner()).clone();
         let line = line.trim_end();

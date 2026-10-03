@@ -80,7 +80,11 @@ pub fn resolved_interval(config: &UpdateConfig) -> Duration {
 /// conventions shared with npm's `update-notifier` and consoledonottrack.com,
 /// so a workstation already opted out of those tools' checks is opted out of
 /// cfgd's too without new configuration.
-const OPTOUT_VARS: [&str; 3] = ["CFGD_NO_UPDATE_CHECK", "NO_UPDATE_NOTIFIER", "DO_NOT_TRACK"];
+pub const OPTOUT_VARS: [&str; 3] = [
+    crate::CFGD_NO_UPDATE_CHECK_ENV,
+    "NO_UPDATE_NOTIFIER",
+    "DO_NOT_TRACK",
+];
 
 /// The environment variable currently suppressing the automatic update check,
 /// or `None` when no opt-out is in effect. Precedence: `CFGD_NO_UPDATE_CHECK`,
@@ -99,6 +103,27 @@ fn is_optout_value_set(var: &str) -> bool {
     match std::env::var(var) {
         Ok(v) => !matches!(v.trim().to_lowercase().as_str(), "" | "0" | "false"),
         Err(_) => false,
+    }
+}
+
+/// The update block a check runs under: `declared` with this invocation's
+/// posture folded in.
+///
+/// The posture resolves flag first, then `CFGD_UPDATE_POLICY`, then
+/// `spec.update.policy`, then `Prompt`. The first two arrive together as
+/// `override_policy`, because the `--update-policy` flag binds the env var and
+/// clap reads it when the flag is absent; the last two are `declared.policy`,
+/// which serde fills with the default when the field is missing. `Some`
+/// replaces only `policy`: `interval`, `channel` and `skills` stay as declared,
+/// since the override names a posture and leaves the rest of the block alone.
+/// `None` returns the declared block unchanged.
+pub fn effective_update_config(
+    declared: UpdateConfig,
+    override_policy: Option<UpdatePolicy>,
+) -> UpdateConfig {
+    match override_policy {
+        Some(policy) => UpdateConfig { policy, ..declared },
+        None => declared,
     }
 }
 
@@ -156,9 +181,8 @@ pub fn resolve_action(policy: UpdatePolicy, interactive: bool, assume_yes: bool)
 }
 
 /// Network-fetch effect: resolve the latest [`UpdateCheck`] for a release
-/// channel (`None` = default stream).
-pub type FetchFn<'a> =
-    Box<dyn FnMut(Option<&str>) -> Result<UpdateCheck, super::UpgradeError> + 'a>;
+/// channel, as [`UpdateConfig::channel_effective`] names it.
+pub type FetchFn<'a> = Box<dyn FnMut(&str) -> Result<UpdateCheck, super::UpgradeError> + 'a>;
 /// Confirm/apply effect: a `&UpdateCheck` predicate returning yes/no (prompt
 /// answer, or install success).
 pub type CheckPredicateFn<'a> = Box<dyn FnMut(&UpdateCheck) -> bool + 'a>;
@@ -214,7 +238,7 @@ pub fn run_update_check(
         return UpdateCheckOutcome::no_check();
     }
 
-    let update = match (effects.fetch)(config.channel.as_deref()) {
+    let update = match (effects.fetch)(config.channel_effective()) {
         Ok(u) => u,
         Err(e) => {
             tracing::warn!(error = %e, "self-update check failed");
@@ -279,28 +303,11 @@ pub fn run_update_check(
 mod tests {
     use super::*;
     use crate::config::SkillUpdateConfig;
-    use crate::test_helpers::EnvVarGuard;
+    use crate::test_helpers::{EnvVarGuard, clear_update_optouts};
     use semver::Version;
     use serial_test::serial;
 
     const HOUR: u64 = 3600;
-
-    const CFGD_VAR: &str = "CFGD_NO_UPDATE_CHECK";
-    const NPM_VAR: &str = "NO_UPDATE_NOTIFIER";
-    const DNT_VAR: &str = "DO_NOT_TRACK";
-
-    /// Guard all three opt-out vars unset. Every test that reaches
-    /// [`should_check`] needs this: the gate reads the process environment, so a
-    /// `DO_NOT_TRACK` exported in the developer's shell profile — or on a CI
-    /// runner, which is exactly this feature's audience — would otherwise
-    /// suppress the check a test expects to happen and fail it spuriously.
-    fn all_unset() -> (EnvVarGuard, EnvVarGuard, EnvVarGuard) {
-        (
-            EnvVarGuard::unset(CFGD_VAR),
-            EnvVarGuard::unset(NPM_VAR),
-            EnvVarGuard::unset(DNT_VAR),
-        )
-    }
 
     fn config(policy: UpdatePolicy) -> UpdateConfig {
         UpdateConfig {
@@ -330,7 +337,7 @@ mod tests {
     /// Effects wired to canned closures with shared counters so a test can both
     /// drive the orchestrator and assert which closures fired.
     struct Spy {
-        fetched_channel: std::cell::RefCell<Option<Option<String>>>,
+        fetched_channel: std::cell::RefCell<Option<String>>,
         surfaced: std::cell::Cell<u32>,
         applied: std::cell::Cell<u32>,
         confirmed: std::cell::Cell<u32>,
@@ -361,7 +368,7 @@ mod tests {
                 interactive,
                 assume_yes,
                 fetch: Box::new(move |ch| {
-                    *self.fetched_channel.borrow_mut() = Some(ch.map(str::to_string));
+                    *self.fetched_channel.borrow_mut() = Some(ch.to_string());
                     if fetch_ok {
                         Ok(result.clone())
                     } else {
@@ -384,12 +391,53 @@ mod tests {
         }
     }
 
+    #[test]
+    fn effective_update_config_replaces_only_the_posture_and_keeps_the_declared_block_without_an_override()
+     {
+        use crate::config::SkillUpdatePolicy;
+        let mut declared = config(UpdatePolicy::Auto);
+        declared.interval = "6h".to_string();
+        declared.channel = Some("beta".to_string());
+        declared.skills.policy = SkillUpdatePolicy::Notify;
+
+        let overridden = effective_update_config(declared.clone(), Some(UpdatePolicy::Manual));
+        assert_eq!(
+            overridden.policy,
+            UpdatePolicy::Manual,
+            "the override names the posture"
+        );
+        assert_eq!(
+            overridden.interval, "6h",
+            "the declared interval still applies"
+        );
+        assert_eq!(
+            overridden.channel.as_deref(),
+            Some("beta"),
+            "the declared channel still applies"
+        );
+        assert_eq!(
+            overridden.skills.policy,
+            SkillUpdatePolicy::Notify,
+            "the declared skill policy still applies"
+        );
+
+        let untouched = effective_update_config(declared, None);
+        assert_eq!(
+            untouched.policy,
+            UpdatePolicy::Auto,
+            "no override keeps the declared posture"
+        );
+        assert_eq!(untouched.interval, "6h");
+        assert_eq!(untouched.channel.as_deref(), Some("beta"));
+        assert_eq!(untouched.skills.policy, SkillUpdatePolicy::Notify);
+    }
+
     // ----- the check gate -----
 
     #[test]
     #[serial]
     fn manual_policy_never_checks() {
-        let _env = all_unset();
+        let _env = clear_update_optouts();
         assert!(!should_check(
             UpdatePolicy::Manual,
             Duration::from_secs(0),
@@ -401,7 +449,7 @@ mod tests {
     #[test]
     #[serial]
     fn no_last_checked_always_checks() {
-        let _env = all_unset();
+        let _env = clear_update_optouts();
         assert!(should_check(
             UpdatePolicy::Prompt,
             Duration::from_secs(HOUR),
@@ -413,7 +461,7 @@ mod tests {
     #[test]
     #[serial]
     fn within_interval_does_not_check() {
-        let _env = all_unset();
+        let _env = clear_update_optouts();
         // last check 1h ago, interval 24h → suppressed.
         assert!(!should_check(
             UpdatePolicy::Notify,
@@ -426,7 +474,7 @@ mod tests {
     #[test]
     #[serial]
     fn past_interval_checks() {
-        let _env = all_unset();
+        let _env = clear_update_optouts();
         assert!(should_check(
             UpdatePolicy::Notify,
             Duration::from_secs(HOUR),
@@ -438,7 +486,7 @@ mod tests {
     #[test]
     #[serial]
     fn backwards_clock_suppresses_rather_than_forces() {
-        let _env = all_unset();
+        let _env = clear_update_optouts();
         // now < last_checked: saturating_sub → 0 < interval → no check.
         assert!(!should_check(
             UpdatePolicy::Auto,
@@ -505,7 +553,7 @@ mod tests {
     #[test]
     #[serial]
     fn manual_policy_skips_check_entirely() {
-        let _env = all_unset();
+        let _env = clear_update_optouts();
         let spy = Spy::new();
         let mut effects = spy.effects(true, false, check(true), true, true, true);
         let outcome = run_update_check(&config(UpdatePolicy::Manual), 100, None, &mut effects);
@@ -526,7 +574,7 @@ mod tests {
     #[test]
     #[serial]
     fn notify_records_available_without_applying() {
-        let _env = all_unset();
+        let _env = clear_update_optouts();
         let spy = Spy::new();
         let mut effects = spy.effects(true, false, check(true), true, false, true);
         let outcome = run_update_check(&config(UpdatePolicy::Notify), 100, None, &mut effects);
@@ -542,7 +590,7 @@ mod tests {
     #[test]
     #[serial]
     fn auto_applies_without_prompting() {
-        let _env = all_unset();
+        let _env = clear_update_optouts();
         let spy = Spy::new();
         let mut effects = spy.effects(true, false, check(true), true, false, true);
         let outcome = run_update_check(&config(UpdatePolicy::Auto), 100, None, &mut effects);
@@ -554,7 +602,7 @@ mod tests {
     #[test]
     #[serial]
     fn prompt_interactive_confirms_then_applies() {
-        let _env = all_unset();
+        let _env = clear_update_optouts();
         let spy = Spy::new();
         let mut effects = spy.effects(true, false, check(true), true, true, true);
         let outcome = run_update_check(&config(UpdatePolicy::Prompt), 100, None, &mut effects);
@@ -566,7 +614,7 @@ mod tests {
     #[test]
     #[serial]
     fn prompt_declined_degrades_to_surface() {
-        let _env = all_unset();
+        let _env = clear_update_optouts();
         let spy = Spy::new();
         let mut effects = spy.effects(true, false, check(true), true, false, true);
         let outcome = run_update_check(&config(UpdatePolicy::Prompt), 100, None, &mut effects);
@@ -579,7 +627,7 @@ mod tests {
     #[test]
     #[serial]
     fn prompt_non_interactive_degrades_to_notify() {
-        let _env = all_unset();
+        let _env = clear_update_optouts();
         let spy = Spy::new();
         let mut effects = spy.effects(false, false, check(true), true, true, true);
         let outcome = run_update_check(&config(UpdatePolicy::Prompt), 100, None, &mut effects);
@@ -591,7 +639,7 @@ mod tests {
     #[test]
     #[serial]
     fn no_update_available_records_but_does_not_surface() {
-        let _env = all_unset();
+        let _env = clear_update_optouts();
         let spy = Spy::new();
         let mut effects = spy.effects(true, false, check(false), true, false, true);
         let outcome = run_update_check(&config(UpdatePolicy::Auto), 100, None, &mut effects);
@@ -603,7 +651,7 @@ mod tests {
     #[test]
     #[serial]
     fn within_interval_short_circuits_before_fetch() {
-        let _env = all_unset();
+        let _env = clear_update_optouts();
         let spy = Spy::new();
         let mut effects = spy.effects(true, false, check(true), true, true, true);
         // last check 1h ago vs default 24h interval.
@@ -620,7 +668,7 @@ mod tests {
     #[test]
     #[serial]
     fn fetch_error_is_non_fatal_and_records_check() {
-        let _env = all_unset();
+        let _env = clear_update_optouts();
         let spy = Spy::new();
         let mut effects = spy.effects(true, false, check(true), false, true, true);
         let outcome = run_update_check(&config(UpdatePolicy::Auto), 100, None, &mut effects);
@@ -637,7 +685,7 @@ mod tests {
     #[test]
     #[serial]
     fn channel_is_threaded_to_fetch() {
-        let _env = all_unset();
+        let _env = clear_update_optouts();
         let spy = Spy::new();
         let mut cfg = config(UpdatePolicy::Notify);
         cfg.channel = Some("beta".to_string());
@@ -645,7 +693,7 @@ mod tests {
         run_update_check(&cfg, 100, None, &mut effects);
         assert_eq!(
             spy.fetched_channel.borrow().clone(),
-            Some(Some("beta".to_string())),
+            Some("beta".to_string()),
             "configured channel must reach the fetch closure",
         );
     }
@@ -653,7 +701,7 @@ mod tests {
     #[test]
     #[serial]
     fn apply_failure_degrades_to_surface() {
-        let _env = all_unset();
+        let _env = clear_update_optouts();
         let spy = Spy::new();
         // Auto policy, apply returns false (install failed).
         let mut effects = spy.effects(true, false, check(true), true, false, false);
@@ -674,7 +722,7 @@ mod tests {
         #[test]
         #[serial]
         fn none_set_behaves_as_today() {
-            let _g = all_unset();
+            let _g = clear_update_optouts();
             assert_eq!(update_optout_var(), None);
             assert!(should_check(
                 UpdatePolicy::Notify,
@@ -687,9 +735,9 @@ mod tests {
         #[test]
         #[serial]
         fn cfgd_var_opts_out() {
-            let _g = all_unset();
-            let _set = EnvVarGuard::set(CFGD_VAR, "1");
-            assert_eq!(update_optout_var(), Some(CFGD_VAR));
+            let _g = clear_update_optouts();
+            let _set = EnvVarGuard::set(OPTOUT_VARS[0], "1");
+            assert_eq!(update_optout_var(), Some(OPTOUT_VARS[0]));
             assert!(!should_check(
                 UpdatePolicy::Notify,
                 Duration::from_secs(HOUR),
@@ -701,9 +749,9 @@ mod tests {
         #[test]
         #[serial]
         fn npm_convention_var_opts_out() {
-            let _g = all_unset();
-            let _set = EnvVarGuard::set(NPM_VAR, "1");
-            assert_eq!(update_optout_var(), Some(NPM_VAR));
+            let _g = clear_update_optouts();
+            let _set = EnvVarGuard::set(OPTOUT_VARS[1], "1");
+            assert_eq!(update_optout_var(), Some(OPTOUT_VARS[1]));
             assert!(!should_check(
                 UpdatePolicy::Notify,
                 Duration::from_secs(HOUR),
@@ -715,9 +763,9 @@ mod tests {
         #[test]
         #[serial]
         fn do_not_track_var_opts_out() {
-            let _g = all_unset();
-            let _set = EnvVarGuard::set(DNT_VAR, "1");
-            assert_eq!(update_optout_var(), Some(DNT_VAR));
+            let _g = clear_update_optouts();
+            let _set = EnvVarGuard::set(OPTOUT_VARS[2], "1");
+            assert_eq!(update_optout_var(), Some(OPTOUT_VARS[2]));
             assert!(!should_check(
                 UpdatePolicy::Notify,
                 Duration::from_secs(HOUR),
@@ -729,8 +777,8 @@ mod tests {
         #[test]
         #[serial]
         fn do_not_track_zero_is_not_an_optout() {
-            let _g = all_unset();
-            let _set = EnvVarGuard::set(DNT_VAR, "0");
+            let _g = clear_update_optouts();
+            let _set = EnvVarGuard::set(OPTOUT_VARS[2], "0");
             assert_eq!(update_optout_var(), None);
             assert!(should_check(
                 UpdatePolicy::Notify,
@@ -743,29 +791,29 @@ mod tests {
         #[test]
         #[serial]
         fn do_not_track_false_and_empty_are_not_an_optout() {
-            let _g = all_unset();
+            let _g = clear_update_optouts();
             {
-                let _set = EnvVarGuard::set(DNT_VAR, "false");
+                let _set = EnvVarGuard::set(OPTOUT_VARS[2], "false");
                 assert_eq!(update_optout_var(), None);
             }
-            let _set = EnvVarGuard::set(DNT_VAR, "");
+            let _set = EnvVarGuard::set(OPTOUT_VARS[2], "");
             assert_eq!(update_optout_var(), None);
         }
 
         #[test]
         #[serial]
         fn two_set_returns_higher_precedence() {
-            let _g = all_unset();
-            let _npm = EnvVarGuard::set(NPM_VAR, "1");
-            let _dnt = EnvVarGuard::set(DNT_VAR, "1");
-            assert_eq!(update_optout_var(), Some(NPM_VAR));
+            let _g = clear_update_optouts();
+            let _npm = EnvVarGuard::set(OPTOUT_VARS[1], "1");
+            let _dnt = EnvVarGuard::set(OPTOUT_VARS[2], "1");
+            assert_eq!(update_optout_var(), Some(OPTOUT_VARS[1]));
         }
 
         #[test]
         #[serial]
         fn optout_wins_over_auto_policy_with_interval_elapsed() {
-            let _g = all_unset();
-            let _set = EnvVarGuard::set(CFGD_VAR, "1");
+            let _g = clear_update_optouts();
+            let _set = EnvVarGuard::set(OPTOUT_VARS[0], "1");
             // Auto + no prior check would otherwise always check — the gate
             // must win regardless.
             assert!(!should_check(

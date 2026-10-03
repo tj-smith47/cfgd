@@ -377,7 +377,8 @@ impl SystemConfigurator for WindowsServiceConfigurator {
                 continue;
             }
             if let Some(ref desired_state) = entry.state {
-                // Query current state to avoid redundant start/stop and locale-dependent string matching
+                // Query current state to avoid redundant start/stop and locale-dependent string
+                // matching
                 let current_state = Self::query_service(&entry.name).map(|r| r.state);
                 match desired_state.as_str() {
                     "running" if current_state.as_deref() != Some("running") => {

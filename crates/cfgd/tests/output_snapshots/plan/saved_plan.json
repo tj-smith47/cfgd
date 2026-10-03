@@ -1,0 +1,83 @@
+{
+  "context": "apply",
+  "phases": [
+    {
+      "groups": [
+        {
+          "actions": [
+            {
+              "description": "create <TARGET>",
+              "targets": [
+                "<TARGET>"
+              ],
+              "type": "create"
+            }
+          ],
+          "owner": {
+            "kind": "profile",
+            "name": "tiny"
+          },
+          "token": "profile:tiny"
+        }
+      ],
+      "phase": "Files"
+    }
+  ],
+  "savedPlan": {
+    "configInputs": [
+      {
+        "mtime": 0,
+        "path": "<CONFIG_DIR>/cfgd.yaml",
+        "present": true,
+        "size": 0
+      },
+      {
+        "path": "<CONFIG_DIR>/profiles/tiny/profile.yaml",
+        "present": false,
+        "size": 0
+      },
+      {
+        "mtime": 0,
+        "path": "<CONFIG_DIR>/profiles/tiny.yaml",
+        "present": true,
+        "size": 0
+      },
+      {
+        "path": "<CONFIG_DIR>/profiles/tiny.yml",
+        "present": false,
+        "size": 0
+      }
+    ],
+    "plan": {
+      "phases": [
+        {
+          "groups": [
+            {
+              "actions": [
+                {
+                  "File": {
+                    "Create": {
+                      "origin": "local",
+                      "source": "<CONFIG_DIR>/files/hello.txt",
+                      "source_hash": "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9",
+                      "strategy": "Copy",
+                      "target": "<TARGET>"
+                    }
+                  }
+                }
+              ],
+              "owner": {
+                "kind": "profile",
+                "name": "tiny"
+              }
+            }
+          ],
+          "name": "Files"
+        }
+      ]
+    },
+    "serial": 0,
+    "storeId": "<STORE_ID>"
+  },
+  "totalActions": 1
+}

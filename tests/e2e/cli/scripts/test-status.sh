@@ -7,30 +7,30 @@ source "$SCRIPT_DIR/setup-cli-env.sh"
 echo "=== cfgd status tests ==="
 
 # State prerequisite: apply so status has state to check
-run $C apply --yes
+run "${C[@]}" apply --yes
 
 # Tests extracted verbatim from run-exhaustive-tests.sh
 
 begin_test "S01: status"
-run $C status
+run "${C[@]}" status
 if assert_ok; then
     pass_test "S01"
 else fail_test "S01"; fi
 
 begin_test "S02: status --verbose"
-run $C status --verbose
+run "${C[@]}" status --verbose
 if assert_ok; then
     pass_test "S02"
 else fail_test "S02"; fi
 
 begin_test "S03: status --quiet"
-run $C status --quiet
+run "${C[@]}" status --quiet
 if assert_ok; then
     pass_test "S03"
 else fail_test "S03"; fi
 
 begin_test "S04: status --module"
-run $C status --module nvim
+run "${C[@]}" status --module nvim
 # Module filter with no matching module should still succeed (empty status)
 if assert_ok; then
     pass_test "S04"

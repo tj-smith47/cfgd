@@ -59,9 +59,9 @@ pub use format::{
     bare_script_subject, condense_action_desc_for_display, format_action_description,
     format_plan_item, format_plan_items, hook_script_subject, module_file_resource_id,
     module_file_spec_resource_id, module_row_facet, module_row_names_a_file, module_row_owner,
-    module_scope, module_script_subject, module_script_subject_within, row_attributable_to_module,
-    script_run_subject, script_run_subject_within, split_module_file_resource_id,
-    system_key_doubling_error, system_resource_key,
+    module_scope, module_script_subject, module_script_subject_within, recorded_resource_kind,
+    row_attributable_to_module, script_run_subject, script_run_subject_within,
+    split_module_file_resource_id, system_key_doubling_error, system_resource_key,
 };
 pub use managers::plan_managers;
 pub use packages::stale_tracked_packages;
@@ -90,20 +90,21 @@ pub(crate) use sidecar::is_stamped_sidecar_name;
 pub use sidecar::{CFGD_BACKUP_SUFFIX, SidecarOutcome, backup_file, cfgd_backup_path};
 pub use types::{
     ALIAS_RESOURCE_TYPE, Action, ActionResult, AfterPlan, AfterPlanOutcome, AfterPlanState,
-    ApplyResult, CFGD_GROUP_ORDER, DeclaredProvision, DriftRow, ENV_GROUP, ENV_RC_RESOURCE_TYPE,
-    ENV_RESOURCE_TYPE, ENV_SESSION_RESOURCE_TYPE, ENV_VAR_RESOURCE_TYPE, EnvAction, MANAGERS_GROUP,
-    MODULE_FACET_FILES_REFUSED, ManagerAction, ModuleAction, ModuleActionKind, Owner, OwnerGroup,
-    OwnerKind, PREREQUISITE_NOT_IN_RUN, Phase, PhaseFilter, PhaseName, Plan, ReconcileContext,
-    RollbackResult, SESSION_GROUP, SHELL_GROUP, ScriptAction, ScriptPhase, SystemAction, Tier,
-    action_counts_as_drift, action_drift_rows, apply_heals_action_rows, attempted_count,
-    module_files_unprobed, module_skipped_whole, package_action_drift_rows,
+    ApplyResult, CFGD_GROUP_ORDER, DeclaredFloor, DeclaredProvision, DriftRow, ENV_GROUP,
+    ENV_RC_RESOURCE_TYPE, ENV_RESOURCE_TYPE, ENV_SESSION_RESOURCE_TYPE, ENV_VAR_RESOURCE_TYPE,
+    EnvAction, HeldFloorFold, MANAGERS_GROUP, MODULE_FACET_FILES_REFUSED, ManagerAction,
+    ModuleAction, ModuleActionKind, Owner, OwnerGroup, OwnerKind, PREREQUISITE_NOT_IN_RUN, Phase,
+    PhaseFilter, PhaseName, Plan, ReconcileContext, RollbackResult, SESSION_GROUP, SHELL_GROUP,
+    ScriptAction, ScriptPhase, SystemAction, Tier, WithheldFloor, action_counts_as_drift,
+    action_drift_rows, apply_heals_action_rows, attempted_count, declared_by_clause,
+    fold_held_floors, module_files_unprobed, module_skipped_whole, package_action_drift_rows,
     package_drift_resource_id, package_entry_drift_id, recorded_source_layers, records_an_env_item,
     split_package_drift_resource_id,
 };
 pub use verify::{
-    EnvItemCheck, MergedEnvItems, SystemCheckError, VerifyReport, VerifyResult, VersionFloor,
-    env_item_verify_results, env_verify_results, package_version_drift, package_version_floor,
-    verify,
+    EnvItemCheck, EnvLayer, LayeredEnv, MergedEnvItems, SystemCheckError, VerifyReport,
+    VerifyResult, VersionFloor, env_item_verify_results, env_verify_results,
+    held_manager_version_drift, package_version_drift, package_version_floor, verify,
 };
 
 pub(crate) use env::all_recorded_path_dirs;
@@ -222,6 +223,11 @@ pub struct Reconciler<'a> {
     /// already withholds the downstream work; this is the same withholding
     /// carried ACROSS phases, where no DAG edge reaches.
     unprovisioned: std::cell::RefCell<Vec<String>>,
+    /// Floor checks a node of THIS run judged unmet, each withholding its
+    /// manager from the modules that declared the floor and from nobody else:
+    /// see [`crate::reconciler::WithheldFloor`]. The same cross-phase carry as
+    /// [`Self::unprovisioned`], for a manager that IS on the machine.
+    withheld_floors: std::cell::RefCell<Vec<crate::reconciler::WithheldFloor>>,
     /// Managers a node of THIS run has already PUT on the machine — the
     /// mirror of [`Self::unprovisioned`], and the answer to "did this run's
     /// own `Bootstrap` phase already deliver this tool".
@@ -286,6 +292,7 @@ impl<'a> Reconciler<'a> {
             installed: None,
             sidecar_backups: std::collections::HashSet::new(),
             unprovisioned: std::cell::RefCell::new(Vec::new()),
+            withheld_floors: std::cell::RefCell::new(Vec::new()),
             provisioned: std::cell::RefCell::new(Vec::new()),
             provisioned_packages: std::cell::RefCell::new(Vec::new()),
             prune_rows: true,
@@ -408,6 +415,7 @@ impl<'a> Reconciler<'a> {
             installed: None,
             sidecar_backups: std::collections::HashSet::new(),
             unprovisioned: std::cell::RefCell::new(Vec::new()),
+            withheld_floors: std::cell::RefCell::new(Vec::new()),
             provisioned: std::cell::RefCell::new(Vec::new()),
             provisioned_packages: std::cell::RefCell::new(Vec::new()),
             prune_rows: true,
@@ -443,12 +451,14 @@ fn resolved_home() -> PathBuf {
 /// what failed there, so the fallback removes the real home from reach rather
 /// than documenting that it must not be reached.
 ///
-/// The gate is the `test-helpers` feature and not `cfg(test)` alone, because
-/// `cfg(test)` is set only while compiling THIS crate's own test binary. Every
-/// dependent crate links a plain release-shaped `cfgd-core`, so a `cfgd` CLI
-/// test driving a real apply resolved the operator's home through the arm
-/// above. The feature is declared in each consumer's `[dev-dependencies]`
-/// only, so under resolver 2 no shipped binary can compile this arm.
+/// The gate is the `test-helpers` feature, because `cfg(test)` is set only
+/// while compiling THIS crate's own test binary. Every dependent crate links a
+/// plain release-shaped `cfgd-core`, so a `cfgd` CLI test driving a real apply
+/// resolved the operator's home through the arm above. The feature is declared
+/// in each consumer's `[dev-dependencies]`, and the one crate taking it as a
+/// normal dependency (`cfgd-test-fixtures`, `publish = false`) is left out of
+/// the workspace `default-members`, so under resolver 2 no shipped binary can
+/// compile this arm.
 #[cfg(any(test, feature = "test-helpers"))]
 fn resolved_home() -> PathBuf {
     crate::test_home_override().unwrap_or_else(unguarded_test_home)

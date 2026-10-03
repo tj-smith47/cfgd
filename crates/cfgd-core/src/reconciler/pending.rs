@@ -660,12 +660,7 @@ impl WithheldDecisions {
 /// here so a policy that declines an item in the daemon declines it in
 /// `cfgd plan` and `cfgd apply` too.
 pub fn configured_auto_apply(cfg: &CfgdConfig) -> bool {
-    cfg.spec
-        .daemon
-        .as_ref()
-        .and_then(|d| d.reconcile.as_ref())
-        .map(|r| r.auto_apply)
-        .unwrap_or(false)
+    cfg.spec.daemon_effective().reconcile_effective().auto_apply
 }
 
 /// A row an auto-apply policy wants minted for review.
@@ -1389,14 +1384,11 @@ pub fn review_source_policies(
     if !auto_apply || cfg.spec.sources.is_empty() {
         return Ok(review);
     }
-    let default_policy = AutoApplyPolicyConfig::default();
     let policy = cfg
         .spec
-        .daemon
-        .as_ref()
-        .and_then(|d| d.reconcile.as_ref())
-        .and_then(|r| r.policy.as_ref())
-        .unwrap_or(&default_policy);
+        .daemon_effective()
+        .reconcile_effective()
+        .policy_effective();
 
     for source in &cfg.spec.sources {
         let one = review_source_policy(
@@ -1627,6 +1619,7 @@ pub fn mint_decisions(store: &StateStore, review: &SourcePolicyReview) -> Vec<(S
             &mint.summary(),
             mint.content_hash.as_deref(),
         ) {
+            // long-line-ok: a hatch is read off its own line, so it cannot wrap
             // tracing-ok: the decision ROW could not be written; the decision itself renders from the plan
             tracing::warn!(error = %e, "failed to record pending decision");
             continue;
@@ -1874,12 +1867,28 @@ impl DeliveredItems {
 /// `files.~/.zshrc` against `/home/u/.zshrc` — so the translation happens here,
 /// once, per arm:
 ///
-/// | decision path | what it withholds |
-/// |---|---|
-/// | `files.<target>` | a `File` action on that target, and the same target inside a module's `DeployFiles` batch — profile files and module files are separate surfaces that can name one path, and withholding only the profile one would still write it. The decision keeps the DECLARED spelling, the planner expands `~`, so the path is expanded and folded to `/` here to meet the id |
-/// | `packages.<mgr>.<pkg>` | that one package inside a batch — a `PackageAction::Install`/`Uninstall` for `<mgr>` or a module's `InstallPackages` (matched on its resolved name). The batch keeps its other packages and is dropped only when it empties. `packages.brew.<pkg>` also matches the `brew-cask` manager: the decision vocabulary folds casks into `brew` and cannot tell a cask from a formula. Every other manager — a brew tap under `brew-tap`, a custom manager under its own name — mints under the exact name its planned batch carries, so the match here is verbatim. A `Skip` names no package and is never withheld |
-/// | `env.<NAME>` | every `Env` action. There is no per-variable action to withhold: one `WriteEnvFile` renders every declared variable into one file, `InjectSourceLine` loads that file and `RefreshLiveSession` mirrors it — so the env surface is withheld as the unit it is generated as, and a decided variable waits with the undecided one rather than an undecided one reaching the machine. That includes the post-apply regeneration: a manager bootstrapped in a withholding tick does not get its PATH dir into `~/.cfgd.env` until the decision clears (the next non-withholding tick plans env unconditionally and converges it) |
-/// | `system.<configurator>` | every `System` action for that configurator. The decision names a whole `spec.system.<configurator>` block, one level above the `<configurator>.<key>` id an individual drift carries |
+/// - `files.<target>`: a `File` action on that target, and the same target inside a module's
+///   `DeployFiles` batch — profile files and module files are separate surfaces that can name one
+///   path, and withholding only the profile one would still write it. The decision keeps the
+///   DECLARED spelling, the planner expands `~`, so the path is expanded and folded to `/` here to
+///   meet the id
+/// - `packages.<mgr>.<pkg>`: that one package inside a batch — a
+///   `PackageAction::Install`/`Uninstall` for `<mgr>` or a module's `InstallPackages` (matched on
+///   its resolved name). The batch keeps its other packages and is dropped only when it empties.
+///   `packages.brew.<pkg>` also matches the `brew-cask` manager: the decision vocabulary folds
+///   casks into `brew` and cannot tell a cask from a formula. Every other manager — a brew tap
+///   under `brew-tap`, a custom manager under its own name — mints under the exact name its planned
+///   batch carries, so the match here is verbatim. A `Skip` names no package and is never withheld
+/// - `env.<NAME>`: every `Env` action. There is no per-variable action to withhold: one
+///   `WriteEnvFile` renders every declared variable into one file, `InjectSourceLine` loads that
+///   file and `RefreshLiveSession` mirrors it — so the env surface is withheld as the unit it is
+///   generated as: a decided variable waits with the undecided one, so no undecided variable
+///   reaches the machine. That includes the post-apply regeneration: a manager bootstrapped in a
+///   withholding tick does not get its PATH dir into `~/.cfgd.env` until the decision clears (the
+///   next non-withholding tick plans env unconditionally and converges it)
+/// - `system.<configurator>`: every `System` action for that configurator. The decision names a
+///   whole `spec.system.<configurator>` block, one level above the `<configurator>.<key>` id an
+///   individual drift carries
 ///
 /// No pending row can withhold a `Secret` or `Script` action as a whole, and a
 /// `Module` action is withheld only by the batch arms above — the packages a
@@ -1925,6 +1934,7 @@ impl DecisionExclusions {
         let mut out = Self::default();
         for path in paths {
             let unmatched = |detail: &str| {
+                // long-line-ok: a hatch is read off its own line, so it cannot wrap
                 // tracing-ok: a decision path that matches no planned resource; no row exists for it to restate
                 tracing::warn!(
                     decision = %path,
@@ -2335,15 +2345,12 @@ mod outranked_tests {
         let mut scanned = 0usize;
         for path in files {
             if path.file_name().is_some_and(|n| n == "pending.rs")
-                || path.file_name().is_some_and(|n| n == "tests.rs")
-                || path.components().any(|c| c.as_os_str() == "tests")
+                || crate::test_helpers::is_test_source(&path)
             {
                 continue;
             }
             scanned += 1;
-            let body = std::fs::read_to_string(&path).unwrap_or_else(|e| {
-                panic!("{}: the walk must read every source: {e}", path.display())
-            });
+            let body = crate::test_helpers::production_slice_of(&path);
             for (n, line) in body.lines().enumerate() {
                 let code = line.trim_start();
                 if code.starts_with("//") {
@@ -2378,7 +2385,10 @@ mod outranked_tests {
     /// producer's own match arms — a new arm there is a new row here.
     #[test]
     fn every_decision_kind_states_whether_it_has_an_ownership_record() {
-        let source = include_str!("pending.rs");
+        let source = crate::test_helpers::walked_file_body(
+            &crate::test_helpers::workspace_root()
+                .join("crates/cfgd-core/src/reconciler/pending.rs"),
+        );
         let body = source
             .split_once("pub fn decision_resource_content(")
             .and_then(|(_, rest)| rest.split_once("\n}\n"))

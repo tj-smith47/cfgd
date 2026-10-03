@@ -48,8 +48,8 @@ pub fn cmd_module_push(
 
     // ONE section, named for the command, holding everything the run produced:
     // what is being pushed, the push verdict (carrying the digest as its
-    // detail), the signing verdict and the CRD apply. A second section named `Push` under a `Push Module`
-    // title spends the word twice on one screen for two different things.
+    // detail), the signing verdict and the CRD apply. A second section named `Push` under a `Push
+    // Module` title spends the word twice on one screen for two different things.
     // `push_module` keeps its `&Printer` signature (it has non-CLI callers
     // too), so the section is opened and scoped here rather than threaded into
     // the library call, and `depth_inheritance` is what settles its spinner at
@@ -83,8 +83,14 @@ pub fn cmd_module_push(
 
         if apply {
             let module_yaml = std::fs::read_to_string(dir_path.join("module.yaml"))?;
-            let module_doc = cfgd_core::config::parse_module(&module_yaml)
-                .map_err(|e| anyhow::anyhow!("Failed to parse module.yaml: {e}"))?;
+            let module_doc = cfgd_core::config::parse_module(&module_yaml).map_err(|e| {
+                crate::cli::cli_error(
+                    artifact,
+                    "parse_failed",
+                    format!("Failed to parse module.yaml: {e}"),
+                    serde_json::json!({ "artifact": artifact, "dir": dir }),
+                )
+            })?;
 
             let signature = build_module_signature(printer, signed, key);
             let rt = tokio::runtime::Runtime::new()?;
@@ -1332,7 +1338,8 @@ spec:
         #[serial_test::serial]
         fn sign_with_kms_key_reference_reads_the_public_key_from_cosign() {
             const PEM: &str = "-----BEGIN PUBLIC KEY-----\nMFk=\n-----END PUBLIC KEY-----";
-            let shim = cfgd_core::test_helpers::ToolShim::install("CFGD_COSIGN_BIN", 0, PEM, "");
+            let shim =
+                cfgd_core::test_helpers::ToolShim::install(cfgd_core::COSIGN_BIN_ENV, 0, PEM, "");
             let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
             let module_doc = parse_module(MINIMAL_MODULE_YAML).expect("parse module.yaml");
             let signature =
@@ -1371,7 +1378,7 @@ spec:
         #[serial_test::serial]
         fn sign_with_pkcs11_key_cosign_cannot_read_warns_and_fails_disallow_unsigned_admission() {
             let _shim = cfgd_core::test_helpers::ToolShim::install(
-                "CFGD_COSIGN_BIN",
+                cfgd_core::COSIGN_BIN_ENV,
                 1,
                 "",
                 "no such token",

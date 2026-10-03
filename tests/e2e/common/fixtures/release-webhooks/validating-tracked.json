@@ -1,0 +1,11 @@
+{
+  "kind": "ValidatingWebhookConfiguration",
+  "metadata": {
+    "name": "cfgd-validating-webhooks",
+    "annotations": {"argocd.argoproj.io/tracking-id": "cfgd:admissionregistration.k8s.io/ValidatingWebhookConfiguration:/cfgd-validating-webhooks"}
+  },
+  "webhooks": [
+    {"name": "validate-machineconfig.cfgd.io",
+     "objectSelector": {"matchExpressions": [{"key": "cfgd.io/e2e-run", "operator": "DoesNotExist"}]}}
+  ]
+}

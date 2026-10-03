@@ -120,6 +120,7 @@ pub fn run_sync(cli: &Cli, printer: &cfgd_core::output::Printer) -> anyhow::Resu
         printer,
         false,
         composition::ConstraintMode::Report,
+        &cfgd_core::modules::refuse_floor_bootstrap,
     );
     let config_dir = ctx.config_dir().to_path_buf();
     // The pull is this run's first wait, and it narrates with NOTHING else on
@@ -250,7 +251,7 @@ pub fn run_sync(cli: &Cli, printer: &cfgd_core::output::Printer) -> anyhow::Resu
         let sources_sec = printer.section(super::source::list::SOURCES_SECTION);
         let cache_dir = source_cache_dir(cli)?;
         let mut mgr = SourceManager::new(&cache_dir);
-        mgr.set_allow_unsigned(cfg.spec.security.as_ref().is_some_and(|s| s.allow_unsigned));
+        mgr.set_allow_unsigned(cfg.spec.security_effective().allow_unsigned);
         let silent_printer = printer.at_verbosity(cfgd_core::output::Verbosity::Quiet);
         // Opened once: every open runs the full migration chain, and the loop
         // below records a fetch per source. Best-effort — the cache refreshes
@@ -450,10 +451,10 @@ pub fn run_sync(cli: &Cli, printer: &cfgd_core::output::Printer) -> anyhow::Resu
                         sp.finish_fail("Sync failed").detail(
                             "load_source reported success but the source is not in the cache",
                         );
-                        owner.hint(format!(
+                        owner.hint(cfgd_core::output::HintCommands::unconditional(format!(
                             "Discard the cached checkout and retry with `cfgd source update {}`",
                             source_spec.name
-                        ));
+                        )));
                         sync_payload.sources.push(SourceSyncOutput {
                             name: source_spec.name.clone(),
                             status: SourceOutcome::Failed,
@@ -560,7 +561,7 @@ fn sync_verdict(payload: &SyncOutput) -> (Role, &'static str, Option<String>) {
             } else {
                 "Synced"
             },
-            Some(detail.join(", ")),
+            Some(cfgd_core::join_clauses(&detail)),
         );
     }
     if total == 0 {

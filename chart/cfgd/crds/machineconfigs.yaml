@@ -163,6 +163,68 @@ spec:
                   cannot observe it preserves it.
                 type: object
                 x-kubernetes-map-type: atomic
+              compliance:
+                description: |-
+                  The compliance the machine last reported: how many of its checks pass,
+                  warn and fail, and every check that does not pass. Device-reported,
+                  like `packageVersions`: absent until a check-in carries a compliance
+                  snapshot, and a reconcile that cannot observe it preserves it.
+                nullable: true
+                properties:
+                  checks:
+                    description: |-
+                      The checks that do not pass, violations first, then warnings: the first
+                      200 of them, with the counts above staying exact. An agent that
+                      predates the list reports the counts alone.
+                    items:
+                      description: One check a machine reported as not passing.
+                      properties:
+                        category:
+                          description: What kind of thing was checked (`file`, `package`, `watchPath`, ...).
+                          type: string
+                        detail:
+                          description: Why the check did not pass, in the machine's own words.
+                          nullable: true
+                          type: string
+                        name:
+                          description: |-
+                            The file, package, key or path the check is about: the name
+                            `cfgd compliance -o json` carries for it (a file's absolute path).
+                          type: string
+                        status:
+                          description: The outcome of a check that did not pass.
+                          enum:
+                          - Warning
+                          - Violation
+                          type: string
+                      required:
+                      - category
+                      - name
+                      - status
+                      type: object
+                    maxItems: 200
+                    type: array
+                  compliant:
+                    description: Checks that pass.
+                    format: uint32
+                    minimum: 0.0
+                    type: integer
+                  violation:
+                    description: Checks that fail.
+                    format: uint32
+                    minimum: 0.0
+                    type: integer
+                  warning:
+                    description: Checks that raised a warning.
+                    format: uint32
+                    minimum: 0.0
+                    type: integer
+                required:
+                - compliant
+                - violation
+                - warning
+                type: object
+                x-kubernetes-map-type: atomic
               conditions:
                 default: []
                 items:

@@ -9,85 +9,85 @@ echo "=== cfgd apply tests ==="
 # Tests extracted verbatim from run-exhaustive-tests.sh
 
 begin_test "A01: apply --help"
-run $C apply --help
+run "${C[@]}" apply --help
 if assert_ok && assert_contains "$OUTPUT" "dry-run"; then
     pass_test "A01"
 else fail_test "A01"; fi
 
 begin_test "A02: apply --dry-run"
-run $C apply --dry-run
+run "${C[@]}" apply --dry-run
 if assert_ok; then
     pass_test "A02"
 else fail_test "A02"; fi
 
 begin_test "A03: apply --yes"
-run $C apply --yes
+run "${C[@]}" apply --yes
 if assert_ok; then
     pass_test "A03"
 else fail_test "A03"; fi
 
 begin_test "A04: apply -y (short flag)"
-run $C apply -y
+run "${C[@]}" apply -y
 if assert_ok; then
     pass_test "A04"
 else fail_test "A04"; fi
 
 begin_test "A05: apply --dry-run --phase files"
-run $C apply --dry-run --phase files
+run "${C[@]}" apply --dry-run --phase files
 if assert_ok; then
     pass_test "A05"
 else fail_test "A05"; fi
 
 begin_test "A06: apply --dry-run --phase packages"
-run $C apply --dry-run --phase packages
+run "${C[@]}" apply --dry-run --phase packages
 if assert_ok; then
     pass_test "A06"
 else fail_test "A06"; fi
 
 begin_test "A07: apply --dry-run --phase system"
-run $C apply --dry-run --phase system
+run "${C[@]}" apply --dry-run --phase system
 if assert_ok; then
     pass_test "A07"
 else fail_test "A07"; fi
 
 begin_test "A08: apply --dry-run --phase env"
-run $C apply --dry-run --phase env
+run "${C[@]}" apply --dry-run --phase env
 if assert_ok; then
     pass_test "A08"
 else fail_test "A08"; fi
 
 begin_test "A09: apply --dry-run --phase secrets"
-run $C apply --dry-run --phase secrets
+run "${C[@]}" apply --dry-run --phase secrets
 if assert_ok; then
     pass_test "A09"
 else fail_test "A09"; fi
 
 begin_test "A10: apply --skip files"
-run $C apply --dry-run --skip files
+run "${C[@]}" apply --dry-run --skip files
 if assert_ok; then
     pass_test "A10"
 else fail_test "A10"; fi
 
 begin_test "A11: apply --only files"
-run $C apply --dry-run --only files
+run "${C[@]}" apply --dry-run --only files
 if assert_ok; then
     pass_test "A11"
 else fail_test "A11"; fi
 
 begin_test "A12: apply --skip multiple"
-run $C apply --dry-run --skip files --skip packages
+run "${C[@]}" apply --dry-run --skip files --skip packages
 if assert_ok; then
     pass_test "A12"
 else fail_test "A12"; fi
 
 begin_test "A13: apply --only multiple"
-run $C apply --dry-run --only files --only env
+run "${C[@]}" apply --dry-run --only files --only env
 if assert_ok; then
     pass_test "A13"
 else fail_test "A13"; fi
 
 begin_test "A14: apply --module (nonexistent module)"
-run $C apply --dry-run --module nonexistent
+run "${C[@]}" apply --dry-run --module nonexistent
 # A typo'd module name errors loudly instead of converging an empty plan —
 # silence here would read as "nonexistent is already satisfied".
 if assert_fail && echo "$OUTPUT" | grep -q "module not found: nonexistent"; then
@@ -95,20 +95,20 @@ if assert_fail && echo "$OUTPUT" | grep -q "module not found: nonexistent"; then
 else fail_test "A14"; fi
 
 begin_test "A15: apply --dry-run --yes (both flags)"
-run $C apply --dry-run --yes
+run "${C[@]}" apply --dry-run --yes
 if assert_ok; then
     pass_test "A15"
 else fail_test "A15"; fi
 
 begin_test "A16: apply creates expected files"
 rm -f "$TGT/.gitconfig" "$TGT/.zshrc"
-run $C apply --yes
+run "${C[@]}" apply --yes
 if [ -f "$TGT/.gitconfig" ] && [ -f "$TGT/.zshrc" ]; then
     pass_test "A16"
 else fail_test "A16" "Expected files not created"; fi
 
 begin_test "A17: apply idempotent (second run no changes)"
-run $C apply --yes
+run "${C[@]}" apply --yes
 if assert_ok; then
     pass_test "A17"
 else fail_test "A17"; fi
@@ -116,7 +116,7 @@ else fail_test "A17"; fi
 # SECTION 32: additional apply flags
 
 begin_test "A18: apply --skip-scripts"
-run $C apply --dry-run --skip-scripts
+run "${C[@]}" apply --dry-run --skip-scripts
 if assert_ok; then
     pass_test "A18"
 else fail_test "A18"; fi
@@ -138,7 +138,7 @@ spec:
 YAML
 (cd "$ISRC" && git init -q && git add -A && git commit -qm "init") 2>/dev/null || true
 A19_DST="$SCRATCH/apply-from-test"
-run $C apply --from "$ISRC" --dry-run --no-color --config "$A19_DST/cfgd.yaml" --state-dir "$SCRATCH/state-a19"
+run "${C[@]}" apply --from "$ISRC" --dry-run --no-color --config "$A19_DST/cfgd.yaml" --state-dir "$SCRATCH/state-a19"
 if assert_ok; then
     pass_test "A19"
 else fail_test "A19"; fi
@@ -196,8 +196,8 @@ spec:
     target: $A22_TGT/.a22.conf
 YAML
 setup_config_dir "$A22_CFG" "$A22_TGT"
-A22_C="--config $A22_CFG/cfgd.yaml --state-dir $A22_STATE --no-color"
-run $A22_C apply --yes --module a22-mod
+A22_C=(--config "$A22_CFG/cfgd.yaml" --state-dir "$A22_STATE" --no-color)
+run "${A22_C[@]}" apply --yes --module a22-mod
 if assert_ok && [ -e "$A22_TGT/.a22.conf" ]; then
     # Verify content matches
     if grep -q "a22-content" "$A22_TGT/.a22.conf" 2>/dev/null || \
@@ -227,8 +227,8 @@ spec:
     target: $A23_TGT/.a23.conf
 YAML
 setup_config_dir "$A23_CFG" "$A23_TGT"
-A23_C="--config $A23_CFG/cfgd.yaml --state-dir $A23_STATE --no-color"
-run $A23_C apply --dry-run --module a23-mod
+A23_C=(--config "$A23_CFG/cfgd.yaml" --state-dir "$A23_STATE" --no-color)
+run "${A23_C[@]}" apply --dry-run --module a23-mod
 # The target file must NOT exist — dry-run should not deploy
 if [ ! -e "$A23_TGT/.a23.conf" ]; then
     pass_test "A23"

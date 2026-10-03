@@ -137,6 +137,10 @@ pub(super) struct PackageExec<'x> {
     /// Managers an earlier phase of this run already failed to provision, which
     /// no action of this one may reach: see `super::Reconciler::unprovisioned`.
     unprovisioned: &'x [String],
+    /// Floor checks an earlier phase failed, each withholding its manager from
+    /// the modules that declared the floor: see
+    /// `super::types::WithheldFloor`.
+    withheld_floors: &'x [crate::reconciler::WithheldFloor],
     /// The `(installer, package)` pairs this run's provisions installed, for a
     /// profile install row's `provisioned by this run` count: see
     /// `super::Reconciler::provisioned_packages`.
@@ -161,6 +165,7 @@ impl<'x> PackageExec<'x> {
             notes,
             lane: None,
             unprovisioned: &[],
+            withheld_floors: &[],
             provisioned_packages: &[],
             bootstrapped: RefCell::new(Vec::new()),
         }
@@ -179,6 +184,17 @@ impl<'x> PackageExec<'x> {
     #[must_use]
     pub(super) fn withholding_managers(mut self, managers: &'x [String]) -> Self {
         self.unprovisioned = managers;
+        self
+    }
+
+    /// Refuse a declaring module's actions naming a manager whose floor this
+    /// run judged unmet.
+    #[must_use]
+    pub(super) fn withholding_floors(
+        mut self,
+        floors: &'x [crate::reconciler::WithheldFloor],
+    ) -> Self {
+        self.withheld_floors = floors;
         self
     }
 
@@ -230,8 +246,8 @@ impl<'x> PackageExec<'x> {
     /// [`PackageManager::created_path_dirs`].
     ///
     /// A directory cfgd made itself belongs in the generated env file however
-    /// the manager got onto the machine, so this runs after every install and
-    /// not only under a provision: npm's `~/.npm-global` is created during
+    /// the manager got onto the machine, so this runs after every install,
+    /// with or without a provision: npm's `~/.npm-global` is created during
     /// `install()`, and a user-installed npm reaches no bootstrap at all.
     ///
     /// A manager that created nothing queues no row at all, so an ordinary
@@ -384,9 +400,26 @@ impl<'x> PackageExec<'x> {
     /// live availability probe: a manager that is merely unavailable right now
     /// is still dispatched — alone, the phase draining around it — because the
     /// action ahead of it in the drain may be what delivers it.
-    fn refuse_withheld_manager(&self, name: &str) -> Result<()> {
+    /// `module` is the module the action belongs to, or `None` for the
+    /// profile's own packages: a floor is one module's statement and withholds
+    /// the manager from that module alone, while a failed provision withholds
+    /// it from everybody.
+    fn refuse_withheld_manager(&self, name: &str, module: Option<&str>) -> Result<()> {
         if self.unprovisioned.iter().any(|m| m == name) {
             return Err(self.package_manager_missing_error(name));
+        }
+        if let Some(module) = module
+            && let Some(message) = self
+                .withheld_floors
+                .iter()
+                .filter(|f| f.manager == name)
+                .find_map(|f| f.refusal(module))
+        {
+            return Err(crate::errors::PackageError::ManagerBelowFloor {
+                manager: name.to_string(),
+                message,
+            }
+            .into());
         }
         Ok(())
     }
@@ -394,7 +427,8 @@ impl<'x> PackageExec<'x> {
     /// The manager `name` names, or the reason a profile-owned action may not
     /// reach it: this run's own failed provision first, then availability.
     fn usable_manager(&self, name: &str) -> Result<&'x dyn PackageManager> {
-        self.refuse_withheld_manager(name)?;
+        // The profile's own packages, which no module's floor speaks for.
+        self.refuse_withheld_manager(name, None)?;
         for pm in self.registry.available_package_managers() {
             if pm.name() == name {
                 return Ok(pm);
@@ -584,7 +618,13 @@ impl<'x> PackageExec<'x> {
                     changed = false;
                 }
             }
-            ManagerAction::Provision { via, declared, .. } => {
+            ManagerAction::Provision {
+                manager,
+                via,
+                declared,
+                floor,
+                ..
+            } => {
                 let members = action.provisioned_managers();
                 // An earlier node may have provisioned one already. What the
                 // node promises is an available manager, not a second run of
@@ -673,12 +713,44 @@ impl<'x> PackageExec<'x> {
                         }
                         .into());
                     }
+                    // The floor was asked of THIS node's manager, so a batched
+                    // sibling delivered by the same command is judged by
+                    // nothing here. A member nothing floored and nothing
+                    // installed is read for no version at all, which would cost
+                    // a spawn per member for a fact no row states.
+                    let installed_now = pending.contains(name);
+                    let asked_floor = (*name == manager.as_str())
+                        .then_some(floor.as_deref())
+                        .flatten();
+                    let version = (installed_now || asked_floor.is_some())
+                        .then(|| pm.tool_version())
+                        .flatten();
+                    // The confirmation named a floor; the node is what checks
+                    // it, whether or not this run is what installed the
+                    // manager. Without this cfgd asks "may I install a cargo at
+                    // 1.85?", installs something, and never looks; with the
+                    // check gated on the install, a replay over a machine that
+                    // already carries an older cargo never looks either.
+                    if let Some(floor) = asked_floor
+                        && let Some(message) = floor_verdict(
+                            pm.as_ref(),
+                            name,
+                            via,
+                            floor,
+                            version.as_deref(),
+                            installed_now,
+                        )
+                    {
+                        return Err(crate::errors::PackageError::BootstrapFailed {
+                            manager: (*name).to_string(),
+                            message,
+                        }
+                        .into());
+                    }
                     // What the run PUT here, read off the binary it just
                     // verified; a member that was here already produced
                     // nothing this row can claim.
-                    if pending.contains(name)
-                        && let Some(version) = pm.tool_version()
-                    {
+                    if let (true, Some(version)) = (installed_now, version) {
                         delivered.push(((*name).to_string(), version));
                     }
                 }
@@ -699,6 +771,41 @@ impl<'x> PackageExec<'x> {
                     message: reason.clone(),
                 }
                 .into());
+            }
+            // Nothing to install: the node is the CHECK. The node asks here and
+            // reads nothing off the resolution, for the reason the floored
+            // provision asks it here too: an operator who raised the toolchain
+            // between the plan and the apply has changed the answer, and a run
+            // that failed on the older one would be reporting a machine that no
+            // longer exists.
+            ManagerAction::HeldFloor {
+                manager,
+                floor,
+                declared,
+            } => {
+                let pm = lookup(manager)?;
+                let judgment = crate::modules::judge_declared_floor(
+                    pm.as_ref(),
+                    manager,
+                    floor,
+                    pm.tool_version().as_deref(),
+                );
+                if !judgment.met() {
+                    let held = crate::modules::HeldManager {
+                        package: manager.clone(),
+                        module: crate::reconciler::declared_by_clause(declared),
+                        floor: floor.clone(),
+                        judgment,
+                    };
+                    return Err(crate::errors::PackageError::BootstrapFailed {
+                        manager: manager.clone(),
+                        message: held.clause(Some(pm.as_ref())),
+                    }
+                    .into());
+                }
+                // A floor that was already met changed nothing, and the row
+                // says so: the node settles and claims no work.
+                changed = false;
             }
         }
         let run = ActionRun::new(action.node_id(), changed).delivering(delivered);
@@ -722,7 +829,6 @@ impl<'x> PackageExec<'x> {
     ) -> Result<ActionRun> {
         // Packages in each InstallPackages action are already grouped by
         // manager in plan_modules(), so just collect names and install.
-        let pkg_names: Vec<String> = pkgs.iter().map(|p| p.resolved_name.clone()).collect();
         let resolved_mod = mcx
             .module_actions
             .iter()
@@ -758,12 +864,7 @@ impl<'x> PackageExec<'x> {
             if first.manager == crate::SCRIPT_SENTINEL {
                 for pkg in pkgs {
                     if let Some(ref script_content) = pkg.script {
-                        let profile_name = mcx
-                            .resolved
-                            .layers
-                            .last()
-                            .map(|l| l.profile_name.as_str())
-                            .unwrap_or("unknown");
+                        let profile_name = mcx.resolved.profile_name();
                         let env_vars = build_module_script_env(
                             &ScriptEnvContext {
                                 config_dir: mcx.config_dir,
@@ -842,12 +943,13 @@ impl<'x> PackageExec<'x> {
                     }
                 }
             } else {
-                // A manager this run already failed to provision is refused in
+                // A manager this run already failed to provision, or whose floor
+                // this module declared and this run judged unmet, is refused in
                 // cfgd's own words rather than spawned into an errno. Merely
                 // unavailable is not refused here: an action naming one is
                 // dispatched alone and the drain around it may be what delivers
                 // the manager (`unavailable_manager_action_drains_the_phase`).
-                self.refuse_withheld_manager(&first.manager)?;
+                self.refuse_withheld_manager(&first.manager, Some(&action.module_name))?;
                 // Find the manager — check all registered, not just available
                 let pm = self
                     .registry
@@ -907,17 +1009,44 @@ impl<'x> PackageExec<'x> {
         }
 
         let run = ActionRun::new(
-            format!(
-                "module:{}:packages:{}",
-                action.module_name,
-                pkg_names.join(",")
-            ),
+            super::format::module_packages_description(&action.module_name, pkgs),
             script_changed || manager_changed,
         );
         Ok(match installed {
             Some(landed) => run.installed(landed, delivered),
             None => run,
         })
+    }
+}
+
+/// How a provision's delivery answers the floor its confirmation was given for:
+/// `None` when it clears, otherwise the sentence the node fails with.
+///
+/// The four questions behind the verdict are asked by
+/// [`crate::modules::judge_declared_floor`], which every site judging a
+/// declared floor against a manager's own version reads; what this function
+/// owns is the WORDING, which differs by what the run did — a delivery this
+/// run made, a manager that was here already, or a question nobody could ask.
+fn floor_verdict(
+    pm: &dyn crate::providers::PackageManager,
+    package: &str,
+    via: &str,
+    floor: &str,
+    version: Option<&str>,
+    installed_now: bool,
+) -> Option<String> {
+    use crate::modules::{FloorBootstrap, FloorJudgment};
+    match crate::modules::judge_declared_floor(pm, package, floor, version) {
+        FloorJudgment::Met { .. } => None,
+        FloorJudgment::Short { version } if installed_now => Some(
+            FloorBootstrap::delivery_shortfall(via, package, &version, floor),
+        ),
+        FloorJudgment::Short { version } => {
+            Some(FloorBootstrap::present_shortfall(package, &version, floor))
+        }
+        FloorJudgment::Unproven { cause } => {
+            Some(FloorBootstrap::floor_unproven(package, floor, &cause))
+        }
     }
 }
 
@@ -995,6 +1124,7 @@ impl super::Reconciler<'_> {
                     .add_bootstrapped_path_dirs(&record.manager, &record.dirs),
             };
             if let Err(e) = written {
+                // long-line-ok: a hatch is read off its own line, so it cannot wrap
                 // tracing-ok: a state write nothing printed; the bootstrap itself already settled its own row
                 tracing::warn!(
                     "cannot record PATH directories for bootstrapped {}: {e}",

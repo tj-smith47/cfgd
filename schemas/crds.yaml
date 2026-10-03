@@ -163,6 +163,68 @@ spec:
                   cannot observe it preserves it.
                 type: object
                 x-kubernetes-map-type: atomic
+              compliance:
+                description: |-
+                  The compliance the machine last reported: how many of its checks pass,
+                  warn and fail, and every check that does not pass. Device-reported,
+                  like `packageVersions`: absent until a check-in carries a compliance
+                  snapshot, and a reconcile that cannot observe it preserves it.
+                nullable: true
+                properties:
+                  checks:
+                    description: |-
+                      The checks that do not pass, violations first, then warnings: the first
+                      200 of them, with the counts above staying exact. An agent that
+                      predates the list reports the counts alone.
+                    items:
+                      description: One check a machine reported as not passing.
+                      properties:
+                        category:
+                          description: What kind of thing was checked (`file`, `package`, `watchPath`, ...).
+                          type: string
+                        detail:
+                          description: Why the check did not pass, in the machine's own words.
+                          nullable: true
+                          type: string
+                        name:
+                          description: |-
+                            The file, package, key or path the check is about: the name
+                            `cfgd compliance -o json` carries for it (a file's absolute path).
+                          type: string
+                        status:
+                          description: The outcome of a check that did not pass.
+                          enum:
+                          - Warning
+                          - Violation
+                          type: string
+                      required:
+                      - category
+                      - name
+                      - status
+                      type: object
+                    maxItems: 200
+                    type: array
+                  compliant:
+                    description: Checks that pass.
+                    format: uint32
+                    minimum: 0.0
+                    type: integer
+                  violation:
+                    description: Checks that fail.
+                    format: uint32
+                    minimum: 0.0
+                    type: integer
+                  warning:
+                    description: Checks that raised a warning.
+                    format: uint32
+                    minimum: 0.0
+                    type: integer
+                required:
+                - compliant
+                - violation
+                - warning
+                type: object
+                x-kubernetes-map-type: atomic
               conditions:
                 default: []
                 items:
@@ -501,10 +563,10 @@ spec:
               A device's report covers its system settings alone — the answers of the
               system configurators its profile declares (`sysctl`, `kernelModules`,
               `macosDefaults`, `windowsRegistry`, ...). Packages, managed files, env vars
-              and aliases are checked on the device by `cfgd diff` and reach the fleet only
-              as the aggregate counts of a compliance summary, never as findings — so a
-              device with no DriftAlert is a device whose system settings matched, not a
-              device proven in sync.
+              and aliases are checked on the device by `cfgd diff` and reach the fleet
+              through its compliance summary (`MachineConfig.status.compliance`); no
+              DriftAlert carries them, so a device with no DriftAlert is a device whose
+              system settings matched. It is not proven in sync.
             properties:
               deviceId:
                 description: Identifier of the device that reported the drift, as it enrolled.
@@ -1117,8 +1179,8 @@ spec:
                       properties:
                         continueOnError:
                           description: |-
-                            Treat a non-zero exit as success and continue reconciliation instead
-                            of failing the run. Default: `false`.
+                            Treat a non-zero exit as success, so reconciliation continues and the
+                            run does not fail. Default: `false`.
                           nullable: true
                           type: boolean
                         creates:
@@ -1141,7 +1203,7 @@ spec:
                             no spinner, no output capture, no idle timeout) so it can prompt the
                             user — e.g. `echo "press Enter when done"; read`. Requires a TTY: when
                             stdin is not a terminal (CI, piped input, or any daemon-run phase) the
-                            script is skipped with a warning rather than hanging on instant EOF.
+                            script is skipped with a warning, so it cannot hang on instant EOF.
                           type: boolean
                         onlyIf:
                           description: |-
@@ -1213,8 +1275,8 @@ spec:
                       properties:
                         continueOnError:
                           description: |-
-                            Treat a non-zero exit as success and continue reconciliation instead
-                            of failing the run. Default: `false`.
+                            Treat a non-zero exit as success, so reconciliation continues and the
+                            run does not fail. Default: `false`.
                           nullable: true
                           type: boolean
                         creates:
@@ -1237,7 +1299,7 @@ spec:
                             no spinner, no output capture, no idle timeout) so it can prompt the
                             user — e.g. `echo "press Enter when done"; read`. Requires a TTY: when
                             stdin is not a terminal (CI, piped input, or any daemon-run phase) the
-                            script is skipped with a warning rather than hanging on instant EOF.
+                            script is skipped with a warning, so it cannot hang on instant EOF.
                           type: boolean
                         onlyIf:
                           description: |-
@@ -1309,8 +1371,8 @@ spec:
                       properties:
                         continueOnError:
                           description: |-
-                            Treat a non-zero exit as success and continue reconciliation instead
-                            of failing the run. Default: `false`.
+                            Treat a non-zero exit as success, so reconciliation continues and the
+                            run does not fail. Default: `false`.
                           nullable: true
                           type: boolean
                         creates:
@@ -1333,7 +1395,7 @@ spec:
                             no spinner, no output capture, no idle timeout) so it can prompt the
                             user — e.g. `echo "press Enter when done"; read`. Requires a TTY: when
                             stdin is not a terminal (CI, piped input, or any daemon-run phase) the
-                            script is skipped with a warning rather than hanging on instant EOF.
+                            script is skipped with a warning, so it cannot hang on instant EOF.
                           type: boolean
                         onlyIf:
                           description: |-
@@ -1405,8 +1467,8 @@ spec:
                       properties:
                         continueOnError:
                           description: |-
-                            Treat a non-zero exit as success and continue reconciliation instead
-                            of failing the run. Default: `false`.
+                            Treat a non-zero exit as success, so reconciliation continues and the
+                            run does not fail. Default: `false`.
                           nullable: true
                           type: boolean
                         creates:
@@ -1429,7 +1491,7 @@ spec:
                             no spinner, no output capture, no idle timeout) so it can prompt the
                             user — e.g. `echo "press Enter when done"; read`. Requires a TTY: when
                             stdin is not a terminal (CI, piped input, or any daemon-run phase) the
-                            script is skipped with a warning rather than hanging on instant EOF.
+                            script is skipped with a warning, so it cannot hang on instant EOF.
                           type: boolean
                         onlyIf:
                           description: |-
@@ -1501,8 +1563,8 @@ spec:
                       properties:
                         continueOnError:
                           description: |-
-                            Treat a non-zero exit as success and continue reconciliation instead
-                            of failing the run. Default: `false`.
+                            Treat a non-zero exit as success, so reconciliation continues and the
+                            run does not fail. Default: `false`.
                           nullable: true
                           type: boolean
                         creates:
@@ -1525,7 +1587,7 @@ spec:
                             no spinner, no output capture, no idle timeout) so it can prompt the
                             user — e.g. `echo "press Enter when done"; read`. Requires a TTY: when
                             stdin is not a terminal (CI, piped input, or any daemon-run phase) the
-                            script is skipped with a warning rather than hanging on instant EOF.
+                            script is skipped with a warning, so it cannot hang on instant EOF.
                           type: boolean
                         onlyIf:
                           description: |-
@@ -1597,8 +1659,8 @@ spec:
                       properties:
                         continueOnError:
                           description: |-
-                            Treat a non-zero exit as success and continue reconciliation instead
-                            of failing the run. Default: `false`.
+                            Treat a non-zero exit as success, so reconciliation continues and the
+                            run does not fail. Default: `false`.
                           nullable: true
                           type: boolean
                         creates:
@@ -1621,7 +1683,7 @@ spec:
                             no spinner, no output capture, no idle timeout) so it can prompt the
                             user — e.g. `echo "press Enter when done"; read`. Requires a TTY: when
                             stdin is not a terminal (CI, piped input, or any daemon-run phase) the
-                            script is skipped with a warning rather than hanging on instant EOF.
+                            script is skipped with a warning, so it cannot hang on instant EOF.
                           type: boolean
                         onlyIf:
                           description: |-
@@ -1753,9 +1815,9 @@ spec:
                 description: |-
                   Platform tags gating the whole module on a machine reconciling it.
                   When non-empty and the machine matches none of them, the module is
-                  skipped entirely (it appears as a skipped action rather than
-                  vanishing). Tags are matched against the machine's OS, distro, and
-                  arch; use `macos` for macOS.
+                  skipped entirely (it still appears, as a skipped action). Tags are
+                  matched against the machine's OS, distro, and arch; use `macos` for
+                  macOS.
                 items:
                   type: string
                 type: array
@@ -1885,11 +1947,10 @@ spec:
                   The signature verdict as ONE word (`verified` / `unverified` /
                   `unsigned` / `unknown`), and the only field the `Signature` printer
                   column may be bound to. `verified` is the same verdict as a raw bool,
-                  which reads as
-                  `true` in a column beside a `kubectl cfgd status` row saying
-                  `(verified)` about the same module — one fact, two vocabularies. Absent
-                  when no reconcile has written it, so the JSONPath resolves to nothing
-                  and the cell stays blank.
+                  which reads as `true` in a column beside a `kubectl cfgd status` row
+                  saying `(verified)` about the same module — one fact, two vocabularies.
+                  Absent when no reconcile has written it, so the JSONPath resolves to
+                  nothing and the cell stays blank.
                 nullable: true
                 type: string
               signatureDigest:

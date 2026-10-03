@@ -152,6 +152,20 @@ impl PackageManager for CargoManager {
         super::shared::tool_version_from(cargo_cmd().arg("--version"))
     }
 
+    fn own_raise(&self) -> Option<std::borrow::Cow<'static, str>> {
+        // The binary on PATH is rustup's shim, so the toolchain behind it is
+        // what a raise has to move; `cargo install cargo` would put a second
+        // copy beside the one in use.
+        Some("rustup update".into())
+    }
+
+    fn home_env_vars(&self) -> &'static [&'static str] {
+        // `~/.cargo/bin/cargo` is rustup's shim: it resolves the toolchain
+        // through these two and exits non-zero without them, so a process that
+        // inherited neither reads no version at all.
+        &["CARGO_HOME", "RUSTUP_HOME"]
+    }
+
     fn is_available(&self) -> bool {
         cargo_available()
     }
@@ -483,9 +497,10 @@ tokei v12.1.2:
         super::super::shared::host_arms()
             .iter()
             .map(|(_, tool)| {
-                let var: &'static str =
-                    Box::leak(super::super::shared::tool_seam_var(tool).into_boxed_str());
-                cfgd_core::test_helpers::EnvVarGuard::set(var, "/nonexistent/cfgd-no-mediator")
+                cfgd_core::test_helpers::EnvVarGuard::set(
+                    &super::super::shared::tool_seam_var(tool),
+                    "/nonexistent/cfgd-no-mediator",
+                )
             })
             .collect()
     }
@@ -660,12 +675,13 @@ tokei v12.1.2:
         use cfgd_core::test_helpers::{ToolShim, test_package_context, test_printer, test_state};
         use serial_test::serial;
 
-        const SHIM_ENV: &str = "CFGD_CARGO_BIN";
+        static SHIM_ENV: std::sync::LazyLock<String> =
+            std::sync::LazyLock::new(|| crate::seams::tool_seam_var("cargo"));
 
         #[test]
         #[serial]
         fn cargo_install_runs_install_subcommand_per_package() {
-            let s = ToolShim::install(SHIM_ENV, 0, "", "");
+            let s = ToolShim::install(&SHIM_ENV, 0, "", "");
             let p = test_printer();
             let st = test_state();
             let cx = test_package_context(&p, &st);
@@ -681,7 +697,7 @@ tokei v12.1.2:
         #[test]
         #[serial]
         fn cargo_uninstall_runs_uninstall_subcommand_per_package() {
-            let s = ToolShim::install(SHIM_ENV, 0, "", "");
+            let s = ToolShim::install(&SHIM_ENV, 0, "", "");
             let p = test_printer();
             let st = test_state();
             let cx = test_package_context(&p, &st);
@@ -694,7 +710,7 @@ tokei v12.1.2:
         #[test]
         #[serial]
         fn refreshing_the_index_declares_none_and_spawns_nothing() {
-            let s = ToolShim::install(SHIM_ENV, 0, "", "");
+            let s = ToolShim::install(&SHIM_ENV, 0, "", "");
             let p = test_printer();
             let st = test_state();
             let cx = test_package_context(&p, &st);
@@ -714,7 +730,7 @@ tokei v12.1.2:
         #[serial]
         fn cargo_installed_packages_parses_install_list_output() {
             let stdout = "ripgrep v14.1.0:\n    rg\nfd-find v9.0.0:\n    fd\n";
-            let _s = ToolShim::install(SHIM_ENV, 0, stdout, "");
+            let _s = ToolShim::install(&SHIM_ENV, 0, stdout, "");
             let p = test_printer();
             let st = test_state();
             let cx = test_package_context(&p, &st);
@@ -727,7 +743,7 @@ tokei v12.1.2:
         #[test]
         #[serial]
         fn cargo_available_version_extracts_from_search_first_line() {
-            let _s = ToolShim::install(SHIM_ENV, 0, "ripgrep = \"14.1.0\"\n", "");
+            let _s = ToolShim::install(&SHIM_ENV, 0, "ripgrep = \"14.1.0\"\n", "");
             let v = CargoManager.available_version("ripgrep").expect("Ok");
             assert_eq!(v.as_deref(), Some("14.1.0"));
         }
@@ -735,7 +751,7 @@ tokei v12.1.2:
         #[test]
         #[serial]
         fn cargo_available_version_passes_search_with_limit_flag() {
-            let s = ToolShim::install(SHIM_ENV, 0, "x = \"0.1\"\n", "");
+            let s = ToolShim::install(&SHIM_ENV, 0, "x = \"0.1\"\n", "");
             CargoManager.available_version("ripgrep").expect("Ok");
             assert!(
                 s.argv_log().contains("search ripgrep --limit 1"),
@@ -747,7 +763,7 @@ tokei v12.1.2:
         #[test]
         #[serial]
         fn cargo_available_version_returns_none_on_nonzero_exit() {
-            let _s = ToolShim::install(SHIM_ENV, 1, "", "registry unreachable");
+            let _s = ToolShim::install(&SHIM_ENV, 1, "", "registry unreachable");
             let v = CargoManager
                 .available_version("anything")
                 .expect("non-zero → Ok(None)");
@@ -758,7 +774,7 @@ tokei v12.1.2:
         #[serial]
         fn cargo_installed_packages_with_versions_parses_install_list() {
             let stdout = "ripgrep v14.1.0:\n    rg\nfd-find v9.0.0:\n    fd\n";
-            let _s = ToolShim::install(SHIM_ENV, 0, stdout, "");
+            let _s = ToolShim::install(&SHIM_ENV, 0, stdout, "");
             let p = test_printer();
             let st = test_state();
             let cx = test_package_context(&p, &st);
@@ -791,7 +807,7 @@ tokei v12.1.2:
             let dir = tempfile::tempdir().expect("tempdir");
             let unspawnable = dir.path().join("cargo");
             std::fs::write(&unspawnable, "").expect("write the unspawnable file");
-            let _g = EnvVarGuard::set(SHIM_ENV, unspawnable.to_string_lossy().as_ref());
+            let _g = EnvVarGuard::set(&SHIM_ENV, unspawnable.to_string_lossy().as_ref());
             let err = CargoManager.available_version("ripgrep").expect_err(
                 "a file nothing can execute must surface as CommandFailed, not a panic",
             );
@@ -828,5 +844,26 @@ tokei v12.1.2:
                 "error must surface bootstrap context: {msg}"
             );
         }
+    }
+
+    /// A cargo whose version cannot be read is most often a rustup shim whose
+    /// home variables are missing, so the clause a reader gets names them
+    /// beside the PATH.
+    #[test]
+    fn an_unreadable_cargo_floor_names_the_homes_its_shim_reads() {
+        let held = cfgd_core::modules::HeldManager {
+            package: "cargo".into(),
+            module: "rust".into(),
+            floor: "1.85".into(),
+            judgment: cfgd_core::modules::FloorJudgment::Unproven {
+                cause: "it reports no version".into(),
+            },
+        };
+        assert_eq!(
+            held.clause(Some(&CargoManager)),
+            "cannot judge cargo against the declared minVersion 1.85: it reports no version; \
+             check that cargo is on this process's PATH and that CARGO_HOME and RUSTUP_HOME \
+             are set for it"
+        );
     }
 }

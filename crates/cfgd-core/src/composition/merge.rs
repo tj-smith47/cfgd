@@ -18,6 +18,9 @@ pub(super) fn merge_with_policy(
     conflicts: &mut Vec<ConflictResolution>,
 ) -> std::result::Result<MergedProfile, CompositionError> {
     let mut merged = MergedProfile::default();
+    // Resolved once after the loop, as `config::merge_layers` does, so a
+    // subscribed machine exports the same preference a local one would.
+    let mut preferences = crate::config::ChainPreferences::new();
     // Track file ownership for conflict detection
     let mut file_owners: HashMap<std::path::PathBuf, FileOwner> = HashMap::new();
 
@@ -40,9 +43,11 @@ pub(super) fn merge_with_policy(
             secrets,
             scripts,
             backups,
+            preferences: layer_preferences,
         } = &layer.spec;
 
         let layer_owner = layer.owner_token();
+        preferences.absorb(layer_preferences, layer);
         // Platform-gated entries are filtered BEFORE the fold, for the same
         // reason `config::merge_layers` filters before its own: an entry that
         // does not apply here must not displace one that does.
@@ -95,7 +100,8 @@ pub(super) fn merge_with_policy(
             for managed in layer_managed {
                 // Check Required-tier protection (bidirectional):
                 // 1. If a Required source already owns this file, no other source can override it.
-                // 2. If *this* layer is Required and another source already placed a file here, error.
+                // 2. If *this* layer is Required and another source already placed a file here,
+                //    error.
                 if let Some(owner) = file_owners.get(&managed.target) {
                     let cross_source = layer.source != owner.source;
                     if cross_source
@@ -216,5 +222,6 @@ pub(super) fn merge_with_policy(
         union_extend(&mut merged.modules, modules);
     }
 
+    crate::config::fold_preferences(&mut merged, &preferences);
     Ok(merged)
 }

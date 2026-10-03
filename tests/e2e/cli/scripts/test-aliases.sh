@@ -15,13 +15,13 @@ mkdir -p "$ALIAS_STATE"
 setup_config_dir "$ALIAS_CFG" "$ALIAS_TGT"
 ALIAS_CONF="$ALIAS_CFG/cfgd.yaml"
 ALIAS_PROFILE="$ALIAS_CFG/profiles/dev.yaml"
-ALIAS_C="--config $ALIAS_CONF --state-dir $ALIAS_STATE --no-color"
+ALIAS_C=(--config "$ALIAS_CONF" --state-dir "$ALIAS_STATE" --no-color)
 
 ALIAS_FILE="$ALIAS_TGT/foo.txt"
 touch "$ALIAS_FILE"
 
 begin_test "AL01: cfgd add <path> appends to spec.files"
-run $ALIAS_C add "$ALIAS_FILE"
+run "${ALIAS_C[@]}" add "$ALIAS_FILE"
 if ! assert_ok; then
     fail_test "AL01" "alias exit code != 0"
 elif ! grep -qE "^[[:space:]]*target: ${ALIAS_FILE//\//\\/}\$" "$ALIAS_PROFILE"; then
@@ -34,7 +34,7 @@ else
 fi
 
 begin_test "AL02: cfgd remove -<path> drops the spec.files entry"
-run $ALIAS_C remove "-$ALIAS_FILE"
+run "${ALIAS_C[@]}" remove "-$ALIAS_FILE"
 if ! assert_ok; then
     fail_test "AL02" "alias exit code != 0"
 elif grep -qE "^[[:space:]]*target: ${ALIAS_FILE//\//\\/}\$" "$ALIAS_PROFILE"; then
@@ -47,7 +47,7 @@ else
 fi
 
 begin_test "AL10: cfgd alias set <name> <command> writes spec.aliases.<name>"
-run $ALIAS_C alias set greet "status"
+run "${ALIAS_C[@]}" alias set greet "status"
 if ! assert_ok; then
     fail_test "AL10" "alias set exit code != 0"
 elif ! grep -qE "^[[:space:]]*greet: status\$" "$ALIAS_CONF"; then
@@ -60,7 +60,7 @@ else
 fi
 
 begin_test "AL11: cfgd alias add <name> <command> (clap alias for set) writes spec.aliases.<name>"
-run $ALIAS_C alias add greet2 "status"
+run "${ALIAS_C[@]}" alias add greet2 "status"
 if ! assert_ok; then
     fail_test "AL11" "alias add exit code != 0"
 elif ! grep -qE "^[[:space:]]*greet2: status\$" "$ALIAS_CONF"; then
@@ -72,7 +72,7 @@ else
 fi
 
 begin_test "AL12: cfgd alias show <name> prints the alias command"
-run $ALIAS_C alias show greet
+run "${ALIAS_C[@]}" alias show greet
 if ! assert_ok; then
     fail_test "AL12" "alias show exit code != 0"
 elif ! assert_contains "$OUTPUT" "status"; then
@@ -82,7 +82,7 @@ else
 fi
 
 begin_test "AL13: cfgd alias ls lists every alias by name and command"
-run $ALIAS_C alias ls
+run "${ALIAS_C[@]}" alias ls
 if ! assert_ok; then
     fail_test "AL13" "alias ls exit code != 0"
 elif ! assert_contains "$OUTPUT" "greet" \
@@ -94,7 +94,7 @@ else
 fi
 
 begin_test "AL14: cfgd alias rm <name> (clap alias for delete) removes spec.aliases.<name>"
-run $ALIAS_C alias rm greet
+run "${ALIAS_C[@]}" alias rm greet
 if ! assert_ok; then
     fail_test "AL14" "alias rm exit code != 0"
 elif grep -qE "^[[:space:]]*greet: status\$" "$ALIAS_CONF"; then
@@ -106,7 +106,7 @@ else
 fi
 
 begin_test "AL15: cfgd alias delete <name> (canonical) removes spec.aliases.<name>"
-run $ALIAS_C alias delete greet2
+run "${ALIAS_C[@]}" alias delete greet2
 if ! assert_ok; then
     fail_test "AL15" "alias delete exit code != 0"
 elif grep -qE "^[[:space:]]*greet2: status\$" "$ALIAS_CONF"; then
@@ -118,11 +118,11 @@ else
 fi
 
 begin_test "AL16: cfgd config rm <key> (clap alias on Unset) removes the key"
-run $ALIAS_C alias set greet3 "status"
+run "${ALIAS_C[@]}" alias set greet3 "status"
 if [ "$RC" -ne 0 ]; then
     fail_test "AL16" "preflight alias set failed (exit $RC)"
 else
-    run $ALIAS_C config rm aliases.greet3
+    run "${ALIAS_C[@]}" config rm aliases.greet3
     if ! assert_ok; then
         fail_test "AL16" "config rm exit code != 0"
     elif grep -qE "^[[:space:]]*greet3: status\$" "$ALIAS_CONF"; then
@@ -135,7 +135,7 @@ else
 fi
 
 begin_test "AL17: cfgd config ls (clap alias on Show) returns the configuration view"
-run $ALIAS_C config ls
+run "${ALIAS_C[@]}" config ls
 if ! assert_ok; then
     fail_test "AL17" "config ls exit code != 0"
 elif ! assert_contains "$OUTPUT" "dev"; then

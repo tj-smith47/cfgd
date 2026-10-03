@@ -1,0 +1,9 @@
+crates/cfgd-core/src/bin/fake_cosign.rs
+crates/cfgd-core/src/output/test_capture.rs
+crates/cfgd-core/src/test_helpers.rs
+crates/cfgd-operator/src/controllers/test_fixtures.rs
+crates/cfgd-operator/src/controllers/test_kube_harness.rs
+crates/cfgd-operator/src/gateway/test_state.rs
+crates/cfgd-operator/src/test_helpers.rs
+crates/cfgd-operator/src/webhook/test_router.rs
+crates/cfgd/src/cli/test_support.rs

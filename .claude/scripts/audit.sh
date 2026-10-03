@@ -3,13 +3,44 @@
 # Uses block-aware test filtering: an awk pass strips #[cfg(test)] blocks
 # by tracking brace depth, so violations inside test modules are correctly ignored.
 #
-# Workspace layout: crates/{cfgd-schema,cfgd-crd,cfgd-core,cfgd,cfgd-csi,cfgd-operator}/src/
+# Workspace layout: crates/<crate>/src/, one per crate: cfgd-schema, cfgd-crd, cfgd-core,
+# cfgd, cfgd-csi, cfgd-operator, cfgd-test-fixtures.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
+
+# The workspace files built only for tests although their names do not say so.
+# cfgd-core's `test_only_files_below` derives the set, and the test
+# `test_only_files_list_matches_the_derivation` fails when this copy is stale.
+TEST_ONLY_LIST=.claude/scripts/test-only-files.txt
+if [[ ! -s "$TEST_ONLY_LIST" ]]; then
+    echo "audit: $TEST_ONLY_LIST is missing or empty; run: task test-only-files:bless" >&2
+    exit 2
+fi
+declare -A TEST_ONLY_FILES=()
+TEST_ONLY_GLOBS=()
+while IFS= read -r f; do
+    [[ -n "$f" ]] || continue
+    TEST_ONLY_FILES["$f"]=1
+    TEST_ONLY_GLOBS+=(--glob "!$f")
+done < "$TEST_ONLY_LIST"
+# One `<path>:` alternative per listed file, for filters over `file:line:` hits.
+TEST_ONLY_RE="$(sed -e 's/[.]/\\./g' -e 's/$/:/' "$TEST_ONLY_LIST" | paste -sd'|')"
+
+# Whether a scanned file holds tests alone: named as a test module (the rule
+# cfgd-core's `is_test_source` states) or listed above.
+is_test_file() {
+    case "$1" in
+        */tests.rs|*/tests_*.rs|*/tests/*) return 0 ;;
+    esac
+    [[ -n "${TEST_ONLY_FILES["crates/${1#*crates/}"]-}" ]]
+}
 
 ERRORS=0
 WARNINGS=0
 
+# SRC_ROOTS names production code only. crates/cfgd-test-fixtures/src is the
+# code crates/cfgd/tests/ shares, so the lib-code rules (no unwrap, no raw
+# Command) leave it out the same way they leave out every tests/ directory.
 SRC_ROOTS=(crates/cfgd-schema/src crates/cfgd-crd/src crates/cfgd-core/src crates/cfgd/src crates/cfgd-csi/src crates/cfgd-operator/src)
 
 # --- Formatting helpers ---
@@ -40,6 +71,7 @@ first_lines() { awk -v n="$1" 'NR <= n'; }
 # everything after it stops being scanned. A marker inside a message string is
 # not an annotation either — that would let a call exempt itself by naming the
 # escape hatch in its own text.
+# shellcheck disable=SC2016  # an awk program; the $ fields belong to awk
 AWK_LIB='
 BEGIN { RAW_HASHES = -1; IN_STR = 0 }
 function hashes_str(n,   s) { s = ""; while (n-- > 0) s = s "#"; return s }
@@ -245,8 +277,17 @@ strip_test_blocks_from_file() {
 }
 
 _strip_test_blocks_uncached() {
-    local filepath="$1"
-    awk -v filepath="$filepath" "$AWK_LIB"'
+    _split_test_spans "$1" prod
+}
+
+# The ONE reading of where a `#[cfg(test)]` span starts and ends, printing the
+# lines outside every span (`prod`) or inside one (`test`). The strip and the
+# extract are two views of the same split, so they share this program: with a
+# copy each, a brace-less `#[cfg(test)]` statement can end at its `;` in one
+# view and run on to the enclosing block's closing brace in the other, which
+# files the production lines after it under "test code".
+_split_test_spans() {
+    awk -v filepath="$1" -v want="$2" "$AWK_LIB"'
     BEGIN { in_test = 0; test_depth = 0 }
     { code = code_only($0) }
     /^[[:space:]]*#\[cfg\(test\)\]/ {
@@ -258,24 +299,27 @@ _strip_test_blocks_uncached() {
         opens = gsub(/{/, "{", code)
         closes = gsub(/}/, "}", code)
         test_depth += opens - closes
+        if (want == "test") print filepath ":" NR ":" $0
         if (test_depth <= 0 && opens + closes > 0) {
             in_test = 0
             test_depth = 0
-        } else if (test_depth == 0 && opens + closes == 0 && code ~ /;[[:space:]]*$/) {
+        } else if (test_depth == 0 && opens + closes == 0 && code ~ /;[[:space:]\001]*$/) {
             in_test = 0
         }
         next
     }
-    { print filepath ":" NR ":" $0 }
-    ' "$filepath"
+    want == "prod" { print filepath ":" NR ":" $0 }
+    ' "$1"
 }
 
 # --- Drop the lines inside every `impl <Trait> for <Type>` block ---
-# A method name inside a trait impl is chosen by the TRAIT, not by the author,
-# so it can never be evidence of copy-paste. Reads the `<file>:<line>:<text>`
-# stream `strip_test_blocks_from_file` produces and drops the whole block,
-# header included; the trait's own declaration, every inherent method and every
-# free function still reach the duplicate gate. `for<'a>` (a HRTB bound) needs no
+# A method inside a trait impl is one type's answer to the TRAIT: its name and
+# signature are the trait's, and many types give the same one-line answer
+# (`Ok(None)`, `Some("upgrade")`), so a repeat there is no evidence of
+# copy-paste. Reads the `<file>:<line>:<text>` stream
+# `strip_test_blocks_from_file` produces and drops the whole block, header
+# included; a trait's default methods, every inherent method and every free
+# function still reach the duplicate gate. `for<'a>` (a HRTB bound) needs no
 # exclusion — it carries no space after `for`. Brace depth is counted through
 # `code_only`, so a brace inside a string or a comment cannot desynchronise the
 # tracker, and a header whose `{` sits on a later line (a `where` clause) is
@@ -375,32 +419,11 @@ extract_test_blocks_from_file() {
 
 _extract_test_blocks_uncached() {
     local filepath="$1"
-    case "$filepath" in
-        */tests.rs|*_test.rs|*/test_*.rs|*/tests_*.rs|*/test_helpers.rs|*/tests/*)
-            awk -v filepath="$filepath" '{ print filepath ":" NR ":" $0 }' "$filepath"
-            return 0
-            ;;
-    esac
-    awk -v filepath="$filepath" "$AWK_LIB"'
-    BEGIN { in_test = 0; test_depth = 0 }
-    { code = code_only($0) }
-    /^[[:space:]]*#\[cfg\(test\)\]/ {
-        in_test = 1
-        test_depth = 0
-        next
-    }
-    in_test {
-        opens = gsub(/{/, "{", code)
-        closes = gsub(/}/, "}", code)
-        test_depth += opens - closes
-        print filepath ":" NR ":" $0
-        if (test_depth <= 0 && opens + closes > 0) {
-            in_test = 0
-            test_depth = 0
-        }
-        next
-    }
-    ' "$filepath"
+    if is_test_file "$filepath"; then
+        awk -v filepath="$filepath" '{ print filepath ":" NR ":" $0 }' "$filepath"
+        return 0
+    fi
+    _split_test_spans "$filepath" test
 }
 
 # --- Core check function ---
@@ -554,16 +577,14 @@ log_section "No Unwrap in Library Code"
 # Match .unwrap() but NOT .unwrap_or(), .unwrap_or_default(), .unwrap_or_else()
 # Exclusions:
 #   - main.rs / gen_crds.rs: binary entry points (expect is acceptable)
-#   - test_helpers.rs: shared test scaffolding
-#   - tests.rs / *_test.rs: inline #[cfg(test)] modules — test code is allowed
-#     to unwrap freely (matches the anodizer anti-patterns convention).
-#   - test_*.rs / tests_*.rs: test-only modules gated by #![cfg(test)]
-#     (e.g. test_kube_harness.rs, tests_drift_alert.rs).
+#   - tests.rs / tests_*.rs: test modules — test code is allowed to unwrap
+#     freely (matches the anodizer anti-patterns convention).
+#   - every file TEST_ONLY_LIST names (test_helpers.rs, test_kube_harness.rs, …)
 #   - src/**/tests/*.rs: a directory declared `#[cfg(test)] mod tests;` from its parent
 check_pattern error \
     "No .unwrap()/.expect() in library code" \
     '\.unwrap\(\)[^_]|\.unwrap\(\)$|\.expect\(' \
-    'main\.rs:|gen_crds\.rs:|test_helpers\.rs:|/tests\.rs:|_test\.rs:|/test_[^/]*\.rs:|/tests_[^/]*\.rs:|^[^:]*/src/([^:]*/)?tests/[^/:]*\.rs:'
+    'main\.rs:|gen_crds\.rs:|/tests\.rs:|/tests_[^/]*\.rs:|^[^:]*/src/([^:]*/)?tests/[^/:]*\.rs:|'"$TEST_ONLY_RE"
 
 log_section "One Noun Per Concept"
 # A counted package reads `3 packages` on every human surface — the status
@@ -618,9 +639,7 @@ advisory_scope_dirs=(crates/cfgd-core/src/config crates/cfgd-core/src/modules cr
 require_dirs "user-facing advisory scan" "${advisory_scope_dirs[@]}" || true
 advisory_violations=""
 while IFS= read -r -d '' rsfile; do
-    case "$rsfile" in
-        */tests.rs|*_test.rs|*/test_*.rs|*/tests_*.rs|*/test_helpers.rs) continue ;;
-    esac
+    is_test_file "$rsfile" && continue
     file_hits=$(strip_test_blocks_from_file "$rsfile" | awk "$AWK_LIB"'
         { code = code_only($0); comment = LAST_COMMENT }
         code ~ /tracing::(info|warn|error)!/ &&
@@ -649,7 +668,7 @@ log_section "Duplicate Narration (tracing::info! outside daemon/)"
 # The binary's default filter is `warn` for exactly that reason, so an info!
 # outside the daemon is a line nobody sees AND a strand risk when they do.
 #
-# daemon/ is the whole exemption, and not a grandfathered one: there the log IS
+# daemon/ is the whole exemption, on its merits: there the log IS
 # the output — a service under systemd/launchd prints its ticks to journald
 # through this channel and no other, which is why `cfgd daemon run` keeps `info`
 # as its tracing floor (main.rs::runs_reconcile_loop).
@@ -659,9 +678,9 @@ narration_scope_dirs=(crates/cfgd-core/src crates/cfgd/src)
 require_dirs "duplicate narration scan" "${narration_scope_dirs[@]}" || true
 narration_violations=""
 while IFS= read -r -d '' rsfile; do
+    is_test_file "$rsfile" && continue
     case "$rsfile" in
         */daemon/*) continue ;;
-        */tests.rs|*_test.rs|*/test_*.rs|*/tests_*.rs|*/test_helpers.rs) continue ;;
     esac
     file_hits=$(strip_test_blocks_from_file "$rsfile" | awk "$AWK_LIB"'
         { code = code_only($0); comment = LAST_COMMENT }
@@ -749,15 +768,15 @@ log_section "Controlled Shell Execution"
 # util/{git,process,env_session}.rs are the cfgd-core controlled-execution seams
 #   catalogued in .claude/rules/module-boundaries.md (git_cmd_*/cosign_cmd,
 #   command_output_with_timeout, launchctl/systemctl/setx session refresh).
-# test_helpers.rs is test scaffolding (Command::new appears only in #[cfg(test)]
-# submodules and doc comments).
+# The files TEST_ONLY_LIST names are built only for tests (test_helpers.rs among
+# them), so a Command there does not ship.
 # providers/mod.rs only NAMES the type, in SystemContext::run_silent's signature,
 #   and forwards to output/; it constructs and spawns nothing. The exclusion is
 #   anchored to that exact parameter line so any other Command use there is caught.
 check_pattern warn \
     "std::process::Command confined to packages/, secrets/, system/, reconciler/, platform/, cli/, gateway/, output/, generate/, oci, daemon/, util/{git,process,env_session}.rs" \
     'std::process::Command|Command::new' \
-    'packages/|secrets/|system/|reconciler/|platform/|cli/|gateway/|output/|generate/|oci|daemon/|util/git\.rs:|util/process\.rs:|util/env_session\.rs:|providers/mod\.rs:[0-9]+:[[:space:]]+cmd: &mut std::process::Command,$|test_helpers\.rs:|lib\.rs:'
+    'packages/|secrets/|system/|reconciler/|platform/|cli/|gateway/|output/|generate/|oci|daemon/|util/git\.rs:|util/process\.rs:|util/env_session\.rs:|providers/mod\.rs:[0-9]+:[[:space:]]+cmd: &mut std::process::Command,$|lib\.rs:|'"$TEST_ONLY_RE"
 
 log_section "Error Type Discipline"
 check_pattern error \
@@ -799,9 +818,7 @@ build_production_corpus() {
     local rsfile
     : > "$PRODUCTION_CORPUS"
     while IFS= read -r -d '' rsfile; do
-        case "$rsfile" in
-            */tests.rs|*_test.rs|*/test_*.rs|*/tests_*.rs|*/test_helpers.rs) continue ;;
-        esac
+        is_test_file "$rsfile" && continue
         strip_test_blocks_from_file "$rsfile" >> "$PRODUCTION_CORPUS"
     done < <(audit_scan_files)
 }
@@ -865,14 +882,14 @@ for errors_file in $(errors_file_candidates); do
 done
 if [[ -n "$dead_variants" ]]; then
     log_warn "Error variants never constructed (wire up or delete):"
-    printf "$dead_variants"
+    printf '%b' "$dead_variants"
 else
     log_ok "All error variants are constructed somewhere"
 fi
 
 log_section "DRY — Repeated String Literals"
-# Whole-file test modules (tests.rs, *_test.rs, test_*.rs, tests_*.rs,
-# test_helpers.rs) carry no inline #[cfg(test)] marker, so strip_test_blocks
+# Whole-file test modules (is_test_file: tests.rs, tests_*.rs, tests/ and the
+# TEST_ONLY_LIST files) carry no inline #[cfg(test)] marker, so strip_test_blocks
 # cannot strip them. Skip them outright: this gate measures production-code DRY,
 # and test fixtures legitimately repeat the same scaffold strings.
 # output/ is the deliberate parallel-builder API (Printer/SectionGuard/Doc mirror
@@ -900,8 +917,9 @@ log_section "DRY — Repeated String Literals"
 # being the subject of this gate; raw and plain strings stay candidates, a
 # repeated raw literal being a repeat like any other.
 dupes=$(while IFS= read -r -d '' rsfile; do
+    is_test_file "$rsfile" && continue
     case "$rsfile" in
-        */tests.rs|*_test.rs|*/test_*.rs|*/tests_*.rs|*/test_helpers.rs|*/output/*) continue ;;
+        */output/*) continue ;;
     esac
     strip_test_blocks_from_file "$rsfile" \
         | strip_attr_lines \
@@ -921,279 +939,106 @@ else
 fi
 
 log_section "DRY — Duplicated Function Definitions"
-# Extract fn names from non-test code across all crates, flag any name defined in >1 file.
-# Excludes trait-standard method names that legitimately repeat across impls.
-# Emits "<fn> <file>" pairs and dedups them (sort -u) so the per-name count is a
-# count of DISTINCT FILES — many impls of one method inside a single file (e.g.
-# the per-struct profile merge_from layering) are not cross-file duplication.
-# Whole-file test modules are skipped (same rationale as the literal gate above).
-# output/ is skipped: Printer/SectionGuard/Doc/StatusBuilder deliberately mirror
-# one fluent method surface (output-module.md), so a method name shared across
-# those builders is intentional API symmetry, not duplicated logic.
+# Flag a function defined twice: one name with one definition (signature and
+# body, `//` comments and one-line `/* */` comments dropped, whitespace
+# collapsed) in more than one file. Qualifiers (`const`, `unsafe`, `extern`)
+# are not part of the definition. Two functions that share only a name, such
+# as `CheckinFacts::collect` and `ComplianceInputs::collect`, are homonyms and
+# pass.
+# Emits one "<name> <definition> <file>" record per function with a body and
+# dedups them, so the count is a count of DISTINCT FILES. A trait's bodiless
+# declaration is not a definition, and a trait impl's methods are dropped whole
+# (`drop_trait_impl_lines`). Whole-file test modules are skipped (same rationale
+# as the literal gate above). output/ is skipped: Printer/SectionGuard/Doc/
+# StatusBuilder deliberately mirror one fluent method surface
+# (output-module.md), so their identical builder steps are API symmetry.
+# `fn new() -> Self { Self::default() }` is the constructor idiom and passes.
 #
-# `len` and `is_empty` are excluded together: clippy's `len_without_is_empty`
-# requires a type offering one to offer the other, so any collection-shaped
-# type in the workspace defines both, and excusing only half of the pair makes
-# the gate fire on the idiom it forced.
-# ALLOWED_FN_PAIRS excuses one *specific* definition rather than a bare name, so
-# the name keeps its budget: `is_clean` is deliberately shared by four backup
-# outcome types — BackupRunReport, RestoreOutcome and RollbackOutcome are
-# listed below, and BackupRunRecord keeps the budget — which answer the
-# exit-code question under one name, but dropping only some of the sites
-# means the next one still trips the gate. Adding a name to the awk list below
-# instead would blind the check to that name forever.
-# `Owner`'s constructors are named after the kind they mint, which is the whole
-# point of the closed vocabulary — the collisions are with unrelated
-# constructors on other types (`PatchBindings::profile`, `BackupJob::source`).
-# Excusing the `Owner` site keeps each name's budget for a real duplicate.
-# `ApplyRun::execute` runs one reconcile; `cli::execute` dispatches clap
-# subcommands. Nothing is shared between them but the verb.
-#
-# `install_cmd_for` is excused by name in the awk list rather than per site: it
-# is the sanctioned per-manager declaration table these Windows managers answer
-# to, composed by `arm_install_commands` (crates/cfgd/src/packages/shared/mod.rs)
-# and stated on each function's own rustdoc (packages/choco.rs, packages/scoop.rs
-# and packages/winget.rs each call it the ONE declaration of how that manager
-# installs), so each manager owning one is the convention itself, and every
-# manager added later owes one too. The walk is
-# every_windows_manager_install_the_cli_emits_comes_from_its_declaration
-# (crates/cfgd/src/cli/tests.rs), which derives its population from this same
-# anchor, so a manager that copies the convention is walked with it.
-#
-# The remaining pairs excuse a name two unrelated TYPES both answer, where
-# nothing but the verb is shared: `Slot::lane` names a package-manager family
-# while `PackageContext::lane` hands back a live output region; `MemberState`'s
-# `node_id` delegates to `ManagerAction`'s own `*_node` derivations rather than
-# re-deriving them; the `cli::output_types` accessors (`token`, `owner`) read a
-# rendered payload's fields, not the reconciler types they name.
-# `CollectOutcome`'s `tally`, `action_count` and `role` answer for a gc run
-# what `ApplyRun`, `Phase` and the status rows answer for theirs, each on its
-# own type; `cli::output_types::is_zero` is a private serde predicate with one
-# user, the twin of `state::types`'s, and `*n == 0` carries no rule to drift.
+# ALLOWED_FN_PAIRS excuses one *specific* definition, so the twin left standing
+# keeps the budget and a third copy still trips the gate.
 ALLOWED_FN_PAIRS=(
-    "is_clean crates/cfgd-core/src/backup/restore.rs"
-    "is_clean crates/cfgd-core/src/backup/mod.rs"
+    # `RestoreOutcome::is_clean` and `RollbackOutcome::is_clean` answer the
+    # backup exit-code question over the same two fields of two outcome types.
     "is_clean crates/cfgd-core/src/backup/rollback.rs"
-    "profile crates/cfgd-core/src/reconciler/types.rs"
-    "module crates/cfgd-core/src/reconciler/types.rs"
-    "source crates/cfgd-core/src/reconciler/types.rs"
-    "execute crates/cfgd-core/src/reconciler/run.rs"
-    "lane crates/cfgd-core/src/providers/mod.rs"
-    "tally crates/cfgd-core/src/backup/gc.rs"
-    "action_count crates/cfgd-core/src/backup/gc.rs"
-    "role crates/cfgd-core/src/backup/gc.rs"
+    # A private serde `skip_serializing_if` predicate with one user, the twin of
+    # `state::types`'s; `*n == 0` carries no rule to drift.
     "is_zero crates/cfgd/src/cli/output_types.rs"
-    "node_id crates/cfgd-core/src/reconciler/managers.rs"
-    "push crates/cfgd-core/src/daemon/service/windows_eventlog.rs"
-    "token crates/cfgd/src/cli/output_types.rs"
-    "owner crates/cfgd/src/cli/output_types.rs"
-    "actions crates/cfgd/src/cli/output_types.rs"
-    # Four conventions and two delegates, each a name two unrelated things
-    # answer. `X::of(source) -> Self` is the derivation convention (`Tier::of`
-    # keeps the budget); `role` maps an enum onto an output `Role`
-    # (`SkillResultStatus` keeps it); `with_config_dir` is the `#[must_use]`
-    # builder convention (`SopsBackend` keeps it); `report` is `sidecar`'s own
-    # private line printer, not one of `providers`' note sinks (which keep it).
-    # The two delegates CALL the definition they share a name with:
-    # `lanes::registers_family_sources` resolves an action's manager and asks
-    # the trait method, and `cli::apply::refresh_link_deployed_hashes` wraps the
-    # reconciler's in the log-and-continue the two apply paths need.
-    "of crates/cfgd-core/src/reconciler/env_engine.rs"
-    "of crates/cfgd-core/src/modules/surfaces.rs"
-    "of crates/cfgd/src/cli/status.rs"
-    # `LevelWidths::of` IS the `X::of(input) -> Self` convention above, over a
-    # slice of sibling fields rather than a single source; a fourth unrelated
-    # `of`. `Tier::of` still keeps the budget.
-    "of crates/cfgd/src/cli/explain/mod.rs"
-    # `AfterPlanCounts::of` is that convention once more, over a finished
-    # `ApplyResult`: a fifth unrelated `of`, and the one seam that turns the
-    # after-plan class into its wire counts.
-    "of crates/cfgd/src/cli/output_types.rs"
-    "role crates/cfgd/src/cli/status.rs"
-    "with_config_dir crates/cfgd-core/src/reconciler/mod.rs"
-    "report crates/cfgd-core/src/reconciler/sidecar.rs"
-    "registers_family_sources crates/cfgd-core/src/reconciler/lanes.rs"
-    "refresh_link_deployed_hashes crates/cfgd/src/cli/apply.rs"
-    # A third delegate: cfgd-schema owns the file shape rule so the Module CRD
-    # applies the same one, and this wrapper only re-labels its bare message as
-    # a ConfigError. cfgd-schema's definition keeps the budget.
-    "validate_file_patch_shape crates/cfgd-core/src/config/profile_spec.rs"
-    # The names below were blanket-excused by NAME until the trait-impl skip
-    # above landed. The skip covers each trait's IMPLS; what still collides is
-    # the trait's own declaration against an unrelated inherent method, a free
-    # function, or a second trait — so each keeps its budget here instead.
-    # Process entry points, one per binary/server, sharing only the verb.
-    "run crates/cfgd-csi/src/app.rs"
-    "run crates/cfgd-operator/src/controllers/mod.rs"
-    "run crates/cfgd/src/mcp/server/mod.rs"
-    # `mcp::resources::read` reads a resource; these three read a withheld
-    # decision, a registry key, and a tool-annotation preset.
-    "read crates/cfgd-core/src/reconciler/pending.rs"
-    "read crates/cfgd/src/mcp/brontes.rs"
-    "read crates/cfgd/src/system/windows_registry.rs"
-    # `SkillProvider::list` is the trait; these build a JSON-RPC method payload.
-    "list crates/cfgd/src/mcp/prompts.rs"
-    "list crates/cfgd/src/mcp/resources.rs"
-    "list crates/cfgd/src/mcp/tools.rs"
-    # `SecretProvider::resolve` is the trait; these resolve a registry
-    # credential and a directory set.
-    "resolve crates/cfgd-core/src/oci/auth/mod.rs"
-    "resolve crates/cfgd-core/src/util/paths.rs"
-    # `PackageManager::install` is the trait; these install a skill and a
-    # signal handler.
-    "install crates/cfgd-core/src/daemon/mod.rs"
-    "install crates/cfgd-core/src/providers/skill/mod.rs"
-    # `SystemConfigurator::apply` is the trait; these run a reconcile.
-    "apply crates/cfgd-core/src/reconciler/apply.rs"
-    "apply crates/cfgd-core/src/reconciler/run.rs"
-    # A spec's own validation vs a web session token's.
-    "validate crates/cfgd-operator/src/gateway/api/mod.rs"
-    # `SkillProvider::render` renders a skill; `IniDoc::render` serializes a file.
-    "render crates/cfgd-core/src/reconciler/patch.rs"
-    # The three `DaemonHooks` methods keep the budget; these are the cfgd-crate
-    # free functions the workstation hooks delegate to.
-    "plan_packages crates/cfgd/src/packages/mod.rs"
-    "plan_packages_observed crates/cfgd/src/packages/mod.rs"
-    "prune_orphaned_packages crates/cfgd/src/packages/mod.rs"
-    # `PackageManager::name` is the trait; this names a scanned profile entry.
-    "name crates/cfgd-core/src/config/parse.rs"
-    # `cfgd_core::expand_tilde` is the shared helper and keeps the budget; the
-    # `DaemonHooks` method is the hook surface over it.
-    "expand_tilde crates/cfgd-core/src/daemon/mod.rs"
-    # `SystemConfigurator::diff` is the trait; this diffs a file's content.
-    "diff crates/cfgd/src/files/plan.rs"
-    # `Platform::detect` is the one platform detection and keeps the budget;
-    # `SkillProvider::detect` finds an installed skill.
-    "detect crates/cfgd-core/src/providers/skill/mod.rs"
-    # The names below became visible when the extraction widened to generic and
-    # restricted-visibility definitions (`fn name<T>(`, `pub(crate) fn name(`).
-    # Each is a homonym: same word, different question, one keeping the budget.
-    # `util::process`'s reader streams 8 KiB byte chunks and signals EOF on a
-    # channel; the script one reads LINES and stamps each with a shared Instant.
-    "spawn_pipe_reader crates/cfgd-core/src/reconciler/scripts.rs"
-    # `patch.rs` assigns into a `toml_edit::Table` carrying the old value's
-    # decor; this converts a `serde_yaml::Value` into a plain `toml::Table`.
-    "set_toml_value crates/cfgd/src/system/node/format.rs"
-    # `LeaderElector::run` drives a callback under a lease; `app::run` is the
-    # process entry point.
-    "run crates/cfgd-operator/src/leader.rs"
-    # The `#[must_use] fn(mut self, &dyn LaneOutput) -> Self` builder convention
-    # on two unrelated types (`PackageContext` keeps the budget, `PackageExec`).
-    "in_lane crates/cfgd-core/src/reconciler/packages.rs"
-    # `ApplyRun::header` renders the run's kv header; this reads one HTTP header.
-    "header crates/cfgd-core/src/oci/transport.rs"
-    # `ConfigInputRecorder::finish` pops a recording frame; `LiveTree::finish`
-    # commits rows and takes the live region down.
-    "finish crates/cfgd-core/src/reconciler/live_tree.rs"
-    # `Platform::detect` / `Platform::current` are the cataloged host detection
-    # and its memo; the env engine's probe reads shell/rc facts under one `home`
-    # and maps `cfg!` flags onto a 4-variant enum its tests drive per platform.
-    "detect crates/cfgd-core/src/reconciler/env_engine.rs"
-    "current crates/cfgd-core/src/reconciler/env_engine.rs"
-    # `RegistryValues::value` reads one Windows registry value by name;
-    # `FoldedPath::value` keeps the budget as the env engine's own PATH
-    # renderer, which takes a dialect's quoting rather than a name.
-    "value crates/cfgd/src/system/windows_registry.rs"
-    # `pack::resolve_platform` parses an explicit `--platform` override or
-    # falls back to the host's (os, arch) pair for an image manifest;
-    # `push::resolve_platform` keeps the budget as the simpler `Option<&str>`
-    # default applied to the annotation string `current_platform` composes.
-    "resolve_platform crates/cfgd-core/src/oci/pack.rs"
-    # `SkillInstallResult::installed` constructs a skill-install report row;
-    # `ActionRun::installed` keeps the budget as the reconciler's own builder
-    # step recording a package count the executor re-read off the machine.
-    "installed crates/cfgd/src/cli/skill/mod.rs"
-    # `ResourceSchema::docs_url` is a delegate — it CALLS `config::docs_url`,
-    # which keeps the budget as the one URL derivation both this and
-    # `field_docs_url` read.
-    "docs_url crates/cfgd/src/cli/explain/mod.rs"
-    # `RateLimiter::check` admits or rejects a peer's request; `ArtifactVerifier
-    # ::check` keeps the budget as the cosign signature verdict for a
-    # reference, an unrelated question sharing only the verb.
-    "check crates/cfgd-operator/src/gateway/rate_limit.rs"
-    # `ApplyStatus::human_display` keeps the budget as the (word, Role) pair
-    # convention (shared-utils.md, "A Title-Cased status word renders with its
-    # role, everywhere"); `ComplianceStatus::human_display` is the same
-    # convention for a compliance snapshot's verdict, a second sanctioned
-    # vocabulary rather than a duplicate to hunt down.
-    "human_display crates/cfgd-core/src/compliance/mod.rs"
-    # `DiffSummary::any_drift` and `VerifyOutput::any_drift` are the same
-    # convention on two verbs' summary types (shared-utils.md, "each
-    # drift-reporting verb COMPOSES ... once"): one name per verb so a reader
-    # of either exit gate finds the same question, over different fields.
-    "any_drift crates/cfgd/src/cli/verify.rs"
-    # `Theme::arrow`/`Printer::arrow` are the output/-excused pair (the ONE
-    # arrow glyph, shared-utils.md); these two CALL `Printer::arrow` to narrow
-    # the surface a caller outside output/ gets, the same shape the two
-    # delegates above take — `SystemContext::arrow` in place of the banned
-    # `printer()` accessor (output-module.md), `LiveTree::arrow` for a wait
-    # row naming a value change.
-    "arrow crates/cfgd-core/src/providers/mod.rs"
+    # `SystemContext::arrow` and `LiveTree::arrow` both CALL `Printer::arrow`
+    # (the ONE arrow glyph, shared-utils.md) to narrow what a caller outside
+    # output/ reaches, in place of the banned `printer()` accessor.
     "arrow crates/cfgd-core/src/reconciler/live_tree.rs"
-    # `Tier::of` / `AfterPlanState::of` in reconciler/types.rs keep the budget as
-    # the cataloged inherent `::of` constructor convention (shared-utils.md,
-    # `ModuleSurfaces::of(spec)` and `AfterPlanState::of`); these two are that
-    # same convention on unrelated types, `SpecChange::of` building one lockfile
-    # diff row and `InventoryDetail::of` folding the `--show-*` trio into a view.
-    # `drop_trait_impl_lines` cannot see an inherent impl, so without these the
-    # check reads these constructors as free functions: four definitions across
-    # three files, reconciler/types.rs holding two, and what the gate counts is
-    # the distinct files, three.
-    "of crates/cfgd-core/src/modules/lockfile.rs"
-    "of crates/cfgd/src/cli/mod.rs"
+    # `DeviceCompliance::counts_line` and `ComplianceSummary::counts_line` both
+    # CALL `cfgd_schema::compliance_counts_line`, the one spelling of the counts,
+    # each over its own type's fields.
+    "counts_line crates/cfgd-crd/src/lib.rs"
 )
+# shellcheck disable=SC2016  # an awk program; the $ fields belong to awk
+FN_DEFINITIONS_AWK='
+# One `<name>\037<definition>\037<file>` record per function with a body. Every
+# function open at a line (a nested fn inside its parent) takes that line, and
+# closes when brace depth returns to where it opened.
+{
+    file = $0; sub(/:.*/, "", file)
+    line = $0; sub(/^[^:]*:[0-9]+:/, "", line)
+    code = code_only(line)
+    text = substr(line, 1, length(line) - length(LAST_COMMENT))
+    # `code` holds an ABI string as placeholder bytes, so `extern` takes any
+    # one token after it where the source spells `extern "C"`.
+    if (match(code, /^[[:space:]]*(pub[^ ]*[[:space:]]+)?((const|async|unsafe|extern( [^ ]+)?)[[:space:]]+)*fn [a-z0-9_]+[(<]/)) {
+        match(substr(code, 1, RLENGTH), /fn [a-z0-9_]+[(<]$/)
+        n = ++open_count
+        start[n] = depth; opened[n] = 0; body[n] = ""
+        name[n] = substr(code, RSTART + 3, RLENGTH - 4)
+        text = substr(text, RSTART)
+    }
+    gsub(/\/\*([^*]|\*+[^*\/])*\*+\//, "", text)
+    gsub(/[[:space:]]+/, " ", text); sub(/^ /, "", text); sub(/ $/, "", text)
+    opens = gsub(/{/, "{", code); closes = gsub(/}/, "}", code)
+    depth += opens - closes
+    for (i = open_count; i >= 1; i--) {
+        if (text != "") body[i] = body[i] (body[i] == "" ? "" : " ") text
+        if (opens > 0) opened[i] = 1
+    }
+    while (open_count > 0) {
+        i = open_count
+        if (!opened[i] && code ~ /;[[:space:]\001]*$/) { open_count--; continue }
+        if (!opened[i] || depth > start[i]) break
+        printf "%s\037%s\037%s\n", name[i], body[i], file
+        open_count--
+    }
+}
+'
 allowed_pairs_file="$STRIP_CACHE_DIR/allowed-fn-pairs"
 printf '%s\n' "${ALLOWED_FN_PAIRS[@]}" > "$allowed_pairs_file"
-# A digit is a legal character in a Rust fn name, so the extraction takes
-# `[a-z0-9_]` — anchored on `[a-z_]` it read `fn sha256_hex(` as a definition of
-# `sha` and could never count the real name.
 fn_dupes=$(while IFS= read -r -d '' rsfile; do
+    is_test_file "$rsfile" && continue
     case "$rsfile" in
-        */tests.rs|*_test.rs|*/test_*.rs|*/tests_*.rs|*/test_helpers.rs|*/output/*) continue ;;
+        */output/*) continue ;;
     esac
     strip_test_blocks_from_file "$rsfile" \
         | drop_trait_impl_lines \
-        | grep -E '^\S+:[0-9]+:\s*(pub[^ ]*\s+)?(async\s+)?fn [a-z0-9_]+[(<]' \
-        | sed 's|^\([^:]*\):[0-9]*:.*fn \([a-z0-9_]*\)[(<].*|\2 \1|' \
-        || true
+        | awk "$AWK_LIB$FN_DEFINITIONS_AWK"
 done < <(audit_scan_files) \
-    | sort -u | grep -vxF -f "$allowed_pairs_file" \
-    | awk '{print $1}' | sort | uniq -c | sort -rn \
-    | awk '$1 > 1 && \
-        $2 != "new" && $2 != "get" && $2 != "set" && $2 != "delete" && \
-        $2 != "open" && $2 != "init_tables" && $2 != "build" && \
-        $2 != "test" && $2 != "main" && $2 != "as_str" && $2 != "router" && \
-        $2 != "set_device_config" && $2 != "record_drift_event" && \
-        $2 != "list_drift_events" && $2 != "list_fleet_events" && \
-        $2 != "read_current_config" && $2 != "load_profile" && $2 != "plan" && \
-        $2 != "list_devices" && $2 != "get_device" && $2 != "enroll" && \
-        $2 != "display_name" && $2 != "config_path" && $2 != "checkin" && \
-        $2 != "from_spec" && $2 != "load_module" && $2 != "success" && \
-        $2 != "run_migrations" && $2 != "request_challenge" && \
-        $2 != "is_empty" && $2 != "len" && $2 != "error" && \
-        $2 != "enroll_info" && $2 != "parse" && $2 != "cmd_status" && \
-        $2 != "terminate_process" && $2 != "set_file_permissions" && \
-        $2 != "is_same_inode" && $2 != "is_root" && $2 != "is_executable" && \
-        $2 != "run_health_server" && $2 != "run_as_windows_service" && \
-        $2 != "home_dir_var" && $2 != "file_permissions_mode" && \
-        $2 != "create_symlink_impl" && $2 != "cleanup_old_binary" && \
-        $2 != "atomic_replace" && $2 != "acquire_apply_lock" && \
-        $2 != "recv_sighup" && $2 != "recv_sigterm" && \
-        $2 != "read_command_output" && $2 != "unavailable" && \
-        $2 != "set_fail_apply" && $2 != "status" && $2 != "label" && \
-        $2 != "manager_names" && $2 != "aborted" && $2 != "failed" && \
-        $2 != "skipped" && $2 != "metrics_handler" && $2 != "compose" && \
-        $2 != "default_cache_dir" && $2 != "default_cache_dir_for" && \
-        $2 != "field_tree" && $2 != "resolve_runtime_dir" && \
-        $2 != "probe_dir_writable" && $2 != "surface_stale_skills" && \
-        $2 != "install_cmd_for" \
-        {print}' || true)
+    | sort -u \
+    | awk -F'\037' -v allowed="$allowed_pairs_file" '
+        BEGIN { while ((getline pair < allowed) > 0) excused[pair] = 1 }
+        ($1 " " $3) in excused { next }
+        $2 == "fn new() -> Self { Self::default() }" { next }
+        { files[$1 "\037" $2]++ }
+        END {
+            for (key in files) {
+                if (files[key] < 2) continue
+                split(key, part, "\037")
+                printf "%7d %s: %s\n", files[key], part[1], substr(part[2], 1, 100)
+            }
+        }' \
+    | sort -k2 || true)
 rm -f "$allowed_pairs_file"
 if [[ -n "$fn_dupes" ]]; then
-    log_warn "Function names defined in multiple files (potential duplication):"
+    log_warn "Functions defined identically in multiple files (duplicated logic):"
     echo "$fn_dupes" | first_lines 10
 else
-    log_ok "No duplicated function definitions across files"
+    log_ok "No function defined identically in more than one file"
 fi
 
 if gate_is_in_scope; then
@@ -1218,7 +1063,8 @@ else
     log_ok "No kebab-case explicit serde rename attributes"
 fi
 
-# Detect kebab-case config field names in user-visible strings (not comments, not CLI flags, not file paths)
+# Detect kebab-case config field names in user-visible strings. Comments, CLI flags and
+# file paths are exempt.
 # Dynamically generate field name patterns from config struct definitions across config/*.rs.
 # This auto-updates as new fields are added — no manual list to maintain.
 config_fields=$(grep -rE '^\s+pub [a-z_]+:' crates/cfgd-core/src/config/ --include='*.rs' \
@@ -1254,14 +1100,14 @@ log_section "Config Parsing Boundary"
 # KIND_REGISTRY validators; generate/validate.rs delegates straight into schema/).
 # lockfile.rs (modules/ and sources/) parses lock artifacts (resolved commit SHAs),
 # not application config, so every lockfile loader is excluded.
-# Inline #[cfg(test)] blocks are stripped; whole-file test modules (tests.rs,
-# *_test.rs, test_helpers.rs) carry no inline marker, so skip them outright —
+# Inline #[cfg(test)] blocks are stripped; whole-file test modules
+# (is_test_file) carry no inline marker, so skip them outright —
 # tests deserialize fixtures freely.
 config_parse_violations=""
 while IFS= read -r -d '' rsfile; do
+    is_test_file "$rsfile" && continue
     case "$rsfile" in
         */config/*|*/generate/*|*/lockfile.rs|*/schema/*|*/lib.rs) continue ;;
-        */tests.rs|*_test.rs|*/test_*.rs|*/tests_*.rs|*/test_helpers.rs) continue ;;
     esac
     # Deserializing into an untyped serde_yaml::Value is document inspection
     # (e.g. SOPS-marker detection), not config-struct parsing — exempt it.
@@ -1447,10 +1293,10 @@ if [ -f "$rule_file" ]; then
     # an empty table must be reported as total coverage loss, not swallowed.
     cmds_in_table=$(grep -E '^\| [a-z]' "$rule_file" \
         | awk -F'|' '{print $2}' | tr -d ' ' | LC_ALL=C sort -u) || cmds_in_table=""
-    missing=$(LC_ALL=C comm -23 <(echo "$cmds_in_code") <(echo "$cmds_in_table" | tr ' ' '_'))
-    if [ -n "$missing" ]; then
+    missing_cmds=$(LC_ALL=C comm -23 <(echo "$cmds_in_code") <(echo "$cmds_in_table" | tr ' ' '_'))
+    if [ -n "$missing_cmds" ]; then
         log_error "Commands missing from structured-output coverage table in $rule_file:"
-        echo "$missing"
+        echo "$missing_cmds"
     fi
     # The other direction: a row for a command that no longer exists. The table
     # is read as the inventory of what cfgd exposes, so a stale row describes a
@@ -1459,8 +1305,9 @@ if [ -f "$rule_file" ]; then
     # there looking answered.
     stale=$(LC_ALL=C comm -13 <(echo "$cmds_in_code") <(echo "$cmds_in_table" | tr ' ' '_'))
     # A dispatched renderer is a command whose body lives under another
-    # command's name: `alias show` is dispatched straight into `cmd_config_get`,
-    # so no `cmd_alias_show` is ever declared and its row would read as stale.
+    # command's name: `alias show` is dispatched into `config_get_as`, the body
+    # `cmd_config_get` hands every read to, so no `cmd_alias_show` is ever
+    # declared and its row would read as stale.
     # The pairs are the ones `DISPATCHED_RENDERERS` (crates/cfgd/src/cli/tests.rs)
     # holds. `every_dispatched_renderer_has_a_coverage_row` reads the assignment
     # below and asserts the two sets are equal, so a pair added to one list and
@@ -1496,14 +1343,14 @@ if [ -f "$rule_file" ]; then
     # command's payload, and following one level only would pass the row.
     # Bounded at five rounds so a helper pair calling each other cannot spin.
     _payload_span() {
-        local span_file="$1" span_line="$2" span_body frontier visited round
+        local span_file="$1" span_line="$2" span_body frontier visited
         local helper helper_line helper_body found
         span_body=$(awk -v start="$span_line" \
             'NR < start { next } NR > start && /^}/ { exit } { print }' "$span_file")
         printf '%s\n' "$span_body"
         frontier="$span_body"
         visited=""
-        for round in 1 2 3 4 5; do
+        for _ in 1 2 3 4 5; do
             found=""
             for helper in $(printf '%s\n' "$frontier" \
                               | grep -oE '\bbuild_[a-z0-9_]+' | LC_ALL=C sort -u || true); do
@@ -1550,12 +1397,13 @@ fi
 log_section "Path-handling consolidation (cross-OS portability)"
 
 # Wave 2: no inline `format!("file://...")` outside cfgd_core::to_file_url itself
-# (and its test_helpers::file_url alias). Anything else must go through
+# and the files built only for tests (its test_helpers::file_url alias lives
+# there). Anything else must go through
 # `cfgd_core::to_file_url(...)`.
 if w2=$(rg --type rust -n 'format!\("file://' \
       "${CFGD_AUDIT_PATH:-crates/}" \
       --glob '!crates/cfgd-core/src/util/paths.rs' \
-      --glob '!crates/cfgd-core/src/test_helpers.rs' \
+      "${TEST_ONLY_GLOBS[@]}" \
       2>/dev/null) && [ -n "$w2" ]; then
   log_error "Wave 2 violation: inline file:// formatter (use cfgd_core::to_file_url):"
   echo "$w2"
@@ -1595,7 +1443,7 @@ if w1=$(rg --type rust -n '(serde_json::json!|rusqlite::|conn\.execute|to_yaml|a
       "${CFGD_AUDIT_PATH:-crates/}" \
       --glob '!**/tests.rs' \
       --glob '!**/tests/**' \
-      --glob '!crates/cfgd-core/src/test_helpers.rs' \
+      "${TEST_ONLY_GLOBS[@]}" \
       2>/dev/null \
       | grep -E '\.display\(\)|\.to_string_lossy\(\)') && [ -n "$w1" ]; then
   log_error "Wave 1 violation: path-to-string at serialization boundary (use cfgd_core::to_posix_string):"
@@ -1612,7 +1460,7 @@ if w4=$(rg --type rust -n '(tracing::(info|warn|error)!|anyhow!|bail!|printer\.(
       "${CFGD_AUDIT_PATH:-crates/}" \
       --glob '!**/tests.rs' \
       --glob '!**/tests/**' \
-      --glob '!crates/cfgd-core/src/test_helpers.rs' \
+      "${TEST_ONLY_GLOBS[@]}" \
       --glob '!crates/cfgd-core/src/util/paths.rs' \
       2>/dev/null \
       | grep -E '\.display\(\)') && [ -n "$w4" ]; then
@@ -1635,8 +1483,9 @@ log_section "Test-home-safe blocking dispatch (workspace)"
 # and inherited only from a comment line directly above — never from a previous
 # call that happened to carry its own marker.
 raw_spawns=$(while IFS= read -r -d '' rsfile; do
+    is_test_file "$rsfile" && continue
     case "$rsfile" in
-        */util/paths.rs|*/tests.rs|*_test.rs|*/test_*.rs|*/tests_*.rs|*/test_helpers.rs|*/tests/*) continue ;;
+        */util/paths.rs) continue ;;
     esac
     strip_test_blocks_from_file "$rsfile" | awk "$AWK_LIB"'
         { code = code_only($0); comment = LAST_COMMENT }
@@ -1697,11 +1546,11 @@ log_section "Raw Printer capture-buffer reads in test code (raw-capture-ok:)"
 # the very thing being asserted on), or a buffer that is provably not a
 # Printer text capture (e.g. an Arc<Mutex<Vec<u8>>> tracing-log sink, which
 # captured_text does not even type-check against).
-# test_helpers.rs is excluded: it is captured_text's own implementation, the
+# cfgd-core's test_helpers.rs is excluded: it is captured_text's own implementation, the
 # one legitimate raw read the helper itself performs.
 raw_capture_violations=$(while IFS= read -r -d '' rsfile; do
     case "$rsfile" in
-        */test_helpers.rs) continue ;;
+        */cfgd-core/src/test_helpers.rs) continue ;;
     esac
     extract_test_blocks_from_file "$rsfile" | awk "$AWK_LIB"'
         { code = code_only($0); comment = LAST_COMMENT }
@@ -1771,7 +1620,7 @@ cli_command_records() {
             sub(/[[:space:]]+$/, "", variant)
 
             # Isolate the long_about VALUE so `Examples:` is tested against IT
-            # and not against some other key (`about = "… Examples: …"`).
+            # alone; some other key (`about = "… Examples: …"`) would pass by accident.
             la = attr
             has_la = (attr ~ /long_about[[:space:]]*=/)
             sub(/.*long_about[[:space:]]*=[[:space:]]*/, "", la)
@@ -2146,6 +1995,35 @@ else
     log_ok "README Distribution table and docs/installation.md match the enabled publishers"
 fi
 
+# A Homebrew cask that generates completions runs the freshly installed binary,
+# which is quarantined and not notarized: Gatekeeper prompts and a headless
+# `brew install` never returns. Completions come from the release archive.
+log_section "Homebrew casks install completions from the archive"
+
+cask_gap="$(python3 - <<'PY'
+import yaml
+
+doc = yaml.safe_load(open(".anodizer.yaml"))
+casks = doc.get("homebrew_casks") or []
+# The config carries one cask today, cfgd's own; a block moved or renamed out
+# of the top-level key would otherwise leave nothing judged and pass.
+gaps = [] if casks else ["cfgd: no homebrew_casks entry in .anodizer.yaml, so no cask was judged"]
+for i, cask in enumerate(casks):
+    name = cask.get("name", f"homebrew_casks[{i}]")
+    if cask.get("generate_completions_from_executable") is not None:
+        gaps.append(f"{name}: sets generate_completions_from_executable, which runs the binary at install time")
+    if not cask.get("completions"):
+        gaps.append(f"{name}: has no completions: block naming the archive's completion files")
+print("\n".join(gaps))
+PY
+)"
+if [ -n "$cask_gap" ]; then
+    log_error "Homebrew cask completions check failed:"
+    printf '%s\n' "$cask_gap"
+else
+    log_ok "Every Homebrew cask installs its completions from the release archive"
+fi
+
 log_section "Demo tapes (one Taskfile target each)"
 
 tape_gap=""
@@ -2359,7 +2237,7 @@ enum_de_file="crates/cfgd-schema/src/enum_de.rs"
 if require_files "case_insensitive_enum! serde-path scan" "$enum_de_file"; then
     bare_serde="$(grep -n 'serde::' "$enum_de_file" \
         | grep -v '^[0-9]*:[[:space:]]*//' \
-        | sed 's/\$crate::serde::/ /g' \
+        | sed 's/[$]crate::serde::/ /g' \
         | grep 'serde::' || true)"
     if [ -n "$bare_serde" ]; then
         log_error "case_insensitive_enum!'s expansion names serde directly (reach it through \`\$crate::serde\`, so a crate without serde can still invoke the macro):"
@@ -2417,6 +2295,111 @@ else
     cat "$guard_out"
 fi
 rm -f "$guard_out"
+fi
+
+# --- e2e sysctl writes stay pod-private ---
+# The node and full-stack e2e jobs run in parallel and their test pods can
+# share a worker, so a host-global sysctl written as drift by one job can be
+# moved by the other mid-case. net.* keys live in the pod's network namespace;
+# the fs.inotify raise before a daemon start is the same value in every job and
+# is never read back, which is why it is allowed on a bare sysctl write only.
+#
+# A key held in a variable can only be judged where its value is spelled, so
+# the helper's own `sysctl -w "$key=..."` inside sysctl_drift_case() is exempt
+# (its callers are judged) and any other variable key is an error. Each
+# fs.inotify raise the scan exempts prints a CANARY line: the repository run
+# requires at least one, so a scan that stops reading the daemon starts fails
+# loudly.
+e2e_sysctl_write_scan() {
+    find "$1" -type f -exec awk '
+        function judge(k, allow, ln, exempt) {
+            gsub(/["'\'']/, "", k)
+            if (k == "") return
+            if (k ~ /\$/) {
+                if (!(exempt && helper && k == "$key")) print FILENAME ":" ln ": unresolvable key " k
+                return
+            }
+            if (k ~ allow) {
+                if (k ~ /^fs\.inotify\./) print "CANARY " FILENAME ":" ln
+                return
+            }
+            print FILENAME ":" ln ": " k
+        }
+        function proc_key(m) {
+            sub(/^.*\/proc\/sys\//, "", m)
+            gsub(/\//, ".", m)
+            return m
+        }
+        FNR == 1 { helper = 0; buf = "" }
+        {
+            if (buf == "") start = FNR
+            line = buf $0
+            if (line ~ /\\[ \t]*$/) { sub(/\\[ \t]*$/, " ", line); buf = line; next }
+            buf = ""
+            if (line ~ /^[ \t]*sysctl_drift_case\(\)/) helper = 1
+            else if (line ~ /^}/) helper = 0
+
+            s = line
+            while (match(s, /(^|[^A-Za-z0-9_.-])sysctl([ \t]+-[-A-Za-z]+)*[ \t]+/)) {
+                flags = substr(s, RSTART, RLENGTH)
+                s = substr(s, RSTART + RLENGTH)
+                if (flags !~ /[ \t]-[A-Za-z]*w[A-Za-z]*[ \t]/ && flags !~ /--write/) continue
+                args = s
+                if (match(args, /[;|&)]/)) args = substr(args, 1, RSTART - 1)
+                n = split(args, tok, /[ \t]+/)
+                for (i = 1; i <= n; i++)
+                    if (index(tok[i], "=") > 1)
+                        judge(substr(tok[i], 1, index(tok[i], "=") - 1), "^(net|fs\\.inotify)\\.", start, 1)
+            }
+            s = line
+            while (match(s, />[>|]?[ \t]*["'\'']?\/proc\/sys\/[^ \t"'\''|;&)<>]+/)) {
+                m = substr(s, RSTART, RLENGTH)
+                s = substr(s, RSTART + RLENGTH)
+                judge(proc_key(m), "^net\\.", start, 0)
+            }
+            s = line
+            while (match(s, /(^|[^A-Za-z0-9_-])tee([ \t]|$)/)) {
+                s = substr(s, RSTART + RLENGTH)
+                args = s
+                if (match(args, /[;|&)<>]/)) args = substr(args, 1, RSTART - 1)
+                n = split(args, tok, /[ \t]+/)
+                for (i = 1; i <= n; i++) {
+                    t = tok[i]
+                    gsub(/["'\'']/, "", t)
+                    if (t ~ /^\/proc\/sys\//) judge(proc_key(t), "^net\\.", start, 0)
+                }
+            }
+            if (line ~ /(^|[^A-Za-z0-9_])sysctl_drift_case[ \t]/ && line !~ /sysctl_drift_case\(\)/) {
+                match(line, /sysctl_drift_case[ \t].*/)
+                split(substr(line, RSTART), tok, /[ \t]+/)
+                judge(tok[4], "^net\\.", start, 0)
+            }
+        }' {} +
+}
+
+# Drops the CANARY lines from the scan output, leaving hits and tool errors.
+e2e_sysctl_findings() {
+    grep -v '^CANARY ' <<<"$1" || true
+}
+
+log_section "e2e sysctl writes (pod-private keys only)"
+e2e_sysctl_root="${CFGD_AUDIT_PATH:-tests/e2e}"
+if ! e2e_sysctl_out=$(e2e_sysctl_write_scan "$e2e_sysctl_root" 2>&1); then
+  log_error "The e2e sysctl write scan could not read $e2e_sysctl_root:"
+  e2e_sysctl_findings "$e2e_sysctl_out"
+elif [ -z "$(find "$e2e_sysctl_root" -type f -print -quit)" ]; then
+  log_error "The e2e sysctl write scan found no files under $e2e_sysctl_root"
+else
+  e2e_sysctl_hits=$(e2e_sysctl_findings "$e2e_sysctl_out")
+  e2e_sysctl_canary=$(grep -c '^CANARY ' <<<"$e2e_sysctl_out" || true)
+  if [ -n "$e2e_sysctl_hits" ]; then
+    log_error "A tests/e2e sysctl write moves a host-global or unresolvable key (drift net.ipv4.ip_forward instead):"
+    echo "$e2e_sysctl_hits"
+  elif [ -z "${CFGD_AUDIT_PATH:-}" ] && [ "$e2e_sysctl_canary" -eq 0 ]; then
+    log_error "The e2e sysctl write scan judged no fs.inotify raise under $e2e_sysctl_root; the daemon-start writes it must read are missing from the scan"
+  else
+    log_ok "e2e sysctl writes stay pod-private ($e2e_sysctl_canary fs.inotify raises exempted)"
+  fi
 fi
 
 # --- Summary ---

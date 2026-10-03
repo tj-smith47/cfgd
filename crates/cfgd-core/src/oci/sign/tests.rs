@@ -13,7 +13,7 @@ fn sign_artifact_rejects_when_cosign_missing() {
     // Declared before the PATH override so it drops last, bracketing the
     // empty-PATH window against concurrent script-interpreter spawns.
     let _spawn_excl = crate::test_helpers::path_env_mutation_guard();
-    let _g = EnvVarGuard::unset("CFGD_COSIGN_BIN");
+    let _g = EnvVarGuard::unset(crate::COSIGN_BIN_ENV);
     let _path = EnvVarGuard::set("PATH", "");
     let result = sign_artifact("ghcr.io/test/mod:v1", None);
     assert!(matches!(result, Err(OciError::ToolNotFound { .. })));
@@ -36,7 +36,7 @@ fn verify_signature_rejects_keyless_without_identity() {
 #[serial_test::serial]
 fn verify_signature_rejects_when_cosign_missing() {
     let _spawn_excl = crate::test_helpers::path_env_mutation_guard();
-    let _g = EnvVarGuard::unset("CFGD_COSIGN_BIN");
+    let _g = EnvVarGuard::unset(crate::COSIGN_BIN_ENV);
     let _path = EnvVarGuard::set("PATH", "");
     let result = verify_signature(
         "ghcr.io/test/mod:v1",
@@ -55,7 +55,7 @@ fn verify_signature_rejects_when_cosign_missing() {
 #[serial_test::serial]
 fn attach_attestation_rejects_when_cosign_missing() {
     let _spawn_excl = crate::test_helpers::path_env_mutation_guard();
-    let _g = EnvVarGuard::unset("CFGD_COSIGN_BIN");
+    let _g = EnvVarGuard::unset(crate::COSIGN_BIN_ENV);
     let _path = EnvVarGuard::set("PATH", "");
     let result = attach_attestation("ghcr.io/test/mod:v1", "provenance.json", None);
     assert!(matches!(result, Err(OciError::ToolNotFound { .. })));
@@ -79,7 +79,7 @@ fn verify_attestation_rejects_keyless_without_identity() {
 #[serial_test::serial]
 fn verify_attestation_rejects_when_cosign_missing() {
     let _spawn_excl = crate::test_helpers::path_env_mutation_guard();
-    let _g = EnvVarGuard::unset("CFGD_COSIGN_BIN");
+    let _g = EnvVarGuard::unset(crate::COSIGN_BIN_ENV);
     let _path = EnvVarGuard::set("PATH", "");
     let result = verify_attestation(
         "ghcr.io/test/mod:v1",
@@ -221,6 +221,7 @@ fn validate_verify_options_rejects_all_none() {
 
 #[test]
 fn apply_verify_args_with_key() {
+    let _path = crate::test_helpers::path_env_read_guard();
     let mut cmd = std::process::Command::new("echo");
     let opts = VerifyOptions {
         key: Some("/path/to/cosign.pub"),
@@ -242,6 +243,7 @@ fn apply_verify_args_with_key() {
 
 #[test]
 fn apply_verify_args_keyless_with_identity_and_issuer() {
+    let _path = crate::test_helpers::path_env_read_guard();
     let mut cmd = std::process::Command::new("echo");
     let opts = VerifyOptions {
         key: None,
@@ -263,6 +265,7 @@ fn apply_verify_args_keyless_with_identity_and_issuer() {
 
 #[test]
 fn apply_verify_args_keyless_with_identity_only_defaults_issuer() {
+    let _path = crate::test_helpers::path_env_read_guard();
     let mut cmd = std::process::Command::new("echo");
     let opts = VerifyOptions {
         key: None,
@@ -285,6 +288,7 @@ fn apply_verify_args_keyless_with_identity_only_defaults_issuer() {
 
 #[test]
 fn apply_verify_args_keyless_with_issuer_only_defaults_identity() {
+    let _path = crate::test_helpers::path_env_read_guard();
     let mut cmd = std::process::Command::new("echo");
     let opts = VerifyOptions {
         key: None,
@@ -307,6 +311,7 @@ fn apply_verify_args_keyless_with_issuer_only_defaults_identity() {
 
 #[test]
 fn apply_verify_args_key_takes_precedence_over_keyless() {
+    let _path = crate::test_helpers::path_env_read_guard();
     let mut cmd = std::process::Command::new("echo");
     let opts = VerifyOptions {
         key: Some("my.pub"),
@@ -486,6 +491,7 @@ fn validate_verify_options_all_none_fails() {
 
 #[test]
 fn apply_verify_args_with_key_only() {
+    let _path = crate::test_helpers::path_env_read_guard();
     let mut cmd = std::process::Command::new("echo");
     let opts = VerifyOptions {
         key: Some("/path/to/cosign.pub"),
@@ -498,6 +504,7 @@ fn apply_verify_args_with_key_only() {
 
 #[test]
 fn apply_verify_args_keyless_defaults() {
+    let _path = crate::test_helpers::path_env_read_guard();
     let mut cmd = std::process::Command::new("echo");
     let opts = VerifyOptions {
         key: None,
@@ -834,7 +841,7 @@ mod fake_cosign {
         let bin = dir.path().join("fake-cosign-noexec");
         // Mode 0o644 — a real file (passes require_cosign) that cannot be exec'd.
         std::fs::write(&bin, "not an executable\n").expect("write file");
-        let guard = EnvVarGuard::set("CFGD_COSIGN_BIN", bin.to_str().unwrap());
+        let guard = EnvVarGuard::set(crate::COSIGN_BIN_ENV, bin.to_str().unwrap());
         (guard, dir)
     }
 
@@ -956,7 +963,9 @@ fn every_type_flag_this_module_spells_is_a_name_the_fold_can_produce() {
         .map(|(uri, _)| attestation_type_name(uri))
         .collect();
 
-    let source = include_str!("mod.rs");
+    let source = crate::test_helpers::walked_file_body(
+        &crate::test_helpers::workspace_root().join("crates/cfgd-core/src/oci/sign/mod.rs"),
+    );
     let mut checked = 0;
     for chunk in source.split(".arg(\"--type\")").skip(1) {
         // A `--type` whose argument is a variable is the caller's to answer for.
@@ -983,6 +992,7 @@ use crate::test_helpers::CosignTestShim;
 #[test]
 #[serial_test::serial]
 fn a_registry_cfgd_reads_over_http_is_named_to_cosign_as_insecure() {
+    let _path = crate::test_helpers::path_env_read_guard();
     let _env = EnvVarGuard::set("OCI_INSECURE_REGISTRIES", "kind-registry:5000");
     let mut cmd = std::process::Command::new("echo");
     apply_registry_scheme(&mut cmd, "kind-registry:5000/demo/tools:v1");
@@ -993,6 +1003,7 @@ fn a_registry_cfgd_reads_over_http_is_named_to_cosign_as_insecure() {
 #[test]
 #[serial_test::serial]
 fn a_tls_registry_is_not_downgraded_for_cosign() {
+    let _path = crate::test_helpers::path_env_read_guard();
     let _env = EnvVarGuard::unset("OCI_INSECURE_REGISTRIES");
     let mut cmd = std::process::Command::new("echo");
     apply_registry_scheme(&mut cmd, "ghcr.io/acme/tools:v1");
@@ -1006,7 +1017,9 @@ fn a_tls_registry_is_not_downgraded_for_cosign() {
 /// names no artifact at all says so with `// no-registry-ok: <why>`.
 #[test]
 fn every_cosign_subcommand_this_module_spells_declares_the_registry_scheme() {
-    let source = include_str!("mod.rs");
+    let source = crate::test_helpers::walked_file_body(
+        &crate::test_helpers::workspace_root().join("crates/cfgd-core/src/oci/sign/mod.rs"),
+    );
     let mut checked = 0;
     for chunk in source.split("let mut cmd = crate::cosign_cmd();").skip(1) {
         // Each factory call opens a function body; the scheme has to be
@@ -1017,7 +1030,10 @@ fn every_cosign_subcommand_this_module_spells_declares_the_registry_scheme() {
             .map(|(_, rest)| rest.split('"').next().unwrap_or_default())
             .unwrap_or_default();
         assert!(
-            body.contains("apply_registry_scheme(&mut cmd") || body.contains("// no-registry-ok:"),
+            body.contains("apply_registry_scheme(&mut cmd")
+                || body
+                    .lines()
+                    .any(|l| crate::test_helpers::carries_hatch(l, "// no-registry-ok:")),
             "cosign {subcommand} reaches a registry but never declares its scheme"
         );
         checked += 1;
@@ -1076,7 +1092,7 @@ fn a_registry_cosign_could_not_reach_is_not_a_verdict() {
 #[serial_test::serial]
 fn a_missing_cosign_is_not_a_verdict() {
     let _spawn_excl = crate::test_helpers::path_env_mutation_guard();
-    let _g = EnvVarGuard::unset("CFGD_COSIGN_BIN");
+    let _g = EnvVarGuard::unset(crate::COSIGN_BIN_ENV);
     let _path = EnvVarGuard::set("PATH", "");
     let check = check_signature(
         "ghcr.io/myorg/mod:v1",

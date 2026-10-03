@@ -12,7 +12,7 @@
 //! Regenerate with:
 //!     INSTA_UPDATE=always cargo test -p cfgd --test diff_snapshots
 
-mod common;
+use cfgd_test_fixtures as common;
 
 use std::path::{Path, PathBuf};
 
@@ -79,13 +79,13 @@ fn plant_env_surface_without_aliases(
     home: &Path,
     aliases: &[cfgd_core::config::ShellAlias],
 ) -> Vec<String> {
-    let mut owners = cfgd_core::config::EntryOwners::default();
-    owners.claim(
+    let layered = cfgd_core::reconciler::LayeredEnv::from_parts(
         &cfgd_core::reconciler::Owner::profile("tiny").token(),
         &[],
         aliases,
+        &[],
     );
-    let merged = cfgd_core::reconciler::MergedEnvItems::new(&[], aliases, &owners, &[], &[]);
+    let merged = cfgd_core::reconciler::MergedEnvItems::new(&layered, &[]);
     let scope = cfgd_core::config::EnvScope::default();
     let withheld: Vec<String> = aliases
         .iter()
@@ -301,6 +301,7 @@ fn diff_standing_rows_human() {
 
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc();
+    let printer = printer.with_hints_enabled(true);
 
     cmd_diff(&cli, &printer, None, false).unwrap();
     drop(printer);
@@ -381,6 +382,7 @@ fn diff_file_drift_human() {
 
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc();
+    let printer = printer.with_hints_enabled(true);
 
     cmd_diff(&cli, &printer, None, false).unwrap();
     drop(printer);
@@ -400,6 +402,7 @@ fn diff_package_drift_human() {
 
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc();
+    let printer = printer.with_hints_enabled(true);
 
     cmd_diff(&cli, &printer, None, false).unwrap();
     drop(printer);
@@ -422,6 +425,7 @@ fn diff_multi_surface_drift_human() {
 
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc();
+    let printer = printer.with_hints_enabled(true);
 
     cmd_diff(&cli, &printer, None, false).unwrap();
     drop(printer);
@@ -471,6 +475,7 @@ fn diff_system_drift_human() {
         },
     };
     let (printer, cap) = Printer::for_test_doc();
+    let printer = printer.with_hints_enabled(true);
     printer.emit(build_diff_doc(&output, DiffScope::Machine));
     drop(printer);
 
@@ -510,6 +515,7 @@ fn diff_module_only_human() {
 
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc();
+    let printer = printer.with_hints_enabled(true);
 
     cmd_diff(&cli, &printer, Some("diff-mod"), false).unwrap();
     drop(printer);

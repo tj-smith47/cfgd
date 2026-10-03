@@ -10,6 +10,10 @@ vars:
   # The one spelling of the rustdoc gate's deny-warnings flag. ci.yml gets it
   # by invoking `task doc` rather than repeating the string.
   RUSTDOC_DENY_WARNINGS: "-D warnings"
+  # cargo-llvm-cov leaves every `tests/` directory out of its report.
+  # `cfgd-test-fixtures` is the code `crates/cfgd/tests/` shares, so the filter
+  # leaves it out too and the report measures the shipped crates alone.
+  LLVM_COV_IGNORE: "--ignore-filename-regex crates/cfgd-test-fixtures/"
 
 env:
   REGISTRY: '{{.REGISTRY}}'
@@ -92,12 +96,13 @@ tasks:
   # --- Quality ---
 
   check:
-    desc: Run all quality checks (fmt:check, clippy, test, audit); the rustdoc gate runs in CI and ahead of `task push`
+    desc: Run all quality checks (fmt:check, clippy, test, audit, shellcheck); the rustdoc gate runs in CI and ahead of `task push`
     cmds:
       - task: fmt:check
       - task: clippy
       - task: test
       - task: audit
+      - task: shellcheck
 
   fmt:
     desc: Format code
@@ -180,10 +185,16 @@ tasks:
           # FreeBSD base. Mirror ci.yml's freebsd prepare so a fresh VM links it.
           ssh {{.HOST}} 'command -v gmake >/dev/null 2>&1 || pkg install -y gmake'
           ssh {{.HOST}} 'command -v perl >/dev/null 2>&1 || pkg install -y perl5'
+          # Mirror ci.yml's freebsd prepare for the demo-script tests: they run
+          # the real bash scripts, and the demo pin runs `git ls-files` on the
+          # synced tree, so bash, git and the tree's .git all have to be there.
+          ssh {{.HOST}} 'command -v bash >/dev/null 2>&1 || pkg install -y bash'
+          ssh {{.HOST}} 'command -v git >/dev/null 2>&1 || pkg install -y git'
+          ssh {{.HOST}} "git config --global --get-all safe.directory | grep -qxF '*' || git config --global --add safe.directory '*'"
           echo "==> syncing tree to {{.HOST}}:cfgd"
-          rsync -a --delete --exclude .git --exclude target --exclude '*.log' ./ {{.HOST}}:cfgd/
+          rsync -a --delete --exclude target --exclude '*.log' ./ {{.HOST}}:cfgd/
           echo "==> task test:ci on {{.HOST}}"
-          ssh {{.HOST}} '. "$HOME/.cargo/env"; cd cfgd && task test:ci'
+          ssh {{.HOST}} '. "$HOME/.cargo/env"; cd cfgd && task test:ci && task installer:test'
           if [ -n "{{.SHUTDOWN}}" ]; then
             echo "==> powering off FreeBSD VM {{.VMID}}"
             ssh {{.HOST}} 'shutdown -p now' || true
@@ -248,6 +259,54 @@ tasks:
     cmds:
       - bash .claude/scripts/audit.sh
 
+  shellcheck:
+    desc: Run shellcheck over every tracked shell script (`git ls-files '*.sh'`) with the repo's .shellcheckrc, refusing any version but the one pinned in .github/actions/setup-shellcheck/action.yml.
+    cmds:
+      - task: _shellcheck:pin
+      - |
+        n=$(git ls-files '*.sh' | wc -l | tr -d ' ')
+        # An empty population would pass on zero files, so a broken pathspec fails here.
+        if [ "$n" -eq 0 ]; then
+          echo "shellcheck: git ls-files '*.sh' matched no tracked script" >&2
+          exit 1
+        fi
+        git ls-files -z '*.sh' | xargs -0 shellcheck
+        echo "shellcheck $(shellcheck --version | sed -n 's/^version: //p'): $n scripts clean"
+
+  installer:shellcheck:
+    desc: Run shellcheck as POSIX sh over the installer `task snapshot` renders from scripts/install.sh.tpl (dist/install.sh), refusing any version but the pinned one.
+    preconditions:
+      - sh: test -f dist/install.sh
+        msg: "dist/install.sh is missing; run `task snapshot` first, which renders it from scripts/install.sh.tpl."
+    cmds:
+      - task: _shellcheck:pin
+      # The template is not shell until rendered; the installer runs under dash, ash and FreeBSD sh.
+      - shellcheck --shell=sh dist/install.sh
+      - |
+        echo "shellcheck $(shellcheck --version | sed -n 's/^version: //p') (sh): dist/install.sh clean"
+
+  _shellcheck:pin:
+    internal: true
+    run: once
+    desc: "Internal: fail unless the shellcheck on PATH is the version CI installs; another version reports a different set of findings."
+    vars:
+      PIN_FILE: .github/actions/setup-shellcheck/action.yml
+    preconditions:
+      - sh: command -v shellcheck
+        msg: "shellcheck is not installed; install the version pinned in {{.PIN_FILE}}."
+    cmds:
+      - |
+        pin=$(awk '/^  version:/ { inside = 1; next } inside && /^  [^ ]/ { exit } inside && /default:/ { split($0, q, "\""); print q[2]; exit }' {{.PIN_FILE}})
+        if [ -z "$pin" ]; then
+          echo "shellcheck: no version default found under version: in {{.PIN_FILE}}" >&2
+          exit 1
+        fi
+        have="v$(shellcheck --version | sed -n 's/^version: //p')"
+        if [ "$have" != "$pin" ]; then
+          echo "shellcheck: $have is on PATH, and {{.PIN_FILE}} pins $pin; install $pin" >&2
+          exit 1
+        fi
+
   version-files:check:
     desc: Verify every file enrolled in .anodizer.yaml version_files still carries its crate's current version (CI drift guard).
     cmds:
@@ -256,28 +315,53 @@ tasks:
       # (v0.8.0 left the chart and four docs at 0.7.0). Caught here instead of by a user.
       - '${ANODIZER_BIN:-anodizer} check version-files'
 
+  chart:test:
+    desc: Render the chart per case and compare the operator Deployment's update strategy and readiness probe, and the cluster-scoped objects, CSI plugin paths and CSI/watch env, with chart/cfgd/tests/golden (UPDATE=1 rewrites the goldens).
+    cmds:
+      - bash chart/cfgd/tests/render.sh
+
+  installer:test:
+    desc: Run the installer's install-directory checks (scripts/tests/test-install-dir.sh) against scratch directories; no download, no root.
+    cmds:
+      - sh scripts/tests/test-install-dir.sh
+
+  e2e:tags:check:
+    desc: Verify the e2e image tag map resolves each image to IMAGE_TAG or its own override, that port_forward waits for its tunnel and keeps kubectl's output, that the counter readers read only the `<family>_total` sample spelling, that no e2e script composes an image reference, starts a port-forward or matches a counter sample outside common/helpers.sh, that no e2e case calls pass_test after printing an excuse, that helpers.sh names the PR install, its run id and its CSI driver, that heredocs.awk reads each heredoc shape, and that every object of a kind schemas/crds.yaml declares that any tests/e2e/*/scripts suite applies carries the run label, each reaching the cluster only from a heredoc on the apply command itself, and that the CRD check setup runs passes on CRDs whose spec matches the cluster's, descriptions and API server defaults aside, and stops on a changed spec or a CRD that is missing, unreadable or not Established, that argocd_managed and the Crossplane install tell a tracked, untracked and unreadable object apart, that no e2e script writes a CRD outside its exempt list and no tracked manifest under tests/e2e holds one, and that every full-stack Helm install and upgrade passes HELM_SCOPE, which scopes its operator, validating webhook and pod injector to its own namespace's label, an array of exactly its three flags that no line appends to or rewrites, and overrides none of its keys, and that pr-install-down.sh deletes the run's objects of every kind schemas/crds.yaml declares, the Helm release and its namespace in that order, runs every step after one fails before exiting 1, and treats a release that is not installed as removed (no cluster needed; kubectl, jq and mikefarah yq v4 on PATH).
+    cmds:
+      - bash tests/e2e/common/test-image-tags.sh
+      - bash tests/e2e/common/test-port-forward.sh
+      - bash tests/e2e/common/test-metrics.sh
+      - bash tests/e2e/common/test-verdicts.sh
+      - bash tests/e2e/common/test-pr-install.sh
+
   chart:tags:check:
     desc: Verify every first-party image the chart renders by default names the version its crate has released, or the one the release cut from this commit publishes (CI drift guard).
     cmds:
       # The chart's three components version independently (agent = appVersion,
       # operator/csi = their own crate versions). All three pins are swept by
       # anodizer's version_files at tag time, so each must name its crate's
-      # current version. A pin the release cut from THIS commit publishes is
-      # never asked of ghcr, because that release is still building when CI
-      # runs: the release either has yet to be tagged (`anodizer tag --dry-run`
-      # predicts it) or was tagged on this very commit (the crate's own release
-      # tag points at HEAD, the shape every anodizer bump commit has). The
-      # `hand` branch below is for a pin no crate enrolls: on a release branch
-      # it must already name the predicted version, and off one it may run
-      # ahead of the released version, which the release branch's own run then
-      # checks exactly. Anything else is asked of ghcr.
+      # current version. Each pin is asked of ghcr, with two exceptions for a
+      # pin the release cut from THIS commit publishes, since that release is
+      # still building when CI runs: the release has yet to be tagged
+      # (`anodizer tag --dry-run` predicts the pin), or it was tagged within
+      # the last two hours (the crate's own release tag exists and its tagged
+      # commit is that recent: anodizer's bump commit itself, or a commit pushed
+      # while that release still builds). The bound keeps the tag arm from
+      # answering every later run, where the pin, the crate version and the
+      # tag agree by construction and only ghcr can say whether the image was
+      # ever pushed. `git tag -l` reads local tags, which `git fetch` never
+      # prunes, so a local run inside the window can pass a tag a rollback
+      # deleted on origin; CI clones fresh. The `hand` branch below is for a
+      # pin no crate enrolls: on a release branch it must already name the
+      # predicted version, and off one it may run ahead of the released
+      # version, which the release branch's own run then checks exactly.
       - cmd: |
           set -e
           predicted=$(${ANODIZER_BIN:-anodizer} tag --dry-run 2>/dev/null | sed -n 's/^anodizer-output versions=//p')
           current=$(for f in crates/*/Cargo.toml; do yq -p toml -o json -I=0 '{.package.name: .package.version}' "$f"; done | jq -sc add)
           swept=$(yq -o=json -I=0 '[.workspaces[].crates[] | select((.version_files // []) | length > 0) | .name]' .anodizer.yaml)
           templates=$(yq -o=json -I=0 '.workspaces[].crates[] | {.name: .tag_template}' .anodizer.yaml | jq -sc add)
-          tagged_here=$(git tag --points-at HEAD)
+          tagged=$(git tag -l)
           if git symbolic-ref -q --short HEAD | grep -qx -f <(yq '.tag.release_branches[]' .anodizer.yaml); then on_release=1; else on_release=0; fi
           failed=0
           for ref in $(helm template cfgd chart/cfgd --set agent.enabled=true --set csiDriver.enabled=true \
@@ -290,10 +374,11 @@ tasks:
             release_tag=$(jq -rn --argjson t "$templates" --arg c "$crate" --arg v "$tag" '$t[$c] // empty | sub("\\{\\{ *Version *\\}\\}"; $v)')
             if [ "$tag" = "$expected" ] && [ "$tag" = "$next" ]; then
               echo "OK       $ref (published by the release cut from this commit)"
-            elif [ "$tag" = "$expected" ] && [ -n "$release_tag" ] && printf '%s\n' "$tagged_here" | grep -qxF "$release_tag"; then
-              echo "OK       $ref (published by the release tagged $release_tag on this commit)"
             elif [ "$tag" = "$expected" ] && docker manifest inspect "$ref" >/dev/null 2>&1; then
               echo "OK       $ref"
+            elif [ "$tag" = "$expected" ] && [ -n "$release_tag" ] && printf '%s\n' "$tagged" | grep -qxF "$release_tag" \
+                && [ "$(git log -1 --format=%ct "$release_tag" 2>/dev/null || echo 0)" -gt "$(( $(date -u +%s) - 7200 ))" ]; then
+              echo "OK       $ref (the release tagged $release_tag is still pushing its image)"
             elif [ "$tag" = "$expected" ]; then
               echo "MISSING  $ref"; failed=1
             elif [ "$hand" = true ] && [ "$on_release" = 0 ] && [ "$(printf '%s\n%s\n' "$now" "$tag" | sort -V | tail -1)" = "$tag" ]; then
@@ -374,16 +459,22 @@ tasks:
     cmds:
       - CFGD_BLESS_SKILL=1 cargo test -p cfgd-core --features cfgd-core/test-helpers --test skill_golden
 
+  test-only-files:bless:
+    desc: Regenerate .claude/scripts/test-only-files.txt, the list of workspace files built only for tests that the shell audits read, after a module or fixture binary gains or loses its test gate. The pin test (test_only_files_list_matches_the_derivation, run by `task test`) is the drift gate; this target is its bless writer.
+    deps: [_check:tmp-headroom]
+    cmds:
+      - CFGD_BLESS_TEST_ONLY_FILES=1 cargo test -p cfgd-core --features cfgd-core/test-helpers --lib test_only_files_list_matches_the_derivation
+
   coverage:check:
     desc: Run workspace test coverage and write cobertura.xml. Prints the same percentage the README badge shows. No branch switching, no push.
     cmds:
-      - cargo llvm-cov nextest --cobertura --output-path cobertura.xml --no-fail-fast
+      - cargo llvm-cov nextest {{.LLVM_COV_IGNORE}} --cobertura --output-path cobertura.xml --no-fail-fast
       - 'echo "Coverage (line, cobertura): $(bash .claude/scripts/coverage-percent.sh cobertura.xml)"'
 
   coverage:publish:
     desc: Run workspace test coverage and publish the badge update to origin/badges. Switches branches via the badge script; release/CI only.
     cmds:
-      - cargo llvm-cov nextest --cobertura --output-path cobertura.xml --no-fail-fast
+      - cargo llvm-cov nextest {{.LLVM_COV_IGNORE}} --cobertura --output-path cobertura.xml --no-fail-fast
       - bash .claude/scripts/coverage-percent.sh cobertura.xml
       - bash .claude/scripts/publish-coverage.sh cobertura.xml
 
@@ -395,7 +486,7 @@ tasks:
       # terminal to percent + verdict and park the rest in a logfile.
       - mkdir -p target
       - |
-        if ! cargo llvm-cov nextest --cobertura --output-path cobertura.xml --no-fail-fast > target/coverage-gate.log 2>&1; then
+        if ! cargo llvm-cov nextest {{.LLVM_COV_IGNORE}} --cobertura --output-path cobertura.xml --no-fail-fast > target/coverage-gate.log 2>&1; then
           echo "instrumented test run failed — tail of target/coverage-gate.log:" >&2
           tail -n 40 target/coverage-gate.log >&2
           exit 1
@@ -475,8 +566,14 @@ tasks:
       # No --no-verify: the verify build compiles each crate FROM ITS TARBALL —
       # the only local gate that catches sources escaping the crate directory
       # (e.g. include_str! of workspace-root files), which packages fine but
-      # fails the release run's cargo publish verify.
-      - cargo package --workspace --allow-dirty
+      # fails the release run's cargo publish verify. `--workspace` packages a
+      # `publish = false` member too, and a test-only crate's path dependency on
+      # a sibling carries no version, so every unpublishable member is excluded
+      # by reading the flag off the manifests.
+      - |
+        cargo package --workspace --allow-dirty \
+          $(cargo metadata --no-deps --format-version 1 \
+            | jq -r '.packages[] | select(.publish == []) | "--exclude \(.name)"')
 
   snapshot:
     desc: Dry-run release pipeline (single target, no publish) using anodizer
@@ -495,13 +592,15 @@ tasks:
       - task: fmt
 
   lint:
-    desc: Local pre-commit check (tidy, clippy, audit, build, snapshot dry-run); the rustdoc gate runs in CI and ahead of `task push`, never here
+    desc: Local pre-commit check (tidy, clippy, audit, shellcheck, build, snapshot dry-run, installer:shellcheck); the rustdoc gate runs in CI and ahead of `task push`.
     cmds:
       - task: tidy
       - task: clippy
       - task: audit
+      - task: shellcheck
       - task: build
       - task: snapshot
+      - task: installer:shellcheck
 
   commit:
     desc: "Lint (regenerates artifacts), re-stage only the user's intended files, then commit. A breaking signal (a `!` subject marker, a `BREAKING CHANGE` footer or `#major`) on a crate below 1.0 is refused unless BREAKING_CHANGE_APPROVED=1, which only the user sets. Usage: stage with `git add` first, then `task commit -- -m 'msg'`."
@@ -598,16 +697,23 @@ tasks:
       - task: gen:crds:check
       - task: version-files:check
       - task: chart:tags:check
+      - task: chart:test
+      - task: e2e:tags:check
+      - task: installer:test
       - task: test
       - task: test:threads
       - task: audit
       - task: audit:test
+      - task: shellcheck
       - task: package
 
   # --- E2E ---
 
   e2e:setup:
     desc: Build images and ensure E2E infrastructure is current
+    # Every suite target depends on it, and `task e2e` reaches it through each
+    # of them; one invocation installs the run once.
+    run: once
     # Skipped (no-op) when CFGD_E2E_SETUP_DONE=1. CI's setup job runs once
     # and sets this for downstream leaf jobs so they don't re-build images
     # or require docker.sock on runner pods that lack it.
@@ -618,8 +724,9 @@ tasks:
 
   e2e:
     desc: Run all E2E test suites
-    deps: [e2e:setup]
     cmds:
+      - defer: { task: e2e:pr-install:down }
+      - task: e2e:setup
       - task: e2e:cli
       - task: e2e:node
       - task: e2e:node:helm
@@ -628,6 +735,11 @@ tasks:
       - task: e2e:full-stack
       - task: e2e:crossplane
       - task: e2e:gateway
+
+  e2e:pr-install:down:
+    desc: Remove this run's PR install of the operator and CSI driver, after deleting the run's cfgd.io objects so its operator clears their finalizers.
+    cmds:
+      - bash tests/e2e/pr-install-down.sh
 
   e2e:cli:
     desc: Run CLI exhaustive E2E tests
@@ -764,26 +876,13 @@ tasks:
   demo:
     desc: Re-record the README demo end to end (binary, image, VHS take, GIF).
     cmds:
-      - task: demo:image
       - task: demo:record
       - task: demo:gif
 
   demo:binary:
     desc: Build the statically-linked cfgd the demo image copies in.
     cmds:
-      # musl, not the default gnu target: the demo image is Ubuntu 24.04 (glibc
-      # 2.39) and this host is newer, so a dynamically-linked build refuses to
-      # start in the container. Same artifact the release pipeline ships.
-      #
-      # zigbuild, not plain cargo build: ring compiles C, and there is no
-      # x86_64-linux-musl-gcc on this host — zig supplies the cross C toolchain,
-      # exactly as the nightly cross-compile job does.
-      - cargo zigbuild --release --target x86_64-unknown-linux-musl --bin cfgd
-      # `install -D` is a GNU coreutils extension; BSD/macOS `install` lacks
-      # it, so create the destination directory separately and use the
-      # `-m`-only form both userlands support.
-      - mkdir -p demo/bin
-      - install -m 0755 target/x86_64-unknown-linux-musl/release/cfgd demo/bin/cfgd
+      - bash demo/scripts/build-binary.sh
 
   demo:image:
     desc: Build the bare Ubuntu image the tape records against.
@@ -793,6 +892,10 @@ tasks:
 
   demo:record:
     desc: Run demo/init.tape, producing whatever its Output line names (demo/.out/raw/).
+    # The take records whatever cfgd-demo:latest holds, so the image is rebuilt
+    # from this checkout first; otherwise the take is stamped with a commit its
+    # binary was never built from.
+    deps: [demo:image]
     preconditions:
       # LazyVim's tree, tabline and statusline are Nerd Font glyphs; without the
       # font VHS still exits 0 and records a take full of tofu boxes. The font
@@ -956,6 +1059,11 @@ tasks:
       - bash demo/scripts/chromium-no-sandbox.sh
       - bash demo/scripts/record.sh connect
       - bash demo/scripts/make-gif-flat.sh connect
+
+  demo:check:
+    desc: Flag every demo GIF whose render inputs changed since the commit it was recorded at.
+    cmds:
+      - bash demo/scripts/check-sync.sh
 
   # --- Deploy ---
 

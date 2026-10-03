@@ -307,7 +307,7 @@ mod tests {
 
     #[test]
     fn parse_reg_value_extracts_reg_sz_and_misses_absent() {
-        let out = "\r\nHKEY_CURRENT_USER\\Environment\r\n    EDITOR    REG_SZ    nvim\r\n";
+        let out = "\r\nHKEY_CURRENT_USER\\Environment\r\n    EDITOR    REG_SZ    nvim\r\n"; // space-run-ok: a fixture reproducing `reg query`'s column-aligned output.
         assert_eq!(parse_reg_value(out, "EDITOR").as_deref(), Some("nvim"));
         assert_eq!(parse_reg_value(out, "MISSING"), None);
     }

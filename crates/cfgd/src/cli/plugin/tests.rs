@@ -3,6 +3,7 @@ use cfgd_core::test_helpers::{EnvVarGuard, test_printer};
 use serial_test::serial;
 
 use super::*;
+use crate::cli::HermeticParse;
 
 #[test]
 fn parse_module_arg_valid() {
@@ -213,6 +214,7 @@ async fn probe_with_deadline_degrades_on_stall() {
     // ("not connected"). A 10ms deadline keeps the test fast and deterministic.
     let deadline = std::time::Duration::from_millis(10);
     let stalled = async {
+        // long-line-ok: a hatch is read off its own line, so it cannot wrap
         // sleep-ok: a never-completes-in-time stall is the subject under test — the deadline wrapper must degrade before this fires
         tokio::time::sleep(std::time::Duration::from_secs(60)).await;
         ComponentVersion::Version("0.4.0".to_string())
@@ -250,7 +252,7 @@ fn image_tag_version_host_port_no_tag() {
 
 #[test]
 fn plugin_output_default_is_table() {
-    let cli = PluginCli::try_parse_from(["kubectl-cfgd", "version"]).unwrap();
+    let cli = PluginCli::try_parse_hermetic(["kubectl-cfgd", "version"]).unwrap();
     assert!(matches!(
         cli.output.0,
         cfgd_core::output::OutputFormat::Table
@@ -259,7 +261,7 @@ fn plugin_output_default_is_table() {
 
 #[test]
 fn plugin_output_before_subcommand_parses_json() {
-    let cli = PluginCli::try_parse_from(["kubectl-cfgd", "-o", "json", "version"]).unwrap();
+    let cli = PluginCli::try_parse_hermetic(["kubectl-cfgd", "-o", "json", "version"]).unwrap();
     assert!(matches!(
         cli.output.0,
         cfgd_core::output::OutputFormat::Json
@@ -269,7 +271,7 @@ fn plugin_output_before_subcommand_parses_json() {
 #[test]
 fn plugin_output_after_subcommand_parses_yaml() {
     // global=true means -o is accepted after the subcommand too.
-    let cli = PluginCli::try_parse_from(["kubectl-cfgd", "status", "-o", "yaml"]).unwrap();
+    let cli = PluginCli::try_parse_hermetic(["kubectl-cfgd", "status", "-o", "yaml"]).unwrap();
     assert!(matches!(
         cli.output.0,
         cfgd_core::output::OutputFormat::Yaml
@@ -278,7 +280,7 @@ fn plugin_output_after_subcommand_parses_yaml() {
 
 #[test]
 fn plugin_output_name_format() {
-    let cli = PluginCli::try_parse_from(["kubectl-cfgd", "-o", "name", "version"]).unwrap();
+    let cli = PluginCli::try_parse_hermetic(["kubectl-cfgd", "-o", "name", "version"]).unwrap();
     assert!(matches!(
         cli.output.0,
         cfgd_core::output::OutputFormat::Name
@@ -289,7 +291,7 @@ fn plugin_output_name_format() {
 
 #[test]
 fn plugin_cli_parse_debug_command() {
-    let cli = PluginCli::try_parse_from([
+    let cli = PluginCli::try_parse_hermetic([
         "kubectl-cfgd",
         "debug",
         "my-pod",
@@ -320,8 +322,8 @@ fn plugin_cli_parse_debug_command() {
 
 #[test]
 fn plugin_cli_parse_debug_omitted_namespace_and_default_image() {
-    let cli =
-        PluginCli::try_parse_from(["kubectl-cfgd", "debug", "my-pod", "-m", "tools:1.0"]).unwrap();
+    let cli = PluginCli::try_parse_hermetic(["kubectl-cfgd", "debug", "my-pod", "-m", "tools:1.0"])
+        .unwrap();
 
     match cli.command {
         PluginCommand::Debug {
@@ -339,7 +341,7 @@ fn plugin_cli_parse_debug_omitted_namespace_and_default_image() {
 
 #[test]
 fn plugin_cli_parse_debug_multiple_modules() {
-    let cli = PluginCli::try_parse_from([
+    let cli = PluginCli::try_parse_hermetic([
         "kubectl-cfgd",
         "debug",
         "my-pod",
@@ -362,7 +364,7 @@ fn plugin_cli_parse_debug_multiple_modules() {
 
 #[test]
 fn plugin_cli_parse_exec_command() {
-    let cli = PluginCli::try_parse_from([
+    let cli = PluginCli::try_parse_hermetic([
         "kubectl-cfgd",
         "exec",
         "my-pod",
@@ -392,7 +394,7 @@ fn plugin_cli_parse_exec_command() {
 
 #[test]
 fn plugin_cli_parse_inject_command() {
-    let cli = PluginCli::try_parse_from([
+    let cli = PluginCli::try_parse_hermetic([
         "kubectl-cfgd",
         "inject",
         "deployment/myapp",
@@ -419,19 +421,19 @@ fn plugin_cli_parse_inject_command() {
 
 #[test]
 fn plugin_cli_parse_status_command() {
-    let cli = PluginCli::try_parse_from(["kubectl-cfgd", "status"]).unwrap();
+    let cli = PluginCli::try_parse_hermetic(["kubectl-cfgd", "status"]).unwrap();
     assert!(matches!(cli.command, PluginCommand::Status { .. }));
 }
 
 #[test]
 fn plugin_cli_parse_version_command() {
-    let cli = PluginCli::try_parse_from(["kubectl-cfgd", "version"]).unwrap();
+    let cli = PluginCli::try_parse_hermetic(["kubectl-cfgd", "version"]).unwrap();
     assert!(matches!(cli.command, PluginCommand::Version { .. }));
 }
 
 #[test]
 fn plugin_cli_no_subcommand_fails() {
-    let result = PluginCli::try_parse_from(["kubectl-cfgd"]);
+    let result = PluginCli::try_parse_hermetic(["kubectl-cfgd"]);
     assert!(result.is_err(), "missing subcommand should fail");
 }
 
@@ -2116,7 +2118,7 @@ images:
     fn cmd_deploy_human_mode_prints_pinned_manifest_to_stdout() {
         // In a non-structured (table) printer, the rewritten manifest is written
         // raw to stdout so it can be piped to `kubectl apply -f -`. Assert the
-        // captured stdout carries the pinned digest ref and not the old tag.
+        // captured stdout carries the pinned digest ref in place of the old tag.
         let dir = tempfile::tempdir().expect("tempdir");
         let lock_path = write_valid_lockfile(dir.path());
         let manifest_path = dir.path().join("pod.yaml");
@@ -2173,7 +2175,9 @@ images:
 /// back to back would read different namespaces from one kubeconfig.
 #[test]
 fn every_namespace_taking_plugin_variant_resolves_through_one_helper() {
-    let source = include_str!("mod.rs");
+    let source = cfgd_core::test_helpers::walked_file_body(
+        &cfgd_core::test_helpers::workspace_root().join("crates/cfgd/src/cli/plugin/mod.rs"),
+    );
     let dispatch = source
         .split_once("match cli.command {")
         .expect("plugin dispatch is a match on cli.command")

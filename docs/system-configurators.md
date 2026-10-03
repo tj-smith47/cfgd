@@ -193,12 +193,12 @@ system:
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `name` | string | Yes | | Identifier for this key entry. |
+| `name` | string | Yes | — | Identifier for this key entry. |
 | `type` | enum | No | `ed25519` | Key algorithm: `ed25519` or `rsa`. |
 | `bits` | int | No | `4096` | RSA key size. Ignored for ed25519. |
 | `path` | string | No | `~/.ssh/id_<type>` | Path to the private key file. |
-| `comment` | string | No | | Key comment (typically an email address). |
-| `passphrase` | string | No | | Secret provider reference for the key passphrase. Plaintext passphrases are not supported. |
+| `comment` | string | No | — | Key comment (typically an email address). |
+| `passphrase` | string | No | — | Secret provider reference for the key passphrase. Plaintext passphrases are not supported. |
 | `permissions` | string | No | `"600"` | Private key file permissions. |
 
 Drift is detected when the key is missing, has the wrong type, or has incorrect permissions. Key type verification reads the public key file (`<path>.pub`) to avoid passphrase prompts during drift checks.
@@ -220,10 +220,10 @@ system:
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `name` | string | Yes | | Identifier for this key entry. |
+| `name` | string | Yes | — | Identifier for this key entry. |
 | `type` | enum | No | `ed25519` | Key algorithm: `ed25519` or `rsa4096`. |
-| `realName` | string | Yes | | GPG uid real name. |
-| `email` | string | Yes | | GPG uid email address. Used for key matching. |
+| `realName` | string | Yes | — | GPG uid real name. |
+| `email` | string | Yes | — | GPG uid email address. Used for key matching. |
 | `expiry` | string | No | `2y` | GPG expiry notation (`0` = no expiry, `1y`, `2y`, etc.). |
 | `usage` | string | No | `sign` | Comma-separated key capabilities: `sign`, `encrypt`, `auth`, or combinations. |
 

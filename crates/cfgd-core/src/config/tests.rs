@@ -37,6 +37,405 @@ fn parse_config_rejects_unknown_apiversion() {
     assert!(err.to_string().contains("cfgd.io/v1alpha1")); // names the supported version
 }
 
+/// A synthetic older version routes through the table; the shipped table's
+/// single entry is the identity. Nothing here invents a v1alpha2 schema:
+/// the claim is that the ROUTE exists and that every entry lands on the
+/// version this build reads.
+#[test]
+fn a_synthetic_older_api_version_routes_through_the_conversion_table() {
+    use super::parse::{API_VERSION_CONVERSIONS, ApiVersionConversion, convertible_from};
+    const SYNTHETIC: &[ApiVersionConversion] = &[
+        ApiVersionConversion {
+            from: "cfgd.io/v1alpha0",
+            to: crate::API_VERSION,
+        },
+        ApiVersionConversion {
+            from: crate::API_VERSION,
+            to: crate::API_VERSION,
+        },
+    ];
+    assert_eq!(
+        convertible_from(SYNTHETIC, "cfgd.io/v1alpha0"),
+        Some(crate::API_VERSION)
+    );
+    assert_eq!(convertible_from(SYNTHETIC, "cfgd.io/v9"), None);
+    assert_eq!(
+        convertible_from(API_VERSION_CONVERSIONS, crate::API_VERSION),
+        Some(crate::API_VERSION),
+        "the shipped table's identity entry answers for the current version"
+    );
+}
+
+/// Every entry converts INTO the version this build reads, so no table row
+/// can route a document to a version nothing parses.
+#[test]
+fn every_api_version_the_table_names_converts_to_the_current_one() {
+    use super::parse::API_VERSION_CONVERSIONS;
+    assert!(
+        !API_VERSION_CONVERSIONS.is_empty(),
+        "the table always carries its identity entry"
+    );
+    for entry in API_VERSION_CONVERSIONS {
+        assert_eq!(
+            entry.to,
+            crate::API_VERSION,
+            "{} routes to {}",
+            entry.from,
+            entry.to
+        );
+    }
+}
+
+/// The refusal names every version the table holds, the current one included.
+///
+/// A build carrying a second conversion row accepts a document the constant
+/// does not name, so a message spelling the constant would refuse a version the
+/// same build reads. The expectation is composed from the shipped table as
+/// data: a synthetic table cannot reach the error type, which reads the
+/// shipped one.
+#[test]
+fn the_unsupported_api_version_refusal_names_every_readable_version() {
+    use super::parse::{API_VERSION_CONVERSIONS, ApiVersionConversion, readable_api_versions};
+    // The shipped table's `from` and `to` are the same bytes while the identity
+    // is its only row, so the column the composer reads is provable only
+    // against a table whose two columns differ.
+    const SYNTHETIC: &[ApiVersionConversion] = &[
+        ApiVersionConversion {
+            from: "cfgd.io/v1alpha0",
+            to: crate::API_VERSION,
+        },
+        ApiVersionConversion {
+            from: "cfgd.io/v1alpha1",
+            to: crate::API_VERSION,
+        },
+    ];
+    assert_eq!(
+        readable_api_versions(SYNTHETIC),
+        "cfgd.io/v1alpha0, cfgd.io/v1alpha1",
+        "the composer names every `from` the table holds, in table order"
+    );
+
+    assert!(
+        !API_VERSION_CONVERSIONS.is_empty(),
+        "the table always carries its identity entry"
+    );
+    let message = ConfigError::UnsupportedApiVersion {
+        found: "cfgd.io/v9".to_string(),
+    }
+    .to_string();
+    for entry in API_VERSION_CONVERSIONS {
+        assert!(
+            message.contains(entry.from),
+            "the refusal {message:?} does not name {}, which this build reads",
+            entry.from
+        );
+    }
+    assert!(
+        message.ends_with(&readable_api_versions(API_VERSION_CONVERSIONS)),
+        "the refusal {message:?} closes on something other than the table's own versions"
+    );
+}
+
+/// Every site judging an incoming document's `apiVersion` asks the conversion
+/// table, in every crate.
+///
+/// [`super::parse::validate_api_version`] is `pub(crate)` to cfgd-core, so a
+/// device gateway or CSI site parsing a document it was handed cannot reach it,
+/// and that is exactly where a hand-written comparison against the current
+/// version goes in. Such a site accepts one version while the parser accepts a
+/// set, and the two disagree in the release a second row lands in.
+///
+/// What it asks of a site is a comparison's two halves: an identifier holding
+/// `api_version` or `apiVersion` on one side of `==`, `!=`, `matches!(`,
+/// `.starts_with(`, `.contains(`, `.eq(` or `.ne(`, and `API_VERSION` or an
+/// inline literal on the other, in either direction and at every place the
+/// operator appears in the text. The question is put to a STATEMENT: rows are
+/// gathered from one terminator to the next and joined, so a comparison split
+/// across rows is one text while two neighbouring statements stay two. A `;`,
+/// `{` or `}` terminates wherever it falls, and so does a `,` at the
+/// statement's own bracket depth, which is what keeps two comma-separated
+/// `match` arms from answering for each other. Literals and comments are
+/// blanked before any of that, so a tell written inside either is invisible,
+/// and an offender is reported at the row its statement opened on.
+///
+/// The population is every `<crate>/src` under `crates/`, read off the
+/// directory so a crate added to the workspace joins it, and NAMED so a renamed
+/// root fails by name, and whatever else appears cannot stand in for it. The
+/// floor is stated per root: one number for the workspace is the biggest tree's
+/// count plus the rest, so `crates/cfgd/src` could go dark inside it.
+///
+/// `validate_api_version` and `convertible_from` are exempt BY NAME, with no
+/// hatch, because they ARE the comparison every other site is routed to. The
+/// validator is judged by the reach check below, which is what catches
+/// a body that keeps the table call and compares anyway.
+#[test]
+fn no_production_site_compares_an_api_version_by_hand() {
+    use crate::test_helpers::{
+        blank_non_code, calls_free_fn, carries_hatch, code_line, file_declarations,
+        production_slice_of, rust_sources_under, workspace_root,
+    };
+
+    /// Every crate root the walk must still be reading, workspace-relative,
+    /// with a floor at the production sources each holds today, so a tree going
+    /// dark fails on its own name. Each floor is a minimum the root must keep,
+    /// and a count above it passes.
+    const WALK_ROOTS: &[(&str, usize)] = &[
+        // 196 sources `is_test_source` leaves in, less the 3 built only for tests
+        // (bin/fake_cosign.rs, output/test_capture.rs, test_helpers.rs).
+        ("crates/cfgd-core/src", 193),
+        ("crates/cfgd-crd/src", 1),
+        ("crates/cfgd-csi/src", 8),
+        ("crates/cfgd-operator/src", 42),
+        ("crates/cfgd-schema/src", 2),
+        ("crates/cfgd/src", 144),
+    ];
+    const HATCH: &str = "// api-version-compare-ok:";
+    const EXEMPT: &[&str] = &["validate_api_version", "convertible_from"];
+
+    // Every statement of a masked slice, as the rows from one terminator to
+    // the next joined with a space, with the row it opened on and the row it
+    // closed on. A comparison written across rows is one expression that a
+    // per-row read sees neither half of: `if doc.api_version` carries no
+    // operator and `!= "cfgd.io/v1alpha1"` carries no field. Reading the whole
+    // slice as one text is the other failure, where two neighbouring
+    // statements answer for each other. Terminators are counted on code the
+    // masking has already blanked, so one inside a literal or a comment ends
+    // nothing. A `,` ends a statement only at the bracket depth the statement
+    // opened at: a comma-separated `match` arm carries no other terminator, so
+    // two arms would otherwise read as one statement and a version literal in
+    // the first would answer for the field name in the second, while a comma
+    // between a call's arguments separates operands of one expression. A row
+    // is scanned to its end after its terminator, so a bracket opened behind
+    // one (`} => format!(`) is still open when the next statement starts and
+    // a comparison split across that call's arguments stays one statement.
+    fn statements(code: &[String]) -> Vec<(usize, usize, String)> {
+        let mut out = Vec::new();
+        let mut open: Option<usize> = None;
+        let mut depth = 0i32;
+        for (n, line) in code.iter().enumerate() {
+            if open.is_none() && line.trim().is_empty() {
+                continue;
+            }
+            let first = *open.get_or_insert(n);
+            let mut ends = false;
+            for c in line.chars() {
+                match c {
+                    '(' | '[' => depth += 1,
+                    ')' | ']' => depth -= 1,
+                    ';' | '{' | '}' => ends = true,
+                    ',' if depth <= 0 => ends = true,
+                    _ => {}
+                }
+            }
+            if ends {
+                out.push((first, n, code[first..=n].join(" ")));
+                open = None;
+            }
+        }
+        if let Some(first) = open {
+            out.push((first, code.len() - 1, code[first..].join(" ")));
+        }
+        out
+    }
+    // A comparison's two halves, at EVERY place the tell appears: taking only
+    // the first split lets an unrelated comparison earlier in the statement
+    // hide the one the tell names. `matches!(subject, PATTERN)` holds both
+    // operands to the right of the macro name, so its own comma is the split.
+    fn halves<'a>(code: &'a str, tell: &'a str) -> impl Iterator<Item = (&'a str, &'a str)> {
+        code.match_indices(tell).filter_map(move |(at, _)| {
+            let (left, right) = (&code[..at], &code[at + tell.len()..]);
+            if tell == "matches!(" {
+                return right.split_once(',');
+            }
+            Some((left, right))
+        })
+    }
+    // The field a document carries is spelled one of two ways, and neither is
+    // the constant: `API_VERSION` holds no lowercase `api_version`.
+    fn names_the_field(part: &str) -> bool {
+        part.contains("api_version") || part.contains("apiVersion")
+    }
+    // A literal reaches this walk as its own quotes around blanks, so the quote
+    // is how a version spelled inline is seen at all.
+    fn names_a_version(part: &str) -> bool {
+        part.contains("API_VERSION") || part.contains('"')
+    }
+    fn compares_by_hand(code: &str) -> bool {
+        [
+            "==",
+            "!=",
+            "matches!(",
+            ".starts_with(",
+            ".contains(",
+            ".eq(",
+            ".ne(",
+        ]
+        .iter()
+        .any(|tell| {
+            halves(code, tell).any(|(left, right)| {
+                (names_the_field(left) && names_a_version(right))
+                    || (names_the_field(right) && names_a_version(left))
+            })
+        })
+    }
+
+    let workspace = workspace_root();
+    let crates_dir = workspace.join("crates");
+    let mut roots: Vec<PathBuf> = std::fs::read_dir(&crates_dir)
+        .unwrap_or_else(|e| panic!("{}: {e}", crates_dir.display()))
+        .map(|entry| {
+            entry
+                .unwrap_or_else(|e| {
+                    panic!(
+                        "{}: the walk must read every entry: {e}",
+                        crates_dir.display()
+                    )
+                })
+                .path()
+                .join("src")
+        })
+        .filter(|src| src.is_dir())
+        .collect();
+    roots.sort();
+    let read: Vec<String> = roots
+        .iter()
+        .map(|root| crate::to_posix_string(root.strip_prefix(&workspace).unwrap_or(root)))
+        .collect();
+
+    let declared =
+        crate::test_helpers::workspace_declarations(crate::test_helpers::WORKSPACE_CRATES);
+    // The exempt declarations' rows, picked out of the memo once and matched
+    // to their file inside the loop.
+    let exempt_rows: Vec<(&Path, std::ops::RangeInclusive<usize>)> = declared
+        .sites
+        .iter()
+        .zip(&declared.rows)
+        .enumerate()
+        .filter(|(_, (_, (name, ..)))| EXEMPT.contains(&name.as_str()))
+        .map(|(at, ((_, site, _), _))| (*site, declared.span_of(at)))
+        .collect();
+    let mut per_root: Vec<(String, usize)> = Vec::new();
+    let mut offenders: Vec<String> = Vec::new();
+    for (root, relative_root) in roots.iter().zip(read.clone()) {
+        let mut files = 0usize;
+        for path in rust_sources_under(root) {
+            // Test scaffolding carries no `#[cfg(test)]` for the slice to cut at. A file built
+            // only for tests (`is_test_only_file`) is named out as well: no shipped binary
+            // compiles it, and cfgd-core's `test_helpers.rs` holds an inline test module the
+            // slice would cut at, leaving a fraction of the file behind.
+            if crate::test_helpers::is_test_source(&path)
+                || crate::test_helpers::is_test_only_file(&path)
+            {
+                continue;
+            }
+            let production = production_slice_of(&path);
+            // The `blank_non_code` fold carries the state a per-line read
+            // cannot: a `/* */` comment or a literal spanning rows leaves every
+            // row below it read as code. `code_line` is then the per-line cut
+            // each judgement is taken on, and both keep the row count, so the
+            // raw line beside it is the one a hatch and a report are read off.
+            let blanked = crate::test_helpers::production_code_of(&path);
+            files += 1;
+            let raw: Vec<&str> = production.lines().collect();
+            let code: Vec<String> = blanked.lines().map(code_line).collect();
+            let exempt: Vec<std::ops::RangeInclusive<usize>> = exempt_rows
+                .iter()
+                .filter(|(site, _)| *site == path.as_path())
+                .map(|(_, rows)| rows.clone())
+                .collect();
+            let relative = crate::to_posix_string(path.strip_prefix(&workspace).unwrap_or(&path));
+            for (first, last, statement) in statements(&code) {
+                if !compares_by_hand(&statement) || exempt.iter().any(|rows| rows.contains(&first))
+                {
+                    continue;
+                }
+                // The hatch is read over the statement's own rows and the one
+                // above it, because a comparison spanning rows carries its
+                // reason wherever its author could see it.
+                if raw[first.saturating_sub(1)..=last]
+                    .iter()
+                    .any(|l| carries_hatch(l, HATCH))
+                {
+                    continue;
+                }
+                let quoted: Vec<&str> = raw[first..=last].iter().map(|l| l.trim()).collect();
+                offenders.push(format!(
+                    "{relative}:{}: compares an apiVersion by hand; ask \
+                     `cfgd_core::config::validate_api_version` (or the conversion table it \
+                     reads), else say why with `{HATCH} <why this site cannot ask the table>`: {}",
+                    first + 1,
+                    quoted.join(" ")
+                ));
+            }
+        }
+        per_root.push((relative_root, files));
+    }
+
+    let unread: Vec<&str> = WALK_ROOTS
+        .iter()
+        .map(|(named, _)| *named)
+        .filter(|named| !read.iter().any(|seen| seen == named))
+        .collect();
+    assert!(
+        unread.is_empty(),
+        "the walk no longer reads {unread:?}; it read {read:?} — a renamed or moved \
+         crate root leaves its apiVersion comparisons judged by nobody"
+    );
+    // A root the walk never reported on reads as zero: a missing entry is the
+    // whole tree going dark, which is what the floor is for.
+    let short: Vec<(&str, usize, usize)> = WALK_ROOTS
+        .iter()
+        .map(|(named, floor)| {
+            let seen = per_root
+                .iter()
+                .find(|(root, _)| root == named)
+                .map_or(0, |(_, files)| *files);
+            (*named, seen, *floor)
+        })
+        .filter(|(_, seen, floor)| seen < floor)
+        .collect();
+    assert!(
+        short.is_empty() && read.len() >= WALK_ROOTS.len(),
+        "a crate root contributed fewer production sources than it holds, so its \
+         apiVersion comparisons are judged by nobody: {short:?} of {per_root:?}"
+    );
+    assert!(
+        offenders.is_empty(),
+        "every site judging a document's apiVersion asks the conversion table:\n{}",
+        offenders.join("\n")
+    );
+
+    // The validator is exempt from the walk above, so the rule holds only while
+    // its body is seen to ASK the table and to compare nothing itself: a body
+    // that calls `convertible_from`, discards the answer and compares against
+    // the constant passes every other pin in this file.
+    let parse_rs = workspace
+        .join("crates")
+        .join("cfgd-core")
+        .join("src")
+        .join("config")
+        .join("parse.rs");
+    let validator = file_declarations(&parse_rs)
+        .into_iter()
+        .find(|(name, ..)| name == "validate_api_version")
+        .map(|(_, _, body)| blank_non_code(&body))
+        .expect("config/parse.rs declares the one apiVersion validator");
+    assert!(
+        calls_free_fn(&validator, "convertible_from"),
+        "validate_api_version no longer asks the conversion table:\n{validator}"
+    );
+    // Judged by the same statement grammar the walk uses, on a body
+    // blanked the way the walk's rows are.
+    let validator_rows: Vec<String> = validator.lines().map(str::to_string).collect();
+    assert!(
+        !statements(&validator_rows)
+            .iter()
+            .any(|(.., statement)| compares_by_hand(statement)),
+        "validate_api_version compares a version string itself where the table \
+         should answer:\n{validator}"
+    );
+}
+
 /// The global strategy is the fallback for files that declare none, and a
 /// `Patch` file is defined by its own `patch:` block — so a file inheriting
 /// the global could never satisfy it. Rejecting at load keeps that
@@ -97,6 +496,26 @@ fn file_strategy_all_round_trips_through_the_deserializer() {
             strategy.as_str(),
             "as_str must match the serialized form"
         );
+    }
+}
+
+/// `spec.migrationPolicy` is the persistent twin of `--migration-policy`, so
+/// every word the flag accepts reaches the parser, spelled as a hand-written
+/// document spells it; an absent key materializes the policy that writes
+/// nothing on its own.
+#[test]
+fn parse_config_reads_every_migration_policy_and_defaults_to_prompt() {
+    let absent = parse_config(SAMPLE_CONFIG_YAML, Path::new("cfgd.yaml")).unwrap();
+    assert_eq!(absent.spec.migration_policy, MigrationPolicy::Prompt);
+
+    for policy in MigrationPolicy::ALL {
+        let value = policy.as_str().to_lowercase();
+        let yaml = format!(
+            "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: m\nspec:\n  profile: default\n  migrationPolicy: {value}\n"
+        );
+        let parsed = parse_config(&yaml, Path::new("cfgd.yaml"))
+            .unwrap_or_else(|e| panic!("{value} must parse: {e}"));
+        assert_eq!(parsed.spec.migration_policy, *policy);
     }
 }
 
@@ -191,7 +610,7 @@ fn merge_env_override() {
     let layer1 = ProfileLayer {
         source: "local".into(),
         profile_name: "base".into(),
-        priority: 1000,
+        priority: crate::config::LOCAL_LAYER_PRIORITY,
         policy: LayerPolicy::Local,
         spec: ProfileSpec {
             env: vec![
@@ -212,7 +631,7 @@ fn merge_env_override() {
     let layer2 = ProfileLayer {
         source: "local".into(),
         profile_name: "work".into(),
-        priority: 1000,
+        priority: crate::config::LOCAL_LAYER_PRIORITY,
         policy: LayerPolicy::Local,
         spec: ProfileSpec {
             env: vec![EnvVar {
@@ -248,7 +667,7 @@ fn merge_packages_union() {
     let layer1 = ProfileLayer {
         source: "local".into(),
         profile_name: "base".into(),
-        priority: 1000,
+        priority: crate::config::LOCAL_LAYER_PRIORITY,
         policy: LayerPolicy::Local,
         spec: ProfileSpec {
             packages: Some(PackagesSpec {
@@ -264,7 +683,7 @@ fn merge_packages_union() {
     let layer2 = ProfileLayer {
         source: "local".into(),
         profile_name: "work".into(),
-        priority: 1000,
+        priority: crate::config::LOCAL_LAYER_PRIORITY,
         policy: LayerPolicy::Local,
         spec: ProfileSpec {
             packages: Some(PackagesSpec {
@@ -290,7 +709,7 @@ fn merge_files_overlay() {
     let layer1 = ProfileLayer {
         source: "local".into(),
         profile_name: "base".into(),
-        priority: 1000,
+        priority: crate::config::LOCAL_LAYER_PRIORITY,
         policy: LayerPolicy::Local,
         spec: ProfileSpec {
             files: Some(FilesSpec {
@@ -312,7 +731,7 @@ fn merge_files_overlay() {
     let layer2 = ProfileLayer {
         source: "local".into(),
         profile_name: "work".into(),
-        priority: 1000,
+        priority: crate::config::LOCAL_LAYER_PRIORITY,
         policy: LayerPolicy::Local,
         spec: ProfileSpec {
             files: Some(FilesSpec {
@@ -612,6 +1031,523 @@ origin:
     assert!(!spec.sync.auto_apply);
 }
 
+// A section written `key: null` (what a writer serializing an emptied block
+// prints) reads as the bare `key:` beside it does.
+#[test]
+fn a_config_section_written_null_reads_as_its_default() {
+    let origin = "name: test-source\norigin:\n  type: Git\n  url: https://example.com/config.git\n";
+    for key in ["subscription", "sync"] {
+        for value in ["", " null", " ~"] {
+            let yaml = format!("{origin}{key}:{value}\n");
+            let spec: SourceSpec =
+                serde_yaml::from_str(&yaml).unwrap_or_else(|e| panic!("{key}:{value}: {e}"));
+            assert_eq!(spec.subscription.priority, 500, "{key}:{value}");
+            assert_eq!(spec.sync.interval, "1h", "{key}:{value}");
+        }
+    }
+
+    let policy: ConfigSourcePolicy = serde_yaml::from_str(
+        "required: null\nrecommended: ~\noptional: null\nlocked: null\nconstraints: null\n",
+    )
+    .unwrap();
+    assert!(
+        policy.constraints.no_scripts,
+        "the constraints default holds"
+    );
+    let source: ConfigSourceSpec = serde_yaml::from_str("provides: null\npolicy: null\n").unwrap();
+    assert!(source.provides.platform_profiles.is_empty());
+
+    let compliance: ComplianceConfig =
+        serde_yaml::from_str("enabled: true\nscope: null\nexport: null\n").unwrap();
+    assert!(compliance.scope.files, "the scope default holds");
+
+    let theme: ThemeConfig = serde_yaml::from_str("name: dracula\noverrides: null\n").unwrap();
+    assert!(theme.overrides.is_empty());
+    let update: UpdateConfig = serde_yaml::from_str("skills: null\n").unwrap();
+    assert_eq!(update.skills.policy, SkillUpdatePolicy::default());
+    let files: FilesSpec = serde_yaml::from_str("permissions: null\n").unwrap();
+    assert!(files.permissions.is_empty());
+    let profile: ProfileSpec = serde_yaml::from_str("system: null\n").unwrap();
+    assert!(profile.system.is_empty());
+    let packages: PackagesSpec = serde_yaml::from_str("apk: null\nbrew: null\n").unwrap();
+    assert!(packages.apk.is_empty() && packages.brew.is_none());
+    let output: OutputConfig =
+        serde_yaml::from_str("theme:\n  name: dracula\n  overrides: null\n").unwrap();
+    assert!(output.theme.unwrap().overrides.is_empty());
+}
+
+/// The key a field is read under: its `rename`, else its camelCase spelling.
+fn serialized_field_name(ident: &str, attrs: &str) -> String {
+    if let Some((_, after)) = attrs.split_once("rename = \"") {
+        return after.split('"').next().unwrap_or_default().to_string();
+    }
+    let mut out = String::new();
+    let mut up = false;
+    for c in ident.chars() {
+        if c == '_' {
+            up = true;
+        } else if up {
+            out.push(c.to_ascii_uppercase());
+            up = false;
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// The serialized names of the fields a hand-written `Deserialize` body reads
+/// through `null_as_default`. Each mention counts only for the field its
+/// attribute sits on, so one section restating the rule never vouches for a
+/// sibling that does not.
+fn fields_reading_null_by_hand(body: &[&str]) -> std::collections::BTreeSet<String> {
+    let mut out = std::collections::BTreeSet::new();
+    let mut attrs = String::new();
+    let mut depth = 0i32;
+    for line in body {
+        let code = line.trim_start();
+        if depth > 0 || code.starts_with("#[") {
+            depth += code.matches('[').count() as i32 - code.matches(']').count() as i32;
+            attrs.push_str(code);
+            continue;
+        }
+        if code.starts_with("//") {
+            continue;
+        }
+        let field = crate::test_helpers::strip_item_lead(code);
+        if let Some((ident, _)) = field.split_once(':')
+            && !ident.is_empty()
+            && ident.chars().all(|c| c.is_alphanumeric() || c == '_')
+            && attrs.contains("deserialize_with = \"crate::config::null_as_default\"")
+        {
+            out.insert(serialized_field_name(ident, &attrs));
+        }
+        attrs.clear();
+    }
+    out
+}
+
+#[test]
+fn a_hand_written_reader_restates_the_null_rule_per_section() {
+    let body = "        struct Inner {\n            #[serde(default, deserialize_with = \"crate::config::null_as_default\")]\n            overrides: ThemeOverrides,\n            #[serde(default)]\n            extra_colors: Palette,\n            #[serde(\n                default,\n                deserialize_with = \"crate::config::null_as_default\"\n            )]\n            #[serde(rename = \"fonts\")]\n            font_set: Fonts,\n        }";
+    let lines: Vec<&str> = body.lines().collect();
+    assert_eq!(
+        fields_reading_null_by_hand(&lines),
+        ["fonts".to_string(), "overrides".to_string()].into()
+    );
+}
+
+fn schema_type_names(node: &serde_json::Value) -> Vec<&str> {
+    match &node["type"] {
+        serde_json::Value::String(t) => vec![t.as_str()],
+        serde_json::Value::Array(ts) => ts.iter().filter_map(serde_json::Value::as_str).collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// Every optional object-shaped property of every local kind's live schema,
+/// as (owning type, serialized name), and the ones whose schema refuses `null`.
+fn defaulted_section_population() -> (std::collections::BTreeSet<(String, String)>, Vec<String>) {
+    use serde_json::Value;
+
+    let mut population = std::collections::BTreeSet::new();
+    let mut refuses_null = Vec::new();
+    for entry in crate::schema::KIND_REGISTRY.iter().filter(|e| !e.crd) {
+        let schema: Value = serde_json::from_str(&entry.pretty_schema())
+            .unwrap_or_else(|e| panic!("{} schema: {e}", entry.kind));
+        let empty = serde_json::Map::new();
+        let defs = schema["definitions"].as_object().unwrap_or(&empty);
+        let is_object_ref = |m: &Value| {
+            m["$ref"]
+                .as_str()
+                .and_then(|r| defs.get(r.trim_start_matches("#/definitions/")))
+                .is_some_and(|d| schema_type_names(d).contains(&"object"))
+        };
+        let title = schema["title"]
+            .as_str()
+            .expect("a kind schema carries its type name");
+        let owners =
+            std::iter::once((title, &schema)).chain(defs.iter().map(|(k, v)| (k.as_str(), v)));
+        for (owner, node) in owners {
+            let Some(props) = node["properties"].as_object() else {
+                continue;
+            };
+            let required: Vec<&str> = node["required"]
+                .as_array()
+                .map(|r| r.iter().filter_map(Value::as_str).collect())
+                .unwrap_or_default();
+            for (name, prop) in props {
+                if required.contains(&name.as_str()) {
+                    continue;
+                }
+                let members: Vec<&Value> = match prop["anyOf"].as_array() {
+                    Some(arms) => arms.iter().collect(),
+                    None => vec![prop],
+                };
+                let object_shaped = members
+                    .iter()
+                    .any(|m| schema_type_names(m).contains(&"object") || is_object_ref(m));
+                if !object_shaped {
+                    continue;
+                }
+                if !members
+                    .iter()
+                    .any(|m| schema_type_names(m).contains(&"null"))
+                {
+                    refuses_null.push(format!("{} {owner}.{name}: {prop}", entry.kind));
+                }
+                population.insert((owner.to_string(), name.clone()));
+            }
+        }
+    }
+    (population, refuses_null)
+}
+
+/// A section a document may leave out (a struct or a map with a default) is
+/// read from an explicit `null` as from a bare `key:`, and the published
+/// schema says so: `deserialize_with = "crate::config::null_as_default"` and
+/// `#[schemars(with = "Option<..>")]` are one statement, written together. The
+/// population is read off the live schema of every local kind (each optional
+/// object-shaped property); each member is then found in the source and held
+/// to both halves, and no field in the source carries one half alone.
+#[test]
+fn every_defaulted_config_section_reads_null_as_its_default() {
+    use std::collections::BTreeMap;
+
+    let (population, refuses_null) = defaulted_section_population();
+    assert!(
+        refuses_null.is_empty(),
+        "an optional section's schema must admit the `null` its loader reads as the default:\n{}",
+        refuses_null.join("\n")
+    );
+
+    // (struct, serialized field) -> (file, rust type, reads null, schema admits null)
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/config");
+    // A package field's union deserializer reads `null` itself, and
+    // `every_list_or_map_package_field_declares_both_shapes_in_its_schema`
+    // holds its schema.
+    const READS_NULL_ITSELF: [&str; 2] = [
+        "deserialize_with = \"list_or_packages_vec\"",
+        "deserialize_with = \"list_or_struct\"",
+    ];
+    let mut fields: BTreeMap<(String, String), (String, String, bool, bool)> = BTreeMap::new();
+    // A type deserialized by hand ignores its derive's field attributes, so its
+    // impl restates the rule: owner -> the fields its body reads `null` for.
+    let mut manual_impls: BTreeMap<String, std::collections::BTreeSet<String>> = BTreeMap::new();
+    let mut unpaired = Vec::new();
+    let mut paired_per_file: BTreeMap<String, usize> = BTreeMap::new();
+    let entries = std::fs::read_dir(&dir).unwrap_or_else(|e| panic!("{}: {e}", dir.display()));
+    for dirent in entries {
+        let path = dirent
+            .unwrap_or_else(|e| panic!("{}: {e}", dir.display()))
+            .path();
+        let file = path.file_name().unwrap().to_string_lossy().into_owned();
+        if !file.ends_with(".rs") || crate::test_helpers::is_test_source(&path) {
+            continue;
+        }
+        let src = crate::test_helpers::production_slice_of(&path);
+        let lines: Vec<&str> = src.lines().collect();
+        for (n, line) in lines.iter().enumerate() {
+            let Some((_, target)) = line.split_once("Deserialize<'de> for ") else {
+                continue;
+            };
+            let owner: String = target
+                .chars()
+                .take_while(|c| c.is_alphanumeric() || *c == '_')
+                .collect();
+            let body_end = lines[n..]
+                .iter()
+                .position(|l| *l == "}")
+                .map_or(lines.len(), |end| n + end);
+            manual_impls.insert(owner, fields_reading_null_by_hand(&lines[n..body_end]));
+        }
+        let mut owner = String::new();
+        let mut attrs = String::new();
+        let mut depth = 0i32;
+        for line in src.lines() {
+            let code = line.trim_start();
+            if depth > 0 || code.starts_with("#[") {
+                depth += code.matches('[').count() as i32 - code.matches(']').count() as i32;
+                attrs.push_str(code);
+                continue;
+            }
+            if code.starts_with("//") {
+                continue;
+            }
+            let rest = crate::test_helpers::strip_item_lead(code);
+            if let Some(decl) = rest.strip_prefix("struct ") {
+                owner = decl
+                    .split(|c: char| !(c.is_alphanumeric() || c == '_'))
+                    .next()
+                    .unwrap_or_default()
+                    .to_string();
+            } else if rest != code
+                && let Some((ident, ty)) = rest.split_once(':')
+                && !ident.is_empty()
+                && ident.chars().all(|c| c.is_alphanumeric() || c == '_')
+                && !ty.starts_with(':')
+            {
+                let serialized = serialized_field_name(ident, &attrs);
+                let reads_null = attrs
+                    .contains("deserialize_with = \"crate::config::null_as_default\"")
+                    || READS_NULL_ITSELF.iter().any(|d| attrs.contains(d));
+                let schema_null = attrs.contains("#[schemars(with = \"Option<")
+                    || READS_NULL_ITSELF.iter().any(|d| attrs.contains(d));
+                if reads_null != schema_null {
+                    unpaired.push(format!("{file}: {owner}.{ident}"));
+                }
+                if attrs.contains("#[schemars(with = \"Option<") {
+                    *paired_per_file.entry(file.clone()).or_default() += 1;
+                }
+                let ty = ty.trim().trim_end_matches(',').to_string();
+                fields.insert(
+                    (owner.clone(), serialized),
+                    (file.clone(), ty, reads_null, schema_null),
+                );
+            }
+            attrs.clear();
+        }
+    }
+    assert!(
+        unpaired.is_empty(),
+        "a field reading `null` as its default and a schema admitting it are written together:\n{}",
+        unpaired.join("\n")
+    );
+
+    let mut unreached = Vec::new();
+    let mut refuses_null_on_load = Vec::new();
+    let mut members = 0;
+    for (owner, name) in &population {
+        match fields.get(&(owner.clone(), name.clone())) {
+            None => unreached.push(format!("{owner}.{name}")),
+            Some((_, ty, ..)) if ty.starts_with("Option<") => {}
+            Some((file, _, reads_null, schema_null)) => {
+                members += 1;
+                let hand_read = manual_impls
+                    .get(owner)
+                    .is_none_or(|read| read.contains(name));
+                if !(*reads_null && *schema_null && hand_read) {
+                    refuses_null_on_load.push(format!("{file}: {owner}.{name}"));
+                }
+            }
+        }
+    }
+    assert!(
+        unreached.is_empty(),
+        "the source walk no longer finds these schema properties: {unreached:?}"
+    );
+    assert!(
+        refuses_null_on_load.is_empty(),
+        "an optional section must read an explicit `null` as its default:\n{}",
+        refuses_null_on_load.join("\n")
+    );
+    assert!(
+        manual_impls
+            .get("ThemeConfig")
+            .is_some_and(|read| read.contains("overrides")),
+        "the walk no longer finds the hand-written ThemeConfig reader: {manual_impls:?}"
+    );
+    assert!(
+        members >= 20,
+        "the walk no longer reaches the defaulted sections: it found {members} in {population:?}"
+    );
+    for (file, floor) in [
+        ("compliance.rs", 2),
+        ("module.rs", 2),
+        ("profile_spec.rs", 2),
+        ("root.rs", 2),
+        ("source.rs", 11),
+        ("theme.rs", 1),
+    ] {
+        let found = paired_per_file.get(file).copied().unwrap_or(0);
+        assert!(
+            found >= floor,
+            "{file}: the walk reached {found} defaulted sections, expected at least {floor}"
+        );
+    }
+}
+
+/// Every defaulted section written `null` loads through the reader cfgd uses
+/// for its kind, so a read struct standing between the document and the typed
+/// one (the root config's legacy-key fold) is held to the rule the typed struct
+/// and the schema state. One document per (kind, member): the member set to
+/// `null`, everything around it the smallest document the schema accepts.
+#[test]
+fn every_defaulted_section_written_null_loads_through_its_kinds_reader() {
+    use serde_json::{Map, Value, json};
+    use std::collections::BTreeSet;
+
+    fn resolve<'a>(r: &str, defs: &'a Map<String, Value>) -> (&'a str, &'a Value) {
+        let name = r.trim_start_matches("#/definitions/");
+        let (key, node) = defs
+            .get_key_value(name)
+            .unwrap_or_else(|| panic!("dangling schema reference {r}"));
+        (key.as_str(), node)
+    }
+
+    fn minimal(node: &Value, defs: &Map<String, Value>) -> Value {
+        if let Some(r) = node["$ref"].as_str() {
+            return minimal(resolve(r, defs).1, defs);
+        }
+        if let Some(c) = node.get("const") {
+            return c.clone();
+        }
+        if let Some(first) = node["enum"].as_array().and_then(|e| e.first()) {
+            return first.clone();
+        }
+        for key in ["anyOf", "oneOf"] {
+            if let Some(arm) = node[key]
+                .as_array()
+                .and_then(|arms| arms.iter().find(|a| schema_type_names(a) != ["null"]))
+            {
+                return minimal(arm, defs);
+            }
+        }
+        let ty = schema_type_names(node)
+            .into_iter()
+            .find(|t| *t != "null")
+            .unwrap_or("string");
+        match ty {
+            "object" => {
+                // A plain string field reads an empty default the schema allows
+                // and a reader's own check may refuse (a file's `source`, a
+                // package's `name`), so each one is written too.
+                let required = node["required"].as_array().cloned().unwrap_or_default();
+                let mut out = Map::new();
+                for (name, prop) in node["properties"].as_object().into_iter().flatten() {
+                    if required.contains(&json!(name)) || schema_type_names(prop) == ["string"] {
+                        out.insert(name.clone(), minimal(prop, defs));
+                    }
+                }
+                Value::Object(out)
+            }
+            "array" => json!([]),
+            "integer" | "number" => json!(0),
+            "boolean" => json!(false),
+            _ => json!("x"),
+        }
+    }
+
+    /// The smallest value of `node` that holds `target` written `null`, with
+    /// the member's slash path, or `None` when `node` cannot reach it.
+    fn with_null_at(
+        node: &Value,
+        owner: &str,
+        target: &(String, String),
+        defs: &Map<String, Value>,
+        visiting: &mut Vec<String>,
+    ) -> Option<(Value, String)> {
+        if let Some(r) = node["$ref"].as_str() {
+            let (name, def) = resolve(r, defs);
+            if visiting.iter().any(|v| v == name) {
+                return None;
+            }
+            visiting.push(name.to_string());
+            let found = with_null_at(def, name, target, defs, visiting);
+            visiting.pop();
+            return found;
+        }
+        for key in ["anyOf", "oneOf"] {
+            for arm in node[key].as_array().into_iter().flatten() {
+                if let Some(found) = with_null_at(arm, owner, target, defs, visiting) {
+                    return Some(found);
+                }
+            }
+        }
+        if let Some(props) = node["properties"].as_object() {
+            for (name, prop) in props {
+                let (value, path) = if owner == target.0 && *name == target.1 {
+                    (Value::Null, name.clone())
+                } else if let Some((v, p)) = with_null_at(prop, "", target, defs, visiting) {
+                    (v, format!("{name}/{p}"))
+                } else {
+                    continue;
+                };
+                let mut obj = minimal(node, defs);
+                obj[name.as_str()] = value;
+                return Some((obj, path));
+            }
+        }
+        if node["items"].is_object()
+            && let Some((v, p)) = with_null_at(&node["items"], "", target, defs, visiting)
+        {
+            return Some((json!([v]), format!("0/{p}")));
+        }
+        if node["additionalProperties"].is_object()
+            && let Some((v, p)) =
+                with_null_at(&node["additionalProperties"], "", target, defs, visiting)
+        {
+            return Some((json!({ "k": v }), format!("k/{p}")));
+        }
+        None
+    }
+
+    let (population, _) = defaulted_section_population();
+    let home = tempfile::tempdir().unwrap();
+    let mut reached = BTreeSet::new();
+    let mut refused = Vec::new();
+    for entry in crate::schema::KIND_REGISTRY.iter().filter(|e| !e.crd) {
+        let schema: Value = serde_json::from_str(&entry.pretty_schema())
+            .unwrap_or_else(|e| panic!("{} schema: {e}", entry.kind));
+        let defs = schema["definitions"]
+            .as_object()
+            .cloned()
+            .unwrap_or_default();
+        let root = schema["title"]
+            .as_str()
+            .expect("a kind schema carries its type name");
+        for member in &population {
+            let Some((value, path)) = with_null_at(&schema, root, member, &defs, &mut Vec::new())
+            else {
+                continue;
+            };
+            reached.insert(member.clone());
+            let (doc, path) = if entry.kind == "Config" {
+                (value, path)
+            } else {
+                (json!({ "spec": value }), format!("spec/{path}"))
+            };
+            let mut doc = doc;
+            doc["apiVersion"] = json!(entry.api_version);
+            doc["kind"] = json!(entry.kind);
+            doc["metadata"] = json!({ "name": "null-sections" });
+            let yaml = serde_yaml::to_string(&doc).expect("a JSON value serializes as YAML");
+            let read = match entry.kind {
+                "Module" => super::parse_module(&yaml).map(drop),
+                "ConfigSource" => super::parse_config_source(&yaml).map(drop),
+                "Profile" | "Config" => {
+                    let file = home.path().join(format!("{}.yaml", entry.kind));
+                    std::fs::write(&file, &yaml).unwrap();
+                    if entry.kind == "Profile" {
+                        super::load_profile(&file).map(drop)
+                    } else {
+                        super::load_config(&file).map(drop)
+                    }
+                }
+                other => panic!("no reader is named here for the local kind {other}"),
+            };
+            if let Err(e) = read {
+                refused.push(format!("{} {path}: {e}\n{yaml}", entry.kind));
+            }
+        }
+    }
+    assert!(
+        refused.is_empty(),
+        "a defaulted section written `null` must load through its kind's reader:\n{}",
+        refused.join("\n")
+    );
+    let unreached: Vec<_> = population.difference(&reached).collect();
+    assert!(
+        unreached.is_empty(),
+        "no document of any local kind reaches these sections: {unreached:?}"
+    );
+    assert!(
+        reached.len() >= 20,
+        "the walk reached only {} sections: {reached:?}",
+        reached.len()
+    );
+}
+
 #[test]
 fn cargo_spec_deserialize_list() {
     // Dual-form lives on the `PackagesSpec::cargo` field, the real consumer
@@ -691,7 +1627,7 @@ fn merge_manifest_file_fields() {
     let layer1 = ProfileLayer {
         source: "local".into(),
         profile_name: "base".into(),
-        priority: 1000,
+        priority: crate::config::LOCAL_LAYER_PRIORITY,
         policy: LayerPolicy::Local,
         spec: ProfileSpec {
             packages: Some(PackagesSpec {
@@ -708,7 +1644,7 @@ fn merge_manifest_file_fields() {
     let layer2 = ProfileLayer {
         source: "local".into(),
         profile_name: "work".into(),
-        priority: 1000,
+        priority: crate::config::LOCAL_LAYER_PRIORITY,
         policy: LayerPolicy::Local,
         spec: ProfileSpec {
             packages: Some(PackagesSpec {
@@ -2466,7 +3402,10 @@ spec:
         Some("dracula"),
         "the flat theme must be readable at spec.output.theme"
     );
-    assert_eq!(cfg.spec.usage_hints(), Some(false));
+    assert_eq!(
+        cfg.spec.output.as_ref().and_then(|o| o.usage_hints),
+        Some(false)
+    );
     assert_eq!(
         cfg.legacy_output_keys,
         vec!["spec.theme".to_string(), "spec.usageHints".to_string()]
@@ -2540,9 +3479,12 @@ spec:
 "#;
     let cfg = super::parse_config(yaml, std::path::Path::new("cfgd.yaml")).expect("parses");
     assert_eq!(cfg.spec.theme().map(|t| t.name.as_str()), Some("nord"));
-    assert_eq!(cfg.spec.usage_hints(), Some(false));
     assert_eq!(
-        cfg.spec.mask_env_values(),
+        cfg.spec.output.as_ref().and_then(|o| o.usage_hints),
+        Some(false)
+    );
+    assert_eq!(
+        cfg.spec.output.as_ref().and_then(|o| o.mask_env_values),
         Some(super::MaskEnvValues::None),
         "maskEnvValues has no flat spelling and reads only from the nested block"
     );
@@ -3138,7 +4080,7 @@ fn gated_layer(name: &str, env: Vec<EnvVar>, aliases: Vec<ShellAlias>) -> Profil
     ProfileLayer {
         source: "local".into(),
         profile_name: name.into(),
-        priority: 1000,
+        priority: crate::config::LOCAL_LAYER_PRIORITY,
         policy: LayerPolicy::Local,
         spec: ProfileSpec {
             env,
@@ -3308,10 +4250,9 @@ fn an_ungated_entry_serializes_exactly_as_it_did_before_the_field_existed() {
 /// deserializer, then the live schema for both shapes.
 #[test]
 fn every_list_or_map_package_field_declares_both_shapes_in_its_schema() {
-    let src = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/config/profile_spec.rs"),
-    )
-    .unwrap();
+    let src = crate::test_helpers::walked_file_body(
+        &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/config/profile_spec.rs"),
+    );
     let lines: Vec<&str> = src.lines().collect();
     let mut widened = Vec::new();
     let mut unpaired = Vec::new();
@@ -3321,17 +4262,19 @@ fn every_list_or_map_package_field_declares_both_shapes_in_its_schema() {
         if !widening {
             continue;
         }
-        // The field name is on the next `pub` line; the paired attribute sits
-        // between the two.
+        // The field name is on the next line carrying a visibility lead; the
+        // paired attribute sits between the two.
         let mut m = n + 1;
         let mut paired = false;
-        while m < lines.len() && !lines[m].trim_start().starts_with("pub ") {
+        let declares_field = |line: &str| {
+            let code = line.trim_start();
+            crate::test_helpers::strip_item_lead(code) != code
+        };
+        while m < lines.len() && !declares_field(lines[m]) {
             paired |= lines[m].contains("schema_with");
             m += 1;
         }
-        let field = lines[m]
-            .trim_start()
-            .trim_start_matches("pub ")
+        let field = crate::test_helpers::strip_item_lead(lines[m].trim_start())
             .split(':')
             .next()
             .unwrap()

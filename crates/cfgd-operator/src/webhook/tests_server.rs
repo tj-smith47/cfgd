@@ -2,7 +2,6 @@
 //! entry point against an in-process self-signed cert and a stub kube
 //! client. Verifies the bind/accept/TLS-handshake loop and at least one
 //! HTTP request round-trip through the production path.
-#![cfg(test)]
 
 use std::io::Write;
 use std::sync::Arc;
@@ -22,6 +21,7 @@ use tower::service_fn;
 
 use super::run_webhook_server;
 use crate::errors::OperatorError;
+use crate::health::HealthState;
 use crate::metrics::{Metrics, WebhookLabels};
 
 // Test-side rustls crypto provider install — one-shot, ignored if already set.
@@ -130,9 +130,15 @@ async fn run_webhook_server_serves_healthz_over_tls() {
     let metrics = fresh_metrics();
     let client = stub_kube_client();
     let cert_dir = dir.path().to_string_lossy().into_owned();
+    let health = HealthState::new(Default::default(), true, false);
+    let serving = health.clone();
 
-    let server =
-        tokio::spawn(async move { run_webhook_server(&cert_dir, listener, metrics, client).await });
+    let server = tokio::spawn(async move {
+        run_webhook_server(&cert_dir, listener, metrics, client, move || {
+            serving.set_webhook_serving()
+        })
+        .await
+    });
 
     // Issue GET /healthz over the pinned TLS connector.
     let mut sender = https_sender(local_addr, &connector).await;
@@ -153,6 +159,10 @@ async fn run_webhook_server_serves_healthz_over_tls() {
         .expect("collect body")
         .to_bytes();
     assert_eq!(body_bytes.as_ref(), b"ok");
+    assert!(
+        health.is_ready(),
+        "a webhook answering over TLS must have marked the pod ready"
+    );
 
     server.abort();
     let _ = server.await;
@@ -181,8 +191,9 @@ async fn run_webhook_server_handles_admission_post_over_tls() {
     let client = stub_kube_client();
     let cert_dir = dir.path().to_string_lossy().into_owned();
 
-    let server =
-        tokio::spawn(async move { run_webhook_server(&cert_dir, listener, metrics, client).await });
+    let server = tokio::spawn(async move {
+        run_webhook_server(&cert_dir, listener, metrics, client, || {}).await
+    });
 
     let review_body = serde_json::to_vec(&serde_json::json!({
         "apiVersion": "admission.k8s.io/v1",
@@ -275,7 +286,14 @@ async fn run_webhook_server_errors_when_cert_pem_has_no_certificates() {
     let metrics = fresh_metrics();
     let client = stub_kube_client();
 
-    let result = run_webhook_server(&dir.path().to_string_lossy(), listener, metrics, client).await;
+    let result = run_webhook_server(
+        &dir.path().to_string_lossy(),
+        listener,
+        metrics,
+        client,
+        || {},
+    )
+    .await;
     match result {
         Err(OperatorError::Webhook(msg)) => {
             assert!(
@@ -302,7 +320,21 @@ async fn run_webhook_server_errors_when_cert_file_missing() {
     let metrics = fresh_metrics();
     let client = stub_kube_client();
 
-    let result = run_webhook_server(&dir.path().to_string_lossy(), listener, metrics, client).await;
+    let health = HealthState::new(Default::default(), true, false);
+    let serving = health.clone();
+
+    let result = run_webhook_server(
+        &dir.path().to_string_lossy(),
+        listener,
+        metrics,
+        client,
+        move || serving.set_webhook_serving(),
+    )
+    .await;
+    assert!(
+        !health.is_ready(),
+        "a webhook that never loaded its certificates must not mark the pod ready"
+    );
     match result {
         Err(OperatorError::Webhook(msg)) => {
             assert!(
@@ -335,8 +367,9 @@ async fn run_webhook_server_recovers_from_failed_tls_handshake() {
     let client = stub_kube_client();
     let cert_dir = dir.path().to_string_lossy().into_owned();
 
-    let server =
-        tokio::spawn(async move { run_webhook_server(&cert_dir, listener, metrics, client).await });
+    let server = tokio::spawn(async move {
+        run_webhook_server(&cert_dir, listener, metrics, client, || {}).await
+    });
 
     // First connection: open TCP, write garbage, close — TLS handshake fails.
     {

@@ -35,12 +35,26 @@ use cfgd_core::output::Printer;
 
 const SNAPSHOT_ROOT: &str = "tests/output_snapshots";
 
+/// The migration gate held off: these goldens pin what init scaffolds and
+/// applies, and the gate's run inside init is covered against the real binary.
+fn inert_migration_gate() -> cfgd::cli::config_schema::GateInvocation<'static> {
+    cfgd::cli::config_schema::GateInvocation {
+        policy_override: Some(cfgd_schema::MigrationPolicy::Ignore),
+        assume_yes: false,
+        is_daemon: false,
+        preview: false,
+        state_dir: None,
+        scope: cfgd_core::Scope::User,
+    }
+}
+
 #[test]
 fn init_happy_human() {
     let tmp = tempfile::tempdir().unwrap();
     let target = tmp.path().join("happy-cfg");
     let target_str = target.to_string_lossy().into_owned();
     let args = InitArgs {
+        migration_gate: inert_migration_gate(),
         on_conflict: cfgd::cli::OnConflict::Ask,
         path: Some(&target_str),
         from: None,
@@ -109,6 +123,7 @@ fn init_from_a_local_repo_names_the_destination_once() {
     let target_str = target.to_string_lossy().into_owned();
     let source_str = source.to_string_lossy().into_owned();
     let args = InitArgs {
+        migration_gate: inert_migration_gate(),
         on_conflict: cfgd::cli::OnConflict::Ask,
         path: Some(&target_str),
         from: Some(&source_str),
@@ -167,6 +182,7 @@ fn init_happy_json() {
     let target = tmp.path().join("happy-cfg-json");
     let target_str = target.to_string_lossy().into_owned();
     let args = InitArgs {
+        migration_gate: inert_migration_gate(),
         on_conflict: cfgd::cli::OnConflict::Ask,
         path: Some(&target_str),
         from: None,
@@ -214,6 +230,7 @@ fn init_already_initialized_human() {
 
     let target_str = target.to_string_lossy().into_owned();
     let args = InitArgs {
+        migration_gate: inert_migration_gate(),
         on_conflict: cfgd::cli::OnConflict::Ask,
         path: Some(&target_str),
         from: None,
@@ -255,10 +272,11 @@ fn init_with_apply_renders_apply_status_streaming() {
     // `printer.emit(...)`, so the final Doc carries only the InitOutput
     // payload — NOT a buffered human surface. This capture therefore covers
     // the scaffold surface (scaffold status lines + git-init success) and
-    // the apply surface (apply header + "Set active profile" + "Nothing to
-    // do" status), with no buffered human content trailing it. The
-    // streaming → buffered one-blank-line invariant under apply data is
-    // asserted by the `init_apply_then_next_steps_bridge_invariant` test
+    // the apply surface (apply header + "Nothing to do" status; a preview
+    // writes no profile, so no "Set active profile" line), with no buffered
+    // human content trailing it. The streaming → buffered one-blank-line
+    // invariant under apply data is asserted by the
+    // `init_apply_then_next_steps_bridge_invariant` test
     // below — kept separate because exercising it requires a buffered Doc
     // with human content, which cmd_init does not emit on the apply branch.
     let tmp = tempfile::tempdir().unwrap();
@@ -269,7 +287,7 @@ fn init_with_apply_renders_apply_status_streaming() {
     std::fs::create_dir_all(&state_dir).unwrap();
     // SAFETY: serialized via #[serial].
     unsafe {
-        std::env::set_var("CFGD_STATE_DIR", &state_dir);
+        std::env::set_var(cfgd_core::CFGD_STATE_DIR_ENV, &state_dir);
     }
     let target = tmp.path().join("bridge-cfg");
     let target_str = target.to_string_lossy().into_owned();
@@ -289,6 +307,7 @@ fn init_with_apply_renders_apply_status_streaming() {
     .unwrap();
 
     let args = InitArgs {
+        migration_gate: inert_migration_gate(),
         on_conflict: cfgd::cli::OnConflict::Ask,
         path: Some(&target_str),
         from: None,
@@ -312,7 +331,7 @@ fn init_with_apply_renders_apply_status_streaming() {
     drop(printer);
     // SAFETY: serialized via #[serial].
     unsafe {
-        std::env::remove_var("CFGD_STATE_DIR");
+        std::env::remove_var(cfgd_core::CFGD_STATE_DIR_ENV);
     }
     result.unwrap();
 
@@ -338,8 +357,8 @@ fn init_theme_rethemed_printer_still_owes_apply_a_blank_line() {
     // "Initialized at …" whenever `--theme` was passed.
     //
     // Module-only (`apply_profile: None`), not profile-based like the sibling
-    // test above: the profile branch prints "Set active profile: …" on the
-    // rethemed printer BEFORE the Apply header, and that status line's own
+    // test above: the profile branch outside `--dry-run` prints "Set active
+    // profile: …" on the rethemed printer BEFORE the Apply header, and that status line's own
     // group-close re-arms blank-pending independently — masking this exact
     // bug. `cfgd init --theme dracula --apply-module nvim --yes` (the README
     // demo's actual command) takes the module-only branch, which has no such
@@ -353,7 +372,7 @@ fn init_theme_rethemed_printer_still_owes_apply_a_blank_line() {
     std::fs::create_dir_all(&state_dir).unwrap();
     // SAFETY: serialized via #[serial].
     unsafe {
-        std::env::set_var("CFGD_STATE_DIR", &state_dir);
+        std::env::set_var(cfgd_core::CFGD_STATE_DIR_ENV, &state_dir);
     }
     let target = tmp.path().join("themed-cfg");
     let target_str = target.to_string_lossy().into_owned();
@@ -371,6 +390,7 @@ fn init_theme_rethemed_printer_still_owes_apply_a_blank_line() {
 
     let apply_modules = vec!["empty-mod".to_string()];
     let args = InitArgs {
+        migration_gate: inert_migration_gate(),
         on_conflict: cfgd::cli::OnConflict::Ask,
         path: Some(&target_str),
         from: None,
@@ -399,7 +419,7 @@ fn init_theme_rethemed_printer_still_owes_apply_a_blank_line() {
     drop(printer);
     // SAFETY: serialized via #[serial].
     unsafe {
-        std::env::remove_var("CFGD_STATE_DIR");
+        std::env::remove_var(cfgd_core::CFGD_STATE_DIR_ENV);
     }
     result.unwrap();
 
@@ -537,7 +557,7 @@ fn init_apply_lock_honors_state_dir_override() {
     let _home_guard = cfgd_core::test_helpers::EnvVarGuard::set("HOME", home.to_str().unwrap());
     // The override must win over CFGD_STATE_DIR too; leave it unset so the only
     // way the lock reaches `state_dir` is via the flag chain under test.
-    let _state_env = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_STATE_DIR");
+    let _state_env = cfgd_core::test_helpers::EnvVarGuard::unset(cfgd_core::CFGD_STATE_DIR_ENV);
 
     let state_dir = tmp.path().join("explicit-state");
     let cache_dir = tmp.path().join("explicit-cache");
@@ -562,6 +582,7 @@ fn init_apply_lock_honors_state_dir_override() {
     .unwrap();
 
     let args = InitArgs {
+        migration_gate: inert_migration_gate(),
         on_conflict: cfgd::cli::OnConflict::Ask,
         path: Some(&target_str),
         from: None,

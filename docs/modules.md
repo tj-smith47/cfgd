@@ -143,7 +143,7 @@ declarations fold together rather than replace one another); on Linux only the f
 | Field | Required | Type | Description |
 |---|---|---|---|
 | `name` | yes | string | Canonical package name |
-| `minVersion` | no | string | Minimum acceptable version (semver). Also checked LIVE, by the whole-machine surfaces (`cfgd diff`, `cfgd status --scan`, `cfgd verify`) and by their `--module` scoped forms alike: an installed copy below the floor is drift (`want: 0.9, have: 0.8.3`), and a version the manager cannot state (or states in a form nothing can compare against, or fails to spawn its own comparator) is a check that could not run. A manager that cannot raise a package in place at all (`brew-tap`, a config-declared scripted installer) reports a below-floor package as a check error rather than drift, since no apply could ever heal it; every other manager raises through its own upgrade or install verb. `apk`, `pacman`, `zypper` and FreeBSD `pkg` list installed names only, and `brew-tap` entries are repositories with no version to state — a `minVersion` against any of these is always such a check |
+| `minVersion` | no | string | Minimum acceptable version (semver). A floor no available manager can meet, on a package that names a manager cfgd can bootstrap, is a question: see the resolution algorithm. Also checked LIVE, by the whole-machine surfaces (`cfgd diff`, `cfgd status --scan`, `cfgd verify`) and by their `--module` scoped forms alike: an installed copy below the floor is drift (`want: 0.9, have: 0.8.3`), and a version the manager cannot state (or states in a form nothing can compare against, or fails to spawn its own comparator) is a check that could not run. A manager that cannot raise a package in place at all (`brew-tap`, a config-declared scripted installer) reports a below-floor package as a check error, since no apply could ever heal it; every other manager raises through its own upgrade or install verb. `apk`, `pacman`, `zypper` and FreeBSD `pkg` list installed names only, and `brew-tap` entries are repositories with no version to state — a `minVersion` against any of these is always such a check |
 | `prefer` | no | list | Ordered list of managers to try. `"script"` uses the `script` field as a custom installer. If omitted, the available manager that already holds the package wins (the platform's native manager is asked first), and a package nobody holds installs through the native manager. |
 | `deny` | no | list | Managers to never use for this package, even if available and preferred |
 | `aliases` | no | map | Per-manager name overrides when the package name differs |
@@ -276,6 +276,53 @@ The full resolution logic for each package entry:
    ✗ package 'neovim' in module 'demo' cannot be resolved: every available manager offers a version below the declared minVersion 99.0
    ```
    A manager that could not be asked successfully is neither of those, and never ends the run.
+   A proven-below floor on a package that NAMES a registered manager this host already holds is not a refusal either. No listing offers the copy a manager's own installer delivered (a `cargo` that rustup put on the machine is in no `apt` index), so the resolver asks that manager's own binary what version it reports, judged in that manager's version grammar. At or above the floor, the entry is satisfied: the manager is the delivery, nothing is planned, and every read surface states what is here.
+   ```
+   ✓ rust — apt available; cargo 1.90 is on this host, at or above the declared minVersion 1.85
+   ```
+   Below the floor, the entry still resolves and the shortfall is reported: the sentence names what the host actually holds, and names the raise, so `cfgd verify`, `cfgd diff`, `cfgd status --scan`, `cfgd doctor` and `cfgd module show --resolved` all state ``cargo 1.80 is on this host, below the declared minVersion 1.85; raise it with `rustup update` ``, and the live check records it as drift wanting the floor. The raise is the family's own (`rustup update` for cargo, `brew update` for brew), because the binary on PATH is a shim and installing the package over itself would leave a second copy beside the one in use. A binary that states no version, or one its own comparator cannot read, is a check that could not run, and the sentence names what to look at: `cannot judge cargo against the declared minVersion 1.85: it reports no version; check that cargo is on this process's PATH and that CARGO_HOME and RUSTUP_HOME are set for it`. `cfgd plan` and `cfgd apply` carry the same fact as a step of their own: the `Bootstrap` phase gets one row per held manager below its floor, naming the floor and every module that declared it, and that step installs nothing (a bootstrap cannot raise a manager already on the machine). The check runs at execution, against the binary; the version read while the plan was built is not reused, so an apply fails that one step with the same sentence. A floor is the declaring module's own statement about what its packages need, so the failure withholds that manager from the packages of the modules the row names and from nobody else: another module installing through the same copy asked for nothing this host fails to offer, and its packages go in. A host whose cargo is 1.98.1, with module `rust` asking for 99.0 and module `tools` for 100.0, plans one row at the stricter of the two, naming each declarant beside the number it wrote:
+   ```
+   Phase: Bootstrap
+     cfgd:managers
+       - check cargo against minVersion 100.0 — declared by rust (99.0), tools (100.0)
+   ```
+   The apply refuses each module's packages with the number that module wrote, and a third module installing through the same cargo is untouched:
+   ```
+   Phase: Bootstrap
+     cfgd:managers
+       ✗ check cargo against minVersion 100.0 — declared by rust (99.0), tools (100.0) — cargo 1.98.1 is on this host, below the declared minVersion 100.0; raise it with `rustup update` (<0.1s)
+
+   Phase: Packages
+     module:dotfiles
+       ✓ cargo install just                                                            (<0.1s)
+     module:rust
+       ✗ cargo install ripgrep                                                         — cargo is below the minVersion 99.0 module 'rust' declared (<0.1s)
+     module:tools
+       ✗ cargo install bat                                                             — cargo is below the minVersion 100.0 module 'tools' declared (<0.1s)
+   ```
+   A daemon tick plans the same way, so the finding is recorded as drift wanting the floor (one row, `cargo:cargo`, shared with the live re-check so the two never stand two rows for one toolchain), each module the row names fires its own `onDrift` hook, on a full tick and on that module's own scoped tick alike, and every other module the tick looked at is still reported. That floor is re-checked live, against the binary with no listing consulted, so a toolchain that later slips below it is reported as drift.
+   A proven-below floor on a package that names a package manager cfgd can bootstrap on this host (`brew`, `cargo`, `npm`, `pipx`, `go`, `nix`, `snap`, `flatpak`, `chocolatey`, `scoop`) has a third answer: cfgd asks. The question names the version found, the floor, and the route that would satisfy it; on yes cfgd provisions that manager in the `Bootstrap` phase and installs no package, and the plan row states the floor the answer was given for.
+   ```
+   ⚠ snap offers nix 2.18.1, below the declared minVersion 99.0 that module 'rust' asks for
+   ? Provision nix via nix installer instead? (y/N) y
+   > Provision nix via nix installer instead? Yes
+
+   Phase: Bootstrap
+     cfgd:managers
+       - provision nix via nix installer (minVersion 99.0)
+   ```
+   `--yes` (or `CFGD_YES=1`) answers yes without asking, on `cfgd plan` and `cfgd apply` alike: the question is asked while modules resolve, so both verbs reach it. A run with nobody to ask (a pipe, CI, `-o json`, the daemon) keeps the refusal, and says what would have let a later run take the route:
+   ```
+   ✗ package 'nix' in module 'rust' cannot be resolved: snap offers nix 2.18.1, below the declared minVersion 99.0; nix can be provisioned via nix installer: re-run with --yes, or on a terminal
+   ```
+   A reader who was asked and said no is told their answer stood: `the nix installer provision of nix was declined`. Every other verb answers "nobody to ask" whatever `--yes` says: `cfgd status`, `cfgd verify`, `cfgd diff`, `cfgd decide`, `cfgd init`, the `cfgd module` verbs and the daemon install nothing, so none of them prompts. `cfgd doctor` states the route as a fact in the module's row:
+   ```
+   ✗ rust — nix: snap offers nix 2.18.1, below the declared minVersion 99.0; provisionable via nix installer
+   ```
+   and `cfgd module show --resolved` states the same clause against the package's declared entry, as does the package's row under `cfgd status <module>`:
+   ```
+   ⚠ nix — snap offers nix 2.18.1, below the declared minVersion 99.0; provisionable via nix installer
+   ```
    A candidate cfgd can bootstrap counts as satisfying: it resolves optimistically (no version can be queried before the manager itself exists), and `cfgd diff` names the route the bootstrap would take:
    ```
    ⚠ chocolatey: not installed — can provision via system
@@ -293,6 +340,7 @@ A package declared in more than one scope (the profile and a module, or two modu
 - **Same manager + same name across scopes** → installed once; the duplicates are dropped.
 - **Different managers** → both install. `ripgrep` via `brew` in the profile and via `cargo` in a module are two distinct installs.
 - **Module installs win** over profile duplicates, and an **earlier module wins** over a later one. Module-owned package work is dispatched ahead of profile-owned work inside the Packages phase, so a module's own `postApply` script can rely on the package already being present.
+- **The strictest `minVersion` survives.** Two modules declaring one package with different floors keep the higher one, judged in the owning manager's own version grammar. Where neither floor is stricter (`1.85` and `1.85.0` are one floor spelled twice, and two floors the manager cannot read are two typos), the spelling that sorts first is kept, so the answer does not depend on which module was read first.
 - **`prefer: [script]` entries are never deduped.** Two same-named install scripts may differ, so both always run (subject to each entry's own `creates`/`onlyIf`/`unless` guards).
 - Dedup is **silent**: no warning is emitted for a dropped duplicate.
 
@@ -379,7 +427,7 @@ resolution added nothing beyond the declared list. See [Profiles → Inheritance
 for the `Profile` row's identical rule.
 
 A module the resolution gated off this host follows the `depends:` one as a further clause in the
-same annotation: `Modules  git, nvim (depends: plugins, rectangle skipped: platform not matched
+same annotation: `Modules  git, nvim (depends: plugins; rectangle skipped: platform not matched
 (requires: macos))` — the name leaves the list, so the clause is where the reader is told why it
 is missing. The run itself lists the module as a planned, skipped action carrying the same reason;
 nothing is installed for it and no drift row is recorded against it.
@@ -629,7 +677,7 @@ declared env values (see [`cfgd status`](cli-reference.md#cfgd-status)). It
 states nothing about the module's scripts, because nothing checks a script after
 the run that executes it: `cfgd module show <name>` lists them.
 
-Module resources are first-class in compliance reporting, not profile-only. A module's files, packages, and system settings appear in every `cfgd compliance` surface (snapshot, export, diff, history), attributed to their module, and are counted into the compliance summary a device check-in reports: the same effective profile-plus-modules view that `cfgd verify` and `cfgd diff` use. Module file checks are content-aware: a deployed module file present on disk but whose bytes drifted from its source is reported as a violation.
+Module resources are first-class in compliance reporting, beside the profile's own. A module's files, packages, and system settings appear in every `cfgd compliance` surface (snapshot, export, diff, history), attributed to their module, and are counted into the compliance summary a device check-in reports, each failing one listed there by name: the same effective profile-plus-modules view that `cfgd verify` and `cfgd diff` use. Module file checks are content-aware: a deployed module file present on disk but whose bytes drifted from its source is reported as a violation.
 
 ## Plan Output Format
 

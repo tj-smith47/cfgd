@@ -1,3 +1,6 @@
+---
+paths: ["crates/*/src/lib.rs", "crates/*/src/main.rs", "chart/**"]
+---
 # cfgd Module Map
 
 ```
@@ -22,6 +25,7 @@ crates/
 ├── cfgd/src/               # Unified binary crate (workstation + node)
 │   ├── main.rs             # Entry point, clap dispatch, kubectl plugin argv[0] detection
 │   ├── cli/                # Clap command definitions, argument parsing
+│   │   ├── startup.rs      # StartupDocument: cfgd.yaml read once, shared by every reader before dispatch
 │   │   └── plugin.rs       # kubectl cfgd plugin: debug, exec, inject, status, version
 │   ├── files/              # File management: copy, template, diff, permissions
 │   ├── packages/           # PackageManager implementations (brew, apt, cargo, npm, pipx, dnf, winget, chocolatey, scoop)
@@ -36,7 +40,7 @@ crates/
 │   ├── crds/               # CRD definitions (MachineConfig, ConfigPolicy, DriftAlert, ClusterConfigPolicy)
 │   ├── controllers/        # kube-rs reconciliation controllers (4 controllers)
 │   ├── webhook.rs          # Admission webhook server (TLS, 4 validation + 1 mutation endpoints)
-│   ├── health.rs           # Dedicated health probe server (/healthz, /readyz)
+│   ├── health.rs           # Dedicated health probe server (/healthz, /readyz, /leaderz)
 │   ├── leader.rs           # Lease-based leader election
 │   ├── metrics.rs          # Prometheus metrics registry + HTTP endpoint
 │   ├── gen_crds.rs         # CRD JSON schema generation utility
@@ -48,6 +52,7 @@ crates/
 │       ├── fleet.rs        # Fleet status aggregation
 │       ├── web.rs          # Web dashboard (HTML/CSS/JS)
 │       └── errors.rs       # GatewayError with IntoResponse
+├── cfgd-test-fixtures/src/ # Test-only lib (publish = false): the shared fixtures `crates/cfgd/tests/` imports as `common`
 └── cfgd-csi/src/           # CSI Node plugin binary crate
     ├── main.rs             # Entry point: gRPC server on unix socket, metrics HTTP
     ├── lib.rs              # Crate root, proto include

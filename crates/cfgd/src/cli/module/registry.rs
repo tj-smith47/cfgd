@@ -31,12 +31,7 @@ pub fn cmd_module_add_from_registry(
     let mut cfg = config::load_config(&cli.config)?;
     drain_config_deprecations(printer, &mut cfg);
 
-    let registries = cfg
-        .spec
-        .modules
-        .as_ref()
-        .map(|m| &m.registries[..])
-        .unwrap_or(&[]);
+    let registries = &cfg.spec.modules_effective().registries[..];
     let registry_entry = match registries.iter().find(|s| s.name == reg_ref.registry) {
         Some(r) => r,
         None => {
@@ -739,12 +734,7 @@ pub fn cmd_module_search(cli: &Cli, printer: &Printer, query: &str) -> anyhow::R
 
     let mut cfg = config::load_config(&cli.config)?;
     drain_config_deprecations(printer, &mut cfg);
-    let registries = cfg
-        .spec
-        .modules
-        .as_ref()
-        .map(|m| &m.registries[..])
-        .unwrap_or(&[]);
+    let registries = &cfg.spec.modules_effective().registries[..];
     if registries.is_empty() {
         // The same element type a found listing serializes, so one payload shape
         // answers both outcomes.
@@ -878,32 +868,41 @@ pub fn cmd_module_registry_add(
     // `already_present` short-circuits the "added" success message after the
     // helper's write (still a harmless idempotent rewrite).
     let mut already_present = false;
-    super::mutate_config_yaml(&cli.config, true, |doc| {
-        let spec = doc
-            .get_mut("spec")
-            .ok_or_else(|| anyhow::anyhow!("config has no spec"))?;
-        if spec.get("modules").is_none() {
-            spec["modules"] = serde_yaml::Value::Mapping(serde_yaml::Mapping::new());
-        }
+    super::mutate_config_yaml(&cli.config, |doc| {
+        use crate::cli::config_cmd;
+        let spec = config_cmd::spec_mapping_mut(doc, &cli.config)?;
         let modules = spec
-            .get_mut("modules")
-            .ok_or_else(|| anyhow::anyhow!("failed to create modules section"))?;
+            .entry(serde_yaml::Value::from("modules"))
+            .or_insert(serde_yaml::Value::Null);
+        let found = config_cmd::blocking_shape(modules);
+        let modules = config_cmd::section_mapping_mut(modules).ok_or_else(|| {
+            config_cmd::section_shape_refusal(
+                &cli.config,
+                "modules",
+                found,
+                config_cmd::SHAPE_MAPPING,
+            )
+        })?;
         let registries = modules
-            .get_mut("registries")
-            .and_then(|v| v.as_sequence_mut());
-
-        if let Some(registries) = registries {
-            if registries
-                .iter()
-                .any(|s| s.get("name").and_then(|v| v.as_str()) == Some(&registry_name))
-            {
-                already_present = true;
-                return Ok(());
-            }
-            registries.push(new_entry.clone());
-        } else {
-            modules["registries"] = serde_yaml::Value::Sequence(vec![new_entry.clone()]);
+            .entry(serde_yaml::Value::from("registries"))
+            .or_insert(serde_yaml::Value::Null);
+        let found = config_cmd::blocking_shape(registries);
+        let registries = config_cmd::section_sequence_mut(registries).ok_or_else(|| {
+            config_cmd::section_shape_refusal(
+                &cli.config,
+                "modules.registries",
+                found,
+                config_cmd::SHAPE_SEQUENCE,
+            )
+        })?;
+        if registries
+            .iter()
+            .any(|s| s.get("name").and_then(|v| v.as_str()) == Some(&registry_name))
+        {
+            already_present = true;
+            return Ok(());
         }
+        registries.push(new_entry.clone());
         Ok(())
     })?;
 
@@ -953,11 +952,12 @@ pub fn cmd_module_registry_remove(
     }
 
     let mut outcome = RegistryRemoveOutcome::NoRegistries;
-    super::mutate_config_yaml(&cli.config, true, |doc| {
+    super::mutate_config_yaml(&cli.config, |doc| {
         let registries = doc
             .get_mut("spec")
             .and_then(|s| s.get_mut("modules"))
             .and_then(|m| m.get_mut("registries"))
+            // section-write-ok: a remover; an absent list is reported as holding no registries
             .and_then(|v| v.as_sequence_mut());
         match registries {
             None => outcome = RegistryRemoveOutcome::NoRegistries,
@@ -1070,12 +1070,7 @@ pub fn cmd_module_registry_rename(
 
     let mut cfg = config::load_config(&cli.config)?;
     drain_config_deprecations(printer, &mut cfg);
-    let registries = cfg
-        .spec
-        .modules
-        .as_ref()
-        .map(|m| &m.registries[..])
-        .unwrap_or(&[]);
+    let registries = &cfg.spec.modules_effective().registries[..];
 
     if !registries.iter().any(|s| s.name == name) {
         // Carry the typed RegistryNotFound so the exit-code downcast resolves to
@@ -1103,15 +1098,17 @@ pub fn cmd_module_registry_rename(
     }
 
     // Update registry name in cfgd.yaml via the shared mutate-write helper.
-    super::mutate_config_yaml(&cli.config, true, |doc| {
+    super::mutate_config_yaml(&cli.config, |doc| {
         if let Some(registries) = doc
             .get_mut("spec")
             .and_then(|s| s.get_mut("modules"))
             .and_then(|m| m.get_mut("registries"))
+            // section-write-ok: renames an entry the typed load above already found
             .and_then(|v| v.as_sequence_mut())
         {
             for entry in registries.iter_mut() {
                 if entry.get("name").and_then(|v| v.as_str()) == Some(name) {
+                    // section-write-ok: the entry matched by name is a mapping
                     entry["name"] = serde_yaml::Value::String(new_name.to_string());
                     break;
                 }
@@ -1196,12 +1193,7 @@ pub fn cmd_module_registry_list(cli: &Cli, printer: &Printer) -> anyhow::Result<
 
     let mut cfg = config::load_config(&cli.config)?;
     drain_config_deprecations(printer, &mut cfg);
-    let registries = cfg
-        .spec
-        .modules
-        .as_ref()
-        .map(|m| &m.registries[..])
-        .unwrap_or(&[]);
+    let registries = &cfg.spec.modules_effective().registries[..];
     if registries.is_empty() {
         printer.emit(
             Doc::new()
@@ -1345,7 +1337,7 @@ pub(super) fn ensure_module_in_profile_doc(
 /// Derived from the command's own printer rather than built fresh: a sink
 /// built from nothing re-resolves colour and theme, and a lib call that does
 /// emit — a warning survives Quiet — would answer to the terminal instead of
-/// to `--no-color` and `spec.theme`.
+/// to `--no-color` and `spec.output.theme`.
 fn null_lib_printer(printer: &Printer) -> cfgd_core::output::Printer {
     printer.at_verbosity(cfgd_core::output::Verbosity::Quiet)
 }

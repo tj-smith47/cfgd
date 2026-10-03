@@ -1,0 +1,12 @@
+{
+  "kind": "ValidatingWebhookConfiguration",
+  "metadata": {"name": "cfgd-validating-webhooks"},
+  "webhooks": [
+    {"name": "validate-machineconfig.cfgd.io",
+     "objectSelector": {"matchExpressions": [{"key": "cfgd.io/e2e-run", "operator": "DoesNotExist"}]}},
+    {"name": "validate-module.cfgd.io"},
+    {"name": "validate-driftalert.cfgd.io",
+     "objectSelector": {"matchExpressions": [{"key": "cfgd.io/e2e-run", "operator": "Exists"}]},
+     "namespaceSelector": {"matchExpressions": [{"key": "cfgd.io/e2e-run", "operator": "DoesNotExist"}]}}
+  ]
+}

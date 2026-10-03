@@ -6,29 +6,27 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/../../common/helpers.sh"
-MANIFESTS="$SCRIPT_DIR/../manifests"
 
 echo "=== cfgd Operator E2E Tests ==="
 
-kubectl get validatingwebhookconfiguration cfgd-validating-webhooks > /dev/null 2>&1 || {
-    echo "ERROR: Webhook configurations not found. Run setup-cluster.sh first."
+kubectl get validatingwebhookconfiguration "$E2E_VALIDATING_WEBHOOK" > /dev/null 2>&1 || {
+    echo "ERROR: validatingwebhookconfiguration $E2E_VALIDATING_WEBHOOK of the PR install not found. Run setup-cluster.sh first." >&2
     exit 1
 }
 
-# Block until the operator Service has ready endpoints. The webhook server
-# lives behind cfgd-operator:443 — tests that create resources via admission
-# will fail with "no endpoints available for service cfgd-operator" if we
-# run while the Service is transitioning (deployment rollout, node restart).
-wait_for_service_endpoints cfgd-system cfgd-operator 120
+require_release_webhooks_scoped || exit 1
+
+# Admission calls fail with "no endpoints available for service" while the
+# webhook Service is between pods (a rollout, a node restart), so the suite
+# starts only once it has a ready endpoint.
+wait_for_service_endpoints "$E2E_INSTALL_NS" "$E2E_WEBHOOK_SVC" 120
 
 # Wrapper: apply YAML and fail the current test (not the whole script) on error.
-# Usage: apply_yaml "T03" <<'EOF' ... EOF
+# Usage: apply_yaml "T03" <<EOF ... EOF
 apply_yaml() {
     local test_id="$1"
-    local yaml
-    yaml=$(cat)
     local output
-    if ! output=$(echo "$yaml" | kubectl apply -f - 2>&1); then
+    if ! output=$(kubectl apply -f - 2>&1); then
         echo "  kubectl apply failed: $output"
         fail_test "$test_id" "kubectl apply failed"
         return 1

@@ -32,8 +32,15 @@
 //!   - `plan/module_package_elided.txt` — a module declaring two packages
 //!     under a manager that already reports one installed: only the missing
 //!     one is planned.
+//!   - `plan/saved_plan.json` — a real unfiltered `cmd_plan` payload WITH
+//!     `savedPlan`: the bytes `cfgd apply --plan` reads a plan file back out
+//!     of, which no hand-built `PlanOutput` fixture can hold. Each recorded
+//!     input's `mtime` and `size` are pinned to `0` and `storeId` to
+//!     `<STORE_ID>` before the compare: they are the wall-clock stamp and the
+//!     byte length of a tempdir path the fixture wrote and the identity a fresh
+//!     store mints, none of which is the same twice.
 
-mod common;
+use cfgd_test_fixtures as common;
 
 use std::path::Path;
 
@@ -50,6 +57,32 @@ use common::{
     cli_for, empty_profile_setup, plan_args, plan_args_module, state_with_pending_decision_setup,
     tiny_profile_setup,
 };
+
+/// Pin the volatile fields of the recorded contract: the store identity and
+/// the two stamps of every recorded config input.
+///
+/// `storeId` is minted at random for each fresh store, `mtime` is the
+/// wall-clock instant the fixture wrote the file and `size` the byte length of
+/// a profile document holding a tempdir path, so all three differ between two
+/// runs of the same test. What the golden is for is the shape of the recorded
+/// set and the bytes of the action graph beside it.
+fn pin_volatile_saved_plan_fields(payload: &mut serde_json::Value) {
+    assert!(
+        payload["savedPlan"]["storeId"].is_string(),
+        "the recorded contract names its store: {payload}"
+    );
+    payload["savedPlan"]["storeId"] = serde_json::json!("<STORE_ID>");
+    let Some(inputs) = payload["savedPlan"]["configInputs"].as_array_mut() else {
+        panic!("the recorded contract carries an input list: {payload}");
+    };
+    for input in inputs {
+        for volatile in ["mtime", "size"] {
+            if input.get(volatile).is_some() {
+                input[volatile] = serde_json::json!(0);
+            }
+        }
+    }
+}
 
 const SNAPSHOT_ROOT: &str = "tests/output_snapshots";
 
@@ -80,6 +113,7 @@ fn happy_plan_output() -> PlanOutput {
         pending_backups: vec![],
         pending_decisions: vec![],
         rejected_decisions: vec![],
+        saved_plan: None,
     }
 }
 
@@ -122,6 +156,7 @@ fn owner_groups_plan_output() -> PlanOutput {
         pending_backups: vec![],
         pending_decisions: vec![],
         rejected_decisions: vec![],
+        saved_plan: None,
     }
 }
 
@@ -143,6 +178,7 @@ fn plan_happy_human() {
 
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc();
+    let printer = printer.with_hints_enabled(true);
     let args = plan_args();
 
     cmd_plan(&cli, &printer, &args).unwrap();
@@ -340,6 +376,7 @@ fn plan_only_zero_match_token_warns_and_names_owners_present_human() {
 
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc();
+    let printer = printer.with_hints_enabled(true);
     let args = cfgd::cli::PlanArgs {
         only: vec!["packages.brwe".to_string()],
         ..plan_args()
@@ -376,6 +413,7 @@ fn plan_with_a_decision_from_an_unsubscribed_source_human() {
 
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc();
+    let printer = printer.with_hints_enabled(true);
     let args = plan_args();
 
     cmd_plan(&cli, &printer, &args).unwrap();
@@ -477,6 +515,7 @@ fn plan_module_package_already_installed_is_elided() {
 
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc();
+    let printer = printer.with_hints_enabled(true);
 
     cmd_plan(&cli, &printer, &plan_args()).unwrap();
     drop(printer);
@@ -551,7 +590,8 @@ fn strip_ansi(s: &str) -> String {
 #[test]
 #[serial_test::serial]
 fn plan_composed_source_human() {
-    let _env = cfgd_core::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+    let _env =
+        cfgd_core::test_helpers::EnvVarGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
     // The delivered profile writes env, whose targets hang off `$HOME`; an
     // unguarded test home is named after the pid and would not be host-stable.
     let home = tempfile::tempdir().unwrap();
@@ -575,6 +615,7 @@ fn plan_composed_source_human() {
 
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc();
+    let printer = printer.with_hints_enabled(true);
 
     cmd_plan(&cli, &printer, &plan_args()).unwrap();
     drop(printer);
@@ -593,5 +634,125 @@ fn plan_composed_source_human() {
         Path::new(SNAPSHOT_ROOT),
         "plan/composed_source.txt",
         &stripped
+    );
+}
+
+/// The approval contract `cfgd apply --plan` replays: the typed actions, the
+/// inputs the derivation read, and the serial of the last recorded apply.
+#[test]
+fn plan_json_records_the_saved_plan_for_an_unfiltered_run() {
+    let (config_dir, state_dir, _target) = tiny_profile_setup();
+    let cli = cli_for(config_dir.path(), state_dir.path());
+    let (printer, cap) = Printer::for_test_doc_with_format(cfgd_core::output::OutputFormat::Json);
+    cmd_plan(&cli, &printer, &plan_args()).unwrap();
+    drop(printer);
+    let payload = cap.json().expect("plan doc carries a payload");
+    let saved = &payload["savedPlan"];
+    assert!(
+        saved["plan"]["phases"].is_array(),
+        "the typed action graph: {payload}"
+    );
+    assert_eq!(
+        saved["serial"],
+        serde_json::json!(0),
+        "no apply has run: {payload}"
+    );
+    assert!(
+        saved["configInputs"].as_array().is_some_and(|inputs| inputs
+            .iter()
+            .any(|i| i["path"].as_str().is_some_and(|p| p.ends_with("cfgd.yaml")))),
+        "the config it read is one of the inputs: {payload}"
+    );
+}
+
+/// A filtered plan records none: `--plan` refuses a filter, so a payload that
+/// baked one in would be a second source of truth about the run's scope.
+#[test]
+fn plan_json_records_no_saved_plan_for_a_filtered_run() {
+    let (config_dir, state_dir, _target) = tiny_profile_setup();
+    let cli = cli_for(config_dir.path(), state_dir.path());
+    let mut args = plan_args();
+    args.only = vec!["files".to_string()];
+    let (printer, cap) = Printer::for_test_doc_with_format(cfgd_core::output::OutputFormat::Json);
+    cmd_plan(&cli, &printer, &args).unwrap();
+    drop(printer);
+    let payload = cap.json().expect("plan doc carries a payload");
+    assert!(
+        payload["savedPlan"].is_null(),
+        "a filtered run records no approval contract: {payload}"
+    );
+}
+
+/// A withheld source decision is a scope no flag stated, and answering it moves
+/// neither refusal fact `savedPlan` carries: `cfgd decide` writes decision rows
+/// only, so `configInputs` re-stats the same unchanged files and `serial` is
+/// still the last apply's. A plan recorded while a decision is pending would
+/// replay after the answer with the accepted resource silently missing.
+#[test]
+#[serial_test::serial]
+fn plan_json_records_no_saved_plan_while_a_source_decision_is_pending() {
+    let _env =
+        cfgd_core::test_helpers::EnvVarGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
+    let (_workspace, config_dir, state_dir) = common::local_source_setup("", |_workspace| {
+        (
+            "apiVersion: cfgd.io/v1alpha1\nkind: ConfigSource\nmetadata:\n  name: acme\n  version: \"1.0.0\"\nspec:\n  provides:\n    profiles:\n      - default\n".to_string(),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec: {}\n".to_string(),
+        )
+    });
+    // Raised by `acme`, which the config subscribes to, over a resource the
+    // local profile does not declare — the shape `DecisionScope::withholds`
+    // admits, and so the shape that reaches `WithheldDecisions::pending`.
+    cfgd_core::state::StateStore::open(&state_dir.path().join("state.db"))
+        .unwrap()
+        .upsert_pending_decision(
+            "acme",
+            "packages.brew.ripgrep",
+            "permission",
+            "add",
+            "acme wants to install ripgrep",
+            None,
+        )
+        .unwrap();
+
+    let cli = cli_for(config_dir.path(), state_dir.path());
+    let (printer, cap) = Printer::for_test_doc_with_format(cfgd_core::output::OutputFormat::Json);
+    cmd_plan(&cli, &printer, &plan_args()).unwrap();
+    drop(printer);
+    let payload = cap.json().expect("plan doc carries a payload");
+    assert!(
+        payload["pendingDecisions"]
+            .as_array()
+            .is_some_and(|rows| !rows.is_empty()),
+        "the fixture must actually withhold a decision: {payload}"
+    );
+    assert!(
+        payload["savedPlan"].is_null(),
+        "a run holding a pending decision records no approval contract: {payload}"
+    );
+}
+
+/// The bytes a plan FILE is made of, pinned whole.
+///
+/// `savedPlan.plan` is the reconciler's own externally-tagged spelling, which
+/// `cfgd apply --plan` reads back: a serde rename anywhere inside `Action`
+/// breaks every file an older cfgd wrote, and the three field assertions above
+/// would not notice. The hand-built `PlanOutput` fixtures cannot hold this —
+/// they carry `saved_plan: None`.
+#[test]
+fn plan_json_saved_plan_payload() {
+    let (config_dir, state_dir, target) = tiny_profile_setup();
+    let cli = cli_for(config_dir.path(), state_dir.path());
+    let (printer, cap) = Printer::for_test_doc_with_format(cfgd_core::output::OutputFormat::Json);
+    cmd_plan(&cli, &printer, &plan_args()).unwrap();
+    drop(printer);
+    let mut payload = cap.json().expect("plan doc carries a payload");
+    pin_volatile_saved_plan_fields(&mut payload);
+    let rendered = serde_json::to_string_pretty(&payload).expect("the payload re-serializes");
+    let normalized =
+        normalize_tempdir_paths(&rendered, config_dir.path(), &[(&target, "<TARGET>")]);
+    assert_snapshot!(
+        Path::new(SNAPSHOT_ROOT),
+        "plan/saved_plan.json",
+        &normalized
     );
 }

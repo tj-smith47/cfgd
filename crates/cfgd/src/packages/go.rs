@@ -507,7 +507,8 @@ mod tests {
     #[test]
     #[serial_test::serial]
     fn caller_owned_bootstrap_settles_no_line_of_its_own() {
-        let _shim = cfgd_core::test_helpers::ToolShim::install("CFGD_BREW_BIN", 0, "", "");
+        let _shim =
+            cfgd_core::test_helpers::ToolShim::install(crate::seams::BREW_BIN_ENV, 0, "", "");
         let settled = |transcript: &str| {
             cfgd_core::test_helpers::settled_status_lines(&cfgd_core::output::strip_ansi(
                 transcript,
@@ -796,14 +797,15 @@ mod tests {
         use cfgd_core::test_helpers::{ToolShim, test_package_context, test_printer, test_state};
         use serial_test::serial;
 
-        const SHIM_ENV: &str = "CFGD_GO_BIN";
+        static SHIM_ENV: std::sync::LazyLock<String> =
+            std::sync::LazyLock::new(|| crate::seams::tool_seam_var("go"));
 
         /// A `go` whose `env GOBIN GOPATH` answers exactly these two values.
         /// Where `go install` puts a binary is the toolchain's answer, not the
         /// environment's, so a test about that directory states it here rather
         /// than inheriting whatever the host toolchain reports.
         fn go_env_shim(gobin: &str, gopath: &str) -> ToolShim {
-            ToolShim::install(SHIM_ENV, 0, &format!("{gobin}\n{gopath}\n"), "")
+            ToolShim::install(&SHIM_ENV, 0, &format!("{gobin}\n{gopath}\n"), "")
         }
 
         /// `go install` writes to `$GOBIN` when the toolchain reports one, and
@@ -824,7 +826,7 @@ mod tests {
                 &gopath.path().to_string_lossy(),
             );
             let _s = ToolShim::install(
-                SHIM_ENV,
+                &SHIM_ENV,
                 0,
                 &format!("{}\n{}\n", gobin.path().display(), gopath.path().display()),
                 "",
@@ -866,7 +868,7 @@ mod tests {
                 ],
             );
             let _shim_env =
-                cfgd_core::test_helpers::EnvVarGuard::set(SHIM_ENV, &shim_path.to_string_lossy());
+                cfgd_core::test_helpers::EnvVarGuard::set(&SHIM_ENV, &shim_path.to_string_lossy());
             let p = test_printer();
             let st = test_state();
             let cx = test_package_context(&p, &st);
@@ -925,7 +927,7 @@ mod tests {
                 ],
             );
             let _shim_env =
-                cfgd_core::test_helpers::EnvVarGuard::set(SHIM_ENV, &shim_path.to_string_lossy());
+                cfgd_core::test_helpers::EnvVarGuard::set(&SHIM_ENV, &shim_path.to_string_lossy());
             let p = test_printer();
             let st = test_state();
             let cx = test_package_context(&p, &st);
@@ -949,7 +951,7 @@ mod tests {
         #[test]
         #[serial]
         fn go_install_appends_at_latest_to_unversioned_package() {
-            let s = ToolShim::install(SHIM_ENV, 0, "", "");
+            let s = ToolShim::install(&SHIM_ENV, 0, "", "");
             let p = test_printer();
             let st = test_state();
             let cx = test_package_context(&p, &st);
@@ -967,7 +969,7 @@ mod tests {
         #[test]
         #[serial]
         fn go_install_passes_through_pre_pinned_version() {
-            let s = ToolShim::install(SHIM_ENV, 0, "", "");
+            let s = ToolShim::install(&SHIM_ENV, 0, "", "");
             let p = test_printer();
             let st = test_state();
             let cx = test_package_context(&p, &st);
@@ -985,7 +987,7 @@ mod tests {
         #[test]
         #[serial]
         fn go_install_runs_one_install_per_package() {
-            let s = ToolShim::install(SHIM_ENV, 0, "", "");
+            let s = ToolShim::install(&SHIM_ENV, 0, "", "");
             let p = test_printer();
             let st = test_state();
             let cx = test_package_context(&p, &st);
@@ -998,7 +1000,7 @@ mod tests {
         #[test]
         #[serial]
         fn refreshing_the_index_declares_none_and_spawns_nothing() {
-            let s = ToolShim::install(SHIM_ENV, 0, "", "");
+            let s = ToolShim::install(&SHIM_ENV, 0, "", "");
             let p = test_printer();
             let st = test_state();
             let cx = test_package_context(&p, &st);
@@ -1020,7 +1022,7 @@ mod tests {
             // parse_go_module_version normalizes "v1.2.3" → "1.2.3" so versions
             // compare cleanly against profile entries (which don't include "v").
             let json = r#"{"Version":"v1.2.3","Path":"github.com/example/tool"}"#;
-            let _s = ToolShim::install(SHIM_ENV, 0, json, "");
+            let _s = ToolShim::install(&SHIM_ENV, 0, json, "");
             let v = GoInstallManager
                 .available_version("github.com/example/tool")
                 .expect("Ok");
@@ -1030,7 +1032,7 @@ mod tests {
         #[test]
         #[serial]
         fn go_available_version_passes_list_m_json_with_at_latest() {
-            let s = ToolShim::install(SHIM_ENV, 0, "{}", "");
+            let s = ToolShim::install(&SHIM_ENV, 0, "{}", "");
             GoInstallManager
                 .available_version("github.com/example/tool")
                 .expect("Ok");
@@ -1049,7 +1051,7 @@ mod tests {
         #[test]
         #[serial]
         fn go_available_version_returns_none_on_nonzero_exit() {
-            let _s = ToolShim::install(SHIM_ENV, 1, "", "module not found");
+            let _s = ToolShim::install(&SHIM_ENV, 1, "", "module not found");
             let v = GoInstallManager
                 .available_version("nonexistent")
                 .expect("non-zero → Ok(None)");
@@ -1157,7 +1159,7 @@ mod tests {
         #[test]
         #[serial]
         fn go_bootstrap_via_brew_runs_brew_install_go() {
-            let s = ToolShim::install("CFGD_BREW_BIN", 0, "", "");
+            let s = ToolShim::install(crate::seams::BREW_BIN_ENV, 0, "", "");
             let p = test_printer();
             GoInstallManager
                 .bootstrap(&cfgd_core::test_helpers::test_bootstrap_context(&p))

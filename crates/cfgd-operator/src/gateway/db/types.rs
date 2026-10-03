@@ -42,7 +42,10 @@ pub struct Device {
     pub config_hash: String,
     pub status: DeviceStatus,
     pub desired_config: Option<serde_json::Value>,
-    pub compliance_summary: Option<serde_json::Value>,
+    /// The compliance the device reported at its last check-in that carried
+    /// one. A check-in without a report (compliance disabled, or a daemon
+    /// that has not collected one since it started) leaves it in place.
+    pub compliance_summary: Option<crate::crds::DeviceCompliance>,
     /// RFC 3339 timestamp of the most recent accepted desired-config push, or
     /// `None` if no config has ever been pushed to this device.
     pub last_pushed_at: Option<String>,

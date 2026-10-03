@@ -3484,3 +3484,181 @@ mod tests_log_reconcile {
         let _: () = futures::executor::block_on(ready);
     }
 }
+
+/// Every kind whose status carries `conditions` exposes its readiness
+/// condition as a printer column. `Module` shipped without one, so a module
+/// the operator WITHHELD over its signature verdict (`Available: False`) and
+/// a served one were the same row in `kubectl get modules` — the one surface
+/// a cluster user reaches for. The column's condition type is checked against
+/// the literals the operator's controllers write, so a column bound to a
+/// condition nothing sets would trip here too.
+#[test]
+fn every_kind_with_conditions_exposes_its_readiness_condition_as_a_column() {
+    use kube::CustomResourceExt;
+
+    use crate::crds::{ClusterConfigPolicy, ConfigPolicy, DriftAlert, MachineConfig, Module};
+
+    // A condition literal in a test would pass for one a controller writes, so
+    // only the controllers' production regions are read.
+    let controllers = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/controllers");
+    let written: String = cfgd_core::test_helpers::rust_sources_under(&controllers)
+        .into_iter()
+        .map(|path| cfgd_core::test_helpers::production_slice_of(&path))
+        .collect();
+
+    let crds = [
+        ("MachineConfig", MachineConfig::crd()),
+        ("ConfigPolicy", ConfigPolicy::crd()),
+        ("ClusterConfigPolicy", ClusterConfigPolicy::crd()),
+        ("DriftAlert", DriftAlert::crd()),
+        ("Module", Module::crd()),
+    ];
+    let mut judged = 0usize;
+    for (kind, crd) in crds {
+        let version = &crd.spec.versions[0];
+        let schema = version
+            .schema
+            .as_ref()
+            .and_then(|s| s.open_api_v3_schema.as_ref())
+            .unwrap_or_else(|| panic!("{kind} must publish a schema"));
+        let conditions = schema
+            .properties
+            .as_ref()
+            .and_then(|p| p.get("status"))
+            .and_then(|s| s.properties.as_ref())
+            .and_then(|p| p.get("conditions"));
+        if conditions.and_then(|c| c.type_.as_deref()) != Some("array") {
+            continue;
+        }
+        judged += 1;
+        let condition_types: Vec<String> = version
+            .additional_printer_columns
+            .iter()
+            .flatten()
+            .filter_map(|c| {
+                let rest = c
+                    .json_path
+                    .strip_prefix(".status.conditions[?(@.type==\"")?;
+                let (ty, _) = rest.split_once("\")].status")?;
+                Some(ty.to_string())
+            })
+            .collect();
+        assert!(
+            !condition_types.is_empty(),
+            "{kind} writes conditions but exposes none of them as a printer column"
+        );
+        for ty in condition_types {
+            assert!(
+                written.contains(&format!("\"{ty}\"")),
+                "{kind}'s printer column binds to a `{ty}` condition no controller writes"
+            );
+        }
+    }
+    assert_eq!(
+        judged, 5,
+        "every kind carries conditions; the walk reached {judged}"
+    );
+}
+
+/// The top-level arguments of each call to `opener` in `code`, split on the
+/// commas outside any bracket. `code` has its comments and literals blanked,
+/// so a bracket or comma written inside one is not read as syntax. An opener
+/// that starts with an identifier matches only at an identifier boundary, so
+/// `watcher(` finds `watcher::watcher(` and a bare `watcher(` but not
+/// `metadata_watcher(`.
+fn call_args<'a>(code: &'a str, opener: &str) -> Vec<Vec<&'a str>> {
+    let is_ident = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
+    let needs_boundary = opener.bytes().next().is_some_and(is_ident);
+    code.match_indices(opener)
+        .filter(|(start, _)| {
+            !needs_boundary || *start == 0 || !is_ident(code.as_bytes()[start - 1])
+        })
+        .map(|(start, _)| {
+            let open = start + opener.len();
+            let mut depth = 0usize;
+            let mut args = Vec::new();
+            let mut arg_start = open;
+            for (i, c) in code[open..].char_indices() {
+                let at = open + i;
+                match c {
+                    '(' | '[' | '{' => depth += 1,
+                    ')' | ']' | '}' if depth > 0 => depth -= 1,
+                    ')' => {
+                        args.push(&code[arg_start..at]);
+                        return args;
+                    }
+                    ',' if depth == 0 => {
+                        args.push(&code[arg_start..at]);
+                        arg_start = at + 1;
+                    }
+                    _ => {}
+                }
+            }
+            panic!("unclosed `{opener}` call");
+        })
+        .collect()
+}
+
+#[test]
+fn every_cfgd_io_watch_is_held_to_the_watch_label_selector() {
+    use cfgd_core::test_helpers::{production_code_of, rust_sources_under};
+
+    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let code: String = rust_sources_under(&src)
+        .iter()
+        .map(|path| production_code_of(path) + "\n")
+        .collect();
+
+    // Each opener with the position of its `watcher::Config` argument, as
+    // kube-runtime declares it, and the fewest calls the operator makes today.
+    // A floor per kind keeps a lost site of one kind from being hidden by a new
+    // site of another. The reflectors come first so a misplaced exemption is
+    // reported as such.
+    let openers = [
+        ("watcher(", 1, 0),
+        ("metadata_watcher(", 1, 0),
+        ("Controller::new(", 1, 6),
+        ("Controller::new_with(", 1, 0),
+        (".owns(", 1, 1),
+        (".owns_with(", 2, 0),
+        (".watches(", 1, 2),
+        (".watches_with(", 2, 0),
+    ];
+    let mut exempt = 0;
+    for (opener, config_at, floor) in openers {
+        let calls = call_args(&code, opener);
+        assert!(
+            calls.len() >= floor,
+            "expected at least {floor} `{opener}` calls in the operator, found {}",
+            calls.len()
+        );
+        for args in calls {
+            let config = args
+                .get(config_at)
+                .unwrap_or_else(|| panic!("`{opener}` call with no argument {config_at}: {args:?}"))
+                .trim();
+            // The Namespace metadata reflector is the one unfiltered watch:
+            // ClusterConfigPolicy matches on namespace labels the selector
+            // never names.
+            if args
+                .iter()
+                .any(|a| a.contains("PartialObjectMeta<Namespace>"))
+            {
+                exempt += 1;
+                assert_eq!(
+                    config, "WatcherConfig::default()",
+                    "the Namespace reflector is the one watch that holds the unfiltered default"
+                );
+            } else {
+                assert!(
+                    config.ends_with("runtime::watch_config()"),
+                    "`{opener}` must take runtime::watch_config() as its watcher config, got `{config}`"
+                );
+            }
+        }
+    }
+    assert_eq!(
+        exempt, 1,
+        "exactly one watch, the Namespace metadata reflector, may skip the selector"
+    );
+}

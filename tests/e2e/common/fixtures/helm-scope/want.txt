@@ -1,0 +1,22 @@
+SCOPED installs.bash:1
+SCOPED installs.bash:2
+UNSCOPED installs.bash:6
+UNSCOPED installs.bash:9
+UNSCOPED installs.bash:11
+UNSCOPED installs.bash:12
+SCOPED installs.bash:13
+UNSCOPED installs.bash:20
+UNSCOPED installs.bash:21
+UNSCOPED installs.bash:22
+SCOPED installs.bash:25
+UNSCOPED installs.bash:26
+SCOPED installs.bash:27
+SCOPEDEF scope-exact.bash:3
+UNSCOPED scope-exact.bash:8
+UNSCOPED scope-exact.bash:9
+UNSCOPED scope-exact.bash:12
+UNSCOPED scope-exact.bash:13
+BADSCOPE scope-extra.bash:1 extra: --set-string operator.watchLabelSelector=
+BADSCOPE scope-missing.bash:1 missing: mutatingWebhook.namespaceSelector
+BADSCOPE scope-no-null.bash:1 missing: operator.watchLabelSelector webhook.objectSelector mutatingWebhook.namespaceSelector extra: --set-json "mutatingWebhook.namespaceSelector={\"matchLabels\":{\"cfgd.io/e2e-helm\":\"${HELM_NS}\"}}"
+BADSCOPE scope-wrong-label.bash:1 missing: operator.watchLabelSelector extra: --set-string "operator.watchLabelSelector=cfgd.io/e2e-run=${HELM_NS}"

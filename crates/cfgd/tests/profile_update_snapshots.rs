@@ -16,7 +16,7 @@
 //! with:
 //!     INSTA_UPDATE=always cargo test -p cfgd --test profile_update_snapshots
 
-mod common;
+use cfgd_test_fixtures as common;
 
 use std::path::Path;
 
@@ -55,6 +55,7 @@ fn profile_update_happy_human() {
     let (config_dir, state_dir) = profile_test_config_setup();
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc();
+    let printer = printer.with_hints_enabled(true);
     let mut args = profile_update_args();
     args.env = vec!["EDITOR=nvim".to_string()];
 
@@ -124,6 +125,7 @@ fn profile_update_add_remove_mixed_human() {
     let (config_dir, state_dir) = profile_test_config_setup();
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc();
+    let printer = printer.with_hints_enabled(true);
     let mut args = profile_update_args();
     args.modules = vec!["nvim".to_string(), "-missing".to_string()];
     args.env = vec!["-EDITOR".to_string()];
@@ -148,7 +150,8 @@ fn profile_update_add_module_remote_hybrid_human() {
     // confirmations through the unified Printer surface.
     let (config_dir, state_dir) = profile_test_config_setup();
     let _home = cfgd_core::with_test_home_guard(config_dir.path());
-    let _env = cfgd_core::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+    let _env =
+        cfgd_core::test_helpers::EnvVarGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
 
     let bare_root = tempfile::tempdir().unwrap();
     let bare = make_bare_module_repo(bare_root.path(), "mymod", "v1.0.0");
@@ -157,6 +160,7 @@ fn profile_update_add_module_remote_hybrid_human() {
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) =
         Printer::for_test_doc_with_prompt_responses(vec![PromptAnswer::Confirm(true)]);
+    let printer = printer.with_hints_enabled(true);
     let mut args = profile_update_args();
     args.modules = vec![module_url.clone()];
 

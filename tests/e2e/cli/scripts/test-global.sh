@@ -9,7 +9,7 @@ echo "=== cfgd global flags & help tests ==="
 # Tests extracted verbatim from run-exhaustive-tests.sh
 
 begin_test "G01: --help"
-run $C --help
+run "${C[@]}" --help
 if assert_ok && assert_contains "$OUTPUT" "apply" && assert_contains "$OUTPUT" "profile"; then
     pass_test "G01"
 else fail_test "G01"; fi
@@ -21,25 +21,25 @@ if assert_ok && assert_contains "$OUTPUT" "cfgd"; then
 else fail_test "G02"; fi
 
 begin_test "G03: --verbose flag accepted"
-run $C status --verbose
+run "${C[@]}" status --verbose
 if assert_ok; then
     pass_test "G03"
 else fail_test "G03" "exit $RC"; fi
 
 begin_test "G04: -v short flag"
-run $C status -v
+run "${C[@]}" status -v
 if assert_ok; then
     pass_test "G04"
 else fail_test "G04" "exit $RC"; fi
 
 begin_test "G05: --quiet flag accepted"
-run $C status --quiet
+run "${C[@]}" status --quiet
 if assert_ok; then
     pass_test "G05"
 else fail_test "G05" "exit $RC"; fi
 
 begin_test "G06: -q short flag"
-run $C status -q
+run "${C[@]}" status -q
 if assert_ok; then
     pass_test "G06"
 else fail_test "G06" "exit $RC"; fi
@@ -51,7 +51,7 @@ if assert_ok; then
 else fail_test "G07" "exit $RC"; fi
 
 begin_test "G08: --profile override"
-run $C --profile base status
+run "${C[@]}" --profile base status
 if assert_ok; then
     pass_test "G08"
 else fail_test "G08" "exit $RC"; fi
@@ -63,7 +63,7 @@ if assert_fail; then
 else fail_test "G09"; fi
 
 begin_test "G10: unknown subcommand fails"
-run $C nonexistent-command
+run "${C[@]}" nonexistent-command
 if assert_fail; then
     pass_test "G10"
 else fail_test "G10"; fi

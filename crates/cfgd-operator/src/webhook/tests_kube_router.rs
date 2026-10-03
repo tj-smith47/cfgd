@@ -4,7 +4,6 @@
 //! These cover the kube-touching branches that the stub-client tests in
 //! `tests_router.rs` skip: `enforce_module_policy` (list ClusterConfigPolicy)
 //! and `collect_policy_modules` + Module CRD GET inside `mutate-pods`.
-#![cfg(test)]
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};

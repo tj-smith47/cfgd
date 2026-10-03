@@ -64,7 +64,12 @@ pub(super) fn cmd_decide(
     let resolution = match action {
         Some(action) => Some(action.resolution()),
         None if all || source.is_some() || resource.is_some() => {
-            anyhow::bail!("specify an action (accept or reject) to resolve pending decisions")
+            return Err(crate::cli::cli_error(
+                "action",
+                "missing_argument",
+                "specify an action (accept or reject) to resolve pending decisions",
+                serde_json::json!({ "accepted": ["accept", "reject"] }),
+            ));
         }
         None => None,
     };
@@ -258,6 +263,7 @@ fn source_classification(
         ctx.printer(),
         false,
         composition::ConstraintMode::Report,
+        &cfgd_core::modules::refuse_floor_bootstrap,
     )
     .context("source composition failed")?;
     // Built before the classification so both halves — the withheld rows and

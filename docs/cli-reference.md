@@ -10,6 +10,11 @@ and a link to the topic document when one exists. Global flags are listed once, 
 topic document, which links back here; this file does not restate them. `cfgd help <command>` and
 `cfgd <command> --help` print the same synopsis from the binary itself.
 
+The closing `→` pointers in the transcripts below are usage hints, and they render only when
+`--hints`, `CFGD_USAGE_HINTS=true` or `spec.output.usageHints: true` asks for them (see
+[Configuration](configuration.md#global-flags)). A refusal's remediation, the next step a run
+closes on when it did not fully succeed, and the note rows a run leaves behind render either way.
+
 ## Core Commands
 
 ### `cfgd generate`
@@ -96,26 +101,40 @@ repository reference: `cfgd apply --from`, `cfgd plan --from`,
 | Flag | Description |
 |---|---|
 | `[path]` | Target directory (default: current directory) |
-| `--from <url\|owner/repo\|path>` | Config source: git URL on any host, GitHub `owner/repo` shorthand, or local path to an existing config directory (an existing path wins over the shorthand) |
+| `--from <url\|owner/repo\|path>` | Config source: git URL on any host, GitHub `owner/repo` shorthand, or local path to an existing config directory holding a `cfgd.yaml` or `cfgd.toml` (an existing path wins over the shorthand) |
 | `--branch <name>` | Git branch (default: master) |
 | `--name <name>` | Config name in metadata (default: directory name) |
 | `--apply` | Apply configuration after scaffolding |
-| `--dry-run` | Preview the `--apply` step without applying (used with `--apply`/`--apply-profile`/`--apply-module`) |
+| `--dry-run` | Preview the `--apply` step without applying (used with `--apply`/`--apply-profile`/`--apply-module`); the preview plans against the profile `--apply-profile` names and leaves the config document as it was: neither the fields the running build would add nor `--name` / `--theme` are written |
 | `--apply-profile <name>` | Activate and apply a specific profile (implies --apply, exits `6` if not found) |
 | `--apply-module <name>` | Apply a specific module (repeatable, implies --apply, errors if not found) |
 | `--on-conflict <ask\|backup\|overwrite\|skip\|fail>` | What the `--apply` step does with a target that already holds a file cfgd never wrote (default `ask`; see [`cfgd apply`](#unmanaged-files-at-a-managed-target)) |
 | `--install-daemon` | Install daemon service after init |
-| `--theme <name>` | Theme name (default, dracula, solarized-dark, solarized-light, nord, monokai, adventure-time, catppuccin-mocha, gruvbox-dark, tokyo-night, one-dark, minimal) |
+| `--theme <name>` | Theme preset written to the config's `spec.output.theme`, an override on an existing or cloned config (default, dracula, solarized-dark, solarized-light, nord, monokai, adventure-time, catppuccin-mocha, gruvbox-dark, tokyo-night, one-dark, minimal) |
 
-`init` never writes over a config directory that already has a `cfgd.yaml`: it
-reports `Already initialized at <dir>` and neither clones nor re-scaffolds. With
-`--from` and a named destination, the run continues to the `--apply` /
-`--apply-module` step against the existing config; `--name` / `--theme` are
-applied as overrides.
+`init` never writes over a config directory that already has a `cfgd.yaml` or
+`cfgd.toml`: it reports `Already initialized at <dir>` and neither clones nor
+re-scaffolds. With `--from` and a named destination, the run continues to the
+`--apply` / `--apply-module` step against the existing config; `--name` /
+`--theme` are applied as overrides.
+
+A repository or directory carrying a `cfgd.toml` is read and written as TOML at
+every step: outside `--dry-run`, `--name`, `--theme` and the profile
+`--apply-profile` activates are written into that file, in the order it declares
+its keys, and no `cfgd.yaml` is created beside it.
+
+Once the config is on disk, `init` aligns it to the running build before its
+`--apply` step reads it, by the same check and rules as
+[`cfgd config migrate`](#cfgd-config-migrate) describes: `--yes` writes each field
+the document does not declare, an interactive run is asked, and a run with no
+terminal reports them. Under `--dry-run` the check adds no field to the document,
+whatever the policy or `--yes`, answering `Prompt` and `Update` the way `Warn`
+does.
 
 With `--from` and **no** destination named, the config lands in the default
 config directory (`~/.config/cfgd`, or `$XDG_CONFIG_HOME/cfgd`), and cfgd
-refuses when that directory is already somebody's — it holds a `cfgd.yaml`, it
+refuses when that directory is already somebody's — it holds a `cfgd.yaml` or
+`cfgd.toml`, it
 is not empty, or it is a symlink:
 
 ```
@@ -171,11 +190,12 @@ cfgd apply --skip system.sysctl         # skip specific items
 cfgd apply --skip-scripts               # apply without running any hooks
 cfgd apply --yes --on-conflict backup   # copy every stranger aside, then write
 cfgd apply --yes --on-conflict fail     # refuse to touch a file cfgd never wrote
+cfgd apply --plan plan.json             # run the plan `cfgd plan -o json` recorded
 ```
 
 | Flag | Description |
 |---|---|
-| `--from <url\|owner/repo\|path>` | Config source: git URL on any host, GitHub `owner/repo` shorthand, or local path to an existing config directory (an existing path wins over the shorthand) |
+| `--from <url\|owner/repo\|path>` | Config source: git URL on any host, GitHub `owner/repo` shorthand, or local path to an existing config directory holding a `cfgd.yaml` or `cfgd.toml` (an existing path wins over the shorthand). The run reads the config document a local directory holds in place; after a clone it reads the `cfgd.yaml` or `cfgd.toml` the repository brings, unless `--config` names a file of another name |
 | `--dry-run` | Preview changes without applying (supports `-o json`) |
 | `--phase <name>` | Apply only a specific phase; takes a dotted `<phase>[.<selector>]` path (see below) |
 | `--module <name>` | Resolve and apply ONLY this module and its dependencies, isolated from the active profile: every profile-owned contribution (env, aliases, packages, files, system settings, secrets, scripts, backups) is zeroed, not composed. Repeatable: unions several modules |
@@ -186,6 +206,7 @@ cfgd apply --yes --on-conflict fail     # refuse to touch a file cfgd never wrot
 | `--context <ctx>` | `apply` (default) or `reconcile` — selects which hooks run |
 | `--shell <auto\|sh\|bash\|zsh\|pwsh\|cmd>` | Force every *inline* lifecycle script under this interpreter, overriding each entry's own `shell:`. File and shebang scripts are unaffected. For debugging a script that behaves differently under another shell |
 | `--on-conflict <ask\|backup\|overwrite\|skip\|fail>` | What to do with a managed target that already holds a file cfgd never wrote (default `ask`) |
+| `--plan <file>` | Run the plan `cfgd plan -o json` recorded, with no second planning pass (see [Applying a saved plan](#applying-a-saved-plan)). Every flag that would narrow or re-aim the run is refused with it: `--from`, `--phase`, `--skip`, `--only`, `--module`, `--with-profile`, `--skip-scripts`, `--context` |
 
 #### What the closing rollup accounts for
 
@@ -282,6 +303,120 @@ item (the default) is withheld from the first run that sees it, before any row e
 `apply` records the row so `cfgd decide` can answer it without waiting for a daemon tick,
 while `plan` withholds it read-only.
 
+`cfgd apply --dry-run` under a structured format records the same `savedPlan` key
+`cfgd plan` does, on the same terms: see [`cfgd plan`](#cfgd-plan) and
+[The saved plan](reconciliation.md#the-saved-plan-savedplan).
+
+#### Applying a saved plan
+
+`cfgd apply --plan <file>` runs the plan a `cfgd plan -o json` recorded, with no
+second planning pass and no confirmation prompt. The file is the approval, which
+is what makes it reviewable: hand it to whoever signs off, and apply the bytes
+they read. Nothing else in the run is asked either. The recording answered every
+question once, a `minVersion` no available manager meets included, so a replay
+takes what the file carries and neither re-asks nor refuses over an answer it
+already holds. What runs is the file's actions, and only those.
+
+```console
+$ cfgd plan -o json > plan.json
+$ cfgd apply --plan plan.json
+Apply
+  Config   ~/.config/cfgd/cfgd.yaml
+  Profile  tiny
+  Phases   Files
+  Actions  1 planned
+
+Phase: Files
+  profile:tiny
+    ✓ create ~/.config/app/hello.txt (<0.1s)
+
+✓ Apply complete — 1 action succeeded (<0.1s wall)
+```
+
+Three facts decide whether the file still describes this machine, and all three are
+refusals (exit 1). The state store the replay opened has to be
+the one the plan was derived against. A plan taken under one `--state-dir` and
+replayed under another names a different store:
+
+```console
+$ cfgd --state-dir /srv/cfgd/state apply --plan plan.json
+✗ plan.json is stale: it was derived against state store c7e8f094-c6a9-46e4-89b1-a73bcd8354fc, and this run opened store a1789f12-9519-40c8-8141-462f356868bd, so it does not describe the machine this store records — run `cfgd plan -o json` against this store
+```
+
+The identity is minted once when a store is created and lives inside the database,
+so a store copied or moved to another directory keeps it and still replays its plans.
+A plan file written by a cfgd that did not record the store yet names none, and is
+refused the same way:
+
+```console
+$ cfgd apply --plan plan.json
+✗ plan.json is stale: it was written before cfgd recorded the state store a plan was derived against (it records none, and this run opened store c7e8f094-c6a9-46e4-89b1-a73bcd8354fc) — run `cfgd plan -o json` again
+```
+
+Under `-o json` both carry the `stale` kind, this run's store as `storeId` and the
+file's as `recordedStoreId` (`null` when it names none):
+
+```json
+{
+  "error": "stale",
+  "file": "plan.json",
+  "name": "plan",
+  "recordedStoreId": "c7e8f094-c6a9-46e4-89b1-a73bcd8354fc",
+  "storeId": "a1789f12-9519-40c8-8141-462f356868bd"
+}
+```
+
+An apply recorded since it was written:
+
+```console
+$ cfgd apply --plan plan.json
+✗ plan.json is stale: apply #1 has run since it was written (it recorded #0), so it no longer describes this machine — run `cfgd plan -o json` again
+```
+
+Or any file the derivation read carrying a different stamp:
+
+```console
+$ cfgd apply --plan plan.json
+✗ plan.json is stale: /home/you/.config/cfgd/profiles/tiny.yaml changed since it was written, so it no longer describes this config — run `cfgd plan -o json` again
+```
+
+Three shapes are refused ahead of those: a payload carrying no `savedPlan` (its run
+was filtered, or held a source decision back), one whose phases were reordered or
+duplicated by hand, and one whose derivation never read the config this run resolved.
+The last is what a global `--config` beside `--plan` runs into: a plan file names no
+config of its own, so without that question the recorded actions would run against a
+second machine picture.
+
+```console
+$ cfgd apply --config /etc/cfgd/other.yaml --plan plan.json
+✗ plan.json is not a plan cfgd wrote for this config: nothing its derivation read was /etc/cfgd/other.yaml, so the actions in it were priced against another machine picture — run `cfgd plan -o json` under this config
+```
+
+There is no `--force` over any of these refusals. A plan the machine has moved past is
+replaced by a new one: the file is the approval, and forcing it would
+approve actions nobody looked at.
+
+Per-action safety is unchanged. The replay runs the same unmanaged-file sweep a fresh
+apply does, under its own `--on-conflict`, so a target holding bytes cfgd never wrote
+is still backed up, skipped or refused exactly as it would be without a plan file.
+
+The file carries everything the plan carries, the generated env file's body included,
+so it is exactly as sensitive as the config it was derived from: see
+[The saved plan](reconciliation.md#the-saved-plan-savedplan).
+
+The replay still resolves this machine's config for itself, because two planner
+inputs live outside the plan format (the manager a `prefer` list names, and a
+package's `minVersion`). It fetches nothing: refreshing a source mid-run would
+move the very stamps the staleness refusal above compares against. Both planner
+inputs have to come from a module that still resolves the same way, so a plan
+naming a module this run no longer resolves, or naming a `manager:package` pair a
+module no longer routes that way, is refused (`plan.json does not describe this
+host: ...`) with the same next step: run `cfgd plan -o json` again. A package
+installed by hand between the plan and the replay is the usual cause, since it
+moves the manager the resolver picks while every recorded stamp still matches.
+`--dry-run`, `--yes` and `--on-conflict` stay legal, since they say how the run
+behaves. What the run does comes from the file.
+
 ### `cfgd plan`
 
 Preview the reconciliation plan without applying. This is the canonical preview command; `apply --dry-run` is a convenience that delegates to the same logic.
@@ -300,7 +435,7 @@ cfgd plan -o json                       # structured plan output
 
 | Flag | Description |
 |---|---|
-| `--from <url\|owner/repo\|path>` | Config source: git URL on any host, GitHub `owner/repo` shorthand, or local path to an existing config directory (an existing path wins over the shorthand) |
+| `--from <url\|owner/repo\|path>` | Config source: git URL on any host, GitHub `owner/repo` shorthand, or local path to an existing config directory holding a `cfgd.yaml` or `cfgd.toml` (an existing path wins over the shorthand). The run reads the config document a local directory holds in place; after a clone it reads the `cfgd.yaml` or `cfgd.toml` the repository brings, unless `--config` names a file of another name |
 | `--phase <name>` | Show only a specific phase; takes a dotted `<phase>[.<selector>]` path (see below) |
 | `--module <name>` | Resolve and plan ONLY this module and its dependencies, isolated from the active profile: every profile-owned contribution (env, aliases, packages, files, system settings, secrets, scripts, backups) is zeroed, not composed. Repeatable: unions several modules |
 | `--with-profile` | Compose `--module`'s named module(s) WITH the full active profile instead of isolating them. Rejected (with an error) if passed without `--module` |
@@ -461,9 +596,16 @@ A `Bootstrap` action carries a structured `manager` sub-object beside its
 sentence: `state` is `present` (an already-installed manager's index refresh),
 `provisioned` (a manager this run installs, `via` naming its bootstrap method),
 `prerequisite` (a tool a provision's installer shells out to; `manager` names
-the tool, `via` names the installer), or `refused` (a manager that can't be
+the tool, `via` names the installer), `refused` (a manager that can't be
 provisioned, `reason` naming why: a refusal is still something the run
-decided, so `-o json` carries it rather than dropping it silently).
+decided, so `-o json` carries it), or `held`
+(a manager this host already has, below the `minVersion` a module declared for
+it; `floor` carries that floor and `reason` names the modules that declared it).
+A `held` action installs nothing: it re-reads the manager's own binary when the
+run reaches it, and fails that one step when the floor is still unmet.
+A provision a floor confirmation produced also carries `floor`, the
+`minVersion` the question was asked for; it is absent from every other
+provision, so a plan that asked nothing carries exactly what it always did.
 `requires` holds the full node ids of the actions this one depends on,
 resolving one-to-one against a sibling action's own `description`:
 
@@ -492,12 +634,32 @@ resolving one-to-one against a sibling action's own `description`:
           }
         },
         {
+          "type": "provision",
+          "description": "provision nix via nix installer (minVersion 99.0)",
+          "manager": {
+            "manager": "nix",
+            "state": "provisioned",
+            "via": "nix installer",
+            "floor": "99.0"
+          }
+        },
+        {
           "type": "refuse",
           "description": "cannot provision snap — no available system manager",
           "manager": {
             "manager": "snap",
             "state": "refused",
             "reason": "no available system manager"
+          }
+        },
+        {
+          "type": "check",
+          "description": "check cargo against minVersion 99.0 — declared by rust",
+          "manager": {
+            "manager": "cargo",
+            "state": "held",
+            "floor": "99.0",
+            "reason": "declared by rust"
           }
         }
       ]
@@ -608,6 +770,14 @@ scope: with no `--state-dir`, a `--scope system` run opens the machine-wide
 state root (Linux `/var/lib/cfgd`, macOS `/Library/Application Support/cfgd/state`,
 Windows `%ProgramData%\cfgd\state`) rather than the per-user one, so the store
 a run judges ownership against is always the store it opened.
+
+An unfiltered run carries one further key, `savedPlan`, holding the typed action
+graph, the files the derivation read with their stamps, the id of the last
+recorded apply, and the identity of the state store it was derived against; every
+structured format carries it, `-o json` among them. A scoped
+run (`--phase`, `--only`, `--skip`, `--skip-scripts`, `--module`) omits it, and so
+does a run holding a withheld source decision. See
+[The saved plan](reconciliation.md#the-saved-plan-savedplan).
 
 ### `cfgd status`
 
@@ -750,6 +920,21 @@ column `cfgd source remove` looks a subscription's resources up by, so
 removing a source can offer to keep them (they become `local`) or take them off
 the machine. `-o json` carries it as `source` on every `managedResources[]` row.
 
+Each `managedResources[]` row also carries two facts the table prints:
+
+- `kind`: what the row is, the fact the `Type` column words (`package`, `file`, `env`, `env-rc`,
+  `env-session`, `env-var`, `alias`). It uses the same words as `drift[].resourceType`, so a drift
+  row and the resource it is about match on it. `resourceType` names the engine that recorded the
+  row (`module`, `env`) and stays the key the row is stored under.
+- `manager`: the package manager that installed a package row (`npm` for the row the table prints
+  as `npm: cowsay`). A module's package row recorded before cfgd stored the manager carries the
+  manager the module's declaration resolves to, the same one the table prints. A row that is not
+  an installed package carries no manager.
+
+```bash
+cfgd status -o json | jq '.managedResources[] | select(.kind == "package") | {manager, resourceId}'
+```
+
 A generated env file, its rc line and the live session are surfaces cfgd writes
 whole out of every layer, so those three rows record `local` whatever delivered
 the entries in them. The entries themselves are separate rows: each env var is
@@ -886,10 +1071,19 @@ content, so every package row and every present file reads `not scanned`
 (absence is still definite: a file the module deployed and that is gone reads
 `missing` either way). A package row names the manager it resolves to in every
 state, the same one `cfgd module show` names, so two entries declaring one name
-under two managers are told apart. A package the module's own `platforms` gate
-rules out on this host reads `skipped (platform filter)` instead, with no
-manager named, the same words `cfgd module show` uses for it: nothing was ever
-going to install it, scan or no scan. `-o json` carries the same verdicts as
+under two managers are told apart. Two kinds of row name none. A package the
+module's own `platforms` gate rules out on this host reads
+`skipped (platform filter)`, the same words `cfgd module show` uses for it:
+nothing was ever going to install it, scan or no scan. And a package whose
+declared `minVersion` no available manager meets, where a bootstrap could
+deliver a manager that does, reads that route in place of a manager, because the
+manager the entry would land on is not on this host yet:
+
+```console
+⚠ nix — snap offers nix 2.18.1, below the declared minVersion 99.0; provisionable via nix installer
+```
+
+`-o json` carries that clause as `packageState[].route.clause`, the same verdicts as
 `packageState[].state` (`installed`, `notInstalled`, `notScanned`,
 `platformSkipped`) and
 `deployedFiles[].state` (`deployed`, `drifted`, `missing`, `notScanned`), and
@@ -1058,7 +1252,11 @@ Per-item rows are labelled `env:` or `alias:` (`env: EDITOR`); the whole-file ro
 is labelled `env file:` (`env file: /home/you/.cfgd.env`), so the file and the
 entries inside it do not read as one kind. The whole-file row is omitted whenever
 the item rows below it already name which entry the file is missing, and the
-closing tally counts only the rows the report showed.
+closing tally counts only the rows the report showed. A drifted env var's
+`want` / `have` is recomputed from the declaration, so it names the winning
+block's value, which need not be the first line in the file that mentions the name (the
+file holds one block per layer, so an outranked layer's line for the same name
+is above it).
 
 `cfgd:managers` reports package **managers** the plan itself would provision or
 refuse: not something the profile declared missing, but something `apply` would
@@ -1189,12 +1387,15 @@ The `Package Managers` section reads the same resolution: a manager no `spec.pac
 names still counts as used when a module routes to it (`brew: available (used by 3 modules)`),
 and only a manager nothing reaches reads `(not used)`.
 
-Exits non-zero when the verdict fails (an invalid config, a config missing at an
-explicitly-given `--config`/`CFGD_CONFIG`/`--config-dir` path, an unresolvable module, or a
-hard-broken profile such as [ambiguous layout forms](profiles.md#layout)), so
-`cfgd doctor && cfgd apply` stops instead of proceeding into a broken apply. A config
-missing at the *default* path is the fresh-machine state and stays a warning (exit 0),
-as does a supported legacy-flat layout; warnings do not affect the exit code.
+Exits non-zero when the verdict fails (a missing required tool, an invalid config, a config
+missing at an explicitly-given `--config`/`CFGD_CONFIG`/`--config-dir` path, an unresolvable
+module, or a hard-broken profile such as [ambiguous layout forms](profiles.md#layout)), so
+`cfgd doctor && cfgd apply` stops before a broken apply. `git` is the one required tool,
+because cfgd runs it to clone and fetch config sources: a machine without it fails the run,
+and `-o json` reports it as `"git": false`. `sops` is needed only for secrets, so a missing
+`sops` is a warning. A config missing at the *default* path is the fresh-machine state and
+stays a warning (exit 0), as does a supported legacy-flat layout; warnings do not affect the
+exit code.
 
 ### `cfgd log`
 
@@ -1341,7 +1542,38 @@ cfgd upgrade                   # download and install latest
 cfgd upgrade --check           # check only (exit 0 = current, 2 = update available, 1 = error)
 cfgd upgrade --require-cosign  # fail if cosign signature cannot be verified
 CFGD_REQUIRE_COSIGN=1 cfgd upgrade
+GITHUB_TOKEN=$(gh auth token) cfgd upgrade --check
 ```
+
+The explicit `cfgd upgrade` runs regardless of `spec.update.policy` and
+`--update-policy`. The policy governs the *automatic* check that other commands
+run at startup and the daemon runs on a timer; `cfgd --update-policy manual
+status` makes no check at all.
+
+#### GitHub token and rate limit
+
+The release check queries the GitHub Releases API, which answers 60 requests an
+hour per IP address without a token. When `GITHUB_TOKEN` or `GH_TOKEN` is set,
+the query sends it as a bearer token and the account's own limit applies.
+`GITHUB_TOKEN` is read first, and an empty value counts as unset. The
+automatic update check and the daemon's check read the same two variables.
+
+When the limit is used up, the check fails with the `rate_limited` kind.
+`limit` is the request allowance GitHub reported, `resetAt` is when it resets
+(RFC 3339, UTC) and `hint` names the two variables:
+
+```json
+{
+  "error": "rate_limited",
+  "name": "0.11.0",
+  "currentVersion": "0.11.0",
+  "limit": 60,
+  "resetAt": "2026-09-21T14:13:20Z",
+  "hint": "set GITHUB_TOKEN or GH_TOKEN to a GitHub token to raise the limit"
+}
+```
+
+Any other refusal from the API fails with `check_failed`.
 
 #### Signature verification
 
@@ -1764,7 +1996,7 @@ platform gate skipped, and the ones no available manager can satisfy.
 Packages
   ✓ ripgrep → 14.1.0 via brew
   ◉ winget-only-tool, platforms: windows — skipped (platform filter)
-  ⚠ obscure-tool (prefer: nix), min: 1.0 — unresolved: no manager available on this platform
+  ⚠ obscure-tool (prefer: nix; min: 1.0) — unresolved: no manager available on this platform
 ```
 
 What the machine and the state store say about the module (whether it is
@@ -2486,9 +2718,32 @@ Open cfgd.yaml in `$EDITOR`.
 ### `cfgd config get <key>`
 
 Get a config value by dotted key path. Outputs raw value to stdout (suitable for scripting).
+A `cfgd.toml` is read as TOML, so every example below answers the same on either
+format, and `config set` / `config unset` write it back as TOML in the order it
+declares its keys.
+
+A key is relative to `spec`, and `get`, `set` and `unset` all accept the
+`spec.` prefix that `cfgd explain` prints, so `spec.theme.name` and
+`theme.name` name one field.
+
+A key the document does not declare answers with the value this build uses for
+it, on the human and `-o json` channels alike. That includes a field inside a
+section the document leaves out and an optional field the build fills in: on a
+document that never names `migrationPolicy`, `daemon` or `output`,
+`config get migrationPolicy` prints `Prompt`,
+`config get daemon.reconcile.interval` prints `5m` and
+`config get output.usageHints` prints `false`. A key the build holds no value
+for is refused as a missing key, exit `6`, and the refusal names the key as you
+wrote it, with the first part of it the document does not declare
+(`key 'deamon.reconcile.interval' not found ('deamon' is not declared)`). That
+covers an optional key whose absence means nothing is set (`profile`,
+`daemon.notify.webhookUrl`, a theme override) and every key under a block the
+build reads only when it is declared, such as `secrets.sops.ageKey` on a
+document with no `secrets.sops`.
 
 ```sh
 cfgd config get profile                      # → work
+cfgd config get spec.theme.name              # → dracula (the prefixed spelling)
 cfgd config get theme.name                   # → dracula
 cfgd config get theme                        # prints the theme block (name + overrides)
 cfgd config get daemon.reconcile.interval    # → 5m
@@ -2500,6 +2755,9 @@ cfgd config get daemon                       # prints full daemon YAML block
 ### `cfgd config set <key> <value>`
 
 Set a config value by dotted key path. Creates intermediate sections as needed.
+A section the write creates declares every field this build reads, each at its
+default where the command named no value, so the next command's migration check
+has nothing to ask about it.
 
 ```sh
 cfgd config set profile personal
@@ -2513,13 +2771,67 @@ cfgd config set aliases.deploy "apply --yes"
 
 ### `cfgd config unset <key>`
 
-Remove a config value (resets to default). Alias: `cfgd config rm`.
+Remove a config value (resets to default). Alias: `cfgd config rm`. A field
+with a default is written back at that default and reported as
+`Reset <key> to <default>`; `-o json` carries `"removed": false` and the `value`
+written. A field with no default (an optional key, an alias) leaves the file and
+is reported as `Unset <key>`, with `"removed": true`.
+A key the document does not hold is refused as a missing key, exit `6`, with
+the first part of it the document does not declare named as `config get` names
+it (`key 'ghost.path' not found ('ghost' is not declared)`).
 
 ```sh
 cfgd config unset theme                          # remove entire theme section
 cfgd config unset daemon.reconcile.autoApply    # reset single field
 cfgd config unset aliases.deploy                 # remove an alias
 ```
+
+### `cfgd config migrate`
+
+Bring `cfgd.yaml` up to the schema this build reads. A document is behind the
+schema when this build carries a field the document never names: the field has a
+default, so cfgd reads it either way, but nothing in the file says what the value
+is or that the knob exists.
+
+```sh
+cfgd config migrate           # report what the document does not declare
+cfgd config migrate --write   # materialize those fields with their defaults
+```
+
+The report writes nothing. `--write` materializes each reported key with the
+value the typed config already carries, through the same write path every
+other write of the document takes (`cfgd config set` among them): the leading
+comment block and the schema modeline are re-prepended, and the result is
+validated before it replaces the file.
+
+The same check runs at load time under `spec.migrationPolicy` (`--migration-policy`
+/ `CFGD_MIGRATION_POLICY` override it for one invocation). Under the default
+`Prompt` an interactive run is asked once per config file and `apiVersion`, and
+the answer is remembered — yes or no; a release that adds another field asks
+again, because the question changed. A run with no terminal reports instead and
+records no answer, and the daemon does the same: it never rewrites a tracked file.
+A preview (`cfgd plan`, `cfgd apply --dry-run`, `cfgd profile migrate --dry-run`
+and `cfgd init --dry-run`) adds no field to the document either, answering
+`Prompt` and `Update` the way `Warn` does. Every write the check makes prints the
+fields it added.
+
+Four invocations are withheld from that load-time check, because the migration
+question is their own subject: this verb, `cfgd config edit`, and
+`cfgd config set` / `cfgd config unset` on `migrationPolicy`. A check that ran
+first would write the file this report is about, open the editor on bytes it had
+just rewritten, or act on the value the caller is replacing.
+
+`cfgd init` runs the check later in the same invocation, against the config it
+wrote: at load time that file does not exist yet, and its path need not be the
+one `--config` names. The check runs once the file is on disk and before the
+`--apply` step reads it, so a config fresh from `init` asks nothing of the next
+command.
+
+Structured output carries `path`, `pendingKeys` and `written`.
+
+A document written under an `apiVersion` this build does not read is a different
+refusal, reported where it happens: the load names the version it found and the
+ones this build accepts.
 
 ### `cfgd workflow generate`
 
@@ -2548,9 +2860,13 @@ The drift half of a check-in covers system settings only — the answers of the 
 configurators the profile declares (`sysctl`, `kernelModules`, `macosDefaults`,
 `windowsRegistry`, ...), which is why the report is headed `System Settings`. Managed files,
 packages, env vars and aliases are checked locally by [`cfgd diff`](#cfgd-diff) and reach the
-gateway only as the aggregate counts of the compliance summary a check-in carries when
-[`spec.compliance`](spec/config.md#speccompliance) is enabled — never as findings. A device the
-fleet dashboard shows as healthy is a device whose system settings matched, not a device proven
+gateway through the compliance summary a check-in carries when
+[`spec.compliance`](spec/config.md#speccompliance) is enabled: the snapshot's counts, and the first 200
+checks that did not pass, each with the name `cfgd compliance -o json` carries (for a file, its
+absolute path) and the detail [`cfgd compliance`](#cfgd-compliance) shows (violations first, then
+warnings), a source's security-constraint violations included. They are written to the machine's `MachineConfig.status.compliance`
+and in the gateway's device listing; no DriftAlert carries them. A device the
+fleet dashboard shows as healthy is a device whose system settings matched. It is not proven
 in sync.
 
 | Flag | Description |
@@ -2561,17 +2877,23 @@ in sync.
 
 The payload also carries what only this machine can answer: `packageVersions`, the installed
 version of each package the resolved profile declares (keyed `<manager>/<package>`, from the
-managers available here, never a full listing), and `backupScheduleOwners`, each declared backup
+managers available here, with no full listing; a package a manifest such as a `Cargo.toml` or a
+Brewfile names counts as declared), and `backupScheduleOwners`, each declared backup
 unit's [`scheduleOwner`](backups.md#scheduleowner). Both reach the machine's `MachineConfig.status`
 in the cluster, each applied whole under its own field manager: a key this machine stopped
 reporting is retired there, and a machine holding none of what it declares sends the empty map
 that clears it. A machine that could not list one of the managers holding its declared
 packages withholds the whole map rather than sending a partial one the cluster would read as a
 retirement, and a map left out produces no write at all, so the versions the cluster holds
-survive it.
+survive it. A package manifest that cannot be read leaves both `packageVersions` and the
+compliance summary out of the check-in, with a warning, and the check-in still goes out.
 
-The daemon's own periodic check-in reports the same two facts from the profile its tick resolved,
-authenticating as the device [`cfgd enroll`](#cfgd-enroll) registered.
+The daemon's own periodic check-in is composed the same way, from the profile its tick resolved,
+with the same hash: it carries the same two facts, and the snapshot the daemon's most recent
+compliance tick collected (none until the first compliance tick after the daemon starts). It
+authenticates as the device [`cfgd enroll`](#cfgd-enroll) registered, and a tick that skips
+reconciling because a source violates a security constraint still checks in and reports the
+violation.
 
 The gateway answers with the backup cadences a cluster [`BackupPolicy`](backup-policy.md) owns for
 this machine. They are recorded locally and decide when a cluster-owned unit is next due; a unit
@@ -2633,6 +2955,24 @@ cfgd alias delete pu                        # alias: rm
 
 No command-specific flags. `set` takes `<NAME> <COMMAND>`, where `COMMAND` is the argument string
 the alias expands to. Aliases live in the config file, so they travel with the config repository.
+
+An alias expands from the same config document every other command reads, wherever its location
+is spelled: `--config` (before or after the alias), `CFGD_CONFIG`, `--config-dir`,
+`CFGD_CONFIG_DIR` or `--scope system`. An alias declared only in another document runs under
+that document's location:
+
+```sh
+CFGD_CONFIG=~/work/cfgd.yaml cfgd pu ~/.gitconfig   # expands `pu` from ~/work/cfgd.yaml
+cfgd --config-dir ~/work pu ~/.gitconfig            # the same document, spelled as a directory
+```
+
+An alias name is one word with no `.`; `set`, `show` and `delete` refuse any other name as
+`invalid_value`. `show` and `delete` refuse a name with no alias as a missing alias, exit `6`.
+Every refusal names the alias as you typed it, in the message and as the `-o json` `name`:
+
+```sh
+cfgd alias show nope      # → ✗ alias 'nope' not found (exit 6)
+```
 
 ### `cfgd man`
 
@@ -2705,9 +3045,8 @@ selector format's success shape and an error doc's shape rarely agree:
   { "error": "not_found", "name": "web-server", "available": ["base", "dev"] }
   ```
 
-  `error` is a machine-readable kind (`not_found`, `registry_not_found`, `already_exists`,
-  `parse_failed`, `key_not_found`, `target_not_writable`, `config_dir_occupied`, …), `name` identifies the subject
-  (module / source / profile / registry / key), and any
+  `error` is a machine-readable kind from the [Error kinds](#error-kinds) list below,
+  `name` identifies the subject (module / source / profile / registry / key / flag), and any
   command-specific fields follow. `name` is present only when the failure has a subject to
   report: an empty subject is omitted from the payload rather than serialized as `""`. A
   plain propagated error with no CLI handler attached still gets a real kind: any typed
@@ -2723,6 +3062,103 @@ selector format's success shape and an error doc's shape rarely agree:
   fields (e.g. `-o jsonpath={.name}` against a `not_found` error, which does carry `name`), that
   projection additionally prints to `stdout`, so a selector format can render an error twice,
   once as the guaranteed `stderr` diagnostic and once as whatever the selector matched.
+
+### Error kinds
+
+Every kind a CLI refusal can carry in its structured payload's `error` field.
+A plain propagated failure with no handler attached carries its `CfgdError`
+domain instead: `config`, `file`, `package`, `secret`, `system`, `state`,
+`daemon`, `source`, `composition`, `upgrade`, `module`, `generate`, `oci`,
+`skill`, `backup` or `io`.
+
+| Kind | Meaning |
+|---|---|
+| `active_profile` | The profile named for deletion is the active one. |
+| `already_exists` | The module, profile, source or registry being created already exists. |
+| `ambiguous_snapshot` | `cfgd backup restore --at` matched more than one snapshot. |
+| `api_error` | The AI provider for `cfgd generate` cannot be reached, or its API key variable is unset. |
+| `apply_failed` | `kubectl cfgd` could not apply the rendered manifest. |
+| `attest_failed` | Attaching a provenance attestation to a pushed artifact failed. |
+| `backend_unavailable` | No secret backend is configured, or the configured one is not installed. |
+| `branch_pin_conflict` | `--branch` and `--pin-version` were given together. |
+| `build_failed` | `cfgd module build` could not build the module for a target. |
+| `check_failed` | `cfgd upgrade` could not check for a release. |
+| `clone_failed` | A git clone, or the checkout that follows it, did not complete. |
+| `command_required` | `kubectl cfgd exec` was given no command after `--`. |
+| `config_dir_occupied` | The default config directory already holds something that is not a cfgd config. |
+| `confirmation_required` | A destructive step needs `--yes` in a non-interactive run. |
+| `conflicting_flags` | Two flags that exclude each other were given together. |
+| `cosign_required` | `cfgd upgrade` requires a cosign signature and none verified. |
+| `crd_apply_failed` | Applying the Module CRD to the cluster failed. |
+| `crd_connect_failed` | The cluster for a Module CRD apply cannot be reached. |
+| `decryption_failed` | The secret backend could not decrypt the file. |
+| `duplicate_basename` | Two `--file` arguments share a file name, so one would overwrite the other. |
+| `edit_failed` | The editor could not be started, or the edit could not be saved back. |
+| `empty_lockfile` | The image lockfile holds no entries to pin against. |
+| `encryption_failed` | The secret backend could not encrypt the file. |
+| `filename_required` | `kubectl cfgd` was given no `-f`/`--filename`. |
+| `foreign_config` | The `--plan` file was not written for this config. |
+| `host_moved` | The `--plan` file describes a different host. |
+| `in_use` | The module named for deletion is referenced by a profile. |
+| `inherited` | The profile named for deletion is inherited by another profile. |
+| `inject_failed` | `kubectl cfgd` could not create its ephemeral container. |
+| `install_failed` | Installing the daemon service or a cfgd release failed, or was refused before it started. |
+| `internal` | A failure no handler typed and no `CfgdError` explains; `message` carries its text. |
+| `invalid` | The path given is not the kind of file system entry the command needs. |
+| `invalid_annotation` | An image annotation could not be parsed. |
+| `invalid_argument` | A flag or argument value was refused. `flag` names the argument as that command's `--help` prints it: a flag with its dashes (`--priority`), a required positional as `<NAME>` and an optional one as `[NAME]`; and `value` repeats what was given, `true` for a switch; `valid` lists the accepted values where they are a closed list, and `resource` names the kind a refused name was for. |
+| `invalid_label` | An image label could not be parsed. |
+| `invalid_pin_version` | `--pin-version` starts with `-`. |
+| `invalid_reference` | An OCI or image reference could not be parsed. |
+| `invalid_resource` | A `kubectl cfgd` resource is not written as `kind/name`. |
+| `invalid_url` | No registry name can be derived from the URL. |
+| `invalid_value` | A config key path or value, or an interactive answer, was refused. |
+| `key_not_found` | The config key, or the signing key file, is not there. |
+| `keygen_failed` | `cosign generate-key-pair` failed. |
+| `kube_connect_failed` | The cluster `kubectl cfgd` targets cannot be reached. |
+| `list_failed` | A provider's listing of installed items failed. |
+| `load_failed` | A source added by `cfgd source add` could not be loaded after its fetch. |
+| `local_module` | The module is a local one, so a registry operation does not apply to it. |
+| `method_mismatch` | The enrollment server uses a different enrollment method. |
+| `missing_argument` | A flag or argument the command needs was not given. |
+| `missing_value` | An override `set` action was given no value. |
+| `module_required` | `kubectl cfgd` was given no module. |
+| `module_yaml_missing` | The directory holds no `module.yaml`. |
+| `no_config` | No cfgd config file (or `cfgd-source.yaml`) is at the resolved path. |
+| `no_key` | No signing key was found for enrollment. |
+| `no_release` | `cfgd upgrade` found no release information. |
+| `no_rollback_copy` | The backup has no copy beside its source to roll back to. |
+| `no_saved_plan` | The `--plan` file carries no saved plan. |
+| `no_snapshots` | The backup has no snapshots yet. |
+| `no_versions` | The registry publishes no versions of the module. |
+| `not_a_cfgd_plan` | The `--plan` file is not a plan cfgd wrote. |
+| `not_found` | A named module, profile, source, file, snapshot, package or field is not there. For an `explain` field path, `resource` names the kind it was read against and `available` lists the fields where the path stopped resolving. |
+| `pack_failed` | `cfgd image pack` could not pack the image. |
+| `parent_not_found` | The profile named in `inherits` does not exist; `parent` names it. |
+| `parse_failed` | A document (config, module, plan) could not be parsed, or its shape contradicts the schema. |
+| `profile_source_delivered` | The profile named is not local, and a subscribed source provides it; `sources` lists which. |
+| `pull_failed` | Pulling a module artifact failed. |
+| `push_failed` | Pushing a module artifact failed. |
+| `rate_limited` | `cfgd upgrade` used up the GitHub API rate limit; `limit` is the allowance, `resetAt` when it resets (RFC 3339) and `hint` names `GITHUB_TOKEN` and `GH_TOKEN`, which raise it. |
+| `read_failed` | A file the command needs exists but could not be read. |
+| `registry_not_found` | The module registry named is not configured. |
+| `resign_failed` | Re-signing an artifact with a rotated key failed. |
+| `restore_failed` | `cfgd backup restore` could not select or restore the snapshot. |
+| `runtime_failed` | The daemon's reconcile loop failed. |
+| `sign_failed` | Signing a pushed artifact failed. |
+| `signature_failed` | A tag's signature is present but does not verify. |
+| `signature_required` | Signatures are required and the module has none. |
+| `signing_failed` | The enrollment challenge could not be signed. |
+| `snapshot_not_found` | `cfgd backup restore --at` matched no snapshot. |
+| `stale` | The `--plan` file was derived against state or config this machine has moved past. |
+| `status_unavailable` | The daemon's status could not be read. |
+| `target_not_writable` | The directory a write goes to is not writable. |
+| `tool_missing` | An external tool the command runs (cosign, ssh-keygen, gpg) is not available. |
+| `uninstall_failed` | Uninstalling the daemon service failed, or was refused before it started. |
+| `validation_failed` | A document or the names it declares failed validation. |
+| `verify_failed` | An artifact's or tag's signature could not be verified. |
+| `version_not_found` | The registry has no tag for the module version asked for. |
+| `write_failed` | A file the command writes could not be written. |
 
 ### Use in CI
 

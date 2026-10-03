@@ -956,7 +956,7 @@ fn load_source_names_a_dash_leading_url_as_injection_even_where_local_origins_ar
     // attempt with "that is a local path". The dash check runs first, and it
     // runs whether or not local origins are permitted.
     for allow in [Some("1"), None] {
-        with_test_env_var("CFGD_ALLOW_LOCAL_SOURCES", allow, || {
+        with_test_env_var(crate::CFGD_ALLOW_LOCAL_SOURCES_ENV, allow, || {
             let dir = tempfile::tempdir().unwrap();
             let mut mgr = SourceManager::new(dir.path());
             let printer = test_printer();
@@ -1485,10 +1485,7 @@ fn git_clone_with_fallback_local_repo() {
     // Create a bare repo as the origin
     let repo = git2::Repository::init(&origin_path).unwrap();
     let sig = git2::Signature::now("Test", "test@example.com").unwrap();
-    // Use content without a trailing newline. Git for Windows defaults to
-    // core.autocrlf=true, which rewrites LF → CRLF on checkout and would
-    // make the byte comparison below platform-dependent.
-    std::fs::write(origin_path.join("file.txt"), "hello").unwrap();
+    std::fs::write(origin_path.join("file.txt"), "hello\n").unwrap();
     let mut index = repo.index().unwrap();
     index.add_path(std::path::Path::new("file.txt")).unwrap();
     index.write().unwrap();
@@ -1507,8 +1504,16 @@ fn git_clone_with_fallback_local_repo() {
         clone_path.join("file.txt").exists(),
         "cloned file should exist"
     );
-    let content = std::fs::read_to_string(clone_path.join("file.txt")).unwrap();
-    assert_eq!(content, "hello", "cloned file should have original content");
+    // Git for Windows checks out under core.autocrlf=true, so the clone's
+    // line endings are the cloning user's git config.
+    let content = crate::normalize_line_endings(
+        &std::fs::read_to_string(clone_path.join("file.txt")).unwrap(),
+    )
+    .into_owned();
+    assert_eq!(
+        content, "hello\n",
+        "cloned file should have original content"
+    );
 
     // Verify it is a valid git repo
     assert!(
@@ -1585,6 +1590,7 @@ fn git_clone_with_fallback_refuses_a_populated_destination_without_deleting_it()
         err.contains("not empty"),
         "refusal must name the non-empty destination as the cause, got: {err}"
     );
+    // eol-exact-ok: the test wrote this file itself; the refused clone checked nothing out
     assert_eq!(
         std::fs::read_to_string(&keeper).unwrap(),
         body,
@@ -2651,7 +2657,7 @@ mod local_source_fixture {
     #[test]
     #[serial]
     fn a_refused_fetch_keeps_the_previously_accepted_checkout() {
-        with_test_env_var("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
+        with_test_env_var(crate::CFGD_ALLOW_LOCAL_SOURCES_ENV, Some("1"), || {
             let tmp = tempfile::tempdir().unwrap();
             let bare = make_bare_with_manifest(&tmp, "trust-keep", None, &[]);
             let branch = detect_branch(&bare);
@@ -2692,7 +2698,7 @@ mod local_source_fixture {
     #[test]
     #[serial]
     fn a_first_clone_refused_for_its_signature_leaves_no_checkout_behind() {
-        with_test_env_var("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
+        with_test_env_var(crate::CFGD_ALLOW_LOCAL_SOURCES_ENV, Some("1"), || {
             let tmp = tempfile::tempdir().unwrap();
             let bare = make_bare_with_manifest(&tmp, "trust-fresh", None, &[]);
             let branch = detect_branch(&bare);
@@ -2735,7 +2741,7 @@ mod local_source_fixture {
     #[test]
     #[serial]
     fn load_source_pin_range_resolves_highest_tag() {
-        with_test_env_var("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
+        with_test_env_var(crate::CFGD_ALLOW_LOCAL_SOURCES_ENV, Some("1"), || {
             let tmp = tempfile::tempdir().unwrap();
             let (bare, oids) =
                 make_bare_with_tags(&tmp, "pin-range", &["v1.0.0", "v2.0.0", "v2.1.0"]);
@@ -2751,7 +2757,7 @@ mod local_source_fixture {
     #[test]
     #[serial]
     fn load_source_pin_caret_one_resolves_v1() {
-        with_test_env_var("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
+        with_test_env_var(crate::CFGD_ALLOW_LOCAL_SOURCES_ENV, Some("1"), || {
             let tmp = tempfile::tempdir().unwrap();
             let (bare, oids) =
                 make_bare_with_tags(&tmp, "pin-caret", &["v1.0.0", "v2.0.0", "v2.1.0"]);
@@ -2767,7 +2773,7 @@ mod local_source_fixture {
     #[test]
     #[serial]
     fn load_source_pin_exact_semver_resolves_that_tag() {
-        with_test_env_var("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
+        with_test_env_var(crate::CFGD_ALLOW_LOCAL_SOURCES_ENV, Some("1"), || {
             let tmp = tempfile::tempdir().unwrap();
             let (bare, oids) =
                 make_bare_with_tags(&tmp, "pin-exact", &["v1.0.0", "v2.0.0", "v2.1.0"]);
@@ -2784,7 +2790,7 @@ mod local_source_fixture {
     #[test]
     #[serial]
     fn load_source_pin_exact_tag_name_resolves() {
-        with_test_env_var("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
+        with_test_env_var(crate::CFGD_ALLOW_LOCAL_SOURCES_ENV, Some("1"), || {
             let tmp = tempfile::tempdir().unwrap();
             let (bare, oids) =
                 make_bare_with_tags(&tmp, "pin-tag", &["v1.0.0", "v2.0.0", "v2.1.0"]);
@@ -2800,7 +2806,7 @@ mod local_source_fixture {
     #[test]
     #[serial]
     fn load_source_pin_commit_sha_resolves() {
-        with_test_env_var("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
+        with_test_env_var(crate::CFGD_ALLOW_LOCAL_SOURCES_ENV, Some("1"), || {
             let tmp = tempfile::tempdir().unwrap();
             let (bare, oids) =
                 make_bare_with_tags(&tmp, "pin-sha", &["v1.0.0", "v2.0.0", "v2.1.0"]);
@@ -2816,7 +2822,7 @@ mod local_source_fixture {
     #[test]
     #[serial]
     fn load_source_pin_no_match_fails_fast() {
-        with_test_env_var("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
+        with_test_env_var(crate::CFGD_ALLOW_LOCAL_SOURCES_ENV, Some("1"), || {
             let tmp = tempfile::tempdir().unwrap();
             let (bare, _) = make_bare_with_tags(&tmp, "pin-nomatch", &["v1.0.0", "v2.0.0"]);
             let cache_dir = tmp.path().join("cache");
@@ -2846,7 +2852,7 @@ mod local_source_fixture {
         // First load resolves a pin and caches a checkout. A later load whose pin
         // no longer matches any tag must KEEP the previously-resolved checkout
         // (non-required source) rather than dropping the source.
-        with_test_env_var("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
+        with_test_env_var(crate::CFGD_ALLOW_LOCAL_SOURCES_ENV, Some("1"), || {
             let tmp = tempfile::tempdir().unwrap();
             let (bare, oids) = make_bare_with_tags(&tmp, "pin-keep", &["v1.0.0", "v2.0.0"]);
             let cache_dir = tmp.path().join("cache");
@@ -2885,7 +2891,7 @@ mod local_source_fixture {
     fn load_source_pin_miss_with_cache_required_is_fatal() {
         // A required source whose pin can no longer resolve must FAIL, never
         // silently fall back to a stale cached ref.
-        with_test_env_var("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
+        with_test_env_var(crate::CFGD_ALLOW_LOCAL_SOURCES_ENV, Some("1"), || {
             let tmp = tempfile::tempdir().unwrap();
             let (bare, _oids) = make_bare_with_tags(&tmp, "pin-req", &["v1.0.0", "v2.0.0"]);
             let cache_dir = tmp.path().join("cache");
@@ -2914,7 +2920,7 @@ mod local_source_fixture {
     fn load_source_pin_miss_no_cache_non_required_errors() {
         // No prior cache + pin-miss → there is nothing to keep, so resolution
         // errors (load_sources then warn-drops it for a non-required source).
-        with_test_env_var("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
+        with_test_env_var(crate::CFGD_ALLOW_LOCAL_SOURCES_ENV, Some("1"), || {
             let tmp = tempfile::tempdir().unwrap();
             let (bare, _) = make_bare_with_tags(&tmp, "pin-fresh", &["v1.0.0", "v2.0.0"]);
             let cache_dir = tmp.path().join("cache");
@@ -2937,7 +2943,7 @@ mod local_source_fixture {
     fn load_source_pin_reresolves_higher_tag_on_update() {
         // A semver-range pin must re-select a newly-pushed higher tag on the
         // second (fetch) load, not stay frozen on the first checkout.
-        with_test_env_var("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
+        with_test_env_var(crate::CFGD_ALLOW_LOCAL_SOURCES_ENV, Some("1"), || {
             let tmp = tempfile::tempdir().unwrap();
             let (bare, oids) = make_bare_with_tags(&tmp, "pin-rereso", &["v2.0.0"]);
             let cache_dir = tmp.path().join("cache");
@@ -2987,7 +2993,7 @@ mod local_source_fixture {
     fn load_source_pin_existing_dir_sha_refetch() {
         // Clone shallow at tag A's commit, then re-pin to SHA B (a different
         // commit). The existing shallow clone lacks B, so checkout must fetch it.
-        with_test_env_var("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
+        with_test_env_var(crate::CFGD_ALLOW_LOCAL_SOURCES_ENV, Some("1"), || {
             let tmp = tempfile::tempdir().unwrap();
             let (bare, oids) =
                 make_bare_with_tags(&tmp, "pin-refetch", &["v1.0.0", "v2.0.0", "v2.1.0"]);
@@ -3014,7 +3020,7 @@ mod local_source_fixture {
     fn load_source_pin_dash_leading_tag_is_rejected() {
         // A malicious source publishes a tag literally named `-x`. Pinning to it
         // must FAIL resolution and never reach a `git checkout`/`fetch` positional.
-        with_test_env_var("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
+        with_test_env_var(crate::CFGD_ALLOW_LOCAL_SOURCES_ENV, Some("1"), || {
             let tmp = tempfile::tempdir().unwrap();
             let (bare, oids) = make_bare_with_tags(&tmp, "pin-dash", &["v1.0.0"]);
             let commit = oids.first().unwrap().1.clone();
@@ -3065,7 +3071,7 @@ mod local_source_fixture {
     #[test]
     #[serial]
     fn load_source_clones_then_fetches_from_local_bare() {
-        with_test_env_var("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
+        with_test_env_var(crate::CFGD_ALLOW_LOCAL_SOURCES_ENV, Some("1"), || {
             let tmp = tempfile::tempdir().unwrap();
             let bare = make_bare_with_manifest(&tmp, "ts1", None, &[]);
             let branch = detect_branch(&bare);
@@ -3087,7 +3093,7 @@ mod local_source_fixture {
     #[test]
     #[serial]
     fn load_source_records_last_commit_after_clone() {
-        with_test_env_var("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
+        with_test_env_var(crate::CFGD_ALLOW_LOCAL_SOURCES_ENV, Some("1"), || {
             let tmp = tempfile::tempdir().unwrap();
             let bare = make_bare_with_manifest(&tmp, "ts2", None, &[]);
             let branch = detect_branch(&bare);
@@ -3109,7 +3115,7 @@ mod local_source_fixture {
     #[test]
     #[serial]
     fn load_source_after_remote_advance_fetches_new_commit() {
-        with_test_env_var("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
+        with_test_env_var(crate::CFGD_ALLOW_LOCAL_SOURCES_ENV, Some("1"), || {
             let tmp = tempfile::tempdir().unwrap();
             let bare = make_bare_with_manifest(&tmp, "ts5", None, &[]);
             let branch = detect_branch(&bare);
@@ -3151,7 +3157,7 @@ mod local_source_fixture {
     #[test]
     #[serial]
     fn load_source_remove_source_clears_cache() {
-        with_test_env_var("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
+        with_test_env_var(crate::CFGD_ALLOW_LOCAL_SOURCES_ENV, Some("1"), || {
             let tmp = tempfile::tempdir().unwrap();
             let bare = make_bare_with_manifest(&tmp, "ts6", None, &[]);
             let branch = detect_branch(&bare);
@@ -3172,7 +3178,7 @@ mod local_source_fixture {
     #[test]
     #[serial]
     fn load_sources_processes_multiple_specs() {
-        with_test_env_var("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
+        with_test_env_var(crate::CFGD_ALLOW_LOCAL_SOURCES_ENV, Some("1"), || {
             let tmp = tempfile::tempdir().unwrap();
             let bare_a = make_bare_with_manifest(&tmp, "alpha", None, &[]);
             let bare_b = make_bare_with_manifest(&tmp, "beta", None, &[]);
@@ -3194,7 +3200,7 @@ mod local_source_fixture {
     #[test]
     #[serial]
     fn load_source_source_files_dir_returns_path_under_cache() {
-        with_test_env_var("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
+        with_test_env_var(crate::CFGD_ALLOW_LOCAL_SOURCES_ENV, Some("1"), || {
             let tmp = tempfile::tempdir().unwrap();
             let bare = make_bare_with_manifest(&tmp, "ts7", None, &[]);
             let branch = detect_branch(&bare);
@@ -3224,7 +3230,7 @@ mod local_source_fixture {
     #[test]
     #[serial]
     fn load_source_ssh_url_falls_back_to_libgit2_and_surfaces_failure() {
-        with_test_env_var("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
+        with_test_env_var(crate::CFGD_ALLOW_LOCAL_SOURCES_ENV, Some("1"), || {
             let tmp = tempfile::tempdir().unwrap();
             let cache_dir = tmp.path().join("cache");
             let mut mgr = SourceManager::new(&cache_dir);
@@ -3249,7 +3255,7 @@ mod local_source_fixture {
         // The cache is keyed by NAME alone. A cached checkout whose recorded
         // origin disagrees with the spec must be discarded and re-cloned from
         // the spec's origin — never fetched from the stale clone's remote.
-        with_test_env_var("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
+        with_test_env_var(crate::CFGD_ALLOW_LOCAL_SOURCES_ENV, Some("1"), || {
             let tmp = tempfile::tempdir().unwrap();
             let bare_a = make_bare_with_manifest(&tmp, "origin-swap", None, &[]);
             let cache_dir = tmp.path().join("cache");
@@ -3337,7 +3343,7 @@ mod local_source_fixture {
         // The read path never fetches, so it cannot heal a mismatched cache —
         // it must degrade exactly like a cache miss: warn, and do not compose
         // the other repository's content under this source's name.
-        with_test_env_var("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
+        with_test_env_var(crate::CFGD_ALLOW_LOCAL_SOURCES_ENV, Some("1"), || {
             let tmp = tempfile::tempdir().unwrap();
             let bare = make_bare_with_manifest(&tmp, "cached-swap", None, &[]);
             let cache_dir = tmp.path().join("cache");
@@ -3374,7 +3380,7 @@ mod local_source_fixture {
         // A cache directory with no git repository in it records no origin, so
         // the sync path cannot fetch it. It takes the same discard-and-reclone
         // self-heal as an origin mismatch instead of failing on the fetch.
-        with_test_env_var("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
+        with_test_env_var(crate::CFGD_ALLOW_LOCAL_SOURCES_ENV, Some("1"), || {
             let tmp = tempfile::tempdir().unwrap();
             let bare = make_bare_with_manifest(&tmp, "nonrepo-heal", None, &[]);
             let cache_dir = tmp.path().join("cache");
@@ -3410,7 +3416,7 @@ mod local_source_fixture {
         // a cache that is not a repository records no origin, so it falls
         // through to manifest parsing, and a corrupt manifest stays a hard
         // error rather than a warn-and-skip.
-        with_test_env_var("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
+        with_test_env_var(crate::CFGD_ALLOW_LOCAL_SOURCES_ENV, Some("1"), || {
             let tmp = tempfile::tempdir().unwrap();
             let cache_dir = tmp.path().join("cache");
             let planted = cache_dir.join("corrupt");
@@ -3431,7 +3437,7 @@ mod local_source_fixture {
         // answers `requireSignedCommits: false` — the answer a planted cache
         // would give. The subscription flag comes from the user's own config,
         // so the unsigned HEAD is still rejected and nothing is composed.
-        with_test_env_var("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
+        with_test_env_var(crate::CFGD_ALLOW_LOCAL_SOURCES_ENV, Some("1"), || {
             let tmp = tempfile::tempdir().unwrap();
             let bare = make_bare_with_manifest(&tmp, "anchored", None, &[]);
             let cache_dir = tmp.path().join("cache");
@@ -3505,7 +3511,7 @@ mod local_source_fixture {
     #[test]
     #[serial]
     fn a_kept_checkout_whose_head_the_pin_fallback_refuses_is_un_composed() {
-        with_test_env_var("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
+        with_test_env_var(crate::CFGD_ALLOW_LOCAL_SOURCES_ENV, Some("1"), || {
             let tmp = tempfile::tempdir().unwrap();
             let bare = make_bare_with_manifest(&tmp, "pinned", None, &[]);
             let cache_dir = tmp.path().join("cache");
@@ -3553,7 +3559,7 @@ mod local_source_fixture {
         // held under `<cache_dir>/cache.lock`. The lock is released with the
         // load, so the second load of the same name takes it again: were the
         // guard held past the first return, this test would never finish.
-        with_test_env_var("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
+        with_test_env_var(crate::CFGD_ALLOW_LOCAL_SOURCES_ENV, Some("1"), || {
             let tmp = tempfile::tempdir().unwrap();
             let bare = make_bare_with_manifest(&tmp, "locked-src", None, &[]);
             let cache_dir = tmp.path().join("cache");
@@ -3571,7 +3577,9 @@ mod local_source_fixture {
                 lock_path.is_file(),
                 "the lock lives beside the checkouts it guards: {:?}",
                 std::fs::read_dir(&cache_dir).map(|d| d
-                    .filter_map(|e| e.ok().map(|e| e.path()))
+                    .map(|entry| entry
+                        .expect("the walk must read every directory entry")
+                        .path())
                     .collect::<Vec<_>>())
             );
 
@@ -3636,7 +3644,7 @@ mod local_source_fixture {
         // drops every status role but `Fail`. The wait is unbounded and can
         // cover another process's network clone, so an ordinary status line
         // would leave the command animating a spinner and saying nothing.
-        with_test_env_var("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
+        with_test_env_var(crate::CFGD_ALLOW_LOCAL_SOURCES_ENV, Some("1"), || {
             let tmp = tempfile::tempdir().unwrap();
             let bare = make_bare_with_manifest(&tmp, "quiet-wait", None, &[]);
             let cache_dir = tmp.path().join("cache");
@@ -3685,7 +3693,7 @@ mod local_source_fixture {
         // The failing load must take nothing with it on the way out. It once
         // would have: a cleanup that ran after its own lock released could
         // delete the cache root while the other load was cloning into it.
-        with_test_env_var("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
+        with_test_env_var(crate::CFGD_ALLOW_LOCAL_SOURCES_ENV, Some("1"), || {
             let tmp = tempfile::tempdir().unwrap();
             let (doomed_bare, _) = make_bare_with_tags(&tmp, "doomed", &["v1.0.0"]);
             let good_bare = make_bare_with_manifest(&tmp, "survivor", None, &[]);
@@ -3750,7 +3758,7 @@ mod local_source_fixture {
         // root and its zero-byte lock stay: the deliberate residue, and NOTHING
         // else. A half-made checkout left beside them would be served by the
         // next load.
-        with_test_env_var("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
+        with_test_env_var(crate::CFGD_ALLOW_LOCAL_SOURCES_ENV, Some("1"), || {
             let tmp = tempfile::tempdir().unwrap();
             let (bare, _) = make_bare_with_tags(&tmp, "litter", &["v1.0.0"]);
             let cache_dir = tmp.path().join("cache");
@@ -3761,7 +3769,11 @@ mod local_source_fixture {
                 .expect_err("a pin matching no tag fails the first-ever load");
             let left: Vec<_> = std::fs::read_dir(&cache_dir)
                 .expect("the cache root stays")
-                .filter_map(|e| e.ok().map(|e| e.file_name()))
+                .map(|entry| {
+                    entry
+                        .expect("the walk must read every directory entry")
+                        .file_name()
+                })
                 .collect();
             assert_eq!(
                 left,
@@ -3798,7 +3810,7 @@ mod local_source_fixture {
     fn a_failed_load_disturbs_nothing_already_in_the_cache_root() {
         // A failed load removes nothing at all, so another source's checkout
         // beside it is untouched.
-        with_test_env_var("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
+        with_test_env_var(crate::CFGD_ALLOW_LOCAL_SOURCES_ENV, Some("1"), || {
             let tmp = tempfile::tempdir().unwrap();
             let (bare, _) = make_bare_with_tags(&tmp, "keeper", &["v1.0.0"]);
             let cache_dir = tmp.path().join("cache");
@@ -4129,7 +4141,7 @@ fn source_manager_source_files_dir_returns_err_for_unknown_source() {
 #[serial]
 fn load_source_rejects_file_url_without_allow_env() {
     use crate::test_helpers::with_test_env_var;
-    with_test_env_var("CFGD_ALLOW_LOCAL_SOURCES", None, || {
+    with_test_env_var(crate::CFGD_ALLOW_LOCAL_SOURCES_ENV, None, || {
         let tmp = tempfile::tempdir().unwrap();
         let cache_dir = tmp.path().join("cache");
         let mut mgr = SourceManager::new(&cache_dir);
@@ -4159,7 +4171,7 @@ fn load_source_rejects_file_url_without_allow_env() {
 #[serial]
 fn load_source_rejects_absolute_path_origin_without_allow_env() {
     use crate::test_helpers::with_test_env_var;
-    with_test_env_var("CFGD_ALLOW_LOCAL_SOURCES", None, || {
+    with_test_env_var(crate::CFGD_ALLOW_LOCAL_SOURCES_ENV, None, || {
         let tmp = tempfile::tempdir().unwrap();
         let cache_dir = tmp.path().join("cache");
         let mut mgr = SourceManager::new(&cache_dir);
@@ -4192,7 +4204,7 @@ fn load_source_rejects_relative_path_origin_without_allow_env() {
     // A relative origin is cloned from the process working directory just as
     // readily as an absolute one, so the guard has to reject both or it names a
     // rule it does not enforce.
-    with_test_env_var("CFGD_ALLOW_LOCAL_SOURCES", None, || {
+    with_test_env_var(crate::CFGD_ALLOW_LOCAL_SOURCES_ENV, None, || {
         for url in ["acme/config", "./config", "../config", r"C:\src\config"] {
             let tmp = tempfile::tempdir().unwrap();
             let mut mgr = SourceManager::new(&tmp.path().join("cache"));
@@ -4255,7 +4267,7 @@ fn remote_origin_urls_are_told_from_local_ones() {
 
 // ---------------------------------------------------------------------------
 // load_source — the source name becomes a cache directory of its own, so it has
-// to be a plain name and not merely free of `..`.
+// to be a plain name; being free of `..` is not enough.
 // ---------------------------------------------------------------------------
 
 fn source_spec_named(name: &str) -> crate::config::SourceSpec {
@@ -4371,7 +4383,7 @@ fn load_sources_succeeds_when_at_least_one_source_loads() {
     };
     use crate::test_helpers::with_test_env_var;
 
-    with_test_env_var("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
+    with_test_env_var(crate::CFGD_ALLOW_LOCAL_SOURCES_ENV, Some("1"), || {
         let tmp = tempfile::tempdir().unwrap();
 
         // Create a real bare repo with a valid cfgd-source.yaml.
@@ -4549,7 +4561,7 @@ mod bare_repo_load {
         // load_source again — fetch_source's CLI + libgit2 fallback both
         // fail, surfacing the FetchFailed error path (sources/mod.rs's
         // spinner + return Err arm).
-        with_test_env_var("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
+        with_test_env_var(crate::CFGD_ALLOW_LOCAL_SOURCES_ENV, Some("1"), || {
             let bare = make_bare_with_manifest("missing1", None);
             let branch = bare.head_branch().to_string();
             let url = bare.url();
@@ -4572,7 +4584,7 @@ mod bare_repo_load {
     #[test]
     #[serial]
     fn load_source_clone_then_fetch_via_bare_repo() {
-        with_test_env_var("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
+        with_test_env_var(crate::CFGD_ALLOW_LOCAL_SOURCES_ENV, Some("1"), || {
             let bare = make_bare_with_manifest("bare1", None);
             let branch = bare.head_branch().to_string();
             let url = bare.url();
@@ -4596,7 +4608,7 @@ mod bare_repo_load {
         // BareGitRepo commits are unsigned. With constraints.require_signed_commits=true
         // and allow_unsigned=false, verify_commit_signature delegates to
         // verify_head_signature -> git log %G? -> "N" -> error.
-        with_test_env_var("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
+        with_test_env_var(crate::CFGD_ALLOW_LOCAL_SOURCES_ENV, Some("1"), || {
             let bare = make_bare_with_manifest("signed1", None);
             let branch = bare.head_branch().to_string();
             let url = bare.url();
@@ -4626,7 +4638,7 @@ mod bare_repo_load {
     #[test]
     #[serial]
     fn load_source_with_bare_repo_clones_into_cache_dir() {
-        with_test_env_var("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
+        with_test_env_var(crate::CFGD_ALLOW_LOCAL_SOURCES_ENV, Some("1"), || {
             let bare = make_bare_with_manifest("freshclone", None);
             let branch = bare.head_branch().to_string();
             let url = bare.url();
@@ -4646,7 +4658,7 @@ mod bare_repo_load {
                 dir.join(".git").exists() || dir.join("HEAD").exists(),
                 "must be a git repo: {:?}",
                 std::fs::read_dir(&dir).map(|d| d
-                    .filter_map(|e| e.ok())
+                    .map(|entry| entry.expect("the walk must read every directory entry"))
                     .map(|e| e.file_name())
                     .collect::<Vec<_>>())
             );

@@ -60,8 +60,8 @@ spec:
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `name` | string | Yes | | Resource name. Conventionally the team slug (e.g. `team-platform`). |
-| `namespace` | string | Yes | | Kubernetes namespace. |
+| `name` | string | Yes | — | Resource name. Conventionally the team slug (e.g. `team-platform`). |
+| `namespace` | string | Yes | — | Kubernetes namespace. |
 
 ---
 
@@ -69,12 +69,12 @@ spec:
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `team` | string | Yes | | Team identifier. Used to name generated `MachineConfig` resources (e.g. `<team>-<username>`). |
-| `members` | list | Yes | | Team members who will each receive a generated `MachineConfig`. See [spec.members[]](#specmembers). |
-| `profile` | string | No | | Default cfgd profile name for all team members. Individual members may override this. |
-| `source` | object | No | | Git repository containing the team's cfgd config source. See [spec.source](#specsource). |
+| `team` | string | Yes | — | Team identifier. Used to name generated `MachineConfig` resources (e.g. `<team>-<username>`). |
+| `members` | list | Yes | — | Team members who will each receive a generated `MachineConfig`. See [spec.members[]](#specmembers). |
+| `profile` | string | No | — | Default cfgd profile name for all team members. Individual members may override this. |
+| `source` | object | No | — | Git repository containing the team's cfgd config source. See [spec.source](#specsource). |
 | `modules` | list | No | `[]` | Modules provided or pinned by this team config. See [spec.modules[]](#specmodules). |
-| `policy` | object | No | | Policy tiers controlling what members can and cannot override. See [spec.policy](#specpolicy). |
+| `policy` | object | No | — | Policy tiers controlling what members can and cannot override. See [spec.policy](#specpolicy). |
 
 ---
 
@@ -84,7 +84,7 @@ Git repository from which the team's cfgd configuration is fetched by subscribed
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `url` | string | Yes | | Git clone URL (SSH or HTTPS). |
+| `url` | string | Yes | — | Git clone URL (SSH or HTTPS). |
 | `branch` | string | No | `main` | Branch to track. |
 
 **Example:**
@@ -103,15 +103,15 @@ Modules that the team config declares, pins, or makes available to members. Each
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `name` | string | Yes | | Module name. |
-| `sourceRef` | object | No | | Reference to a git repository containing this module. See [spec.modules[].sourceRef](#specmodulessourceref). |
+| `name` | string | Yes | — | Module name. |
+| `sourceRef` | object | No | — | Reference to a git repository containing this module. See [spec.modules[].sourceRef](#specmodulessourceref). |
 
 #### spec.modules[].sourceRef
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `url` | string | Yes | | Git clone URL of the repository containing the module. |
-| `ref` | string | No | | Git ref (tag, branch, or commit SHA) to pin the module to. |
+| `url` | string | Yes | — | Git clone URL of the repository containing the module. |
+| `ref` | string | No | — | Git ref (tag, branch, or commit SHA) to pin the module to. |
 
 **Example:**
 ```yaml
@@ -135,9 +135,9 @@ YAML objects (preserved via `x-kubernetes-preserve-unknown-fields: true`).
 |-------|------|----------|---------|-------------|
 | `requiredModules` | list of string | No | `[]` | Module names that all team members must have installed. The composition function injects these into every generated `MachineConfig.spec.moduleRefs` with `required: true`. |
 | `recommendedModules` | list of string | No | `[]` | Module names recommended for team members. Injected with `required: false`; members may opt out. |
-| `required` | object | No | | Arbitrary config items that subscribers cannot override or remove. Free-form YAML merged at the highest priority in generated configs. |
-| `recommended` | object | No | | Arbitrary config items subscribers receive only when `acceptRecommended: true`; they may override or reject individual items. |
-| `locked` | object | No | | Arbitrary config items that subscribers cannot modify or remove under any circumstances. Enforced by the composition function regardless of member overrides. |
+| `required` | object | No | — | Arbitrary config items that subscribers cannot override or remove. Free-form YAML merged at the highest priority in generated configs. |
+| `recommended` | object | No | — | Arbitrary config items subscribers receive only when `acceptRecommended: true`; they may override or reject individual items. |
+| `locked` | object | No | — | Arbitrary config items that subscribers cannot modify or remove under any circumstances. Enforced by the composition function regardless of member overrides. |
 
 **Example:**
 ```yaml
@@ -165,10 +165,10 @@ member, merging team-level defaults with member-level overrides.
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `username` | string | Yes | | Unique identifier for the team member. Used as the `<username>` suffix in the generated `MachineConfig` name. |
-| `sshPublicKey` | string | No | | SSH public key for device identity verification during enrollment and check-in. |
-| `profile` | string | No | | Profile override for this member. When set, takes precedence over `spec.profile`. Defaults to the team-level `spec.profile`. |
-| `hostname` | string | No | | Machine hostname. If empty on creation, the generated `MachineConfig` gets the placeholder hostname `pending-<username>` until the device checks in and reports its real hostname. |
+| `username` | string | Yes | — | Unique identifier for the team member. Used as the `<username>` suffix in the generated `MachineConfig` name. |
+| `sshPublicKey` | string | No | — | SSH public key for device identity verification during enrollment and check-in. |
+| `profile` | string | No | — | Profile override for this member. When set, takes precedence over `spec.profile`. Defaults to the team-level `spec.profile`. |
+| `hostname` | string | No | — | Machine hostname. If empty on creation, the generated `MachineConfig` gets the placeholder hostname `pending-<username>` until the device checks in and reports its real hostname. |
 
 **Example:**
 ```yaml

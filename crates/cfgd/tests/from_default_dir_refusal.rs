@@ -1,5 +1,3 @@
-#![allow(deprecated)] // assert_cmd 2.x cargo_bin deprecation; upgrade path is assert_cmd 3.x
-
 //! A `--from` run that names no destination must not write over the default
 //! config directory.
 //!
@@ -11,8 +9,12 @@
 
 use std::path::Path;
 
-use assert_cmd::Command;
 use predicates::prelude::*;
+
+use assert_cmd::prelude::*;
+
+mod cfgd_binary;
+use cfgd_binary::cfgd_bin;
 
 /// A committed git repository holding a `cfgd.yaml`, for `--from` to clone.
 fn source_repo(dir: &Path) {
@@ -36,15 +38,15 @@ fn source_repo(dir: &Path) {
 /// The binary under a throwaway home, with every seam that resolves the default
 /// config directory pointed into it.
 fn run(home: &Path, args: &[&str]) -> assert_cmd::assert::Assert {
-    Command::cargo_bin("cfgd")
+    cfgd_bin()
         .unwrap()
         .args(args)
         .env("HOME", home)
         // Windows resolves `~` from USERPROFILE first.
         .env("USERPROFILE", home)
         .env("XDG_CONFIG_HOME", home.join(".config"))
-        .env("CFGD_CACHE_DIR", home.join("cache"))
-        .env("CFGD_ALLOW_LOCAL_SOURCES", "1")
+        .env(cfgd_core::CFGD_CACHE_DIR_ENV, home.join("cache"))
+        .env(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1")
         .assert()
 }
 
@@ -94,6 +96,7 @@ fn init_from_refuses_a_default_dir_that_already_holds_a_config() {
         .stderr(predicate::str::contains("it already holds a cfgd.yaml"));
 
     // The refusal is only worth anything if it left the directory alone.
+    // eol-exact-ok: the test wrote this file itself; the refused clone checked nothing out
     assert_eq!(
         std::fs::read_to_string(dest.join("cfgd.yaml")).unwrap(),
         "apiVersion: cfgd.io/v1alpha1\n"
@@ -115,6 +118,7 @@ fn init_from_refuses_a_non_empty_default_dir() {
         .code(1)
         .stderr(predicate::str::contains("it is not empty"));
 
+    // eol-exact-ok: the test wrote this file itself; the refused clone checked nothing out
     assert_eq!(
         std::fs::read_to_string(dest.join("notes.txt")).unwrap(),
         "somebody's"
@@ -227,6 +231,7 @@ fn apply_from_materialises_into_the_directory_config_names() {
     .success();
 
     // The default directory kept the config it already had.
+    // eol-exact-ok: the test wrote this file itself; the refused clone checked nothing out
     assert_eq!(
         std::fs::read_to_string(dest.join("cfgd.yaml")).unwrap(),
         "apiVersion: cfgd.io/v1alpha1\n"
@@ -251,6 +256,7 @@ fn plan_from_refuses_a_default_dir_that_already_holds_a_config() {
             "Refusing to write into the default config directory",
         ));
 
+    // eol-exact-ok: the test wrote this file itself; the refused clone checked nothing out
     assert_eq!(
         std::fs::read_to_string(dest.join("cfgd.yaml")).unwrap(),
         "apiVersion: cfgd.io/v1alpha1\n"
@@ -291,6 +297,7 @@ fn apply_from_refuses_a_config_that_walks_back_into_the_default_dir() {
         "Refusing to write into the default config directory",
     ));
 
+    // eol-exact-ok: the test wrote this file itself; the refused clone checked nothing out
     assert_eq!(
         std::fs::read_to_string(dest.join("cfgd.yaml")).unwrap(),
         "apiVersion: cfgd.io/v1alpha1\n"
@@ -339,6 +346,7 @@ fn apply_from_refuses_a_config_walking_back_through_a_component_that_is_not_ther
         !dest.join("x").exists(),
         "the absent component was not created on the way to the refusal"
     );
+    // eol-exact-ok: the test wrote this file itself; the refused clone checked nothing out
     assert_eq!(
         std::fs::read_to_string(dest.join("cfgd.yaml")).unwrap(),
         "apiVersion: cfgd.io/v1alpha1\n"
@@ -417,6 +425,7 @@ fn apply_from_names_what_the_default_dir_holds_when_the_config_is_a_link_to_it()
     ))
     .stderr(predicate::str::contains("it is not empty"));
 
+    // eol-exact-ok: the test wrote this file itself; the refused clone checked nothing out
     assert_eq!(
         std::fs::read_to_string(dest.join("notes.txt")).unwrap(),
         "somebody's"
@@ -504,13 +513,13 @@ fn init_from_refuses_an_occupied_default_dir_before_provisioning_git() {
     );
     let argv_log = shim_dir.join("argv.log");
 
-    let mut cmd = Command::cargo_bin("cfgd").unwrap();
+    let mut cmd = cfgd_bin().unwrap();
     cmd.args(["init", "--from", &src.display().to_string()])
         .env("HOME", &home)
         .env("USERPROFILE", &home)
         .env("XDG_CONFIG_HOME", home.join(".config"))
-        .env("CFGD_CACHE_DIR", home.join("cache"))
-        .env("CFGD_ALLOW_LOCAL_SOURCES", "1")
+        .env(cfgd_core::CFGD_CACHE_DIR_ENV, home.join("cache"))
+        .env(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1")
         // git is the whole prerequisite `init` provisions, and an empty PATH is
         // what takes it off the machine for this child alone.
         .env("PATH", "");
@@ -525,9 +534,11 @@ fn init_from_refuses_an_occupied_default_dir_before_provisioning_git() {
     assert!(
         !argv_log.exists(),
         "the refusal came first, so no manager was asked for anything: {}",
+        // long-line-ok: a hatch is read off its own line, so it cannot wrap
         // absent-file-ok: the assertion above is that this file is absent, and the read only fills the failure message when it is not
         std::fs::read_to_string(&argv_log).unwrap_or_default()
     );
+    // eol-exact-ok: the test wrote this file itself; the refused clone checked nothing out
     assert_eq!(
         std::fs::read_to_string(dest.join("cfgd.yaml")).unwrap(),
         "apiVersion: cfgd.io/v1alpha1\n"

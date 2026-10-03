@@ -1,6 +1,6 @@
 use super::*;
 use crate::config::ScriptCommand;
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::Path;
 use std::str::FromStr;
 
@@ -432,7 +432,7 @@ fn apply_aborts_before_first_action_when_flag_preset() {
     );
     let leftover: Vec<_> = std::fs::read_dir(dir.path())
         .unwrap()
-        .filter_map(|e| e.ok())
+        .map(|entry| entry.expect("the walk must read every directory entry"))
         .map(|e| e.file_name().to_string_lossy().to_string())
         .filter(|n| n.contains(".tmp") || n.ends_with('~'))
         .collect();
@@ -675,6 +675,8 @@ fn a_manager_that_cannot_list_is_one_erroring_check_and_the_rest_still_reports()
     // The npm entry pins a floor too, so BOTH package passes meet the same
     // unlistable manager and the reader is still told once.
     let modules = vec![ResolvedModule {
+        held_managers: Vec::new(),
+        floor_bootstraps: Vec::new(),
         dep_pulled: false,
         name: "web".to_string(),
         packages: vec![ResolvedPackage {
@@ -893,11 +895,11 @@ fn plan_hash_string() {
         )],
         warnings: vec![],
     };
-    let hash = plan.to_hash_string();
+    let hash = plan.to_hash_string().expect("the plan hashes");
     assert!(!hash.is_empty());
     assert_eq!(
         hash,
-        plan.to_hash_string(),
+        plan.to_hash_string().expect("the plan hashes again"),
         "plan hash must be deterministic"
     );
 }
@@ -908,6 +910,7 @@ fn apply_result_counts() {
         action_results: vec![
             ActionResult {
                 origin: None,
+                manager: None,
                 after_plan: None,
                 phase: "files".to_string(),
                 description: "test".to_string(),
@@ -922,6 +925,7 @@ fn apply_result_counts() {
             },
             ActionResult {
                 origin: None,
+                manager: None,
                 after_plan: None,
                 phase: "files".to_string(),
                 description: "test2".to_string(),
@@ -999,6 +1003,8 @@ fn plan_module_with_files() {
     std::fs::write(&source, "config").unwrap();
 
     let modules = vec![ResolvedModule {
+        held_managers: Vec::new(),
+        floor_bootstraps: Vec::new(),
         dep_pulled: false,
         name: "nvim".to_string(),
         packages: vec![],
@@ -1067,6 +1073,8 @@ fn plan_module_with_scripts() {
     let resolved = make_empty_resolved();
 
     let modules = vec![ResolvedModule {
+        held_managers: Vec::new(),
+        floor_bootstraps: Vec::new(),
         dep_pulled: false,
         name: "nvim".to_string(),
         packages: vec![],
@@ -1128,6 +1136,8 @@ fn plan_multiple_modules_in_dependency_order() {
 
     let modules = vec![
         ResolvedModule {
+            held_managers: Vec::new(),
+            floor_bootstraps: Vec::new(),
             dep_pulled: false,
             name: "node".to_string(),
             packages: vec![ResolvedPackage {
@@ -1158,6 +1168,8 @@ fn plan_multiple_modules_in_dependency_order() {
             platform_skip_reason: None,
         },
         ResolvedModule {
+            held_managers: Vec::new(),
+            floor_bootstraps: Vec::new(),
             dep_pulled: false,
             name: "nvim".to_string(),
             packages: vec![ResolvedPackage {
@@ -1238,6 +1250,8 @@ fn plan_package_actions_order_ties_by_manager_name_every_run() {
     let resolved = make_empty_resolved();
 
     let module = ResolvedModule {
+        held_managers: Vec::new(),
+        floor_bootstraps: Vec::new(),
         dep_pulled: false,
         name: "toolchain".to_string(),
         packages: vec![
@@ -1330,6 +1344,8 @@ fn plan_routes_module_work_to_the_phase_of_its_kind() {
     std::fs::write(&source, "config").unwrap();
 
     let modules = vec![ResolvedModule {
+        held_managers: Vec::new(),
+        floor_bootstraps: Vec::new(),
         dep_pulled: false,
         name: "nvim".to_string(),
         packages: vec![ResolvedPackage {
@@ -1436,6 +1452,8 @@ fn plan_routes_module_work_to_the_phase_of_its_kind() {
 /// helper keeps package identities disjoint so both modules' phases survive.
 fn resolved_module_with_package(name: &str, pkg: &str, manager: &str) -> ResolvedModule {
     ResolvedModule {
+        held_managers: Vec::new(),
+        floor_bootstraps: Vec::new(),
         dep_pulled: false,
         name: name.to_string(),
         packages: vec![ResolvedPackage {
@@ -1857,7 +1875,7 @@ fn plan_hash_includes_module_actions() {
         warnings: vec![],
     };
 
-    let hash = plan.to_hash_string();
+    let hash = plan.to_hash_string().expect("the plan hashes");
     assert!(hash.contains("nvim"));
     assert!(hash.contains("neovim"));
     assert!(hash.contains("brew"));
@@ -1932,6 +1950,8 @@ fn verify_routes_through_package_identity_for_name_remapping_manager() {
     let printer = test_printer();
 
     let modules = vec![ResolvedModule {
+        held_managers: Vec::new(),
+        floor_bootstraps: Vec::new(),
         dep_pulled: false,
         name: "gotools".to_string(),
         packages: vec![ResolvedPackage {
@@ -1999,6 +2019,8 @@ fn verify_module_script_packages_not_false_drift() {
     let printer = test_printer();
 
     let modules = vec![ResolvedModule {
+        held_managers: Vec::new(),
+        floor_bootstraps: Vec::new(),
         dep_pulled: false,
         name: "rustup".to_string(),
         packages: vec![ResolvedPackage {
@@ -2162,6 +2184,127 @@ fn a_comparator_that_fails_to_spawn_is_unreadable_not_below() {
             "a comparator that failed to spawn must never be reported as a verdict: {other:?}"
         ),
     }
+}
+
+/// A manager a run provisioned to meet a declared floor answers for itself: no
+/// listing holds a cargo that rustup delivered, so the listing pass can never
+/// check that entry's floor and this pass is the only thing that reports a
+/// toolchain which later slipped below it.
+#[test]
+fn a_held_managers_floor_is_checked_against_the_binary_this_host_holds() {
+    let module = held_module("rust", "cargo", "1.85");
+
+    let mut met = ProviderRegistry::new();
+    met.add_package_manager(Box::new(
+        crate::test_helpers::MockPackageManager::new("cargo").reporting_version("1.90"),
+    ));
+    let (results, check_errors) =
+        crate::reconciler::held_manager_version_drift(std::slice::from_ref(&module), &met, &[]);
+    assert!(
+        results.is_empty() && check_errors.is_empty(),
+        "a binary at or above the floor is no finding: {results:?} {check_errors:?}"
+    );
+
+    let mut slipped = ProviderRegistry::new();
+    slipped.add_package_manager(Box::new(
+        crate::test_helpers::MockPackageManager::new("cargo").reporting_version("1.80"),
+    ));
+    let (results, check_errors) =
+        crate::reconciler::held_manager_version_drift(std::slice::from_ref(&module), &slipped, &[]);
+    assert!(
+        check_errors.is_empty(),
+        "a version the manager stated is not a check error: {check_errors:?}"
+    );
+    assert_eq!(results.len(), 1, "one row per held manager: {results:?}");
+    let row = &results[0];
+    assert_eq!(row.resource_type, "package");
+    assert_eq!(
+        row.resource_id, "cargo:cargo",
+        "the row carries the package pass's own id, so a converged scan heals it"
+    );
+    assert!(!row.matches);
+    assert_eq!(
+        (row.expected.as_str(), row.actual.as_str()),
+        ("1.85", "1.80")
+    );
+}
+
+/// A module whose only package declaration is the manager that delivers it.
+fn held_module(module: &str, manager: &str, floor: &str) -> ResolvedModule {
+    let mut resolved = make_resolved_module(module);
+    resolved.packages = Vec::new();
+    resolved.held_managers = vec![crate::modules::HeldManager {
+        package: manager.to_string(),
+        module: module.to_string(),
+        floor: floor.to_string(),
+        // The stored verdict, which this pass re-asks.
+        judgment: crate::modules::FloorJudgment::Met {
+            version: "1.90".to_string(),
+        },
+    }];
+    resolved
+}
+
+/// A binary that states no version has answered nothing, so the pass reports a
+/// check that could not run, claiming no shortfall it never measured, and the
+/// error carries the clause naming what a reader would look at.
+#[test]
+fn a_held_manager_whose_version_cannot_be_read_is_a_check_that_could_not_run() {
+    let module = held_module("rust", "cargo", "1.85");
+    let mut registry = ProviderRegistry::new();
+    registry.add_package_manager(Box::new(crate::test_helpers::MockPackageManager::new(
+        "cargo",
+    )));
+
+    let (results, check_errors) = crate::reconciler::held_manager_version_drift(
+        std::slice::from_ref(&module),
+        &registry,
+        &[],
+    );
+    assert!(
+        results.is_empty(),
+        "a floor nothing judged is no drift finding: {results:?}"
+    );
+    assert_eq!(check_errors.len(), 1, "{check_errors:?}");
+    assert_eq!(check_errors[0].key, "cargo:cargo");
+    assert!(
+        check_errors[0]
+            .error
+            .contains("cannot judge cargo against the declared minVersion 1.85"),
+        "{:?}",
+        check_errors[0].error
+    );
+}
+
+/// `npm install -g npm` is one package name and one manager name, so the
+/// listing pass and this pass reach the same `<mgr>:<pkg>` key. The store
+/// UPSERTs on it, so two answers would silently overwrite each other; the
+/// listing's wins, because it measured the copy an apply can raise.
+#[test]
+fn a_held_manager_the_listing_pass_already_reported_mints_no_second_row() {
+    let module = held_module("node", "npm", "10.0.0");
+    let mut registry = ProviderRegistry::new();
+    registry.add_package_manager(Box::new(
+        crate::test_helpers::MockPackageManager::new("npm").reporting_version("9.0.0"),
+    ));
+    let claimed = vec![VerifyResult {
+        resource_type: "package".to_string(),
+        resource_id: "npm:npm".to_string(),
+        matches: false,
+        expected: "10.0.0".to_string(),
+        actual: "9.5.0".to_string(),
+        unmanaged: false,
+    }];
+
+    let (results, check_errors) = crate::reconciler::held_manager_version_drift(
+        std::slice::from_ref(&module),
+        &registry,
+        &claimed,
+    );
+    assert!(
+        results.is_empty() && check_errors.is_empty(),
+        "the listing's row already holds the key: {results:?} {check_errors:?}"
+    );
 }
 
 /// The same failure on the LIVE path `cmd_verify` actually calls: the
@@ -2796,6 +2939,8 @@ fn plan_module_with_script_packages() {
     let resolved = make_empty_resolved();
 
     let modules = vec![ResolvedModule {
+        held_managers: Vec::new(),
+        floor_bootstraps: Vec::new(),
         dep_pulled: false,
         name: "rustup".to_string(),
         packages: vec![ResolvedPackage {
@@ -2935,6 +3080,8 @@ fn conflict_detection_different_content() {
     }];
 
     let modules = vec![ResolvedModule {
+        held_managers: Vec::new(),
+        floor_bootstraps: Vec::new(),
         dep_pulled: false,
         name: "mymod".to_string(),
         packages: vec![],
@@ -3057,6 +3204,8 @@ fn conflict_detection_identical_content_ok() {
     }];
 
     let modules = vec![ResolvedModule {
+        held_managers: Vec::new(),
+        floor_bootstraps: Vec::new(),
         dep_pulled: false,
         name: "mymod".to_string(),
         packages: vec![],
@@ -3094,6 +3243,8 @@ fn conflict_detection_identical_content_ok() {
     let file_c = dir.path().join("c.txt");
     std::fs::write(&file_c, "different content").unwrap();
     let conflicting_modules = vec![ResolvedModule {
+        held_managers: Vec::new(),
+        floor_bootstraps: Vec::new(),
         dep_pulled: false,
         name: "mymod".to_string(),
         packages: vec![],
@@ -3146,6 +3297,8 @@ fn conflict_detection_no_overlap_ok() {
     }];
 
     let modules = vec![ResolvedModule {
+        held_managers: Vec::new(),
+        floor_bootstraps: Vec::new(),
         dep_pulled: false,
         name: "mymod".to_string(),
         packages: vec![],
@@ -3181,6 +3334,8 @@ fn conflict_detection_no_overlap_ok() {
     );
     // Prove this is meaningful: same target with different content WOULD conflict
     let overlapping_modules = vec![ResolvedModule {
+        held_managers: Vec::new(),
+        floor_bootstraps: Vec::new(),
         dep_pulled: false,
         name: "mymod".to_string(),
         packages: vec![],
@@ -3265,10 +3420,8 @@ fn generate_env_file_quoted_and_unquoted() {
         },
     ];
     let content = super::generate_env_file_content(
-        &env,
-        &[],
+        &crate::reconciler::LayeredEnv::for_test(&env, &[], &Default::default()),
         posix_path_fold(&env).as_ref(),
-        &Default::default(),
     );
     assert!(content.starts_with("# managed by cfgd"));
     assert!(content.contains("export EDITOR=\"nvim\""));
@@ -3291,10 +3444,8 @@ fn generate_fish_env_splits_path() {
         },
     ];
     let content = super::generate_fish_env_content(
-        &env,
-        &[],
+        &crate::reconciler::LayeredEnv::for_test(&env, &[], &Default::default()),
         fish_path_fold(&env).as_ref(),
-        &Default::default(),
     );
     assert!(content.starts_with("# managed by cfgd"));
     assert!(content.contains("set -gx EDITOR 'nvim'"));
@@ -3324,28 +3475,22 @@ fn generate_env_files_expand_leading_tilde() {
             },
         ];
         let bash = super::generate_env_file_content(
-            &env,
-            &[],
+            &crate::reconciler::LayeredEnv::for_test(&env, &[], &Default::default()),
             posix_path_fold(&env).as_ref(),
-            &Default::default(),
         );
         assert!(bash.contains(&format!("export CLIFT_DIR=\"{h}/.local/share/clift\"")));
         assert!(bash.contains(&format!("export PATH=\"{h}/bin:/usr/bin\"")));
 
         let fish = super::generate_fish_env_content(
-            &env,
-            &[],
+            &crate::reconciler::LayeredEnv::for_test(&env, &[], &Default::default()),
             fish_path_fold(&env).as_ref(),
-            &Default::default(),
         );
         assert!(fish.contains(&format!("set -gx CLIFT_DIR '{h}/.local/share/clift'")));
         assert!(fish.contains(&format!("set -gx PATH '{h}/bin' '/usr/bin'")));
 
         let ps = super::generate_powershell_env_content(
-            &env,
-            &[],
+            &crate::reconciler::LayeredEnv::for_test(&env, &[], &Default::default()),
             posix_path_fold(&env).as_ref(),
-            &Default::default(),
         );
         assert!(ps.contains(&format!("$env:CLIFT_DIR = '{h}/.local/share/clift'")));
     });
@@ -3375,10 +3520,8 @@ fn generate_fish_path_keeps_colon_containing_home_intact() {
             platforms: vec![],
         }];
         let fish = super::generate_fish_env_content(
-            &env,
-            &[],
+            &crate::reconciler::LayeredEnv::for_test(&env, &[], &Default::default()),
             fish_path_fold(&env).as_ref(),
-            &Default::default(),
         );
         assert!(
             fish.contains(&format!("set -gx PATH '{h}/bin' '/usr/bin'")),
@@ -3391,11 +3534,8 @@ fn generate_fish_path_keeps_colon_containing_home_intact() {
 fn plan_env_empty_when_no_env() {
     let tmp = tempfile::tempdir().unwrap();
     let actions = Reconciler::plan_env_with_home(
-        &[],
-        &[],
-        &Default::default(),
+        super::LayeredEnv::from_parts("profile:test", &[], &[], &[]),
         crate::config::EnvScope::Interactive,
-        &[],
         &[],
         &[],
         &[],
@@ -3413,6 +3553,8 @@ fn plan_env_module_wins_on_conflict() {
         platforms: vec![],
     }];
     let modules = vec![ResolvedModule {
+        held_managers: Vec::new(),
+        floor_bootstraps: Vec::new(),
         dep_pulled: false,
         name: "nvim".into(),
         packages: vec![],
@@ -3438,11 +3580,8 @@ fn plan_env_module_wins_on_conflict() {
     // plan_env merges and generates actions — the merged env should have EDITOR=nvim
     let tmp = tempfile::tempdir().unwrap();
     let actions = Reconciler::plan_env_with_home(
-        &profile_env,
-        &[],
-        &Default::default(),
+        super::LayeredEnv::from_parts("profile:test", &profile_env, &[], &modules),
         crate::config::EnvScope::Interactive,
-        &modules,
         &[],
         &[],
         &[],
@@ -3467,7 +3606,10 @@ fn plan_env_generates_file_matching_expected() {
     // The subject is the content generation alone: `plan_env` reads the home
     // directory's own env file, so a copy planted in a tempdir was written and
     // then read by nothing.
-    let expected = super::generate_env_file_content(&env, &[], None, &Default::default());
+    let expected = super::generate_env_file_content(
+        &crate::reconciler::LayeredEnv::for_test(&env, &[], &Default::default()),
+        None,
+    );
     assert!(expected.contains("export EDITOR=\"nvim\""));
     assert!(expected.contains("# managed by cfgd"));
 }
@@ -3507,7 +3649,10 @@ fn generate_env_file_with_aliases() {
             platforms: vec![],
         },
     ];
-    let content = super::generate_env_file_content(&env, &aliases, None, &Default::default());
+    let content = super::generate_env_file_content(
+        &crate::reconciler::LayeredEnv::for_test(&env, &aliases, &Default::default()),
+        None,
+    );
     assert!(content.contains("export EDITOR=\"nvim\""));
     assert!(content.contains("alias vim=\"nvim\""));
     assert!(content.contains("alias ll=\"ls -la\""));
@@ -3525,7 +3670,10 @@ fn generate_fish_env_with_aliases() {
         command: "nvim".into(),
         platforms: vec![],
     }];
-    let content = super::generate_fish_env_content(&env, &aliases, None, &Default::default());
+    let content = super::generate_fish_env_content(
+        &crate::reconciler::LayeredEnv::for_test(&env, &aliases, &Default::default()),
+        None,
+    );
     assert!(content.contains("set -gx EDITOR 'nvim'"));
     assert!(content.contains("abbr -a vim 'nvim'"));
 }
@@ -3539,11 +3687,8 @@ fn plan_env_aliases_only() {
     }];
     let tmp = tempfile::tempdir().unwrap();
     let actions = Reconciler::plan_env_with_home(
-        &[],
-        &aliases,
-        &Default::default(),
+        super::LayeredEnv::from_parts("profile:test", &[], &aliases, &[]),
         crate::config::EnvScope::Interactive,
-        &[],
         &[],
         &[],
         &[],
@@ -3565,6 +3710,8 @@ fn plan_env_module_alias_wins_on_conflict() {
         platforms: vec![],
     }];
     let modules = vec![ResolvedModule {
+        held_managers: Vec::new(),
+        floor_bootstraps: Vec::new(),
         dep_pulled: false,
         name: "nvim".into(),
         packages: vec![],
@@ -3588,12 +3735,13 @@ fn plan_env_module_alias_wins_on_conflict() {
         platform_skip_reason: None,
     }];
     let tmp = tempfile::tempdir().unwrap();
+    let blocks = host_env_blocks(
+        &super::LayeredEnv::from_parts("profile:test", &[], &profile_aliases, &modules),
+        None,
+    );
     let actions = Reconciler::plan_env_with_home(
-        &[],
-        &profile_aliases,
-        &Default::default(),
+        super::LayeredEnv::from_parts("profile:test", &[], &profile_aliases, &modules),
         crate::config::EnvScope::Interactive,
-        &modules,
         &[],
         &[],
         &[],
@@ -3603,13 +3751,22 @@ fn plan_env_module_alias_wins_on_conflict() {
     // Find the WriteEnvFile action and check it has "nvim" not "vi"
     for action in &actions {
         if let Action::Env(EnvAction::WriteEnvFile { content, .. }) = action {
-            assert!(
-                content.contains("alias vim=\"nvim\""),
-                "Module alias should override profile alias"
+            // Both declarations are in the file, each under the layer that
+            // wrote it, and the module's block is last — which is what leaves
+            // a shell sourcing the file with `nvim`.
+            assert_eq!(
+                block_of(&blocks, "alias vim=\"vi\""),
+                Some("# profile: test (priority 1000)"),
+                "{content}"
+            );
+            assert_eq!(
+                block_of(&blocks, "alias vim=\"nvim\""),
+                Some("# module: nvim"),
+                "{content}"
             );
             assert!(
-                !content.contains("alias vim=\"vi\""),
-                "Profile alias should be overridden"
+                content.find("alias vim=\"vi\"") < content.find("alias vim=\"nvim\""),
+                "the module's alias must be resolved last: {content}"
             );
             return;
         }
@@ -3624,7 +3781,10 @@ fn generate_env_file_alias_escapes_quotes() {
         command: "echo \"hello world\"".into(),
         platforms: vec![],
     }];
-    let content = super::generate_env_file_content(&[], &aliases, None, &Default::default());
+    let content = super::generate_env_file_content(
+        &crate::reconciler::LayeredEnv::for_test(&[], &aliases, &Default::default()),
+        None,
+    );
     assert!(content.contains("alias greet=\"echo \\\"hello world\\\"\""));
 }
 
@@ -3701,11 +3861,8 @@ fn plan_env_with_secret_envs_includes_them() {
     ];
     let tmp = tempfile::tempdir().unwrap();
     let actions = Reconciler::plan_env_with_home(
-        &[],
-        &[],
-        &Default::default(),
+        super::LayeredEnv::from_parts("profile:test", &[], &[], &[]),
         crate::config::EnvScope::Interactive,
-        &[],
         &secret_envs,
         &[],
         &[],
@@ -3730,11 +3887,8 @@ fn plan_env_secret_envs_appear_in_generated_content() {
     let secret_envs = vec![("GITHUB_TOKEN".to_string(), "ghp_abc123".to_string())];
     let tmp = tempfile::tempdir().unwrap();
     let actions = Reconciler::plan_env_with_home(
-        &regular_env,
-        &[],
-        &Default::default(),
+        super::LayeredEnv::from_parts("profile:test", &regular_env, &[], &[]),
         crate::config::EnvScope::Interactive,
-        &[],
         &secret_envs,
         &[],
         &[],
@@ -3903,10 +4057,8 @@ fn generate_powershell_env_basic() {
         },
     ];
     let content = super::generate_powershell_env_content(
-        &env,
-        &[],
+        &crate::reconciler::LayeredEnv::for_test(&env, &[], &Default::default()),
         windows_path_fold(&env).as_ref(),
-        &Default::default(),
     );
     assert!(content.starts_with("# managed by cfgd"));
     assert!(content.contains("$env:EDITOR = 'code'"));
@@ -3928,7 +4080,10 @@ fn generate_powershell_env_with_aliases() {
             platforms: vec![],
         },
     ];
-    let content = super::generate_powershell_env_content(&[], &aliases, None, &Default::default());
+    let content = super::generate_powershell_env_content(
+        &crate::reconciler::LayeredEnv::for_test(&[], &aliases, &Default::default()),
+        None,
+    );
     assert!(content.contains("Set-Alias -Name g -Value 'git'"));
     assert!(content.contains("function ll {"));
     assert!(content.contains("Get-ChildItem -Force @args"));
@@ -3941,17 +4096,31 @@ fn generate_powershell_env_escapes_quotes() {
         value: r#"say "hello""#.into(),
         platforms: vec![],
     }];
-    let content = super::generate_powershell_env_content(&env, &[], None, &Default::default());
+    let content = super::generate_powershell_env_content(
+        &crate::reconciler::LayeredEnv::for_test(&env, &[], &Default::default()),
+        None,
+    );
     // No $env: reference, so single-quoted (PS single quotes don't need escaping except ')
     assert!(content.contains("$env:GREETING = 'say \"hello\"'"));
 }
 
 #[test]
 fn generate_powershell_env_empty() {
-    let content = super::generate_powershell_env_content(&[], &[], None, &Default::default());
-    assert!(content.starts_with("# managed by cfgd"));
-    // Only header + trailing newline
-    assert_eq!(content.lines().count(), 1);
+    let content = super::generate_powershell_env_content(
+        &crate::reconciler::LayeredEnv::for_test(&[], &[], &Default::default()),
+        None,
+    );
+    // The banner and nothing else, in its block-free form: no declaration
+    // means no block to head, and the two sentences about blocks would name
+    // something this file does not hold. Written out by hand: composing it
+    // through `banner` would compare the generator against the one function
+    // it already called.
+    assert_eq!(
+        content,
+        "# managed by cfgd \u{2014} do not edit\n\
+         # Regenerated by every `cfgd apply`; edits made here are lost.\n",
+        "{content}"
+    );
 }
 
 // --- Apply execution path tests ---
@@ -4433,7 +4602,15 @@ fn apply_package_uninstall_untracks_managed_resource() {
     let state = test_state();
     // Pre-track a package as cfgd-installed.
     state
-        .upsert_managed_resource("package", "brew/ripgrep", "local", None, None)
+        .upsert_managed_resource(
+            "package",
+            "brew/ripgrep",
+            "package",
+            None,
+            "local",
+            None,
+            None,
+        )
         .unwrap();
 
     let mut registry = ProviderRegistry::new();
@@ -4610,7 +4787,10 @@ fn apply_env_write_env_file_to_tempdir() {
             platforms: vec![],
         },
     ];
-    let content = super::generate_env_file_content(&env, &[], None, &Default::default());
+    let content = super::generate_env_file_content(
+        &crate::reconciler::LayeredEnv::for_test(&env, &[], &Default::default()),
+        None,
+    );
 
     let action = EnvAction::WriteEnvFile {
         path: env_path.clone(),
@@ -4642,7 +4822,10 @@ fn apply_env_write_skips_when_content_matches() {
         value: "nvim".into(),
         platforms: vec![],
     }];
-    let content = super::generate_env_file_content(&env, &[], None, &Default::default());
+    let content = super::generate_env_file_content(
+        &crate::reconciler::LayeredEnv::for_test(&env, &[], &Default::default()),
+        None,
+    );
 
     // Pre-write identical content
     std::fs::write(&env_path, &content).unwrap();
@@ -5485,7 +5668,10 @@ fn apply_env_write_with_aliases_produces_correct_file() {
         command: "ls -la".into(),
         platforms: vec![],
     }];
-    let content = super::generate_env_file_content(&env, &aliases, None, &Default::default());
+    let content = super::generate_env_file_content(
+        &crate::reconciler::LayeredEnv::for_test(&env, &aliases, &Default::default()),
+        None,
+    );
 
     let action = EnvAction::WriteEnvFile {
         path: env_path.clone(),
@@ -5736,15 +5922,15 @@ fn build_script_env_includes_expected_vars() {
     });
     let map: HashMap<String, String> = env.into_iter().collect();
     assert_eq!(
-        map.get("CFGD_CONFIG_DIR").unwrap(),
+        map.get(crate::CFGD_CONFIG_DIR_ENV).unwrap(),
         "/home/user/.config/cfgd"
     );
-    assert_eq!(map.get("CFGD_PROFILE").unwrap(), "default");
-    assert_eq!(map.get("CFGD_CONTEXT").unwrap(), "apply");
-    assert_eq!(map.get("CFGD_PHASE").unwrap(), "preApply");
+    assert_eq!(map.get(crate::CFGD_PROFILE_ENV).unwrap(), "default");
+    assert_eq!(map.get(crate::CFGD_CONTEXT_ENV).unwrap(), "apply");
+    assert_eq!(map.get(crate::CFGD_PHASE_ENV).unwrap(), "preApply");
     assert!(!map.contains_key("CFGD_DRY_RUN"));
-    assert!(!map.contains_key("CFGD_MODULE_NAME"));
-    assert!(!map.contains_key("CFGD_MODULE_DIR"));
+    assert!(!map.contains_key(crate::CFGD_MODULE_NAME_ENV));
+    assert!(!map.contains_key(crate::CFGD_MODULE_DIR_ENV));
 }
 
 #[test]
@@ -5759,9 +5945,12 @@ fn build_script_env_includes_module_vars() {
         path_dirs: &[],
     });
     let map: HashMap<String, String> = env.into_iter().collect();
-    assert_eq!(map.get("CFGD_MODULE_NAME").unwrap(), "nvim");
-    assert_eq!(map.get("CFGD_MODULE_DIR").unwrap(), "/modules/nvim");
-    assert_eq!(map.get("CFGD_CONTEXT").unwrap(), "reconcile");
+    assert_eq!(map.get(crate::CFGD_MODULE_NAME_ENV).unwrap(), "nvim");
+    assert_eq!(
+        map.get(crate::CFGD_MODULE_DIR_ENV).unwrap(),
+        "/modules/nvim"
+    );
+    assert_eq!(map.get(crate::CFGD_CONTEXT_ENV).unwrap(), "reconcile");
 }
 
 #[test]
@@ -7183,6 +7372,8 @@ fn apply_guard_skipped_module_script_does_not_fire_on_change() {
     let resolved = make_empty_resolved();
 
     let modules = vec![ResolvedModule {
+        held_managers: Vec::new(),
+        floor_bootstraps: Vec::new(),
         dep_pulled: false,
         name: "testmod".to_string(),
         packages: vec![],
@@ -7284,6 +7475,8 @@ fn apply_guard_permitted_module_script_fires_on_change() {
     let resolved = make_empty_resolved();
 
     let modules = vec![ResolvedModule {
+        held_managers: Vec::new(),
+        floor_bootstraps: Vec::new(),
         dep_pulled: false,
         name: "testmod".to_string(),
         packages: vec![],
@@ -7373,6 +7566,8 @@ fn apply_skipped_module_does_not_fire_on_change() {
     // planned Skip (the upcoming module-platforms scenario: a whole module is
     // skipped). The skip did nothing, so onChange must not fire.
     let modules = vec![ResolvedModule {
+        held_managers: Vec::new(),
+        floor_bootstraps: Vec::new(),
         dep_pulled: false,
         name: "skippedmod".to_string(),
         packages: vec![],
@@ -7514,6 +7709,7 @@ fn a_manager_nodes_description_parses_back_to_the_id_it_is_recorded_under() {
             manager: "npm".to_string(),
             via: "brew".to_string(),
             declared: None,
+            floor: None,
             batched: vec![],
             depends_on: vec![ManagerAction::refresh_node("brew")],
         }),
@@ -7578,6 +7774,7 @@ fn both_producers_mint_one_identity_for_a_provision_finding() {
         manager: "npm".to_string(),
         via: "brew".to_string(),
         declared: None,
+        floor: None,
         batched: vec![],
         depends_on: vec![],
     });
@@ -7722,8 +7919,14 @@ fn no_daemon_action_row_wears_the_live_checks_separator() {
                     assert_eq!(rid, ManagerAction::refuse_resource_id(manager));
                 }
                 // cfgd's own scaffolding keeps the `manager` type
-                // `record_managed_resources` refuses to manage.
-                ManagerAction::RefreshIndex { .. } | ManagerAction::Prerequisite { .. } => {
+                // `record_managed_resources` refuses to manage. A floor check
+                // joins them: cfgd never installed the manager whose version
+                // it is judging, so it manages no resource here, and the
+                // PACKAGE row that finding stands for is minted by
+                // `action_drift_rows` instead.
+                ManagerAction::RefreshIndex { .. }
+                | ManagerAction::Prerequisite { .. }
+                | ManagerAction::HeldFloor { .. } => {
                     assert_eq!(rtype, "manager");
                 }
             },
@@ -7907,12 +8110,14 @@ fn a_refused_env_regeneration_is_recorded_as_an_after_plan_failure() {
     let tmp = tempfile::tempdir().unwrap();
     let _home = crate::with_test_home_guard(tmp.path());
 
-    let targets: Vec<std::path::PathBuf> =
-        MergedEnvItems::new(&resolved.merged.env, &[], &Default::default(), &[], &[])
-            .managed_env_files(tmp.path(), resolved.merged.env_scope)
-            .into_iter()
-            .map(|(path, _)| path)
-            .collect();
+    let targets: Vec<std::path::PathBuf> = MergedEnvItems::new(
+        &super::LayeredEnv::from_parts("profile:test", &resolved.merged.env, &[], &[]),
+        &[],
+    )
+    .managed_env_files(tmp.path(), resolved.merged.env_scope)
+    .into_iter()
+    .map(|(path, _)| path)
+    .collect();
     assert!(
         !targets.is_empty(),
         "this host's generator writes at least one managed env file, or the \
@@ -8037,6 +8242,7 @@ fn a_withheld_session_publish_leaves_no_env_session_row_while_its_siblings_recor
                   rows: Vec<(String, String)>,
                   not_attempted: Option<String>| ActionResult {
         origin: None,
+        manager: None,
         after_plan: None,
         phase: phase.as_str().to_string(),
         description: crate::reconciler::format_action_description(action),
@@ -8128,6 +8334,7 @@ fn a_result_the_run_never_attempted_writes_no_row_and_heals_none() {
             apply_id,
             &[ActionResult {
                 origin: None,
+                manager: None,
                 after_plan: None,
                 phase: PhaseName::Files.as_str().to_string(),
                 description: crate::reconciler::format_action_description(&action),
@@ -8255,6 +8462,7 @@ fn every_row_the_tick_records_is_healed_by_the_apply_that_converges_it() {
         manager: "snap".to_string(),
         via: "stub".to_string(),
         declared: None,
+        floor: None,
         batched: vec![],
         depends_on: vec![],
     })];
@@ -8611,6 +8819,7 @@ fn every_action_variant() -> Vec<Action> {
             manager: "npm".to_string(),
             via: "brew".to_string(),
             declared: None,
+            floor: None,
             batched: vec![],
             depends_on: vec![],
         }),
@@ -8624,6 +8833,14 @@ fn every_action_variant() -> Vec<Action> {
         Action::Manager(ManagerAction::Refuse {
             manager: "npm".to_string(),
             reason: "provision failed".to_string(),
+        }),
+        Action::Manager(ManagerAction::HeldFloor {
+            manager: "cargo".to_string(),
+            floor: "1.85".to_string(),
+            declared: vec![DeclaredFloor {
+                module: "rust".to_string(),
+                floor: "1.85".to_string(),
+            }],
         }),
         Action::File(FileAction::Create {
             source: PathBuf::from("/cache/conf"),
@@ -9016,7 +9233,7 @@ fn plan_to_hash_string_empty_plan_is_empty() {
         phases: vec![],
         warnings: vec![],
     };
-    assert_eq!(plan.to_hash_string(), "");
+    assert_eq!(plan.to_hash_string().expect("an empty plan hashes"), "");
 }
 
 #[test]
@@ -9047,9 +9264,71 @@ fn plan_to_hash_string_multiple_phases() {
         ],
         warnings: vec![],
     };
-    let hash = plan.to_hash_string();
+    let hash = plan.to_hash_string().expect("the plan hashes");
     assert!(hash.contains('|'));
     assert!(hash.contains("jq"));
+}
+
+/// The bytes this composition writes are what `applies.plan_hash` stores, and
+/// every surface asking whether a machine's plan changed compares those
+/// digests. A field that starts serializing while absent re-hashes every plan
+/// on every machine at once: the next run reads its own stored hash as a
+/// different plan and reports work nobody asked for.
+///
+/// Held against bytes written here. A second call of the producer agrees with
+/// itself however the fields are spelled. Two arms, because the two shapes
+/// break separately: an ordinary plan, whose nodes leave their optional fields
+/// absent, and a held-floor node with no declarants, which is what that field's
+/// `skip_serializing_if` promises hashes as it did before the field existed.
+#[test]
+fn the_plan_hash_holds_the_bytes_a_stored_hash_was_taken_over() {
+    let ordinary = Plan {
+        phases: vec![
+            Phase::from_actions(
+                PhaseName::Bootstrap,
+                &Owner::profile("test"),
+                vec![Action::Manager(ManagerAction::Provision {
+                    manager: "npm".to_string(),
+                    via: "brew".to_string(),
+                    declared: None,
+                    floor: None,
+                    batched: vec![],
+                    depends_on: vec![],
+                })],
+            ),
+            Phase::from_actions(
+                PhaseName::Packages,
+                &Owner::profile("test"),
+                vec![Action::Package(PackageAction::Install {
+                    manager: "brew".into(),
+                    packages: vec!["jq".into()],
+                    origin: "local".into(),
+                })],
+            ),
+        ],
+        warnings: vec![],
+    };
+    assert_eq!(
+        ordinary.to_hash_string().expect("the plan hashes"),
+        r#"{"Manager":{"provision":{"manager":"npm","via":"brew","batched":[],"depends_on":[]}}}|{"Package":{"Install":{"manager":"brew","packages":["jq"],"origin":"local"}}}"#
+    );
+
+    let held = Plan {
+        phases: vec![Phase::from_actions(
+            PhaseName::Bootstrap,
+            &Owner::profile("test"),
+            vec![Action::Manager(ManagerAction::HeldFloor {
+                manager: "cargo".to_string(),
+                floor: "1.85".to_string(),
+                declared: vec![],
+            })],
+        )],
+        warnings: vec![],
+    };
+    assert_eq!(
+        held.to_hash_string().expect("the plan hashes"),
+        r#"{"Manager":{"heldFloor":{"manager":"cargo","floor":"1.85"}}}"#
+    );
 }
 
 #[test]
@@ -9270,6 +9549,8 @@ fn plan_modules_reconcile_context_uses_pre_post_reconcile() {
     let reconciler = Reconciler::new(&registry, &state);
 
     let modules = vec![ResolvedModule {
+        held_managers: Vec::new(),
+        floor_bootstraps: Vec::new(),
         dep_pulled: false,
         name: "test".to_string(),
         packages: vec![],
@@ -9518,6 +9799,8 @@ fn detect_file_conflicts_skip_and_delete_actions_ignored() {
     // Module targets the same path as Skip — should NOT conflict because
     // Skip/Delete actions are excluded from conflict detection
     let modules = vec![ResolvedModule {
+        held_managers: Vec::new(),
+        floor_bootstraps: Vec::new(),
         dep_pulled: false,
         name: "mymod".to_string(),
         packages: vec![],
@@ -9598,6 +9881,8 @@ fn merge_module_env_aliases_merges_correctly() {
         platforms: vec![],
     }];
     let modules = vec![ResolvedModule {
+        held_managers: Vec::new(),
+        floor_bootstraps: Vec::new(),
         dep_pulled: false,
         name: "mod1".into(),
         packages: vec![],
@@ -9654,7 +9939,10 @@ fn generate_powershell_env_escapes_single_quotes() {
         value: "it's a test".into(),
         platforms: vec![],
     }];
-    let content = super::generate_powershell_env_content(&env, &[], None, &Default::default());
+    let content = super::generate_powershell_env_content(
+        &crate::reconciler::LayeredEnv::for_test(&env, &[], &Default::default()),
+        None,
+    );
     // Single quotes in values are doubled in PS
     assert!(content.contains("$env:MSG = 'it''s a test'"));
 }
@@ -9666,7 +9954,10 @@ fn generate_fish_env_escapes_single_quotes() {
         value: "it's a test".into(),
         platforms: vec![],
     }];
-    let content = super::generate_fish_env_content(&env, &[], None, &Default::default());
+    let content = super::generate_fish_env_content(
+        &crate::reconciler::LayeredEnv::for_test(&env, &[], &Default::default()),
+        None,
+    );
     assert!(content.contains("set -gx MSG 'it\\'s a test'"));
 }
 
@@ -9824,6 +10115,7 @@ fn apply_manager_provision_makes_manager_available() {
                 manager: "snap".to_string(),
                 via: "stub".to_string(),
                 declared: None,
+                floor: None,
                 batched: vec![],
                 depends_on: vec![],
             })],
@@ -9924,6 +10216,7 @@ fn an_apply_that_provisions_a_manager_resolves_both_provision_findings() {
                 manager: "snap".to_string(),
                 via: "stub".to_string(),
                 declared: None,
+                floor: None,
                 batched: vec![],
                 depends_on: vec![],
             })],
@@ -9970,6 +10263,7 @@ fn a_provisioned_manager_appears_in_the_registrys_next_availability_sweep() {
                 manager: "snap".to_string(),
                 via: "stub".to_string(),
                 declared: None,
+                floor: None,
                 batched: vec![],
                 depends_on: vec![],
             })],
@@ -10151,6 +10445,7 @@ fn apply_manager_provision_unknown_manager_errors() {
                 manager: "nonexistent".to_string(),
                 via: "stub".to_string(),
                 declared: None,
+                floor: None,
                 batched: vec![],
                 depends_on: vec![],
             })],
@@ -10196,6 +10491,7 @@ fn a_declared_routes_verification_failure_names_the_package_it_installed() {
                     installer: "apt".to_string(),
                     package: "rustc".to_string(),
                 }),
+                floor: None,
                 batched: vec![],
                 depends_on: vec![],
             })],
@@ -10223,6 +10519,483 @@ fn a_declared_routes_verification_failure_names_the_package_it_installed() {
     );
 }
 
+/// One confirmed route, as the resolver hands it over: the package names a
+/// manager, and `floor` is the `minVersion` the confirmation was given for.
+fn floor_route(package: &str, module: &str, floor: &str) -> crate::modules::FloorBootstrap {
+    crate::modules::FloorBootstrap {
+        package: package.to_string(),
+        module: module.to_string(),
+        found_in: "apt".to_string(),
+        found: "1.75".to_string(),
+        floor: floor.to_string(),
+        via: "rustup".to_string(),
+        also_declared_by: Vec::new(),
+    }
+}
+
+/// A module whose entry for `package` resolved to no `ResolvedPackage` at all,
+/// leaving the confirmed route as the only thing it asks for.
+fn module_routing_a_floor(name: &str, package: &str, floor: &str) -> ResolvedModule {
+    let mut module = resolved_module_with_package(name, "unused", package);
+    module.packages.clear();
+    module.floor_bootstraps = vec![floor_route(package, name, floor)];
+    module
+}
+
+/// The provision nodes a plan's `Bootstrap` phase holds, in plan order.
+fn bootstrap_provisions(plan: &Plan) -> Vec<&ManagerAction> {
+    plan.phases
+        .iter()
+        .filter(|p| p.name == PhaseName::Bootstrap)
+        .flat_map(|p| p.actions())
+        .filter_map(|action| match action {
+            Action::Manager(node @ ManagerAction::Provision { .. }) => Some(node),
+            _ => None,
+        })
+        .collect()
+}
+
+/// A confirmed floor route provisions the manager in `Bootstrap` and plans NO
+/// install for the entry that asked: the provision IS the delivery, and a
+/// `Packages` row beside it promises a second copy nothing delivered.
+#[test]
+fn a_confirmed_floor_route_provisions_the_manager_ahead_of_the_module() {
+    let cargo = crate::test_helpers::MockPackageManager::new("cargo")
+        .unavailable()
+        .bootstrappable_via("rustup")
+        .bootstrap_succeeds()
+        .reporting_version("1.90.0");
+    let state = test_state();
+    let mut registry = ProviderRegistry::new();
+    registry.add_package_manager(Box::new(cargo));
+
+    let module = module_routing_a_floor("nvim", "cargo", "1.85");
+
+    let plan = Reconciler::new(&registry, &state)
+        .plan(
+            &make_empty_resolved(),
+            Vec::new(),
+            Vec::new(),
+            vec![module],
+            ReconcileContext::Apply,
+        )
+        .unwrap();
+
+    let bootstrap: Vec<&Action> = plan
+        .phases
+        .iter()
+        .find(|p| p.name == PhaseName::Bootstrap)
+        .expect("a confirmed route opens a Bootstrap phase")
+        .actions()
+        .collect();
+    assert!(
+        matches!(
+            bootstrap.as_slice(),
+            [Action::Manager(ManagerAction::Provision { manager, via, floor, .. })]
+                if manager == "cargo" && via == "rustup" && floor.as_deref() == Some("1.85")
+        ),
+        "the provision carries the floor it was confirmed for: {bootstrap:#?}"
+    );
+    // Counted: an empty phase is pruned, so "absent" and "present with no
+    // action" are the same answer.
+    let installs = plan
+        .phases
+        .iter()
+        .filter(|p| p.name == PhaseName::Packages)
+        .flat_map(|p| p.actions())
+        .count();
+    assert_eq!(
+        installs, 0,
+        "the provision delivers it; nothing installs it a second time: {:#?}",
+        plan.phases
+    );
+}
+
+/// A bootstrap that lands BELOW the floor it was confirmed for fails the node.
+/// cfgd asked for a cargo at 1.85; delivering 1.80 and settling green would make
+/// the question it asked meaningless.
+#[test]
+fn a_provision_landing_below_its_confirmed_floor_fails_the_node() {
+    let cargo = crate::test_helpers::MockPackageManager::new("cargo")
+        .unavailable()
+        .bootstrappable_via("rustup")
+        .bootstrap_succeeds()
+        .reporting_version("1.80.0");
+    let state = test_state();
+    let mut registry = ProviderRegistry::new();
+    registry.add_package_manager(Box::new(cargo));
+
+    let plan = Plan {
+        phases: vec![Phase::from_actions(
+            PhaseName::Bootstrap,
+            &Owner::cfgd("managers"),
+            vec![Action::Manager(ManagerAction::Provision {
+                manager: "cargo".to_string(),
+                via: "rustup".to_string(),
+                declared: None,
+                floor: Some("1.85".to_string()),
+                batched: vec![],
+                depends_on: vec![],
+            })],
+        )],
+        warnings: vec![],
+    };
+    let (result, _) = apply_manager_plan(&registry, &state, &plan);
+
+    assert_eq!(result.failed(), 1);
+    let err = result.action_results[0]
+        .error
+        .clone()
+        .expect("a delivery below the confirmed floor fails the node");
+    assert!(
+        err.contains("rustup delivered cargo 1.80.0, below the declared minVersion 1.85"),
+        "{err}"
+    );
+}
+
+/// One `Bootstrap` node provisioning `manager` for a confirmed floor, as the
+/// planner mints it.
+fn floored_provision_plan(manager: &str, via: &str, floor: &str) -> Plan {
+    Plan {
+        phases: vec![Phase::from_actions(
+            PhaseName::Bootstrap,
+            &Owner::cfgd("managers"),
+            vec![Action::Manager(ManagerAction::Provision {
+                manager: manager.to_string(),
+                via: via.to_string(),
+                declared: None,
+                floor: Some(floor.to_string()),
+                batched: vec![],
+                depends_on: vec![],
+            })],
+        )],
+        warnings: vec![],
+    }
+}
+
+/// The error one applied node settled with, or `None` where it succeeded.
+fn provision_failure(
+    registry: &ProviderRegistry,
+    state: &StateStore,
+    plan: &Plan,
+) -> Option<String> {
+    let (result, _) = apply_manager_plan(registry, state, plan);
+    result.action_results[0].error.clone()
+}
+
+/// The floor is judged in the grammar of the family that packages the tool: an
+/// apt epoch, a cask build, a winget fourth component are all versions their own
+/// manager reads and the shared parser refuses. Asked of the shared parser, a
+/// delivery that clears its floor fails the node it satisfied.
+#[test]
+fn a_delivered_version_is_judged_in_its_own_managers_grammar() {
+    for (floor, delivered, fails) in [
+        ("1:2.30", "1:2.31", false),
+        ("1:2.30", "1:2.29", true),
+        ("1.2.3,4567", "1.2.3,4568", false),
+        ("1.2.3,4567", "1.2.3,4566", true),
+        ("2.2.2.0", "2.2.2.1", false),
+        ("2.2.2.0", "2.2.1.9", true),
+    ] {
+        assert!(
+            !crate::declared_floor_parses(floor),
+            "{floor} is a floor only its own family reads, or this arm asks nothing"
+        );
+        let state = test_state();
+        let mut registry = ProviderRegistry::new();
+        registry.add_package_manager(Box::new(
+            crate::test_helpers::MockPackageManager::new("cargo")
+                .unavailable()
+                .bootstrappable_via("rustup")
+                .bootstrap_succeeds()
+                .reading_its_own_version_grammar()
+                .reporting_version(delivered),
+        ));
+
+        let error = provision_failure(
+            &registry,
+            &state,
+            &floored_provision_plan("cargo", "rustup", floor),
+        );
+        assert_eq!(
+            error.is_some(),
+            fails,
+            "{delivered} against {floor}, as the manager reads both: {error:?}"
+        );
+    }
+}
+
+/// A floor is checked whether or not THIS run installed the manager. A replay
+/// over a machine already carrying an older copy asked the same question, and
+/// the run that settles green over it answers it with an install it never made.
+#[test]
+fn a_manager_already_present_below_its_confirmed_floor_fails_the_node() {
+    let state = test_state();
+    let mut registry = ProviderRegistry::new();
+    registry.add_package_manager(Box::new(
+        crate::test_helpers::MockPackageManager::new("cargo").reporting_version("1.80.0"),
+    ));
+
+    let error = provision_failure(
+        &registry,
+        &state,
+        &floored_provision_plan("cargo", "rustup", "1.85"),
+    )
+    .expect("a manager already here below the floor fails the node");
+    assert!(
+        error.contains("cargo was already present at 1.80.0, below the declared minVersion 1.85"),
+        "the sentence credits the run with no install it never made: {error}"
+    );
+}
+
+/// A comparator that could not judge its operands answered nothing. Settling
+/// green there reports success for a question cfgd asked and never read, so the
+/// node fails and says which half it could not read.
+#[test]
+fn a_floor_nothing_could_judge_fails_the_node_rather_than_settling_green() {
+    for (manager, floor, cause) in [
+        (
+            crate::test_helpers::MockPackageManager::new("cargo"),
+            "1.85",
+            "it reports no version",
+        ),
+        (
+            crate::test_helpers::MockPackageManager::new("cargo").reporting_version("nightly-2026"),
+            "1.85",
+            "cargo reports nightly-2026, which it cannot compare",
+        ),
+        (
+            crate::test_helpers::MockPackageManager::new("cargo").reporting_version("1.90.0"),
+            ">=1.85",
+            "cargo cannot read that floor",
+        ),
+        (
+            crate::test_helpers::MockPackageManager::new("cargo")
+                .reporting_version("1.90.0")
+                .failing_version_comparisons(),
+            "1.85",
+            "mock comparator failed to spawn",
+        ),
+    ] {
+        let state = test_state();
+        let mut registry = ProviderRegistry::new();
+        registry.add_package_manager(Box::new(manager));
+
+        let error = provision_failure(
+            &registry,
+            &state,
+            &floored_provision_plan("cargo", "rustup", floor),
+        )
+        .unwrap_or_else(|| panic!("an unproven floor fails the node: {cause}"));
+        assert!(
+            error.contains(&format!(
+                "cannot judge cargo against the declared minVersion {floor}"
+            )) && error.contains(cause),
+            "the failure says the floor is unproven and why: {error}"
+        );
+    }
+}
+
+/// Two modules asking one manager for two different floors get ONE copy of it,
+/// so the node carries the higher: it satisfies both, where the lower leaves
+/// the stricter module short of what its confirmation promised. Asked in both
+/// orders, because a fold that keeps whichever route came last answers one of
+/// them correctly by accident.
+#[test]
+fn two_modules_flooring_one_manager_provision_it_at_the_higher_floor() {
+    for (first, second) in [("1.80", "1.85"), ("1.85", "1.80")] {
+        assert_eq!(
+            floor_two_modules_settle_on(first, second).as_deref(),
+            Some("1.85"),
+            "one node at the higher floor, asked as ({first}, {second})"
+        );
+    }
+}
+
+/// The floor the single provision node carries when `first` and `second` are
+/// declared, in that order, by two modules asking for one manager.
+fn floor_two_modules_settle_on(first: &str, second: &str) -> Option<String> {
+    let state = test_state();
+    let mut registry = ProviderRegistry::new();
+    registry.add_package_manager(Box::new(
+        crate::test_helpers::MockPackageManager::new("cargo")
+            .unavailable()
+            .bootstrappable_via("rustup"),
+    ));
+
+    let plan = Reconciler::new(&registry, &state)
+        .plan(
+            &make_empty_resolved(),
+            Vec::new(),
+            Vec::new(),
+            vec![
+                module_routing_a_floor("nvim", "cargo", first),
+                module_routing_a_floor("tools", "cargo", second),
+            ],
+            ReconcileContext::Apply,
+        )
+        .unwrap();
+
+    match bootstrap_provisions(&plan).as_slice() {
+        [ManagerAction::Provision { manager, floor, .. }] if manager == "cargo" => floor.clone(),
+        other => panic!("one cargo node carries the settled floor: {other:#?}"),
+    }
+}
+
+/// The dedup two modules force is the effective set's own, so it answers the
+/// same way whichever module the resolution reached first. Neither floor being
+/// stricter is ordinary: a floor nothing can read has to survive to the check
+/// that reports it, and one floor spelled two ways is still one floor. The
+/// spelling that survives is what the plan carries and every refusal prints.
+#[test]
+fn two_floors_neither_stricter_settle_the_same_way_in_both_orders() {
+    for (a, b, settled) in [(">=1.2", "1.85", ">=1.2"), ("1.85", "1.85.0", "1.85")] {
+        for (first, second) in [(a, b), (b, a)] {
+            assert_eq!(
+                floor_two_modules_settle_on(first, second).as_deref(),
+                Some(settled),
+                "({first}, {second}) settles on {settled}"
+            );
+        }
+    }
+}
+
+/// A manager the run already wanted for another reason keeps its ONE provision
+/// node, and the floor rides it. A second node would run the cascade twice and
+/// leave the DAG with two ids for one manager.
+#[test]
+fn a_floor_rides_the_provision_a_manager_was_already_getting() {
+    let state = test_state();
+    let mut registry = ProviderRegistry::new();
+    registry.add_package_manager(Box::new(
+        crate::test_helpers::MockPackageManager::new("cargo")
+            .unavailable()
+            .bootstrappable_via("rustup"),
+    ));
+
+    // The package makes cargo a member on its own: this run installs `ripgrep`
+    // through it whether or not any floor was confirmed.
+    let mut module = resolved_module_with_package("nvim", "ripgrep", "cargo");
+    module.floor_bootstraps = vec![floor_route("cargo", "nvim", "1.85")];
+
+    let plan = Reconciler::new(&registry, &state)
+        .plan(
+            &make_empty_resolved(),
+            Vec::new(),
+            Vec::new(),
+            vec![module],
+            ReconcileContext::Apply,
+        )
+        .unwrap();
+
+    let provisions = bootstrap_provisions(&plan);
+    assert!(
+        matches!(
+            provisions.as_slice(),
+            [ManagerAction::Provision { manager, floor, .. }]
+                if manager == "cargo" && floor.as_deref() == Some("1.85")
+        ),
+        "one node, carrying the floor: {provisions:#?}"
+    );
+}
+
+/// A manager a batch WOULD have swallowed keeps its own node once a floor is
+/// confirmed for it. Joining dissolves the member's node, and the floor rides
+/// that node: the batch would deliver it through one `apt-get install` that
+/// nothing then checks against the version the confirmation asked for.
+#[test]
+fn a_floored_manager_keeps_its_own_node_instead_of_joining_a_batch() {
+    let state = test_state();
+    let mut registry = ProviderRegistry::new();
+    registry.add_package_manager(Box::new(crate::test_helpers::MockPackageManager::new(
+        "apt",
+    )));
+    for (manager, package) in [("npm", "nodejs"), ("pipx", "pipx")] {
+        registry.add_package_manager(Box::new(
+            crate::test_helpers::MockPackageManager::new(manager)
+                .unavailable()
+                .bootstrappable_via("apt")
+                .mediated_by("apt", &[package]),
+        ));
+    }
+
+    // npm sorts first and leads the batch; pipx is the member that would join
+    // it, and the one the floor was confirmed for.
+    let mut asking = module_routing_a_floor("tools", "pipx", "1.85");
+    asking.packages = resolved_module_with_package("tools", "prettier", "npm").packages;
+
+    let plan = Reconciler::new(&registry, &state)
+        .plan(
+            &make_empty_resolved(),
+            Vec::new(),
+            Vec::new(),
+            vec![asking],
+            ReconcileContext::Apply,
+        )
+        .unwrap();
+
+    let provisions = bootstrap_provisions(&plan);
+    let floored: Vec<&ManagerAction> = provisions
+        .iter()
+        .copied()
+        .filter(
+            |node| matches!(node, ManagerAction::Provision { manager, .. } if manager == "pipx"),
+        )
+        .collect();
+    assert!(
+        matches!(
+            floored.as_slice(),
+            [ManagerAction::Provision { floor, batched, .. }]
+                if floor.as_deref() == Some("1.85") && batched.is_empty()
+        ),
+        "pipx holds a node of its own, carrying the floor: {provisions:#?}"
+    );
+    assert!(
+        !provisions.iter().any(|node| matches!(
+            node,
+            ManagerAction::Provision { manager, batched, .. }
+                if manager != "pipx" && batched.iter().any(|m| m == "pipx")
+        )),
+        "no other node swallows it: {provisions:#?}"
+    );
+}
+
+/// `applies.plan_hash` is a serialization of the actions, so a provision
+/// carrying no floor has to hash to the bytes it hashed to before the field
+/// existed. Without `skip_serializing_if`, every stored hash re-reads as a
+/// change nobody made and every converged host re-plans.
+///
+/// The literal is the string a run of the hash produced before the field was
+/// added, kept byte for byte (never retyped from the struct): it holds the
+/// variant's own field ORDER, and `depends_on` in the snake_case spelling serde
+/// gives it, since `rename_all = "camelCase"` on the enum renames variants
+/// only; fields keep their names. A literal composed from the type by hand
+/// would agree with whatever the type says today and prove nothing about the
+/// stored hashes.
+#[test]
+fn a_provision_with_no_floor_hashes_to_the_bytes_it_always_did() {
+    let plan = Plan {
+        phases: vec![Phase::from_actions(
+            PhaseName::Bootstrap,
+            &Owner::cfgd("managers"),
+            vec![Action::Manager(ManagerAction::Provision {
+                manager: "npm".to_string(),
+                via: "apt".to_string(),
+                declared: None,
+                floor: None,
+                batched: vec![],
+                depends_on: vec![],
+            })],
+        )],
+        warnings: vec![],
+    };
+    assert_eq!(
+        plan.to_hash_string().expect("the plan hashes"),
+        r#"{"Manager":{"provision":{"manager":"npm","via":"apt","batched":[],"depends_on":[]}}}"#,
+        "a floor-less provision writes no floor key"
+    );
+}
+
 #[test]
 fn an_unprovisioned_managers_install_names_a_recovery_that_holds_off_a_filter() {
     // The reach path the error's own comment once denied: no phase filter, a
@@ -10245,6 +11018,7 @@ fn an_unprovisioned_managers_install_names_a_recovery_that_holds_off_a_filter() 
                     manager: "stub".to_string(),
                     via: "mock".to_string(),
                     declared: None,
+                    floor: None,
                     batched: vec![],
                     depends_on: vec![],
                 })],
@@ -11872,6 +12646,8 @@ fn apply_module_install_packages_calls_manager() {
     let resolved = make_empty_resolved();
 
     let modules = vec![ResolvedModule {
+        held_managers: Vec::new(),
+        floor_bootstraps: Vec::new(),
         dep_pulled: false,
         name: "nvim".to_string(),
         packages: vec![ResolvedPackage {
@@ -11977,6 +12753,8 @@ fn apply_module_deploy_files_creates_target() {
     let resolved = make_empty_resolved();
 
     let modules = vec![ResolvedModule {
+        held_managers: Vec::new(),
+        floor_bootstraps: Vec::new(),
         dep_pulled: false,
         name: "mymod".to_string(),
         packages: vec![],
@@ -12089,6 +12867,8 @@ fn apply_module_deploy_files_leaves_a_target_that_already_holds_the_source_bytes
         patch: None,
     };
     let modules = vec![ResolvedModule {
+        held_managers: Vec::new(),
+        floor_bootstraps: Vec::new(),
         dep_pulled: false,
         name: "mymod".to_string(),
         packages: vec![],
@@ -12188,6 +12968,8 @@ fn deploy_one_module_file_under_global_copy(
     let resolved = make_empty_resolved();
 
     let modules = vec![ResolvedModule {
+        held_managers: Vec::new(),
+        floor_bootstraps: Vec::new(),
         dep_pulled: false,
         name: "mymod".to_string(),
         packages: vec![],
@@ -12356,6 +13138,8 @@ fn apply_module_deploy_files_patch_merges_into_the_target() {
     };
 
     let modules = vec![ResolvedModule {
+        held_managers: Vec::new(),
+        floor_bootstraps: Vec::new(),
         dep_pulled: false,
         name: "mymod".to_string(),
         packages: vec![],
@@ -12444,6 +13228,8 @@ fn deploy_patch_module_file(module_dir: &std::path::Path, target: &std::path::Pa
     };
 
     let modules = vec![ResolvedModule {
+        held_managers: Vec::new(),
+        floor_bootstraps: Vec::new(),
         dep_pulled: false,
         name: "mymod".to_string(),
         packages: vec![],
@@ -12562,6 +13348,8 @@ fn apply_module_deploy_files_symlink_strategy() {
     let resolved = make_empty_resolved();
 
     let modules = vec![ResolvedModule {
+        held_managers: Vec::new(),
+        floor_bootstraps: Vec::new(),
         dep_pulled: false,
         name: "linkmod".to_string(),
         packages: vec![],
@@ -12702,6 +13490,8 @@ fn apply_module_install_packages_provisions_manager_when_needed() {
     let resolved = make_empty_resolved();
 
     let modules = vec![ResolvedModule {
+        held_managers: Vec::new(),
+        floor_bootstraps: Vec::new(),
         dep_pulled: false,
         name: "tools".to_string(),
         packages: vec![ResolvedPackage {
@@ -12848,6 +13638,8 @@ fn a_package_a_prerequisite_landed_is_not_installed_again_by_the_packages_phase(
         min_version: None,
     };
     let modules = vec![ResolvedModule {
+        held_managers: Vec::new(),
+        floor_bootstraps: Vec::new(),
         dep_pulled: false,
         name: "tools".to_string(),
         packages: vec![declared()],
@@ -12876,6 +13668,7 @@ fn a_package_a_prerequisite_landed_is_not_installed_again_by_the_packages_phase(
                     manager: "npm".to_string(),
                     via: "sys".to_string(),
                     declared: None,
+                    floor: None,
                     batched: vec!["pipx".to_string()],
                     depends_on: Vec::new(),
                 })],
@@ -12985,6 +13778,8 @@ fn an_install_that_landed_fewer_than_it_named_says_so_on_its_row() {
         min_version: None,
     };
     let modules = vec![ResolvedModule {
+        held_managers: Vec::new(),
+        floor_bootstraps: Vec::new(),
         dep_pulled: false,
         name: "tools".to_string(),
         packages: vec![declared("npm"), declared("jq")],
@@ -13013,6 +13808,7 @@ fn an_install_that_landed_fewer_than_it_named_says_so_on_its_row() {
                     manager: "npm".to_string(),
                     via: "sys".to_string(),
                     declared: None,
+                    floor: None,
                     batched: vec!["pipx".to_string()],
                     depends_on: Vec::new(),
                 })],
@@ -13087,6 +13883,119 @@ fn an_install_that_landed_fewer_than_it_named_says_so_on_its_row() {
         Some(1),
         "`-o json` carries the landed count beside the planned set: {packages:?}"
     );
+}
+
+/// A module's package install records the manager that ran it and the kind
+/// of resource it is. The tracking id (`npmtest:packages:cowsay`) never spells
+/// the manager, so a row without the column named its installer only while the
+/// module's current declaration still resolved one.
+#[test]
+fn a_module_package_install_records_its_manager_and_kind() {
+    let mut registry = ProviderRegistry::new();
+    registry.add_package_manager(Box::new(crate::test_helpers::MockPackageManager::new(
+        "npm",
+    )));
+    let state = test_state();
+    let reconciler = Reconciler::new(&registry, &state);
+
+    let module = ResolvedModule {
+        packages: vec![ResolvedPackage {
+            canonical_name: "cowsay".to_string(),
+            resolved_name: "cowsay".to_string(),
+            manager: "npm".to_string(),
+            manager_declared: true,
+            version: None,
+            script: None,
+            creates: None,
+            only_if: None,
+            unless: None,
+            min_version: None,
+        }],
+        files: vec![],
+        ..crate::test_helpers::make_resolved_module("npmtest")
+    };
+    let plan = Plan {
+        phases: vec![Phase::from_actions(
+            PhaseName::Packages,
+            &Owner::module("npmtest"),
+            vec![Action::Module(ModuleAction {
+                module_name: "npmtest".to_string(),
+                kind: ModuleActionKind::InstallPackages {
+                    resolved: module.packages.clone(),
+                },
+                origin: None,
+            })],
+        )],
+        warnings: vec![],
+    };
+
+    let result = reconciler
+        .apply(
+            &plan,
+            &make_empty_resolved(),
+            Path::new("."),
+            &test_printer(),
+            None,
+            std::slice::from_ref(&module),
+            ReconcileContext::Apply,
+            false,
+            None,
+            &crate::AbortFlag::new(),
+        )
+        .expect("apply");
+    assert_eq!(result.status, ApplyStatus::Success);
+
+    let rows = state.managed_resources().unwrap();
+    let row = rows
+        .iter()
+        .find(|r| r.resource_type == "module" && r.resource_id == "npmtest:packages:cowsay")
+        .unwrap_or_else(|| panic!("the install records its tracking row: {rows:?}"));
+    assert_eq!(row.kind.as_deref(), Some("package"), "{row:?}");
+    assert_eq!(row.manager.as_deref(), Some("npm"), "{row:?}");
+}
+
+/// A package `Skip` installed nothing, so its tracking row names no manager,
+/// the same answer the store's backfill gives a row of that shape.
+#[test]
+fn a_package_skip_records_no_manager() {
+    let registry = ProviderRegistry::new();
+    let state = test_state();
+    let reconciler = Reconciler::new(&registry, &state);
+    let plan = Plan {
+        phases: vec![Phase::from_actions(
+            PhaseName::Packages,
+            &Owner::profile("test"),
+            vec![Action::Package(PackageAction::Skip {
+                manager: "apt".to_string(),
+                reason: "not available".to_string(),
+                origin: "local".to_string(),
+            })],
+        )],
+        warnings: vec![],
+    };
+
+    reconciler
+        .apply(
+            &plan,
+            &make_empty_resolved(),
+            Path::new("."),
+            &test_printer(),
+            None,
+            &[],
+            ReconcileContext::Apply,
+            false,
+            None,
+            &crate::AbortFlag::new(),
+        )
+        .expect("apply");
+
+    let rows = state.managed_resources().unwrap();
+    let row = rows
+        .iter()
+        .find(|r| r.resource_type == "package" && r.resource_id == "apt:skip")
+        .unwrap_or_else(|| panic!("the skip records its tracking row: {rows:?}"));
+    assert_eq!(row.kind.as_deref(), Some("package"), "{row:?}");
+    assert_eq!(row.manager, None, "{row:?}");
 }
 
 /// A provision that found its manager already there says so, and does not
@@ -13224,6 +14133,7 @@ fn every_manager_node_states_what_it_produced() {
         manager: "brew".to_string(),
         via: "homebrew installer".to_string(),
         declared: None,
+        floor: None,
         batched: Vec::new(),
         depends_on: Vec::new(),
     });
@@ -13242,6 +14152,7 @@ fn every_manager_node_states_what_it_produced() {
         manager: "cargo".to_string(),
         via: "apt".to_string(),
         declared: None,
+        floor: None,
         batched: vec!["npm".to_string()],
         depends_on: Vec::new(),
     };
@@ -13252,6 +14163,7 @@ fn every_manager_node_states_what_it_produced() {
             installer: "apt".to_string(),
             package: "npm".to_string(),
         }),
+        floor: None,
         batched: Vec::new(),
         depends_on: Vec::new(),
     };
@@ -13395,6 +14307,7 @@ fn no_produced_detail_restates_a_total_the_subject_already_gives() {
             manager: names[0].clone(),
             via: "apt".to_string(),
             declared: None,
+            floor: None,
             batched: names[1..].to_vec(),
             depends_on: Vec::new(),
         }),
@@ -13653,6 +14566,8 @@ fn a_tool_this_run_provisioned_is_not_installed_again_by_a_module_entry() {
     );
 
     let modules = vec![ResolvedModule {
+        held_managers: Vec::new(),
+        floor_bootstraps: Vec::new(),
         dep_pulled: false,
         name: "tools".to_string(),
         packages: vec![defaulted_tool.clone(), widget.clone()],
@@ -14142,6 +15057,8 @@ fn a_tool_a_module_declares_is_provisioned_by_the_modules_own_route() {
     );
 
     let modules = vec![ResolvedModule {
+        held_managers: Vec::new(),
+        floor_bootstraps: Vec::new(),
         dep_pulled: false,
         name: "tools".to_string(),
         packages: vec![declared_tool.clone(), widget.clone()],
@@ -14291,6 +15208,8 @@ fn plan_modules_encryption_always_with_symlink_skips() {
     let reconciler = Reconciler::new(&registry, &state);
 
     let modules = vec![ResolvedModule {
+        held_managers: Vec::new(),
+        floor_bootstraps: Vec::new(),
         dep_pulled: false,
         name: "secrets-mod".to_string(),
         packages: vec![],
@@ -14349,6 +15268,8 @@ fn plan_modules_platform_skipped_emits_single_skip_and_no_other_actions() {
     // A platform-gated module carries a skip reason plus (defensively) packages
     // and scripts. plan_modules must emit exactly one Skip and nothing else.
     let modules = vec![ResolvedModule {
+        held_managers: Vec::new(),
+        floor_bootstraps: Vec::new(),
         dep_pulled: false,
         name: "macstuff".to_string(),
         packages: vec![crate::modules::ResolvedPackage {
@@ -14414,6 +15335,8 @@ fn plan_modules_encryption_always_with_copy_proceeds() {
     let reconciler = Reconciler::new(&registry, &state);
 
     let modules = vec![ResolvedModule {
+        held_managers: Vec::new(),
+        floor_bootstraps: Vec::new(),
         dep_pulled: false,
         name: "secrets-mod".to_string(),
         packages: vec![],
@@ -14475,6 +15398,8 @@ fn plan_modules_encryption_check_err_skips_with_error_reason() {
     let reconciler = Reconciler::new(&registry, &state);
 
     let modules = vec![ResolvedModule {
+        held_managers: Vec::new(),
+        floor_bootstraps: Vec::new(),
         dep_pulled: false,
         name: "gpg-mod".to_string(),
         packages: vec![],
@@ -14536,6 +15461,8 @@ fn plan_modules_encryption_check_err_breaks_after_first_file() {
     let reconciler = Reconciler::new(&registry, &state);
 
     let modules = vec![ResolvedModule {
+        held_managers: Vec::new(),
+        floor_bootstraps: Vec::new(),
         dep_pulled: false,
         name: "multi".to_string(),
         packages: vec![],
@@ -14616,6 +15543,8 @@ fn plan_modules_encryption_file_not_encrypted_skips() {
     let reconciler = Reconciler::new(&registry, &state);
 
     let modules = vec![ResolvedModule {
+        held_managers: Vec::new(),
+        floor_bootstraps: Vec::new(),
         dep_pulled: false,
         name: "secrets-mod".to_string(),
         packages: vec![],
@@ -14732,6 +15661,8 @@ fn apply_module_run_script_executes_in_module_dir() {
     let resolved = make_empty_resolved();
 
     let modules = vec![ResolvedModule {
+        held_managers: Vec::new(),
+        floor_bootstraps: Vec::new(),
         dep_pulled: false,
         name: "testmod".to_string(),
         packages: vec![],
@@ -14816,7 +15747,10 @@ fn generate_fish_env_content_basic() {
         command: "git".into(),
         platforms: vec![],
     }];
-    let content = super::generate_fish_env_content(&env, &aliases, None, &Default::default());
+    let content = super::generate_fish_env_content(
+        &crate::reconciler::LayeredEnv::for_test(&env, &aliases, &Default::default()),
+        None,
+    );
     assert!(content.starts_with("# managed by cfgd"));
     assert!(content.contains("set -gx EDITOR 'nvim'"));
     assert!(content.contains("set -gx CARGO_HOME '/home/user/.cargo'"));
@@ -14830,7 +15764,10 @@ fn generate_powershell_env_content_with_env_ref() {
         value: r"C:\tools;$env:PATH".into(),
         platforms: vec![],
     }];
-    let content = super::generate_powershell_env_content(&env, &[], None, &Default::default());
+    let content = super::generate_powershell_env_content(
+        &crate::reconciler::LayeredEnv::for_test(&env, &[], &Default::default()),
+        None,
+    );
     // Contains $env: so should be double-quoted
     assert!(
         content.contains(r#"$env:MY_PATH = "C:\tools;$env:PATH""#),
@@ -14847,7 +15784,10 @@ fn generate_powershell_env_function_alias() {
         command: "Get-ChildItem -Force".into(),
         platforms: vec![],
     }];
-    let content = super::generate_powershell_env_content(&[], &aliases, None, &Default::default());
+    let content = super::generate_powershell_env_content(
+        &crate::reconciler::LayeredEnv::for_test(&[], &aliases, &Default::default()),
+        None,
+    );
     assert!(content.contains("function ll {"));
     assert!(content.contains("Get-ChildItem -Force @args"));
 }
@@ -14861,10 +15801,8 @@ fn generate_fish_env_path_splitting() {
         platforms: vec![],
     }];
     let content = super::generate_fish_env_content(
-        &env,
-        &[],
+        &crate::reconciler::LayeredEnv::for_test(&env, &[], &Default::default()),
         fish_path_fold(&env).as_ref(),
-        &Default::default(),
     );
     assert!(
         content.contains("set -gx PATH '/usr/bin' '/usr/local/bin' $PATH"),
@@ -14938,7 +15876,7 @@ fn build_script_env_all_phases() {
         });
         let map: HashMap<String, String> = env.into_iter().collect();
         assert_eq!(
-            map.get("CFGD_PHASE").unwrap(),
+            map.get(crate::CFGD_PHASE_ENV).unwrap(),
             expected_name,
             "phase {:?} should produce CFGD_PHASE={}",
             phase,
@@ -14980,9 +15918,9 @@ fn build_script_env_reconcile_context() {
         path_dirs: &[],
     });
     let map: HashMap<String, String> = env.into_iter().collect();
-    assert_eq!(map.get("CFGD_CONTEXT").unwrap(), "reconcile");
-    assert_eq!(map.get("CFGD_PHASE").unwrap(), "postReconcile");
-    assert_eq!(map.get("CFGD_PROFILE").unwrap(), "server");
+    assert_eq!(map.get(crate::CFGD_CONTEXT_ENV).unwrap(), "reconcile");
+    assert_eq!(map.get(crate::CFGD_PHASE_ENV).unwrap(), "postReconcile");
+    assert_eq!(map.get(crate::CFGD_PROFILE_ENV).unwrap(), "server");
 }
 
 #[test]
@@ -14998,9 +15936,9 @@ fn build_script_env_module_name_without_dir() {
         path_dirs: &[],
     });
     let map: HashMap<String, String> = env.into_iter().collect();
-    assert_eq!(map.get("CFGD_MODULE_NAME").unwrap(), "zsh");
+    assert_eq!(map.get(crate::CFGD_MODULE_NAME_ENV).unwrap(), "zsh");
     assert!(
-        !map.contains_key("CFGD_MODULE_DIR"),
+        !map.contains_key(crate::CFGD_MODULE_DIR_ENV),
         "CFGD_MODULE_DIR should not be set when module_dir is None"
     );
 }
@@ -15082,6 +16020,8 @@ fn verify_module_files_produce_no_reconciler_rows() {
     let resolved = make_empty_resolved();
 
     let modules = vec![ResolvedModule {
+        held_managers: Vec::new(),
+        floor_bootstraps: Vec::new(),
         dep_pulled: false,
         name: "test-mod".to_string(),
         packages: vec![],
@@ -15346,6 +16286,7 @@ fn format_action_description_manager_provision() {
         manager: "brew".to_string(),
         via: "homebrew installer".to_string(),
         declared: None,
+        floor: None,
         batched: vec![],
         depends_on: vec![],
     });
@@ -15479,15 +16420,18 @@ fn verify_env_file_missing_when_file_absent() {
 /// `env_targets`) — so a fixture seeded from it can never drift from what the
 /// verifier treats as the primary file: bash/zsh's `.cfgd.env` on Unix,
 /// PowerShell's `.cfgd-env.ps1` on Windows.
-fn primary_managed_env_target(
-    home: &Path,
-    env: &[EnvVar],
-    aliases: &[ShellAlias],
-) -> (PathBuf, String) {
+fn primary_managed_env_target(home: &Path, layered: &super::LayeredEnv) -> (PathBuf, String) {
     let probe = EnvHostProbe::detect(home);
     let platform = EnvPlatform::current();
     env_targets(
-        EnvContent::new(env, aliases, &[], &Default::default()),
+        EnvContent::of(
+            &crate::reconciler::LayeredEnv::for_test(
+                &layered.merged,
+                &layered.merged_aliases,
+                &layered.origins,
+            ),
+            &[],
+        ),
         EnvScope::All,
         home,
         &probe,
@@ -15520,15 +16464,15 @@ fn env_verify_results_reports_matching_alias_and_env_var_as_current() {
 
     // Seed the primary managed file exactly as `apply` would generate it, so
     // the per-item check reads a real, matching baseline.
-    let (path, content) = primary_managed_env_target(tmp_home.path(), &env, &aliases);
+    let (path, content) = primary_managed_env_target(
+        tmp_home.path(),
+        &super::LayeredEnv::from_parts("profile:test", &env, &aliases, &[]),
+    );
     std::fs::write(path, content).unwrap();
 
     let results = super::verify::env_verify_results(
-        &env,
-        &aliases,
-        &Default::default(),
+        &super::LayeredEnv::from_parts("profile:test", &env, &aliases, &[]),
         EnvScope::All,
-        &[],
         &[],
     );
 
@@ -15570,19 +16514,20 @@ fn env_verify_results_detects_hand_edited_alias_as_drift_without_flagging_untouc
     // `primary_alias_line` (the real declared line vs. the line a hand-edited
     // command would render), never a hardcoded POSIX literal — so the
     // mutation is meaningful on whichever dialect this platform writes.
-    let (path, content) = primary_managed_env_target(tmp_home.path(), &env, &aliases);
+    let (path, content) = primary_managed_env_target(
+        tmp_home.path(),
+        &super::LayeredEnv::from_parts("profile:test", &env, &aliases, &[]),
+    );
     let platform = EnvPlatform::current();
-    let declared_line =
-        super::env_files::primary_alias_line(&aliases[0], platform, &Default::default())
-            .expect("alias renders a declared line");
+    let declared_line = super::env_files::primary_alias_line(&aliases[0], platform)
+        .expect("alias renders a declared line");
     let hand_edited = ShellAlias {
         name: "ll".to_string(),
         command: "ls -lah".to_string(),
         platforms: vec![],
     };
-    let hand_edited_line =
-        super::env_files::primary_alias_line(&hand_edited, platform, &Default::default())
-            .expect("hand-edited alias renders a line");
+    let hand_edited_line = super::env_files::primary_alias_line(&hand_edited, platform)
+        .expect("hand-edited alias renders a line");
     let mutated = content.replace(&declared_line, &hand_edited_line);
     assert_ne!(
         content, mutated,
@@ -15591,11 +16536,8 @@ fn env_verify_results_detects_hand_edited_alias_as_drift_without_flagging_untouc
     std::fs::write(path, mutated).unwrap();
 
     let results = super::verify::env_verify_results(
-        &env,
-        &aliases,
-        &Default::default(),
+        &super::LayeredEnv::from_parts("profile:test", &env, &aliases, &[]),
         EnvScope::All,
-        &[],
         &[],
     );
 
@@ -15654,15 +16596,15 @@ fn env_verify_results_carry_only_the_opaque_markers_never_the_declared_value() {
     // exercise the "missing or changed" arm. `ENV_FILE_HEADER` is the one
     // line every dialect's generator opens with, so the header alone is a
     // legal (if incomplete) managed file on any platform.
-    let (path, _) = primary_managed_env_target(tmp_home.path(), &env, &aliases);
+    let (path, _) = primary_managed_env_target(
+        tmp_home.path(),
+        &super::LayeredEnv::from_parts("profile:test", &env, &aliases, &[]),
+    );
     std::fs::write(path, format!("{ENV_FILE_HEADER}\n")).unwrap();
 
     let results = super::verify::env_verify_results(
-        &env,
-        &aliases,
-        &Default::default(),
+        &super::LayeredEnv::from_parts("profile:test", &env, &aliases, &[]),
         EnvScope::All,
-        &[],
         &[],
     );
 
@@ -15706,27 +16648,135 @@ fn a_drifted_env_row_shows_the_line_the_file_holds_against_the_declared_one() {
     }];
     // Both lines come from production's own renderer rather than a POSIX
     // literal, so the fixture holds whatever dialect this platform writes.
-    let edited_line =
-        super::verify::MergedEnvItems::new(&edited, &[], &Default::default(), &[], &[])
-            .declared_line("env-var", "EDITOR")
-            .expect("the edited var renders a line");
-    let (path, _) = primary_managed_env_target(tmp_home.path(), &declared, &[]);
+    let edited_line = super::verify::MergedEnvItems::new(
+        &super::LayeredEnv::from_parts("profile:test", &edited, &[], &[]),
+        &[],
+    )
+    .declared_line("env-var", "EDITOR")
+    .expect("the edited var renders a line");
+    let (path, _) = primary_managed_env_target(
+        tmp_home.path(),
+        &super::LayeredEnv::from_parts("profile:test", &declared, &[], &[]),
+    );
     std::fs::write(path, format!("{ENV_FILE_HEADER}\n{edited_line}\n")).unwrap();
 
-    let (want, have) =
-        super::verify::MergedEnvItems::new(&declared, &[], &Default::default(), &[], &[])
-            .display_values("env-var", "EDITOR")
-            .expect("a declared env var recomputes both operands");
+    let (want, have) = super::verify::MergedEnvItems::new(
+        &super::LayeredEnv::from_parts("profile:test", &declared, &[], &[]),
+        &[],
+    )
+    .display_values("env-var", "EDITOR")
+    .expect("a declared env var recomputes both operands");
     assert_eq!(
         want,
-        super::verify::MergedEnvItems::new(&declared, &[], &Default::default(), &[], &[])
-            .declared_line("env-var", "EDITOR")
-            .unwrap(),
+        super::verify::MergedEnvItems::new(
+            &super::LayeredEnv::from_parts("profile:test", &declared, &[], &[]),
+            &[]
+        )
+        .declared_line("env-var", "EDITOR")
+        .unwrap(),
         "want is the line the declaration renders as"
     );
     assert_eq!(
         have, edited_line,
         "have is the line the file actually holds, not a marker"
+    );
+}
+
+/// A name several blocks assign reads back as the LAST line of the file.
+///
+/// Before the file held one block per layer it held one line per name, so the
+/// first line claiming a name was the only one. Now every layer that declared
+/// the name writes its own, and a shell sourcing the file is left with the
+/// last of them. Reading the first would quote an outranked layer's value as
+/// what the machine holds, which is neither the declaration nor the truth —
+/// and `cmd_verify` recomputes both operands for every row it renders,
+/// `matches: true` included, so a converged machine would report drift
+/// against itself in `-o json`.
+#[test]
+#[serial_test::serial]
+fn an_env_var_several_blocks_assign_reads_back_as_the_last_line_that_claims_it() {
+    let tmp_home = tempfile::tempdir().unwrap();
+    let _home = crate::with_test_home_guard(tmp_home.path());
+
+    // A REAL generated file: two layers both declaring `PAGER`, written
+    // through the engine's own targets.
+    let (layered, path_dirs) =
+        crate::test_helpers::layered_fixture(&crate::to_posix_string(tmp_home.path()));
+    let view = super::verify::MergedEnvItems::new(&layered, &path_dirs);
+    for (path, content) in view.managed_env_files(tmp_home.path(), EnvScope::All) {
+        crate::ensure_parent_dir(&path).unwrap();
+        std::fs::write(&path, content).unwrap();
+    }
+
+    let primary = super::primary_env_file(tmp_home.path());
+    let written = std::fs::read_to_string(&primary).unwrap();
+    let prefix = super::env_files::env_var_line_prefix("PAGER", EnvPlatform::current())
+        .expect("a declared name renders a prefix");
+    let claiming: Vec<&str> = written
+        .lines()
+        .filter(|l| l.starts_with(prefix.as_str()))
+        .collect();
+    assert_eq!(
+        claiming.len(),
+        2,
+        "the premise is a file assigning one name twice:\n{written}"
+    );
+    assert_ne!(
+        claiming[0], claiming[1],
+        "the two lines must differ, or neither end of the file can be told from the other:\n{written}"
+    );
+
+    let declared = view
+        .declared_line("env-var", "PAGER")
+        .expect("a declared var renders its declared line");
+    assert_eq!(
+        view.display_values("env-var", "PAGER"),
+        Some((declared.clone(), declared.clone())),
+        "a converged file agrees with its own declaration:\n{written}"
+    );
+
+    // Both hand edits below are the same line in the same file; which one the
+    // reader answers from is the whole question.
+    let edited = vec![EnvVar {
+        name: "PAGER".to_string(),
+        value: "hexdump".to_string(),
+        platforms: vec![],
+    }];
+    let edited_line = super::verify::MergedEnvItems::new(
+        &super::LayeredEnv::from_parts("profile:test", &edited, &[], &[]),
+        &[],
+    )
+    .declared_line("env-var", "PAGER")
+    .expect("the edited var renders a line");
+    let rewrite = |nth: usize| {
+        let mut seen = 0;
+        let mut out: Vec<String> = Vec::new();
+        for line in written.lines() {
+            if line.starts_with(prefix.as_str()) {
+                let hit = seen;
+                seen += 1;
+                if hit == nth {
+                    out.push(edited_line.clone());
+                    continue;
+                }
+            }
+            out.push(line.to_string());
+        }
+        format!("{}\n", out.join("\n"))
+    };
+
+    std::fs::write(&primary, rewrite(0)).unwrap();
+    assert_eq!(
+        view.display_values("env-var", "PAGER"),
+        Some((declared.clone(), declared.clone())),
+        "editing the outranked layer's line changes nothing a shell resolves"
+    );
+
+    std::fs::write(&primary, rewrite(1)).unwrap();
+    assert_eq!(
+        view.display_values("env-var", "PAGER"),
+        Some((declared, edited_line)),
+        "the last line claiming the name is what the machine holds"
     );
 }
 
@@ -15749,7 +16799,8 @@ fn one_merged_env_view_answers_every_row_of_a_report() {
         command: "ls -lah".to_string(),
         platforms: vec![],
     }];
-    let view = super::verify::MergedEnvItems::new(&env, &aliases, &Default::default(), &[], &[]);
+    let layered = super::LayeredEnv::from_parts("profile:test", &env, &aliases, &[]);
+    let view = super::verify::MergedEnvItems::new(&layered, &[]);
 
     let editor = view
         .declared_line("env-var", "EDITOR")
@@ -15782,25 +16833,36 @@ fn an_env_item_the_file_does_not_hold_reads_as_the_shared_absence_word() {
         value: "nvim".to_string(),
         platforms: vec![],
     }];
-    let (path, _) = primary_managed_env_target(tmp_home.path(), &declared, &[]);
+    let (path, _) = primary_managed_env_target(
+        tmp_home.path(),
+        &super::LayeredEnv::from_parts("profile:test", &declared, &[], &[]),
+    );
     std::fs::write(path, format!("{ENV_FILE_HEADER}\n")).unwrap();
 
-    let (_, have) =
-        super::verify::MergedEnvItems::new(&declared, &[], &Default::default(), &[], &[])
-            .display_values("env-var", "EDITOR")
-            .expect("a declared env var recomputes both operands");
+    let (_, have) = super::verify::MergedEnvItems::new(
+        &super::LayeredEnv::from_parts("profile:test", &declared, &[], &[]),
+        &[],
+    )
+    .display_values("env-var", "EDITOR")
+    .expect("a declared env var recomputes both operands");
     assert_eq!(have, crate::Absence::Missing.as_str());
 
     assert!(
-        super::verify::MergedEnvItems::new(&declared, &[], &Default::default(), &[], &[])
-            .display_values("file", "~/.zshrc")
-            .is_none(),
+        super::verify::MergedEnvItems::new(
+            &super::LayeredEnv::from_parts("profile:test", &declared, &[], &[]),
+            &[]
+        )
+        .display_values("file", "~/.zshrc")
+        .is_none(),
         "a kind with no managed env line recomputes nothing"
     );
     assert!(
-        super::verify::MergedEnvItems::new(&declared, &[], &Default::default(), &[], &[])
-            .display_values("env-var", "PAGER")
-            .is_none(),
+        super::verify::MergedEnvItems::new(
+            &super::LayeredEnv::from_parts("profile:test", &declared, &[], &[]),
+            &[]
+        )
+        .display_values("env-var", "PAGER")
+        .is_none(),
         "an item no longer declared recomputes nothing"
     );
 }
@@ -15829,13 +16891,18 @@ fn an_unreadable_managed_env_file_recomputes_nothing_rather_than_claiming_absenc
         value: "nvim".to_string(),
         platforms: vec![],
     }];
-    let (path, _) = primary_managed_env_target(tmp_home.path(), &declared, &[]);
+    let (path, _) = primary_managed_env_target(
+        tmp_home.path(),
+        &super::LayeredEnv::from_parts("profile:test", &declared, &[], &[]),
+    );
     std::fs::write(&path, format!("{ENV_FILE_HEADER}\n")).unwrap();
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
 
-    let recomputed =
-        super::verify::MergedEnvItems::new(&declared, &[], &Default::default(), &[], &[])
-            .display_values("env-var", "EDITOR");
+    let recomputed = super::verify::MergedEnvItems::new(
+        &super::LayeredEnv::from_parts("profile:test", &declared, &[], &[]),
+        &[],
+    )
+    .display_values("env-var", "EDITOR");
 
     // Restore before asserting so a failure does not leave the tempdir
     // undeletable.
@@ -15941,6 +17008,543 @@ fn a_successful_env_apply_resolves_the_per_item_rows_it_converged() {
     );
 }
 
+// --- LayeredEnv tests ---
+
+/// An env var for the subscription pins below.
+fn team_env(name: &str, value: &str) -> crate::config::EnvVar {
+    crate::config::EnvVar {
+        name: name.to_string(),
+        value: value.to_string(),
+        platforms: Vec::new(),
+    }
+}
+
+/// One layer a subscription named `team` delivered at `priority`.
+fn team_layer(priority: u32, env: Vec<crate::config::EnvVar>) -> crate::config::ProfileLayer {
+    crate::config::ProfileLayer {
+        source: "team".to_string(),
+        profile_name: format!("team-{priority}"),
+        priority,
+        policy: crate::config::LayerPolicy::Required,
+        spec: crate::config::ProfileSpec {
+            env,
+            ..Default::default()
+        },
+    }
+}
+
+/// Two layers one subscription delivered AT ONE RANK are one block.
+///
+/// `ProfileLayer::owner_token` spells `source:<name>` for every layer a
+/// subscription delivered, and its recommended tier, its opted-in profiles and
+/// its standard profiles all take the subscription's own number, so a source
+/// contributing two such layers would hand the view two blocks with identical
+/// headers — a repeated section a reader could not tell apart as two layers.
+/// They are joined in declaration order with every declaration kept.
+#[test]
+fn two_layers_of_one_subscription_at_one_rank_share_one_block() {
+    let layers = vec![
+        team_layer(500, vec![team_env("PAGER", "less")]),
+        team_layer(
+            500,
+            vec![team_env("PAGER", "bat"), team_env("EDITOR", "vi")],
+        ),
+    ];
+    let merged = crate::config::merge_layers(&layers);
+    let resolved = crate::config::ResolvedProfile { layers, merged };
+
+    let layered = super::LayeredEnv::of(&resolved, &[]);
+
+    assert_eq!(
+        layered
+            .layers
+            .iter()
+            .map(|l| (l.owner.as_str(), l.priority))
+            .collect::<Vec<_>>(),
+        [("source:team", Some(500))],
+        "one owner at one rank is one block",
+    );
+    assert_eq!(
+        layered.layers[0]
+            .env
+            .iter()
+            .map(|ev| (ev.name.as_str(), ev.value.as_str()))
+            .collect::<Vec<_>>(),
+        [("PAGER", "less"), ("PAGER", "bat"), ("EDITOR", "vi")],
+        "the joined block holds both layers' declarations in declaration order",
+    );
+
+    // The rendered file says the same: one header, and ONE assignment per name
+    // inside it — two `export PAGER=` lines under one header would read as the
+    // file setting it twice.
+    let content = super::generate_env_file_content(&layered, None);
+    let blocks =
+        super::env_files::generate_blocks(super::env_files::Dialect::Posix, &layered, None);
+    assert_eq!(
+        block_headers(&blocks),
+        ["# source: team (priority 500)"],
+        "{content}"
+    );
+    assert_eq!(
+        content
+            .lines()
+            .filter(|l| l.starts_with("export PAGER="))
+            .count(),
+        1,
+        "one name, one assignment inside a block:\n{content}"
+    );
+    assert_eq!(
+        block_of(&blocks, "export PAGER=\"bat\""),
+        Some("# source: team (priority 500)"),
+        "the surviving value is the one the later layer wrote:\n{content}"
+    );
+}
+
+/// Two ADJACENT tiers of one subscription each keep their own block.
+///
+/// A subscriber override rides one step above the source's own items
+/// (`composition::layers`), so the two tiers share an owner token and stand
+/// next to each other with no third owner between them. A header states the
+/// rank that put its block where it is, so joining them would print a line
+/// declared at 500 under a header saying 501 and drop the outranked line
+/// altogether. Whether an outranked declaration survives cannot depend on
+/// whether some unrelated owner's layer happens to sit between the two tiers,
+/// which is what `a_straddling_owners_two_blocks_each_state_their_own_priority`
+/// holds for the case where one does.
+#[test]
+fn two_adjacent_tiers_of_one_subscription_each_keep_their_own_block() {
+    let layers = vec![
+        team_layer(
+            500,
+            vec![team_env("PAGER", "less"), team_env("LANG", "en_US.UTF-8")],
+        ),
+        team_layer(
+            501,
+            vec![team_env("PAGER", "bat"), team_env("EDITOR", "vi")],
+        ),
+    ];
+    let merged = crate::config::merge_layers(&layers);
+    let resolved = crate::config::ResolvedProfile { layers, merged };
+
+    let layered = super::LayeredEnv::of(&resolved, &[]);
+
+    assert_eq!(
+        layered
+            .layers
+            .iter()
+            .map(|l| (l.owner.as_str(), l.priority))
+            .collect::<Vec<_>>(),
+        [("source:team", Some(500)), ("source:team", Some(501))],
+        "one owner at two ranks is two blocks, each stating its own",
+    );
+
+    let content = super::generate_env_file_content(&layered, None);
+    let blocks =
+        super::env_files::generate_blocks(super::env_files::Dialect::Posix, &layered, None);
+    assert_eq!(
+        block_headers(&blocks),
+        [
+            "# source: team (priority 500)",
+            "# source: team (priority 501)"
+        ],
+        "{content}"
+    );
+    // The outranked value is verbatim in the tier that declared it, ABOVE the
+    // tier that beat it — the order is what proves the precedence.
+    assert_eq!(
+        block_of(&blocks, "export PAGER=\"less\""),
+        Some("# source: team (priority 500)"),
+        "{content}"
+    );
+    assert_eq!(
+        block_of(&blocks, "export PAGER=\"bat\""),
+        Some("# source: team (priority 501)"),
+        "{content}"
+    );
+    assert!(
+        content.find("export PAGER=\"less\"") < content.find("export PAGER=\"bat\""),
+        "the shell's own last-wins resolves the two in file order:\n{content}"
+    );
+    // A name only the lower tier declares stays under the lower tier's header:
+    // a joined block would have printed it under the higher number.
+    assert_eq!(
+        block_of(&blocks, "export LANG=\"en_US.UTF-8\""),
+        Some("# source: team (priority 500)"),
+        "{content}"
+    );
+}
+
+/// An entry no layer declares is placed in the block of the tier that DID declare.
+///
+/// A subscription's tiers are separate layers, and a tier can declare packages
+/// alone, so an owner routinely holds one block with declarations and another
+/// with none. Placing a claimed-but-undeclared entry in the owner's LAST block
+/// would put it under a header stating a rank at which that owner declared
+/// nothing, and would keep an otherwise empty block alive to print it -- the
+/// rank misstatement `fold_layers_of_one_owner` stopped making.
+#[test]
+fn an_entry_no_layer_declares_lands_in_its_owners_declaring_block() {
+    let mut empty_override = team_layer(501, Vec::new());
+    empty_override.policy = crate::config::LayerPolicy::Required;
+    let layers = vec![
+        team_layer(500, vec![team_env("LANG", "en_US.UTF-8")]),
+        empty_override,
+    ];
+    let merged = crate::config::merge_layers(&layers);
+    let mut resolved = crate::config::ResolvedProfile { layers, merged };
+    // What a resolved preference does after the layer loop: fold the entry into
+    // the merge and claim it for the owner, which names no rank of its own.
+    resolved
+        .merged
+        .env
+        .push(team_env("CFGD_CLIPBOARD", "wl-copy"));
+    resolved
+        .merged
+        .entry_owners
+        .claim_env_names("source:team", ["CFGD_CLIPBOARD"]);
+
+    let layered = super::LayeredEnv::of(&resolved, &[]);
+
+    assert_eq!(
+        layered
+            .layers
+            .iter()
+            .map(|l| (l.owner.as_str(), l.priority))
+            .collect::<Vec<_>>(),
+        [("source:team", Some(500))],
+        "the tier that declares nothing must not be kept alive to hold the entry",
+    );
+    let content = super::generate_env_file_content(&layered, None);
+    let blocks =
+        super::env_files::generate_blocks(super::env_files::Dialect::Posix, &layered, None);
+    assert_eq!(
+        block_of(&blocks, "export CFGD_CLIPBOARD=\"wl-copy\""),
+        Some("# source: team (priority 500)"),
+        "the entry states the rank its owner declared at:\n{content}"
+    );
+}
+
+/// A source whose tiers sit on both sides of a local layer keeps a block per run.
+///
+/// `composition::compose` sorts every layer by priority, and a source at the
+/// default priority declares its standard tier BELOW the local layers and its
+/// required tier above them. Joined into the source's first block, the
+/// required declarations would sit under local's, and a reader folding the
+/// blocks the way a shell sources them would read the local value where
+/// `merge_layers` holds the required one. One block per run is what keeps the
+/// blocks and the winners answering the same question.
+///
+/// The claim map answers the same way: an entry no block declares is placed by
+/// its owner token, and an owner holding two blocks takes the LAST of them.
+/// The claim records the last layer that ranked the entry, so nothing between
+/// it and that block ranked it, and the entry is never rendered below a layer
+/// declaring its own name.
+#[test]
+fn a_source_whose_tiers_straddle_a_local_layer_keeps_a_block_per_run() {
+    let env = |name: &str, value: &str| crate::config::EnvVar {
+        name: name.to_string(),
+        value: value.to_string(),
+        platforms: Vec::new(),
+    };
+    let mut resolved = straddling_source_profile();
+    // What a resolved preference does after the layer loop: fold in and claim
+    // the last layer that ranked it — here the required tier, which is the
+    // owner's SECOND block.
+    resolved.merged.env.push(env("CFGD_CLIPBOARD", "wl-copy"));
+    resolved
+        .merged
+        .entry_owners
+        .claim_env_names("source:team", ["CFGD_CLIPBOARD"]);
+    let claimed_alias = crate::config::ShellAlias {
+        name: "gs".to_string(),
+        command: "git status".to_string(),
+        platforms: Vec::new(),
+    };
+    resolved.merged.aliases.push(claimed_alias.clone());
+    resolved
+        .merged
+        .entry_owners
+        .claim("source:team", &[], std::slice::from_ref(&claimed_alias));
+
+    let layered = super::LayeredEnv::of(&resolved, &[]);
+
+    assert_eq!(
+        layered
+            .layers
+            .iter()
+            .map(|l| l.owner.as_str())
+            .collect::<Vec<_>>(),
+        ["source:team", "profile:work", "source:team"],
+        "the source's tiers straddle the local layer, so each run is its own \
+         block in precedence order",
+    );
+
+    // The claimed pair is placed by owner token, and this owner holds two
+    // blocks: the first sits under local, so an entry landing there reads as
+    // outranked by a layer that never declared it.
+    assert!(
+        layered.layers[2]
+            .env
+            .iter()
+            .any(|ev| ev.name == "CFGD_CLIPBOARD"),
+        "the claimed var is not in its claiming layer's block: {:?}",
+        layered.layers,
+    );
+    assert!(
+        layered.layers[2].aliases.iter().any(|al| al.name == "gs"),
+        "the claimed alias is not in its claiming layer's block: {:?}",
+        layered.layers,
+    );
+
+    // Fold the blocks the way a shell sources them: in order, last assignment
+    // wins. The result is the merge's own answer.
+    let mut folded: Vec<crate::config::EnvVar> = Vec::new();
+    let mut folded_aliases: Vec<crate::config::ShellAlias> = Vec::new();
+    for layer in &layered.layers {
+        crate::fold_env_layer(&mut folded, &layer.env, crate::PATH_LIST_SEPARATOR);
+        crate::merge_aliases(&mut folded_aliases, &layer.aliases);
+    }
+    let by_name = |mut entries: Vec<crate::config::EnvVar>| {
+        entries.sort_by(|a, b| a.name.cmp(&b.name));
+        entries
+    };
+    assert_eq!(
+        by_name(folded.clone()),
+        by_name(layered.merged.clone()),
+        "the blocks fold to a different env than the merge decided",
+    );
+    let aliases_by_name = |mut entries: Vec<crate::config::ShellAlias>| {
+        entries.sort_by(|a, b| a.name.cmp(&b.name));
+        entries
+    };
+    assert_eq!(
+        aliases_by_name(folded_aliases),
+        aliases_by_name(layered.merged_aliases.clone()),
+        "the blocks fold to a different alias set than the merge decided",
+    );
+
+    let value = |name: &str| {
+        layered
+            .merged
+            .iter()
+            .find(|ev| ev.name == name)
+            .map(|ev| ev.value.as_str())
+    };
+    assert_eq!(
+        value("EDITOR"),
+        Some("vi"),
+        "local outranks the source's standard tier: {:?}",
+        layered.merged,
+    );
+    assert_eq!(
+        value("VISUAL"),
+        Some("emacs"),
+        "the source's required tier outranks local: {:?}",
+        layered.merged,
+    );
+}
+
+/// One subscription whose tiers sit on BOTH sides of the local layer: its
+/// standard tier below local, its required tier above. `composition::compose`
+/// sorts the whole layer vec by priority, so the source's own token appears
+/// twice in `resolved.layers` with local's between them.
+fn straddling_source_profile() -> crate::config::ResolvedProfile {
+    let env = |name: &str, value: &str| crate::config::EnvVar {
+        name: name.to_string(),
+        value: value.to_string(),
+        platforms: Vec::new(),
+    };
+    let team = |priority: u32,
+                policy: crate::config::LayerPolicy,
+                env: Vec<crate::config::EnvVar>| crate::config::ProfileLayer {
+        source: "team".to_string(),
+        profile_name: format!("team-{priority}"),
+        priority,
+        policy,
+        spec: crate::config::ProfileSpec {
+            env,
+            ..Default::default()
+        },
+    };
+    let local = |env: Vec<crate::config::EnvVar>| crate::config::ProfileLayer {
+        source: crate::config::LOCAL_LAYER.to_string(),
+        profile_name: "work".to_string(),
+        priority: crate::config::LOCAL_LAYER_PRIORITY,
+        policy: crate::config::LayerPolicy::Local,
+        spec: crate::config::ProfileSpec {
+            env,
+            ..Default::default()
+        },
+    };
+    let layers = vec![
+        team(
+            500,
+            crate::config::LayerPolicy::Recommended,
+            vec![env("EDITOR", "nano"), env("VISUAL", "nano")],
+        ),
+        local(vec![env("EDITOR", "vi"), env("VISUAL", "vi")]),
+        team(
+            1500,
+            crate::config::LayerPolicy::Required,
+            vec![env("VISUAL", "emacs")],
+        ),
+    ];
+    let merged = crate::config::merge_layers(&layers);
+    crate::config::ResolvedProfile { layers, merged }
+}
+
+/// The blocks are the merge's inputs; the winners are the merge's answer; the
+/// shell's own last-wins takes one to the other.
+///
+/// The layered view holds every layer verbatim, outranked lines included, so
+/// the blocks deliberately say more than the winner set does. What must never
+/// differ is where they LAND: folding the blocks in precedence order is what a
+/// shell does when it sources the file, and the result has to be the set
+/// `merge_layers` and `merge_module_env_aliases` already decided. Derived apart
+/// and never compared, the two disagree the first time a platform gate is read
+/// by one and not the other, or an entry no layer declares is placed by
+/// neither.
+#[test]
+fn the_layered_env_folds_back_to_the_merge() {
+    let mut resolved = crate::test_helpers::two_layer_profile();
+    // What a resolved preference does after the layer loop: fold in and claim
+    // the last layer that ranked it. Written here by hand, so this pin needs
+    // no session probe.
+    resolved.merged.env.push(crate::config::EnvVar {
+        name: "CFGD_CLIPBOARD".to_string(),
+        value: "xclip".to_string(),
+        platforms: Vec::new(),
+    });
+    resolved
+        .merged
+        .entry_owners
+        .claim_env_names("profile:work", ["CFGD_CLIPBOARD"]);
+    // The alias half of the same case: an alias the merge holds that no block
+    // declares, claimed by the layer that ranked it.
+    let resolved_alias = crate::config::ShellAlias {
+        name: "gs".to_string(),
+        command: "git status".to_string(),
+        platforms: Vec::new(),
+    };
+    resolved.merged.aliases.push(resolved_alias.clone());
+    resolved
+        .merged
+        .entry_owners
+        .claim("profile:work", &[], std::slice::from_ref(&resolved_alias));
+    // The same two halves with NO claim behind them. Every winner has to be
+    // set by the generated file, and the last block is the only position a
+    // shell folding the blocks in order resolves to the merge's own value, so
+    // an entry no claim answers for lands there and is kept.
+    resolved.merged.env.push(crate::config::EnvVar {
+        name: "CFGD_UNCLAIMED".to_string(),
+        value: "1".to_string(),
+        platforms: Vec::new(),
+    });
+    resolved.merged.aliases.push(crate::config::ShellAlias {
+        name: "unclaimed".to_string(),
+        command: "true".to_string(),
+        platforms: Vec::new(),
+    });
+
+    let mut module = crate::test_helpers::make_resolved_module("nvim");
+    module.env = vec![crate::config::EnvVar {
+        name: "EDITOR".to_string(),
+        value: "nvim".to_string(),
+        platforms: Vec::new(),
+    }];
+    module.aliases = vec![crate::config::ShellAlias {
+        name: "v".to_string(),
+        command: "nvim".to_string(),
+        platforms: Vec::new(),
+    }];
+    // A module declaring neither an env var nor an alias: its block would be a
+    // header with nothing under it, so the assemble drops it and the owner list
+    // below never names it.
+    let bare = crate::test_helpers::make_resolved_module("bare");
+    let layered = super::LayeredEnv::of(&resolved, &[module, bare]);
+
+    assert_eq!(
+        layered
+            .layers
+            .iter()
+            .map(|l| l.owner.as_str())
+            .collect::<Vec<_>>(),
+        ["profile:base", "profile:work", "module:nvim"],
+        "blocks arrive low precedence first, and a block with nothing in it is \
+         dropped, so no empty header prints",
+    );
+    // The outranked value is in its own block, verbatim — the whole point of
+    // the layered file, and the one thing a winners-only split cannot hold.
+    assert!(
+        layered.layers[0]
+            .env
+            .iter()
+            .any(|ev| ev.name == "PAGER" && ev.value == "less"),
+        "base's block dropped its outranked PAGER: {:?}",
+        layered.layers[0].env,
+    );
+    // The entry no layer declares sits in the block its claim names.
+    assert!(
+        layered.layers[1]
+            .env
+            .iter()
+            .any(|ev| ev.name == "CFGD_CLIPBOARD"),
+        "the preference var is not in its claiming layer's block: {:?}",
+        layered.layers[1].env,
+    );
+    // The same placement on the alias half, over its own claim map: a block
+    // holding the env var and not the alias would render half the layer.
+    assert!(
+        layered.layers[1].aliases.iter().any(|al| al.name == "gs"),
+        "the claimed alias is not in its claiming layer's block: {:?}",
+        layered.layers[1].aliases,
+    );
+    // The unclaimed pair lands in the last block, both halves through the one
+    // slot the placement shares.
+    let last = layered.layers.last().expect("the view holds a block");
+    assert!(
+        last.env.iter().any(|ev| ev.name == "CFGD_UNCLAIMED"),
+        "an unclaimed winner is not in the last block: {:?}",
+        last.env,
+    );
+    assert!(
+        last.aliases.iter().any(|al| al.name == "unclaimed"),
+        "an unclaimed alias is not in the last block: {:?}",
+        last.aliases,
+    );
+
+    // Fold the blocks the way a shell sources them: in order, last assignment
+    // wins. The result is the merge's own answer.
+    let mut folded: Vec<crate::config::EnvVar> = Vec::new();
+    let mut folded_aliases: Vec<crate::config::ShellAlias> = Vec::new();
+    for layer in &layered.layers {
+        crate::fold_env_layer(&mut folded, &layer.env, crate::PATH_LIST_SEPARATOR);
+        crate::merge_aliases(&mut folded_aliases, &layer.aliases);
+    }
+    let by_name = |mut entries: Vec<crate::config::EnvVar>| {
+        entries.sort_by(|a, b| a.name.cmp(&b.name));
+        entries
+    };
+    let aliases_by_name = |mut entries: Vec<crate::config::ShellAlias>| {
+        entries.sort_by(|a, b| a.name.cmp(&b.name));
+        entries
+    };
+    // `PATH` is the one name with no block to fold: the composed `PATH` line
+    // assembles it from every producer instead.
+    let mut winners = layered.merged.clone();
+    winners.retain(|ev| ev.name != "PATH");
+    assert_eq!(
+        by_name(folded),
+        by_name(winners),
+        "the blocks fold to a different env than the merge decided",
+    );
+    assert_eq!(
+        aliases_by_name(folded_aliases),
+        aliases_by_name(layered.merged_aliases.clone()),
+        "the blocks fold to a different alias set than the merge decided",
+    );
+}
+
 // --- merge_module_env_aliases tests ---
 
 #[test]
@@ -15964,6 +17568,8 @@ fn merge_module_env_aliases_combines_profile_and_modules() {
         platforms: vec![],
     }];
     let modules = vec![ResolvedModule {
+        held_managers: Vec::new(),
+        floor_bootstraps: Vec::new(),
         dep_pulled: false,
         name: "test".to_string(),
         packages: vec![],
@@ -16015,6 +17621,8 @@ fn merge_module_env_aliases_module_overrides_profile() {
         platforms: vec![],
     }];
     let modules = vec![ResolvedModule {
+        held_managers: Vec::new(),
+        floor_bootstraps: Vec::new(),
         dep_pulled: false,
         name: "test".to_string(),
         packages: vec![],
@@ -16093,6 +17701,8 @@ fn apply_module_deploy_files_hardlink_strategy() {
     };
 
     let modules = vec![ResolvedModule {
+        held_managers: Vec::new(),
+        floor_bootstraps: Vec::new(),
         dep_pulled: false,
         name: "hardmod".to_string(),
         packages: vec![],
@@ -16200,6 +17810,8 @@ fn apply_module_deploy_files_copy_strategy() {
     };
 
     let modules = vec![ResolvedModule {
+        held_managers: Vec::new(),
+        floor_bootstraps: Vec::new(),
         dep_pulled: false,
         name: "copymod".to_string(),
         packages: vec![],
@@ -16309,6 +17921,8 @@ fn apply_module_deploy_files_applies_permissions() {
     };
 
     let modules = vec![ResolvedModule {
+        held_managers: Vec::new(),
+        floor_bootstraps: Vec::new(),
         dep_pulled: false,
         name: "permmod".to_string(),
         packages: vec![],
@@ -16408,6 +18022,8 @@ fn a_symlinked_module_files_declared_mode_lands_on_its_source() {
     };
 
     let modules = vec![ResolvedModule {
+        held_managers: Vec::new(),
+        floor_bootstraps: Vec::new(),
         dep_pulled: false,
         name: "linkmod".to_string(),
         packages: vec![],
@@ -16507,6 +18123,8 @@ fn apply_module_deploy_files_directory_copy_strategy() {
     };
 
     let modules = vec![ResolvedModule {
+        held_managers: Vec::new(),
+        floor_bootstraps: Vec::new(),
         dep_pulled: false,
         name: "dirmod".to_string(),
         packages: vec![],
@@ -16609,6 +18227,8 @@ fn apply_module_deploy_files_overwrites_existing_file() {
     };
 
     let modules = vec![ResolvedModule {
+        held_managers: Vec::new(),
+        floor_bootstraps: Vec::new(),
         dep_pulled: false,
         name: "overmod".to_string(),
         packages: vec![],
@@ -16699,6 +18319,8 @@ fn apply_module_on_change_script_runs_when_module_has_changes() {
     };
 
     let modules = vec![ResolvedModule {
+        held_managers: Vec::new(),
+        floor_bootstraps: Vec::new(),
         dep_pulled: false,
         name: "changemod".to_string(),
         packages: vec![],
@@ -16762,6 +18384,8 @@ fn apply_module_on_change_script_does_not_run_when_no_changes() {
     };
 
     let modules = vec![ResolvedModule {
+        held_managers: Vec::new(),
+        floor_bootstraps: Vec::new(),
         dep_pulled: false,
         name: "nochangemod".to_string(),
         packages: vec![],
@@ -17135,7 +18759,7 @@ fn verify_system_configurator_reports_drift() {
         layers: vec![crate::config::ProfileLayer {
             source: "local".to_string(),
             profile_name: "default".to_string(),
-            priority: 0,
+            priority: crate::config::LOCAL_LAYER_PRIORITY,
             policy: crate::config::LayerPolicy::Local,
             spec: Default::default(),
         }],
@@ -17232,7 +18856,7 @@ fn verify_system_configurator_reports_healthy_when_no_drift() {
         layers: vec![crate::config::ProfileLayer {
             source: "local".to_string(),
             profile_name: "default".to_string(),
-            priority: 0,
+            priority: crate::config::LOCAL_LAYER_PRIORITY,
             policy: crate::config::LayerPolicy::Local,
             spec: Default::default(),
         }],
@@ -17556,6 +19180,7 @@ fn format_plan_items_manager_provision() {
             manager: "brew".into(),
             via: "curl | bash".into(),
             declared: None,
+            floor: None,
             batched: vec![],
             depends_on: vec![],
         })],
@@ -18347,6 +19972,7 @@ fn provision_only_plan(manager: &str, via: &str) -> Plan {
                 manager: manager.to_string(),
                 via: via.to_string(),
                 declared: None,
+                floor: None,
                 batched: vec![],
                 depends_on: vec![],
             })],
@@ -18664,6 +20290,8 @@ fn brew_install_fixture() -> (Vec<ResolvedModule>, ModuleAction) {
         min_version: None,
     };
     let modules = vec![ResolvedModule {
+        held_managers: Vec::new(),
+        floor_bootstraps: Vec::new(),
         dep_pulled: false,
         name: "tools".to_string(),
         packages: vec![package.clone()],
@@ -19041,11 +20669,11 @@ fn plan_env_folds_in_a_to_be_provisioned_managers_declared_path_dirs() {
 
 #[test]
 fn env_targets_folded_path_dirs_render_into_the_fish_managed_file() {
-    // The same folded PATH-dir set `plan_env_folds_in_a_to_be_provisioned_managers_declared_path_dirs`
-    // pins through the bash `.cfgd.env` render — proven here through fish's
-    // dialect too, so a divergence in `generate_fish_env_content`'s PATH
-    // folding (a different join char, a missing per-entry quote) cannot hide
-    // behind bash-only coverage.
+    // The same folded PATH-dir set
+    // `plan_env_folds_in_a_to_be_provisioned_managers_declared_path_dirs` pins through the bash
+    // `.cfgd.env` render — proven here through fish's dialect too, so a divergence in
+    // `generate_fish_env_content`'s PATH folding (a different join char, a missing per-entry quote)
+    // cannot hide behind bash-only coverage.
     let home = Path::new("/h");
     let mut probe = env_probe("/bin/bash");
     probe.fish_present = true;
@@ -19054,7 +20682,10 @@ fn env_targets_folded_path_dirs_render_into_the_fish_managed_file() {
         .map(|d| ManagerPathDir::new("brew", *d))
         .collect();
     let t = env_targets(
-        EnvContent::new(&[], &[], &dirs, &Default::default()),
+        EnvContent::of(
+            &crate::reconciler::LayeredEnv::for_test(&[], &[], &Default::default()),
+            &dirs,
+        ),
         EnvScope::Interactive,
         home,
         &probe,
@@ -19087,7 +20718,10 @@ fn env_targets_folded_path_dirs_render_into_the_powershell_managed_file() {
         .map(|d| ManagerPathDir::new("brew", *d))
         .collect();
     let t = env_targets(
-        EnvContent::new(&[], &[], &dirs, &Default::default()),
+        EnvContent::of(
+            &crate::reconciler::LayeredEnv::for_test(&[], &[], &Default::default()),
+            &dirs,
+        ),
         EnvScope::Interactive,
         home,
         &env_probe(""),
@@ -19147,7 +20781,10 @@ fn every_managed_env_file_counts_its_own_lines() {
         },
     ];
     let counts: std::collections::HashMap<String, (usize, usize)> = env_targets(
-        EnvContent::new(&env, &aliases, &[], &Default::default()),
+        EnvContent::of(
+            &crate::reconciler::LayeredEnv::for_test(&env, &aliases, &Default::default()),
+            &[],
+        ),
         EnvScope::All,
         Path::new("/h"),
         &env_probe(""),
@@ -19331,6 +20968,8 @@ fn brew_and_npm_module_fixture() -> Vec<ResolvedModule> {
         min_version: None,
     };
     vec![ResolvedModule {
+        held_managers: Vec::new(),
+        floor_bootstraps: Vec::new(),
         dep_pulled: false,
         name: "tools".to_string(),
         packages: vec![brew_package, npm_package],
@@ -19733,6 +21372,8 @@ fn apply_module_install_packages_no_op_when_manager_not_in_registry() {
     let resolved = make_empty_resolved();
 
     let modules = vec![ResolvedModule {
+        held_managers: Vec::new(),
+        floor_bootstraps: Vec::new(),
         dep_pulled: false,
         name: "ghost".to_string(),
         packages: vec![ResolvedPackage {
@@ -19829,6 +21470,8 @@ fn apply_module_install_packages_script_manager_runs_per_package_script() {
     let resolved = make_empty_resolved();
 
     let modules = vec![ResolvedModule {
+        held_managers: Vec::new(),
+        floor_bootstraps: Vec::new(),
         dep_pulled: false,
         name: "scripted".to_string(),
         packages: vec![],
@@ -19919,6 +21562,8 @@ fn apply_module_install_packages_script_manager_failure_returns_err() {
 
     let dir = tempfile::tempdir().unwrap();
     let modules = vec![ResolvedModule {
+        held_managers: Vec::new(),
+        floor_bootstraps: Vec::new(),
         dep_pulled: false,
         name: "bad-script".to_string(),
         packages: vec![],
@@ -20003,6 +21648,8 @@ fn run_guarded_script_install(
     let resolved = make_empty_resolved();
 
     let modules = vec![ResolvedModule {
+        held_managers: Vec::new(),
+        floor_bootstraps: Vec::new(),
         dep_pulled: false,
         name: "guarded".to_string(),
         packages: vec![],
@@ -20191,6 +21838,8 @@ fn apply_module_on_change_script_runs_when_module_changed() {
     let resolved = make_empty_resolved();
 
     let module_actions = vec![ResolvedModule {
+        held_managers: Vec::new(),
+        floor_bootstraps: Vec::new(),
         dep_pulled: false,
         name: "mymod".to_string(),
         packages: vec![],
@@ -20275,6 +21924,8 @@ fn apply_module_on_change_script_does_not_run_when_module_unchanged() {
     let resolved = make_empty_resolved();
 
     let module_actions = vec![ResolvedModule {
+        held_managers: Vec::new(),
+        floor_bootstraps: Vec::new(),
         dep_pulled: false,
         name: "mymod".to_string(),
         packages: vec![],
@@ -20338,6 +21989,8 @@ fn apply_module_on_change_skip_scripts_flag_bypasses_module_on_change() {
     let resolved = make_empty_resolved();
 
     let module_actions = vec![ResolvedModule {
+        held_managers: Vec::new(),
+        floor_bootstraps: Vec::new(),
         dep_pulled: false,
         name: "skipmod".to_string(),
         packages: vec![],
@@ -20527,6 +22180,8 @@ fn plan_modules_sorts_bootstrappable_managers_after_native_ones() {
     let reconciler = Reconciler::new(&registry, &state);
 
     let module = ResolvedModule {
+        held_managers: Vec::new(),
+        floor_bootstraps: Vec::new(),
         dep_pulled: false,
         name: "multimgr".to_string(),
         packages: vec![
@@ -20629,6 +22284,8 @@ fn apply_module_with_git_source_file_serializes_into_module_state() {
     let resolved = make_empty_resolved();
 
     let module_actions = vec![ResolvedModule {
+        held_managers: Vec::new(),
+        floor_bootstraps: Vec::new(),
         dep_pulled: false,
         name: "gitmod".to_string(),
         packages: vec![],
@@ -20735,6 +22392,8 @@ fn apply_module_on_change_failure_continues_with_default_continue_on_error() {
 
     // ScriptEntry::Simple defaults continueOnError=true for OnChange phase
     let module_actions = vec![ResolvedModule {
+        held_managers: Vec::new(),
+        floor_bootstraps: Vec::new(),
         dep_pulled: false,
         name: "failmod".to_string(),
         packages: vec![],
@@ -20821,6 +22480,8 @@ fn apply_module_on_change_failure_aborts_when_continue_on_error_false() {
     let resolved = make_empty_resolved();
 
     let module_actions = vec![ResolvedModule {
+        held_managers: Vec::new(),
+        floor_bootstraps: Vec::new(),
         dep_pulled: false,
         name: "abortmod".to_string(),
         packages: vec![],
@@ -21073,6 +22734,7 @@ fn action_matches_phase_filter_table() {
         manager: "brew".to_string(),
         via: "curl".to_string(),
         declared: None,
+        floor: None,
         batched: vec![],
         depends_on: vec![],
     });
@@ -21313,6 +22975,8 @@ fn apply_post_scripts_filter_runs_module_post_scripts() {
     let resolved = make_empty_resolved();
 
     let module = crate::modules::ResolvedModule {
+        held_managers: Vec::new(),
+        floor_bootstraps: Vec::new(),
         dep_pulled: false,
         name: "nvim".to_string(),
         packages: vec![],
@@ -21412,6 +23076,8 @@ fn apply_pre_scripts_filter_runs_module_pre_scripts() {
     let resolved = make_empty_resolved();
 
     let module = crate::modules::ResolvedModule {
+        held_managers: Vec::new(),
+        floor_bootstraps: Vec::new(),
         dep_pulled: false,
         name: "nvim".to_string(),
         packages: vec![],
@@ -21508,6 +23174,8 @@ fn apply_modules_phase_filter_runs_all_module_actions() {
     let resolved = make_empty_resolved();
 
     let module = crate::modules::ResolvedModule {
+        held_managers: Vec::new(),
+        floor_bootstraps: Vec::new(),
         dep_pulled: false,
         name: "nvim".to_string(),
         packages: vec![],
@@ -21606,6 +23274,8 @@ fn apply_post_scripts_filter_skips_other_phases() {
     let resolved = make_empty_resolved();
 
     let module = crate::modules::ResolvedModule {
+        held_managers: Vec::new(),
+        floor_bootstraps: Vec::new(),
         dep_pulled: false,
         name: "nvim".to_string(),
         packages: vec![],
@@ -21745,7 +23415,10 @@ fn one_env() -> Vec<EnvVar> {
 fn env_targets_empty_yields_nothing() {
     let home = Path::new("/h");
     let t = env_targets(
-        EnvContent::new(&[], &[], &[], &Default::default()),
+        EnvContent::of(
+            &crate::reconciler::LayeredEnv::for_test(&[], &[], &Default::default()),
+            &[],
+        ),
         EnvScope::All,
         home,
         &env_probe("/bin/bash"),
@@ -21758,7 +23431,10 @@ fn env_targets_empty_yields_nothing() {
 fn env_targets_interactive_is_env_file_plus_interactive_rc() {
     let home = Path::new("/h");
     let t = env_targets(
-        EnvContent::new(&one_env(), &[], &[], &Default::default()),
+        EnvContent::of(
+            &crate::reconciler::LayeredEnv::for_test(&one_env(), &[], &Default::default()),
+            &[],
+        ),
         EnvScope::Interactive,
         home,
         &env_probe("/bin/bash"),
@@ -21771,7 +23447,10 @@ fn env_targets_interactive_is_env_file_plus_interactive_rc() {
 fn env_targets_interactive_zsh_uses_zshrc() {
     let home = Path::new("/h");
     let t = env_targets(
-        EnvContent::new(&one_env(), &[], &[], &Default::default()),
+        EnvContent::of(
+            &crate::reconciler::LayeredEnv::for_test(&one_env(), &[], &Default::default()),
+            &[],
+        ),
         EnvScope::Interactive,
         home,
         &env_probe("/usr/bin/zsh"),
@@ -21785,7 +23464,10 @@ fn env_targets_login_adds_zshenv_only_when_zsh_present() {
     let home = Path::new("/h");
     // zsh in use ⇒ ~/.zshenv is written into the login chain.
     let t = env_targets(
-        EnvContent::new(&one_env(), &[], &[], &Default::default()),
+        EnvContent::of(
+            &crate::reconciler::LayeredEnv::for_test(&one_env(), &[], &Default::default()),
+            &[],
+        ),
         EnvScope::Login,
         home,
         &env_probe("/bin/zsh"),
@@ -21804,7 +23486,10 @@ fn env_targets_login_adds_zshenv_only_when_zsh_present() {
 
     // bash-only host ⇒ no inert ~/.zshenv for a shell it never runs.
     let t = env_targets(
-        EnvContent::new(&one_env(), &[], &[], &Default::default()),
+        EnvContent::of(
+            &crate::reconciler::LayeredEnv::for_test(&one_env(), &[], &Default::default()),
+            &[],
+        ),
         EnvScope::Login,
         home,
         &env_probe("/bin/bash"),
@@ -21829,7 +23514,10 @@ fn env_targets_login_injects_existing_bash_profile() {
     let mut probe = env_probe("/bin/bash");
     probe.bash_profile_exists = true;
     let t = env_targets(
-        EnvContent::new(&one_env(), &[], &[], &Default::default()),
+        EnvContent::of(
+            &crate::reconciler::LayeredEnv::for_test(&one_env(), &[], &Default::default()),
+            &[],
+        ),
         EnvScope::Login,
         home,
         &probe,
@@ -21846,7 +23534,10 @@ fn env_targets_login_falls_back_to_bash_login_when_only_it_exists() {
     let mut probe = env_probe("/bin/bash");
     probe.bash_login_exists = true;
     let t = env_targets(
-        EnvContent::new(&one_env(), &[], &[], &Default::default()),
+        EnvContent::of(
+            &crate::reconciler::LayeredEnv::for_test(&one_env(), &[], &Default::default()),
+            &[],
+        ),
         EnvScope::Login,
         home,
         &probe,
@@ -21861,7 +23552,10 @@ fn env_targets_login_falls_back_to_bash_login_when_only_it_exists() {
 fn env_targets_all_linux_adds_environment_d_and_session() {
     let home = Path::new("/h");
     let t = env_targets(
-        EnvContent::new(&one_env(), &[], &[], &Default::default()),
+        EnvContent::of(
+            &crate::reconciler::LayeredEnv::for_test(&one_env(), &[], &Default::default()),
+            &[],
+        ),
         EnvScope::All,
         home,
         &env_probe("/bin/bash"),
@@ -21878,7 +23572,10 @@ fn env_targets_all_linux_adds_environment_d_and_session() {
 fn env_targets_all_macos_adds_launchagent_not_environment_d() {
     let home = Path::new("/h");
     let t = env_targets(
-        EnvContent::new(&one_env(), &[], &[], &Default::default()),
+        EnvContent::of(
+            &crate::reconciler::LayeredEnv::for_test(&one_env(), &[], &Default::default()),
+            &[],
+        ),
         EnvScope::All,
         home,
         &env_probe("/bin/zsh"),
@@ -21900,7 +23597,10 @@ fn env_targets_all_freebsd_omits_environment_d_and_launchagent() {
     // (inert clutter no consumer reads) nor a macOS LaunchAgent plist.
     let home = Path::new("/h");
     let t = env_targets(
-        EnvContent::new(&one_env(), &[], &[], &Default::default()),
+        EnvContent::of(
+            &crate::reconciler::LayeredEnv::for_test(&one_env(), &[], &Default::default()),
+            &[],
+        ),
         EnvScope::All,
         home,
         &env_probe("/bin/sh"),
@@ -21919,7 +23619,10 @@ fn env_targets_all_freebsd_omits_environment_d_and_launchagent() {
 fn env_targets_windows_is_ps_profiles_plus_session_on_all() {
     let home = Path::new("/h");
     let t = env_targets(
-        EnvContent::new(&one_env(), &[], &[], &Default::default()),
+        EnvContent::of(
+            &crate::reconciler::LayeredEnv::for_test(&one_env(), &[], &Default::default()),
+            &[],
+        ),
         EnvScope::All,
         home,
         &env_probe(""),
@@ -21943,14 +23646,20 @@ fn env_targets_match_what_verify_rederives() {
     let home = Path::new("/h");
     let probe = env_probe("/bin/bash");
     let a = env_targets(
-        EnvContent::new(&one_env(), &[], &[], &Default::default()),
+        EnvContent::of(
+            &crate::reconciler::LayeredEnv::for_test(&one_env(), &[], &Default::default()),
+            &[],
+        ),
         EnvScope::All,
         home,
         &probe,
         EnvPlatform::Linux,
     );
     let b = env_targets(
-        EnvContent::new(&one_env(), &[], &[], &Default::default()),
+        EnvContent::of(
+            &crate::reconciler::LayeredEnv::for_test(&one_env(), &[], &Default::default()),
+            &[],
+        ),
         EnvScope::All,
         home,
         &probe,
@@ -22088,11 +23797,8 @@ fn launchd_plist_xml_escapes_values() {
 fn plan_env_all_scope_emits_live_session_action() {
     let tmp = tempfile::tempdir().unwrap();
     let actions = Reconciler::plan_env_with_home(
-        &one_env(),
-        &[],
-        &Default::default(),
+        super::LayeredEnv::from_parts("profile:test", &one_env(), &[], &[]),
         EnvScope::All,
-        &[],
         &[],
         &[],
         &[],
@@ -22111,11 +23817,8 @@ fn plan_env_all_scope_emits_live_session_action() {
 fn plan_env_interactive_scope_has_no_live_session_action() {
     let tmp = tempfile::tempdir().unwrap();
     let actions = Reconciler::plan_env_with_home(
-        &one_env(),
-        &[],
-        &Default::default(),
+        super::LayeredEnv::from_parts("profile:test", &one_env(), &[], &[]),
         EnvScope::Interactive,
-        &[],
         &[],
         &[],
         &[],
@@ -22405,7 +24108,10 @@ fn env_targets_windows_with_git_bash_adds_unix_env_file_and_bashrc() {
         zsh_present: false,
     };
     let t = env_targets(
-        EnvContent::new(&one_env(), &[], &[], &Default::default()),
+        EnvContent::of(
+            &crate::reconciler::LayeredEnv::for_test(&one_env(), &[], &Default::default()),
+            &[],
+        ),
         EnvScope::All,
         home,
         &probe,
@@ -22436,7 +24142,10 @@ fn env_targets_fish_present_adds_managed_fish_file() {
         zsh_present: false,
     };
     let t = env_targets(
-        EnvContent::new(&one_env(), &[], &[], &Default::default()),
+        EnvContent::of(
+            &crate::reconciler::LayeredEnv::for_test(&one_env(), &[], &Default::default()),
+            &[],
+        ),
         EnvScope::Interactive,
         home,
         &probe,
@@ -22896,16 +24605,17 @@ fn plan_env_neutralizes_a_stale_managed_file_when_the_desired_env_empties() {
     // last generated file would otherwise keep exporting them forever.
     let home = tempfile::tempdir().unwrap();
     let env_file = home.path().join(".cfgd.env");
-    let neutral = "# managed by cfgd \u{2014} do not edit\n";
-    std::fs::write(&env_file, format!("{neutral}export FOO=\"bar\"\n")).unwrap();
+    let neutral = format!("{}\n", super::env_files::banner("#", false).join("\n"));
+    // What an OLDER cfgd wrote: one banner line, and the file it neutralised
+    // to was that line alone. Line 1 is the whole recognition test, so a
+    // machine upgraded across the banner change is still cfgd's to strip.
+    let legacy_banner = super::env_files::ENV_FILE_HEADER;
+    std::fs::write(&env_file, format!("{legacy_banner}\nexport FOO=\"bar\"\n")).unwrap();
     let managed = vec![crate::to_posix_string(&env_file)];
 
     let actions = Reconciler::plan_env_with_home(
-        &[],
-        &[],
-        &Default::default(),
+        super::LayeredEnv::from_parts("profile:test", &[], &[], &[]),
         EnvScope::Interactive,
-        &[],
         &[],
         &[],
         &managed,
@@ -22922,19 +24632,34 @@ fn plan_env_neutralizes_a_stale_managed_file_when_the_desired_env_empties() {
             aliases: 0,
         }) => {
             assert_eq!(path, &env_file);
-            assert_eq!(content, neutral);
+            assert_eq!(content, &neutral);
         }
         other => panic!("expected a managed-file rewrite, got {other:?}"),
     }
 
-    // Already neutral: nothing left to strip.
-    std::fs::write(&env_file, neutral).unwrap();
+    // The same file under the CURRENT banner: still stripped, and to the same
+    // bytes.
+    std::fs::write(&env_file, format!("{neutral}\nexport FOO=\"bar\"\n")).unwrap();
     let actions = Reconciler::plan_env_with_home(
-        &[],
-        &[],
-        &Default::default(),
+        super::LayeredEnv::from_parts("profile:test", &[], &[], &[]),
         EnvScope::Interactive,
         &[],
+        &[],
+        &managed,
+        home.path(),
+    )
+    .actions;
+    assert_eq!(actions.len(), 1, "{actions:?}");
+    match &actions[0] {
+        Action::Env(EnvAction::WriteEnvFile { content, .. }) => assert_eq!(content, &neutral),
+        other => panic!("expected a managed-file rewrite, got {other:?}"),
+    }
+
+    // Already neutral: nothing left to strip.
+    std::fs::write(&env_file, &neutral).unwrap();
+    let actions = Reconciler::plan_env_with_home(
+        super::LayeredEnv::from_parts("profile:test", &[], &[], &[]),
+        EnvScope::Interactive,
         &[],
         &[],
         &managed,
@@ -22946,11 +24671,8 @@ fn plan_env_neutralizes_a_stale_managed_file_when_the_desired_env_empties() {
     // A file cfgd's generator did not write is not cfgd's to strip.
     std::fs::write(&env_file, "export FOO=\"user-authored\"\n").unwrap();
     let actions = Reconciler::plan_env_with_home(
-        &[],
-        &[],
-        &Default::default(),
+        super::LayeredEnv::from_parts("profile:test", &[], &[], &[]),
         EnvScope::Interactive,
-        &[],
         &[],
         &[],
         &managed,
@@ -22972,11 +24694,8 @@ fn plan_env_leaves_a_generated_file_this_state_store_never_recorded() {
     std::fs::write(&env_file, body).unwrap();
 
     let actions = Reconciler::plan_env_with_home(
-        &[],
-        &[],
-        &Default::default(),
+        super::LayeredEnv::from_parts("profile:test", &[], &[], &[]),
         EnvScope::Interactive,
-        &[],
         &[],
         &[],
         &[],
@@ -23006,11 +24725,8 @@ fn reconciler_env_surfaces_resolve_against_the_home_it_was_built_with() {
 
     let actions = reconciler
         .plan_env(
-            &env,
-            &[],
-            &Default::default(),
+            super::LayeredEnv::from_parts("profile:test", &env, &[], &[]),
             EnvScope::Interactive,
-            &[],
             &[],
             &[],
             &[],
@@ -23763,6 +25479,7 @@ fn managers_group_is_built_at_rank_one() {
                 manager: "brew".to_string(),
                 via: "homebrew installer".to_string(),
                 declared: None,
+                floor: None,
                 batched: vec![],
                 depends_on: vec![],
             }),
@@ -23838,6 +25555,7 @@ fn apply_manager_provision_is_skipped_when_already_available() {
                 manager: "brew".to_string(),
                 via: "homebrew installer".to_string(),
                 declared: None,
+                floor: None,
                 batched: vec![],
                 depends_on: vec![],
             })],
@@ -23882,6 +25600,7 @@ fn a_package_action_for_a_manager_whose_provision_failed_is_never_spawned() {
                     manager: "brew".to_string(),
                     via: "stub".to_string(),
                     declared: None,
+                    floor: None,
                     batched: vec![],
                     depends_on: vec![],
                 })],
@@ -23938,6 +25657,7 @@ fn action_index_is_the_plan_position_not_the_dispatch_counter() {
                     manager: "brew".to_string(),
                     via: "homebrew installer".to_string(),
                     declared: None,
+                    floor: None,
                     batched: vec![],
                     depends_on: vec![],
                 })],
@@ -24409,7 +26129,9 @@ fn a_lane_worker_resolves_tilde_against_the_callers_test_home() {
         home.path(),
         std::fs::read_dir(home.path())
             .map(|entries| entries
-                .filter_map(|e| e.ok().map(|e| e.file_name()))
+                .map(|entry| entry
+                    .expect("the walk must read every directory entry")
+                    .file_name())
                 .collect::<Vec<_>>())
             .unwrap_or_default()
     );
@@ -24511,10 +26233,9 @@ fn a_dispatch_stall_fails_the_run_and_names_the_stuck_action() {
 fn a_lane_worker_blocks_behind_an_exclusively_held_path_lock() {
     // The write half of `PATH_ENV_LOCK` is taken here, on the TEST thread,
     // before `ConcurrentApply` ever spawns the worker that runs
-    // `dispatch_package_lanes` — so `path_env_exclusive_guard_held()`'s
-    // own-thread precondition check (evaluated on the worker thread) never
-    // trips, and the write guard is provably held for the worker's entire
-    // dispatch window. If the lane worker takes its own
+    // `dispatch_package_lanes` — so that worker holds no window to lend its
+    // lane workers, and the write guard is provably held by another thread for
+    // the worker's entire dispatch window. If the lane worker takes its own
     // `path_env_read_guard()` before running the action (the fix), it blocks
     // on `PATH_ENV_LOCK` for as long as this thread holds the write half, so
     // `install` cannot have recorded anything by the time `drive()` checks.
@@ -24530,6 +26251,7 @@ fn a_lane_worker_blocks_behind_an_exclusively_held_path_lock() {
     let outcome = ConcurrentApply::new(registry, plan)
         .with_modules(modules)
         .run(move || {
+            // long-line-ok: a hatch is read off its own line, so it cannot wrap
             // sleep-ok: correctness here comes from the still-held write guard, not the duration — this only gives a correctly-guarded worker room to reach and block on it
             std::thread::sleep(std::time::Duration::from_millis(150));
             assert!(
@@ -24546,6 +26268,38 @@ fn a_lane_worker_blocks_behind_an_exclusively_held_path_lock() {
         dispatch_log(&log),
         vec!["install:brew:alpha-pkg".to_string()],
         "the action must still run to completion once the lock is released"
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn a_caller_holding_the_path_window_lends_it_to_its_lane_workers() {
+    // The caller parks on its lane workers while it holds the write half, so a
+    // worker waiting on that lock for its own read guard waits until the gate's
+    // own bound. The timeout reports that deadlock as this test's failure. The
+    // gate's own wait bound then panics the stuck worker, the holder thread
+    // below ends and drops its guard, and the rest of a full run gets the lock
+    // back.
+    let log = new_dispatch_log();
+    let registry = lane_registry(vec![DispatchLogManager::new("brew", &log, true)]);
+    let plan = packages_phase(vec![module_install_action("alpha", "brew", "alpha-pkg")]);
+    let modules = vec![module_for("alpha", "brew", "alpha-pkg")];
+    let state = test_state();
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _excl = crate::test_helpers::path_env_mutation_guard();
+        let reconciler = Reconciler::new(&registry, &state);
+        let _ = tx.send(run_apply(&reconciler, &plan, &modules, None).status);
+    });
+    let status = rx
+        .recv_timeout(std::time::Duration::from_secs(30))
+        .expect("a lane worker waited on the window its own caller holds");
+
+    assert_eq!(status, ApplyStatus::Success);
+    assert_eq!(
+        dispatch_log(&log),
+        vec!["install:brew:alpha-pkg".to_string()]
     );
 }
 
@@ -25319,6 +27073,7 @@ fn retain_actions_drops_the_groups_it_empties() {
                 manager: "brew".to_string(),
                 via: "homebrew installer".to_string(),
                 declared: None,
+                floor: None,
                 batched: vec![],
                 depends_on: vec![],
             }),
@@ -25450,6 +27205,7 @@ fn retain_groups_keeps_the_surviving_owners_in_sort_key_order() {
                 manager: "brew".to_string(),
                 via: "homebrew installer".to_string(),
                 declared: None,
+                floor: None,
                 batched: vec![],
                 depends_on: vec![],
             }),
@@ -25554,9 +27310,845 @@ fn to_hash_string_is_stable_across_group_permutation() {
     );
 
     assert_eq!(
-        plan.to_hash_string(),
-        permuted.to_hash_string(),
+        plan.to_hash_string().expect("the plan hashes"),
+        permuted.to_hash_string().expect("the permuted plan hashes"),
         "the hash identifies the SET of planned actions, not the walk order"
+    );
+}
+
+/// The serde names `E` accepts for its variants, read off its own
+/// deserializer's refusal of a name it does not know. Serde spells the whole
+/// accepted list in that refusal, so the population comes from the type and
+/// never from a list written beside it.
+fn serde_variant_names<E: serde::de::DeserializeOwned + std::fmt::Debug>() -> BTreeSet<String> {
+    let refusal = serde_json::from_value::<E>(serde_json::json!("__no_such_variant__"))
+        .expect_err("no variant is spelled `__no_such_variant__`")
+        .to_string();
+    let (_, accepted) = refusal.split_once("expected").unwrap_or_else(|| {
+        panic!("an unknown-variant refusal lists the accepted names: {refusal}")
+    });
+    let names: BTreeSet<String> = accepted
+        .split('`')
+        .skip(1)
+        .step_by(2)
+        .map(str::to_string)
+        .collect();
+    assert!(!names.is_empty(), "no variant name read off: {refusal}");
+    names
+}
+
+/// Every variant of a fieldless enum, each built by deserializing one of the
+/// names [`serde_variant_names`] reads off the type.
+fn every_unit_variant<E: serde::de::DeserializeOwned + std::fmt::Debug>() -> Vec<E> {
+    serde_variant_names::<E>()
+        .into_iter()
+        .map(|name| {
+            serde_json::from_value(serde_json::json!(name))
+                .unwrap_or_else(|e| panic!("`{name}` reads back as a variant: {e}"))
+        })
+        .collect()
+}
+
+/// The serde variant name of every enum a plan file carries, recorded per enum
+/// by one exhaustive match each: a variant added to any of them fails to
+/// COMPILE until its arm names it here.
+#[derive(Default)]
+struct PlanVariantsSeen(BTreeMap<&'static str, BTreeSet<String>>);
+
+impl PlanVariantsSeen {
+    fn saw(&mut self, owner: &'static str, variant: &str) {
+        self.0.entry(owner).or_default().insert(variant.to_string());
+    }
+
+    fn strategy(&mut self, strategy: &FileStrategy) {
+        let name = match strategy {
+            FileStrategy::Symlink => "Symlink",
+            FileStrategy::Copy => "Copy",
+            FileStrategy::Template => "Template",
+            FileStrategy::Hardlink => "Hardlink",
+            FileStrategy::Patch => "Patch",
+        };
+        self.saw("FileStrategy", name);
+    }
+
+    fn patch(&mut self, patch: &PatchSpec) {
+        if let Some(format) = &patch.format {
+            let name = match format {
+                PatchFormat::Ini => "Ini",
+                PatchFormat::Json => "Json",
+                PatchFormat::Yaml => "Yaml",
+                PatchFormat::Toml => "Toml",
+            };
+            self.saw("PatchFormat", name);
+        }
+    }
+
+    fn content(&mut self, strategy: &FileStrategy, patch: Option<&PatchSpec>) {
+        self.strategy(strategy);
+        if let Some(patch) = patch {
+            self.patch(patch);
+        }
+    }
+
+    fn phase(&mut self, phase: &ScriptPhase) {
+        let name = match phase {
+            ScriptPhase::PreApply => "PreApply",
+            ScriptPhase::PostApply => "PostApply",
+            ScriptPhase::PreReconcile => "PreReconcile",
+            ScriptPhase::PostReconcile => "PostReconcile",
+            ScriptPhase::OnDrift => "OnDrift",
+            ScriptPhase::OnChange => "OnChange",
+            ScriptPhase::Patch => "Patch",
+            ScriptPhase::PreBackup => "PreBackup",
+            ScriptPhase::PostBackup => "PostBackup",
+        };
+        self.saw("ScriptPhase", name);
+    }
+
+    fn entry(&mut self, entry: &ScriptEntry) {
+        match entry {
+            ScriptEntry::Simple(_) => self.saw("ScriptEntry", "Simple"),
+            ScriptEntry::Full(command) => {
+                self.saw("ScriptEntry", "Full");
+                let name = match command.shell {
+                    ScriptShell::Auto => "auto",
+                    ScriptShell::Sh => "sh",
+                    ScriptShell::Bash => "bash",
+                    ScriptShell::Zsh => "zsh",
+                    ScriptShell::Pwsh => "pwsh",
+                    ScriptShell::Cmd => "cmd",
+                };
+                self.saw("ScriptShell", name);
+            }
+        }
+    }
+
+    fn resolved_file(&mut self, file: &ResolvedFile) {
+        if let Some(strategy) = &file.strategy {
+            self.strategy(strategy);
+        }
+        if let Some(patch) = &file.patch {
+            self.patch(patch);
+        }
+        if let Some(encryption) = &file.encryption {
+            let name = match encryption.mode {
+                EncryptionMode::InRepo => "InRepo",
+                EncryptionMode::Always => "Always",
+            };
+            self.saw("EncryptionMode", name);
+        }
+    }
+
+    fn action(&mut self, action: &Action) {
+        match action {
+            Action::File(file) => {
+                self.saw("Action", "File");
+                let name = match file {
+                    FileAction::Create {
+                        strategy, patch, ..
+                    } => {
+                        self.content(strategy, patch.as_ref());
+                        "Create"
+                    }
+                    FileAction::Update {
+                        strategy, patch, ..
+                    } => {
+                        self.content(strategy, patch.as_ref());
+                        "Update"
+                    }
+                    FileAction::Delete { .. } => "Delete",
+                    FileAction::SetPermissions { .. } => "SetPermissions",
+                    FileAction::Skip { .. } => "Skip",
+                };
+                self.saw("FileAction", name);
+            }
+            Action::Package(package) => {
+                self.saw("Action", "Package");
+                let name = match package {
+                    PackageAction::Install { .. } => "Install",
+                    PackageAction::Uninstall { .. } => "Uninstall",
+                    PackageAction::Skip { .. } => "Skip",
+                };
+                self.saw("PackageAction", name);
+            }
+            Action::Secret(secret) => {
+                self.saw("Action", "Secret");
+                let name = match secret {
+                    SecretAction::Decrypt { .. } => "Decrypt",
+                    SecretAction::Resolve { .. } => "Resolve",
+                    SecretAction::ResolveEnv { .. } => "ResolveEnv",
+                    SecretAction::Skip { .. } => "Skip",
+                };
+                self.saw("SecretAction", name);
+            }
+            Action::System(system) => {
+                self.saw("Action", "System");
+                let name = match system {
+                    SystemAction::SetValue { .. } => "SetValue",
+                    SystemAction::Skip { .. } => "Skip",
+                    SystemAction::ConfigureAfterInstall { .. } => "ConfigureAfterInstall",
+                };
+                self.saw("SystemAction", name);
+            }
+            Action::Script(ScriptAction::Run { entry, phase, .. }) => {
+                self.saw("Action", "Script");
+                self.saw("ScriptAction", "Run");
+                self.entry(entry);
+                self.phase(phase);
+            }
+            Action::Module(module) => {
+                self.saw("Action", "Module");
+                let name = match &module.kind {
+                    ModuleActionKind::InstallPackages { .. } => "InstallPackages",
+                    ModuleActionKind::DeployFiles { files, .. } => {
+                        for file in files {
+                            self.resolved_file(file);
+                        }
+                        "DeployFiles"
+                    }
+                    ModuleActionKind::RunScript { script, phase } => {
+                        self.entry(script);
+                        self.phase(phase);
+                        "RunScript"
+                    }
+                    ModuleActionKind::Skip { .. } => "Skip",
+                    ModuleActionKind::FilesRefused { .. } => "FilesRefused",
+                };
+                self.saw("ModuleActionKind", name);
+            }
+            Action::Env(env) => {
+                self.saw("Action", "Env");
+                let name = match env {
+                    EnvAction::WriteEnvFile { .. } => "WriteEnvFile",
+                    EnvAction::InjectSourceLine { .. } => "InjectSourceLine",
+                    EnvAction::RefreshLiveSession { .. } => "RefreshLiveSession",
+                };
+                self.saw("EnvAction", name);
+            }
+            Action::Manager(manager) => {
+                self.saw("Action", "Manager");
+                let name = match manager {
+                    ManagerAction::RefreshIndex { .. } => "refreshIndex",
+                    ManagerAction::Provision { .. } => "provision",
+                    ManagerAction::Prerequisite { .. } => "prerequisite",
+                    ManagerAction::Refuse { .. } => "refuse",
+                    ManagerAction::HeldFloor { .. } => "heldFloor",
+                };
+                self.saw("ManagerAction", name);
+            }
+        }
+    }
+}
+
+/// One action of every variant a plan file can carry, and one of every value
+/// enum those reach, each path spelled by `path` from its POSIX literal.
+fn every_action_variant_sample(path: impl Fn(&str) -> std::path::PathBuf) -> Vec<Action> {
+    let patch = |format: PatchFormat| PatchSpec {
+        format: Some(format),
+        ensure: None,
+        script: None,
+        blocked_by: None,
+    };
+    let resolved_file = |target: &str| ResolvedFile {
+        source: path("/cfg/files/m"),
+        target: path(target),
+        is_git_source: false,
+        strategy: None,
+        encryption: None,
+        permissions: None,
+        patch: None,
+    };
+    let mut files: Vec<ResolvedFile> = vec![resolved_file("/home/u/plain")];
+    files.extend(
+        every_unit_variant::<FileStrategy>()
+            .into_iter()
+            .map(|strategy| ResolvedFile {
+                strategy: Some(strategy),
+                ..resolved_file("/home/u/strategy")
+            }),
+    );
+    files.extend(
+        every_unit_variant::<PatchFormat>()
+            .into_iter()
+            .map(|format| ResolvedFile {
+                patch: Some(patch(format)),
+                ..resolved_file("/home/u/patch")
+            }),
+    );
+    files.extend(
+        every_unit_variant::<EncryptionMode>()
+            .into_iter()
+            .map(|mode| ResolvedFile {
+                encryption: Some(EncryptionSpec {
+                    backend: "sops".into(),
+                    mode,
+                }),
+                ..resolved_file("/home/u/secret")
+            }),
+    );
+
+    let mut actions = vec![
+        Action::File(FileAction::Create {
+            source: path("/cfg/files/a"),
+            target: path("/home/u/a"),
+            origin: String::new(),
+            strategy: FileStrategy::Copy,
+            source_hash: None,
+            patch: Some(patch(PatchFormat::Ini)),
+        }),
+        Action::File(FileAction::Update {
+            source: path("/cfg/files/a"),
+            target: path("/home/u/a"),
+            diff: "-a\n+b\n".into(),
+            origin: String::new(),
+            strategy: FileStrategy::Symlink,
+            source_hash: None,
+            patch: None,
+        }),
+        Action::File(FileAction::Delete {
+            target: path("/home/u/a"),
+            origin: String::new(),
+        }),
+        Action::File(FileAction::SetPermissions {
+            target: path("/home/u/a"),
+            mode: 0o600,
+            origin: String::new(),
+            chmod_path: None,
+        }),
+        Action::File(FileAction::Skip {
+            target: path("/home/u/a"),
+            reason: "r".into(),
+            origin: String::new(),
+        }),
+        Action::Package(PackageAction::Install {
+            manager: "brew".into(),
+            packages: vec!["jq".into()],
+            origin: String::new(),
+        }),
+        Action::Package(PackageAction::Uninstall {
+            manager: "brew".into(),
+            packages: vec!["jq".into()],
+            origin: String::new(),
+        }),
+        Action::Package(PackageAction::Skip {
+            manager: "brew".into(),
+            reason: "r".into(),
+            origin: String::new(),
+        }),
+        Action::Secret(SecretAction::Decrypt {
+            source: path("/cfg/secrets/s"),
+            target: path("/home/u/s"),
+            backend: "sops".into(),
+            origin: String::new(),
+        }),
+        Action::Secret(SecretAction::Resolve {
+            provider: "op".into(),
+            reference: "op://v/i".into(),
+            target: path("/home/u/s"),
+            template: None,
+            origin: String::new(),
+        }),
+        Action::Secret(SecretAction::ResolveEnv {
+            provider: "op".into(),
+            reference: "op://v/i".into(),
+            envs: vec!["TOKEN".into()],
+            template: None,
+            origin: String::new(),
+        }),
+        Action::Secret(SecretAction::Skip {
+            source: "s".into(),
+            reason: "r".into(),
+            origin: String::new(),
+        }),
+        Action::System(SystemAction::SetValue {
+            configurator: "sysctl".into(),
+            key: "vm.swappiness".into(),
+            desired: "10".into(),
+            current: "60".into(),
+            origin: String::new(),
+        }),
+        Action::System(SystemAction::Skip {
+            configurator: "sysctl".into(),
+            reason: "r".into(),
+            origin: String::new(),
+            unknown: false,
+        }),
+        Action::System(SystemAction::ConfigureAfterInstall {
+            configurator: "gsettings".into(),
+            tool: "gsettings".into(),
+            origin: String::new(),
+            prerequisite_withheld: false,
+        }),
+        Action::Module(ModuleAction {
+            module_name: "nvim".into(),
+            kind: ModuleActionKind::InstallPackages {
+                resolved: vec![ResolvedPackage {
+                    canonical_name: "neovim".into(),
+                    resolved_name: "neovim".into(),
+                    manager: "brew".into(),
+                    version: None,
+                    script: None,
+                    creates: None,
+                    only_if: None,
+                    unless: None,
+                    manager_declared: false,
+                    min_version: None,
+                }],
+            },
+            origin: None,
+        }),
+        Action::Module(ModuleAction {
+            module_name: "nvim".into(),
+            kind: ModuleActionKind::DeployFiles {
+                declared_total: files.len(),
+                files,
+            },
+            origin: None,
+        }),
+        Action::Module(ModuleAction {
+            module_name: "nvim".into(),
+            kind: ModuleActionKind::Skip {
+                reason: "platform".into(),
+            },
+            origin: None,
+        }),
+        Action::Module(ModuleAction {
+            module_name: "nvim".into(),
+            kind: ModuleActionKind::FilesRefused {
+                reason: "unencrypted".into(),
+            },
+            origin: None,
+        }),
+        Action::Env(EnvAction::WriteEnvFile {
+            path: path("/home/u/.cfgd.env"),
+            content: "export A=1\n".into(),
+            vars: 0,
+            aliases: 0,
+        }),
+        Action::Env(EnvAction::InjectSourceLine {
+            rc_path: path("/home/u/.zshrc"),
+            line: "source ~/.cfgd.env".into(),
+        }),
+        Action::Env(EnvAction::RefreshLiveSession {
+            vars: vec![("A".into(), "1".into())],
+        }),
+        Action::Manager(ManagerAction::RefreshIndex {
+            manager: "brew".into(),
+        }),
+        Action::Manager(ManagerAction::Provision {
+            manager: "brew".into(),
+            via: "homebrew installer".into(),
+            declared: None,
+            floor: None,
+            batched: Vec::new(),
+            depends_on: Vec::new(),
+        }),
+        Action::Manager(ManagerAction::Prerequisite {
+            tool: "curl".into(),
+            package: "curl".into(),
+            installer: "apt".into(),
+            required_by: vec!["brew".into()],
+            depends_on: Vec::new(),
+        }),
+        Action::Manager(ManagerAction::Refuse {
+            manager: "nix".into(),
+            reason: "r".into(),
+        }),
+        Action::Manager(ManagerAction::HeldFloor {
+            manager: "cargo".into(),
+            floor: "1.85".into(),
+            declared: Vec::new(),
+        }),
+    ];
+    actions.extend(
+        every_unit_variant::<ScriptPhase>()
+            .into_iter()
+            .map(|phase| {
+                Action::Script(ScriptAction::Run {
+                    entry: ScriptEntry::Simple("echo hi".into()),
+                    phase,
+                    origin: String::new(),
+                })
+            }),
+    );
+    actions.extend(
+        every_unit_variant::<ScriptShell>()
+            .into_iter()
+            .map(|shell| {
+                Action::Module(ModuleAction {
+                    module_name: "nvim".into(),
+                    kind: ModuleActionKind::RunScript {
+                        script: ScriptEntry::Full(ScriptCommand {
+                            run: "echo hi".into(),
+                            shell,
+                            ..Default::default()
+                        }),
+                        phase: ScriptPhase::PreApply,
+                    },
+                    origin: None,
+                })
+            }),
+    );
+    actions
+}
+
+/// Every variant of every enum a plan file carries survives the plan-file
+/// round trip: `Action`, each action enum under it (`FileAction`,
+/// `PackageAction`, `SecretAction`, `SystemAction`, `ScriptAction`,
+/// `ModuleActionKind`, `EnvAction`, `ManagerAction`), and the value enums
+/// those carry (`FileStrategy`, `PatchFormat`, `EncryptionMode`, `ScriptEntry`,
+/// `ScriptShell`, `ScriptPhase`).
+///
+/// [`PlanVariantsSeen`] names each sampled variant through one exhaustive
+/// match per enum, and the names it saw must equal the ones serde accepts for
+/// that enum, read off the type itself. A new variant fails to compile until
+/// it is named, and fails here until it is sampled. `ScriptEntry` is untagged,
+/// so serde lists no names for it; its count comes off its published schema.
+///
+/// Optional fields are left empty except where one carries a nested enum, and
+/// each of those also appears empty in a sibling sample: an empty field is the
+/// case a `skip_serializing_if` with no `#[serde(default)]` fails on, since the
+/// key is absent from the wire entirely.
+#[test]
+fn every_action_variant_survives_the_plan_file_round_trip() {
+    let actions = every_action_variant_sample(|p| std::path::PathBuf::from(p));
+
+    let mut seen = PlanVariantsSeen::default();
+    for action in &actions {
+        seen.action(action);
+    }
+    let accepted: BTreeMap<&str, BTreeSet<String>> = BTreeMap::from([
+        ("Action", serde_variant_names::<Action>()),
+        ("FileAction", serde_variant_names::<FileAction>()),
+        ("PackageAction", serde_variant_names::<PackageAction>()),
+        ("SecretAction", serde_variant_names::<SecretAction>()),
+        ("SystemAction", serde_variant_names::<SystemAction>()),
+        ("ScriptAction", serde_variant_names::<ScriptAction>()),
+        (
+            "ModuleActionKind",
+            serde_variant_names::<ModuleActionKind>(),
+        ),
+        ("EnvAction", serde_variant_names::<EnvAction>()),
+        ("ManagerAction", serde_variant_names::<ManagerAction>()),
+        ("FileStrategy", serde_variant_names::<FileStrategy>()),
+        ("PatchFormat", serde_variant_names::<PatchFormat>()),
+        ("EncryptionMode", serde_variant_names::<EncryptionMode>()),
+        ("ScriptShell", serde_variant_names::<ScriptShell>()),
+        ("ScriptPhase", serde_variant_names::<ScriptPhase>()),
+    ]);
+    let mut seen = seen.0;
+    let entries = seen
+        .remove("ScriptEntry")
+        .expect("a script entry was sampled");
+    let entry_shapes = serde_json::to_value(schemars::schema_for!(ScriptEntry))
+        .expect("the ScriptEntry schema serializes")["anyOf"]
+        .as_array()
+        .map(Vec::len)
+        .expect("an untagged enum publishes one schema per variant");
+    assert_eq!(
+        entries.len(),
+        entry_shapes,
+        "every ScriptEntry shape is sampled: saw {entries:?}"
+    );
+    assert_eq!(
+        seen.keys().copied().collect::<BTreeSet<_>>(),
+        accepted.keys().copied().collect::<BTreeSet<_>>(),
+        "every enum the samples reach is judged against its serde names"
+    );
+    for (owner, names) in &accepted {
+        assert_eq!(
+            &seen[owner], names,
+            "every {owner} variant serde accepts is sampled, and the match names each as serde \
+             spells it"
+        );
+    }
+
+    let plan = Plan {
+        phases: vec![Phase::from_actions(
+            PhaseName::Files,
+            &Owner::profile("work"),
+            actions,
+        )],
+        warnings: Vec::new(),
+    };
+    let wire = serde_json::to_string(&plan).expect("a plan serializes");
+    let back: Plan = serde_json::from_str(&wire).expect("a plan file reads back");
+    assert_eq!(
+        back.to_hash_string().expect("the plan read back hashes"),
+        plan.to_hash_string().expect("the plan hashes"),
+        "the round trip must land the same actions, byte for byte: {wire}"
+    );
+    assert_eq!(
+        serde_json::to_string(&back).expect("the plan read back serializes"),
+        wire,
+        "the whole plan returns as the same bytes, phases and owner groups included",
+    );
+}
+
+/// Every path a plan file carries is written with `/`, the separator every
+/// other serialized path in cfgd uses, so a Windows plan file never spells a
+/// path `C:\Users\…` beside `configInputs` rows reading `C:/Users/…`. The
+/// sample's paths are spelled with this host's separator, the way a planner
+/// joins them, so a path field that serializes natively fails here on Windows.
+/// On POSIX nothing is folded: a backslash is an ordinary filename character
+/// there, and a replay reopens the path it reads.
+#[test]
+fn every_path_a_plan_file_carries_is_written_with_forward_slashes() {
+    let native = |p: &str| std::path::PathBuf::from(p.replace('/', std::path::MAIN_SEPARATOR_STR));
+    let mut actions = every_action_variant_sample(native);
+    actions.push(Action::File(FileAction::SetPermissions {
+        target: native("/home/u/link"),
+        mode: 0o600,
+        origin: String::new(),
+        chmod_path: Some(native("/cfg/files/link-source")),
+    }));
+    fn strings<'a>(value: &'a serde_json::Value, out: &mut Vec<&'a str>) {
+        match value {
+            serde_json::Value::String(s) => out.push(s),
+            serde_json::Value::Array(items) => items.iter().for_each(|v| strings(v, out)),
+            serde_json::Value::Object(map) => map.values().for_each(|v| strings(v, out)),
+            _ => {}
+        }
+    }
+    let wire = serde_json::to_value(&actions).expect("a plan's actions serialize");
+    let mut seen = Vec::new();
+    strings(&wire, &mut seen);
+    let native_spelled: Vec<&str> = seen.iter().copied().filter(|s| s.contains('\\')).collect();
+    assert!(
+        native_spelled.is_empty(),
+        "a plan file writes every path with `/`: {native_spelled:?}"
+    );
+    let paths: Vec<&str> = seen
+        .iter()
+        .copied()
+        .filter(|s| s.starts_with("/cfg/") || s.starts_with("/home/"))
+        .collect();
+    assert!(
+        paths.len() >= 20 && paths.contains(&"/cfg/files/link-source"),
+        "the sample must reach every path field, the optional one included: {paths:?}"
+    );
+
+    #[cfg(not(windows))]
+    {
+        let odd = Action::File(FileAction::Delete {
+            target: std::path::PathBuf::from("/home/u/od\\d.conf"),
+            origin: String::new(),
+        });
+        assert_eq!(
+            serde_json::to_value(&odd).expect("the action serializes")["File"]["Delete"]["target"],
+            "/home/u/od\\d.conf",
+            "on POSIX a backslash is part of the filename and is written as it stands"
+        );
+    }
+}
+
+/// A plan file's phase reads back as one `Phase::from_actions` could have built.
+///
+/// That constructor is the only other way a phase comes into being, and it
+/// settles three facts every tree, preview and report then renders without
+/// checking: one group per owner, no empty group, owners in [`Owner::sort_key`]
+/// order. A file is an input like any other, so the fixture below breaks all
+/// three and the reader answers with the phase the planner would have built.
+#[test]
+fn a_plan_file_whose_groups_arrived_out_of_order_reads_back_in_display_order() {
+    let profile = Owner::profile("work");
+    let skip = |name: &str| {
+        Action::File(FileAction::Skip {
+            target: std::path::PathBuf::from(name),
+            origin: String::new(),
+            reason: "r".into(),
+        })
+    };
+    let ordered = Plan {
+        phases: vec![Phase::from_actions(
+            PhaseName::Files,
+            &profile,
+            vec![
+                skip("/home/u/a"),
+                skip("/home/u/b"),
+                Action::Manager(ManagerAction::RefreshIndex {
+                    manager: "brew".into(),
+                }),
+            ],
+        )],
+        warnings: Vec::new(),
+    };
+    let owners = |plan: &Plan| -> Vec<String> {
+        plan.phases[0]
+            .groups()
+            .iter()
+            .map(|g| g.owner.token())
+            .collect()
+    };
+
+    let mut wire: serde_json::Value = serde_json::to_value(&ordered).expect("a plan serializes");
+    let groups = wire["phases"][0]["groups"]
+        .as_array_mut()
+        .expect("a phase carries its groups");
+    assert_eq!(
+        owners(&ordered),
+        vec!["profile:work", "cfgd:managers"],
+        "the fixture leads on the profile group, which the wire below puts last"
+    );
+    // One owner's actions split across two groups, an owner carrying nothing at
+    // all, and the profile group behind the one it outranks: the three shapes a
+    // file can hold that no planner ever writes.
+    let mut leading_half = groups[0].clone();
+    let trailing = leading_half["actions"]
+        .as_array_mut()
+        .expect("the profile group carries its actions")
+        .split_off(1);
+    assert!(
+        !trailing.is_empty(),
+        "the split must leave actions on both halves, or the merge is not exercised"
+    );
+    *groups = vec![
+        groups[1].clone(),
+        serde_json::json!({ "owner": { "kind": "module", "name": "ghost" }, "actions": [] }),
+        serde_json::json!({ "owner": leading_half["owner"], "actions": trailing }),
+        leading_half,
+    ];
+
+    let back: Plan = serde_json::from_value(wire).expect("a plan file reads back");
+    assert_eq!(
+        owners(&back),
+        owners(&ordered),
+        "a shuffled file reads back as the phase the planner would have built",
+    );
+    assert_eq!(
+        back.to_hash_string().expect("the plan read back hashes"),
+        ordered.to_hash_string().expect("the ordered plan hashes"),
+        "and it carries every action the file did, each exactly once",
+    );
+}
+
+/// A plan file may not file an action under an owner that action does not name.
+///
+/// `owner_of` answers from the ACTION alone for a module, an env surface and a
+/// manager node, and from the planning profile for everything else. A file
+/// stating an owner the action itself contradicts is one no planner wrote, and
+/// the two consumers that partition a phase on `Owner::is_managers`
+/// (`apply::dispatched_in_lanes`, `daemon::reconcile::narrow_to_module`) would
+/// dispatch and filter it unlike every other copy of that action.
+#[test]
+fn a_plan_file_filing_an_action_under_the_wrong_owner_is_refused() {
+    let misfiled = serde_json::json!({
+        "phases": [{
+            "name": "Bootstrap",
+            "groups": [{
+                "owner": { "kind": "module", "name": "nvim" },
+                "actions": [{ "Manager": { "refreshIndex": { "manager": "brew" } } }],
+            }],
+        }],
+        "warnings": [],
+    });
+    let refusal = serde_json::from_value::<Plan>(misfiled)
+        .expect_err("a misfiled manager node is refused")
+        .to_string();
+    assert!(
+        refusal.contains("`module:nvim`") && refusal.contains("`cfgd:managers`"),
+        "the refusal names the group the file wrote and the one the action belongs to: {refusal}"
+    );
+    assert!(
+        refusal.contains("manager") && refusal.contains("brew"),
+        "and it names the action, so a reader can find it in the file: {refusal}"
+    );
+}
+
+/// An action whose owner is the planning profile is filed where the file says.
+///
+/// Nothing in a phase says which profile planned it, so `owner_of`'s profile
+/// arm has no answer to check the file against — and a run under a different
+/// profile name is not a corrupt file. The refusal above covers the three arms
+/// the action itself determines and no more.
+#[test]
+fn a_plan_file_filing_a_profile_owned_action_under_any_owner_reads_back() {
+    let filed = serde_json::json!({
+        "phases": [{
+            "name": "Files",
+            "groups": [{
+                "owner": { "kind": "module", "name": "nvim" },
+                "actions": [{ "File": { "Skip": {
+                    "target": "/home/u/a", "origin": "", "reason": "r",
+                } } }],
+            }],
+        }],
+        "warnings": [],
+    });
+    let back: Plan = serde_json::from_value(filed).expect("a profile-owned action reads back");
+    assert_eq!(
+        back.phases[0]
+            .groups()
+            .iter()
+            .map(|g| g.owner.token())
+            .collect::<Vec<_>>(),
+        vec!["module:nvim"],
+        "the file's own owner survives the read",
+    );
+}
+
+/// An action `serde_json` cannot write ends the hash; it never vanishes from
+/// it.
+///
+/// `applies.plan_hash` is a serialization of the actions, so an action dropped
+/// from the composition would let a run that deploys a file and a run that does
+/// not record the same hash, and every surface comparing stored hashes would
+/// read the two runs as the same plan. The unwritable shape is built here by
+/// hand: `PatchSpec`'s own reader refuses a mapping key that is not a
+/// string, which is the other half of the same rule, so this is the residual a
+/// caller holding the struct can still reach.
+#[test]
+fn an_action_serde_json_cannot_write_fails_the_plan_hash_instead_of_vanishing() {
+    let mut ensure = serde_yaml::Mapping::new();
+    ensure.insert(
+        serde_yaml::Value::Sequence(vec![
+            serde_yaml::Value::String("a".into()),
+            serde_yaml::Value::String("b".into()),
+        ]),
+        serde_yaml::Value::String("c".into()),
+    );
+    let unwritable = Action::File(FileAction::Create {
+        source: PathBuf::from("/cfg/files/a"),
+        target: PathBuf::from("/home/u/a"),
+        origin: String::new(),
+        strategy: crate::config::FileStrategy::Patch,
+        source_hash: None,
+        patch: Some(crate::config::PatchSpec {
+            format: None,
+            ensure: Some(serde_yaml::Value::Mapping(ensure)),
+            script: None,
+            blocked_by: None,
+        }),
+    });
+    let refresh = || {
+        Action::Manager(ManagerAction::RefreshIndex {
+            manager: "brew".to_string(),
+        })
+    };
+    let plan_of = |actions: Vec<Action>| Plan {
+        phases: vec![Phase::from_actions(
+            PhaseName::Files,
+            &Owner::profile("work"),
+            actions,
+        )],
+        warnings: Vec::new(),
+    };
+
+    let with_file = plan_of(vec![unwritable, refresh()]);
+    let without_file = plan_of(vec![refresh()]);
+
+    let err = with_file
+        .to_hash_string()
+        .expect_err("an action that cannot be serialized has no hash to contribute");
+    let message = err.to_string();
+    assert!(
+        message.contains("file") && message.contains("/home/u/a"),
+        "the refusal names the action it could not write: {message}"
+    );
+    assert_ne!(
+        with_file.to_hash_string().ok(),
+        without_file.to_hash_string().ok(),
+        "two plans differing by one file action must never reach the same hash"
     );
 }
 
@@ -25578,6 +28170,7 @@ fn provision_node(manager: &str, via: &str, depends_on: &[String]) -> Action {
         manager: manager.to_string(),
         via: via.to_string(),
         declared: None,
+        floor: None,
         batched: vec![],
         depends_on: depends_on.to_vec(),
     })
@@ -26302,6 +28895,7 @@ fn manager_action_renders_in_cfgd_managers_group() {
             manager: "brew".to_string(),
             via: "homebrew installer".to_string(),
             declared: None,
+            floor: None,
             batched: vec![],
             depends_on: vec![],
         }),
@@ -26346,6 +28940,7 @@ fn manager_action_group_is_display_only() {
         manager: "brew".to_string(),
         via: "homebrew installer".to_string(),
         declared: None,
+        floor: None,
         batched: vec![],
         depends_on: vec![],
     });
@@ -27122,17 +29717,17 @@ fn platform_skip_renders_as_header_annotation_not_a_phase() {
     );
     assert!(
         out.contains(
-            "Modules   nvim (wsl-tools skipped: platform not matched (requires: windows))"
+            "Modules   nvim (wsl-tools skipped: platform not matched (requires: windows))" // space-run-ok: a rendered kv row's own column padding.
         ) || out.contains(
             "Modules  nvim (wsl-tools skipped: platform not matched (requires: windows))"
         ),
         "the row carries the skip's own reason string: {out}"
     );
     assert!(
-        out.contains("Phases   Packages") || out.contains("Phases  Packages"),
+        out.contains("Phases   Packages") || out.contains("Phases  Packages"), // space-run-ok: a rendered kv row's own column padding.
         "Modules is not listed among the phases: {out}"
     );
-    assert!(!out.contains("Phases   Modules"), "got: {out}");
+    assert!(!out.contains("Phases   Modules"), "got: {out}"); // space-run-ok: a rendered kv row's own column padding.
     assert!(
         out.contains("1 planned"),
         "a module skipped whole is stated by the Modules row and counted \
@@ -27675,21 +30270,64 @@ fn every_caveat_names_the_subject_that_produced_it() {
     );
 }
 
-/// A next step is not a warning. `⚠ run `source ~/.cfgd.env`, or open a new
-/// shell` marked an instruction with the glyph a problem wears, and stood
-/// among the run's real warnings; it renders as a hint, after everything the
-/// run had to report, and reads as an instruction ("Run", not "run").
+/// A run's own instruction survives `usageHints: false`.
+///
+/// The re-source reminder names the file this apply wrote. A reader whose
+/// shell is stale and whose config says "no tutorials" still has to be told
+/// which file to source, so it is a note row under its owner, out of the
+/// hint gate's reach.
+///
+/// `for_test_at(Normal)`, since `for_test()` captures at Quiet: a note row is
+/// a `status_simple`, and every non-`Fail` role is suppressed at
+/// `Verbosity::Quiet`, so the Quiet capture would read back empty whichever
+/// slot carried the sentence.
 #[test]
-fn a_next_step_renders_as_a_hint_below_the_reports() {
+fn the_re_source_reminder_renders_with_usage_hints_off() {
+    let (printer, buf) = crate::output::Printer::for_test_at(crate::output::Verbosity::Normal);
+    let printer = printer.with_hints_enabled(false);
+    let owner = Owner::cfgd(crate::reconciler::ENV_GROUP);
+    let notes = vec![crate::providers::ActionNote::instruction(
+        "Run `source ~/.cfgd.env`, or open a new shell",
+    )];
+    crate::reconciler::render_caveats(&printer, &[(owner, notes)]);
+    printer.flush();
+    let out = crate::test_helpers::captured_text(&buf);
+    assert!(
+        out.contains("source ~/.cfgd.env"),
+        "the instruction renders: {out:?}"
+    );
+    assert!(!out.contains('\u{2192}'), "and not as a hint: {out:?}");
+}
+
+/// An instruction is not a warning, and it is the last line its group says.
+/// `⚠ run `source ~/.cfgd.env`, or open a new shell` marked an instruction with
+/// the glyph a problem wears and stood among the run's real warnings; it
+/// renders as an `Info` note row, below every note its group holds — the
+/// warnings and the reports of work done alike — and reads as an instruction
+/// (capitalised "Run"). The fixture hands the four in the order that discovers
+/// a sort keyed on the role alone, which would leave the instruction between
+/// the warning and the reports.
+///
+/// The fourth is the shape a key of `tag.is_none()` cannot tell from the
+/// instruction: `NoteSink::report` pushes every `SystemConfigurator`'s report
+/// untagged, because its owning action line already names the producer. It is
+/// collected AFTER the instruction, so a stable sort sharing one key leaves it
+/// below — which is the render the marker exists to refuse.
+#[test]
+fn an_instruction_renders_as_an_info_row_below_the_warnings() {
     let (printer, cap) = crate::output::Printer::for_test_doc();
     crate::reconciler::render_caveats(
         &printer,
         &[(
             Owner::cfgd("env"),
             vec![
-                crate::providers::ActionNote::next_step("Run `source ~/.cfgd.env`"),
+                crate::providers::ActionNote::instruction("Run `source ~/.cfgd.env`"),
                 crate::providers::ActionNote::warn("npm", "deprecated: glob@7"),
                 crate::providers::ActionNote::info("npm", "installed into ~/.npm-global"),
+                crate::providers::ActionNote::untagged(
+                    crate::output::Role::Info,
+                    "Updated /etc/environment",
+                ),
             ],
         )],
     );
@@ -27707,37 +30345,51 @@ fn a_next_step_renders_as_a_hint_below_the_reports() {
             .unwrap_or_else(|| panic!("{needle:?} missing from: {out}"))
     };
     assert!(
-        position("Run `source") > position("deprecated: glob@7")
-            && position("Run `source") > position("installed into"),
-        "the next step must come last: {out}"
+        position("Run `source") > position("deprecated: glob@7"),
+        "the run's real warnings come first: {out}"
+    );
+    assert!(
+        position("Run `source") > position("installed into"),
+        "the instruction closes its group, below the notes reporting what the run did: {out}"
+    );
+    assert!(
+        position("Run `source") > position("Updated /etc/environment"),
+        "an untagged report is still a report, and the instruction closes the group \
+         below it: {out}"
     );
     let step = lines[position("Run `source")];
     assert!(
         !step.starts_with('\u{26a0}'),
-        "a next step wears the warning glyph: {step:?}"
+        "an instruction wears the warning glyph: {step:?}"
+    );
+    assert!(
+        !step.contains('\u{2192}'),
+        "an instruction is a row, out of the hint gate's reach: {step:?}"
     );
     assert!(
         step.contains("Run `source"),
-        "a next step is an instruction, capitalized: {step:?}"
+        "an instruction is capitalized: {step:?}"
     );
 }
 
-/// A next step closes the REPORT, not an owner group inside `Caveats`.
+/// An instruction renders UNDER the owner that produced it, at the same depth
+/// as that owner's other notes.
 ///
-/// Nested under `cfgd:env` it read as a remark about that one owner, indented
-/// two levels below a heading whose subject is "things that went sideways" —
-/// while the thing it actually says is what the reader does next about the
-/// whole run. It renders after the section closes, at the report's foot, and a
-/// run whose only note is a next step opens no `Caveats` heading at all.
+/// It used to close the report at column 0, printed through `Printer::hint`
+/// after the section had closed — which put the one line naming the file the
+/// run just wrote behind the `usageHints` gate. A reader who turned tutorials
+/// off was told nothing about a shell that no longer matches the machine, so
+/// the fact moved to the row slot that no knob decides, beside the owner whose
+/// work produced it.
 #[test]
-fn a_next_step_renders_below_the_closed_caveats_section() {
+fn an_instruction_renders_under_the_owner_that_produced_it() {
     let (printer, cap) = crate::output::Printer::for_test_doc();
     crate::reconciler::render_caveats(
         &printer,
         &[
             (
                 Owner::cfgd("env"),
-                vec![crate::providers::ActionNote::next_step(
+                vec![crate::providers::ActionNote::instruction(
                     "Run `source ~/.cfgd.env`",
                 )],
             ),
@@ -27755,7 +30407,7 @@ fn a_next_step_renders_below_the_closed_caveats_section() {
     let step = out
         .lines()
         .find(|l| l.contains("Run `source"))
-        .unwrap_or_else(|| panic!("the next step must render: {out}"));
+        .unwrap_or_else(|| panic!("the instruction must render: {out}"));
     let warn = out
         .lines()
         .find(|l| l.contains("deprecated: glob@7"))
@@ -27763,39 +30415,43 @@ fn a_next_step_renders_below_the_closed_caveats_section() {
     let indent = |l: &str| l.len() - l.trim_start().len();
     assert_eq!(
         indent(step),
-        0,
-        "a next step closes the report at column 0, not inside a caveat group: {out}"
+        indent(warn),
+        "an instruction is a note row like any other, at its owner's depth: {out}"
     );
     assert!(
-        indent(warn) > 0,
-        "a report still nests under its owner group: {out}"
+        !step.contains('\u{2192}'),
+        "and never a hint the `usageHints` gate can eat: {out}"
     );
     assert!(
-        !out.contains("cfgd:env"),
-        "an owner whose only note is a next step opens no caveat group: {out}"
+        out.contains("cfgd:env"),
+        "the owner that produced it names it: {out}"
     );
 }
 
-/// A run whose only note is a next step prints the step and no `Caveats`
-/// heading — the heading would introduce an empty section.
+/// A run whose only note is an instruction still opens the section: the row
+/// lives under an owner heading, and a heading is what says whose work left
+/// the reader something to do.
 #[test]
-fn a_lone_next_step_opens_no_caveats_heading() {
+fn a_lone_instruction_opens_its_owners_group() {
     let (printer, cap) = crate::output::Printer::for_test_doc();
     crate::reconciler::render_caveats(
         &printer,
         &[(
             Owner::cfgd("env"),
-            vec![crate::providers::ActionNote::next_step(
+            vec![crate::providers::ActionNote::instruction(
                 "Run `source ~/.cfgd.env`",
             )],
         )],
     );
     drop(printer);
     let out = crate::output::strip_ansi(&cap.human());
-    assert!(out.contains("Run `source"), "the step must render: {out}");
     assert!(
-        !out.contains("Caveats"),
-        "nothing to caveat, so no heading: {out}"
+        out.contains("Run `source"),
+        "the instruction must render: {out}"
+    );
+    assert!(
+        out.contains("cfgd:env"),
+        "under the owner that produced it: {out}"
     );
 }
 
@@ -27867,16 +30523,19 @@ fn a_caveat_message_renders_once_per_report() {
     );
 }
 
-/// The report half and the hint half are two slots on one section, and for a
-/// while only the hint half deduplicated. Walk both, so they cannot diverge
-/// again: the same message, filed under two owners, renders once whichever
-/// slot carries it — and the report slots go through `collect_caveats`, so the
-/// per-action attribution is in the way of the fold exactly as it is on a run.
+/// The report half and the instruction half were two slots on one section, and
+/// for a while only one of them deduplicated. Walk every note shape, so they
+/// cannot diverge again: the same message, filed under two owners, renders
+/// once whichever shape carries it — and every slot goes through
+/// `collect_caveats`, so the per-action attribution is in the way of the fold
+/// exactly as it is on a run.
 #[test]
 fn every_caveat_slot_dedupes_by_message() {
     type NoteBuilder = fn(&str) -> crate::providers::ActionNote;
     let slots: [(&str, NoteBuilder); 4] = [
-        ("hint", |m| crate::providers::ActionNote::next_step(m)),
+        ("instruction", |m| {
+            crate::providers::ActionNote::instruction(m)
+        }),
         ("report/warn", |m| {
             crate::providers::ActionNote::untagged(crate::output::Role::Warn, m)
         }),
@@ -28059,14 +30718,14 @@ fn configurator_narration_settles_on_its_own_when_no_caller_drains_it() {
 
     assert!(
         out.contains("sysctl -w net.ipv4.ip_forward=1"),
-        "an undrained report still settles rather than vanishing: {out}"
+        "an undrained report still settles into a row: {out}"
     );
     assert!(
         out.contains("reload deferred: /proc is read-only"),
         "including the warning: {out}"
     );
-    // The second render point of a note: settled on the printer rather than
-    // collected, it folds the home directory the way `ActionNote::body` does,
+    // The second render point of a note: a note settled on the printer folds
+    // the home directory the way `ActionNote::body` does for a collected one,
     // so one run cannot spell the home two ways depending on who drained it.
     let home = crate::to_posix_string(staging.path());
     assert!(
@@ -28136,6 +30795,7 @@ fn a_provisions_planned_via_reaches_the_bootstrap_that_executes_it() {
                 manager: "npm".to_string(),
                 via: "apt".to_string(),
                 declared: None,
+                floor: None,
                 batched: vec![],
                 depends_on: vec![],
             })],
@@ -28149,7 +30809,7 @@ fn a_provisions_planned_via_reaches_the_bootstrap_that_executes_it() {
     assert_eq!(
         seen.lock().unwrap().as_deref(),
         Some("apt"),
-        "bootstrap must see the method the plan resolved, not None"
+        "bootstrap must see the method the plan resolved"
     );
 }
 
@@ -28190,6 +30850,8 @@ fn the_post_apply_snapshot_covers_only_the_files_the_run_touched() {
     let resolved = make_empty_resolved();
 
     let modules = vec![ResolvedModule {
+        held_managers: Vec::new(),
+        floor_bootstraps: Vec::new(),
         dep_pulled: false,
         name: "mymod".to_string(),
         packages: vec![],
@@ -28297,11 +30959,10 @@ fn plan_observed_reports_every_computed_phase_in_order() {
         )
         .unwrap();
 
-    // Computation order, not render order: `Bootstrap` is planned from the
-    // package work that survived dedup, so it cannot be reported before
-    // `Packages` even though it renders ahead of it. `PostScripts` never fires
-    // — its actions are computed in the same passes as `PreScripts` and
-    // `Modules`.
+    // Computation order: `Bootstrap` is planned from the package work that
+    // survived dedup, so it cannot be reported before `Packages` even though it
+    // renders ahead of it. `PostScripts` never fires — its actions are computed
+    // in the same passes as `PreScripts` and `Modules`.
     assert_eq!(
         seen,
         vec![
@@ -28330,6 +30991,669 @@ fn plan_observed_reports_every_computed_phase_in_order() {
 /// The package items a plan holds, across every phase.
 fn all_plan_items(plan: &Plan) -> Vec<String> {
     plan.phases.iter().flat_map(plan_items).collect()
+}
+
+/// A module whose only declared package is a manager this host already holds
+/// at the declared floor plans nothing: the manager IS the delivery, so there
+/// is no install to run and no provision to schedule.
+#[test]
+fn a_module_whose_only_entry_is_held_plans_no_action() {
+    let mut registry = ProviderRegistry::new();
+    registry.add_package_manager(Box::new(
+        crate::test_helpers::MockPackageManager::new("apt").offering("cargo", "1.75"),
+    ));
+    registry.add_package_manager(Box::new(
+        crate::test_helpers::MockPackageManager::new("cargo").reporting_version("1.90"),
+    ));
+    let managers = registry.manager_map();
+    let loaded = crate::modules::LoadedModule {
+        version: None,
+        name: "rust".to_string(),
+        spec: ModuleSpec {
+            packages: vec![ModulePackageEntry {
+                name: "cargo".to_string(),
+                min_version: Some("1.85".to_string()),
+                prefer: vec!["apt".to_string()],
+                ..Default::default()
+            }],
+            ..Default::default()
+        },
+        dir: std::path::PathBuf::from("/fake/rust"),
+        origin: None,
+    };
+    let (packages, routes, held) = crate::modules::resolve_module_packages(
+        &loaded,
+        &crate::test_helpers::linux_ubuntu_platform(),
+        &managers,
+        None,
+    )
+    .unwrap();
+    assert_eq!(held.len(), 1, "the premise: the entry resolved as held");
+
+    let mut module = make_resolved_module("rust");
+    module.packages = packages;
+    module.floor_bootstraps = routes;
+    module.held_managers = held;
+
+    let state = test_state();
+    let reconciler = Reconciler::new(&registry, &state);
+    let plan = reconciler
+        .plan(
+            &make_empty_resolved(),
+            Vec::new(),
+            Vec::new(),
+            vec![module],
+            ReconcileContext::Apply,
+        )
+        .unwrap();
+    assert!(
+        plan.is_empty(),
+        "a held entry asks for nothing: {:?}",
+        all_plan_items(&plan)
+    );
+}
+
+/// A module whose held manager is below its floor, or whose floor nothing
+/// could judge, carries that fact INTO the plan as a step of its own, and a
+/// module whose floor is met carries nothing.
+///
+/// The planner refusing instead is what the daemon crosses on every tick: a
+/// plan that ends in an error records no row, heals nothing and fires no hook
+/// for as long as one toolchain stays short.
+#[test]
+fn a_held_manager_below_its_floor_is_planned_as_a_step_of_its_own() {
+    fn held_nodes(version: Option<&str>) -> Vec<(String, String, Vec<DeclaredFloor>)> {
+        let mut registry = ProviderRegistry::new();
+        let mut cargo = crate::test_helpers::MockPackageManager::new("cargo");
+        if let Some(version) = version {
+            cargo = cargo.reporting_version(version);
+        }
+        registry.add_package_manager(Box::new(cargo));
+        let mut module = make_resolved_module("rust");
+        module.packages = Vec::new();
+        module.held_managers = vec![crate::modules::HeldManager {
+            package: "cargo".to_string(),
+            module: "rust".to_string(),
+            floor: "1.85".to_string(),
+            judgment: crate::modules::judge_declared_floor(
+                registry.package_managers()[0].as_ref(),
+                "cargo",
+                "1.85",
+                version,
+            ),
+        }];
+        let state = test_state();
+        let reconciler = Reconciler::new(&registry, &state);
+        let plan = reconciler
+            .plan(
+                &make_empty_resolved(),
+                Vec::new(),
+                Vec::new(),
+                vec![module],
+                ReconcileContext::Apply,
+            )
+            .expect("a held floor rides in the plan and the plan completes");
+        plan.phases
+            .iter()
+            .flat_map(Phase::actions)
+            .filter_map(|a| match a {
+                Action::Manager(ManagerAction::HeldFloor {
+                    manager,
+                    floor,
+                    declared,
+                }) => Some((manager.clone(), floor.clone(), declared.clone())),
+                _ => None,
+            })
+            .collect()
+    }
+
+    assert!(
+        held_nodes(Some("1.90")).is_empty(),
+        "a floor this host meets asks for nothing"
+    );
+    for version in [Some("1.80"), None] {
+        let nodes = held_nodes(version);
+        assert_eq!(nodes.len(), 1, "{version:?}: {nodes:?}");
+        let (manager, floor, declared) = &nodes[0];
+        assert_eq!((manager.as_str(), floor.as_str()), ("cargo", "1.85"));
+        assert_eq!(
+            declared,
+            &vec![DeclaredFloor {
+                module: "rust".to_string(),
+                floor: "1.85".to_string(),
+            }]
+        );
+    }
+}
+
+/// Two modules flooring one manager are ONE fact about the machine: one copy
+/// of cargo answers both, so the plan carries one node, at the stricter floor,
+/// naming both declarants.
+#[test]
+fn two_modules_flooring_one_held_manager_plan_one_node_at_the_stricter_floor() {
+    let mut registry = ProviderRegistry::new();
+    registry.add_package_manager(Box::new(
+        crate::test_helpers::MockPackageManager::new("cargo").reporting_version("1.70"),
+    ));
+    let held = |module: &str, floor: &str| crate::modules::HeldManager {
+        package: "cargo".to_string(),
+        module: module.to_string(),
+        floor: floor.to_string(),
+        judgment: crate::modules::FloorJudgment::Short {
+            version: "1.70".to_string(),
+        },
+    };
+    let mut first = make_resolved_module("rust");
+    first.packages = Vec::new();
+    first.held_managers = vec![held("rust", "1.80")];
+    let mut second = make_resolved_module("tools");
+    second.packages = Vec::new();
+    second.held_managers = vec![held("tools", "1.85")];
+
+    let state = test_state();
+    let reconciler = Reconciler::new(&registry, &state);
+    let plan = reconciler
+        .plan(
+            &make_empty_resolved(),
+            Vec::new(),
+            Vec::new(),
+            vec![first, second],
+            ReconcileContext::Apply,
+        )
+        .expect("plan");
+    let nodes: Vec<(&String, &Vec<DeclaredFloor>)> = plan
+        .phases
+        .iter()
+        .flat_map(Phase::actions)
+        .filter_map(|a| match a {
+            Action::Manager(ManagerAction::HeldFloor {
+                floor, declared, ..
+            }) => Some((floor, declared)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(nodes.len(), 1, "{nodes:?}");
+    assert_eq!(
+        nodes[0].0, "1.85",
+        "the stricter floor satisfies both modules"
+    );
+    // The fold answers for the machine; each entry keeps the number its own
+    // module wrote, so a sentence addressed to `rust` can still say 1.80.
+    assert_eq!(
+        nodes[0].1,
+        &vec![
+            DeclaredFloor {
+                module: "rust".to_string(),
+                floor: "1.80".to_string(),
+            },
+            DeclaredFloor {
+                module: "tools".to_string(),
+                floor: "1.85".to_string(),
+            },
+        ]
+    );
+}
+
+/// The planner's node and the live re-check both answer for `cargo:cargo`, and
+/// the drift store UPSERTs on that id, so the two fold the declarants the same
+/// way or the row's `expected` flips with whichever pass wrote last.
+///
+/// The lower floor here is one this host MEETS, which is what a per-declarant
+/// walk gets wrong: it reads the first module as green, records nothing, and
+/// leaves the node's finding unbacked by any row.
+#[test]
+fn the_live_recheck_and_the_planned_node_hold_one_floor_for_one_manager() {
+    let mut registry = ProviderRegistry::new();
+    registry.add_package_manager(Box::new(
+        crate::test_helpers::MockPackageManager::new("cargo").reporting_version("99.5"),
+    ));
+    let held_module = |name: &str, floor: &str| {
+        let mut module = make_resolved_module(name);
+        module.packages = Vec::new();
+        module.held_managers = vec![crate::modules::HeldManager {
+            package: "cargo".to_string(),
+            module: name.to_string(),
+            floor: floor.to_string(),
+            judgment: crate::modules::judge_declared_floor(
+                registry.package_managers()[0].as_ref(),
+                "cargo",
+                floor,
+                Some("99.5"),
+            ),
+        }];
+        module
+    };
+    let modules = vec![held_module("rust", "99.0"), held_module("tools", "100.0")];
+
+    let state = test_state();
+    let reconciler = Reconciler::new(&registry, &state);
+    let plan = reconciler
+        .plan(
+            &make_empty_resolved(),
+            Vec::new(),
+            Vec::new(),
+            modules.clone(),
+            ReconcileContext::Apply,
+        )
+        .expect("plan");
+    let node_floor = plan
+        .phases
+        .iter()
+        .flat_map(Phase::actions)
+        .find_map(|a| match a {
+            Action::Manager(ManagerAction::HeldFloor { floor, .. }) => Some(floor.clone()),
+            _ => None,
+        })
+        .expect("the unmet floor rides in the plan as a node");
+
+    let (results, check_errors) =
+        crate::reconciler::held_manager_version_drift(&modules, &registry, &[]);
+    assert!(
+        check_errors.is_empty(),
+        "a version the manager stated is not a check error: {check_errors:?}"
+    );
+    assert_eq!(results.len(), 1, "one row per held manager: {results:?}");
+    assert_eq!(results[0].resource_id, "cargo:cargo");
+    assert_eq!(
+        results[0].expected, "100.0",
+        "the row wants what one copy of cargo has to reach"
+    );
+    assert_eq!(
+        results[0].expected, node_floor,
+        "both producers of cargo:cargo write one expected"
+    );
+    assert_eq!(results[0].actual, "99.5");
+}
+
+/// The step installs nothing and judges the BINARY when it runs: a host whose
+/// toolchain still falls short fails that one node, with the clause every read
+/// surface words the same fact in, and the rest of the run goes on.
+#[test]
+fn a_held_floor_step_fails_against_the_binary_and_names_the_raise() {
+    let mut registry = ProviderRegistry::new();
+    registry.add_package_manager(Box::new(
+        crate::test_helpers::MockPackageManager::new("cargo").reporting_version("1.80"),
+    ));
+    let plan = Plan {
+        phases: vec![Phase::from_actions(
+            PhaseName::Bootstrap,
+            &Owner::profile("test"),
+            vec![Action::Manager(ManagerAction::HeldFloor {
+                manager: "cargo".to_string(),
+                floor: "1.85".to_string(),
+                declared: vec![DeclaredFloor {
+                    module: "rust".to_string(),
+                    floor: "1.85".to_string(),
+                }],
+            })],
+        )],
+        warnings: vec![],
+    };
+
+    let state = test_state();
+    let (result, out) = apply_manager_plan(&registry, &state, &plan);
+    assert_eq!(result.failed(), 1, "apply output:\n{out}");
+    let failure = result
+        .action_results
+        .iter()
+        .find_map(|a| a.error.clone())
+        .unwrap_or_else(|| panic!("the failed node carries its reason: {out}"));
+    let expected = crate::modules::HeldManager {
+        package: "cargo".to_string(),
+        module: "rust".to_string(),
+        floor: "1.85".to_string(),
+        judgment: crate::modules::FloorJudgment::Short {
+            version: "1.80".to_string(),
+        },
+    }
+    .clause(Some(registry.package_managers()[0].as_ref()));
+    assert!(
+        failure.contains(&expected),
+        "the failure is worded by the one composer every read surface reads: \
+         {failure} / {expected}"
+    );
+    assert!(
+        expected.contains("below the declared minVersion 1.85"),
+        "the premise: that composer states the shortfall: {expected}"
+    );
+
+    let met = {
+        let mut registry = ProviderRegistry::new();
+        registry.add_package_manager(Box::new(
+            crate::test_helpers::MockPackageManager::new("cargo").reporting_version("1.90"),
+        ));
+        let state = test_state();
+        apply_manager_plan(&registry, &state, &plan).0
+    };
+    assert_eq!(met.failed(), 0);
+    assert_eq!(
+        met.skipped(),
+        1,
+        "a binary that meets the floor settles the step having changed nothing"
+    );
+
+    // The failed node forbids the declaring module's packages and nothing
+    // else. A floor is `rust`'s statement about what `rust` needs, so the
+    // profile's own package through the same toolchain is installed: a manager
+    // that failed to ARRIVE is missing for everybody, while one that is merely
+    // short is only short of what somebody asked for.
+    let profile_owned = Plan {
+        phases: vec![
+            Phase::from_actions(
+                PhaseName::Bootstrap,
+                &Owner::profile("test"),
+                vec![Action::Manager(ManagerAction::HeldFloor {
+                    manager: "cargo".to_string(),
+                    floor: "1.85".to_string(),
+                    declared: vec![DeclaredFloor {
+                        module: "rust".to_string(),
+                        floor: "1.85".to_string(),
+                    }],
+                })],
+            ),
+            Phase::from_actions(
+                PhaseName::Packages,
+                &Owner::profile("test"),
+                vec![install_action("cargo", &["ripgrep"])],
+            ),
+        ],
+        warnings: vec![],
+    };
+    let state = test_state();
+    let (after, out) = apply_manager_plan(&registry, &state, &profile_owned);
+    let install = after
+        .action_results
+        .iter()
+        .find(|r| r.phase == PhaseName::Packages.as_str())
+        .unwrap_or_else(|| panic!("the package row settled: {out}"));
+    assert_eq!(
+        install.error, None,
+        "the profile declared no floor, so nothing withholds the manager from \
+         its packages: {install:?}"
+    );
+}
+
+/// A floor belongs to the module that wrote it. When the node judging it fails,
+/// the manager is withheld from that module's packages and from no others: a
+/// second module installing through the same copy of cargo asked for nothing
+/// the host fails to offer, and refusing it would take a whole machine down
+/// over one module's minVersion.
+#[test]
+fn a_failed_floor_withholds_the_manager_from_the_declaring_module_alone() {
+    let mut registry = ProviderRegistry::new();
+    registry.add_package_manager(Box::new(
+        crate::test_helpers::MockPackageManager::new("cargo").reporting_version("1.80"),
+    ));
+    let module_install = |module: &str, package: &str| {
+        Action::Module(ModuleAction::local(
+            module,
+            ModuleActionKind::InstallPackages {
+                resolved: vec![ResolvedPackage {
+                    canonical_name: package.to_string(),
+                    resolved_name: package.to_string(),
+                    manager: "cargo".to_string(),
+                    manager_declared: false,
+                    version: None,
+                    script: None,
+                    creates: None,
+                    only_if: None,
+                    unless: None,
+                    min_version: None,
+                }],
+            },
+        ))
+    };
+    let plan = Plan {
+        phases: vec![
+            Phase::from_actions(
+                PhaseName::Bootstrap,
+                &Owner::profile("test"),
+                vec![Action::Manager(ManagerAction::HeldFloor {
+                    manager: "cargo".to_string(),
+                    floor: "1.85".to_string(),
+                    declared: vec![DeclaredFloor {
+                        module: "rust".to_string(),
+                        floor: "1.85".to_string(),
+                    }],
+                })],
+            ),
+            Phase::from_actions(
+                PhaseName::Packages,
+                &Owner::profile("test"),
+                vec![
+                    module_install("rust", "ripgrep"),
+                    module_install("tools", "just"),
+                ],
+            ),
+        ],
+        warnings: vec![],
+    };
+
+    let state = test_state();
+    let (result, out) = apply_manager_plan(&registry, &state, &plan);
+    let row_for = |package: &str| {
+        result
+            .action_results
+            .iter()
+            .find(|r| r.description.contains(package))
+            .unwrap_or_else(|| panic!("{package}: the package row settled: {out}"))
+    };
+    assert_eq!(
+        row_for("ripgrep").error.as_deref(),
+        Some("cargo is below the minVersion 1.85 module 'rust' declared"),
+        "the declaring module's packages are refused, in cfgd's own words"
+    );
+    assert_eq!(
+        row_for("just").error,
+        None,
+        "the module that declared no floor installs through the same manager"
+    );
+}
+
+/// Two modules flooring one manager at different numbers are one node at the
+/// stricter fold, and the fold is an answer about the MACHINE. Each refused
+/// row still quotes the number its own module wrote: a reader told their
+/// module asks for 1.90 goes looking for a line their file does not contain,
+/// and the sibling that raised the fold is invisible from where they are
+/// standing.
+#[test]
+fn each_refused_row_names_the_floor_its_own_module_declared() {
+    let mut registry = ProviderRegistry::new();
+    registry.add_package_manager(Box::new(
+        crate::test_helpers::MockPackageManager::new("cargo").reporting_version("1.82"),
+    ));
+    let module_install = |module: &str, package: &str| {
+        Action::Module(ModuleAction::local(
+            module,
+            ModuleActionKind::InstallPackages {
+                resolved: vec![ResolvedPackage {
+                    canonical_name: package.to_string(),
+                    resolved_name: package.to_string(),
+                    manager: "cargo".to_string(),
+                    manager_declared: false,
+                    version: None,
+                    script: None,
+                    creates: None,
+                    only_if: None,
+                    unless: None,
+                    min_version: None,
+                }],
+            },
+        ))
+    };
+    let node = Action::Manager(ManagerAction::HeldFloor {
+        manager: "cargo".to_string(),
+        floor: "1.90".to_string(),
+        declared: vec![
+            DeclaredFloor {
+                module: "rust".to_string(),
+                floor: "1.85".to_string(),
+            },
+            DeclaredFloor {
+                module: "tools".to_string(),
+                floor: "1.90".to_string(),
+            },
+        ],
+    });
+    assert_eq!(
+        format_plan_item(&node, "-"),
+        "check cargo against minVersion 1.90 — declared by rust (1.85), tools (1.90)",
+        "the plan row pairs each declarant with its own number"
+    );
+
+    let plan = Plan {
+        phases: vec![
+            Phase::from_actions(PhaseName::Bootstrap, &Owner::profile("test"), vec![node]),
+            Phase::from_actions(
+                PhaseName::Packages,
+                &Owner::profile("test"),
+                vec![
+                    module_install("rust", "ripgrep"),
+                    module_install("tools", "just"),
+                ],
+            ),
+        ],
+        warnings: vec![],
+    };
+
+    let state = test_state();
+    let (result, out) = apply_manager_plan(&registry, &state, &plan);
+    let row_for = |package: &str| {
+        result
+            .action_results
+            .iter()
+            .find(|r| r.description.contains(package))
+            .unwrap_or_else(|| panic!("{package}: the package row settled: {out}"))
+    };
+    assert_eq!(
+        row_for("ripgrep").error.as_deref(),
+        Some("cargo is below the minVersion 1.85 module 'rust' declared"),
+        "the module that wrote 1.85 hears 1.85 itself"
+    );
+    assert_eq!(
+        row_for("just").error.as_deref(),
+        Some("cargo is below the minVersion 1.90 module 'tools' declared"),
+        "and the module that raised the fold hears its own number"
+    );
+}
+
+/// Both blocks of the apply fence `docs/modules.md` prints for a held floor are
+/// what a run renders, taken from the run here.
+///
+/// A page showing rows nobody produced is how a glyph, a column or a sentence
+/// drifts out from under a reader who is matching the page against their own
+/// terminal. Both are reproduced from the same three modules the page
+/// describes, so a change to any producer reaching those lines (the node's
+/// subject, the shortfall sentence and the raise it names, the refusal
+/// sentence, the report's one column) fails here before it reaches a reader.
+#[test]
+fn the_docs_apply_fence_for_a_held_floor_is_what_the_run_renders() {
+    let mut registry = ProviderRegistry::new();
+    registry.add_package_manager(Box::new(
+        crate::test_helpers::MockPackageManager::new("cargo")
+            .reporting_version("1.98.1")
+            // The raise the page's own row names: cargo is rustup's shim, and a
+            // manager stating no raise of its own would word the sentence
+            // around `cargo install cargo` instead.
+            .raising_itself_with("rustup update"),
+    ));
+    let module_install = |module: &str, package: &str| {
+        Action::Module(ModuleAction::local(
+            module,
+            ModuleActionKind::InstallPackages {
+                resolved: vec![ResolvedPackage {
+                    canonical_name: package.to_string(),
+                    resolved_name: package.to_string(),
+                    manager: "cargo".to_string(),
+                    manager_declared: false,
+                    version: None,
+                    script: None,
+                    creates: None,
+                    only_if: None,
+                    unless: None,
+                    min_version: None,
+                }],
+            },
+        ))
+    };
+    let node = Action::Manager(ManagerAction::HeldFloor {
+        manager: "cargo".to_string(),
+        floor: "100.0".to_string(),
+        declared: vec![
+            DeclaredFloor {
+                module: "rust".to_string(),
+                floor: "99.0".to_string(),
+            },
+            DeclaredFloor {
+                module: "tools".to_string(),
+                floor: "100.0".to_string(),
+            },
+        ],
+    });
+    let plan_row = format!("       - {}", format_plan_item(&node, "-"));
+    let plan = Plan {
+        phases: vec![
+            Phase::from_actions(PhaseName::Bootstrap, &Owner::profile("default"), vec![node]),
+            Phase::from_actions(
+                PhaseName::Packages,
+                &Owner::profile("default"),
+                vec![
+                    module_install("dotfiles", "just"),
+                    module_install("rust", "ripgrep"),
+                    module_install("tools", "bat"),
+                ],
+            ),
+        ],
+        warnings: vec![],
+    };
+
+    let state = test_state();
+    let (_, out) =
+        apply_manager_plan_at(&registry, &state, &plan, crate::output::Verbosity::Normal);
+    let block = |head: &str| -> String {
+        out.lines()
+            .skip_while(|l| !l.starts_with(head))
+            .take_while(|l| !l.trim().is_empty())
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let bootstrap = block("Phase: Bootstrap");
+    let packages = block("Phase: Packages");
+    assert_eq!(
+        bootstrap.lines().count(),
+        3,
+        "the rendered block is the phase head, one owner and its row: {out}"
+    );
+    assert_eq!(
+        packages.lines().count(),
+        7,
+        "the rendered block is the phase head, three owners and their rows: {out}"
+    );
+
+    let page = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/modules.md");
+    let body = crate::test_helpers::walked_file_body(&page);
+    // The page indents its fenced blocks under a numbered list item, so the
+    // comparison is per line against the same indent the neighbouring blocks
+    // carry.
+    let indented = |block: &str| -> String {
+        block
+            .lines()
+            .map(|l| format!("   {l}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    for rendered in [&bootstrap, &packages] {
+        let rendered = indented(rendered);
+        assert!(
+            body.contains(&rendered),
+            "docs/modules.md does not carry the block this run renders:\n{rendered}"
+        );
+    }
+
+    assert!(
+        body.contains(&plan_row),
+        "docs/modules.md does not carry the plan row the composer builds:\n{plan_row}"
+    );
 }
 
 #[test]
@@ -28391,6 +31715,10 @@ fn a_bare_entry_another_manager_holds_is_neither_re_resolved_nor_planned() {
         let pkg = crate::modules::resolve_package(&entry, "nvim", &platform, &managers, Some(&cx))
             .unwrap()
             .unwrap();
+        let pkg = match pkg {
+            crate::modules::PackageResolution::Package(pkg) => *pkg,
+            other => panic!("the package resolves to a manager: {other:?}"),
+        };
         let manager = pkg.manager.clone();
         let mut module = make_resolved_module("nvim");
         module.packages = vec![pkg];
@@ -29554,11 +32882,8 @@ fn a_converged_env_surface_plans_no_env_actions() {
     }];
     let plan = || {
         Reconciler::plan_env_with_home(
-            &env,
-            &aliases,
-            &Default::default(),
+            super::LayeredEnv::from_parts("profile:test", &env, &aliases, &[]),
             crate::config::EnvScope::Interactive,
-            &[],
             &[],
             &[],
             &[],
@@ -30234,18 +33559,57 @@ fn an_unreserved_target_is_not_copied_aside() {
     );
 }
 
-/// EVERY line of a generated env file names its owner: a module-declared entry
-/// names its module, a profile-declared one names the LAYER that declared it,
-/// and the bootstrapped PATH line names the manager (or managers) whose
-/// directories it holds. A file that is the merge of N layers has no default
-/// owner, so an uncommented line would be the one line nobody can attribute.
+/// The header line of every block a generated env file holds, in file order.
+///
+/// Taken from the generator's own [`EnvFileBlock`]s: a declared value may hold
+/// a blank line or a row opening with `#`, and either one fakes a boundary for
+/// a reader parsing the bytes back.
+///
+/// [`EnvFileBlock`]: super::env_files::EnvFileBlock
+fn block_headers(blocks: &[super::env_files::EnvFileBlock]) -> Vec<&str> {
+    blocks.iter().map(|block| block.header.as_str()).collect()
+}
+
+/// The header of the block `line` sits under, or `None` when no block holds
+/// such a line.
+fn block_of<'a>(blocks: &'a [super::env_files::EnvFileBlock], line: &str) -> Option<&'a str> {
+    blocks
+        .iter()
+        .find(|block| block.lines.iter().any(|l| l == line))
+        .map(|block| block.header.as_str())
+}
+
+/// The blocks behind an env file THIS host's generator wrote, for a pin
+/// holding the file itself.
+///
+/// The file under assertion came out of the same generator over the same
+/// layers, so the blocks it returns are that file's own boundaries.
+fn host_env_blocks(
+    layered: &super::LayeredEnv,
+    path: Option<&FoldedPath>,
+) -> Vec<super::env_files::EnvFileBlock> {
+    super::env_files::generate_blocks(
+        super::env_files::Dialect::of(super::env_engine::EnvPlatform::current()),
+        layered,
+        path,
+    )
+}
+
+/// EVERY line of a generated env file sits in the block of the layer that
+/// DECLARED it, outranked lines included, and no line names an owner of its
+/// own.
+///
+/// A per-line owner comment could only ever name the layer whose value won, so
+/// on an outranked line it named the layer that beat it. The header says it
+/// once, for every line under it, and the file's order says which of two
+/// blocks the shell resolves last.
 #[test]
-fn every_generated_env_line_names_the_owner_that_declared_it() {
+fn every_generated_env_line_sits_in_the_block_that_declared_it() {
     let layer = |name: &str, env: Vec<(&str, &str)>, aliases: Vec<(&str, &str)>| {
         crate::config::ProfileLayer {
             source: crate::config::LOCAL_LAYER.to_string(),
             profile_name: name.to_string(),
-            priority: 1000,
+            priority: crate::config::LOCAL_LAYER_PRIORITY,
             policy: crate::config::LayerPolicy::Local,
             spec: crate::config::ProfileSpec {
                 env: env
@@ -30268,13 +33632,15 @@ fn every_generated_env_line_names_the_owner_that_declared_it() {
             },
         }
     };
-    // Two layers, and `work` overrides `base`'s PAGER: the comment has to name
-    // the layer whose VALUE survived, which is what recording owners inside the
-    // merge (rather than re-deriving them afterwards) buys.
-    let merged = crate::config::merge_layers(&[
+    // Two layers, and `work` overrides `base`'s PAGER: both values are in the
+    // file, each under the layer that wrote it, and the shell's own last-wins
+    // is what leaves `bat` set.
+    let layers = vec![
         layer("base", vec![("PAGER", "less")], vec![("catn", "cat -n")]),
         layer("work", vec![("PAGER", "bat")], vec![]),
-    ]);
+    ];
+    let merged = crate::config::merge_layers(&layers);
+    let resolved = crate::config::ResolvedProfile { layers, merged };
 
     let mut module = crate::test_helpers::make_resolved_module("nvim");
     module.env = vec![crate::config::EnvVar {
@@ -30287,100 +33653,180 @@ fn every_generated_env_line_names_the_owner_that_declared_it() {
         command: "nvim".into(),
         platforms: vec![],
     }];
-
-    let (env, aliases, origins) = super::merge_module_env_aliases(
-        &merged.env,
-        &merged.aliases,
-        &merged.entry_owners,
-        std::slice::from_ref(&module),
-    );
+    let layered = super::LayeredEnv::of(&resolved, std::slice::from_ref(&module));
     let path_dirs = vec![
         ManagerPathDir::new("brew", "/home/linuxbrew/.linuxbrew/bin"),
         ManagerPathDir::new("brew", "/home/linuxbrew/.linuxbrew/sbin"),
         ManagerPathDir::new("cargo", "/home/u/.cargo/bin"),
     ];
-    let content = super::generate_env_file_content(
-        &env,
-        &aliases,
-        Some(&FoldedPath::derived(&path_dirs)),
-        &origins,
-    );
+    let fold = FoldedPath::derived(&path_dirs);
 
-    assert!(
-        content.contains("export EDITOR=\"nvim\" # module:nvim"),
-        "a module-declared var names its module: {content}"
-    );
-    assert!(
-        content.contains("alias v=\"nvim\" # module:nvim"),
-        "a module-declared alias names its module: {content}"
-    );
-    assert!(
-        content.contains("export PAGER=\"bat\" # profile:work"),
-        "an overridden var names the layer whose value won: {content}"
-    );
-    assert!(
-        content.contains("alias catn=\"cat -n\" # profile:base"),
-        "an alias names the layer that declared it: {content}"
-    );
-    // One comment for the whole line, managers in directory order, deduped —
-    // one per directory would repeat `brew` twice and say nothing extra.
-    assert!(
-        content.contains(
-            "export PATH=\"/home/linuxbrew/.linuxbrew/bin:/home/linuxbrew/.linuxbrew/sbin:\
-             /home/u/.cargo/bin:$PATH\" # manager:brew,cargo"
-        ),
-        "the bootstrapped PATH line names its managers once each: {content}"
-    );
-    // Every DIALECT, not just the one whose exact strings are pinned above:
-    // each generator appends its own comments and dropping any one of those
-    // calls has to fail here. The assertion is on the line's TAIL so it says
-    // nothing about a dialect's own assignment syntax.
+    // Every DIALECT: each generator composes its own blocks, and
+    // dropping any one of those calls has to fail here.
     for (dialect, content) in [
-        ("bash/zsh", content),
         (
-            "fish",
-            super::generate_fish_env_content(
-                &env,
-                &aliases,
-                Some(&FoldedPath::derived(&path_dirs)),
-                &origins,
-            ),
+            super::env_files::Dialect::Posix,
+            super::generate_env_file_content(&layered, Some(&fold)),
         ),
         (
-            "powershell",
-            super::env_files::generate_powershell_env_content(
-                &env,
-                &aliases,
-                Some(&FoldedPath::derived(&path_dirs)),
-                &origins,
-            ),
+            super::env_files::Dialect::Fish,
+            super::generate_fish_env_content(&layered, Some(&fold)),
+        ),
+        (
+            super::env_files::Dialect::PowerShell,
+            super::env_files::generate_powershell_env_content(&layered, Some(&fold)),
         ),
     ] {
+        let blocks = super::env_files::generate_blocks(dialect, &layered, Some(&fold));
+        assert_eq!(
+            block_headers(&blocks),
+            [
+                "# path",
+                "# profile: base (priority 1000)",
+                "# profile: work (priority 1000)",
+                "# module: nvim"
+            ],
+            "{dialect:?}: one block per layer, low precedence first:\n{content}"
+        );
         let body: Vec<&str> = content
             .lines()
-            .skip(1)
-            .filter(|l| !l.trim().is_empty())
+            .filter(|l| !l.trim().is_empty() && !l.starts_with('#'))
             .collect();
-        assert!(
-            body.iter().all(|l| l.contains(" # ")),
-            "{dialect}: every generated line below the header names an owner: {content}"
+        // One comment in the file, on the one line no header can own: the fold
+        // has as many producers as fed it.
+        assert_eq!(
+            body.iter().filter(|l| l.contains(" # ")).count(),
+            1,
+            "{dialect:?}: only the folded PATH line names its producers:\n{content}"
         );
-        for (needle, owner) in [
-            ("EDITOR", "# module:nvim"),
-            ("PAGER", "# profile:work"),
-            ("catn", "# profile:base"),
-            ("PATH", "# manager:brew,cargo"),
+        for (needle, header) in [
+            ("EDITOR", "# module: nvim"),
+            ("bat", "# profile: work (priority 1000)"),
+            ("less", "# profile: base (priority 1000)"),
+            ("catn", "# profile: base (priority 1000)"),
+            ("PATH", "# path"),
         ] {
             let line = body
                 .iter()
                 .find(|l| l.contains(needle))
-                .unwrap_or_else(|| panic!("{dialect}: no line names {needle}: {content}"));
-            assert!(
-                line.ends_with(owner),
-                "{dialect}: `{line}` must end with `{owner}`"
+                .unwrap_or_else(|| panic!("{dialect:?}: no line names {needle}: {content}"));
+            assert_eq!(
+                block_of(&blocks, line),
+                Some(header),
+                "{dialect:?}: `{line}` sits in the wrong block:\n{content}"
             );
         }
+        // One comment for the whole PATH line, managers in directory order,
+        // deduped — one per directory would repeat `brew` twice and say
+        // nothing extra.
+        let path_line = body
+            .iter()
+            .find(|l| l.contains("PATH"))
+            .expect("the fold writes a PATH line");
+        assert!(
+            path_line.ends_with(" # manager:brew,cargo"),
+            "{dialect:?}: the bootstrapped PATH line names its managers once each: {path_line}"
+        );
     }
+}
+
+/// Every layer's contribution is in the file, under a header naming it.
+#[test]
+fn the_primary_env_file_holds_one_block_per_layer_in_precedence_order() {
+    let (layered, path_dirs) = crate::test_helpers::layered_fixture("/home/tj");
+    let fold = FoldedPath::derived(&path_dirs);
+    let content = super::generate_env_file_content(&layered, Some(&fold));
+    let blocks =
+        super::env_files::generate_blocks(super::env_files::Dialect::Posix, &layered, Some(&fold));
+    assert_eq!(
+        block_headers(&blocks),
+        [
+            "# path",
+            "# profile: base (priority 100)",
+            "# profile: work (priority 1000)",
+            "# module: nvim"
+        ],
+        "one block per layer, low precedence first:\n{content}",
+    );
+    // The losing value is verbatim in its own block — the file IS the
+    // inheritance debugger, and the shell's last-wins resolves it.
+    assert_eq!(
+        block_of(&blocks, "export PAGER=\"less\""),
+        Some("# profile: base (priority 100)"),
+        "{content}"
+    );
+    assert_eq!(
+        block_of(&blocks, "export PAGER=\"bat\""),
+        Some("# profile: work (priority 1000)"),
+        "{content}"
+    );
+    // Name-sorted inside a block, env then aliases, read off the boundaries
+    // the generator returned.
+    let body = |header: &str| {
+        blocks
+            .iter()
+            .find(|block| block.header == header)
+            .unwrap_or_else(|| panic!("no {header} block:\n{content}"))
+            .lines
+            .join("\n")
+    };
+    let work = body("# profile: work (priority 1000)");
+    assert!(work.find("EDITOR") < work.find("PAGER"), "{content}");
+    let base = body("# profile: base (priority 100)");
+    assert!(base.find("export") < base.find("alias"), "{content}");
+    // No per-line owner comment survives: the header said it once, and a
+    // shadowed layer's line would otherwise name the layer that beat it.
+    assert!(
+        !content.contains(" # profile:"),
+        "redundant per-line provenance:\n{content}"
+    );
+    assert!(
+        !content.contains(" # module:"),
+        "redundant per-line provenance:\n{content}"
+    );
+    // Except on the one line no header can own — two producers, one assignment.
+    assert!(
+        content.contains(":$PATH\" # manager:brew,cargo\n"),
+        "{content}"
+    );
+}
+
+/// Both runs of a straddling owner name that owner, and each states the
+/// priority that put it where it is.
+///
+/// The two blocks are the same source, so the owner alone cannot tell a reader
+/// why one of them sits below the local layer and the other above it. The
+/// priority is the fact that answers it: `team` subscribed at 500, the local
+/// profile ranks 1000, and the source's required tier ranks 1500.
+#[test]
+fn a_straddling_owners_two_blocks_each_state_their_own_priority() {
+    let resolved = straddling_source_profile();
+    let layered = super::LayeredEnv::of(&resolved, &[]);
+    let content = super::generate_env_file_content(&layered, None);
+    let blocks =
+        super::env_files::generate_blocks(super::env_files::Dialect::Posix, &layered, None);
+    assert_eq!(
+        block_headers(&blocks),
+        [
+            "# source: team (priority 500)",
+            "# profile: work (priority 1000)",
+            "# source: team (priority 1500)"
+        ],
+        "the local block sits between the source's two runs, each under the \
+         owner's own header:\n{content}"
+    );
+    // The required tier's value is the one a shell sourcing this file is left
+    // with, which is the merge's own answer.
+    assert_eq!(
+        block_of(&blocks, "export VISUAL=\"emacs\""),
+        Some("# source: team (priority 1500)"),
+        "{content}"
+    );
+    assert!(
+        content.find("export VISUAL=\"vi\"") < content.find("export VISUAL=\"emacs\""),
+        "the required tier is below local, or the shell resolves the wrong \
+         value:\n{content}"
+    );
 }
 
 /// The `PATH` declarations that survive on a host CONCATENATE, and the one line
@@ -30397,7 +33843,7 @@ fn every_surviving_path_declaration_reaches_the_one_generated_line() {
     let layer = |name: &str, path: &str| crate::config::ProfileLayer {
         source: crate::config::LOCAL_LAYER.to_string(),
         profile_name: name.to_string(),
-        priority: 1000,
+        priority: crate::config::LOCAL_LAYER_PRIORITY,
         policy: crate::config::LayerPolicy::Local,
         spec: crate::config::ProfileSpec {
             env: vec![crate::config::EnvVar {
@@ -30457,7 +33903,10 @@ fn every_surviving_path_declaration_reaches_the_one_generated_line() {
         },
     )
     .expect("a declared PATH folds into a line");
-    let content = super::generate_env_file_content(&env, &aliases, Some(&folded), &origins);
+    let content = super::generate_env_file_content(
+        &crate::reconciler::LayeredEnv::for_test(&env, &aliases, &origins),
+        Some(&folded),
+    );
 
     let line = content
         .lines()
@@ -30493,15 +33942,13 @@ fn every_surviving_path_declaration_reaches_the_one_generated_line() {
     }
 }
 
-/// The provenance comment is part of the line `verify` matches, so a file
-/// written with it must read back as current rather than as permanent drift.
-/// Every owner kind is on the file at once — profile layer, module and the
-/// bootstrapped PATH line's manager — because the planner and the verifier
-/// share ONE merge and a comment either side rendered differently would be
-/// drift nothing can fix.
+/// A file the planner wrote must read back as current. Every owner kind is on
+/// the file at once — profile layer, module and the bootstrapped PATH line's
+/// manager — because the planner and the verifier share ONE merge, and a line
+/// either side rendered differently would be drift nothing can fix.
 #[test]
 #[serial_test::serial]
-fn an_owner_commented_env_line_written_by_the_planner_verifies_as_current() {
+fn every_line_the_planner_wrote_verifies_as_current() {
     let tmp_home = tempfile::tempdir().unwrap();
     let _home = crate::with_test_home_guard(tmp_home.path());
 
@@ -30510,11 +33957,6 @@ fn an_owner_commented_env_line_written_by_the_planner_verifies_as_current() {
         value: "less".into(),
         platforms: vec![],
     }];
-    let layer_owners = {
-        let mut o = crate::config::EntryOwners::default();
-        o.claim("profile:base", &profile_env, &[]);
-        o
-    };
     let path_dirs = vec![ManagerPathDir::new("brew", "/opt/homebrew/bin")];
 
     let mut module = crate::test_helpers::make_resolved_module("nvim");
@@ -30534,11 +33976,8 @@ fn an_owner_commented_env_line_written_by_the_planner_verifies_as_current() {
     // real apply writes rather than a literal that can drift from them.
     let mut primary: Option<std::path::PathBuf> = None;
     for action in Reconciler::plan_env_with_home(
-        &profile_env,
-        &[],
-        &layer_owners,
+        super::LayeredEnv::from_parts("profile:base", &profile_env, &[], &modules),
         crate::config::EnvScope::Interactive,
-        &modules,
         &[],
         &path_dirs,
         &[],
@@ -30556,11 +33995,8 @@ fn an_owner_commented_env_line_written_by_the_planner_verifies_as_current() {
     let primary = primary.expect("the planner writes a primary managed env file");
 
     let results = super::verify::env_verify_results(
-        &profile_env,
-        &[],
-        &layer_owners,
+        &super::LayeredEnv::from_parts("profile:base", &profile_env, &[], &modules),
         crate::config::EnvScope::Interactive,
-        &modules,
         &path_dirs,
     );
     // Only the seeded managed file is under test; the rc source line the test
@@ -30584,18 +34020,27 @@ fn an_owner_commented_env_line_written_by_the_planner_verifies_as_current() {
     // expected line the file is not required to hold sends the reader to fix a
     // difference that is not the difference.
     let written = std::fs::read_to_string(&primary).unwrap();
-    for (id, owner) in [("EDITOR", "# module:nvim"), ("PAGER", "# profile:base")] {
-        let shown =
-            super::verify::MergedEnvItems::new(&profile_env, &[], &layer_owners, &modules, &[])
-                .declared_line("env-var", id)
-                .expect("a declared var renders its declared line");
+    let layered = super::LayeredEnv::from_parts("profile:base", &profile_env, &[], &modules);
+    let blocks = host_env_blocks(&layered, Some(&FoldedPath::derived(&path_dirs)));
+    for (id, header) in [
+        ("EDITOR", "# module: nvim"),
+        ("PAGER", "# profile: base (priority 1000)"),
+    ] {
+        let shown = super::verify::MergedEnvItems::new(&layered, &[])
+            .declared_line("env-var", id)
+            .expect("a declared var renders its declared line");
         assert!(
-            shown.contains(owner),
-            "the shown line carries the provenance comment verify matched on: {shown}"
+            !shown.contains(" # "),
+            "the shown line carries provenance the file does not: {shown}"
         );
         assert!(
             written.lines().any(|line| line == shown),
             "the shown line is a line the file actually holds: {shown} in {written}"
+        );
+        assert_eq!(
+            block_of(&blocks, &shown),
+            Some(header),
+            "the shown line sits under the owner that declared it: {written}"
         );
     }
     // `written` is the file the planner wrote for THIS host, so the assertion
@@ -30890,7 +34335,7 @@ fn a_failing_write_over_an_adopted_target_still_names_the_copy_it_took() {
     );
     // The error first, the copy after: both facts on one row, in the order
     // they happened, rather than either replacing the other.
-    let (before, after) = row.split_once(", backed up to ").unwrap();
+    let (before, after) = row.split_once("; backed up to ").unwrap();
     assert!(
         before.contains('—') && before.len() > before.find('—').unwrap() + 3,
         "the error keeps its own place ahead of the copy, got: {row}"
@@ -30942,7 +34387,15 @@ fn a_module_deploying_a_directory_by_symlink_reports_the_file_that_moved_inside_
         &super::format::module_files_description("nvim", 1),
     );
     state
-        .upsert_managed_resource(&rtype, &rid, "local", None, None)
+        .upsert_managed_resource(
+            &rtype,
+            &rid,
+            crate::reconciler::recorded_resource_kind(&rtype, &rid),
+            None,
+            "local",
+            None,
+            None,
+        )
         .unwrap();
 
     let modules = vec![module];
@@ -31022,7 +34475,15 @@ fn a_one_file_edit_inside_a_module_tree_is_counted_as_one() {
         &super::format::module_files_description("nvim", 2),
     );
     state
-        .upsert_managed_resource(&rtype, &rid, "local", None, None)
+        .upsert_managed_resource(
+            &rtype,
+            &rid,
+            crate::reconciler::recorded_resource_kind(&rtype, &rid),
+            None,
+            "local",
+            None,
+            None,
+        )
         .unwrap();
 
     let refreshed = reconciler
@@ -31145,7 +34606,15 @@ fn an_apply_records_each_declared_env_entry_under_the_layer_that_declared_it() {
     // A row for an entry no layer declares any more: the rewrite that drops
     // its line from the file is what drops the row.
     state
-        .upsert_managed_resource(super::ENV_VAR_RESOURCE_TYPE, "RETIRED", "acme", None, None)
+        .upsert_managed_resource(
+            super::ENV_VAR_RESOURCE_TYPE,
+            "RETIRED",
+            super::ENV_VAR_RESOURCE_TYPE,
+            None,
+            "acme",
+            None,
+            None,
+        )
         .unwrap();
 
     let mut resolved = make_empty_resolved();
@@ -31348,13 +34817,23 @@ fn a_scoped_apply_leaves_another_layers_env_row_standing() {
         .upsert_managed_resource(
             super::ENV_VAR_RESOURCE_TYPE,
             "ACME_HOME",
+            super::ENV_VAR_RESOURCE_TYPE,
+            None,
             "acme",
             None,
             None,
         )
         .unwrap();
     state
-        .upsert_managed_resource(super::ALIAS_RESOURCE_TYPE, "acmeup", "acme", None, None)
+        .upsert_managed_resource(
+            super::ALIAS_RESOURCE_TYPE,
+            "acmeup",
+            super::ALIAS_RESOURCE_TYPE,
+            None,
+            "acme",
+            None,
+            None,
+        )
         .unwrap();
 
     // The desired set this run resolved: the operator's own layer alone, as an

@@ -1,0 +1,3 @@
+pub fn padding(depth: usize) -> usize {
+    depth * 4 /* one indent step */
+}

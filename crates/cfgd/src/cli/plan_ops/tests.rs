@@ -28,9 +28,12 @@ fn test_cli_in(dir: &std::path::Path) -> Cli {
         color: crate::cli::ColorWhen::Auto,
         output: crate::cli::OutputFormatArg(cfgd_core::output::OutputFormat::Table),
         list_envelope: false,
+        hints: false,
         no_hints: false,
         theme: None,
         mask_env_values: None,
+        migration_policy: None,
+        update_policy: None,
         jsonpath: None,
         yes: false,
         state_dir: None,
@@ -294,6 +297,7 @@ fn action_type_str_manager_variants() {
             manager: "brew".to_string(),
             via: "homebrew installer".to_string(),
             declared: None,
+            floor: None,
             batched: vec![],
             depends_on: vec![],
         })),
@@ -342,6 +346,7 @@ fn manager_action_output_provision_carries_via_and_requires() {
         manager: "pipx".to_string(),
         via: "pip install pipx".to_string(),
         declared: None,
+        floor: None,
         batched: vec![],
         depends_on: vec!["manager:prereq:curl".to_string()],
     }))
@@ -637,6 +642,7 @@ fn skip_and_only_patterns_reach_a_prerequisite_by_tool_not_installer() {
         manager: "brew".to_string(),
         via: "curl".to_string(),
         declared: None,
+        floor: None,
         batched: vec![],
         depends_on: vec![],
     });
@@ -809,6 +815,7 @@ fn batched_provision_plan() -> cfgd_core::reconciler::Plan {
                 manager: "npm".to_string(),
                 via: "apt".to_string(),
                 declared: None,
+                floor: None,
                 batched: vec!["pipx".to_string()],
                 depends_on: vec![],
             })],
@@ -880,12 +887,182 @@ fn a_phase_selector_naming_one_batch_member_provisions_only_that_manager() {
     );
 }
 
+/// The same batch, carrying the two facts that belong to its own manager: the
+/// module's declared route to npm, and a floor a confirmation was given for.
+fn routed_provision_plan() -> cfgd_core::reconciler::Plan {
+    make_plan(vec![
+        (
+            PhaseName::Bootstrap,
+            vec![Action::Manager(ManagerAction::Provision {
+                manager: "npm".to_string(),
+                via: "apt".to_string(),
+                declared: Some(cfgd_core::reconciler::DeclaredProvision {
+                    installer: "apt".to_string(),
+                    package: "nodejs".to_string(),
+                }),
+                floor: Some("1.85".to_string()),
+                batched: vec!["pipx".to_string()],
+                depends_on: vec![],
+            })],
+        ),
+        (
+            PhaseName::Packages,
+            vec![
+                pkg_install("npm", vec!["prettier"]),
+                pkg_install("pipx", vec!["ruff"]),
+            ],
+        ),
+    ])
+}
+
+fn provision_nodes(plan: &cfgd_core::reconciler::Plan) -> Vec<&ManagerAction> {
+    plan.phases
+        .iter()
+        .flat_map(|phase| phase.actions())
+        .filter_map(|a| match a {
+            Action::Manager(node @ ManagerAction::Provision { .. }) => Some(node),
+            _ => None,
+        })
+        .collect()
+}
+
+/// `declared` and `floor` are the node MANAGER's own: the route the module
+/// wrote to that tool, and the floor its confirmation asked for. A filter
+/// keeping the manager keeps both, so `--only` cannot quietly turn a declared
+/// route into a cascade or drop the check the confirmation earned; a filter
+/// dropping it promotes a batched member, which neither fact describes.
+#[test]
+fn a_filtered_provision_keeps_the_facts_of_its_own_manager_and_lends_them_to_nobody() {
+    let (printer, _buf) = Printer::for_test();
+    let mut kept = routed_provision_plan();
+    filter_plan(
+        &mut kept,
+        &["bootstrap.pipx".to_string()],
+        &[],
+        None,
+        &printer,
+        &ProviderRegistry::new(),
+        &std::collections::HashSet::new(),
+    );
+    let nodes = provision_nodes(&kept);
+    assert!(
+        matches!(
+            nodes.as_slice(),
+            [ManagerAction::Provision { manager, declared, floor, .. }]
+                if manager == "npm"
+                    && declared.as_ref().is_some_and(|route| route.package == "nodejs")
+                    && floor.as_deref() == Some("1.85")
+        ),
+        "the surviving manager keeps its route and its floor: {nodes:#?}"
+    );
+
+    let mut promoted = routed_provision_plan();
+    filter_plan(
+        &mut promoted,
+        &["bootstrap.npm".to_string()],
+        &[],
+        None,
+        &printer,
+        &ProviderRegistry::new(),
+        &std::collections::HashSet::new(),
+    );
+    let nodes = provision_nodes(&promoted);
+    assert!(
+        matches!(
+            nodes.as_slice(),
+            [ManagerAction::Provision { manager, declared, floor, .. }]
+                if manager == "pipx" && declared.is_none() && floor.is_none()
+        ),
+        "the promoted member inherits neither: {nodes:#?}"
+    );
+}
+
+/// The whole chain a floor has to survive: the confirmation is made while the
+/// plan is written, and the check runs while it is applied, which for `cfgd
+/// apply --plan` are two invocations with a file in between. Dropped on the
+/// wire, the replay installs whatever the cascade hands it and settles green
+/// over the question the recorded run asked.
+#[test]
+fn a_floor_survives_the_saved_plan_file_and_still_fails_a_short_delivery() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = tmp.path().join("cfgd.yaml");
+    std::fs::write(&config, "# what the derivation read\n").unwrap();
+    let state = StateStore::open_in_memory().unwrap();
+    let plan = make_plan(vec![(
+        PhaseName::Bootstrap,
+        vec![Action::Manager(ManagerAction::Provision {
+            manager: "cargo".to_string(),
+            via: "rustup".to_string(),
+            declared: None,
+            floor: Some("1.85".to_string()),
+            batched: vec![],
+            depends_on: vec![],
+        })],
+    )]);
+
+    // The producer's own gate and its own writer: a structured run, no filter,
+    // no isolate, nothing withheld.
+    let (printer, _buf) = Printer::for_test_doc_with_format(cfgd_core::output::OutputFormat::Json);
+    let recorder = cfgd_core::ConfigInputRecorder::start();
+    cfgd_core::record_config_input(&config);
+    let withheld = reconciler::WithheldDecisions::default();
+    let saved = saved_plan_for(
+        &printer,
+        &plan,
+        &state,
+        false,
+        &[],
+        &withheld,
+        recorder.finish(),
+    )
+    .unwrap()
+    .expect("an unfiltered structured run records its plan");
+    let payload = build_plan_output(&plan, "apply", None, &[], &withheld, &[], Some(saved));
+    let file = tmp.path().join("plan.json");
+    std::fs::write(&file, serde_json::to_string(&payload).unwrap()).unwrap();
+
+    let loaded = load_saved_plan(&file, &config, &state).expect("the file reads back");
+    let nodes = provision_nodes(&loaded.plan);
+    assert!(
+        matches!(
+            nodes.as_slice(),
+            [ManagerAction::Provision { floor, .. }] if floor.as_deref() == Some("1.85")
+        ),
+        "the floor came back off the wire: {nodes:#?}"
+    );
+
+    let mut registry = ProviderRegistry::new();
+    registry.add_package_manager(Box::new(
+        cfgd_core::test_helpers::MockPackageManager::new("cargo").reporting_version("1.80.0"),
+    ));
+    let result = reconciler::Reconciler::new(&registry, &state)
+        .apply(
+            &loaded.plan,
+            &cfgd_core::test_helpers::make_empty_resolved(),
+            tmp.path(),
+            &cfgd_core::test_helpers::test_printer(),
+            None,
+            &[],
+            reconciler::ReconcileContext::Apply,
+            false,
+            None,
+            &cfgd_core::AbortFlag::new(),
+        )
+        .expect("the replay runs the file's own actions");
+    let error = result.action_results[0].error.clone().unwrap_or_default();
+    assert!(
+        error.contains("below the declared minVersion 1.85"),
+        "the replayed node checks what it found against the recorded floor: {error}"
+    );
+}
+
 #[test]
 fn a_batched_provision_names_every_manager_it_delivers_in_the_json_payload() {
     let out = manager_action_output(&Action::Manager(ManagerAction::Provision {
         manager: "npm".to_string(),
         via: "apt".to_string(),
         declared: None,
+        floor: None,
         batched: vec!["pipx".to_string()],
         depends_on: vec![],
     }))
@@ -908,6 +1085,7 @@ fn filter_plan_warns_when_a_skipped_provision_strands_the_installs_that_needed_i
                 manager: "brew".to_string(),
                 via: "homebrew installer".to_string(),
                 declared: None,
+                floor: None,
                 batched: vec![],
                 depends_on: vec![],
             })],
@@ -953,6 +1131,7 @@ fn filter_plan_skip_bootstrap_session_removes_only_the_broadcast_and_strands_not
                     manager: "brew".to_string(),
                     via: "homebrew installer".to_string(),
                     declared: None,
+                    floor: None,
                     batched: vec![],
                     depends_on: vec![],
                 }),
@@ -1011,6 +1190,7 @@ fn filter_plan_skip_bootstrap_shell_removes_only_the_injects_and_keeps_the_write
                 manager: "brew".to_string(),
                 via: "homebrew installer".to_string(),
                 declared: None,
+                floor: None,
                 batched: vec![],
                 depends_on: vec![],
             }),
@@ -1104,6 +1284,7 @@ fn filter_plan_skip_bootstrap_managers_strands_every_manager_it_removes() {
                     manager: "brew".to_string(),
                     via: "homebrew installer".to_string(),
                     declared: None,
+                    floor: None,
                     batched: vec![],
                     depends_on: vec![],
                 }),
@@ -1111,6 +1292,7 @@ fn filter_plan_skip_bootstrap_managers_strands_every_manager_it_removes() {
                     manager: "npm".to_string(),
                     via: "node installer".to_string(),
                     declared: None,
+                    floor: None,
                     batched: vec![],
                     depends_on: vec![],
                 }),
@@ -1164,6 +1346,7 @@ fn filter_plan_skip_bootstrap_brew_leaves_other_managers_untouched() {
                     manager: "brew".to_string(),
                     via: "homebrew installer".to_string(),
                     declared: None,
+                    floor: None,
                     batched: vec![],
                     depends_on: vec![],
                 }),
@@ -1233,6 +1416,7 @@ fn filter_plan_skip_last_package_consumer_silently_prunes_its_now_purposeless_ma
                 manager: "brew".to_string(),
                 via: "homebrew installer".to_string(),
                 declared: None,
+                floor: None,
                 batched: vec![],
                 depends_on: vec![],
             })],
@@ -1319,6 +1503,7 @@ fn filter_plan_only_bootstrap_managers_keeps_every_manager_node() {
                     manager: "brew".to_string(),
                     via: "homebrew installer".to_string(),
                     declared: None,
+                    floor: None,
                     batched: vec![],
                     depends_on: vec![],
                 }),
@@ -1382,6 +1567,7 @@ fn filter_plan_only_cfgd_managers_keeps_every_manager_node() {
                     manager: "brew".to_string(),
                     via: "homebrew installer".to_string(),
                     declared: None,
+                    floor: None,
                     batched: vec![],
                     depends_on: vec![],
                 }),
@@ -1733,7 +1919,7 @@ fn every_operand_a_plan_action_holds_reaches_the_json_payload() {
     ];
     for (shape, action) in shapes {
         let plan = one_phase_plan(vec![action]);
-        let output = build_plan_output(&plan, "ctx", None, &[], &no_decisions(), &[]);
+        let output = build_plan_output(&plan, "ctx", None, &[], &no_decisions(), &[], None);
         let json = serde_json::to_string(&output).unwrap();
         for name in &names {
             assert!(
@@ -1793,7 +1979,7 @@ fn a_tool_this_plan_provisions_is_named_once_in_the_json_payload() {
         )
         .expect("plan");
 
-    let output = build_plan_output(&plan, "ctx", None, &[], &no_decisions(), &[]);
+    let output = build_plan_output(&plan, "ctx", None, &[], &no_decisions(), &[], None);
     let json = serde_json::to_string(&output).expect("serialize");
     assert_eq!(
         json.matches("tool-alias").count(),
@@ -1819,7 +2005,7 @@ fn build_plan_output_counts_actions_and_sets_context() {
         ),
         (PhaseName::Packages, vec![pkg_install("brew", vec!["rg"])]),
     ]);
-    let output = build_plan_output(&plan, "my-machine", None, &[], &no_decisions(), &[]);
+    let output = build_plan_output(&plan, "my-machine", None, &[], &no_decisions(), &[], None);
 
     assert_eq!(output.context, "my-machine");
     assert_eq!(output.total_actions, 3);
@@ -1866,6 +2052,7 @@ fn build_plan_output_phase_filter_excludes_other_phases() {
         &[],
         &no_decisions(),
         &[],
+        None,
     );
 
     assert_eq!(output.phases.len(), 1);
@@ -1879,7 +2066,7 @@ fn build_plan_output_names_the_kind_phase_and_carries_the_module_as_an_owner() {
         PhaseName::PostScripts,
         vec![module_run_script()],
     )]);
-    let output = build_plan_output(&plan, "ctx", None, &[], &no_decisions(), &[]);
+    let output = build_plan_output(&plan, "ctx", None, &[], &no_decisions(), &[], None);
 
     assert_eq!(output.phases.len(), 1);
     assert_eq!(output.phases[0].phase, "Post-Scripts");
@@ -1918,13 +2105,14 @@ fn build_plan_output_orders_groups_profile_first() {
                 manager: "brew".to_string(),
                 via: "homebrew installer".to_string(),
                 declared: None,
+                floor: None,
                 batched: vec![],
                 depends_on: vec![],
             }),
             pkg_install("apt", vec!["sl"]),
         ],
     )]);
-    let output = build_plan_output(&plan, "ctx", None, &[], &no_decisions(), &[]);
+    let output = build_plan_output(&plan, "ctx", None, &[], &no_decisions(), &[], None);
 
     assert_eq!(
         output.phases[0]
@@ -1952,7 +2140,7 @@ fn no_bootstrap_means_no_managers_group_in_the_payload() {
         PhaseName::Packages,
         vec![pkg_install("apt", vec!["sl"])],
     )]);
-    let output = build_plan_output(&plan, "ctx", None, &[], &no_decisions(), &[]);
+    let output = build_plan_output(&plan, "ctx", None, &[], &no_decisions(), &[], None);
 
     assert_eq!(
         output.phases[0]
@@ -1983,6 +2171,7 @@ fn build_plan_output_manager_action_carries_the_structured_manager_payload() {
                 manager: "pipx".to_string(),
                 via: "pip install pipx".to_string(),
                 declared: None,
+                floor: None,
                 batched: vec![],
                 depends_on: vec!["manager:prereq:curl".to_string()],
             }),
@@ -1992,7 +2181,7 @@ fn build_plan_output_manager_action_carries_the_structured_manager_payload() {
             }),
         ],
     )]);
-    let output = build_plan_output(&plan, "ctx", None, &[], &no_decisions(), &[]);
+    let output = build_plan_output(&plan, "ctx", None, &[], &no_decisions(), &[], None);
     let json = serde_json::to_value(&output).unwrap();
     let groups = json["phases"][0]["groups"].as_array().expect("groups");
     assert_eq!(groups.len(), 1);
@@ -2044,6 +2233,7 @@ fn build_plan_output_manager_action_carries_the_structured_manager_payload() {
         &[],
         &no_decisions(),
         &[],
+        None,
     );
     let other_json = serde_json::to_value(&other).unwrap();
     assert!(
@@ -2057,7 +2247,7 @@ fn build_plan_output_manager_action_carries_the_structured_manager_payload() {
 #[test]
 fn build_plan_output_non_module_phase_omits_module_and_section_keys() {
     let plan = make_plan(vec![(PhaseName::Files, vec![file_create("/etc/foo")])]);
-    let output = build_plan_output(&plan, "ctx", None, &[], &no_decisions(), &[]);
+    let output = build_plan_output(&plan, "ctx", None, &[], &no_decisions(), &[], None);
 
     // `skip_serializing_if` back-compat guarantee: a non-module phase's wire
     // form carries no `module`/`section` keys at all, not `null` values.
@@ -2089,7 +2279,7 @@ fn build_plan_output_carries_source_module_origin() {
         PhaseName::Modules,
         vec![module_install_from_source("acme"), module_install()],
     )]);
-    let output = build_plan_output(&plan, "ctx", None, &[], &no_decisions(), &[]);
+    let output = build_plan_output(&plan, "ctx", None, &[], &no_decisions(), &[], None);
 
     let actions = phase_actions(&output.phases[0]);
     let sourced = actions
@@ -2126,7 +2316,7 @@ fn build_plan_output_local_only_omits_all_origins() {
         PhaseName::Modules,
         vec![module_install(), module_deploy_files()],
     )]);
-    let output = build_plan_output(&plan, "ctx", None, &[], &no_decisions(), &[]);
+    let output = build_plan_output(&plan, "ctx", None, &[], &no_decisions(), &[], None);
     for phase in &output.phases {
         for action in phase_actions(phase) {
             assert_eq!(action.origin, None, "local plan must carry no origin");
@@ -2147,7 +2337,7 @@ fn build_plan_output_local_only_omits_all_origins() {
 #[test]
 fn build_plan_output_empty_plan_has_zero_actions() {
     let plan = make_plan(vec![]);
-    let output = build_plan_output(&plan, "ctx", None, &[], &no_decisions(), &[]);
+    let output = build_plan_output(&plan, "ctx", None, &[], &no_decisions(), &[], None);
 
     assert_eq!(output.total_actions, 0);
     assert!(output.phases.is_empty());
@@ -2190,8 +2380,9 @@ fn the_plan_json_payload_is_the_same_bytes_under_a_preset_that_overrides_the_arr
             scope: &scope,
             pending_backups: &[],
             withheld: &decisions,
+            saved_plan: None,
         };
-        display_plan_preview(&run, &plan, &printer, &args);
+        display_plan_preview(&run, &plan, &printer, args);
         drop(printer);
         cfgd_core::test_helpers::captured_text(&buf)
     };
@@ -2210,6 +2401,66 @@ fn the_plan_json_payload_is_the_same_bytes_under_a_preset_that_overrides_the_arr
     );
 }
 
+/// `applies.plan_hash` is a digest of the ACTIONS, so recording the graph in the
+/// payload envelope cannot move it: a plan read back out of `savedPlan.plan`
+/// hashes to what the same plan hashed before it was written. A replay that
+/// hashed differently would record an apply nothing can be matched against.
+///
+/// The hash equality alone covers the ENVELOPE and nothing else. Both operands
+/// run through the same serde impl, so a symmetric change — a rename, a
+/// `skip_serializing`, a new field — moves both and the digests still agree.
+/// What guards field coverage is
+/// `every_optional_field_of_the_plan_format_deserializes_from_its_absence` and
+/// the `// plan-skip-ok:` marker rule it reads. The `Debug` equality below is
+/// the asymmetric half available here: `Debug` does not go through serde, so a
+/// field dropped from the wire reads back as its default and fails there while
+/// the digests still match.
+///
+/// That equality holds over THIS fixture's plan, which reaches no hatched
+/// field: a `// plan-skip-ok:` skip is a blessed shape, so one added to a type
+/// this fixture carries is a reason to move the fixture off that type. The
+/// failure then says nothing about the plan format.
+#[test]
+fn a_saved_plan_hashes_to_what_it_hashed_before_the_payload_carried_it() {
+    let plan = make_plan(vec![(PhaseName::System, vec![system_set()])]);
+    let before = plan.to_hash_string().expect("the fixture plan hashes");
+    let saved = SavedPlan {
+        plan: serde_json::to_value(&plan).expect("a plan serializes"),
+        config_inputs: cfgd_core::ConfigInputs::default(),
+        serial: 7,
+        store_id: "00000000-0000-4000-8000-000000000000".to_string(),
+    };
+    let output = build_plan_output(&plan, "ctx", None, &[], &no_decisions(), &[], Some(saved));
+    let json = serde_json::to_value(&output).expect("the payload serializes");
+    assert_eq!(json["savedPlan"]["serial"], serde_json::json!(7));
+    let replayed: Plan = serde_json::from_value(json["savedPlan"]["plan"].clone())
+        .expect("the recorded plan reads back as the reconciler's own plan");
+    assert_eq!(
+        replayed.to_hash_string().expect("the replayed plan hashes"),
+        before,
+        "the payload envelope adds nothing the plan hash is taken over"
+    );
+    assert_eq!(
+        format!("{replayed:?}"),
+        format!("{plan:?}"),
+        "this fixture's plan carries no `plan-skip-ok` field, so every field of \
+         it survives the round trip"
+    );
+}
+
+/// A payload with no approval contract omits the key outright, so every
+/// existing consumer reads the same bytes it always did.
+#[test]
+fn a_plan_output_with_no_saved_plan_omits_the_key() {
+    let plan = make_plan(vec![(PhaseName::System, vec![system_set()])]);
+    let output = build_plan_output(&plan, "ctx", None, &[], &no_decisions(), &[], None);
+    let json = serde_json::to_value(&output).expect("the payload serializes");
+    assert!(
+        json.get("savedPlan").is_none(),
+        "an unrecorded contract is absent (no null key): {json}"
+    );
+}
+
 // `build_plan_output`'s `PlanActionOutput.description` is the
 // `-o json` plan payload — it must preserve a multi-line inline script's
 // run_str body byte-identical, never condensed. Condensing belongs solely to
@@ -2223,7 +2474,7 @@ fn build_plan_output_script_action_json_preserves_raw_multiline_body() {
         origin: "test".to_string(),
     });
     let plan = make_plan(vec![(PhaseName::PreScripts, vec![action])]);
-    let output = build_plan_output(&plan, "ctx", None, &[], &no_decisions(), &[]);
+    let output = build_plan_output(&plan, "ctx", None, &[], &no_decisions(), &[], None);
 
     let desc = &output.phases[0].groups[0].actions()[0].description;
     assert!(
@@ -2248,7 +2499,7 @@ fn build_plan_output_module_script_action_json_preserves_raw_multiline_body() {
         origin: None,
     });
     let plan = make_plan(vec![(PhaseName::Modules, vec![action])]);
-    let output = build_plan_output(&plan, "ctx", None, &[], &no_decisions(), &[]);
+    let output = build_plan_output(&plan, "ctx", None, &[], &no_decisions(), &[], None);
 
     let desc = &output.phases[0].groups[0].actions()[0].description;
     assert!(
@@ -2372,6 +2623,8 @@ fn is_unmanaged_file_managed_path_returns_false() {
         .upsert_managed_resource(
             "file",
             &cfgd_core::to_posix_string(&file_path),
+            "file",
+            None,
             "test",
             None,
             None,
@@ -2669,7 +2922,7 @@ fn a_managed_target_is_recognised_by_the_id_the_reconciler_actually_mints() {
         .strip_prefix("file:update:")
         .expect("a file Update description carries the file:update: prefix");
     state
-        .upsert_managed_resource("file", id, "local", None, None)
+        .upsert_managed_resource("file", id, "file", None, "local", None, None)
         .unwrap();
 
     assert!(
@@ -2936,6 +3189,7 @@ fn env_apply_result(descriptions: &[&str]) -> ApplyResult {
             .iter()
             .map(|d| ActionResult {
                 origin: None,
+                manager: None,
                 after_plan: None,
                 phase: "env".to_string(),
                 description: (*d).to_string(),
@@ -3401,6 +3655,8 @@ fn a_reserved_target_is_still_the_users_file_until_the_write_runs() {
 #[test]
 #[serial_test::serial]
 fn shell_env_reminder_names_the_written_env_file() {
+    let _msystem = cfgd_core::test_helpers::EnvVarGuard::unset("MSYSTEM");
+    let _shell = cfgd_core::test_helpers::EnvVarGuard::unset("SHELL");
     let tmp = tempfile::tempdir().unwrap();
     let (out, home) = cfgd_core::with_test_home(tmp.path(), || {
         let home = cfgd_core::to_posix_string(cfgd_core::expand_tilde(std::path::Path::new("~")));
@@ -3418,16 +3674,16 @@ fn shell_env_reminder_names_the_written_env_file() {
         !home.is_empty() && home != "~",
         "the test home must resolve to a real sandbox path, got: {home}"
     );
-    // The reminder is the report's closing instruction, so it renders at the
-    // foot with no `Caveats` heading and no owner group around it — there is
-    // nothing to caveat here, only something to do next.
+    // The reminder names the file this apply wrote, so it is a note row under
+    // the owner that wrote it — inside the report's own `Caveats` section,
+    // where no `usageHints` decision can reach it.
     assert!(
-        !out.contains("Caveats"),
-        "a lone next step opens no Caveats section, got: {out}"
+        out.contains("Caveats"),
+        "an instruction renders inside the report's caveats, got: {out}"
     );
     assert!(
-        !out.contains("cfgd:env"),
-        "a next step is not a remark about one owner, got: {out}"
+        out.contains("cfgd:env"),
+        "and under the owner that wrote the file it names, got: {out}"
     );
     assert!(
         out.contains("Run `source ~/.cfgd.env`"),
@@ -3528,8 +3784,8 @@ fn shell_env_reminder_fires_for_source_line_injection_alone() {
          the running shell stale: {out}"
     );
     assert!(
-        !out.contains("Caveats"),
-        "a lone next step opens no Caveats section, got: {out}"
+        out.contains("Caveats"),
+        "an instruction renders inside the report's caveats, got: {out}"
     );
 }
 
@@ -3584,6 +3840,190 @@ fn module_batch(module: &str, resolved: Vec<cfgd_core::modules::ResolvedPackage>
         kind: ModuleActionKind::InstallPackages { resolved },
         origin: None,
     })
+}
+
+/// A plan file carries neither `manager_declared` nor `min_version` — both are
+/// `#[serde(skip)]`, because serializing either would move every stored
+/// `plan_hash` — so a replay reads them back `false` and `None`. The resolution
+/// that filled them runs again on that path, and this is what puts them back:
+/// without it `Reconciler::package_survives_elision` reads a module's declared
+/// floor as "no floor" and elides an outdated copy as converged.
+#[test]
+fn a_plan_read_off_the_wire_takes_its_declared_manager_and_floor_from_the_modules() {
+    let off_the_wire = resolved_package("brew", "neovim");
+    assert!(
+        !off_the_wire.manager_declared && off_the_wire.min_version.is_none(),
+        "the premise: a package read back off a plan file states neither"
+    );
+    let mut plan = make_plan(vec![(
+        PhaseName::Packages,
+        vec![module_batch("editor", vec![off_the_wire])],
+    )]);
+
+    let mut module = cfgd_core::test_helpers::make_resolved_module("editor");
+    module.packages = vec![cfgd_core::modules::ResolvedPackage {
+        manager_declared: true,
+        min_version: Some("0.11".to_string()),
+        ..resolved_package("brew", "neovim")
+    }];
+
+    super::restore_module_planner_inputs(
+        &mut plan,
+        std::slice::from_ref(&module),
+        std::path::Path::new("plan.json"),
+    )
+    .unwrap();
+
+    let restored: Vec<_> = plan.phases[0]
+        .actions()
+        .filter_map(|a| match a {
+            Action::Module(m) => match &m.kind {
+                ModuleActionKind::InstallPackages { resolved } => Some(resolved),
+                _ => None,
+            },
+            _ => None,
+        })
+        .flatten()
+        .collect();
+    assert_eq!(restored.len(), 1);
+    assert!(restored[0].manager_declared, "the author named the manager");
+    assert_eq!(restored[0].min_version.as_deref(), Some("0.11"));
+}
+
+/// What a refusal puts on the wire, rendered through the CLI's own error sink.
+///
+/// `restore_module_planner_inputs` runs after the file has already been read
+/// and accepted, so its two refusals are reachable only from here, and their
+/// kinds still have to be the ones a script reads.
+fn refusal_payload(err: &anyhow::Error) -> serde_json::Value {
+    let (printer, cap) = Printer::for_test_doc_with_format(cfgd_core::output::OutputFormat::Json);
+    let _ = crate::cli::error::render_cli_error(&printer, err);
+    drop(printer);
+    cap.json().expect("an error doc carries a payload")
+}
+
+/// The two facts the restore puts back are the MODULE's to state, and
+/// `modules::resolve_package` picks a manager by what this host holds, so a
+/// package installed between the plan and the replay moves the
+/// `(manager, canonical_name)` key while every recorded config input still
+/// stats identical. Passing the entry through would hand
+/// `package_survives_elision` a floor of `None` and elide an outdated copy as
+/// converged, so the file is refused instead.
+#[test]
+fn a_plan_naming_a_package_the_modules_no_longer_route_the_same_way_is_refused() {
+    let mut plan = make_plan(vec![(
+        PhaseName::Packages,
+        vec![module_batch(
+            "editor",
+            vec![resolved_package("brew", "neovim")],
+        )],
+    )]);
+
+    let mut module = cfgd_core::test_helpers::make_resolved_module("editor");
+    module.packages = vec![resolved_package("cargo", "neovim")];
+
+    let refusal = super::restore_module_planner_inputs(
+        &mut plan,
+        std::slice::from_ref(&module),
+        std::path::Path::new("plan.json"),
+    )
+    .unwrap_err();
+    let payload = refusal_payload(&refusal);
+    assert_eq!(payload["error"], "host_moved", "{payload}");
+    assert_eq!(payload["module"], "editor", "{payload}");
+    assert_eq!(payload["manager"], "brew", "{payload}");
+    assert_eq!(payload["package"], "neovim", "{payload}");
+    let err = refusal.to_string();
+    assert!(
+        err.contains("plan.json does not describe this host"),
+        "the refusal names the file: {err}"
+    );
+    assert!(
+        err.contains("brew:neovim") && err.contains("module editor"),
+        "the refusal names the package and its module: {err}"
+    );
+    assert!(err.contains("`cfgd plan -o json`"), "{err}");
+}
+
+/// The keys [`super::is_plan_payload`] asks for are ones `cfgd plan -o json`
+/// cannot omit, read off the real serialization: a key gaining a
+/// `skip_serializing_if` would make a plan cfgd wrote fail the question and
+/// earn a stranger's sentence.
+#[test]
+fn is_plan_payload_reads_keys_the_plan_output_always_serializes() {
+    // Every optional slot empty, which is the payload most likely to drop a
+    // key.
+    let bare = PlanOutput {
+        context: "apply".to_string(),
+        phases: vec![],
+        total_actions: 0,
+        sources: vec![],
+        warnings: vec![],
+        pending_backups: vec![],
+        pending_decisions: vec![],
+        rejected_decisions: vec![],
+        saved_plan: None,
+    };
+    let body = serde_json::to_string(&bare).unwrap();
+    let doc: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let mut keys: Vec<_> = doc
+        .as_object()
+        .expect("a plan payload is an object")
+        .keys()
+        .map(String::as_str)
+        .collect();
+    keys.sort_unstable();
+    assert_eq!(
+        keys,
+        ["context", "phases", "totalActions"],
+        "these are the keys no filter suppresses, and the ones the question may read"
+    );
+    assert!(
+        super::is_plan_payload(&body),
+        "the emptiest plan output is still recognised as one: {body}"
+    );
+    assert!(
+        !super::is_plan_payload(r#"{"context":"apply"}"#),
+        "a document carrying only the third key is not a plan output"
+    );
+    assert!(
+        !super::is_plan_payload("[1, 2]"),
+        "a JSON array is no plan output"
+    );
+}
+
+/// The same refusal one level up: the file plans packages for a module this
+/// run's resolution no longer produces at all, so nothing can state the two
+/// facts for it.
+#[test]
+fn a_plan_naming_a_module_this_run_no_longer_resolves_is_refused() {
+    let mut plan = make_plan(vec![(
+        PhaseName::Packages,
+        vec![module_batch(
+            "editor",
+            vec![resolved_package("brew", "neovim")],
+        )],
+    )]);
+
+    let refusal = super::restore_module_planner_inputs(
+        &mut plan,
+        &[cfgd_core::test_helpers::make_resolved_module("shell")],
+        std::path::Path::new("plan.json"),
+    )
+    .unwrap_err();
+    let payload = refusal_payload(&refusal);
+    assert_eq!(payload["error"], "host_moved", "{payload}");
+    assert_eq!(payload["module"], "editor", "{payload}");
+    let err = refusal.to_string();
+    assert!(
+        err.contains("plan.json does not describe this host"),
+        "the refusal names the file: {err}"
+    );
+    assert!(
+        err.contains("module editor"),
+        "the refusal names the module: {err}"
+    );
+    assert!(err.contains("`cfgd plan -o json`"), "{err}");
 }
 
 fn module_named(module: &str) -> Action {
@@ -3663,6 +4103,7 @@ fn brew_provision_plan() -> Plan {
                 manager: "brew".to_string(),
                 via: "homebrew installer".to_string(),
                 declared: None,
+                floor: None,
                 batched: vec![],
                 depends_on: vec![],
             })],
@@ -3979,6 +4420,7 @@ fn stranded_warning_counts_actions_not_distinct_managers() {
                 manager: "brew".to_string(),
                 via: "homebrew installer".to_string(),
                 declared: None,
+                floor: None,
                 batched: vec![],
                 depends_on: vec![],
             }),
@@ -4053,7 +4495,7 @@ fn platform_skip_survives_in_the_plan_payload() {
         (PhaseName::Modules, vec![skip]),
         (PhaseName::Packages, vec![pkg_install("brew", vec!["rg"])]),
     ]);
-    let output = build_plan_output(&plan, "ctx", None, &[], &no_decisions(), &[]);
+    let output = build_plan_output(&plan, "ctx", None, &[], &no_decisions(), &[], None);
 
     assert_eq!(
         output.total_actions, 1,
@@ -4110,7 +4552,7 @@ fn the_payload_total_matches_the_plans_own_count_over_a_pre_skipped_action() {
             pkg_install("brew", vec!["rg"]),
         ],
     )]);
-    let output = build_plan_output(&plan, "ctx", None, &[], &no_decisions(), &[]);
+    let output = build_plan_output(&plan, "ctx", None, &[], &no_decisions(), &[], None);
 
     assert_eq!(
         output.total_actions,
@@ -4136,7 +4578,7 @@ fn a_phase_scoped_payload_prices_only_the_scope_it_listed() {
         (PhaseName::Files, vec![file_create("/etc/foo")]),
     ]);
     let filter = reconciler::PhaseFilter::Phase(PhaseName::Files);
-    let output = build_plan_output(&plan, "ctx", Some(&filter), &[], &no_decisions(), &[]);
+    let output = build_plan_output(&plan, "ctx", Some(&filter), &[], &no_decisions(), &[], None);
 
     assert_eq!(plan.total_actions(), 2, "the plan itself holds both phases");
     assert_eq!(output.total_actions, 1);
@@ -4158,7 +4600,7 @@ fn local_resolved(spec_yaml: &str) -> cfgd_core::config::ResolvedProfile {
     let layers = vec![ProfileLayer {
         source: LOCAL_LAYER.to_string(),
         profile_name: "p".to_string(),
-        priority: 1000,
+        priority: cfgd_core::config::LOCAL_LAYER_PRIORITY,
         policy: LayerPolicy::Local,
         spec,
     }];

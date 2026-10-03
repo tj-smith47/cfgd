@@ -1,11 +1,8 @@
-//! Shared integration-test helpers.
+//! Shared integration-test fixtures for the `cfgd` binary crate's `tests/`.
 //!
-//! Each integration test file is its own crate, so any unused helper here
-//! will trip `dead_code` when imported by a file that only uses some of
-//! them. `#![allow(dead_code)]` is the standard Cargo idiom for this
-//! shared-fixture pattern.
-
-#![allow(dead_code)]
+//! A lib crate. Every integration crate compiles a `tests/common/mod.rs` with a
+//! different used subset, so that pattern needs a blanket `dead_code` allowance
+//! to build. A lib's `pub` items are its API and need none.
 
 use std::path::PathBuf;
 
@@ -246,9 +243,12 @@ pub fn cli_for(config_dir: &std::path::Path, state_dir: &std::path::Path) -> Cli
         quiet: true,
         output: OutputFormatArg(cfgd_core::output::OutputFormat::Table),
         list_envelope: false,
+        hints: false,
         no_hints: false,
         theme: None,
         mask_env_values: None,
+        migration_policy: None,
+        update_policy: None,
         jsonpath: None,
         yes: false,
         state_dir: Some(state_dir.to_path_buf()),
@@ -273,6 +273,7 @@ pub fn cli_for(config_dir: &std::path::Path, state_dir: &std::path::Path) -> Cli
 pub fn apply_args() -> ApplyArgs {
     ApplyArgs {
         on_conflict: cfgd::cli::OnConflict::Ask,
+        plan: None,
         from: None,
         dry_run: false,
         phase: None,
@@ -291,6 +292,7 @@ pub fn apply_args() -> ApplyArgs {
 pub fn apply_args_dry_run() -> ApplyArgs {
     ApplyArgs {
         on_conflict: cfgd::cli::OnConflict::Ask,
+        plan: None,
         from: None,
         dry_run: true,
         phase: None,
@@ -1641,7 +1643,7 @@ pub fn workflow_empty_test_setup() -> (tempfile::TempDir, tempfile::TempDir) {
 }
 
 /// Assert that `needle`'s line sits exactly one section level (2 spaces —
-/// see `Renderer::indent_prefix`) deeper than `header`'s own line: the shape
+/// see `renderer::indent_prefix`) deeper than `header`'s own line: the shape
 /// every depth-nested spinner must hold, a settled action line nesting DIRECTLY
 /// under the section/owner header that introduced it, not merely somewhere
 /// deeper than it. `output` is ANSI-stripped human text.

@@ -35,7 +35,7 @@ spawn_daemon() {
     local log="$1"
     local retries=25
     rm -f "$CFGD_DAEMON_IPC_PATH"
-    "$CFGD" $C daemon > "$log" 2>&1 &
+    "$CFGD" "${C[@]}" daemon > "$log" 2>&1 &
     SPAWNED_PID=$!
     DAEMON_PIDS+=("$SPAWNED_PID")
     until [ -S "$CFGD_DAEMON_IPC_PATH" ] || [ "$retries" -le 0 ]; do
@@ -74,20 +74,20 @@ echo "=== cfgd daemon tests ==="
 # Tests extracted verbatim from run-exhaustive-tests.sh
 
 begin_test "DM01: daemon --help"
-run $C daemon --help
+run "${C[@]}" daemon --help
 if assert_ok && assert_contains "$OUTPUT" "install"; then
     pass_test "DM01"
 else fail_test "DM01"; fi
 
 begin_test "DM02: daemon status"
-run $C daemon status
+run "${C[@]}" daemon status
 # Daemon not running, status should still succeed (reports not-running)
 if assert_ok; then
     pass_test "DM02"
 else fail_test "DM02"; fi
 
 begin_test "DM03: daemon install"
-run $C daemon install
+run "${C[@]}" daemon install
 # Requires systemd/launchd — skip if unavailable
 if assert_ok; then
     pass_test "DM03"
@@ -96,7 +96,7 @@ else
 fi
 
 begin_test "DM04: daemon uninstall"
-run $C daemon uninstall
+run "${C[@]}" daemon uninstall
 # Requires systemd/launchd — skip if unavailable
 if assert_ok; then
     pass_test "DM04"
@@ -140,7 +140,7 @@ if [ -n "$LIVE_SKIP" ]; then
 elif [ -z "$DAEMON_PID" ]; then
     skip_test "DM06" "DM05 did not produce a live daemon"
 else
-    run $C daemon status
+    run "${C[@]}" daemon status
     if assert_ok && assert_contains "$OUTPUT" "Daemon running"; then
         pass_test "DM06"
     else

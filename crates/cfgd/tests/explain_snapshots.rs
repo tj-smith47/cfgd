@@ -18,8 +18,6 @@
 //! Goldens live under `tests/output_snapshots/explain/`. Regenerate with:
 //!     INSTA_UPDATE=always cargo test -p cfgd --test explain_snapshots
 
-#![allow(deprecated)] // assert_cmd 2.x cargo_bin deprecation; upgrade path is assert_cmd 3.x
-
 use std::path::Path;
 
 use cfgd::cli::explain::{
@@ -28,6 +26,9 @@ use cfgd::cli::explain::{
 };
 use cfgd_core::output::test_capture::assert_snapshot_at;
 use cfgd_core::output::{DocCapture, Printer, strip_ansi};
+
+mod cfgd_binary;
+use cfgd_binary::cfgd_bin;
 
 const SNAPSHOT_ROOT: &str = "tests/output_snapshots";
 
@@ -52,6 +53,7 @@ fn assert_json(cap: &DocCapture, name: &str) {
 #[test]
 fn explain_index_human() {
     let (printer, cap) = Printer::for_test_doc();
+    let printer = printer.with_hints_enabled(true);
     printer.emit(build_explain_index_doc());
     drop(printer);
     assert_human(&cap, "explain/index.txt");
@@ -79,6 +81,7 @@ fn explain_index_json() {
 fn explain_module_human() {
     let schema = find_schema("module").expect("module schema is registered");
     let (printer, cap) = Printer::for_test_doc();
+    let printer = printer.with_hints_enabled(true);
     printer.emit(build_explain_schema_doc(schema, false));
     drop(printer);
     assert_human(&cap, "explain/module.txt");
@@ -229,7 +232,7 @@ fn write_snapshot(path: &Path, contents: &str) {
 #[test]
 fn explain_profile_under_color_never_writes_no_escape() {
     let run = |color: &str| {
-        let out = assert_cmd::Command::cargo_bin("cfgd")
+        let out = cfgd_bin()
             .expect("cfgd binary builds")
             .args(["--color", color, "explain", "profile"])
             .output()

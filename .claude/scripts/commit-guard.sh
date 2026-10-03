@@ -44,14 +44,17 @@ breaking_signal() {
     subject="${msg%%$'\n'*}"
     bang_marker='^[a-zA-Z]+(\([^)]*\))?!:'
     if [[ $subject =~ $bang_marker ]]; then
+        # shellcheck disable=SC2016  # literal backticks in a message, nothing to expand
         printf '%s' 'a `!` marker in the subject'
         return 0
     fi
     if grep -Eq '^(BREAKING CHANGE|BREAKING-CHANGE):' <<<"$msg"; then
+        # shellcheck disable=SC2016  # literal backticks in a message, nothing to expand
         printf '%s' 'a `BREAKING CHANGE:` footer'
         return 0
     fi
     if grep -Eq '(^|[[:space:]])#major([[:space:]]|$)' <<<"$msg"; then
+        # shellcheck disable=SC2016  # literal backticks in a message, nothing to expand
         printf '%s' 'a `#major` token'
         return 0
     fi
@@ -93,6 +96,7 @@ refusal_for() {
     while IFS=' ' read -r crate version; do
         [ -n "$crate" ] && printf '  %s is at %s\n' "$crate" "$version"
     done <<<"$below"
+    # shellcheck disable=SC2016  # literal backticks in a message, nothing to expand
     printf 'A 1.0.0 release is the user'"'"'s call. Reword the subject (a `#minor` token\n'
     printf 'carries the bump anodizer should take instead), or have the user set\n'
     printf 'BREAKING_CHANGE_APPROVED=1 for this commit.\n'
@@ -158,6 +162,7 @@ self_test() {
     local fixture failures=0
     fixture="$(mktemp -d)"
     # Expanded now: the trap fires after this function's locals are gone.
+    # shellcheck disable=SC2064  # expanded now on purpose: the local is gone when the trap fires
     trap "rm -rf '$fixture'" EXIT
     mkdir -p "$fixture/crates/below" "$fixture/crates/stable"
     printf '[package]\nname = "below"\nversion = "0.9.0"\n' >"$fixture/crates/below/Cargo.toml"

@@ -419,9 +419,9 @@ mod tests {
         for path in crate::test_helpers::rust_sources_under(
             &crate::test_helpers::workspace_root().join("crates"),
         ) {
-            let body = std::fs::read_to_string(&path).unwrap_or_else(|e| {
-                panic!("{}: the walk must read every source: {e}", path.display())
-            });
+            // A test spawning git runs the same argv, so test code is judged too.
+            // unfloored-slice-ok: test regions and test files are in the population.
+            let body = crate::test_helpers::walked_file_body(&path);
             // Prose says the words on purpose — the rule is documented where it
             // is enforced, and a comment spawns no process.
             let code = body
@@ -686,10 +686,10 @@ mod tests {
         let bin = tmp.path().join("anything");
         fs::write(&bin, "").expect("write");
 
-        let _guard = EnvVarGuard::capture("CFGD_COSIGN_BIN");
+        let _guard = EnvVarGuard::capture(crate::COSIGN_BIN_ENV);
         // SAFETY: serial.
         unsafe {
-            std::env::set_var("CFGD_COSIGN_BIN", &bin);
+            std::env::set_var(crate::COSIGN_BIN_ENV, &bin);
         }
         require_cosign().expect("env-var pointing to existing file → Ok");
     }
@@ -697,13 +697,14 @@ mod tests {
     #[test]
     #[serial]
     fn require_cosign_with_env_var_pointing_to_missing_file_errors_out() {
-        let _guard = EnvVarGuard::capture("CFGD_COSIGN_BIN");
+        let _guard = EnvVarGuard::capture(crate::COSIGN_BIN_ENV);
         // SAFETY: serial.
         unsafe {
-            std::env::set_var("CFGD_COSIGN_BIN", "/no/such/file/at/all");
+            std::env::set_var(crate::COSIGN_BIN_ENV, "/no/such/file/at/all");
         }
         let err = require_cosign().expect_err("missing file → Err");
         assert!(
+            // env-literal-ok: asserts the rendered error text
             err.contains("CFGD_COSIGN_BIN") && err.contains("not a file"),
             "error must call out env-var + missing-file: {err}"
         );

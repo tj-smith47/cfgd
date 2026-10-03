@@ -9,6 +9,7 @@ use cfgd_schema::{
     case_insensitive_enum,
 };
 
+use super::PreferencesSpec;
 use super::source::{EnvVar, ShellAlias};
 use crate::PathDisplayExt;
 use crate::errors::{ConfigError, Result};
@@ -380,8 +381,8 @@ pub struct ProfileSpec {
 
     /// System configurator settings (`macosDefaults`, `systemd`, `sysctl`, …),
     /// keyed by configurator name.
-    #[serde(default)]
-    #[schemars(with = "std::collections::BTreeMap<String, serde_json::Value>")]
+    #[serde(default, deserialize_with = "crate::config::null_as_default")]
+    #[schemars(with = "Option<std::collections::BTreeMap<String, serde_json::Value>>")]
     pub system: SystemSettings,
 
     /// Secrets this profile resolves into files or environment variables.
@@ -395,6 +396,13 @@ pub struct ProfileSpec {
     /// Declarative backup jobs this profile schedules.
     #[serde(default)]
     pub backups: Vec<BackupSpec>,
+
+    /// Ranked candidate lists per domain (`clipboard`, …). cfgd picks the
+    /// first candidate the running session can reach and exports it as
+    /// `CFGD_<DOMAIN>`.
+    #[serde(default, deserialize_with = "crate::config::null_as_default")]
+    #[schemars(with = "Option<PreferencesSpec>")]
+    pub preferences: PreferencesSpec,
 }
 
 /// How far `spec.env` exports reach across the current user's environment.
@@ -636,7 +644,7 @@ impl PackagesSpec {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct BrewSpec {
-    /// Path to a Brewfile to apply instead of (or alongside) `taps`,
+    /// Path to a Brewfile to apply in place of (or alongside) `taps`,
     /// `formulae` and `casks`. Relative to the config root.
     #[serde(default)]
     pub file: Option<String>,
@@ -714,8 +722,8 @@ impl FromPackageList for NpmSpec {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CargoSpec {
-    /// Path to a `Cargo.toml` whose binaries to install instead of `packages`.
-    /// Relative to the config root.
+    /// Path to a `Cargo.toml` whose binaries are installed in place of
+    /// `packages`. Relative to the config root.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub file: Option<String>,
     /// Crate names to install (`cargo install`).
@@ -829,7 +837,8 @@ pub struct FilesSpec {
     pub managed: Vec<ManagedFileSpec>,
     /// Octal permission strings (`"0600"`) keyed by target path, applied after
     /// deployment.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "crate::config::null_as_default")]
+    #[schemars(with = "Option<std::collections::HashMap<String, String>>")]
     pub permissions: HashMap<String, String>,
 }
 

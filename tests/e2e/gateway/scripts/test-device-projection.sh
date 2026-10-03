@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # Gateway device-projection tests (GW-32 through GW-36).
 # Sourced by run-all.sh — no shebang, no set, no source, no traps, no print_summary.
 #
@@ -173,11 +174,16 @@ elif [ -z "$DP_TOKEN" ]; then
     fail_test "GW-32" "The admin token API did not mint a bootstrap token for this case family"
 else
     GW32_PASS=true
-    GW32_OUT=$(dp_cfgd -o json enroll --server-url "$GW_URL" --token "$DP_TOKEN" 2>&1)
+    # stdout alone is the JSON document jq reads below: an advisory (say, fields
+    # this build reads that the config does not declare) goes to stderr, and
+    # merged ahead of the JSON it would leave jq nothing to parse.
+    GW32_ERR="$DP_ROOT/gw32-enroll.stderr"
+    GW32_OUT=$(dp_cfgd -o json enroll --server-url "$GW_URL" --token "$DP_TOKEN" 2> "$GW32_ERR")
     GW32_RC=$?
     echo "  enroll rc=$GW32_RC"
     echo "$GW32_OUT" | head -c 400 | sed 's/^/    /'
     echo ""
+    print_stderr_head "$GW32_ERR"
 
     GW32_CRED="$DP_STATE/device-credential.json"
     GW32_CRED_PRESENT=absent

@@ -7,6 +7,19 @@ members = [
     "crates/cfgd",
     "crates/cfgd-operator",
     "crates/cfgd-csi",
+    "crates/cfgd-test-fixtures",
+]
+# Every member but the `publish = false` ones. A root-level `cargo build` builds
+# the default members, and resolver 2 unifies features across what it builds:
+# with `cfgd-test-fixtures` among them, its `cfgd-core/test-helpers` dependency
+# reaches every binary and swaps `$HOME` for a throwaway test home.
+default-members = [
+    "crates/cfgd-schema",
+    "crates/cfgd-crd",
+    "crates/cfgd-core",
+    "crates/cfgd",
+    "crates/cfgd-operator",
+    "crates/cfgd-csi",
 ]
 
 [workspace.package]
@@ -21,3 +34,11 @@ authors = ["TJ Smith"]
 # to fit ubuntu-latest's ~14 GB free disk. No coverage or test-integrity loss.
 [profile.dev]
 debug = "line-tables-only"
+
+# The source walks parse every workspace file with `syn`; unoptimized, the
+# parse costs the floored walk ~1.5x and the raw-read walk ~2x.
+[profile.dev.package.syn]
+opt-level = 3
+
+[profile.dev.package.proc-macro2]
+opt-level = 3

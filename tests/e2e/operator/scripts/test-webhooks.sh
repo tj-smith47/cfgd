@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # Operator E2E tests: Webhooks
 # Sourced by run-all.sh — do NOT set traps or pipefail here.
 
@@ -18,7 +19,7 @@ kind: ClusterConfigPolicy
 metadata:
   name: e2e-bad-semver-${E2E_RUN_ID}
   labels:
-    cfgd.io/e2e-run: "${E2E_RUN_ID}"
+    ${E2E_RUN_LABEL_YAML}
     ${E2E_JOB_LABEL_YAML}
 spec:
   namespaceSelector: {}
@@ -37,6 +38,8 @@ kind: DriftAlert
 metadata:
   name: e2e-bad-drift
   namespace: ${E2E_NAMESPACE}
+  labels:
+    ${E2E_RUN_LABEL_YAML}
 spec:
   deviceId: ""
   machineConfigRef:
@@ -58,6 +61,8 @@ kind: MachineConfig
 metadata:
   name: e2e-bad-mc
   namespace: ${E2E_NAMESPACE}
+  labels:
+    ${E2E_RUN_LABEL_YAML}
 spec:
   hostname: ""
   profile: test
@@ -95,7 +100,7 @@ kind: Module
 metadata:
   name: e2e-inject-mod-${E2E_RUN_ID}
   labels:
-    cfgd.io/e2e-run: "${E2E_RUN_ID}"
+    ${E2E_RUN_LABEL_YAML}
     ${E2E_JOB_LABEL_YAML}
 spec:
   packages:
@@ -145,7 +150,7 @@ echo "  CSI driver: $CSI_DRIVER"
 
 PASS=true
 if ! echo "$CSI_DRIVER" | grep -qF "$CSI_DRIVER_NAME"; then
-    echo "  WARN: CSI volume not injected (expected driver=csi.cfgd.io)"
+    echo "  WARN: CSI volume not injected (expected driver=$CSI_DRIVER_NAME)"
     PASS=false
 fi
 if ! echo "$POD_VMOUNTS" | grep -q "cfgd-module"; then
@@ -171,7 +176,7 @@ kind: Module
 metadata:
   name: e2e-debug-mod-${E2E_RUN_ID}
   labels:
-    cfgd.io/e2e-run: "${E2E_RUN_ID}"
+    ${E2E_RUN_LABEL_YAML}
     ${E2E_JOB_LABEL_YAML}
 spec:
   packages:
@@ -188,6 +193,8 @@ kind: ConfigPolicy
 metadata:
   name: e2e-debug-policy
   namespace: e2e-inject-${E2E_RUN_ID}
+  labels:
+    ${E2E_RUN_LABEL_YAML}
 spec:
   debugModules:
     - name: e2e-debug-mod-${E2E_RUN_ID}
@@ -335,8 +342,8 @@ kubectl delete machineconfig "e2e-valid-mc-${E2E_RUN_ID}" -n "$E2E_NAMESPACE" --
 # =================================================================
 begin_test "OP-WH-07: ConfigPolicy — empty targetSelector"
 
-# ConfigPolicy validation does not reject an empty targetSelector — it defaults
-# to matching nothing (same as Kubernetes LabelSelector semantics: {} matches all).
+# ConfigPolicy validation accepts an empty targetSelector, as Kubernetes
+# accepts an empty LabelSelector.
 RESULT=$(kubectl apply -n "$E2E_NAMESPACE" -f - 2>&1 <<EOF || true
 apiVersion: cfgd.io/v1alpha1
 kind: ConfigPolicy
@@ -353,17 +360,10 @@ spec:
 EOF
 )
 echo "  Result: $(echo "$RESULT" | tail -1)"
-# Empty targetSelector is accepted (matches all, like k8s LabelSelector)
 if echo "$RESULT" | grep -qE "created|configured|unchanged"; then
     pass_test "OP-WH-07"
 else
-    # Also acceptable if webhook rejects — document whichever behavior is observed
-    if assert_rejected "$RESULT" "Empty targetSelector" 2>/dev/null; then
-        echo "  Note: empty targetSelector is rejected by webhook (stricter validation)"
-        pass_test "OP-WH-07"
-    else
-        fail_test "OP-WH-07" "Unexpected result for empty targetSelector: $RESULT"
-    fi
+    fail_test "OP-WH-07" "Empty targetSelector was not accepted: $RESULT"
 fi
 kubectl delete configpolicy "e2e-empty-sel-${E2E_RUN_ID}" -n "$E2E_NAMESPACE" --ignore-not-found 2>/dev/null || true
 
@@ -632,17 +632,19 @@ if [ "$STORED_PROFILE" != "minimal" ]; then
 fi
 
 # Check that defaulted array fields exist (packages defaults to [])
-STORED_PKGS=$(echo "$STORED" | jq -r '.spec.packages // "missing"')
+STORED_PKGS=$(echo "$STORED" | jq -c '.spec.packages // "missing"')
 echo "  Stored packages: $STORED_PKGS"
-if [ "$STORED_PKGS" = "missing" ]; then
-    echo "  Note: packages field omitted (server-side default not applied, acceptable)"
+if [ "$STORED_PKGS" != "[]" ]; then
+    echo "  WARN: packages not defaulted to [] (got $STORED_PKGS)"
+    PASS=false
 fi
 
 # Check that defaulted map fields exist (systemSettings defaults to {})
-STORED_SETTINGS=$(echo "$STORED" | jq -r '.spec.systemSettings // "missing"')
+STORED_SETTINGS=$(echo "$STORED" | jq -c '.spec.systemSettings // "missing"')
 echo "  Stored systemSettings: $STORED_SETTINGS"
-if [ "$STORED_SETTINGS" = "missing" ]; then
-    echo "  Note: systemSettings field omitted (server-side default not applied, acceptable)"
+if [ "$STORED_SETTINGS" != "{}" ]; then
+    echo "  WARN: systemSettings not defaulted to {} (got $STORED_SETTINGS)"
+    PASS=false
 fi
 
 # The resource must at minimum exist and have the required fields set

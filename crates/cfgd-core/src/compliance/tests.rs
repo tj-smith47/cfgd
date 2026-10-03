@@ -576,6 +576,113 @@ fn collect_package_checks_installed_package_compliant() {
     assert_eq!(checks[0].manager.as_deref(), Some("pipx"));
 }
 
+/// A module whose only declaration is the manager that delivers it used to be
+/// invisible to the control plane: nothing installs a held manager, so it is
+/// in no desired-package set and the fleet saw a module declaring nothing at
+/// all. It gets a row of its own, under the manager's own name, and the row
+/// carries the floor verdict the manager's binary measured.
+#[test]
+fn collect_package_checks_gives_a_held_manager_a_row_under_its_own_name() {
+    use crate::config::MergedProfile;
+
+    let mut module = empty_module("rust");
+    module.held_managers = vec![crate::modules::HeldManager {
+        package: "cargo".into(),
+        module: "rust".into(),
+        floor: "1.85".into(),
+        judgment: crate::modules::FloorJudgment::Met {
+            version: "1.90".into(),
+        },
+    }];
+    let registry = ProviderRegistry::new();
+    let printer = crate::test_helpers::test_printer();
+    let state = crate::test_helpers::test_state();
+    let cx = crate::providers::PackageContext::new(&printer, &state);
+
+    let checks = collect_package_checks(
+        &MergedProfile::default(),
+        std::slice::from_ref(&module),
+        &registry,
+        &cx,
+    )
+    .unwrap();
+    assert_eq!(checks.len(), 1, "{checks:?}");
+    assert_eq!(checks[0].name.as_deref(), Some("cargo"));
+    assert_eq!(checks[0].manager.as_deref(), Some("cargo"));
+    assert_eq!(checks[0].status, ComplianceStatus::Compliant);
+    assert_eq!(
+        checks[0].detail.as_deref(),
+        Some("held at 1.90 (module: rust)")
+    );
+
+    module.held_managers[0].judgment = crate::modules::FloorJudgment::Short {
+        version: "1.80".into(),
+    };
+    let checks = collect_package_checks(
+        &MergedProfile::default(),
+        std::slice::from_ref(&module),
+        &registry,
+        &cx,
+    )
+    .unwrap();
+    assert_eq!(checks[0].status, ComplianceStatus::Violation);
+    assert_eq!(
+        checks[0].detail.as_deref(),
+        Some(
+            "cargo 1.80 is on this host, below the declared minVersion 1.85; \
+             nothing cfgd can run raises cargo, so it must be raised by hand (module: rust)"
+        ),
+        "no manager is registered here, so nothing states a raise verb"
+    );
+}
+
+/// The check-in reports what this machine holds for what it declares, and a
+/// held manager is a declaration no listing answers for: its version comes
+/// from the judgment the resolution already made. A floor nothing could judge
+/// contributes no key, so a policy has no placeholder to compare.
+#[test]
+fn declared_package_versions_reports_a_held_manager_under_its_own_name() {
+    use crate::config::MergedProfile;
+
+    let mut module = empty_module("rust");
+    module.held_managers = vec![crate::modules::HeldManager {
+        package: "cargo".into(),
+        module: "rust".into(),
+        floor: "1.85".into(),
+        judgment: crate::modules::FloorJudgment::Met {
+            version: "1.90".into(),
+        },
+    }];
+    let registry = ProviderRegistry::new();
+    let printer = crate::test_helpers::test_printer();
+    let state = crate::test_helpers::test_state();
+    let cx = crate::providers::PackageContext::new(&printer, &state);
+
+    let reported = declared_package_versions(
+        &MergedProfile::default(),
+        std::slice::from_ref(&module),
+        &registry,
+        &cx,
+    )
+    .expect("nothing failed to be queried");
+    assert_eq!(
+        reported.get("cargo/cargo").map(String::as_str),
+        Some("1.90")
+    );
+
+    module.held_managers[0].judgment = crate::modules::FloorJudgment::Unproven {
+        cause: "it reports no version".into(),
+    };
+    let reported = declared_package_versions(
+        &MergedProfile::default(),
+        std::slice::from_ref(&module),
+        &registry,
+        &cx,
+    )
+    .expect("nothing failed to be queried");
+    assert!(reported.is_empty(), "{reported:?}");
+}
+
 #[test]
 fn collect_package_checks_routes_through_package_identity_for_case_insensitive_manager() {
     use crate::config::MergedProfile;
@@ -1077,6 +1184,7 @@ fn a_snapshot_handed_collected_diffs_asks_no_configurator_again() {
         &printer,
         &state,
         Some(&collected),
+        &[],
     )
     .unwrap();
 
@@ -1300,6 +1408,8 @@ use crate::modules::{ResolvedFile, ResolvedModule, ResolvedPackage};
 /// An empty resolved module to fill in one resource kind per test.
 fn empty_module(name: &str) -> ResolvedModule {
     ResolvedModule {
+        held_managers: Vec::new(),
+        floor_bootstraps: Vec::new(),
         dep_pulled: false,
         name: name.to_string(),
         packages: Vec::new(),
@@ -1769,6 +1879,7 @@ fn collect_snapshot_includes_module_resources_and_content_check() {
         &printer,
         &state,
         None,
+        &[],
     )
     .unwrap();
 
@@ -1928,4 +2039,134 @@ fn a_broken_manager_holding_no_declared_package_withholds_nothing() {
         "the healthy manager's rows are reported: {reported:?}"
     );
     assert_eq!(reported.len(), 1, "and nothing else is: {reported:?}");
+}
+
+fn violation(kind: &str, path: &str, detail: &str) -> crate::composition::ConstraintViolation {
+    crate::composition::ConstraintViolation {
+        source_name: "team".into(),
+        path: Some(path.into()),
+        kind: kind.into(),
+        detail: detail.into(),
+    }
+}
+
+/// A source-constraint violation a Report-mode composition collected is a
+/// `Violation` check in the snapshot itself, counted in its summary: every
+/// command collects through the one collector that reports it, so none can
+/// collect a snapshot that leaves it out.
+#[test]
+fn a_snapshot_reports_each_source_constraint_violation_as_a_violation_check() {
+    let dir = tempfile::tempdir().unwrap();
+    let printer = crate::test_helpers::test_printer();
+    let state = crate::test_helpers::test_state();
+    let scope = ComplianceScope {
+        files: false,
+        packages: false,
+        system: false,
+        secrets: false,
+        ..Default::default()
+    };
+
+    let snapshot = collect_snapshot(
+        "default",
+        &crate::config::MergedProfile::default(),
+        &[],
+        dir.path(),
+        &ProviderRegistry::new(),
+        &scope,
+        &[],
+        &printer,
+        &state,
+        None,
+        &[
+            violation(
+                "scripts-not-allowed",
+                "/home/u/hook.sh",
+                "source 'team' may not run scripts",
+            ),
+            violation(
+                "encryption-required",
+                "/home/u/.config/secret.yaml",
+                "file matches required-encryption target 'secret*' but has no encryption block",
+            ),
+        ],
+    )
+    .unwrap();
+
+    let rows: Vec<_> = snapshot
+        .checks
+        .iter()
+        .map(|c| {
+            (
+                c.category.as_str(),
+                c.target.as_deref(),
+                c.status,
+                c.detail.as_deref(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        rows,
+        vec![
+            (
+                "file-encryption",
+                Some("/home/u/.config/secret.yaml"),
+                ComplianceStatus::Violation,
+                Some(
+                    "file matches required-encryption target 'secret*' but has no encryption block"
+                ),
+            ),
+            (
+                "source-constraint",
+                Some("/home/u/hook.sh"),
+                ComplianceStatus::Violation,
+                Some("source 'team' may not run scripts"),
+            ),
+        ],
+        "each violation is one check, sorted by category, carrying its detail verbatim"
+    );
+    assert_eq!(snapshot.summary.violation, 2);
+    assert_eq!(snapshot.summary.compliant, 0);
+}
+
+/// `ComplianceStatus::ALL` holds every status, each at its own ordinal, so a
+/// loop over it (the gateway's check that it reads every status the agent
+/// sends) cannot miss one.
+#[test]
+fn every_compliance_status_is_listed_in_all_at_its_ordinal() {
+    assert_eq!(
+        ComplianceStatus::ALL.len(),
+        ComplianceStatus::Violation.ordinal() + 1
+    );
+    for status in ComplianceStatus::ALL {
+        assert_eq!(ComplianceStatus::ALL[status.ordinal()], status);
+    }
+    // serde's refusal of an unknown word names every variant the enum
+    // declares, which is the one list nobody writes by hand. A status added
+    // after `Violation` with its own ordinal passes the two checks above, and
+    // fails here until `ALL` holds it.
+    let refusal = serde_json::from_str::<ComplianceStatus>(r#""no-such-status""#)
+        .expect_err("an unknown word is refused")
+        .to_string();
+    let (_, declared) = refusal
+        .split_once("expected one of ")
+        .unwrap_or_else(|| panic!("serde's refusal no longer lists the variants: {refusal}"));
+    let declared: Vec<&str> = declared
+        .split(", ")
+        .map(|w| w.split('`').nth(1).unwrap_or_default())
+        .collect();
+    let listed: Vec<String> = ComplianceStatus::ALL
+        .iter()
+        .map(|s| {
+            serde_json::to_value(s)
+                .unwrap()
+                .as_str()
+                .unwrap()
+                .to_string()
+        })
+        .collect();
+    assert_eq!(
+        declared, listed,
+        "ComplianceStatus::ALL is missing a status"
+    );
 }

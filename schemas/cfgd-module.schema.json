@@ -190,7 +190,10 @@
             "type": "string"
           },
           "description": "Manager-specific package name aliases (e.g. `{apt: \"neovim\", brew:\n\"neovim\"}`) for a package named differently across managers.",
-          "type": "object"
+          "type": [
+            "object",
+            "null"
+          ]
         },
         "creates": {
           "description": "Skip the install script if this path already exists. A leading `~`\nexpands to the home directory; a relative path resolves against the\nscript's working directory. Existence follows symlinks. Only meaningful\nfor a `prefer: [script]` install; ignored otherwise.",
@@ -240,7 +243,7 @@
           "type": "array"
         },
         "script": {
-          "description": "Shell script to run instead of a manager install, selected via\n`prefer: [script]`.",
+          "description": "Shell script that takes the place of a manager install, selected via\n`prefer: [script]`.",
           "type": [
             "string",
             "null"
@@ -296,7 +299,7 @@
           "type": "array"
         },
         "platforms": {
-          "description": "Platform tags gating the whole module. When non-empty and the current\nplatform matches none of them, the module is skipped entirely (it\nappears as a skipped action rather than vanishing). Tags are matched\nagainst the machine's OS, distro, and arch; use `macos` for macOS.",
+          "description": "Platform tags gating the whole module. When non-empty and the current\nplatform matches none of them, the module is skipped entirely (it\nstill appears, as a skipped action). Tags are matched\nagainst the machine's OS, distro, and arch; use `macos` for macOS.",
           "items": {
             "type": "string"
           },
@@ -315,8 +318,11 @@
         },
         "system": {
           "additionalProperties": true,
-          "description": "System configurator settings contributed by this module.\nDeep-merged into the profile system map; module values override profile values at leaf level.",
-          "type": "object"
+          "description": "System configurator settings contributed by this module.\nDeep-merged into the profile system map; module values override profile values at leaf\nlevel.",
+          "type": [
+            "object",
+            "null"
+          ]
         }
       },
       "type": "object"
@@ -378,7 +384,7 @@
       "description": "The mapping form of a script entry: a command with a timeout, shell,\nguard condition or working directory.",
       "properties": {
         "continueOnError": {
-          "description": "Treat a non-zero exit as success and continue reconciliation instead\nof failing the run. Default: `false`.",
+          "description": "Treat a non-zero exit as success, so reconciliation continues and the\nrun does not fail. Default: `false`.",
           "type": [
             "boolean",
             "null"
@@ -399,7 +405,7 @@
           ]
         },
         "interactive": {
-          "description": "Run the script attached to the terminal (inherited stdin/stdout/stderr,\nno spinner, no output capture, no idle timeout) so it can prompt the\nuser — e.g. `echo \"press Enter when done\"; read`. Requires a TTY: when\nstdin is not a terminal (CI, piped input, or any daemon-run phase) the\nscript is skipped with a warning rather than hanging on instant EOF.",
+          "description": "Run the script attached to the terminal (inherited stdin/stdout/stderr,\nno spinner, no output capture, no idle timeout) so it can prompt the\nuser — e.g. `echo \"press Enter when done\"; read`. Requires a TTY: when\nstdin is not a terminal (CI, piped input, or any daemon-run phase) the\nscript is skipped with a warning, so it cannot hang on instant EOF.",
           "type": "boolean"
         },
         "onlyIf": {

@@ -73,7 +73,7 @@ fn mock_older_release_server() -> mockito::ServerGuard {
 #[serial]
 fn upgrade_check_up_to_date_human() {
     let server = mock_older_release_server();
-    let _api = EnvVarGuard::set("CFGD_GITHUB_API_BASE", &server.url());
+    let _api = EnvVarGuard::set(cfgd_core::CFGD_GITHUB_API_BASE_ENV, &server.url());
     let home = tempfile::tempdir().unwrap();
     let _home = cfgd_core::with_test_home_guard(home.path());
 
@@ -100,7 +100,7 @@ fn upgrade_check_up_to_date_human() {
 #[serial]
 fn upgrade_check_up_to_date_json() {
     let server = mock_older_release_server();
-    let _api = EnvVarGuard::set("CFGD_GITHUB_API_BASE", &server.url());
+    let _api = EnvVarGuard::set(cfgd_core::CFGD_GITHUB_API_BASE_ENV, &server.url());
     let home = tempfile::tempdir().unwrap();
     let _home = cfgd_core::with_test_home_guard(home.path());
 

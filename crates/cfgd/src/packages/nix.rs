@@ -294,8 +294,9 @@ pub(super) fn parse_nix_profile_list_json(stdout: &str) -> HashSet<String> {
 /// reading the version off the FIRST store path's trailing `-<version>`
 /// segment (after stripping the store's leading `<hash>-`, then the
 /// element's own name if the store path repeats it). An element naming no
-/// readable store path lists as [`UNKNOWN_PACKAGE_VERSION`](cfgd_core::providers::UNKNOWN_PACKAGE_VERSION).
-/// Returns empty on missing or malformed JSON.
+/// readable store path lists as
+/// [`UNKNOWN_PACKAGE_VERSION`](cfgd_core::providers::UNKNOWN_PACKAGE_VERSION). Returns empty on
+/// missing or malformed JSON.
 pub(super) fn parse_nix_profile_list_versions(
     stdout: &str,
 ) -> Vec<cfgd_core::providers::PackageInfo> {
@@ -735,8 +736,10 @@ mod tests {
         // The seam env vars are cleared for the whole test: with either set,
         // this asserts about whichever ToolShim ran last rather than about the
         // PATH probe.
-        let _seam_nix = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_NIX_BIN");
-        let _seam_nix_env = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_NIX_ENV_BIN");
+        let _seam_nix =
+            cfgd_core::test_helpers::EnvVarGuard::unset(&crate::seams::tool_seam_var("nix"));
+        let _seam_nix_env =
+            cfgd_core::test_helpers::EnvVarGuard::unset(&crate::seams::tool_seam_var("nix-env"));
         let _path_lock = cfgd_core::test_helpers::path_env_mutation_guard();
         let _dirs = cfgd_core::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
         let mgr = NixManager;
@@ -873,8 +876,10 @@ mod tests {
         use cfgd_core::test_helpers::{ToolShim, test_package_context, test_printer, test_state};
         use serial_test::serial;
 
-        const SHIM_ENV: &str = "CFGD_NIX_BIN";
-        const SHIM_ENV_NIX_ENV: &str = "CFGD_NIX_ENV_BIN";
+        static SHIM_ENV: std::sync::LazyLock<String> =
+            std::sync::LazyLock::new(|| crate::seams::tool_seam_var("nix"));
+        static SHIM_ENV_NIX_ENV: std::sync::LazyLock<String> =
+            std::sync::LazyLock::new(|| crate::seams::tool_seam_var("nix-env"));
 
         #[test]
         #[serial]
@@ -882,7 +887,7 @@ mod tests {
             // CFGD_NIX_BIN is set → nix_available() returns true → install
             // takes the `nix profile install` path. CFGD_NIX_ENV_BIN must
             // stay unset so the test fails loudly if the wrong branch fires.
-            let s = ToolShim::install(SHIM_ENV, 0, "", "");
+            let s = ToolShim::install(&SHIM_ENV, 0, "", "");
             let p = test_printer();
             let st = test_state();
             let cx = test_package_context(&p, &st);
@@ -915,7 +920,7 @@ mod tests {
             // carries it (so the batch fails), then the per-package retry
             // isolates it while the valid ones install.
             let s = ToolShim::install_failing_on(
-                SHIM_ENV,
+                &SHIM_ENV,
                 "nixpkgs#nope",
                 "error: flake 'nixpkgs' does not provide attribute 'nope'",
             );
@@ -952,7 +957,7 @@ mod tests {
         #[test]
         #[serial]
         fn nix_uninstall_routes_through_nix_profile_when_nix_available() {
-            let s = ToolShim::install(SHIM_ENV, 0, "", "");
+            let s = ToolShim::install(&SHIM_ENV, 0, "", "");
             let p = test_printer();
             let st = test_state();
             let cx = test_package_context(&p, &st);
@@ -976,7 +981,7 @@ mod tests {
         fn nix_installed_packages_uses_nix_profile_list_when_nix_available() {
             // nix 2.34 `nix profile list --json` (version 3) object shape.
             let stdout = r#"{"elements":{"ripgrep":{"storePaths":["/nix/store/abc-ripgrep"]},"fd":{"storePaths":["/nix/store/def-fd"]}},"version":3}"#;
-            let s = ToolShim::install(SHIM_ENV, 0, stdout, "");
+            let s = ToolShim::install(&SHIM_ENV, 0, stdout, "");
             let p = test_printer();
             let st = test_state();
             let cx = test_package_context(&p, &st);
@@ -998,8 +1003,9 @@ mod tests {
             // falls through to nix-env path. Both shims must be installed.
             // Use the SAME tempdir tracking — but ToolShim::install creates
             // its own tempdir per call, so each shim is independent.
-            let _nix = ToolShim::install(SHIM_ENV, 1, "", "profile list unsupported on this nix");
-            let _nix_env = ToolShim::install(SHIM_ENV_NIX_ENV, 0, "ripgrep-14.1.0\nfd-9.0.0\n", "");
+            let _nix = ToolShim::install(&SHIM_ENV, 1, "", "profile list unsupported on this nix");
+            let _nix_env =
+                ToolShim::install(&SHIM_ENV_NIX_ENV, 0, "ripgrep-14.1.0\nfd-9.0.0\n", "");
             let p = test_printer();
             let st = test_state();
             let cx = test_package_context(&p, &st);
@@ -1012,7 +1018,7 @@ mod tests {
         #[serial]
         fn nix_available_version_uses_nix_search_when_nix_available() {
             let json = r#"{"legacyPackages.x86_64-linux.ripgrep":{"version":"14.1.0"}}"#;
-            let s = ToolShim::install(SHIM_ENV, 0, json, "");
+            let s = ToolShim::install(&SHIM_ENV, 0, json, "");
             let v = NixManager.available_version("ripgrep").expect("Ok");
             assert_eq!(v.as_deref(), Some("14.1.0"));
             let argv = s.argv_log();
@@ -1025,7 +1031,7 @@ mod tests {
         #[test]
         #[serial]
         fn nix_available_version_returns_none_on_nonzero_exit() {
-            let _s = ToolShim::install(SHIM_ENV, 1, "", "search service unavailable");
+            let _s = ToolShim::install(&SHIM_ENV, 1, "", "search service unavailable");
             let v = NixManager
                 .available_version("anything")
                 .expect("non-zero → Ok(None)");
@@ -1041,7 +1047,7 @@ mod tests {
             // `nix profile install`, which would no-op; `fd` is unheld and
             // still installs.
             let json = r#"{"elements":{"ripgrep":{"storePaths":["/nix/store/a-ripgrep-14.1.0"]}},"version":3}"#;
-            let s = ToolShim::install(SHIM_ENV, 0, json, "");
+            let s = ToolShim::install(&SHIM_ENV, 0, json, "");
             let p = test_printer();
             let st = test_state();
             let cx = test_package_context(&p, &st);
@@ -1065,7 +1071,7 @@ mod tests {
             // The legacy `nix-env -q` listing already carries `ripgrep`, so
             // `install` raises it through `nix-env -u ripgrep` instead of
             // re-running `nix-env -iA`, which would no-op.
-            let s = ToolShim::install(SHIM_ENV_NIX_ENV, 0, "ripgrep\n", "");
+            let s = ToolShim::install(&SHIM_ENV_NIX_ENV, 0, "ripgrep\n", "");
             let p = test_printer();
             let st = test_state();
             let cx = test_package_context(&p, &st);
@@ -1086,7 +1092,7 @@ mod tests {
         fn nix_install_uses_nix_env_when_only_nix_env_seam_set() {
             // Shim ONLY on CFGD_NIX_ENV_BIN — nix_available() is false, so
             // install routes through the nix-env -iA fallback path.
-            let s = ToolShim::install(SHIM_ENV_NIX_ENV, 0, "", "");
+            let s = ToolShim::install(&SHIM_ENV_NIX_ENV, 0, "", "");
             let p = test_printer();
             let st = test_state();
             let cx = test_package_context(&p, &st);
@@ -1105,7 +1111,7 @@ mod tests {
         #[test]
         #[serial]
         fn nix_uninstall_uses_nix_env_when_only_nix_env_seam_set() {
-            let s = ToolShim::install(SHIM_ENV_NIX_ENV, 0, "", "");
+            let s = ToolShim::install(&SHIM_ENV_NIX_ENV, 0, "", "");
             let p = test_printer();
             let st = test_state();
             let cx = test_package_context(&p, &st);

@@ -283,6 +283,7 @@ email: bad@example.com
 
 #[test]
 fn gpg_integration_generate_and_detect() {
+    let _path = cfgd_core::test_helpers::path_env_read_guard();
     if !cfgd_core::command_available("gpg") {
         return; // skip if gpg not installed
     }
@@ -764,12 +765,12 @@ mod gpg_shim {
     use cfgd_core::test_helpers::{ToolShim, test_printer};
     use serial_test::serial;
 
-    const SHIM_ENV: &str = "CFGD_GPG_BIN";
+    use crate::seams::GPG_BIN_ENV;
 
     #[test]
     #[serial]
     fn is_available_true_when_seam_points_to_existing_file() {
-        let _s = ToolShim::install(SHIM_ENV, 0, "", "");
+        let _s = ToolShim::install(GPG_BIN_ENV, 0, "", "");
         assert!(GpgKeysConfigurator.is_available());
     }
 
@@ -777,17 +778,17 @@ mod gpg_shim {
     #[serial]
     fn is_available_false_when_seam_points_to_missing_file() {
         // Snapshot + restore to avoid polluting other serial tests.
-        let prev = std::env::var_os("CFGD_GPG_BIN");
+        let prev = std::env::var_os(crate::seams::GPG_BIN_ENV);
         // SAFETY: serial test, no concurrent reader.
         unsafe {
-            std::env::set_var("CFGD_GPG_BIN", "/this/path/does/not/exist/gpg");
+            std::env::set_var(crate::seams::GPG_BIN_ENV, "/this/path/does/not/exist/gpg");
         }
         let available = GpgKeysConfigurator.is_available();
         // SAFETY: serial.
         unsafe {
             match prev {
-                Some(v) => std::env::set_var("CFGD_GPG_BIN", v),
-                None => std::env::remove_var("CFGD_GPG_BIN"),
+                Some(v) => std::env::set_var(crate::seams::GPG_BIN_ENV, v),
+                None => std::env::remove_var(crate::seams::GPG_BIN_ENV),
             }
         }
         assert!(!available);
@@ -796,7 +797,7 @@ mod gpg_shim {
     #[test]
     #[serial]
     fn query_keys_for_email_records_expected_argv() {
-        let s = ToolShim::install(SHIM_ENV, 0, "", "");
+        let s = ToolShim::install(GPG_BIN_ENV, 0, "", "");
         let entries = query_keys_for_email("jane@work.com").expect("Ok");
         assert!(entries.is_empty());
         let argv = s.argv_log();
@@ -811,7 +812,7 @@ mod gpg_shim {
     #[serial]
     fn query_keys_for_email_returns_empty_on_gpg_exit_2() {
         // exit 2 = "no keys matched" — must NOT propagate as error
-        let _s = ToolShim::install(SHIM_ENV, 2, "", "no public key");
+        let _s = ToolShim::install(GPG_BIN_ENV, 2, "", "no public key");
         let entries = query_keys_for_email("nobody@example.com").expect("Ok");
         assert!(entries.is_empty());
     }
@@ -819,7 +820,7 @@ mod gpg_shim {
     #[test]
     #[serial]
     fn query_keys_for_email_propagates_other_exit_codes_with_stderr() {
-        let _s = ToolShim::install(SHIM_ENV, 1, "", "gpg: fatal: keyring busted");
+        let _s = ToolShim::install(GPG_BIN_ENV, 1, "", "gpg: fatal: keyring busted");
         let err = query_keys_for_email("x@y.z").expect_err("expected error");
         let msg = err.to_string();
         assert!(
@@ -836,7 +837,7 @@ pub:u:255:22:AAAA:1700000000:0::u:::SC:::23::
 fpr:::::::::FPR-ABC:
 uid:u::::1700000000::HASH::Jane Doe <jane@work.com>::::::::::0:
 ";
-        let _s = ToolShim::install(SHIM_ENV, 0, stdout, "");
+        let _s = ToolShim::install(GPG_BIN_ENV, 0, stdout, "");
         let entries = query_keys_for_email("jane@work.com").expect("Ok");
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].fingerprint, "FPR-ABC");
@@ -856,7 +857,7 @@ pub:u:255:22:BBBB:1700000000:0::u:::SC:::23::
 fpr:::::::::FPR-B:
 uid:u::::1700000000::HASH2::Jane <jane@work.com>::::::::::0:
 ";
-        let _s = ToolShim::install(SHIM_ENV, 0, stdout, "");
+        let _s = ToolShim::install(GPG_BIN_ENV, 0, stdout, "");
         let entries = query_keys_for_email("jane@work.com").expect("Ok");
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].fingerprint, "FPR-B");
@@ -867,7 +868,7 @@ uid:u::::1700000000::HASH2::Jane <jane@work.com>::::::::::0:
     fn apply_invokes_gpg_gen_key_when_no_matching_keys() {
         // Empty stdout for every call: query → no keys; gen-key → success;
         // post-gen query → no keys (apply prints a warning but returns Ok).
-        let s = ToolShim::install(SHIM_ENV, 0, "", "");
+        let s = ToolShim::install(GPG_BIN_ENV, 0, "", "");
         let p = test_printer();
         let desired: serde_yaml::Value = serde_yaml::from_str(
             r#"
@@ -905,7 +906,7 @@ uid:u::::1700000000::HASH2::Jane <jane@work.com>::::::::::0:
         // Shim exits non-zero on every call → both the initial query and the
         // gen-key invocation see the failure. Initial query at exit 1 is
         // already an error path (query returns Err for any non-zero/!=2).
-        let _s = ToolShim::install(SHIM_ENV, 1, "", "gpg: agent unavailable");
+        let _s = ToolShim::install(GPG_BIN_ENV, 1, "", "gpg: agent unavailable");
         let p = test_printer();
         let desired: serde_yaml::Value = serde_yaml::from_str(
             r#"
@@ -932,7 +933,7 @@ uid:u::::1700000000::HASH2::Jane <jane@work.com>::::::::::0:
     #[test]
     #[serial]
     fn diff_reports_missing_when_shim_returns_empty_keyring() {
-        let _s = ToolShim::install(SHIM_ENV, 0, "", "");
+        let _s = ToolShim::install(GPG_BIN_ENV, 0, "", "");
         let desired: serde_yaml::Value = serde_yaml::from_str(
             r#"
 - name: work-signing
@@ -961,7 +962,7 @@ pub:u:255:22:AAAA:1700000000:9999999999::u:::SC:::23::
 fpr:::::::::FPR-VALID:
 uid:u::::1700000000::HASH::Jane <jane@work.com>::::::::::0:
 ";
-        let _s = ToolShim::install(SHIM_ENV, 0, stdout, "");
+        let _s = ToolShim::install(GPG_BIN_ENV, 0, stdout, "");
         let desired: serde_yaml::Value = serde_yaml::from_str(
             r#"
 - name: work-signing
@@ -991,7 +992,7 @@ pub:e:255:22:AAAA:1700000000:1700000010::u:::SC:::23::
 fpr:::::::::FPR-EXPIRED:
 uid:e::::1700000000::HASH::Jane <jane@work.com>::::::::::0:
 ";
-        let _s = ToolShim::install(SHIM_ENV, 0, stdout, "");
+        let _s = ToolShim::install(GPG_BIN_ENV, 0, stdout, "");
         let desired: serde_yaml::Value = serde_yaml::from_str(
             r#"
 - name: work-signing

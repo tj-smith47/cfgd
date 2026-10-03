@@ -197,10 +197,14 @@ fn snapshot_dir(h: &Harness, name: &str) -> PathBuf {
 fn snapshots(dir: &Path) -> Vec<String> {
     let mut names: Vec<String> = match std::fs::read_dir(dir) {
         Ok(entries) => entries
-            .filter_map(|e| e.ok())
+            .map(|entry| entry.expect("the walk must read every directory entry"))
             .map(|e| e.file_name().to_string_lossy().into_owned())
             .collect(),
-        Err(_) => Vec::new(),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+        Err(e) => panic!(
+            "{}: the snapshot directory must be readable: {e}",
+            dir.display()
+        ),
     };
     names.sort();
     names
@@ -582,8 +586,11 @@ fn hooks_see_the_backup_phase_in_the_environment() {
     let pre = h.root.join("pre-phase");
     let post = h.root.join("post-phase");
     let mut s = spec("db", &source);
-    s.pre_backup = vec![echo_env_hook(&["CFGD_PHASE"], &pre)];
-    s.post_backup = vec![echo_env_hook(&["CFGD_PHASE", "CFGD_PROFILE"], &post)];
+    s.pre_backup = vec![echo_env_hook(&[crate::CFGD_PHASE_ENV], &pre)];
+    s.post_backup = vec![echo_env_hook(
+        &[crate::CFGD_PHASE_ENV, crate::CFGD_PROFILE_ENV],
+        &post,
+    )];
 
     h.run(&s);
 
@@ -1093,6 +1100,48 @@ fn an_orphaned_row_takes_no_retention_slot() {
     assert!(
         stranded.exists(),
         "the orphaned snapshot was pruned from disk"
+    );
+}
+
+/// The orphan note row spells a destination under the home directory `~/`.
+///
+/// The status row that carries this sentence folds nothing of what it is
+/// handed, unlike the hint slot the sentence used to take, so the fold has to
+/// live in the composer. No golden can answer the question:
+/// `normalize_for_snapshot` substitutes a path's absolute and `~/`-folded
+/// spellings alike, so both read back as the same label. The claim is on the
+/// captured bytes ahead of any normalization for that reason.
+#[test]
+fn the_orphan_note_folds_a_destination_under_the_home_directory() {
+    let home = tempfile::tempdir().expect("tempdir");
+    let destination = home.path().join("backups/notes");
+    let absolute = crate::to_posix_string(&destination);
+    let (note, folded) = crate::with_test_home(home.path(), || {
+        (
+            orphan_note(2, "docs", &destination),
+            crate::fold_home_in_text(&absolute),
+        )
+    });
+    // The premise the claim rests on: this destination is one the fold moves,
+    // so a `~/` spelling in the row is the composer's work: the path has
+    // another form too.
+    assert_ne!(
+        folded, absolute,
+        "the fixture must put the destination under the home it folds against"
+    );
+
+    let (printer, buf) = Printer::for_test_at(crate::output::Verbosity::Normal);
+    printer.status_simple(Role::Warn, note);
+    drop(printer);
+    let out = crate::test_helpers::captured_text(&buf);
+
+    assert!(
+        out.contains("destination ~/backups/notes by"),
+        "the note row folds the home directory, got:\n{out}"
+    );
+    assert!(
+        !out.contains(&absolute),
+        "the note row still spells {absolute} absolutely:\n{out}"
     );
 }
 
@@ -2297,22 +2346,22 @@ fn a_restore_over_bytes_already_preserved_reads_already_backed_up_at() {
     report_restore(&printer, &second);
     drop(printer);
     let out = crate::test_helpers::captured_text(&buf);
-    let hints: Vec<&str> = out
+    let rows: Vec<&str> = out
         .lines()
         .filter(|l| l.contains("Previous contents"))
         .collect();
-    assert_eq!(hints.len(), 2, "one hint per restore, got:\n{out}");
+    assert_eq!(rows.len(), 2, "one row per restore, got:\n{out}");
     assert!(
-        hints[0].contains(&format!("Previous contents {}", first_copy.detail()))
-            && hints[0].contains("backed up to"),
+        rows[0].contains(&format!("Previous contents {}", first_copy.detail()))
+            && rows[0].contains("backed up to"),
         "the written copy reads as written, got: {}",
-        hints[0]
+        rows[0]
     );
     assert!(
-        hints[1].contains(&format!("Previous contents {}", second_copy.detail()))
-            && hints[1].contains("already backed up at"),
+        rows[1].contains(&format!("Previous contents {}", second_copy.detail()))
+            && rows[1].contains("already backed up at"),
         "the reused copy must not claim a write, got: {}",
-        hints[1]
+        rows[1]
     );
 }
 
@@ -2781,8 +2830,14 @@ fn restore_hooks_see_the_restore_operation() {
 
     let pre = h.root.join("pre-op");
     let post = h.root.join("post-op");
-    s.pre_backup = vec![echo_env_hook(&["CFGD_PHASE", "CFGD_OPERATION"], &pre)];
-    s.post_backup = vec![echo_env_hook(&["CFGD_PHASE", "CFGD_OPERATION"], &post)];
+    s.pre_backup = vec![echo_env_hook(
+        &[crate::CFGD_PHASE_ENV, crate::CFGD_OPERATION_ENV],
+        &pre,
+    )];
+    s.post_backup = vec![echo_env_hook(
+        &[crate::CFGD_PHASE_ENV, crate::CFGD_OPERATION_ENV],
+        &post,
+    )];
 
     h.restore(&s, None, None).expect("restore");
 
@@ -2797,7 +2852,7 @@ fn backup_hooks_see_the_backup_operation() {
     std::fs::write(&source, "v1").expect("source");
     let mut s = spec("db", &source);
     let pre = h.root.join("pre-op");
-    s.pre_backup = vec![echo_env_hook(&["CFGD_OPERATION"], &pre)];
+    s.pre_backup = vec![echo_env_hook(&[crate::CFGD_OPERATION_ENV], &pre)];
 
     h.run(&s);
 
@@ -3537,8 +3592,8 @@ fn a_rollback_runs_the_units_hooks_with_the_rollback_operation() {
     let pre = h.root.join("pre.txt");
     let post = h.root.join("post.txt");
     let mut s = spec("docs", &source);
-    s.pre_backup = vec![echo_env_hook(&["CFGD_OPERATION"], &pre)];
-    s.post_backup = vec![echo_env_hook(&["CFGD_OPERATION"], &post)];
+    s.pre_backup = vec![echo_env_hook(&[crate::CFGD_OPERATION_ENV], &pre)];
+    s.post_backup = vec![echo_env_hook(&[crate::CFGD_OPERATION_ENV], &post)];
 
     h.run(&s);
     std::fs::write(&source, b"later").expect("edit source");

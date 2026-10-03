@@ -19,48 +19,31 @@ pub fn cmd_checkin(
     printer.heading("Checkin");
 
     let ctx = RunContext::new(cli, printer);
-    let (cfg, _profile_name, local_resolved) = ctx.config_and_profile()?;
+    let (cfg, profile_name, local_resolved) = ctx.config_and_profile()?;
     let config_dir = ctx.config_dir();
 
-    // Compose with sources (cache-only — read paths stay offline) and resolve the
-    // effective module set through the one shared resolver, so the checkin
-    // payload reflects the same source-composed desired state that `apply` writes.
-    let mut desired = resolve_desired_state(
-        &ctx,
-        cfg,
-        local_resolved,
-        &[],
-        false,
-        printer,
-        false,
-        composition::ConstraintMode::Report,
-    )?;
-    // Taken before the other fields, because a partial move out of `desired`
-    // would block the `&mut self` this accessor needs.
-    let mut registry = desired.take_registry(cfg);
-    let resolved = desired.resolved;
-    let resolved_modules = desired.modules;
-
-    registry.file_manager = Some(Box::new(build_compliance_file_manager(
-        config_dir,
-        &resolved,
-        Some(&ctx),
-    )?));
+    // The same resolution `cfgd compliance` collects against, so the compliance
+    // report, the hash and the drift scan below all read the source-composed
+    // desired state that `apply` writes.
+    let mut inputs =
+        super::compliance::ComplianceInputs::of_config(&ctx, cfg, local_resolved, printer)?;
+    // A manifest that cannot be read leaves its packages out of the declared
+    // set. Reported anyway, the version map would retire every version that
+    // manifest declares and the compliance checks would call its packages
+    // undeclared, so the check-in withholds both and still goes out.
+    let manifest_error = inputs.take_manifest_error();
+    if let Some(ref e) = manifest_error {
+        tracing::warn!(
+            error = %e,
+            "checkin: a package manifest could not be read — the check-in withholds package versions and compliance"
+        );
+    }
+    let registry = &inputs.registry;
+    let resolved = &inputs.resolved;
+    let resolved_modules = &inputs.modules;
 
     let stored_cred = cfgd_core::server_client::load_credential().ok().flatten();
     let client = build_checkin_client(server_url, api_key, device_id, stored_cred.as_ref());
-
-    // The effective (profile ⊕ modules) system map, not the profile's own: a
-    // module's system settings are desired state like any other, and reading the
-    // profile-only view hid them from BOTH surfaces below — the hash the gateway
-    // uses to tell one desired config from another never moved when a module's
-    // settings changed, and the drift scan never checked a setting only a module
-    // declared.
-    let (system, _) =
-        cfgd_core::effective::effective_system_map(&resolved.merged, &resolved_modules);
-    let config_yaml =
-        serde_yaml::to_string(&system).context("failed to serialize system config")?;
-    let config_hash = cfgd_core::sha256_hex(config_yaml.as_bytes());
 
     // The machine is diffed ONCE per checkin, and not until someone asks. Both
     // consumers read from this cell: the compliance snapshot's system checks
@@ -73,19 +56,22 @@ pub fn cmd_checkin(
     let system_diffs: std::cell::OnceCell<Vec<cfgd_core::compliance::SystemDiff>> =
         std::cell::OnceCell::new();
     let diff_system = || {
-        cfgd_core::compliance::collect_system_diffs(&resolved.merged, &resolved_modules, &registry)
+        cfgd_core::compliance::collect_system_diffs(&resolved.merged, resolved_modules, registry)
     };
 
-    let compliance_summary = if let Some(ref compliance_cfg) = cfg.spec.compliance {
-        if compliance_cfg.enabled {
-            let profile_name = cfg.active_profile().unwrap_or("unknown");
+    // Kept whole for the length of the check-in, because the report borrows
+    // its rows from it.
+    let compliance_snapshot = match cfg
+        .spec
+        .compliance
+        .as_ref()
+        .filter(|c| c.enabled && manifest_error.is_none())
+    {
+        Some(compliance_cfg) => {
             let checkin_state = ctx.state()?;
-            match cfgd_core::compliance::collect_snapshot(
+            match inputs.collect(
                 profile_name,
-                &resolved.merged,
-                &resolved_modules,
                 config_dir,
-                &registry,
                 &compliance_cfg.scope,
                 &[],
                 printer,
@@ -93,27 +79,16 @@ pub fn cmd_checkin(
                 Some(system_diffs.get_or_init(diff_system)),
             ) {
                 Ok(snapshot) => {
-                    printer.kv(
-                        "Compliance",
-                        format!(
-                            "{} compliant, {} warning, {} violation",
-                            snapshot.summary.compliant,
-                            snapshot.summary.warning,
-                            snapshot.summary.violation,
-                        ),
-                    );
-                    Some(snapshot.summary)
+                    printer.kv("Compliance", snapshot.summary.counts_line());
+                    Some(snapshot)
                 }
                 Err(e) => {
                     tracing::warn!(error = %e, "Failed to collect compliance snapshot for checkin");
                     None
                 }
             }
-        } else {
-            None
         }
-    } else {
-        None
+        None => None,
     };
 
     // What the machine reports about itself beyond the hash: the versions it
@@ -121,30 +96,27 @@ pub fn cmd_checkin(
     // unit's schedule. Both are questions only the device can answer and the
     // check-in is its only channel to the cluster, where a `ConfigPolicy`
     // version pin and a `BackupPolicy` schedule projection are decided from
-    // them.
+    // them. Composed by the one builder the daemon's check-in uses too.
     //
     // Nothing observed means nothing claimed, whether the whole context failed
     // to build or one manager holding declared packages could not be listed:
     // the map is left out of the body entirely, the gateway's own manager for
     // it writes nothing, and the cluster keeps the versions the last check-in
     // that could look reported.
-    let checkin_facts = cfgd_core::server_client::CheckinFacts {
-        package_versions: match ctx.package_context() {
-            Ok(pkg_cx) => cfgd_core::compliance::declared_package_versions(
-                &resolved.merged,
-                &resolved_modules,
-                &registry,
-                &pkg_cx,
-            ),
-            Err(e) => {
-                tracing::warn!(error = %e, "checkin: package versions unavailable");
-                None
-            }
-        },
-        backup_schedule_owners: Some(cfgd_core::backup::declared_schedule_owners(
-            &resolved.merged.backups,
-        )),
+    let pkg_cx = match manifest_error {
+        Some(_) => None,
+        None => ctx
+            .package_context()
+            .inspect_err(|e| tracing::warn!(error = %e, "checkin: package versions unavailable"))
+            .ok(),
     };
+    let checkin_facts = cfgd_core::server_client::CheckinFacts::collect(
+        &resolved.merged,
+        resolved_modules,
+        registry,
+        pkg_cx.as_ref(),
+        compliance_snapshot.as_ref(),
+    )?;
 
     let resp = {
         // `client.checkin` narrates through the bare `&Printer` it's handed
@@ -162,7 +134,7 @@ pub fn cmd_checkin(
         let gateway_sec = printer.section("Gateway");
         let _inherit = printer.depth_inheritance();
         let result = client
-            .checkin(&config_hash, compliance_summary, checkin_facts, printer)
+            .checkin(checkin_facts, printer)
             .context("checkin to gateway failed");
         match &result {
             Ok(resp) => {
@@ -335,6 +307,16 @@ metadata:
 spec: {}
 "#;
 
+    fn test_facts() -> cfgd_core::server_client::CheckinFacts<'static> {
+        cfgd_core::server_client::CheckinFacts {
+            hostname: "test-host".into(),
+            config_hash: "hash".into(),
+            compliance: None,
+            package_versions: None,
+            backup_schedule_owners: None,
+        }
+    }
+
     fn make_cred(server_url: &str, device_id: &str, api_key: &str) -> DeviceCredential {
         DeviceCredential {
             server_url: server_url.to_string(),
@@ -429,7 +411,7 @@ spec: {}
 
         let client = build_checkin_client(&server.url(), None, None, Some(&cred));
         let (printer, _buf) = Printer::for_test_at(Verbosity::Quiet);
-        let result = client.checkin("hash", None, Default::default(), &printer);
+        let result = client.checkin(test_facts(), &printer);
 
         assert!(result.is_ok(), "checkin should succeed: {:?}", result);
         mock.assert();
@@ -454,7 +436,7 @@ spec: {}
             Some(&cred),
         );
         let (printer, _buf) = Printer::for_test_at(Verbosity::Quiet);
-        let result = client.checkin("hash", None, Default::default(), &printer);
+        let result = client.checkin(test_facts(), &printer);
 
         assert!(result.is_ok(), "checkin should succeed: {:?}", result);
         mock.assert();
@@ -475,7 +457,7 @@ spec: {}
         let client =
             build_checkin_client(&server.url(), None, Some("explicit-device"), Some(&cred));
         let (printer, _buf) = Printer::for_test_at(Verbosity::Quiet);
-        let result = client.checkin("hash", None, Default::default(), &printer);
+        let result = client.checkin(test_facts(), &printer);
 
         // The mock succeeds without requiring Bearer stored-key, confirming the
         // anonymous (non-stored-cred) path was taken.
@@ -499,7 +481,7 @@ spec: {}
 
         let client = build_checkin_client(&server_url, None, None, Some(&cred));
         let (printer, _buf) = Printer::for_test_at(Verbosity::Quiet);
-        let result = client.checkin("hash", None, Default::default(), &printer);
+        let result = client.checkin(test_facts(), &printer);
 
         assert!(
             result.is_ok(),
@@ -533,9 +515,12 @@ spec: {}
             color: crate::cli::ColorWhen::Auto,
             output: OutputFormatArg(OutputFormat::Table),
             list_envelope: false,
+            hints: false,
             no_hints: false,
             theme: None,
             mask_env_values: None,
+            migration_policy: None,
+            update_policy: None,
             jsonpath: None,
             yes: false,
             state_dir: Some(state_dir.to_path_buf()),
@@ -559,7 +544,7 @@ spec: {}
         // available and answers its bulk read, so the shim's log is the count
         // of times checkin asked the machine anything at all.
         let shim = cfgd_core::test_helpers::ToolShim::install(
-            "CFGD_GSETTINGS_BIN",
+            crate::seams::GSETTINGS_BIN_ENV,
             0,
             "org.gnome.cfgd-checkin color-scheme 'default'\n",
             "",
@@ -588,7 +573,10 @@ spec:
 
         let state_dir = tempfile::tempdir().unwrap();
         let _home = cfgd_core::with_test_home_guard(config_dir.path());
-        let _state_env = EnvVarGuard::set("CFGD_STATE_DIR", state_dir.path().to_str().unwrap());
+        let _state_env = EnvVarGuard::set(
+            cfgd_core::CFGD_STATE_DIR_ENV,
+            state_dir.path().to_str().unwrap(),
+        );
 
         let mut server = mockito::Server::new();
         let checkin = server
@@ -633,6 +621,241 @@ spec:
         );
     }
 
+    /// The check-in reports the machine's failing checks as `cfgd compliance`
+    /// collects them for the same config: the same rows, the same subjects
+    /// and the same details, so the fleet and the machine never disagree
+    /// about why it is out of compliance.
+    #[test]
+    #[serial_test::serial]
+    fn checkin_reports_the_failing_checks_cfgd_compliance_collects() {
+        let config_dir = make_test_config_dir();
+        let root = config_dir.path();
+        std::fs::create_dir_all(root.join("files")).unwrap();
+        std::fs::write(root.join("files").join("zshrc"), "export A=1\n").unwrap();
+        std::fs::write(
+            root.join("cfgd.yaml"),
+            format!(
+                "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  \
+                 profile: default\n  compliance:\n    enabled: true\n    scope:\n      \
+                 packages: false\n      system: false\n      secrets: false\n      \
+                 watchPaths: [{}]\n",
+                cfgd_core::to_posix_string(root.join("watched"))
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("profiles").join("default.yaml"),
+            format!(
+                "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\n\
+                 spec:\n  files:\n    managed:\n      - source: files/zshrc\n        \
+                 target: {}\n",
+                cfgd_core::to_posix_string(root.join(".zshrc"))
+            ),
+        )
+        .unwrap();
+
+        let state_dir = tempfile::tempdir().unwrap();
+        let _home = cfgd_core::with_test_home_guard(root);
+        let _state_env = EnvVarGuard::set(
+            cfgd_core::CFGD_STATE_DIR_ENV,
+            state_dir.path().to_str().unwrap(),
+        );
+        let cli = test_cli_for(root, state_dir.path());
+
+        let (quiet, _) = Printer::for_test_doc();
+        let (_, collected) = super::super::compliance::collect_and_store_compliance_snapshot(
+            &RunContext::new(&cli, &quiet),
+        )
+        .expect("cfgd compliance collects");
+        let report = cfgd_core::server_client::CheckinCompliance::from_snapshot(&collected);
+        assert_eq!(
+            report
+                .checks
+                .iter()
+                .map(|c| (c.category, c.status))
+                .collect::<Vec<_>>(),
+            vec![
+                ("file", cfgd_core::compliance::ComplianceStatus::Violation),
+                (
+                    "watchPath",
+                    cfgd_core::compliance::ComplianceStatus::Warning
+                ),
+            ],
+            "the fixture fails one check of each kind"
+        );
+        let expected = serde_json::json!({ "complianceSummary": report }).to_string();
+
+        let mut server = mockito::Server::new();
+        let checkin = server
+            .mock("POST", "/api/v1/checkin")
+            .match_body(mockito::Matcher::PartialJsonString(expected))
+            .with_status(200)
+            .with_body(r#"{"status":"ok","configChanged":false}"#)
+            .create();
+
+        let (printer, _cap) = Printer::for_test_doc();
+        let result = cmd_checkin(
+            &cli,
+            &printer,
+            &server.url(),
+            Some("test-key"),
+            Some("dev-1"),
+        );
+        drop(printer);
+
+        assert!(result.is_ok(), "cmd_checkin should succeed: {result:?}");
+        checkin.assert();
+    }
+
+    /// The profile a compliance snapshot is labelled with, and the name its
+    /// patch scripts see as `CFGD_PROFILE`, is the one the invocation resolved:
+    /// `--profile` when given, the document's `profile:` otherwise. Driven
+    /// through `execute` with parsed argv, so the flag's own path to the
+    /// resolver is what is tested.
+    #[test]
+    #[cfg(unix)]
+    #[serial_test::serial]
+    fn compliance_and_checkin_label_the_snapshot_with_the_resolved_profile() {
+        use std::os::unix::fs::PermissionsExt;
+
+        const ROWS: &[(&str, &[&str], &str)] = &[
+            (
+                "compliance --profile",
+                &["--profile", "work", "compliance"],
+                "work",
+            ),
+            (
+                "compliance, the document's profile",
+                &["compliance"],
+                "base",
+            ),
+            (
+                "checkin --profile",
+                &["--profile", "work", "checkin"],
+                "work",
+            ),
+            ("checkin, the document's profile", &["checkin"], "base"),
+        ];
+
+        let mut server = mockito::Server::new();
+        let _checkin = server
+            .mock("POST", "/api/v1/checkin")
+            .with_status(200)
+            .with_body(r#"{"status":"ok","configChanged":false}"#)
+            .expect_at_least(0)
+            .create();
+
+        let mut wrong = Vec::new();
+        for (row, args, expected) in ROWS {
+            let config_dir = make_test_config_dir();
+            let root = config_dir.path();
+            let seen = root.join("seen-profile");
+            let target = root.join("patched.conf");
+            std::fs::write(&target, "keep=me\n").unwrap();
+            let script = root.join("scripts").join("record-profile.sh");
+            std::fs::create_dir_all(script.parent().unwrap()).unwrap();
+            std::fs::write(
+                &script,
+                format!(
+                    "#!/bin/sh\nprintf '%s' \"$CFGD_PROFILE\" > '{}'\ncat\n",
+                    cfgd_core::to_posix_string(&seen)
+                ),
+            )
+            .unwrap();
+            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+            std::fs::write(
+                root.join("cfgd.yaml"),
+                "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  \
+                 profile: base\n  compliance:\n    enabled: true\n    scope:\n      \
+                 packages: false\n      system: false\n      secrets: false\n",
+            )
+            .unwrap();
+            for name in ["base", "work"] {
+                std::fs::write(
+                    root.join("profiles").join(format!("{name}.yaml")),
+                    format!(
+                        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: {name}\n\
+                         spec:\n  files:\n    managed:\n      - target: {}\n        \
+                         strategy: Patch\n        patch:\n          \
+                         script: scripts/record-profile.sh\n",
+                        cfgd_core::to_posix_string(&target)
+                    ),
+                )
+                .unwrap();
+            }
+
+            let state_dir = tempfile::tempdir().unwrap();
+            let _home = cfgd_core::with_test_home_guard(root);
+            let _state_env = EnvVarGuard::set(
+                cfgd_core::CFGD_STATE_DIR_ENV,
+                state_dir.path().to_str().unwrap(),
+            );
+            let mut argv: Vec<String> = vec![
+                "cfgd".into(),
+                "--config".into(),
+                cfgd_core::to_posix_string(root.join("cfgd.yaml")),
+                "--state-dir".into(),
+                cfgd_core::to_posix_string(state_dir.path()),
+            ];
+            argv.extend(args.iter().map(|a| (*a).to_string()));
+            if args.contains(&"checkin") {
+                argv.extend([
+                    "--server-url".into(),
+                    server.url(),
+                    "--api-key".into(),
+                    "test-key".into(),
+                    "--device-id".into(),
+                    "dev-1".into(),
+                ]);
+            }
+            let cli = Cli::try_parse_hermetic(&argv).expect("the invocation parses");
+            let (printer, _cap) = Printer::for_test_doc();
+            let result = super::super::execute(
+                &cli,
+                &printer,
+                &super::super::paths::DirSources::all_default(),
+                &super::super::startup::StartupDocument::load(&cli.config),
+            );
+            drop(printer);
+            if let Err(e) = result {
+                wrong.push(format!("{row}: the invocation failed: {e:#}"));
+                continue;
+            }
+
+            match std::fs::read_to_string(&seen) {
+                Ok(script_saw) if script_saw == *expected => {}
+                Ok(script_saw) => wrong.push(format!(
+                    "{row}: the patch script saw CFGD_PROFILE={script_saw:?}, expected {expected:?}"
+                )),
+                Err(e) => wrong.push(format!("{row}: the patch script did not run: {e}")),
+            }
+            if args.contains(&"compliance") {
+                let state = open_state_store(Some(state_dir.path()), cfgd_core::Scope::User)
+                    .expect("the state store opens");
+                let latest = state
+                    .compliance_history(None, 1)
+                    .expect("the history reads")
+                    .first()
+                    .and_then(|r| {
+                        state
+                            .get_compliance_snapshot(r.id)
+                            .expect("the snapshot reads")
+                    });
+                let label = latest.map(|s| s.profile);
+                if label.as_deref() != Some(*expected) {
+                    wrong.push(format!(
+                        "{row}: the stored snapshot is labelled {label:?}, expected {expected:?}"
+                    ));
+                }
+            }
+        }
+        assert!(
+            wrong.is_empty(),
+            "the snapshot's profile label does not follow the resolved profile:\n{}",
+            wrong.join("\n")
+        );
+    }
+
     /// Every string in a gateway response is remote input, and this command
     /// echoes `status` verbatim into a kv row. An `ESC[2K` in it erases the
     /// line it is written on, so what a user reads is not what the gateway
@@ -645,7 +868,10 @@ spec:
         let config_dir = make_test_config_dir();
         let state_dir = tempfile::tempdir().unwrap();
         let _home = cfgd_core::with_test_home_guard(config_dir.path());
-        let _state_env = EnvVarGuard::set("CFGD_STATE_DIR", state_dir.path().to_str().unwrap());
+        let _state_env = EnvVarGuard::set(
+            cfgd_core::CFGD_STATE_DIR_ENV,
+            state_dir.path().to_str().unwrap(),
+        );
 
         let mut server = mockito::Server::new();
         let checkin = server
@@ -701,7 +927,7 @@ spec:
     #[serial_test::serial]
     fn cmd_checkin_drift_settle_line_nests_under_the_system_settings_section_header() {
         let shim = cfgd_core::test_helpers::ToolShim::install(
-            "CFGD_GSETTINGS_BIN",
+            crate::seams::GSETTINGS_BIN_ENV,
             0,
             "org.gnome.cfgd-checkin color-scheme 'default'\n",
             "",
@@ -730,7 +956,10 @@ spec:
 
         let state_dir = tempfile::tempdir().unwrap();
         let _home = cfgd_core::with_test_home_guard(config_dir.path());
-        let _state_env = EnvVarGuard::set("CFGD_STATE_DIR", state_dir.path().to_str().unwrap());
+        let _state_env = EnvVarGuard::set(
+            cfgd_core::CFGD_STATE_DIR_ENV,
+            state_dir.path().to_str().unwrap(),
+        );
 
         let mut server = mockito::Server::new();
         let checkin = server
@@ -783,7 +1012,7 @@ spec:
         // does — and the machine must not have been scanned for a report
         // nobody will read.
         let shim = cfgd_core::test_helpers::ToolShim::install(
-            "CFGD_GSETTINGS_BIN",
+            crate::seams::GSETTINGS_BIN_ENV,
             0,
             "org.gnome.cfgd-lazy color-scheme 'default'\n",
             "",
@@ -806,7 +1035,10 @@ spec:
 
         let state_dir = tempfile::tempdir().unwrap();
         let _home = cfgd_core::with_test_home_guard(config_dir.path());
-        let _state_env = EnvVarGuard::set("CFGD_STATE_DIR", state_dir.path().to_str().unwrap());
+        let _state_env = EnvVarGuard::set(
+            cfgd_core::CFGD_STATE_DIR_ENV,
+            state_dir.path().to_str().unwrap(),
+        );
 
         let mut server = mockito::Server::new();
         // The client retries a 5xx, so the count is "at least one attempt".
@@ -843,7 +1075,10 @@ spec:
         let config_dir = make_test_config_dir();
         let state_dir = tempfile::tempdir().unwrap();
         let _home = cfgd_core::with_test_home_guard(config_dir.path());
-        let _state_env = EnvVarGuard::set("CFGD_STATE_DIR", state_dir.path().to_str().unwrap());
+        let _state_env = EnvVarGuard::set(
+            cfgd_core::CFGD_STATE_DIR_ENV,
+            state_dir.path().to_str().unwrap(),
+        );
 
         let mut server = mockito::Server::new();
         let mock = server
@@ -901,7 +1136,10 @@ spec:
         let config_dir = make_test_config_dir();
         let state_dir = tempfile::tempdir().unwrap();
         let _home = cfgd_core::with_test_home_guard(config_dir.path());
-        let _state_env = EnvVarGuard::set("CFGD_STATE_DIR", state_dir.path().to_str().unwrap());
+        let _state_env = EnvVarGuard::set(
+            cfgd_core::CFGD_STATE_DIR_ENV,
+            state_dir.path().to_str().unwrap(),
+        );
 
         let mut server = mockito::Server::new();
         let mock = server
@@ -934,7 +1172,10 @@ spec:
         let config_dir = make_test_config_dir();
         let state_dir = tempfile::tempdir().unwrap();
         let _home = cfgd_core::with_test_home_guard(config_dir.path());
-        let _state_env = EnvVarGuard::set("CFGD_STATE_DIR", state_dir.path().to_str().unwrap());
+        let _state_env = EnvVarGuard::set(
+            cfgd_core::CFGD_STATE_DIR_ENV,
+            state_dir.path().to_str().unwrap(),
+        );
 
         let mut server = mockito::Server::new();
         let mock = server
@@ -1007,7 +1248,10 @@ spec:
         let cli_state = tempfile::tempdir().unwrap();
         let cli_written = {
             let _home = cfgd_core::with_test_home_guard(cli_config.path());
-            let _state_env = EnvVarGuard::set("CFGD_STATE_DIR", cli_state.path().to_str().unwrap());
+            let _state_env = EnvVarGuard::set(
+                cfgd_core::CFGD_STATE_DIR_ENV,
+                cli_state.path().to_str().unwrap(),
+            );
             let mut server = mockito::Server::new();
             let _mock = server
                 .mock("POST", "/api/v1/checkin")
@@ -1031,8 +1275,10 @@ spec:
         let daemon_home = tempfile::tempdir().unwrap();
         let daemon_written = {
             let _home = cfgd_core::with_test_home_guard(daemon_home.path());
-            let _state_env =
-                EnvVarGuard::set("CFGD_STATE_DIR", daemon_home.path().to_str().unwrap());
+            let _state_env = EnvVarGuard::set(
+                cfgd_core::CFGD_STATE_DIR_ENV,
+                daemon_home.path().to_str().unwrap(),
+            );
             let mut server = mockito::Server::new();
             let _mock = server
                 .mock("POST", "/api/v1/checkin")
@@ -1071,17 +1317,11 @@ spec:
                 deprecations: Vec::new(),
                 legacy_output_keys: Vec::new(),
             };
-            let resolved = ResolvedProfile {
-                layers: vec![ProfileLayer {
-                    source: "local".into(),
-                    profile_name: "test".into(),
-                    priority: 1000,
-                    policy: LayerPolicy::Local,
-                    spec: ProfileSpec::default(),
-                }],
-                merged: MergedProfile::default(),
-            };
-            cfgd_core::daemon::try_server_checkin(&config, &resolved, Default::default());
+            cfgd_core::daemon::try_server_checkin(
+                &config,
+                &cfgd_core::test_helpers::test_printer(),
+                || Some(test_facts()),
+            );
             pending_of(daemon_home.path())
         };
 
@@ -1097,7 +1337,10 @@ spec:
         let config_dir = make_test_config_dir();
         let state_dir = tempfile::tempdir().unwrap();
         let _home = cfgd_core::with_test_home_guard(config_dir.path());
-        let _state_env = EnvVarGuard::set("CFGD_STATE_DIR", state_dir.path().to_str().unwrap());
+        let _state_env = EnvVarGuard::set(
+            cfgd_core::CFGD_STATE_DIR_ENV,
+            state_dir.path().to_str().unwrap(),
+        );
 
         let mut server = mockito::Server::new();
         // The retry logic retries 500s, so allow at least 2 hits.
@@ -1170,7 +1413,10 @@ spec:
 
         let state_dir = tempfile::tempdir().unwrap();
         let _home = cfgd_core::with_test_home_guard(config_dir.path());
-        let _state_env = EnvVarGuard::set("CFGD_STATE_DIR", state_dir.path().to_str().unwrap());
+        let _state_env = EnvVarGuard::set(
+            cfgd_core::CFGD_STATE_DIR_ENV,
+            state_dir.path().to_str().unwrap(),
+        );
 
         // Spelled out rather than read back through the merge under test: the
         // expectation is the map a reader of the two YAML files above would
@@ -1228,5 +1474,321 @@ spec:
             "checkin should have sent the effective-map hash: {result:?}"
         );
         mock.assert();
+    }
+
+    /// One enrolled machine for both senders: a source whose file sits
+    /// outside its allowed paths, compliance on, a `Cargo.toml` manifest
+    /// declaring `ripgrep`, and a gateway that records every check-in body.
+    struct TwoSenderMachine {
+        cli: crate::cli::Cli,
+        root: std::path::PathBuf,
+        state_dir: std::path::PathBuf,
+        cache_dir: std::path::PathBuf,
+        destination: String,
+        server: mockito::ServerGuard,
+        posted: std::sync::Arc<std::sync::Mutex<Vec<serde_json::Value>>>,
+        _guards: (
+            EnvVarGuard,
+            EnvVarGuard,
+            cfgd_core::TestHomeGuard,
+            Box<dyn std::any::Any>,
+        ),
+    }
+
+    impl TwoSenderMachine {
+        fn new() -> Self {
+            let allow = EnvVarGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
+            let (workspace, config_dir, state_dir, destination) =
+                cfgd_test_fixtures::violating_backup_source_setup();
+            let cache_dir = tempfile::tempdir().unwrap();
+            let root = config_dir.path().to_path_buf();
+            let home = cfgd_core::with_test_home_guard(&root);
+            let state_env = EnvVarGuard::set(
+                cfgd_core::CFGD_STATE_DIR_ENV,
+                state_dir.path().to_str().unwrap(),
+            );
+
+            let posted =
+                std::sync::Arc::new(std::sync::Mutex::new(Vec::<serde_json::Value>::new()));
+            let sink = std::sync::Arc::clone(&posted);
+            let mut server = mockito::Server::new();
+            let checkin = server
+                .mock("POST", "/api/v1/checkin")
+                .expect(2)
+                .with_status(200)
+                .with_body_from_request(move |request| {
+                    let body = request.body().expect("a check-in body");
+                    sink.lock()
+                        .unwrap()
+                        .push(serde_json::from_slice(body).expect("a JSON check-in"));
+                    br#"{"status":"ok","configChanged":false}"#.to_vec()
+                })
+                .create();
+
+            let config = std::fs::read_to_string(root.join("cfgd.yaml")).unwrap();
+            std::fs::write(
+                root.join("cfgd.yaml"),
+                format!(
+                    "{config}  compliance:\n    enabled: true\n  origin:\n    - type: Server\n      \
+                     url: {}\n",
+                    server.url()
+                ),
+            )
+            .unwrap();
+            std::fs::write(
+                root.join("Cargo.toml"),
+                "[package]\nname = \"t\"\nversion = \"0.1.0\"\n\n[dependencies]\nripgrep = \"14\"\n",
+            )
+            .unwrap();
+            std::fs::write(
+                root.join("profiles").join("default.yaml"),
+                "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  \
+                 packages:\n    cargo:\n      file: Cargo.toml\n",
+            )
+            .unwrap();
+            cfgd_core::server_client::save_credential(&make_cred(
+                &server.url(),
+                "dev-1",
+                "test-key",
+            ))
+            .expect("store the device credential");
+
+            let mut cli = test_cli_for(&root, state_dir.path());
+            cli.cache_dir = Some(cache_dir.path().to_path_buf());
+            let (quiet, _) = Printer::for_test_doc();
+            crate::cli::sync::cmd_sync(&cli, &quiet).expect("the source syncs into the cache");
+
+            Self {
+                cli,
+                state_dir: state_dir.path().to_path_buf(),
+                cache_dir: cache_dir.path().to_path_buf(),
+                root,
+                destination,
+                server,
+                posted,
+                _guards: (
+                    allow,
+                    state_env,
+                    home,
+                    Box::new((workspace, config_dir, state_dir, cache_dir, checkin)),
+                ),
+            }
+        }
+
+        fn run_cfgd_checkin(&self) {
+            let (printer, _cap) = Printer::for_test_doc();
+            cmd_checkin(
+                &self.cli,
+                &printer,
+                &self.server.url(),
+                Some("test-key"),
+                Some("dev-1"),
+            )
+            .expect("cfgd checkin succeeds");
+        }
+
+        fn run_daemon_ticks(&self, hooks: std::sync::Arc<dyn cfgd_core::daemon::DaemonHooks>) {
+            tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(cfgd_core::daemon::run_compliance_and_reconcile_ticks(
+                    &self.root.join("cfgd.yaml"),
+                    hooks,
+                    &self.state_dir,
+                    Some(&self.cache_dir),
+                ))
+                .expect("the daemon ticks");
+        }
+
+        /// Every body posted, after the gateway saw exactly the two it expects.
+        fn posted(&self) -> Vec<serde_json::Value> {
+            let posted = self.posted.lock().unwrap().clone();
+            assert_eq!(posted.len(), 2, "one check-in from each sender: {posted:?}");
+            posted
+        }
+    }
+
+    /// The daemon and `cfgd checkin` compose one check-in for one machine: a
+    /// source-constraint violation reaches the gateway as a failing check and
+    /// a package a `Cargo.toml` declares reaches it with its version, from
+    /// both senders, under the same hash and hostname.
+    #[test]
+    #[serial_test::serial]
+    fn the_daemon_and_cfgd_checkin_post_the_same_check_in() {
+        let machine = TwoSenderMachine::new();
+        let _cargo = cfgd_core::test_helpers::ToolShim::install(
+            &crate::seams::tool_seam_var("cargo"),
+            0,
+            "ripgrep v14.1.0:\n    rg\n",
+            "",
+        );
+        machine.run_cfgd_checkin();
+        machine.run_daemon_ticks(std::sync::Arc::new(
+            super::super::registry::WorkstationDaemonHooks,
+        ));
+
+        let posted = machine.posted();
+        let destination = &machine.destination;
+        let expected_checks = serde_json::json!([{
+            "category": "source-constraint",
+            "name": destination,
+            "status": "Violation",
+            "detail": format!("path '{destination}' not in allowed paths for source 'acme'"),
+        }]);
+        for (sender, body) in ["cfgd checkin", "the daemon"].iter().zip(&posted) {
+            assert_eq!(
+                body["complianceSummary"]["checks"], expected_checks,
+                "{sender} reports the source-constraint violation as a failing check"
+            );
+            assert_eq!(
+                body["packageVersions"],
+                serde_json::json!({ "cargo/ripgrep": "14.1.0" }),
+                "{sender} reports the package the manifest declares"
+            );
+            assert_eq!(body["hostname"], cfgd_core::hostname_string().as_str());
+        }
+        assert_eq!(
+            posted[0], posted[1],
+            "the two senders post one check-in, hash included"
+        );
+    }
+
+    /// The workstation hooks, except that the manifest breaks right after the
+    /// first read: the daemon's compliance tick collects its snapshot from the
+    /// good manifest, and every later reader finds it unreadable.
+    struct ManifestBreaksAfterFirstRead {
+        manifest: std::path::PathBuf,
+        reads: std::sync::atomic::AtomicUsize,
+    }
+
+    impl cfgd_core::daemon::DaemonHooks for ManifestBreaksAfterFirstRead {
+        fn build_registry(
+            &self,
+            config: &cfgd_core::config::CfgdConfig,
+        ) -> cfgd_core::providers::ProviderRegistry {
+            super::super::registry::WorkstationDaemonHooks.build_registry(config)
+        }
+        fn plan_files(
+            &self,
+            config_dir: &std::path::Path,
+            resolved: &cfgd_core::config::ResolvedProfile,
+        ) -> cfgd_core::errors::Result<Vec<cfgd_core::providers::FileAction>> {
+            super::super::registry::WorkstationDaemonHooks.plan_files(config_dir, resolved)
+        }
+        fn plan_files_with_manager(
+            &self,
+            config_dir: &std::path::Path,
+            resolved: &cfgd_core::config::ResolvedProfile,
+        ) -> cfgd_core::errors::Result<cfgd_core::daemon::PlannedFiles> {
+            super::super::registry::WorkstationDaemonHooks
+                .plan_files_with_manager(config_dir, resolved)
+        }
+        fn plan_packages(
+            &self,
+            profile: &cfgd_core::config::MergedProfile,
+            managers: &[&dyn cfgd_core::providers::PackageManager],
+            cfgd_installed: &std::collections::HashSet<String>,
+            cx: &cfgd_core::providers::PackageContext<'_>,
+        ) -> cfgd_core::errors::Result<Vec<cfgd_core::providers::PackageAction>> {
+            super::super::registry::WorkstationDaemonHooks.plan_packages(
+                profile,
+                managers,
+                cfgd_installed,
+                cx,
+            )
+        }
+        fn plan_packages_observed(
+            &self,
+            profile: &cfgd_core::config::MergedProfile,
+            managers: &[&dyn cfgd_core::providers::PackageManager],
+            cfgd_installed: &std::collections::HashSet<String>,
+            cx: &cfgd_core::providers::PackageContext<'_>,
+        ) -> cfgd_core::errors::Result<(
+            Vec<cfgd_core::providers::PackageAction>,
+            cfgd_core::reconciler::ActualPackages,
+        )> {
+            super::super::registry::WorkstationDaemonHooks.plan_packages_observed(
+                profile,
+                managers,
+                cfgd_installed,
+                cx,
+            )
+        }
+        fn extend_registry_custom_managers(
+            &self,
+            registry: &mut cfgd_core::providers::ProviderRegistry,
+            packages: &cfgd_core::config::PackagesSpec,
+        ) {
+            super::super::registry::WorkstationDaemonHooks
+                .extend_registry_custom_managers(registry, packages)
+        }
+        fn build_file_manager(
+            &self,
+            config_dir: &std::path::Path,
+            resolved: &cfgd_core::config::ResolvedProfile,
+        ) -> cfgd_core::errors::Result<Option<Box<dyn cfgd_core::providers::FileManager>>> {
+            super::super::registry::WorkstationDaemonHooks.build_file_manager(config_dir, resolved)
+        }
+        fn resolve_manifest_packages(
+            &self,
+            config_dir: &std::path::Path,
+            merged: &mut cfgd_core::config::MergedProfile,
+        ) -> cfgd_core::errors::Result<()> {
+            if self.reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst) > 0 {
+                std::fs::write(&self.manifest, "[dependencies\nripgrep = ").unwrap();
+            }
+            super::super::registry::WorkstationDaemonHooks
+                .resolve_manifest_packages(config_dir, merged)
+        }
+        fn expand_tilde(&self, path: &std::path::Path) -> std::path::PathBuf {
+            super::super::registry::WorkstationDaemonHooks.expand_tilde(path)
+        }
+        fn prune_orphaned_packages(
+            &self,
+            orphans: &[cfgd_core::providers::OrphanedPackage],
+            cx: &cfgd_core::providers::PackageContext<'_>,
+        ) -> Vec<(String, String)> {
+            super::super::registry::WorkstationDaemonHooks.prune_orphaned_packages(orphans, cx)
+        }
+    }
+
+    /// A manifest that cannot be read withholds both the package versions and
+    /// the compliance summary, from both senders. The daemon holds a snapshot
+    /// its compliance tick took while the manifest still read, and that
+    /// snapshot is withheld with the versions: it would report packages the
+    /// machine can no longer say it declares.
+    #[test]
+    #[serial_test::serial]
+    fn an_unreadable_manifest_withholds_versions_and_compliance_from_both_senders() {
+        let machine = TwoSenderMachine::new();
+        let _cargo = cfgd_core::test_helpers::ToolShim::install(
+            &crate::seams::tool_seam_var("cargo"),
+            0,
+            "ripgrep v14.1.0:\n    rg\n",
+            "",
+        );
+        let hooks = std::sync::Arc::new(ManifestBreaksAfterFirstRead {
+            manifest: machine.root.join("Cargo.toml"),
+            reads: std::sync::atomic::AtomicUsize::new(0),
+        });
+        machine.run_daemon_ticks(hooks.clone());
+        assert!(
+            hooks.reads.load(std::sync::atomic::Ordering::SeqCst) >= 2,
+            "the compliance tick read the manifest before it broke, and the check-in after"
+        );
+        machine.run_cfgd_checkin();
+
+        for (sender, body) in ["the daemon", "cfgd checkin"].iter().zip(&machine.posted()) {
+            assert_eq!(body["deviceId"], "dev-1", "{sender} checked in: {body}");
+            assert!(
+                body.get("packageVersions").is_none(),
+                "{sender} withholds package versions: {body}"
+            );
+            assert!(
+                body.get("complianceSummary").is_none(),
+                "{sender} withholds the compliance summary: {body}"
+            );
+        }
     }
 }

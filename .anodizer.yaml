@@ -1215,11 +1215,14 @@ homebrew_casks:
     # the Homebrew cask DSL has no license stanza, so the field never rendered.
     binaries:
       - cfgd
-    generate_completions_from_executable:
-      executable: cfgd
-      args:
-        - completion
-      base_name: cfgd
+    # Completions come from the archive (archives.completions -> completions/),
+    # the files the nix publisher installs too. Generating them at install time
+    # runs the quarantined binary, which is not notarized, so Gatekeeper
+    # prompts and a headless `brew install` never returns.
+    completions:
+      bash: completions/cfgd
+      zsh: completions/_cfgd
+      fish: completions/cfgd.fish
     # Man page bundled in the archive (archives.manpages -> man/man1/cfgd.1);
     # the path is relative to the unpacked cask artifact.
     manpages:

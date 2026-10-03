@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # Node E2E tests: Certificates
 # Sourced by run-all.sh — do NOT set traps or pipefail here.
 
@@ -35,7 +36,7 @@ echo "  test.key mode: $KEY_MODE (expected: 600)"
 if assert_equals "$KEY_MODE" "600"; then
     pass_test "CERT-01"
 else
-    fail_test "CERT-01" "Certificate permissions not set correctly"
+    fail_test "CERT-01" "Certificate permissions not set correctly; apply output: $OUTPUT"
 fi
 
 # =================================================================

@@ -2,6 +2,14 @@ use super::super::*;
 use crate::PathDisplayExt;
 use crate::output::Role;
 
+/// Why a user-scope `systemctl` call that failed leaves the daemon stopped.
+/// Both failing arms below word it once: a systemd user manager only runs
+/// while the user has a session unless lingering is enabled, and nothing else
+/// on the screen says so. It states THIS host's session state, so it renders
+/// as a note row beside the failure.
+const LINGER_SESSION_STATE: &str =
+    "If you have no active login session, enable lingering: loginctl enable-linger $USER";
+
 /// Render one `ExecStart` token so systemd passes it to the daemon verbatim.
 ///
 /// systemd splits `ExecStart` on whitespace unless a token is quoted, so an
@@ -35,6 +43,9 @@ pub(crate) fn systemd_quote(token: &str) -> String {
 /// events and backups under the scope default while the operator's CLI reads
 /// the directory they named — and the two apply locks would stop excluding
 /// each other.
+// absolute-path-ok: the unit is a file systemd parses, and every path in
+// it is an argv token this host resolves — a `~/` spelling there is a
+// path nothing opens.
 #[cfg(unix)]
 pub(crate) fn generate_systemd_unit(
     binary: &Path,
@@ -56,7 +67,7 @@ pub(crate) fn generate_systemd_unit(
         args.push("--scope".to_string());
         args.push("system".to_string());
     }
-    for (flag, dir) in service_dir_flags(dirs) {
+    for (flag, dir) in super::service_dir_flags(dirs) {
         args.push(flag.to_string());
         args.push(dir.display().to_string()); // native-ok: argv token for this host
     }
@@ -209,7 +220,9 @@ pub(crate) fn start_systemd_service(printer: &Printer, scope: crate::Scope) -> R
         printer
             .status(Role::Warn, "systemctl not found") // name-row-ok: the init system's own tool name, which is lowercase
             .detail(super::INSTALLED_NOT_STARTED);
-        printer.hint(format!("Start it later with `{hint_cmd}`"));
+        printer.hint(crate::output::HintCommands::unconditional(format!(
+            "Start it later with `{hint_cmd}`"
+        )));
         return Ok(false);
     }
 
@@ -235,9 +248,12 @@ pub(crate) fn start_systemd_service(printer: &Printer, scope: crate::Scope) -> R
                         "No user session bus (XDG_RUNTIME_DIR unset and /run/user/<uid> absent)",
                     )
                     .detail(super::INSTALLED_NOT_STARTED);
-                printer.hint_commands(
-                    "Enable lingering so the user service can run without an active login:",
-                    &["loginctl enable-linger $USER", "cfgd daemon install"],
+                printer.hint(
+                    crate::output::HintCommands::new(
+                        "Enable lingering so the user service can run without an active login:",
+                        ["loginctl enable-linger $USER", "cfgd daemon install"],
+                    )
+                    .ungated(),
                 );
                 return Ok(false);
             }
@@ -265,9 +281,7 @@ pub(crate) fn start_systemd_service(printer: &Printer, scope: crate::Scope) -> R
                     ),
                 );
                 if scope == crate::Scope::User {
-                    printer.hint(
-                        "If you have no active login session, enable lingering: loginctl enable-linger $USER",
-                    );
+                    printer.status_simple(Role::Warn, LINGER_SESSION_STATE);
                 }
                 return Ok(false);
             }
@@ -281,9 +295,7 @@ pub(crate) fn start_systemd_service(printer: &Printer, scope: crate::Scope) -> R
                     ),
                 );
                 if scope == crate::Scope::User {
-                    printer.hint(
-                        "If you have no active login session, enable lingering: loginctl enable-linger $USER",
-                    );
+                    printer.status_simple(Role::Warn, LINGER_SESSION_STATE);
                 }
                 return Ok(false);
             }
@@ -337,7 +349,9 @@ pub(crate) fn stop_systemd_service(printer: &Printer, scope: crate::Scope) {
         } else {
             "systemctl --user disable --now cfgd.service".to_string()
         };
-        printer.hint(format!("Stop it manually with `{hint_cmd}`"));
+        printer.hint(crate::output::HintCommands::unconditional(format!(
+            "Stop it manually with `{hint_cmd}`"
+        )));
         return;
     }
 

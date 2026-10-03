@@ -1,0 +1,70 @@
+- kind: ClusterRole
+  name: cfgd-csi
+  selectors: []
+- kind: ClusterRole
+  name: cfgd-operator
+  selectors: []
+- kind: ClusterRoleBinding
+  name: cfgd-csi
+  selectors: []
+- kind: ClusterRoleBinding
+  name: cfgd-operator
+  selectors: []
+- kind: CSIDriver
+  name: csi.cfgd.io
+  selectors: []
+- kind: MutatingWebhookConfiguration
+  name: cfgd-pod-injector
+  selectors:
+    - name: inject-modules.cfgd.io
+      objectSelector:
+        matchExpressions:
+          - key: cfgd.io/skip-injection
+            operator: DoesNotExist
+      namespaceSelector:
+        matchExpressions:
+          - key: cfgd.io/inject-modules
+            operator: In
+            values:
+              - "true"
+- kind: ValidatingWebhookConfiguration
+  name: cfgd
+  selectors:
+    - name: validate-machineconfig.cfgd.io
+      objectSelector: null
+      namespaceSelector: null
+    - name: validate-configpolicy.cfgd.io
+      objectSelector: null
+      namespaceSelector: null
+    - name: validate-clusterconfigpolicy.cfgd.io
+      objectSelector: null
+      namespaceSelector: null
+    - name: validate-driftalert.cfgd.io
+      objectSelector: null
+      namespaceSelector: null
+    - name: validate-module.cfgd.io
+      objectSelector: null
+      namespaceSelector: null
+    - name: validate-backuppolicy.cfgd.io
+      objectSelector: null
+      namespaceSelector: null
+- kind: DaemonSet
+  name: cfgd-csi
+  registrationPath:
+    - "--kubelet-registration-path=/var/lib/kubelet/plugins/csi.cfgd.io/csi.sock"
+  pluginHostPath:
+    - /var/lib/kubelet/plugins/csi.cfgd.io/
+- kind: DaemonSet
+  name: cfgd-csi
+  env:
+    - container: cfgd-csi
+      values:
+        - name: CSI_DRIVER_NAME
+          value: "csi.cfgd.io"
+- kind: Deployment
+  name: cfgd-operator
+  env:
+    - container: operator
+      values:
+        - name: CSI_DRIVER_NAME
+          value: "csi.cfgd.io"

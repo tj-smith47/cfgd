@@ -27,7 +27,7 @@ fn make_resolved_profile(env: Vec<EnvVar>, files: FilesSpec) -> ResolvedProfile 
         layers: vec![ProfileLayer {
             source: "local".to_string(),
             profile_name: "test".to_string(),
-            priority: 1000,
+            priority: cfgd_core::config::LOCAL_LAYER_PRIORITY,
             policy: LayerPolicy::Local,
             spec: ProfileSpec::default(),
         }],
@@ -1219,7 +1219,7 @@ fn refresh_link_deployed_hashes_writes_once_per_edit_and_nothing_in_between() {
     let state = cfgd_core::state::StateStore::open(&dir.path().join("state.db")).unwrap();
     let resource_id = cfgd_core::to_posix_string(&target);
     state
-        .upsert_managed_resource("file", &resource_id, "local", None, None)
+        .upsert_managed_resource("file", &resource_id, "file", None, "local", None, None)
         .unwrap();
 
     let registry = cfgd_core::providers::ProviderRegistry::new();

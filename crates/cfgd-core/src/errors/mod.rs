@@ -8,6 +8,8 @@ pub type Result<T> = std::result::Result<T, CfgdError>;
 
 /// Render a path list as `'a', 'b', 'c'` (posix separators) for single-line
 /// error messages that must name every candidate.
+// absolute-path-ok: the list lands in a `thiserror` message, which keeps
+// the path a reader can act on, as every other returned error does.
 fn join_quoted_posix(paths: &[PathBuf]) -> String {
     paths
         .iter()
@@ -123,9 +125,12 @@ pub enum ConfigError {
     #[error("invalid config: {message}")]
     Invalid { message: String },
 
+    // The accepted set is read off the conversion table. A build carrying a
+    // second row accepts a version `crate::API_VERSION` does not name, and a
+    // refusal reading the constant would call it unsupported.
     #[error(
         "unsupported apiVersion {found:?}; this build supports {}",
-        crate::API_VERSION
+        crate::config::readable_api_versions(crate::config::API_VERSION_CONVERSIONS)
     )]
     UnsupportedApiVersion { found: String },
 
@@ -137,8 +142,16 @@ pub enum ConfigError {
 
     // No "in config" here: this variant renders under `CfgdError::Config`'s own
     // "config error: " prefix, and the two together said config twice.
-    #[error("key '{key}' not found")]
-    KeyNotFound { key: String },
+    #[error(
+        "key '{key}' not found{}",
+        undeclared.as_ref().map(|segment| format!(" ('{segment}' is not declared)")).unwrap_or_default()
+    )]
+    KeyNotFound {
+        key: String,
+        /// The first segment of `key` the document does not declare, where
+        /// it is shorter than `key`.
+        undeclared: Option<String>,
+    },
 
     #[error(
         "ambiguous profile '{name}': multiple forms exist ({forms}) — delete or rename one of them (the canonical form is '{name}/profile.yaml')",
@@ -303,6 +316,14 @@ pub enum PackageError {
     // a declared route runs no cascade at all.
     #[error("{message}")]
     BootstrapFailed { manager: String, message: String },
+
+    // The manager IS on the machine and would run; what forbids it is the
+    // declaring module's own floor, which this run already judged unmet. The
+    // message carries the whole reason because `ManagerNotAvailable`'s recovery
+    // (run the Bootstrap phase) is the wrong advice here: no phase raises a
+    // toolchain, the operator does.
+    #[error("{message}")]
+    ManagerBelowFloor { manager: String, message: String },
 
     // The manager is not registered at all — no phase can provision a name
     // that does not exist, so this carries no phase-run guidance (unlike
@@ -595,6 +616,11 @@ pub enum StateError {
     #[error("migration failed: {message}")]
     MigrationFailed { message: String },
 
+    /// The store's `store_identity` table holds no row, which only a
+    /// hand-edited database reaches: migration 30 mints one for every store.
+    #[error("the state store carries no identity: its store_identity table is empty")]
+    IdentityMissing,
+
     #[error("state directory not writable: {path}")]
     DirectoryNotWritable { path: PathBuf },
 
@@ -619,6 +645,19 @@ pub enum StateError {
     #[error("state serialization failed ({context}): {source}")]
     Serialize {
         context: &'static str,
+        #[source]
+        source: serde_json::Error,
+    },
+
+    // The plan hash IS the serialization of the actions, so an action that
+    // cannot be written has no hash to contribute and no honest one to omit:
+    // dropping it would let two different plans record the same
+    // `applies.plan_hash`. The action is named the way every other reader of
+    // one names it, by its `(type, id)` pair.
+    #[error("the {rtype} action '{rid}' cannot be serialized, so the plan has no hash: {source}")]
+    PlanActionUnserializable {
+        rtype: String,
+        rid: String,
         #[source]
         source: serde_json::Error,
     },
@@ -823,6 +862,13 @@ pub enum CompositionError {
 pub enum UpgradeError {
     #[error("failed to query GitHub releases: {message}")]
     ApiError { message: String },
+
+    #[error(
+        "GitHub API rate limit of {limit} requests is used up until {reset_at}; set {} or {} to a GitHub token to raise it",
+        crate::upgrade::GITHUB_TOKEN_VARS[0],
+        crate::upgrade::GITHUB_TOKEN_VARS[1]
+    )]
+    RateLimited { limit: u64, reset_at: String },
 
     #[error("no release found for {os}/{arch}")]
     NoAsset { os: String, arch: String },
@@ -1120,7 +1166,9 @@ mod tests {
             ),
         ];
 
-        let src = include_str!("mod.rs");
+        let src = crate::test_helpers::walked_file_body(
+            &crate::test_helpers::workspace_root().join("crates/cfgd-core/src/errors/mod.rs"),
+        );
         let start = src
             .find("pub enum CfgdError {")
             .expect("CfgdError is declared in this file");

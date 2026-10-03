@@ -15,7 +15,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 RUN userdel -r ubuntu
 
 # None of this ships in a bare ubuntu:26.04, and each entry maps to one
-# requirement: sudo (cfgd's apt provider shells out to `sudo apt-get`),
+# requirement: sudo (cfgd's apt provider shells out to `sudo env … apt-get`),
 # git/curl/ca-certificates (the tape's HTTPS clone), build-essential/
 # procps/file (Homebrew's own documented Linux prerequisites), gnupg (the
 # source-trust tape's `git log --format=%G?` signature check, and the key
@@ -54,7 +54,7 @@ ENV LANG=C.utf8 \
 # non-root `tj` takes cfgd's brew provider down its non-root install path
 # instead, installing straight into `tj`'s own home with no system user
 # created at all. `tj` still needs passwordless sudo, for cfgd's apt
-# provider (`sudo apt-get`), codified up front.
+# provider (`sudo env … apt-get`), codified up front.
 RUN useradd --uid 1000 --create-home --shell /bin/bash --user-group tj \
     && echo "tj ALL=(ALL) NOPASSWD: ALL" | tee /etc/sudoers.d/tj-nopasswd > /dev/null \
     && chmod 0440 /etc/sudoers.d/tj-nopasswd \
@@ -87,7 +87,7 @@ ENV COLORTERM=truecolor
 # use for. Staged at demo/bin/cfgd before `docker build` runs (see
 # .dockerignore — target/ itself never enters the build context).
 #
-# Built for x86_64-unknown-linux-musl, not the default gnu target: a
+# Built for x86_64-unknown-linux-musl: a
 # dynamically-linked gnu binary refuses to run against a libc older than the
 # one it was linked against, so a gnu build would tie this image's glibc to
 # the build host's (they match today, at 2.43, and diverge the moment either

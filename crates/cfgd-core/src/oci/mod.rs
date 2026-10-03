@@ -4,7 +4,7 @@
 // Supports pushing/pulling module archives with custom media types,
 // registry authentication via Docker config.json, credential helpers, and env vars.
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
@@ -242,6 +242,13 @@ fn is_insecure_registry(registry: &str) -> bool {
 // OCI Manifest types (OCI Image Manifest v1)
 // ---------------------------------------------------------------------------
 
+/// The map a manifest and a descriptor hold their annotations in, declared
+/// once because the CHOICE is the contract: a registry addresses what was
+/// pushed by the digest of the bytes, so two serializations of one annotation
+/// set have to agree byte for byte, and a map that iterates by hash seed makes
+/// re-pushing an unchanged module a new digest every time.
+pub(super) type Annotations = BTreeMap<String, String>;
+
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct OciManifest {
@@ -249,8 +256,8 @@ pub(super) struct OciManifest {
     pub(super) media_type: String,
     pub(super) config: OciDescriptor,
     pub(super) layers: Vec<OciDescriptor>,
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    pub(super) annotations: HashMap<String, String>,
+    #[serde(default, skip_serializing_if = "Annotations::is_empty")]
+    pub(super) annotations: Annotations,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -259,8 +266,8 @@ pub(super) struct OciDescriptor {
     pub(super) media_type: String,
     pub(super) digest: String,
     pub(super) size: u64,
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    pub(super) annotations: HashMap<String, String>,
+    #[serde(default, skip_serializing_if = "Annotations::is_empty")]
+    pub(super) annotations: Annotations,
 }
 
 // ---------------------------------------------------------------------------

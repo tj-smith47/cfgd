@@ -178,6 +178,79 @@ fn push_module_inner_uploads_blobs_and_manifest() {
     manifest_mock.assert();
 }
 
+/// The manifest `cfgd module push` actually PUTs carries its annotations in
+/// one key order.
+///
+/// The pins beside `build_image_manifest` judge the packed-image builders;
+/// this one judges the module push, which builds its own `OciManifest` inline
+/// and is the path whose two runs a second apart produced two digests. The
+/// mock only matches a body whose annotation object spells
+/// `cfgd.io/platform` before `org.opencontainers.image.created` (the sorted
+/// order; the function inserts them the other way round), so a manifest
+/// that serialized them the other way never reaches this mock and
+/// `manifest_mock.assert()` reports it.
+#[test]
+fn push_module_inner_writes_its_manifest_annotations_in_sorted_key_order() {
+    let mut server = mockito::Server::new();
+    let registry = registry_from_url(&server.url());
+
+    let oci_ref = OciReference {
+        registry,
+        repository: "test/ordered".to_string(),
+        reference: ReferenceKind::Tag("v1".to_string()),
+    };
+
+    let module_dir = create_test_module_dir();
+
+    server
+        .mock(
+            "HEAD",
+            mockito::Matcher::Regex(r"/v2/test/ordered/blobs/sha256:.*".to_string()),
+        )
+        .with_status(404)
+        .expect_at_least(2)
+        .create();
+    let upload_location = format!("{}/v2/test/ordered/blobs/uploads/upload-id", server.url());
+    server
+        .mock("POST", "/v2/test/ordered/blobs/uploads/")
+        .with_status(202)
+        .with_header("Location", &upload_location)
+        .expect_at_least(2)
+        .create();
+    server
+        .mock(
+            "PUT",
+            mockito::Matcher::Regex(
+                r"/v2/test/ordered/blobs/uploads/upload-id\?digest=sha256:.*".to_string(),
+            ),
+        )
+        .with_status(201)
+        .expect_at_least(2)
+        .create();
+
+    // `created` is the wall clock, so it is matched as "any string"; the two
+    // keys' ORDER and the object's end are what the pattern pins.
+    let ordered = format!(
+        r#""annotations":\{{"{platform}":"linux/amd64","{created}":"[^"]+"\}}"#,
+        platform = crate::OCI_ANNOTATION_PLATFORM.replace('.', r"\."),
+        created = crate::OCI_ANNOTATION_CREATED.replace('.', r"\."),
+    );
+    let manifest_mock = server
+        .mock("PUT", "/v2/test/ordered/manifests/v1")
+        .with_status(201)
+        .match_body(mockito::Matcher::Regex(ordered))
+        .create();
+
+    let agent = ureq::Agent::config_builder()
+        .timeout_global(Some(std::time::Duration::from_secs(10)))
+        .build()
+        .new_agent();
+
+    push_module_inner(&agent, module_dir.path(), &oci_ref, None, "linux/amd64")
+        .expect("the ordered push must succeed");
+    manifest_mock.assert();
+}
+
 #[test]
 fn push_module_inner_rejects_missing_module_yaml() {
     let dir = tempfile::tempdir().unwrap();

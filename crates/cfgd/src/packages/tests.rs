@@ -10,6 +10,20 @@ use super::npm::{find_npm, npm_available, npm_cmd};
 use super::pipx::{find_pipx, pipx_available, pipx_cmd};
 use super::*;
 
+/// Fold `packages`' manifests in with a cache and claims of their own, so each
+/// call parses every manifest afresh.
+fn resolve_manifests_fresh(
+    packages: &mut PackagesSpec,
+    config_dir: &std::path::Path,
+) -> cfgd_core::errors::Result<()> {
+    resolve_manifest_packages_cached(
+        packages,
+        &mut LayerSources::default(),
+        config_dir,
+        &ManifestCache::default(),
+    )
+}
+
 /// Render each action through the real producer (`format_plan_item`) rather
 /// than a hand-rolled duplicate, so these tests fail the moment the display
 /// grammar drifts instead of asserting against a second copy of it.
@@ -472,32 +486,45 @@ fn apply_calls_uninstall_on_correct_manager() {
     assert_eq!(uninstalls[0], vec!["bat"]);
 }
 
+/// The registry holds every manager exactly once: the managers outside the
+/// system family table by name, and every family of that table by reading it,
+/// so a row added to the table without a registry entry fails here, and so does
+/// a registry entry that is neither a named manager nor a table row.
 #[test]
 fn all_package_managers_creates_all() {
+    const OUTSIDE_THE_FAMILY_TABLE: [&str; 13] = [
+        "brew",
+        "brew-tap",
+        "brew-cask",
+        "cargo",
+        "npm",
+        "pipx",
+        "snap",
+        "flatpak",
+        "nix",
+        "go",
+        "winget",
+        "chocolatey",
+        "scoop",
+    ];
     let managers = all_package_managers();
-    assert_eq!(managers.len(), 20);
-
     let names: Vec<&str> = managers.iter().map(|m| m.name()).collect();
-    assert!(names.contains(&"brew"));
-    assert!(names.contains(&"brew-tap"));
-    assert!(names.contains(&"brew-cask"));
-    assert!(names.contains(&"apt"));
-    assert!(names.contains(&"cargo"));
-    assert!(names.contains(&"npm"));
-    assert!(names.contains(&"pipx"));
-    assert!(names.contains(&"dnf"));
-    assert!(names.contains(&"apk"));
-    assert!(names.contains(&"pacman"));
-    assert!(names.contains(&"zypper"));
-    assert!(names.contains(&"yum"));
-    assert!(names.contains(&"pkg"));
-    assert!(names.contains(&"snap"));
-    assert!(names.contains(&"flatpak"));
-    assert!(names.contains(&"nix"));
-    assert!(names.contains(&"go"));
-    assert!(names.contains(&"winget"));
-    assert!(names.contains(&"chocolatey"));
-    assert!(names.contains(&"scoop"));
+    let once = |name: &str| names.iter().filter(|n| **n == name).count() == 1;
+
+    for name in OUTSIDE_THE_FAMILY_TABLE {
+        assert!(once(name), "{name} is registered exactly once: {names:?}");
+    }
+    for (family, _) in simple::SIMPLE_FAMILIES {
+        assert!(
+            once(family),
+            "the {family} family has a table row, so the registry must hold it exactly once: {names:?}"
+        );
+    }
+    assert_eq!(
+        managers.len(),
+        OUTSIDE_THE_FAMILY_TABLE.len() + simple::SIMPLE_FAMILIES.len(),
+        "every registry entry is a named manager or a family table row: {names:?}"
+    );
 }
 
 #[test]
@@ -1303,7 +1330,7 @@ fn resolve_manifest_packages_merges_with_inline() {
         ..Default::default()
     };
 
-    resolve_manifest_packages(&mut packages, dir.path()).unwrap();
+    resolve_manifests_fresh(&mut packages, dir.path()).unwrap();
 
     // Brew: inline + Brewfile merged
     let brew = packages.brew.as_ref().unwrap();
@@ -1343,7 +1370,7 @@ fn resolve_manifest_missing_file_skipped() {
     };
 
     // Missing file should be silently skipped
-    resolve_manifest_packages(&mut packages, dir.path()).unwrap();
+    resolve_manifests_fresh(&mut packages, dir.path()).unwrap();
 
     let brew = packages.brew.as_ref().unwrap();
     assert_eq!(brew.formulae, vec!["fd"]); // only inline
@@ -1362,7 +1389,7 @@ fn resolve_manifest_no_file_field_noop() {
         ..Default::default()
     };
 
-    resolve_manifest_packages(&mut packages, dir.path()).unwrap();
+    resolve_manifests_fresh(&mut packages, dir.path()).unwrap();
 
     let brew = packages.brew.as_ref().unwrap();
     assert_eq!(brew.formulae, vec!["fd"]);
@@ -1679,7 +1706,7 @@ fn plan_skip_unavailable_no_bootstrap() {
     }
 }
 
-// --- resolve_manifest_packages ---
+// --- resolve_manifest_packages_cached ---
 
 #[test]
 fn resolve_manifest_packages_brewfile() {
@@ -1700,7 +1727,7 @@ fn resolve_manifest_packages_brewfile() {
         ..Default::default()
     };
 
-    resolve_manifest_packages(&mut spec, dir.path()).unwrap();
+    resolve_manifests_fresh(&mut spec, dir.path()).unwrap();
     let brew = spec.brew.unwrap();
     assert!(brew.formulae.contains(&"ripgrep".to_string()));
     assert!(brew.formulae.contains(&"fd".to_string()));
@@ -1723,7 +1750,7 @@ fn resolve_manifest_packages_apt_file() {
         ..Default::default()
     };
 
-    resolve_manifest_packages(&mut spec, dir.path()).unwrap();
+    resolve_manifests_fresh(&mut spec, dir.path()).unwrap();
     let apt = spec.apt.unwrap();
     assert!(apt.packages.contains(&"git".to_string()));
     assert!(apt.packages.contains(&"curl".to_string()));
@@ -1794,10 +1821,7 @@ fn detect_system_method_names_only_a_manager_this_host_can_run() {
     // would be a guaranteed failure. Whichever it picks, the command that
     // would run it must resolve.
     let runnable = |tool: &str| {
-        cfgd_core::command_available_with_seam(
-            &format!("CFGD_{}_BIN", tool.to_uppercase().replace('-', "_")),
-            tool,
-        )
+        cfgd_core::command_available_with_seam(&crate::packages::shared::tool_seam_var(tool), tool)
     };
     // snap's real arms: every Linux mediator, and no FreeBSD port. A manager
     // that declines an arm must never have it named, or the plan binds
@@ -1838,10 +1862,10 @@ fn detect_system_method_names_the_pkg_arm_only_for_a_manager_that_declares_one()
     let _path_excl = cfgd_core::test_helpers::path_env_mutation_guard();
     let _path = cfgd_core::test_helpers::EnvVarGuard::set("PATH", "");
     let _seams: Vec<_> = [
-        "CFGD_APT_GET_BIN",
-        "CFGD_DNF_BIN",
-        "CFGD_ZYPPER_BIN",
-        "CFGD_PKG_BIN",
+        crate::seams::APT_GET_BIN_ENV,
+        crate::seams::DNF_BIN_ENV,
+        crate::seams::ZYPPER_BIN_ENV,
+        crate::seams::PKG_BIN_ENV,
     ]
     .into_iter()
     .map(cfgd_core::test_helpers::EnvVarGuard::unset)
@@ -1921,97 +1945,130 @@ fn every_mediated_arm_installs_through_its_own_managers_argv() {
     let _dirs = cfgd_core::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
     // cargo's arms deliver rustup alone, so its bootstrap settles a toolchain
     // behind every one of them; the shim catches that second spawn.
-    let rustup = cfgd_core::test_helpers::ToolShim::install("CFGD_RUSTUP_BIN", 0, "", "");
+    let rustup = cfgd_core::test_helpers::ToolShim::install(
+        &crate::seams::tool_seam_var("rustup"),
+        0,
+        "",
+        "",
+    );
 
     // winget's install argv is one shape whatever the id, so the flags are
     // spelled once here rather than per row.
     let winget = |id: &str| {
         format!("install --id {id} --silent --accept-package-agreements --accept-source-agreements")
     };
+    let winget_seam = crate::seams::tool_seam_var("winget");
+    let choco_seam = crate::seams::tool_seam_var("choco");
+    let scoop_seam = crate::seams::tool_seam_var("scoop");
     // (manager, planned method, the arm's own seam, the argv it must log)
     let cases: Vec<(&str, &str, &str, String)> = vec![
         (
             "npm",
             "pacman",
-            "CFGD_PACMAN_BIN",
+            crate::seams::PACMAN_BIN_ENV,
             "-S --noconfirm nodejs npm".into(),
         ),
-        ("npm", "apk", "CFGD_APK_BIN", "add nodejs npm".into()),
-        ("npm", "yum", "CFGD_YUM_BIN", "install -y nodejs npm".into()),
+        (
+            "npm",
+            "apk",
+            crate::seams::APK_BIN_ENV,
+            "add nodejs npm".into(),
+        ),
+        (
+            "npm",
+            "yum",
+            crate::seams::YUM_BIN_ENV,
+            "install -y nodejs npm".into(),
+        ),
         (
             "npm",
             "zypper",
-            "CFGD_ZYPPER_BIN",
+            crate::seams::ZYPPER_BIN_ENV,
             "install -y nodejs24 npm24".into(),
         ),
         (
             "npm",
             "winget",
-            "CFGD_WINGET_BIN",
+            winget_seam.as_str(),
             winget("OpenJS.NodeJS.LTS"),
         ),
         (
             "npm",
             "chocolatey",
-            "CFGD_CHOCO_BIN",
+            choco_seam.as_str(),
             "install -y nodejs-lts".into(),
         ),
         (
             "npm",
             "scoop",
-            "CFGD_SCOOP_BIN",
+            scoop_seam.as_str(),
             "install nodejs-lts".into(),
         ),
         (
             "pipx",
             "pacman",
-            "CFGD_PACMAN_BIN",
+            crate::seams::PACMAN_BIN_ENV,
             "-S --noconfirm python-pipx".into(),
         ),
-        ("pipx", "apk", "CFGD_APK_BIN", "add pipx".into()),
+        ("pipx", "apk", crate::seams::APK_BIN_ENV, "add pipx".into()),
         (
             "pipx",
             "zypper",
-            "CFGD_ZYPPER_BIN",
+            crate::seams::ZYPPER_BIN_ENV,
             "install -y python3-pipx".into(),
         ),
         (
             "pipx",
             "chocolatey",
-            "CFGD_CHOCO_BIN",
+            choco_seam.as_str(),
             "install -y pipx".into(),
         ),
-        ("pipx", "scoop", "CFGD_SCOOP_BIN", "install pipx".into()),
+        ("pipx", "scoop", scoop_seam.as_str(), "install pipx".into()),
         (
             "go",
             "pacman",
-            "CFGD_PACMAN_BIN",
+            crate::seams::PACMAN_BIN_ENV,
             "-S --noconfirm go".into(),
         ),
-        ("go", "apk", "CFGD_APK_BIN", "add go".into()),
-        ("go", "yum", "CFGD_YUM_BIN", "install -y golang".into()),
-        ("go", "zypper", "CFGD_ZYPPER_BIN", "install -y go".into()),
-        ("go", "winget", "CFGD_WINGET_BIN", winget("GoLang.Go")),
+        ("go", "apk", crate::seams::APK_BIN_ENV, "add go".into()),
+        (
+            "go",
+            "yum",
+            crate::seams::YUM_BIN_ENV,
+            "install -y golang".into(),
+        ),
+        (
+            "go",
+            "zypper",
+            crate::seams::ZYPPER_BIN_ENV,
+            "install -y go".into(),
+        ),
+        ("go", "winget", winget_seam.as_str(), winget("GoLang.Go")),
         (
             "go",
             "chocolatey",
-            "CFGD_CHOCO_BIN",
+            choco_seam.as_str(),
             "install -y golang".into(),
         ),
-        ("go", "scoop", "CFGD_SCOOP_BIN", "install go".into()),
+        ("go", "scoop", scoop_seam.as_str(), "install go".into()),
         (
             "cargo",
             "winget",
-            "CFGD_WINGET_BIN",
+            winget_seam.as_str(),
             winget("Rustlang.Rustup"),
         ),
         (
             "cargo",
             "chocolatey",
-            "CFGD_CHOCO_BIN",
+            choco_seam.as_str(),
             "install -y rustup.install".into(),
         ),
-        ("cargo", "scoop", "CFGD_SCOOP_BIN", "install rustup".into()),
+        (
+            "cargo",
+            "scoop",
+            scoop_seam.as_str(),
+            "install rustup".into(),
+        ),
     ];
 
     for (manager, method, seam, expected) in cases {
@@ -2044,8 +2101,18 @@ fn every_mediated_arm_installs_through_its_own_managers_argv() {
     // installs pipx with it. Both spawns are asserted rather than the arm
     // alone, each through its own seam, so the row runs on every host.
     {
-        let pip = cfgd_core::test_helpers::ToolShim::install("CFGD_PIP_BIN", 0, "", "");
-        let shim = cfgd_core::test_helpers::ToolShim::install("CFGD_WINGET_BIN", 0, "", "");
+        let pip = cfgd_core::test_helpers::ToolShim::install(
+            &crate::seams::tool_seam_var("pip"),
+            0,
+            "",
+            "",
+        );
+        let shim = cfgd_core::test_helpers::ToolShim::install(
+            &crate::seams::tool_seam_var("winget"),
+            0,
+            "",
+            "",
+        );
         let (printer, _buf) =
             cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
         let cx = cfgd_core::test_helpers::test_bootstrap_context(&printer).for_provision("winget");
@@ -2079,9 +2146,17 @@ fn every_mediated_arm_installs_through_its_own_managers_argv() {
 #[serial_test::serial]
 fn the_winget_route_registers_the_directory_its_pip_came_from() {
     let _dirs = cfgd_core::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
-    let _winget = cfgd_core::test_helpers::ToolShim::install("CFGD_WINGET_BIN", 0, "", "");
-    let _pip = cfgd_core::test_helpers::ToolShim::install("CFGD_PIP_BIN", 0, "", "");
-    let planted = std::path::PathBuf::from(std::env::var("CFGD_PIP_BIN").expect("the seam is set"));
+    let _winget = cfgd_core::test_helpers::ToolShim::install(
+        &crate::seams::tool_seam_var("winget"),
+        0,
+        "",
+        "",
+    );
+    let _pip =
+        cfgd_core::test_helpers::ToolShim::install(&crate::seams::tool_seam_var("pip"), 0, "", "");
+    let planted = std::path::PathBuf::from(
+        std::env::var(crate::seams::tool_seam_var("pip")).expect("the seam is set"),
+    );
     let interpreter_dir = planted.parent().expect("the shim has a directory");
 
     let (printer, _buf) =
@@ -2108,7 +2183,12 @@ fn the_winget_route_registers_the_directory_its_pip_came_from() {
 #[serial_test::serial]
 fn a_failed_pip_step_behind_the_winget_arm_names_pip_and_not_winget() {
     let _dirs = cfgd_core::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
-    let _winget = cfgd_core::test_helpers::ToolShim::install("CFGD_WINGET_BIN", 0, "", "");
+    let _winget = cfgd_core::test_helpers::ToolShim::install(
+        &crate::seams::tool_seam_var("winget"),
+        0,
+        "",
+        "",
+    );
 
     let refusal = |cx_printer: &cfgd_core::output::Printer| {
         let cx =
@@ -2122,8 +2202,12 @@ fn a_failed_pip_step_behind_the_winget_arm_names_pip_and_not_winget() {
     // pip ran and exited non-zero, carrying its own diagnostic.
     let (printer, _buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-    let _pip =
-        cfgd_core::test_helpers::ToolShim::install("CFGD_PIP_BIN", 1, "", "no matching dist");
+    let _pip = cfgd_core::test_helpers::ToolShim::install(
+        &crate::seams::tool_seam_var("pip"),
+        1,
+        "",
+        "no matching dist",
+    );
     let failed = refusal(&printer);
     assert!(
         failed.contains("pip could not finish installing pipx")
@@ -2145,8 +2229,10 @@ fn a_failed_pip_step_behind_the_winget_arm_names_pip_and_not_winget() {
     // `pip install --user pipx` here.
     let _path_excl = cfgd_core::test_helpers::path_env_mutation_guard();
     let _path = cfgd_core::test_helpers::EnvVarGuard::set("PATH", "");
-    let _pip_seam = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_PIP_BIN");
-    let _pip3_seam = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_PIP3_BIN");
+    let _pip_seam =
+        cfgd_core::test_helpers::EnvVarGuard::unset(&crate::seams::tool_seam_var("pip"));
+    let _pip3_seam =
+        cfgd_core::test_helpers::EnvVarGuard::unset(&crate::seams::tool_seam_var("pip3"));
     let empty = tempfile::tempdir().expect("tempdir");
     let empty_dir = empty.path().to_string_lossy().into_owned();
     let _local_appdata =
@@ -2177,9 +2263,18 @@ fn a_failed_pip_step_behind_the_winget_arm_names_pip_and_not_winget() {
 fn a_failing_seam_pip_is_never_retried_against_the_hosts_own_pip() {
     let _dirs = cfgd_core::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
     let _memo = cfgd_core::test_helpers::CommandPathMemoTtlGuard::always_expired();
-    let _winget = cfgd_core::test_helpers::ToolShim::install("CFGD_WINGET_BIN", 0, "", "");
-    let _seam =
-        cfgd_core::test_helpers::ToolShim::install("CFGD_PIP_BIN", 1, "", "no matching dist");
+    let _winget = cfgd_core::test_helpers::ToolShim::install(
+        &crate::seams::tool_seam_var("winget"),
+        0,
+        "",
+        "",
+    );
+    let _seam = cfgd_core::test_helpers::ToolShim::install(
+        &crate::seams::tool_seam_var("pip"),
+        1,
+        "",
+        "no matching dist",
+    );
 
     // A pip that answers every argv with success, reachable by bare name.
     let host = tempfile::tempdir().expect("tempdir");
@@ -2214,17 +2309,26 @@ fn a_failing_seam_pip_is_never_retried_against_the_hosts_own_pip() {
 #[serial_test::serial]
 fn a_failed_toolchain_step_behind_a_windows_arm_names_rustup_and_not_the_mediator() {
     let _dirs = cfgd_core::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
-    let _rustup =
-        cfgd_core::test_helpers::ToolShim::install("CFGD_RUSTUP_BIN", 1, "", "could not download");
+    let _rustup = cfgd_core::test_helpers::ToolShim::install(
+        &crate::seams::tool_seam_var("rustup"),
+        1,
+        "",
+        "could not download",
+    );
     // All three Windows arms deliver rustup alone and reach the toolchain step
     // through the same call, so each one can point the blame at its own
     // mediator.
-    for (method, seam) in [
-        ("winget", "CFGD_WINGET_BIN"),
-        ("chocolatey", "CFGD_CHOCO_BIN"),
-        ("scoop", "CFGD_SCOOP_BIN"),
+    for (method, tool) in [
+        ("winget", "winget"),
+        ("chocolatey", "choco"),
+        ("scoop", "scoop"),
     ] {
-        let _mediator = cfgd_core::test_helpers::ToolShim::install(seam, 0, "", "");
+        let _mediator = cfgd_core::test_helpers::ToolShim::install(
+            &crate::seams::tool_seam_var(tool),
+            0,
+            "",
+            "",
+        );
         let (printer, _buf) =
             cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
         let cx = cfgd_core::test_helpers::test_bootstrap_context(&printer).for_provision(method);
@@ -2255,9 +2359,9 @@ fn a_failed_toolchain_step_behind_a_windows_arm_names_rustup_and_not_the_mediato
 fn a_mediator_that_declined_an_arm_refuses_a_plan_naming_it() {
     let _dirs = cfgd_core::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
     for (manager, method, seam) in [
-        ("pipx", "yum", "CFGD_YUM_BIN"),
-        ("cargo", "apt", "CFGD_APT_GET_BIN"),
-        ("cargo", "pkg", "CFGD_PKG_BIN"),
+        ("pipx", "yum", crate::seams::YUM_BIN_ENV),
+        ("cargo", "apt", crate::seams::APT_GET_BIN_ENV),
+        ("cargo", "pkg", crate::seams::PKG_BIN_ENV),
     ] {
         let shim = cfgd_core::test_helpers::ToolShim::install(seam, 0, "", "");
         let (printer, _buf) =
@@ -2289,9 +2393,9 @@ fn a_mediator_that_declined_an_arm_refuses_a_plan_naming_it() {
 #[serial_test::serial]
 fn a_plan_naming_a_windows_mediator_this_host_lacks_is_refused_without_a_spawn() {
     let _dirs = cfgd_core::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
-    let _seams: Vec<_> = ["CFGD_WINGET_BIN", "CFGD_CHOCO_BIN", "CFGD_SCOOP_BIN"]
+    let _seams: Vec<_> = ["winget", "choco", "scoop"]
         .into_iter()
-        .map(cfgd_core::test_helpers::EnvVarGuard::unset)
+        .map(|tool| cfgd_core::test_helpers::EnvVarGuard::unset(&crate::seams::tool_seam_var(tool)))
         .collect();
     let _path_excl = cfgd_core::test_helpers::path_env_mutation_guard();
     let _path = cfgd_core::test_helpers::EnvVarGuard::set("PATH", "");
@@ -2395,9 +2499,7 @@ fn the_windows_pip_arm_declares_a_scripts_dir_under_roaming_appdata() {
     match plan {
         None => assert!(!pip_present, "a resolvable pip owes the pip arm a plan"),
         Some(p) if p.method == "pip" => {
-            let appdata = std::env::var("APPDATA")
-                .unwrap_or_default()
-                .replace('\\', "/");
+            let appdata = cfgd_core::to_posix_string(std::env::var("APPDATA").unwrap_or_default());
             assert!(!appdata.is_empty(), "a Windows host without APPDATA");
             assert_eq!(
                 p.creates_path_dirs.len(),
@@ -2766,7 +2868,7 @@ fn parse_cargo_toml_invalid_toml() {
     assert!(msg.contains("failed to parse Cargo.toml"), "got: {msg}");
 }
 
-// --- resolve_manifest_packages edge cases ---
+// --- resolve_manifest_packages_cached edge cases ---
 
 /// A manifest's names reach the same argv a declared one does, so the merge
 /// judges them against the same grammar the profile parse used, and names the
@@ -2838,7 +2940,7 @@ fn a_manifest_carrying_a_metacharacter_name_is_refused_naming_the_file() {
         ),
     ] {
         let mut spec = spec;
-        let why = resolve_manifest_packages(&mut spec, dir.path())
+        let why = resolve_manifests_fresh(&mut spec, dir.path())
             .expect_err("a manifest name a command line reads as syntax is refused")
             .to_string();
         assert!(
@@ -2878,7 +2980,7 @@ fd-find
         ..Default::default()
     };
 
-    let why = resolve_manifest_packages(&mut spec, dir.path())
+    let why = resolve_manifests_fresh(&mut spec, dir.path())
         .expect_err("the offending manifest is refused")
         .to_string();
     assert!(
@@ -2904,7 +3006,7 @@ fn a_manifest_path_that_climbs_out_of_the_config_dir_is_refused() {
         ..Default::default()
     };
 
-    let why = resolve_manifest_packages(&mut spec, dir.path())
+    let why = resolve_manifests_fresh(&mut spec, dir.path())
         .expect_err("a manifest path leaving the config dir is refused")
         .to_string();
     assert!(
@@ -2931,7 +3033,7 @@ fn an_absolute_manifest_path_is_refused() {
         ..Default::default()
     };
 
-    let why = resolve_manifest_packages(&mut spec, &config_dir)
+    let why = resolve_manifests_fresh(&mut spec, &config_dir)
         .expect_err("an absolute manifest path is refused")
         .to_string();
     assert!(
@@ -2964,7 +3066,7 @@ fn a_manifest_symlink_pointing_out_of_the_config_dir_is_refused() {
         ..Default::default()
     };
 
-    let why = resolve_manifest_packages(&mut spec, &config_dir)
+    let why = resolve_manifests_fresh(&mut spec, &config_dir)
         .expect_err("a manifest symlink escaping the config dir is refused")
         .to_string();
     assert!(
@@ -2993,11 +3095,44 @@ fn a_relative_in_tree_manifest_path_is_read() {
         ..Default::default()
     };
 
-    resolve_manifest_packages(&mut spec, dir.path()).unwrap();
+    resolve_manifests_fresh(&mut spec, dir.path()).unwrap();
     assert_eq!(
         spec.apt.as_ref().map(|apt| apt.packages.clone()),
         Some(vec!["ripgrep".to_string()]),
         "an in-tree manifest still merges"
+    );
+}
+
+/// A declared `<manager>.file` is part of what the derivation read, so a daemon
+/// tick reusing a derivation notices a Brewfile that changed under it.
+///
+/// Absence is recorded as a state of its own: a manifest that only appears
+/// later reads as a change, which is why the record is taken before the
+/// caller's `exists()`.
+#[test]
+fn resolving_a_declared_manifest_records_it_as_a_config_input() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("Brewfile"), "brew \"jq\"\n").unwrap();
+    let recorder = cfgd_core::ConfigInputRecorder::start();
+    let _ = manifest_path(dir.path(), "Brewfile").unwrap();
+    let _ = manifest_path(dir.path(), "Gemfile").unwrap();
+    let inputs = recorder.finish();
+
+    assert!(
+        inputs.paths().any(|p| p.ends_with("Brewfile")),
+        "a declared manifest is part of what the derivation read"
+    );
+    assert!(
+        inputs.paths().any(|p| p.ends_with("Gemfile")),
+        "a manifest that is not there yet is recorded too, so its arrival reads as a change"
+    );
+    assert!(inputs.unchanged(), "nothing has moved since the record");
+
+    std::fs::write(dir.path().join("Gemfile"), "gem \"rake\"\n").unwrap();
+    assert_eq!(
+        inputs.first_moved(),
+        Some(dir.path().join("Gemfile").as_path()),
+        "the manifest that appeared is the one named as moved"
     );
 }
 
@@ -3018,7 +3153,7 @@ fn resolve_manifest_packages_npm_file() {
         ..Default::default()
     };
 
-    resolve_manifest_packages(&mut packages, dir.path()).unwrap();
+    resolve_manifests_fresh(&mut packages, dir.path()).unwrap();
     let npm = packages.npm.as_ref().unwrap();
     assert!(npm.global.contains(&"existing".to_string()));
     assert!(npm.global.contains(&"express".to_string()));
@@ -3041,7 +3176,7 @@ fn resolve_manifest_packages_cargo_file() {
         ..Default::default()
     };
 
-    resolve_manifest_packages(&mut packages, dir.path()).unwrap();
+    resolve_manifests_fresh(&mut packages, dir.path()).unwrap();
     let cargo = packages.cargo.as_ref().unwrap();
     assert!(cargo.packages.contains(&"existing".to_string()));
     assert!(cargo.packages.contains(&"clap".to_string()));
@@ -3134,7 +3269,7 @@ fn simple_manager_available_version_dispatches() {
     // named for. Asserting only that the manager is called "apt" pinned its
     // name, not the pointer.
     let shim = cfgd_core::test_helpers::ToolShim::install(
-        "CFGD_APT_CACHE_BIN",
+        crate::seams::APT_CACHE_BIN_ENV,
         0,
         "vim:\n  Installed: (none)\n  Candidate: 2:9.0.1378-2\n",
         "",
@@ -3438,7 +3573,7 @@ fn remove_package_from_empty_simple_managers() {
     }
 }
 
-// --- resolve_manifest_packages all file types at once ---
+// --- resolve_manifest_packages_cached all file types at once ---
 
 #[test]
 fn resolve_manifest_packages_all_file_types_simultaneously() {
@@ -3483,7 +3618,7 @@ fn resolve_manifest_packages_all_file_types_simultaneously() {
         ..Default::default()
     };
 
-    resolve_manifest_packages(&mut packages, dir.path()).unwrap();
+    resolve_manifests_fresh(&mut packages, dir.path()).unwrap();
 
     let brew = packages.brew.as_ref().unwrap();
     assert!(brew.taps.contains(&"custom/tap".to_string()));
@@ -3511,7 +3646,7 @@ fn resolve_manifest_packages_all_file_types_simultaneously() {
 fn resolve_manifest_packages_no_specs_is_noop() {
     let dir = tempfile::tempdir().unwrap();
     let mut packages = PackagesSpec::default();
-    resolve_manifest_packages(&mut packages, dir.path()).unwrap();
+    resolve_manifests_fresh(&mut packages, dir.path()).unwrap();
     // Everything stays default
     assert!(packages.brew.is_none());
     assert!(packages.apt.is_none());
@@ -3539,7 +3674,7 @@ fn resolve_manifest_packages_duplicate_merging() {
         ..Default::default()
     };
 
-    resolve_manifest_packages(&mut packages, dir.path()).unwrap();
+    resolve_manifests_fresh(&mut packages, dir.path()).unwrap();
 
     let brew = packages.brew.as_ref().unwrap();
     // fd should not be duplicated — union_extend deduplicates
@@ -4224,7 +4359,7 @@ fn apply_packages_skip_prints_warning() {
 
 // --- choco list with .extension packages ---
 
-// --- resolve_manifest_packages with dedup across inline+file ---
+// --- resolve_manifest_packages_cached with dedup across inline+file ---
 
 #[test]
 fn resolve_manifest_packages_apt_dedup() {
@@ -4240,7 +4375,7 @@ fn resolve_manifest_packages_apt_dedup() {
         ..Default::default()
     };
 
-    resolve_manifest_packages(&mut packages, dir.path()).unwrap();
+    resolve_manifests_fresh(&mut packages, dir.path()).unwrap();
     let apt = packages.apt.as_ref().unwrap();
     let curl_count = apt.packages.iter().filter(|p| *p == "curl").count();
     assert_eq!(curl_count, 1, "curl should not be duplicated");
@@ -4266,7 +4401,7 @@ fn resolve_manifest_packages_cargo_dedup() {
         ..Default::default()
     };
 
-    resolve_manifest_packages(&mut packages, dir.path()).unwrap();
+    resolve_manifests_fresh(&mut packages, dir.path()).unwrap();
     let cargo = packages.cargo.as_ref().unwrap();
     let serde_count = cargo.packages.iter().filter(|p| *p == "serde").count();
     assert_eq!(serde_count, 1, "serde should not be duplicated");
@@ -4291,7 +4426,7 @@ fn resolve_manifest_packages_npm_dedup() {
         ..Default::default()
     };
 
-    resolve_manifest_packages(&mut packages, dir.path()).unwrap();
+    resolve_manifests_fresh(&mut packages, dir.path()).unwrap();
     let npm = packages.npm.as_ref().unwrap();
     let express_count = npm.global.iter().filter(|p| *p == "express").count();
     assert_eq!(express_count, 1, "express should not be duplicated");
@@ -4638,7 +4773,7 @@ fn brew_path_dirs_through_trait() {
     // `brew_path_dirs` answers from `CFGD_BREW_BIN` when it is set, so the
     // platform arm this pins is only reachable with the seam clear; a sibling
     // test's brew shim is a process-global that would answer in its place.
-    let _no_seam = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_BREW_BIN");
+    let _no_seam = cfgd_core::test_helpers::EnvVarGuard::unset(crate::seams::BREW_BIN_ENV);
     let printer = cfgd_core::test_helpers::test_printer();
     let state = cfgd_core::test_helpers::test_state();
     let cx = cfgd_core::test_helpers::test_package_context(&printer, &state);
@@ -5014,7 +5149,7 @@ fn a_changed_manifest_is_read_again() {
 }
 
 #[test]
-fn the_uncached_entry_point_never_reuses_a_parse() {
+fn separate_manifest_caches_never_share_a_parse() {
     let dir = tempfile::tempdir().unwrap();
     let manifest = dir.path().join("packages.apt.txt");
     std::fs::write(&manifest, "git\ncurl\n").unwrap();
@@ -5024,7 +5159,7 @@ fn the_uncached_entry_point_never_reuses_a_parse() {
         .set_modified(meta.modified().unwrap());
 
     let mut first = apt_manifest_spec();
-    resolve_manifest_packages(&mut first, dir.path()).unwrap();
+    resolve_manifests_fresh(&mut first, dir.path()).unwrap();
     assert_eq!(resolved_apt(first), vec!["git", "curl"]);
 
     std::fs::write(&manifest, "ab\ncdefg\n").unwrap();
@@ -5036,7 +5171,7 @@ fn the_uncached_entry_point_never_reuses_a_parse() {
         .unwrap();
 
     let mut second = apt_manifest_spec();
-    resolve_manifest_packages(&mut second, dir.path()).unwrap();
+    resolve_manifests_fresh(&mut second, dir.path()).unwrap();
     assert_eq!(resolved_apt(second), vec!["ab", "cdefg"]);
 }
 
@@ -5330,7 +5465,7 @@ const MANAGER_VERSION_GRAMMARS: &[(&str, VersionGrammar, SampleRead)] = &[
             floor: "133",
         },
         SampleRead::Listed {
-            fixture: "Name  Id       Version\n-----------------------\nFoo   Chrome   133.0.6943.98\n",
+            fixture: "Name  Id       Version\n-----------------------\nFoo   Chrome   133.0.6943.98\n", // space-run-ok: a fixture reproducing the manager's own column-aligned listing.
             parse: super::winget::parse_winget_list_versions,
         },
     ),
@@ -5586,36 +5721,66 @@ enum RaiseVerb {
     None { listing_seam: &'static str },
 }
 
+/// What raises a manager's OWN copy, where its package verb does not.
+///
+/// `cargo install cargo` is not how a rust toolchain moves and `brew upgrade
+/// brew` is not how brew moves, so a shortfall sentence about the manager
+/// itself cannot be worded from [`RaiseVerb`] alone. [`OwnRaise::PackageVerb`]
+/// is the statement that this family really does raise itself the way it
+/// raises a package, or that nothing cfgd can run raises it at all.
+enum OwnRaise {
+    Command(&'static str),
+    PackageVerb,
+}
+
 /// Every registered manager against the verb it raises an already-held
-/// package with, read off each manager's own `upgrade_verb()` at HEAD. A
-/// newly registered manager fails this walk until it is classified here,
-/// which is the mechanism that keeps the next family honest.
-const MANAGER_RAISE_VERBS: &[(&str, RaiseVerb)] = &[
-    ("brew", RaiseVerb::Verb("upgrade")),
-    ("brew-cask", RaiseVerb::Verb("upgrade")),
+/// package with, and the command that raises its own copy, both read off the
+/// manager's own answers at HEAD. A newly registered manager fails this walk
+/// until it is classified here, which is the mechanism that keeps the next
+/// family honest.
+const MANAGER_RAISE_VERBS: &[(&str, RaiseVerb, OwnRaise)] = &[
+    (
+        "brew",
+        RaiseVerb::Verb("upgrade"),
+        OwnRaise::Command("brew update"),
+    ),
+    (
+        "brew-cask",
+        RaiseVerb::Verb("upgrade"),
+        OwnRaise::Command("brew update"),
+    ),
     (
         "brew-tap",
         RaiseVerb::None {
-            listing_seam: "CFGD_BREW_BIN",
+            listing_seam: crate::seams::BREW_BIN_ENV,
         },
+        OwnRaise::PackageVerb,
     ),
-    ("apt", RaiseVerb::Verb("install")),
-    ("cargo", RaiseVerb::Verb("install")),
-    ("npm", RaiseVerb::Verb("install")),
-    ("pipx", RaiseVerb::Verb("upgrade")),
-    ("dnf", RaiseVerb::Verb("install")),
-    ("apk", RaiseVerb::Verb("upgrade")),
-    ("pacman", RaiseVerb::Verb("-S")),
-    ("zypper", RaiseVerb::Verb("install")),
-    ("yum", RaiseVerb::Verb("install")),
-    ("pkg", RaiseVerb::Verb("install")),
-    ("snap", RaiseVerb::Verb("refresh")),
-    ("flatpak", RaiseVerb::Verb("update")),
-    ("nix", RaiseVerb::Verb("upgrade")),
-    ("go", RaiseVerb::Verb("install")),
-    ("winget", RaiseVerb::Verb("install")),
-    ("chocolatey", RaiseVerb::Verb("upgrade")),
-    ("scoop", RaiseVerb::Verb("update")),
+    ("apt", RaiseVerb::Verb("install"), OwnRaise::PackageVerb),
+    (
+        "cargo",
+        RaiseVerb::Verb("install"),
+        OwnRaise::Command("rustup update"),
+    ),
+    ("npm", RaiseVerb::Verb("install"), OwnRaise::PackageVerb),
+    ("pipx", RaiseVerb::Verb("upgrade"), OwnRaise::PackageVerb),
+    ("dnf", RaiseVerb::Verb("install"), OwnRaise::PackageVerb),
+    ("apk", RaiseVerb::Verb("upgrade"), OwnRaise::PackageVerb),
+    ("pacman", RaiseVerb::Verb("-S"), OwnRaise::PackageVerb),
+    ("zypper", RaiseVerb::Verb("install"), OwnRaise::PackageVerb),
+    ("yum", RaiseVerb::Verb("install"), OwnRaise::PackageVerb),
+    ("pkg", RaiseVerb::Verb("install"), OwnRaise::PackageVerb),
+    ("snap", RaiseVerb::Verb("refresh"), OwnRaise::PackageVerb),
+    ("flatpak", RaiseVerb::Verb("update"), OwnRaise::PackageVerb),
+    ("nix", RaiseVerb::Verb("upgrade"), OwnRaise::PackageVerb),
+    ("go", RaiseVerb::Verb("install"), OwnRaise::PackageVerb),
+    ("winget", RaiseVerb::Verb("install"), OwnRaise::PackageVerb),
+    (
+        "chocolatey",
+        RaiseVerb::Verb("upgrade"),
+        OwnRaise::PackageVerb,
+    ),
+    ("scoop", RaiseVerb::Verb("update"), OwnRaise::PackageVerb),
 ];
 
 #[test]
@@ -5625,9 +5790,9 @@ fn every_registered_manager_declares_how_its_family_raises_a_held_package() {
     let state = cfgd_core::test_helpers::test_state();
     let cx = PackageContext::new(&printer, &state);
     for mgr in all_package_managers() {
-        let (_, verb) = MANAGER_RAISE_VERBS
+        let (_, verb, own) = MANAGER_RAISE_VERBS
             .iter()
-            .find(|(name, _)| *name == mgr.name())
+            .find(|(name, _, _)| *name == mgr.name())
             .unwrap_or_else(|| {
                 panic!(
                     "{}: classify this manager's raise verb — an uninventoried \
@@ -5645,6 +5810,30 @@ fn every_registered_manager_declares_how_its_family_raises_a_held_package() {
             expected,
             "{}: MANAGER_RAISE_VERBS disagrees with the manager's own \
              upgrade_verb()",
+            mgr.name()
+        );
+        // A manager naming home env vars has a SHIM on PATH, and a shim's own
+        // copy is not what its package verb installs: `cargo install cargo`
+        // fetches a second crate and leaves the toolchain the shim resolves
+        // exactly where it was. So the family that needs those variables also
+        // needs a raise command of its own, and classifying it `PackageVerb`
+        // would word a held floor with advice that cannot clear it.
+        assert!(
+            mgr.home_env_vars().is_empty() || !matches!(own, OwnRaise::PackageVerb),
+            "{}: a manager whose binary is a shim (it names {:?}) cannot raise \
+             its own copy through its package verb",
+            mgr.name(),
+            mgr.home_env_vars()
+        );
+        let expected_own = match own {
+            OwnRaise::Command(c) => Some(*c),
+            OwnRaise::PackageVerb => None,
+        };
+        assert_eq!(
+            mgr.own_raise().as_deref(),
+            expected_own,
+            "{}: MANAGER_RAISE_VERBS disagrees with the manager's own \
+             own_raise()",
             mgr.name()
         );
         if let RaiseVerb::None { listing_seam } = verb {
@@ -5671,6 +5860,40 @@ fn every_registered_manager_declares_how_its_family_raises_a_held_package() {
             );
         }
     }
+}
+
+/// The sentence a reader gets when the toolchain on this host has slipped
+/// below a declared floor names the command that moves it. `cargo install
+/// cargo` fetches a second copy from crates.io and leaves the toolchain where
+/// it was, so the clause is worded from the manager's own raise and held here
+/// against the REGISTERED cargo; a mock could answer anything.
+#[test]
+fn a_held_cargo_below_its_floor_names_rustup_as_the_raise() {
+    let managers = all_package_managers();
+    let cargo = managers
+        .iter()
+        .find(|m| m.name() == "cargo")
+        .expect("cargo is a registered manager");
+    let held = cfgd_core::modules::HeldManager {
+        package: "cargo".to_string(),
+        module: "rust".to_string(),
+        floor: "1.85".to_string(),
+        judgment: cfgd_core::modules::judge_declared_floor(
+            cargo.as_ref(),
+            "cargo",
+            "1.85",
+            Some("1.80"),
+        ),
+    };
+    let clause = held.clause(Some(cargo.as_ref()));
+    assert!(
+        clause.contains("cargo 1.80 is on this host, below the declared minVersion 1.85"),
+        "the shortfall states both operands: {clause}"
+    );
+    assert!(
+        clause.contains("raise it with `rustup update`"),
+        "a slipped toolchain is raised by rustup; cargo's package verb cannot: {clause}"
+    );
 }
 
 /// The half of the floor-dedup rule a "simplification" would break. Both
@@ -5926,13 +6149,17 @@ fn silence_every_mediator_but_pkg() -> SilencedMediators {
     let path_excl = cfgd_core::test_helpers::path_env_mutation_guard();
     let path = cfgd_core::test_helpers::EnvVarGuard::set("PATH", "");
     let brew = cfgd_core::test_helpers::EnvVarGuard::set(
-        "CFGD_BREW_BIN",
+        crate::seams::BREW_BIN_ENV,
         "/nonexistent/cfgd-no-brew-on-this-host",
     );
-    let seams = ["CFGD_APT_GET_BIN", "CFGD_DNF_BIN", "CFGD_PKG_BIN"]
-        .into_iter()
-        .map(cfgd_core::test_helpers::EnvVarGuard::unset)
-        .collect();
+    let seams = [
+        crate::seams::APT_GET_BIN_ENV,
+        crate::seams::DNF_BIN_ENV,
+        crate::seams::PKG_BIN_ENV,
+    ]
+    .into_iter()
+    .map(cfgd_core::test_helpers::EnvVarGuard::unset)
+    .collect();
     SilencedMediators {
         _memo: memo,
         _seams: seams,

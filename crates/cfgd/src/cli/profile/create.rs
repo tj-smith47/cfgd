@@ -22,7 +22,7 @@ pub fn cmd_profile_create(
     let post_reconcile = &args.post_reconcile;
     let on_change = &args.on_change;
     let on_drift = &args.on_drift;
-    validate_resource_name(name, "Profile")?;
+    validate_resource_name(name, "Profile", "<NAME>")?;
     printer.heading_title(&TitleLabel::new("Create Profile", name));
 
     let config_dir = config_dir(cli);
@@ -125,12 +125,16 @@ pub fn cmd_profile_create(
                 .iter()
                 .find(|(m, _)| Some(m.as_str()) == pkg.manager.as_deref())
             {
-                anyhow::bail!(
-                    "'{mgr}' is declared by profile '{parent}', not by '{name}'; add the package \
-                     there with `cfgd profile update {parent} --package {mgr}:{}`, or declare \
-                     {mgr} under spec.packages.custom in this profile",
-                    pkg.name
-                );
+                return Err(crate::cli::invalid_argument(
+                    "--package",
+                    &format!("{mgr}:{}", pkg.name),
+                    format!(
+                        "'{mgr}' is declared by profile '{parent}'; '{name}' does not declare it. \
+                         Add the package there with `cfgd profile update {parent} --package {mgr}:{}`, or declare \
+                         {mgr} under spec.packages.custom in this profile",
+                        pkg.name
+                    ),
+                ));
             }
         }
         let vars = var_list.to_vec();
@@ -159,21 +163,19 @@ pub fn cmd_profile_create(
     // Build env
     let mut env_vars = Vec::new();
     for v in &vars {
-        env_vars.push(cfgd_core::parse_env_var(v).map_err(|e| anyhow::anyhow!(e))?);
+        env_vars.push(super::env_flag(v)?);
     }
 
     // Build aliases
     let mut shell_aliases = Vec::new();
     for a in alias_list {
-        shell_aliases.push(cfgd_core::parse_alias(a).map_err(|e| anyhow::anyhow!(e))?);
+        shell_aliases.push(super::alias_flag(a)?);
     }
 
     // Build system settings
     let mut system = std::collections::BTreeMap::new();
     for s in &sys {
-        let (key, value) = s.split_once('=').ok_or_else(|| {
-            anyhow::anyhow!("Invalid system setting '{}' — expected key=value", s)
-        })?;
+        let (key, value) = super::system_flag(s)?;
         system.insert(
             key.to_string(),
             serde_yaml::Value::String(value.to_string()),
@@ -279,6 +281,7 @@ pub fn cmd_profile_create(
             secrets,
             scripts,
             backups: Vec::new(),
+            preferences: config::PreferencesSpec::default(),
         },
     };
 

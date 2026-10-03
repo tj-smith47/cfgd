@@ -1489,8 +1489,8 @@ mod tests {
             pending_owners: vec![base.token(), nvim.token()],
         });
         // The wait hangs on the lane that is WAITING, in the action-row column
-        // of its own owner group — not at the group heading's column, and not
-        // under the group it is waiting on, which is running its own work.
+        // of its own owner group. The group heading's column is a different
+        // one, and the group it is waiting on is running its own work.
         let waiting = screen.contents();
         let wait_line = waiting
             .lines()

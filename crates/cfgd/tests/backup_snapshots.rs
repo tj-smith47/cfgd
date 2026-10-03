@@ -27,9 +27,9 @@
 //!     the recorded path being a tempdir.
 //!   - `backup/gc_nothing.txt`             — `cfgd backup gc` on a machine that
 //!     has moved no destination.
-//!   - `backup/run_orphan_hint.txt`        — the `cfgd backup run` that moves a
+//!   - `backup/run_orphan_note.txt`        — the `cfgd backup run` that moves a
 //!     `destination:`, whose group carries the snapshot row it wrote and then
-//!     the hint naming what the move stranded.
+//!     the note row naming what the move stranded.
 //!   - `backup/rollback_no_copy.{txt,json}` — `cfgd backup rollback docs` on a
 //!     unit with no copy beside its source: the typed `no_rollback_copy` error
 //!     and its read-only-surface hint (`cfgd backup list <name>`, never the
@@ -44,7 +44,7 @@
 //!     best-effort pattern — and a backup failure never raises an
 //!     already-`Failed` apply back up to `partial`.
 
-mod common;
+use cfgd_test_fixtures as common;
 
 use std::path::Path;
 
@@ -398,7 +398,8 @@ fn backup_run_aborts_on_a_source_constraint_violation_but_list_still_reports() {
     // source's own constraints must stop the run, not be recorded and run
     // anyway. `backup list` only reads, so it stays on Report and still shows
     // the inventory.
-    let _allow = cfgd_core::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+    let _allow =
+        cfgd_core::test_helpers::EnvVarGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
     let (_workspace, config_dir, state_dir, rejected_destination) =
         common::violating_backup_source_setup();
     let cli = cli_for(config_dir.path(), state_dir.path());
@@ -738,7 +739,7 @@ fn newest_sidecar_beside(source: &Path) -> std::path::PathBuf {
     );
     std::fs::read_dir(dir)
         .expect("read the source directory")
-        .flatten()
+        .map(|entry| entry.expect("the walk must read every directory entry"))
         .filter(|e| e.file_name().to_string_lossy().starts_with(&base))
         // Mtime AND name, the tie-break `rollback_copy` itself breaks toward
         // the stamped spelling: a filesystem with coarse timestamps can stamp
@@ -799,6 +800,7 @@ fn backup_rollback_human() {
     restored_docs(&cli, &source, "live");
 
     let (printer, cap) = Printer::for_test_doc();
+    let printer = printer.with_hints_enabled(true);
     run_backup_rollback(&cli, &printer, "docs", true).unwrap();
     drop(printer);
 
@@ -915,6 +917,7 @@ fn backup_rollback_listing_is_empty_when_nothing_was_displaced() {
     let cli = cli_for(config_dir.path(), state_dir.path());
 
     let (printer, cap) = Printer::for_test_doc();
+    let printer = printer.with_hints_enabled(true);
     cmd_backup_rollback(&cli, &printer, None, false).unwrap();
     drop(printer);
 
@@ -1359,7 +1362,7 @@ fn backup_gc_with_nothing_to_collect_says_so() {
 }
 
 #[test]
-fn backup_run_hints_at_gc_after_the_snapshot_row_it_follows() {
+fn backup_run_names_the_stranded_snapshots_after_the_row_it_follows() {
     let config_dir = tempfile::tempdir().unwrap();
     let state_dir = tempfile::tempdir().unwrap();
     let source = config_dir.path().join("data").join("notes.txt");
@@ -1367,8 +1370,8 @@ fn backup_run_hints_at_gc_after_the_snapshot_row_it_follows() {
     std::fs::write(&source, "hello backup").unwrap();
 
     // The run that MOVED the destination is the one that discovers the rows the
-    // move stranded, so its own snapshot row and the hint about them share a
-    // group — and the hint has to come second, or it names work the reader has
+    // move stranded, so its own snapshot row and the note about them share a
+    // group — and the note has to come second, or it names work the reader has
     // not been told about yet.
     let (_, moved_run) = strand_a_snapshot(config_dir.path(), state_dir.path(), &source);
 
@@ -1385,7 +1388,7 @@ fn backup_run_hints_at_gc_after_the_snapshot_row_it_follows() {
         cfgd_core::normalize_snapshot_durations(&normalize_backup_timestamp(&normalized));
     assert_snapshot!(
         Path::new(SNAPSHOT_ROOT),
-        "backup/run_orphan_hint.txt",
+        "backup/run_orphan_note.txt",
         &normalized
     );
 }
@@ -2135,7 +2138,8 @@ fn a_restore_completes_over_a_module_whose_source_cannot_be_reached() {
 #[test]
 #[serial_test::serial]
 fn a_restore_over_a_conflicting_source_composes_once() {
-    let _allow = cfgd_core::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+    let _allow =
+        cfgd_core::test_helpers::EnvVarGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
     let (_workspace, config_dir, state_dir, source) =
         common::backup_profile_with_conflicting_source_setup();
     let cli = cli_for(config_dir.path(), state_dir.path());

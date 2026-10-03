@@ -5,7 +5,7 @@ use cfgd_core::PathDisplayExt;
 use crate::errors::CsiError;
 
 const LAST_ACCESS_FILE: &str = ".cfgd-last-access";
-const COMPLETE_SENTINEL: &str = ".cfgd-complete";
+pub(crate) const COMPLETE_SENTINEL: &str = ".cfgd-complete";
 
 /// Node-level LRU cache for OCI module artifacts.
 ///
@@ -27,7 +27,8 @@ impl Cache {
         Ok(Self { root, max_bytes })
     }
 
-    /// Return the cache path for a module, or pull it if not cached.
+    /// Return the cache path for a module, pulling it if not cached, and
+    /// whether the entry was already there (`true` for a hit).
     ///
     /// On cache hit, updates access time for LRU tracking.
     /// On cache miss, pulls the OCI artifact to a temp dir and atomically
@@ -38,14 +39,14 @@ impl Cache {
         module: &str,
         version: &str,
         oci_ref: &str,
-    ) -> Result<PathBuf, CsiError> {
+    ) -> Result<(PathBuf, bool), CsiError> {
         let entry_dir = self.entry_path(module, version)?;
 
         if entry_dir.is_dir() && is_complete(&entry_dir) {
             if let Err(e) = touch_atime(&entry_dir) {
                 tracing::warn!(module = %module, version = %version, error = %e, "failed to update cache atime on hit; LRU ordering may be stale");
             }
-            return Ok(entry_dir);
+            return Ok((entry_dir, true));
         }
 
         // Cache miss — pull to temp dir, then atomically move into place
@@ -99,7 +100,7 @@ impl Cache {
             tracing::warn!(error = %e, "cache eviction failed");
         }
 
-        Ok(entry_dir)
+        Ok((entry_dir, false))
     }
 
     /// Return the cached path if it exists and is complete, without pulling.
@@ -607,9 +608,10 @@ mod tests {
 
         let dir = tempfile::tempdir().unwrap();
         let cache = make_cache(dir.path(), 10 * 1024 * 1024);
-        let entry = cache
+        let (entry, hit) = cache
             .get_or_pull("execmod", "1.0.0", &format!("{registry}/test/execmod:v1"))
             .expect("pull must succeed against the mock registry");
+        assert!(!hit, "a first pull must report a miss");
 
         let mode = std::fs::metadata(entry.join("bin/run.sh"))
             .unwrap()
@@ -632,9 +634,10 @@ mod tests {
         let cache = make_cache(dir.path(), 1024 * 1024);
         populate_entry(dir.path(), "preinstalled", "1.0.0", 256, 1_000);
 
-        let result = cache
+        let (result, hit) = cache
             .get_or_pull("preinstalled", "1.0.0", "not-a-real-oci-ref://garbage")
             .expect("cache-hit must NOT consult oci::pull_module");
+        assert!(hit, "a complete entry must report a hit");
 
         assert_eq!(result, dir.path().join("preinstalled").join("1.0.0"));
         assert!(

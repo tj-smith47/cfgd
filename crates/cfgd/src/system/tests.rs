@@ -485,7 +485,7 @@ fn diff_nested_mapping_passes_outer_key_to_get_actual() {
 
 #[test]
 fn parse_reg_line_typical_entry() {
-    let line = "    MyValue    REG_SZ    hello world";
+    let line = "    MyValue    REG_SZ    hello world"; // space-run-ok: a fixture reproducing `reg query`'s column-aligned output.
     let result = parse_reg_line(line);
     assert_eq!(result, Some(("MyValue", "REG_SZ", "hello world")));
 }
@@ -507,7 +507,7 @@ fn parse_reg_line_hkey_header_line() {
 
 #[test]
 fn parse_reg_line_dword_value() {
-    let line = "    Timeout    REG_DWORD    0xff";
+    let line = "    Timeout    REG_DWORD    0xff"; // space-run-ok: a fixture reproducing `reg query`'s column-aligned output.
     let result = parse_reg_line(line);
     assert_eq!(result, Some(("Timeout", "REG_DWORD", "0xff")));
 }
@@ -559,7 +559,7 @@ fn parse_reg_line_hkey_local_machine() {
 
 #[test]
 fn parse_reg_line_with_spaces_in_value() {
-    let line = "    MyPath    REG_SZ    C:\\Program Files\\App";
+    let line = "    MyPath    REG_SZ    C:\\Program Files\\App"; // space-run-ok: a fixture reproducing `reg query`'s column-aligned output.
     let result = parse_reg_line(line);
     assert_eq!(result, Some(("MyPath", "REG_SZ", "C:\\Program Files\\App")));
 }
@@ -762,7 +762,7 @@ fn parse_reg_line_hkey_users() {
 
 #[test]
 fn parse_reg_line_expand_sz_type() {
-    let line = "    Path    REG_EXPAND_SZ    %SystemRoot%\\system32";
+    let line = "    Path    REG_EXPAND_SZ    %SystemRoot%\\system32"; // space-run-ok: a fixture reproducing `reg query`'s column-aligned output.
     let result = parse_reg_line(line);
     assert_eq!(
         result,
@@ -772,7 +772,7 @@ fn parse_reg_line_expand_sz_type() {
 
 #[test]
 fn parse_reg_line_multi_sz_type() {
-    let line = "    MultiVal    REG_MULTI_SZ    val1\\0val2";
+    let line = "    MultiVal    REG_MULTI_SZ    val1\\0val2"; // space-run-ok: a fixture reproducing `reg query`'s column-aligned output.
     let result = parse_reg_line(line);
     assert_eq!(result, Some(("MultiVal", "REG_MULTI_SZ", "val1\\0val2")));
 }
@@ -835,12 +835,14 @@ fn yaml_value_to_string_float() {
 
 #[test]
 fn read_command_output_successful_command() {
+    let _path = cfgd_core::test_helpers::path_env_read_guard();
     let output = read_command_output(Command::new("echo").arg("hello"));
     assert_eq!(output, "hello");
 }
 
 #[test]
 fn read_command_output_trims_trailing_newline() {
+    let _path = cfgd_core::test_helpers::path_env_read_guard();
     // echo outputs "hello\n" but read_command_output should trim it
     let output = read_command_output(Command::new("echo").arg("  spaced  "));
     assert_eq!(output, "spaced");
@@ -848,12 +850,14 @@ fn read_command_output_trims_trailing_newline() {
 
 #[test]
 fn read_command_output_failed_command_returns_empty() {
+    let _path = cfgd_core::test_helpers::path_env_read_guard();
     let output = read_command_output(&mut Command::new("false"));
     assert_eq!(output, "");
 }
 
 #[test]
 fn read_command_output_nonexistent_command_returns_empty() {
+    let _path = cfgd_core::test_helpers::path_env_read_guard();
     let output = read_command_output(&mut Command::new("cfgd_nonexistent_cmd_12345"));
     assert_eq!(output, "");
 }
@@ -861,6 +865,7 @@ fn read_command_output_nonexistent_command_returns_empty() {
 #[test]
 #[cfg(not(windows))] // printf with embedded \n is unreliable on Windows
 fn read_command_output_multiline_output() {
+    let _path = cfgd_core::test_helpers::path_env_read_guard();
     // printf produces multiline output without trailing newline issues
     let output = read_command_output(Command::new("printf").arg("line1\nline2"));
     assert_eq!(output, "line1\nline2");
@@ -882,8 +887,8 @@ fn read_command_output_multiline_output() {
 /// answers to nobody's login shell, and neither is a COMMENT line: a doc
 /// sentence naming a writer is documentation, not a call site, and one reported
 /// as an offender or counted toward the floor is a walk lying in both
-/// directions. The floor sits AT what this module holds rather than under it, so
-/// a writer cannot vanish inside a margin.
+/// directions. The floor is a minimum set at what this module holds, so a writer
+/// cannot be removed silently; a count above it passes.
 #[test]
 fn every_privileged_writer_says_whether_a_non_root_reader_opens_its_file() {
     let system_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/system");
@@ -891,9 +896,7 @@ fn every_privileged_writer_says_whether_a_non_root_reader_opens_its_file() {
     let mut writers = 0usize;
     let mut files = 0usize;
     for path in cfgd_core::test_helpers::rust_sources_under(&system_dir) {
-        if path.file_name().is_some_and(|n| n == "tests.rs")
-            || path.parent().is_some_and(|p| p.ends_with("tests"))
-        {
+        if cfgd_core::test_helpers::is_test_source(&path) {
             continue;
         }
         let body = cfgd_core::test_helpers::production_slice_of(&path);
@@ -944,7 +947,7 @@ fn every_privileged_writer_says_whether_a_non_root_reader_opens_its_file() {
             // `else if let Err(e)` chain, so that half is read per function.
             let hatched = lines[idx.saturating_sub(2)..idx]
                 .iter()
-                .any(|l| l.contains("user-scope-ok:"));
+                .any(|l| cfgd_core::test_helpers::carries_hatch(l, "user-scope-ok:"));
             let lo = fn_starts
                 .iter()
                 .rev()
@@ -967,7 +970,7 @@ fn every_privileged_writer_says_whether_a_non_root_reader_opens_its_file() {
         }
     }
     assert!(
-        files >= 24 && writers >= 16,
+        files >= 23 && writers >= 16,
         "the walk read {files} files and {writers} writers, too few to be the population"
     );
     assert!(

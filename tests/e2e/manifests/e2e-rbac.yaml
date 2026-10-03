@@ -1,36 +1,40 @@
+# Reference copy of what ArgoCD applies from
+# /db/manifests/k3s/namespaces/cfgd-system/e2e-rbac.yaml, where kustomize sets
+# the namespace; setup's permission preflight points here when the runner
+# lacks a rule.
 apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: cfgd-e2e
-  namespace: cfgd-system
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: cfgd-e2e-token
+  annotations:
+    kubernetes.io/service-account.name: cfgd-e2e
+type: kubernetes.io/service-account-token
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
   name: cfgd-e2e
 rules:
-  # CRD management — required by setup-cluster.sh to install/update cfgd CRDs
-  - apiGroups: ["apiextensions.k8s.io"]
-    resources: ["customresourcedefinitions"]
-    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-  # cfgd.io CRDs — full access including status subresources
   - apiGroups: ["cfgd.io"]
     resources: ["*", "*/status"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-  # Core resources
   - apiGroups: [""]
     resources: ["namespaces"]
-    verbs: ["get", "list", "watch", "create", "delete"]
-  - apiGroups: [""]
-    resources: ["pods", "services", "secrets", "serviceaccounts", "configmaps"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   - apiGroups: [""]
-    resources: ["pods/exec", "pods/log", "pods/portforward"]
-    verbs: ["create", "get"]
+    resources: ["pods", "services", "secrets", "serviceaccounts", "configmaps", "endpoints"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["pods/exec", "pods/log", "pods/portforward", "pods/ephemeralcontainers"]
+    verbs: ["create", "get", "update", "patch"]
   - apiGroups: [""]
     resources: ["nodes"]
     verbs: ["get", "list", "watch"]
-  # Apps — deployments, daemonsets, replicasets (Helm creates these; rollout checks need replicasets)
   - apiGroups: ["apps"]
     resources: ["deployments", "daemonsets", "replicasets"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
@@ -38,27 +42,25 @@ rules:
   - apiGroups: [""]
     resources: ["persistentvolumeclaims"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-  # RBAC — Helm chart creates ClusterRoles/Bindings for agent, operator, CSI
   - apiGroups: ["rbac.authorization.k8s.io"]
     resources: ["roles", "rolebindings", "clusterroles", "clusterrolebindings"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete", "bind", "escalate"]
-  # Admission webhooks
+  # Read-only: ArgoCD applies the CRDs; setup and the suites compare them
+  - apiGroups: ["apiextensions.k8s.io"]
+    resources: ["customresourcedefinitions"]
+    verbs: ["get", "list", "watch"]
   - apiGroups: ["admissionregistration.k8s.io"]
     resources: ["validatingwebhookconfigurations", "mutatingwebhookconfigurations"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-  # Storage — CSI driver registration
   - apiGroups: ["storage.k8s.io"]
     resources: ["csidrivers", "csinodes"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-  # Events
   - apiGroups: [""]
     resources: ["events"]
     verbs: ["create", "patch"]
-  # Leader election
   - apiGroups: ["coordination.k8s.io"]
     resources: ["leases"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-  # cert-manager
   - apiGroups: ["cert-manager.io"]
     resources: ["certificates", "issuers"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
@@ -70,7 +72,6 @@ rules:
     resources: ["functions", "deploymentruntimeconfigs"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
 ---
-# Binding for the cfgd-e2e SA (used by test pods)
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:

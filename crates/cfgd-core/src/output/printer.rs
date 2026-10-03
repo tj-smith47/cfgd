@@ -1,11 +1,10 @@
-//! User-facing handle. Holds the Renderer (single layout authority), the
-//! active OutputFormat, and the writers for stderr (status output) +
-//! stdout (structured/data output). Sinks: `sink_stderr` for status,
-//! `sink_stdout` for `data_line`, `multi_progress` for spinners and progress
-//! bars, `syntax_set` for `syntax_highlight` (whose palette comes from the
-//! renderer's own `Theme`). The
-//! `test_doc_capture` and `prompt_queue` fields are populated by test
-//! helpers (gated on the `test-helpers` feature).
+//! User-facing handle. Holds the Renderer (single layout authority), the active
+//! OutputFormat, and the writers for stderr (status output) + stdout
+//! (structured/data output). Sinks: `sink_stderr` for status, `sink_stdout` for
+//! `data_line`, `multi_progress` for spinners and progress bars, `syntax_set`
+//! for `syntax_highlight` (whose palette comes from the renderer's own
+//! `Theme`). The `test_doc_capture` and `prompt_queue` fields are populated by
+//! test helpers (gated on the `test-helpers` feature).
 
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -250,7 +249,7 @@ impl Printer {
     /// decision instead of this printer's.
     pub fn with_theme_config(
         verbosity: Verbosity,
-        theme: Option<&crate::config::ThemeConfig>,
+        theme: &crate::config::ThemeConfig,
         output_format: OutputFormat,
         colors: ColorChoice,
     ) -> Self {
@@ -424,9 +423,11 @@ impl Printer {
     }
 
     /// Enable or disable closing `→` usage hints for this printer's lifetime.
-    /// Builder-style, mirroring [`Self::with_list_envelope`]; on by default.
-    /// Wired from `cli::resolve_hints_enabled` (`--no-hints` /
-    /// `CFGD_USAGE_HINTS` / `spec.output.usageHints`).
+    /// Builder-style, mirroring [`Self::with_list_envelope`]; OFF by default,
+    /// which is what a cfgd run renders when nothing asked for hints. Wired
+    /// from `cli::resolve_hints_enabled` (`--hints` / `--no-hints` /
+    /// `CFGD_USAGE_HINTS` / `spec.output.usageHints`). It decides a GATED
+    /// hint only: an unconditional one renders whatever this says.
     ///
     /// The decision lives on the `Renderer` rather than on `Printer` itself:
     /// `SectionGuard` and `Doc` rendering hold their own `Arc<Renderer>`
@@ -616,8 +617,13 @@ impl Printer {
     pub fn hint(&self, hint: impl Into<crate::output::HintCommands>) {
         let hint = hint.into();
         let depth = self.renderer.inherit_depth();
-        self.renderer
-            .render_hint(self.sink_stderr.as_ref(), depth, &hint.text, &hint.commands);
+        self.renderer.render_hint(
+            self.sink_stderr.as_ref(),
+            depth,
+            &hint.text,
+            &hint.commands,
+            hint.is_gated(),
+        );
     }
 
     /// A hint whose colon-introduced payload is one or more commands, dropped
@@ -1349,6 +1355,7 @@ mod tests {
         let (p, buf) = Printer::for_test_at(Verbosity::Normal);
         p.status_simple(Role::Ok, "Enrolled as user '\x1b[2Kroot\x1b[31m'");
         p.flush();
+        // long-line-ok: a hatch is read off its own line, so it cannot wrap
         // raw-capture-ok: the claim IS that no escape survives, and captured_text strips exactly what this test looks for
         let raw = buf.lock().unwrap_or_else(|e| e.into_inner()).clone();
         assert!(
@@ -1623,7 +1630,7 @@ mod tests {
 
         let p = Printer::with_theme_config(
             Verbosity::Normal,
-            Some(&config),
+            &config,
             OutputFormat::Table,
             ColorChoice::Always,
         );
@@ -1646,10 +1653,10 @@ mod tests {
              printer's colour decision, not the default colour-off one"
         );
 
-        // No config at all is the default theme, not a panic or an empty one.
+        // The block an omitted `spec.output.theme` reads as is the default theme.
         let bare = Printer::with_theme_config(
             Verbosity::Normal,
-            None,
+            &crate::config::ThemeConfig::default(),
             OutputFormat::Table,
             ColorChoice::Always,
         );
@@ -1898,8 +1905,9 @@ mod tests {
         assert_eq!(parsed, payload, "default emit must keep the bare array");
     }
 
-    /// `spec.output.usageHints: false` / `CFGD_USAGE_HINTS=false` / `--no-hints`
-    /// resolve to `Printer::with_hints_enabled(false)`, which must suppress
+    /// `spec.output.usageHints: false` / `CFGD_USAGE_HINTS=false` /
+    /// `--no-hints`, and the shipped default they share, resolve to
+    /// `Printer::with_hints_enabled(false)`, which must suppress
     /// BOTH the hint text AND its leading blank line — a bare blank left
     /// behind would be a visible artifact of a feature that is supposed to
     /// leave no trace. `render_hint`'s early return fires before
@@ -1909,6 +1917,7 @@ mod tests {
     #[test]
     fn hints_off_suppresses_the_hint_and_its_leading_blank() {
         let (on, buf_on) = Printer::for_test_at(Verbosity::Normal);
+        let on = on.with_hints_enabled(true);
         on.status_simple(Role::Ok, "did thing");
         on.hint("run `cfgd apply`");
         on.flush();
@@ -1932,11 +1941,79 @@ mod tests {
             !without_hints.contains('→'),
             "hint glyph leaked with hints off: {without_hints:?}"
         );
+
+        // The same question one depth in. The blank a hint is preceded by is
+        // armed by the group the SECTION opened; the hint's own call arms
+        // nothing, so a nested hint could suppress its text and still leave the
+        // blank the section's boundary had already put in place.
+        let (nested_on, buf_nested_on) = Printer::for_test_at(Verbosity::Normal);
+        let nested_on = nested_on.with_hints_enabled(true);
+        {
+            let section = nested_on.section("Sources");
+            section.status_simple(Role::Ok, "did thing");
+            section.hint("run `cfgd apply`");
+        }
+        nested_on.flush();
+        let nested_with = crate::test_helpers::captured_text(&buf_nested_on);
+        assert!(
+            nested_with.contains("→ run `cfgd apply`"),
+            "nested hints-on baseline shape changed: {nested_with:?}"
+        );
+
+        let (nested_off, buf_nested_off) = Printer::for_test_at(Verbosity::Normal);
+        let nested_off = nested_off.with_hints_enabled(false);
+        {
+            let section = nested_off.section("Sources");
+            section.status_simple(Role::Ok, "did thing");
+            section.hint("run `cfgd apply`");
+        }
+        nested_off.flush();
+        let nested_without = crate::test_helpers::captured_text(&buf_nested_off);
+        assert!(
+            !nested_without.contains('→'),
+            "hint glyph leaked from inside a section with hints off: {nested_without:?}"
+        );
+        assert!(
+            nested_without.ends_with("did thing\n"),
+            "a nested hint left a trailing blank line or the hint itself: \
+             {nested_without:?}"
+        );
     }
 
-    /// `note`/`deprecation`/`alert` are NOT hints — they report what a run
-    /// did or will do, not what to run next — so `--no-hints` and its env/config
-    /// twins must never touch them. Only `render_hint` checks `hints_enabled`.
+    /// An UNCONDITIONAL hint survives the gate a tutorial hint dies at.
+    ///
+    /// The gate is the one seam (`Renderer::render_hint`), so the class has to
+    /// travel on the payload: a refusal's remediation is the whole value of the
+    /// refusal, and a reader who turned tutorials off did not ask to be told
+    /// nothing when a command declines to run.
+    ///
+    /// `Verbosity::Normal`, because `Printer::for_test()` is Quiet and a Quiet
+    /// run suppresses every hint whatever its class.
+    #[cfg(feature = "test-helpers")]
+    #[test]
+    fn an_unconditional_hint_renders_with_usage_hints_off() {
+        let (p, buf) = Printer::for_test_at(Verbosity::Normal);
+        let p = p.with_hints_enabled(false);
+        p.hint("Run `cfgd apply` to reconcile");
+        p.hint(crate::output::HintCommands::unconditional(
+            "Pick an existing ref with `cfgd source update acme --pin-version <ref>`",
+        ));
+        p.flush();
+        let out = crate::test_helpers::captured_text(&buf);
+        assert!(
+            !out.contains("to reconcile"),
+            "the tutorial hint stays off: {out:?}"
+        );
+        assert!(
+            out.contains("--pin-version"),
+            "the remediation hint renders: {out:?}"
+        );
+    }
+
+    /// `note`/`deprecation`/`alert` are NOT hints: they report what a run did
+    /// or will do. A hint says what to run next, so `--hints`/`--no-hints` and
+    /// their env/config twins must never touch them. Only `render_hint` reads
+    /// `hints_enabled`.
     #[cfg(feature = "test-helpers")]
     #[test]
     fn hints_off_leaves_note_deprecation_and_alert_visible() {
@@ -2046,7 +2123,9 @@ mod tests {
     #[cfg(feature = "test-helpers")]
     #[test]
     fn section_hint_renders() {
+        // Hints are off by default, as a cfgd run renders them.
         let (p, buf) = Printer::for_test_at(Verbosity::Normal);
+        let p = p.with_hints_enabled(true);
         {
             let s = p.section("Setup");
             s.hint("Run cfgd init first");
@@ -2274,7 +2353,9 @@ mod tests {
     #[test]
     fn render_doc_with_hint_renders_content() {
         use super::super::doc::Doc;
+        // Hints are off by default, as a cfgd run renders them.
         let (p, buf) = Printer::for_test_at(Verbosity::Normal);
+        let p = p.with_hints_enabled(true);
         let doc = Doc::new()
             .heading("Setup")
             .hint("Run cfgd init to get started");
@@ -2492,6 +2573,7 @@ mod tests {
     #[cfg(feature = "test-helpers")]
     #[test]
     fn top_level_run_stays_at_column_zero() {
+        let _path = crate::test_helpers::path_env_read_guard();
         let (p, buf) = Printer::for_test_at(Verbosity::Normal);
         let out = p
             .run(
@@ -2849,6 +2931,7 @@ mod tests {
                 colors,
             );
             printer.emit(super::super::doc::Doc::new().with_data(payload.clone()));
+            // long-line-ok: a hatch is read off its own line, so it cannot wrap
             // raw-capture-ok: the escapes ARE this test's subject, and `captured_text` strips exactly them
             buf.lock().unwrap().clone()
         };

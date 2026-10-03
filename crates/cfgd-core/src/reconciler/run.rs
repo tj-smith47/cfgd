@@ -1429,12 +1429,17 @@ pub fn report_trailing_allowance(
 }
 
 /// What a run's actions came to, as ONE line: `13 actions succeeded`, or
-/// `12 actions succeeded, 1 skipped` — every clause `outcome_clauses`
-/// produced, joined. So no closing line can claim a skipped action as a
-/// success, and silent about outcomes that did not occur: a clean run's line
-/// does not name skips it has none of. No path panics, so the function is safe
-/// in core and testable without a `Printer` — and it reads a [`RunTally`], so a
-/// backup run reaches it without an [`ApplyResult`].
+/// `12 actions succeeded; 1 skipped`: every clause `outcome_clauses`
+/// produced, joined through [`crate::join_clauses`], because a clause carries
+/// commas of its own (`3 of 5 sources, 1 skipped`) and a comma between them
+/// would read as a fourth item. The withheld clause is the one whose own
+/// reasons are a list, and `outcome_clauses` pushes it last, after a colon:
+/// everything past that colon is a reason, so the two levels stay apart
+/// without a second separator. So no closing line can claim a skipped action as
+/// a success, and silent about outcomes that did not occur: a clean run's line
+/// does not name failures or skips it has none of. No path panics, so the
+/// function is safe in core and testable without a `Printer`, and it reads a
+/// [`RunTally`], so a backup run reaches it without an [`ApplyResult`].
 ///
 /// Public because the daemon's `reconcile: complete — …` log line accounts for
 /// the same run the rollup above it does, and a tick whose log and whose
@@ -1444,11 +1449,7 @@ pub fn report_trailing_allowance(
 /// line has no glyph column, which is why this joined form exists beside the
 /// rollup's one-line-per-clause layout rather than being replaced by it.
 pub fn outcome_counts(tally: &RunTally) -> String {
-    outcome_clauses(tally)
-        .into_iter()
-        .map(|(_, clause)| clause)
-        .collect::<Vec<_>>()
-        .join(", ")
+    crate::join_clauses(outcome_clauses(tally).into_iter().map(|(_, clause)| clause))
 }
 
 /// One clause per outcome CLASS the run produced, each carrying the role that
@@ -1489,6 +1490,21 @@ fn outcome_clauses(tally: &RunTally) -> Vec<(Role, String)> {
             clauses.push((Role::Skipped, format!("{} skipped", tally.skipped)));
         }
     }
+    // `Role::Fail`: these are status lines in a status block, and
+    // `Role::Accent` reserves no glyph column. The failure count hung one
+    // column left of the two lines above it, the only unmarked line in a
+    // report where every failed action row carries a red glyph, so the bad
+    // news read as a stray fragment of the green line above it.
+    //
+    // Directly under the lead clause, ahead of every other class: a failure is
+    // what the reader acts on, and a skip, an after-plan outcome and what did
+    // not happen at all are the footnotes. Drawn only when a PLANNED action
+    // failed: a run turned partial by an after-plan failure alone has that
+    // failure stated by the class's own clause below, and `0 actions failed`
+    // over it names a failure nothing had.
+    if let Some(clause) = failed_clause(tally.failed) {
+        clauses.insert(1, (Role::Fail, clause));
+    }
     // After the planned classes and before the withheld footnote: this work
     // HAPPENED, so it belongs with the outcomes, while the withheld clause
     // names reasons after a colon and closes the account.
@@ -1509,11 +1525,20 @@ fn outcome_clauses(tally: &RunTally) -> Vec<(Role, String)> {
             format!(
                 "{} not attempted: {}",
                 tally.not_attempted.len(),
-                reasons.join(", ")
+                crate::join_clauses(&reasons)
             ),
         ));
     }
     clauses
+}
+
+/// What a run's failed actions come to, as the clause every summary states them
+/// in, or `None` where none failed. Two surfaces word this count: the counted
+/// rollup's own list and the aborted verdict's detail, and a second spelling
+/// (`1 failed` beside `1 action failed`) reads as two different facts about the
+/// same run.
+fn failed_clause(failed: usize) -> Option<String> {
+    (failed > 0).then(|| format!("{} failed", pluralize(failed, "action")))
 }
 
 /// One clause per [`AfterPlan`] member per [`AfterPlanState`] the run has
@@ -1534,7 +1559,7 @@ fn after_plan_clauses(tally: &RunTally) -> Vec<(Role, String)> {
                 .filter(|o| o.subject == subject && o.state == state)
                 .count();
             if count > 0 {
-                clauses.push(state.clause(subject, count));
+                clauses.push(state.counted_clause(subject, count));
             }
         }
     }
@@ -1581,26 +1606,6 @@ fn rollup_lines(tally: &RunTally, title: RunTitle) -> Vec<(Role, String, Option<
                     .first()
                     .map(|(role, clause)| (*role, clause.clone(), None)),
             );
-            // `Role::Fail`, not `Role::Accent`: these are status lines in a
-            // status block, and `Accent` reserves no glyph column. The failure
-            // count hung one column left of the two lines above it — the only
-            // unmarked line in a report where every failed action row carries
-            // a red glyph — so the bad news read as a stray fragment of the
-            // green line above it.
-            //
-            // It sits above the withheld clauses because a failure is what the
-            // reader acts on, and what did not happen is the footnote. Drawn
-            // only when a PLANNED action failed: a run turned partial by an
-            // after-plan failure alone has that failure stated by the class's
-            // own clause below, and `0 actions failed` over it names a failure
-            // nothing had.
-            if tally.failed > 0 {
-                lines.push((
-                    Role::Fail,
-                    format!("{} failed", pluralize(tally.failed, "action")),
-                    None,
-                ));
-            }
             lines.extend(trailing(1));
             lines
         }
@@ -1668,15 +1673,18 @@ fn rollup_lines(tally: &RunTally, title: RunTitle) -> Vec<(Role, String, Option<
         ApplyStatus::Aborted => vec![(
             Role::Warn,
             format!("{} aborted by signal", title.as_str().to_ascii_lowercase()),
-            Some(format!(
-                "{} of {} applied{}; no partial writes",
-                tally.succeeded,
-                pluralize(tally.planned_total, "action"),
-                if tally.failed > 0 {
-                    format!(", {} failed", tally.failed)
-                } else {
-                    String::new()
-                }
+            Some(crate::join_clauses(
+                [
+                    Some(format!(
+                        "{} of {} applied",
+                        tally.succeeded,
+                        pluralize(tally.planned_total, "action")
+                    )),
+                    failed_clause(tally.failed),
+                    Some("no partial writes".to_string()),
+                ]
+                .into_iter()
+                .flatten(),
             )),
         )],
     }
@@ -1712,19 +1720,23 @@ fn rerun_command(title: RunTitle) -> &'static str {
 ///
 /// `Success` with something attempted is the one verdict with no next step:
 /// the run converged, and the surfaces that DO have something left to say
-/// (a withheld decision, a written env file) say it themselves.
-pub fn run_next_step(tally: &RunTally, title: RunTitle) -> Option<String> {
+/// (a withheld decision, a written env file) say it themselves. Every OTHER
+/// arm follows a run that did not converge, so the hint is ungated: without it
+/// the reader is left with `✗ 1 action failed` and nothing saying the run is
+/// repeatable, which `spec.output.usageHints` was never meant to decide.
+pub fn run_next_step(tally: &RunTally, title: RunTitle) -> Option<crate::output::HintCommands> {
     let cmd = rerun_command(title);
-    match tally.status {
-        ApplyStatus::Success if tally.nothing_attempted() => Some(format!(
-            "Resolve what withheld the actions above, then run `{cmd}` again"
-        )),
-        ApplyStatus::Success => None,
-        ApplyStatus::Aborted => Some(format!("Run `{cmd}` again to converge")),
-        ApplyStatus::Failed | ApplyStatus::Partial | ApplyStatus::InProgress => {
-            Some(format!("Fix what failed, then run `{cmd}` again"))
+    let text = match tally.status {
+        ApplyStatus::Success if tally.nothing_attempted() => {
+            format!("Resolve what withheld the actions above, then run `{cmd}` again")
         }
-    }
+        ApplyStatus::Success => return None,
+        ApplyStatus::Aborted => format!("Run `{cmd}` again to converge"),
+        ApplyStatus::Failed | ApplyStatus::Partial | ApplyStatus::InProgress => {
+            format!("Fix what failed, then run `{cmd}` again")
+        }
+    };
+    Some(crate::output::HintCommands::unconditional(text))
 }
 
 /// The run's closing rollup: one or two status lines naming what happened, plus
@@ -1745,8 +1757,9 @@ pub fn render_run_rollup(
     let shortfall = tally.shortfall();
     // The `did not run` arm already names the whole shortfall in its own line.
     if shortfall > 0 && !(tally.status == ApplyStatus::Success && tally.nothing_attempted()) {
-        // `Role::Info` and not `Role::Pending`: this is a final count, and
-        // nothing it names is still going to happen.
+        // The role is `Role::Info`, since `Role::Pending` would say the work
+        // is still under way: this is a final count, and nothing it names is
+        // still going to happen.
         lines.push((
             Role::Info,
             format!("{} not attempted", pluralize(shortfall, "action")),

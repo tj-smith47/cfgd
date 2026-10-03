@@ -75,7 +75,7 @@ pub enum EnrollmentMethod {
 
 impl EnrollmentMethod {
     pub fn from_env() -> Self {
-        match std::env::var("CFGD_ENROLLMENT_METHOD")
+        match std::env::var(cfgd_core::CFGD_ENROLLMENT_METHOD_ENV)
             .unwrap_or_default()
             .as_str()
         {
@@ -119,8 +119,15 @@ pub struct CheckinRequest {
     pub os: String,
     pub arch: String,
     pub config_hash: String,
-    #[serde(default)]
-    pub compliance_summary: Option<serde_json::Value>,
+    /// The compliance snapshot the device collected for this check-in: its
+    /// counts, and every check that did not pass. Absent when the device has
+    /// compliance off or could not collect it; an agent that predates the
+    /// check list sends the counts alone. A report the gateway cannot read (a
+    /// status word a newer agent added) is dropped with a warning, so it costs
+    /// the check-in its compliance and nothing else. A list longer than
+    /// [`crate::crds::MAX_REPORTED_CHECKS`] keeps its first entries.
+    #[serde(default, deserialize_with = "lenient_compliance")]
+    pub compliance_summary: Option<crate::crds::DeviceCompliance>,
     /// Installed versions of the packages the device DECLARES, keyed
     /// `<manager>/<package>`. Absent when the device did not observe them,
     /// which is what a device that predates the field sends; an observed map
@@ -131,6 +138,34 @@ pub struct CheckinRequest {
     /// as `ScheduleOwner::label` spells it. Absent on the same terms.
     #[serde(default)]
     pub backup_schedule_owners: Option<std::collections::BTreeMap<String, String>>,
+}
+
+/// Read `complianceSummary`, dropping a report that does not parse. The rest
+/// of the check-in (the device's identity, its package versions and backup
+/// owners) is still applied, which a strict field would refuse along with it.
+fn lenient_compliance<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Option<crate::crds::DeviceCompliance>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let Some(value) = Option::<serde_json::Value>::deserialize(deserializer)? else {
+        return Ok(None);
+    };
+    // The MachineConfig schema refuses a longer list, and that refusal would
+    // cost the status apply the whole report.
+    Ok(serde_json::from_value::<crate::crds::DeviceCompliance>(value)
+        .map(|mut report| {
+            report.checks.truncate(crate::crds::MAX_REPORTED_CHECKS);
+            report
+        })
+        .inspect_err(|e| {
+            tracing::warn!(
+                error = %e,
+                "gateway: a check-in's compliance summary could not be read; it is accepted without one"
+            );
+        })
+        .ok())
 }
 
 #[derive(Debug, Serialize)]
@@ -487,7 +522,7 @@ async fn auth_middleware(
     let bearer_token = extract_bearer_token(&headers);
 
     // Check admin key first (constant-time comparison to prevent timing attacks)
-    if let Ok(expected_key) = std::env::var("CFGD_API_KEY") {
+    if let Ok(expected_key) = std::env::var(cfgd_core::CFGD_API_KEY_ENV) {
         if let Some(ref token) = bearer_token
             && hash_token(token)
                 .as_bytes()
@@ -531,7 +566,7 @@ async fn admin_auth_middleware(
     request: axum::extract::Request,
     next: Next,
 ) -> Result<axum::response::Response, GatewayError> {
-    if let Ok(expected_key) = std::env::var("CFGD_API_KEY") {
+    if let Ok(expected_key) = std::env::var(cfgd_core::CFGD_API_KEY_ENV) {
         match extract_bearer_token(&headers) {
             Some(token)
                 if hash_token(&token)
@@ -544,7 +579,7 @@ async fn admin_auth_middleware(
         // Server misconfig — log at error so the operator notices, but present
         // as 401 to the client to avoid leaking the env-var name.
         tracing::error!(
-            env = "CFGD_API_KEY",
+            env = cfgd_core::CFGD_API_KEY_ENV,
             "admin endpoint hit but CFGD_API_KEY is not set — refusing access"
         );
         return Err(GatewayError::Unauthorized);

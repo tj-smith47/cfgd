@@ -35,7 +35,8 @@ golden_doc!(regression, registry_added_pkg, |p, cap| {
     s.bullet("nodejs@20");
 });
 
-// BEFORE: cli/module/registry.rs:360  printer.info(&format!("  {} -> {}", file.source, file.target));
+// BEFORE: cli/module/registry.rs:360  printer.info(&format!("  {} -> {}", file.source,
+// file.target));
 golden_doc!(regression, registry_file_map, |p, cap| {
     let s = p.section("Files");
     s.bullet("./foo.txt → /etc/foo.txt");
@@ -146,7 +147,8 @@ golden_doc!(regression, module_show_script, |p, cap| {
     s.bullet("./install.sh");
 });
 
-// BEFORE: cli/module/export.rs:154  printer.info(&format!("  {}/install.sh", feature_dir.display()));
+// BEFORE: cli/module/export.rs:154  printer.info(&format!("  {}/install.sh",
+// feature_dir.display()));
 golden_doc!(regression, export_install_path, |p, cap| {
     let s = p.section("Exported");
     s.bullet("./build/feature/install.sh");
@@ -359,13 +361,13 @@ golden_doc!(regression, sync_per_source_owner_group, |p, cap| {
 // Surface: the reminder `cfgd apply` prints once at the end of a run whose Env
 // phase changed something — the running shell predates the file, so the
 // bootstrapped manager's PATH entries are one command away. Anchors the exact
-// wording and the warning shape: until the user acts, their shell disagrees
-// with what the run wrote, and a bullet would read as information rather than
-// something left to do.
+// wording and the row shape: an instruction. Nothing went wrong, so it is no
+// warning, and `usageHints` may not decide whether a reader is told which file
+// their stale shell has to source, so it is no hint.
 golden_doc!(regression, apply_shell_env_reminder, |p, cap| {
     let s = p.section_caveats();
     let owner = s.section_owner(&OwnerLabel::new("cfgd", "env"));
-    owner.status_simple(Role::Warn, "run `source ~/.cfgd.env`, or open a new shell");
+    owner.status_simple(Role::Info, "Run `source ~/.cfgd.env`, or open a new shell");
 });
 
 // Same reminder in its real position: emitted after the apply summary line.
@@ -379,7 +381,7 @@ golden_doc!(
             .duration(Duration::from_millis(820));
         let s = p.section_caveats();
         let owner = s.section_owner(&OwnerLabel::new("cfgd", "env"));
-        owner.status_simple(Role::Warn, "run `source ~/.cfgd.env`, or open a new shell");
+        owner.status_simple(Role::Info, "Run `source ~/.cfgd.env`, or open a new shell");
     }
 );
 

@@ -120,7 +120,11 @@ pub struct PatchSpec {
     /// Keys/values to deep-merge into the target, leaving unmentioned keys
     /// untouched. Values are literal (no template rendering). Mutually
     /// exclusive with `script`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_ensure",
+        skip_serializing_if = "Option::is_none"
+    )]
     #[schemars(with = "Option<serde_json::Value>")]
     pub ensure: Option<serde_yaml::Value>,
     /// A script path or an inline command that receives the target's current
@@ -140,8 +144,75 @@ pub struct PatchSpec {
     /// file visible on read-only surfaces while making the filter unrunnable by
     /// construction — every evaluation path funnels through `compute_patched`,
     /// which refuses a marked spec.
+    // plan-skip-ok: a plan file reads it back `None`, so the poison a composition
+    // applied does not survive one — a file-driven run recomposes and leaves
+    // the mark untrusted. Serializing it would add a key to the published schema
+    // that `deny_unknown_fields` then refuses in YAML, and rewrite every stored
+    // `plan_hash`, this spec riding inside `FileAction::{Create,Update}`.
     #[serde(skip)]
     pub blocked_by: Option<String>,
+}
+
+/// Read `patch.ensure`, refusing a mapping key that is not a string.
+///
+/// The field is declared to the world as `Option<serde_json::Value>`
+/// (`#[schemars(with = ...)]`), and a JSON object keys on strings alone. The
+/// YAML parser behind it is wider: `? [a, b]` gives a sequence-keyed mapping,
+/// and `1: x` a number-keyed one. Such a value has no JSON spelling, so
+/// `serde_json` refuses the whole action carrying it when the reconciler's plan
+/// is written out or hashed, and a number key that does survive comes back as
+/// the string `"1"`, which is a different patch from the one that was declared.
+/// The refusal lands here, at the one parse boundary every holder shares (the
+/// profile's managed files, a module body, the Module CRD, a plan file read
+/// back), so no caller has to remember to ask.
+fn deserialize_ensure<'de, D>(de: D) -> std::result::Result<Option<serde_yaml::Value>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Option::<serde_yaml::Value>::deserialize(de)?;
+    if let Some(inner) = &value {
+        refuse_unstringed_key("patch.ensure", inner).map_err(serde::de::Error::custom)?;
+    }
+    Ok(value)
+}
+
+/// Refuse a non-string mapping key anywhere under `value`, naming where it sits.
+fn refuse_unstringed_key(path: &str, value: &serde_yaml::Value) -> std::result::Result<(), String> {
+    match value {
+        serde_yaml::Value::Mapping(map) => {
+            for (key, nested) in map {
+                let serde_yaml::Value::String(name) = key else {
+                    let rendered = serde_yaml::to_string(key)
+                        .unwrap_or_else(|_| format!("{key:?}"))
+                        .trim()
+                        .replace('\n', " ");
+                    // A scalar key has a one-character remedy (quote it), and
+                    // `1` was almost always meant as the section name `"1"`.
+                    // A sequence- or mapping-keyed entry has no spelling that
+                    // means the same thing, and quoting a TAGGED key drops the
+                    // tag the author wrote, so no remedy is invented for any of
+                    // the three.
+                    let hint = match key {
+                        serde_yaml::Value::Sequence(_)
+                        | serde_yaml::Value::Mapping(_)
+                        | serde_yaml::Value::Tagged(_) => String::new(),
+                        _ => format!("; did you mean '\"{rendered}\"'?"),
+                    };
+                    return Err(format!(
+                        "{path}: a mapping key must be a string, and this one is not: {rendered}{hint}"
+                    ));
+                };
+                refuse_unstringed_key(&format!("{path}.{name}"), nested)?;
+            }
+            Ok(())
+        }
+        serde_yaml::Value::Sequence(items) => items
+            .iter()
+            .enumerate()
+            .try_for_each(|(nth, item)| refuse_unstringed_key(&format!("{path}[{nth}]"), item)),
+        serde_yaml::Value::Tagged(tagged) => refuse_unstringed_key(path, &tagged.value),
+        _ => Ok(()),
+    }
 }
 
 /// Controls when encryption is required for a managed file.
@@ -236,8 +307,8 @@ pub struct ScriptCommand {
         rename = "idleTimeout"
     )]
     pub idle_timeout: Option<String>,
-    /// Treat a non-zero exit as success and continue reconciliation instead
-    /// of failing the run. Default: `false`.
+    /// Treat a non-zero exit as success, so reconciliation continues and the
+    /// run does not fail. Default: `false`.
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
@@ -267,7 +338,7 @@ pub struct ScriptCommand {
     /// no spinner, no output capture, no idle timeout) so it can prompt the
     /// user — e.g. `echo "press Enter when done"; read`. Requires a TTY: when
     /// stdin is not a terminal (CI, piped input, or any daemon-run phase) the
-    /// script is skipped with a warning rather than hanging on instant EOF.
+    /// script is skipped with a warning, so it cannot hang on instant EOF.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub interactive: bool,
     /// Working directory for the script. By default every lifecycle script
@@ -451,6 +522,31 @@ impl ScriptBodyShape {
     }
 }
 
+/// The most failing checks one check-in reports, and one MachineConfig status
+/// lists.
+///
+/// The list is written to a status object every operator replica watches, which
+/// has to stay well inside etcd's ~1.5 MiB limit. Unlike the policy violator
+/// lists, whose entries are bounded `namespace/name` pairs, a check carries a
+/// path and a free-text detail of any length, so the cap is lower than theirs:
+/// at ~1 KiB per check, 200 is ~200 KiB. The counts beside the list stay
+/// exact; only the enumeration stops.
+pub const MAX_REPORTED_CHECKS: usize = 200;
+
+/// A compliance report's counts as every command and the dashboard spell them:
+/// `12 compliant, 1 warning, 0 violation`.
+///
+/// The machine's own report, the daemon's journal, the check-in and the fleet
+/// dashboard all state these three numbers, and a reader comparing two of them
+/// should not have to reconcile two spellings.
+pub fn compliance_counts_line(
+    compliant: impl std::fmt::Display,
+    warning: impl std::fmt::Display,
+    violation: impl std::fmt::Display,
+) -> String {
+    format!("{compliant} compliant, {warning} warning, {violation} violation")
+}
+
 /// Which layer owns a backup unit's schedule.
 ///
 /// `Cluster` (the default) leaves the unit open to a cluster `BackupPolicy`,
@@ -469,6 +565,30 @@ pub enum ScheduleOwner {
 case_insensitive_enum!(ScheduleOwner {
     "Cluster" => ScheduleOwner::Cluster,
     "Local" => ScheduleOwner::Local,
+});
+
+/// What cfgd does when the config document on disk is behind the schema this
+/// build reads: a field the binary now carries that the document never names,
+/// or an `apiVersion` an older release wrote.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, schemars::JsonSchema)]
+pub enum MigrationPolicy {
+    /// Ask once, on an interactive run, before writing anything (default).
+    #[default]
+    Prompt,
+    /// Report what is behind and write nothing. What a non-interactive run
+    /// under `Prompt` does.
+    Warn,
+    /// Write the alignment without asking.
+    Update,
+    /// Say nothing and write nothing.
+    Ignore,
+}
+
+case_insensitive_enum!(MigrationPolicy {
+    "Prompt" => MigrationPolicy::Prompt,
+    "Warn" => MigrationPolicy::Warn,
+    "Update" => MigrationPolicy::Update,
+    "Ignore" => MigrationPolicy::Ignore,
 });
 
 impl ScheduleOwner {
@@ -543,8 +663,8 @@ pub struct BackupSpec {
     /// the list. Keys the `destination` default, run records, and CLI
     /// selection. Becomes a directory component (`<state_dir>/backups/<name>/`)
     /// and a lock filename (`<state_dir>/locks/backup-<name>.lock`), so it must
-    /// be non-empty, non-blank, a single segment (no `/` or `\`), not a
-    /// directory reference (`.`, `..`), not rooted (`/daily`, `C:/daily`), and
+    /// be non-empty and non-blank, a single segment (no `/` or `\`), neither a
+    /// directory reference (`.`, `..`) nor rooted (`/daily`, `C:/daily`), and
     /// free of `:` anywhere — a drive and NTFS data-stream separator on Windows.
     /// Windows shapes are rejected on every platform so a name written on one
     /// OS stays valid on the others.
@@ -557,8 +677,8 @@ pub struct BackupSpec {
     /// on Windows) needs an explicit `namePattern` that leaves `{filename}` out.
     pub source: PathBuf,
     /// Where snapshots are written. Defaults to `<state_dir>/backups/<name>/`
-    /// when omitted — resolved by the backup engine, not at parse time, since
-    /// the state dir depends on runtime scope/overrides.
+    /// when omitted — resolved by the backup engine at run time, since the
+    /// state dir depends on runtime scope/overrides.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub destination: Option<PathBuf>,
     /// Filename template for each snapshot. Supports `{name}`, `{filename}`,
@@ -593,8 +713,8 @@ pub struct BackupSpec {
     pub schedule_owner: ScheduleOwner,
     /// Number of newest snapshots to keep for this backup; older snapshots are
     /// pruned from disk and from the run history. Must be at least 1 (`0` would
-    /// keep no backups, which is a misconfiguration rather than a supported
-    /// "unlimited" mode). Defaults to 10.
+    /// keep no backups, which is a misconfiguration; there is no "unlimited"
+    /// mode). Defaults to 10.
     #[serde(default = "default_backup_retention")]
     #[schemars(range(min = 1))]
     pub retention: u32,
@@ -862,7 +982,7 @@ pub fn validate_plain_name(raw: &str) -> Result<(), String> {
         }
         if segment == "." || segment == ".." {
             return Err(format!(
-                "the segment '{segment}' is a directory reference, not a name"
+                "the segment '{segment}' is a directory reference; every segment must name something"
             ));
         }
         // Windows reads `C:name` as drive-relative and `name:stream` as an NTFS
@@ -1034,11 +1154,11 @@ pub fn validate_package_name(subject: &str, name: &str) -> Result<(), PackageNam
         )));
     }
     // Every manager appends names positionally, and the system family runs
-    // under sudo, so a leading dash is read as an option by the manager rather
-    // than as a package on every platform, shim or no shim.
+    // under sudo, so the manager reads a leading dash as an option on every
+    // platform, shim or no shim.
     if name.starts_with('-') {
         return Err(PackageNameError(format!(
-            "{subject}: package name '{name}' must not begin with '-'; a leading dash makes it an option to the package manager rather than a package"
+            "{subject}: package name '{name}' must not begin with '-'; a leading dash makes the package manager read it as an option"
         )));
     }
     // A version spec is spelled in range operators, three of which (`^`, `>`,
@@ -1105,6 +1225,69 @@ fn is_version_spec_char(c: char) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every `patch.ensure` a parse accepts is one `serde_json` can write.
+    ///
+    /// The field is published as `Option<serde_json::Value>`, and a JSON object
+    /// keys on strings alone. The YAML behind it is wider, so a mapping key that
+    /// is not a string is refused where the value enters, naming the path it sits
+    /// at and the key itself. Without the refusal such a spec rides into a
+    /// `FileAction`, where `serde_json` refuses the whole action: the plan cannot
+    /// be written out, and the hash `applies.plan_hash` stores cannot name it.
+    ///
+    /// A scalar key closes on the remedy, the way this file's other refusals do;
+    /// a sequence-, mapping- or tagged-keyed entry has no quoted spelling
+    /// meaning the same thing, so it states the rule alone.
+    #[test]
+    fn a_patch_ensure_key_that_is_not_a_string_is_refused_at_every_depth() {
+        for (yaml, expected) in [
+            (
+                "ensure:\n  ? [a, b]\n  : c\n",
+                "patch.ensure: a mapping key must be a string, and this one is not: - a - b",
+            ),
+            (
+                "ensure:\n  outer:\n    1: on\n",
+                "patch.ensure.outer: a mapping key must be a string, and this one is not: 1; did you mean '\"1\"'?",
+            ),
+            (
+                "ensure:\n  items:\n    - nested:\n        true: yes\n",
+                "patch.ensure.items[0].nested: a mapping key must be a string, and this one is not: true; did you mean '\"true\"'?",
+            ),
+        ] {
+            let err = serde_yaml::from_str::<PatchSpec>(yaml)
+                .expect_err("a key with no JSON spelling is refused");
+            assert!(
+                err.to_string().contains(expected),
+                "the refusal names the field and the key it found: {err}"
+            );
+        }
+
+        for yaml in [
+            "ensure:\n  ? [a, b]\n  : c\n",
+            "ensure:\n  ? {a: b}\n  : c\n",
+            // Quoting a tagged key would hand back a plain string, which is a
+            // different key from the tag the author wrote.
+            "ensure:\n  ? !Ref foo\n  : c\n",
+        ] {
+            let refusal = serde_yaml::from_str::<PatchSpec>(yaml)
+                .expect_err("a key with no JSON spelling is refused")
+                .to_string();
+            assert!(
+                refusal.contains("a mapping key must be a string"),
+                "the refusal is this rule's own; no parse failure produced it: {refusal}"
+            );
+            assert!(
+                !refusal.contains("did you mean"),
+                "a key no quoting can rescue is offered no remedy: {refusal}"
+            );
+        }
+
+        let ok = serde_yaml::from_str::<PatchSpec>(
+            "ensure:\n  outer:\n    inner: 1\n  items:\n    - a\n    - 2\n",
+        )
+        .expect("string-keyed mappings, and values of any shape, still parse");
+        assert!(ok.ensure.is_some(), "the value survives the check: {ok:?}");
+    }
 
     /// The ONE cadence grammar both `spec.backups[].schedule` and
     /// `BackupPolicy.spec.units[].schedule` answer to; a refusal names both

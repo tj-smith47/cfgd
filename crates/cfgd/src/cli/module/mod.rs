@@ -97,7 +97,9 @@ impl From<ModuleLoadError> for anyhow::Error {
             // Preserve the typed CfgdError as the top-level anyhow error so
             // main.rs::exit_code_for_anyhow downcasts it to the parse exit code.
             ModuleLoadError::Parse(inner) => inner.into(),
-            ModuleLoadError::NotFound(msg) => anyhow::anyhow!(msg),
+            ModuleLoadError::NotFound(msg) => {
+                crate::cli::cli_error("", "not_found", msg, serde_json::json!({}))
+            }
         }
     }
 }
@@ -159,16 +161,20 @@ pub(super) fn apply_module_sets(
     doc: &mut config::ModuleDocument,
 ) -> anyhow::Result<()> {
     for set_str in sets {
+        let refuse = |message: String| crate::cli::invalid_argument("--set", set_str, message);
         let (path, value) = set_str.split_once('=').ok_or_else(|| {
-            anyhow::anyhow!("Invalid --set format '{}' — expected key=value", set_str)
+            refuse(format!(
+                "Invalid --set format '{}' — expected key=value",
+                set_str
+            ))
         })?;
 
         let parts: Vec<&str> = path.split('.').collect();
         if parts.len() < 3 || parts[0] != "package" || parts[1].is_empty() || parts[2].is_empty() {
-            anyhow::bail!(
+            return Err(refuse(format!(
                 "Invalid --set path '{}' — expected package.<name>.<field>[.<subfield>]",
                 path
-            );
+            )));
         }
 
         let pkg_name = parts[1];
@@ -180,9 +186,14 @@ pub(super) fn apply_module_sets(
             .iter_mut()
             .find(|p| p.name == pkg_name)
             .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "Package '{}' not found in module — add it with --package first",
-                    pkg_name
+                crate::cli::cli_error(
+                    pkg_name,
+                    "not_found",
+                    format!(
+                        "Package '{}' not found in module — add it with --package first",
+                        pkg_name
+                    ),
+                    serde_json::json!({ "flag": "--set" }),
                 )
             })?;
 
@@ -204,19 +215,19 @@ pub(super) fn apply_module_sets(
             }
             "alias" => {
                 if parts.len() < 4 {
-                    anyhow::bail!(
+                    return Err(refuse(format!(
                         "Invalid alias path '{}' — expected package.<name>.alias.<manager>=<alias>",
                         path
-                    );
+                    )));
                 }
                 let manager = parts[3];
                 pkg.aliases.insert(manager.to_string(), value.to_string());
             }
             _ => {
-                anyhow::bail!(
+                return Err(refuse(format!(
                     "Unknown package field '{}' — valid fields: minVersion, prefer, deny, platforms, script, alias",
                     field
-                );
+                )));
             }
         }
     }

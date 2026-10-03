@@ -23,7 +23,7 @@
 //!     same `Printer`; asserts the bridge invariant (one blank line
 //!     between streaming and buffered) programmatically.
 
-mod common;
+use cfgd_test_fixtures as common;
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -159,6 +159,7 @@ fn apply_dry_run_human() {
 
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc();
+    let printer = printer.with_hints_enabled(true);
     let args = apply_args_dry_run();
 
     cmd_apply(&cli, &printer, &args).unwrap();
@@ -176,6 +177,39 @@ fn apply_dry_run_human() {
 /// the only difference either is allowed to have is the title row. Comparing
 /// the two goldens would only prove they were regenerated together, so both are
 /// re-driven here against identical setups and diffed live.
+/// The same agreement on the wire: both spellings record the approval contract,
+/// and they record the SAME one.
+///
+/// Driven against a single fixture, because a dry run mutates nothing and both
+/// refusal facts are derived from it — two setups would differ in their
+/// recorded paths and the equality would have to be weakened to prove anything.
+/// Without this, deleting the `saved_plan` block from `run_apply` leaves every
+/// test green: nothing else asserts the key on that side.
+#[test]
+fn plan_and_dry_run_record_the_same_saved_plan() {
+    let (config_dir, state_dir, _target) = tiny_profile_setup();
+    let cli = cli_for(config_dir.path(), state_dir.path());
+
+    let (printer, cap) = Printer::for_test_doc_with_format(cfgd_core::output::OutputFormat::Json);
+    cmd_plan(&cli, &printer, &plan_args()).unwrap();
+    drop(printer);
+    let planned = cap.json().expect("plan doc carries a payload");
+
+    let (printer, cap) = Printer::for_test_doc_with_format(cfgd_core::output::OutputFormat::Json);
+    cmd_apply(&cli, &printer, &apply_args_dry_run()).unwrap();
+    drop(printer);
+    let dry_run = cap.json().expect("apply doc carries a payload");
+
+    assert!(
+        planned["savedPlan"]["plan"]["phases"].is_array(),
+        "the plan surface records a contract: {planned}"
+    );
+    assert_eq!(
+        planned["savedPlan"], dry_run["savedPlan"],
+        "cfgd plan and cfgd apply --dry-run must record the same approval contract"
+    );
+}
+
 #[test]
 fn plan_and_dry_run_agree_below_the_title_row() {
     fn body(rendered: &str) -> String {
@@ -331,6 +365,7 @@ fn apply_after_plan_work_human_and_json() {
             .into_iter()
             .map(|(success, skipped)| ActionResult {
                 origin: None,
+                manager: None,
                 after_plan: Some(AfterPlan::EnvSurface),
                 phase: "bootstrap".to_string(),
                 description: "env:write:/home/me/.cfgd.env".to_string(),
@@ -468,7 +503,7 @@ fn apply_phase_tree_human() {
     // Every brew invocation — availability probe, index refresh, install —
     // lands on a shim that exits 0 and says nothing, so the plan and the
     // transcript are the same on a host with brew and a host without.
-    let _brew = cfgd_core::test_helpers::ToolShim::install("CFGD_BREW_BIN", 0, "", "");
+    let _brew = cfgd_core::test_helpers::ToolShim::install(cfgd::seams::BREW_BIN_ENV, 0, "", "");
     let (config_dir, state_dir, target) = profile_with_packages_setup();
 
     let cli = cli_for(config_dir.path(), state_dir.path());
@@ -512,7 +547,8 @@ fn apply_phase_tree_human() {
 #[test]
 #[serial_test::serial]
 fn apply_env_owner_groups_human() {
-    let _systemctl = cfgd_core::test_helpers::ToolShim::install("CFGD_SYSTEMCTL_BIN", 0, "", "");
+    let _systemctl =
+        cfgd_core::test_helpers::ToolShim::install(cfgd_core::SYSTEMCTL_BIN_ENV, 0, "", "");
     // The env targets hang off `$HOME`; an unguarded test home is named after
     // the pid and would not be host-stable.
     let home = tempfile::tempdir().unwrap();

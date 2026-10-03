@@ -16,11 +16,15 @@ fn module_package_ref(token: &str, native: &str) -> anyhow::Result<PackageRef> {
     if let (Some(path), Some(slot), Some(manager)) = (&pkg.schema_path, &pkg.slot, &pkg.manager)
         && slot != manager
     {
-        anyhow::bail!(
-            "'{path}' is a profile-only package list; a module entry names a manager \
-             — use {manager}:{}",
-            pkg.name
-        );
+        return Err(crate::cli::invalid_argument(
+            "--package",
+            token,
+            format!(
+                "'{path}' is a profile-only package list; a module entry names a manager \
+                 — use {manager}:{}",
+                pkg.name
+            ),
+        ));
     }
     Ok(pkg)
 }
@@ -38,7 +42,7 @@ pub fn cmd_module_create(
     let env_list = &args.env;
     let post_apply = &args.post_apply;
     let sets = &args.sets;
-    validate_resource_name(name, "Module")?;
+    validate_resource_name(name, "Module", "<NAME>")?;
     printer.heading_title(&TitleLabel::new("Create Module", name));
 
     let config_dir = config_dir(cli);
@@ -184,13 +188,13 @@ pub fn cmd_module_create(
     // Build env
     let mut env_entries = Vec::new();
     for e in env_list {
-        env_entries.push(cfgd_core::parse_env_var(e).map_err(|e| anyhow::anyhow!(e))?);
+        env_entries.push(super::env_flag(e)?);
     }
 
     // Build aliases
     let mut alias_entries = Vec::new();
     for a in &args.aliases {
-        alias_entries.push(cfgd_core::parse_alias(a).map_err(|e| anyhow::anyhow!(e))?);
+        alias_entries.push(super::alias_flag(a)?);
     }
 
     // Build scripts — normalize shell escape artifacts (bash escapes ! to \! in double quotes)
@@ -275,7 +279,7 @@ pub fn cmd_module_create(
     // consumers before the process exits nonzero on a failed apply.
     let mut apply_status = cfgd_core::state::ApplyStatus::Success;
     if args.apply {
-        let config_path = config_dir.join(cfgd_core::config::CONFIG_FILENAME);
+        let config_path = cfgd_core::config::config_document_in(&config_dir);
         let mut cfg = config::load_config(&config_path)?;
         drain_config_deprecations(printer, &mut cfg);
         let mut registry = super::build_registry_with_config(Some(&cfg));
@@ -296,6 +300,7 @@ pub fn cmd_module_create(
             &mgr_map,
             Some(&pkg_cx),
             printer,
+            &modules::refuse_floor_bootstrap,
         )?;
         let resolved = config::ResolvedProfile {
             layers: Vec::new(),
@@ -455,7 +460,7 @@ pub fn cmd_module_update_local(
     let (add_post_apply, remove_post_apply) = cfgd_core::split_add_remove(&args.post_apply);
     let description = args.description.as_deref();
     let sets = &args.sets;
-    validate_resource_name(name, "Module")?;
+    validate_resource_name(name, "Module", "<NAME>")?;
     printer.heading_owner_prefixed("Update", &OwnerLabel::new("module", name));
 
     let config_dir = config_dir(cli);
@@ -578,8 +583,14 @@ pub fn cmd_module_update_local(
             let (source, _) = parse_file_spec(spec)?;
             let basename = source
                 .file_name()
-                // absolute-path-ok: a returned error names the path the caller typed
-                .ok_or_else(|| anyhow::anyhow!("Invalid file path: {}", source.posix()))?
+                .ok_or_else(|| {
+                    crate::cli::invalid_argument(
+                        "--file",
+                        spec,
+                        // absolute-path-ok: a returned error names the path the caller typed
+                        format!("Invalid file path: {}", source.posix()),
+                    )
+                })?
                 .to_string_lossy()
                 .to_string();
 
@@ -589,10 +600,15 @@ pub fn cmd_module_update_local(
                 continue;
             }
             if !added_basenames.insert(basename) {
-                anyhow::bail!(
-                    "Duplicate file basename '{}' — multiple files would overwrite each other",
-                    source_key
-                );
+                return Err(crate::cli::cli_error(
+                    name,
+                    "duplicate_basename",
+                    format!(
+                        "Duplicate file basename '{}' — multiple files would overwrite each other",
+                        source_key
+                    ),
+                    serde_json::json!({ "basename": &source_key["files/".len()..] }),
+                ));
             }
             files_to_copy.push(spec.clone());
         }
@@ -656,7 +672,7 @@ pub fn cmd_module_update_local(
 
     // Add env vars
     for e in &add_env {
-        let ev = cfgd_core::parse_env_var(e).map_err(|e| anyhow::anyhow!(e))?;
+        let ev = super::env_flag(e)?;
         cfgd_core::merge_env(&mut doc.spec.env, std::slice::from_ref(&ev));
         printer
             .status(Role::Ok, "Set env")
@@ -680,7 +696,7 @@ pub fn cmd_module_update_local(
 
     // Add aliases
     for a in &add_aliases {
-        let alias = cfgd_core::parse_alias(a).map_err(|e| anyhow::anyhow!(e))?;
+        let alias = super::alias_flag(a)?;
         cfgd_core::merge_aliases(&mut doc.spec.aliases, std::slice::from_ref(&alias));
         printer
             .status(Role::Ok, "Set alias")
@@ -797,7 +813,7 @@ pub fn cmd_module_update_local(
 // --- Module Edit ---
 
 pub fn cmd_module_edit(cli: &Cli, printer: &Printer, name: &str) -> anyhow::Result<()> {
-    validate_resource_name(name, "Module")?;
+    validate_resource_name(name, "Module", "<NAME>")?;
     let config_dir = config_dir(cli);
     let module_yaml = cfgd_core::declared_modules_dir(&config_dir)
         .join(name)
@@ -885,7 +901,7 @@ pub fn cmd_module_delete(
     purge: bool,
     ignore_not_found: bool,
 ) -> anyhow::Result<()> {
-    validate_resource_name(name, "Module")?;
+    validate_resource_name(name, "Module", "<NAME>")?;
     printer.heading_title(&TitleLabel::new("Delete Module", name));
 
     let config_dir = config_dir(cli);

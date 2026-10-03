@@ -223,7 +223,7 @@
             "type": "[]string"
           },
           {
-            "description": "Shell script to run instead of a manager install, selected via `prefer: [script]`.",
+            "description": "Shell script that takes the place of a manager install, selected via `prefer: [script]`.",
             "name": "script",
             "required": false,
             "type": "string"
@@ -242,7 +242,7 @@
         "typeName": "ModulePackageEntry"
       },
       {
-        "description": "Platform tags gating the whole module. When non-empty and the current platform matches none of them, the module is skipped entirely (it appears as a skipped action rather than vanishing). Tags are matched against the machine's OS, distro, and arch; use `macos` for macOS.",
+        "description": "Platform tags gating the whole module. When non-empty and the current platform matches none of them, the module is skipped entirely (it still appears, as a skipped action). Tags are matched against the machine's OS, distro, and arch; use `macos` for macOS.",
         "name": "platforms",
         "required": false,
         "type": "[]string"
@@ -265,7 +265,7 @@
               {
                 "children": [
                   {
-                    "description": "Treat a non-zero exit as success and continue reconciliation instead of failing the run. Default: `false`.",
+                    "description": "Treat a non-zero exit as success, so reconciliation continues and the run does not fail. Default: `false`.",
                     "name": "continueOnError",
                     "required": false,
                     "type": "boolean"
@@ -283,7 +283,7 @@
                     "type": "string"
                   },
                   {
-                    "description": "Run the script attached to the terminal (inherited stdin/stdout/stderr, no spinner, no output capture, no idle timeout) so it can prompt the user — e.g. `echo \"press Enter when done\"; read`. Requires a TTY: when stdin is not a terminal (CI, piped input, or any daemon-run phase) the script is skipped with a warning rather than hanging on instant EOF.",
+                    "description": "Run the script attached to the terminal (inherited stdin/stdout/stderr, no spinner, no output capture, no idle timeout) so it can prompt the user — e.g. `echo \"press Enter when done\"; read`. Requires a TTY: when stdin is not a terminal (CI, piped input, or any daemon-run phase) the script is skipped with a warning, so it cannot hang on instant EOF.",
                     "name": "interactive",
                     "required": false,
                     "type": "boolean"
@@ -358,7 +358,7 @@
               {
                 "children": [
                   {
-                    "description": "Treat a non-zero exit as success and continue reconciliation instead of failing the run. Default: `false`.",
+                    "description": "Treat a non-zero exit as success, so reconciliation continues and the run does not fail. Default: `false`.",
                     "name": "continueOnError",
                     "required": false,
                     "type": "boolean"
@@ -376,7 +376,7 @@
                     "type": "string"
                   },
                   {
-                    "description": "Run the script attached to the terminal (inherited stdin/stdout/stderr, no spinner, no output capture, no idle timeout) so it can prompt the user — e.g. `echo \"press Enter when done\"; read`. Requires a TTY: when stdin is not a terminal (CI, piped input, or any daemon-run phase) the script is skipped with a warning rather than hanging on instant EOF.",
+                    "description": "Run the script attached to the terminal (inherited stdin/stdout/stderr, no spinner, no output capture, no idle timeout) so it can prompt the user — e.g. `echo \"press Enter when done\"; read`. Requires a TTY: when stdin is not a terminal (CI, piped input, or any daemon-run phase) the script is skipped with a warning, so it cannot hang on instant EOF.",
                     "name": "interactive",
                     "required": false,
                     "type": "boolean"
@@ -451,7 +451,7 @@
               {
                 "children": [
                   {
-                    "description": "Treat a non-zero exit as success and continue reconciliation instead of failing the run. Default: `false`.",
+                    "description": "Treat a non-zero exit as success, so reconciliation continues and the run does not fail. Default: `false`.",
                     "name": "continueOnError",
                     "required": false,
                     "type": "boolean"
@@ -469,7 +469,7 @@
                     "type": "string"
                   },
                   {
-                    "description": "Run the script attached to the terminal (inherited stdin/stdout/stderr, no spinner, no output capture, no idle timeout) so it can prompt the user — e.g. `echo \"press Enter when done\"; read`. Requires a TTY: when stdin is not a terminal (CI, piped input, or any daemon-run phase) the script is skipped with a warning rather than hanging on instant EOF.",
+                    "description": "Run the script attached to the terminal (inherited stdin/stdout/stderr, no spinner, no output capture, no idle timeout) so it can prompt the user — e.g. `echo \"press Enter when done\"; read`. Requires a TTY: when stdin is not a terminal (CI, piped input, or any daemon-run phase) the script is skipped with a warning, so it cannot hang on instant EOF.",
                     "name": "interactive",
                     "required": false,
                     "type": "boolean"
@@ -544,7 +544,7 @@
               {
                 "children": [
                   {
-                    "description": "Treat a non-zero exit as success and continue reconciliation instead of failing the run. Default: `false`.",
+                    "description": "Treat a non-zero exit as success, so reconciliation continues and the run does not fail. Default: `false`.",
                     "name": "continueOnError",
                     "required": false,
                     "type": "boolean"
@@ -562,7 +562,7 @@
                     "type": "string"
                   },
                   {
-                    "description": "Run the script attached to the terminal (inherited stdin/stdout/stderr, no spinner, no output capture, no idle timeout) so it can prompt the user — e.g. `echo \"press Enter when done\"; read`. Requires a TTY: when stdin is not a terminal (CI, piped input, or any daemon-run phase) the script is skipped with a warning rather than hanging on instant EOF.",
+                    "description": "Run the script attached to the terminal (inherited stdin/stdout/stderr, no spinner, no output capture, no idle timeout) so it can prompt the user — e.g. `echo \"press Enter when done\"; read`. Requires a TTY: when stdin is not a terminal (CI, piped input, or any daemon-run phase) the script is skipped with a warning, so it cannot hang on instant EOF.",
                     "name": "interactive",
                     "required": false,
                     "type": "boolean"
@@ -637,7 +637,7 @@
               {
                 "children": [
                   {
-                    "description": "Treat a non-zero exit as success and continue reconciliation instead of failing the run. Default: `false`.",
+                    "description": "Treat a non-zero exit as success, so reconciliation continues and the run does not fail. Default: `false`.",
                     "name": "continueOnError",
                     "required": false,
                     "type": "boolean"
@@ -655,7 +655,7 @@
                     "type": "string"
                   },
                   {
-                    "description": "Run the script attached to the terminal (inherited stdin/stdout/stderr, no spinner, no output capture, no idle timeout) so it can prompt the user — e.g. `echo \"press Enter when done\"; read`. Requires a TTY: when stdin is not a terminal (CI, piped input, or any daemon-run phase) the script is skipped with a warning rather than hanging on instant EOF.",
+                    "description": "Run the script attached to the terminal (inherited stdin/stdout/stderr, no spinner, no output capture, no idle timeout) so it can prompt the user — e.g. `echo \"press Enter when done\"; read`. Requires a TTY: when stdin is not a terminal (CI, piped input, or any daemon-run phase) the script is skipped with a warning, so it cannot hang on instant EOF.",
                     "name": "interactive",
                     "required": false,
                     "type": "boolean"
@@ -730,7 +730,7 @@
               {
                 "children": [
                   {
-                    "description": "Treat a non-zero exit as success and continue reconciliation instead of failing the run. Default: `false`.",
+                    "description": "Treat a non-zero exit as success, so reconciliation continues and the run does not fail. Default: `false`.",
                     "name": "continueOnError",
                     "required": false,
                     "type": "boolean"
@@ -748,7 +748,7 @@
                     "type": "string"
                   },
                   {
-                    "description": "Run the script attached to the terminal (inherited stdin/stdout/stderr, no spinner, no output capture, no idle timeout) so it can prompt the user — e.g. `echo \"press Enter when done\"; read`. Requires a TTY: when stdin is not a terminal (CI, piped input, or any daemon-run phase) the script is skipped with a warning rather than hanging on instant EOF.",
+                    "description": "Run the script attached to the terminal (inherited stdin/stdout/stderr, no spinner, no output capture, no idle timeout) so it can prompt the user — e.g. `echo \"press Enter when done\"; read`. Requires a TTY: when stdin is not a terminal (CI, piped input, or any daemon-run phase) the script is skipped with a warning, so it cannot hang on instant EOF.",
                     "name": "interactive",
                     "required": false,
                     "type": "boolean"
@@ -861,13 +861,13 @@
       {
         "children": [
           {
-            "description": "Where snapshots are written. Defaults to `<state_dir>/backups/<name>/` when omitted — resolved by the backup engine, not at parse time, since the state dir depends on runtime scope/overrides.",
+            "description": "Where snapshots are written. Defaults to `<state_dir>/backups/<name>/` when omitted — resolved by the backup engine at run time, since the state dir depends on runtime scope/overrides.",
             "name": "destination",
             "required": false,
             "type": "string"
           },
           {
-            "description": "Unique identifier for this backup within `spec.backups`, unique across the list. Keys the `destination` default, run records, and CLI selection. Becomes a directory component (`<state_dir>/backups/<name>/`) and a lock filename (`<state_dir>/locks/backup-<name>.lock`), so it must be non-empty, non-blank, a single segment (no `/` or `\\`), not a directory reference (`.`, `..`), not rooted (`/daily`, `C:/daily`), and free of `:` anywhere — a drive and NTFS data-stream separator on Windows. Windows shapes are rejected on every platform so a name written on one OS stays valid on the others.",
+            "description": "Unique identifier for this backup within `spec.backups`, unique across the list. Keys the `destination` default, run records, and CLI selection. Becomes a directory component (`<state_dir>/backups/<name>/`) and a lock filename (`<state_dir>/locks/backup-<name>.lock`), so it must be non-empty and non-blank, a single segment (no `/` or `\\`), neither a directory reference (`.`, `..`) nor rooted (`/daily`, `C:/daily`), and free of `:` anywhere — a drive and NTFS data-stream separator on Windows. Windows shapes are rejected on every platform so a name written on one OS stays valid on the others.",
             "name": "name",
             "required": true,
             "type": "string"
@@ -894,7 +894,7 @@
               {
                 "children": [
                   {
-                    "description": "Treat a non-zero exit as success and continue reconciliation instead of failing the run. Default: `false`.",
+                    "description": "Treat a non-zero exit as success, so reconciliation continues and the run does not fail. Default: `false`.",
                     "name": "continueOnError",
                     "required": false,
                     "type": "boolean"
@@ -912,7 +912,7 @@
                     "type": "string"
                   },
                   {
-                    "description": "Run the script attached to the terminal (inherited stdin/stdout/stderr, no spinner, no output capture, no idle timeout) so it can prompt the user — e.g. `echo \"press Enter when done\"; read`. Requires a TTY: when stdin is not a terminal (CI, piped input, or any daemon-run phase) the script is skipped with a warning rather than hanging on instant EOF.",
+                    "description": "Run the script attached to the terminal (inherited stdin/stdout/stderr, no spinner, no output capture, no idle timeout) so it can prompt the user — e.g. `echo \"press Enter when done\"; read`. Requires a TTY: when stdin is not a terminal (CI, piped input, or any daemon-run phase) the script is skipped with a warning, so it cannot hang on instant EOF.",
                     "name": "interactive",
                     "required": false,
                     "type": "boolean"
@@ -987,7 +987,7 @@
               {
                 "children": [
                   {
-                    "description": "Treat a non-zero exit as success and continue reconciliation instead of failing the run. Default: `false`.",
+                    "description": "Treat a non-zero exit as success, so reconciliation continues and the run does not fail. Default: `false`.",
                     "name": "continueOnError",
                     "required": false,
                     "type": "boolean"
@@ -1005,7 +1005,7 @@
                     "type": "string"
                   },
                   {
-                    "description": "Run the script attached to the terminal (inherited stdin/stdout/stderr, no spinner, no output capture, no idle timeout) so it can prompt the user — e.g. `echo \"press Enter when done\"; read`. Requires a TTY: when stdin is not a terminal (CI, piped input, or any daemon-run phase) the script is skipped with a warning rather than hanging on instant EOF.",
+                    "description": "Run the script attached to the terminal (inherited stdin/stdout/stderr, no spinner, no output capture, no idle timeout) so it can prompt the user — e.g. `echo \"press Enter when done\"; read`. Requires a TTY: when stdin is not a terminal (CI, piped input, or any daemon-run phase) the script is skipped with a warning, so it cannot hang on instant EOF.",
                     "name": "interactive",
                     "required": false,
                     "type": "boolean"
@@ -1065,7 +1065,7 @@
             ]
           },
           {
-            "description": "Number of newest snapshots to keep for this backup; older snapshots are pruned from disk and from the run history. Must be at least 1 (`0` would keep no backups, which is a misconfiguration rather than a supported \"unlimited\" mode). Defaults to 10.",
+            "description": "Number of newest snapshots to keep for this backup; older snapshots are pruned from disk and from the run history. Must be at least 1 (`0` would keep no backups, which is a misconfiguration; there is no \"unlimited\" mode). Defaults to 10.",
             "name": "retention",
             "required": false,
             "type": "integer"
@@ -1360,7 +1360,7 @@
                     "type": "[]string"
                   },
                   {
-                    "description": "Path to a Brewfile to apply instead of (or alongside) `taps`, `formulae` and `casks`. Relative to the config root.",
+                    "description": "Path to a Brewfile to apply in place of (or alongside) `taps`, `formulae` and `casks`. Relative to the config root.",
                     "name": "file",
                     "required": false,
                     "type": "string"
@@ -1401,7 +1401,7 @@
               {
                 "children": [
                   {
-                    "description": "Path to a `Cargo.toml` whose binaries to install instead of `packages`. Relative to the config root.",
+                    "description": "Path to a `Cargo.toml` whose binaries are installed in place of `packages`. Relative to the config root.",
                     "name": "file",
                     "required": false,
                     "type": "string"
@@ -1906,6 +1906,21 @@
       {
         "children": [
           {
+            "description": "Clipboard mechanisms in preference order, most-wanted first. cfgd picks the first one the running session can reach and whose tool is installed, and exports it as `CFGD_CLIPBOARD`. Candidates: `wl-clipboard`, `xclip`, `xsel`, `pbcopy`, `clip.exe`, `osc52`.",
+            "name": "clipboard",
+            "required": false,
+            "type": "[]string"
+          }
+        ],
+        "description": "Ranked candidate lists per domain (`clipboard`, …). cfgd picks the first candidate the running session can reach and exports it as `CFGD_<DOMAIN>`.",
+        "name": "preferences",
+        "required": false,
+        "type": "object",
+        "typeName": "PreferencesSpec"
+      },
+      {
+        "children": [
+          {
             "description": "Run when a watched file changes on disk (requires `daemon.reconcile.onChange`).",
             "name": "onChange",
             "required": false,
@@ -1921,7 +1936,7 @@
               {
                 "children": [
                   {
-                    "description": "Treat a non-zero exit as success and continue reconciliation instead of failing the run. Default: `false`.",
+                    "description": "Treat a non-zero exit as success, so reconciliation continues and the run does not fail. Default: `false`.",
                     "name": "continueOnError",
                     "required": false,
                     "type": "boolean"
@@ -1939,7 +1954,7 @@
                     "type": "string"
                   },
                   {
-                    "description": "Run the script attached to the terminal (inherited stdin/stdout/stderr, no spinner, no output capture, no idle timeout) so it can prompt the user — e.g. `echo \"press Enter when done\"; read`. Requires a TTY: when stdin is not a terminal (CI, piped input, or any daemon-run phase) the script is skipped with a warning rather than hanging on instant EOF.",
+                    "description": "Run the script attached to the terminal (inherited stdin/stdout/stderr, no spinner, no output capture, no idle timeout) so it can prompt the user — e.g. `echo \"press Enter when done\"; read`. Requires a TTY: when stdin is not a terminal (CI, piped input, or any daemon-run phase) the script is skipped with a warning, so it cannot hang on instant EOF.",
                     "name": "interactive",
                     "required": false,
                     "type": "boolean"
@@ -2014,7 +2029,7 @@
               {
                 "children": [
                   {
-                    "description": "Treat a non-zero exit as success and continue reconciliation instead of failing the run. Default: `false`.",
+                    "description": "Treat a non-zero exit as success, so reconciliation continues and the run does not fail. Default: `false`.",
                     "name": "continueOnError",
                     "required": false,
                     "type": "boolean"
@@ -2032,7 +2047,7 @@
                     "type": "string"
                   },
                   {
-                    "description": "Run the script attached to the terminal (inherited stdin/stdout/stderr, no spinner, no output capture, no idle timeout) so it can prompt the user — e.g. `echo \"press Enter when done\"; read`. Requires a TTY: when stdin is not a terminal (CI, piped input, or any daemon-run phase) the script is skipped with a warning rather than hanging on instant EOF.",
+                    "description": "Run the script attached to the terminal (inherited stdin/stdout/stderr, no spinner, no output capture, no idle timeout) so it can prompt the user — e.g. `echo \"press Enter when done\"; read`. Requires a TTY: when stdin is not a terminal (CI, piped input, or any daemon-run phase) the script is skipped with a warning, so it cannot hang on instant EOF.",
                     "name": "interactive",
                     "required": false,
                     "type": "boolean"
@@ -2107,7 +2122,7 @@
               {
                 "children": [
                   {
-                    "description": "Treat a non-zero exit as success and continue reconciliation instead of failing the run. Default: `false`.",
+                    "description": "Treat a non-zero exit as success, so reconciliation continues and the run does not fail. Default: `false`.",
                     "name": "continueOnError",
                     "required": false,
                     "type": "boolean"
@@ -2125,7 +2140,7 @@
                     "type": "string"
                   },
                   {
-                    "description": "Run the script attached to the terminal (inherited stdin/stdout/stderr, no spinner, no output capture, no idle timeout) so it can prompt the user — e.g. `echo \"press Enter when done\"; read`. Requires a TTY: when stdin is not a terminal (CI, piped input, or any daemon-run phase) the script is skipped with a warning rather than hanging on instant EOF.",
+                    "description": "Run the script attached to the terminal (inherited stdin/stdout/stderr, no spinner, no output capture, no idle timeout) so it can prompt the user — e.g. `echo \"press Enter when done\"; read`. Requires a TTY: when stdin is not a terminal (CI, piped input, or any daemon-run phase) the script is skipped with a warning, so it cannot hang on instant EOF.",
                     "name": "interactive",
                     "required": false,
                     "type": "boolean"
@@ -2200,7 +2215,7 @@
               {
                 "children": [
                   {
-                    "description": "Treat a non-zero exit as success and continue reconciliation instead of failing the run. Default: `false`.",
+                    "description": "Treat a non-zero exit as success, so reconciliation continues and the run does not fail. Default: `false`.",
                     "name": "continueOnError",
                     "required": false,
                     "type": "boolean"
@@ -2218,7 +2233,7 @@
                     "type": "string"
                   },
                   {
-                    "description": "Run the script attached to the terminal (inherited stdin/stdout/stderr, no spinner, no output capture, no idle timeout) so it can prompt the user — e.g. `echo \"press Enter when done\"; read`. Requires a TTY: when stdin is not a terminal (CI, piped input, or any daemon-run phase) the script is skipped with a warning rather than hanging on instant EOF.",
+                    "description": "Run the script attached to the terminal (inherited stdin/stdout/stderr, no spinner, no output capture, no idle timeout) so it can prompt the user — e.g. `echo \"press Enter when done\"; read`. Requires a TTY: when stdin is not a terminal (CI, piped input, or any daemon-run phase) the script is skipped with a warning, so it cannot hang on instant EOF.",
                     "name": "interactive",
                     "required": false,
                     "type": "boolean"
@@ -2293,7 +2308,7 @@
               {
                 "children": [
                   {
-                    "description": "Treat a non-zero exit as success and continue reconciliation instead of failing the run. Default: `false`.",
+                    "description": "Treat a non-zero exit as success, so reconciliation continues and the run does not fail. Default: `false`.",
                     "name": "continueOnError",
                     "required": false,
                     "type": "boolean"
@@ -2311,7 +2326,7 @@
                     "type": "string"
                   },
                   {
-                    "description": "Run the script attached to the terminal (inherited stdin/stdout/stderr, no spinner, no output capture, no idle timeout) so it can prompt the user — e.g. `echo \"press Enter when done\"; read`. Requires a TTY: when stdin is not a terminal (CI, piped input, or any daemon-run phase) the script is skipped with a warning rather than hanging on instant EOF.",
+                    "description": "Run the script attached to the terminal (inherited stdin/stdout/stderr, no spinner, no output capture, no idle timeout) so it can prompt the user — e.g. `echo \"press Enter when done\"; read`. Requires a TTY: when stdin is not a terminal (CI, piped input, or any daemon-run phase) the script is skipped with a warning, so it cannot hang on instant EOF.",
                     "name": "interactive",
                     "required": false,
                     "type": "boolean"
@@ -2386,7 +2401,7 @@
               {
                 "children": [
                   {
-                    "description": "Treat a non-zero exit as success and continue reconciliation instead of failing the run. Default: `false`.",
+                    "description": "Treat a non-zero exit as success, so reconciliation continues and the run does not fail. Default: `false`.",
                     "name": "continueOnError",
                     "required": false,
                     "type": "boolean"
@@ -2404,7 +2419,7 @@
                     "type": "string"
                   },
                   {
-                    "description": "Run the script attached to the terminal (inherited stdin/stdout/stderr, no spinner, no output capture, no idle timeout) so it can prompt the user — e.g. `echo \"press Enter when done\"; read`. Requires a TTY: when stdin is not a terminal (CI, piped input, or any daemon-run phase) the script is skipped with a warning rather than hanging on instant EOF.",
+                    "description": "Run the script attached to the terminal (inherited stdin/stdout/stderr, no spinner, no output capture, no idle timeout) so it can prompt the user — e.g. `echo \"press Enter when done\"; read`. Requires a TTY: when stdin is not a terminal (CI, piped input, or any daemon-run phase) the script is skipped with a warning, so it cannot hang on instant EOF.",
                     "name": "interactive",
                     "required": false,
                     "type": "boolean"
@@ -2855,7 +2870,7 @@
                             "type": "[]string"
                           },
                           {
-                            "description": "Path to a Brewfile to apply instead of (or alongside) `taps`, `formulae` and `casks`. Relative to the config root.",
+                            "description": "Path to a Brewfile to apply in place of (or alongside) `taps`, `formulae` and `casks`. Relative to the config root.",
                             "name": "file",
                             "required": false,
                             "type": "string"
@@ -2896,7 +2911,7 @@
                       {
                         "children": [
                           {
-                            "description": "Path to a `Cargo.toml` whose binaries to install instead of `packages`. Relative to the config root.",
+                            "description": "Path to a `Cargo.toml` whose binaries are installed in place of `packages`. Relative to the config root.",
                             "name": "file",
                             "required": false,
                             "type": "string"
@@ -3712,7 +3727,7 @@
                             "type": "[]string"
                           },
                           {
-                            "description": "Path to a Brewfile to apply instead of (or alongside) `taps`, `formulae` and `casks`. Relative to the config root.",
+                            "description": "Path to a Brewfile to apply in place of (or alongside) `taps`, `formulae` and `casks`. Relative to the config root.",
                             "name": "file",
                             "required": false,
                             "type": "string"
@@ -3753,7 +3768,7 @@
                       {
                         "children": [
                           {
-                            "description": "Path to a `Cargo.toml` whose binaries to install instead of `packages`. Relative to the config root.",
+                            "description": "Path to a `Cargo.toml` whose binaries are installed in place of `packages`. Relative to the config root.",
                             "name": "file",
                             "required": false,
                             "type": "string"
@@ -4569,7 +4584,7 @@
                             "type": "[]string"
                           },
                           {
-                            "description": "Path to a Brewfile to apply instead of (or alongside) `taps`, `formulae` and `casks`. Relative to the config root.",
+                            "description": "Path to a Brewfile to apply in place of (or alongside) `taps`, `formulae` and `casks`. Relative to the config root.",
                             "name": "file",
                             "required": false,
                             "type": "string"
@@ -4610,7 +4625,7 @@
                       {
                         "children": [
                           {
-                            "description": "Path to a `Cargo.toml` whose binaries to install instead of `packages`. Relative to the config root.",
+                            "description": "Path to a `Cargo.toml` whose binaries are installed in place of `packages`. Relative to the config root.",
                             "name": "file",
                             "required": false,
                             "type": "string"
@@ -5426,7 +5441,7 @@
                             "type": "[]string"
                           },
                           {
-                            "description": "Path to a Brewfile to apply instead of (or alongside) `taps`, `formulae` and `casks`. Relative to the config root.",
+                            "description": "Path to a Brewfile to apply in place of (or alongside) `taps`, `formulae` and `casks`. Relative to the config root.",
                             "name": "file",
                             "required": false,
                             "type": "string"
@@ -5467,7 +5482,7 @@
                       {
                         "children": [
                           {
-                            "description": "Path to a `Cargo.toml` whose binaries to install instead of `packages`. Relative to the config root.",
+                            "description": "Path to a `Cargo.toml` whose binaries are installed in place of `packages`. Relative to the config root.",
                             "name": "file",
                             "required": false,
                             "type": "string"
@@ -6133,7 +6148,7 @@
         "typeName": "AiConfig"
       },
       {
-        "description": "CLI aliases: map of alias name → command string. Built-in defaults (add, remove) can be overridden or extended.",
+        "description": "CLI aliases: map of alias name → command string. `cfgd init` scaffolds `add` and `remove`; cfgd defines no alias of its own.",
         "name": "aliases",
         "required": false,
         "type": "object"
@@ -6448,7 +6463,7 @@
             "type": "boolean"
           }
         ],
-        "description": "The background daemon that watches for drift between reconciles. Omitted, no daemon runs and every reconcile is an explicit `cfgd apply`.",
+        "description": "The background daemon that watches for drift between reconciles. Omitted, a daemon started with `cfgd daemon` runs every default: a `5m` reconcile that reports drift and applies nothing, with no pull or push.",
         "name": "daemon",
         "required": false,
         "type": "object",
@@ -6465,6 +6480,19 @@
         "name": "fileStrategy",
         "required": false,
         "type": "string"
+      },
+      {
+        "description": "What cfgd does when this document is behind the schema the running binary reads. `Prompt` asks once on an interactive run; `Warn` only reports; `Update` writes the alignment; `Ignore` says nothing.",
+        "enum": [
+          "Prompt",
+          "Warn",
+          "Update",
+          "Ignore"
+        ],
+        "name": "migrationPolicy",
+        "required": false,
+        "type": "string",
+        "typeName": "MigrationPolicy"
       },
       {
         "children": [
@@ -6578,7 +6606,21 @@
           {
             "children": [
               {
-                "description": "Preset name (`default`, `dracula`, `solarized-dark`, `solarized-light`, `nord`, `monokai`, `adventure-time`, `catppuccin-mocha`, `gruvbox-dark`, `tokyo-night`, `one-dark`, `minimal`). Default: `default`.",
+                "description": "Preset name. `cfgd config set theme.name` refuses a word this field's schema does not enumerate, and one hand-written into the file renders the default palette with a warning. Default: `default`.",
+                "enum": [
+                  "default",
+                  "dracula",
+                  "solarized-dark",
+                  "solarized-light",
+                  "nord",
+                  "monokai",
+                  "adventure-time",
+                  "catppuccin-mocha",
+                  "gruvbox-dark",
+                  "tokyo-night",
+                  "one-dark",
+                  "minimal"
+                ],
                 "name": "name",
                 "required": false,
                 "type": "string"
@@ -6732,7 +6774,7 @@
             "typeName": "ThemeConfig"
           },
           {
-            "description": "Whether closing `→` usage hints render. Omitted, hints render.",
+            "description": "Whether closing `→` usage hints render. Omitted, they do not; a refusal's remediation and a run's own instructions render either way.",
             "name": "usageHints",
             "required": false,
             "type": "boolean"
@@ -6789,7 +6831,7 @@
             "typeName": "SopsConfig"
           }
         ],
-        "description": "Which backend resolves a `${secret:…}` reference, and how it is reached. Omitted, no backend is configured and a declared secret reference fails to resolve.",
+        "description": "Which backend resolves a `${secret:…}` reference, and how it is reached. Omitted, the `sops` backend resolves it through sops's own key search.",
         "name": "secrets",
         "required": false,
         "type": "object",
@@ -6968,7 +7010,7 @@
       {
         "children": [
           {
-            "description": "Release channel to track (e.g. `stable`, `beta`). When unset, cfgd uses its built-in default channel.",
+            "description": "Release channel to track: `stable` (releases GitHub marks latest) or `prerelease` (the newest release, prereleases included). Omitted, `stable`.",
             "name": "channel",
             "required": false,
             "type": "string"
@@ -7685,7 +7727,7 @@
               {
                 "children": [
                   {
-                    "description": "Treat a non-zero exit as success and continue reconciliation instead of failing the run. Default: `false`.",
+                    "description": "Treat a non-zero exit as success, so reconciliation continues and the run does not fail. Default: `false`.",
                     "name": "continueOnError",
                     "required": false,
                     "type": "boolean"
@@ -7703,7 +7745,7 @@
                     "type": "string"
                   },
                   {
-                    "description": "Run the script attached to the terminal (inherited stdin/stdout/stderr, no spinner, no output capture, no idle timeout) so it can prompt the user — e.g. `echo \"press Enter when done\"; read`. Requires a TTY: when stdin is not a terminal (CI, piped input, or any daemon-run phase) the script is skipped with a warning rather than hanging on instant EOF.",
+                    "description": "Run the script attached to the terminal (inherited stdin/stdout/stderr, no spinner, no output capture, no idle timeout) so it can prompt the user — e.g. `echo \"press Enter when done\"; read`. Requires a TTY: when stdin is not a terminal (CI, piped input, or any daemon-run phase) the script is skipped with a warning, so it cannot hang on instant EOF.",
                     "name": "interactive",
                     "required": false,
                     "type": "boolean"
@@ -7778,7 +7820,7 @@
               {
                 "children": [
                   {
-                    "description": "Treat a non-zero exit as success and continue reconciliation instead of failing the run. Default: `false`.",
+                    "description": "Treat a non-zero exit as success, so reconciliation continues and the run does not fail. Default: `false`.",
                     "name": "continueOnError",
                     "required": false,
                     "type": "boolean"
@@ -7796,7 +7838,7 @@
                     "type": "string"
                   },
                   {
-                    "description": "Run the script attached to the terminal (inherited stdin/stdout/stderr, no spinner, no output capture, no idle timeout) so it can prompt the user — e.g. `echo \"press Enter when done\"; read`. Requires a TTY: when stdin is not a terminal (CI, piped input, or any daemon-run phase) the script is skipped with a warning rather than hanging on instant EOF.",
+                    "description": "Run the script attached to the terminal (inherited stdin/stdout/stderr, no spinner, no output capture, no idle timeout) so it can prompt the user — e.g. `echo \"press Enter when done\"; read`. Requires a TTY: when stdin is not a terminal (CI, piped input, or any daemon-run phase) the script is skipped with a warning, so it cannot hang on instant EOF.",
                     "name": "interactive",
                     "required": false,
                     "type": "boolean"
@@ -7871,7 +7913,7 @@
               {
                 "children": [
                   {
-                    "description": "Treat a non-zero exit as success and continue reconciliation instead of failing the run. Default: `false`.",
+                    "description": "Treat a non-zero exit as success, so reconciliation continues and the run does not fail. Default: `false`.",
                     "name": "continueOnError",
                     "required": false,
                     "type": "boolean"
@@ -7889,7 +7931,7 @@
                     "type": "string"
                   },
                   {
-                    "description": "Run the script attached to the terminal (inherited stdin/stdout/stderr, no spinner, no output capture, no idle timeout) so it can prompt the user — e.g. `echo \"press Enter when done\"; read`. Requires a TTY: when stdin is not a terminal (CI, piped input, or any daemon-run phase) the script is skipped with a warning rather than hanging on instant EOF.",
+                    "description": "Run the script attached to the terminal (inherited stdin/stdout/stderr, no spinner, no output capture, no idle timeout) so it can prompt the user — e.g. `echo \"press Enter when done\"; read`. Requires a TTY: when stdin is not a terminal (CI, piped input, or any daemon-run phase) the script is skipped with a warning, so it cannot hang on instant EOF.",
                     "name": "interactive",
                     "required": false,
                     "type": "boolean"
@@ -7964,7 +8006,7 @@
               {
                 "children": [
                   {
-                    "description": "Treat a non-zero exit as success and continue reconciliation instead of failing the run. Default: `false`.",
+                    "description": "Treat a non-zero exit as success, so reconciliation continues and the run does not fail. Default: `false`.",
                     "name": "continueOnError",
                     "required": false,
                     "type": "boolean"
@@ -7982,7 +8024,7 @@
                     "type": "string"
                   },
                   {
-                    "description": "Run the script attached to the terminal (inherited stdin/stdout/stderr, no spinner, no output capture, no idle timeout) so it can prompt the user — e.g. `echo \"press Enter when done\"; read`. Requires a TTY: when stdin is not a terminal (CI, piped input, or any daemon-run phase) the script is skipped with a warning rather than hanging on instant EOF.",
+                    "description": "Run the script attached to the terminal (inherited stdin/stdout/stderr, no spinner, no output capture, no idle timeout) so it can prompt the user — e.g. `echo \"press Enter when done\"; read`. Requires a TTY: when stdin is not a terminal (CI, piped input, or any daemon-run phase) the script is skipped with a warning, so it cannot hang on instant EOF.",
                     "name": "interactive",
                     "required": false,
                     "type": "boolean"
@@ -8057,7 +8099,7 @@
               {
                 "children": [
                   {
-                    "description": "Treat a non-zero exit as success and continue reconciliation instead of failing the run. Default: `false`.",
+                    "description": "Treat a non-zero exit as success, so reconciliation continues and the run does not fail. Default: `false`.",
                     "name": "continueOnError",
                     "required": false,
                     "type": "boolean"
@@ -8075,7 +8117,7 @@
                     "type": "string"
                   },
                   {
-                    "description": "Run the script attached to the terminal (inherited stdin/stdout/stderr, no spinner, no output capture, no idle timeout) so it can prompt the user — e.g. `echo \"press Enter when done\"; read`. Requires a TTY: when stdin is not a terminal (CI, piped input, or any daemon-run phase) the script is skipped with a warning rather than hanging on instant EOF.",
+                    "description": "Run the script attached to the terminal (inherited stdin/stdout/stderr, no spinner, no output capture, no idle timeout) so it can prompt the user — e.g. `echo \"press Enter when done\"; read`. Requires a TTY: when stdin is not a terminal (CI, piped input, or any daemon-run phase) the script is skipped with a warning, so it cannot hang on instant EOF.",
                     "name": "interactive",
                     "required": false,
                     "type": "boolean"
@@ -8150,7 +8192,7 @@
               {
                 "children": [
                   {
-                    "description": "Treat a non-zero exit as success and continue reconciliation instead of failing the run. Default: `false`.",
+                    "description": "Treat a non-zero exit as success, so reconciliation continues and the run does not fail. Default: `false`.",
                     "name": "continueOnError",
                     "required": false,
                     "type": "boolean"
@@ -8168,7 +8210,7 @@
                     "type": "string"
                   },
                   {
-                    "description": "Run the script attached to the terminal (inherited stdin/stdout/stderr, no spinner, no output capture, no idle timeout) so it can prompt the user — e.g. `echo \"press Enter when done\"; read`. Requires a TTY: when stdin is not a terminal (CI, piped input, or any daemon-run phase) the script is skipped with a warning rather than hanging on instant EOF.",
+                    "description": "Run the script attached to the terminal (inherited stdin/stdout/stderr, no spinner, no output capture, no idle timeout) so it can prompt the user — e.g. `echo \"press Enter when done\"; read`. Requires a TTY: when stdin is not a terminal (CI, piped input, or any daemon-run phase) the script is skipped with a warning, so it cannot hang on instant EOF.",
                     "name": "interactive",
                     "required": false,
                     "type": "boolean"
@@ -8297,7 +8339,7 @@
         "typeName": "PackageEntry"
       },
       {
-        "description": "Platform tags gating the whole module on a machine reconciling it. When non-empty and the machine matches none of them, the module is skipped entirely (it appears as a skipped action rather than vanishing). Tags are matched against the machine's OS, distro, and arch; use `macos` for macOS.",
+        "description": "Platform tags gating the whole module on a machine reconciling it. When non-empty and the machine matches none of them, the module is skipped entirely (it still appears, as a skipped action). Tags are matched against the machine's OS, distro, and arch; use `macos` for macOS.",
         "name": "platforms",
         "required": false,
         "type": "[]string"

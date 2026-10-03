@@ -14,7 +14,11 @@ pub fn build_config_show_doc(cfg: &CfgdConfig, config_path: &Path) -> Doc {
         )
         .kv(
             "Profile",
-            cfg.spec.profile.as_deref().unwrap_or("(none)").to_string(),
+            cfg.spec
+                .profile
+                .as_deref()
+                .unwrap_or(super::NO_PROFILE_LABEL)
+                .to_string(),
         );
 
     doc = doc.section_if_nonempty("Origins", &cfg.spec.origin, |s, origins| {
@@ -181,6 +185,357 @@ pub fn cmd_config_edit(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
 
 // --- Config get/set/unset ---
 
+/// The `spec`-relative paths whose value is a scalar-or-mapping union, paired
+/// with the field a bare scalar there stands for. Both rows are `ThemeConfig`:
+/// `theme: dracula` IS `theme: {name: dracula}`, and that scalar arm is what
+/// `cfgd init` and `cfgd config set theme <name>` write, so a walk refusing to
+/// descend through it would fail every documented `config set theme.name` on
+/// cfgd's own document. The legacy flat spelling is listed because `get` falls
+/// back to it on an unmigrated document.
+const SCALAR_UNION_FIELDS: &[(&str, &str)] = &[("output.theme", "name"), ("theme", "name")];
+
+/// The field a bare scalar at these path segments stands for, or `None` where a
+/// scalar is genuinely a leaf.
+pub(super) fn scalar_union_field(segments: &[&str]) -> Option<&'static str> {
+    SCALAR_UNION_FIELDS.iter().find_map(|(path, field)| {
+        path.split('.')
+            .eq(segments.iter().copied())
+            .then_some(*field)
+    })
+}
+
+/// Whether this value is a scalar a union's mapping arm could have been
+/// written as. A sequence is no arm of any union here, so it stays a shape
+/// error.
+pub(super) fn is_union_scalar(value: &serde_yaml::Value) -> bool {
+    blocking_shape(value) == SHAPE_SCALAR
+}
+
+/// The words a refusal calls the two shapes whose refusal turns on what the
+/// schema declares at the path they blocked.
+const SHAPE_SCALAR: &str = "a scalar";
+pub(in crate::cli) const SHAPE_SEQUENCE: &str = "a sequence";
+pub(in crate::cli) const SHAPE_MAPPING: &str = "a mapping";
+
+/// What a value that blocked a descent IS, as the refusal words it. Captured
+/// before the parent it sits in is borrowed mutably, so both walkers can name
+/// the shape they found.
+pub(in crate::cli) fn blocking_shape(value: &serde_yaml::Value) -> &'static str {
+    match value {
+        serde_yaml::Value::String(_)
+        | serde_yaml::Value::Number(_)
+        | serde_yaml::Value::Bool(_) => SHAPE_SCALAR,
+        serde_yaml::Value::Sequence(_) => SHAPE_SEQUENCE,
+        serde_yaml::Value::Mapping(_) => SHAPE_MAPPING,
+        serde_yaml::Value::Tagged(_) => "a tagged value",
+        serde_yaml::Value::Null => "nothing",
+    }
+}
+
+/// A descent blocked by a value that is no mapping and no union arm cfgd can
+/// promote. Typed, so the classifier reads the failure the walker actually hit
+/// with no match on a message four situations shared.
+#[derive(Debug)]
+pub(super) struct ShapeBlocked {
+    /// The key path that blocked, or `None` for the document itself, which no
+    /// key names.
+    path: Option<String>,
+    found: &'static str,
+    wanted: &'static str,
+}
+
+impl std::fmt::Display for ShapeBlocked {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self.path {
+            Some(path) => write!(
+                f,
+                "'{path}' holds {} where {} belongs",
+                self.found, self.wanted
+            ),
+            None => write!(
+                f,
+                "the config document holds {} where {} belongs",
+                self.found, self.wanted
+            ),
+        }
+    }
+}
+
+impl std::error::Error for ShapeBlocked {}
+
+/// The typed missing-key refusal every walker, `unset` and `as_asked` mint, naming
+/// the path that is not there and, when known, the first segment the document
+/// does not declare.
+fn key_not_found(asked: &[&str], undeclared: Option<String>) -> anyhow::Error {
+    anyhow::Error::new(cfgd_core::errors::CfgdError::Config(
+        cfgd_core::errors::ConfigError::KeyNotFound {
+            key: asked.join("."),
+            undeclared,
+        },
+    ))
+}
+
+/// What a `config` verb's refusal names: the key the caller wrote, or the
+/// alias name an `alias` verb built its key from.
+#[derive(Clone, Copy)]
+pub(super) struct Asked<'a> {
+    spelling: &'a str,
+    alias: bool,
+}
+
+impl<'a> Asked<'a> {
+    /// A key the caller wrote, after its `spec.` prefix is folded away.
+    pub(super) fn key(spelling: &'a str) -> Self {
+        Self {
+            spelling,
+            alias: false,
+        }
+    }
+
+    /// An alias name, which the verb addresses as `aliases.<name>`.
+    pub(super) fn alias(name: &'a str) -> Self {
+        Self {
+            spelling: name,
+            alias: true,
+        }
+    }
+
+    fn described(self) -> String {
+        if self.alias {
+            format!("alias '{}'", self.spelling)
+        } else {
+            format!("'{}'", self.spelling)
+        }
+    }
+}
+
+/// The `spec`-relative key an `alias` verb addresses `name` by, or the
+/// refusal a name no alias can be stored under earns: the key would hold an
+/// empty segment or a `.` that nests the alias one level down.
+pub(super) fn alias_key(name: &str) -> anyhow::Result<String> {
+    if name.is_empty() || name.contains('.') {
+        return Err(crate::cli::cli_error(
+            name,
+            "invalid_value",
+            format!("invalid alias name '{name}': an alias name is one word with no '.'"),
+            serde_json::json!({}),
+        ));
+    }
+    Ok(format!("aliases.{name}"))
+}
+
+/// A key verb's refusal on `resolved`, restated for what the caller wrote
+/// (`asked`), which is `resolved` itself unless [`nested_output_key`] or an
+/// `alias` verb built `resolved` from it.
+///
+/// A missing key is reported under `asked` whole, so the message names the
+/// same key the `-o json` payload does. The walk reports the first segment it
+/// found missing (`secrets` for `secrets.sops.ageKey`); that segment is named
+/// as the one not declared where it is a prefix of what the caller typed, and
+/// left out where it belongs to a built path the caller never typed. A
+/// refusal on a built path that names the stored path (a shape that blocks
+/// the walk, or a write that would leave the document invalid) keeps it,
+/// since that path is where the reader has to look, and adds where what they
+/// asked for lives. Every other refusal names no key and passes through as
+/// it is.
+fn as_asked(error: anyhow::Error, asked: Asked<'_>, resolved: &str) -> anyhow::Error {
+    let built = asked.alias || asked.spelling != resolved;
+    let stored_at = |error: &dyn std::fmt::Display| {
+        format!("{error}; {} is stored at '{resolved}'", asked.described())
+    };
+    if let Some(cfgd_core::errors::CfgdError::Config(
+        cfgd_core::errors::ConfigError::KeyNotFound { key, .. },
+    )) = error.downcast_ref::<cfgd_core::errors::CfgdError>()
+    {
+        let undeclared = asked
+            .spelling
+            .strip_prefix(key.as_str())
+            .is_some_and(|rest| rest.starts_with('.'))
+            .then(|| key.clone());
+        let missing = key_not_found(&[asked.spelling], undeclared);
+        return if asked.alias {
+            missing.context(format!("{} not found", asked.described()))
+        } else if built {
+            let message = stored_at(&missing);
+            missing.context(message)
+        } else {
+            missing
+        };
+    }
+    if built && classify_config_error(&error) == "parse_failed" {
+        let message = stored_at(&error);
+        return error.context(message);
+    }
+    error
+}
+
+/// The value `spec` holds at the `spec`-relative `key`: its serialization
+/// carries every serde default, so a key the document leaves out still has
+/// one. `None` where `spec` has no such key.
+fn typed_value_at(spec: &cfgd_core::config::ConfigSpec, key: &str) -> Option<serde_yaml::Value> {
+    let tree = serde_yaml::to_value(spec).ok()?;
+    walk_yaml_path(&tree, key).ok().cloned()
+}
+
+/// The refusal a key path holding an empty segment (`a..b`, a trailing `.`)
+/// earns: no key is spelled that way, so the path itself is the bad input.
+fn empty_segment(path: &str) -> anyhow::Error {
+    crate::cli::cli_error(
+        path,
+        "invalid_value",
+        format!("invalid key path '{path}': contains empty segment"),
+        serde_json::json!({}),
+    )
+}
+
+/// The mapping a section of a config document holds, where a section holding
+/// nothing becomes an empty one; `None` for any other shape. A bare `key:` and
+/// a serialized `None` both read back as Null, and both mean the section is
+/// not there yet, so a writer creates it.
+pub(in crate::cli) fn section_mapping_mut(
+    value: &mut serde_yaml::Value,
+) -> Option<&mut serde_yaml::Mapping> {
+    if value.is_null() {
+        *value = serde_yaml::Value::Mapping(serde_yaml::Mapping::new());
+    }
+    // section-write-ok: the section rule itself
+    value.as_mapping_mut()
+}
+
+/// [`section_mapping_mut`]'s twin for a section the schema declares a list.
+pub(in crate::cli) fn section_sequence_mut(
+    value: &mut serde_yaml::Value,
+) -> Option<&mut serde_yaml::Sequence> {
+    if value.is_null() {
+        *value = serde_yaml::Value::Sequence(Vec::new());
+    }
+    // section-write-ok: the section rule itself
+    value.as_sequence_mut()
+}
+
+/// A config document's `spec`, as the mapping a verb writing under it edits.
+///
+/// An absent `spec` and a bare `spec:` are an empty mapping, the rule
+/// [`section_mapping_mut`] applies to every section the key walker descends
+/// through; any other shape is refused `parse_failed`, naming what the
+/// document holds there. The refusal carries [`ShapeBlocked`] as its source,
+/// so `config set` and `config unset` classify it as they classify the same
+/// block met further down a key path.
+pub(in crate::cli) fn spec_mapping_mut<'a>(
+    root: &'a mut serde_yaml::Value,
+    config_path: &Path,
+) -> anyhow::Result<&'a mut serde_yaml::Mapping> {
+    let found = blocking_shape(root);
+    let document = section_mapping_mut(root).ok_or_else(|| {
+        shape_refusal(
+            config_path,
+            ShapeBlocked {
+                path: None,
+                found,
+                wanted: SHAPE_MAPPING,
+            },
+        )
+    })?;
+    let spec = document
+        .entry(serde_yaml::Value::String("spec".into()))
+        .or_insert(serde_yaml::Value::Null);
+    let found = blocking_shape(spec);
+    section_mapping_mut(spec)
+        .ok_or_else(|| section_shape_refusal(config_path, "spec", found, SHAPE_MAPPING))
+}
+
+/// The `parse_failed` refusal a writer earns from a section of the config
+/// document at `path` holding `found` where the schema declares `wanted`.
+/// Its source is the same [`ShapeBlocked`] a blocked key walk mints, so the
+/// wording and the classification are one whichever writer met the block.
+pub(in crate::cli) fn section_shape_refusal(
+    config_path: &Path,
+    path: &str,
+    found: &'static str,
+    wanted: &'static str,
+) -> anyhow::Error {
+    shape_refusal(
+        config_path,
+        ShapeBlocked {
+            path: Some(path.to_string()),
+            found,
+            wanted,
+        },
+    )
+}
+
+fn shape_refusal(config_path: &Path, blocked: ShapeBlocked) -> anyhow::Error {
+    let message = blocked.to_string();
+    let file = cfgd_core::to_posix_string(config_path);
+    let extras = serde_json::json!({ "path": &file });
+    crate::cli::cli_error_ctx(
+        anyhow::Error::new(blocked),
+        file,
+        "parse_failed",
+        message,
+        extras,
+    )
+}
+
+/// The refusal a descent blocked at `path` earns, where `asked` is the path
+/// the caller named and `found` the shape that blocked it.
+///
+/// Which one it is turns on the shape the schema declares at `path`, on both
+/// branches. A child of a genuine scalar leaf, and a key named under a
+/// declared list, can never exist however the document is written: the key
+/// walkers address no sequence element, so neither says anything is wrong with
+/// the document, and both are the missing key the absent-section arm answers
+/// with. Every other block — a scalar where the schema declares a mapping or a
+/// list, a sequence where it declares a mapping or a value — is a document
+/// whose shape contradicts the schema, which a script must be able to tell
+/// from a key it can simply create.
+fn descent_blocked(path: &[&str], asked: &[&str], found: &'static str) -> anyhow::Error {
+    use super::explain::DeclaredShape;
+
+    let declared = if path.is_empty() {
+        DeclaredShape::Mapping
+    } else {
+        super::explain::config_field_shape(path)
+    };
+    let document_agrees_with_schema = matches!(
+        (found, declared),
+        (SHAPE_SCALAR, DeclaredShape::Leaf | DeclaredShape::Unknown)
+            | (SHAPE_SEQUENCE, DeclaredShape::Sequence)
+    );
+    if document_agrees_with_schema {
+        return key_not_found(asked, None);
+    }
+    anyhow::Error::new(ShapeBlocked {
+        // The root of the walk is `spec` itself, which every path is relative
+        // to and no segment names, so an empty path is the mapping the whole
+        // field list hangs off.
+        path: Some(if path.is_empty() {
+            "spec".to_string()
+        } else {
+            path.join(".")
+        }),
+        found,
+        wanted: SHAPE_MAPPING,
+    })
+}
+
+/// Rewrite a union's scalar arm in place as the mapping it stands for, so a
+/// write to a field beneath it descends.
+fn promote_scalar_union(value: &mut serde_yaml::Value, segments: &[&str]) {
+    let Some(field) = scalar_union_field(segments) else {
+        return;
+    };
+    if !is_union_scalar(value) {
+        return;
+    }
+    let mut promoted = serde_yaml::Mapping::new();
+    promoted.insert(
+        serde_yaml::Value::String(field.to_string()),
+        std::mem::replace(value, serde_yaml::Value::Null),
+    );
+    *value = serde_yaml::Value::Mapping(promoted);
+}
+
 /// Walk a dotted key path through a YAML value, returning the leaf.
 /// Use "." to return the root value itself.
 pub(super) fn walk_yaml_path<'a>(
@@ -192,7 +547,7 @@ pub(super) fn walk_yaml_path<'a>(
     }
     let segments: Vec<&str> = path.split('.').collect();
     if segments.iter().any(|s| s.is_empty()) {
-        anyhow::bail!("invalid key path '{}': contains empty segment", path);
+        return Err(empty_segment(path));
     }
     let mut current = value;
 
@@ -200,25 +555,33 @@ pub(super) fn walk_yaml_path<'a>(
         match current {
             serde_yaml::Value::Mapping(map) => {
                 let key = serde_yaml::Value::String((*segment).to_string());
-                current = map.get(&key).ok_or_else(|| {
-                    let partial = segments[..=i].join(".");
-                    anyhow::Error::new(cfgd_core::errors::CfgdError::Config(
-                        cfgd_core::errors::ConfigError::KeyNotFound { key: partial },
-                    ))
-                })?;
+                current = map
+                    .get(&key)
+                    .ok_or_else(|| key_not_found(&segments[..=i], None))?;
             }
             // `daemon:` with nothing beneath it parses as Null and means the
             // section is absent, so a key asked for under it is not found —
-            // only a genuine scalar is "not a mapping".
+            // only a value standing in the way is a shape error.
             serde_yaml::Value::Null => {
-                let partial = segments[..=i].join(".");
-                return Err(anyhow::Error::new(cfgd_core::errors::CfgdError::Config(
-                    cfgd_core::errors::ConfigError::KeyNotFound { key: partial },
-                )));
+                return Err(key_not_found(&segments[..=i], None));
             }
-            _ => {
-                let partial = segments[..i].join(".");
-                anyhow::bail!("'{}' is not a mapping", partial);
+            other => {
+                // A union's scalar arm is its mapping with one field set, so
+                // that field answers from the scalar itself and every other
+                // field of the arm is absent.
+                if is_union_scalar(other)
+                    && let Some(field) = scalar_union_field(&segments[..i])
+                {
+                    if *segment == field && i + 1 == segments.len() {
+                        return Ok(other);
+                    }
+                    return Err(key_not_found(&segments[..=i], None));
+                }
+                return Err(descent_blocked(
+                    &segments[..i],
+                    &segments[..=i],
+                    blocking_shape(other),
+                ));
             }
         }
     }
@@ -232,45 +595,53 @@ pub(super) fn walk_yaml_path_mut<'a>(
     value: &'a mut serde_yaml::Value,
     path: &str,
 ) -> anyhow::Result<(&'a mut serde_yaml::Mapping, String)> {
-    let segments: Vec<&str> = path.split('.').collect();
-    if segments.is_empty() || segments.iter().any(|s| s.is_empty()) {
-        anyhow::bail!("invalid key path '{}': contains empty segment", path);
-    }
+    let segments = key_segments(path)?;
+    let found = blocking_shape(value);
+    let root =
+        section_mapping_mut(value).ok_or_else(|| descent_blocked(&[], &segments[..1], found))?;
+    walk_spec_path_mut(root, path).map(|(parent, leaf, _)| (parent, leaf))
+}
 
-    // A bare `spec:` is the same "nothing here yet" as a Null section below it.
-    if value.is_null() {
-        *value = serde_yaml::Value::Mapping(serde_yaml::Mapping::new());
-    }
-    let mut current = value;
-    // Walk to the parent of the final segment, creating intermediate maps
-    for (i, segment) in segments[..segments.len() - 1].iter().enumerate() {
-        let key = serde_yaml::Value::String((*segment).to_string());
-        let map = current.as_mapping_mut().ok_or_else(|| {
-            let partial = segments[..i].join(".");
-            anyhow::anyhow!("'{}' is not a mapping", partial)
-        })?;
-        // An absent key and a `daemon:` holding nothing (Null, which is also
-        // how a serialized `None` section reads back) both mean there is no
-        // section here yet, so both get a fresh mapping to descend into.
-        if matches!(map.get(&key), None | Some(serde_yaml::Value::Null)) {
-            map.insert(
-                key.clone(),
-                serde_yaml::Value::Mapping(serde_yaml::Mapping::new()),
-            );
+/// [`walk_yaml_path_mut`] from a `spec` already in hand as a mapping, the
+/// shape [`spec_mapping_mut`] hands a writer. The third element is the dotted
+/// path of the first parent the walk had to insert, `None` when `spec`
+/// already held every parent.
+pub(super) fn walk_spec_path_mut<'a>(
+    spec: &'a mut serde_yaml::Mapping,
+    path: &str,
+) -> anyhow::Result<(&'a mut serde_yaml::Mapping, String, Option<String>)> {
+    let segments = key_segments(path)?;
+    let (leaf, parents) = segments
+        .split_last()
+        // untyped-ok: `split` yields at least one segment, so no input reaches this.
+        .ok_or_else(|| anyhow::anyhow!("empty key path"))?;
+
+    let mut parent = spec;
+    let mut inserted = None;
+    // An absent key is inserted as Null, which reads as the empty section it
+    // stands for, exactly as a `daemon:` holding nothing does.
+    for (i, segment) in parents.iter().enumerate() {
+        let name = serde_yaml::Value::String((*segment).to_string());
+        let at = &segments[..=i];
+        if inserted.is_none() && !parent.contains_key(&name) {
+            inserted = Some(at.join("."));
         }
-        current = map
-            .get_mut(&key)
-            .ok_or_else(|| anyhow::anyhow!("failed to create intermediate mapping"))?;
+        let slot = parent.entry(name).or_insert(serde_yaml::Value::Null);
+        promote_scalar_union(slot, at);
+        let found = blocking_shape(slot);
+        parent = section_mapping_mut(slot)
+            .ok_or_else(|| descent_blocked(at, &segments[..i + 2], found))?;
     }
+    Ok((parent, (*leaf).to_string(), inserted))
+}
 
-    let parent = current
-        .as_mapping_mut()
-        .ok_or_else(|| anyhow::anyhow!("parent is not a mapping"))?;
-    let leaf = segments
-        .last()
-        .ok_or_else(|| anyhow::anyhow!("empty key path"))?
-        .to_string();
-    Ok((parent, leaf))
+/// A key path's dot-separated segments, refused when one of them is empty.
+fn key_segments(path: &str) -> anyhow::Result<Vec<&str>> {
+    let segments: Vec<&str> = path.split('.').collect();
+    if segments.iter().any(|s| s.is_empty()) {
+        return Err(empty_segment(path));
+    }
+    Ok(segments)
 }
 
 /// Parse a string value into the most appropriate YAML type.
@@ -292,6 +663,13 @@ pub(super) fn parse_yaml_value(s: &str) -> serde_yaml::Value {
     }
 }
 
+/// A caller-written config key as this module addresses it: relative to
+/// `spec`, which every path descends from and no segment names, so the
+/// `spec.` prefix the docs and `cfgd explain` print is optional.
+pub(super) fn spec_relative_key(key: &str) -> &str {
+    key.strip_prefix("spec.").unwrap_or(key)
+}
+
 /// Resolve a `spec`-relative key path onto the nested `spec.output.*` key that
 /// owns it, so `theme.name` and `output.theme.name` name one field.
 ///
@@ -299,6 +677,11 @@ pub(super) fn parse_yaml_value(s: &str) -> serde_yaml::Value {
 /// key in a document that has not been migrated, which is why `get` falls back
 /// to it and `set` removes it once it has written the nested one.
 pub(super) fn nested_output_key(key: &str) -> Option<String> {
+    // A path no field is spelled as is refused by the walk under the spelling
+    // the caller wrote, so it is never rewritten first.
+    if key.split('.').any(str::is_empty) {
+        return None;
+    }
     let (head, rest) = match key.split_once('.') {
         Some((head, rest)) => (head, Some(rest)),
         None => (key, None),
@@ -327,20 +710,48 @@ pub(super) fn flat_output_key(key: &str) -> Option<String> {
     Some(format!("{old}{}", &key[new.len()..]))
 }
 
-pub fn cmd_config_get(cli: &Cli, printer: &Printer, key: &str) -> anyhow::Result<()> {
+pub fn cmd_config_get(
+    cli: &Cli,
+    printer: &Printer,
+    startup: &crate::cli::startup::StartupDocument,
+    key: &str,
+) -> anyhow::Result<()> {
+    // The `spec.` prefix the docs and `cfgd explain` print is folded away
+    // first, so every later read of the key — the walk, the confirmation, the
+    // `-o json` payload and the error — names one field.
+    let key = spec_relative_key(key);
+    config_get_as(cli, printer, startup, key, Asked::key(key))
+}
+
+/// `config get` of the `spec`-relative `key`, refusing by `asked`.
+///
+/// Where `startup` is the document `cli.config` names, its text and parsed
+/// config answer the verb, so the file is read and parsed once per run.
+pub(super) fn config_get_as(
+    cli: &Cli,
+    printer: &Printer,
+    startup: &crate::cli::startup::StartupDocument,
+    key: &str,
+    asked: Asked<'_>,
+) -> anyhow::Result<()> {
     let config_path = &cli.config;
     if !config_path.exists() {
         return Err(no_config_error(printer, config_path));
     }
 
-    let contents = std::fs::read_to_string(config_path)?;
-    let raw: serde_yaml::Value = match serde_yaml::from_str(&contents) {
+    let on_hand = (startup.path() == config_path.as_path()).then_some(startup);
+    let contents = match on_hand.and_then(|doc| doc.on_disk()) {
+        Some(text) => std::borrow::Cow::Borrowed(text),
+        // startup-load-ok: the startup document names another file, or did not load
+        None => std::borrow::Cow::Owned(std::fs::read_to_string(config_path)?),
+    };
+    let raw = match crate::cli::source::config_tree(&contents, config_path) {
         Ok(v) => v,
         Err(e) => {
             let msg = format!("failed to parse config: {}", e);
             return Err(crate::cli::cli_error_ctx(
-                e.into(),
-                key,
+                e,
+                asked.spelling,
                 "parse_failed",
                 msg,
                 serde_json::json!({ "path": cfgd_core::to_posix_string(config_path) }),
@@ -352,7 +763,7 @@ pub fn cmd_config_get(cli: &Cli, printer: &Printer, key: &str) -> anyhow::Result
         Some(s) => s,
         None => {
             return Err(crate::cli::cli_error(
-                key,
+                asked.spelling,
                 "parse_failed",
                 "config has no 'spec' section",
                 serde_json::json!({ "path": cfgd_core::to_posix_string(config_path) }),
@@ -362,19 +773,56 @@ pub fn cmd_config_get(cli: &Cli, printer: &Printer, key: &str) -> anyhow::Result
 
     // A legacy flat key names the nested one; a document that still carries
     // the flat spelling is answered from it rather than reported missing.
-    let alias = nested_output_key(key).or_else(|| flat_output_key(key));
     let resolved = nested_output_key(key).unwrap_or_else(|| key.to_string());
-    let value = match walk_yaml_path(spec, &resolved).or_else(|e| match alias.as_deref() {
-        Some(alias) if alias != resolved => walk_yaml_path(spec, alias),
+    // The fallback is the flat twin of the key the walk RESOLVED to: a caller
+    // writing the legacy spelling already resolves to the nested key, and
+    // asking for its own twin again would leave `theme.name` — the spelling the
+    // docs print — with no fallback at all on a document nothing has migrated.
+    let alias = flat_output_key(&resolved);
+    let walked = walk_yaml_path(spec, &resolved).or_else(|e| match alias.as_deref() {
+        // Only a key that is not there is worth asking the other spelling
+        // about: a shape the walk refused is a fact about the document, and
+        // the legacy path would answer for it with a missing key.
+        Some(alias) if alias != resolved && classify_config_error(&e) == "key_not_found" => {
+            // A rescue that fails is not the refusal a reader gets: the key
+            // they named is the resolved one, and its own walk said why.
+            walk_yaml_path(spec, alias).map_err(|_| e)
+        }
         _ => Err(e),
-    }) {
-        Ok(v) => v,
-        Err(e) => {
+    });
+    // A key the document leaves out is answered with the value the build
+    // uses for it: the typed config with every omitted section the build
+    // substitutes filled in. A key the schema does not know, an unset
+    // optional, or a key under a section whose omission turns its feature off
+    // has no value there, and stays the missing key the walk reported, as
+    // does every key of a document that does not parse as a config.
+    let typed_default = match &walked {
+        Err(e) if classify_config_error(e) == "key_not_found" => {
+            let parsed;
+            let config = match on_hand {
+                Some(doc) => doc.config(),
+                None => {
+                    parsed = cfgd_core::config::parse_config(&contents, config_path).ok();
+                    parsed.as_ref()
+                }
+            };
+            config
+                .and_then(|config| typed_value_at(&config.spec.effective(), &resolved))
+                .filter(|value| !value.is_null())
+        }
+        _ => None,
+    };
+    let value = match (walked, typed_default.as_ref()) {
+        (Ok(v), _) => v,
+        (Err(_), Some(default)) => default,
+        (Err(e), None) => {
+            let e = as_asked(e, asked, &resolved);
             let msg = format!("{}", e);
+            let kind = classify_config_error(&e);
             return Err(crate::cli::cli_error_ctx(
                 e,
-                key,
-                "key_not_found",
+                asked.spelling,
+                kind,
                 msg,
                 serde_json::json!({ "path": cfgd_core::to_posix_string(config_path) }),
             ));
@@ -416,6 +864,21 @@ pub fn cmd_config_get(cli: &Cli, printer: &Printer, key: &str) -> anyhow::Result
 }
 
 pub fn cmd_config_set(cli: &Cli, printer: &Printer, key: &str, value: &str) -> anyhow::Result<()> {
+    // The `spec.` prefix the docs and `cfgd explain` print is folded away
+    // first, so every later read of the key — the walk, the confirmation, the
+    // `-o json` payload and the error — names one field.
+    let key = spec_relative_key(key);
+    config_set_as(cli, printer, key, value, Asked::key(key))
+}
+
+/// `config set` of the `spec`-relative `key` to `value`, refusing by `asked`.
+pub(super) fn config_set_as(
+    cli: &Cli,
+    printer: &Printer,
+    key: &str,
+    value: &str,
+    asked: Asked<'_>,
+) -> anyhow::Result<()> {
     let config_path = &cli.config;
     if !config_path.exists() {
         return Err(no_config_error(printer, config_path));
@@ -428,23 +891,44 @@ pub fn cmd_config_set(cli: &Cli, printer: &Printer, key: &str, value: &str) -> a
     // the caller reached for, and the flat key it replaced is dropped with it.
     let nested = nested_output_key(key);
     let written_key = nested.clone().unwrap_or_else(|| key.to_string());
-    let mutate_result = mutate_config_yaml(config_path, true, |raw| {
-        let spec = raw
-            .get_mut("spec")
-            .ok_or_else(|| anyhow::anyhow!("config has no 'spec' section"))?;
+
+    // The theme block's `name` is a free string in the document, so a name no
+    // preset answers to would be stored and every later render would silently
+    // fall back to the default palette. This setter runs with a printer in
+    // hand, which is what `Theme::from_preset`'s render-time fallback does not,
+    // so the refusal belongs here. Both spellings of the block are covered:
+    // `output.theme` carrying a scalar IS the name. The word judged is the one
+    // the caller wrote, whatever the parsed value's `String` arm holds:
+    // `123`, `true`, `null` and `3.14` each parse as another YAML shape, and a
+    // shape that is no scalar at all reads back as no preset either.
+    if matches!(written_key.as_str(), "output.theme" | "output.theme.name")
+        && let Some(accepted) = crate::cli::unknown_theme_preset(value)
+    {
+        return Err(crate::cli::cli_error(
+            asked.spelling,
+            "invalid_value",
+            format!("`{value}` is not a theme preset; accepted names: {accepted}"),
+            serde_json::json!({
+                "path": cfgd_core::to_posix_string(config_path),
+                "value": value,
+                "accepted": cfgd_core::output::Theme::PRESET_NAMES,
+            }),
+        ));
+    }
+
+    let mutate_result = mutate_config_yaml(config_path, |raw| {
+        let spec = spec_mapping_mut(raw, config_path)?;
         if nested.is_some() {
             let flat = serde_yaml::Value::String(
                 key.split_once('.')
                     .map_or(key, |(head, _)| head)
                     .to_string(),
             );
-            if let Some(map) = spec.as_mapping_mut()
-                && let Some(prior) = map.remove(&flat)
-            {
+            if let Some(prior) = spec.remove(&flat) {
                 previous = serde_json::to_value(&prior).unwrap_or(serde_json::Value::Null);
             }
         }
-        let (parent, leaf_key) = walk_yaml_path_mut(spec, &written_key)?;
+        let (parent, leaf_key, _) = walk_spec_path_mut(spec, &written_key)?;
         let yaml_key = serde_yaml::Value::String(leaf_key);
         if let Some(prior) = parent.get(&yaml_key) {
             previous = serde_json::to_value(prior).unwrap_or(serde_json::Value::Null);
@@ -454,12 +938,13 @@ pub fn cmd_config_set(cli: &Cli, printer: &Printer, key: &str, value: &str) -> a
     });
 
     if let Err(e) = mutate_result {
-        let kind = classify_mutate_error(&e);
+        let e = as_asked(e, asked, &written_key);
+        let kind = classify_config_error(&e);
         let msg = format!("{}", e);
         let hints = writability_hint(kind, config_path);
         return Err(crate::cli::cli_error_ctx_with_hints(
             e,
-            key,
+            asked.spelling,
             kind,
             msg,
             serde_json::json!({ "path": cfgd_core::to_posix_string(config_path) }),
@@ -484,6 +969,20 @@ pub fn cmd_config_set(cli: &Cli, printer: &Printer, key: &str, value: &str) -> a
 }
 
 pub fn cmd_config_unset(cli: &Cli, printer: &Printer, key: &str) -> anyhow::Result<()> {
+    // The `spec.` prefix the docs and `cfgd explain` print is folded away
+    // first, so every later read of the key — the walk, the confirmation, the
+    // `-o json` payload and the error — names one field.
+    let key = spec_relative_key(key);
+    config_unset_as(cli, printer, key, Asked::key(key))
+}
+
+/// `config unset` of the `spec`-relative `key`, refusing by `asked`.
+pub(super) fn config_unset_as(
+    cli: &Cli,
+    printer: &Printer,
+    key: &str,
+    asked: Asked<'_>,
+) -> anyhow::Result<()> {
     let config_path = &cli.config;
     if !config_path.exists() {
         return Err(no_config_error(printer, config_path));
@@ -493,10 +992,8 @@ pub fn cmd_config_unset(cli: &Cli, printer: &Printer, key: &str) -> anyhow::Resu
 
     let nested = nested_output_key(key);
     let written_key = nested.clone().unwrap_or_else(|| key.to_string());
-    let mutate_result = mutate_config_yaml(config_path, true, |raw| {
-        let spec = raw
-            .get_mut("spec")
-            .ok_or_else(|| anyhow::anyhow!("config has no 'spec' section"))?;
+    let mutate_result = mutate_config_yaml(config_path, |raw| {
+        let spec = spec_mapping_mut(raw, config_path)?;
         // Unsetting a presentation knob clears both spellings: one left
         // standing is a value the reader believes they removed.
         let mut removed_flat = false;
@@ -506,14 +1003,12 @@ pub fn cmd_config_unset(cli: &Cli, printer: &Printer, key: &str) -> anyhow::Resu
                     .map_or(key, |(head, _)| head)
                     .to_string(),
             );
-            if let Some(map) = spec.as_mapping_mut()
-                && let Some(prior) = map.remove(&flat)
-            {
+            if let Some(prior) = spec.remove(&flat) {
                 previous = serde_json::to_value(&prior).unwrap_or(serde_json::Value::Null);
                 removed_flat = true;
             }
         }
-        let (parent, leaf_key) = walk_yaml_path_mut(spec, &written_key)?;
+        let (parent, leaf_key, inserted) = walk_spec_path_mut(spec, &written_key)?;
         let yaml_key = serde_yaml::Value::String(leaf_key.clone());
         match parent.remove(&yaml_key) {
             Some(prior) => {
@@ -521,61 +1016,97 @@ pub fn cmd_config_unset(cli: &Cli, printer: &Printer, key: &str) -> anyhow::Resu
                 Ok(())
             }
             None if removed_flat => Ok(()),
-            None => Err(anyhow::Error::new(cfgd_core::errors::CfgdError::Config(
-                cfgd_core::errors::ConfigError::KeyNotFound {
-                    key: key.to_string(),
-                },
-            ))),
+            // Named at the first segment the document lacks, as `get`'s walk
+            // does, so `as_asked` says which part of the key is not declared.
+            None => Err(key_not_found(&[inserted.as_deref().unwrap_or(key)], None)),
         }
     });
 
-    if let Err(e) = mutate_result {
-        let kind = classify_mutate_error(&e);
-        let msg = format!("{}", e);
-        let hints = writability_hint(kind, config_path);
-        return Err(crate::cli::cli_error_ctx_with_hints(
-            e,
-            key,
-            kind,
-            msg,
-            serde_json::json!({ "path": cfgd_core::to_posix_string(config_path) }),
-            hints,
-        ));
-    }
+    let written = match mutate_result {
+        Ok(written) => written,
+        Err(e) => {
+            let e = as_asked(e, asked, &written_key);
+            let kind = classify_config_error(&e);
+            let msg = format!("{}", e);
+            let hints = writability_hint(kind, config_path);
+            return Err(crate::cli::cli_error_ctx_with_hints(
+                e,
+                asked.spelling,
+                kind,
+                msg,
+                serde_json::json!({ "path": cfgd_core::to_posix_string(config_path) }),
+                hints,
+            ));
+        }
+    };
 
-    printer.emit(
+    // A key with a default inside a section the document keeps is written
+    // back at that default, so the file still names it: the row and the
+    // payload report the reset, and `removed` holds only for a key the file
+    // no longer carries.
+    let document_key = format!("spec.{written_key}");
+    let reset = written.filled.iter().any(|filled| {
+        filled == &document_key
+            || filled
+                .strip_prefix(document_key.as_str())
+                .is_some_and(|rest| rest.starts_with('.'))
+    });
+    let doc = if reset {
+        let default =
+            typed_value_at(&written.config.spec, &written_key).unwrap_or(serde_yaml::Value::Null);
+        let shown = match &default {
+            serde_yaml::Value::String(s) => s.clone(),
+            other => serde_json::to_string(other).unwrap_or_default(),
+        };
+        Doc::new()
+            .status(Role::Ok, format!("Reset {written_key} to {shown}"))
+            .with_data(serde_json::json!({
+                "key": written_key,
+                "previousValue": previous,
+                "removed": false,
+                "value": serde_json::to_value(&default).unwrap_or(serde_json::Value::Null),
+            }))
+    } else {
         Doc::new()
             .status(Role::Ok, format!("Unset {}", written_key))
             .with_data(serde_json::json!({
                 "key": written_key,
                 "previousValue": previous,
                 "removed": true,
-            })),
-    );
+            }))
+    };
+    printer.emit(doc);
 
     Ok(())
 }
 
-/// Classify a `mutate_config_yaml` error into a stable error_kind for the
-/// emit-then-bail Doc payload. Falls back to `invalid_value` for shapes that
-/// don't match the known buckets (parse-fail / not-found / no-spec).
-fn classify_mutate_error(e: &anyhow::Error) -> &'static str {
+/// Classify a `config get`/`set`/`unset` failure into a stable error_kind for
+/// the emit-then-bail Doc payload. Falls back to `invalid_value` for shapes
+/// that don't match the known buckets (parse-fail / not-found / no-spec).
+///
+/// The typed errors are read first, and they are what tells a key that is not
+/// there from a document whose shape contradicts the schema: the two failures
+/// the walkers used to word alike, which left the human channel saying one
+/// thing and `-o json` the other.
+fn classify_config_error(e: &anyhow::Error) -> &'static str {
     // A read-only config dir is a distinct, scriptable failure: the pre-flight in
-    // mutate_config_yaml surfaces a typed TargetNotWritable. Match the typed error
-    // first so its kind survives regardless of message phrasing.
-    if let Some(cfgd_core::errors::CfgdError::File(
-        cfgd_core::errors::FileError::TargetNotWritable { .. },
-    )) = e.downcast_ref::<cfgd_core::errors::CfgdError>()
-    {
-        return "target_not_writable";
+    // mutate_config_yaml surfaces a typed TargetNotWritable.
+    match e.downcast_ref::<cfgd_core::errors::CfgdError>() {
+        Some(cfgd_core::errors::CfgdError::File(
+            cfgd_core::errors::FileError::TargetNotWritable { .. },
+        )) => return "target_not_writable",
+        Some(cfgd_core::errors::CfgdError::Config(
+            cfgd_core::errors::ConfigError::KeyNotFound { .. },
+        )) => return "key_not_found",
+        _ => {}
+    }
+    if e.downcast_ref::<ShapeBlocked>().is_some() {
+        return "parse_failed";
     }
     let msg = e.to_string();
     if msg.contains("not found") {
         "key_not_found"
-    } else if msg.contains("no 'spec' section")
-        || msg.contains("would become invalid")
-        || msg.contains("not a mapping")
-    {
+    } else if msg.contains("would become invalid") {
         "parse_failed"
     } else {
         "invalid_value"
@@ -585,17 +1116,20 @@ fn classify_mutate_error(e: &anyhow::Error) -> &'static str {
 /// Remediation hint for a `target_not_writable` mutate failure naming the config
 /// directory, or none for other failure kinds. Centralized so `config set` and
 /// `config unset` attach the identical chmod guidance.
-fn writability_hint(kind: &str, config_path: &Path) -> Vec<cfgd_core::output::HintCommands> {
+///
+/// Unconditional: the write refused, and the way out of a refusal is not a
+/// tutorial `spec.output.usageHints` gets to suppress.
+pub(in crate::cli) fn writability_hint(
+    kind: &str,
+    config_path: &Path,
+) -> Vec<cfgd_core::output::HintCommands> {
     if kind == "target_not_writable"
         && let Some(parent) = config_path.parent()
     {
-        return vec![
-            format!(
-                "check directory permissions: chmod u+w {}",
-                cfgd_core::to_posix_string(parent)
-            )
-            .into(),
-        ];
+        return vec![cfgd_core::output::HintCommands::unconditional(format!(
+            "check directory permissions: chmod u+w {}",
+            cfgd_core::to_posix_string(parent)
+        ))];
     }
     Vec::new()
 }
@@ -617,9 +1151,12 @@ mod tests {
             color: crate::cli::ColorWhen::Auto,
             output: OutputFormatArg(cfgd_core::output::OutputFormat::Table),
             list_envelope: false,
+            hints: false,
             no_hints: false,
             theme: None,
             mask_env_values: None,
+            migration_policy: None,
+            update_policy: None,
             jsonpath: None,
             yes: false,
             state_dir: None,
@@ -691,7 +1228,7 @@ spec:
 
         let cli = test_cli_for(config_path.clone());
         let printer = test_printer();
-        let err = cmd_config_set(&cli, &printer, "theme.name", "dark")
+        let err = cmd_config_set(&cli, &printer, "theme.name", "nord")
             .expect_err("read-only config dir must reject the mutation");
 
         let cfgd_err = err
@@ -757,15 +1294,451 @@ spec:
         assert_eq!(leaf, &serde_yaml::Value::String("monokai".into()));
     }
 
+    // 'a' exists and holds a scalar the schema declares no fields under, so
+    // 'a.b' is a key that can never exist — the walk names the path it could
+    // not reach.
     #[test]
     fn walk_yaml_path_missing_key_errs_with_partial_path() {
         let yaml: serde_yaml::Value = serde_yaml::from_str("a: 1\n").unwrap();
         let err = walk_yaml_path(&yaml, "a.b.c").unwrap_err();
-        let msg = err.to_string();
-        // 'a' exists but is not a mapping → error mentions the partial prefix
+        assert_eq!(err.to_string(), "config error: key 'a.b' not found");
+    }
+
+    // The other half: `daemon` is a mapping in the Config schema, so a scalar
+    // there is a document whose shape contradicts it, and the refusal says
+    // which shape it found.
+    #[test]
+    fn walk_yaml_path_at_a_declared_mapping_names_the_shape_it_found() {
+        let yaml: serde_yaml::Value = serde_yaml::from_str("daemon: yes\n").unwrap();
+        let err = walk_yaml_path(&yaml, "daemon.reconcile").unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "'daemon' holds a scalar where a mapping belongs"
+        );
+    }
+
+    // The document itself is no key, so its refusal names it in words; no
+    // path is quoted.
+    #[test]
+    fn a_config_document_that_is_not_a_mapping_is_refused_in_its_own_words() {
+        let mut root: serde_yaml::Value = serde_yaml::from_str("just a string\n").unwrap();
+        let err = spec_mapping_mut(&mut root, Path::new("cfgd.yaml")).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "the config document holds a scalar where a mapping belongs"
+        );
         assert!(
-            msg.contains("not a mapping") && msg.contains("a"),
-            "expected non-mapping error mentioning prefix 'a', got: {msg}"
+            err.chain()
+                .any(|e| e.downcast_ref::<ShapeBlocked>().is_some()),
+            "the refusal carries the typed shape block: {err:?}"
+        );
+    }
+
+    /// Every `spec`-relative path the `Config` schema names that a key path
+    /// can address: each top-level field, and then each field under one the
+    /// schema declares a mapping at, to any depth. A sequence's element fields
+    /// are left out because no key path names an element.
+    fn addressable_config_paths() -> Vec<Vec<String>> {
+        addressable_config_fields()
+            .into_iter()
+            .map(|(path, _)| path)
+            .collect()
+    }
+
+    /// [`addressable_config_paths`] with the schema node each path names.
+    fn addressable_config_fields() -> Vec<(Vec<String>, cfgd_core::schema::FieldNode)> {
+        fn walk(
+            fields: &[cfgd_core::schema::FieldNode],
+            at: &[String],
+            out: &mut Vec<(Vec<String>, cfgd_core::schema::FieldNode)>,
+        ) {
+            for field in fields {
+                if field.is_variant {
+                    continue;
+                }
+                let mut path = at.to_vec();
+                path.push(field.name.clone());
+                out.push((path.clone(), field.clone()));
+                if field.type_desc == "object" {
+                    walk(&field.children, &path, out);
+                }
+            }
+        }
+        let schema = crate::cli::explain::find_schema("Config").expect("the Config schema");
+        let mut out = Vec::new();
+        walk(&schema.fields, &[], &mut out);
+        out
+    }
+
+    /// Every scalar leaf [`addressable_config_fields`] reads, as the dotted
+    /// key `config set` takes and a value the parser accepts for the leaf's
+    /// declared type: `true` for a boolean, the first accepted word of an
+    /// enum, and for a free string the value the typed config gives the leaf
+    /// once its section is present, or a plain word where it gives none.
+    fn settable_config_leaves() -> Vec<(String, String)> {
+        let path = std::path::Path::new("cfgd.yaml");
+        addressable_config_fields()
+            .into_iter()
+            .filter(|(_, node)| node.type_desc != "object" && !node.type_desc.starts_with("[]"))
+            .map(|(segments, node)| {
+                let key = segments.join(".");
+                let value = if node.type_desc == "boolean" {
+                    "true".to_string()
+                } else if let Some(word) = node.enum_values.first() {
+                    word.clone()
+                } else {
+                    let section = spec_holding(
+                        &segments[..segments.len() - 1],
+                        serde_yaml::Value::Mapping(serde_yaml::Mapping::new()),
+                    );
+                    let doc = format!(
+                        "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n{}",
+                        serde_yaml::to_string(&section)
+                            .unwrap()
+                            .lines()
+                            .map(|l| format!("  {l}\n"))
+                            .collect::<String>()
+                    );
+                    cfgd_core::config::parse_config(&doc, path)
+                        .ok()
+                        .and_then(|cfg| serde_yaml::to_value(cfg.spec).ok())
+                        .and_then(|spec| walk_yaml_path(&spec, &key).ok().cloned())
+                        .and_then(|v| v.as_str().map(str::to_string))
+                        .unwrap_or_else(|| "probe".to_string())
+                };
+                (key, value)
+            })
+            .collect()
+    }
+
+    /// A fresh `cfgd init` scaffold in `dir`, returning the `cfgd.yaml` path.
+    fn scaffolded(dir: &std::path::Path) -> std::path::PathBuf {
+        crate::cli::init::cmd_init::scaffold(dir, Some("t"), None, &test_printer()).unwrap();
+        dir.join("cfgd.yaml")
+    }
+
+    /// The same scaffold as a `cfgd.toml`, the document form `--config` also
+    /// accepts, returning its path.
+    fn toml_scaffolded(dir: &std::path::Path) -> std::path::PathBuf {
+        let yaml = scaffolded(dir);
+        let tree: serde_yaml::Value =
+            serde_yaml::from_str(&std::fs::read_to_string(&yaml).unwrap()).unwrap();
+        std::fs::remove_file(&yaml).unwrap();
+        let path = dir.join("cfgd.toml");
+        std::fs::write(&path, toml::to_string(&tree).unwrap()).unwrap();
+        path
+    }
+
+    /// Why a written document is not aligned: the keys the load-time gate
+    /// would still ask about, and every scalar of the section holding `key`
+    /// that the typed value carries and the bytes do not declare.
+    fn misalignment(path: &std::path::Path, key: &str) -> Option<String> {
+        let bytes = std::fs::read_to_string(path).unwrap();
+        let parsed = match cfgd_core::config::parse_config(&bytes, path) {
+            Ok(parsed) => parsed,
+            Err(e) => return Some(format!("the written document does not parse: {e}")),
+        };
+        let pending = crate::cli::config_schema::pending_alignment(&parsed, &bytes, path).keys;
+        let declared = crate::cli::source::config_tree(&bytes, path).unwrap();
+        let typed = serde_yaml::to_value(&parsed.spec).unwrap();
+        let section = key.rsplit_once('.').map_or(".", |(parent, _)| parent);
+        let missing: Vec<String> = walk_yaml_path(&typed, section)
+            .ok()
+            .and_then(serde_yaml::Value::as_mapping)
+            .into_iter()
+            .flatten()
+            .filter(|(_, v)| {
+                matches!(
+                    v,
+                    serde_yaml::Value::Bool(_)
+                        | serde_yaml::Value::Number(_)
+                        | serde_yaml::Value::String(_)
+                )
+            })
+            .filter_map(|(k, _)| {
+                let sibling = match section {
+                    "." => format!("spec.{}", k.as_str()?),
+                    parent => format!("spec.{parent}.{}", k.as_str()?),
+                };
+                walk_yaml_path(&declared, &sibling)
+                    .is_err()
+                    .then_some(sibling)
+            })
+            .collect();
+        (!pending.is_empty() || !missing.is_empty())
+            .then(|| format!("pending {pending:?}, section siblings not declared {missing:?}"))
+    }
+
+    /// The scalar leaves the Config schema names today; a walk finding fewer
+    /// has stopped reading the schema.
+    const SETTABLE_LEAF_FLOOR: usize = 63;
+
+    // The population is every scalar leaf the schema names, so a field added
+    // to any section later is set here by being declared. A `config set` that
+    // brings a section into existence (`daemon.reconcile.autoApply` on a
+    // fresh scaffold, which declares no `daemon`) must leave that section
+    // declaring every sibling the build reads, or the next command's
+    // migration gate asks about fields the reader never touched.
+    #[test]
+    fn every_config_document_write_leaves_it_aligned() {
+        let leaves = settable_config_leaves();
+        assert!(
+            leaves.len() >= SETTABLE_LEAF_FLOOR,
+            "{} settable leaves, fewer than the {SETTABLE_LEAF_FLOOR} the schema names today",
+            leaves.len()
+        );
+        assert!(
+            leaves
+                .iter()
+                .any(|(key, _)| key == "daemon.reconcile.autoApply"),
+            "the leaf the defect was found on is in the population"
+        );
+        let printer = test_printer();
+        let mut offenders = Vec::new();
+        for toml in [false, true] {
+            for (key, value) in &leaves {
+                let dir = tempfile::tempdir().unwrap();
+                let path = if toml {
+                    toml_scaffolded(dir.path())
+                } else {
+                    scaffolded(dir.path())
+                };
+                let cli = test_cli_for(path.clone());
+                let form = if toml { "cfgd.toml" } else { "cfgd.yaml" };
+                let case = format!("config set {key} {value} on {form}");
+                if let Err(e) = cmd_config_set(&cli, &printer, key, value) {
+                    offenders.push(format!("{case}: refused: {e}"));
+                    continue;
+                }
+                if toml {
+                    let written = std::fs::read_to_string(&path).unwrap();
+                    if let Err(e) = written.parse::<toml::Table>() {
+                        offenders.push(format!("{case}: the document is no longer TOML: {e}"));
+                        continue;
+                    }
+                }
+                if let Some(why) = misalignment(&path, key) {
+                    offenders.push(format!("{case}: {why}"));
+                }
+            }
+        }
+        assert!(
+            offenders.is_empty(),
+            "a config set left the document partial:\n{}",
+            offenders.join("\n")
+        );
+    }
+
+    // The unset half, on a document declaring every leaf: removing a key
+    // with a default re-declares it at that default, and removing the last
+    // key of a section leaves either the section complete or no section at
+    // all, both of which the gate reads as aligned. The payload says which
+    // of the two happened: `removed` only for a key the file no longer
+    // carries, and the value written back for a key reset to its default.
+    #[test]
+    fn every_config_document_unset_leaves_it_aligned() {
+        let leaves = settable_config_leaves();
+        let printer = test_printer();
+        let full = tempfile::tempdir().unwrap();
+        let full_path = scaffolded(full.path());
+        let full_cli = test_cli_for(full_path.clone());
+        for (key, value) in &leaves {
+            cmd_config_set(&full_cli, &printer, key, value)
+                .unwrap_or_else(|e| panic!("config set {key} {value}: {e}"));
+        }
+        let full_doc = std::fs::read_to_string(&full_path).unwrap();
+
+        let mut offenders = Vec::new();
+        let mut payloads = std::collections::BTreeMap::new();
+        for (key, _) in &leaves {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("cfgd.yaml");
+            std::fs::write(&path, &full_doc).unwrap();
+            let cli = test_cli_for(path.clone());
+            let (json_printer, cap) = Printer::for_test_doc_with_format(OutputFormat::Json);
+            if let Err(e) = cmd_config_unset(&cli, &json_printer, key) {
+                offenders.push(format!("config unset {key}: refused: {e}"));
+                continue;
+            }
+            drop(json_printer);
+            if let Some(why) = misalignment(&path, key) {
+                offenders.push(format!("config unset {key}: {why}"));
+            }
+            let payload = cap.json().expect("doc captured json");
+            let written: serde_yaml::Value =
+                serde_yaml::from_str(&cfgd_core::test_helpers::walked_file_body(&path)).unwrap();
+            let on_file = walk_yaml_path(&written, &format!("spec.{key}")).ok();
+            match on_file {
+                None if payload["removed"] != true => offenders.push(format!(
+                    "config unset {key}: the file no longer carries it, the payload says {payload}"
+                )),
+                Some(value)
+                    if payload["removed"] != false
+                        || payload["value"] != serde_json::to_value(value).unwrap() =>
+                {
+                    offenders.push(format!(
+                        "config unset {key}: the file holds {value:?}, the payload says {payload}"
+                    ))
+                }
+                _ => {}
+            }
+            payloads.insert(key.clone(), payload);
+        }
+        assert!(
+            offenders.is_empty(),
+            "a config unset left the document partial or misreported it:\n{}",
+            offenders.join("\n")
+        );
+
+        let reset = &payloads["daemon.reconcile.autoApply"];
+        assert_eq!(
+            (&reset["removed"], &reset["value"]),
+            (&serde_json::json!(false), &serde_json::json!(false)),
+            "a field with a default is reported reset to that default: {reset}"
+        );
+        let removed = &payloads["profile"];
+        assert_eq!(
+            (&removed["removed"], removed.get("value")),
+            (&serde_json::json!(true), None),
+            "an optional field is reported removed: {removed}"
+        );
+    }
+
+    /// A `spec` document holding `leaf` at `path` and nothing else.
+    fn spec_holding(path: &[String], leaf: serde_yaml::Value) -> serde_yaml::Value {
+        path.iter().rev().fold(leaf, |value, segment| {
+            let mut map = serde_yaml::Mapping::new();
+            map.insert(serde_yaml::Value::String(segment.clone()), value);
+            serde_yaml::Value::Mapping(map)
+        })
+    }
+
+    // The population walk behind `descent_blocked`: for every field the Config
+    // schema names, plant a value of the wrong shape under it and ask for a key
+    // beneath it, then check the refusal against what the schema declares
+    // there. A free-form map (`spec.aliases`) is a mapping that names no child
+    // field, and a list is a shape the key walker cannot address, which the
+    // document did not get wrong; both read the same as their neighbours under
+    // a child count.
+    #[test]
+    fn every_config_spec_field_refuses_a_wrong_shape_by_its_declared_shape() {
+        use crate::cli::explain::DeclaredShape;
+
+        let paths = addressable_config_paths();
+        assert!(
+            paths.len() >= 60,
+            "the Config schema names far more addressable fields than this: {}",
+            paths.len()
+        );
+        for expected in ["aliases", "sources", "origin", "daemon", "fileStrategy"] {
+            assert!(
+                paths.iter().any(|p| p == &[expected.to_string()]),
+                "{expected} is in the population"
+            );
+        }
+
+        // The loop below reads its expected refusal from `config_field_shape`,
+        // the same function `descent_blocked` asks, so it pins the mapping
+        // itself. These rows say what the schema declares, so an oracle
+        // that answers a child count again fails here. One row per `type_desc`
+        // spelling the reflection holds, because the spelling is what the
+        // oracle branches on: a demoted `[]string` or `boolean` arm reads as a
+        // scalar, the loop below agrees with it, and only a row named at that
+        // spelling can see it.
+        for (path, expected) in [
+            // object, no children of its own
+            (&["aliases"][..], DeclaredShape::Mapping),
+            // object, with children
+            (&["daemon"][..], DeclaredShape::Mapping),
+            // []object
+            (&["sources"][..], DeclaredShape::Sequence),
+            (&["origin"][..], DeclaredShape::Sequence),
+            // []string
+            (
+                &["compliance", "scope", "watchPaths"][..],
+                DeclaredShape::Sequence,
+            ),
+            // string
+            (&["fileStrategy"][..], DeclaredShape::Leaf),
+            // boolean
+            (&["daemon", "enabled"][..], DeclaredShape::Leaf),
+            // the schema names nothing here
+            (&["nope"][..], DeclaredShape::Unknown),
+        ] {
+            assert_eq!(
+                crate::cli::explain::config_field_shape(path),
+                expected,
+                "the declared shape at {path:?}"
+            );
+        }
+
+        let scalar = serde_yaml::Value::String("planted".into());
+        let sequence = serde_yaml::Value::Sequence(vec![scalar.clone()]);
+        for path in &paths {
+            let segments: Vec<&str> = path.iter().map(String::as_str).collect();
+            let declared = crate::cli::explain::config_field_shape(&segments);
+            let key = format!("{}.probe", path.join("."));
+            // A scalar-or-mapping union's scalar arm IS its mapping with one
+            // field set, so it is settled before the shape question is asked
+            // and `probe` is simply another field of the arm.
+            let union_arm = scalar_union_field(&segments).is_some();
+
+            for (planted, expected) in [
+                (
+                    scalar.clone(),
+                    match declared {
+                        _ if union_arm => "key_not_found",
+                        DeclaredShape::Mapping | DeclaredShape::Sequence => "parse_failed",
+                        DeclaredShape::Leaf | DeclaredShape::Unknown => "key_not_found",
+                    },
+                ),
+                (
+                    sequence.clone(),
+                    match declared {
+                        DeclaredShape::Sequence => "key_not_found",
+                        _ => "parse_failed",
+                    },
+                ),
+            ] {
+                let spec = spec_holding(path, planted.clone());
+                let err = walk_yaml_path(&spec, &key)
+                    .err()
+                    .unwrap_or_else(|| panic!("{key} resolves nothing on {planted:?}"));
+                assert_eq!(
+                    classify_config_error(&err),
+                    expected,
+                    "read walk on {key} over {planted:?} (declared {declared:?}): {err}"
+                );
+
+                // The setter promotes a union's scalar arm, so only the read
+                // walk answers there.
+                if union_arm && planted.is_string() {
+                    continue;
+                }
+                let mut spec = spec_holding(path, planted.clone());
+                let err = walk_yaml_path_mut(&mut spec, &key)
+                    .err()
+                    .unwrap_or_else(|| panic!("{key} is writable on {planted:?}"));
+                assert_eq!(
+                    classify_config_error(&err),
+                    expected,
+                    "write walk on {key} over {planted:?} (declared {declared:?}): {err}"
+                );
+            }
+        }
+    }
+
+    // The schema names no `a`, so a value there is a leaf as far as the key
+    // walker can tell, and a sequence standing at one is a shape the document
+    // got wrong. A list the walker declines to index into is a different case,
+    // which the document did not get wrong.
+    #[test]
+    fn walk_yaml_path_blocked_by_a_sequence_names_it() {
+        let yaml: serde_yaml::Value = serde_yaml::from_str("a:\n  - 1\n").unwrap();
+        let err = walk_yaml_path(&yaml, "a.b").unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "'a' holds a sequence where a mapping belongs"
         );
     }
 
@@ -874,7 +1847,13 @@ spec:
         let cli = test_cli_for(path.clone());
         let printer = test_printer();
 
-        let err = cmd_config_get(&cli, &printer, "profile").unwrap_err();
+        let err = cmd_config_get(
+            &cli,
+            &printer,
+            &crate::cli::startup::StartupDocument::load(&cli.config),
+            "profile",
+        )
+        .unwrap_err();
         assert_no_config_error(&err, &path);
     }
 
@@ -886,7 +1865,13 @@ spec:
         let cli = test_cli_for(write_sample_config(dir.path()));
         let (printer, cap) = Printer::for_test_doc();
 
-        cmd_config_get(&cli, &printer, "theme.name").unwrap();
+        cmd_config_get(
+            &cli,
+            &printer,
+            &crate::cli::startup::StartupDocument::load(&cli.config),
+            "theme.name",
+        )
+        .unwrap();
         drop(printer);
 
         assert_eq!(cap.human().trim(), "monokai");
@@ -906,7 +1891,13 @@ spec:
         let cli = test_cli_for(path);
         let (printer, cap) = Printer::for_test_doc();
 
-        cmd_config_get(&cli, &printer, "output.theme.name").unwrap();
+        cmd_config_get(
+            &cli,
+            &printer,
+            &crate::cli::startup::StartupDocument::load(&cli.config),
+            "output.theme.name",
+        )
+        .unwrap();
         drop(printer);
 
         assert_eq!(cap.human().trim(), "nord");
@@ -976,7 +1967,13 @@ spec:
         let cli = test_cli_for(write_sample_config(dir.path()));
         let (printer, cap) = Printer::for_test_doc();
 
-        cmd_config_get(&cli, &printer, "profile").unwrap();
+        cmd_config_get(
+            &cli,
+            &printer,
+            &crate::cli::startup::StartupDocument::load(&cli.config),
+            "profile",
+        )
+        .unwrap();
         drop(printer);
 
         let captured = cap.human();
@@ -993,7 +1990,13 @@ spec:
         let cli = test_cli_for(write_sample_config(dir.path()));
         let (printer, cap) = Printer::for_test_doc();
 
-        cmd_config_get(&cli, &printer, "theme.name").unwrap();
+        cmd_config_get(
+            &cli,
+            &printer,
+            &crate::cli::startup::StartupDocument::load(&cli.config),
+            "theme.name",
+        )
+        .unwrap();
         drop(printer);
 
         let captured = cap.human();
@@ -1006,7 +2009,13 @@ spec:
         let cli = test_cli_for(write_sample_config(dir.path()));
         let printer = test_printer();
 
-        let err = cmd_config_get(&cli, &printer, "missing").unwrap_err();
+        let err = cmd_config_get(
+            &cli,
+            &printer,
+            &crate::cli::startup::StartupDocument::load(&cli.config),
+            "missing",
+        )
+        .unwrap_err();
         assert!(
             err.to_string().contains("'missing' not found"),
             "expected key-not-found error, got: {err}"
@@ -1042,7 +2051,13 @@ spec:
         let cli = test_cli_for(path);
         let printer = test_printer();
 
-        let err = cmd_config_get(&cli, &printer, "profile").unwrap_err();
+        let err = cmd_config_get(
+            &cli,
+            &printer,
+            &crate::cli::startup::StartupDocument::load(&cli.config),
+            "profile",
+        )
+        .unwrap_err();
         assert!(
             err.to_string().contains("no 'spec' section"),
             "expected 'no spec section' error, got: {err}"
@@ -1055,12 +2070,106 @@ spec:
         let cli = test_cli_for(write_sample_config(dir.path()));
         let (printer, cap) = Printer::for_test_doc_with_format(OutputFormat::Json);
 
-        cmd_config_get(&cli, &printer, "theme").unwrap();
+        cmd_config_get(
+            &cli,
+            &printer,
+            &crate::cli::startup::StartupDocument::load(&cli.config),
+            "theme",
+        )
+        .unwrap();
         drop(printer);
 
         let parsed = cap.json().expect("doc captured json");
         assert_eq!(parsed["key"], "theme");
         assert_eq!(parsed["value"]["name"], "monokai");
+    }
+
+    /// `--config` accepts a `cfgd.toml`, so `config get` reads one in its own
+    /// format: every shape a YAML document answers with, and a TOML syntax
+    /// error refused as the document's own parse failure.
+    #[test]
+    fn cmd_config_get_reads_a_toml_document_in_its_own_format() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cfgd.toml");
+        std::fs::write(
+            &path,
+            "apiVersion = \"cfgd.io/v1alpha1\"\nkind = \"Config\"\n\n[metadata]\nname = \"t\"\n\n\
+             [spec]\nprofile = \"work\"\n\n[spec.theme]\nname = \"monokai\"\n",
+        )
+        .unwrap();
+        let cli = test_cli_for(path.clone());
+
+        let (printer, cap) = Printer::for_test_doc();
+        cmd_config_get(
+            &cli,
+            &printer,
+            &crate::cli::startup::StartupDocument::load(&cli.config),
+            "profile",
+        )
+        .unwrap();
+        drop(printer);
+        assert_eq!(cap.human().trim(), "work");
+
+        let (printer, cap) = Printer::for_test_doc();
+        cmd_config_get(
+            &cli,
+            &printer,
+            &crate::cli::startup::StartupDocument::load(&cli.config),
+            "theme.name",
+        )
+        .unwrap();
+        drop(printer);
+        assert_eq!(cap.human().trim(), "monokai");
+
+        let (printer, cap) = Printer::for_test_doc_with_format(OutputFormat::Json);
+        cmd_config_get(
+            &cli,
+            &printer,
+            &crate::cli::startup::StartupDocument::load(&cli.config),
+            "theme",
+        )
+        .unwrap();
+        drop(printer);
+        let parsed = cap.json().expect("doc captured json");
+        assert_eq!(parsed["value"]["name"], "monokai");
+
+        std::fs::write(&path, "[spec\nprofile = \"work\"\n").unwrap();
+        let err = cmd_config_get(
+            &cli,
+            &test_printer(),
+            &crate::cli::startup::StartupDocument::load(&cli.config),
+            "profile",
+        )
+        .unwrap_err();
+        let meta = err
+            .downcast_ref::<crate::cli::CliErrorMeta>()
+            .expect("CliErrorMeta carrier on parse_failed");
+        assert_eq!(meta.error_kind, "parse_failed");
+    }
+
+    // TOML has no null, so `~` on a cfgd.toml is refused by name before a
+    // byte is written; dropping the key would make the set a silent no-op.
+    #[test]
+    fn cmd_config_set_null_on_a_toml_document_is_refused_and_writes_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = toml_scaffolded(dir.path());
+        let before = std::fs::read(&path).unwrap();
+        let cli = test_cli_for(path.clone());
+        let err = cmd_config_set(&cli, &test_printer(), "daemon.enabled", "~").unwrap_err();
+        let meta = err
+            .downcast_ref::<crate::cli::CliErrorMeta>()
+            .expect("CliErrorMeta carrier on parse_failed");
+        assert_eq!(meta.error_kind, "parse_failed", "{err}");
+        let message = err.to_string();
+        assert!(
+            message.contains("spec.daemon.enabled") && message.contains("TOML has no null"),
+            "the refusal names the key and the reason: {message}"
+        );
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            before,
+            "a refused write leaves the bytes alone"
+        );
     }
 
     // --- cmd_config_set ---
@@ -1240,7 +2349,13 @@ spec:
         let cli = test_cli_for(write_sample_config(dir.path()));
         let (printer, cap) = Printer::for_test_doc();
 
-        cmd_config_get(&cli, &printer, "theme").unwrap();
+        cmd_config_get(
+            &cli,
+            &printer,
+            &crate::cli::startup::StartupDocument::load(&cli.config),
+            "theme",
+        )
+        .unwrap();
         drop(printer);
 
         let captured = cap.human();
@@ -1264,7 +2379,13 @@ spec:
         let cli = test_cli_for(path);
         let (printer, cap) = Printer::for_test_doc();
 
-        cmd_config_get(&cli, &printer, "profile").unwrap();
+        cmd_config_get(
+            &cli,
+            &printer,
+            &crate::cli::startup::StartupDocument::load(&cli.config),
+            "profile",
+        )
+        .unwrap();
         drop(printer);
 
         let captured = cap.human();
@@ -1286,7 +2407,13 @@ spec:
         let cli = test_cli_for(path);
         let printer = test_printer();
 
-        let err = cmd_config_get(&cli, &printer, "profile").unwrap_err();
+        let err = cmd_config_get(
+            &cli,
+            &printer,
+            &crate::cli::startup::StartupDocument::load(&cli.config),
+            "profile",
+        )
+        .unwrap_err();
         let meta = err
             .downcast_ref::<crate::cli::CliErrorMeta>()
             .expect("CliErrorMeta carrier on parse_failed");
@@ -1321,15 +2448,36 @@ spec:
         );
     }
 
-    // Target 3: walk_yaml_path_mut names the segment that resolved to a scalar,
-    // the same spelling the read walk uses.
-    // `a: 1` → attempting `a.b.c` finds `a` = scalar 1, not a mapping.
+    // Target 3: the setter refuses a blocked descent exactly as the read walk
+    // does, so a script reading one channel and a person reading the other are
+    // told the same thing. `a: 1` is a leaf the schema declares nothing under;
+    // `daemon: yes` is a mapping the document got wrong.
     #[test]
-    fn walk_yaml_path_mut_non_mapping_intermediate_errs() {
+    fn walk_yaml_path_mut_under_a_leaf_is_a_missing_key() {
         let mut yaml: serde_yaml::Value = serde_yaml::from_str("a: 1\n").unwrap();
         let err = walk_yaml_path_mut(&mut yaml, "a.b.c").unwrap_err();
-        let msg = err.to_string();
-        assert_eq!(msg, "'a' is not a mapping");
+        assert_eq!(err.to_string(), "config error: key 'a.b' not found");
+    }
+
+    #[test]
+    fn walk_yaml_path_mut_at_a_declared_mapping_names_the_shape_it_found() {
+        let mut yaml: serde_yaml::Value = serde_yaml::from_str("daemon: yes\n").unwrap();
+        let err = walk_yaml_path_mut(&mut yaml, "daemon.reconcile.interval").unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "'daemon' holds a scalar where a mapping belongs"
+        );
+    }
+
+    // The root of the walk is `spec` itself, which no segment names.
+    #[test]
+    fn walk_yaml_path_mut_names_the_root_when_the_document_is_not_a_mapping() {
+        let mut yaml: serde_yaml::Value = serde_yaml::from_str("- a\n").unwrap();
+        let err = walk_yaml_path_mut(&mut yaml, "profile").unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "'spec' holds a sequence where a mapping belongs"
+        );
     }
 
     // `daemon: null` is how a serialized `None` section reads back (and how a
@@ -1365,7 +2513,7 @@ spec:
         let err = walk_yaml_path(&yaml, "daemon.reconcile").unwrap_err();
         match err.downcast_ref::<cfgd_core::errors::CfgdError>() {
             Some(cfgd_core::errors::CfgdError::Config(
-                cfgd_core::errors::ConfigError::KeyNotFound { key },
+                cfgd_core::errors::ConfigError::KeyNotFound { key, .. },
             )) => assert_eq!(key, "daemon.reconcile"),
             other => panic!("expected KeyNotFound, got {other:?}"),
         }
@@ -1414,7 +2562,7 @@ spec:
 
         let cli = test_cli_for(config_path.clone());
         let printer = test_printer();
-        cmd_config_set(&cli, &printer, "theme.name", "dark").unwrap();
+        cmd_config_set(&cli, &printer, "theme.name", "nord").unwrap();
 
         let after = std::fs::read_to_string(&config_path).unwrap();
         let mut lines = after.lines();
@@ -1428,13 +2576,733 @@ spec:
             "# team banner",
             "user banner must survive the rewrite"
         );
-        assert!(after.contains("name: dark"), "mutation must land: {after}");
+        assert!(after.contains("name: nord"), "mutation must land: {after}");
 
         // Second rewrite must not duplicate the block.
-        cmd_config_set(&cli, &printer, "theme.name", "light").unwrap();
+        cmd_config_set(&cli, &printer, "theme.name", "minimal").unwrap();
         let after2 = std::fs::read_to_string(&config_path).unwrap();
         assert_eq!(after2.matches("# team banner").count(), 1);
         assert_eq!(after2.matches("yaml-language-server").count(), 1);
-        assert!(after2.contains("name: light"));
+        assert!(after2.contains("name: minimal"));
+    }
+    /// The `spec.` prefix the docs and `cfgd explain` print names the same
+    /// field on every key verb, so a reader who copies a path out of
+    /// `cfgd explain` can paste it into any of the three.
+    #[test]
+    fn every_config_key_verb_accepts_the_spec_prefix_the_docs_print() {
+        let dir = tempfile::tempdir().unwrap();
+
+        // get: the prefixed spelling answers with the same value the bare one
+        // does, and the `-o json` envelope keys it the folded way.
+        let cli = test_cli_for(write_sample_config(dir.path()));
+        let (printer, cap) = Printer::for_test_doc();
+        cmd_config_get(
+            &cli,
+            &printer,
+            &crate::cli::startup::StartupDocument::load(&cli.config),
+            "spec.theme.name",
+        )
+        .unwrap();
+        drop(printer);
+        assert_eq!(cap.human().trim(), "monokai");
+
+        let (printer, cap) = Printer::for_test_doc_with_format(OutputFormat::Json);
+        cmd_config_get(
+            &cli,
+            &printer,
+            &crate::cli::startup::StartupDocument::load(&cli.config),
+            "spec.output.theme.name",
+        )
+        .unwrap();
+        drop(printer);
+        let parsed = cap.json().expect("doc captured json");
+        assert_eq!(parsed["key"], "output.theme.name");
+        assert_eq!(parsed["value"], "monokai");
+
+        // set: the prefixed key writes the field it names and nothing else.
+        let printer = test_printer();
+        cmd_config_set(&cli, &printer, "spec.migrationPolicy", "Ignore").unwrap();
+        let after = std::fs::read_to_string(&cli.config).unwrap();
+        assert!(
+            after.contains("  migrationPolicy: Ignore\n"),
+            "the prefixed key writes `spec.migrationPolicy`: {after}"
+        );
+        assert!(
+            !after.contains("spec:\n  spec:") && !after.contains("\n  spec:"),
+            "nothing named `spec` is written underneath `spec`: {after}"
+        );
+        assert!(
+            after.contains("name: monokai"),
+            "the write touches nothing else: {after}"
+        );
+
+        // unset: the prefixed key clears the field the bare one addresses.
+        cmd_config_unset(&cli, &printer, "spec.theme.name").unwrap();
+        let cleared = std::fs::read_to_string(&cli.config).unwrap();
+        assert!(
+            !cleared.contains("name: monokai"),
+            "the prefixed unset clears `spec.output.theme.name`: {cleared}"
+        );
+    }
+
+    /// Every `cmd_config_*` taking a caller-written key folds the `spec.`
+    /// prefix before anything reads it. The population is read off the source
+    /// with no hand list, so a fourth key verb joins it by being compiled.
+    #[test]
+    fn every_config_key_verb_folds_the_spec_prefix_before_it_reads_the_key() {
+        use cfgd_core::test_helpers::{calls_free_fn, file_declarations};
+
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/cli/config_cmd.rs");
+        let declarations = file_declarations(&path);
+        let mut verbs = Vec::new();
+        let mut missing = Vec::new();
+        for (name, owner, code) in &declarations {
+            let signature = code.split_once(')').map_or(code.as_str(), |(head, _)| head);
+            if owner.is_some()
+                || !name.starts_with("cmd_config_")
+                || !signature.contains("key: &str")
+            {
+                continue;
+            }
+            verbs.push(name.clone());
+            if !calls_free_fn(code, "spec_relative_key") {
+                missing.push(name.clone());
+            }
+        }
+        assert!(
+            verbs.len() >= 3,
+            "the walk found {} key verbs: {verbs:?}",
+            verbs.len()
+        );
+        assert!(
+            missing.is_empty(),
+            "these key verbs never fold the `spec.` prefix, so the spelling the docs print \
+             is a usage error there: {missing:?}"
+        );
+    }
+
+    /// A config document whose `spec` is `spec`.
+    fn document_text(spec: &serde_yaml::Value) -> String {
+        let body: String = serde_yaml::to_string(spec)
+            .unwrap()
+            .lines()
+            .map(|l| format!("  {l}\n"))
+            .collect();
+        format!("apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n{body}")
+    }
+
+    /// [`document_text`] written to `dir/cfgd.yaml`, returning its path.
+    fn document_with_spec(dir: &std::path::Path, spec: &serde_yaml::Value) -> std::path::PathBuf {
+        let path = dir.join("cfgd.yaml");
+        std::fs::write(&path, document_text(spec)).unwrap();
+        path
+    }
+
+    /// The refusal meta a `config` verb's error carries.
+    fn refusal(err: &anyhow::Error) -> &crate::cli::CliErrorMeta {
+        err.downcast_ref::<crate::cli::CliErrorMeta>()
+            .unwrap_or_else(|| panic!("a typed refusal, got: {err:#}"))
+    }
+
+    /// `spec.migrationPolicy` has a default the load-time gate already runs
+    /// under, so `config get` answers it on a document that never names it,
+    /// on both channels. A key the schema does not know, and an optional key
+    /// with no value, stay the missing key.
+    #[test]
+    fn cmd_config_get_answers_an_undeclared_migration_policy_with_the_build_default() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cfgd.yaml");
+        std::fs::write(
+            &path,
+            "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  daemon:\n    enabled: true\n",
+        )
+        .unwrap();
+        let cli = test_cli_for(path);
+
+        let (printer, cap) = Printer::for_test_doc();
+        cmd_config_get(
+            &cli,
+            &printer,
+            &crate::cli::startup::StartupDocument::load(&cli.config),
+            "migrationPolicy",
+        )
+        .unwrap();
+        drop(printer);
+        assert_eq!(cap.human().trim(), "Prompt");
+
+        let (printer, cap) = Printer::for_test_doc_with_format(OutputFormat::Json);
+        cmd_config_get(
+            &cli,
+            &printer,
+            &crate::cli::startup::StartupDocument::load(&cli.config),
+            "spec.migrationPolicy",
+        )
+        .unwrap();
+        drop(printer);
+        assert_eq!(
+            cap.json().expect("doc captured json"),
+            serde_json::json!({ "key": "migrationPolicy", "value": "Prompt" })
+        );
+
+        for (key, named) in [("nope", "nope"), ("profile", "profile")] {
+            let err = cmd_config_get(
+                &cli,
+                &test_printer(),
+                &crate::cli::startup::StartupDocument::load(&cli.config),
+                key,
+            )
+            .unwrap_err();
+            let meta = refusal(&err);
+            assert_eq!(meta.error_kind, "key_not_found", "{key}: {}", meta.message);
+            assert!(
+                meta.message.contains(&format!("key '{named}' not found")),
+                "{key}: {}",
+                meta.message
+            );
+        }
+    }
+
+    /// Every scalar leaf the `Config` schema addresses, asked for on a document
+    /// that declares the sections above it and nothing else, answers with the
+    /// value the typed config carries there, read off its JSON serialization:
+    /// a default where serde fills one, the value its `OMITTED_FIELDS` row
+    /// reads where the typed value is null and the build fills it in, and the
+    /// missing key where it is null and nothing is set.
+    #[test]
+    fn every_config_leaf_the_document_leaves_out_answers_with_the_typed_default() {
+        let leaves: Vec<Vec<String>> = addressable_config_fields()
+            .into_iter()
+            .filter(|(_, node)| node.type_desc != "object" && !node.type_desc.starts_with("[]"))
+            .map(|(segments, _)| segments)
+            .collect();
+        let mut answered = Vec::new();
+        for segments in &leaves {
+            let key = segments.join(".");
+            let dir = tempfile::tempdir().unwrap();
+            let sections = spec_holding(
+                &segments[..segments.len() - 1],
+                serde_yaml::Value::Mapping(serde_yaml::Mapping::new()),
+            );
+            let bytes = document_text(&sections);
+            let path = dir.path().join("cfgd.yaml");
+            std::fs::write(&path, &bytes).unwrap();
+            let config = cfgd_core::config::parse_config(&bytes, &path)
+                .unwrap_or_else(|e| panic!("{key}: the sections above it parse empty: {e}"));
+            let pointer = format!("/{}", segments.join("/"));
+            let typed = serde_json::to_value(&config.spec)
+                .unwrap()
+                .pointer(&pointer)
+                .cloned()
+                .unwrap_or(serde_json::Value::Null);
+            let filled = cfgd_core::test_helpers::OMITTED_FIELDS
+                .iter()
+                .find(|row| row.key == key)
+                .and_then(|row| row.omitted);
+            let typed = match filled {
+                Some(omitted) if typed.is_null() => {
+                    serde_json::to_value(omitted(&config.spec)).unwrap()
+                }
+                _ => typed,
+            };
+            let cli = test_cli_for(path);
+            let (printer, cap) = Printer::for_test_doc_with_format(OutputFormat::Json);
+            let result = cmd_config_get(
+                &cli,
+                &printer,
+                &crate::cli::startup::StartupDocument::load(&cli.config),
+                &key,
+            );
+            drop(printer);
+            if typed.is_null() {
+                let err = result
+                    .err()
+                    .unwrap_or_else(|| panic!("{key} holds no typed value, yet `get` answered"));
+                assert_eq!(refusal(&err).error_kind, "key_not_found", "{key}");
+                continue;
+            }
+            if let Err(err) = result {
+                panic!("{key} carries the typed default {typed}, yet `get` refused: {err:#}");
+            }
+            assert_eq!(
+                cap.json().expect("doc captured json"),
+                serde_json::json!({ "key": key, "value": typed }),
+                "{key}"
+            );
+            answered.push(key);
+        }
+        for named in [
+            "migrationPolicy",
+            "fileStrategy",
+            "daemon.enabled",
+            "daemon.reconcile.interval",
+            "output.theme.name",
+            "output.usageHints",
+            "update.channel",
+        ] {
+            assert!(
+                answered.iter().any(|key| key == named),
+                "{named} was not answered from its default; answered: {answered:?}"
+            );
+        }
+        assert!(
+            answered.len() >= ANSWERED_FLOOR,
+            "{} defaulted leaves answered, below the floor of {ANSWERED_FLOOR}: {answered:?}",
+            answered.len()
+        );
+    }
+
+    /// How many leaves the walk above answers from a default today, so a
+    /// schema walk that stopped descending fails by count as well as by name.
+    const ANSWERED_FLOOR: usize = 38;
+
+    /// A key `nested_output_key` rewrote is refused under the spelling the
+    /// caller wrote, by every verb and on every refusal a rewritten key can
+    /// earn: a missing key, a shape that blocks the walk, and a path with an
+    /// empty segment, and a write the document would not parse after, a null
+    /// in a `cfgd.toml` among them. A key
+    /// under a section the document leaves out, which no rewrite touched, is
+    /// refused under that same whole spelling in the message and the `-o json`
+    /// name alike, and the message names the first segment it does not
+    /// declare. `unset` only removes a key, so it earns no refusal for a
+    /// document left invalid.
+    #[test]
+    fn every_key_verb_refuses_a_rewritten_key_by_the_spelling_the_caller_wrote() {
+        let dir = tempfile::tempdir().unwrap();
+        let bare = document_with_spec(dir.path(), &serde_yaml::from_str("profile: work").unwrap());
+        let bare_cli = test_cli_for(bare);
+        let shape_dir = tempfile::tempdir().unwrap();
+        let blocked = document_with_spec(
+            shape_dir.path(),
+            &serde_yaml::from_str("output: 5").unwrap(),
+        );
+        let blocked_cli = test_cli_for(blocked);
+        let leaf_dir = tempfile::tempdir().unwrap();
+        let leaf = document_with_spec(
+            leaf_dir.path(),
+            &serde_yaml::from_str("output:\n  theme:\n    name: nord").unwrap(),
+        );
+        let leaf_cli = test_cli_for(leaf);
+        let toml_dir = tempfile::tempdir().unwrap();
+        let toml_cli = test_cli_for(toml_scaffolded(toml_dir.path()));
+
+        type Verb = fn(&Cli, &Printer, &str) -> anyhow::Result<()>;
+        let get: Verb = |cli, printer, key| {
+            cmd_config_get(
+                cli,
+                printer,
+                &crate::cli::startup::StartupDocument::load(&cli.config),
+                key,
+            )
+        };
+        let set: Verb = |cli, printer, key| cmd_config_set(cli, printer, key, "dracula");
+        let set_null: Verb = |cli, printer, key| cmd_config_set(cli, printer, key, "~");
+        let unset: Verb = cmd_config_unset;
+        let cases: [(&str, Verb, &Cli, &str, &str, &str); 15] = [
+            (
+                "get",
+                get,
+                &bare_cli,
+                "secrets.sops.ageKey",
+                "key_not_found",
+                "key 'secrets.sops.ageKey' not found",
+            ),
+            (
+                "get",
+                get,
+                &bare_cli,
+                "theme.overrides.primary",
+                "key_not_found",
+                "key 'theme.overrides.primary' not found; 'theme.overrides.primary' is stored at 'output.theme.overrides.primary'",
+            ),
+            (
+                "get",
+                get,
+                &bare_cli,
+                "ghost.path",
+                "key_not_found",
+                "key 'ghost.path' not found ('ghost' is not declared)",
+            ),
+            (
+                "set",
+                set,
+                &bare_cli,
+                "usageHints",
+                "parse_failed",
+                "config would become invalid: config error: yaml parse error: spec.output.usageHints: invalid type: string \"dracula\", expected a boolean",
+            ),
+            (
+                "set",
+                set,
+                &bare_cli,
+                "usageHints",
+                "parse_failed",
+                "; 'usageHints' is stored at 'output.usageHints'",
+            ),
+            (
+                "get",
+                get,
+                &blocked_cli,
+                "theme.name",
+                "parse_failed",
+                "'output' holds a scalar where a mapping belongs; 'theme.name' is stored at 'output.theme.name'",
+            ),
+            (
+                "get",
+                get,
+                &bare_cli,
+                "theme..name",
+                "invalid_value",
+                "invalid key path 'theme..name'",
+            ),
+            (
+                "set",
+                set_null,
+                &toml_cli,
+                "theme.name",
+                "invalid_value",
+                "`~` is not a theme preset",
+            ),
+            (
+                "set",
+                set_null,
+                &toml_cli,
+                "usageHints",
+                "parse_failed",
+                "config would become invalid: spec.output.usageHints is null, and TOML has no null value; 'usageHints' is stored at 'output.usageHints'",
+            ),
+            (
+                "set",
+                set,
+                &leaf_cli,
+                "theme.name.x",
+                "key_not_found",
+                "key 'theme.name.x' not found",
+            ),
+            (
+                "set",
+                set,
+                &blocked_cli,
+                "theme.name",
+                "parse_failed",
+                "'output' holds a scalar where a mapping belongs; 'theme.name' is stored at 'output.theme.name'",
+            ),
+            (
+                "set",
+                set,
+                &bare_cli,
+                "theme..name",
+                "invalid_value",
+                "invalid key path 'theme..name'",
+            ),
+            (
+                "unset",
+                unset,
+                &leaf_cli,
+                "theme.name.x",
+                "key_not_found",
+                "key 'theme.name.x' not found",
+            ),
+            (
+                "unset",
+                unset,
+                &blocked_cli,
+                "theme.name",
+                "parse_failed",
+                "'output' holds a scalar where a mapping belongs; 'theme.name' is stored at 'output.theme.name'",
+            ),
+            (
+                "unset",
+                unset,
+                &bare_cli,
+                "ghost.path",
+                "key_not_found",
+                "key 'ghost.path' not found ('ghost' is not declared)",
+            ),
+        ];
+        for (verb, run, cli, key, kind, message) in cases {
+            let err = run(cli, &test_printer(), key)
+                .err()
+                .unwrap_or_else(|| panic!("{verb} {key} was not refused"));
+            let meta = refusal(&err);
+            assert_eq!(meta.error_kind, kind, "{verb} {key}: {}", meta.message);
+            assert_eq!(meta.name, key, "{verb} {key}: the -o json name");
+            assert!(
+                meta.message.contains(message),
+                "{verb} {key}: {:?} does not carry {message:?}",
+                meta.message
+            );
+        }
+    }
+
+    /// `key_not_found` is the one place this file builds a missing-key
+    /// refusal, so the key, the undeclared segment and the error wrapping
+    /// cannot drift between the walkers, `unset` and `as_asked`. A
+    /// `KeyNotFound` carrying `key:` anywhere else in production code fails
+    /// here, naming its line.
+    #[test]
+    fn every_missing_key_refusal_in_this_file_is_built_by_key_not_found() {
+        let production = cfgd_core::test_helpers::production_slice_of(std::path::Path::new(
+            concat!(env!("CARGO_MANIFEST_DIR"), "/src/cli/config_cmd.rs"),
+        ));
+        let open = production
+            .find("fn key_not_found(")
+            .expect("config_cmd.rs defines key_not_found");
+        let close = open
+            + production[open..]
+                .find("\n}\n")
+                .expect("key_not_found's body closes");
+        let mut built = 0;
+        let mut elsewhere = Vec::new();
+        for (at, _) in production.match_indices("KeyNotFound {") {
+            let fields = &production[at..];
+            let fields = &fields[..fields.find('}').unwrap_or(fields.len())];
+            if !fields.contains("key:") {
+                continue;
+            }
+            built += 1;
+            if !(open..close).contains(&at) {
+                let line = production[..at].lines().count();
+                elsewhere.push(format!("config_cmd.rs:{line}: {}", fields.trim()));
+            }
+        }
+        assert_eq!(
+            built - elsewhere.len(),
+            1,
+            "key_not_found builds the refusal once"
+        );
+        assert!(
+            elsewhere.is_empty(),
+            "a missing-key refusal is built outside key_not_found; call it instead:\n{}",
+            elsewhere.join("\n")
+        );
+    }
+
+    /// Every scalar leaf, asked for on a document whose `spec` is empty,
+    /// answers with what the build uses there. A leaf with its own
+    /// `OMITTED_FIELDS` row, or under a section production fills in when it
+    /// is omitted, reads the nearest row's omitted value; a leaf whose row,
+    /// or whose section's row, has none is refused as not found, under the
+    /// key the caller wrote; any other leaf answers with its serde default.
+    #[test]
+    fn every_key_under_an_omitted_section_answers_what_the_build_uses() {
+        use cfgd_core::test_helpers::OMITTED_FIELDS;
+        let dir = tempfile::tempdir().unwrap();
+        let path = document_with_spec(dir.path(), &serde_yaml::from_str("{}").unwrap());
+        let bytes = std::fs::read_to_string(&path).unwrap();
+        let bare = cfgd_core::config::parse_config(&bytes, &path).expect("an empty spec parses");
+        let typed = serde_json::to_value(&bare.spec).unwrap();
+        let cli = test_cli_for(path);
+        let mut answered = Vec::new();
+        let mut refused = Vec::new();
+        for (segments, node) in addressable_config_fields() {
+            if node.type_desc == "object" || node.type_desc.starts_with("[]") {
+                continue;
+            }
+            let key = segments.join(".");
+            let under = |row_key: &str| key == row_key || key.starts_with(&format!("{row_key}."));
+            let feature_off = OMITTED_FIELDS
+                .iter()
+                .any(|row| row.omitted.is_none() && under(row.key));
+            let expected = if feature_off {
+                serde_json::Value::Null
+            } else if let Some(row) = OMITTED_FIELDS
+                .iter()
+                .filter(|row| under(row.key))
+                .max_by_key(|row| row.key.len())
+            {
+                let omitted =
+                    (row.omitted.expect("feature-off rows are handled above"))(&bare.spec);
+                let below = &segments[row.key.split('.').count()..];
+                let pointer = below
+                    .iter()
+                    .map(|segment| format!("/{segment}"))
+                    .collect::<String>();
+                serde_json::to_value(&omitted)
+                    .unwrap()
+                    .pointer(&pointer)
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Null)
+            } else {
+                typed
+                    .pointer(&format!("/{}", segments.join("/")))
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Null)
+            };
+            let (printer, cap) = Printer::for_test_doc_with_format(OutputFormat::Json);
+            let result = cmd_config_get(
+                &cli,
+                &printer,
+                &crate::cli::startup::StartupDocument::load(&cli.config),
+                &key,
+            );
+            drop(printer);
+            if expected.is_null() {
+                let err = result.err().unwrap_or_else(|| {
+                    panic!("{key}: the build uses no value, yet `get` answered")
+                });
+                let meta = refusal(&err);
+                assert_eq!(meta.error_kind, "key_not_found", "{key}: {}", meta.message);
+                assert_eq!(meta.name, key, "{key}: the -o json name");
+                assert!(
+                    meta.message.contains(&format!("key '{key}' not found")),
+                    "{key}: the message names another key than the -o json name: {:?}",
+                    meta.message
+                );
+                refused.push(key);
+                continue;
+            }
+            if let Err(err) = result {
+                panic!("{key}: the build uses {expected}, yet `get` refused: {err:#}");
+            }
+            assert_eq!(
+                cap.json().expect("doc captured json"),
+                serde_json::json!({ "key": key, "value": expected }),
+                "{key}"
+            );
+            answered.push(key);
+        }
+        for (named, value) in [
+            ("daemon.reconcile.interval", serde_json::json!("5m")),
+            ("daemon.sync.interval", serde_json::json!("1h")),
+            ("daemon.notify.method", serde_json::json!("Desktop")),
+            ("output.theme.name", serde_json::json!("default")),
+            ("secrets.backend", serde_json::json!("sops")),
+            ("output.usageHints", serde_json::json!(false)),
+            ("output.maskEnvValues", serde_json::json!("All")),
+            ("update.channel", serde_json::json!("stable")),
+        ] {
+            let (printer, cap) = Printer::for_test_doc_with_format(OutputFormat::Json);
+            cmd_config_get(
+                &cli,
+                &printer,
+                &crate::cli::startup::StartupDocument::load(&cli.config),
+                named,
+            )
+            .unwrap_or_else(|e| panic!("{named}: {e:#}"));
+            drop(printer);
+            assert_eq!(
+                cap.json().expect("doc captured json"),
+                serde_json::json!({ "key": named, "value": value }),
+                "{named}"
+            );
+        }
+        assert!(
+            refused.iter().any(|key| key == "secrets.sops.ageKey"),
+            "secrets.sops.ageKey was answered on a document with no secrets section: {refused:?}"
+        );
+        assert!(
+            answered.len() >= OMITTED_ANSWERED_FLOOR,
+            "{} leaves answered, below the floor of {OMITTED_ANSWERED_FLOOR}: {answered:?}",
+            answered.len()
+        );
+        assert!(
+            refused.len() >= OMITTED_REFUSED_FLOOR,
+            "{} leaves refused, below the floor of {OMITTED_REFUSED_FLOOR}: {refused:?}",
+            refused.len()
+        );
+    }
+
+    /// How many leaves the walk above answers and refuses today, so a schema
+    /// walk that stopped descending fails by count as well as by name.
+    const OMITTED_ANSWERED_FLOOR: usize = 38;
+    const OMITTED_REFUSED_FLOOR: usize = 25;
+
+    /// Every `alias` verb builds the key `aliases.<name>` from the name the
+    /// caller typed, and refuses by that name: the `-o json` name is the
+    /// alias, and the message says which alias. Each verb is driven through
+    /// the real `cfgd alias` dispatch.
+    #[test]
+    fn every_alias_verb_refuses_by_the_alias_name_the_caller_typed() {
+        let dir = tempfile::tempdir().unwrap();
+        let bare = document_with_spec(dir.path(), &serde_yaml::from_str("profile: work").unwrap());
+        let shape_dir = tempfile::tempdir().unwrap();
+        let blocked = document_with_spec(
+            shape_dir.path(),
+            &serde_yaml::from_str("aliases: 5").unwrap(),
+        );
+        let toml_dir = tempfile::tempdir().unwrap();
+        let toml = toml_dir.path().join("cfgd.toml");
+        std::fs::write(
+            &toml,
+            "apiVersion = \"cfgd.io/v1alpha1\"\nkind = \"Config\"\n[metadata]\nname = \"t\"\n[spec]\n",
+        )
+        .unwrap();
+        let cases: [(&[&str], &std::path::Path, &str, &str); 8] = [
+            (
+                &["alias", "set", "n", "~"],
+                &toml,
+                "parse_failed",
+                "config would become invalid: spec.aliases.n is null, and TOML has no null value; alias 'n' is stored at 'aliases.n'",
+            ),
+            (
+                &["alias", "show", "nope"],
+                &bare,
+                "key_not_found",
+                "alias 'nope' not found",
+            ),
+            (
+                &["alias", "delete", "nope"],
+                &bare,
+                "key_not_found",
+                "alias 'nope' not found",
+            ),
+            (
+                &["alias", "show", "nope"],
+                &blocked,
+                "parse_failed",
+                "'aliases' holds a scalar where a mapping belongs; alias 'nope' is stored at 'aliases.nope'",
+            ),
+            (
+                &["alias", "set", "nope", "apply"],
+                &blocked,
+                "parse_failed",
+                "'aliases' holds a scalar where a mapping belongs; alias 'nope' is stored at 'aliases.nope'",
+            ),
+            (
+                &["alias", "delete", "nope"],
+                &blocked,
+                "parse_failed",
+                "'aliases' holds a scalar where a mapping belongs; alias 'nope' is stored at 'aliases.nope'",
+            ),
+            (
+                &["alias", "set", "a.b", "apply"],
+                &bare,
+                "invalid_value",
+                "invalid alias name 'a.b'",
+            ),
+            (
+                &["alias", "show", "a.b"],
+                &bare,
+                "invalid_value",
+                "invalid alias name 'a.b'",
+            ),
+        ];
+        for (args, path, kind, message) in cases {
+            let subject = if args[1] == "set" {
+                args[args.len() - 2]
+            } else {
+                args[args.len() - 1]
+            };
+            let mut argv = vec!["cfgd", "--config", path.to_str().unwrap()];
+            argv.extend_from_slice(args);
+            let cli = <Cli as crate::cli::HermeticParse>::try_parse_hermetic(&argv)
+                .unwrap_or_else(|e| panic!("{argv:?} parses: {e}"));
+            let err = crate::cli::execute(
+                &cli,
+                &test_printer(),
+                &crate::cli::paths::DirSources::all_default(),
+                &crate::cli::startup::StartupDocument::load(&cli.config),
+            )
+            .err()
+            .unwrap_or_else(|| panic!("{args:?} was not refused"));
+            let meta = refusal(&err);
+            assert_eq!(meta.error_kind, kind, "{args:?}: {}", meta.message);
+            assert_eq!(meta.name, subject, "{args:?}: the -o json name");
+            assert!(
+                meta.message.contains(message),
+                "{args:?}: {:?} does not carry {message:?}",
+                meta.message
+            );
+        }
     }
 }

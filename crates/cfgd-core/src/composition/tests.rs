@@ -7,7 +7,7 @@ fn make_local_profile() -> ResolvedProfile {
         layers: vec![ProfileLayer {
             source: "local".into(),
             profile_name: "default".into(),
-            priority: 1000,
+            priority: crate::config::LOCAL_LAYER_PRIORITY,
             policy: LayerPolicy::Local,
             spec: ProfileSpec {
                 env: vec![EnvVar {
@@ -150,6 +150,82 @@ fn compose_keeps_the_env_scope_the_operator_declared() {
         EnvScope::Login,
         "the higher-priority local layer still wins"
     );
+}
+
+#[test]
+fn compose_exports_the_preference_a_source_ranked_under_that_source_layer() {
+    let local = make_local_profile();
+    let mut source = make_source_input("acme", 500);
+    let ranked = source_layer(ProfileSpec {
+        preferences: PreferencesSpec {
+            clipboard: vec!["osc52".into()],
+        },
+        ..Default::default()
+    });
+    let owner = ranked.owner_token();
+    source.layers = vec![ranked];
+    let result = compose(&local, &[source], ConstraintMode::Enforce).unwrap();
+    let merged = &result.resolved.merged;
+    let vars: Vec<&EnvVar> = merged
+        .env
+        .iter()
+        .filter(|e| e.name == "CFGD_CLIPBOARD")
+        .collect();
+    assert_eq!(
+        vars.len(),
+        1,
+        "exactly one preference var: {:?}",
+        merged.env
+    );
+    assert_eq!(vars[0].value, "osc52");
+    assert_eq!(merged.entry_owners.env.get("CFGD_CLIPBOARD"), Some(&owner));
+}
+
+#[test]
+fn compose_gives_a_domain_both_layers_rank_to_the_later_local_layer() {
+    let mut local = make_local_profile();
+    local.layers[0].spec.preferences.clipboard = vec!["osc52".into()];
+    let owner = local.layers[0].owner_token();
+    let mut source = make_source_input("acme", 500);
+    source.layers = vec![source_layer(ProfileSpec {
+        preferences: PreferencesSpec {
+            clipboard: vec!["osc52".into()],
+        },
+        ..Default::default()
+    })];
+    let result = compose(&local, &[source], ConstraintMode::Enforce).unwrap();
+    let merged = &result.resolved.merged;
+    assert_eq!(
+        merged
+            .env
+            .iter()
+            .filter(|e| e.name == "CFGD_CLIPBOARD")
+            .count(),
+        1,
+        "exactly one preference var: {:?}",
+        merged.env
+    );
+    assert_eq!(
+        merged.entry_owners.env.get("CFGD_CLIPBOARD"),
+        Some(&owner),
+        "the higher-priority local layer is the last to rank the domain and owns it"
+    );
+}
+
+#[test]
+fn compose_refuses_an_unknown_candidate_a_source_delivers() {
+    let local = make_local_profile();
+    let mut source = make_source_input("acme", 500);
+    source.layers = vec![source_layer(ProfileSpec {
+        preferences: PreferencesSpec {
+            clipboard: vec!["xclipp".into()],
+        },
+        ..Default::default()
+    })];
+    let err = compose(&local, &[source], ConstraintMode::Enforce)
+        .expect_err("the source's typo is refused")
+        .to_string();
+    assert!(err.contains("xclipp"), "names the typo: {err}");
 }
 
 #[test]
@@ -1563,7 +1639,7 @@ fn higher_priority_source_wins_env_var() {
         layers: vec![ProfileLayer {
             source: "local".into(),
             profile_name: "default".into(),
-            priority: 1000,
+            priority: crate::config::LOCAL_LAYER_PRIORITY,
             policy: LayerPolicy::Local,
             spec: ProfileSpec::default(),
         }],
@@ -1632,7 +1708,7 @@ fn local_env_wins_over_source_env_at_same_name() {
         layers: vec![ProfileLayer {
             source: "local".into(),
             profile_name: "default".into(),
-            priority: 1000,
+            priority: crate::config::LOCAL_LAYER_PRIORITY,
             policy: LayerPolicy::Local,
             spec: ProfileSpec {
                 env: vec![EnvVar {
@@ -1695,7 +1771,7 @@ fn higher_priority_source_wins_file_content() {
         layers: vec![ProfileLayer {
             source: "local".into(),
             profile_name: "default".into(),
-            priority: 1000,
+            priority: crate::config::LOCAL_LAYER_PRIORITY,
             policy: LayerPolicy::Local,
             spec: ProfileSpec::default(),
         }],
@@ -1803,7 +1879,7 @@ fn single_source_merges_correctly() {
         layers: vec![ProfileLayer {
             source: "local".into(),
             profile_name: "default".into(),
-            priority: 1000,
+            priority: crate::config::LOCAL_LAYER_PRIORITY,
             policy: LayerPolicy::Local,
             spec: ProfileSpec {
                 packages: Some(PackagesSpec {
@@ -1879,7 +1955,7 @@ fn overlapping_packages_are_unioned_not_duplicated() {
         layers: vec![ProfileLayer {
             source: "local".into(),
             profile_name: "default".into(),
-            priority: 1000,
+            priority: crate::config::LOCAL_LAYER_PRIORITY,
             policy: LayerPolicy::Local,
             spec: ProfileSpec {
                 packages: Some(PackagesSpec {
@@ -2057,7 +2133,7 @@ fn higher_priority_source_wins_alias() {
         layers: vec![ProfileLayer {
             source: "local".into(),
             profile_name: "default".into(),
-            priority: 1000,
+            priority: crate::config::LOCAL_LAYER_PRIORITY,
             policy: LayerPolicy::Local,
             spec: ProfileSpec {
                 aliases: vec![ShellAlias {
@@ -2707,7 +2783,7 @@ fn compose_scripts_appended_in_order() {
         layers: vec![ProfileLayer {
             source: "local".into(),
             profile_name: "default".into(),
-            priority: 1000,
+            priority: crate::config::LOCAL_LAYER_PRIORITY,
             policy: LayerPolicy::Local,
             spec: ProfileSpec {
                 scripts: Some(ScriptSpec {
@@ -2772,7 +2848,7 @@ fn compose_secrets_deduplicated_by_source() {
         layers: vec![ProfileLayer {
             source: "local".into(),
             profile_name: "default".into(),
-            priority: 1000,
+            priority: crate::config::LOCAL_LAYER_PRIORITY,
             policy: LayerPolicy::Local,
             spec: ProfileSpec {
                 secrets: vec![crate::config::SecretSpec {
@@ -2846,7 +2922,7 @@ fn compose_system_deep_merges() {
         layers: vec![ProfileLayer {
             source: "local".into(),
             profile_name: "default".into(),
-            priority: 1000,
+            priority: crate::config::LOCAL_LAYER_PRIORITY,
             policy: LayerPolicy::Local,
             spec: ProfileSpec {
                 system: BTreeMap::from([(
@@ -2957,7 +3033,7 @@ fn compose_file_origins_tagged_for_source_files() {
         layers: vec![ProfileLayer {
             source: "local".into(),
             profile_name: "default".into(),
-            priority: 1000,
+            priority: crate::config::LOCAL_LAYER_PRIORITY,
             policy: LayerPolicy::Local,
             spec: ProfileSpec::default(),
         }],
@@ -3859,7 +3935,7 @@ fn override_env_stays_below_local_config() {
         layers: vec![ProfileLayer {
             source: "local".into(),
             profile_name: "default".into(),
-            priority: 1000,
+            priority: crate::config::LOCAL_LAYER_PRIORITY,
             policy: LayerPolicy::Local,
             spec: ProfileSpec {
                 env: vec![EnvVar {
@@ -4098,7 +4174,7 @@ fn compose_rejects_local_override_of_locked_resource() {
         layers: vec![ProfileLayer {
             source: "local".into(),
             profile_name: "default".into(),
-            priority: 1000,
+            priority: crate::config::LOCAL_LAYER_PRIORITY,
             policy: LayerPolicy::Local,
             spec: ProfileSpec::default(),
         }],

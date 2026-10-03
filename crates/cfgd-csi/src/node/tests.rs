@@ -434,8 +434,9 @@ async fn node_get_volume_stats_with_subdirectories() {
         .iter()
         .find(|u| u.unit == volume_usage::Unit::Inodes as i32)
         .unwrap();
-    // root dir (1) + subdir entry in readdir (1) + root.txt (1) + nested.txt (1) + subdir itself walked = total 4
-    // Actually: walk counts root(1), then readdir(root): subdir(+1), root.txt(+1), then walk(subdir): nested.txt(+1) = 4
+    // root dir (1) + subdir entry in readdir (1) + root.txt (1) + nested.txt (1) + subdir itself
+    // walked = total 4 Actually: walk counts root(1), then readdir(root): subdir(+1), root.txt(+1),
+    // then walk(subdir): nested.txt(+1) = 4
     assert_eq!(inodes_entry.used, 4);
 }
 
@@ -618,6 +619,7 @@ fn check_registry_allowed_rejects_when_registry_not_in_list() {
     assert_eq!(err.code(), tonic::Code::PermissionDenied);
     assert!(err.message().contains("docker.io"));
     assert!(
+        // env-literal-ok: asserts the rendered error text
         err.message().contains("CFGD_CSI_ALLOWED_REGISTRIES"),
         "error should reference the env var so the operator can fix it: {}",
         err.message()
@@ -633,7 +635,7 @@ fn check_registry_allowed_rejects_when_registry_not_in_list() {
 fn parse_allowed_registries_from_env_returns_none_when_unset() {
     // SAFETY: serialised — no other test mutates this var concurrently.
     unsafe {
-        std::env::remove_var(ALLOWED_REGISTRIES_ENV);
+        std::env::remove_var(cfgd_core::CFGD_CSI_ALLOWED_REGISTRIES_ENV);
     }
     assert!(parse_allowed_registries_from_env().is_none());
 }
@@ -643,11 +645,11 @@ fn parse_allowed_registries_from_env_returns_none_when_unset() {
 fn parse_allowed_registries_from_env_returns_none_for_wildcard() {
     // SAFETY: serialised.
     unsafe {
-        std::env::set_var(ALLOWED_REGISTRIES_ENV, "*");
+        std::env::set_var(cfgd_core::CFGD_CSI_ALLOWED_REGISTRIES_ENV, "*");
     }
     let got = parse_allowed_registries_from_env();
     unsafe {
-        std::env::remove_var(ALLOWED_REGISTRIES_ENV);
+        std::env::remove_var(cfgd_core::CFGD_CSI_ALLOWED_REGISTRIES_ENV);
     }
     assert!(
         got.is_none(),
@@ -660,11 +662,14 @@ fn parse_allowed_registries_from_env_returns_none_for_wildcard() {
 fn parse_allowed_registries_from_env_splits_csv_with_trimming() {
     // SAFETY: serialised.
     unsafe {
-        std::env::set_var(ALLOWED_REGISTRIES_ENV, " ghcr.io , quay.io ,, docker.io ");
+        std::env::set_var(
+            cfgd_core::CFGD_CSI_ALLOWED_REGISTRIES_ENV,
+            " ghcr.io , quay.io ,, docker.io ",
+        );
     }
     let got = parse_allowed_registries_from_env();
     unsafe {
-        std::env::remove_var(ALLOWED_REGISTRIES_ENV);
+        std::env::remove_var(cfgd_core::CFGD_CSI_ALLOWED_REGISTRIES_ENV);
     }
     assert_eq!(
         got,
@@ -682,11 +687,11 @@ fn parse_allowed_registries_from_env_splits_csv_with_trimming() {
 fn parse_allowed_registries_from_env_returns_none_for_empty_string() {
     // SAFETY: serialised.
     unsafe {
-        std::env::set_var(ALLOWED_REGISTRIES_ENV, "   ");
+        std::env::set_var(cfgd_core::CFGD_CSI_ALLOWED_REGISTRIES_ENV, "   ");
     }
     let got = parse_allowed_registries_from_env();
     unsafe {
-        std::env::remove_var(ALLOWED_REGISTRIES_ENV);
+        std::env::remove_var(cfgd_core::CFGD_CSI_ALLOWED_REGISTRIES_ENV);
     }
     assert!(got.is_none(), "whitespace-only → None");
 }
@@ -706,7 +711,8 @@ async fn node_stage_volume_cache_pull_failure_returns_internal_status() {
     // pin this Node to its allow-list, making 127.0.0.1 fail with
     // PermissionDenied instead of the Internal being tested for. Force-unset
     // for the duration of this test.
-    let _g = cfgd_core::test_helpers::EnvVarGuard::unset(ALLOWED_REGISTRIES_ENV);
+    let _g =
+        cfgd_core::test_helpers::EnvVarGuard::unset(cfgd_core::CFGD_CSI_ALLOWED_REGISTRIES_ENV);
     let dir = tempfile::tempdir().unwrap();
     let node = test_node(test_cache(dir.path()));
     let req = NodeStageVolumeRequest {
@@ -742,7 +748,8 @@ async fn node_stage_volume_cache_pull_failure_returns_internal_status() {
 #[serial_test::serial]
 async fn node_publish_volume_cache_pull_failure_returns_internal_status() {
     // Same race as the stage-volume counterpart: see comment above.
-    let _g = cfgd_core::test_helpers::EnvVarGuard::unset(ALLOWED_REGISTRIES_ENV);
+    let _g =
+        cfgd_core::test_helpers::EnvVarGuard::unset(cfgd_core::CFGD_CSI_ALLOWED_REGISTRIES_ENV);
     let dir = tempfile::tempdir().unwrap();
     let node = test_node(test_cache(dir.path()));
     let target = dir.path().join("publish-target");
@@ -778,12 +785,12 @@ async fn node_publish_volume_cache_pull_failure_returns_internal_status() {
 async fn node_stage_volume_rejects_disallowed_registry() {
     // SAFETY: serialised — env mutation is process-global.
     unsafe {
-        std::env::set_var(ALLOWED_REGISTRIES_ENV, "ghcr.io");
+        std::env::set_var(cfgd_core::CFGD_CSI_ALLOWED_REGISTRIES_ENV, "ghcr.io");
     }
     let dir = tempfile::tempdir().unwrap();
     let node = test_node(test_cache(dir.path()));
     unsafe {
-        std::env::remove_var(ALLOWED_REGISTRIES_ENV);
+        std::env::remove_var(cfgd_core::CFGD_CSI_ALLOWED_REGISTRIES_ENV);
     }
 
     let req = NodeStageVolumeRequest {
@@ -818,12 +825,12 @@ async fn node_stage_volume_rejects_disallowed_registry() {
 async fn node_publish_volume_rejects_disallowed_registry() {
     // SAFETY: serialised — env mutation is process-global.
     unsafe {
-        std::env::set_var(ALLOWED_REGISTRIES_ENV, "ghcr.io");
+        std::env::set_var(cfgd_core::CFGD_CSI_ALLOWED_REGISTRIES_ENV, "ghcr.io");
     }
     let dir = tempfile::tempdir().unwrap();
     let node = test_node(test_cache(dir.path()));
     unsafe {
-        std::env::remove_var(ALLOWED_REGISTRIES_ENV);
+        std::env::remove_var(cfgd_core::CFGD_CSI_ALLOWED_REGISTRIES_ENV);
     }
 
     let req = NodePublishVolumeRequest {
@@ -865,14 +872,14 @@ async fn node_publish_volume_rejects_disallowed_registry() {
 fn cfgd_node_new_with_empty_allow_list_stores_empty_vec() {
     // SAFETY: serialised — env mutation is process-global.
     unsafe {
-        std::env::set_var(ALLOWED_REGISTRIES_ENV, ",,,");
+        std::env::set_var(cfgd_core::CFGD_CSI_ALLOWED_REGISTRIES_ENV, ",,,");
     }
     let dir = tempfile::tempdir().unwrap();
     let mut registry = prometheus_client::registry::Registry::default();
     let metrics = Arc::new(CsiMetrics::new(&mut registry));
     let node = CfgdNode::new(test_cache(dir.path()), metrics, "test-node".to_string());
     unsafe {
-        std::env::remove_var(ALLOWED_REGISTRIES_ENV);
+        std::env::remove_var(cfgd_core::CFGD_CSI_ALLOWED_REGISTRIES_ENV);
     }
     // ",,," parses to Some(empty vec) — every entry is filtered out as empty
     // after split+trim. Constructor's "explicitly empty" branch logs a warn.
@@ -888,14 +895,17 @@ fn cfgd_node_new_with_empty_allow_list_stores_empty_vec() {
 fn cfgd_node_new_with_configured_allow_list_stores_parsed_entries() {
     // SAFETY: serialised.
     unsafe {
-        std::env::set_var(ALLOWED_REGISTRIES_ENV, "ghcr.io,quay.io");
+        std::env::set_var(
+            cfgd_core::CFGD_CSI_ALLOWED_REGISTRIES_ENV,
+            "ghcr.io,quay.io",
+        );
     }
     let dir = tempfile::tempdir().unwrap();
     let mut registry = prometheus_client::registry::Registry::default();
     let metrics = Arc::new(CsiMetrics::new(&mut registry));
     let node = CfgdNode::new(test_cache(dir.path()), metrics, "test-node".to_string());
     unsafe {
-        std::env::remove_var(ALLOWED_REGISTRIES_ENV);
+        std::env::remove_var(cfgd_core::CFGD_CSI_ALLOWED_REGISTRIES_ENV);
     }
     assert_eq!(
         node.allowed_registries,
@@ -1104,11 +1114,11 @@ fn check_registry_allowed_passes_when_localhost_in_list() {
 #[serial_test::serial]
 fn parse_allowed_registries_from_env_single_entry_returns_some_with_one_item() {
     unsafe {
-        std::env::set_var(ALLOWED_REGISTRIES_ENV, "ghcr.io");
+        std::env::set_var(cfgd_core::CFGD_CSI_ALLOWED_REGISTRIES_ENV, "ghcr.io");
     }
     let got = parse_allowed_registries_from_env();
     unsafe {
-        std::env::remove_var(ALLOWED_REGISTRIES_ENV);
+        std::env::remove_var(cfgd_core::CFGD_CSI_ALLOWED_REGISTRIES_ENV);
     }
     assert_eq!(got, Some(vec!["ghcr.io".to_string()]));
 }
@@ -1117,11 +1127,11 @@ fn parse_allowed_registries_from_env_single_entry_returns_some_with_one_item() {
 #[serial_test::serial]
 fn parse_allowed_registries_from_env_wildcard_with_whitespace_is_still_wildcard() {
     unsafe {
-        std::env::set_var(ALLOWED_REGISTRIES_ENV, "  *  ");
+        std::env::set_var(cfgd_core::CFGD_CSI_ALLOWED_REGISTRIES_ENV, "  *  ");
     }
     let got = parse_allowed_registries_from_env();
     unsafe {
-        std::env::remove_var(ALLOWED_REGISTRIES_ENV);
+        std::env::remove_var(cfgd_core::CFGD_CSI_ALLOWED_REGISTRIES_ENV);
     }
     assert!(
         got.is_none(),
@@ -1234,4 +1244,95 @@ async fn unusable_paths_are_rejected_with_the_value_and_the_reason() {
             "unpublish: {msg}"
         );
     }
+}
+
+/// A mount served from the node cache counts a hit on whichever call makes it:
+/// kubelet sends an inline ephemeral volume, the webhook's injection, straight
+/// to NodePublishVolume, and a persistent one through NodeStageVolume. A
+/// publish that follows a stage is the same mount and counts nothing.
+#[tokio::test]
+#[serial_test::serial]
+async fn a_cache_hit_counts_once_per_mount_at_an_unstaged_publish_or_a_stage() {
+    let _g =
+        cfgd_core::test_helpers::EnvVarGuard::unset(cfgd_core::CFGD_CSI_ALLOWED_REGISTRIES_ENV);
+    let dir = tempfile::tempdir().unwrap();
+    let cache_root = dir.path().join("cache");
+    let entry = cache_root.join("m").join("v1");
+    std::fs::create_dir_all(&entry).unwrap();
+    std::fs::write(entry.join(crate::cache::COMPLETE_SENTINEL), "").unwrap();
+
+    let mut registry = prometheus_client::registry::Registry::default();
+    let metrics = Arc::new(CsiMetrics::new(&mut registry));
+    let node = CfgdNode::new(test_cache(&cache_root), metrics, "test-node".to_string());
+    let context: HashMap<String, String> = [
+        ("module".to_string(), "m".to_string()),
+        ("version".to_string(), "v1".to_string()),
+    ]
+    .into_iter()
+    .collect();
+
+    // A target under a regular file cannot be created, so the publish stops
+    // after the cache lookup and before any bind mount.
+    let blocker = dir.path().join("blocker");
+    std::fs::write(&blocker, "").unwrap();
+    let publish = NodePublishVolumeRequest {
+        volume_id: "vol-1".to_string(),
+        target_path: blocker.join("target").to_str().unwrap().to_string(),
+        volume_context: context.clone(),
+        ..Default::default()
+    };
+    let err = node
+        .node_publish_volume(Request::new(publish))
+        .await
+        .expect_err("a target under a regular file cannot be created");
+    assert!(
+        err.message().contains("cannot create target dir"),
+        "the publish must stop at the target, after the cache lookup: {}",
+        err.message()
+    );
+    let hits = |registry: &prometheus_client::registry::Registry| {
+        let mut buf = String::new();
+        prometheus_client::encoding::text::encode(&mut buf, registry).unwrap();
+        buf
+    };
+    let after_publish = hits(&registry);
+    assert!(
+        after_publish.contains("\ncfgd_csi_cache_hits_total{module=\"m\"} 1\n"),
+        "{after_publish}"
+    );
+
+    let stage = NodeStageVolumeRequest {
+        volume_id: "vol-2".to_string(),
+        staging_target_path: dir.path().join("staging").to_str().unwrap().to_string(),
+        volume_context: context.clone(),
+        ..Default::default()
+    };
+    node.node_stage_volume(Request::new(stage)).await.unwrap();
+    let after_stage = hits(&registry);
+    assert!(
+        after_stage.contains("\ncfgd_csi_cache_hits_total{module=\"m\"} 2\n"),
+        "{after_stage}"
+    );
+
+    // The publish that follows a stage is the same mount, already counted.
+    let staged_publish = NodePublishVolumeRequest {
+        volume_id: "vol-2".to_string(),
+        staging_target_path: dir.path().join("staging").to_str().unwrap().to_string(),
+        target_path: blocker.join("target2").to_str().unwrap().to_string(),
+        volume_context: context,
+        ..Default::default()
+    };
+    node.node_publish_volume(Request::new(staged_publish))
+        .await
+        .expect_err("a target under a regular file cannot be created");
+    let after_staged_publish = hits(&registry);
+    assert!(
+        after_staged_publish.contains("\ncfgd_csi_cache_hits_total{module=\"m\"} 2\n"),
+        "{after_staged_publish}"
+    );
+    assert!(
+        after_staged_publish
+            .contains("\ncfgd_csi_pull_duration_seconds_count{module=\"m\",cached=\"true\"} 2\n"),
+        "{after_staged_publish}"
+    );
 }

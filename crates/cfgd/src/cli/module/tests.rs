@@ -284,9 +284,12 @@ spec:
         color: crate::cli::ColorWhen::Auto,
         output: super::OutputFormatArg(cfgd_core::output::OutputFormat::Table),
         list_envelope: false,
+        hints: false,
         no_hints: false,
         theme: None,
         mask_env_values: None,
+        migration_policy: None,
+        update_policy: None,
         jsonpath: None,
         yes: false,
         state_dir: None,
@@ -342,9 +345,12 @@ fn test_cli(dir: &std::path::Path) -> super::Cli {
         color: crate::cli::ColorWhen::Auto,
         output: super::OutputFormatArg(cfgd_core::output::OutputFormat::Table),
         list_envelope: false,
+        hints: false,
         no_hints: false,
         theme: None,
         mask_env_values: None,
+        migration_policy: None,
+        update_policy: None,
         jsonpath: None,
         yes: false,
         state_dir: None,
@@ -2051,7 +2057,7 @@ fn cmd_module_keys_generate_no_cosign_fails() {
     // A manager answers available from its own install prefix as well as from
     // PATH, so an emptied PATH alone would still leave one for cfgd to spawn.
     let _managers = cfgd_core::test_helpers::NoHostManagers::pinned_missing();
-    let _g = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_COSIGN_BIN");
+    let _g = cfgd_core::test_helpers::EnvVarGuard::unset(cfgd_core::COSIGN_BIN_ENV);
     let _path = cfgd_core::test_helpers::EnvVarGuard::set("PATH", "");
     let printer = make_printer();
     let err = cmd_module_keys_generate(&printer, None).unwrap_err();
@@ -2375,7 +2381,7 @@ fn cmd_module_show_table_with_lockfile_entry() {
 
     let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
-        output.contains("Source      remote"),
+        output.contains("Source      remote"), // space-run-ok: a rendered kv row's own column padding.
         "should show a remote source, got: {output}"
     );
     assert!(
@@ -3395,7 +3401,15 @@ fn module_create_apply_keeps_the_rows_its_scope_never_resolved() {
         }
         for (rtype, id) in foreign {
             state
-                .upsert_managed_resource(rtype, id, "acme", None, None)
+                .upsert_managed_resource(
+                    rtype,
+                    id,
+                    cfgd_core::reconciler::recorded_resource_kind(rtype, id),
+                    None,
+                    "acme",
+                    None,
+                    None,
+                )
                 .expect("seed tracking row");
         }
         for (rtype, id) in foreign.iter().chain(declared.iter()) {
@@ -4797,7 +4811,7 @@ fn cmd_module_keys_rotate_no_cosign_fails() {
     // A manager answers available from its own install prefix as well as from
     // PATH, so an emptied PATH alone would still leave one for cfgd to spawn.
     let _managers = cfgd_core::test_helpers::NoHostManagers::pinned_missing();
-    let _g = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_COSIGN_BIN");
+    let _g = cfgd_core::test_helpers::EnvVarGuard::unset(cfgd_core::COSIGN_BIN_ENV);
     let _path = cfgd_core::test_helpers::EnvVarGuard::set("PATH", "");
     // The key the verb would rotate: its absence is a precondition that
     // refuses ahead of the install, so a pin about the missing TOOL has to get
@@ -4826,7 +4840,7 @@ fn cmd_module_keys_rotate_no_existing_key_fails() {
     let fake = dir.path().join("cosign");
     std::fs::write(&fake, "").unwrap();
     let _g = cfgd_core::test_helpers::EnvVarGuard::set(
-        "CFGD_COSIGN_BIN",
+        cfgd_core::COSIGN_BIN_ENV,
         fake.to_str().expect("tempdir path is valid UTF-8"),
     );
     let printer = make_printer();
@@ -5196,9 +5210,10 @@ mod keys_with_fake_cosign {
         // logs every argv: the claim is that NOTHING was spawned to get a tool
         // the verb never needed.
         let _managers = cfgd_core::test_helpers::NoHostManagers::pinned_missing();
-        let shim = cfgd_core::test_helpers::ToolShim::install("CFGD_BREW_BIN", 0, "", "");
+        let shim =
+            cfgd_core::test_helpers::ToolShim::install(crate::seams::BREW_BIN_ENV, 0, "", "");
         let _seam = cfgd_core::test_helpers::EnvVarGuard::set(
-            "CFGD_COSIGN_BIN",
+            cfgd_core::COSIGN_BIN_ENV,
             cfgd_core::test_helpers::ABSENT_SEAM_PATH,
         );
         let _empty = cfgd_core::test_helpers::EnvVarGuard::set("PATH", "");
@@ -5256,7 +5271,7 @@ mod keys_with_fake_cosign {
         std::fs::set_permissions(&shim_path, perms).expect("chmod shim");
 
         let _g = cfgd_core::test_helpers::EnvVarGuard::set(
-            "CFGD_COSIGN_BIN",
+            cfgd_core::COSIGN_BIN_ENV,
             shim_path.to_str().expect("shim path utf8"),
         );
 
@@ -5771,18 +5786,21 @@ fn print_module_review_summary_shows_control_characters_on_every_row() {
     for marker in ["dep-", "pkg-", "src-", "ENV=", "al="] {
         let row = out
             .lines()
+            // doc-comment-ok: the haystack is a rendered row
             .find(|l| l.contains(marker))
             .unwrap_or_else(|| panic!("row {marker:?} missing; screen holds: {out}"));
         assert!(
             row.contains("\\x0d") && row.contains("\\x1b[2K"),
             "row {marker:?} hid what it is asking the operator to approve: {row:?}"
         );
+        // doc-comment-ok: the haystack is a rendered row
         let payload = &row[row.find(marker).unwrap_or(0)..];
         assert!(
             !payload.contains('\r'),
             "row {marker:?} carries a live carriage return: {row:?}"
         );
     }
+    // long-line-ok: a hatch is read off its own line, so it cannot wrap
     // raw-capture-ok: the claim is that no erase sequence survived anywhere on the screen, and a stripping read removes exactly what it looks for
     let raw = buf.lock().unwrap_or_else(|e| e.into_inner()).clone();
     assert!(
@@ -5813,18 +5831,21 @@ fn print_module_review_summary_shows_control_characters_in_heading_and_trailer()
     for marker in ["module:mod-", "commit-", "sha256-"] {
         let row = out
             .lines()
+            // doc-comment-ok: the haystack is a rendered row
             .find(|l| l.contains(marker))
             .unwrap_or_else(|| panic!("row {marker:?} missing; screen holds: {out}"));
         assert!(
             row.contains("\\x0d") && row.contains("\\x1b[2K"),
             "row {marker:?} hid what it is asking the operator to approve: {row:?}"
         );
+        // doc-comment-ok: the haystack is a rendered row
         let payload = &row[row.find(marker).unwrap_or(0)..];
         assert!(
             !payload.contains('\r'),
             "row {marker:?} carries a live carriage return: {row:?}"
         );
     }
+    // long-line-ok: a hatch is read off its own line, so it cannot wrap
     // raw-capture-ok: the claim is that no erase sequence survived anywhere on the screen, and a stripping read removes exactly what it looks for
     let raw = buf.lock().unwrap_or_else(|e| e.into_inner()).clone();
     assert!(
@@ -6062,6 +6083,7 @@ fn a_remote_modules_post_apply_steps_reach_the_approval_screen_through_the_compo
         "sha256:dec0",
     );
     drop(printer);
+    // long-line-ok: a hatch is read off its own line, so it cannot wrap
     // raw-capture-ok: the escapes are half of what this test claims — a stripping read removes exactly what it compares
     let raw = buf.lock().unwrap_or_else(|e| e.into_inner()).clone();
 
@@ -6172,6 +6194,7 @@ fn an_upgrade_diffs_script_changes_render_their_bodies_through_the_composer() {
     );
     super::registry::print_spec_changes(&printer, &changes);
     drop(printer);
+    // long-line-ok: a hatch is read off its own line, so it cannot wrap
     // raw-capture-ok: the escapes are half of what this test claims — a stripping read removes exactly what it compares
     let raw = buf.lock().unwrap_or_else(|e| e.into_inner()).clone();
 
@@ -6670,7 +6693,7 @@ mod cmd_module_add_remote_local_bare {
     fn cmd_module_add_remote_against_local_bare_adds_to_lockfile_and_profile() {
         let work = setup_config_dir();
         let _home = cfgd_core::with_test_home_guard(work.path());
-        let _env = EnvGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+        let _env = EnvGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
 
         let bare_root = tempfile::tempdir().unwrap();
         let bare = make_bare_with_module(bare_root.path(), "mymod", "v1.0.0");
@@ -6708,7 +6731,7 @@ mod cmd_module_add_remote_local_bare {
     fn cmd_module_add_remote_is_idempotent_when_module_already_in_lockfile() {
         let work = setup_config_dir();
         let _home = cfgd_core::with_test_home_guard(work.path());
-        let _env = EnvGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+        let _env = EnvGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
 
         let bare_root = tempfile::tempdir().unwrap();
         let bare = make_bare_with_module(bare_root.path(), "mymod", "v1.0.0");
@@ -6736,7 +6759,7 @@ mod cmd_module_add_remote_local_bare {
     fn cmd_module_add_remote_bails_when_local_module_with_same_name_exists() {
         let work = setup_config_dir();
         let _home = cfgd_core::with_test_home_guard(work.path());
-        let _env = EnvGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+        let _env = EnvGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
 
         // Seed a local module under <config>/modules/<name>/ so the
         // local-vs-remote name collision check fires.
@@ -6764,7 +6787,7 @@ mod cmd_module_add_remote_local_bare {
     fn cmd_module_upgrade_against_local_bare_replaces_lockfile_entry() {
         let work = setup_config_dir();
         let _home = cfgd_core::with_test_home_guard(work.path());
-        let _env = EnvGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+        let _env = EnvGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
 
         let bare_root = tempfile::tempdir().unwrap();
         let bare = make_bare_with_module(bare_root.path(), "mymod", "v1.0.0");
@@ -6802,7 +6825,7 @@ mod cmd_module_add_remote_local_bare {
     fn cmd_module_upgrade_returns_early_when_module_not_in_lockfile() {
         let work = setup_config_dir();
         let _home = cfgd_core::with_test_home_guard(work.path());
-        let _env = EnvGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+        let _env = EnvGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
 
         let cli = test_cli(work.path());
         let printer = make_printer();
@@ -6826,7 +6849,7 @@ mod cmd_module_add_remote_local_bare {
         // HEAD and short-circuit at "already at this version".
         let work = setup_config_dir();
         let _home = cfgd_core::with_test_home_guard(work.path());
-        let _env = EnvGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+        let _env = EnvGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
 
         let bare_root = tempfile::tempdir().unwrap();
         let bare = make_bare_with_prefixed_tag(bare_root.path(), "mymod", "1.0.0");
@@ -6889,7 +6912,7 @@ mod cmd_module_add_remote_local_bare {
         // falling back to a branch HEAD.
         let work = setup_config_dir();
         let _home = cfgd_core::with_test_home_guard(work.path());
-        let _env = EnvGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+        let _env = EnvGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
 
         // `make_bare_with_module` tags the commit `v1.0.0` (no `mymod/` prefix),
         // so there is no `mymod/v*` version tag for "latest" to resolve.
@@ -6929,7 +6952,7 @@ mod cmd_module_add_remote_local_bare {
         // BEFORE rewriting the lockfile.
         let work = setup_config_dir();
         let _home = cfgd_core::with_test_home_guard(work.path());
-        let _env = EnvGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+        let _env = EnvGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
 
         let bare_root = tempfile::tempdir().unwrap();
         let bare = make_bare_with_module(bare_root.path(), "mymod", "v1.0.0");
@@ -6968,7 +6991,7 @@ mod cmd_module_add_remote_local_bare {
     fn cmd_module_upgrade_bails_when_target_is_a_local_module() {
         let work = setup_config_dir();
         let _home = cfgd_core::with_test_home_guard(work.path());
-        let _env = EnvGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+        let _env = EnvGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
 
         // Module exists only as a local module — no lockfile entry.
         let local_mod_yaml =
@@ -7112,7 +7135,7 @@ mod cmd_module_add_from_registry_local {
     fn cmd_module_add_from_registry_explicit_tag_writes_lockfile_and_profile() {
         let work = setup_config_dir();
         let _home = cfgd_core::with_test_home_guard(work.path());
-        let _env = EnvGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+        let _env = EnvGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
 
         let src_root = tempfile::tempdir().unwrap();
         let src = init_registry_source(src_root.path(), "alpha", "1.0.0", "Alpha module");
@@ -7156,7 +7179,7 @@ mod cmd_module_add_from_registry_local {
     fn cmd_module_add_from_registry_no_tag_resolves_latest_version() {
         let work = setup_config_dir();
         let _home = cfgd_core::with_test_home_guard(work.path());
-        let _env = EnvGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+        let _env = EnvGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
 
         let src_root = tempfile::tempdir().unwrap();
         let src = init_registry_source(src_root.path(), "beta", "1.0.0", "Beta v1");
@@ -7190,7 +7213,7 @@ mod cmd_module_add_from_registry_local {
     fn cmd_module_add_from_registry_unknown_registry_errors() {
         let work = setup_config_dir();
         let _home = cfgd_core::with_test_home_guard(work.path());
-        let _env = EnvGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+        let _env = EnvGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
 
         // cfgd.yaml left without any registries declared.
         let cli = test_cli(work.path());
@@ -7209,7 +7232,7 @@ mod cmd_module_add_from_registry_local {
     fn cmd_module_add_from_registry_invalid_reference_format_errors() {
         let work = setup_config_dir();
         let _home = cfgd_core::with_test_home_guard(work.path());
-        let _env = EnvGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+        let _env = EnvGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
 
         let cli = test_cli(work.path());
         let printer = make_printer();
@@ -7228,7 +7251,7 @@ mod cmd_module_add_from_registry_local {
     fn cmd_module_add_from_registry_unknown_module_errors_when_no_tags() {
         let work = setup_config_dir();
         let _home = cfgd_core::with_test_home_guard(work.path());
-        let _env = EnvGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+        let _env = EnvGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
 
         let src_root = tempfile::tempdir().unwrap();
         let src = init_registry_source(src_root.path(), "alpha", "1.0.0", "Alpha");
@@ -7260,7 +7283,7 @@ mod cmd_module_add_from_registry_local {
     fn cmd_module_search_returns_matching_module_in_table() {
         let work = setup_config_dir();
         let _home = cfgd_core::with_test_home_guard(work.path());
-        let _env = EnvGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+        let _env = EnvGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
 
         let src_root = tempfile::tempdir().unwrap();
         let src = init_registry_source(src_root.path(), "alpha", "1.0.0", "Alpha module");
@@ -7294,7 +7317,7 @@ mod cmd_module_add_from_registry_local {
     fn cmd_module_search_reports_no_matches_when_query_misses() {
         let work = setup_config_dir();
         let _home = cfgd_core::with_test_home_guard(work.path());
-        let _env = EnvGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+        let _env = EnvGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
 
         let src_root = tempfile::tempdir().unwrap();
         let src = init_registry_source(src_root.path(), "alpha", "1.0.0", "Alpha module");
@@ -7323,7 +7346,7 @@ mod cmd_module_add_from_registry_local {
     fn cmd_module_search_wide_format_includes_registry_column() {
         let work = setup_config_dir();
         let _home = cfgd_core::with_test_home_guard(work.path());
-        let _env = EnvGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+        let _env = EnvGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
 
         let src_root = tempfile::tempdir().unwrap();
         let src = init_registry_source(src_root.path(), "alpha", "1.0.0", "Alpha module");
@@ -7358,7 +7381,7 @@ mod cmd_module_add_from_registry_local {
     fn cmd_module_search_json_emits_results_array() {
         let work = setup_config_dir();
         let _home = cfgd_core::with_test_home_guard(work.path());
-        let _env = EnvGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+        let _env = EnvGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
 
         let src_root = tempfile::tempdir().unwrap();
         let src = init_registry_source(src_root.path(), "alpha", "1.0.0", "Alpha module");
@@ -7388,7 +7411,7 @@ mod cmd_module_add_from_registry_local {
     fn cmd_module_search_unreachable_registry_emits_failure_warning() {
         let work = setup_config_dir();
         let _home = cfgd_core::with_test_home_guard(work.path());
-        let _env = EnvGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+        let _env = EnvGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
 
         // Point the registry URL at a path that doesn't exist — the
         // file:// resolver should fail to clone, the search should NOT
@@ -8284,11 +8307,8 @@ fn every_surface_naming_the_shell_pair_lists_aliases_first() {
     .unwrap();
     let ordered = cfgd_core::with_test_home(home.path(), || {
         crate::cli::diff::env_drift_ordered(cfgd_core::reconciler::env_verify_results(
-            &env,
-            &aliases,
-            &cfgd_core::config::EntryOwners::default(),
+            &cfgd_core::reconciler::LayeredEnv::from_parts("profile:test", &env, &aliases, &[]),
             cfgd_core::config::EnvScope::default(),
-            &[],
             &[],
         ))
     });
@@ -8332,11 +8352,25 @@ fn module_show_resolved_rows_states_each_of_the_three_resolutions() {
 
     let mut gated = make_pkg("mas-cli");
     gated.platforms = vec!["darwin".to_string()];
-    let mut unsatisfiable = make_pkg("ghostty");
-    unsatisfiable.prefer = vec!["brew".to_string()];
+    // The entry the golden and the reference page both show, so the bytes
+    // asserted below are the bytes those two pages promise.
+    let mut unsatisfiable = make_pkg("obscure-tool");
+    unsatisfiable.prefer = vec!["nix".to_string()];
+    unsatisfiable.min_version = Some("1.0".to_string());
+    // Gated ON for the fixture's own platform AND unsatisfiable, which is the
+    // only shape that can carry the gate twice: `declared_package_clauses`
+    // puts it inside the parenthetical, and the row used to append it again.
+    let mut gated_unsatisfiable = make_pkg("gated-tool");
+    gated_unsatisfiable.platforms = vec!["linux".to_string()];
+    gated_unsatisfiable.prefer = vec!["nix".to_string()];
 
     let spec = cfgd_core::config::ModuleSpec {
-        packages: vec![make_pkg("ripgrep"), gated, unsatisfiable],
+        packages: vec![
+            make_pkg("ripgrep"),
+            gated,
+            unsatisfiable,
+            gated_unsatisfiable,
+        ],
         ..Default::default()
     };
 
@@ -8351,7 +8385,7 @@ fn module_show_resolved_rows_states_each_of_the_three_resolutions() {
         Some(&cx),
     );
 
-    assert_eq!(rows.len(), 3, "one row per declared package: {rows:#?}");
+    assert_eq!(rows.len(), 4, "one row per declared package: {rows:#?}");
     match &rows[0] {
         super::list_show::PackageDisplay::Resolved {
             name,
@@ -8366,7 +8400,7 @@ fn module_show_resolved_rows_states_each_of_the_three_resolutions() {
                 version.as_deref(),
                 Some("14.1.0"),
                 "the row states what the manager OFFERS, which is what \
-                 `fill_available_versions` fills and not the installed copy"
+                 `fill_available_versions` fills, whatever the installed copy is"
             );
         }
         other => panic!("a package an available manager holds resolves: {other:#?}"),
@@ -8383,9 +8417,186 @@ fn module_show_resolved_rows_states_each_of_the_three_resolutions() {
     }
     match &rows[2] {
         super::list_show::PackageDisplay::Unresolved { summary, error } => {
-            assert!(summary.starts_with("ghostty"), "summary: {summary}");
+            assert_eq!(
+                summary, "obscure-tool (prefer: nix; min: 1.0)",
+                "every declared clause sits inside the ONE parenthetical, \
+                 separated as clauses"
+            );
             assert!(!error.is_empty(), "the row states why it could not resolve");
+            // A page showing this row was typed by hand once and went on
+            // promising `(prefer: nix), min: 1.0` for the two releases after
+            // the composer stopped producing it. Both copies are read here, so
+            // a shape change fails beside the code that made it.
+            let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+            let shipped = [
+                root.join("tests/output_snapshots/module_show/resolved.txt"),
+                root.join("../../docs/cli-reference.md"),
+            ];
+            for path in shipped {
+                let body = cfgd_core::test_helpers::walked_file_body(&path);
+                assert!(
+                    body.contains(summary.as_str()),
+                    "{} shows a `module show --resolved` row the composer does \
+                     not produce; it must read {summary:?}",
+                    path.display()
+                );
+                // Containment alone passes a page holding the right bytes in
+                // one block and the spelling the composer stopped producing in
+                // another, which is the state both pages were actually in.
+                assert!(
+                    !body.contains("(prefer: nix), min"),
+                    "{} still shows the comma-separated spelling no composer \
+                     produces",
+                    path.display()
+                );
+            }
         }
         other => panic!("an entry no available manager can satisfy is unresolved: {other:#?}"),
     }
+    match &rows[3] {
+        super::list_show::PackageDisplay::Unresolved { summary, .. } => {
+            assert_eq!(
+                summary, "gated-tool (platforms: linux; prefer: nix)",
+                "the gate is one of the declared clauses, so the row names it \
+                 once"
+            );
+            assert_eq!(
+                summary.matches("platforms:").count(),
+                1,
+                "an unresolved row states its platform gate exactly once: \
+                 {summary:?}"
+            );
+        }
+        other => {
+            panic!("an entry gated ON for this host but unsatisfiable is unresolved: {other:#?}")
+        }
+    }
+}
+
+/// A declared package that NAMES a manager this host already holds renders the
+/// one composer's sentence, and the row's `met` flag carries the judgment.
+///
+/// The rows a reader sees for the two answers differ only in that flag and in
+/// the clause, and both come from `HeldManager::clause`. Built by hand once,
+/// the row promised a shortfall the resolution never made: the clause is
+/// asserted here as the composer produces it, over the real resolution.
+#[test]
+fn module_show_resolved_rows_state_a_held_managers_floor_judgment() {
+    use cfgd_core::providers::PackageManager;
+    use cfgd_core::test_helpers::MockPackageManager;
+
+    let cargo = MockPackageManager::new("cargo")
+        .offering("cargo", "1.75")
+        .reporting_version("1.80");
+    let npm = MockPackageManager::new("npm").offering("npm", "9.0.0");
+    let mgr_map: std::collections::HashMap<String, &dyn PackageManager> = [
+        ("cargo".to_string(), &cargo as &dyn PackageManager),
+        ("npm".to_string(), &npm as &dyn PackageManager),
+    ]
+    .into_iter()
+    .collect();
+    let platform = cfgd_core::platform::Platform {
+        os: cfgd_core::platform::Os::Linux,
+        distro: cfgd_core::platform::Distro::Debian,
+        version: "12".to_string(),
+        arch: cfgd_core::platform::Arch::X86_64,
+    };
+
+    let mut held_short = make_pkg("cargo");
+    held_short.min_version = Some("1.85".to_string());
+    held_short.prefer = vec!["cargo".to_string()];
+    // The manager states no version at all, which is neither a pass nor a
+    // shortfall: the row carries the unproven clause and fails the flag.
+    let mut held_unproven = make_pkg("npm");
+    held_unproven.min_version = Some("10.0".to_string());
+    held_unproven.prefer = vec!["npm".to_string()];
+
+    let spec = cfgd_core::config::ModuleSpec {
+        packages: vec![held_short, held_unproven],
+        ..Default::default()
+    };
+
+    let (printer, _cap) = cfgd_core::output::Printer::for_test_doc();
+    let state = cfgd_core::state::StateStore::open_in_memory().unwrap();
+    let cx = cfgd_core::providers::PackageContext::new(&printer, &state);
+    let rows = super::list_show::module_show_resolved_rows(
+        &spec,
+        "dev-tools",
+        &platform,
+        &mgr_map,
+        Some(&cx),
+    );
+
+    let expected_short = cfgd_core::modules::HeldManager {
+        package: "cargo".into(),
+        module: "dev-tools".into(),
+        floor: "1.85".into(),
+        judgment: cfgd_core::modules::FloorJudgment::Short {
+            version: "1.80".into(),
+        },
+    }
+    .clause(Some(&cargo));
+    match &rows[0] {
+        super::list_show::PackageDisplay::Held {
+            name,
+            clause,
+            met,
+            version,
+            min_version,
+        } => {
+            assert_eq!(name, "cargo");
+            assert_eq!(clause, &expected_short);
+            assert!(!met, "a floor this host falls short of is not met");
+            assert_eq!(
+                version.as_deref(),
+                Some("1.80"),
+                "the operand the verdict was measured against rides as a field"
+            );
+            assert_eq!(
+                min_version, "1.85",
+                "and so does the floor it was measured against"
+            );
+        }
+        other => panic!("an entry naming a held manager renders its judgment: {other:#?}"),
+    }
+    match &rows[1] {
+        super::list_show::PackageDisplay::Held {
+            name,
+            clause,
+            met,
+            version,
+            min_version,
+        } => {
+            assert_eq!(name, "npm");
+            assert_eq!(
+                version.as_deref(),
+                None,
+                "a floor nothing could judge names no version"
+            );
+            assert_eq!(min_version, "10.0");
+            let unproven = cfgd_core::modules::HeldManager {
+                package: "npm".into(),
+                module: "dev-tools".into(),
+                floor: "10.0".into(),
+                judgment: cfgd_core::modules::judge_declared_floor(&npm, "npm", "10.0", None),
+            }
+            .clause(Some(&npm));
+            assert_eq!(clause, &unproven);
+            assert!(!met, "a floor nothing could judge is not met");
+        }
+        other => panic!("a floor nothing could judge is still a held row: {other:#?}"),
+    }
+
+    let wire = serde_json::to_value(&rows).expect("the rows serialize");
+    assert_eq!(wire[0]["state"], "held");
+    assert_eq!(
+        (&wire[0]["version"], &wire[0]["minVersion"]),
+        (&serde_json::json!("1.80"), &serde_json::json!("1.85")),
+        "a consumer reads both operands as fields, camelCase like every other key"
+    );
+    assert!(
+        wire[1]["version"].is_null() && wire[1]["minVersion"] == "10.0",
+        "a floor nothing could judge states the floor and a null version: {}",
+        wire[1]
+    );
 }

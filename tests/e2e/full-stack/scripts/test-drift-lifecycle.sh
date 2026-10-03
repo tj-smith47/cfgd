@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # Full-stack E2E tests: Drift Lifecycle
 # Sourced by run-all.sh — do NOT set traps or pipefail here.
 
@@ -10,8 +11,8 @@ echo "=== Drift Lifecycle Tests ==="
 begin_test "FS-DRIFT-01: Drift detection and server reporting"
 
 # Introduce sysctl drift on the test pod
-ORIG=$(exec_in_pod cat /proc/sys/vm/max_map_count 2>/dev/null || echo "262144")
-exec_in_pod sysctl -w vm.max_map_count=65530 > /dev/null 2>&1 || true
+ORIG=$(exec_in_pod cat /proc/sys/net/ipv4/ip_forward 2>/dev/null || echo "1")
+exec_in_pod sysctl -w net.ipv4.ip_forward=0 > /dev/null 2>&1 || true
 
 # Checkin — should detect and report drift
 OUTPUT=$(exec_in_pod cfgd \
@@ -30,7 +31,7 @@ DRIFT_EVENTS=$(exec_in_pod curl -sf \
 echo "  Drift events: $(echo "$DRIFT_EVENTS" | head -c 200)"
 
 # Restore
-exec_in_pod sysctl -w "vm.max_map_count=$ORIG" > /dev/null 2>&1 || true
+exec_in_pod sysctl -w "net.ipv4.ip_forward=$ORIG" > /dev/null 2>&1 || true
 
 if echo "$OUTPUT" | grep -qi "drift" || [ "$DRIFT_EVENTS" != "[]" ]; then
     pass_test "FS-DRIFT-01"
@@ -196,7 +197,7 @@ exec_in_pod cfgd --config /etc/cfgd/e2e-compliance-cfgd.yaml apply --yes --no-co
 # =================================================================
 begin_test "FS-DRIFT-06: compliance snapshot after device apply"
 
-OUTPUT=$(exec_in_pod cfgd --config /etc/cfgd/e2e-compliance-cfgd.yaml compliance -o json --no-color 2>&1) || true
+OUTPUT=$(pod_compliance_json /etc/cfgd/e2e-compliance-cfgd.yaml)
 if assert_contains "$OUTPUT" '"snapshot"' && assert_contains "$OUTPUT" '"checks"'; then
     pass_test "FS-DRIFT-06"
 else
@@ -206,19 +207,7 @@ fi
 # =================================================================
 begin_test "FS-DRIFT-07: compliance detects introduced drift end-to-end"
 
-exec_in_pod sysctl -w vm.max_map_count=65530 > /dev/null 2>&1 || true
-
-OUTPUT=$(exec_in_pod cfgd --config /etc/cfgd/e2e-compliance-cfgd.yaml compliance -o json --no-color 2>&1) || true
-
-if assert_contains "$OUTPUT" "Violation" || assert_contains "$OUTPUT" "violation" || \
-   assert_contains "$OUTPUT" "Warning" || assert_contains "$OUTPUT" "warning" || \
-   assert_contains "$OUTPUT" "drift" || assert_contains "$OUTPUT" "Drift"; then
-    pass_test "FS-DRIFT-07"
-else
-    fail_test "FS-DRIFT-07" "Compliance should detect sysctl drift"
-fi
-
-exec_in_pod sysctl -w vm.max_map_count=262144 > /dev/null 2>&1 || true
+sysctl_drift_case "FS-DRIFT-07" /etc/cfgd/e2e-compliance-cfgd.yaml net.ipv4.ip_forward 0 1
 
 # =================================================================
 begin_test "FS-DRIFT-08: device checkin after compliance carries state"
@@ -237,14 +226,14 @@ else
     if [ "$CHECKIN_RC" -le 1 ]; then
         pass_test "FS-DRIFT-08"
     else
-        fail_test "FS-DRIFT-08" "Device not registered after compliance+checkin (exit $CHECKIN_RC)"
+        fail_test "FS-DRIFT-08" "Device not registered after compliance+checkin (exit $CHECKIN_RC): $CHECKIN_OUTPUT"
     fi
 fi
 
 # =================================================================
 begin_test "FS-DRIFT-09: MachineConfig with compliance-relevant spec"
 
-kubectl apply -n "$E2E_NAMESPACE" -f - <<EOF
+if ! kubectl apply -n "$E2E_NAMESPACE" -f - <<EOF
 apiVersion: cfgd.io/v1alpha1
 kind: MachineConfig
 metadata:
@@ -265,8 +254,7 @@ spec:
     "vm.max_map_count": "262144"
     "net.ipv4.ip_forward": "1"
 EOF
-
-if [ $? -ne 0 ]; then
+then
     fail_test "FS-DRIFT-09" "kubectl apply failed"
 else
     if wait_for_k8s_field machineconfig "e2e-compliance-mc-${E2E_RUN_ID}" "$E2E_NAMESPACE" \
@@ -280,7 +268,7 @@ fi
 # =================================================================
 begin_test "FS-DRIFT-10: ConfigPolicy enforces compliance on MachineConfig"
 
-kubectl apply -n "$E2E_NAMESPACE" -f - <<EOF
+if ! kubectl apply -n "$E2E_NAMESPACE" -f - <<EOF
 apiVersion: cfgd.io/v1alpha1
 kind: ConfigPolicy
 metadata:
@@ -299,8 +287,7 @@ spec:
   settings:
     "net.ipv4.ip_forward": "1"
 EOF
-
-if [ $? -ne 0 ]; then
+then
     fail_test "FS-DRIFT-10" "kubectl apply failed"
 else
     if wait_for_k8s_field configpolicy "e2e-compliance-policy-${E2E_RUN_ID}" "$E2E_NAMESPACE" \
@@ -321,7 +308,7 @@ fi
 # =================================================================
 begin_test "FS-DRIFT-11: non-compliant MachineConfig detected"
 
-kubectl apply -n "$E2E_NAMESPACE" -f - <<EOF
+if ! kubectl apply -n "$E2E_NAMESPACE" -f - <<EOF
 apiVersion: cfgd.io/v1alpha1
 kind: MachineConfig
 metadata:
@@ -337,8 +324,7 @@ spec:
   packages:
     - name: curl
 EOF
-
-if [ $? -ne 0 ]; then
+then
     fail_test "FS-DRIFT-11" "kubectl apply failed"
 else
     # Wait for the policy controller to re-evaluate (watches MachineConfig changes)
@@ -368,7 +354,7 @@ fi
 # =================================================================
 begin_test "FS-DRIFT-12: DriftAlert propagates to MachineConfig compliance status"
 
-kubectl apply -n "$E2E_NAMESPACE" -f - <<EOF
+if ! kubectl apply -n "$E2E_NAMESPACE" -f - <<EOF
 apiVersion: cfgd.io/v1alpha1
 kind: DriftAlert
 metadata:
@@ -387,8 +373,7 @@ spec:
       expected: "262144"
       actual: "65530"
 EOF
-
-if [ $? -ne 0 ]; then
+then
     fail_test "FS-DRIFT-12" "kubectl apply failed"
 else
     sleep 5

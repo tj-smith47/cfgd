@@ -1,0 +1,3 @@
+pub(crate) const fn width(columns: usize) -> usize {
+    columns * 2 + 1
+}

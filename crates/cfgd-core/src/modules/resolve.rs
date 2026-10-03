@@ -5,6 +5,8 @@ use std::path::{Path, PathBuf};
 
 use std::collections::HashSet;
 
+use serde::Serialize;
+
 use crate::config::ModulePackageEntry;
 use crate::errors::{ModuleError, Result};
 use crate::platform::Platform;
@@ -21,6 +23,376 @@ use super::{LoadedModule, ResolvedFile, ResolvedModule, ResolvedPackage, SourceM
 // ---------------------------------------------------------------------------
 // Package resolution
 // ---------------------------------------------------------------------------
+
+/// A declared floor no available manager meets, for a package that is ALSO a
+/// registered manager this host can bootstrap.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FloorBootstrap {
+    pub package: String,
+    pub module: String,
+    /// The manager that offered the best proven-below version, and what it offered.
+    pub found_in: String,
+    pub found: String,
+    pub floor: String,
+    /// `BootstrapPlan::method`: `rustup`, `nvm`, `homebrew installer`, or a mediator's name.
+    pub via: String,
+    /// The other modules whose declaration of this package the ONE question
+    /// asked about it also answers for.
+    ///
+    /// Empty on every route [`resolve_package`] mints, which is about a single
+    /// entry. Filled only where [`resolve_modules`] folds a run's routes for
+    /// one package into the question it asks: the run can deliver one copy of
+    /// a manager, so it asks once, and the reader is owed the whole list of
+    /// modules that answer rides on.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub also_declared_by: Vec<String>,
+}
+
+/// What a caller's policy answers a [`FloorBootstrap`] question with.
+///
+/// Three-way because the two refusals are not one refusal:
+/// a person who answered no has already been asked, and telling them to re-run
+/// on a terminal is nonsense.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FloorAnswer {
+    /// Take the route: the manager joins the run and the floor rides with it.
+    Yes,
+    /// A human was asked and said no, or the prompt failed before it could be
+    /// answered.
+    Declined,
+    /// There was nobody to ask: no `--yes`, and no human at a terminal.
+    NobodyToAsk,
+}
+
+/// A caller's policy on floor bootstrap routes, taken by [`resolve_modules`].
+///
+/// Every call site states its own, with no default to inherit: `plan` and
+/// `apply` may ask, and a read-only or scaffolding verb installs nothing, so a
+/// `status` that prompted would be a trap in scripts.
+pub type FloorConfirm<'a> = dyn Fn(&FloorBootstrap) -> FloorAnswer + 'a;
+
+/// The policy of every surface that installs nothing, and of the daemon.
+pub fn refuse_floor_bootstrap(_: &FloorBootstrap) -> FloorAnswer {
+    FloorAnswer::NobodyToAsk
+}
+
+impl FloorBootstrap {
+    /// The tail every sentence naming a version short of a declared floor ends
+    /// on, so the offer this route states and the failure an install settles
+    /// with cannot word the same shortfall two ways. A sentence built anywhere
+    /// but this module composes it from here.
+    pub const BELOW_DECLARED_FLOOR: &'static str = "below the declared minVersion";
+
+    /// What this host offers and why it falls short, as ONE clause: the
+    /// confirmation that asks whether to take the route, the plan row that
+    /// states it and `cfgd doctor`'s unresolved row all read it, so one offer
+    /// cannot be worded three ways.
+    pub fn offer_clause(&self) -> String {
+        format!(
+            "{} offers {} {}, {} {}",
+            self.found_in,
+            self.package,
+            self.found,
+            Self::BELOW_DECLARED_FLOOR,
+            self.floor
+        )
+    }
+
+    /// Every module the answer to this question applies to, the one that
+    /// declared it first.
+    pub fn asking_modules(&self) -> impl Iterator<Item = &str> {
+        std::iter::once(self.module.as_str())
+            .chain(self.also_declared_by.iter().map(String::as_str))
+    }
+
+    /// What the confirmation opens on: the offer, and every module whose
+    /// declared floor it falls short of. One question covers every module
+    /// naming the package, so the sentence agrees with however many asked.
+    pub fn asking_clause(&self) -> String {
+        let names: Vec<String> = self.asking_modules().map(|m| format!("'{m}'")).collect();
+        format!(
+            "{} that {} {} {} for",
+            self.offer_clause(),
+            crate::plural_noun(names.len(), "module"),
+            names.join(", "),
+            crate::agreeing_verb(names.len(), "ask"),
+        )
+    }
+
+    /// The route as a NOTE, asking nothing: what this host offers, and
+    /// the bootstrap that would meet the floor. The surfaces that state a
+    /// route without asking about it (`cfgd doctor`, `cfgd module show
+    /// --resolved`, `cfgd status <module>`) read this, so none of them can
+    /// turn a fact into a prompt.
+    pub fn provisionable_clause(&self) -> String {
+        crate::join_clauses([
+            self.offer_clause(),
+            format!("provisionable via {}", self.via),
+        ])
+    }
+
+    /// Why a route nobody could be asked about is still a refusal, and what
+    /// would let a later run take it.
+    pub fn unasked_refusal(&self) -> String {
+        crate::join_clauses([
+            self.offer_clause(),
+            format!(
+                "{} can be provisioned via {}: re-run with --yes, or on a terminal",
+                self.package, self.via
+            ),
+        ])
+    }
+
+    /// Why a route a person turned down is a refusal. It never tells a reader
+    /// at a terminal to re-run on a terminal: they were asked, and the answer
+    /// was no.
+    pub fn declined_refusal(&self) -> String {
+        crate::join_clauses([
+            self.offer_clause(),
+            format!(
+                "the {} provision of {} was declined",
+                self.via, self.package
+            ),
+        ])
+    }
+
+    /// What a provision settles with when the route it took delivered a version
+    /// still short of the floor the confirmation was given for.
+    ///
+    /// An associated function: the node holds the four values as plain strings
+    /// by then, the route itself having been folded into the plan. It shares
+    /// [`Self::BELOW_DECLARED_FLOOR`] with [`Self::offer_clause`], so the
+    /// question cfgd asked and the failure it answers with cannot word one
+    /// shortfall two ways.
+    pub fn delivery_shortfall(via: &str, package: &str, delivered: &str, floor: &str) -> String {
+        format!(
+            "{via} delivered {package} {delivered}, {} {floor}",
+            Self::BELOW_DECLARED_FLOOR
+        )
+    }
+
+    /// The same shortfall where this run installed NOTHING: the manager was on
+    /// the machine already, below the floor a confirmation asked for. A
+    /// replayed plan reaches it, and wording it as a delivery would credit the
+    /// run with an install it never performed.
+    pub fn present_shortfall(package: &str, found: &str, floor: &str) -> String {
+        format!(
+            "{package} was already present at {found}, {} {floor}",
+            Self::BELOW_DECLARED_FLOOR
+        )
+    }
+
+    /// A floor the run could not judge at all, and why.
+    ///
+    /// A comparator that cannot read its operands answers no question, so the
+    /// node says the floor is unproven. It neither settles green nor claims a
+    /// shortfall it did not measure: cfgd asked for a version and must not
+    /// report success for an answer it never read.
+    pub fn floor_unproven(package: &str, floor: &str, cause: &str) -> String {
+        format!("cannot judge {package} against the declared minVersion {floor}: {cause}")
+    }
+}
+
+/// A declared floor answered by the entry's OWN manager: the package names a
+/// registered manager this host holds, and [`judgment`](Self::judgment) is what
+/// that manager's binary reports, judged against the floor in its own grammar.
+///
+/// The judgment travels on the node; it never decides, at resolution time,
+/// whether the entry resolves at all. A manager below its floor is a fact about
+/// the machine, so every read surface reports it and only the install paths
+/// refuse: the alternative ended `status`, `verify`, `diff` and every daemon
+/// tick for every module the moment one toolchain slipped.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HeldManager {
+    /// The package, which is also the registered manager's name.
+    pub package: String,
+    pub module: String,
+    pub floor: String,
+    pub judgment: FloorJudgment,
+}
+
+impl HeldManager {
+    /// What this host holds and what that says about the declared floor, as ONE
+    /// clause: `cfgd doctor`'s module row, `module show --resolved`'s package
+    /// row, `status <module>`'s package row and the planner's refusal all read
+    /// it, so one held manager cannot be worded four ways.
+    ///
+    /// `mgr` is the registered manager this entry names, where the caller has
+    /// the registry in hand. It is read only to word the raise a shortfall
+    /// names and the home variables an unreadable version asks about; `None`
+    /// keeps both generic and still states them, because a surface with no
+    /// registry still has to say what is wrong.
+    pub fn clause(&self, mgr: Option<&dyn PackageManager>) -> String {
+        match &self.judgment {
+            FloorJudgment::Met { version } => format!(
+                "{} {version} is on this host, at or above the declared minVersion {}",
+                self.package, self.floor
+            ),
+            FloorJudgment::Short { version } => crate::join_clauses([
+                format!(
+                    "{} {version} is on this host, {} {}",
+                    self.package,
+                    FloorBootstrap::BELOW_DECLARED_FLOOR,
+                    self.floor
+                ),
+                self.raise_clause(mgr),
+            ]),
+            FloorJudgment::Unproven { cause } => crate::join_clauses([
+                FloorBootstrap::floor_unproven(&self.package, &self.floor, cause),
+                self.readable_version_clause(mgr),
+            ]),
+        }
+    }
+
+    /// How the manager itself is raised. A bootstrap cannot raise a manager
+    /// already on the machine and nothing cfgd plans installs one over itself,
+    /// so the sentence names a real raise and stops there. A composed install
+    /// command would put a second copy beside the one in use.
+    ///
+    /// The manager answers for its own copy first
+    /// ([`PackageManager::own_raise`]), because a family whose binary is a
+    /// shim is raised by the tool behind the shim; only a manager that raises
+    /// itself the way it raises a package falls to
+    /// [`PackageManager::upgrade_verb`].
+    fn raise_clause(&self, mgr: Option<&dyn PackageManager>) -> String {
+        if let Some(command) = mgr.and_then(PackageManager::own_raise) {
+            return format!("raise it with `{command}`");
+        }
+        match mgr.and_then(PackageManager::upgrade_verb) {
+            Some(verb) => format!("raise it with {}'s own {verb}", self.package),
+            None => format!(
+                "nothing cfgd can run raises {}, so it must be raised by hand",
+                self.package
+            ),
+        }
+    }
+
+    /// What has to be true for the binary to answer at all, for a version the
+    /// run could not read.
+    ///
+    /// A manager's binary is reached through `PATH`, and a shim resolves the
+    /// copy it stands for through the family's own home variables, and a
+    /// systemd unit carries neither unless the unit sets them, which is exactly
+    /// where this verdict is reached. The variables are named by the manager
+    /// ([`PackageManager::home_env_vars`]), with no list here, so a family
+    /// that gains one joins the sentence with it.
+    fn readable_version_clause(&self, mgr: Option<&dyn PackageManager>) -> String {
+        let vars = mgr.map(PackageManager::home_env_vars).unwrap_or(&[]);
+        let reach = format!("check that {} is on this process's PATH", self.package);
+        if vars.is_empty() {
+            return reach;
+        }
+        format!("{reach} and that {} are set for it", vars.join(" and "))
+    }
+}
+
+/// What a manager's own version answers a declared floor with.
+///
+/// The four questions in the ONE order they must be asked: is there a version
+/// at all, can this manager compare it, can it read the floor, and does the
+/// comparison it then runs say yes. A comparator that could not judge its
+/// operands has answered nothing, so [`Unproven`](Self::Unproven) is neither a
+/// pass nor a shortfall — every caller words its own verdict from the answer
+/// and none of them re-asks the questions.
+///
+/// It rides on [`HeldManager`], so it reaches the wire: internally tagged under
+/// the same `state` key `PackageDisplay` names its own arms with, which keeps a
+/// reader's match on one string whichever key a map happens to hold.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "state", rename_all = "camelCase")]
+pub enum FloorJudgment {
+    /// Comparable, and at or above the floor.
+    Met { version: String },
+    /// Comparable, and below the floor. The version is carried back because
+    /// every caller's sentence names it.
+    Short { version: String },
+    /// The question could not be asked, and why.
+    Unproven { cause: String },
+}
+
+impl FloorJudgment {
+    /// Whether the floor was measured and cleared. The two other answers are
+    /// different facts but one decision for a caller that has to act: a version
+    /// below the floor and a version nothing could read both leave a declared
+    /// floor unmet.
+    pub fn met(&self) -> bool {
+        matches!(self, Self::Met { .. })
+    }
+
+    /// The version the judgment was made against, or `None` where nothing
+    /// could be read. A surface rendering the operand takes it from here. A
+    /// second read of the binary would answer a later moment than the verdict
+    /// beside it.
+    pub fn version(&self) -> Option<&str> {
+        match self {
+            Self::Met { version } | Self::Short { version } => Some(version),
+            Self::Unproven { .. } => None,
+        }
+    }
+}
+
+/// Judge `version` against a declared `floor` in `mgr`'s own version grammar.
+///
+/// The comparison belongs to the family that packages the tool: `1:2.30`,
+/// `1.2.3,4567` and `2.2.2.0` are all versions a family reads and the shared
+/// parser refuses, so a `false` from the shared parser would be an artifact of
+/// the parse. It would say nothing about the machine.
+pub fn judge_declared_floor(
+    mgr: &dyn PackageManager,
+    subject: &str,
+    floor: &str,
+    version: Option<&str>,
+) -> FloorJudgment {
+    let Some(version) = version else {
+        return FloorJudgment::Unproven {
+            cause: "it reports no version".to_string(),
+        };
+    };
+    if !mgr.version_comparable(version) {
+        return FloorJudgment::Unproven {
+            cause: format!("{subject} reports {version}, which it cannot compare"),
+        };
+    }
+    if !mgr.floor_comparable(floor) {
+        return FloorJudgment::Unproven {
+            cause: format!("{subject} cannot read that floor"),
+        };
+    }
+    match mgr.version_meets_minimum_checked(version, floor) {
+        Ok(true) => FloorJudgment::Met {
+            version: version.to_string(),
+        },
+        Ok(false) => FloorJudgment::Short {
+            version: version.to_string(),
+        },
+        Err(e) => FloorJudgment::Unproven {
+            cause: crate::output::collapse_to_subject_line(&e),
+        },
+    }
+}
+
+/// What one declared package entry resolves to: the manager it lands on, the
+/// route a floor no available manager meets could be met by, or the manager
+/// this host already holds at that floor.
+// `Debug` because a resolver test panics with the arm it did not expect;
+// `ResolvedPackage` already derives it.
+#[derive(Debug)]
+pub enum PackageResolution {
+    Package(Box<ResolvedPackage>),
+    Bootstrap(FloorBootstrap),
+    /// The entry names a manager this host holds at or above the floor: the
+    /// manager itself is the delivery, so there is nothing to install and
+    /// nothing to ask.
+    HeldByManager(HeldManager),
+}
+
+impl From<ResolvedPackage> for PackageResolution {
+    fn from(pkg: ResolvedPackage) -> Self {
+        PackageResolution::Package(Box::new(pkg))
+    }
+}
 
 /// Resolve a single module package entry to a concrete (manager, name, version).
 ///
@@ -65,7 +437,7 @@ pub fn resolve_package(
     platform: &Platform,
     managers: &HashMap<String, &dyn PackageManager>,
     installed: Option<&crate::providers::PackageContext<'_>>,
-) -> Result<Option<ResolvedPackage>> {
+) -> Result<Option<PackageResolution>> {
     // Platform filter: skip entirely if platforms is non-empty and doesn't match
     if !crate::platform::PlatformGated::applies_to(entry, platform) {
         return Ok(None);
@@ -97,6 +469,9 @@ pub fn resolve_package(
     // Whether some candidate proved it offers below the floor, which is the
     // only way a floor can make a package genuinely unresolvable.
     let mut proven_below = false;
+    // The (manager, version) of the first candidate PROVEN below the floor, the
+    // operands a route's own clause quotes. `None` until one proves it.
+    let mut best_found: Option<(String, String)> = None;
 
     for candidate in &candidates {
         // Special "script" manager — always available, uses custom install script
@@ -111,20 +486,23 @@ pub fn resolve_package(
                         entry.name
                     ),
                 })?;
-            return Ok(Some(ResolvedPackage {
-                canonical_name: entry.name.clone(),
-                resolved_name: entry.name.clone(),
-                manager: crate::SCRIPT_SENTINEL.to_string(),
-                // `script` only ever reaches a candidate list the author
-                // wrote: it is not any platform's native manager.
-                manager_declared: true,
-                version: None,
-                script: Some(script.clone()),
-                creates: entry.creates.clone(),
-                only_if: entry.only_if.clone(),
-                unless: entry.unless.clone(),
-                min_version: entry.min_version.clone(),
-            }));
+            return Ok(Some(
+                ResolvedPackage {
+                    canonical_name: entry.name.clone(),
+                    resolved_name: entry.name.clone(),
+                    manager: crate::SCRIPT_SENTINEL.to_string(),
+                    // `script` only ever reaches a candidate list the author
+                    // wrote: it is not any platform's native manager.
+                    manager_declared: true,
+                    version: None,
+                    script: Some(script.clone()),
+                    creates: entry.creates.clone(),
+                    only_if: entry.only_if.clone(),
+                    unless: entry.unless.clone(),
+                    min_version: entry.min_version.clone(),
+                }
+                .into(),
+            ));
         }
 
         let mgr = match managers.get(candidate.as_str()) {
@@ -153,18 +531,21 @@ pub fn resolve_package(
         // If the manager isn't installed yet but can be bootstrapped, resolve
         // optimistically — versions cannot be queried until it's installed.
         if bootstrappable {
-            return Ok(Some(ResolvedPackage {
-                canonical_name: entry.name.clone(),
-                resolved_name,
-                manager: candidate.clone(),
-                manager_declared,
-                version: None,
-                script: None,
-                creates: None,
-                only_if: None,
-                unless: None,
-                min_version: entry.min_version.clone(),
-            }));
+            return Ok(Some(
+                ResolvedPackage {
+                    canonical_name: entry.name.clone(),
+                    resolved_name,
+                    manager: candidate.clone(),
+                    manager_declared,
+                    version: None,
+                    script: None,
+                    creates: None,
+                    only_if: None,
+                    unless: None,
+                    min_version: entry.min_version.clone(),
+                }
+                .into(),
+            ));
         }
 
         // A floor the manager cannot read rejects nothing: making every
@@ -183,26 +564,32 @@ pub fn resolve_package(
                     // through to the loose-semver default.
                     if !mgr.version_meets_minimum(&ver, min_ver) {
                         proven_below = true;
+                        // First candidate wins, matching `prefer` order: the
+                        // author's own ordering decides which offer is quoted.
+                        best_found.get_or_insert_with(|| (candidate.clone(), ver));
                         continue;
                     }
-                    return Ok(Some(ResolvedPackage {
-                        canonical_name: entry.name.clone(),
-                        resolved_name,
-                        manager: candidate.clone(),
-                        manager_declared,
-                        version: Some(ver),
-                        script: None,
-                        creates: None,
-                        only_if: None,
-                        unless: None,
-                        min_version: entry.min_version.clone(),
-                    }));
+                    return Ok(Some(
+                        ResolvedPackage {
+                            canonical_name: entry.name.clone(),
+                            resolved_name,
+                            manager: candidate.clone(),
+                            manager_declared,
+                            version: Some(ver),
+                            script: None,
+                            creates: None,
+                            only_if: None,
+                            unless: None,
+                            min_version: entry.min_version.clone(),
+                        }
+                        .into(),
+                    ));
                 }
                 // The manager answered nothing, or could not be asked at all.
                 // Neither says the floor is unmet, so the candidate stands by
                 // in case nothing better is found.
                 Ok(None) | Err(_) => {
-                    unproven.get_or_insert(ResolvedPackage {
+                    unproven.get_or_insert_with(|| ResolvedPackage {
                         canonical_name: entry.name.clone(),
                         resolved_name,
                         manager: candidate.clone(),
@@ -221,30 +608,48 @@ pub fn resolve_package(
             // that choice depends on what the manager currently offers — so the
             // version query is left to `fill_available_versions`, which the
             // paths that DISPLAY a version call and the read paths do not.
-            return Ok(Some(ResolvedPackage {
-                canonical_name: entry.name.clone(),
-                resolved_name,
-                manager: candidate.clone(),
-                manager_declared,
-                version: None,
-                script: None,
-                creates: None,
-                only_if: None,
-                unless: None,
-                min_version: entry.min_version.clone(),
-            }));
+            return Ok(Some(
+                ResolvedPackage {
+                    canonical_name: entry.name.clone(),
+                    resolved_name,
+                    manager: candidate.clone(),
+                    manager_declared,
+                    version: None,
+                    script: None,
+                    creates: None,
+                    only_if: None,
+                    unless: None,
+                    min_version: entry.min_version.clone(),
+                }
+                .into(),
+            ));
         }
     }
 
     if let Some(pkg) = unproven {
-        return Ok(Some(pkg));
+        return Ok(Some(pkg.into()));
+    }
+
+    // Asked before the route and before the refusal, and only here: a run that
+    // provisioned this manager to meet the floor leaves a machine where every
+    // LISTING is still below it, so the walk above proves below on every later
+    // run and the entry that converged the machine is the one that refuses.
+    // What the manager's own binary reports is the fact that answers it.
+    if proven_below && let Some(held) = held_manager_answer(entry, module_name, managers) {
+        return Ok(Some(PackageResolution::HeldByManager(held)));
+    }
+
+    if proven_below
+        // Only a proven-below floor can be rescued this way. "No manager at
+        // all" is already answered by the optimistic `bootstrappable` arm
+        // above, which resolves.
+        && let Some(route) = floor_bootstrap_route(entry, module_name, managers, &best_found)
+    {
+        return Ok(Some(PackageResolution::Bootstrap(route)));
     }
 
     let reason = if proven_below {
-        format!(
-            "every available manager offers a version below the declared minVersion {}",
-            entry.min_version.as_deref().unwrap_or("any")
-        )
+        proven_below_reason(entry.min_version.as_deref().unwrap_or("any"))
     } else {
         "no manager for it is available on this host, and none can be bootstrapped".to_string()
     };
@@ -254,6 +659,104 @@ pub fn resolve_package(
         reason,
     }
     .into())
+}
+
+/// Why a package every available manager proved itself below the floor of
+/// cannot be resolved, for the entry no bootstrap route and no manager on this
+/// host can answer.
+fn proven_below_reason(floor: &str) -> String {
+    format!(
+        "every available manager offers a version {} {floor}",
+        FloorBootstrap::BELOW_DECLARED_FLOOR
+    )
+}
+
+/// What the manager this entry NAMES, already on this host, answers the
+/// declared floor with. `None` where the rule does not apply: the entry names
+/// no registered manager, that manager is not here, or nothing declared a
+/// floor.
+///
+/// Never a refusal, whatever the verdict: resolution is atomic, so refusing
+/// here takes every other module's answer down with this one, and the surfaces
+/// that only READ the machine are exactly the ones a reader reaches for when a
+/// toolchain has slipped. The install paths refuse instead, at the planner,
+/// for the one module holding the unmet floor.
+///
+/// `tool_version()` spawns, so this runs on the proven-below exit alone and
+/// asks once: every entry reaching it has already failed every listing.
+fn held_manager_answer(
+    entry: &ModulePackageEntry,
+    module_name: &str,
+    managers: &HashMap<String, &dyn PackageManager>,
+) -> Option<HeldManager> {
+    let floor = entry.min_version.as_deref()?;
+    let mgr = *managers.get(entry.name.as_str())?;
+    if !mgr.is_available() {
+        return None;
+    }
+    let name = entry.name.as_str();
+    let version = mgr.tool_version();
+    Some(HeldManager {
+        package: name.to_string(),
+        module: module_name.to_string(),
+        floor: floor.to_string(),
+        judgment: judge_declared_floor(mgr, name, floor, version.as_deref()),
+    })
+}
+
+/// The route a proven-below floor could be met by: the package names a
+/// REGISTERED manager that is not on this host, and that manager's own cascade
+/// runs here.
+fn floor_bootstrap_route(
+    entry: &ModulePackageEntry,
+    module_name: &str,
+    managers: &HashMap<String, &dyn PackageManager>,
+    found: &Option<(String, String)>,
+) -> Option<FloorBootstrap> {
+    let (mgr, route) = floor_bootstrap_via(&entry.name, entry, module_name, managers, found)?;
+    // The manager the route runs through, asked of the value the derivation
+    // resolved, with no second lookup: a manager already on this host
+    // has nothing left to bootstrap, because a second copy of it would not
+    // raise what it offers, and the refusal stands.
+    (!mgr.is_available()).then_some(route)
+}
+
+/// That route through ONE named manager, asked without regard to whether this
+/// host already has it, so a caller walking the registry can price every
+/// manager that declares the package. The resolved manager comes back with the
+/// route so its caller asks the host question of that same value.
+///
+/// `manager` is the package's own name wherever the resolver calls this, which
+/// is what makes the route's `package` field name a registered manager. The
+/// field is the ENTRY's name either way, so a caller naming a manager the entry
+/// does not gets a route naming that entry.
+///
+/// `bootstrap_plan_given(&|_| false)` prices the cascade against the host as it
+/// stands, so a manager whose only arm is a mediator this host lacks offers
+/// nothing and the refusal stands.
+pub fn floor_bootstrap_via<'m>(
+    manager: &str,
+    entry: &ModulePackageEntry,
+    module_name: &str,
+    managers: &HashMap<String, &'m dyn PackageManager>,
+    found: &Option<(String, String)>,
+) -> Option<(&'m dyn PackageManager, FloorBootstrap)> {
+    let mgr = *managers.get(manager)?;
+    let floor = entry.min_version.clone()?;
+    let via = mgr.bootstrap_plan_given(&|_| false)?.method;
+    let (found_in, found) = found.clone()?;
+    Some((
+        mgr,
+        FloorBootstrap {
+            package: entry.name.clone(),
+            module: module_name.to_string(),
+            found_in,
+            found,
+            floor,
+            via,
+            also_declared_by: Vec::new(),
+        },
+    ))
 }
 
 /// The available manager that already holds a bare entry's package, when one
@@ -306,14 +809,21 @@ pub fn resolve_module_packages(
     platform: &Platform,
     managers: &HashMap<String, &dyn PackageManager>,
     installed: Option<&crate::providers::PackageContext<'_>>,
-) -> Result<Vec<ResolvedPackage>> {
-    let mut resolved = Vec::new();
+) -> Result<(Vec<ResolvedPackage>, Vec<FloorBootstrap>, Vec<HeldManager>)> {
+    let mut resolved = Vec::with_capacity(module.spec.packages.len());
+    let mut routes = Vec::new();
+    let mut held = Vec::new();
     for entry in &module.spec.packages {
-        if let Some(pkg) = resolve_package(entry, &module.name, platform, managers, installed)? {
-            resolved.push(pkg);
+        match resolve_package(entry, &module.name, platform, managers, installed)? {
+            Some(PackageResolution::Package(pkg)) => resolved.push(*pkg),
+            Some(PackageResolution::Bootstrap(route)) => routes.push(route),
+            // Nothing to install and nothing to plan: the delivery is the
+            // manager, and it is already here.
+            Some(PackageResolution::HeldByManager(entry)) => held.push(entry),
+            None => {}
         }
     }
-    Ok(resolved)
+    Ok((resolved, routes, held))
 }
 
 /// Price every resolved package that does not already carry a version, so a
@@ -498,6 +1008,7 @@ pub fn resolve_modules(
     managers: &HashMap<String, &dyn PackageManager>,
     installed: Option<&crate::providers::PackageContext<'_>>,
     printer: &crate::output::Printer,
+    confirm: &FloorConfirm<'_>,
 ) -> Result<Vec<ResolvedModule>> {
     let all_modules = load_all_modules(config_dir, cache_base, source_roots, printer)?;
 
@@ -532,6 +1043,39 @@ pub fn resolve_modules(
         (&spec.depends, &spec.platforms)
     })?;
 
+    // Fail-closed: a source not permitted to run scripts may not deliver a
+    // module body carrying lifecycle scripts or `prefer: [script]` package
+    // installs. Judged over `order` — the modules THIS resolution actually
+    // references, requested or depends-pulled — never over everything a
+    // source's manifest merely offers: an unreferenced sibling module in the
+    // same source carrying a script is not this subscriber's problem, and a
+    // platform-skipped one never runs its body at all.
+    let scripts_permitted_by_source: HashMap<&str, bool> = source_roots
+        .iter()
+        .map(|root| (root.source_name.as_str(), root.scripts_permitted))
+        .collect();
+    for name in &order {
+        if skipped.contains(name.as_str()) {
+            continue;
+        }
+        let module = &all_modules[name];
+        let Some(source_name) = module.origin.as_deref() else {
+            continue;
+        };
+        let permitted = scripts_permitted_by_source
+            .get(source_name)
+            .copied()
+            .unwrap_or(false);
+        if !permitted && let Some(kind) = super::lockfile::module_script_kind(module) {
+            return Err(ModuleError::ScriptsNotAllowed {
+                source_name: source_name.to_string(),
+                module: name.clone(),
+                kind,
+            }
+            .into());
+        }
+    }
+
     let mut resolved = Vec::new();
     // A module's own resolution is where this walk waits: a git file source
     // is cloned or fetched here and every manifest is read off disk. Narrated
@@ -561,7 +1105,8 @@ pub fn resolve_modules(
                 continue;
             }
 
-            let packages = resolve_module_packages(module, platform, managers, installed)?;
+            let (packages, floor_bootstraps, held_managers) =
+                resolve_module_packages(module, platform, managers, installed)?;
             let files = resolve_module_files(module, cache_base, printer)?;
 
             let scripts = module.spec.scripts.as_ref();
@@ -578,6 +1123,8 @@ pub fn resolve_modules(
             resolved.push(ResolvedModule {
                 name: name.clone(),
                 packages,
+                floor_bootstraps,
+                held_managers,
                 files,
                 // Filtered here, beside the package filter above: a gated
                 // entry is not part of this host's desired state, so it
@@ -605,7 +1152,86 @@ pub fn resolve_modules(
         Ok(())
     })?;
 
+    // Asked after the narrate block closes: `inquire` writes
+    // straight to the terminal past the renderer, so a confirm drawn under a
+    // live spinner is painted over by the next tick. Asked after every module
+    // resolved, too — a hard refusal has already ended the run by then, which
+    // is what keeps anybody from being asked to approve a toolchain install
+    // for a configuration that cannot resolve anyway.
+    confirm_floor_bootstraps(&resolved, managers, confirm)?;
+
     Ok(resolved)
+}
+
+/// Ask once per package about the floors a manager bootstrap would meet, and
+/// let every route for that package stand or refuse the run on the one answer.
+///
+/// Two modules naming one manager are one question: the run can deliver a
+/// single copy of it, so the question quotes the strictest floor any of them
+/// asked for — the same [`crate::effective::stricter_floor`] the planner folds
+/// the confirmed routes with, so a floor cannot survive here and lose there —
+/// and names every module that asked.
+///
+/// The questions are matched by package through a linear scan: a run carries
+/// at most a handful of floored packages, and the overwhelmingly common one
+/// carries none and leaves before anything is allocated.
+fn confirm_floor_bootstraps(
+    resolved: &[ResolvedModule],
+    managers: &HashMap<String, &dyn PackageManager>,
+    confirm: &FloorConfirm<'_>,
+) -> Result<()> {
+    if resolved.iter().all(|m| m.floor_bootstraps.is_empty()) {
+        return Ok(());
+    }
+    let mut questions: Vec<FloorBootstrap> = Vec::new();
+    for route in resolved.iter().flat_map(|m| m.floor_bootstraps.iter()) {
+        let Some(question) = questions.iter_mut().find(|q| q.package == route.package) else {
+            questions.push(route.clone());
+            continue;
+        };
+        if !question.asking_modules().any(|m| m == route.module) {
+            question.also_declared_by.push(route.module.clone());
+        }
+        // Judged in the grammar of the manager being provisioned, since that
+        // is whose versions both floors are written in. Read from borrows: a
+        // comparator that answers `None` must leave the floor exactly as it
+        // was, and a floor moved out first is gone by then.
+        let kept = crate::effective::stricter_floor(
+            &Some(question.floor.clone()),
+            &Some(route.floor.clone()),
+            managers.get(&route.package).copied(),
+        );
+        // The offer travels with the floor it falls short of. Two modules
+        // naming one package can price it against different candidate sets
+        // (their own `prefer` lists), so the best proven-below offer is per
+        // ROUTE, and a sentence pairing one module's floor with the other's
+        // offer states a shortfall neither module declared. `via` is the
+        // manager's own bootstrap method and is identical on every route
+        // naming it, so it has nothing to move. `stricter_floor` answers with
+        // the earlier spelling where neither floor is stricter, which is what
+        // leaves the offer already on the question in place.
+        if let Some(kept) = kept
+            && kept != question.floor
+        {
+            question.floor = kept;
+            question.found_in = route.found_in.clone();
+            question.found = route.found.clone();
+        }
+    }
+    for question in &questions {
+        let reason = match confirm(question) {
+            FloorAnswer::Yes => continue,
+            FloorAnswer::Declined => question.declined_refusal(),
+            FloorAnswer::NobodyToAsk => question.unasked_refusal(),
+        };
+        return Err(ModuleError::UnresolvablePackage {
+            module: question.module.clone(),
+            package: question.package.clone(),
+            reason,
+        }
+        .into());
+    }
+    Ok(())
 }
 
 /// Enrich a `ModuleError::NotFound` raised during dependency resolution: when the

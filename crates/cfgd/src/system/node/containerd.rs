@@ -1,5 +1,5 @@
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use cfgd_core::PathDisplayExt;
 use cfgd_core::errors::{CfgdError, Result};
@@ -27,14 +27,6 @@ pub struct ContainerdConfigurator;
 
 impl ContainerdConfigurator {
     pub(super) const DEFAULT_CONFIG_PATH: &'static str = "/etc/containerd/config.toml";
-
-    pub(super) fn config_path(desired: &serde_yaml::Value) -> PathBuf {
-        desired
-            .get("configPath")
-            .and_then(|v| v.as_str())
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from(Self::DEFAULT_CONFIG_PATH))
-    }
 
     pub(super) fn read_current_config(path: &Path) -> Result<toml::Table> {
         if !path.exists() {
@@ -65,6 +57,7 @@ impl ContainerdConfigurator {
     }
 }
 
+// long-line-ok: a hatch is read off its own line, so it cannot wrap
 // no-tool-ok: containerd comes from the node's own provisioning, and no package cfgd can install puts a container runtime on a machine that has none
 impl SystemConfigurator for ContainerdConfigurator {
     fn name(&self) -> &str {
@@ -80,7 +73,7 @@ impl SystemConfigurator for ContainerdConfigurator {
     }
 
     fn diff(&self, desired: &serde_yaml::Value) -> Result<Vec<SystemDrift>> {
-        let config_path = Self::config_path(desired);
+        let config_path = super::config_path(desired, Self::DEFAULT_CONFIG_PATH);
         let current = Self::read_current_config(&config_path)?;
 
         let settings = match desired.get("settings").and_then(|v| v.as_mapping()) {
@@ -97,7 +90,7 @@ impl SystemConfigurator for ContainerdConfigurator {
     }
 
     fn apply(&self, desired: &serde_yaml::Value, cx: &SystemContext<'_>) -> Result<()> {
-        let config_path = Self::config_path(desired);
+        let config_path = super::config_path(desired, Self::DEFAULT_CONFIG_PATH);
 
         let settings = match desired.get("settings").and_then(|v| v.as_mapping()) {
             Some(m) => m,

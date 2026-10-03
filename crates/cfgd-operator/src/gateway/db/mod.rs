@@ -131,10 +131,9 @@ const MIGRATIONS: &[&str] = &[
 
 /// Applied to every reader connection.
 fn init_reader(conn: &mut Connection) -> rusqlite::Result<()> {
-    conn.busy_timeout(SQLITE_BUSY_TIMEOUT)?;
+    cfgd_core::state::enable_wal(conn, SQLITE_BUSY_TIMEOUT)?;
     conn.execute_batch(
-        "PRAGMA journal_mode=WAL;
-         PRAGMA synchronous=FULL;
+        "PRAGMA synchronous=FULL;
          PRAGMA foreign_keys=ON;
          PRAGMA temp_store=MEMORY;
          PRAGMA query_only=ON;",
@@ -145,10 +144,9 @@ fn init_reader(conn: &mut Connection) -> rusqlite::Result<()> {
 
 /// Applied to the dedicated writer connection.
 fn init_writer(conn: &mut Connection) -> rusqlite::Result<()> {
-    conn.busy_timeout(SQLITE_BUSY_TIMEOUT)?;
+    cfgd_core::state::enable_wal(conn, SQLITE_BUSY_TIMEOUT)?;
     conn.execute_batch(
-        "PRAGMA journal_mode=WAL;
-         PRAGMA synchronous=FULL;
+        "PRAGMA synchronous=FULL;
          PRAGMA foreign_keys=ON;
          PRAGMA temp_store=MEMORY;",
     )?;
@@ -170,7 +168,7 @@ impl r2d2::CustomizeConnection<Connection, rusqlite::Error> for ReaderCustomizer
 }
 
 fn reader_pool_size_from_env() -> u32 {
-    std::env::var("CFGD_GATEWAY_DB_READ_POOL_SIZE")
+    std::env::var(cfgd_core::CFGD_GATEWAY_DB_READ_POOL_SIZE_ENV)
         .ok()
         .and_then(|s| s.parse().ok())
         .filter(|&n: &u32| n >= 1)
@@ -182,6 +180,7 @@ where
     F: FnOnce() -> Result<R, GatewayError> + Send + 'static,
     R: Send + 'static,
 {
+    // long-line-ok: a hatch is read off its own line, so it cannot wrap
     // spawn-blocking-ok: closure resolves no home paths (sqlite work on an already-open pool connection)
     match tokio::task::spawn_blocking(f).await {
         Ok(r) => r,

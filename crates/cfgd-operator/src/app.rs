@@ -146,10 +146,15 @@ fn log_crd_info() {
 }
 
 /// Spawn the health-probe server on `HEALTH_PORT` (default 8081) and return its
-/// task handle plus the shared `HealthState`. The caller marks ready via
-/// `HealthState::set_ready` once dependents are up.
-fn spawn_health_server() -> (tokio::task::JoinHandle<()>, health::HealthState) {
-    let health_state = health::HealthState::new();
+/// task handle plus the shared `HealthState`. `webhook` and `gateway` name the
+/// listeners readiness waits for; each reports itself once it accepts, and the
+/// caller reports the lease via `HealthState::set_leader`.
+fn spawn_health_server(
+    leader_gauge: prometheus_client::metrics::gauge::Gauge,
+    webhook: bool,
+    gateway: bool,
+) -> (tokio::task::JoinHandle<()>, health::HealthState) {
+    let health_state = health::HealthState::new(leader_gauge, webhook, gateway);
     let health_port = env::parse_port_env("HEALTH_PORT", 8081);
 
     let handle = tokio::spawn({
@@ -186,7 +191,11 @@ fn spawn_metrics_server() -> (tokio::task::JoinHandle<()>, metrics::Metrics) {
     (handle, metrics)
 }
 
-async fn run_operator(client: Client, metrics: metrics::Metrics) -> Result<()> {
+async fn run_operator(
+    client: Client,
+    metrics: metrics::Metrics,
+    health_state: health::HealthState,
+) -> Result<()> {
     let gateway_enabled = runtime::is_gateway_enabled();
 
     if gateway_enabled {
@@ -215,7 +224,7 @@ async fn run_operator(client: Client, metrics: metrics::Metrics) -> Result<()> {
             }
         });
 
-        gateway::start_gateway(gateway_config)
+        gateway::start_gateway(gateway_config, || health_state.set_gateway_serving())
             .await
             .map_err(|e| anyhow::anyhow!("{}", e))?;
     } else {
@@ -255,14 +264,23 @@ pub async fn run() -> Result<()> {
 
     let client = Client::try_default().await?;
 
-    let (mut health_handle, health_state) = spawn_health_server();
-    let (mut metrics_handle, metrics) = spawn_metrics_server();
-
+    let leader_enabled = runtime::is_leader_election_enabled();
+    if let Some(selector) = runtime::watch_label_selector() {
+        tracing::info!(selector = %selector, "watching only labelled objects");
+    }
     let cert_dir = cfgd_core::env_or("WEBHOOK_CERT_DIR", "/tmp/k8s-webhook-server/serving-certs");
     let webhook_port = env::parse_port_env("WEBHOOK_PORT", 9443);
+    let webhook_enabled = runtime::webhook_certs_present(Path::new(&cert_dir));
+
+    let (mut metrics_handle, metrics) = spawn_metrics_server();
+    let (mut health_handle, health_state) = spawn_health_server(
+        metrics.leader.clone(),
+        webhook_enabled,
+        runtime::is_gateway_enabled(),
+    );
 
     let mut webhook_handle: Option<tokio::task::JoinHandle<()>> = None;
-    if runtime::webhook_certs_present(Path::new(&cert_dir)) {
+    if webhook_enabled {
         tracing::info!(cert_dir = %cert_dir, port = webhook_port, "starting webhook server");
         let webhook_addr: std::net::SocketAddr = ([0, 0, 0, 0], webhook_port).into();
         let webhook_listener = match tokio::net::TcpListener::bind(webhook_addr).await {
@@ -274,12 +292,14 @@ pub async fn run() -> Result<()> {
         };
         let webhook_metrics = metrics.clone();
         let webhook_client = client.clone();
+        let serving = health_state.clone();
         webhook_handle = Some(tokio::spawn(async move {
             if let Err(e) = webhook::run_webhook_server(
                 &cert_dir,
                 webhook_listener,
                 webhook_metrics,
                 webhook_client,
+                move || serving.set_webhook_serving(),
             )
             .await
             {
@@ -292,8 +312,6 @@ pub async fn run() -> Result<()> {
             "webhook certs not found, webhook server disabled"
         );
     }
-
-    let leader_enabled = runtime::is_leader_election_enabled();
 
     let shutdown = CancellationToken::new();
 
@@ -310,16 +328,16 @@ pub async fn run() -> Result<()> {
 
             let le = leader::LeaderElection::new(client.clone(), namespace, identity);
             le.run(shutdown.clone(), || async {
-                health_state.set_ready();
-                run_operator(client, metrics)
+                health_state.set_leader();
+                run_operator(client, metrics, health_state.clone())
                     .await
                     .map_err(|e| errors::OperatorError::Leader(format!("Operator run failed: {e}")))
             })
             .await
             .map_err(|e| anyhow::anyhow!("{}", e))?;
         } else {
-            health_state.set_ready();
-            run_operator(client, metrics).await?;
+            health_state.set_leader();
+            run_operator(client, metrics, health_state.clone()).await?;
         }
 
         Ok::<(), anyhow::Error>(())
@@ -409,17 +427,18 @@ async fn run_standalone_gateway() -> Result<()> {
          controllers, webhook, and leader election are disabled"
     );
 
-    let (mut health_handle, health_state) = spawn_health_server();
     let (mut metrics_handle, metrics) = spawn_metrics_server();
+    let (mut health_handle, health_state) =
+        spawn_health_server(metrics.leader.clone(), false, true);
 
     let gateway_config =
         runtime::build_gateway_config(None, controllers::BackupPolicyCache::default(), metrics);
 
-    health_state.set_ready();
+    health_state.set_leader();
 
     let mut gateway_err: Option<anyhow::Error> = None;
     tokio::select! {
-        result = gateway::start_gateway(gateway_config) => {
+        result = gateway::start_gateway(gateway_config, || health_state.set_gateway_serving()) => {
             if let Err(e) = result {
                 tracing::error!(error = %e, "device gateway exited with error");
                 gateway_err = Some(anyhow::anyhow!("{}", e));
@@ -537,8 +556,9 @@ mod tests {
         let _g = EnvVarGuard::unset("DEVICE_GATEWAY_ENABLED");
         let (client, m, _registry) = test_client_and_metrics();
 
+        let health = health::HealthState::new(Default::default(), false, false);
         let result =
-            tokio::time::timeout(Duration::from_millis(400), run_operator(client, m)).await;
+            tokio::time::timeout(Duration::from_millis(400), run_operator(client, m, health)).await;
 
         // The mock service handle is dropped, so kube watchers will error out
         // quickly and controllers::run returns an error. Either a timeout
@@ -561,22 +581,61 @@ mod tests {
         // Use a non-conflicting port and a tempfile DB path.
         let tmp = tempfile::tempdir().expect("tempdir");
         let db_path = tmp.path().join("test-gateway.db");
-        let _g2 = EnvVarGuard::set("CFGD_SERVER_DB_PATH", db_path.to_str().expect("valid utf8"));
+        let _g2 = EnvVarGuard::set(
+            cfgd_core::CFGD_SERVER_DB_PATH_ENV,
+            db_path.to_str().expect("valid utf8"),
+        );
         // Let the OS pick a free port to never clash with other tests.
         let _g3 = EnvVarGuard::set("DEVICE_GATEWAY_PORT", "0");
 
         let (client, m, _registry) = test_client_and_metrics();
+        let health = health::HealthState::new(Default::default(), false, true);
 
-        let result =
-            tokio::time::timeout(Duration::from_millis(400), run_operator(client, m)).await;
+        let result = tokio::time::timeout(
+            Duration::from_millis(400),
+            run_operator(client, m, health.clone()),
+        )
+        .await;
 
-        // Gateway bind on port 0 succeeds but axum::serve blocks; timeout fires.
-        // Or the gateway errors immediately on DB init — both are acceptable.
-        match result {
-            Ok(Ok(())) => {}
-            Ok(Err(_)) => {}
-            Err(_elapsed) => {}
-        }
+        assert!(
+            result.is_err(),
+            "the gateway must be blocked in its accept loop, got {result:?}"
+        );
+        assert!(
+            health.is_ready(),
+            "a gateway accepting on its bound listener must have marked the pod ready"
+        );
+    }
+
+    /// A gateway that never binds (its database cannot open) leaves the pod
+    /// unready, so no Service routes gateway requests to it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[serial]
+    async fn run_operator_gateway_that_never_binds_leaves_the_pod_unready() {
+        let _g1 = EnvVarGuard::set("DEVICE_GATEWAY_ENABLED", "true");
+        let _g2 = EnvVarGuard::set(
+            cfgd_core::CFGD_SERVER_DB_PATH_ENV,
+            "/proc/cfgd-this-path-cannot-exist/gateway.db",
+        );
+        let _g3 = EnvVarGuard::set("DEVICE_GATEWAY_PORT", "0");
+
+        let (client, m, _registry) = test_client_and_metrics();
+        let health = health::HealthState::new(Default::default(), false, true);
+
+        let result = tokio::time::timeout(
+            Duration::from_millis(400),
+            run_operator(client, m, health.clone()),
+        )
+        .await;
+
+        assert!(
+            matches!(result, Ok(Err(_))),
+            "a gateway whose database cannot open must fail, got {result:?}"
+        );
+        assert!(
+            !health.is_ready(),
+            "a gateway that never bound its listener must not mark the pod ready"
+        );
     }
 
     /// Verify `ControllerContext` can be constructed (sanity check that the
@@ -741,7 +800,10 @@ mod tests {
         let _g_gp = EnvVarGuard::set("DEVICE_GATEWAY_PORT", "0");
 
         let db_path = tmp.path().join("standalone-gateway.db");
-        let _g_db = EnvVarGuard::set("CFGD_SERVER_DB_PATH", db_path.to_str().expect("valid utf8"));
+        let _g_db = EnvVarGuard::set(
+            cfgd_core::CFGD_SERVER_DB_PATH_ENV,
+            db_path.to_str().expect("valid utf8"),
+        );
 
         let _g_sa = EnvVarGuard::set("DEVICE_GATEWAY_STANDALONE", "true");
         let _g_le = EnvVarGuard::unset("LEADER_ELECTION_ENABLED");

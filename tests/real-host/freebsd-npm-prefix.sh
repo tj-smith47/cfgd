@@ -12,7 +12,7 @@
 # Must run as root: it installs npm, creates the unprivileged user, and then
 # drops to that user for every cfgd invocation.
 #
-# Exit codes: 1 setup refused, 11/12/13/14 assertion a/b/c/d failed.
+# Exit codes: 1 setup refused, 11/12/13/14/15 assertion a/b/c/d/e failed.
 #
 # `set -e` is load-bearing rather than tidy: every assertion below judges the
 # OUTPUT of a command run through `su -l`, so a setup step that failed silently
@@ -104,15 +104,28 @@ metadata:
 spec:
   profile: npmtest
 YAML
-cat > "$CONF_DIR/profiles/npmtest.yaml" <<YAML || fail 1 "cannot write the test profile"
+mkdir -p "$CONF_DIR/modules/npmtest" || fail 1 "cannot create the module directory"
+cat > "$CONF_DIR/profiles/npmtest.yaml" <<'YAML' || fail 1 "cannot write the test profile"
 apiVersion: cfgd.io/v1alpha1
 kind: Profile
 metadata:
   name: npmtest
 spec:
+  modules:
+    - npmtest
+YAML
+# `prefer: [npm]` is the authored arm of modules::resolve_package — a bare
+# spec.packages.npm list never reaches it, so the manager the module names is
+# what this run proves the fallback under.
+cat > "$CONF_DIR/modules/npmtest/module.yaml" <<YAML || fail 1 "cannot write the test module"
+apiVersion: cfgd.io/v1alpha1
+kind: Module
+metadata:
+  name: npmtest
+spec:
   packages:
-    npm:
-      - $PKG_NAME
+    - name: $PKG_NAME
+      prefer: [npm]
 YAML
 chown -R "$USER_NAME:$USER_NAME" "$CONF_DIR" "$CFGD" || fail 1 "chown failed"
 
@@ -188,14 +201,14 @@ echo
 echo "===== (c) the apply's row is Ok and the env surface exports the bin dir ====="
 echo "$APPLY_OUT" | grep -q "✓ npm install $PKG_NAME" ||
     fail 13 "the apply did not render an Ok row for 'npm install $PKG_NAME'"
-echo "$JSON_OUT" | grep -q "\"npm/$PKG_NAME\"" ||
-    fail 13 "-o json status does not name the npm/$PKG_NAME package row"
+echo "$STATUS_OUT" | grep -q "npm: $PKG_NAME" ||
+    fail 13 "cfgd status does not list the package under its manager as 'npm: $PKG_NAME'"
 ENV_FILE=$HOME_DIR/.cfgd.env
 [ -f "$ENV_FILE" ] || fail 13 "no generated env file at $ENV_FILE"
 cat "$ENV_FILE"
 grep -q '^export PATH=.*\.npm-global/bin' "$ENV_FILE" ||
     fail 13 "$ENV_FILE does not put the fallback bin directory on PATH"
-echo "PASS (c): Ok row rendered and $ENV_FILE exports the fallback bin directory"
+echo "PASS (c): Ok row rendered, status names npm: $PKG_NAME, and $ENV_FILE exports the fallback bin directory"
 
 echo
 echo "===== cfgd apply --yes (second) ====="
@@ -212,4 +225,16 @@ echo "$APPLY2_OUT" | grep -q "Nothing to do" ||
 echo "PASS (d): the second apply is a no-op"
 
 echo
-echo "ALL ASSERTIONS PASSED (a, b, c, d)"
+echo "===== (e) the package was resolved through the module that named npm ====="
+# Both JSON keys are spellings only a module-owned row produces: the profile
+# is also named npmtest, so a bare "npmtest" would match its lastApply entry.
+echo "$JSON_OUT" | grep -q "\"resourceId\": \"npmtest:packages:$PKG_NAME\"" ||
+    fail 15 "-o json status has no npmtest:packages:$PKG_NAME resource, so the module arm did not record the package"
+echo "$JSON_OUT" | grep -q '"owner": "module:npmtest"' ||
+    fail 15 "-o json status has no resource owned by module:npmtest"
+echo "$PLAN_OUT" | grep -q "module:npmtest" ||
+    fail 15 "the plan did not attribute the package to module:npmtest"
+echo "PASS (e): the npm package resolved under module:npmtest"
+
+echo
+echo "ALL ASSERTIONS PASSED (a, b, c, d, e)"

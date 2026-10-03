@@ -39,9 +39,9 @@ fn module_env_vars_propagated_to_script_env() {
     assert_eq!(lookup("PATH"), Some("/custom/bin"));
     assert_eq!(lookup("GOPATH"), Some("/foo"));
     // Runtime metadata is still present.
-    assert_eq!(lookup("CFGD_MODULE_NAME"), Some("nvim"));
-    assert_eq!(lookup("CFGD_PROFILE"), Some("workstation"));
-    assert_eq!(lookup("CFGD_PHASE"), Some("postApply"));
+    assert_eq!(lookup(crate::CFGD_MODULE_NAME_ENV), Some("nvim"));
+    assert_eq!(lookup(crate::CFGD_PROFILE_ENV), Some("workstation"));
+    assert_eq!(lookup(crate::CFGD_PHASE_ENV), Some("postApply"));
 }
 
 // build_module_script_env: `$VAR`/`${VAR}` in declared values are expanded
@@ -224,7 +224,7 @@ fn execute_script_workdir_override_expands_tilde_and_vars() {
             workdir: Some("$CFGD_MODULE_DIR".into()),
         });
         let env = vec![(
-            "CFGD_MODULE_DIR".to_string(),
+            crate::CFGD_MODULE_DIR_ENV.to_string(),
             module_dir.path().display().to_string(),
         )];
         execute_script(
@@ -716,7 +716,6 @@ fn bash_inline_prepends_env_source() {
         "echo $TEST_VAR",
         tmp.path(),
         Some(&env_file),
-        true,
     );
     let args: Vec<_> = cmd
         .get_args()
@@ -752,7 +751,6 @@ fn zsh_inline_prepends_env_source() {
         "echo $TEST_VAR",
         tmp.path(),
         Some(&env_file),
-        true,
     );
     let args: Vec<_> = cmd
         .get_args()
@@ -783,13 +781,7 @@ fn sh_inline_ignores_cfgd_env_path() {
     let env_file = tmp.path().join(".cfgd.env");
     std::fs::write(&env_file, "export TEST_VAR=hello\n").unwrap();
 
-    let cmd = build_inline_command(
-        ScriptShell::Sh,
-        "echo hello",
-        tmp.path(),
-        Some(&env_file),
-        true,
-    );
+    let cmd = build_inline_command(ScriptShell::Sh, "echo hello", tmp.path(), Some(&env_file));
     let args: Vec<_> = cmd
         .get_args()
         .map(|a| a.to_string_lossy().to_string())
@@ -810,7 +802,7 @@ fn sh_inline_ignores_cfgd_env_path() {
 fn bash_inline_no_env_file_skips_preamble() {
     let tmp = tempfile::tempdir().unwrap();
 
-    let cmd = build_inline_command(ScriptShell::Bash, "echo hello", tmp.path(), None, true);
+    let cmd = build_inline_command(ScriptShell::Bash, "echo hello", tmp.path(), None);
     let args: Vec<_> = cmd
         .get_args()
         .map(|a| a.to_string_lossy().to_string())
@@ -818,43 +810,39 @@ fn bash_inline_no_env_file_skips_preamble() {
     assert_eq!(args, vec!["-c", "echo hello"], "no env file → no preamble");
 }
 
-// set_process_group=true (every non-interactive spawn arm) still puts the
-// child in its OWN new process group — child pgid == child pid — so a
-// timeout/idle kill can `kill(-pid, …)` the whole subtree without hitting
-// cfgd itself. This is the behavior every arm had before the interactive
-// fix, and must stay unchanged.
+// Every non-interactive spawn goes through `spawn_tree`, which puts the child
+// in its OWN new process group — child pgid == child pid — so a timeout/idle
+// kill reaches the whole subtree without hitting cfgd itself.
 #[cfg(unix)]
 #[test]
-fn build_inline_command_default_spawns_own_process_group() {
+fn a_tree_spawn_leads_its_own_process_group() {
     use nix::unistd::{Pid, getpgid};
 
     let _path_guard = crate::test_helpers::path_env_read_guard();
     let tmp = tempfile::tempdir().unwrap();
-    let mut cmd = build_inline_command(ScriptShell::Sh, "sleep 0.3", tmp.path(), None, true);
-    let mut child = cmd.spawn().expect("spawn must succeed");
+    let mut cmd = build_inline_command(ScriptShell::Sh, "sleep 0.3", tmp.path(), None);
+    let (mut child, tree) = crate::spawn_tree(&mut cmd).expect("spawn must succeed");
     let child_pid = Pid::from_raw(child.id() as i32);
     let child_pgid = getpgid(Some(child_pid)).expect("child must still be alive");
     assert_eq!(
         child_pgid, child_pid,
-        "set_process_group=true must make the child its own group leader"
+        "a tree spawn must make the child its own group leader"
     );
-    // Signal the GROUP, not the leader: whether `sh -c 'sleep …'` execs the
+    // Kill the whole group: whether `sh -c 'sleep …'` execs the
     // sleep or forks it is the host's choice of /bin/sh (dash execs, bash
     // forks), and killing only the leader leaves a bash host's grandchild
     // holding the test's stdio — which is what nextest reports as a leak.
-    // Safe here precisely because the assertion above proved the group is the
-    // child's own.
-    let _ = nix::sys::signal::killpg(child_pgid, nix::sys::signal::Signal::SIGKILL);
+    tree.force_kill();
     let _ = child.wait();
 }
 
-// set_process_group=false (the interactive `Run` arm only) leaves the
-// child in cfgd's OWN process group instead of a new one — the fix that
-// restores terminal Ctrl-C delivery and raw-mode TUI reads to an
-// interactive script (see execute_script_inner's `Run` arm doc comment).
+// The interactive `Run` arm spawns with `spawn_child`, which leaves the child
+// in cfgd's own process group, which is what keeps terminal
+// Ctrl-C delivery and raw-mode TUI reads working for an interactive script
+// (see execute_script_inner's `Run` arm doc comment).
 #[cfg(unix)]
 #[test]
-fn build_inline_command_interactive_shares_callers_process_group() {
+fn an_interactive_spawn_shares_the_callers_process_group() {
     use nix::unistd::{Pid, getpgid, getpgrp};
 
     let _path_guard = crate::test_helpers::path_env_read_guard();
@@ -862,19 +850,134 @@ fn build_inline_command_interactive_shares_callers_process_group() {
     let own_pgid = getpgrp();
     // `exec` so the shell REPLACES itself instead of possibly forking the
     // sleep (bash forks, dash execs): this child shares the caller's process
-    // group by design, so the sibling test's killpg escape is not available
-    // here — a forked grandchild would outlive `child.kill()` holding the
-    // test's stdio, which nextest reports as a leak.
-    let mut cmd = build_inline_command(ScriptShell::Sh, "exec sleep 5", tmp.path(), None, false);
-    let mut child = cmd.spawn().expect("spawn must succeed");
+    // group by design, so no group kill is available here — a forked
+    // grandchild would outlive `child.kill()` holding the test's stdio, which
+    // nextest reports as a leak.
+    let mut cmd = build_inline_command(ScriptShell::Sh, "exec sleep 5", tmp.path(), None);
+    let (mut child, _kill) = crate::spawn_sharing_terminal(&mut cmd).expect("spawn must succeed");
     let child_pid = Pid::from_raw(child.id() as i32);
     let child_pgid = getpgid(Some(child_pid)).expect("child must still be alive");
     assert_eq!(
         child_pgid, own_pgid,
-        "set_process_group=false must leave the child in the caller's own group"
+        "an interactive spawn must leave the child in the caller's own group"
     );
     let _ = child.kill();
     let _ = child.wait();
+}
+
+/// Time out an interactive script started as the `Run` arm starts one,
+/// returning how long the timed-out wait took once its timeout had fired.
+fn interactive_kill_takes(body: &str) -> std::time::Duration {
+    let _path_guard = crate::test_helpers::path_env_read_guard();
+    let tmp = tempfile::tempdir().unwrap();
+    let mut cmd = build_inline_command(ScriptShell::Auto, body, tmp.path(), None);
+    cmd.stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    let (mut child, kill) = crate::spawn_sharing_terminal(&mut cmd).expect("spawn must succeed");
+    let timeout = std::time::Duration::from_millis(300);
+    let start = std::time::Instant::now();
+    let err = wait_interactive_with_timeout(&mut child, &kill, timeout, "slow")
+        .expect_err("a script outliving its timeout must fail");
+    let took = start.elapsed().saturating_sub(timeout);
+    assert!(
+        err.to_string().contains("timed out"),
+        "the failure must name the timeout: {err}"
+    );
+    took
+}
+
+/// A child killed alone on Unix is sent SIGTERM, which it may be acting on,
+/// so it gets the whole grace period before SIGKILL. The body ignores
+/// SIGTERM, so only the escalation ends it.
+#[cfg(unix)]
+#[test]
+fn a_timed_out_interactive_script_gets_the_grace_period_on_unix() {
+    // `exec` keeps the SIGTERM-ignoring sleep as the one process: it shares
+    // the test's process group, so a forked grandchild would outlive the kill.
+    let took = interactive_kill_takes("trap '' TERM; exec sleep 30");
+    assert!(
+        took >= SCRIPT_KILL_GRACE,
+        "the escalation must wait the {SCRIPT_KILL_GRACE:?} grace period, took {took:?}"
+    );
+    assert!(
+        took < SCRIPT_KILL_GRACE * 3,
+        "SIGKILL must end the script once the grace period is over, took {took:?}"
+    );
+}
+
+/// A lone child that exits on SIGTERM ends the wait there, without the rest
+/// of the grace period.
+#[cfg(unix)]
+#[test]
+fn a_timed_out_interactive_script_that_exits_on_sigterm_ends_the_wait_on_unix() {
+    let took = interactive_kill_takes("exec sleep 30");
+    assert!(
+        took < SCRIPT_KILL_GRACE / 2,
+        "a script that exited on SIGTERM must not wait out the {SCRIPT_KILL_GRACE:?} grace \
+         period, took {took:?}"
+    );
+}
+
+/// Ending a job on Windows is final, so nothing is left to act on a request
+/// to exit and the timed-out wait returns without the grace period.
+#[cfg(windows)]
+#[test]
+fn a_timed_out_interactive_script_returns_without_a_grace_wait_on_windows() {
+    let took = interactive_kill_takes("ping -n 30 127.0.0.1");
+    assert!(
+        took < SCRIPT_KILL_GRACE / 2,
+        "ending the job must not wait out the {SCRIPT_KILL_GRACE:?} grace period, took {took:?}"
+    );
+}
+
+/// Run `body` as a guard in `dir`, returning whether its timeout fired.
+fn guard_timed_out(body: &str, dir: &std::path::Path, timeout: std::time::Duration) -> bool {
+    match run_guard_command(body, ScriptShell::Auto, dir, &[], timeout) {
+        Ok(_) => false,
+        Err(e) if e.to_string().contains("timed out") => true,
+        Err(e) => panic!("the guard failed on something other than its timeout: {e}"),
+    }
+}
+
+/// A guard that times out is killed with everything it started. The body
+/// starts a grandchild that writes a marker once the timeout has long fired;
+/// killing only the shell cfgd spawned leaves that grandchild running, holding
+/// the guard's pipes, and the marker appears. On Unix the tree is the child's
+/// process group, on Windows its job object.
+#[test]
+fn a_timed_out_guard_kills_every_process_it_started() {
+    let tmp = crate::test_helpers::spaced_marker_dir();
+    let marker = tmp.path().join("grandchild-outlived-the-guard");
+    let shown = marker.display();
+    #[cfg(unix)]
+    let body = format!("sh -c 'sleep 2; echo x > \"{shown}\"'; true");
+    #[cfg(windows)]
+    let body = format!("cmd /C \"ping -n 3 127.0.0.1 >NUL & echo x> \"{shown}\"\" & exit 0");
+
+    crate::test_helpers::assert_a_timeout_kill_stops_the_write(
+        &marker,
+        std::time::Duration::from_secs(3),
+        |timeout| guard_timed_out(&body, tmp.path(), timeout),
+    );
+}
+
+/// The shell a timed-out guard started exits on SIGTERM, but a grandchild
+/// ignoring SIGTERM does not, so the group is sent SIGKILL once the grace
+/// period is up whether or not its leader is still there.
+#[cfg(unix)]
+#[test]
+fn a_timed_out_guard_kills_a_grandchild_that_ignores_sigterm() {
+    let tmp = crate::test_helpers::spaced_marker_dir();
+    let marker = tmp.path().join("grandchild-ignored-sigterm");
+    let shown = marker.display();
+    // An ignored signal stays ignored across exec, so `sleep` ignores it too.
+    let body = format!("sh -c 'trap \"\" TERM; sleep 4; echo x > \"{shown}\"'; true");
+
+    crate::test_helpers::assert_a_timeout_kill_stops_the_write(
+        &marker,
+        std::time::Duration::from_secs(4),
+        |timeout| guard_timed_out(&body, tmp.path(), timeout),
+    );
 }
 
 // Auto-detection picks the file's shebang-implied interpreter (`sh`),
@@ -2061,7 +2164,7 @@ fn execute_script_spawn_enoent_maps_to_interpreter_hint() {
 #[test]
 fn pwsh_inline_command_argv_shape() {
     let tmp = tempfile::tempdir().unwrap();
-    let cmd = build_inline_command(ScriptShell::Pwsh, "Get-Date", tmp.path(), None, true);
+    let cmd = build_inline_command(ScriptShell::Pwsh, "Get-Date", tmp.path(), None);
     assert_eq!(
         cmd.get_program().to_string_lossy(),
         "pwsh",
@@ -2162,16 +2265,16 @@ fn build_script_env_reconcile_context_and_module_dir() {
     });
     let lookup = |k: &str| env.iter().find(|(n, _)| n == k).map(|(_, v)| v.as_str());
 
-    assert_eq!(lookup("CFGD_CONTEXT"), Some("reconcile"));
-    assert_eq!(lookup("CFGD_PROFILE"), Some("node"));
+    assert_eq!(lookup(crate::CFGD_CONTEXT_ENV), Some("reconcile"));
+    assert_eq!(lookup(crate::CFGD_PROFILE_ENV), Some("node"));
     assert_eq!(
-        lookup("CFGD_PHASE"),
+        lookup(crate::CFGD_PHASE_ENV),
         Some(ScriptPhase::OnDrift.display_name())
     );
-    assert_eq!(lookup("CFGD_CONFIG_DIR"), Some("/cfg"));
-    assert_eq!(lookup("CFGD_MODULE_DIR"), Some("/mods/x"));
+    assert_eq!(lookup(crate::CFGD_CONFIG_DIR_ENV), Some("/cfg"));
+    assert_eq!(lookup(crate::CFGD_MODULE_DIR_ENV), Some("/mods/x"));
     assert_eq!(
-        lookup("CFGD_MODULE_NAME"),
+        lookup(crate::CFGD_MODULE_NAME_ENV),
         None,
         "module name must be omitted when None"
     );

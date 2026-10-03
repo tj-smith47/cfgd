@@ -16,7 +16,7 @@
 //! Goldens live under `tests/output_snapshots/source_remove/`. Regenerate with:
 //!     INSTA_UPDATE=always cargo test -p cfgd --test source_remove_snapshots
 
-mod common;
+use cfgd_test_fixtures as common;
 
 use std::path::Path;
 
@@ -57,6 +57,7 @@ fn source_remove_happy_human() {
     );
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc();
+    let printer = printer.with_hints_enabled(true);
 
     cmd_source_remove(&cli, &printer, "team-config", false, true, false, false).unwrap();
     drop(printer);
@@ -99,6 +100,7 @@ fn source_remove_keep_all_human() {
     );
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc();
+    let printer = printer.with_hints_enabled(true);
 
     cmd_source_remove(&cli, &printer, "team-config", true, false, false, false).unwrap();
     drop(printer);
@@ -125,7 +127,15 @@ fn source_remove_cancelled_human() {
     );
     let store = cfgd_core::state::StateStore::open(&state_dir.path().join("state.db")).unwrap();
     store
-        .upsert_managed_resource("package", "brew/curl", "team-config", Some("hash1"), None)
+        .upsert_managed_resource(
+            "package",
+            "brew/curl",
+            "package",
+            None,
+            "team-config",
+            Some("hash1"),
+            None,
+        )
         .unwrap();
 
     let cli = cli_for(config_dir.path(), state_dir.path());

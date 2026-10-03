@@ -15,7 +15,7 @@
 //! Goldens live under `tests/output_snapshots/source_replace/`. Regenerate with:
 //!     INSTA_UPDATE=always cargo test -p cfgd --test source_replace_snapshots
 
-mod common;
+use cfgd_test_fixtures as common;
 
 use std::path::Path;
 
@@ -71,7 +71,8 @@ use cfgd_core::output::test_capture::strip_spinner_duration;
 #[test]
 #[serial]
 fn source_replace_happy_human() {
-    let _allow = cfgd_core::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+    let _allow =
+        cfgd_core::test_helpers::EnvVarGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
     let (config_dir, state_dir) = source_test_config_setup();
     let bare_root = tempfile::tempdir().unwrap();
     let bare_old = make_bare_source_repo(bare_root.path(), "replace-old", None);
@@ -89,6 +90,7 @@ fn source_replace_happy_human() {
     drop(add_printer);
 
     let (printer, cap) = Printer::for_test_doc();
+    let printer = printer.with_hints_enabled(true);
     cmd_source_replace(&cli, &printer, "replace-old", &url_new).unwrap();
     drop(printer);
 
@@ -138,7 +140,8 @@ fn source_replace_happy_human() {
 #[test]
 #[serial]
 fn source_replace_carries_every_subscription_field() {
-    let _allow = cfgd_core::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+    let _allow =
+        cfgd_core::test_helpers::EnvVarGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
     let (config_dir, state_dir) = source_test_config_setup();
     let bare_root = tempfile::tempdir().unwrap();
     let bare_old = make_bare_source_repo(bare_root.path(), "carry-old", None);

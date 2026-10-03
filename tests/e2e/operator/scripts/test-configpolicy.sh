@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # Operator E2E tests: ConfigPolicy
 # Sourced by run-all.sh — do NOT set traps or pipefail here.
 
@@ -15,6 +16,8 @@ kind: ConfigPolicy
 metadata:
   name: e2e-security-baseline
   namespace: ${E2E_NAMESPACE}
+  labels:
+    ${E2E_RUN_LABEL_YAML}
 spec:
   packages:
     - name: vim
@@ -58,6 +61,8 @@ kind: MachineConfig
 metadata:
   name: e2e-workstation-2
   namespace: ${E2E_NAMESPACE}
+  labels:
+    ${E2E_RUN_LABEL_YAML}
 spec:
   hostname: e2e-host-2
   profile: minimal
@@ -71,7 +76,7 @@ sleep 5
 
 # Poll until nonCompliantCount >= 1 (can't use wait_for_k8s_field since we need >= not ==)
 NON_COMPLIANT="0"
-for i in $(seq 1 60); do
+for _ in $(seq 1 60); do
     NON_COMPLIANT=$(kubectl get configpolicy e2e-security-baseline -n "$E2E_NAMESPACE" \
         -o jsonpath='{.status.nonCompliantCount}' 2>/dev/null || echo "0")
     if [ "${NON_COMPLIANT:-0}" -ge 1 ] 2>/dev/null; then
@@ -106,6 +111,8 @@ kind: ConfigPolicy
 metadata:
   name: e2e-version-policy
   namespace: ${E2E_NAMESPACE}
+  labels:
+    ${E2E_RUN_LABEL_YAML}
 spec:
   packages:
     - name: vim
@@ -144,6 +151,8 @@ kind: ConfigPolicy
 metadata:
   name: e2e-selector-policy
   namespace: ${E2E_NAMESPACE}
+  labels:
+    ${E2E_RUN_LABEL_YAML}
 spec:
   packages:
     - name: ripgrep

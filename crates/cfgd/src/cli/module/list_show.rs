@@ -19,6 +19,22 @@ pub enum PackageDisplay {
         resolved_name: String,
         version: Option<String>,
     },
+    /// The entry names a manager this host already holds. A resolution like the
+    /// one above it, judged against the declared floor by the manager's own
+    /// binary with no listing consulted, which is why it is a variant of its
+    /// own. `met` is whether that judgment cleared the floor; `clause` words
+    /// it either way.
+    #[serde(rename = "held", rename_all = "camelCase")]
+    Held {
+        name: String,
+        clause: String,
+        met: bool,
+        /// The version the manager's own binary reported, `null` where the
+        /// judgment could read none. A consumer comparing the two operands
+        /// reads them as fields; the clause is the sentence for a person.
+        version: Option<String>,
+        min_version: String,
+    },
     #[serde(rename = "skipped", rename_all = "camelCase")]
     Skipped { name: String, platforms: String },
     #[serde(rename = "unresolved", rename_all = "camelCase")]
@@ -77,6 +93,9 @@ pub fn build_module_list_doc(entries: &[ModuleListEntry], wide: bool, config_dir
     let mut doc = Doc::new().heading("Modules");
 
     if entries.is_empty() {
+        // gated-hint-ok: a listing put nothing on the machine, and the
+        // directory is the alternative to the command the same sentence
+        // names, so the tutorial withholds no fact about this run.
         doc = doc.status(Role::Info, "No modules found").hint(format!(
             "Create one with `cfgd module create <name>`, or add a directory under {}/modules/",
             config_dir.posix()
@@ -184,7 +203,7 @@ fn declared_package_clauses(entry: &cfgd_core::config::ModulePackageEntry) -> St
         aliases.sort();
         clauses.push(format!("aliases: {}", aliases.join(", ")));
     }
-    clauses.join(", ")
+    cfgd_core::join_clauses(&clauses)
 }
 
 /// One `--resolved` package row: what this host RESOLVED the declared entry to,
@@ -238,6 +257,13 @@ fn build_module_show_resolved_packages(doc: Doc, packages: &[PackageDisplay], ar
             } => s.status(
                 Role::Ok,
                 resolved_package_row(name, manager, resolved_name, version.as_deref(), arrow),
+            ),
+            PackageDisplay::Held {
+                name, clause, met, ..
+            } => s.status_with(
+                if *met { Role::Ok } else { Role::Warn },
+                name.clone(),
+                |f| f.detail(clause.clone()),
             ),
             PackageDisplay::Skipped { name, platforms } => {
                 s.status_with(Role::Info, format!("{}{}", name, platforms), |f| {
@@ -488,6 +514,10 @@ pub(super) fn module_show_resolved_rows(
             } else {
                 format!("{} ({})", entry.name, clauses)
             };
+            // The gated-off row names no clauses of its own, so it is the one
+            // arm that has to spell the gate itself; the two unresolved arms
+            // read it off `declared`, where `declared_package_clauses` already
+            // put it.
             let platform_str = if entry.platforms.is_empty() {
                 String::new()
             } else {
@@ -495,7 +525,8 @@ pub(super) fn module_show_resolved_rows(
             };
 
             match modules::resolve_package(entry, name, platform, mgr_map, installed) {
-                Ok(Some(mut resolved)) => {
+                Ok(Some(modules::PackageResolution::Package(resolved))) => {
+                    let mut resolved = *resolved;
                     // `module show --resolved` prints the version beside each
                     // package, so it is one of the surfaces that asks for one.
                     modules::fill_available_versions(std::slice::from_mut(&mut resolved), mgr_map);
@@ -506,12 +537,36 @@ pub(super) fn module_show_resolved_rows(
                         version: resolved.version.clone(),
                     }
                 }
+                // A floor no available manager meets: the row states what the
+                // host offers, how far short it falls, and the bootstrap that
+                // would meet it. A `show` performs nothing, so it never asks.
+                Ok(Some(modules::PackageResolution::Bootstrap(route))) => {
+                    PackageDisplay::Unresolved {
+                        summary: declared,
+                        error: route.provisionable_clause(),
+                    }
+                }
+                // The manager the entry names is on this host: the row states
+                // what this host holds against the declared floor, satisfied
+                // like the resolution above it where the floor is met and
+                // carrying the shortfall or the unreadable cause where it is
+                // not.
+                Ok(Some(modules::PackageResolution::HeldByManager(held))) => {
+                    let mgr = mgr_map.get(&held.package).copied();
+                    PackageDisplay::Held {
+                        name: held.package.clone(),
+                        clause: held.clause(mgr),
+                        met: held.judgment.met(),
+                        version: held.judgment.version().map(str::to_string),
+                        min_version: held.floor.clone(),
+                    }
+                }
                 Ok(None) => PackageDisplay::Skipped {
                     name: entry.name.clone(),
                     platforms: platform_str,
                 },
                 Err(e) => PackageDisplay::Unresolved {
-                    summary: format!("{declared}{platform_str}"),
+                    summary: declared,
                     error: e.to_string(),
                 },
             }
@@ -666,7 +721,7 @@ mod role_mapping_tests {
         entry.min_version = Some("1.0".to_string());
         assert_eq!(
             declared_package_clauses(&entry),
-            "platforms: windows, prefer: nix, min: 1.0"
+            "platforms: windows; prefer: nix; min: 1.0"
         );
 
         let ungated = cfgd_core::config::ModulePackageEntry {
@@ -710,8 +765,8 @@ mod role_mapping_tests {
     /// `module list` runs no check of its own, so `Synced` on its rows is a
     /// claim borrowed from somebody else's: the machine-wide scan stamp, or a
     /// scoped scan of that module. With neither, the row states this table's
-    /// own fact — the module is on the machine — which is `Installed` and not
-    /// the `Applied` a dashboard row says about a different question. The word
+    /// own fact — the module is on the machine — which is `Installed`. The
+    /// `Applied` a dashboard row says answers a different question. The word
     /// a person reads changes; the `status` token `-o json` carries does not.
     #[test]
     fn module_list_reads_synced_only_for_a_module_a_check_covers() {
