@@ -5,8 +5,8 @@
 #     from one run id
 #   - a local run id is the same in every process of one checkout
 #   - ensure_namespace and running_image address the namespaces they are given
-#   - create_e2e_namespace waits out a namespace that is Terminating and stops
-#     when it outlasts the wait
+#   - create_e2e_namespace waits out a namespace that is Terminating, stops
+#     when it outlasts the wait, and leaves an Active one as it is
 #   - every cfgd.io object the operator and full-stack suites apply carries the
 #     run label
 #   - no e2e script runs a multi-command subshell or brace group as a condition
@@ -179,31 +179,40 @@ else
     fail "create_e2e_namespace with a failing get: rc=$rc, printed [$out]"
 fi
 
-# create_e2e_namespace against fixtures/terminating-ns/bin/kubectl, whose
-# namespace is Terminating: ns_case <wait rc> prints its output, then
-# `rc=<status>`; the calls are in $scratch/ns.log.
+# create_e2e_namespace against fixtures/namespace-phase/bin/kubectl: ns_case
+# <arm> <phase> <wait rc> prints its output, `heartbeat started` when it
+# started one, then `rc=<status>`. Each arm logs its calls to its own
+# $scratch/ns-<arm>.log, since a heartbeat call already under way when
+# stop_heartbeat kills the loop can still append to the log it was given.
 ns_case() {
-    : > "$scratch/ns.log"
     # shellcheck disable=SC2016 # the inner script expands its own variables
-    env -u GITHUB_RUN_ID -u CFGD_NAMESPACE PATH="$here/fixtures/terminating-ns/bin:$PATH" GITHUB_RUN_ID=42 \
-        E2E_NAMESPACE=ns-x NS_LOG="$scratch/ns.log" NS_WAIT_RC="$1" REGISTRY=r.example CLI_SCRATCH="$scratch" \
-        bash -c 'source "$1/common/helpers.sh"; rc=0; create_e2e_namespace 2>&1 || rc=$?; stop_heartbeat; echo "rc=$rc"' _ "$e2e_root"
+    env -u GITHUB_RUN_ID -u CFGD_NAMESPACE PATH="$here/fixtures/namespace-phase/bin:$PATH" GITHUB_RUN_ID=42 \
+        E2E_NAMESPACE=ns-x NS_LOG="$scratch/ns-$1.log" NS_PHASE="$2" NS_WAIT_RC="$3" REGISTRY=r.example CLI_SCRATCH="$scratch" \
+        bash -c 'source "$1/common/helpers.sh"; rc=0; create_e2e_namespace 2>&1 || rc=$?
+            [ -z "$HEARTBEAT_PID" ] || echo "heartbeat started"; stop_heartbeat; echo "rc=$rc"' _ "$e2e_root"
 }
 ns_wait="kubectl get namespace ns-x --ignore-not-found -o jsonpath={.status.phase}
 kubectl wait --for=delete namespace/ns-x --timeout=120s"
-out="$(ns_case 0)"
-if [ "$(sed -n 's/^rc=//p' <<<"$out")" = 0 ] && [ "$(head -3 "$scratch/ns.log")" = "$ns_wait
+out="$(ns_case goes Terminating 0)"
+if [ "$(sed -n 's/^rc=//p' <<<"$out")" = 0 ] && [ "$(head -3 "$scratch/ns-goes.log")" = "$ns_wait
 kubectl create namespace ns-x" ]; then
     pass "create_e2e_namespace waits for a Terminating namespace to go, then creates it"
 else
-    fail "create_e2e_namespace on a Terminating namespace that goes: got [$out] with calls [$(cat "$scratch/ns.log")], want rc=0 and a wait before the create"
+    fail "create_e2e_namespace on a Terminating namespace that goes: got [$out] with calls [$(cat "$scratch/ns-goes.log")], want rc=0 and a wait before the create"
 fi
-out="$(ns_case 1)"
-if [ "$(sed -n 's/^rc=//p' <<<"$out")" = 1 ] && [ "$(cat "$scratch/ns.log")" = "$ns_wait" ] &&
+out="$(ns_case stays Terminating 1)"
+if [ "$(sed -n 's/^rc=//p' <<<"$out")" = 1 ] && [ "$(cat "$scratch/ns-stays.log")" = "$ns_wait" ] &&
     grep -qxF "ERROR: namespace ns-x is still being deleted after 120s; rerun once it is gone" <<<"$out"; then
     pass "create_e2e_namespace stops with a message when a Terminating namespace outlasts its wait"
 else
-    fail "create_e2e_namespace on a Terminating namespace that stays: got [$out] with calls [$(cat "$scratch/ns.log")], want rc=1, no call after the wait and the ERROR naming ns-x"
+    fail "create_e2e_namespace on a Terminating namespace that stays: got [$out] with calls [$(cat "$scratch/ns-stays.log")], want rc=1, no call after the wait and the ERROR naming ns-x"
+fi
+out="$(ns_case active Active 0)"
+if [ "$(sed -n 's/^rc=//p' <<<"$out")" = 0 ] && grep -qxF "heartbeat started" <<<"$out" &&
+    ! grep -qE '^kubectl (create|label|annotate) namespace ns-x|^kubectl wait ' "$scratch/ns-active.log"; then
+    pass "create_e2e_namespace takes an Active namespace as created: no wait, create, label or annotate, and its heartbeat starts"
+else
+    fail "create_e2e_namespace on an Active namespace: got [$out] with calls [$(cat "$scratch/ns-active.log")], want rc=0, a heartbeat, and no wait, create, label or annotate of ns-x"
 fi
 
 expect_kubectl "running_image reads cfgd-system by default" \

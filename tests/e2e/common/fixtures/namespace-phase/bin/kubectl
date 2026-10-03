@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Records each call in $NS_LOG. A namespace get prints Terminating; a wait
+# Records each call in $NS_LOG. A namespace get prints $NS_PHASE; a wait
 # exits with $NS_WAIT_RC, 1 standing for kubectl's timeout. Anything else
 # succeeds and prints nothing.
 echo "kubectl $*" >> "$NS_LOG"
 case "$1 $2" in
-    "get namespace") printf 'Terminating' ;;
+    "get namespace") printf '%s' "$NS_PHASE" ;;
     "wait --for=delete") exit "${NS_WAIT_RC:-0}" ;;
 esac
 exit 0

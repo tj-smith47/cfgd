@@ -287,6 +287,7 @@ tasks:
 
   _shellcheck:pin:
     internal: true
+    run: once
     desc: "Internal: fail unless the shellcheck on PATH is the version CI installs; another version reports a different set of findings."
     vars:
       PIN_FILE: .github/actions/setup-shellcheck/action.yml
@@ -710,6 +711,9 @@ tasks:
 
   e2e:setup:
     desc: Build images and ensure E2E infrastructure is current
+    # Every suite target depends on it, and `task e2e` reaches it through each
+    # of them; one invocation installs the run once.
+    run: once
     # Skipped (no-op) when CFGD_E2E_SETUP_DONE=1. CI's setup job runs once
     # and sets this for downstream leaf jobs so they don't re-build images
     # or require docker.sock on runner pods that lack it.
