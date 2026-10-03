@@ -24,6 +24,8 @@
 #     full-stack and gateway suites call it
 #   - every ERROR line an e2e script prints goes to stderr
 #   - no full-stack case calls skip_test
+#   - every full-stack helm install and upgrade scopes its operator and
+#     webhook to its own namespace's objects through HELM_SCOPE
 #   - no operator or full-stack suite script names the release's operator,
 #     namespace, webhooks or CSI driver by hand, outside the full-stack
 #     suite's kept gateway lines
@@ -2811,6 +2813,64 @@ elif [ -z "$fullstack_skips" ]; then
     pass "no full-stack case calls skip_test (${#fullstack_scripts[@]} scripts)"
 else
     fail "a full-stack case skips; setup stops when what it needs is missing, so the case fails instead: [$fullstack_skips]"
+fi
+
+# The full-stack Helm suite installs the chart beside the PR install; an
+# install without HELM_SCOPE runs an operator and webhook that reconcile and
+# admit every run's cfgd.io objects. scan_helm_scope FILE...: `SCOPED file:line`
+# or `UNSCOPED file:line` for each helm install or upgrade in command position,
+# its backslash-continued lines joined; fails only when a file cannot be read.
+scan_helm_scope() {
+    awk '
+        FNR == 1 { cmd = "" }
+        {
+            if (cmd == "") start = FNR
+            line = $0
+            if (sub(/\\$/, "", line)) { cmd = cmd line " "; next }
+            cmd = cmd line
+            if (cmd ~ /(^|[;&|(!]|[^[:alnum:]_](if|then|else|elif|do|while|until)|^(if|then|else|elif|do|while|until))[[:space:]]*helm[[:space:]]+(install|upgrade)([[:space:]]|$)/)
+                print (index(cmd, "\"${HELM_SCOPE[@]}\"") ? "SCOPED " : "UNSCOPED ") FILENAME ":" start
+            cmd = ""
+        }
+    ' "$@"
+}
+scope_got="$(cd "$here/fixtures/helm-scope" && scan_helm_scope installs.bash)" || scope_got="(the scan failed)"
+scope_want="$(printf '%s\n' 'SCOPED installs.bash:1' 'SCOPED installs.bash:2' 'UNSCOPED installs.bash:6' 'UNSCOPED installs.bash:9' 'UNSCOPED installs.bash:11' 'UNSCOPED installs.bash:12' 'SCOPED installs.bash:13' 'UNSCOPED installs.bash:20')"
+if [ "$scope_got" = "$scope_want" ]; then
+    pass "the Helm scope scan reports each Helm install and upgrade, on one line or continued, at line start, after \$(, ! or &&, as scoped only when it passes \"\${HELM_SCOPE[@]}\", and stays quiet on comments, quoted text, uninstall, template and longer words"
+else
+    fail "the Helm scope scan printed [$scope_got], want [$scope_want]"
+fi
+if scan_helm_scope "$here/fixtures/helm-scope/absent.bash" >/dev/null 2>&1; then
+    fail "the Helm scope scan passed over a file it could not read"
+else
+    pass "the Helm scope scan fails over a file it cannot read"
+fi
+# Eight installs and FS-HELM-05's upgrade.
+declare -A helm_scope_floors=([tests/e2e/full-stack/scripts/test-helm.sh]=9)
+for scope_file in "${!helm_scope_floors[@]}"; do
+    if ! git -C "$repo_root" ls-files --error-unmatch "$scope_file" >/dev/null 2>&1; then
+        fail "$scope_file is not tracked, so the Helm scope scan cannot hold it to its floor"
+    fi
+done
+if ! scope_verdict="$(cd "$repo_root" && scan_helm_scope "${fullstack_scripts[@]}")"; then
+    fail "the Helm scope scan could not read the full-stack suite"
+else
+    scope_short=""
+    for scope_file in "${!helm_scope_floors[@]}"; do
+        scope_sites="$(grep -c " $scope_file:" <<<"$scope_verdict" || true)" # rc-ok: zero sites is reported against the floor below
+        if [ "$scope_sites" -lt "${helm_scope_floors[$scope_file]}" ]; then
+            scope_short+=" $scope_file has $scope_sites Helm installs and upgrades, fewer than its floor of ${helm_scope_floors[$scope_file]};"
+        fi
+    done
+    scope_unscoped="$(grep '^UNSCOPED ' <<<"$scope_verdict" || true)" # rc-ok: no unscoped install is the passing outcome
+    if [ -n "$scope_short" ]; then
+        fail "the Helm scope scan has lost its population:$scope_short"
+    elif [ -n "$scope_unscoped" ]; then
+        fail "a full-stack Helm install or upgrade runs an operator and webhook that act on every run's objects; pass \"\${HELM_SCOPE[@]}\" from helm_test_ns: [$scope_unscoped]"
+    else
+        pass "every full-stack Helm install and upgrade passes \"\${HELM_SCOPE[@]}\" ($(wc -l <<<"$scope_verdict") sites in ${#fullstack_scripts[@]} scripts)"
+    fi
 fi
 
 if [ "$failures" -gt 0 ]; then

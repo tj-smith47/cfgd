@@ -16,10 +16,19 @@ for res in clusterrole clusterrolebinding; do
 done
 
 # Helper: create a dedicated namespace for a Helm test, install, and return release name.
-# Usage: helm_test_ns "01" -- sets HELM_NS="e2e-helm-01-${E2E_RUN_ID}"
+# Usage: helm_test_ns "01" -- sets HELM_NS="e2e-helm-01-${E2E_RUN_ID}" and
+# HELM_SCOPE, the flags every helm install and upgrade of cfgd-test carries.
 helm_test_ns() {
     local id="$1"
     HELM_NS="e2e-helm-${id}-${E2E_RUN_ID}"
+    # The test operator and its validating webhook would otherwise reconcile and
+    # admit every cfgd.io object in the cluster, the PR install's and other
+    # runs' included; a case that wants its own operator to act on an object
+    # labels it cfgd.io/e2e-helm=$HELM_NS.
+    HELM_SCOPE=(
+        --set-string "operator.watchLabelSelector=cfgd.io/e2e-helm=${HELM_NS}"
+        --set-json "webhook.objectSelector={\"matchLabels\":{\"cfgd.io/e2e-helm\":\"${HELM_NS}\"}}"
+    )
     ensure_namespace "$HELM_NS"
     kubectl label namespace "$HELM_NS" "$E2E_RUN_LABEL" --overwrite 2>/dev/null || true # rc-ok: the run tag the janitor ages leaked namespaces out by; no case asserts on it
     # Wait for Reflector to replicate registry-credentials (needed for imagePullSecrets)
@@ -57,6 +66,7 @@ begin_test "FS-HELM-01: Fresh Helm install creates operator deployment"
 helm_test_ns "01"
 INSTALL_OUTPUT=$(helm install cfgd-test "$CHART_DIR" --skip-crds \
     -n "$HELM_NS" \
+    "${HELM_SCOPE[@]}" \
     --set "operator.image.repository=$(e2e_image_repo cfgd-operator)" \
     --set "operator.image.tag=$(e2e_image_tag cfgd-operator)" \
     --set "operator.imagePullSecrets[0].name=registry-credentials" \
@@ -107,6 +117,7 @@ begin_test "FS-HELM-02: Gateway enabled creates gateway service"
 helm_test_ns "02"
 helm install cfgd-test "$CHART_DIR" --skip-crds \
     -n "$HELM_NS" \
+    "${HELM_SCOPE[@]}" \
     --set "operator.image.repository=$(e2e_image_repo cfgd-operator)" \
     --set "operator.image.tag=$(e2e_image_tag cfgd-operator)" \
     --set "operator.imagePullSecrets[0].name=registry-credentials" \
@@ -147,6 +158,7 @@ begin_test "FS-HELM-03: Gateway disabled creates no gateway service"
 helm_test_ns "03"
 helm install cfgd-test "$CHART_DIR" --skip-crds \
     -n "$HELM_NS" \
+    "${HELM_SCOPE[@]}" \
     --set "operator.image.repository=$(e2e_image_repo cfgd-operator)" \
     --set "operator.image.tag=$(e2e_image_tag cfgd-operator)" \
     --set "operator.imagePullSecrets[0].name=registry-credentials" \
@@ -190,6 +202,7 @@ begin_test "FS-HELM-04: CSI disabled creates no CSI daemonset"
 helm_test_ns "04"
 helm install cfgd-test "$CHART_DIR" --skip-crds \
     -n "$HELM_NS" \
+    "${HELM_SCOPE[@]}" \
     --set "operator.image.repository=$(e2e_image_repo cfgd-operator)" \
     --set "operator.image.tag=$(e2e_image_tag cfgd-operator)" \
     --set "operator.imagePullSecrets[0].name=registry-credentials" \
@@ -225,6 +238,7 @@ helm_test_ns "05"
 # Install initial release
 helm install cfgd-test "$CHART_DIR" --skip-crds \
     -n "$HELM_NS" \
+    "${HELM_SCOPE[@]}" \
     --set "operator.image.repository=$(e2e_image_repo cfgd-operator)" \
     --set "operator.image.tag=$(e2e_image_tag cfgd-operator)" \
     --set "operator.imagePullSecrets[0].name=registry-credentials" \
@@ -247,6 +261,7 @@ metadata:
   labels:
     ${E2E_RUN_LABEL_YAML}
     ${E2E_JOB_LABEL_YAML}
+    cfgd.io/e2e-helm: "$HELM_NS"
 spec:
   hostname: helm-upgrade-test-${E2E_RUN_ID}
   profile: default
@@ -262,6 +277,7 @@ echo "  MachineConfig before upgrade: ${MC_BEFORE:-<not found>}"
 UPGRADE_RC=0
 UPGRADE_OUTPUT=$(helm upgrade cfgd-test "$CHART_DIR" \
     -n "$HELM_NS" \
+    "${HELM_SCOPE[@]}" \
     --set "operator.image.repository=$(e2e_image_repo cfgd-operator)" \
     --set "operator.image.tag=$(e2e_image_tag cfgd-operator)" \
     --set "operator.imagePullSecrets[0].name=registry-credentials" \
@@ -315,6 +331,7 @@ begin_test "FS-HELM-06: Values override — custom replica count"
 helm_test_ns "06"
 helm install cfgd-test "$CHART_DIR" --skip-crds \
     -n "$HELM_NS" \
+    "${HELM_SCOPE[@]}" \
     --set "operator.image.repository=$(e2e_image_repo cfgd-operator)" \
     --set "operator.image.tag=$(e2e_image_tag cfgd-operator)" \
     --set "operator.imagePullSecrets[0].name=registry-credentials" \
@@ -385,6 +402,7 @@ helm_test_ns "08"
 # Install
 helm install cfgd-test "$CHART_DIR" --skip-crds \
     -n "$HELM_NS" \
+    "${HELM_SCOPE[@]}" \
     --set "operator.image.repository=$(e2e_image_repo cfgd-operator)" \
     --set "operator.image.tag=$(e2e_image_tag cfgd-operator)" \
     --set "operator.imagePullSecrets[0].name=registry-credentials" \
@@ -449,6 +467,7 @@ kubectl delete validatingwebhookconfiguration cfgd-test --ignore-not-found 2>/de
 helm_test_ns "09"
 helm install cfgd-test "$CHART_DIR" --skip-crds \
     -n "$HELM_NS" \
+    "${HELM_SCOPE[@]}" \
     --set "operator.image.repository=$(e2e_image_repo cfgd-operator)" \
     --set "operator.image.tag=$(e2e_image_tag cfgd-operator)" \
     --set "operator.imagePullSecrets[0].name=registry-credentials" \
