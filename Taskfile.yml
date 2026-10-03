@@ -737,7 +737,7 @@ tasks:
       - task: e2e:gateway
 
   e2e:pr-install:down:
-    desc: Remove this run's PR install of the operator and CSI driver, after deleting the run's cfgd.io objects so its operator clears their finalizers and the Crossplane suite's TeamConfigs, Composition and Function, then read back that the CSIDriver, webhook configurations, Function and Composition are gone and report the namespace's phase.
+    desc: Delete the run's cfgd.io objects (TeamConfigs included) while its operator can clear their finalizers, then the Crossplane suite's Composition and Function, then remove the PR install of the operator and CSI driver and read back that the CSIDriver, webhook configurations, Function and Composition are gone and report the namespace's phase.
     cmds:
       - bash tests/e2e/pr-install-down.sh
 
