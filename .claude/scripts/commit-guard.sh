@@ -8,11 +8,19 @@
 # token. On a 0.x crate that bump is 1.0.0, which is a release decision only
 # the user makes. `BREAKING_CHANGE_APPROVED=1` is the user's override.
 #
+# It also refuses a message whose wording the changelog cannot carry: a
+# subject over 100 characters or without a conventional `type(scope): ` prefix,
+# or any non-trailer line matching `commit-wording.txt` beside this script
+# (contrast frames, prose dashes, deferral excuses, review and session
+# narrative). Those have no override: the message is reworded.
+#
 # Usage: commit-guard.sh [--dry-run] <the exact `git commit` argv>
 #        commit-guard.sh --self-test
 set -euo pipefail
 
 GUARD_ROOT="${GUARD_ROOT:-$(cd "$(dirname "$0")/../.." && pwd)}"
+WORDING_LIST="${WORDING_LIST:-$(cd "$(dirname "$0")" && pwd)/commit-wording.txt}"
+SUBJECT_MAX=100
 
 # The first `version = "..."` under `[package]`, empty when the file names none.
 crate_version() {
@@ -100,6 +108,38 @@ refusal_for() {
     printf 'A 1.0.0 release is the user'"'"'s call. Reword the subject (a `#minor` token\n'
     printf 'carries the bump anodizer should take instead), or have the user set\n'
     printf 'BREAKING_CHANGE_APPROVED=1 for this commit.\n'
+}
+
+# The wording refusal, or nothing when every line reads as the changelog and
+# its readers need. Trailer lines (`Key: value`) carry names and are skipped.
+wording_refusal() {
+    local msg="$1" subject prefix line pat n=0 out=""
+    subject="${msg%%$'\n'*}"
+    prefix='^[a-z]+(\([^)]*\))?!?: [^ ]'
+    if [ "${#subject}" -gt "$SUBJECT_MAX" ]; then
+        out="$out  the subject is ${#subject} characters; the limit is $SUBJECT_MAX"$'\n'
+    fi
+    if ! [[ $subject =~ $prefix ]]; then
+        out="$out  the subject does not open with a conventional \`type(scope): \` prefix"$'\n'
+    fi
+    if [ ! -r "$WORDING_LIST" ]; then
+        printf 'commit-guard: cannot read the wording list at %s\n' "$WORDING_LIST" >&2
+        return 2
+    fi
+    while IFS= read -r pat || [ -n "$pat" ]; do
+        case "$pat" in '' | '#'*) continue ;; esac
+        while IFS= read -r line; do
+            n=$((n + 1))
+            [[ $line =~ ^[A-Za-z-]+:\  ]] && continue
+            if grep -Pqi -- "$pat" <<<"$line"; then
+                out="$out  line $n matches \`$pat\`: $line"$'\n'
+            fi
+        done <<<"$msg"
+        n=0
+    done <"$WORDING_LIST"
+    [ -n "$out" ] || return 0
+    printf 'commit-guard: this message needs rewording before it can be a changelog line:\n%s' "$out"
+    printf 'The list is %s; say the fact once, in plain English.\n' "$WORDING_LIST"
 }
 
 # --- Message extraction -----------------------------------------------------
@@ -196,6 +236,39 @@ self_test() {
     walk 'feat!: x on a 1.x crate' 'feat!: x' "$under_stable" allow
     walk 'a #minor token' 'fix(core): x #minor' "$under_crate" allow
 
+    WORDING_LIST="$fixture/wording.txt"
+    cp "$(dirname "${BASH_SOURCE[0]}")/commit-wording.txt" "$WORDING_LIST"
+    word() { # name, message, expected verdict (refuse|allow)
+        local got
+        got="$(wording_refusal "$2")"
+        if [ "$3" = "refuse" ] && [ -z "$got" ]; then
+            printf 'MISS: %s should have been refused\n' "$1"
+            failures=$((failures + 1))
+        elif [ "$3" = "allow" ] && [ -n "$got" ]; then
+            printf 'MISS: %s should have been allowed, got:\n%s\n' "$1" "$got"
+            failures=$((failures + 1))
+        else
+            printf 'ok: %s (%s)\n' "$1" "$3"
+        fi
+    }
+    word 'a plain subject and body' $'fix(cli): report the failing question\n\nThe refusal names the file.\n\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>' allow
+    word 'a subject over the limit' "feat(cli): $(printf 'x%.0s' $(seq 1 100))" refuse
+    word 'a subject without a prefix' 'Report the failing question' refuse
+    word 'a contrast frame in the body' $'fix(cli): x\n\nIt reads the file rather than the env.' refuse
+    word 'a comma-not frame' $'fix(cli): x\n\nThe flag, not the env, wins.' refuse
+    word 'a prose em dash' $'fix(cli): x\n\nThe flag — when set — wins.' refuse
+    word 'a prose double dash' $'fix(cli): x\n\nThe flag -- when set -- wins.' refuse
+    word 'a deferral excuse' $'fix(cli): x\n\nThe rest is a follow-up.' refuse
+    word 'a review tag' $'fix(cli): x\n\nThe B1 fix moves the read.' refuse
+    word 'session narrative' $'fix(cli): x\n\nTask 7 left this open.' refuse
+    word 'a first-person we' $'fix(cli): x\n\nWe read the file once.' refuse
+    word 'a Claude mention outside a trailer' $'fix(cli): x\n\nClaude wrote the first draft.' refuse
+    word 'a .claude path' $'docs(rules): x\n\nThe rule in .claude/rules/testing.md names the helper.' allow
+    word 'an I/O mention' $'fix(core): x\n\nThe I/O error is typed.' allow
+    word 'a round-trip mention' $'test(schema): x\n\nThe round-trip test samples one variant.' allow
+    word 'a legacy flat key' $'test(cli): x\n\nThe fixture wrote the legacy flat key.' allow
+    word 'a module-id token' $'fix(cli): x\n\nFS-CSI-01 and OP-PR-01 read the pod once.' allow
+
     if [ "$failures" -gt 0 ]; then
         printf 'commit-guard self-test: %d miss(es)\n' "$failures"
         return 1
@@ -224,6 +297,12 @@ if ! MESSAGE="$(extract_message "$@")"; then
     exit 1
 fi
 
+WORDING="$(wording_refusal "$MESSAGE")" || exit 1
+if [ -n "$WORDING" ]; then
+    printf '%s\n' "$WORDING" >&2
+    exit 1
+fi
+
 STAGED="$(git diff --cached --name-only)"
 REFUSAL="$(refusal_for "$MESSAGE" "$STAGED")"
 
@@ -237,7 +316,7 @@ if [ -n "$REFUSAL" ]; then
 fi
 
 if [ "$DRY_RUN" -eq 1 ]; then
-    printf 'commit-guard: no breaking signal blocks this commit.\n'
+    printf 'commit-guard: no breaking signal or wording blocks this commit.\n'
     exit 0
 fi
 

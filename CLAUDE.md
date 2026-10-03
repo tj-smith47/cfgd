@@ -50,6 +50,12 @@ A commit subject never carries `!`, a `BREAKING CHANGE` footer or `#major` on a 
 1.0 unless the user asked for that commit in their own words; `task commit` refuses it, and
 the override `BREAKING_CHANGE_APPROVED=1` is the user's to set, never the agent's.
 
+Every subject is a changelog line and every body is read cold, so `task commit` and
+`task commit:quick` also refuse, with no override: a subject over 100 characters or without
+a `type(scope): ` prefix, and any non-trailer line matching `.claude/scripts/commit-wording.txt`
+(contrast frames such as "rather than" / "X, not Y", prose dashes, deferral excuses, review
+tags like `B1`, session words like `Task 7`, "we", "Claude"). Reword; never quote the phrase.
+
 ## Quality scripts
 - `.claude/scripts/audit.sh` — DRY violations, banned patterns, module boundary violations
 
