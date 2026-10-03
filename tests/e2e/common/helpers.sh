@@ -450,11 +450,12 @@ argocd_owner() {
 # require_release_webhooks_scoped: 0 when the release's webhook configurations
 # leave every run-labelled object and namespace to the PR install: each
 # $E2E_RELEASE_VALIDATING_WEBHOOK entry's objectSelector and each
-# $E2E_RELEASE_MUTATING_WEBHOOK entry's namespaceSelector holds the cfgd.io/e2e-run DoesNotExist expression.
-# Otherwise prints an ERROR and returns 1. A setup run from a branch without
-# that scoping re-applies both configurations without it, and the release
-# operator then admits and mutates what this run creates. A configuration
-# ArgoCD tracks is refused as setup refuses it, since setup cannot scope it.
+# $E2E_RELEASE_MUTATING_WEBHOOK entry's namespaceSelector holds the
+# cfgd.io/e2e-run DoesNotExist expression. Otherwise prints an ERROR and
+# returns 1. A setup run from a branch without that scoping re-applies both
+# configurations without it, and the release operator then admits and mutates
+# what this run creates. A configuration ArgoCD tracks is refused as setup
+# refuses it, since setup cannot scope it.
 require_release_webhooks_scoped() {
     local rerun="rerun setup from this branch" entry kind name selector rc doc unscoped
     for entry in "validatingwebhookconfiguration $E2E_RELEASE_VALIDATING_WEBHOOK objectSelector" \
