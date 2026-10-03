@@ -287,8 +287,22 @@ ensure_namespace() {
 # heartbeat loop starts for a namespace that is not there. A plain return also
 # works where the caller runs it inside a condition, where set -e is off.
 create_e2e_namespace() {
-    local hint="Check that the runner can create, label and annotate namespaces."
-    if ! kubectl get namespace "$E2E_NAMESPACE" > /dev/null 2>&1; then
+    local hint="Check that the runner can create, label and annotate namespaces." phase
+    if ! phase=$(kubectl get namespace "$E2E_NAMESPACE" --ignore-not-found -o jsonpath='{.status.phase}'); then
+        echo "ERROR: could not read namespace $E2E_NAMESPACE. Check that the runner can get namespaces." >&2
+        return 1
+    fi
+    # A re-run with the same run id names the namespace an earlier teardown is
+    # still deleting. It keeps its labels and annotations but refuses new
+    # objects, so taking it as created fails later on a secret or install that
+    # cannot land in it.
+    if [ "$phase" = Terminating ]; then
+        echo "  namespace $E2E_NAMESPACE is being deleted; waiting up to 120s for it to go"
+        kubectl wait --for=delete "namespace/$E2E_NAMESPACE" --timeout=120s || {
+            echo "ERROR: namespace $E2E_NAMESPACE is still being deleted after 120s; rerun once it is gone" >&2; return 1; }
+        phase=""
+    fi
+    if [ -z "$phase" ]; then
         kubectl create namespace "$E2E_NAMESPACE" || {
             echo "ERROR: could not create namespace $E2E_NAMESPACE. $hint" >&2; return 1; }
         kubectl label namespace "$E2E_NAMESPACE" "$E2E_RUN_LABEL" --overwrite || {

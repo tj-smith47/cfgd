@@ -225,6 +225,9 @@ then the Helm release, then `$E2E_INSTALL_NS`, with each step run after a failed
 one and the script exiting 1 at the end. Its delete lists name every plural
 `schemas/crds.yaml` declares; `test-pr-install.sh` drives it against stub kubectl
 and helm and fails when a CRD's plural is missing from them.
+`create_e2e_namespace` waits up to 120s for a namespace an earlier teardown of the
+same run id is still deleting and stops when it outlasts that, so a re-run never
+takes a Terminating namespace as created.
 Every `ERROR` line an e2e script prints goes to stderr, on its own command
 (`>&2`, `1>&2`, `>/dev/stderr`) or through the closer of an enclosing compound
 (`} >&2`, `) >&2`, `fi >&2`, `done >&2`, `esac >&2`), whatever prefix words,

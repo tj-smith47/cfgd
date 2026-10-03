@@ -1,7 +1,13 @@
 #!/usr/bin/env bash
-# Records each call in $DOWN_LOG; a list prints the release name unless
-# $DOWN_RELEASE is absent.
+# Records each call in $DOWN_LOG and exits 1 on one whose arguments match a
+# glob in $DOWN_FAIL (patterns separated by |). A list prints the release name
+# unless $DOWN_RELEASE is absent.
 echo "helm $*" >> "$DOWN_LOG"
+IFS='|' read -ra fail_patterns <<<"${DOWN_FAIL:-}"
+for pattern in "${fail_patterns[@]}"; do
+    # shellcheck disable=SC2053 # the pattern is meant to glob
+    [[ "$*" == $pattern ]] && exit 1
+done
 if [ "$1" = list ] && [ "${DOWN_RELEASE:-}" != absent ]; then
     echo "cfgd-e2e-42"
 fi

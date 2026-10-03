@@ -5,6 +5,8 @@
 #     from one run id
 #   - a local run id is the same in every process of one checkout
 #   - ensure_namespace and running_image address the namespaces they are given
+#   - create_e2e_namespace waits out a namespace that is Terminating and stops
+#     when it outlasts the wait
 #   - every cfgd.io object the operator and full-stack suites apply carries the
 #     run label
 #   - no e2e script runs a multi-command subshell or brace group as a condition
@@ -33,8 +35,9 @@
 #     suite's kept gateway lines
 #   - pr-install-down.sh deletes the run's objects of every kind
 #     schemas/crds.yaml declares, uninstalls the release and deletes its
-#     namespace in that order, runs every step after one fails and then exits
-#     1, and treats a release that is not installed as removed
+#     namespace in that order, runs every step after an object delete, a
+#     release lookup or the uninstall fails and then exits 1, and treats a
+#     release that is not installed as removed
 # kubectl is a stub on PATH, so nothing reaches a cluster; the CRD check's stub
 # hands YAML reading to the real kubectl, which reads it offline.
 #
@@ -163,9 +166,45 @@ expect_namespace_write_stop() {
         fail "create_e2e_namespace with a failing $verb: rc=$rc, printed [$out]"
     fi
 }
-expect_namespace_write_stop create 'get namespace*|create namespace*'
-expect_namespace_write_stop label 'get namespace*|label namespace*'
-expect_namespace_write_stop annotate 'get namespace*|annotate namespace*'
+expect_namespace_write_stop create 'create namespace*'
+expect_namespace_write_stop label 'label namespace*'
+expect_namespace_write_stop annotate 'annotate namespace*'
+rc=0
+# shellcheck disable=SC2016 # the inner script expands its own variables
+out="$(in_helpers 'rc=0; create_e2e_namespace || rc=$?; stop_heartbeat; echo "returned $rc"; exit "$rc"' \
+    GITHUB_RUN_ID=42 E2E_NAMESPACE=ns-x KUBECTL_FAIL='get namespace*' 2>&1)" || rc=$?
+if [ "$rc" -ne 0 ] && grep -qxF "ERROR: could not read namespace ns-x. Check that the runner can get namespaces." <<<"$out"; then
+    pass "create_e2e_namespace stops with a message when it cannot read the namespace"
+else
+    fail "create_e2e_namespace with a failing get: rc=$rc, printed [$out]"
+fi
+
+# create_e2e_namespace against fixtures/terminating-ns/bin/kubectl, whose
+# namespace is Terminating: ns_case <wait rc> prints its output, then
+# `rc=<status>`; the calls are in $scratch/ns.log.
+ns_case() {
+    : > "$scratch/ns.log"
+    # shellcheck disable=SC2016 # the inner script expands its own variables
+    env -u GITHUB_RUN_ID -u CFGD_NAMESPACE PATH="$here/fixtures/terminating-ns/bin:$PATH" GITHUB_RUN_ID=42 \
+        E2E_NAMESPACE=ns-x NS_LOG="$scratch/ns.log" NS_WAIT_RC="$1" REGISTRY=r.example CLI_SCRATCH="$scratch" \
+        bash -c 'source "$1/common/helpers.sh"; rc=0; create_e2e_namespace 2>&1 || rc=$?; stop_heartbeat; echo "rc=$rc"' _ "$e2e_root"
+}
+ns_wait="kubectl get namespace ns-x --ignore-not-found -o jsonpath={.status.phase}
+kubectl wait --for=delete namespace/ns-x --timeout=120s"
+out="$(ns_case 0)"
+if [ "$(sed -n 's/^rc=//p' <<<"$out")" = 0 ] && [ "$(head -3 "$scratch/ns.log")" = "$ns_wait
+kubectl create namespace ns-x" ]; then
+    pass "create_e2e_namespace waits for a Terminating namespace to go, then creates it"
+else
+    fail "create_e2e_namespace on a Terminating namespace that goes: got [$out] with calls [$(cat "$scratch/ns.log")], want rc=0 and a wait before the create"
+fi
+out="$(ns_case 1)"
+if [ "$(sed -n 's/^rc=//p' <<<"$out")" = 1 ] && [ "$(cat "$scratch/ns.log")" = "$ns_wait" ] &&
+    grep -qxF "ERROR: namespace ns-x is still being deleted after 120s; rerun once it is gone" <<<"$out"; then
+    pass "create_e2e_namespace stops with a message when a Terminating namespace outlasts its wait"
+else
+    fail "create_e2e_namespace on a Terminating namespace that stays: got [$out] with calls [$(cat "$scratch/ns.log")], want rc=1, no call after the wait and the ERROR naming ns-x"
+fi
 
 expect_kubectl "running_image reads cfgd-system by default" \
     'running_image daemonset cfgd-csi-csi cfgd-csi' \
@@ -2973,6 +3012,15 @@ expect_down "pr-install-down.sh treats a release that is not installed as remove
     0 "$down_objects
 $down_rest" "^  release cfgd-e2e-42 is not installed in cfgd-e2e-42-sys; nothing to uninstall$" \
     DOWN_RELEASE=absent
+expect_down "pr-install-down.sh deletes the namespace and reads back after a failed helm uninstall, then exits 1 naming it" \
+    1 "$down_objects
+$down_uninstall
+$down_rest" "^ERROR: the PR install teardown failed at: helm uninstall$" \
+    "DOWN_FAIL=uninstall *"
+expect_down "pr-install-down.sh skips the uninstall when it cannot list the releases, still deletes the namespace and reads back, then exits 1 naming it" \
+    1 "$down_objects
+$down_rest" "^ERROR: the PR install teardown failed at: find release$" \
+    "DOWN_FAIL=list *"
 # Every kind the cluster serves can hold a run-labelled object, so the
 # teardown's delete lists name each plural schemas/crds.yaml declares.
 down_case >/dev/null

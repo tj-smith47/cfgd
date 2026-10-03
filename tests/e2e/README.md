@@ -4,8 +4,8 @@ The suites under `tests/e2e/` run against a real Kubernetes cluster. `task e2e:s
 (`setup-cluster.sh`) builds and pushes the images, then deploys what the suites need;
 each `task e2e:<suite>` target runs one suite. `task e2e:pr-install:down`
 (`pr-install-down.sh`) removes what setup installed for the run, and `task e2e` runs it
-last whatever the suites' result. The full-stack suite also needs `cosign` on PATH, and
-its setup stops without it.
+last whatever setup's and the suites' result. The full-stack suite also needs `cosign`
+on PATH, and its setup stops without it.
 
 ## Environment
 
@@ -80,6 +80,10 @@ takes the namespace as an optional fourth argument (default `cfgd-system`), so
 install's driver. `common/test-pr-install.sh` (run by `task e2e:tags:check`) checks
 these names, the run id, both helpers and the values file with a stub `kubectl`, so it
 needs no cluster.
+
+`create_e2e_namespace`, which setup uses for `$E2E_INSTALL_NS` and each suite for its own
+namespace, waits up to 120s for a namespace an earlier teardown of the same run id is
+still deleting, and stops when it outlasts that.
 
 `pr-install-down.sh` removes the install once every cluster suite has finished: CI's
 `e2e-teardown` job runs it after all of them, and `task e2e` runs it last. It deletes

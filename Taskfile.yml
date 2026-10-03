@@ -720,9 +720,9 @@ tasks:
 
   e2e:
     desc: Run all E2E test suites
-    deps: [e2e:setup]
     cmds:
       - defer: { task: e2e:pr-install:down }
+      - task: e2e:setup
       - task: e2e:cli
       - task: e2e:node
       - task: e2e:node:helm
