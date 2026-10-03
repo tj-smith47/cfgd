@@ -2,8 +2,10 @@
 
 The suites under `tests/e2e/` run against a real Kubernetes cluster. `task e2e:setup`
 (`setup-cluster.sh`) builds and pushes the images, then deploys what the suites need;
-each `task e2e:<suite>` target runs one suite. The full-stack suite also needs
-`cosign` on PATH, and its setup stops without it.
+each `task e2e:<suite>` target runs one suite. `task e2e:pr-install:down`
+(`pr-install-down.sh`) removes what setup installed for the run, and `task e2e` runs it
+last whatever the suites' result. The full-stack suite also needs `cosign` on PATH, and
+its setup stops without it.
 
 ## Environment
 
@@ -78,6 +80,17 @@ takes the namespace as an optional fourth argument (default `cfgd-system`), so
 install's driver. `common/test-pr-install.sh` (run by `task e2e:tags:check`) checks
 these names, the run id, both helpers and the values file with a stub `kubectl`, so it
 needs no cluster.
+
+`pr-install-down.sh` removes the install once every cluster suite has finished: CI's
+`e2e-teardown` job runs it after all of them, and `task e2e` runs it last. It deletes
+the run's MachineConfigs, ConfigPolicies, DriftAlerts, BackupPolicies,
+ClusterConfigPolicies and Modules (`-l "$E2E_RUN_LABEL"`) while the run's operator
+still clears their finalizers, then uninstalls `$E2E_INSTALL_RELEASE` and deletes
+`$E2E_INSTALL_NS` without waiting. It then reads back that `$CSI_DRIVER_NAME` no longer
+belongs to the install and that both webhook configurations are gone, and prints the
+namespace's phase. A release that is not installed counts as removed. Every step runs
+when one before it fails, and the script exits 1 naming each failed step.
+`test-pr-install.sh` runs it against the stubs in `common/fixtures/pr-install-down/bin/`.
 
 The operator suite runs against the PR install: its pods, Deployment, leader lease
 (`cfgd-operator-leader` in `$E2E_INSTALL_NS`), webhook Service and CSI driver name all

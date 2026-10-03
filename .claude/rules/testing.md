@@ -218,6 +218,13 @@ operator, validating webhook and pod injector act only on objects and
 namespaces carrying it, and an object a case wants its own install to act on
 carries that label. `tests/e2e/common/test-pr-install.sh` names each install,
 upgrade or array that does not.
+`tests/e2e/pr-install-down.sh` removes the PR install after every cluster suite
+(the `e2e-teardown` job in e2e.yml, the `defer` in `task e2e`): the run-labelled
+cfgd.io objects first, while the run's operator can still clear their finalizers,
+then the Helm release, then `$E2E_INSTALL_NS`, with each step run after a failed
+one and the script exiting 1 at the end. Its delete lists name every plural
+`schemas/crds.yaml` declares; `test-pr-install.sh` drives it against stub kubectl
+and helm and fails when a CRD's plural is missing from them.
 Every `ERROR` line an e2e script prints goes to stderr, on its own command
 (`>&2`, `1>&2`, `>/dev/stderr`) or through the closer of an enclosing compound
 (`} >&2`, `) >&2`, `fi >&2`, `done >&2`, `esac >&2`), whatever prefix words,

@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# Records each call in $DOWN_LOG; a list prints the release name unless
+# $DOWN_RELEASE is absent.
+echo "helm $*" >> "$DOWN_LOG"
+if [ "$1" = list ] && [ "${DOWN_RELEASE:-}" != absent ]; then
+    echo "cfgd-e2e-42"
+fi
+exit 0

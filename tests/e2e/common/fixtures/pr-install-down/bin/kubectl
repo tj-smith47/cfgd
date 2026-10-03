@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# Records each call in $DOWN_LOG and exits 1 on one whose arguments match a
+# glob in $DOWN_FAIL (patterns separated by |). A get prints nothing, as for
+# objects that are gone.
+echo "kubectl $*" >> "$DOWN_LOG"
+IFS='|' read -ra fail_patterns <<<"${DOWN_FAIL:-}"
+for pattern in "${fail_patterns[@]}"; do
+    # shellcheck disable=SC2053 # the pattern is meant to glob
+    [[ "$*" == $pattern ]] && exit 1
+done
+exit 0

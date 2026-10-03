@@ -31,6 +31,10 @@
 #   - no operator or full-stack suite script names the release's operator,
 #     namespace, webhooks or CSI driver by hand, outside the full-stack
 #     suite's kept gateway lines
+#   - pr-install-down.sh deletes the run's objects of every kind
+#     schemas/crds.yaml declares, uninstalls the release and deletes its
+#     namespace in that order, runs every step after one fails and then exits
+#     1, and treats a release that is not installed as removed
 # kubectl is a stub on PATH, so nothing reaches a cluster; the CRD check's stub
 # hands YAML reading to the real kubectl, which reads it offline.
 #
@@ -2921,6 +2925,65 @@ else
         fail "the Helm scope scan has lost its population:$scope_short"
     else
         pass "every full-stack Helm install and upgrade passes \"\${HELM_SCOPE[@]}\" and overrides none of its keys, and HELM_SCOPE scopes the operator, validating webhook and pod injector ($(grep -cE '^(UN)?SCOPED ' <<<"$scope_verdict") sites in ${#fullstack_scripts[@]} scripts)"
+    fi
+fi
+
+# pr-install-down.sh against the stubs in fixtures/pr-install-down/bin: down_case
+# [VAR=value...] runs it for run 42 and prints its output, then `rc=<status>`;
+# the calls the stubs saw are in $scratch/down.log.
+down_bin="$here/fixtures/pr-install-down/bin"
+down_case() {
+    : > "$scratch/down.log"
+    local rc=0
+    env -u GITHUB_RUN_ID -u CFGD_NAMESPACE PATH="$down_bin:$PATH" GITHUB_RUN_ID=42 \
+        DOWN_LOG="$scratch/down.log" REGISTRY=r.example CLI_SCRATCH="$scratch" "$@" \
+        bash "$e2e_root/pr-install-down.sh" </dev/null 2>&1 || rc=$?
+    echo "rc=$rc"
+}
+down_objects="kubectl delete machineconfigs,configpolicies,driftalerts,backuppolicies -A -l cfgd.io/e2e-run=42 --wait=true --timeout=90s
+kubectl delete clusterconfigpolicies,modules -A -l cfgd.io/e2e-run=42 --wait=true --timeout=90s
+helm list -n cfgd-e2e-42-sys -a -q --filter ^cfgd-e2e-42\$"
+down_rest="kubectl delete namespace cfgd-e2e-42-sys --ignore-not-found --wait=false
+kubectl get csidriver e2e.csi.cfgd.io --ignore-not-found -o jsonpath={.metadata.annotations.meta\\.helm\\.sh/release-namespace}
+kubectl get validatingwebhookconfiguration/cfgd-e2e-42 mutatingwebhookconfiguration/cfgd-e2e-42-pod-injector --ignore-not-found -o name
+kubectl get namespace cfgd-e2e-42-sys --ignore-not-found -o jsonpath={.status.phase}"
+down_uninstall="helm uninstall cfgd-e2e-42 -n cfgd-e2e-42-sys --wait --timeout=120s"
+# expect_down <label> <want rc> <want calls> <want output pattern> [VAR=value...]
+expect_down() {
+    local label="$1" want_rc="$2" want_calls="$3" want_out="$4" out
+    shift 4
+    out="$(down_case "$@")"
+    if [ "$(sed -n 's/^rc=//p' <<<"$out")" = "$want_rc" ] && [ "$(cat "$scratch/down.log")" = "$want_calls" ] &&
+        grep -q -- "$want_out" <<<"$out"; then
+        pass "$label"
+    else
+        fail "$label: got [$out] with calls [$(cat "$scratch/down.log")], want rc=$want_rc, calls [$want_calls] and a line matching [$want_out]"
+    fi
+}
+expect_down "pr-install-down.sh deletes the run's objects, uninstalls the release, deletes its namespace and reads back that each is gone" \
+    0 "$down_objects
+$down_uninstall
+$down_rest" "^Removed the PR install cfgd-e2e-42$"
+expect_down "pr-install-down.sh runs the uninstall and the namespace delete after an object delete fails, then exits 1 naming the failed step" \
+    1 "$down_objects
+$down_uninstall
+$down_rest" "^ERROR: the PR install teardown failed at: delete machineconfigs,configpolicies,driftalerts,backuppolicies$" \
+    "DOWN_FAIL=delete machineconfigs,*"
+expect_down "pr-install-down.sh treats a release that is not installed as removed and still deletes the namespace" \
+    0 "$down_objects
+$down_rest" "^  release cfgd-e2e-42 is not installed in cfgd-e2e-42-sys; nothing to uninstall$" \
+    DOWN_RELEASE=absent
+# Every kind the cluster serves can hold a run-labelled object, so the
+# teardown's delete lists name each plural schemas/crds.yaml declares.
+down_case >/dev/null
+if ! crd_plurals="$(yq -N '.spec.names.plural' "$repo_root/schemas/crds.yaml" | sort)" || [ -z "$crd_plurals" ]; then
+    fail "yq could not read the CRD plurals from schemas/crds.yaml"
+else
+    down_plurals="$(sed -n 's/^kubectl delete \([^ ]*\) -A -l cfgd.io\/e2e-run=42 .*/\1/p' "$scratch/down.log" | tr ',' '\n' | sort)"
+    if [ "$down_plurals" = "$crd_plurals" ]; then
+        pass "pr-install-down.sh deletes the run's objects of every kind schemas/crds.yaml declares ($(wc -l <<<"$crd_plurals") kinds)"
+    else
+        fail "pr-install-down.sh deletes [$(paste -sd ' ' <<<"$down_plurals")], want every CRD plural in schemas/crds.yaml [$(paste -sd ' ' <<<"$crd_plurals")]"
     fi
 fi
 
