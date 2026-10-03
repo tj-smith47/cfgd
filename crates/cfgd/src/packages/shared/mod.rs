@@ -492,11 +492,37 @@ pub(super) fn report_abandoned_step(
 pub(super) fn command_failure_reason(output: &CommandOutput) -> String {
     let reason = cfgd_core::exit_status_reason(&output.status);
     let stderr = cfgd_core::output::captured_output_detail(output.stderr.trim());
-    if stderr.is_empty() {
+    let mut message = if stderr.is_empty() {
         reason
     } else {
         format!("{reason}: {stderr}")
+    };
+    if let Some(hint) = sudo_refusal_hint(&output.stderr) {
+        message.push_str("; ");
+        message.push_str(hint);
     }
+    message
+}
+
+/// The sentence that turns sudo's refusal into the sudoers change it needs,
+/// or `None` when stderr is not sudo refusing.
+///
+/// A manager that runs as root does so through `sudo env K=V <manager>`, the
+/// one form that carries its variables (debconf's frontend, needrestart's
+/// mode) past sudo's environment reset without a SETENV tag. A sudoers rule
+/// that allows the manager alone refuses `env`, and sudo's own message names
+/// the argv without saying what to allow.
+pub(super) fn sudo_refusal_hint(stderr: &str) -> Option<&'static str> {
+    let refused = stderr.lines().any(|line| {
+        let line = line.trim_start();
+        line.starts_with("sudo:")
+            && (line.contains("is not allowed to execute")
+                || line.contains("a password is required")
+                || line.contains("a terminal is required"))
+    });
+    refused.then_some(
+        "sudo refused the command. cfgd runs a package manager as `sudo env K=V <manager>` so its variables reach the packages' own scripts; allow `env` for this user in sudoers, or give the manager's rule the SETENV tag and NOPASSWD",
+    )
 }
 
 /// Run `cmd` through a live output window, letting the CONTEXT decide whether

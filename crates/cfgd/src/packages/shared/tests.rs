@@ -1227,6 +1227,48 @@ fn run_pkg_cmd_live_install_failure_maps_to_install_failed() {
 #[cfg(unix)]
 #[test]
 #[serial_test::serial]
+fn run_pkg_cmd_live_sudo_refusal_names_the_sudoers_change() {
+    let _path = cfgd_core::test_helpers::path_env_mutation_guard();
+    let notes = NoteSink::default();
+    let _shim = cfgd_core::test_helpers::ToolShim::install(
+        "CFGD_SH_SUDO_BIN",
+        1,
+        "",
+        "sudo: sorry, user tj is not allowed to execute '/usr/bin/env DEBIAN_FRONTEND=noninteractive apt-get install -y jq' as root on box.\n",
+    );
+    let (printer, _buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    let mut cmd = std::process::Command::new(std::env::var("CFGD_SH_SUDO_BIN").unwrap());
+    let err = run_pkg_cmd_live(
+        &cx_for(&printer, &notes),
+        "apt",
+        &mut cmd,
+        "sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y jq",
+        "install",
+    )
+    .err()
+    .expect("expected Err from the sudo-refusal shim");
+    let PackageError::InstallFailed { message, .. } = &err else {
+        panic!("expected InstallFailed, got: {err:?}");
+    };
+    assert!(
+        message.contains("is not allowed to execute") && message.contains("SETENV"),
+        "the message carries sudo's own line and the sudoers change: {message}"
+    );
+}
+
+#[test]
+fn sudo_refusal_hint_is_none_for_an_ordinary_failure() {
+    assert_eq!(sudo_refusal_hint("E: Unable to locate package jq\n"), None);
+    assert_eq!(
+        sudo_refusal_hint("sudo: unable to resolve host box\nE: broken\n"),
+        None
+    );
+    assert!(sudo_refusal_hint("  sudo: a password is required\n").is_some());
+}
+
+#[cfg(unix)]
+#[test]
+#[serial_test::serial]
 fn run_pkg_cmd_live_uninstall_failure_maps_to_uninstall_failed() {
     let _path = cfgd_core::test_helpers::path_env_mutation_guard();
     let notes = NoteSink::default();
