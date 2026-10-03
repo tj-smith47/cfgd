@@ -275,6 +275,7 @@ workspaces:
           - docs/installation.md
           - docs/skill.md
           - docs/team-config.md
+          - manifests/crossplane/function-cfgd.yaml
           - chart/cfgd/Chart.yaml
         builds:
           # gnu build → tarballs / binstall / homebrew cask / makeself installer
