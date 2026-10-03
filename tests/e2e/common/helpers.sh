@@ -721,23 +721,22 @@ http_evidence() {
 }
 
 # Print every sample line of counter family $1 in the exposition body in file
-# $2; returns 1 when there is none. A counter family renders its samples as
-# `<family>_total`, but a release registered with the name already ending in
-# `_total` renders `<family>_total_total`, and the operator and CSI suites run
-# whichever release ArgoCD pins, so both spellings are read.
+# $2; returns 1 when there is none. Every suite scrapes components built from
+# this checkout, which render a counter's samples as `<family>_total`, so that
+# is the only sample name read; a sample with a doubled suffix is a
+# registration bug for the check to fail on.
 metric_sample_lines() {
-    grep -E "^$1_total(_total)?(\{| )" "$2"
+    grep -E "^$1_total(\{| )" "$2"
 }
 
 # Print the value of counter family $1's sample with label set $2 (the text
 # between the braces, e.g. `module="m",result="success"`; empty for a sample
 # without labels) in the body in file $3, or 0 when that sample is absent.
-# Reads the same two spellings as metric_sample_lines.
+# Reads the same one spelling as metric_sample_lines.
 metric_sample_value() {
     local labels=""
     [ -z "$2" ] || labels="{$2}"
-    awk -v a="$1_total$labels" -v b="$1_total_total$labels" \
-        '$1 == a || $1 == b { v = $2 } END { print v + 0 }' "$3"
+    awk -v a="$1_total$labels" '$1 == a { v = $2 } END { print v + 0 }' "$3"
 }
 
 wait_for_url() {

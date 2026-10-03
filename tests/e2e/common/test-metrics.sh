@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Checks the counter readers in helpers.sh without a cluster: both spellings a
-# counter sample renders under are read, a longer name or a comment line is
-# not, an absent sample reads as 0, and no e2e script matches a counter sample
-# by hand.
+# Checks the counter readers in helpers.sh without a cluster: a `<family>_total`
+# sample is read, a `<family>_total_total` sample, a longer name or a comment
+# line is not, an absent sample reads as 0, and no e2e script matches a counter
+# sample by hand.
 #
 # Usage: tests/e2e/common/test-metrics.sh
 set -euo pipefail
@@ -34,10 +34,10 @@ cfgd_x_hits_created{module="a"} 1.7e9
 # EOF
 BODY
 
-want="$(printf '%s\n' 'cfgd_x_hits_total{module="a"} 3' 'cfgd_x_hits_total_total{module="b"} 5' 'cfgd_x_hits_total 11')"
+want="$(printf '%s\n' 'cfgd_x_hits_total{module="a"} 3' 'cfgd_x_hits_total 11')"
 got="$(metric_sample_lines cfgd_x_hits "$body")"
 if [ "$got" = "$want" ]; then
-    pass "metric_sample_lines reads both spellings and skips _totalx, _created and comment lines"
+    pass "metric_sample_lines reads _total and skips _total_total, _totalx, _created and comment lines"
 else
     fail "metric_sample_lines: got '$got', want '$want'"
 fi
@@ -58,7 +58,7 @@ check_value() {
     fi
 }
 check_value 'module="a"' 3
-check_value 'module="b"' 5
+check_value 'module="b"' 0
 check_value 'module="c"' 0
 check_value 'module="absent"' 0
 check_value '' 11
@@ -87,8 +87,8 @@ scan_hand_matches() {
     '
 }
 
-# Every counter read goes through the helpers, so a release that renders a
-# different spelling is handled in one place.
+# Every counter read goes through the helpers, so the one sample spelling read
+# is stated in one place.
 report="$(scan_hand_matches "$e2e_root")"
 strays="$(grep -v '^scanned ' <<<"$report" || true)"
 scanned_files="$(sed -n 's/^scanned //p' <<<"$report")"

@@ -254,11 +254,10 @@ An exempt write is listed in the test by tag, file and command text, with its re
 the one entry is XP-01's Helm install of Crossplane, which runs only where ArgoCD does
 not run Crossplane and whose chart holds none of the CRDs in `cfgd-crds.yaml`.
 
-Because the gateway suite, and each suite not yet moved to the PR install, runs a
-release, a check reads a counter through
-`metric_sample_lines` or `metric_sample_value` in `common/helpers.sh`, which
-accept both the `<family>_total` sample and the `<family>_total_total` sample an
-older release renders. `common/test-metrics.sh` (run by `task e2e:tags:check`)
+A check reads a counter through `metric_sample_lines` or `metric_sample_value` in
+`common/helpers.sh`, which read only the `<family>_total` sample the components
+built from the checkout render, so a sample whose name doubles the suffix is not read.
+`common/test-metrics.sh` (run by `task e2e:tags:check`)
 fails when a script matches a counter sample by hand.
 
 A check for behaviour that only a newer build than the pinned release has reads

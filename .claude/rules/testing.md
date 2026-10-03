@@ -155,8 +155,8 @@ asserts on the body fetches it with `http_get_to_file` and puts
 exit code and error when nothing answered) in every fail reason; a counter
 check reads the body through `metric_sample_lines <family> <body>` or
 `metric_sample_value <family> <labels> <body>` (absent reads 0), which match
-the sample line only (never `# HELP`/`# TYPE`) under both `<family>_total` and
-the `<family>_total_total` an older ArgoCD-pinned release renders;
+the sample line only (never `# HELP`/`# TYPE`) and only under `<family>_total`,
+the one name the PR-built components render (a doubled suffix is not read);
 `tests/e2e/common/test-metrics.sh` fails on a counter sample matched by hand
 anywhere under `tests/e2e/`. A `run-all.sh` whose setup starts a
 port-forward installs its EXIT trap before sourcing that setup.
