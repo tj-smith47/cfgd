@@ -870,14 +870,16 @@ scan_run_labels() {
         # the scanned scripts define, standing as the command word w[cw], is a
         # kubectl; any other word names another
         # tool (cfgd, helm, git) whose apply is not one. kubectl anywhere before
-        # the verb settles it, so sudo -E kubectl is a kubectl.
+        # the verb settles it, so sudo -E kubectl is a kubectl. The command
+        # word is never an option argument, so k in time -p k is the runner.
         function runs_apply(w, v, cw,   i) {
             for (i = v - 1; i >= 1; i--) {
                 if (w[i] == "") continue
                 if (w[i] ~ /(^|\/)kubectl$/) return 1
                 if (w[i] ~ /^-/) continue
+                if (i == cw) return w[i] ~ /^(Q|\$)/ || (w[i] in defined)
                 if (i > 1 && w[i - 1] ~ /^-[^=]*$/) { i--; continue }
-                return w[i] ~ /^(Q|\$)/ || (i == cw && (w[i] in defined))
+                return w[i] ~ /^(Q|\$)/
             }
             return 0
         }
@@ -941,25 +943,34 @@ scan_run_labels() {
             }
         }
         # position(tok, st): the state after the word tok, where st is 1 while
-        # the next word stands where bash reads a command word, 2 when it is
+        # the next word stands where bash reads a command word, 3 after time,
+        # whose options (-p, --) keep that position, 2 when the next word is
         # the target of a redirect standing there, and 0 inside arguments. A
         # separator, a keyword that starts a command, a reserved { or }, an
         # assignment and a redirect all leave the next word at that position.
         function position(tok, st) {
             if (tok ~ /^[;()]$/) return 1
+            if (st == 3 && tok ~ /^-/) return 3
+            if (st == 3) st = 1
             if (st != 1) return st == 2
-            if (tok ~ /^(!|if|then|else|elif|do|while|until|time|coproc|\{|\}|HEREDOC|FDDOC)$/) return 1
+            if (tok == "time") return 3
+            if (tok ~ /^(!|if|then|else|elif|do|while|until|coproc|\{|\}|HEREDOC|FDDOC)$/) return 1
             if (tok ~ /^[A-Za-z_][A-Za-z0-9_]*(\[[^]]*\])?\+?=/) return 1
             if (tok ~ /^[0-9]*[<>]/) return (tok ~ /^[0-9]*[<>]+&?$/) ? 2 : 1
             return 0
         }
+        # regex_escape(s): s with each character a regular expression gives a
+        # meaning to taken literally, as in a function named a.b.
+        function regex_escape(s) { gsub(/[][\\.^$*+?(){}|\/]/, "\\\\&", s); return s }
+        # at_command(st): the next word stands at a command-word position.
+        function at_command(st) { return st == 1 || st == 3 }
         # command_word(w, n): the index of the command word among the words
         # w[1..n] of one simple command, or 0 when it has none.
         function command_word(w, n,   v, st) {
             st = 1
             for (v = 1; v <= n; v++) {
                 if (w[v] == "") continue
-                if (st == 1 && !position(w[v], 1)) return v
+                if (at_command(st) && !position(w[v], st)) return v
                 st = position(w[v], st)
             }
             return 0
@@ -984,9 +995,9 @@ scan_run_labels() {
             for (i = 1; i <= nw; i++) {
                 if (w[i] == "(") op++
                 if (w[i] == ")") cp++
-                if (st == 1 && w[i] == "{") ob++
-                if (st == 1 && w[i] == "}") cb++
-                if (st == 1 && w[i] == "function" && w[i + 1] ~ /^[A-Za-z_][A-Za-z0-9_:.-]*$/) i++
+                if (at_command(st) && w[i] == "{") ob++
+                if (at_command(st) && w[i] == "}") cb++
+                if (at_command(st) && w[i] == "function" && w[i + 1] ~ /^[A-Za-z_][A-Za-z0-9_:.-]*$/) i++
                 else if (!(w[i + 1] == "FNDEF" && w[i] ~ /^[A-Za-z_][A-Za-z0-9_:.-]*$/)) { st = position(w[i], st); continue }
                 defname[++defs] = w[i]; defkind[defs] = ""; defat[defs] = ob - cb; defpat[defs] = op - cp
                 if (w[i + 1] == "FNDEF") i++
@@ -1018,20 +1029,23 @@ scan_run_labels() {
         # of the function bodies it opens and closes. A body is a { } or a
         # ( ) group, counted on the line with its quoted text dropped, and a
         # definition is one words() finds at a command word.
-        function check_command(   c, raw, l, k, d, top) {
+        function check_command(   c, raw, l, k, d, top, e) {
             if (pending == "") return
             c = pending; pending = ""; top = fns; raw = pending_kept; pending_kept = ""
             for (k = 1; k <= fns; k++) fnbody[k] = fnbody[k] "\n" raw
             gsub(/\$\{[^}]*\}/, "$V", c)
+            # A clobber redirect (>|) is no pipe.
+            gsub(/>\|/, ">", c)
             words(c)
             for (d = 1; d <= defs; d++) {
                 if (pass == 1) defined[defname[d]] = 1
                 fn[++fns] = defname[d]; fnline[fns] = pending_at; fnat[fns] = depth + defat[d]; fnpat[fns] = pdepth + defpat[d]
                 fnkind[fns] = defkind[d]; fnopen[fns] = 0
-                # A body is compared without its opener, so function f { and
-                # f() { open the same body.
-                fnbody[fns] = raw
-                sub(".*(function[ \t]+" defname[d] "([ \t]*\\(\\))?|" defname[d] "[ \t]*\\(\\))", "", fnbody[fns])
+                # A body is compared from the end of its first opener on the
+                # line, so function f { and f() { open the same body.
+                e = regex_escape(defname[d]); fnbody[fns] = raw
+                if (match(raw, "(^|[^A-Za-z0-9_:.-])(function[ \t]+" e "([ \t]*\\(\\))?|" e "[ \t]*\\(\\))"))
+                    fnbody[fns] = substr(raw, RSTART + RLENGTH)
             }
             if (fns && fnkind[fns] == "" && first ~ /^[({]$/) fnkind[fns] = first
             judge(c)
@@ -1785,7 +1799,7 @@ probe() {
     probe procsub 'kubectl apply -f <(cat "$dir/m.yaml")'
     probe dev-stdin 'kubectl apply -f /dev/stdin < "$dir/m.yaml"'
     probe no-feeder 'kubectl apply -f -'
-    probe kubectl-var 'KUBECTL=kubectl'$'\n''$KUBECTL apply -f "$dir/m.yaml"'$'\n''${KUBECTL} apply -f "$dir/m.yaml"'
+    probe kubectl-var 'KUBECTL=kubectl'$'\n''$KUBECTL apply -f "$dir/m.yaml"'$'\n''${KUBECTL} apply -f "$dir/m.yaml"'$'\n''sudo "$KUBECTL" apply -f "$dir/m.yaml"'
     probe kubectl-option 'kubectl --context=e2e apply -f "$dir/m.yaml"'
     probe heredoc-then-here-string "kubectl apply -f - <<EOF <<<\"\$y\""$'\n''a: b'$'\n''EOF'
     probe heredoc-then-redirect "kubectl apply -f - <<EOF < \"\$f\""$'\n''a: b'$'\n''EOF'
@@ -1800,7 +1814,7 @@ probe() {
     probe brace-word-pair 'bw_f() {'$'\n''    echo a{b'$'\n''}'$'\n''cat "$f" | kubectl apply -f -'$'\n''kubectl apply -f -'$'\n''echo c}d'
     probe default-json 'dj_f() {'$'\n''    local b=${body:-{}}'$'\n''    kubectl apply -f -'$'\n''}'$'\n''dj_f < "$f"'
     probe brace-groups 'grp() {'$'\n''    if { true; }; then { true; }; elif { true; }; then true; else { true; }; fi'$'\n''    while { false; }; do { true; }; done'$'\n''    until { true; }; do true; done'$'\n''    ! { false; }'$'\n''    true & { true; }'$'\n''    true | { cat; }'$'\n''    ( { true; } )'$'\n''    case x in x) { true; } ;; esac'$'\n''    { { true; } }'$'\n''    echo then {'$'\n''    kubectl apply -f -'$'\n''}'$'\n''grp < "$f"'
-    probe brace-time 'bt_f() {'$'\n''    time { true; }'$'\n''    coproc { cat; }'$'\n''    echo ` { true; } `'$'\n''    kubectl apply -f -'$'\n''}'$'\n''bt_f < "$f"'
+    probe brace-time 'bt_f() {'$'\n''    time { true; }'$'\n''    time -p { true; }'$'\n''    coproc { cat; }'$'\n''    echo ` { true; } `'$'\n''    kubectl apply -f -'$'\n''}'$'\n''bt_f < "$f"'
     probe subshell-same-body-one 'ss() ( kubectl apply -f - )'$'\n''ss < "$f"'
     probe subshell-same-body-two 'ss() ('$'\n''    kubectl apply -f -'$'\n'')'$'\n''ss < "$f"'
     probe nested-one-line 'nl_o() { nl_i() { true; }'$'\n''    kubectl apply -f -'$'\n''}'$'\n''nl_o < "$f"'
@@ -1810,11 +1824,20 @@ probe() {
     # Two bodies that differ only inside a quoted word.
     probe quoted-body-one 'qb() { echo "a"; }'
     probe quoted-body-two 'qb() { echo "b"; }'
+    # Two bodies cut at their first opener, before quoted text shaped like one.
+    probe opener-quoted-one 'og() { kubectl apply -f -; echo "og()"; }'
+    probe opener-quoted-two 'og() { echo nope; echo "og()"; }'
+    probe suffix-name-one 'true; x_sf() { :; }; sf() { kubectl apply -f -; }'
+    probe suffix-name-two 'sf() { kubectl apply -f -; }'
+    probe dotted-prefix-one 'true; cxd() { :; }; c.d() { kubectl apply -f -; }'
+    probe dotted-prefix-two 'c.d() { kubectl apply -f -; }'
+    probe dotted-name-one 'a.b() { kubectl apply -f -; echo "axb()"; }'
+    probe dotted-name-two 'a.b() { echo nope; echo "axb()"; }'
     # A function is defined, and called, at any command word.
     probe def-after-and 'true && ar_k() { kubectl "$@"; }'$'\n''ar_k apply -f m.yaml'
     probe def-after-semi 'set -e; sr_k() { kubectl "$@"; }'$'\n''sr_k apply -f m.yaml'$'\n''sp_k ( ) { kubectl "$@"; }'$'\n''sp_k apply -f m.yaml'
     probe def-keyword-after-semi 'true; function fr_k { kubectl "$@"; }'$'\n''fr_k apply -f m.yaml'
-    probe call-prefixes 'cp_w() { kubectl apply -f -; }'$'\n''FOO=1 cp_w T1 < "$f"'$'\n''2>/dev/null cp_w T2 < "$f"'$'\n''time cp_w T3 < "$f"'$'\n''x=`cp_w T4 < "$f"`'$'\n''&>/dev/null cp_w T5 < "$f"'$'\n''> /dev/null cp_w T6 < "$f"'$'\n''A+=1 cp_w T7 < "$f"'$'\n''a[0]=1 cp_w T8 < "$f"'$'\n''0<&3 cp_w T9 < "$f"'
+    probe call-prefixes 'cp_w() { kubectl apply -f -; }'$'\n''FOO=1 cp_w T1 < "$f"'$'\n''2>/dev/null cp_w T2 < "$f"'$'\n''time cp_w T3 < "$f"'$'\n''x=`cp_w T4 < "$f"`'$'\n''&>/dev/null cp_w T5 < "$f"'$'\n''> /dev/null cp_w T6 < "$f"'$'\n''A+=1 cp_w T7 < "$f"'$'\n''a[0]=1 cp_w T8 < "$f"'$'\n''0<&3 cp_w T9 < "$f"'$'\n''time -p cp_w T10 < "$f"'$'\n''time -- cp_w T11 < "$f"'$'\n''>| /dev/null cp_w T12 < "$f"'$'\n''cp_k() { kubectl "$@"; }'$'\n''time -p cp_k apply -f m.yaml'$'\n''cp_o() {'$'\n''    time -p cp_w'$'\n''}'$'\n''cp_o < "$f"'$'\n''time 2>/dev/null cp_w T13 < "$f"'
     # A wrapper name as an argument is no call.
     probe arg-named-runner 'ra_k() { kubectl "$@"; }'$'\n''echo ra_k apply -f m.yaml'$'\n''ra_k apply -f m.yaml'
     probe arg-named-wrapper 'an_w() { kubectl apply -f -; }'$'\n''an_o() {'$'\n''    echo an_w'$'\n''}'$'\n''an_o < "$f"'$'\n''echo an_w | kubectl apply -f -'$'\n''true && an_w < "$f"'$'\n''cat "$f" | an_w'
@@ -1933,6 +1956,7 @@ BYPATH dev-stdin.sh:1
 BYPATH no-feeder.sh:1
 BYPATH kubectl-var.sh:2
 BYPATH kubectl-var.sh:3
+BYPATH kubectl-var.sh:4
 BYPATH kubectl-option.sh:1
 BYPATH heredoc-then-here-string.sh:1
 BYPATH heredoc-then-redirect.sh:1
@@ -1966,12 +1990,18 @@ BYPATH call-prefixes.sh:7
 BYPATH call-prefixes.sh:8
 BYPATH call-prefixes.sh:9
 BYPATH call-prefixes.sh:10
+BYPATH call-prefixes.sh:11
+BYPATH call-prefixes.sh:12
+BYPATH call-prefixes.sh:13
+BYPATH call-prefixes.sh:15
+BYPATH call-prefixes.sh:19
+BYPATH call-prefixes.sh:20
 SITE heredoc-first.sh:2
 BYPATH fd-heredoc-first.sh:2
 FILEDOC fd-heredoc-first.sh:2
 BYPATH arg-named-runner.sh:3
 UNLABELLED heredoc-first.sh:3
-BYPATH brace-time.sh:7
+BYPATH brace-time.sh:8
 BYPATH def-after-and.sh:2
 BYPATH def-after-semi.sh:2
 BYPATH def-keyword-after-semi.sh:2
@@ -2007,6 +2037,8 @@ SITE same-name-other.sh:2
 UNLABELLED same-name-other.sh:3
 DUPLICATE heredoc-body-two.sh:1
 DUPLICATE quoted-body-two.sh:1
+DUPLICATE opener-quoted-two.sh:1
+DUPLICATE dotted-name-two.sh:1
 BYPATH fd3-heredoc.sh:1
 FILEDOC fd3-heredoc.sh:1
 SITE fd0-heredoc.sh:1
