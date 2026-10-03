@@ -45,8 +45,6 @@ spec:
     - name: debug-tools-${E2E_RUN_ID}
 EOF
 
-sleep 5
-
 # Create a pod (no annotation — debug modules come from policy)
 kubectl apply -n "e2e-debug-flow-${E2E_RUN_ID}" -f - <<EOF
 apiVersion: v1
