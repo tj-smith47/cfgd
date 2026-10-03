@@ -1,0 +1,140 @@
+apiVersion: apiextensions.crossplane.io/v2
+kind: CompositeResourceDefinition
+metadata:
+  annotations:
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+    argocd.argoproj.io/sync-wave: "5"
+  creationTimestamp: "2026-03-18T03:24:32Z"
+  finalizers:
+    - defined.apiextensions.crossplane.io
+  generation: 1
+  labels:
+    app.kubernetes.io/instance: infra-crossplane-system
+  name: teamconfigs.cfgd.io
+  resourceVersion: "191402337"
+  uid: 2503b3d0-80f8-418b-bb09-5d3d8782e197
+spec:
+  defaultCompositeDeletePolicy: Background
+  defaultCompositionUpdatePolicy: Automatic
+  group: cfgd.io
+  names:
+    kind: TeamConfig
+    plural: teamconfigs
+  scope: Namespaced
+  versions:
+    - name: v1alpha1
+      referenceable: true
+      schema:
+        openAPIV3Schema:
+          properties:
+            spec:
+              properties:
+                members:
+                  description: Team members who will receive MachineConfig CRDs.
+                  items:
+                    properties:
+                      hostname:
+                        description: Machine hostname (filled on first check-in if
+                          empty).
+                        type: string
+                      profile:
+                        description: Profile override for this member (defaults to
+                          team profile).
+                        type: string
+                      sshPublicKey:
+                        description: SSH public key for device verification.
+                        type: string
+                      username:
+                        description: Unique identifier for the team member.
+                        type: string
+                    required:
+                      - username
+                    type: object
+                  type: array
+                modules:
+                  description: Modules provided by this team config.
+                  items:
+                    properties:
+                      name:
+                        description: Module name.
+                        type: string
+                      sourceRef:
+                        description: Reference to a git repo containing the module.
+                        properties:
+                          ref:
+                            type: string
+                          url:
+                            type: string
+                        required:
+                          - url
+                        type: object
+                    required:
+                      - name
+                    type: object
+                  type: array
+                policy:
+                  description: Policy tiers controlling what members can override.
+                  properties:
+                    locked:
+                      description: Items subscribers cannot modify or remove under
+                        any circumstances.
+                      type: object
+                      x-kubernetes-preserve-unknown-fields: true
+                    recommended:
+                      description: Items subscribers get by default but can override
+                        or reject.
+                      type: object
+                      x-kubernetes-preserve-unknown-fields: true
+                    recommendedModules:
+                      description: Module names recommended for team members.
+                      items:
+                        type: string
+                      type: array
+                    required:
+                      description: Items subscribers cannot override or remove.
+                      type: object
+                      x-kubernetes-preserve-unknown-fields: true
+                    requiredModules:
+                      description: Module names that all team members must have installed.
+                      items:
+                        type: string
+                      type: array
+                  type: object
+                profile:
+                  description: Default cfgd profile for team members (overridable
+                    per member).
+                  type: string
+                source:
+                  description: Git repository containing the team's cfgd config source.
+                  properties:
+                    branch:
+                      default: main
+                      type: string
+                    url:
+                      type: string
+                  required:
+                    - url
+                  type: object
+                team:
+                  description: Team identifier used to name generated resources.
+                  type: string
+              required:
+                - team
+                - members
+              type: object
+          type: object
+      served: true
+status:
+  conditions:
+    - lastTransitionTime: "2026-03-18T03:24:33Z"
+      observedGeneration: 1
+      reason: WatchingCompositeResource
+      status: "True"
+      type: Established
+  controllers:
+    compositeResourceClaimType:
+      apiVersion: ""
+      kind: ""
+    compositeResourceType:
+      apiVersion: cfgd.io/v1alpha1
+      kind: TeamConfig

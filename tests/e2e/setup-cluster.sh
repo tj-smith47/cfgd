@@ -459,10 +459,11 @@ build_and_push cfgd-csi "$REPO_ROOT/Dockerfile.csi" "$REPO_ROOT" cfgd-csi true \
     crates/cfgd-csi "${RUST_SHARED_PATHS[@]}"
 
 # function-cfgd is a self-contained Go module: its dir holds go.mod/go.sum and
-# its Dockerfile, so the crate dir alone is the full input set. It is pushed as
-# a Crossplane xpkg (below), not via the plain image push, so retag_latest=false.
+# its Dockerfile, so the crate dir alone is the full input set. The run's tag is
+# the only one written: the runtime image goes there first, then the xpkg
+# (below) that embeds it replaces it, so the tag holds the package the
+# Crossplane suite's Function installs.
 FUNCTION_IMAGE="$(e2e_image function-cfgd)"
-FUNCTION_LATEST="$(e2e_image_repo function-cfgd):latest"
 FUNCTION_DECISION="$(image_decision function-cfgd function-cfgd/Dockerfile function-cfgd)"
 if e2e_image_overridden function-cfgd; then
     use_overridden_image function-cfgd
@@ -474,14 +475,13 @@ else
     build_image "$REPO_ROOT/function-cfgd/Dockerfile" \
         "$FUNCTION_IMAGE" "$REPO_ROOT/function-cfgd" function-cfgd
     docker push "$FUNCTION_IMAGE"
-    docker tag "$FUNCTION_IMAGE" "$FUNCTION_LATEST"
-    docker push "$FUNCTION_LATEST"
     FUNCTION_DECISION="build"
 fi
 
 # The xpkg repackages function-cfgd's embedded runtime image. When the image
-# was rebuilt this run, the xpkg must follow; when skipped, the existing xpkg
-# tag is still valid and we avoid the crank install + build + push entirely.
+# was rebuilt this run, the xpkg must follow; when skipped, the tag already
+# holds the xpkg an earlier build pushed over it, so the crank install, build
+# and push are not needed.
 if [ "$FUNCTION_DECISION" = "build" ]; then
     # Ensure crossplane CLI (crank). In CI the checksum-verified pinned binary
     # is already on PATH via .github/actions/setup-crossplane (the pin's SSOT);
@@ -522,17 +522,6 @@ if [ "$FUNCTION_DECISION" = "build" ]; then
         --embed-runtime-image="$FUNCTION_IMAGE" \
         -o "$XPKG_OUT"
     crossplane xpkg push "$FUNCTION_IMAGE" -f "$XPKG_OUT"
-    crossplane xpkg push "$FUNCTION_LATEST" -f "$XPKG_OUT"
-
-    # Restart the function-cfgd deployment so it picks up the new embedded runtime image.
-    # The xpkg push doesn't trigger a redeploy when the tag is unchanged.
-    FUNC_DEPLOY=$(kubectl get deployment -n crossplane-system -l pkg.crossplane.io/function=function-cfgd \
-        -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
-    if [ -n "$FUNC_DEPLOY" ]; then
-        echo "  Restarting function-cfgd deployment ($FUNC_DEPLOY)..."
-        kubectl rollout restart "deployment/$FUNC_DEPLOY" -n crossplane-system 2>/dev/null || true
-        kubectl rollout status "deployment/$FUNC_DEPLOY" -n crossplane-system --timeout=60s 2>/dev/null || true
-    fi
 fi
 
 # (Namespace and RBAC already created in Step 1b above)

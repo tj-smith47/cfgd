@@ -225,6 +225,14 @@ then the Helm release, then `$E2E_INSTALL_NS`, with each step run after a failed
 one and the script exiting 1 at the end. Its delete lists name every plural
 `schemas/crds.yaml` declares; `test-pr-install.sh` drives it against stub kubectl
 and helm and fails when a CRD's plural is missing from them.
+The Crossplane suite writes nothing ArgoCD tracks in `crossplane-system`: it checks
+the XRD with `check_pr_xrd`, installs `$E2E_FUNCTION` from `e2e_image function-cfgd`
+and `$E2E_COMPOSITION` from `render_run_composition`, every TeamConfig sets
+`spec.crossplane.compositionRef.name: ${E2E_COMPOSITION}`, and the suite's end and
+`pr-install-down.sh` delete both and read back that they are gone;
+`test-pr-install.sh` fails on a TeamConfig without the reference and on a line that
+applies the repo XRD or Composition, runs `kubectl` on `function-cfgd` or names a
+`:latest` function package.
 `create_e2e_namespace` waits up to 120s for a namespace an earlier teardown of the
 same run id is still deleting and stops when it outlasts that, so a re-run never
 takes a Terminating namespace as created.

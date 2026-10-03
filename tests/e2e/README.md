@@ -223,8 +223,9 @@ A cfgd.io document of another kind (the crossplane suite's `TeamConfig`) is list
 as outside the operator's watch. A heredoc written to a file (`cat >`, or a cfgd
 config file written inside a pod), or captured into a variable when it holds a kind the
 operator does not serve, is counted and needs no label; one written to a file that `yq`
-cannot read (a script, say) is skipped. A manifest another suite applies by path (the
-crossplane suite's) is listed.
+cannot read (a script, say) is skipped. Every TeamConfig heredoc names the run's
+Composition (see below). No suite applies a manifest by path; the crossplane suite's
+Composition reaches `kubectl apply -f -` on a here-string from `render_run_composition`.
 
 ## Components ArgoCD owns
 
@@ -238,6 +239,34 @@ component and each PR install workload runs, and warns when `OPERATOR_IMAGE_TAG`
 set while ArgoCD owns the gateway, which the override then does not reach. When
 `CFGD_DEPLOY_MANIFESTS` names a tree that `task deploy:operator` applied, that tree
 owns the operator and gateway Deployments, and setup warns the same way.
+
+ArgoCD owns the Crossplane objects in
+`/db/manifests/k3s/namespaces/crossplane-system/` too: `Function/function-cfgd`, pinned
+to the released `ghcr.io/tj-smith47/function-cfgd` package, its
+`DeploymentRuntimeConfig/function-cfgd-runtime`, the TeamConfig XRD and the
+`teamconfig-to-machineconfigs` Composition. No e2e script writes them. Setup pushes
+the run's function package to `registry.jarvispro.io/function-cfgd:<tag>`
+(`e2e_image function-cfgd`) and to no other tag. The Crossplane suite runs
+`check_pr_xrd`, which compares the spec of `manifests/crossplane/xrd-teamconfig.yaml`
+with the cluster's XRD, Crossplane's `defaultCompositeDeletePolicy: Background` and
+`defaultCompositionUpdatePolicy: Automatic` filled in on both sides, and stops on a
+difference, a missing XRD or one that is not `Established`; to run a PR that changes
+the XRD, copy the file over `xrd-teamconfig.yaml` there (keeping its ArgoCD
+annotations), push and rerun the suite. It then deletes any Function or Composition
+labelled `cfgd.io/e2e-run` (the E2E workflow runs one at a time, so any found is a
+leftover, and Crossplane's package lock admits one Function per repository) and waits
+for their function revisions to go. It installs `$E2E_FUNCTION`
+(`function-cfgd-<run>`) from the run's package with ArgoCD's runtime config, and
+`$E2E_COMPOSITION` (`teamconfig-to-machineconfigs-<run>`), which
+`render_run_composition` renders from `manifests/crossplane/composition.yaml` with its
+name, its Function and the run label changed. Every TeamConfig sets
+`spec.crossplane.compositionRef.name: ${E2E_COMPOSITION}`. The suite's end and
+`pr-install-down.sh` delete the run's TeamConfigs, then its Composition and Function,
+and read back that both are gone. `test-pr-install.sh` drives `check_pr_xrd` against
+`common/fixtures/xrd/`, the render against the real Composition, and fails on a
+TeamConfig heredoc without that reference, a tracked manifest holding a TeamConfig, and
+a script line that applies the repo XRD or Composition, runs `kubectl` on
+`function-cfgd` or names a `:latest` function package.
 
 ArgoCD also owns the cluster's CRDs, applied from
 `/db/manifests/k3s/namespaces/crossplane-system/cfgd-crds.yaml`, and no e2e script
@@ -253,7 +282,7 @@ the comparison, and `common/test-pr-install.sh` drives them against the fixtures
 `common/fixtures/crd-schema/` with a stub `kubectl get`. It needs `kubectl`, which
 reads the fixtures' YAML offline (`annotate --local`), and `jq`.
 The Crossplane suite runs the same `check_pr_crds` against `schemas/crds.yaml` once
-XP-01 has found Crossplane running, before it applies its XRD. The Helm suites install
+XP-01 has found Crossplane running, before `check_pr_xrd` compares its XRD. The Helm suites install
 `chart/cfgd` with `--skip-crds`; FS-HELM-05 and FS-HELM-08 run `check_pr_crds` after
 the upgrade and the uninstall to show the CRDs ArgoCD applied are still in place.
 The full-stack Helm suite installs the chart as `cfgd-test` beside the PR install, so

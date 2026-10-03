@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Removes this run's PR install of the operator and CSI driver: the run's
-# cfgd.io objects, then the Helm release, then its namespace. Every step runs
+# cfgd.io objects, the Crossplane suite's TeamConfigs, Composition and
+# Function, then the Helm release, then its namespace. Every step runs
 # even when one before it failed, and the script exits 1 when any failed.
 #
 # Usage: tests/e2e/pr-install-down.sh
@@ -24,6 +25,16 @@ for kinds in machineconfigs,configpolicies,driftalerts,backuppolicies clustercon
         failed+=("delete $kinds")
     fi
 done
+
+# A TeamConfig composite references the run's Composition, so it goes first.
+if ! kubectl delete teamconfigs -A -l "$E2E_RUN_LABEL" --wait=true --timeout=90s; then
+    echo "ERROR: the teamconfigs labelled $E2E_RUN_LABEL were not deleted within 90s. Read the kubectl error above and the composites' status.conditions." >&2
+    failed+=("delete teamconfigs")
+fi
+if ! kubectl delete composition,function -l "$E2E_RUN_LABEL" --wait=true --timeout=90s; then
+    echo "ERROR: the composition and function labelled $E2E_RUN_LABEL were not deleted within 90s. Read the kubectl error above and the Function's status.conditions." >&2
+    failed+=("delete composition,function")
+fi
 
 # A setup that failed before its helm install leaves no release, which is
 # already the state this step wants.
@@ -63,6 +74,17 @@ elif [ -n "$webhooks_left" ]; then
     failed+=("webhooks left")
 else
     echo "  validatingwebhookconfiguration/$E2E_VALIDATING_WEBHOOK and mutatingwebhookconfiguration/$E2E_MUTATING_WEBHOOK are gone"
+fi
+# A Function left behind holds the package lock node the next run's Function
+# needs.
+if ! run_left=$(kubectl get "function/$E2E_FUNCTION" "composition/$E2E_COMPOSITION" --ignore-not-found -o name); then
+    echo "ERROR: could not read function/$E2E_FUNCTION and composition/$E2E_COMPOSITION to confirm they are gone." >&2
+    failed+=("read function")
+elif [ -n "$run_left" ]; then
+    echo "ERROR: the run's Crossplane objects are still on the cluster: $(echo "$run_left" | tr '\n' ' ')" >&2
+    failed+=("function left")
+else
+    echo "  function/$E2E_FUNCTION and composition/$E2E_COMPOSITION are gone"
 fi
 if ! ns_phase=$(kubectl get namespace "$E2E_INSTALL_NS" --ignore-not-found -o jsonpath='{.status.phase}'); then
     echo "ERROR: could not read namespace $E2E_INSTALL_NS to confirm its deletion." >&2

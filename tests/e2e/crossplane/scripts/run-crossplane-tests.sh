@@ -9,8 +9,6 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=tests/e2e/common/helpers.sh
 source "$SCRIPT_DIR/../../common/helpers.sh"
-MANIFESTS_DIR="$SCRIPT_DIR/../manifests"
-CROSSPLANE_DIR="$REPO_ROOT/manifests/crossplane"
 
 echo "=== Crossplane E2E Tests ==="
 
@@ -26,36 +24,51 @@ pass_test "XP-01"
 echo "Checking the cfgd CRDs on the cluster..."
 check_pr_crds schemas/crds.yaml "rerun the Crossplane suite" < "$REPO_ROOT/schemas/crds.yaml" || exit 1
 
-# --- Setup: Apply Crossplane XRD, Composition, and Function ---
-echo "Applying XRD, Composition, and Function..."
-kubectl apply -f "$CROSSPLANE_DIR/xrd-teamconfig.yaml"
-kubectl apply -f "$CROSSPLANE_DIR/composition.yaml"
+# --- Setup: the TeamConfig XRD ArgoCD applied ---
+echo "Checking the TeamConfig XRD on the cluster..."
+check_pr_xrd || exit 1
 
-# Apply Function CR with the E2E registry image, pull secrets, and runtime config.
-# The xpkg is built by setup-cluster.sh; the DRC passes --insecure to skip mTLS.
-FUNC_IMAGE="$(e2e_image function-cfgd)"
+# --- Setup: this run's Function and Composition ---
+# The E2E workflow's concurrency group serializes runs, so a run-labelled
+# Function or Composition present now is a leftover of a run that did not tear
+# down. Crossplane's package lock keys a Function on its repository, so a
+# leftover installed from the e2e repository holds the lock node this run's
+# Function needs until its revisions are gone.
+echo "Removing Functions and Compositions left by earlier runs..."
+if ! kubectl delete function,composition -l cfgd.io/e2e-run --ignore-not-found --wait=true --timeout=90s; then
+    echo "ERROR: the run-labelled Functions and Compositions of earlier runs were not deleted within 90s. Read the kubectl error above, then rerun the Crossplane suite." >&2
+    exit 1
+fi
+# A revision's pkg.crossplane.io/package label is its Function's name. ArgoCD's
+# Function keeps inactive revisions, so the wait is for the run-scoped
+# Functions' revisions alone: every name that starts as $E2E_FUNCTION does.
+FUNC_PREFIX="${E2E_FUNCTION%"$E2E_RUN_ID"}"
+if ! FUNC_REVISIONS="$(kubectl get functionrevisions -o json | jq -r --arg prefix "$FUNC_PREFIX" \
+    '.items[] | select(.metadata.labels["pkg.crossplane.io/package"] // "" | startswith($prefix)) | "functionrevision/" + .metadata.name')"; then
+    echo "ERROR: could not list the functionrevisions of earlier runs' Functions. Read the kubectl error above, then rerun the Crossplane suite." >&2
+    exit 1
+fi
+if [ -n "$FUNC_REVISIONS" ]; then
+    # shellcheck disable=SC2086 # one revision name per word
+    if ! kubectl wait --for=delete $FUNC_REVISIONS --timeout=120s; then
+        echo "ERROR: these functionrevisions of earlier runs' Functions were not removed within 120s: $(paste -sd ' ' <<<"$FUNC_REVISIONS"). Read the kubectl error above and their finalizers, then rerun the Crossplane suite." >&2
+        exit 1
+    fi
+fi
+
+# The run's Function reads ArgoCD's DeploymentRuntimeConfig, a template that a
+# second Function referencing it leaves unchanged. The xpkg is built by
+# setup-cluster.sh.
+echo "Installing $E2E_FUNCTION and $E2E_COMPOSITION..."
 kubectl apply -f - <<FUNCEOF
-apiVersion: pkg.crossplane.io/v1beta1
-kind: DeploymentRuntimeConfig
-metadata:
-  name: function-cfgd-runtime
-spec:
-  deploymentTemplate:
-    spec:
-      selector: {}
-      template:
-        spec:
-          imagePullSecrets:
-            - name: registry-credentials
-          containers:
-            - name: package-runtime
----
 apiVersion: pkg.crossplane.io/v1beta1
 kind: Function
 metadata:
-  name: function-cfgd
+  name: ${E2E_FUNCTION}
+  labels:
+    ${E2E_RUN_LABEL_YAML}
 spec:
-  package: ${FUNC_IMAGE}
+  package: $(e2e_image function-cfgd)
   packagePullPolicy: Always
   packagePullSecrets:
     - name: registry-credentials
@@ -64,44 +77,31 @@ spec:
     kind: DeploymentRuntimeConfig
     name: function-cfgd-runtime
 FUNCEOF
+RUN_COMPOSITION="$(render_run_composition)" || exit 1
+kubectl apply -f - <<<"$RUN_COMPOSITION"
 
-# Wait for function-cfgd to be installed and healthy
-echo "Waiting for function-cfgd to be healthy..."
-for i in $(seq 1 60); do
-    FUNC_HEALTHY=$(kubectl get function function-cfgd \
-        -o jsonpath='{.status.conditions[?(@.type=="Healthy")].status}' 2>/dev/null || echo "")
-    if [ "$FUNC_HEALTHY" = "True" ]; then
-        echo "  function-cfgd healthy after ${i}s"
-        break
-    fi
-    sleep 5
-done
-if [ "$FUNC_HEALTHY" != "True" ]; then
-    echo "  WARN: function-cfgd not healthy after 300s — composition tests may fail"
-    kubectl get function function-cfgd -o yaml 2>/dev/null | grep -A 10 'conditions:' || true
+echo "Waiting for $E2E_FUNCTION to be healthy..."
+if ! wait_for_k8s_field function "$E2E_FUNCTION" "" \
+    '{.status.conditions[?(@.type=="Healthy")].status}' True 300 >/dev/null; then
+    echo "ERROR: function/$E2E_FUNCTION is not Healthy after 300s: $(kubectl get function "$E2E_FUNCTION" -o jsonpath='{range .status.conditions[*]}{.type}={.status} ({.reason}: {.message}); {end}' 2>&1)" >&2
+    exit 1
 fi
 
-# Wait for XRD to be established
-echo "Waiting for TeamConfig XRD to be established..."
-for i in $(seq 1 30); do
-    XRD_READY=$(kubectl get xrd teamconfigs.cfgd.io \
-        -o jsonpath='{.status.conditions[?(@.type=="Established")].status}' 2>/dev/null || echo "")
-    if [ "$XRD_READY" = "True" ]; then
-        break
-    fi
-    sleep 2
-done
-
 # Warm up: verify the composition pipeline works end-to-end before running tests.
-# After a Function revision change, the composition engine needs time to route gRPC
-# calls to the new pod. Create a canary TeamConfig and wait for it to produce results.
+# After $E2E_FUNCTION turns Healthy, the composition engine needs time to route gRPC
+# calls to its pod. Create a canary TeamConfig and wait for it to produce results.
 echo "Verifying composition pipeline (warm-up)..."
-kubectl apply -f - <<'WARMUPEOF'
+kubectl apply -f - <<WARMUPEOF
 apiVersion: cfgd.io/v1alpha1
 kind: TeamConfig
 metadata:
   name: warmup-team
+  labels:
+    ${E2E_RUN_LABEL_YAML}
 spec:
+  crossplane:
+    compositionRef:
+      name: ${E2E_COMPOSITION}
   team: warmup-team
   profile: test
   members:
@@ -131,7 +131,33 @@ fi
 # XP-02: Create TeamConfig with 2 members
 # =================================================================
 begin_test "XP-02: TeamConfig generates MachineConfigs"
-kubectl apply -f "$MANIFESTS_DIR/teamconfig-sample.yaml"
+kubectl apply -f - <<EOF
+apiVersion: cfgd.io/v1alpha1
+kind: TeamConfig
+metadata:
+  name: test-team
+  labels:
+    ${E2E_RUN_LABEL_YAML}
+spec:
+  crossplane:
+    compositionRef:
+      name: ${E2E_COMPOSITION}
+  team: test-team
+  profile: developer
+  members:
+    - username: alice
+      hostname: dev-laptop-1
+    - username: bob
+      hostname: dev-laptop-2
+  policy:
+    required:
+      packages:
+        brew:
+          - kubectl
+          - git
+    requiredModules:
+      - corp-vpn
+EOF
 
 MC_COUNT=""
 for i in $(seq 1 30); do
@@ -177,12 +203,17 @@ fi
 # =================================================================
 begin_test "XP-04: Member addition creates MachineConfig"
 
-kubectl apply -f - <<'EOF'
+kubectl apply -f - <<EOF
 apiVersion: cfgd.io/v1alpha1
 kind: TeamConfig
 metadata:
   name: test-team
+  labels:
+    ${E2E_RUN_LABEL_YAML}
 spec:
+  crossplane:
+    compositionRef:
+      name: ${E2E_COMPOSITION}
   team: test-team
   profile: developer
   members:
@@ -224,12 +255,17 @@ fi
 # =================================================================
 begin_test "XP-05: Member removal garbage-collects MachineConfig"
 
-kubectl apply -f - <<'EOF'
+kubectl apply -f - <<EOF
 apiVersion: cfgd.io/v1alpha1
 kind: TeamConfig
 metadata:
   name: test-team
+  labels:
+    ${E2E_RUN_LABEL_YAML}
 spec:
+  crossplane:
+    compositionRef:
+      name: ${E2E_COMPOSITION}
   team: test-team
   profile: developer
   members:
@@ -278,12 +314,17 @@ sleep 5
 begin_test "XP-06: Invalid TeamConfig rejected"
 
 # TeamConfig missing required 'team' and 'members' fields
-INVALID_OUTPUT=$(kubectl apply -f - 2>&1 <<'EOF' || true
+INVALID_OUTPUT=$(kubectl apply -f - 2>&1 <<EOF || true
 apiVersion: cfgd.io/v1alpha1
 kind: TeamConfig
 metadata:
   name: invalid-tc
+  labels:
+    ${E2E_RUN_LABEL_YAML}
 spec:
+  crossplane:
+    compositionRef:
+      name: ${E2E_COMPOSITION}
   profile: developer
 EOF
 )
@@ -311,7 +352,12 @@ kind: TeamConfig
 metadata:
   name: policy-team
   namespace: $XP07_NS
+  labels:
+    ${E2E_RUN_LABEL_YAML}
 spec:
+  crossplane:
+    compositionRef:
+      name: ${E2E_COMPOSITION}
   team: policy-team
   profile: base
   members:
@@ -354,7 +400,12 @@ kind: TeamConfig
 metadata:
   name: policy-team
   namespace: $XP07_NS
+  labels:
+    ${E2E_RUN_LABEL_YAML}
 spec:
+  crossplane:
+    compositionRef:
+      name: ${E2E_COMPOSITION}
   team: policy-team
   profile: base
   members:
@@ -401,12 +452,17 @@ kubectl delete namespace "$XP07_NS" --ignore-not-found --wait=false 2>/dev/null 
 # =================================================================
 begin_test "XP-09: TeamConfig status reflects member count"
 
-kubectl apply -f - <<'EOF'
+kubectl apply -f - <<EOF
 apiVersion: cfgd.io/v1alpha1
 kind: TeamConfig
 metadata:
   name: status-team
+  labels:
+    ${E2E_RUN_LABEL_YAML}
 spec:
+  crossplane:
+    compositionRef:
+      name: ${E2E_COMPOSITION}
   team: status-team
   profile: developer
   members:
@@ -447,12 +503,17 @@ kubectl delete mc -l "cfgd.io/e2e=true" --ignore-not-found -A 2>/dev/null || tru
 # =================================================================
 begin_test "XP-10: MachineConfig inherits team profile"
 
-kubectl apply -f - <<'EOF'
+kubectl apply -f - <<EOF
 apiVersion: cfgd.io/v1alpha1
 kind: TeamConfig
 metadata:
   name: profile-team
+  labels:
+    ${E2E_RUN_LABEL_YAML}
 spec:
+  crossplane:
+    compositionRef:
+      name: ${E2E_COMPOSITION}
   team: profile-team
   profile: sre-oncall
   members:
@@ -497,12 +558,17 @@ begin_test "XP-11: Duplicate member hostname rejected"
 
 # Two members with the same hostname should cause an error or the
 # composition should deduplicate. We apply and check the outcome.
-DUP_OUTPUT=$(kubectl apply -f - 2>&1 <<'EOF' || true
+DUP_OUTPUT=$(kubectl apply -f - 2>&1 <<EOF || true
 apiVersion: cfgd.io/v1alpha1
 kind: TeamConfig
 metadata:
   name: dup-team
+  labels:
+    ${E2E_RUN_LABEL_YAML}
 spec:
+  crossplane:
+    compositionRef:
+      name: ${E2E_COMPOSITION}
   team: dup-team
   profile: developer
   members:
@@ -541,12 +607,17 @@ kubectl delete mc -l "cfgd.io/e2e=true" --ignore-not-found -A 2>/dev/null || tru
 # =================================================================
 begin_test "XP-12: TeamConfig deletion cascades to MachineConfigs and ConfigPolicy"
 
-kubectl apply -f - <<'EOF'
+kubectl apply -f - <<EOF
 apiVersion: cfgd.io/v1alpha1
 kind: TeamConfig
 metadata:
   name: cascade-team
+  labels:
+    ${E2E_RUN_LABEL_YAML}
 spec:
+  crossplane:
+    compositionRef:
+      name: ${E2E_COMPOSITION}
   team: cascade-team
   profile: developer
   members:
@@ -610,7 +681,12 @@ kind: TeamConfig
 metadata:
   name: team-alpha
   namespace: $XP13_NS_A
+  labels:
+    ${E2E_RUN_LABEL_YAML}
 spec:
+  crossplane:
+    compositionRef:
+      name: ${E2E_COMPOSITION}
   team: team-alpha
   profile: frontend
   members:
@@ -626,7 +702,12 @@ kind: TeamConfig
 metadata:
   name: team-beta
   namespace: $XP13_NS_B
+  labels:
+    ${E2E_RUN_LABEL_YAML}
 spec:
+  crossplane:
+    compositionRef:
+      name: ${E2E_COMPOSITION}
   team: team-beta
   profile: backend
   members:
@@ -668,11 +749,11 @@ kubectl delete namespace "$XP13_NS_B" --ignore-not-found --wait=false 2>/dev/nul
 # =================================================================
 # XP-14: Crossplane function health
 # =================================================================
-begin_test "XP-14: function-cfgd pod running and healthy"
+begin_test "XP-14: the run's function-cfgd pod running and healthy"
 
 FUNC_STATUS=""
 for i in $(seq 1 15); do
-    FUNC_STATUS=$(kubectl get pods -A -l pkg.crossplane.io/function=function-cfgd \
+    FUNC_STATUS=$(kubectl get pods -A -l "pkg.crossplane.io/function=$E2E_FUNCTION" \
         -o jsonpath='{.items[0].status.phase}' 2>/dev/null || echo "")
     if [ "$FUNC_STATUS" = "Running" ]; then
         break
@@ -680,22 +761,22 @@ for i in $(seq 1 15); do
     sleep 2
 done
 
-echo "  function-cfgd pod status: ${FUNC_STATUS:-not found}"
+echo "  $E2E_FUNCTION pod status: ${FUNC_STATUS:-not found}"
 
 if [ "$FUNC_STATUS" = "Running" ]; then
     # A Running pod can still fail its package health check, so the Function's
     # own Healthy condition is what the test title claims.
-    FUNC_HEALTHY=$(wait_for_k8s_field function function-cfgd "" \
+    FUNC_HEALTHY=$(wait_for_k8s_field function "$E2E_FUNCTION" "" \
         '{.status.conditions[?(@.type=="Healthy")].status}' True 60 || true)
     echo "  Function healthy: ${FUNC_HEALTHY:-unknown}"
 
     if [ "$FUNC_HEALTHY" = "True" ]; then
         pass_test "XP-14"
     else
-        fail_test "XP-14" "function-cfgd pod is Running but the Function's Healthy condition is '${FUNC_HEALTHY:-unset}' after 60s: $(kubectl get function function-cfgd -o jsonpath='{range .status.conditions[*]}{.type}={.status} ({.reason}: {.message}); {end}' 2>&1)"
+        fail_test "XP-14" "$E2E_FUNCTION pod is Running but the Function's Healthy condition is '${FUNC_HEALTHY:-unset}' after 60s: $(kubectl get function "$E2E_FUNCTION" -o jsonpath='{range .status.conditions[*]}{.type}={.status} ({.reason}: {.message}); {end}' 2>&1)"
     fi
 else
-    fail_test "XP-14" "Expected function-cfgd pod Running, got '${FUNC_STATUS:-not found}'"
+    fail_test "XP-14" "Expected $E2E_FUNCTION pod Running, got '${FUNC_STATUS:-not found}'"
 fi
 
 # --- Final cleanup ---
@@ -705,7 +786,30 @@ echo "Cleaning up test resources..."
 for ns in "$XP07_NS" "$XP13_NS_A" "$XP13_NS_B" "crossplane-e2e-${E2E_RUN_ID:-local}"; do
     kubectl delete namespace "$ns" --ignore-not-found --wait=false 2>/dev/null || true
 done
-kubectl delete teamconfig -l "cfgd.io/e2e=true" --ignore-not-found -A 2>/dev/null || true
+# A Function left behind holds the package lock node the next run's Function
+# needs, and the TeamConfigs reference the Composition, so they go first and
+# the Function and Composition are read back as gone.
+CLEANUP_FAILED=false
+if ! kubectl delete teamconfigs -A -l "$E2E_RUN_LABEL" --ignore-not-found --wait=true --timeout=90s; then
+    echo "ERROR: the TeamConfigs labelled $E2E_RUN_LABEL were not deleted within 90s. Read the kubectl error above; tests/e2e/pr-install-down.sh deletes them again." >&2
+    CLEANUP_FAILED=true
+fi
+if ! kubectl delete composition,function -l "$E2E_RUN_LABEL" --ignore-not-found --wait=true --timeout=90s; then
+    echo "ERROR: the Composition and Function labelled $E2E_RUN_LABEL were not deleted within 90s. Read the kubectl error above; tests/e2e/pr-install-down.sh deletes them again." >&2
+    CLEANUP_FAILED=true
+fi
+if ! RUN_LEFT="$(kubectl get "function/$E2E_FUNCTION" "composition/$E2E_COMPOSITION" --ignore-not-found -o name)"; then
+    echo "ERROR: could not read function/$E2E_FUNCTION and composition/$E2E_COMPOSITION to confirm they are gone." >&2
+    CLEANUP_FAILED=true
+elif [ -n "$RUN_LEFT" ]; then
+    echo "ERROR: still on the cluster after the suite's cleanup: $(echo "$RUN_LEFT" | tr '\n' ' ')" >&2
+    CLEANUP_FAILED=true
+else
+    echo "  function/$E2E_FUNCTION and composition/$E2E_COMPOSITION are gone"
+fi
 
 # --- Summary ---
-print_summary "Crossplane E2E Tests"
+SUMMARY_RC=0
+print_summary "Crossplane E2E Tests" || SUMMARY_RC=$?
+[ "$CLEANUP_FAILED" = false ] || exit 1
+exit "$SUMMARY_RC"

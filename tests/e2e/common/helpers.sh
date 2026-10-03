@@ -105,6 +105,10 @@ export E2E_VALIDATING_WEBHOOK="$E2E_INSTALL_RELEASE"
 export E2E_MUTATING_WEBHOOK="$E2E_INSTALL_RELEASE-pod-injector"
 export E2E_OPERATOR_PODS="app.kubernetes.io/instance=$E2E_INSTALL_RELEASE,app.kubernetes.io/component=operator"
 export E2E_CSI_PODS="app.kubernetes.io/instance=$E2E_INSTALL_RELEASE,app.kubernetes.io/component=csi-driver"
+# The Crossplane suite's own Function and Composition, beside ArgoCD's
+# function-cfgd and teamconfig-to-machineconfigs.
+export E2E_FUNCTION="function-cfgd-$E2E_RUN_ID"
+export E2E_COMPOSITION="teamconfig-to-machineconfigs-$E2E_RUN_ID"
 # The live release's webhook configurations, which setup scopes away from
 # run-labelled objects and namespaces.
 export E2E_RELEASE_VALIDATING_WEBHOOK="cfgd-validating-webhooks"
@@ -631,6 +635,70 @@ check_pr_crds() {
         return 1
     fi
     return "$status"
+}
+
+export E2E_XRD_MANIFEST="/db/manifests/k3s/namespaces/crossplane-system/xrd-teamconfig.yaml"
+
+# check_pr_xrd [xrd file]: compares the spec of the TeamConfig XRD in the file
+# (default: manifests/crossplane/xrd-teamconfig.yaml) with the cluster's copy
+# and checks that copy is Established. Crossplane fills
+# defaultCompositeDeletePolicy and defaultCompositionUpdatePolicy when an XRD
+# omits them, so both sides get those defaults before they are compared.
+# Prints an ERROR to stderr when the XRD cannot be read, is missing, differs
+# (followed by up to 40 lines of diff, cluster first) or is not Established,
+# and returns 1.
+check_pr_xrd() {
+    local file="${1:-$REPO_ROOT/manifests/crossplane/xrd-teamconfig.yaml}"
+    local doc name want live_doc live why status=0
+    local shape='.spec | .defaultCompositeDeletePolicy //= "Background" | .defaultCompositionUpdatePolicy //= "Automatic"'
+    local fix="ArgoCD owns the cluster's XRD; copy manifests/crossplane/xrd-teamconfig.yaml over $E2E_XRD_MANIFEST (keep its ArgoCD annotations) and push, then rerun the Crossplane suite."
+    if ! doc="$(kubectl annotate --local -o json -f "$file" cfgd.io/e2e-unset-)" ||
+        ! name="$(jq -er 'select(.kind == "CompositeResourceDefinition") | .metadata.name' <<<"$doc")" ||
+        ! want="$(jq -S "$shape" <<<"$doc")"; then
+        echo "ERROR: could not read $file as one CompositeResourceDefinition. Check that it is valid YAML and that kubectl and jq are on PATH, then rerun the Crossplane suite." >&2
+        return 1
+    fi
+    if ! live_doc="$(kubectl get xrd "$name" --ignore-not-found -o json)"; then
+        echo "ERROR: could not read xrd/$name. Check that the runner can get compositeresourcedefinitions, then rerun the Crossplane suite." >&2
+        return 1
+    fi
+    if [ -z "$live_doc" ]; then
+        echo "ERROR: the cluster has no xrd/$name. $fix" >&2
+        return 1
+    fi
+    if ! live="$(jq -S "$shape" <<<"$live_doc")" || ! why="$(crd_not_established <<<"$live_doc")"; then
+        echo "ERROR: could not read the cluster's xrd/$name as JSON. Check that kubectl get xrd $name -o json prints a CompositeResourceDefinition, then rerun the Crossplane suite." >&2
+        return 1
+    fi
+    if [ "$want" != "$live" ]; then
+        echo "ERROR: this PR changes the TeamConfig XRD. $fix" >&2
+        diff <(printf '%s\n' "$live") <(printf '%s\n' "$want") | head -40 >&2 || true # rc-ok: diff exits 1 on the difference being shown
+        status=1
+    fi
+    if [ -n "$why" ]; then
+        echo "ERROR: xrd/$name is not Established on the cluster ($why). Check ArgoCD's crossplane-system sync and the XRD's status.conditions, then rerun the Crossplane suite." >&2
+        status=1
+    fi
+    return "$status"
+}
+
+# render_run_composition [composition file]: prints the Composition (default:
+# manifests/crossplane/composition.yaml) as this run's copy: named
+# $E2E_COMPOSITION, calling $E2E_FUNCTION and carrying the run label. The
+# runner has no yq, so sed rewrites the exact lines; when a line it rewrites
+# is not in the file exactly once, it prints an ERROR naming that line and
+# returns 1.
+render_run_composition() {
+    local file="${1:-$REPO_ROOT/manifests/crossplane/composition.yaml}" anchor count
+    for anchor in '  name: teamconfig-to-machineconfigs' '  labels:' '      name: function-cfgd'; do
+        if ! count="$(grep -cxF -- "$anchor" "$file")" || [ "$count" -ne 1 ]; then
+            echo "ERROR: $file holds the line '$anchor' ${count:-0} times (want once), so the run's Composition cannot be rendered from it. Update render_run_composition in tests/e2e/common/helpers.sh to the file's layout." >&2
+            return 1
+        fi
+    done
+    sed -e "s/^  name: teamconfig-to-machineconfigs\$/  name: $E2E_COMPOSITION/" \
+        -e "/^  labels:\$/a\\    $E2E_RUN_LABEL_YAML" \
+        -e "s/^      name: function-cfgd\$/      name: $E2E_FUNCTION/" "$file"
 }
 
 # Port-forward to `svc/<name>` or `pod/<name>` in the background and echo the

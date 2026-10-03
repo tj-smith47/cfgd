@@ -2,7 +2,7 @@
 # Checks without a cluster that:
 #   - helpers.sh names the PR-owned install (its release, namespace, workloads,
 #     pod selectors, webhook configurations, webhook certificate and CSI driver)
-#     from one run id
+#     and the Crossplane suite's Function and Composition from one run id
 #   - a local run id is the same in every process of one checkout
 #   - ensure_namespace and running_image address the namespaces they are given
 #   - create_e2e_namespace waits out a namespace that is Terminating, stops
@@ -18,6 +18,15 @@
 #     the namespace it is given, and the Crossplane suite installs Crossplane
 #     only where ArgoCD does not track it and stops when it cannot tell
 #   - the CRD check names the source and rerun advice its caller passes
+#   - the Crossplane suite's XRD check passes on an XRD whose spec matches the
+#     cluster's, Crossplane's defaults aside, and stops on a changed spec and on
+#     an XRD that is missing, unreadable or not Established
+#   - the run's Composition renders from manifests/crossplane/composition.yaml
+#     with its name, its Function and the run label changed and nothing else,
+#     and the render stops naming a line it cannot find
+#   - every TeamConfig an e2e script applies names the run's Composition, and
+#     no e2e script applies the repo XRD or Composition, writes ArgoCD's
+#     function-cfgd or pushes a :latest function package
 #   - no e2e script writes a CRD outside the exempt list, and no tracked
 #     manifest under tests/e2e holds one
 #   - require_release_webhooks_scoped passes on release webhooks scoped away
@@ -34,7 +43,8 @@
 #     namespace, webhooks or CSI driver by hand, outside the full-stack
 #     suite's kept gateway lines
 #   - pr-install-down.sh deletes the run's objects of every kind
-#     schemas/crds.yaml declares, uninstalls the release and deletes its
+#     schemas/crds.yaml and the TeamConfig XRD declare, then the run's
+#     Composition and Function, uninstalls the release and deletes its
 #     namespace in that order, runs every step after an object delete, a
 #     release lookup or the uninstall fails and then exits 1, and treats a
 #     release that is not installed as removed
@@ -99,6 +109,8 @@ expect_var E2E_MUTATING_WEBHOOK cfgd-e2e-42-pod-injector
 expect_var E2E_OPERATOR_PODS "app.kubernetes.io/instance=cfgd-e2e-42,app.kubernetes.io/component=operator"
 expect_var E2E_CSI_PODS "app.kubernetes.io/instance=cfgd-e2e-42,app.kubernetes.io/component=csi-driver"
 expect_var CSI_DRIVER_NAME e2e.csi.cfgd.io
+expect_var E2E_FUNCTION function-cfgd-42
+expect_var E2E_COMPOSITION teamconfig-to-machineconfigs-42
 expect_var E2E_RELEASE_VALIDATING_WEBHOOK cfgd-validating-webhooks
 expect_var E2E_RELEASE_MUTATING_WEBHOOK cfgd-mutating-webhooks
 
@@ -521,15 +533,101 @@ ERROR: could not read crd/gadgets.example.io. Check that the runner can get cust
         "ERROR: widgets.example.io in the cfgd-gen-crds output has no versions to compare. Check the cfgd-gen-crds output, then rerun setup."
 }
 
+# The XRD check against fixture XRDs, through the CRD check's stub: the
+# cluster's copy of teamconfigs.cfgd.io is the fixture xrd_case copies into
+# CRD_LIVE_DIR. teamconfigs.yaml is the cluster's XRD as kubectl returned it,
+# so it carries Crossplane's defaults, ArgoCD's annotations and a status.
+xrd_fixtures="$here/fixtures/xrd"
+xrd_fix="ArgoCD owns the cluster's XRD; copy manifests/crossplane/xrd-teamconfig.yaml over /db/manifests/k3s/namespaces/crossplane-system/xrd-teamconfig.yaml (keep its ArgoCD annotations) and push, then rerun the Crossplane suite."
+
+# xrd_case <live fixture or ""> [VAR=value...]: prints check_pr_xrd's output on
+# fixtures/xrd/pr.yaml, then `rc=<status>`.
+# shellcheck disable=SC2016 # the inner script expands its own positional args
+xrd_case() {
+    local live="$1" dir="$scratch/xrd-live/${1:-missing}${2:-}"
+    shift
+    mkdir -p "$dir"
+    [ -z "$live" ] || cp "$xrd_fixtures/$live" "$dir/teamconfigs.cfgd.io.yaml"
+    env -u GITHUB_RUN_ID -u CFGD_NAMESPACE PATH="$scratch/crd-bin:$PATH" \
+        REAL_KUBECTL="$real_kubectl" CRD_LIVE_DIR="$dir" \
+        REGISTRY=r.example CLI_SCRATCH="$scratch" "$@" \
+        bash -c 'source "$1/common/helpers.sh"
+            rc=0
+            check_pr_xrd "$2" 2>&1 || rc=$?
+            echo "rc=$rc"' _ "$e2e_root" "$xrd_fixtures/pr.yaml"
+}
+
+xrd_cases() {
+    local out
+    out="$(xrd_case teamconfigs.yaml)"
+    expect_crd "the XRD check passes on the cluster's copy of the repo XRD, Crossplane's defaults, ArgoCD's annotations and its status aside" "$out" 0 ""
+    out="$(xrd_case teamconfigs-changed.yaml)"
+    expect_crd "the XRD check stops on a changed schema field" "$out" 1 \
+        "ERROR: this PR changes the TeamConfig XRD. $xrd_fix"
+    if grep -q '"type": "string"' <<<"$out" && grep -q '"type": "integer"' <<<"$out"; then
+        pass "the XRD check prints both sides of the spec difference"
+    else
+        fail "the XRD check printed no diff showing the team type change: $out"
+    fi
+    out="$(xrd_case teamconfigs-not-established.yaml)"
+    expect_crd "the XRD check stops on an XRD whose Established condition is False" "$out" 1 \
+        "ERROR: xrd/teamconfigs.cfgd.io is not Established on the cluster (EstablishComposite). Check ArgoCD's crossplane-system sync and the XRD's status.conditions, then rerun the Crossplane suite."
+    out="$(xrd_case "")"
+    expect_crd "the XRD check stops on an XRD the cluster does not have" "$out" 1 \
+        "ERROR: the cluster has no xrd/teamconfigs.cfgd.io. $xrd_fix"
+    out="$(xrd_case teamconfigs.yaml CRD_GET_FAIL=1)"
+    expect_crd "the XRD check stops when it cannot read the cluster's XRD" "$out" 1 \
+        "ERROR: could not read xrd/teamconfigs.cfgd.io. Check that the runner can get compositeresourcedefinitions, then rerun the Crossplane suite."
+}
+
+# The run's Composition, rendered from the repo file for run 42: the diff
+# against that file is the three lines below, and the result reads as a
+# Composition with those values. `kubectl create --dry-run=client` needs a
+# cluster to map the kind, so `annotate --local` is what reads it offline.
+# shellcheck disable=SC2016 # the inner scripts expand their own variables
+composition_cases() {
+    local composition="$repo_root/manifests/crossplane/composition.yaml" out rc=0 changed json
+    out="$(env -u GITHUB_RUN_ID -u CFGD_NAMESPACE GITHUB_RUN_ID=42 REGISTRY=r.example CLI_SCRATCH="$scratch" \
+        bash -c 'source "$1/common/helpers.sh"; render_run_composition' _ "$e2e_root" 2>&1)" || rc=$?
+    changed="$(diff --old-line-format='-%L' --new-line-format='+%L' --unchanged-line-format='' \
+        "$composition" <(printf '%s\n' "$out") || true)" # rc-ok: diff exits 1 on the lines it prints, compared below
+    if [ "$rc" -eq 0 ] && [ "$changed" = '-  name: teamconfig-to-machineconfigs
++  name: teamconfig-to-machineconfigs-42
++    cfgd.io/e2e-run: "42"
+-      name: function-cfgd
++      name: function-cfgd-42' ]; then
+        pass "render_run_composition changes the Composition's name and Function and adds the run label, and nothing else"
+    else
+        fail "render_run_composition on $composition: rc=$rc, changed lines [$changed], output [$out]"
+    fi
+    if json="$("$real_kubectl" annotate --local -o json -f - cfgd.io/e2e-unset- <<<"$out" 2>&1)" &&
+        jq -e '.kind == "Composition" and .metadata.name == "teamconfig-to-machineconfigs-42"
+               and .metadata.labels["cfgd.io/e2e-run"] == "42"
+               and .metadata.labels["cfgd.io/purpose"] == "team-config-fanout"
+               and ([.spec.pipeline[].functionRef.name] == ["function-cfgd-42"])' <<<"$json" >/dev/null; then
+        pass "kubectl reads the rendered Composition as one Composition with the run's name, label and Function"
+    else
+        fail "kubectl did not read the rendered Composition as the run's: $json"
+    fi
+    rc=0
+    out="$(env -u GITHUB_RUN_ID -u CFGD_NAMESPACE GITHUB_RUN_ID=42 REGISTRY=r.example CLI_SCRATCH="$scratch" \
+        bash -c 'source "$1/common/helpers.sh"; render_run_composition "$2"' _ "$e2e_root" "$here/fixtures/composition/renamed.yaml" 2>&1)" || rc=$?
+    if [ "$rc" -eq 1 ] && [ "$out" = "ERROR: $here/fixtures/composition/renamed.yaml holds the line '  name: teamconfig-to-machineconfigs' 0 times (want once), so the run's Composition cannot be rendered from it. Update render_run_composition in tests/e2e/common/helpers.sh to the file's layout." ]; then
+        pass "render_run_composition stops naming the line a Composition without its name line lacks"
+    else
+        fail "render_run_composition on fixtures/composition/renamed.yaml: rc=$rc, printed [$out]"
+    fi
+}
+
 if ! real_kubectl="$(command -v kubectl)" || ! command -v jq >/dev/null; then
-    fail "the CRD check needs kubectl (it reads YAML offline with annotate --local) and jq on PATH; its cases did not run"
+    fail "the CRD and XRD checks and the Composition render cases need kubectl (it reads YAML offline with annotate --local) and jq on PATH; their cases did not run"
 else
     mkdir -p "$scratch/crd-bin"
     cat > "$scratch/crd-bin/kubectl" <<'STUB'
 #!/usr/bin/env bash
-if [ "$1 $2" = "get crd" ]; then
+if [ "$1" = get ] && { [ "$2" = crd ] || [ "$2" = xrd ]; }; then
     if [ -n "${CRD_GET_FAIL:-}" ]; then
-        echo "Error from server (Forbidden): customresourcedefinitions is forbidden" >&2
+        echo "Error from server (Forbidden): $2 is forbidden" >&2
         exit 1
     fi
     [ -f "$CRD_LIVE_DIR/$3.yaml" ] || exit 0
@@ -539,6 +637,8 @@ exec "$REAL_KUBECTL" "$@"
 STUB
     chmod +x "$scratch/crd-bin/kubectl"
     crd_cases
+    xrd_cases
+    composition_cases
 fi
 
 # ArgoCD owns the cluster's CRDs, so no e2e script writes one. crd-writes.awk
@@ -2972,6 +3072,106 @@ else
     fi
 fi
 
+# Every TeamConfig names the run's Composition: ArgoCD's Composition for the
+# same XRD stays on the cluster, so a TeamConfig without the reference could be
+# composed by ArgoCD's function-cfgd instead of the run's.
+# scan_teamconfig_refs <file...> prints `NOREF file:line` for each heredoc
+# holding a TeamConfig whose spec.crossplane.compositionRef.name is not
+# $E2E_COMPOSITION as bash sends it (a quoted delimiter sends the word as
+# written), and `UNREADABLE file:line: <yq error>` for one yq cannot read once
+# rendered.
+composition_sentinel="run-composition-$$-$RANDOM$RANDOM"
+scan_teamconfig_refs() {
+    local dir="$scratch/teamconfig-refs" body file line quoted dash refs err
+    rm -rf "$dir"
+    mkdir -p "$dir"
+    awk -f "$here/heredocs.awk" "$@" | awk -F'\t' -v dir="$dir" '
+        $1 == "OPEN" { key = $2 SUBSEP $4; open_line[key] = $3; quoted[key] = $6; dash[key] = $7; text[key] = "" }
+        $1 == "BODY" { key = $2 SUBSEP $4; raw = $0; sub(/^[^\t]*\t[^\t]*\t[^\t]*\t[^\t]*\t/, "", raw); text[key] = text[key] raw "\n" }
+        $1 == "CLOSE" {
+            key = $2 SUBSEP $4
+            if (text[key] ~ /(^|\n)[ \t-]*kind:[ \t]*["\047]?TeamConfig["\047]?[ \t]*(#[^\n]*)?\n/) {
+                n++
+                printf "%s", text[key] > (dir "/" n ".body")
+                close(dir "/" n ".body")
+                printf "%s\t%s\t%s\t%s\t%s\n", n, $2, open_line[key], quoted[key], dash[key] > (dir "/index")
+            }
+        }'
+    [ -f "$dir/index" ] || return 0
+    while IFS=$'\t' read -r body file line quoted dash; do
+        if [ "$quoted" = 0 ]; then
+            sed -E "s/\\$\\{E2E_COMPOSITION\\}|\\\$E2E_COMPOSITION([^A-Za-z0-9_]|\$)/$composition_sentinel\\1/g" "$dir/$body.body"
+        else
+            cat "$dir/$body.body"
+        fi | render "$dash" "$quoted" > "$dir/$body.yaml"
+        if ! refs="$(yq -N '.. | select(tag == "!!map" and .kind == "TeamConfig") | (.spec.crossplane.compositionRef.name // "")' "$dir/$body.yaml" 2>"$dir/yq.err")"; then
+            err="$(head -n1 "$dir/yq.err")"
+            echo "UNREADABLE $file:$line: $err"
+            continue
+        fi
+        if grep -qvxF -- "$composition_sentinel" <<<"$refs"; then
+            echo "NOREF $file:$line"
+        fi
+    done < "$dir/index"
+}
+refs_fixtures="$here/fixtures/teamconfig-refs"
+refs_got="$(cd "$refs_fixtures" && scan_teamconfig_refs with.bash without.bash other.bash)"
+refs_want="NOREF without.bash:1
+NOREF other.bash:1
+NOREF other.bash:12
+NOREF other.bash:23"
+if [ "$refs_got" = "$refs_want" ]; then
+    pass "the TeamConfig scan passes a reference to \$E2E_COMPOSITION and stops on none, another name, a quoted delimiter and spec.compositionRef"
+else
+    fail "the TeamConfig scan judged fixtures/teamconfig-refs wrongly: got [$refs_got], want [$refs_want]"
+fi
+mapfile -t tracked_scripts < <(git -C "$repo_root" ls-files 'tests/e2e/*.sh')
+refs_tree="$(cd "$repo_root" && scan_teamconfig_refs "${tracked_scripts[@]}")"
+refs_count=0
+[ ! -f "$scratch/teamconfig-refs/index" ] || refs_count="$(wc -l < "$scratch/teamconfig-refs/index")"
+if [ -n "$refs_tree" ]; then
+    fail "TeamConfigs that do not name the run's Composition (add spec.crossplane.compositionRef.name: \${E2E_COMPOSITION} on an unquoted heredoc): $refs_tree"
+elif [ "$refs_count" -lt 13 ]; then
+    fail "the TeamConfig scan found $refs_count TeamConfig heredocs under tests/e2e (want at least 13); it has lost its population"
+else
+    pass "every TeamConfig an e2e script applies names the run's Composition ($refs_count heredocs)"
+fi
+mapfile -t teamconfig_manifests < <(cd "$repo_root" && git ls-files 'tests/e2e/*.yaml' 'tests/e2e/*.yml' 'tests/e2e/*.json' |
+    grep -v '^tests/e2e/common/fixtures/' | xargs -r grep -lE "kind\"?[[:space:]]*:[[:space:]]*[\"']?TeamConfig")
+if [ "${#teamconfig_manifests[@]}" -eq 0 ]; then
+    pass "no tracked manifest under tests/e2e holds a TeamConfig, which the scan above could not read"
+else
+    fail "apply these TeamConfigs from a heredoc that names \${E2E_COMPOSITION}: ${teamconfig_manifests[*]}"
+fi
+
+# ArgoCD owns the XRD, the Composition and the function-cfgd Function, and
+# its Function pins the released ghcr package. scan_crossplane_writes
+# <file...> prints `file:line` for each non-comment line that applies the repo
+# XRD or Composition, runs kubectl on an object named function-cfgd, or names a
+# :latest function-cfgd package. The patterns are assembled so no line of this
+# script matches them.
+fn_name="function-cfgd"
+crossplane_writes="kubectl[^#]*[^-A-Za-z0-9_]${fn_name}([^-A-Za-z0-9_]|\$)|kubectl[^#]*[[:space:]](apply|create|replace)[[:space:]][^#]*(xrd-teamconfig|composition)\\.yaml|${fn_name}\\)?:latest"
+scan_crossplane_writes() {
+    grep -HnE -- "$crossplane_writes" "$@" | grep -vE '^[^:]*:[0-9]+:[[:space:]]*#' | cut -d: -f1,2
+}
+writes_got="$(cd "$here/fixtures/crossplane-writes" && scan_crossplane_writes sites.bash || true)" # rc-ok: compared below
+if [ "$writes_got" = "sites.bash:1
+sites.bash:2
+sites.bash:3
+sites.bash:4
+sites.bash:5" ]; then
+    pass "the Crossplane write scan finds an XRD or Composition apply, a kubectl call on ArgoCD's Function and a :latest package, and passes comments, reads of the repo XRD and the run's Function"
+else
+    fail "the Crossplane write scan judged fixtures/crossplane-writes/sites.bash wrongly: got [$writes_got]"
+fi
+writes_tree="$(cd "$repo_root" && scan_crossplane_writes "${tracked_scripts[@]}" || true)" # rc-ok: no hit is the passing outcome
+if [ -z "$writes_tree" ]; then
+    pass "no e2e script applies the repo XRD or Composition, writes function-cfgd or pushes a :latest function package (${#tracked_scripts[@]} scripts)"
+else
+    fail "these lines write an object ArgoCD owns in crossplane-system; use check_pr_xrd, render_run_composition, \$E2E_FUNCTION and e2e_image function-cfgd: $(paste -sd ' ' <<<"$writes_tree")"
+fi
+
 # pr-install-down.sh against the stubs in fixtures/pr-install-down/bin: down_case
 # [VAR=value...] runs it for run 42 and prints its output, then `rc=<status>`;
 # the calls the stubs saw are in $scratch/down.calls.
@@ -2986,10 +3186,13 @@ down_case() {
 }
 down_objects="kubectl delete machineconfigs,configpolicies,driftalerts,backuppolicies -A -l cfgd.io/e2e-run=42 --wait=true --timeout=90s
 kubectl delete clusterconfigpolicies,modules -A -l cfgd.io/e2e-run=42 --wait=true --timeout=90s
+kubectl delete teamconfigs -A -l cfgd.io/e2e-run=42 --wait=true --timeout=90s
+kubectl delete composition,function -l cfgd.io/e2e-run=42 --wait=true --timeout=90s
 helm list -n cfgd-e2e-42-sys -a -q --filter ^cfgd-e2e-42\$"
 down_rest="kubectl delete namespace cfgd-e2e-42-sys --ignore-not-found --wait=false
 kubectl get csidriver e2e.csi.cfgd.io --ignore-not-found -o jsonpath={.metadata.annotations.meta\\.helm\\.sh/release-namespace}
 kubectl get validatingwebhookconfiguration/cfgd-e2e-42 mutatingwebhookconfiguration/cfgd-e2e-42-pod-injector --ignore-not-found -o name
+kubectl get function/function-cfgd-42 composition/teamconfig-to-machineconfigs-42 --ignore-not-found -o name
 kubectl get namespace cfgd-e2e-42-sys --ignore-not-found -o jsonpath={.status.phase}"
 down_uninstall="helm uninstall cfgd-e2e-42 -n cfgd-e2e-42-sys --wait --timeout=120s"
 # expect_down <label> <want rc> <want calls> <want output pattern> [VAR=value...]
@@ -3013,6 +3216,21 @@ expect_down "pr-install-down.sh runs the uninstall and the namespace delete afte
 $down_uninstall
 $down_rest" "^ERROR: the PR install teardown failed at: delete machineconfigs,configpolicies,driftalerts,backuppolicies$" \
     "DOWN_FAIL=delete machineconfigs,*"
+expect_down "pr-install-down.sh runs every later step after the TeamConfig delete fails, then exits 1 naming it" \
+    1 "$down_objects
+$down_uninstall
+$down_rest" "^ERROR: the PR install teardown failed at: delete teamconfigs$" \
+    "DOWN_FAIL=delete teamconfigs *"
+expect_down "pr-install-down.sh runs every later step after the Composition and Function delete fails, then exits 1 naming it" \
+    1 "$down_objects
+$down_uninstall
+$down_rest" "^ERROR: the PR install teardown failed at: delete composition,function$" \
+    "DOWN_FAIL=delete composition,function *"
+expect_down "pr-install-down.sh exits 1 when it cannot read back the run's Function and Composition" \
+    1 "$down_objects
+$down_uninstall
+$down_rest" "^ERROR: the PR install teardown failed at: read function$" \
+    "DOWN_FAIL=get function/*"
 expect_down "pr-install-down.sh treats a release that is not installed as removed and still deletes the namespace" \
     0 "$down_objects
 $down_rest" "^  release cfgd-e2e-42 is not installed in cfgd-e2e-42-sys; nothing to uninstall$" \
@@ -3026,17 +3244,18 @@ expect_down "pr-install-down.sh skips the uninstall when it cannot list the rele
     1 "$down_objects
 $down_rest" "^ERROR: the PR install teardown failed at: find release$" \
     "DOWN_FAIL=list *"
-# Every kind the cluster serves can hold a run-labelled object, so the
-# teardown's delete lists name each plural schemas/crds.yaml declares.
+# Every cfgd.io kind the cluster serves can hold a run-labelled object, so the
+# teardown's delete lists name each plural schemas/crds.yaml and the TeamConfig
+# XRD declare.
 down_case >/dev/null
-if ! crd_plurals="$(yq -N '.spec.names.plural' "$repo_root/schemas/crds.yaml" | sort)" || [ -z "$crd_plurals" ]; then
-    fail "yq could not read the CRD plurals from schemas/crds.yaml"
+if ! crd_plurals="$(yq -N '.spec.names.plural' "$repo_root/schemas/crds.yaml" "$repo_root/manifests/crossplane/xrd-teamconfig.yaml" | sort)" || [ -z "$crd_plurals" ]; then
+    fail "yq could not read the plurals from schemas/crds.yaml and manifests/crossplane/xrd-teamconfig.yaml"
 else
     down_plurals="$(sed -n 's/^kubectl delete \([^ ]*\) -A -l cfgd.io\/e2e-run=42 .*/\1/p' "$scratch/down.calls" | tr ',' '\n' | sort)"
     if [ "$down_plurals" = "$crd_plurals" ]; then
-        pass "pr-install-down.sh deletes the run's objects of every kind schemas/crds.yaml declares ($(wc -l <<<"$crd_plurals") kinds)"
+        pass "pr-install-down.sh deletes the run's objects of every kind schemas/crds.yaml and the TeamConfig XRD declare ($(wc -l <<<"$crd_plurals") kinds)"
     else
-        fail "pr-install-down.sh deletes [$(paste -sd ' ' <<<"$down_plurals")], want every CRD plural in schemas/crds.yaml [$(paste -sd ' ' <<<"$crd_plurals")]"
+        fail "pr-install-down.sh deletes [$(paste -sd ' ' <<<"$down_plurals")], want every plural in schemas/crds.yaml and the TeamConfig XRD [$(paste -sd ' ' <<<"$crd_plurals")]"
     fi
 fi
 
