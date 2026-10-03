@@ -2743,8 +2743,8 @@ if ! release_target_kept="$(grep -v -e '^#' -e '^$' "$here/release-targets-kept.
     fail "could not read an entry from $here/release-targets-kept.tsv"
 fi
 
-# Each suite that drives the PR install has a floor of scripts, so a pathspec
-# that stops matching fails here instead of scanning nothing.
+# Each suite that drives the PR install has a floor of scripts; a pathspec
+# that matches fewer fails the check.
 release_target_suites=(operator full-stack)
 release_target_floors=(12 10)
 for i in "${!release_target_suites[@]}"; do
