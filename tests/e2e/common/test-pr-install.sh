@@ -3073,8 +3073,8 @@ else
 fi
 
 # Every TeamConfig names the run's Composition: ArgoCD's Composition for the
-# same XRD stays on the cluster, so a TeamConfig without the reference could be
-# composed by ArgoCD's function-cfgd instead of the run's.
+# same XRD stays on the cluster, and a TeamConfig without the reference can be
+# composed by it, which calls ArgoCD's released function-cfgd.
 # scan_teamconfig_refs <file...> prints `NOREF file:line` for each heredoc
 # holding a TeamConfig whose spec.crossplane.compositionRef.name is not
 # $E2E_COMPOSITION as bash sends it (a quoted delimiter sends the word as
