@@ -33,6 +33,7 @@ cfgd_x_hits_total 11
 cfgd_x_hits_created{module="a"} 1.7e9
 # EOF
 BODY
+printf 'cfgd_x_tabs_total\t13\n' >> "$body"
 
 want="$(printf '%s\n' 'cfgd_x_hits_total{module="a"} 3' 'cfgd_x_hits_total 11')"
 got="$(metric_sample_lines cfgd_x_hits "$body")"
@@ -40,6 +41,12 @@ if [ "$got" = "$want" ]; then
     pass "metric_sample_lines reads _total and skips _total_total, _totalx, _created and comment lines"
 else
     fail "metric_sample_lines: got '$got', want '$want'"
+fi
+
+if [ "$(metric_sample_lines cfgd_x_tabs "$body")" = $'cfgd_x_tabs_total\t13' ]; then
+    pass "metric_sample_lines reads a sample whose value follows a tab"
+else
+    fail "metric_sample_lines did not read the tab-separated cfgd_x_tabs_total sample"
 fi
 
 if metric_sample_lines cfgd_x_misses "$body" > /dev/null; then
@@ -62,6 +69,18 @@ check_value 'module="b"' 0
 check_value 'module="c"' 0
 check_value 'module="absent"' 0
 check_value '' 11
+got="$(metric_sample_value cfgd_x_tabs '' "$body")"
+if [ "$got" = 13 ]; then
+    pass "metric_sample_value reads 13 from the tab-separated cfgd_x_tabs_total sample"
+else
+    fail "metric_sample_value cfgd_x_tabs: got '$got', want 13"
+fi
+
+if got="$(metric_sample_value cfgd_x_misses '' "$body")" && [ "$got" = 0 ]; then
+    pass "metric_sample_value reads 0 and exits 0 for a family with no sample"
+else
+    fail "metric_sample_value for a family with no sample: got '$got'"
+fi
 
 # There are about twice this many scripts under tests/e2e/, so a count below
 # it means the scan lost its files.
