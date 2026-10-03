@@ -10,6 +10,7 @@ use cfgd_core::server_client::{DeviceCredential, ServerClient};
 pub fn cmd_checkin(
     cli: &Cli,
     printer: &Printer,
+    startup: &crate::cli::startup::StartupDocument,
     server_url: &str,
     api_key: Option<&str>,
     device_id: Option<&str>,
@@ -18,7 +19,7 @@ pub fn cmd_checkin(
     // the Gateway section that reports its verdict
     printer.heading("Checkin");
 
-    let ctx = RunContext::new(cli, printer);
+    let ctx = RunContext::new(cli, printer, startup);
     let (cfg, profile_name, local_resolved) = ctx.config_and_profile()?;
     let config_dir = ctx.config_dir();
 
@@ -600,6 +601,7 @@ spec:
         let result = cmd_checkin(
             &cli,
             &printer,
+            &crate::cli::startup::StartupDocument::load(&cli.config),
             &server.url(),
             Some("test-key"),
             Some("dev-1"),
@@ -663,10 +665,13 @@ spec:
         let cli = test_cli_for(root, state_dir.path());
 
         let (quiet, _) = Printer::for_test_doc();
-        let (_, collected) = super::super::compliance::collect_and_store_compliance_snapshot(
-            &RunContext::new(&cli, &quiet),
-        )
-        .expect("cfgd compliance collects");
+        let (_, collected) =
+            super::super::compliance::collect_and_store_compliance_snapshot(&RunContext::new(
+                &cli,
+                &quiet,
+                &crate::cli::startup::StartupDocument::load(&cli.config),
+            ))
+            .expect("cfgd compliance collects");
         let report = cfgd_core::server_client::CheckinCompliance::from_snapshot(&collected);
         assert_eq!(
             report
@@ -697,6 +702,7 @@ spec:
         let result = cmd_checkin(
             &cli,
             &printer,
+            &crate::cli::startup::StartupDocument::load(&cli.config),
             &server.url(),
             Some("test-key"),
             Some("dev-1"),
@@ -885,6 +891,7 @@ spec:
         let result = cmd_checkin(
             &cli,
             &printer,
+            &crate::cli::startup::StartupDocument::load(&cli.config),
             &server.url(),
             Some("test-key"),
             Some("dev-1"),
@@ -981,6 +988,7 @@ spec:
         let result = cmd_checkin(
             &cli,
             &printer,
+            &crate::cli::startup::StartupDocument::load(&cli.config),
             &server.url(),
             Some("test-key"),
             Some("dev-1"),
@@ -1054,6 +1062,7 @@ spec:
         let result = cmd_checkin(
             &cli,
             &printer,
+            &crate::cli::startup::StartupDocument::load(&cli.config),
             &server.url(),
             Some("test-key"),
             Some("dev-1"),
@@ -1092,6 +1101,7 @@ spec:
         let result = cmd_checkin(
             &cli,
             &printer,
+            &crate::cli::startup::StartupDocument::load(&cli.config),
             &server.url(),
             Some("test-key"),
             Some("dev-1"),
@@ -1153,6 +1163,7 @@ spec:
         let result = cmd_checkin(
             &cli,
             &printer,
+            &crate::cli::startup::StartupDocument::load(&cli.config),
             &server.url(),
             Some("test-key"),
             Some("dev-1"),
@@ -1191,6 +1202,7 @@ spec:
         let result = cmd_checkin(
             &cli,
             &printer,
+            &crate::cli::startup::StartupDocument::load(&cli.config),
             &server.url(),
             Some("test-key"),
             Some("dev-1"),
@@ -1263,6 +1275,7 @@ spec:
             cmd_checkin(
                 &cli,
                 &printer,
+                &crate::cli::startup::StartupDocument::load(&cli.config),
                 &server.url(),
                 Some("test-key"),
                 Some("dev-1"),
@@ -1356,6 +1369,7 @@ spec:
         let result = cmd_checkin(
             &cli,
             &printer,
+            &crate::cli::startup::StartupDocument::load(&cli.config),
             &server.url(),
             Some("test-key"),
             Some("dev-1"),
@@ -1463,6 +1477,7 @@ spec:
         let result = cmd_checkin(
             &cli,
             &printer,
+            &crate::cli::startup::StartupDocument::load(&cli.config),
             &server.url(),
             Some("test-key"),
             Some("dev-1"),
@@ -1556,7 +1571,12 @@ spec:
             let mut cli = test_cli_for(&root, state_dir.path());
             cli.cache_dir = Some(cache_dir.path().to_path_buf());
             let (quiet, _) = Printer::for_test_doc();
-            crate::cli::sync::cmd_sync(&cli, &quiet).expect("the source syncs into the cache");
+            crate::cli::sync::cmd_sync(
+                &cli,
+                &quiet,
+                &crate::cli::startup::StartupDocument::load(&cli.config),
+            )
+            .expect("the source syncs into the cache");
 
             Self {
                 cli,
@@ -1580,6 +1600,7 @@ spec:
             cmd_checkin(
                 &self.cli,
                 &printer,
+                &crate::cli::startup::StartupDocument::load(&self.cli.config),
                 &self.server.url(),
                 Some("test-key"),
                 Some("dev-1"),

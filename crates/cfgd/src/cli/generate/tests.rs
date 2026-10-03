@@ -1128,8 +1128,13 @@ mod cmd_generate_mockito {
             home: None,
         };
 
-        cmd_generate(&cli, &printer, &args)
-            .expect("cmd_generate should succeed against the text-only mock");
+        cmd_generate(
+            &cli,
+            &printer,
+            &crate::cli::startup::StartupDocument::load(&cli.config),
+            &args,
+        )
+        .expect("cmd_generate should succeed against the text-only mock");
 
         mock.assert();
         let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -1190,7 +1195,13 @@ mod cmd_generate_mockito {
             home: None,
         };
 
-        cmd_generate(&cli, &printer, &args).expect("cmd_generate (module target) should succeed");
+        cmd_generate(
+            &cli,
+            &printer,
+            &crate::cli::startup::StartupDocument::load(&cli.config),
+            &args,
+        )
+        .expect("cmd_generate (module target) should succeed");
         mock.assert();
     }
 
@@ -1268,8 +1279,13 @@ mod cmd_generate_mockito {
             home: None,
         };
 
-        cmd_generate(&cli, &printer, &args)
-            .expect("two-turn conversation must complete without error");
+        cmd_generate(
+            &cli,
+            &printer,
+            &crate::cli::startup::StartupDocument::load(&cli.config),
+            &args,
+        )
+        .expect("two-turn conversation must complete without error");
 
         // Both mocks fired exactly once → the loop made two API calls.
         turn1.assert();
@@ -1359,8 +1375,13 @@ mod cmd_generate_mockito {
             home: None,
         };
 
-        cmd_generate(&cli, &printer, &args)
-            .expect("present_yaml + Accept two-turn loop must succeed");
+        cmd_generate(
+            &cli,
+            &printer,
+            &crate::cli::startup::StartupDocument::load(&cli.config),
+            &args,
+        )
+        .expect("present_yaml + Accept two-turn loop must succeed");
 
         turn1.assert();
         turn2.assert();
@@ -1424,7 +1445,12 @@ mod cmd_generate_mockito {
             home: None,
         };
 
-        let result = cmd_generate(&cli, &printer, &args);
+        let result = cmd_generate(
+            &cli,
+            &printer,
+            &crate::cli::startup::StartupDocument::load(&cli.config),
+            &args,
+        );
         // Either:
         //   (a) prompt_confirm returns Err → cmd_generate returns Err via `?`
         //   (b) some prompt impls return Ok(false) → "Aborted." printed + Ok
@@ -1484,8 +1510,13 @@ mod cmd_generate_mockito {
             home: None,
         };
 
-        let err = cmd_generate(&cli, &printer, &args)
-            .expect_err("missing API key should surface as an error");
+        let err = cmd_generate(
+            &cli,
+            &printer,
+            &crate::cli::startup::StartupDocument::load(&cli.config),
+            &args,
+        )
+        .expect_err("missing API key should surface as an error");
         let msg = err.to_string();
         assert!(
             msg.contains("ANTHROPIC_API_KEY"),
@@ -1613,7 +1644,13 @@ mod cmd_generate_mockito {
             home: None,
         };
 
-        cmd_generate(&cli, &printer, &args).expect("two-turn write_module_yaml loop must succeed");
+        cmd_generate(
+            &cli,
+            &printer,
+            &crate::cli::startup::StartupDocument::load(&cli.config),
+            &args,
+        )
+        .expect("two-turn write_module_yaml loop must succeed");
 
         turn1.assert();
         turn2.assert();
@@ -1671,7 +1708,13 @@ mod cmd_generate_mockito {
             home: None,
         };
 
-        cmd_generate(&cli, &printer, &args).expect("profile-target one-turn loop must succeed");
+        cmd_generate(
+            &cli,
+            &printer,
+            &crate::cli::startup::StartupDocument::load(&cli.config),
+            &args,
+        )
+        .expect("profile-target one-turn loop must succeed");
         mock.assert();
         let output = cfgd_core::test_helpers::captured_text(&buf);
         assert!(
@@ -1739,8 +1782,13 @@ mod cmd_generate_mockito {
             home: None,
         };
 
-        cmd_generate(&cli, &printer, &args)
-            .expect("tool error path must complete; cmd_generate returns Ok even on tool error");
+        cmd_generate(
+            &cli,
+            &printer,
+            &crate::cli::startup::StartupDocument::load(&cli.config),
+            &args,
+        )
+        .expect("tool error path must complete; cmd_generate returns Ok even on tool error");
         turn1.assert();
         turn2.assert();
         let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -1783,8 +1831,13 @@ mod cmd_generate_mockito {
             home: None,
         };
 
-        cmd_generate(&cli, &printer, &args)
-            .expect("declining consent must return Ok with an 'Aborted.' doc, not Err");
+        cmd_generate(
+            &cli,
+            &printer,
+            &crate::cli::startup::StartupDocument::load(&cli.config),
+            &args,
+        )
+        .expect("declining consent must return Ok with an 'Aborted.' doc, not Err");
         must_not_fire.assert();
         let output = cfgd_core::test_helpers::captured_text(&buf);
         assert!(
@@ -1919,8 +1972,13 @@ mod cmd_generate_mockito {
             home: None,
         };
 
-        cmd_generate(&cli, &printer, &args)
-            .expect("consent + commit confirms must drive a successful end-to-end commit");
+        cmd_generate(
+            &cli,
+            &printer,
+            &crate::cli::startup::StartupDocument::load(&cli.config),
+            &args,
+        )
+        .expect("consent + commit confirms must drive a successful end-to-end commit");
 
         turn1.assert();
         turn2.assert();
@@ -1999,8 +2057,13 @@ mod cmd_generate_mockito {
             home: None,
         };
 
-        cmd_generate(&cli, &printer, &args)
-            .expect("declining commit must still return Ok and just skip the commit");
+        cmd_generate(
+            &cli,
+            &printer,
+            &crate::cli::startup::StartupDocument::load(&cli.config),
+            &args,
+        )
+        .expect("declining commit must still return Ok and just skip the commit");
         turn1.assert();
         turn2.assert();
         let output = cfgd_core::test_helpers::captured_text(&buf);

@@ -905,7 +905,8 @@ fn compose_with_sources_no_sources_returns_local_profile_unchanged() {
     let cfg = config::load_config(&config_path).unwrap();
     let local = empty_resolved_profile(&["my-module".to_string()], "work");
     let printer = quiet_printer();
-    let ctx = RunContext::new(&cli, &printer);
+    let startup = crate::cli::startup::StartupDocument::load(&cli.config);
+    let ctx = RunContext::new(&cli, &printer, &startup);
 
     let result = compose_with_sources(
         &ctx,
@@ -1051,7 +1052,8 @@ fn compose_with_sources_with_local_source_merges_source_profile() {
     let cfg = config::load_config(&config_path).unwrap();
     let local = empty_resolved_profile(&["my-module".to_string()], "work");
     let printer = quiet_printer();
-    let ctx = RunContext::new(&cli, &printer);
+    let startup = crate::cli::startup::StartupDocument::load(&cli.config);
+    let ctx = RunContext::new(&cli, &printer, &startup);
 
     let result = compose_with_sources(
         &ctx,
@@ -1118,7 +1120,8 @@ fn compose_with_sources_merges_canonical_form_source_profile() {
     let cfg = config::load_config(&config_path).unwrap();
     let local = empty_resolved_profile(&["my-module".to_string()], "work");
     let printer = quiet_printer();
-    let ctx = RunContext::new(&cli, &printer);
+    let startup = crate::cli::startup::StartupDocument::load(&cli.config);
+    let ctx = RunContext::new(&cli, &printer, &startup);
 
     let result = compose_with_sources(
         &ctx,
@@ -1169,7 +1172,8 @@ fn resolve_desired_state_read_path_sees_source_package_and_module() {
     let cfg = config::load_config(&config_path).unwrap();
     let local = empty_resolved_profile(&["my-module".to_string()], "work");
     let printer = quiet_printer();
-    let ctx = RunContext::new(&cli, &printer);
+    let startup = crate::cli::startup::StartupDocument::load(&cli.config);
+    let ctx = RunContext::new(&cli, &printer, &startup);
 
     // Prime the cache with a refresh so the cache-only read path has a cache
     // dir to read (the daemon's sync task plays this role in production).
@@ -1252,7 +1256,8 @@ fn resolve_desired_state_read_path_cache_miss_falls_back_to_local() {
         packages: vec!["local-pkg".to_string()],
     });
     let printer = quiet_printer();
-    let ctx = RunContext::new(&cli, &printer);
+    let startup = crate::cli::startup::StartupDocument::load(&cli.config);
+    let ctx = RunContext::new(&cli, &printer, &startup);
 
     // No prime: cache dir for 'test-src' does not exist.
     let desired = resolve_desired_state(
@@ -1308,7 +1313,8 @@ fn resolve_desired_state_apply_and_read_compute_same_module_set() {
     let cfg = config::load_config(&config_path).unwrap();
     let local = empty_resolved_profile(&["my-module".to_string()], "work");
     let printer = quiet_printer();
-    let ctx = RunContext::new(&cli, &printer);
+    let startup = crate::cli::startup::StartupDocument::load(&cli.config);
+    let ctx = RunContext::new(&cli, &printer, &startup);
 
     // refresh = true (apply/plan path) primes the cache AND resolves.
     let apply_side = resolve_desired_state(
@@ -1373,7 +1379,8 @@ fn resolve_desired_state_no_sources_resolves_local_only() {
         merged: MergedProfile::default(),
     };
     let printer = quiet_printer();
-    let ctx = RunContext::new(&cli, &printer);
+    let startup = crate::cli::startup::StartupDocument::load(&cli.config);
+    let ctx = RunContext::new(&cli, &printer, &startup);
 
     let desired = resolve_desired_state(
         &ctx,
@@ -1487,7 +1494,8 @@ fn resolve_desired_state_module_only_isolates_every_profile_owned_field() {
     };
 
     let printer = quiet_printer();
-    let ctx = RunContext::new(&cli, &printer);
+    let startup = crate::cli::startup::StartupDocument::load(&cli.config);
+    let ctx = RunContext::new(&cli, &printer, &startup);
     let desired = resolve_desired_state(
         &ctx,
         &cfg,
@@ -1594,7 +1602,8 @@ fn resolve_desired_state_with_profile_unions_module_and_keeps_every_profile_owne
     };
 
     let printer = quiet_printer();
-    let ctx = RunContext::new(&cli, &printer);
+    let startup = crate::cli::startup::StartupDocument::load(&cli.config);
+    let ctx = RunContext::new(&cli, &printer, &startup);
     let desired = resolve_desired_state(
         &ctx,
         &cfg,
@@ -1710,7 +1719,8 @@ fn resolve_desired_state_module_blocked_by_scripts_not_allowed_surfaces_the_real
         merged: MergedProfile::default(),
     };
     let printer = quiet_printer();
-    let ctx = RunContext::new(&cli, &printer);
+    let startup = crate::cli::startup::StartupDocument::load(&cli.config);
+    let ctx = RunContext::new(&cli, &printer, &startup);
 
     let result = resolve_desired_state(
         &ctx,
@@ -1759,7 +1769,8 @@ fn a_module_free_resolution_builds_no_registry_until_one_is_asked_for() {
     let cli = make_cli(config_path.clone());
     let cfg = config::load_config(&config_path).unwrap();
     let printer = quiet_printer();
-    let ctx = RunContext::new(&cli, &printer);
+    let startup = crate::cli::startup::StartupDocument::load(&cli.config);
+    let ctx = RunContext::new(&cli, &printer, &startup);
 
     let no_modules = ResolvedProfile {
         layers: Vec::new(),
@@ -1986,7 +1997,8 @@ fn display_and_persist_conflicts_routes_roles_and_persists() {
     };
 
     let (printer, cap) = Printer::for_test_at(Verbosity::Normal);
-    let ctx = RunContext::new(&cli, &printer);
+    let startup = crate::cli::startup::StartupDocument::load(&cli.config);
+    let ctx = RunContext::new(&cli, &printer, &startup);
     display_and_persist_conflicts(&ctx, &result, &printer);
     drop(printer);
 
@@ -2045,7 +2057,8 @@ fn display_and_persist_conflicts_rewords_the_arrow_on_the_primary_apply_surface(
     };
 
     let (printer, cap) = Printer::for_test_at(Verbosity::Normal);
-    let ctx = RunContext::new(&cli, &printer);
+    let startup = crate::cli::startup::StartupDocument::load(&cli.config);
+    let ctx = RunContext::new(&cli, &printer, &startup);
     display_and_persist_conflicts(&ctx, &result, &printer);
     drop(printer);
 
@@ -2074,7 +2087,8 @@ fn the_desired_state_registers_each_custom_manager_exactly_once() {
     let cli = make_cli(config_path.clone());
     let cfg = config::load_config(&config_path).unwrap();
     let printer = quiet_printer();
-    let ctx = RunContext::new(&cli, &printer);
+    let startup = crate::cli::startup::StartupDocument::load(&cli.config);
+    let ctx = RunContext::new(&cli, &printer, &startup);
 
     let mut local = empty_resolved_profile(&["my-module".to_string()], "work");
     local.merged.modules.clear();

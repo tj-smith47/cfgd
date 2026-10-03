@@ -52,6 +52,7 @@ pub(super) struct DecideListOutput {
 pub(super) fn cmd_decide(
     cli: &Cli,
     printer: &Printer,
+    startup: &crate::cli::startup::StartupDocument,
     action: Option<DecideAction>,
     resource: Option<&str>,
     source: Option<&str>,
@@ -73,7 +74,7 @@ pub(super) fn cmd_decide(
         }
         None => None,
     };
-    let ctx = RunContext::new(cli, printer);
+    let ctx = RunContext::new(cli, printer, startup);
     let state = ctx.state()?;
 
     // A resolution is inherently a write, so an item `cfgd plan` classified

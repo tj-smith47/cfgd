@@ -9,6 +9,7 @@ use cfgd_core::state::StateStore;
 
 use super::helpers::{config_dir, resolve_profile_for};
 use super::registry::{build_registry, open_state_store};
+use super::startup::StartupDocument;
 use super::{Cli, packages};
 use crate::packages::ManifestCache;
 
@@ -22,8 +23,11 @@ use crate::packages::ManifestCache;
 /// run that wants it and paid once — a command that never asks for the state
 /// store still never opens one.
 ///
+/// The config itself is the invocation's [`StartupDocument`], read and parsed
+/// before dispatch, so a command never reads `cfgd.yaml` a second time.
+///
 /// Scoped to ONE run: each `cmd_*` builds a context at its top and drops it when
-/// it returns. Construction is pure (it copies two references and derives the
+/// it returns. Construction is pure (it copies three references and derives the
 /// config directory), so a daemon tick can hold one per tick without paying for
 /// slots that tick does not use, and nothing here can outlive the config it
 /// describes.
@@ -36,7 +40,7 @@ pub(in crate::cli) struct RunContext<'a> {
     printer: &'a Printer,
     config_dir: PathBuf,
     /// `cli.config` as parsed, with its deprecation notices still intact.
-    config: OnceCell<CfgdConfig>,
+    startup: &'a StartupDocument,
     /// Whether those notices have already been surfaced. The drain is once per
     /// run and belongs to the first caller that reads the config for real —
     /// a command that only wants the active profile NAME must not print them,
@@ -54,12 +58,16 @@ pub(in crate::cli) struct RunContext<'a> {
 }
 
 impl<'a> RunContext<'a> {
-    pub(in crate::cli) fn new(cli: &'a Cli, printer: &'a Printer) -> Self {
+    pub(in crate::cli) fn new(
+        cli: &'a Cli,
+        printer: &'a Printer,
+        startup: &'a StartupDocument,
+    ) -> Self {
         Self {
             cli,
             printer,
             config_dir: config_dir(cli),
-            config: OnceCell::new(),
+            startup,
             deprecations_drained: Cell::new(false),
             profile: OnceCell::new(),
             state: OnceCell::new(),
@@ -105,21 +113,15 @@ impl<'a> RunContext<'a> {
         &self.config_dir
     }
 
-    /// The run's config, parsed at most once, WITHOUT surfacing its deprecation
-    /// notices. Only the callers that need nothing but a name off the config
-    /// (the active profile a module-only run stamps into `CFGD_PROFILE`) read
-    /// through here.
-    fn config_unannounced(&self) -> cfgd_core::errors::Result<&CfgdConfig> {
-        if let Some(cfg) = self.config.get() {
-            return Ok(cfg);
-        }
-        let cfg = cfgd_core::config::load_config(&self.cli.config)?;
-        Ok(self.config.get_or_init(|| cfg))
+    /// The run's config WITHOUT surfacing its deprecation notices. Only the
+    /// callers that need nothing but a name off the config (the active profile
+    /// a module-only run stamps into `CFGD_PROFILE`) read through here.
+    fn config_unannounced(&self) -> cfgd_core::errors::Result<&'a CfgdConfig> {
+        self.startup.config_result()
     }
 
-    /// The run's config, parsed at most once, with its deprecation notices
-    /// surfaced exactly once.
-    pub(in crate::cli) fn config(&self) -> cfgd_core::errors::Result<&CfgdConfig> {
+    /// The run's config, with its deprecation notices surfaced exactly once.
+    pub(in crate::cli) fn config(&self) -> cfgd_core::errors::Result<&'a CfgdConfig> {
         let cfg = self.config_unannounced()?;
         if !self.deprecations_drained.replace(true) {
             for msg in &cfg.deprecations {
@@ -127,6 +129,13 @@ impl<'a> RunContext<'a> {
             }
         }
         Ok(cfg)
+    }
+
+    /// An owned copy of the run's config for a command that edits and saves
+    /// it, with its deprecation notices surfaced exactly once across this and
+    /// [`Self::config`].
+    pub(in crate::cli) fn config_for_edit(&self) -> anyhow::Result<CfgdConfig> {
+        Ok(self.config()?.clone())
     }
 
     /// The run's config, the name of the profile in force, and that profile's
@@ -271,7 +280,8 @@ mod tests {
         write_config(dir.path());
         let printer = test_printer();
         let cli = cli_in(dir.path());
-        let ctx = RunContext::new(&cli, &printer);
+        let startup = StartupDocument::load(&cli.config);
+        let ctx = RunContext::new(&cli, &printer, &startup);
 
         let first = ctx.config().unwrap() as *const CfgdConfig;
         // The file is gone: a second parse could not succeed, so a second
@@ -288,7 +298,8 @@ mod tests {
         write_config(dir.path());
         let printer = test_printer();
         let cli = cli_in(dir.path());
-        let ctx = RunContext::new(&cli, &printer);
+        let startup = StartupDocument::load(&cli.config);
+        let ctx = RunContext::new(&cli, &printer, &startup);
 
         let (_, name, resolved) = ctx.config_and_profile().unwrap();
         assert_eq!(name, "default");
@@ -308,7 +319,8 @@ mod tests {
         let printer = test_printer();
         let mut cli = cli_in(dir.path());
         cli.state_dir = Some(state_dir.clone());
-        let ctx = RunContext::new(&cli, &printer);
+        let startup = StartupDocument::load(&cli.config);
+        let ctx = RunContext::new(&cli, &printer, &startup);
 
         let first = ctx.state().unwrap() as *const StateStore;
         // A second open would re-create the directory it was told to use, so
@@ -331,7 +343,8 @@ mod tests {
         write_config(dir.path());
         let printer = test_printer();
         let cli = cli_in(dir.path());
-        let ctx = RunContext::new(&cli, &printer);
+        let startup = StartupDocument::load(&cli.config);
+        let ctx = RunContext::new(&cli, &printer, &startup);
 
         let first = ctx.base_registry() as *const ProviderRegistry;
         let second = ctx.base_registry() as *const ProviderRegistry;
@@ -354,7 +367,8 @@ mod tests {
         .unwrap();
         let (printer, buf) = cfgd_core::output::Printer::for_test();
         let cli = cli_in(dir.path());
-        let ctx = RunContext::new(&cli, &printer);
+        let startup = StartupDocument::load(&cli.config);
+        let ctx = RunContext::new(&cli, &printer, &startup);
 
         assert_eq!(ctx.active_profile_name(), "default");
         assert!(
@@ -366,5 +380,47 @@ mod tests {
         ctx.config().unwrap();
         let out = cfgd_core::test_helpers::captured_text(&buf);
         assert_eq!(out.matches("theme.overrides.subheader").count(), 1, "{out}");
+    }
+
+    /// The edit copy shares the run's one announcement, and taking it leaves
+    /// the shared document's notices in place for every other reader.
+    #[test]
+    fn the_edit_copy_announces_deprecations_once_with_the_reads() {
+        let dir = tempfile::tempdir().unwrap();
+        write_config(dir.path());
+        std::fs::write(
+            dir.path().join("cfgd.yaml"),
+            format!("{CONFIG_YAML}  theme:\n    overrides:\n      subheader: red\n"),
+        )
+        .unwrap();
+        let (printer, buf) = cfgd_core::output::Printer::for_test();
+        let cli = cli_in(dir.path());
+        let startup = StartupDocument::load(&cli.config);
+        let ctx = RunContext::new(&cli, &printer, &startup);
+
+        let edit = ctx.config_for_edit().unwrap();
+        ctx.config().unwrap();
+        ctx.config_for_edit().unwrap();
+
+        let out = cfgd_core::test_helpers::captured_text(&buf);
+        assert_eq!(out.matches("theme.overrides.subheader").count(), 1, "{out}");
+        assert_eq!(edit.deprecations, startup.config().unwrap().deprecations);
+        assert!(!startup.config().unwrap().deprecations.is_empty());
+    }
+
+    /// A run's config is the startup document's own parse, by reference.
+    #[test]
+    fn the_run_reads_the_startup_document() {
+        let dir = tempfile::tempdir().unwrap();
+        write_config(dir.path());
+        let printer = test_printer();
+        let cli = cli_in(dir.path());
+        let startup = StartupDocument::load(&cli.config);
+        let ctx = RunContext::new(&cli, &printer, &startup);
+
+        assert!(std::ptr::eq(
+            ctx.config().unwrap(),
+            startup.config().unwrap()
+        ));
     }
 }

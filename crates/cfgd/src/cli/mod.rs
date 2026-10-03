@@ -3319,8 +3319,8 @@ pub fn execute(
         return Ok(());
     };
     match command {
-        Command::Apply(args) => apply::cmd_apply(cli, printer, args),
-        Command::Plan(args) => plan::cmd_plan(cli, printer, args),
+        Command::Apply(args) => apply::cmd_apply(cli, printer, startup, args),
+        Command::Plan(args) => plan::cmd_plan(cli, printer, startup, args),
         Command::Status {
             module,
             scan,
@@ -3333,6 +3333,7 @@ pub fn execute(
             None => status::cmd_status(
                 cli,
                 printer,
+                startup,
                 module.as_deref(),
                 status::StatusRun {
                     exit_code: *exit_code,
@@ -3346,7 +3347,7 @@ pub fn execute(
             ),
         },
         Command::Diff { module, exit_code } => {
-            diff::cmd_diff(cli, printer, module.as_deref(), *exit_code)
+            diff::cmd_diff(cli, printer, startup, module.as_deref(), *exit_code)
         }
         Command::Log { limit, show_output } => log::cmd_log(
             printer,
@@ -3356,7 +3357,7 @@ pub fn execute(
             cli.scope(),
         ),
         Command::Verify { module, exit_code } => {
-            verify::cmd_verify(cli, printer, module.as_deref(), *exit_code)
+            verify::cmd_verify(cli, printer, startup, module.as_deref(), *exit_code)
         }
         Command::Profile { command } => match command {
             ProfileCommand::Show {
@@ -3391,7 +3392,7 @@ pub fn execute(
                 yes,
             } => profile::cmd_profile_migrate(cli, printer, name.as_deref(), *all, *dry_run, *yes),
         },
-        Command::Doctor { fix } => doctor::cmd_doctor(cli, printer, *fix),
+        Command::Doctor { fix } => doctor::cmd_doctor(cli, printer, startup, *fix),
         Command::Paths => paths::cmd_paths(cli, printer, dir_sources),
         Command::Init {
             path,
@@ -3439,6 +3440,7 @@ pub fn execute(
             } => module::cmd_module_show(
                 cli,
                 printer,
+                startup,
                 name,
                 InventoryDetail::of(
                     env_value_masking(printer, *show_values),
@@ -3447,7 +3449,7 @@ pub fn execute(
                 ),
                 *resolved,
             ),
-            ModuleCommand::Create(args) => module::cmd_module_create(cli, printer, args),
+            ModuleCommand::Create(args) => module::cmd_module_create(cli, printer, startup, args),
             ModuleCommand::Update(args) => module::cmd_module_update_local(cli, printer, args),
             ModuleCommand::Edit { name } => module::cmd_module_edit(cli, printer, name),
             ModuleCommand::Delete {
@@ -3557,7 +3559,7 @@ pub fn execute(
             },
             ModuleCommand::Validate { source } => validate::cmd_module_validate(printer, source),
         },
-        Command::Sync => sync::cmd_sync(cli, printer),
+        Command::Sync => sync::cmd_sync(cli, printer, startup),
         Command::Pull => pull::cmd_pull(cli, printer),
         Command::Daemon { command } => daemon::cmd_daemon(cli, printer, command.as_ref()),
         Command::Secret { command } => match command {
@@ -3587,6 +3589,7 @@ pub fn execute(
             } => source::cmd_source_remove(
                 cli,
                 printer,
+                startup,
                 name,
                 *keep_all || (*yes && !*remove_all),
                 *remove_all,
@@ -3618,7 +3621,7 @@ pub fn execute(
                 value,
             } => source::cmd_source_override(cli, printer, source, *action, path, value.as_deref()),
             SourceCommand::Replace { old_name, new_url } => {
-                source::cmd_source_replace(cli, printer, old_name, new_url)
+                source::cmd_source_replace(cli, printer, startup, old_name, new_url)
             }
             SourceCommand::Edit => source::cmd_source_edit(printer, &std::env::current_dir()?),
             SourceCommand::Create {
@@ -3635,13 +3638,16 @@ pub fn execute(
             SourceCommand::Validate { source } => validate::cmd_source_validate(printer, source),
         },
         Command::Backup { command } => match command {
-            BackupCommand::Run { name } => backup::cmd_backup_run(cli, printer, name.as_deref()),
+            BackupCommand::Run { name } => {
+                backup::cmd_backup_run(cli, printer, startup, name.as_deref())
+            }
             BackupCommand::List { name, snapshots } => {
-                backup::cmd_backup_list(cli, printer, name.as_deref(), *snapshots)
+                backup::cmd_backup_list(cli, printer, startup, name.as_deref(), *snapshots)
             }
             BackupCommand::Restore { name, at, to, yes } => backup::cmd_backup_restore(
                 cli,
                 printer,
+                startup,
                 &backup::RestoreArgs {
                     name,
                     at: at.as_deref(),
@@ -3650,9 +3656,11 @@ pub fn execute(
                 },
             ),
             BackupCommand::Rollback { name, yes } => {
-                backup::cmd_backup_rollback(cli, printer, name.as_deref(), *yes)
+                backup::cmd_backup_rollback(cli, printer, startup, name.as_deref(), *yes)
             }
-            BackupCommand::Gc { name } => backup::cmd_backup_gc(cli, printer, name.as_deref()),
+            BackupCommand::Gc { name } => {
+                backup::cmd_backup_gc(cli, printer, startup, name.as_deref())
+            }
         },
         Command::Explain {
             resource,
@@ -3707,6 +3715,7 @@ pub fn execute(
         } => decide::cmd_decide(
             cli,
             printer,
+            startup,
             *action,
             resource.as_deref(),
             source.as_deref(),
@@ -3754,6 +3763,7 @@ pub fn execute(
         } => checkin::cmd_checkin(
             cli,
             printer,
+            startup,
             server_url,
             api_key.as_deref(),
             device_id.as_deref(),
@@ -3780,7 +3790,7 @@ pub fn execute(
             clap_mangen::Man::new(Cli::command()).render(&mut std::io::stdout())?;
             Ok(())
         }
-        Command::Generate(args) => generate::cmd_generate(cli, printer, args),
+        Command::Generate(args) => generate::cmd_generate(cli, printer, startup, args),
         Command::Rollback { apply_id, yes } => rollback::cmd_rollback(
             printer,
             *apply_id,
@@ -3792,8 +3802,10 @@ pub fn execute(
             crate::mcp::server::run_mcp_server(&cli.config, cli.state_dir.as_deref(), cli.scope())
         }
         Command::Compliance { command } => match command {
-            None => compliance::cmd_compliance_snapshot(cli, printer),
-            Some(ComplianceCommand::Export) => compliance::cmd_compliance_export(cli, printer),
+            None => compliance::cmd_compliance_snapshot(cli, printer, startup),
+            Some(ComplianceCommand::Export) => {
+                compliance::cmd_compliance_export(cli, printer, startup)
+            }
             Some(ComplianceCommand::History { since }) => {
                 compliance::cmd_compliance_history(cli, printer, since.as_deref())
             }

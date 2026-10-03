@@ -3083,6 +3083,7 @@ pub(super) fn retired_status_flag_error(flag: &LegacyStatusFlag) -> anyhow::Erro
 pub(super) fn cmd_status(
     cli: &Cli,
     printer: &Printer,
+    startup: &crate::cli::startup::StartupDocument,
     module_filter: Option<&str>,
     run: StatusRun,
 ) -> anyhow::Result<()> {
@@ -3096,7 +3097,7 @@ pub(super) fn cmd_status(
     // to see it. `exit_code` alone still decides whether the run EXITS
     // nonzero on drift — `--scan` on its own never changes the exit code.
     let do_scan = exit_code || scan;
-    let ctx = RunContext::new(cli, printer);
+    let ctx = RunContext::new(cli, printer, startup);
     if let Some(mod_name) = module_filter {
         // `--show-values` is a request to see the declared items themselves,
         // which only the itemized view has rows for, so it implies that view
@@ -5318,12 +5319,26 @@ mod tests {
         cli.cache_dir = Some(env.state_dir.path().to_path_buf());
 
         let (printer, buf) = test_printers();
-        cmd_status(&cli, &printer, None, StatusRun::default()).unwrap();
+        cmd_status(
+            &cli,
+            &printer,
+            &crate::cli::startup::StartupDocument::load(&cli.config),
+            None,
+            StatusRun::default(),
+        )
+        .unwrap();
         drop(printer);
         let dashboard = cfgd_core::test_helpers::captured_text(&buf);
 
         let (printer, buf) = test_printers();
-        crate::cli::diff::cmd_diff(&cli, &printer, None, false).unwrap();
+        crate::cli::diff::cmd_diff(
+            &cli,
+            &printer,
+            &crate::cli::startup::StartupDocument::load(&cli.config),
+            None,
+            false,
+        )
+        .unwrap();
         drop(printer);
         let diff = cfgd_core::test_helpers::captured_text(&buf);
 
@@ -5365,7 +5380,14 @@ mod tests {
         cli.cache_dir = Some(env.state_dir.path().to_path_buf());
 
         let (printer, buf) = test_printers_json();
-        cmd_status(&cli, &printer, None, StatusRun::default()).unwrap();
+        cmd_status(
+            &cli,
+            &printer,
+            &crate::cli::startup::StartupDocument::load(&cli.config),
+            None,
+            StatusRun::default(),
+        )
+        .unwrap();
         drop(printer);
         let payload: serde_json::Value =
             serde_json::from_str(&cfgd_core::test_helpers::captured_text(&buf))
@@ -5426,30 +5448,82 @@ mod tests {
         // paths compose cache-only, so a header derived from the composition
         // would drop its `Sources` row here and the key would be answering
         // "has this machine synced yet" rather than what the config declares.
-        let cold = render(&|p| cmd_status(&cli, p, None, StatusRun::default()).unwrap());
+        let cold = render(&|p| {
+            cmd_status(
+                &cli,
+                p,
+                &crate::cli::startup::StartupDocument::load(&cli.config),
+                None,
+                StatusRun::default(),
+            )
+            .unwrap()
+        });
         assert_eq!(
             cold.len(),
             4,
             "a cold cache changes nothing about the header: {cold:?}"
         );
 
-        let status = render(&|p| cmd_status(&cli, p, None, StatusRun::default()).unwrap());
-        let diff = render(&|p| crate::cli::diff::cmd_diff(&cli, p, None, false).unwrap());
-        let sync = render(&|p| crate::cli::sync::cmd_sync(&cli, p).unwrap());
+        let status = render(&|p| {
+            cmd_status(
+                &cli,
+                p,
+                &crate::cli::startup::StartupDocument::load(&cli.config),
+                None,
+                StatusRun::default(),
+            )
+            .unwrap()
+        });
+        let diff = render(&|p| {
+            crate::cli::diff::cmd_diff(
+                &cli,
+                p,
+                &crate::cli::startup::StartupDocument::load(&cli.config),
+                None,
+                false,
+            )
+            .unwrap()
+        });
+        let sync = render(&|p| {
+            crate::cli::sync::cmd_sync(
+                &cli,
+                p,
+                &crate::cli::startup::StartupDocument::load(&cli.config),
+            )
+            .unwrap()
+        });
         // The two verbs that build a `Plan`: their header reads its module
         // gating off the plan's own `Skip` actions rather than off the
         // resolution, which is the one branch that can disagree with the five
         // surfaces above without any of them being wrong about the machine.
         let plan = render(&|p| {
-            crate::cli::plan::cmd_plan(&cli, p, &header_plan_args()).unwrap();
+            crate::cli::plan::cmd_plan(
+                &cli,
+                p,
+                &crate::cli::startup::StartupDocument::load(&cli.config),
+                &header_plan_args(),
+            )
+            .unwrap();
         });
         let apply = render(&|p| {
-            crate::cli::apply::run_apply(&cli, p, &header_apply_args()).unwrap();
+            crate::cli::apply::run_apply(
+                &cli,
+                p,
+                &crate::cli::startup::StartupDocument::load(&cli.config),
+                &header_apply_args(),
+            )
+            .unwrap();
         });
         // `spec.backups[]` is profile-declared, so a backup run reports under a
         // resolved profile exactly as an apply does.
         let backup = render(&|p| {
-            crate::cli::backup::run_backup_run(&cli, p, Some("docs")).unwrap();
+            crate::cli::backup::run_backup_run(
+                &cli,
+                p,
+                &crate::cli::startup::StartupDocument::load(&cli.config),
+                Some("docs"),
+            )
+            .unwrap();
         });
         // The two verbs that put data back report under the same profile, off
         // the same resolution — and a restore is what leaves the safety copy a
@@ -5458,6 +5532,7 @@ mod tests {
             crate::cli::backup::run_backup_restore(
                 &cli,
                 p,
+                &crate::cli::startup::StartupDocument::load(&cli.config),
                 &crate::cli::backup::RestoreArgs {
                     name: "docs",
                     at: None,
@@ -5468,14 +5543,22 @@ mod tests {
             .unwrap();
         });
         let rollback = render(&|p| {
-            crate::cli::backup::run_backup_rollback(&cli, p, "docs", true).unwrap();
+            crate::cli::backup::run_backup_rollback(
+                &cli,
+                p,
+                &crate::cli::startup::StartupDocument::load(&cli.config),
+                "docs",
+                true,
+            )
+            .unwrap();
         });
 
         // The daemon's reader is another process: it renders the modules the
         // reconcile tick put on the wire and the sources its own config
         // declares, holding no composition of its own.
         let (probe, _) = test_printers();
-        let ctx = crate::cli::RunContext::new(&cli, &probe);
+        let startup = crate::cli::startup::StartupDocument::load(&cli.config);
+        let ctx = crate::cli::RunContext::new(&cli, &probe, &startup);
         let (cfg, profile_name, local_resolved) = ctx.config_and_profile().unwrap();
         let declared = cfgd_core::reconciler::ComposedSource::from_declared(&cfg.spec.sources);
         let profile_name = profile_name.to_string();
@@ -5541,14 +5624,34 @@ mod tests {
             .clone();
         let config_row = format!("Config {}", cfgd_core::to_posix_string(&cli.config));
         let created = render(&|p| {
-            crate::cli::module::cmd_module_create(&cli, p, &header_module_create_args()).unwrap();
+            crate::cli::module::cmd_module_create(
+                &cli,
+                p,
+                &crate::cli::startup::StartupDocument::load(&cli.config),
+                &header_module_create_args(),
+            )
+            .unwrap();
         });
-        let diff_isolate =
-            render(&|p| crate::cli::diff::cmd_diff(&cli, p, Some("editor"), false).unwrap());
+        let diff_isolate = render(&|p| {
+            crate::cli::diff::cmd_diff(
+                &cli,
+                p,
+                &crate::cli::startup::StartupDocument::load(&cli.config),
+                Some("editor"),
+                false,
+            )
+            .unwrap()
+        });
         let apply_isolate = render(&|p| {
             let mut args = header_apply_args();
             args.module = vec!["editor".to_string()];
-            crate::cli::apply::run_apply(&cli, p, &args).unwrap();
+            crate::cli::apply::run_apply(
+                &cli,
+                p,
+                &crate::cli::startup::StartupDocument::load(&cli.config),
+                &args,
+            )
+            .unwrap();
         });
         for (surface, rows, module) in [
             // A run the invocation named states only what its invocation did
@@ -5629,9 +5732,21 @@ mod tests {
             for verb in ["plan", "apply"] {
                 let (printer, buf) = test_printers();
                 if verb == "plan" {
-                    crate::cli::plan::cmd_plan(&cli, &printer, &plan_args).unwrap();
+                    crate::cli::plan::cmd_plan(
+                        &cli,
+                        &printer,
+                        &crate::cli::startup::StartupDocument::load(&cli.config),
+                        &plan_args,
+                    )
+                    .unwrap();
                 } else {
-                    crate::cli::apply::run_apply(&cli, &printer, &apply_args).unwrap();
+                    crate::cli::apply::run_apply(
+                        &cli,
+                        &printer,
+                        &crate::cli::startup::StartupDocument::load(&cli.config),
+                        &apply_args,
+                    )
+                    .unwrap();
                 }
                 drop(printer);
                 let rows = rendered_header_rows(&cfgd_core::test_helpers::captured_text(&buf));
@@ -7478,7 +7593,14 @@ mod tests {
         let cli = test_cli_for(config_path, state_dir.path());
         let (printer, buf) = test_printers();
 
-        cmd_status(&cli, &printer, None, StatusRun::default()).unwrap();
+        cmd_status(
+            &cli,
+            &printer,
+            &crate::cli::startup::StartupDocument::load(&cli.config),
+            None,
+            StatusRun::default(),
+        )
+        .unwrap();
         drop(printer);
 
         let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -7516,6 +7638,7 @@ mod tests {
         cmd_status(
             &cli,
             &printer,
+            &crate::cli::startup::StartupDocument::load(&cli.config),
             Some("test-mod"),
             StatusRun {
                 mask_env_values: cfgd_core::config::MaskEnvValues::None,
@@ -7579,6 +7702,7 @@ mod tests {
             cmd_status(
                 &cli,
                 &printer,
+                &crate::cli::startup::StartupDocument::load(&cli.config),
                 Some("test-mod"),
                 StatusRun {
                     mask_env_values: if show_values {
@@ -7631,7 +7755,14 @@ mod tests {
         cli.output = super::OutputFormatArg(cfgd_core::output::OutputFormat::Wide);
         let (printer, cap) =
             Printer::for_test_doc_with_format(cfgd_core::output::OutputFormat::Wide);
-        cmd_status(&cli, &printer, Some("test-mod"), StatusRun::default()).unwrap();
+        cmd_status(
+            &cli,
+            &printer,
+            &crate::cli::startup::StartupDocument::load(&cli.config),
+            Some("test-mod"),
+            StatusRun::default(),
+        )
+        .unwrap();
         drop(printer);
 
         let out = cap.human();
@@ -7652,7 +7783,14 @@ mod tests {
         let cli = test_cli_for(dir.path().join("nope.yaml"), state_dir.path());
         let (printer, _) = test_printers();
 
-        let err = cmd_status(&cli, &printer, None, StatusRun::default()).unwrap_err();
+        let err = cmd_status(
+            &cli,
+            &printer,
+            &crate::cli::startup::StartupDocument::load(&cli.config),
+            None,
+            StatusRun::default(),
+        )
+        .unwrap_err();
         let msg = err.to_string().to_lowercase();
         assert!(
             msg.contains("not found") || msg.contains("nope.yaml"),
@@ -7666,7 +7804,14 @@ mod tests {
         let cli = test_cli_for(config_path, state_dir.path());
         let (printer, buf) = test_printers();
 
-        cmd_status(&cli, &printer, None, StatusRun::default()).unwrap();
+        cmd_status(
+            &cli,
+            &printer,
+            &crate::cli::startup::StartupDocument::load(&cli.config),
+            None,
+            StatusRun::default(),
+        )
+        .unwrap();
         drop(printer);
 
         let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -7707,7 +7852,14 @@ mod tests {
         let cli = test_cli_for(config_path, state_dir.path());
         let (printer, buf) = test_printers();
 
-        cmd_status(&cli, &printer, None, StatusRun::default()).unwrap();
+        cmd_status(
+            &cli,
+            &printer,
+            &crate::cli::startup::StartupDocument::load(&cli.config),
+            None,
+            StatusRun::default(),
+        )
+        .unwrap();
         drop(printer);
 
         let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -7746,7 +7898,14 @@ mod tests {
         let cli = test_cli_for(config_path, state_dir.path());
         let (printer, buf) = test_printers();
 
-        cmd_status(&cli, &printer, None, StatusRun::default()).unwrap();
+        cmd_status(
+            &cli,
+            &printer,
+            &crate::cli::startup::StartupDocument::load(&cli.config),
+            None,
+            StatusRun::default(),
+        )
+        .unwrap();
         drop(printer);
 
         let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -7787,7 +7946,14 @@ mod tests {
         let cli = test_cli_for(config_path, state_dir.path());
         let (printer, buf) = test_printers();
 
-        cmd_status(&cli, &printer, None, StatusRun::default()).unwrap();
+        cmd_status(
+            &cli,
+            &printer,
+            &crate::cli::startup::StartupDocument::load(&cli.config),
+            None,
+            StatusRun::default(),
+        )
+        .unwrap();
         drop(printer);
 
         let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -7819,7 +7985,14 @@ mod tests {
         let cli = test_cli_for(config_path, state_dir.path());
         let (printer, buf) = test_printers();
 
-        cmd_status(&cli, &printer, None, StatusRun::default()).unwrap();
+        cmd_status(
+            &cli,
+            &printer,
+            &crate::cli::startup::StartupDocument::load(&cli.config),
+            None,
+            StatusRun::default(),
+        )
+        .unwrap();
         drop(printer);
 
         let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -7859,7 +8032,14 @@ mod tests {
         let cli = test_cli_for(config_path, state_dir.path());
         let (printer, buf) = test_printers();
 
-        cmd_status(&cli, &printer, None, StatusRun::default()).unwrap();
+        cmd_status(
+            &cli,
+            &printer,
+            &crate::cli::startup::StartupDocument::load(&cli.config),
+            None,
+            StatusRun::default(),
+        )
+        .unwrap();
         drop(printer);
 
         let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -7889,7 +8069,14 @@ mod tests {
         let cli = test_cli_for(config_path, state_dir.path());
         let (printer, buf) = test_printers_json();
 
-        cmd_status(&cli, &printer, None, StatusRun::default()).unwrap();
+        cmd_status(
+            &cli,
+            &printer,
+            &crate::cli::startup::StartupDocument::load(&cli.config),
+            None,
+            StatusRun::default(),
+        )
+        .unwrap();
         drop(printer);
 
         let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -7941,7 +8128,14 @@ mod tests {
             } else {
                 test_printers()
             };
-            cmd_status(&cli, &printer, None, StatusRun::default()).unwrap();
+            cmd_status(
+                &cli,
+                &printer,
+                &crate::cli::startup::StartupDocument::load(&cli.config),
+                None,
+                StatusRun::default(),
+            )
+            .unwrap();
             drop(printer);
             cfgd_core::test_helpers::captured_text(&buf)
         };
@@ -8026,7 +8220,14 @@ mod tests {
             } else {
                 test_printers()
             };
-            cmd_status(&cli, &printer, None, StatusRun::default()).unwrap();
+            cmd_status(
+                &cli,
+                &printer,
+                &crate::cli::startup::StartupDocument::load(&cli.config),
+                None,
+                StatusRun::default(),
+            )
+            .unwrap();
             drop(printer);
             cfgd_core::test_helpers::captured_text(&buf)
         };
@@ -8063,7 +8264,13 @@ mod tests {
         let cli = test_cli_for(config_path, state_dir.path());
         let (printer, _) = test_printers();
 
-        let res = cmd_status(&cli, &printer, None, StatusRun::default());
+        let res = cmd_status(
+            &cli,
+            &printer,
+            &crate::cli::startup::StartupDocument::load(&cli.config),
+            None,
+            StatusRun::default(),
+        );
         assert!(res.is_ok(), "exit_code=false must return Ok, got: {res:?}");
     }
 
@@ -8079,6 +8286,7 @@ mod tests {
         let res = cmd_status(
             &cli,
             &printer,
+            &crate::cli::startup::StartupDocument::load(&cli.config),
             None,
             StatusRun {
                 exit_code: true,
@@ -8115,6 +8323,7 @@ mod tests {
         cmd_status(
             &cli,
             &printer,
+            &crate::cli::startup::StartupDocument::load(&cli.config),
             None,
             StatusRun {
                 scan: true,
@@ -8201,6 +8410,7 @@ mod tests {
         cmd_status(
             &cli,
             &printer,
+            &crate::cli::startup::StartupDocument::load(&cli.config),
             None,
             StatusRun {
                 scan: true,
@@ -8237,6 +8447,7 @@ mod tests {
         cmd_status(
             &cli,
             &human_printer,
+            &crate::cli::startup::StartupDocument::load(&cli.config),
             None,
             StatusRun {
                 scan: true,
@@ -8337,6 +8548,7 @@ mod tests {
             cmd_status(
                 &cli,
                 &printer,
+                &crate::cli::startup::StartupDocument::load(&cli.config),
                 None,
                 StatusRun {
                     scan,
@@ -8361,7 +8573,14 @@ mod tests {
         // its own row — and the recompute rides the additive pair beside them.
         cli.output = OutputFormatArg(cfgd_core::output::OutputFormat::Json);
         let (printer, buf) = test_printers_json();
-        cmd_status(&cli, &printer, None, StatusRun::default()).unwrap();
+        cmd_status(
+            &cli,
+            &printer,
+            &crate::cli::startup::StartupDocument::load(&cli.config),
+            None,
+            StatusRun::default(),
+        )
+        .unwrap();
         drop(printer);
         let captured = cfgd_core::test_helpers::captured_text(&buf);
         let parsed: serde_json::Value = serde_json::from_str(captured.trim())
@@ -8460,6 +8679,7 @@ mod tests {
             cmd_status(
                 &cli,
                 &printer,
+                &crate::cli::startup::StartupDocument::load(&cli.config),
                 None,
                 StatusRun {
                     scan,
@@ -8492,6 +8712,7 @@ mod tests {
             cmd_status(
                 &cli,
                 &printer,
+                &crate::cli::startup::StartupDocument::load(&cli.config),
                 None,
                 StatusRun {
                     scan,
@@ -8577,6 +8798,7 @@ mod tests {
         cmd_status(
             &cli,
             &printer,
+            &crate::cli::startup::StartupDocument::load(&cli.config),
             None,
             StatusRun {
                 scan: true,
@@ -8598,6 +8820,7 @@ mod tests {
         cmd_status(
             &cli,
             &printer,
+            &crate::cli::startup::StartupDocument::load(&cli.config),
             None,
             StatusRun {
                 scan: true,
@@ -8650,7 +8873,14 @@ mod tests {
         cli.output = OutputFormatArg(cfgd_core::output::OutputFormat::Json);
         let (printer, buf) = test_printers_json();
 
-        cmd_status(&cli, &printer, None, StatusRun::default()).unwrap();
+        cmd_status(
+            &cli,
+            &printer,
+            &crate::cli::startup::StartupDocument::load(&cli.config),
+            None,
+            StatusRun::default(),
+        )
+        .unwrap();
         drop(printer);
 
         let captured = cfgd_core::test_helpers::captured_text(&buf);
@@ -8683,7 +8913,14 @@ mod tests {
         let cli = test_cli_for(config_path, state_dir.path());
         let (printer, buf) = test_printers();
 
-        cmd_status(&cli, &printer, Some("test-mod"), StatusRun::default()).unwrap();
+        cmd_status(
+            &cli,
+            &printer,
+            &crate::cli::startup::StartupDocument::load(&cli.config),
+            Some("test-mod"),
+            StatusRun::default(),
+        )
+        .unwrap();
         drop(printer);
 
         let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -8712,7 +8949,11 @@ mod tests {
         let (printer, buf) = test_printers();
 
         cmd_status_module(
-            &RunContext::new(&cli, &printer),
+            &RunContext::new(
+                &cli,
+                &printer,
+                &crate::cli::startup::StartupDocument::load(&cli.config),
+            ),
             "ghost",
             false,
             false,
@@ -8743,7 +8984,11 @@ mod tests {
         let (printer, buf) = test_printers_json();
 
         cmd_status_module(
-            &RunContext::new(&cli, &printer),
+            &RunContext::new(
+                &cli,
+                &printer,
+                &crate::cli::startup::StartupDocument::load(&cli.config),
+            ),
             "ghost",
             false,
             false,
@@ -8785,7 +9030,11 @@ mod tests {
         let (printer, buf) = test_printers();
 
         cmd_status_module(
-            &RunContext::new(&cli, &printer),
+            &RunContext::new(
+                &cli,
+                &printer,
+                &crate::cli::startup::StartupDocument::load(&cli.config),
+            ),
             "test-mod",
             false,
             false,
@@ -9187,7 +9436,11 @@ mod tests {
         let cli = test_cli_for(config_path, state_dir.path());
         let (printer, buf) = test_printers();
         cmd_status_module(
-            &RunContext::new(&cli, &printer),
+            &RunContext::new(
+                &cli,
+                &printer,
+                &crate::cli::startup::StartupDocument::load(&cli.config),
+            ),
             "test-mod",
             false,
             false,
@@ -9265,7 +9518,13 @@ mod tests {
             context: "apply".to_string(),
             shell: None,
         };
-        crate::cli::apply::cmd_apply(&cli, &apply_printer, &args).unwrap();
+        crate::cli::apply::cmd_apply(
+            &cli,
+            &apply_printer,
+            &crate::cli::startup::StartupDocument::load(&cli.config),
+            &args,
+        )
+        .unwrap();
         drop(apply_printer);
         let applied = cfgd_core::test_helpers::captured_text(&apply_buf);
 
@@ -9284,7 +9543,11 @@ mod tests {
 
         let (printer, buf) = test_printers();
         cmd_status_module(
-            &RunContext::new(&cli, &printer),
+            &RunContext::new(
+                &cli,
+                &printer,
+                &crate::cli::startup::StartupDocument::load(&cli.config),
+            ),
             "test-mod",
             false,
             false,
@@ -9348,7 +9611,13 @@ mod tests {
             context: "apply".to_string(),
             shell: None,
         };
-        crate::cli::apply::cmd_apply(&cli, &apply_printer, &args).unwrap();
+        crate::cli::apply::cmd_apply(
+            &cli,
+            &apply_printer,
+            &crate::cli::startup::StartupDocument::load(&cli.config),
+            &args,
+        )
+        .unwrap();
         drop(apply_printer);
         let applied = cfgd_core::test_helpers::captured_text(&apply_buf);
 
@@ -9371,7 +9640,11 @@ mod tests {
         let (printer, buf) = test_printers();
 
         cmd_status_module(
-            &RunContext::new(&cli, &printer),
+            &RunContext::new(
+                &cli,
+                &printer,
+                &crate::cli::startup::StartupDocument::load(&cli.config),
+            ),
             "test-mod",
             false,
             false,
@@ -9425,7 +9698,11 @@ mod tests {
         let (printer, buf) = test_printers();
 
         cmd_status_module(
-            &RunContext::new(&cli, &printer),
+            &RunContext::new(
+                &cli,
+                &printer,
+                &crate::cli::startup::StartupDocument::load(&cli.config),
+            ),
             "test-mod",
             false,
             false,
@@ -9481,7 +9758,11 @@ mod tests {
         let (printer, buf) = test_printers_json();
 
         cmd_status_module(
-            &RunContext::new(&cli, &printer),
+            &RunContext::new(
+                &cli,
+                &printer,
+                &crate::cli::startup::StartupDocument::load(&cli.config),
+            ),
             "test-mod",
             false,
             false,
@@ -9604,7 +9885,11 @@ mod tests {
         let cli = test_cli_for(env.config_path.clone(), env.state_dir.path());
         let (printer, buf) = test_printers();
         cmd_status_module(
-            &RunContext::new(&cli, &printer),
+            &RunContext::new(
+                &cli,
+                &printer,
+                &crate::cli::startup::StartupDocument::load(&cli.config),
+            ),
             "test-mod",
             false,
             true,
@@ -9642,7 +9927,11 @@ mod tests {
         let cli = test_cli_for(env.config_path.clone(), env.state_dir.path());
         let (printer, buf) = test_printers();
         cmd_status_module(
-            &RunContext::new(&cli, &printer),
+            &RunContext::new(
+                &cli,
+                &printer,
+                &crate::cli::startup::StartupDocument::load(&cli.config),
+            ),
             "test-mod",
             false,
             true,
@@ -9681,7 +9970,11 @@ mod tests {
         let cli = test_cli_for(env.config_path.clone(), env.state_dir.path());
         let (printer, buf) = test_printers();
         cmd_status_module(
-            &RunContext::new(&cli, &printer),
+            &RunContext::new(
+                &cli,
+                &printer,
+                &crate::cli::startup::StartupDocument::load(&cli.config),
+            ),
             "test-mod",
             false,
             true,
@@ -9719,7 +10012,11 @@ mod tests {
         let cli = test_cli_for(config_path, state_dir.path());
         let (printer, buf) = test_printers();
         cmd_status_module(
-            &RunContext::new(&cli, &printer),
+            &RunContext::new(
+                &cli,
+                &printer,
+                &crate::cli::startup::StartupDocument::load(&cli.config),
+            ),
             "test-mod",
             false,
             false,
@@ -9773,7 +10070,11 @@ mod tests {
         let cli = test_cli_for(config_path, state_dir.path());
         let (printer, buf) = test_printers();
         cmd_status_module(
-            &RunContext::new(&cli, &printer),
+            &RunContext::new(
+                &cli,
+                &printer,
+                &crate::cli::startup::StartupDocument::load(&cli.config),
+            ),
             "test-mod",
             false,
             false,
@@ -9819,7 +10120,11 @@ mod tests {
         let (printer, buf) = test_printers_json();
 
         cmd_status_module(
-            &RunContext::new(&cli, &printer),
+            &RunContext::new(
+                &cli,
+                &printer,
+                &crate::cli::startup::StartupDocument::load(&cli.config),
+            ),
             "test-mod",
             false,
             true,
@@ -9855,7 +10160,11 @@ mod tests {
         let (printer, buf) = test_printers_json();
 
         let res = cmd_status_module(
-            &RunContext::new(&cli, &printer),
+            &RunContext::new(
+                &cli,
+                &printer,
+                &crate::cli::startup::StartupDocument::load(&cli.config),
+            ),
             "test-mod",
             true,
             true,
@@ -10044,7 +10353,13 @@ mod tests {
             shell: None,
         };
         let printer = cfgd_core::test_helpers::test_printer();
-        crate::cli::apply::cmd_apply(&cli, &printer, &args).unwrap();
+        crate::cli::apply::cmd_apply(
+            &cli,
+            &printer,
+            &crate::cli::startup::StartupDocument::load(&cli.config),
+            &args,
+        )
+        .unwrap();
         assert_eq!(
             std::fs::read_to_string(&target).unwrap(),
             "declared content\n",
@@ -10069,7 +10384,14 @@ mod tests {
 
         let cli = test_cli_for(config_path.clone(), state_dir.path());
         let printer = cfgd_core::test_helpers::test_printer();
-        crate::cli::diff::cmd_diff(&cli, &printer, None, false).unwrap();
+        crate::cli::diff::cmd_diff(
+            &cli,
+            &printer,
+            &crate::cli::startup::StartupDocument::load(&cli.config),
+            None,
+            false,
+        )
+        .unwrap();
 
         let store = open_state_store(Some(state_dir.path()), cfgd_core::Scope::User).unwrap();
         let rows = store.unresolved_drift().unwrap();
@@ -10080,7 +10402,14 @@ mod tests {
         );
 
         let (printer, buf) = test_printers();
-        cmd_status(&cli, &printer, None, StatusRun::default()).unwrap();
+        cmd_status(
+            &cli,
+            &printer,
+            &crate::cli::startup::StartupDocument::load(&cli.config),
+            None,
+            StatusRun::default(),
+        )
+        .unwrap();
         drop(printer);
         let out = cfgd_core::test_helpers::captured_text(&buf);
         assert!(
@@ -10107,7 +10436,14 @@ mod tests {
         std::fs::write(&target, "edited out of band\n").unwrap();
         let cli = test_cli_for(config_path.clone(), state_dir.path());
         let printer = cfgd_core::test_helpers::test_printer();
-        crate::cli::diff::cmd_diff(&cli, &printer, None, false).unwrap();
+        crate::cli::diff::cmd_diff(
+            &cli,
+            &printer,
+            &crate::cli::startup::StartupDocument::load(&cli.config),
+            None,
+            false,
+        )
+        .unwrap();
         {
             let store = open_state_store(Some(state_dir.path()), cfgd_core::Scope::User).unwrap();
             assert!(
@@ -10119,7 +10455,14 @@ mod tests {
         // Heal by hand and check again: the second diff re-finds nothing,
         // which is the evidence the recorded row needs to resolve.
         std::fs::write(&target, "declared content\n").unwrap();
-        crate::cli::diff::cmd_diff(&cli, &printer, None, false).unwrap();
+        crate::cli::diff::cmd_diff(
+            &cli,
+            &printer,
+            &crate::cli::startup::StartupDocument::load(&cli.config),
+            None,
+            false,
+        )
+        .unwrap();
 
         let store = open_state_store(Some(state_dir.path()), cfgd_core::Scope::User).unwrap();
         let rows = store.unresolved_drift().unwrap();
@@ -10129,7 +10472,14 @@ mod tests {
         );
 
         let (printer, buf) = test_printers();
-        cmd_status(&cli, &printer, None, StatusRun::default()).unwrap();
+        cmd_status(
+            &cli,
+            &printer,
+            &crate::cli::startup::StartupDocument::load(&cli.config),
+            None,
+            StatusRun::default(),
+        )
+        .unwrap();
         drop(printer);
         let out = cfgd_core::test_helpers::captured_text(&buf);
         assert!(
@@ -10195,7 +10545,11 @@ mod tests {
         let printer = cfgd_core::test_helpers::test_printer();
         // The module target is missing, so the scoped scan FINDS drift.
         cmd_status_module(
-            &RunContext::new(&cli, &printer),
+            &RunContext::new(
+                &cli,
+                &printer,
+                &crate::cli::startup::StartupDocument::load(&cli.config),
+            ),
             "test-mod",
             false,
             true,
@@ -10239,7 +10593,14 @@ mod tests {
         // surface (`diff --module`): its own row resolves, the out-of-scope
         // rows still stand, the stamp is still unwritten.
         std::fs::write(&module_target, "module content\n").unwrap();
-        crate::cli::diff::cmd_diff(&cli, &printer, Some("test-mod"), false).unwrap();
+        crate::cli::diff::cmd_diff(
+            &cli,
+            &printer,
+            &crate::cli::startup::StartupDocument::load(&cli.config),
+            Some("test-mod"),
+            false,
+        )
+        .unwrap();
 
         let rows = store.unresolved_drift().unwrap();
         assert!(
@@ -10312,7 +10673,11 @@ mod tests {
         let cli = test_cli_for(config_path, state_dir.path());
         let printer = cfgd_core::test_helpers::test_printer();
         cmd_status_module(
-            &RunContext::new(&cli, &printer),
+            &RunContext::new(
+                &cli,
+                &printer,
+                &crate::cli::startup::StartupDocument::load(&cli.config),
+            ),
             "test-mod",
             false,
             true,
@@ -10389,7 +10754,11 @@ mod tests {
         let cli = test_cli_for(config_path, state_dir.path());
         let printer = cfgd_core::test_helpers::test_printer();
         cmd_status_module(
-            &RunContext::new(&cli, &printer),
+            &RunContext::new(
+                &cli,
+                &printer,
+                &crate::cli::startup::StartupDocument::load(&cli.config),
+            ),
             "test-mod",
             false,
             true,
@@ -10405,7 +10774,14 @@ mod tests {
         assert_eq!(store.last_scan_at().unwrap(), None);
 
         let (printer, buf) = test_printers();
-        cmd_status(&cli, &printer, None, StatusRun::default()).unwrap();
+        cmd_status(
+            &cli,
+            &printer,
+            &crate::cli::startup::StartupDocument::load(&cli.config),
+            None,
+            StatusRun::default(),
+        )
+        .unwrap();
         drop(printer);
         let rendered = cfgd_core::test_helpers::captured_text(&buf);
         assert!(
@@ -10538,7 +10914,11 @@ mod tests {
         let cli = test_cli_for(config_path, state_dir.path());
         let (printer, buf) = test_printers();
         cmd_status_module(
-            &RunContext::new(&cli, &printer),
+            &RunContext::new(
+                &cli,
+                &printer,
+                &crate::cli::startup::StartupDocument::load(&cli.config),
+            ),
             "test-mod",
             false,
             false,
@@ -10662,7 +11042,11 @@ mod tests {
         let cli = test_cli_for(config_path, state_dir.path());
         let (printer, buf) = test_printers();
         cmd_status_module(
-            &RunContext::new(&cli, &printer),
+            &RunContext::new(
+                &cli,
+                &printer,
+                &crate::cli::startup::StartupDocument::load(&cli.config),
+            ),
             "test-mod",
             false,
             false,
@@ -10755,7 +11139,11 @@ mod tests {
         let cli = test_cli_for(config_path, state_dir.path());
         let (printer, buf) = test_printers();
         cmd_status_module(
-            &RunContext::new(&cli, &printer),
+            &RunContext::new(
+                &cli,
+                &printer,
+                &crate::cli::startup::StartupDocument::load(&cli.config),
+            ),
             "test-mod",
             false,
             false,
@@ -10902,7 +11290,11 @@ mod tests {
         let cli = test_cli_for(config_path.clone(), state_dir.path());
         let (printer, buf) = test_printers();
         cmd_status_module(
-            &RunContext::new(&cli, &printer),
+            &RunContext::new(
+                &cli,
+                &printer,
+                &crate::cli::startup::StartupDocument::load(&cli.config),
+            ),
             "test-mod",
             false,
             false,
@@ -10945,7 +11337,11 @@ mod tests {
         json_cli.output = OutputFormatArg(cfgd_core::output::OutputFormat::Json);
         let (json_printer, json_buf) = test_printers_json();
         cmd_status_module(
-            &RunContext::new(&json_cli, &json_printer),
+            &RunContext::new(
+                &json_cli,
+                &json_printer,
+                &crate::cli::startup::StartupDocument::load(&json_cli.config),
+            ),
             "test-mod",
             false,
             false,
@@ -11012,7 +11408,11 @@ mod tests {
         json_cli.output = OutputFormatArg(cfgd_core::output::OutputFormat::Json);
         let (json_printer, json_buf) = test_printers_json();
         cmd_status_module(
-            &RunContext::new(&json_cli, &json_printer),
+            &RunContext::new(
+                &json_cli,
+                &json_printer,
+                &crate::cli::startup::StartupDocument::load(&json_cli.config),
+            ),
             "test-mod",
             false,
             true,
@@ -11100,7 +11500,11 @@ mod tests {
         json_cli.output = OutputFormatArg(cfgd_core::output::OutputFormat::Json);
         let (json_printer, json_buf) = test_printers_json();
         cmd_status_module(
-            &RunContext::new(&json_cli, &json_printer),
+            &RunContext::new(
+                &json_cli,
+                &json_printer,
+                &crate::cli::startup::StartupDocument::load(&json_cli.config),
+            ),
             "test-mod",
             false,
             true,
@@ -11141,7 +11545,11 @@ mod tests {
         let human_cli = test_cli_for(config_path, state_dir.path());
         let (human_printer, human_buf) = test_printers();
         cmd_status_module(
-            &RunContext::new(&human_cli, &human_printer),
+            &RunContext::new(
+                &human_cli,
+                &human_printer,
+                &crate::cli::startup::StartupDocument::load(&human_cli.config),
+            ),
             "test-mod",
             false,
             true,
@@ -11198,7 +11606,11 @@ mod tests {
         let cli = test_cli_for(config_path, state_dir.path());
         let (printer, buf) = test_printers();
         cmd_status_module(
-            &RunContext::new(&cli, &printer),
+            &RunContext::new(
+                &cli,
+                &printer,
+                &crate::cli::startup::StartupDocument::load(&cli.config),
+            ),
             "test-mod",
             false,
             true,
@@ -11241,7 +11653,11 @@ mod tests {
         );
         let printer = cfgd_core::test_helpers::test_printer();
         cmd_status_module(
-            &RunContext::new(&cli, &printer),
+            &RunContext::new(
+                &cli,
+                &printer,
+                &crate::cli::startup::StartupDocument::load(&cli.config),
+            ),
             "test-mod",
             false,
             true,

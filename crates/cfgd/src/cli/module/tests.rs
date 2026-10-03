@@ -504,6 +504,7 @@ fn rendered_show(cli: &super::Cli, name: &str) -> String {
     cmd_module_show(
         cli,
         &printer,
+        &crate::cli::startup::StartupDocument::load(&cli.config),
         name,
         crate::cli::InventoryDetail::default(),
         false,
@@ -654,6 +655,7 @@ fn cmd_module_show_not_found() {
     let err = cmd_module_show(
         &cli,
         &printer,
+        &crate::cli::startup::StartupDocument::load(&cli.config),
         "ghost",
         crate::cli::InventoryDetail::default(),
         false,
@@ -683,6 +685,7 @@ fn cmd_module_show_displays_details() {
     cmd_module_show(
         &cli,
         &printer,
+        &crate::cli::startup::StartupDocument::load(&cli.config),
         "devtools",
         crate::cli::InventoryDetail::default(),
         false,
@@ -737,6 +740,7 @@ fn cmd_module_show_local_does_not_load_locked_remotes() {
     cmd_module_show(
         &cli,
         &printer,
+        &crate::cli::startup::StartupDocument::load(&cli.config),
         "local-mod",
         crate::cli::InventoryDetail::default(),
         false,
@@ -770,6 +774,7 @@ fn cmd_module_show_falls_through_to_locked_modules() {
     let err = cmd_module_show(
         &cli,
         &printer,
+        &crate::cli::startup::StartupDocument::load(&cli.config),
         "private-mod",
         crate::cli::InventoryDetail::default(),
         false,
@@ -797,6 +802,7 @@ fn cmd_module_show_with_available_hint() {
     let err = cmd_module_show(
         &cli,
         &printer,
+        &crate::cli::startup::StartupDocument::load(&cli.config),
         "missing",
         crate::cli::InventoryDetail::default(),
         false,
@@ -838,6 +844,7 @@ fn cmd_module_show_env_masking() {
     cmd_module_show(
         &cli,
         &printer,
+        &crate::cli::startup::StartupDocument::load(&cli.config),
         "secrets-mod",
         crate::cli::InventoryDetail::default(),
         false,
@@ -868,6 +875,7 @@ fn cmd_module_show_env_unmasked() {
     cmd_module_show(
         &cli,
         &printer,
+        &crate::cli::startup::StartupDocument::load(&cli.config),
         "env-mod",
         crate::cli::InventoryDetail {
             masking: crate::cli::EnvValueMasking::revealing(),
@@ -900,6 +908,7 @@ fn cmd_module_show_json_schema() {
     cmd_module_show(
         &cli,
         &printer,
+        &crate::cli::startup::StartupDocument::load(&cli.config),
         "jmod",
         crate::cli::InventoryDetail::default(),
         false,
@@ -1000,7 +1009,13 @@ fn no_module_verb_respells_the_name_its_heading_already_stated() {
     quoted("create", "walkmod-new", None, &|cli, printer| {
         let mut args = make_module_create_args("walkmod-new");
         args.packages = vec!["jq".to_string()];
-        cmd_module_create(cli, printer, &args).expect("create");
+        cmd_module_create(
+            cli,
+            printer,
+            &crate::cli::startup::StartupDocument::load(&cli.config),
+            &args,
+        )
+        .expect("create");
     });
     quoted("update", "walkmod", Some("walkmod"), &|cli, printer| {
         let args = super::ModuleUpdateArgs {
@@ -1096,7 +1111,13 @@ fn cmd_module_create_records_a_sub_list_packages_registered_manager() {
         packages: vec!["brew.taps:charmbracelet/tap".to_string()],
         ..make_module_create_args("tapmod")
     };
-    cmd_module_create(&cli, &printer, &args).unwrap();
+    cmd_module_create(
+        &cli,
+        &printer,
+        &crate::cli::startup::StartupDocument::load(&cli.config),
+        &args,
+    )
+    .unwrap();
 
     let (doc, _) = load_module_document(dir.path(), "tapmod").unwrap();
     assert_eq!(doc.spec.packages[0].name, "charmbracelet/tap");
@@ -1124,9 +1145,14 @@ fn module_surfaces_refuse_a_snap_classic_token() {
         packages: vec!["snap.classic:code".to_string()],
         ..make_module_create_args("classicmod")
     };
-    let err = cmd_module_create(&cli, &printer, &create)
-        .unwrap_err()
-        .to_string();
+    let err = cmd_module_create(
+        &cli,
+        &printer,
+        &crate::cli::startup::StartupDocument::load(&cli.config),
+        &create,
+    )
+    .unwrap_err()
+    .to_string();
     assert!(err.contains("use snap:code"), "create: got: {err}");
 
     for token in ["snap.classic:code", "-snap.classic:code"] {
@@ -1151,9 +1177,14 @@ fn cmd_module_create_refuses_the_wire_spelling_of_a_virtual_brew_manager() {
         packages: vec!["brew-tap:charmbracelet/tap".to_string()],
         ..make_module_create_args("badmod")
     };
-    let err = cmd_module_create(&cli, &printer, &args)
-        .unwrap_err()
-        .to_string();
+    let err = cmd_module_create(
+        &cli,
+        &printer,
+        &crate::cli::startup::StartupDocument::load(&cli.config),
+        &args,
+    )
+    .unwrap_err()
+    .to_string();
     assert!(
         err.contains("use brew.taps:charmbracelet/tap"),
         "should name the schema spelling, got: {err}"
@@ -1526,7 +1557,13 @@ fn cmd_module_create_with_env_and_aliases() {
         aliases: vec!["ll=ls -la".to_string()],
         ..make_module_create_args("env-mod")
     };
-    cmd_module_create(&cli, &printer, &args).unwrap();
+    cmd_module_create(
+        &cli,
+        &printer,
+        &crate::cli::startup::StartupDocument::load(&cli.config),
+        &args,
+    )
+    .unwrap();
     drop(printer);
 
     let module_yaml = dir
@@ -1570,7 +1607,13 @@ fn cmd_module_create_with_depends_and_scripts() {
         post_apply: vec!["echo setup".to_string()],
         ..make_module_create_args("dep-mod")
     };
-    cmd_module_create(&cli, &printer, &args).unwrap();
+    cmd_module_create(
+        &cli,
+        &printer,
+        &crate::cli::startup::StartupDocument::load(&cli.config),
+        &args,
+    )
+    .unwrap();
 
     let (doc, _) = load_module_document(dir.path(), "dep-mod").unwrap();
     assert_eq!(doc.spec.depends, vec!["base"]);
@@ -1586,7 +1629,13 @@ fn cmd_module_create_invalid_name_fails() {
     let printer = make_printer();
 
     let args = make_module_create_args(".bad-name");
-    let err = cmd_module_create(&cli, &printer, &args).unwrap_err();
+    let err = cmd_module_create(
+        &cli,
+        &printer,
+        &crate::cli::startup::StartupDocument::load(&cli.config),
+        &args,
+    )
+    .unwrap_err();
     assert!(
         err.to_string().contains("cannot start with"),
         "should reject invalid name, got: {err}"
@@ -2325,6 +2374,7 @@ fn cmd_module_show_json_with_lockfile_entry() {
     cmd_module_show(
         &cli,
         &printer,
+        &crate::cli::startup::StartupDocument::load(&cli.config),
         "remote-mod",
         crate::cli::InventoryDetail::default(),
         false,
@@ -2372,6 +2422,7 @@ fn cmd_module_show_table_with_lockfile_entry() {
     cmd_module_show(
         &cli,
         &printer,
+        &crate::cli::startup::StartupDocument::load(&cli.config),
         "locked-mod",
         crate::cli::InventoryDetail::default(),
         false,
@@ -2412,6 +2463,7 @@ fn cmd_module_show_aliases() {
     cmd_module_show(
         &cli,
         &printer,
+        &crate::cli::startup::StartupDocument::load(&cli.config),
         "alias-mod",
         crate::cli::InventoryDetail::default(),
         false,
@@ -2449,6 +2501,7 @@ fn cmd_module_show_scripts() {
     cmd_module_show(
         &cli,
         &printer,
+        &crate::cli::startup::StartupDocument::load(&cli.config),
         "script-mod",
         crate::cli::InventoryDetail::default(),
         false,
@@ -2490,6 +2543,7 @@ fn cmd_module_show_files_with_git_source() {
     cmd_module_show(
         &cli,
         &printer,
+        &crate::cli::startup::StartupDocument::load(&cli.config),
         "git-file-mod",
         crate::cli::InventoryDetail::default(),
         false,
@@ -2525,7 +2579,13 @@ fn cmd_module_create_with_packages_and_sets() {
         ],
         ..make_module_create_args("pkg-set-mod")
     };
-    cmd_module_create(&cli, &printer, &args).unwrap();
+    cmd_module_create(
+        &cli,
+        &printer,
+        &crate::cli::startup::StartupDocument::load(&cli.config),
+        &args,
+    )
+    .unwrap();
     drop(printer);
 
     let (doc, _) = load_module_document(dir.path(), "pkg-set-mod").unwrap();
@@ -2564,11 +2624,23 @@ fn cmd_module_create_duplicate_name_fails() {
         description: Some("test module".to_string()),
         ..make_module_create_args("dup-mod")
     };
-    cmd_module_create(&cli, &printer, &args).unwrap();
+    cmd_module_create(
+        &cli,
+        &printer,
+        &crate::cli::startup::StartupDocument::load(&cli.config),
+        &args,
+    )
+    .unwrap();
 
     // Second create with same name should fail
     let printer2 = make_printer();
-    let err = cmd_module_create(&cli, &printer2, &args).unwrap_err();
+    let err = cmd_module_create(
+        &cli,
+        &printer2,
+        &crate::cli::startup::StartupDocument::load(&cli.config),
+        &args,
+    )
+    .unwrap_err();
     assert!(
         err.to_string().contains("already exists"),
         "should report already exists, got: {err}"
@@ -2587,7 +2659,13 @@ fn cmd_module_create_post_apply_scripts_escape() {
         post_apply: vec![r"echo hello \! world".to_string()],
         ..make_module_create_args("script-esc-mod")
     };
-    cmd_module_create(&cli, &printer, &args).unwrap();
+    cmd_module_create(
+        &cli,
+        &printer,
+        &crate::cli::startup::StartupDocument::load(&cli.config),
+        &args,
+    )
+    .unwrap();
 
     let (doc, _) = load_module_document(dir.path(), "script-esc-mod").unwrap();
     let scripts = doc.spec.scripts.unwrap();
@@ -2611,7 +2689,13 @@ fn cmd_module_create_with_prefixed_packages() {
         packages: vec!["brew:ripgrep".to_string(), "cargo:fd-find".to_string()],
         ..make_module_create_args("prefix-mod")
     };
-    cmd_module_create(&cli, &printer, &args).unwrap();
+    cmd_module_create(
+        &cli,
+        &printer,
+        &crate::cli::startup::StartupDocument::load(&cli.config),
+        &args,
+    )
+    .unwrap();
 
     let (doc, _) = load_module_document(dir.path(), "prefix-mod").unwrap();
     assert_eq!(doc.spec.packages[0].name, "ripgrep");
@@ -2640,7 +2724,13 @@ fn cmd_module_create_with_file_import() {
         files: vec![file_spec],
         ..make_module_create_args("file-mod")
     };
-    cmd_module_create(&cli, &printer, &args).unwrap();
+    cmd_module_create(
+        &cli,
+        &printer,
+        &crate::cli::startup::StartupDocument::load(&cli.config),
+        &args,
+    )
+    .unwrap();
     drop(printer);
 
     let (doc, _) = load_module_document(dir.path(), "file-mod").unwrap();
@@ -2687,7 +2777,13 @@ fn cmd_module_create_duplicate_file_basenames_fail() {
         ],
         ..make_module_create_args("dup-file-mod")
     };
-    let err = cmd_module_create(&cli, &printer, &args).unwrap_err();
+    let err = cmd_module_create(
+        &cli,
+        &printer,
+        &crate::cli::startup::StartupDocument::load(&cli.config),
+        &args,
+    )
+    .unwrap_err();
     assert!(
         err.to_string().contains("Duplicate file basename"),
         "should report duplicate basenames, got: {err}"
@@ -2710,7 +2806,13 @@ fn cmd_module_create_private_files_gitignore() {
         private: true,
         ..make_module_create_args("priv-mod")
     };
-    cmd_module_create(&cli, &printer, &args).unwrap();
+    cmd_module_create(
+        &cli,
+        &printer,
+        &crate::cli::startup::StartupDocument::load(&cli.config),
+        &args,
+    )
+    .unwrap();
 
     let (doc, _) = load_module_document(dir.path(), "priv-mod").unwrap();
     assert!(doc.spec.files[0].private, "file should be marked private");
@@ -3301,8 +3403,13 @@ fn cmd_module_create_with_apply_and_yes_drives_full_apply_sequence() {
     args.yes = true;
     args.description = Some("noop".to_string());
 
-    cmd_module_create(&cli, &printer, &args)
-        .expect("create-with-apply-yes (empty spec) should succeed");
+    cmd_module_create(
+        &cli,
+        &printer,
+        &crate::cli::startup::StartupDocument::load(&cli.config),
+        &args,
+    )
+    .expect("create-with-apply-yes (empty spec) should succeed");
     drop(printer);
 
     let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -3358,7 +3465,13 @@ fn module_create_apply_keeps_the_rows_its_scope_never_resolved() {
     let create = |args: &super::ModuleCreateArgs| {
         let (printer, _buf) =
             cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-        cmd_module_create(&cli, &printer, args).expect("create-with-apply must succeed");
+        cmd_module_create(
+            &cli,
+            &printer,
+            &crate::cli::startup::StartupDocument::load(&cli.config),
+            args,
+        )
+        .expect("create-with-apply must succeed");
     };
 
     // The module whose entries the env surface then holds.
@@ -3513,7 +3626,13 @@ fn cmd_module_create_apply_prices_the_package_it_installs() {
     // (manager, package) for the whole process.
     args.packages = vec!["qp4-created-tool".to_string()];
 
-    cmd_module_create(&cli, &printer, &args).expect("create-with-apply must succeed");
+    cmd_module_create(
+        &cli,
+        &printer,
+        &crate::cli::startup::StartupDocument::load(&cli.config),
+        &args,
+    )
+    .expect("create-with-apply must succeed");
     drop(printer);
 
     let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -3551,7 +3670,13 @@ fn cmd_module_create_interactive_drives_full_prompt_sequence_via_harness() {
     );
     let args = make_module_create_args("interactive-mod");
 
-    cmd_module_create(&cli, &printer, &args).expect("interactive create should succeed");
+    cmd_module_create(
+        &cli,
+        &printer,
+        &crate::cli::startup::StartupDocument::load(&cli.config),
+        &args,
+    )
+    .expect("interactive create should succeed");
     drop(printer);
 
     // The module yaml should be written with the prompted fields.
@@ -4081,6 +4206,7 @@ fn cmd_module_show_resolved_renders_platform_filtered_and_resolved_packages() {
     cmd_module_show(
         &cli,
         &printer,
+        &crate::cli::startup::StartupDocument::load(&cli.config),
         "rich",
         crate::cli::InventoryDetail::default(),
         true,
@@ -4509,6 +4635,7 @@ fn cmd_module_show_json_depends() {
     cmd_module_show(
         &cli,
         &printer,
+        &crate::cli::startup::StartupDocument::load(&cli.config),
         "dep-show",
         crate::cli::InventoryDetail::default(),
         false,
@@ -4613,7 +4740,13 @@ fn cmd_module_create_description_and_depends_output() {
         packages: vec!["curl".to_string()],
         ..make_module_create_args("desc-mod")
     };
-    cmd_module_create(&cli, &printer, &args).unwrap();
+    cmd_module_create(
+        &cli,
+        &printer,
+        &crate::cli::startup::StartupDocument::load(&cli.config),
+        &args,
+    )
+    .unwrap();
     drop(printer);
 
     let (doc, _) = load_module_document(dir.path(), "desc-mod").unwrap();
@@ -4648,7 +4781,13 @@ fn cmd_module_create_no_description_omits_field() {
         packages: vec!["curl".to_string()],
         ..make_module_create_args("nodesc-mod")
     };
-    cmd_module_create(&cli, &printer, &args).unwrap();
+    cmd_module_create(
+        &cli,
+        &printer,
+        &crate::cli::startup::StartupDocument::load(&cli.config),
+        &args,
+    )
+    .unwrap();
 
     let yaml = std::fs::read_to_string(
         dir.path()
@@ -7480,7 +7619,13 @@ fn cmd_module_create_interactive_imports_file_and_script_with_empty_description(
     );
 
     let args = make_module_create_args("interactive-file-mod");
-    cmd_module_create(&cli, &printer, &args).expect("interactive create should succeed");
+    cmd_module_create(
+        &cli,
+        &printer,
+        &crate::cli::startup::StartupDocument::load(&cli.config),
+        &args,
+    )
+    .expect("interactive create should succeed");
     drop(printer);
 
     let (doc, _) = load_module_document(dir.path(), "interactive-file-mod").unwrap();
@@ -7539,8 +7684,13 @@ fn cmd_module_create_apply_declined_emits_applied_false_and_leaves_unapplied() {
     args.yes = false;
     args.env = vec!["CARGO_HOME_TEST=/tmp/x".to_string()];
 
-    cmd_module_create(&cli, &printer, &args)
-        .expect("create with apply declined should still succeed");
+    cmd_module_create(
+        &cli,
+        &printer,
+        &crate::cli::startup::StartupDocument::load(&cli.config),
+        &args,
+    )
+    .expect("create with apply declined should still succeed");
     drop(printer);
 
     // The emitted doc must record the decline as applied:false.
@@ -7908,7 +8058,13 @@ fn cmd_module_create_success_doc_payload_fields() {
         packages: vec!["ripgrep".to_string(), "fd".to_string()],
         ..make_module_create_args("create-doc")
     };
-    cmd_module_create(&cli, &printer, &args).expect("create should succeed");
+    cmd_module_create(
+        &cli,
+        &printer,
+        &crate::cli::startup::StartupDocument::load(&cli.config),
+        &args,
+    )
+    .expect("create should succeed");
     drop(printer);
 
     let json = cap.json().expect("doc captured json");
@@ -8085,7 +8241,13 @@ fn cmd_module_update_preserves_leading_comment_block() {
         description: Some("Comment keeper".to_string()),
         ..make_module_create_args("keeper")
     };
-    cmd_module_create(&cli, &printer, &create_args).unwrap();
+    cmd_module_create(
+        &cli,
+        &printer,
+        &crate::cli::startup::StartupDocument::load(&cli.config),
+        &create_args,
+    )
+    .unwrap();
     let module_yaml = dir
         .path()
         .join("modules")

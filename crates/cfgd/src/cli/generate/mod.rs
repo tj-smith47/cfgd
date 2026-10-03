@@ -61,7 +61,12 @@ pub enum GenerateTarget {
     },
 }
 
-pub fn cmd_generate(cli: &Cli, printer: &Printer, args: &GenerateArgs) -> anyhow::Result<()> {
+pub fn cmd_generate(
+    cli: &Cli,
+    printer: &Printer,
+    startup: &crate::cli::startup::StartupDocument,
+    args: &GenerateArgs,
+) -> anyhow::Result<()> {
     // --scan-only short-circuits the AI conversation loop.
     if args.scan_only {
         return cmd_generate_scan_only(printer, args);
@@ -181,7 +186,7 @@ pub fn cmd_generate(cli: &Cli, printer: &Printer, args: &GenerateArgs) -> anyhow
     let managers: Vec<Box<dyn cfgd_core::providers::PackageManager>> =
         packages::all_package_managers();
     let home = dirs_from_env();
-    let ctx = crate::cli::RunContext::new(cli, printer);
+    let ctx = crate::cli::RunContext::new(cli, printer, startup);
     let pkg_cx = ctx.package_context()?;
 
     // 9. Conversation loop

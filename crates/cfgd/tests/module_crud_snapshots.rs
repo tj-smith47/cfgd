@@ -110,7 +110,13 @@ fn module_create_happy_human() {
         apply: false,
         yes: true,
     };
-    module::cmd_module_create(&cli, &printer, &args).unwrap();
+    module::cmd_module_create(
+        &cli,
+        &printer,
+        &cfgd::cli::startup::StartupDocument::load(&cli.config),
+        &args,
+    )
+    .unwrap();
     drop(printer);
 
     let stripped = normalize(&strip_ansi(&cap.human()), config_dir.path());
@@ -148,7 +154,13 @@ fn module_create_with_apply_human() {
         apply: true,
         yes: true,
     };
-    module::cmd_module_create(&cli, &printer, &args).unwrap();
+    module::cmd_module_create(
+        &cli,
+        &printer,
+        &cfgd::cli::startup::StartupDocument::load(&cli.config),
+        &args,
+    )
+    .unwrap();
     drop(printer);
 
     let stripped = normalize(&strip_ansi(&cap.human()), config_dir.path());
@@ -187,7 +199,13 @@ fn module_create_happy_json() {
         apply: false,
         yes: true,
     };
-    module::cmd_module_create(&cli, &printer, &args).unwrap();
+    module::cmd_module_create(
+        &cli,
+        &printer,
+        &cfgd::cli::startup::StartupDocument::load(&cli.config),
+        &args,
+    )
+    .unwrap();
     drop(printer);
 
     let json = cap.json().expect("doc captured json");
@@ -216,8 +234,13 @@ fn module_create_already_exists_human() {
         apply: false,
         yes: true,
     };
-    let err = module::cmd_module_create(&cli, &printer, &args)
-        .expect_err("duplicate module must return Err");
+    let err = module::cmd_module_create(
+        &cli,
+        &printer,
+        &cfgd::cli::startup::StartupDocument::load(&cli.config),
+        &args,
+    )
+    .expect_err("duplicate module must return Err");
     render_cli_error(&printer, &err);
     drop(printer);
 

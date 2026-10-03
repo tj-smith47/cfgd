@@ -89,10 +89,11 @@ fn files_by_target(
 pub fn cmd_diff(
     cli: &Cli,
     printer: &Printer,
+    startup: &crate::cli::startup::StartupDocument,
     module_filter: Option<&str>,
     exit_code: bool,
 ) -> anyhow::Result<()> {
-    let ctx = RunContext::new(cli, printer);
+    let ctx = RunContext::new(cli, printer, startup);
     let config_dir = ctx.config_dir();
 
     if let Some(mod_name) = module_filter {
@@ -1353,7 +1354,14 @@ mod tests {
         cli.cache_dir = Some(tmp.path().join("cache"));
         let printer = quiet_printer();
 
-        let err = cmd_diff(&cli, &printer, Some("cycle-a"), false).unwrap_err();
+        let err = cmd_diff(
+            &cli,
+            &printer,
+            &crate::cli::startup::StartupDocument::load(&cli.config),
+            Some("cycle-a"),
+            false,
+        )
+        .unwrap_err();
         let cfgd_err = err
             .downcast_ref::<cfgd_core::errors::CfgdError>()
             .unwrap_or_else(|| panic!("expected a typed CfgdError, got: {err}"));
@@ -1429,7 +1437,14 @@ mod tests {
         cli.cache_dir = Some(tmp.path().join("cache"));
         let (printer, buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
-        cmd_diff(&cli, &printer, None, false).unwrap();
+        cmd_diff(
+            &cli,
+            &printer,
+            &crate::cli::startup::StartupDocument::load(&cli.config),
+            None,
+            false,
+        )
+        .unwrap();
         drop(printer);
         let human = strip_ansi(&cfgd_core::test_helpers::captured_text(&buf));
         assert!(
@@ -1524,7 +1539,14 @@ mod tests {
         cli.cache_dir = Some(tmp.path().join("cache"));
         let (printer, cap) = Printer::for_test_doc();
 
-        cmd_diff(&cli, &printer, None, false).unwrap();
+        cmd_diff(
+            &cli,
+            &printer,
+            &crate::cli::startup::StartupDocument::load(&cli.config),
+            None,
+            false,
+        )
+        .unwrap();
         drop(printer);
         let human = strip_ansi(&cap.human());
         assert!(
@@ -1614,7 +1636,14 @@ mod tests {
         drop(state);
 
         let (printer, cap) = Printer::for_test_doc();
-        cmd_diff(&cli, &printer, None, false).unwrap();
+        cmd_diff(
+            &cli,
+            &printer,
+            &crate::cli::startup::StartupDocument::load(&cli.config),
+            None,
+            false,
+        )
+        .unwrap();
         drop(printer);
 
         let json = cap.json().expect("diff emits a data payload");
@@ -1689,7 +1718,14 @@ mod tests {
         cli.cache_dir = Some(tmp.path().join("cache"));
 
         let (printer, cap) = Printer::for_test_doc();
-        cmd_diff(&cli, &printer, Some("env-mod"), false).unwrap();
+        cmd_diff(
+            &cli,
+            &printer,
+            &crate::cli::startup::StartupDocument::load(&cli.config),
+            Some("env-mod"),
+            false,
+        )
+        .unwrap();
         drop(printer);
 
         let json = cap.json().expect("diff emits a data payload");
@@ -1706,7 +1742,14 @@ mod tests {
         assert_eq!(json["summary"]["envCheckFailed"], serde_json::json!(false));
 
         let (printer, buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-        super::super::verify::cmd_verify(&cli, &printer, Some("env-mod"), false).unwrap();
+        super::super::verify::cmd_verify(
+            &cli,
+            &printer,
+            &crate::cli::startup::StartupDocument::load(&cli.config),
+            Some("env-mod"),
+            false,
+        )
+        .unwrap();
         drop(printer);
         let out = cfgd_core::test_helpers::captured_text(&buf);
         let env_file_name = cfgd_core::reconciler::primary_env_file(tmp_home.path())
@@ -1806,7 +1849,14 @@ mod tests {
         // The module that owns nothing on the drifted surface stays clean:
         // PAGER is the profile's, and a scoped diff may not blame or report it.
         let (printer, cap) = Printer::for_test_doc();
-        cmd_diff(&cli, &printer, Some("other-mod"), false).unwrap();
+        cmd_diff(
+            &cli,
+            &printer,
+            &crate::cli::startup::StartupDocument::load(&cli.config),
+            Some("other-mod"),
+            false,
+        )
+        .unwrap();
         drop(printer);
         let json = cap.json().expect("diff emits a data payload");
         assert_eq!(
@@ -1818,7 +1868,14 @@ mod tests {
 
         // The module that DOES own a missing entry reports exactly it.
         let (printer, cap) = Printer::for_test_doc();
-        cmd_diff(&cli, &printer, Some("env-mod"), false).unwrap();
+        cmd_diff(
+            &cli,
+            &printer,
+            &crate::cli::startup::StartupDocument::load(&cli.config),
+            Some("env-mod"),
+            false,
+        )
+        .unwrap();
         drop(printer);
         let json = cap.json().expect("diff emits a data payload");
         let env = json["env"].as_array().expect("env array present");
@@ -1978,7 +2035,14 @@ mod tests {
         }
 
         let printer = cfgd_core::test_helpers::test_printer();
-        cmd_diff(&cli, &printer, Some("env-mod"), false).unwrap();
+        cmd_diff(
+            &cli,
+            &printer,
+            &crate::cli::startup::StartupDocument::load(&cli.config),
+            Some("env-mod"),
+            false,
+        )
+        .unwrap();
 
         let store =
             crate::cli::registry::open_state_store(Some(&state_dir), cfgd_core::Scope::User)
@@ -2043,7 +2107,14 @@ mod tests {
         cli.cache_dir = Some(tmp.path().join("cache"));
 
         let (printer, cap) = Printer::for_test_doc();
-        cmd_diff(&cli, &printer, Some("env-mod"), false).unwrap();
+        cmd_diff(
+            &cli,
+            &printer,
+            &crate::cli::startup::StartupDocument::load(&cli.config),
+            Some("env-mod"),
+            false,
+        )
+        .unwrap();
         drop(printer);
         let json = cap.json().expect("diff emits a data payload");
         assert_eq!(
@@ -2141,8 +2212,14 @@ mod tests {
         cli.cache_dir = Some(tmp.path().join("cache"));
         let (printer, cap) = Printer::for_test_doc();
 
-        cmd_diff(&cli, &printer, Some("file-mod"), false)
-            .expect("one module's failure must not abort another module's diff");
+        cmd_diff(
+            &cli,
+            &printer,
+            &crate::cli::startup::StartupDocument::load(&cli.config),
+            Some("file-mod"),
+            false,
+        )
+        .expect("one module's failure must not abort another module's diff");
         drop(printer);
 
         let json = cap.json().expect("diff emits a data payload");

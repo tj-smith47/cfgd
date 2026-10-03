@@ -125,7 +125,13 @@ fn apply_happy_human() {
     let (printer, cap) = Printer::for_test_doc();
     let args = apply_args();
 
-    cmd_apply(&cli, &printer, &args).unwrap();
+    cmd_apply(
+        &cli,
+        &printer,
+        &cfgd::cli::startup::StartupDocument::load(&cli.config),
+        &args,
+    )
+    .unwrap();
     drop(printer);
 
     let normalized =
@@ -162,7 +168,13 @@ fn apply_dry_run_human() {
     let printer = printer.with_hints_enabled(true);
     let args = apply_args_dry_run();
 
-    cmd_apply(&cli, &printer, &args).unwrap();
+    cmd_apply(
+        &cli,
+        &printer,
+        &cfgd::cli::startup::StartupDocument::load(&cli.config),
+        &args,
+    )
+    .unwrap();
     drop(printer);
 
     assert!(!target.exists(), "dry-run must not create the target file");
@@ -191,12 +203,24 @@ fn plan_and_dry_run_record_the_same_saved_plan() {
     let cli = cli_for(config_dir.path(), state_dir.path());
 
     let (printer, cap) = Printer::for_test_doc_with_format(cfgd_core::output::OutputFormat::Json);
-    cmd_plan(&cli, &printer, &plan_args()).unwrap();
+    cmd_plan(
+        &cli,
+        &printer,
+        &cfgd::cli::startup::StartupDocument::load(&cli.config),
+        &plan_args(),
+    )
+    .unwrap();
     drop(printer);
     let planned = cap.json().expect("plan doc carries a payload");
 
     let (printer, cap) = Printer::for_test_doc_with_format(cfgd_core::output::OutputFormat::Json);
-    cmd_apply(&cli, &printer, &apply_args_dry_run()).unwrap();
+    cmd_apply(
+        &cli,
+        &printer,
+        &cfgd::cli::startup::StartupDocument::load(&cli.config),
+        &apply_args_dry_run(),
+    )
+    .unwrap();
     drop(printer);
     let dry_run = cap.json().expect("apply doc carries a payload");
 
@@ -224,6 +248,9 @@ fn plan_and_dry_run_agree_below_the_title_row() {
     cmd_plan(
         &cli_for(config_dir.path(), state_dir.path()),
         &printer,
+        &cfgd::cli::startup::StartupDocument::load(
+            &cli_for(config_dir.path(), state_dir.path()).config,
+        ),
         &plan_args(),
     )
     .unwrap();
@@ -239,6 +266,9 @@ fn plan_and_dry_run_agree_below_the_title_row() {
     cmd_apply(
         &cli_for(config_dir.path(), state_dir.path()),
         &printer,
+        &cfgd::cli::startup::StartupDocument::load(
+            &cli_for(config_dir.path(), state_dir.path()).config,
+        ),
         &apply_args_dry_run(),
     )
     .unwrap();
@@ -303,7 +333,13 @@ fn apply_after_plan_work_human_and_json() {
         ..apply_args()
     };
 
-    cmd_apply(&cli, &printer, &args).unwrap();
+    cmd_apply(
+        &cli,
+        &printer,
+        &cfgd::cli::startup::StartupDocument::load(&cli.config),
+        &args,
+    )
+    .unwrap();
     drop(printer);
 
     // Three planned deploys of which one settles as a conflict skip, and four
@@ -421,7 +457,13 @@ fn apply_change_hooks_open_one_group_per_declaring_owner() {
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc();
 
-    cmd_apply(&cli, &printer, &apply_args()).unwrap();
+    cmd_apply(
+        &cli,
+        &printer,
+        &cfgd::cli::startup::StartupDocument::load(&cli.config),
+        &apply_args(),
+    )
+    .unwrap();
     drop(printer);
 
     let normalized =
@@ -461,7 +503,13 @@ fn apply_with_failures_human() {
     // `process::exit` that `cmd_apply` performs on a partial apply — that exit
     // would abort the in-process snapshot capture (it is covered by the
     // subprocess test in `apply_exit_code.rs`).
-    let outcome = run_apply(&cli, &printer, &args).unwrap();
+    let outcome = run_apply(
+        &cli,
+        &printer,
+        &cfgd::cli::startup::StartupDocument::load(&cli.config),
+        &args,
+    )
+    .unwrap();
     drop(printer);
 
     assert_eq!(
@@ -509,7 +557,13 @@ fn apply_phase_tree_human() {
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc();
 
-    let outcome = run_apply(&cli, &printer, &apply_args()).unwrap();
+    let outcome = run_apply(
+        &cli,
+        &printer,
+        &cfgd::cli::startup::StartupDocument::load(&cli.config),
+        &apply_args(),
+    )
+    .unwrap();
     drop(printer);
 
     assert_eq!(
@@ -581,7 +635,13 @@ fn apply_env_owner_groups_human() {
 
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc();
-    run_apply(&cli, &printer, &apply_args()).unwrap();
+    run_apply(
+        &cli,
+        &printer,
+        &cfgd::cli::startup::StartupDocument::load(&cli.config),
+        &apply_args(),
+    )
+    .unwrap();
     drop(printer);
 
     let normalized = normalize_tempdir_paths(&cap.human(), config_dir.path(), &[]);

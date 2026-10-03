@@ -577,6 +577,7 @@ pub(super) fn module_show_resolved_rows(
 pub(crate) fn cmd_module_show(
     cli: &Cli,
     printer: &Printer,
+    startup: &crate::cli::startup::StartupDocument,
     name: &str,
     detail: crate::cli::InventoryDetail<'_>,
     resolved: bool,
@@ -620,7 +621,7 @@ pub(crate) fn cmd_module_show(
     // `Secrets` masking policy below both need one, and a second would repeat
     // the config load, the source composition and the profile resolution the
     // first already paid for.
-    let ctx = crate::cli::RunContext::new(cli, printer);
+    let ctx = crate::cli::RunContext::new(cli, printer, startup);
     let resolved_packages = if resolved {
         Some(build_module_show_resolved_package_rows(
             &ctx,

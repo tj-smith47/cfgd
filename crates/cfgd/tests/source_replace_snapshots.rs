@@ -91,7 +91,14 @@ fn source_replace_happy_human() {
 
     let (printer, cap) = Printer::for_test_doc();
     let printer = printer.with_hints_enabled(true);
-    cmd_source_replace(&cli, &printer, "replace-old", &url_new).unwrap();
+    cmd_source_replace(
+        &cli,
+        &printer,
+        &cfgd::cli::startup::StartupDocument::load(&cli.config),
+        "replace-old",
+        &url_new,
+    )
+    .unwrap();
     drop(printer);
 
     let stripped = normalize_bare(
@@ -177,7 +184,14 @@ fn source_replace_carries_every_subscription_field() {
     .expect("write config");
 
     let (printer, _cap) = Printer::for_test_doc();
-    cmd_source_replace(&cli, &printer, "carry-old", &url_new).expect("replace");
+    cmd_source_replace(
+        &cli,
+        &printer,
+        &cfgd::cli::startup::StartupDocument::load(&cli.config),
+        "carry-old",
+        &url_new,
+    )
+    .expect("replace");
     drop(printer);
 
     let after: serde_yaml::Value =
@@ -202,8 +216,14 @@ fn source_replace_not_found_human() {
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc();
 
-    let err = cmd_source_replace(&cli, &printer, "missing", "https://github.com/team/new.git")
-        .expect_err("missing old source must return Err");
+    let err = cmd_source_replace(
+        &cli,
+        &printer,
+        &cfgd::cli::startup::StartupDocument::load(&cli.config),
+        "missing",
+        "https://github.com/team/new.git",
+    )
+    .expect_err("missing old source must return Err");
     render_cli_error(&printer, &err);
     drop(printer);
 

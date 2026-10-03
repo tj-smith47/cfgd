@@ -6,6 +6,7 @@ use super::*;
 pub fn cmd_plan(
     cli: &Cli,
     printer: &cfgd_core::output::Printer,
+    startup: &crate::cli::startup::StartupDocument,
     args: &PlanArgs,
 ) -> anyhow::Result<()> {
     let reconcile_context = super::apply::parse_reconcile_context(&args.context)?;
@@ -13,7 +14,8 @@ pub fn cmd_plan(
     // --from: clone from a git source, or read a local config directory in
     // place; either way the run reads the document the source put there.
     let from_cli;
-    let cli = match &args.from {
+    let from_document;
+    let (cli, startup) = match &args.from {
         Some(from) => {
             let target = init::from_destination(&cli.config);
             let dest = init::resolve_from(from, target.as_deref(), "master", printer)?;
@@ -21,13 +23,16 @@ pub fn cmd_plan(
                 config: init::from_run_config(from, &cli.config, &dest),
                 ..cli.clone()
             };
-            &from_cli
+            // The document the source put there, which the startup read
+            // could not have seen.
+            from_document = crate::cli::startup::StartupDocument::load(&from_cli.config);
+            (&from_cli, &from_document)
         }
-        None => cli,
+        None => (cli, startup),
     };
 
     let config_dir = config_dir(cli);
-    let ctx = RunContext::new(cli, printer);
+    let ctx = RunContext::new(cli, printer, startup);
     let state = ctx.state()?;
     let module_filter: &[String] = &args.module;
     let with_profile = args.with_profile;

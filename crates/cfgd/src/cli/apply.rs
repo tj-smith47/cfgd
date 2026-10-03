@@ -112,9 +112,10 @@ impl reconciler::RunExecutor for ReconcilerExecutor<'_> {
 pub fn cmd_apply(
     cli: &Cli,
     printer: &cfgd_core::output::Printer,
+    startup: &crate::cli::startup::StartupDocument,
     args: &ApplyArgs,
 ) -> anyhow::Result<()> {
-    let outcome = run_apply(cli, printer, args)?;
+    let outcome = run_apply(cli, printer, startup, args)?;
 
     // A graceful signal abort is NOT an error, but it must NOT exit 0: exit with
     // the signal-conventional code so wrappers see the interruption. The abort
@@ -194,6 +195,7 @@ pub(super) fn refuse_with_profile_without_module(
 pub fn run_apply(
     cli: &Cli,
     printer: &cfgd_core::output::Printer,
+    startup: &crate::cli::startup::StartupDocument,
     args: &ApplyArgs,
 ) -> anyhow::Result<ApplyOutcome> {
     // Parsed before anything is read, so a misspelled `--context` is refused
@@ -204,7 +206,8 @@ pub fn run_apply(
     // --from: clone from a git source, or read a local config directory in
     // place; either way the run reads the document the source put there.
     let from_cli;
-    let cli = match &args.from {
+    let from_document;
+    let (cli, startup) = match &args.from {
         Some(from) => {
             let target = init::from_destination(&cli.config);
             let dest = init::resolve_from(from, target.as_deref(), "master", printer)?;
@@ -212,9 +215,12 @@ pub fn run_apply(
                 config: init::from_run_config(from, &cli.config, &dest),
                 ..cli.clone()
             };
-            &from_cli
+            // The document the source put there, which the startup read
+            // could not have seen.
+            from_document = crate::cli::startup::StartupDocument::load(&from_cli.config);
+            (&from_cli, &from_document)
         }
-        None => cli,
+        None => (cli, startup),
     };
 
     let dry_run = args.dry_run;
@@ -246,7 +252,7 @@ pub fn run_apply(
     let (cfg, resolved, profile_label, config_parsed) =
         load_config_and_profile_module_scoped(cli, printer, module_filter, with_profile)?;
 
-    let ctx = RunContext::new(cli, printer);
+    let ctx = RunContext::new(cli, printer, startup);
 
     // Open state only after config discovery so a missing config (or an
     // unresolvable home) surfaces before any state.db is created — otherwise a

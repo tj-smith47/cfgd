@@ -25,10 +25,11 @@ pub struct VerifyOutput {
 pub fn cmd_verify(
     cli: &Cli,
     printer: &Printer,
+    startup: &crate::cli::startup::StartupDocument,
     module_filter: Option<&str>,
     exit_code: bool,
 ) -> anyhow::Result<()> {
-    let ctx = RunContext::new(cli, printer);
+    let ctx = RunContext::new(cli, printer, startup);
     let config_dir = ctx.config_dir();
     let state = ctx.state()?;
 
@@ -503,7 +504,14 @@ mod tests {
         cli.cache_dir = Some(tmp.path().join("cache"));
         let printer = quiet_printer();
 
-        let err = cmd_verify(&cli, &printer, Some("cycle-a"), false).unwrap_err();
+        let err = cmd_verify(
+            &cli,
+            &printer,
+            &crate::cli::startup::StartupDocument::load(&cli.config),
+            Some("cycle-a"),
+            false,
+        )
+        .unwrap_err();
         let cfgd_err = err
             .downcast_ref::<cfgd_core::errors::CfgdError>()
             .unwrap_or_else(|| panic!("expected a typed CfgdError, got: {err}"));
@@ -562,7 +570,14 @@ mod tests {
         cli.cache_dir = Some(tmp.path().join("cache"));
         let printer = quiet_printer();
 
-        cmd_verify(&cli, &printer, Some("test-mod"), false).unwrap();
+        cmd_verify(
+            &cli,
+            &printer,
+            &crate::cli::startup::StartupDocument::load(&cli.config),
+            Some("test-mod"),
+            false,
+        )
+        .unwrap();
         let after_module = open_state_store(Some(&state_dir), cfgd_core::Scope::User).unwrap();
         let stamp_after_module = after_module.last_scan_at().unwrap();
         assert_eq!(
@@ -580,7 +595,14 @@ mod tests {
             )
         );
 
-        cmd_verify(&cli, &printer, None, false).unwrap();
+        cmd_verify(
+            &cli,
+            &printer,
+            &crate::cli::startup::StartupDocument::load(&cli.config),
+            None,
+            false,
+        )
+        .unwrap();
         let stamp_after_fleet = open_state_store(Some(&state_dir), cfgd_core::Scope::User)
             .unwrap()
             .last_scan_at()
@@ -655,7 +677,14 @@ mod tests {
         cli.cache_dir = Some(tmp.path().join("cache"));
 
         let (printer, cap) = Printer::for_test_doc();
-        cmd_verify(&cli, &printer, None, false).unwrap();
+        cmd_verify(
+            &cli,
+            &printer,
+            &crate::cli::startup::StartupDocument::load(&cli.config),
+            None,
+            false,
+        )
+        .unwrap();
         drop(printer);
 
         let human = cap.human();
@@ -801,7 +830,14 @@ mod tests {
         cli.cache_dir = Some(tmp.path().join("cache"));
 
         let (printer, cap) = Printer::for_test_doc();
-        cmd_verify(&cli, &printer, None, false).unwrap();
+        cmd_verify(
+            &cli,
+            &printer,
+            &crate::cli::startup::StartupDocument::load(&cli.config),
+            None,
+            false,
+        )
+        .unwrap();
         drop(printer);
 
         let json = cap.json().expect("verify emits a data payload");
@@ -923,7 +959,14 @@ mod tests {
         };
 
         let (printer, cap) = Printer::for_test_doc();
-        cmd_verify(&cli, &printer, None, false).unwrap();
+        cmd_verify(
+            &cli,
+            &printer,
+            &crate::cli::startup::StartupDocument::load(&cli.config),
+            None,
+            false,
+        )
+        .unwrap();
         drop(printer);
         let converged = editor_row(&cap);
         assert_eq!(
@@ -937,7 +980,14 @@ mod tests {
             std::fs::write(path, content.replace(&nvim, &emacs)).unwrap();
         }
         let (printer, cap) = Printer::for_test_doc();
-        cmd_verify(&cli, &printer, None, false).unwrap();
+        cmd_verify(
+            &cli,
+            &printer,
+            &crate::cli::startup::StartupDocument::load(&cli.config),
+            None,
+            false,
+        )
+        .unwrap();
         drop(printer);
         let drifted = editor_row(&cap);
         assert_eq!(
@@ -1029,7 +1079,14 @@ mod tests {
         }
 
         let printer = quiet_printer();
-        cmd_verify(&cli, &printer, None, false).unwrap();
+        cmd_verify(
+            &cli,
+            &printer,
+            &crate::cli::startup::StartupDocument::load(&cli.config),
+            None,
+            false,
+        )
+        .unwrap();
 
         let store = open_state_store(Some(&state_dir), cfgd_core::Scope::User).unwrap();
         let rows = store.unresolved_drift().unwrap();
@@ -1127,7 +1184,14 @@ mod tests {
         }
 
         let printer = quiet_printer();
-        cmd_verify(&cli, &printer, None, false).unwrap();
+        cmd_verify(
+            &cli,
+            &printer,
+            &crate::cli::startup::StartupDocument::load(&cli.config),
+            None,
+            false,
+        )
+        .unwrap();
 
         let store = open_state_store(Some(&state_dir), cfgd_core::Scope::User).unwrap();
         let rows = store.unresolved_drift().unwrap();
@@ -1210,7 +1274,14 @@ mod tests {
         }
 
         let (printer, buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-        cmd_verify(&cli, &printer, Some("test-mod"), false).unwrap();
+        cmd_verify(
+            &cli,
+            &printer,
+            &crate::cli::startup::StartupDocument::load(&cli.config),
+            Some("test-mod"),
+            false,
+        )
+        .unwrap();
         drop(printer);
         // The DISPLAY half of the scope rule: the rendered report carries the
         // module's own finding and none of the machine-wide env/rc rows the

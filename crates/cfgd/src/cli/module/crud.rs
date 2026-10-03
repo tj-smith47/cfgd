@@ -32,6 +32,7 @@ fn module_package_ref(token: &str, native: &str) -> anyhow::Result<PackageRef> {
 pub fn cmd_module_create(
     cli: &Cli,
     printer: &Printer,
+    startup: &crate::cli::startup::StartupDocument,
     args: &ModuleCreateArgs,
 ) -> anyhow::Result<()> {
     let name = &args.name;
@@ -284,7 +285,7 @@ pub fn cmd_module_create(
         drain_config_deprecations(printer, &mut cfg);
         let mut registry = super::build_registry_with_config(Some(&cfg));
         registry.set_system_config_dir(&config_dir);
-        let ctx = crate::cli::RunContext::new(cli, printer);
+        let ctx = crate::cli::RunContext::new(cli, printer, startup);
         let store = ctx.state()?;
 
         let platform = cfgd_core::platform::Platform::current();

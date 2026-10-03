@@ -23,6 +23,7 @@ fn restore_subscription(
 pub fn cmd_source_replace(
     cli: &Cli,
     printer: &Printer,
+    startup: &crate::cli::startup::StartupDocument,
     old_name: &str,
     new_url: &str,
 ) -> anyhow::Result<()> {
@@ -51,7 +52,9 @@ pub fn cmd_source_replace(
     // Remove old source (keeping resources). Confirmation-free: a re-home
     // purges nothing, so there is no forget-my-edits question to ask, and a
     // replace must not stop mid-way to pose one.
-    remove::run_source_remove(cli, printer, old_name, true, false, true, false, false)?;
+    remove::run_source_remove(
+        cli, printer, startup, old_name, true, false, true, false, false,
+    )?;
 
     // Add new source with same name, carrying over the whole subscription
     add::run_source_add(

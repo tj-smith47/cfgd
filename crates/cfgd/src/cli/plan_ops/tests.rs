@@ -4641,7 +4641,8 @@ fn a_decision_never_withholds_a_package_the_operator_declares_in_a_manifest_file
 
     let cli = test_cli_in(dir.path());
     let printer = Printer::for_test().0;
-    let ctx = RunContext::new(&cli, &printer);
+    let startup = crate::cli::startup::StartupDocument::load(&cli.config);
+    let ctx = RunContext::new(&cli, &printer, &startup);
     let (withheld, _review) = withheld_for_run(
         &ctx,
         &store,
@@ -4682,7 +4683,8 @@ fn a_run_that_could_not_read_its_config_still_withholds_every_row() {
 
     let cli = test_cli_in(dir.path());
     let printer = Printer::for_test().0;
-    let ctx = RunContext::new(&cli, &printer);
+    let startup = crate::cli::startup::StartupDocument::load(&cli.config);
+    let ctx = RunContext::new(&cli, &printer, &startup);
     let (withheld, _review) = withheld_for_run(
         &ctx,
         &store,

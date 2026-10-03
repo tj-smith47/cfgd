@@ -124,6 +124,7 @@ fn declared_by_source(
 fn keep_entry_declarations(
     cli: &Cli,
     printer: &Printer,
+    startup: &crate::cli::startup::StartupDocument,
     name: &str,
     rows: &[cfgd_core::state::ManagedResource],
 ) -> anyhow::Result<usize> {
@@ -131,7 +132,7 @@ fn keep_entry_declarations(
         return Ok(0);
     }
     let quiet = printer.at_verbosity(cfgd_core::output::Verbosity::Quiet);
-    let ctx = RunContext::new(cli, &quiet);
+    let ctx = RunContext::new(cli, &quiet, startup);
     let (cfg, profile_name, local_resolved) = ctx.config_and_profile()?;
     let desired = resolve_desired_state(
         &ctx,
@@ -191,12 +192,14 @@ fn cancelled_doc(name: &str, managed_count: usize) -> Doc {
         }))
 }
 
+#[allow(clippy::too_many_arguments)]
 // no-header-ok: this verb removes a subscription and reports what happened to
 // the rows it owned; the composition its Keep arm reads is a lookup of one
 // declaration, not a configuration this report measures anything against.
 pub fn cmd_source_remove(
     cli: &Cli,
     printer: &Printer,
+    startup: &crate::cli::startup::StartupDocument,
     name: &str,
     keep_all: bool,
     remove_all: bool,
@@ -206,6 +209,7 @@ pub fn cmd_source_remove(
     run_source_remove(
         cli,
         printer,
+        startup,
         name,
         keep_all,
         remove_all,
@@ -222,6 +226,7 @@ pub fn cmd_source_remove(
 pub(super) fn run_source_remove(
     cli: &Cli,
     printer: &Printer,
+    startup: &crate::cli::startup::StartupDocument,
     name: &str,
     keep_all: bool,
     remove_all: bool,
@@ -243,8 +248,7 @@ pub(super) fn run_source_remove(
     printer.heading_owner_prefixed("Remove", &OwnerLabel::new("source", name));
 
     let config_path = cli.config.clone();
-    let mut cfg = config::load_config(&config_path)?;
-    drain_config_deprecations(printer, &mut cfg);
+    let cfg = RunContext::new(cli, printer, startup).config_for_edit()?;
 
     if !cfg.spec.sources.iter().any(|s| s.name == name) {
         if ignore_not_found {
@@ -322,7 +326,7 @@ pub(super) fn run_source_remove(
     }
 
     if disposition == "kept" {
-        let copied = keep_entry_declarations(cli, printer, name, &resources)?;
+        let copied = keep_entry_declarations(cli, printer, startup, name, &resources)?;
         if copied > 0 {
             printer.status(
                 Role::Ok,
@@ -493,8 +497,17 @@ mod tests {
         let cli = cli_with_seeded_config(dir.path());
         let (printer, _cap) = Printer::for_test_doc();
 
-        let err = cmd_source_remove(&cli, &printer, "acme", true, true, false, false)
-            .expect_err("keep_all + remove_all must conflict");
+        let err = cmd_source_remove(
+            &cli,
+            &printer,
+            &crate::cli::startup::StartupDocument::load(&cli.config),
+            "acme",
+            true,
+            true,
+            false,
+            false,
+        )
+        .expect_err("keep_all + remove_all must conflict");
         drop(printer);
 
         let meta = err
@@ -509,8 +522,17 @@ mod tests {
         let cli = cli_with_seeded_config(dir.path());
         let (printer, _cap) = Printer::for_test_doc();
 
-        let err = cmd_source_remove(&cli, &printer, "nope", false, false, false, false)
-            .expect_err("absent source must error");
+        let err = cmd_source_remove(
+            &cli,
+            &printer,
+            &crate::cli::startup::StartupDocument::load(&cli.config),
+            "nope",
+            false,
+            false,
+            false,
+            false,
+        )
+        .expect_err("absent source must error");
         drop(printer);
 
         let meta = err
@@ -526,8 +548,17 @@ mod tests {
         let cli = cli_with_seeded_config(dir.path());
         let (printer, cap) = Printer::for_test_doc();
 
-        cmd_source_remove(&cli, &printer, "nope", false, false, false, true)
-            .expect("--ignore-not-found must succeed for an absent source");
+        cmd_source_remove(
+            &cli,
+            &printer,
+            &crate::cli::startup::StartupDocument::load(&cli.config),
+            "nope",
+            false,
+            false,
+            false,
+            true,
+        )
+        .expect("--ignore-not-found must succeed for an absent source");
         drop(printer);
 
         let doc = cap.json().expect("no-op removal must emit a Doc");
@@ -547,8 +578,17 @@ mod tests {
         );
         let (printer, cap) = Printer::for_test_doc();
 
-        cmd_source_remove(&cli, &printer, "acme", false, false, false, false)
-            .expect("removing a source with no managed resources must succeed");
+        cmd_source_remove(
+            &cli,
+            &printer,
+            &crate::cli::startup::StartupDocument::load(&cli.config),
+            "acme",
+            false,
+            false,
+            false,
+            false,
+        )
+        .expect("removing a source with no managed resources must succeed");
         drop(printer);
 
         let doc = cap.json().expect("removal must emit a Doc");
@@ -601,8 +641,17 @@ mod tests {
         drop(state);
 
         let (printer, _cap) = Printer::for_test_doc();
-        cmd_source_remove(&cli, &printer, "acme", true, false, false, false)
-            .expect("removing a source must succeed");
+        cmd_source_remove(
+            &cli,
+            &printer,
+            &crate::cli::startup::StartupDocument::load(&cli.config),
+            "acme",
+            true,
+            false,
+            false,
+            false,
+        )
+        .expect("removing a source must succeed");
         drop(printer);
 
         let state = open_state_store(cli.state_dir.as_deref(), cli.scope()).expect("reopen state");
@@ -639,8 +688,17 @@ mod tests {
         drop(state);
 
         let (printer, cap) = Printer::for_test_doc();
-        cmd_source_remove(&cli, &printer, "acme", true, false, false, false)
-            .expect("keep_all removal must succeed");
+        cmd_source_remove(
+            &cli,
+            &printer,
+            &crate::cli::startup::StartupDocument::load(&cli.config),
+            "acme",
+            true,
+            false,
+            false,
+            false,
+        )
+        .expect("keep_all removal must succeed");
         drop(printer);
 
         let doc = cap.json().expect("removal must emit a Doc");
@@ -716,8 +774,17 @@ mod tests {
 
         let (printer, cap) =
             Printer::for_test_doc_with_prompt_responses(vec![PromptAnswer::Confirm(false)]);
-        cmd_source_remove(&cli, &printer, "acme", false, true, false, false)
-            .expect("a declined confirm is an abort, not a failure");
+        cmd_source_remove(
+            &cli,
+            &printer,
+            &crate::cli::startup::StartupDocument::load(&cli.config),
+            "acme",
+            false,
+            true,
+            false,
+            false,
+        )
+        .expect("a declined confirm is an abort, not a failure");
         drop(printer);
 
         let human = cap.human();
@@ -761,8 +828,17 @@ mod tests {
         // No seeded prompt answer: a test printer cannot prompt, so reaching a
         // confirm here would fail the command rather than pass silently.
         let (printer, cap) = Printer::for_test_doc();
-        cmd_source_remove(&cli, &printer, "acme", false, true, true, false)
-            .expect("--yes must purge without asking");
+        cmd_source_remove(
+            &cli,
+            &printer,
+            &crate::cli::startup::StartupDocument::load(&cli.config),
+            "acme",
+            false,
+            true,
+            true,
+            false,
+        )
+        .expect("--yes must purge without asking");
         drop(printer);
 
         assert_eq!(cap.json().expect("Doc")["disposition"], "purged");
@@ -788,8 +864,17 @@ mod tests {
         );
 
         let (printer, cap) = Printer::for_test_doc();
-        cmd_source_remove(&cli, &printer, "acme", false, true, false, false)
-            .expect("an unmodified file must not stop to ask");
+        cmd_source_remove(
+            &cli,
+            &printer,
+            &crate::cli::startup::StartupDocument::load(&cli.config),
+            "acme",
+            false,
+            true,
+            false,
+            false,
+        )
+        .expect("an unmodified file must not stop to ask");
         drop(printer);
 
         let human = cap.human();
@@ -809,8 +894,17 @@ mod tests {
         let id = seed_deployed_file(&cli, dir.path(), "whatever is here now", None);
 
         let (printer, cap) = Printer::for_test_doc();
-        cmd_source_remove(&cli, &printer, "acme", false, true, false, false)
-            .expect("a NULL last_hash must not stop to ask");
+        cmd_source_remove(
+            &cli,
+            &printer,
+            &crate::cli::startup::StartupDocument::load(&cli.config),
+            "acme",
+            false,
+            true,
+            false,
+            false,
+        )
+        .expect("a NULL last_hash must not stop to ask");
         drop(printer);
 
         let human = cap.human();
@@ -844,8 +938,17 @@ mod tests {
         drop(state);
 
         let (printer, cap) = Printer::for_test_doc();
-        cmd_source_remove(&cli, &printer, "acme", false, true, false, false)
-            .expect("remove_all removal must succeed");
+        cmd_source_remove(
+            &cli,
+            &printer,
+            &crate::cli::startup::StartupDocument::load(&cli.config),
+            "acme",
+            false,
+            true,
+            false,
+            false,
+        )
+        .expect("remove_all removal must succeed");
         drop(printer);
 
         let doc = cap.json().expect("removal must emit a Doc");
@@ -991,7 +1094,8 @@ mod tests {
     /// composition has the source's declarations to read.
     fn prime_source_cache(cli: &Cli) {
         let (printer, _cap) = Printer::for_test_doc();
-        let ctx = RunContext::new(cli, &printer);
+        let startup = crate::cli::startup::StartupDocument::load(&cli.config);
+        let ctx = RunContext::new(cli, &printer, &startup);
         let (cfg, _profile_name, local) = ctx.config_and_profile().expect("resolve local profile");
         crate::cli::helpers::compose_with_sources(
             &ctx,
@@ -1034,8 +1138,17 @@ mod tests {
         prime_source_cache(&cli);
 
         let (printer, cap) = Printer::for_test_doc();
-        cmd_source_remove(&cli, &printer, "acme", true, false, false, false)
-            .expect("keep-all removal must succeed");
+        cmd_source_remove(
+            &cli,
+            &printer,
+            &crate::cli::startup::StartupDocument::load(&cli.config),
+            "acme",
+            true,
+            false,
+            false,
+            false,
+        )
+        .expect("keep-all removal must succeed");
         drop(printer);
         assert_eq!(cap.json().expect("Doc")["disposition"], "kept");
 
@@ -1078,8 +1191,17 @@ mod tests {
         // No seeded prompt answer and no --yes: an entry row names nothing on
         // disk, so this arm has nothing to stop and ask about.
         let (printer, cap) = Printer::for_test_doc();
-        cmd_source_remove(&cli, &printer, "acme", false, true, false, false)
-            .expect("remove-all removal must succeed");
+        cmd_source_remove(
+            &cli,
+            &printer,
+            &crate::cli::startup::StartupDocument::load(&cli.config),
+            "acme",
+            false,
+            true,
+            false,
+            false,
+        )
+        .expect("remove-all removal must succeed");
         drop(printer);
         assert_eq!(cap.json().expect("Doc")["disposition"], "purged");
 
@@ -1134,8 +1256,17 @@ mod tests {
             Printer::for_test_doc_with_prompt_responses(vec![PromptAnswer::Select(
                 "Cancel (abort remove)".into(),
             )]);
-        cmd_source_remove(&cli, &printer, "acme", false, false, false, false)
-            .expect("cancel path must return Ok");
+        cmd_source_remove(
+            &cli,
+            &printer,
+            &crate::cli::startup::StartupDocument::load(&cli.config),
+            "acme",
+            false,
+            false,
+            false,
+            false,
+        )
+        .expect("cancel path must return Ok");
         drop(printer);
 
         let doc = cap.json().expect("cancel must emit a Doc");
@@ -1174,8 +1305,17 @@ mod tests {
             Printer::for_test_doc_with_prompt_responses(vec![PromptAnswer::Select(
                 "Keep all (resources become locally managed)".into(),
             )]);
-        cmd_source_remove(&cli, &printer, "acme", false, false, false, false)
-            .expect("keep choice must return Ok");
+        cmd_source_remove(
+            &cli,
+            &printer,
+            &crate::cli::startup::StartupDocument::load(&cli.config),
+            "acme",
+            false,
+            false,
+            false,
+            false,
+        )
+        .expect("keep choice must return Ok");
         drop(printer);
 
         let doc = cap.json().expect("keep must emit a Doc");

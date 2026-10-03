@@ -97,7 +97,13 @@ fn generate_scan_only_empty_home_human() {
     let cli = cli_for(home.path());
     let (printer, cap) = Printer::for_test_doc();
 
-    generate::cmd_generate(&cli, &printer, &scan_only_args(home.path())).unwrap();
+    generate::cmd_generate(
+        &cli,
+        &printer,
+        &cfgd::cli::startup::StartupDocument::load(&cli.config),
+        &scan_only_args(home.path()),
+    )
+    .unwrap();
     drop(printer);
 
     let stripped = strip_ansi(&cap.human());
@@ -117,7 +123,13 @@ fn generate_scan_only_json_shape() {
     let cli = cli_for(home.path());
     let (printer, cap) = Printer::for_test_doc_with_format(OutputFormat::Json);
 
-    generate::cmd_generate(&cli, &printer, &scan_only_args(home.path())).unwrap();
+    generate::cmd_generate(
+        &cli,
+        &printer,
+        &cfgd::cli::startup::StartupDocument::load(&cli.config),
+        &scan_only_args(home.path()),
+    )
+    .unwrap();
     drop(printer);
 
     let json = cap.json().expect("doc captured json");

@@ -2,12 +2,16 @@ use super::*;
 
 use cfgd_core::output::{Doc, OwnerLabel, Role};
 
-pub fn cmd_sync(cli: &Cli, printer: &cfgd_core::output::Printer) -> anyhow::Result<()> {
+pub fn cmd_sync(
+    cli: &Cli,
+    printer: &cfgd_core::output::Printer,
+    startup: &crate::cli::startup::StartupDocument,
+) -> anyhow::Result<()> {
     // A leg that refused must not read as success to a CI `&&` chain, the same
     // reason `apply` exits nonzero on a partial run. The rows and the payload
     // are already flushed by `run_sync`, so this exits directly rather than
     // returning an error nothing new could say.
-    if sync_refused(&run_sync(cli, printer)?) {
+    if sync_refused(&run_sync(cli, printer, startup)?) {
         cfgd_core::exit::ExitCode::Error.exit();
     }
     Ok(())
@@ -88,7 +92,11 @@ pub(super) fn resolution_failure_the_fetch_rejudges(e: &anyhow::Error) -> bool {
 /// Drive the sync and return the payload it settled, so a caller can map a
 /// refused leg onto a nonzero process exit and a test can read the outcome
 /// without the process leaving under it.
-pub fn run_sync(cli: &Cli, printer: &cfgd_core::output::Printer) -> anyhow::Result<SyncOutput> {
+pub fn run_sync(
+    cli: &Cli,
+    printer: &cfgd_core::output::Printer,
+    startup: &crate::cli::startup::StartupDocument,
+) -> anyhow::Result<SyncOutput> {
     // The configuration as this command FOUND it. The body below reports what
     // the pull changed, and the plan the closing hint invites reads the new
     // set — so the header describes the starting point, exactly as `Config`
@@ -99,7 +107,7 @@ pub fn run_sync(cli: &Cli, printer: &cfgd_core::output::Printer) -> anyhow::Resu
     // does the fetching. Everything else the composition has to say — a
     // constraint violation, a conflict, the `allowScripts` disclosure — is
     // exactly what this verb is the right place to hear.
-    let ctx = RunContext::new(cli, printer).fetching_sources();
+    let ctx = RunContext::new(cli, printer, startup).fetching_sources();
     let (cfg, profile_name, local_resolved) = ctx.config_and_profile()?;
     // The starting point is a header FACT, never a gate on the run. This
     // resolution reads the source cache offline, and a cached checkout can be

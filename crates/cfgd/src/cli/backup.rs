@@ -321,6 +321,7 @@ pub fn build_backup_snapshot_list_doc(
 pub fn cmd_backup_list(
     cli: &Cli,
     printer: &Printer,
+    startup: &crate::cli::startup::StartupDocument,
     name: Option<&str>,
     snapshots: bool,
 ) -> anyhow::Result<()> {
@@ -358,7 +359,7 @@ pub fn cmd_backup_list(
         return Ok(());
     }
 
-    let ctx = RunContext::new(cli, printer);
+    let ctx = RunContext::new(cli, printer, startup);
     let (cfg, profile_name, local_resolved) = ctx.config_and_profile()?;
     // Cache-only composition (no network refresh) and Report constraint mode:
     // listing backups is a read surface, the same class as
@@ -566,13 +567,14 @@ fn snapshot_selection_error(name: &str, e: cfgd_core::errors::BackupError) -> an
 pub fn cmd_backup_restore(
     cli: &Cli,
     printer: &Printer,
+    startup: &crate::cli::startup::StartupDocument,
     args: &RestoreArgs<'_>,
 ) -> anyhow::Result<()> {
     // Same split `cmd_backup_run` uses: the payload Doc has already been
     // emitted by the time the exit code is decided, so exiting here keeps a
     // failed restore from being rendered as a SECOND top-level document that
     // no single-document `-o json` reader could parse.
-    match run_backup_restore(cli, printer, args)? {
+    match run_backup_restore(cli, printer, startup, args)? {
         Some(outcome) if !outcome.is_clean() => cfgd_core::exit::ExitCode::Error.exit(),
         _ => Ok(()),
     }
@@ -586,9 +588,10 @@ pub fn cmd_backup_restore(
 pub fn run_backup_restore(
     cli: &Cli,
     printer: &Printer,
+    startup: &crate::cli::startup::StartupDocument,
     args: &RestoreArgs<'_>,
 ) -> anyhow::Result<Option<cfgd_core::backup::RestoreOutcome>> {
-    let ctx = RunContext::new(cli, printer);
+    let ctx = RunContext::new(cli, printer, startup);
     let (cfg, profile_name, local_resolved) = ctx.config_and_profile()?;
     let (sources, header_modules, backups) =
         restoring_verb_state(&ctx, cfg, local_resolved, printer)?;
@@ -767,16 +770,17 @@ pub fn build_backup_rollback_list_doc(entries: &[BackupRollbackEntry], now: &str
 pub fn cmd_backup_rollback(
     cli: &Cli,
     printer: &Printer,
+    startup: &crate::cli::startup::StartupDocument,
     name: Option<&str>,
     yes: bool,
 ) -> anyhow::Result<()> {
     let Some(name) = name else {
-        return list_rollback_copies(cli, printer);
+        return list_rollback_copies(cli, printer, startup);
     };
     // The same split `cmd_backup_restore` uses: the payload Doc is already out
     // by the time the exit code is decided, so a failed rollback is not
     // rendered as a SECOND top-level document.
-    match run_backup_rollback(cli, printer, name, yes)? {
+    match run_backup_rollback(cli, printer, startup, name, yes)? {
         Some(outcome) if !outcome.is_clean() => cfgd_core::exit::ExitCode::Error.exit(),
         _ => Ok(()),
     }
@@ -786,8 +790,12 @@ pub fn cmd_backup_rollback(
 ///
 /// A read surface, so it composes in `Report` alongside `backup list` rather
 /// than in the `Enforce` the two mutating verbs take.
-fn list_rollback_copies(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
-    let ctx = RunContext::new(cli, printer);
+fn list_rollback_copies(
+    cli: &Cli,
+    printer: &Printer,
+    startup: &crate::cli::startup::StartupDocument,
+) -> anyhow::Result<()> {
+    let ctx = RunContext::new(cli, printer, startup);
     let (cfg, profile_name, local_resolved) = ctx.config_and_profile()?;
     let composition = compose_with_sources(
         &ctx,
@@ -830,10 +838,11 @@ fn list_rollback_copies(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
 pub fn run_backup_rollback(
     cli: &Cli,
     printer: &Printer,
+    startup: &crate::cli::startup::StartupDocument,
     name: &str,
     yes: bool,
 ) -> anyhow::Result<Option<cfgd_core::backup::RollbackOutcome>> {
-    let ctx = RunContext::new(cli, printer);
+    let ctx = RunContext::new(cli, printer, startup);
     let (cfg, profile_name, local_resolved) = ctx.config_and_profile()?;
     let (sources, header_modules, backups) =
         restoring_verb_state(&ctx, cfg, local_resolved, printer)?;
@@ -944,8 +953,13 @@ fn confirm_rollback(
 
 // no-header-ok: the run header comes from `reconciler::ApplyRun`, as it
 // does for every verb that closes on the shared rollup.
-pub fn cmd_backup_run(cli: &Cli, printer: &Printer, name: Option<&str>) -> anyhow::Result<()> {
-    let outcome = run_backup_run(cli, printer, name)?;
+pub fn cmd_backup_run(
+    cli: &Cli,
+    printer: &Printer,
+    startup: &crate::cli::startup::StartupDocument,
+    name: Option<&str>,
+) -> anyhow::Result<()> {
+    let outcome = run_backup_run(cli, printer, startup, name)?;
 
     // A scripted consumer must be able to detect a failed, dirty, or refused
     // backup from the exit code alone — `run_backup_run` already emitted the
@@ -995,9 +1009,10 @@ impl BackupRunOutcome {
 pub fn run_backup_run(
     cli: &Cli,
     printer: &Printer,
+    startup: &crate::cli::startup::StartupDocument,
     name: Option<&str>,
 ) -> anyhow::Result<BackupRunOutcome> {
-    let ctx = RunContext::new(cli, printer);
+    let ctx = RunContext::new(cli, printer, startup);
     let (cfg, profile_name, local_resolved) = ctx.config_and_profile()?;
     // Cache-only composition (no network refresh), but Enforce constraint mode:
     // `backup run` executes user-declared hooks and writes snapshots, so it is a
@@ -1097,12 +1112,17 @@ pub fn run_backup_run(
 /// condition beside it.
 // no-header-ok: a report on the snapshot rows a destination change
 // stranded, not on the configuration those rows were declared in.
-pub fn cmd_backup_gc(cli: &Cli, printer: &Printer, name: Option<&str>) -> anyhow::Result<()> {
+pub fn cmd_backup_gc(
+    cli: &Cli,
+    printer: &Printer,
+    startup: &crate::cli::startup::StartupDocument,
+    name: Option<&str>,
+) -> anyhow::Result<()> {
     // The payload Doc is already on stdout by the time the exit code is
     // decided, so exiting here rather than returning an error keeps a failed
     // collection from being rendered as a SECOND top-level document — the same
     // split `cmd_backup_run` takes, and why the body stays in `run_backup_gc`.
-    if run_backup_gc(cli, printer, name)?.tally().failed > 0 {
+    if run_backup_gc(cli, printer, startup, name)?.tally().failed > 0 {
         cfgd_core::exit::ExitCode::Error.exit();
     }
     Ok(())
@@ -1118,9 +1138,10 @@ pub fn cmd_backup_gc(cli: &Cli, printer: &Printer, name: Option<&str>) -> anyhow
 pub fn run_backup_gc(
     cli: &Cli,
     printer: &Printer,
+    startup: &crate::cli::startup::StartupDocument,
     name: Option<&str>,
 ) -> anyhow::Result<cfgd_core::backup::CollectOutcome> {
-    let ctx = RunContext::new(cli, printer);
+    let ctx = RunContext::new(cli, printer, startup);
     let (cfg, profile_name, local_resolved) = ctx.config_and_profile()?;
     // Enforce, like `backup run`: gc deletes files, so it is a mutating
     // surface and a source constraint violation must abort it rather than be

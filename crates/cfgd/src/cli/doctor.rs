@@ -4,12 +4,17 @@ use cfgd_core::PathDisplayExt;
 use cfgd_core::output::{Doc, Printer, Role, doc::SectionBuilder};
 use cfgd_core::providers::PackageManagerExt;
 
-pub(super) fn cmd_doctor(cli: &Cli, printer: &Printer, fix: bool) -> anyhow::Result<()> {
+pub(super) fn cmd_doctor(
+    cli: &Cli,
+    printer: &Printer,
+    startup: &crate::cli::startup::StartupDocument,
+    fix: bool,
+) -> anyhow::Result<()> {
     // A failed verdict must fail the process so `cfgd doctor && cfgd apply`
     // stops instead of sailing into a guaranteed-broken apply. The Doc is
     // already emitted, so exit directly (mirroring cmd_profile_migrate)
     // rather than return an error the central sink would re-render.
-    if !run_doctor(cli, printer, fix)? {
+    if !run_doctor(cli, printer, startup, fix)? {
         cfgd_core::exit::ExitCode::Error.exit();
     }
     Ok(())
@@ -62,14 +67,19 @@ fn fix_missing_tools(printer: &Printer) {
 /// Runs every doctor probe, emits the report Doc, and returns whether the
 /// verdict passed. Kept separate from the process-exit wrapper so it stays
 /// unit-testable.
-pub(crate) fn run_doctor(cli: &Cli, printer: &Printer, fix: bool) -> anyhow::Result<bool> {
+pub(crate) fn run_doctor(
+    cli: &Cli,
+    printer: &Printer,
+    startup: &crate::cli::startup::StartupDocument,
+    fix: bool,
+) -> anyhow::Result<bool> {
     if fix {
         fix_missing_tools(printer);
     }
     // One spinner across every probe, renamed per group: doctor shells out to
     // git, sops and each package manager before it prints anything at all.
     let (output, extras) = printer.narrate("Probing: config", |sp| {
-        collect_doctor_output(cli, printer, sp)
+        collect_doctor_output(cli, printer, startup, sp)
     })?;
     let passed = all_passed(&output);
     printer.emit(build_doctor_doc(&output, &extras));
@@ -234,9 +244,10 @@ fn build_module_routes(
 fn collect_doctor_output(
     cli: &Cli,
     printer: &Printer,
+    startup: &crate::cli::startup::StartupDocument,
     sp: &mut cfgd_core::output::Spinner<'_>,
 ) -> anyhow::Result<(DoctorOutput, DoctorExtras)> {
-    let ctx = RunContext::new(cli, printer);
+    let ctx = RunContext::new(cli, printer, startup);
     let (config_check, loaded_cfg) = if cli.config.exists() {
         match config::load_config(&cli.config) {
             Ok(mut cfg) => {
