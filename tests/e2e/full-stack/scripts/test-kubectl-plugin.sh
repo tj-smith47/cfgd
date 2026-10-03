@@ -45,7 +45,6 @@ INJECT_OUTPUT=$(NO_COLOR=1 "$KUBECTL_CFGD" inject deployment/inject-target \
 echo "  Inject output: $(echo "$INJECT_OUTPUT" | head -3)"
 
 # Verify the annotation was patched
-sleep 3
 ANNOTATION=$(kubectl get deployment inject-target -n "e2e-plugin-test-${E2E_RUN_ID}" \
     -o jsonpath='{.spec.template.metadata.annotations.cfgd\.io/modules}' 2>/dev/null || echo "")
 echo "  Annotation: ${ANNOTATION:-not set}"

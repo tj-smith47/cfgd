@@ -111,8 +111,9 @@ spec:
   mountPolicy: Always
 EOF
 
-# Wait for module controller to set status
-sleep 5
+# The API server matches the injector's namespaceSelector against a namespace
+# cache that trails the label write above.
+wait_for_injection "e2e-inject-${E2E_RUN_ID}" "e2e-inject-mod-${E2E_RUN_ID}:v1" || true
 
 # Create a pod with the modules annotation in the labeled namespace
 kubectl apply -n "e2e-inject-${E2E_RUN_ID}" -f - <<EOF
@@ -129,9 +130,6 @@ spec:
       command: ["sleep", "3600"]
   restartPolicy: Never
 EOF
-
-# Wait for pod to be created (webhook runs on CREATE)
-sleep 5
 
 # Check if CSI volume was injected
 POD_VOLUMES=$(kubectl get pod e2e-injected-pod -n "e2e-inject-${E2E_RUN_ID}" \
@@ -184,8 +182,6 @@ spec:
   mountPolicy: Debug
 EOF
 
-sleep 3
-
 # Create a ConfigPolicy with the debug module (so webhook picks it up)
 kubectl apply -n "e2e-inject-${E2E_RUN_ID}" -f - <<EOF
 apiVersion: cfgd.io/v1alpha1
@@ -200,8 +196,6 @@ spec:
     - name: e2e-debug-mod-${E2E_RUN_ID}
 EOF
 
-sleep 3
-
 # Create a pod in the injection namespace (no annotation needed — policy injects)
 kubectl apply -n "e2e-inject-${E2E_RUN_ID}" -f - <<EOF
 apiVersion: v1
@@ -215,8 +209,6 @@ spec:
       command: ["sleep", "3600"]
   restartPolicy: Never
 EOF
-
-sleep 5
 
 # Check: CSI volume should exist but volumeMount should NOT be on the container
 DEBUG_VOLUMES=$(kubectl get pod e2e-debug-pod -n "e2e-inject-${E2E_RUN_ID}" \
@@ -608,8 +600,6 @@ spec:
   hostname: defaults-host-${E2E_RUN_ID}
   profile: minimal
 EOF
-
-sleep 2
 
 # Verify the stored object has default fields populated
 STORED=$(kubectl get machineconfig "e2e-defaults-mc-${E2E_RUN_ID}" -n "$E2E_NAMESPACE" \

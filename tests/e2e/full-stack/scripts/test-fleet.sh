@@ -128,10 +128,8 @@ spec:
     "net.ipv4.ip_forward": "1"
 EOF
 
-# Wait for policy evaluation
-sleep 5
 COMPLIANT=$(wait_for_k8s_field configpolicy "fleet-baseline-${E2E_RUN_ID}" cfgd-system \
-    '{.status.compliantCount}' "" 60) || true
+    '{.status.compliantCount}' "" 65) || true
 
 NON_COMPLIANT=$(kubectl get configpolicy "fleet-baseline-${E2E_RUN_ID}" -n cfgd-system \
     -o jsonpath='{.status.nonCompliantCount}' 2>/dev/null || echo "0")

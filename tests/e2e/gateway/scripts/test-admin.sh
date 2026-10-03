@@ -9,6 +9,30 @@
 # Production defaults (burst=5, refill=5/min) are tight, so back-to-back
 # enrollments across multiple test cases can hit the limiter. The retry
 # loop honors the server's `retry_after_secs` hint.
+# gw_enroll_post <token> <device_id> <hostname> <body_file>: POST an enrollment
+# up to 3 times, waiting out each HTTP 429 for the retry_after_secs it names.
+# Leaves the last response body in <body_file> and its status in
+# GW_ENROLL_CODE; returns 0 on 200 or 201.
+gw_enroll_post() {
+    local attempt retry
+    for attempt in 1 2 3; do
+        GW_ENROLL_CODE=$(curl -s -o "$4" -w "%{http_code}" -X POST "$GW_URL/api/v1/enroll" \
+            -H "Content-Type: application/json" \
+            -d "{\"token\":\"$1\",\"deviceId\":\"$2\",\"hostname\":\"$3\",\"os\":\"linux\",\"arch\":\"x86_64\"}" 2>/dev/null || echo "000")
+        case "$GW_ENROLL_CODE" in
+            200 | 201) return 0 ;;
+            429) ;;
+            *) return 1 ;;
+        esac
+        [ "$attempt" -lt 3 ] || break
+        retry=$(jq -r '.retry_after_secs // 2' < "$4" 2>/dev/null)
+        [[ "$retry" =~ ^[0-9]+$ ]] || retry=2
+        echo "  Enroll attempt $attempt got 429; waiting ${retry}s before retry"
+        sleep "$retry" # sleep-ok: the gateway's per-IP enroll rate limit names this wait in the 429's retry_after_secs
+    done
+    return 1
+}
+
 gw_enroll_new_device() {
     local suffix="$1"
     local token
@@ -20,25 +44,12 @@ gw_enroll_new_device() {
 
     GW_HELPER_DEVICE_ID="e2e-admin-device-${suffix}-${E2E_RUN_ID}"
     local body_file="$GW_SCRATCH/enroll-$suffix.json"
-    local attempt code retry
-    for attempt in 1 2 3; do
-        code=$(curl -s -o "$body_file" -w "%{http_code}" -X POST "$GW_URL/api/v1/enroll" \
-            -H "Content-Type: application/json" \
-            -d "{\"token\":\"$token\",\"deviceId\":\"$GW_HELPER_DEVICE_ID\",\"hostname\":\"e2e-host-$suffix\",\"os\":\"linux\",\"arch\":\"x86_64\"}" 2>/dev/null || echo "000")
-        if [ "$code" = "200" ] || [ "$code" = "201" ]; then
-            break
-        fi
-        if [ "$code" = "429" ]; then
-            retry=$(jq -r '.retry_after_secs // 2' < "$body_file" 2>/dev/null)
-            [ -z "$retry" ] || ! [[ "$retry" =~ ^[0-9]+$ ]] && retry=2
-            echo "  Enroll attempt $attempt got 429; sleeping ${retry}s before retry"
-            sleep "$retry"
-            continue
-        fi
-        echo "  Enrollment failed for $suffix (HTTP $code): $(cat "$body_file" 2>/dev/null)"
+    if ! gw_enroll_post "$token" "$GW_HELPER_DEVICE_ID" "e2e-host-$suffix" "$body_file" \
+        && [ "$GW_ENROLL_CODE" != "429" ]; then
+        echo "  Enrollment failed for $suffix (HTTP $GW_ENROLL_CODE): $(cat "$body_file" 2>/dev/null)"
         rm -f "$body_file"
         return 1
-    done
+    fi
     GW_HELPER_API_KEY=$(jq -r '.apiKey // empty' < "$body_file" 2>/dev/null)
     rm -f "$body_file"
     if [ -z "$GW_HELPER_API_KEY" ]; then
@@ -330,30 +341,14 @@ if [ "$GW16_PASS" = "true" ]; then
 fi
 
 if [ "$GW16_PASS" = "true" ]; then
-    # Same retry-on-429 shape as gw_enroll_new_device — back-to-back enrolls
-    # exhaust the per-IP bucket and the server's HTTP 429 carries a
-    # retry_after_secs hint we should honor.
+    # Back-to-back enrolls exhaust the per-IP bucket, so this goes through the
+    # same 429-honoring POST as gw_enroll_new_device.
     GW16_REENROLL_BODY="$GW_SCRATCH/gw16-reenroll.json"
-    GW16_REENROLL_CODE="000"
-    for attempt in 1 2 3; do
-        GW16_REENROLL_CODE=$(curl -s -o "$GW16_REENROLL_BODY" -w "%{http_code}" \
-            -X POST "$GW_URL/api/v1/enroll" \
-            -H "Content-Type: application/json" \
-            -d "{\"token\":\"$GW16_NEW_TOKEN\",\"deviceId\":\"$GW16_DEVICE_ID\",\"hostname\":\"e2e-host-gw16-reenroll\",\"os\":\"linux\",\"arch\":\"x86_64\"}" \
-            2>/dev/null || echo "000")
-        if [ "$GW16_REENROLL_CODE" = "200" ] || [ "$GW16_REENROLL_CODE" = "201" ]; then
-            break
-        fi
-        if [ "$GW16_REENROLL_CODE" = "429" ]; then
-            GW16_RETRY=$(jq -r '.retry_after_secs // 2' < "$GW16_REENROLL_BODY" 2>/dev/null)
-            [ -z "$GW16_RETRY" ] || ! [[ "$GW16_RETRY" =~ ^[0-9]+$ ]] && GW16_RETRY=2
-            echo "  Re-enroll attempt $attempt got 429; sleeping ${GW16_RETRY}s before retry"
-            sleep "$GW16_RETRY"
-            continue
-        fi
-        echo "  Re-enroll attempt $attempt got unexpected HTTP $GW16_REENROLL_CODE: $(cat "$GW16_REENROLL_BODY" 2>/dev/null)"
-        break
-    done
+    if ! gw_enroll_post "$GW16_NEW_TOKEN" "$GW16_DEVICE_ID" e2e-host-gw16-reenroll "$GW16_REENROLL_BODY" \
+        && [ "$GW_ENROLL_CODE" != "429" ]; then
+        echo "  Re-enroll got unexpected HTTP $GW_ENROLL_CODE: $(cat "$GW16_REENROLL_BODY" 2>/dev/null)"
+    fi
+    GW16_REENROLL_CODE=$GW_ENROLL_CODE
     GW16_NEW_KEY=$(jq -r '.apiKey // empty' < "$GW16_REENROLL_BODY" 2>/dev/null)
     rm -f "$GW16_REENROLL_BODY"
 

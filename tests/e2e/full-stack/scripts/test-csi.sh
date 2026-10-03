@@ -49,7 +49,7 @@ EOF
     ensure_namespace "e2e-csi-test-${E2E_RUN_ID}"
     ensure_label namespace "e2e-csi-test-${E2E_RUN_ID}" cfgd.io/inject-modules=true --overwrite
 
-    sleep 3
+    wait_for_injection "e2e-csi-test-${E2E_RUN_ID}" "csi-test-mod-${E2E_RUN_ID}:v1.0" || true
 
     # Create a pod with module annotation
     kubectl apply -n "e2e-csi-test-${E2E_RUN_ID}" -f - <<EOF
@@ -113,13 +113,7 @@ kubectl delete pod csi-mount-test -n "e2e-csi-test-${E2E_RUN_ID}" --grace-period
 
 # Wait for pod to be deleted
 echo "  Waiting for pod deletion..."
-for _ in $(seq 1 30); do
-    POD_EXISTS=$(kubectl get pod csi-mount-test -n "e2e-csi-test-${E2E_RUN_ID}" 2>/dev/null || echo "")
-    if [ -z "$POD_EXISTS" ]; then
-        break
-    fi
-    sleep 1
-done
+wait_for_deleted 30 pod csi-mount-test -n "e2e-csi-test-${E2E_RUN_ID}" || true
 
 # Verify no mount leftovers via the test pod (which has host access)
 CSI_MOUNTS=$(exec_in_pod mount 2>/dev/null | grep "cfgd" | grep "csi-mount-test" || echo "")
@@ -192,7 +186,7 @@ EOF
     ensure_namespace "$CSI03_NS"
     ensure_label namespace "$CSI03_NS" cfgd.io/inject-modules=true --overwrite
 
-    sleep 3
+    wait_for_injection "$CSI03_NS" "csi-multi-a-${E2E_RUN_ID}:v1.0,csi-multi-b-${E2E_RUN_ID}:v1.0" || true
 
     # Create pod referencing both modules
     kubectl apply -n "$CSI03_NS" -f - <<EOF
@@ -285,7 +279,7 @@ else
     ensure_namespace "$CSI04_NS"
     ensure_label namespace "$CSI04_NS" cfgd.io/inject-modules=true --overwrite
 
-    sleep 3
+    wait_for_injection "$CSI04_NS" "csi-test-mod-${E2E_RUN_ID}:v1.0" || true
 
     CSI04_DRIVER=$(kubectl get pods -n "$E2E_INSTALL_NS" -l "$E2E_CSI_PODS" \
         --field-selector "spec.nodeName=$CSI01_NODE" \
@@ -355,8 +349,6 @@ ensure_namespace "$CSI05_NS"
 CSI05_LABELLED=true
 ensure_label namespace "$CSI05_NS" cfgd.io/inject-modules=true --overwrite || CSI05_LABELLED=false
 
-sleep 3
-
 # Reference a module that does not exist
 kubectl apply -n "$CSI05_NS" -f - <<EOF
 apiVersion: v1
@@ -373,11 +365,18 @@ spec:
   restartPolicy: Never
 EOF
 
-echo "  Waiting 30s — pod should NOT reach Running..."
-sleep 30
-
-POD_PHASE=$(kubectl get pod csi-invalid-test -n "$CSI05_NS" \
-    -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
+# The case ends when the pod runs or the kubelet reports the mount it cannot
+# make; a pod the webhook left alone runs, one it injected never mounts.
+csi05_settled() {
+    POD_PHASE=$(kubectl get pod csi-invalid-test -n "$CSI05_NS" \
+        -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
+    [ "$POD_PHASE" = "Running" ] && return 0
+    kubectl get events -n "$CSI05_NS" -o name \
+        --field-selector involvedObject.name=csi-invalid-test,reason=FailedMount 2>/dev/null | grep -q . # rc-ok: a failed read leaves grep empty, so the function answers no
+}
+echo "  Waiting up to 60s for the pod to run or report FailedMount..."
+POD_PHASE=""
+wait_until 60 2 "pod/csi-invalid-test to run or report FailedMount" csi05_settled || true
 echo "  Pod phase: ${POD_PHASE:-<not found>}"
 
 if ! $CSI05_LABELLED; then
@@ -446,7 +445,7 @@ EOF
     ensure_namespace "$CSI06_NS"
     ensure_label namespace "$CSI06_NS" cfgd.io/inject-modules=true --overwrite
 
-    sleep 3
+    wait_for_injection "$CSI06_NS" "csi-update-mod-${E2E_RUN_ID}:v2.0" || true
 
     # Create pod referencing the updated module
     kubectl apply -n "$CSI06_NS" -f - <<EOF
@@ -570,7 +569,7 @@ ensure_namespace "$CSI09_NS"
 CSI09_LABELLED=true
 ensure_label namespace "$CSI09_NS" cfgd.io/inject-modules=true --overwrite || CSI09_LABELLED=false
 
-sleep 3
+! $CSI09_LABELLED || wait_for_injection "$CSI09_NS" "csi-test-mod-${E2E_RUN_ID}:v1.0" || true
 
 # Reuse module from FS-CSI-01
 kubectl apply -n "$CSI09_NS" -f - <<EOF
@@ -604,13 +603,7 @@ if $POD_RUNNING; then
 
     # Wait for pod to be gone
     echo "  Waiting for pod deletion..."
-    for _ in $(seq 1 30); do
-        POD_EXISTS=$(kubectl get pod csi-unmount-test -n "$CSI09_NS" 2>/dev/null || echo "")
-        if [ -z "$POD_EXISTS" ]; then
-            break
-        fi
-        sleep 1
-    done
+    wait_for_deleted 30 pod csi-unmount-test -n "$CSI09_NS" || true
 
     # Verify no mount leftovers
     CSI_MOUNTS=$(exec_in_pod mount 2>/dev/null | grep "cfgd" | grep "csi-unmount-test" || echo "")
@@ -641,7 +634,7 @@ CSI10_NS="e2e-csi-ro-${E2E_RUN_ID}"
 ensure_namespace "$CSI10_NS"
 ensure_label namespace "$CSI10_NS" cfgd.io/inject-modules=true --overwrite
 
-sleep 3
+wait_for_injection "$CSI10_NS" "csi-test-mod-${E2E_RUN_ID}:v1.0" || true
 
 # Reuse module from FS-CSI-01
 kubectl apply -n "$CSI10_NS" -f - <<EOF

@@ -97,21 +97,21 @@ dp_field() {
         jq -r --arg f "$1" '.[] | select(.name=="'"$DP_UNIT"'") | .[$f] // "absent"' 2>/dev/null
 }
 
-# Poll that field until it reads `want`. The suite's own waiting shape — a
-# bounded retry inside the script, the way wait_for_pod waits on a pod — because
-# what is being waited on is a controller requeue plus a daemon tick.
+dp_field_is() {
+    DP_FIELD_GOT=$(dp_field "$1")
+    [ "$DP_FIELD_GOT" = "$2" ]
+}
+
+# Poll that field until it reads `want`, then print what it last read. What is
+# being waited on is a controller requeue plus a daemon tick.
 dp_wait_field() {
-    local field="$1" want="$2" timeout="${3:-180}" got=""
-    local deadline=$((SECONDS + timeout))
-    while [ $SECONDS -lt $deadline ]; do
-        got=$(dp_field "$field")
-        if [ "$got" = "$want" ]; then
-            echo "$got"
-            return 0
-        fi
-        sleep 3
-    done
-    echo "$got"
+    local field="$1" want="$2" timeout="${3:-180}"
+    DP_FIELD_GOT=""
+    if wait_until "$timeout" 3 "$field to read '$want' in cfgd backup list" dp_field_is "$field" "$want"; then
+        echo "$DP_FIELD_GOT"
+        return 0
+    fi
+    echo "$DP_FIELD_GOT"
     return 1
 }
 
@@ -353,16 +353,11 @@ else
     rm -f "$DP_ROOT/cfgd.sock"
     dp_spawn_daemon > "$DP_DAEMON_LOG" 2>&1 &
     DP_DAEMON_PID=$!
-    GW35_READY=timeout
-    GW35_DEADLINE=$((SECONDS + 60))
-    while [ $SECONDS -lt $GW35_DEADLINE ]; do
-        if [ -S "$DP_ROOT/cfgd.sock" ]; then
-            GW35_READY=ready
-            break
-        fi
-        kill -0 "$DP_DAEMON_PID" 2>/dev/null || { GW35_READY=exited; break; }
-        sleep 1
-    done
+    GW35_READY=ready
+    if ! wait_for_daemon_socket "$DP_ROOT/cfgd.sock" "$DP_DAEMON_PID" 60; then
+        GW35_READY=timeout
+        kill -0 "$DP_DAEMON_PID" 2>/dev/null || GW35_READY=exited
+    fi
     echo "  daemon pid=$DP_DAEMON_PID state=$GW35_READY"
 
     GW35_NEXT_BEFORE=$(dp_field nextRunAt)
@@ -413,12 +408,7 @@ else
     printf '%s\n' "$GW35_LOCAL_HUMAN" | sed 's/^/    /'
     echo "  Schedule Owner cell: ${GW35_OWNER_CELL:-none}"
 
-    kill -TERM "$DP_DAEMON_PID" 2>/dev/null
-    (sleep 5; kill -KILL "$DP_DAEMON_PID" 2>/dev/null || true) &
-    GW35_WATCHDOG=$!
-    wait "$DP_DAEMON_PID" 2>/dev/null
-    kill -KILL "$GW35_WATCHDOG" 2>/dev/null || true
-    wait "$GW35_WATCHDOG" 2>/dev/null || true
+    stop_background_job "$DP_DAEMON_PID" 5 || true
     GW35_STOPPED=running
     dp_daemon_alive
     case $? in

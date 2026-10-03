@@ -62,8 +62,7 @@ fi
 begin_test "OP-MC-02: MachineConfig update triggers re-reconcile"
 BEFORE_TS="$MC_STATUS"
 
-# Wait to ensure timestamp differs from initial reconcile
-sleep 2
+sleep 1 # sleep-ok: lastReconciled has one-second resolution, so the re-reconcile has to land in a later second
 
 # Update the spec
 MC02_PATCH_RC=0
@@ -74,16 +73,13 @@ echo "  Spec patch rc: $MC02_PATCH_RC"
 
 # Wait for new reconciliation — poll until timestamp changes
 echo "  Waiting for re-reconciliation..."
-AFTER_TS=""
-deadline=$((SECONDS + 60))
-while [ $SECONDS -lt $deadline ]; do
+mc02_reconciled_again() {
     AFTER_TS=$(kubectl get machineconfig e2e-workstation-1 -n "$E2E_NAMESPACE" \
         -o jsonpath='{.status.lastReconciled}' 2>/dev/null || echo "")
-    if [ -n "$AFTER_TS" ] && [ "$AFTER_TS" != "$BEFORE_TS" ]; then
-        break
-    fi
-    sleep 1
-done
+    [ -n "$AFTER_TS" ] && [ "$AFTER_TS" != "$BEFORE_TS" ]
+}
+AFTER_TS=""
+wait_until 60 1 "lastReconciled on e2e-workstation-1 to move past $BEFORE_TS" mc02_reconciled_again || true
 
 echo "  Before: $BEFORE_TS"
 echo "  After:  ${AFTER_TS:-unchanged}"
@@ -168,18 +164,9 @@ EOF
 
 # Wait for policy reconciliation
 echo "  Waiting for ConfigPolicy status..."
-sleep 5
-
-# Poll until compliantCount field is present (even if 0)
-ERR02_STATUS=""
-for i in $(seq 1 60); do
-    ERR02_STATUS=$(kubectl get configpolicy "e2e-impossible-selector-${E2E_RUN_ID}" -n "$E2E_NAMESPACE" \
-        -o jsonpath='{.status.compliantCount}' 2>/dev/null || echo "")
-    if [ -n "$ERR02_STATUS" ]; then
-        break
-    fi
-    sleep 1
-done
+# compliantCount is written even when it is 0.
+ERR02_STATUS=$(wait_for_k8s_field configpolicy "e2e-impossible-selector-${E2E_RUN_ID}" "$E2E_NAMESPACE" \
+    '{.status.compliantCount}' "" 65) || true
 
 COMPLIANT=$(kubectl get configpolicy "e2e-impossible-selector-${E2E_RUN_ID}" -n "$E2E_NAMESPACE" \
     -o jsonpath='{.status.compliantCount}' 2>/dev/null || echo "")
@@ -253,8 +240,10 @@ spec:
       actual: "60"
 EOF
 
-# Wait for DriftAlert to be processed (owner ref set)
-sleep 5
+# The DriftAlert controller owns the alert by its MachineConfig, which is what
+# makes deleting the MachineConfig below orphan it.
+wait_for_k8s_field driftalert "e2e-orphan-drift-${E2E_RUN_ID}" "$E2E_NAMESPACE" \
+    '{.metadata.ownerReferences[?(@.kind=="MachineConfig")].name}' "e2e-ephemeral-mc-${E2E_RUN_ID}" 30 > /dev/null || true
 
 # Delete the MachineConfig — DriftAlert becomes orphaned
 # Remove finalizers first in case controller added them
@@ -262,18 +251,12 @@ kubectl patch machineconfig "e2e-ephemeral-mc-${E2E_RUN_ID}" -n "$E2E_NAMESPACE"
     --type=json -p='[{"op":"replace","path":"/metadata/finalizers","value":[]}]' 2>/dev/null || true # rc-ok: clearing finalizers is best-effort; OP-ERR-03 asserts only that the operator survives the orphaned alert
 kubectl delete machineconfig "e2e-ephemeral-mc-${E2E_RUN_ID}" -n "$E2E_NAMESPACE" --wait=false --ignore-not-found 2>/dev/null || true
 
-# Wait for MC to actually be gone
-for i in $(seq 1 30); do
-    if ! kubectl get machineconfig "e2e-ephemeral-mc-${E2E_RUN_ID}" -n "$E2E_NAMESPACE" > /dev/null 2>&1; then
-        break
-    fi
-    sleep 1
-done
+wait_for_deleted 30 machineconfig "e2e-ephemeral-mc-${E2E_RUN_ID}" -n "$E2E_NAMESPACE" || true
 
-# The DriftAlert may be garbage-collected by owner ref, or the controller
-# may handle the orphaned state. Either outcome is acceptable as long as
-# the operator does not crash.
-sleep 5
+# The garbage collector removes the alert through its owner reference while the
+# operator handles the orphaned alert; the verdict reads the operator after
+# both. An alert that stays is acceptable as long as the operator does not crash.
+wait_for_deleted 30 driftalert "e2e-orphan-drift-${E2E_RUN_ID}" -n "$E2E_NAMESPACE" || true
 
 OPERATOR_STATUS=$(kubectl get pods -n "$E2E_INSTALL_NS" -l "$E2E_OPERATOR_PODS" \
     -o jsonpath='{.items[0].status.phase}' 2>/dev/null || echo "")
@@ -325,8 +308,13 @@ EOF
     kubectl delete machineconfig "e2e-rapid-${E2E_RUN_ID}-${i}" -n "$E2E_NAMESPACE" --wait=false --ignore-not-found 2>/dev/null || true
 done
 
-# Give the controller time to process the events
-sleep 10
+# A MachineConfig the controller has claimed stays until its finalizer is
+# handled, so all five gone means the controller has finished with each delete.
+ERR04_NAMES=()
+for i in $(seq 1 5); do
+    ERR04_NAMES+=("e2e-rapid-${E2E_RUN_ID}-${i}")
+done
+wait_for_deleted 60 machineconfig "${ERR04_NAMES[@]}" -n "$E2E_NAMESPACE" || true
 
 OPERATOR_STATUS=$(kubectl get pods -n "$E2E_INSTALL_NS" -l "$E2E_OPERATOR_PODS" \
     -o jsonpath='{.items[0].status.phase}' 2>/dev/null || echo "")

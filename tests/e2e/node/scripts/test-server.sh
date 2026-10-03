@@ -29,15 +29,8 @@ echo "Device gateway URL: $SERVER_URL"
 
 # Verify device gateway is reachable from the test pod (use health endpoint — API requires auth)
 echo "Verifying device gateway reachability from test pod..."
-GATEWAY_READY=false
-for _ in $(seq 1 30); do
-    if exec_in_pod curl -sf "${HEALTH_URL}/readyz" > /dev/null 2>&1; then
-        GATEWAY_READY=true
-        break
-    fi
-    sleep 2
-done
-if [ "$GATEWAY_READY" = "false" ]; then
+if ! wait_until 60 2 "${HEALTH_URL}/readyz from the test pod" \
+    exec_in_pod curl -sf -o /dev/null "${HEALTH_URL}/readyz"; then
     echo "ERROR: device gateway not reachable after 60s" >&2
     exit 1
 fi
@@ -163,7 +156,7 @@ begin_test "T35: Checkin updates timestamp"
 BEFORE=$(exec_in_pod curl -sf -H "Authorization: Bearer $GW_API_KEY" "${SERVER_URL}/api/v1/devices/${DEVICE_ID}" 2>/dev/null \
     | grep -o '"lastCheckin":"[^"]*"' || echo "")
 
-sleep 2
+sleep 1 # sleep-ok: lastCheckin has one-second resolution, so the second checkin has to land in a later second
 
 exec_in_pod cfgd \
     --config /etc/cfgd/cfgd.yaml \
@@ -226,7 +219,6 @@ echo "  Compliance checkin output:"
 echo "$OUTPUT" | head -15 | sed 's/^/    /'
 
 # Verify the device now has complianceSummary in its API response
-sleep 1
 DEVICE_RESP=$(exec_in_pod curl -sf -H "Authorization: Bearer $GW_API_KEY" "${SERVER_URL}/api/v1/devices/${COMPLIANCE_DEVICE_ID}" 2>/dev/null || echo "{}")
 echo "  Device API response (first 400 chars):"
 echo "$DEVICE_RESP" | head -c 400 | sed 's/^/    /'

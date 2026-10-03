@@ -45,6 +45,32 @@ LC01_PASSED=false
 LC01_REASON=""
 LC01_LEADER=""
 LC01_ATTEMPT=0
+# lc01_attempt: one touch-and-scrape; LC01_REASON says why a failed one failed.
+lc01_attempt() {
+    LC01_ATTEMPT=$RETRY_ATTEMPT
+    if ! kubectl annotate machineconfig "$LC01_MC" -n "$E2E_NAMESPACE" \
+        "cfgd.io/e2e-touch=$LC01_ATTEMPT" --overwrite > /dev/null; then
+        LC01_REASON="Could not annotate MachineConfig $LC01_MC to drive a reconcile (kubectl output above)"
+        return 1
+    fi
+    if ! LC01_LEADER="$(operator_leader_pod)"; then
+        LC01_REASON="$LC01_LEADER"
+        LC01_LEADER=""
+        return 1
+    fi
+    if ! LC01_PF_PID=$(port_forward "$E2E_INSTALL_NS" "pod/$LC01_LEADER" "$LC01_LOCAL_PORT" 8443); then
+        LC01_REASON="Port-forward to pod/$LC01_LEADER never opened localhost:$LC01_LOCAL_PORT (kubectl output above)"
+        return 1
+    fi
+    read -r LC01_CODE LC01_CONTENT_TYPE \
+        <<<"$(http_get_to_file "http://localhost:$LC01_LOCAL_PORT/metrics" "$LC01_BODY")"
+    stop_port_forward "$LC01_PF_PID"
+    if [[ "$LC01_CODE" == 2* ]] && metric_sample_lines cfgd_operator_reconciliations "$LC01_BODY" > /dev/null; then
+        return 0
+    fi
+    LC01_REASON="pod/$LC01_LEADER served no cfgd_operator_reconciliations sample: $(http_evidence "$LC01_CODE" "${LC01_CONTENT_TYPE:-}" "$LC01_BODY")"
+    return 1
+}
 if ! [[ $LC01_TRIES =~ ^[1-9][0-9]*$ ]]; then
     fail_test "OP-LC-01" "E2E_METRICS_TRIES must be a positive integer, got '$LC01_TRIES'"
 elif ! kubectl apply -n "$E2E_NAMESPACE" -f - <<EOF; then
@@ -65,28 +91,9 @@ spec:
 EOF
     fail_test "OP-LC-01" "Could not create MachineConfig $LC01_MC to drive a reconcile (kubectl output above)"
 else
-    while [ "$LC01_ATTEMPT" -lt "$LC01_TRIES" ] && ! $LC01_PASSED; do
-        [ "$LC01_ATTEMPT" -eq 0 ] || sleep 5
-        LC01_ATTEMPT=$((LC01_ATTEMPT + 1))
-        if ! kubectl annotate machineconfig "$LC01_MC" -n "$E2E_NAMESPACE" \
-            "cfgd.io/e2e-touch=$LC01_ATTEMPT" --overwrite > /dev/null; then
-            LC01_REASON="Could not annotate MachineConfig $LC01_MC to drive a reconcile (kubectl output above)"
-        elif ! LC01_LEADER="$(operator_leader_pod)"; then
-            LC01_REASON="$LC01_LEADER"
-            LC01_LEADER=""
-        elif ! LC01_PF_PID=$(port_forward "$E2E_INSTALL_NS" "pod/$LC01_LEADER" "$LC01_LOCAL_PORT" 8443); then
-            LC01_REASON="Port-forward to pod/$LC01_LEADER never opened localhost:$LC01_LOCAL_PORT (kubectl output above)"
-        else
-            read -r LC01_CODE LC01_CONTENT_TYPE \
-                <<<"$(http_get_to_file "http://localhost:$LC01_LOCAL_PORT/metrics" "$LC01_BODY")"
-            stop_port_forward "$LC01_PF_PID"
-            if [[ "$LC01_CODE" == 2* ]] && metric_sample_lines cfgd_operator_reconciliations "$LC01_BODY" > /dev/null; then
-                LC01_PASSED=true
-            else
-                LC01_REASON="pod/$LC01_LEADER served no cfgd_operator_reconciliations sample: $(http_evidence "$LC01_CODE" "${LC01_CONTENT_TYPE:-}" "$LC01_BODY")"
-            fi
-        fi
-    done
+    if retry_tries "$LC01_TRIES" 5 lc01_attempt; then
+        LC01_PASSED=true
+    fi
     echo "  Leader pod: ${LC01_LEADER:-unresolved}, attempts: $LC01_ATTEMPT of $LC01_TRIES"
 
     if $LC01_PASSED; then
@@ -115,13 +122,13 @@ LC02_LEADER=""
 if ! [[ $LC02_TRIES =~ ^[1-9][0-9]*$ ]]; then
     fail_test "OP-LC-02" "E2E_LEASE_TRIES must be a positive integer, got '$LC02_TRIES'"
 else
-    while [ "$LC02_ATTEMPT" -lt "$LC02_TRIES" ] && ! $LC02_PASSED; do
-        [ "$LC02_ATTEMPT" -eq 0 ] || sleep 5
-        LC02_ATTEMPT=$((LC02_ATTEMPT + 1))
-        if LC02_LEADER="$(operator_leader_pod)"; then
-            LC02_PASSED=true
-        fi
-    done
+    lc02_attempt() {
+        LC02_LEADER="$(operator_leader_pod)"
+    }
+    if retry_tries "$LC02_TRIES" 5 lc02_attempt; then
+        LC02_PASSED=true
+    fi
+    LC02_ATTEMPT=$RETRY_ATTEMPT
     if $LC02_PASSED; then
         echo "  Lease holder: pod/$LC02_LEADER (attempt $LC02_ATTEMPT of $LC02_TRIES)"
         pass_test "OP-LC-02"
@@ -176,13 +183,7 @@ fi
 echo "  Waiting for webhook readiness after pod restart..."
 kubectl wait --for=condition=Ready pod -l "$E2E_OPERATOR_PODS" \
     -n "$E2E_INSTALL_NS" --timeout=60s 2>/dev/null || true
-for _i in $(seq 1 12); do
-    if kubectl get endpoints "$E2E_WEBHOOK_SVC" -n "$E2E_INSTALL_NS" \
-        -o jsonpath='{.subsets[0].addresses[0].ip}' 2>/dev/null | grep -q .; then
-        break
-    fi
-    sleep 5
-done
+wait_for_service_endpoints "$E2E_INSTALL_NS" "$E2E_WEBHOOK_SVC" 60 || true
 
 # =================================================================
 # OP-LC-04: MachineConfig reconcile loop
@@ -190,9 +191,8 @@ done
 begin_test "OP-LC-04: MachineConfig reconcile loop"
 
 # Retry apply — webhook endpoint may still be registering after OP-LC-03 restart
-LC04_APPLIED=false
-for _attempt in $(seq 1 6); do
-    if kubectl apply -n "$E2E_NAMESPACE" -f - <<EOF 2>/dev/null
+lc04_apply() {
+    kubectl apply -n "$E2E_NAMESPACE" -f - <<EOF 2>/dev/null && return 0
 apiVersion: cfgd.io/v1alpha1
 kind: MachineConfig
 metadata:
@@ -209,13 +209,13 @@ spec:
     - name: git
   systemSettings: {}
 EOF
-    then
-        LC04_APPLIED=true
-        break
-    fi
-    echo "  Webhook not ready, retrying in 5s..."
-    sleep 5
-done
+    echo "  Webhook not ready (attempt $RETRY_ATTEMPT of 6)"
+    return 1
+}
+LC04_APPLIED=false
+if retry_tries 6 5 lc04_apply; then
+    LC04_APPLIED=true
+fi
 
 if [ "$LC04_APPLIED" = "false" ]; then
     fail_test "OP-LC-04" "Failed to create MachineConfig after retries (webhook unavailable)"
@@ -278,16 +278,13 @@ echo "  MC spec patch rc: $LC05_PATCH_RC"
 
 # Wait for policy to re-evaluate — poll until compliantCount changes or appears
 echo "  Waiting for ConfigPolicy re-evaluation after MC update..."
-COMPLIANT_AFTER=""
-deadline=$((SECONDS + 60))
-while [ $SECONDS -lt $deadline ]; do
+lc05_compliant() {
     COMPLIANT_AFTER=$(kubectl get configpolicy "e2e-lc-policy-${E2E_RUN_ID}" -n "$E2E_NAMESPACE" \
         -o jsonpath='{.status.compliantCount}' 2>/dev/null || echo "")
-    if [ -n "$COMPLIANT_AFTER" ] && [ "${COMPLIANT_AFTER:-0}" -ge 1 ] 2>/dev/null; then
-        break
-    fi
-    sleep 1
-done
+    [ -n "$COMPLIANT_AFTER" ] && [ "${COMPLIANT_AFTER:-0}" -ge 1 ] 2>/dev/null
+}
+COMPLIANT_AFTER=""
+wait_until 60 1 "e2e-lc-policy-${E2E_RUN_ID} to count a compliant MachineConfig" lc05_compliant || true
 
 echo "  compliantCount after update: ${COMPLIANT_AFTER:-not set}"
 

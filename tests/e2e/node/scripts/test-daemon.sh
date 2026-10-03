@@ -5,6 +5,32 @@
 echo ""
 echo "=== Daemon & Compliance Tests ==="
 
+# pod_sysctl_is <name> <value>: the test pod reads <value> for the sysctl.
+pod_sysctl_is() {
+    [ "$(exec_in_pod cat "/proc/sys/${1//.//}" 2>/dev/null)" = "$2" ]
+}
+
+# pod_has_file <glob>: a file matching the glob exists in the test pod.
+pod_has_file() {
+    # shellcheck disable=SC2016  # the pod's bash expands $1
+    exec_in_pod bash -c 'compgen -G "$1" > /dev/null' _ "$1"
+}
+
+# pod_log_completes_after_drift <file> <n>: the daemon log in the test pod
+# holds <n> or more "reconcile: complete" lines after its first "reconcile:
+# drift detected in" line, so that many ticks have read the drift and acted on
+# it under the case's policy.
+pod_log_completes_after_drift() {
+    # shellcheck disable=SC2016 # an awk program; the $ fields belong to awk
+    exec_in_pod awk -v want="$2" '/reconcile: drift detected in/ { d = 1 } d && /reconcile: complete/ { n++ } END { exit !(n >= want) }' "$1"
+}
+
+# pod_log_count_at_least <file> <ERE> <n>: the file in the test pod holds <n>
+# or more lines matching ERE.
+pod_log_count_at_least() {
+    [ "$(exec_in_pod grep -cE -- "$2" "$1" 2>/dev/null || true)" -ge "$3" ] 2>/dev/null
+}
+
 # =================================================================
 # DAEMON-01: Daemon auto-reconciliation
 # =================================================================
@@ -37,8 +63,10 @@ echo "  Daemon PID: $DAEMON_PID"
 
 if [ -z "$DAEMON_PID" ]; then
     fail_test "DAEMON-01" "Daemon did not start"
+elif ! wait_for_pod_log /tmp/daemon.log 'daemon: running' 30; then
+    fail_test "DAEMON-01" "Daemon never logged 'daemon: running'"
+    stop_pod_process "$DAEMON_PID" || true
 else
-    sleep 3
 
     # Introduce drift
     exec_in_pod sysctl -w net.ipv4.ip_forward=0 > /dev/null 2>&1 || true
@@ -47,19 +75,12 @@ else
     # Wait for daemon to fix it (should happen within 10s with 5s interval)
     echo "  Waiting up to 15s for daemon to reconcile..."
     FIXED=false
-    for i in $(seq 1 15); do
-        VAL=$(exec_in_pod cat /proc/sys/net/ipv4/ip_forward 2>/dev/null || echo "error")
-        if [ "$VAL" = "1" ]; then
-            echo "  Reconciled after ${i}s: net.ipv4.ip_forward=$VAL"
-            FIXED=true
-            break
-        fi
-        sleep 1
-    done
+    if wait_until 15 1 "the daemon to restore net.ipv4.ip_forward=1" pod_sysctl_is net.ipv4.ip_forward 1; then
+        echo "  Reconciled: net.ipv4.ip_forward=1"
+        FIXED=true
+    fi
 
-    # Kill daemon
-    exec_in_pod kill "$DAEMON_PID" > /dev/null 2>&1 || true
-    sleep 1
+    stop_pod_process "$DAEMON_PID" || true
 
     # Show daemon logs
     echo "  Daemon logs (last 15 lines):"
@@ -125,19 +146,12 @@ else
     # Wait for compliance snapshot file to appear (interval is 3s, allow up to 20s)
     echo "  Waiting up to 20s for compliance snapshot file..."
     FOUND=false
-    for i in $(seq 1 20); do
-        FILE_COUNT=$(exec_in_pod bash -c "ls $COMPLIANCE_EXPORT_DIR/compliance-*.json 2>/dev/null | wc -l" | tr -d '[:space:]')
-        if [ "$FILE_COUNT" -gt 0 ]; then
-            echo "  Snapshot file found after ${i}s"
-            FOUND=true
-            break
-        fi
-        sleep 1
-    done
+    if wait_until 20 1 "a compliance snapshot in $COMPLIANCE_EXPORT_DIR" pod_has_file "$COMPLIANCE_EXPORT_DIR/compliance-*.json"; then
+        echo "  Snapshot file found"
+        FOUND=true
+    fi
 
-    # Kill daemon
-    exec_in_pod kill "$DAEMON_PID" > /dev/null 2>&1 || true
-    sleep 1
+    stop_pod_process "$DAEMON_PID" || true
 
     if $FOUND; then
         # Validate the snapshot is valid JSON with expected keys
@@ -227,18 +241,12 @@ if [ -z "$DAEMON_PID" ]; then
 else
     echo "  Waiting up to 20s for compliance snapshot export..."
     FOUND=false
-    for i in $(seq 1 20); do
-        COUNT=$(exec_in_pod bash -c "ls $COMPLIANCE_EXPORT_DIR/compliance-*.json 2>/dev/null | wc -l" | tr -d '[:space:]')
-        if [ "$COUNT" -gt 0 ]; then
-            echo "  Snapshot exported after ${i}s"
-            FOUND=true
-            break
-        fi
-        sleep 1
-    done
+    if wait_until 20 1 "a compliance snapshot in $COMPLIANCE_EXPORT_DIR" pod_has_file "$COMPLIANCE_EXPORT_DIR/compliance-*.json"; then
+        echo "  Snapshot exported"
+        FOUND=true
+    fi
 
-    exec_in_pod kill "$DAEMON_PID" > /dev/null 2>&1 || true
-    sleep 1
+    stop_pod_process "$DAEMON_PID" || true
 
     if $FOUND; then
         pass_test "DAEMON-07"
@@ -325,8 +333,10 @@ echo "  Daemon PID: $DAEMON_PID"
 
 if [ -z "$DAEMON_PID" ]; then
     fail_test "DAEMON-10" "Daemon did not start"
+elif ! wait_for_pod_log /tmp/daemon10.log 'daemon: running' 30; then
+    fail_test "DAEMON-10" "Daemon never logged 'daemon: running'"
+    stop_pod_process "$DAEMON_PID" || true
 else
-    sleep 3
 
     # Modify the profile to trigger a file watch event
     exec_in_pod bash -c 'cat > /etc/cfgd/profiles/k8s-worker-minimal.yaml << "INNEREOF"
@@ -348,18 +358,13 @@ INNEREOF'
     # Wait for daemon to detect the config change and reconcile
     echo "  Waiting up to 20s for daemon to reconcile after config change..."
     RECONCILED=false
-    for i in $(seq 1 20); do
-        DAEMON_LOG=$(exec_in_pod cat /tmp/daemon10.log 2>/dev/null || echo "")
-        if echo "$DAEMON_LOG" | grep -q "watch: file changed\|reconcile: complete"; then
-            echo "  Daemon detected config change after ${i}s"
-            RECONCILED=true
-            break
-        fi
-        sleep 1
-    done
+    if wait_until 20 1 "the daemon to log the profile change" \
+        exec_in_pod grep -qE 'watch: file changed|reconcile: complete' /tmp/daemon10.log; then
+        echo "  Daemon detected config change"
+        RECONCILED=true
+    fi
 
-    exec_in_pod kill "$DAEMON_PID" > /dev/null 2>&1 || true
-    sleep 1
+    stop_pod_process "$DAEMON_PID" || true
 
     echo "  Daemon logs (last 15 lines):"
     exec_in_pod cat /tmp/daemon10.log 2>/dev/null | tail -15 | sed 's/^/    /' || true
@@ -419,8 +424,10 @@ echo "  Daemon PID: $DAEMON_PID"
 
 if [ -z "$DAEMON_PID" ]; then
     fail_test "DAEMON-11" "Daemon did not start"
+elif ! wait_for_pod_log /tmp/daemon11.log 'daemon: running' 30; then
+    fail_test "DAEMON-11" "Daemon never logged 'daemon: running'"
+    stop_pod_process "$DAEMON_PID" || true
 else
-    sleep 3
 
     # Introduce drift on a managed sysctl value
     exec_in_pod sysctl -w net.ipv4.ip_forward=0 > /dev/null 2>&1 || true
@@ -429,18 +436,12 @@ else
     # Wait for daemon to auto-restore the value
     echo "  Waiting up to 20s for daemon to restore drifted value..."
     RESTORED=false
-    for i in $(seq 1 20); do
-        VAL=$(exec_in_pod cat /proc/sys/net/ipv4/ip_forward 2>/dev/null || echo "error")
-        if [ "$VAL" = "1" ]; then
-            echo "  Value restored after ${i}s: net.ipv4.ip_forward=$VAL"
-            RESTORED=true
-            break
-        fi
-        sleep 1
-    done
+    if wait_until 20 1 "the daemon to restore net.ipv4.ip_forward=1" pod_sysctl_is net.ipv4.ip_forward 1; then
+        echo "  Value restored: net.ipv4.ip_forward=1"
+        RESTORED=true
+    fi
 
-    exec_in_pod kill "$DAEMON_PID" > /dev/null 2>&1 || true
-    sleep 1
+    stop_pod_process "$DAEMON_PID" || true
 
     DAEMON_LOG=$(exec_in_pod cat /tmp/daemon11.log 2>/dev/null || echo "")
     echo "  Daemon logs (last 15 lines):"
@@ -488,19 +489,21 @@ echo "  Daemon PID: $DAEMON_PID"
 
 if [ -z "$DAEMON_PID" ]; then
     fail_test "DAEMON-12" "Daemon did not start"
+elif ! wait_for_pod_log /tmp/daemon12.log 'daemon: running' 30; then
+    fail_test "DAEMON-12" "Daemon never logged 'daemon: running'"
+    stop_pod_process "$DAEMON_PID" || true
 else
-    sleep 3
 
     # Introduce drift
     exec_in_pod sysctl -w net.ipv4.ip_forward=0 > /dev/null 2>&1 || true
     echo "  Introduced drift: net.ipv4.ip_forward=0"
 
-    # Wait for daemon to detect drift (at least one reconcile cycle)
-    echo "  Waiting 12s for daemon to detect drift..."
-    sleep 12
+    # The verdict reads what the first tick that saw the drift did with it.
+    echo "  Waiting up to 30s for a reconcile tick to act on the drift..."
+    wait_until 30 1 "a reconcile tick after drift in /tmp/daemon12.log" \
+        pod_log_completes_after_drift /tmp/daemon12.log 1 || true
 
-    exec_in_pod kill "$DAEMON_PID" > /dev/null 2>&1 || true
-    sleep 1
+    stop_pod_process "$DAEMON_PID" || true
 
     DAEMON_LOG=$(exec_in_pod cat /tmp/daemon12.log 2>/dev/null || echo "")
     echo "  Daemon logs (last 15 lines):"
@@ -554,19 +557,21 @@ echo "  Daemon PID: $DAEMON_PID"
 
 if [ -z "$DAEMON_PID" ]; then
     fail_test "DAEMON-13" "Daemon did not start"
+elif ! wait_for_pod_log /tmp/daemon13.log 'daemon: running' 30; then
+    fail_test "DAEMON-13" "Daemon never logged 'daemon: running'"
+    stop_pod_process "$DAEMON_PID" || true
 else
-    sleep 3
 
     # Introduce drift
     exec_in_pod sysctl -w net.ipv4.ip_forward=0 > /dev/null 2>&1 || true
     echo "  Introduced drift: net.ipv4.ip_forward=0"
 
-    # Wait through multiple reconcile cycles
-    echo "  Waiting 12s to confirm daemon does not auto-apply..."
-    sleep 12
+    # Two ticks that read the drift and left it is the evidence the policy holds.
+    echo "  Waiting up to 30s for two reconcile ticks to act on the drift..."
+    wait_until 30 1 "two reconcile ticks after drift in /tmp/daemon13.log" \
+        pod_log_completes_after_drift /tmp/daemon13.log 2 || true
 
-    exec_in_pod kill "$DAEMON_PID" > /dev/null 2>&1 || true
-    sleep 1
+    stop_pod_process "$DAEMON_PID" || true
 
     DAEMON_LOG=$(exec_in_pod cat /tmp/daemon13.log 2>/dev/null || echo "")
     echo "  Daemon logs (last 15 lines):"
@@ -619,12 +624,12 @@ echo "  Daemon PID: $DAEMON_PID"
 if [ -z "$DAEMON_PID" ]; then
     fail_test "DAEMON-14" "Daemon did not start"
 else
-    # Wait 18s to allow ~3 reconciliation cycles (5s interval)
-    echo "  Waiting 18s for ~3 reconcile cycles..."
-    sleep 18
+    # The 18s window is the case: a 5s interval completes two ticks inside it.
+    echo "  Waiting up to 18s for two reconcile ticks..."
+    wait_until 18 1 "two 'reconcile: complete' lines in /tmp/daemon14.log" \
+        pod_log_count_at_least /tmp/daemon14.log 'reconcile: complete' 2 || true
 
-    exec_in_pod kill "$DAEMON_PID" > /dev/null 2>&1 || true
-    sleep 1
+    stop_pod_process "$DAEMON_PID" || true
 
     DAEMON_LOG=$(exec_in_pod cat /tmp/daemon14.log 2>/dev/null || echo "")
     echo "  Daemon logs (last 20 lines):"
@@ -701,19 +706,15 @@ else
     # Wait for daemon to reconcile and run hooks
     echo "  Waiting up to 20s for hook artifacts..."
     HOOKS_RAN=false
-    for i in $(seq 1 20); do
+    if wait_until 20 1 "a pre- or post-reconcile hook artifact" \
+        exec_in_pod sh -c 'test -f /tmp/cfgd-pre-reconcile-ran || test -f /tmp/cfgd-post-reconcile-ran'; then
         PRE_EXISTS=$(exec_in_pod test -f /tmp/cfgd-pre-reconcile-ran && echo "yes" || echo "no")
         POST_EXISTS=$(exec_in_pod test -f /tmp/cfgd-post-reconcile-ran && echo "yes" || echo "no")
-        if [ "$PRE_EXISTS" = "yes" ] || [ "$POST_EXISTS" = "yes" ]; then
-            echo "  Hook artifacts found after ${i}s (pre=$PRE_EXISTS, post=$POST_EXISTS)"
-            HOOKS_RAN=true
-            break
-        fi
-        sleep 1
-    done
+        echo "  Hook artifacts found (pre=$PRE_EXISTS, post=$POST_EXISTS)"
+        HOOKS_RAN=true
+    fi
 
-    exec_in_pod kill "$DAEMON_PID" > /dev/null 2>&1 || true
-    sleep 1
+    stop_pod_process "$DAEMON_PID" || true
 
     echo "  Daemon logs (last 15 lines):"
     exec_in_pod cat /tmp/daemon15.log 2>/dev/null | tail -15 | sed 's/^/    /' || true
@@ -790,17 +791,12 @@ else
     # Wait for onDrift hook artifact
     echo "  Waiting up to 20s for onDrift hook artifact..."
     ONDRIFT_FIRED=false
-    for i in $(seq 1 20); do
-        if exec_in_pod test -f /tmp/cfgd-ondrift-fired 2>/dev/null; then
-            echo "  onDrift hook artifact found after ${i}s"
-            ONDRIFT_FIRED=true
-            break
-        fi
-        sleep 1
-    done
+    if wait_until 20 1 "the onDrift hook artifact" exec_in_pod test -f /tmp/cfgd-ondrift-fired; then
+        echo "  onDrift hook artifact found"
+        ONDRIFT_FIRED=true
+    fi
 
-    exec_in_pod kill "$DAEMON_PID" > /dev/null 2>&1 || true
-    sleep 1
+    stop_pod_process "$DAEMON_PID" || true
 
     DAEMON_LOG=$(exec_in_pod cat /tmp/daemon16.log 2>/dev/null || echo "")
     echo "  Daemon logs (last 15 lines):"
@@ -829,13 +825,9 @@ GW_API_KEY="${CFGD_E2E_API_KEY:-cfgd-e2e-admin-key}"
 
 # Check if device gateway is reachable (use health endpoint — API requires auth)
 GATEWAY_REACHABLE=false
-for i in $(seq 1 10); do
-    if exec_in_pod curl -sf "${HEALTH_URL}/readyz" > /dev/null 2>&1; then
-        GATEWAY_REACHABLE=true
-        break
-    fi
-    sleep 2
-done
+if wait_until 20 2 "${HEALTH_URL}/readyz" exec_in_pod curl -sf -o /dev/null "${HEALTH_URL}/readyz"; then
+    GATEWAY_REACHABLE=true
+fi
 
 if [ "$GATEWAY_REACHABLE" = "false" ]; then
     skip_test "DAEMON-17" "Device gateway not reachable"
@@ -867,12 +859,11 @@ INNEREOF"
     if [ -z "$DAEMON_PID" ]; then
         fail_test "DAEMON-17" "Daemon did not start"
     else
-        # Wait for daemon to perform at least one checkin cycle
-        echo "  Waiting 12s for daemon to checkin with gateway..."
-        sleep 12
+        # A reconcile tick checks in with the server origin, or says why it skipped.
+        echo "  Waiting up to 30s for the daemon's check-in attempt..."
+        wait_for_pod_log /tmp/daemon17.log 'daemon: (checking in with|no device credential for this gateway)' 30 || true
 
-        exec_in_pod kill "$DAEMON_PID" > /dev/null 2>&1 || true
-        sleep 1
+        stop_pod_process "$DAEMON_PID" || true
 
         DAEMON_LOG=$(exec_in_pod cat /tmp/daemon17.log 2>/dev/null || echo "")
         echo "  Daemon logs (last 15 lines):"
@@ -921,8 +912,8 @@ echo "  Daemon PID: $DAEMON_PID"
 if [ -z "$DAEMON_PID" ]; then
     fail_test "DAEMON-18" "Daemon did not start"
 else
-    # Wait for daemon to fully initialize
-    sleep 3
+    # SIGTERM has to land on a daemon that is up, not one still starting.
+    wait_for_pod_log /tmp/daemon18.log 'daemon: running' 30 || true
 
     # Verify daemon is running
     IS_RUNNING=$(exec_in_pod bash -c "kill -0 $DAEMON_PID 2>/dev/null && echo yes || echo no")
@@ -935,24 +926,12 @@ else
         exec_in_pod kill -TERM "$DAEMON_PID" 2>/dev/null || true
         echo "  Sent SIGTERM to PID $DAEMON_PID"
 
-        # Wait for process to exit (up to 15s)
-        # Check both kill -0 and /proc state — zombies (Z) still respond to kill -0
+        # A zombie counts as exited: the pod's PID 1 reaps nothing.
         EXITED=false
-        for i in $(seq 1 15); do
-            if ! exec_in_pod kill -0 "$DAEMON_PID" 2>/dev/null; then
-                echo "  Daemon exited after ${i}s"
-                EXITED=true
-                break
-            fi
-            # Zombie means the daemon exited cleanly but wasn't reaped by PID 1
-            PROC_STATE=$(exec_in_pod cat "/proc/$DAEMON_PID/status" 2>/dev/null | grep '^State:' || echo "")
-            if echo "$PROC_STATE" | grep -q 'Z (zombie)'; then
-                echo "  Daemon exited after ${i}s (zombie — awaiting reap)"
-                EXITED=true
-                break
-            fi
-            sleep 1
-        done
+        if wait_until 15 1 "pid $DAEMON_PID to exit after SIGTERM" pod_pid_gone "$DAEMON_PID"; then
+            echo "  Daemon exited"
+            EXITED=true
+        fi
 
         if ! $EXITED; then
             echo "  Daemon logs on timeout:"

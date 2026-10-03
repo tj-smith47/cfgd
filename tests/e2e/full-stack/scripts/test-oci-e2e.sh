@@ -42,7 +42,7 @@ EOF
     ensure_namespace "$OCI01_NS"
     ensure_label namespace "$OCI01_NS" cfgd.io/inject-modules=true --overwrite
 
-    sleep 3
+    wait_for_injection "$OCI01_NS" "${OCI01_MOD}:v1.0" || true
 
     kubectl apply -n "$OCI01_NS" -f - <<EOF
 apiVersion: v1
@@ -160,7 +160,7 @@ EOF
     ensure_namespace "$OCI02_NS"
     ensure_label namespace "$OCI02_NS" cfgd.io/inject-modules=true --overwrite
 
-    sleep 3
+    wait_for_injection "$OCI02_NS" "${OCI02_MOD}:v1.0" || true
 
     kubectl apply -n "$OCI02_NS" -f - <<EOF
 apiVersion: v1
@@ -231,8 +231,6 @@ spec:
     trustedRegistries:
       - "${REGISTRY}/*"
 EOF
-
-    sleep 3
 
     # Try to create a Module without signature — webhook should reject it
     REJECT_OUTPUT=$(kubectl apply -f - 2>&1 <<EOF || true
@@ -387,7 +385,7 @@ EOF
     ensure_namespace "$OCI05_NS"
     ensure_label namespace "$OCI05_NS" cfgd.io/inject-modules=true --overwrite
 
-    sleep 3
+    wait_for_injection "$OCI05_NS" "${OCI05_MOD}:v1.0" || true
 
     kubectl apply -n "$OCI05_NS" -f - <<EOF
 apiVersion: v1
@@ -465,21 +463,11 @@ EOF
 
     # Wait for registry-credentials to be replicated by Reflector
     echo "  Waiting for registry-credentials in namespace..."
-    CRED_DEADLINE=$((SECONDS + 30))
-    CRED_FOUND=false
-    while [ $SECONDS -lt $CRED_DEADLINE ]; do
-        if kubectl get secret registry-credentials -n "$OCI06_NS" > /dev/null 2>&1; then
-            CRED_FOUND=true
-            break
-        fi
-        sleep 1
-    done
-
-    if ! $CRED_FOUND; then
+    if ! wait_for_registry_credentials "$OCI06_NS" 30; then
         echo "  WARN: registry-credentials not replicated, creating pod anyway"
     fi
 
-    sleep 3
+    wait_for_injection "$OCI06_NS" "${OCI06_MOD}:v1.0" || true
 
     # Create pod with imagePullSecrets referencing the registry-credentials secret
     kubectl apply -n "$OCI06_NS" -f - <<EOF

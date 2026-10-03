@@ -33,40 +33,11 @@ trap 'daemon_cleanup; rm -rf "$CLI_SCRATCH"' EXIT
 SPAWNED_PID=""
 spawn_daemon() {
     local log="$1"
-    local retries=25
     rm -f "$CFGD_DAEMON_IPC_PATH"
     "$CFGD" "${C[@]}" daemon > "$log" 2>&1 &
     SPAWNED_PID=$!
     DAEMON_PIDS+=("$SPAWNED_PID")
-    until [ -S "$CFGD_DAEMON_IPC_PATH" ] || [ "$retries" -le 0 ]; do
-        if ! kill -0 "$SPAWNED_PID" 2>/dev/null; then
-            return 1
-        fi
-        sleep 0.2
-        retries=$((retries - 1))
-    done
-    [ -S "$CFGD_DAEMON_IPC_PATH" ]
-}
-
-# Stop a daemon cleanly via SIGTERM, wait for exit, return its exit code via
-# $REAPED_RC. Uses bash `wait` directly so we reap before any other code can —
-# polling kill -0 ahead of `wait` lets bash drop the job from its table and
-# turns `wait $pid` into "no such job" (rc=127), losing the real exit status.
-# A 3s SIGKILL backstop fires from a sidecar shell so a hung daemon can't
-# block `wait` forever.
-stop_daemon() {
-    local pid="$1"
-    kill -TERM "$pid" 2>/dev/null || true
-    ( sleep 3; kill -KILL "$pid" 2>/dev/null || true ) &
-    local watchdog=$!
-    REAPED_RC=0
-    wait "$pid" 2>/dev/null || REAPED_RC=$?
-    kill -KILL "$watchdog" 2>/dev/null || true
-    wait "$watchdog" 2>/dev/null || true
-    if kill -0 "$pid" 2>/dev/null; then
-        return 1
-    fi
-    return 0
+    wait_for_daemon_socket "$CFGD_DAEMON_IPC_PATH" "$SPAWNED_PID" 5
 }
 
 echo "=== cfgd daemon tests ==="
@@ -155,15 +126,11 @@ elif [ -z "$DAEMON_PID" ]; then
     skip_test "DM07" "DM05 did not produce a live daemon"
 else
     kill -HUP "$DAEMON_PID" 2>/dev/null || true
-    sleep 0.5
     SIGHUP_OK=""
-    for _ in $(seq 1 25); do
-        if grep -qF "daemon: reloading configuration (SIGHUP)" "$DAEMON_LOG"; then
-            SIGHUP_OK=1
-            break
-        fi
-        sleep 0.2
-    done
+    if wait_until 5 0.2 "the SIGHUP reload line in $DAEMON_LOG" \
+        grep -qF "daemon: reloading configuration (SIGHUP)" "$DAEMON_LOG"; then
+        SIGHUP_OK=1
+    fi
     if [ -n "$SIGHUP_OK" ] && kill -0 "$DAEMON_PID" 2>/dev/null; then
         pass_test "DM07"
     else
@@ -180,7 +147,7 @@ elif [ -z "$DAEMON_PID" ]; then
 else
     DM08_OK=1
     # Cycle 1: shut down the daemon spawned in DM05.
-    if ! stop_daemon "$DAEMON_PID"; then
+    if ! stop_background_job "$DAEMON_PID" 3; then
         fail_test "DM08" "first daemon did not exit within 3s"
         DM08_OK=0
     elif [ "$REAPED_RC" -ne 0 ]; then
@@ -200,7 +167,7 @@ else
             fail_test "DM08" "respawn failed; cycle2 log tail:"
             tail -20 "$DAEMON_LOG2" 2>/dev/null | sed 's/^/    /' || true
             DM08_OK=0
-        elif ! stop_daemon "$DAEMON_PID2"; then
+        elif ! stop_background_job "$DAEMON_PID2" 3; then
             fail_test "DM08" "respawned daemon did not exit within 3s"
             DM08_OK=0
         elif [ "$REAPED_RC" -ne 0 ]; then

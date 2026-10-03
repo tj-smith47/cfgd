@@ -37,14 +37,7 @@ helm_test_ns() {
     kubectl label namespace "$HELM_NS" "$E2E_RUN_LABEL" --overwrite 2>/dev/null || true # rc-ok: the run tag the janitor ages leaked namespaces out by; no case asserts on it
     kubectl label namespace "$HELM_NS" "cfgd.io/e2e-helm=$HELM_NS" --overwrite >/dev/null ||
         echo "  WARN: could not label namespace $HELM_NS cfgd.io/e2e-helm=$HELM_NS, so a pod injector this install enables leaves its pods alone"
-    # Wait for Reflector to replicate registry-credentials (needed for imagePullSecrets)
-    local deadline=$((SECONDS + 30))
-    while [ $SECONDS -lt $deadline ]; do
-        if kubectl get secret registry-credentials -n "$HELM_NS" > /dev/null 2>&1; then
-            return 0
-        fi
-        sleep 1
-    done
+    wait_for_registry_credentials "$HELM_NS" 30 && return 0
     echo "  WARN: registry-credentials not replicated to $HELM_NS"
 }
 
@@ -428,8 +421,7 @@ DEPLOY_BEFORE=$(kubectl get deployment -n "$HELM_NS" \
 echo "  Deployment before uninstall: ${DEPLOY_BEFORE:-<none>}"
 
 # Uninstall
-helm uninstall cfgd-test -n "$HELM_NS" 2>&1 || true
-sleep 5
+helm uninstall cfgd-test -n "$HELM_NS" --wait --timeout 60s 2>&1 || true
 
 # Verify deployment is gone
 DEPLOY_AFTER=$(kubectl get deployment -n "$HELM_NS" \

@@ -71,19 +71,14 @@ spec:
   systemSettings: {}
 EOF
 
-# Wait for both MC and policy to re-reconcile
-sleep 5
-
-# Poll until nonCompliantCount >= 1 (can't use wait_for_k8s_field since we need >= not ==)
-NON_COMPLIANT="0"
-for _ in $(seq 1 60); do
+# wait_for_k8s_field matches one value, and the verdict needs nonCompliantCount >= 1.
+cp02_non_compliant() {
     NON_COMPLIANT=$(kubectl get configpolicy e2e-security-baseline -n "$E2E_NAMESPACE" \
         -o jsonpath='{.status.nonCompliantCount}' 2>/dev/null || echo "0")
-    if [ "${NON_COMPLIANT:-0}" -ge 1 ] 2>/dev/null; then
-        break
-    fi
-    sleep 1
-done
+    [ "${NON_COMPLIANT:-0}" -ge 1 ] 2>/dev/null
+}
+NON_COMPLIANT="0"
+wait_until 65 1 "e2e-security-baseline to count a non-compliant MachineConfig" cp02_non_compliant || true
 
 COMPLIANT=$(kubectl get configpolicy e2e-security-baseline -n "$E2E_NAMESPACE" \
     -o jsonpath='{.status.compliantCount}' 2>/dev/null || echo "0")
@@ -119,10 +114,8 @@ spec:
       version: ">=9.0"
 EOF
 
-sleep 5
-
 COMPLIANT=$(wait_for_k8s_field configpolicy e2e-version-policy "$E2E_NAMESPACE" \
-    '{.status.compliantCount}' "" 20) || true
+    '{.status.compliantCount}' "" 25) || true
 
 echo "  Version policy status:"
 kubectl get configpolicy e2e-version-policy -n "$E2E_NAMESPACE" \
@@ -161,10 +154,8 @@ spec:
       cfgd.io/profile: dev-workstation
 EOF
 
-sleep 5
-
 COMPLIANT=$(wait_for_k8s_field configpolicy e2e-selector-policy "$E2E_NAMESPACE" \
-    '{.status.compliantCount}' "" 20) || true
+    '{.status.compliantCount}' "" 25) || true
 
 NON_COMPLIANT=$(kubectl get configpolicy e2e-selector-policy -n "$E2E_NAMESPACE" \
     -o jsonpath='{.status.nonCompliantCount}' 2>/dev/null || echo "0")

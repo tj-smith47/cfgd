@@ -112,11 +112,8 @@ spec:
     dns-server: "1.1.1.1"
 EOF
 
-# Wait for reconciliation
-sleep 10
-
-CCP2_COMPLIANT=$(kubectl get clusterconfigpolicy "e2e-cluster-override-${E2E_RUN_ID}" \
-    -o jsonpath='{.status.compliantCount}' 2>/dev/null || echo "")
+CCP2_COMPLIANT=$(wait_for_k8s_field clusterconfigpolicy "e2e-cluster-override-${E2E_RUN_ID}" "" \
+    '{.status.compliantCount}' "" 60) || true
 CCP2_NON_COMPLIANT=$(kubectl get clusterconfigpolicy "e2e-cluster-override-${E2E_RUN_ID}" \
     -o jsonpath='{.status.nonCompliantCount}' 2>/dev/null || echo "0")
 
@@ -139,6 +136,26 @@ echo "=== Multi-Namespace Policy Tests ==="
 
 NS_A="e2e-ns-a-${E2E_RUN_ID}"
 NS_B="e2e-ns-b-${E2E_RUN_ID}"
+
+# cross_ns_totals: read the e2e-cross-ns ClusterConfigPolicy's status into
+# CROSS_COMPLIANT (empty until the controller writes it) and CROSS_TOTAL
+# (compliant plus non-compliant).
+cross_ns_totals() {
+    local non_compliant
+    CROSS_COMPLIANT=$(kubectl get clusterconfigpolicy "e2e-cross-ns-${E2E_RUN_ID}" \
+        -o jsonpath='{.status.compliantCount}' 2>/dev/null || echo "0")
+    non_compliant=$(kubectl get clusterconfigpolicy "e2e-cross-ns-${E2E_RUN_ID}" \
+        -o jsonpath='{.status.nonCompliantCount}' 2>/dev/null || echo "0")
+    CROSS_TOTAL=$(( ${CROSS_COMPLIANT:-0} + ${non_compliant:-0} ))
+}
+cross_ns_total_below() {
+    cross_ns_totals
+    [ "$CROSS_TOTAL" -lt "$1" ]
+}
+cross_ns_total_at_least() {
+    cross_ns_totals
+    [ "$CROSS_TOTAL" -ge "$1" ]
+}
 
 # --- Setup: create two ephemeral namespaces with labels ---
 ensure_namespace "$NS_A"
@@ -279,24 +296,12 @@ begin_test "OP-NS-03: Namespace selector filtering"
 # Remove the team label from ns-b so it no longer matches the selector
 ensure_label namespace "$NS_B" cfgd.io/team-
 
-# Wait for the controller to re-evaluate (label change triggers reconciliation)
+# Only ns-a matches once the controller re-evaluates, so the total drops.
 echo "  Waiting for ClusterConfigPolicy to re-evaluate after unlabeling ns-b..."
-sleep 10
-
-NS03_COMPLIANT=""
-NS03_TOTAL=0
-for _ in $(seq 1 60); do
-    NS03_COMPLIANT=$(kubectl get clusterconfigpolicy "e2e-cross-ns-${E2E_RUN_ID}" \
-        -o jsonpath='{.status.compliantCount}' 2>/dev/null || echo "0")
-    NS03_NON_COMPLIANT=$(kubectl get clusterconfigpolicy "e2e-cross-ns-${E2E_RUN_ID}" \
-        -o jsonpath='{.status.nonCompliantCount}' 2>/dev/null || echo "0")
-    NS03_TOTAL=$(( ${NS03_COMPLIANT:-0} + ${NS03_NON_COMPLIANT:-0} ))
-    # After removing ns-b label, only ns-a matches => total should decrease
-    if [ "$NS03_TOTAL" -lt "$NS02_TOTAL" ]; then
-        break
-    fi
-    sleep 1
-done
+wait_until 70 1 "the cross-namespace total to drop below $NS02_TOTAL" \
+    cross_ns_total_below "$NS02_TOTAL" || true
+NS03_COMPLIANT=$CROSS_COMPLIANT
+NS03_TOTAL=$CROSS_TOTAL
 
 echo "  After unlabeling ns-b — compliant: ${NS03_COMPLIANT:-0}, total: ${NS03_TOTAL}"
 
@@ -348,8 +353,8 @@ fi
 # =================================================================
 begin_test "OP-NS-05: ClusterConfigPolicy compliance counting"
 
-# Wait for re-evaluation after ns-b label was restored
-sleep 5
+# Both namespaces match again once the controller re-evaluates the restored label.
+wait_until 30 1 "the cross-namespace total to reach 2" cross_ns_total_at_least 2 || true
 
 NS05_COMPLIANT=$(wait_for_k8s_field clusterconfigpolicy "e2e-cross-ns-${E2E_RUN_ID}" "" \
     '{.status.compliantCount}' "" 30) || true
@@ -383,31 +388,13 @@ NS06_BEFORE_TOTAL=$NS05_TOTAL
 kubectl delete namespace "$NS_A" --wait=false --ignore-not-found 2>/dev/null || true
 
 echo "  Waiting for namespace $NS_A deletion to propagate..."
-# Wait for the namespace to actually be gone
-for _ in $(seq 1 60); do
-    if ! kubectl get namespace "$NS_A" > /dev/null 2>&1; then
-        break
-    fi
-    sleep 1
-done
+wait_for_deleted 60 namespace "$NS_A" || true
 
-# Wait for the controller to re-evaluate the ClusterConfigPolicy
-sleep 10
-
-NS06_COMPLIANT=""
-NS06_TOTAL=0
-for _ in $(seq 1 60); do
-    NS06_COMPLIANT=$(kubectl get clusterconfigpolicy "e2e-cross-ns-${E2E_RUN_ID}" \
-        -o jsonpath='{.status.compliantCount}' 2>/dev/null || echo "0")
-    NS06_NON_COMPLIANT=$(kubectl get clusterconfigpolicy "e2e-cross-ns-${E2E_RUN_ID}" \
-        -o jsonpath='{.status.nonCompliantCount}' 2>/dev/null || echo "0")
-    NS06_TOTAL=$(( ${NS06_COMPLIANT:-0} + ${NS06_NON_COMPLIANT:-0} ))
-    # After deleting ns-a, total should decrease
-    if [ "$NS06_TOTAL" -lt "$NS06_BEFORE_TOTAL" ]; then
-        break
-    fi
-    sleep 1
-done
+# The controller re-evaluates once mc-ns-a goes with its namespace.
+wait_until 70 1 "the cross-namespace total to drop below $NS06_BEFORE_TOTAL" \
+    cross_ns_total_below "$NS06_BEFORE_TOTAL" || true
+NS06_COMPLIANT=$CROSS_COMPLIANT
+NS06_TOTAL=$CROSS_TOTAL
 
 echo "  After deleting ns-a — compliant: ${NS06_COMPLIANT:-0}, total: ${NS06_TOTAL} (was: ${NS06_BEFORE_TOTAL})"
 

@@ -109,67 +109,71 @@ lease_held_by_us() {
     [ "$holder" = "$LEASE_HOLDER" ]
 }
 
-# Block until we hold the lease. Acquisition is atomic — never a bare apply:
+# One attempt at the lease; 0 once this run holds it. Acquisition is atomic,
+# with no bare apply:
 #   absent  → kubectl create (fails if another waiter created it first)
 #   expired → kubectl replace guarded by the observed resourceVersion
-# After any write that returns success we RE-READ and confirm we are the holder
-# before returning; losing the race loops back and waits. No deadlock: a dead
-# holder stops renewing, the lease expires, and the next waiter steals it.
-acquire_lease() {
-    echo "Acquiring setup lease ${LEASE_NS}/${LEASE_NAME} (holder ${LEASE_HOLDER})..."
-    local deadline=$((SECONDS + LEASE_DURATION_SECONDS))
-    while [ $SECONDS -lt $deadline ]; do
-        local raw holder renew rv
-        raw=$(kubectl get lease "$LEASE_NAME" -n "$LEASE_NS" \
-            -o jsonpath='{.spec.holderIdentity}|{.spec.renewTime}|{.metadata.resourceVersion}' \
-            2>/dev/null || echo "__absent__")
+# After any write that returns success it RE-READS and confirms this run is
+# the holder; losing the race is a failed attempt. No deadlock: a dead holder stops
+# renewing, the lease expires, and the next waiter steals it.
+try_acquire_lease() {
+    local raw holder renew rv
+    raw=$(kubectl get lease "$LEASE_NAME" -n "$LEASE_NS" \
+        -o jsonpath='{.spec.holderIdentity}|{.spec.renewTime}|{.metadata.resourceVersion}' \
+        2>/dev/null || echo "__absent__")
 
-        if [ "$raw" = "__absent__" ]; then
-            # No lease object yet — create it atomically.
-            if lease_create && lease_held_by_us; then
-                echo "  Lease acquired (created)"
-                return 0
-            fi
-            sleep 5
-            continue
-        fi
-
-        holder="${raw%%|*}"
-        rv="${raw##*|}"
-        renew="${raw#*|}"; renew="${renew%|*}"
-
-        if [ -z "$holder" ]; then
-            # Object exists but holder was cleared — replace under its RV.
-            if lease_replace_at "$rv" && lease_held_by_us; then
-                echo "  Lease acquired (claimed released lease)"
-                return 0
-            fi
-            sleep 5
-            continue
-        fi
-
-        if [ "$holder" = "$LEASE_HOLDER" ]; then
-            echo "  Lease already held by us"
+    if [ "$raw" = "__absent__" ]; then
+        # No lease object yet — create it atomically.
+        if lease_create && lease_held_by_us; then
+            echo "  Lease acquired (created)"
             return 0
         fi
+        return 1
+    fi
 
-        local renew_epoch now_epoch
-        renew_epoch=$(lease_epoch "$renew")
-        now_epoch=$(date -u +%s)
-        if [ $((now_epoch - renew_epoch)) -gt "$LEASE_DURATION_SECONDS" ]; then
-            echo "  Lease held by ${holder} is expired — attempting steal"
-            # Guarded replace: only succeeds if the lease hasn't changed (e.g.
-            # the dead holder revived, or another waiter stole first) since read.
-            if lease_replace_at "$rv" && lease_held_by_us; then
-                echo "  Lease acquired (stolen from expired ${holder})"
-                return 0
-            fi
-            echo "  Steal lost the race; retrying"
-        else
-            echo "  Lease held by ${holder}; waiting..."
+    holder="${raw%%|*}"
+    rv="${raw##*|}"
+    renew="${raw#*|}"; renew="${renew%|*}"
+
+    if [ -z "$holder" ]; then
+        # Object exists but holder was cleared — replace under its RV.
+        if lease_replace_at "$rv" && lease_held_by_us; then
+            echo "  Lease acquired (claimed released lease)"
+            return 0
         fi
-        sleep 5
-    done
+        return 1
+    fi
+
+    if [ "$holder" = "$LEASE_HOLDER" ]; then
+        echo "  Lease already held by us"
+        return 0
+    fi
+
+    local renew_epoch now_epoch
+    renew_epoch=$(lease_epoch "$renew")
+    now_epoch=$(date -u +%s)
+    if [ $((now_epoch - renew_epoch)) -gt "$LEASE_DURATION_SECONDS" ]; then
+        echo "  Lease held by ${holder} is expired — attempting steal"
+        # Guarded replace: only succeeds if the lease hasn't changed (e.g.
+        # the dead holder revived, or another waiter stole first) since read.
+        if lease_replace_at "$rv" && lease_held_by_us; then
+            echo "  Lease acquired (stolen from expired ${holder})"
+            return 0
+        fi
+        echo "  Steal lost the race; retrying"
+    else
+        echo "  Lease held by ${holder}; waiting..."
+    fi
+    return 1
+}
+
+# Block until this run holds the lease, or exit when a whole lease duration passes
+# without it.
+acquire_lease() {
+    echo "Acquiring setup lease ${LEASE_NS}/${LEASE_NAME} (holder ${LEASE_HOLDER})..."
+    if wait_until "$LEASE_DURATION_SECONDS" 5 "setup lease ${LEASE_NS}/${LEASE_NAME}" try_acquire_lease; then
+        return 0
+    fi
     echo "ERROR: Could not acquire setup lease within ${LEASE_DURATION_SECONDS}s" >&2
     exit 1
 }
@@ -183,7 +187,7 @@ start_lease_renewer() {
     (
         trap - EXIT
         while true; do
-            sleep $((LEASE_DURATION_SECONDS / 3))
+            sleep $((LEASE_DURATION_SECONDS / 3)) # sleep-ok: the renewal cadence, three renewals per lease duration so a live holder's lease never expires
             local raw holder rv
             raw=$(kubectl get lease "$LEASE_NAME" -n "$LEASE_NS" \
                 -o jsonpath='{.spec.holderIdentity}|{.metadata.resourceVersion}' \
@@ -642,15 +646,8 @@ fi
 # caBundle the API server rejects every labelled object the suites create.
 for pr_webhook in "validatingwebhookconfiguration/$E2E_VALIDATING_WEBHOOK" \
     "mutatingwebhookconfiguration/$E2E_MUTATING_WEBHOOK"; do
-    pr_ca_bundle=""
-    for _ in $(seq 1 60); do
-        pr_ca_bundle=$(kubectl get "$pr_webhook" \
-            -o jsonpath='{.webhooks[0].clientConfig.caBundle}' 2>/dev/null || echo "")
-        if [ -n "$pr_ca_bundle" ]; then
-            break
-        fi
-        sleep 2
-    done
+    pr_ca_bundle=$(wait_for_k8s_field "${pr_webhook%%/*}" "${pr_webhook#*/}" "" \
+        '{.webhooks[0].clientConfig.caBundle}' "" 120) || true
     if [ -z "$pr_ca_bundle" ]; then
         {
             echo "ERROR: $pr_webhook has no caBundle after 120s, so the API server cannot call it."
@@ -720,7 +717,6 @@ elif [ -n "${CFGD_DEPLOY_MANIFESTS:-}" ] && [ -d "$CFGD_DEPLOY_MANIFESTS" ]; the
             kubectl rollout status "deployment/$deploy" -n cfgd-system --timeout=120s 2>/dev/null || {
                 echo "  Rollout stuck for $deploy — deleting old pods to release PVC..."
                 kubectl delete pods -n cfgd-system -l "app=$deploy" --ignore-not-found --grace-period=5 --wait=false 2>/dev/null || true
-                sleep 5
                 kubectl rollout status "deployment/$deploy" -n cfgd-system --timeout=120s 2>/dev/null || true
             }
         fi
@@ -757,15 +753,8 @@ done
 echo "Applying webhook configurations..."
 # Get the CA bundle from the cert-manager-generated secret
 echo "  Waiting for webhook TLS secret..."
-CA_BUNDLE=""
-for _ in $(seq 1 60); do
-    CA_BUNDLE=$(kubectl get secret cfgd-webhook-certs -n cfgd-system \
-        -o jsonpath='{.data.ca\.crt}' 2>/dev/null || echo "")
-    if [ -n "$CA_BUNDLE" ]; then
-        break
-    fi
-    sleep 2
-done
+CA_BUNDLE=$(wait_for_k8s_field secret cfgd-webhook-certs cfgd-system \
+    '{.data.ca\.crt}' "" 120) || true
 
 if [ -z "$CA_BUNDLE" ]; then
     echo "ERROR: Webhook TLS secret not created by cert-manager after 120s" >&2

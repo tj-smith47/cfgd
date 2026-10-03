@@ -137,7 +137,7 @@ start_heartbeat() {
         while true; do
             kubectl annotate namespace -l "$E2E_RUN_LABEL" \
                 "cfgd.io/heartbeat=$(date -u +%s)" --overwrite >/dev/null 2>&1 || true # rc-ok: background heartbeat; a missed annotation is retried on the next interval
-            sleep "$HEARTBEAT_INTERVAL_SECONDS"
+            sleep "$HEARTBEAT_INTERVAL_SECONDS" # sleep-ok: the heartbeat's refresh interval, set against the janitor's freshness window
         done
     ) &
     HEARTBEAT_PID=$!
@@ -323,15 +323,8 @@ create_e2e_namespace() {
             echo "ERROR: could not annotate namespace $E2E_NAMESPACE. $hint" >&2; return 1; }
     fi
     start_heartbeat
-    # Wait for Reflector to replicate registry-credentials (annotated on source secret)
-    local deadline=$((SECONDS + 30))
-    while [ $SECONDS -lt $deadline ]; do
-        if kubectl get secret registry-credentials -n "$E2E_NAMESPACE" > /dev/null 2>&1; then
-            return 0
-        fi
-        sleep 1
-    done
-    echo "  WARN: registry-credentials not replicated to $E2E_NAMESPACE (Reflector may not be running)"
+    wait_for_registry_credentials "$E2E_NAMESPACE" ||
+        echo "  WARN: registry-credentials not replicated to $E2E_NAMESPACE (Reflector may not be running)"
 }
 
 cleanup_e2e() {
@@ -361,6 +354,185 @@ cleanup_e2e() {
     if [ -n "${E2E_SCRATCH_OWNED:-}" ]; then
         rm -rf "$E2E_SCRATCH_OWNED"
     fi
+}
+
+# --- Waiting ---
+#
+# A wait polls the state the next step reads, up to a deadline, and says on
+# timeout what it waited for. common/test-waits.sh fails on a `sleep` outside a
+# function of this file whose body checks a deadline.
+
+# wait_until <timeout_s> <interval_s> <what> <command...>: run the command every
+# interval until it exits 0. When the timeout passes first, prints "Timed out
+# after <timeout_s>s waiting for <what>" to stderr and returns 1. The command
+# runs in this shell, so a predicate function can leave what it last read in a
+# variable for the caller's verdict.
+wait_until() {
+    local timeout="$1" interval="$2" what="$3"
+    shift 3
+    local deadline=$((SECONDS + timeout))
+    until "$@"; do
+        if [ "$SECONDS" -ge "$deadline" ]; then
+            echo "  Timed out after ${timeout}s waiting for $what" >&2
+            return 1
+        fi
+        sleep "$interval"
+    done
+}
+
+# retry_tries <tries> <interval_s> <command...>: run the command up to <tries>
+# times, <interval_s> apart, and return 0 on its first success. RETRY_ATTEMPT
+# holds the number of attempts made. Returns 1 without a message when every
+# attempt failed, since the caller's verdict names what the last one saw.
+retry_tries() {
+    local tries="$1" interval="$2"
+    shift 2
+    RETRY_ATTEMPT=0
+    while [ "$RETRY_ATTEMPT" -lt "$tries" ]; do
+        [ "$RETRY_ATTEMPT" -eq 0 ] || sleep "$interval"
+        RETRY_ATTEMPT=$((RETRY_ATTEMPT + 1))
+        "$@" && return 0
+    done
+    return 1
+}
+
+# k8s_exists <kubectl get args...>: 0 when kubectl reads the object.
+k8s_exists() {
+    kubectl get "$@" > /dev/null 2>&1 # rc-ok: its status is the function's answer
+}
+
+# wait_for_registry_credentials <namespace> [timeout_s, default 30]: wait for
+# Reflector to copy registry-credentials, which every pod pulling a first-party
+# image names in imagePullSecrets, into the namespace.
+wait_for_registry_credentials() {
+    wait_until "${2:-30}" 1 "Reflector to copy registry-credentials into namespace $1" \
+        k8s_exists secret registry-credentials -n "$1"
+}
+
+# wait_for_deleted <timeout_s> <kubectl get args...>: wait until the objects
+# named are gone. Some kubectl versions report an object that went before the
+# wait looked as a NotFound error, so a failed wait is read back before it
+# counts. Prints what is left and returns 1 on timeout.
+wait_for_deleted() {
+    local timeout="$1" left
+    shift
+    kubectl wait --for=delete "$@" --timeout="${timeout}s" > /dev/null 2>&1 && return 0
+    left="$(kubectl get "$@" --ignore-not-found -o name 2>&1)" || true
+    [ -n "$left" ] || return 0
+    echo "  Timed out after ${timeout}s waiting for deletion; still there: $(paste -sd ' ' <<<"$left")" >&2
+    return 1
+}
+
+# wait_for_pod_log <file> <ERE> [timeout_s, default 30]: wait for a line
+# matching ERE in a file inside the test pod, such as a daemon's log. On
+# timeout prints the file's last 15 lines to stderr and returns 1.
+wait_for_pod_log() {
+    local file="$1" pattern="$2" timeout="${3:-30}"
+    if wait_until "$timeout" 1 "/$pattern/ in $file on pod/$TEST_POD" \
+        exec_in_pod grep -qE -- "$pattern" "$file"; then
+        return 0
+    fi
+    {
+        echo "  Last 15 lines of $file:"
+        exec_in_pod tail -n 15 "$file" 2>&1 | sed 's/^/    /'
+    } >&2
+    return 1
+}
+
+# pod_pid_gone <pid>: 0 when the process is gone from the test pod or is a
+# zombie. The pod's PID 1 reaps nothing, so a daemon started under nohup stays
+# a zombie after it exits and kill -0 still finds it. A kubectl failure reads
+# as not gone.
+pod_pid_gone() {
+    # shellcheck disable=SC2016 # the script runs in the pod's sh, which expands $1 and $state
+    exec_in_pod sh -c 'state=$(sed -n "s/^State:[[:space:]]*//p" "/proc/$1/status" 2>/dev/null); [ -z "$state" ] || [ "${state#Z}" != "$state" ]' _ "$1"
+}
+
+# stop_pod_process <pid> [timeout_s, default 15]: SIGTERM a process in the test
+# pod and wait for it to go. One that outlasts the timeout is sent SIGKILL and
+# given 5s more, and the call returns 1; the timeout message is already on
+# stderr, so a caller that only needs the process gone before its next case
+# may ignore the status.
+stop_pod_process() {
+    local pid="$1" timeout="${2:-15}"
+    exec_in_pod kill "$pid" > /dev/null 2>&1 || true
+    wait_until "$timeout" 1 "pid $pid to exit after SIGTERM in pod/$TEST_POD" pod_pid_gone "$pid" && return 0
+    exec_in_pod kill -KILL "$pid" > /dev/null 2>&1 || true
+    wait_until 5 1 "pid $pid to exit after SIGKILL in pod/$TEST_POD" pod_pid_gone "$pid" || true
+    return 1
+}
+
+_socket_or_exited() {
+    [ -S "$1" ] || ! kill -0 "$2" 2>/dev/null
+}
+
+# wait_for_daemon_socket <socket> <pid> <timeout_s>: wait for a daemon this
+# shell started as <pid> to create its IPC socket. Returns 1 as soon as the
+# daemon exits without one, and on timeout.
+wait_for_daemon_socket() {
+    wait_until "$3" 0.2 "pid $2 to create $1" _socket_or_exited "$1" "$2" || return 1
+    [ -S "$1" ] || {
+        echo "  pid $2 exited before creating $1" >&2
+        return 1
+    }
+}
+
+# stop_background_job <pid> <grace_s>: SIGTERM a job this shell started and
+# reap it, leaving its exit status in REAPED_RC. `wait` has to be what reaps
+# it, as a reaped job's status is gone, so the SIGKILL for a job that outlives
+# the grace comes from a watchdog subshell, whose kill -0 polls reap nothing.
+# Returns 1 when the process is still there afterwards.
+stop_background_job() {
+    local pid="$1" grace="$2" watchdog
+    kill -TERM "$pid" 2>/dev/null || true
+    (
+        trap - EXIT
+        _wait_gone "$pid" $((grace * 10)) || kill -KILL "$pid" 2>/dev/null
+    ) &
+    watchdog=$!
+    # shellcheck disable=SC2034  # read by the caller after the reap
+    if wait "$pid" 2>/dev/null; then REAPED_RC=0; else REAPED_RC=$?; fi
+    kill -KILL "$watchdog" 2>/dev/null || true
+    wait "$watchdog" 2>/dev/null || true
+    ! kill -0 "$pid" 2>/dev/null
+}
+
+# _injects_csi <namespace> <cfgd.io/modules value>: 0 when a server-side dry
+# run of a pod carrying the annotation in the namespace comes back with a
+# $CSI_DRIVER_NAME volume. INJECTION_PROBE keeps what the dry run returned.
+_injects_csi() {
+    INJECTION_PROBE=$(kubectl create --dry-run=server -n "$1" \
+        -o jsonpath='{.spec.volumes[*].csi.driver}' -f - 2>&1 <<EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  generateName: cfgd-e2e-injection-probe-
+  annotations:
+    cfgd.io/modules: "$2"
+spec:
+  restartPolicy: Never
+  containers:
+    - name: probe
+      image: busybox:1.36
+EOF
+) || return 1
+    [[ " $INJECTION_PROBE " == *" $CSI_DRIVER_NAME "* ]]
+}
+
+# wait_for_injection <namespace> <cfgd.io/modules value> [timeout_s, default 60]:
+# wait until the pod injector adds a $CSI_DRIVER_NAME volume to a pod created
+# in the namespace with that annotation, read from a server-side dry run (the
+# injector declares sideEffects: None). The API server matches a webhook's
+# namespaceSelector against its own cache of namespaces, which trails a label
+# write, and the namespace's default ServiceAccount, which a pod needs, appears
+# after the namespace; the dry run passes once both have. On timeout prints
+# what the last dry run returned.
+wait_for_injection() {
+    INJECTION_PROBE=""
+    wait_until "${3:-60}" 1 "the pod injector to add a $CSI_DRIVER_NAME volume for '$2' in namespace $1" \
+        _injects_csi "$1" "$2" && return 0
+    echo "  The last dry run returned: ${INJECTION_PROBE:-no volumes}" >&2
+    return 1
 }
 
 # --- K8s helpers ---

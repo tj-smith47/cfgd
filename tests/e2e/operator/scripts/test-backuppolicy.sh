@@ -79,16 +79,13 @@ spec:
 EOF
 
 echo "  Waiting for BackupPolicy projection..."
-BP01_ROWS=0
-BP01_DEADLINE=$((SECONDS + 120))
-while [ $SECONDS -lt $BP01_DEADLINE ]; do
+bp01_two_rows() {
     BP01_ROWS=$(kubectl get backuppolicy nightly-dotfiles -n "$BP_NS" \
         -o jsonpath='{.status.units[*].hostname}' 2>/dev/null | wc -w)
-    if [ "$BP01_ROWS" -eq 2 ]; then
-        break
-    fi
-    sleep 2
-done
+    [ "$BP01_ROWS" -eq 2 ]
+}
+BP01_ROWS=0
+wait_until 120 2 "two status.units rows on backuppolicy/nightly-dotfiles" bp01_two_rows || true
 
 BP01_MATCHED=$(kubectl get backuppolicy nightly-dotfiles -n "$BP_NS" \
     -o jsonpath='{.status.machinesMatched}' 2>/dev/null || echo "")

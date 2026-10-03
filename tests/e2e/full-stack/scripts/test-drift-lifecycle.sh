@@ -113,16 +113,15 @@ echo "  MC patch rc: ${FS04_PATCH_RC}"
 
 # Wait for MC to clear drift (controller may set status=False or remove the condition entirely)
 echo "  Waiting for drift to clear..."
-DRIFT_CLEARED=false
-for i in $(seq 1 60); do
+fs04_drift_cleared() {
     DRIFT_VAL=$(kubectl get machineconfig "mc-${DEVICE_1}" -n cfgd-system \
         -o jsonpath='{.status.conditions[?(@.type=="DriftDetected")].status}' 2>/dev/null || echo "")
-    if [ "$DRIFT_VAL" = "False" ] || [ -z "$DRIFT_VAL" ]; then
-        DRIFT_CLEARED=true
-        break
-    fi
-    sleep 1
-done
+    [ "$DRIFT_VAL" = "False" ] || [ -z "$DRIFT_VAL" ]
+}
+DRIFT_CLEARED=false
+if wait_until 60 1 "DriftDetected to clear on machineconfig/mc-${DEVICE_1}" fs04_drift_cleared; then
+    DRIFT_CLEARED=true
+fi
 
 READY_STATUS=$(kubectl get machineconfig "mc-${DEVICE_1}" -n cfgd-system \
     -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || echo "")
@@ -218,7 +217,6 @@ exec_in_pod cfgd --config /etc/cfgd/e2e-compliance-cfgd.yaml compliance --no-col
 CHECKIN_OUTPUT=$(exec_in_pod cfgd --config /etc/cfgd/cfgd.yaml checkin \
     --server-url "$SERVER_URL" --api-key "$GW_API_KEY" --device-id "$DEVICE_ID" --no-color 2>&1) && CHECKIN_RC=0 || CHECKIN_RC=$?
 
-sleep 2
 DEVICES=$(exec_in_pod curl -sf -H "Authorization: Bearer $GW_API_KEY" "${SERVER_URL}/api/v1/devices" 2>/dev/null || echo "")
 if assert_contains "$DEVICES" "$DEVICE_ID"; then
     pass_test "FS-DRIFT-08"
@@ -329,17 +327,16 @@ then
 else
     # Wait for the policy controller to re-evaluate (watches MachineConfig changes)
     echo "  Waiting up to 30s for policy to detect non-compliance..."
-    T66_PASS=false
-    for i in $(seq 1 30); do
+    fs11_non_compliant() {
         NONCOMPLIANT=$(kubectl get configpolicy "e2e-compliance-policy-${E2E_RUN_ID}" -n "$E2E_NAMESPACE" \
             -o jsonpath='{.status.nonCompliantCount}' 2>/dev/null || echo "0")
-        if [ "$NONCOMPLIANT" -ge 1 ] 2>/dev/null; then
-            echo "  Non-compliant count: $NONCOMPLIANT (after ${i}s)"
-            T66_PASS=true
-            break
-        fi
-        sleep 1
-    done
+        [ "$NONCOMPLIANT" -ge 1 ] 2>/dev/null
+    }
+    T66_PASS=false
+    if wait_until 30 1 "e2e-compliance-policy-${E2E_RUN_ID} to count a non-compliant MachineConfig" fs11_non_compliant; then
+        echo "  Non-compliant count: $NONCOMPLIANT"
+        T66_PASS=true
+    fi
 
     if $T66_PASS; then
         pass_test "FS-DRIFT-11"
@@ -376,9 +373,8 @@ EOF
 then
     fail_test "FS-DRIFT-12" "kubectl apply failed"
 else
-    sleep 5
-    DRIFT_CONDITION=$(kubectl get machineconfig "e2e-compliance-mc-${E2E_RUN_ID}" -n "$E2E_NAMESPACE" \
-        -o jsonpath='{.status.conditions[?(@.type=="DriftDetected")].status}' 2>/dev/null || echo "")
+    DRIFT_CONDITION=$(wait_for_k8s_field machineconfig "e2e-compliance-mc-${E2E_RUN_ID}" "$E2E_NAMESPACE" \
+        '{.status.conditions[?(@.type=="DriftDetected")].status}' "True" 30) || true
     echo "  DriftDetected condition: $DRIFT_CONDITION"
 
     if [ "$DRIFT_CONDITION" = "True" ]; then
@@ -397,23 +393,19 @@ fi
 begin_test "FS-DRIFT-13: compliance reflects state after drift resolution"
 
 kubectl delete driftalert "e2e-compliance-drift-${E2E_RUN_ID}" -n "$E2E_NAMESPACE" --ignore-not-found 2>/dev/null || true
-sleep 3
 
-DRIFT_AFTER=$(kubectl get machineconfig "e2e-compliance-mc-${E2E_RUN_ID}" -n "$E2E_NAMESPACE" \
-    -o jsonpath='{.status.conditions[?(@.type=="DriftDetected")].status}' 2>/dev/null || echo "")
+fs13_drift_cleared() {
+    DRIFT_AFTER=$(kubectl get machineconfig "e2e-compliance-mc-${E2E_RUN_ID}" -n "$E2E_NAMESPACE" \
+        -o jsonpath='{.status.conditions[?(@.type=="DriftDetected")].status}' 2>/dev/null || echo "")
+    [ "$DRIFT_AFTER" != "True" ]
+}
+wait_until 30 1 "DriftDetected to clear on machineconfig/e2e-compliance-mc-${E2E_RUN_ID}" fs13_drift_cleared || true
 echo "  DriftDetected after deletion: ${DRIFT_AFTER:-removed}"
 
 if [ "$DRIFT_AFTER" != "True" ]; then
     pass_test "FS-DRIFT-13"
 else
-    sleep 5
-    DRIFT_FINAL=$(kubectl get machineconfig "e2e-compliance-mc-${E2E_RUN_ID}" -n "$E2E_NAMESPACE" \
-        -o jsonpath='{.status.conditions[?(@.type=="DriftDetected")].status}' 2>/dev/null || echo "")
-    if [ "$DRIFT_FINAL" != "True" ]; then
-        pass_test "FS-DRIFT-13"
-    else
-        fail_test "FS-DRIFT-13" "DriftDetected condition still True after alert deletion"
-    fi
+    fail_test "FS-DRIFT-13" "DriftDetected condition still True after alert deletion"
 fi
 
 # --- Compliance cleanup ---

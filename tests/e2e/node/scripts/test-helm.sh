@@ -55,15 +55,20 @@ fi
 # T22: Pod logs show daemon activity
 # =================================================================
 begin_test "T22: Pod logs show daemon activity"
-sleep 5  # let the daemon run at least one tick
 
 POD=$(kubectl get pods -n "$E2E_NAMESPACE" -l "app.kubernetes.io/name=cfgd" \
     -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
 
+t22_pod_has_logs() {
+    LOGS=$(kubectl logs "$POD" -n "$E2E_NAMESPACE" --tail=50 2>/dev/null || echo "")
+    [ -n "$LOGS" ]
+}
+
 if [ -z "$POD" ]; then
     fail_test "T22" "No pod found"
 else
-    LOGS=$(kubectl logs "$POD" -n "$E2E_NAMESPACE" --tail=50 2>&1 || echo "")
+    LOGS=""
+    wait_until 60 1 "pod/$POD to write a log line" t22_pod_has_logs || true
     echo "  Pod logs (last 10 lines):"
     echo "$LOGS" | tail -10 | sed 's/^/    /'
 
@@ -130,8 +135,7 @@ fi
 # T25: Helm uninstall cleans up
 # =================================================================
 begin_test "T25: Helm uninstall"
-helm uninstall cfgd -n "$E2E_NAMESPACE" 2>&1 || true
-sleep 5
+helm uninstall cfgd -n "$E2E_NAMESPACE" --wait --timeout 60s 2>&1 || true
 
 # Check that no cfgd DaemonSet remains
 DS_NAMES=$(kubectl get ds -n "$E2E_NAMESPACE" -l "app.kubernetes.io/name=cfgd" \

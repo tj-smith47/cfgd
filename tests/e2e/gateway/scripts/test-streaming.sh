@@ -11,8 +11,9 @@ if [ -z "${DEVICE_API_KEY:-}" ]; then
     skip_test "GW-21" "No device enrolled (GW-02 may have failed), so no drift report can raise an event"
 else
     GW21_TMPFILE=$(mktemp "$GW_SCRATCH/gw21-sse.XXXXXX")
+    GW21_HEADERS=$(mktemp "$GW_SCRATCH/gw21-sse-headers.XXXXXX")
 
-    curl -sN "$GW_URL/api/v1/events/stream" \
+    curl -sN -D "$GW21_HEADERS" "$GW_URL/api/v1/events/stream" \
         -H "$(gw_admin_auth_header)" \
         -H "Accept: text/event-stream" \
         > "$GW21_TMPFILE" 2>/dev/null &
@@ -20,8 +21,10 @@ else
     echo "  SSE listener started (PID $GW21_PID)"
 
     # The stream is a broadcast with no replay, so the listener must be
-    # subscribed before the event is raised.
-    sleep 2
+    # subscribed before the event is raised. The handler subscribes before it
+    # answers, so the response's status line means the subscription exists.
+    wait_until 10 0.2 "the SSE stream's response headers" \
+        grep -qE '^HTTP/[0-9.]+ 200' "$GW21_HEADERS" || true
 
     # A drift report is one of the calls that broadcasts a fleet event;
     # creating a token or reading state raises none.
@@ -33,19 +36,16 @@ else
         2>/dev/null || echo "000")
     echo "  Drift report HTTP status: $GW21_TRIGGER_CODE"
 
-    GW21_TRIES=0
     # The gateway is shared across runs, so another run's drift event can
     # arrive first; the wait is for this device's.
-    while [ "$GW21_TRIES" -lt 20 ] && ! grep -qF "\"deviceId\":\"${GW_DEVICE_ID}\"" "$GW21_TMPFILE"; do
-        sleep 0.5
-        GW21_TRIES=$((GW21_TRIES + 1))
-    done
+    wait_until 10 0.5 "an SSE event for device ${GW_DEVICE_ID}" \
+        grep -qF "\"deviceId\":\"${GW_DEVICE_ID}\"" "$GW21_TMPFILE" || true
 
     kill "$GW21_PID" 2>/dev/null || true
     wait "$GW21_PID" 2>/dev/null || true
 
     GW21_OUTPUT=$(cat "$GW21_TMPFILE" 2>/dev/null || echo "")
-    rm -f "$GW21_TMPFILE"
+    rm -f "$GW21_TMPFILE" "$GW21_HEADERS"
     echo "  SSE output (first 500 chars):"
     echo "$GW21_OUTPUT" | head -c 500 | sed 's/^/    /'
     echo ""

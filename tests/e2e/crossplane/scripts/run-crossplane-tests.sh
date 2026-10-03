@@ -121,16 +121,27 @@ spec:
     - username: warmup
       hostname: warmup-host
 WARMUPEOF
+# xp_count <kind> <team>: XP_COUNT holds how many <kind> objects, across all
+# namespaces, have a listing line naming <team>.
+xp_count() {
+    XP_COUNT=$(kubectl get "$1" -A --no-headers 2>/dev/null | { grep -c "$2" || true; })
+}
+# shellcheck disable=SC2329  # wait_until invokes it by name
+xp_count_at_least() {
+    xp_count "$1" "$2"
+    [ "${XP_COUNT:-0}" -ge "$3" ]
+}
+# shellcheck disable=SC2329  # wait_until invokes it by name
+xp_count_is() {
+    xp_count "$1" "$2"
+    [ "${XP_COUNT:-0}" -eq "$3" ]
+}
+
 WARMUP_OK=false
-for i in $(seq 1 60); do
-    WMC=$(kubectl get mc -A --no-headers 2>/dev/null | { grep -c "warmup-team" || true; })
-    if [ "${WMC:-0}" -ge 1 ]; then
-        echo "  Composition pipeline ready after $((i*3))s"
-        WARMUP_OK=true
-        break
-    fi
-    sleep 3
-done
+if wait_until 180 3 "teamconfig/warmup-team to compose a MachineConfig" xp_count_at_least mc warmup-team 1; then
+    echo "  Composition pipeline ready"
+    WARMUP_OK=true
+fi
 # Every XP case after this one needs the pipeline, so a failed warm-up stops
 # the suite with the composite's conditions; warmup-team carries the run label
 # and pr-install-down.sh removes it.
@@ -139,7 +150,6 @@ if [ "$WARMUP_OK" != "true" ]; then
     exit 1
 fi
 kubectl delete teamconfig warmup-team --ignore-not-found 2>/dev/null || true
-sleep 5
 kubectl delete mc -l cfgd.io/team=warmup-team --ignore-not-found -A 2>/dev/null || true
 
 # =================================================================
@@ -174,14 +184,8 @@ spec:
       - corp-vpn
 EOF
 
-MC_COUNT=""
-for i in $(seq 1 30); do
-    MC_COUNT=$(kubectl get mc -A --no-headers 2>/dev/null | { grep -c "test-team" || true; })
-    if [ "${MC_COUNT:-0}" -ge 2 ]; then
-        break
-    fi
-    sleep 2
-done
+wait_until 60 2 "at least 2 mc for test-team" xp_count_at_least mc test-team 2 || true
+MC_COUNT=$XP_COUNT
 
 echo "  MachineConfig count: ${MC_COUNT:-0}"
 
@@ -196,14 +200,8 @@ fi
 # =================================================================
 begin_test "XP-03: TeamConfig generates ConfigPolicy"
 
-CP_COUNT=""
-for i in $(seq 1 15); do
-    CP_COUNT=$(kubectl get cpol -A --no-headers 2>/dev/null | { grep -c "test-team" || true; })
-    if [ "${CP_COUNT:-0}" -ge 1 ]; then
-        break
-    fi
-    sleep 2
-done
+wait_until 30 2 "at least 1 cpol for test-team" xp_count_at_least cpol test-team 1 || true
+CP_COUNT=$XP_COUNT
 
 echo "  ConfigPolicy count: ${CP_COUNT:-0}"
 
@@ -248,14 +246,8 @@ spec:
       - corp-vpn
 EOF
 
-MC_COUNT=""
-for i in $(seq 1 30); do
-    MC_COUNT=$(kubectl get mc -A --no-headers 2>/dev/null | { grep -c "test-team" || true; })
-    if [ "${MC_COUNT:-0}" -ge 3 ]; then
-        break
-    fi
-    sleep 2
-done
+wait_until 60 2 "at least 3 mc for test-team" xp_count_at_least mc test-team 3 || true
+MC_COUNT=$XP_COUNT
 
 echo "  MachineConfig count after adding member: ${MC_COUNT:-0}"
 
@@ -298,14 +290,8 @@ spec:
       - corp-vpn
 EOF
 
-MC_COUNT=""
-for i in $(seq 1 40); do
-    MC_COUNT=$(kubectl get mc -A --no-headers 2>/dev/null | { grep -c "test-team" || true; })
-    if [ "${MC_COUNT:-0}" -eq 2 ]; then
-        break
-    fi
-    sleep 2
-done
+wait_until 80 2 "2 mc for test-team" xp_count_is mc test-team 2 || true
+MC_COUNT=$XP_COUNT
 
 echo "  MachineConfig count after removing member: ${MC_COUNT:-0}"
 
@@ -319,7 +305,6 @@ fi
 echo ""
 echo "Cleaning up XP-01..XP-05 resources before depth tests..."
 kubectl delete teamconfig test-team --ignore-not-found 2>/dev/null || true
-sleep 5
 
 # =================================================================
 # XP-06: Invalid TeamConfig rejected
@@ -385,14 +370,8 @@ spec:
           - git
 EOF
 
-CP_FOUND=""
-for i in $(seq 1 30); do
-    CP_FOUND=$(kubectl get cpol -A --no-headers 2>/dev/null | { grep -c "policy-team" || true; })
-    if [ "${CP_FOUND:-0}" -ge 1 ]; then
-        break
-    fi
-    sleep 2
-done
+wait_until 60 2 "at least 1 cpol for policy-team" xp_count_at_least cpol policy-team 1 || true
+CP_FOUND=$XP_COUNT
 
 echo "  ConfigPolicy count for policy-team: ${CP_FOUND:-0}"
 
@@ -435,25 +414,26 @@ spec:
           - curl
 EOF
 
-# Wait for the composition to reconcile the update
-sleep 10
+# The update has reached the composed ConfigPolicy once its required tier
+# names the module the update added.
+# shellcheck disable=SC2329  # wait_until invokes it by name
+xp08_policy_updated() {
+    kubectl get cpol -A -l cfgd.io/team=policy-team,cfgd.io/tier=required -o json 2>/dev/null | # rc-ok: pipefail makes a failed read the function's answer
+        jq -e 'any(.items[].spec.requiredModules[]?; .name == "compliance")' > /dev/null
+}
+XP08_UPDATED=false
+if wait_until 60 2 "the policy-team required ConfigPolicy to name module compliance" xp08_policy_updated; then
+    XP08_UPDATED=true
+fi
+xp_count cpol policy-team
+CP_AFTER_UPDATE=$XP_COUNT
 
-# Verify ConfigPolicy still exists after the update
-CP_AFTER_UPDATE=""
-for i in $(seq 1 20); do
-    CP_AFTER_UPDATE=$(kubectl get cpol -A --no-headers 2>/dev/null | { grep -c "policy-team" || true; })
-    if [ "${CP_AFTER_UPDATE:-0}" -ge 1 ]; then
-        break
-    fi
-    sleep 2
-done
+echo "  ConfigPolicy count after policy update: ${CP_AFTER_UPDATE:-0}, carries the added module: $XP08_UPDATED"
 
-echo "  ConfigPolicy count after policy update: ${CP_AFTER_UPDATE:-0}"
-
-if [ "${CP_AFTER_UPDATE:-0}" -ge 1 ]; then
+if [ "${CP_AFTER_UPDATE:-0}" -ge 1 ] && $XP08_UPDATED; then
     pass_test "XP-08"
 else
-    fail_test "XP-08" "Expected ConfigPolicy to persist after policy update, found ${CP_AFTER_UPDATE:-0}"
+    fail_test "XP-08" "Expected the policy-team ConfigPolicy to carry requiredModule compliance after the update, found ${CP_AFTER_UPDATE:-0} ConfigPolicies (updated: $XP08_UPDATED)"
 fi
 
 # Cleanup XP-07/XP-08
@@ -488,14 +468,8 @@ spec:
 EOF
 
 # Wait for MachineConfigs to appear (proves composition ran)
-MC_COUNT=""
-for i in $(seq 1 30); do
-    MC_COUNT=$(kubectl get mc -A --no-headers 2>/dev/null | { grep -c "status-team" || true; })
-    if [ "${MC_COUNT:-0}" -ge 3 ]; then
-        break
-    fi
-    sleep 2
-done
+wait_until 60 2 "at least 3 mc for status-team" xp_count_at_least mc status-team 3 || true
+MC_COUNT=$XP_COUNT
 
 echo "  MachineConfig count for status-team: ${MC_COUNT:-0}"
 
@@ -508,7 +482,6 @@ else
 fi
 
 kubectl delete teamconfig status-team --ignore-not-found 2>/dev/null || true
-sleep 5
 
 # =================================================================
 # XP-10: MachineConfig inherits team profile
@@ -534,14 +507,13 @@ spec:
 EOF
 
 # Wait for MachineConfig to appear
-MC_NAME=""
-for i in $(seq 1 30); do
+# shellcheck disable=SC2329  # wait_until invokes it by name
+xp10_mc_named() {
     MC_NAME=$(kubectl get mc -A --no-headers 2>/dev/null | grep "profile-team" | awk '{print $2}' | head -1 || true)
-    if [ -n "$MC_NAME" ]; then
-        break
-    fi
-    sleep 2
-done
+    [ -n "$MC_NAME" ]
+}
+MC_NAME=""
+wait_until 60 2 "a MachineConfig for profile-team" xp10_mc_named || true
 
 if [ -z "$MC_NAME" ]; then
     fail_test "XP-10" "No MachineConfig found for profile-team"
@@ -560,7 +532,6 @@ else
 fi
 
 kubectl delete teamconfig profile-team --ignore-not-found 2>/dev/null || true
-sleep 5
 
 # =================================================================
 # XP-11: Duplicate member name rejected
@@ -592,9 +563,12 @@ EOF
 
 echo "  Apply output: $DUP_OUTPUT"
 
-# If the apply succeeded, wait briefly then check MachineConfig count.
-# The composition function should either reject or produce only unique MCs.
-sleep 10
+# The composition function either rejects the members or composes them; a
+# Synced composite has applied whatever it composed.
+if ! echo "$DUP_OUTPUT" | grep -qi "error\|invalid\|denied\|rejected\|duplicate"; then
+    wait_for_k8s_field teamconfig dup-team "" \
+        '{.status.conditions[?(@.type=="Synced")].status}' "True" 60 > /dev/null || true
+fi
 DUP_MC_COUNT=$(kubectl get mc -A --no-headers 2>/dev/null | { grep -c "dup-team" || true; })
 echo "  MachineConfig count for dup-team: ${DUP_MC_COUNT:-0}"
 
@@ -610,7 +584,6 @@ else
 fi
 
 kubectl delete teamconfig dup-team --ignore-not-found 2>/dev/null || true
-sleep 5
 
 # =================================================================
 # XP-12: TeamConfig deletion cascades
@@ -641,13 +614,8 @@ spec:
 EOF
 
 # Wait for composed resources to appear
-for i in $(seq 1 30); do
-    MC_COUNT=$(kubectl get mc -A --no-headers 2>/dev/null | { grep -c "cascade-team" || true; })
-    if [ "${MC_COUNT:-0}" -ge 2 ]; then
-        break
-    fi
-    sleep 2
-done
+wait_until 60 2 "at least 2 mc for cascade-team" xp_count_at_least mc cascade-team 2 || true
+MC_COUNT=$XP_COUNT
 
 echo "  MachineConfigs before deletion: ${MC_COUNT:-0}"
 
@@ -655,16 +623,17 @@ echo "  MachineConfigs before deletion: ${MC_COUNT:-0}"
 kubectl delete teamconfig cascade-team --ignore-not-found --timeout=60s
 
 # Wait for cascade — composed resources should be garbage-collected
+# shellcheck disable=SC2329  # wait_until invokes it by name
+xp12_cascaded() {
+    xp_count mc cascade-team
+    MC_REMAINING=$XP_COUNT
+    xp_count cpol cascade-team
+    CP_REMAINING=$XP_COUNT
+    [ "${MC_REMAINING:-0}" -eq 0 ] && [ "${CP_REMAINING:-0}" -eq 0 ]
+}
 MC_REMAINING=""
 CP_REMAINING=""
-for i in $(seq 1 40); do
-    MC_REMAINING=$(kubectl get mc -A --no-headers 2>/dev/null | { grep -c "cascade-team" || true; })
-    CP_REMAINING=$(kubectl get cpol -A --no-headers 2>/dev/null | { grep -c "cascade-team" || true; })
-    if [ "${MC_REMAINING:-0}" -eq 0 ] && [ "${CP_REMAINING:-0}" -eq 0 ]; then
-        break
-    fi
-    sleep 2
-done
+wait_until 80 2 "cascade-team's MachineConfigs and ConfigPolicies to be collected" xp12_cascaded || true
 
 echo "  MachineConfigs after deletion: ${MC_REMAINING:-0}"
 echo "  ConfigPolicies after deletion: ${CP_REMAINING:-0}"
@@ -730,16 +699,17 @@ spec:
 EOF
 
 # Wait for both sets of MachineConfigs
+# shellcheck disable=SC2329  # wait_until invokes it by name
+xp13_both_composed() {
+    xp_count mc team-alpha
+    MC_ALPHA=$XP_COUNT
+    xp_count mc team-beta
+    MC_BETA=$XP_COUNT
+    [ "${MC_ALPHA:-0}" -ge 2 ] && [ "${MC_BETA:-0}" -ge 3 ]
+}
 MC_ALPHA=""
 MC_BETA=""
-for i in $(seq 1 30); do
-    MC_ALPHA=$(kubectl get mc -A --no-headers 2>/dev/null | { grep -c "team-alpha" || true; })
-    MC_BETA=$(kubectl get mc -A --no-headers 2>/dev/null | { grep -c "team-beta" || true; })
-    if [ "${MC_ALPHA:-0}" -ge 2 ] && [ "${MC_BETA:-0}" -ge 3 ]; then
-        break
-    fi
-    sleep 2
-done
+wait_until 60 2 "2 team-alpha and 3 team-beta MachineConfigs" xp13_both_composed || true
 
 echo "  team-alpha MachineConfigs: ${MC_ALPHA:-0} (expected 2)"
 echo "  team-beta MachineConfigs: ${MC_BETA:-0} (expected 3)"
@@ -761,15 +731,14 @@ kubectl delete namespace "$XP13_NS_B" --ignore-not-found --wait=false 2>/dev/nul
 # =================================================================
 begin_test "XP-14: the run's function-cfgd pod running and healthy"
 
-FUNC_STATUS=""
-for i in $(seq 1 15); do
+# shellcheck disable=SC2329  # wait_until invokes it by name
+xp14_func_running() {
     FUNC_STATUS=$(kubectl get pods -A -l "pkg.crossplane.io/function=$E2E_FUNCTION" \
         -o jsonpath='{.items[0].status.phase}' 2>/dev/null || echo "")
-    if [ "$FUNC_STATUS" = "Running" ]; then
-        break
-    fi
-    sleep 2
-done
+    [ "$FUNC_STATUS" = "Running" ]
+}
+FUNC_STATUS=""
+wait_until 30 2 "the $E2E_FUNCTION pod to run" xp14_func_running || true
 
 echo "  $E2E_FUNCTION pod status: ${FUNC_STATUS:-not found}"
 

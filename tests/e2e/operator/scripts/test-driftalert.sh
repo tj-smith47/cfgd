@@ -29,8 +29,10 @@ spec:
     - name: curl
 EOF
 
-# Wait for MC to be reconciled before creating drift alert
-sleep 3
+# The alert has to find the MachineConfig already reconciled, or the first
+# reconcile's status write races the DriftDetected condition the alert sets.
+wait_for_k8s_field machineconfig "e2e-drift-mc-${E2E_RUN_ID}" "$E2E_NAMESPACE" \
+    '{.status.conditions[?(@.type=="Reconciled")].status}' "True" 30 > /dev/null || true
 
 kubectl apply -n "$E2E_NAMESPACE" -f - <<EOF
 apiVersion: cfgd.io/v1alpha1
@@ -87,17 +89,16 @@ echo "  MC spec patch rc: $DA02_PATCH_RC"
 
 # Wait for MC to clear drift status (DriftDetected=False or condition removed)
 echo "  Waiting for drift to clear..."
-DRIFT_CLEARED=false
-for i in $(seq 1 30); do
+da02_drift_cleared() {
     DRIFT_COND=$(kubectl get machineconfig "e2e-drift-mc-${E2E_RUN_ID}" -n "$E2E_NAMESPACE" \
         -o jsonpath='{.status.conditions[?(@.type=="DriftDetected")].status}' 2>/dev/null || echo "")
-    if [ "$DRIFT_COND" = "False" ] || [ -z "$DRIFT_COND" ]; then
-        echo "  MC DriftDetected after cleanup: ${DRIFT_COND:-removed} (after ${i}s)"
-        DRIFT_CLEARED=true
-        break
-    fi
-    sleep 1
-done
+    [ "$DRIFT_COND" = "False" ] || [ -z "$DRIFT_COND" ]
+}
+DRIFT_CLEARED=false
+if wait_until 30 1 "DriftDetected to clear on machineconfig/e2e-drift-mc-${E2E_RUN_ID}" da02_drift_cleared; then
+    echo "  MC DriftDetected after cleanup: ${DRIFT_COND:-removed}"
+    DRIFT_CLEARED=true
+fi
 
 if [ "$DA02_PATCH_RC" -eq 0 ] && $DRIFT_CLEARED; then
     pass_test "OP-DA-02"

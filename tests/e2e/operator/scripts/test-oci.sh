@@ -78,7 +78,8 @@ spec:
   ociArtifact: "${OCI_REF}"
 EOF
 then
-    sleep 5
+    wait_for_k8s_field module "e2e-oci-module-${E2E_RUN_ID}" "" \
+        '{.status.conditions[?(@.type=="Available")].status}' "" 30 > /dev/null || true
     OCI_RESOLVED=$(kubectl get module "e2e-oci-module-${E2E_RUN_ID}" \
         -o jsonpath='{.status.resolvedArtifact}' 2>/dev/null || echo "")
     OCI_AVAIL=$(kubectl get module "e2e-oci-module-${E2E_RUN_ID}" \
