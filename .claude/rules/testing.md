@@ -202,7 +202,9 @@ spellings. A suite that applies
 run-labelled objects calls `require_release_webhooks_scoped` in its setup, which
 stops the suite when the release's webhooks are not scoped away from them.
 Every `ERROR` line an e2e script prints goes to stderr, on its own command
-or through a redirected group or function body (`} >&2`);
+(`>&2`, `1>&2`, `>/dev/stderr`) or through the closer of an enclosing compound
+(`} >&2`, `) >&2`, `fi >&2`, `done >&2`, `esac >&2`), whatever prefix words,
+function header or case pattern come before the echo;
 `tests/e2e/common/test-pr-install.sh` names each one that does not.
 The gateway and full-stack suites run ArgoCD's pinned images. A case there for
 behaviour only a newer build has reads the running capability and calls

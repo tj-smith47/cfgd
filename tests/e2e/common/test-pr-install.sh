@@ -2537,15 +2537,51 @@ done
 # and heredoc bodies, that is not sent to stderr. A statement is a line with
 # the lines a trailing backslash or an open quote joins to it, and its
 # commands are split at each ;, &&, ||, | and & outside quotes, read off
-# squash's mask; a >& or <& and an &> are redirects. A command passes with its
-# own >&2 or 1>&2, or when a brace group or function body enclosing it is
-# redirected to stderr: a } that closes it later on the statement, or else the
-# first later line indented less that starts with }.
+# squash's mask; a >& or <& and an &> are redirects. A command's word is read
+# past assignments, redirects, a function header (f() or function f), a case
+# pattern, the openers { ( if while until for select and case ... in, and the
+# prefix words ! then do else elif time command builtin exec. A command passes
+# with its own >&2, 1>&2 or >/dev/stderr, or when a compound enclosing it is
+# redirected so at its closer (}, ), fi, done or esac): one later on the
+# statement, or else on a later line indented less. Such a line that is not a
+# closer, else, elif, then, do, ;; or a case pattern ends the compounds
+# indented more than it.
 # shellcheck disable=SC2016 # an awk program; the $ fields belong to awk
 scan_stdout_errors() {
     { awk -f "$here/heredocs.awk" "$@" || echo "UNREADABLE heredocs.awk exited $?"; } | awk -F '\t' "$squash_awk"'
         function indent(s) { match(s, /^[ \t]*/); return RLENGTH }
-        function to_stderr(m) { return m ~ /(^|[^0-9])1?>&2/ }
+        function to_stderr(m) { return m ~ /(^|[^0-9])1?(>&2|>>?[ \t]*\/dev\/stderr)([^0-9A-Za-z_]|$)/ }
+        # lead(m): the offset in the masked command m of its command word,
+        # past any assignment, redirect, function header, case pattern and
+        # prefix word. opens counts the compounds it opens there.
+        function lead(m,   p, r) {
+            p = 1; opens = 0
+            for (;;) {
+                r = substr(m, p)
+                if (match(r, /^[ \t\n]+/) ||
+                    match(r, /^(function[ \t]+[^ \t\n()]+([ \t]*\(\))?|[A-Za-z_][A-Za-z0-9_:.-]*[ \t]*\(\))/) ||
+                    match(r, /^\(?[^ \t\n()]+\)/) ||
+                    match(r, /^[0-9]*(>>?|<|>&|<&|&>>?)[ \t]*[^ \t\n<>&]+/) ||
+                    match(r, /^[A-Za-z_][A-Za-z0-9_]*\+?=[^ \t\n]*/) ||
+                    match(r, /^(!|then|do|else|elif|time([ \t]+-p)?|command|builtin|exec)([ \t\n]|$)/)) { p += RLENGTH; continue }
+                if (match(r, /^(case[ \t]+[^ \t\n]+[ \t]+in|[{]|if|while|until|for|select)([ \t\n]|$)/)) { p += RLENGTH; opens++; continue }
+                if (r ~ /^\(([^(]|$)/) { p++; opens++; continue }
+                return p
+            }
+        }
+        # closer(m): the length of the }, fi, done or esac that starts m, or 0.
+        function closer(m) {
+            if (!match(m, /^[ \t\n]*([}]|fi|done|esac)/)) return 0
+            return substr(m, RLENGTH + 1, 1) ~ /^[A-Za-z0-9_]$/ ? 0 : RLENGTH
+        }
+        # close_group(rest): a compound closes, with rest after its closer. One
+        # opened after the judged command lowers the depth d; one closing at
+        # depth 0 encloses the command, and passes it when rest redirects to
+        # stderr.
+        function close_group(rest) {
+            if (d > 0) d--
+            else if (to_stderr(rest)) ok = 1
+        }
         # commands(k, m): the commands of the statement whose kept text is k
         # and mask m, as cmd[1..nc], with their masks in cmk[] and in cl[] the
         # statement line each starts on, counted from 0.
@@ -2566,7 +2602,7 @@ scan_stdout_errors() {
             t = substr(k, 1, a - 1); gsub(/[^\n]/, "", t)
             cmd[++nc] = substr(k, a, b - a); cmk[nc] = substr(m, a, b - a); cl[nc] = length(t)
         }
-        function judge(first, last,   i, j, k, m, d, ok, ind) {
+        function judge(first, last,   i, j, k, m, r, p, b, x, ind) {
             k = kept_at[first]; m = mask_at[first]
             for (i = first + 1; i <= last; i++) {
                 k = k "\n" kept_at[i]
@@ -2574,21 +2610,27 @@ scan_stdout_errors() {
             }
             commands(k, m)
             for (i = 1; i <= nc; i++) {
-                if (cmd[i] !~ /^[ \t\n]*(([{(]|then|do|else)[ \t\n]*)*(echo|printf)[ \t]/ || cmd[i] !~ /ERROR/) continue
+                if (substr(cmk[i], lead(cmk[i])) !~ /^(echo|printf)([ \t]|$)/ || cmd[i] !~ /ERROR/) continue
                 if (to_stderr(cmk[i])) continue
                 ok = 0; d = 0
-                for (j = i + 1; j <= nc; j++) {
-                    if (cmd[j] ~ /^[ \t\n]*}/) {
-                        if (d > 0) d--
-                        else if (to_stderr(cmk[j])) { ok = 1; break }
+                for (j = i + 1; j <= nc && !ok; j++) {
+                    r = cmk[j]
+                    if ((p = closer(r))) { r = substr(r, p + 1); close_group(r) }
+                    else { r = substr(r, lead(r)); d += opens }
+                    b = 0
+                    for (x = 1; x <= length(r) && !ok; x++) {
+                        if (substr(r, x, 1) == "(") b++
+                        else if (substr(r, x, 1) == ")") { if (b > 0) b--; else close_group(substr(r, x + 1)) }
                     }
-                    if (cmd[j] ~ /^[ \t\n]*\{[ \t\n]/) d++
                 }
-                if (!ok) {
-                    ind = indent(raw[first + cl[i]])
-                    for (j = last + 1; j <= n; j++) {
-                        if (raw[j] ~ /^[ \t]*}/ && indent(raw[j]) < ind) { ok = (raw[j] ~ /^[ \t]*}[ \t]*1?>&2/); break }
+                ind = indent(raw[first + cl[i]])
+                for (j = last + 1; j <= n && !ok; j++) {
+                    if (mask_at[j] ~ /^[ \t]*$/ || indent(raw[j]) >= ind) continue
+                    if ((p = closer(mask_at[j])) || match(mask_at[j], /^[ \t]*\)/) && (p = RLENGTH)) {
+                        if (to_stderr(substr(mask_at[j], p + 1))) ok = 1
+                        else ind = indent(raw[j])
                     }
+                    else if (mask_at[j] !~ /^[ \t]*((else|elif|then|do)([^A-Za-z0-9_]|$)|;;|\(?[^ \t\n()]+\))/) ind = indent(raw[j])
                 }
                 if (!ok) print "STDOUT " file ":" num[first + cl[i]]
             }
@@ -2615,9 +2657,9 @@ scan_stdout_errors() {
 
 stderr_fixtures="$here/fixtures/stderr-errors"
 stderr_got="$(cd "$stderr_fixtures" && scan_stdout_errors hits.bash allowed.bash 2>&1)"
-stderr_want="$(printf 'STDOUT hits.bash:%s\n' 1 2 3 5 10 13 14 15 16 18 19 23 24 25 26 27 29)"
+stderr_want="$(printf 'STDOUT hits.bash:%s\n' 1 2 3 5 10 13 14 15 16 18 19 23 24 25 26 27 29 30 31 33 34 36 37 38 39 40 41 42 43 44 45 46 47 50 54)"
 if [ "$stderr_got" = "$stderr_want" ]; then
-    pass "the stderr scan reports each planted ERROR echo or printf on stdout, in a bare statement, an unredirected group or function, after an option or &&, across a continued line or a quoted newline, before a later group of its own, after a redirected command on its line, in a one-line group closed without a redirect or around an inner group that alone is redirected, and beside a quoted >&2, and stays quiet on >&2, 1>&2, separators inside quotes, groups and function bodies redirected either way on one line or several, comments, quoted text and heredoc bodies"
+    pass "the stderr scan reports each planted ERROR echo or printf on stdout, in a bare statement, an unredirected group or function, after an option or &&, across a continued line or a quoted newline, before a later group of its own, after a redirected command on its line, in a one-line group closed without a redirect or around an inner group that alone is redirected, beside a quoted >&2 or >&20, after a function header, a case pattern, an assignment, a redirect, if and each prefix word, and in an if, loop, subshell or function closed without a redirect or ended by a plain line, and stays quiet on >&2, 1>&2, >/dev/stderr, separators inside quotes, groups, function bodies, ifs, loops, cases and subshells redirected at their closer on one line or several, branches before an else and case arms before another arm inside them, one-line functions and case arms with their own redirect, comments, quoted text and heredoc bodies"
 else
     fail "the stderr scan printed [$stderr_got], want [$stderr_want]"
 fi
