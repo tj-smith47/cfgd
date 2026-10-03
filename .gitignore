@@ -82,6 +82,7 @@
 !.claude/scripts/audit.sh
 !.claude/scripts/test-only-files.txt
 !.claude/scripts/commit-guard.sh
+!.claude/scripts/commit-wording.txt
 !.claude/scripts/audit-tests/
 !.claude/scripts/audit-tests/**
 !.claude/scripts/publish-coverage.sh

@@ -1,0 +1,33 @@
+# Wording a commit message may not carry. commit-guard.sh refuses a message
+# whose subject or body matches a line here (grep -P, case-insensitive);
+# trailer lines (`Key: value`) are not scanned. Each commit subject is a
+# changelog line and each body is read by a stranger, so the same plain
+# English the docs use applies: say the fact once, no contrast frames, no
+# session narrative, no review bookkeeping.
+
+# Contrast frames: "X rather than Y", "X instead of Y", "X, not Y", "not X but Y".
+\brather than\b
+\binstead of\b
+(, |; | but )(not|never|no longer) [a-z]
+
+# Dashes used as prose punctuation.
+—
+ -- 
+
+# Deferral and provenance excuses.
+\bpre[- ]?existing\b
+\bfor now\b
+\bfollow[- ]?ups?\b
+\bout of scope\b
+\blegacy code\b
+\bwill (be )?(fixed|addressed|handled) (later|next)\b
+
+# Review bookkeeping and session narrative.
+\b[RFBWSNM]\d{1,2}\b
+\b(task|phase|step|wave|cycle|session|round|unit) \d+\b
+\b(this|the|that|last|previous) (session|fix round|seat|re-review|reviewer|coordinator|subagent)\b
+\bfix round\b
+\b(the )?(reviewer|re-review|coordinator|subagent|seat)('s)? (found|asked|ruled|caught|flagged|said|wants?)\b
+\bwe\b
+(?<![./-])\bClaude\b
+\bI\b(?!/)
