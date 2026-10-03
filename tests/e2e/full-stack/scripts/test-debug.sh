@@ -61,11 +61,9 @@ spec:
   restartPolicy: Never
 EOF
 
-sleep 10
-
 # Check pod spec: CSI volume should exist, volumeMount should NOT be on app container
-DEBUG_CSI=$(kubectl get pod debug-target -n "e2e-debug-flow-${E2E_RUN_ID}" \
-    -o jsonpath='{.spec.volumes[?(@.csi)].csi.driver}' 2>/dev/null || echo "")
+DEBUG_CSI=$(wait_for_k8s_field pod debug-target "e2e-debug-flow-${E2E_RUN_ID}" \
+    '{.spec.volumes[?(@.csi.driver=="'"$CSI_DRIVER_NAME"'")].csi.driver}' "$CSI_DRIVER_NAME" 30) || true
 APP_VMOUNTS=$(kubectl get pod debug-target -n "e2e-debug-flow-${E2E_RUN_ID}" \
     -o jsonpath='{.spec.containers[0].volumeMounts[*].name}' 2>/dev/null || echo "")
 APP_ENV=$(kubectl get pod debug-target -n "e2e-debug-flow-${E2E_RUN_ID}" \
@@ -75,7 +73,7 @@ echo "  CSI driver: ${DEBUG_CSI:-none}"
 echo "  App container volumeMounts: ${APP_VMOUNTS:-none}"
 echo "  App container env: ${APP_ENV:-none}"
 
-if echo "$DEBUG_CSI" | grep -qF "$CSI_DRIVER_NAME"; then
+if [ "$DEBUG_CSI" = "$CSI_DRIVER_NAME" ]; then
     # Volume exists — check that it's NOT mounted on the app container
     if ! echo "$APP_VMOUNTS" | grep -q "debug-tools-${E2E_RUN_ID}"; then
         pass_test "FS-DEBUG-01"
@@ -83,8 +81,9 @@ if echo "$DEBUG_CSI" | grep -qF "$CSI_DRIVER_NAME"; then
         fail_test "FS-DEBUG-01" "Debug module volumeMount present on app container (should be omitted)"
     fi
 else
-    # If no CSI volume, the debug policy may not have been picked up
-    skip_test "FS-DEBUG-01" "Debug module not injected (policy may need more time to propagate)"
+    DEBUG_CSI=$(kubectl get pod debug-target -n "e2e-debug-flow-${E2E_RUN_ID}" \
+        -o jsonpath='{.spec.volumes[*].csi.driver}' 2>/dev/null || echo "")
+    fail_test "FS-DEBUG-01" "no $CSI_DRIVER_NAME volume injected for the Debug module: volumes=[$DEBUG_CSI]"
 fi
 
 # Test kubectl cfgd debug (creates ephemeral container)

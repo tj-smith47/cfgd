@@ -23,6 +23,7 @@
 #     ArgoCD tracks, and one that is missing or unreadable; the operator,
 #     full-stack and gateway suites call it
 #   - every ERROR line an e2e script prints goes to stderr
+#   - no full-stack case calls skip_test
 #   - no operator or full-stack suite script names the release's operator,
 #     namespace, webhooks or CSI driver by hand, outside the full-stack
 #     suite's kept gateway lines
@@ -2704,30 +2705,35 @@ if scan_release_targets "$here/fixtures/release-targets/absent.bash" >/dev/null 
 else
     pass "the release-target scan fails over a file it cannot read"
 fi
-# release_target_verdict KEPT FILE...: `HIT file:line:text` for each line naming
-# a release target whose file and text, leading blanks dropped, are not a
-# tab-separated entry of KEPT, then `STALE entry` for each entry no line
-# matches. KEPT reaches awk through the environment, since -v would read a
-# trailing backslash as an escape. Fails only when a file cannot be read.
+# release_target_verdict KEPT FILE...: KEPT holds one tab-separated file and
+# text row per line it clears, so a text kept once clears one line only. Prints
+# `HIT file:line:text` for each line naming a release target, leading blanks
+# dropped from its text, beyond the rows KEPT holds for it, then `STALE entry`
+# for each row left unused. KEPT reaches awk through the environment, since -v
+# would read a trailing backslash as an escape. Fails only when a file cannot
+# be read.
 release_target_verdict() {
     local kept="$1" hits
     shift
     hits="$(scan_release_targets "$@")" || return 1
-    KEPT="$kept" awk 'BEGIN { n = split(ENVIRON["KEPT"], k, "\n"); for (i = 1; i <= n; i++) if (k[i] != "") ok[k[i]] = 1 }
+    KEPT="$kept" awk 'BEGIN { n = split(ENVIRON["KEPT"], k, "\n"); for (i = 1; i <= n; i++) if (k[i] != "") rows[k[i]]++ }
         $0 != "" {
             file = $0; sub(/:.*/, "", file)
             text = $0; sub(/^[^:]*:[0-9]+:[ \t]*/, "", text)
-            if ((file "\t" text) in ok) seen[file "\t" text] = 1; else print "HIT " $0
+            key = file "\t" text
+            if (used[key] < rows[key]) used[key]++; else print "HIT " $0
         }
-        END { for (i = 1; i <= n; i++) if (k[i] != "" && !(k[i] in seen)) print "STALE " k[i] }' <<<"$hits"
+        END { for (i = 1; i <= n; i++) if (k[i] != "" && ++unused[k[i]] > used[k[i]]) print "STALE " k[i] }' <<<"$hits"
 }
 kept_got="$(cd "$here/fixtures/release-targets" && release_target_verdict "$(cat kept.tsv)" kept.bash)" ||
     kept_got="(the scan failed)"
 kept_want="HIT kept.bash:4:kubectl get deployment cfgd-operator -n cfgd-system
 HIT kept.bash:5:echo \"the release namespace is cfgd-system.\"
-STALE kept.bash	kubectl get pods -n cfgd-system"
+HIT kept.bash:6:kubectl get deployment cfgd-server -n cfgd-system
+STALE kept.bash	kubectl get pods -n cfgd-system
+STALE kept.bash	wait_for_k8s_field machineconfig mc-1 cfgd-system"
 if [ "$kept_got" = "$kept_want" ]; then
-    pass "the release-target verdict passes a line its kept list names, indented or not and with a trailing backslash, and reports every other line and each kept entry no line matches"
+    pass "the release-target verdict clears one line per kept row, indented or not and with a trailing backslash, and reports every other line, a repeat beyond its rows and each row no line uses"
 else
     fail "the release-target verdict printed [$kept_got], want [$kept_want]"
 fi
@@ -2738,9 +2744,13 @@ else
 fi
 
 # release-targets-kept.tsv lists the lines that name a release target on
-# purpose, each with its reason.
-if ! release_target_kept="$(grep -v -e '^#' -e '^$' "$here/release-targets-kept.tsv")"; then
-    fail "could not read an entry from $here/release-targets-kept.tsv"
+# purpose, one row per line, each with its reason.
+kept_rc=0
+release_target_kept="$(grep -v -e '^#' -e '^$' "$here/release-targets-kept.tsv")" || kept_rc=$?
+if [ "$kept_rc" -eq 1 ]; then
+    fail "no entries in $here/release-targets-kept.tsv"
+elif [ "$kept_rc" -gt 1 ]; then
+    fail "could not read $here/release-targets-kept.tsv"
 fi
 
 # Each suite that drives the PR install has a floor of scripts; a pathspec
@@ -2766,6 +2776,38 @@ done
 unscanned_kept="$(grep -vE "^tests/e2e/($(IFS='|'; echo "${release_target_suites[*]}"))/" <<<"$release_target_kept" || true)" # rc-ok: no entry outside the scanned suites is the passing outcome
 if [ -n "$unscanned_kept" ]; then
     fail "release-targets-kept.tsv lists lines of a file the release-target scan does not read, so they can never go stale; remove them: [$unscanned_kept]"
+fi
+
+# Setup stops when the PR install or a tool the suite needs is missing, so no
+# full-stack case has a reason left to skip. scan_skip_tests FILE...: file:line
+# of each skip_test call; fails only when a file cannot be read.
+scan_skip_tests() {
+    local rc=0
+    grep -HnwF skip_test "$@" || rc=$?
+    [ "$rc" -le 1 ]
+}
+skips_got="$(cd "$here/fixtures/skip-tests" && scan_skip_tests skips.bash | cut -d: -f1,2)" ||
+    skips_got="(the scan failed)"
+if [ "$skips_got" = "skips.bash:2
+skips.bash:5" ]; then
+    pass "the skip scan reports each skip_test call, on its own line or after ||, and stays quiet on longer names and prose"
+else
+    fail "the skip scan printed [$skips_got], want [skips.bash:2 skips.bash:5]"
+fi
+if scan_skip_tests "$here/fixtures/skip-tests/absent.bash" >/dev/null 2>&1; then
+    fail "the skip scan passed over a file it could not read"
+else
+    pass "the skip scan fails over a file it cannot read"
+fi
+mapfile -t fullstack_scripts < <(git -C "$repo_root" ls-files 'tests/e2e/full-stack/*.sh')
+if [ "${#fullstack_scripts[@]}" -lt "${release_target_floors[1]}" ]; then
+    fail "git ls-files 'tests/e2e/full-stack/*.sh' matched ${#fullstack_scripts[@]} scripts, fewer than the floor of ${release_target_floors[1]}, so the skip scan missed part of the suite"
+elif ! fullstack_skips="$(cd "$repo_root" && scan_skip_tests "${fullstack_scripts[@]}")"; then
+    fail "the skip scan could not read the full-stack suite"
+elif [ -z "$fullstack_skips" ]; then
+    pass "no full-stack case calls skip_test (${#fullstack_scripts[@]} scripts)"
+else
+    fail "a full-stack case skips; setup stops when what it needs is missing, so the case fails instead: [$fullstack_skips]"
 fi
 
 if [ "$failures" -gt 0 ]; then

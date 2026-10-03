@@ -1,3 +1,7 @@
 kept.bash	kubectl get deployment cfgd-server -n cfgd-system
 kept.bash	kubectl get machineconfig mc-1 -n cfgd-system \
 kept.bash	kubectl get pods -n cfgd-system
+kept.bash	namespace: cfgd-system
+kept.bash	namespace: cfgd-system
+kept.bash	wait_for_k8s_field machineconfig mc-1 cfgd-system
+kept.bash	wait_for_k8s_field machineconfig mc-1 cfgd-system

@@ -11,6 +11,11 @@ NODE_FIXTURES="$SCRIPT_DIR/../../node/fixtures"
 
 echo "=== cfgd Full-Stack E2E Tests ==="
 
+command -v cosign >/dev/null 2>&1 || {
+    echo "ERROR: cosign is required: OCI-E2E-02 signs a module with it and OCI-E2E-03 needs it for the signature policy. Install it (https://docs.sigstore.dev/cosign/system_config/installation/, or go install github.com/sigstore/cosign/v2/cmd/cosign@latest), then rerun the suite." >&2
+    exit 1
+}
+
 require_release_webhooks_scoped || exit 1
 
 # --- Verify infrastructure ---

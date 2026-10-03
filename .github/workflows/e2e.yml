@@ -187,9 +187,8 @@ jobs:
       - name: Install go-task
         uses: go-task/setup-task@v2
 
-      # cosign is required by test-oci-e2e.sh OCI-E2E-02/03 (and the
-      # cosign-keyed CSI scripts under test-csi.sh); without it those
-      # tests skip silently.
+      # cosign is required by test-oci-e2e.sh OCI-E2E-02/03, so
+      # setup-fullstack-env.sh stops before any case without it.
       - name: Install cosign
         uses: sigstore/cosign-installer@v3
         with:

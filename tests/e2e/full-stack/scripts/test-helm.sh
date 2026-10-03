@@ -51,8 +51,9 @@ helm_test_cleanup() {
 # =================================================================
 begin_test "FS-HELM-01: Fresh Helm install creates operator deployment"
 
-# The FS-CSI cases drive the PR install's CSI driver, so these installs leave
-# csiDriver off and test the operator only.
+# A CSIDriver is cluster-scoped, and the chart's default driver name belongs to
+# the live release, so these installs leave csiDriver off and test the operator
+# only.
 helm_test_ns "01"
 INSTALL_OUTPUT=$(helm install cfgd-test "$CHART_DIR" --skip-crds \
     -n "$HELM_NS" \

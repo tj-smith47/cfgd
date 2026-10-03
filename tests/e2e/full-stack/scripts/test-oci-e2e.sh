@@ -89,47 +89,39 @@ fi
 # =================================================================
 begin_test "OCI-E2E-02: Push with --sign, Module CRD with signature, verify mount"
 
-COSIGN_AVAILABLE=false
-if command -v cosign > /dev/null 2>&1; then
-    COSIGN_AVAILABLE=true
-fi
+OCI02_NS="e2e-oci02-${E2E_RUN_ID}"
+OCI02_MOD="oci02-signed-${E2E_RUN_ID}"
+OCI02_REF="${REGISTRY}/cfgd-e2e/oci02-signed:v1.0-${E2E_RUN_ID}"
+OCI02_DIR=$(mktemp -d)
+create_test_module_dir "$OCI02_DIR" "$OCI02_MOD" "1.0.0"
 
-if ! $COSIGN_AVAILABLE; then
-    skip_test "OCI-E2E-02" "cosign not available"
+# Generate a cosign key pair for signing
+OCI02_KEYDIR=$(mktemp -d)
+COSIGN_PASSWORD="" cosign generate-key-pair --output-key-prefix "$OCI02_KEYDIR/e2e" 2>/dev/null || true
+
+PUSH_OK=true
+if [ -f "$OCI02_KEYDIR/e2e.key" ]; then
+    COSIGN_PASSWORD="" "$CFGD_BIN" module push "$OCI02_DIR" \
+        --artifact "$OCI02_REF" --sign --key "$OCI02_KEYDIR/e2e.key" --no-color 2>&1 || PUSH_OK=false
 else
-    OCI02_NS="e2e-oci02-${E2E_RUN_ID}"
-    OCI02_MOD="oci02-signed-${E2E_RUN_ID}"
-    OCI02_REF="${REGISTRY}/cfgd-e2e/oci02-signed:v1.0-${E2E_RUN_ID}"
-    OCI02_DIR=$(mktemp -d)
-    create_test_module_dir "$OCI02_DIR" "$OCI02_MOD" "1.0.0"
+    "$CFGD_BIN" module push "$OCI02_DIR" \
+        --artifact "$OCI02_REF" --sign --no-color 2>&1 || PUSH_OK=false
+fi
+rm -rf "$OCI02_DIR"
 
-    # Generate a cosign key pair for signing
-    OCI02_KEYDIR=$(mktemp -d)
-    COSIGN_PASSWORD="" cosign generate-key-pair --output-key-prefix "$OCI02_KEYDIR/e2e" 2>/dev/null || true
-
-    PUSH_OK=true
-    if [ -f "$OCI02_KEYDIR/e2e.key" ]; then
-        COSIGN_PASSWORD="" "$CFGD_BIN" module push "$OCI02_DIR" \
-            --artifact "$OCI02_REF" --sign --key "$OCI02_KEYDIR/e2e.key" --no-color 2>&1 || PUSH_OK=false
-    else
-        "$CFGD_BIN" module push "$OCI02_DIR" \
-            --artifact "$OCI02_REF" --sign --no-color 2>&1 || PUSH_OK=false
+if [ "$PUSH_OK" = "false" ]; then
+    fail_test "OCI-E2E-02" "Failed to push signed module to registry"
+    rm -rf "$OCI02_KEYDIR"
+else
+    # Read the public key for the Module CRD if available
+    PUB_KEY=""
+    if [ -f "$OCI02_KEYDIR/e2e.pub" ]; then
+        PUB_KEY=$(cat "$OCI02_KEYDIR/e2e.pub")
     fi
-    rm -rf "$OCI02_DIR"
+    rm -rf "$OCI02_KEYDIR"
 
-    if [ "$PUSH_OK" = "false" ]; then
-        fail_test "OCI-E2E-02" "Failed to push signed module to registry"
-        rm -rf "$OCI02_KEYDIR"
-    else
-        # Read the public key for the Module CRD if available
-        PUB_KEY=""
-        if [ -f "$OCI02_KEYDIR/e2e.pub" ]; then
-            PUB_KEY=$(cat "$OCI02_KEYDIR/e2e.pub")
-        fi
-        rm -rf "$OCI02_KEYDIR"
-
-        if [ -n "$PUB_KEY" ]; then
-            kubectl apply -f - <<EOF
+    if [ -n "$PUB_KEY" ]; then
+        kubectl apply -f - <<EOF
 apiVersion: cfgd.io/v1alpha1
 kind: Module
 metadata:
@@ -146,8 +138,8 @@ spec:
       publicKey: |
         $(sed '2,$s/^/        /' <<<"$PUB_KEY")
 EOF
-        else
-            kubectl apply -f - <<EOF
+    else
+        kubectl apply -f - <<EOF
 apiVersion: cfgd.io/v1alpha1
 kind: Module
 metadata:
@@ -163,14 +155,14 @@ spec:
     cosign:
       keyless: true
 EOF
-        fi
+    fi
 
-        ensure_namespace "$OCI02_NS"
-        ensure_label namespace "$OCI02_NS" cfgd.io/inject-modules=true --overwrite
+    ensure_namespace "$OCI02_NS"
+    ensure_label namespace "$OCI02_NS" cfgd.io/inject-modules=true --overwrite
 
-        sleep 3
+    sleep 3
 
-        kubectl apply -n "$OCI02_NS" -f - <<EOF
+    kubectl apply -n "$OCI02_NS" -f - <<EOF
 apiVersion: v1
 kind: Pod
 metadata:
@@ -185,26 +177,25 @@ spec:
   restartPolicy: Never
 EOF
 
-        echo "  Waiting for pod to be running..."
-        POD_RUNNING=false
-        wait_for_k8s_field pod oci02-pod "$OCI02_NS" \
-            '{.status.phase}' Running 180 > /dev/null && POD_RUNNING=true || true
+    echo "  Waiting for pod to be running..."
+    POD_RUNNING=false
+    wait_for_k8s_field pod oci02-pod "$OCI02_NS" \
+        '{.status.phase}' Running 180 > /dev/null && POD_RUNNING=true || true
 
-        if $POD_RUNNING; then
-            MODULE_FILE=$(kubectl exec oci02-pod -n "$OCI02_NS" -- \
-                cat "/cfgd-modules/${OCI02_MOD}/module.yaml" 2>/dev/null || echo "")
+    if $POD_RUNNING; then
+        MODULE_FILE=$(kubectl exec oci02-pod -n "$OCI02_NS" -- \
+            cat "/cfgd-modules/${OCI02_MOD}/module.yaml" 2>/dev/null || echo "")
 
-            echo "  module.yaml present: $([ -n "$MODULE_FILE" ] && echo 'yes' || echo 'no')"
+        echo "  module.yaml present: $([ -n "$MODULE_FILE" ] && echo 'yes' || echo 'no')"
 
-            if [ -n "$MODULE_FILE" ]; then
-                pass_test "OCI-E2E-02"
-            else
-                fail_test "OCI-E2E-02" "Signed module content not found at mount path"
-            fi
+        if [ -n "$MODULE_FILE" ]; then
+            pass_test "OCI-E2E-02"
         else
-            fail_test "OCI-E2E-02" "Pod did not reach Running state"
-            kubectl describe pod oci02-pod -n "$OCI02_NS" 2>/dev/null | tail -20
+            fail_test "OCI-E2E-02" "Signed module content not found at mount path"
         fi
+    else
+        fail_test "OCI-E2E-02" "Pod did not reach Running state"
+        kubectl describe pod oci02-pod -n "$OCI02_NS" 2>/dev/null | tail -20
     fi
 fi
 
@@ -213,22 +204,19 @@ fi
 # =================================================================
 begin_test "OCI-E2E-03: Module with disallow unsigned policy rejects unsigned module"
 
-if ! $COSIGN_AVAILABLE; then
-    skip_test "OCI-E2E-03" "cosign not available (needed for signature policy enforcement)"
-else
-    OCI03_MOD="oci03-unsigned-${E2E_RUN_ID}"
-    OCI03_REF="${REGISTRY}/cfgd-e2e/oci03-unsigned:v1.0-${E2E_RUN_ID}"
-    OCI03_DIR=$(mktemp -d)
-    create_test_module_dir "$OCI03_DIR" "$OCI03_MOD" "1.0.0"
-    PUSH_OK=true
-    "$CFGD_BIN" module push "$OCI03_DIR" --artifact "$OCI03_REF" --no-color 2>&1 || PUSH_OK=false
-    rm -rf "$OCI03_DIR"
+OCI03_MOD="oci03-unsigned-${E2E_RUN_ID}"
+OCI03_REF="${REGISTRY}/cfgd-e2e/oci03-unsigned:v1.0-${E2E_RUN_ID}"
+OCI03_DIR=$(mktemp -d)
+create_test_module_dir "$OCI03_DIR" "$OCI03_MOD" "1.0.0"
+PUSH_OK=true
+"$CFGD_BIN" module push "$OCI03_DIR" --artifact "$OCI03_REF" --no-color 2>&1 || PUSH_OK=false
+rm -rf "$OCI03_DIR"
 
-    if [ "$PUSH_OK" = "false" ]; then
-        fail_test "OCI-E2E-03" "Failed to push unsigned module to registry"
-    else
-        # Create a ClusterConfigPolicy that disallows unsigned modules
-        kubectl apply -f - <<EOF
+if [ "$PUSH_OK" = "false" ]; then
+    fail_test "OCI-E2E-03" "Failed to push unsigned module to registry"
+else
+    # Create a ClusterConfigPolicy that disallows unsigned modules
+    kubectl apply -f - <<EOF
 apiVersion: cfgd.io/v1alpha1
 kind: ClusterConfigPolicy
 metadata:
@@ -244,10 +232,10 @@ spec:
       - "${REGISTRY}/*"
 EOF
 
-        sleep 3
+    sleep 3
 
-        # Try to create a Module without signature — webhook should reject it
-        REJECT_OUTPUT=$(kubectl apply -f - 2>&1 <<EOF || true
+    # Try to create a Module without signature — webhook should reject it
+    REJECT_OUTPUT=$(kubectl apply -f - 2>&1 <<EOF || true
 apiVersion: cfgd.io/v1alpha1
 kind: Module
 metadata:
@@ -261,24 +249,23 @@ spec:
   mountPolicy: Always
 EOF
 )
-        echo "  Webhook response: $(echo "$REJECT_OUTPUT" | head -3)"
+    echo "  Webhook response: $(echo "$REJECT_OUTPUT" | head -3)"
 
-        if echo "$REJECT_OUTPUT" | grep -qi "unsigned\|denied\|error\|rejected"; then
+    if echo "$REJECT_OUTPUT" | grep -qi "unsigned\|denied\|error\|rejected"; then
+        pass_test "OCI-E2E-03"
+    else
+        # Check if the Module was created (it shouldn't be)
+        MOD_EXISTS=$(kubectl get module "$OCI03_MOD" 2>/dev/null || echo "")
+        if [ -z "$MOD_EXISTS" ]; then
             pass_test "OCI-E2E-03"
         else
-            # Check if the Module was created (it shouldn't be)
-            MOD_EXISTS=$(kubectl get module "$OCI03_MOD" 2>/dev/null || echo "")
-            if [ -z "$MOD_EXISTS" ]; then
-                pass_test "OCI-E2E-03"
-            else
-                fail_test "OCI-E2E-03" "Unsigned module was accepted despite disallow-unsigned policy"
-                kubectl delete module "$OCI03_MOD" --ignore-not-found 2>/dev/null || true
-            fi
+            fail_test "OCI-E2E-03" "Unsigned module was accepted despite disallow-unsigned policy"
+            kubectl delete module "$OCI03_MOD" --ignore-not-found 2>/dev/null || true
         fi
-
-        # Clean up the ClusterConfigPolicy
-        kubectl delete clusterconfigpolicy "oci03-no-unsigned-${E2E_RUN_ID}" --ignore-not-found 2>/dev/null || true
     fi
+
+    # Clean up the ClusterConfigPolicy
+    kubectl delete clusterconfigpolicy "oci03-no-unsigned-${E2E_RUN_ID}" --ignore-not-found 2>/dev/null || true
 fi
 
 # =================================================================

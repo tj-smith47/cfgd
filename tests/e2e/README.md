@@ -2,7 +2,8 @@
 
 The suites under `tests/e2e/` run against a real Kubernetes cluster. `task e2e:setup`
 (`setup-cluster.sh`) builds and pushes the images, then deploys what the suites need;
-each `task e2e:<suite>` target runs one suite.
+each `task e2e:<suite>` target runs one suite. The full-stack suite also needs
+`cosign` on PATH, and its setup stops without it.
 
 ## Environment
 
@@ -83,8 +84,9 @@ The operator suite runs against the PR install: its pods, Deployment, leader lea
 come from the names above, and OP-PR-01 fails unless `$E2E_OPERATOR_DEPLOY` runs
 `e2e_image cfgd-operator`. The full-stack suite runs against the PR install too: its
 setup waits for `$E2E_OPERATOR_DEPLOY`, the endpoints of `$E2E_WEBHOOK_SVC` and
-`$E2E_CSI_DS`, and stops when the CSI driver is not ready, so no FS-CSI case skips.
-The FS-CSI cases find the driver pods by `$E2E_CSI_PODS` in `$E2E_INSTALL_NS` and the
+`$E2E_CSI_DS`, and stops when the CSI driver is not ready or `cosign` is missing. No
+full-stack case calls `skip_test`, and `test-pr-install.sh` fails on one under
+`full-stack/`. The FS-CSI cases find the driver pods by `$E2E_CSI_PODS` in `$E2E_INSTALL_NS` and the
 injected volume by `$CSI_DRIVER_NAME`. `test-pr-install.sh` fails on a tracked `*.sh`
 under `operator/` or `full-stack/` that names a release target by hand:
 
@@ -100,8 +102,9 @@ The full-stack suite names `cfgd-system` on purpose in two places, listed by fil
 line text in `common/release-targets-kept.tsv`: the device gateway `cfgd-server`,
 which the PR install does not replace, and the MachineConfigs, ConfigPolicy and
 DriftAlert of the fleet and drift cases, which live where the gateway works and reach
-the PR operator through the run label. A kept entry that matches no line fails, and
-each suite has a floor of scripts the scan must read. The
+the PR operator through the run label. Each row clears one line, so a text kept on
+three lines of a file has three rows; a further line with that text fails, as does a
+row no line uses. Each suite has a floor of scripts the scan must read. The
 YAML under `operator/manifests/` is the release operator's own definition, which setup
 applies where ArgoCD does not run it, so the scan does not read it. `helpers.sh` names
 the release webhook configurations once, as `$E2E_RELEASE_VALIDATING_WEBHOOK` and
