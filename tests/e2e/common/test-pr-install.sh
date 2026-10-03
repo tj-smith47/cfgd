@@ -2473,7 +2473,7 @@ expect_wh "require_release_webhooks_scoped passes when every release webhook ent
 expect_wh "require_release_webhooks_scoped names each validating entry whose objectSelector lacks the run-label DoesNotExist expression" \
     "$wh_rescope validatingwebhookconfiguration/cfgd-validating-webhooks entries whose objectSelector lacks cfgd.io/e2e-run DoesNotExist: validate-module.cfgd.io validate-driftalert.cfgd.io
 rc=1" validating-unscoped.json mutating-scoped.json
-expect_wh "require_release_webhooks_scoped reads the mutating webhook's namespaceSelector, not its objectSelector" \
+expect_wh "require_release_webhooks_scoped names the mutating entry whose namespaceSelector lacks the run-label DoesNotExist expression, even when its objectSelector holds it" \
     "$wh_rescope mutatingwebhookconfiguration/cfgd-mutating-webhooks entries whose namespaceSelector lacks cfgd.io/e2e-run DoesNotExist: inject-modules.cfgd.io
 rc=1" validating-scoped.json mutating-unscoped.json
 expect_wh "require_release_webhooks_scoped stops on a configuration ArgoCD tracks, as setup does" \
