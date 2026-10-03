@@ -247,8 +247,8 @@ enforces this; a pass that is sound anyway carries `# verdict-ok: <why>` on its
 Every object of a kind `schemas/crds.yaml` declares that an e2e suite applies
 carries `${E2E_RUN_LABEL_YAML}` in its own `metadata.labels`, and reaches the
 cluster only from a heredoc with an unquoted delimiter on the apply command
-itself: `kubectl apply|create|replace -f - <<EOF`, or a wrapper such as
-`apply_yaml "T01" <<EOF`. Any other apply in a suite that applies operator
+itself: `kubectl apply|create|replace -f - <<EOF`, or a wrapper function a
+scanned script defines whose body applies stdin. Any other apply in a suite that applies operator
 objects (a manifest by path, or stdin fed by a redirect, a here-string or a
 pipe) fails the check.
 `tests/e2e/common/test-pr-install.sh` (`task e2e:tags:check`) reads each

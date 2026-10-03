@@ -1,5 +1,5 @@
 writes.bash:11	kubectl apply -f - <<EOF
-writes.bash:17	apply_yaml <<EOF
+writes.bash:17	apply_stdin <<EOF
 writes.bash:24	cat > crd.yaml <<EOF
 writes.bash:27	cat > double.yaml <<EOF
 writes.bash:30	cat > single.yaml <<EOF

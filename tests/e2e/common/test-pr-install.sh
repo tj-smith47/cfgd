@@ -1194,9 +1194,7 @@ scan_run_labels() {
         # still open when a file ends leaves the scan unable to tell what is
         # inside a function, and a quote still open leaves it unable to tell
         # which lines are commands, so both fail.
-        # apply_yaml stays a wrapper when the script defining it is not among
-        # those scanned, so a heredoc fed to it is still judged.
-        BEGIN { OFS = "\t"; wrapper["apply_yaml"] = 1 }
+        BEGIN { OFS = "\t" }
         $1 == "FILE" {
             check_command()
             if (pass == 2 && fns) print "UNREADABLE " file ":" fnline[1] ": a function body opened at line " fnline[1] " never closes for the scan"
@@ -1467,7 +1465,7 @@ metadata:
   name: comment
 data:
   k: v'
-plant comment-heredoc "# Usage: apply_yaml \"T03\" <<'EOF' ... EOF"$'\n'"kubectl apply -f - <<EOF" "$module_unlabelled"
+plant comment-heredoc "# Usage: apply_stdin \"T03\" <<'EOF' ... EOF"$'\n'"kubectl apply -f - <<EOF" "$module_unlabelled"
 plant rc-ok-comment "kubectl apply -n \"\$E2E_NAMESPACE\" -f - 2>&1 <<EOF || true # rc-ok: read back with kubectl exec below" "$module_unlabelled"
 plant quoted "kubectl apply -f - <<'EOF'" "$module_unlabelled"
 plant in-pod "exec_in_pod bash -c 'cat > /etc/cfgd/in-pod.yaml << \"INNEREOF\"" 'apiVersion: cfgd.io/v1alpha1
@@ -1477,7 +1475,7 @@ metadata:
 spec:
   profile: base' "INNEREOF'"
 plant exec-apply "exec_in_pod kubectl apply -f - <<EOF" "$module_unlabelled"
-plant apply-yaml "apply_yaml \"T01\" <<EOF" "$module_unlabelled"
+plant wrapper-other-file "apply_stdin \"T01\" <<EOF" "$module_unlabelled"
 plant captured "RESULT=\$(kubectl apply -f - 2>&1 <<EOF || true" "$module_unlabelled" "EOF"$'\n'")"
 plant continued "kubectl apply -n \"\$E2E_NAMESPACE\" \\"$'\n'"    -f - <<EOF" "$module_unlabelled"
 plant dash "kubectl apply -f - <<-EOF" $'\t'"${module_unlabelled//$'\n'/$'\n\t'}" $'\tEOF'
@@ -1844,8 +1842,8 @@ cat "$f" | kubectl apply -f -
 sed "s/x/y/" "$f" | kubectl apply -f -
 sed -e 's/x/y/' manifest.yaml | kubectl apply -f -
 envsubst < "$f" | kubectl apply -f -
-apply_yaml "T01" < "$f"
-cat "$f" | apply_yaml "T01"
+apply_stdin "T01" < "$f"
+cat "$f" | apply_stdin "T01"
 kubectl apply -n ns \
     -f - < "$f"
 cat "$f" |
@@ -2014,7 +2012,7 @@ plant wrapper-heredoc "wh_apply_it() { kubectl apply -f -; }"$'\n'"wh_apply_it <
 # sends nothing, the other tools the suites run with an apply verb or a -f,
 # and text that only mentions an apply.
 cat > "$fixtures/scripts/apply-negative.sh" <<'FIXTURE'
-apply_yaml() {
+apply_stdin() {
     local test_id="$1" output
     if ! output=$(kubectl apply -f - 2>&1); then
         echo "  kubectl apply failed: $output"
@@ -2055,8 +2053,8 @@ SITE alias-api.sh:1
 UNLABELLED alias-api.sh:6
 SITE anchor-kind.sh:1
 UNLABELLED anchor-kind.sh:2
-SITE apply-yaml.sh:1
-UNLABELLED apply-yaml.sh:2
+SITE wrapper-other-file.sh:1
+UNLABELLED wrapper-other-file.sh:2
 BYPATH captured-operator-kind.sh:10
 BYPATH outside.sh:1
 BYPATH outside-quoted.sh:1
@@ -2404,8 +2402,6 @@ if [ "$by_path_verdict" = "BYPATH $by_path_tree/operator/scripts/zz-by-path.sh:1
 else
     fail "a manifest applied by path in the operator suite: verdict was: ${by_path_verdict:-clean}"
 fi
-expect_red "a call of apply_yaml is judged when the script that defines it is not scanned" \
-    "$(scan_run_labels "$kinds" "$fixtures/scripts/by-stdin.sh")" "^BYPATH $fixtures/scripts/by-stdin.sh:9: "
 expect_red "a function body still open when the last file scanned ends fails the scan" \
     "$(scan_run_labels "$kinds" "$fixtures/scripts/unclosed-body.sh")" "^UNREADABLE $fixtures/scripts/unclosed-body.sh:1: "
 expect_red "a function name two scanned scripts define with two bodies names both definitions" \

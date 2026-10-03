@@ -14,7 +14,7 @@ kind: CustomResourceDefinition
 metadata:
   name: widgets.example.io
 EOF
-apply_yaml <<EOF
+apply_stdin <<EOF
 apiVersion: v1
 kind: ConfigMap
 ---

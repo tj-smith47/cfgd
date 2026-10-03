@@ -166,8 +166,8 @@ The kinds are the ones `schemas/crds.yaml` declares (`.spec.names.kind`: today
 BackupPolicy, ClusterConfigPolicy, ConfigPolicy, DriftAlert, MachineConfig and
 Module), read when the check runs, so a new CRD joins the rule. An object is applied
 when its heredoc feeds `kubectl apply`, `create` or `replace` on the same command
-(directly, through `exec_in_pod`, `$KUBECTL` or a function) or a wrapper such as
-`apply_yaml`. The heredoc delimiter stays unquoted (`<<EOF`) so
+(directly, through `exec_in_pod`, `$KUBECTL` or a function) or a wrapper function
+whose body applies stdin. The heredoc delimiter stays unquoted (`<<EOF`) so
 the label expands.
 
 `test-pr-install.sh` reads every `tests/e2e/*/scripts` directory and `common/helpers.sh`
@@ -194,7 +194,7 @@ text inside a string value is no object. It fails on:
 - a script other than `helpers.sh` that sets `E2E_RUN_LABEL_YAML`
 - in the operator, full-stack and gateway suites or `helpers.sh`, an apply the scan cannot
   read. An operator object reaches the cluster only from a heredoc on the apply command
-  itself (`kubectl apply -f - <<EOF`, `apply_yaml "T01" <<EOF`). A manifest applied by path
+  itself (`kubectl apply -f - <<EOF`, or a wrapper function fed the same way). A manifest applied by path
   (`-f mc.yaml`, `--filename`, `-k`, `-f <(...)`) fails, and so does an apply reading stdin
   from anything else: a `<` redirect, a here-string, a process substitution, a heredoc on
   another descriptor (`3<<EOF`), a pipe (from `cat`, `echo`, `printf`, or a heredoc fed to
@@ -202,8 +202,7 @@ text inside a string value is no object. It fails on:
   or `replace` word and a `-f`, `--filename`, `-k` or `--kustomize` argument, run by
   `kubectl`, a variable or array (`$KUBECTL`, `"${kc[@]}"`) or a function a scanned script
   defines; another tool's `apply` (`cfgd apply`) is not one. A wrapper is a function whose
-  body reads stdin with nothing feeding it into an apply or into another wrapper, such as
-  `apply_yaml`: its body passes, and a call of it is an apply reading stdin. A function is
+  body reads stdin with nothing feeding it into an apply or into another wrapper: its body passes, and a call of it is an apply reading stdin. A function is
   called, or defined, only where bash reads a command word (`FOO=1 w`, `time w`, `true && w`),
   so `echo w` and `> w` call nothing. An apply with `--dry-run=client` sends nothing and passes
 - a function body (`{ }` or `( )`) still open at the end of its script, where the scan

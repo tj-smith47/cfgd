@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Shared setup for operator E2E tests.
 # Sourced by run-all.sh BEFORE domain test files.
-# Sets up: helpers, infrastructure verification, namespace, cleanup trap, apply_yaml().
+# Sets up: helpers, infrastructure verification, namespace, cleanup trap.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -20,19 +20,6 @@ require_release_webhooks_scoped || exit 1
 # webhook Service is between pods (a rollout, a node restart), so the suite
 # starts only once it has a ready endpoint.
 wait_for_service_endpoints "$E2E_INSTALL_NS" "$E2E_WEBHOOK_SVC" 120
-
-# Wrapper: apply YAML and fail the current test (not the whole script) on error.
-# Usage: apply_yaml "T03" <<EOF ... EOF
-apply_yaml() {
-    local test_id="$1"
-    local output
-    if ! output=$(kubectl apply -f - 2>&1); then
-        echo "  kubectl apply failed: $output"
-        fail_test "$test_id" "kubectl apply failed"
-        return 1
-    fi
-    return 0
-}
 
 # Set up ephemeral namespace for test resources
 create_e2e_namespace
