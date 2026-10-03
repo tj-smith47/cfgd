@@ -5,20 +5,20 @@
 echo ""
 echo "=== Controller Lifecycle Tests ==="
 
-# Print the lease cfgd-operator-leader's holderIdentity, or nothing when the
-# lease has no holder.
+# Print the holderIdentity of the lease cfgd-operator-leader in the PR
+# install's namespace, or nothing when the lease has no holder.
 operator_leader() {
-    kubectl get lease cfgd-operator-leader -n cfgd-system \
+    kubectl get lease cfgd-operator-leader -n "$E2E_INSTALL_NS" \
         -o jsonpath='{.spec.holderIdentity}' 2>/dev/null || true
 }
 
 # Print the operator pod the leader lease names. When the holder matches no
-# pod labelled app=cfgd-operator, print the identity and the pod list instead
+# pod $E2E_OPERATOR_PODS selects, print the identity and the pod list instead
 # and return 1.
 operator_leader_pod() {
     local holder pods
     holder="$(operator_leader)"
-    pods="$(kubectl get pods -n cfgd-system -l app=cfgd-operator -o name 2>&1 || true)"
+    pods="$(kubectl get pods -n "$E2E_INSTALL_NS" -l "$E2E_OPERATOR_PODS" -o name 2>&1 || true)"
     if [ -n "$holder" ] && grep -qxF "pod/$holder" <<<"$pods"; then
         printf '%s\n' "$holder"
         return 0
@@ -74,7 +74,7 @@ else
         elif ! LC01_LEADER="$(operator_leader_pod)"; then
             LC01_REASON="$LC01_LEADER"
             LC01_LEADER=""
-        elif ! LC01_PF_PID=$(port_forward cfgd-system "pod/$LC01_LEADER" "$LC01_LOCAL_PORT" 8443); then
+        elif ! LC01_PF_PID=$(port_forward "$E2E_INSTALL_NS" "pod/$LC01_LEADER" "$LC01_LOCAL_PORT" 8443); then
             LC01_REASON="Port-forward to pod/$LC01_LEADER never opened localhost:$LC01_LOCAL_PORT (kubectl output above)"
         else
             read -r LC01_CODE LC01_CONTENT_TYPE \
@@ -93,7 +93,7 @@ else
         pass_test "OP-LC-01"
     else
         LC01_POD_STATE=""
-        [ -z "$LC01_LEADER" ] || LC01_POD_STATE=" Pod (age, restarts): $(kubectl get pod "$LC01_LEADER" -n cfgd-system -o wide 2>&1 | tr '\n' ' ' || true)"
+        [ -z "$LC01_LEADER" ] || LC01_POD_STATE=" Pod (age, restarts): $(kubectl get pod "$LC01_LEADER" -n "$E2E_INSTALL_NS" -o wide 2>&1 | tr '\n' ' ' || true)"
         fail_test "OP-LC-01" "No reconciliation sample after $LC01_TRIES attempts touching MachineConfig $LC01_MC.$LC01_POD_STATE Last attempt: $LC01_REASON"
     fi
 fi
@@ -136,7 +136,7 @@ fi
 begin_test "OP-LC-03: Graceful shutdown recovery"
 
 # Get current operator pod name
-OLD_POD=$(kubectl get pods -n cfgd-system -l app=cfgd-operator \
+OLD_POD=$(kubectl get pods -n "$E2E_INSTALL_NS" -l "$E2E_OPERATOR_PODS" \
     -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
 
 echo "  Current operator pod: ${OLD_POD:-unknown}"
@@ -145,14 +145,14 @@ if [ -z "$OLD_POD" ]; then
     fail_test "OP-LC-03" "No operator pod found"
 else
     # Delete the pod
-    kubectl delete pod "$OLD_POD" -n cfgd-system --wait=false --ignore-not-found 2>/dev/null
+    kubectl delete pod "$OLD_POD" -n "$E2E_INSTALL_NS" --wait=false --ignore-not-found 2>/dev/null
 
     # Wait for the deployment to become available again
     echo "  Waiting for operator deployment to recover..."
-    wait_for_deployment cfgd-system cfgd-operator 120
+    wait_for_deployment "$E2E_INSTALL_NS" "$E2E_OPERATOR_DEPLOY" 120
 
     # Verify new pod has a different name
-    NEW_POD=$(kubectl get pods -n cfgd-system -l app=cfgd-operator \
+    NEW_POD=$(kubectl get pods -n "$E2E_INSTALL_NS" -l "$E2E_OPERATOR_PODS" \
         -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
 
     echo "  New operator pod: ${NEW_POD:-unknown}"
@@ -161,7 +161,7 @@ else
         pass_test "OP-LC-03"
     elif [ -n "$NEW_POD" ]; then
         # Same name is possible if ReplicaSet reuses the name (unlikely but legal)
-        NEW_UID=$(kubectl get pod "$NEW_POD" -n cfgd-system \
+        NEW_UID=$(kubectl get pod "$NEW_POD" -n "$E2E_INSTALL_NS" \
             -o jsonpath='{.metadata.uid}' 2>/dev/null || echo "")
         echo "  New pod UID: $NEW_UID"
         pass_test "OP-LC-03"
@@ -174,10 +174,10 @@ fi
 # The deployment becomes Available before the new pod registers webhook
 # endpoints, so kubectl apply can fail with "no endpoints available".
 echo "  Waiting for webhook readiness after pod restart..."
-kubectl wait --for=condition=Ready pod -l app=cfgd-operator \
-    -n cfgd-system --timeout=60s 2>/dev/null || true
+kubectl wait --for=condition=Ready pod -l "$E2E_OPERATOR_PODS" \
+    -n "$E2E_INSTALL_NS" --timeout=60s 2>/dev/null || true
 for _i in $(seq 1 12); do
-    if kubectl get endpoints cfgd-operator -n cfgd-system \
+    if kubectl get endpoints "$E2E_WEBHOOK_SVC" -n "$E2E_INSTALL_NS" \
         -o jsonpath='{.subsets[0].addresses[0].ip}' 2>/dev/null | grep -q .; then
         break
     fi
@@ -356,7 +356,7 @@ else
         -o jsonpath='{.status}' 2>&1 | sed 's/^/    /' || true
     echo ""
     echo "  Operator logs (drift-related, last 40):"
-    kubectl logs -n cfgd-system deployment/cfgd-operator --tail=300 2>/dev/null \
+    kubectl logs -n "$E2E_INSTALL_NS" deployment/"$E2E_OPERATOR_DEPLOY" --tail=300 2>/dev/null \
         | grep -iE "drift|e2e-lc-drift-${E2E_RUN_ID}|e2e-lc-mc-${E2E_RUN_ID}" \
         | tail -40 | sed 's/^/    /' || true
     fail_test "OP-LC-06" "DriftAlert status conditions not set"
@@ -420,13 +420,13 @@ fi
 begin_test "OP-LC-08: Health probes"
 
 # Wait for operator to be fully ready (OP-LC-03 restarts the pod)
-kubectl wait --for=condition=available deployment/cfgd-operator \
-    -n cfgd-system --timeout=60s 2>/dev/null || true
-kubectl wait --for=condition=Ready pod -l app=cfgd-operator \
-    -n cfgd-system --timeout=60s 2>/dev/null || true
+kubectl wait --for=condition=available deployment/"$E2E_OPERATOR_DEPLOY" \
+    -n "$E2E_INSTALL_NS" --timeout=60s 2>/dev/null || true
+kubectl wait --for=condition=Ready pod -l "$E2E_OPERATOR_PODS" \
+    -n "$E2E_INSTALL_NS" --timeout=60s 2>/dev/null || true
 
 # Get the newest running operator pod for port-forward
-LC08_POD=$(kubectl get pods -n cfgd-system -l app=cfgd-operator \
+LC08_POD=$(kubectl get pods -n "$E2E_INSTALL_NS" -l "$E2E_OPERATOR_PODS" \
     --sort-by=.metadata.creationTimestamp --field-selector=status.phase=Running \
     -o jsonpath='{.items[-1:].metadata.name}' 2>/dev/null || echo "")
 
@@ -434,7 +434,7 @@ if [ -z "$LC08_POD" ]; then
     fail_test "OP-LC-08" "No operator pod found for health probe check"
 else
     LC08_LOCAL_PORT=18181
-    LC08_PF_PID=$(port_forward cfgd-system "pod/$LC08_POD" "$LC08_LOCAL_PORT" 8081) || LC08_PF_PID=""
+    LC08_PF_PID=$(port_forward "$E2E_INSTALL_NS" "pod/$LC08_POD" "$LC08_LOCAL_PORT" 8081) || LC08_PF_PID=""
 
     HEALTHZ_CODE=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "http://localhost:$LC08_LOCAL_PORT/healthz" 2>/dev/null) || HEALTHZ_CODE="000"
     READYZ_CODE=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "http://localhost:$LC08_LOCAL_PORT/readyz" 2>/dev/null) || READYZ_CODE="000"

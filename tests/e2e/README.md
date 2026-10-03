@@ -78,6 +78,25 @@ install's driver. `common/test-pr-install.sh` (run by `task e2e:tags:check`) che
 these names, the run id, both helpers and the values file with a stub `kubectl`, so it
 needs no cluster.
 
+The operator suite runs against the PR install: its pods, Deployment, leader lease
+(`cfgd-operator-leader` in `$E2E_INSTALL_NS`), webhook Service and CSI driver name all
+come from the names above, and OP-PR-01 fails unless `$E2E_OPERATOR_DEPLOY` runs
+`e2e_image cfgd-operator`. `test-pr-install.sh` fails on a script under `operator/`
+that names a release target by hand: `cfgd-system`, `$CFGD_NAMESPACE`,
+`app=cfgd-operator`, the `cfgd-operator` Deployment, endpoints or Service, the
+`cfgd-validating-webhooks` and `cfgd-mutating-webhooks` configurations, or `csi.cfgd.io`.
+
+Setup scopes the release's webhooks away from run-labelled objects and namespaces
+(`cfgd.io/e2e-run DoesNotExist`), and a setup run from a branch without that scoping
+re-applies them unscoped. The operator and gateway suites call
+`require_release_webhooks_scoped` before their first case. It stops the suite when an
+entry of `cfgd-validating-webhooks` lacks the expression in its `objectSelector`, or one
+of `cfgd-mutating-webhooks` in its `namespaceSelector`; when either configuration is
+missing or cannot be read; and when ArgoCD tracks either, where setup stops too.
+`test-pr-install.sh` drives it against the fixtures in `common/fixtures/release-webhooks/`
+and fails when a suite that applies operator objects does not call it from its setup,
+the full-stack suite aside while it drives the release operator.
+
 The PR operator reconciles only objects labelled with the run, so every object of
 a kind the operator serves that a suite applies carries the label in its own
 `metadata.labels`, spelled as the variable:

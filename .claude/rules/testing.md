@@ -185,9 +185,18 @@ repository for them. A Service routes each connection to any replica, and a
 `a_family_with_no_sample_is_not_rendered` in `crates/cfgd-csi/src/metrics.rs`
 holds the library to this.
 
-## An e2e case asserts what it names, against the release that runs
+## An e2e case asserts what it names, against the PR install
 
-The operator, gateway and CSI suites run ArgoCD's pinned images. A case for
+The operator suite drives this run's operator in the PR install: every target
+it reads comes from `common/helpers.sh` (`$E2E_INSTALL_NS`,
+`$E2E_OPERATOR_PODS`, `$E2E_OPERATOR_DEPLOY`, `$E2E_WEBHOOK_SVC`,
+`$CSI_DRIVER_NAME`), OP-PR-01 fails when `$E2E_OPERATOR_DEPLOY` runs an image
+other than `e2e_image cfgd-operator`, and `tests/e2e/common/test-pr-install.sh`
+fails on an operator suite script that names `cfgd-system`, the release's
+operator, webhook configurations or `csi.cfgd.io` by hand. A suite that applies
+run-labelled objects calls `require_release_webhooks_scoped` in its setup, which
+stops the suite when the release's webhooks are not scoped away from them.
+The gateway and full-stack suites run ArgoCD's pinned images. A case there for
 behaviour only a newer build has reads the running capability and calls
 `skip_test` naming `running_image <kind> <name> <container>` when it is
 missing. No case calls `pass_test` after printing why the checked thing did not

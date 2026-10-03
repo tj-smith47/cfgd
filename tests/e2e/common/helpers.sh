@@ -443,6 +443,50 @@ argocd_owner() {
     return "$rc"
 }
 
+# require_release_webhooks_scoped: 0 when the release's webhook configurations
+# leave every run-labelled object and namespace to the PR install: each
+# cfgd-validating-webhooks entry's objectSelector and each cfgd-mutating-webhooks
+# entry's namespaceSelector holds the cfgd.io/e2e-run DoesNotExist expression.
+# Otherwise prints an ERROR and returns 1. A setup run from a branch without
+# that scoping re-applies both configurations without it, and the release
+# operator then admits and mutates what this run creates. A configuration
+# ArgoCD tracks is refused as setup refuses it, since setup cannot scope it.
+require_release_webhooks_scoped() {
+    local rerun="rerun setup from this branch" entry kind name selector rc doc unscoped
+    for entry in "validatingwebhookconfiguration cfgd-validating-webhooks objectSelector" \
+        "mutatingwebhookconfiguration cfgd-mutating-webhooks namespaceSelector"; do
+        read -r kind name selector <<<"$entry"
+        rc=0
+        argocd_owner "$kind" "$name" - "$rerun" || rc=$?
+        case "$rc" in
+            0)
+                echo "ERROR: $kind/$name carries an argocd.argoproj.io/tracking-id annotation, so ArgoCD owns it and setup does not scope it. Add the cfgd.io/e2e-run DoesNotExist selectors from setup-cluster.sh's webhook step to its manifest in the GitOps repo, drop it from that step's heredoc, then $rerun." >&2
+                return 1
+                ;;
+            1) ;;
+            *) return 1 ;;
+        esac
+        doc="$(kubectl get "$kind" "$name" --ignore-not-found -o json)" || {
+            echo "ERROR: could not read $kind/$name. Check that the runner can get $kind objects, then $rerun." >&2
+            return 1
+        }
+        if [ -z "$doc" ]; then
+            echo "ERROR: $kind/$name is missing; setup applies it, so $rerun." >&2
+            return 1
+        fi
+        unscoped="$(jq -r --arg sel "$selector" '.webhooks[]?
+            | select([.[$sel].matchExpressions[]? | select(.key == "cfgd.io/e2e-run" and .operator == "DoesNotExist")] | length == 0)
+            | .name' <<<"$doc")" || {
+            echo "ERROR: could not read the webhooks of $kind/$name as JSON. Check that jq is on PATH, then $rerun." >&2
+            return 1
+        }
+        if [ -n "$unscoped" ]; then
+            echo "ERROR: a setup from a branch without the PR-install scoping re-applied the release webhooks; $rerun. $kind/$name entries whose $selector lacks cfgd.io/e2e-run DoesNotExist: $(paste -sd ' ' <<<"$unscoped")" >&2
+            return 1
+        fi
+    done
+}
+
 # Installs Crossplane into crossplane-system with Helm unless ArgoCD runs it
 # there. Returns 1 with an ERROR when the crossplane Deployment cannot be read
 # or the install fails, before or after any Helm call.

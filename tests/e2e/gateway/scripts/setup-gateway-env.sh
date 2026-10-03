@@ -11,6 +11,8 @@ source "$SCRIPT_DIR/../../common/helpers.sh"
 
 command -v jq >/dev/null 2>&1 || { echo "ERROR: jq is required for gateway tests"; exit 1; }
 
+require_release_webhooks_scoped || exit 1
+
 echo "=== cfgd Gateway E2E Tests ==="
 
 # --- Verify gateway deployment is running ---

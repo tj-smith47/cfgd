@@ -18,6 +18,12 @@
 #   - the CRD check names the source and rerun advice its caller passes
 #   - no e2e script writes a CRD outside the exempt list, and no tracked
 #     manifest under tests/e2e holds one
+#   - require_release_webhooks_scoped passes on release webhooks scoped away
+#     from run-labelled objects and stops on an unscoped entry, a configuration
+#     ArgoCD tracks, and one that is missing or unreadable; the operator and
+#     gateway suites call it
+#   - no operator suite script names the release's operator, namespace,
+#     webhooks or CSI driver by hand
 # kubectl is a stub on PATH, so nothing reaches a cluster; the CRD check's stub
 # hands YAML reading to the real kubectl, which reads it offline.
 #
@@ -2413,6 +2419,129 @@ expect_red "a helpers.sh without the run label's entry fails the scan" \
 printf 'a: 1\n' > "$scratch/no-kinds.yaml"
 expect_red "a CRD file that names no kinds fails the kind list" "$(operator_kinds "$scratch/no-kinds.yaml")" "^FAIL $scratch/no-kinds.yaml names no CRD kinds"
 expect_red "a CRD file yq cannot read fails the kind list" "$(operator_kinds "$scratch/no-such.yaml")" "^FAIL yq could not read $scratch/no-such.yaml"
+
+# require_release_webhooks_scoped against a stub kubectl that serves
+# $WH_DIR/<name>.json: a get with --ignore-not-found prints nothing for a name
+# with no file, and a name listed in WH_UNREADABLE fails every get.
+wh_fixtures="$here/fixtures/release-webhooks"
+mkdir -p "$scratch/wh-bin"
+cat > "$scratch/wh-bin/kubectl" <<'STUB'
+#!/usr/bin/env bash
+[ "$1" = get ] || exit 1
+for name in ${WH_UNREADABLE:-}; do
+    if [ "$3" = "$name" ]; then
+        echo "Error from server (Forbidden): $2 \"$3\" is forbidden" >&2
+        exit 1
+    fi
+done
+file="$WH_DIR/$3.json"
+[ -f "$file" ] || exit 0
+case "$*" in
+    *tracking-id*) if grep -q 'argocd.argoproj.io/tracking-id' "$file"; then printf 'tracked'; fi ;;
+    *) cat "$file" ;;
+esac
+STUB
+chmod +x "$scratch/wh-bin/kubectl"
+
+# wh_case <validating fixture|-> <mutating fixture|-> [VAR=value...]: runs the
+# check with each fixture served under its configuration's name (- serves
+# none) and prints its output, then `rc=<status>`.
+# shellcheck disable=SC2016 # the inner script expands its own positional args
+wh_case() {
+    local dir
+    dir="$(mktemp -d "$scratch/wh.XXXXXX")"
+    [ "$1" = - ] || cp "$wh_fixtures/$1" "$dir/cfgd-validating-webhooks.json"
+    [ "$2" = - ] || cp "$wh_fixtures/$2" "$dir/cfgd-mutating-webhooks.json"
+    shift 2
+    env -u GITHUB_RUN_ID -u CFGD_NAMESPACE PATH="$scratch/wh-bin:$PATH" WH_DIR="$dir" \
+        REGISTRY=r.example CLI_SCRATCH="$scratch" "$@" \
+        bash -c 'source "$1/common/helpers.sh"; rc=0; require_release_webhooks_scoped 2>&1 || rc=$?; echo "rc=$rc"' _ "$e2e_root"
+}
+
+# expect_wh <label> <want output> <case args...>; jq's own error text differs
+# between jq versions, so its lines are left out of the comparison.
+expect_wh() {
+    local label="$1" want="$2" got
+    shift 2
+    got="$(wh_case "$@" | grep -v '^jq: ')"
+    if [ "$got" = "$want" ]; then pass "$label"; else fail "$label: got [$got], want [$want]"; fi
+}
+
+wh_rescope="ERROR: a setup from a branch without the PR-install scoping re-applied the release webhooks; rerun setup from this branch."
+expect_wh "require_release_webhooks_scoped passes when every release webhook entry leaves run-labelled objects and namespaces alone" \
+    "rc=0" validating-scoped.json mutating-scoped.json
+expect_wh "require_release_webhooks_scoped names each validating entry whose objectSelector lacks the run-label DoesNotExist expression" \
+    "$wh_rescope validatingwebhookconfiguration/cfgd-validating-webhooks entries whose objectSelector lacks cfgd.io/e2e-run DoesNotExist: validate-module.cfgd.io validate-driftalert.cfgd.io
+rc=1" validating-unscoped.json mutating-scoped.json
+expect_wh "require_release_webhooks_scoped reads the mutating webhook's namespaceSelector, not its objectSelector" \
+    "$wh_rescope mutatingwebhookconfiguration/cfgd-mutating-webhooks entries whose namespaceSelector lacks cfgd.io/e2e-run DoesNotExist: inject-modules.cfgd.io
+rc=1" validating-scoped.json mutating-unscoped.json
+expect_wh "require_release_webhooks_scoped stops on a configuration ArgoCD tracks, as setup does" \
+    "ERROR: validatingwebhookconfiguration/cfgd-validating-webhooks carries an argocd.argoproj.io/tracking-id annotation, so ArgoCD owns it and setup does not scope it. Add the cfgd.io/e2e-run DoesNotExist selectors from setup-cluster.sh's webhook step to its manifest in the GitOps repo, drop it from that step's heredoc, then rerun setup from this branch.
+rc=1" validating-tracked.json mutating-scoped.json
+expect_wh "require_release_webhooks_scoped stops on a missing configuration" \
+    "ERROR: mutatingwebhookconfiguration/cfgd-mutating-webhooks is missing; setup applies it, so rerun setup from this branch.
+rc=1" validating-scoped.json -
+expect_wh "require_release_webhooks_scoped stops on a configuration it cannot read" \
+    "Error from server (Forbidden): validatingwebhookconfiguration \"cfgd-validating-webhooks\" is forbidden
+ERROR: could not read validatingwebhookconfiguration/cfgd-validating-webhooks. Check that the runner can get validatingwebhookconfiguration objects, then rerun setup from this branch.
+rc=1" validating-scoped.json mutating-scoped.json WH_UNREADABLE=cfgd-validating-webhooks
+expect_wh "require_release_webhooks_scoped stops on a configuration whose webhooks are not JSON" \
+    "ERROR: could not read the webhooks of mutatingwebhookconfiguration/cfgd-mutating-webhooks as JSON. Check that jq is on PATH, then rerun setup from this branch.
+rc=1" validating-scoped.json garbled.json
+
+# The suites that apply run-labelled objects call the check before any case.
+# The exempt suite still drives the release operator in cfgd-system; once its
+# setup calls the check, the entry fails until it is removed.
+webhook_scope_exempt=full-stack
+for suite in "${run_label_suites[@]}"; do
+    calls=false
+    if grep -qE '^require_release_webhooks_scoped( |$)' "$e2e_root/$suite/scripts/"setup-*-env.sh; then calls=true; fi
+    if [ "$suite" = "$webhook_scope_exempt" ]; then
+        if $calls; then
+            fail "the $suite suite's setup calls require_release_webhooks_scoped; remove it from webhook_scope_exempt"
+        else
+            pass "the $suite suite is exempt from require_release_webhooks_scoped: it drives the release operator"
+        fi
+    elif $calls; then
+        pass "the $suite suite's setup calls require_release_webhooks_scoped"
+    else
+        fail "the $suite suite's setup does not call require_release_webhooks_scoped before its cases; a setup from a branch without the PR-install scoping would go unseen"
+    fi
+done
+
+# A release target spelled by hand in the operator suite reaches the live
+# release instead of this run's install; helpers.sh names the install's.
+release_target='cfgd-system|\$\{?CFGD_NAMESPACE([^[:alnum:]_]|$)|app=cfgd-operator|(deployment|endpoints|svc|service)[/ ]+cfgd-operator|cfgd-(validating|mutating)-webhooks|csi\.cfgd\.io'
+# scan_release_targets FILE...: file:line:text of each line naming one.
+scan_release_targets() {
+    local rc=0
+    grep -HnE "$release_target" "$@" || rc=$?
+    [ "$rc" -le 1 ]
+}
+targets_got="$(cd "$here/fixtures/release-targets" && scan_release_targets spelled.bash clean.bash | cut -d: -f1,2)" ||
+    targets_got="(the scan failed)"
+targets_want="$(seq -f 'spelled.bash:%g' 1 13)"
+if [ "$targets_got" = "$targets_want" ]; then
+    pass "the release-target scan reports the release namespace, CFGD_NAMESPACE, operator selector, deployment, endpoints, service, webhook configurations and CSI driver, in code, comments and heredocs, and stays quiet on the PR install's names, the leader lease and other cfgd.io names"
+else
+    fail "the release-target scan printed [$targets_got], want [$targets_want]"
+fi
+if scan_release_targets "$here/fixtures/release-targets/absent.bash" >/dev/null 2>&1; then
+    fail "the release-target scan passed over a file it could not read"
+else
+    pass "the release-target scan fails over a file it cannot read"
+fi
+mapfile -t operator_scripts < <(git -C "$repo_root" ls-files 'tests/e2e/operator/*.sh')
+if [ "${#operator_scripts[@]}" -eq 0 ]; then
+    fail "git ls-files 'tests/e2e/operator/*.sh' matched no script, so the release-target scan read nothing"
+elif ! release_hits="$(cd "$repo_root" && scan_release_targets "${operator_scripts[@]}")"; then
+    fail "the release-target scan could not read the operator suite"
+elif [ -z "$release_hits" ]; then
+    pass "no operator suite script names a release target by hand (${#operator_scripts[@]} scripts)"
+else
+    fail "the operator suite drives the PR install; use \$E2E_INSTALL_NS, \$E2E_OPERATOR_PODS, \$E2E_OPERATOR_DEPLOY, \$E2E_WEBHOOK_SVC, \$E2E_VALIDATING_WEBHOOK, \$E2E_MUTATING_WEBHOOK or \$CSI_DRIVER_NAME from helpers.sh instead of: [$release_hits]"
+fi
 
 if [ "$failures" -gt 0 ]; then
     echo "$failures check(s) failed"

@@ -1,0 +1,11 @@
+{
+  "kind": "MutatingWebhookConfiguration",
+  "metadata": {"name": "cfgd-mutating-webhooks"},
+  "webhooks": [
+    {"name": "inject-modules.cfgd.io",
+     "namespaceSelector": {"matchExpressions": [{"key": "cfgd.io/inject-modules", "operator": "In", "values": ["true"]}]},
+     "objectSelector": {"matchExpressions": [
+       {"key": "cfgd.io/skip-injection", "operator": "DoesNotExist"},
+       {"key": "cfgd.io/e2e-run", "operator": "DoesNotExist"}]}}
+  ]
+}

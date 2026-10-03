@@ -1,0 +1,12 @@
+{
+  "kind": "ValidatingWebhookConfiguration",
+  "metadata": {"name": "cfgd-validating-webhooks"},
+  "webhooks": [
+    {"name": "validate-machineconfig.cfgd.io",
+     "objectSelector": {"matchExpressions": [{"key": "cfgd.io/e2e-run", "operator": "DoesNotExist"}]}},
+    {"name": "validate-module.cfgd.io",
+     "objectSelector": {"matchExpressions": [
+       {"key": "app.kubernetes.io/part-of", "operator": "Exists"},
+       {"key": "cfgd.io/e2e-run", "operator": "DoesNotExist"}]}}
+  ]
+}

@@ -150,7 +150,7 @@ echo "  CSI driver: $CSI_DRIVER"
 
 PASS=true
 if ! echo "$CSI_DRIVER" | grep -qF "$CSI_DRIVER_NAME"; then
-    echo "  WARN: CSI volume not injected (expected driver=csi.cfgd.io)"
+    echo "  WARN: CSI volume not injected (expected driver=$CSI_DRIVER_NAME)"
     PASS=false
 fi
 if ! echo "$POD_VMOUNTS" | grep -q "cfgd-module"; then
