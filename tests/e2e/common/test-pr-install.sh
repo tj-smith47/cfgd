@@ -2756,12 +2756,15 @@ fi
 # Each suite that drives the PR install has a floor of scripts; a pathspec
 # that matches fewer fails the check.
 release_target_suites=(operator full-stack)
-release_target_floors=(12 10)
-for i in "${!release_target_suites[@]}"; do
-    suite="${release_target_suites[$i]}"
+declare -A release_target_floors=([operator]=12 [full-stack]=10)
+for suite in "${release_target_suites[@]}"; do
+    if [ -z "${release_target_floors[$suite]:-}" ]; then
+        fail "release_target_floors has no floor for the $suite suite"
+        continue
+    fi
     mapfile -t suite_scripts < <(git -C "$repo_root" ls-files "tests/e2e/$suite/*.sh")
-    if [ "${#suite_scripts[@]}" -lt "${release_target_floors[$i]}" ]; then
-        fail "git ls-files 'tests/e2e/$suite/*.sh' matched ${#suite_scripts[@]} scripts, fewer than the floor of ${release_target_floors[$i]}, so the release-target scan missed part of the $suite suite"
+    if [ "${#suite_scripts[@]}" -lt "${release_target_floors[$suite]}" ]; then
+        fail "git ls-files 'tests/e2e/$suite/*.sh' matched ${#suite_scripts[@]} scripts, fewer than the floor of ${release_target_floors[$suite]}, so the release-target scan missed part of the $suite suite"
         continue
     fi
     suite_kept="$(grep "^tests/e2e/$suite/" <<<"$release_target_kept" || true)" # rc-ok: a suite with no kept entry is valid
@@ -2800,8 +2803,8 @@ else
     pass "the skip scan fails over a file it cannot read"
 fi
 mapfile -t fullstack_scripts < <(git -C "$repo_root" ls-files 'tests/e2e/full-stack/*.sh')
-if [ "${#fullstack_scripts[@]}" -lt "${release_target_floors[1]}" ]; then
-    fail "git ls-files 'tests/e2e/full-stack/*.sh' matched ${#fullstack_scripts[@]} scripts, fewer than the floor of ${release_target_floors[1]}, so the skip scan missed part of the suite"
+if [ "${#fullstack_scripts[@]}" -lt "${release_target_floors[full-stack]}" ]; then
+    fail "git ls-files 'tests/e2e/full-stack/*.sh' matched ${#fullstack_scripts[@]} scripts, fewer than the floor of ${release_target_floors[full-stack]}, so the skip scan missed part of the suite"
 elif ! fullstack_skips="$(cd "$repo_root" && scan_skip_tests "${fullstack_scripts[@]}")"; then
     fail "the skip scan could not read the full-stack suite"
 elif [ -z "$fullstack_skips" ]; then

@@ -61,9 +61,10 @@ spec:
   restartPolicy: Never
 EOF
 
-# Check pod spec: CSI volume should exist, volumeMount should NOT be on app container
-DEBUG_CSI=$(wait_for_k8s_field pod debug-target "e2e-debug-flow-${E2E_RUN_ID}" \
-    '{.spec.volumes[?(@.csi.driver=="'"$CSI_DRIVER_NAME"'")].csi.driver}' "$CSI_DRIVER_NAME" 30) || true
+# Check pod spec: CSI volume should exist, volumeMount should NOT be on app container.
+# The webhook writes the volumes at admission, so one read sees all it will add.
+DEBUG_CSI=$(kubectl get pod debug-target -n "e2e-debug-flow-${E2E_RUN_ID}" \
+    -o jsonpath='{.spec.volumes[?(@.csi.driver=="'"$CSI_DRIVER_NAME"'")].csi.driver}' 2>/dev/null || echo "")
 APP_VMOUNTS=$(kubectl get pod debug-target -n "e2e-debug-flow-${E2E_RUN_ID}" \
     -o jsonpath='{.spec.containers[0].volumeMounts[*].name}' 2>/dev/null || echo "")
 APP_ENV=$(kubectl get pod debug-target -n "e2e-debug-flow-${E2E_RUN_ID}" \
