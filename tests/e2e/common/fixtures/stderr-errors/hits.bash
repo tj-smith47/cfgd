@@ -20,3 +20,10 @@ echo "ERROR: before a redirected group"
 {
     echo "detail"
 } >&2
+echo "ERROR: first, redirected" >&2; echo "ERROR: second, on stdout"
+echo "detail" >&2 && echo "ERROR: after a redirected command"
+{ echo "ERROR: in a group closed without a redirect"; } && echo ok >&2
+echo 'ERROR: a quoted >&2 is text' "x >&2"
+echo "ERROR: spread
+over a quoted newline"
+{ echo "ERROR: in a group whose inner group alone is redirected"; { echo "detail"; } >&2; }

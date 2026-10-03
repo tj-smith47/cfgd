@@ -113,8 +113,10 @@ scan holds to a floor.
 Every `ERROR` line an e2e script prints goes to stderr, so a caller that captures or
 discards stdout still shows it. `test-pr-install.sh` reads every tracked `tests/e2e/*.sh`
 and fails, naming file and line, on an `echo` or `printf` of an `ERROR` line outside
-comments and heredoc bodies whose statement carries no `>&2` (or `1>&2`) and whose
-enclosing brace group or function body is not redirected (`} >&2`).
+comments and heredoc bodies whose own command carries no `>&2` (or `1>&2`) and whose
+enclosing brace group or function body is not redirected (`} >&2`). The commands on a
+line are split at `;`, `&&`, `||`, `|` and `&` outside quotes, so in
+`echo "ERROR: a" >&2; echo "ERROR: b"` the second echo is named.
 
 The PR operator reconciles only objects labelled with the run, so every object of
 a kind the operator serves that a suite applies carries the label in its own

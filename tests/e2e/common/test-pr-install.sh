@@ -783,6 +783,49 @@ parse_bodies() {
     done
 }
 
+# squash_awk defines squash(s, n), shared by the scans that read shell lines.
+# shellcheck disable=SC2016 # an awk program; the $ signs belong to awk
+squash_awk='
+# squash(s, n): shell line n with each quoted span made the word Q, each
+# escaped character the letter X and a comment dropped, so a | or < in
+# a string is not read as shell. In an ANSI-C span (a single quote
+# after an odd run of $), as in a double-quoted one, a backslash
+# escapes the next character. The string a bash -c or sh -c runs is
+# shell, so it is read as such. A quote still open at the end of the
+# line stays open into the next one; a line ending in one backslash
+# keeps it. A quoted client stays the word client, so that
+# --dry-run="client" reads as --dry-run=client. kept is the line as
+# written with only its comment dropped, and mask is kept with each
+# quoted character a Q and each escape XX, so an offset in one is the
+# same offset in the other.
+function squash(s, n,   out, i, c) {
+    out = ""; kept = s; mask = ""
+    for (i = 1; i <= length(s); i++) {
+        c = substr(s, i, 1)
+        if ((inq == "\"" || inq == "\047" && ansi) && c == "\\") {
+            if (i < length(s)) { i++; mask = mask "QQ" } else mask = mask "Q"
+            continue
+        }
+        if (inq != "" && c == inq) {
+            if (qbuf == "client") out = substr(out, 1, length(out) - 1) "client"
+            inq = ""; mask = mask "Q"; continue
+        }
+        if (inq == "\047") { qbuf = qbuf c; mask = mask "Q"; continue }
+        if (inq == "\"") { qbuf = qbuf c; mask = mask "Q"; continue }
+        if (c == "\\") { if (i == length(s)) { out = out c; mask = mask c } else { out = out "X"; mask = mask "XX"; i++ } }
+        else if (cq != "" && c == cq) { cq = ""; out = out " ; "; mask = mask " " }
+        else if ((c == "\047" || c == "\"") && cq == "" && out ~ /(^|[^A-Za-z0-9_])(ba)?sh[ \t]+-c[ \t]*$/) { cq = c; qat = n; out = out " ; "; mask = mask " " }
+        else if (c == "\047" || c == "\"") {
+            ansi = match(out, /\$+$/) && RLENGTH % 2
+            inq = c; qat = n; qbuf = ""; out = out "Q"; mask = mask "Q"
+        }
+        else if (c == "#" && (i == 1 || substr(s, i - 1, 1) ~ /[ \t]/)) { kept = substr(s, 1, i - 1); break }
+        else { out = out c; mask = mask c }
+    }
+    return out
+}
+'
+
 # scan_run_labels <kinds> <dir or file...> reads every file in each dir, and
 # each file named, through heredocs.awk. Each heredoc body is read with yq as
 # bash would send it: an unquoted one rendered, a quoted one as written. Every
@@ -850,46 +893,8 @@ scan_run_labels() {
     : > "$work/index"
     awk -f "$here/heredocs.awk" "${files[@]}" > "$work/records" || echo "UNREADABLE heredocs.awk exited $? reading ${files[*]}"
     awk -F '\t' -v work="$work" -v sentinel="$label_sentinel" -v placeholder="$expansion_placeholder" \
-        -v entries="$yaml_entries" -v helpers="$helpers" "$render_awk"'
+        -v entries="$yaml_entries" -v helpers="$helpers" "$render_awk$squash_awk"'
         function rest(n,   i, p) { p = 0; for (i = 1; i <= n; i++) p += length($i) + 1; return substr($0, p + 1) }
-        # squash(s, n): shell line n with each quoted span made the word Q, each
-        # escaped character the letter X and a comment dropped, so a | or < in
-        # a string is not read as shell. In an ANSI-C span (a single quote
-        # after an odd run of $), as in a double-quoted one, a backslash
-        # escapes the next character. The string a bash -c or sh -c runs is
-        # shell, so it is read as such. A quote still open at the end of the
-        # line stays open into the next one; a line ending in one backslash
-        # keeps it. A quoted client stays the word client, so that
-        # --dry-run="client" reads as --dry-run=client. kept is the line as
-        # written with only its comment dropped, and mask is kept with each
-        # quoted character a Q and each escape XX, so an offset in one is the
-        # same offset in the other.
-        function squash(s, n,   out, i, c) {
-            out = ""; kept = s; mask = ""
-            for (i = 1; i <= length(s); i++) {
-                c = substr(s, i, 1)
-                if ((inq == "\"" || inq == "\047" && ansi) && c == "\\") {
-                    if (i < length(s)) { i++; mask = mask "QQ" } else mask = mask "Q"
-                    continue
-                }
-                if (inq != "" && c == inq) {
-                    if (qbuf == "client") out = substr(out, 1, length(out) - 1) "client"
-                    inq = ""; mask = mask "Q"; continue
-                }
-                if (inq == "\047") { qbuf = qbuf c; mask = mask "Q"; continue }
-                if (inq == "\"") { qbuf = qbuf c; mask = mask "Q"; continue }
-                if (c == "\\") { if (i == length(s)) { out = out c; mask = mask c } else { out = out "X"; mask = mask "XX"; i++ } }
-                else if (cq != "" && c == cq) { cq = ""; out = out " ; "; mask = mask " " }
-                else if ((c == "\047" || c == "\"") && cq == "" && out ~ /(^|[^A-Za-z0-9_])(ba)?sh[ \t]+-c[ \t]*$/) { cq = c; qat = n; out = out " ; "; mask = mask " " }
-                else if (c == "\047" || c == "\"") {
-                    ansi = match(out, /\$+$/) && RLENGTH % 2
-                    inq = c; qat = n; qbuf = ""; out = out "Q"; mask = mask "Q"
-                }
-                else if (c == "#" && (i == 1 || substr(s, i - 1, 1) ~ /[ \t]/)) { kept = substr(s, 1, i - 1); break }
-                else { out = out c; mask = mask c }
-            }
-            return out
-        }
         # runs_apply(w, v, cw): the verb w[v] belongs to a command that sends
         # manifests to a cluster. The word that runs it is the nearest one
         # before the verb that is not an option or an option argument: kubectl,
@@ -2529,46 +2534,98 @@ done
 # An ERROR on stdout is lost where a caller captures or discards stdout, and
 # interleaves with the output a case parses. scan_stdout_errors FILE... prints
 # `STDOUT file:line` for each echo or printf of an ERROR line, outside comments
-# and heredoc bodies, whose statement (backslash-continued lines joined) has no
-# >&2 and whose nearest enclosing `}` (the first later line indented less that
-# starts with one: a brace group or a function body) is not redirected to stderr.
-# ponytail: one >&2 anywhere on the statement's lines passes every echo on them;
-# a quote-aware split per command is the upgrade if two share a line.
+# and heredoc bodies, that is not sent to stderr. A statement is a line with
+# the lines a trailing backslash or an open quote joins to it, and its
+# commands are split at each ;, &&, ||, | and & outside quotes, read off
+# squash's mask; a >& or <& and an &> are redirects. A command passes with its
+# own >&2 or 1>&2, or when a brace group or function body enclosing it is
+# redirected to stderr: a } that closes it later on the statement, or else the
+# first later line indented less that starts with }.
 # shellcheck disable=SC2016 # an awk program; the $ fields belong to awk
 scan_stdout_errors() {
-    { awk -f "$here/heredocs.awk" "$@" || echo "UNREADABLE heredocs.awk exited $?"; } | awk -F '\t' '
+    { awk -f "$here/heredocs.awk" "$@" || echo "UNREADABLE heredocs.awk exited $?"; } | awk -F '\t' "$squash_awk"'
         function indent(s) { match(s, /^[ \t]*/); return RLENGTH }
-        function judge(   i, j, line, stmt, ind, ok) {
-            for (i = 1; i <= n; i++) {
-                line = raw[i]
-                if (line ~ /^[ \t]*#/) continue
-                if (line !~ /(^|[;&|{(]|then|do|else)[ \t]*(echo|printf)[ \t][^;&|]*ERROR/) continue
-                stmt = line
-                for (j = i; stmt ~ /\\$/ && j < n; ) { j++; stmt = stmt "\n" raw[j] }
-                if (stmt ~ />&2/) continue
-                ok = 0
-                ind = indent(line)
-                for (j = i + 1; j <= n; j++) {
-                    if (raw[j] ~ /^[ \t]*}/ && indent(raw[j]) < ind) { ok = (raw[j] ~ /^[ \t]*}[ \t]*1?>&2/); break }
+        function to_stderr(m) { return m ~ /(^|[^0-9])1?>&2/ }
+        # commands(k, m): the commands of the statement whose kept text is k
+        # and mask m, as cmd[1..nc], with their masks in cmk[] and in cl[] the
+        # statement line each starts on, counted from 0.
+        function commands(k, m,   i, c, p, start, line) {
+            nc = 0; start = 1; line = 0
+            for (i = 1; i <= length(m); i++) {
+                c = substr(m, i, 1); p = (i > 1) ? substr(m, i - 1, 1) : ""
+                if (c == "&" && (p == ">" || p == "<" || substr(m, i + 1, 1) == ">")) continue
+                if (c == "\n" && p == "\\") continue
+                if (c != ";" && c != "&" && c != "|" && c != "\n") continue
+                cut(k, m, start, i, line)
+                if ((c == "&" || c == "|") && substr(m, i + 1, 1) ~ /[&|]/) i++
+                start = i + 1
+            }
+            cut(k, m, start, length(m) + 1, line)
+        }
+        function cut(k, m, a, b, line,   t) {
+            t = substr(k, 1, a - 1); gsub(/[^\n]/, "", t)
+            cmd[++nc] = substr(k, a, b - a); cmk[nc] = substr(m, a, b - a); cl[nc] = length(t)
+        }
+        function judge(first, last,   i, j, k, m, d, ok, ind) {
+            k = kept_at[first]; m = mask_at[first]
+            for (i = first + 1; i <= last; i++) {
+                k = k "\n" kept_at[i]
+                m = m (quoted_at[i - 1] ? "Q" : "\n") mask_at[i]
+            }
+            commands(k, m)
+            for (i = 1; i <= nc; i++) {
+                if (cmd[i] !~ /^[ \t\n]*(([{(]|then|do|else)[ \t\n]*)*(echo|printf)[ \t]/ || cmd[i] !~ /ERROR/) continue
+                if (to_stderr(cmk[i])) continue
+                ok = 0; d = 0
+                for (j = i + 1; j <= nc; j++) {
+                    if (cmd[j] ~ /^[ \t\n]*}/) {
+                        if (d > 0) d--
+                        else if (to_stderr(cmk[j])) { ok = 1; break }
+                    }
+                    if (cmd[j] ~ /^[ \t\n]*\{[ \t\n]/) d++
                 }
-                if (!ok) print "STDOUT " file ":" num[i]
+                if (!ok) {
+                    ind = indent(raw[first + cl[i]])
+                    for (j = last + 1; j <= n; j++) {
+                        if (raw[j] ~ /^[ \t]*}/ && indent(raw[j]) < ind) { ok = (raw[j] ~ /^[ \t]*}[ \t]*1?>&2/); break }
+                    }
+                }
+                if (!ok) print "STDOUT " file ":" num[first + cl[i]]
+            }
+        }
+        function judge_file(   i, first) {
+            inq = ""; cq = ""; qbuf = ""; ansi = 0
+            for (i = 1; i <= n; i++) {
+                squash(raw[i], i)
+                kept_at[i] = kept; mask_at[i] = mask
+                quoted_at[i] = (inq != ""); open_at[i] = (inq != "" || cq != "")
+            }
+            for (first = 1; first <= n; first = i + 1) {
+                for (i = first; i < n && (open_at[i] || mask_at[i] ~ /\\$/); i++) ;
+                judge(first, i)
             }
             n = 0
         }
         /^UNREADABLE / { print; next }
-        $1 == "FILE" { judge(); file = $2; next }
+        $1 == "FILE" { judge_file(); file = $2; next }
         $1 == "SH" { r = $0; sub(/^[^\t]*\t[^\t]*\t[^\t]*\t/, "", r); raw[++n] = r; num[n] = $3 }
-        END { judge() }
+        END { judge_file() }
     '
 }
 
 stderr_fixtures="$here/fixtures/stderr-errors"
 stderr_got="$(cd "$stderr_fixtures" && scan_stdout_errors hits.bash allowed.bash 2>&1)"
-stderr_want="$(printf 'STDOUT hits.bash:%s\n' 1 2 3 5 10 13 14 15 16 18 19)"
+stderr_want="$(printf 'STDOUT hits.bash:%s\n' 1 2 3 5 10 13 14 15 16 18 19 23 24 25 26 27 29)"
 if [ "$stderr_got" = "$stderr_want" ]; then
-    pass "the stderr scan reports each planted ERROR echo or printf on stdout, in a bare statement, an unredirected group or function, after an option or &&, across a continued line and before a later group of its own, and stays quiet on >&2, 1>&2, groups and function bodies redirected either way, comments, quoted text and heredoc bodies"
+    pass "the stderr scan reports each planted ERROR echo or printf on stdout, in a bare statement, an unredirected group or function, after an option or &&, across a continued line or a quoted newline, before a later group of its own, after a redirected command on its line, in a one-line group closed without a redirect or around an inner group that alone is redirected, and beside a quoted >&2, and stays quiet on >&2, 1>&2, separators inside quotes, groups and function bodies redirected either way on one line or several, comments, quoted text and heredoc bodies"
 else
     fail "the stderr scan printed [$stderr_got], want [$stderr_want]"
+fi
+stderr_after_open="$(cd "$stderr_fixtures" && scan_stdout_errors open-quote.bash hits.bash allowed.bash 2>&1)"
+if [ "$stderr_after_open" = "$stderr_want" ]; then
+    pass "the stderr scan starts each file outside quotes, after one that ends inside a quote"
+else
+    fail "the stderr scan after a file that ends inside a quote printed [$stderr_after_open], want [$stderr_want]"
 fi
 stderr_bad="$(scan_stdout_errors "$stderr_fixtures/absent.bash" 2>/dev/null)"
 if [[ "$stderr_bad" == UNREADABLE* ]]; then
