@@ -10,22 +10,19 @@ echo "=== OCI Supply Chain Tests ==="
 # =================================================================
 begin_test "OCI-E2E-01: Push module, create Module CRD, deploy pod, verify content"
 
-if ! $CSI_AVAILABLE; then
-    skip_test "OCI-E2E-01" "CSI driver not ready"
-else
-    OCI01_NS="e2e-oci01-${E2E_RUN_ID}"
-    OCI01_MOD="oci01-mod-${E2E_RUN_ID}"
-    OCI01_REF="${REGISTRY}/cfgd-e2e/oci01:v1.0-${E2E_RUN_ID}"
-    OCI01_DIR=$(mktemp -d)
-    create_test_module_dir "$OCI01_DIR" "$OCI01_MOD" "1.0.0"
-    PUSH_OK=true
-    "$CFGD_BIN" module push "$OCI01_DIR" --artifact "$OCI01_REF" --no-color 2>&1 || PUSH_OK=false
-    rm -rf "$OCI01_DIR"
+OCI01_NS="e2e-oci01-${E2E_RUN_ID}"
+OCI01_MOD="oci01-mod-${E2E_RUN_ID}"
+OCI01_REF="${REGISTRY}/cfgd-e2e/oci01:v1.0-${E2E_RUN_ID}"
+OCI01_DIR=$(mktemp -d)
+create_test_module_dir "$OCI01_DIR" "$OCI01_MOD" "1.0.0"
+PUSH_OK=true
+"$CFGD_BIN" module push "$OCI01_DIR" --artifact "$OCI01_REF" --no-color 2>&1 || PUSH_OK=false
+rm -rf "$OCI01_DIR"
 
-    if [ "$PUSH_OK" = "false" ]; then
-        fail_test "OCI-E2E-01" "Failed to push test module to registry"
-    else
-        kubectl apply -f - <<EOF
+if [ "$PUSH_OK" = "false" ]; then
+    fail_test "OCI-E2E-01" "Failed to push test module to registry"
+else
+    kubectl apply -f - <<EOF
 apiVersion: cfgd.io/v1alpha1
 kind: Module
 metadata:
@@ -42,12 +39,12 @@ spec:
       keyless: true
 EOF
 
-        ensure_namespace "$OCI01_NS"
-        ensure_label namespace "$OCI01_NS" cfgd.io/inject-modules=true --overwrite
+    ensure_namespace "$OCI01_NS"
+    ensure_label namespace "$OCI01_NS" cfgd.io/inject-modules=true --overwrite
 
-        sleep 3
+    sleep 3
 
-        kubectl apply -n "$OCI01_NS" -f - <<EOF
+    kubectl apply -n "$OCI01_NS" -f - <<EOF
 apiVersion: v1
 kind: Pod
 metadata:
@@ -62,29 +59,28 @@ spec:
   restartPolicy: Never
 EOF
 
-        echo "  Waiting for pod to be running..."
-        POD_RUNNING=false
-        wait_for_k8s_field pod oci01-pod "$OCI01_NS" \
-            '{.status.phase}' Running 180 > /dev/null && POD_RUNNING=true || true
+    echo "  Waiting for pod to be running..."
+    POD_RUNNING=false
+    wait_for_k8s_field pod oci01-pod "$OCI01_NS" \
+        '{.status.phase}' Running 180 > /dev/null && POD_RUNNING=true || true
 
-        if $POD_RUNNING; then
-            MODULE_FILE=$(kubectl exec oci01-pod -n "$OCI01_NS" -- \
-                cat "/cfgd-modules/${OCI01_MOD}/module.yaml" 2>/dev/null || echo "")
-            HELLO_SH=$(kubectl exec oci01-pod -n "$OCI01_NS" -- \
-                cat "/cfgd-modules/${OCI01_MOD}/bin/hello.sh" 2>/dev/null || echo "")
+    if $POD_RUNNING; then
+        MODULE_FILE=$(kubectl exec oci01-pod -n "$OCI01_NS" -- \
+            cat "/cfgd-modules/${OCI01_MOD}/module.yaml" 2>/dev/null || echo "")
+        HELLO_SH=$(kubectl exec oci01-pod -n "$OCI01_NS" -- \
+            cat "/cfgd-modules/${OCI01_MOD}/bin/hello.sh" 2>/dev/null || echo "")
 
-            echo "  module.yaml present: $([ -n "$MODULE_FILE" ] && echo 'yes' || echo 'no')"
-            echo "  bin/hello.sh present: $([ -n "$HELLO_SH" ] && echo 'yes' || echo 'no')"
+        echo "  module.yaml present: $([ -n "$MODULE_FILE" ] && echo 'yes' || echo 'no')"
+        echo "  bin/hello.sh present: $([ -n "$HELLO_SH" ] && echo 'yes' || echo 'no')"
 
-            if [ -n "$MODULE_FILE" ] && [ -n "$HELLO_SH" ]; then
-                pass_test "OCI-E2E-01"
-            else
-                fail_test "OCI-E2E-01" "Module content not found at mount path"
-            fi
+        if [ -n "$MODULE_FILE" ] && [ -n "$HELLO_SH" ]; then
+            pass_test "OCI-E2E-01"
         else
-            fail_test "OCI-E2E-01" "Pod did not reach Running state (CSI mount may have failed)"
-            kubectl describe pod oci01-pod -n "$OCI01_NS" 2>/dev/null | tail -20
+            fail_test "OCI-E2E-01" "Module content not found at mount path"
         fi
+    else
+        fail_test "OCI-E2E-01" "Pod did not reach Running state (CSI mount may have failed)"
+        kubectl describe pod oci01-pod -n "$OCI01_NS" 2>/dev/null | tail -20
     fi
 fi
 
@@ -98,9 +94,7 @@ if command -v cosign > /dev/null 2>&1; then
     COSIGN_AVAILABLE=true
 fi
 
-if ! $CSI_AVAILABLE; then
-    skip_test "OCI-E2E-02" "CSI driver not ready"
-elif ! $COSIGN_AVAILABLE; then
+if ! $COSIGN_AVAILABLE; then
     skip_test "OCI-E2E-02" "cosign not available"
 else
     OCI02_NS="e2e-oci02-${E2E_RUN_ID}"
@@ -219,9 +213,7 @@ fi
 # =================================================================
 begin_test "OCI-E2E-03: Module with disallow unsigned policy rejects unsigned module"
 
-if ! $CSI_AVAILABLE; then
-    skip_test "OCI-E2E-03" "CSI driver not ready"
-elif ! $COSIGN_AVAILABLE; then
+if ! $COSIGN_AVAILABLE; then
     skip_test "OCI-E2E-03" "cosign not available (needed for signature policy enforcement)"
 else
     OCI03_MOD="oci03-unsigned-${E2E_RUN_ID}"
@@ -294,30 +286,27 @@ fi
 # =================================================================
 begin_test "OCI-E2E-04: Push --platform linux/amd64,linux/arm64, verify Module status"
 
-if ! $CSI_AVAILABLE; then
-    skip_test "OCI-E2E-04" "CSI driver not ready"
+OCI04_MOD="oci04-multi-${E2E_RUN_ID}"
+OCI04_REF="${REGISTRY}/cfgd-e2e/oci04-multi:v1.0-${E2E_RUN_ID}"
+
+# Push two platform-specific artifacts, then verify the Module CRD status
+OCI04_DIR_AMD=$(mktemp -d)
+OCI04_DIR_ARM=$(mktemp -d)
+create_test_module_dir "$OCI04_DIR_AMD" "$OCI04_MOD" "1.0.0"
+create_test_module_dir "$OCI04_DIR_ARM" "$OCI04_MOD" "1.0.0"
+
+PUSH_AMD_OK=true
+PUSH_ARM_OK=true
+"$CFGD_BIN" module push "$OCI04_DIR_AMD" \
+    --artifact "$OCI04_REF" --platform linux/amd64 --no-color 2>&1 || PUSH_AMD_OK=false
+"$CFGD_BIN" module push "$OCI04_DIR_ARM" \
+    --artifact "$OCI04_REF" --platform linux/arm64 --no-color 2>&1 || PUSH_ARM_OK=false
+rm -rf "$OCI04_DIR_AMD" "$OCI04_DIR_ARM"
+
+if [ "$PUSH_AMD_OK" = "false" ] || [ "$PUSH_ARM_OK" = "false" ]; then
+    fail_test "OCI-E2E-04" "Failed to push multi-platform module"
 else
-    OCI04_MOD="oci04-multi-${E2E_RUN_ID}"
-    OCI04_REF="${REGISTRY}/cfgd-e2e/oci04-multi:v1.0-${E2E_RUN_ID}"
-
-    # Push two platform-specific artifacts, then verify the Module CRD status
-    OCI04_DIR_AMD=$(mktemp -d)
-    OCI04_DIR_ARM=$(mktemp -d)
-    create_test_module_dir "$OCI04_DIR_AMD" "$OCI04_MOD" "1.0.0"
-    create_test_module_dir "$OCI04_DIR_ARM" "$OCI04_MOD" "1.0.0"
-
-    PUSH_AMD_OK=true
-    PUSH_ARM_OK=true
-    "$CFGD_BIN" module push "$OCI04_DIR_AMD" \
-        --artifact "$OCI04_REF" --platform linux/amd64 --no-color 2>&1 || PUSH_AMD_OK=false
-    "$CFGD_BIN" module push "$OCI04_DIR_ARM" \
-        --artifact "$OCI04_REF" --platform linux/arm64 --no-color 2>&1 || PUSH_ARM_OK=false
-    rm -rf "$OCI04_DIR_AMD" "$OCI04_DIR_ARM"
-
-    if [ "$PUSH_AMD_OK" = "false" ] || [ "$PUSH_ARM_OK" = "false" ]; then
-        fail_test "OCI-E2E-04" "Failed to push multi-platform module"
-    else
-        kubectl apply -f - <<EOF
+    kubectl apply -f - <<EOF
 apiVersion: cfgd.io/v1alpha1
 kind: Module
 metadata:
@@ -334,28 +323,27 @@ spec:
       keyless: true
 EOF
 
-        # Wait for the operator to reconcile and populate status
-        echo "  Waiting for Module status..."
-        RESOLVED=$(wait_for_k8s_field module "$OCI04_MOD" "" \
-            '{.status.resolvedArtifact}' "" 60) || true
+    # Wait for the operator to reconcile and populate status
+    echo "  Waiting for Module status..."
+    RESOLVED=$(wait_for_k8s_field module "$OCI04_MOD" "" \
+        '{.status.resolvedArtifact}' "" 60) || true
 
-        PLATFORMS=$(kubectl get module "$OCI04_MOD" \
-            -o jsonpath='{.status.availablePlatforms}' 2>/dev/null || echo "")
+    PLATFORMS=$(kubectl get module "$OCI04_MOD" \
+        -o jsonpath='{.status.availablePlatforms}' 2>/dev/null || echo "")
 
-        echo "  Resolved artifact: ${RESOLVED:-none}"
-        echo "  Available platforms: ${PLATFORMS:-none}"
+    echo "  Resolved artifact: ${RESOLVED:-none}"
+    echo "  Available platforms: ${PLATFORMS:-none}"
 
-        # Verify that the Module CRD was accepted and has some status
-        if [ -n "$RESOLVED" ]; then
+    # Verify that the Module CRD was accepted and has some status
+    if [ -n "$RESOLVED" ]; then
+        pass_test "OCI-E2E-04"
+    else
+        # Module was accepted — that alone validates multi-platform push
+        MOD_EXISTS=$(kubectl get module "$OCI04_MOD" -o name 2>/dev/null || echo "")
+        if [ -n "$MOD_EXISTS" ]; then
             pass_test "OCI-E2E-04"
         else
-            # Module was accepted — that alone validates multi-platform push
-            MOD_EXISTS=$(kubectl get module "$OCI04_MOD" -o name 2>/dev/null || echo "")
-            if [ -n "$MOD_EXISTS" ]; then
-                pass_test "OCI-E2E-04"
-            else
-                fail_test "OCI-E2E-04" "Module CRD not created for multi-platform artifact"
-            fi
+            fail_test "OCI-E2E-04" "Module CRD not created for multi-platform artifact"
         fi
     fi
 fi
@@ -365,37 +353,34 @@ fi
 # =================================================================
 begin_test "OCI-E2E-05: Module references @sha256:..., verify mount"
 
-if ! $CSI_AVAILABLE; then
-    skip_test "OCI-E2E-05" "CSI driver not ready"
+OCI05_NS="e2e-oci05-${E2E_RUN_ID}"
+OCI05_MOD="oci05-digest-${E2E_RUN_ID}"
+OCI05_TAG_REF="${REGISTRY}/cfgd-e2e/oci05-digest:v1.0-${E2E_RUN_ID}"
+OCI05_DIR=$(mktemp -d)
+create_test_module_dir "$OCI05_DIR" "$OCI05_MOD" "1.0.0"
+
+# Push and capture the digest from output
+PUSH_OUTPUT=""
+PUSH_OK=true
+PUSH_OUTPUT=$("$CFGD_BIN" module push "$OCI05_DIR" --artifact "$OCI05_TAG_REF" --no-color 2>&1) || PUSH_OK=false
+rm -rf "$OCI05_DIR"
+
+echo "  Push output: $(echo "$PUSH_OUTPUT" | head -5)"
+
+# Extract digest (sha256:...) from push output
+DIGEST=$(echo "$PUSH_OUTPUT" | grep -oE 'sha256:[a-f0-9]{64}' | head -1 || echo "")
+
+if [ "$PUSH_OK" = "false" ]; then
+    fail_test "OCI-E2E-05" "Failed to push module to registry"
+elif [ -z "$DIGEST" ]; then
+    fail_test "OCI-E2E-05" "Could not extract digest from push output"
 else
-    OCI05_NS="e2e-oci05-${E2E_RUN_ID}"
-    OCI05_MOD="oci05-digest-${E2E_RUN_ID}"
-    OCI05_TAG_REF="${REGISTRY}/cfgd-e2e/oci05-digest:v1.0-${E2E_RUN_ID}"
-    OCI05_DIR=$(mktemp -d)
-    create_test_module_dir "$OCI05_DIR" "$OCI05_MOD" "1.0.0"
+    # Build the digest-pinned reference (repo@sha256:...)
+    OCI05_REPO=$(echo "$OCI05_TAG_REF" | cut -d: -f1)
+    OCI05_DIGEST_REF="${OCI05_REPO}@${DIGEST}"
+    echo "  Digest-pinned ref: $OCI05_DIGEST_REF"
 
-    # Push and capture the digest from output
-    PUSH_OUTPUT=""
-    PUSH_OK=true
-    PUSH_OUTPUT=$("$CFGD_BIN" module push "$OCI05_DIR" --artifact "$OCI05_TAG_REF" --no-color 2>&1) || PUSH_OK=false
-    rm -rf "$OCI05_DIR"
-
-    echo "  Push output: $(echo "$PUSH_OUTPUT" | head -5)"
-
-    # Extract digest (sha256:...) from push output
-    DIGEST=$(echo "$PUSH_OUTPUT" | grep -oE 'sha256:[a-f0-9]{64}' | head -1 || echo "")
-
-    if [ "$PUSH_OK" = "false" ]; then
-        fail_test "OCI-E2E-05" "Failed to push module to registry"
-    elif [ -z "$DIGEST" ]; then
-        fail_test "OCI-E2E-05" "Could not extract digest from push output"
-    else
-        # Build the digest-pinned reference (repo@sha256:...)
-        OCI05_REPO=$(echo "$OCI05_TAG_REF" | cut -d: -f1)
-        OCI05_DIGEST_REF="${OCI05_REPO}@${DIGEST}"
-        echo "  Digest-pinned ref: $OCI05_DIGEST_REF"
-
-        kubectl apply -f - <<EOF
+    kubectl apply -f - <<EOF
 apiVersion: cfgd.io/v1alpha1
 kind: Module
 metadata:
@@ -412,12 +397,12 @@ spec:
       keyless: true
 EOF
 
-        ensure_namespace "$OCI05_NS"
-        ensure_label namespace "$OCI05_NS" cfgd.io/inject-modules=true --overwrite
+    ensure_namespace "$OCI05_NS"
+    ensure_label namespace "$OCI05_NS" cfgd.io/inject-modules=true --overwrite
 
-        sleep 3
+    sleep 3
 
-        kubectl apply -n "$OCI05_NS" -f - <<EOF
+    kubectl apply -n "$OCI05_NS" -f - <<EOF
 apiVersion: v1
 kind: Pod
 metadata:
@@ -432,26 +417,25 @@ spec:
   restartPolicy: Never
 EOF
 
-        echo "  Waiting for pod to be running..."
-        POD_RUNNING=false
-        wait_for_k8s_field pod oci05-pod "$OCI05_NS" \
-            '{.status.phase}' Running 180 > /dev/null && POD_RUNNING=true || true
+    echo "  Waiting for pod to be running..."
+    POD_RUNNING=false
+    wait_for_k8s_field pod oci05-pod "$OCI05_NS" \
+        '{.status.phase}' Running 180 > /dev/null && POD_RUNNING=true || true
 
-        if $POD_RUNNING; then
-            MODULE_FILE=$(kubectl exec oci05-pod -n "$OCI05_NS" -- \
-                cat "/cfgd-modules/${OCI05_MOD}/module.yaml" 2>/dev/null || echo "")
+    if $POD_RUNNING; then
+        MODULE_FILE=$(kubectl exec oci05-pod -n "$OCI05_NS" -- \
+            cat "/cfgd-modules/${OCI05_MOD}/module.yaml" 2>/dev/null || echo "")
 
-            echo "  module.yaml present: $([ -n "$MODULE_FILE" ] && echo 'yes' || echo 'no')"
+        echo "  module.yaml present: $([ -n "$MODULE_FILE" ] && echo 'yes' || echo 'no')"
 
-            if [ -n "$MODULE_FILE" ]; then
-                pass_test "OCI-E2E-05"
-            else
-                fail_test "OCI-E2E-05" "Digest-pinned module content not found at mount path"
-            fi
+        if [ -n "$MODULE_FILE" ]; then
+            pass_test "OCI-E2E-05"
         else
-            fail_test "OCI-E2E-05" "Pod did not reach Running state (digest-pinned CSI mount failed)"
-            kubectl describe pod oci05-pod -n "$OCI05_NS" 2>/dev/null | tail -20
+            fail_test "OCI-E2E-05" "Digest-pinned module content not found at mount path"
         fi
+    else
+        fail_test "OCI-E2E-05" "Pod did not reach Running state (digest-pinned CSI mount failed)"
+        kubectl describe pod oci05-pod -n "$OCI05_NS" 2>/dev/null | tail -20
     fi
 fi
 
@@ -460,22 +444,19 @@ fi
 # =================================================================
 begin_test "OCI-E2E-06: Push, Module CRD, CSI uses imagePullSecrets"
 
-if ! $CSI_AVAILABLE; then
-    skip_test "OCI-E2E-06" "CSI driver not ready"
-else
-    OCI06_NS="e2e-oci06-${E2E_RUN_ID}"
-    OCI06_MOD="oci06-auth-${E2E_RUN_ID}"
-    OCI06_REF="${REGISTRY}/cfgd-e2e/oci06-auth:v1.0-${E2E_RUN_ID}"
-    OCI06_DIR=$(mktemp -d)
-    create_test_module_dir "$OCI06_DIR" "$OCI06_MOD" "1.0.0"
-    PUSH_OK=true
-    "$CFGD_BIN" module push "$OCI06_DIR" --artifact "$OCI06_REF" --no-color 2>&1 || PUSH_OK=false
-    rm -rf "$OCI06_DIR"
+OCI06_NS="e2e-oci06-${E2E_RUN_ID}"
+OCI06_MOD="oci06-auth-${E2E_RUN_ID}"
+OCI06_REF="${REGISTRY}/cfgd-e2e/oci06-auth:v1.0-${E2E_RUN_ID}"
+OCI06_DIR=$(mktemp -d)
+create_test_module_dir "$OCI06_DIR" "$OCI06_MOD" "1.0.0"
+PUSH_OK=true
+"$CFGD_BIN" module push "$OCI06_DIR" --artifact "$OCI06_REF" --no-color 2>&1 || PUSH_OK=false
+rm -rf "$OCI06_DIR"
 
-    if [ "$PUSH_OK" = "false" ]; then
-        fail_test "OCI-E2E-06" "Failed to push module to registry"
-    else
-        kubectl apply -f - <<EOF
+if [ "$PUSH_OK" = "false" ]; then
+    fail_test "OCI-E2E-06" "Failed to push module to registry"
+else
+    kubectl apply -f - <<EOF
 apiVersion: cfgd.io/v1alpha1
 kind: Module
 metadata:
@@ -492,29 +473,29 @@ spec:
       keyless: true
 EOF
 
-        ensure_namespace "$OCI06_NS"
-        ensure_label namespace "$OCI06_NS" cfgd.io/inject-modules=true --overwrite
+    ensure_namespace "$OCI06_NS"
+    ensure_label namespace "$OCI06_NS" cfgd.io/inject-modules=true --overwrite
 
-        # Wait for registry-credentials to be replicated by Reflector
-        echo "  Waiting for registry-credentials in namespace..."
-        CRED_DEADLINE=$((SECONDS + 30))
-        CRED_FOUND=false
-        while [ $SECONDS -lt $CRED_DEADLINE ]; do
-            if kubectl get secret registry-credentials -n "$OCI06_NS" > /dev/null 2>&1; then
-                CRED_FOUND=true
-                break
-            fi
-            sleep 1
-        done
-
-        if ! $CRED_FOUND; then
-            echo "  WARN: registry-credentials not replicated, creating pod anyway"
+    # Wait for registry-credentials to be replicated by Reflector
+    echo "  Waiting for registry-credentials in namespace..."
+    CRED_DEADLINE=$((SECONDS + 30))
+    CRED_FOUND=false
+    while [ $SECONDS -lt $CRED_DEADLINE ]; do
+        if kubectl get secret registry-credentials -n "$OCI06_NS" > /dev/null 2>&1; then
+            CRED_FOUND=true
+            break
         fi
+        sleep 1
+    done
 
-        sleep 3
+    if ! $CRED_FOUND; then
+        echo "  WARN: registry-credentials not replicated, creating pod anyway"
+    fi
 
-        # Create pod with imagePullSecrets referencing the registry-credentials secret
-        kubectl apply -n "$OCI06_NS" -f - <<EOF
+    sleep 3
+
+    # Create pod with imagePullSecrets referencing the registry-credentials secret
+    kubectl apply -n "$OCI06_NS" -f - <<EOF
 apiVersion: v1
 kind: Pod
 metadata:
@@ -531,34 +512,33 @@ spec:
   restartPolicy: Never
 EOF
 
-        echo "  Waiting for pod to be running..."
-        POD_RUNNING=false
-        wait_for_k8s_field pod oci06-pod "$OCI06_NS" \
-            '{.status.phase}' Running 180 > /dev/null && POD_RUNNING=true || true
+    echo "  Waiting for pod to be running..."
+    POD_RUNNING=false
+    wait_for_k8s_field pod oci06-pod "$OCI06_NS" \
+        '{.status.phase}' Running 180 > /dev/null && POD_RUNNING=true || true
 
-        if $POD_RUNNING; then
-            MODULE_FILE=$(kubectl exec oci06-pod -n "$OCI06_NS" -- \
-                cat "/cfgd-modules/${OCI06_MOD}/module.yaml" 2>/dev/null || echo "")
+    if $POD_RUNNING; then
+        MODULE_FILE=$(kubectl exec oci06-pod -n "$OCI06_NS" -- \
+            cat "/cfgd-modules/${OCI06_MOD}/module.yaml" 2>/dev/null || echo "")
 
-            # Verify the pod has imagePullSecrets set
-            PULL_SECRETS=$(kubectl get pod oci06-pod -n "$OCI06_NS" \
-                -o jsonpath='{.spec.imagePullSecrets[*].name}' 2>/dev/null || echo "")
+        # Verify the pod has imagePullSecrets set
+        PULL_SECRETS=$(kubectl get pod oci06-pod -n "$OCI06_NS" \
+            -o jsonpath='{.spec.imagePullSecrets[*].name}' 2>/dev/null || echo "")
 
-            echo "  module.yaml present: $([ -n "$MODULE_FILE" ] && echo 'yes' || echo 'no')"
-            echo "  imagePullSecrets: ${PULL_SECRETS:-none}"
+        echo "  module.yaml present: $([ -n "$MODULE_FILE" ] && echo 'yes' || echo 'no')"
+        echo "  imagePullSecrets: ${PULL_SECRETS:-none}"
 
-            if [ -n "$MODULE_FILE" ] && echo "$PULL_SECRETS" | grep -qF "registry-credentials"; then
-                pass_test "OCI-E2E-06"
-            elif [ -n "$MODULE_FILE" ]; then
-                # Content mounted but secrets not in expected location — still a pass
-                # since CSI driver used the cluster-level credentials
-                pass_test "OCI-E2E-06"
-            else
-                fail_test "OCI-E2E-06" "Module content not found at mount path with registry auth"
-            fi
+        if [ -n "$MODULE_FILE" ] && echo "$PULL_SECRETS" | grep -qF "registry-credentials"; then
+            pass_test "OCI-E2E-06"
+        elif [ -n "$MODULE_FILE" ]; then
+            # Content mounted but secrets not in expected location — still a pass
+            # since CSI driver used the cluster-level credentials
+            pass_test "OCI-E2E-06"
         else
-            fail_test "OCI-E2E-06" "Pod did not reach Running state (registry auth may have failed)"
-            kubectl describe pod oci06-pod -n "$OCI06_NS" 2>/dev/null | tail -20
+            fail_test "OCI-E2E-06" "Module content not found at mount path with registry auth"
         fi
+    else
+        fail_test "OCI-E2E-06" "Pod did not reach Running state (registry auth may have failed)"
+        kubectl describe pod oci06-pod -n "$OCI06_NS" 2>/dev/null | tail -20
     fi
 fi

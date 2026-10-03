@@ -20,11 +20,12 @@
 #     manifest under tests/e2e holds one
 #   - require_release_webhooks_scoped passes on release webhooks scoped away
 #     from run-labelled objects and stops on an unscoped entry, a configuration
-#     ArgoCD tracks, and one that is missing or unreadable; the operator and
-#     gateway suites call it
+#     ArgoCD tracks, and one that is missing or unreadable; the operator,
+#     full-stack and gateway suites call it
 #   - every ERROR line an e2e script prints goes to stderr
-#   - no operator suite script names the release's operator, namespace,
-#     webhooks or CSI driver by hand
+#   - no operator or full-stack suite script names the release's operator,
+#     namespace, webhooks or CSI driver by hand, outside the full-stack
+#     suite's kept gateway lines
 # kubectl is a stub on PATH, so nothing reaches a cluster; the CRD check's stub
 # hands YAML reading to the real kubectl, which reads it offline.
 #
@@ -2506,24 +2507,11 @@ expect_wh "require_release_webhooks_scoped stops on a configuration whose webhoo
 rc=1" validating-scoped.json garbled.json
 
 # The suites that apply run-labelled objects call the check before any case.
-# The exempt suite still drives the release operator in cfgd-system; once its
-# setup calls the check, or it leaves run_label_suites, the entry fails until it
-# is removed.
-webhook_scope_exempt=full-stack
-if [[ " ${run_label_suites[*]} " != *" $webhook_scope_exempt "* ]]; then
-    fail "webhook_scope_exempt names $webhook_scope_exempt, which run_label_suites does not list; remove the entry"
-fi
 for suite in "${run_label_suites[@]}"; do
     rc=0
     grep -qE '^require_release_webhooks_scoped( |$)' "$e2e_root/$suite/scripts/"setup-*-env.sh 2>/dev/null || rc=$?
     if [ "$rc" -gt 1 ]; then
         fail "could not read the $suite suite's setup-*-env.sh to see whether it calls require_release_webhooks_scoped"
-    elif [ "$suite" = "$webhook_scope_exempt" ]; then
-        if [ "$rc" -eq 0 ]; then
-            fail "the $suite suite's setup calls require_release_webhooks_scoped; remove it from webhook_scope_exempt"
-        else
-            pass "the $suite suite is exempt from require_release_webhooks_scoped: it drives the release operator"
-        fi
     elif [ "$rc" -eq 0 ]; then
         pass "the $suite suite's setup calls require_release_webhooks_scoped"
     else
@@ -2684,10 +2672,11 @@ else
     fail "an ERROR on stdout is lost where stdout is captured; add >&2 to: [${stdout_errors:-the scan failed}]"
 fi
 
-# A release target spelled by hand in the operator suite reaches the live
-# release. helpers.sh names this run's install. The scan reads the suite's
-# tracked *.sh files only: the YAML under operator/manifests/ is the release
-# operator's own definition, which setup applies where ArgoCD does not run it.
+# A release target spelled by hand in the operator or full-stack suite reaches
+# the live release. helpers.sh names this run's install. The scan reads each
+# suite's tracked *.sh files only: the YAML under operator/manifests/ is the
+# release operator's own definition, which setup applies where ArgoCD does not
+# run it.
 # The resource words are kubectl's spellings of a Deployment, Endpoints and a
 # Service, singular, plural, short and group-qualified.
 q="[\"']?"
@@ -2715,15 +2704,68 @@ if scan_release_targets "$here/fixtures/release-targets/absent.bash" >/dev/null 
 else
     pass "the release-target scan fails over a file it cannot read"
 fi
-mapfile -t operator_scripts < <(git -C "$repo_root" ls-files 'tests/e2e/operator/*.sh')
-if [ "${#operator_scripts[@]}" -eq 0 ]; then
-    fail "git ls-files 'tests/e2e/operator/*.sh' matched no script, so the release-target scan read nothing"
-elif ! release_hits="$(cd "$repo_root" && scan_release_targets "${operator_scripts[@]}")"; then
-    fail "the release-target scan could not read the operator suite"
-elif [ -z "$release_hits" ]; then
-    pass "no operator suite script names a release target by hand (${#operator_scripts[@]} scripts)"
+# release_target_verdict KEPT FILE...: `HIT file:line:text` for each line naming
+# a release target whose file and text, leading blanks dropped, are not a
+# tab-separated entry of KEPT, then `STALE entry` for each entry no line
+# matches. KEPT reaches awk through the environment, since -v would read a
+# trailing backslash as an escape. Fails only when a file cannot be read.
+release_target_verdict() {
+    local kept="$1" hits
+    shift
+    hits="$(scan_release_targets "$@")" || return 1
+    KEPT="$kept" awk 'BEGIN { n = split(ENVIRON["KEPT"], k, "\n"); for (i = 1; i <= n; i++) if (k[i] != "") ok[k[i]] = 1 }
+        $0 != "" {
+            file = $0; sub(/:.*/, "", file)
+            text = $0; sub(/^[^:]*:[0-9]+:[ \t]*/, "", text)
+            if ((file "\t" text) in ok) seen[file "\t" text] = 1; else print "HIT " $0
+        }
+        END { for (i = 1; i <= n; i++) if (k[i] != "" && !(k[i] in seen)) print "STALE " k[i] }' <<<"$hits"
+}
+kept_got="$(cd "$here/fixtures/release-targets" && release_target_verdict "$(cat kept.tsv)" kept.bash)" ||
+    kept_got="(the scan failed)"
+kept_want="HIT kept.bash:4:kubectl get deployment cfgd-operator -n cfgd-system
+HIT kept.bash:5:echo \"the release namespace is cfgd-system.\"
+STALE kept.bash	kubectl get pods -n cfgd-system"
+if [ "$kept_got" = "$kept_want" ]; then
+    pass "the release-target verdict passes a line its kept list names, indented or not and with a trailing backslash, and reports every other line and each kept entry no line matches"
 else
-    fail "the operator suite drives the PR install; use \$E2E_INSTALL_NS, \$E2E_OPERATOR_PODS, \$E2E_OPERATOR_DEPLOY, \$E2E_WEBHOOK_SVC, \$E2E_VALIDATING_WEBHOOK, \$E2E_MUTATING_WEBHOOK or \$CSI_DRIVER_NAME from helpers.sh. Hand-spelled: [$release_hits]"
+    fail "the release-target verdict printed [$kept_got], want [$kept_want]"
+fi
+if release_target_verdict "" "$here/fixtures/release-targets/absent.bash" >/dev/null 2>&1; then
+    fail "the release-target verdict passed over a file it could not read"
+else
+    pass "the release-target verdict fails over a file it cannot read"
+fi
+
+# release-targets-kept.tsv lists the lines that name a release target on
+# purpose, each with its reason.
+if ! release_target_kept="$(grep -v -e '^#' -e '^$' "$here/release-targets-kept.tsv")"; then
+    fail "could not read an entry from $here/release-targets-kept.tsv"
+fi
+
+# Each suite that drives the PR install has a floor of scripts, so a pathspec
+# that stops matching fails here instead of scanning nothing.
+release_target_suites=(operator full-stack)
+release_target_floors=(12 10)
+for i in "${!release_target_suites[@]}"; do
+    suite="${release_target_suites[$i]}"
+    mapfile -t suite_scripts < <(git -C "$repo_root" ls-files "tests/e2e/$suite/*.sh")
+    if [ "${#suite_scripts[@]}" -lt "${release_target_floors[$i]}" ]; then
+        fail "git ls-files 'tests/e2e/$suite/*.sh' matched ${#suite_scripts[@]} scripts, fewer than the floor of ${release_target_floors[$i]}, so the release-target scan missed part of the $suite suite"
+        continue
+    fi
+    suite_kept="$(grep "^tests/e2e/$suite/" <<<"$release_target_kept" || true)" # rc-ok: a suite with no kept entry is valid
+    if ! release_verdict="$(cd "$repo_root" && release_target_verdict "$suite_kept" "${suite_scripts[@]}")"; then
+        fail "the release-target scan could not read the $suite suite"
+    elif [ -z "$release_verdict" ]; then
+        pass "no $suite suite script names a release target by hand outside its kept list (${#suite_scripts[@]} scripts)"
+    else
+        fail "the $suite suite drives the PR install; use \$E2E_INSTALL_NS, \$E2E_OPERATOR_PODS, \$E2E_OPERATOR_DEPLOY, \$E2E_WEBHOOK_SVC, \$E2E_CSI_DS, \$E2E_CSI_PODS, \$E2E_VALIDATING_WEBHOOK, \$E2E_MUTATING_WEBHOOK or \$CSI_DRIVER_NAME from helpers.sh. A line that names the release on purpose goes in common/release-targets-kept.tsv with its reason; a kept entry that matches no line is removed or updated. [$release_verdict]"
+    fi
+done
+unscanned_kept="$(grep -vE "^tests/e2e/($(IFS='|'; echo "${release_target_suites[*]}"))/" <<<"$release_target_kept" || true)" # rc-ok: no entry outside the scanned suites is the passing outcome
+if [ -n "$unscanned_kept" ]; then
+    fail "release-targets-kept.tsv lists lines of a file the release-target scan does not read, so they can never go stale; remove them: [$unscanned_kept]"
 fi
 
 if [ "$failures" -gt 0 ]; then

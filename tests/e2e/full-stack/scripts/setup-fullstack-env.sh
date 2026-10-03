@@ -11,27 +11,19 @@ NODE_FIXTURES="$SCRIPT_DIR/../../node/fixtures"
 
 echo "=== cfgd Full-Stack E2E Tests ==="
 
+require_release_webhooks_scoped || exit 1
+
 # --- Verify infrastructure ---
 echo "Verifying persistent infrastructure..."
-kubectl wait --for=condition=available deployment/cfgd-operator -n cfgd-system --timeout=120s
+kubectl wait --for=condition=available deployment/"$E2E_OPERATOR_DEPLOY" -n "$E2E_INSTALL_NS" --timeout=120s
 kubectl wait --for=condition=available deployment/cfgd-server -n cfgd-system --timeout=120s
 # Deployment Available can flip True before Service Endpoints repopulate during
 # a rolling update, which makes admission webhook calls fail transiently with
-# "no endpoints available for service cfgd-operator". Block on real endpoints.
-wait_for_service_endpoints cfgd-system cfgd-operator 120
+# "no endpoints available for service". Block on real endpoints.
+wait_for_service_endpoints "$E2E_INSTALL_NS" "$E2E_WEBHOOK_SVC" 120
 wait_for_service_endpoints cfgd-system cfgd-server 120
+wait_for_daemonset "$E2E_INSTALL_NS" "$E2E_CSI_DS" 120 || { echo "ERROR: PR CSI driver not ready" >&2; exit 1; }
 echo "All persistent components running"
-
-# Check CSI driver
-CSI_READY=$(kubectl get ds -n cfgd-system -l app.kubernetes.io/component=csi-driver \
-    -o jsonpath='{.items[0].status.numberReady}' 2>/dev/null || echo "0")
-# shellcheck disable=SC2034  # read by the test files run-all.sh sources after this one
-if [ "$CSI_READY" = "0" ] || [ -z "$CSI_READY" ]; then
-    echo "WARN: CSI driver not ready, CSI tests will be skipped"
-    CSI_AVAILABLE=false
-else
-    CSI_AVAILABLE=true
-fi
 
 # Set up ephemeral namespace and test pod
 create_e2e_namespace

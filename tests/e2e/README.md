@@ -81,8 +81,12 @@ needs no cluster.
 The operator suite runs against the PR install: its pods, Deployment, leader lease
 (`cfgd-operator-leader` in `$E2E_INSTALL_NS`), webhook Service and CSI driver name all
 come from the names above, and OP-PR-01 fails unless `$E2E_OPERATOR_DEPLOY` runs
-`e2e_image cfgd-operator`. `test-pr-install.sh` fails on a tracked `*.sh` under
-`operator/` that names a release target by hand:
+`e2e_image cfgd-operator`. The full-stack suite runs against the PR install too: its
+setup waits for `$E2E_OPERATOR_DEPLOY`, the endpoints of `$E2E_WEBHOOK_SVC` and
+`$E2E_CSI_DS`, and stops when the CSI driver is not ready, so no FS-CSI case skips.
+The FS-CSI cases find the driver pods by `$E2E_CSI_PODS` in `$E2E_INSTALL_NS` and the
+injected volume by `$CSI_DRIVER_NAME`. `test-pr-install.sh` fails on a tracked `*.sh`
+under `operator/` or `full-stack/` that names a release target by hand:
 
 - `cfgd-system` or `$CFGD_NAMESPACE` / `${CFGD_NAMESPACE}`
 - `app=cfgd-operator` or `app.kubernetes.io/name=cfgd-operator`
@@ -91,7 +95,13 @@ come from the names above, and OP-PR-01 fails unless `$E2E_OPERATOR_DEPLOY` runs
   `services`, joined by `/` or spaces
 - `cfgd-validating-webhooks`, `cfgd-mutating-webhooks` or `csi.cfgd.io`
 
-A longer name that starts the same (`cfgd-systemd`, `cfgd-operator-leader`) passes. The
+A longer name that starts the same (`cfgd-systemd`, `cfgd-operator-leader`) passes.
+The full-stack suite names `cfgd-system` on purpose in two places, listed by file and
+line text in `common/release-targets-kept.tsv`: the device gateway `cfgd-server`,
+which the PR install does not replace, and the MachineConfigs, ConfigPolicy and
+DriftAlert of the fleet and drift cases, which live where the gateway works and reach
+the PR operator through the run label. A kept entry that matches no line fails, and
+each suite has a floor of scripts the scan must read. The
 YAML under `operator/manifests/` is the release operator's own definition, which setup
 applies where ArgoCD does not run it, so the scan does not read it. `helpers.sh` names
 the release webhook configurations once, as `$E2E_RELEASE_VALIDATING_WEBHOOK` and
@@ -99,16 +109,13 @@ the release webhook configurations once, as `$E2E_RELEASE_VALIDATING_WEBHOOK` an
 
 Setup scopes the release's webhooks away from run-labelled objects and namespaces
 (`cfgd.io/e2e-run DoesNotExist`), and a setup run from a branch without that scoping
-re-applies them unscoped. The operator and gateway suites call
+re-applies them unscoped. The operator, full-stack and gateway suites call
 `require_release_webhooks_scoped` before their first case. It stops the suite when an
 entry of `cfgd-validating-webhooks` lacks the expression in its `objectSelector`, or one
 of `cfgd-mutating-webhooks` in its `namespaceSelector`; when either configuration is
 missing or cannot be read; and when ArgoCD tracks either, where setup stops too.
 `test-pr-install.sh` drives it against the fixtures in `common/fixtures/release-webhooks/`
-and fails when a suite that applies operator objects does not call it from its setup,
-the full-stack suite aside while it drives the release operator. The exemption fails
-once that suite calls the check, or once it is no longer one of the suites the run-label
-scan holds to a floor.
+and fails when a suite that applies operator objects does not call it from its setup.
 
 Every `ERROR` line an e2e script prints goes to stderr, so a caller that captures or
 discards stdout still shows it. `test-pr-install.sh` reads every tracked `tests/e2e/*.sh`
@@ -253,13 +260,10 @@ fails when a script matches a counter sample by hand.
 
 A check for behaviour that only a newer build than the pinned release has reads
 the running component's capability first and calls `skip_test` naming the image
-(`running_image` in `common/helpers.sh`) when the release lacks it. FS-CSI-04
-skips only when the driver served no cache-hit sample for its module after the
-mount, runs an image other than this run's, and its DaemonSet carries ArgoCD's
-tracking-id annotation (`argocd_managed` in `common/helpers.sh`); without that
-annotation the mismatch fails, naming the running and wanted images, and when the
-DaemonSet cannot be read the case fails with the ERROR `argocd_owner` prints, which
-names the object, its namespace and the rerun to do. XP-01 reads the same annotation on
+(`running_image` in `common/helpers.sh`) when the release lacks it. The FS-CSI
+cases run this run's CSI driver, so FS-CSI-04 fails when the driver served no
+cache-hit sample for its module after the mount. XP-01 reads ArgoCD's tracking-id
+annotation (`argocd_managed` in `common/helpers.sh`) on
 `deployment/crossplane` in `crossplane-system`: where ArgoCD tracks it the suite
 installs nothing, where it does not the suite runs `helm upgrade --install`, and where
 it cannot be read the suite stops before calling Helm. Setup stops the same way when

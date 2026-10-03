@@ -51,9 +51,8 @@ helm_test_cleanup() {
 # =================================================================
 begin_test "FS-HELM-01: Fresh Helm install creates operator deployment"
 
-# CSI driver is cluster-scoped (CSIDriver resource) and already installed by setup-cluster.sh.
-# A second Helm install with csiDriver.enabled=true in a different namespace will fail because
-# the CSIDriver "csi.cfgd.io" is already owned by the cfgd-csi release. Test operator only.
+# The FS-CSI cases drive the PR install's CSI driver, so these installs leave
+# csiDriver off and test the operator only.
 helm_test_ns "01"
 INSTALL_OUTPUT=$(helm install cfgd-test "$CHART_DIR" --skip-crds \
     -n "$HELM_NS" \

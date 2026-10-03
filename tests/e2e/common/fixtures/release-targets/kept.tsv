@@ -1,0 +1,3 @@
+kept.bash	kubectl get deployment cfgd-server -n cfgd-system
+kept.bash	kubectl get machineconfig mc-1 -n cfgd-system \
+kept.bash	kubectl get pods -n cfgd-system

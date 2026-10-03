@@ -1,0 +1,36 @@
+# Lines of the full-stack suite that name a release target on purpose, read by
+# test-pr-install.sh. Each entry is the script's path and the line's text with
+# its leading blanks dropped, separated by one tab, so an entry follows its line
+# when lines move and goes stale when the line changes. Lines starting with #
+# and blank lines are skipped.
+
+# The device gateway is the release's cfgd-server in cfgd-system; the PR
+# install runs no gateway of its own.
+tests/e2e/full-stack/scripts/setup-fullstack-env.sh	kubectl wait --for=condition=available deployment/cfgd-server -n cfgd-system --timeout=120s
+tests/e2e/full-stack/scripts/setup-fullstack-env.sh	wait_for_service_endpoints cfgd-system cfgd-server 120
+tests/e2e/full-stack/scripts/setup-fullstack-env.sh	SERVER_URL="http://cfgd-server.cfgd-system.svc.cluster.local:8080"
+tests/e2e/full-stack/scripts/setup-fullstack-env.sh	HEALTH_URL="http://cfgd-server.cfgd-system.svc.cluster.local:8081"
+tests/e2e/full-stack/scripts/test-health.sh	kubectl rollout status deployment/cfgd-server -n cfgd-system --timeout=120s 2>/dev/null || true
+tests/e2e/full-stack/scripts/test-health.sh	GATEWAY_POD=$(kubectl get deployment cfgd-server -n cfgd-system \
+
+# The fleet and drift cases put their MachineConfigs, ConfigPolicy and
+# DriftAlert in cfgd-system, where the gateway works; the run label hands them
+# to the PR operator, and the suite's cleanup deletes them there.
+tests/e2e/full-stack/scripts/setup-fullstack-env.sh	# Clean up namespaced CRDs in test and cfgd-system namespaces
+tests/e2e/full-stack/scripts/setup-fullstack-env.sh	for ns in "$E2E_NAMESPACE" cfgd-system; do
+tests/e2e/full-stack/scripts/test-drift-lifecycle.sh	kubectl apply -n cfgd-system -f - <<EOF
+tests/e2e/full-stack/scripts/test-drift-lifecycle.sh	namespace: cfgd-system
+tests/e2e/full-stack/scripts/test-drift-lifecycle.sh	DRIFT_DETECTED=$(wait_for_k8s_field machineconfig "mc-${DEVICE_1}" cfgd-system \
+tests/e2e/full-stack/scripts/test-drift-lifecycle.sh	if wait_for_k8s_field machineconfig "mc-${DEVICE_1}" cfgd-system \
+tests/e2e/full-stack/scripts/test-drift-lifecycle.sh	DRIFT_REASON=$(kubectl get machineconfig "mc-${DEVICE_1}" -n cfgd-system \
+tests/e2e/full-stack/scripts/test-drift-lifecycle.sh	DRIFT_STATUS=$(kubectl get machineconfig "mc-${DEVICE_1}" -n cfgd-system \
+tests/e2e/full-stack/scripts/test-drift-lifecycle.sh	kubectl delete driftalert "drift-${DEVICE_1}" -n cfgd-system --ignore-not-found 2>/dev/null || true
+tests/e2e/full-stack/scripts/test-drift-lifecycle.sh	kubectl patch machineconfig "mc-${DEVICE_1}" -n cfgd-system --type=merge \
+tests/e2e/full-stack/scripts/test-drift-lifecycle.sh	DRIFT_VAL=$(kubectl get machineconfig "mc-${DEVICE_1}" -n cfgd-system \
+tests/e2e/full-stack/scripts/test-drift-lifecycle.sh	READY_STATUS=$(kubectl get machineconfig "mc-${DEVICE_1}" -n cfgd-system \
+tests/e2e/full-stack/scripts/test-drift-lifecycle.sh	echo "  MC driftDetected: $(kubectl get machineconfig "mc-${DEVICE_1}" -n cfgd-system \
+tests/e2e/full-stack/scripts/test-fleet.sh	kubectl apply -n cfgd-system -f - <<EOF
+tests/e2e/full-stack/scripts/test-fleet.sh	namespace: cfgd-system
+tests/e2e/full-stack/scripts/test-fleet.sh	MC_STATUS=$(wait_for_k8s_field machineconfig "mc-${DEVICE_1}" cfgd-system \
+tests/e2e/full-stack/scripts/test-fleet.sh	COMPLIANT=$(wait_for_k8s_field configpolicy "fleet-baseline-${E2E_RUN_ID}" cfgd-system \
+tests/e2e/full-stack/scripts/test-fleet.sh	NON_COMPLIANT=$(kubectl get configpolicy "fleet-baseline-${E2E_RUN_ID}" -n cfgd-system \

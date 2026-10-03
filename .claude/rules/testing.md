@@ -187,18 +187,23 @@ holds the library to this.
 
 ## An e2e case asserts what it names, against the PR install
 
-The operator suite drives this run's operator in the PR install: every target
-it reads comes from `common/helpers.sh` (`$E2E_INSTALL_NS`,
-`$E2E_OPERATOR_PODS`, `$E2E_OPERATOR_DEPLOY`, `$E2E_WEBHOOK_SVC`,
-`$E2E_VALIDATING_WEBHOOK`, `$CSI_DRIVER_NAME`), OP-PR-01 fails when
-`$E2E_OPERATOR_DEPLOY` runs an image other than `e2e_image cfgd-operator`, and
+The operator and full-stack suites drive this run's operator and CSI driver in
+the PR install: every target they read comes from `common/helpers.sh`
+(`$E2E_INSTALL_NS`, `$E2E_OPERATOR_PODS`, `$E2E_OPERATOR_DEPLOY`,
+`$E2E_WEBHOOK_SVC`, `$E2E_CSI_DS`, `$E2E_CSI_PODS`, `$E2E_VALIDATING_WEBHOOK`,
+`$CSI_DRIVER_NAME`), OP-PR-01 fails when `$E2E_OPERATOR_DEPLOY` runs an image
+other than `e2e_image cfgd-operator`, the full-stack setup stops when
+`$E2E_CSI_DS` is not ready so no FS-CSI case skips, and
 `tests/e2e/common/test-pr-install.sh` fails on a tracked `*.sh` under
-`tests/e2e/operator/` that spells by hand `cfgd-system`, `$CFGD_NAMESPACE`,
+`tests/e2e/operator/` or `tests/e2e/full-stack/` that spells by hand `cfgd-system`, `$CFGD_NAMESPACE`,
 the `app=` or `app.kubernetes.io/name=` selector for `cfgd-operator`,
 `cfgd-operator` after any kubectl spelling of a Deployment, Endpoints or
 Service (`deploy`, `deployments.apps`, `ep`, `svc`, ...), either release
-webhook configuration, or `csi.cfgd.io`. `tests/e2e/README.md` lists the
-spellings. A suite that applies
+webhook configuration, or `csi.cfgd.io`. A full-stack line that names the
+release gateway `cfgd-server`, or the fleet and drift objects that live beside
+it in `cfgd-system`, is listed by file and text in
+`tests/e2e/common/release-targets-kept.tsv` with its reason, and an entry no
+line matches fails. `tests/e2e/README.md` lists the spellings. A suite that applies
 run-labelled objects calls `require_release_webhooks_scoped` in its setup, which
 stops the suite when the release's webhooks are not scoped away from them.
 Every `ERROR` line an e2e script prints goes to stderr, on its own command
@@ -206,7 +211,8 @@ Every `ERROR` line an e2e script prints goes to stderr, on its own command
 (`} >&2`, `) >&2`, `fi >&2`, `done >&2`, `esac >&2`), whatever prefix words,
 function header or case pattern come before the echo;
 `tests/e2e/common/test-pr-install.sh` names each one that does not.
-The gateway and full-stack suites run ArgoCD's pinned images. A case there for
+The gateway suite, and the full-stack cases that go through the gateway, run
+ArgoCD's pinned images. A case there for
 behaviour only a newer build has reads the running capability and calls
 `skip_test` naming `running_image <kind> <name> <container>` when it is
 missing. No case calls `pass_test` after printing why the checked thing did not
