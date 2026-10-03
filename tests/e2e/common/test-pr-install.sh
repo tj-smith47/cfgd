@@ -25,8 +25,9 @@
 #   - every ERROR line an e2e script prints goes to stderr
 #   - no full-stack case calls skip_test
 #   - every full-stack helm install and upgrade scopes its operator, validating
-#     webhook and pod injector to its own namespace through HELM_SCOPE, and
-#     overrides none of its keys
+#     webhook and pod injector to its own namespace through HELM_SCOPE, an
+#     array of exactly the three flags that no line appends to or rewrites,
+#     and overrides none of its keys
 #   - no operator or full-stack suite script names the release's operator,
 #     namespace, webhooks or CSI driver by hand, outside the full-stack
 #     suite's kept gateway lines
@@ -2822,29 +2823,45 @@ fi
 # FILE...: for each helm install or upgrade in command position, its
 # backslash-continued lines joined, `SCOPED file:line` when it passes
 # "${HELM_SCOPE[@]}" and no later flag sets one of the keys HELM_SCOPE sets or
-# their parent, otherwise `UNSCOPED file:line`; for each HELM_SCOPE=( array,
-# `SCOPEDEF file:line` when it sets all three keys to the namespace label, or
-# `BADSCOPE file:line KEY...` naming those it does not. Fails only when a file
-# cannot be read.
+# their parent, otherwise `UNSCOPED file:line`. A file's first HELM_SCOPE=(
+# array gives `SCOPEDEF file:line` when it holds exactly the three flags that
+# set those keys to the namespace label, otherwise `BADSCOPE file:line` with
+# `missing: KEY...` and `extra: TEXT`; Helm applies a later --set over an
+# earlier one, so an extra element can undo a wanted one. Any other line that
+# names HELM_SCOPE beyond expanding "${HELM_SCOPE[@]}" (an append, a second
+# definition, an element write, an unset) is `UNSCOPED file:line`. Fails only
+# when a file cannot be read.
 scan_helm_scope() {
     awk '
         BEGIN {
             scope = "\"${HELM_SCOPE[@]}\""
             key[1] = "operator.watchLabelSelector"
-            want[1] = "\"operator.watchLabelSelector=cfgd.io/e2e-helm=${HELM_NS}\""
+            pair[1] = "--set-string \"operator.watchLabelSelector=cfgd.io/e2e-helm=${HELM_NS}\""
             key[2] = "webhook.objectSelector"
-            want[2] = "\"webhook.objectSelector={\\\"matchLabels\\\":{\\\"cfgd.io/e2e-helm\\\":\\\"${HELM_NS}\\\"}}\""
+            pair[2] = "--set-json \"webhook.objectSelector={\\\"matchLabels\\\":{\\\"cfgd.io/e2e-helm\\\":\\\"${HELM_NS}\\\"}}\""
             key[3] = "mutatingWebhook.namespaceSelector"
-            want[3] = "\"mutatingWebhook.namespaceSelector={\\\"matchExpressions\\\":null,\\\"matchLabels\\\":{\\\"cfgd.io/e2e-helm\\\":\\\"${HELM_NS}\\\"}}\""
+            pair[3] = "--set-json \"mutatingWebhook.namespaceSelector={\\\"matchExpressions\\\":null,\\\"matchLabels\\\":{\\\"cfgd.io/e2e-helm\\\":\\\"${HELM_NS}\\\"}}\""
         }
-        FNR == 1 { cmd = ""; def = "" }
-        def == "" && /^[[:space:]]*HELM_SCOPE=\(/ { def = " "; defstart = FNR }
+        FNR == 1 { cmd = ""; def = ""; defined = 0 }
+        def == "" && !defined && /^[[:space:]]*HELM_SCOPE=\(/ { def = " "; defstart = FNR; defined = 1 }
         def != "" {
-            def = def $0 "\n"
+            def = def $0 " "
             if ($0 !~ /\)[[:space:]]*$/) next
+            body = def
+            sub(/^[[:space:]]*HELM_SCOPE=\(/, "", body)
+            sub(/\)[[:space:]]*$/, "", body)
+            gsub(/[[:space:]]+/, " ", body)
             missing = ""
-            for (k = 1; k <= 3; k++) if (!index(def, want[k])) missing = missing " " key[k]
-            print (missing == "" ? "SCOPEDEF " : "BADSCOPE ") FILENAME ":" defstart missing
+            for (k = 1; k <= 3; k++) {
+                at = index(body, pair[k])
+                if (at) body = substr(body, 1, at - 1) " " substr(body, at + length(pair[k]))
+                else missing = missing " " key[k]
+            }
+            gsub(/  +/, " ", body)
+            sub(/^ /, "", body)
+            sub(/ $/, "", body)
+            if (missing == "" && body == "") print "SCOPEDEF " FILENAME ":" defstart
+            else print "BADSCOPE " FILENAME ":" defstart (missing == "" ? "" : " missing:" missing) (body == "" ? "" : " extra: " body)
             def = ""
             next
         }
@@ -2853,19 +2870,22 @@ scan_helm_scope() {
             line = $0
             if (sub(/\\$/, "", line)) { cmd = cmd line " "; next }
             cmd = cmd line
+            rest = cmd
+            while ((at = index(rest, scope))) rest = substr(rest, 1, at - 1) substr(rest, at + length(scope))
+            stray = rest ~ /HELM_SCOPE/ && cmd !~ /^[[:space:]]*#/
             if (cmd ~ /(^|[;&|(!]|[^[:alnum:]_](if|then|else|elif|do|while|until)|^(if|then|else|elif|do|while|until))[[:space:]]*helm[[:space:]]+(install|upgrade)([[:space:]]|$)/) {
                 at = index(cmd, scope)
-                ok = at && substr(cmd, at + length(scope)) !~ /(^|[^[:alnum:]_.])(operator|webhook|mutatingWebhook)(\.(watchLabelSelector|objectSelector|namespaceSelector)[^=[:space:]]*)?=/
+                ok = at && !stray && substr(cmd, at + length(scope)) !~ /(^|[^[:alnum:]_.])(operator|webhook|mutatingWebhook)(\.(watchLabelSelector|objectSelector|namespaceSelector)[^=[:space:]]*)?=/
                 print (ok ? "SCOPED " : "UNSCOPED ") FILENAME ":" start
-            }
+            } else if (stray) print "UNSCOPED " FILENAME ":" start
             cmd = ""
         }
     ' "$@"
 }
-scope_got="$(cd "$here/fixtures/helm-scope" && scan_helm_scope installs.bash)" || scope_got="(the scan failed)"
-scope_want="$(printf '%s\n' 'SCOPED installs.bash:1' 'SCOPED installs.bash:2' 'UNSCOPED installs.bash:6' 'UNSCOPED installs.bash:9' 'UNSCOPED installs.bash:11' 'UNSCOPED installs.bash:12' 'SCOPED installs.bash:13' 'UNSCOPED installs.bash:20' 'UNSCOPED installs.bash:21' 'UNSCOPED installs.bash:22' 'SCOPED installs.bash:25' 'UNSCOPED installs.bash:26' 'SCOPED installs.bash:27' 'SCOPEDEF installs.bash:28' 'BADSCOPE installs.bash:33 mutatingWebhook.namespaceSelector' 'BADSCOPE installs.bash:37 operator.watchLabelSelector webhook.objectSelector mutatingWebhook.namespaceSelector')"
+scope_got="$(cd "$here/fixtures/helm-scope" && scan_helm_scope installs.bash scope-exact.bash scope-extra.bash scope-missing.bash scope-no-null.bash scope-wrong-label.bash)" || scope_got="(the scan failed)"
+scope_want="$(cat "$here/fixtures/helm-scope/want.txt")"
 if [ "$scope_got" = "$scope_want" ]; then
-    pass "the Helm scope scan reports each Helm install and upgrade, on one line or continued, at line start, after \$(, ! or &&, as scoped only when it passes \"\${HELM_SCOPE[@]}\" and no later flag sets one of its keys or their parent, reports each HELM_SCOPE array missing a key, and stays quiet on comments, quoted text, uninstall, template and longer words"
+    pass "the Helm scope scan reports each Helm install and upgrade, on one line or continued, at line start, after \$(, ! or &&, as scoped only when it passes \"\${HELM_SCOPE[@]}\" and no later flag sets one of its keys or their parent, reports a file's first HELM_SCOPE array that holds anything but its three flags, each append, second definition, element write or unset of it, and stays quiet on comments, quoted text, uninstall, template and longer words"
 else
     fail "the Helm scope scan printed [$scope_got], want [$scope_want]"
 fi
@@ -2896,7 +2916,7 @@ else
     done
     scope_unscoped="$(grep -E '^(UNSCOPED|BADSCOPE) ' <<<"$scope_verdict" || true)" # rc-ok: no unscoped install or incomplete array is the passing outcome
     if [ -n "$scope_unscoped" ]; then
-        fail "a full-stack Helm install or upgrade runs an operator, webhook or pod injector that acts on every run's objects; pass \"\${HELM_SCOPE[@]}\" from helm_test_ns with no later flag setting a key it sets, and keep all three of its keys set to the namespace label: [$scope_unscoped]"
+        fail "a full-stack Helm install or upgrade runs an operator, webhook or pod injector that acts on every run's objects; pass \"\${HELM_SCOPE[@]}\" from helm_test_ns with no later flag setting a key it sets, keep the array exactly its three flags set to the namespace label, and write it nowhere else: [$scope_unscoped]"
     elif [ -n "$scope_short" ]; then
         fail "the Helm scope scan has lost its population:$scope_short"
     else

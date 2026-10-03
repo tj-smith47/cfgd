@@ -250,8 +250,9 @@ validating webhook and pod injector then act only on objects and namespaces carr
 the label, and an object a case applies for its own install carries it too.
 `test-pr-install.sh` fails on a full-stack `helm install` or `helm upgrade` that does
 not pass the array, one with a later flag that sets one of its keys or their parent,
-and a `HELM_SCOPE` array missing one of the three keys, and fails when `test-helm.sh`
-falls below its floor of sites or defines no complete array.
+a `HELM_SCOPE` array that holds anything but its three flags, and any other line that
+writes the array (an append, a second definition, an element write or an unset), and
+fails when `test-helm.sh` falls below its floor of sites or defines no complete array.
 
 The CRD-write scan in `test-pr-install.sh` reads the `kubectl` and `helm` write
 commands and heredoc bodies of every tracked `tests/e2e/*.sh`, through

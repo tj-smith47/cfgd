@@ -211,8 +211,9 @@ stops the suite when the release's webhooks are not scoped away from them.
 Every `helm install` and `helm upgrade` in the full-stack suite passes
 `"${HELM_SCOPE[@]}"`, which `helm_test_ns` composes, and no later flag sets
 `operator.watchLabelSelector`, `webhook.objectSelector`,
-`mutatingWebhook.namespaceSelector` or their parent; the array sets all three to
-the install's own `cfgd.io/e2e-helm=$HELM_NS` label, so a test install's
+`mutatingWebhook.namespaceSelector` or their parent; the array is exactly the
+three flags that set them to the install's own `cfgd.io/e2e-helm=$HELM_NS`
+label, defined once and never appended to or rewritten, so a test install's
 operator, validating webhook and pod injector act only on objects and
 namespaces carrying it, and an object a case wants its own install to act on
 carries that label. `tests/e2e/common/test-pr-install.sh` names each install,
