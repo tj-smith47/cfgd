@@ -346,3 +346,22 @@ keeps the lease until it expires. No case passes on a note that the thing it
 checks did not happen: `common/test-verdicts.sh` fails on a `pass_test` that
 follows such a note in the same branch, unless that line carries
 `# verdict-ok: <why>`.
+
+A step that needs something to happen first waits on that state through a helper in
+`common/helpers.sh`, which polls up to a deadline and says on timeout what it waited
+for:
+
+```bash
+wait_until 30 1 "two reconcile ticks" pod_log_count_at_least /tmp/d.log 'reconcile: complete' 2
+retry_tries 6 5 lc04_apply                  # RETRY_ATTEMPT holds the attempts made
+wait_for_pod_log /tmp/daemon.log 'daemon: running' 30
+wait_for_deleted 60 namespace "$NS_A"
+wait_for_injection "$NS" "my-module:v1"     # a server-side dry run comes back with the CSI volume
+```
+
+`common/test-waits.sh` (run by `task e2e:tags:check`) fails on a `sleep` anywhere
+else under `tests/e2e/`, and on one in a `helpers.sh` function whose body checks no
+deadline (`SECONDS`, `deadline` or `tries`). A sleep that waits on wall-clock
+behaviour itself, such as a timestamp with one-second resolution or a renewal cadence,
+carries `# sleep-ok: <why>` on its line, and the check prints every such line with
+its reason.
