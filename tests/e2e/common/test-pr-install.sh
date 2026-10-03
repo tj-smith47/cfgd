@@ -182,7 +182,7 @@ fi
 # create_e2e_namespace against fixtures/namespace-phase/bin/kubectl: ns_case
 # <arm> <phase> <wait rc> prints its output, `heartbeat started` when it
 # started one, then `rc=<status>`. Each arm logs its calls to its own
-# $scratch/ns-<arm>.log, since a heartbeat call already under way when
+# $scratch/ns-<arm>.calls, since a heartbeat call already under way when
 # stop_heartbeat kills the loop can still append to the log it was given.
 ns_case() {
     # shellcheck disable=SC2016 # the inner script expands its own variables
