@@ -2511,7 +2511,7 @@ for suite in "${run_label_suites[@]}"; do
 done
 
 # A release target spelled by hand in the operator suite reaches the live
-# release instead of this run's install; helpers.sh names the install's.
+# release. helpers.sh names this run's install.
 release_target='cfgd-system|\$\{?CFGD_NAMESPACE([^[:alnum:]_]|$)|app=cfgd-operator|(deployment|endpoints|svc|service)[/ ]+cfgd-operator|cfgd-(validating|mutating)-webhooks|csi\.cfgd\.io'
 # scan_release_targets FILE...: file:line:text of each line naming one.
 scan_release_targets() {
@@ -2540,7 +2540,7 @@ elif ! release_hits="$(cd "$repo_root" && scan_release_targets "${operator_scrip
 elif [ -z "$release_hits" ]; then
     pass "no operator suite script names a release target by hand (${#operator_scripts[@]} scripts)"
 else
-    fail "the operator suite drives the PR install; use \$E2E_INSTALL_NS, \$E2E_OPERATOR_PODS, \$E2E_OPERATOR_DEPLOY, \$E2E_WEBHOOK_SVC, \$E2E_VALIDATING_WEBHOOK, \$E2E_MUTATING_WEBHOOK or \$CSI_DRIVER_NAME from helpers.sh instead of: [$release_hits]"
+    fail "the operator suite drives the PR install; use \$E2E_INSTALL_NS, \$E2E_OPERATOR_PODS, \$E2E_OPERATOR_DEPLOY, \$E2E_WEBHOOK_SVC, \$E2E_VALIDATING_WEBHOOK, \$E2E_MUTATING_WEBHOOK or \$CSI_DRIVER_NAME from helpers.sh. Hand-spelled: [$release_hits]"
 fi
 
 if [ "$failures" -gt 0 ]; then
