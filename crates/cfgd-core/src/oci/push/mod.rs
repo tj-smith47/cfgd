@@ -366,11 +366,25 @@ fn classify_tag(
     platform: &str,
 ) -> Result<TagState, OciError> {
     let Some(ManifestDocument {
-        digest, size, doc, ..
+        digest,
+        size,
+        content_digest,
+        doc,
     }) = existing
     else {
         return Ok(TagState::Replace);
     };
+    // The joined index lists the old manifest under `digest`, and a header
+    // naming other bytes would sign an entry every later pull refuses.
+    if digest != content_digest {
+        return Err(OciError::RequestFailed {
+            message: format!(
+                "{oci_ref} answered with digest {digest} in its Docker-Content-Digest header, and \
+                 the manifest it served hashes to {content_digest}; the registry (or a proxy in \
+                 front of it) served other content than that digest names, so nothing was pushed"
+            ),
+        });
+    }
     if doc.get("manifests").is_some_and(|m| m.is_array()) {
         return Ok(TagState::Index(doc));
     }

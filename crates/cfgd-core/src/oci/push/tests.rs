@@ -1218,6 +1218,57 @@ fn assert_tag_read_failure_writes_nothing(status: usize) {
     }
 }
 
+/// The join lists the tag's manifest under the digest its GET named, so a
+/// header naming other bytes than the body stops the push before any write.
+#[test]
+fn push_refuses_a_tag_whose_digest_header_names_other_bytes_before_any_upload() {
+    let mut server = mockito::Server::new();
+    let registry = registry_from_url(&server.url());
+    let repo = "test/taglie";
+    let blobs = blob_upload_mocks(&mut server, repo, 0);
+    let body = serde_json::to_vec(&earlier_manifest(Some("linux/amd64"))).unwrap();
+    let claimed = format!("sha256:{}", "0".repeat(64));
+    let tag_read = server
+        .mock("GET", format!("/v2/{repo}/manifests/v1").as_str())
+        .with_status(200)
+        .with_header("Content-Type", MEDIA_TYPE_OCI_MANIFEST)
+        .with_header("Docker-Content-Digest", &claimed)
+        .with_body(&body)
+        .expect(1)
+        .create();
+    let manifest_put = server
+        .mock(
+            "PUT",
+            mockito::Matcher::Regex(format!(r"^/v2/{repo}/manifests/")),
+        )
+        .with_status(201)
+        .expect(0)
+        .create();
+
+    let dir = create_test_module_dir();
+    let err = push_module(
+        dir.path(),
+        &format!("{registry}/{repo}:v1"),
+        Some("linux/arm64"),
+        None,
+    )
+    .expect_err("a tag whose header names other bytes cannot be joined");
+
+    let served = crate::sha256_digest(&body);
+    match &err {
+        OciError::RequestFailed { message } => assert!(
+            message.contains(&claimed) && message.contains(&served),
+            "the refusal names both digests: {message}"
+        ),
+        other => panic!("expected RequestFailed, got {other:?}"),
+    }
+    tag_read.assert();
+    manifest_put.assert();
+    for mock in blobs {
+        mock.assert();
+    }
+}
+
 #[test]
 fn push_fails_without_writing_when_the_tag_read_is_a_server_error() {
     assert_tag_read_failure_writes_nothing(500);
