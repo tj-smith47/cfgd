@@ -249,6 +249,7 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
                 }
             }
 
+            // load-ok: re-read after this verb's write
             let mut cfg = config::load_config(&config_path)?;
             drain_config_deprecations(printer, &mut cfg);
             let mut registry = super::build_registry_with_config(Some(&cfg));
@@ -347,6 +348,7 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
                 // A preview plans against the named profile and leaves the
                 // document naming the one it named before.
                 if args.dry_run {
+                    // load-ok: re-read after this verb's write
                     let mut cfg = config::load_config(&config_path)?;
                     drain_config_deprecations(printer, &mut cfg);
                 } else {
@@ -366,6 +368,7 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
                 name.to_string()
             } else {
                 // No --apply-profile: use whatever the config document names, or pick interactively
+                // load-ok: re-read after this verb's write
                 let mut cfg = config::load_config(&config_path)?;
                 drain_config_deprecations(printer, &mut cfg);
                 // option-section-ok: an omitted profile is asked for at the prompt
@@ -376,6 +379,7 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
                 }
             };
 
+            // load-ok: re-read after this verb's write
             let cfg = config::load_config(&config_path)?;
             let resolved = config::resolve_profile(&profile_name, &profiles_dir)?;
             let mut registry = super::build_registry_with_config(Some(&cfg));
@@ -497,6 +501,7 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
     if args.install_daemon {
         #[cfg(any(unix, windows))]
         {
+            // load-ok: re-read after this verb's write
             let mut cfg = config::load_config(&config_path)?;
             drain_config_deprecations(printer, &mut cfg);
             let profile = cfg.spec.profile.as_deref();

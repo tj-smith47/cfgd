@@ -6,10 +6,12 @@
 //! `main` reports the startup document in one `loaded config document` debug
 //! line, after the last place the path can move. `reads=1` means clap settled
 //! on the file the alias pass read; each move clap or the macOS config move
-//! makes adds one. The line counts the startup document alone: a loader call
-//! elsewhere before dispatch never reaches it, and
-//! `the_pre_dispatch_path_loads_the_document_once` (`src/cli/tests.rs`) is the
-//! walk that fails on one.
+//! makes adds one. The line counts the startup document alone; a later
+//! `load_config` logs `parsing config document`, which
+//! `every_config_reading_verb_answers_from_the_startup_document` fails on, and
+//! the walks `the_pre_dispatch_path_loads_the_document_once` and
+//! `every_cli_config_read_goes_through_the_run` (`src/cli/tests.rs`) fail on a
+//! loader call in the source.
 
 mod cfgd_binary;
 use cfgd_binary::cfgd_bin;
@@ -89,6 +91,55 @@ fn the_alias_pass_and_clap_settle_on_one_document_for_every_verb() {
     ] {
         assert_reads(verb, &stderr_of(Config::Flag(&config), verb), 1);
     }
+}
+
+/// A verb reads its config through the run, so the startup document is the
+/// run's only read of the file: one summary line with `reads=1`, no failed
+/// reload after it, and no `parsing config document` line, which every
+/// `load_config` logs once the tracing subscriber exists.
+#[test]
+fn every_config_reading_verb_answers_from_the_startup_document() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    write_fixture(dir.path());
+    let config = dir.path().join("cfgd.yaml");
+
+    let mut wrong = Vec::new();
+    for verb in [
+        &["status"][..],
+        &["config", "show"][..],
+        &["profile", "list"][..],
+        &["source", "list"][..],
+        &["module", "list"][..],
+        &["doctor"][..],
+    ] {
+        let stderr = stderr_of(Config::Flag(&config), verb);
+        let summary: Vec<&str> = stderr
+            .lines()
+            .filter(|l| l.contains(SUMMARY_LINE))
+            .collect();
+        let second_reads: Vec<&str> = stderr
+            .lines()
+            .skip_while(|l| !l.contains(SUMMARY_LINE))
+            .filter(|l| l.contains("config document not loaded"))
+            .chain(
+                stderr
+                    .lines()
+                    .filter(|l| l.contains("parsing config document")),
+            )
+            .collect();
+        if summary.len() != 1
+            || !summary[0].contains("reads=1 ")
+            || !summary[0].contains("found=true")
+            || !second_reads.is_empty()
+        {
+            wrong.push(format!("{verb:?}:\n{stderr}"));
+        }
+    }
+    assert!(
+        wrong.is_empty(),
+        "a verb read the config document again after startup:\n{}",
+        wrong.join("\n")
+    );
 }
 
 /// With no `--config`, the alias pass and clap both land on the default

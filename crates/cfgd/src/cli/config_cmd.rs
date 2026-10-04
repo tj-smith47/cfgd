@@ -738,7 +738,7 @@ pub(super) fn config_get_as(
     let on_hand = (startup.path() == config_path.as_path()).then_some(startup);
     let contents = match on_hand.and_then(|doc| doc.on_disk()) {
         Some(text) => std::borrow::Cow::Borrowed(text),
-        // startup-load-ok: the startup document names another file, or did not load
+        // load-ok: the startup document names another file, or did not load
         None => std::borrow::Cow::Owned(std::fs::read_to_string(config_path)?),
     };
     let raw = match crate::cli::source::config_tree(&contents, config_path) {

@@ -159,11 +159,13 @@ pub(in crate::cli) fn build_compliance_file_manager(
     let cfg: &CfgdConfig = match run {
         Some(run) if compliance_config_path == run.cli().config => run.config()?,
         Some(run) => {
+            // load-ok: a different document (the compliance config)
             owned = config::load_config(&compliance_config_path)?;
             owned.drain_deprecations(run.printer());
             &owned
         }
         None => {
+            // load-ok: a different document (the compliance config)
             owned = config::load_config(&compliance_config_path)?;
             &owned
         }

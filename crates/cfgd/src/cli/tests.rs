@@ -56217,7 +56217,7 @@ fn every_compliance_counts_line_comes_from_the_one_builder() {
 /// Every line of `source` that reads the config document for itself: a call to
 /// one of the loaders, or a `read_to_string` naming the config on its line or
 /// the next, outside `StartupDocument::load` and not marked
-/// `// startup-load-ok: <why>` on the line or the one above.
+/// `// load-ok: <why>` on the line or the one above.
 fn config_reads_outside_the_startup_document(source: &str) -> Vec<String> {
     use cfgd_core::test_helpers::{
         calls_free_fn, carries_hatch, code_line, declaration_end, declared_fn_name, impl_owner,
@@ -56240,8 +56240,7 @@ fn config_reads_outside_the_startup_document(source: &str) -> Vec<String> {
         }
     }
     let hatched = |i: usize| {
-        carries_hatch(raw[i], "startup-load-ok")
-            || (i > 0 && carries_hatch(raw[i - 1], "startup-load-ok"))
+        carries_hatch(raw[i], "load-ok") || (i > 0 && carries_hatch(raw[i - 1], "load-ok"))
     };
     code.iter()
         .enumerate()
@@ -56264,9 +56263,9 @@ fn config_reads_outside_the_startup_document(source: &str) -> Vec<String> {
 /// dispatch is a second read of a file already in hand, and a
 /// `StartupDocument::load` call site outside the counted ones is a second
 /// document. A verb's own load after dispatch carries
-/// `// startup-load-ok: <why>`. This walk alone holds the no-second-read
-/// claim: the real binary's summary line counts the startup document's own
-/// reloads and cannot see a loader call beside it.
+/// `// load-ok: <why>`. The real binary's summary line counts only the
+/// startup document's own reloads; this walk also sees a `parse_config` or a
+/// config `read_to_string` in these files, which logs nothing a run can check.
 #[test]
 fn the_pre_dispatch_path_loads_the_document_once() {
     use cfgd_core::test_helpers::{code_line, rust_sources_under, workspace_root};
@@ -56398,7 +56397,7 @@ fn the_config_read_scan_reads_loaders_and_skips_the_startup_load_and_its_hatch()
         "    let cfg = cfgd_core::config::load_config(path);",
         "}",
         "fn verb(path: &Path) {",
-        "    // startup-load-ok: the verb's own load after dispatch",
+        "    // load-ok: the verb's own load after dispatch",
         "    let cfg = config::load_config(path);",
         "    let text = std::fs::read_to_string(&config_path);",
         "    let other = std::fs::read_to_string(&script);",
@@ -56416,6 +56415,151 @@ fn the_config_read_scan_reads_loaders_and_skips_the_startup_load_and_its_hatch()
             "2: let cfg = cfgd_core::config::load_config(path);".to_string(),
             "7: let text = std::fs::read_to_string(&config_path);".to_string(),
         ]
+    );
+}
+
+/// One read of a config document from disk the cli walk found: where it sits,
+/// and the reason its `// load-ok: <why>` hatch gives (`None` when unmarked).
+#[derive(Debug, PartialEq)]
+struct ConfigDocumentRead {
+    at: String,
+    why: Option<String>,
+}
+
+/// Every `load_config(` and `read_config_document(` call in the production
+/// code of the Rust sources under `root`, outside `startup.rs`, which holds the
+/// one read the run shares. A hatch counts on the call's line or the one above,
+/// and only with a reason after it. Line numbers are the file's own: test-only
+/// lines are skipped through the test-region mask, which blanks in place.
+fn config_document_reads_under(root: &Path) -> Vec<ConfigDocumentRead> {
+    use cfgd_core::test_helpers::{
+        calls_free_fn, carries_hatch, code_line, floored_production_body, rust_sources_under,
+        test_region_mask, walked_file_body,
+    };
+    const HATCH: &str = "load-ok:";
+    let reason = |line: &str| {
+        carries_hatch(line, HATCH)
+            .then(|| {
+                line.split_once(HATCH)
+                    .map(|(_, why)| why.trim().to_string())
+            })
+            .flatten()
+            .filter(|why| !why.is_empty())
+    };
+    let mut reads = Vec::new();
+    for file in rust_sources_under(root) {
+        let rel = cfgd_core::to_posix_string(file.strip_prefix(root).unwrap_or(&file));
+        // The floored read fails the walk on a file it cannot read, and is
+        // empty for a file built only for tests.
+        if rel == "startup.rs" || floored_production_body(&file).is_empty() {
+            continue;
+        }
+        let raw = walked_file_body(&file);
+        let lines: Vec<&str> = raw.lines().collect();
+        let mask = test_region_mask(&raw);
+        for (i, (line, test)) in lines.iter().zip(mask.lines()).enumerate() {
+            let code = code_line(line);
+            if !test.is_empty()
+                || !["load_config", "read_config_document"]
+                    .iter()
+                    .any(|loader| calls_free_fn(&code, loader))
+            {
+                continue;
+            }
+            let why = reason(line).or_else(|| i.checked_sub(1).and_then(|p| reason(lines[p])));
+            reads.push(ConfigDocumentRead {
+                at: format!("{rel}:{}", i + 1),
+                why,
+            });
+        }
+    }
+    reads
+}
+
+/// A verb under `cli/` reads its config through the run (`run.config()`,
+/// `run.config_and_profile()`), which answers from the document read once at
+/// startup. A read from disk anywhere else is a second read of a file already
+/// in hand, unless it reads a different document or re-reads after the verb's
+/// own write, which `// load-ok: <why>` says on the line or the one above.
+/// A failure lists every marked read beside the unmarked ones, so the
+/// exemptions stay in view of whoever adds the next.
+#[test]
+fn every_cli_config_read_goes_through_the_run() {
+    let root = cfgd_core::test_helpers::workspace_root().join("crates/cfgd/src/cli");
+    let reads = config_document_reads_under(&root);
+    let hatches: Vec<String> = reads
+        .iter()
+        .filter_map(|read| Some(format!("{}: {}", read.at, read.why.as_deref()?)))
+        .collect();
+    assert!(
+        reads.iter().any(|read| read.why.is_some()),
+        "the walk found none of the marked reads under cli/, so it proves nothing"
+    );
+    let bare: Vec<&str> = reads
+        .iter()
+        .filter(|read| read.why.is_none())
+        .map(|read| read.at.as_str())
+        .collect();
+    assert!(
+        bare.is_empty(),
+        "read the config through the run (`run.config()`), or mark the read \
+         `// load-ok: <why>`:\n{}\n\nthe marked reads:\n{}",
+        bare.join("\n"),
+        hatches.join("\n")
+    );
+}
+
+/// The walk behind the pin above, one fixture per outcome: `startup.rs` is
+/// exempt, a hatched read is reported with its reason, a bare read is reported
+/// without one, a read in a test module is skipped, and a file the walk cannot
+/// read fails it.
+#[test]
+fn the_cli_config_read_walk_judges_each_outcome() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let write = |name: &str, body: &str| {
+        std::fs::write(dir.path().join(name), body).expect("write fixture");
+    };
+    write(
+        "startup.rs",
+        "fn load(p: &Path) {\n    let _ = cfgd_core::config::read_config_document(p);\n}\n",
+    );
+    write(
+        "hatched.rs",
+        "fn other(p: &Path) {\n    // load-ok: a different document\n    let _ = config::load_config(p);\n}\n",
+    );
+    write(
+        "bare.rs",
+        "fn verb(p: &Path) {\n    let _ = cfgd_core::config::load_config(p);\n}\n",
+    );
+    write(
+        "tested.rs",
+        "fn verb() {}\n\n#[cfg(test)]\nmod tests {\n    fn t(p: &Path) {\n        let _ = load_config(p);\n    }\n}\n",
+    );
+    assert_eq!(
+        config_document_reads_under(dir.path()),
+        vec![
+            ConfigDocumentRead {
+                at: "bare.rs:2".to_string(),
+                why: None,
+            },
+            ConfigDocumentRead {
+                at: "hatched.rs:3".to_string(),
+                why: Some("a different document".to_string()),
+            },
+        ]
+    );
+
+    let unreadable = tempfile::tempdir().expect("tempdir");
+    std::fs::write(unreadable.path().join("bad.rs"), [0xff, 0xfe, b'\n']).expect("write fixture");
+    let refusal = std::panic::catch_unwind(|| config_document_reads_under(unreadable.path()))
+        .expect_err("a file the walk cannot read fails it");
+    let message = refusal
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .unwrap_or_default();
+    assert!(
+        message.contains("bad.rs"),
+        "the failure names the file: {message}"
     );
 }
 
