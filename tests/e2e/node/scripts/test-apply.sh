@@ -308,11 +308,16 @@ ERR04_OUTPUT=$(exec_in_pod su -s /bin/sh nobody -c \
 echo "  Non-root apply exit: $ERR04_RC, output (first 10 lines):"
 echo "$ERR04_OUTPUT" | head -10 | sed 's/^/    /'
 # A non-root apply either has nothing it lacks permission for and exits 0, or
-# exits non-zero naming the error it hit (sysctl, for one); a panic is neither.
+# exits non-zero through cfgd's one error sink, which prints a line opening
+# with the fail icon (render_cli_error in crates/cfgd/src/cli/error.rs, icon
+# ICON_FAIL "✗" in crates/cfgd-core/src/output/theme.rs). An su or kubectl exec
+# failure prints its own words with no such line, so cfgd never ran.
 if echo "$ERR04_OUTPUT" | grep -q "panicked"; then
     fail_test "BIN-ERR-04" "cfgd panicked when run as a non-root user"
-elif [ "$ERR04_RC" -eq 0 ] || echo "$ERR04_OUTPUT" | grep -qi "permission\|denied\|error\|failed\|cannot"; then
+elif [ "$ERR04_RC" -eq 126 ] || [ "$ERR04_RC" -eq 127 ]; then
+    fail_test "BIN-ERR-04" "su or kubectl exec could not run cfgd as nobody (exit $ERR04_RC)"
+elif [ "$ERR04_RC" -eq 0 ] || echo "$ERR04_OUTPUT" | grep -q '^✗ '; then
     pass_test "BIN-ERR-04"
 else
-    fail_test "BIN-ERR-04" "non-root apply exited $ERR04_RC without naming the error it hit"
+    fail_test "BIN-ERR-04" "non-root apply exited $ERR04_RC with no cfgd error line; su or kubectl exec may have failed before cfgd ran"
 fi
