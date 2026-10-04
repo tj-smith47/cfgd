@@ -2,7 +2,8 @@
 # Checks that every wait in an e2e script is a bounded poll on the state the
 # next step reads. A `sleep` command may run only:
 #   - inside a function of common/helpers.sh whose body tests a deadline: a
-#     `[`, `[[` or `((` test naming SECONDS, $deadline or $tries;
+#     `[`, `[[` or `((` test naming SECONDS, $deadline or $tries outside a
+#     quoted string of more than one word;
 #   - inside run_every, the one background cadence in common/helpers.sh, which
 #     is printed under Cadences;
 #   - on a line carrying `# sleep-ok: <why>`, kept for a wait on wall-clock
@@ -46,11 +47,15 @@ min_listed_files=60
 # `command: ["sleep", "3600"]`, a stub script) and a quoted word are not
 # commands. A sleep counts where bash runs it as a command: first on the line,
 # or after `;`, `&`, `|`, `(`, `{`, `!`, `` ` ``, `)` (a case arm), ` -- `
-# (`kubectl exec <pod> -- sleep`), or a run of `if`, `while`, `until`, `then`,
-# `do`, `else`, `elif`, `exec`, `time`, `command`, `builtin`, `nohup`, `env`,
-# `nice`, `xargs`, `exec_in_pod` and `timeout <duration>` words; spelled
-# `sleep`, `\sleep`, `/bin/sleep` or `/usr/bin/sleep`. The script of a
-# `bash -c '...'` or `sh -c "..."` is read the same way. A function of
+# (`kubectl exec <pod> -- sleep`), or a run of these words, each with its own
+# options:
+#   if while until then do else elif exec builtin nohup xargs exec_in_pod
+#   coproc eval, `time [-p]`, `command [-p]`, `env [-opt|NAME=value]...`,
+#   `nice [-n N|-opt]...`, `timeout [-s SIG|-k DUR|-opt]... <duration>`,
+#   `sudo [-opt]...`, `stdbuf [-opt]...`, and leading `NAME=value` assignments;
+# spelled `sleep`, `\sleep`, `/bin/sleep`, `/usr/bin/sleep`, `'sleep'` or
+# `"sleep"`. The script of a `bash -c '...'`, `sh -c "..."` or `eval "..."` is
+# read the same way. A function of
 # helpers.sh runs from its `name() {` line in column 0 to the next `}` in
 # column 0, the layout every function there keeps; a one-line function ends on
 # its own line, and one left open is reported.
@@ -79,15 +84,36 @@ scan_sleeps() {
     tr '\n' '\0' < "$list" | xargs -0 awk -f "$here/heredocs.awk" | awk -F '\t' -v helpers_path="$1/common/helpers.sh" '
         BEGIN {
             # A sleep at a command position, as the comment above lists them.
-            SLEEP_RE = "(^|[;&|({!`)]|[[:space:]]--[[:space:]])[[:space:]]*" \
-                "((if|while|until|then|do|else|elif|exec|time|command|builtin|nohup|env|nice|xargs|exec_in_pod" \
-                "|timeout([[:space:]]+-[^[:space:]]+)*[[:space:]]+[0-9.]+[smhd]?)[[:space:]]+)*" \
-                "(\\\\|/(usr/)?bin/)?sleep([[:space:];)&|`]|$)"
-            # The opening quote of a shell -c script.
-            DASH_C_RE = "(^|[^A-Za-z0-9_])(ba|da|k|z)?sh([[:space:]]+-[A-Za-z]+)*[[:space:]]+-[A-Za-z]*c[[:space:]]+[\047\"]"
+            CMD_POS = "(^|[;&|({!`)]|[[:space:]]--[[:space:]])[[:space:]]*" \
+                "((if|while|until|then|do|else|elif|exec|builtin|nohup|xargs|exec_in_pod|coproc|eval" \
+                "|time([[:space:]]+-p)?|command([[:space:]]+-p)?" \
+                "|env([[:space:]]+(-[^[:space:]]+|[A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*))*" \
+                "|nice([[:space:]]+-n[[:space:]]*-?[0-9]+|[[:space:]]+-[^[:space:]]+)*" \
+                "|timeout([[:space:]]+(-[ks][[:space:]]+[^[:space:]]+|-[^[:space:]]+))*[[:space:]]+[0-9.]+[smhd]?" \
+                "|sudo([[:space:]]+-[^[:space:]]+)*|stdbuf([[:space:]]+-[^[:space:]]+)*" \
+                "|[A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*)[[:space:]]+)*"
+            SLEEP_END = "([[:space:];)&|`]|$)"
+            SLEEP_RE = CMD_POS "(\047sleep\047|(\\\\|/(usr/)?bin/)?sleep)" SLEEP_END
+            # heredocs.awk drops a double-quoted word from CMD, so a "sleep" is
+            # looked for in the line as written.
+            QSLEEP_RE = CMD_POS "\"sleep\"" SLEEP_END
+            # The opening quote of a shell -c or eval script.
+            DASH_C_RE = "(^|[^A-Za-z0-9_])((ba|da|k|z)?sh([[:space:]]+-[A-Za-z]+)*[[:space:]]+-[A-Za-z]*c|eval)[[:space:]]+[\047\"]"
             # A deadline test: a [, [[ or (( (an arithmetic command; a $(( is no test)
             # whose text names SECONDS, $deadline or $tries as whole words.
             TEST_RE = "(\\[|(^|[^$])\\(\\()[^]]*([^A-Za-z0-9_]SECONDS|\\$\\{?(deadline|tries))([^A-Za-z0-9_]|$)"
+        }
+        # unprose(code): code with each quoted string holding a space or a
+        # bracket emptied, so a message such as "waiting [until $deadline]" is
+        # no test while the operand "$deadline" stays one.
+        function unprose(code,   out, q) {
+            out = ""
+            while (match(code, /"([^"\\]|\\.)*"|\047[^\047]*\047/)) {
+                q = substr(code, RSTART, RLENGTH)
+                out = out substr(code, 1, RSTART - 1) (q ~ /[][()[:space:]]/ ? "\"\"" : q)
+                code = substr(code, RSTART + RLENGTH)
+            }
+            return out code
         }
         function report(l, why) {
             if (hatch[l] != "") { print "HATCH " file ":" l " " hatch[l]; return }
@@ -139,8 +165,9 @@ scan_sleeps() {
                 hatch[$3] = h
             }
             code = raw; sub(/(^|[[:space:]])#.*$/, "", code)
-            rawcode[$3] = code
-            if (fn != "" && code ~ TEST_RE) deadline = 1
+            rawcode[$3] = unprose(code)
+            if (fn != "" && rawcode[$3] ~ TEST_RE) deadline = 1
+            if (code ~ QSLEEP_RE) site($3)
             dash_c(code, $3)
             next
         }
@@ -235,12 +262,16 @@ probe "$(fixture_tree unclosed-helper)" fail "a helpers.sh function with no clos
 probe "$(fixture_tree not-a-command)" pass "a sleep in a heredoc body, a quoted word or a comment is no command"
 probe "$(fixture_tree hatch)" pass "a sleep carrying '# sleep-ok: <why>' passes"
 probe "$(fixture_tree empty-hatch)" fail "a '# sleep-ok:' with no why fails the walk"
-probe "$(fixture_tree mention-only-helper)" fail "a helpers.sh function that names a deadline in a message and tests none fails the walk" \
+probe "$(fixture_tree mention-only-helper)" fail "a helpers.sh function whose only bracketed deadline is in a message fails the walk" \
     '^SLEEP .*/common/helpers.sh:5 .*function settle whose body tests no deadline'
 probe "$(fixture_tree assigned-only-helper)" fail "a helpers.sh function that sets a deadline and never tests it fails the walk" \
     '^SLEEP .*/common/helpers.sh:5 .*function settle whose body tests no deadline'
 probe "$(fixture_tree substring-helper)" fail "a helpers.sh function testing a word that only contains tries fails the walk" \
     '^SLEEP .*/common/helpers.sh:6 .*function settle whose body tests no deadline'
+probe "$(fixture_tree tries-left-helper)" fail "a helpers.sh function testing a word that only starts with tries fails the walk" \
+    '^SLEEP .*/common/helpers.sh:6 .*function settle whose body tests no deadline'
+probe "$(fixture_tree arith-deadline-helper)" fail "a helpers.sh function whose deadline is only a \$(( )) expansion fails the walk" \
+    '^SLEEP .*/common/helpers.sh:5 .*function settle whose body tests no deadline'
 probe "$(fixture_tree nested-helpers-path)" fail "a common/helpers.sh below the walked tree's own is a suite script" \
     '^SLEEP .*/foo/common/helpers.sh:8 runs outside common/helpers.sh'
 probe "$(fixture_tree cadence-helper)" pass "run_every in helpers.sh passes"

@@ -18,3 +18,17 @@ bash -c 'sleep 1'
 sh -c "sleep 1"
 kubectl exec p -- sleep 2
 exec_in_pod sleep 2
+nice -n 5 sleep 1
+env FOO=1 sleep 1
+FOO=1 sleep 1
+timeout -s KILL 5 sleep 1
+time -p sleep 1
+command -p sleep 1
+sudo sleep 1
+stdbuf -oL sleep 1
+coproc sleep 1
+eval sleep 1
+eval "sleep 1"
+"sleep" 1
+'sleep' 1
+env -i PATH=/bin sleep 1
