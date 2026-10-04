@@ -522,8 +522,17 @@ pub(super) mod test_helpers {
                 })
                 .create();
             let (status_tags, get_tags, get_log) = (tags.clone(), tags.clone(), log.clone());
+            // A registry serves an index only to a reader that accepts one, so
+            // every manifest read the store answers must name both shapes.
             server
                 .mock("GET", mockito::Matcher::Regex(manifests))
+                .match_header(
+                    "accept",
+                    mockito::Matcher::AllOf(vec![
+                        mockito::Matcher::Regex(regex::escape(super::MEDIA_TYPE_OCI_MANIFEST)),
+                        mockito::Matcher::Regex(regex::escape(super::MEDIA_TYPE_OCI_INDEX)),
+                    ]),
+                )
                 .with_status_code_from_request(move |req| {
                     if status_tags.lock().unwrap().contains_key(&reference(req)) {
                         200

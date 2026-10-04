@@ -1257,6 +1257,31 @@ fn push_without_a_platform_joins_as_the_host_platform() {
 }
 
 #[test]
+fn written_digests_name_the_tag_document_first_then_each_manifest_under_it() {
+    let alone = PushOutcome {
+        digest: "sha256:m".to_string(),
+        platform: "linux/amd64".to_string(),
+        index_digest: None,
+    };
+    assert_eq!(alone.written_digests(), vec!["sha256:m"]);
+
+    let joined = PushOutcome {
+        index_digest: Some("sha256:i".to_string()),
+        ..alone
+    };
+    assert_eq!(joined.written_digests(), vec!["sha256:i", "sha256:m"]);
+
+    let multi = MultiPlatformPushOutcome {
+        index_digest: "sha256:i".to_string(),
+        manifest_digests: vec!["sha256:a".to_string(), "sha256:b".to_string()],
+    };
+    assert_eq!(
+        multi.written_digests(),
+        vec!["sha256:i", "sha256:a", "sha256:b"]
+    );
+}
+
+#[test]
 fn the_push_row_names_the_index_only_when_one_was_written() {
     let store = crate::oci::test_helpers::ManifestStore::new("test/acc");
     let module_dir = create_test_module_dir();
