@@ -106,7 +106,7 @@ wait_for_deleted 30 pod csi-mount-test -n "e2e-csi-test-${E2E_RUN_ID}" || true
 # Verify no mount leftovers via the test pod (which has host access)
 MOUNT_TABLE_RC=0
 MOUNT_TABLE=$(exec_in_pod mount 2>&1) || MOUNT_TABLE_RC=$?
-CSI_MOUNTS=$(printf '%s\n' "$MOUNT_TABLE" | grep "cfgd" | grep "csi-mount-test" || true)
+CSI_MOUNTS=$(awk '/cfgd/ && /csi-mount-test/' <<<"$MOUNT_TABLE")
 if [ "$MOUNT_TABLE_RC" -ne 0 ]; then
     fail_test "FS-CSI-02" "Could not read the mount table (exit $MOUNT_TABLE_RC): $MOUNT_TABLE"
 elif [ -z "$CSI_MOUNTS" ]; then
@@ -595,7 +595,7 @@ if $POD_RUNNING; then
     # Verify no mount leftovers
     MOUNT_TABLE_RC=0
     MOUNT_TABLE=$(exec_in_pod mount 2>&1) || MOUNT_TABLE_RC=$?
-    CSI_MOUNTS=$(printf '%s\n' "$MOUNT_TABLE" | grep "cfgd" | grep "csi-unmount-test" || true)
+    CSI_MOUNTS=$(awk '/cfgd/ && /csi-unmount-test/' <<<"$MOUNT_TABLE")
     if ! $CSI09_LABELLED; then
         # No label, no injected volume, and "no mount left behind" is then
         # a fact about a pod that never had one.

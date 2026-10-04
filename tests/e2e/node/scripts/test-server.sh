@@ -149,7 +149,7 @@ fi
 begin_test "T35: Checkin updates timestamp"
 BEFORE_RC=0
 BEFORE_BODY=$(exec_in_pod curl -sf -H "Authorization: Bearer $GW_API_KEY" "${SERVER_URL}/api/v1/devices/${DEVICE_ID}" 2>&1) || BEFORE_RC=$?
-BEFORE=$(printf '%s\n' "$BEFORE_BODY" | grep -o '"lastCheckin":"[^"]*"' || true)
+BEFORE=$(sed -n 's/.*\("lastCheckin":"[^"]*"\).*/\1/p' <<<"$BEFORE_BODY")
 
 sleep 1 # sleep-ok: lastCheckin has one-second resolution, so the second checkin has to land in a later second
 
@@ -163,7 +163,7 @@ exec_in_pod cfgd \
 
 AFTER_RC=0
 AFTER_BODY=$(exec_in_pod curl -sf -H "Authorization: Bearer $GW_API_KEY" "${SERVER_URL}/api/v1/devices/${DEVICE_ID}" 2>&1) || AFTER_RC=$?
-AFTER=$(printf '%s\n' "$AFTER_BODY" | grep -o '"lastCheckin":"[^"]*"' || true)
+AFTER=$(sed -n 's/.*\("lastCheckin":"[^"]*"\).*/\1/p' <<<"$AFTER_BODY")
 
 echo "  Before: $BEFORE"
 echo "  After:  $AFTER"

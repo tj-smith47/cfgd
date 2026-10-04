@@ -34,3 +34,28 @@ if [ "$LEFT" != "" ]; then
 else
     pass_test "E-53" # want-absent
 fi
+T=$(kubectl get ds -o name 2>/dev/null || true)
+if [ -z "$T" ]; then
+    pass_test "E-54" # want-absent
+fi
+C=$(kubectl get ds -o name 2>/dev/null || :)
+[ -z "$C" ] && pass_test "E-55" # want-absent
+P=$(kubectl get ds -o name 2>/dev/null || printf '')
+if ! echo "$P" | grep -q cfgd; then
+    pass_test "E-56" # want-absent
+fi
+Q=$(kubectl get ds -o name 2>/dev/null || printf "")
+if [ -z "$Q" ]; then
+    pass_test "E-57" # want-absent
+fi
+L=$(kubectl get ds -o name 2>/dev/null || echo "")
+case "$L" in
+    "") pass_test "E-58" ;; # want-absent
+    *) fail_test "E-58" "left: $L" ;;
+esac
+case "$L" in
+    ds/*) fail_test "E-59" "left: $L" ;;
+    ""|none)
+        pass_test "E-59" # want-absent
+        ;;
+esac

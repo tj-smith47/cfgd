@@ -302,15 +302,17 @@ exec_in_pod rm -rf /tmp/cfgd-e2e-err03 2>/dev/null || true
 # =================================================================
 begin_test "BIN-ERR-04: Insufficient permissions"
 # Run cfgd as nobody (uid 65534) to verify it handles permission errors gracefully.
+ERR04_RC=0
 ERR04_OUTPUT=$(exec_in_pod su -s /bin/sh nobody -c \
-    "cfgd --config /etc/cfgd/cfgd.yaml apply --yes --no-color 2>&1" || true)
-echo "  Non-root apply output (first 10 lines):"
+    "cfgd --config /etc/cfgd/cfgd.yaml apply --yes --no-color 2>&1") || ERR04_RC=$?
+echo "  Non-root apply exit: $ERR04_RC, output (first 10 lines):"
 echo "$ERR04_OUTPUT" | head -10 | sed 's/^/    /'
-# A non-root apply reports the permission errors it hits (sysctl, for one) and exits without a panic
-if echo "$ERR04_OUTPUT" | grep -qi "permission\|denied\|error\|failed\|cannot"; then
+# A non-root apply either has nothing it lacks permission for and exits 0, or
+# exits non-zero naming the error it hit (sysctl, for one); a panic is neither.
+if echo "$ERR04_OUTPUT" | grep -q "panicked"; then
+    fail_test "BIN-ERR-04" "cfgd panicked when run as a non-root user"
+elif [ "$ERR04_RC" -eq 0 ] || echo "$ERR04_OUTPUT" | grep -qi "permission\|denied\|error\|failed\|cannot"; then
     pass_test "BIN-ERR-04"
 else
-    # Even if it succeeds with nothing to do (no drift), that's fine:
-    # the point is it didn't crash
-    pass_test "BIN-ERR-04"
+    fail_test "BIN-ERR-04" "non-root apply exited $ERR04_RC without naming the error it hit"
 fi

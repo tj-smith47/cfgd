@@ -35,3 +35,23 @@ GONE=$(kubectl get ds -o name 2>/dev/null) || GONE_RC=$?
 if [ -n "$SEEN" ] && [ "$GONE_RC" -eq 0 ] && [ -z "$GONE" ]; then
     pass_test "E-52"
 fi
+T_RC=0
+T=$(kubectl get ds -o name 2>/dev/null) || T_RC=$?
+if [ "$T_RC" -ne 0 ]; then
+    fail_test "E-60" "kubectl get failed (rc=$T_RC)"
+elif [ -z "$T" ]; then
+    pass_test "E-60"
+fi
+M=$(awk '/cfgd/' <<<"$T")
+[ -z "$M" ] && pass_test "E-61"
+L_RC=0
+L=$(kubectl get ds -o name 2>/dev/null) || L_RC=$?
+case "$L_RC:$L" in
+    0:) pass_test "E-62" ;;
+    *) fail_test "E-62" "left: $L" ;;
+esac
+S=$(kubectl get ds -o name 2>/dev/null || echo "")
+case "$S" in
+    ds/a) pass_test "E-63" ;;
+    *) fail_test "E-63" "got $S" ;;
+esac

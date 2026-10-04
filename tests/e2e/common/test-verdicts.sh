@@ -14,9 +14,11 @@
 #
 # Checks as well that no absence verdict rests on a read that turns its own
 # failure into empty output: a pass_test in the branch of a `-z` test, an
-# `= ""` test, a `!=` against a word or a negated condition, or in the else
+# `= ""` test, a `!=` against a word or a negated condition, in the else
 # branch of a condition an empty value makes false (a grep, an `=` against a
-# word), on a variable last assigned from a `$(... || echo "")`. A read
+# word), or in a case arm that matches "", on a variable last assigned from a
+# `$(...)` whose fallback prints nothing (`|| echo`, `|| echo ""`, `|| true`,
+# `|| :`, `|| printf ""`). A read
 # that failed then passes as "nothing there"; the read's exit code, captured
 # on its own, is what tells the two apart. The fixtures under
 # common/fixtures/existence/ mark each pass_test the scan has to flag with
@@ -170,7 +172,7 @@ scan_existence_files() {
             if (code !~ /(^|[;&|[:space:]])pass_test[[:space:]]/) return
             if (raw ~ /(^|[;&|[:space:]])pass_test[[:space:]].*# verdict-ok: [^[:space:]]/) return
             if (depth > 0 && kind[depth] == "if" && weakv[depth]) { print "EXIST " where; return }
-            if (depth > 0 && kind[depth] == "if" && absv[depth]) { print "ABSENT " where; return }
+            if (depth > 0 && absv[depth]) { print "ABSENT " where; return }
             if (match(code, /&&[[:space:]]*pass_test[[:space:]]/)) {
                 pre = substr(code, 1, RSTART - 1)
                 sub(/^.*;/, "", pre)
@@ -209,7 +211,7 @@ scan_existence_files() {
                 v = substr(c, RSTART, RLENGTH - 1); sub(/^[[:space:]]*((local|export)[[:space:]]+)?/, "", v)
                 # CMD drops double-quoted text, so the fallback echo is read
                 # off the raw last line of the command, the SH record before.
-                if (c ~ /=\$\(/ && lastsh ~ /\|\|[[:space:]]*echo([[:space:]]+(""|\047\047))?[[:space:]]*\)[[:space:]]*$/) soft[v] = 1
+                if (c ~ /=\$\(/ && lastsh ~ /\|\|[[:space:]]*(echo([[:space:]]+(""|\047\047))?|true|:|printf[[:space:]]+(""|\047\047))[[:space:]]*\)[[:space:]]*$/) soft[v] = 1
                 else delete soft[v]
             }
             next
@@ -227,7 +229,19 @@ scan_existence_files() {
                 branch(k, substr(code, RSTART + RLENGTH))
                 next
             }
-            if (code ~ /^[[:space:]]*case[[:space:]].*[[:space:]]in([[:space:]]|$)/) { depth++; kind[depth] = "case"; next }
+            if (code ~ /^[[:space:]]*case[[:space:]].*[[:space:]]in([[:space:]]|$)/) {
+                depth++; kind[depth] = "case"; weakv[depth] = 0; absv[depth] = 0
+                casesoft[depth] = soft_in(code)
+                next
+            }
+            # A case arm: on a soft variable, an arm that matches the empty
+            # string is where a failed read lands.
+            if (depth > 0 && kind[depth] == "case" && match(code, /^[[:space:]]*\(?("[^"]*"|\047[^\047]*\047|[^[:space:]()|"\047]+)([[:space:]]*\|[[:space:]]*("[^"]*"|\047[^\047]*\047|[^[:space:]()|"\047]+))*[[:space:]]*\)/)) {
+                arm = substr(code, RSTART, RLENGTH)
+                absv[depth] = casesoft[depth] && arm ~ /(^|[[:space:](|])(""|\047\047)[[:space:]]*[|)]/
+                body(substr(code, RSTART + RLENGTH), raw)
+                next
+            }
             if (code ~ /^[[:space:]]*else([[:space:];]|$)/) { if (depth > 0) { weakv[depth] = 0; absv[depth] = elsev[depth] }; body(substr(code, index(code, "else") + 4), raw); next }
             body(code, raw)
         }
