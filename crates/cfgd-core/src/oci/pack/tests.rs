@@ -485,7 +485,7 @@ fn pack_image_manifest_push_500_returns_manifest_push_failed() {
     let artifact_ref = format!("{registry}/myorg/myimage:v1");
     let result = pack_image(dir.path(), &artifact_ref, &PackOptions::default(), None);
 
-    let err = result.err().expect("manifest PUT 500 must yield Err");
+    let err = result.expect_err("manifest PUT 500 must yield Err");
     assert!(
         matches!(err, OciError::ManifestPushFailed { .. }),
         "manifest PUT 500 must yield ManifestPushFailed, got: {err:?}"
@@ -520,7 +520,7 @@ fn pack_image_blob_upload_500_returns_blob_upload_failed() {
     let artifact_ref = format!("{registry}/myorg/myimage:v1");
     let result = pack_image(dir.path(), &artifact_ref, &PackOptions::default(), None);
 
-    let err = result.err().expect("blob POST 500 must yield Err");
+    let err = result.expect_err("blob POST 500 must yield Err");
     assert!(
         matches!(err, OciError::BlobUploadFailed { .. }),
         "blob POST 500 must yield BlobUploadFailed, got: {err:?}"
@@ -1102,9 +1102,7 @@ fn pack_image_base_index_no_matching_platform_errors() {
     };
 
     let result = pack_image(dir.path(), &artifact_ref, &opts, None);
-    let err = result
-        .err()
-        .expect("missing platform in index must yield Err");
+    let err = result.expect_err("missing platform in index must yield Err");
     let msg = format!("{err}");
     assert!(
         matches!(err, OciError::RequestFailed { .. }),

@@ -1260,9 +1260,9 @@ pub(super) mod tests {
         #[test]
         #[serial]
         fn pull_with_signature_verify_success_emits_signature_verified_true() {
-            // The registry serves the tag but not its layer blob, so the
-            // signature check passes against the tag's digest and the pull
-            // fails afterwards, fetching the layer.
+            // The registry serves the tag and answers 404 for its layer blob,
+            // so the signature check passes against the tag's digest and the
+            // pull fails afterwards, fetching the layer.
             let _shim = CosignTestShim::builder()
                 .with_argv_logging(false)
                 .with_exit(0)

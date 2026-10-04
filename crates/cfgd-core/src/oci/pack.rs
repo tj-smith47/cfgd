@@ -282,8 +282,9 @@ pub(super) fn build_layered_manifest(
 
 /// The result of a successful [`pack_image`] call.
 ///
-/// Carries the pushed manifest digest and the resolved platform so callers
-/// report ground truth rather than re-deriving the platform independently.
+/// Carries the pushed manifest digest and the resolved platform, so callers
+/// report what the pack did and never re-derive the platform themselves.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PackOutcome {
     /// OCI manifest digest (`"sha256:..."`).
     pub digest: String,

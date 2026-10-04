@@ -1023,8 +1023,7 @@ fn platform_push_beside_a_manifest_naming_no_platform_is_refused_and_leaves_the_
         Some("linux/arm64"),
         None,
     )
-    .err()
-    .expect("an unlabelled manifest cannot join an index");
+    .expect_err("an unlabelled manifest cannot join an index");
 
     match &err {
         OciError::TagPlatformUnknown {
@@ -1055,8 +1054,7 @@ fn platform_push_to_a_digest_reference_is_refused_before_any_request() {
     let artifact = store.artifact("sha256:0123456789abcdef");
 
     let err = push_module(module_dir.path(), &artifact, Some("linux/arm64"), None)
-        .err()
-        .expect("a digest cannot be re-pointed");
+        .expect_err("a digest cannot be re-pointed");
 
     assert!(
         matches!(&err, OciError::PushToDigest { reference } if *reference == artifact),

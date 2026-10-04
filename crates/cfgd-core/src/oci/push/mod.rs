@@ -21,9 +21,10 @@ use super::{
 
 /// The result of a successful [`push_module`] call.
 ///
-/// Carries the pushed manifest digest and the resolved platform so callers
-/// report ground truth rather than re-deriving the platform independently —
-/// the same shape [`super::PackOutcome`] carries, for the same reason.
+/// Carries the pushed manifest digest and the resolved platform, so callers
+/// report what the push did and never re-derive the platform themselves.
+/// [`super::PackOutcome`] carries the same shape for the same reason.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PushOutcome {
     /// OCI manifest digest (`"sha256:..."`).
     pub digest: String,
@@ -50,7 +51,7 @@ impl PushOutcome {
 }
 
 /// The result of a successful [`push_module_multiplatform`] call.
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MultiPlatformPushOutcome {
     /// Digest of the OCI index written at the tag.
     pub index_digest: String,
