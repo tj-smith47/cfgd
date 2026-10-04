@@ -958,7 +958,9 @@ squash_awk='
 # a string is not read as shell. In an ANSI-C span (a single quote
 # after an odd run of $), as in a double-quoted one, a backslash
 # escapes the next character. The string a bash -c or sh -c runs is
-# shell, so it is read as such. A quote still open at the end of the
+# shell, so it is read as such, and so is a "$( capture: a quote inside
+# its parentheses opens a nested string, and only the " after the ) that
+# closes the capture ends it. A quote still open at the end of the
 # line stays open into the next one; a line ending in one backslash
 # keeps it. A quoted client stays the word client, so that
 # --dry-run="client" reads as --dry-run=client. kept is the line as
@@ -980,9 +982,10 @@ function squash(s, n,   out, i, c) {
         if (inq == "\047") { qbuf = qbuf c; mask = mask "Q"; continue }
         if (inq == "\"") { qbuf = qbuf c; mask = mask "Q"; continue }
         if (c == "\\") { if (i == length(s)) { out = out c; mask = mask c } else { out = out "X"; mask = mask "XX"; i++ } }
-        else if (cq != "" && c == cq) { cq = ""; out = out " ; "; mask = mask " " }
-        else if ((c == "\047" || c == "\"") && cq == "" && out ~ /(^|[^A-Za-z0-9_])(ba)?sh[ \t]+-c[ \t]*$/) { cq = c; qat = n; out = out " ; "; mask = mask " " }
-        else if (c == "\"" && cq == "" && substr(s, i + 1, 2) == "$(") { cq = c; qat = n; out = out " ; "; mask = mask " " }
+        else if (cq != "" && cqcap && (c == "(" || c == ")")) { cqd += (c == "(") ? 1 : -1; out = out c; mask = mask c }
+        else if (cq != "" && c == cq && (!cqcap || cqd <= 0)) { cq = ""; out = out " ; "; mask = mask " " }
+        else if ((c == "\047" || c == "\"") && cq == "" && out ~ /(^|[^A-Za-z0-9_])(ba)?sh[ \t]+-c[ \t]*$/) { cq = c; cqcap = 0; qat = n; out = out " ; "; mask = mask " " }
+        else if (c == "\"" && cq == "" && substr(s, i + 1, 2) == "$(") { cq = c; cqcap = 1; cqd = 0; qat = n; out = out " ; "; mask = mask " " }
         else if (c == "\047" || c == "\"") {
             ansi = match(out, /\$+$/) && RLENGTH % 2
             inq = c; qat = n; qbuf = ""; out = out "Q"; mask = mask "Q"
@@ -1593,6 +1596,9 @@ plant captured "RESULT=\$(kubectl apply -f - 2>&1 <<EOF || true" "$module_unlabe
 # the )" after the terminator closes it. A "$( is read as code, so the apply
 # inside it is a site like its unquoted twin.
 plant captured-quoted "cq_f() {"$'\n'"    RESULT=\"\$(kubectl apply -f - 2>&1 <<EOF" "$module_unlabelled" "EOF"$'\n'"    )\" || return 1"$'\n'"}"
+# A quoted capture holding its own quoted word: the "$E2E_NAMESPACE" inside
+# the $( is a nested string, and only the )" back at depth 0 closes it.
+plant captured-quoted-nested "cqn_f() {"$'\n'"    R=\"\$(kubectl apply -n \"\$E2E_NAMESPACE\" -f - 2>&1 <<EOF" "$module_unlabelled" "EOF"$'\n'"    )\" || return 1"$'\n'"}"
 # A quoted capture of a heredoc fed to cat: where the text goes next is
 # beyond the scan.
 plant captured-quoted-cat "RESULT=\"\$(cat <<EOF" "$module_unlabelled" "EOF"$'\n'")\""
@@ -2333,6 +2339,8 @@ SITE captured.sh:1
 UNLABELLED captured.sh:2
 SITE captured-quoted.sh:2
 UNLABELLED captured-quoted.sh:3
+SITE captured-quoted-nested.sh:2
+UNLABELLED captured-quoted-nested.sh:3
 CAPTURED captured-quoted-cat.sh:2
 CAPTURED captured-tag-kind.sh:2
 FILEDOC captured-to-file.sh:1
