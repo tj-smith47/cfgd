@@ -36,6 +36,39 @@ pub struct PushOutcome {
     pub index_digest: Option<String>,
 }
 
+impl PushOutcome {
+    /// Every document the push wrote: first what the tag resolves to after
+    /// it (the index, when the push joined one), then the platform manifest
+    /// under that index, which `<tag>-<os>-<arch>` resolves to.
+    pub fn written_digests(&self) -> Vec<&str> {
+        self.index_digest
+            .iter()
+            .chain([&self.digest])
+            .map(String::as_str)
+            .collect()
+    }
+}
+
+/// The result of a successful [`push_module_multiplatform`] call.
+#[derive(Debug)]
+pub struct MultiPlatformPushOutcome {
+    /// Digest of the OCI index written at the tag.
+    pub index_digest: String,
+    /// Digest of each platform's manifest, in the order the builds were given.
+    pub manifest_digests: Vec<String>,
+}
+
+impl MultiPlatformPushOutcome {
+    /// Every document the push wrote: first the index at the tag, then each
+    /// platform's manifest, which its `<tag>-<os>-<arch>` resolves to.
+    pub fn written_digests(&self) -> Vec<&str> {
+        std::iter::once(&self.index_digest)
+            .chain(&self.manifest_digests)
+            .map(String::as_str)
+            .collect()
+    }
+}
+
 /// Push a module directory as an OCI artifact.
 ///
 /// Reads `module.yaml` from `dir`, serializes it as the config blob, and
@@ -470,15 +503,14 @@ pub fn parse_platform_target(target: &str) -> Result<(&str, &str), OciError> {
 /// Each `builds` entry is `(build_dir, platform)` where platform is "os/arch".
 /// Pushes each platform-specific manifest, then pushes the index.
 ///
-/// Returns the index digest alone, unlike [`push_module`]: every platform here
-/// was named by the caller, so there is no defaulted value the caller would
-/// otherwise have to re-derive, and an index spans platforms rather than
-/// resolving one.
+/// Answers the digest of the index at the tag and of each platform's manifest
+/// under it, so a caller signing what the push wrote can name every document
+/// a `<tag>-<os>-<arch>` reference resolves to.
 pub fn push_module_multiplatform(
     builds: &[(&Path, &str)],
     artifact_ref: &str,
     printer: Option<&Printer>,
-) -> Result<String, OciError> {
+) -> Result<MultiPlatformPushOutcome, OciError> {
     let oci_ref = OciReference::parse(artifact_ref)?;
     let auth = RegistryAuth::resolve(&oci_ref.registry);
     let agent = crate::http::http_agent(crate::http::HTTP_OCI_TIMEOUT);
@@ -489,7 +521,7 @@ pub fn push_module_multiplatform(
     let result = push_multiplatform_manifests_and_index(&agent, builds, &oci_ref, auth.as_ref());
 
     match &result {
-        Ok(index_digest) => {
+        Ok(MultiPlatformPushOutcome { index_digest, .. }) => {
             if let Some(s) = spinner {
                 let _ = s
                     .finish_ok("Pushed multi-platform module")
@@ -524,7 +556,7 @@ fn push_multiplatform_manifests_and_index(
     builds: &[(&Path, &str)],
     oci_ref: &OciReference,
     auth: Option<&RegistryAuth>,
-) -> Result<String, OciError> {
+) -> Result<MultiPlatformPushOutcome, OciError> {
     let mut platform_manifests = Vec::new();
 
     for (dir, platform) in builds {
@@ -555,7 +587,11 @@ fn push_multiplatform_manifests_and_index(
         media_type: MEDIA_TYPE_OCI_INDEX.to_string(),
         manifests: platform_manifests,
     };
-    put_index(agent, oci_ref, auth, &serde_json::to_vec(&index)?)
+    let index_digest = put_index(agent, oci_ref, auth, &serde_json::to_vec(&index)?)?;
+    Ok(MultiPlatformPushOutcome {
+        index_digest,
+        manifest_digests: index.manifests.into_iter().map(|m| m.digest).collect(),
+    })
 }
 
 #[cfg(test)]

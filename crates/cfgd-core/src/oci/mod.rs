@@ -27,8 +27,8 @@ pub use pull::{
     ArtifactFacts, PullChecks, PullOutcome, SignaturePolicy, artifact_facts, pull_module,
 };
 pub use push::{
-    PushOutcome, current_platform, parse_platform_target, push_module, push_module_multiplatform,
-    rust_arch_to_oci,
+    MultiPlatformPushOutcome, PushOutcome, current_platform, parse_platform_target, push_module,
+    push_module_multiplatform, rust_arch_to_oci,
 };
 pub use sign::{
     COSIGN_PREDICATE_TYPES, SignatureCheck, VerifyOptions, attach_attestation,

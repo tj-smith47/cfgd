@@ -142,7 +142,7 @@ pub fn cmd_image_pack(
         }
 
         let crate::cli::helpers::SignAttestOutcome { signed, attested } =
-            crate::cli::helpers::sign_and_attest(printer, artifact, &digest, key, sign, attest)?;
+            crate::cli::helpers::sign_and_attest(printer, artifact, &[&digest], key, sign, attest)?;
         (digest, platform_str, signed, attested)
     };
 

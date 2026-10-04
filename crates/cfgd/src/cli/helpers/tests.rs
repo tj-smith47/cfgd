@@ -1848,7 +1848,7 @@ fn sign_and_attest_no_op_returns_both_false_without_cosign() {
     let outcome = sign_and_attest(
         &printer,
         "localhost:5000/x:v1",
-        "sha256:dead",
+        &["sha256:dead"],
         None,
         false,
         false,
@@ -1878,7 +1878,7 @@ fn sign_and_attest_attest_without_git_warns_and_records_unknown_source() {
     let outcome = sign_and_attest(
         &printer,
         "localhost:5000/x:v1",
-        "sha256:dead",
+        &["sha256:dead"],
         None,
         false,
         true,
@@ -1912,7 +1912,7 @@ fn sign_and_attest_sign_failure_maps_to_sign_failed_meta() {
     let err = sign_and_attest(
         &printer,
         "localhost:5000/x:v1",
-        "sha256:dead",
+        &["sha256:dead"],
         None,
         true,
         false,
@@ -1926,6 +1926,10 @@ fn sign_and_attest_sign_failure_maps_to_sign_failed_meta() {
     assert_eq!(
         meta.error_kind, "sign_failed",
         "cosign sign failure must map to sign_failed: {meta:?}"
+    );
+    assert_eq!(
+        meta.extras["digest"], "sha256:dead",
+        "the payload names the digest whose subject cosign refused: {meta:?}"
     );
 }
 
@@ -1945,7 +1949,7 @@ fn sign_and_attest_attest_failure_maps_to_attest_failed_meta() {
     let err = sign_and_attest(
         &printer,
         "localhost:5000/x:v1",
-        "sha256:dead",
+        &["sha256:dead"],
         None,
         false,
         true,
@@ -1959,6 +1963,10 @@ fn sign_and_attest_attest_failure_maps_to_attest_failed_meta() {
     assert_eq!(
         meta.error_kind, "attest_failed",
         "cosign attach failure must map to attest_failed: {meta:?}"
+    );
+    assert_eq!(
+        meta.extras["digest"], "sha256:dead",
+        "the payload names the digest whose subject cosign refused: {meta:?}"
     );
 }
 

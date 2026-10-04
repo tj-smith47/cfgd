@@ -2183,8 +2183,9 @@ without `--platform` is a push for this host's platform. Each push also tags its
 digest reference is refused (a digest cannot be re-pointed). A tag holding a manifest with no
 `cfgd.io/platform` annotation is refused before anything is uploaded: delete that tag in the
 registry, or push to another tag. `--sign` and `--attest` name the digest the tag resolves to after
-the push (the index, when one was written), so the signature and the provenance land on what this
-push left there. `module build --sign` signs the same way.
+the push, so the signature and the provenance land on what this push left there. When that is an
+index, they also name this push's manifest under it, so `<tag>-<os>-<arch>` verifies too.
+`module build --sign` signs the same way.
 
 ```sh
 cfgd module push ./mod-amd64 --artifact ghcr.io/me/my-module:1.0.0 --platform linux/amd64
@@ -2273,6 +2274,8 @@ cfgd module build ./my-module --target linux/amd64,linux/arm64
 Several `--target` platforms push one OCI index to `--artifact`. A build for one platform (one
 `--target`, or none for this host) pushes the way `cfgd module push` does, so it joins
 any other platforms the tag already lists.
+`--sign` signs the digest the tag resolves to after the push and, when that is an index, each
+manifest this build put under it, so every `<tag>-<os>-<arch>` it pushed verifies.
 With `-o json` the payload's `indexDigest` names the index the tag resolves to, and is `null` when
 the tag holds the one manifest alone.
 

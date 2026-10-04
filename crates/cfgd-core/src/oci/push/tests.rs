@@ -508,10 +508,12 @@ fn push_module_multiplatform_pushes_index_with_per_platform_manifests() {
     server
         .mock("PUT", "/v2/test/multi/manifests/multi-tag-linux-amd64")
         .with_status(201)
+        .with_header("Docker-Content-Digest", "sha256:a4d")
         .create();
     server
         .mock("PUT", "/v2/test/multi/manifests/multi-tag-linux-arm64")
         .with_status(201)
+        .with_header("Docker-Content-Digest", "sha256:a64")
         .create();
     // Index manifest PUT (the original tag).
     let index_mock = server
@@ -530,10 +532,15 @@ fn push_module_multiplatform_pushes_index_with_per_platform_manifests() {
         "multiplatform push should succeed: {:?}",
         result.err()
     );
-    let index_digest = result.unwrap();
+    let outcome = result.unwrap();
     assert!(
-        index_digest.starts_with("sha256:"),
-        "index digest must be sha256-prefixed: {index_digest}"
+        outcome.index_digest.starts_with("sha256:"),
+        "index digest must be sha256-prefixed: {outcome:?}"
+    );
+    assert_eq!(
+        outcome.manifest_digests,
+        ["sha256:a4d", "sha256:a64"],
+        "each platform's manifest digest, in build order"
     );
     index_mock.assert();
 }

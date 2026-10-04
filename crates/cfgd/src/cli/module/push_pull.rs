@@ -61,12 +61,8 @@ pub fn cmd_module_push(
         let push_sec = printer.section("Push Module");
         let _inherit = printer.depth_inheritance();
         push_sec.kv_block(header);
-        let cfgd_core::oci::PushOutcome {
-            digest,
-            platform: resolved_platform,
-            index_digest,
-        } = cfgd_core::oci::push_module(dir_path, artifact, platform, Some(printer)).map_err(
-            |e| {
+        let pushed = cfgd_core::oci::push_module(dir_path, artifact, platform, Some(printer))
+            .map_err(|e| {
                 crate::cli::cli_error(
                     artifact,
                     "push_failed",
@@ -77,11 +73,21 @@ pub fn cmd_module_push(
                     // reads as "no platform" rather than "no artifact".
                     serde_json::json!({ "artifact": artifact, "dir": dir }),
                 )
-            },
-        )?;
-        let resolved = index_digest.as_deref().unwrap_or(&digest);
+            })?;
         let crate::cli::helpers::SignAttestOutcome { signed, attested } =
-            crate::cli::helpers::sign_and_attest(printer, artifact, resolved, key, sign, attest)?;
+            crate::cli::helpers::sign_and_attest(
+                printer,
+                artifact,
+                &pushed.written_digests(),
+                key,
+                sign,
+                attest,
+            )?;
+        let cfgd_core::oci::PushOutcome {
+            digest,
+            platform: resolved_platform,
+            index_digest,
+        } = pushed;
 
         if apply {
             let module_yaml = std::fs::read_to_string(dir_path.join("module.yaml"))?;
@@ -1081,7 +1087,13 @@ pub(super) mod tests {
                 "mediaType": "application/vnd.oci.image.manifest.v1+json",
                 "annotations": { cfgd_core::OCI_ANNOTATION_PLATFORM: "linux/amd64" },
             })));
-            assert_signed_and_attested(&argv, &format!("{registry}/test/mod@{TAG_DIGEST}"));
+            assert_signed_and_attested(
+                &argv,
+                &[
+                    &format!("{registry}/test/mod@{TAG_DIGEST}"),
+                    &format!("{registry}/test/mod@{PLATFORM_TAG_DIGEST}"),
+                ],
+            );
         }
 
         #[test]
@@ -1090,25 +1102,28 @@ pub(super) mod tests {
             let (argv, registry) = cosign_argv_after_push(None);
             assert_signed_and_attested(
                 &argv,
-                &format!("{registry}/test/mod@{PLATFORM_TAG_DIGEST}"),
+                &[&format!("{registry}/test/mod@{PLATFORM_TAG_DIGEST}")],
             );
         }
 
-        /// `cosign sign` and `cosign attest` each ran once, both naming `subject`.
-        fn assert_signed_and_attested(argv: &str, subject: &str) {
+        /// `cosign sign` ran once per subject, in order, and then `cosign
+        /// attest` did the same.
+        fn assert_signed_and_attested(argv: &str, subjects: &[&str]) {
             let calls: Vec<&str> = argv
                 .lines()
                 .filter(|l| l.starts_with("sign ") || l.starts_with("attest "))
                 .collect();
-            assert_eq!(calls.len(), 2, "{argv}");
-            assert!(
-                calls[0].starts_with("sign ") && calls[0].ends_with(subject),
-                "the signature names {subject}: {argv}"
-            );
-            assert!(
-                calls[1].starts_with("attest ") && calls[1].ends_with(subject),
-                "the attestation names {subject}: {argv}"
-            );
+            let expected: Vec<(&str, &str)> = ["sign ", "attest "]
+                .into_iter()
+                .flat_map(|verb| subjects.iter().map(move |s| (verb, *s)))
+                .collect();
+            assert_eq!(calls.len(), expected.len(), "{argv}");
+            for (call, (verb, subject)) in calls.iter().zip(&expected) {
+                assert!(
+                    call.starts_with(verb) && call.ends_with(subject),
+                    "expected `{verb}` naming {subject}: {argv}"
+                );
+            }
         }
 
         #[test]

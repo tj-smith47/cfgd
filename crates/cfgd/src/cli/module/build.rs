@@ -79,21 +79,29 @@ pub fn cmd_module_build(
             output_artifacts.push(cfgd_core::to_posix_string(&output_dir));
 
             if let Some(art) = artifact {
+                let outcome =
+                    cfgd_core::oci::push_module(&output_dir, art, Some(targets[0]), Some(printer))
+                        .map_err(|e| {
+                            crate::cli::cli_error(
+                                art,
+                                "push_failed",
+                                cfgd_core::output::collapse_to_subject_line(&e),
+                                serde_json::json!({ "artifact": art, "target": targets[0] }),
+                            )
+                        })?;
+                crate::cli::helpers::sign_and_attest(
+                    printer,
+                    art,
+                    &outcome.written_digests(),
+                    key,
+                    sign,
+                    false,
+                )?;
                 let cfgd_core::oci::PushOutcome {
                     digest,
                     index_digest,
                     ..
-                } = cfgd_core::oci::push_module(&output_dir, art, Some(targets[0]), Some(printer))
-                    .map_err(|e| {
-                        crate::cli::cli_error(
-                            art,
-                            "push_failed",
-                            cfgd_core::output::collapse_to_subject_line(&e),
-                            serde_json::json!({ "artifact": art, "target": targets[0] }),
-                        )
-                    })?;
-                let resolved = index_digest.as_deref().unwrap_or(&digest);
-                crate::cli::helpers::sign_and_attest(printer, art, resolved, key, sign, false)?;
+                } = outcome;
                 pushed = Some(Pushed::Platform {
                     digest,
                     index_digest,
@@ -138,7 +146,7 @@ pub fn cmd_module_build(
                     .iter()
                     .map(|(dir, plat)| (dir.as_path(), plat.as_str()))
                     .collect();
-                let digest =
+                let outcome =
                     cfgd_core::oci::push_module_multiplatform(&build_refs, art, Some(printer))
                         .map_err(|e| {
                             crate::cli::cli_error(
@@ -148,8 +156,15 @@ pub fn cmd_module_build(
                                 serde_json::json!({ "artifact": art, "targets": &targets }),
                             )
                         })?;
-                crate::cli::helpers::sign_and_attest(printer, art, &digest, key, sign, false)?;
-                pushed = Some(Pushed::Index(digest));
+                crate::cli::helpers::sign_and_attest(
+                    printer,
+                    art,
+                    &outcome.written_digests(),
+                    key,
+                    sign,
+                    false,
+                )?;
+                pushed = Some(Pushed::Index(outcome.index_digest));
             }
         }
     }
@@ -440,6 +455,9 @@ mod tests {
         use cfgd_core::test_helpers::CosignTestShim;
         use serial_test::serial;
 
+        #[cfg(unix)]
+        use crate::cli::module::push_pull::tests::{PLATFORM_TAG_DIGEST, TAG_DIGEST};
+
         #[test]
         #[serial]
         fn sign_fails_when_cosign_exits_nonzero_returns_sign_failed_error_meta() {
@@ -483,11 +501,14 @@ mod tests {
         }
 
         /// Build `targets` through a stand-in container runtime and push the
-        /// result to a mock registry with `--sign`, answering the cosign argv
-        /// (one line per call) and the registry.
+        /// result with `--sign` to a mock registry whose tag holds `tag`,
+        /// answering the cosign argv (one line per call) and the registry.
         // Unix-only: the stand-in runtime is a `/bin/sh` script.
         #[cfg(unix)]
-        fn cosign_argv_after_signed_build(targets: &str) -> (String, String) {
+        fn cosign_argv_after_signed_build(
+            targets: &str,
+            tag: Option<&serde_json::Value>,
+        ) -> (String, String) {
             use std::os::unix::fs::PermissionsExt;
 
             let dir = tempfile::tempdir().unwrap();
@@ -515,7 +536,7 @@ mod tests {
                 .with_exit(0)
                 .install();
             let (_server, registry) =
-                crate::cli::module::push_pull::tests::mock_push_registry_holding(None);
+                crate::cli::module::push_pull::tests::mock_push_registry_holding(tag);
 
             let (printer, _cap) = cfgd_core::output::Printer::for_test_doc();
             cmd_module_build(
@@ -531,42 +552,65 @@ mod tests {
             (shim.argv_log(), registry)
         }
 
-        /// `cosign sign` ran once, naming `subject`.
+        /// `cosign sign` ran once per subject, in order.
         #[cfg(unix)]
-        fn assert_signed(argv: &str, subject: &str) {
+        fn assert_signed(argv: &str, subjects: &[String]) {
             let signs: Vec<&str> = argv.lines().filter(|l| l.starts_with("sign ")).collect();
-            assert_eq!(signs.len(), 1, "{argv}");
-            assert!(
-                signs[0].ends_with(subject),
-                "the signature names {subject}: {argv}"
-            );
+            assert_eq!(signs.len(), subjects.len(), "{argv}");
+            for (sign, subject) in signs.iter().zip(subjects) {
+                assert!(
+                    sign.ends_with(subject.as_str()),
+                    "a signature names {subject}: {argv}"
+                );
+            }
+        }
+
+        #[cfg(unix)]
+        fn subject(registry: &str, digest: &str) -> String {
+            format!("{registry}/test/mod@{digest}")
         }
 
         #[cfg(unix)]
         #[test]
         #[serial]
         fn build_sign_of_one_target_signs_the_manifest_it_pushed() {
-            let (argv, registry) = cosign_argv_after_signed_build("linux/amd64");
+            let (argv, registry) = cosign_argv_after_signed_build("linux/amd64", None);
+            assert_signed(&argv, &[subject(&registry, PLATFORM_TAG_DIGEST)]);
+        }
+
+        #[cfg(unix)]
+        #[test]
+        #[serial]
+        fn build_sign_of_one_target_joining_an_index_signs_the_index_and_the_manifest() {
+            let (argv, registry) = cosign_argv_after_signed_build(
+                "linux/amd64",
+                Some(&serde_json::json!({
+                    "schemaVersion": 2,
+                    "mediaType": "application/vnd.oci.image.manifest.v1+json",
+                    "annotations": { cfgd_core::OCI_ANNOTATION_PLATFORM: "linux/arm64" },
+                })),
+            );
             assert_signed(
                 &argv,
-                &format!(
-                    "{registry}/test/mod@{}",
-                    crate::cli::module::push_pull::tests::PLATFORM_TAG_DIGEST
-                ),
+                &[
+                    subject(&registry, TAG_DIGEST),
+                    subject(&registry, PLATFORM_TAG_DIGEST),
+                ],
             );
         }
 
         #[cfg(unix)]
         #[test]
         #[serial]
-        fn build_sign_of_several_targets_signs_the_index_it_pushed() {
-            let (argv, registry) = cosign_argv_after_signed_build("linux/amd64,linux/arm64");
+        fn build_sign_of_several_targets_signs_the_index_and_each_manifest() {
+            let (argv, registry) = cosign_argv_after_signed_build("linux/amd64,linux/arm64", None);
             assert_signed(
                 &argv,
-                &format!(
-                    "{registry}/test/mod@{}",
-                    crate::cli::module::push_pull::tests::TAG_DIGEST
-                ),
+                &[
+                    subject(&registry, TAG_DIGEST),
+                    subject(&registry, PLATFORM_TAG_DIGEST),
+                    subject(&registry, PLATFORM_TAG_DIGEST),
+                ],
             );
         }
     }
