@@ -1837,7 +1837,7 @@ mod cmd_generate_mockito {
             &crate::cli::startup::StartupDocument::load(&cli.config),
             &args,
         )
-        .expect("declining consent must return Ok with an 'Aborted.' doc, not Err");
+        .expect("declining consent returns Ok with an 'Aborted.' doc");
         must_not_fire.assert();
         let output = cfgd_core::test_helpers::captured_text(&buf);
         assert!(

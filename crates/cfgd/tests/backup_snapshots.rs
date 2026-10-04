@@ -1852,7 +1852,7 @@ fn backup_run_reports_a_busy_unit_and_still_runs_the_others() {
         &cfgd::cli::startup::StartupDocument::load(&cli.config),
         None,
     )
-    .expect("a busy unit is an outcome, not an error");
+    .expect("a busy unit is an outcome");
     drop(printer);
 
     let skipped: Vec<&str> = outcome

@@ -785,7 +785,7 @@ mod tests {
             false,
             false,
         )
-        .expect("a declined confirm is an abort, not a failure");
+        .expect("a declined confirm is an abort");
         drop(printer);
 
         let human = cap.human();
