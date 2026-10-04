@@ -163,7 +163,7 @@ begin_test "I10: init --from same repo twice does NOT pull"
 I10_DST="$SCRATCH/i10-dst"
 run init "$I10_DST" --from "$ISRC" --no-color
 FIRST_HEAD=$(cd "$I10_DST" && git rev-parse HEAD 2>/dev/null || echo "")
-# Run again: should detect already initialized, not re-clone or pull
+# Run again: init should find the existing checkout and leave its HEAD alone
 run init "$I10_DST" --from "$ISRC" --no-color
 SECOND_HEAD=$(cd "$I10_DST" && git rev-parse HEAD 2>/dev/null || echo "")
 if [ "$FIRST_HEAD" = "$SECOND_HEAD" ] && [ -n "$FIRST_HEAD" ]; then

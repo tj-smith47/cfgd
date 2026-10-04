@@ -5,10 +5,10 @@
 # what the note excuses or fails.
 #
 # Checks too that no pass_test is guarded only by existence: an if or elif
-# whose condition, or one of whose ||-alternatives, is nothing but `-n`, `-s`
-# or `!=` against an empty value ("", '', "[]", "{}" or "null"), an elif that
-# only re-reads an object with a bare `kubectl get` or `k8s_exists`, or the
-# same tests chained with && into the pass_test line. A value read back is asserted by comparing it with the value
+# whose condition, or one of whose ||-alternatives, is nothing but `-n`,
+# `-s` or `!=` against an empty value ("", '', "[]", "{}" or "null"), an
+# elif that only re-reads an object with a bare `kubectl get` or
+# `k8s_exists`, or the same tests chained with && into the pass_test line. A value read back is asserted by comparing it with the value
 # the fixture determines. The fixtures under common/fixtures/existence/ mark
 # each pass_test the scan has to flag with `# want-flag`.
 #

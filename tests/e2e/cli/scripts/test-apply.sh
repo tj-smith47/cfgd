@@ -88,8 +88,8 @@ else fail_test "A13"; fi
 
 begin_test "A14: apply --module (nonexistent module)"
 run "${C[@]}" apply --dry-run --module nonexistent
-# A typo'd module name errors loudly instead of converging an empty plan:
-# silence here would read as "nonexistent is already satisfied".
+# A typo'd module name has to error loudly: an empty plan here would read as
+# "nonexistent is already satisfied".
 if assert_fail && echo "$OUTPUT" | grep -q "module not found: nonexistent"; then
     pass_test "A14"
 else fail_test "A14"; fi

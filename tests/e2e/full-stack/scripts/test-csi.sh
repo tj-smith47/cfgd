@@ -336,9 +336,9 @@ ensure_label namespace "$CSI05_NS" cfgd.io/inject-modules=true --overwrite || CS
 # logs the skip, so the pod runs with no CSI volume. Running alone cannot tell
 # that skip from a webhook that never saw the pod; the operator's log line can.
 csi05_skip_logged() {
-    kubectl logs -n "$E2E_INSTALL_NS" -l "$E2E_OPERATOR_PODS" --since-time="$CSI05_SINCE" --tail=-1 2>/dev/null |
+    kubectl logs -n "$E2E_INSTALL_NS" -l "$E2E_OPERATOR_PODS" --since-time="$CSI05_SINCE" --tail=-1 2>/dev/null | # rc-ok: a failed read leaves grep empty, so the function answers no
         grep 'module CRD not found, skipping injection' |
-        grep -qE "module=\"?nonexistent-module-${E2E_RUN_ID}\"?([^A-Za-z0-9_-]|$)" # rc-ok: a failed read leaves grep empty, so the function answers no
+        grep -qE "module=\"?nonexistent-module-${E2E_RUN_ID}\"?([^A-Za-z0-9_-]|$)"
 }
 
 if ! $CSI05_LABELLED; then
