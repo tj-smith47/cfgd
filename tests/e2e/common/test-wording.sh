@@ -162,6 +162,7 @@ probe frame-rather-than fail "\"rather than\" in a comment fails" '^WORDING .*/s
 probe frame-instead-of fail "\"instead of\" in a trailing comment fails" '^WORDING .*/suite\.sh:2 contrast frame$'
 probe frame-comma-not fail "a \", not\" frame broken across two comment lines fails at the first" '^WORDING .*/suite\.sh:2 contrast frame$'
 probe quoted-hash pass "a # inside a quoted string starts no comment"
+probe frame-not-but fail "a \"not X but Y\" frame in a comment fails" '^WORDING .*/suite\.sh:2 contrast frame$'
 probe frame-hatched pass "a contrast frame on a line carrying a wording-ok hatch passes"
 
 # The census: each way a listed script can fail to reach awk fails the scan.

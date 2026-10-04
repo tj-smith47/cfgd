@@ -9,10 +9,11 @@
 # tests/e2e/common/test-wording.sh reads the lines of this section, up to the
 # blank line, as the contrast frames no e2e comment may carry, matched in awk
 # on lowercased text, so each is written in the regex dialect awk and grep -P
-# share.
+# share; that leaves out a {m,n} bound, which an older mawk reads literally.
 (^|[^[:alnum:]_])rather than([^[:alnum:]_]|$)
 (^|[^[:alnum:]_])instead of([^[:alnum:]_]|$)
 (, |; | but )(not|never|no longer) [[:alnum:]]
+(^|[^[:alnum:]_])not [^.;,]+ but 
 
 # Dashes used as prose punctuation.
 —

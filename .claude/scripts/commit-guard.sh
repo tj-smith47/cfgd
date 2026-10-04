@@ -256,6 +256,11 @@ self_test() {
     word 'a subject without a prefix' 'Report the failing question' refuse
     word 'a contrast frame in the body' $'fix(cli): x\n\nIt reads the file rather than the env.' refuse
     word 'a comma-not frame' $'fix(cli): x\n\nThe flag, not the env, wins.' refuse
+    word 'a comma-never frame before a digit' $'fix(cli): x\n\nReturns 2, never 1, when pgrep cannot answer.' refuse
+    word 'an instead-of frame' $'fix(cli): x\n\nIt reads the file instead of the env.' refuse
+    word 'a but-not frame' $'fix(cli): x\n\nThe flag is read but not the env.' refuse
+    word 'a not-X-but-Y frame' $'fix(cli): x\n\nIt reads not the file but the env.' refuse
+    word 'a not with no but' $'fix(cli): x\n\nThe file is not read twice.' allow
     word 'a prose em dash' $'fix(cli): x\n\nThe flag — when set — wins.' refuse
     word 'a prose double dash' $'fix(cli): x\n\nThe flag -- when set -- wins.' refuse
     word 'a deferral excuse' $'fix(cli): x\n\nThe rest is a follow-up.' refuse
