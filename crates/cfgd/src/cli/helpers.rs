@@ -1407,7 +1407,19 @@ pub fn effective_config_file(
 /// central sink renders one consistent payload while `main.rs` still downcasts
 /// the inner `CfgdError` onto `ExitCode::NoConfig`. The returned error must be
 /// propagated (`return Err(no_config_error(printer, path))`); it emits nothing.
+///
+/// A path still leading with `~` is missing because no home directory resolved,
+/// so it is the loader's own `ConfigError::HomeUnresolved`, as every verb
+/// reading through the run reports it.
 pub(in crate::cli) fn no_config_error(_printer: &Printer, config_path: &Path) -> anyhow::Error {
+    if config_path.starts_with("~") {
+        return cfgd_core::errors::CfgdError::Config(
+            cfgd_core::errors::ConfigError::HomeUnresolved {
+                path: config_path.to_path_buf(),
+            },
+        )
+        .into();
+    }
     crate::cli::cli_error_ctx(
         cfgd_core::errors::CfgdError::Config(cfgd_core::errors::ConfigError::NotFound {
             path: config_path.to_path_buf(),

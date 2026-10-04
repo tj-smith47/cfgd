@@ -673,6 +673,42 @@ fn a_tilde_config_with_no_home_reports_the_unset_home() {
     );
 }
 
+/// The verbs that check for the config file before reading it report a `~`
+/// path with no home set the way `status` does: the unset home, under table
+/// and json output alike.
+#[test]
+fn every_config_verb_reports_a_tilde_config_with_no_home_as_the_unset_home() {
+    let verbs: [&[&str]; 5] = [
+        &["config", "show"],
+        &["config", "get", "profile"],
+        &["config", "set", "profile", "work"],
+        &["config", "unset", "theme.name"],
+        &["config", "edit"],
+    ];
+    for verb in verbs {
+        let mut args = verb.to_vec();
+        args.extend(["--config", "~/cfgd.yaml"]);
+        let (_, stderr, code) = run_homeless(&args);
+        assert_eq!(code, Some(3), "{verb:?}: exits NoConfig(3): {stderr}");
+        assert!(
+            stderr.contains(&format!("{HOME_UNRESOLVED} ~/cfgd.yaml")),
+            "{verb:?}: {stderr:?}"
+        );
+
+        args.extend(["-o", "json"]);
+        let (stdout, _, code) = run_homeless(&args);
+        assert_eq!(code, Some(3), "{verb:?}: exits NoConfig(3): {stdout}");
+        let v = parse_single_json(&stdout);
+        assert_eq!(v["error"], "config", "{verb:?}: {v}");
+        assert!(
+            v["message"]
+                .as_str()
+                .is_some_and(|m| m.contains(&format!("{HOME_UNRESOLVED} ~/cfgd.yaml"))),
+            "{verb:?}: {v}"
+        );
+    }
+}
+
 /// The default config location with no home set. Linux and macOS spell it
 /// under `~`, so the run reports the unset home; Windows finds its config
 /// root through a known-folder lookup that needs no home variable, so the
