@@ -8,6 +8,8 @@
 set -euo pipefail
 
 here="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=tests/e2e/common/census.sh
+source "$here/census.sh"
 e2e_root="$(dirname "$here")"
 scratch="$(mktemp -d)"
 trap 'rm -rf "$scratch"' EXIT
@@ -89,26 +91,32 @@ min_scanned_files=40
 # Print file:line for each line outside helpers.sh and this file that names a
 # counter sample (`cfgd_<name>_total` as a whole word, or any `_total{` / `_total(\{` match),
 # skipping comments and begin_test titles, then a last line `scanned <files>`.
-# Exits 1 when no file matched.
+# Exits 1 when find fails or matched no file, or when a non-empty file find
+# listed never reached awk (each one is named).
 scan_hand_matches() {
-    local files="$scratch/scan-files"
-    find "$@" -name '*.sh' ! -name helpers.sh ! -name test-metrics.sh -type f > "$files"
+    local files="$scratch/scan-files" read="$scratch/scan-read"
+    if ! find "$@" -name '*.sh' ! -name helpers.sh ! -name test-metrics.sh -type f > "$files"; then
+        echo "scan_hand_matches: find failed under $*" >&2
+        return 1
+    fi
     if [ ! -s "$files" ]; then
         echo "scan_hand_matches: no .sh file under $*" >&2
         return 1
     fi
     # shellcheck disable=SC2016 # the single-quoted text is an awk program
-    tr '\n' '\0' < "$files" | xargs -0 awk '
-        FNR == 1 { files++ }
+    : > "$read"
+    tr '\n' '\0' < "$files" | xargs -0 awk -v readlog="$read" '
+        FNR == 1 { files++; print FILENAME > readlog }
         /^[[:space:]]*#/ || /^[[:space:]]*begin_test[[:space:]]/ { next }
         /cfgd_[a-z_]+_total([^a-z_]|$)/ || /_total(\(\\\{|\\?\{)/ { print FILENAME ":" FNR }
         END { print "scanned " files + 0 }
     '
+    census_unread scan_hand_matches "$files" "$read"
 }
 
 # Every counter read goes through the helpers, so the one sample spelling read
 # is stated in one place.
-report="$(scan_hand_matches "$e2e_root")"
+report="$(scan_hand_matches "$e2e_root")" || fail "the hand-match scan lost the scripts named above"
 strays="$(grep -v '^scanned ' <<<"$report" || true)"
 scanned_files="$(sed -n 's/^scanned //p' <<<"$report")"
 if [ "$scanned_files" -lt "$min_scanned_files" ]; then
@@ -118,6 +126,26 @@ elif [ -z "$strays" ]; then
 else
     fail "counter samples matched outside metric_sample_lines/metric_sample_value:"
     printf '%s\n' "$strays" | sed 's/^/    /'
+fi
+
+# find and awk are stubbed through PATH, so each failure is the one named.
+mkdir -p "$scratch/census" "$scratch/find-fails" "$scratch/awk-drops"
+printf 'x\n' > "$scratch/census/only.sh"
+printf '#!/bin/sh\nexit 1\n' > "$scratch/find-fails/find"
+# shellcheck disable=SC2016  # the $ belong to the stub script, expanded when it runs
+printf '#!/usr/bin/env bash\nset -- "${@:1:$#-1}"\nexec %q "$@"\n' "$(command -v awk)" > "$scratch/awk-drops/awk"
+chmod +x "$scratch/find-fails/find" "$scratch/awk-drops/awk"
+census="$(PATH="$scratch/find-fails:$PATH" scan_hand_matches "$scratch/census" 2>&1)" && census_rc=0 || census_rc=$?
+if [ "$census_rc" -ne 0 ] && grep -q '^scan_hand_matches: find failed under' <<<"$census"; then
+    pass "a hand-match scan whose find fails fails"
+else
+    fail "a hand-match scan whose find fails exited $census_rc: $census"
+fi
+census="$(PATH="$scratch/awk-drops:$PATH" scan_hand_matches "$scratch/census" 2>&1 < /dev/null)" && census_rc=0 || census_rc=$?
+if [ "$census_rc" -ne 0 ] && grep -q '^scan_hand_matches: .*/only\.sh was listed and never read$' <<<"$census"; then
+    pass "a hand-match scan names a script find listed and awk never read"
+else
+    fail "a hand-match scan that lost a script exited $census_rc: $census"
 fi
 
 if scan_hand_matches "$scratch/no-such-dir" > /dev/null 2>&1; then

@@ -19,6 +19,8 @@
 set -euo pipefail
 
 here="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=tests/e2e/common/census.sh
+source "$here/census.sh"
 e2e_root="$(dirname "$here")"
 scratch="$(mktemp -d)"
 trap 'rm -rf "$scratch"' EXIT
@@ -42,23 +44,28 @@ min_pass_tests=330
 # heredocs.awk, so heredoc bodies are skipped: a `}` in a manifest ends no shell
 # block. A heredoc still open at the end of a file is reported, so a misread
 # terminator cannot hide the rest of the file. A file that cannot be read is
-# reported too. Exits 1 when no file matched.
+# reported too. Exits 1 when find fails or matched no file, or when a readable
+# non-empty file never reached awk (each one is named).
 scan_excuses() {
-    local files="$scratch/scan-files" readable="$scratch/scan-readable" f
-    find "$@" -name '*.sh' ! -name test-verdicts.sh \( -type f -o -type l \) > "$files"
+    local files="$scratch/scan-files" readable="$scratch/scan-readable" read="$scratch/scan-read" f
+    if ! find "$@" -name '*.sh' ! -name test-verdicts.sh \( -type f -o -type l \) > "$files"; then
+        echo "scan_excuses: find failed under $*" >&2
+        return 1
+    fi
     if [ ! -s "$files" ]; then
         echo "scan_excuses: no .sh file under $*" >&2
         return 1
     fi
     : > "$readable"
     while IFS= read -r f; do
-        if [ -f "$f" ] && [ -r "$f" ]; then printf '%s\0' "$f" >> "$readable"; else echo "$f: unreadable"; fi
+        if [ -f "$f" ] && [ -r "$f" ]; then printf '%s\n' "$f" >> "$readable"; else echo "$f: unreadable"; fi
     done < "$files"
     [ -s "$readable" ] || { echo "scanned 0 0"; return 0; }
+    : > "$read"
     # shellcheck disable=SC2016 # the single-quoted text is an awk program
-    { xargs -0 awk -f "$here/heredocs.awk" < "$readable" || echo "UNREADABLE"; } | awk -F '\t' -v excuse="$excuse" '
+    { tr '\n' '\0' < "$readable" | xargs -0 awk -f "$here/heredocs.awk" || echo "UNREADABLE"; } | awk -F '\t' -v excuse="$excuse" -v readlog="$read" '
         function rest(n,   i, p) { p = 0; for (i = 1; i <= n; i++) p += length($i) + 1; return substr($0, p + 1) }
-        $1 == "FILE" { files++; held = ""; next }
+        $1 == "FILE" { files++; held = ""; print $2 > readlog; next }
         $1 == "UNREADABLE" { print "heredocs.awk could not read the scripts"; next }
         $1 == "UNCLOSED" { print $2 ": heredoc " $4 " never closes"; next }
         $1 != "SH" && $1 != "BODY" { next }
@@ -78,30 +85,37 @@ scan_excuses() {
         line ~ /(^|[;&|[:space:]])pass_test[[:space:]]/ && held != "" { print held; held = "" }
         END { print "scanned " files + 0 " " calls + 0 }
     '
+    census_unread scan_excuses "$readable" "$read"
 }
 
 # Print `EXIST file:line` for each pass_test guarded only by existence, then
 # `scanned <files>`. Reads the SH lines of heredocs.awk, so a heredoc body is
 # never read as code. A case inside the branch is a guard of its own, so its
 # arms are not judged by the enclosing if; an else branch is not judged.
+# Exits 1 when find fails or matched no file, or when a non-empty file find
+# listed never reached awk (each one is named).
 scan_existence() {
-    local list
-    list="$(find "$@" -name '*.sh' ! -path '*/common/fixtures/*' | LC_ALL=C sort)" || {
+    local list="$scratch/existence-files" read="$scratch/existence-read"
+    if ! find "$@" -name '*.sh' ! -path '*/common/fixtures/*' > "$list.raw"; then
         echo "scan_existence: find failed under $*" >&2
         return 1
-    }
-    if [ -z "$list" ]; then
+    fi
+    LC_ALL=C sort "$list.raw" > "$list"
+    if [ ! -s "$list" ]; then
         echo "scan_existence: no .sh file under $*" >&2
         return 1
     fi
-    scan_existence_files <<<"$list"
+    : > "$read"
+    scan_existence_files "$read" < "$list"
+    census_unread scan_existence "$list" "$read"
 }
 
-# scan_existence_files: scan_existence over the newline-separated paths on
-# stdin, with no exclusion, so the fixtures can be read.
+# scan_existence_files [read log]: scan_existence over the newline-separated
+# paths on stdin, with no exclusion, so the fixtures can be read. Each file
+# awk reads is written to the log.
 scan_existence_files() {
     # shellcheck disable=SC2016  # the single-quoted text is an awk program
-    tr '\n' '\0' | { xargs -0 awk -f "$here/heredocs.awk" || echo "UNREADABLE"; } | awk -F '\t' '
+    tr '\n' '\0' | { xargs -0 awk -f "$here/heredocs.awk" || echo "UNREADABLE"; } | awk -F '\t' -v readlog="${1:-/dev/null}" '
         function rest(n,   i, p) { p = 0; for (i = 1; i <= n; i++) p += length($i) + 1; return substr($0, p + 1) }
         function trim(s) { sub(/^[[:space:]]+/, "", s); sub(/[[:space:]]+$/, "", s); return s }
         function exist_term(t, fallback,   op) {
@@ -153,7 +167,7 @@ scan_existence_files() {
             judge(code, raw)
             if (code ~ /(^|[;[:space:]])(fi|esac)[[:space:];]*$/ && depth > 0) depth--
         }
-        $1 == "FILE" { files++; depth = 0; pending = ""; next }
+        $1 == "FILE" { files++; depth = 0; pending = ""; print $2 > readlog; next }
         $1 == "UNREADABLE" { print "heredocs.awk could not read the scripts"; next }
         $1 != "SH" { next }
         {
@@ -175,7 +189,7 @@ scan_existence_files() {
     '
 }
 
-report="$(scan_excuses "$e2e_root")"
+report="$(scan_excuses "$e2e_root")" || fail "the excuse scan lost the scripts named above"
 strays="$(grep -v '^scanned ' <<<"$report" || true)"
 read -r _ scanned_files scanned_calls < <(grep '^scanned ' <<<"$report")
 if [ "$scanned_calls" -lt "$min_pass_tests" ]; then
@@ -538,6 +552,39 @@ else
     echo "    want:"
     printf '%s\n' "$want" | sed 's/^/    /'
 fi
+
+# census_probe <scan> <dir> <description> <stderr regex> [PATH dir]: the scan
+# of <dir> has to fail and print a line matching the regex, with the stubs of
+# the PATH dir first on PATH when one is given.
+census_probe() {
+    local out rc=0
+    out="$(PATH="${5:+$5:}$PATH" "$1" "$2" 2>&1)" || rc=$?
+    if [ "$rc" -ne 0 ] && grep -Eq -- "$4" <<<"$out"; then
+        pass "$3"
+    else
+        fail "$3 (scan exited $rc):"
+        printf '%s\n' "$out" | sed 's/^/    /'
+    fi
+}
+
+# The census of each scan: find and awk are stubbed through PATH, so each
+# failure is the one named and no other.
+mkdir -p "$scratch/census/two" "$scratch/census/empty" "$scratch/census/gone" "$scratch/find-fails" "$scratch/awk-drops"
+printf 'if a; then\n    pass_test "C-01"\nfi\n' > "$scratch/census/two/a.sh"
+cp "$scratch/census/two/a.sh" "$scratch/census/two/b.sh"
+cp "$scratch/census/two/a.sh" "$scratch/census/gone/a.sh"
+ln -s "$scratch/nowhere.sh" "$scratch/census/gone/gone.sh"
+printf '#!/bin/sh\nexit 1\n' > "$scratch/find-fails/find"
+# shellcheck disable=SC2016  # the $ belong to the stub script, expanded when it runs
+printf '#!/usr/bin/env bash\nif [ "$1" = -f ] && [[ "$2" == */heredocs.awk ]]; then set -- "${@:1:$#-1}"; fi\nexec %q "$@"\n' \
+    "$(command -v awk)" > "$scratch/awk-drops/awk"
+chmod +x "$scratch/find-fails/find" "$scratch/awk-drops/awk"
+census_probe scan_existence "$scratch/census/two" "an existence scan whose find fails fails" '^scan_existence: find failed under' "$scratch/find-fails"
+census_probe scan_existence "$scratch/census/empty" "an existence scan with no .sh file fails" '^scan_existence: no \.sh file under'
+census_probe scan_existence "$scratch/census/gone" "an existence scan names a script awk cannot open" '^scan_existence: .*/gone\.sh was listed and never read$'
+census_probe scan_existence "$scratch/census/two" "an existence scan names a script find listed and awk never read" '^scan_existence: .*/b\.sh was listed and never read$' "$scratch/awk-drops"
+census_probe scan_excuses "$scratch/census/two" "an excuse scan whose find fails fails" '^scan_excuses: find failed under' "$scratch/find-fails"
+census_probe scan_excuses "$scratch/census/two" "an excuse scan names a script find listed and awk never read" '^scan_excuses: .*/[ab]\.sh was listed and never read$' "$scratch/awk-drops"
 
 mkdir -p "$scratch/dangling"
 ln -s "$scratch/nowhere.sh" "$scratch/dangling/gone.sh"

@@ -10,6 +10,8 @@
 set -euo pipefail
 
 here="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=tests/e2e/common/census.sh
+source "$here/census.sh"
 e2e_root="$(dirname "$here")"
 fixtures="$here/fixtures/wording"
 scratch="$(mktemp -d)"
@@ -24,20 +26,23 @@ fail() {
 
 # scan_wording <dir>: print `WORDING <file>:<line> <what>` for each breach in
 # a *.sh under <dir> outside common/fixtures/, then `scanned <n>`. Exits 1 when
-# find fails, when there is no file, or when a WORDING line was printed.
+# find fails, when there is no file, when a non-empty file find listed never
+# reached awk (each one is named), or when a WORDING line was printed.
 scan_wording() {
-    local list
-    list="$(find "$1" -name '*.sh' ! -path '*/common/fixtures/*' | LC_ALL=C sort)" || {
+    local list="$scratch/wording-files" read="$scratch/wording-read" rc=0
+    if ! find "$1" -name '*.sh' ! -path '*/common/fixtures/*' > "$list.raw"; then
         echo "scan_wording: find failed under $1" >&2
         return 1
-    }
-    if [ -z "$list" ]; then
+    fi
+    LC_ALL=C sort "$list.raw" > "$list"
+    if [ ! -s "$list" ]; then
         echo "scan_wording: no .sh file under $1" >&2
         return 1
     fi
+    : > "$read"
     # shellcheck disable=SC2016  # the single-quoted text is an awk program
-    tr '\n' '\0' <<<"$list" | xargs -0 awk '
-        FNR == 1 { files++ }
+    tr '\n' '\0' < "$list" | xargs -0 awk -v readlog="$read" '
+        FNR == 1 { files++; print FILENAME > readlog }
         function flag(what) { print "WORDING " FILENAME ":" FNR " " what; bad = 1 }
         function first_person(text) {
             return text ~ /(^|[^A-Za-z0-9_-])([Ww]e|I)([^A-Za-z0-9_\/]|$)/
@@ -59,16 +64,20 @@ scan_wording() {
             }
         }
         END { print "scanned " files + 0; exit bad }
-    '
+    ' || rc=1
+    census_unread scan_wording "$list" "$read" || rc=1
+    return "$rc"
 }
 
-# probe <fixture> <want: pass|fail> <description> [line regex]: run the scan on
-# one fixture; a failure also has to print a line matching the regex.
+# probe <fixture or dir> <want: pass|fail> <description> [line regex]: run the
+# scan on a copy of one fixture, or of a directory built here; a failure also
+# has to print a line matching the regex.
 probe() {
-    local out rc=0
+    local out rc=0 src="$fixtures/$1"
+    [ -d "$1" ] && src="$1"
     rm -rf "${scratch:?}/tree"
     mkdir -p "$scratch/tree"
-    cp -R "$fixtures/$1/." "$scratch/tree/"
+    cp -R "$src/." "$scratch/tree/"
     out="$(scan_wording "$scratch/tree" 2>&1)" || rc=$?
     case "$2:$((rc != 0))" in
         pass:0) pass "$3" ;;
@@ -94,6 +103,21 @@ probe dash-title fail "an em dash in a begin_test title fails" '^WORDING .*/suit
 probe dash-message fail "an em dash in a fail_test message fails" '^WORDING .*/suite\.sh:2 prose em dash$'
 probe we-comment fail "\"we\" in a comment fails" '^WORDING .*/suite\.sh:2 first-person word in a comment$'
 probe i-message fail "\"I\" in an echo message fails" '^WORDING .*/suite\.sh:2 first-person word in a message$'
+
+# The census: each way a listed script can fail to reach awk fails the scan.
+# find and awk are stubbed through PATH, so each failure is the one named.
+mkdir -p "$scratch/empty-dir" "$scratch/dangling" "$scratch/find-fails" "$scratch/awk-drops"
+probe "$scratch/empty-dir" fail "a scan with no .sh file to read fails" '^scan_wording: no \.sh file under'
+cp -R "$fixtures/clean/." "$scratch/dangling/"
+ln -s "$scratch/no-such-file" "$scratch/dangling/gone.sh"
+probe "$scratch/dangling" fail "a script awk cannot open fails the scan by name" '^scan_wording: .*/gone\.sh was listed and never read$'
+printf '#!/bin/sh\nexit 1\n' > "$scratch/find-fails/find"
+# shellcheck disable=SC2016  # the $ belong to the stub script, expanded when it runs
+printf '#!/usr/bin/env bash\nset -- "${@:1:$#-1}"\nexec %q "$@"\n' "$(command -v awk)" > "$scratch/awk-drops/awk"
+chmod +x "$scratch/find-fails/find" "$scratch/awk-drops/awk"
+PATH="$scratch/find-fails:$PATH" probe clean fail "a find that fails fails the scan" '^scan_wording: find failed under'
+PATH="$scratch/awk-drops:$PATH" probe clean fail "a script find listed and awk never read fails the scan by name" '^scan_wording: .*/suite\.sh was listed and never read$'
+
 probe clean pass "assert_* arguments, -I flags, I/O, words holding we or I and a non-message command pass"
 
 real="$(scan_wording "$e2e_root" 2>&1)" && rc=0 || rc=$?

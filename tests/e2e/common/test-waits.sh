@@ -16,6 +16,8 @@
 set -euo pipefail
 
 here="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=tests/e2e/common/census.sh
+source "$here/census.sh"
 e2e_root="$(dirname "$here")"
 fixtures="$here/fixtures/waits"
 scratch="$(mktemp -d)"
@@ -40,8 +42,8 @@ min_listed_files=60
 #   CADENCE <file>:<line> <fn>  the run_every function of helpers.sh
 #   listed <n>, scanned <n>     the scripts find listed and awk read
 # Exits 1 when find fails, when there is no file to read, when a file cannot
-# be read, when awk read fewer non-empty files than find listed, or when a
-# SLEEP line was printed.
+# be read, when a non-empty file find listed never reached awk (each one is
+# named), or when a SLEEP line was printed.
 #
 # Commands are read through heredocs.awk, so a heredoc body (a pod's
 # `command: ["sleep", "3600"]`, a stub script) and a quoted word are not
@@ -61,7 +63,7 @@ min_listed_files=60
 # column 0, the layout every function there keeps; a one-line function ends on
 # its own line, and one left open is reported.
 scan_sleeps() {
-    local list="$scratch/scan-files" out="$scratch/scan-out" rc=0 file listed empty=0 scanned
+    local list="$scratch/scan-files" out="$scratch/scan-out" read="$scratch/scan-read" rc=0 file listed
     if ! find "$1" -name '*.sh' ! -path '*/common/fixtures/*' > "$list.raw"; then
         echo "scan_sleeps: find failed under $1" >&2
         return 1
@@ -76,13 +78,12 @@ scan_sleeps() {
         if [ ! -f "$file" ] || [ ! -r "$file" ]; then
             echo "scan_sleeps: cannot read $file" >&2
             rc=1
-        elif [ ! -s "$file" ]; then
-            empty=$((empty + 1))
         fi
     done < "$list"
     [ "$rc" -eq 0 ] || return 1
     # shellcheck disable=SC2016 # the single-quoted text is an awk program
-    tr '\n' '\0' < "$list" | xargs -0 awk -f "$here/heredocs.awk" | awk -F '\t' -v helpers_path="$1/common/helpers.sh" '
+    : > "$read"
+    tr '\n' '\0' < "$list" | xargs -0 awk -f "$here/heredocs.awk" | awk -F '\t' -v helpers_path="$1/common/helpers.sh" -v readlog="$read" '
         BEGIN {
             # A sleep at a command position, as the comment above lists them.
             # An option, with the argument it may take: ERE tries every parse,
@@ -159,6 +160,7 @@ scan_sleeps() {
         $1 == "FILE" {
             open_at_end()
             files++; file = $2; helpers = (file == helpers_path)
+            print file > readlog
             fn = ""; np = 0; deadline = 0
             split("", hatch); split("", rawcode); split("", seen)
             next
@@ -196,11 +198,7 @@ scan_sleeps() {
     ' > "$out" || rc=1
     cat "$out"
     echo "listed $listed"
-    scanned="$(sed -n 's/^scanned //p' "$out")"
-    if [ "${scanned:-0}" -ne $((listed - empty)) ]; then
-        echo "scan_sleeps: awk read ${scanned:-0} of the $((listed - empty)) non-empty scripts find listed under $1" >&2
-        return 1
-    fi
+    census_unread scan_sleeps "$list" "$read" || return 1
     return "$rc"
 }
 
@@ -329,7 +327,7 @@ chmod +x "$scratch/find-fails/find" "$scratch/awk-drops/awk"
 PATH="$scratch/find-fails:$PATH" probe "$(fixture_tree deadline-helper)" fail "a find that fails fails the walk" \
     '^scan_sleeps: find failed under'
 PATH="$scratch/awk-drops:$PATH" probe "$(fixture_tree deadline-helper)" fail "a script find listed and awk never read fails the walk" \
-    '^scan_sleeps: awk read 1 of the 2 non-empty scripts'
+    '^scan_sleeps: .*/suite\.sh was listed and never read$'
 
 hatched="$(scan_sleeps "$(fixture_tree hatch)")"
 if grep -q '^HATCH .*/suite.sh:[0-9]* the daemon under test reconciles every 5s$' <<<"$hatched"; then
