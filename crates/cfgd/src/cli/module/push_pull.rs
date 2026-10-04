@@ -1153,10 +1153,9 @@ pub(super) mod tests {
         #[test]
         #[serial]
         fn pull_with_signature_verify_success_emits_signature_verified_true() {
-            // Cosign shim succeeds for `verify`; the rest of the pull fails
-            // (no valid OCI server) but the signature-verification branch
-            // exits success first — verify the emitted error_doc shows the
-            // failure originated downstream of the signature step.
+            // The registry serves the tag but not its layer blob, so the
+            // signature check passes against the tag's digest and the pull
+            // fails afterwards, fetching the layer.
             let _shim = CosignTestShim::builder()
                 .with_argv_logging(false)
                 .with_exit(0)
