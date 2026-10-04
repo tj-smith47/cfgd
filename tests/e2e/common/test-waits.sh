@@ -81,7 +81,6 @@ scan_sleeps() {
         fi
     done < "$list"
     [ "$rc" -eq 0 ] || return 1
-    # shellcheck disable=SC2016 # the single-quoted text is an awk program
     : > "$read"
     tr '\n' '\0' < "$list" | xargs -0 awk -f "$here/heredocs.awk" | awk -F '\t' -v helpers_path="$1/common/helpers.sh" -v readlog="$read" '
         BEGIN {

@@ -103,7 +103,6 @@ scan_hand_matches() {
         echo "scan_hand_matches: no .sh file under $*" >&2
         return 1
     fi
-    # shellcheck disable=SC2016 # the single-quoted text is an awk program
     : > "$read"
     tr '\n' '\0' < "$files" | xargs -0 awk -v readlog="$read" '
         FNR == 1 { files++; print FILENAME > readlog }
