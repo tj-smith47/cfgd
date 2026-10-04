@@ -534,6 +534,19 @@ mod tests {
         // returns 201 on the manifest PUT, so the pack happy path completes and
         // reaches the sign/attest + doc-emit stage.
         fn mock_pack_registry() -> (mockito::ServerGuard, String) {
+            let (server, registry, _) = mock_pack_registry_answering(false);
+            (server, registry)
+        }
+
+        /// [`mock_pack_registry`], whose manifest PUT answers a digest naming
+        /// other bytes when `lying`, and records the sha256 of the bytes it took.
+        fn mock_pack_registry_answering(
+            lying: bool,
+        ) -> (
+            mockito::ServerGuard,
+            String,
+            std::sync::Arc<std::sync::Mutex<Option<String>>>,
+        ) {
             let mut server = mockito::Server::new();
             let registry = server.url().trim_start_matches("http://").to_string();
             let upload_location = format!("{}/v2/test/image/blobs/uploads/up-id", server.url());
@@ -562,12 +575,70 @@ mod tests {
                 .with_status(201)
                 .expect_at_least(2)
                 .create();
+            let sent = std::sync::Arc::new(std::sync::Mutex::new(None));
+            let recorded = std::sync::Arc::clone(&sent);
             server
                 .mock("PUT", "/v2/test/image/manifests/v1")
                 .with_status(201)
+                .with_header_from_request("Docker-Content-Digest", move |req| {
+                    let digest = cfgd_core::sha256_digest(req.body().expect("manifest body"));
+                    *recorded.lock().expect("sent digest lock") = Some(digest.clone());
+                    if lying {
+                        cfgd_core::sha256_digest(b"other bytes")
+                    } else {
+                        digest
+                    }
+                })
                 .create();
 
-            (server, registry)
+            (server, registry, sent)
+        }
+
+        #[test]
+        #[serial]
+        fn cmd_image_pack_refuses_a_manifest_digest_naming_other_bytes_before_lock_and_sign() {
+            let shim = CosignTestShim::builder()
+                .with_argv_logging(true)
+                .with_exit(0)
+                .install();
+            let dir = tempfile::tempdir().expect("tempdir");
+            std::fs::write(dir.path().join("config.yaml"), "key: value\n")
+                .expect("write config file");
+            let lock_dir = tempfile::tempdir().expect("lock tempdir");
+            let lock_path = lock_dir.path().join("cfgd-images.lock");
+            let lock = lock_path.to_string_lossy().into_owned();
+            let (_server, registry, sent) = mock_pack_registry_answering(true);
+
+            let (printer, _cap) = Printer::for_test_doc();
+            let err = cmd_image_pack(
+                &printer,
+                dir.path(),
+                &format!("{registry}/test/image:v1"),
+                ImagePackOptions {
+                    sign: true,
+                    lock: Some(&lock),
+                    ..no_opts()
+                },
+            )
+            .expect_err("a manifest PUT answering another digest fails the pack");
+            drop(printer);
+
+            let meta = err
+                .downcast_ref::<crate::cli::CliErrorMeta>()
+                .expect("handler returns CliErrorMeta");
+            assert_eq!(meta.error_kind, "pack_failed", "{meta:?}");
+            let sent = sent.lock().expect("sent digest lock").clone();
+            let sent = sent.expect("the manifest was put");
+            assert!(
+                meta.message.contains(&sent)
+                    && meta
+                        .message
+                        .contains(&cfgd_core::sha256_digest(b"other bytes")),
+                "the refusal names the digest sent and the digest answered: {}",
+                meta.message
+            );
+            assert!(!lock_path.exists(), "nothing is locked");
+            assert_eq!(shim.argv_log(), "", "nothing is signed");
         }
 
         #[test]
