@@ -84,8 +84,7 @@ echo "Device gateway URL: $SERVER_URL"
 
 # Wait for gateway reachability from test pod (use health endpoint — API requires auth)
 echo "Waiting for device gateway..."
-if ! wait_until 120 2 "${HEALTH_URL}/readyz from the test pod" \
-    exec_in_pod curl -sf -o /dev/null "${HEALTH_URL}/readyz"; then
+if ! wait_for_pod_url "${HEALTH_URL}/readyz" 120; then
     echo "ERROR: Device gateway not reachable after 120s" >&2
     exit 1
 fi

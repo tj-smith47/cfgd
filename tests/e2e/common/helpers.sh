@@ -571,8 +571,10 @@ wait_for_pod() {
         fi
         sleep 2
     done
-    echo "  Timed out waiting for pod"
-    kubectl get pods -n "$namespace" -l "$label" -o wide 2>/dev/null || true
+    {
+        echo "  Timed out after ${timeout}s waiting for a Running pod $label in $namespace; pods there:"
+        kubectl get pods -n "$namespace" -l "$label" -o wide 2>&1 || true
+    } >&2
     return 1
 }
 
@@ -603,8 +605,10 @@ wait_for_daemonset() {
         fi
         sleep 2
     done
-    echo "  Timed out waiting for DaemonSet"
-    kubectl describe ds "$name" -n "$namespace" 2>/dev/null || true
+    {
+        echo "  Timed out after ${timeout}s waiting for DaemonSet $namespace/$name to be ready; it reads:"
+        kubectl describe ds "$name" -n "$namespace" 2>&1 || true
+    } >&2
     return 1
 }
 
@@ -955,6 +959,9 @@ stop_port_forward() {
 }
 
 # Return 0 once PID $1 no longer exists, checking every 0.1s up to $2 times.
+# It returns 1 without a word on timeout: both callers answer a timeout with
+# SIGKILL, and stop_port_forward names a process that outlives it, while
+# stop_background_job returns 1 for its caller's verdict to name.
 _wait_gone() {
     local tries=0
     while kill -0 "$1" 2>/dev/null; do
@@ -1024,8 +1031,14 @@ wait_for_url() {
         fi
         sleep 2
     done
-    echo "  Timed out waiting for URL"
+    echo "  Timed out after ${timeout}s waiting for $url; last try: $(curl -sS -o /dev/null -w 'HTTP %{http_code}' "$url" 2>&1)" >&2
     return 1
+}
+
+# wait_for_pod_url <url> [timeout_s, default 60]: wait until curl in the test
+# pod gets a 2xx from the URL, for an address only the cluster resolves.
+wait_for_pod_url() {
+    wait_until "${2:-60}" 2 "$1 from pod/$TEST_POD" exec_in_pod curl -sf -o /dev/null "$1"
 }
 
 # --- OCI / Module helpers ---
@@ -1069,7 +1082,8 @@ EOF
 
 # Wait for a k8s resource field to reach a desired state.
 # If expected_value is empty, waits for field to be non-empty.
-# Returns 0 if condition met, 1 on timeout. Echoes the final value to stdout.
+# Returns 0 if condition met, 1 on timeout. Echoes the final value to stdout;
+# on timeout also names the field and its last read on stderr.
 # Usage: wait_for_k8s_field <kind> <name> <namespace> <jsonpath> [expected_value] [timeout]
 # For cluster-scoped resources, pass "" for namespace.
 wait_for_k8s_field() {
@@ -1097,6 +1111,7 @@ wait_for_k8s_field() {
         fi
         sleep 1
     done
+    echo "  Timed out after ${timeout}s waiting for $kind/$name${namespace:+ -n $namespace} $jsonpath${expected:+ = $expected}; last read: ${value:-<empty>}" >&2
     echo "$value"
     return 1
 }

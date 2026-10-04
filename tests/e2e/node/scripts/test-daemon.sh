@@ -823,9 +823,9 @@ SERVER_URL="http://cfgd-server.cfgd-system.svc.cluster.local:8080"
 HEALTH_URL="http://cfgd-server.cfgd-system.svc.cluster.local:8081"
 GW_API_KEY="${CFGD_E2E_API_KEY:-cfgd-e2e-admin-key}"
 
-# Check if device gateway is reachable (use health endpoint — API requires auth)
+# Check if device gateway is reachable (use health endpoint, as the API requires auth)
 GATEWAY_REACHABLE=false
-if wait_until 20 2 "${HEALTH_URL}/readyz" exec_in_pod curl -sf -o /dev/null "${HEALTH_URL}/readyz"; then
+if wait_for_pod_url "${HEALTH_URL}/readyz" 20; then
     GATEWAY_REACHABLE=true
 fi
 
