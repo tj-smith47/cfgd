@@ -670,9 +670,9 @@ tasks:
     # `task ci` deliberately excludes cross-platform builds, so a signature change
     # that misses a #[cfg(windows)] call site type-checks clean on every other
     # host and only fails on the Windows CI runner, after the push. Needs the
-    # mingw target (rustup target add x86_64-pc-windows-gnu) plus mingw-w64. The
-    # gnu target, because ring's build script rejects a GNU
-    # compiler for msvc, aborting the check before any cfgd crate is reached.
+    # mingw target (rustup target add x86_64-pc-windows-gnu) plus mingw-w64.
+    # It checks the gnu target: ring's build script rejects a GNU compiler for
+    # the msvc target, which aborts the check before any cfgd crate is reached.
     cmds:
       - cargo check --target x86_64-pc-windows-gnu -p cfgd-core -p cfgd
 
