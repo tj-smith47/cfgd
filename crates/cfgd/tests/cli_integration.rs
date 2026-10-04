@@ -3339,11 +3339,29 @@ fn apply_plan_stale_by_serial_exits_1_through_the_real_binary() {
     assert!(payload["serial"].as_i64().unwrap_or(0) >= 1, "{payload}");
 }
 
-/// The two legacy theme notices, as stderr spells them.
+/// A config carrying the two legacy theme spellings, each of which the load
+/// reports as a deprecation notice.
+const LEGACY_THEME_CONFIG: &str = "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: legacy\nspec:\n  profile: default\n  theme:\n    name: dracula\n    overrides:\n      subheader: \"#ff79c6\"\n";
+
+/// The two notices `LEGACY_THEME_CONFIG` earns, as stderr spells them.
 const LEGACY_THEME_NOTICES: [&str; 2] = [
     "spec.theme moved to spec.output.theme",
     "theme.overrides.subheader is no longer supported",
 ];
+
+/// How many stderr lines carry each of `LEGACY_THEME_NOTICES`.
+fn legacy_notice_counts(stderr: &[u8]) -> Vec<(&'static str, usize)> {
+    let stderr = String::from_utf8_lossy(stderr);
+    LEGACY_THEME_NOTICES
+        .iter()
+        .map(|notice| {
+            (
+                *notice,
+                stderr.lines().filter(|l| l.contains(notice)).count(),
+            )
+        })
+        .collect()
+}
 
 /// `--config <file>` names the config document; `module create --apply` reads
 /// that file, and a `cfgd.yaml` beside it is a different document.
@@ -3379,5 +3397,76 @@ fn module_create_apply_reads_the_file_the_config_flag_names() {
     assert!(
         report.contains(LEGACY_THEME_NOTICES[0]),
         "the notice for other.yaml's own flat theme key reaches stderr:\n{report}"
+    );
+}
+
+/// `source replace` removes and re-adds a subscription inside one run, and
+/// reports each deprecation the config earns once.
+#[test]
+fn source_replace_prints_each_config_deprecation_notice_once() {
+    let (config_dir, _state_dir) = cfgd_test_fixtures::source_test_config_setup();
+    let config = config_dir.path().join("cfgd.yaml");
+    std::fs::write(&config, LEGACY_THEME_CONFIG).unwrap();
+    let bare_root = tempfile::tempdir().unwrap();
+    let old = cfgd_test_fixtures::make_bare_source_repo(bare_root.path(), "replace-old", None);
+    let new = cfgd_test_fixtures::make_bare_source_repo(bare_root.path(), "replace-new", None);
+    let run = |args: &[&str]| {
+        cfgd_bin()
+            .unwrap()
+            .env(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1")
+            .arg("--config")
+            .arg(&config)
+            .arg("--yes")
+            .args(args)
+            .output()
+            .unwrap()
+    };
+    let old_url = cfgd_core::test_helpers::file_url(&old);
+    let new_url = cfgd_core::test_helpers::file_url(&new);
+    let added = run(&["source", "add", &old_url, "--name", "acme"]);
+    assert!(added.status.success(), "{added:?}");
+
+    let replaced = run(&["source", "replace", "acme", &new_url]);
+    assert!(replaced.status.success(), "{replaced:?}");
+    assert_eq!(
+        legacy_notice_counts(&replaced.stderr),
+        LEGACY_THEME_NOTICES.map(|n| (n, 1)).to_vec(),
+        "{}",
+        String::from_utf8_lossy(&replaced.stderr)
+    );
+}
+
+/// `profile update --module <remote>` adds the module inside the update's run,
+/// and reports each deprecation the config earns once.
+#[test]
+fn profile_update_with_a_remote_module_prints_each_config_deprecation_notice_once() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("profiles")).unwrap();
+    let config = dir.path().join("cfgd.yaml");
+    std::fs::write(&config, LEGACY_THEME_CONFIG).unwrap();
+    std::fs::write(
+        dir.path().join("profiles/default.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec: {}\n",
+    )
+    .unwrap();
+    let bare_root = tempfile::tempdir().unwrap();
+    let bare = cfgd_test_fixtures::make_bare_module_repo(bare_root.path(), "mymod", "v1.0.0");
+    let module_url = format!("{}@v1.0.0", cfgd_core::to_file_url(&bare));
+
+    let out = cfgd_bin()
+        .unwrap()
+        .env(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1")
+        .arg("--config")
+        .arg(&config)
+        .arg("--yes")
+        .args(["profile", "update", "default", "--module", &module_url])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+    assert_eq!(
+        legacy_notice_counts(&out.stderr),
+        LEGACY_THEME_NOTICES.map(|n| (n, 1)).to_vec(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
     );
 }
