@@ -56340,6 +56340,7 @@ fn config_loaders(rows: &[(String, String)]) -> Vec<String> {
             }
             let reads = code.contains("read_to_string(")
                 || code.contains("fs::read(")
+                || code.contains("File::open(")
                 || !str_parameters(code).is_empty()
                 || loaders
                     .iter()
@@ -56388,6 +56389,8 @@ fn the_config_loaders_follow_a_fixed_path_loader_and_leave_a_built_config_out() 
          let text = std::fs::read_to_string(path)?;\n    parse_config(&text, path)\n}\n\
          fn parse_config(contents: &str, path: &Path) -> Result<CfgdConfig> {\n    \
          from_text(contents, path)\n}\n\
+         fn load_through_a_handle(path: &Path) -> Result<CfgdConfig> {\n    \
+         Ok(serde_yaml::from_reader(std::fs::File::open(path)?)?)\n}\n\
          fn minimal_config() -> CfgdConfig {\n    CfgdConfig::default()\n}\n\
          fn display_name(name: &str) -> String {\n    name.to_string()\n}\n",
     )
@@ -56398,7 +56401,12 @@ fn the_config_loaders_follow_a_fixed_path_loader_and_leave_a_built_config_out() 
     loaders.sort();
     assert_eq!(
         loaders,
-        ["load_config", "load_default_config", "parse_config"]
+        [
+            "load_config",
+            "load_default_config",
+            "load_through_a_handle",
+            "parse_config"
+        ]
     );
 }
 
