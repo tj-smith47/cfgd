@@ -315,6 +315,21 @@ fn build_inject_patch_json(module_refs: &[String]) -> serde_json::Value {
     })
 }
 
+/// The config document the plugin reads. The plugin carries no `--config`
+/// flag of its own, so it honours the rest of the primary CLI's precedence
+/// (`CFGD_CONFIG` first, then the default location) and settles the path the
+/// way the primary CLI settles its own, a leading `~` included.
+fn plugin_config_path() -> std::path::PathBuf {
+    let config_env = std::env::var_os(cfgd_core::CFGD_CONFIG_ENV).map(std::path::PathBuf::from);
+    let explicit = config_env.is_some();
+    crate::cli::settle_config_path(
+        config_env.unwrap_or_else(crate::cli::default_config_file),
+        explicit,
+        None,
+        cfgd_core::Scope::User,
+    )
+}
+
 pub fn plugin_main() -> anyhow::Result<()> {
     // rustls CryptoProvider is already installed by main() before dispatching here
     let cli = PluginCli::parse();
@@ -338,12 +353,7 @@ pub fn plugin_main() -> anyhow::Result<()> {
     // Same precedence as the primary CLI (main.rs), via the one shared
     // resolution both entry points call.
     let color_choice = crate::cli::resolve_color_choice(cli.no_color, cli.color);
-    // The plugin carries no `--config` flag of its own, so it honours the rest
-    // of the primary CLI's precedence: the environment override first, then the
-    // default location.
-    let config_path = std::env::var_os(cfgd_core::CFGD_CONFIG_ENV)
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(crate::cli::default_config_file);
+    let config_path = plugin_config_path();
     let startup = crate::cli::startup::StartupDocument::load(&config_path);
     let theme_config = crate::cli::resolve_theme_config(startup.config(), cli.theme.as_deref());
     let printer =

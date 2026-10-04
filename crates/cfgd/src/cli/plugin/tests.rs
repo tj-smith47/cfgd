@@ -2307,3 +2307,17 @@ fn resolve_namespace_falls_back_to_default_when_context_names_none() {
         "a context naming no namespace must fall back to \"default\", same as kubectl"
     );
 }
+
+/// `CFGD_CONFIG` names the plugin's config document as it names the primary
+/// CLI's, a leading `~` expanded against the home directory.
+#[test]
+#[serial]
+fn the_plugin_expands_a_leading_tilde_in_cfgd_config() {
+    let home = tempfile::tempdir().unwrap();
+    let _home = cfgd_core::with_test_home_guard(home.path());
+    let _config = EnvVarGuard::set(cfgd_core::CFGD_CONFIG_ENV, "~/team/cfgd.yaml");
+    assert_eq!(
+        plugin_config_path(),
+        home.path().join("team").join("cfgd.yaml")
+    );
+}

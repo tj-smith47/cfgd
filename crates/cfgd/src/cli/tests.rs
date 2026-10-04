@@ -57045,8 +57045,11 @@ fn every_config_verb_call_passes_the_key_the_caller_typed() {
 /// `pub const` in `cfgd-core/src/util/env_names.rs`, each classified: read
 /// and expanded by a named function (whose body must call `expand_tilde(` and
 /// name the const), read by clap as a flag the flag rows cover (and bound to
-/// that flag), or not a path, with why. An unclassified const, a stale row
-/// and a function missing its expansion each fail naming it.
+/// that flag) plus the functions outside clap that read it, each settling it
+/// through `settle_config_path`, or not a path, with why. Every production
+/// function of `cfgd` and `cfgd-core` that reads a path variable from the
+/// environment must be one its row names. An unclassified const, a stale row,
+/// an unnamed reader and a function missing its expansion each fail naming it.
 #[test]
 fn every_path_flag_and_path_env_expands_a_leading_tilde() {
     use cfgd_core::test_helpers::{item_keyword, walked_file_body, workspace_root};
@@ -57054,7 +57057,7 @@ fn every_path_flag_and_path_env_expands_a_leading_tilde() {
 
     enum Class {
         Expands(&'static str, &'static str),
-        Flag(&'static str),
+        Flag(&'static str, &'static [(&'static str, &'static str)]),
         NotAPath(&'static str),
     }
     use Class::{Expands, Flag, NotAPath};
@@ -57103,7 +57106,13 @@ fn every_path_flag_and_path_env_expands_a_leading_tilde() {
     const SWITCH: &str = "a switch";
     const HOOK: &str = "a word cfgd exports to hook scripts";
     const ENVS: &[(&str, Class)] = &[
-        ("CFGD_CONFIG_ENV", Flag("config")),
+        (
+            "CFGD_CONFIG_ENV",
+            Flag(
+                "config",
+                &[("crates/cfgd/src/cli/plugin/mod.rs", "plugin_config_path")],
+            ),
+        ),
         ("CFGD_PROFILE_ENV", NotAPath("a profile name")),
         ("CFGD_VERBOSE_ENV", NotAPath("a verbosity level")),
         ("CFGD_QUIET_ENV", NotAPath(SWITCH)),
@@ -57118,7 +57127,7 @@ fn every_path_flag_and_path_env_expands_a_leading_tilde() {
             "CFGD_STATE_DIR_ENV",
             Expands("crates/cfgd-core/src/state/mod.rs", "default_state_dir_for"),
         ),
-        ("CFGD_CONFIG_DIR_ENV", Flag("config_dir")),
+        ("CFGD_CONFIG_DIR_ENV", Flag("config_dir", &[])),
         ("CFGD_CONTEXT_ENV", NotAPath(HOOK)),
         ("CFGD_PHASE_ENV", NotAPath(HOOK)),
         ("CFGD_MODULE_NAME_ENV", NotAPath(HOOK)),
@@ -57243,7 +57252,16 @@ fn every_path_flag_and_path_env_expands_a_leading_tilde() {
                 )),
                 Err(e) => offenders.push(format!("{constant}: {e}")),
             },
-            Some((_, Flag(id))) => {
+            Some((_, Flag(id, readers))) => {
+                for (rel, name) in *readers {
+                    match body_of(rel, name) {
+                        Ok(body) if body.contains(constant) && body.contains("settle_config_path(") => {}
+                        Ok(_) => offenders.push(format!(
+                            "{constant}: {rel} `fn {name}` does not read it through `settle_config_path(`"
+                        )),
+                        Err(e) => offenders.push(format!("{constant}: {e}")),
+                    }
+                }
                 let bound = command
                     .get_arguments()
                     .find(|arg| arg.get_id() == *id)
@@ -57265,6 +57283,58 @@ fn every_path_flag_and_path_env_expands_a_leading_tilde() {
             offenders.push(format!("{row}: env_names.rs declares no such const"));
         }
     }
+
+    // The readers outside clap: every production function naming a path
+    // variable beside an environment read is the function its row names.
+    let declared =
+        cfgd_core::test_helpers::workspace_declarations(cfgd_core::test_helpers::WORKSPACE_CRATES);
+    let reads_env = ["env::var(", "env::var_os(", "env_or("];
+    let names = |code: &str, ident: &str| {
+        code.match_indices(ident).any(|(at, _)| {
+            let before = code[..at].chars().next_back();
+            let after = code[at + ident.len()..].chars().next();
+            ![before, after]
+                .into_iter()
+                .flatten()
+                .any(|c| c.is_ascii_alphanumeric() || c == '_')
+        })
+    };
+    let mut readers_seen = 0usize;
+    for (i, (name, _, _)) in declared.rows.iter().enumerate() {
+        let code = declared.code_of(i);
+        if !reads_env.iter().any(|read| code.contains(read)) {
+            continue;
+        }
+        let rel = cfgd_core::to_posix_string(
+            declared.sites[i]
+                .1
+                .strip_prefix(&root)
+                .unwrap_or(declared.sites[i].1),
+        );
+        for (constant, class) in ENVS {
+            if !names(&code, constant) {
+                continue;
+            }
+            let named = match class {
+                Expands(file, function) => *file == rel && *function == name,
+                Flag(_, readers) => readers
+                    .iter()
+                    .any(|(file, function)| *file == rel && *function == name),
+                NotAPath(_) => continue,
+            };
+            readers_seen += 1;
+            if !named {
+                offenders.push(format!(
+                    "{constant}: {rel} `fn {name}` reads it from the environment, and its row \
+                     names no such reader"
+                ));
+            }
+        }
+    }
+    assert!(
+        readers_seen > 0,
+        "the reader walk found no production function reading a path variable, so it proves nothing"
+    );
     assert!(
         offenders.is_empty(),
         "a path from a flag or a CFGD_* variable must expand a leading `~` through \
