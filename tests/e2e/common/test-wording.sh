@@ -55,15 +55,19 @@ scan_wording() {
         BEGIN { while ((getline f < framelist) > 0) frame[++nframes] = f }
         FNR == 1 { frame_flush(); files++; print FILENAME > readlog }
         function flag(what) { print "WORDING " FILENAME ":" FNR " " what; bad = 1 }
-        # A contrast frame in the comment text gathered since the last flush,
-        # reported at the line its match starts on. fo[n] is the offset in
-        # fbuf where the text of line fl[n] starts.
-        function frame_flush(   t, k, n) {
+        # Every contrast frame in the comment text gathered since the last
+        # flush, each reported at the line its match starts on. fo[n] is the
+        # offset in fbuf where the text of line fl[n] starts. A match is
+        # blanked to spaces of the same length before the next search, so the
+        # offsets hold and a second frame in the block is reported in the same run.
+        function frame_flush(   t, u, k, n, b) {
             t = tolower(fbuf)
             for (k = 1; fbuf != "" && k <= nframes; k++)
-                if (match(t, frame[k])) {
+                for (u = t; match(u, frame[k]) && RLENGTH > 0; ) {
                     for (n = nlines; n > 1 && fo[n] > RSTART; n--) ;
                     print "WORDING " ffile ":" fl[n] " contrast frame"; bad = 1
+                    b = ""; for (n = 0; n < RLENGTH; n++) b = b " "
+                    u = substr(u, 1, RSTART - 1) b substr(u, RSTART + RLENGTH)
                 }
             fbuf = ""; nlines = 0
         }
@@ -163,6 +167,19 @@ probe frame-instead-of fail "\"instead of\" in a trailing comment fails" '^WORDI
 probe frame-comma-not fail "a \", not\" frame broken across two comment lines fails at the first" '^WORDING .*/suite\.sh:2 contrast frame$'
 probe quoted-hash pass "a # inside a quoted string starts no comment"
 probe frame-not-but fail "a \"not X but Y\" frame in a comment fails" '^WORDING .*/suite\.sh:2 contrast frame$'
+probe frame-two-in-block fail "the same contrast frame twice in one comment block fails" '^WORDING .*/suite\.sh:2 contrast frame$'
+rm -rf "${scratch:?}/tree"
+mkdir -p "$scratch/tree"
+cp -R "$fixtures/frame-two-in-block/." "$scratch/tree/"
+two_rc=0
+two="$(scan_wording "$scratch/tree" 2>&1)" || two_rc=$?
+hits="$(grep -c '^WORDING .*/suite\.sh:[23] contrast frame$' <<<"$two")" || [ "$hits" = 0 ]
+if [ "$two_rc" -ne 0 ] && [ "$hits" -eq 2 ]; then
+    pass "a comment block with the same contrast frame twice prints both hits"
+else
+    fail "a comment block with the same contrast frame twice exited $two_rc with $hits hits:"
+    printf '%s\n' "$two" | sed 's/^/    /'
+fi
 probe frame-hatched pass "a contrast frame on a line carrying a wording-ok hatch passes"
 
 # The census: each way a listed script can fail to reach awk fails the scan.
