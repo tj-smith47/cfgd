@@ -1,4 +1,5 @@
-# shellcheck shell=bash disable=SC1001,SC2006,SC2016,SC2034,SC2091,SC2093,SC2194,SC2216  # each line is a spelling the walk reads and nothing runs
+# shellcheck shell=bash disable=SC1001,SC2006,SC2016,SC2034,SC2091,SC2093,SC2194,SC2216
+# Each line is a spelling the walk reads and nothing runs.
 # One way bash runs sleep per line; the walk names every line. test-waits.sh
 # counts the lines below the marker and expects one SLEEP for each.
 # spellings:

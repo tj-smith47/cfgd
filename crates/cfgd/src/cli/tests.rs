@@ -56641,7 +56641,7 @@ fn config_document_reads_under(root: &Path) -> Vec<ConfigDocumentRead> {
         if rel == "startup.rs" || floored_production_body(&file).is_empty() {
             continue;
         }
-        // unfloored-slice-ok: the test-region mask blanks in place, so line numbers stay the file's own.
+        // unfloored-slice-ok: the mask blanks test regions in place, so line numbers stay true.
         let raw = walked_file_body(&file);
         let lines: Vec<&str> = raw.lines().collect();
         let mask = test_region_mask(&raw);

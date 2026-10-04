@@ -58,8 +58,8 @@ min_listed_files=60
 #   `chrt [-opt]... <priority>`, `taskset [-opt]... <mask|cpu-list>`, and
 #   leading `NAME=value` assignments;
 # spelled `sleep`, with a backslash before any letter (`\sleep`, `s\leep`),
-# `/bin/sleep`, `/usr/bin/sleep`, `'sleep'` or `"sleep"`. The script of a `bash -c '...'`, `sh -c "..."` or `eval "..."` is
-# read the same way. A function of
+# `/bin/sleep`, `/usr/bin/sleep`, `'sleep'` or `"sleep"`. The script of a
+# `bash -c '...'`, `sh -c "..."` or `eval "..."` is read the same way. A function of
 # helpers.sh runs from its `name() {` line in column 0 to the next `}` in
 # column 0, the layout every function there keeps; a one-line function ends on
 # its own line, and one left open is reported.

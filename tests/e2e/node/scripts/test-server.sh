@@ -27,7 +27,8 @@ HEALTH_URL="http://cfgd-server.cfgd-system.svc.cluster.local:8081"
 GW_API_KEY="${CFGD_E2E_API_KEY:-cfgd-e2e-admin-key}"
 echo "Device gateway URL: $SERVER_URL"
 
-# Verify device gateway is reachable from the test pod (use the health endpoint, as the API requires auth)
+# Verify the device gateway is reachable from the test pod through the health
+# endpoint, since the API requires auth.
 echo "Verifying device gateway reachability from test pod..."
 if ! wait_for_pod_url "${HEALTH_URL}/readyz" 60; then
     echo "ERROR: device gateway not reachable after 60s" >&2

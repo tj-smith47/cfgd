@@ -160,7 +160,8 @@ fn profile_update_add_remove_mixed_human() {
 #[serial]
 fn profile_update_add_module_remote_hybrid_human() {
     // `cmd_profile_update --module <file://...>` delegates to
-    // `cfgd::cli::RunContext::for_test(cli, printer, |run| module::cmd_module_add_remote(run, ...))`.
+    // `cfgd::cli::RunContext::for_test(cli, printer, |run| ...)` running
+    // `module::cmd_module_add_remote(run, ...)`.
     // The prompt queue drives the "Add this remote module?" / signature
     // confirmations through the unified Printer surface.
     let (config_dir, state_dir) = profile_test_config_setup();
