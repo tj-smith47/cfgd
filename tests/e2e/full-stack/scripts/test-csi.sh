@@ -340,22 +340,35 @@ EOF
 fi
 
 # =================================================================
-# FS-CSI-05: Invalid module ref: pod stays Pending
+# FS-CSI-05: Invalid module ref: the pod runs uninjected and the skip is logged
 # =================================================================
-begin_test "FS-CSI-05: CSI driver: invalid module ref stays Pending"
+begin_test "FS-CSI-05: CSI driver: invalid module ref runs uninjected"
 
 CSI05_NS="e2e-csi-invalid-${E2E_RUN_ID}"
+CSI05_SINCE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 ensure_namespace "$CSI05_NS"
 CSI05_LABELLED=true
 ensure_label namespace "$CSI05_NS" cfgd.io/inject-modules=true --overwrite || CSI05_LABELLED=false
 
-# The injector skips a module it cannot resolve, so the namespace is probed
-# with the FS-CSI-01 module: once that one injects, the API server's
-# namespace cache has the label and the pod below reaches the webhook.
-! $CSI05_LABELLED || wait_for_injection "$CSI05_NS" "csi-test-mod-${E2E_RUN_ID}:v1.0" || true
+# The injector admits a pod naming a module it cannot resolve unpatched and
+# logs the skip, so the pod runs with no CSI volume. Running alone cannot tell
+# that skip from a webhook that never saw the pod; the operator's log line can.
+csi05_skip_logged() {
+    kubectl logs -n "$E2E_INSTALL_NS" -l "$E2E_OPERATOR_PODS" --since-time="$CSI05_SINCE" --tail=-1 2>/dev/null |
+        grep 'module CRD not found, skipping injection' |
+        grep -qE "module=\"?nonexistent-module-${E2E_RUN_ID}\"?([^A-Za-z0-9_-]|$)" # rc-ok: a failed read leaves grep empty, so the function answers no
+}
 
-# Reference a module that does not exist
-kubectl apply -n "$CSI05_NS" -f - <<EOF
+if ! $CSI05_LABELLED; then
+    fail_test "FS-CSI-05" "Namespace $CSI05_NS could not be labelled for injection"
+elif ! wait_for_injection "$CSI05_NS" "csi-test-mod-${E2E_RUN_ID}:v1.0"; then
+    # The probe uses the FS-CSI-01 module, which resolves: until it injects,
+    # the API server's namespace cache lacks the label and the pod below would
+    # never reach the webhook.
+    fail_test "FS-CSI-05" "The injector never served namespace $CSI05_NS"
+else
+    CSI05_APPLY_RC=0
+    kubectl apply -n "$CSI05_NS" -f - <<EOF || CSI05_APPLY_RC=$?
 apiVersion: v1
 kind: Pod
 metadata:
@@ -369,42 +382,25 @@ spec:
       command: ["sleep", "3600"]
   restartPolicy: Never
 EOF
-
-# The case ends when the pod runs or the kubelet reports the mount it cannot
-# make; a pod the webhook left alone runs, one it injected never mounts.
-csi05_settled() {
-    POD_PHASE=$(kubectl get pod csi-invalid-test -n "$CSI05_NS" \
-        -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
-    [ "$POD_PHASE" = "Running" ] && return 0
-    kubectl get events -n "$CSI05_NS" -o name \
-        --field-selector involvedObject.name=csi-invalid-test,reason=FailedMount 2>/dev/null | grep -q . # rc-ok: a failed read leaves grep empty, so the function answers no
-}
-echo "  Waiting up to 60s for the pod to run or report FailedMount..."
-POD_PHASE=""
-wait_until 60 2 "pod/csi-invalid-test to run or report FailedMount" csi05_settled || true
-echo "  Pod phase: ${POD_PHASE:-<not found>}"
-
-if ! $CSI05_LABELLED; then
-    # Every branch below reads as a pass when the webhook was never asked to
-    # inject, so the case is only meaningful on a labelled namespace.
-    fail_test "FS-CSI-05" "Namespace $CSI05_NS could not be labelled for injection"
-elif [ "$POD_PHASE" = "Pending" ] || [ "$POD_PHASE" = "" ]; then
-    pass_test "FS-CSI-05"
-elif [ "$POD_PHASE" = "Running" ]; then
-    # Pod is Running: check if the CSI volume was actually injected.
-    # If the webhook couldn't resolve the module, it may skip injection
-    # entirely, letting the pod run without the volume. That's acceptable.
-    VOL_COUNT=$(kubectl get pod csi-invalid-test -n "$CSI05_NS" \
-        -o jsonpath='{.spec.volumes[?(@.csi.driver=="'"$CSI_DRIVER_NAME"'")]}' 2>/dev/null || echo "")
-    if [ -z "$VOL_COUNT" ]; then
-        echo "  Pod Running but no CSI volume injected (webhook skipped unknown module)"
-        pass_test "FS-CSI-05"
+    if [ "$CSI05_APPLY_RC" -ne 0 ]; then
+        fail_test "FS-CSI-05" "kubectl apply of pod/csi-invalid-test failed (rc=$CSI05_APPLY_RC)"
     else
-        fail_test "FS-CSI-05" "Pod should not be Running with invalid module ref"
+        POD_PHASE=$(wait_for_k8s_field pod csi-invalid-test "$CSI05_NS" '{.status.phase}' Running 60) || true
+        CSI05_VOLS=$(kubectl get pod csi-invalid-test -n "$CSI05_NS" \
+            -o jsonpath='{.spec.volumes[?(@.csi.driver=="'"$CSI_DRIVER_NAME"'")].name}' 2>&1) || CSI05_VOLS="read failed: $CSI05_VOLS"
+        CSI05_SKIPPED=false
+        wait_until 30 2 "the operator to log it skipped nonexistent-module-${E2E_RUN_ID}" csi05_skip_logged && CSI05_SKIPPED=true
+        echo "  Pod phase: ${POD_PHASE:-<none>}; $CSI_DRIVER_NAME volumes: ${CSI05_VOLS:-<none>}; skip logged: $CSI05_SKIPPED"
+        if [ "$POD_PHASE" != "Running" ]; then
+            fail_test "FS-CSI-05" "Expected the uninjected pod Running, phase is ${POD_PHASE:-<none>}"
+        elif [ -n "$CSI05_VOLS" ]; then
+            fail_test "FS-CSI-05" "The pod carries $CSI_DRIVER_NAME volumes for a module that does not exist: $CSI05_VOLS"
+        elif ! $CSI05_SKIPPED; then
+            fail_test "FS-CSI-05" "The operator logged no 'module CRD not found, skipping injection' for nonexistent-module-${E2E_RUN_ID} since $CSI05_SINCE"
+        else
+            pass_test "FS-CSI-05"
+        fi
     fi
-else
-    # ContainerCreating or other non-Running is acceptable
-    pass_test "FS-CSI-05"
 fi
 
 # Cleanup
