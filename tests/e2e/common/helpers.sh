@@ -1031,7 +1031,9 @@ wait_for_url() {
         fi
         sleep 2
     done
-    echo "  Timed out after ${timeout}s waiting for $url; last try: $(curl -sS -o /dev/null -w 'HTTP %{http_code}' "$url" 2>&1)" >&2
+    # The body is discarded by the redirect; -w writes the status to stderr,
+    # which the capture keeps beside curl's own error.
+    echo "  Timed out after ${timeout}s waiting for $url; last try: $(curl -sS -w '%{stderr}HTTP %{http_code}' "$url" 2>&1 >/dev/null | tr '\n' ' ')" >&2
     return 1
 }
 

@@ -359,14 +359,15 @@ spec:
       - ip_vs
 INNEREOF'
 
-    # Wait for daemon to detect the config change and reconcile
+    # The profile sits under the config dir, so the watcher names it relative
+    # to that dir; the reconcile has to follow it past the startup count.
     echo "  Waiting up to 20s for daemon to reconcile after config change..."
     RECONCILED=false
     dm10_reacted() {
-        exec_in_pod grep -q 'watch: file changed' /tmp/daemon10.log ||
+        pod_log_count_at_least /tmp/daemon10.log 'watch: config changed profiles/k8s-worker-minimal.yaml' 1 &&
             pod_log_count_at_least /tmp/daemon10.log 'reconcile: complete' $((DM10_BASE + 1))
     }
-    if wait_until 20 1 "the daemon to log the profile change or a reconcile after it" dm10_reacted; then
+    if wait_until 20 1 "the daemon to log the profile change and a reconcile after it" dm10_reacted; then
         echo "  Daemon detected config change"
         RECONCILED=true
     fi
