@@ -56438,13 +56438,10 @@ fn config_document_reads_under(root: &Path) -> Vec<ConfigDocumentRead> {
     };
     const HATCH: &str = "load-ok:";
     let reason = |line: &str| {
-        carries_hatch(line, HATCH)
-            .then(|| {
-                line.split_once(HATCH)
-                    .map(|(_, why)| why.trim().to_string())
-            })
-            .flatten()
-            .filter(|why| !why.is_empty())
+        let (_, why) = carries_hatch(line, HATCH)
+            .then(|| line.split_once(HATCH))
+            .flatten()?;
+        Some(why.trim().to_string()).filter(|why| !why.is_empty())
     };
     let mut reads = Vec::new();
     for file in rust_sources_under(root) {
@@ -56454,6 +56451,7 @@ fn config_document_reads_under(root: &Path) -> Vec<ConfigDocumentRead> {
         if rel == "startup.rs" || floored_production_body(&file).is_empty() {
             continue;
         }
+        // unfloored-slice-ok: the test-region mask blanks in place, so line numbers stay the file's own.
         let raw = walked_file_body(&file);
         let lines: Vec<&str> = raw.lines().collect();
         let mask = test_region_mask(&raw);
