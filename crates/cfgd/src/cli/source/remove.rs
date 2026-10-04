@@ -248,7 +248,8 @@ pub(super) fn run_source_remove(
     printer.heading_owner_prefixed("Remove", &OwnerLabel::new("source", name));
 
     let config_path = cli.config.clone();
-    let cfg = RunContext::new(cli, printer, startup).config_for_edit()?;
+    let run = RunContext::new(cli, printer, startup);
+    let cfg = run.config()?;
 
     if !cfg.spec.sources.iter().any(|s| s.name == name) {
         if ignore_not_found {

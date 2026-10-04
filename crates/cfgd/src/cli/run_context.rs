@@ -23,8 +23,8 @@ use crate::packages::ManifestCache;
 /// run that wants it and paid once — a command that never asks for the state
 /// store still never opens one.
 ///
-/// The config itself is the invocation's [`StartupDocument`], read and parsed
-/// before dispatch, so a command never reads `cfgd.yaml` a second time.
+/// The config is the invocation's [`StartupDocument`], read and parsed before
+/// dispatch; reading it through the context parses nothing.
 ///
 /// Scoped to ONE run: each `cmd_*` builds a context at its top and drops it when
 /// it returns. Construction is pure (it copies three references and derives the
@@ -131,13 +131,6 @@ impl<'a> RunContext<'a> {
         Ok(cfg)
     }
 
-    /// An owned copy of the run's config for a command that edits and saves
-    /// it, with its deprecation notices surfaced exactly once across this and
-    /// [`Self::config`].
-    pub(in crate::cli) fn config_for_edit(&self) -> anyhow::Result<CfgdConfig> {
-        Ok(self.config()?.clone())
-    }
-
     /// The run's config, the name of the profile in force, and that profile's
     /// resolution — the reference-returning form of
     /// [`super::helpers::load_config_and_profile`], resolved at most once.
@@ -165,8 +158,8 @@ impl<'a> RunContext<'a> {
             .map(|(_, _, resolved)| resolved.secret_env_names())
     }
 
-    /// [`super::helpers::active_profile_name`] over the run's already-parsed
-    /// config, parsed into the same slot when it is not read yet.
+    /// [`super::helpers::active_profile_name`] over the run's config, read
+    /// from the startup document.
     pub(in crate::cli) fn active_profile_name(&self) -> String {
         super::helpers::active_profile_name(self.cli, self.config_unannounced().ok())
     }
@@ -275,7 +268,7 @@ mod tests {
     }
 
     #[test]
-    fn the_config_is_parsed_once_per_run() {
+    fn the_run_never_rereads_the_config_from_disk() {
         let dir = tempfile::tempdir().unwrap();
         write_config(dir.path());
         let printer = test_printer();
@@ -284,8 +277,8 @@ mod tests {
         let ctx = RunContext::new(&cli, &printer, &startup);
 
         let first = ctx.config().unwrap() as *const CfgdConfig;
-        // The file is gone: a second parse could not succeed, so a second
-        // `config()` answering at all is the memo answering.
+        // The file is gone: a `config()` that still answers read nothing from
+        // disk.
         std::fs::remove_file(dir.path().join("cfgd.yaml")).unwrap();
         let second = ctx.config().unwrap() as *const CfgdConfig;
 
@@ -380,32 +373,6 @@ mod tests {
         ctx.config().unwrap();
         let out = cfgd_core::test_helpers::captured_text(&buf);
         assert_eq!(out.matches("theme.overrides.subheader").count(), 1, "{out}");
-    }
-
-    /// The edit copy shares the run's one announcement, and taking it leaves
-    /// the shared document's notices in place for every other reader.
-    #[test]
-    fn the_edit_copy_announces_deprecations_once_with_the_reads() {
-        let dir = tempfile::tempdir().unwrap();
-        write_config(dir.path());
-        std::fs::write(
-            dir.path().join("cfgd.yaml"),
-            format!("{CONFIG_YAML}  theme:\n    overrides:\n      subheader: red\n"),
-        )
-        .unwrap();
-        let (printer, buf) = cfgd_core::output::Printer::for_test();
-        let cli = cli_in(dir.path());
-        let startup = StartupDocument::load(&cli.config);
-        let ctx = RunContext::new(&cli, &printer, &startup);
-
-        let edit = ctx.config_for_edit().unwrap();
-        ctx.config().unwrap();
-        ctx.config_for_edit().unwrap();
-
-        let out = cfgd_core::test_helpers::captured_text(&buf);
-        assert_eq!(out.matches("theme.overrides.subheader").count(), 1, "{out}");
-        assert_eq!(edit.deprecations, startup.config().unwrap().deprecations);
-        assert!(!startup.config().unwrap().deprecations.is_empty());
     }
 
     /// A run's config is the startup document's own parse, by reference.
