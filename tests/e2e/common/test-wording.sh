@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 # Checks the prose of every e2e script: no em dash anywhere on a line, and no
 # first-person pronoun in a comment or in a quoted string of a begin_test,
-# pass_test, fail_test, skip_test, echo, printf or log line. The arguments of
-# an assert_* call are exempt, because they are CLI output the case asserts
-# verbatim. The fixtures under common/fixtures/wording/ prove each arm, and no
-# cluster is needed.
+# pass_test, fail_test, skip_test, echo, printf or log line. The quoted
+# arguments of an assert_* call are exempt, because they are CLI output the
+# case asserts verbatim; a comment after them is still read. Any other line
+# that has to hold such text carries `# wording-ok: <why>`, and the scan prints
+# each hatch with its why. The fixtures under common/fixtures/wording/ prove
+# each arm, and no cluster is needed.
 #
 # Usage: tests/e2e/common/test-wording.sh
 set -euo pipefail
@@ -25,7 +27,8 @@ fail() {
 }
 
 # scan_wording <dir>: print `WORDING <file>:<line> <what>` for each breach in
-# a *.sh under <dir> outside common/fixtures/, then `scanned <n>`. Exits 1 when
+# a *.sh under <dir> outside common/fixtures/, `HATCH <file>:<line> <why>` for
+# each wording-ok hatch, then `scanned <n>`. Exits 1 when
 # find fails, when there is no file, when a non-empty file find listed never
 # reached awk (each one is named), or when a WORDING line was printed.
 scan_wording() {
@@ -49,7 +52,16 @@ scan_wording() {
         }
         {
             line = $0
-            sub(/assert_[a-z_]+[[:space:]].*$/, "", line)
+            if (match(line, /(^|[[:space:]])#[[:space:]]*wording-ok:[[:space:]]*[^[:space:]].*$/)) {
+                why = substr(line, RSTART, RLENGTH); sub(/^[[:space:]]*#[[:space:]]*wording-ok:[[:space:]]*/, "", why)
+                print "HATCH " FILENAME ":" FNR " " why
+                next
+            }
+            if (match(line, /assert_[a-z_]+[[:space:]]/)) {
+                rest = substr(line, RSTART + RLENGTH)
+                gsub(/"([^"\\]|\\.)*"|\047[^\047]*\047/, "\"\"", rest)
+                line = substr(line, 1, RSTART + RLENGTH - 1) rest
+            }
             # U+2014 spelled as its UTF-8 bytes, so this line holds none.
             if (index(line, "\342\200\224")) flag("prose em dash")
             if (line ~ /^#!/) next
@@ -118,12 +130,23 @@ chmod +x "$scratch/find-fails/find" "$scratch/awk-drops/awk"
 PATH="$scratch/find-fails:$PATH" probe clean fail "a find that fails fails the scan" '^scan_wording: find failed under'
 PATH="$scratch/awk-drops:$PATH" probe clean fail "a script find listed and awk never read fails the scan by name" '^scan_wording: .*/suite\.sh was listed and never read$'
 
+probe dash-after-assert fail "an em dash in a comment after an assert_* call fails" '^WORDING .*/suite\.sh:2 prose em dash$'
+probe dash-hatched pass "a line carrying a wording-ok hatch with its why passes"
+rm -rf "${scratch:?}/tree"
+mkdir -p "$scratch/tree"
+cp -R "$fixtures/dash-hatched/." "$scratch/tree/"
+if scan_wording "$scratch/tree" | grep -q '^HATCH .*/suite\.sh:2 cfgd status prints this em dash and the case greps it verbatim$'; then
+    pass "the scan prints each hatch with its why"
+else
+    fail "the scan did not print the hatch's why"
+fi
 probe clean pass "assert_* arguments, -I flags, I/O, words holding we or I and a non-message command pass"
 
 real="$(scan_wording "$e2e_root" 2>&1)" && rc=0 || rc=$?
 scanned="$(sed -n 's/^scanned //p' <<<"$real")"
 if [ "$rc" -eq 0 ] && [ "${scanned:-0}" -ge 60 ]; then
     pass "no e2e script has a prose em dash or a first-person word ($scanned scripts)"
+    grep '^HATCH ' <<<"$real" | sed 's/^/    /' || true
 else
     fail "e2e prose (rc=$rc, ${scanned:-0} scripts scanned):"
     grep -v '^scanned ' <<<"$real" | sed 's/^/    /'
