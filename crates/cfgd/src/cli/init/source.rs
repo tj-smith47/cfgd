@@ -147,6 +147,25 @@ pub(crate) fn from_run_config(from: &str, config: &Path, dest: &Path) -> PathBuf
     cfgd_core::config::config_document_in(dest)
 }
 
+/// The `Cli` and the config document a `plan --from` / `apply --from` run
+/// reads: the source resolved to its destination through [`from_destination`]
+/// and [`resolve_from`], `--config` pointed at the document it put there, and
+/// that document loaded, since the startup read could not have seen it.
+pub(crate) fn from_run(
+    cli: &crate::cli::Cli,
+    from: &str,
+    printer: &Printer,
+) -> anyhow::Result<(crate::cli::Cli, crate::cli::startup::StartupDocument)> {
+    let target = from_destination(&cli.config);
+    let dest = resolve_from(from, target.as_deref(), "master", printer)?;
+    let from_cli = crate::cli::Cli {
+        config: from_run_config(from, &cli.config, &dest),
+        ..cli.clone()
+    };
+    let document = crate::cli::startup::StartupDocument::load(&from_cli.config);
+    Ok((from_cli, document))
+}
+
 /// What the default config directory was found to hold, worded for the refusal
 /// below, or `None` when it is free for this run to write into.
 ///

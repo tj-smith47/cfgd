@@ -13,20 +13,11 @@ pub fn cmd_plan(
 
     // --from: clone from a git source, or read a local config directory in
     // place; either way the run reads the document the source put there.
-    let from_cli;
-    let from_document;
+    let from_run;
     let (cli, startup) = match &args.from {
         Some(from) => {
-            let target = init::from_destination(&cli.config);
-            let dest = init::resolve_from(from, target.as_deref(), "master", printer)?;
-            from_cli = Cli {
-                config: init::from_run_config(from, &cli.config, &dest),
-                ..cli.clone()
-            };
-            // The document the source put there, which the startup read
-            // could not have seen.
-            from_document = crate::cli::startup::StartupDocument::load(&from_cli.config);
-            (&from_cli, &from_document)
+            from_run = init::from_run(cli, from, printer)?;
+            (&from_run.0, &from_run.1)
         }
         None => (cli, startup),
     };

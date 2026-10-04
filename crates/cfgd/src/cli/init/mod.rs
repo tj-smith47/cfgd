@@ -15,7 +15,9 @@ pub(super) use cmd_init::regenerate_workflow;
 pub use cmd_init::{InitArgs, cmd_init};
 pub(super) use enroll::cmd_enroll;
 pub use enroll::{EnrollOutput, build_enroll_error, build_enroll_final_doc};
-pub(super) use source::{from_destination, from_run_config, resolve_from};
+pub(super) use source::from_run;
+#[cfg(test)]
+use source::resolve_from;
 
 // --- Cross-submodule helpers (private to cli::init, visible to tests) ---
 

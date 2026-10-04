@@ -53585,9 +53585,9 @@ fn the_lock_wait_test_matches_the_state_store_event_by_its_constant() {
 /// `init::from_destination`, so the refusal that guards the default config
 /// directory cannot be walked around by a verb that forgot to ask.
 ///
-/// `apply` and `plan` each carry their own copy of the same two lines, which is
-/// the shape that let a `&& !cli.config.exists()` bug sit in both files at once
-/// — and a fourth `--from` verb would carry a third copy. The walk resolves a
+/// `apply` and `plan` once carried their own copy of the same two lines, which
+/// is the shape that let a `&& !cli.config.exists()` bug sit in both files at
+/// once; both now go through `init::from_run`. The walk resolves a
 /// `let`-bound argument back to its own `let` before judging it, so
 /// `init::resolve_from(from, target.as_deref(), …)` is read as the
 /// `from_destination` call that produced `target`.
@@ -53638,9 +53638,9 @@ fn every_from_verb_takes_its_destination_from_from_destination() {
         }
     }
     assert!(
-        call_sites >= 3,
-        "the walk found {call_sites} `resolve_from` call sites; `init`, `apply` and `plan` \
-         each have one, so the walk is reading less than it claims"
+        call_sites >= 2,
+        "the walk found {call_sites} `resolve_from` call sites; `init` and `from_run` (which \
+         `apply` and `plan` share) each have one, so the walk is reading less than it claims"
     );
     assert!(
         offenders.is_empty(),
@@ -57174,11 +57174,10 @@ fn the_pre_dispatch_path_loads_the_document_once() {
     );
 
     let expected: std::collections::BTreeMap<&str, usize> = [
-        ("cli/apply.rs", 1),
         ("cli/mod.rs", 1),
-        ("cli/plan.rs", 1),
         ("cli/plugin/mod.rs", 1),
         ("cli/init/cmd_init.rs", 2),
+        ("cli/init/source.rs", 1),
         ("cli/startup.rs", 1),
     ]
     .into_iter()
