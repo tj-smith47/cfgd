@@ -88,7 +88,7 @@ E2E_RUN_ID="${GITHUB_RUN_ID:-local-$(git -C "$REPO_ROOT" rev-parse --short HEAD 
 E2E_RUN_LABEL="cfgd.io/e2e-run=$E2E_RUN_ID"
 # Job-specific label for cluster-scoped resources (prevents parallel job cleanup races)
 E2E_JOB_LABEL="cfgd.io/e2e-job=$E2E_NAMESPACE"
-# YAML-friendly forms for embedding in heredoc labels (key: "value" instead of key=value)
+# YAML-friendly forms for embedding in heredoc labels (key: "value" in place of key=value)
 export E2E_RUN_LABEL_YAML="cfgd.io/e2e-run: \"$E2E_RUN_ID\""
 export E2E_JOB_LABEL_YAML="cfgd.io/e2e-job: \"$E2E_NAMESPACE\""
 
@@ -236,8 +236,8 @@ cp_to_pod() {
 
 # Label a resource, and fail the caller when the label does not take.
 #
-# A label is what a later selector matches on — an injection webhook's
-# namespace label, a policy's targetSelector. `kubectl label … || true` reads
+# A label is what a later selector matches on (an injection webhook's
+# namespace label, a policy's targetSelector). `kubectl label … || true` reads
 # the same whether the label landed or the API server refused, and a case
 # asserting the ABSENCE of an effect (FS-CSI-05: the pod must not run;
 # FS-CSI-09: no mount is left behind) then passes because nothing was ever
@@ -346,8 +346,8 @@ cleanup_e2e() {
     done
 
     # Last: the scratch root holds this run's $HOME, and every kubectl above
-    # resolves its discovery cache under it. Removed here when scratch-home.sh
-    # made the root, rather than by a suite that owns its own removal.
+    # resolves its discovery cache under it. It is removed here when
+    # scratch-home.sh made the root; a suite that made its own removes it.
     if [ -n "${E2E_SCRATCH_OWNED:-}" ]; then
         rm -rf "$E2E_SCRATCH_OWNED"
     fi
@@ -1174,7 +1174,7 @@ ensure_cfgd_binary() {
 
 # The shell mirror of the Rust suite's `captured_text`: these assertions are
 # about TEXT, and cfgd emits attribute SGR (bold/italic) even under
-# --no-color — colour off is not attrs off — so a style boundary inside a
+# --no-color (colour off leaves attrs on), so a style boundary inside a
 # token (the phase heading's "Phase" + ":") breaks a plain grep over the raw
 # bytes, and a negative grep over them passes vacuously.
 strip_sgr() {
@@ -1335,7 +1335,7 @@ secret_cli_install_route_available() {
 }
 
 # What a plan says about a declared secret whose backend CLI is missing. Which
-# of the two rows cfgd writes is the host's decision, not a choice: with a
+# of the two rows cfgd writes follows from the host: with a
 # manager that packages the CLI, the planner adds the install and names the
 # backend that asked for it; with none, it cannot install anything, so it
 # writes the skip row saying the provider is out of reach and why.

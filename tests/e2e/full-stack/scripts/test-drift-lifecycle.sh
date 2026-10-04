@@ -1,6 +1,6 @@
 # shellcheck shell=bash
 # Full-stack E2E tests: Drift Lifecycle
-# Sourced by run-all.sh — do NOT set traps or pipefail here.
+# Sourced by run-all.sh: do NOT set traps or pipefail here.
 
 echo ""
 echo "=== Drift Lifecycle Tests ==="
@@ -14,7 +14,7 @@ begin_test "FS-DRIFT-01: Drift detection and server reporting"
 ORIG=$(exec_in_pod cat /proc/sys/net/ipv4/ip_forward 2>/dev/null || echo "1")
 exec_in_pod sysctl -w net.ipv4.ip_forward=0 > /dev/null 2>&1 || true
 
-# Checkin — should detect and report drift
+# Checkin: should detect and report drift
 OUTPUT=$(exec_in_pod cfgd \
     --config /etc/cfgd/cfgd.yaml \
     checkin \

@@ -1,6 +1,6 @@
 # shellcheck shell=bash
 # Node E2E tests: Daemon & Compliance
-# Sourced by run-all.sh — do NOT set traps or pipefail here.
+# Sourced by run-all.sh: do NOT set traps or pipefail here.
 
 echo ""
 echo "=== Daemon & Compliance Tests ==="
@@ -523,7 +523,7 @@ else
     if echo "$DAEMON_LOG" | grep -q "policy is notify-only, nothing applied" && [ "$FINAL_VAL" = "0" ]; then
         pass_test "DAEMON-12"
     elif echo "$DAEMON_LOG" | grep -q "drifted" && echo "$DAEMON_LOG" | grep -q "none applied" && [ "$FINAL_VAL" = "0" ]; then
-        pass_test "DAEMON-12"  # drift detected, not auto-applied
+        pass_test "DAEMON-12"  # drift detected and left unapplied
     else
         fail_test "DAEMON-12" "Expected drift logged + value unchanged (final: $FINAL_VAL)"
     fi
@@ -911,7 +911,7 @@ spec:
       autoApply: false
 INNEREOF'
 
-# Start daemon — write PID file to avoid pgrep ambiguity
+# Start daemon, writing a PID file to avoid pgrep ambiguity
 exec_in_pod bash -c 'sysctl -w fs.inotify.max_user_instances=512 fs.inotify.max_user_watches=524288 > /dev/null 2>&1; cfgd --config /etc/cfgd/e2e-daemon18-cfgd.yaml daemon --no-color > /tmp/daemon18.log 2>&1 & echo $! > /tmp/daemon18.pid'
 DAEMON_PID=$(exec_in_pod cat /tmp/daemon18.pid 2>/dev/null | tr -d '[:space:]')
 echo "  Daemon PID: $DAEMON_PID"
@@ -919,7 +919,7 @@ echo "  Daemon PID: $DAEMON_PID"
 if [ -z "$DAEMON_PID" ]; then
     fail_test "DAEMON-18" "Daemon did not start"
 else
-    # SIGTERM has to land on a daemon that is up, not one still starting.
+    # SIGTERM goes to a daemon that has logged it is running.
     wait_for_pod_log /tmp/daemon18.log 'daemon: running' 30 || true
 
     # Verify daemon is running
@@ -951,10 +951,10 @@ else
             echo "  Daemon logs (last 10 lines):"
             echo "$DAEMON_LOG" | tail -10 | sed 's/^/    /'
 
-            # A graceful stop means the process exited (which we confirmed above).
+            # A graceful stop means the process exited (confirmed above).
             # The daemon should not have crashed (no panic/SIGSEGV).
             if echo "$DAEMON_LOG" | grep -q "panic\|SIGSEGV\|signal: 11"; then
-                fail_test "DAEMON-18" "Daemon crashed instead of graceful shutdown"
+                fail_test "DAEMON-18" "Daemon crashed during what should have been a graceful shutdown"
             else
                 pass_test "DAEMON-18"
             fi

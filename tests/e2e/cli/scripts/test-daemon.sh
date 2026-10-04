@@ -10,7 +10,7 @@ source "$SCRIPT_DIR/setup-cli-env.sh"
 # DaemonRunOverrides field and before the DEFAULT_IPC_PATH const.
 export CFGD_DAEMON_IPC_PATH="$SCRATCH/cfgd.sock"
 
-# Kill any daemons we spawn, on every exit path. Bash trap is per-process and
+# Kill every daemon this script spawns, on every exit path. Bash trap is per-process and
 # REPLACES inherited handlers, so this re-installs the parent's CLI_SCRATCH
 # cleanup explicitly to keep the contract.
 DAEMON_PIDS=()
@@ -26,9 +26,9 @@ daemon_cleanup() {
 trap 'daemon_cleanup; rm -rf "$CLI_SCRATCH"' EXIT
 
 # Spawn a daemon in the background, capture PID, wait for IPC socket readiness.
-# Writes the PID into the global SPAWNED_PID (do NOT use `pid=$(spawn_daemon ...)`
-# — command substitution runs in a subshell, so the parent shell loses the
-# backgrounded child from its job table and a later `wait $pid` returns 127).
+# Writes the PID into the global SPAWNED_PID. Do NOT use `pid=$(spawn_daemon ...)`:
+# command substitution runs in a subshell, so the parent shell loses the
+# backgrounded child from its job table and a later `wait $pid` returns 127.
 # Returns 0 on ready, 1 on timeout/exit; caller decides whether to fail or skip.
 SPAWNED_PID=""
 spawn_daemon() {
@@ -59,7 +59,7 @@ else fail_test "DM02"; fi
 
 begin_test "DM03: daemon install"
 run "${C[@]}" daemon install
-# Requires systemd/launchd — skip if unavailable
+# Requires systemd/launchd; skip if unavailable
 if assert_ok; then
     pass_test "DM03"
 else
@@ -68,7 +68,7 @@ fi
 
 begin_test "DM04: daemon uninstall"
 run "${C[@]}" daemon uninstall
-# Requires systemd/launchd — skip if unavailable
+# Requires systemd/launchd; skip if unavailable
 if assert_ok; then
     pass_test "DM04"
 else
@@ -78,7 +78,7 @@ fi
 # --- Live-daemon lifecycle (DM05-DM08) -----------------------------------
 # Probe host unix-socket binding via python3. If the host can't bind unix
 # sockets (rare CI shapes), chain-skip DM05-DM08. If python3 itself is
-# missing, attempt anyway — the environment is too minimal to introspect.
+# missing, attempt anyway: the environment is too minimal to introspect.
 LIVE_SKIP=""
 if command -v python3 > /dev/null 2>&1; then
     if ! python3 -c "import socket,os;p='$SCRATCH/probe.sock';s=socket.socket(socket.AF_UNIX);s.bind(p);s.close();os.unlink(p)" > /dev/null 2>&1; then
@@ -157,7 +157,7 @@ else
         fail_test "DM08" "first daemon log missing SIGTERM line"
         DM08_OK=0
     fi
-    # Cycle 2: respawn and shut down again — the restart-not-reload invariant.
+    # Second cycle: respawn and shut down again (the restart-not-reload invariant).
     if [ "$DM08_OK" -eq 1 ]; then
         DAEMON_LOG2="$SCRATCH/daemon-cycle2.log"
         spawn_daemon "$DAEMON_LOG2" || true

@@ -1,12 +1,12 @@
 # shellcheck shell=bash
 # Operator E2E tests: MachineConfig
-# Sourced by run-all.sh — do NOT set traps or pipefail here.
+# Sourced by run-all.sh: do NOT set traps or pipefail here.
 
 echo ""
 echo "=== MachineConfig Tests ==="
 
 # =================================================================
-# OP-MC-01: Create MachineConfig — controller reconciles and sets status
+# OP-MC-01: Create MachineConfig: controller reconciles and sets status
 # =================================================================
 begin_test "OP-MC-01: MachineConfig reconciliation"
 
@@ -58,7 +58,7 @@ else
 fi
 
 # =================================================================
-# OP-MC-02: Update MachineConfig — controller re-reconciles
+# OP-MC-02: Update MachineConfig: controller re-reconciles
 # =================================================================
 begin_test "OP-MC-02: MachineConfig update triggers re-reconcile"
 BEFORE_TS="$MC_STATUS"
@@ -72,7 +72,7 @@ kubectl patch machineconfig e2e-workstation-1 -n "$E2E_NAMESPACE" --type=merge \
     > /dev/null 2>&1 || MC02_PATCH_RC=$?
 echo "  Spec patch rc: $MC02_PATCH_RC"
 
-# Wait for new reconciliation — poll until timestamp changes
+# Wait for a new reconciliation: poll until the timestamp changes
 echo "  Waiting for re-reconciliation..."
 mc02_reconciled_again() {
     AFTER_TS=$(kubectl get machineconfig e2e-workstation-1 -n "$E2E_NAMESPACE" \
@@ -240,7 +240,7 @@ EOF
 wait_for_k8s_field driftalert "e2e-orphan-drift-${E2E_RUN_ID}" "$E2E_NAMESPACE" \
     '{.metadata.ownerReferences[?(@.kind=="MachineConfig")].name}' "e2e-ephemeral-mc-${E2E_RUN_ID}" 30 > /dev/null || true
 
-# Delete the MachineConfig — DriftAlert becomes orphaned
+# Delete the MachineConfig, which orphans the DriftAlert
 # Remove finalizers first in case controller added them
 kubectl patch machineconfig "e2e-ephemeral-mc-${E2E_RUN_ID}" -n "$E2E_NAMESPACE" \
     --type=json -p='[{"op":"replace","path":"/metadata/finalizers","value":[]}]' 2>/dev/null || true # rc-ok: clearing finalizers is best-effort; OP-ERR-03 asserts only that the operator survives the orphaned alert
@@ -274,7 +274,7 @@ kubectl delete driftalert "e2e-orphan-drift-${E2E_RUN_ID}" -n "$E2E_NAMESPACE" -
 kubectl delete machineconfig "e2e-ephemeral-mc-${E2E_RUN_ID}" -n "$E2E_NAMESPACE" --ignore-not-found 2>/dev/null || true
 
 # =================================================================
-# OP-ERR-04: Rapid create/delete — no reconcile panic
+# OP-ERR-04: Rapid create/delete: no reconcile panic
 # =================================================================
 begin_test "OP-ERR-04: Rapid create/delete — no reconcile panic"
 
@@ -322,7 +322,7 @@ echo "  Restarts before: ${RESTARTS_BEFORE}, after: ${RESTARTS_AFTER}"
 if [ "$OPERATOR_STATUS" = "Running" ] && [ "${RESTARTS_AFTER:-0}" -eq "${RESTARTS_BEFORE:-0}" ]; then
     pass_test "OP-ERR-04"
 elif [ "$OPERATOR_STATUS" = "Running" ]; then
-    # Running but with extra restarts — still acceptable if no crash loop
+    # Running but with extra restarts: still acceptable if no crash loop
     CRASH_LOOP=$(kubectl get pods -n "$E2E_INSTALL_NS" -l "$E2E_OPERATOR_PODS" \
         -o jsonpath='{.items[0].status.containerStatuses[0].state.waiting.reason}' 2>/dev/null || echo "")
     if [ "$CRASH_LOOP" = "CrashLoopBackOff" ]; then

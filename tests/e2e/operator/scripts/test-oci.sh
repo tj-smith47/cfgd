@@ -1,12 +1,12 @@
 # shellcheck shell=bash
 # Operator E2E tests: OCI
-# Sourced by run-all.sh — do NOT set traps or pipefail here.
+# Sourced by run-all.sh: do NOT set traps or pipefail here.
 
 echo ""
 echo "=== OCI Tests ==="
 
 # =================================================================
-# OP-OCI-01: OCI supply chain — push, pull, verify content integrity
+# OP-OCI-01: OCI supply chain: push, pull, verify content integrity
 # =================================================================
 begin_test "OP-OCI-01: OCI supply chain — push, pull, verify"
 
@@ -64,7 +64,7 @@ fi
 rm -rf "$TEST_MODULE_DIR" "$PULL_DIR"
 
 # Bonus: create Module CRD referencing the pushed artifact to verify controller resolves it
-# This may be rejected if ClusterConfigPolicy disallows unsigned modules — that's fine
+# This may be rejected if ClusterConfigPolicy disallows unsigned modules, which is fine
 if kubectl apply -f - 2>/dev/null <<EOF
 apiVersion: cfgd.io/v1alpha1
 kind: Module

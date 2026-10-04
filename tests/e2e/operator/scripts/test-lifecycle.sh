@@ -1,6 +1,6 @@
 # shellcheck shell=bash
 # Operator E2E tests: Controller Lifecycle
-# Sourced by run-all.sh — do NOT set traps or pipefail here.
+# Sourced by run-all.sh: do NOT set traps or pipefail here.
 
 echo ""
 echo "=== Controller Lifecycle Tests ==="
@@ -190,7 +190,7 @@ wait_for_service_endpoints "$E2E_INSTALL_NS" "$E2E_WEBHOOK_SVC" 60 || true
 # =================================================================
 begin_test "OP-LC-04: MachineConfig reconcile loop"
 
-# Retry apply — webhook endpoint may still be registering after OP-LC-03 restart
+# Retry apply: the webhook endpoint may still be registering after the OP-LC-03 restart
 lc04_apply() {
     kubectl apply -n "$E2E_NAMESPACE" -f - <<EOF 2>/dev/null && return 0
 apiVersion: cfgd.io/v1alpha1
@@ -276,7 +276,7 @@ kubectl patch machineconfig "e2e-lc-mc-${E2E_RUN_ID}" -n "$E2E_NAMESPACE" --type
     > /dev/null 2>&1 || LC05_PATCH_RC=$?
 echo "  MC spec patch rc: $LC05_PATCH_RC"
 
-# Wait for policy to re-evaluate — poll until compliantCount changes or appears
+# Wait for the policy to re-evaluate: poll until compliantCount changes or appears
 echo "  Waiting for ConfigPolicy re-evaluation after MC update..."
 lc05_compliant() {
     COMPLIANT_AFTER=$(kubectl get configpolicy "e2e-lc-policy-${E2E_RUN_ID}" -n "$E2E_NAMESPACE" \
@@ -343,7 +343,7 @@ else
     # completed (missed watch event, transient patch error → backoff, or
     # informer-cache lag under load). Without this dump the failure is a black
     # box; capture the resource state + drift-related operator logs so a
-    # recurrence is diagnosable rather than a bare "not set".
+    # recurrence is diagnosable from more than a bare "not set".
     echo "  --- OP-LC-06 diagnostics ---"
     echo "  DriftAlert object:"
     kubectl get driftalert "e2e-lc-drift-${E2E_RUN_ID}" -n "$E2E_NAMESPACE" \
@@ -383,7 +383,7 @@ EOF
 ) && LC07_CREATE_RC=0 || LC07_CREATE_RC=$?
 
 if [ "$LC07_CREATE_RC" -ne 0 ]; then
-    # Webhook rejects unsigned modules — this is correct behavior
+    # Webhook rejects unsigned modules, which is correct behavior
     if echo "$LC07_CREATE_OUTPUT" | grep -q "unsigned modules"; then
         echo "  Webhook correctly rejects unsigned modules (expected behavior)"
         pass_test "OP-LC-07"
@@ -445,7 +445,7 @@ else
         pass_test "OP-LC-08"
     elif [ "$HEALTHZ_CODE" = "200" ]; then
         # readyz may be 503 during initial reconciliation warmup after OP-LC-03
-        # restart — healthz 200 proves the health probe endpoint works
+        # restart; healthz 200 proves the health probe endpoint works
         pass_test "OP-LC-08"
     else
         fail_test "OP-LC-08" "Health probes failed: /healthz=$HEALTHZ_CODE /readyz=$READYZ_CODE"

@@ -1,12 +1,12 @@
 # shellcheck shell=bash
 # Operator E2E tests: ClusterConfigPolicy
-# Sourced by run-all.sh — do NOT set traps or pipefail here.
+# Sourced by run-all.sh: do NOT set traps or pipefail here.
 
 echo ""
 echo "=== ClusterConfigPolicy Tests ==="
 
 # =================================================================
-# OP-CCP-01: ClusterConfigPolicy — namespaceSelector filtering
+# OP-CCP-01: ClusterConfigPolicy: namespaceSelector filtering
 # =================================================================
 begin_test "OP-CCP-01: ClusterConfigPolicy — namespaceSelector filtering"
 
@@ -73,7 +73,7 @@ else
 fi
 
 # =================================================================
-# OP-CCP-02: ClusterConfigPolicy — cluster-wins merge with namespace ConfigPolicy
+# OP-CCP-02: ClusterConfigPolicy: cluster-wins merge with namespace ConfigPolicy
 # =================================================================
 begin_test "OP-CCP-02: ClusterConfigPolicy — cluster-wins merge"
 
@@ -266,7 +266,7 @@ else
 fi
 
 # =================================================================
-# OP-NS-03: Namespace selector filtering — unlabel ns-b
+# OP-NS-03: Namespace selector filtering: unlabel ns-b
 # =================================================================
 begin_test "OP-NS-03: Namespace selector filtering"
 
@@ -288,7 +288,7 @@ fi
 ensure_label namespace "$NS_B" cfgd.io/team=frontend --overwrite
 
 # =================================================================
-# OP-NS-04: Policy priority resolution — both namespace and cluster
+# OP-NS-04: Policy priority resolution: both namespace and cluster
 # =================================================================
 begin_test "OP-NS-04: Policy priority resolution"
 

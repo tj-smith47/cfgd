@@ -27,7 +27,7 @@ HEALTH_URL="http://cfgd-server.cfgd-system.svc.cluster.local:8081"
 GW_API_KEY="${CFGD_E2E_API_KEY:-cfgd-e2e-admin-key}"
 echo "Device gateway URL: $SERVER_URL"
 
-# Verify device gateway is reachable from the test pod (use health endpoint — API requires auth)
+# Verify device gateway is reachable from the test pod (use the health endpoint, as the API requires auth)
 echo "Verifying device gateway reachability from test pod..."
 if ! wait_for_pod_url "${HEALTH_URL}/readyz" 60; then
     echo "ERROR: device gateway not reachable after 60s" >&2
@@ -102,7 +102,7 @@ begin_test "T33: Drift reporting to device gateway"
 ORIG_FWD=$(exec_in_pod cat /proc/sys/net/ipv4/ip_forward 2>/dev/null || echo "1")
 exec_in_pod sysctl -w net.ipv4.ip_forward=0 > /dev/null 2>&1 || true
 
-# Checkin again — should detect and report drift
+# Checkin again: should detect and report drift
 OUTPUT=$(exec_in_pod cfgd \
     --config /etc/cfgd/cfgd.yaml \
     checkin \

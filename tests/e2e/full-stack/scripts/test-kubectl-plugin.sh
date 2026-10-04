@@ -1,12 +1,12 @@
 # shellcheck shell=bash
 # Full-stack E2E tests: kubectl Plugin
-# Sourced by run-all.sh — do NOT set traps or pipefail here.
+# Sourced by run-all.sh: do NOT set traps or pipefail here.
 
 echo ""
 echo "=== kubectl Plugin Tests ==="
 
 # =================================================================
-# FS-PLUGIN-01: kubectl cfgd inject — patches annotation on deployment
+# FS-PLUGIN-01: kubectl cfgd inject: patches annotation on deployment
 # =================================================================
 begin_test "FS-PLUGIN-01: kubectl cfgd inject"
 
@@ -38,7 +38,7 @@ EOF
 wait_for_deployment "e2e-plugin-test-${E2E_RUN_ID}" inject-target 60 2>/dev/null || true
 
 # Run kubectl cfgd inject (the binary acts as kubectl plugin when invoked as kubectl-cfgd)
-# We call it directly since it's not installed as a kubectl plugin in CI
+# Called directly, as CI does not install it as a kubectl plugin
 INJECT_OUTPUT=$(NO_COLOR=1 "$KUBECTL_CFGD" inject deployment/inject-target \
     --namespace "e2e-plugin-test-${E2E_RUN_ID}" \
     --module "csi-test-mod-${E2E_RUN_ID}:v1.0" 2>&1) || true
@@ -56,7 +56,7 @@ else
 fi
 
 # =================================================================
-# FS-PLUGIN-02: kubectl cfgd status — lists modules
+# FS-PLUGIN-02: kubectl cfgd status: lists modules
 # =================================================================
 begin_test "FS-PLUGIN-02: kubectl cfgd status"
 
@@ -64,7 +64,7 @@ STATUS_OUTPUT=$(NO_COLOR=1 "$KUBECTL_CFGD" status 2>&1) || true
 echo "  Status output:"
 echo "$STATUS_OUTPUT" | head -10 | sed 's/^/    /'
 
-# Should list the modules we created (csi-test-mod-*, e2e-nettools if still around)
+# Should list the modules the CSI cases created (csi-test-mod-*, e2e-nettools if still around)
 if echo "$STATUS_OUTPUT" | grep -qi "module\|csi-test-mod\|name"; then
     pass_test "FS-PLUGIN-02"
 else
@@ -72,7 +72,7 @@ else
 fi
 
 # =================================================================
-# FS-PLUGIN-03: kubectl cfgd version — returns version info
+# FS-PLUGIN-03: kubectl cfgd version: returns version info
 # =================================================================
 begin_test "FS-PLUGIN-03: kubectl cfgd version"
 

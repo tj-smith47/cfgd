@@ -1,11 +1,11 @@
 # shellcheck shell=bash
 # Gateway device-projection tests (GW-32 through GW-36).
-# Sourced by run-all.sh — no shebang, no set, no source, no traps, no print_summary.
+# Sourced by run-all.sh: no shebang, no set, no source, no traps, no print_summary.
 #
 # The only case family that drives a REAL cfgd binary against the gateway: every
 # other gateway case speaks to the API with curl, so the halves the device owns
-# — enrolling, recording a check-in's `backupSchedules` answer, re-arming the
-# daemon's timer off it and rendering the result — were never exercised end to
+# (enrolling, recording a check-in's `backupSchedules` answer, re-arming the
+# daemon's timer off it and rendering the result) were never exercised end to
 # end on a cluster.
 
 DP_ROOT="$GW_SCRATCH/device-projection"
@@ -62,8 +62,8 @@ command -v pgrep > /dev/null 2>&1 && DP_PGREP=present
 # Whether any process of THIS run's device is still alive. Asked of the recorded
 # pid first, which is the handle this script owns, and of the config path second
 # so a daemon that outlived its recorded pid is still seen. The path match CAN
-# also catch a shell whose own argv carries "$DP_CONF" — a future `dp_cfgd ... &`
-# would flip it — so the pid question comes first and the path question only
+# also catch a shell whose own argv carries "$DP_CONF" (a future `dp_cfgd ... &`
+# would flip it), so the pid question comes first and the path question only
 # widens it.
 #
 # Returns 2, never 1, when pgrep cannot answer at all: a caller must not read
@@ -83,8 +83,8 @@ dp_daemon_alive() {
 
 # The word in the listing's Schedule Owner cell for this run's unit. Column four
 # of `cfgd backup list`, and a cron expression is exactly five fields, so the
-# owner is field eight of the unit's own row — asserted as the CELL rather than
-# as a substring of a render that also carries paths and status words.
+# owner is field eight of the unit's own row. The assertion reads that CELL, as
+# the render around it also carries paths and status words.
 dp_owner_cell() {
     dp_cfgd backup list 2>&1 | strip_sgr | awk -v unit="$DP_UNIT" '$1 == unit { print $8 }'
 }
@@ -152,7 +152,8 @@ EOF
 dp_write_profile Cluster
 
 # A CI runner compiles this binary here, so the build's outcome is carried into
-# GW-32 rather than surfacing as an opaque `rc=127` from the first case to run it.
+# GW-32, where a failed build is named; the first case to run the binary would
+# only see an opaque `rc=127`.
 DP_BIN_READY=yes
 ensure_cfgd_binary || DP_BIN_READY=no
 [ -x "${CFGD_BIN:-}" ] || DP_BIN_READY=no
@@ -205,7 +206,7 @@ else
     assert_equals "$GW32_CRED_URL" "$GW_URL" || GW32_PASS=false
     # The MachineConfig below is keyed on `uname -n`; if the binary ever reports
     # a different name the projection would silently never land, so the two
-    # readings are pinned equal here rather than assumed.
+    # readings are asserted equal here.
     assert_equals "$GW32_DEVICE_ID" "$DP_HOSTNAME" || GW32_PASS=false
     assert_exit_code "$GW32_LIST_RC" 0 || GW32_PASS=false
     assert_equals "$GW32_LISTED" "$DP_HOSTNAME" || GW32_PASS=false

@@ -1,12 +1,12 @@
 # shellcheck shell=bash
 # Operator E2E tests: DriftAlert
-# Sourced by run-all.sh — do NOT set traps or pipefail here.
+# Sourced by run-all.sh: do NOT set traps or pipefail here.
 
 echo ""
 echo "=== DriftAlert Tests ==="
 
 # =================================================================
-# OP-DA-01: DriftAlert — marks MachineConfig as drifted
+# OP-DA-01: DriftAlert: marks MachineConfig as drifted
 # =================================================================
 begin_test "OP-DA-01: DriftAlert creates drift on MachineConfig"
 
@@ -71,7 +71,7 @@ else
 fi
 
 # =================================================================
-# OP-DA-02: DriftAlert cleanup — delete alert, MC drift clears
+# OP-DA-02: DriftAlert cleanup: delete alert, MC drift clears
 # =================================================================
 begin_test "OP-DA-02: DriftAlert cleanup"
 
@@ -80,7 +80,7 @@ kubectl delete driftalert e2e-drift-1 -n "$E2E_NAMESPACE" --ignore-not-found 2>/
 
 # Update MC spec to bump generation and trigger re-reconcile (clear drift flag).
 # The poll below reads an ABSENT DriftDetected condition as cleared, so a patch
-# that never landed has to be a failure here rather than a silent pass.
+# that never landed has to fail here, where it would otherwise pass silently.
 DA02_PATCH_RC=0
 kubectl patch machineconfig "e2e-drift-mc-${E2E_RUN_ID}" -n "$E2E_NAMESPACE" --type=merge \
     -p '{"spec":{"packages":[{"name":"vim"},{"name":"git"},{"name":"curl"},{"name":"wget"}]}}' \

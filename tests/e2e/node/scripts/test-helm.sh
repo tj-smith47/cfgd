@@ -72,7 +72,7 @@ else
     echo "  Pod logs (last 10 lines):"
     echo "$LOGS" | tail -10 | sed 's/^/    /'
 
-    # The daemon should produce some output — either reconciliation or errors
+    # The daemon should produce some output: reconciliation or errors
     if [ -n "$LOGS" ]; then
         pass_test "T22"
     else

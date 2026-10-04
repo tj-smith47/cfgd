@@ -1,6 +1,6 @@
 # shellcheck shell=bash
 # Full-stack E2E tests: Fleet
-# Sourced by run-all.sh — do NOT set traps or pipefail here.
+# Sourced by run-all.sh: do NOT set traps or pipefail here.
 
 echo ""
 echo "=== Fleet Tests ==="

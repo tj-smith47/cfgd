@@ -46,7 +46,7 @@ ensure_namespace cfgd-system
 # CSIDriver). A coordination.k8s.io/Lease named cfgd-e2e-setup serializes
 # them: the holder identity is GITHUB_RUN_ID and a background renewer advances
 # renewTime every third of the duration. If the holder dies, renewTime stops
-# and any waiter steals the lease once it expires — auto-release on holder
+# and any waiter steals the lease once it expires: auto-release on holder
 # death without a permanent lock.
 LEASE_NAME="cfgd-e2e-setup"
 LEASE_NS="cfgd-system"
@@ -66,7 +66,7 @@ lease_now_rfc3339() {
     date -u +%Y-%m-%dT%H:%M:%S.000000Z
 }
 
-# Lease manifest body with us as holder and a fresh renewTime. A
+# Lease manifest body naming this run as holder, with a fresh renewTime. A
 # resourceVersion line is injected by callers that need an optimistic-
 # concurrency precondition.
 lease_manifest() {
@@ -87,13 +87,13 @@ spec:
 LEASEEOF
 }
 
-# Atomic create — fails (non-zero) if the Lease already exists. Only one
+# Atomic create: fails (non-zero) if the Lease already exists. Only one
 # concurrent waiter observing an absent lease can win this.
 lease_create() {
     lease_manifest | kubectl create -f - >/dev/null 2>&1
 }
 
-# Optimistic replace — fails if the object changed since we read it (the
+# Optimistic replace: fails if the object changed since it was read (the
 # embedded resourceVersion no longer matches), so a steal can't clobber a
 # write another waiter landed first.
 lease_replace_at() {
@@ -101,7 +101,7 @@ lease_replace_at() {
     lease_manifest "$resource_version" | kubectl replace -f - >/dev/null 2>&1
 }
 
-# True only if the live Lease still names us as holder.
+# True only if the live Lease still names this run as holder.
 lease_held_by_us() {
     local holder
     holder=$(kubectl get lease "$LEASE_NAME" -n "$LEASE_NS" \
@@ -123,7 +123,7 @@ try_acquire_lease() {
         2>/dev/null || echo "__absent__")
 
     if [ "$raw" = "__absent__" ]; then
-        # No lease object yet — create it atomically.
+        # No lease object yet: create it atomically.
         if lease_create && lease_held_by_us; then
             echo "  Lease acquired (created)"
             return 0
@@ -136,7 +136,7 @@ try_acquire_lease() {
     renew="${raw#*|}"; renew="${renew%|*}"
 
     if [ -z "$holder" ]; then
-        # Object exists but holder was cleared — replace under its RV.
+        # Object exists but holder was cleared: replace under its RV.
         if lease_replace_at "$rv" && lease_held_by_us; then
             echo "  Lease acquired (claimed released lease)"
             return 0
@@ -145,7 +145,7 @@ try_acquire_lease() {
     fi
 
     if [ "$holder" = "$LEASE_HOLDER" ]; then
-        echo "  Lease already held by us"
+        echo "  Lease already held by this run"
         return 0
     fi
 
@@ -200,8 +200,9 @@ start_lease_renewer() {
     LEASE_RENEW_PID=$!
 }
 
-# Release on any exit: stop the renewer, then delete the Lease only if we still
-# hold it (never yank a lease another run legitimately stole after our death).
+# Release on any exit: stop the renewer, then delete the Lease only if this run
+# still holds it (never yank a lease another run legitimately stole after this
+# one was presumed dead).
 release_lease() {
     [ -n "$LEASE_RENEW_PID" ] && kill "$LEASE_RENEW_PID" 2>/dev/null || true
     local holder
@@ -250,7 +251,7 @@ echo "  All pre-flight checks passed"
 # --- Step 2: Extract cfgd-gen-crds binary from the operator's build stage ---
 # Dockerfile.operator now compiles cfgd-operator AND cfgd-gen-crds in a
 # single `cargo build` pass; the `crds` stage exposes just the gen-crds
-# binary. Buildx extracts it into the local filesystem — populates the
+# binary. Buildx extracts it into the local filesystem, which populates the
 # layer cache that the subsequent runtime build reuses (no second compile).
 # Registry-backed buildx cache flags for one image scope, or nothing when
 # caching is disabled (local runs). Emitted onto a buildx arg array via mapfile.
@@ -265,7 +266,7 @@ buildcache_args() {
     local ref
     ref="$(e2e_image_repo "$1"):buildcache"
     # ignore-error: the cache export is an optimization, and a registry-side
-    # blob rejection during it aborts an otherwise-successful build — which
+    # blob rejection during it aborts an otherwise-successful build, which
     # fails setup, which cascades every E2E suite to "skipped" without a
     # single test having run. A cold next build is the correct penalty.
     printf '%s\n' "--cache-from" "type=registry,ref=${ref}" \
@@ -283,7 +284,7 @@ docker "${crds_args[@]}" "$REPO_ROOT"
 
 # --- Step 3: Build and push images ---
 # Pre-pull base images so the Dockerfile `FROM`s hit the local cache. If
-# docker.io rate-limits us (HTTP 429), fall back to mirror.gcr.io and retag
+# docker.io rate-limits this runner (HTTP 429), fall back to mirror.gcr.io and retag
 # under the bare name so `FROM debian:bookworm-slim` resolves locally.
 pull_with_fallback() {
     local image="$1"
@@ -340,7 +341,7 @@ GIT_SHA="$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null || echo "")"
 # "build" or "skip". Fails OPEN (prints "build") on ANY uncertainty: missing
 # last-green SHA, unreadable git history, or an empty diff range. Never skips
 # and ships a stale image. Inputs = the image's own crate dir(s), the shared
-# Cargo.lock + Cargo.toml, and the image's Dockerfile — all relative to
+# Cargo.lock + Cargo.toml, and the image's Dockerfile, all relative to
 # REPO_ROOT so `git diff` paths resolve regardless of CWD.
 # Usage: image_decision <image> <dockerfile_relpath> <path>...
 image_decision() {
@@ -358,7 +359,7 @@ image_decision() {
         return 0
     fi
     # A last-green SHA absent from local history (force-push, shallow clone)
-    # means we cannot trust the diff → build.
+    # means the diff cannot be trusted → build.
     if ! git -C "$REPO_ROOT" cat-file -e "${last_green}^{commit}" 2>/dev/null; then
         echo "build"
         return 0
@@ -371,8 +372,8 @@ image_decision() {
 }
 
 # buildx + registry cache: unchanged layers restore from the per-image
-# `:buildcache` tag instead of recompiling (see buildcache_args for why
-# registry, not gha). Gated on SCCACHE_GHA_ENABLED so local invocations without
+# `:buildcache` tag with no recompile (buildcache_args says why the cache is
+# the registry's and gha's is unused). Gated on SCCACHE_GHA_ENABLED so local invocations without
 # a registry fall back to a plain `docker buildx build --load`.
 build_image() {
     local dockerfile="$1" tag="$2" context="$3" scope="$4"
@@ -429,7 +430,7 @@ build_and_push() {
 
     if [ "$decision" = "skip" ]; then
         # Confirm the tag the deploys reference actually exists before trusting
-        # the skip — fail OPEN to a build if the registry lost it.
+        # the skip; fail OPEN to a build if the registry lost it.
         if docker manifest inspect "$ref" >/dev/null 2>&1; then
             echo "  SKIP ${image}: no source change since $(e2e_image_repo "$image") last-green"
             if [ "$retag_latest" = "true" ]; then
@@ -488,15 +489,14 @@ if [ "$FUNCTION_DECISION" = "build" ]; then
     # Ensure crossplane CLI (crank). In CI the checksum-verified pinned binary
     # is already on PATH via .github/actions/setup-crossplane (the pin's SSOT);
     # this fallback exists for local runs only. Same version, and checksum
-    # verification on amd64 (the only arch the action pins a hash for) —
+    # verification on amd64 (the only arch the action pins a hash for), as
     # the upstream install.sh from `main` is unpinned and unchecked, and
     # rejects `linux / x86_64` as of late May 2026.
     if ! which crossplane &>/dev/null; then
         CROSSPLANE_VERSION="v2.3.2"
         # One pinned digest per arch this installs on, so no arch reaches the
         # xpkg steps unverified: an `if amd64` guard left the arm64 binary
-        # checked by nothing at all. An arch with no pinned digest is refused
-        # rather than trusted.
+        # checked by nothing at all. An arch with no pinned digest is refused.
         case "$(uname -m)" in
             x86_64|amd64)
                 CROSSPLANE_ARCH=amd64
@@ -763,7 +763,7 @@ export CA_BUNDLE
 # Generate webhook configs using the CA bundle
 WEBHOOK_FILE=$(mktemp "${RUNNER_TEMP:-/tmp}/cfgd-e2e-webhooks.XXXXXX.yaml")
 # Chain both cleanups into the single EXIT trap (the lease release is already
-# registered) — a bare `trap ... EXIT` here would drop the lease release.
+# registered): a bare `trap ... EXIT` here would drop the lease release.
 trap 'rm -f "$WEBHOOK_FILE"; release_lease; [ -z "${E2E_SCRATCH_OWNED:-}" ] || rm -rf "$E2E_SCRATCH_OWNED"' EXIT
 cat >"$WEBHOOK_FILE" <<WEBHOOKEOF
 apiVersion: v1
@@ -966,7 +966,7 @@ fi
 # --- Step 11: Record last-green SHA per image ---
 # Reached only after every prior step succeeded (set -e). Persisting HEAD as the
 # last-green SHA here is what lets the NEXT run's image_decision skip unchanged
-# images. Best-effort writes — a ConfigMap write failure just forces a rebuild
+# images. Best-effort writes: a ConfigMap write failure just forces a rebuild
 # next run, never a stale skip.
 if [ -n "$GIT_SHA" ]; then
     echo "Recording last-green SHA ($GIT_SHA) for branch $E2E_BRANCH..."

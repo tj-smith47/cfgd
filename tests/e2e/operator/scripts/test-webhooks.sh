@@ -1,12 +1,12 @@
 # shellcheck shell=bash
 # Operator E2E tests: Webhooks
-# Sourced by run-all.sh — do NOT set traps or pipefail here.
+# Sourced by run-all.sh: do NOT set traps or pipefail here.
 
 echo ""
 echo "=== Webhook Tests ==="
 
 # =================================================================
-# OP-WH-01: Validation webhooks — reject invalid specs for multiple CRDs
+# OP-WH-01: Validation webhooks: reject invalid specs for multiple CRDs
 # =================================================================
 begin_test "OP-WH-01: Validation webhooks — reject invalid specs"
 
@@ -85,7 +85,7 @@ kubectl delete driftalert e2e-bad-drift -n "$E2E_NAMESPACE" --ignore-not-found 2
 kubectl delete machineconfig e2e-bad-mc -n "$E2E_NAMESPACE" --ignore-not-found 2>/dev/null || true
 
 # =================================================================
-# OP-WH-02: Mutating webhook — pod injection with CSI volumes
+# OP-WH-02: Mutating webhook: pod injection with CSI volumes
 # =================================================================
 begin_test "OP-WH-02: Mutating webhook — pod injection"
 
@@ -163,7 +163,7 @@ else
 fi
 
 # =================================================================
-# OP-WH-03: Mutating webhook — mountPolicy Debug skips volumeMount
+# OP-WH-03: Mutating webhook: mountPolicy Debug skips volumeMount
 # =================================================================
 begin_test "OP-WH-03: Mutating webhook — Debug mountPolicy"
 
@@ -196,7 +196,7 @@ spec:
     - name: e2e-debug-mod-${E2E_RUN_ID}
 EOF
 
-# Create a pod in the injection namespace (no annotation needed — policy injects)
+# Create a pod in the injection namespace (no annotation needed, as the policy injects)
 kubectl apply -n "e2e-inject-${E2E_RUN_ID}" -f - <<EOF
 apiVersion: v1
 kind: Pod
@@ -231,12 +231,12 @@ if echo "$DEBUG_CSI" | grep -qF "$CSI_DRIVER_NAME"; then
     fi
 else
     # If no modules were injected at all, this is also acceptable if the policy
-    # controller hasn't reconciled yet — but CSI volume without mount is the goal
+    # controller hasn't reconciled yet, though a CSI volume without a mount is the goal
     skip_test "OP-WH-03" "Debug module CSI volume not injected (policy may not have been picked up)"
 fi
 
 # =================================================================
-# OP-WH-04: MachineConfig — missing hostname rejected
+# OP-WH-04: MachineConfig: missing hostname rejected
 # =================================================================
 begin_test "OP-WH-04: MachineConfig — missing hostname rejected"
 
@@ -265,7 +265,7 @@ fi
 kubectl delete machineconfig "e2e-no-host-${E2E_RUN_ID}" -n "$E2E_NAMESPACE" --ignore-not-found 2>/dev/null || true
 
 # =================================================================
-# OP-WH-05: MachineConfig — invalid moduleRef format rejected
+# OP-WH-05: MachineConfig: invalid moduleRef format rejected
 # =================================================================
 begin_test "OP-WH-05: MachineConfig — invalid moduleRef format rejected"
 
@@ -297,7 +297,7 @@ fi
 kubectl delete machineconfig "e2e-bad-modref-${E2E_RUN_ID}" -n "$E2E_NAMESPACE" --ignore-not-found 2>/dev/null || true
 
 # =================================================================
-# OP-WH-06: MachineConfig — valid spec accepted
+# OP-WH-06: MachineConfig: valid spec accepted
 # =================================================================
 begin_test "OP-WH-06: MachineConfig — valid spec accepted"
 
@@ -330,7 +330,7 @@ fi
 kubectl delete machineconfig "e2e-valid-mc-${E2E_RUN_ID}" -n "$E2E_NAMESPACE" --ignore-not-found 2>/dev/null || true
 
 # =================================================================
-# OP-WH-07: ConfigPolicy — empty targetSelector accepted
+# OP-WH-07: ConfigPolicy: empty targetSelector accepted
 # =================================================================
 begin_test "OP-WH-07: ConfigPolicy — empty targetSelector"
 
@@ -360,7 +360,7 @@ fi
 kubectl delete configpolicy "e2e-empty-sel-${E2E_RUN_ID}" -n "$E2E_NAMESPACE" --ignore-not-found 2>/dev/null || true
 
 # =================================================================
-# OP-WH-08: ConfigPolicy — valid spec accepted
+# OP-WH-08: ConfigPolicy: valid spec accepted
 # =================================================================
 begin_test "OP-WH-08: ConfigPolicy — valid spec accepted"
 
@@ -393,7 +393,7 @@ fi
 kubectl delete configpolicy "e2e-valid-cp-${E2E_RUN_ID}" -n "$E2E_NAMESPACE" --ignore-not-found 2>/dev/null || true
 
 # =================================================================
-# OP-WH-09: DriftAlert — missing machineConfigRef rejected
+# OP-WH-09: DriftAlert: missing machineConfigRef rejected
 # =================================================================
 begin_test "OP-WH-09: DriftAlert — missing machineConfigRef rejected"
 
@@ -426,7 +426,7 @@ fi
 kubectl delete driftalert "e2e-no-mcref-${E2E_RUN_ID}" -n "$E2E_NAMESPACE" --ignore-not-found 2>/dev/null || true
 
 # =================================================================
-# OP-WH-10: DriftAlert — valid spec accepted
+# OP-WH-10: DriftAlert: valid spec accepted
 # =================================================================
 begin_test "OP-WH-10: DriftAlert — valid spec accepted"
 
@@ -459,7 +459,7 @@ fi
 kubectl delete driftalert "e2e-valid-da-${E2E_RUN_ID}" -n "$E2E_NAMESPACE" --ignore-not-found 2>/dev/null || true
 
 # =================================================================
-# OP-WH-11: ClusterConfigPolicy — invalid namespaceSelector + invalid semver rejected
+# OP-WH-11: ClusterConfigPolicy: invalid namespaceSelector + invalid semver rejected
 # =================================================================
 begin_test "OP-WH-11: ClusterConfigPolicy — invalid namespaceSelector + invalid semver rejected"
 
@@ -492,7 +492,7 @@ fi
 kubectl delete clusterconfigpolicy "e2e-bad-ccp-${E2E_RUN_ID}" --ignore-not-found 2>/dev/null || true
 
 # =================================================================
-# OP-WH-12: ClusterConfigPolicy — valid spec accepted
+# OP-WH-12: ClusterConfigPolicy: valid spec accepted
 # =================================================================
 begin_test "OP-WH-12: ClusterConfigPolicy — valid spec accepted"
 
@@ -524,7 +524,7 @@ fi
 kubectl delete clusterconfigpolicy "e2e-valid-ccp-${E2E_RUN_ID}" --ignore-not-found 2>/dev/null || true
 
 # =================================================================
-# OP-WH-13: Module — invalid OCI reference format rejected
+# OP-WH-13: Module: invalid OCI reference format rejected
 # =================================================================
 begin_test "OP-WH-13: Module — invalid OCI reference format rejected"
 
@@ -552,7 +552,7 @@ fi
 kubectl delete module "e2e-bad-oci-${E2E_RUN_ID}" --ignore-not-found 2>/dev/null || true
 
 # =================================================================
-# OP-WH-14: Module — valid spec accepted
+# OP-WH-14: Module: valid spec accepted
 # =================================================================
 begin_test "OP-WH-14: Module — valid spec accepted"
 

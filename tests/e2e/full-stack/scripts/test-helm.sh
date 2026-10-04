@@ -1,6 +1,6 @@
 # shellcheck shell=bash
 # Full-stack E2E tests: Helm Chart Lifecycle
-# Sourced by run-all.sh — do NOT set traps or pipefail here.
+# Sourced by run-all.sh: do NOT set traps or pipefail here.
 
 CHART_DIR="$REPO_ROOT/chart/cfgd"
 
@@ -55,7 +55,7 @@ helm_test_cleanup() {
 }
 
 # =================================================================
-# FS-HELM-01: Fresh install — operator + CSI running
+# FS-HELM-01: Fresh install: operator + CSI running
 # =================================================================
 begin_test "FS-HELM-01: Fresh Helm install creates operator deployment"
 
@@ -109,7 +109,7 @@ fi
 helm_test_cleanup "cfgd-test"
 
 # =================================================================
-# FS-HELM-02: Gateway enabled — gateway service exists
+# FS-HELM-02: Gateway enabled: gateway service exists
 # =================================================================
 begin_test "FS-HELM-02: Gateway enabled creates gateway service"
 
@@ -150,7 +150,7 @@ fi
 helm_test_cleanup "cfgd-test"
 
 # =================================================================
-# FS-HELM-03: Gateway disabled — no gateway service
+# FS-HELM-03: Gateway disabled: no gateway service
 # =================================================================
 begin_test "FS-HELM-03: Gateway disabled creates no gateway service"
 
@@ -194,7 +194,7 @@ fi
 helm_test_cleanup "cfgd-test"
 
 # =================================================================
-# FS-HELM-04: CSI disabled — no CSI daemonset
+# FS-HELM-04: CSI disabled: no CSI daemonset
 # =================================================================
 begin_test "FS-HELM-04: CSI disabled creates no CSI daemonset"
 
@@ -323,7 +323,7 @@ kubectl delete machineconfig "helm-upgrade-test-${E2E_RUN_ID}" -n "$HELM_NS" --i
 helm_test_cleanup "cfgd-test"
 
 # =================================================================
-# FS-HELM-06: Values override — custom replica count reflected
+# FS-HELM-06: Values override: custom replica count reflected
 # =================================================================
 begin_test "FS-HELM-06: Values override — custom replica count"
 
@@ -359,7 +359,7 @@ fi
 helm_test_cleanup "cfgd-test"
 
 # =================================================================
-# FS-HELM-07: Helm template validation — valid YAML
+# FS-HELM-07: Helm template validation: valid YAML
 # =================================================================
 begin_test "FS-HELM-07: Helm template produces valid YAML"
 

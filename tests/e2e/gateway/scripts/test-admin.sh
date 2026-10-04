@@ -1,6 +1,6 @@
 # shellcheck shell=bash
 # Gateway admin tests (GW-15 through GW-17, GW-24 through GW-30).
-# Sourced by run-all.sh — no shebang, no set, no source, no traps, no print_summary.
+# Sourced by run-all.sh: no shebang, no set, no source, no traps, no print_summary.
 
 # gw_enroll_once <token> <device_id> <hostname> <body_file>: POST one
 # enrollment, leaving the response body in <body_file> and its status in
@@ -60,7 +60,7 @@ gw_enroll_new_device() {
 }
 
 # =================================================================
-# GW-24: Auth boundary — unauthenticated GET /api/v1/devices returns 401
+# GW-24: Auth boundary: unauthenticated GET /api/v1/devices returns 401
 # =================================================================
 begin_test "GW-24: Auth boundary (unauthenticated access)"
 
@@ -258,7 +258,7 @@ if [ "$GW15_PASS" = "true" ]; then
     echo "  Pre-revoke device list: HTTP $GW15_PRE_CODE"
 
     if [ "$GW15_PRE_CODE" != "200" ]; then
-        # In open mode the key is irrelevant — all requests succeed.
+        # In open mode the key is irrelevant: all requests succeed.
         if [ -z "$ADMIN_KEY" ]; then
             echo "  Open mode — skipping key validation"
         else
@@ -284,7 +284,7 @@ fi
 # Step 4: Verify the old device API key no longer works
 if [ "$GW15_PASS" = "true" ]; then
     if [ -z "$ADMIN_KEY" ]; then
-        # Open mode — auth is not enforced, so revocation cannot be verified via HTTP status.
+        # Open mode: auth is not enforced, so revocation cannot be verified via HTTP status.
         echo "  Open mode — credential revocation stored but auth not enforced"
         pass_test "GW-15"
     else
@@ -408,7 +408,7 @@ if [ "$GW17_CODE" = "200" ]; then
     GW17_COUNT=$(echo "$GW17_BODY" | jq 'if type == "array" then length elif .devices then (.devices | length) else 0 end' 2>/dev/null || echo "0")
     echo "  Device count: $GW17_COUNT"
 
-    # We enrolled devices in GW-15 and GW-16, plus the bootstrap device from setup.
+    # GW-15 and GW-16 enrolled devices, and setup enrolled the bootstrap device.
     # Expect at least 2 devices.
     if [ "$GW17_COUNT" -ge 2 ] 2>/dev/null; then
         pass_test "GW-17"

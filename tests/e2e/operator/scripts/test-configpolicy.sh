@@ -1,12 +1,12 @@
 # shellcheck shell=bash
 # Operator E2E tests: ConfigPolicy
-# Sourced by run-all.sh — do NOT set traps or pipefail here.
+# Sourced by run-all.sh: do NOT set traps or pipefail here.
 
 echo ""
 echo "=== ConfigPolicy Tests ==="
 
 # =================================================================
-# OP-CP-01: ConfigPolicy — all MachineConfigs compliant
+# OP-CP-01: ConfigPolicy: all MachineConfigs compliant
 # =================================================================
 begin_test "OP-CP-01: ConfigPolicy — compliant check"
 
@@ -41,7 +41,7 @@ else
 fi
 
 # =================================================================
-# OP-CP-02: ConfigPolicy — non-compliant MachineConfig
+# OP-CP-02: ConfigPolicy: non-compliant MachineConfig
 # =================================================================
 begin_test "OP-CP-02: ConfigPolicy — non-compliant detection"
 
@@ -80,7 +80,7 @@ else
 fi
 
 # =================================================================
-# OP-CP-03: ConfigPolicy — version enforcement
+# OP-CP-03: ConfigPolicy: version enforcement
 # =================================================================
 begin_test "OP-CP-03: ConfigPolicy version enforcement"
 

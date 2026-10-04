@@ -1,6 +1,6 @@
 # shellcheck shell=bash
 # Gateway SSE streaming test (GW-21).
-# Sourced by run-all.sh — no shebang, no set, no source, no traps, no print_summary.
+# Sourced by run-all.sh: no shebang, no set, no source, no traps, no print_summary.
 
 # =================================================================
 # GW-21: SSE event stream

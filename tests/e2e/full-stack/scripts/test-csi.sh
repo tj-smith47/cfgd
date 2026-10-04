@@ -1,6 +1,6 @@
 # shellcheck shell=bash
 # Full-stack E2E tests: CSI
-# Sourced by run-all.sh — do NOT set traps or pipefail here.
+# Sourced by run-all.sh: do NOT set traps or pipefail here.
 
 echo ""
 echo "=== CSI Tests ==="
@@ -9,7 +9,7 @@ echo "=== CSI Tests ==="
 CSI01_NODE=""
 
 # =================================================================
-# FS-CSI-01: CSI driver — deploy DaemonSet, mount module content, verify
+# FS-CSI-01: CSI driver: deploy DaemonSet, mount module content, verify
 # =================================================================
 begin_test "FS-CSI-01: CSI driver — module mount and content verification"
 
@@ -104,7 +104,7 @@ EOF
 fi
 
 # =================================================================
-# FS-CSI-02: CSI driver — unmount on pod delete
+# FS-CSI-02: CSI driver: unmount on pod delete
 # =================================================================
 begin_test "FS-CSI-02: CSI driver — unmount on pod delete"
 
@@ -340,7 +340,7 @@ EOF
 fi
 
 # =================================================================
-# FS-CSI-05: Invalid module ref — pod stays Pending
+# FS-CSI-05: Invalid module ref: pod stays Pending
 # =================================================================
 begin_test "FS-CSI-05: CSI driver — invalid module ref stays Pending"
 
@@ -391,7 +391,7 @@ if ! $CSI05_LABELLED; then
 elif [ "$POD_PHASE" = "Pending" ] || [ "$POD_PHASE" = "" ]; then
     pass_test "FS-CSI-05"
 elif [ "$POD_PHASE" = "Running" ]; then
-    # Pod is Running — check if the CSI volume was actually injected.
+    # Pod is Running: check if the CSI volume was actually injected.
     # If the webhook couldn't resolve the module, it may skip injection
     # entirely, letting the pod run without the volume. That's acceptable.
     VOL_COUNT=$(kubectl get pod csi-invalid-test -n "$CSI05_NS" \
@@ -516,7 +516,7 @@ if [ -z "$CSI01_NODE" ]; then
 elif [ -z "$CSI07_POD" ]; then
     fail_test "FS-CSI-07" "No CSI driver pod on node $CSI01_NODE"
 else
-    # CSI container is distroless — no wget/curl. Port-forward to scrape metrics.
+    # CSI container is distroless (no wget/curl). Port-forward to scrape metrics.
     CSI07_PORT=19090
     CSI07_BODY="$CLI_SCRATCH/fs-csi-07-metrics.txt"
     echo "  Node: $CSI01_NODE, CSI driver pod: $CSI07_POD"

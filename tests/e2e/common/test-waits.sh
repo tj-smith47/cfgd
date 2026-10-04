@@ -85,7 +85,7 @@ scan_sleeps() {
                 "(\\\\|/(usr/)?bin/)?sleep([[:space:];)&|`]|$)"
             # The opening quote of a shell -c script.
             DASH_C_RE = "(^|[^A-Za-z0-9_])(ba|da|k|z)?sh([[:space:]]+-[A-Za-z]+)*[[:space:]]+-[A-Za-z]*c[[:space:]]+[\047\"]"
-            # A deadline test: a [, [[ or (( (an arithmetic command, not $(( ))
+            # A deadline test: a [, [[ or (( (an arithmetic command; a $(( is no test)
             # whose text names SECONDS, $deadline or $tries as whole words.
             TEST_RE = "(\\[|(^|[^$])\\(\\()[^]]*([^A-Za-z0-9_]SECONDS|\\$\\{?(deadline|tries))([^A-Za-z0-9_]|$)"
         }

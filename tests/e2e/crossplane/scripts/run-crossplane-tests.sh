@@ -212,7 +212,7 @@ else
 fi
 
 # =================================================================
-# XP-04: Add a member — new MachineConfig appears
+# XP-04: Add a member, and a new MachineConfig appears
 # =================================================================
 begin_test "XP-04: Member addition creates MachineConfig"
 
@@ -258,7 +258,7 @@ else
 fi
 
 # =================================================================
-# XP-05: Remove a member — MachineConfig garbage-collected
+# XP-05: Remove a member, and its MachineConfig is garbage-collected
 # =================================================================
 begin_test "XP-05: Member removal garbage-collects MachineConfig"
 
@@ -473,7 +473,7 @@ MC_COUNT=$XP_COUNT
 
 echo "  MachineConfig count for status-team: ${MC_COUNT:-0}"
 
-# The composition should produce 3 MachineConfigs — one per member.
+# The composition should produce 3 MachineConfigs, one per member.
 # This proves the status/output correctly reflects the 3 members.
 if [ "${MC_COUNT:-0}" -ge 3 ]; then
     pass_test "XP-09"
@@ -573,7 +573,7 @@ DUP_MC_COUNT=$(kubectl get mc -A --no-headers 2>/dev/null | { grep -c "dup-team"
 echo "  MachineConfig count for dup-team: ${DUP_MC_COUNT:-0}"
 
 # Accept any of: (a) apply rejected, (b) dedup to 1 MC, (c) 2 MCs for 2 distinct usernames.
-# The function keys MCs by username, not hostname — same hostname for different users is valid.
+# The function keys MCs by username, so one hostname for different users is valid.
 if echo "$DUP_OUTPUT" | grep -qi "error\|invalid\|denied\|rejected\|duplicate"; then
     pass_test "XP-11"
 elif [ "${DUP_MC_COUNT:-0}" -le 2 ]; then
@@ -622,7 +622,7 @@ echo "  MachineConfigs before deletion: ${MC_COUNT:-0}"
 # Now delete the TeamConfig
 kubectl delete teamconfig cascade-team --ignore-not-found --timeout=60s
 
-# Wait for cascade — composed resources should be garbage-collected
+# Wait for the cascade: composed resources should be garbage-collected
 # shellcheck disable=SC2329  # wait_until invokes it by name
 xp12_cascaded() {
     xp_count mc cascade-team

@@ -1,6 +1,6 @@
 # shellcheck shell=bash
 # Full-stack E2E tests: OCI Supply Chain
-# Sourced by run-all.sh — do NOT set traps or pipefail here.
+# Sourced by run-all.sh: do NOT set traps or pipefail here.
 
 echo ""
 echo "=== OCI Supply Chain Tests ==="
@@ -232,7 +232,7 @@ spec:
       - "${REGISTRY}/*"
 EOF
 
-    # Try to create a Module without signature — webhook should reject it
+    # Try to create a Module without signature; the webhook should reject it
     REJECT_OUTPUT=$(kubectl apply -f - 2>&1 <<EOF || true
 apiVersion: cfgd.io/v1alpha1
 kind: Module
@@ -323,7 +323,7 @@ EOF
     if [ -n "$RESOLVED" ]; then
         pass_test "OCI-E2E-04"
     else
-        # Module was accepted — that alone validates multi-platform push
+        # Module was accepted, which alone validates multi-platform push
         MOD_EXISTS=$(kubectl get module "$OCI04_MOD" -o name 2>/dev/null || echo "")
         if [ -n "$MOD_EXISTS" ]; then
             pass_test "OCI-E2E-04"
@@ -506,7 +506,7 @@ EOF
         if [ -n "$MODULE_FILE" ] && echo "$PULL_SECRETS" | grep -qF "registry-credentials"; then
             pass_test "OCI-E2E-06"
         elif [ -n "$MODULE_FILE" ]; then
-            # Content mounted but secrets not in expected location — still a pass
+            # Content mounted but secrets not in expected location: still a pass
             # since CSI driver used the cluster-level credentials
             pass_test "OCI-E2E-06"
         else
