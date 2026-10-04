@@ -181,9 +181,8 @@ pub struct RuntimePaths {
 /// A discoverability command degrades gracefully: each root resolves
 /// independently, so an unresolvable state/cache root (no `$HOME` and no
 /// override, or an override leading with a `~` no home resolves) reports `null`
-/// for that root rather than failing the whole command, while the
-/// home-independent socket fallback (`/tmp/cfgd.sock` / named pipe) is still
-/// reported.
+/// for that root and the command still succeeds, while the home-independent
+/// socket fallback (`/tmp/cfgd.sock` / named pipe) is still reported.
 pub(crate) fn collect_paths_output(cli: &Cli, sources: &DirSources) -> anyhow::Result<PathsOutput> {
     let scope = cli.scope();
     // `cli.config` is the already-resolved config FILE (main.rs folds --config /
