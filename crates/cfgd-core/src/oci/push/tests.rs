@@ -545,6 +545,10 @@ fn push_module_multiplatform_pushes_index_with_per_platform_manifests() {
         "index digest must be sha256-prefixed: {outcome:?}"
     );
     let platform_digests = platform_digests.lock().expect("digests lock").clone();
+    assert_ne!(
+        platform_digests[0], platform_digests[1],
+        "the two manifests differ"
+    );
     assert_eq!(
         outcome.manifest_digests, platform_digests,
         "each platform's manifest digest, in build order"

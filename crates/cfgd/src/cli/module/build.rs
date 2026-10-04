@@ -610,6 +610,7 @@ mod tests {
                 subject(&registry, &puts, "v1-linux-amd64"),
                 subject(&registry, &puts, "v1-linux-arm64"),
             ];
+            assert_ne!(subjects[1], subjects[2], "the two manifests differ");
             assert_signed(&argv, &subjects);
         }
     }

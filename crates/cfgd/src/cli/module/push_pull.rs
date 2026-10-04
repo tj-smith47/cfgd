@@ -1138,6 +1138,7 @@ pub(super) mod tests {
             let (result, argv, registry, puts) = signed_push(Some(&amd64_tag()), None);
             result.expect("signed and attested push must succeed");
             let (index, manifest) = (puts.at("v1"), puts.at("v1-linux-arm64"));
+            assert_ne!(index, manifest, "the index and the manifest differ");
             assert_signed_and_attested(
                 &argv,
                 &[
