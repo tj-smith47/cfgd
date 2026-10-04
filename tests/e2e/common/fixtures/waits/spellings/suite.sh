@@ -47,3 +47,12 @@ ionice -c3 sleep 1
 ionice -c 3 sleep 1
 timeout -k 5 10 sleep 1
 nice -n -5 sleep 1
+chrt 10 sleep 1
+chrt -f 10 sleep 1
+chrt --rr 5 sleep 1
+chrt -o 0 sleep 1
+taskset 0x3 sleep 1
+taskset -c 0,1 sleep 1
+taskset --cpu-list 0 sleep 1
+busybox sleep 1
+sudo busybox sleep 1

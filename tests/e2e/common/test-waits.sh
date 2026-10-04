@@ -52,10 +52,11 @@ min_listed_files=60
 # (`kubectl exec <pod> -- sleep`), or a run of these words, each with its own
 # options, where an option may take one argument (`-u root`, `-n1`):
 #   if while until then do else elif builtin nohup exec_in_pod coproc eval,
-#   `exec`, `xargs`, `time`, `command`, `nice`, `sudo`, `stdbuf`, `setsid` and
-#   `ionice` with options, `env [-opt|NAME=value]...`,
-#   `timeout [-opt]... <duration>`, `flock [-opt]... <lock>`, and leading
-#   `NAME=value` assignments;
+#   `exec`, `xargs`, `time`, `command`, `nice`, `sudo`, `stdbuf`, `setsid`,
+#   `ionice` and `busybox` with options, `env [-opt|NAME=value]...`,
+#   `timeout [-opt]... <duration>`, `flock [-opt]... <lock>`,
+#   `chrt [-opt]... <priority>`, `taskset [-opt]... <mask|cpu-list>`, and
+#   leading `NAME=value` assignments;
 # spelled `sleep`, with a backslash before any letter (`\sleep`, `s\leep`),
 # `/bin/sleep`, `/usr/bin/sleep`, `'sleep'` or `"sleep"`. The script of a `bash -c '...'`, `sh -c "..."` or `eval "..."` is
 # read the same way. A function of
@@ -90,7 +91,9 @@ scan_sleeps() {
             OPT = "[[:space:]]+-[^[:space:]]+([[:space:]]+[^-[:space:]][^[:space:]]*)?"
             CMD_POS = "(^|[;&|({!`)]|[[:space:]]--[[:space:]])[[:space:]]*" \
                 "((if|while|until|then|do|else|elif|builtin|nohup|exec_in_pod|coproc|eval" \
-                "|(exec|xargs|time|command|nice|sudo|stdbuf|setsid|ionice)(" OPT ")*" \
+                "|(exec|xargs|time|command|nice|sudo|stdbuf|setsid|ionice|busybox)(" OPT ")*" \
+                "|chrt(" OPT ")*[[:space:]]+[0-9]+" \
+                "|taskset(" OPT ")*[[:space:]]+[^-[:space:]][^[:space:]]*" \
                 "|env(" OPT "|[[:space:]]+[A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*)*" \
                 "|timeout(" OPT ")*[[:space:]]+[0-9.]+[smhd]?" \
                 "|flock(" OPT ")*[[:space:]]+[^-[:space:]][^[:space:]]*" \
