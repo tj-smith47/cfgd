@@ -56,6 +56,8 @@
 set -euo pipefail
 
 here="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=tests/e2e/common/census.sh
+source "$here/census.sh"
 e2e_root="$(dirname "$here")"
 scratch="$(mktemp -d)"
 trap 'rm -rf "$scratch"' EXIT
@@ -1064,6 +1066,10 @@ scan_run_labels() {
     work="$(mktemp -d "$scratch/scan.XXXXXX")" || { echo "UNREADABLE no scratch directory for the scan"; return 0; }
     : > "$work/index"
     awk -f "$here/heredocs.awk" "${files[@]}" > "$work/records" || echo "UNREADABLE heredocs.awk exited $? reading ${files[*]}"
+    printf '%s\n' "${files[@]}" > "$work/listed"
+    awk -F '\t' '$1 == "FILE" { print $2 }' "$work/records" > "$work/read"
+    census_unread scan_run_labels "$work/listed" "$work/read" 2>&1 >/dev/null \
+        | sed 's/^scan_run_labels: \(.*\) was listed and never read$/UNREADABLE \1: listed and never read/'
     awk -F '\t' -v work="$work" -v sentinel="$label_sentinel" -v placeholder="$expansion_placeholder" \
         -v entries="$yaml_entries" -v helpers="$helpers" "$render_awk$squash_awk"'
         function rest(n,   i, p) { p = 0; for (i = 1; i <= n; i++) p += length($i) + 1; return substr($0, p + 1) }
@@ -2572,6 +2578,14 @@ fail_awk() {
     chmod +x "$1/awk"
 }
 fail_awk "$scratch/fail-reader" '*heredocs.awk*'
+# An awk that drops the last script from the heredocs.awk argv and exits 0.
+mkdir -p "$scratch/drop-reader"
+# shellcheck disable=SC2016 # the stub's own text, expanded when it runs
+printf '#!/usr/bin/env bash\nif [ "$1" = -f ] && [[ "$2" == */heredocs.awk ]]; then set -- "${@:1:$#-1}"; fi\nexec %q "$@"\n' \
+    "$(command -v awk)" > "$scratch/drop-reader/awk"
+chmod +x "$scratch/drop-reader/awk"
+expect_red "a script heredocs.awk never read fails the scan by name" \
+    "$(PATH="$scratch/drop-reader:$PATH" scan_run_labels "$kinds" "$fixtures/scripts")" '^UNREADABLE .*: listed and never read$'
 fail_awk "$scratch/fail-scan" '*kinds=*'
 expect_red "heredocs.awk failing to read the scripts fails the scan" \
     "$(PATH="$scratch/fail-reader:$PATH" scan_run_labels "$kinds" "$fixtures/scripts")" '^UNREADABLE heredocs.awk exited 2'
