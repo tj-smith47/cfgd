@@ -417,7 +417,7 @@ fn pack_image_inner(
         message: format!("{e}"),
     })?;
 
-    let manifest_digest = resolve_pushed_digest(&manifest_resp, &manifest_json);
+    let manifest_digest = resolve_pushed_digest(&manifest_resp, &manifest_json, oci_ref)?;
 
     Ok(PackOutcome {
         digest: manifest_digest,

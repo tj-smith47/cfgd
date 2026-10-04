@@ -504,17 +504,24 @@ fn push_module_multiplatform_pushes_index_with_per_platform_manifests() {
         .expect_at_least(4)
         .create();
 
-    // Per-platform manifest PUTs (one per build, named `<tag>-<platform-with-dash>`).
-    server
-        .mock("PUT", "/v2/test/multi/manifests/multi-tag-linux-amd64")
-        .with_status(201)
-        .with_header("Docker-Content-Digest", "sha256:a4d")
-        .create();
-    server
-        .mock("PUT", "/v2/test/multi/manifests/multi-tag-linux-arm64")
-        .with_status(201)
-        .with_header("Docker-Content-Digest", "sha256:a64")
-        .create();
+    // Per-platform manifest PUTs (one per build, named `<tag>-<platform-with-dash>`),
+    // each answering the digest of the bytes it took and recording it.
+    let platform_digests = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    for platform in ["linux-amd64", "linux-arm64"] {
+        let recorded = std::sync::Arc::clone(&platform_digests);
+        server
+            .mock(
+                "PUT",
+                format!("/v2/test/multi/manifests/multi-tag-{platform}").as_str(),
+            )
+            .with_status(201)
+            .with_header_from_request("Docker-Content-Digest", move |req| {
+                let digest = crate::sha256_digest(req.body().expect("manifest body"));
+                recorded.lock().expect("digests lock").push(digest.clone());
+                digest
+            })
+            .create();
+    }
     // Index manifest PUT (the original tag).
     let index_mock = server
         .mock("PUT", "/v2/test/multi/manifests/multi-tag")
@@ -537,9 +544,9 @@ fn push_module_multiplatform_pushes_index_with_per_platform_manifests() {
         outcome.index_digest.starts_with("sha256:"),
         "index digest must be sha256-prefixed: {outcome:?}"
     );
+    let platform_digests = platform_digests.lock().expect("digests lock").clone();
     assert_eq!(
-        outcome.manifest_digests,
-        ["sha256:a4d", "sha256:a64"],
+        outcome.manifest_digests, platform_digests,
         "each platform's manifest digest, in build order"
     );
     index_mock.assert();

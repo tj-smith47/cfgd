@@ -858,10 +858,9 @@ fn pack_image_base_path_layers_onto_base_via_mount() {
             true
         })
         .with_status(201)
-        .with_header(
-            "Docker-Content-Digest",
-            "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-        )
+        .with_header_from_request("Docker-Content-Digest", |req| {
+            crate::sha256_digest(req.body().expect("manifest body"))
+        })
         .create();
 
     let artifact_ref = format!("{registry}/myorg/myimage:v1");

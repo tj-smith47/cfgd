@@ -456,7 +456,7 @@ mod tests {
         use serial_test::serial;
 
         #[cfg(unix)]
-        use crate::cli::module::push_pull::tests::{PLATFORM_TAG_DIGEST, TAG_DIGEST};
+        use crate::cli::module::push_pull::tests::{ManifestPuts, mock_push_registry_holding};
 
         #[test]
         #[serial]
@@ -508,7 +508,7 @@ mod tests {
         fn cosign_argv_after_signed_build(
             targets: &str,
             tag: Option<&serde_json::Value>,
-        ) -> (String, String) {
+        ) -> (String, String, ManifestPuts) {
             use std::os::unix::fs::PermissionsExt;
 
             let dir = tempfile::tempdir().unwrap();
@@ -535,8 +535,7 @@ mod tests {
                 .with_argv_logging(true)
                 .with_exit(0)
                 .install();
-            let (_server, registry) =
-                crate::cli::module::push_pull::tests::mock_push_registry_holding(tag);
+            let (_server, registry, puts) = mock_push_registry_holding(tag);
 
             let (printer, _cap) = cfgd_core::output::Printer::for_test_doc();
             cmd_module_build(
@@ -549,7 +548,7 @@ mod tests {
                 None,
             )
             .expect("signed build and push must succeed");
-            (shim.argv_log(), registry)
+            (shim.argv_log(), registry, puts)
         }
 
         /// `cosign sign` ran once per subject, in order.
@@ -565,24 +564,25 @@ mod tests {
             }
         }
 
+        /// `artifact` pinned to the digest of the manifest the build put at `tag`.
         #[cfg(unix)]
-        fn subject(registry: &str, digest: &str) -> String {
-            format!("{registry}/test/mod@{digest}")
+        fn subject(registry: &str, puts: &ManifestPuts, tag: &str) -> String {
+            format!("{registry}/test/mod@{}", puts.at(tag))
         }
 
         #[cfg(unix)]
         #[test]
         #[serial]
         fn build_sign_of_one_target_signs_the_manifest_it_pushed() {
-            let (argv, registry) = cosign_argv_after_signed_build("linux/amd64", None);
-            assert_signed(&argv, &[subject(&registry, PLATFORM_TAG_DIGEST)]);
+            let (argv, registry, puts) = cosign_argv_after_signed_build("linux/amd64", None);
+            assert_signed(&argv, &[subject(&registry, &puts, "v1-linux-amd64")]);
         }
 
         #[cfg(unix)]
         #[test]
         #[serial]
         fn build_sign_of_one_target_joining_an_index_signs_the_index_and_the_manifest() {
-            let (argv, registry) = cosign_argv_after_signed_build(
+            let (argv, registry, puts) = cosign_argv_after_signed_build(
                 "linux/amd64",
                 Some(&serde_json::json!({
                     "schemaVersion": 2,
@@ -593,8 +593,8 @@ mod tests {
             assert_signed(
                 &argv,
                 &[
-                    subject(&registry, TAG_DIGEST),
-                    subject(&registry, PLATFORM_TAG_DIGEST),
+                    subject(&registry, &puts, "v1"),
+                    subject(&registry, &puts, "v1-linux-amd64"),
                 ],
             );
         }
@@ -603,15 +603,14 @@ mod tests {
         #[test]
         #[serial]
         fn build_sign_of_several_targets_signs_the_index_and_each_manifest() {
-            let (argv, registry) = cosign_argv_after_signed_build("linux/amd64,linux/arm64", None);
-            assert_signed(
-                &argv,
-                &[
-                    subject(&registry, TAG_DIGEST),
-                    subject(&registry, PLATFORM_TAG_DIGEST),
-                    subject(&registry, PLATFORM_TAG_DIGEST),
-                ],
-            );
+            let (argv, registry, puts) =
+                cosign_argv_after_signed_build("linux/amd64,linux/arm64", None);
+            let subjects = [
+                subject(&registry, &puts, "v1"),
+                subject(&registry, &puts, "v1-linux-amd64"),
+                subject(&registry, &puts, "v1-linux-arm64"),
+            ];
+            assert_signed(&argv, &subjects);
         }
     }
 

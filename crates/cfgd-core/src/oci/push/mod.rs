@@ -238,7 +238,7 @@ fn put_manifest(
     .map_err(|e| OciError::ManifestPushFailed {
         message: format!("{e}"),
     })?;
-    let digest = resolve_pushed_digest(&resp, manifest_json);
+    let digest = resolve_pushed_digest(&resp, manifest_json, oci_ref)?;
     tracing::debug!(reference = %oci_ref, digest = %digest, "module pushed");
     Ok(digest)
 }
@@ -263,7 +263,7 @@ fn put_index(
     .map_err(|e| OciError::ManifestPushFailed {
         message: format!("index push failed: {e}"),
     })?;
-    Ok(resolve_pushed_digest(&resp, index_json))
+    resolve_pushed_digest(&resp, index_json, oci_ref)
 }
 
 fn manifest_url(oci_ref: &OciReference) -> String {

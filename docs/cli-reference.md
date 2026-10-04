@@ -2182,7 +2182,9 @@ without `--platform` is a push for this host's platform. Each push also tags its
 `<tag>-<os>-<arch>`, a later push of the same platform replaces that platform's entry, and a
 digest reference is refused (a digest cannot be re-pointed). A tag holding a manifest with no
 `cfgd.io/platform` annotation is refused before anything is uploaded: delete that tag in the
-registry, or push to another tag. `--sign` and `--attest` name the digest the tag resolves to after
+registry, or push to another tag. Each digest a push reports and signs is the sha256 of the bytes
+it sent; a registry whose `Docker-Content-Digest` header names another digest fails the push
+before anything is signed. `--sign` and `--attest` name the digest the tag resolves to after
 the push, so the signature and the provenance land on what this push left there. When that is an
 index, they also name this push's manifest under it, so `<tag>-<os>-<arch>` verifies too.
 `module build --sign` signs the same way.

@@ -192,6 +192,10 @@ resolved digest in an image lockfile; `kubectl cfgd deploy` rewrites the mutable
 `volumes[].image.reference` tag in your manifests to that pinned digest, so you deploy the
 artifact you tested, not whatever the tag happens to point at later.
 
+The recorded digest, like the one `--sign` and `--attest` name, is the sha256 of the manifest
+bytes the pack sent. A registry whose `Docker-Content-Digest` header names another digest fails
+the pack before anything is locked or signed.
+
 ### Step 1: pack with `--lock`
 
 ```bash

@@ -221,15 +221,28 @@ fn authorized_response(
     Ok(resp)
 }
 
-/// Resolve the authoritative digest of a just-PUT manifest/index.
+/// The digest of a manifest or index just PUT at `oci_ref`: the sha256 of the
+/// bytes sent.
 ///
-/// Prefers the registry's `Docker-Content-Digest` response header, falling back
-/// to hashing the exact bytes sent. A conformant registry echoes the digest
-/// of those bytes — but one that re-canonicalizes the manifest stores (and
-/// addresses) a different digest, so the value a caller pins (e.g. a Kubernetes
-/// `volume.image` reference) must come from the registry whenever it provides one.
-pub(super) fn resolve_pushed_digest(resp: &Response<Body>, sent_bytes: &[u8]) -> String {
-    response_digest(resp).unwrap_or_else(|| sha256_digest(sent_bytes))
+/// The registry's `Docker-Content-Digest` header only confirms it. A header
+/// naming another digest is refused with [`OciError::RequestFailed`] naming
+/// both, because callers sign and pin the digest this answers, and a digest
+/// the push did not write would put the user's signature on other content.
+pub(super) fn resolve_pushed_digest(
+    resp: &Response<Body>,
+    sent_bytes: &[u8],
+    oci_ref: &OciReference,
+) -> Result<String, OciError> {
+    let sent = sha256_digest(sent_bytes);
+    match response_digest(resp) {
+        Some(answered) if answered != sent => Err(OciError::RequestFailed {
+            message: format!(
+                "{oci_ref} answered the push with digest {answered} in its \
+                 Docker-Content-Digest header, and the manifest sent hashes to {sent}"
+            ),
+        }),
+        _ => Ok(sent),
+    }
 }
 
 /// The digest the registry itself names for a response, when it names one.
@@ -731,34 +744,54 @@ mod tests {
     }
 
     #[test]
-    fn resolve_pushed_digest_prefers_registry_header() {
+    fn resolve_pushed_digest_refuses_a_header_naming_other_bytes() {
         let resp = put_response_with(&[("Docker-Content-Digest", "sha256:deadbeef")]);
-        // Header value wins over the local hash of the sent bytes.
-        assert_eq!(
-            resolve_pushed_digest(&resp, b"different bytes"),
-            "sha256:deadbeef"
+        let err = resolve_pushed_digest(&resp, b"manifest bytes", &pushed_ref())
+            .expect_err("a header naming other bytes is refused");
+        let message = err.to_string();
+        assert!(
+            matches!(err, OciError::RequestFailed { .. })
+                && message.contains("sha256:deadbeef")
+                && message.contains(MANIFEST_BYTES_DIGEST),
+            "the refusal names both digests: {message}"
         );
+    }
+
+    #[test]
+    fn resolve_pushed_digest_accepts_a_header_naming_the_bytes_sent() {
+        let resp = put_response_with(&[("Docker-Content-Digest", MANIFEST_BYTES_DIGEST)]);
+        assert_eq!(
+            resolve_pushed_digest(&resp, b"manifest bytes", &pushed_ref()).unwrap(),
+            MANIFEST_BYTES_DIGEST
+        );
+    }
+
+    /// Precomputed so a test fails if the hash covers the wrong bytes or the
+    /// algorithm drifts.
+    const MANIFEST_BYTES_DIGEST: &str =
+        "sha256:66444334cfc47d81840f88c1e690564d3c130e9237482a58d7631124e9b9a815";
+
+    fn pushed_ref() -> OciReference {
+        OciReference::parse("registry.example/test/repo:v1").unwrap()
     }
 
     #[test]
     fn resolve_pushed_digest_falls_back_when_header_absent() {
         let resp = put_response_with(&[]);
-        // Pin a precomputed digest (not `sha256_digest(sent)`) so the test fails
-        // if the fallback ever hashes the wrong bytes or the algorithm drifts.
         assert_eq!(
-            resolve_pushed_digest(&resp, b"manifest bytes"),
-            "sha256:66444334cfc47d81840f88c1e690564d3c130e9237482a58d7631124e9b9a815"
+            resolve_pushed_digest(&resp, b"manifest bytes", &pushed_ref()).unwrap(),
+            MANIFEST_BYTES_DIGEST
         );
     }
 
     #[test]
     fn resolve_pushed_digest_falls_back_when_header_empty() {
         let resp = put_response_with(&[("Docker-Content-Digest", "")]);
-        // An empty header must be ignored, not returned — fall back to the
-        // precomputed digest of the sent bytes.
+        // An empty header names no digest, so it confirms nothing and
+        // refuses nothing.
         assert_eq!(
-            resolve_pushed_digest(&resp, b"manifest bytes"),
-            "sha256:66444334cfc47d81840f88c1e690564d3c130e9237482a58d7631124e9b9a815"
+            resolve_pushed_digest(&resp, b"manifest bytes", &pushed_ref()).unwrap(),
+            MANIFEST_BYTES_DIGEST
         );
     }
 

@@ -14,11 +14,9 @@ use std::path::Path;
 
 use cfgd::cli::image::{ImagePackOptions, cmd_image_pack};
 use cfgd_core::assert_snapshot_golden as assert_snapshot;
-use cfgd_core::output::{Printer, strip_ansi};
+use cfgd_core::output::{DocCapture, Printer, strip_ansi};
 
 const SNAPSHOT_ROOT: &str = "tests/output_snapshots";
-const MANIFEST_DIGEST: &str =
-    "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
 fn no_opts() -> ImagePackOptions<'static> {
     ImagePackOptions {
@@ -73,7 +71,9 @@ fn mock_registry() -> (mockito::ServerGuard, String) {
     server
         .mock("PUT", "/v2/test/image/manifests/v1")
         .with_status(201)
-        .with_header("Docker-Content-Digest", MANIFEST_DIGEST)
+        .with_header_from_request("Docker-Content-Digest", |req| {
+            cfgd_core::sha256_digest(req.body().expect("manifest body"))
+        })
         .create();
 
     (server, artifact)
@@ -94,15 +94,25 @@ fn packable_dir() -> tempfile::TempDir {
 /// Every host-shaped fact in the capture, folded: the paths through the
 /// workspace's own `normalize_for_snapshot` (which folds separators BEFORE
 /// substituting, so a natively-rendered Windows path still matches its label),
-/// the registry's ephemeral port, the elapsed spans, and the host platform the
-/// pushed manifest declares.
-fn normalized(human: &str, registry: &str, paths: &[(&Path, &str)]) -> String {
+/// the registry's ephemeral port, the elapsed spans, the host platform the
+/// pushed manifest declares, and the manifest's digest, which hashes that
+/// platform.
+fn normalized(cap: &DocCapture, registry: &str, paths: &[(&Path, &str)]) -> String {
     cfgd_core::normalize_for_snapshot(
-        &cfgd_core::normalize_snapshot_durations(&strip_ansi(human)),
+        &cfgd_core::normalize_snapshot_durations(&strip_ansi(&cap.human())),
         paths,
     )
     .replace(registry, "<REGISTRY>")
+    .replace(&pushed_digest(cap), "<DIGEST>")
     .replace(&cfgd_core::oci::current_platform(), "<PLATFORM>")
+}
+
+/// The digest the pack reported in its payload.
+fn pushed_digest(cap: &DocCapture) -> String {
+    cap.json().expect("pack emits a data payload")["digest"]
+        .as_str()
+        .expect("payload digest")
+        .to_string()
 }
 
 #[test]
@@ -118,7 +128,7 @@ fn image_pack_human() {
     assert_snapshot!(
         Path::new(SNAPSHOT_ROOT),
         "image_pack/packed.txt",
-        &normalized(&cap.human(), &registry, &[(dir.path(), "<DIR>")]),
+        &normalized(&cap, &registry, &[(dir.path(), "<DIR>")]),
     );
 }
 
@@ -139,7 +149,7 @@ fn image_pack_with_lock_human() {
     drop(printer);
 
     let human = normalized(
-        &cap.human(),
+        &cap,
         &registry,
         &[(dir.path(), "<DIR>"), (lock_dir.path(), "<LOCKDIR>")],
     );
@@ -156,9 +166,10 @@ fn image_pack_with_lock_human() {
         serde_yaml::from_str(&written).expect("lockfile parses");
     assert_eq!(lockfile.images.len(), 1, "one entry: {written}");
     assert_eq!(lockfile.images[0].reference, artifact);
-    assert_eq!(lockfile.images[0].digest, MANIFEST_DIGEST);
+    let digest = pushed_digest(&cap);
+    assert_eq!(lockfile.images[0].digest, digest);
     assert!(
-        lockfile.images[0].pinned.ends_with(MANIFEST_DIGEST),
+        lockfile.images[0].pinned.ends_with(&digest),
         "the pinned reference addresses the digest: {}",
         lockfile.images[0].pinned
     );
@@ -185,7 +196,7 @@ fn image_pack_signed_human() {
     assert_snapshot!(
         Path::new(SNAPSHOT_ROOT),
         "image_pack/packed_signed.txt",
-        &normalized(&cap.human(), &registry, &[(dir.path(), "<DIR>")]),
+        &normalized(&cap, &registry, &[(dir.path(), "<DIR>")]),
     );
 }
 
@@ -201,6 +212,7 @@ fn image_pack_json() {
 
     let mut json = cap.json().expect("pack emits a data payload");
     json["artifact"] = serde_json::Value::String(artifact.replace(&registry, "<REGISTRY>"));
+    json["digest"] = serde_json::Value::String("<DIGEST>".to_string());
     // The payload carries the same host-derived `platform` the human row
     // reports when nothing passed `--platform`, and is folded the same way:
     // a golden holding this runner's os/arch is a golden only this runner

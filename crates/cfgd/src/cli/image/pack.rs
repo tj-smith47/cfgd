@@ -396,10 +396,9 @@ mod tests {
             server
                 .mock("PUT", "/v2/test/image/manifests/v1")
                 .with_status(201)
-                .with_header(
-                    "Docker-Content-Digest",
-                    "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-                )
+                .with_header_from_request("Docker-Content-Digest", |req| {
+                    cfgd_core::sha256_digest(req.body().expect("manifest body"))
+                })
                 .create();
 
             let (printer, cap) = Printer::for_test_doc();
@@ -445,8 +444,6 @@ mod tests {
             let registry = server.url().trim_start_matches("http://").to_string();
             let artifact = format!("{}/test/image:v1", registry);
             let upload_location = format!("{}/v2/test/image/blobs/uploads/up-id", server.url());
-            let manifest_digest =
-                "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
             server
                 .mock(
@@ -475,7 +472,9 @@ mod tests {
             server
                 .mock("PUT", "/v2/test/image/manifests/v1")
                 .with_status(201)
-                .with_header("Docker-Content-Digest", manifest_digest)
+                .with_header_from_request("Docker-Content-Digest", |req| {
+                    cfgd_core::sha256_digest(req.body().expect("manifest body"))
+                })
                 .create();
 
             let lock_str = lock_path.to_string_lossy().into_owned();

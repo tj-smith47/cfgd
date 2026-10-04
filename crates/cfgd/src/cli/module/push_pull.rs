@@ -776,22 +776,46 @@ pub(super) mod tests {
         (server, artifact, digest)
     }
 
-    /// Digest the mock registry answers for a manifest put at a platform tag.
-    pub(in crate::cli::module) const PLATFORM_TAG_DIGEST: &str = "sha256:3a1";
-    /// Digest the mock registry answers for whatever is put at `v1`.
-    pub(in crate::cli::module) const TAG_DIGEST: &str = "sha256:1d3";
+    /// The digest of each manifest a mock registry took, by the tag it was put at.
+    #[derive(Clone, Default)]
+    pub(in crate::cli::module) struct ManifestPuts(
+        std::sync::Arc<std::sync::Mutex<Vec<(String, String)>>>,
+    );
+
+    impl ManifestPuts {
+        /// The digest of the manifest last put at `tag`.
+        pub(in crate::cli::module) fn at(&self, tag: &str) -> String {
+            let puts = self.0.lock().expect("manifest puts lock");
+            puts.iter()
+                .rev()
+                .find(|(t, _)| t == tag)
+                .map(|(_, digest)| digest.clone())
+                .unwrap_or_else(|| panic!("nothing was put at {tag}: {puts:?}"))
+        }
+    }
 
     /// A mock registry taking a push of `test/mod:v1` while the tag is absent.
     fn mock_push_registry() -> (mockito::ServerGuard, String) {
-        mock_push_registry_holding(None)
+        let (server, registry, _) = mock_push_registry_holding(None);
+        (server, registry)
     }
 
     /// A mock registry taking a push of `test/mod:v1`, whose tag holds `tag`
-    /// before the push (absent when `None`). The two manifest PUTs answer with
-    /// different digests so a payload or cosign argv shows which one it names.
+    /// before the push (absent when `None`). Each manifest PUT answers the
+    /// sha256 of the bytes it took, as a conformant registry does, and records
+    /// it in the returned [`ManifestPuts`].
     pub(in crate::cli::module) fn mock_push_registry_holding(
         tag: Option<&serde_json::Value>,
-    ) -> (mockito::ServerGuard, String) {
+    ) -> (mockito::ServerGuard, String, ManifestPuts) {
+        mock_push_registry_answering(tag, None)
+    }
+
+    /// [`mock_push_registry_holding`], except that the manifest PUT at
+    /// `lying_at` answers a digest naming other bytes.
+    fn mock_push_registry_answering(
+        tag: Option<&serde_json::Value>,
+        lying_at: Option<&'static str>,
+    ) -> (mockito::ServerGuard, String, ManifestPuts) {
         let mut server = mockito::Server::new();
         let registry = server.url().trim_start_matches("http://").to_string();
         let upload_location = format!("{}/v2/test/mod/blobs/uploads/up-id", server.url());
@@ -825,20 +849,36 @@ pub(super) mod tests {
             None => tag_read.with_status(404),
         }
         .create();
+        let puts = ManifestPuts::default();
+        let recorded = puts.clone();
         server
             .mock(
                 "PUT",
-                mockito::Matcher::Regex(r"^/v2/test/mod/manifests/v1-".to_string()),
+                mockito::Matcher::Regex(r"^/v2/test/mod/manifests/".to_string()),
             )
             .with_status(201)
-            .with_header("Docker-Content-Digest", PLATFORM_TAG_DIGEST)
+            .with_header_from_request("Docker-Content-Digest", move |req| {
+                let tag = req
+                    .path()
+                    .rsplit('/')
+                    .next()
+                    .unwrap_or_default()
+                    .to_string();
+                let digest = cfgd_core::sha256_digest(req.body().expect("manifest body"));
+                let answered = if lying_at == Some(tag.as_str()) {
+                    cfgd_core::sha256_digest(b"other bytes")
+                } else {
+                    digest.clone()
+                };
+                recorded
+                    .0
+                    .lock()
+                    .expect("manifest puts lock")
+                    .push((tag, digest));
+                answered
+            })
             .create();
-        server
-            .mock("PUT", "/v2/test/mod/manifests/v1")
-            .with_status(201)
-            .with_header("Docker-Content-Digest", TAG_DIGEST)
-            .create();
-        (server, registry)
+        (server, registry, puts)
     }
 
     mod with_cosign_shim {
@@ -848,8 +888,8 @@ pub(super) mod tests {
 
         use super::super::{PushOptions, cmd_module_pull, cmd_module_push};
         use super::{
-            PLATFORM_TAG_DIGEST, TAG_DIGEST, mock_push_registry, mock_push_registry_holding,
-            mock_tag_without_blob, write_module_yaml,
+            ManifestPuts, mock_push_registry, mock_push_registry_answering, mock_tag_without_blob,
+            write_module_yaml,
         };
 
         #[test]
@@ -1052,18 +1092,32 @@ pub(super) mod tests {
             );
         }
 
-        /// Push with `--sign --attest` to a tag holding `tag`, answering the
-        /// cosign argv (one line per call) and the registry.
-        fn cosign_argv_after_push(tag: Option<&serde_json::Value>) -> (String, String) {
+        /// A tag already listing linux/amd64, which a linux/arm64 push joins.
+        fn amd64_tag() -> serde_json::Value {
+            serde_json::json!({
+                "schemaVersion": 2,
+                "mediaType": "application/vnd.oci.image.manifest.v1+json",
+                "annotations": { cfgd_core::OCI_ANNOTATION_PLATFORM: "linux/amd64" },
+            })
+        }
+
+        /// Push linux/arm64 with `--sign --attest` to a mock registry whose tag
+        /// holds `tag` and whose manifest PUT at `lying_at` answers a digest
+        /// naming other bytes. Answers the push's result, the cosign argv (one
+        /// line per call), the registry and the digests the PUTs took.
+        fn signed_push(
+            tag: Option<&serde_json::Value>,
+            lying_at: Option<&'static str>,
+        ) -> (anyhow::Result<()>, String, String, ManifestPuts) {
             let shim = CosignTestShim::builder()
                 .with_argv_logging(true)
                 .with_exit(0)
                 .install();
             let dir = tempfile::tempdir().expect("tempdir");
             write_module_yaml(dir.path());
-            let (_server, registry) = mock_push_registry_holding(tag);
+            let (_server, registry, puts) = mock_push_registry_answering(tag, lying_at);
             let (printer, _cap) = Printer::for_test_doc();
-            cmd_module_push(
+            let result = cmd_module_push(
                 &printer,
                 dir.path().to_str().unwrap(),
                 &format!("{registry}/test/mod:v1"),
@@ -1074,24 +1128,21 @@ pub(super) mod tests {
                     key: None,
                     attest: true,
                 },
-            )
-            .expect("signed and attested push must succeed");
-            (shim.argv_log(), registry)
+            );
+            (result, shim.argv_log(), registry, puts)
         }
 
         #[test]
         #[serial]
         fn push_signs_and_attests_the_index_the_tag_resolves_to_after_a_join() {
-            let (argv, registry) = cosign_argv_after_push(Some(&serde_json::json!({
-                "schemaVersion": 2,
-                "mediaType": "application/vnd.oci.image.manifest.v1+json",
-                "annotations": { cfgd_core::OCI_ANNOTATION_PLATFORM: "linux/amd64" },
-            })));
+            let (result, argv, registry, puts) = signed_push(Some(&amd64_tag()), None);
+            result.expect("signed and attested push must succeed");
+            let (index, manifest) = (puts.at("v1"), puts.at("v1-linux-arm64"));
             assert_signed_and_attested(
                 &argv,
                 &[
-                    &format!("{registry}/test/mod@{TAG_DIGEST}"),
-                    &format!("{registry}/test/mod@{PLATFORM_TAG_DIGEST}"),
+                    &format!("{registry}/test/mod@{index}"),
+                    &format!("{registry}/test/mod@{manifest}"),
                 ],
             );
         }
@@ -1099,11 +1150,51 @@ pub(super) mod tests {
         #[test]
         #[serial]
         fn push_signs_and_attests_the_manifest_when_no_index_was_written() {
-            let (argv, registry) = cosign_argv_after_push(None);
+            let (result, argv, registry, puts) = signed_push(None, None);
+            result.expect("signed and attested push must succeed");
             assert_signed_and_attested(
                 &argv,
-                &[&format!("{registry}/test/mod@{PLATFORM_TAG_DIGEST}")],
+                &[&format!(
+                    "{registry}/test/mod@{}",
+                    puts.at("v1-linux-arm64")
+                )],
             );
+        }
+
+        /// The push failed with `push_failed` naming both digests of the PUT
+        /// at `tag`, and cosign never ran.
+        fn assert_refused_unsigned(
+            result: anyhow::Result<()>,
+            argv: &str,
+            puts: &ManifestPuts,
+            tag: &str,
+        ) {
+            let err = result.expect_err("a PUT answering another digest fails the push");
+            let meta = err
+                .downcast_ref::<crate::cli::CliErrorMeta>()
+                .expect("handler returns CliErrorMeta");
+            assert_eq!(meta.error_kind, "push_failed", "{err}");
+            let message = err.to_string();
+            assert!(
+                message.contains(&puts.at(tag))
+                    && message.contains(&cfgd_core::sha256_digest(b"other bytes")),
+                "the refusal names the digest sent and the digest answered: {message}"
+            );
+            assert_eq!(argv, "", "nothing the push did not write is signed");
+        }
+
+        #[test]
+        #[serial]
+        fn push_refuses_a_manifest_put_answering_another_digest_before_signing() {
+            let (result, argv, _, puts) = signed_push(None, Some("v1-linux-arm64"));
+            assert_refused_unsigned(result, &argv, &puts, "v1-linux-arm64");
+        }
+
+        #[test]
+        #[serial]
+        fn push_refuses_an_index_put_answering_another_digest_before_signing() {
+            let (result, argv, _, puts) = signed_push(Some(&amd64_tag()), Some("v1"));
+            assert_refused_unsigned(result, &argv, &puts, "v1");
         }
 
         /// `cosign sign` ran once per subject, in order, and then `cosign
@@ -1922,7 +2013,7 @@ spec:
         let dir = tempfile::tempdir().expect("tempdir");
         write_module_yaml(dir.path());
 
-        let (_server, registry) = mock_push_registry_holding(Some(&serde_json::json!({
+        let (_server, registry, puts) = mock_push_registry_holding(Some(&serde_json::json!({
             "schemaVersion": 2,
             "mediaType": "application/vnd.oci.image.manifest.v1+json",
             "annotations": { cfgd_core::OCI_ANNOTATION_PLATFORM: "linux/amd64" },
@@ -1946,8 +2037,8 @@ spec:
         drop(printer);
 
         let doc = cap.json().expect("success doc must be emitted");
-        assert_eq!(doc["indexDigest"], TAG_DIGEST, "{doc}");
-        assert_eq!(doc["digest"], PLATFORM_TAG_DIGEST, "{doc}");
+        assert_eq!(doc["indexDigest"], puts.at("v1"), "{doc}");
+        assert_eq!(doc["digest"], puts.at("v1-linux-arm64"), "{doc}");
         assert_eq!(doc["platform"], "linux/arm64", "{doc}");
     }
 }
