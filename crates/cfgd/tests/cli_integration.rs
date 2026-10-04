@@ -3338,3 +3338,46 @@ fn apply_plan_stale_by_serial_exits_1_through_the_real_binary() {
     assert_eq!(payload["recordedSerial"], 0, "{payload}");
     assert!(payload["serial"].as_i64().unwrap_or(0) >= 1, "{payload}");
 }
+
+/// The two legacy theme notices, as stderr spells them.
+const LEGACY_THEME_NOTICES: [&str; 2] = [
+    "spec.theme moved to spec.output.theme",
+    "theme.overrides.subheader is no longer supported",
+];
+
+/// `--config <file>` names the config document; `module create --apply` reads
+/// that file, and a `cfgd.yaml` beside it is a different document.
+#[test]
+fn module_create_apply_reads_the_file_the_config_flag_names() {
+    let dir = tempfile::tempdir().unwrap();
+    create_valid_config(dir.path());
+    let other = dir.path().join("other.yaml");
+    std::fs::write(
+        &other,
+        "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: other\nspec:\n  profile: base\n  theme:\n    name: dracula\n",
+    )
+    .unwrap();
+
+    let out = cfgd_bin()
+        .unwrap()
+        .arg("--config")
+        .arg(&other)
+        .args(["module", "create", "mymod", "--apply", "--description", "x"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+    // Without a terminal on stdout the human report goes to stderr.
+    let report = String::from_utf8_lossy(&out.stderr);
+    let config_row = report
+        .lines()
+        .find(|l| l.trim_start().starts_with("Config "))
+        .unwrap_or_else(|| panic!("no Config row in the apply header:\n{report}"));
+    assert!(
+        config_row.contains("other.yaml"),
+        "the apply header names the file --config named: {config_row}"
+    );
+    assert!(
+        report.contains(LEGACY_THEME_NOTICES[0]),
+        "the notice for other.yaml's own flat theme key reaches stderr:\n{report}"
+    );
+}
