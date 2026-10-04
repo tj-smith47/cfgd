@@ -77,7 +77,7 @@ fn source_list_happy_human() {
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc();
 
-    cmd_source_list(&cli, &printer).unwrap();
+    cfgd::cli::RunContext::for_test(&cli, &printer, cmd_source_list).unwrap();
     drop(printer);
 
     let stripped = strip_ansi(&cap.human());
@@ -119,7 +119,7 @@ fn source_list_carries_the_pinned_ref_and_commit_on_the_wire() {
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc();
 
-    cmd_source_list(&cli, &printer).unwrap();
+    cfgd::cli::RunContext::for_test(&cli, &printer, cmd_source_list).unwrap();
     drop(printer);
 
     let payload = cap.json().expect("a json payload");
@@ -147,7 +147,7 @@ fn source_list_empty_human() {
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc();
 
-    cmd_source_list(&cli, &printer).unwrap();
+    cfgd::cli::RunContext::for_test(&cli, &printer, cmd_source_list).unwrap();
     drop(printer);
 
     let stripped = strip_ansi(&cap.human());

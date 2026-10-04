@@ -87,7 +87,7 @@ fn source_add_happy_human() {
     let mut args = source_add_args(url);
     args.name = Some("team-config".into());
 
-    cmd_source_add(&cli, &printer, &args).unwrap();
+    cfgd::cli::RunContext::for_test(&cli, &printer, |run| cmd_source_add(run, &args)).unwrap();
     drop(printer);
 
     let stripped = normalize_paths(
@@ -115,7 +115,7 @@ fn source_add_happy_json() {
     let mut args = source_add_args(url);
     args.name = Some("team-config".into());
 
-    cmd_source_add(&cli, &printer, &args).unwrap();
+    cfgd::cli::RunContext::for_test(&cli, &printer, |run| cmd_source_add(run, &args)).unwrap();
     drop(printer);
 
     let json = cap.json().expect("doc captured json");
@@ -139,7 +139,8 @@ fn source_add_already_exists_human() {
     let mut args = source_add_args("https://github.com/team/config");
     args.name = Some("team-config".into());
 
-    let err = cmd_source_add(&cli, &printer, &args).expect_err("duplicate source must return Err");
+    let err = cfgd::cli::RunContext::for_test(&cli, &printer, |run| cmd_source_add(run, &args))
+        .expect_err("duplicate source must return Err");
     render_cli_error(&printer, &err);
     drop(printer);
 
@@ -175,8 +176,8 @@ fn source_add_clone_failure_human() {
     let mut args = source_add_args(url);
     args.name = Some("doomed-src".into());
 
-    let err =
-        cmd_source_add(&cli, &printer, &args).expect_err("cmd_source_add must fail on bogus URL");
+    let err = cfgd::cli::RunContext::for_test(&cli, &printer, |run| cmd_source_add(run, &args))
+        .expect_err("cmd_source_add must fail on bogus URL");
     render_cli_error(&printer, &err);
     drop(printer);
 
@@ -221,7 +222,7 @@ fn source_add_bridge_one_blank_line() {
     let mut args = source_add_args(url);
     args.name = Some("bridge-src".into());
 
-    cmd_source_add(&cli, &printer, &args).unwrap();
+    cfgd::cli::RunContext::for_test(&cli, &printer, |run| cmd_source_add(run, &args)).unwrap();
     drop(printer);
 
     let combined = cap.human();

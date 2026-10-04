@@ -106,6 +106,12 @@ impl<'a> RunContext<'a> {
         self.printer
     }
 
+    /// The document this run reads its config from, for the verbs that also
+    /// need its path or the text it was parsed from.
+    pub(in crate::cli) fn startup(&self) -> &'a StartupDocument {
+        self.startup
+    }
+
     /// The directory holding `cli.config`, which relative source paths and
     /// manifest references resolve against.
     pub(in crate::cli) fn config_dir(&self) -> &Path {

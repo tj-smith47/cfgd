@@ -1,6 +1,6 @@
 use super::*;
 use cfgd_core::config::LOCAL_LAYER;
-use cfgd_core::output::{Doc, OwnerLabel, Printer, Role, renderer::Table};
+use cfgd_core::output::{Doc, OwnerLabel, Role, renderer::Table};
 
 /// The `managed_resources` rows whose file on disk no longer holds the bytes
 /// cfgd recorded when it last deployed it.
@@ -122,17 +122,16 @@ fn declared_by_source(
 /// command is reading what the source declared, not gating on it, and a source
 /// on its way out must not be able to refuse its own removal.
 fn keep_entry_declarations(
-    cli: &Cli,
-    printer: &Printer,
-    startup: &crate::cli::startup::StartupDocument,
+    run: &RunContext<'_>,
     name: &str,
     rows: &[cfgd_core::state::ManagedResource],
 ) -> anyhow::Result<usize> {
+    let printer = run.printer();
     if !rows.iter().any(is_entry_row) {
         return Ok(0);
     }
     let quiet = printer.at_verbosity(cfgd_core::output::Verbosity::Quiet);
-    let ctx = RunContext::new(cli, &quiet, startup);
+    let ctx = RunContext::new(run.cli(), &quiet, run.startup());
     let (cfg, profile_name, local_resolved) = ctx.config_and_profile()?;
     let desired = resolve_desired_state(
         &ctx,
@@ -197,26 +196,14 @@ fn cancelled_doc(name: &str, managed_count: usize) -> Doc {
 // the rows it owned; the composition its Keep arm reads is a lookup of one
 // declaration, not a configuration this report measures anything against.
 pub fn cmd_source_remove(
-    cli: &Cli,
-    printer: &Printer,
-    startup: &crate::cli::startup::StartupDocument,
+    run: &RunContext<'_>,
     name: &str,
     keep_all: bool,
     remove_all: bool,
     yes: bool,
     ignore_not_found: bool,
 ) -> anyhow::Result<()> {
-    run_source_remove(
-        cli,
-        printer,
-        startup,
-        name,
-        keep_all,
-        remove_all,
-        yes,
-        ignore_not_found,
-        true,
-    )
+    run_source_remove(run, name, keep_all, remove_all, yes, ignore_not_found, true)
 }
 
 /// The body of `cfgd source remove`. `closing` is whether this removal is the
@@ -224,9 +211,7 @@ pub fn cmd_source_remove(
 /// verdict, so only a closing removal carries the next-step hint.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn run_source_remove(
-    cli: &Cli,
-    printer: &Printer,
-    startup: &crate::cli::startup::StartupDocument,
+    run: &RunContext<'_>,
     name: &str,
     keep_all: bool,
     remove_all: bool,
@@ -234,6 +219,8 @@ pub(super) fn run_source_remove(
     ignore_not_found: bool,
     closing: bool,
 ) -> anyhow::Result<()> {
+    let cli = run.cli();
+    let printer = run.printer();
     if keep_all && remove_all {
         return Err(crate::cli::cli_error(
             name,
@@ -248,7 +235,6 @@ pub(super) fn run_source_remove(
     printer.heading_owner_prefixed("Remove", &OwnerLabel::new("source", name));
 
     let config_path = cli.config.clone();
-    let run = RunContext::new(cli, printer, startup);
     let cfg = run.config()?;
 
     if !cfg.spec.sources.iter().any(|s| s.name == name) {
@@ -327,7 +313,7 @@ pub(super) fn run_source_remove(
     }
 
     if disposition == "kept" {
-        let copied = keep_entry_declarations(cli, printer, startup, name, &resources)?;
+        let copied = keep_entry_declarations(run, name, &resources)?;
         if copied > 0 {
             printer.status(
                 Role::Ok,
@@ -449,7 +435,7 @@ pub(super) fn run_source_remove(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cfgd_core::output::{OutputFormat, PromptAnswer};
+    use cfgd_core::output::{OutputFormat, Printer, PromptAnswer};
 
     const SEED_CONFIG: &str = "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: default\n  sources:\n    - name: acme\n      origin:\n        type: Git\n        url: https://example.com/acme/dev.git\n        branch: main\n";
 
@@ -498,16 +484,9 @@ mod tests {
         let cli = cli_with_seeded_config(dir.path());
         let (printer, _cap) = Printer::for_test_doc();
 
-        let err = cmd_source_remove(
-            &cli,
-            &printer,
-            &crate::cli::startup::StartupDocument::load(&cli.config),
-            "acme",
-            true,
-            true,
-            false,
-            false,
-        )
+        let err = crate::cli::RunContext::for_test(&cli, &printer, |run| {
+            cmd_source_remove(run, "acme", true, true, false, false)
+        })
         .expect_err("keep_all + remove_all must conflict");
         drop(printer);
 
@@ -523,16 +502,9 @@ mod tests {
         let cli = cli_with_seeded_config(dir.path());
         let (printer, _cap) = Printer::for_test_doc();
 
-        let err = cmd_source_remove(
-            &cli,
-            &printer,
-            &crate::cli::startup::StartupDocument::load(&cli.config),
-            "nope",
-            false,
-            false,
-            false,
-            false,
-        )
+        let err = crate::cli::RunContext::for_test(&cli, &printer, |run| {
+            cmd_source_remove(run, "nope", false, false, false, false)
+        })
         .expect_err("absent source must error");
         drop(printer);
 
@@ -549,16 +521,9 @@ mod tests {
         let cli = cli_with_seeded_config(dir.path());
         let (printer, cap) = Printer::for_test_doc();
 
-        cmd_source_remove(
-            &cli,
-            &printer,
-            &crate::cli::startup::StartupDocument::load(&cli.config),
-            "nope",
-            false,
-            false,
-            false,
-            true,
-        )
+        crate::cli::RunContext::for_test(&cli, &printer, |run| {
+            cmd_source_remove(run, "nope", false, false, false, true)
+        })
         .expect("--ignore-not-found must succeed for an absent source");
         drop(printer);
 
@@ -579,16 +544,9 @@ mod tests {
         );
         let (printer, cap) = Printer::for_test_doc();
 
-        cmd_source_remove(
-            &cli,
-            &printer,
-            &crate::cli::startup::StartupDocument::load(&cli.config),
-            "acme",
-            false,
-            false,
-            false,
-            false,
-        )
+        crate::cli::RunContext::for_test(&cli, &printer, |run| {
+            cmd_source_remove(run, "acme", false, false, false, false)
+        })
         .expect("removing a source with no managed resources must succeed");
         drop(printer);
 
@@ -642,16 +600,9 @@ mod tests {
         drop(state);
 
         let (printer, _cap) = Printer::for_test_doc();
-        cmd_source_remove(
-            &cli,
-            &printer,
-            &crate::cli::startup::StartupDocument::load(&cli.config),
-            "acme",
-            true,
-            false,
-            false,
-            false,
-        )
+        crate::cli::RunContext::for_test(&cli, &printer, |run| {
+            cmd_source_remove(run, "acme", true, false, false, false)
+        })
         .expect("removing a source must succeed");
         drop(printer);
 
@@ -689,16 +640,9 @@ mod tests {
         drop(state);
 
         let (printer, cap) = Printer::for_test_doc();
-        cmd_source_remove(
-            &cli,
-            &printer,
-            &crate::cli::startup::StartupDocument::load(&cli.config),
-            "acme",
-            true,
-            false,
-            false,
-            false,
-        )
+        crate::cli::RunContext::for_test(&cli, &printer, |run| {
+            cmd_source_remove(run, "acme", true, false, false, false)
+        })
         .expect("keep_all removal must succeed");
         drop(printer);
 
@@ -775,16 +719,9 @@ mod tests {
 
         let (printer, cap) =
             Printer::for_test_doc_with_prompt_responses(vec![PromptAnswer::Confirm(false)]);
-        cmd_source_remove(
-            &cli,
-            &printer,
-            &crate::cli::startup::StartupDocument::load(&cli.config),
-            "acme",
-            false,
-            true,
-            false,
-            false,
-        )
+        crate::cli::RunContext::for_test(&cli, &printer, |run| {
+            cmd_source_remove(run, "acme", false, true, false, false)
+        })
         .expect("a declined confirm is an abort");
         drop(printer);
 
@@ -829,16 +766,9 @@ mod tests {
         // No seeded prompt answer: a test printer cannot prompt, so reaching a
         // confirm here would fail the command rather than pass silently.
         let (printer, cap) = Printer::for_test_doc();
-        cmd_source_remove(
-            &cli,
-            &printer,
-            &crate::cli::startup::StartupDocument::load(&cli.config),
-            "acme",
-            false,
-            true,
-            true,
-            false,
-        )
+        crate::cli::RunContext::for_test(&cli, &printer, |run| {
+            cmd_source_remove(run, "acme", false, true, true, false)
+        })
         .expect("--yes must purge without asking");
         drop(printer);
 
@@ -865,16 +795,9 @@ mod tests {
         );
 
         let (printer, cap) = Printer::for_test_doc();
-        cmd_source_remove(
-            &cli,
-            &printer,
-            &crate::cli::startup::StartupDocument::load(&cli.config),
-            "acme",
-            false,
-            true,
-            false,
-            false,
-        )
+        crate::cli::RunContext::for_test(&cli, &printer, |run| {
+            cmd_source_remove(run, "acme", false, true, false, false)
+        })
         .expect("an unmodified file must not stop to ask");
         drop(printer);
 
@@ -895,16 +818,9 @@ mod tests {
         let id = seed_deployed_file(&cli, dir.path(), "whatever is here now", None);
 
         let (printer, cap) = Printer::for_test_doc();
-        cmd_source_remove(
-            &cli,
-            &printer,
-            &crate::cli::startup::StartupDocument::load(&cli.config),
-            "acme",
-            false,
-            true,
-            false,
-            false,
-        )
+        crate::cli::RunContext::for_test(&cli, &printer, |run| {
+            cmd_source_remove(run, "acme", false, true, false, false)
+        })
         .expect("a NULL last_hash must not stop to ask");
         drop(printer);
 
@@ -939,16 +855,9 @@ mod tests {
         drop(state);
 
         let (printer, cap) = Printer::for_test_doc();
-        cmd_source_remove(
-            &cli,
-            &printer,
-            &crate::cli::startup::StartupDocument::load(&cli.config),
-            "acme",
-            false,
-            true,
-            false,
-            false,
-        )
+        crate::cli::RunContext::for_test(&cli, &printer, |run| {
+            cmd_source_remove(run, "acme", false, true, false, false)
+        })
         .expect("remove_all removal must succeed");
         drop(printer);
 
@@ -1139,16 +1048,9 @@ mod tests {
         prime_source_cache(&cli);
 
         let (printer, cap) = Printer::for_test_doc();
-        cmd_source_remove(
-            &cli,
-            &printer,
-            &crate::cli::startup::StartupDocument::load(&cli.config),
-            "acme",
-            true,
-            false,
-            false,
-            false,
-        )
+        crate::cli::RunContext::for_test(&cli, &printer, |run| {
+            cmd_source_remove(run, "acme", true, false, false, false)
+        })
         .expect("keep-all removal must succeed");
         drop(printer);
         assert_eq!(cap.json().expect("Doc")["disposition"], "kept");
@@ -1192,16 +1094,9 @@ mod tests {
         // No seeded prompt answer and no --yes: an entry row names nothing on
         // disk, so this arm has nothing to stop and ask about.
         let (printer, cap) = Printer::for_test_doc();
-        cmd_source_remove(
-            &cli,
-            &printer,
-            &crate::cli::startup::StartupDocument::load(&cli.config),
-            "acme",
-            false,
-            true,
-            false,
-            false,
-        )
+        crate::cli::RunContext::for_test(&cli, &printer, |run| {
+            cmd_source_remove(run, "acme", false, true, false, false)
+        })
         .expect("remove-all removal must succeed");
         drop(printer);
         assert_eq!(cap.json().expect("Doc")["disposition"], "purged");
@@ -1257,16 +1152,9 @@ mod tests {
             Printer::for_test_doc_with_prompt_responses(vec![PromptAnswer::Select(
                 "Cancel (abort remove)".into(),
             )]);
-        cmd_source_remove(
-            &cli,
-            &printer,
-            &crate::cli::startup::StartupDocument::load(&cli.config),
-            "acme",
-            false,
-            false,
-            false,
-            false,
-        )
+        crate::cli::RunContext::for_test(&cli, &printer, |run| {
+            cmd_source_remove(run, "acme", false, false, false, false)
+        })
         .expect("cancel path must return Ok");
         drop(printer);
 
@@ -1306,16 +1194,9 @@ mod tests {
             Printer::for_test_doc_with_prompt_responses(vec![PromptAnswer::Select(
                 "Keep all (resources become locally managed)".into(),
             )]);
-        cmd_source_remove(
-            &cli,
-            &printer,
-            &crate::cli::startup::StartupDocument::load(&cli.config),
-            "acme",
-            false,
-            false,
-            false,
-            false,
-        )
+        crate::cli::RunContext::for_test(&cli, &printer, |run| {
+            cmd_source_remove(run, "acme", false, false, false, false)
+        })
         .expect("keep choice must return Ok");
         drop(printer);
 

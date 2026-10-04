@@ -44,12 +44,9 @@ fn config_get_happy_human() {
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc();
 
-    config_cmd::cmd_config_get(
-        &cli,
-        &printer,
-        &cfgd::cli::startup::StartupDocument::load(&cli.config),
-        "profile",
-    )
+    cfgd::cli::RunContext::for_test(&cli, &printer, |run| {
+        config_cmd::cmd_config_get(run, "profile")
+    })
     .unwrap();
     drop(printer);
 
@@ -63,12 +60,9 @@ fn config_get_happy_json() {
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc_with_format(OutputFormat::Json);
 
-    config_cmd::cmd_config_get(
-        &cli,
-        &printer,
-        &cfgd::cli::startup::StartupDocument::load(&cli.config),
-        "profile",
-    )
+    cfgd::cli::RunContext::for_test(&cli, &printer, |run| {
+        config_cmd::cmd_config_get(run, "profile")
+    })
     .unwrap();
     drop(printer);
 
@@ -86,12 +80,9 @@ fn config_get_not_found_human() {
     // one ✗ line. Drive both through the SAME printer so the golden captures any handler
     // pre-error output plus the central failure line — exactly what the user sees.
     let (printer, cap) = Printer::for_test_doc();
-    let err = config_cmd::cmd_config_get(
-        &cli,
-        &printer,
-        &cfgd::cli::startup::StartupDocument::load(&cli.config),
-        "ghost.path",
-    )
+    let err = cfgd::cli::RunContext::for_test(&cli, &printer, |run| {
+        config_cmd::cmd_config_get(run, "ghost.path")
+    })
     .expect_err("missing key must return Err");
     render_cli_error(&printer, &err);
     drop(printer);

@@ -1,15 +1,15 @@
 use super::*;
-use cfgd_core::output::{Doc, OwnerLabel, Printer, Role};
+use cfgd_core::output::{Doc, OwnerLabel, Role};
 
 pub fn cmd_source_priority(
-    cli: &Cli,
-    printer: &Printer,
+    run: &RunContext<'_>,
     name: &str,
     value: Option<u32>,
 ) -> anyhow::Result<()> {
+    let cli = run.cli();
+    let printer = run.printer();
     let config_path = cli.config.clone();
-    let mut cfg = config::load_config(&config_path)?;
-    drain_config_deprecations(printer, &mut cfg);
+    let cfg = run.config()?;
 
     let source = match cfg.spec.sources.iter().find(|s| s.name == name) {
         Some(s) => s,

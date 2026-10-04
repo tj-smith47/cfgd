@@ -86,18 +86,15 @@ fn source_replace_happy_human() {
     let (add_printer, _add_cap) = Printer::for_test_doc();
     let mut args = source_add_args(url_old);
     args.name = Some("replace-old".into());
-    cmd_source_add(&cli, &add_printer, &args).expect("seed source");
+    cfgd::cli::RunContext::for_test(&cli, &add_printer, |run| cmd_source_add(run, &args))
+        .expect("seed source");
     drop(add_printer);
 
     let (printer, cap) = Printer::for_test_doc();
     let printer = printer.with_hints_enabled(true);
-    cmd_source_replace(
-        &cli,
-        &printer,
-        &cfgd::cli::startup::StartupDocument::load(&cli.config),
-        "replace-old",
-        &url_new,
-    )
+    cfgd::cli::RunContext::for_test(&cli, &printer, |run| {
+        cmd_source_replace(run, "replace-old", &url_new)
+    })
     .unwrap();
     drop(printer);
 
@@ -160,7 +157,8 @@ fn source_replace_carries_every_subscription_field() {
     let (add_printer, _add_cap) = Printer::for_test_doc();
     let mut args = source_add_args(url_old);
     args.name = Some("carry-old".into());
-    cmd_source_add(&cli, &add_printer, &args).expect("seed source");
+    cfgd::cli::RunContext::for_test(&cli, &add_printer, |run| cmd_source_add(run, &args))
+        .expect("seed source");
     drop(add_printer);
 
     // Populate every field of the subscription block on disk.
@@ -184,13 +182,9 @@ fn source_replace_carries_every_subscription_field() {
     .expect("write config");
 
     let (printer, _cap) = Printer::for_test_doc();
-    cmd_source_replace(
-        &cli,
-        &printer,
-        &cfgd::cli::startup::StartupDocument::load(&cli.config),
-        "carry-old",
-        &url_new,
-    )
+    cfgd::cli::RunContext::for_test(&cli, &printer, |run| {
+        cmd_source_replace(run, "carry-old", &url_new)
+    })
     .expect("replace");
     drop(printer);
 
@@ -216,13 +210,9 @@ fn source_replace_not_found_human() {
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc();
 
-    let err = cmd_source_replace(
-        &cli,
-        &printer,
-        &cfgd::cli::startup::StartupDocument::load(&cli.config),
-        "missing",
-        "https://github.com/team/new.git",
-    )
+    let err = cfgd::cli::RunContext::for_test(&cli, &printer, |run| {
+        cmd_source_replace(run, "missing", "https://github.com/team/new.git")
+    })
     .expect_err("missing old source must return Err");
     render_cli_error(&printer, &err);
     drop(printer);

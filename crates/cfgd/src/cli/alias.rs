@@ -1,5 +1,5 @@
 use super::*;
-use cfgd_core::output::{Doc, Printer, Role, renderer::Table};
+use cfgd_core::output::{Doc, Role, renderer::Table};
 
 /// Build the `cfgd alias list` Doc from a populated entries slice. Pure helper
 /// so callers can assemble entries from disk and tests can drive the renderer
@@ -34,7 +34,9 @@ pub fn build_alias_list_no_config_doc() -> Doc {
         .with_data(&empty)
 }
 
-pub fn cmd_alias_list(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
+pub fn cmd_alias_list(run: &RunContext<'_>) -> anyhow::Result<()> {
+    let cli = run.cli();
+    let printer = run.printer();
     let config_path = cli.config.clone();
     if !config_path.exists() {
         if printer.is_structured() {
@@ -45,8 +47,7 @@ pub fn cmd_alias_list(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
         return Ok(());
     }
 
-    let mut cfg = config::load_config(&config_path)?;
-    drain_config_deprecations(printer, &mut cfg);
+    let cfg = run.config()?;
 
     let mut entries: Vec<AliasListEntry> = cfg
         .spec
@@ -176,7 +177,8 @@ mod tests {
         let cfg_path = tmp.path().join("cfgd.yaml");
         let cli = test_cli_for(cfg_path);
         let (printer, cap) = Printer::for_test_doc_with_format(OutputFormat::Json);
-        cmd_alias_list(&cli, &printer).expect("cmd_alias_list ok on missing config");
+        crate::cli::RunContext::for_test(&cli, &printer, cmd_alias_list)
+            .expect("cmd_alias_list ok on missing config");
         drop(printer);
 
         let json = cap
@@ -194,7 +196,8 @@ mod tests {
         std::fs::write(&cfg_path, yaml).expect("write cfg");
         let cli = test_cli_for(cfg_path);
         let (printer, cap) = Printer::for_test_doc();
-        cmd_alias_list(&cli, &printer).expect("cmd_alias_list ok");
+        crate::cli::RunContext::for_test(&cli, &printer, cmd_alias_list)
+            .expect("cmd_alias_list ok");
         drop(printer);
 
         let json = cap.json().expect("payload");

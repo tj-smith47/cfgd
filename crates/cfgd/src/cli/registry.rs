@@ -1,7 +1,6 @@
 use super::*;
 
 use cfgd_core::PathDisplayExt;
-use cfgd_core::output::Printer;
 
 // --- Provider registry, daemon hooks, state store ---
 
@@ -574,23 +573,21 @@ pub(in crate::cli) fn open_state_store(
 /// Resolve the secret backend from config, check availability, and validate the file exists.
 /// Returns a registry whose `secret_backend` is guaranteed `Some`.
 pub(in crate::cli) fn resolve_secret_backend(
-    cli: &Cli,
-    printer: &Printer,
+    run: &RunContext<'_>,
     file: &Path,
 ) -> anyhow::Result<ProviderRegistry> {
+    let cli = run.cli();
     let cfg = if cli.config.exists() {
-        let mut cfg = config::load_config(&cli.config)?;
-        drain_config_deprecations(printer, &mut cfg);
-        Some(cfg)
+        Some(run.config()?)
     } else {
         None
     };
 
-    let mut registry = build_registry_with_config(cfg.as_ref());
+    let mut registry = build_registry_with_config(cfg);
 
     // Rebuild secret backend with config dir so sops can find .sops.yaml
     let cd = config_dir(cli);
-    let (backend_name, age_key_path) = secret_backend_from_config(cfg.as_ref());
+    let (backend_name, age_key_path) = secret_backend_from_config(cfg);
     registry.secret_backend = Some(secrets::build_secret_backend(
         &backend_name,
         age_key_path,
@@ -622,11 +619,10 @@ pub(in crate::cli) fn resolve_secret_backend(
 
 /// Shorthand: resolve secret backend and extract it in one call.
 pub(in crate::cli) fn get_secret_backend(
-    cli: &Cli,
-    printer: &Printer,
+    run: &RunContext<'_>,
     file: &Path,
 ) -> anyhow::Result<Box<dyn SecretBackend>> {
-    let registry = resolve_secret_backend(cli, printer, file)?;
+    let registry = resolve_secret_backend(run, file)?;
     registry
         .secret_backend
         .ok_or_else(|| no_secret_backend(file))
@@ -866,10 +862,10 @@ mod tests {
         let missing = dir.path().join("absent.enc");
 
         // ProviderRegistry is not Debug, so match rather than expect_err.
-        let err = match resolve_secret_backend(
+        let err = match crate::cli::RunContext::for_test(
             &cli,
             &cfgd_core::test_helpers::test_printer(),
-            &missing,
+            |run| resolve_secret_backend(run, &missing),
         ) {
             Ok(_) => panic!("missing target file must error"),
             Err(e) => e,
@@ -887,8 +883,11 @@ mod tests {
         let missing = dir.path().join("absent.enc");
 
         // Box<dyn SecretBackend> is not Debug, so match rather than expect_err.
-        let err = match get_secret_backend(&cli, &cfgd_core::test_helpers::test_printer(), &missing)
-        {
+        let err = match crate::cli::RunContext::for_test(
+            &cli,
+            &cfgd_core::test_helpers::test_printer(),
+            |run| get_secret_backend(run, &missing),
+        ) {
             Ok(_) => panic!("missing target file must error"),
             Err(e) => e,
         };

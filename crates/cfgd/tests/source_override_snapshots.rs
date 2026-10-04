@@ -53,14 +53,15 @@ fn source_override_accept_human() {
     let (printer, cap) = Printer::for_test_doc();
     let printer = printer.with_hints_enabled(true);
 
-    cmd_source_override(
-        &cli,
-        &printer,
-        "team-config",
-        SourceOverrideAction::Set,
-        "packages.brew.ripgrep",
-        Some("true"),
-    )
+    cfgd::cli::RunContext::for_test(&cli, &printer, |run| {
+        cmd_source_override(
+            run,
+            "team-config",
+            SourceOverrideAction::Set,
+            "packages.brew.ripgrep",
+            Some("true"),
+        )
+    })
     .unwrap();
     drop(printer);
 
@@ -83,14 +84,15 @@ fn source_override_accept_json() {
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc();
 
-    cmd_source_override(
-        &cli,
-        &printer,
-        "team-config",
-        SourceOverrideAction::Set,
-        "packages.brew.ripgrep",
-        Some("true"),
-    )
+    cfgd::cli::RunContext::for_test(&cli, &printer, |run| {
+        cmd_source_override(
+            run,
+            "team-config",
+            SourceOverrideAction::Set,
+            "packages.brew.ripgrep",
+            Some("true"),
+        )
+    })
     .unwrap();
     drop(printer);
 
@@ -112,14 +114,15 @@ fn source_override_reject_human() {
     let (printer, cap) = Printer::for_test_doc();
     let printer = printer.with_hints_enabled(true);
 
-    cmd_source_override(
-        &cli,
-        &printer,
-        "team-config",
-        SourceOverrideAction::Reject,
-        "packages.brew.ripgrep",
-        None,
-    )
+    cfgd::cli::RunContext::for_test(&cli, &printer, |run| {
+        cmd_source_override(
+            run,
+            "team-config",
+            SourceOverrideAction::Reject,
+            "packages.brew.ripgrep",
+            None,
+        )
+    })
     .unwrap();
     drop(printer);
 
@@ -142,14 +145,15 @@ fn source_override_not_found_human() {
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc();
 
-    let err = cmd_source_override(
-        &cli,
-        &printer,
-        "missing",
-        SourceOverrideAction::Reject,
-        "packages.brew",
-        None,
-    )
+    let err = cfgd::cli::RunContext::for_test(&cli, &printer, |run| {
+        cmd_source_override(
+            run,
+            "missing",
+            SourceOverrideAction::Reject,
+            "packages.brew",
+            None,
+        )
+    })
     .expect_err("missing source must return Err");
     render_cli_error(&printer, &err);
     drop(printer);

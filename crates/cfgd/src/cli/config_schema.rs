@@ -8,6 +8,7 @@ use cfgd_core::output::{Doc, Printer, Role};
 use cfgd_core::state::StateStore;
 use cfgd_schema::MigrationPolicy;
 
+use crate::cli::RunContext;
 use crate::cli::helpers::no_config_error;
 use crate::cli::startup::StartupDocument;
 use crate::cli::{
@@ -330,26 +331,27 @@ fn open_store(printer: &Printer, invocation: &GateInvocation<'_>) -> Option<Stat
 
 /// Report what this build's schema carries that the config document does not
 /// declare, and under `write` materialize it.
-pub fn cmd_config_migrate(cli: &Cli, printer: &Printer, write: bool) -> anyhow::Result<()> {
+pub fn cmd_config_migrate(run: &RunContext<'_>, write: bool) -> anyhow::Result<()> {
+    let cli = run.cli();
+    let printer = run.printer();
     let config_path = &cli.config;
-    // startup-load-ok: the verb's own load, so a document it cannot read says why.
-    let (cfg, on_disk) = match cfgd_core::config::read_config_document(config_path) {
+    let (cfg, on_disk) = match run.startup().document() {
         Ok(pair) => pair,
         Err(cfgd_core::errors::CfgdError::Config(cfgd_core::errors::ConfigError::NotFound {
             ..
         })) => return Err(no_config_error(printer, config_path)),
         Err(error) => return Err(error.into()),
     };
-    let pending = pending_alignment(&cfg, &on_disk, config_path);
+    let pending = pending_alignment(cfg, on_disk, config_path);
     let wrote = write && !pending.keys.is_empty();
     if wrote {
-        write_alignment(config_path, &cfg, &pending)?;
+        write_alignment(config_path, cfg, &pending)?;
     }
 
     // Each row is the key and the value the write would materialize, read
     // off the same typed value the write reads, so the report and the write
     // cannot name two things.
-    let materialized = serde_yaml::to_value(&cfg).unwrap_or(serde_yaml::Value::Null);
+    let materialized = serde_yaml::to_value(cfg).unwrap_or(serde_yaml::Value::Null);
     let rows: Vec<(String, String)> = pending
         .keys
         .iter()
@@ -684,7 +686,10 @@ mod tests {
         let printer = cfgd_core::test_helpers::test_printer();
 
         let missing = dir.path().join("absent.yaml");
-        let error = cmd_config_migrate(&cli_with_config(&missing, None), &printer, false)
+        let error =
+            crate::cli::RunContext::for_test(&cli_with_config(&missing, None), &printer, |run| {
+                cmd_config_migrate(run, false)
+            })
             .expect_err("a missing document fails");
         assert!(
             format!("{error:#}").contains("config file not found"),
@@ -697,7 +702,10 @@ mod tests {
             "apiVersion: cfgd.io/v1alpha1\nkind: [unclosed\n",
         )
         .unwrap();
-        let error = cmd_config_migrate(&cli_with_config(&malformed, None), &printer, false)
+        let error =
+            crate::cli::RunContext::for_test(&cli_with_config(&malformed, None), &printer, |run| {
+                cmd_config_migrate(run, false)
+            })
             .expect_err("a malformed document fails");
         assert!(
             !format!("{error:#}").contains("config file not found"),
@@ -715,14 +723,16 @@ mod tests {
         let cli = cli_with_config(&path, None);
         let printer = cfgd_core::test_helpers::test_printer();
 
-        cmd_config_migrate(&cli, &printer, false).unwrap();
+        crate::cli::RunContext::for_test(&cli, &printer, |run| cmd_config_migrate(run, false))
+            .unwrap();
         assert_eq!(
             std::fs::read_to_string(&path).unwrap(),
             doc,
             "a report writes nothing"
         );
 
-        cmd_config_migrate(&cli, &printer, true).unwrap();
+        crate::cli::RunContext::for_test(&cli, &printer, |run| cmd_config_migrate(run, true))
+            .unwrap();
         let after = std::fs::read_to_string(&path).unwrap();
         assert!(
             after.starts_with("# yaml-language-server:"),
@@ -759,7 +769,8 @@ mod tests {
         let cli = cli_with_config(&path, None);
         let printer = cfgd_core::test_helpers::test_printer();
 
-        cmd_config_migrate(&cli, &printer, true).unwrap();
+        crate::cli::RunContext::for_test(&cli, &printer, |run| cmd_config_migrate(run, true))
+            .unwrap();
         let after = std::fs::read_to_string(&path).unwrap();
         assert!(
             !after.contains("output:") || !after.contains("theme:\n"),
@@ -808,7 +819,8 @@ mod tests {
             let cli = cli_with_config(&path, None);
             let printer = cfgd_core::test_helpers::test_printer();
 
-            cmd_config_migrate(&cli, &printer, true).unwrap();
+            crate::cli::RunContext::for_test(&cli, &printer, |run| cmd_config_migrate(run, true))
+                .unwrap();
             let after = std::fs::read_to_string(&path).unwrap();
 
             let reloaded = cfgd_core::config::parse_config(&after, &path)

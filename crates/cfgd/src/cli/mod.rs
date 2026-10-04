@@ -3579,20 +3579,19 @@ pub fn execute(
         Command::Pull => pull::cmd_pull(&run),
         Command::Daemon { command } => daemon::cmd_daemon(&run, command.as_ref()),
         Command::Secret { command } => match command {
-            SecretCommand::Encrypt { file } => secret::cmd_secret_encrypt(cli, printer, file),
-            SecretCommand::Decrypt { file } => secret::cmd_secret_decrypt(cli, printer, file),
-            SecretCommand::Edit { file } => secret::cmd_secret_edit(cli, printer, file),
+            SecretCommand::Encrypt { file } => secret::cmd_secret_encrypt(&run, file),
+            SecretCommand::Decrypt { file } => secret::cmd_secret_decrypt(&run, file),
+            SecretCommand::Edit { file } => secret::cmd_secret_edit(&run, file),
             SecretCommand::Init => secret::cmd_secret_init(cli, printer),
         },
         Command::Source { command } => match command {
-            SourceCommand::Add(args) => source::cmd_source_add(cli, printer, args),
+            SourceCommand::Add(args) => source::cmd_source_add(&run, args),
             SourceCommand::Priority { name, value } => {
-                source::cmd_source_priority(cli, printer, name, *value)
+                source::cmd_source_priority(&run, name, *value)
             }
-            SourceCommand::List => source::cmd_source_list(cli, printer),
+            SourceCommand::List => source::cmd_source_list(&run),
             SourceCommand::Show { name, show_values } => source::cmd_source_show(
-                cli,
-                printer,
+                &run,
                 name,
                 InventoryDetail::of(env_value_masking(printer, *show_values), false, false),
             ),
@@ -3603,9 +3602,7 @@ pub fn execute(
                 yes,
                 ignore_not_found,
             } => source::cmd_source_remove(
-                cli,
-                printer,
-                startup,
+                &run,
                 name,
                 *keep_all || (*yes && !*remove_all),
                 *remove_all,
@@ -3619,8 +3616,7 @@ pub fn execute(
                 allow_scripts,
                 no_allow_scripts,
             } => source::cmd_source_update(
-                cli,
-                printer,
+                &run,
                 name.as_deref(),
                 source::SubscriptionEdits {
                     require_signed_commits: paired_flag(
@@ -3635,9 +3631,9 @@ pub fn execute(
                 action,
                 path,
                 value,
-            } => source::cmd_source_override(cli, printer, source, *action, path, value.as_deref()),
+            } => source::cmd_source_override(&run, source, *action, path, value.as_deref()),
             SourceCommand::Replace { old_name, new_url } => {
-                source::cmd_source_replace(cli, printer, startup, old_name, new_url)
+                source::cmd_source_replace(&run, old_name, new_url)
             }
             SourceCommand::Edit => source::cmd_source_edit(printer, &std::env::current_dir()?),
             SourceCommand::Create {
@@ -3724,16 +3720,14 @@ pub fn execute(
             all,
         } => decide::cmd_decide(&run, *action, resource.as_deref(), source.as_deref(), *all),
         Command::Config { command } => match command {
-            ConfigCommand::Show => config_cmd::cmd_config_show(cli, printer),
+            ConfigCommand::Show => config_cmd::cmd_config_show(&run),
             ConfigCommand::Edit => config_cmd::cmd_config_edit(cli, printer),
-            ConfigCommand::Get { key } => config_cmd::cmd_config_get(cli, printer, startup, key),
+            ConfigCommand::Get { key } => config_cmd::cmd_config_get(&run, key),
             ConfigCommand::Set { key, value } => {
                 config_cmd::cmd_config_set(cli, printer, key, value)
             }
             ConfigCommand::Unset { key } => config_cmd::cmd_config_unset(cli, printer, key),
-            ConfigCommand::Migrate { write } => {
-                config_schema::cmd_config_migrate(cli, printer, *write)
-            }
+            ConfigCommand::Migrate { write } => config_schema::cmd_config_migrate(&run, *write),
         },
         Command::Alias { command } => {
             use config_cmd::{Asked, alias_key};
@@ -3748,9 +3742,9 @@ pub fn execute(
                 }
                 AliasCommand::Show { name } => {
                     let key = alias_key(name)?;
-                    config_cmd::config_get_as(cli, printer, startup, &key, Asked::alias(name))
+                    config_cmd::config_get_as(&run, &key, Asked::alias(name))
                 }
-                AliasCommand::List => alias::cmd_alias_list(cli, printer),
+                AliasCommand::List => alias::cmd_alias_list(&run),
             }
         }
         Command::Workflow { command } => match command {

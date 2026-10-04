@@ -59,16 +59,9 @@ fn source_remove_happy_human() {
     let (printer, cap) = Printer::for_test_doc();
     let printer = printer.with_hints_enabled(true);
 
-    cmd_source_remove(
-        &cli,
-        &printer,
-        &cfgd::cli::startup::StartupDocument::load(&cli.config),
-        "team-config",
-        false,
-        true,
-        false,
-        false,
-    )
+    cfgd::cli::RunContext::for_test(&cli, &printer, |run| {
+        cmd_source_remove(run, "team-config", false, true, false, false)
+    })
     .unwrap();
     drop(printer);
 
@@ -91,16 +84,9 @@ fn source_remove_happy_json() {
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc();
 
-    cmd_source_remove(
-        &cli,
-        &printer,
-        &cfgd::cli::startup::StartupDocument::load(&cli.config),
-        "team-config",
-        false,
-        true,
-        false,
-        false,
-    )
+    cfgd::cli::RunContext::for_test(&cli, &printer, |run| {
+        cmd_source_remove(run, "team-config", false, true, false, false)
+    })
     .unwrap();
     drop(printer);
 
@@ -122,16 +108,9 @@ fn source_remove_keep_all_human() {
     let (printer, cap) = Printer::for_test_doc();
     let printer = printer.with_hints_enabled(true);
 
-    cmd_source_remove(
-        &cli,
-        &printer,
-        &cfgd::cli::startup::StartupDocument::load(&cli.config),
-        "team-config",
-        true,
-        false,
-        false,
-        false,
-    )
+    cfgd::cli::RunContext::for_test(&cli, &printer, |run| {
+        cmd_source_remove(run, "team-config", true, false, false, false)
+    })
     .unwrap();
     drop(printer);
 
@@ -173,16 +152,9 @@ fn source_remove_cancelled_human() {
         "Cancel (abort remove)".into(),
     )]);
 
-    cmd_source_remove(
-        &cli,
-        &printer,
-        &cfgd::cli::startup::StartupDocument::load(&cli.config),
-        "team-config",
-        false,
-        false,
-        false,
-        false,
-    )
+    cfgd::cli::RunContext::for_test(&cli, &printer, |run| {
+        cmd_source_remove(run, "team-config", false, false, false, false)
+    })
     .unwrap();
     drop(printer);
 
@@ -213,16 +185,9 @@ fn source_remove_not_found_human() {
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc();
 
-    let err = cmd_source_remove(
-        &cli,
-        &printer,
-        &cfgd::cli::startup::StartupDocument::load(&cli.config),
-        "missing",
-        false,
-        true,
-        false,
-        false,
-    )
+    let err = cfgd::cli::RunContext::for_test(&cli, &printer, |run| {
+        cmd_source_remove(run, "missing", false, true, false, false)
+    })
     .expect_err("missing source must return Err");
     render_cli_error(&printer, &err);
     drop(printer);
@@ -252,16 +217,9 @@ fn source_remove_conflicting_flags_human() {
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc();
 
-    let err = cmd_source_remove(
-        &cli,
-        &printer,
-        &cfgd::cli::startup::StartupDocument::load(&cli.config),
-        "team-config",
-        true,
-        true,
-        false,
-        false,
-    )
+    let err = cfgd::cli::RunContext::for_test(&cli, &printer, |run| {
+        cmd_source_remove(run, "team-config", true, true, false, false)
+    })
     .expect_err("conflicting flags must return Err");
     render_cli_error(&printer, &err);
     drop(printer);

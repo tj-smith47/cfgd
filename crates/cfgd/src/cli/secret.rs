@@ -6,8 +6,9 @@ fn first_line(s: &str) -> String {
     s.lines().next().unwrap_or("").to_string()
 }
 
-pub fn cmd_secret_encrypt(cli: &Cli, printer: &Printer, file: &Path) -> anyhow::Result<()> {
-    let backend = get_secret_backend(cli, printer, file)?;
+pub fn cmd_secret_encrypt(run: &RunContext<'_>, file: &Path) -> anyhow::Result<()> {
+    let printer = run.printer();
+    let backend = get_secret_backend(run, file)?;
     let backend_name = backend.name().to_string();
 
     if let Err(e) = backend.encrypt_file(file) {
@@ -47,8 +48,9 @@ pub fn cmd_secret_encrypt(cli: &Cli, printer: &Printer, file: &Path) -> anyhow::
     Ok(())
 }
 
-pub fn cmd_secret_decrypt(cli: &Cli, printer: &Printer, file: &Path) -> anyhow::Result<()> {
-    let backend = get_secret_backend(cli, printer, file)?;
+pub fn cmd_secret_decrypt(run: &RunContext<'_>, file: &Path) -> anyhow::Result<()> {
+    let printer = run.printer();
+    let backend = get_secret_backend(run, file)?;
     let backend_name = backend.name().to_string();
 
     let decrypted = match backend.decrypt_file(file) {
@@ -114,8 +116,9 @@ pub fn cmd_secret_decrypt(cli: &Cli, printer: &Printer, file: &Path) -> anyhow::
     Ok(())
 }
 
-pub fn cmd_secret_edit(cli: &Cli, printer: &Printer, file: &Path) -> anyhow::Result<()> {
-    let backend = get_secret_backend(cli, printer, file)?;
+pub fn cmd_secret_edit(run: &RunContext<'_>, file: &Path) -> anyhow::Result<()> {
+    let printer = run.printer();
+    let backend = get_secret_backend(run, file)?;
     let backend_name = backend.name().to_string();
 
     if let Err(e) = backend.edit_file(file) {

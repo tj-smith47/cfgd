@@ -2,7 +2,7 @@ use super::*;
 use crate::cli::output_types::SourcePolicyOutput;
 use cfgd_core::PathDisplayExt;
 use cfgd_core::config::{ConfigSourceDocument, PolicyItems, SourceConstraints, SourceSpec};
-use cfgd_core::output::{Doc, KvPair, Printer, Role, doc::SectionBuilder};
+use cfgd_core::output::{Doc, KvPair, Role, doc::SectionBuilder};
 
 /// Build the not-found error returned by `cmd_source_show`. The central error
 /// sink (`main.rs::render_cli_error`) renders the structured `{error, name,
@@ -416,14 +416,13 @@ fn append_policy_items(mut s: SectionBuilder, items: &PolicyItems) -> SectionBui
 }
 
 pub fn cmd_source_show(
-    cli: &Cli,
-    printer: &Printer,
+    run: &RunContext<'_>,
     name: &str,
     detail: crate::cli::InventoryDetail<'_>,
 ) -> anyhow::Result<()> {
-    let config_path = cli.config.clone();
-    let mut cfg = config::load_config(&config_path)?;
-    drain_config_deprecations(printer, &mut cfg);
+    let cli = run.cli();
+    let printer = run.printer();
+    let cfg = run.config()?;
 
     let source_spec = match cfg.spec.sources.iter().find(|s| s.name == name) {
         Some(spec) => spec,
@@ -504,6 +503,7 @@ pub fn cmd_source_show(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use cfgd_core::output::Printer;
 
     fn source_show_output(url: String) -> crate::cli::output_types::SourceShowOutput {
         crate::cli::output_types::SourceShowOutput {

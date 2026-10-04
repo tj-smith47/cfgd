@@ -5006,7 +5006,7 @@ spec:
 
     let cli = test_cli(dir.path());
     let (printer, cap) = cfgd_core::output::Printer::for_test_doc();
-    let result = config_cmd::cmd_config_show(&cli, &printer);
+    let result = crate::cli::RunContext::for_test(&cli, &printer, config_cmd::cmd_config_show);
     assert!(result.is_ok(), "config show failed: {:?}", result.err());
     drop(printer);
 
@@ -5025,7 +5025,8 @@ spec:
 fn config_show_fails_without_config() {
     let dir = tempfile::tempdir().unwrap();
     let cli = test_cli(dir.path());
-    let result = config_cmd::cmd_config_show(&cli, &test_printer());
+    let result =
+        crate::cli::RunContext::for_test(&cli, &test_printer(), config_cmd::cmd_config_show);
     let err = result.unwrap_err();
     let msg = err.to_string();
     assert!(
@@ -5535,7 +5536,7 @@ spec:
     let cli = test_cli(dir.path());
     let (printer, cap) = cfgd_core::output::Printer::for_test_doc();
 
-    let result = config_cmd::cmd_config_show(&cli, &printer);
+    let result = crate::cli::RunContext::for_test(&cli, &printer, config_cmd::cmd_config_show);
     assert!(result.is_ok(), "config show failed: {:?}", result.err());
     drop(printer);
 
@@ -6991,12 +6992,9 @@ fn config_get_reads_value() {
     };
     let printer = test_printer();
 
-    let result = super::config_cmd::cmd_config_get(
-        &cli,
-        &printer,
-        &crate::cli::startup::StartupDocument::load(&cli.config),
-        "profile",
-    );
+    let result = crate::cli::RunContext::for_test(&cli, &printer, |run| {
+        super::config_cmd::cmd_config_get(run, "profile")
+    });
     assert!(
         result.is_ok(),
         "config get should read profile value without error: {:?}",
@@ -7022,12 +7020,10 @@ fn cmd_config_get_missing_key_errors() {
     let printer = test_printer();
 
     assert!(
-        super::config_cmd::cmd_config_get(
-            &cli,
-            &printer,
-            &crate::cli::startup::StartupDocument::load(&cli.config),
+        crate::cli::RunContext::for_test(&cli, &printer, |run| super::config_cmd::cmd_config_get(
+            run,
             "nonexistent"
-        )
+        ))
         .is_err()
     );
 }
@@ -7111,7 +7107,8 @@ fn config_show_succeeds_with_valid_config() {
     let (printer, cap) = cfgd_core::output::Printer::for_test_doc();
 
     assert!(
-        super::config_cmd::cmd_config_show(&cli, &printer).is_ok(),
+        crate::cli::RunContext::for_test(&cli, &printer, super::config_cmd::cmd_config_show)
+            .is_ok(),
         "config show should succeed when cfgd.yaml exists and is valid"
     );
     drop(printer);
@@ -7136,7 +7133,10 @@ fn config_show_errors_without_config() {
         ..test_cli(dir.path())
     };
 
-    assert!(super::config_cmd::cmd_config_show(&cli, &test_printer()).is_err());
+    assert!(
+        crate::cli::RunContext::for_test(&cli, &test_printer(), super::config_cmd::cmd_config_show)
+            .is_err()
+    );
 }
 
 // --- secret_backend_from_config ---
@@ -9503,7 +9503,7 @@ fn cmd_source_list_no_sources() {
     let (printer, cap) = cfgd_core::output::Printer::for_test_doc();
 
     assert!(
-        super::source::cmd_source_list(&cli, &printer).is_ok(),
+        crate::cli::RunContext::for_test(&cli, &printer, super::source::cmd_source_list).is_ok(),
         "source list should succeed when no sources are configured"
     );
 
@@ -9528,7 +9528,7 @@ fn cmd_source_list_no_config() {
     let (printer, cap) = cfgd_core::output::Printer::for_test_doc();
 
     assert!(
-        super::source::cmd_source_list(&cli, &printer).is_ok(),
+        crate::cli::RunContext::for_test(&cli, &printer, super::source::cmd_source_list).is_ok(),
         "source list should succeed even without cfgd.yaml"
     );
 
@@ -14568,7 +14568,7 @@ spec:
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
     let printer = test_printer();
 
-    let result = super::source::cmd_source_list(&cli, &printer);
+    let result = crate::cli::RunContext::for_test(&cli, &printer, super::source::cmd_source_list);
     assert!(
         result.is_ok(),
         "source list should succeed when sources are configured in cfgd.yaml: {:?}",
@@ -14590,7 +14590,7 @@ fn cmd_source_list_structured_output() {
     };
     let (printer, cap) = cfgd_core::output::Printer::for_test_doc();
 
-    super::source::cmd_source_list(&cli, &printer).unwrap();
+    crate::cli::RunContext::for_test(&cli, &printer, super::source::cmd_source_list).unwrap();
 
     drop(printer);
     let parsed = cap
@@ -14614,12 +14614,9 @@ fn cmd_source_show_not_found() {
 
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
 
-    let result = super::source::cmd_source_show(
-        &cli,
-        &test_printer(),
-        "nonexistent",
-        super::InventoryDetail::default(),
-    );
+    let result = crate::cli::RunContext::for_test(&cli, &test_printer(), |run| {
+        super::source::cmd_source_show(run, "nonexistent", super::InventoryDetail::default())
+    });
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("not found"));
 }
@@ -14656,12 +14653,9 @@ spec:
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
-    super::source::cmd_source_show(
-        &cli,
-        &printer,
-        "team-config",
-        super::InventoryDetail::default(),
-    )
+    crate::cli::RunContext::for_test(&cli, &printer, |run| {
+        super::source::cmd_source_show(run, "team-config", super::InventoryDetail::default())
+    })
     .unwrap();
     drop(printer);
 
@@ -14681,16 +14675,9 @@ fn cmd_source_remove_not_found() {
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
     let printer = test_printer();
 
-    let result = super::source::cmd_source_remove(
-        &cli,
-        &printer,
-        &crate::cli::startup::StartupDocument::load(&cli.config),
-        "nonexistent",
-        true,
-        false,
-        false,
-        false,
-    );
+    let result = crate::cli::RunContext::for_test(&cli, &printer, |run| {
+        super::source::cmd_source_remove(run, "nonexistent", true, false, false, false)
+    });
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("not found"));
 }
@@ -14702,16 +14689,9 @@ fn cmd_source_remove_keep_all_and_remove_all_conflict() {
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
     let printer = test_printer();
 
-    let result = super::source::cmd_source_remove(
-        &cli,
-        &printer,
-        &crate::cli::startup::StartupDocument::load(&cli.config),
-        "anything",
-        true,
-        true,
-        false,
-        false,
-    );
+    let result = crate::cli::RunContext::for_test(&cli, &printer, |run| {
+        super::source::cmd_source_remove(run, "anything", true, true, false, false)
+    });
     assert!(result.is_err());
     assert!(
         result
@@ -14730,14 +14710,15 @@ fn cmd_source_override_source_not_found() {
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
     let printer = test_printer();
 
-    let result = super::source::cmd_source_override(
-        &cli,
-        &printer,
-        "nonexistent",
-        super::SourceOverrideAction::Reject,
-        "env.FOO",
-        None,
-    );
+    let result = crate::cli::RunContext::for_test(&cli, &printer, |run| {
+        super::source::cmd_source_override(
+            run,
+            "nonexistent",
+            super::SourceOverrideAction::Reject,
+            "env.FOO",
+            None,
+        )
+    });
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("not found"));
 }
@@ -14769,14 +14750,15 @@ spec:
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
     let printer = test_printer();
 
-    let result = super::source::cmd_source_override(
-        &cli,
-        &printer,
-        "team",
-        super::SourceOverrideAction::Set,
-        "env.FOO",
-        None,
-    );
+    let result = crate::cli::RunContext::for_test(&cli, &printer, |run| {
+        super::source::cmd_source_override(
+            run,
+            "team",
+            super::SourceOverrideAction::Set,
+            "env.FOO",
+            None,
+        )
+    });
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("requires a value"));
 }
@@ -14790,7 +14772,9 @@ fn cmd_source_priority_not_found() {
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
     let printer = test_printer();
 
-    let result = super::source::cmd_source_priority(&cli, &printer, "nonexistent", None);
+    let result = crate::cli::RunContext::for_test(&cli, &printer, |run| {
+        super::source::cmd_source_priority(run, "nonexistent", None)
+    });
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("not found"));
 }
@@ -14819,7 +14803,10 @@ spec:
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
     let (printer, cap) = cfgd_core::output::Printer::for_test_doc();
 
-    super::source::cmd_source_priority(&cli, &printer, "team", None).unwrap();
+    crate::cli::RunContext::for_test(&cli, &printer, |run| {
+        super::source::cmd_source_priority(run, "team", None)
+    })
+    .unwrap();
 
     drop(printer);
     let output = cap.human();
@@ -14853,7 +14840,9 @@ spec:
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
     let printer = test_printer();
 
-    let result = super::source::cmd_source_priority(&cli, &printer, "team", Some(500));
+    let result = crate::cli::RunContext::for_test(&cli, &printer, |run| {
+        super::source::cmd_source_priority(run, "team", Some(500))
+    });
     assert!(
         result.is_ok(),
         "source priority update should succeed: {:?}",
@@ -16360,7 +16349,7 @@ fn cmd_config_show_with_rich_config() {
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
     let (printer, cap) = cfgd_core::output::Printer::for_test_doc();
 
-    super::config_cmd::cmd_config_show(&cli, &printer).unwrap();
+    crate::cli::RunContext::for_test(&cli, &printer, super::config_cmd::cmd_config_show).unwrap();
     drop(printer);
 
     let output = cap.human();
@@ -16382,7 +16371,7 @@ fn cmd_config_show_structured_json() {
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
 
-    super::config_cmd::cmd_config_show(&cli, &printer).unwrap();
+    crate::cli::RunContext::for_test(&cli, &printer, super::config_cmd::cmd_config_show).unwrap();
     drop(printer);
 
     let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -16403,7 +16392,8 @@ fn cmd_config_show_no_config_fails() {
     let dir = tempfile::tempdir().unwrap();
     let cli = test_cli(dir.path());
 
-    let result = super::config_cmd::cmd_config_show(&cli, &test_printer());
+    let result =
+        crate::cli::RunContext::for_test(&cli, &test_printer(), super::config_cmd::cmd_config_show);
     assert!(result.is_err());
     assert!(
         result
@@ -16421,12 +16411,9 @@ fn cmd_config_get_reads_profile() {
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
     let (printer, cap) = cfgd_core::output::Printer::for_test_doc();
 
-    super::config_cmd::cmd_config_get(
-        &cli,
-        &printer,
-        &crate::cli::startup::StartupDocument::load(&cli.config),
-        "profile",
-    )
+    crate::cli::RunContext::for_test(&cli, &printer, |run| {
+        super::config_cmd::cmd_config_get(run, "profile")
+    })
     .unwrap();
     drop(printer);
 
@@ -16443,12 +16430,9 @@ fn cmd_config_get_nested_key() {
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
     let (printer, cap) = cfgd_core::output::Printer::for_test_doc();
 
-    super::config_cmd::cmd_config_get(
-        &cli,
-        &printer,
-        &crate::cli::startup::StartupDocument::load(&cli.config),
-        "daemon.enabled",
-    )
+    crate::cli::RunContext::for_test(&cli, &printer, |run| {
+        super::config_cmd::cmd_config_get(run, "daemon.enabled")
+    })
     .unwrap();
     drop(printer);
 
@@ -16469,12 +16453,9 @@ fn cmd_config_get_structured_json() {
     let (printer, cap) =
         cfgd_core::output::Printer::for_test_doc_with_format(cfgd_core::output::OutputFormat::Json);
 
-    super::config_cmd::cmd_config_get(
-        &cli,
-        &printer,
-        &crate::cli::startup::StartupDocument::load(&cli.config),
-        "profile",
-    )
+    crate::cli::RunContext::for_test(&cli, &printer, |run| {
+        super::config_cmd::cmd_config_get(run, "profile")
+    })
     .unwrap();
     drop(printer);
 
@@ -16492,12 +16473,9 @@ fn cmd_config_get_missing_key_fails() {
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
     let printer = test_printer();
 
-    let result = super::config_cmd::cmd_config_get(
-        &cli,
-        &printer,
-        &crate::cli::startup::StartupDocument::load(&cli.config),
-        "nonexistent.path",
-    );
+    let result = crate::cli::RunContext::for_test(&cli, &printer, |run| {
+        super::config_cmd::cmd_config_get(run, "nonexistent.path")
+    });
     let err = result.unwrap_err();
     let msg = err.to_string();
     assert!(
@@ -16512,12 +16490,9 @@ fn cmd_config_get_no_config_fails() {
     let cli = test_cli(dir.path());
     let printer = test_printer();
 
-    let result = super::config_cmd::cmd_config_get(
-        &cli,
-        &printer,
-        &crate::cli::startup::StartupDocument::load(&cli.config),
-        "profile",
-    );
+    let result = crate::cli::RunContext::for_test(&cli, &printer, |run| {
+        super::config_cmd::cmd_config_get(run, "profile")
+    });
     assert!(result.is_err());
     assert!(
         result
@@ -23010,16 +22985,9 @@ fn cmd_source_remove_existing_removes_from_config() {
     let cfg = config::load_config(&config_dir.path().join("cfgd.yaml")).unwrap();
     assert_eq!(cfg.spec.sources.len(), 1);
 
-    let result = super::source::cmd_source_remove(
-        &cli,
-        &printer,
-        &crate::cli::startup::StartupDocument::load(&cli.config),
-        "team-config",
-        false,
-        true,
-        false,
-        false,
-    );
+    let result = crate::cli::RunContext::for_test(&cli, &printer, |run| {
+        super::source::cmd_source_remove(run, "team-config", false, true, false, false)
+    });
     assert!(
         result.is_ok(),
         "source remove should succeed: {:?}",
@@ -23054,16 +23022,9 @@ fn cmd_source_remove_with_keep_all_transfers_resources_to_local_management() {
         .unwrap();
     drop(store);
 
-    super::source::cmd_source_remove(
-        &cli,
-        &printer,
-        &crate::cli::startup::StartupDocument::load(&cli.config),
-        "team-config",
-        true,
-        false,
-        false,
-        false,
-    )
+    crate::cli::RunContext::for_test(&cli, &printer, |run| {
+        super::source::cmd_source_remove(run, "team-config", true, false, false, false)
+    })
     .expect("source remove --keep-all should succeed");
 
     // Source dropped from cfgd.yaml.
@@ -23095,16 +23056,9 @@ fn cmd_source_remove_nonexistent_fails() {
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
     let printer = test_printer();
 
-    let result = super::source::cmd_source_remove(
-        &cli,
-        &printer,
-        &crate::cli::startup::StartupDocument::load(&cli.config),
-        "nonexistent",
-        false,
-        true,
-        false,
-        false,
-    );
+    let result = crate::cli::RunContext::for_test(&cli, &printer, |run| {
+        super::source::cmd_source_remove(run, "nonexistent", false, true, false, false)
+    });
     let err = result.unwrap_err();
     let msg = err.to_string();
     assert!(
@@ -23126,16 +23080,9 @@ fn cmd_source_remove_deletes_cached_clone() {
     std::fs::write(cached_dir.join("marker"), b"cached").unwrap();
     assert!(cached_dir.exists());
 
-    super::source::cmd_source_remove(
-        &cli,
-        &printer,
-        &crate::cli::startup::StartupDocument::load(&cli.config),
-        "team-config",
-        false,
-        true,
-        false,
-        false,
-    )
+    crate::cli::RunContext::for_test(&cli, &printer, |run| {
+        super::source::cmd_source_remove(run, "team-config", false, true, false, false)
+    })
     .expect("source remove should succeed");
 
     assert!(
@@ -23159,13 +23106,9 @@ fn cmd_source_replace_clears_stale_cache() {
     // Replace fails at the add step (unreachable URL is rejected before clone),
     // but the remove step must still have cleared the stale cache so a later
     // successful add cannot inherit the previous source's contents.
-    let _ = super::source::cmd_source_replace(
-        &cli,
-        &printer,
-        &crate::cli::startup::StartupDocument::load(&cli.config),
-        "team-config",
-        "file:///nonexistent/new-config.git",
-    );
+    let _ = crate::cli::RunContext::for_test(&cli, &printer, |run| {
+        super::source::cmd_source_replace(run, "team-config", "file:///nonexistent/new-config.git")
+    });
 
     assert!(
         !cached_dir.join("STALE").exists(),
@@ -23181,14 +23124,15 @@ fn cmd_source_override_reject_succeeds() {
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
     let (printer, cap) = cfgd_core::output::Printer::for_test_doc();
 
-    super::source::cmd_source_override(
-        &cli,
-        &printer,
-        "team-config",
-        super::SourceOverrideAction::Reject,
-        "packages.brew",
-        None,
-    )
+    crate::cli::RunContext::for_test(&cli, &printer, |run| {
+        super::source::cmd_source_override(
+            run,
+            "team-config",
+            super::SourceOverrideAction::Reject,
+            "packages.brew",
+            None,
+        )
+    })
     .unwrap();
 
     drop(printer);
@@ -23205,14 +23149,15 @@ fn cmd_source_override_set_succeeds() {
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
     let (printer, cap) = cfgd_core::output::Printer::for_test_doc();
 
-    super::source::cmd_source_override(
-        &cli,
-        &printer,
-        "team-config",
-        super::SourceOverrideAction::Set,
-        "packages.brew.ripgrep",
-        Some("true"),
-    )
+    crate::cli::RunContext::for_test(&cli, &printer, |run| {
+        super::source::cmd_source_override(
+            run,
+            "team-config",
+            super::SourceOverrideAction::Set,
+            "packages.brew.ripgrep",
+            Some("true"),
+        )
+    })
     .unwrap();
 
     drop(printer);
@@ -23229,14 +23174,15 @@ fn cmd_source_override_set_stores_typed_list() {
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
     let (printer, _cap) = cfgd_core::output::Printer::for_test_doc();
 
-    super::source::cmd_source_override(
-        &cli,
-        &printer,
-        "team-config",
-        super::SourceOverrideAction::Set,
-        "packages.npm.global",
-        Some("[prettier]"),
-    )
+    crate::cli::RunContext::for_test(&cli, &printer, |run| {
+        super::source::cmd_source_override(
+            run,
+            "team-config",
+            super::SourceOverrideAction::Set,
+            "packages.npm.global",
+            Some("[prettier]"),
+        )
+    })
     .unwrap();
     drop(printer);
 
@@ -23267,14 +23213,15 @@ fn cmd_source_override_set_stores_plain_string() {
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
     let (printer, _cap) = cfgd_core::output::Printer::for_test_doc();
 
-    super::source::cmd_source_override(
-        &cli,
-        &printer,
-        "team-config",
-        super::SourceOverrideAction::Set,
-        "env.EDITOR",
-        Some("nvim"),
-    )
+    crate::cli::RunContext::for_test(&cli, &printer, |run| {
+        super::source::cmd_source_override(
+            run,
+            "team-config",
+            super::SourceOverrideAction::Set,
+            "env.EDITOR",
+            Some("nvim"),
+        )
+    })
     .unwrap();
     drop(printer);
 
@@ -23304,14 +23251,15 @@ fn cmd_source_override_set_env_value_always_string() {
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
     let (printer, _cap) = cfgd_core::output::Printer::for_test_doc();
 
-    super::source::cmd_source_override(
-        &cli,
-        &printer,
-        "team-config",
-        super::SourceOverrideAction::Set,
-        "env.DEBUG",
-        Some("true"),
-    )
+    crate::cli::RunContext::for_test(&cli, &printer, |run| {
+        super::source::cmd_source_override(
+            run,
+            "team-config",
+            super::SourceOverrideAction::Set,
+            "env.DEBUG",
+            Some("true"),
+        )
+    })
     .unwrap();
     drop(printer);
 
@@ -23341,14 +23289,15 @@ fn cmd_source_override_set_env_scope_snake_normalizes() {
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
     let (printer, _cap) = cfgd_core::output::Printer::for_test_doc();
 
-    super::source::cmd_source_override(
-        &cli,
-        &printer,
-        "team-config",
-        super::SourceOverrideAction::Set,
-        "env_scope",
-        Some("All"),
-    )
+    crate::cli::RunContext::for_test(&cli, &printer, |run| {
+        super::source::cmd_source_override(
+            run,
+            "team-config",
+            super::SourceOverrideAction::Set,
+            "env_scope",
+            Some("All"),
+        )
+    })
     .unwrap();
     drop(printer);
 
@@ -23383,14 +23332,15 @@ fn cmd_source_override_nonexistent_source_fails() {
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
     let printer = test_printer();
 
-    let result = super::source::cmd_source_override(
-        &cli,
-        &printer,
-        "nonexistent",
-        super::SourceOverrideAction::Reject,
-        "packages.brew",
-        None,
-    );
+    let result = crate::cli::RunContext::for_test(&cli, &printer, |run| {
+        super::source::cmd_source_override(
+            run,
+            "nonexistent",
+            super::SourceOverrideAction::Reject,
+            "packages.brew",
+            None,
+        )
+    });
     let err = result.unwrap_err();
     let msg = err.to_string();
     assert!(
@@ -23407,7 +23357,9 @@ fn cmd_source_priority_nonexistent_fails() {
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
     let printer = test_printer();
 
-    let result = super::source::cmd_source_priority(&cli, &printer, "nonexistent", None);
+    let result = crate::cli::RunContext::for_test(&cli, &printer, |run| {
+        super::source::cmd_source_priority(run, "nonexistent", None)
+    });
     let err = result.unwrap_err();
     let msg = err.to_string();
     assert!(
@@ -23422,7 +23374,9 @@ fn cmd_source_priority_updates_config() {
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
     let printer = test_printer();
 
-    let result = super::source::cmd_source_priority(&cli, &printer, "team-config", Some(200));
+    let result = crate::cli::RunContext::for_test(&cli, &printer, |run| {
+        super::source::cmd_source_priority(run, "team-config", Some(200))
+    });
     assert!(result.is_ok(), "source priority update: {:?}", result.err());
 
     let cfg = config::load_config(&config_dir.path().join("cfgd.yaml")).unwrap();
@@ -23438,12 +23392,9 @@ fn cmd_source_show_exists() {
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
-    let result = super::source::cmd_source_show(
-        &cli,
-        &printer,
-        "team-config",
-        super::InventoryDetail::default(),
-    );
+    let result = crate::cli::RunContext::for_test(&cli, &printer, |run| {
+        super::source::cmd_source_show(run, "team-config", super::InventoryDetail::default())
+    });
     assert!(
         result.is_ok(),
         "source show should succeed: {:?}",
@@ -23468,12 +23419,9 @@ fn cmd_source_show_structured_json() {
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
 
-    super::source::cmd_source_show(
-        &cli,
-        &printer,
-        "team-config",
-        super::InventoryDetail::default(),
-    )
+    crate::cli::RunContext::for_test(&cli, &printer, |run| {
+        super::source::cmd_source_show(run, "team-config", super::InventoryDetail::default())
+    })
     .unwrap();
     drop(printer);
 
@@ -23526,7 +23474,7 @@ fn cmd_source_list_with_sources_shows_entries() {
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
     let (printer, cap) = cfgd_core::output::Printer::for_test_doc();
 
-    let result = super::source::cmd_source_list(&cli, &printer);
+    let result = crate::cli::RunContext::for_test(&cli, &printer, super::source::cmd_source_list);
     assert!(
         result.is_ok(),
         "source list with sources: {:?}",
@@ -23550,7 +23498,7 @@ fn cmd_source_list_structured_json() {
     };
     let (printer, cap) = cfgd_core::output::Printer::for_test_doc();
 
-    super::source::cmd_source_list(&cli, &printer).unwrap();
+    crate::cli::RunContext::for_test(&cli, &printer, super::source::cmd_source_list).unwrap();
 
     drop(printer);
     let parsed = cap
@@ -24016,7 +23964,9 @@ fn cmd_source_add_duplicate_fails() {
         require_signed_commits: false,
         allow_scripts: false,
     };
-    let result = super::source::cmd_source_add(&h.cli(), h.printer(), &args);
+    let result = crate::cli::RunContext::for_test(&h.cli(), h.printer(), |run| {
+        super::source::cmd_source_add(run, &args)
+    });
     assert_error_contains(&result, "already exists");
 }
 
@@ -24171,7 +24121,10 @@ fn cmd_config_edit_with_invalid_config_and_prompt_declined_breaks_with_warning()
 #[test]
 fn cmd_source_update_no_sources_succeeds() {
     let h = CliTestHarness::builder().build();
-    super::source::cmd_source_update(&h.cli(), h.printer(), None, Default::default()).unwrap();
+    crate::cli::RunContext::for_test(&h.cli(), h.printer(), |run| {
+        super::source::cmd_source_update(run, None, Default::default())
+    })
+    .unwrap();
     h.assert_header("Update Sources");
     h.assert_output_contains("No sources configured");
 }
@@ -24180,12 +24133,9 @@ fn cmd_source_update_no_sources_succeeds() {
 fn cmd_source_update_named_not_found_fails() {
     // Need a config with sources so it doesn't take the "no sources" early return
     let h = CliTestHarness::builder().rich_config().build();
-    let result = super::source::cmd_source_update(
-        &h.cli(),
-        h.printer(),
-        Some("nonexistent"),
-        Default::default(),
-    );
+    let result = crate::cli::RunContext::for_test(&h.cli(), h.printer(), |run| {
+        super::source::cmd_source_update(run, Some("nonexistent"), Default::default())
+    });
     assert_error_contains(&result, "not found");
 }
 
@@ -24196,13 +24146,9 @@ fn cmd_source_update_named_not_found_fails() {
 #[test]
 fn cmd_source_replace_nonexistent_fails() {
     let h = CliTestHarness::builder().build();
-    let result = super::source::cmd_source_replace(
-        &h.cli(),
-        h.printer(),
-        &crate::cli::startup::StartupDocument::load(&h.cli().config),
-        "nonexistent",
-        "https://github.com/new/config.git",
-    );
+    let result = crate::cli::RunContext::for_test(&h.cli(), h.printer(), |run| {
+        super::source::cmd_source_replace(run, "nonexistent", "https://github.com/new/config.git")
+    });
     assert_error_contains(&result, "not found");
 }
 
@@ -24379,7 +24325,8 @@ fn json_schema_plan() {
 #[test]
 fn json_schema_config_show() {
     let h = CliTestHarness::builder().json().rich_config().build();
-    super::config_cmd::cmd_config_show(&h.cli(), h.printer()).unwrap();
+    crate::cli::RunContext::for_test(&h.cli(), h.printer(), super::config_cmd::cmd_config_show)
+        .unwrap();
     let parsed = h.json_output();
     assert_json_has_fields(&parsed, &["metadata", "spec"]);
     assert_json_field_type(&parsed, "metadata", "object");
@@ -24420,7 +24367,8 @@ fn json_schema_verify() {
 #[test]
 fn json_schema_source_list() {
     let h = CliTestHarness::builder().json().rich_config().build();
-    super::source::cmd_source_list(&h.cli(), h.printer()).unwrap();
+    crate::cli::RunContext::for_test(&h.cli(), h.printer(), super::source::cmd_source_list)
+        .unwrap();
     let output = h.output();
     // Source list writes a JSON array; output may have trailing newlines from capture()
     // Use serde_json::from_str on trimmed output, finding the JSON portion
@@ -24441,12 +24389,9 @@ fn json_schema_source_list() {
 #[test]
 fn json_schema_source_show() {
     let h = CliTestHarness::builder().json().rich_config().build();
-    super::source::cmd_source_show(
-        &h.cli(),
-        h.printer(),
-        "team-config",
-        super::InventoryDetail::default(),
-    )
+    crate::cli::RunContext::for_test(&h.cli(), h.printer(), |run| {
+        super::source::cmd_source_show(run, "team-config", super::InventoryDetail::default())
+    })
     .unwrap();
     let parsed = h.json_output();
     assert_json_has_fields(&parsed, &["name", "url"]);
@@ -24499,10 +24444,10 @@ fn secret_init_prints_header_and_key_path() {
 fn resolve_secret_backend_file_not_found() {
     let h = CliTestHarness::builder().rich_config().build();
     let nonexistent = h.config_path().join("does-not-exist.yaml");
-    let result = super::resolve_secret_backend(
+    let result = crate::cli::RunContext::for_test(
         &h.cli(),
         &cfgd_core::test_helpers::test_printer(),
-        &nonexistent,
+        |run| super::resolve_secret_backend(run, &nonexistent),
     );
     assert_error_contains(&result.map(|_| ()), "File not found");
 }
@@ -24511,10 +24456,10 @@ fn resolve_secret_backend_file_not_found() {
 fn get_secret_backend_file_not_found() {
     let h = CliTestHarness::builder().rich_config().build();
     let nonexistent = h.config_path().join("nonexistent-secret.yaml");
-    let result = super::get_secret_backend(
+    let result = crate::cli::RunContext::for_test(
         &h.cli(),
         &cfgd_core::test_helpers::test_printer(),
-        &nonexistent,
+        |run| super::get_secret_backend(run, &nonexistent),
     );
     assert_error_contains(&result.map(|_| ()), "File not found");
 }
@@ -24527,7 +24472,9 @@ fn resolve_secret_backend_no_config_file_errors() {
     let cli = test_cli(dir.path());
     let nonexistent = dir.path().join("secret.enc.yaml");
     let result =
-        super::resolve_secret_backend(&cli, &cfgd_core::test_helpers::test_printer(), &nonexistent);
+        crate::cli::RunContext::for_test(&cli, &cfgd_core::test_helpers::test_printer(), |run| {
+            super::resolve_secret_backend(run, &nonexistent)
+        });
     // Config file missing: load_config will fail
     match result {
         Ok(_) => panic!("expected error when config file is missing"),
@@ -24545,7 +24492,9 @@ fn resolve_secret_backend_no_config_file_errors() {
 fn cmd_secret_encrypt_file_not_found() {
     let h = CliTestHarness::builder().rich_config().build();
     let nonexistent = h.config_path().join("missing.enc.yaml");
-    let result = super::secret::cmd_secret_encrypt(&h.cli(), h.printer(), &nonexistent);
+    let result = crate::cli::RunContext::for_test(&h.cli(), h.printer(), |run| {
+        super::secret::cmd_secret_encrypt(run, &nonexistent)
+    });
     assert_error_contains(&result, "File not found");
 }
 
@@ -24553,7 +24502,9 @@ fn cmd_secret_encrypt_file_not_found() {
 fn cmd_secret_decrypt_file_not_found() {
     let h = CliTestHarness::builder().rich_config().build();
     let nonexistent = h.config_path().join("missing.enc.yaml");
-    let result = super::secret::cmd_secret_decrypt(&h.cli(), h.printer(), &nonexistent);
+    let result = crate::cli::RunContext::for_test(&h.cli(), h.printer(), |run| {
+        super::secret::cmd_secret_decrypt(run, &nonexistent)
+    });
     assert_error_contains(&result, "File not found");
 }
 
@@ -27421,7 +27372,8 @@ fn cmd_status_module_json_output_not_found() {
 fn cmd_config_show_with_rich_config_full() {
     let h = CliTestHarness::builder().rich_config().build();
 
-    let result = super::config_cmd::cmd_config_show(&h.cli(), h.printer());
+    let result =
+        crate::cli::RunContext::for_test(&h.cli(), h.printer(), super::config_cmd::cmd_config_show);
     assert!(
         result.is_ok(),
         "config show should succeed: {:?}",
@@ -27462,7 +27414,8 @@ fn cmd_config_show_with_rich_config_full() {
 fn cmd_config_show_missing_file_errors() {
     let dir = tempfile::tempdir().unwrap();
     let cli = test_cli_with_state(dir.path(), None);
-    let result = super::config_cmd::cmd_config_show(&cli, &test_printer());
+    let result =
+        crate::cli::RunContext::for_test(&cli, &test_printer(), super::config_cmd::cmd_config_show);
     assert!(result.is_err());
     assert!(
         result
@@ -27480,12 +27433,9 @@ fn cmd_config_show_missing_file_errors() {
 #[test]
 fn cmd_config_get_string_value() {
     let h = CliTestHarness::builder().build();
-    let result = super::config_cmd::cmd_config_get(
-        &h.cli(),
-        h.printer(),
-        &crate::cli::startup::StartupDocument::load(&h.cli().config),
-        "profile",
-    );
+    let result = crate::cli::RunContext::for_test(&h.cli(), h.printer(), |run| {
+        super::config_cmd::cmd_config_get(run, "profile")
+    });
     assert!(
         result.is_ok(),
         "config get profile should succeed: {:?}",
@@ -27501,12 +27451,9 @@ fn cmd_config_get_string_value() {
 #[test]
 fn cmd_config_get_missing_key_errors_no_config() {
     let h = CliTestHarness::builder().build();
-    let result = super::config_cmd::cmd_config_get(
-        &h.cli(),
-        h.printer(),
-        &crate::cli::startup::StartupDocument::load(&h.cli().config),
-        "nonexistent.key",
-    );
+    let result = crate::cli::RunContext::for_test(&h.cli(), h.printer(), |run| {
+        super::config_cmd::cmd_config_get(run, "nonexistent.key")
+    });
     assert!(result.is_err(), "missing key should error");
     assert!(
         result.unwrap_err().to_string().contains("not found"),
@@ -27517,12 +27464,9 @@ fn cmd_config_get_missing_key_errors_no_config() {
 #[test]
 fn cmd_config_get_json_output() {
     let h = CliTestHarness::builder().json().build();
-    let result = super::config_cmd::cmd_config_get(
-        &h.cli(),
-        h.printer(),
-        &crate::cli::startup::StartupDocument::load(&h.cli().config),
-        "profile",
-    );
+    let result = crate::cli::RunContext::for_test(&h.cli(), h.printer(), |run| {
+        super::config_cmd::cmd_config_get(run, "profile")
+    });
     assert!(result.is_ok(), "JSON config get should succeed");
     let output = h.output();
     // JSON output should contain the value
@@ -28229,7 +28173,8 @@ fn cmd_source_list_table_shows_status_and_priority() {
         })
         .unwrap();
 
-    super::source::cmd_source_list(&h.cli(), h.printer()).unwrap();
+    crate::cli::RunContext::for_test(&h.cli(), h.printer(), super::source::cmd_source_list)
+        .unwrap();
 
     let output = h.output();
     // Table should include the source name, URL, priority, version, and status
@@ -28259,7 +28204,8 @@ fn cmd_source_list_structured_json_includes_state_info() {
         })
         .unwrap();
 
-    super::source::cmd_source_list(&h.cli(), h.printer()).unwrap();
+    crate::cli::RunContext::for_test(&h.cli(), h.printer(), super::source::cmd_source_list)
+        .unwrap();
 
     let output = h.output();
     let parsed: serde_json::Value = serde_json::from_str(output.trim())
@@ -28282,12 +28228,9 @@ fn cmd_source_list_structured_json_includes_state_info() {
 fn cmd_source_show_displays_all_key_fields() {
     let h = CliTestHarness::builder().rich_config().build();
 
-    super::source::cmd_source_show(
-        &h.cli(),
-        h.printer(),
-        "team-config",
-        super::InventoryDetail::default(),
-    )
+    crate::cli::RunContext::for_test(&h.cli(), h.printer(), |run| {
+        super::source::cmd_source_show(run, "team-config", super::InventoryDetail::default())
+    })
     .unwrap();
 
     let output = h.output();
@@ -28359,12 +28302,9 @@ fn cmd_source_show_renders_no_recorded_state_or_managed_resources() {
         .unwrap();
     drop(state);
 
-    super::source::cmd_source_show(
-        &h.cli(),
-        h.printer(),
-        "team-config",
-        super::InventoryDetail::default(),
-    )
+    crate::cli::RunContext::for_test(&h.cli(), h.printer(), |run| {
+        super::source::cmd_source_show(run, "team-config", super::InventoryDetail::default())
+    })
     .unwrap();
 
     let output = h.output();
@@ -28397,12 +28337,9 @@ fn cmd_source_show_json_carries_no_recorded_state_or_managed_resources() {
         .unwrap();
     drop(state);
 
-    super::source::cmd_source_show(
-        &h.cli(),
-        h.printer(),
-        "team-config",
-        super::InventoryDetail::default(),
-    )
+    crate::cli::RunContext::for_test(&h.cli(), h.printer(), |run| {
+        super::source::cmd_source_show(run, "team-config", super::InventoryDetail::default())
+    })
     .unwrap();
 
     let parsed = h.json_output();
@@ -28443,16 +28380,9 @@ fn cmd_source_remove_keep_all_reassigns_resources_to_local() {
         )
         .unwrap();
 
-    let result = super::source::cmd_source_remove(
-        &h.cli(),
-        h.printer(),
-        &crate::cli::startup::StartupDocument::load(&h.cli().config),
-        "team-config",
-        true,
-        false,
-        false,
-        false,
-    );
+    let result = crate::cli::RunContext::for_test(&h.cli(), h.printer(), |run| {
+        super::source::cmd_source_remove(run, "team-config", true, false, false, false)
+    });
     assert!(result.is_ok(), "remove with keep_all: {:?}", result.err());
 
     // Source should be gone from config
@@ -28494,16 +28424,9 @@ fn cmd_source_remove_remove_all_does_not_reassign() {
         )
         .unwrap();
 
-    let result = super::source::cmd_source_remove(
-        &h.cli(),
-        h.printer(),
-        &crate::cli::startup::StartupDocument::load(&h.cli().config),
-        "team-config",
-        false,
-        true,
-        false,
-        false,
-    );
+    let result = crate::cli::RunContext::for_test(&h.cli(), h.printer(), |run| {
+        super::source::cmd_source_remove(run, "team-config", false, true, false, false)
+    });
     assert!(result.is_ok(), "remove with remove_all: {:?}", result.err());
 
     // Source should be gone from config
@@ -28525,16 +28448,9 @@ fn cmd_source_remove_remove_all_does_not_reassign() {
 fn cmd_source_remove_prints_success_message() {
     let h = CliTestHarness::builder().rich_config().build();
 
-    super::source::cmd_source_remove(
-        &h.cli(),
-        h.printer(),
-        &crate::cli::startup::StartupDocument::load(&h.cli().config),
-        "team-config",
-        false,
-        true,
-        false,
-        false,
-    )
+    crate::cli::RunContext::for_test(&h.cli(), h.printer(), |run| {
+        super::source::cmd_source_remove(run, "team-config", false, true, false, false)
+    })
     .unwrap();
 
     // The heading names the source; the line below it names the outcome.
@@ -30532,13 +30448,9 @@ spec:
 "#;
     let h = CliTestHarness::builder().config(config_with_source).build();
     // Replace will display the header and remove old source, then fail on clone
-    let result = super::source::cmd_source_replace(
-        &h.cli(),
-        h.printer(),
-        &crate::cli::startup::StartupDocument::load(&h.cli().config),
-        "old-source",
-        "file:///nonexistent/new-config.git",
-    );
+    let result = crate::cli::RunContext::for_test(&h.cli(), h.printer(), |run| {
+        super::source::cmd_source_replace(run, "old-source", "file:///nonexistent/new-config.git")
+    });
     // The header should be printed regardless of success/failure
     h.assert_output_contains("Replace source:old-source");
     h.assert_output_contains("Remove source:old-source");
@@ -30577,7 +30489,10 @@ spec:
         priority: 750
 "#;
     let h = CliTestHarness::builder().config(config_with_source).build();
-    super::source::cmd_source_priority(&h.cli(), h.printer(), "team-src", None).unwrap();
+    crate::cli::RunContext::for_test(&h.cli(), h.printer(), |run| {
+        super::source::cmd_source_priority(run, "team-src", None)
+    })
+    .unwrap();
     // View mode should display source name and priority value
     h.assert_output_contains("team-src");
     h.assert_output_contains("750");
@@ -30604,7 +30519,10 @@ spec:
         priority: 750
 "#;
     let h = CliTestHarness::builder().config(config_with_source).build();
-    super::source::cmd_source_priority(&h.cli(), h.printer(), "team-src", Some(100)).unwrap();
+    crate::cli::RunContext::for_test(&h.cli(), h.printer(), |run| {
+        super::source::cmd_source_priority(run, "team-src", Some(100))
+    })
+    .unwrap();
     // Should display the old->new priority change
     h.assert_output_contains("priority updated: 750 → 100");
     // Verify the file was actually updated
@@ -31695,7 +31613,9 @@ mod cmd_source_add_local {
                 name: Some("local-team".to_string()),
                 ..empty_source_args(url.clone())
             };
-            let result = super::source::cmd_source_add(&h.cli(), h.printer(), &args);
+            let result = crate::cli::RunContext::for_test(&h.cli(), h.printer(), |run| {
+                super::source::cmd_source_add(run, &args)
+            });
             assert!(result.is_ok(), "cmd_source_add should succeed: {result:?}");
             // Source row added to cfgd.yaml.
             let cfg_after = std::fs::read_to_string(h.config_path().join("cfgd.yaml")).unwrap();
@@ -31724,7 +31644,9 @@ mod cmd_source_add_local {
                 pin_version: Some("~1".to_string()),
                 ..empty_source_args(url)
             };
-            let result = super::source::cmd_source_add(&h.cli(), h.printer(), &args);
+            let result = crate::cli::RunContext::for_test(&h.cli(), h.printer(), |run| {
+                super::source::cmd_source_add(run, &args)
+            });
             assert!(result.is_ok(), "cmd_source_add should succeed: {result:?}");
             let cfg_after = std::fs::read_to_string(h.config_path().join("cfgd.yaml")).unwrap();
             assert!(
@@ -31748,8 +31670,10 @@ mod cmd_source_add_local {
                 pin_version: Some("~1".to_string()),
                 ..empty_source_args(url)
             };
-            let err = super::source::cmd_source_add(&h.cli(), h.printer(), &args)
-                .expect_err("branch + pin should be rejected");
+            let err = crate::cli::RunContext::for_test(&h.cli(), h.printer(), |run| {
+                super::source::cmd_source_add(run, &args)
+            })
+            .expect_err("branch + pin should be rejected");
             let msg = err.to_string();
             assert!(
                 msg.contains("mutually exclusive") || msg.contains("branch_pin_conflict"),
@@ -31781,8 +31705,10 @@ mod cmd_source_add_local {
                 pin_version: Some("-x".to_string()),
                 ..empty_source_args(url)
             };
-            let err = super::source::cmd_source_add(&h.cli(), h.printer(), &args)
-                .expect_err("dash-leading pin should be rejected");
+            let err = crate::cli::RunContext::for_test(&h.cli(), h.printer(), |run| {
+                super::source::cmd_source_add(run, &args)
+            })
+            .expect_err("dash-leading pin should be rejected");
             let msg = err.to_string();
             assert!(
                 msg.contains("invalid_pin_version") || msg.contains("must not start with '-'"),
@@ -31814,7 +31740,9 @@ mod cmd_source_add_local {
                 accept_recommended: true,
                 ..empty_source_args(url)
             };
-            let result = super::source::cmd_source_add(&h.cli(), h.printer(), &args);
+            let result = crate::cli::RunContext::for_test(&h.cli(), h.printer(), |run| {
+                super::source::cmd_source_add(run, &args)
+            });
             assert!(result.is_ok(), "cmd_source_add should succeed: {result:?}");
             let cfg_after = std::fs::read_to_string(h.config_path().join("cfgd.yaml")).unwrap();
             assert!(
@@ -31849,14 +31777,18 @@ mod cmd_source_add_local {
                 ..empty_source_args(url.clone())
             };
             // First add succeeds.
-            let r1 = super::source::cmd_source_add(&h.cli(), h.printer(), &args);
+            let r1 = crate::cli::RunContext::for_test(&h.cli(), h.printer(), |run| {
+                super::source::cmd_source_add(run, &args)
+            });
             assert!(r1.is_ok(), "first add should succeed: {r1:?}");
             // Second add against the same name fails with the "already exists" message.
             let args2 = SourceAddArgs {
                 name: Some("dup-name".to_string()),
                 ..empty_source_args(url)
             };
-            let r2 = super::source::cmd_source_add(&h.cli(), h.printer(), &args2);
+            let r2 = crate::cli::RunContext::for_test(&h.cli(), h.printer(), |run| {
+                super::source::cmd_source_add(run, &args2)
+            });
             let err = r2.expect_err("duplicate source name should fail");
             assert!(
                 err.to_string().to_lowercase().contains("already exists"),
@@ -31958,7 +31890,9 @@ mod cmd_source_add_local {
                 profile: None, // <- trigger auto-detect branch
                 ..empty_source_args(url)
             };
-            let result = super::source::cmd_source_add(&h.cli(), h.printer(), &args);
+            let result = crate::cli::RunContext::for_test(&h.cli(), h.printer(), |run| {
+                super::source::cmd_source_add(run, &args)
+            });
             assert!(result.is_ok(), "cmd_source_add should succeed: {result:?}");
             let cfg_after = std::fs::read_to_string(h.config_path().join("cfgd.yaml")).unwrap();
             assert!(
@@ -32016,7 +31950,9 @@ mod cmd_source_add_local {
                 profile: None,
                 ..empty_source_args(url)
             };
-            let result = super::source::cmd_source_add(&h.cli(), h.printer(), &args);
+            let result = crate::cli::RunContext::for_test(&h.cli(), h.printer(), |run| {
+                super::source::cmd_source_add(run, &args)
+            });
             let err = result.expect_err("empty provides must fail in source load");
             assert!(
                 err.to_string()
@@ -32055,7 +31991,9 @@ mod cmd_source_add_local {
                 branch: Some(actual_branch.clone()),
                 ..empty_source_args(url)
             };
-            let result = super::source::cmd_source_add(&h.cli(), h.printer(), &args);
+            let result = crate::cli::RunContext::for_test(&h.cli(), h.printer(), |run| {
+                super::source::cmd_source_add(run, &args)
+            });
             assert!(result.is_ok(), "cmd_source_add should succeed: {result:?}");
             let cfg_after = std::fs::read_to_string(h.config_path().join("cfgd.yaml")).unwrap();
             assert!(
@@ -32086,14 +32024,18 @@ mod cmd_source_add_local {
                 name: Some("upd-src".to_string()),
                 ..empty_source_args(url)
             };
-            super::source::cmd_source_add(&h.cli(), h.printer(), &add_args)
-                .expect("cmd_source_add precondition should succeed");
+            crate::cli::RunContext::for_test(&h.cli(), h.printer(), |run| {
+                super::source::cmd_source_add(run, &add_args)
+            })
+            .expect("cmd_source_add precondition should succeed");
 
             // No name → updates every source. Drives the
             // `mgr.get(...).is_some()` happy path + upsert_config_source +
             // the group's `updated` success line.
-            super::source::cmd_source_update(&h.cli(), h.printer(), None, Default::default())
-                .expect("cmd_source_update should succeed against the staged source");
+            crate::cli::RunContext::for_test(&h.cli(), h.printer(), |run| {
+                super::source::cmd_source_update(run, None, Default::default())
+            })
+            .expect("cmd_source_update should succeed against the staged source");
 
             h.assert_output_contains("source:upd-src");
 
@@ -32119,23 +32061,25 @@ mod cmd_source_add_local {
             let h = CliTestHarness::builder().build();
             let url_a = cfgd_core::test_helpers::file_url(&bare_a);
             let url_b = cfgd_core::test_helpers::file_url(&bare_b);
-            super::source::cmd_source_add(
-                &h.cli(),
-                h.printer(),
-                &SourceAddArgs {
-                    name: Some("src-a".to_string()),
-                    ..empty_source_args(url_a)
-                },
-            )
+            crate::cli::RunContext::for_test(&h.cli(), h.printer(), |run| {
+                super::source::cmd_source_add(
+                    run,
+                    &SourceAddArgs {
+                        name: Some("src-a".to_string()),
+                        ..empty_source_args(url_a)
+                    },
+                )
+            })
             .unwrap();
-            super::source::cmd_source_add(
-                &h.cli(),
-                h.printer(),
-                &SourceAddArgs {
-                    name: Some("src-b".to_string()),
-                    ..empty_source_args(url_b)
-                },
-            )
+            crate::cli::RunContext::for_test(&h.cli(), h.printer(), |run| {
+                super::source::cmd_source_add(
+                    run,
+                    &SourceAddArgs {
+                        name: Some("src-b".to_string()),
+                        ..empty_source_args(url_b)
+                    },
+                )
+            })
             .unwrap();
 
             // Snapshot the buffer length to only inspect output from
@@ -32147,12 +32091,9 @@ mod cmd_source_add_local {
             // source. The post-update slice must contain src-b AND must NOT
             // mention src-a; without the second assertion the test would
             // pass even if the name filter was wired to update everything.
-            super::source::cmd_source_update(
-                &h.cli(),
-                h.printer(),
-                Some("src-b"),
-                Default::default(),
-            )
+            crate::cli::RunContext::for_test(&h.cli(), h.printer(), |run| {
+                super::source::cmd_source_update(run, Some("src-b"), Default::default())
+            })
             .expect("named update should succeed");
 
             let full = h.output();
@@ -32227,15 +32168,16 @@ mod cmd_source_add_local {
             let bare = make_bare_with_manifest(&scratch, "shown-src", Some("2.0.0"));
             let h = CliTestHarness::builder().build();
             let url = cfgd_core::test_helpers::file_url(&bare);
-            super::source::cmd_source_add(
-                &h.cli(),
-                h.printer(),
-                &SourceAddArgs {
-                    name: Some("shown-src".to_string()),
-                    accept_recommended: true,
-                    ..empty_source_args(url)
-                },
-            )
+            crate::cli::RunContext::for_test(&h.cli(), h.printer(), |run| {
+                super::source::cmd_source_add(
+                    run,
+                    &SourceAddArgs {
+                        name: Some("shown-src".to_string()),
+                        accept_recommended: true,
+                        ..empty_source_args(url)
+                    },
+                )
+            })
             .expect("cmd_source_add precondition should succeed");
 
             // Republish with a v2 manifest carrying a populated policy. This
@@ -32255,21 +32197,15 @@ mod cmd_source_add_local {
             // Err → continue. The cache nevertheless got the v2 manifest
             // written by SourceManager::load_source BEFORE the permission
             // check ran, so cmd_source_show can render its policy section.
-            super::source::cmd_source_update(
-                &h.cli(),
-                h.printer(),
-                Some("shown-src"),
-                Default::default(),
-            )
+            crate::cli::RunContext::for_test(&h.cli(), h.printer(), |run| {
+                super::source::cmd_source_update(run, Some("shown-src"), Default::default())
+            })
             .expect("cmd_source_update");
 
             let baseline_len = h.output().len();
-            super::source::cmd_source_show(
-                &h.cli(),
-                h.printer(),
-                "shown-src",
-                super::InventoryDetail::default(),
-            )
+            crate::cli::RunContext::for_test(&h.cli(), h.printer(), |run| {
+                super::source::cmd_source_show(run, "shown-src", super::InventoryDetail::default())
+            })
             .expect("cmd_source_show");
             let full = h.output();
             let show_out = &full[baseline_len..];
@@ -32325,14 +32261,15 @@ mod cmd_source_add_local {
             let bare = make_bare_with_manifest(&scratch, "perm-src", None);
             let h = CliTestHarness::builder().build();
             let url = cfgd_core::test_helpers::file_url(&bare);
-            super::source::cmd_source_add(
-                &h.cli(),
-                h.printer(),
-                &SourceAddArgs {
-                    name: Some("perm-src".to_string()),
-                    ..empty_source_args(url)
-                },
-            )
+            crate::cli::RunContext::for_test(&h.cli(), h.printer(), |run| {
+                super::source::cmd_source_add(
+                    run,
+                    &SourceAddArgs {
+                        name: Some("perm-src".to_string()),
+                        ..empty_source_args(url)
+                    },
+                )
+            })
             .expect("cmd_source_add precondition should succeed");
 
             // Publish a v2 manifest with EXPANDED policy. required.modules
@@ -32345,12 +32282,9 @@ mod cmd_source_add_local {
             push_replacement_manifest(&scratch, &bare, v2);
 
             let baseline_len = h.output().len();
-            super::source::cmd_source_update(
-                &h.cli(),
-                h.printer(),
-                Some("perm-src"),
-                Default::default(),
-            )
+            crate::cli::RunContext::for_test(&h.cli(), h.printer(), |run| {
+                super::source::cmd_source_update(run, Some("perm-src"), Default::default())
+            })
             .expect("cmd_source_update should not bubble up the cancelled prompt");
 
             let full = h.output();
@@ -32389,14 +32323,15 @@ mod cmd_source_add_local {
             let bare = make_bare_with_manifest(&scratch, "doomed-src", None);
             let h = CliTestHarness::builder().build();
             let url = cfgd_core::test_helpers::file_url(&bare);
-            super::source::cmd_source_add(
-                &h.cli(),
-                h.printer(),
-                &SourceAddArgs {
-                    name: Some("doomed-src".to_string()),
-                    ..empty_source_args(url)
-                },
-            )
+            crate::cli::RunContext::for_test(&h.cli(), h.printer(), |run| {
+                super::source::cmd_source_add(
+                    run,
+                    &SourceAddArgs {
+                        name: Some("doomed-src".to_string()),
+                        ..empty_source_args(url)
+                    },
+                )
+            })
             .unwrap();
 
             // Bulldoze the upstream + the local cache so the update can't
@@ -32409,12 +32344,9 @@ mod cmd_source_add_local {
 
             // Call the non-exiting core directly: `cmd_source_update` would
             // `process::exit(1)` on this failure and abort the test binary.
-            let error_count = super::source::run_source_update(
-                &h.cli(),
-                h.printer(),
-                Some("doomed-src"),
-                Default::default(),
-            )
+            let error_count = crate::cli::RunContext::for_test(&h.cli(), h.printer(), |run| {
+                super::source::run_source_update(run, Some("doomed-src"), Default::default())
+            })
             .expect("run_source_update should not bubble up a fetch failure");
             assert_eq!(
                 error_count, 1,
@@ -34374,16 +34306,9 @@ fn removing_a_source_and_its_entries_drops_them_from_the_env_file_on_the_next_ap
     );
     assert!(fx.env_file_holds("ACME_HOME"));
 
-    super::source::cmd_source_remove(
-        &fx.h.cli(),
-        fx.h.printer(),
-        &crate::cli::startup::StartupDocument::load(&fx.h.cli().config),
-        "acme",
-        false,
-        true,
-        true,
-        false,
-    )
+    crate::cli::RunContext::for_test(&fx.h.cli(), fx.h.printer(), |run| {
+        super::source::cmd_source_remove(run, "acme", false, true, true, false)
+    })
     .unwrap();
     fx.apply();
 
@@ -34410,16 +34335,9 @@ fn keeping_a_removed_sources_entries_leaves_them_declared_locally() {
     let fx = SourceEnvFixture::build();
     fx.apply();
 
-    super::source::cmd_source_remove(
-        &fx.h.cli(),
-        fx.h.printer(),
-        &crate::cli::startup::StartupDocument::load(&fx.h.cli().config),
-        "acme",
-        true,
-        false,
-        true,
-        false,
-    )
+    crate::cli::RunContext::for_test(&fx.h.cli(), fx.h.printer(), |run| {
+        super::source::cmd_source_remove(run, "acme", true, false, true, false)
+    })
     .unwrap();
     let profile =
         std::fs::read_to_string(fx.h.config_path().join("profiles").join("sourced.yaml")).unwrap();

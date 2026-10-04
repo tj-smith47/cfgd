@@ -47,8 +47,14 @@ impl StartupDocument {
     /// variant and message [`cfgd_core::config::load_config`] returns for the
     /// same file.
     pub fn config_result(&self) -> cfgd_core::errors::Result<&CfgdConfig> {
+        self.document().map(|(config, _)| config)
+    }
+
+    /// The parsed document and the text it was parsed from, or the error
+    /// [`Self::config_result`] reports.
+    pub fn document(&self) -> cfgd_core::errors::Result<(&CfgdConfig, &str)> {
         match &self.loaded {
-            Ok((config, _)) => Ok(config),
+            Ok((config, text)) => Ok((config, text.as_str())),
             Err(CfgdError::Config(error)) => Err(error.clone().into()),
             // `read_config_document` fails only with a `ConfigError`. Any
             // other variant is not `Clone`, so its message travels as an

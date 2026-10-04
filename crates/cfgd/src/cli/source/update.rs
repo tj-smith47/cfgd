@@ -132,12 +132,11 @@ fn write_subscription_knobs(
 }
 
 pub fn cmd_source_update(
-    cli: &Cli,
-    printer: &Printer,
+    run: &RunContext<'_>,
     name: Option<&str>,
     edits: SubscriptionEdits,
 ) -> anyhow::Result<()> {
-    let error_count = run_source_update(cli, printer, name, edits)?;
+    let error_count = run_source_update(run, name, edits)?;
 
     // A scripted consumer must be able to detect that a source failed to
     // update from the exit code alone. `run_source_update` already emitted the
@@ -155,14 +154,14 @@ pub fn cmd_source_update(
 /// Core of `source update`: fetches each configured source, emits the summary
 /// Doc, and returns the number of sources that failed to update.
 pub fn run_source_update(
-    cli: &Cli,
-    printer: &Printer,
+    run: &RunContext<'_>,
     name: Option<&str>,
     edits: SubscriptionEdits,
 ) -> anyhow::Result<usize> {
+    let cli = run.cli();
+    let printer = run.printer();
     let config_path = cli.config.clone();
-    let mut cfg = config::load_config(&config_path)?;
-    drain_config_deprecations(printer, &mut cfg);
+    let cfg = run.config()?;
 
     if cfg.spec.sources.is_empty() {
         // A specific source was requested but the config has no sources: that is
