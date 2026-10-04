@@ -2177,6 +2177,31 @@ cfgd module push ./my-module --artifact ghcr.io/me/my-module:1.0.0 --sign --atte
 | `--key <path>` | Signing key path |
 | `--attest` | Attach SLSA provenance attestation |
 
+With `--platform`, repeated pushes of different platforms to one tag accumulate into an OCI index
+at that tag. Each push also tags its own manifest `<tag>-<os>-<arch>`, a later push of the same
+platform replaces that platform's entry, and a digest reference is refused (a digest cannot be
+re-pointed). Without `--platform` the tag holds this host's manifest alone.
+
+```sh
+cfgd module push ./mod-amd64 --artifact ghcr.io/me/my-module:1.0.0 --platform linux/amd64
+cfgd module push ./mod-arm64 --artifact ghcr.io/me/my-module:1.0.0 --platform linux/arm64 -o json
+```
+
+```json
+{
+  "dir": "./mod-arm64",
+  "artifact": "ghcr.io/me/my-module:1.0.0",
+  "platform": "linux/arm64",
+  "digest": "sha256:<this platform's manifest>",
+  "indexDigest": "sha256:<the index the tag now resolves to>",
+  "signed": false,
+  "attestation": false,
+  "applied": null
+}
+```
+
+`indexDigest` is `null` when the tag holds the pushed manifest alone.
+
 ### `cfgd module pull <ref>`
 
 Pull a module artifact from an OCI registry into a local directory.
@@ -2211,6 +2236,12 @@ cfgd module build ./my-module --target linux/amd64,linux/arm64
 | `--artifact <ref>` | OCI artifact reference to tag the build with |
 | `--sign` | Sign with cosign |
 | `--key <path>` | Signing key path |
+
+Several `--target` platforms push one OCI index to `--artifact`. A build for one platform (one
+`--target`, or none for this host) pushes the way `cfgd module push --platform` does, so it joins
+any other platforms the tag already lists.
+With `-o json` the payload's `indexDigest` names the index the tag resolves to, and is `null` when
+the tag holds the one manifest alone.
 
 ### `cfgd module keys`
 

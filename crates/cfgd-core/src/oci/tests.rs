@@ -444,7 +444,7 @@ fn media_type_constants_are_correct() {
         "application/vnd.oci.image.manifest.v1+json"
     );
     assert_eq!(
-        push::MEDIA_TYPE_OCI_INDEX,
+        MEDIA_TYPE_OCI_INDEX,
         "application/vnd.oci.image.index.v1+json"
     );
 }

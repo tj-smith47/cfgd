@@ -304,6 +304,14 @@ fn push_module_top_level_parses_ref_and_returns_manifest_digest() {
         .with_status(201)
         .expect_at_least(2)
         .create();
+    server
+        .mock("PUT", "/v2/test/wrapped/manifests/wrap-tag-linux-amd64")
+        .with_status(201)
+        .create();
+    server
+        .mock("GET", "/v2/test/wrapped/manifests/wrap-tag")
+        .with_status(404)
+        .create();
     let manifest_mock = server
         .mock("PUT", "/v2/test/wrapped/manifests/wrap-tag")
         .with_status(201)
@@ -718,4 +726,360 @@ fn oci_index_camel_case_and_round_trip() {
     let parsed: OciIndex = serde_json::from_str(&json).unwrap();
     assert_eq!(parsed.manifests[0].platform.os, "linux");
     assert_eq!(parsed.manifests[0].platform.architecture, "amd64");
+}
+
+// --- push_module --platform: accumulating platforms under one tag ---
+
+const MANIFEST_PUT: &str = "application/vnd.oci.image.manifest.v1+json";
+const INDEX_PUT: &str = "application/vnd.oci.image.index.v1+json";
+
+/// A manifest an earlier push left at a tag, annotated with `platform` when
+/// one is given.
+fn earlier_manifest(platform: Option<&str>) -> serde_json::Value {
+    let mut doc = serde_json::json!({
+        "schemaVersion": 2,
+        "mediaType": MEDIA_TYPE_OCI_MANIFEST,
+        "config": { "mediaType": MEDIA_TYPE_MODULE_CONFIG, "digest": "sha256:c0", "size": 1 },
+        "layers": [],
+    });
+    if let Some(p) = platform {
+        doc["annotations"] = serde_json::json!({ crate::OCI_ANNOTATION_PLATFORM: p });
+    }
+    doc
+}
+
+fn json_of(bytes: &[u8]) -> serde_json::Value {
+    serde_json::from_slice(bytes).expect("stored bytes are JSON")
+}
+
+#[test]
+fn platform_push_to_an_absent_tag_puts_the_one_manifest_at_the_tag() {
+    let store = crate::oci::test_helpers::ManifestStore::new("test/acc");
+    let module_dir = create_test_module_dir();
+
+    let outcome = push_module(
+        module_dir.path(),
+        &store.artifact("v1"),
+        Some("linux/amd64"),
+        None,
+    )
+    .expect("push to an absent tag");
+
+    assert_eq!(
+        store.requests(),
+        vec![
+            format!("PUT v1-linux-amd64 {MANIFEST_PUT}"),
+            "GET v1".to_string(),
+            format!("PUT v1 {MANIFEST_PUT}"),
+        ]
+    );
+    let at_tag = store.stored("v1");
+    assert_eq!(
+        at_tag,
+        store.stored("v1-linux-amd64"),
+        "the tag holds the platform manifest's own bytes"
+    );
+    assert_eq!(outcome.digest, crate::sha256_digest(&at_tag));
+    assert_eq!(outcome.index_digest, None);
+}
+
+#[test]
+fn platform_push_beside_another_platforms_manifest_puts_an_index_of_both() {
+    let store = crate::oci::test_helpers::ManifestStore::new("test/acc");
+    let earlier = store.seed("v1", &earlier_manifest(Some("linux/amd64")));
+    let module_dir = create_test_module_dir();
+
+    let outcome = push_module(
+        module_dir.path(),
+        &store.artifact("v1"),
+        Some("linux/arm64"),
+        None,
+    )
+    .expect("push beside another platform");
+
+    assert_eq!(
+        store.requests(),
+        vec![
+            format!("PUT v1-linux-arm64 {MANIFEST_PUT}"),
+            "GET v1".to_string(),
+            format!("PUT v1 {INDEX_PUT}"),
+        ]
+    );
+    let index_bytes = store.stored("v1");
+    let new_manifest = store.stored("v1-linux-arm64");
+    assert_eq!(
+        json_of(&index_bytes),
+        serde_json::json!({
+            "schemaVersion": 2,
+            "mediaType": INDEX_PUT,
+            "manifests": [
+                {
+                    "mediaType": MEDIA_TYPE_OCI_MANIFEST,
+                    "digest": crate::sha256_digest(&earlier),
+                    "size": earlier.len(),
+                    "platform": { "os": "linux", "architecture": "amd64" },
+                },
+                {
+                    "mediaType": MEDIA_TYPE_OCI_MANIFEST,
+                    "digest": crate::sha256_digest(&new_manifest),
+                    "size": new_manifest.len(),
+                    "platform": { "os": "linux", "architecture": "arm64" },
+                },
+            ],
+        })
+    );
+    assert_eq!(outcome.digest, crate::sha256_digest(&new_manifest));
+    assert_eq!(
+        outcome.index_digest,
+        Some(crate::sha256_digest(&index_bytes))
+    );
+}
+
+#[test]
+fn platform_push_over_the_same_platforms_manifest_replaces_it() {
+    let store = crate::oci::test_helpers::ManifestStore::new("test/acc");
+    store.seed("v1", &earlier_manifest(Some("linux/arm64")));
+    let module_dir = create_test_module_dir();
+
+    let outcome = push_module(
+        module_dir.path(),
+        &store.artifact("v1"),
+        Some("linux/arm64"),
+        None,
+    )
+    .expect("push over the same platform");
+
+    assert_eq!(
+        store.requests(),
+        vec![
+            format!("PUT v1-linux-arm64 {MANIFEST_PUT}"),
+            "GET v1".to_string(),
+            format!("PUT v1 {MANIFEST_PUT}"),
+        ]
+    );
+    assert_eq!(store.stored("v1"), store.stored("v1-linux-arm64"));
+    assert_eq!(outcome.index_digest, None);
+}
+
+#[test]
+fn platform_push_to_an_index_replaces_its_platforms_entry_in_place() {
+    let store = crate::oci::test_helpers::ManifestStore::new("test/acc");
+    let attestation = serde_json::json!({
+        "mediaType": MEDIA_TYPE_OCI_MANIFEST,
+        "digest": "sha256:a77",
+        "size": 9,
+        "platform": { "os": "unknown", "architecture": "unknown" },
+        "annotations": { "vnd.docker.reference.type": "attestation-manifest" },
+    });
+    store.seed(
+        "v1",
+        &serde_json::json!({
+            "schemaVersion": 2,
+            "mediaType": INDEX_PUT,
+            "manifests": [
+                {
+                    "mediaType": MEDIA_TYPE_OCI_MANIFEST,
+                    "digest": "sha256:a1",
+                    "size": 1,
+                    "platform": { "os": "linux", "architecture": "amd64" },
+                },
+                {
+                    "mediaType": MEDIA_TYPE_OCI_MANIFEST,
+                    "digest": "sha256:old",
+                    "size": 2,
+                    "platform": { "os": "linux", "architecture": "arm64" },
+                },
+                attestation,
+            ],
+        }),
+    );
+    let module_dir = create_test_module_dir();
+
+    let outcome = push_module(
+        module_dir.path(),
+        &store.artifact("v1"),
+        Some("linux/arm64"),
+        None,
+    )
+    .expect("push into an index");
+
+    assert_eq!(
+        store.requests(),
+        vec![
+            format!("PUT v1-linux-arm64 {MANIFEST_PUT}"),
+            "GET v1".to_string(),
+            format!("PUT v1 {INDEX_PUT}"),
+        ]
+    );
+    let index_bytes = store.stored("v1");
+    let new_manifest = store.stored("v1-linux-arm64");
+    let index = json_of(&index_bytes);
+    assert_eq!(index["mediaType"], INDEX_PUT);
+    assert_eq!(
+        index["manifests"],
+        serde_json::json!([
+            {
+                "mediaType": MEDIA_TYPE_OCI_MANIFEST,
+                "digest": "sha256:a1",
+                "size": 1,
+                "platform": { "os": "linux", "architecture": "amd64" },
+            },
+            {
+                "mediaType": MEDIA_TYPE_OCI_MANIFEST,
+                "digest": crate::sha256_digest(&new_manifest),
+                "size": new_manifest.len(),
+                "platform": { "os": "linux", "architecture": "arm64" },
+            },
+            attestation,
+        ])
+    );
+    assert_eq!(
+        outcome.index_digest,
+        Some(crate::sha256_digest(&index_bytes))
+    );
+}
+
+#[test]
+fn platform_push_to_an_index_without_its_platform_appends_an_entry() {
+    let store = crate::oci::test_helpers::ManifestStore::new("test/acc");
+    let amd64 = serde_json::json!({
+        "mediaType": MEDIA_TYPE_OCI_MANIFEST,
+        "digest": "sha256:a1",
+        "size": 1,
+        "platform": { "os": "linux", "architecture": "amd64" },
+    });
+    store.seed(
+        "v1",
+        &serde_json::json!({ "schemaVersion": 2, "mediaType": INDEX_PUT, "manifests": [amd64] }),
+    );
+    let module_dir = create_test_module_dir();
+
+    push_module(
+        module_dir.path(),
+        &store.artifact("v1"),
+        Some("linux/s390x"),
+        None,
+    )
+    .expect("push a new platform into an index");
+
+    assert_eq!(
+        store.requests().last().map(String::as_str),
+        Some(format!("PUT v1 {INDEX_PUT}").as_str())
+    );
+    let new_manifest = store.stored("v1-linux-s390x");
+    assert_eq!(
+        json_of(&store.stored("v1"))["manifests"],
+        serde_json::json!([
+            amd64,
+            {
+                "mediaType": MEDIA_TYPE_OCI_MANIFEST,
+                "digest": crate::sha256_digest(&new_manifest),
+                "size": new_manifest.len(),
+                "platform": { "os": "linux", "architecture": "s390x" },
+            },
+        ])
+    );
+}
+
+#[test]
+fn platform_push_beside_a_manifest_naming_no_platform_is_refused_and_leaves_the_tag() {
+    let store = crate::oci::test_helpers::ManifestStore::new("test/acc");
+    let earlier = store.seed("v1", &earlier_manifest(None));
+    let module_dir = create_test_module_dir();
+
+    let err = push_module(
+        module_dir.path(),
+        &store.artifact("v1"),
+        Some("linux/arm64"),
+        None,
+    )
+    .err()
+    .expect("an unlabelled manifest cannot join an index");
+
+    match &err {
+        OciError::TagPlatformUnknown {
+            reference,
+            annotation,
+        } => {
+            assert_eq!(reference, &store.artifact("v1"));
+            assert_eq!(annotation, crate::OCI_ANNOTATION_PLATFORM);
+        }
+        other => panic!("expected TagPlatformUnknown, got {other:?}"),
+    }
+    assert_eq!(
+        store.requests(),
+        vec![
+            format!("PUT v1-linux-arm64 {MANIFEST_PUT}"),
+            "GET v1".to_string(),
+        ]
+    );
+    assert_eq!(store.stored("v1"), earlier, "the tag is left as it was");
+}
+
+#[test]
+fn platform_push_to_a_digest_reference_is_refused_before_any_request() {
+    let store = crate::oci::test_helpers::ManifestStore::new("test/acc");
+    let module_dir = create_test_module_dir();
+    let artifact = store.artifact("sha256:0123456789abcdef");
+
+    let err = push_module(module_dir.path(), &artifact, Some("linux/arm64"), None)
+        .err()
+        .expect("a digest cannot be re-pointed");
+
+    assert!(
+        matches!(&err, OciError::PlatformPushToDigest { reference } if *reference == artifact),
+        "expected PlatformPushToDigest naming {artifact}, got {err:?}"
+    );
+    assert!(store.requests().is_empty(), "{:?}", store.requests());
+}
+
+#[test]
+fn push_without_a_platform_puts_only_the_tag() {
+    let store = crate::oci::test_helpers::ManifestStore::new("test/acc");
+    store.seed("v1", &earlier_manifest(Some("plan9/mips")));
+    let module_dir = create_test_module_dir();
+
+    let outcome = push_module(module_dir.path(), &store.artifact("v1"), None, None)
+        .expect("push with no platform");
+
+    assert_eq!(store.requests(), vec![format!("PUT v1 {MANIFEST_PUT}")]);
+    assert_eq!(outcome.index_digest, None);
+}
+
+#[test]
+fn the_push_row_names_the_index_only_when_one_was_written() {
+    let store = crate::oci::test_helpers::ManifestStore::new("test/acc");
+    let module_dir = create_test_module_dir();
+    let (printer, cap) = crate::output::Printer::for_test_doc();
+
+    let first = push_module(
+        module_dir.path(),
+        &store.artifact("v1"),
+        Some("linux/amd64"),
+        Some(&printer),
+    )
+    .expect("first platform");
+    let second = push_module(
+        module_dir.path(),
+        &store.artifact("v1"),
+        Some("linux/arm64"),
+        Some(&printer),
+    )
+    .expect("second platform");
+    drop(printer);
+
+    let rendered = cap.human();
+    let index = second.index_digest.expect("the second push wrote an index");
+    let first_row = rendered
+        .lines()
+        .find(|l| l.contains(&first.digest))
+        .unwrap_or_else(|| panic!("no row names {}: {rendered}", first.digest));
+    assert!(
+        first_row.contains("(linux/amd64)") && !first_row.contains("index"),
+        "{first_row}"
+    );
+    assert!(
+        rendered.contains(&format!("{} (linux/arm64), index {index}", second.digest)),
+        "{rendered}"
+    );
 }

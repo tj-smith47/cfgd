@@ -1061,6 +1061,21 @@ pub enum OciError {
     #[error("manifest not found: {reference}")]
     ManifestNotFound { reference: String },
 
+    #[error(
+        "cannot push one platform to digest reference {reference}: a digest names one manifest \
+         and cannot be re-pointed at an index of platforms; push to a tag"
+    )]
+    PlatformPushToDigest { reference: String },
+
+    #[error(
+        "{reference} holds a manifest with no {annotation} annotation, so its platform cannot \
+         be listed in an index beside the one being pushed"
+    )]
+    TagPlatformUnknown {
+        reference: String,
+        annotation: String,
+    },
+
     #[error("blob not found: {digest}")]
     BlobNotFound { digest: String },
 

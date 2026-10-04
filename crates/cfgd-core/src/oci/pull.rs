@@ -157,12 +157,33 @@ fn fetch_manifest_document(
         oci_ref.api_base(),
         oci_ref.repository,
     );
-    let accept = format!(
-        "{MEDIA_TYPE_OCI_MANIFEST}, {}, {}",
-        super::MEDIA_TYPE_OCI_INDEX,
-        super::MEDIA_TYPE_DOCKER_MANIFEST_LIST
-    );
-    let resp = authenticated_request(agent, "GET", &url, auth, Some(&accept), None, None)?;
+    let resp = authenticated_request(
+        agent,
+        "GET",
+        &url,
+        auth,
+        Some(&super::manifest_accept()),
+        None,
+        None,
+    )?;
+    let ManifestDocument { digest, doc, .. } = read_manifest_document(resp)?;
+    Ok((digest, doc))
+}
+
+/// A manifest document as the registry serves it.
+pub(super) struct ManifestDocument {
+    /// The digest the registry addresses it by (see [`fetch_manifest_document`]).
+    pub(super) digest: String,
+    /// The byte length of the served body, which a descriptor pointing at it
+    /// declares as its `size`.
+    pub(super) size: u64,
+    pub(super) doc: serde_json::Value,
+}
+
+/// Read a manifest GET's body into a [`ManifestDocument`].
+pub(super) fn read_manifest_document(
+    resp: ureq::http::Response<ureq::Body>,
+) -> Result<ManifestDocument, OciError> {
     let header_digest = response_digest(&resp);
     let body = resp
         .into_body()
@@ -174,10 +195,11 @@ fn fetch_manifest_document(
         serde_json::from_str(&body).map_err(|e| OciError::RequestFailed {
             message: format!("invalid manifest JSON: {e}"),
         })?;
-    Ok((
-        header_digest.unwrap_or_else(|| sha256_digest(body.as_bytes())),
+    Ok(ManifestDocument {
+        digest: header_digest.unwrap_or_else(|| sha256_digest(body.as_bytes())),
+        size: body.len() as u64,
         doc,
-    ))
+    })
 }
 
 /// The platforms a manifest document declares.
@@ -454,6 +476,25 @@ mod tests {
         assert_eq!(
             facts.platforms,
             vec!["linux/arm64".to_string(), "linux/amd64".to_string()]
+        );
+    }
+
+    #[test]
+    fn two_platform_pushes_to_one_tag_read_back_as_both_platforms_in_push_order() {
+        let store = crate::oci::test_helpers::ManifestStore::new("test/roundtrip");
+        let amd64 = create_test_module_dir();
+        let arm64 = create_test_module_dir();
+        let artifact = store.artifact("v1");
+
+        crate::oci::push_module(amd64.path(), &artifact, Some("linux/amd64"), None)
+            .expect("push amd64");
+        crate::oci::push_module(arm64.path(), &artifact, Some("linux/arm64"), None)
+            .expect("push arm64");
+
+        let facts = artifact_facts(&artifact).unwrap();
+        assert_eq!(
+            facts.platforms,
+            vec!["linux/amd64".to_string(), "linux/arm64".to_string()]
         );
     }
 

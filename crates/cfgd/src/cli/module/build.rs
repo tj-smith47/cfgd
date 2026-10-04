@@ -40,6 +40,7 @@ pub fn cmd_module_build(
 
     let mut output_artifacts: Vec<String> = Vec::new();
     let mut digest_value: Option<String> = None;
+    let mut index_digest_value: Option<String> = None;
 
     // ONE section, named for the command, holding everything the run produced:
     // what is being built, each build's verdict, the push, the digest and the
@@ -79,16 +80,19 @@ pub fn cmd_module_build(
             output_artifacts.push(cfgd_core::to_posix_string(&output_dir));
 
             if let Some(art) = artifact {
-                let cfgd_core::oci::PushOutcome { digest, .. } =
-                    cfgd_core::oci::push_module(&output_dir, art, Some(targets[0]), Some(printer))
-                        .map_err(|e| {
-                            crate::cli::cli_error(
-                                art,
-                                "push_failed",
-                                cfgd_core::output::collapse_to_subject_line(&e),
-                                serde_json::json!({ "artifact": art, "target": targets[0] }),
-                            )
-                        })?;
+                let cfgd_core::oci::PushOutcome {
+                    digest,
+                    index_digest,
+                    ..
+                } = cfgd_core::oci::push_module(&output_dir, art, Some(targets[0]), Some(printer))
+                    .map_err(|e| {
+                        crate::cli::cli_error(
+                            art,
+                            "push_failed",
+                            cfgd_core::output::collapse_to_subject_line(&e),
+                            serde_json::json!({ "artifact": art, "target": targets[0] }),
+                        )
+                    })?;
                 if sign {
                     cfgd_core::oci::sign_artifact(art, key).map_err(|e| {
                         crate::cli::cli_error(
@@ -101,6 +105,7 @@ pub fn cmd_module_build(
                     printer.status_simple(Role::Ok, "Signed artifact with cosign");
                 }
                 digest_value = Some(digest);
+                index_digest_value = index_digest;
             }
         } else {
             let mut builds: Vec<(std::path::PathBuf, String)> = Vec::new();
@@ -162,6 +167,7 @@ pub fn cmd_module_build(
                     })?;
                     printer.status_simple(Role::Ok, "Signed artifact with cosign");
                 }
+                index_digest_value = Some(digest.clone());
                 digest_value = Some(digest);
             }
         }
@@ -206,6 +212,13 @@ pub fn cmd_module_build(
     }
     if let Some(d) = digest_value {
         payload.insert("digest".into(), serde_json::Value::String(d));
+        // What the tag resolves to: the multi-platform push always writes an
+        // index, and a single-target push writes one when the tag already
+        // listed another platform.
+        payload.insert(
+            "indexDigest".into(),
+            index_digest_value.map_or(serde_json::Value::Null, serde_json::Value::String),
+        );
     }
     payload.insert("signed".into(), serde_json::Value::Bool(sign));
     printer.emit(

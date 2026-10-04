@@ -55,7 +55,7 @@ pub fn cmd_module_push(
     // the library call, and `depth_inheritance` is what settles its spinner at
     // the section's depth instead of depth 0.
     let mut applied_name: Option<String> = None;
-    let (digest, resolved_platform, signed, attestation_attached) = {
+    let (digest, resolved_platform, index_digest, signed, attestation_attached) = {
         // heading-first-ok: push_module is handed this printer and narrates its
         // bar at the section's depth, so the frame reports its own wait
         let push_sec = printer.section("Push Module");
@@ -64,6 +64,7 @@ pub fn cmd_module_push(
         let cfgd_core::oci::PushOutcome {
             digest,
             platform: resolved_platform,
+            index_digest,
         } = cfgd_core::oci::push_module(dir_path, artifact, platform, Some(printer)).map_err(
             |e| {
                 crate::cli::cli_error(
@@ -97,7 +98,7 @@ pub fn cmd_module_push(
             rt.block_on(apply_module_crd(printer, &module_doc, artifact, signature))?;
             applied_name = Some(module_doc.metadata.name.clone());
         }
-        (digest, resolved_platform, signed, attested)
+        (digest, resolved_platform, index_digest, signed, attested)
     };
 
     // The RESOLVED platform, never the `--platform` flag: this push stamped it
@@ -117,6 +118,7 @@ pub fn cmd_module_push(
                 "artifact": artifact,
                 "platform": resolved_platform,
                 "digest": digest,
+                "indexDigest": index_digest,
                 "signed": signed,
                 "attestation": attestation_attached,
                 "applied": applied_name,
@@ -903,6 +905,19 @@ mod tests {
             server
                 .mock("PUT", "/v2/test/mod/manifests/v1")
                 .with_status(201)
+                .create();
+            // A `--platform` push also tags its manifest per platform and
+            // reads the tag first; an absent tag keeps it a single manifest.
+            server
+                .mock(
+                    "PUT",
+                    mockito::Matcher::Regex(r"^/v2/test/mod/manifests/v1-".to_string()),
+                )
+                .with_status(201)
+                .create();
+            server
+                .mock("GET", "/v2/test/mod/manifests/v1")
+                .with_status(404)
                 .create();
 
             (server, registry)
@@ -1736,5 +1751,87 @@ spec:
             doc["attestation"], false,
             "attestation must be false: {doc}"
         );
+        assert_eq!(
+            doc.get("indexDigest"),
+            Some(&serde_json::Value::Null),
+            "a push that wrote no index says so: {doc}"
+        );
+    }
+
+    #[test]
+    fn push_joining_another_platform_reports_the_index_digest() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_module_yaml(dir.path());
+
+        let mut server = mockito::Server::new();
+        let registry = server.url().trim_start_matches("http://").to_string();
+        let artifact = format!("{}/test/mod:v1", registry);
+        let upload_location = format!("{}/v2/test/mod/blobs/uploads/up-id", server.url());
+
+        server
+            .mock(
+                "HEAD",
+                mockito::Matcher::Regex(r"/v2/test/mod/blobs/sha256:.*".to_string()),
+            )
+            .with_status(404)
+            .create();
+        server
+            .mock("POST", "/v2/test/mod/blobs/uploads/")
+            .with_status(202)
+            .with_header("Location", &upload_location)
+            .create();
+        server
+            .mock(
+                "PUT",
+                mockito::Matcher::Regex(
+                    r"/v2/test/mod/blobs/uploads/up-id\?digest=sha256:.*".to_string(),
+                ),
+            )
+            .with_status(201)
+            .create();
+        server
+            .mock("PUT", "/v2/test/mod/manifests/v1-linux-arm64")
+            .with_status(201)
+            .create();
+        server
+            .mock("GET", "/v2/test/mod/manifests/v1")
+            .with_status(200)
+            .with_body(
+                serde_json::json!({
+                    "schemaVersion": 2,
+                    "mediaType": "application/vnd.oci.image.manifest.v1+json",
+                    "annotations": { cfgd_core::OCI_ANNOTATION_PLATFORM: "linux/amd64" },
+                })
+                .to_string(),
+            )
+            .create();
+        let index_put = server
+            .mock("PUT", "/v2/test/mod/manifests/v1")
+            .match_header("content-type", "application/vnd.oci.image.index.v1+json")
+            .with_status(201)
+            .with_header("Docker-Content-Digest", "sha256:1d3")
+            .create();
+
+        let (printer, cap) = Printer::for_test_doc();
+        cmd_module_push(
+            &printer,
+            dir.path().to_str().unwrap(),
+            &artifact,
+            PushOptions {
+                platform: Some("linux/arm64"),
+                apply: false,
+                sign: false,
+                key: None,
+                attest: false,
+            },
+        )
+        .expect("push beside another platform must succeed");
+        drop(printer);
+
+        index_put.assert();
+        let doc = cap.json().expect("success doc must be emitted");
+        assert_eq!(doc["indexDigest"], "sha256:1d3", "{doc}");
+        assert_eq!(doc["platform"], "linux/arm64", "{doc}");
+        assert_ne!(doc["digest"], doc["indexDigest"], "{doc}");
     }
 }

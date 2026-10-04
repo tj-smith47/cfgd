@@ -130,6 +130,44 @@ pub(super) fn authenticated_request(
     content_type: Option<&str>,
     body: Option<&[u8]>,
 ) -> Result<Response<Body>, OciError> {
+    let resp = authorized_response(agent, method, url, auth, accept, content_type, body)?;
+    // not-a-child-ok: an HTTP response's own status code, which starts no process
+    let status = resp.status().as_u16();
+    if (200..300).contains(&status) {
+        return Ok(resp);
+    }
+    Err(format_registry_error(status, url, resp))
+}
+
+/// [`authenticated_request`] for a resource whose absence is an answer: a
+/// `404` is `Ok(None)`, every other failure an error.
+pub(super) fn authenticated_request_if_present(
+    agent: &ureq::Agent,
+    method: &str,
+    url: &str,
+    auth: Option<&RegistryAuth>,
+    accept: Option<&str>,
+) -> Result<Option<Response<Body>>, OciError> {
+    let resp = authorized_response(agent, method, url, auth, accept, None, None)?;
+    // not-a-child-ok: an HTTP response's own status code, which starts no process
+    match resp.status().as_u16() {
+        status if (200..300).contains(&status) => Ok(Some(resp)),
+        404 => Ok(None),
+        status => Err(format_registry_error(status, url, resp)),
+    }
+}
+
+/// The registry's final response to a request, whatever its status, after
+/// answering a 401 Bearer challenge once.
+fn authorized_response(
+    agent: &ureq::Agent,
+    method: &str,
+    url: &str,
+    auth: Option<&RegistryAuth>,
+    accept: Option<&str>,
+    content_type: Option<&str>,
+    body: Option<&[u8]>,
+) -> Result<Response<Body>, OciError> {
     let basic_authz = auth.map(|cred| cred.basic_auth_header());
 
     // First attempt — may get 401. `run_request` disables status-as-error so a
@@ -148,12 +186,7 @@ pub(super) fn authenticated_request(
     })?;
 
     // not-a-child-ok: an HTTP response's own status code, which starts no process
-    let status = resp.status().as_u16();
-    if (200..300).contains(&status) {
-        return Ok(resp);
-    }
-
-    if status == 401 {
+    if resp.status().as_u16() == 401 {
         // Get the Www-Authenticate header and try token auth
         let www_auth = header(&resp, "Www-Authenticate")
             .or_else(|| header(&resp, "www-authenticate"))
@@ -182,16 +215,10 @@ pub(super) fn authenticated_request(
         .map_err(|e| OciError::RequestFailed {
             message: format!("{e}"),
         })?;
-
-        // not-a-child-ok: an HTTP response's own status code, which starts no process
-        let status2 = resp2.status().as_u16();
-        if (200..300).contains(&status2) {
-            return Ok(resp2);
-        }
-        return Err(format_registry_error(status2, url, resp2));
+        return Ok(resp2);
     }
 
-    Err(format_registry_error(status, url, resp))
+    Ok(resp)
 }
 
 /// Resolve the authoritative digest of a just-PUT manifest/index.

@@ -322,6 +322,7 @@ pub fn pack_image(
                     .detail(super::artifact_row_detail(
                         &outcome.digest,
                         &outcome.platform,
+                        None,
                     ));
             }
             tracing::debug!(
@@ -428,12 +429,6 @@ fn pack_image_inner(
 // Internal helpers
 // ---------------------------------------------------------------------------
 
-/// Combined Accept header advertising every base-doc media type this can parse:
-/// OCI image manifest + OCI index + Docker manifest list.
-fn base_accept_header() -> String {
-    format!("{MEDIA_TYPE_OCI_MANIFEST}, {MEDIA_TYPE_OCI_INDEX}, {MEDIA_TYPE_DOCKER_MANIFEST_LIST}")
-}
-
 /// GET a manifest document by reference (tag or digest) from `base`.
 fn get_base_doc(
     agent: &ureq::Agent,
@@ -452,7 +447,7 @@ fn get_base_doc(
         "GET",
         &url,
         auth,
-        Some(&base_accept_header()),
+        Some(&super::manifest_accept()),
         None,
         None,
     )

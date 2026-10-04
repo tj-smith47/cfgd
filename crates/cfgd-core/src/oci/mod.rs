@@ -226,8 +226,25 @@ impl OciReference {
 /// operator reads it back off the manifest into a Module's `PLATFORMS` column
 /// whether or not a flag named it, so the detail states it unconditionally and
 /// both verbs read the same either way.
-pub(crate) fn artifact_row_detail(digest: &str, platform: &str) -> String {
-    format!("{digest} ({platform})")
+///
+/// A push that joined its platform to others under one tag also wrote an
+/// index there, and that index digest is what the tag now resolves to, so it
+/// follows the pair when there is one.
+pub(crate) fn artifact_row_detail(
+    digest: &str,
+    platform: &str,
+    index_digest: Option<&str>,
+) -> String {
+    match index_digest {
+        Some(index) => format!("{digest} ({platform}), index {index}"),
+        None => format!("{digest} ({platform})"),
+    }
+}
+
+/// The `Accept` header for a manifest read that takes whichever shape the
+/// reference holds: an OCI image manifest, an OCI index or a Docker manifest list.
+pub(super) fn manifest_accept() -> String {
+    format!("{MEDIA_TYPE_OCI_MANIFEST}, {MEDIA_TYPE_OCI_INDEX}, {MEDIA_TYPE_DOCKER_MANIFEST_LIST}")
 }
 
 /// Check if a registry is listed in `OCI_INSECURE_REGISTRIES` (comma-separated).
@@ -377,6 +394,143 @@ pub(super) mod test_helpers {
         .unwrap();
         std::fs::write(dir.path().join("README.md"), "# Test module\n").unwrap();
         dir
+    }
+
+    type Tags = std::sync::Arc<std::sync::Mutex<std::collections::BTreeMap<String, Vec<u8>>>>;
+
+    /// A mock registry for one repository that keeps what each manifest PUT
+    /// stored under its reference, serves it back on GET (`404` for one never
+    /// stored), accepts every blob upload, and records each manifest request
+    /// as `"<METHOD> <reference>"`, with the PUT's `Content-Type` appended, in
+    /// the order the registry received them.
+    pub(crate) struct ManifestStore {
+        server: mockito::ServerGuard,
+        repository: String,
+        tags: Tags,
+        log: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    }
+
+    impl ManifestStore {
+        pub(crate) fn new(repository: &str) -> Self {
+            let mut server = mockito::Server::new();
+            let tags = Tags::default();
+            let log = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+            let blobs = format!("/v2/{repository}/blobs/");
+            server
+                .mock("HEAD", mockito::Matcher::Regex(format!("^{blobs}sha256:")))
+                .with_status(404)
+                .create();
+            server
+                .mock("POST", format!("{blobs}uploads/").as_str())
+                .with_status(202)
+                .with_header("Location", &format!("{}{blobs}uploads/up", server.url()))
+                .create();
+            server
+                .mock(
+                    "PUT",
+                    mockito::Matcher::Regex(format!(r"^{blobs}uploads/up\?digest=")),
+                )
+                .with_status(201)
+                .create();
+
+            let manifests = format!("^/v2/{repository}/manifests/");
+            let reference = |req: &mockito::Request| {
+                req.path()
+                    .rsplit_once("/manifests/")
+                    .map(|(_, r)| r.to_string())
+                    .unwrap_or_default()
+            };
+            let (put_tags, put_log) = (tags.clone(), log.clone());
+            server
+                .mock("PUT", mockito::Matcher::Regex(manifests.clone()))
+                .with_status(201)
+                .with_body_from_request(move |req| {
+                    let content_type = req
+                        .header("content-type")
+                        .first()
+                        .and_then(|v| v.to_str().ok())
+                        .unwrap_or_default()
+                        .to_string();
+                    let r = reference(req);
+                    put_log
+                        .lock()
+                        .unwrap()
+                        .push(format!("PUT {r} {content_type}"));
+                    put_tags
+                        .lock()
+                        .unwrap()
+                        .insert(r, req.body().unwrap().clone());
+                    Vec::new()
+                })
+                .create();
+            let (status_tags, get_tags, get_log) = (tags.clone(), tags.clone(), log.clone());
+            server
+                .mock("GET", mockito::Matcher::Regex(manifests))
+                .with_status_code_from_request(move |req| {
+                    if status_tags.lock().unwrap().contains_key(&reference(req)) {
+                        200
+                    } else {
+                        404
+                    }
+                })
+                .with_body_from_request(move |req| {
+                    let r = reference(req);
+                    get_log.lock().unwrap().push(format!("GET {r}"));
+                    get_tags
+                        .lock()
+                        .unwrap()
+                        .get(&r)
+                        .cloned()
+                        .unwrap_or_default()
+                })
+                .create();
+
+            Self {
+                server,
+                repository: repository.to_string(),
+                tags,
+                log,
+            }
+        }
+
+        /// The artifact reference naming `reference` in this repository.
+        pub(crate) fn artifact(&self, reference: &str) -> String {
+            let sep = if reference.starts_with("sha256:") {
+                '@'
+            } else {
+                ':'
+            };
+            format!(
+                "{}/{}{sep}{reference}",
+                registry_from_url(&self.server.url()),
+                self.repository
+            )
+        }
+
+        /// Store `body` under `reference` as an earlier push would have.
+        pub(crate) fn seed(&self, reference: &str, body: &serde_json::Value) -> Vec<u8> {
+            let bytes = serde_json::to_vec(body).unwrap();
+            self.tags
+                .lock()
+                .unwrap()
+                .insert(reference.to_string(), bytes.clone());
+            bytes
+        }
+
+        /// The bytes stored under `reference`.
+        pub(crate) fn stored(&self, reference: &str) -> Vec<u8> {
+            self.tags
+                .lock()
+                .unwrap()
+                .get(reference)
+                .cloned()
+                .unwrap_or_else(|| panic!("nothing stored under {reference}"))
+        }
+
+        /// The manifest requests received so far, in order.
+        pub(crate) fn requests(&self) -> Vec<String> {
+            self.log.lock().unwrap().clone()
+        }
     }
 }
 
