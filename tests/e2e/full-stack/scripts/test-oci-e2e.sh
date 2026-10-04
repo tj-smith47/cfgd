@@ -254,7 +254,7 @@ fi
 # =================================================================
 # OCI-E2E-04: Multi-platform
 # =================================================================
-begin_test "OCI-E2E-04: Push --platform linux/amd64,linux/arm64, verify Module status"
+begin_test "OCI-E2E-04: Push linux/amd64 then linux/arm64 to one tag, verify Module status"
 
 OCI04_MOD="oci04-multi-${E2E_RUN_ID}"
 OCI04_REF="${REGISTRY}/cfgd-e2e/oci04-multi:v1.0-${E2E_RUN_ID}"
