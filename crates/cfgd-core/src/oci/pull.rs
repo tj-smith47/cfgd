@@ -15,6 +15,16 @@ use super::sign::{VerifyOptions, verify_signature};
 use super::transport::{authenticated_request, response_digest};
 use super::{MEDIA_TYPE_OCI_MANIFEST, OciManifest, OciReference};
 
+/// The result of a successful [`pull_module`] call.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PullOutcome {
+    /// Digest of the image manifest whose layer was extracted (`"sha256:..."`).
+    pub digest: String,
+    /// Digest of the index the reference resolved to, when it resolved to one
+    /// and `digest` is the entry picked out of it.
+    pub index_digest: Option<String>,
+}
+
 /// Policy for verifying a module artifact's cosign signature during pull.
 ///
 /// - `None` — skip signature verification entirely (default).
@@ -54,12 +64,17 @@ impl SignaturePolicy<'_> {
 /// who could push to the registry could trivially satisfy. The current API
 /// requires callers to supply the verifying key (or identity/issuer) so the
 /// trust decision is explicit and cryptographically enforced.
+///
+/// A reference that resolves to an index pulls the entry for `platform`
+/// (this host when `None`); one that resolves to a single manifest pulls it
+/// whatever platform it names.
 pub fn pull_module(
     artifact_ref: &str,
     output_dir: &Path,
     signature_policy: SignaturePolicy<'_>,
+    platform: Option<&str>,
     printer: Option<&Printer>,
-) -> Result<(), OciError> {
+) -> Result<PullOutcome, OciError> {
     let oci_ref = OciReference::parse(artifact_ref)?;
     let auth = RegistryAuth::resolve(&oci_ref.registry);
     let agent = crate::http::http_agent(crate::http::HTTP_OCI_TIMEOUT);
@@ -73,8 +88,9 @@ pub fn pull_module(
         output_dir,
         &signature_policy,
         artifact_ref,
+        &platform.map_or_else(super::current_platform, String::from),
     ) {
-        Ok(()) => {
+        Ok(outcome) => {
             // Settled without the reference: the caller's header block names
             // it, and the running message above already carried it while the
             // wait was the only thing on screen.
@@ -86,7 +102,7 @@ pub fn pull_module(
                 output = %output_dir.posix(),
                 "module pulled"
             );
-            Ok(())
+            Ok(outcome)
         }
         Err(e) => {
             if let Some(s) = spinner {
@@ -177,6 +193,9 @@ pub(super) struct ManifestDocument {
     /// The byte length of the served body, which a descriptor pointing at it
     /// declares as its `size`.
     pub(super) size: u64,
+    /// The sha256 of the served body itself, which a manifest fetched by
+    /// digest must equal: the registry's header is its own claim.
+    pub(super) content_digest: String,
     pub(super) doc: serde_json::Value,
 }
 
@@ -195,9 +214,11 @@ pub(super) fn read_manifest_document(
         serde_json::from_str(&body).map_err(|e| OciError::RequestFailed {
             message: format!("invalid manifest JSON: {e}"),
         })?;
+    let content_digest = sha256_digest(body.as_bytes());
     Ok(ManifestDocument {
-        digest: header_digest.unwrap_or_else(|| sha256_digest(body.as_bytes())),
+        digest: header_digest.unwrap_or_else(|| content_digest.clone()),
         size: body.len() as u64,
+        content_digest,
         doc,
     })
 }
@@ -303,7 +324,8 @@ fn pull_module_inner(
     output_dir: &Path,
     signature_policy: &SignaturePolicy<'_>,
     artifact_ref: &str,
-) -> Result<(), OciError> {
+    platform: &str,
+) -> Result<PullOutcome, OciError> {
     if signature_policy.requires_signature() {
         let opts = match signature_policy {
             SignaturePolicy::None => unreachable!("guarded by requires_signature()"),
@@ -321,37 +343,7 @@ fn pull_module_inner(
         verify_signature(artifact_ref, &opts)?;
     }
 
-    // Pull manifest
-    let manifest_url = format!(
-        "{}/{}/manifests/{}",
-        oci_ref.api_base(),
-        oci_ref.repository,
-        oci_ref.reference_str(),
-    );
-
-    let resp = authenticated_request(
-        agent,
-        "GET",
-        &manifest_url,
-        auth,
-        Some(MEDIA_TYPE_OCI_MANIFEST),
-        None,
-        None,
-    )
-    .map_err(|e| OciError::ManifestNotFound {
-        reference: format!("{}: {e}", oci_ref),
-    })?;
-
-    let manifest_body = resp
-        .into_body()
-        .read_to_string()
-        .map_err(|e| OciError::RequestFailed {
-            message: format!("cannot read manifest body: {e}"),
-        })?;
-    let manifest: OciManifest =
-        serde_json::from_str(&manifest_body).map_err(|e| OciError::RequestFailed {
-            message: format!("invalid manifest JSON: {e}"),
-        })?;
+    let (manifest, outcome) = resolve_platform_manifest(agent, oci_ref, auth, platform)?;
 
     // Find our layer
     let layer = manifest
@@ -412,7 +404,88 @@ fn pull_module_inner(
     // Extract
     extract_tar_gz(&blob_data, output_dir)?;
 
-    Ok(())
+    Ok(outcome)
+}
+
+/// GET the reference and, when it is an index, the entry for `platform`,
+/// answering the image manifest to pull and the digests that name it.
+fn resolve_platform_manifest(
+    agent: &ureq::Agent,
+    oci_ref: &OciReference,
+    auth: Option<&RegistryAuth>,
+    platform: &str,
+) -> Result<(OciManifest, PullOutcome), OciError> {
+    // Parsed before any request, so a malformed platform fails even against a
+    // tag naming one manifest, where it would otherwise go unread.
+    let (os, architecture) = super::parse_platform_target(platform)?;
+    let wanted = super::push::OciPlatform {
+        os: os.to_string(),
+        architecture: architecture.to_string(),
+    };
+    let fetch = |reference: &str| {
+        let url = format!(
+            "{}/{}/manifests/{reference}",
+            oci_ref.api_base(),
+            oci_ref.repository,
+        );
+        authenticated_request(
+            agent,
+            "GET",
+            &url,
+            auth,
+            Some(&super::manifest_accept()),
+            None,
+            None,
+        )
+        .map_err(|e| OciError::ManifestNotFound {
+            reference: format!("{oci_ref}: {e}"),
+        })
+        .and_then(read_manifest_document)
+    };
+
+    let top = fetch(oci_ref.reference_str())?;
+    let Some(entries) = top.doc.get("manifests").and_then(|m| m.as_array()) else {
+        let outcome = PullOutcome {
+            digest: top.digest,
+            index_digest: None,
+        };
+        return Ok((parse_image_manifest(top.doc)?, outcome));
+    };
+
+    let Some(entry_digest) = entries
+        .iter()
+        .find(|e| super::push::entry_platform_is(e, &wanted))
+        .and_then(|e| e.get("digest"))
+        .and_then(|d| d.as_str())
+    else {
+        return Err(OciError::PlatformNotInIndex {
+            reference: oci_ref.to_string(),
+            platform: platform.to_string(),
+            available: declared_platforms(&top.doc),
+        });
+    };
+
+    let picked = fetch(entry_digest)?;
+    if picked.content_digest != entry_digest {
+        return Err(OciError::RequestFailed {
+            message: format!(
+                "manifest digest mismatch for {platform} in {oci_ref}: the index names \
+                 {entry_digest}, the registry served {}",
+                picked.content_digest
+            ),
+        });
+    }
+    let outcome = PullOutcome {
+        digest: entry_digest.to_string(),
+        index_digest: Some(top.digest),
+    };
+    Ok((parse_image_manifest(picked.doc)?, outcome))
+}
+
+fn parse_image_manifest(doc: serde_json::Value) -> Result<OciManifest, OciError> {
+    serde_json::from_value(doc).map_err(|e| OciError::RequestFailed {
+        message: format!("invalid manifest JSON: {e}"),
+    })
 }
 
 #[cfg(test)]
@@ -495,6 +568,164 @@ mod tests {
         assert_eq!(
             facts.platforms,
             vec!["linux/amd64".to_string(), "linux/arm64".to_string()]
+        );
+    }
+
+    /// A module directory whose README says which build it is, so an
+    /// extraction shows which platform's layer was pulled.
+    fn module_dir_marked(mark: &str) -> tempfile::TempDir {
+        let dir = create_test_module_dir();
+        std::fs::write(dir.path().join("README.md"), mark).unwrap();
+        dir
+    }
+
+    fn pulled_mark(
+        artifact: &str,
+        platform: Option<&str>,
+    ) -> Result<(String, PullOutcome), OciError> {
+        let out = tempfile::tempdir().unwrap();
+        let outcome = pull_module(artifact, out.path(), SignaturePolicy::None, platform, None)?;
+        let mark = std::fs::read_to_string(out.path().join("README.md")).unwrap();
+        Ok((mark, outcome))
+    }
+
+    #[test]
+    fn pull_of_an_index_extracts_the_entry_for_the_requested_platform() {
+        let store = crate::oci::test_helpers::ManifestStore::new("test/pullidx");
+        let artifact = store.artifact("v1");
+        let amd = module_dir_marked("amd64 build");
+        let arm = module_dir_marked("arm64 build");
+        let amd_push =
+            crate::oci::push_module(amd.path(), &artifact, Some("linux/amd64"), None).unwrap();
+        let arm_push =
+            crate::oci::push_module(arm.path(), &artifact, Some("linux/arm64"), None).unwrap();
+        let index = arm_push
+            .index_digest
+            .clone()
+            .expect("the second push wrote an index");
+
+        let (mark, outcome) = pulled_mark(&artifact, Some("linux/arm64")).unwrap();
+        assert_eq!(mark, "arm64 build");
+        assert_eq!(
+            outcome,
+            PullOutcome {
+                digest: arm_push.digest,
+                index_digest: Some(index.clone()),
+            }
+        );
+
+        let (mark, outcome) = pulled_mark(&artifact, Some("linux/amd64")).unwrap();
+        assert_eq!(
+            mark, "amd64 build",
+            "the platform asked for overrides the host"
+        );
+        assert_eq!(outcome.digest, amd_push.digest);
+        assert_eq!(outcome.index_digest, Some(index));
+    }
+
+    #[test]
+    fn pull_of_an_index_with_no_platform_takes_the_hosts_entry() {
+        let store = crate::oci::test_helpers::ManifestStore::new("test/pullhost");
+        let artifact = store.artifact("v1");
+        let other = module_dir_marked("other build");
+        let host = module_dir_marked("host build");
+        crate::oci::push_module(other.path(), &artifact, Some("plan9/mips"), None).unwrap();
+        crate::oci::push_module(host.path(), &artifact, None, None).unwrap();
+
+        let (mark, _) = pulled_mark(&artifact, None).unwrap();
+        assert_eq!(mark, "host build");
+    }
+
+    #[test]
+    fn pull_of_an_index_without_the_platform_names_what_it_holds() {
+        let store = crate::oci::test_helpers::ManifestStore::new("test/pullnone");
+        let artifact = store.artifact("v1");
+        for platform in ["linux/amd64", "linux/arm64"] {
+            let dir = module_dir_marked(platform);
+            crate::oci::push_module(dir.path(), &artifact, Some(platform), None).unwrap();
+        }
+
+        let err = pulled_mark(&artifact, Some("linux/s390x")).expect_err("no entry for s390x");
+        match &err {
+            OciError::PlatformNotInIndex {
+                reference,
+                platform,
+                available,
+            } => {
+                assert_eq!(reference, &artifact);
+                assert_eq!(platform, "linux/s390x");
+                assert_eq!(available, &["linux/amd64", "linux/arm64"]);
+            }
+            other => panic!("expected PlatformNotInIndex, got {other:?}"),
+        }
+        assert!(
+            err.to_string()
+                .contains("it holds linux/amd64, linux/arm64"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn pull_of_a_single_manifest_takes_it_whatever_platform_is_asked() {
+        let store = crate::oci::test_helpers::ManifestStore::new("test/pullone");
+        let artifact = store.artifact("v1");
+        let dir = module_dir_marked("only build");
+        let pushed =
+            crate::oci::push_module(dir.path(), &artifact, Some("linux/amd64"), None).unwrap();
+
+        let (mark, outcome) = pulled_mark(&artifact, Some("linux/arm64")).unwrap();
+        assert_eq!(mark, "only build");
+        assert_eq!(
+            outcome,
+            PullOutcome {
+                digest: pushed.digest,
+                index_digest: None,
+            }
+        );
+    }
+
+    #[test]
+    fn pull_refuses_a_malformed_platform_before_reading_the_tag() {
+        let store = crate::oci::test_helpers::ManifestStore::new("test/pullbad");
+        let artifact = store.artifact("v1");
+        let dir = module_dir_marked("only build");
+        crate::oci::push_module(dir.path(), &artifact, Some("linux/amd64"), None).unwrap();
+        let before = store.requests().len();
+
+        let err =
+            pulled_mark(&artifact, Some("linux")).expect_err("a platform with no arch is refused");
+        assert!(err.to_string().contains("linux"), "{err}");
+        assert_eq!(store.requests().len(), before, "nothing was requested");
+    }
+
+    #[test]
+    fn pull_refuses_an_index_entry_the_registry_serves_under_another_digest() {
+        let store = crate::oci::test_helpers::ManifestStore::new("test/pulllie");
+        let artifact = store.artifact("v1");
+        let dir = module_dir_marked("real build");
+        crate::oci::push_module(dir.path(), &artifact, Some("linux/amd64"), None).unwrap();
+        let real = store.stored("v1");
+        // The index names a digest whose stored document hashes to something else.
+        store.seed_bytes("sha256:0000", &real);
+        store.seed(
+            "v1",
+            &serde_json::json!({
+                "schemaVersion": 2,
+                "mediaType": crate::oci::MEDIA_TYPE_OCI_INDEX,
+                "manifests": [{
+                    "mediaType": MEDIA_TYPE_OCI_MANIFEST,
+                    "digest": "sha256:0000",
+                    "size": real.len(),
+                    "platform": { "os": "linux", "architecture": "amd64" },
+                }],
+            }),
+        );
+
+        let err =
+            pulled_mark(&artifact, Some("linux/amd64")).expect_err("a mismatched entry is refused");
+        assert!(
+            err.to_string().contains("manifest digest mismatch"),
+            "{err}"
         );
     }
 
@@ -638,6 +869,7 @@ mod tests {
             output_dir.path(),
             SignaturePolicy::None,
             None,
+            None,
         );
         assert!(result.is_ok(), "pull_module failed: {:?}", result.err());
 
@@ -692,6 +924,7 @@ mod tests {
             output_dir.path(),
             SignaturePolicy::None,
             None,
+            None,
         );
         assert!(result.is_err());
         let err_msg = format!("{}", result.unwrap_err());
@@ -721,7 +954,7 @@ mod tests {
         let key_path_str = key_path.to_str().unwrap();
 
         let policy = SignaturePolicy::RequireKey { path: key_path_str };
-        let result = pull_module(&artifact_ref, output_dir.path(), policy, None);
+        let result = pull_module(&artifact_ref, output_dir.path(), policy, None, None);
         assert!(result.is_err());
         assert!(
             matches!(result, Err(OciError::VerificationFailed { .. })),
@@ -773,7 +1006,7 @@ mod tests {
         let key_path_str = key_path.to_str().unwrap();
 
         let policy = SignaturePolicy::RequireKey { path: key_path_str };
-        let result = pull_module(&artifact_ref, output_dir.path(), policy, None);
+        let result = pull_module(&artifact_ref, output_dir.path(), policy, None, None);
         assert!(result.is_ok(), "pull_module failed: {:?}", result.err());
     }
 
@@ -808,6 +1041,7 @@ mod tests {
             output_dir.path(),
             SignaturePolicy::None,
             None,
+            None,
         );
         assert!(matches!(result, Err(OciError::ManifestNotFound { .. })));
     }
@@ -837,6 +1071,7 @@ mod tests {
             &artifact_ref,
             output_dir.path(),
             SignaturePolicy::None,
+            None,
             Some(&printer),
         );
         drop(printer);
@@ -902,6 +1137,7 @@ mod tests {
             output_dir.path(),
             SignaturePolicy::None,
             None,
+            None,
         );
         assert!(matches!(result, Err(OciError::BlobNotFound { .. })));
     }
@@ -924,6 +1160,7 @@ mod tests {
             &artifact_ref,
             output_dir.path(),
             SignaturePolicy::None,
+            None,
             None,
         );
         assert!(matches!(result, Err(OciError::RequestFailed { .. })));

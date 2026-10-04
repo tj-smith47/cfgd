@@ -1942,7 +1942,9 @@ pub(in crate::cli) struct SignAttestOutcome {
 ///
 /// Shared by `cfgd module push` and `cfgd image pack`: both push an artifact,
 /// then optionally sign it and attach provenance derived from the local git
-/// `origin`/`HEAD`. Errors route through `collapse_to_subject_line` so a
+/// `origin`/`HEAD`. `digest` is what `artifact`'s tag resolves to after the
+/// push (an index when the push joined one), and the attestation is attached
+/// to that digest so it lands on the document the push left at the tag. Errors route through `collapse_to_subject_line` so a
 /// multi-line cosign stderr can't trip the renderer's single-line invariant.
 pub(in crate::cli) fn sign_and_attest(
     printer: &Printer,
@@ -1991,8 +1993,18 @@ pub(in crate::cli) fn sign_and_attest(
         let pred_dir = tempfile::tempdir()?;
         let pred_path = pred_dir.path().join("provenance.json");
         cfgd_core::atomic_write_str(&pred_path, &provenance)?;
+        let subject = cfgd_core::oci::OciReference::parse(artifact)
+            .map(|r| r.at_digest(digest).to_string())
+            .map_err(|e| {
+                cli_error(
+                    artifact,
+                    "attest_failed",
+                    cfgd_core::output::collapse_to_subject_line(&e),
+                    serde_json::json!({ "artifact": artifact, "digest": digest, "step": "attach" }),
+                )
+            })?;
         cfgd_core::oci::attach_attestation(
-            artifact,
+            &subject,
             // native-ok: local predicate path for the co-located cosign subprocess
             // absolute-path-ok: cosign opens the predicate, so it is handed the real path
             &pred_path.display().to_string(),

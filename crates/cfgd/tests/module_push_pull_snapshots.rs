@@ -102,6 +102,20 @@ fn mock_registry() -> (mockito::ServerGuard, String) {
         .with_status(201)
         .expect_at_least(2)
         .create();
+    // A push reads the tag first and also puts its manifest at the
+    // per-platform tag, whose digest is the one the push reports.
+    server
+        .mock("GET", "/v2/test/module/manifests/v1")
+        .with_status(404)
+        .create();
+    server
+        .mock(
+            "PUT",
+            mockito::Matcher::Regex(r"^/v2/test/module/manifests/v1-".to_string()),
+        )
+        .with_status(201)
+        .with_header("Docker-Content-Digest", MANIFEST_DIGEST)
+        .create();
     server
         .mock("PUT", "/v2/test/module/manifests/v1")
         .with_status(201)

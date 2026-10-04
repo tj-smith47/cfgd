@@ -19,12 +19,19 @@ pub(crate) const COMPLETE_SENTINEL: &str = ".cfgd-complete";
 pub struct Cache {
     root: PathBuf,
     max_bytes: u64,
+    /// The `os/arch` a pull picks out of a multi-platform index: the node's
+    /// own, since the pod the module is mounted into runs here.
+    platform: String,
 }
 
 impl Cache {
     pub fn new(root: PathBuf, max_bytes: u64) -> Result<Self, CsiError> {
         std::fs::create_dir_all(&root)?;
-        Ok(Self { root, max_bytes })
+        Ok(Self {
+            root,
+            max_bytes,
+            platform: cfgd_core::oci::current_platform(),
+        })
     }
 
     /// Return the cache path for a module, pulling it if not cached, and
@@ -58,6 +65,7 @@ impl Cache {
             oci_ref,
             &tmp_dir,
             cfgd_core::oci::SignaturePolicy::None,
+            Some(&self.platform),
             None,
         );
         if let Err(e) = pull_result {
@@ -621,6 +629,98 @@ mod tests {
         assert_eq!(
             mode, 0o755,
             "a cached module's script must still be executable where the node publishes it"
+        );
+    }
+
+    #[test]
+    fn cache_get_or_pull_takes_the_index_entry_for_the_nodes_platform() {
+        let mut server = mockito::Server::new();
+        let registry = server
+            .url()
+            .trim_start_matches("http://")
+            .trim_end_matches('/')
+            .to_string();
+        let mut entries = Vec::new();
+        for platform in ["plan9/mips".to_string(), cfgd_core::oci::current_platform()] {
+            let src = tempfile::tempdir().unwrap();
+            std::fs::write(
+                src.path().join("module.yaml"),
+                format!("built: {platform}\n"),
+            )
+            .unwrap();
+            let layer = cfgd_core::oci::create_tar_gz(src.path()).unwrap();
+            let layer_digest = cfgd_core::sha256_digest(&layer);
+            server
+                .mock(
+                    "GET",
+                    format!("/v2/test/multi/blobs/{layer_digest}").as_str(),
+                )
+                .with_status(200)
+                .with_body(layer.clone())
+                .create();
+            let manifest = serde_json::to_vec(&serde_json::json!({
+                "schemaVersion": 2,
+                "mediaType": cfgd_core::oci::MEDIA_TYPE_OCI_MANIFEST,
+                "config": {
+                    "mediaType": cfgd_core::oci::MEDIA_TYPE_MODULE_CONFIG,
+                    "digest": "sha256:0",
+                    "size": 0,
+                },
+                "layers": [{
+                    "mediaType": cfgd_core::oci::MEDIA_TYPE_MODULE_LAYER,
+                    "digest": layer_digest,
+                    "size": layer.len(),
+                }],
+            }))
+            .unwrap();
+            let digest = cfgd_core::sha256_digest(&manifest);
+            server
+                .mock("GET", format!("/v2/test/multi/manifests/{digest}").as_str())
+                .with_status(200)
+                .with_header("Content-Type", cfgd_core::oci::MEDIA_TYPE_OCI_MANIFEST)
+                .with_body(manifest.clone())
+                .create();
+            let (os, arch) = platform.split_once('/').unwrap();
+            entries.push(serde_json::json!({
+                "mediaType": cfgd_core::oci::MEDIA_TYPE_OCI_MANIFEST,
+                "digest": digest,
+                "size": manifest.len(),
+                "platform": { "os": os, "architecture": arch },
+            }));
+        }
+        server
+            .mock("GET", "/v2/test/multi/manifests/v1")
+            .with_status(200)
+            .with_header("Content-Type", cfgd_core::oci::MEDIA_TYPE_OCI_INDEX)
+            .with_body(
+                serde_json::json!({
+                    "schemaVersion": 2,
+                    "mediaType": cfgd_core::oci::MEDIA_TYPE_OCI_INDEX,
+                    "manifests": entries,
+                })
+                .to_string(),
+            )
+            .create();
+        let artifact = format!("{registry}/test/multi:v1");
+
+        let host_dir = tempfile::tempdir().unwrap();
+        let host_cache = make_cache(host_dir.path(), 10 * 1024 * 1024);
+        let (entry, _) = host_cache.get_or_pull("multi", "1.0.0", &artifact).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(entry.join("module.yaml")).unwrap(),
+            format!("built: {}\n", cfgd_core::oci::current_platform()),
+            "a cache pulls the entry for the node it runs on"
+        );
+
+        let other_dir = tempfile::tempdir().unwrap();
+        let mut other_cache = make_cache(other_dir.path(), 10 * 1024 * 1024);
+        other_cache.platform = "plan9/mips".to_string();
+        let (entry, _) = other_cache
+            .get_or_pull("multi", "1.0.0", &artifact)
+            .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(entry.join("module.yaml")).unwrap(),
+            "built: plan9/mips\n"
         );
     }
 

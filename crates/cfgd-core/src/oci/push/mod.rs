@@ -42,12 +42,13 @@ pub struct PushOutcome {
 /// tars+gzips the directory contents as a single layer. Pushes to the
 /// registry specified by `artifact_ref`.
 ///
-/// With an explicit `platform` and a tag reference, the push accumulates
-/// platforms under that tag: the manifest is also tagged `<tag>-<os>-<arch>`,
-/// and a tag already holding another platform's manifest, or an index of
-/// several, becomes an index listing every platform with this one replacing
-/// any earlier push of the same platform. A digest reference cannot be
-/// re-pointed, so an explicit platform with one is refused.
+/// Every push names a platform (`platform`, or this host when `None`), and
+/// pushes to one tag accumulate platforms under it: the manifest is also
+/// tagged `<tag>-<os>-<arch>`, and a tag already holding another platform's
+/// manifest, or an index of several, becomes an index listing every platform,
+/// with this one replacing any earlier push of the same platform. A tag that
+/// is absent or holds only this platform gets the manifest itself. A digest
+/// reference cannot be re-pointed, so it is refused.
 ///
 /// Returns a [`PushOutcome`] carrying the pushed manifest digest, the
 /// platform this push resolved and annotated the manifest with, and the index
@@ -63,12 +64,7 @@ pub fn push_module(
     let agent = crate::http::http_agent(crate::http::HTTP_OCI_TIMEOUT);
     let spinner = printer.map(|p| p.spinner(format!("Pushing module to {artifact_ref}")));
     let resolved_platform = resolve_platform(platform);
-    let pushed = match platform {
-        Some(_) => push_platform_to_tag(&agent, dir, &oci_ref, auth.as_ref(), &resolved_platform),
-        None => push_module_inner(&agent, dir, &oci_ref, auth.as_ref(), &resolved_platform)
-            .map(|(digest, _size)| (digest, None)),
-    };
-    match pushed {
+    match push_platform_to_tag(&agent, dir, &oci_ref, auth.as_ref(), &resolved_platform) {
         Ok((digest, index_digest)) => {
             // The running message names the reference because the wait is the
             // only thing on screen; the settled line does not, because every
@@ -263,6 +259,9 @@ fn platform_tagged(oci_ref: &OciReference, platform: &str) -> OciReference {
 /// Push one platform's manifest to a tag that may already list others.
 /// Returns the manifest digest and, when the tag now holds an index, the
 /// index digest.
+///
+/// The tag is read and judged before anything is uploaded, so a push the tag
+/// refuses writes nothing to the registry.
 fn push_platform_to_tag(
     agent: &ureq::Agent,
     dir: &Path,
@@ -271,11 +270,22 @@ fn push_platform_to_tag(
     platform: &str,
 ) -> Result<(String, Option<String>), OciError> {
     if matches!(oci_ref.reference, ReferenceKind::Digest(_)) {
-        return Err(OciError::PlatformPushToDigest {
+        return Err(OciError::PushToDigest {
             reference: oci_ref.to_string(),
         });
     }
     let (os, arch) = parse_platform_target(platform)?;
+    let existing = authenticated_request_if_present(
+        agent,
+        "GET",
+        &manifest_url(oci_ref),
+        auth,
+        Some(&super::manifest_accept()),
+    )?
+    .map(read_manifest_document)
+    .transpose()?;
+    let state = classify_tag(existing, oci_ref, platform)?;
+
     let manifest_json = upload_module_manifest(agent, dir, oci_ref, auth, platform)?;
     let digest = put_manifest(
         agent,
@@ -293,21 +303,7 @@ fn push_platform_to_tag(
         },
     };
 
-    let existing = authenticated_request_if_present(
-        agent,
-        "GET",
-        &manifest_url(oci_ref),
-        auth,
-        Some(&super::manifest_accept()),
-    )?
-    .map(read_manifest_document)
-    .transpose()?;
-    let index = match existing {
-        Some(existing) => index_joining(existing, &entry, oci_ref, platform)?,
-        None => None,
-    };
-
-    let index_digest = match index {
+    let index_digest = match joined_index(state, &entry)? {
         Some(index_json) => Some(put_index(agent, oci_ref, auth, &index_json)?),
         None => {
             put_manifest(agent, oci_ref, auth, &manifest_json)?;
@@ -317,41 +313,33 @@ fn push_platform_to_tag(
     Ok((entry.digest, index_digest))
 }
 
-/// The index bytes the tag should hold once `entry` joins what it holds now,
-/// or `None` when the tag should hold `entry`'s manifest alone (it held a
-/// manifest for the same platform).
-///
-/// An existing index is edited as JSON so entries and fields cfgd never
-/// writes (attestation entries, annotations, a platform `variant`) survive.
-fn index_joining(
-    existing: ManifestDocument,
-    entry: &OciPlatformManifest,
+/// What a tag holds, judged against the platform about to be pushed to it.
+enum TagState {
+    /// Absent, or this platform's manifest alone: the tag gets the new manifest.
+    Replace,
+    /// Another platform's manifest: the tag becomes an index of it and the new one.
+    BesideManifest(OciPlatformManifest),
+    /// An index, kept as JSON so entries and fields cfgd never writes
+    /// (attestation entries, annotations, a platform `variant`) survive the edit.
+    Index(serde_json::Value),
+}
+
+/// Judge what the tag holds. A manifest naming no platform is refused: it
+/// cannot be listed in an index, and replacing it would drop whatever it is.
+fn classify_tag(
+    existing: Option<ManifestDocument>,
     oci_ref: &OciReference,
     platform: &str,
-) -> Result<Option<Vec<u8>>, OciError> {
-    let ManifestDocument {
-        digest,
-        size,
-        mut doc,
-    } = existing;
-
-    if let Some(entries) = doc.get_mut("manifests").and_then(|m| m.as_array_mut()) {
-        let same_platform = |e: &serde_json::Value| {
-            e.get("platform").is_some_and(|p| {
-                p.get("os").and_then(|v| v.as_str()) == Some(entry.platform.os.as_str())
-                    && p.get("architecture").and_then(|v| v.as_str())
-                        == Some(entry.platform.architecture.as_str())
-            })
-        };
-        let new_entry = serde_json::to_value(entry)?;
-        match entries.iter_mut().find(|e| same_platform(e)) {
-            Some(slot) => *slot = new_entry,
-            None => entries.push(new_entry),
-        }
-        doc["mediaType"] = serde_json::Value::from(MEDIA_TYPE_OCI_INDEX);
-        return Ok(Some(serde_json::to_vec(&doc)?));
+) -> Result<TagState, OciError> {
+    let Some(ManifestDocument {
+        digest, size, doc, ..
+    }) = existing
+    else {
+        return Ok(TagState::Replace);
+    };
+    if doc.get("manifests").is_some_and(|m| m.is_array()) {
+        return Ok(TagState::Index(doc));
     }
-
     let Some(existing_platform) = doc
         .get("annotations")
         .and_then(|a| a.get(crate::OCI_ANNOTATION_PLATFORM))
@@ -363,30 +351,61 @@ fn index_joining(
         });
     };
     if existing_platform == platform {
-        return Ok(None);
+        return Ok(TagState::Replace);
     }
     let (os, arch) = parse_platform_target(existing_platform)?;
     let media_type = doc
         .get("mediaType")
         .and_then(|m| m.as_str())
         .unwrap_or(MEDIA_TYPE_OCI_MANIFEST);
-    let index = OciIndex {
-        schema_version: 2,
-        media_type: MEDIA_TYPE_OCI_INDEX.to_string(),
-        manifests: vec![
-            OciPlatformManifest {
-                media_type: media_type.to_string(),
-                digest,
-                size,
-                platform: OciPlatform {
-                    os: os.to_string(),
-                    architecture: arch.to_string(),
-                },
-            },
-            entry.clone(),
-        ],
-    };
-    Ok(Some(serde_json::to_vec(&index)?))
+    Ok(TagState::BesideManifest(OciPlatformManifest {
+        media_type: media_type.to_string(),
+        digest,
+        size,
+        platform: OciPlatform {
+            os: os.to_string(),
+            architecture: arch.to_string(),
+        },
+    }))
+}
+
+/// The index bytes the tag should hold once `entry` joins `state`, or `None`
+/// when the tag should hold `entry`'s manifest alone.
+fn joined_index(state: TagState, entry: &OciPlatformManifest) -> Result<Option<Vec<u8>>, OciError> {
+    match state {
+        TagState::Replace => Ok(None),
+        TagState::BesideManifest(existing) => {
+            let index = OciIndex {
+                schema_version: 2,
+                media_type: MEDIA_TYPE_OCI_INDEX.to_string(),
+                manifests: vec![existing, entry.clone()],
+            };
+            Ok(Some(serde_json::to_vec(&index)?))
+        }
+        TagState::Index(mut doc) => {
+            let new_entry = serde_json::to_value(entry)?;
+            if let Some(entries) = doc.get_mut("manifests").and_then(|m| m.as_array_mut()) {
+                match entries
+                    .iter_mut()
+                    .find(|e| entry_platform_is(e, &entry.platform))
+                {
+                    Some(slot) => *slot = new_entry,
+                    None => entries.push(new_entry),
+                }
+            }
+            doc["mediaType"] = serde_json::Value::from(MEDIA_TYPE_OCI_INDEX);
+            Ok(Some(serde_json::to_vec(&doc)?))
+        }
+    }
+}
+
+/// Whether an index entry declares `platform`'s os and architecture.
+pub(super) fn entry_platform_is(entry: &serde_json::Value, platform: &OciPlatform) -> bool {
+    entry.get("platform").is_some_and(|p| {
+        p.get("os").and_then(|v| v.as_str()) == Some(platform.os.as_str())
+            && p.get("architecture").and_then(|v| v.as_str())
+                == Some(platform.architecture.as_str())
+    })
 }
 
 // ---------------------------------------------------------------------------

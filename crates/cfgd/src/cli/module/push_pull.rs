@@ -79,8 +79,9 @@ pub fn cmd_module_push(
                 )
             },
         )?;
+        let resolved = index_digest.as_deref().unwrap_or(&digest);
         let crate::cli::helpers::SignAttestOutcome { signed, attested } =
-            crate::cli::helpers::sign_and_attest(printer, artifact, &digest, key, sign, attest)?;
+            crate::cli::helpers::sign_and_attest(printer, artifact, resolved, key, sign, attest)?;
 
         if apply {
             let module_yaml = std::fs::read_to_string(dir_path.join("module.yaml"))?;
@@ -454,6 +455,7 @@ pub fn cmd_module_pull(
     printer: &Printer,
     artifact_ref: &str,
     output: &str,
+    platform: Option<&str>,
     require_signature: bool,
     verify_attestation: bool,
     verify_opts: cfgd_core::oci::VerifyOptions<'_>,
@@ -464,6 +466,7 @@ pub fn cmd_module_pull(
     let mut module_description: Option<String> = None;
     let mut package_count: Option<usize> = None;
     let mut file_count: Option<usize> = None;
+    let pulled: cfgd_core::oci::PullOutcome;
 
     // Same shape as `cmd_module_push`: ONE section named for the command,
     // holding what is being pulled, the verifications the pull gated on, the
@@ -515,10 +518,11 @@ pub fn cmd_module_pull(
             printer.status_simple(Role::Ok, "Verified SLSA provenance attestation");
         }
 
-        cfgd_core::oci::pull_module(
+        pulled = cfgd_core::oci::pull_module(
             artifact_ref,
             output_path,
             cfgd_core::oci::SignaturePolicy::None,
+            platform,
             Some(printer),
         )
         .map_err(|e| {
@@ -557,6 +561,8 @@ pub fn cmd_module_pull(
             .with_data(serde_json::json!({
                 "artifact": artifact_ref,
                 "output": output,
+                "digest": pulled.digest,
+                "indexDigest": pulled.index_digest,
                 "signatureVerified": require_signature,
                 "attestationVerified": verify_attestation,
                 "moduleName": module_name,
@@ -701,6 +707,7 @@ mod tests {
             &printer,
             &artifact,
             dir.path().to_str().unwrap(),
+            None,
             false,
             false,
             cfgd_core::oci::VerifyOptions {
@@ -727,6 +734,7 @@ mod tests {
             &printer,
             &artifact,
             dir.path().to_str().unwrap(),
+            None,
             false,
             false,
             cfgd_core::oci::VerifyOptions {
@@ -747,13 +755,81 @@ mod tests {
         );
     }
 
+    /// Digest the mock registry answers for a manifest put at a platform tag.
+    const PLATFORM_TAG_DIGEST: &str = "sha256:3a1";
+    /// Digest the mock registry answers for whatever is put at `v1`.
+    const TAG_DIGEST: &str = "sha256:1d3";
+
+    /// A mock registry taking a push of `test/mod:v1` while the tag is absent.
+    fn mock_push_registry() -> (mockito::ServerGuard, String) {
+        mock_push_registry_holding(None)
+    }
+
+    /// A mock registry taking a push of `test/mod:v1`, whose tag holds `tag`
+    /// before the push (absent when `None`). The two manifest PUTs answer with
+    /// different digests so a payload or cosign argv shows which one it names.
+    fn mock_push_registry_holding(
+        tag: Option<&serde_json::Value>,
+    ) -> (mockito::ServerGuard, String) {
+        let mut server = mockito::Server::new();
+        let registry = server.url().trim_start_matches("http://").to_string();
+        let upload_location = format!("{}/v2/test/mod/blobs/uploads/up-id", server.url());
+        server
+            .mock(
+                "HEAD",
+                mockito::Matcher::Regex(r"/v2/test/mod/blobs/sha256:.*".to_string()),
+            )
+            .with_status(404)
+            .expect_at_least(2)
+            .create();
+        server
+            .mock("POST", "/v2/test/mod/blobs/uploads/")
+            .with_status(202)
+            .with_header("Location", &upload_location)
+            .expect_at_least(2)
+            .create();
+        server
+            .mock(
+                "PUT",
+                mockito::Matcher::Regex(
+                    r"/v2/test/mod/blobs/uploads/up-id\?digest=sha256:.*".to_string(),
+                ),
+            )
+            .with_status(201)
+            .expect_at_least(2)
+            .create();
+        let tag_read = server.mock("GET", "/v2/test/mod/manifests/v1");
+        match tag {
+            Some(body) => tag_read.with_status(200).with_body(body.to_string()),
+            None => tag_read.with_status(404),
+        }
+        .create();
+        server
+            .mock(
+                "PUT",
+                mockito::Matcher::Regex(r"^/v2/test/mod/manifests/v1-".to_string()),
+            )
+            .with_status(201)
+            .with_header("Docker-Content-Digest", PLATFORM_TAG_DIGEST)
+            .create();
+        server
+            .mock("PUT", "/v2/test/mod/manifests/v1")
+            .with_status(201)
+            .with_header("Docker-Content-Digest", TAG_DIGEST)
+            .create();
+        (server, registry)
+    }
+
     mod with_cosign_shim {
         use cfgd_core::output::Printer;
         use cfgd_core::test_helpers::CosignTestShim;
         use serial_test::serial;
 
         use super::super::{PushOptions, cmd_module_pull, cmd_module_push};
-        use super::{unreachable_ref, write_module_yaml};
+        use super::{
+            PLATFORM_TAG_DIGEST, TAG_DIGEST, mock_push_registry, mock_push_registry_holding,
+            unreachable_ref, write_module_yaml,
+        };
 
         #[test]
         #[serial]
@@ -761,42 +837,8 @@ mod tests {
             let dir = tempfile::tempdir().expect("tempdir");
             write_module_yaml(dir.path());
 
-            let mut server = mockito::Server::new();
-            let registry = server.url().trim_start_matches("http://").to_string();
+            let (_server, registry) = mock_push_registry();
             let artifact = format!("{}/test/mod:v1", registry);
-            let upload_location = format!("{}/v2/test/mod/blobs/uploads/up-id", server.url());
-
-            server
-                .mock(
-                    "HEAD",
-                    mockito::Matcher::Regex(r"/v2/test/mod/blobs/sha256:.*".to_string()),
-                )
-                .with_status(404)
-                .expect_at_least(2)
-                .create();
-
-            server
-                .mock("POST", "/v2/test/mod/blobs/uploads/")
-                .with_status(202)
-                .with_header("Location", &upload_location)
-                .expect_at_least(2)
-                .create();
-
-            server
-                .mock(
-                    "PUT",
-                    mockito::Matcher::Regex(
-                        r"/v2/test/mod/blobs/uploads/up-id\?digest=sha256:.*".to_string(),
-                    ),
-                )
-                .with_status(201)
-                .expect_at_least(2)
-                .create();
-
-            server
-                .mock("PUT", "/v2/test/mod/manifests/v1")
-                .with_status(201)
-                .create();
 
             let _shim = CosignTestShim::builder()
                 .with_argv_logging(false)
@@ -846,6 +888,7 @@ mod tests {
                 &printer,
                 &artifact,
                 dir.path().to_str().unwrap(),
+                None,
                 true,
                 false,
                 cfgd_core::oci::VerifyOptions {
@@ -870,59 +913,6 @@ mod tests {
                 meta.extras
             );
         }
-
-        // Helper: stand up a mock OCI registry that accepts blob uploads and
-        // returns 201 on manifest PUT, so a happy-path push can complete.
-        fn mock_push_registry() -> (mockito::ServerGuard, String) {
-            let mut server = mockito::Server::new();
-            let registry = server.url().trim_start_matches("http://").to_string();
-            let upload_location = format!("{}/v2/test/mod/blobs/uploads/up-id", server.url());
-
-            server
-                .mock(
-                    "HEAD",
-                    mockito::Matcher::Regex(r"/v2/test/mod/blobs/sha256:.*".to_string()),
-                )
-                .with_status(404)
-                .expect_at_least(2)
-                .create();
-            server
-                .mock("POST", "/v2/test/mod/blobs/uploads/")
-                .with_status(202)
-                .with_header("Location", &upload_location)
-                .expect_at_least(2)
-                .create();
-            server
-                .mock(
-                    "PUT",
-                    mockito::Matcher::Regex(
-                        r"/v2/test/mod/blobs/uploads/up-id\?digest=sha256:.*".to_string(),
-                    ),
-                )
-                .with_status(201)
-                .expect_at_least(2)
-                .create();
-            server
-                .mock("PUT", "/v2/test/mod/manifests/v1")
-                .with_status(201)
-                .create();
-            // A `--platform` push also tags its manifest per platform and
-            // reads the tag first; an absent tag keeps it a single manifest.
-            server
-                .mock(
-                    "PUT",
-                    mockito::Matcher::Regex(r"^/v2/test/mod/manifests/v1-".to_string()),
-                )
-                .with_status(201)
-                .create();
-            server
-                .mock("GET", "/v2/test/mod/manifests/v1")
-                .with_status(404)
-                .create();
-
-            (server, registry)
-        }
-
         /// `cmd_module_push`'s push spinner used to render at
         /// depth 0 unconditionally (a bare `printer.spinner()` call inside
         /// `push_module`, a library fn with no `SectionGuard` of its own).
@@ -1041,6 +1031,56 @@ mod tests {
             );
         }
 
+        /// Push with `--attest` to a tag holding `tag`, returning the cosign argv.
+        fn attest_argv_after_push(tag: Option<&serde_json::Value>) -> (String, String) {
+            let shim = CosignTestShim::builder()
+                .with_argv_logging(true)
+                .with_exit(0)
+                .install();
+            let dir = tempfile::tempdir().expect("tempdir");
+            write_module_yaml(dir.path());
+            let (_server, registry) = mock_push_registry_holding(tag);
+            let (printer, _cap) = Printer::for_test_doc();
+            cmd_module_push(
+                &printer,
+                dir.path().to_str().unwrap(),
+                &format!("{registry}/test/mod:v1"),
+                PushOptions {
+                    platform: Some("linux/arm64"),
+                    apply: false,
+                    sign: false,
+                    key: None,
+                    attest: true,
+                },
+            )
+            .expect("attested push must succeed");
+            (shim.argv_log(), registry)
+        }
+
+        #[test]
+        #[serial]
+        fn push_attests_the_index_the_tag_resolves_to_after_a_join() {
+            let (argv, registry) = attest_argv_after_push(Some(&serde_json::json!({
+                "schemaVersion": 2,
+                "mediaType": "application/vnd.oci.image.manifest.v1+json",
+                "annotations": { cfgd_core::OCI_ANNOTATION_PLATFORM: "linux/amd64" },
+            })));
+            assert!(
+                argv.contains(&format!("{registry}/test/mod@{TAG_DIGEST}")),
+                "the attestation subject is the index the tag now names: {argv}"
+            );
+        }
+
+        #[test]
+        #[serial]
+        fn push_attests_the_manifest_when_no_index_was_written() {
+            let (argv, registry) = attest_argv_after_push(None);
+            assert!(
+                argv.contains(&format!("{registry}/test/mod@{PLATFORM_TAG_DIGEST}")),
+                "the attestation subject is the manifest the tag names: {argv}"
+            );
+        }
+
         #[test]
         #[serial]
         fn push_with_sign_success_emits_signed_true_doc() {
@@ -1100,6 +1140,7 @@ mod tests {
                 &printer,
                 &artifact,
                 dir.path().to_str().unwrap(),
+                None,
                 true,
                 false,
                 cfgd_core::oci::VerifyOptions {
@@ -1139,6 +1180,7 @@ mod tests {
                 &printer,
                 &artifact,
                 dir.path().to_str().unwrap(),
+                None,
                 false,
                 true,
                 cfgd_core::oci::VerifyOptions {
@@ -1585,6 +1627,7 @@ spec:
             &printer,
             &artifact_ref,
             output_dir.path().to_str().unwrap(),
+            None,
             false,
             false,
             cfgd_core::oci::VerifyOptions {
@@ -1601,6 +1644,67 @@ spec:
         assert!(
             doc["output"].is_string(),
             "output field must be present: {doc}"
+        );
+        assert_eq!(
+            doc["digest"],
+            cfgd_core::sha256_digest(&serde_json::to_vec(&manifest).unwrap()),
+            "{doc}"
+        );
+        assert_eq!(
+            doc.get("indexDigest"),
+            Some(&serde_json::Value::Null),
+            "a tag naming one manifest has no index: {doc}"
+        );
+    }
+
+    #[test]
+    fn pull_of_a_platform_the_index_lacks_fails_naming_both() {
+        let mut server = mockito::Server::new();
+        let registry = server.url().trim_start_matches("http://").to_string();
+        server
+            .mock("GET", "/v2/test/mod/manifests/v1")
+            .with_status(200)
+            .with_header("Content-Type", "application/vnd.oci.image.index.v1+json")
+            .with_body(
+                serde_json::json!({
+                    "schemaVersion": 2,
+                    "mediaType": "application/vnd.oci.image.index.v1+json",
+                    "manifests": [{
+                        "mediaType": "application/vnd.oci.image.manifest.v1+json",
+                        "digest": "sha256:a1",
+                        "size": 1,
+                        "platform": { "os": "linux", "architecture": "amd64" },
+                    }],
+                })
+                .to_string(),
+            )
+            .create();
+        let output_dir = tempfile::tempdir().expect("output dir");
+        let (printer, _cap) = Printer::for_test_doc();
+
+        let err = cmd_module_pull(
+            &printer,
+            &format!("{registry}/test/mod:v1"),
+            output_dir.path().to_str().unwrap(),
+            Some("plan9/mips"),
+            false,
+            false,
+            cfgd_core::oci::VerifyOptions {
+                key: None,
+                identity: None,
+                issuer: None,
+            },
+        )
+        .expect_err("no plan9/mips entry");
+        drop(printer);
+
+        let meta = err
+            .downcast_ref::<crate::cli::CliErrorMeta>()
+            .expect("handler returns CliErrorMeta");
+        assert_eq!(meta.error_kind, "pull_failed", "{meta:?}");
+        assert!(
+            meta.message.contains("plan9/mips") && meta.message.contains("linux/amd64"),
+            "the error names the platform asked for and the ones held: {meta:?}"
         );
     }
 
@@ -1667,6 +1771,7 @@ spec:
             &printer,
             &artifact_ref,
             output_dir.path().to_str().unwrap(),
+            None,
             false,
             false,
             cfgd_core::oci::VerifyOptions {
@@ -1687,42 +1792,8 @@ spec:
         let dir = tempfile::tempdir().expect("tempdir");
         write_module_yaml(dir.path());
 
-        let mut server = mockito::Server::new();
-        let registry = server.url().trim_start_matches("http://").to_string();
+        let (_server, registry) = mock_push_registry();
         let artifact = format!("{}/test/mod:v1", registry);
-        let upload_location = format!("{}/v2/test/mod/blobs/uploads/up-id", server.url());
-
-        server
-            .mock(
-                "HEAD",
-                mockito::Matcher::Regex(r"/v2/test/mod/blobs/sha256:.*".to_string()),
-            )
-            .with_status(404)
-            .expect_at_least(2)
-            .create();
-
-        server
-            .mock("POST", "/v2/test/mod/blobs/uploads/")
-            .with_status(202)
-            .with_header("Location", &upload_location)
-            .expect_at_least(2)
-            .create();
-
-        server
-            .mock(
-                "PUT",
-                mockito::Matcher::Regex(
-                    r"/v2/test/mod/blobs/uploads/up-id\?digest=sha256:.*".to_string(),
-                ),
-            )
-            .with_status(201)
-            .expect_at_least(2)
-            .create();
-
-        server
-            .mock("PUT", "/v2/test/mod/manifests/v1")
-            .with_status(201)
-            .create();
 
         let (printer, cap) = Printer::for_test_doc();
         cmd_module_push(
@@ -1763,54 +1834,12 @@ spec:
         let dir = tempfile::tempdir().expect("tempdir");
         write_module_yaml(dir.path());
 
-        let mut server = mockito::Server::new();
-        let registry = server.url().trim_start_matches("http://").to_string();
+        let (_server, registry) = mock_push_registry_holding(Some(&serde_json::json!({
+            "schemaVersion": 2,
+            "mediaType": "application/vnd.oci.image.manifest.v1+json",
+            "annotations": { cfgd_core::OCI_ANNOTATION_PLATFORM: "linux/amd64" },
+        })));
         let artifact = format!("{}/test/mod:v1", registry);
-        let upload_location = format!("{}/v2/test/mod/blobs/uploads/up-id", server.url());
-
-        server
-            .mock(
-                "HEAD",
-                mockito::Matcher::Regex(r"/v2/test/mod/blobs/sha256:.*".to_string()),
-            )
-            .with_status(404)
-            .create();
-        server
-            .mock("POST", "/v2/test/mod/blobs/uploads/")
-            .with_status(202)
-            .with_header("Location", &upload_location)
-            .create();
-        server
-            .mock(
-                "PUT",
-                mockito::Matcher::Regex(
-                    r"/v2/test/mod/blobs/uploads/up-id\?digest=sha256:.*".to_string(),
-                ),
-            )
-            .with_status(201)
-            .create();
-        server
-            .mock("PUT", "/v2/test/mod/manifests/v1-linux-arm64")
-            .with_status(201)
-            .create();
-        server
-            .mock("GET", "/v2/test/mod/manifests/v1")
-            .with_status(200)
-            .with_body(
-                serde_json::json!({
-                    "schemaVersion": 2,
-                    "mediaType": "application/vnd.oci.image.manifest.v1+json",
-                    "annotations": { cfgd_core::OCI_ANNOTATION_PLATFORM: "linux/amd64" },
-                })
-                .to_string(),
-            )
-            .create();
-        let index_put = server
-            .mock("PUT", "/v2/test/mod/manifests/v1")
-            .match_header("content-type", "application/vnd.oci.image.index.v1+json")
-            .with_status(201)
-            .with_header("Docker-Content-Digest", "sha256:1d3")
-            .create();
 
         let (printer, cap) = Printer::for_test_doc();
         cmd_module_push(
@@ -1828,10 +1857,9 @@ spec:
         .expect("push beside another platform must succeed");
         drop(printer);
 
-        index_put.assert();
         let doc = cap.json().expect("success doc must be emitted");
-        assert_eq!(doc["indexDigest"], "sha256:1d3", "{doc}");
+        assert_eq!(doc["indexDigest"], TAG_DIGEST, "{doc}");
+        assert_eq!(doc["digest"], PLATFORM_TAG_DIGEST, "{doc}");
         assert_eq!(doc["platform"], "linux/arm64", "{doc}");
-        assert_ne!(doc["digest"], doc["indexDigest"], "{doc}");
     }
 }

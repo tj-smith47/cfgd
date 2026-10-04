@@ -39,8 +39,7 @@ pub fn cmd_module_build(
         .unwrap_or_else(|| vec![default_platform.as_str()]);
 
     let mut output_artifacts: Vec<String> = Vec::new();
-    let mut digest_value: Option<String> = None;
-    let mut index_digest_value: Option<String> = None;
+    let mut pushed: Option<Pushed> = None;
 
     // ONE section, named for the command, holding everything the run produced:
     // what is being built, each build's verdict, the push, the digest and the
@@ -104,8 +103,10 @@ pub fn cmd_module_build(
                     })?;
                     printer.status_simple(Role::Ok, "Signed artifact with cosign");
                 }
-                digest_value = Some(digest);
-                index_digest_value = index_digest;
+                pushed = Some(Pushed::Platform {
+                    digest,
+                    index_digest,
+                });
             }
         } else {
             let mut builds: Vec<(std::path::PathBuf, String)> = Vec::new();
@@ -167,8 +168,7 @@ pub fn cmd_module_build(
                     })?;
                     printer.status_simple(Role::Ok, "Signed artifact with cosign");
                 }
-                index_digest_value = Some(digest.clone());
-                digest_value = Some(digest);
+                pushed = Some(Pushed::Index(digest));
             }
         }
     }
@@ -184,50 +184,57 @@ pub fn cmd_module_build(
         None => super::Mutation::ModuleBuilt { output: built },
     });
 
-    let mut payload = serde_json::Map::new();
-    payload.insert("dir".into(), serde_json::Value::String(dir.to_string()));
-    payload.insert(
-        "targets".into(),
-        serde_json::Value::Array(
-            targets
-                .iter()
-                .map(|t| serde_json::Value::String((*t).to_string()))
-                .collect(),
-        ),
-    );
-    payload.insert(
-        "outputArtifacts".into(),
-        serde_json::Value::Array(
-            output_artifacts
-                .iter()
-                .map(|p| serde_json::Value::String(p.clone()))
-                .collect(),
-        ),
-    );
-    if let Some(art) = artifact {
-        payload.insert(
-            "artifact".into(),
-            serde_json::Value::String(art.to_string()),
-        );
-    }
-    if let Some(d) = digest_value {
-        payload.insert("digest".into(), serde_json::Value::String(d));
-        // What the tag resolves to: the multi-platform push always writes an
-        // index, and a single-target push writes one when the tag already
-        // listed another platform.
-        payload.insert(
-            "indexDigest".into(),
-            index_digest_value.map_or(serde_json::Value::Null, serde_json::Value::String),
-        );
-    }
-    payload.insert("signed".into(), serde_json::Value::Bool(sign));
-    printer.emit(
-        Doc::new()
-            .hint(next_step)
-            .with_data(serde_json::Value::Object(payload)),
-    );
+    let payload = build_payload(dir, &targets, &output_artifacts, artifact, pushed, sign);
+    printer.emit(Doc::new().hint(next_step).with_data(payload));
 
     Ok(())
+}
+
+/// What a `module build --push` wrote at the tag.
+enum Pushed {
+    /// One platform's manifest, and the index the tag names when the push
+    /// joined it to platforms already there.
+    Platform {
+        digest: String,
+        index_digest: Option<String>,
+    },
+    /// A multi-platform build's index.
+    Index(String),
+}
+
+/// The `-o json` payload of `module build`. A push reports `digest` and
+/// `indexDigest`: a multi-platform build's push is an index, so both name it;
+/// a single-target push writes an index only when the tag already listed
+/// another platform.
+fn build_payload(
+    dir: &str,
+    targets: &[&str],
+    output_artifacts: &[String],
+    artifact: Option<&str>,
+    pushed: Option<Pushed>,
+    signed: bool,
+) -> serde_json::Value {
+    let mut payload = serde_json::Map::new();
+    payload.insert("dir".into(), dir.into());
+    payload.insert("targets".into(), targets.into());
+    payload.insert("outputArtifacts".into(), output_artifacts.into());
+    payload.insert("signed".into(), signed.into());
+    if let Some(art) = artifact {
+        payload.insert("artifact".into(), art.into());
+    }
+    let digests = match pushed {
+        Some(Pushed::Platform {
+            digest,
+            index_digest,
+        }) => Some((digest, index_digest)),
+        Some(Pushed::Index(digest)) => Some((digest.clone(), Some(digest))),
+        None => None,
+    };
+    if let Some((digest, index_digest)) = digests {
+        payload.insert("digest".into(), digest.into());
+        payload.insert("indexDigest".into(), index_digest.into());
+    }
+    payload.into()
 }
 
 #[cfg(test)]
@@ -707,6 +714,55 @@ mod tests {
         assert!(
             err.to_string().contains("does not contain a module.yaml"),
             "expected module-yaml-missing error: {err}"
+        );
+    }
+
+    fn payload(pushed: Option<Pushed>) -> serde_json::Value {
+        build_payload(
+            "mod",
+            &["linux/amd64"],
+            &["out".to_string()],
+            Some("reg/mod:v1"),
+            pushed,
+            false,
+        )
+    }
+
+    #[test]
+    fn build_payload_of_a_push_joined_to_an_index_names_both_digests() {
+        let doc = payload(Some(Pushed::Platform {
+            digest: "sha256:a1".to_string(),
+            index_digest: Some("sha256:1d".to_string()),
+        }));
+        assert_eq!(doc["digest"], "sha256:a1");
+        assert_eq!(doc["indexDigest"], "sha256:1d");
+    }
+
+    #[test]
+    fn build_payload_of_a_push_that_wrote_no_index_has_a_null_index_digest() {
+        let doc = payload(Some(Pushed::Platform {
+            digest: "sha256:a1".to_string(),
+            index_digest: None,
+        }));
+        assert_eq!(doc["digest"], "sha256:a1");
+        assert_eq!(doc.get("indexDigest"), Some(&serde_json::Value::Null));
+    }
+
+    #[test]
+    fn build_payload_of_a_multi_platform_push_names_the_index_twice() {
+        let doc = payload(Some(Pushed::Index("sha256:1d".to_string())));
+        assert_eq!(doc["digest"], "sha256:1d");
+        assert_eq!(doc["indexDigest"], "sha256:1d");
+    }
+
+    #[test]
+    fn build_payload_without_a_push_carries_no_digests() {
+        let doc = build_payload("mod", &[], &[], None, None, false);
+        assert!(
+            doc.get("digest").is_none()
+                && doc.get("indexDigest").is_none()
+                && doc.get("artifact").is_none(),
+            "{doc}"
         );
     }
 }

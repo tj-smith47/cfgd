@@ -2171,16 +2171,19 @@ cfgd module push ./my-module --artifact ghcr.io/me/my-module:1.0.0 --sign --atte
 | Flag | Description |
 |---|---|
 | `--artifact <ref>` | OCI artifact reference (required, e.g. `ghcr.io/myorg/mymodule:v1.0.0`) |
-| `--platform <os/arch>` | Platform annotation (default: auto-detected from OS/arch) |
+| `--platform <os/arch>` | Platform the module is built for (default: this host's OS/arch) |
 | `--apply` | Apply the module after pushing |
 | `--sign` | Sign with cosign (keyless by default) |
 | `--key <path>` | Signing key path |
 | `--attest` | Attach SLSA provenance attestation |
 
-With `--platform`, repeated pushes of different platforms to one tag accumulate into an OCI index
-at that tag. Each push also tags its own manifest `<tag>-<os>-<arch>`, a later push of the same
-platform replaces that platform's entry, and a digest reference is refused (a digest cannot be
-re-pointed). Without `--platform` the tag holds this host's manifest alone.
+Pushes of different platforms to one tag accumulate into an OCI index at that tag; a push
+without `--platform` is a push for this host's platform. Each push also tags its own manifest
+`<tag>-<os>-<arch>`, a later push of the same platform replaces that platform's entry, and a
+digest reference is refused (a digest cannot be re-pointed). A tag holding a manifest with no
+`cfgd.io/platform` annotation is refused before anything is uploaded: delete that tag in the
+registry, or push to another tag. `--attest` attaches the provenance to the digest the tag
+resolves to after the push (the index, when one was written).
 
 ```sh
 cfgd module push ./mod-amd64 --artifact ghcr.io/me/my-module:1.0.0 --platform linux/amd64
@@ -2214,11 +2217,37 @@ cfgd module pull ghcr.io/me/my-module:1.0.0 --dir modules/my-module --require-si
 | Flag | Description |
 |---|---|
 | `--dir <path>` | Directory to extract the module into (required) |
+| `--platform <os/arch>` | Platform to take out of a multi-platform artifact (default: this host's OS/arch) |
 | `--require-signature` | Require a cosign signature on the artifact |
 | `--verify-attest` | Verify the SLSA provenance attestation |
 | `--key <path>` | Public key for signature verification |
 | `--certificate-identity <id>` | Expected certificate identity for keyless verification |
 | `--certificate-oidc-issuer <url>` | Expected OIDC issuer for keyless verification |
+
+When the tag names an OCI index, pull takes the entry whose platform matches `--platform` (or this
+host) and fails naming the platforms the index lists when none matches. A tag naming one manifest
+is pulled as it is. Signature and attestation checks run against the tag.
+
+```sh
+cfgd module pull ghcr.io/me/my-module:1.0.0 --dir out --platform linux/arm64 -o json
+```
+
+```json
+{
+  "artifact": "ghcr.io/me/my-module:1.0.0",
+  "output": "out",
+  "digest": "sha256:<the linux/arm64 manifest>",
+  "indexDigest": "sha256:<the index the tag resolves to>",
+  "signatureVerified": false,
+  "attestationVerified": false,
+  "moduleName": "my-module",
+  "moduleDescription": null,
+  "packageCount": 0,
+  "fileCount": 0
+}
+```
+
+`indexDigest` is `null` when the tag names one manifest.
 
 ### `cfgd module build <dir>`
 
@@ -2238,7 +2267,7 @@ cfgd module build ./my-module --target linux/amd64,linux/arm64
 | `--key <path>` | Signing key path |
 
 Several `--target` platforms push one OCI index to `--artifact`. A build for one platform (one
-`--target`, or none for this host) pushes the way `cfgd module push --platform` does, so it joins
+`--target`, or none for this host) pushes the way `cfgd module push` does, so it joins
 any other platforms the tag already lists.
 With `-o json` the payload's `indexDigest` names the index the tag resolves to, and is `null` when
 the tag holds the one manifest alone.

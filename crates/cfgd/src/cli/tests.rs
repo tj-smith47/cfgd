@@ -33966,6 +33966,7 @@ fn execute_module_pull_dispatch() {
         command: ModuleCommand::Pull {
             artifact_ref: "ghcr.io/example/module:v0.0.0".to_string(),
             dir: out_dir.path().display().to_string(),
+            platform: None,
             require_signature: false,
             verify_attestation: false,
             key: None,
@@ -33981,6 +33982,38 @@ fn execute_module_pull_dispatch() {
     );
     // Fails on network/registry, but dispatch arm was reached.
     assert!(result.is_err(), "pull of unreachable artifact should fail");
+}
+
+#[test]
+fn execute_module_pull_dispatch_passes_the_platform_flag() {
+    let h = CliTestHarness::builder().build();
+    let out_dir = tempfile::tempdir().unwrap();
+    let cli = h.cli_with_command(Command::Module {
+        command: ModuleCommand::Pull {
+            artifact_ref: "ghcr.io/example/module:v0.0.0".to_string(),
+            dir: out_dir.path().display().to_string(),
+            platform: Some("plan9".to_string()),
+            require_signature: false,
+            verify_attestation: false,
+            key: None,
+            certificate_identity: None,
+            certificate_oidc_issuer: None,
+        },
+    });
+    let err = super::execute(
+        &cli,
+        h.printer(),
+        &super::paths::DirSources::all_default(),
+        &super::startup::StartupDocument::load(&cli.config),
+    )
+    .expect_err("a platform with no arch is refused");
+    let meta = err
+        .downcast_ref::<crate::cli::CliErrorMeta>()
+        .expect("handler returns CliErrorMeta");
+    assert!(
+        meta.message.contains("invalid platform target 'plan9'"),
+        "the flag reaches the pull: {meta:?}"
+    );
 }
 
 #[test]

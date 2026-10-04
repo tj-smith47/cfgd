@@ -375,6 +375,18 @@ fn push_module_with_no_platform_reports_the_host_platform_it_annotated() {
         .with_status(201)
         .expect_at_least(2)
         .create();
+    // Every push reads the tag first and tags its manifest per platform.
+    server
+        .mock("GET", "/v2/test/defaulted/manifests/v1")
+        .with_status(404)
+        .create();
+    server
+        .mock(
+            "PUT",
+            mockito::Matcher::Regex(r"^/v2/test/defaulted/manifests/v1-".to_string()),
+        )
+        .with_status(201)
+        .create();
     let manifest_mock = server
         .mock("PUT", "/v2/test/defaulted/manifests/v1")
         .with_status(201)
@@ -768,8 +780,8 @@ fn platform_push_to_an_absent_tag_puts_the_one_manifest_at_the_tag() {
     assert_eq!(
         store.requests(),
         vec![
-            format!("PUT v1-linux-amd64 {MANIFEST_PUT}"),
             "GET v1".to_string(),
+            format!("PUT v1-linux-amd64 {MANIFEST_PUT}"),
             format!("PUT v1 {MANIFEST_PUT}"),
         ]
     );
@@ -800,8 +812,8 @@ fn platform_push_beside_another_platforms_manifest_puts_an_index_of_both() {
     assert_eq!(
         store.requests(),
         vec![
-            format!("PUT v1-linux-arm64 {MANIFEST_PUT}"),
             "GET v1".to_string(),
+            format!("PUT v1-linux-arm64 {MANIFEST_PUT}"),
             format!("PUT v1 {INDEX_PUT}"),
         ]
     );
@@ -852,8 +864,8 @@ fn platform_push_over_the_same_platforms_manifest_replaces_it() {
     assert_eq!(
         store.requests(),
         vec![
-            format!("PUT v1-linux-arm64 {MANIFEST_PUT}"),
             "GET v1".to_string(),
+            format!("PUT v1-linux-arm64 {MANIFEST_PUT}"),
             format!("PUT v1 {MANIFEST_PUT}"),
         ]
     );
@@ -906,8 +918,8 @@ fn platform_push_to_an_index_replaces_its_platforms_entry_in_place() {
     assert_eq!(
         store.requests(),
         vec![
-            format!("PUT v1-linux-arm64 {MANIFEST_PUT}"),
             "GET v1".to_string(),
+            format!("PUT v1-linux-arm64 {MANIFEST_PUT}"),
             format!("PUT v1 {INDEX_PUT}"),
         ]
     );
@@ -1008,10 +1020,12 @@ fn platform_push_beside_a_manifest_naming_no_platform_is_refused_and_leaves_the_
     }
     assert_eq!(
         store.requests(),
-        vec![
-            format!("PUT v1-linux-arm64 {MANIFEST_PUT}"),
-            "GET v1".to_string(),
-        ]
+        vec!["GET v1".to_string()],
+        "a refused join reads the tag and writes nothing"
+    );
+    assert!(
+        store.blob_digests().is_empty(),
+        "the refusal comes before any blob upload"
     );
     assert_eq!(store.stored("v1"), earlier, "the tag is left as it was");
 }
@@ -1027,23 +1041,55 @@ fn platform_push_to_a_digest_reference_is_refused_before_any_request() {
         .expect("a digest cannot be re-pointed");
 
     assert!(
-        matches!(&err, OciError::PlatformPushToDigest { reference } if *reference == artifact),
-        "expected PlatformPushToDigest naming {artifact}, got {err:?}"
+        matches!(&err, OciError::PushToDigest { reference } if *reference == artifact),
+        "expected PushToDigest naming {artifact}, got {err:?}"
     );
     assert!(store.requests().is_empty(), "{:?}", store.requests());
 }
 
+/// A push given no platform names this host, and joins the tag like any
+/// other platform: both verbs behave the same.
 #[test]
-fn push_without_a_platform_puts_only_the_tag() {
+fn push_without_a_platform_joins_as_the_host_platform() {
     let store = crate::oci::test_helpers::ManifestStore::new("test/acc");
-    store.seed("v1", &earlier_manifest(Some("plan9/mips")));
+    let earlier = store.seed("v1", &earlier_manifest(Some("plan9/mips")));
     let module_dir = create_test_module_dir();
+    let host = crate::oci::current_platform();
+    let host_tag = format!("v1-{}", host.replace('/', "-"));
 
     let outcome = push_module(module_dir.path(), &store.artifact("v1"), None, None)
         .expect("push with no platform");
 
-    assert_eq!(store.requests(), vec![format!("PUT v1 {MANIFEST_PUT}")]);
-    assert_eq!(outcome.index_digest, None);
+    assert_eq!(
+        store.requests(),
+        vec![
+            "GET v1".to_string(),
+            format!("PUT {host_tag} {MANIFEST_PUT}"),
+            format!("PUT v1 {INDEX_PUT}"),
+        ]
+    );
+    let index_bytes = store.stored("v1");
+    let platforms: Vec<String> = json_of(&index_bytes)["manifests"]
+        .as_array()
+        .expect("an index")
+        .iter()
+        .map(|e| {
+            format!(
+                "{}/{}",
+                e["platform"]["os"].as_str().unwrap(),
+                e["platform"]["architecture"].as_str().unwrap()
+            )
+        })
+        .collect();
+    assert_eq!(platforms, vec!["plan9/mips".to_string(), host]);
+    assert_eq!(
+        json_of(&index_bytes)["manifests"][0]["digest"],
+        crate::sha256_digest(&earlier)
+    );
+    assert_eq!(
+        outcome.index_digest,
+        Some(crate::sha256_digest(&index_bytes))
+    );
 }
 
 #[test]
@@ -1082,4 +1128,147 @@ fn the_push_row_names_the_index_only_when_one_was_written() {
         rendered.contains(&format!("{} (linux/arm64), index {index}", second.digest)),
         "{rendered}"
     );
+}
+
+/// Blob-upload mocks for `repo`, each expected `uploads` times.
+fn blob_upload_mocks(
+    server: &mut mockito::ServerGuard,
+    repo: &str,
+    uploads: usize,
+) -> Vec<mockito::Mock> {
+    let location = format!("{}/v2/{repo}/blobs/uploads/upload-id", server.url());
+    vec![
+        server
+            .mock(
+                "HEAD",
+                mockito::Matcher::Regex(format!(r"^/v2/{repo}/blobs/sha256:")),
+            )
+            .with_status(404)
+            .expect(uploads)
+            .create(),
+        server
+            .mock("POST", format!("/v2/{repo}/blobs/uploads/").as_str())
+            .with_status(202)
+            .with_header("Location", &location)
+            .expect(uploads)
+            .create(),
+        server
+            .mock(
+                "PUT",
+                mockito::Matcher::Regex(format!(r"^/v2/{repo}/blobs/uploads/upload-id\?digest=")),
+            )
+            .with_status(201)
+            .expect(uploads)
+            .create(),
+    ]
+}
+
+/// A tag read failing with `status` stops the push before any blob or
+/// manifest is written.
+fn assert_tag_read_failure_writes_nothing(status: usize) {
+    let mut server = mockito::Server::new();
+    let registry = registry_from_url(&server.url());
+    let repo = "test/tagfail";
+    let blobs = blob_upload_mocks(&mut server, repo, 0);
+    let tag_read = server
+        .mock("GET", format!("/v2/{repo}/manifests/v1").as_str())
+        .with_status(status)
+        .expect(1)
+        .create();
+    let manifest_put = server
+        .mock(
+            "PUT",
+            mockito::Matcher::Regex(format!(r"^/v2/{repo}/manifests/")),
+        )
+        .with_status(201)
+        .expect(0)
+        .create();
+
+    let dir = create_test_module_dir();
+    let result = push_module(
+        dir.path(),
+        &format!("{registry}/{repo}:v1"),
+        Some("linux/amd64"),
+        None,
+    );
+    assert!(
+        result.is_err(),
+        "a {status} reading the tag must fail the push"
+    );
+    tag_read.assert();
+    manifest_put.assert();
+    for mock in blobs {
+        mock.assert();
+    }
+}
+
+#[test]
+fn push_fails_without_writing_when_the_tag_read_is_a_server_error() {
+    assert_tag_read_failure_writes_nothing(500);
+}
+
+#[test]
+fn push_fails_without_writing_when_the_tag_read_is_forbidden() {
+    assert_tag_read_failure_writes_nothing(403);
+}
+
+#[test]
+fn push_answers_a_bearer_challenge_on_the_tag_read_and_takes_an_absent_tag() {
+    let mut server = mockito::Server::new();
+    let registry = registry_from_url(&server.url());
+    let repo = "test/tagauth";
+    let blobs = blob_upload_mocks(&mut server, repo, 2);
+    let challenge = format!(
+        r#"Bearer realm="{}/auth/token",service="registry.test",scope="repository:{repo}:pull,push""#,
+        server.url()
+    );
+    let token = server
+        .mock("GET", mockito::Matcher::Regex(r"^/auth/token".to_string()))
+        .with_status(200)
+        .with_body(r#"{"token":"tok"}"#)
+        .expect(1)
+        .create();
+    let unauthorized = server
+        .mock("GET", format!("/v2/{repo}/manifests/v1").as_str())
+        .match_header("authorization", mockito::Matcher::Missing)
+        .with_status(401)
+        .with_header("Www-Authenticate", &challenge)
+        .expect(1)
+        .create();
+    let absent = server
+        .mock("GET", format!("/v2/{repo}/manifests/v1").as_str())
+        .match_header("authorization", "Bearer tok")
+        .with_status(404)
+        .expect(1)
+        .create();
+    server
+        .mock(
+            "PUT",
+            mockito::Matcher::Regex(format!(r"^/v2/{repo}/manifests/v1-")),
+        )
+        .with_status(201)
+        .create();
+    let tag_put = server
+        .mock("PUT", format!("/v2/{repo}/manifests/v1").as_str())
+        .match_header("content-type", MEDIA_TYPE_OCI_MANIFEST)
+        .with_status(201)
+        .expect(1)
+        .create();
+
+    let dir = create_test_module_dir();
+    let outcome = push_module(
+        dir.path(),
+        &format!("{registry}/{repo}:v1"),
+        Some("linux/amd64"),
+        None,
+    )
+    .expect("an absent tag behind a challenge is pushed");
+    assert_eq!(outcome.index_digest, None);
+    token.assert();
+    unauthorized.assert();
+    absent.assert();
+    tag_put.assert();
+    for mock in blobs {
+        mock.assert();
+    }
 }

@@ -1062,18 +1062,29 @@ pub enum OciError {
     ManifestNotFound { reference: String },
 
     #[error(
-        "cannot push one platform to digest reference {reference}: a digest names one manifest \
+        "cannot push a module to digest reference {reference}: a digest names one manifest \
          and cannot be re-pointed at an index of platforms; push to a tag"
     )]
-    PlatformPushToDigest { reference: String },
+    PushToDigest { reference: String },
 
     #[error(
         "{reference} holds a manifest with no {annotation} annotation, so its platform cannot \
-         be listed in an index beside the one being pushed"
+         be listed in an index beside the one being pushed; delete that tag in the registry, \
+         or push to a different tag"
     )]
     TagPlatformUnknown {
         reference: String,
         annotation: String,
+    },
+
+    #[error(
+        "{reference} lists no manifest for {platform}; it holds {}",
+        if available.is_empty() { "none".to_string() } else { available.join(", ") }
+    )]
+    PlatformNotInIndex {
+        reference: String,
+        platform: String,
+        available: Vec<String>,
     },
 
     #[error("blob not found: {digest}")]

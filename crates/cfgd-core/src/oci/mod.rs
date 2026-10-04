@@ -23,7 +23,7 @@ pub use archive::{create_tar_gz, create_tar_gz_with_diff_id, extract_tar_gz};
 pub use auth::RegistryAuth;
 pub use build::{build_module, detect_container_runtime};
 pub use pack::{PackOptions, PackOutcome, pack_image};
-pub use pull::{ArtifactFacts, SignaturePolicy, artifact_facts, pull_module};
+pub use pull::{ArtifactFacts, PullOutcome, SignaturePolicy, artifact_facts, pull_module};
 pub use push::{
     PushOutcome, current_platform, parse_platform_target, push_module, push_module_multiplatform,
     rust_arch_to_oci,
@@ -56,7 +56,7 @@ pub const MEDIA_TYPE_OCI_IMAGE_LAYER: &str = "application/vnd.oci.image.layer.v1
 
 /// OCI image index (multi-platform manifest list) media type. A base image may be
 /// served as an index whose `manifests` array points at per-platform image manifests.
-pub(super) const MEDIA_TYPE_OCI_INDEX: &str = "application/vnd.oci.image.index.v1+json";
+pub const MEDIA_TYPE_OCI_INDEX: &str = "application/vnd.oci.image.index.v1+json";
 
 /// Docker manifest-list media type — the Docker v2 equivalent of an OCI image index.
 /// Registries serving Docker-format multi-platform images use this type.
@@ -176,6 +176,16 @@ impl OciReference {
             repository,
             reference: ref_kind,
         })
+    }
+
+    /// This repository addressed by `digest`, the form that names exactly one
+    /// document whatever a tag is later moved to.
+    pub fn at_digest(&self, digest: &str) -> OciReference {
+        OciReference {
+            registry: self.registry.clone(),
+            repository: self.repository.clone(),
+            reference: ReferenceKind::Digest(digest.to_string()),
+        }
     }
 
     /// The tag string (or digest) used in API paths.
@@ -399,14 +409,16 @@ pub(super) mod test_helpers {
     type Tags = std::sync::Arc<std::sync::Mutex<std::collections::BTreeMap<String, Vec<u8>>>>;
 
     /// A mock registry for one repository that keeps what each manifest PUT
-    /// stored under its reference, serves it back on GET (`404` for one never
-    /// stored), accepts every blob upload, and records each manifest request
+    /// stored under its reference and under its digest, serves it back on GET
+    /// (`404` for one never stored), keeps every uploaded blob and serves it
+    /// back by digest, and records each manifest request
     /// as `"<METHOD> <reference>"`, with the PUT's `Content-Type` appended, in
     /// the order the registry received them.
     pub(crate) struct ManifestStore {
         server: mockito::ServerGuard,
         repository: String,
         tags: Tags,
+        blobs: Tags,
         log: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
     }
 
@@ -425,12 +437,51 @@ pub(super) mod test_helpers {
                 .with_status(202)
                 .with_header("Location", &format!("{}{blobs}uploads/up", server.url()))
                 .create();
+            let blob_store = Tags::default();
+            let put_blobs = blob_store.clone();
             server
                 .mock(
                     "PUT",
                     mockito::Matcher::Regex(format!(r"^{blobs}uploads/up\?digest=")),
                 )
                 .with_status(201)
+                .with_body_from_request(move |req| {
+                    let digest = req
+                        .path_and_query()
+                        .rsplit_once("digest=")
+                        .map(|(_, d)| d.replace("%3A", ":"))
+                        .unwrap_or_default();
+                    put_blobs
+                        .lock()
+                        .unwrap()
+                        .insert(digest, req.body().unwrap().clone());
+                    Vec::new()
+                })
+                .create();
+            let (status_blobs, get_blobs) = (blob_store.clone(), blob_store.clone());
+            let blob_digest = |req: &mockito::Request| {
+                req.path()
+                    .rsplit_once("/blobs/")
+                    .map(|(_, d)| d.to_string())
+                    .unwrap_or_default()
+            };
+            server
+                .mock("GET", mockito::Matcher::Regex(format!("^{blobs}sha256:")))
+                .with_status_code_from_request(move |req| {
+                    if status_blobs.lock().unwrap().contains_key(&blob_digest(req)) {
+                        200
+                    } else {
+                        404
+                    }
+                })
+                .with_body_from_request(move |req| {
+                    get_blobs
+                        .lock()
+                        .unwrap()
+                        .get(&blob_digest(req))
+                        .cloned()
+                        .unwrap_or_default()
+                })
                 .create();
 
             let manifests = format!("^/v2/{repository}/manifests/");
@@ -456,10 +507,10 @@ pub(super) mod test_helpers {
                         .lock()
                         .unwrap()
                         .push(format!("PUT {r} {content_type}"));
-                    put_tags
-                        .lock()
-                        .unwrap()
-                        .insert(r, req.body().unwrap().clone());
+                    let body = req.body().unwrap().clone();
+                    let mut stored = put_tags.lock().unwrap();
+                    stored.insert(crate::sha256_digest(&body), body.clone());
+                    stored.insert(r, body);
                     Vec::new()
                 })
                 .create();
@@ -489,6 +540,7 @@ pub(super) mod test_helpers {
                 server,
                 repository: repository.to_string(),
                 tags,
+                blobs: blob_store,
                 log,
             }
         }
@@ -510,11 +562,16 @@ pub(super) mod test_helpers {
         /// Store `body` under `reference` as an earlier push would have.
         pub(crate) fn seed(&self, reference: &str, body: &serde_json::Value) -> Vec<u8> {
             let bytes = serde_json::to_vec(body).unwrap();
+            self.seed_bytes(reference, &bytes);
+            bytes
+        }
+
+        /// Store `bytes` under `reference` verbatim.
+        pub(crate) fn seed_bytes(&self, reference: &str, bytes: &[u8]) {
             self.tags
                 .lock()
                 .unwrap()
-                .insert(reference.to_string(), bytes.clone());
-            bytes
+                .insert(reference.to_string(), bytes.to_vec());
         }
 
         /// The bytes stored under `reference`.
@@ -525,6 +582,11 @@ pub(super) mod test_helpers {
                 .get(reference)
                 .cloned()
                 .unwrap_or_else(|| panic!("nothing stored under {reference}"))
+        }
+
+        /// Digests of every blob uploaded so far.
+        pub(crate) fn blob_digests(&self) -> Vec<String> {
+            self.blobs.lock().unwrap().keys().cloned().collect()
         }
 
         /// The manifest requests received so far, in order.

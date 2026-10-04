@@ -2730,7 +2730,7 @@ pub enum ModuleCommand {
         /// OCI artifact reference (e.g. ghcr.io/myorg/mymodule:v1.0.0)
         #[arg(long)]
         artifact: String,
-        /// Platform annotation (default: auto-detected from OS/arch)
+        /// Platform the module is built for (default: this host's OS/arch)
         #[arg(long)]
         platform: Option<String>,
         /// After push, apply a Module CRD to the cluster referencing the artifact
@@ -2754,6 +2754,9 @@ pub enum ModuleCommand {
         /// Directory to extract the module into
         #[arg(long)]
         dir: String,
+        /// Platform to pull out of a multi-platform artifact (default: this host's OS/arch)
+        #[arg(long)]
+        platform: Option<String>,
         /// Require a cosign signature on the artifact
         #[arg(long)]
         require_signature: bool,
@@ -3535,6 +3538,7 @@ pub fn execute(
             ModuleCommand::Pull {
                 artifact_ref,
                 dir,
+                platform,
                 require_signature,
                 verify_attestation,
                 key,
@@ -3544,6 +3548,7 @@ pub fn execute(
                 printer,
                 artifact_ref,
                 dir,
+                platform.as_deref(),
                 *require_signature,
                 *verify_attestation,
                 cfgd_core::oci::VerifyOptions {

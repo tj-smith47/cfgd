@@ -694,6 +694,7 @@ mod bridge {
             &artifact_ref,
             output_dir.path(),
             SignaturePolicy::None,
+            None,
             Some(&printer),
         )
         .unwrap();
@@ -761,6 +762,17 @@ mod bridge {
             .expect_at_least(2)
             .create();
 
+        server
+            .mock("GET", "/v2/test/bridge-push/manifests/v1")
+            .with_status(404)
+            .create();
+        server
+            .mock(
+                "PUT",
+                mockito::Matcher::Regex(r"^/v2/test/bridge-push/manifests/v1-".to_string()),
+            )
+            .with_status(201)
+            .create();
         server
             .mock("PUT", "/v2/test/bridge-push/manifests/v1")
             .with_status(201)

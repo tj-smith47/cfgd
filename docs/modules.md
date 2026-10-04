@@ -945,6 +945,21 @@ machine the agent is reconciling, and the cluster installs nothing.
 a relative script path inside the artifact that the pod-mutating webhook runs in an init
 container. See [operator.md](operator.md#module) for the full CRD field table.
 
+### Multi-platform artifacts
+
+Each `cfgd module push` names a platform (`--platform`, default this host), and pushes of
+different platforms to one tag gather into an OCI index there. `cfgd module pull` and the CSI
+driver take the index entry for the platform asked for (`module pull --platform`, default this
+host; the CSI driver uses its node's):
+
+```sh
+cfgd module push ./mod-amd64 --artifact ghcr.io/org/mymod:v1 --platform linux/amd64
+cfgd module push ./mod-arm64 --artifact ghcr.io/org/mymod:v1 --platform linux/arm64
+cfgd module pull ghcr.io/org/mymod:v1 --dir ./out --platform linux/arm64
+```
+
+A pull for a platform the index does not list fails and names the platforms it does.
+
 ## Security
 
 ### Signature Verification
