@@ -358,8 +358,9 @@ fn pull_module_inner(
     if top.digest != top.content_digest {
         return Err(OciError::RequestFailed {
             message: format!(
-                "{oci_ref} answered with digest {} in its Docker-Content-Digest header, but the \
-                 manifest it served hashes to {}",
+                "{oci_ref} answered with digest {} in its Docker-Content-Digest header, and the \
+                 manifest it served hashes to {}; the registry (or a proxy in front of it) served \
+                 other content than that digest names, so nothing was verified or extracted",
                 top.digest, top.content_digest
             ),
         });
@@ -921,6 +922,10 @@ mod tests {
         assert!(
             message.contains(&sha256_digest(body.as_bytes())),
             "{message}"
+        );
+        assert!(
+            message.contains("so nothing was verified or extracted"),
+            "the refusal says what it stopped: {message}"
         );
         assert_eq!(shim.argv_log(), "", "cosign never ran");
     }

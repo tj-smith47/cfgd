@@ -238,7 +238,9 @@ pub(super) fn resolve_pushed_digest(
         Some(answered) if answered != sent => Err(OciError::RequestFailed {
             message: format!(
                 "{oci_ref} answered the push with digest {answered} in its \
-                 Docker-Content-Digest header, and the manifest sent hashes to {sent}"
+                 Docker-Content-Digest header, and the manifest sent hashes to {sent}; the \
+                 registry (or a proxy in front of it) stored other content than cfgd sent, so \
+                 nothing was signed or recorded"
             ),
         }),
         _ => Ok(sent),
@@ -754,6 +756,10 @@ mod tests {
                 && message.contains("sha256:deadbeef")
                 && message.contains(MANIFEST_BYTES_DIGEST),
             "the refusal names both digests: {message}"
+        );
+        assert!(
+            message.contains("so nothing was signed or recorded"),
+            "the refusal says what it stopped: {message}"
         );
     }
 
