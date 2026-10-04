@@ -337,6 +337,10 @@ elif ! wait_for_pod_log /tmp/daemon10.log 'daemon: running' 30; then
     fail_test "DAEMON-10" "Daemon never logged 'daemon: running'"
     stop_pod_process "$DAEMON_PID" || true
 else
+    # A reconcile logged before the profile write (the startup tick) proves
+    # nothing about the watch, so only one past this count does.
+    DM10_BASE=$(exec_in_pod grep -c 'reconcile: complete' /tmp/daemon10.log 2>/dev/null || true)
+    DM10_BASE=${DM10_BASE:-0}
 
     # Modify the profile to trigger a file watch event
     exec_in_pod bash -c 'cat > /etc/cfgd/profiles/k8s-worker-minimal.yaml << "INNEREOF"
@@ -358,8 +362,11 @@ INNEREOF'
     # Wait for daemon to detect the config change and reconcile
     echo "  Waiting up to 20s for daemon to reconcile after config change..."
     RECONCILED=false
-    if wait_until 20 1 "the daemon to log the profile change" \
-        exec_in_pod grep -qE 'watch: file changed|reconcile: complete' /tmp/daemon10.log; then
+    dm10_reacted() {
+        exec_in_pod grep -q 'watch: file changed' /tmp/daemon10.log ||
+            pod_log_count_at_least /tmp/daemon10.log 'reconcile: complete' $((DM10_BASE + 1))
+    }
+    if wait_until 20 1 "the daemon to log the profile change or a reconcile after it" dm10_reacted; then
         echo "  Daemon detected config change"
         RECONCILED=true
     fi

@@ -41,17 +41,18 @@ MC_STATUS=$(wait_for_k8s_field machineconfig e2e-workstation-1 "$E2E_NAMESPACE" 
 echo "  lastReconciled: ${MC_STATUS:-not set}"
 
 if [ -n "$MC_STATUS" ]; then
-    # Verify conditions
-    READY_STATUS=$(kubectl get machineconfig e2e-workstation-1 -n "$E2E_NAMESPACE" \
-        -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || echo "")
-    echo "  Ready condition: $READY_STATUS"
-
-    if [ "$READY_STATUS" = "True" ]; then
-        pass_test "OP-MC-01"
-    else
-        # May be False if drift was detected, still valid reconciliation
-        pass_test "OP-MC-01"
-    fi
+    # A fresh MachineConfig has no DriftAlert and no moduleRefs, so the
+    # controller's first pass writes all three of its own conditions true or
+    # false with nothing left open.
+    MC01_CONDITIONS=$(kubectl get machineconfig e2e-workstation-1 -n "$E2E_NAMESPACE" \
+        -o jsonpath='{range .status.conditions[*]}{.type}={.status}/{.reason} {end}' 2>/dev/null || echo "")
+    echo "  Conditions: ${MC01_CONDITIONS:-none}"
+    case " $MC01_CONDITIONS" in
+        *" Reconciled=True/ReconcileSuccess "*" DriftDetected=False/NoDrift "*" ModulesResolved=True/AllResolved "*)
+            pass_test "OP-MC-01" ;;
+        *)
+            fail_test "OP-MC-01" "Expected Reconciled=True/ReconcileSuccess, DriftDetected=False/NoDrift and ModulesResolved=True/AllResolved, got: ${MC01_CONDITIONS:-none}" ;;
+    esac
 else
     fail_test "OP-MC-01" "MachineConfig status was not updated by controller"
 fi
@@ -175,18 +176,12 @@ NON_COMPLIANT=$(kubectl get configpolicy "e2e-impossible-selector-${E2E_RUN_ID}"
 
 echo "  Compliant: ${COMPLIANT:-not set}, Non-compliant: ${NON_COMPLIANT:-not set}"
 
-if [ "${COMPLIANT:-}" = "0" ] && [ "${NON_COMPLIANT:-}" = "0" ]; then
-    pass_test "OP-ERR-02"
-elif [ -n "$ERR02_STATUS" ]; then
-    # Status was set — accept any 0-total as pass
-    TOTAL=$(( ${COMPLIANT:-0} + ${NON_COMPLIANT:-0} ))
-    if [ "$TOTAL" -eq 0 ]; then
-        pass_test "OP-ERR-02"
-    else
-        fail_test "OP-ERR-02" "Expected 0 total, got compliant=${COMPLIANT}, non-compliant=${NON_COMPLIANT}"
-    fi
-else
+if [ -z "$ERR02_STATUS" ]; then
     fail_test "OP-ERR-02" "ConfigPolicy status was not updated by controller"
+elif [ "${COMPLIANT:-}" = "0" ] && [ "${NON_COMPLIANT:-}" = "0" ]; then
+    pass_test "OP-ERR-02"
+else
+    fail_test "OP-ERR-02" "Expected compliant=0 and non-compliant=0, got compliant=${COMPLIANT:-not set}, non-compliant=${NON_COMPLIANT:-not set}"
 fi
 
 kubectl delete configpolicy "e2e-impossible-selector-${E2E_RUN_ID}" -n "$E2E_NAMESPACE" --ignore-not-found 2>/dev/null || true
