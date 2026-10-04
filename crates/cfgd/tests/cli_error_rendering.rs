@@ -673,17 +673,21 @@ fn a_tilde_config_with_no_home_reports_the_unset_home() {
     );
 }
 
-/// The verbs that check for the config file before reading it report a `~`
-/// path with no home set the way `status` does: the unset home, under table
+/// The verbs that check for the config file before reading it (one caller
+/// of each family besides the `config` verbs) report a `~` path with no home
+/// set the way `status` does: the unset home, under table
 /// and json output alike.
 #[test]
 fn every_config_verb_reports_a_tilde_config_with_no_home_as_the_unset_home() {
-    let verbs: [&[&str]; 5] = [
+    let verbs: [&[&str]; 8] = [
         &["config", "show"],
         &["config", "get", "profile"],
         &["config", "set", "profile", "work"],
         &["config", "unset", "theme.name"],
         &["config", "edit"],
+        &["config", "migrate"],
+        &["profile", "switch", "work"],
+        &["module", "registry", "remove", "community"],
     ];
     for verb in verbs {
         let mut args = verb.to_vec();
@@ -707,6 +711,31 @@ fn every_config_verb_reports_a_tilde_config_with_no_home_as_the_unset_home() {
             "{verb:?}: {v}"
         );
     }
+}
+
+/// `doctor` reports a `~` config path with no home set as the unset home on
+/// its config-file row, and never as a path that does not exist.
+#[test]
+fn doctor_reports_a_tilde_config_with_no_home_as_the_unset_home() {
+    let (_, stderr, _) = run_homeless(&["doctor", "--config", "~/cfgd.yaml"]);
+    let row = stderr
+        .lines()
+        .find(|line| line.contains("Config file"))
+        .unwrap_or_else(|| panic!("no config-file row: {stderr}"));
+    assert!(
+        row.contains(&format!("{HOME_UNRESOLVED} ~/cfgd.yaml")),
+        "{row:?}"
+    );
+
+    let (stdout, _, _) = run_homeless(&["doctor", "--config", "~/cfgd.yaml", "-o", "json"]);
+    let v = parse_single_json(&stdout);
+    assert_eq!(v["config"]["valid"], false, "{v}");
+    assert!(
+        v["config"]["error"]
+            .as_str()
+            .is_some_and(|e| e.contains(&format!("{HOME_UNRESOLVED} ~/cfgd.yaml"))),
+        "{v}"
+    );
 }
 
 /// The default config location with no home set. Linux and macOS spell it

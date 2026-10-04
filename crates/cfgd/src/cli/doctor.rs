@@ -237,7 +237,10 @@ fn collect_doctor_output(
 ) -> anyhow::Result<(DoctorOutput, DoctorExtras)> {
     let cli = run.cli();
     let printer = run.printer();
-    let (config_check, loaded_cfg) = if cli.config.exists() {
+    // A path still leading with `~` found no home directory; the read reports
+    // that as the loader's own error, where an existence check would call the
+    // file missing.
+    let (config_check, loaded_cfg) = if cli.config.exists() || cli.config.starts_with("~") {
         match run.config() {
             Ok(cfg) => (
                 DoctorConfigCheck {
