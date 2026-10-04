@@ -565,7 +565,7 @@ pub fn cmd_module_pull(
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use cfgd_core::output::Printer;
     use cfgd_core::test_helpers::test_printer;
 
@@ -771,9 +771,9 @@ mod tests {
     }
 
     /// Digest the mock registry answers for a manifest put at a platform tag.
-    const PLATFORM_TAG_DIGEST: &str = "sha256:3a1";
+    pub(in crate::cli::module) const PLATFORM_TAG_DIGEST: &str = "sha256:3a1";
     /// Digest the mock registry answers for whatever is put at `v1`.
-    const TAG_DIGEST: &str = "sha256:1d3";
+    pub(in crate::cli::module) const TAG_DIGEST: &str = "sha256:1d3";
 
     /// A mock registry taking a push of `test/mod:v1` while the tag is absent.
     fn mock_push_registry() -> (mockito::ServerGuard, String) {
@@ -783,7 +783,7 @@ mod tests {
     /// A mock registry taking a push of `test/mod:v1`, whose tag holds `tag`
     /// before the push (absent when `None`). The two manifest PUTs answer with
     /// different digests so a payload or cosign argv shows which one it names.
-    fn mock_push_registry_holding(
+    pub(in crate::cli::module) fn mock_push_registry_holding(
         tag: Option<&serde_json::Value>,
     ) -> (mockito::ServerGuard, String) {
         let mut server = mockito::Server::new();

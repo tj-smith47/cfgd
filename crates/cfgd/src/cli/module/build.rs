@@ -481,6 +481,94 @@ mod tests {
                 meta.error_kind
             );
         }
+
+        /// Build `targets` through a stand-in container runtime and push the
+        /// result to a mock registry with `--sign`, answering the cosign argv
+        /// (one line per call) and the registry.
+        // Unix-only: the stand-in runtime is a `/bin/sh` script.
+        #[cfg(unix)]
+        fn cosign_argv_after_signed_build(targets: &str) -> (String, String) {
+            use std::os::unix::fs::PermissionsExt;
+
+            let dir = tempfile::tempdir().unwrap();
+            write_module_yaml(dir.path());
+            // `docker cp <container>:/build/. <out>` is the step that leaves the
+            // built module where `push_module` reads it; every other verb only
+            // has to succeed.
+            let runtime = dir.path().join("docker");
+            std::fs::write(
+                &runtime,
+                format!(
+                    "#!/bin/sh\nfor last; do :; done\n\
+                     if [ \"$1\" = cp ]; then cp '{}' \"$last/module.yaml\"; fi\nexit 0\n",
+                    dir.path().join("module.yaml").display()
+                ),
+            )
+            .unwrap();
+            std::fs::set_permissions(&runtime, std::fs::Permissions::from_mode(0o755)).unwrap();
+            let _runtime = cfgd_core::test_helpers::EnvVarGuard::set(
+                "CFGD_DOCKER_BIN",
+                runtime.to_str().unwrap(),
+            );
+            let shim = CosignTestShim::builder()
+                .with_argv_logging(true)
+                .with_exit(0)
+                .install();
+            let (_server, registry) =
+                crate::cli::module::push_pull::tests::mock_push_registry_holding(None);
+
+            let (printer, _cap) = cfgd_core::output::Printer::for_test_doc();
+            cmd_module_build(
+                &printer,
+                dir.path().to_str().unwrap(),
+                Some(targets),
+                None,
+                Some(&format!("{registry}/test/mod:v1")),
+                true,
+                None,
+            )
+            .expect("signed build and push must succeed");
+            (shim.argv_log(), registry)
+        }
+
+        /// `cosign sign` ran once, naming `subject`.
+        #[cfg(unix)]
+        fn assert_signed(argv: &str, subject: &str) {
+            let signs: Vec<&str> = argv.lines().filter(|l| l.starts_with("sign ")).collect();
+            assert_eq!(signs.len(), 1, "{argv}");
+            assert!(
+                signs[0].ends_with(subject),
+                "the signature names {subject}: {argv}"
+            );
+        }
+
+        #[cfg(unix)]
+        #[test]
+        #[serial]
+        fn build_sign_of_one_target_signs_the_manifest_it_pushed() {
+            let (argv, registry) = cosign_argv_after_signed_build("linux/amd64");
+            assert_signed(
+                &argv,
+                &format!(
+                    "{registry}/test/mod@{}",
+                    crate::cli::module::push_pull::tests::PLATFORM_TAG_DIGEST
+                ),
+            );
+        }
+
+        #[cfg(unix)]
+        #[test]
+        #[serial]
+        fn build_sign_of_several_targets_signs_the_index_it_pushed() {
+            let (argv, registry) = cosign_argv_after_signed_build("linux/amd64,linux/arm64");
+            assert_signed(
+                &argv,
+                &format!(
+                    "{registry}/test/mod@{}",
+                    crate::cli::module::push_pull::tests::TAG_DIGEST
+                ),
+            );
+        }
     }
 
     // -----------------------------------------------------------------------
