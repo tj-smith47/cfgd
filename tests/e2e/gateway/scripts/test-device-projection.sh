@@ -170,7 +170,7 @@ DP_TOKEN=$(gw_create_bootstrap_token "dp-user")
 # failing, and a skip would take GW-33..35 with it while the summary still read
 # `0 failed`.
 if [ "$DP_BIN_READY" != yes ]; then
-    fail_test "GW-32" "No cfgd binary at '${CFGD_BIN:-unset}' — the release build failed"
+    fail_test "GW-32" "No cfgd binary at '${CFGD_BIN:-unset}': the release build failed"
 elif [ -z "$DP_TOKEN" ]; then
     fail_test "GW-32" "The admin token API did not mint a bootstrap token for this case family"
 else

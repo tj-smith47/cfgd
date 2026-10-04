@@ -11,7 +11,7 @@ CSI01_NODE=""
 # =================================================================
 # FS-CSI-01: CSI driver: deploy DaemonSet, mount module content, verify
 # =================================================================
-begin_test "FS-CSI-01: CSI driver — module mount and content verification"
+begin_test "FS-CSI-01: CSI driver: module mount and content verification"
 
 if ! wait_for_daemonset "$E2E_INSTALL_NS" "$E2E_CSI_DS" 60; then
     fail_test "FS-CSI-01" "CSI DaemonSet not ready"
@@ -106,7 +106,7 @@ fi
 # =================================================================
 # FS-CSI-02: CSI driver: unmount on pod delete
 # =================================================================
-begin_test "FS-CSI-02: CSI driver — unmount on pod delete"
+begin_test "FS-CSI-02: CSI driver: unmount on pod delete"
 
 # Delete the pod
 kubectl delete pod csi-mount-test -n "e2e-csi-test-${E2E_RUN_ID}" --grace-period=5 --ignore-not-found 2>/dev/null || true
@@ -127,7 +127,7 @@ fi
 # =================================================================
 # FS-CSI-03: Multi-module volume mount
 # =================================================================
-begin_test "FS-CSI-03: CSI driver — multi-module volume mount"
+begin_test "FS-CSI-03: CSI driver: multi-module volume mount"
 
 # Push two distinct test modules
 MOD_A_DIR=$(mktemp -d)
@@ -235,7 +235,7 @@ fi
 # =================================================================
 # FS-CSI-04: Module cache hit
 # =================================================================
-begin_test "FS-CSI-04: CSI driver — module cache hit"
+begin_test "FS-CSI-04: CSI driver: module cache hit"
 
 # Print the cache-hit count for label set $CSI04_LABELS scraped off CSI
 # driver pod $1, keeping the response in $2 for a fail reason; returns 1
@@ -342,7 +342,7 @@ fi
 # =================================================================
 # FS-CSI-05: Invalid module ref: pod stays Pending
 # =================================================================
-begin_test "FS-CSI-05: CSI driver — invalid module ref stays Pending"
+begin_test "FS-CSI-05: CSI driver: invalid module ref stays Pending"
 
 CSI05_NS="e2e-csi-invalid-${E2E_RUN_ID}"
 ensure_namespace "$CSI05_NS"
@@ -413,7 +413,7 @@ kubectl delete namespace "$CSI05_NS" --ignore-not-found --wait=false 2>/dev/null
 # =================================================================
 # FS-CSI-06: Module update propagation
 # =================================================================
-begin_test "FS-CSI-06: CSI driver — module update propagation"
+begin_test "FS-CSI-06: CSI driver: module update propagation"
 
 # Push v2 of a module with different content
 MOD_V2_DIR=$(mktemp -d)
@@ -503,7 +503,7 @@ fi
 # =================================================================
 # FS-CSI-07: CSI driver metrics
 # =================================================================
-begin_test "FS-CSI-07: CSI driver — /metrics returns cfgd_csi_volume_publish_total"
+begin_test "FS-CSI-07: CSI driver: /metrics returns cfgd_csi_volume_publish_total"
 
 CSI07_POD=""
 [ -z "$CSI01_NODE" ] || CSI07_POD=$(kubectl get pods -n "$E2E_INSTALL_NS" -l "$E2E_CSI_PODS" \
@@ -543,7 +543,7 @@ fi
 # =================================================================
 # FS-CSI-08: CSI pod readiness
 # =================================================================
-begin_test "FS-CSI-08: CSI driver — DaemonSet pod Ready"
+begin_test "FS-CSI-08: CSI driver: DaemonSet pod Ready"
 
 CSI_POD=$(kubectl get pods -n "$E2E_INSTALL_NS" -l "$E2E_CSI_PODS" \
     -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
@@ -567,7 +567,7 @@ fi
 # =================================================================
 # FS-CSI-09: Volume unmount cleanup
 # =================================================================
-begin_test "FS-CSI-09: CSI driver — volume unmount cleanup on pod delete"
+begin_test "FS-CSI-09: CSI driver: volume unmount cleanup on pod delete"
 
 CSI09_NS="e2e-csi-unmount-${E2E_RUN_ID}"
 ensure_namespace "$CSI09_NS"
@@ -633,7 +633,7 @@ kubectl delete namespace "$CSI09_NS" --ignore-not-found --wait=false 2>/dev/null
 # =================================================================
 # FS-CSI-10: ReadOnly enforcement
 # =================================================================
-begin_test "FS-CSI-10: CSI driver — readOnly enforcement"
+begin_test "FS-CSI-10: CSI driver: readOnly enforcement"
 
 CSI10_NS="e2e-csi-ro-${E2E_RUN_ID}"
 ensure_namespace "$CSI10_NS"

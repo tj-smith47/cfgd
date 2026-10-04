@@ -8,7 +8,7 @@ echo "=== Webhook Tests ==="
 # =================================================================
 # OP-WH-01: Validation webhooks: reject invalid specs for multiple CRDs
 # =================================================================
-begin_test "OP-WH-01: Validation webhooks — reject invalid specs"
+begin_test "OP-WH-01: Validation webhooks: reject invalid specs"
 
 PASS=true
 
@@ -87,7 +87,7 @@ kubectl delete machineconfig e2e-bad-mc -n "$E2E_NAMESPACE" --ignore-not-found 2
 # =================================================================
 # OP-WH-02: Mutating webhook: pod injection with CSI volumes
 # =================================================================
-begin_test "OP-WH-02: Mutating webhook — pod injection"
+begin_test "OP-WH-02: Mutating webhook: pod injection"
 
 # Create a namespace with the injection label
 ensure_namespace "e2e-inject-${E2E_RUN_ID}"
@@ -165,7 +165,7 @@ fi
 # =================================================================
 # OP-WH-03: Mutating webhook: mountPolicy Debug skips volumeMount
 # =================================================================
-begin_test "OP-WH-03: Mutating webhook — Debug mountPolicy"
+begin_test "OP-WH-03: Mutating webhook: Debug mountPolicy"
 
 # Create a Module with mountPolicy Debug
 kubectl apply -f - <<EOF
@@ -238,7 +238,7 @@ fi
 # =================================================================
 # OP-WH-04: MachineConfig: missing hostname rejected
 # =================================================================
-begin_test "OP-WH-04: MachineConfig — missing hostname rejected"
+begin_test "OP-WH-04: MachineConfig: missing hostname rejected"
 
 RESULT=$(kubectl apply -n "$E2E_NAMESPACE" -f - 2>&1 <<EOF || true
 apiVersion: cfgd.io/v1alpha1
@@ -267,7 +267,7 @@ kubectl delete machineconfig "e2e-no-host-${E2E_RUN_ID}" -n "$E2E_NAMESPACE" --i
 # =================================================================
 # OP-WH-05: MachineConfig: invalid moduleRef format rejected
 # =================================================================
-begin_test "OP-WH-05: MachineConfig — invalid moduleRef format rejected"
+begin_test "OP-WH-05: MachineConfig: invalid moduleRef format rejected"
 
 RESULT=$(kubectl apply -n "$E2E_NAMESPACE" -f - 2>&1 <<EOF || true
 apiVersion: cfgd.io/v1alpha1
@@ -299,7 +299,7 @@ kubectl delete machineconfig "e2e-bad-modref-${E2E_RUN_ID}" -n "$E2E_NAMESPACE" 
 # =================================================================
 # OP-WH-06: MachineConfig: valid spec accepted
 # =================================================================
-begin_test "OP-WH-06: MachineConfig — valid spec accepted"
+begin_test "OP-WH-06: MachineConfig: valid spec accepted"
 
 RESULT=$(kubectl apply -n "$E2E_NAMESPACE" -f - 2>&1 <<EOF || true
 apiVersion: cfgd.io/v1alpha1
@@ -332,7 +332,7 @@ kubectl delete machineconfig "e2e-valid-mc-${E2E_RUN_ID}" -n "$E2E_NAMESPACE" --
 # =================================================================
 # OP-WH-07: ConfigPolicy: empty targetSelector accepted
 # =================================================================
-begin_test "OP-WH-07: ConfigPolicy — empty targetSelector"
+begin_test "OP-WH-07: ConfigPolicy: empty targetSelector"
 
 # ConfigPolicy validation accepts an empty targetSelector, as Kubernetes
 # accepts an empty LabelSelector.
@@ -362,7 +362,7 @@ kubectl delete configpolicy "e2e-empty-sel-${E2E_RUN_ID}" -n "$E2E_NAMESPACE" --
 # =================================================================
 # OP-WH-08: ConfigPolicy: valid spec accepted
 # =================================================================
-begin_test "OP-WH-08: ConfigPolicy — valid spec accepted"
+begin_test "OP-WH-08: ConfigPolicy: valid spec accepted"
 
 RESULT=$(kubectl apply -n "$E2E_NAMESPACE" -f - 2>&1 <<EOF || true
 apiVersion: cfgd.io/v1alpha1
@@ -395,7 +395,7 @@ kubectl delete configpolicy "e2e-valid-cp-${E2E_RUN_ID}" -n "$E2E_NAMESPACE" --i
 # =================================================================
 # OP-WH-09: DriftAlert: missing machineConfigRef rejected
 # =================================================================
-begin_test "OP-WH-09: DriftAlert — missing machineConfigRef rejected"
+begin_test "OP-WH-09: DriftAlert: missing machineConfigRef rejected"
 
 RESULT=$(kubectl apply -n "$E2E_NAMESPACE" -f - 2>&1 <<EOF || true
 apiVersion: cfgd.io/v1alpha1
@@ -428,7 +428,7 @@ kubectl delete driftalert "e2e-no-mcref-${E2E_RUN_ID}" -n "$E2E_NAMESPACE" --ign
 # =================================================================
 # OP-WH-10: DriftAlert: valid spec accepted
 # =================================================================
-begin_test "OP-WH-10: DriftAlert — valid spec accepted"
+begin_test "OP-WH-10: DriftAlert: valid spec accepted"
 
 RESULT=$(kubectl apply -n "$E2E_NAMESPACE" -f - 2>&1 <<EOF || true
 apiVersion: cfgd.io/v1alpha1
@@ -461,7 +461,7 @@ kubectl delete driftalert "e2e-valid-da-${E2E_RUN_ID}" -n "$E2E_NAMESPACE" --ign
 # =================================================================
 # OP-WH-11: ClusterConfigPolicy: invalid namespaceSelector + invalid semver rejected
 # =================================================================
-begin_test "OP-WH-11: ClusterConfigPolicy — invalid namespaceSelector + invalid semver rejected"
+begin_test "OP-WH-11: ClusterConfigPolicy: invalid namespaceSelector + invalid semver rejected"
 
 RESULT=$(kubectl apply -f - 2>&1 <<EOF || true
 apiVersion: cfgd.io/v1alpha1
@@ -494,7 +494,7 @@ kubectl delete clusterconfigpolicy "e2e-bad-ccp-${E2E_RUN_ID}" --ignore-not-foun
 # =================================================================
 # OP-WH-12: ClusterConfigPolicy: valid spec accepted
 # =================================================================
-begin_test "OP-WH-12: ClusterConfigPolicy — valid spec accepted"
+begin_test "OP-WH-12: ClusterConfigPolicy: valid spec accepted"
 
 RESULT=$(kubectl apply -f - 2>&1 <<EOF || true
 apiVersion: cfgd.io/v1alpha1
@@ -526,7 +526,7 @@ kubectl delete clusterconfigpolicy "e2e-valid-ccp-${E2E_RUN_ID}" --ignore-not-fo
 # =================================================================
 # OP-WH-13: Module: invalid OCI reference format rejected
 # =================================================================
-begin_test "OP-WH-13: Module — invalid OCI reference format rejected"
+begin_test "OP-WH-13: Module: invalid OCI reference format rejected"
 
 RESULT=$(kubectl apply -f - 2>&1 <<EOF || true
 apiVersion: cfgd.io/v1alpha1
@@ -554,7 +554,7 @@ kubectl delete module "e2e-bad-oci-${E2E_RUN_ID}" --ignore-not-found 2>/dev/null
 # =================================================================
 # OP-WH-14: Module: valid spec accepted
 # =================================================================
-begin_test "OP-WH-14: Module — valid spec accepted"
+begin_test "OP-WH-14: Module: valid spec accepted"
 
 RESULT=$(kubectl apply -f - 2>&1 <<EOF || true
 apiVersion: cfgd.io/v1alpha1

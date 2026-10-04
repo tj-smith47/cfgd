@@ -8,7 +8,7 @@ echo "=== ClusterConfigPolicy Tests ==="
 # =================================================================
 # OP-CCP-01: ClusterConfigPolicy: namespaceSelector filtering
 # =================================================================
-begin_test "OP-CCP-01: ClusterConfigPolicy — namespaceSelector filtering"
+begin_test "OP-CCP-01: ClusterConfigPolicy: namespaceSelector filtering"
 
 # Create two namespaces: one matching, one not
 ensure_namespace "e2e-team-alpha-${E2E_RUN_ID}"
@@ -75,7 +75,7 @@ fi
 # =================================================================
 # OP-CCP-02: ClusterConfigPolicy: cluster-wins merge with namespace ConfigPolicy
 # =================================================================
-begin_test "OP-CCP-02: ClusterConfigPolicy — cluster-wins merge"
+begin_test "OP-CCP-02: ClusterConfigPolicy: cluster-wins merge"
 
 # Create a namespace-level ConfigPolicy in alpha namespace
 kubectl apply -n "e2e-team-alpha-${E2E_RUN_ID}" -f - <<EOF

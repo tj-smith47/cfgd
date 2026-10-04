@@ -343,7 +343,7 @@ else
     else
         COMPLIANT=$(kubectl get configpolicy "e2e-compliance-policy-${E2E_RUN_ID}" -n "$E2E_NAMESPACE" \
             -o jsonpath='{.status.compliantCount}' 2>/dev/null || echo "")
-        echo "  Final counts — compliant: ${COMPLIANT:-0}, non-compliant: ${NONCOMPLIANT:-0}"
+        echo "  Final counts: compliant: ${COMPLIANT:-0}, non-compliant: ${NONCOMPLIANT:-0}"
         fail_test "FS-DRIFT-11" "Policy did not detect non-compliant MachineConfig within 30s"
     fi
 fi

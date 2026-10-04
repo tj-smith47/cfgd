@@ -325,7 +325,7 @@ helm_test_cleanup "cfgd-test"
 # =================================================================
 # FS-HELM-06: Values override: custom replica count reflected
 # =================================================================
-begin_test "FS-HELM-06: Values override — custom replica count"
+begin_test "FS-HELM-06: Values override: custom replica count"
 
 helm_test_ns "06"
 helm install cfgd-test "$CHART_DIR" --skip-crds \

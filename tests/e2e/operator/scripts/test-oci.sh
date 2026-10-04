@@ -8,7 +8,7 @@ echo "=== OCI Tests ==="
 # =================================================================
 # OP-OCI-01: OCI supply chain: push, pull, verify content integrity
 # =================================================================
-begin_test "OP-OCI-01: OCI supply chain — push, pull, verify"
+begin_test "OP-OCI-01: OCI supply chain: push, pull, verify"
 
 # Create a test module directory
 TEST_MODULE_DIR=$(mktemp -d)
@@ -87,5 +87,5 @@ then
     echo "  Module resolvedArtifact: ${OCI_RESOLVED:-not set}"
     echo "  Module Available: ${OCI_AVAIL:-not set}"
 else
-    echo "  (Module rejected by policy — unsigned module not allowed, which is correct behavior)"
+    echo "  (Module rejected by policy: unsigned module not allowed, which is correct behavior)"
 fi

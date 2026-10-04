@@ -8,7 +8,7 @@ echo "=== ConfigPolicy Tests ==="
 # =================================================================
 # OP-CP-01: ConfigPolicy: all MachineConfigs compliant
 # =================================================================
-begin_test "OP-CP-01: ConfigPolicy — compliant check"
+begin_test "OP-CP-01: ConfigPolicy: compliant check"
 
 kubectl apply -n "$E2E_NAMESPACE" -f - <<EOF
 apiVersion: cfgd.io/v1alpha1
@@ -43,7 +43,7 @@ fi
 # =================================================================
 # OP-CP-02: ConfigPolicy: non-compliant MachineConfig
 # =================================================================
-begin_test "OP-CP-02: ConfigPolicy — non-compliant detection"
+begin_test "OP-CP-02: ConfigPolicy: non-compliant detection"
 
 # Create a MachineConfig that's missing required packages
 kubectl apply -n "$E2E_NAMESPACE" -f - <<EOF

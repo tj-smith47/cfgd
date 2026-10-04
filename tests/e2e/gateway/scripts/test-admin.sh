@@ -65,7 +65,7 @@ gw_enroll_new_device() {
 begin_test "GW-24: Auth boundary (unauthenticated access)"
 
 if [ -z "$ADMIN_KEY" ]; then
-    skip_test "GW-24" "No ADMIN_KEY set — gateway in open mode, auth boundary not testable"
+    skip_test "GW-24" "No ADMIN_KEY set: gateway in open mode, auth boundary not testable"
 else
     GW24_CODE=$(curl -s -o /dev/null -w "%{http_code}" "$GW_URL/api/v1/devices" 2>/dev/null || echo "000")
     echo "  GET /api/v1/devices (no auth): HTTP $GW24_CODE"
@@ -260,7 +260,7 @@ if [ "$GW15_PASS" = "true" ]; then
     if [ "$GW15_PRE_CODE" != "200" ]; then
         # In open mode the key is irrelevant: all requests succeed.
         if [ -z "$ADMIN_KEY" ]; then
-            echo "  Open mode — skipping key validation"
+            echo "  Open mode: skipping key validation"
         else
             fail_test "GW-15" "Device key did not work before revocation (HTTP $GW15_PRE_CODE)"
             GW15_PASS=false
@@ -285,7 +285,7 @@ fi
 if [ "$GW15_PASS" = "true" ]; then
     if [ -z "$ADMIN_KEY" ]; then
         # Open mode: auth is not enforced, so revocation cannot be verified via HTTP status.
-        echo "  Open mode — credential revocation stored but auth not enforced"
+        echo "  Open mode: credential revocation stored but auth not enforced"
         pass_test "GW-15"
     else
         GW15_POST_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
@@ -374,7 +374,7 @@ fi
 # Step 5: Verify old key fails
 if [ "$GW16_PASS" = "true" ]; then
     if [ -z "$ADMIN_KEY" ]; then
-        echo "  Open mode — old key rejection not verifiable via HTTP status"
+        echo "  Open mode: old key rejection not verifiable via HTTP status"
         pass_test "GW-16"
     else
         GW16_OLD_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
@@ -415,7 +415,7 @@ if [ "$GW17_CODE" = "200" ]; then
     else
         # Even 1 is acceptable if re-enrollment replaced the device record
         if [ "$GW17_COUNT" -ge 1 ] 2>/dev/null; then
-            echo "  Only $GW17_COUNT device(s) — re-enrollment may have replaced records"
+            echo "  Only $GW17_COUNT device(s): re-enrollment may have replaced records"
             pass_test "GW-17"
         else
             fail_test "GW-17" "Expected at least 2 devices, got $GW17_COUNT"

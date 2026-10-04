@@ -134,7 +134,7 @@ COMPLIANT=$(wait_for_k8s_field configpolicy "fleet-baseline-${E2E_RUN_ID}" cfgd-
 NON_COMPLIANT=$(kubectl get configpolicy "fleet-baseline-${E2E_RUN_ID}" -n cfgd-system \
     -o jsonpath='{.status.nonCompliantCount}' 2>/dev/null || echo "0")
 
-echo "  Fleet policy — compliant: ${COMPLIANT:-0}, non-compliant: ${NON_COMPLIANT:-0}"
+echo "  Fleet policy: compliant: ${COMPLIANT:-0}, non-compliant: ${NON_COMPLIANT:-0}"
 
 if [ "${COMPLIANT:-0}" -ge 1 ]; then
     pass_test "FS-FLEET-04"

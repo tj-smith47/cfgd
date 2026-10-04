@@ -276,7 +276,7 @@ kubectl delete machineconfig "e2e-ephemeral-mc-${E2E_RUN_ID}" -n "$E2E_NAMESPACE
 # =================================================================
 # OP-ERR-04: Rapid create/delete: no reconcile panic
 # =================================================================
-begin_test "OP-ERR-04: Rapid create/delete — no reconcile panic"
+begin_test "OP-ERR-04: Rapid create/delete: no reconcile panic"
 
 # Record operator restart count before the test
 RESTARTS_BEFORE=$(kubectl get pods -n "$E2E_INSTALL_NS" -l "$E2E_OPERATOR_PODS" \

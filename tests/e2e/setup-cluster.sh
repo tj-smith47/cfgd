@@ -153,7 +153,7 @@ try_acquire_lease() {
     renew_epoch=$(lease_epoch "$renew")
     now_epoch=$(date -u +%s)
     if [ $((now_epoch - renew_epoch)) -gt "$LEASE_DURATION_SECONDS" ]; then
-        echo "  Lease held by ${holder} is expired — attempting steal"
+        echo "  Lease held by ${holder} is expired: attempting steal"
         # Guarded replace: only succeeds if the lease hasn't changed (e.g.
         # the dead holder revived, or another waiter stole first) since read.
         if lease_replace_at "$rv" && lease_held_by_us; then
@@ -441,7 +441,7 @@ build_and_push() {
             IMAGE_BUILT[$image]="false"
             return 0
         fi
-        echo "  ${image}: last-green unchanged but $ref missing from registry — rebuilding"
+        echo "  ${image}: last-green unchanged but $ref missing from registry: rebuilding"
     fi
 
     echo "  BUILD ${image}..."
@@ -704,16 +704,16 @@ elif [ -n "${CFGD_DEPLOY_MANIFESTS:-}" ] && [ -d "$CFGD_DEPLOY_MANIFESTS" ]; the
     warn_override_unused cfgd-operator "the tree at $CFGD_DEPLOY_MANIFESTS" \
         deployment cfgd-server cfgd-operator
     if [ "${IMAGE_BUILT[cfgd-operator]:-true}" != "true" ]; then
-        echo "  cfgd-operator image unchanged — skipping operator/server rollout restart"
+        echo "  cfgd-operator image unchanged: skipping operator/server rollout restart"
     else
-    echo "  Deployments applied from $CFGD_DEPLOY_MANIFESTS — restarting to pull :latest..."
+    echo "  Deployments applied from $CFGD_DEPLOY_MANIFESTS: restarting to pull :latest..."
 
     for deploy in cfgd-operator cfgd-server; do
         if kubectl get deployment "$deploy" -n cfgd-system >/dev/null 2>&1; then
             kubectl rollout restart "deployment/$deploy" -n cfgd-system 2>/dev/null || true
             # Wait for old pods to terminate (handles RWO PVC conflicts)
             kubectl rollout status "deployment/$deploy" -n cfgd-system --timeout=120s 2>/dev/null || {
-                echo "  Rollout stuck for $deploy — deleting old pods to release PVC..."
+                echo "  Rollout stuck for $deploy: deleting old pods to release PVC..."
                 kubectl delete pods -n cfgd-system -l "app=$deploy" --ignore-not-found --grace-period=5 --wait=false 2>/dev/null || true
                 kubectl rollout status "deployment/$deploy" -n cfgd-system --timeout=120s 2>/dev/null || true
             }
