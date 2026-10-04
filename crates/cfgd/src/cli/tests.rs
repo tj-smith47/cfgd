@@ -57129,6 +57129,106 @@ fn every_config_verb_call_passes_the_key_the_caller_typed() {
 /// function of `cfgd` and `cfgd-core` that reads a path variable from the
 /// environment must be one its row names. An unclassified const, a stale row,
 /// an unnamed reader and a function missing its expansion each fail naming it.
+/// The calls that read the process environment: `env::var` and `env::var_os`,
+/// plus every function among `rows` (`(name, code)`) whose body hands one of
+/// its `&str` parameters to a call already in the set, folded until the set
+/// stops growing, so a read behind a wrapper (`env_set(KEY)`) is still a read.
+fn env_read_needles(rows: &[(String, String)]) -> Vec<String> {
+    let mut needles = vec!["env::var".to_string(), "env::var_os".to_string()];
+    loop {
+        let before = needles.len();
+        for (name, code) in rows {
+            if needles.contains(name) {
+                continue;
+            }
+            let compact: String = code.split_whitespace().collect();
+            let forwards = str_parameters(code).iter().any(|param| {
+                needles.iter().any(|needle| {
+                    cfgd_core::test_helpers::calls_free_fn(code, needle)
+                        && [")", ","].iter().any(|close| {
+                            compact.contains(&format!("{needle}({param}{close}"))
+                                || compact.contains(&format!("{needle}(&{param}{close}"))
+                        })
+                })
+            });
+            if forwards {
+                needles.push(name.clone());
+            }
+        }
+        if needles.len() == before {
+            return needles;
+        }
+    }
+}
+
+/// The names of the `&str` parameters (any lifetime) the function whose CODE
+/// opens `code` declares.
+fn str_parameters(code: &str) -> Vec<String> {
+    let signature = code.split('{').next().unwrap_or_default();
+    let Some((_, rest)) = signature.split_once('(') else {
+        return Vec::new();
+    };
+    let mut depth = 0i32;
+    let mut params = vec![String::new()];
+    for c in rest.chars() {
+        match c {
+            ')' if depth == 0 => break,
+            '(' | '[' | '<' => depth += 1,
+            ')' | ']' | '>' => depth -= 1,
+            ',' if depth == 0 => {
+                params.push(String::new());
+                continue;
+            }
+            _ => {}
+        }
+        if let Some(param) = params.last_mut() {
+            param.push(c);
+        }
+    }
+    params
+        .iter()
+        .filter_map(|param| {
+            let (name, ty) = param.split_once(':')?;
+            let ty = ty.trim();
+            let is_str = ty == "&str" || (ty.starts_with("&'") && ty.ends_with(" str"));
+            is_str.then(|| name.trim().trim_start_matches("mut ").trim().to_string())
+        })
+        .collect()
+}
+
+/// Whether CODE `code` reads the environment through one of `needles`.
+fn reads_env(code: &str, needles: &[String]) -> bool {
+    needles
+        .iter()
+        .any(|needle| cfgd_core::test_helpers::calls_free_fn(code, needle))
+}
+
+/// A path read through a wrapper the derivation found, two wrappers deep, is
+/// still an environment read, and a function taking a `&str` it never hands
+/// to a read joins no list.
+#[test]
+fn the_env_read_needles_follow_a_read_behind_a_derived_helper() {
+    let rows: Vec<(String, String)> = cfgd_core::test_helpers::fixture_declarations(
+        "fn env_flag(key: &str) -> bool {\n    std::env::var_os(key).is_some()\n}\n\
+         fn flag_set(name: &'static str) -> bool {\n    env_flag(name)\n}\n\
+         fn planted() -> bool {\n    flag_set(PLANTED_PATH)\n}\n\
+         fn unrelated(key: &str) -> usize {\n    key.len()\n}\n",
+    )
+    .into_iter()
+    .map(|(name, _, code)| (name, code))
+    .collect();
+    let needles = env_read_needles(&rows);
+    assert_eq!(needles, ["env::var", "env::var_os", "env_flag", "flag_set"]);
+    let code_of = |name: &str| {
+        rows.iter()
+            .find(|(row, _)| row == name)
+            .map(|(_, code)| code.as_str())
+            .unwrap_or_default()
+    };
+    assert!(reads_env(code_of("planted"), &needles));
+    assert!(!reads_env(code_of("unrelated"), &needles));
+}
+
 #[test]
 fn every_path_flag_and_path_env_expands_a_leading_tilde() {
     use cfgd_core::test_helpers::{item_keyword, walked_file_body, workspace_root};
@@ -57367,7 +57467,19 @@ fn every_path_flag_and_path_env_expands_a_leading_tilde() {
     // variable beside an environment read is the function its row names.
     let declared =
         cfgd_core::test_helpers::workspace_declarations(cfgd_core::test_helpers::WORKSPACE_CRATES);
-    let reads_env = ["env::var(", "env::var_os(", "env_or("];
+    let rows: Vec<(String, String)> = declared
+        .rows
+        .iter()
+        .enumerate()
+        .map(|(i, (name, _, _))| (name.clone(), declared.code_of(i)))
+        .collect();
+    let needles = env_read_needles(&rows);
+    assert!(
+        needles.len() >= 3,
+        "the environment reads derived from the workspace are {needles:?}: `env_set` in \
+         cfgd-core/src/platform/session.rs forwards its key to `env::var_os`, so the \
+         derivation lost a wrapper it must find"
+    );
     let names = |code: &str, ident: &str| {
         code.match_indices(ident).any(|(at, _)| {
             let before = code[..at].chars().next_back();
@@ -57379,9 +57491,8 @@ fn every_path_flag_and_path_env_expands_a_leading_tilde() {
         })
     };
     let mut readers_seen = 0usize;
-    for (i, (name, _, _)) in declared.rows.iter().enumerate() {
-        let code = declared.code_of(i);
-        if !reads_env.iter().any(|read| code.contains(read)) {
+    for (i, (name, code)) in rows.iter().enumerate() {
+        if !reads_env(code, &needles) {
             continue;
         }
         let rel = cfgd_core::to_posix_string(
@@ -57391,7 +57502,7 @@ fn every_path_flag_and_path_env_expands_a_leading_tilde() {
                 .unwrap_or(declared.sites[i].1),
         );
         for (constant, class) in ENVS {
-            if !names(&code, constant) {
+            if !names(code, constant) {
                 continue;
             }
             let named = match class {
@@ -57412,7 +57523,8 @@ fn every_path_flag_and_path_env_expands_a_leading_tilde() {
     }
     assert!(
         readers_seen > 0,
-        "the reader walk found no production function reading a path variable, so it proves nothing"
+        "the reader walk, reading the environment through {needles:?}, found no production \
+         function reading a path variable, so it proves nothing"
     );
     assert!(
         offenders.is_empty(),
