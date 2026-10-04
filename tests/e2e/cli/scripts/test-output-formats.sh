@@ -52,7 +52,7 @@ else fail_test "OF07"; fi
 
 begin_test "OF08: module list --output json"
 run "${C[@]}" module list --output json
-# May output [] (empty array) or [{...}] (populated) — both are valid JSON
+# May output [] (empty array) or [{...}] (populated): both are valid JSON
 if assert_ok && (assert_contains "$OUTPUT" "[" || assert_contains "$OUTPUT" "{"); then
     pass_test "OF08"
 else fail_test "OF08"; fi
@@ -65,7 +65,7 @@ else fail_test "OF09"; fi
 
 begin_test "OF10: source list --output json"
 run "${C[@]}" source list --output json
-# May output [] (empty array) or [{...}] (populated) — both are valid JSON
+# May output [] (empty array) or [{...}] (populated): both are valid JSON
 if assert_ok; then
     pass_test "OF10"
 else fail_test "OF10"; fi

@@ -32,7 +32,7 @@ PF_PID=$(port_forward cfgd-system svc/cfgd-server "$GW_PORT" 8080)
 PF_HEALTH_PID=$(port_forward cfgd-system svc/cfgd-server "$GW_HEALTH_PORT" 8081)
 GW_URL="http://localhost:$GW_PORT"
 
-# Wait for gateway to be reachable via port-forward (use health endpoint — API requires auth)
+# Wait for gateway to be reachable via port-forward (use health endpoint: API requires auth)
 wait_for_url "http://localhost:$GW_HEALTH_PORT/readyz" 30
 
 echo "Gateway reachable at $GW_URL"
@@ -42,7 +42,7 @@ ADMIN_KEY=$(kubectl get deployment cfgd-server -n cfgd-system \
     -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="CFGD_API_KEY")].value}' 2>/dev/null || echo "")
 
 if [ -z "$ADMIN_KEY" ]; then
-    # CFGD_API_KEY not set on deployment — gateway runs in open mode (all requests are admin)
+    # CFGD_API_KEY not set on deployment: gateway runs in open mode (all requests are admin)
     echo "WARN: CFGD_API_KEY not set on deployment, gateway in open mode"
     ADMIN_KEY=""
 fi
@@ -57,7 +57,7 @@ gw_admin_auth_header() {
     if [ -n "${ADMIN_KEY:-}" ]; then
         echo "Authorization: Bearer $ADMIN_KEY"
     else
-        # Open mode — no auth needed, but curl -H "" is harmless
+        # Open mode: no auth needed, but curl -H "" is harmless
         echo "X-No-Auth: open-mode"
     fi
 }

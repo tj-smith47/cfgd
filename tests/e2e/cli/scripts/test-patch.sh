@@ -75,7 +75,7 @@ if grep -q 'editor: vim' "$PT_TGT/prefs.yaml" && grep -q 'theme: dark' "$PT_TGT/
     pass_test "PT03"
 else fail_test "PT03" "$(cat "$PT_TGT/prefs.yaml")"; fi
 
-begin_test "PT04: missing target — ensure writes a minimal document"
+begin_test "PT04: missing target: ensure writes a minimal document"
 if grep -q '"fresh": true' "$PT_TGT/created.json"; then
     pass_test "PT04"
 else fail_test "PT04" "$(cat "$PT_TGT/created.json" 2>/dev/null)"; fi

@@ -272,7 +272,7 @@ else
 fi
 
 # ═════════════════════════════════════════════════════
-# SECTION 44: system configurators — git (GC01)
+# SECTION 44: system configurators (git, GC01)
 # ═════════════════════════════════════════════════════
 
 if command -v git > /dev/null 2>&1; then
@@ -471,7 +471,7 @@ YAML
 
     # Update the source so cfgd picks up the new commit
     run "${EC[@]}" source update
-    # Ignore exit code — update may warn
+    # Ignore exit code: update may warn
 
     begin_test "EC03: apply --dry-run with non-compliant file fails constraint"
     SOPS_AGE_KEY_FILE="$EC_AGE_KEY" run "${EC[@]}" apply --dry-run
@@ -592,7 +592,7 @@ run "${C[@]}" profile create ""
 if assert_fail && echo "$OUTPUT" | grep -qiE "empty|invalid|cannot"; then
     pass_test "ERR09"
 else
-    # clap may reject before our validation — any failure is acceptable
+    # clap may reject before cfgd's own validation; any failure is acceptable
     if assert_fail; then
         pass_test "ERR09"
     else

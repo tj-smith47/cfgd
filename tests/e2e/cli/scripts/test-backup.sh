@@ -109,7 +109,7 @@ echo "clobbered-live-data" > "$BK_SRC"
 SNAP_COUNT_BEFORE=$(snap_count)
 run "${BC[@]}" backup restore notes --yes
 # The displaced contents go beside the source as the <source>.cfgd-backup
-# sidecar, never into the unit's snapshot history — so the snapshot set the
+# sidecar, never into the unit's snapshot history, so the snapshot set the
 # operator restores FROM does not grow when they restore.
 SNAP_COUNT_AFTER=$(snap_count)
 if assert_ok && [ "$(cat "$BK_SRC")" = "generation-three" ] \

@@ -1,6 +1,6 @@
 # shellcheck shell=bash
 # Gateway health probe tests (GW-01).
-# Sourced by run-all.sh — no shebang, no set, no source, no traps, no print_summary.
+# Sourced by run-all.sh: no shebang, no set, no source, no traps, no print_summary.
 
 # The health probe port-forward is already established by setup-gateway-env.sh
 # on GW_HEALTH_PORT (18081). Use it directly.
@@ -33,7 +33,7 @@ if [ "$GW01_PASS" = "true" ]; then
 else
     # Health probe port may not be exposed via the E2E cfgd-server Service.
     # Fall back to checking the gateway API port as a liveness indicator.
-    # /api/v1/devices requires auth — use admin key if available
+    # /api/v1/devices requires auth: use admin key if available
     GW01_AUTH_HEADER=""
     if [ -n "${ADMIN_KEY:-}" ]; then
         GW01_AUTH_HEADER="Authorization: Bearer $ADMIN_KEY"

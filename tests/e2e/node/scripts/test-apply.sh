@@ -1,6 +1,6 @@
 # shellcheck shell=bash
 # Node E2E tests: Apply (binary-level)
-# Sourced by run-all.sh — do NOT set traps or pipefail here.
+# Sourced by run-all.sh: do NOT set traps or pipefail here.
 
 echo ""
 echo "=== Apply Tests ==="
@@ -127,7 +127,7 @@ else
 fi
 
 # =================================================================
-# BIN-07: Idempotency — apply again shows nothing to do
+# BIN-07: Idempotency: apply again shows nothing to do
 # =================================================================
 begin_test "BIN-07: Apply idempotency"
 RC=0
@@ -147,7 +147,7 @@ echo "=== Error Path Tests ==="
 # BIN-ERR-01: Read-only sysctl parameter
 # =================================================================
 begin_test "BIN-ERR-01: Read-only sysctl parameter"
-# kernel.ostype is read-only (always "Linux") — writing to it must fail gracefully.
+# kernel.ostype is read-only (always "Linux"): writing to it must fail gracefully.
 exec_in_pod bash -c 'cat > /etc/cfgd/profiles/err01-readonly-sysctl.yaml << "INNEREOF"
 apiVersion: cfgd.io/v1alpha1
 kind: Profile
@@ -310,7 +310,7 @@ echo "$ERR04_OUTPUT" | head -10 | sed 's/^/    /'
 if echo "$ERR04_OUTPUT" | grep -qi "permission\|denied\|error\|failed\|cannot"; then
     pass_test "BIN-ERR-04"
 else
-    # Even if it succeeds with nothing to do (no drift), that's fine —
+    # Even if it succeeds with nothing to do (no drift), that's fine:
     # the point is it didn't crash
     pass_test "BIN-ERR-04"
 fi

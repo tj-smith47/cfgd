@@ -8,7 +8,7 @@ echo "=== cfgd explain tests ==="
 
 # Tests extracted verbatim from run-exhaustive-tests.sh
 
-begin_test "E01: explain (no args — lists types)"
+begin_test "E01: explain (no args: lists types)"
 run "${C[@]}" explain
 if assert_ok; then
     pass_test "E01"
@@ -82,7 +82,7 @@ else fail_test "E12"; fi
 
 # SECTION 41: explain additional types
 
-begin_test "E13: explain clusterpolicy (not in schema — fails gracefully)"
+begin_test "E13: explain clusterpolicy (not in schema: fails gracefully)"
 run "${C[@]}" explain clusterpolicy
 if assert_fail && assert_contains "$OUTPUT" "Unknown resource type"; then
     pass_test "E13"

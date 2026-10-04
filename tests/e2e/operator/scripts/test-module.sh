@@ -1,14 +1,14 @@
 # shellcheck shell=bash
 # Operator E2E tests: Module
-# Sourced by run-all.sh — do NOT set traps or pipefail here.
+# Sourced by run-all.sh: do NOT set traps or pipefail here.
 
 echo ""
 echo "=== Module Tests ==="
 
 # =================================================================
-# OP-MOD-01: Module CRD — create and verify controller sets status
+# OP-MOD-01: Module CRD: create and verify controller sets status
 # =================================================================
-begin_test "OP-MOD-01: Module CRD — controller sets status"
+begin_test "OP-MOD-01: Module CRD: controller sets status"
 
 kubectl apply -f - <<EOF
 apiVersion: cfgd.io/v1alpha1
@@ -66,9 +66,9 @@ else
 fi
 
 # =================================================================
-# OP-MOD-02: Module webhook — rejects invalid OCI refs and malformed PEM
+# OP-MOD-02: Module webhook: rejects invalid OCI refs and malformed PEM
 # =================================================================
-begin_test "OP-MOD-02: Module webhook — rejects invalid specs"
+begin_test "OP-MOD-02: Module webhook: rejects invalid specs"
 
 # Test 1: Invalid OCI reference (missing tag/digest)
 RESULT_INVALID_OCI=$(kubectl apply -f - 2>&1 <<EOF || true

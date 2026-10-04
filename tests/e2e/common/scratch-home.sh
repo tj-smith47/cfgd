@@ -8,7 +8,7 @@
 # redirect, every path cfgd resolves from $HOME or $XDG_* is that user's own:
 # `--from` with no destination resolves to ~/.config/cfgd, `secret` writes
 # ~/.config/cfgd/age-key.txt, and an apply deploys into the real home. All three
-# happened — see .claude/rules/testing.md.
+# happened: see .claude/rules/testing.md.
 
 if [ -n "${E2E_SCRATCH_HOME_LOADED:-}" ]; then return 0; fi
 E2E_SCRATCH_HOME_LOADED=1
@@ -80,7 +80,7 @@ fi
 
 # Every line carries `|| true`: the group is the left side of a pipeline, so it
 # runs in a subshell that inherits `set -e`, and one unreadable subdirectory
-# would abort it before the two `git` lines ran — leaving a shorter digest that
+# would abort it before the two `git` lines ran, leaving a shorter digest that
 # still compares equal to itself and a guard weaker than it reads.
 #
 # `cksum` rather than a `find -printf` format: the CLI suite also runs on macOS,

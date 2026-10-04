@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# run-all.sh for node tests — sources domain files in same process
+# run-all.sh for node tests: sources domain files in same process
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 

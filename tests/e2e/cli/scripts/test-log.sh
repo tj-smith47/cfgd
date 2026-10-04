@@ -34,7 +34,7 @@ begin_test "L04: log --show-output <apply_id>"
 # table's first column when that yields none
 LOG_ID=$("$CFGD" "${C[@]}" log -n 1 --output json 2>/dev/null | grep -oE '"id":\s*[0-9]+' | head -1 | grep -oE '[0-9]+' || echo "")
 if [ -z "$LOG_ID" ]; then
-    # Fallback: parse table output — ID is the first number on the data line
+    # Fallback: parse table output: ID is the first number on the data line
     LOG_ID=$("$CFGD" "${C[@]}" log -n 1 2>&1 | grep -E '^[0-9]' | awk '{print $1}' | head -1 || echo "")
 fi
 if [ -n "$LOG_ID" ]; then

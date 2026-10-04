@@ -236,7 +236,7 @@ else
 fi
 
 begin_test "RB08: rollback log entry"
-# Use the main config dir — we just need to verify that rollback creates a log entry
+# Use the main config dir: the check only verifies that rollback creates a log entry
 RB08_ID=$("$CFGD" "${C[@]}" log -n 1 --output json 2>/dev/null | grep -oE '"id":\s*[0-9]+' | head -1 | grep -oE '[0-9]+' || echo "")
 if [ -z "$RB08_ID" ]; then
     RB08_ID=$("$CFGD" "${C[@]}" log -n 1 2>&1 | grep -E '^[0-9]' | awk '{print $1}' | head -1 || echo "")

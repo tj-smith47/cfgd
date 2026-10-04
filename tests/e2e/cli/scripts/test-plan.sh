@@ -64,7 +64,7 @@ else fail_test "PL09"; fi
 
 begin_test "PL10: plan --module (nonexistent)"
 run "${C[@]}" plan --module nonexistent
-# A typo'd module name errors loudly instead of rendering an empty plan —
+# A typo'd module name errors loudly instead of rendering an empty plan:
 # silence here would read as "nonexistent is already satisfied".
 if assert_fail && echo "$OUTPUT" | grep -q "module not found: nonexistent"; then
     pass_test "PL10"

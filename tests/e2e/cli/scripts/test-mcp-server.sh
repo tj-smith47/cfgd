@@ -14,7 +14,7 @@ mcp_send() {
     local out
     out=$(echo "$input" | timeout 10 "$CFGD" "${C[@]}" mcp-server 2>/dev/null) || rc=$?
     # timeout exits 124 when it kills the process; the server exits 0 on EOF.
-    # Both are acceptable — we care about the stdout content.
+    # Both are acceptable: the check reads the stdout content.
     if [ "$rc" -ne 0 ] && [ "$rc" -ne 124 ]; then
         MCP_OUTPUT=""
         MCP_RC=$rc

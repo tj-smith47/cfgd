@@ -1,6 +1,6 @@
 # shellcheck shell=bash
 # Gateway API & auth tests (GW-11 through GW-14, GW-19, GW-20).
-# Sourced by run-all.sh — no shebang, no set, no source, no traps, no print_summary.
+# Sourced by run-all.sh: no shebang, no set, no source, no traps, no print_summary.
 
 # Helper: build auth header for device API calls.
 gw_device_auth_header() {

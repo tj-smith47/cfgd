@@ -1,6 +1,6 @@
 # shellcheck shell=bash
 # Gateway checkin tests (GW-07 through GW-10, GW-18, GW-31).
-# Sourced by run-all.sh — no shebang, no set, no source, no traps, no print_summary.
+# Sourced by run-all.sh: no shebang, no set, no source, no traps, no print_summary.
 
 # =================================================================
 # GW-07: Device checkin happy path
@@ -94,7 +94,7 @@ else
         echo ""
 
         if [ "$GW09_DEVICE_CODE" = "200" ] && echo "$GW09_DEVICE_BODY" | jq -e '.complianceSummary' >/dev/null 2>&1; then
-            # Verify the compliance data matches what we sent
+            # Verify the compliance data matches what the check-in sent
             GW09_STORED_COMPLIANT=$(echo "$GW09_DEVICE_BODY" | jq -r '.complianceSummary.compliant // empty' 2>/dev/null)
             if [ "$GW09_STORED_COMPLIANT" = "true" ]; then
                 pass_test "GW-09"
@@ -129,7 +129,7 @@ case "$GW10_HTTP_CODE" in
         pass_test "GW-10"
         ;;
     200)
-        # Gateway may be in open mode (no CFGD_API_KEY set) — any Bearer token is accepted
+        # Gateway may be in open mode (no CFGD_API_KEY set): any Bearer token is accepted
         if [ -z "$ADMIN_KEY" ]; then
             skip_test "GW-10" "Gateway in open mode (no CFGD_API_KEY), cannot test auth rejection"
         else

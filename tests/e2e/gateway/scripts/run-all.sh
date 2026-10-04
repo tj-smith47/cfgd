@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# run-all.sh for gateway tests — sources domain files in same process
+# run-all.sh for gateway tests: sources domain files in same process
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
@@ -24,7 +24,7 @@ trap 'stop_port_forward "${PF_PID:-}"; stop_port_forward "${PF_HEALTH_PID:-}"; k
 # shellcheck source=tests/e2e/gateway/scripts/setup-gateway-env.sh
 source "$SCRIPT_DIR/setup-gateway-env.sh"
 
-# Disable set -e for the test body — individual test failures are tracked by
+# Disable set -e for the test body: individual test failures are tracked by
 # fail_test/pass_test, and print_summary returns non-zero if any test failed.
 set +e
 

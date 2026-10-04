@@ -88,7 +88,7 @@ else fail_test "A13"; fi
 
 begin_test "A14: apply --module (nonexistent module)"
 run "${C[@]}" apply --dry-run --module nonexistent
-# A typo'd module name errors loudly instead of converging an empty plan —
+# A typo'd module name errors loudly instead of converging an empty plan:
 # silence here would read as "nonexistent is already satisfied".
 if assert_fail && echo "$OUTPUT" | grep -q "module not found: nonexistent"; then
     pass_test "A14"
@@ -170,7 +170,7 @@ if [ -f "$ENV_FILE" ] && grep -q "EDITOR" "$ENV_FILE"; then
     pass_test "A21"
 else
     # env file might not be created if profile has no env vars
-    # check if our profile actually has env
+    # check if the test profile actually has env
     if grep -q "env:" "$CFG/profiles/dev.yaml" 2>/dev/null; then
         fail_test "A21" "Profile has env but ~/.cfgd.env missing or incomplete"
     else
@@ -229,7 +229,7 @@ YAML
 setup_config_dir "$A23_CFG" "$A23_TGT"
 A23_C=(--config "$A23_CFG/cfgd.yaml" --state-dir "$A23_STATE" --no-color)
 run "${A23_C[@]}" apply --dry-run --module a23-mod
-# The target file must NOT exist — dry-run should not deploy
+# The target file must NOT exist: dry-run should not deploy
 if [ ! -e "$A23_TGT/.a23.conf" ]; then
     pass_test "A23"
 else

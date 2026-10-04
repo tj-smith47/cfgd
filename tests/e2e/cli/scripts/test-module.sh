@@ -196,30 +196,30 @@ else
     fi
 fi
 
-begin_test "M29: module upgrade (no remote — should fail gracefully)"
+begin_test "M29: module upgrade (no remote: should fail gracefully)"
 run "${C[@]}" module upgrade nvim --yes
-# No remote source for local module — expected to fail
+# No remote source for local module: expected to fail
 if assert_fail; then
     pass_test "M29"
 else fail_test "M29" "expected failure for local-only module"; fi
 
 begin_test "M30: module upgrade --ref (no remote)"
 run "${C[@]}" module upgrade nvim --ref main --yes
-# No remote source — expected to fail
+# No remote source: expected to fail
 if assert_fail; then
     pass_test "M30"
 else fail_test "M30" "expected failure for local-only module"; fi
 
 begin_test "M31: module upgrade --allow-unsigned (no remote)"
 run "${C[@]}" module upgrade nvim --allow-unsigned --yes
-# No remote source — expected to fail
+# No remote source: expected to fail
 if assert_fail; then
     pass_test "M31"
 else fail_test "M31" "expected failure for local-only module"; fi
 
 begin_test "M32: module search (no registry configured)"
 run "${C[@]}" module search neovim
-# No registry configured — skip if search unavailable
+# No registry configured: skip if search unavailable
 if [ "$RC" -eq 0 ]; then
     pass_test "M32"
 else
@@ -338,7 +338,7 @@ if assert_fail; then
     pass_test "MX02"
 else fail_test "MX02"; fi
 
-# SECTION 29: module OCI (push/pull) — requires registry
+# SECTION 29: module OCI (push/pull), which requires a registry
 
 begin_test "OCI01: module push"
 OCI_DIR="$SCRATCH/oci-push-test"
@@ -373,7 +373,7 @@ if [ "$OCI_PUSH_OK" = "true" ]; then
         pass_test "OCI02"
     else fail_test "OCI02"; fi
 else
-    skip_test "OCI02" "OCI01 push failed — no artifact to pull"
+    skip_test "OCI02" "OCI01 push failed: no artifact to pull"
 fi
 
 begin_test "OCI03: module push --platform"
@@ -383,7 +383,7 @@ if [ "$OCI_PUSH_OK" = "true" ]; then
         pass_test "OCI03"
     else fail_test "OCI03"; fi
 else
-    skip_test "OCI03" "OCI01 push failed — registry unavailable"
+    skip_test "OCI03" "OCI01 push failed: registry unavailable"
 fi
 
 # SECTION 30: module keys
@@ -421,7 +421,7 @@ mkdir -p "$BUILD_DIR"
 cp "$OCI_DIR/module.yaml" "$BUILD_DIR/"
 mkdir -p "$BUILD_DIR/bin"
 cp "$OCI_DIR/bin/hello.sh" "$BUILD_DIR/bin/"
-# Build requires docker/podman — skip if unavailable
+# Build requires docker/podman: skip if unavailable
 run "${C[@]}" module build "$BUILD_DIR" --target linux/amd64
 if [ "$RC" -eq 0 ]; then
     pass_test "MB02"

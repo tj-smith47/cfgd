@@ -21,7 +21,7 @@ if assert_ok; then
 else fail_test "SEC02"; fi
 
 if command -v age-keygen > /dev/null 2>&1 && command -v sops > /dev/null 2>&1; then
-    # The age key goes in the default config dir cfgd resolves — which is the
+    # The age key goes in the default config dir cfgd resolves, which is the
     # scratch home's, redirected once in common/scratch-home.sh.
     CFGD_DEFAULT_DIR="$XDG_CONFIG_HOME/cfgd"
     mkdir -p "$CFGD_DEFAULT_DIR"

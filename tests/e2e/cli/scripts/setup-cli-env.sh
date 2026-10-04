@@ -11,7 +11,7 @@ CLI_ENV_LOADED=1
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Scratch directory (each domain file gets its own subdir). Claimed BEFORE
-# helpers.sh, which redirects $HOME into whatever scratch root is already set —
+# helpers.sh, which redirects $HOME into whatever scratch root is already set:
 # so a suite run on its own still owns, and removes, the root its home lives in.
 if [ -z "${CLI_SCRATCH:-}" ]; then
     CLI_SCRATCH=$(mktemp -d)
@@ -86,7 +86,7 @@ assert_ok() {
     if [ "$RC" -ne 0 ]; then
         echo "  ASSERT FAILED: expected exit 0, got $RC"
         # Unlike the pass-path prints scattered through this suite, this only
-        # runs on an unexpected failure — truncating here risks cutting the
+        # runs on an unexpected failure; truncating here risks cutting the
         # one line that names the actual error, so print all of it.
         # shellcheck disable=SC2001  # sed indents each line; an expansion cannot
         echo "$OUTPUT" | sed 's/^/    /'
@@ -115,7 +115,7 @@ C=(--config "$CONF" --state-dir "$STATE" --no-color)
 export CFGD_ALLOW_LOCAL_SOURCES=1
 
 # Every cache read/write stays inside the scratch tree. Without this, source
-# clones land in the operator's real ~/.cache/cfgd/sources — where a stale
+# clones land in the operator's real ~/.cache/cfgd/sources, where a stale
 # clone from an earlier run (keyed by source NAME alone) redirects this run's
 # fetches at whatever origin that clone recorded. CFGD_CACHE_DIR is the
 # verbatim highest-precedence seam on every OS (XDG only folds in on Linux).

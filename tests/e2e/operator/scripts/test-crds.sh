@@ -1,6 +1,6 @@
 # shellcheck shell=bash
 # Operator E2E tests: CRDs
-# Sourced by run-all.sh — do NOT set traps or pipefail here.
+# Sourced by run-all.sh: do NOT set traps or pipefail here.
 
 echo ""
 echo "=== CRD Tests ==="

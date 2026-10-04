@@ -1,14 +1,14 @@
 # shellcheck shell=bash
 # Full-stack E2E tests: Debug
-# Sourced by run-all.sh — do NOT set traps or pipefail here.
+# Sourced by run-all.sh: do NOT set traps or pipefail here.
 
 echo ""
 echo "=== Debug Tests ==="
 
 # =================================================================
-# FS-DEBUG-01: Debug flow — pod with Debug mountPolicy module
+# FS-DEBUG-01: Debug flow: pod with Debug mountPolicy module
 # =================================================================
-begin_test "FS-DEBUG-01: Debug flow — mountPolicy Debug module"
+begin_test "FS-DEBUG-01: Debug flow: mountPolicy Debug module"
 
 # Create a Module with Debug mountPolicy
 kubectl apply -f - <<EOF
@@ -45,7 +45,7 @@ spec:
     - name: debug-tools-${E2E_RUN_ID}
 EOF
 
-# Create a pod (no annotation — debug modules come from policy)
+# Create a pod (no annotation: debug modules come from policy)
 kubectl apply -n "e2e-debug-flow-${E2E_RUN_ID}" -f - <<EOF
 apiVersion: v1
 kind: Pod
@@ -73,7 +73,7 @@ echo "  App container volumeMounts: ${APP_VMOUNTS:-none}"
 echo "  App container env: ${APP_ENV:-none}"
 
 if [ "$DEBUG_CSI" = "$CSI_DRIVER_NAME" ]; then
-    # Volume exists — check that it's NOT mounted on the app container
+    # Volume exists: check that it's NOT mounted on the app container
     if ! echo "$APP_VMOUNTS" | grep -q "debug-tools-${E2E_RUN_ID}"; then
         pass_test "FS-DEBUG-01"
     else

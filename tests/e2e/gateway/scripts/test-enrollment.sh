@@ -1,6 +1,6 @@
 # shellcheck shell=bash
 # Gateway enrollment tests (GW-02 through GW-06).
-# Sourced by run-all.sh — no shebang, no set, no source, no traps, no print_summary.
+# Sourced by run-all.sh: no shebang, no set, no source, no traps, no print_summary.
 
 # =================================================================
 # GW-02: Token-based enrollment
@@ -334,7 +334,7 @@ else
                         pass_test "GW-06"
                         ;;
                     201)
-                        # Server allows re-enrollment (upsert behavior) — credential is replaced.
+                        # Server allows re-enrollment (upsert behavior): credential is replaced.
                         # This is a valid design: re-enrollment rotates the device API key.
                         echo "  Server permits re-enrollment with new token (upsert semantics)"
                         pass_test "GW-06"
