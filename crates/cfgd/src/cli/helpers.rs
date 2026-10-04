@@ -1376,6 +1376,12 @@ pub fn settle_config_path(
     // file, where `load_config` inferring alone would leave `config_dir()`
     // deriving `profiles/` from the wrong parent.
     let config = cfgd_core::config::resolve_config_path(&config);
+    // A leading `~` survived only because no home directory resolves. Joined
+    // to the working directory it would name a file nobody meant, and the
+    // loader reports the unset home only for the path as written.
+    if config.starts_with("~") {
+        return config;
+    }
     // A relative path would otherwise reach every derivation of the config
     // directory verbatim, and a script hook resolves against that directory
     // while its process runs in the home directory.

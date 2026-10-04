@@ -621,3 +621,82 @@ fn a_secret_verb_over_an_unparseable_config_is_the_config_domain_in_json() {
     let v = json_refusal_against(&config, &["secret", "encrypt", target.to_str().unwrap()]);
     assert_eq!(v["error"], "config", "{v}");
 }
+
+/// `cfgd` with no home directory to resolve, so a `~` in the config path
+/// stays a literal `~`.
+fn run_homeless(args: &[&str]) -> (String, String, Option<i32>) {
+    let out = cfgd_bin()
+        .unwrap()
+        .env_remove("HOME")
+        .env_remove("USERPROFILE")
+        .env_remove("XDG_CONFIG_HOME")
+        .args(args)
+        .output()
+        .unwrap();
+    (
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+        out.status.code(),
+    )
+}
+
+const HOME_UNRESOLVED: &str = "cannot resolve home directory (HOME unset) to locate config at";
+
+/// A `--config` under `~` with no home set is refused as an unset home,
+/// naming the path as written, under table and json output alike.
+#[test]
+fn a_tilde_config_with_no_home_reports_the_unset_home() {
+    let (_, stderr, code) = run_homeless(&["status", "--config", "~/cfgd.yaml"]);
+    assert_eq!(
+        code,
+        Some(3),
+        "an unresolvable home exits NoConfig(3): {stderr}"
+    );
+    assert!(
+        stderr.contains(&format!("{HOME_UNRESOLVED} ~/cfgd.yaml")),
+        "stderr: {stderr:?}"
+    );
+
+    let (stdout, _, code) = run_homeless(&["status", "--config", "~/cfgd.yaml", "-o", "json"]);
+    assert_eq!(
+        code,
+        Some(3),
+        "an unresolvable home exits NoConfig(3): {stdout}"
+    );
+    let v = parse_single_json(&stdout);
+    assert_eq!(v["error"], "config", "payload: {v}");
+    assert!(
+        v["message"]
+            .as_str()
+            .is_some_and(|m| m.contains(&format!("{HOME_UNRESOLVED} ~/cfgd.yaml"))),
+        "payload: {v}"
+    );
+}
+
+/// The default config location with no home set. Linux and macOS spell it
+/// under `~`, so the run reports the unset home; Windows finds its config
+/// root through a known-folder lookup that needs no home variable, so the
+/// run reports the document that is not there.
+#[test]
+fn the_default_config_with_no_home_names_what_is_missing() {
+    let expected = if cfg!(windows) {
+        "config file not found: "
+    } else {
+        HOME_UNRESOLVED
+    };
+    for format in ["table", "json"] {
+        let (stdout, stderr, code) = run_homeless(&["status", "-o", format]);
+        assert_eq!(code, Some(3), "{format}: exits NoConfig(3): {stderr}");
+        let reported = if format == "json" {
+            let v = parse_single_json(&stdout);
+            v["message"].as_str().unwrap_or_default().to_string()
+        } else {
+            stderr
+        };
+        assert!(reported.contains(expected), "{format}: {reported:?}");
+        assert!(
+            !reported.contains("/~/") && !reported.contains("\\~\\"),
+            "{format}: a `~` joined under another directory: {reported:?}"
+        );
+    }
+}
