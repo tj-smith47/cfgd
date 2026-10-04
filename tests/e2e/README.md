@@ -359,9 +359,20 @@ wait_for_deleted 60 namespace "$NS_A"
 wait_for_injection "$NS" "my-module:v1"     # a server-side dry run comes back with the CSI volume
 ```
 
+A refresh that has to outlive the step starting it, such as the run's heartbeat or
+the setup lease renewal, runs through `run_every <interval_s> <command...>`, the one
+background cadence in `helpers.sh`:
+
+```bash
+run_every "$HEARTBEAT_INTERVAL_SECONDS" _heartbeat_beat
+HEARTBEAT_PID=$!
+```
+
 `common/test-waits.sh` (run by `task e2e:tags:check`) fails on a `sleep` anywhere
-else under `tests/e2e/`, and on one in a `helpers.sh` function whose body checks no
-deadline (`SECONDS`, `deadline` or `tries`). A sleep that waits on wall-clock
-behaviour itself, such as a timestamp with one-second resolution or a renewal cadence,
-carries `# sleep-ok: <why>` on its line, and the check prints every such line with
-its reason.
+else under `tests/e2e/`, and on one in a `helpers.sh` function whose body has no
+deadline test: a `[`, `[[` or `((` test naming `SECONDS`, `$deadline` or `$tries`.
+It reads every way bash runs `sleep` as a command, wrappers such as `timeout`, `env`
+and `exec_in_pod`, `kubectl exec ... --` and `sh -c` scripts included, and prints
+`run_every` under Cadences. A sleep that waits on wall-clock behaviour under test,
+such as a timestamp with one-second resolution, carries `# sleep-ok: <why>` on its
+line, and the check prints every such line with its reason.

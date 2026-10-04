@@ -19,3 +19,4 @@ STUB
 echo "sleep 3 is not run"
 printf '%s\n' sleep
 grep -c sleep stub.sh
+grep -c 'sleep 1' stub.sh
