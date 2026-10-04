@@ -2,8 +2,8 @@
 # Checks that every wait in an e2e script is a bounded poll on the state the
 # next step reads. A `sleep` command may run only:
 #   - inside a function of common/helpers.sh whose body tests a deadline: a
-#     `[`, `[[` or `((` test naming SECONDS, $deadline or $tries outside a
-#     quoted string of more than one word;
+#     `[`, `[[` or `((` test at a command position naming SECONDS, $deadline
+#     or $tries outside a quoted string of more than one word;
 #   - inside run_every, the one background cadence in common/helpers.sh, which
 #     is printed under Cadences;
 #   - on a line carrying `# sleep-ok: <why>`, kept for a wait on wall-clock
@@ -104,9 +104,10 @@ scan_sleeps() {
             QSLEEP_RE = CMD_POS "\"sleep\"" SLEEP_END
             # The opening quote of a shell -c or eval script.
             DASH_C_RE = "(^|[^A-Za-z0-9_])((ba|da|k|z)?sh([[:space:]]+-[A-Za-z]+)*[[:space:]]+-[A-Za-z]*c|eval)[[:space:]]+[\047\"]"
-            # A deadline test: a [, [[ or (( (an arithmetic command; a $(( is no test)
-            # whose text names SECONDS, $deadline or $tries as whole words.
-            TEST_RE = "(\\[|(^|[^$])\\(\\()[^]]*([^A-Za-z0-9_]SECONDS|\\$\\{?(deadline|tries))([^A-Za-z0-9_]|$)"
+            # A deadline test: a [, [[ or (( at a command position (a $(( is no
+            # test, and neither is a bracket among the words an echo prints) whose text
+            # names SECONDS, $deadline or $tries as whole words.
+            TEST_RE = "(^|[;&|!]|(if|while|until|elif)[[:space:]])[[:space:]]*(\\[\\[?|\\(\\()[^]]*([^A-Za-z0-9_]SECONDS|\\$\\{?(deadline|tries))([^A-Za-z0-9_]|$)"
         }
         # unprose(code): code with each quoted string holding a space or a
         # bracket emptied, so a message such as "waiting [until $deadline]" is
@@ -276,6 +277,8 @@ probe "$(fixture_tree substring-helper)" fail "a helpers.sh function testing a w
 probe "$(fixture_tree tries-left-helper)" fail "a helpers.sh function testing a word that only starts with tries fails the walk" \
     '^SLEEP .*/common/helpers.sh:6 .*function settle whose body tests no deadline'
 probe "$(fixture_tree arith-deadline-helper)" fail "a helpers.sh function whose deadline is only a \$(( )) expansion fails the walk" \
+    '^SLEEP .*/common/helpers.sh:5 .*function settle whose body tests no deadline'
+probe "$(fixture_tree unquoted-echo-helper)" fail "a helpers.sh function whose only bracketed deadline is an echo's words fails the walk" \
     '^SLEEP .*/common/helpers.sh:5 .*function settle whose body tests no deadline'
 probe "$(fixture_tree nested-helpers-path)" fail "a common/helpers.sh below the walked tree's own is a suite script" \
     '^SLEEP .*/foo/common/helpers.sh:8 runs outside common/helpers.sh'
