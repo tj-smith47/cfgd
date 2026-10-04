@@ -347,6 +347,35 @@ checks did not happen: `common/test-verdicts.sh` fails on a `pass_test` that
 follows such a note in the same branch, unless that line carries
 `# verdict-ok: <why>`.
 
+Three more scans read every script under `tests/e2e/`. Each one also fails
+when a script it listed never reached its reader, naming the script.
+
+- Existence (`common/test-verdicts.sh`, prints `EXIST`): a `pass_test` guarded
+  only by `-n`, `-s` or `!=` against an empty value, or by an elif that only
+  re-reads an object with a bare `kubectl get` or `k8s_exists`. Compare the
+  value the fixture determines. Hatch: `# verdict-ok: <why>`. Fixture marker:
+  `# want-exist`.
+- Absence (`common/test-verdicts.sh`, prints `ABSENT`): a `pass_test` that
+  takes empty output as "nothing there" from a `$(...)` whose fallback prints
+  nothing (`|| echo ""`, `|| true`, `|| :`, `|| printf ""`), so a failed read
+  passes. Capture the read's exit code on its own line and fail on a failed
+  read. Hatch: `# verdict-ok: <why>`. Fixture marker: `# want-absent`.
+- Wording (`common/test-wording.sh`, prints `WORDING`): an em dash anywhere, a
+  first-person word in a comment or a message, or a contrast frame in a
+  comment, read from the Contrast frames section of
+  `.claude/scripts/commit-wording.txt`. Hatch: `# wording-ok: <why>`, printed
+  with its why on every run.
+
+```bash
+DS_RC=0
+DS=$(kubectl get ds -n "$NS" -o name 2>/dev/null) || DS_RC=$?
+if [ "$DS_RC" -ne 0 ]; then
+    fail_test "T25" "Could not list the daemonsets in $NS (kubectl exit $DS_RC)"
+elif [ -z "$DS" ]; then
+    pass_test "T25"
+fi
+```
+
 A step that needs something to happen first waits on that state through a helper in
 `common/helpers.sh`, which polls up to a deadline and says on timeout what it waited
 for:

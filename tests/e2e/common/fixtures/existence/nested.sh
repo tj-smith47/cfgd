@@ -7,5 +7,5 @@ if [ -n "$S" ]; then
     if [ "$S" = "ok" ]; then
         pass_test "E-22"
     fi
-    pass_test "E-23" # want-flag
+    pass_test "E-23" # want-exist
 fi

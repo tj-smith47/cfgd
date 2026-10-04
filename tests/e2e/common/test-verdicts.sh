@@ -22,7 +22,7 @@
 # that failed then passes as "nothing there"; the read's exit code, captured
 # on its own, is what tells the two apart. The fixtures under
 # common/fixtures/existence/ mark each pass_test the scan has to flag with
-# `# want-flag` (existence) or `# want-absent` (absence).
+# `# want-exist` (existence) or `# want-absent` (absence).
 #
 # A pass_test line carrying `# verdict-ok: <why>` is exempt from both.
 #
@@ -263,7 +263,7 @@ fi
 
 fixtures="$here/fixtures/existence"
 existence_want="$({
-    grep -n 'want-flag' "$fixtures"/*.sh | cut -d: -f1,2 | sed 's/^/EXIST /'
+    grep -n 'want-exist' "$fixtures"/*.sh | cut -d: -f1,2 | sed 's/^/EXIST /'
     grep -n 'want-absent' "$fixtures"/*.sh | cut -d: -f1,2 | sed 's/^/ABSENT /'
 } | LC_ALL=C sort)"
 existence_got="$(find "$fixtures" -name '*.sh' | LC_ALL=C sort | scan_existence_files | grep -v '^scanned ' | LC_ALL=C sort)"
