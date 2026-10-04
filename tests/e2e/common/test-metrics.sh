@@ -95,7 +95,7 @@ min_scanned_files=40
 # listed never reached awk (each one is named).
 scan_hand_matches() {
     local files="$scratch/scan-files" read="$scratch/scan-read"
-    if ! find "$@" -name '*.sh' ! -name helpers.sh ! -name test-metrics.sh -type f > "$files"; then
+    if ! find "$@" -name '*.sh' ! -name helpers.sh ! -name test-metrics.sh > "$files"; then
         echo "scan_hand_matches: find failed under $*" >&2
         return 1
     fi
@@ -146,6 +146,16 @@ if [ "$census_rc" -ne 0 ] && grep -q '^scan_hand_matches: .*/only\.sh was listed
     pass "a hand-match scan names a script find listed and awk never read"
 else
     fail "a hand-match scan that lost a script exited $census_rc: $census"
+fi
+
+mkdir -p "$scratch/dangling"
+printf 'x\n' > "$scratch/dangling/a.sh"
+ln -s "$scratch/nowhere.sh" "$scratch/dangling/b.sh"
+census="$(scan_hand_matches "$scratch/dangling" 2>&1)" && census_rc=0 || census_rc=$?
+if [ "$census_rc" -ne 0 ] && grep -q '^scan_hand_matches: .*/b\.sh was listed and never read$' <<<"$census"; then
+    pass "a hand-match scan names a script awk cannot open"
+else
+    fail "a hand-match scan over a dangling script exited $census_rc: $census"
 fi
 
 if scan_hand_matches "$scratch/no-such-dir" > /dev/null 2>&1; then
