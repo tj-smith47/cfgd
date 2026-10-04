@@ -980,21 +980,21 @@ fn fold_path_case_windows(s: String) -> String {
     s.to_ascii_lowercase()
 }
 
-/// The environment variables [`home_dir_var`] reads the home directory from,
+/// The environment variables `home_dir_var` reads the home directory from,
 /// as an unset-home message names them.
 #[cfg(not(windows))]
 pub const HOME_ENV_VARS: &str = "HOME";
-/// The environment variables [`home_dir_var`] reads the home directory from,
+/// The environment variables `home_dir_var` reads the home directory from,
 /// as an unset-home message names them.
 #[cfg(windows)]
 pub const HOME_ENV_VARS: &str = "USERPROFILE and HOME";
 
 /// The variable an unset-home message tells the reader to set: the one
-/// [`home_dir_var`] reads first.
+/// `home_dir_var` reads first.
 #[cfg(not(windows))]
 pub const HOME_ENV_VAR: &str = "HOME";
 /// The variable an unset-home message tells the reader to set: the one
-/// [`home_dir_var`] reads first.
+/// `home_dir_var` reads first.
 #[cfg(windows)]
 pub const HOME_ENV_VAR: &str = "USERPROFILE";
 

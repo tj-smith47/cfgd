@@ -1974,7 +1974,8 @@ pub enum ImageCommand {
         dir: std::path::PathBuf,
         /// OCI artifact reference to push to (e.g. ghcr.io/myorg/myapp:v1.0.0)
         artifact: String,
-        /// Target platform as os/arch or os/arch/variant (e.g. linux/amd64, linux/arm/v7). Defaults to host platform.
+        /// Target platform as os/arch or os/arch/variant (e.g. linux/amd64, linux/arm/v7).
+        /// Defaults to host platform.
         #[arg(long, value_parser = platform_value)]
         platform: Option<String>,
         /// Image ENTRYPOINT entries (repeatable; e.g. --entrypoint /bin/sh)
