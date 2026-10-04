@@ -42,27 +42,22 @@ spec:
   mountPolicy: Always
 EOF
 
-# Wait for Module controller to reconcile
+# The key passes the PEM framing check but is not a parseable key, so cosign
+# cannot run the check: Verified is Unknown/VerificationUnavailable and
+# verified is false. No policy disallows unsigned modules here, so the
+# reference stays available; one another run applies meanwhile can withhold it
+# for one requeue, which the 90s wait outlasts.
+MOD01_WANT="false Available=True/ArtifactAvailable Verified=Unknown/VerificationUnavailable"
 echo "  Waiting for Module status..."
-MOD_VERIFIED=$(wait_for_k8s_field module "e2e-nettools-${E2E_RUN_ID}" "" \
-    '{.status.verified}' "" 60) || true
+MOD01_STATUS=$(wait_for_k8s_field module "e2e-nettools-${E2E_RUN_ID}" "" \
+    '{.status.verified}{range .status.conditions[*]} {.type}={.status}/{.reason}{end}' "$MOD01_WANT" 90) || true
 
-RESOLVED=$(kubectl get module "e2e-nettools-${E2E_RUN_ID}" \
-    -o jsonpath='{.status.resolvedArtifact}' 2>/dev/null || echo "")
-AVAIL_COND=$(kubectl get module "e2e-nettools-${E2E_RUN_ID}" \
-    -o jsonpath='{.status.conditions[?(@.type=="Available")].status}' 2>/dev/null || echo "")
-VERIFIED_COND=$(kubectl get module "e2e-nettools-${E2E_RUN_ID}" \
-    -o jsonpath='{.status.conditions[?(@.type=="Verified")].status}' 2>/dev/null || echo "")
+echo "  verified and conditions: ${MOD01_STATUS:-not set}"
 
-echo "  verified: ${MOD_VERIFIED:-not set}"
-echo "  resolvedArtifact: ${RESOLVED:-not set}"
-echo "  Available condition: ${AVAIL_COND:-not set}"
-echo "  Verified condition: ${VERIFIED_COND:-not set}"
-
-if [ -n "$MOD_VERIFIED" ] && [ -n "$RESOLVED" ]; then
+if [ "$MOD01_STATUS" = "$MOD01_WANT" ]; then
     pass_test "OP-MOD-01"
 else
-    fail_test "OP-MOD-01" "Module controller did not set status fields"
+    fail_test "OP-MOD-01" "Expected '$MOD01_WANT', got '${MOD01_STATUS:-none}'"
 fi
 
 # =================================================================

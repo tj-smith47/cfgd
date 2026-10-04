@@ -1080,6 +1080,40 @@ EOF
     chmod +x "$dir/bin/hello.sh"
 }
 
+# gateway_drift_count <device-id> <field>: print how many of the device's drift
+# events on the gateway name <field>, or nothing when the list cannot be read.
+# Earlier checkins leave events behind, so a case compares the count before
+# and after the checkin it drives.
+gateway_drift_count() {
+    exec_in_pod curl -sf -H "Authorization: Bearer $GW_API_KEY" \
+        "${SERVER_URL}/api/v1/devices/$1/drift" 2>/dev/null \
+        | jq --arg f "$2" '[.[] | select(.details | contains($f))] | length' 2>/dev/null
+}
+
+# module_mount_holds <pod> <namespace> <module>: 0 when the pod's mount of
+# <module> holds the module.yaml naming it and the bin/hello.sh that
+# create_test_module_dir writes. MOUNT_SEEN says what was read, for a verdict.
+module_mount_holds() {
+    local dir="/cfgd-modules/$3" yaml hello
+    yaml=$(kubectl exec "$1" -n "$2" -- cat "$dir/module.yaml" 2>/dev/null || echo "")
+    hello=$(kubectl exec "$1" -n "$2" -- cat "$dir/bin/hello.sh" 2>/dev/null || echo "")
+    # shellcheck disable=SC2034  # read by the caller for its verdict
+    MOUNT_SEEN="module.yaml name: $(sed -n 's/^  name: //p' <<<"$yaml" | head -1), bin/hello.sh: $(tail -1 <<<"$hello")"
+    grep -qxF "  name: $3" <<<"$yaml" && grep -qxF 'echo "hello from test module"' <<<"$hello"
+}
+
+# mount_write_refused <pod> <namespace> <path>: 0 when kubectl exec itself ran
+# and a touch of <path> inside the pod failed with EROFS. A failed exec (pod
+# gone, exec refused) is not a refused write. WRITE_SEEN holds what came back.
+mount_write_refused() {
+    local out rc=0
+    # shellcheck disable=SC2016  # the script runs in the pod's sh, which expands $1 and $?
+    out=$(kubectl exec "$1" -n "$2" -- sh -c 'touch "$1" 2>&1; echo "touch-rc=$?"' sh "$3" 2>&1) || rc=$?
+    # shellcheck disable=SC2034  # read by the caller for its verdict
+    WRITE_SEEN="exec rc $rc: $(tr '\n' ' ' <<<"$out")"
+    [ "$rc" -eq 0 ] && grep -q '^touch-rc=[1-9]' <<<"$out" && grep -q 'Read-only file system' <<<"$out"
+}
+
 # --- K8s field polling ---
 
 # Wait for a k8s resource field to reach a desired state.

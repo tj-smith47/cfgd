@@ -65,18 +65,10 @@ EOF
         '{.status.phase}' Running 180 > /dev/null && POD_RUNNING=true || true
 
     if $POD_RUNNING; then
-        MODULE_FILE=$(kubectl exec oci01-pod -n "$OCI01_NS" -- \
-            cat "/cfgd-modules/${OCI01_MOD}/module.yaml" 2>/dev/null || echo "")
-        HELLO_SH=$(kubectl exec oci01-pod -n "$OCI01_NS" -- \
-            cat "/cfgd-modules/${OCI01_MOD}/bin/hello.sh" 2>/dev/null || echo "")
-
-        echo "  module.yaml present: $([ -n "$MODULE_FILE" ] && echo 'yes' || echo 'no')"
-        echo "  bin/hello.sh present: $([ -n "$HELLO_SH" ] && echo 'yes' || echo 'no')"
-
-        if [ -n "$MODULE_FILE" ] && [ -n "$HELLO_SH" ]; then
+        if module_mount_holds oci01-pod "$OCI01_NS" "$OCI01_MOD"; then
             pass_test "OCI-E2E-01"
         else
-            fail_test "OCI-E2E-01" "Module content not found at mount path"
+            fail_test "OCI-E2E-01" "Module content at the mount path is not what was pushed ($MOUNT_SEEN)"
         fi
     else
         fail_test "OCI-E2E-01" "Pod did not reach Running state (CSI mount may have failed)"
@@ -183,15 +175,10 @@ EOF
         '{.status.phase}' Running 180 > /dev/null && POD_RUNNING=true || true
 
     if $POD_RUNNING; then
-        MODULE_FILE=$(kubectl exec oci02-pod -n "$OCI02_NS" -- \
-            cat "/cfgd-modules/${OCI02_MOD}/module.yaml" 2>/dev/null || echo "")
-
-        echo "  module.yaml present: $([ -n "$MODULE_FILE" ] && echo 'yes' || echo 'no')"
-
-        if [ -n "$MODULE_FILE" ]; then
+        if module_mount_holds oci02-pod "$OCI02_NS" "$OCI02_MOD"; then
             pass_test "OCI-E2E-02"
         else
-            fail_test "OCI-E2E-02" "Signed module content not found at mount path"
+            fail_test "OCI-E2E-02" "Signed module content at the mount path is not what was pushed ($MOUNT_SEEN)"
         fi
     else
         fail_test "OCI-E2E-02" "Pod did not reach Running state"
@@ -308,28 +295,27 @@ spec:
       keyless: true
 EOF
 
-    # Wait for the operator to reconcile and populate status
-    echo "  Waiting for Module status..."
-    RESOLVED=$(wait_for_k8s_field module "$OCI04_MOD" "" \
-        '{.status.resolvedArtifact}' "" 60) || true
-
-    PLATFORMS=$(kubectl get module "$OCI04_MOD" \
-        -o jsonpath='{.status.availablePlatforms}' 2>/dev/null || echo "")
-
-    echo "  Resolved artifact: ${RESOLVED:-none}"
-    echo "  Available platforms: ${PLATFORMS:-none}"
-
-    # Verify that the Module CRD was accepted and has some status
-    if [ -n "$RESOLVED" ]; then
+    # The two pushes above name one tag, so the tag has to resolve to an index
+    # listing both platforms for the controller to report both.
+    oci04_both_platforms() {
+        PLATFORMS=$(kubectl get module "$OCI04_MOD" \
+            -o jsonpath='{.status.availablePlatforms[*]}' 2>/dev/null || echo "")
+        case " $PLATFORMS " in
+            *" linux/amd64 "*) ;;
+            *) return 1 ;;
+        esac
+        case " $PLATFORMS " in
+            *" linux/arm64 "*) return 0 ;;
+            *) return 1 ;;
+        esac
+    }
+    PLATFORMS=""
+    echo "  Waiting for Module availablePlatforms..."
+    if wait_until 60 2 "$OCI04_MOD to list linux/amd64 and linux/arm64" oci04_both_platforms; then
+        echo "  Available platforms: $PLATFORMS"
         pass_test "OCI-E2E-04"
     else
-        # Module was accepted, which alone validates multi-platform push
-        MOD_EXISTS=$(kubectl get module "$OCI04_MOD" -o name 2>/dev/null || echo "")
-        if [ -n "$MOD_EXISTS" ]; then
-            pass_test "OCI-E2E-04"
-        else
-            fail_test "OCI-E2E-04" "Module CRD not created for multi-platform artifact"
-        fi
+        fail_test "OCI-E2E-04" "Expected availablePlatforms to list linux/amd64 and linux/arm64, got: ${PLATFORMS:-none}"
     fi
 fi
 
@@ -408,15 +394,10 @@ EOF
         '{.status.phase}' Running 180 > /dev/null && POD_RUNNING=true || true
 
     if $POD_RUNNING; then
-        MODULE_FILE=$(kubectl exec oci05-pod -n "$OCI05_NS" -- \
-            cat "/cfgd-modules/${OCI05_MOD}/module.yaml" 2>/dev/null || echo "")
-
-        echo "  module.yaml present: $([ -n "$MODULE_FILE" ] && echo 'yes' || echo 'no')"
-
-        if [ -n "$MODULE_FILE" ]; then
+        if module_mount_holds oci05-pod "$OCI05_NS" "$OCI05_MOD"; then
             pass_test "OCI-E2E-05"
         else
-            fail_test "OCI-E2E-05" "Digest-pinned module content not found at mount path"
+            fail_test "OCI-E2E-05" "Digest-pinned module content at the mount path is not what was pushed ($MOUNT_SEEN)"
         fi
     else
         fail_test "OCI-E2E-05" "Pod did not reach Running state (digest-pinned CSI mount failed)"
@@ -493,24 +474,16 @@ EOF
         '{.status.phase}' Running 180 > /dev/null && POD_RUNNING=true || true
 
     if $POD_RUNNING; then
-        MODULE_FILE=$(kubectl exec oci06-pod -n "$OCI06_NS" -- \
-            cat "/cfgd-modules/${OCI06_MOD}/module.yaml" 2>/dev/null || echo "")
-
-        # Verify the pod has imagePullSecrets set
         PULL_SECRETS=$(kubectl get pod oci06-pod -n "$OCI06_NS" \
             -o jsonpath='{.spec.imagePullSecrets[*].name}' 2>/dev/null || echo "")
-
-        echo "  module.yaml present: $([ -n "$MODULE_FILE" ] && echo 'yes' || echo 'no')"
         echo "  imagePullSecrets: ${PULL_SECRETS:-none}"
 
-        if [ -n "$MODULE_FILE" ] && echo "$PULL_SECRETS" | grep -qF "registry-credentials"; then
-            pass_test "OCI-E2E-06"
-        elif [ -n "$MODULE_FILE" ]; then
-            # Content mounted but secrets not in expected location: still a pass
-            # since CSI driver used the cluster-level credentials
-            pass_test "OCI-E2E-06"
+        if ! module_mount_holds oci06-pod "$OCI06_NS" "$OCI06_MOD"; then
+            fail_test "OCI-E2E-06" "Module content at the mount path is not what was pushed ($MOUNT_SEEN)"
+        elif ! echo "$PULL_SECRETS" | grep -qwF "registry-credentials"; then
+            fail_test "OCI-E2E-06" "Pod carries no registry-credentials pull secret: ${PULL_SECRETS:-none}"
         else
-            fail_test "OCI-E2E-06" "Module content not found at mount path with registry auth"
+            pass_test "OCI-E2E-06"
         fi
     else
         fail_test "OCI-E2E-06" "Pod did not reach Running state (registry auth may have failed)"

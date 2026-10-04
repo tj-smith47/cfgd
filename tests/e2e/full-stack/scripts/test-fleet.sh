@@ -75,16 +75,22 @@ spec:
     "vm.max_map_count": "262144"
 EOF
 
-# Wait for operator to reconcile
-MC_STATUS=$(wait_for_k8s_field machineconfig "mc-${DEVICE_1}" cfgd-system \
-    '{.status.lastReconciled}' "" 60) || true
-
-echo "  MC lastReconciled: ${MC_STATUS:-not set}"
-
-if [ -n "$MC_STATUS" ]; then
+# A fresh MachineConfig with no DriftAlert and no moduleRefs: the controller's
+# first pass settles all three of its conditions, as in OP-MC-01.
+fleet03_settled() {
+    FLEET03_CONDITIONS=$(kubectl get machineconfig "mc-${DEVICE_1}" -n cfgd-system \
+        -o jsonpath='{range .status.conditions[*]}{.type}={.status}/{.reason} {end}' 2>/dev/null || echo "")
+    case " $FLEET03_CONDITIONS" in
+        *" Reconciled=True/ReconcileSuccess "*" DriftDetected=False/NoDrift "*" ModulesResolved=True/AllResolved "*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+FLEET03_CONDITIONS=""
+if wait_until 60 1 "mc-${DEVICE_1} to settle its conditions" fleet03_settled; then
+    echo "  Conditions: $FLEET03_CONDITIONS"
     pass_test "FS-FLEET-03"
 else
-    fail_test "FS-FLEET-03" "MachineConfig not reconciled by operator"
+    fail_test "FS-FLEET-03" "Expected Reconciled=True/ReconcileSuccess, DriftDetected=False/NoDrift and ModulesResolved=True/AllResolved, got: ${FLEET03_CONDITIONS:-none}"
 fi
 
 # =================================================================

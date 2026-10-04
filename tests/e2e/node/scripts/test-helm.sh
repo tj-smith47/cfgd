@@ -59,24 +59,22 @@ begin_test "T22: Pod logs show daemon activity"
 POD=$(kubectl get pods -n "$E2E_NAMESPACE" -l "app.kubernetes.io/name=cfgd" \
     -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
 
-t22_pod_has_logs() {
-    LOGS=$(kubectl logs "$POD" -n "$E2E_NAMESPACE" --tail=50 2>/dev/null || echo "")
-    [ -n "$LOGS" ]
+# `daemon: running` is the line the daemon logs once its loop has started.
+t22_daemon_running() {
+    LOGS=$(kubectl logs "$POD" -n "$E2E_NAMESPACE" 2>/dev/null || echo "")
+    grep -q 'daemon: running' <<<"$LOGS"
 }
 
 if [ -z "$POD" ]; then
     fail_test "T22" "No pod found"
 else
     LOGS=""
-    wait_until 60 1 "pod/$POD to write a log line" t22_pod_has_logs || true
-    echo "  Pod logs (last 10 lines):"
-    echo "$LOGS" | tail -10 | sed 's/^/    /'
-
-    # The daemon should produce some output: reconciliation or errors
-    if [ -n "$LOGS" ]; then
+    if wait_until 60 1 "pod/$POD to log daemon: running" t22_daemon_running; then
         pass_test "T22"
     else
-        fail_test "T22" "Pod logs are empty"
+        echo "  Pod logs (last 10 lines):"
+        echo "$LOGS" | tail -10 | sed 's/^/    /'
+        fail_test "T22" "pod/$POD never logged daemon: running"
     fi
 fi
 

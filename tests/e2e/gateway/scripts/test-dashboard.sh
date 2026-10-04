@@ -79,10 +79,11 @@ if [ "$GW23_CODE" = "200" ]; then
     GW23_METHOD=$(echo "$GW23_BODY" | jq -r '.method // empty' 2>/dev/null)
     echo "  Enrollment method: $GW23_METHOD"
 
-    if [ -n "$GW23_METHOD" ]; then
+    # The chart default enrollmentMethod is token and no e2e install overrides it.
+    if [ "$GW23_METHOD" = "token" ]; then
         pass_test "GW-23"
     else
-        fail_test "GW-23" "Response missing method field"
+        fail_test "GW-23" "Expected method token, got '$GW23_METHOD'"
     fi
 else
     fail_test "GW-23" "Expected 200, got $GW23_CODE"

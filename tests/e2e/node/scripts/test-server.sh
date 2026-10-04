@@ -98,6 +98,7 @@ fi
 # T33: Drift reporting
 # =================================================================
 begin_test "T33: Drift reporting to device gateway"
+T33_BEFORE=$(gateway_drift_count "$DEVICE_ID" net.ipv4.ip_forward)
 # Introduce drift on a sysctl value
 ORIG_FWD=$(exec_in_pod cat /proc/sys/net/ipv4/ip_forward 2>/dev/null || echo "1")
 exec_in_pod sysctl -w net.ipv4.ip_forward=0 > /dev/null 2>&1 || true
@@ -116,20 +117,13 @@ echo "$OUTPUT" | head -10 | sed 's/^/    /'
 # Restore sysctl
 exec_in_pod sysctl -w "net.ipv4.ip_forward=$ORIG_FWD" > /dev/null 2>&1 || true
 
-if assert_contains "$OUTPUT" "drift"; then
+T33_AFTER=$(gateway_drift_count "$DEVICE_ID" net.ipv4.ip_forward)
+echo "  Gateway drift events naming net.ipv4.ip_forward: ${T33_BEFORE:-unreadable} before, ${T33_AFTER:-unreadable} after"
+
+if [[ $T33_BEFORE =~ ^[0-9]+$ ]] && [[ $T33_AFTER =~ ^[0-9]+$ ]] && [ "$T33_AFTER" -gt "$T33_BEFORE" ]; then
     pass_test "T33"
 else
-    # Drift may have been auto-fixed by a previous apply; check server anyway
-    DRIFT_EVENTS=$(exec_in_pod curl -sf -H "Authorization: Bearer $GW_API_KEY" "${SERVER_URL}/api/v1/devices/${DEVICE_ID}/drift" 2>/dev/null || echo "[]")
-    echo "  Drift events from server:"
-    echo "$DRIFT_EVENTS" | head -c 200 | sed 's/^/    /'
-    echo ""
-
-    if [ "$DRIFT_EVENTS" != "[]" ] && [ -n "$DRIFT_EVENTS" ]; then
-        pass_test "T33"
-    else
-        fail_test "T33" "No drift reported"
-    fi
+    fail_test "T33" "The checkin reported no net.ipv4.ip_forward drift to the device gateway (events before ${T33_BEFORE:-unreadable}, after ${T33_AFTER:-unreadable})"
 fi
 
 # =================================================================
@@ -141,11 +135,12 @@ echo "  Drift events:"
 echo "$DRIFT_EVENTS" | head -c 300 | sed 's/^/    /'
 echo ""
 
-if [ "$DRIFT_EVENTS" != "[]" ] && assert_contains "$DRIFT_EVENTS" "timestamp"; then
+# T33 left an event naming net.ipv4.ip_forward, and every event in the list is
+# this device's.
+if echo "$DRIFT_EVENTS" | jq -e --arg d "$DEVICE_ID" 'length >= 1 and all(.[]; .deviceId == $d and (.id // "") != "" and (.timestamp // "") != "") and any(.[]; .details | contains("net.ipv4.ip_forward"))' >/dev/null 2>&1; then
     pass_test "T34"
 else
-    # It's possible no drift was detected if sysctl was already at desired value
-    skip_test "T34" "No drift events (sysctl may have been at desired value)"
+    fail_test "T34" "Expected this device's drift events, one naming net.ipv4.ip_forward: $(echo "$DRIFT_EVENTS" | head -c 300)"
 fi
 
 # =================================================================

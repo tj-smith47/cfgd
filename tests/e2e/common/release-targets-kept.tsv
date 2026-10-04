@@ -36,6 +36,6 @@ tests/e2e/full-stack/scripts/test-fleet.sh	kubectl apply -n cfgd-system -f - <<E
 tests/e2e/full-stack/scripts/test-fleet.sh	namespace: cfgd-system
 tests/e2e/full-stack/scripts/test-fleet.sh	namespace: cfgd-system
 tests/e2e/full-stack/scripts/test-fleet.sh	namespace: cfgd-system
-tests/e2e/full-stack/scripts/test-fleet.sh	MC_STATUS=$(wait_for_k8s_field machineconfig "mc-${DEVICE_1}" cfgd-system \
+tests/e2e/full-stack/scripts/test-fleet.sh	FLEET03_CONDITIONS=$(kubectl get machineconfig "mc-${DEVICE_1}" -n cfgd-system \
 tests/e2e/full-stack/scripts/test-fleet.sh	COMPLIANT=$(wait_for_k8s_field configpolicy "fleet-baseline-${E2E_RUN_ID}" cfgd-system \
 tests/e2e/full-stack/scripts/test-fleet.sh	NON_COMPLIANT=$(kubectl get configpolicy "fleet-baseline-${E2E_RUN_ID}" -n cfgd-system \

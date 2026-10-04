@@ -9,25 +9,18 @@ echo "=== CRD Tests ==="
 # OP-CRD-01: CRDs are installed and established (all 6)
 # =================================================================
 begin_test "OP-CRD-01: CRDs installed (all 6)"
-MC_CRD=$(kubectl get crd machineconfigs.cfgd.io -o jsonpath='{.metadata.name}' 2>/dev/null || echo "")
-CP_CRD=$(kubectl get crd configpolicies.cfgd.io -o jsonpath='{.metadata.name}' 2>/dev/null || echo "")
-DA_CRD=$(kubectl get crd driftalerts.cfgd.io -o jsonpath='{.metadata.name}' 2>/dev/null || echo "")
-MOD_CRD=$(kubectl get crd modules.cfgd.io -o jsonpath='{.metadata.name}' 2>/dev/null || echo "")
-CCP_CRD=$(kubectl get crd clusterconfigpolicies.cfgd.io -o jsonpath='{.metadata.name}' 2>/dev/null || echo "")
-BP_CRD=$(kubectl get crd backuppolicies.cfgd.io -o jsonpath='{.metadata.name}' 2>/dev/null || echo "")
+CRD01_MISSING=""
+for crd in machineconfigs configpolicies driftalerts modules clusterconfigpolicies backuppolicies; do
+    CRD01_ESTABLISHED=$(kubectl get crd "${crd}.cfgd.io" \
+        -o jsonpath='{.status.conditions[?(@.type=="Established")].status}' 2>/dev/null || echo "")
+    echo "  ${crd}.cfgd.io Established: ${CRD01_ESTABLISHED:-not found}"
+    [ "$CRD01_ESTABLISHED" = "True" ] || CRD01_MISSING="$CRD01_MISSING ${crd}.cfgd.io"
+done
 
-echo "  MachineConfig CRD:       ${MC_CRD:-not found}"
-echo "  ConfigPolicy CRD:        ${CP_CRD:-not found}"
-echo "  DriftAlert CRD:          ${DA_CRD:-not found}"
-echo "  Module CRD:              ${MOD_CRD:-not found}"
-echo "  ClusterConfigPolicy CRD: ${CCP_CRD:-not found}"
-echo "  BackupPolicy CRD:        ${BP_CRD:-not found}"
-
-if [ -n "$MC_CRD" ] && [ -n "$CP_CRD" ] && [ -n "$DA_CRD" ] && \
-   [ -n "$MOD_CRD" ] && [ -n "$CCP_CRD" ] && [ -n "$BP_CRD" ]; then
+if [ -z "$CRD01_MISSING" ]; then
     pass_test "OP-CRD-01"
 else
-    fail_test "OP-CRD-01" "One or more CRDs not installed"
+    fail_test "OP-CRD-01" "Not established:$CRD01_MISSING"
 fi
 
 # =================================================================

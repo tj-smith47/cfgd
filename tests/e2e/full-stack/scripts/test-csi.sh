@@ -76,25 +76,13 @@ EOF
         -o jsonpath='{.spec.nodeName}' 2>/dev/null || echo "")
 
     if $POD_RUNNING; then
-        # Verify module content is mounted
-        MODULE_FILE=$(kubectl exec csi-mount-test -n "e2e-csi-test-${E2E_RUN_ID}" -- \
-            cat "/cfgd-modules/csi-test-mod-${E2E_RUN_ID}/module.yaml" 2>/dev/null || echo "")
-        HELLO_SH=$(kubectl exec csi-mount-test -n "e2e-csi-test-${E2E_RUN_ID}" -- \
-            cat "/cfgd-modules/csi-test-mod-${E2E_RUN_ID}/bin/hello.sh" 2>/dev/null || echo "")
-
-        echo "  module.yaml present: $([ -n "$MODULE_FILE" ] && echo 'yes' || echo 'no')"
-        echo "  bin/hello.sh present: $([ -n "$HELLO_SH" ] && echo 'yes' || echo 'no')"
-
-        # Verify read-only mount
-        RO_TEST=$(kubectl exec csi-mount-test -n "e2e-csi-test-${E2E_RUN_ID}" -- \
-            touch "/cfgd-modules/csi-test-mod-${E2E_RUN_ID}/test-write" 2>&1 || echo "read-only")
-
-        if [ -n "$MODULE_FILE" ] && echo "$RO_TEST" | grep -qi "read-only"; then
-            pass_test "FS-CSI-01"
-        elif [ -n "$MODULE_FILE" ]; then
-            pass_test "FS-CSI-01"
+        if ! module_mount_holds csi-mount-test "e2e-csi-test-${E2E_RUN_ID}" "csi-test-mod-${E2E_RUN_ID}"; then
+            fail_test "FS-CSI-01" "Mounted module content is not what was pushed ($MOUNT_SEEN)"
+        elif ! mount_write_refused csi-mount-test "e2e-csi-test-${E2E_RUN_ID}" \
+            "/cfgd-modules/csi-test-mod-${E2E_RUN_ID}/test-write"; then
+            fail_test "FS-CSI-01" "A write into the module mount was not refused as read-only ($WRITE_SEEN)"
         else
-            fail_test "FS-CSI-01" "Module content not found at mount path"
+            pass_test "FS-CSI-01"
         fi
     else
         fail_test "FS-CSI-01" "Pod did not reach Running state (CSI mount may have failed)"
@@ -210,18 +198,12 @@ EOF
         '{.status.phase}' Running 180 > /dev/null && POD_RUNNING=true || true
 
     if $POD_RUNNING; then
-        MOD_A_FILE=$(kubectl exec csi-multi-test -n "$CSI03_NS" -- \
-            cat "/cfgd-modules/csi-multi-a-${E2E_RUN_ID}/module.yaml" 2>/dev/null || echo "")
-        MOD_B_FILE=$(kubectl exec csi-multi-test -n "$CSI03_NS" -- \
-            cat "/cfgd-modules/csi-multi-b-${E2E_RUN_ID}/module.yaml" 2>/dev/null || echo "")
-
-        echo "  Module A mounted: $([ -n "$MOD_A_FILE" ] && echo 'yes' || echo 'no')"
-        echo "  Module B mounted: $([ -n "$MOD_B_FILE" ] && echo 'yes' || echo 'no')"
-
-        if [ -n "$MOD_A_FILE" ] && [ -n "$MOD_B_FILE" ]; then
-            pass_test "FS-CSI-03"
+        if ! module_mount_holds csi-multi-test "$CSI03_NS" "csi-multi-a-${E2E_RUN_ID}"; then
+            fail_test "FS-CSI-03" "Module A's mount is not what was pushed ($MOUNT_SEEN)"
+        elif ! module_mount_holds csi-multi-test "$CSI03_NS" "csi-multi-b-${E2E_RUN_ID}"; then
+            fail_test "FS-CSI-03" "Module B's mount is not what was pushed ($MOUNT_SEEN)"
         else
-            fail_test "FS-CSI-03" "One or both module volumes not mounted"
+            pass_test "FS-CSI-03"
         fi
     else
         fail_test "FS-CSI-03" "Pod did not reach Running state"
@@ -659,19 +641,13 @@ wait_for_k8s_field pod csi-ro-test "$CSI10_NS" \
     '{.status.phase}' Running 180 > /dev/null && POD_RUNNING=true || true
 
 if $POD_RUNNING; then
-    # Attempt to write a file inside the mounted module directory
-    WRITE_RESULT=$(kubectl exec csi-ro-test -n "$CSI10_NS" -- \
-        sh -c "touch /cfgd-modules/csi-test-mod-${E2E_RUN_ID}/write-test 2>&1" || echo "read-only")
-    echo "  Write attempt result: $WRITE_RESULT"
-
-    if echo "$WRITE_RESULT" | grep -qi "read.only\|permission denied\|not permitted"; then
-        pass_test "FS-CSI-10"
-    elif [ -n "$WRITE_RESULT" ] && ! kubectl exec csi-ro-test -n "$CSI10_NS" -- \
-        test -f "/cfgd-modules/csi-test-mod-${E2E_RUN_ID}/write-test" 2>/dev/null; then
-        # Write failed (file doesn't exist) even if error message differs
+    WRITE_SEEN=""
+    if mount_write_refused csi-ro-test "$CSI10_NS" "/cfgd-modules/csi-test-mod-${E2E_RUN_ID}/write-test"; then
+        echo "  Write attempt: $WRITE_SEEN"
         pass_test "FS-CSI-10"
     else
-        fail_test "FS-CSI-10" "Write to read-only mount did not fail as expected"
+        echo "  Write attempt: $WRITE_SEEN"
+        fail_test "FS-CSI-10" "A write into the module mount was not refused as read-only ($WRITE_SEEN)"
     fi
 else
     fail_test "FS-CSI-10" "Pod did not reach Running state"

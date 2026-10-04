@@ -2,8 +2,17 @@
 # Checks that no e2e case passes on an excuse: a branch that prints why the
 # thing under test did not happen ("Note: ...", "not yet ...", "acceptable")
 # and then calls pass_test has asserted nothing. Such a branch either asserts
-# what the note excuses or fails. A pass_test line carrying
-# `# verdict-ok: <why>` is exempt.
+# what the note excuses or fails.
+#
+# Checks too that no pass_test is guarded only by existence: an if or elif
+# whose condition, or one of whose ||-alternatives, is nothing but `-n`, `-s`
+# or `!=` against an empty value ("", '', "[]", "{}" or "null"), an elif that
+# only re-reads an object with a bare `kubectl get` or `k8s_exists`, or the
+# same tests chained with && into the pass_test line. A value read back is asserted by comparing it with the value
+# the fixture determines. The fixtures under common/fixtures/existence/ mark
+# each pass_test the scan has to flag with `# want-flag`.
+#
+# A pass_test line carrying `# verdict-ok: <why>` is exempt from both.
 #
 # Usage: tests/e2e/common/test-verdicts.sh
 set -euo pipefail
@@ -70,6 +79,101 @@ scan_excuses() {
     '
 }
 
+# Print `EXIST file:line` for each pass_test guarded only by existence, then
+# `scanned <files>`. Reads the SH lines of heredocs.awk, so a heredoc body is
+# never read as code. A case inside the branch is a guard of its own, so its
+# arms are not judged by the enclosing if; an else branch is not judged.
+scan_existence() {
+    local list
+    list="$(find "$@" -name '*.sh' ! -path '*/common/fixtures/*' | LC_ALL=C sort)" || {
+        echo "scan_existence: find failed under $*" >&2
+        return 1
+    }
+    if [ -z "$list" ]; then
+        echo "scan_existence: no .sh file under $*" >&2
+        return 1
+    fi
+    scan_existence_files <<<"$list"
+}
+
+# scan_existence_files: scan_existence over the newline-separated paths on
+# stdin, with no exclusion, so the fixtures can be read.
+scan_existence_files() {
+    # shellcheck disable=SC2016  # the single-quoted text is an awk program
+    tr '\n' '\0' | { xargs -0 awk -f "$here/heredocs.awk" || echo "UNREADABLE"; } | awk -F '\t' '
+        function rest(n,   i, p) { p = 0; for (i = 1; i <= n; i++) p += length($i) + 1; return substr($0, p + 1) }
+        function trim(s) { sub(/^[[:space:]]+/, "", s); sub(/[[:space:]]+$/, "", s); return s }
+        function exist_term(t, fallback,   op) {
+            op = "(\"[^\"]*\"|[^[:space:]\"]+)"
+            empty = "(\"\"|\047\047|\"?(\\[\\]|\\{\\}|null)\"?)"
+            t = trim(t)
+            if (t ~ ("^(\\[\\[?|test)[[:space:]]+-[ns][[:space:]]+" op "[[:space:]]*(\\]\\]?)?$")) return 1
+            if (t ~ ("^\\[\\[?[[:space:]]+" op "[[:space:]]+!=[[:space:]]+" empty "[[:space:]]*\\]\\]?$")) return 1
+            if (t ~ ("^\\[\\[?[[:space:]]+" empty "[[:space:]]+!=[[:space:]]+" op "[[:space:]]*\\]\\]?$")) return 1
+            if (fallback && t ~ /^(k8s_exists|kubectl[[:space:]]+get)[[:space:]]/ && t !~ /\|/) return 1
+            return 0
+        }
+        function weak(cond, fallback,   groups, terms, g, k, ng, nt, all) {
+            ng = split(cond, groups, /\|\|/)
+            for (g = 1; g <= ng; g++) {
+                nt = split(groups[g], terms, /&&/)
+                all = 1
+                for (k = 1; k <= nt; k++) if (!exist_term(terms[k], fallback)) all = 0
+                if (all) return 1
+            }
+            return 0
+        }
+        function judge(code, raw) {
+            if (code !~ /(^|[;&|[:space:]])pass_test[[:space:]]/) return
+            if (raw ~ /(^|[;&|[:space:]])pass_test[[:space:]].*# verdict-ok: [^[:space:]]/) return
+            if (depth > 0 && kind[depth] == "if" && weakv[depth]) { print "EXIST " where; return }
+            if (match(code, /&&[[:space:]]*pass_test[[:space:]]/)) {
+                pre = substr(code, 1, RSTART - 1)
+                sub(/^.*;/, "", pre)
+                if (weak(pre, 0)) print "EXIST " where
+            }
+        }
+        function branch(k, text,   c, after) {
+            if (match(text, /(^|[;[:space:]])then([[:space:];]|$)/)) {
+                c = substr(text, 1, RSTART)
+                after = substr(text, RSTART + RLENGTH)
+                sub(/;[[:space:]]*$/, "", c)
+                gsub(/\\[[:space:]]*/, " ", c)
+                if (k == "if") { depth++; kind[depth] = "if" }
+                if (depth > 0) weakv[depth] = weak(c, k == "elif")
+                pending = ""
+                if (after ~ /[^[:space:]]/) body(after, raw)
+            } else {
+                pending = k
+                ptext = text
+            }
+        }
+        function body(code, raw) {
+            judge(code, raw)
+            if (code ~ /(^|[;[:space:]])(fi|esac)[[:space:];]*$/ && depth > 0) depth--
+        }
+        $1 == "FILE" { files++; depth = 0; pending = ""; next }
+        $1 == "UNREADABLE" { print "heredocs.awk could not read the scripts"; next }
+        $1 != "SH" { next }
+        {
+            where = $2 ":" $3
+            raw = rest(3)
+            code = raw
+            sub(/(^|[[:space:]])#.*$/, "", code)
+            if (pending != "") { branch(pending, ptext " " code); next }
+            if (match(code, /^[[:space:]]*(if|elif)[[:space:]]/)) {
+                k = trim(substr(code, RSTART, RLENGTH))
+                branch(k, substr(code, RSTART + RLENGTH))
+                next
+            }
+            if (code ~ /^[[:space:]]*case[[:space:]].*[[:space:]]in([[:space:]]|$)/) { depth++; kind[depth] = "case"; next }
+            if (code ~ /^[[:space:]]*else([[:space:];]|$)/) { if (depth > 0) weakv[depth] = 0; body(substr(code, index(code, "else") + 4), raw); next }
+            body(code, raw)
+        }
+        END { print "scanned " files + 0 }
+    '
+}
+
 report="$(scan_excuses "$e2e_root")"
 strays="$(grep -v '^scanned ' <<<"$report" || true)"
 read -r _ scanned_files scanned_calls < <(grep '^scanned ' <<<"$report")
@@ -80,6 +184,29 @@ elif [ -z "$strays" ]; then
 else
     fail "the scan flagged these lines (an excuse followed by pass_test, or a heredoc that never closes):"
     printf '%s\n' "$strays" | sed 's/^/    /'
+fi
+
+fixtures="$here/fixtures/existence"
+existence_want="$(grep -n 'want-flag' "$fixtures"/*.sh | cut -d: -f1,2 | sed 's/^/EXIST /' | LC_ALL=C sort)"
+existence_got="$(find "$fixtures" -name '*.sh' | LC_ALL=C sort | scan_existence_files | grep -v '^scanned ' | LC_ALL=C sort)"
+if [ -n "$existence_want" ] && [ "$existence_got" = "$existence_want" ]; then
+    pass "the existence scan flags -n, [[ -n ]], test -n, -s, != against an empty string, [], {} or null, &&-chained, ||-alternative, multi-line, one-line and same-line guards and a bare kubectl get, k8s_exists or -n elif, and clears value comparisons, case arms, else branches, hatched lines, heredoc bodies and a kubectl get outside an elif"
+else
+    fail "the existence scan on the fixtures printed (< want, > got):"
+    diff <(printf '%s\n' "$existence_want") <(printf '%s\n' "$existence_got") | grep '^[<>]' | sed 's/^/    /' || true
+fi
+
+existence="$(scan_existence "$e2e_root" 2>&1)" && existence_rc=0 || existence_rc=$?
+existence_files="$(sed -n 's/^scanned //p' <<<"$existence")"
+existence_hits="$(grep -v '^scanned ' <<<"$existence" || true)"
+if [ "$existence_rc" -ne 0 ] || [ "${existence_files:-0}" -lt 60 ]; then
+    fail "the existence scan read ${existence_files:-0} files (rc=$existence_rc):"
+    printf '%s\n' "$existence" | sed 's/^/    /'
+elif [ -n "$existence_hits" ]; then
+    fail "these pass_test calls are guarded only by existence; compare the value the fixture determines, or hatch with # verdict-ok: <why>:"
+    printf '%s\n' "$existence_hits" | sed 's/^/    /'
+else
+    pass "no e2e pass_test is guarded only by existence ($existence_files files)"
 fi
 
 if scan_excuses "$scratch/no-such-dir" > /dev/null 2>&1; then

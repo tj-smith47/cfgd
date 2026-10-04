@@ -10,6 +10,8 @@ echo "=== Drift Lifecycle Tests ==="
 # =================================================================
 begin_test "FS-DRIFT-01: Drift detection and server reporting"
 
+DRIFT01_BEFORE=$(gateway_drift_count "$DEVICE_1" net.ipv4.ip_forward)
+
 # Introduce sysctl drift on the test pod
 ORIG=$(exec_in_pod cat /proc/sys/net/ipv4/ip_forward 2>/dev/null || echo "1")
 exec_in_pod sysctl -w net.ipv4.ip_forward=0 > /dev/null 2>&1 || true
@@ -24,19 +26,16 @@ OUTPUT=$(exec_in_pod cfgd \
     --no-color 2>&1) || true
 echo "  Checkin with drift: $OUTPUT" | head -5
 
-# Check device gateway for drift events
-DRIFT_EVENTS=$(exec_in_pod curl -sf \
-    -H "Authorization: Bearer $GW_API_KEY" \
-    "${SERVER_URL}/api/v1/devices/${DEVICE_1}/drift" 2>/dev/null || echo "[]")
-echo "  Drift events: $(echo "$DRIFT_EVENTS" | head -c 200)"
+DRIFT01_AFTER=$(gateway_drift_count "$DEVICE_1" net.ipv4.ip_forward)
+echo "  Gateway drift events naming net.ipv4.ip_forward: ${DRIFT01_BEFORE:-unreadable} before, ${DRIFT01_AFTER:-unreadable} after"
 
 # Restore
 exec_in_pod sysctl -w "net.ipv4.ip_forward=$ORIG" > /dev/null 2>&1 || true
 
-if echo "$OUTPUT" | grep -qi "drift" || [ "$DRIFT_EVENTS" != "[]" ]; then
+if [[ $DRIFT01_BEFORE =~ ^[0-9]+$ ]] && [[ $DRIFT01_AFTER =~ ^[0-9]+$ ]] && [ "$DRIFT01_AFTER" -gt "$DRIFT01_BEFORE" ]; then
     pass_test "FS-DRIFT-01"
 else
-    fail_test "FS-DRIFT-01" "Drift not detected or reported to device gateway"
+    fail_test "FS-DRIFT-01" "The checkin reported no net.ipv4.ip_forward drift to the device gateway (events before ${DRIFT01_BEFORE:-unreadable}, after ${DRIFT01_AFTER:-unreadable})"
 fi
 
 # =================================================================
@@ -374,18 +373,13 @@ then
     fail_test "FS-DRIFT-12" "kubectl apply failed"
 else
     DRIFT_CONDITION=$(wait_for_k8s_field machineconfig "e2e-compliance-mc-${E2E_RUN_ID}" "$E2E_NAMESPACE" \
-        '{.status.conditions[?(@.type=="DriftDetected")].status}' "True" 30) || true
+        '{range .status.conditions[?(@.type=="DriftDetected")]}{.status}/{.reason}{end}' "True/DriftActive" 30) || true
     echo "  DriftDetected condition: $DRIFT_CONDITION"
 
-    if [ "$DRIFT_CONDITION" = "True" ]; then
+    if [ "$DRIFT_CONDITION" = "True/DriftActive" ]; then
         pass_test "FS-DRIFT-12"
     else
-        DA_EXISTS=$(kubectl get driftalert "e2e-compliance-drift-${E2E_RUN_ID}" -n "$E2E_NAMESPACE" -o name 2>/dev/null || echo "")
-        if [ -n "$DA_EXISTS" ]; then
-            pass_test "FS-DRIFT-12"
-        else
-            fail_test "FS-DRIFT-12" "DriftAlert not created or not propagated"
-        fi
+        fail_test "FS-DRIFT-12" "Expected the MachineConfig's DriftDetected condition True/DriftActive, got '${DRIFT_CONDITION:-none}'"
     fi
 fi
 

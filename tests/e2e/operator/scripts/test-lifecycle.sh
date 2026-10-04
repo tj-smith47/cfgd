@@ -146,9 +146,13 @@ begin_test "OP-LC-03: Graceful shutdown recovery"
 OLD_POD=$(kubectl get pods -n "$E2E_INSTALL_NS" -l "$E2E_OPERATOR_PODS" \
     -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
 
-echo "  Current operator pod: ${OLD_POD:-unknown}"
+OLD_UID=""
+[ -z "$OLD_POD" ] || OLD_UID=$(kubectl get pod "$OLD_POD" -n "$E2E_INSTALL_NS" \
+    -o jsonpath='{.metadata.uid}' 2>/dev/null || echo "")
 
-if [ -z "$OLD_POD" ]; then
+echo "  Current operator pod: ${OLD_POD:-unknown} (uid ${OLD_UID:-unknown})"
+
+if [ -z "$OLD_POD" ] || [ -z "$OLD_UID" ]; then
     fail_test "OP-LC-03" "No operator pod found"
 else
     # Delete the pod
@@ -158,22 +162,21 @@ else
     echo "  Waiting for operator deployment to recover..."
     wait_for_deployment "$E2E_INSTALL_NS" "$E2E_OPERATOR_DEPLOY" 120
 
-    # Verify new pod has a different name
+    # A pod name can be reused, so the UID is what tells a replacement apart.
     NEW_POD=$(kubectl get pods -n "$E2E_INSTALL_NS" -l "$E2E_OPERATOR_PODS" \
         -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
+    NEW_UID=""
+    [ -z "$NEW_POD" ] || NEW_UID=$(kubectl get pod "$NEW_POD" -n "$E2E_INSTALL_NS" \
+        -o jsonpath='{.metadata.uid}' 2>/dev/null || echo "")
 
-    echo "  New operator pod: ${NEW_POD:-unknown}"
+    echo "  New operator pod: ${NEW_POD:-unknown} (uid ${NEW_UID:-unknown})"
 
-    if [ -n "$NEW_POD" ] && [ "$NEW_POD" != "$OLD_POD" ]; then
-        pass_test "OP-LC-03"
-    elif [ -n "$NEW_POD" ]; then
-        # Same name is possible if ReplicaSet reuses the name (unlikely but legal)
-        NEW_UID=$(kubectl get pod "$NEW_POD" -n "$E2E_INSTALL_NS" \
-            -o jsonpath='{.metadata.uid}' 2>/dev/null || echo "")
-        echo "  New pod UID: $NEW_UID"
-        pass_test "OP-LC-03"
-    else
+    if [ -z "$NEW_UID" ]; then
         fail_test "OP-LC-03" "Operator pod did not recover after deletion"
+    elif [ "$NEW_UID" = "$OLD_UID" ]; then
+        fail_test "OP-LC-03" "Operator pod $NEW_POD still has the deleted pod's uid $OLD_UID"
+    else
+        pass_test "OP-LC-03"
     fi
 fi
 
@@ -221,22 +224,18 @@ if [ "$LC04_APPLIED" = "false" ]; then
     fail_test "OP-LC-04" "Failed to create MachineConfig after retries (webhook unavailable)"
 fi
 
-# Wait for Reconciled condition
 echo "  Waiting for Reconciled condition..."
 RECONCILED=$(wait_for_k8s_field machineconfig "e2e-lc-mc-${E2E_RUN_ID}" "$E2E_NAMESPACE" \
-    '{.status.conditions[?(@.type=="Reconciled")].status}' "" 60) || true
-
-# Also check lastReconciled as fallback (controller may use either pattern)
-LAST_RECONCILED=$(kubectl get machineconfig "e2e-lc-mc-${E2E_RUN_ID}" -n "$E2E_NAMESPACE" \
-    -o jsonpath='{.status.lastReconciled}' 2>/dev/null || echo "")
+    '{range .status.conditions[?(@.type=="Reconciled")]}{.status}/{.reason}{end}' "True/ReconcileSuccess" 60) || true
 
 echo "  Reconciled condition: ${RECONCILED:-not set}"
-echo "  lastReconciled: ${LAST_RECONCILED:-not set}"
 
-if [ -n "$RECONCILED" ] || [ -n "$LAST_RECONCILED" ]; then
+if [ "$LC04_APPLIED" = "false" ]; then
+    :
+elif [ "$RECONCILED" = "True/ReconcileSuccess" ]; then
     pass_test "OP-LC-04"
 else
-    fail_test "OP-LC-04" "MachineConfig Reconciled condition not set"
+    fail_test "OP-LC-04" "Expected Reconciled True/ReconcileSuccess, got '${RECONCILED:-none}'"
 fi
 
 # =================================================================
@@ -322,19 +321,20 @@ spec:
       actual: "0"
 EOF
 
-# Wait for controller to set status conditions
+# An unresolved, unacknowledged High alert: the controller writes these three
+# conditions in this order, and sets the MachineConfig's DriftDetected in the
+# same pass.
+LC06_WANT="Acknowledged=False/NotAcknowledged Resolved=False/DriftActive Escalated=True/SeverityThreshold"
 echo "  Waiting for DriftAlert status conditions..."
 DA_STATUS=$(wait_for_k8s_field driftalert "e2e-lc-drift-${E2E_RUN_ID}" "$E2E_NAMESPACE" \
-    '{.status.conditions[0].type}' "" 90) || true
+    '{range .status.conditions[*]}{.type}={.status}/{.reason} {end}' "$LC06_WANT " 90) || true
+MC_DRIFT=$(wait_for_k8s_field machineconfig "e2e-lc-mc-${E2E_RUN_ID}" "$E2E_NAMESPACE" \
+    '{range .status.conditions[?(@.type=="DriftDetected")]}{.status}/{.reason}{end}' "True/DriftActive" 30) || true
 
-# Also check if DriftDetected was propagated to the MC
-MC_DRIFT=$(kubectl get machineconfig "e2e-lc-mc-${E2E_RUN_ID}" -n "$E2E_NAMESPACE" \
-    -o jsonpath='{.status.conditions[?(@.type=="DriftDetected")].status}' 2>/dev/null || echo "")
-
-echo "  DriftAlert condition type: ${DA_STATUS:-not set}"
+echo "  DriftAlert conditions: ${DA_STATUS:-not set}"
 echo "  MC DriftDetected: ${MC_DRIFT:-not set}"
 
-if [ -n "$DA_STATUS" ] || [ "$MC_DRIFT" = "True" ]; then
+if [ "$DA_STATUS" = "$LC06_WANT " ] && [ "$MC_DRIFT" = "True/DriftActive" ]; then
     pass_test "OP-LC-06"
 else
     # The DriftAlert controller is event-driven and sets both the MC
@@ -356,7 +356,7 @@ else
     kubectl logs -n "$E2E_INSTALL_NS" deployment/"$E2E_OPERATOR_DEPLOY" --tail=300 2>/dev/null \
         | grep -iE "drift|e2e-lc-drift-${E2E_RUN_ID}|e2e-lc-mc-${E2E_RUN_ID}" \
         | tail -40 | sed 's/^/    /' || true
-    fail_test "OP-LC-06" "DriftAlert status conditions not set"
+    fail_test "OP-LC-06" "Expected DriftAlert conditions '$LC06_WANT' and MC DriftDetected True/DriftActive, got '${DA_STATUS:-none}' and '${MC_DRIFT:-none}'"
 fi
 
 # =================================================================
@@ -391,23 +391,21 @@ if [ "$LC07_CREATE_RC" -ne 0 ]; then
         fail_test "OP-LC-07" "Module creation failed: $LC07_CREATE_OUTPUT"
     fi
 else
+    # No signature block: Verified is False/NotSigned. The webhook admitted an
+    # unsigned module, so no policy disallows unsigned ones and the reference is
+    # available. A policy another run applies meanwhile can withhold it for one
+    # requeue, which the 90s wait outlasts.
+    LC07_WANT="false Available=True/ArtifactAvailable Verified=False/NotSigned"
     echo "  Waiting for Module status..."
     MOD_STATUS=$(wait_for_k8s_field module "e2e-lc-module-${E2E_RUN_ID}" "" \
-        '{.status.verified}' "" 60) || true
+        '{.status.verified}{range .status.conditions[*]} {.type}={.status}/{.reason}{end}' "$LC07_WANT" 90) || true
 
-    RESOLVED=$(kubectl get module "e2e-lc-module-${E2E_RUN_ID}" \
-        -o jsonpath='{.status.resolvedArtifact}' 2>/dev/null || echo "")
-    AVAIL_COND=$(kubectl get module "e2e-lc-module-${E2E_RUN_ID}" \
-        -o jsonpath='{.status.conditions[?(@.type=="Available")].status}' 2>/dev/null || echo "")
+    echo "  verified and conditions: ${MOD_STATUS:-not set}"
 
-    echo "  verified: ${MOD_STATUS:-not set}"
-    echo "  resolvedArtifact: ${RESOLVED:-not set}"
-    echo "  Available condition: ${AVAIL_COND:-not set}"
-
-    if [ -n "$MOD_STATUS" ] || [ -n "$RESOLVED" ] || [ -n "$AVAIL_COND" ]; then
+    if [ "$MOD_STATUS" = "$LC07_WANT" ]; then
         pass_test "OP-LC-07"
     else
-        fail_test "OP-LC-07" "Module controller did not populate status"
+        fail_test "OP-LC-07" "Expected '$LC07_WANT', got '${MOD_STATUS:-none}'"
     fi
 fi
 
@@ -434,7 +432,14 @@ else
     LC08_PF_PID=$(port_forward "$E2E_INSTALL_NS" "pod/$LC08_POD" "$LC08_LOCAL_PORT" 8081) || LC08_PF_PID=""
 
     HEALTHZ_CODE=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "http://localhost:$LC08_LOCAL_PORT/healthz" 2>/dev/null) || HEALTHZ_CODE="000"
-    READYZ_CODE=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "http://localhost:$LC08_LOCAL_PORT/readyz" 2>/dev/null) || READYZ_CODE="000"
+    # The pod OP-LC-03 restarted answers 503 on /readyz until its first
+    # reconcile completes, so the case waits for 200 before judging it.
+    lc08_ready() {
+        READYZ_CODE=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "http://localhost:$LC08_LOCAL_PORT/readyz" 2>/dev/null) || READYZ_CODE="000"
+        [ "$READYZ_CODE" = "200" ]
+    }
+    READYZ_CODE="000"
+    wait_until 30 1 "operator /readyz 200" lc08_ready || true
 
     if [ -n "$LC08_PF_PID" ]; then stop_port_forward "$LC08_PF_PID"; fi
 
@@ -442,10 +447,6 @@ else
     echo "  /readyz:  HTTP $READYZ_CODE"
 
     if [ "$HEALTHZ_CODE" = "200" ] && [ "$READYZ_CODE" = "200" ]; then
-        pass_test "OP-LC-08"
-    elif [ "$HEALTHZ_CODE" = "200" ]; then
-        # readyz may be 503 during initial reconciliation warmup after OP-LC-03
-        # restart; healthz 200 proves the health probe endpoint works
         pass_test "OP-LC-08"
     else
         fail_test "OP-LC-08" "Health probes failed: /healthz=$HEALTHZ_CODE /readyz=$READYZ_CODE"

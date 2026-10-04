@@ -93,10 +93,12 @@ GW25_TOKEN_ID=$(echo "$GW25_RESPONSE" | jq -r '.id // empty' 2>/dev/null)
 echo "  Response has token: $([ -n "$GW25_TOKEN" ] && echo yes || echo no)"
 echo "  Response has id: $([ -n "$GW25_TOKEN_ID" ] && echo yes || echo no)"
 
-if [ -n "$GW25_TOKEN" ] && [ -n "$GW25_TOKEN_ID" ]; then
+# The token is cfgd_bs_ and two dash-less v4 UUIDs; username and team echo the
+# request.
+if echo "$GW25_RESPONSE" | jq -e '(.id // "") != "" and (.token | test("^cfgd_bs_[0-9a-f]{64}$")) and .username == "e2e-gw25-user" and .team == "e2e-team"' >/dev/null 2>&1; then
     pass_test "GW-25"
 else
-    fail_test "GW-25" "Token create response missing token or id"
+    fail_test "GW-25" "Expected an id, a cfgd_bs_ token, username e2e-gw25-user and team e2e-team: ${GW25_RESPONSE:-no response}"
 fi
 
 # =================================================================
@@ -111,28 +113,16 @@ rm -f "$GW_SCRATCH/gw26-body.txt"
 
 echo "  GET /api/v1/admin/tokens: HTTP $GW26_CODE"
 
-if [ "$GW26_CODE" = "200" ]; then
-    # Verify the response is a JSON array
-    GW26_LEN=$(echo "$GW26_BODY" | jq 'length' 2>/dev/null || echo "")
-    echo "  Token count: $GW26_LEN"
-    if [ -n "$GW26_LEN" ]; then
-        # Check that at least one token has an id field (from GW-25 or setup)
-        GW26_HAS_ID=$(echo "$GW26_BODY" | jq -r '.[0].id // empty' 2>/dev/null)
-        if [ -n "$GW26_HAS_ID" ]; then
-            pass_test "GW-26"
-        else
-            # Empty list is acceptable if tokens were consumed
-            if [ "$GW26_LEN" = "0" ]; then
-                pass_test "GW-26"
-            else
-                fail_test "GW-26" "Token list entries missing id field"
-            fi
-        fi
-    else
-        fail_test "GW-26" "Response is not a valid JSON array"
-    fi
-else
+# The list returns every token row, used or not, so the one GW-25 created is
+# always in it.
+if [ "$GW26_CODE" != "200" ]; then
     fail_test "GW-26" "Expected 200, got $GW26_CODE"
+elif [ -z "$GW25_TOKEN_ID" ]; then
+    fail_test "GW-26" "GW-25 created no token, so there is no id to look for"
+elif echo "$GW26_BODY" | jq -e --arg id "$GW25_TOKEN_ID" 'any(.[]; .id == $id)' >/dev/null 2>&1; then
+    pass_test "GW-26"
+else
+    fail_test "GW-26" "Token $GW25_TOKEN_ID from GW-25 is not in the list: $GW26_BODY"
 fi
 
 # =================================================================
@@ -183,10 +173,10 @@ echo "  POST /api/v1/admin/users/$GW28_USERNAME/keys: HTTP $GW28_CODE"
 if [ "$GW28_CODE" = "201" ]; then
     GW28_KEY_ID=$(echo "$GW28_BODY" | jq -r '.id // empty' 2>/dev/null)
     echo "  Key ID: $GW28_KEY_ID"
-    if [ -n "$GW28_KEY_ID" ]; then
+    if echo "$GW28_BODY" | jq -e '(.id // "") != "" and .fingerprint == "SHA256:e2eTestFingerprint28" and .label == "gw28-test"' >/dev/null 2>&1; then
         pass_test "GW-28"
     else
-        fail_test "GW-28" "Response missing key id"
+        fail_test "GW-28" "Expected an id, fingerprint SHA256:e2eTestFingerprint28 and label gw28-test: $GW28_BODY"
     fi
 else
     fail_test "GW-28" "Expected 201, got $GW28_CODE"
