@@ -302,7 +302,7 @@ fn push_module_inner_rejects_missing_module_yaml() {
 
 #[test]
 fn push_module_top_level_parses_ref_and_returns_manifest_digest() {
-    // Drives the wrapper at push/mod.rs:28-43: parse the artifact_ref string,
+    // Drives the wrapper: parse the artifact_ref string,
     // resolve auth (which is None for this 127.0.0.1 mock registry), build
     // the http agent, then delegate to push_module_inner. Asserts the
     // returned digest is the sha256 of the manifest JSON.
@@ -454,7 +454,7 @@ fn push_module_top_level_propagates_invalid_reference_err() {
 
 #[test]
 fn push_module_registry_failure_finishes_spinner_as_fail() {
-    // Drives the error arm added at push/mod.rs:44-51: when push_module_inner
+    // Drives the error arm: when push_module_inner
     // errors, the spinner must close with Role::Fail rather than being
     // dropped (which would render as an unmarked Info line instead).
     let mut server = mockito::Server::new();
@@ -496,7 +496,7 @@ fn push_module_registry_failure_finishes_spinner_as_fail() {
 
 #[test]
 fn push_module_multiplatform_pushes_index_with_per_platform_manifests() {
-    // Drives push_module_multiplatform at push/mod.rs:203-287: iterate two
+    // Drives push_module_multiplatform: iterate two
     // (build_dir, platform) pairs, push each as its own platform-tagged
     // manifest via push_module_inner, then push the OCI index manifest list
     // under the original tag. Asserts the index PUT fires and the returned
@@ -604,7 +604,7 @@ fn push_module_multiplatform_propagates_invalid_platform_target_err() {
 #[test]
 fn push_module_multiplatform_index_failure_finishes_spinner_as_fail() {
     // Same finish_fail contract as push_module, but for the index-push
-    // failure branch of push_module_multiplatform (mod.rs:242-250): the
+    // failure branch of push_module_multiplatform: the
     // per-platform manifests succeed but the index PUT 500s.
     let mut server = mockito::Server::new();
     let registry = registry_from_url(&server.url());
@@ -1183,6 +1183,32 @@ fn platform_push_to_a_digest_reference_is_refused_before_any_request() {
         "expected PushToDigest naming {artifact}, got {err:?}"
     );
     assert!(store.requests().is_empty(), "{:?}", store.requests());
+}
+
+#[test]
+fn multiplatform_push_to_a_digest_reference_is_refused_before_any_request() {
+    let store = crate::oci::test_helpers::ManifestStore::new("test/acc");
+    let amd64 = create_test_module_dir();
+    let arm64 = create_test_module_dir();
+    let artifact = store.artifact("sha256:0123456789abcdef");
+
+    let err = push_module_multiplatform(
+        &[(amd64.path(), "linux/amd64"), (arm64.path(), "linux/arm64")],
+        &artifact,
+        None,
+    )
+    .expect_err("a digest cannot be re-pointed at an index");
+
+    assert!(
+        matches!(&err, OciError::PushToDigest { reference } if *reference == artifact),
+        "expected PushToDigest naming {artifact}, got {err:?}"
+    );
+    assert!(store.requests().is_empty(), "{:?}", store.requests());
+    assert!(
+        store.blob_digests().is_empty(),
+        "{:?}",
+        store.blob_digests()
+    );
 }
 
 /// A push given no platform names this host, and joins the tag like any

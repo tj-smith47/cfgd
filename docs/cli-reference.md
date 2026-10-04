@@ -2282,11 +2282,13 @@ cfgd module build ./my-module --target linux/amd64,linux/arm64
 | `--sign` | Sign with cosign |
 | `--key <path>` | Signing key path |
 
-Several `--target` platforms push one OCI index to `--artifact`. A build for one platform (one
+Several `--target` platforms push one OCI index to `--artifact` that lists exactly those platforms:
+it replaces whatever the tag listed before, other platforms included. A build for one platform (one
 `--target`, or none for this host) pushes the way `cfgd module push` does, so it joins
-any other platforms the tag already lists.
+any other platforms the tag already lists. An `--artifact` naming a digest is refused before
+anything is uploaded, whatever the number of targets.
 `--sign` signs the digest the tag resolves to after the push and, when that is an index, each
-manifest this build put under it, so every `<tag>-<os>-<arch>` it pushed verifies.
+manifest this build put under it, so every `<tag>-<os>-<arch>[-<variant>]` it pushed verifies.
 With `-o json` the payload's `indexDigest` names the index the tag resolves to, and is `null` when
 the tag holds the one manifest alone.
 

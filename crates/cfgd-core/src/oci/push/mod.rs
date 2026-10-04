@@ -303,11 +303,7 @@ fn push_platform_to_tag(
     auth: Option<&RegistryAuth>,
     platform: &str,
 ) -> Result<(String, Option<String>), OciError> {
-    if matches!(oci_ref.reference, ReferenceKind::Digest(_)) {
-        return Err(OciError::PushToDigest {
-            reference: oci_ref.to_string(),
-        });
-    }
+    refuse_digest_reference(oci_ref)?;
     let target = OciPlatform::from(parse_platform_target(platform)?);
     let existing = authenticated_request_if_present(
         agent,
@@ -342,6 +338,17 @@ fn push_platform_to_tag(
         }
     };
     Ok((entry.digest, index_digest))
+}
+
+/// Refuse a push whose reference is a digest: a digest names one manifest, so
+/// neither a platform's manifest nor an index can be written under it.
+fn refuse_digest_reference(oci_ref: &OciReference) -> Result<(), OciError> {
+    if matches!(oci_ref.reference, ReferenceKind::Digest(_)) {
+        return Err(OciError::PushToDigest {
+            reference: oci_ref.to_string(),
+        });
+    }
+    Ok(())
 }
 
 /// What a tag holds, judged against the platform about to be pushed to it.
@@ -633,6 +640,7 @@ fn push_multiplatform_manifests_and_index(
     oci_ref: &OciReference,
     auth: Option<&RegistryAuth>,
 ) -> Result<MultiPlatformPushOutcome, OciError> {
+    refuse_digest_reference(oci_ref)?;
     let mut platform_manifests = Vec::new();
 
     for (dir, platform) in builds {
