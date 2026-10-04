@@ -982,6 +982,7 @@ function squash(s, n,   out, i, c) {
         if (c == "\\") { if (i == length(s)) { out = out c; mask = mask c } else { out = out "X"; mask = mask "XX"; i++ } }
         else if (cq != "" && c == cq) { cq = ""; out = out " ; "; mask = mask " " }
         else if ((c == "\047" || c == "\"") && cq == "" && out ~ /(^|[^A-Za-z0-9_])(ba)?sh[ \t]+-c[ \t]*$/) { cq = c; qat = n; out = out " ; "; mask = mask " " }
+        else if (c == "\"" && cq == "" && substr(s, i + 1, 2) == "$(") { cq = c; qat = n; out = out " ; "; mask = mask " " }
         else if (c == "\047" || c == "\"") {
             ansi = match(out, /\$+$/) && RLENGTH % 2
             inq = c; qat = n; qbuf = ""; out = out "Q"; mask = mask "Q"
@@ -1005,8 +1006,9 @@ function squash(s, n,   out, i, c) {
 #   FILEDOC      a heredoc fed to a command that does not apply it (cat > a file,
 #                there or inside a pod), or captured into a variable when its
 #                cfgd.io documents are of kinds the operator does not serve
-#   CAPTURED     an operator object in a heredoc captured into a variable, where
-#                the scan cannot see whether it reaches the cluster
+#   CAPTURED     an operator object in a heredoc captured into a variable by a
+#                command other than an apply, where the scan cannot see whether
+#                it reaches the cluster
 #   OTHERKIND    a cfgd.io document of a kind the operator does not serve, applied
 #                to the cluster
 #   UNLABELLED   an operator object whose metadata.labels has no cfgd.io/e2e-run
@@ -1399,7 +1401,7 @@ scan_run_labels() {
             if (index(kind, placeholder)) { print "EXPANDED " at ": kind is a shell expansion; write it literally"; reported[b] = 1; next }
             if (cls[b] == "CAPTURE") {
                 if (kind in operator) {
-                    print "CAPTURED " at " " kind ": the scan cannot see where a captured heredoc goes; feed it to kubectl apply directly"
+                    print "CAPTURED " at " " kind ": the heredoc is captured by a command other than an apply, so the scan cannot see whether it reaches the cluster; put it on the kubectl apply line itself"
                     reported[b] = 1
                 }
                 next
@@ -1588,9 +1590,12 @@ plant exec-apply "exec_in_pod kubectl apply -f - <<EOF" "$module_unlabelled"
 plant wrapper-other-file "apply_stdin \"T01\" <<EOF" "$module_unlabelled"
 plant captured "RESULT=\$(kubectl apply -f - 2>&1 <<EOF || true" "$module_unlabelled" "EOF"$'\n'")"
 # The capture quoted, in a function: the "$( stays open across the body and
-# the )" after the terminator closes it. The scan reads no command inside a
-# "...", so it reports the capture it cannot follow.
+# the )" after the terminator closes it. A "$( is read as code, so the apply
+# inside it is a site like its unquoted twin.
 plant captured-quoted "cq_f() {"$'\n'"    RESULT=\"\$(kubectl apply -f - 2>&1 <<EOF" "$module_unlabelled" "EOF"$'\n'"    )\" || return 1"$'\n'"}"
+# A quoted capture of a heredoc fed to cat: where the text goes next is
+# beyond the scan.
+plant captured-quoted-cat "RESULT=\"\$(cat <<EOF" "$module_unlabelled" "EOF"$'\n'")\""
 plant continued "kubectl apply -n \"\$E2E_NAMESPACE\" \\"$'\n'"    -f - <<EOF" "$module_unlabelled"
 plant dash "kubectl apply -f - <<-EOF" $'\t'"${module_unlabelled//$'\n'/$'\n\t'}" $'\tEOF'
 plant captured-operator-kind "yaml=\$(cat <<EOF" 'apiVersion: cfgd.io/v1alpha1
@@ -2326,7 +2331,9 @@ CAPTURED captured-operator-kind.sh:2
 FILEDOC captured-other-kind.sh:1
 SITE captured.sh:1
 UNLABELLED captured.sh:2
-CAPTURED captured-quoted.sh:3
+SITE captured-quoted.sh:2
+UNLABELLED captured-quoted.sh:3
+CAPTURED captured-quoted-cat.sh:2
 CAPTURED captured-tag-kind.sh:2
 FILEDOC captured-to-file.sh:1
 UNPARSED captured-unparsed.sh:1
