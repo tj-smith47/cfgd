@@ -753,8 +753,11 @@ mod tests {
                 ("--cache-dir", "c"),
             ] {
                 assert!(
-                    argv.windows(2)
-                        .any(|w| w[0] == flag && w[1] == expected(dir)),
+                    // The binPath token keeps this host's separators, so it is
+                    // folded before the compare.
+                    argv.windows(2).any(|w| w[0] == flag
+                        && cfgd_core::to_posix_string(std::path::Path::new(&w[1]))
+                            == expected(dir)),
                     "{spelling}: {flag} is not {} in {argv:?}",
                     expected(dir)
                 );
