@@ -136,10 +136,13 @@ begin_test "T25: Helm uninstall"
 helm uninstall cfgd -n "$E2E_NAMESPACE" --wait --timeout 60s 2>&1 || true
 
 # Check that no cfgd DaemonSet remains
+DS_NAMES_RC=0
 DS_NAMES=$(kubectl get ds -n "$E2E_NAMESPACE" -l "app.kubernetes.io/name=cfgd" \
-    -o jsonpath='{.items[*].metadata.name}' 2>/dev/null || echo "")
+    -o jsonpath='{.items[*].metadata.name}' 2>/dev/null) || DS_NAMES_RC=$?
 
-if [ -z "$DS_NAMES" ]; then
+if [ "$DS_NAMES_RC" -ne 0 ]; then
+    fail_test "T25" "Could not list the daemonsets in $E2E_NAMESPACE (kubectl exit $DS_NAMES_RC)"
+elif [ -z "$DS_NAMES" ]; then
     pass_test "T25"
 else
     fail_test "T25" "DaemonSet still present after uninstall: $DS_NAMES"

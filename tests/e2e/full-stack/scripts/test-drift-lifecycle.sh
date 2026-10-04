@@ -389,14 +389,17 @@ begin_test "FS-DRIFT-13: compliance reflects state after drift resolution"
 kubectl delete driftalert "e2e-compliance-drift-${E2E_RUN_ID}" -n "$E2E_NAMESPACE" --ignore-not-found 2>/dev/null || true
 
 fs13_drift_cleared() {
+    DRIFT_AFTER_RC=0
     DRIFT_AFTER=$(kubectl get machineconfig "e2e-compliance-mc-${E2E_RUN_ID}" -n "$E2E_NAMESPACE" \
-        -o jsonpath='{.status.conditions[?(@.type=="DriftDetected")].status}' 2>/dev/null || echo "")
-    [ "$DRIFT_AFTER" != "True" ]
+        -o jsonpath='{.status.conditions[?(@.type=="DriftDetected")].status}' 2>/dev/null) || DRIFT_AFTER_RC=$?
+    [ "$DRIFT_AFTER_RC" -eq 0 ] && [ "$DRIFT_AFTER" != "True" ]
 }
 wait_until 30 1 "DriftDetected to clear on machineconfig/e2e-compliance-mc-${E2E_RUN_ID}" fs13_drift_cleared || true
 echo "  DriftDetected after deletion: ${DRIFT_AFTER:-removed}"
 
-if [ "$DRIFT_AFTER" != "True" ]; then
+if [ "$DRIFT_AFTER_RC" -ne 0 ]; then
+    fail_test "FS-DRIFT-13" "Could not read machineconfig/e2e-compliance-mc-${E2E_RUN_ID} (kubectl exit $DRIFT_AFTER_RC)"
+elif [ "$DRIFT_AFTER" != "True" ]; then
     pass_test "FS-DRIFT-13"
 else
     fail_test "FS-DRIFT-13" "DriftDetected condition still True after alert deletion"

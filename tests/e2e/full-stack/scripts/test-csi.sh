@@ -104,8 +104,12 @@ echo "  Waiting for pod deletion..."
 wait_for_deleted 30 pod csi-mount-test -n "e2e-csi-test-${E2E_RUN_ID}" || true
 
 # Verify no mount leftovers via the test pod (which has host access)
-CSI_MOUNTS=$(exec_in_pod mount 2>/dev/null | grep "cfgd" | grep "csi-mount-test" || echo "")
-if [ -z "$CSI_MOUNTS" ]; then
+MOUNT_TABLE_RC=0
+MOUNT_TABLE=$(exec_in_pod mount 2>&1) || MOUNT_TABLE_RC=$?
+CSI_MOUNTS=$(printf '%s\n' "$MOUNT_TABLE" | grep "cfgd" | grep "csi-mount-test" || true)
+if [ "$MOUNT_TABLE_RC" -ne 0 ]; then
+    fail_test "FS-CSI-02" "Could not read the mount table (exit $MOUNT_TABLE_RC): $MOUNT_TABLE"
+elif [ -z "$CSI_MOUNTS" ]; then
     pass_test "FS-CSI-02"
 else
     fail_test "FS-CSI-02" "CSI mount still present after pod deletion"
@@ -589,11 +593,15 @@ if $POD_RUNNING; then
     wait_for_deleted 30 pod csi-unmount-test -n "$CSI09_NS" || true
 
     # Verify no mount leftovers
-    CSI_MOUNTS=$(exec_in_pod mount 2>/dev/null | grep "cfgd" | grep "csi-unmount-test" || echo "")
+    MOUNT_TABLE_RC=0
+    MOUNT_TABLE=$(exec_in_pod mount 2>&1) || MOUNT_TABLE_RC=$?
+    CSI_MOUNTS=$(printf '%s\n' "$MOUNT_TABLE" | grep "cfgd" | grep "csi-unmount-test" || true)
     if ! $CSI09_LABELLED; then
         # No label, no injected volume, and "no mount left behind" is then
         # a fact about a pod that never had one.
         fail_test "FS-CSI-09" "Namespace $CSI09_NS could not be labelled for injection"
+    elif [ "$MOUNT_TABLE_RC" -ne 0 ]; then
+        fail_test "FS-CSI-09" "Could not read the mount table (exit $MOUNT_TABLE_RC): $MOUNT_TABLE"
     elif [ -z "$CSI_MOUNTS" ]; then
         pass_test "FS-CSI-09"
     else

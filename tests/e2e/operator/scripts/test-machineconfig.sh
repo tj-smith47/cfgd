@@ -323,9 +323,12 @@ if [ "$OPERATOR_STATUS" = "Running" ] && [ "${RESTARTS_AFTER:-0}" -eq "${RESTART
     pass_test "OP-ERR-04"
 elif [ "$OPERATOR_STATUS" = "Running" ]; then
     # Running but with extra restarts: still acceptable if no crash loop
+    CRASH_LOOP_RC=0
     CRASH_LOOP=$(kubectl get pods -n "$E2E_INSTALL_NS" -l "$E2E_OPERATOR_PODS" \
-        -o jsonpath='{.items[0].status.containerStatuses[0].state.waiting.reason}' 2>/dev/null || echo "")
-    if [ "$CRASH_LOOP" = "CrashLoopBackOff" ]; then
+        -o jsonpath='{.items[0].status.containerStatuses[0].state.waiting.reason}' 2>/dev/null) || CRASH_LOOP_RC=$?
+    if [ "$CRASH_LOOP_RC" -ne 0 ]; then
+        fail_test "OP-ERR-04" "Could not read the operator pod's state (kubectl exit $CRASH_LOOP_RC)"
+    elif [ "$CRASH_LOOP" = "CrashLoopBackOff" ]; then
         fail_test "OP-ERR-04" "Operator entered CrashLoopBackOff after rapid create/delete"
     else
         pass_test "OP-ERR-04"

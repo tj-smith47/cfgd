@@ -948,13 +948,16 @@ else
             fail_test "DAEMON-18" "Daemon did not exit within 15s after SIGTERM"
         else
             # Check exit code via log content (clean shutdown logs graceful messages)
-            DAEMON_LOG=$(exec_in_pod cat /tmp/daemon18.log 2>/dev/null || echo "")
+            DAEMON_LOG_RC=0
+            DAEMON_LOG=$(exec_in_pod cat /tmp/daemon18.log 2>&1) || DAEMON_LOG_RC=$?
             echo "  Daemon logs (last 10 lines):"
             echo "$DAEMON_LOG" | tail -10 | sed 's/^/    /'
 
             # A graceful stop means the process exited (confirmed above).
             # The daemon should not have crashed (no panic/SIGSEGV).
-            if echo "$DAEMON_LOG" | grep -q "panic\|SIGSEGV\|signal: 11"; then
+            if [ "$DAEMON_LOG_RC" -ne 0 ]; then
+                fail_test "DAEMON-18" "Could not read /tmp/daemon18.log (exit $DAEMON_LOG_RC)"
+            elif echo "$DAEMON_LOG" | grep -q "panic\|SIGSEGV\|signal: 11"; then
                 fail_test "DAEMON-18" "Daemon crashed during what should have been a graceful shutdown"
             else
                 pass_test "DAEMON-18"

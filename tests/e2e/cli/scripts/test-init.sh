@@ -149,8 +149,11 @@ YAML
 run init "$I09_DST" --from "$I09_SRC" --no-color
 if assert_ok; then
     # The cloned repo should be clean (no uncommitted changes)
-    DIRTY=$(cd "$I09_DST" && git status --porcelain 2>/dev/null || echo "")
-    if [ -z "$DIRTY" ]; then
+    DIRTY_RC=0
+    DIRTY=$(cd "$I09_DST" && git status --porcelain 2>&1) || DIRTY_RC=$?
+    if [ "$DIRTY_RC" -ne 0 ]; then
+        fail_test "I09" "git status failed in the clone (exit $DIRTY_RC): $DIRTY"
+    elif [ -z "$DIRTY" ]; then
         pass_test "I09"
     else
         fail_test "I09" "Cloned repo is dirty: $DIRTY"

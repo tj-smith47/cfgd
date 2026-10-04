@@ -147,8 +147,9 @@ fi
 # T35: Second checkin updates last_checkin timestamp
 # =================================================================
 begin_test "T35: Checkin updates timestamp"
-BEFORE=$(exec_in_pod curl -sf -H "Authorization: Bearer $GW_API_KEY" "${SERVER_URL}/api/v1/devices/${DEVICE_ID}" 2>/dev/null \
-    | grep -o '"lastCheckin":"[^"]*"' || echo "")
+BEFORE_RC=0
+BEFORE_BODY=$(exec_in_pod curl -sf -H "Authorization: Bearer $GW_API_KEY" "${SERVER_URL}/api/v1/devices/${DEVICE_ID}" 2>&1) || BEFORE_RC=$?
+BEFORE=$(printf '%s\n' "$BEFORE_BODY" | grep -o '"lastCheckin":"[^"]*"' || true)
 
 sleep 1 # sleep-ok: lastCheckin has one-second resolution, so the second checkin has to land in a later second
 
@@ -160,13 +161,16 @@ exec_in_pod cfgd \
     --device-id "$DEVICE_ID" \
     --no-color > /dev/null 2>&1 || true
 
-AFTER=$(exec_in_pod curl -sf -H "Authorization: Bearer $GW_API_KEY" "${SERVER_URL}/api/v1/devices/${DEVICE_ID}" 2>/dev/null \
-    | grep -o '"lastCheckin":"[^"]*"' || echo "")
+AFTER_RC=0
+AFTER_BODY=$(exec_in_pod curl -sf -H "Authorization: Bearer $GW_API_KEY" "${SERVER_URL}/api/v1/devices/${DEVICE_ID}" 2>&1) || AFTER_RC=$?
+AFTER=$(printf '%s\n' "$AFTER_BODY" | grep -o '"lastCheckin":"[^"]*"' || true)
 
 echo "  Before: $BEFORE"
 echo "  After:  $AFTER"
 
-if [ "$BEFORE" != "$AFTER" ] && [ -n "$AFTER" ]; then
+if [ "$BEFORE_RC" -ne 0 ] || [ "$AFTER_RC" -ne 0 ]; then
+    fail_test "T35" "Could not read the device record (curl exit before=$BEFORE_RC after=$AFTER_RC)"
+elif [ "$BEFORE" != "$AFTER" ] && [ -n "$AFTER" ]; then
     pass_test "T35"
 else
     fail_test "T35" "Timestamp did not change between checkins"

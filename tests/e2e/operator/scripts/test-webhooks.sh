@@ -213,8 +213,9 @@ EOF
 # Check: CSI volume should exist but volumeMount should NOT be on the container
 DEBUG_VOLUMES=$(kubectl get pod e2e-debug-pod -n "e2e-inject-${E2E_RUN_ID}" \
     -o jsonpath='{.spec.volumes[*].name}' 2>/dev/null || echo "")
+DEBUG_VMOUNTS_RC=0
 DEBUG_VMOUNTS=$(kubectl get pod e2e-debug-pod -n "e2e-inject-${E2E_RUN_ID}" \
-    -o jsonpath='{.spec.containers[0].volumeMounts[*].name}' 2>/dev/null || echo "")
+    -o jsonpath='{.spec.containers[0].volumeMounts[*].name}' 2>/dev/null) || DEBUG_VMOUNTS_RC=$?
 DEBUG_CSI=$(kubectl get pod e2e-debug-pod -n "e2e-inject-${E2E_RUN_ID}" \
     -o jsonpath='{.spec.volumes[?(@.csi)].csi.driver}' 2>/dev/null || echo "")
 
@@ -224,7 +225,9 @@ echo "  CSI driver: $DEBUG_CSI"
 
 # Under the Debug policy the CSI volume is on the pod and absent from every container's volumeMounts
 if echo "$DEBUG_CSI" | grep -qF "$CSI_DRIVER_NAME"; then
-    if ! echo "$DEBUG_VMOUNTS" | grep -q "debug-mod"; then
+    if [ "$DEBUG_VMOUNTS_RC" -ne 0 ]; then
+        fail_test "OP-WH-03" "Could not read the container's volumeMounts (kubectl exit $DEBUG_VMOUNTS_RC)"
+    elif ! echo "$DEBUG_VMOUNTS" | grep -q "debug-mod"; then
         pass_test "OP-WH-03"
     else
         fail_test "OP-WH-03" "Debug module volumeMount was injected on container (should be skipped)"

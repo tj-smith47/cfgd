@@ -10,8 +10,17 @@
 # elif that only re-reads an object with a bare `kubectl get` or
 # `k8s_exists`, or the same tests chained with && into the pass_test line.
 # A value read back is asserted by comparing it with the value the fixture
-# determines. The fixtures under common/fixtures/existence/ mark each
-# pass_test the scan has to flag with `# want-flag`.
+# determines.
+#
+# Checks as well that no absence verdict rests on a read that turns its own
+# failure into empty output: a pass_test in the branch of a `-z` test, an
+# `= ""` test, a `!=` against a word or a negated condition, or in the else
+# branch of a condition an empty value makes false (a grep, an `=` against a
+# word), on a variable last assigned from a `$(... || echo "")`. A read
+# that failed then passes as "nothing there"; the read's exit code, captured
+# on its own, is what tells the two apart. The fixtures under
+# common/fixtures/existence/ mark each pass_test the scan has to flag with
+# `# want-flag` (existence) or `# want-absent` (absence).
 #
 # A pass_test line carrying `# verdict-ok: <why>` is exempt from both.
 #
@@ -138,14 +147,35 @@ scan_existence_files() {
             }
             return 0
         }
+        # soft[v] holds each variable last assigned from a read whose failure
+        # reads as empty output.
+        function soft_in(c,   v) {
+            for (v in soft) if (c ~ ("\\$\\{?" v "([^A-Za-z0-9_]|$)")) return 1
+            return 0
+        }
+        # A condition an empty value makes true: its then branch is where a
+        # failed read lands. One an empty value makes false sends a failed
+        # read to its else branch instead, and a != against a word already
+        # routes the empty value to the then branch.
+        function absent_cond(c,   v, r) {
+            for (v in soft) {
+                r = "\"?\\$\\{?" v "\\}?\"?"
+                if (c ~ ("-z[[:space:]]+" r "([[:space:]]|$)")) return 1
+                if (c ~ (r "[[:space:]]+==?[[:space:]]+(\"\"|\047\047)[[:space:]]*\\]")) return 1
+                if (c ~ (r "[[:space:]]+!=[[:space:]]+\"?[^\"[:space:]]")) return 1
+            }
+            return soft_in(c) && c ~ /^[[:space:]]*!/
+        }
         function judge(code, raw) {
             if (code !~ /(^|[;&|[:space:]])pass_test[[:space:]]/) return
             if (raw ~ /(^|[;&|[:space:]])pass_test[[:space:]].*# verdict-ok: [^[:space:]]/) return
             if (depth > 0 && kind[depth] == "if" && weakv[depth]) { print "EXIST " where; return }
+            if (depth > 0 && kind[depth] == "if" && absv[depth]) { print "ABSENT " where; return }
             if (match(code, /&&[[:space:]]*pass_test[[:space:]]/)) {
                 pre = substr(code, 1, RSTART - 1)
                 sub(/^.*;/, "", pre)
                 if (weak(pre, 0)) print "EXIST " where
+                else if (absent_cond(pre)) print "ABSENT " where
             }
         }
         function branch(k, text,   c, after) {
@@ -155,7 +185,11 @@ scan_existence_files() {
                 sub(/;[[:space:]]*$/, "", c)
                 gsub(/\\[[:space:]]*/, " ", c)
                 if (k == "if") { depth++; kind[depth] = "if" }
-                if (depth > 0) weakv[depth] = weak(c, k == "elif")
+                if (depth > 0) {
+                    weakv[depth] = weak(c, k == "elif")
+                    absv[depth] = absent_cond(c)
+                    elsev[depth] = soft_in(c) && !absv[depth]
+                }
                 pending = ""
                 if (after ~ /[^[:space:]]/) body(after, raw)
             } else {
@@ -167,9 +201,21 @@ scan_existence_files() {
             judge(code, raw)
             if (code ~ /(^|[;[:space:]])(fi|esac)[[:space:];]*$/ && depth > 0) depth--
         }
-        $1 == "FILE" { files++; depth = 0; pending = ""; print $2 > readlog; next }
+        $1 == "FILE" { files++; depth = 0; pending = ""; split("", soft); print $2 > readlog; next }
         $1 == "UNREADABLE" { print "heredocs.awk could not read the scripts"; next }
+        $1 == "CMD" {
+            c = rest(3)
+            if (match(c, /^[[:space:]]*((local|export)[[:space:]]+)?[A-Za-z_][A-Za-z0-9_]*=/)) {
+                v = substr(c, RSTART, RLENGTH - 1); sub(/^[[:space:]]*((local|export)[[:space:]]+)?/, "", v)
+                # CMD drops double-quoted text, so the fallback echo is read
+                # off the raw last line of the command, the SH record before.
+                if (c ~ /=\$\(/ && lastsh ~ /\|\|[[:space:]]*echo([[:space:]]+(""|\047\047))?[[:space:]]*\)[[:space:]]*$/) soft[v] = 1
+                else delete soft[v]
+            }
+            next
+        }
         $1 != "SH" { next }
+        { lastsh = rest(3) }
         {
             where = $2 ":" $3
             raw = rest(3)
@@ -182,7 +228,7 @@ scan_existence_files() {
                 next
             }
             if (code ~ /^[[:space:]]*case[[:space:]].*[[:space:]]in([[:space:]]|$)/) { depth++; kind[depth] = "case"; next }
-            if (code ~ /^[[:space:]]*else([[:space:];]|$)/) { if (depth > 0) weakv[depth] = 0; body(substr(code, index(code, "else") + 4), raw); next }
+            if (code ~ /^[[:space:]]*else([[:space:];]|$)/) { if (depth > 0) { weakv[depth] = 0; absv[depth] = elsev[depth] }; body(substr(code, index(code, "else") + 4), raw); next }
             body(code, raw)
         }
         END { print "scanned " files + 0 }
@@ -202,10 +248,13 @@ else
 fi
 
 fixtures="$here/fixtures/existence"
-existence_want="$(grep -n 'want-flag' "$fixtures"/*.sh | cut -d: -f1,2 | sed 's/^/EXIST /' | LC_ALL=C sort)"
+existence_want="$({
+    grep -n 'want-flag' "$fixtures"/*.sh | cut -d: -f1,2 | sed 's/^/EXIST /'
+    grep -n 'want-absent' "$fixtures"/*.sh | cut -d: -f1,2 | sed 's/^/ABSENT /'
+} | LC_ALL=C sort)"
 existence_got="$(find "$fixtures" -name '*.sh' | LC_ALL=C sort | scan_existence_files | grep -v '^scanned ' | LC_ALL=C sort)"
 if [ -n "$existence_want" ] && [ "$existence_got" = "$existence_want" ]; then
-    pass "the existence scan flags -n, [[ -n ]], test -n, -s, != against an empty string, [], {} or null, &&-chained, ||-alternative, multi-line, one-line and same-line guards and a bare kubectl get, k8s_exists or -n elif, and clears value comparisons, case arms, else branches, hatched lines, heredoc bodies and a kubectl get outside an elif"
+    pass "the existence scan flags -n, [[ -n ]], test -n, -s, != against an empty string, [], {} or null, &&-chained, ||-alternative, multi-line, one-line and same-line guards and a bare kubectl get, k8s_exists or -n elif, and clears value comparisons, case arms, else branches, hatched lines, heredoc bodies and a kubectl get outside an elif, and flags -z, = \"\", negated and else-branch absence passes on a || echo \"\" read while clearing them on a read whose exit code is captured"
 else
     fail "the existence scan on the fixtures printed (< want, > got):"
     diff <(printf '%s\n' "$existence_want") <(printf '%s\n' "$existence_got") | grep '^[<>]' | sed 's/^/    /' || true
@@ -213,15 +262,22 @@ fi
 
 existence="$(scan_existence "$e2e_root" 2>&1)" && existence_rc=0 || existence_rc=$?
 existence_files="$(sed -n 's/^scanned //p' <<<"$existence")"
-existence_hits="$(grep -v '^scanned ' <<<"$existence" || true)"
+existence_hits="$(grep '^EXIST ' <<<"$existence" || true)"
+absence_hits="$(grep '^ABSENT ' <<<"$existence" || true)"
 if [ "$existence_rc" -ne 0 ] || [ "${existence_files:-0}" -lt 60 ]; then
     fail "the existence scan read ${existence_files:-0} files (rc=$existence_rc):"
     printf '%s\n' "$existence" | sed 's/^/    /'
-elif [ -n "$existence_hits" ]; then
-    fail "these pass_test calls are guarded only by existence; compare the value the fixture determines, or hatch with # verdict-ok: <why>:"
-    printf '%s\n' "$existence_hits" | sed 's/^/    /'
+elif [ -n "$existence_hits" ] || [ -n "$absence_hits" ]; then
+    if [ -n "$existence_hits" ]; then
+        fail "these pass_test calls are guarded only by existence; compare the value the fixture determines, or hatch with # verdict-ok: <why>:"
+        printf '%s\n' "$existence_hits" | sed 's/^/    /'
+    fi
+    if [ -n "$absence_hits" ]; then
+        fail "these absence passes rest on a read whose failure reads as empty; capture the read's exit code and fail on a failed read, or hatch with # verdict-ok: <why>:"
+        printf '%s\n' "$absence_hits" | sed 's/^/    /'
+    fi
 else
-    pass "no e2e pass_test is guarded only by existence ($existence_files files)"
+    pass "no e2e pass_test is guarded only by existence, and no absence pass rests on a read that hides its failure ($existence_files files)"
 fi
 
 if scan_excuses "$scratch/no-such-dir" > /dev/null 2>&1; then

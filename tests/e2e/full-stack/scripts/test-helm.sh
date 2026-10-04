@@ -171,20 +171,26 @@ helm install cfgd-test "$CHART_DIR" --skip-crds \
     --set operator.leaderElection.enabled=false \
     --wait --timeout 120s 2>&1 || true
 
+GATEWAY_SVC_RC=0
 GATEWAY_SVC=$(kubectl get svc -n "$HELM_NS" \
-    -o jsonpath='{.items[*].metadata.name}' 2>/dev/null || echo "")
+    -o jsonpath='{.items[*].metadata.name}' 2>/dev/null) || GATEWAY_SVC_RC=$?
 echo "  Services: ${GATEWAY_SVC:-<none>}"
 
-if echo "$GATEWAY_SVC" | grep -q "gateway"; then
+if [ "$GATEWAY_SVC_RC" -ne 0 ]; then
+    fail_test "FS-HELM-03" "Could not list the services in $HELM_NS (kubectl exit $GATEWAY_SVC_RC)"
+elif echo "$GATEWAY_SVC" | grep -q "gateway"; then
     fail_test "FS-HELM-03" "Gateway service found when deviceGateway.enabled=false"
 else
     # Confirm operator deployment does NOT have gateway env
+    GW_ENV_RC=0
     GW_ENV=$(kubectl get deployment -n "$HELM_NS" \
         -l app.kubernetes.io/component=operator \
         -o jsonpath='{.items[0].spec.template.spec.containers[0].env[?(@.name=="DEVICE_GATEWAY_ENABLED")].value}' \
-        2>/dev/null || echo "")
+        2>/dev/null) || GW_ENV_RC=$?
     echo "  DEVICE_GATEWAY_ENABLED: ${GW_ENV:-<not set>}"
-    if [ -z "$GW_ENV" ]; then
+    if [ "$GW_ENV_RC" -ne 0 ]; then
+        fail_test "FS-HELM-03" "Could not read the operator deployment's env (kubectl exit $GW_ENV_RC)"
+    elif [ -z "$GW_ENV" ]; then
         pass_test "FS-HELM-03"
     else
         fail_test "FS-HELM-03" "DEVICE_GATEWAY_ENABLED env set when gateway disabled"
@@ -214,12 +220,15 @@ helm install cfgd-test "$CHART_DIR" --skip-crds \
     --set operator.leaderElection.enabled=false \
     --wait --timeout 120s 2>&1 || true
 
+CSI_DS_RC=0
 CSI_DS=$(kubectl get daemonset -n "$HELM_NS" \
     -l app.kubernetes.io/component=csi-driver \
-    -o jsonpath='{.items[*].metadata.name}' 2>/dev/null || echo "")
+    -o jsonpath='{.items[*].metadata.name}' 2>/dev/null) || CSI_DS_RC=$?
 echo "  CSI DaemonSets: ${CSI_DS:-<none>}"
 
-if [ -z "$CSI_DS" ]; then
+if [ "$CSI_DS_RC" -ne 0 ]; then
+    fail_test "FS-HELM-04" "Could not list the daemonsets in $HELM_NS (kubectl exit $CSI_DS_RC)"
+elif [ -z "$CSI_DS" ]; then
     pass_test "FS-HELM-04"
 else
     fail_test "FS-HELM-04" "CSI daemonset found when csiDriver.enabled=false: $CSI_DS"
@@ -424,9 +433,10 @@ echo "  Deployment before uninstall: ${DEPLOY_BEFORE:-<none>}"
 helm uninstall cfgd-test -n "$HELM_NS" --wait --timeout 60s 2>&1 || true
 
 # Verify deployment is gone
+DEPLOY_AFTER_RC=0
 DEPLOY_AFTER=$(kubectl get deployment -n "$HELM_NS" \
     -l app.kubernetes.io/component=operator \
-    -o jsonpath='{.items[*].metadata.name}' 2>/dev/null || echo "")
+    -o jsonpath='{.items[*].metadata.name}' 2>/dev/null) || DEPLOY_AFTER_RC=$?
 echo "  Deployment after uninstall: ${DEPLOY_AFTER:-<none>}"
 
 # The release installs with --skip-crds, so the CRDs are ArgoCD's; they must
@@ -434,11 +444,13 @@ echo "  Deployment after uninstall: ${DEPLOY_AFTER:-<none>}"
 CRDS_RC=0
 CRDS_REPORT=$(check_pr_crds schemas/crds.yaml "rerun the full-stack suite" < "$REPO_ROOT/schemas/crds.yaml" 2>&1) || CRDS_RC=$?
 
-if [ -n "$DEPLOY_BEFORE" ] && [ -z "$DEPLOY_AFTER" ] && [ "$CRDS_RC" -eq 0 ]; then
+if [ -n "$DEPLOY_BEFORE" ] && [ "$DEPLOY_AFTER_RC" -eq 0 ] && [ -z "$DEPLOY_AFTER" ] && [ "$CRDS_RC" -eq 0 ]; then
     pass_test "FS-HELM-08"
 else
     if [ -z "$DEPLOY_BEFORE" ]; then
         fail_test "FS-HELM-08" "Deployment was not created during install"
+    elif [ "$DEPLOY_AFTER_RC" -ne 0 ]; then
+        fail_test "FS-HELM-08" "Could not list the deployments after uninstall (kubectl exit $DEPLOY_AFTER_RC)"
     elif [ -n "$DEPLOY_AFTER" ]; then
         fail_test "FS-HELM-08" "Deployment still present after uninstall"
     else

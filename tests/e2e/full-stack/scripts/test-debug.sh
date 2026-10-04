@@ -63,8 +63,9 @@ EOF
 # The webhook writes the volumes at admission, so one read sees all it will add.
 DEBUG_CSI=$(kubectl get pod debug-target -n "e2e-debug-flow-${E2E_RUN_ID}" \
     -o jsonpath='{.spec.volumes[?(@.csi.driver=="'"$CSI_DRIVER_NAME"'")].csi.driver}' 2>/dev/null || echo "")
+APP_VMOUNTS_RC=0
 APP_VMOUNTS=$(kubectl get pod debug-target -n "e2e-debug-flow-${E2E_RUN_ID}" \
-    -o jsonpath='{.spec.containers[0].volumeMounts[*].name}' 2>/dev/null || echo "")
+    -o jsonpath='{.spec.containers[0].volumeMounts[*].name}' 2>/dev/null) || APP_VMOUNTS_RC=$?
 APP_ENV=$(kubectl get pod debug-target -n "e2e-debug-flow-${E2E_RUN_ID}" \
     -o jsonpath='{.spec.containers[0].env[*].name}' 2>/dev/null || echo "")
 
@@ -74,7 +75,9 @@ echo "  App container env: ${APP_ENV:-none}"
 
 if [ "$DEBUG_CSI" = "$CSI_DRIVER_NAME" ]; then
     # Volume exists: check that it's NOT mounted on the app container
-    if ! echo "$APP_VMOUNTS" | grep -q "debug-tools-${E2E_RUN_ID}"; then
+    if [ "$APP_VMOUNTS_RC" -ne 0 ]; then
+        fail_test "FS-DEBUG-01" "Could not read the app container's volumeMounts (kubectl exit $APP_VMOUNTS_RC)"
+    elif ! echo "$APP_VMOUNTS" | grep -q "debug-tools-${E2E_RUN_ID}"; then
         pass_test "FS-DEBUG-01"
     else
         fail_test "FS-DEBUG-01" "Debug module volumeMount present on app container (should be omitted)"
