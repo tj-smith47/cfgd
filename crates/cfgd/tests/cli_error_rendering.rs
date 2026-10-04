@@ -640,7 +640,12 @@ fn run_homeless(args: &[&str]) -> (String, String, Option<i32>) {
     )
 }
 
-const HOME_UNRESOLVED: &str = "cannot resolve home directory (HOME unset) to locate config at";
+fn home_unresolved() -> String {
+    format!(
+        "cannot resolve home directory ({} unset) to locate config at",
+        cfgd_core::HOME_ENV_VARS
+    )
+}
 
 /// A `--config` under `~` with no home set is refused as an unset home,
 /// naming the path as written, under table and json output alike.
@@ -653,7 +658,7 @@ fn a_tilde_config_with_no_home_reports_the_unset_home() {
         "an unresolvable home exits NoConfig(3): {stderr}"
     );
     assert!(
-        stderr.contains(&format!("{HOME_UNRESOLVED} ~/cfgd.yaml")),
+        stderr.contains(&format!("{} ~/cfgd.yaml", home_unresolved())),
         "stderr: {stderr:?}"
     );
 
@@ -668,7 +673,7 @@ fn a_tilde_config_with_no_home_reports_the_unset_home() {
     assert!(
         v["message"]
             .as_str()
-            .is_some_and(|m| m.contains(&format!("{HOME_UNRESOLVED} ~/cfgd.yaml"))),
+            .is_some_and(|m| m.contains(&format!("{} ~/cfgd.yaml", home_unresolved()))),
         "payload: {v}"
     );
 }
@@ -695,7 +700,7 @@ fn every_config_verb_reports_a_tilde_config_with_no_home_as_the_unset_home() {
         let (_, stderr, code) = run_homeless(&args);
         assert_eq!(code, Some(3), "{verb:?}: exits NoConfig(3): {stderr}");
         assert!(
-            stderr.contains(&format!("{HOME_UNRESOLVED} ~/cfgd.yaml")),
+            stderr.contains(&format!("{} ~/cfgd.yaml", home_unresolved())),
             "{verb:?}: {stderr:?}"
         );
 
@@ -707,7 +712,7 @@ fn every_config_verb_reports_a_tilde_config_with_no_home_as_the_unset_home() {
         assert!(
             v["message"]
                 .as_str()
-                .is_some_and(|m| m.contains(&format!("{HOME_UNRESOLVED} ~/cfgd.yaml"))),
+                .is_some_and(|m| m.contains(&format!("{} ~/cfgd.yaml", home_unresolved()))),
             "{verb:?}: {v}"
         );
     }
@@ -723,7 +728,7 @@ fn doctor_reports_a_tilde_config_with_no_home_as_the_unset_home() {
         .find(|line| line.contains("Config file"))
         .unwrap_or_else(|| panic!("no config-file row: {stderr}"));
     assert!(
-        row.contains(&format!("{HOME_UNRESOLVED} ~/cfgd.yaml")),
+        row.contains(&format!("{} ~/cfgd.yaml", home_unresolved())),
         "{row:?}"
     );
 
@@ -733,7 +738,7 @@ fn doctor_reports_a_tilde_config_with_no_home_as_the_unset_home() {
     assert!(
         v["config"]["error"]
             .as_str()
-            .is_some_and(|e| e.contains(&format!("{HOME_UNRESOLVED} ~/cfgd.yaml"))),
+            .is_some_and(|e| e.contains(&format!("{} ~/cfgd.yaml", home_unresolved()))),
         "{v}"
     );
 }
@@ -757,7 +762,7 @@ fn doctor_with_no_home_fails_the_default_config_check_on_the_unset_home() {
     };
     let (_, stderr, code) = run_homeless(&["doctor"]);
     let row = config_row(&stderr);
-    assert!(row.contains(HOME_UNRESOLVED), "{row:?}");
+    assert!(row.contains(&home_unresolved()), "{row:?}");
     assert_eq!(code, Some(1), "{stderr}");
 
     let xdg = tempfile::tempdir().unwrap();
@@ -772,7 +777,7 @@ fn doctor_with_no_home_fails_the_default_config_check_on_the_unset_home() {
     let stderr = String::from_utf8_lossy(&out.stderr);
     let row = config_row(&stderr);
     assert!(row.contains("not found; run `cfgd init`"), "{row:?}");
-    assert!(!row.contains(HOME_UNRESOLVED), "{row:?}");
+    assert!(!row.contains(&home_unresolved()), "{row:?}");
     assert_eq!(out.status.code(), Some(0), "{stderr}");
 
     let systemd = tempfile::tempdir().unwrap();
@@ -788,7 +793,7 @@ fn doctor_with_no_home_fails_the_default_config_check_on_the_unset_home() {
     let stderr = String::from_utf8_lossy(&out.stderr);
     let row = config_row(&stderr);
     assert!(row.contains("not found; run `cfgd init`"), "{row:?}");
-    assert!(!row.contains(HOME_UNRESOLVED), "{row:?}");
+    assert!(!row.contains(&home_unresolved()), "{row:?}");
     assert_eq!(out.status.code(), Some(0), "{stderr}");
 }
 
@@ -798,8 +803,10 @@ fn doctor_with_no_home_fails_the_default_config_check_on_the_unset_home() {
 /// directory.
 #[test]
 fn a_tilde_state_dir_with_no_home_fails_naming_the_unset_home() {
-    const REFUSAL: &str = "cannot expand ~/s for the state directory: no home directory found \
-                           (HOME unset)";
+    let refusal = format!(
+        "cannot expand ~/s for the state directory: no home directory found ({} unset)",
+        cfgd_core::HOME_ENV_VARS
+    );
     let dir = tempfile::tempdir().unwrap();
     let config = write_config_with_spec(dir.path(), "spec: {}\n");
     let cwd = tempfile::tempdir().unwrap();
@@ -826,7 +833,7 @@ fn a_tilde_state_dir_with_no_home_fails_naming_the_unset_home() {
         let out = cmd.output().unwrap();
         let stderr = String::from_utf8_lossy(&out.stderr);
         assert_eq!(out.status.code(), Some(1), "{spelling}: {stderr}");
-        assert!(stderr.contains(REFUSAL), "{spelling}: {stderr:?}");
+        assert!(stderr.contains(&refusal), "{spelling}: {stderr:?}");
         assert!(
             !cwd.path().join("~").exists(),
             "{spelling}: a `~` directory was created under the working directory"
@@ -841,9 +848,9 @@ fn a_tilde_state_dir_with_no_home_fails_naming_the_unset_home() {
 #[test]
 fn the_default_config_with_no_home_names_what_is_missing() {
     let expected = if cfg!(windows) {
-        "config file not found: "
+        "config file not found: ".to_string()
     } else {
-        HOME_UNRESOLVED
+        home_unresolved()
     };
     for format in ["table", "json"] {
         let (stdout, stderr, code) = run_homeless(&["status", "-o", format]);
@@ -854,7 +861,7 @@ fn the_default_config_with_no_home_names_what_is_missing() {
         } else {
             stderr
         };
-        assert!(reported.contains(expected), "{format}: {reported:?}");
+        assert!(reported.contains(&expected), "{format}: {reported:?}");
         assert!(
             !reported.contains("/~/") && !reported.contains("\\~\\"),
             "{format}: a `~` joined under another directory: {reported:?}"
@@ -894,7 +901,7 @@ fn a_tilde_config_with_a_home_set_reports_the_missing_file() {
         };
         assert!(reported.ends_with(&expected), "{format}: {reported:?}");
         assert!(
-            !reported.contains(HOME_UNRESOLVED),
+            !reported.contains(&home_unresolved()),
             "{format}: {reported:?}"
         );
     }

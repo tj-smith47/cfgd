@@ -120,7 +120,9 @@ pub enum ConfigError {
     NotFound { path: PathBuf },
 
     #[error(
-        "cannot resolve home directory (HOME unset) to locate config at {path}; set HOME or pass --config <path>"
+        "cannot resolve home directory ({vars} unset) to locate config at {path}; set {var} or pass --config <path>",
+        vars = crate::HOME_ENV_VARS,
+        var = crate::HOME_ENV_VAR
     )]
     HomeUnresolved { path: PathBuf },
 
@@ -653,7 +655,9 @@ pub enum StateError {
     /// as written it would name a directory called `~` under the working
     /// directory, which nobody means and a later `rm -r ~` cleanup endangers.
     #[error(
-        "cannot expand {path} for the {role}: no home directory found (HOME unset); set HOME or give an absolute path"
+        "cannot expand {path} for the {role}: no home directory found ({vars} unset); set {var} or give an absolute path",
+        vars = crate::HOME_ENV_VARS,
+        var = crate::HOME_ENV_VAR
     )]
     HomeUnresolved { role: &'static str, path: PathBuf },
 
@@ -1129,6 +1133,33 @@ pub enum OciError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_config_unset_home_error_names_the_home_variables_this_os_reads() {
+        let message = ConfigError::HomeUnresolved {
+            path: PathBuf::from("~/cfgd.yaml"),
+        }
+        .to_string();
+        assert!(
+            message.contains(&format!("({} unset)", crate::HOME_ENV_VARS))
+                && message.contains(&format!("set {} or", crate::HOME_ENV_VAR)),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn the_directory_unset_home_error_names_the_home_variables_this_os_reads() {
+        let message = StateError::HomeUnresolved {
+            role: "state directory",
+            path: PathBuf::from("~/s"),
+        }
+        .to_string();
+        assert!(
+            message.contains(&format!("({} unset)", crate::HOME_ENV_VARS))
+                && message.contains(&format!("set {} or", crate::HOME_ENV_VAR)),
+            "{message}"
+        );
+    }
 
     /// No error a row renders opens on a category label.
     ///
