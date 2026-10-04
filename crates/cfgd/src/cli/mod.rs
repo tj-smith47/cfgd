@@ -1127,6 +1127,23 @@ impl From<OutputFormatArg> for clap::builder::OsStr {
     }
 }
 
+/// Clap value parser for an `os/arch` flag, run through
+/// [`cfgd_core::oci::parse_platform_target`] so a malformed value is a usage
+/// error before any command starts.
+fn platform_value(value: &str) -> Result<String, String> {
+    cfgd_core::oci::parse_platform_target(value)
+        .map(|_| value.to_string())
+        .map_err(|e| e.to_string())
+}
+
+/// [`platform_value`] for a comma-separated list of `os/arch` platforms.
+fn platform_list_value(value: &str) -> Result<String, String> {
+    for platform in value.split(',') {
+        platform_value(platform)?;
+    }
+    Ok(value.to_string())
+}
+
 #[derive(Parser, Clone)]
 #[command(
     name = "cfgd",
@@ -1957,7 +1974,7 @@ pub enum ImageCommand {
         /// OCI artifact reference to push to (e.g. ghcr.io/myorg/myapp:v1.0.0)
         artifact: String,
         /// Target platform in os/arch form (e.g. linux/amd64). Defaults to host platform.
-        #[arg(long)]
+        #[arg(long, value_parser = platform_value)]
         platform: Option<String>,
         /// Image ENTRYPOINT entries (repeatable; e.g. --entrypoint /bin/sh)
         #[arg(long = "entrypoint", value_name = "ARG")]
@@ -2731,7 +2748,7 @@ pub enum ModuleCommand {
         #[arg(long)]
         artifact: String,
         /// Platform the module is built for (default: this host's OS/arch)
-        #[arg(long)]
+        #[arg(long, value_parser = platform_value)]
         platform: Option<String>,
         /// After push, apply a Module CRD to the cluster referencing the artifact
         #[arg(long)]
@@ -2755,7 +2772,7 @@ pub enum ModuleCommand {
         #[arg(long)]
         dir: String,
         /// Platform to pull out of a multi-platform artifact (default: this host's OS/arch)
-        #[arg(long)]
+        #[arg(long, value_parser = platform_value)]
         platform: Option<String>,
         /// Require a cosign signature on the artifact
         #[arg(long)]
@@ -2778,7 +2795,7 @@ pub enum ModuleCommand {
         /// Path to the module directory (must contain module.yaml)
         dir: String,
         /// Target platform(s), comma-separated (e.g. linux/amd64,linux/arm64)
-        #[arg(long)]
+        #[arg(long, value_parser = platform_list_value)]
         target: Option<String>,
         /// Base container image (default: ubuntu:22.04)
         #[arg(long)]

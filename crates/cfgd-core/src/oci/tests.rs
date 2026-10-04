@@ -606,7 +606,7 @@ fn is_insecure_registry_without_env_var() {
 #[cfg(all(unix, feature = "test-helpers"))]
 mod bridge {
     use crate::oci::archive::create_tar_gz;
-    use crate::oci::pull::{SignaturePolicy, pull_module};
+    use crate::oci::pull::{PullChecks, pull_module};
     use crate::oci::push::push_module;
     use crate::oci::test_helpers::{create_test_module_dir, registry_from_url};
     use crate::oci::{MEDIA_TYPE_MODULE_CONFIG, MEDIA_TYPE_MODULE_LAYER, MEDIA_TYPE_OCI_MANIFEST};
@@ -690,10 +690,10 @@ mod bridge {
         let artifact_ref = format!("{}/test/bridge-pull:v1", registry);
 
         let (printer, cap) = Printer::for_test_doc();
-        pull_module(
+        let outcome = pull_module(
             &artifact_ref,
             output_dir.path(),
-            SignaturePolicy::None,
+            PullChecks::default(),
             None,
             Some(&printer),
         )
@@ -710,7 +710,8 @@ mod bridge {
         drop(printer);
 
         let raw = strip_ansi(&cap.human());
-        let url_normalized = normalize_mock_url(&raw, &server_url, &registry);
+        let url_normalized =
+            normalize_mock_url(&raw, &server_url, &registry).replace(&outcome.digest, "<DIGEST>");
         let captured = strip_spinner_duration(url_normalized);
 
         assert!(

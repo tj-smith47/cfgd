@@ -2182,8 +2182,9 @@ without `--platform` is a push for this host's platform. Each push also tags its
 `<tag>-<os>-<arch>`, a later push of the same platform replaces that platform's entry, and a
 digest reference is refused (a digest cannot be re-pointed). A tag holding a manifest with no
 `cfgd.io/platform` annotation is refused before anything is uploaded: delete that tag in the
-registry, or push to another tag. `--attest` attaches the provenance to the digest the tag
-resolves to after the push (the index, when one was written).
+registry, or push to another tag. `--sign` and `--attest` name the digest the tag resolves to after
+the push (the index, when one was written), so the signature and the provenance land on what this
+push left there. `module build --sign` signs the same way.
 
 ```sh
 cfgd module push ./mod-amd64 --artifact ghcr.io/me/my-module:1.0.0 --platform linux/amd64
@@ -2226,7 +2227,8 @@ cfgd module pull ghcr.io/me/my-module:1.0.0 --dir modules/my-module --require-si
 
 When the tag names an OCI index, pull takes the entry whose platform matches `--platform` (or this
 host) and fails naming the platforms the index lists when none matches. A tag naming one manifest
-is pulled as it is. Signature and attestation checks run against the tag.
+is pulled as it is. `--require-signature` and `--verify-attest` check the digest the tag resolved to
+on the one read the pull extracts from, before anything is extracted.
 
 ```sh
 cfgd module pull ghcr.io/me/my-module:1.0.0 --dir out --platform linux/arm64 -o json

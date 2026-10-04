@@ -23,7 +23,9 @@ pub use archive::{create_tar_gz, create_tar_gz_with_diff_id, extract_tar_gz};
 pub use auth::RegistryAuth;
 pub use build::{build_module, detect_container_runtime};
 pub use pack::{PackOptions, PackOutcome, pack_image};
-pub use pull::{ArtifactFacts, PullOutcome, SignaturePolicy, artifact_facts, pull_module};
+pub use pull::{
+    ArtifactFacts, PullChecks, PullOutcome, SignaturePolicy, artifact_facts, pull_module,
+};
 pub use push::{
     PushOutcome, current_platform, parse_platform_target, push_module, push_module_multiplatform,
     rust_arch_to_oci,

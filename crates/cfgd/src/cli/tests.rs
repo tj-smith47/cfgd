@@ -33410,36 +33410,86 @@ fn execute_module_pull_dispatch() {
     assert!(result.is_err(), "pull of unreachable artifact should fail");
 }
 
+/// Every `--platform` flag, and `module build --target`, takes `os/arch`
+/// through `parse_platform_target` at parse time: a value with no arch is a
+/// usage error before any command starts, and a well-formed one parses. The
+/// population is read off `Cli::command()`, so a new `--platform` fails here
+/// until it is listed with an argv that reaches it.
 #[test]
-fn execute_module_pull_dispatch_passes_the_platform_flag() {
-    let h = CliTestHarness::builder().build();
-    let out_dir = tempfile::tempdir().unwrap();
-    let cli = h.cli_with_command(Command::Module {
-        command: ModuleCommand::Pull {
-            artifact_ref: "ghcr.io/example/module:v0.0.0".to_string(),
-            dir: out_dir.path().display().to_string(),
-            platform: Some("plan9".to_string()),
-            require_signature: false,
-            verify_attestation: false,
-            key: None,
-            certificate_identity: None,
-            certificate_oidc_issuer: None,
-        },
-    });
-    let err = super::execute(
-        &cli,
-        h.printer(),
-        &super::paths::DirSources::all_default(),
-        &super::startup::StartupDocument::load(&cli.config),
-    )
-    .expect_err("a platform with no arch is refused");
-    let meta = err
-        .downcast_ref::<crate::cli::CliErrorMeta>()
-        .expect("handler returns CliErrorMeta");
-    assert!(
-        meta.message.contains("invalid platform target 'plan9'"),
-        "the flag reaches the pull: {meta:?}"
+fn every_platform_flag_refuses_a_value_without_an_arch_at_parse_time() {
+    fn walk(cmd: &clap::Command, path: &str, found: &mut Vec<String>) {
+        for arg in cmd.get_arguments() {
+            let long = arg.get_long().unwrap_or_default();
+            if long == "platform" || (path == "cfgd module build" && long == "target") {
+                found.push(format!("{path} --{long}"));
+            }
+        }
+        for sub in cmd.get_subcommands() {
+            walk(sub, &format!("{path} {}", sub.get_name()), found);
+        }
+    }
+    let mut found = Vec::new();
+    walk(
+        &<Cli as clap::CommandFactory>::command(),
+        "cfgd",
+        &mut found,
     );
+    found.sort();
+    let argv: [(&str, &[&str]); 4] = [
+        (
+            "cfgd image pack --platform",
+            &["cfgd", "image", "pack", "d", "r/a:v1", "--platform"],
+        ),
+        (
+            "cfgd module build --target",
+            &["cfgd", "module", "build", "d", "--target"],
+        ),
+        (
+            "cfgd module pull --platform",
+            &[
+                "cfgd",
+                "module",
+                "pull",
+                "r/a:v1",
+                "--dir",
+                "d",
+                "--platform",
+            ],
+        ),
+        (
+            "cfgd module push --platform",
+            &[
+                "cfgd",
+                "module",
+                "push",
+                "d",
+                "--artifact",
+                "r/a:v1",
+                "--platform",
+            ],
+        ),
+    ];
+    assert_eq!(found, argv.map(|(name, _)| name));
+
+    for (name, prefix) in argv {
+        let parse = |value: &str| {
+            let mut args = prefix.to_vec();
+            args.push(value);
+            Cli::try_parse_hermetic(args)
+        };
+        let err = parse("plan9")
+            .err()
+            .unwrap_or_else(|| panic!("{name} accepts `plan9`"));
+        assert_eq!(
+            err.kind(),
+            clap::error::ErrorKind::ValueValidation,
+            "{name}: {err}"
+        );
+        assert!(parse("linux/arm64").is_ok(), "{name} refuses `linux/arm64`");
+    }
+    let build = ["cfgd", "module", "build", "d", "--target"];
+    assert!(Cli::try_parse_hermetic(build.into_iter().chain(["linux/amd64,plan9"])).is_err());
+    assert!(Cli::try_parse_hermetic(build.into_iter().chain(["linux/amd64,linux/arm64"])).is_ok());
 }
 
 #[test]
@@ -39596,6 +39646,27 @@ fn every_attestation_type_this_crate_names_is_one_the_reader_can_produce() {
                     .any(|(_, known)| *known == name),
                 "{}: cosign --type {name} is not a name any predicate URI folds to, so the \
                  Module status column can never report an artifact carrying it",
+                path.display()
+            );
+            checked += 1;
+        }
+        // `PullChecks { attestation: <flag>.then_some(("<type>", opts)) }`
+        // names the type a pull verifies.
+        for chunk in body.split("attestation: ").skip(1) {
+            let Some(name) = chunk
+                .split_once(".then_some((\"")
+                .filter(|(flag, _)| !flag.contains(char::is_whitespace))
+                .and_then(|(_, rest)| rest.split_once('"'))
+                .map(|(name, _)| name)
+            else {
+                continue;
+            };
+            assert!(
+                cfgd_core::oci::COSIGN_PREDICATE_TYPES
+                    .iter()
+                    .any(|(_, known)| *known == name),
+                "{}: a pull verifying attestation type {name} checks a name no predicate URI \
+                 folds to",
                 path.display()
             );
             checked += 1;

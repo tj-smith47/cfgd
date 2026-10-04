@@ -11,7 +11,7 @@ use crate::sha256_digest;
 
 use super::archive::extract_tar_gz;
 use super::auth::RegistryAuth;
-use super::sign::{VerifyOptions, verify_signature};
+use super::sign::{VerifyOptions, verify_attestation, verify_signature};
 use super::transport::{authenticated_request, response_digest};
 use super::{MEDIA_TYPE_OCI_MANIFEST, OciManifest, OciReference};
 
@@ -31,8 +31,9 @@ pub struct PullOutcome {
 /// - `RequireKey { path }` — fail unless `cosign verify --key <path>` succeeds.
 /// - `RequireKeyless { identity, issuer }` — fail unless keyless verification
 ///   matches the supplied certificate identity / OIDC issuer constraints.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy, Default)]
 pub enum SignaturePolicy<'a> {
+    #[default]
     None,
     RequireKey {
         path: &'a str,
@@ -43,15 +44,23 @@ pub enum SignaturePolicy<'a> {
     },
 }
 
-impl SignaturePolicy<'_> {
-    fn requires_signature(&self) -> bool {
-        !matches!(self, SignaturePolicy::None)
-    }
+/// The cosign checks [`pull_module`] runs before it extracts anything. Both
+/// run against the digest the reference resolved to on the one read the pull
+/// takes from, so what was verified is what gets extracted even if the tag
+/// moves mid-pull.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct PullChecks<'a> {
+    /// The signature the artifact must carry.
+    pub signature: SignaturePolicy<'a>,
+    /// An attestation the artifact must carry: its predicate type (in the
+    /// vocabulary `cosign verify-attestation --type` takes) and the options
+    /// cosign verifies it with.
+    pub attestation: Option<(&'a str, VerifyOptions<'a>)>,
 }
 
 /// Pull a module from an OCI registry and extract it to `output_dir`.
 ///
-/// `signature_policy` controls cryptographic signature verification:
+/// `checks.signature` controls cryptographic signature verification:
 /// - `SignaturePolicy::None` — no verification (default).
 /// - `SignaturePolicy::RequireKey { path }` — run real `cosign verify --key`,
 ///   fail the pull if it does not succeed.
@@ -65,13 +74,17 @@ impl SignaturePolicy<'_> {
 /// requires callers to supply the verifying key (or identity/issuer) so the
 /// trust decision is explicit and cryptographically enforced.
 ///
+/// `checks.attestation` adds a `cosign verify-attestation` of that predicate
+/// type. A signature failure is [`OciError::VerificationFailed`] and an
+/// attestation failure [`OciError::AttestationError`], whatever stopped cosign.
+///
 /// A reference that resolves to an index pulls the entry for `platform`
 /// (this host when `None`); one that resolves to a single manifest pulls it
 /// whatever platform it names.
 pub fn pull_module(
     artifact_ref: &str,
     output_dir: &Path,
-    signature_policy: SignaturePolicy<'_>,
+    checks: PullChecks<'_>,
     platform: Option<&str>,
     printer: Option<&Printer>,
 ) -> Result<PullOutcome, OciError> {
@@ -86,16 +99,23 @@ pub fn pull_module(
         &oci_ref,
         auth.as_ref(),
         output_dir,
-        &signature_policy,
-        artifact_ref,
+        &checks,
         &platform.map_or_else(super::current_platform, String::from),
     ) {
-        Ok(outcome) => {
+        Ok((outcome, pulled_platform)) => {
             // Settled without the reference: the caller's header block names
             // it, and the running message above already carried it while the
             // wait was the only thing on screen.
             if let Some(s) = spinner {
-                let _ = s.finish_ok("Pulled module");
+                let detail = match pulled_platform.as_deref() {
+                    Some(p) => super::artifact_row_detail(
+                        &outcome.digest,
+                        p,
+                        outcome.index_digest.as_deref(),
+                    ),
+                    None => outcome.digest.clone(),
+                };
+                let _ = s.finish_ok("Pulled module").detail(detail);
             }
             tracing::debug!(
                 reference = %oci_ref,
@@ -314,36 +334,27 @@ fn attached_attestations(
         .collect()
 }
 
-/// The fallible half of [`pull_module`]: every step from signature
-/// verification through extraction runs under one `Result` the caller
-/// matches once, rather than an early `?` abandoning the spinner mid-pull.
+/// The fallible half of [`pull_module`]: every step from the tag read
+/// through extraction runs under one `Result` the caller matches once, rather
+/// than an early `?` abandoning the spinner mid-pull. Answers the outcome and
+/// the platform the pulled manifest is for, when it names one.
 fn pull_module_inner(
     agent: &ureq::Agent,
     oci_ref: &OciReference,
     auth: Option<&RegistryAuth>,
     output_dir: &Path,
-    signature_policy: &SignaturePolicy<'_>,
-    artifact_ref: &str,
+    checks: &PullChecks<'_>,
     platform: &str,
-) -> Result<PullOutcome, OciError> {
-    if signature_policy.requires_signature() {
-        let opts = match signature_policy {
-            SignaturePolicy::None => unreachable!("guarded by requires_signature()"),
-            SignaturePolicy::RequireKey { path } => VerifyOptions {
-                key: Some(path),
-                identity: None,
-                issuer: None,
-            },
-            SignaturePolicy::RequireKeyless { identity, issuer } => VerifyOptions {
-                key: None,
-                identity: *identity,
-                issuer: *issuer,
-            },
-        };
-        verify_signature(artifact_ref, &opts)?;
-    }
-
-    let (manifest, outcome) = resolve_platform_manifest(agent, oci_ref, auth, platform)?;
+) -> Result<(PullOutcome, Option<String>), OciError> {
+    let (os, architecture) = super::parse_platform_target(platform)?;
+    let wanted = super::push::OciPlatform {
+        os: os.to_string(),
+        architecture: architecture.to_string(),
+    };
+    let top = fetch_pull_document(agent, oci_ref, auth, oci_ref.reference_str(), oci_ref)?;
+    run_checks(checks, &oci_ref.at_digest(&top.digest).to_string())?;
+    let (manifest, outcome, pulled_platform) =
+        select_platform_manifest(agent, oci_ref, auth, top, &wanted)?;
 
     // Find our layer
     let layer = manifest
@@ -404,68 +415,118 @@ fn pull_module_inner(
     // Extract
     extract_tar_gz(&blob_data, output_dir)?;
 
-    Ok(outcome)
+    Ok((outcome, pulled_platform))
 }
 
-/// GET the reference and, when it is an index, the entry for `platform`,
-/// answering the image manifest to pull and the digests that name it.
-fn resolve_platform_manifest(
+/// Run `checks` against `subject`, typing each failure by the check it came
+/// from whatever stopped cosign, so a caller tells the two apart by variant.
+fn run_checks(checks: &PullChecks<'_>, subject: &str) -> Result<(), OciError> {
+    let opts = match checks.signature {
+        SignaturePolicy::None => None,
+        SignaturePolicy::RequireKey { path } => Some(VerifyOptions {
+            key: Some(path),
+            identity: None,
+            issuer: None,
+        }),
+        SignaturePolicy::RequireKeyless { identity, issuer } => Some(VerifyOptions {
+            key: None,
+            identity,
+            issuer,
+        }),
+    };
+    if let Some(opts) = opts {
+        verify_signature(subject, &opts).map_err(|e| match e {
+            OciError::VerificationFailed { .. } => e,
+            other => OciError::VerificationFailed {
+                reference: subject.to_string(),
+                message: other.to_string(),
+            },
+        })?;
+    }
+    if let Some((predicate_type, opts)) = &checks.attestation {
+        verify_attestation(subject, predicate_type, opts).map_err(|e| match e {
+            OciError::AttestationError { .. } => e,
+            other => OciError::AttestationError {
+                message: other.to_string(),
+            },
+        })?;
+    }
+    Ok(())
+}
+
+/// GET a manifest document for a pull, naming `name` when it is missing.
+fn fetch_pull_document(
     agent: &ureq::Agent,
     oci_ref: &OciReference,
     auth: Option<&RegistryAuth>,
-    platform: &str,
-) -> Result<(OciManifest, PullOutcome), OciError> {
-    // Parsed before any request, so a malformed platform fails even against a
-    // tag naming one manifest, where it would otherwise go unread.
-    let (os, architecture) = super::parse_platform_target(platform)?;
-    let wanted = super::push::OciPlatform {
-        os: os.to_string(),
-        architecture: architecture.to_string(),
-    };
-    let fetch = |reference: &str| {
-        let url = format!(
-            "{}/{}/manifests/{reference}",
-            oci_ref.api_base(),
-            oci_ref.repository,
-        );
-        authenticated_request(
-            agent,
-            "GET",
-            &url,
-            auth,
-            Some(&super::manifest_accept()),
-            None,
-            None,
-        )
-        .map_err(|e| OciError::ManifestNotFound {
-            reference: format!("{oci_ref}: {e}"),
-        })
-        .and_then(read_manifest_document)
-    };
+    reference: &str,
+    name: &OciReference,
+) -> Result<ManifestDocument, OciError> {
+    let url = format!(
+        "{}/{}/manifests/{reference}",
+        oci_ref.api_base(),
+        oci_ref.repository,
+    );
+    authenticated_request(
+        agent,
+        "GET",
+        &url,
+        auth,
+        Some(&super::manifest_accept()),
+        None,
+        None,
+    )
+    .map_err(|e| OciError::ManifestNotFound {
+        reference: format!("{name}: {e}"),
+    })
+    .and_then(read_manifest_document)
+}
 
-    let top = fetch(oci_ref.reference_str())?;
+/// The image manifest to pull out of `top`, the document the reference
+/// resolved to: `top` itself, or its entry for `wanted` fetched by digest.
+/// Answers the digests that name it and the platform it is for, when it names one.
+fn select_platform_manifest(
+    agent: &ureq::Agent,
+    oci_ref: &OciReference,
+    auth: Option<&RegistryAuth>,
+    top: ManifestDocument,
+    wanted: &super::push::OciPlatform,
+) -> Result<(OciManifest, PullOutcome, Option<String>), OciError> {
     let Some(entries) = top.doc.get("manifests").and_then(|m| m.as_array()) else {
+        let annotated = top
+            .doc
+            .get("annotations")
+            .and_then(|a| a.get(crate::OCI_ANNOTATION_PLATFORM))
+            .and_then(|p| p.as_str())
+            .map(String::from);
         let outcome = PullOutcome {
             digest: top.digest,
             index_digest: None,
         };
-        return Ok((parse_image_manifest(top.doc)?, outcome));
+        return Ok((parse_image_manifest(top.doc)?, outcome, annotated));
     };
 
+    let platform = format!("{}/{}", wanted.os, wanted.architecture);
     let Some(entry_digest) = entries
         .iter()
-        .find(|e| super::push::entry_platform_is(e, &wanted))
+        .find(|e| super::push::entry_platform_is(e, wanted))
         .and_then(|e| e.get("digest"))
         .and_then(|d| d.as_str())
     else {
         return Err(OciError::PlatformNotInIndex {
             reference: oci_ref.to_string(),
-            platform: platform.to_string(),
+            platform,
             available: declared_platforms(&top.doc),
         });
     };
 
-    let picked = fetch(entry_digest)?;
+    let picked = fetch_pull_document(
+        agent,
+        oci_ref,
+        auth,
+        entry_digest,
+        &oci_ref.at_digest(entry_digest),
+    )?;
     if picked.content_digest != entry_digest {
         return Err(OciError::RequestFailed {
             message: format!(
@@ -479,7 +540,7 @@ fn resolve_platform_manifest(
         digest: entry_digest.to_string(),
         index_digest: Some(top.digest),
     };
-    Ok((parse_image_manifest(picked.doc)?, outcome))
+    Ok((parse_image_manifest(picked.doc)?, outcome, Some(platform)))
 }
 
 fn parse_image_manifest(doc: serde_json::Value) -> Result<OciManifest, OciError> {
@@ -584,7 +645,7 @@ mod tests {
         platform: Option<&str>,
     ) -> Result<(String, PullOutcome), OciError> {
         let out = tempfile::tempdir().unwrap();
-        let outcome = pull_module(artifact, out.path(), SignaturePolicy::None, platform, None)?;
+        let outcome = pull_module(artifact, out.path(), PullChecks::default(), platform, None)?;
         let mark = std::fs::read_to_string(out.path().join("README.md")).unwrap();
         Ok((mark, outcome))
     }
@@ -729,6 +790,175 @@ mod tests {
         );
     }
 
+    /// Two platforms pushed to `v1` of a fresh store, answering the store,
+    /// the artifact and the index digest the tag resolves to.
+    fn two_platform_store(repo: &str) -> (crate::oci::test_helpers::ManifestStore, String, String) {
+        let store = crate::oci::test_helpers::ManifestStore::new(repo);
+        let artifact = store.artifact("v1");
+        let mut index = String::new();
+        for platform in ["linux/amd64", "linux/arm64"] {
+            let dir = module_dir_marked(&format!("{platform} build"));
+            let pushed =
+                crate::oci::push_module(dir.path(), &artifact, Some(platform), None).unwrap();
+            index = pushed.index_digest.unwrap_or_default();
+        }
+        (store, artifact, index)
+    }
+
+    fn keyed_checks(key: &str) -> PullChecks<'_> {
+        let opts = VerifyOptions {
+            key: Some(key),
+            identity: None,
+            issuer: None,
+        };
+        PullChecks {
+            signature: SignaturePolicy::RequireKey { path: key },
+            attestation: Some(("slsaprovenance1", opts)),
+        }
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn pull_verifies_the_digest_of_the_one_tag_read_it_extracts_from() {
+        let shim = crate::test_helpers::CosignTestShim::builder()
+            .with_argv_logging(true)
+            .with_exit(0)
+            .install();
+        let (store, artifact, index) = two_platform_store("test/pullsig");
+        let before = store.requests().len();
+        let out = tempfile::tempdir().unwrap();
+
+        let outcome = pull_module(
+            &artifact,
+            out.path(),
+            keyed_checks("cosign.pub"),
+            Some("linux/arm64"),
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(outcome.index_digest.as_deref(), Some(index.as_str()));
+        let reads: Vec<_> = store.requests()[before..]
+            .iter()
+            .filter(|r| r.as_str() == "GET v1")
+            .cloned()
+            .collect();
+        assert_eq!(reads, ["GET v1"], "the tag is read once");
+        let argv = shim.argv_log();
+        let subject = format!("{}@{index}", artifact.trim_end_matches(":v1"));
+        let checked: Vec<&str> = argv.lines().collect();
+        assert_eq!(checked.len(), 2, "{argv}");
+        assert!(
+            checked[0].starts_with("verify ") && checked[0].ends_with(&subject),
+            "{argv}"
+        );
+        assert!(
+            checked[1].starts_with("verify-attestation ") && checked[1].ends_with(&subject),
+            "{argv}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(out.path().join("README.md")).unwrap(),
+            "linux/arm64 build"
+        );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn pull_types_an_attestation_failure_apart_from_a_signature_failure() {
+        let _shim = crate::test_helpers::CosignTestShim::builder()
+            .with_exit(1)
+            .with_stderr("no matching attestations")
+            .install();
+        let (_store, artifact, _) = two_platform_store("test/pullatt");
+        let out = tempfile::tempdir().unwrap();
+        let checks = PullChecks {
+            signature: SignaturePolicy::None,
+            ..keyed_checks("cosign.pub")
+        };
+
+        let err = pull_module(&artifact, out.path(), checks, Some("linux/amd64"), None)
+            .expect_err("a rejected attestation stops the pull");
+        assert!(matches!(err, OciError::AttestationError { .. }), "{err:?}");
+        assert!(
+            !out.path().join("README.md").exists(),
+            "nothing is extracted"
+        );
+    }
+
+    #[test]
+    fn pull_names_the_entry_digest_an_index_points_at_when_it_is_missing() {
+        let store = crate::oci::test_helpers::ManifestStore::new("test/pullgone");
+        let artifact = store.artifact("v1");
+        let missing = format!("sha256:{}", "a".repeat(64));
+        store.seed(
+            "v1",
+            &serde_json::json!({
+                "schemaVersion": 2,
+                "mediaType": crate::oci::MEDIA_TYPE_OCI_INDEX,
+                "manifests": [{
+                    "mediaType": MEDIA_TYPE_OCI_MANIFEST,
+                    "digest": missing,
+                    "size": 1,
+                    "platform": { "os": "linux", "architecture": "amd64" },
+                }],
+            }),
+        );
+
+        let err = pulled_mark(&artifact, Some("linux/amd64")).expect_err("the entry is gone");
+        let entry = format!("{}@{missing}", artifact.trim_end_matches(":v1"));
+        match &err {
+            OciError::ManifestNotFound { reference } => {
+                assert!(reference.starts_with(&format!("{entry}: ")), "{reference}");
+            }
+            other => panic!("expected ManifestNotFound, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn pull_row_states_the_digest_platform_and_index_it_took() {
+        let (_store, artifact, index) = two_platform_store("test/pullrow");
+        let out = tempfile::tempdir().unwrap();
+        let (printer, cap) = crate::output::Printer::for_test_doc();
+        let outcome = pull_module(
+            &artifact,
+            out.path(),
+            PullChecks::default(),
+            Some("linux/amd64"),
+            Some(&printer),
+        )
+        .unwrap();
+        drop(printer);
+
+        let human = cap.human();
+        let detail =
+            crate::oci::artifact_row_detail(&outcome.digest, "linux/amd64", Some(index.as_str()));
+        assert!(human.contains(&detail), "{human}");
+    }
+
+    #[test]
+    fn pull_row_of_a_single_manifest_states_its_annotated_platform() {
+        let store = crate::oci::test_helpers::ManifestStore::new("test/pullrow1");
+        let artifact = store.artifact("v1");
+        let dir = module_dir_marked("only build");
+        let pushed =
+            crate::oci::push_module(dir.path(), &artifact, Some("plan9/mips"), None).unwrap();
+        let out = tempfile::tempdir().unwrap();
+        let (printer, cap) = crate::output::Printer::for_test_doc();
+        pull_module(
+            &artifact,
+            out.path(),
+            PullChecks::default(),
+            None,
+            Some(&printer),
+        )
+        .unwrap();
+        drop(printer);
+
+        let human = cap.human();
+        let detail = crate::oci::artifact_row_detail(&pushed.digest, "plan9/mips", None);
+        assert!(human.contains(&detail), "{human}");
+    }
+
     #[test]
     fn artifact_facts_of_an_artifact_declaring_no_platform_are_empty() {
         let mut server = mockito::Server::new();
@@ -867,7 +1097,7 @@ mod tests {
         let result = pull_module(
             &artifact_ref,
             output_dir.path(),
-            SignaturePolicy::None,
+            PullChecks::default(),
             None,
             None,
         );
@@ -922,7 +1152,7 @@ mod tests {
         let result = pull_module(
             &artifact_ref,
             output_dir.path(),
-            SignaturePolicy::None,
+            PullChecks::default(),
             None,
             None,
         );
@@ -943,10 +1173,17 @@ mod tests {
             .with_stderr("cosign error: signature does not match")
             .install();
 
-        let server = mockito::Server::new();
+        let mut server = mockito::Server::new();
         let registry = registry_from_url(&server.url());
         let output_dir = tempfile::tempdir().unwrap();
         let artifact_ref = format!("{}/test/sigfail:v1", registry);
+        // The signature is checked against the digest the tag read answers,
+        // so the tag is read first.
+        server
+            .mock("GET", "/v2/test/sigfail/manifests/v1")
+            .with_status(200)
+            .with_body(r#"{"schemaVersion":2,"layers":[]}"#)
+            .create();
 
         let key_dir = tempfile::tempdir().unwrap();
         let key_path = key_dir.path().join("cosign.pub");
@@ -954,7 +1191,16 @@ mod tests {
         let key_path_str = key_path.to_str().unwrap();
 
         let policy = SignaturePolicy::RequireKey { path: key_path_str };
-        let result = pull_module(&artifact_ref, output_dir.path(), policy, None, None);
+        let result = pull_module(
+            &artifact_ref,
+            output_dir.path(),
+            PullChecks {
+                signature: policy,
+                attestation: None,
+            },
+            None,
+            None,
+        );
         assert!(result.is_err());
         assert!(
             matches!(result, Err(OciError::VerificationFailed { .. })),
@@ -1006,21 +1252,17 @@ mod tests {
         let key_path_str = key_path.to_str().unwrap();
 
         let policy = SignaturePolicy::RequireKey { path: key_path_str };
-        let result = pull_module(&artifact_ref, output_dir.path(), policy, None, None);
-        assert!(result.is_ok(), "pull_module failed: {:?}", result.err());
-    }
-
-    #[test]
-    fn signature_policy_requires_signature_predicate() {
-        assert!(!SignaturePolicy::None.requires_signature());
-        assert!(SignaturePolicy::RequireKey { path: "k" }.requires_signature());
-        assert!(
-            SignaturePolicy::RequireKeyless {
-                identity: Some("u@example"),
-                issuer: None,
-            }
-            .requires_signature()
+        let result = pull_module(
+            &artifact_ref,
+            output_dir.path(),
+            PullChecks {
+                signature: policy,
+                attestation: None,
+            },
+            None,
+            None,
         );
+        assert!(result.is_ok(), "pull_module failed: {:?}", result.err());
     }
 
     #[test]
@@ -1039,7 +1281,7 @@ mod tests {
         let result = pull_module(
             &artifact_ref,
             output_dir.path(),
-            SignaturePolicy::None,
+            PullChecks::default(),
             None,
             None,
         );
@@ -1070,7 +1312,7 @@ mod tests {
         let result = pull_module(
             &artifact_ref,
             output_dir.path(),
-            SignaturePolicy::None,
+            PullChecks::default(),
             None,
             Some(&printer),
         );
@@ -1135,7 +1377,7 @@ mod tests {
         let result = pull_module(
             &artifact_ref,
             output_dir.path(),
-            SignaturePolicy::None,
+            PullChecks::default(),
             None,
             None,
         );
@@ -1159,7 +1401,7 @@ mod tests {
         let result = pull_module(
             &artifact_ref,
             output_dir.path(),
-            SignaturePolicy::None,
+            PullChecks::default(),
             None,
             None,
         );

@@ -92,17 +92,8 @@ pub fn cmd_module_build(
                             serde_json::json!({ "artifact": art, "target": targets[0] }),
                         )
                     })?;
-                if sign {
-                    cfgd_core::oci::sign_artifact(art, key).map_err(|e| {
-                        crate::cli::cli_error(
-                            art,
-                            "sign_failed",
-                            cfgd_core::output::collapse_to_subject_line(&e),
-                            serde_json::json!({ "artifact": art }),
-                        )
-                    })?;
-                    printer.status_simple(Role::Ok, "Signed artifact with cosign");
-                }
+                let resolved = index_digest.as_deref().unwrap_or(&digest);
+                crate::cli::helpers::sign_and_attest(printer, art, resolved, key, sign, false)?;
                 pushed = Some(Pushed::Platform {
                     digest,
                     index_digest,
@@ -157,17 +148,7 @@ pub fn cmd_module_build(
                                 serde_json::json!({ "artifact": art, "targets": &targets }),
                             )
                         })?;
-                if sign {
-                    cfgd_core::oci::sign_artifact(art, key).map_err(|e| {
-                        crate::cli::cli_error(
-                            art,
-                            "sign_failed",
-                            cfgd_core::output::collapse_to_subject_line(&e),
-                            serde_json::json!({ "artifact": art }),
-                        )
-                    })?;
-                    printer.status_simple(Role::Ok, "Signed artifact with cosign");
-                }
+                crate::cli::helpers::sign_and_attest(printer, art, &digest, key, sign, false)?;
                 pushed = Some(Pushed::Index(digest));
             }
         }

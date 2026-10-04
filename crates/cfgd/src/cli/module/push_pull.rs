@@ -480,59 +480,48 @@ pub fn cmd_module_pull(
         let _inherit = printer.depth_inheritance();
         pull_sec.kv_block([("Artifact", artifact_ref), ("Output", output)]);
 
-        if require_signature {
-            // A registry round-trip with no printer of its own: narrated under
-            // the section, retiring silently into the verdict row below it.
-            printer
-                .narrate_silent("Verifying signature", |_| {
-                    cfgd_core::oci::verify_signature(artifact_ref, &verify_opts)
-                })
+        // The checks run inside the pull, against the digest of the one tag
+        // read it extracts from, so a tag moved mid-pull cannot slip an
+        // unverified document past them.
+        let checks = cfgd_core::oci::PullChecks {
+            signature: match (require_signature, verify_opts.key) {
+                (false, _) => cfgd_core::oci::SignaturePolicy::None,
+                (true, Some(path)) => cfgd_core::oci::SignaturePolicy::RequireKey { path },
+                (true, None) => cfgd_core::oci::SignaturePolicy::RequireKeyless {
+                    identity: verify_opts.identity,
+                    issuer: verify_opts.issuer,
+                },
+            },
+            attestation: verify_attestation.then_some(("slsaprovenance1", verify_opts)),
+        };
+        pulled =
+            cfgd_core::oci::pull_module(artifact_ref, output_path, checks, platform, Some(printer))
                 .map_err(|e| {
+                    let step = match &e {
+                        cfgd_core::errors::OciError::VerificationFailed { .. } => "signature",
+                        cfgd_core::errors::OciError::AttestationError { .. } => "attestation",
+                        _ => {
+                            return crate::cli::cli_error(
+                                artifact_ref,
+                                "pull_failed",
+                                e.to_string(),
+                                serde_json::json!({ "artifact": artifact_ref, "output": output }),
+                            );
+                        }
+                    };
                     crate::cli::cli_error(
                         artifact_ref,
                         "verify_failed",
                         e.to_string(),
-                        serde_json::json!({ "artifact": artifact_ref, "step": "signature" }),
+                        serde_json::json!({ "artifact": artifact_ref, "step": step }),
                     )
                 })?;
+        if require_signature {
             printer.status_simple(Role::Ok, "Verified signature");
         }
-
         if verify_attestation {
-            printer
-                .narrate_silent("Verifying SLSA provenance attestation", |_| {
-                    cfgd_core::oci::verify_attestation(
-                        artifact_ref,
-                        "slsaprovenance1",
-                        &verify_opts,
-                    )
-                })
-                .map_err(|e| {
-                    crate::cli::cli_error(
-                        artifact_ref,
-                        "verify_failed",
-                        e.to_string(),
-                        serde_json::json!({ "artifact": artifact_ref, "step": "attestation" }),
-                    )
-                })?;
             printer.status_simple(Role::Ok, "Verified SLSA provenance attestation");
         }
-
-        pulled = cfgd_core::oci::pull_module(
-            artifact_ref,
-            output_path,
-            cfgd_core::oci::SignaturePolicy::None,
-            platform,
-            Some(printer),
-        )
-        .map_err(|e| {
-            crate::cli::cli_error(
-                artifact_ref,
-                "pull_failed",
-                e.to_string(),
-                serde_json::json!({ "artifact": artifact_ref, "output": output }),
-            )
-        })?;
 
         if output_path.join("module.yaml").exists() {
             let contents = std::fs::read_to_string(output_path.join("module.yaml"))?;
@@ -755,6 +744,32 @@ mod tests {
         );
     }
 
+    /// A mock registry whose `test/mod:v1` names a manifest whose layer blob
+    /// is missing: a pull reads the tag, runs its checks against it and then
+    /// fails fetching the layer. Answers the artifact and the manifest digest.
+    fn mock_tag_without_blob() -> (mockito::ServerGuard, String, String) {
+        let mut server = mockito::Server::new();
+        let artifact = format!("{}/test/mod:v1", server.url().trim_start_matches("http://"));
+        let manifest = serde_json::json!({
+            "schemaVersion": 2,
+            "mediaType": "application/vnd.oci.image.manifest.v1+json",
+            "layers": [{
+                "mediaType": cfgd_core::oci::MEDIA_TYPE_MODULE_LAYER,
+                "digest": format!("sha256:{}", "0".repeat(64)),
+                "size": 1,
+            }],
+        })
+        .to_string();
+        let digest = cfgd_core::sha256_digest(manifest.as_bytes());
+        server
+            .mock("GET", "/v2/test/mod/manifests/v1")
+            .with_status(200)
+            .with_body(manifest)
+            .expect(1)
+            .create();
+        (server, artifact, digest)
+    }
+
     /// Digest the mock registry answers for a manifest put at a platform tag.
     const PLATFORM_TAG_DIGEST: &str = "sha256:3a1";
     /// Digest the mock registry answers for whatever is put at `v1`.
@@ -828,7 +843,7 @@ mod tests {
         use super::super::{PushOptions, cmd_module_pull, cmd_module_push};
         use super::{
             PLATFORM_TAG_DIGEST, TAG_DIGEST, mock_push_registry, mock_push_registry_holding,
-            unreachable_ref, write_module_yaml,
+            mock_tag_without_blob, write_module_yaml,
         };
 
         #[test]
@@ -875,7 +890,7 @@ mod tests {
         #[serial]
         fn pull_require_signature_emits_verify_failed_when_cosign_exits_nonzero() {
             let dir = tempfile::tempdir().expect("tempdir");
-            let artifact = unreachable_ref("test/verify-sig");
+            let (_server, artifact, _) = mock_tag_without_blob();
 
             let _shim = CosignTestShim::builder()
                 .with_argv_logging(false)
@@ -1031,8 +1046,9 @@ mod tests {
             );
         }
 
-        /// Push with `--attest` to a tag holding `tag`, returning the cosign argv.
-        fn attest_argv_after_push(tag: Option<&serde_json::Value>) -> (String, String) {
+        /// Push with `--sign --attest` to a tag holding `tag`, answering the
+        /// cosign argv (one line per call) and the registry.
+        fn cosign_argv_after_push(tag: Option<&serde_json::Value>) -> (String, String) {
             let shim = CosignTestShim::builder()
                 .with_argv_logging(true)
                 .with_exit(0)
@@ -1048,36 +1064,50 @@ mod tests {
                 PushOptions {
                     platform: Some("linux/arm64"),
                     apply: false,
-                    sign: false,
+                    sign: true,
                     key: None,
                     attest: true,
                 },
             )
-            .expect("attested push must succeed");
+            .expect("signed and attested push must succeed");
             (shim.argv_log(), registry)
         }
 
         #[test]
         #[serial]
-        fn push_attests_the_index_the_tag_resolves_to_after_a_join() {
-            let (argv, registry) = attest_argv_after_push(Some(&serde_json::json!({
+        fn push_signs_and_attests_the_index_the_tag_resolves_to_after_a_join() {
+            let (argv, registry) = cosign_argv_after_push(Some(&serde_json::json!({
                 "schemaVersion": 2,
                 "mediaType": "application/vnd.oci.image.manifest.v1+json",
                 "annotations": { cfgd_core::OCI_ANNOTATION_PLATFORM: "linux/amd64" },
             })));
-            assert!(
-                argv.contains(&format!("{registry}/test/mod@{TAG_DIGEST}")),
-                "the attestation subject is the index the tag now names: {argv}"
-            );
+            assert_signed_and_attested(&argv, &format!("{registry}/test/mod@{TAG_DIGEST}"));
         }
 
         #[test]
         #[serial]
-        fn push_attests_the_manifest_when_no_index_was_written() {
-            let (argv, registry) = attest_argv_after_push(None);
+        fn push_signs_and_attests_the_manifest_when_no_index_was_written() {
+            let (argv, registry) = cosign_argv_after_push(None);
+            assert_signed_and_attested(
+                &argv,
+                &format!("{registry}/test/mod@{PLATFORM_TAG_DIGEST}"),
+            );
+        }
+
+        /// `cosign sign` and `cosign attest` each ran once, both naming `subject`.
+        fn assert_signed_and_attested(argv: &str, subject: &str) {
+            let calls: Vec<&str> = argv
+                .lines()
+                .filter(|l| l.starts_with("sign ") || l.starts_with("attest "))
+                .collect();
+            assert_eq!(calls.len(), 2, "{argv}");
             assert!(
-                argv.contains(&format!("{registry}/test/mod@{PLATFORM_TAG_DIGEST}")),
-                "the attestation subject is the manifest the tag names: {argv}"
+                calls[0].starts_with("sign ") && calls[0].ends_with(subject),
+                "the signature names {subject}: {argv}"
+            );
+            assert!(
+                calls[1].starts_with("attest ") && calls[1].ends_with(subject),
+                "the attestation names {subject}: {argv}"
             );
         }
 
@@ -1133,7 +1163,7 @@ mod tests {
                 .install();
 
             let dir = tempfile::tempdir().expect("tempdir");
-            let artifact = unreachable_ref("test/verify-success");
+            let (_server, artifact, _) = mock_tag_without_blob();
 
             let (printer, _cap) = Printer::for_test_doc();
             let err = cmd_module_pull(
@@ -1165,9 +1195,53 @@ mod tests {
 
         #[test]
         #[serial]
+        fn pull_checks_signature_and_attestation_against_the_digest_the_tag_read_answered() {
+            let shim = CosignTestShim::builder()
+                .with_argv_logging(true)
+                .with_exit(0)
+                .install();
+            let dir = tempfile::tempdir().expect("tempdir");
+            let (_server, artifact, digest) = mock_tag_without_blob();
+
+            let (printer, _cap) = Printer::for_test_doc();
+            let _ = cmd_module_pull(
+                &printer,
+                &artifact,
+                dir.path().to_str().unwrap(),
+                None,
+                true,
+                true,
+                cfgd_core::oci::VerifyOptions {
+                    key: Some("cosign.pub"),
+                    identity: None,
+                    issuer: None,
+                },
+            );
+            drop(printer);
+
+            let subject = format!("{}@{digest}", artifact.trim_end_matches(":v1"));
+            let argv = shim.argv_log();
+            let calls: Vec<&str> = argv.lines().collect();
+            assert_eq!(
+                calls.len(),
+                2,
+                "one signature and one attestation check: {argv}"
+            );
+            assert!(
+                calls[0].starts_with("verify ") && calls[0].ends_with(&subject),
+                "{argv}"
+            );
+            assert!(
+                calls[1].starts_with("verify-attestation ") && calls[1].ends_with(&subject),
+                "{argv}"
+            );
+        }
+
+        #[test]
+        #[serial]
         fn pull_verify_attestation_emits_verify_failed_when_cosign_exits_nonzero() {
             let dir = tempfile::tempdir().expect("tempdir");
-            let artifact = unreachable_ref("test/verify-attest");
+            let (_server, artifact, _) = mock_tag_without_blob();
 
             let _shim = CosignTestShim::builder()
                 .with_argv_logging(false)

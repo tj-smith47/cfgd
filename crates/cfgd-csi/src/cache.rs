@@ -64,7 +64,7 @@ impl Cache {
         let pull_result = cfgd_core::oci::pull_module(
             oci_ref,
             &tmp_dir,
-            cfgd_core::oci::SignaturePolicy::None,
+            cfgd_core::oci::PullChecks::default(),
             Some(&self.platform),
             None,
         );

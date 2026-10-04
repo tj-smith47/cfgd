@@ -1929,12 +1929,15 @@ pub(in crate::cli) struct SignAttestOutcome {
 
 /// Cosign-sign and/or attach SLSA provenance to an already-pushed OCI artifact.
 ///
-/// Shared by `cfgd module push` and `cfgd image pack`: both push an artifact,
-/// then optionally sign it and attach provenance derived from the local git
-/// `origin`/`HEAD`. `digest` is what `artifact`'s tag resolves to after the
-/// push (an index when the push joined one), and the attestation is attached
-/// to that digest so it lands on the document the push left at the tag. Errors route through `collapse_to_subject_line` so a
-/// multi-line cosign stderr can't trip the renderer's single-line invariant.
+/// Shared by `cfgd module push`, `cfgd module build` and `cfgd image pack`:
+/// each pushes an artifact, then optionally signs it and attaches provenance
+/// derived from the local git `origin`/`HEAD`. `digest` is what `artifact`'s
+/// tag resolves to after the push (an index when the push joined one). Both
+/// the signature and the attestation name `artifact` pinned to that digest,
+/// so they land on the document this push left at the tag even if another
+/// push moves the tag first. Errors route through `collapse_to_subject_line`
+/// so a multi-line cosign stderr can't trip the renderer's single-line
+/// invariant.
 pub(in crate::cli) fn sign_and_attest(
     printer: &Printer,
     artifact: &str,
@@ -1943,8 +1946,24 @@ pub(in crate::cli) fn sign_and_attest(
     sign: bool,
     attest: bool,
 ) -> anyhow::Result<SignAttestOutcome> {
+    if !sign && !attest {
+        return Ok(SignAttestOutcome {
+            signed: false,
+            attested: false,
+        });
+    }
+    let subject = cfgd_core::oci::OciReference::parse(artifact)
+        .map(|r| r.at_digest(digest).to_string())
+        .map_err(|e| {
+            cli_error(
+                artifact,
+                if sign { "sign_failed" } else { "attest_failed" },
+                cfgd_core::output::collapse_to_subject_line(&e),
+                serde_json::json!({ "artifact": artifact, "digest": digest }),
+            )
+        })?;
     if sign {
-        cfgd_core::oci::sign_artifact(artifact, key).map_err(|e| {
+        cfgd_core::oci::sign_artifact(&subject, key).map_err(|e| {
             cli_error(
                 artifact,
                 "sign_failed",
@@ -1982,16 +2001,6 @@ pub(in crate::cli) fn sign_and_attest(
         let pred_dir = tempfile::tempdir()?;
         let pred_path = pred_dir.path().join("provenance.json");
         cfgd_core::atomic_write_str(&pred_path, &provenance)?;
-        let subject = cfgd_core::oci::OciReference::parse(artifact)
-            .map(|r| r.at_digest(digest).to_string())
-            .map_err(|e| {
-                cli_error(
-                    artifact,
-                    "attest_failed",
-                    cfgd_core::output::collapse_to_subject_line(&e),
-                    serde_json::json!({ "artifact": artifact, "digest": digest, "step": "attach" }),
-                )
-            })?;
         cfgd_core::oci::attach_attestation(
             &subject,
             // native-ok: local predicate path for the co-located cosign subprocess

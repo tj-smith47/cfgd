@@ -274,7 +274,8 @@ cosign verify-attestation --key cosign.pub --type slsaprovenance1 \
 ```
 
 Both flags are independent and can be combined: `--sign --attest` signs the image
-manifest and attaches the provenance in one invocation.
+manifest and attaches the provenance in one invocation. Both name the image by the digest the
+push left at the tag (`registry.example.com/myapp@sha256:...`).
 
 ## Error output
 
