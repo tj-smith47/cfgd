@@ -122,24 +122,21 @@ TEST_POD=""
 HEARTBEAT_INTERVAL_SECONDS="${HEARTBEAT_INTERVAL_SECONDS:-120}"
 HEARTBEAT_PID=""
 
-# Background loop that keeps refreshing cfgd.io/heartbeat=<unix-epoch> on every
-# namespace this run owns (selected by the run label, so operator-suite
-# secondary namespaces are covered too, not just $E2E_NAMESPACE). The janitor
-# treats a fresh heartbeat as proof the owning run is alive and skips the
-# namespace regardless of its age — protecting runs that outlive the age gate.
-#
-# Mirrors start_lease_renewer in setup-cluster.sh: the subshell clears the
-# inherited EXIT trap so killing it can never re-enter cleanup_e2e.
+# Refresh cfgd.io/heartbeat=<unix-epoch> on every namespace this run owns
+# (selected by the run label, so operator-suite secondary namespaces are
+# covered too, and $E2E_NAMESPACE with them). A failed annotation is retried
+# on the next beat.
+_heartbeat_beat() {
+    kubectl annotate namespace -l "$E2E_RUN_LABEL" \
+        "cfgd.io/heartbeat=$(date -u +%s)" --overwrite >/dev/null 2>&1 # rc-ok: run_every ignores a failed beat and the next one retries it
+}
+
+# Keep the run's heartbeat fresh in the background. The janitor treats a fresh
+# heartbeat as proof the owning run is alive and skips the namespace whatever
+# its age, which protects a run that outlives the age gate.
 start_heartbeat() {
     [ -n "$HEARTBEAT_PID" ] && return 0
-    (
-        trap - EXIT
-        while true; do
-            kubectl annotate namespace -l "$E2E_RUN_LABEL" \
-                "cfgd.io/heartbeat=$(date -u +%s)" --overwrite >/dev/null 2>&1 || true # rc-ok: background heartbeat; a missed annotation is retried on the next interval
-            sleep "$HEARTBEAT_INTERVAL_SECONDS" # sleep-ok: the heartbeat's refresh interval, set against the janitor's freshness window
-        done
-    ) &
+    run_every "$HEARTBEAT_INTERVAL_SECONDS" _heartbeat_beat
     HEARTBEAT_PID=$!
 }
 
@@ -360,7 +357,27 @@ cleanup_e2e() {
 #
 # A wait polls the state the next step reads, up to a deadline, and says on
 # timeout what it waited for. common/test-waits.sh fails on a `sleep` outside a
-# function of this file whose body checks a deadline.
+# function of this file whose body tests a deadline, apart from run_every.
+
+# run_every <interval_s> <command...>: run the command in a background subshell
+# now and then every interval_s seconds until the subshell is killed; the
+# caller reads its pid from $!. A failed run is ignored and the next one runs
+# on time. This is the one background cadence the e2e scripts keep (a refresh
+# that has to outlive the step that starts it), so it is the one sleep
+# test-waits.sh lets run without a deadline, listed under Cadences. The
+# subshell clears the inherited EXIT trap, so killing it never re-enters the
+# caller's cleanup.
+run_every() {
+    local interval="$1"
+    shift
+    (
+        trap - EXIT
+        while true; do
+            "$@" || true
+            sleep "$interval"
+        done
+    ) &
+}
 
 # wait_until <timeout_s> <interval_s> <what> <command...>: run the command every
 # interval until it exits 0. When the timeout passes first, prints "Timed out

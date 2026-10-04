@@ -178,27 +178,25 @@ acquire_lease() {
     exit 1
 }
 
-# Renew in the background so a long setup never lets the lease expire under it.
-# The subshell clears the inherited EXIT trap so killing it can't re-enter
-# release_lease. Each renewal is a guarded replace at the current RV and only
-# proceeds while we are still the holder — if a steal happened (we were
-# wrongly presumed dead), the renewer stops touching the lease.
+# One renewal: a guarded replace at the current RV, made only while this run
+# is still the holder. After a steal (this run wrongly presumed dead) it
+# leaves the lease alone.
+renew_lease() {
+    local raw holder rv
+    raw=$(kubectl get lease "$LEASE_NAME" -n "$LEASE_NS" \
+        -o jsonpath='{.spec.holderIdentity}|{.metadata.resourceVersion}' \
+        2>/dev/null || echo "")
+    holder="${raw%%|*}"
+    rv="${raw##*|}"
+    if [ "$holder" = "$LEASE_HOLDER" ] && [ -n "$rv" ]; then
+        lease_replace_at "$rv"
+    fi
+}
+
+# Renew in the background, three times per lease duration, so a long setup
+# never lets the lease expire under it.
 start_lease_renewer() {
-    (
-        trap - EXIT
-        while true; do
-            sleep $((LEASE_DURATION_SECONDS / 3)) # sleep-ok: the renewal cadence, three renewals per lease duration so a live holder's lease never expires
-            local raw holder rv
-            raw=$(kubectl get lease "$LEASE_NAME" -n "$LEASE_NS" \
-                -o jsonpath='{.spec.holderIdentity}|{.metadata.resourceVersion}' \
-                2>/dev/null || echo "")
-            holder="${raw%%|*}"
-            rv="${raw##*|}"
-            if [ "$holder" = "$LEASE_HOLDER" ] && [ -n "$rv" ]; then
-                lease_replace_at "$rv" || true
-            fi
-        done
-    ) &
+    run_every $((LEASE_DURATION_SECONDS / 3)) renew_lease
     LEASE_RENEW_PID=$!
 }
 
