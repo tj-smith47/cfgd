@@ -320,7 +320,12 @@ fn build_inject_patch_json(module_refs: &[String]) -> serde_json::Value {
 /// (`CFGD_CONFIG` first, then the default location) and settles the path the
 /// way the primary CLI settles its own, a leading `~` included.
 fn plugin_config_path() -> std::path::PathBuf {
-    let config_env = std::env::var_os(cfgd_core::CFGD_CONFIG_ENV).map(std::path::PathBuf::from);
+    // An empty value names no file; the primary CLI refuses it as a missing
+    // `--config` value, and the plugin, which reads the config only for its
+    // theme, falls back to the default.
+    let config_env = std::env::var_os(cfgd_core::CFGD_CONFIG_ENV)
+        .filter(|value| !value.is_empty())
+        .map(std::path::PathBuf::from);
     let explicit = config_env.is_some();
     crate::cli::settle_config_path(
         config_env.unwrap_or_else(crate::cli::default_config_file),

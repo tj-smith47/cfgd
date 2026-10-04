@@ -2321,3 +2321,20 @@ fn the_plugin_expands_a_leading_tilde_in_cfgd_config() {
         home.path().join("team").join("cfgd.yaml")
     );
 }
+
+/// An empty `CFGD_CONFIG` names no file, so the plugin reads the default
+/// config document.
+#[test]
+#[serial]
+fn the_plugin_reads_the_default_config_under_an_empty_cfgd_config() {
+    let home = tempfile::tempdir().unwrap();
+    let _home = cfgd_core::with_test_home_guard(home.path());
+    let _config = EnvVarGuard::set(cfgd_core::CFGD_CONFIG_ENV, "");
+    let expected = crate::cli::settle_config_path(
+        crate::cli::default_config_file(),
+        false,
+        None,
+        cfgd_core::Scope::User,
+    );
+    assert_eq!(plugin_config_path(), expected);
+}
