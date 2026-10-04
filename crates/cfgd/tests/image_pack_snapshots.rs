@@ -212,6 +212,24 @@ fn image_pack_json() {
 
     let mut json = cap.json().expect("pack emits a data payload");
     json["artifact"] = serde_json::Value::String(artifact.replace(&registry, "<REGISTRY>"));
+    // Folded below, so its shape and its agreement with the human row are
+    // checked here: the golden alone would accept any value at this key.
+    let digest = json["digest"].as_str().expect("payload digest is a string");
+    assert!(
+        digest
+            .strip_prefix("sha256:")
+            .is_some_and(|hex| hex.len() == 64
+                && hex
+                    .bytes()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))),
+        "the payload digest is a sha256 digest: {digest}"
+    );
+    assert!(
+        cap.human()
+            .contains(&format!("Packed and pushed image — {digest} (")),
+        "the payload names the digest the pack row printed: {}",
+        cap.human()
+    );
     json["digest"] = serde_json::Value::String("<DIGEST>".to_string());
     // The payload carries the same host-derived `platform` the human row
     // reports when nothing passed `--platform`, and is folded the same way:
