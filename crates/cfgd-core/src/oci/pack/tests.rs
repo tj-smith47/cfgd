@@ -1139,6 +1139,180 @@ fn pack_image_base_index_selects_matching_platform_manifest() {
     amd64_mock.assert();
 }
 
+/// A `--platform` naming no variant, layered onto a base whose matching
+/// entry names one, reports and writes the base's variant: the pushed
+/// config copies the base's platform, so the outcome names what was written.
+#[test]
+fn pack_image_onto_a_variant_base_reports_the_variant_its_config_carries() {
+    use std::sync::{Arc, Mutex};
+
+    let mut server = mockito::Server::new();
+    let registry = registry_from_url(&server.url());
+    let dir = create_test_pack_dir();
+
+    let arm64_manifest_digest =
+        "sha256:dddd000000000000000000000000000000000000000000000000000000000000";
+    let index = serde_json::json!({
+        "schemaVersion": 2,
+        "mediaType": MEDIA_TYPE_OCI_INDEX,
+        "manifests": [{
+            "mediaType": MEDIA_TYPE_OCI_MANIFEST,
+            "digest": arm64_manifest_digest,
+            "size": 100u64,
+            "platform": {"os": "linux", "architecture": "arm64", "variant": "v8"},
+        }],
+    });
+
+    let base_layer_digest =
+        "sha256:3333333333333333333333333333333333333333333333333333333333333333";
+    let base_config_blob = serde_json::to_vec(&ImageConfig {
+        architecture: "arm64".to_string(),
+        os: "linux".to_string(),
+        variant: Some("v8".to_string()),
+        created: Some("2021-06-01T00:00:00Z".to_string()),
+        config: None,
+        rootfs: RootFs {
+            fs_type: "layers".to_string(),
+            diff_ids: vec!["sha256:arm-diff".to_string()],
+        },
+    })
+    .expect("serialize base config");
+    let base_config_digest = sha256_digest(&base_config_blob);
+    let arm64_manifest = serde_json::json!({
+        "schemaVersion": 2,
+        "mediaType": MEDIA_TYPE_OCI_MANIFEST,
+        "config": {
+            "mediaType": MEDIA_TYPE_OCI_IMAGE_CONFIG,
+            "digest": base_config_digest,
+            "size": base_config_blob.len(),
+        },
+        "layers": [{
+            "mediaType": MEDIA_TYPE_OCI_IMAGE_LAYER,
+            "digest": base_layer_digest,
+            "size": 4096u64,
+        }],
+    });
+
+    server
+        .mock("GET", "/v2/base/variant/manifests/v1")
+        .with_status(200)
+        .with_header("Content-Type", MEDIA_TYPE_OCI_INDEX)
+        .with_body(serde_json::to_string(&index).unwrap())
+        .create();
+    server
+        .mock(
+            "GET",
+            format!("/v2/base/variant/manifests/{arm64_manifest_digest}").as_str(),
+        )
+        .with_status(200)
+        .with_body(serde_json::to_string(&arm64_manifest).unwrap())
+        .create();
+    server
+        .mock(
+            "GET",
+            format!("/v2/base/variant/blobs/{base_config_digest}").as_str(),
+        )
+        .with_status(200)
+        .with_body(base_config_blob.clone())
+        .create();
+
+    server
+        .mock(
+            "HEAD",
+            format!("/v2/myorg/myimage/blobs/{base_layer_digest}").as_str(),
+        )
+        .with_status(404)
+        .create();
+    server
+        .mock(
+            "POST",
+            mockito::Matcher::Regex(
+                r"/v2/myorg/myimage/blobs/uploads/\?mount=sha256:.*&from=base/variant".to_string(),
+            ),
+        )
+        .with_status(201)
+        .create();
+    server
+        .mock(
+            "HEAD",
+            mockito::Matcher::Regex(r"/v2/myorg/myimage/blobs/sha256:.*".to_string()),
+        )
+        .with_status(404)
+        .expect_at_least(2)
+        .create();
+    let upload_location = format!("{}/v2/myorg/myimage/blobs/uploads/upload-id", server.url());
+    server
+        .mock("POST", "/v2/myorg/myimage/blobs/uploads/")
+        .with_status(202)
+        .with_header("Location", &upload_location)
+        .expect_at_least(2)
+        .create();
+    let blob_bodies: Arc<Mutex<HashMap<String, Vec<u8>>>> = Arc::new(Mutex::new(HashMap::new()));
+    let blob_capture = Arc::clone(&blob_bodies);
+    server
+        .mock(
+            "PUT",
+            mockito::Matcher::Regex(
+                r"/v2/myorg/myimage/blobs/uploads/upload-id\?digest=sha256:.*".to_string(),
+            ),
+        )
+        .match_request(move |req| {
+            let digest = req
+                .path_and_query()
+                .split("digest=")
+                .nth(1)
+                .unwrap_or("")
+                .to_string();
+            if let Ok(body) = req.body() {
+                blob_capture
+                    .lock()
+                    .expect("blob capture lock")
+                    .insert(digest, body.clone());
+            }
+            true
+        })
+        .with_status(201)
+        .expect_at_least(2)
+        .create();
+    let manifest_body: Arc<Mutex<Option<Vec<u8>>>> = Arc::new(Mutex::new(None));
+    let manifest_capture = Arc::clone(&manifest_body);
+    server
+        .mock("PUT", "/v2/myorg/myimage/manifests/v1")
+        .match_request(move |req| {
+            if let Ok(body) = req.body() {
+                *manifest_capture.lock().expect("manifest capture lock") = Some(body.clone());
+            }
+            true
+        })
+        .with_status(201)
+        .create();
+
+    let artifact_ref = format!("{registry}/myorg/myimage:v1");
+    let opts = PackOptions {
+        platform: Some("linux/arm64".into()),
+        base: Some(format!("{registry}/base/variant:v1")),
+        ..Default::default()
+    };
+
+    let outcome = pack_image(dir.path(), &artifact_ref, &opts, None).expect("pack_image");
+    assert_eq!(outcome.platform, "linux/arm64/v8");
+
+    let manifest_bytes = manifest_body
+        .lock()
+        .expect("manifest lock")
+        .clone()
+        .expect("manifest PUT must have been captured");
+    let manifest: OciManifest =
+        serde_json::from_slice(&manifest_bytes).expect("captured manifest must parse");
+    let captured = blob_bodies.lock().expect("blob lock");
+    let config_body = captured
+        .get(&manifest.config.digest)
+        .expect("a blob PUT must carry the config digest from the manifest");
+    let pushed: serde_json::Value =
+        serde_json::from_slice(config_body).expect("pushed config must parse");
+    assert_eq!(pushed["variant"], "v8", "pushed config: {pushed}");
+}
+
 #[test]
 fn pack_image_base_index_no_matching_platform_errors() {
     let mut server = mockito::Server::new();

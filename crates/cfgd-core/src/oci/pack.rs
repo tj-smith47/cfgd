@@ -156,7 +156,7 @@ pub(super) fn build_image_manifest(
 ///   entrypoint/cmd/working_dir/user; `env` is base ++ opts; `labels` are base
 ///   merged with opts (opts wins on key conflict).
 ///
-/// Architecture/os are kept from the base. Callers must validate that the base
+/// Architecture, os and variant are kept from the base. Callers must validate that the base
 /// platform equals the resolved pack target before invoking this.
 pub(super) fn build_layered_image_config(
     base: &ImageConfig,
@@ -291,7 +291,9 @@ pub(super) fn build_layered_manifest(
 pub struct PackOutcome {
     /// OCI manifest digest (`"sha256:..."`).
     pub digest: String,
-    /// Resolved platform in `"os/arch[/variant]"` form (e.g. `"linux/amd64"`).
+    /// Platform of the config the push wrote, in `"os/arch[/variant]"` form
+    /// (e.g. `"linux/amd64"`). With a base image this is the base's own
+    /// platform, so a variant the request left out is still named.
     pub platform: String,
 }
 
@@ -365,7 +367,7 @@ fn pack_image_inner(
     let layer_digest = sha256_digest(&layer_gz);
     let layer_size = layer_gz.len() as u64;
 
-    let manifest = if let Some(base_ref) = opts.base.as_deref() {
+    let (manifest, platform) = if let Some(base_ref) = opts.base.as_deref() {
         layer_onto_base(
             agent,
             base_ref,
@@ -395,7 +397,10 @@ fn pack_image_inner(
         )?;
         upload_blob(agent, oci_ref, auth, &layer_gz, MEDIA_TYPE_OCI_IMAGE_LAYER)?;
 
-        build_image_manifest(config_digest, config_size, layer_digest, layer_size, opts)
+        (
+            build_image_manifest(config_digest, config_size, layer_digest, layer_size, opts),
+            platform,
+        )
     };
 
     let manifest_json = serde_json::to_vec(&manifest)?;
@@ -538,7 +543,7 @@ pub(super) fn base_index_entry<'a>(
 
 /// Pack `layer_gz` as a new top layer on top of the resolved `base_ref` image,
 /// uploading everything into the target `oci_ref` repository and returning the
-/// layered manifest ready to PUT.
+/// layered manifest ready to PUT, with the platform its config declares.
 ///
 /// Steps: resolve base manifest (following an index for `(os, arch)`) → fetch +
 /// parse base config → assert base platform matches the resolved target → build
@@ -557,7 +562,7 @@ fn layer_onto_base(
     layer_size: u64,
     diff_id: String,
     opts: &PackOptions,
-) -> Result<OciManifest, OciError> {
+) -> Result<(OciManifest, OciPlatform), OciError> {
     let base = OciReference::parse(base_ref)?;
     let base_auth = RegistryAuth::resolve(&base.registry);
 
@@ -580,15 +585,18 @@ fn layer_onto_base(
     // correctness error: the new layer would claim a platform the base layers
     // were not built for.
     let variant_differs = platform.variant.is_some() && base_config.variant != platform.variant;
+    // The layered config copies the base's os, architecture and variant, so
+    // this is the platform the pushed image claims, a variant the caller left
+    // unnamed included.
+    let base_platform = OciPlatform {
+        os: base_config.os.clone(),
+        architecture: base_config.architecture.clone(),
+        variant: base_config.variant.clone(),
+    };
     if base_config.os != platform.os
         || base_config.architecture != platform.architecture
         || variant_differs
     {
-        let base_platform = OciPlatform {
-            os: base_config.os.clone(),
-            architecture: base_config.architecture.clone(),
-            variant: base_config.variant.clone(),
-        };
         return Err(OciError::RequestFailed {
             message: format!(
                 "base image platform {base_platform} does not match requested {platform}"
@@ -625,14 +633,15 @@ fn layer_onto_base(
     )?;
     upload_blob(agent, oci_ref, auth, layer_gz, MEDIA_TYPE_OCI_IMAGE_LAYER)?;
 
-    Ok(build_layered_manifest(
+    let manifest = build_layered_manifest(
         &base_manifest.layers,
         config_digest,
         config_size,
         layer_digest,
         layer_size,
         opts,
-    ))
+    );
+    Ok((manifest, base_platform))
 }
 
 /// Resolve the target platform from `PackOptions.platform` or the host.
