@@ -239,8 +239,9 @@ pub(super) fn resolve_pushed_digest(
             message: format!(
                 "{oci_ref} answered the push with digest {answered} in its \
                  Docker-Content-Digest header, and the manifest sent hashes to {sent}; the \
-                 registry (or a proxy in front of it) stored other content than cfgd sent, so \
-                 nothing was signed or recorded"
+                 registry (or a proxy in front of it) stored other content than cfgd sent, and \
+                 the tag may now name it. cfgd stopped before using that digest: nothing signs, \
+                 locks or applies it"
             ),
         }),
         _ => Ok(sent),
@@ -758,7 +759,7 @@ mod tests {
             "the refusal names both digests: {message}"
         );
         assert!(
-            message.contains("so nothing was signed or recorded"),
+            message.contains("nothing signs, locks or applies it"),
             "the refusal says what it stopped: {message}"
         );
     }
