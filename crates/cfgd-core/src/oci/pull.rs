@@ -352,7 +352,19 @@ fn pull_module_inner(
         architecture: architecture.to_string(),
     };
     let top = fetch_pull_document(agent, oci_ref, auth, oci_ref.reference_str(), oci_ref)?;
-    run_checks(checks, &oci_ref.at_digest(&top.digest).to_string())?;
+    // The checks and the extraction must both be about the bytes read: a
+    // header naming a signed digest over a body naming other layers would
+    // otherwise pass cosign and extract the unsigned body.
+    if top.digest != top.content_digest {
+        return Err(OciError::RequestFailed {
+            message: format!(
+                "{oci_ref} answered with digest {} in its Docker-Content-Digest header, but the \
+                 manifest it served hashes to {}",
+                top.digest, top.content_digest
+            ),
+        });
+    }
+    run_checks(checks, &oci_ref.at_digest(&top.content_digest).to_string())?;
     let (manifest, outcome, pulled_platform) =
         select_platform_manifest(agent, oci_ref, auth, top, &wanted)?;
 
@@ -500,7 +512,7 @@ fn select_platform_manifest(
             .and_then(|p| p.as_str())
             .map(String::from);
         let outcome = PullOutcome {
-            digest: top.digest,
+            digest: top.content_digest,
             index_digest: None,
         };
         return Ok((parse_image_manifest(top.doc)?, outcome, annotated));
@@ -538,7 +550,7 @@ fn select_platform_manifest(
     }
     let outcome = PullOutcome {
         digest: entry_digest.to_string(),
-        index_digest: Some(top.digest),
+        index_digest: Some(top.content_digest),
     };
     Ok((parse_image_manifest(picked.doc)?, outcome, Some(platform)))
 }
@@ -860,6 +872,89 @@ mod tests {
             std::fs::read_to_string(out.path().join("README.md")).unwrap(),
             "linux/arm64 build"
         );
+    }
+
+    /// A tag served from mockito with `body`, plus `header` as its
+    /// `Docker-Content-Digest` when one is given.
+    fn tag_served(
+        server: &mut mockito::ServerGuard,
+        repo: &str,
+        body: &str,
+        header: Option<&str>,
+    ) -> String {
+        let mut mock = server
+            .mock("GET", format!("/v2/{repo}/manifests/v1").as_str())
+            .with_status(200)
+            .with_header("Content-Type", MEDIA_TYPE_OCI_MANIFEST)
+            .with_body(body);
+        if let Some(digest) = header {
+            mock = mock.with_header("Docker-Content-Digest", digest);
+        }
+        mock.create();
+        format!("{}/{repo}:v1", registry_from_url(&server.url()))
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn pull_refuses_a_tag_whose_digest_header_names_other_bytes_before_any_check() {
+        let shim = crate::test_helpers::CosignTestShim::builder()
+            .with_argv_logging(true)
+            .with_exit(0)
+            .install();
+        let mut server = mockito::Server::new();
+        let body = r#"{"schemaVersion":2,"layers":[]}"#;
+        let claimed = format!("sha256:{}", "b".repeat(64));
+        let artifact = tag_served(&mut server, "test/pulllie", body, Some(&claimed));
+        let out = tempfile::tempdir().unwrap();
+
+        let err = pull_module(
+            &artifact,
+            out.path(),
+            keyed_checks("cosign.pub"),
+            None,
+            None,
+        )
+        .expect_err("a header naming other bytes is refused");
+        let message = err.to_string();
+        assert!(matches!(err, OciError::RequestFailed { .. }), "{err:?}");
+        assert!(message.contains(&claimed), "{message}");
+        assert!(
+            message.contains(&sha256_digest(body.as_bytes())),
+            "{message}"
+        );
+        assert_eq!(shim.argv_log(), "", "cosign never ran");
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn pull_without_a_digest_header_checks_the_digest_of_the_bytes_it_read() {
+        let shim = crate::test_helpers::CosignTestShim::builder()
+            .with_argv_logging(true)
+            .with_exit(0)
+            .install();
+        let mut server = mockito::Server::new();
+        let body = r#"{"schemaVersion":2,"layers":[]}"#;
+        let artifact = tag_served(&mut server, "test/pullnohdr", body, None);
+        let out = tempfile::tempdir().unwrap();
+
+        // No layers, so the pull fails after the checks ran.
+        let _ = pull_module(
+            &artifact,
+            out.path(),
+            keyed_checks("cosign.pub"),
+            None,
+            None,
+        );
+
+        let subject = format!(
+            "{}@{}",
+            artifact.trim_end_matches(":v1"),
+            sha256_digest(body.as_bytes())
+        );
+        let argv = shim.argv_log();
+        let calls: Vec<&str> = argv.lines().collect();
+        assert_eq!(calls.len(), 2, "{argv}");
+        assert!(calls.iter().all(|c| c.ends_with(&subject)), "{argv}");
     }
 
     #[test]

@@ -2228,7 +2228,9 @@ cfgd module pull ghcr.io/me/my-module:1.0.0 --dir modules/my-module --require-si
 When the tag names an OCI index, pull takes the entry whose platform matches `--platform` (or this
 host) and fails naming the platforms the index lists when none matches. A tag naming one manifest
 is pulled as it is. `--require-signature` and `--verify-attest` check the digest the tag resolved to
-on the one read the pull extracts from, before anything is extracted.
+on the one read the pull extracts from, before anything is extracted. That digest is the sha256 of
+the bytes read; a registry whose `Docker-Content-Digest` header names another digest is refused
+before any check runs.
 
 ```sh
 cfgd module pull ghcr.io/me/my-module:1.0.0 --dir out --platform linux/arm64 -o json
