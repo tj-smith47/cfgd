@@ -57641,7 +57641,7 @@ fn every_path_flag_and_path_env_expands_a_leading_tilde() {
                     && [
                         "assert_expands_a_leading_tilde(",
                         "HomeUnresolved",
-                        "HOME_UNRESOLVED",
+                        "home_unresolved(",
                     ]
                     .iter()
                     .any(|refusal| body.contains(refusal)) => {}
