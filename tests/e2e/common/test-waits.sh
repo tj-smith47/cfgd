@@ -48,13 +48,14 @@ min_listed_files=60
 # commands. A sleep counts where bash runs it as a command: first on the line,
 # or after `;`, `&`, `|`, `(`, `{`, `!`, `` ` ``, `)` (a case arm), ` -- `
 # (`kubectl exec <pod> -- sleep`), or a run of these words, each with its own
-# options:
-#   if while until then do else elif exec builtin nohup xargs exec_in_pod
-#   coproc eval, `time [-p]`, `command [-p]`, `env [-opt|NAME=value]...`,
-#   `nice [-n N|-opt]...`, `timeout [-s SIG|-k DUR|-opt]... <duration>`,
-#   `sudo [-opt]...`, `stdbuf [-opt]...`, and leading `NAME=value` assignments;
-# spelled `sleep`, `\sleep`, `/bin/sleep`, `/usr/bin/sleep`, `'sleep'` or
-# `"sleep"`. The script of a `bash -c '...'`, `sh -c "..."` or `eval "..."` is
+# options, where an option may take one argument (`-u root`, `-n1`):
+#   if while until then do else elif builtin nohup exec_in_pod coproc eval,
+#   `exec`, `xargs`, `time`, `command`, `nice`, `sudo`, `stdbuf`, `setsid` and
+#   `ionice` with options, `env [-opt|NAME=value]...`,
+#   `timeout [-opt]... <duration>`, `flock [-opt]... <lock>`, and leading
+#   `NAME=value` assignments;
+# spelled `sleep`, with a backslash before any letter (`\sleep`, `s\leep`),
+# `/bin/sleep`, `/usr/bin/sleep`, `'sleep'` or `"sleep"`. The script of a `bash -c '...'`, `sh -c "..."` or `eval "..."` is
 # read the same way. A function of
 # helpers.sh runs from its `name() {` line in column 0 to the next `}` in
 # column 0, the layout every function there keeps; a one-line function ends on
@@ -84,16 +85,20 @@ scan_sleeps() {
     tr '\n' '\0' < "$list" | xargs -0 awk -f "$here/heredocs.awk" | awk -F '\t' -v helpers_path="$1/common/helpers.sh" '
         BEGIN {
             # A sleep at a command position, as the comment above lists them.
+            # An option, with the argument it may take: ERE tries every parse,
+            # so `sudo -E sleep` still reads sleep as the command.
+            OPT = "[[:space:]]+-[^[:space:]]+([[:space:]]+[^-[:space:]][^[:space:]]*)?"
             CMD_POS = "(^|[;&|({!`)]|[[:space:]]--[[:space:]])[[:space:]]*" \
-                "((if|while|until|then|do|else|elif|exec|builtin|nohup|xargs|exec_in_pod|coproc|eval" \
-                "|time([[:space:]]+-p)?|command([[:space:]]+-p)?" \
-                "|env([[:space:]]+(-[^[:space:]]+|[A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*))*" \
-                "|nice([[:space:]]+-n[[:space:]]*-?[0-9]+|[[:space:]]+-[^[:space:]]+)*" \
-                "|timeout([[:space:]]+(-[ks][[:space:]]+[^[:space:]]+|-[^[:space:]]+))*[[:space:]]+[0-9.]+[smhd]?" \
-                "|sudo([[:space:]]+-[^[:space:]]+)*|stdbuf([[:space:]]+-[^[:space:]]+)*" \
+                "((if|while|until|then|do|else|elif|builtin|nohup|exec_in_pod|coproc|eval" \
+                "|(exec|xargs|time|command|nice|sudo|stdbuf|setsid|ionice)(" OPT ")*" \
+                "|env(" OPT "|[[:space:]]+[A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*)*" \
+                "|timeout(" OPT ")*[[:space:]]+[0-9.]+[smhd]?" \
+                "|flock(" OPT ")*[[:space:]]+[^-[:space:]][^[:space:]]*" \
                 "|[A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*)[[:space:]]+)*"
             SLEEP_END = "([[:space:];)&|`]|$)"
-            SLEEP_RE = CMD_POS "(\047sleep\047|(\\\\|/(usr/)?bin/)?sleep)" SLEEP_END
+            # bash drops a backslash before any letter, so s\leep is sleep too.
+            BS = "\\\\?"
+            SLEEP_RE = CMD_POS "(\047sleep\047|(/(usr/)?bin/)?" BS "s" BS "l" BS "e" BS "e" BS "p)" SLEEP_END
             # heredocs.awk drops a double-quoted word from CMD, so a "sleep" is
             # looked for in the line as written.
             QSLEEP_RE = CMD_POS "\"sleep\"" SLEEP_END
