@@ -49,20 +49,34 @@ fn already_subscribed(document: Option<&CfgdConfig>, source_name: &str) -> Optio
 }
 
 pub fn cmd_source_add(run: &RunContext<'_>, args: &SourceAddArgs) -> anyhow::Result<()> {
-    run_source_add(run, args, false, true)
+    let config_path = &run.cli().config;
+    let subscribed = run_source_add(run, args, || {
+        Ok(if config_path.exists() {
+            Some(run.config()?)
+        } else {
+            None
+        })
+    })?;
+    if let Some(doc) = subscribed {
+        run.printer()
+            .emit(doc.hint(super::success_next_step(super::Mutation::SourceSubscribed)));
+    }
+    Ok(())
 }
 
-/// The body of `cfgd source add`. `closing` is whether this add is the whole
-/// command: a `source replace` runs one inside its own report and closes on its
-/// own verdict, so the next-step hint belongs to the caller's last line, not to
-/// a `Subscribed` row mid-screen. `after_write` is whether the caller has
-/// written the config since the run read it, so the add reads the file again.
-pub(super) fn run_source_add(
+/// The body of `cfgd source add`, up to the `Subscribed` document it closes on,
+/// which the caller emits: a `source replace` runs one inside its own report
+/// and closes on its own verdict, so only a lone add carries the next-step
+/// hint. `None` is a subscription the operator declined, whose cancellation is
+/// already printed. `read_document` yields the config the add checks the name
+/// against (`None` when there is no file yet); it is asked only after the
+/// argument refusals, so a contradiction is reported ahead of a config that
+/// does not load.
+pub(super) fn run_source_add<'d>(
     run: &RunContext<'_>,
     args: &SourceAddArgs,
-    after_write: bool,
-    closing: bool,
-) -> anyhow::Result<()> {
+    read_document: impl FnOnce() -> anyhow::Result<Option<&'d CfgdConfig>>,
+) -> anyhow::Result<Option<Doc>> {
     let cli = run.cli();
     let printer = run.printer();
     // Resolve the reference before anything reads the URL, so the inferred name,
@@ -85,22 +99,14 @@ pub(super) fn run_source_add(
     let source_name = name
         .map(|s| s.to_string())
         .unwrap_or_else(|| infer_source_name(url));
-    let config_path = cli.config.clone();
     // The argument refusals come first so a contradiction is reported ahead of
     // a config that does not load; every refusal shares the one title below.
-    let mut reread = None;
+    let config_path = cli.config.clone();
     let mut document = None;
     let refusal = match argument_refusal(&source_name, args) {
         Some(refusal) => Some(refusal),
         None => {
-            document = if !config_path.exists() {
-                None
-            } else if after_write {
-                // load-ok: re-read after this verb's write (`source replace` removed the entry)
-                Some(&*reread.insert(config::load_config(&config_path)?))
-            } else {
-                Some(run.config()?)
-            };
+            document = read_document()?;
             already_subscribed(document, &source_name)
         }
     };
@@ -315,7 +321,7 @@ pub(super) fn run_source_add(
                     "cancelled": true,
                 })),
         );
-        return Ok(());
+        return Ok(None);
     }
 
     // Build the source spec with user choices
@@ -380,25 +386,20 @@ pub(super) fn run_source_add(
     // this subscription activates, under its own `profile:<name>` owner, and a
     // headingless key/value pair restating it cannot be read on its own. The
     // payload below still carries the field.
-    let mut doc = Doc::new().status(Role::Ok, "Subscribed");
-    if closing {
-        doc = doc.hint(super::success_next_step(super::Mutation::SourceSubscribed));
-    }
-    let doc = doc.with_data(serde_json::json!({
-        "name": source_name,
-        "url": url,
-        "branch": source_spec.origin.branch,
-        "commit": cached.last_commit.clone().unwrap_or_default(),
-        "profile": selected_profile,
-        "priority": resolved_priority,
-        // Additive: the same manifest object `source show` carries, so a
-        // consumer scripting a subscription reads what it subscribed TO
-        // without a second `source show` call.
-        "manifest": super::show::source_manifest_output(manifest),
-    }));
-    printer.emit(doc);
-
-    Ok(())
+    Ok(Some(Doc::new().status(Role::Ok, "Subscribed").with_data(
+        serde_json::json!({
+            "name": source_name,
+            "url": url,
+            "branch": source_spec.origin.branch,
+            "commit": cached.last_commit.clone().unwrap_or_default(),
+            "profile": selected_profile,
+            "priority": resolved_priority,
+            // Additive: the same manifest object `source show` carries, so a
+            // consumer scripting a subscription reads what it subscribed TO
+            // without a second `source show` call.
+            "manifest": super::show::source_manifest_output(manifest),
+        }),
+    )))
 }
 
 #[cfg(test)]

@@ -53,8 +53,10 @@ pub fn cmd_source_replace(
     // replace must not stop mid-way to pose one.
     remove::run_source_remove(run, old_name, true, false, true, false, false)?;
 
+    // load-ok: re-read after this verb's write (the remove above dropped the entry)
+    let after_remove = config::load_config(&config_path)?;
     // Add new source with same name, carrying over the whole subscription
-    add::run_source_add(
+    let subscribed = add::run_source_add(
         run,
         &SourceAddArgs {
             url: new_url.to_string(),
@@ -71,9 +73,11 @@ pub fn cmd_source_replace(
             allow_scripts: old_subscription.allow_scripts,
             yes: true,
         },
-        true,
-        false,
+        || Ok(Some(&after_remove)),
     )?;
+    if let Some(doc) = subscribed {
+        printer.emit(doc);
+    }
 
     restore_subscription(&config_path, old_name, &old_subscription)?;
 
