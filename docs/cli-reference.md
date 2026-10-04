@@ -1395,9 +1395,9 @@ because cfgd runs it to clone and fetch config sources: a machine without it fai
 and `-o json` reports it as `"git": false`. `sops` is needed only for secrets, so a missing
 `sops` is a warning. A config missing at the *default* path is the fresh-machine state and
 stays a warning (exit 0), as does a supported legacy-flat layout; warnings do not affect the
-exit code. With no home directory to resolve the default path against (`HOME` unset), the config
-check fails with the unset-home error and so does the verdict, since every verb that reads the
-config fails the same way there.
+exit code. With `HOME` unset and no `XDG_CONFIG_HOME` to place the default path, the config check
+fails with `cannot resolve home directory (HOME unset)` and so does the verdict, since every verb
+that reads the config fails the same way there.
 
 ### `cfgd log`
 
