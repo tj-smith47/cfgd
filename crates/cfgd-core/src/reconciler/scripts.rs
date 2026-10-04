@@ -1377,6 +1377,11 @@ pub(super) const SCRIPT_KILL_GRACE: std::time::Duration = std::time::Duration::f
 /// up to the grace period after SIGTERM, on Windows the job is ended at once.
 /// `graceful=false` kills it at once — used on the abort path where cfgd
 /// itself received a signal and must exit quickly.
+///
+/// An interactive script on Unix is the exception: it was started through
+/// [`crate::spawn_sharing_terminal`], which keeps it in cfgd's foreground
+/// process group, so the kill reaches the script's own process and nothing it
+/// started.
 pub(super) fn kill_script_child(
     child: &mut std::process::Child,
     tree: &crate::TreeKill,

@@ -1478,19 +1478,24 @@ fn interactive_script_without_tty_skips_with_warn() {
 // `timeout:` bounds it. Where one IS declared the deadline is enforced — the
 // child is killed rather than waited on forever, and the row names the ceiling
 // it passed. The body's own side effect is the kill's evidence: it lands two
-// seconds after the deadline, while the refusal only returns once the grace
-// period is over, so a body still running would have written the sentinel
-// before this assertion reads for it.
+// seconds after the deadline, while the refusal only returns once the script
+// has been reaped, so a body still running would have written the sentinel
+// before this assertion reads for it. On Unix the kill reaches the script's own
+// process alone, so the `sleep` it waits on survives it: started with its stdio
+// closed, it holds none of the test's output, and the test kills it by the pid
+// it recorded.
 #[cfg(all(unix, feature = "test-helpers"))]
 #[test]
 fn an_interactive_script_passing_its_declared_timeout_is_killed() {
     let (printer, buf) = crate::output::Printer::for_test_at(crate::output::Verbosity::Normal);
     let tmp = tempfile::tempdir().unwrap();
     let sentinel = tmp.path().join("body-finished");
+    let pidfile = tmp.path().join("sleep.pid");
     let entry = ScriptEntry::Full(ScriptCommand {
         workdir: None,
         run: format!(
-            "sleep 3; touch {}",
+            "sleep 3 </dev/null >/dev/null 2>&1 & echo $! > {}; wait $!; touch {}",
+            crate::posix_single_quoted(&pidfile.to_string_lossy()),
             crate::posix_single_quoted(&sentinel.to_string_lossy())
         ),
         timeout: Some("1s".to_string()),
@@ -1531,6 +1536,19 @@ fn an_interactive_script_passing_its_declared_timeout_is_killed() {
         out.contains("timed out after 1s (interactive)"),
         "the row states why the script ended: {out:?}"
     );
+
+    let pid: i32 = std::fs::read_to_string(&pidfile)
+        .expect("the script records the pid of the sleep it started")
+        .trim()
+        .parse()
+        .expect("the recorded pid is a number");
+    match nix::sys::signal::kill(
+        nix::unistd::Pid::from_raw(pid),
+        nix::sys::signal::Signal::SIGKILL,
+    ) {
+        Ok(()) | Err(nix::errno::Errno::ESRCH) => {}
+        Err(e) => panic!("could not kill the sleep the script started ({pid}): {e}"),
+    }
 }
 
 /// A user script is the one thing cfgd runs whose effects it cannot predict: a
