@@ -57113,22 +57113,6 @@ fn every_config_verb_call_passes_the_key_the_caller_typed() {
     );
 }
 
-/// A path cfgd takes from a global flag or a `CFGD_*` variable expands a
-/// leading `~` itself, because an environment file or a quoted argument
-/// reaches it with no shell to do that.
-///
-/// The flags are every global `Cli` argument whose value parses as a
-/// `PathBuf`, read off `Cli::command()`. Each has a row naming every function
-/// that must expand it and the call that does; a directory flag's row names
-/// `Cli::expand_path_flags`, which `main` must call. The variables are every
-/// `pub const` in `cfgd-core/src/util/env_names.rs`, each classified: read
-/// and expanded by a named function (whose body must call `expand_tilde(` and
-/// name the const), read by clap as a flag the flag rows cover (and bound to
-/// that flag) plus the functions outside clap that read it, each settling it
-/// through `settle_config_path`, or not a path, with why. Every production
-/// function of `cfgd` and `cfgd-core` that reads a path variable from the
-/// environment must be one its row names. An unclassified const, a stale row,
-/// an unnamed reader and a function missing its expansion each fail naming it.
 /// The calls that read the process environment: `env::var` and `env::var_os`,
 /// plus every function among `rows` (`(name, code)`) whose body hands one of
 /// its `&str` parameters to a call already in the set, folded until the set
@@ -57229,6 +57213,22 @@ fn the_env_read_needles_follow_a_read_behind_a_derived_helper() {
     assert!(!reads_env(code_of("unrelated"), &needles));
 }
 
+/// A path cfgd takes from a global flag or a `CFGD_*` variable expands a
+/// leading `~` itself, because an environment file or a quoted argument
+/// reaches it with no shell to do that.
+///
+/// The flags are every global `Cli` argument whose value parses as a
+/// `PathBuf`, read off `Cli::command()`. Each has a row naming every function
+/// that must expand it and the call that does; a directory flag's row names
+/// `Cli::expand_path_flags`, which `main` must call. The variables are every
+/// `pub const` in `cfgd-core/src/util/env_names.rs`, each classified: read
+/// and expanded by a named function (whose body must call `expand_tilde(` and
+/// name the const), read by clap as a flag the flag rows cover (and bound to
+/// that flag) plus the functions outside clap that read it, each settling it
+/// through `settle_config_path`, or not a path, with why. Every production
+/// function of every workspace crate that reads a path variable from the
+/// environment must be one its row names. An unclassified const, a stale row,
+/// an unnamed reader and a function missing its expansion each fail naming it.
 #[test]
 fn every_path_flag_and_path_env_expands_a_leading_tilde() {
     use cfgd_core::test_helpers::{item_keyword, walked_file_body, workspace_root};
