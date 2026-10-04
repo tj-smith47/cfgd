@@ -181,14 +181,26 @@ if [ "$GATEWAY_SVC_RC" -ne 0 ]; then
 elif echo "$GATEWAY_SVC" | grep -q "gateway"; then
     fail_test "FS-HELM-03" "Gateway service found when deviceGateway.enabled=false"
 else
-    # Confirm operator deployment does NOT have gateway env
+    # Confirm operator deployment does NOT have gateway env.
+    # The env read indexes items[0], which fails on an absent deployment, so
+    # the deployment is listed first to name that cause on its own.
+    OP_DEPLOY_RC=0
+    OP_DEPLOY=$(kubectl get deployment -n "$HELM_NS" \
+        -l app.kubernetes.io/component=operator -o name 2>/dev/null) || OP_DEPLOY_RC=$?
     GW_ENV_RC=0
-    GW_ENV=$(kubectl get deployment -n "$HELM_NS" \
-        -l app.kubernetes.io/component=operator \
-        -o jsonpath='{.items[0].spec.template.spec.containers[0].env[?(@.name=="DEVICE_GATEWAY_ENABLED")].value}' \
-        2>/dev/null) || GW_ENV_RC=$?
-    echo "  DEVICE_GATEWAY_ENABLED: ${GW_ENV:-<not set>}"
-    if [ "$GW_ENV_RC" -ne 0 ]; then
+    GW_ENV=""
+    if [ "$OP_DEPLOY_RC" -eq 0 ] && [ -n "$OP_DEPLOY" ]; then
+        GW_ENV=$(kubectl get deployment -n "$HELM_NS" \
+            -l app.kubernetes.io/component=operator \
+            -o jsonpath='{.items[0].spec.template.spec.containers[0].env[?(@.name=="DEVICE_GATEWAY_ENABLED")].value}' \
+            2>/dev/null) || GW_ENV_RC=$?
+        echo "  DEVICE_GATEWAY_ENABLED: ${GW_ENV:-<not set>}"
+    fi
+    if [ "$OP_DEPLOY_RC" -ne 0 ]; then
+        fail_test "FS-HELM-03" "Could not list the deployments in $HELM_NS (kubectl exit $OP_DEPLOY_RC)"
+    elif [ -z "$OP_DEPLOY" ]; then
+        fail_test "FS-HELM-03" "no operator deployment in $HELM_NS after helm install"
+    elif [ "$GW_ENV_RC" -ne 0 ]; then
         fail_test "FS-HELM-03" "Could not read the operator deployment's env (kubectl exit $GW_ENV_RC)"
     elif [ -z "$GW_ENV" ]; then
         pass_test "FS-HELM-03"

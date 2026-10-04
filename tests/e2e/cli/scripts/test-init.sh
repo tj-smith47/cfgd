@@ -150,9 +150,10 @@ run init "$I09_DST" --from "$I09_SRC" --no-color
 if assert_ok; then
     # The cloned repo should be clean (no uncommitted changes)
     DIRTY_RC=0
-    DIRTY=$(cd "$I09_DST" && git status --porcelain 2>&1) || DIRTY_RC=$?
+    # stderr goes to its own file so a git warning on a clean clone does not read as a dirty path
+    DIRTY=$(cd "$I09_DST" && git status --porcelain 2>"$SCRATCH/i09-status.err") || DIRTY_RC=$?
     if [ "$DIRTY_RC" -ne 0 ]; then
-        fail_test "I09" "git status failed in the clone (exit $DIRTY_RC): $DIRTY"
+        fail_test "I09" "git status failed in the clone (exit $DIRTY_RC): $(cat "$SCRATCH/i09-status.err")"
     elif [ -z "$DIRTY" ]; then
         pass_test "I09"
     else
