@@ -1970,6 +1970,50 @@ fn sign_and_attest_attest_failure_maps_to_attest_failed_meta() {
     );
 }
 
+/// Run `sign_and_attest` over two digests under a cosign that refuses only the
+/// second, answering the error.
+fn sign_and_attest_refusing_the_second_digest(sign: bool, attest: bool) -> anyhow::Error {
+    let _shim = cfgd_core::test_helpers::ToolShim::install_failing_on(
+        cfgd_core::COSIGN_BIN_ENV,
+        "@sha256:bbb",
+        "simulated refusal",
+    );
+    let dir = tempdir().expect("tempdir");
+    let _cwd = cfgd_core::test_helpers::CwdGuard::set(dir.path()).expect("cwd guard");
+    let printer = quiet_printer();
+    sign_and_attest(
+        &printer,
+        "localhost:5000/x:v1",
+        &["sha256:aaa", "sha256:bbb"],
+        None,
+        sign,
+        attest,
+    )
+    .expect_err("a refusal of the second digest must return Err")
+}
+
+#[test]
+#[serial]
+fn sign_and_attest_sign_failure_names_the_digest_cosign_refused() {
+    let err = sign_and_attest_refusing_the_second_digest(true, false);
+    let meta = err
+        .downcast_ref::<crate::cli::CliErrorMeta>()
+        .expect("sign failure returns CliErrorMeta");
+    assert_eq!(meta.error_kind, "sign_failed", "{meta:?}");
+    assert_eq!(meta.extras["digest"], "sha256:bbb", "{meta:?}");
+}
+
+#[test]
+#[serial]
+fn sign_and_attest_attest_failure_names_the_digest_cosign_refused() {
+    let err = sign_and_attest_refusing_the_second_digest(false, true);
+    let meta = err
+        .downcast_ref::<crate::cli::CliErrorMeta>()
+        .expect("attest failure returns CliErrorMeta");
+    assert_eq!(meta.error_kind, "attest_failed", "{meta:?}");
+    assert_eq!(meta.extras["digest"], "sha256:bbb", "{meta:?}");
+}
+
 // ---------------------------------------------------------------------------
 // display_and_persist_conflicts
 // ---------------------------------------------------------------------------
