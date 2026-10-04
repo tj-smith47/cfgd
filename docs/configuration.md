@@ -927,7 +927,9 @@ These are not hardcoded: they live in your cfgd.yaml and can be changed or remov
 
 cfgd expands an alias from the config document the invocation names, through any spelling of its
 location (`--config`, `CFGD_CONFIG`, `--config-dir`, `CFGD_CONFIG_DIR`, `--scope system`), so
-`CFGD_CONFIG=~/work/cfgd.yaml cfgd up` runs the `up` declared in `~/work/cfgd.yaml`.
+`CFGD_CONFIG=~/work/cfgd.yaml cfgd up` runs the `up` declared in `~/work/cfgd.yaml`. cfgd expands a
+leading `~` in `--config` or `CFGD_CONFIG` to your home directory itself, so the same value works
+from an environment file or a quoted argument, where no shell expands it.
 
 ## AI Configuration
 

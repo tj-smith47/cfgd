@@ -701,27 +701,23 @@ fn the_default_config_with_no_home_names_what_is_missing() {
     }
 }
 
-/// A `--config` under `~` with a home set is absolutized against the working
-/// directory like any relative path, so the refusal names the file that is
-/// not there and never claims the home is unset.
+/// The home directory a command built by `cfgd_bin()` hands the binary.
+fn home_of(cmd: &std::process::Command) -> std::path::PathBuf {
+    cmd.get_envs()
+        .find_map(|(var, value)| (var == "HOME").then_some(value).flatten())
+        .map(std::path::PathBuf::from)
+        .expect("the constructor sets HOME")
+}
+
+/// A `--config` under `~` with a home set names the file under that home, so
+/// the refusal points at it and never claims the home is unset.
 #[test]
 fn a_tilde_config_with_a_home_set_reports_the_missing_file() {
     for format in ["table", "json"] {
         let mut cmd = cfgd_bin().unwrap();
-        let cwd = cmd
-            .get_current_dir()
-            .expect("the constructor sets a working directory")
-            .to_path_buf();
-        // The binary reads its working directory back through `getcwd`,
-        // which resolves the symlinked temp root macOS hands out.
-        let cwd = if cfg!(unix) {
-            std::fs::canonicalize(&cwd).unwrap()
-        } else {
-            cwd
-        };
         let expected = format!(
             "config error: config file not found: {}",
-            cfgd_core::absolutize_path(&cwd.join("~").join("cfgd.yaml")).display()
+            cfgd_core::absolutize_path(&home_of(&cmd).join("cfgd.yaml")).display()
         );
         let out = cmd
             .args(["status", "--config", "~/cfgd.yaml", "-o", format])
@@ -739,6 +735,31 @@ fn a_tilde_config_with_a_home_set_reports_the_missing_file() {
         assert!(
             !reported.contains(HOME_UNRESOLVED),
             "{format}: {reported:?}"
+        );
+    }
+}
+
+/// A config under the home directory loads through a `~` spelling of its
+/// path, given as `--config` or as `CFGD_CONFIG`, as an environment file
+/// passes it with no shell to expand it.
+#[test]
+fn a_tilde_config_under_the_home_loads_from_the_flag_and_the_env() {
+    let probe = cfgd_bin().unwrap();
+    write_config_with_spec(&home_of(&probe), "spec:\n  profile: tilde-home\n");
+    let mut by_flag = cfgd_bin().unwrap();
+    by_flag.args(["config", "get", "profile", "--config", "~/cfgd.yaml"]);
+    let mut by_env = cfgd_bin().unwrap();
+    by_env
+        .env(cfgd_core::CFGD_CONFIG_ENV, "~/cfgd.yaml")
+        .args(["config", "get", "profile"]);
+    for (spelling, mut cmd) in [("--config", by_flag), (cfgd_core::CFGD_CONFIG_ENV, by_env)] {
+        let out = cmd.output().unwrap();
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(out.status.success(), "{spelling}: {stderr}");
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout).trim(),
+            "tilde-home",
+            "{spelling}: {stderr}"
         );
     }
 }

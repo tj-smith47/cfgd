@@ -1371,16 +1371,19 @@ pub fn settle_config_path(
         config
     };
     let config = effective_config_file(&config, config_is_explicit, config_dir);
+    // No shell expands a `~` read from an environment file or a quoted
+    // argument, so cfgd expands it itself, before the directory inference
+    // below looks at the path.
+    let config = cfgd_core::expand_tilde(&config);
     // A directory names the document inside it. Inferred once, here, so every
     // consumer (theme load, profiles-dir derivation, dispatch) agrees on the
     // file, where `load_config` inferring alone would leave `config_dir()`
     // deriving `profiles/` from the wrong parent.
     let config = cfgd_core::config::resolve_config_path(&config);
-    // With no home directory to resolve, a leading `~` joined to the working
-    // directory would name a file nobody meant, and the loader reports the
-    // unset home only for the path as written. With a home set, the path is
-    // absolutized like any other relative path.
-    if config.starts_with("~") && cfgd_core::expand_tilde(&config) == config {
+    // A `~` still leading here found no home directory. Joined to the working
+    // directory it would name a file nobody meant, and the loader reports the
+    // unset home only for the path as written.
+    if config.starts_with("~") {
         return config;
     }
     // A relative path would otherwise reach every derivation of the config
