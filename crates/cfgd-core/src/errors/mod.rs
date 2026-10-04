@@ -112,7 +112,9 @@ impl CfgdError {
     }
 }
 
-#[derive(Debug, thiserror::Error)]
+// `Clone` so one load result can answer every reader of the startup
+// document; the parser errors are not `Clone`, so they are shared.
+#[derive(Debug, Clone, thiserror::Error)]
 pub enum ConfigError {
     #[error("config file not found: {path}")]
     NotFound { path: PathBuf },
@@ -160,10 +162,22 @@ pub enum ConfigError {
     AmbiguousProfile { name: String, paths: Vec<PathBuf> },
 
     #[error("yaml parse error: {0}")]
-    Yaml(#[from] serde_yaml::Error),
+    Yaml(#[source] std::sync::Arc<serde_yaml::Error>),
 
     #[error("toml parse error: {0}")]
-    Toml(#[from] toml::de::Error),
+    Toml(#[source] std::sync::Arc<toml::de::Error>),
+}
+
+impl From<serde_yaml::Error> for ConfigError {
+    fn from(error: serde_yaml::Error) -> Self {
+        Self::Yaml(std::sync::Arc::new(error))
+    }
+}
+
+impl From<toml::de::Error> for ConfigError {
+    fn from(error: toml::de::Error) -> Self {
+        Self::Toml(std::sync::Arc::new(error))
+    }
 }
 
 #[derive(Debug, thiserror::Error)]

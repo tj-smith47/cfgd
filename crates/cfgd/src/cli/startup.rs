@@ -49,7 +49,14 @@ impl StartupDocument {
     pub fn config_result(&self) -> cfgd_core::errors::Result<&CfgdConfig> {
         match &self.loaded {
             Ok((config, _)) => Ok(config),
-            Err(error) => Err(reissue_load_error(error)),
+            Err(CfgdError::Config(error)) => Err(error.clone().into()),
+            // `read_config_document` fails only with a `ConfigError`. Any
+            // other variant is not `Clone`, so its message travels as an
+            // invalid config.
+            Err(other) => Err(ConfigError::Invalid {
+                message: other.to_string(),
+            }
+            .into()),
         }
     }
 
@@ -94,65 +101,6 @@ impl StartupDocument {
     }
 }
 
-/// A fresh copy of an error [`cfgd_core::config::read_config_document`]
-/// returned, with the same variant (the exit code and the CLI's error routing
-/// match on it) and the same message.
-///
-/// `CfgdError` is not `Clone` because the parser errors it wraps are not, and
-/// the document is read once while every caller of
-/// [`StartupDocument::config_result`] needs an owned error to propagate. The
-/// parser errors are rebuilt from their rendered text, which is all a
-/// consumer of a load failure reads.
-fn reissue_load_error(error: &CfgdError) -> CfgdError {
-    use serde::de::Error as _;
-    let config = match error {
-        CfgdError::Config(config) => config,
-        CfgdError::Io(io) => return CfgdError::Io(std::io::Error::new(io.kind(), io.to_string())),
-        // `read_config_document` produces nothing else; anything it adds
-        // later is reported as an invalid config carrying its message.
-        other => {
-            return ConfigError::Invalid {
-                message: other.to_string(),
-            }
-            .into();
-        }
-    };
-    let copy = match config {
-        ConfigError::NotFound { path } => ConfigError::NotFound { path: path.clone() },
-        ConfigError::HomeUnresolved { path } => ConfigError::HomeUnresolved { path: path.clone() },
-        ConfigError::Invalid { message } => ConfigError::Invalid {
-            message: message.clone(),
-        },
-        ConfigError::UnsupportedApiVersion { found } => ConfigError::UnsupportedApiVersion {
-            found: found.clone(),
-        },
-        ConfigError::CircularInheritance { chain } => ConfigError::CircularInheritance {
-            chain: chain.clone(),
-        },
-        ConfigError::ProfileNotFound { name } => {
-            ConfigError::ProfileNotFound { name: name.clone() }
-        }
-        ConfigError::KeyNotFound { key, undeclared } => ConfigError::KeyNotFound {
-            key: key.clone(),
-            undeclared: undeclared.clone(),
-        },
-        ConfigError::AmbiguousProfile { name, paths } => ConfigError::AmbiguousProfile {
-            name: name.clone(),
-            paths: paths.clone(),
-        },
-        ConfigError::Yaml(yaml) => ConfigError::Yaml(serde_yaml::Error::custom(yaml)),
-        // A rebuilt toml error renders its message followed by a newline, and
-        // the original's rendering already ends in one.
-        ConfigError::Toml(toml) => {
-            let text = toml.to_string();
-            ConfigError::Toml(toml::de::Error::custom(
-                text.strip_suffix('\n').unwrap_or(&text),
-            ))
-        }
-    };
-    copy.into()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -174,82 +122,62 @@ mod tests {
     #[test]
     fn config_result_reports_what_load_config_reports() {
         let dir = tempfile::tempdir().unwrap();
-        let documents = [
-            ("missing.yaml", None),
+        let documents: [(PathBuf, Option<&[u8]>); 8] = [
+            (dir.path().join("missing.yaml"), None),
+            // A leading `~` is left only when no home directory resolves.
+            (PathBuf::from("~").join("no-such-cfgd.yaml"), None),
             (
-                "malformed.yaml",
-                Some(
-                    "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: [unclosed\n",
-                ),
+                dir.path().join("malformed.yaml"),
+                Some(b"apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: [unclosed\n"),
             ),
             (
-                "unknown-key.yaml",
-                Some(
-                    "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  bogus: 1\n",
-                ),
+                dir.path().join("unknown-key.yaml"),
+                Some(b"apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  bogus: 1\n"),
             ),
             (
-                "version.yaml",
-                Some("apiVersion: cfgd.io/v9\nkind: Config\nmetadata:\n  name: t\nspec: {}\n"),
+                dir.path().join("version.yaml"),
+                Some(b"apiVersion: cfgd.io/v9\nkind: Config\nmetadata:\n  name: t\nspec: {}\n"),
+            ),
+            (dir.path().join("not-utf8.yaml"), Some(b"apiVersion: \xff\xfe\n")),
+            (
+                dir.path().join("malformed.toml"),
+                Some(b"apiVersion = \"cfgd.io/v1alpha1\"\nkind = \n"),
             ),
             (
-                "malformed.toml",
-                Some("apiVersion = \"cfgd.io/v1alpha1\"\nkind = \n"),
-            ),
-            (
-                "unknown-key.toml",
-                Some(
-                    "apiVersion = \"cfgd.io/v1alpha1\"\nkind = \"Config\"\n[metadata]\nname = \"t\"\n[spec]\nbogus = 1\n",
-                ),
+                dir.path().join("unknown-key.toml"),
+                Some(b"apiVersion = \"cfgd.io/v1alpha1\"\nkind = \"Config\"\n[metadata]\nname = \"t\"\n[spec]\nbogus = 1\n"),
             ),
         ];
-        for (name, text) in documents {
-            let path = dir.path().join(name);
-            if let Some(text) = text {
-                std::fs::write(&path, text).unwrap();
+        for (path, bytes) in documents {
+            if let Some(bytes) = bytes {
+                std::fs::write(&path, bytes).unwrap();
             }
             let expected = cfgd_core::config::load_config(&path).unwrap_err();
             let document = StartupDocument::load(&path);
-            assert!(document.config().is_none(), "{name}");
-            let first = document.config_result().unwrap_err();
-            same_error(&expected, &first);
+            assert!(document.config().is_none(), "{}", path.display());
+            same_error(&expected, &document.config_result().unwrap_err());
             // Asked twice, the kept error answers twice.
             same_error(&expected, &document.config_result().unwrap_err());
         }
     }
 
-    /// The variants a load never reaches through a file on this host are
-    /// rebuilt to the same variant and message as well.
+    /// A load failure outside `ConfigError` still reaches the verb with its
+    /// message, as an invalid config.
     #[test]
-    fn every_reissued_config_error_keeps_its_variant_and_message() {
-        let errors: Vec<CfgdError> = vec![
-            ConfigError::HomeUnresolved {
-                path: PathBuf::from("~/cfgd.yaml"),
-            }
-            .into(),
-            ConfigError::Invalid {
-                message: "too large".into(),
-            }
-            .into(),
-            ConfigError::CircularInheritance {
-                chain: vec!["a".into(), "b".into()],
-            }
-            .into(),
-            ConfigError::ProfileNotFound { name: "p".into() }.into(),
-            ConfigError::KeyNotFound {
-                key: "a.b".into(),
-                undeclared: Some("a".into()),
-            }
-            .into(),
-            ConfigError::AmbiguousProfile {
-                name: "p".into(),
-                paths: vec![PathBuf::from("p.yaml"), PathBuf::from("p/profile.yaml")],
-            }
-            .into(),
-            CfgdError::Io(std::io::Error::new(std::io::ErrorKind::NotFound, "gone")),
-        ];
-        for error in &errors {
-            same_error(error, &reissue_load_error(error));
-        }
+    fn a_load_error_outside_config_error_keeps_its_message() {
+        let document = StartupDocument {
+            path: PathBuf::from("cfgd.yaml"),
+            loaded: Err(CfgdError::Io(std::io::Error::other("disk gone"))),
+            reads: 1,
+        };
+        let error = document.config_result().unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "config error: invalid config: io error: disk gone"
+        );
+        assert!(matches!(
+            error,
+            CfgdError::Config(ConfigError::Invalid { .. })
+        ));
     }
 }
