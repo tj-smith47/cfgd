@@ -1127,7 +1127,7 @@ impl From<OutputFormatArg> for clap::builder::OsStr {
     }
 }
 
-/// Clap value parser for an `os/arch` flag, run through
+/// Clap value parser for an `os/arch[/variant]` flag, run through
 /// [`cfgd_core::oci::parse_platform_target`] so a malformed value is a usage
 /// error before any command starts.
 fn platform_value(value: &str) -> Result<String, String> {
@@ -1136,7 +1136,7 @@ fn platform_value(value: &str) -> Result<String, String> {
         .map_err(|e| e.to_string())
 }
 
-/// [`platform_value`] for a comma-separated list of `os/arch` platforms.
+/// [`platform_value`] for a comma-separated list of `os/arch[/variant]` platforms.
 fn platform_list_value(value: &str) -> Result<String, String> {
     for platform in value.split(',') {
         platform_value(platform)?;
@@ -1974,7 +1974,7 @@ pub enum ImageCommand {
         dir: std::path::PathBuf,
         /// OCI artifact reference to push to (e.g. ghcr.io/myorg/myapp:v1.0.0)
         artifact: String,
-        /// Target platform in os/arch form (e.g. linux/amd64). Defaults to host platform.
+        /// Target platform as os/arch or os/arch/variant (e.g. linux/amd64, linux/arm/v7). Defaults to host platform.
         #[arg(long, value_parser = platform_value)]
         platform: Option<String>,
         /// Image ENTRYPOINT entries (repeatable; e.g. --entrypoint /bin/sh)

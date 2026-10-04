@@ -16,6 +16,7 @@ fn oci_index_manifest_serialization() {
                 platform: OciPlatform {
                     os: "linux".to_string(),
                     architecture: "amd64".to_string(),
+                    variant: None,
                 },
             },
             OciPlatformManifest {
@@ -25,6 +26,7 @@ fn oci_index_manifest_serialization() {
                 platform: OciPlatform {
                     os: "linux".to_string(),
                     architecture: "arm64".to_string(),
+                    variant: None,
                 },
             },
         ],
@@ -40,9 +42,48 @@ fn oci_index_manifest_serialization() {
 
 #[test]
 fn parse_platform_target_valid() {
-    let (os, arch) = parse_platform_target("linux/amd64").unwrap();
-    assert_eq!(os, "linux");
-    assert_eq!(arch, "amd64");
+    assert_eq!(
+        parse_platform_target("linux/amd64").unwrap(),
+        PlatformTarget {
+            os: "linux",
+            architecture: "amd64",
+            variant: None,
+        }
+    );
+}
+
+#[test]
+fn parse_platform_target_reads_a_third_segment_as_the_variant() {
+    assert_eq!(
+        parse_platform_target("linux/arm/v7").unwrap(),
+        PlatformTarget {
+            os: "linux",
+            architecture: "arm",
+            variant: Some("v7"),
+        }
+    );
+}
+
+/// Each spelling would reach an index entry as a platform no runtime selects.
+#[test]
+fn parse_platform_target_refuses_an_empty_segment_a_fourth_segment_and_a_list() {
+    for target in [
+        "linux/",
+        "/amd64",
+        "linux//v7",
+        "linux/arm/",
+        "linux/arm/v7/x",
+        "linux/amd64,linux/arm64",
+        "",
+    ] {
+        assert!(
+            matches!(
+                parse_platform_target(target),
+                Err(OciError::BuildError { .. })
+            ),
+            "{target:?} is accepted"
+        );
+    }
 }
 
 #[test]
@@ -83,16 +124,6 @@ fn current_platform_returns_valid_format() {
 }
 
 // --- parse_platform_target edge cases ---
-
-#[test]
-fn parse_platform_target_three_parts_gives_arch_with_slash() {
-    // split_once('/') on "linux/amd64/extra" gives ("linux", "amd64/extra")
-    let result = parse_platform_target("linux/amd64/extra");
-    assert!(result.is_ok());
-    let (os, arch) = result.unwrap();
-    assert_eq!(os, "linux");
-    assert_eq!(arch, "amd64/extra");
-}
 
 #[test]
 fn parse_platform_target_no_slash_fails() {
@@ -642,6 +673,7 @@ fn oci_index_serializes_with_correct_field_names() {
             platform: OciPlatform {
                 os: "linux".to_string(),
                 architecture: "amd64".to_string(),
+                variant: None,
             },
         }],
     };
@@ -675,6 +707,7 @@ fn oci_index_roundtrips_multiple_platforms() {
                 platform: OciPlatform {
                     os: "linux".to_string(),
                     architecture: "amd64".to_string(),
+                    variant: None,
                 },
             },
             OciPlatformManifest {
@@ -684,6 +717,7 @@ fn oci_index_roundtrips_multiple_platforms() {
                 platform: OciPlatform {
                     os: "linux".to_string(),
                     architecture: "arm64".to_string(),
+                    variant: None,
                 },
             },
             OciPlatformManifest {
@@ -693,6 +727,7 @@ fn oci_index_roundtrips_multiple_platforms() {
                 platform: OciPlatform {
                     os: "darwin".to_string(),
                     architecture: "arm64".to_string(),
+                    variant: None,
                 },
             },
         ],
@@ -744,6 +779,7 @@ fn oci_index_camel_case_and_round_trip() {
             platform: OciPlatform {
                 os: "linux".to_string(),
                 architecture: "amd64".to_string(),
+                variant: None,
             },
         }],
     };
@@ -862,6 +898,92 @@ fn platform_push_beside_another_platforms_manifest_puts_an_index_of_both() {
     assert_eq!(
         outcome.index_digest,
         Some(crate::sha256_digest(&index_bytes))
+    );
+}
+
+/// A variant is its own platform: `linux/arm/v7` joins a tag holding
+/// `linux/arm/v6` beside it, each entry carrying its OCI `variant`, and the
+/// new manifest's annotation carries the whole string.
+#[test]
+fn platform_push_of_a_variant_joins_beside_another_variant_of_its_arch() {
+    let store = crate::oci::test_helpers::ManifestStore::new("test/acc");
+    store.seed("v1", &earlier_manifest(Some("linux/arm/v6")));
+    let module_dir = create_test_module_dir();
+
+    push_module(
+        module_dir.path(),
+        &store.artifact("v1"),
+        Some("linux/arm/v7"),
+        None,
+    )
+    .expect("push beside another variant");
+
+    assert_eq!(
+        store.requests(),
+        vec![
+            "GET v1".to_string(),
+            format!("PUT v1-linux-arm-v7 {MANIFEST_PUT}"),
+            format!("PUT v1 {INDEX_PUT}"),
+        ]
+    );
+    let platforms: Vec<serde_json::Value> = json_of(&store.stored("v1"))["manifests"]
+        .as_array()
+        .expect("an index")
+        .iter()
+        .map(|e| e["platform"].clone())
+        .collect();
+    assert_eq!(
+        platforms,
+        vec![
+            serde_json::json!({ "os": "linux", "architecture": "arm", "variant": "v6" }),
+            serde_json::json!({ "os": "linux", "architecture": "arm", "variant": "v7" }),
+        ]
+    );
+    assert_eq!(
+        json_of(&store.stored("v1-linux-arm-v7"))["annotations"][crate::OCI_ANNOTATION_PLATFORM],
+        "linux/arm/v7"
+    );
+}
+
+#[test]
+fn platform_push_of_a_variant_into_an_index_appends_beside_another_variant_of_its_arch() {
+    let store = crate::oci::test_helpers::ManifestStore::new("test/acc");
+    let v6 = serde_json::json!({
+        "mediaType": MEDIA_TYPE_OCI_MANIFEST,
+        "digest": "sha256:a6",
+        "size": 1,
+        "platform": { "os": "linux", "architecture": "arm", "variant": "v6" },
+    });
+    store.seed(
+        "v1",
+        &serde_json::json!({
+            "schemaVersion": 2,
+            "mediaType": INDEX_PUT,
+            "manifests": [v6],
+        }),
+    );
+    let module_dir = create_test_module_dir();
+
+    push_module(
+        module_dir.path(),
+        &store.artifact("v1"),
+        Some("linux/arm/v7"),
+        None,
+    )
+    .expect("push a variant into an index");
+
+    let new_manifest = store.stored("v1-linux-arm-v7");
+    assert_eq!(
+        json_of(&store.stored("v1"))["manifests"],
+        serde_json::json!([
+            v6,
+            {
+                "mediaType": MEDIA_TYPE_OCI_MANIFEST,
+                "digest": crate::sha256_digest(&new_manifest),
+                "size": new_manifest.len(),
+                "platform": { "os": "linux", "architecture": "arm", "variant": "v7" },
+            },
+        ])
     );
 }
 

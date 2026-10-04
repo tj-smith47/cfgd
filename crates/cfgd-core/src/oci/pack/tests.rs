@@ -3,6 +3,11 @@ use std::collections::HashMap;
 use super::*;
 use crate::oci::test_helpers::registry_from_url;
 
+/// `platform` parsed the way `--platform` is.
+fn target(platform: &str) -> OciPlatform {
+    crate::oci::parse_platform_target(platform).unwrap().into()
+}
+
 /// Create a temp directory with a couple of regular files for pack tests.
 fn create_test_pack_dir() -> tempfile::TempDir {
     let dir = tempfile::tempdir().unwrap();
@@ -18,7 +23,11 @@ fn create_test_pack_dir() -> tempfile::TempDir {
 #[test]
 fn build_image_config_uses_standard_media_types_in_rootfs() {
     let diff_id = "sha256:aabbcc".to_string();
-    let config = build_image_config(&PackOptions::default(), diff_id.clone(), "linux", "amd64");
+    let config = build_image_config(
+        &PackOptions::default(),
+        diff_id.clone(),
+        &target("linux/amd64"),
+    );
     assert_eq!(config.os, "linux");
     assert_eq!(config.architecture, "amd64");
     assert_eq!(config.rootfs.fs_type, "layers");
@@ -33,7 +42,7 @@ fn build_image_config_runtime_config_populated_from_opts() {
         env: vec!["PATH=/app/bin".into()],
         ..Default::default()
     };
-    let config = build_image_config(&opts, "sha256:xx".into(), "linux", "amd64");
+    let config = build_image_config(&opts, "sha256:xx".into(), &target("linux/amd64"));
     let rc = config.config.expect("runtime config should be Some");
     assert_eq!(rc.entrypoint, Some(vec!["/app/server".into()]));
     assert_eq!(rc.env, Some(vec!["PATH=/app/bin".into()]));
@@ -45,8 +54,7 @@ fn build_image_config_no_runtime_config_when_opts_empty() {
     let config = build_image_config(
         &PackOptions::default(),
         "sha256:xx".into(),
-        "linux",
-        "amd64",
+        &target("linux/amd64"),
     );
     assert!(
         config.config.is_none(),
@@ -127,7 +135,7 @@ fn image_config_serializes_with_correct_field_names() {
         labels,
         ..Default::default()
     };
-    let config = build_image_config(&opts, "sha256:xx".into(), "linux", "arm64");
+    let config = build_image_config(&opts, "sha256:xx".into(), &target("linux/arm64"));
     let json: serde_json::Value = serde_json::to_value(&config).unwrap();
     assert_eq!(json["os"], "linux");
     assert_eq!(json["architecture"], "arm64");
@@ -263,8 +271,8 @@ fn pack_image_descriptor_digests_match_blob_bytes() {
     let (layer_gz, diff_id) = create_tar_gz_with_diff_id(dir.path()).unwrap();
     let expected_layer_digest = sha256_digest(&layer_gz);
 
-    let (os, arch) = resolve_platform(&opts).unwrap();
-    let image_config = build_image_config(&opts, diff_id, &os, &arch);
+    let platform = resolve_platform(&opts).unwrap();
+    let image_config = build_image_config(&opts, diff_id, &platform);
     let config_blob = serde_json::to_vec(&image_config).unwrap();
     let expected_config_digest = sha256_digest(&config_blob);
 
@@ -555,8 +563,7 @@ fn pack_image_manifest_uses_standard_media_types() {
     let config = build_image_config(
         &PackOptions::default(),
         "sha256:diff-id".into(),
-        "linux",
-        "amd64",
+        &target("linux/amd64"),
     );
     assert!(
         !config.rootfs.diff_ids.is_empty(),
@@ -566,11 +573,71 @@ fn pack_image_manifest_uses_standard_media_types() {
 }
 
 #[test]
+fn build_image_config_writes_the_variant_a_platform_names() {
+    let config = build_image_config(
+        &PackOptions::default(),
+        "sha256:xx".into(),
+        &target("linux/arm/v7"),
+    );
+    let json = serde_json::to_value(&config).unwrap();
+    assert_eq!(
+        (&json["os"], &json["architecture"], &json["variant"]),
+        (
+            &serde_json::json!("linux"),
+            &serde_json::json!("arm"),
+            &serde_json::json!("v7")
+        )
+    );
+    let plain = build_image_config(
+        &PackOptions::default(),
+        "sha256:xx".into(),
+        &target("linux/amd64"),
+    );
+    assert!(
+        serde_json::to_value(&plain)
+            .unwrap()
+            .get("variant")
+            .is_none(),
+        "a platform naming no variant writes no variant key"
+    );
+}
+
+/// A base index entry is picked by variant when the target names one, and
+/// by os and architecture alone, preferring an entry naming no variant, when
+/// it names none.
+#[test]
+fn base_index_entry_matches_the_variant_a_platform_names() {
+    let index: OciImageIndex = serde_json::from_value(serde_json::json!({
+        "manifests": [
+            { "digest": "sha256:v6", "platform": { "os": "linux", "architecture": "arm", "variant": "v6" } },
+            { "digest": "sha256:v7", "platform": { "os": "linux", "architecture": "arm", "variant": "v7" } },
+            { "digest": "sha256:v8", "platform": { "os": "linux", "architecture": "arm64", "variant": "v8" } },
+            { "digest": "sha256:amd", "platform": { "os": "linux", "architecture": "amd64" } },
+        ],
+    }))
+    .unwrap();
+    for (asked, picked) in [
+        ("linux/arm/v7", Some("sha256:v7")),
+        ("linux/arm", Some("sha256:v6")),
+        ("linux/arm64", Some("sha256:v8")),
+        ("linux/amd64", Some("sha256:amd")),
+        ("linux/arm/v5", None),
+        ("linux/amd64/v2", None),
+    ] {
+        assert_eq!(
+            base_index_entry(&index, &target(asked)).map(|e| e.digest.as_str()),
+            picked,
+            "asked for {asked}"
+        );
+    }
+}
+
+#[test]
 fn resolve_platform_uses_host_when_none() {
     let opts = PackOptions::default();
-    let (os, arch) = resolve_platform(&opts).unwrap();
-    assert!(!os.is_empty());
-    assert!(!arch.is_empty());
+    let platform = resolve_platform(&opts).unwrap();
+    assert!(!platform.os.is_empty());
+    assert!(!platform.architecture.is_empty());
 }
 
 #[test]
@@ -579,9 +646,10 @@ fn resolve_platform_parses_explicit_platform() {
         platform: Some("linux/arm64".into()),
         ..Default::default()
     };
-    let (os, arch) = resolve_platform(&opts).unwrap();
-    assert_eq!(os, "linux");
-    assert_eq!(arch, "arm64");
+    let platform = resolve_platform(&opts).unwrap();
+    assert_eq!(platform.os, "linux");
+    assert_eq!(platform.architecture, "arm64");
+    assert_eq!(platform.variant, None);
 }
 
 #[test]
@@ -606,6 +674,7 @@ fn base_config_with_two_layers() -> ImageConfig {
     ImageConfig {
         architecture: "amd64".to_string(),
         os: "linux".to_string(),
+        variant: None,
         created: Some("2020-01-01T00:00:00Z".to_string()),
         config: Some(ImageRuntimeConfig {
             entrypoint: Some(vec!["/base/entry".into()]),
@@ -743,6 +812,7 @@ fn base_image_config_json(os: &str, arch: &str, diff_id: &str) -> Vec<u8> {
     let cfg = ImageConfig {
         architecture: arch.to_string(),
         os: os.to_string(),
+        variant: None,
         created: Some("2021-06-01T00:00:00Z".to_string()),
         config: None,
         rootfs: RootFs {

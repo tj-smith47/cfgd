@@ -308,7 +308,7 @@ fn push_platform_to_tag(
             reference: oci_ref.to_string(),
         });
     }
-    let (os, arch) = parse_platform_target(platform)?;
+    let target = OciPlatform::from(parse_platform_target(platform)?);
     let existing = authenticated_request_if_present(
         agent,
         "GET",
@@ -331,10 +331,7 @@ fn push_platform_to_tag(
         media_type: MEDIA_TYPE_OCI_MANIFEST.to_string(),
         digest,
         size: manifest_json.len() as u64,
-        platform: OciPlatform {
-            os: os.to_string(),
-            architecture: arch.to_string(),
-        },
+        platform: target,
     };
 
     let index_digest = match joined_index(state, &entry)? {
@@ -401,7 +398,7 @@ fn classify_tag(
     if existing_platform == platform {
         return Ok(TagState::Replace);
     }
-    let (os, arch) = parse_platform_target(existing_platform)?;
+    let existing_target = OciPlatform::from(parse_platform_target(existing_platform)?);
     let media_type = doc
         .get("mediaType")
         .and_then(|m| m.as_str())
@@ -410,10 +407,7 @@ fn classify_tag(
         media_type: media_type.to_string(),
         digest,
         size,
-        platform: OciPlatform {
-            os: os.to_string(),
-            architecture: arch.to_string(),
-        },
+        platform: existing_target,
     }))
 }
 
@@ -447,8 +441,20 @@ fn joined_index(state: TagState, entry: &OciPlatformManifest) -> Result<Option<V
     }
 }
 
-/// Whether an index entry declares `platform`'s os and architecture.
+/// Whether an index entry declares `platform`'s os and architecture, and
+/// its variant or, for a platform naming none, no variant.
 pub(super) fn entry_platform_is(entry: &serde_json::Value, platform: &OciPlatform) -> bool {
+    entry_os_arch_is(entry, platform)
+        && entry
+            .get("platform")
+            .and_then(|p| p.get("variant"))
+            .and_then(|v| v.as_str())
+            == platform.variant.as_deref()
+}
+
+/// Whether an index entry declares `platform`'s os and architecture, whatever
+/// variant either names.
+pub(super) fn entry_os_arch_is(entry: &serde_json::Value, platform: &OciPlatform) -> bool {
     entry.get("platform").is_some_and(|p| {
         p.get("os").and_then(|v| v.as_str()) == Some(platform.os.as_str())
             && p.get("architecture").and_then(|v| v.as_str())
@@ -481,6 +487,18 @@ pub(super) struct OciPlatformManifest {
 pub(super) struct OciPlatform {
     pub(super) os: String,
     pub(super) architecture: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) variant: Option<String>,
+}
+
+impl std::fmt::Display for OciPlatform {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}/{}", self.os, self.architecture)?;
+        match &self.variant {
+            Some(variant) => write!(f, "/{variant}"),
+            None => Ok(()),
+        }
+    }
 }
 
 /// Map Rust arch names to OCI architecture names.
@@ -504,18 +522,61 @@ pub fn current_platform() -> String {
     )
 }
 
-/// Parse "os/arch" (e.g. "linux/amd64") into (os, arch).
-pub fn parse_platform_target(target: &str) -> Result<(&str, &str), OciError> {
-    target.split_once('/').ok_or_else(|| OciError::BuildError {
+/// A platform as `--platform` and `--target` spell it: `os/arch`, or
+/// `os/arch/variant` for an architecture OCI qualifies (`linux/arm/v7`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PlatformTarget<'a> {
+    pub os: &'a str,
+    pub architecture: &'a str,
+    pub variant: Option<&'a str>,
+}
+
+impl From<PlatformTarget<'_>> for OciPlatform {
+    fn from(target: PlatformTarget<'_>) -> Self {
+        OciPlatform {
+            os: target.os.to_string(),
+            architecture: target.architecture.to_string(),
+            variant: target.variant.map(String::from),
+        }
+    }
+}
+
+/// Parse `os/arch` or `os/arch/variant` (`linux/amd64`, `linux/arm/v7`).
+/// An empty segment, a fourth segment and a `,` are refused: each would
+/// otherwise reach an index entry as a platform no runtime selects.
+pub fn parse_platform_target(target: &str) -> Result<PlatformTarget<'_>, OciError> {
+    let invalid = || OciError::BuildError {
         message: format!(
-            "invalid platform target '{target}' — expected os/arch (e.g. linux/amd64)"
+            "invalid platform target '{target}' — expected os/arch or os/arch/variant \
+             (e.g. linux/amd64, linux/arm/v7)"
         ),
-    })
+    };
+    if target.contains(',') {
+        return Err(invalid());
+    }
+    let segments: Vec<&str> = target.split('/').collect();
+    if segments.iter().any(|s| s.is_empty()) {
+        return Err(invalid());
+    }
+    match segments[..] {
+        [os, architecture] => Ok(PlatformTarget {
+            os,
+            architecture,
+            variant: None,
+        }),
+        [os, architecture, variant] => Ok(PlatformTarget {
+            os,
+            architecture,
+            variant: Some(variant),
+        }),
+        _ => Err(invalid()),
+    }
 }
 
 /// Push a module for multiple platforms, creating an OCI index (manifest list).
 ///
-/// Each `builds` entry is `(build_dir, platform)` where platform is "os/arch".
+/// Each `builds` entry is `(build_dir, platform)` where platform is `os/arch` or
+/// `os/arch/variant`.
 /// Pushes each platform-specific manifest, then pushes the index.
 ///
 /// Answers the digest of the index at the tag and of each platform's manifest
@@ -575,7 +636,7 @@ fn push_multiplatform_manifests_and_index(
     let mut platform_manifests = Vec::new();
 
     for (dir, platform) in builds {
-        let (os, arch) = parse_platform_target(platform)?;
+        let target = OciPlatform::from(parse_platform_target(platform)?);
 
         let (digest, size) = push_module_inner(
             agent,
@@ -589,10 +650,7 @@ fn push_multiplatform_manifests_and_index(
             media_type: MEDIA_TYPE_OCI_MANIFEST.to_string(),
             digest,
             size,
-            platform: OciPlatform {
-                os: os.to_string(),
-                architecture: arch.to_string(),
-            },
+            platform: target,
         });
     }
 

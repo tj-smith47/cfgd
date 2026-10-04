@@ -58,7 +58,7 @@ $ cfgd image pack ./out registry.example.com/myapp/server:v1.4.0 \
 
 | Flag | Description |
 |---|---|
-| `--platform <os/arch>` | Target platform (default: host platform, e.g. `linux/amd64`) |
+| `--platform <os/arch[/variant]>` | Target platform (default: host platform, e.g. `linux/amd64`); a variant (`linux/arm/v7`) is written to the image config and selects that variant of a `--base` index |
 | `--entrypoint <arg>` | Image entrypoint (repeatable; builds a list, e.g. `--entrypoint /app/server`) |
 | `--cmd <arg>` | Default command arguments (repeatable) |
 | `--env KEY=VALUE` | Environment variable in the image runtime config (repeatable) |

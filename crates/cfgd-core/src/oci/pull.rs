@@ -243,11 +243,23 @@ pub(super) fn read_manifest_document(
     })
 }
 
+/// An index entry's platform as `os/arch[/variant]`, when it declares one.
+fn entry_platform(entry: &serde_json::Value) -> Option<String> {
+    let platform = entry.get("platform")?;
+    let os = platform.get("os")?.as_str()?;
+    let arch = platform.get("architecture")?.as_str()?;
+    Some(match platform.get("variant").and_then(|v| v.as_str()) {
+        Some(variant) => format!("{os}/{arch}/{variant}"),
+        None => format!("{os}/{arch}"),
+    })
+}
+
 /// The platforms a manifest document declares.
 ///
 /// The two shapes [`super::push_module`] and [`super::push_module_multiplatform`]
-/// write are both read here: an index names an `os`/`architecture` pair per
-/// entry, and a single-platform manifest carries the whole `os/arch` string in
+/// write are both read here: an index names an `os`/`architecture` pair (and a
+/// `variant` where one is declared) per entry, and a single-platform manifest
+/// carries the whole `os/arch[/variant]` string in
 /// its [`crate::OCI_ANNOTATION_PLATFORM`] annotation. An artifact declaring
 /// neither answers an empty list rather than an error — a manifest a third
 /// party pushed is a legitimate artifact that simply says nothing about its
@@ -263,12 +275,7 @@ fn declared_platforms(doc: &serde_json::Value) -> Vec<String> {
         let mut seen = std::collections::HashSet::new();
         return entries
             .iter()
-            .filter_map(|entry| {
-                let platform = entry.get("platform")?;
-                let os = platform.get("os")?.as_str()?;
-                let arch = platform.get("architecture")?.as_str()?;
-                Some(format!("{os}/{arch}"))
-            })
+            .filter_map(entry_platform)
             .filter(|p| seen.insert(p.clone()))
             .collect();
     }
@@ -346,11 +353,7 @@ fn pull_module_inner(
     checks: &PullChecks<'_>,
     platform: &str,
 ) -> Result<(PullOutcome, Option<String>), OciError> {
-    let (os, architecture) = super::parse_platform_target(platform)?;
-    let wanted = super::push::OciPlatform {
-        os: os.to_string(),
-        architecture: architecture.to_string(),
-    };
+    let wanted = super::push::OciPlatform::from(super::parse_platform_target(platform)?);
     let top = fetch_pull_document(agent, oci_ref, auth, oci_ref.reference_str(), oci_ref)?;
     // The checks and the extraction must both be about the bytes read: a
     // header naming a signed digest over a body naming other layers would
@@ -519,16 +522,29 @@ fn select_platform_manifest(
         return Ok((parse_image_manifest(top.doc)?, outcome, annotated));
     };
 
-    let platform = format!("{}/{}", wanted.os, wanted.architecture);
-    let Some(entry_digest) = entries
+    // A platform naming no variant takes the entry naming none, else the first
+    // entry for its os and architecture: registries list `linux/arm64/v8` for
+    // what a node and a push without a variant both call `linux/arm64`.
+    let entry = entries
         .iter()
         .find(|e| super::push::entry_platform_is(e, wanted))
-        .and_then(|e| e.get("digest"))
-        .and_then(|d| d.as_str())
+        .or_else(|| {
+            wanted
+                .variant
+                .is_none()
+                .then(|| {
+                    entries
+                        .iter()
+                        .find(|e| super::push::entry_os_arch_is(e, wanted))
+                })
+                .flatten()
+        });
+    let Some((entry_digest, platform)) =
+        entry.and_then(|e| Some((e.get("digest")?.as_str()?, entry_platform(e)?)))
     else {
         return Err(OciError::PlatformNotInIndex {
             reference: oci_ref.to_string(),
-            platform,
+            platform: wanted.to_string(),
             available: declared_platforms(&top.doc),
         });
     };
@@ -695,6 +711,43 @@ mod tests {
         );
         assert_eq!(outcome.digest, amd_push.digest);
         assert_eq!(outcome.index_digest, Some(index));
+    }
+
+    /// A platform naming a variant takes that variant's entry; one naming none
+    /// takes the first entry for its os and architecture, which is how a node
+    /// asking for `linux/arm64` reads an index listing `linux/arm64/v8`.
+    #[test]
+    fn pull_of_an_index_matches_the_variant_a_platform_names() {
+        let store = crate::oci::test_helpers::ManifestStore::new("test/pullvariant");
+        let artifact = store.artifact("v1");
+        for platform in ["linux/arm/v6", "linux/arm/v7", "linux/arm64/v8"] {
+            let dir = module_dir_marked(&format!("{platform} build"));
+            crate::oci::push_module(dir.path(), &artifact, Some(platform), None).unwrap();
+        }
+
+        for (asked, built) in [
+            ("linux/arm/v7", "linux/arm/v7"),
+            ("linux/arm/v6", "linux/arm/v6"),
+            ("linux/arm64", "linux/arm64/v8"),
+            ("linux/arm", "linux/arm/v6"),
+        ] {
+            let (mark, _) = pulled_mark(&artifact, Some(asked)).unwrap();
+            assert_eq!(mark, format!("{built} build"), "asked for {asked}");
+        }
+        match pulled_mark(&artifact, Some("linux/arm/v5")) {
+            Err(OciError::PlatformNotInIndex {
+                platform,
+                available,
+                ..
+            }) => {
+                assert_eq!(platform, "linux/arm/v5");
+                assert_eq!(
+                    available,
+                    ["linux/arm/v6", "linux/arm/v7", "linux/arm64/v8"]
+                );
+            }
+            other => panic!("expected PlatformNotInIndex, got {other:?}"),
+        }
     }
 
     #[test]

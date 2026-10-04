@@ -27,8 +27,8 @@ pub use pull::{
     ArtifactFacts, PullChecks, PullOutcome, SignaturePolicy, artifact_facts, pull_module,
 };
 pub use push::{
-    MultiPlatformPushOutcome, PushOutcome, current_platform, parse_platform_target, push_module,
-    push_module_multiplatform, rust_arch_to_oci,
+    MultiPlatformPushOutcome, PlatformTarget, PushOutcome, current_platform, parse_platform_target,
+    push_module, push_module_multiplatform, rust_arch_to_oci,
 };
 pub use sign::{
     COSIGN_PREDICATE_TYPES, SignatureCheck, VerifyOptions, attach_attestation,
@@ -328,6 +328,8 @@ pub(super) struct OciIndexEntry {
 pub(super) struct OciPlatform {
     pub(super) os: String,
     pub(super) architecture: String,
+    #[serde(default)]
+    pub(super) variant: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -343,6 +345,9 @@ pub(super) struct OciPlatform {
 pub struct ImageConfig {
     pub architecture: String,
     pub os: String,
+    /// The CPU variant (`v7` of `linux/arm/v7`), when the platform names one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub variant: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub created: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]

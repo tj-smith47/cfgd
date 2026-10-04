@@ -33410,11 +33410,12 @@ fn execute_module_pull_dispatch() {
     assert!(result.is_err(), "pull of unreachable artifact should fail");
 }
 
-/// Every `--platform` flag, and `module build --target`, takes `os/arch`
-/// through `parse_platform_target` at parse time: a value with no arch is a
-/// usage error before any command starts, and a well-formed one parses. The
-/// population is read off `Cli::command()`, so a new `--platform` fails here
-/// until it is listed with an argv that reaches it.
+/// Every `--platform` flag, and `module build --target`, takes `os/arch` or
+/// `os/arch/variant` through `parse_platform_target` at parse time: a value
+/// with no arch, an empty os or arch, or a comma list where one platform is
+/// expected is a usage error before any command starts, and a well-formed one
+/// parses. The population is read off `Cli::command()`, so a new `--platform`
+/// fails here until it is listed with an argv that reaches it.
 #[test]
 fn every_platform_flag_refuses_a_value_without_an_arch_at_parse_time() {
     fn walk(cmd: &clap::Command, path: &str, found: &mut Vec<String>) {
@@ -33477,19 +33478,46 @@ fn every_platform_flag_refuses_a_value_without_an_arch_at_parse_time() {
             args.push(value);
             Cli::try_parse_hermetic(args)
         };
-        let err = parse("plan9")
-            .err()
-            .unwrap_or_else(|| panic!("{name} accepts `plan9`"));
-        assert_eq!(
-            err.kind(),
-            clap::error::ErrorKind::ValueValidation,
-            "{name}: {err}"
-        );
-        assert!(parse("linux/arm64").is_ok(), "{name} refuses `linux/arm64`");
+        let list = name == "cfgd module build --target";
+        let mut refused = vec!["plan9", "linux/", "/amd64", "linux/arm/v7/x"];
+        if !list {
+            refused.push("linux/amd64,linux/arm64");
+        }
+        for value in refused {
+            let err = parse(value)
+                .err()
+                .unwrap_or_else(|| panic!("{name} accepts `{value}`"));
+            assert_eq!(
+                err.kind(),
+                clap::error::ErrorKind::ValueValidation,
+                "{name} {value}: {err}"
+            );
+        }
+        for value in ["linux/arm64", "linux/arm/v7"] {
+            assert!(parse(value).is_ok(), "{name} refuses `{value}`");
+        }
     }
+    // The value each flag accepts is what the parser splits: a third segment
+    // is the OCI variant.
+    assert_eq!(
+        cfgd_core::oci::parse_platform_target("linux/arm/v7")
+            .map(|t| t.variant)
+            .ok(),
+        Some(Some("v7"))
+    );
     let build = ["cfgd", "module", "build", "d", "--target"];
-    assert!(Cli::try_parse_hermetic(build.into_iter().chain(["linux/amd64,plan9"])).is_err());
-    assert!(Cli::try_parse_hermetic(build.into_iter().chain(["linux/amd64,linux/arm64"])).is_ok());
+    for refused in ["linux/amd64,plan9", "linux/amd64,", "linux/amd64,linux/"] {
+        assert!(
+            Cli::try_parse_hermetic(build.into_iter().chain([refused])).is_err(),
+            "--target accepts `{refused}`"
+        );
+    }
+    for accepted in ["linux/amd64,linux/arm64", "linux/amd64,linux/arm/v7"] {
+        assert!(
+            Cli::try_parse_hermetic(build.into_iter().chain([accepted])).is_ok(),
+            "--target refuses `{accepted}`"
+        );
+    }
 }
 
 #[test]

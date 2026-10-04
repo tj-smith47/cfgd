@@ -2174,15 +2174,17 @@ cfgd module push ./my-module --artifact ghcr.io/me/my-module:1.0.0 --sign --atte
 | Flag | Description |
 |---|---|
 | `--artifact <ref>` | OCI artifact reference (required, e.g. `ghcr.io/myorg/mymodule:v1.0.0`) |
-| `--platform <os/arch>` | Platform the module is built for (default: this host's OS/arch) |
+| `--platform <os/arch[/variant]>` | Platform the module is built for (default: this host's OS/arch) |
 | `--apply` | Apply the module after pushing |
 | `--sign` | Sign with cosign (keyless by default) |
 | `--key <path>` | Signing key path |
 | `--attest` | Attach SLSA provenance attestation |
 
-Pushes of different platforms to one tag accumulate into an OCI index at that tag; a push
-without `--platform` is a push for this host's platform. Each push also tags its own manifest
-`<tag>-<os>-<arch>`, a later push of the same platform replaces that platform's entry, and a
+A platform is `os/arch` or `os/arch/variant` (`linux/amd64`, `linux/arm/v7`); a third segment is
+written to the index entry's OCI `variant` field, and an empty segment, a fourth segment or a comma
+list is a usage error. Pushes of different platforms to one tag accumulate into an OCI index at that
+tag; a push without `--platform` is a push for this host's platform. Each push also tags its own manifest
+`<tag>-<os>-<arch>` (`<tag>-<os>-<arch>-<variant>` for a variant), a later push of the same platform replaces that platform's entry, and a
 digest reference is refused (a digest cannot be re-pointed). A tag holding a manifest with no
 `cfgd.io/platform` annotation is refused before anything is uploaded: delete that tag in the
 registry, or push to another tag. So is a tag whose `Docker-Content-Digest` header names other
@@ -2226,7 +2228,7 @@ cfgd module pull ghcr.io/me/my-module:1.0.0 --dir modules/my-module --require-si
 | Flag | Description |
 |---|---|
 | `--dir <path>` | Directory to extract the module into (required) |
-| `--platform <os/arch>` | Platform to take out of a multi-platform artifact (default: this host's OS/arch) |
+| `--platform <os/arch[/variant]>` | Platform to take out of a multi-platform artifact (default: this host's OS/arch) |
 | `--require-signature` | Require a cosign signature on the artifact |
 | `--verify-attest` | Verify the SLSA provenance attestation |
 | `--key <path>` | Public key for signature verification |
@@ -2234,7 +2236,9 @@ cfgd module pull ghcr.io/me/my-module:1.0.0 --dir modules/my-module --require-si
 | `--certificate-oidc-issuer <url>` | Expected OIDC issuer for keyless verification |
 
 When the tag names an OCI index, pull takes the entry whose platform matches `--platform` (or this
-host) and fails naming the platforms the index lists when none matches. A tag naming one manifest
+host) and fails naming the platforms the index lists when none matches. A platform naming a variant
+takes that variant's entry; one naming none takes the entry naming none, else the first entry for its
+os and architecture (`linux/arm64` takes a `linux/arm64/v8` entry). A tag naming one manifest
 is pulled as it is. `--require-signature` and `--verify-attest` check the digest the tag resolved to
 on the one read the pull extracts from, before anything is extracted. That digest is the sha256 of
 the bytes read; a registry whose `Docker-Content-Digest` header names another digest is refused
@@ -2272,7 +2276,7 @@ cfgd module build ./my-module --target linux/amd64,linux/arm64
 
 | Flag | Description |
 |---|---|
-| `--target <platforms>` | Target platform(s), comma-separated (e.g. `linux/amd64,linux/arm64`) |
+| `--target <platforms>` | Target platform(s) as `os/arch[/variant]`, comma-separated (e.g. `linux/amd64,linux/arm/v7`) |
 | `--base-image <ref>` | Base container image (default: `ubuntu:22.04`) |
 | `--artifact <ref>` | OCI artifact reference to tag the build with |
 | `--sign` | Sign with cosign |
@@ -2762,7 +2766,7 @@ cfgd image pack ./out registry.example.com/myapp:v1.4.0 -o json
 
 | Flag | Description |
 |---|---|
-| `--platform <os/arch>` | Target platform (default: host, e.g. `linux/amd64`) |
+| `--platform <os/arch[/variant]>` | Target platform (default: host, e.g. `linux/amd64`); a variant (`linux/arm/v7`) is written to the image config and selects that variant of a `--base` index |
 | `--entrypoint <arg>` | Image entrypoint, repeatable |
 | `--cmd <arg>` | Default command arguments, repeatable |
 | `--env KEY=VALUE` | Runtime environment variable, repeatable |

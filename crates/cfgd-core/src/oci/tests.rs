@@ -823,6 +823,7 @@ fn image_config_serializes_with_correct_oci_keys() {
     let cfg = ImageConfig {
         architecture: "amd64".to_string(),
         os: "linux".to_string(),
+        variant: None,
         created: Some("2026-01-01T00:00:00Z".to_string()),
         config: Some(ImageRuntimeConfig {
             entrypoint: Some(vec!["/app/server".to_string()]),
