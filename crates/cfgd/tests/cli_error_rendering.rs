@@ -738,6 +738,22 @@ fn doctor_reports_a_tilde_config_with_no_home_as_the_unset_home() {
     );
 }
 
+/// `doctor` with no home set and no `--config` fails its config check on the
+/// unset home and exits 1: every verb reading the config fails there, so a
+/// passing verdict would let `cfgd doctor && cfgd apply` reach a broken apply.
+/// Windows resolves its default config root without a home variable.
+#[cfg(not(windows))]
+#[test]
+fn doctor_with_no_home_fails_the_default_config_check_on_the_unset_home() {
+    let (_, stderr, code) = run_homeless(&["doctor"]);
+    let row = stderr
+        .lines()
+        .find(|line| line.contains("Config file"))
+        .unwrap_or_else(|| panic!("no config-file row: {stderr}"));
+    assert!(row.contains(HOME_UNRESOLVED), "{row:?}");
+    assert_eq!(code, Some(1), "{stderr}");
+}
+
 /// The default config location with no home set. Linux and macOS spell it
 /// under `~`, so the run reports the unset home; Windows finds its config
 /// root through a known-folder lookup that needs no home variable, so the
