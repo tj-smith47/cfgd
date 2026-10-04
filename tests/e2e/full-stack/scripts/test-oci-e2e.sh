@@ -236,17 +236,15 @@ EOF
 )
     echo "  Webhook response: $(echo "$REJECT_OUTPUT" | head -3)"
 
-    if echo "$REJECT_OUTPUT" | grep -qi "unsigned\|denied\|error\|rejected"; then
+    # Any failed apply prints "error", so the verdict needs the webhook's own
+    # refusal, and a refused module was never stored.
+    if k8s_exists module "$OCI03_MOD"; then
+        fail_test "OCI-E2E-03" "Unsigned module was accepted despite disallow-unsigned policy"
+        kubectl delete module "$OCI03_MOD" --ignore-not-found 2>/dev/null || true
+    elif grep -q "unsigned modules are not allowed" <<<"$REJECT_OUTPUT"; then
         pass_test "OCI-E2E-03"
     else
-        # Check if the Module was created (it shouldn't be)
-        MOD_EXISTS=$(kubectl get module "$OCI03_MOD" 2>/dev/null || echo "")
-        if [ -z "$MOD_EXISTS" ]; then
-            pass_test "OCI-E2E-03"
-        else
-            fail_test "OCI-E2E-03" "Unsigned module was accepted despite disallow-unsigned policy"
-            kubectl delete module "$OCI03_MOD" --ignore-not-found 2>/dev/null || true
-        fi
+        fail_test "OCI-E2E-03" "The apply failed without the webhook's unsigned-module refusal: $(head -3 <<<"$REJECT_OUTPUT")"
     fi
 
     # Clean up the ClusterConfigPolicy
