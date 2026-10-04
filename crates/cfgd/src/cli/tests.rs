@@ -56315,35 +56315,58 @@ fn config_reads_outside_the_startup_document(source: &str) -> Vec<String> {
         .collect()
 }
 
-/// The `cfgd_core::config` entry points that hand back a parsed config: every
-/// free `pub` function under `cfgd-core/src/config` taking an input and whose
-/// return type names `CfgdConfig`, read off the module's own declarations so a
-/// loader added there joins the walk with no list to extend. A function taking
-/// nothing (`minimal_config`) builds a config without reading one.
+/// The functions among `rows` (`(name, code)`, the free functions under
+/// `cfgd-core/src/config`) that hand back a config read from a document: one
+/// whose return type names `CfgdConfig` and whose body reads a file or which
+/// parses text it takes as a `&str`, then every one returning `CfgdConfig`
+/// whose body calls a member, folded until the set stops growing. A loader
+/// reading a fixed path joins through the loader it calls; a function that
+/// builds a config and reads none (`minimal_config`) joins nothing.
+fn config_loaders(rows: &[(String, String)]) -> Vec<String> {
+    let returns_config = |code: &str| {
+        let signature = code.split('{').next().unwrap_or_default();
+        signature
+            .split_once("->")
+            .map_or("", |(_, ret)| ret)
+            .split(|c: char| !(c.is_alphanumeric() || c == '_'))
+            .any(|word| word == "CfgdConfig")
+    };
+    let mut loaders: Vec<String> = Vec::new();
+    loop {
+        let before = loaders.len();
+        for (name, code) in rows {
+            if loaders.contains(name) || !returns_config(code) {
+                continue;
+            }
+            let reads = code.contains("read_to_string(")
+                || code.contains("fs::read(")
+                || !str_parameters(code).is_empty()
+                || loaders
+                    .iter()
+                    .any(|loader| cfgd_core::test_helpers::calls_free_fn(code, loader));
+            if reads {
+                loaders.push(name.clone());
+            }
+        }
+        if loaders.len() == before {
+            return loaders;
+        }
+    }
+}
+
+/// [`config_loaders`] over the free functions `cfgd-core/src/config`
+/// declares, so a loader added there joins the walk with no list to extend.
 static CONFIG_LOADERS: std::sync::LazyLock<Vec<String>> = std::sync::LazyLock::new(|| {
-    use cfgd_core::test_helpers::{ItemLead, item_lead};
-    let loaders: Vec<String> = workspace_declarations(WORKSPACE_CRATES)
+    let rows: Vec<(String, String)> = workspace_declarations(WORKSPACE_CRATES)
         .rows_under("cfgd-core/src/config", 19)
         .into_iter()
-        .filter(|(_, owner, code)| {
-            let signature = code.split('{').next().unwrap_or_default();
-            let returns = signature.split_once("->").map_or("", |(_, ret)| ret);
-            let takes_input = signature
-                .split_once('(')
-                .and_then(|(_, rest)| rest.split_once(')'))
-                .is_some_and(|(params, _)| !params.trim().is_empty());
-            owner.is_none()
-                && takes_input
-                && matches!(item_lead(signature).0, ItemLead::Visible)
-                && returns
-                    .split(|c: char| !(c.is_alphanumeric() || c == '_'))
-                    .any(|word| word == "CfgdConfig")
-        })
-        .map(|(name, ..)| name.clone())
+        .filter(|(_, owner, _)| owner.is_none())
+        .map(|(name, _, code)| (name.clone(), code.clone()))
         .collect();
+    let loaders = config_loaders(&rows);
     assert!(
         !loaders.is_empty(),
-        "no `pub fn` under cfgd-core/src/config returns a `CfgdConfig`; the derivation read nothing"
+        "no function under cfgd-core/src/config reads a `CfgdConfig`; the derivation read nothing"
     );
     for canary in ["load_config", "read_config_document", "parse_config"] {
         assert!(
@@ -56354,6 +56377,30 @@ static CONFIG_LOADERS: std::sync::LazyLock<Vec<String>> = std::sync::LazyLock::n
     }
     loaders
 });
+
+/// A loader taking no argument joins through the loader it calls, and a
+/// function that builds a config without reading one stays out.
+#[test]
+fn the_config_loaders_follow_a_fixed_path_loader_and_leave_a_built_config_out() {
+    let rows: Vec<(String, String)> = cfgd_core::test_helpers::fixture_declarations(
+        "fn load_default_config() -> Result<CfgdConfig> {\n    load_config(&default_path())\n}\n\
+         fn load_config(path: &Path) -> Result<CfgdConfig> {\n    \
+         let text = std::fs::read_to_string(path)?;\n    parse_config(&text, path)\n}\n\
+         fn parse_config(contents: &str, path: &Path) -> Result<CfgdConfig> {\n    \
+         from_text(contents, path)\n}\n\
+         fn minimal_config() -> CfgdConfig {\n    CfgdConfig::default()\n}\n\
+         fn display_name(name: &str) -> String {\n    name.to_string()\n}\n",
+    )
+    .into_iter()
+    .map(|(name, _, code)| (name, code))
+    .collect();
+    let mut loaders = config_loaders(&rows);
+    loaders.sort();
+    assert_eq!(
+        loaders,
+        ["load_config", "load_default_config", "parse_config"]
+    );
+}
 
 /// Whether the CODE line `line`, with `next` below it, reads a config document
 /// from disk: a call to one of [`CONFIG_LOADERS`], or a `read_to_string` whose
