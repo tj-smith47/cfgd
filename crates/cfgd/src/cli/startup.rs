@@ -124,7 +124,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let documents: [(PathBuf, Option<&[u8]>); 8] = [
             (dir.path().join("missing.yaml"), None),
-            // A leading `~` is left only when no home directory resolves.
+            // The loader reports any leading `~` that reaches it as an unset home.
             (PathBuf::from("~").join("no-such-cfgd.yaml"), None),
             (
                 dir.path().join("malformed.yaml"),

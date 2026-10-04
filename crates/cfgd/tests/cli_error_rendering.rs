@@ -700,3 +700,45 @@ fn the_default_config_with_no_home_names_what_is_missing() {
         );
     }
 }
+
+/// A `--config` under `~` with a home set is absolutized against the working
+/// directory like any relative path, so the refusal names the file that is
+/// not there and never claims the home is unset.
+#[test]
+fn a_tilde_config_with_a_home_set_reports_the_missing_file() {
+    for format in ["table", "json"] {
+        let mut cmd = cfgd_bin().unwrap();
+        let cwd = cmd
+            .get_current_dir()
+            .expect("the constructor sets a working directory")
+            .to_path_buf();
+        // The binary reads its working directory back through `getcwd`,
+        // which resolves the symlinked temp root macOS hands out.
+        let cwd = if cfg!(unix) {
+            std::fs::canonicalize(&cwd).unwrap()
+        } else {
+            cwd
+        };
+        let expected = format!(
+            "config error: config file not found: {}",
+            cfgd_core::absolutize_path(&cwd.join("~").join("cfgd.yaml")).display()
+        );
+        let out = cmd
+            .args(["status", "--config", "~/cfgd.yaml", "-o", format])
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(out.status.code(), Some(3), "{format}: {stderr}");
+        let reported = if format == "json" {
+            let v = parse_single_json(&String::from_utf8_lossy(&out.stdout));
+            v["message"].as_str().unwrap_or_default().to_string()
+        } else {
+            stderr.lines().next().unwrap_or_default().to_string()
+        };
+        assert!(reported.ends_with(&expected), "{format}: {reported:?}");
+        assert!(
+            !reported.contains(HOME_UNRESOLVED),
+            "{format}: {reported:?}"
+        );
+    }
+}
