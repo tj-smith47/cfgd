@@ -33,13 +33,7 @@ fn cmd_apply_increments_apply_log_by_one() {
         assert_eq!(before.len(), 0, "no applies before the test");
     }
 
-    apply::cmd_apply(
-        &cli,
-        &printer,
-        &cfgd::cli::startup::StartupDocument::load(&cli.config),
-        &args,
-    )
-    .unwrap();
+    cfgd::cli::RunContext::for_test(&cli, &printer, |run| apply::cmd_apply(run, &args)).unwrap();
     assert!(target.exists(), "target file was created");
 
     // Exactly one apply record now.
@@ -62,13 +56,7 @@ fn cmd_apply_releases_apply_lock() {
     let printer = test_printer();
     let args = apply_args();
 
-    apply::cmd_apply(
-        &cli,
-        &printer,
-        &cfgd::cli::startup::StartupDocument::load(&cli.config),
-        &args,
-    )
-    .unwrap();
+    cfgd::cli::RunContext::for_test(&cli, &printer, |run| apply::cmd_apply(run, &args)).unwrap();
 
     // If the lock is released, re-acquiring must succeed.
     let guard = cfgd_core::acquire_apply_lock(state_dir.path())

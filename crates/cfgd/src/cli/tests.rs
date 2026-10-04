@@ -7236,12 +7236,9 @@ fn cmd_doctor_with_valid_config() {
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
-    let result = super::doctor::run_doctor(
-        &cli,
-        &printer,
-        &crate::cli::startup::StartupDocument::load(&cli.config),
-        false,
-    );
+    let result = crate::cli::RunContext::for_test(&cli, &printer, |run| {
+        super::doctor::run_doctor(run, false)
+    });
     assert!(result.is_ok(), "doctor failed: {:?}", result.err());
     printer.flush();
 
@@ -7267,12 +7264,9 @@ fn cmd_doctor_without_config() {
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
-    let result = super::doctor::run_doctor(
-        &cli,
-        &printer,
-        &crate::cli::startup::StartupDocument::load(&cli.config),
-        false,
-    );
+    let result = crate::cli::RunContext::for_test(&cli, &printer, |run| {
+        super::doctor::run_doctor(run, false)
+    });
     // Missing at the DEFAULT path is the fresh-machine state: the verdict
     // must pass (exit 0), or `cfgd doctor` fails before a config can exist.
     assert!(
@@ -7306,12 +7300,9 @@ fn cmd_doctor_missing_config_at_explicit_path_fails_verdict() {
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
-    let passed = super::doctor::run_doctor(
-        &cli,
-        &printer,
-        &crate::cli::startup::StartupDocument::load(&cli.config),
-        false,
-    )
+    let passed = crate::cli::RunContext::for_test(&cli, &printer, |run| {
+        super::doctor::run_doctor(run, false)
+    })
     .unwrap();
     assert!(
         !passed,
@@ -7359,12 +7350,9 @@ fn cmd_doctor_json_missing_config_shape_is_unchanged() {
             ..test_cli(dir.path())
         };
         let (printer, buf) = cfgd_core::output::Printer::for_test_with_format(format.clone());
-        super::doctor::run_doctor(
-            &cli,
-            &printer,
-            &crate::cli::startup::StartupDocument::load(&cli.config),
-            false,
-        )
+        crate::cli::RunContext::for_test(&cli, &printer, |run| {
+            super::doctor::run_doctor(run, false)
+        })
         .unwrap();
         printer.flush();
 
@@ -7411,13 +7399,9 @@ fn setup_test_env() -> (tempfile::TempDir, tempfile::TempDir) {
 #[test]
 fn cmd_status_with_empty_state() {
     let h = CliTestHarness::builder().build();
-    super::status::cmd_status(
-        &h.cli(),
-        h.printer(),
-        &crate::cli::startup::StartupDocument::load(&h.cli().config),
-        None,
-        super::status::StatusRun::default(),
-    )
+    crate::cli::RunContext::for_test(&h.cli(), h.printer(), |run| {
+        super::status::cmd_status(run, None, super::status::StatusRun::default())
+    })
     .unwrap();
     h.assert_header("Status");
     h.assert_output_contains("No applies recorded yet");
@@ -7426,13 +7410,13 @@ fn cmd_status_with_empty_state() {
 #[test]
 fn cmd_status_module_not_found() {
     let h = CliTestHarness::builder().build();
-    super::status::cmd_status(
-        &h.cli(),
-        h.printer(),
-        &crate::cli::startup::StartupDocument::load(&h.cli().config),
-        Some("nonexistent"),
-        super::status::StatusRun::default(),
-    )
+    crate::cli::RunContext::for_test(&h.cli(), h.printer(), |run| {
+        super::status::cmd_status(
+            run,
+            Some("nonexistent"),
+            super::status::StatusRun::default(),
+        )
+    })
     .unwrap();
     h.assert_output_contains("nonexistent");
 }
@@ -7442,13 +7426,9 @@ fn cmd_status_module_found() {
     let h = CliTestHarness::builder()
         .module("test-mod", SIMPLE_MODULE_YAML)
         .build();
-    super::status::cmd_status(
-        &h.cli(),
-        h.printer(),
-        &crate::cli::startup::StartupDocument::load(&h.cli().config),
-        Some("test-mod"),
-        super::status::StatusRun::default(),
-    )
+    crate::cli::RunContext::for_test(&h.cli(), h.printer(), |run| {
+        super::status::cmd_status(run, Some("test-mod"), super::status::StatusRun::default())
+    })
     .unwrap();
     h.assert_output_contains("test-mod");
 }
@@ -7458,13 +7438,9 @@ fn cmd_verify_module() {
     let h = CliTestHarness::builder()
         .module("test-mod", SIMPLE_MODULE_YAML)
         .build();
-    super::verify::cmd_verify(
-        &h.cli(),
-        h.printer(),
-        &crate::cli::startup::StartupDocument::load(&h.cli().config),
-        Some("test-mod"),
-        false,
-    )
+    crate::cli::RunContext::for_test(&h.cli(), h.printer(), |run| {
+        super::verify::cmd_verify(run, Some("test-mod"), false)
+    })
     .unwrap();
     h.assert_header("Verify");
     // An empty module (no packages, no files) has nothing to verify. The former
@@ -7511,12 +7487,9 @@ fn cmd_apply_dry_run_empty_profile() {
         shell: None,
     };
 
-    super::apply::cmd_apply(
-        &h.cli(),
-        h.printer(),
-        &crate::cli::startup::StartupDocument::load(&h.cli().config),
-        &args,
-    )
+    crate::cli::RunContext::for_test(&h.cli(), h.printer(), |run| {
+        super::apply::cmd_apply(run, &args)
+    })
     .unwrap();
     h.assert_header("Plan");
     let output = h.output();
@@ -7564,12 +7537,8 @@ fn cmd_apply_from_flag_parses() {
     // cmd_apply should attempt to resolve the --from URL.
     // The URL is unreachable so this will fail — but it must fail because
     // the URL was attempted (resolve_from path), not because --from was ignored.
-    let result = super::apply::cmd_apply(
-        &cli,
-        &printer,
-        &crate::cli::startup::StartupDocument::load(&cli.config),
-        &args,
-    );
+    let result =
+        crate::cli::RunContext::for_test(&cli, &printer, |run| super::apply::cmd_apply(run, &args));
     // Either succeeds (local config found) or fails on the URL — both prove --from was wired up
     if let Err(ref e) = result {
         let msg = e.to_string();
@@ -7656,13 +7625,9 @@ fn run_apply_home_unset_errors_and_creates_no_state() {
         shell: None,
     };
 
-    let err = super::apply::run_apply(
-        &cli,
-        &printer,
-        &crate::cli::startup::StartupDocument::load(&cli.config),
-        &args,
-    )
-    .expect_err("apply with no resolvable home must error before any side-effect");
+    let err =
+        crate::cli::RunContext::for_test(&cli, &printer, |run| super::apply::run_apply(run, &args))
+            .expect_err("apply with no resolvable home must error before any side-effect");
     let msg = err.to_string();
     assert!(
         msg.contains("HOME") || msg.contains("config"),
@@ -7705,12 +7670,9 @@ fn cmd_apply_dry_run_with_phase_filter() {
         context: "apply".to_string(),
         shell: None,
     };
-    super::apply::cmd_apply(
-        &h.cli(),
-        h.printer(),
-        &crate::cli::startup::StartupDocument::load(&h.cli().config),
-        &args,
-    )
+    crate::cli::RunContext::for_test(&h.cli(), h.printer(), |run| {
+        super::apply::cmd_apply(run, &args)
+    })
     .unwrap();
     h.assert_header("Plan");
     let output = h.output();
@@ -7753,12 +7715,9 @@ fn cmd_apply_dry_run_with_skip() {
         context: "apply".to_string(),
         shell: None,
     };
-    super::apply::cmd_apply(
-        &h.cli(),
-        h.printer(),
-        &crate::cli::startup::StartupDocument::load(&h.cli().config),
-        &args,
-    )
+    crate::cli::RunContext::for_test(&h.cli(), h.printer(), |run| {
+        super::apply::cmd_apply(run, &args)
+    })
     .unwrap();
     h.assert_header("Plan");
     let output = h.output();
@@ -7786,12 +7745,9 @@ fn cmd_apply_dry_run_with_only() {
         context: "apply".to_string(),
         shell: None,
     };
-    super::apply::cmd_apply(
-        &h.cli(),
-        h.printer(),
-        &crate::cli::startup::StartupDocument::load(&h.cli().config),
-        &args,
-    )
+    crate::cli::RunContext::for_test(&h.cli(), h.printer(), |run| {
+        super::apply::cmd_apply(run, &args)
+    })
     .unwrap();
     h.assert_header("Plan");
     let output = h.output();
@@ -7828,12 +7784,9 @@ fn cmd_apply_real_with_empty_profile() {
         context: "apply".to_string(),
         shell: None,
     };
-    super::apply::cmd_apply(
-        &h.cli(),
-        h.printer(),
-        &crate::cli::startup::StartupDocument::load(&h.cli().config),
-        &args,
-    )
+    crate::cli::RunContext::for_test(&h.cli(), h.printer(), |run| {
+        super::apply::cmd_apply(run, &args)
+    })
     .unwrap();
     h.assert_header("Apply");
     h.assert_output_contains("Nothing to do");
@@ -7876,21 +7829,12 @@ fn cmd_status_after_apply() {
         context: "apply".to_string(),
         shell: None,
     };
-    super::apply::cmd_apply(
-        &cli,
-        &printer,
-        &crate::cli::startup::StartupDocument::load(&cli.config),
-        &args,
-    )
-    .unwrap();
+    crate::cli::RunContext::for_test(&cli, &printer, |run| super::apply::cmd_apply(run, &args))
+        .unwrap();
 
-    super::status::cmd_status(
-        &cli,
-        &printer,
-        &crate::cli::startup::StartupDocument::load(&cli.config),
-        None,
-        super::status::StatusRun::default(),
-    )
+    crate::cli::RunContext::for_test(&cli, &printer, |run| {
+        super::status::cmd_status(run, None, super::status::StatusRun::default())
+    })
     .unwrap();
     drop(printer);
     let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -7929,13 +7873,8 @@ fn cmd_log_after_apply() {
         context: "apply".to_string(),
         shell: None,
     };
-    super::apply::cmd_apply(
-        &cli,
-        &printer,
-        &crate::cli::startup::StartupDocument::load(&cli.config),
-        &args,
-    )
-    .unwrap();
+    crate::cli::RunContext::for_test(&cli, &printer, |run| super::apply::cmd_apply(run, &args))
+        .unwrap();
 
     let (log_printer, log_buf) = test_printer_capture();
     super::log::cmd_log(
@@ -7961,13 +7900,9 @@ fn cmd_log_after_apply() {
 #[test]
 fn cmd_verify_empty_profile() {
     let h = CliTestHarness::builder().build();
-    super::verify::cmd_verify(
-        &h.cli(),
-        h.printer(),
-        &crate::cli::startup::StartupDocument::load(&h.cli().config),
-        None,
-        false,
-    )
+    crate::cli::RunContext::for_test(&h.cli(), h.printer(), |run| {
+        super::verify::cmd_verify(run, None, false)
+    })
     .unwrap();
     h.assert_header("Verify");
 }
@@ -7975,13 +7910,9 @@ fn cmd_verify_empty_profile() {
 #[test]
 fn cmd_diff_empty_profile() {
     let h = CliTestHarness::builder().build();
-    super::diff::cmd_diff(
-        &h.cli(),
-        h.printer(),
-        &crate::cli::startup::StartupDocument::load(&h.cli().config),
-        None,
-        false,
-    )
+    crate::cli::RunContext::for_test(&h.cli(), h.printer(), |run| {
+        super::diff::cmd_diff(run, None, false)
+    })
     .unwrap();
     h.assert_header("Diff");
 }
@@ -8028,12 +7959,8 @@ fn cmd_apply_dry_run_with_files() {
         shell: None,
     };
 
-    let result = super::apply::cmd_apply(
-        &cli,
-        &printer,
-        &crate::cli::startup::StartupDocument::load(&cli.config),
-        &args,
-    );
+    let result =
+        crate::cli::RunContext::for_test(&cli, &printer, |run| super::apply::cmd_apply(run, &args));
     assert!(
         result.is_ok(),
         "dry-run apply with files should succeed: {:?}",
@@ -8094,12 +8021,8 @@ fn cmd_apply_creates_file() {
         shell: None,
     };
 
-    let result = super::apply::cmd_apply(
-        &cli,
-        &printer,
-        &crate::cli::startup::StartupDocument::load(&cli.config),
-        &args,
-    );
+    let result =
+        crate::cli::RunContext::for_test(&cli, &printer, |run| super::apply::cmd_apply(run, &args));
     assert!(
         result.is_ok(),
         "apply should succeed and create the target file: {:?}",
@@ -8151,25 +8074,16 @@ fn cmd_apply_idempotent() {
     };
 
     // First apply
-    super::apply::cmd_apply(
-        &cli,
-        &printer,
-        &crate::cli::startup::StartupDocument::load(&cli.config),
-        &args,
-    )
-    .unwrap();
+    crate::cli::RunContext::for_test(&cli, &printer, |run| super::apply::cmd_apply(run, &args))
+        .unwrap();
     assert!(target.exists());
 
     // Clear buffers before second apply
     buf.lock().unwrap().clear();
 
     // Second apply — should succeed with nothing to do
-    let result = super::apply::cmd_apply(
-        &cli,
-        &printer,
-        &crate::cli::startup::StartupDocument::load(&cli.config),
-        &args,
-    );
+    let result =
+        crate::cli::RunContext::for_test(&cli, &printer, |run| super::apply::cmd_apply(run, &args));
     assert!(
         result.is_ok(),
         "second apply (idempotent) should succeed with nothing to do: {:?}",
@@ -8212,13 +8126,9 @@ fn cmd_diff_with_files() {
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
     let (printer, buf) = test_printer_capture();
 
-    let result = super::diff::cmd_diff(
-        &cli,
-        &printer,
-        &crate::cli::startup::StartupDocument::load(&cli.config),
-        None,
-        false,
-    );
+    let result = crate::cli::RunContext::for_test(&cli, &printer, |run| {
+        super::diff::cmd_diff(run, None, false)
+    });
     assert!(result.is_ok(), "diff failed: {:?}", result.err());
 
     drop(printer);
@@ -8233,13 +8143,9 @@ fn cmd_diff_with_files() {
 #[test]
 fn cmd_status_structured_output() {
     let h = CliTestHarness::builder().json().build();
-    super::status::cmd_status(
-        &h.cli(),
-        h.printer(),
-        &crate::cli::startup::StartupDocument::load(&h.cli().config),
-        None,
-        super::status::StatusRun::default(),
-    )
+    crate::cli::RunContext::for_test(&h.cli(), h.printer(), |run| {
+        super::status::cmd_status(run, None, super::status::StatusRun::default())
+    })
     .unwrap();
     let parsed = h.json_output();
     assert!(
@@ -8813,12 +8719,9 @@ fn cmd_apply_with_module_filter() {
         shell: None,
     };
 
-    let result = super::apply::cmd_apply(
-        &h.cli(),
-        h.printer(),
-        &crate::cli::startup::StartupDocument::load(&h.cli().config),
-        &args,
-    );
+    let result = crate::cli::RunContext::for_test(&h.cli(), h.printer(), |run| {
+        super::apply::cmd_apply(run, &args)
+    });
     assert!(result.is_ok(), "apply failed: {:?}", result.err());
 
     let output = h.output();
@@ -8911,12 +8814,8 @@ fn cmd_apply_with_env_vars_for_host(zsh_present: bool, expected_actions: u32) {
         shell: None,
     };
 
-    let result = super::apply::cmd_apply(
-        &cli,
-        &printer,
-        &crate::cli::startup::StartupDocument::load(&cli.config),
-        &args,
-    );
+    let result =
+        crate::cli::RunContext::for_test(&cli, &printer, |run| super::apply::cmd_apply(run, &args));
     assert!(
         result.is_ok(),
         "apply should succeed when profile contains env vars: {:?}",
@@ -9044,24 +8943,17 @@ fn the_fleet_wide_table_lists_one_row_per_deployed_file_with_its_method() {
         context: "apply".to_string(),
         shell: None,
     };
-    let result = super::apply::cmd_apply(
-        &cli,
-        &test_printer(),
-        &crate::cli::startup::StartupDocument::load(&cli.config),
-        &args,
-    );
+    let result = crate::cli::RunContext::for_test(&cli, &test_printer(), |run| {
+        super::apply::cmd_apply(run, &args)
+    });
     assert!(result.is_ok(), "apply should succeed: {:?}", result.err());
 
     // The default table keeps the aggregate — and renders a manifest of one
     // as the file's own path, because a count of one is not an aggregate.
     let (printer, buf) = test_printer_capture();
-    super::status::cmd_status(
-        &cli,
-        &printer,
-        &crate::cli::startup::StartupDocument::load(&cli.config),
-        None,
-        super::status::StatusRun::default(),
-    )
+    crate::cli::RunContext::for_test(&cli, &printer, |run| {
+        super::status::cmd_status(run, None, super::status::StatusRun::default())
+    })
     .unwrap();
     drop(printer);
     let out = cfgd_core::test_helpers::captured_text(&buf);
@@ -9092,13 +8984,9 @@ fn the_fleet_wide_table_lists_one_row_per_deployed_file_with_its_method() {
     wide_cli.output = OutputFormatArg(cfgd_core::output::OutputFormat::Wide);
     let (printer, cap) =
         cfgd_core::output::Printer::for_test_doc_with_format(cfgd_core::output::OutputFormat::Wide);
-    super::status::cmd_status(
-        &wide_cli,
-        &printer,
-        &crate::cli::startup::StartupDocument::load(&wide_cli.config),
-        None,
-        super::status::StatusRun::default(),
-    )
+    crate::cli::RunContext::for_test(&wide_cli, &printer, |run| {
+        super::status::cmd_status(run, None, super::status::StatusRun::default())
+    })
     .unwrap();
     drop(printer);
     let rendered = cfgd_core::output::strip_ansi(&cap.human());
@@ -9146,13 +9034,9 @@ fn the_fleet_wide_table_lists_one_row_per_deployed_file_with_its_method() {
     json_cli.output = OutputFormatArg(cfgd_core::output::OutputFormat::Json);
     let (printer, cap) =
         cfgd_core::output::Printer::for_test_doc_with_format(cfgd_core::output::OutputFormat::Json);
-    super::status::cmd_status(
-        &json_cli,
-        &printer,
-        &crate::cli::startup::StartupDocument::load(&json_cli.config),
-        None,
-        super::status::StatusRun::default(),
-    )
+    crate::cli::RunContext::for_test(&json_cli, &printer, |run| {
+        super::status::cmd_status(run, None, super::status::StatusRun::default())
+    })
     .unwrap();
     drop(printer);
     let json = serde_json::to_string(&cap.json().expect("status emits json")).unwrap();
@@ -9214,12 +9098,9 @@ fn no_status_surface_renders_a_row_for_a_module_that_declares_scripts() {
         context: "apply".to_string(),
         shell: None,
     };
-    let result = super::apply::cmd_apply(
-        &cli,
-        &test_printer(),
-        &crate::cli::startup::StartupDocument::load(&cli.config),
-        &args,
-    );
+    let result = crate::cli::RunContext::for_test(&cli, &test_printer(), |run| {
+        super::apply::cmd_apply(run, &args)
+    });
     assert!(result.is_ok(), "apply should succeed: {:?}", result.err());
 
     for wide in [false, true] {
@@ -9233,13 +9114,9 @@ fn no_status_surface_renders_a_row_for_a_module_that_declares_scripts() {
         } else {
             cfgd_core::output::OutputFormat::Table
         });
-        super::status::cmd_status(
-            &view_cli,
-            &printer,
-            &crate::cli::startup::StartupDocument::load(&view_cli.config),
-            None,
-            super::status::StatusRun::default(),
-        )
+        crate::cli::RunContext::for_test(&view_cli, &printer, |run| {
+            super::status::cmd_status(run, None, super::status::StatusRun::default())
+        })
         .unwrap();
         drop(printer);
         let rendered = cfgd_core::output::strip_ansi(&cap.human());
@@ -9257,13 +9134,9 @@ fn no_status_surface_renders_a_row_for_a_module_that_declares_scripts() {
         } else {
             cfgd_core::output::OutputFormat::Table
         });
-        super::status::cmd_status(
-            &view_cli,
-            &printer,
-            &crate::cli::startup::StartupDocument::load(&view_cli.config),
-            Some("hooked"),
-            super::status::StatusRun::default(),
-        )
+        crate::cli::RunContext::for_test(&view_cli, &printer, |run| {
+            super::status::cmd_status(run, Some("hooked"), super::status::StatusRun::default())
+        })
         .unwrap();
         drop(printer);
         let module_view = cfgd_core::output::strip_ansi(&cap.human());
@@ -9279,13 +9152,9 @@ fn no_status_surface_renders_a_row_for_a_module_that_declares_scripts() {
     json_cli.output = OutputFormatArg(cfgd_core::output::OutputFormat::Json);
     let (printer, cap) =
         cfgd_core::output::Printer::for_test_doc_with_format(cfgd_core::output::OutputFormat::Json);
-    super::status::cmd_status(
-        &json_cli,
-        &printer,
-        &crate::cli::startup::StartupDocument::load(&json_cli.config),
-        None,
-        super::status::StatusRun::default(),
-    )
+    crate::cli::RunContext::for_test(&json_cli, &printer, |run| {
+        super::status::cmd_status(run, None, super::status::StatusRun::default())
+    })
     .unwrap();
     drop(printer);
     let json = serde_json::to_string(&cap.json().expect("status emits json")).unwrap();
@@ -9355,12 +9224,8 @@ fn a_strategy_less_file_names_one_method_on_the_tree_and_the_table() {
         context: "apply".to_string(),
         shell: None,
     };
-    let result = super::apply::cmd_apply(
-        &cli,
-        &printer,
-        &crate::cli::startup::StartupDocument::load(&cli.config),
-        &args,
-    );
+    let result =
+        crate::cli::RunContext::for_test(&cli, &printer, |run| super::apply::cmd_apply(run, &args));
     assert!(result.is_ok(), "apply should succeed: {:?}", result.err());
     drop(printer);
     let out = cfgd_core::test_helpers::captured_text(&buf);
@@ -9377,13 +9242,9 @@ fn a_strategy_less_file_names_one_method_on_the_tree_and_the_table() {
     wide_cli.output = OutputFormatArg(cfgd_core::output::OutputFormat::Wide);
     let (printer, cap) =
         cfgd_core::output::Printer::for_test_doc_with_format(cfgd_core::output::OutputFormat::Wide);
-    super::status::cmd_status(
-        &wide_cli,
-        &printer,
-        &crate::cli::startup::StartupDocument::load(&wide_cli.config),
-        None,
-        super::status::StatusRun::default(),
-    )
+    crate::cli::RunContext::for_test(&wide_cli, &printer, |run| {
+        super::status::cmd_status(run, None, super::status::StatusRun::default())
+    })
     .unwrap();
     drop(printer);
     let wide = cfgd_core::output::strip_ansi(&cap.human());
@@ -9439,12 +9300,9 @@ fn a_dropped_file_declaration_cannot_resurrect_the_one_file_aggregate() {
         context: "apply".to_string(),
         shell: None,
     };
-    let result = super::apply::cmd_apply(
-        &cli,
-        &test_printer(),
-        &crate::cli::startup::StartupDocument::load(&cli.config),
-        &args,
-    );
+    let result = crate::cli::RunContext::for_test(&cli, &test_printer(), |run| {
+        super::apply::cmd_apply(run, &args)
+    });
     assert!(result.is_ok(), "first apply: {:?}", result.err());
 
     // Drop `~/.pb` from the declaration and change the survivor's source so
@@ -9459,22 +9317,15 @@ fn a_dropped_file_declaration_cannot_resurrect_the_one_file_aggregate() {
     )
     .unwrap();
     std::fs::write(files.join("pa"), "a changed\n").unwrap();
-    let result = super::apply::cmd_apply(
-        &cli,
-        &test_printer(),
-        &crate::cli::startup::StartupDocument::load(&cli.config),
-        &args,
-    );
+    let result = crate::cli::RunContext::for_test(&cli, &test_printer(), |run| {
+        super::apply::cmd_apply(run, &args)
+    });
     assert!(result.is_ok(), "second apply: {:?}", result.err());
 
     let (printer, buf) = test_printer_capture();
-    super::status::cmd_status(
-        &cli,
-        &printer,
-        &crate::cli::startup::StartupDocument::load(&cli.config),
-        None,
-        super::status::StatusRun::default(),
-    )
+    crate::cli::RunContext::for_test(&cli, &printer, |run| {
+        super::status::cmd_status(run, None, super::status::StatusRun::default())
+    })
     .unwrap();
     drop(printer);
     let out = cfgd_core::test_helpers::captured_text(&buf);
@@ -9495,13 +9346,9 @@ fn a_dropped_file_declaration_cannot_resurrect_the_one_file_aggregate() {
     wide_cli.output = OutputFormatArg(cfgd_core::output::OutputFormat::Wide);
     let (printer, cap) =
         cfgd_core::output::Printer::for_test_doc_with_format(cfgd_core::output::OutputFormat::Wide);
-    super::status::cmd_status(
-        &wide_cli,
-        &printer,
-        &crate::cli::startup::StartupDocument::load(&wide_cli.config),
-        None,
-        super::status::StatusRun::default(),
-    )
+    crate::cli::RunContext::for_test(&wide_cli, &printer, |run| {
+        super::status::cmd_status(run, None, super::status::StatusRun::default())
+    })
     .unwrap();
     drop(printer);
     let wide = cfgd_core::output::strip_ansi(&cap.human());
@@ -9534,13 +9381,11 @@ fn cmd_status_with_modules() {
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
     assert!(
-        super::status::cmd_status(
-            &cli,
-            &printer,
-            &crate::cli::startup::StartupDocument::load(&cli.config),
+        crate::cli::RunContext::for_test(&cli, &printer, |run| super::status::cmd_status(
+            run,
             None,
             super::status::StatusRun::default()
-        )
+        ))
         .is_ok(),
         "status should succeed when profile references modules"
     );
@@ -9585,13 +9430,8 @@ fn cmd_status_with_drift_events() {
         context: "apply".to_string(),
         shell: None,
     };
-    super::apply::cmd_apply(
-        &cli,
-        &printer,
-        &crate::cli::startup::StartupDocument::load(&cli.config),
-        &args,
-    )
-    .unwrap();
+    crate::cli::RunContext::for_test(&cli, &printer, |run| super::apply::cmd_apply(run, &args))
+        .unwrap();
 
     // Record a drift event
     let state = super::open_state_store(Some(state_dir.path()), cfgd_core::Scope::User).unwrap();
@@ -9609,13 +9449,9 @@ fn cmd_status_with_drift_events() {
 
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-    super::status::cmd_status(
-        &cli,
-        &printer,
-        &crate::cli::startup::StartupDocument::load(&cli.config),
-        None,
-        super::status::StatusRun::default(),
-    )
+    crate::cli::RunContext::for_test(&cli, &printer, |run| {
+        super::status::cmd_status(run, None, super::status::StatusRun::default())
+    })
     .unwrap();
     drop(printer);
 
@@ -9682,16 +9518,10 @@ fn cmd_decide_accept_all_empty() {
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
-    let result = super::decide::cmd_decide(
+    let result = crate::cli::RunContext::for_test(
         &test_cli_with_state(_config_dir.path(), Some(state_dir.path().to_path_buf())),
         &printer,
-        &crate::cli::startup::StartupDocument::load(
-            &test_cli_with_state(_config_dir.path(), Some(state_dir.path().to_path_buf())).config,
-        ),
-        Some(super::DecideAction::Accept),
-        None,
-        None,
-        true,
+        |run| super::decide::cmd_decide(run, Some(super::DecideAction::Accept), None, None, true),
     );
     assert!(result.is_ok(), "decide failed: {:?}", result.err());
     drop(printer);
@@ -9713,16 +9543,10 @@ fn cmd_decide_reject_all_empty() {
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
-    let result = super::decide::cmd_decide(
+    let result = crate::cli::RunContext::for_test(
         &test_cli_with_state(_config_dir.path(), Some(state_dir.path().to_path_buf())),
         &printer,
-        &crate::cli::startup::StartupDocument::load(
-            &test_cli_with_state(_config_dir.path(), Some(state_dir.path().to_path_buf())).config,
-        ),
-        Some(super::DecideAction::Reject),
-        None,
-        None,
-        true,
+        |run| super::decide::cmd_decide(run, Some(super::DecideAction::Reject), None, None, true),
     );
     assert!(result.is_ok(), "decide failed: {:?}", result.err());
     drop(printer);
@@ -9748,16 +9572,18 @@ fn cmd_decide_accept_specific_resource() {
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
-    let result = super::decide::cmd_decide(
+    let result = crate::cli::RunContext::for_test(
         &test_cli_with_state(_config_dir.path(), Some(state_dir.path().to_path_buf())),
         &printer,
-        &crate::cli::startup::StartupDocument::load(
-            &test_cli_with_state(_config_dir.path(), Some(state_dir.path().to_path_buf())).config,
-        ),
-        Some(super::DecideAction::Accept),
-        Some("packages.brew.curl"),
-        None,
-        false,
+        |run| {
+            super::decide::cmd_decide(
+                run,
+                Some(super::DecideAction::Accept),
+                Some("packages.brew.curl"),
+                None,
+                false,
+            )
+        },
     );
     assert!(result.is_ok(), "decide failed: {:?}", result.err());
     drop(printer);
@@ -9782,16 +9608,18 @@ fn cmd_decide_reject_by_source() {
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
-    let result = super::decide::cmd_decide(
+    let result = crate::cli::RunContext::for_test(
         &test_cli_with_state(_config_dir.path(), Some(state_dir.path().to_path_buf())),
         &printer,
-        &crate::cli::startup::StartupDocument::load(
-            &test_cli_with_state(_config_dir.path(), Some(state_dir.path().to_path_buf())).config,
-        ),
-        Some(super::DecideAction::Reject),
-        None,
-        Some("acme"),
-        false,
+        |run| {
+            super::decide::cmd_decide(
+                run,
+                Some(super::DecideAction::Reject),
+                None,
+                Some("acme"),
+                false,
+            )
+        },
     );
     assert!(
         result.is_ok(),
@@ -9918,12 +9746,7 @@ fn cmd_sync_no_sources() {
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
     let (printer, buf) = test_printer_capture();
 
-    super::sync::cmd_sync(
-        &cli,
-        &printer,
-        &crate::cli::startup::StartupDocument::load(&cli.config),
-    )
-    .unwrap();
+    crate::cli::RunContext::for_test(&cli, &printer, super::sync::cmd_sync).unwrap();
 
     let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
@@ -9939,7 +9762,7 @@ fn cmd_pull_no_sources() {
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
     let (printer, buf) = test_printer_capture();
 
-    super::pull::cmd_pull(&cli, &printer).unwrap();
+    crate::cli::RunContext::for_test(&cli, &printer, super::pull::cmd_pull).unwrap();
     drop(printer);
 
     let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -9980,12 +9803,9 @@ fn cmd_apply_dry_run_each_phase() {
             context: "apply".to_string(),
             shell: None,
         };
-        let result = super::apply::cmd_apply(
-            &cli,
-            &printer,
-            &crate::cli::startup::StartupDocument::load(&cli.config),
-            &args,
-        );
+        let result = crate::cli::RunContext::for_test(&cli, &printer, |run| {
+            super::apply::cmd_apply(run, &args)
+        });
         assert!(
             result.is_ok(),
             "dry-run failed for phase: {}",
@@ -10030,23 +9850,14 @@ fn cmd_verify_after_apply_with_env() {
         context: "apply".to_string(),
         shell: None,
     };
-    super::apply::cmd_apply(
-        &cli,
-        &printer,
-        &crate::cli::startup::StartupDocument::load(&cli.config),
-        &args,
-    )
-    .unwrap();
+    crate::cli::RunContext::for_test(&cli, &printer, |run| super::apply::cmd_apply(run, &args))
+        .unwrap();
 
     let (verify_printer, verify_buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-    super::verify::cmd_verify(
-        &cli,
-        &verify_printer,
-        &crate::cli::startup::StartupDocument::load(&cli.config),
-        None,
-        false,
-    )
+    crate::cli::RunContext::for_test(&cli, &verify_printer, |run| {
+        super::verify::cmd_verify(run, None, false)
+    })
     .unwrap();
     verify_printer.flush();
 
@@ -10167,13 +9978,8 @@ fn cmd_plan_empty_profile() {
         context: "apply".to_string(),
     };
 
-    super::plan::cmd_plan(
-        &cli,
-        &printer,
-        &crate::cli::startup::StartupDocument::load(&cli.config),
-        &args,
-    )
-    .unwrap();
+    crate::cli::RunContext::for_test(&cli, &printer, |run| super::plan::cmd_plan(run, &args))
+        .unwrap();
     printer.flush();
 
     let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -10200,13 +10006,8 @@ fn cmd_plan_reconcile_context() {
         context: "reconcile".to_string(),
     };
 
-    super::plan::cmd_plan(
-        &cli,
-        &printer,
-        &crate::cli::startup::StartupDocument::load(&cli.config),
-        &args,
-    )
-    .unwrap();
+    crate::cli::RunContext::for_test(&cli, &printer, |run| super::plan::cmd_plan(run, &args))
+        .unwrap();
     printer.flush();
 
     let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -10233,12 +10034,8 @@ fn cmd_plan_invalid_context() {
         context: "bogus".to_string(),
     };
 
-    let result = super::plan::cmd_plan(
-        &cli,
-        &printer,
-        &crate::cli::startup::StartupDocument::load(&cli.config),
-        &args,
-    );
+    let result =
+        crate::cli::RunContext::for_test(&cli, &printer, |run| super::plan::cmd_plan(run, &args));
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("Unknown context"));
 }
@@ -10260,13 +10057,8 @@ fn cmd_plan_with_phase_filter() {
         context: "apply".to_string(),
     };
 
-    super::plan::cmd_plan(
-        &cli,
-        &printer,
-        &crate::cli::startup::StartupDocument::load(&cli.config),
-        &args,
-    )
-    .unwrap();
+    crate::cli::RunContext::for_test(&cli, &printer, |run| super::plan::cmd_plan(run, &args))
+        .unwrap();
     printer.flush();
     let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
@@ -10296,13 +10088,8 @@ fn cmd_plan_with_skip_filter() {
         context: "apply".to_string(),
     };
 
-    super::plan::cmd_plan(
-        &cli,
-        &printer,
-        &crate::cli::startup::StartupDocument::load(&cli.config),
-        &args,
-    )
-    .unwrap();
+    crate::cli::RunContext::for_test(&cli, &printer, |run| super::plan::cmd_plan(run, &args))
+        .unwrap();
     printer.flush();
     let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
@@ -10328,13 +10115,8 @@ fn cmd_plan_with_only_filter() {
         context: "apply".to_string(),
     };
 
-    super::plan::cmd_plan(
-        &cli,
-        &printer,
-        &crate::cli::startup::StartupDocument::load(&cli.config),
-        &args,
-    )
-    .unwrap();
+    crate::cli::RunContext::for_test(&cli, &printer, |run| super::plan::cmd_plan(run, &args))
+        .unwrap();
     printer.flush();
     let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
@@ -10360,13 +10142,8 @@ fn cmd_plan_with_skip_scripts() {
         context: "apply".to_string(),
     };
 
-    super::plan::cmd_plan(
-        &cli,
-        &printer,
-        &crate::cli::startup::StartupDocument::load(&cli.config),
-        &args,
-    )
-    .unwrap();
+    crate::cli::RunContext::for_test(&cli, &printer, |run| super::plan::cmd_plan(run, &args))
+        .unwrap();
     printer.flush();
     let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
@@ -10398,13 +10175,8 @@ fn cmd_plan_with_module_filter() {
         context: "apply".to_string(),
     };
 
-    super::plan::cmd_plan(
-        &cli,
-        &printer,
-        &crate::cli::startup::StartupDocument::load(&cli.config),
-        &args,
-    )
-    .unwrap();
+    crate::cli::RunContext::for_test(&cli, &printer, |run| super::plan::cmd_plan(run, &args))
+        .unwrap();
     printer.flush();
     let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
@@ -10494,13 +10266,8 @@ fn cmd_rollback_after_file_apply() {
         context: "apply".to_string(),
         shell: None,
     };
-    super::apply::cmd_apply(
-        &cli,
-        &printer,
-        &crate::cli::startup::StartupDocument::load(&cli.config),
-        &args,
-    )
-    .unwrap();
+    crate::cli::RunContext::for_test(&cli, &printer, |run| super::apply::cmd_apply(run, &args))
+        .unwrap();
     assert!(target.exists());
 
     // Get the apply ID from history
@@ -10582,13 +10349,8 @@ fn apply_one_file_and_record(
         context: "apply".to_string(),
         shell: None,
     };
-    super::apply::cmd_apply(
-        &cli,
-        &printer,
-        &crate::cli::startup::StartupDocument::load(&cli.config),
-        &args,
-    )
-    .unwrap();
+    crate::cli::RunContext::for_test(&cli, &printer, |run| super::apply::cmd_apply(run, &args))
+        .unwrap();
 
     let state = super::open_state_store(Some(state_dir.path()), cfgd_core::Scope::User).unwrap();
     let history = state.history(1).unwrap();
@@ -10669,11 +10431,9 @@ fn cmd_compliance_snapshot_basic() {
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
     let (printer, cap) = cfgd_core::output::Printer::for_test_doc();
 
-    let result = super::compliance::cmd_compliance_snapshot(
-        &cli,
-        &printer,
-        &crate::cli::startup::StartupDocument::load(&cli.config),
-    );
+    let result = crate::cli::RunContext::for_test(&cli, &printer, |run| {
+        super::compliance::cmd_compliance_snapshot(run)
+    });
     assert!(
         result.is_ok(),
         "compliance snapshot should succeed: {:?}",
@@ -10703,11 +10463,9 @@ fn cmd_compliance_export_basic() {
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
     let (printer, cap) = cfgd_core::output::Printer::for_test_doc();
 
-    let result = super::compliance::cmd_compliance_export(
-        &cli,
-        &printer,
-        &crate::cli::startup::StartupDocument::load(&cli.config),
-    );
+    let result = crate::cli::RunContext::for_test(&cli, &printer, |run| {
+        super::compliance::cmd_compliance_export(run)
+    });
     assert!(
         result.is_ok(),
         "compliance export failed: {:?}",
@@ -10814,17 +10572,13 @@ fn cmd_compliance_diff_after_two_snapshots() {
     let printer = test_printer();
 
     // Create two snapshots
-    super::compliance::cmd_compliance_snapshot(
-        &cli,
-        &printer,
-        &crate::cli::startup::StartupDocument::load(&cli.config),
-    )
+    crate::cli::RunContext::for_test(&cli, &printer, |run| {
+        super::compliance::cmd_compliance_snapshot(run)
+    })
     .unwrap();
-    super::compliance::cmd_compliance_snapshot(
-        &cli,
-        &printer,
-        &crate::cli::startup::StartupDocument::load(&cli.config),
-    )
+    crate::cli::RunContext::for_test(&cli, &printer, |run| {
+        super::compliance::cmd_compliance_snapshot(run)
+    })
     .unwrap();
 
     // Get snapshot IDs from history — must have exactly 2
@@ -10853,11 +10607,9 @@ fn cmd_compliance_history_after_snapshot() {
     // Take a snapshot first (separate printer so its output doesn't pollute the
     // history-capture assertions).
     let snap_printer = test_printer();
-    super::compliance::cmd_compliance_snapshot(
-        &cli,
-        &snap_printer,
-        &crate::cli::startup::StartupDocument::load(&cli.config),
-    )
+    crate::cli::RunContext::for_test(&cli, &snap_printer, |run| {
+        super::compliance::cmd_compliance_snapshot(run)
+    })
     .unwrap();
     drop(snap_printer);
 
@@ -10986,12 +10738,8 @@ fn cmd_apply_dry_run_with_skip_scripts() {
         shell: None,
     };
 
-    let result = super::apply::cmd_apply(
-        &cli,
-        &printer,
-        &crate::cli::startup::StartupDocument::load(&cli.config),
-        &args,
-    );
+    let result =
+        crate::cli::RunContext::for_test(&cli, &printer, |run| super::apply::cmd_apply(run, &args));
     assert!(
         result.is_ok(),
         "dry-run apply should succeed with --skip-scripts flag: {:?}",
@@ -11198,13 +10946,8 @@ fn cmd_plan_structured_json() {
         context: "apply".to_string(),
     };
 
-    super::plan::cmd_plan(
-        &cli,
-        &printer,
-        &crate::cli::startup::StartupDocument::load(&cli.config),
-        &args,
-    )
-    .unwrap();
+    crate::cli::RunContext::for_test(&cli, &printer, |run| super::plan::cmd_plan(run, &args))
+        .unwrap();
     printer.flush();
 
     let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -11240,13 +10983,9 @@ fn cmd_verify_structured_json() {
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
 
-    super::verify::cmd_verify(
-        &cli,
-        &printer,
-        &crate::cli::startup::StartupDocument::load(&cli.config),
-        None,
-        false,
-    )
+    crate::cli::RunContext::for_test(&cli, &printer, |run| {
+        super::verify::cmd_verify(run, None, false)
+    })
     .unwrap();
     printer.flush();
 
@@ -11285,13 +11024,8 @@ fn cmd_doctor_structured_json() {
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
 
-    super::doctor::run_doctor(
-        &cli,
-        &printer,
-        &crate::cli::startup::StartupDocument::load(&cli.config),
-        false,
-    )
-    .unwrap();
+    crate::cli::RunContext::for_test(&cli, &printer, |run| super::doctor::run_doctor(run, false))
+        .unwrap();
     printer.flush();
 
     let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -11330,11 +11064,9 @@ fn cmd_compliance_snapshot_structured_json() {
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
 
-    super::compliance::cmd_compliance_snapshot(
-        &cli,
-        &printer,
-        &crate::cli::startup::StartupDocument::load(&cli.config),
-    )
+    crate::cli::RunContext::for_test(&cli, &printer, |run| {
+        super::compliance::cmd_compliance_snapshot(run)
+    })
     .unwrap();
 
     drop(printer);
@@ -11402,13 +11134,9 @@ fn cmd_diff_with_module_filter() {
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
     let (printer, buf) = test_printer_capture();
 
-    let result = super::diff::cmd_diff(
-        &cli,
-        &printer,
-        &crate::cli::startup::StartupDocument::load(&cli.config),
-        Some("diff-mod"),
-        false,
-    );
+    let result = crate::cli::RunContext::for_test(&cli, &printer, |run| {
+        super::diff::cmd_diff(run, Some("diff-mod"), false)
+    });
     assert!(
         result.is_ok(),
         "diff should succeed when filtering to a specific module: {:?}",
@@ -11434,13 +11162,9 @@ fn cmd_verify_module_not_found() {
     // Nonexistent module should succeed gracefully (empty results, exit 0)
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-    let result = super::verify::cmd_verify(
-        &cli,
-        &printer,
-        &crate::cli::startup::StartupDocument::load(&cli.config),
-        Some("nonexistent"),
-        false,
-    );
+    let result = crate::cli::RunContext::for_test(&cli, &printer, |run| {
+        super::verify::cmd_verify(run, Some("nonexistent"), false)
+    });
     assert!(
         result.is_ok(),
         "verify should handle nonexistent module gracefully: {:?}",
@@ -11488,12 +11212,8 @@ fn cmd_plan_module_with_packages() {
         context: "apply".to_string(),
     };
 
-    let result = super::plan::cmd_plan(
-        &cli,
-        &printer,
-        &crate::cli::startup::StartupDocument::load(&cli.config),
-        &args,
-    );
+    let result =
+        crate::cli::RunContext::for_test(&cli, &printer, |run| super::plan::cmd_plan(run, &args));
     assert!(
         result.is_ok(),
         "plan should succeed when module contains packages: {:?}",
@@ -15138,16 +14858,10 @@ fn cmd_decide_no_args_shows_pending() {
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
-    super::decide::cmd_decide(
+    crate::cli::RunContext::for_test(
         &test_cli_with_state(state_dir.path(), Some(state_dir.path().to_path_buf())),
         &printer,
-        &crate::cli::startup::StartupDocument::load(
-            &test_cli_with_state(state_dir.path(), Some(state_dir.path().to_path_buf())).config,
-        ),
-        Some(super::DecideAction::Accept),
-        None,
-        None,
-        false,
+        |run| super::decide::cmd_decide(run, Some(super::DecideAction::Accept), None, None, false),
     )
     .unwrap();
     drop(printer);
@@ -15170,16 +14884,10 @@ fn decide_bare_parses_and_lists() {
     let state_dir = tempfile::tempdir().unwrap();
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-    super::decide::cmd_decide(
+    crate::cli::RunContext::for_test(
         &test_cli_with_state(state_dir.path(), Some(state_dir.path().to_path_buf())),
         &printer,
-        &crate::cli::startup::StartupDocument::load(
-            &test_cli_with_state(state_dir.path(), Some(state_dir.path().to_path_buf())).config,
-        ),
-        None,
-        None,
-        None,
-        false,
+        |run| super::decide::cmd_decide(run, None, None, None, false),
     )
     .unwrap();
     drop(printer);
@@ -15203,16 +14911,10 @@ fn decide_target_without_action_is_refused() {
         (Some("packages.brew.k9s"), None, false),
         (None, Some("team"), false),
     ] {
-        let err = super::decide::cmd_decide(
+        let err = crate::cli::RunContext::for_test(
             &test_cli_with_state(state_dir.path(), Some(state_dir.path().to_path_buf())),
             &printer,
-            &crate::cli::startup::StartupDocument::load(
-                &test_cli_with_state(state_dir.path(), Some(state_dir.path().to_path_buf())).config,
-            ),
-            None,
-            resource,
-            source,
-            all,
+            |run| super::decide::cmd_decide(run, None, resource, source, all),
         )
         .unwrap_err();
         assert!(
@@ -15240,16 +14942,18 @@ fn cmd_decide_with_pending_decision() {
         )
         .unwrap();
 
-    let result = super::decide::cmd_decide(
+    let result = crate::cli::RunContext::for_test(
         &test_cli_with_state(state_dir.path(), Some(state_dir.path().to_path_buf())),
         &printer,
-        &crate::cli::startup::StartupDocument::load(
-            &test_cli_with_state(state_dir.path(), Some(state_dir.path().to_path_buf())).config,
-        ),
-        Some(super::DecideAction::Accept),
-        Some("packages.brew.curl"),
-        None,
-        false,
+        |run| {
+            super::decide::cmd_decide(
+                run,
+                Some(super::DecideAction::Accept),
+                Some("packages.brew.curl"),
+                None,
+                false,
+            )
+        },
     );
     assert!(
         result.is_ok(),
@@ -15299,16 +15003,10 @@ fn cmd_decide_accept_all_with_pending() {
         )
         .unwrap();
 
-    let result = super::decide::cmd_decide(
+    let result = crate::cli::RunContext::for_test(
         &test_cli_with_state(state_dir.path(), Some(state_dir.path().to_path_buf())),
         &printer,
-        &crate::cli::startup::StartupDocument::load(
-            &test_cli_with_state(state_dir.path(), Some(state_dir.path().to_path_buf())).config,
-        ),
-        Some(super::DecideAction::Accept),
-        None,
-        None,
-        true,
+        |run| super::decide::cmd_decide(run, Some(super::DecideAction::Accept), None, None, true),
     );
     assert!(
         result.is_ok(),
@@ -15355,16 +15053,18 @@ fn cmd_decide_reject_by_source_with_pending() {
         )
         .unwrap();
 
-    let result = super::decide::cmd_decide(
+    let result = crate::cli::RunContext::for_test(
         &test_cli_with_state(state_dir.path(), Some(state_dir.path().to_path_buf())),
         &printer,
-        &crate::cli::startup::StartupDocument::load(
-            &test_cli_with_state(state_dir.path(), Some(state_dir.path().to_path_buf())).config,
-        ),
-        Some(super::DecideAction::Reject),
-        None,
-        Some("team"),
-        false,
+        |run| {
+            super::decide::cmd_decide(
+                run,
+                Some(super::DecideAction::Reject),
+                None,
+                Some("team"),
+                false,
+            )
+        },
     );
     assert!(
         result.is_ok(),
@@ -15506,12 +15206,8 @@ fn cmd_apply_module_only_no_profile() {
         shell: None,
     };
 
-    let result = super::apply::cmd_apply(
-        &cli,
-        &printer,
-        &crate::cli::startup::StartupDocument::load(&cli.config),
-        &args,
-    );
+    let result =
+        crate::cli::RunContext::for_test(&cli, &printer, |run| super::apply::cmd_apply(run, &args));
     assert!(
         result.is_ok(),
         "dry-run apply should succeed with --module flag and no profile configured: {:?}",
@@ -15558,12 +15254,8 @@ fn cmd_plan_module_only_no_profile() {
         context: "apply".to_string(),
     };
 
-    let result = super::plan::cmd_plan(
-        &cli,
-        &printer,
-        &crate::cli::startup::StartupDocument::load(&cli.config),
-        &args,
-    );
+    let result =
+        crate::cli::RunContext::for_test(&cli, &printer, |run| super::plan::cmd_plan(run, &args));
     assert!(
         result.is_ok(),
         "plan should succeed with --module flag and no profile configured: {:?}",
@@ -15844,12 +15536,8 @@ fn cmd_apply_with_aliases() {
         shell: None,
     };
 
-    let result = super::apply::cmd_apply(
-        &cli,
-        &printer,
-        &crate::cli::startup::StartupDocument::load(&cli.config),
-        &args,
-    );
+    let result =
+        crate::cli::RunContext::for_test(&cli, &printer, |run| super::apply::cmd_apply(run, &args));
     assert!(
         result.is_ok(),
         "dry-run apply should succeed when profile contains shell aliases: {:?}",
@@ -15889,13 +15577,9 @@ fn cmd_status_module_structured_output() {
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
 
-    super::status::cmd_status(
-        &cli,
-        &printer,
-        &crate::cli::startup::StartupDocument::load(&cli.config),
-        Some("json-mod"),
-        super::status::StatusRun::default(),
-    )
+    crate::cli::RunContext::for_test(&cli, &printer, |run| {
+        super::status::cmd_status(run, Some("json-mod"), super::status::StatusRun::default())
+    })
     .unwrap();
     drop(printer);
 
@@ -15922,13 +15606,9 @@ fn cmd_verify_structured_output() {
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
 
-    super::verify::cmd_verify(
-        &cli,
-        &printer,
-        &crate::cli::startup::StartupDocument::load(&cli.config),
-        None,
-        false,
-    )
+    crate::cli::RunContext::for_test(&cli, &printer, |run| {
+        super::verify::cmd_verify(run, None, false)
+    })
     .unwrap();
     printer.flush();
 
@@ -15977,13 +15657,8 @@ fn cmd_plan_structured_output() {
         context: "apply".to_string(),
     };
 
-    super::plan::cmd_plan(
-        &cli,
-        &printer,
-        &crate::cli::startup::StartupDocument::load(&cli.config),
-        &args,
-    )
-    .unwrap();
+    crate::cli::RunContext::for_test(&cli, &printer, |run| super::plan::cmd_plan(run, &args))
+        .unwrap();
     printer.flush();
 
     let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -16546,12 +16221,8 @@ fn cmd_apply_dry_run_with_skip_and_only() {
         shell: None,
     };
 
-    let result = super::apply::cmd_apply(
-        &cli,
-        &printer,
-        &crate::cli::startup::StartupDocument::load(&cli.config),
-        &args,
-    );
+    let result =
+        crate::cli::RunContext::for_test(&cli, &printer, |run| super::apply::cmd_apply(run, &args));
     assert!(
         result.is_ok(),
         "dry-run apply should succeed with both --skip and --only filters: {:?}",
@@ -16605,13 +16276,8 @@ fn cmd_plan_module_structured_output() {
         context: "apply".to_string(),
     };
 
-    super::plan::cmd_plan(
-        &cli,
-        &printer,
-        &crate::cli::startup::StartupDocument::load(&cli.config),
-        &args,
-    )
-    .unwrap();
+    crate::cli::RunContext::for_test(&cli, &printer, |run| super::plan::cmd_plan(run, &args))
+        .unwrap();
     printer.flush();
 
     let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -16881,13 +16547,8 @@ fn cmd_doctor_without_config_succeeds() {
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
-    super::doctor::run_doctor(
-        &cli,
-        &printer,
-        &crate::cli::startup::StartupDocument::load(&cli.config),
-        false,
-    )
-    .unwrap();
+    crate::cli::RunContext::for_test(&cli, &printer, |run| super::doctor::run_doctor(run, false))
+        .unwrap();
     printer.flush();
 
     let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -16901,13 +16562,8 @@ fn cmd_doctor_with_rich_config() {
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
-    super::doctor::run_doctor(
-        &cli,
-        &printer,
-        &crate::cli::startup::StartupDocument::load(&cli.config),
-        false,
-    )
-    .unwrap();
+    crate::cli::RunContext::for_test(&cli, &printer, |run| super::doctor::run_doctor(run, false))
+        .unwrap();
     printer.flush();
 
     let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -16963,12 +16619,11 @@ fn load_config_and_profile_module_scoped_isolated_rejects_a_nonexistent_explicit
         ..test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()))
     };
 
-    let result = super::load_config_and_profile_module_scoped(
-        &cli,
-        &cfgd_core::test_helpers::test_printer(),
-        &["some-module".to_string()],
-        false,
-    );
+    let result =
+        crate::cli::RunContext::for_test(&cli, &cfgd_core::test_helpers::test_printer(), |run| {
+            super::load_config_and_profile_module_scoped(run, &["some-module".to_string()], false)
+                .map(|_| ())
+        });
     let err = result.unwrap_err();
     let msg = err.to_string();
     assert!(
@@ -16987,13 +16642,12 @@ fn load_config_and_profile_module_scoped_isolated_with_no_explicit_profile_stays
     let (config_dir, state_dir) = setup_test_env();
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
 
-    let (_, resolved, profile_label, _) = super::load_config_and_profile_module_scoped(
-        &cli,
-        &cfgd_core::test_helpers::test_printer(),
-        &["some-module".to_string()],
-        false,
-    )
-    .unwrap();
+    let (resolved, profile_label) =
+        crate::cli::RunContext::for_test(&cli, &cfgd_core::test_helpers::test_printer(), |run| {
+            super::load_config_and_profile_module_scoped(run, &["some-module".to_string()], false)
+                .map(|(_, resolved, label, _)| (resolved.into_owned(), label))
+        })
+        .unwrap();
     assert!(profile_label.is_none(), "an isolated run carries no label");
     assert!(!resolved.profile_name().is_empty());
 }
@@ -17029,12 +16683,9 @@ fn cmd_plan_invalid_context_fails() {
         skip_scripts: false,
         context: "invalid".to_string(),
     };
-    let result = super::plan::cmd_plan(
-        &h.cli(),
-        h.printer(),
-        &crate::cli::startup::StartupDocument::load(&h.cli().config),
-        &args,
-    );
+    let result = crate::cli::RunContext::for_test(&h.cli(), h.printer(), |run| {
+        super::plan::cmd_plan(run, &args)
+    });
     assert_error_contains(&result, "Unknown context");
 }
 
@@ -17051,12 +16702,9 @@ fn cmd_plan_with_skip_filters_actions() {
         skip_scripts: false,
         context: "apply".to_string(),
     };
-    super::plan::cmd_plan(
-        &h.cli(),
-        h.printer(),
-        &crate::cli::startup::StartupDocument::load(&h.cli().config),
-        &args,
-    )
+    crate::cli::RunContext::for_test(&h.cli(), h.printer(), |run| {
+        super::plan::cmd_plan(run, &args)
+    })
     .unwrap();
     let output = h.output();
     assert!(
@@ -17070,13 +16718,9 @@ fn cmd_plan_with_skip_filters_actions() {
 #[test]
 fn cmd_diff_module_not_found_succeeds() {
     let h = CliTestHarness::builder().build();
-    super::diff::cmd_diff(
-        &h.cli(),
-        h.printer(),
-        &crate::cli::startup::StartupDocument::load(&h.cli().config),
-        Some("nonexistent"),
-        false,
-    )
+    crate::cli::RunContext::for_test(&h.cli(), h.printer(), |run| {
+        super::diff::cmd_diff(run, Some("nonexistent"), false)
+    })
     .unwrap();
     let output = h.output();
     assert!(
@@ -17090,13 +16734,9 @@ fn cmd_diff_with_module() {
     let h = CliTestHarness::builder()
             .module("diff-mod", "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: diff-mod\nspec:\n  packages: []\n")
             .build();
-    super::diff::cmd_diff(
-        &h.cli(),
-        h.printer(),
-        &crate::cli::startup::StartupDocument::load(&h.cli().config),
-        Some("diff-mod"),
-        false,
-    )
+    crate::cli::RunContext::for_test(&h.cli(), h.printer(), |run| {
+        super::diff::cmd_diff(run, Some("diff-mod"), false)
+    })
     .unwrap();
     let output = h.output();
     assert!(
@@ -17120,13 +16760,9 @@ fn cmd_diff_module_patch_shows_the_merge_the_target_is_missing() {
         .module("diff-patch-mod", &module_yaml)
         .build();
 
-    super::diff::cmd_diff(
-        &h.cli(),
-        h.printer(),
-        &crate::cli::startup::StartupDocument::load(&h.cli().config),
-        Some("diff-patch-mod"),
-        false,
-    )
+    crate::cli::RunContext::for_test(&h.cli(), h.printer(), |run| {
+        super::diff::cmd_diff(run, Some("diff-patch-mod"), false)
+    })
     .unwrap();
     let output = h.output();
     assert!(
@@ -17160,13 +16796,9 @@ fn cmd_diff_full_profile_patch_reports_no_drift_when_converged() {
         .module("diff-patch-mod", &module_yaml)
         .build();
 
-    super::diff::cmd_diff(
-        &h.cli(),
-        h.printer(),
-        &crate::cli::startup::StartupDocument::load(&h.cli().config),
-        None,
-        false,
-    )
+    crate::cli::RunContext::for_test(&h.cli(), h.printer(), |run| {
+        super::diff::cmd_diff(run, None, false)
+    })
     .unwrap();
     let output = h.output();
     assert!(
@@ -17186,13 +16818,9 @@ fn cmd_verify_with_module_filter() {
     let h = CliTestHarness::builder()
             .module("verify-mod", "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: verify-mod\nspec:\n  packages: []\n")
             .build();
-    super::verify::cmd_verify(
-        &h.cli(),
-        h.printer(),
-        &crate::cli::startup::StartupDocument::load(&h.cli().config),
-        Some("verify-mod"),
-        false,
-    )
+    crate::cli::RunContext::for_test(&h.cli(), h.printer(), |run| {
+        super::verify::cmd_verify(run, Some("verify-mod"), false)
+    })
     .unwrap();
     let output = h.output();
     assert!(
@@ -17284,12 +16912,9 @@ fn cmd_apply_real_records_state() {
         context: "apply".to_string(),
         shell: None,
     };
-    super::apply::cmd_apply(
-        &h.cli(),
-        h.printer(),
-        &crate::cli::startup::StartupDocument::load(&h.cli().config),
-        &args,
-    )
+    crate::cli::RunContext::for_test(&h.cli(), h.printer(), |run| {
+        super::apply::cmd_apply(run, &args)
+    })
     .unwrap();
 
     // The hermetic file action actually ran.
@@ -17329,12 +16954,9 @@ fn cmd_apply_with_skip_and_only() {
         context: "apply".to_string(),
         shell: None,
     };
-    super::apply::cmd_apply(
-        &h.cli(),
-        h.printer(),
-        &crate::cli::startup::StartupDocument::load(&h.cli().config),
-        &args,
-    )
+    crate::cli::RunContext::for_test(&h.cli(), h.printer(), |run| {
+        super::apply::cmd_apply(run, &args)
+    })
     .unwrap();
     let output = h.output();
     assert!(
@@ -17364,12 +16986,9 @@ fn cmd_apply_skip_scripts_flag() {
         context: "apply".to_string(),
         shell: None,
     };
-    super::apply::cmd_apply(
-        &h.cli(),
-        h.printer(),
-        &crate::cli::startup::StartupDocument::load(&h.cli().config),
-        &args,
-    )
+    crate::cli::RunContext::for_test(&h.cli(), h.printer(), |run| {
+        super::apply::cmd_apply(run, &args)
+    })
     .unwrap();
     let output = h.output();
     assert!(
@@ -17399,12 +17018,9 @@ fn cmd_apply_invalid_context_fails() {
         context: "bogus".to_string(),
         shell: None,
     };
-    let result = super::apply::cmd_apply(
-        &h.cli(),
-        h.printer(),
-        &crate::cli::startup::StartupDocument::load(&h.cli().config),
-        &args,
-    );
+    let result = crate::cli::RunContext::for_test(&h.cli(), h.printer(), |run| {
+        super::apply::cmd_apply(run, &args)
+    });
     let err = result
         .expect_err("apply with unknown context must fail before any reconcile work runs")
         .to_string();
@@ -17481,12 +17097,9 @@ fn cmd_apply_reconcile_context_threads_through() {
         context: "reconcile".to_string(),
         shell: None,
     };
-    super::apply::cmd_apply(
-        &h.cli(),
-        h.printer(),
-        &crate::cli::startup::StartupDocument::load(&h.cli().config),
-        &args,
-    )
+    crate::cli::RunContext::for_test(&h.cli(), h.printer(), |run| {
+        super::apply::cmd_apply(run, &args)
+    })
     .unwrap();
     h.assert_header("Plan");
     let output = h.output();
@@ -17551,13 +17164,8 @@ spec:
         shell: None,
     };
 
-    super::apply::cmd_apply(
-        &cli,
-        &printer,
-        &crate::cli::startup::StartupDocument::load(&cli.config),
-        &args,
-    )
-    .unwrap();
+    crate::cli::RunContext::for_test(&cli, &printer, |run| super::apply::cmd_apply(run, &args))
+        .unwrap();
     printer.flush();
     let output = cfgd_core::test_helpers::captured_text(&buf);
 
@@ -23295,13 +22903,8 @@ spec:
         shell: None,
     };
 
-    super::apply::cmd_apply(
-        &cli,
-        &printer,
-        &crate::cli::startup::StartupDocument::load(&cli.config),
-        &args,
-    )
-    .unwrap();
+    crate::cli::RunContext::for_test(&cli, &printer, |run| super::apply::cmd_apply(run, &args))
+        .unwrap();
     printer.flush();
     let output = cfgd_core::test_helpers::captured_text(&buf);
 
@@ -24448,7 +24051,7 @@ fn every_pull_failure_kind_is_listed_in_all() {
 #[test]
 fn cmd_pull_over_a_non_repo_reports_nothing_to_pull() {
     let h = CliTestHarness::builder().build();
-    super::pull::cmd_pull(&h.cli(), h.printer()).unwrap();
+    crate::cli::RunContext::for_test(&h.cli(), h.printer(), super::pull::cmd_pull).unwrap();
     let output = h.output();
     assert!(
         output.contains("Pull") && output.contains(super::MSG_NOT_A_REPOSITORY),
@@ -24459,12 +24062,7 @@ fn cmd_pull_over_a_non_repo_reports_nothing_to_pull() {
 #[test]
 fn cmd_sync_non_git_dir_shows_output() {
     let h = CliTestHarness::builder().build();
-    super::sync::cmd_sync(
-        &h.cli(),
-        h.printer(),
-        &crate::cli::startup::StartupDocument::load(&h.cli().config),
-    )
-    .unwrap();
+    crate::cli::RunContext::for_test(&h.cli(), h.printer(), super::sync::cmd_sync).unwrap();
     h.assert_header("Sync");
 }
 
@@ -24560,11 +24158,9 @@ fn cmd_source_replace_nonexistent_fails() {
 #[test]
 fn cmd_compliance_snapshot_empty_state() {
     let h = CliTestHarness::builder().build();
-    super::compliance::cmd_compliance_snapshot(
-        &h.cli(),
-        h.printer(),
-        &crate::cli::startup::StartupDocument::load(&h.cli().config),
-    )
+    crate::cli::RunContext::for_test(&h.cli(), h.printer(), |run| {
+        super::compliance::cmd_compliance_snapshot(run)
+    })
     .unwrap();
     let output = h.output();
     assert!(
@@ -24576,11 +24172,9 @@ fn cmd_compliance_snapshot_empty_state() {
 #[test]
 fn cmd_compliance_export_empty_state() {
     let h = CliTestHarness::builder().build();
-    super::compliance::cmd_compliance_export(
-        &h.cli(),
-        h.printer(),
-        &crate::cli::startup::StartupDocument::load(&h.cli().config),
-    )
+    crate::cli::RunContext::for_test(&h.cli(), h.printer(), |run| {
+        super::compliance::cmd_compliance_export(run)
+    })
     .unwrap();
     // export writes to a file and prints success message
     let output = h.output();
@@ -24597,11 +24191,9 @@ fn cmd_compliance_export_empty_state() {
 #[test]
 fn cmd_compliance_snapshot_json() {
     let h = CliTestHarness::builder().json().build();
-    super::compliance::cmd_compliance_snapshot(
-        &h.cli(),
-        h.printer(),
-        &crate::cli::startup::StartupDocument::load(&h.cli().config),
-    )
+    crate::cli::RunContext::for_test(&h.cli(), h.printer(), |run| {
+        super::compliance::cmd_compliance_snapshot(run)
+    })
     .unwrap();
     let parsed = h.json_output();
     // Compliance snapshot JSON wraps a snapshot object
@@ -24631,13 +24223,9 @@ fn cmd_compliance_history_json() {
 #[test]
 fn json_schema_status() {
     let h = CliTestHarness::builder().json().build();
-    super::status::cmd_status(
-        &h.cli(),
-        h.printer(),
-        &crate::cli::startup::StartupDocument::load(&h.cli().config),
-        None,
-        super::status::StatusRun::default(),
-    )
+    crate::cli::RunContext::for_test(&h.cli(), h.printer(), |run| {
+        super::status::cmd_status(run, None, super::status::StatusRun::default())
+    })
     .unwrap();
     let parsed = h.json_output();
     assert_json_has_fields(
@@ -24722,12 +24310,9 @@ fn json_schema_plan() {
         skip_scripts: false,
         context: "apply".to_string(),
     };
-    super::plan::cmd_plan(
-        &h.cli(),
-        h.printer(),
-        &crate::cli::startup::StartupDocument::load(&h.cli().config),
-        &args,
-    )
+    crate::cli::RunContext::for_test(&h.cli(), h.printer(), |run| {
+        super::plan::cmd_plan(run, &args)
+    })
     .unwrap();
     let parsed = h.json_output();
     assert_json_has_fields(&parsed, &["context", "phases", "totalActions"]);
@@ -24749,12 +24334,9 @@ fn json_schema_config_show() {
 #[test]
 fn json_schema_doctor() {
     let h = CliTestHarness::builder().json().build();
-    super::doctor::run_doctor(
-        &h.cli(),
-        h.printer(),
-        &crate::cli::startup::StartupDocument::load(&h.cli().config),
-        false,
-    )
+    crate::cli::RunContext::for_test(&h.cli(), h.printer(), |run| {
+        super::doctor::run_doctor(run, false)
+    })
     .unwrap();
     let parsed = h.json_output();
     assert_json_has_fields(
@@ -24769,13 +24351,9 @@ fn json_schema_doctor() {
 #[test]
 fn json_schema_verify() {
     let h = CliTestHarness::builder().json().build();
-    super::verify::cmd_verify(
-        &h.cli(),
-        h.printer(),
-        &crate::cli::startup::StartupDocument::load(&h.cli().config),
-        None,
-        false,
-    )
+    crate::cli::RunContext::for_test(&h.cli(), h.printer(), |run| {
+        super::verify::cmd_verify(run, None, false)
+    })
     .unwrap();
     let parsed = h.json_output();
     assert_json_has_fields(&parsed, &["passCount", "failCount", "results"]);
@@ -24931,7 +24509,10 @@ fn cmd_secret_decrypt_file_not_found() {
 #[test]
 fn daemon_status_no_daemon_running_human_output() {
     let h = CliTestHarness::builder().build();
-    super::daemon::cmd_daemon_status(&h.cli(), h.printer()).unwrap();
+    crate::cli::RunContext::for_test(&h.cli(), h.printer(), |run| {
+        super::daemon::cmd_daemon_status(run)
+    })
+    .unwrap();
     let output = h.output();
     assert!(
         output.contains("Daemon Status"),
@@ -24954,7 +24535,10 @@ fn daemon_status_no_daemon_running_human_output() {
 #[test]
 fn daemon_status_no_daemon_running_json_output() {
     let h = CliTestHarness::builder().json().build();
-    super::daemon::cmd_daemon_status(&h.cli(), h.printer()).unwrap();
+    crate::cli::RunContext::for_test(&h.cli(), h.printer(), |run| {
+        super::daemon::cmd_daemon_status(run)
+    })
+    .unwrap();
     let parsed = h.json_output();
     assert_json_has_fields(
         &parsed,
@@ -25202,14 +24786,9 @@ fn checkin_fails_when_no_profile_configured() {
         "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec: {}\n";
     let h = CliTestHarness::builder().config(no_profile_config).build();
     let printer = test_printer();
-    let result = super::checkin::cmd_checkin(
-        &h.cli(),
-        &printer,
-        &crate::cli::startup::StartupDocument::load(&h.cli().config),
-        "http://localhost:8080",
-        None,
-        None,
-    );
+    let result = crate::cli::RunContext::for_test(&h.cli(), &printer, |run| {
+        super::checkin::cmd_checkin(run, "http://localhost:8080", None, None)
+    });
     assert_error_contains(&result, "no profile configured");
 }
 
@@ -25219,14 +24798,9 @@ fn checkin_fails_when_config_file_missing() {
     // Don't write any config file
     let cli = test_cli(dir.path());
     let printer = test_printer();
-    let result = super::checkin::cmd_checkin(
-        &cli,
-        &printer,
-        &crate::cli::startup::StartupDocument::load(&cli.config),
-        "http://localhost:8080",
-        None,
-        None,
-    );
+    let result = crate::cli::RunContext::for_test(&cli, &printer, |run| {
+        super::checkin::cmd_checkin(run, "http://localhost:8080", None, None)
+    });
     assert_error_contains(&result, "config file not found");
 }
 
@@ -25235,14 +24809,9 @@ fn checkin_fails_when_profile_does_not_exist() {
     let bad_profile_config = "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: nonexistent\n";
     let h = CliTestHarness::builder().config(bad_profile_config).build();
     let printer = test_printer();
-    let result = super::checkin::cmd_checkin(
-        &h.cli(),
-        &printer,
-        &crate::cli::startup::StartupDocument::load(&h.cli().config),
-        "http://localhost:8080",
-        None,
-        None,
-    );
+    let result = crate::cli::RunContext::for_test(&h.cli(), &printer, |run| {
+        super::checkin::cmd_checkin(run, "http://localhost:8080", None, None)
+    });
     let err = result.unwrap_err();
     let msg = err.to_string();
     assert!(
@@ -26212,21 +25781,21 @@ spec:
         skip_scripts: false,
         context: "apply".to_string(),
     }));
-    let result = super::plan::cmd_plan(
-        &cli,
-        h.printer(),
-        &crate::cli::startup::StartupDocument::load(&cli.config),
-        &PlanArgs {
-            from: None,
-            phase: None,
-            skip: vec![],
-            only: vec![],
-            module: vec![],
-            with_profile: false,
-            skip_scripts: false,
-            context: "apply".to_string(),
-        },
-    );
+    let result = crate::cli::RunContext::for_test(&cli, h.printer(), |run| {
+        super::plan::cmd_plan(
+            run,
+            &PlanArgs {
+                from: None,
+                phase: None,
+                skip: vec![],
+                only: vec![],
+                module: vec![],
+                with_profile: false,
+                skip_scripts: false,
+                context: "apply".to_string(),
+            },
+        )
+    });
     assert!(
         result.is_ok(),
         "cmd_plan with rich module should succeed: {:?}",
@@ -26286,12 +25855,9 @@ spec:
         skip_scripts: false,
         context: "apply".to_string(),
     };
-    let result = super::plan::cmd_plan(
-        &h.cli(),
-        h.printer(),
-        &crate::cli::startup::StartupDocument::load(&h.cli().config),
-        &args,
-    );
+    let result = crate::cli::RunContext::for_test(&h.cli(), h.printer(), |run| {
+        super::plan::cmd_plan(run, &args)
+    });
     assert!(
         result.is_ok(),
         "module-only plan should succeed: {:?}",
@@ -26357,12 +25923,9 @@ spec:
         skip_scripts: false,
         context: "apply".to_string(),
     };
-    super::plan::cmd_plan(
-        &h.cli(),
-        h.printer(),
-        &crate::cli::startup::StartupDocument::load(&h.cli().config),
-        &args,
-    )
+    crate::cli::RunContext::for_test(&h.cli(), h.printer(), |run| {
+        super::plan::cmd_plan(run, &args)
+    })
     .unwrap();
     let json = h.json_output();
 
@@ -26409,12 +25972,9 @@ fn cmd_plan_with_profile_alone_errors() {
         skip_scripts: false,
         context: "apply".to_string(),
     };
-    let result = super::plan::cmd_plan(
-        &h.cli(),
-        h.printer(),
-        &crate::cli::startup::StartupDocument::load(&h.cli().config),
-        &args,
-    );
+    let result = crate::cli::RunContext::for_test(&h.cli(), h.printer(), |run| {
+        super::plan::cmd_plan(run, &args)
+    });
     assert_error_contains(&result, "--with-profile requires --module");
 }
 
@@ -26436,12 +25996,9 @@ fn cmd_apply_with_profile_alone_errors() {
         context: "apply".to_string(),
         shell: None,
     };
-    let result = super::apply::cmd_apply(
-        &h.cli(),
-        h.printer(),
-        &crate::cli::startup::StartupDocument::load(&h.cli().config),
-        &args,
-    );
+    let result = crate::cli::RunContext::for_test(&h.cli(), h.printer(), |run| {
+        super::apply::cmd_apply(run, &args)
+    });
     assert_error_contains(&result, "--with-profile requires --module");
 }
 
@@ -26492,12 +26049,9 @@ spec:
         skip_scripts: false,
         context: "apply".to_string(),
     };
-    super::plan::cmd_plan(
-        &plain.cli(),
-        plain.printer(),
-        &crate::cli::startup::StartupDocument::load(&plain.cli().config),
-        &args_plain,
-    )
+    crate::cli::RunContext::for_test(&plain.cli(), plain.printer(), |run| {
+        super::plan::cmd_plan(run, &args_plain)
+    })
     .unwrap();
     let plain_json = plain.json_output();
     let plain_module_actions = plain_json["phases"]
@@ -26522,12 +26076,9 @@ spec:
         only: vec!["module:standalone".to_string()],
         ..args_plain
     };
-    super::plan::cmd_plan(
-        &filtered.cli(),
-        filtered.printer(),
-        &crate::cli::startup::StartupDocument::load(&filtered.cli().config),
-        &args_filtered,
-    )
+    crate::cli::RunContext::for_test(&filtered.cli(), filtered.printer(), |run| {
+        super::plan::cmd_plan(run, &args_filtered)
+    })
     .unwrap();
     let filtered_json = filtered.json_output();
     let filtered_module_actions = filtered_json["phases"]
@@ -26585,12 +26136,9 @@ spec:
         skip_scripts: false,
         context: "apply".to_string(),
     };
-    super::plan::cmd_plan(
-        &h.cli(),
-        h.printer(),
-        &crate::cli::startup::StartupDocument::load(&h.cli().config),
-        &args,
-    )
+    crate::cli::RunContext::for_test(&h.cli(), h.printer(), |run| {
+        super::plan::cmd_plan(run, &args)
+    })
     .unwrap();
     let out = h.output();
 
@@ -27642,12 +27190,9 @@ spec:
         skip_scripts: false,
         context: "apply".to_string(),
     };
-    let result = super::plan::cmd_plan(
-        &h.cli(),
-        h.printer(),
-        &crate::cli::startup::StartupDocument::load(&h.cli().config),
-        &args,
-    );
+    let result = crate::cli::RunContext::for_test(&h.cli(), h.printer(), |run| {
+        super::plan::cmd_plan(run, &args)
+    });
     assert!(
         result.is_ok(),
         "JSON plan should succeed: {:?}",
@@ -28003,13 +27548,9 @@ fn cmd_diff_full_profile_converged_names_no_surface() {
             "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  inherits: []\n  modules: []\n",
         )
         .build();
-    let result = super::diff::cmd_diff(
-        &h.cli(),
-        h.printer(),
-        &crate::cli::startup::StartupDocument::load(&h.cli().config),
-        None,
-        false,
-    );
+    let result = crate::cli::RunContext::for_test(&h.cli(), h.printer(), |run| {
+        super::diff::cmd_diff(run, None, false)
+    });
     assert!(
         result.is_ok(),
         "diff with default profile should succeed: {:?}",
@@ -28040,13 +27581,9 @@ fn cmd_diff_full_profile_converged_names_no_surface() {
 #[test]
 fn cmd_diff_module_not_found_shows_info() {
     let h = CliTestHarness::builder().build();
-    let result = super::diff::cmd_diff(
-        &h.cli(),
-        h.printer(),
-        &crate::cli::startup::StartupDocument::load(&h.cli().config),
-        Some("nonexistent-mod"),
-        false,
-    );
+    let result = crate::cli::RunContext::for_test(&h.cli(), h.printer(), |run| {
+        super::diff::cmd_diff(run, Some("nonexistent-mod"), false)
+    });
     assert!(
         result.is_ok(),
         "diff with missing module should succeed gracefully"
@@ -28080,13 +27617,9 @@ fn cmd_diff_module_with_files_shows_the_drifted_file() {
     let module_dir = h.config_path().join("modules").join("diff-mod");
     std::fs::write(module_dir.join("my-config"), "new config content\n").unwrap();
 
-    let result = super::diff::cmd_diff(
-        &h.cli(),
-        h.printer(),
-        &crate::cli::startup::StartupDocument::load(&h.cli().config),
-        Some("diff-mod"),
-        false,
-    );
+    let result = crate::cli::RunContext::for_test(&h.cli(), h.printer(), |run| {
+        super::diff::cmd_diff(run, Some("diff-mod"), false)
+    });
     assert!(
         result.is_ok(),
         "module diff should succeed: {:?}",
@@ -28117,13 +27650,9 @@ fn cmd_diff_module_with_files_shows_the_drifted_file() {
 #[test]
 fn cmd_status_with_sources_shows_source_section() {
     let h = CliTestHarness::builder().rich_config().build();
-    let result = super::status::cmd_status(
-        &h.cli(),
-        h.printer(),
-        &crate::cli::startup::StartupDocument::load(&h.cli().config),
-        None,
-        super::status::StatusRun::default(),
-    );
+    let result = crate::cli::RunContext::for_test(&h.cli(), h.printer(), |run| {
+        super::status::cmd_status(run, None, super::status::StatusRun::default())
+    });
     assert!(
         result.is_ok(),
         "status with sources should succeed: {:?}",
@@ -28967,17 +28496,13 @@ fn cmd_compliance_diff_identical_snapshots_reports_no_differences() {
     let h = CliTestHarness::builder().build();
 
     // Create two identical snapshots
-    super::compliance::cmd_compliance_snapshot(
-        &h.cli(),
-        h.printer(),
-        &crate::cli::startup::StartupDocument::load(&h.cli().config),
-    )
+    crate::cli::RunContext::for_test(&h.cli(), h.printer(), |run| {
+        super::compliance::cmd_compliance_snapshot(run)
+    })
     .unwrap();
-    super::compliance::cmd_compliance_snapshot(
-        &h.cli(),
-        h.printer(),
-        &crate::cli::startup::StartupDocument::load(&h.cli().config),
-    )
+    crate::cli::RunContext::for_test(&h.cli(), h.printer(), |run| {
+        super::compliance::cmd_compliance_snapshot(run)
+    })
     .unwrap();
 
     let state = super::open_state_store(Some(h.state_path()), cfgd_core::Scope::User).unwrap();
@@ -29240,11 +28765,9 @@ fn cmd_compliance_history_with_entries_shows_table() {
     let h = CliTestHarness::builder().build();
 
     // Create a snapshot to populate history
-    super::compliance::cmd_compliance_snapshot(
-        &h.cli(),
-        h.printer(),
-        &crate::cli::startup::StartupDocument::load(&h.cli().config),
-    )
+    crate::cli::RunContext::for_test(&h.cli(), h.printer(), |run| {
+        super::compliance::cmd_compliance_snapshot(run)
+    })
     .unwrap();
 
     h.buf.lock().unwrap().clear();
@@ -29281,12 +28804,9 @@ fn cmd_doctor_with_invalid_config_shows_error_but_succeeds() {
         .config("this is not valid yaml: [[[")
         .build();
 
-    let result = super::doctor::run_doctor(
-        &h.cli(),
-        h.printer(),
-        &crate::cli::startup::StartupDocument::load(&h.cli().config),
-        false,
-    );
+    let result = crate::cli::RunContext::for_test(&h.cli(), h.printer(), |run| {
+        super::doctor::run_doctor(run, false)
+    });
     assert!(
         result.is_ok(),
         "doctor should succeed even with invalid config"
@@ -29308,12 +28828,9 @@ fn cmd_doctor_with_invalid_config_shows_error_but_succeeds() {
 fn cmd_doctor_json_has_all_top_level_fields() {
     let h = CliTestHarness::builder().json().build();
 
-    super::doctor::run_doctor(
-        &h.cli(),
-        h.printer(),
-        &crate::cli::startup::StartupDocument::load(&h.cli().config),
-        false,
-    )
+    crate::cli::RunContext::for_test(&h.cli(), h.printer(), |run| {
+        super::doctor::run_doctor(run, false)
+    })
     .unwrap();
 
     let parsed = h.json_output();
@@ -29340,12 +28857,9 @@ fn cmd_doctor_json_has_all_top_level_fields() {
 fn cmd_doctor_json_config_section_has_expected_fields() {
     let h = CliTestHarness::builder().json().build();
 
-    super::doctor::run_doctor(
-        &h.cli(),
-        h.printer(),
-        &crate::cli::startup::StartupDocument::load(&h.cli().config),
-        false,
-    )
+    crate::cli::RunContext::for_test(&h.cli(), h.printer(), |run| {
+        super::doctor::run_doctor(run, false)
+    })
     .unwrap();
 
     let parsed = h.json_output();
@@ -29376,12 +28890,9 @@ spec:
         .module("test-mod", SIMPLE_MODULE_YAML)
         .build();
 
-    super::doctor::run_doctor(
-        &h.cli(),
-        h.printer(),
-        &crate::cli::startup::StartupDocument::load(&h.cli().config),
-        false,
-    )
+    crate::cli::RunContext::for_test(&h.cli(), h.printer(), |run| {
+        super::doctor::run_doctor(run, false)
+    })
     .unwrap();
 
     let output = h.output();
@@ -29412,12 +28923,9 @@ spec:
         .profile("default", profile_with_missing_module)
         .build();
 
-    super::doctor::run_doctor(
-        &h.cli(),
-        h.printer(),
-        &crate::cli::startup::StartupDocument::load(&h.cli().config),
-        false,
-    )
+    crate::cli::RunContext::for_test(&h.cli(), h.printer(), |run| {
+        super::doctor::run_doctor(run, false)
+    })
     .unwrap();
 
     let output = h.output();
@@ -29479,12 +28987,9 @@ fn cmd_doctor_declares_every_supported_package_manager() {
         .profile("default", ALL_MANAGERS_PROFILE_YAML)
         .json()
         .build();
-    super::doctor::run_doctor(
-        &h.cli(),
-        h.printer(),
-        &crate::cli::startup::StartupDocument::load(&h.cli().config),
-        false,
-    )
+    crate::cli::RunContext::for_test(&h.cli(), h.printer(), |run| {
+        super::doctor::run_doctor(run, false)
+    })
     .unwrap();
 
     let parsed = h.json_output();
@@ -29544,12 +29049,9 @@ fn cmd_doctor_shows_config_sources_section_when_sources_declared() {
     // — so the "Config Sources" section should render with the "not cached"
     // warning arm (doctor.rs lines 415-439).
     let h = CliTestHarness::builder().rich_config().build();
-    super::doctor::run_doctor(
-        &h.cli(),
-        h.printer(),
-        &crate::cli::startup::StartupDocument::load(&h.cli().config),
-        false,
-    )
+    crate::cli::RunContext::for_test(&h.cli(), h.printer(), |run| {
+        super::doctor::run_doctor(run, false)
+    })
     .unwrap();
 
     let output = h.output();
@@ -29585,12 +29087,9 @@ spec:
         .json()
         .build();
 
-    super::doctor::run_doctor(
-        &h.cli(),
-        h.printer(),
-        &crate::cli::startup::StartupDocument::load(&h.cli().config),
-        false,
-    )
+    crate::cli::RunContext::for_test(&h.cli(), h.printer(), |run| {
+        super::doctor::run_doctor(run, false)
+    })
     .unwrap();
 
     let parsed = h.json_output();
@@ -30452,12 +29951,9 @@ spec:
         .planted_manager()
         .build();
 
-    super::doctor::run_doctor(
-        &h.cli(),
-        h.printer(),
-        &crate::cli::startup::StartupDocument::load(&h.cli().config),
-        false,
-    )
+    crate::cli::RunContext::for_test(&h.cli(), h.printer(), |run| {
+        super::doctor::run_doctor(run, false)
+    })
     .unwrap();
 
     let output = h.output();
@@ -30498,12 +29994,9 @@ fn cmd_doctor_with_custom_package_manager_declared_exercises_custom_branch() {
         .profile("default", CUSTOM_PKG_PROFILE_YAML)
         .build();
 
-    super::doctor::run_doctor(
-        &h.cli(),
-        h.printer(),
-        &crate::cli::startup::StartupDocument::load(&h.cli().config),
-        false,
-    )
+    crate::cli::RunContext::for_test(&h.cli(), h.printer(), |run| {
+        super::doctor::run_doctor(run, false)
+    })
     .unwrap();
 
     let output = h.output();
@@ -30527,12 +30020,9 @@ fn cmd_doctor_notes_the_decision_grammar_limit_of_a_dotted_custom_manager() {
         )
         .build();
 
-    super::doctor::run_doctor(
-        &h.cli(),
-        h.printer(),
-        &crate::cli::startup::StartupDocument::load(&h.cli().config),
-        false,
-    )
+    crate::cli::RunContext::for_test(&h.cli(), h.printer(), |run| {
+        super::doctor::run_doctor(run, false)
+    })
     .unwrap();
 
     let output = h.output();
@@ -30553,16 +30043,10 @@ fn cmd_decide_no_args_no_pending_shows_info() {
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
     // With no resource, no source, and all=false, should show pending list
-    super::decide::cmd_decide(
+    crate::cli::RunContext::for_test(
         &test_cli_with_state(state_dir.path(), Some(state_dir.path().to_path_buf())),
         &printer,
-        &crate::cli::startup::StartupDocument::load(
-            &test_cli_with_state(state_dir.path(), Some(state_dir.path().to_path_buf())).config,
-        ),
-        Some(super::DecideAction::Accept),
-        None,
-        None,
-        false,
+        |run| super::decide::cmd_decide(run, Some(super::DecideAction::Accept), None, None, false),
     )
     .unwrap();
     drop(printer);
@@ -30605,16 +30089,10 @@ fn cmd_decide_no_args_with_pending_shows_list() {
         .unwrap();
 
     // No resource/source/all — should display pending decisions
-    super::decide::cmd_decide(
+    crate::cli::RunContext::for_test(
         &test_cli_with_state(state_dir.path(), Some(state_dir.path().to_path_buf())),
         &printer,
-        &crate::cli::startup::StartupDocument::load(
-            &test_cli_with_state(state_dir.path(), Some(state_dir.path().to_path_buf())).config,
-        ),
-        Some(super::DecideAction::Accept),
-        None,
-        None,
-        false,
+        |run| super::decide::cmd_decide(run, Some(super::DecideAction::Accept), None, None, false),
     )
     .unwrap();
     drop(printer);
@@ -30669,16 +30147,18 @@ fn cmd_decide_reject_specific_resource_verifies_resolution() {
         )
         .unwrap();
 
-    super::decide::cmd_decide(
+    crate::cli::RunContext::for_test(
         &test_cli_with_state(state_dir.path(), Some(state_dir.path().to_path_buf())),
         &printer,
-        &crate::cli::startup::StartupDocument::load(
-            &test_cli_with_state(state_dir.path(), Some(state_dir.path().to_path_buf())).config,
-        ),
-        Some(super::DecideAction::Reject),
-        Some("packages.brew.jq"),
-        None,
-        false,
+        |run| {
+            super::decide::cmd_decide(
+                run,
+                Some(super::DecideAction::Reject),
+                Some("packages.brew.jq"),
+                None,
+                false,
+            )
+        },
     )
     .unwrap();
     drop(printer);
@@ -30719,16 +30199,18 @@ fn cmd_decide_accept_specific_resource_verifies_messaging() {
         )
         .unwrap();
 
-    super::decide::cmd_decide(
+    crate::cli::RunContext::for_test(
         &test_cli_with_state(state_dir.path(), Some(state_dir.path().to_path_buf())),
         &printer,
-        &crate::cli::startup::StartupDocument::load(
-            &test_cli_with_state(state_dir.path(), Some(state_dir.path().to_path_buf())).config,
-        ),
-        Some(super::DecideAction::Accept),
-        Some("file/bashrc"),
-        None,
-        false,
+        |run| {
+            super::decide::cmd_decide(
+                run,
+                Some(super::DecideAction::Accept),
+                Some("file/bashrc"),
+                None,
+                false,
+            )
+        },
     )
     .unwrap();
     drop(printer);
@@ -30754,16 +30236,18 @@ fn cmd_decide_accept_nonexistent_resource_warns() {
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
-    super::decide::cmd_decide(
+    crate::cli::RunContext::for_test(
         &test_cli_with_state(state_dir.path(), Some(state_dir.path().to_path_buf())),
         &printer,
-        &crate::cli::startup::StartupDocument::load(
-            &test_cli_with_state(state_dir.path(), Some(state_dir.path().to_path_buf())).config,
-        ),
-        Some(super::DecideAction::Accept),
-        Some("no.such.resource"),
-        None,
-        false,
+        |run| {
+            super::decide::cmd_decide(
+                run,
+                Some(super::DecideAction::Accept),
+                Some("no.such.resource"),
+                None,
+                false,
+            )
+        },
     )
     .unwrap();
     drop(printer);
@@ -30801,16 +30285,10 @@ fn cmd_decide_accept_all_reports_count() {
             .unwrap();
     }
 
-    super::decide::cmd_decide(
+    crate::cli::RunContext::for_test(
         &test_cli_with_state(state_dir.path(), Some(state_dir.path().to_path_buf())),
         &printer,
-        &crate::cli::startup::StartupDocument::load(
-            &test_cli_with_state(state_dir.path(), Some(state_dir.path().to_path_buf())).config,
-        ),
-        Some(super::DecideAction::Accept),
-        None,
-        None,
-        true,
+        |run| super::decide::cmd_decide(run, Some(super::DecideAction::Accept), None, None, true),
     )
     .unwrap();
     drop(printer);
@@ -30850,16 +30328,18 @@ fn cmd_decide_reject_by_source_preserves_other_sources() {
         .upsert_pending_decision("beta", "env/X", "required", "set", "X", None)
         .unwrap();
 
-    super::decide::cmd_decide(
+    crate::cli::RunContext::for_test(
         &test_cli_with_state(state_dir.path(), Some(state_dir.path().to_path_buf())),
         &printer,
-        &crate::cli::startup::StartupDocument::load(
-            &test_cli_with_state(state_dir.path(), Some(state_dir.path().to_path_buf())).config,
-        ),
-        Some(super::DecideAction::Reject),
-        None,
-        Some("alpha"),
-        false,
+        |run| {
+            super::decide::cmd_decide(
+                run,
+                Some(super::DecideAction::Reject),
+                None,
+                Some("alpha"),
+                false,
+            )
+        },
     )
     .unwrap();
     drop(printer);
@@ -30896,16 +30376,18 @@ fn cmd_decide_reject_by_source_with_no_matching_decisions() {
         .upsert_pending_decision("alpha", "pkg/a", "recommended", "install", "A", None)
         .unwrap();
 
-    super::decide::cmd_decide(
+    crate::cli::RunContext::for_test(
         &test_cli_with_state(state_dir.path(), Some(state_dir.path().to_path_buf())),
         &printer,
-        &crate::cli::startup::StartupDocument::load(
-            &test_cli_with_state(state_dir.path(), Some(state_dir.path().to_path_buf())).config,
-        ),
-        Some(super::DecideAction::Reject),
-        None,
-        Some("nonexistent-source"),
-        false,
+        |run| {
+            super::decide::cmd_decide(
+                run,
+                Some(super::DecideAction::Reject),
+                None,
+                Some("nonexistent-source"),
+                false,
+            )
+        },
     )
     .unwrap();
     drop(printer);
@@ -30939,16 +30421,10 @@ fn cmd_decide_accept_single_item_singular_message() {
         )
         .unwrap();
 
-    super::decide::cmd_decide(
+    crate::cli::RunContext::for_test(
         &test_cli_with_state(state_dir.path(), Some(state_dir.path().to_path_buf())),
         &printer,
-        &crate::cli::startup::StartupDocument::load(
-            &test_cli_with_state(state_dir.path(), Some(state_dir.path().to_path_buf())).config,
-        ),
-        Some(super::DecideAction::Accept),
-        None,
-        None,
-        true,
+        |run| super::decide::cmd_decide(run, Some(super::DecideAction::Accept), None, None, true),
     )
     .unwrap();
     drop(printer);
@@ -31096,14 +30572,14 @@ spec:
 fn cmd_checkin_server_unreachable() {
     let h = CliTestHarness::builder().build();
     let printer = test_printer();
-    let result = super::checkin::cmd_checkin(
-        &h.cli(),
-        &printer,
-        &crate::cli::startup::StartupDocument::load(&h.cli().config),
-        "http://127.0.0.1:19999",
-        Some("test-api-key"),
-        Some("test-device-42"),
-    );
+    let result = crate::cli::RunContext::for_test(&h.cli(), &printer, |run| {
+        super::checkin::cmd_checkin(
+            run,
+            "http://127.0.0.1:19999",
+            Some("test-api-key"),
+            Some("test-device-42"),
+        )
+    });
     // The call should fail because the server is unreachable
     assert!(
         result.is_err(),
@@ -31138,14 +30614,9 @@ spec:
     let h = CliTestHarness::builder()
         .config(config_with_compliance)
         .build();
-    let result = super::checkin::cmd_checkin(
-        &h.cli(),
-        h.printer(),
-        &crate::cli::startup::StartupDocument::load(&h.cli().config),
-        "http://127.0.0.1:19999",
-        None,
-        None,
-    );
+    let result = crate::cli::RunContext::for_test(&h.cli(), h.printer(), |run| {
+        super::checkin::cmd_checkin(run, "http://127.0.0.1:19999", None, None)
+    });
     assert!(
         result.is_err(),
         "checkin should fail with unreachable server"
@@ -31165,11 +30636,9 @@ spec:
 #[test]
 fn cmd_compliance_export_writes_file_and_displays_path() {
     let h = CliTestHarness::builder().build();
-    super::compliance::cmd_compliance_export(
-        &h.cli(),
-        h.printer(),
-        &crate::cli::startup::StartupDocument::load(&h.cli().config),
-    )
+    crate::cli::RunContext::for_test(&h.cli(), h.printer(), |run| {
+        super::compliance::cmd_compliance_export(run)
+    })
     .unwrap();
     let output = h.output();
     // export writes a file and prints the path in a success message
@@ -31187,11 +30656,9 @@ fn cmd_compliance_export_writes_file_and_displays_path() {
 #[test]
 fn cmd_compliance_export_json_returns_snapshot_object() {
     let h = CliTestHarness::builder().json().build();
-    super::compliance::cmd_compliance_export(
-        &h.cli(),
-        h.printer(),
-        &crate::cli::startup::StartupDocument::load(&h.cli().config),
-    )
+    crate::cli::RunContext::for_test(&h.cli(), h.printer(), |run| {
+        super::compliance::cmd_compliance_export(run)
+    })
     .unwrap();
     let parsed = h.json_output();
     // Structured output should contain the snapshot wrapper
@@ -31210,12 +30677,7 @@ fn cmd_sync_over_a_non_repo_reports_no_pull_at_all() {
     // `git_pull_sync` answers a bare `Err` there — which opened a `Local Repo`
     // section whose `⚠ Pull failed` sat two lines above the closing verdict.
     let h = CliTestHarness::builder().build();
-    super::sync::cmd_sync(
-        &h.cli(),
-        h.printer(),
-        &crate::cli::startup::StartupDocument::load(&h.cli().config),
-    )
-    .unwrap();
+    crate::cli::RunContext::for_test(&h.cli(), h.printer(), super::sync::cmd_sync).unwrap();
     h.assert_header("Sync");
     let output = h.output();
     assert!(
@@ -31248,12 +30710,7 @@ spec:
     let h = CliTestHarness::builder().config(config_with_source).build();
     // A refused source leaves `cmd_sync` exiting nonzero, which would take
     // this process with it; the rendered section is what is under test.
-    super::sync::run_sync(
-        &h.cli(),
-        h.printer(),
-        &crate::cli::startup::StartupDocument::load(&h.cli().config),
-    )
-    .unwrap();
+    crate::cli::RunContext::for_test(&h.cli(), h.printer(), super::sync::run_sync).unwrap();
     h.assert_header("Sync");
     // When sources are configured, the Sources subheader should appear
     h.assert_output_contains("Sources");
@@ -31387,12 +30844,8 @@ fn a_source_refused_for_an_unsigned_head_syncs_once_a_signed_commit_lands() {
     let checkout = cache.join("jarvispro");
     let stale = cfgd_core::sources::SourceManager::head_commit(&checkout).unwrap();
 
-    let payload = super::sync::run_sync(
-        &h.cli(),
-        h.printer(),
-        &crate::cli::startup::StartupDocument::load(&h.cli().config),
-    )
-    .unwrap();
+    let payload =
+        crate::cli::RunContext::for_test(&h.cli(), h.printer(), super::sync::run_sync).unwrap();
     assert!(
         super::sync::sync_refused(&payload),
         "a source still refused after the fetch exits nonzero"
@@ -31425,12 +30878,8 @@ fn a_source_refused_for_an_unsigned_head_syncs_once_a_signed_commit_lands() {
     let signed = cfgd_core::sources::SourceManager::head_commit(&upstream).unwrap();
     assert_ne!(signed, stale, "the fixture must offer a new commit");
 
-    let payload = super::sync::run_sync(
-        &h.cli(),
-        h.printer(),
-        &crate::cli::startup::StartupDocument::load(&h.cli().config),
-    )
-    .unwrap();
+    let payload =
+        crate::cli::RunContext::for_test(&h.cli(), h.printer(), super::sync::run_sync).unwrap();
     let accepted = h.output();
     assert_eq!(
         cfgd_core::sources::SourceManager::head_commit(&checkout).as_deref(),
@@ -31547,12 +30996,8 @@ fn a_config_resolution_failure_the_fetch_cannot_repair_still_refuses_the_sync() 
         .config(config)
         .profile("default", profile)
         .build();
-    let payload = super::sync::run_sync(
-        &h.cli(),
-        h.printer(),
-        &crate::cli::startup::StartupDocument::load(&h.cli().config),
-    )
-    .unwrap();
+    let payload =
+        crate::cli::RunContext::for_test(&h.cli(), h.printer(), super::sync::run_sync).unwrap();
     let human = h.output();
     assert!(
         payload.config_resolution_error.is_some(),
@@ -31593,12 +31038,8 @@ fn a_config_resolution_failure_the_fetch_cannot_repair_still_refuses_the_sync() 
         .profile("default", profile)
         .json()
         .build();
-    let payload = super::sync::run_sync(
-        &hj.cli(),
-        hj.printer(),
-        &crate::cli::startup::StartupDocument::load(&hj.cli().config),
-    )
-    .unwrap();
+    let payload =
+        crate::cli::RunContext::for_test(&hj.cli(), hj.printer(), super::sync::run_sync).unwrap();
     assert!(
         super::sync::sync_refused(&payload),
         "same exit under -o json"
@@ -31691,11 +31132,9 @@ fn a_cached_manifest_the_fetch_replaces_is_a_starting_point_not_a_refusal() {
         )
         .unwrap();
 
-        let payload = super::sync::run_sync(
-            &h.cli(),
-            h.printer(),
-            &crate::cli::startup::StartupDocument::load(&h.cli().config),
-        )
+        let payload = crate::cli::RunContext::for_test(&h.cli(), h.printer(), |run| {
+            super::sync::run_sync(run)
+        })
         .unwrap();
         let out = h.output();
         assert!(
@@ -34381,12 +33820,9 @@ fn execute_enroll_dispatch() {
 fn cmd_doctor_json_flags_legacy_profiles() {
     // The default harness writes flat legacy manifests (default.yaml, work.yaml).
     let h = CliTestHarness::builder().json().build();
-    super::doctor::run_doctor(
-        &h.cli(),
-        h.printer(),
-        &crate::cli::startup::StartupDocument::load(&h.cli().config),
-        false,
-    )
+    crate::cli::RunContext::for_test(&h.cli(), h.printer(), |run| {
+        super::doctor::run_doctor(run, false)
+    })
     .unwrap();
 
     let parsed = h.json_output();
@@ -34420,12 +33856,9 @@ fn cmd_doctor_json_canonical_profiles_not_legacy() {
         )
         .unwrap();
     }
-    super::doctor::run_doctor(
-        &h.cli(),
-        h.printer(),
-        &crate::cli::startup::StartupDocument::load(&h.cli().config),
-        false,
-    )
+    crate::cli::RunContext::for_test(&h.cli(), h.printer(), |run| {
+        super::doctor::run_doctor(run, false)
+    })
     .unwrap();
 
     let parsed = h.json_output();
@@ -34452,12 +33885,9 @@ fn run_doctor_returns_false_verdict_on_ambiguous_profile() {
     std::fs::create_dir_all(&bundle).unwrap();
     std::fs::copy(pdir.join("work.yaml"), bundle.join("profile.yaml")).unwrap();
 
-    let passed = super::doctor::run_doctor(
-        &h.cli(),
-        h.printer(),
-        &crate::cli::startup::StartupDocument::load(&h.cli().config),
-        false,
-    )
+    let passed = crate::cli::RunContext::for_test(&h.cli(), h.printer(), |run| {
+        super::doctor::run_doctor(run, false)
+    })
     .unwrap();
     assert!(
         !passed,
@@ -34844,12 +34274,9 @@ impl SourceEnvFixture {
     }
 
     fn apply(&self) {
-        super::apply::cmd_apply(
-            &self.h.cli(),
-            self.h.printer(),
-            &crate::cli::startup::StartupDocument::load(&self.h.cli().config),
-            &apply_args(false),
-        )
+        crate::cli::RunContext::for_test(&self.h.cli(), self.h.printer(), |run| {
+            super::apply::cmd_apply(run, &apply_args(false))
+        })
         .unwrap();
     }
 
@@ -34989,12 +34416,9 @@ fn plan_preview_excludes_the_resource_its_pending_block_names() {
     let f = decision_fixture(false);
     f.with_pending_decision();
 
-    super::plan::cmd_plan(
-        &f.h.cli(),
-        f.h.printer(),
-        &crate::cli::startup::StartupDocument::load(&f.h.cli().config),
-        &plan_args(),
-    )
+    crate::cli::RunContext::for_test(&f.h.cli(), f.h.printer(), |run| {
+        super::plan::cmd_plan(run, &plan_args())
+    })
     .unwrap();
     let output = cfgd_core::output::strip_ansi(&f.h.output());
 
@@ -35034,12 +34458,9 @@ fn plan_preview_names_the_decision_that_declined_a_resource() {
     let state = f.with_pending_decision();
     state.resolve_decision(&f.resource(), "rejected").unwrap();
 
-    super::plan::cmd_plan(
-        &f.h.cli(),
-        f.h.printer(),
-        &crate::cli::startup::StartupDocument::load(&f.h.cli().config),
-        &plan_args(),
-    )
+    crate::cli::RunContext::for_test(&f.h.cli(), f.h.printer(), |run| {
+        super::plan::cmd_plan(run, &plan_args())
+    })
     .unwrap();
     let output = cfgd_core::output::strip_ansi(&f.h.output());
 
@@ -35070,12 +34491,9 @@ fn plan_preview_says_what_a_withheld_decision_would_put_on_the_machine() {
     let f = decision_fixture(false);
     f.with_pending_decision();
 
-    super::plan::cmd_plan(
-        &f.h.cli(),
-        f.h.printer(),
-        &crate::cli::startup::StartupDocument::load(&f.h.cli().config),
-        &plan_args(),
-    )
+    crate::cli::RunContext::for_test(&f.h.cli(), f.h.printer(), |run| {
+        super::plan::cmd_plan(run, &plan_args())
+    })
     .unwrap();
     let output = cfgd_core::output::strip_ansi(&f.h.output());
 
@@ -35173,12 +34591,9 @@ fn apply_closes_on_the_decisions_hint_after_its_caveats() {
         "\u{25c9} Run `source ~/.cfgd.env`"
     };
 
-    super::apply::cmd_apply(
-        &f.h.cli(),
-        f.h.printer(),
-        &crate::cli::startup::StartupDocument::load(&f.h.cli().config),
-        &apply_args(false),
-    )
+    crate::cli::RunContext::for_test(&f.h.cli(), f.h.printer(), |run| {
+        super::apply::cmd_apply(run, &apply_args(false))
+    })
     .unwrap();
     let output = cfgd_core::output::strip_ansi(&f.h.output());
 
@@ -35203,12 +34618,9 @@ fn plan_payload_counts_and_lists_only_the_decided_actions() {
     let f = decision_fixture(true);
     f.with_pending_decision();
 
-    super::plan::cmd_plan(
-        &f.h.cli(),
-        f.h.printer(),
-        &crate::cli::startup::StartupDocument::load(&f.h.cli().config),
-        &plan_args(),
-    )
+    crate::cli::RunContext::for_test(&f.h.cli(), f.h.printer(), |run| {
+        super::plan::cmd_plan(run, &plan_args())
+    })
     .unwrap();
     let json = f.h.json_output();
 
@@ -35258,12 +34670,9 @@ fn plan_payload_reports_a_declined_decision_under_its_own_key() {
     let state = f.with_pending_decision();
     state.resolve_decision(&f.resource(), "rejected").unwrap();
 
-    super::plan::cmd_plan(
-        &f.h.cli(),
-        f.h.printer(),
-        &crate::cli::startup::StartupDocument::load(&f.h.cli().config),
-        &plan_args(),
-    )
+    crate::cli::RunContext::for_test(&f.h.cli(), f.h.printer(), |run| {
+        super::plan::cmd_plan(run, &plan_args())
+    })
     .unwrap();
     let json = f.h.json_output();
 
@@ -35291,12 +34700,9 @@ fn plan_payload_reports_a_declined_decision_under_its_own_key() {
 fn plan_payload_omits_pending_decisions_when_there_are_none() {
     let f = decision_fixture(true);
 
-    super::plan::cmd_plan(
-        &f.h.cli(),
-        f.h.printer(),
-        &crate::cli::startup::StartupDocument::load(&f.h.cli().config),
-        &plan_args(),
-    )
+    crate::cli::RunContext::for_test(&f.h.cli(), f.h.printer(), |run| {
+        super::plan::cmd_plan(run, &plan_args())
+    })
     .unwrap();
     let json = f.h.json_output();
 
@@ -35315,12 +34721,9 @@ fn plan_payload_marks_an_unrecorded_decision_with_id_zero() {
     // the store itself stays empty.
     let f = decision_fixture_with(true, NOTIFYING_POLICY);
 
-    super::plan::cmd_plan(
-        &f.h.cli(),
-        f.h.printer(),
-        &crate::cli::startup::StartupDocument::load(&f.h.cli().config),
-        &plan_args(),
-    )
+    crate::cli::RunContext::for_test(&f.h.cli(), f.h.printer(), |run| {
+        super::plan::cmd_plan(run, &plan_args())
+    })
     .unwrap();
     let json = f.h.json_output();
 
@@ -35361,12 +34764,9 @@ fn apply_does_not_execute_a_resource_awaiting_a_decision() {
     let f = decision_fixture(false);
     f.with_pending_decision();
 
-    super::apply::cmd_apply(
-        &f.h.cli(),
-        f.h.printer(),
-        &crate::cli::startup::StartupDocument::load(&f.h.cli().config),
-        &apply_args(false),
-    )
+    crate::cli::RunContext::for_test(&f.h.cli(), f.h.printer(), |run| {
+        super::apply::cmd_apply(run, &apply_args(false))
+    })
     .unwrap();
 
     assert!(f.kept.exists(), "the decided file still applies");
@@ -35395,12 +34795,9 @@ fn an_interactively_confirmed_apply_withholds_the_undecided_resource_too() {
         yes: false,
         ..apply_args(false)
     };
-    super::apply::cmd_apply(
-        &f.h.cli(),
-        &printer,
-        &crate::cli::startup::StartupDocument::load(&f.h.cli().config),
-        &args,
-    )
+    crate::cli::RunContext::for_test(&f.h.cli(), &printer, |run| {
+        super::apply::cmd_apply(run, &args)
+    })
     .unwrap();
     printer.flush();
     let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -35426,23 +34823,20 @@ fn apply_executes_a_resource_once_its_decision_is_accepted() {
     let f = decision_fixture(false);
     let state = f.with_pending_decision();
 
-    super::decide::cmd_decide(
-        &f.h.cli(),
-        f.h.printer(),
-        &crate::cli::startup::StartupDocument::load(&f.h.cli().config),
-        Some(super::DecideAction::Accept),
-        Some(&f.resource()),
-        None,
-        false,
-    )
+    crate::cli::RunContext::for_test(&f.h.cli(), f.h.printer(), |run| {
+        super::decide::cmd_decide(
+            run,
+            Some(super::DecideAction::Accept),
+            Some(&f.resource()),
+            None,
+            false,
+        )
+    })
     .unwrap();
 
-    super::apply::cmd_apply(
-        &f.h.cli(),
-        f.h.printer(),
-        &crate::cli::startup::StartupDocument::load(&f.h.cli().config),
-        &apply_args(false),
-    )
+    crate::cli::RunContext::for_test(&f.h.cli(), f.h.printer(), |run| {
+        super::apply::cmd_apply(run, &apply_args(false))
+    })
     .unwrap();
 
     assert!(f.kept.exists());
@@ -35462,23 +34856,20 @@ fn apply_never_executes_a_resource_whose_decision_was_rejected() {
     let f = decision_fixture(false);
     let state = f.with_pending_decision();
 
-    super::decide::cmd_decide(
-        &f.h.cli(),
-        f.h.printer(),
-        &crate::cli::startup::StartupDocument::load(&f.h.cli().config),
-        Some(super::DecideAction::Reject),
-        Some(&f.resource()),
-        None,
-        false,
-    )
+    crate::cli::RunContext::for_test(&f.h.cli(), f.h.printer(), |run| {
+        super::decide::cmd_decide(
+            run,
+            Some(super::DecideAction::Reject),
+            Some(&f.resource()),
+            None,
+            false,
+        )
+    })
     .unwrap();
 
-    super::apply::cmd_apply(
-        &f.h.cli(),
-        f.h.printer(),
-        &crate::cli::startup::StartupDocument::load(&f.h.cli().config),
-        &apply_args(false),
-    )
+    crate::cli::RunContext::for_test(&f.h.cli(), f.h.printer(), |run| {
+        super::apply::cmd_apply(run, &apply_args(false))
+    })
     .unwrap();
 
     assert!(f.kept.exists());
@@ -35514,12 +34905,9 @@ fn a_decision_never_withholds_what_the_operator_declares_themselves() {
         .unwrap();
     state.resolve_decision(&local_resource, "rejected").unwrap();
 
-    super::apply::cmd_apply(
-        &f.h.cli(),
-        f.h.printer(),
-        &crate::cli::startup::StartupDocument::load(&f.h.cli().config),
-        &apply_args(false),
-    )
+    crate::cli::RunContext::for_test(&f.h.cli(), f.h.printer(), |run| {
+        super::apply::cmd_apply(run, &apply_args(false))
+    })
     .unwrap();
 
     assert!(
@@ -35548,12 +34936,9 @@ fn a_decision_whose_source_is_not_subscribed_withholds_nothing() {
         .unwrap();
     state.resolve_decision(&f.resource(), "rejected").unwrap();
 
-    super::apply::cmd_apply(
-        &f.h.cli(),
-        f.h.printer(),
-        &crate::cli::startup::StartupDocument::load(&f.h.cli().config),
-        &apply_args(false),
-    )
+    crate::cli::RunContext::for_test(&f.h.cli(), f.h.printer(), |run| {
+        super::apply::cmd_apply(run, &apply_args(false))
+    })
     .unwrap();
 
     assert!(
@@ -35575,12 +34960,9 @@ fn apply_withholds_the_item_a_rejecting_policy_declines() {
     // new, and the daemon never declines it again.
     let f = decision_fixture_with(false, REJECTING_POLICY);
 
-    super::apply::cmd_apply(
-        &f.h.cli(),
-        f.h.printer(),
-        &crate::cli::startup::StartupDocument::load(&f.h.cli().config),
-        &apply_args(false),
-    )
+    crate::cli::RunContext::for_test(&f.h.cli(), f.h.printer(), |run| {
+        super::apply::cmd_apply(run, &apply_args(false))
+    })
     .unwrap();
     let output = cfgd_core::output::strip_ansi(&f.h.output());
 
@@ -35605,12 +34987,9 @@ fn apply_withholds_the_item_a_rejecting_policy_declines() {
 fn plan_withholds_the_item_a_rejecting_policy_declines() {
     let f = decision_fixture_with(false, REJECTING_POLICY);
 
-    super::plan::cmd_plan(
-        &f.h.cli(),
-        f.h.printer(),
-        &crate::cli::startup::StartupDocument::load(&f.h.cli().config),
-        &plan_args(),
-    )
+    crate::cli::RunContext::for_test(&f.h.cli(), f.h.printer(), |run| {
+        super::plan::cmd_plan(run, &plan_args())
+    })
     .unwrap();
     let output = cfgd_core::output::strip_ansi(&f.h.output());
 
@@ -35647,12 +35026,9 @@ fn a_module_only_run_on_a_broken_config_keeps_every_decision_row() {
         with_profile: false,
         ..apply_args(false)
     };
-    let _ = super::apply::cmd_apply(
-        &f.h.cli(),
-        f.h.printer(),
-        &crate::cli::startup::StartupDocument::load(&f.h.cli().config),
-        &args,
-    );
+    let _ = crate::cli::RunContext::for_test(&f.h.cli(), f.h.printer(), |run| {
+        super::apply::cmd_apply(run, &args)
+    });
 
     assert_eq!(
         state
@@ -35686,12 +35062,9 @@ fn a_foreign_config_with_its_own_state_dir_still_sweeps_dead_decision_rows() {
         )
         .unwrap();
 
-    super::apply::cmd_apply(
-        &f.h.cli(),
-        f.h.printer(),
-        &crate::cli::startup::StartupDocument::load(&f.h.cli().config),
-        &apply_args(false),
-    )
+    crate::cli::RunContext::for_test(&f.h.cli(), f.h.printer(), |run| {
+        super::apply::cmd_apply(run, &apply_args(false))
+    })
     .unwrap();
 
     assert_eq!(
@@ -35723,12 +35096,9 @@ fn apply_asks_about_a_source_item_no_run_has_seen_yet_instead_of_installing_it()
     // that makes it answerable.
     let f = decision_fixture_with(false, NOTIFYING_POLICY);
 
-    super::apply::cmd_apply(
-        &f.h.cli(),
-        f.h.printer(),
-        &crate::cli::startup::StartupDocument::load(&f.h.cli().config),
-        &apply_args(false),
-    )
+    crate::cli::RunContext::for_test(&f.h.cli(), f.h.printer(), |run| {
+        super::apply::cmd_apply(run, &apply_args(false))
+    })
     .unwrap();
     let output = cfgd_core::output::strip_ansi(&f.h.output());
 
@@ -35760,12 +35130,9 @@ fn apply_installs_the_item_once_its_freshly_minted_decision_is_accepted() {
     // The other half of the same window: the row an apply mints is a real one,
     // so answering it releases the item on the next apply.
     let f = decision_fixture_with(false, NOTIFYING_POLICY);
-    super::apply::cmd_apply(
-        &f.h.cli(),
-        f.h.printer(),
-        &crate::cli::startup::StartupDocument::load(&f.h.cli().config),
-        &apply_args(false),
-    )
+    crate::cli::RunContext::for_test(&f.h.cli(), f.h.printer(), |run| {
+        super::apply::cmd_apply(run, &apply_args(false))
+    })
     .unwrap();
 
     let state = super::open_state_store(Some(f.h.state_path()), cfgd_core::Scope::User).unwrap();
@@ -35775,12 +35142,9 @@ fn apply_installs_the_item_once_its_freshly_minted_decision_is_accepted() {
     );
     drop(state);
 
-    super::apply::cmd_apply(
-        &f.h.cli(),
-        f.h.printer(),
-        &crate::cli::startup::StartupDocument::load(&f.h.cli().config),
-        &apply_args(false),
-    )
+    crate::cli::RunContext::for_test(&f.h.cli(), f.h.printer(), |run| {
+        super::apply::cmd_apply(run, &apply_args(false))
+    })
     .unwrap();
     assert!(
         f.withheld.exists(),
@@ -35808,12 +35172,9 @@ fn an_apply_declined_at_the_prompt_records_nothing() {
         yes: false,
         ..apply_args(false)
     };
-    super::apply::cmd_apply(
-        &f.h.cli(),
-        &printer,
-        &crate::cli::startup::StartupDocument::load(&f.h.cli().config),
-        &args,
-    )
+    crate::cli::RunContext::for_test(&f.h.cli(), &printer, |run| {
+        super::apply::cmd_apply(run, &args)
+    })
     .unwrap();
     printer.flush();
     let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -35847,12 +35208,9 @@ fn plan_withholds_an_unrecorded_item_without_recording_it() {
     // set, but the row is left for the apply to mint.
     let f = decision_fixture_with(false, NOTIFYING_POLICY);
 
-    super::plan::cmd_plan(
-        &f.h.cli(),
-        f.h.printer(),
-        &crate::cli::startup::StartupDocument::load(&f.h.cli().config),
-        &plan_args(),
-    )
+    crate::cli::RunContext::for_test(&f.h.cli(), f.h.printer(), |run| {
+        super::plan::cmd_plan(run, &plan_args())
+    })
     .unwrap();
     let output = cfgd_core::output::strip_ansi(&f.h.output());
 
@@ -35897,12 +35255,9 @@ fn a_foreign_config_on_the_default_store_sweeps_none_of_its_decision_rows() {
         state_dir: None,
         ..f.h.cli()
     };
-    super::apply::cmd_apply(
-        &cli,
-        f.h.printer(),
-        &crate::cli::startup::StartupDocument::load(&cli.config),
-        &apply_args(false),
-    )
+    crate::cli::RunContext::for_test(&cli, f.h.printer(), |run| {
+        super::apply::cmd_apply(run, &apply_args(false))
+    })
     .unwrap();
 
     assert_eq!(
@@ -35960,12 +35315,9 @@ fn an_apply_naming_the_default_config_still_sweeps_dead_decision_rows() {
     };
     let (printer, _buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Quiet);
-    super::apply::cmd_apply(
-        &cli,
-        &printer,
-        &crate::cli::startup::StartupDocument::load(&cli.config),
-        &apply_args(false),
-    )
+    crate::cli::RunContext::for_test(&cli, &printer, |run| {
+        super::apply::cmd_apply(run, &apply_args(false))
+    })
     .unwrap();
 
     assert!(
@@ -35990,13 +35342,9 @@ fn status_lists_only_the_decisions_their_source_can_still_answer() {
         )
         .unwrap();
 
-    super::status::cmd_status(
-        &f.h.cli(),
-        f.h.printer(),
-        &crate::cli::startup::StartupDocument::load(&f.h.cli().config),
-        None,
-        super::status::StatusRun::default(),
-    )
+    crate::cli::RunContext::for_test(&f.h.cli(), f.h.printer(), |run| {
+        super::status::cmd_status(run, None, super::status::StatusRun::default())
+    })
     .unwrap();
     let output = cfgd_core::output::strip_ansi(&f.h.output());
 
@@ -36027,15 +35375,9 @@ fn decide_lists_only_the_decisions_their_source_can_still_answer() {
         )
         .unwrap();
 
-    super::decide::cmd_decide(
-        &f.h.cli(),
-        f.h.printer(),
-        &crate::cli::startup::StartupDocument::load(&f.h.cli().config),
-        Some(super::DecideAction::Accept),
-        None,
-        None,
-        false,
-    )
+    crate::cli::RunContext::for_test(&f.h.cli(), f.h.printer(), |run| {
+        super::decide::cmd_decide(run, Some(super::DecideAction::Accept), None, None, false)
+    })
     .unwrap();
     let output = cfgd_core::output::strip_ansi(&f.h.output());
 
@@ -36061,12 +35403,9 @@ fn decide_answers_an_item_no_run_has_recorded_yet() {
     let f = decision_fixture_with(false, NOTIFYING_POLICY);
     // A read-only plan classifies the item (and populates the source cache)
     // without recording anything.
-    super::plan::cmd_plan(
-        &f.h.cli(),
-        f.h.printer(),
-        &crate::cli::startup::StartupDocument::load(&f.h.cli().config),
-        &plan_args(),
-    )
+    crate::cli::RunContext::for_test(&f.h.cli(), f.h.printer(), |run| {
+        super::plan::cmd_plan(run, &plan_args())
+    })
     .unwrap();
     let state = super::open_state_store(Some(f.h.state_path()), cfgd_core::Scope::User).unwrap();
     assert!(
@@ -36076,15 +35415,15 @@ fn decide_answers_an_item_no_run_has_recorded_yet() {
 
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-    super::decide::cmd_decide(
-        &f.h.cli(),
-        &printer,
-        &crate::cli::startup::StartupDocument::load(&f.h.cli().config),
-        Some(super::DecideAction::Reject),
-        Some(&f.resource()),
-        None,
-        false,
-    )
+    crate::cli::RunContext::for_test(&f.h.cli(), &printer, |run| {
+        super::decide::cmd_decide(
+            run,
+            Some(super::DecideAction::Reject),
+            Some(&f.resource()),
+            None,
+            false,
+        )
+    })
     .unwrap();
     printer.flush();
     let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -36099,12 +35438,9 @@ fn decide_answers_an_item_no_run_has_recorded_yet() {
         state.pending_decisions().unwrap().is_empty(),
         "the minted row was resolved in the same step"
     );
-    super::apply::cmd_apply(
-        &f.h.cli(),
-        f.h.printer(),
-        &crate::cli::startup::StartupDocument::load(&f.h.cli().config),
-        &apply_args(false),
-    )
+    crate::cli::RunContext::for_test(&f.h.cli(), f.h.printer(), |run| {
+        super::apply::cmd_apply(run, &apply_args(false))
+    })
     .unwrap();
     assert!(f.kept.exists(), "the operator's own file still applies");
     assert!(
@@ -36121,25 +35457,16 @@ fn decide_lists_the_unrecorded_item_without_recording_it() {
     // item alongside the recorded rows so the surfaces agree, but mints
     // nothing until the operator actually answers.
     let f = decision_fixture_with(false, NOTIFYING_POLICY);
-    super::plan::cmd_plan(
-        &f.h.cli(),
-        f.h.printer(),
-        &crate::cli::startup::StartupDocument::load(&f.h.cli().config),
-        &plan_args(),
-    )
+    crate::cli::RunContext::for_test(&f.h.cli(), f.h.printer(), |run| {
+        super::plan::cmd_plan(run, &plan_args())
+    })
     .unwrap();
 
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-    super::decide::cmd_decide(
-        &f.h.cli(),
-        &printer,
-        &crate::cli::startup::StartupDocument::load(&f.h.cli().config),
-        Some(super::DecideAction::Accept),
-        None,
-        None,
-        false,
-    )
+    crate::cli::RunContext::for_test(&f.h.cli(), &printer, |run| {
+        super::decide::cmd_decide(run, Some(super::DecideAction::Accept), None, None, false)
+    })
     .unwrap();
     printer.flush();
     let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -36162,23 +35489,16 @@ fn status_lists_the_unrecorded_item_the_plan_withholds() {
     // the plan names under "Pending Decisions" is corroborated here rather
     // than denied.
     let f = decision_fixture_with(false, NOTIFYING_POLICY);
-    super::plan::cmd_plan(
-        &f.h.cli(),
-        f.h.printer(),
-        &crate::cli::startup::StartupDocument::load(&f.h.cli().config),
-        &plan_args(),
-    )
+    crate::cli::RunContext::for_test(&f.h.cli(), f.h.printer(), |run| {
+        super::plan::cmd_plan(run, &plan_args())
+    })
     .unwrap();
 
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-    super::status::cmd_status(
-        &f.h.cli(),
-        &printer,
-        &crate::cli::startup::StartupDocument::load(&f.h.cli().config),
-        None,
-        super::status::StatusRun::default(),
-    )
+    crate::cli::RunContext::for_test(&f.h.cli(), &printer, |run| {
+        super::status::cmd_status(run, None, super::status::StatusRun::default())
+    })
     .unwrap();
     printer.flush();
     let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -36208,25 +35528,22 @@ fn decide_answers_one_item_without_consuming_the_other_items_notification() {
         sibling: true,
         ..Default::default()
     });
-    super::plan::cmd_plan(
-        &f.h.cli(),
-        f.h.printer(),
-        &crate::cli::startup::StartupDocument::load(&f.h.cli().config),
-        &plan_args(),
-    )
+    crate::cli::RunContext::for_test(&f.h.cli(), f.h.printer(), |run| {
+        super::plan::cmd_plan(run, &plan_args())
+    })
     .unwrap();
 
     let (printer, _buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-    super::decide::cmd_decide(
-        &f.h.cli(),
-        &printer,
-        &crate::cli::startup::StartupDocument::load(&f.h.cli().config),
-        Some(super::DecideAction::Reject),
-        Some(&f.resource()),
-        None,
-        false,
-    )
+    crate::cli::RunContext::for_test(&f.h.cli(), &printer, |run| {
+        super::decide::cmd_decide(
+            run,
+            Some(super::DecideAction::Reject),
+            Some(&f.resource()),
+            None,
+            false,
+        )
+    })
     .unwrap();
 
     let state = super::open_state_store(Some(f.h.state_path()), cfgd_core::Scope::User).unwrap();
@@ -36259,12 +35576,9 @@ fn an_apply_with_nothing_else_to_do_still_records_the_withheld_item() {
         ..Default::default()
     });
 
-    super::apply::cmd_apply(
-        &f.h.cli(),
-        f.h.printer(),
-        &crate::cli::startup::StartupDocument::load(&f.h.cli().config),
-        &apply_args(false),
-    )
+    crate::cli::RunContext::for_test(&f.h.cli(), f.h.printer(), |run| {
+        super::apply::cmd_apply(run, &apply_args(false))
+    })
     .unwrap();
     let output = cfgd_core::output::strip_ansi(&f.h.output());
 
@@ -36303,12 +35617,9 @@ fn a_foreign_config_plan_names_the_truth_instead_of_a_decide_that_will_refuse() 
         ..f.h.cli()
     };
 
-    super::plan::cmd_plan(
-        &cli,
-        f.h.printer(),
-        &crate::cli::startup::StartupDocument::load(&cli.config),
-        &plan_args(),
-    )
+    crate::cli::RunContext::for_test(&cli, f.h.printer(), |run| {
+        super::plan::cmd_plan(run, &plan_args())
+    })
     .unwrap();
     let output = cfgd_core::output::strip_ansi(&f.h.output());
 
@@ -36349,12 +35660,9 @@ fn a_recorded_row_keeps_its_decide_instruction_on_every_config() {
         state_dir: None,
         ..f.h.cli()
     };
-    super::plan::cmd_plan(
-        &cli,
-        f.h.printer(),
-        &crate::cli::startup::StartupDocument::load(&cli.config),
-        &plan_args(),
-    )
+    crate::cli::RunContext::for_test(&cli, f.h.printer(), |run| {
+        super::plan::cmd_plan(run, &plan_args())
+    })
     .unwrap();
     let output = cfgd_core::output::strip_ansi(&f.h.output());
 
@@ -36385,12 +35693,9 @@ fn a_source_batch_under_a_dotted_custom_manager_is_withheld_fail_closed() {
         ..Default::default()
     });
 
-    super::plan::cmd_plan(
-        &f.h.cli(),
-        f.h.printer(),
-        &crate::cli::startup::StartupDocument::load(&f.h.cli().config),
-        &plan_args(),
-    )
+    crate::cli::RunContext::for_test(&f.h.cli(), f.h.printer(), |run| {
+        super::plan::cmd_plan(run, &plan_args())
+    })
     .unwrap();
     let json = f.h.json_output();
 
@@ -36422,12 +35727,9 @@ fn the_dotted_manager_withholding_warns_on_the_plan_the_operator_reads() {
         ..Default::default()
     });
 
-    super::plan::cmd_plan(
-        &f.h.cli(),
-        f.h.printer(),
-        &crate::cli::startup::StartupDocument::load(&f.h.cli().config),
-        &plan_args(),
-    )
+    crate::cli::RunContext::for_test(&f.h.cli(), f.h.printer(), |run| {
+        super::plan::cmd_plan(run, &plan_args())
+    })
     .unwrap();
     let output = cfgd_core::output::strip_ansi(&f.h.output());
     assert!(
@@ -36459,12 +35761,9 @@ fn a_local_declaration_under_a_dotted_manager_still_applies() {
         ..Default::default()
     });
 
-    super::plan::cmd_plan(
-        &f.h.cli(),
-        f.h.printer(),
-        &crate::cli::startup::StartupDocument::load(&f.h.cli().config),
-        &plan_args(),
-    )
+    crate::cli::RunContext::for_test(&f.h.cli(), f.h.printer(), |run| {
+        super::plan::cmd_plan(run, &plan_args())
+    })
     .unwrap();
     let json = f.h.json_output();
     assert!(
@@ -36501,12 +35800,9 @@ fn a_source_custom_manager_without_the_script_opt_in_aborts_a_machine_changing_r
         ..Default::default()
     });
 
-    let why = super::apply::cmd_apply(
-        &f.h.cli(),
-        f.h.printer(),
-        &crate::cli::startup::StartupDocument::load(&f.h.cli().config),
-        &apply_args(false),
-    )
+    let why = crate::cli::RunContext::for_test(&f.h.cli(), f.h.printer(), |run| {
+        super::apply::cmd_apply(run, &apply_args(false))
+    })
     .expect_err("a source shipping a custom manager needs the opt-in")
     .to_string();
     assert!(
@@ -36531,21 +35827,14 @@ fn a_source_custom_manager_without_the_script_opt_in_warns_on_a_read_only_run() 
     // only after a run that fetches; this one refuses AFTER the fetch.
     let (warm_printer, _warm) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-    super::apply::cmd_apply(
-        &f.h.cli(),
-        &warm_printer,
-        &crate::cli::startup::StartupDocument::load(&f.h.cli().config),
-        &apply_args(false),
-    )
+    crate::cli::RunContext::for_test(&f.h.cli(), &warm_printer, |run| {
+        super::apply::cmd_apply(run, &apply_args(false))
+    })
     .expect_err("the fetching run still refuses");
 
-    super::status::cmd_status(
-        &f.h.cli(),
-        f.h.printer(),
-        &crate::cli::startup::StartupDocument::load(&f.h.cli().config),
-        None,
-        super::status::StatusRun::default(),
-    )
+    crate::cli::RunContext::for_test(&f.h.cli(), f.h.printer(), |run| {
+        super::status::cmd_status(run, None, super::status::StatusRun::default())
+    })
     .unwrap();
     let output = cfgd_core::output::strip_ansi(&f.h.output());
     assert!(
@@ -36572,12 +35861,9 @@ fn plan_previews_an_installed_source_package_as_included_and_mints_nothing() {
         ..Default::default()
     });
 
-    super::plan::cmd_plan(
-        &f.h.cli(),
-        f.h.printer(),
-        &crate::cli::startup::StartupDocument::load(&f.h.cli().config),
-        &plan_args(),
-    )
+    crate::cli::RunContext::for_test(&f.h.cli(), f.h.printer(), |run| {
+        super::plan::cmd_plan(run, &plan_args())
+    })
     .unwrap();
     let json = f.h.json_output();
 
@@ -36624,12 +35910,9 @@ fn apply_records_an_installed_source_package_as_auto_accepted() {
         ..Default::default()
     });
 
-    super::apply::cmd_apply(
-        &f.h.cli(),
-        f.h.printer(),
-        &crate::cli::startup::StartupDocument::load(&f.h.cli().config),
-        &apply_args(false),
-    )
+    crate::cli::RunContext::for_test(&f.h.cli(), f.h.printer(), |run| {
+        super::apply::cmd_apply(run, &apply_args(false))
+    })
     .unwrap();
 
     let state = super::open_state_store(Some(f.h.state_path()), cfgd_core::Scope::User).unwrap();
@@ -36679,12 +35962,9 @@ fn a_replay_still_auto_accepts_a_source_package_the_machine_already_holds() {
     let plan_file = f.h.state_path().join("plan.json");
     let (plan_printer, cap) =
         cfgd_core::output::Printer::for_test_doc_with_format(cfgd_core::output::OutputFormat::Json);
-    super::plan::cmd_plan(
-        &f.h.cli(),
-        &plan_printer,
-        &crate::cli::startup::StartupDocument::load(&f.h.cli().config),
-        &plan_args(),
-    )
+    crate::cli::RunContext::for_test(&f.h.cli(), &plan_printer, |run| {
+        super::plan::cmd_plan(run, &plan_args())
+    })
     .unwrap();
     drop(plan_printer);
     let payload = cap.json().expect("the plan emits a payload");
@@ -36698,12 +35978,9 @@ fn a_replay_still_auto_accepts_a_source_package_the_machine_already_holds() {
         plan: Some(plan_file),
         ..apply_args(false)
     };
-    super::apply::cmd_apply(
-        &f.h.cli(),
-        f.h.printer(),
-        &crate::cli::startup::StartupDocument::load(&f.h.cli().config),
-        &args,
-    )
+    crate::cli::RunContext::for_test(&f.h.cli(), f.h.printer(), |run| {
+        super::apply::cmd_apply(run, &args)
+    })
     .unwrap();
 
     let state = super::open_state_store(Some(f.h.state_path()), cfgd_core::Scope::User).unwrap();
@@ -36746,12 +36023,9 @@ fn a_declined_apply_records_no_auto_accepted_row() {
         yes: false,
         ..apply_args(false)
     };
-    super::apply::cmd_apply(
-        &f.h.cli(),
-        &printer,
-        &crate::cli::startup::StartupDocument::load(&f.h.cli().config),
-        &args,
-    )
+    crate::cli::RunContext::for_test(&f.h.cli(), &printer, |run| {
+        super::apply::cmd_apply(run, &args)
+    })
     .unwrap();
     printer.flush();
     let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -36784,12 +36058,9 @@ fn a_version_conflict_annotates_the_pending_row_in_the_plan_payload() {
         ..Default::default()
     });
 
-    super::plan::cmd_plan(
-        &f.h.cli(),
-        f.h.printer(),
-        &crate::cli::startup::StartupDocument::load(&f.h.cli().config),
-        &plan_args(),
-    )
+    crate::cli::RunContext::for_test(&f.h.cli(), f.h.printer(), |run| {
+        super::plan::cmd_plan(run, &plan_args())
+    })
     .unwrap();
     let json = f.h.json_output();
     let row = json["pendingDecisions"]
@@ -36825,21 +36096,14 @@ fn the_version_conflict_annotation_reaches_the_status_dashboard() {
     });
     let (apply_printer, _buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-    super::apply::cmd_apply(
-        &f.h.cli(),
-        &apply_printer,
-        &crate::cli::startup::StartupDocument::load(&f.h.cli().config),
-        &apply_args(false),
-    )
+    crate::cli::RunContext::for_test(&f.h.cli(), &apply_printer, |run| {
+        super::apply::cmd_apply(run, &apply_args(false))
+    })
     .unwrap();
 
-    super::status::cmd_status(
-        &f.h.cli(),
-        f.h.printer(),
-        &crate::cli::startup::StartupDocument::load(&f.h.cli().config),
-        None,
-        super::status::StatusRun::default(),
-    )
+    crate::cli::RunContext::for_test(&f.h.cli(), f.h.printer(), |run| {
+        super::status::cmd_status(run, None, super::status::StatusRun::default())
+    })
     .unwrap();
     let output = cfgd_core::output::strip_ansi(&f.h.output());
     assert!(
@@ -36862,23 +36126,14 @@ fn the_version_conflict_annotation_reaches_the_decide_listing() {
     });
     let (apply_printer, _buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-    super::apply::cmd_apply(
-        &f.h.cli(),
-        &apply_printer,
-        &crate::cli::startup::StartupDocument::load(&f.h.cli().config),
-        &apply_args(false),
-    )
+    crate::cli::RunContext::for_test(&f.h.cli(), &apply_printer, |run| {
+        super::apply::cmd_apply(run, &apply_args(false))
+    })
     .unwrap();
 
-    super::decide::cmd_decide(
-        &f.h.cli(),
-        f.h.printer(),
-        &crate::cli::startup::StartupDocument::load(&f.h.cli().config),
-        Some(super::DecideAction::Accept),
-        None,
-        None,
-        false,
-    )
+    crate::cli::RunContext::for_test(&f.h.cli(), f.h.printer(), |run| {
+        super::decide::cmd_decide(run, Some(super::DecideAction::Accept), None, None, false)
+    })
     .unwrap();
     let json = f.h.json_output();
     assert!(
@@ -36912,21 +36167,14 @@ fn status_names_the_undecidable_source_batch_in_warnings() {
     // offline), so the source's layers exist only after a run that fetches.
     let (warm_printer, _warm) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-    super::plan::cmd_plan(
-        &f.h.cli(),
-        &warm_printer,
-        &crate::cli::startup::StartupDocument::load(&f.h.cli().config),
-        &plan_args(),
-    )
+    crate::cli::RunContext::for_test(&f.h.cli(), &warm_printer, |run| {
+        super::plan::cmd_plan(run, &plan_args())
+    })
     .unwrap();
 
-    super::status::cmd_status(
-        &f.h.cli(),
-        f.h.printer(),
-        &crate::cli::startup::StartupDocument::load(&f.h.cli().config),
-        None,
-        super::status::StatusRun::default(),
-    )
+    crate::cli::RunContext::for_test(&f.h.cli(), f.h.printer(), |run| {
+        super::status::cmd_status(run, None, super::status::StatusRun::default())
+    })
     .unwrap();
     let json = f.h.json_output();
     let warnings = json["warnings"]
@@ -36954,21 +36202,14 @@ fn status_renders_the_undecidable_batch_warning_for_the_operator() {
     // offline), so the source's layers exist only after a run that fetches.
     let (warm_printer, _warm) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-    super::plan::cmd_plan(
-        &f.h.cli(),
-        &warm_printer,
-        &crate::cli::startup::StartupDocument::load(&f.h.cli().config),
-        &plan_args(),
-    )
+    crate::cli::RunContext::for_test(&f.h.cli(), &warm_printer, |run| {
+        super::plan::cmd_plan(run, &plan_args())
+    })
     .unwrap();
 
-    super::status::cmd_status(
-        &f.h.cli(),
-        f.h.printer(),
-        &crate::cli::startup::StartupDocument::load(&f.h.cli().config),
-        None,
-        super::status::StatusRun::default(),
-    )
+    crate::cli::RunContext::for_test(&f.h.cli(), f.h.printer(), |run| {
+        super::status::cmd_status(run, None, super::status::StatusRun::default())
+    })
     .unwrap();
     let output = cfgd_core::output::strip_ansi(&f.h.output());
     assert!(
@@ -36994,23 +36235,14 @@ fn decide_listing_names_the_undecidable_source_batch() {
     // offline), so the source's layers exist only after a run that fetches.
     let (warm_printer, _warm) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-    super::plan::cmd_plan(
-        &f.h.cli(),
-        &warm_printer,
-        &crate::cli::startup::StartupDocument::load(&f.h.cli().config),
-        &plan_args(),
-    )
+    crate::cli::RunContext::for_test(&f.h.cli(), &warm_printer, |run| {
+        super::plan::cmd_plan(run, &plan_args())
+    })
     .unwrap();
 
-    super::decide::cmd_decide(
-        &f.h.cli(),
-        f.h.printer(),
-        &crate::cli::startup::StartupDocument::load(&f.h.cli().config),
-        Some(super::DecideAction::Accept),
-        None,
-        None,
-        false,
-    )
+    crate::cli::RunContext::for_test(&f.h.cli(), f.h.printer(), |run| {
+        super::decide::cmd_decide(run, Some(super::DecideAction::Accept), None, None, false)
+    })
     .unwrap();
     let json = f.h.json_output();
     let warnings = json["warnings"]
@@ -37038,23 +36270,14 @@ fn decide_listing_renders_the_undecidable_batch_warning() {
     // offline), so the source's layers exist only after a run that fetches.
     let (warm_printer, _warm) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-    super::plan::cmd_plan(
-        &f.h.cli(),
-        &warm_printer,
-        &crate::cli::startup::StartupDocument::load(&f.h.cli().config),
-        &plan_args(),
-    )
+    crate::cli::RunContext::for_test(&f.h.cli(), &warm_printer, |run| {
+        super::plan::cmd_plan(run, &plan_args())
+    })
     .unwrap();
 
-    super::decide::cmd_decide(
-        &f.h.cli(),
-        f.h.printer(),
-        &crate::cli::startup::StartupDocument::load(&f.h.cli().config),
-        Some(super::DecideAction::Accept),
-        None,
-        None,
-        false,
-    )
+    crate::cli::RunContext::for_test(&f.h.cli(), f.h.printer(), |run| {
+        super::decide::cmd_decide(run, Some(super::DecideAction::Accept), None, None, false)
+    })
     .unwrap();
     let output = cfgd_core::output::strip_ansi(&f.h.output());
     assert!(
@@ -37088,13 +36311,9 @@ fn status_still_renders_when_the_source_classification_is_unreadable() {
 
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-    super::status::cmd_status(
-        &f.h.cli(),
-        &printer,
-        &crate::cli::startup::StartupDocument::load(&f.h.cli().config),
-        None,
-        super::status::StatusRun::default(),
-    )
+    crate::cli::RunContext::for_test(&f.h.cli(), &printer, |run| {
+        super::status::cmd_status(run, None, super::status::StatusRun::default())
+    })
     .expect("a read-only dashboard renders through a classification failure");
     printer.flush();
     let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -37123,13 +36342,9 @@ fn a_degraded_status_json_payload_says_so_structurally() {
     });
     write_broken_manifest(&f.h);
 
-    super::status::cmd_status(
-        &f.h.cli(),
-        f.h.printer(),
-        &crate::cli::startup::StartupDocument::load(&f.h.cli().config),
-        None,
-        super::status::StatusRun::default(),
-    )
+    crate::cli::RunContext::for_test(&f.h.cli(), f.h.printer(), |run| {
+        super::status::cmd_status(run, None, super::status::StatusRun::default())
+    })
     .expect("a read-only dashboard renders through a classification failure");
     let json = f.h.json_output();
     assert_eq!(
@@ -37158,13 +36373,9 @@ fn a_clean_status_json_payload_marks_classification_undegraded() {
         extra_spec: NOTIFYING_POLICY,
         ..Default::default()
     });
-    super::status::cmd_status(
-        &f.h.cli(),
-        f.h.printer(),
-        &crate::cli::startup::StartupDocument::load(&f.h.cli().config),
-        None,
-        super::status::StatusRun::default(),
-    )
+    crate::cli::RunContext::for_test(&f.h.cli(), f.h.printer(), |run| {
+        super::status::cmd_status(run, None, super::status::StatusRun::default())
+    })
     .expect("a clean classification renders");
     let json = f.h.json_output();
     assert_eq!(
@@ -37198,15 +36409,9 @@ fn a_degraded_decide_json_listing_says_so_structurally() {
     write_broken_manifest(&f.h);
     f.with_pending_decision();
 
-    super::decide::cmd_decide(
-        &f.h.cli(),
-        f.h.printer(),
-        &crate::cli::startup::StartupDocument::load(&f.h.cli().config),
-        Some(super::DecideAction::Accept),
-        None,
-        None,
-        false,
-    )
+    crate::cli::RunContext::for_test(&f.h.cli(), f.h.printer(), |run| {
+        super::decide::cmd_decide(run, Some(super::DecideAction::Accept), None, None, false)
+    })
     .expect("a degraded listing renders, it does not refuse");
     let json = f.h.json_output();
     assert_eq!(
@@ -37243,15 +36448,9 @@ fn a_clean_decide_json_listing_marks_classification_undegraded() {
         extra_spec: NOTIFYING_POLICY,
         ..Default::default()
     });
-    super::decide::cmd_decide(
-        &f.h.cli(),
-        f.h.printer(),
-        &crate::cli::startup::StartupDocument::load(&f.h.cli().config),
-        Some(super::DecideAction::Accept),
-        None,
-        None,
-        false,
-    )
+    crate::cli::RunContext::for_test(&f.h.cli(), f.h.printer(), |run| {
+        super::decide::cmd_decide(run, Some(super::DecideAction::Accept), None, None, false)
+    })
     .expect("a clean listing renders");
     let json = f.h.json_output();
     assert_eq!(
@@ -37293,13 +36492,9 @@ fn a_sourceless_status_skips_source_classification_entirely() {
 
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-    super::status::cmd_status(
-        &h.cli(),
-        &printer,
-        &crate::cli::startup::StartupDocument::load(&h.cli().config),
-        None,
-        super::status::StatusRun::default(),
-    )
+    crate::cli::RunContext::for_test(&h.cli(), &printer, |run| {
+        super::status::cmd_status(run, None, super::status::StatusRun::default())
+    })
     .expect("no sources, no classification, no failure");
     printer.flush();
     let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -37332,15 +36527,15 @@ fn a_sourceless_decide_answers_the_store_without_classifying() {
 
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-    super::decide::cmd_decide(
-        &h.cli(),
-        &printer,
-        &crate::cli::startup::StartupDocument::load(&h.cli().config),
-        Some(super::DecideAction::Accept),
-        Some("no.such.resource"),
-        None,
-        false,
-    )
+    crate::cli::RunContext::for_test(&h.cli(), &printer, |run| {
+        super::decide::cmd_decide(
+            run,
+            Some(super::DecideAction::Accept),
+            Some("no.such.resource"),
+            None,
+            false,
+        )
+    })
     .expect("no sources, no classification, no refusal");
     printer.flush();
     let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -37366,15 +36561,15 @@ fn a_degraded_decide_refuses_rather_than_denying_the_decision_exists() {
 
     let (printer, _buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-    let err = super::decide::cmd_decide(
-        &f.h.cli(),
-        &printer,
-        &crate::cli::startup::StartupDocument::load(&f.h.cli().config),
-        Some(super::DecideAction::Accept),
-        Some(&f.resource()),
-        None,
-        false,
-    )
+    let err = crate::cli::RunContext::for_test(&f.h.cli(), &printer, |run| {
+        super::decide::cmd_decide(
+            run,
+            Some(super::DecideAction::Accept),
+            Some(&f.resource()),
+            None,
+            false,
+        )
+    })
     .expect_err("an unanswerable resolve refuses instead of reporting not-found");
     let msg = format!("{err:#}");
 
@@ -37405,15 +36600,9 @@ fn a_degraded_decide_listing_still_shows_the_recorded_rows() {
 
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-    super::decide::cmd_decide(
-        &f.h.cli(),
-        &printer,
-        &crate::cli::startup::StartupDocument::load(&f.h.cli().config),
-        Some(super::DecideAction::Accept),
-        None,
-        None,
-        false,
-    )
+    crate::cli::RunContext::for_test(&f.h.cli(), &printer, |run| {
+        super::decide::cmd_decide(run, Some(super::DecideAction::Accept), None, None, false)
+    })
     .expect("a degraded listing renders, it does not refuse");
     printer.flush();
     let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -37443,15 +36632,15 @@ fn decide_still_answers_a_recorded_row_when_the_picture_is_unreadable() {
 
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-    super::decide::cmd_decide(
-        &f.h.cli(),
-        &printer,
-        &crate::cli::startup::StartupDocument::load(&f.h.cli().config),
-        Some(super::DecideAction::Accept),
-        Some(&f.resource()),
-        None,
-        false,
-    )
+    crate::cli::RunContext::for_test(&f.h.cli(), &printer, |run| {
+        super::decide::cmd_decide(
+            run,
+            Some(super::DecideAction::Accept),
+            Some(&f.resource()),
+            None,
+            false,
+        )
+    })
     .unwrap();
     printer.flush();
     let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -37471,21 +36660,14 @@ fn status_payload_marks_the_unrecorded_decision_with_id_zero() {
     let f = decision_fixture_with(true, NOTIFYING_POLICY);
     let (plan_printer, _buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-    super::plan::cmd_plan(
-        &f.h.cli(),
-        &plan_printer,
-        &crate::cli::startup::StartupDocument::load(&f.h.cli().config),
-        &plan_args(),
-    )
+    crate::cli::RunContext::for_test(&f.h.cli(), &plan_printer, |run| {
+        super::plan::cmd_plan(run, &plan_args())
+    })
     .unwrap();
 
-    super::status::cmd_status(
-        &f.h.cli(),
-        f.h.printer(),
-        &crate::cli::startup::StartupDocument::load(&f.h.cli().config),
-        None,
-        super::status::StatusRun::default(),
-    )
+    crate::cli::RunContext::for_test(&f.h.cli(), f.h.printer(), |run| {
+        super::status::cmd_status(run, None, super::status::StatusRun::default())
+    })
     .unwrap();
     let json = f.h.json_output();
 
@@ -37518,23 +36700,14 @@ fn decide_listing_payload_marks_the_unrecorded_item_with_id_zero() {
     let f = decision_fixture_with(true, NOTIFYING_POLICY);
     let (plan_printer, _buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-    super::plan::cmd_plan(
-        &f.h.cli(),
-        &plan_printer,
-        &crate::cli::startup::StartupDocument::load(&f.h.cli().config),
-        &plan_args(),
-    )
+    crate::cli::RunContext::for_test(&f.h.cli(), &plan_printer, |run| {
+        super::plan::cmd_plan(run, &plan_args())
+    })
     .unwrap();
 
-    super::decide::cmd_decide(
-        &f.h.cli(),
-        f.h.printer(),
-        &crate::cli::startup::StartupDocument::load(&f.h.cli().config),
-        Some(super::DecideAction::Accept),
-        None,
-        None,
-        false,
-    )
+    crate::cli::RunContext::for_test(&f.h.cli(), f.h.printer(), |run| {
+        super::decide::cmd_decide(run, Some(super::DecideAction::Accept), None, None, false)
+    })
     .unwrap();
     let json = f.h.json_output();
 
@@ -37560,12 +36733,9 @@ fn dry_run_apply_previews_the_pruned_plan() {
     let f = decision_fixture(false);
     f.with_pending_decision();
 
-    super::apply::cmd_apply(
-        &f.h.cli(),
-        f.h.printer(),
-        &crate::cli::startup::StartupDocument::load(&f.h.cli().config),
-        &apply_args(true),
-    )
+    crate::cli::RunContext::for_test(&f.h.cli(), f.h.printer(), |run| {
+        super::apply::cmd_apply(run, &apply_args(true))
+    })
     .unwrap();
     let output = cfgd_core::output::strip_ansi(&f.h.output());
 
@@ -37611,13 +36781,8 @@ fn a_module_scoped_apply_records_its_modules_not_a_profile_placeholder() {
         context: "apply".to_string(),
         shell: None,
     };
-    super::apply::cmd_apply(
-        &cli,
-        &printer,
-        &crate::cli::startup::StartupDocument::load(&cli.config),
-        &args,
-    )
-    .unwrap();
+    crate::cli::RunContext::for_test(&cli, &printer, |run| super::apply::cmd_apply(run, &args))
+        .unwrap();
 
     let state = cfgd_core::state::StateStore::open(&state_dir.path().join("state.db")).unwrap();
     let history = state.history(1).unwrap();
@@ -37672,13 +36837,8 @@ fn an_adopted_file_is_copied_aside_by_a_real_apply() {
         context: "apply".to_string(),
         shell: None,
     };
-    super::apply::cmd_apply(
-        &cli,
-        &printer,
-        &crate::cli::startup::StartupDocument::load(&cli.config),
-        &args,
-    )
-    .unwrap();
+    crate::cli::RunContext::for_test(&cli, &printer, |run| super::apply::cmd_apply(run, &args))
+        .unwrap();
 
     assert_eq!(
         std::fs::read_to_string(target_dir.path().join("app.conf.cfgd-backup")).unwrap(),
@@ -45864,13 +45024,8 @@ fn the_doctor_payload_spells_the_home_directory_absolutely() {
     };
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
-    super::doctor::run_doctor(
-        &cli,
-        &printer,
-        &crate::cli::startup::StartupDocument::load(&cli.config),
-        false,
-    )
-    .expect("doctor runs against a config under home");
+    crate::cli::RunContext::for_test(&cli, &printer, |run| super::doctor::run_doctor(run, false))
+        .expect("doctor runs against a config under home");
     printer.flush();
 
     let payload = cfgd_core::test_helpers::captured_text(&buf);
@@ -48059,13 +47214,8 @@ fn doctor_fix_installs_every_missing_tool_through_the_tool_table() {
     let cli = test_cli(dir.path());
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-    super::doctor::run_doctor(
-        &cli,
-        &printer,
-        &crate::cli::startup::StartupDocument::load(&cli.config),
-        true,
-    )
-    .unwrap();
+    crate::cli::RunContext::for_test(&cli, &printer, |run| super::doctor::run_doctor(run, true))
+        .unwrap();
     printer.flush();
 
     let argv = shim.argv_log();
@@ -48106,13 +47256,8 @@ fn doctor_without_fix_installs_nothing() {
     let cli = test_cli(dir.path());
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-    super::doctor::run_doctor(
-        &cli,
-        &printer,
-        &crate::cli::startup::StartupDocument::load(&cli.config),
-        false,
-    )
-    .unwrap();
+    crate::cli::RunContext::for_test(&cli, &printer, |run| super::doctor::run_doctor(run, false))
+        .unwrap();
     printer.flush();
 
     assert!(
@@ -49423,16 +48568,16 @@ fn a_status_scan_reports_an_erroring_system_check_as_its_own_row() {
     let h = CliTestHarness::builder()
         .profile("default", GPG_CHECK_PROFILE_YAML)
         .build();
-    super::status::cmd_status(
-        &h.cli(),
-        h.printer(),
-        &crate::cli::startup::StartupDocument::load(&h.cli().config),
-        None,
-        super::status::StatusRun {
-            scan: true,
-            ..super::status::StatusRun::default()
-        },
-    )
+    crate::cli::RunContext::for_test(&h.cli(), h.printer(), |run| {
+        super::status::cmd_status(
+            run,
+            None,
+            super::status::StatusRun {
+                scan: true,
+                ..super::status::StatusRun::default()
+            },
+        )
+    })
     .unwrap();
     h.assert_output_contains("gpgKeys");
     h.assert_output_contains("error checking drift");
@@ -49453,16 +48598,16 @@ fn a_status_scan_carries_an_erroring_check_in_its_json_payload() {
         .json()
         .profile("default", GPG_CHECK_PROFILE_YAML)
         .build();
-    super::status::cmd_status(
-        &h.cli(),
-        h.printer(),
-        &crate::cli::startup::StartupDocument::load(&h.cli().config),
-        None,
-        super::status::StatusRun {
-            scan: true,
-            ..super::status::StatusRun::default()
-        },
-    )
+    crate::cli::RunContext::for_test(&h.cli(), h.printer(), |run| {
+        super::status::cmd_status(
+            run,
+            None,
+            super::status::StatusRun {
+                scan: true,
+                ..super::status::StatusRun::default()
+            },
+        )
+    })
     .unwrap();
     let parsed = h.json_output();
     let errors = parsed
@@ -49518,26 +48663,22 @@ fn diff_and_scan_agree_on_the_findings() {
     };
 
     let (diff_rows, diff_out) = drift_rows(&|h: &CliTestHarness| {
-        super::diff::cmd_diff(
-            &h.cli(),
-            h.printer(),
-            &crate::cli::startup::StartupDocument::load(&h.cli().config),
-            None,
-            false,
-        )
+        crate::cli::RunContext::for_test(&h.cli(), h.printer(), |run| {
+            super::diff::cmd_diff(run, None, false)
+        })
         .unwrap();
     });
     let (scan_rows, scan_out) = drift_rows(&|h: &CliTestHarness| {
-        super::status::cmd_status(
-            &h.cli(),
-            h.printer(),
-            &crate::cli::startup::StartupDocument::load(&h.cli().config),
-            None,
-            super::status::StatusRun {
-                scan: true,
-                ..super::status::StatusRun::default()
-            },
-        )
+        crate::cli::RunContext::for_test(&h.cli(), h.printer(), |run| {
+            super::status::cmd_status(
+                run,
+                None,
+                super::status::StatusRun {
+                    scan: true,
+                    ..super::status::StatusRun::default()
+                },
+            )
+        })
         .unwrap();
     });
 
@@ -50718,12 +49859,9 @@ fn a_backup_run_prunes_to_the_retention_the_cluster_projected() {
     let (config_dir, state_dir) = backup_projection_env(5, Some(2), 4);
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
     let printer = test_printer();
-    super::backup::run_backup_run(
-        &cli,
-        &printer,
-        &crate::cli::startup::StartupDocument::load(&cli.config),
-        Some("docs"),
-    )
+    crate::cli::RunContext::for_test(&cli, &printer, |run| {
+        super::backup::run_backup_run(run, Some("docs"))
+    })
     .unwrap();
     assert_eq!(
         snapshots_kept(state_dir.path()),
@@ -50740,12 +49878,9 @@ fn a_backup_run_keeps_what_a_raised_cluster_retention_keeps() {
     let (config_dir, state_dir) = backup_projection_env(2, Some(5), 4);
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
     let printer = test_printer();
-    super::backup::run_backup_run(
-        &cli,
-        &printer,
-        &crate::cli::startup::StartupDocument::load(&cli.config),
-        Some("docs"),
-    )
+    crate::cli::RunContext::for_test(&cli, &printer, |run| {
+        super::backup::run_backup_run(run, Some("docs"))
+    })
     .unwrap();
     assert_eq!(
         snapshots_kept(state_dir.path()),
@@ -50779,13 +49914,8 @@ fn an_apply_prunes_its_backups_to_the_retention_the_cluster_projected() {
         context: "apply".to_string(),
         shell: None,
     };
-    super::apply::run_apply(
-        &cli,
-        &printer,
-        &crate::cli::startup::StartupDocument::load(&cli.config),
-        &args,
-    )
-    .unwrap();
+    crate::cli::RunContext::for_test(&cli, &printer, |run| super::apply::run_apply(run, &args))
+        .unwrap();
     assert_eq!(
         snapshots_kept(state_dir.path()),
         2,
@@ -54246,12 +53376,9 @@ impl FloorFixture {
             yes: true,
             ..self.h.cli()
         };
-        super::plan::cmd_plan(
-            &cli,
-            &printer,
-            &crate::cli::startup::StartupDocument::load(&cli.config),
-            &self.plan_args(),
-        )
+        crate::cli::RunContext::for_test(&cli, &printer, |run| {
+            super::plan::cmd_plan(run, &self.plan_args())
+        })
         .unwrap();
         drop(printer);
         let payload = capture.json().expect("a plan doc carries a payload");
@@ -54279,12 +53406,9 @@ impl FloorFixture {
     /// Replay `path` through the real `cfgd apply --plan` read path, with no
     /// `--yes` anywhere: the file is the only approval in the run.
     fn run_replay(&self, path: &Path) -> anyhow::Result<()> {
-        super::apply::cmd_apply(
-            &self.h.cli(),
-            self.h.printer(),
-            &crate::cli::startup::StartupDocument::load(&self.h.cli().config),
-            &Self::replay_args(path),
-        )
+        crate::cli::RunContext::for_test(&self.h.cli(), self.h.printer(), |run| {
+            super::apply::cmd_apply(run, &Self::replay_args(path))
+        })
     }
 
     /// The plan object that same replay resolved, as the run itself serialized
@@ -54300,12 +53424,9 @@ impl FloorFixture {
         let (printer, capture) = cfgd_core::output::Printer::for_test_doc_with_format(
             cfgd_core::output::OutputFormat::Json,
         );
-        super::apply::cmd_apply(
-            &self.h.cli(),
-            &printer,
-            &crate::cli::startup::StartupDocument::load(&self.h.cli().config),
-            &Self::replay_args(path),
-        )
+        crate::cli::RunContext::for_test(&self.h.cli(), &printer, |run| {
+            super::apply::cmd_apply(run, &Self::replay_args(path))
+        })
         .unwrap_or_else(|e| panic!("what the file carries is what runs: {e}"));
         drop(printer);
         saved_plan_object(&capture.json().expect("an apply preview carries a payload"))
@@ -54341,48 +53462,44 @@ impl FloorFixture {
             ..self.h.cli()
         };
         match verb {
-            "plan" => super::plan::cmd_plan(
-                &cli,
-                self.h.printer(),
-                &crate::cli::startup::StartupDocument::load(&cli.config),
-                &PlanArgs {
-                    from: None,
-                    phase: None,
-                    skip: vec![],
-                    only: vec![],
-                    module: vec![],
-                    with_profile: false,
-                    skip_scripts: false,
-                    context: "apply".to_string(),
-                },
-            ),
-            "apply" => super::apply::cmd_apply(
-                &cli,
-                self.h.printer(),
-                &crate::cli::startup::StartupDocument::load(&cli.config),
-                &ApplyArgs {
-                    plan: None,
-                    on_conflict: crate::cli::OnConflict::Ask,
-                    from: None,
-                    dry_run: true,
-                    phase: None,
-                    yes,
-                    skip: vec![],
-                    only: vec![],
-                    module: vec![],
-                    with_profile: false,
-                    skip_scripts: false,
-                    context: "apply".to_string(),
-                    shell: None,
-                },
-            ),
-            "verify" => super::verify::cmd_verify(
-                &cli,
-                self.h.printer(),
-                &crate::cli::startup::StartupDocument::load(&cli.config),
-                None,
-                false,
-            ),
+            "plan" => crate::cli::RunContext::for_test(&cli, self.h.printer(), |run| {
+                super::plan::cmd_plan(
+                    run,
+                    &PlanArgs {
+                        from: None,
+                        phase: None,
+                        skip: vec![],
+                        only: vec![],
+                        module: vec![],
+                        with_profile: false,
+                        skip_scripts: false,
+                        context: "apply".to_string(),
+                    },
+                )
+            }),
+            "apply" => crate::cli::RunContext::for_test(&cli, self.h.printer(), |run| {
+                super::apply::cmd_apply(
+                    run,
+                    &ApplyArgs {
+                        plan: None,
+                        on_conflict: crate::cli::OnConflict::Ask,
+                        from: None,
+                        dry_run: true,
+                        phase: None,
+                        yes,
+                        skip: vec![],
+                        only: vec![],
+                        module: vec![],
+                        with_profile: false,
+                        skip_scripts: false,
+                        context: "apply".to_string(),
+                        shell: None,
+                    },
+                )
+            }),
+            "verify" => crate::cli::RunContext::for_test(&cli, self.h.printer(), |run| {
+                super::verify::cmd_verify(run, None, false)
+            }),
             other => panic!("the fixture drives plan, apply and verify alone: {other}"),
         }
     }

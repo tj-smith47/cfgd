@@ -433,6 +433,16 @@ pub(in crate::cli) fn resolve_profile_for(
     }
 }
 
+/// The config, the profile a run applies, the resolved profile's name (none
+/// for an isolated `--module` run) and whether the config came from the
+/// document (false when an isolated run fell back to an empty config).
+pub(in crate::cli) type ModuleScopedLoad<'a> = (
+    std::borrow::Cow<'a, CfgdConfig>,
+    std::borrow::Cow<'a, ResolvedProfile>,
+    Option<String>,
+    bool,
+);
+
 /// Load config and resolve a profile, with the `--module` isolate mode
 /// shared by `cmd_apply` and `cmd_plan`: when `module_filter` names one or
 /// more modules and `with_profile` is false, the run is ISOLATED from the
@@ -442,35 +452,34 @@ pub(in crate::cli) fn resolve_profile_for(
 /// --with-profile` (or no `--module` at all) behaves exactly like a normal
 /// run: the active profile must resolve, same as `cfgd apply` with no flags.
 ///
-/// Loads (and drains) `cli.config` EXACTLY ONCE regardless of which branch
-/// is taken. The two call sites this replaces each called
-/// `load_config_and_profile` (load + drain #1), and on its `Err` re-parsed
-/// the same file a second time to build the module-only fallback (load +
-/// drain #2) — the same legacy-key deprecation notice landing on the
-/// user's terminal twice for one `apply --module x` / `plan --module x`
-/// invocation.
-pub(in crate::cli) fn load_config_and_profile_module_scoped(
-    cli: &Cli,
-    printer: &Printer,
+/// Reads (and drains) the run's config EXACTLY ONCE regardless of which
+/// branch is taken, so a legacy-key deprecation notice lands on the user's
+/// terminal once for one `apply --module x` / `plan --module x` invocation.
+pub(in crate::cli) fn load_config_and_profile_module_scoped<'a>(
+    run: &'a RunContext<'_>,
     module_filter: &[String],
     with_profile: bool,
-) -> anyhow::Result<(CfgdConfig, ResolvedProfile, Option<String>, bool)> {
+) -> anyhow::Result<ModuleScopedLoad<'a>> {
+    use std::borrow::Cow;
     if module_filter.is_empty() || with_profile {
-        let (cfg, profile_name, resolved) = load_config_and_profile(cli, printer)?;
-        return Ok((cfg, resolved, Some(profile_name), true));
+        let (cfg, profile_name, resolved) = run.config_and_profile()?;
+        return Ok((
+            Cow::Borrowed(cfg),
+            Cow::Borrowed(resolved),
+            Some(profile_name.to_string()),
+            true,
+        ));
     }
+    let cli = run.cli();
 
     // `minimal_config()` subscribes to nothing, and that fabricated empty
     // list must never reach the decision sweep: it would read as "no
     // source is subscribed any more" and delete every decision row on the
     // machine, turning "awaiting your answer" into "applies silently" with
     // nothing to recover from.
-    let (cfg, config_parsed) = match config::load_config(&cli.config) {
-        Ok(mut cfg) => {
-            drain_config_deprecations(printer, &mut cfg);
-            (cfg, true)
-        }
-        Err(_) => (config::minimal_config(), false),
+    let (cfg, config_parsed) = match run.config() {
+        Ok(cfg) => (Cow::Borrowed(cfg), true),
+        Err(_) => (Cow::Owned(config::minimal_config()), false),
     };
 
     // Isolation skips composing the profile's CONTENT, but an explicit
@@ -487,7 +496,7 @@ pub(in crate::cli) fn load_config_and_profile_module_scoped(
     }
 
     let resolved = empty_resolved_profile(module_filter, &active_profile_name(cli, Some(&cfg)));
-    Ok((cfg, resolved, None, config_parsed))
+    Ok((cfg, Cow::Owned(resolved), None, config_parsed))
 }
 
 /// Turn a bare `ProfileNotFound` into an actionable error when the requested
@@ -842,21 +851,12 @@ pub(in crate::cli) fn pending_backups(
 ///
 /// Module-only commands never resolve a profile, but the scripts they run
 /// (a `patch.script` filter, a lifecycle hook) still receive `CFGD_PROFILE`,
-/// so the name must be the real one wherever the config knows it. Pass `cfg`
-/// when it is already loaded to avoid a second read; with `None` the config is
-/// read here.
+/// so the name must be the real one wherever the config knows it. `cfg` is
+/// the run's config, `None` when it did not load.
 pub(in crate::cli) fn active_profile_name(cli: &Cli, cfg: Option<&CfgdConfig>) -> String {
     if let Some(p) = cli.profile.as_deref() {
         return p.to_string();
     }
-    let loaded;
-    let cfg = match cfg {
-        Some(cfg) => Some(cfg),
-        None => {
-            loaded = config::load_config(&cli.config).ok();
-            loaded.as_ref()
-        }
-    };
     cfg.and_then(|c| c.active_profile().ok())
         .unwrap_or(cfgd_core::config::UNKNOWN_PROFILE)
         .to_string()

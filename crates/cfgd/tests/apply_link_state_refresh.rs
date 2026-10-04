@@ -96,13 +96,8 @@ fn recorded_module_hash(state_dir: &Path, module: &str, declared_total: usize) -
 fn apply_once(config_dir: &Path, state_dir: &Path) -> String {
     let cli = cli_for(config_dir, state_dir);
     let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
-    apply::cmd_apply(
-        &cli,
-        &printer,
-        &cfgd::cli::startup::StartupDocument::load(&cli.config),
-        &apply_args(),
-    )
-    .unwrap();
+    cfgd::cli::RunContext::for_test(&cli, &printer, |run| apply::cmd_apply(run, &apply_args()))
+        .unwrap();
     captured_text(&buf)
 }
 

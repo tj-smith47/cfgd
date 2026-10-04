@@ -169,7 +169,7 @@ const DAEMON_STATUS_NOW: &str = "2026-05-14T12:00:00Z";
 fn daemon_status_not_running_human() {
     let cli = Cli::try_parse_hermetic(["cfgd"]).expect("a bare argv parses");
     let (printer, cap) = Printer::for_test_doc();
-    cmd_daemon_status(&cli, &printer).unwrap();
+    cfgd::cli::RunContext::for_test(&cli, &printer, cmd_daemon_status).unwrap();
     drop(printer);
     cap.assert_human_snapshot_in(Path::new(SNAPSHOT_ROOT), "daemon_status/not_running.txt");
 }
@@ -178,7 +178,7 @@ fn daemon_status_not_running_human() {
 fn daemon_status_not_running_json() {
     let cli = Cli::try_parse_hermetic(["cfgd"]).expect("a bare argv parses");
     let (printer, cap) = Printer::for_test_doc();
-    cmd_daemon_status(&cli, &printer).unwrap();
+    cfgd::cli::RunContext::for_test(&cli, &printer, cmd_daemon_status).unwrap();
     drop(printer);
     let json = cap.json().expect("doc captured json");
     assert_eq!(json["running"], false);

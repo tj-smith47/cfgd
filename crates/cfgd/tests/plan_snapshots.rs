@@ -181,13 +181,7 @@ fn plan_happy_human() {
     let printer = printer.with_hints_enabled(true);
     let args = plan_args();
 
-    cmd_plan(
-        &cli,
-        &printer,
-        &cfgd::cli::startup::StartupDocument::load(&cli.config),
-        &args,
-    )
-    .unwrap();
+    cfgd::cli::RunContext::for_test(&cli, &printer, |run| cmd_plan(run, &args)).unwrap();
     drop(printer);
 
     let normalized =
@@ -240,13 +234,7 @@ fn plan_json_exposes_action_target_paths() {
     // (`printer.is_structured()` gate) rather than human status lines.
     let (printer, cap) = Printer::for_test_doc_with_format(cfgd_core::output::OutputFormat::Json);
 
-    cmd_plan(
-        &cli,
-        &printer,
-        &cfgd::cli::startup::StartupDocument::load(&cli.config),
-        &plan_args(),
-    )
-    .unwrap();
+    cfgd::cli::RunContext::for_test(&cli, &printer, |run| cmd_plan(run, &plan_args())).unwrap();
     drop(printer);
 
     let payload = cap.json().expect("plan doc carries a payload");
@@ -296,13 +284,7 @@ fn plan_json_folds_a_target_declared_with_a_native_separator() {
 
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc_with_format(cfgd_core::output::OutputFormat::Json);
-    cmd_plan(
-        &cli,
-        &printer,
-        &cfgd::cli::startup::StartupDocument::load(&cli.config),
-        &plan_args(),
-    )
-    .unwrap();
+    cfgd::cli::RunContext::for_test(&cli, &printer, |run| cmd_plan(run, &plan_args())).unwrap();
     drop(printer);
 
     let payload = cap.json().expect("plan doc carries a payload");
@@ -339,13 +321,7 @@ fn plan_empty_human() {
     let (printer, cap) = Printer::for_test_doc();
     let args = plan_args();
 
-    cmd_plan(
-        &cli,
-        &printer,
-        &cfgd::cli::startup::StartupDocument::load(&cli.config),
-        &args,
-    )
-    .unwrap();
+    cfgd::cli::RunContext::for_test(&cli, &printer, |run| cmd_plan(run, &args)).unwrap();
     drop(printer);
 
     let normalized = normalize_tempdir_paths(&cap.human(), config_dir.path(), &[]);
@@ -374,13 +350,8 @@ fn plan_module_only_unresolved_module_errors() {
     let (printer, cap) = Printer::for_test_doc();
     let args = plan_args_module("nettools");
 
-    let err = cmd_plan(
-        &cli,
-        &printer,
-        &cfgd::cli::startup::StartupDocument::load(&cli.config),
-        &args,
-    )
-    .unwrap_err();
+    let err =
+        cfgd::cli::RunContext::for_test(&cli, &printer, |run| cmd_plan(run, &args)).unwrap_err();
     drop(printer);
 
     assert!(
@@ -412,13 +383,7 @@ fn plan_only_zero_match_token_warns_and_names_owners_present_human() {
         ..plan_args()
     };
 
-    cmd_plan(
-        &cli,
-        &printer,
-        &cfgd::cli::startup::StartupDocument::load(&cli.config),
-        &args,
-    )
-    .unwrap();
+    cfgd::cli::RunContext::for_test(&cli, &printer, |run| cmd_plan(run, &args)).unwrap();
     drop(printer);
 
     let normalized = normalize_tempdir_paths(&cap.human(), config_dir.path(), &[]);
@@ -452,13 +417,7 @@ fn plan_with_a_decision_from_an_unsubscribed_source_human() {
     let printer = printer.with_hints_enabled(true);
     let args = plan_args();
 
-    cmd_plan(
-        &cli,
-        &printer,
-        &cfgd::cli::startup::StartupDocument::load(&cli.config),
-        &args,
-    )
-    .unwrap();
+    cfgd::cli::RunContext::for_test(&cli, &printer, |run| cmd_plan(run, &args)).unwrap();
     drop(printer);
 
     let normalized =
@@ -508,13 +467,8 @@ fn plan_module_resolution_failure_human() {
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc();
 
-    let err = cmd_plan(
-        &cli,
-        &printer,
-        &cfgd::cli::startup::StartupDocument::load(&cli.config),
-        &plan_args(),
-    )
-    .expect_err("an unresolvable package must fail");
+    let err = cfgd::cli::RunContext::for_test(&cli, &printer, |run| cmd_plan(run, &plan_args()))
+        .expect_err("an unresolvable package must fail");
     render_cli_error(&printer, &err);
     drop(printer);
 
@@ -564,13 +518,7 @@ fn plan_module_package_already_installed_is_elided() {
     let (printer, cap) = Printer::for_test_doc();
     let printer = printer.with_hints_enabled(true);
 
-    cmd_plan(
-        &cli,
-        &printer,
-        &cfgd::cli::startup::StartupDocument::load(&cli.config),
-        &plan_args(),
-    )
-    .unwrap();
+    cfgd::cli::RunContext::for_test(&cli, &printer, |run| cmd_plan(run, &plan_args())).unwrap();
     drop(printer);
 
     let normalized = normalize_tempdir_paths(&cap.human(), config_dir.path(), &[]);
@@ -670,13 +618,7 @@ fn plan_composed_source_human() {
     let (printer, cap) = Printer::for_test_doc();
     let printer = printer.with_hints_enabled(true);
 
-    cmd_plan(
-        &cli,
-        &printer,
-        &cfgd::cli::startup::StartupDocument::load(&cli.config),
-        &plan_args(),
-    )
-    .unwrap();
+    cfgd::cli::RunContext::for_test(&cli, &printer, |run| cmd_plan(run, &plan_args())).unwrap();
     drop(printer);
 
     let normalized = normalize_tempdir_paths(
@@ -703,13 +645,7 @@ fn plan_json_records_the_saved_plan_for_an_unfiltered_run() {
     let (config_dir, state_dir, _target) = tiny_profile_setup();
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc_with_format(cfgd_core::output::OutputFormat::Json);
-    cmd_plan(
-        &cli,
-        &printer,
-        &cfgd::cli::startup::StartupDocument::load(&cli.config),
-        &plan_args(),
-    )
-    .unwrap();
+    cfgd::cli::RunContext::for_test(&cli, &printer, |run| cmd_plan(run, &plan_args())).unwrap();
     drop(printer);
     let payload = cap.json().expect("plan doc carries a payload");
     let saved = &payload["savedPlan"];
@@ -739,13 +675,7 @@ fn plan_json_records_no_saved_plan_for_a_filtered_run() {
     let mut args = plan_args();
     args.only = vec!["files".to_string()];
     let (printer, cap) = Printer::for_test_doc_with_format(cfgd_core::output::OutputFormat::Json);
-    cmd_plan(
-        &cli,
-        &printer,
-        &cfgd::cli::startup::StartupDocument::load(&cli.config),
-        &args,
-    )
-    .unwrap();
+    cfgd::cli::RunContext::for_test(&cli, &printer, |run| cmd_plan(run, &args)).unwrap();
     drop(printer);
     let payload = cap.json().expect("plan doc carries a payload");
     assert!(
@@ -787,13 +717,7 @@ fn plan_json_records_no_saved_plan_while_a_source_decision_is_pending() {
 
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc_with_format(cfgd_core::output::OutputFormat::Json);
-    cmd_plan(
-        &cli,
-        &printer,
-        &cfgd::cli::startup::StartupDocument::load(&cli.config),
-        &plan_args(),
-    )
-    .unwrap();
+    cfgd::cli::RunContext::for_test(&cli, &printer, |run| cmd_plan(run, &plan_args())).unwrap();
     drop(printer);
     let payload = cap.json().expect("plan doc carries a payload");
     assert!(
@@ -820,13 +744,7 @@ fn plan_json_saved_plan_payload() {
     let (config_dir, state_dir, target) = tiny_profile_setup();
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc_with_format(cfgd_core::output::OutputFormat::Json);
-    cmd_plan(
-        &cli,
-        &printer,
-        &cfgd::cli::startup::StartupDocument::load(&cli.config),
-        &plan_args(),
-    )
-    .unwrap();
+    cfgd::cli::RunContext::for_test(&cli, &printer, |run| cmd_plan(run, &plan_args())).unwrap();
     drop(printer);
     let mut payload = cap.json().expect("plan doc carries a payload");
     pin_volatile_saved_plan_fields(&mut payload);

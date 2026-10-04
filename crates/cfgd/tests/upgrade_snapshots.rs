@@ -24,11 +24,25 @@
 
 use std::path::Path;
 
-use cfgd::cli::upgrade;
+use cfgd::cli::{Cli, HermeticParse, RunContext, upgrade};
 use cfgd_core::assert_snapshot_golden as assert_snapshot;
 use cfgd_core::output::{Doc, OutputFormat, Printer, Role};
 use cfgd_core::test_helpers::EnvVarGuard;
 use serial_test::serial;
+
+/// Run `cmd_upgrade` for a config path that does not exist, the state every
+/// upgrade test starts from: the update policy falls back to its defaults.
+fn upgrade_without_config(
+    printer: &Printer,
+    check_only: bool,
+    require_cosign: bool,
+) -> anyhow::Result<()> {
+    let cli = Cli::try_parse_hermetic(["cfgd", "--config", "/nonexistent/cfgd.yaml", "upgrade"])
+        .expect("the upgrade argv parses");
+    RunContext::for_test(&cli, printer, |run| {
+        upgrade::cmd_upgrade(run, check_only, require_cosign)
+    })
+}
 
 const SNAPSHOT_ROOT: &str = "tests/output_snapshots";
 
@@ -79,11 +93,8 @@ fn upgrade_check_up_to_date_human() {
 
     let (printer, cap) = Printer::for_test_doc();
 
-    upgrade::cmd_upgrade(
-        &printer,
-        std::path::Path::new("/nonexistent/cfgd.yaml"),
-        /*check_only=*/ true,
-        /*require_cosign=*/ false,
+    upgrade_without_config(
+        &printer, /*check_only=*/ true, /*require_cosign=*/ false,
     )
     .unwrap();
     drop(printer);
@@ -106,11 +117,8 @@ fn upgrade_check_up_to_date_json() {
 
     let (printer, cap) = Printer::for_test_doc_with_format(OutputFormat::Json);
 
-    upgrade::cmd_upgrade(
-        &printer,
-        std::path::Path::new("/nonexistent/cfgd.yaml"),
-        /*check_only=*/ true,
-        /*require_cosign=*/ false,
+    upgrade_without_config(
+        &printer, /*check_only=*/ true, /*require_cosign=*/ false,
     )
     .unwrap();
     drop(printer);

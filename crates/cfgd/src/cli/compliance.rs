@@ -150,13 +150,9 @@ impl ComplianceInputs {
 }
 
 /// Build a snapshot and emit a compliance summary Doc.
-pub(super) fn cmd_compliance_snapshot(
-    cli: &Cli,
-    printer: &Printer,
-    startup: &crate::cli::startup::StartupDocument,
-) -> anyhow::Result<()> {
-    let ctx = RunContext::new(cli, printer, startup);
-    let (_cfg, snapshot) = collect_and_store_compliance_snapshot(&ctx)?;
+pub(super) fn cmd_compliance_snapshot(run: &RunContext<'_>) -> anyhow::Result<()> {
+    let printer = run.printer();
+    let (_cfg, snapshot) = collect_and_store_compliance_snapshot(run)?;
     printer.emit(build_compliance_summary_doc(
         &snapshot,
         &cfgd_core::utc_now_iso8601(),
@@ -168,13 +164,9 @@ pub(super) fn cmd_compliance_snapshot(
 /// Export snapshot to the configured export path and emit a compliance summary Doc.
 // no-header-ok: this verb writes a file and reports the path; the snapshot
 // verb beside it is the one that reports on a resolved configuration.
-pub(super) fn cmd_compliance_export(
-    cli: &Cli,
-    printer: &Printer,
-    startup: &crate::cli::startup::StartupDocument,
-) -> anyhow::Result<()> {
-    let ctx = RunContext::new(cli, printer, startup);
-    let (cfg, snapshot) = collect_and_store_compliance_snapshot(&ctx)?;
+pub(super) fn cmd_compliance_export(run: &RunContext<'_>) -> anyhow::Result<()> {
+    let printer = run.printer();
+    let (cfg, snapshot) = collect_and_store_compliance_snapshot(run)?;
 
     let export = cfg.spec.compliance_effective().export.clone();
 

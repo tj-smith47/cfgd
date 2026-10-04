@@ -4,17 +4,12 @@ use cfgd_core::PathDisplayExt;
 use cfgd_core::output::{Doc, Printer, Role, doc::SectionBuilder};
 use cfgd_core::providers::PackageManagerExt;
 
-pub(super) fn cmd_doctor(
-    cli: &Cli,
-    printer: &Printer,
-    startup: &crate::cli::startup::StartupDocument,
-    fix: bool,
-) -> anyhow::Result<()> {
+pub(super) fn cmd_doctor(run: &RunContext<'_>, fix: bool) -> anyhow::Result<()> {
     // A failed verdict must fail the process so `cfgd doctor && cfgd apply`
     // stops instead of sailing into a guaranteed-broken apply. The Doc is
     // already emitted, so exit directly (mirroring cmd_profile_migrate)
     // rather than return an error the central sink would re-render.
-    if !run_doctor(cli, printer, startup, fix)? {
+    if !run_doctor(run, fix)? {
         cfgd_core::exit::ExitCode::Error.exit();
     }
     Ok(())
@@ -67,20 +62,15 @@ fn fix_missing_tools(printer: &Printer) {
 /// Runs every doctor probe, emits the report Doc, and returns whether the
 /// verdict passed. Kept separate from the process-exit wrapper so it stays
 /// unit-testable.
-pub(crate) fn run_doctor(
-    cli: &Cli,
-    printer: &Printer,
-    startup: &crate::cli::startup::StartupDocument,
-    fix: bool,
-) -> anyhow::Result<bool> {
+pub(crate) fn run_doctor(run: &RunContext<'_>, fix: bool) -> anyhow::Result<bool> {
+    let printer = run.printer();
     if fix {
         fix_missing_tools(printer);
     }
     // One spinner across every probe, renamed per group: doctor shells out to
     // git, sops and each package manager before it prints anything at all.
-    let (output, extras) = printer.narrate("Probing: config", |sp| {
-        collect_doctor_output(cli, printer, startup, sp)
-    })?;
+    let (output, extras) =
+        printer.narrate("Probing: config", |sp| collect_doctor_output(run, sp))?;
     let passed = all_passed(&output);
     printer.emit(build_doctor_doc(&output, &extras));
     Ok(passed)
@@ -242,29 +232,25 @@ fn build_module_routes(
 }
 
 fn collect_doctor_output(
-    cli: &Cli,
-    printer: &Printer,
-    startup: &crate::cli::startup::StartupDocument,
+    run: &RunContext<'_>,
     sp: &mut cfgd_core::output::Spinner<'_>,
 ) -> anyhow::Result<(DoctorOutput, DoctorExtras)> {
-    let ctx = RunContext::new(cli, printer, startup);
+    let cli = run.cli();
+    let printer = run.printer();
     let (config_check, loaded_cfg) = if cli.config.exists() {
-        match config::load_config(&cli.config) {
-            Ok(mut cfg) => {
-                drain_config_deprecations(printer, &mut cfg);
-                (
-                    DoctorConfigCheck {
-                        valid: true,
-                        path: cfgd_core::to_posix_string(&cli.config),
-                        name: Some(cfg.metadata.name.clone()),
-                        profile: cfg.spec.profile.clone(),
-                        error: None,
-                        legacy_output_keys: cfg.legacy_output_keys.clone(),
-                        state: DoctorConfigState::Valid,
-                    },
-                    Some(cfg),
-                )
-            }
+        match run.config() {
+            Ok(cfg) => (
+                DoctorConfigCheck {
+                    valid: true,
+                    path: cfgd_core::to_posix_string(&cli.config),
+                    name: Some(cfg.metadata.name.clone()),
+                    profile: cfg.spec.profile.clone(),
+                    error: None,
+                    legacy_output_keys: cfg.legacy_output_keys.clone(),
+                    state: DoctorConfigState::Valid,
+                },
+                Some(cfg),
+            ),
             Err(e) => (
                 DoctorConfigCheck {
                     valid: false,
@@ -308,7 +294,6 @@ fn collect_doctor_output(
 
     let config_dir = config_dir(cli);
     let age_key_override = loaded_cfg
-        .as_ref()
         .and_then(|c| c.spec.secrets.as_ref())
         .and_then(|s| s.sops.as_ref())
         .and_then(|s| s.age_key.as_ref());
@@ -318,7 +303,7 @@ fn collect_doctor_output(
     // Resolved ONCE and read by both the package report below and the module
     // list further down: `doctor` asked the same question twice, and a profile
     // resolution walks the inheritance chain off disk each time.
-    let doctor_profile = loaded_cfg.as_ref().and_then(|cfg| {
+    let doctor_profile = loaded_cfg.and_then(|cfg| {
         let profiles_dir = profiles_dir(cli);
         let profile_name = cli.profile.as_deref().or(cfg.spec.profile.as_deref())?;
         config::resolve_profile(profile_name, &profiles_dir).ok()
@@ -329,7 +314,7 @@ fn collect_doctor_output(
         // A throwaway claim set: `doctor` reports what is declared and records
         // no row, so nothing reads the layer a manifest package arrived on.
         let mut manifest_sources = cfgd_core::config::LayerSources::default();
-        if let Err(e) = ctx.resolve_manifest_packages(&mut packages, &mut manifest_sources) {
+        if let Err(e) = run.resolve_manifest_packages(&mut packages, &mut manifest_sources) {
             // Manifest resolution failed (missing referenced file, unreadable
             // dir, parse error). Surface so the user knows the package report
             // below is computed from a partial set.
@@ -427,10 +412,10 @@ fn collect_doctor_output(
     // against the managers it declares — so resolving the module report through
     // the profile's registry would report a module package as resolvable by a
     // manager the module cannot use.
-    let modules_registry = ctx.base_registry();
+    let modules_registry = run.base_registry();
     let mgr_map = modules_registry.manager_map();
     let platform = Platform::current();
-    let doctor_cx = ctx.package_context().ok();
+    let doctor_cx = run.package_context().ok();
 
     let (module_checks, module_routes) = build_module_routes(
         &module_list,
@@ -487,7 +472,7 @@ fn collect_doctor_output(
     // failure, so a refused open is still re-attempted and still reported here
     // rather than being answered from a cached error.
     sp.set_message("Probing: state store");
-    let state_store = match ctx.state() {
+    let state_store = match run.state() {
         Ok(_) => DoctorStateStore {
             accessible: true,
             message: None,
@@ -512,8 +497,7 @@ fn collect_doctor_output(
         error: profiles_scan.as_ref().err().map(|e| e.to_string()),
     };
 
-    let config_sources: Vec<DoctorConfigSource> = if cli.config.exists()
-        && let Ok(cfg) = config::load_config(&cli.config)
+    let config_sources: Vec<DoctorConfigSource> = if let Some(cfg) = loaded_cfg
         && !cfg.spec.sources.is_empty()
     {
         let cache_dir = source_cache_dir(cli).ok();

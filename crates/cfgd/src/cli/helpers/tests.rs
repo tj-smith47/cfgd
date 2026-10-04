@@ -250,8 +250,9 @@ fn active_profile_name_falls_back_to_the_configured_active_profile() {
     let dir = tempdir().expect("tempdir");
     let cfg_path = dir.path().join("config.yaml");
     std::fs::write(&cfg_path, CONFIG_YAML).expect("write config");
+    let cfg = cfgd_core::config::parse_config(CONFIG_YAML, &cfg_path).expect("parse config");
     let cli = make_cli(cfg_path);
-    assert_eq!(active_profile_name(&cli, None), "default");
+    assert_eq!(active_profile_name(&cli, Some(&cfg)), "default");
 }
 
 #[test]

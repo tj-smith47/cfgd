@@ -125,13 +125,7 @@ fn apply_happy_human() {
     let (printer, cap) = Printer::for_test_doc();
     let args = apply_args();
 
-    cmd_apply(
-        &cli,
-        &printer,
-        &cfgd::cli::startup::StartupDocument::load(&cli.config),
-        &args,
-    )
-    .unwrap();
+    cfgd::cli::RunContext::for_test(&cli, &printer, |run| cmd_apply(run, &args)).unwrap();
     drop(printer);
 
     let normalized =
@@ -168,13 +162,7 @@ fn apply_dry_run_human() {
     let printer = printer.with_hints_enabled(true);
     let args = apply_args_dry_run();
 
-    cmd_apply(
-        &cli,
-        &printer,
-        &cfgd::cli::startup::StartupDocument::load(&cli.config),
-        &args,
-    )
-    .unwrap();
+    cfgd::cli::RunContext::for_test(&cli, &printer, |run| cmd_apply(run, &args)).unwrap();
     drop(printer);
 
     assert!(!target.exists(), "dry-run must not create the target file");
@@ -203,24 +191,13 @@ fn plan_and_dry_run_record_the_same_saved_plan() {
     let cli = cli_for(config_dir.path(), state_dir.path());
 
     let (printer, cap) = Printer::for_test_doc_with_format(cfgd_core::output::OutputFormat::Json);
-    cmd_plan(
-        &cli,
-        &printer,
-        &cfgd::cli::startup::StartupDocument::load(&cli.config),
-        &plan_args(),
-    )
-    .unwrap();
+    cfgd::cli::RunContext::for_test(&cli, &printer, |run| cmd_plan(run, &plan_args())).unwrap();
     drop(printer);
     let planned = cap.json().expect("plan doc carries a payload");
 
     let (printer, cap) = Printer::for_test_doc_with_format(cfgd_core::output::OutputFormat::Json);
-    cmd_apply(
-        &cli,
-        &printer,
-        &cfgd::cli::startup::StartupDocument::load(&cli.config),
-        &apply_args_dry_run(),
-    )
-    .unwrap();
+    cfgd::cli::RunContext::for_test(&cli, &printer, |run| cmd_apply(run, &apply_args_dry_run()))
+        .unwrap();
     drop(printer);
     let dry_run = cap.json().expect("apply doc carries a payload");
 
@@ -245,13 +222,10 @@ fn plan_and_dry_run_agree_below_the_title_row() {
 
     let (config_dir, state_dir, target) = tiny_profile_setup();
     let (printer, cap) = Printer::for_test_doc();
-    cmd_plan(
+    cfgd::cli::RunContext::for_test(
         &cli_for(config_dir.path(), state_dir.path()),
         &printer,
-        &cfgd::cli::startup::StartupDocument::load(
-            &cli_for(config_dir.path(), state_dir.path()).config,
-        ),
-        &plan_args(),
+        |run| cmd_plan(run, &plan_args()),
     )
     .unwrap();
     drop(printer);
@@ -263,13 +237,10 @@ fn plan_and_dry_run_agree_below_the_title_row() {
 
     let (config_dir, state_dir, target) = tiny_profile_setup();
     let (printer, cap) = Printer::for_test_doc();
-    cmd_apply(
+    cfgd::cli::RunContext::for_test(
         &cli_for(config_dir.path(), state_dir.path()),
         &printer,
-        &cfgd::cli::startup::StartupDocument::load(
-            &cli_for(config_dir.path(), state_dir.path()).config,
-        ),
-        &apply_args_dry_run(),
+        |run| cmd_apply(run, &apply_args_dry_run()),
     )
     .unwrap();
     drop(printer);
@@ -333,13 +304,7 @@ fn apply_after_plan_work_human_and_json() {
         ..apply_args()
     };
 
-    cmd_apply(
-        &cli,
-        &printer,
-        &cfgd::cli::startup::StartupDocument::load(&cli.config),
-        &args,
-    )
-    .unwrap();
+    cfgd::cli::RunContext::for_test(&cli, &printer, |run| cmd_apply(run, &args)).unwrap();
     drop(printer);
 
     // Three planned deploys of which one settles as a conflict skip, and four
@@ -457,13 +422,7 @@ fn apply_change_hooks_open_one_group_per_declaring_owner() {
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc();
 
-    cmd_apply(
-        &cli,
-        &printer,
-        &cfgd::cli::startup::StartupDocument::load(&cli.config),
-        &apply_args(),
-    )
-    .unwrap();
+    cfgd::cli::RunContext::for_test(&cli, &printer, |run| cmd_apply(run, &apply_args())).unwrap();
     drop(printer);
 
     let normalized =
@@ -503,13 +462,8 @@ fn apply_with_failures_human() {
     // `process::exit` that `cmd_apply` performs on a partial apply — that exit
     // would abort the in-process snapshot capture (it is covered by the
     // subprocess test in `apply_exit_code.rs`).
-    let outcome = run_apply(
-        &cli,
-        &printer,
-        &cfgd::cli::startup::StartupDocument::load(&cli.config),
-        &args,
-    )
-    .unwrap();
+    let outcome =
+        cfgd::cli::RunContext::for_test(&cli, &printer, |run| run_apply(run, &args)).unwrap();
     drop(printer);
 
     assert_eq!(
@@ -557,13 +511,9 @@ fn apply_phase_tree_human() {
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc();
 
-    let outcome = run_apply(
-        &cli,
-        &printer,
-        &cfgd::cli::startup::StartupDocument::load(&cli.config),
-        &apply_args(),
-    )
-    .unwrap();
+    let outcome =
+        cfgd::cli::RunContext::for_test(&cli, &printer, |run| run_apply(run, &apply_args()))
+            .unwrap();
     drop(printer);
 
     assert_eq!(
@@ -635,13 +585,7 @@ fn apply_env_owner_groups_human() {
 
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc();
-    run_apply(
-        &cli,
-        &printer,
-        &cfgd::cli::startup::StartupDocument::load(&cli.config),
-        &apply_args(),
-    )
-    .unwrap();
+    cfgd::cli::RunContext::for_test(&cli, &printer, |run| run_apply(run, &apply_args())).unwrap();
     drop(printer);
 
     let normalized = normalize_tempdir_paths(&cap.human(), config_dir.path(), &[]);

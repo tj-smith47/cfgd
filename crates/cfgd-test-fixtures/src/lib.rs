@@ -1710,12 +1710,9 @@ pub fn strand_a_snapshot(
     write_gc_profile(config_dir, source, &old);
     let cli = cli_for(config_dir, state_dir);
     let (printer, _cap) = cfgd_core::output::Printer::for_test_doc();
-    cfgd::cli::backup::cmd_backup_run(
-        &cli,
-        &printer,
-        &cfgd::cli::startup::StartupDocument::load(&cli.config),
-        Some("docs"),
-    )
+    cfgd::cli::RunContext::for_test(&cli, &printer, |run| {
+        cfgd::cli::backup::cmd_backup_run(run, Some("docs"))
+    })
     .unwrap();
     drop(printer);
 
@@ -1727,12 +1724,9 @@ pub fn strand_a_snapshot(
 
     write_gc_profile(config_dir, source, &state_dir.join("new-backups"));
     let (printer, cap) = cfgd_core::output::Printer::for_test_doc();
-    cfgd::cli::backup::cmd_backup_run(
-        &cli,
-        &printer,
-        &cfgd::cli::startup::StartupDocument::load(&cli.config),
-        Some("docs"),
-    )
+    cfgd::cli::RunContext::for_test(&cli, &printer, |run| {
+        cfgd::cli::backup::cmd_backup_run(run, Some("docs"))
+    })
     .unwrap();
     drop(printer);
     (stranded, cfgd_core::output::strip_ansi(&cap.human()))

@@ -2,32 +2,30 @@ use super::*;
 
 use anyhow::Context;
 use cfgd_core::PathDisplayExt;
-use cfgd_core::output::{Doc, Printer, Role};
+use cfgd_core::output::{Doc, Role};
 use cfgd_core::server_client::{DeviceCredential, ServerClient};
 
 // no-header-ok: the verdict is about what the gateway accepted, and the
 // machine identity it reports is the header a reader of this verb needs.
 pub fn cmd_checkin(
-    cli: &Cli,
-    printer: &Printer,
-    startup: &crate::cli::startup::StartupDocument,
+    run: &RunContext<'_>,
     server_url: &str,
     api_key: Option<&str>,
     device_id: Option<&str>,
 ) -> anyhow::Result<()> {
+    let printer = run.printer();
     // heading-first-ok: the gateway round-trip narrates one layer down, under
     // the Gateway section that reports its verdict
     printer.heading("Checkin");
 
-    let ctx = RunContext::new(cli, printer, startup);
-    let (cfg, profile_name, local_resolved) = ctx.config_and_profile()?;
-    let config_dir = ctx.config_dir();
+    let (cfg, profile_name, local_resolved) = run.config_and_profile()?;
+    let config_dir = run.config_dir();
 
     // The same resolution `cfgd compliance` collects against, so the compliance
     // report, the hash and the drift scan below all read the source-composed
     // desired state that `apply` writes.
     let mut inputs =
-        super::compliance::ComplianceInputs::of_config(&ctx, cfg, local_resolved, printer)?;
+        super::compliance::ComplianceInputs::of_config(run, cfg, local_resolved, printer)?;
     // A manifest that cannot be read leaves its packages out of the declared
     // set. Reported anyway, the version map would retire every version that
     // manifest declares and the compliance checks would call its packages
@@ -69,7 +67,7 @@ pub fn cmd_checkin(
         .filter(|c| c.enabled && manifest_error.is_none())
     {
         Some(compliance_cfg) => {
-            let checkin_state = ctx.state()?;
+            let checkin_state = run.state()?;
             match inputs.collect(
                 profile_name,
                 config_dir,
@@ -106,7 +104,7 @@ pub fn cmd_checkin(
     // that could look reported.
     let pkg_cx = match manifest_error {
         Some(_) => None,
-        None => ctx
+        None => run
             .package_context()
             .inspect_err(|e| tracing::warn!(error = %e, "checkin: package versions unavailable"))
             .ok(),
@@ -170,7 +168,7 @@ pub fn cmd_checkin(
     // check-in. An answer that carries no projection at all is a gateway that
     // could not read the cluster, so the set already recorded stands.
     if let Some(ref projections) = resp.backup_schedules {
-        match ctx.state() {
+        match run.state() {
             Ok(state) => {
                 cfgd_core::backup::record_cluster_schedules(state, projections);
             }
@@ -598,14 +596,9 @@ spec:
 
         let cli = test_cli_for(config_dir.path(), state_dir.path());
         let (printer, cap) = Printer::for_test_doc();
-        let result = cmd_checkin(
-            &cli,
-            &printer,
-            &crate::cli::startup::StartupDocument::load(&cli.config),
-            &server.url(),
-            Some("test-key"),
-            Some("dev-1"),
-        );
+        let result = crate::cli::RunContext::for_test(&cli, &printer, |run| {
+            cmd_checkin(run, &server.url(), Some("test-key"), Some("dev-1"))
+        });
         drop(printer);
 
         assert!(result.is_ok(), "cmd_checkin should succeed: {result:?}");
@@ -699,14 +692,9 @@ spec:
             .create();
 
         let (printer, _cap) = Printer::for_test_doc();
-        let result = cmd_checkin(
-            &cli,
-            &printer,
-            &crate::cli::startup::StartupDocument::load(&cli.config),
-            &server.url(),
-            Some("test-key"),
-            Some("dev-1"),
-        );
+        let result = crate::cli::RunContext::for_test(&cli, &printer, |run| {
+            cmd_checkin(run, &server.url(), Some("test-key"), Some("dev-1"))
+        });
         drop(printer);
 
         assert!(result.is_ok(), "cmd_checkin should succeed: {result:?}");
@@ -888,14 +876,9 @@ spec:
 
         let cli = test_cli_for(config_dir.path(), state_dir.path());
         let (printer, cap) = Printer::for_test_doc();
-        let result = cmd_checkin(
-            &cli,
-            &printer,
-            &crate::cli::startup::StartupDocument::load(&cli.config),
-            &server.url(),
-            Some("test-key"),
-            Some("dev-1"),
-        );
+        let result = crate::cli::RunContext::for_test(&cli, &printer, |run| {
+            cmd_checkin(run, &server.url(), Some("test-key"), Some("dev-1"))
+        });
         drop(printer);
 
         assert!(result.is_ok(), "cmd_checkin should succeed: {result:?}");
@@ -985,14 +968,9 @@ spec:
 
         let cli = test_cli_for(config_dir.path(), state_dir.path());
         let (printer, cap) = Printer::for_test_doc();
-        let result = cmd_checkin(
-            &cli,
-            &printer,
-            &crate::cli::startup::StartupDocument::load(&cli.config),
-            &server.url(),
-            Some("test-key"),
-            Some("dev-1"),
-        );
+        let result = crate::cli::RunContext::for_test(&cli, &printer, |run| {
+            cmd_checkin(run, &server.url(), Some("test-key"), Some("dev-1"))
+        });
         drop(printer);
         let _ = shim;
 
@@ -1059,14 +1037,9 @@ spec:
 
         let cli = test_cli_for(config_dir.path(), state_dir.path());
         let (printer, _cap) = Printer::for_test_doc();
-        let result = cmd_checkin(
-            &cli,
-            &printer,
-            &crate::cli::startup::StartupDocument::load(&cli.config),
-            &server.url(),
-            Some("test-key"),
-            Some("dev-1"),
-        );
+        let result = crate::cli::RunContext::for_test(&cli, &printer, |run| {
+            cmd_checkin(run, &server.url(), Some("test-key"), Some("dev-1"))
+        });
         drop(printer);
 
         assert!(result.is_err(), "a 500 must fail the checkin");
@@ -1098,14 +1071,9 @@ spec:
 
         let cli = test_cli_for(config_dir.path(), state_dir.path());
         let (printer, cap) = Printer::for_test_doc();
-        let result = cmd_checkin(
-            &cli,
-            &printer,
-            &crate::cli::startup::StartupDocument::load(&cli.config),
-            &server.url(),
-            Some("test-key"),
-            Some("dev-1"),
-        );
+        let result = crate::cli::RunContext::for_test(&cli, &printer, |run| {
+            cmd_checkin(run, &server.url(), Some("test-key"), Some("dev-1"))
+        });
         drop(printer);
 
         assert!(result.is_ok(), "cmd_checkin should succeed: {:?}", result);
@@ -1160,14 +1128,9 @@ spec:
 
         let cli = test_cli_for(config_dir.path(), state_dir.path());
         let (printer, cap) = Printer::for_test_doc();
-        let result = cmd_checkin(
-            &cli,
-            &printer,
-            &crate::cli::startup::StartupDocument::load(&cli.config),
-            &server.url(),
-            Some("test-key"),
-            Some("dev-1"),
-        );
+        let result = crate::cli::RunContext::for_test(&cli, &printer, |run| {
+            cmd_checkin(run, &server.url(), Some("test-key"), Some("dev-1"))
+        });
         drop(printer);
 
         assert!(result.is_ok(), "cmd_checkin should succeed: {result:?}");
@@ -1199,14 +1162,9 @@ spec:
 
         let cli = test_cli_for(config_dir.path(), state_dir.path());
         let (printer, cap) = Printer::for_test_doc();
-        let result = cmd_checkin(
-            &cli,
-            &printer,
-            &crate::cli::startup::StartupDocument::load(&cli.config),
-            &server.url(),
-            Some("test-key"),
-            Some("dev-1"),
-        );
+        let result = crate::cli::RunContext::for_test(&cli, &printer, |run| {
+            cmd_checkin(run, &server.url(), Some("test-key"), Some("dev-1"))
+        });
         drop(printer);
 
         assert!(result.is_ok(), "cmd_checkin should succeed: {:?}", result);
@@ -1272,14 +1230,9 @@ spec:
                 .create();
             let cli = test_cli_for(cli_config.path(), cli_state.path());
             let (printer, _cap) = Printer::for_test_doc();
-            cmd_checkin(
-                &cli,
-                &printer,
-                &crate::cli::startup::StartupDocument::load(&cli.config),
-                &server.url(),
-                Some("test-key"),
-                Some("dev-1"),
-            )
+            crate::cli::RunContext::for_test(&cli, &printer, |run| {
+                cmd_checkin(run, &server.url(), Some("test-key"), Some("dev-1"))
+            })
             .expect("the gateway answered");
             pending_of(cli_state.path())
         };
@@ -1366,14 +1319,9 @@ spec:
 
         let cli = test_cli_for(config_dir.path(), state_dir.path());
         let (printer, _cap) = Printer::for_test_doc();
-        let result = cmd_checkin(
-            &cli,
-            &printer,
-            &crate::cli::startup::StartupDocument::load(&cli.config),
-            &server.url(),
-            Some("test-key"),
-            Some("dev-1"),
-        );
+        let result = crate::cli::RunContext::for_test(&cli, &printer, |run| {
+            cmd_checkin(run, &server.url(), Some("test-key"), Some("dev-1"))
+        });
         drop(printer);
 
         assert!(
@@ -1474,14 +1422,9 @@ spec:
 
         let cli = test_cli_for(config_dir.path(), state_dir.path());
         let (printer, _cap) = Printer::for_test_doc();
-        let result = cmd_checkin(
-            &cli,
-            &printer,
-            &crate::cli::startup::StartupDocument::load(&cli.config),
-            &server.url(),
-            Some("test-key"),
-            Some("dev-1"),
-        );
+        let result = crate::cli::RunContext::for_test(&cli, &printer, |run| {
+            cmd_checkin(run, &server.url(), Some("test-key"), Some("dev-1"))
+        });
         drop(printer);
 
         assert!(
@@ -1571,12 +1514,8 @@ spec:
             let mut cli = test_cli_for(&root, state_dir.path());
             cli.cache_dir = Some(cache_dir.path().to_path_buf());
             let (quiet, _) = Printer::for_test_doc();
-            crate::cli::sync::cmd_sync(
-                &cli,
-                &quiet,
-                &crate::cli::startup::StartupDocument::load(&cli.config),
-            )
-            .expect("the source syncs into the cache");
+            crate::cli::RunContext::for_test(&cli, &quiet, crate::cli::sync::cmd_sync)
+                .expect("the source syncs into the cache");
 
             Self {
                 cli,
@@ -1597,14 +1536,9 @@ spec:
 
         fn run_cfgd_checkin(&self) {
             let (printer, _cap) = Printer::for_test_doc();
-            cmd_checkin(
-                &self.cli,
-                &printer,
-                &crate::cli::startup::StartupDocument::load(&self.cli.config),
-                &self.server.url(),
-                Some("test-key"),
-                Some("dev-1"),
-            )
+            crate::cli::RunContext::for_test(&self.cli, &printer, |run| {
+                cmd_checkin(run, &self.server.url(), Some("test-key"), Some("dev-1"))
+            })
             .expect("cfgd checkin succeeds");
         }
 

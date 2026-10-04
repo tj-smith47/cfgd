@@ -26,16 +26,16 @@ use crate::packages::ManifestCache;
 /// The config is the invocation's [`StartupDocument`], read and parsed before
 /// dispatch; reading it through the context parses nothing.
 ///
-/// Scoped to ONE run: each `cmd_*` builds a context at its top and drops it when
-/// it returns. Construction is pure (it copies three references and derives the
-/// config directory), so a daemon tick can hold one per tick without paying for
-/// slots that tick does not use, and nothing here can outlive the config it
-/// describes.
+/// Scoped to ONE run: `execute` builds the context and hands it to the verb,
+/// which drops it when it returns. Construction is pure (it copies three
+/// references and derives the config directory), so a daemon tick can hold one
+/// per tick without paying for slots that tick does not use, and nothing here
+/// can outlive the config it describes.
 ///
 /// Not `Sync` by construction — the cells are single-threaded. Concurrent phases
 /// receive the resolved objects (`&StateStore`, `&ProviderRegistry`), never the
 /// context.
-pub(in crate::cli) struct RunContext<'a> {
+pub struct RunContext<'a> {
     cli: &'a Cli,
     printer: &'a Printer,
     config_dir: PathBuf,
@@ -54,7 +54,7 @@ pub(in crate::cli) struct RunContext<'a> {
     manifests: ManifestCache,
     /// Whether this run FETCHES the sources it composes, which decides
     /// [`Self::announce_cache_skips`].
-    fetching_sources: bool,
+    fetching_sources: Cell<bool>,
 }
 
 impl<'a> RunContext<'a> {
@@ -74,7 +74,7 @@ impl<'a> RunContext<'a> {
             enumerations: cfgd_core::providers::InstalledEnumerations::default(),
             base_registry: OnceCell::new(),
             manifests: ManifestCache::default(),
-            fetching_sources: false,
+            fetching_sources: Cell::new(false),
         }
     }
 
@@ -89,14 +89,13 @@ impl<'a> RunContext<'a> {
     /// progress. Nothing else the composition says is touched: a constraint
     /// violation, a conflict preview and the `allowScripts` disclosure are all
     /// facts the fetching verb is the right place to hear.
-    pub(in crate::cli) fn fetching_sources(mut self) -> Self {
-        self.fetching_sources = true;
-        self
+    pub(in crate::cli) fn fetching_sources(&self) {
+        self.fetching_sources.set(true);
     }
 
     /// Whether a source-cache skip should be announced on this run.
     pub(in crate::cli) fn announce_cache_skips(&self) -> bool {
-        !self.fetching_sources
+        !self.fetching_sources.get()
     }
 
     pub(in crate::cli) fn cli(&self) -> &'a Cli {
@@ -115,8 +114,15 @@ impl<'a> RunContext<'a> {
 
     /// The run's config WITHOUT surfacing its deprecation notices. Only the
     /// callers that need nothing but a name off the config (the active profile
-    /// a module-only run stamps into `CFGD_PROFILE`) read through here.
-    fn config_unannounced(&self) -> cfgd_core::errors::Result<&'a CfgdConfig> {
+    /// a module-only run stamps into `CFGD_PROFILE`), and the best-effort reads
+    /// of a verb that reports on something other than the config (the daemon's
+    /// status), read through here.
+    ///
+    /// Every read reports the document as a config input, as a read from disk
+    /// would: a saved plan records what its derivation read, and the startup
+    /// read happened before the plan opened its recorder.
+    pub(in crate::cli) fn config_unannounced(&self) -> cfgd_core::errors::Result<&'a CfgdConfig> {
+        cfgd_core::record_config_input(self.startup.path());
         self.startup.config_result()
     }
 
@@ -222,6 +228,16 @@ impl<'a> RunContext<'a> {
         sources: &mut LayerSources,
     ) -> cfgd_core::errors::Result<()> {
         packages::resolve_manifest_packages_cached(spec, sources, &self.config_dir, &self.manifests)
+    }
+}
+
+#[cfg(any(test, feature = "test-helpers"))]
+impl RunContext<'_> {
+    /// Run `verb` against a context over `cli`'s config as it stands now, read
+    /// the way the process reads it before dispatch.
+    pub fn for_test<T>(cli: &Cli, printer: &Printer, verb: impl FnOnce(&RunContext<'_>) -> T) -> T {
+        let startup = StartupDocument::load(&cli.config);
+        verb(&RunContext::new(cli, printer, &startup))
     }
 }
 

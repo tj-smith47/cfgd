@@ -7,7 +7,7 @@ license.workspace = true
 publish = false
 
 [dependencies]
-cfgd = { path = "../cfgd" }
+cfgd = { path = "../cfgd", features = ["test-helpers"] }
 cfgd-core = { path = "../cfgd-core", features = ["test-helpers"] }
 git2 = "0.21"
 tempfile = "3"

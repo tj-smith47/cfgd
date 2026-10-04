@@ -214,14 +214,7 @@ fn diff_no_drift_human() {
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc();
 
-    cmd_diff(
-        &cli,
-        &printer,
-        &cfgd::cli::startup::StartupDocument::load(&cli.config),
-        None,
-        false,
-    )
-    .unwrap();
+    cfgd::cli::RunContext::for_test(&cli, &printer, |run| cmd_diff(run, None, false)).unwrap();
     drop(printer);
 
     let normalized = normalize(&cap.human(), config_dir.path(), &[(&target, "<TARGET>")]);
@@ -310,14 +303,7 @@ fn diff_standing_rows_human() {
     let (printer, cap) = Printer::for_test_doc();
     let printer = printer.with_hints_enabled(true);
 
-    cmd_diff(
-        &cli,
-        &printer,
-        &cfgd::cli::startup::StartupDocument::load(&cli.config),
-        None,
-        false,
-    )
-    .unwrap();
+    cfgd::cli::RunContext::for_test(&cli, &printer, |run| cmd_diff(run, None, false)).unwrap();
     drop(printer);
 
     let human = cap.human();
@@ -398,14 +384,7 @@ fn diff_file_drift_human() {
     let (printer, cap) = Printer::for_test_doc();
     let printer = printer.with_hints_enabled(true);
 
-    cmd_diff(
-        &cli,
-        &printer,
-        &cfgd::cli::startup::StartupDocument::load(&cli.config),
-        None,
-        false,
-    )
-    .unwrap();
+    cfgd::cli::RunContext::for_test(&cli, &printer, |run| cmd_diff(run, None, false)).unwrap();
     drop(printer);
 
     let normalized = normalize(&cap.human(), config_dir.path(), &[(&target, "<TARGET>")]);
@@ -425,14 +404,7 @@ fn diff_package_drift_human() {
     let (printer, cap) = Printer::for_test_doc();
     let printer = printer.with_hints_enabled(true);
 
-    cmd_diff(
-        &cli,
-        &printer,
-        &cfgd::cli::startup::StartupDocument::load(&cli.config),
-        None,
-        false,
-    )
-    .unwrap();
+    cfgd::cli::RunContext::for_test(&cli, &printer, |run| cmd_diff(run, None, false)).unwrap();
     drop(printer);
 
     let normalized = normalize(&cap.human(), config_dir.path(), &[(&target, "<TARGET>")]);
@@ -455,14 +427,7 @@ fn diff_multi_surface_drift_human() {
     let (printer, cap) = Printer::for_test_doc();
     let printer = printer.with_hints_enabled(true);
 
-    cmd_diff(
-        &cli,
-        &printer,
-        &cfgd::cli::startup::StartupDocument::load(&cli.config),
-        None,
-        false,
-    )
-    .unwrap();
+    cfgd::cli::RunContext::for_test(&cli, &printer, |run| cmd_diff(run, None, false)).unwrap();
     drop(printer);
 
     let normalized = normalize(&cap.human(), config_dir.path(), &[(&target, "<TARGET>")]);
@@ -528,14 +493,7 @@ fn diff_module_dependency_header_human() {
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc();
 
-    cmd_diff(
-        &cli,
-        &printer,
-        &cfgd::cli::startup::StartupDocument::load(&cli.config),
-        None,
-        false,
-    )
-    .unwrap();
+    cfgd::cli::RunContext::for_test(&cli, &printer, |run| cmd_diff(run, None, false)).unwrap();
     drop(printer);
 
     let normalized = normalize(&cap.human(), config_dir.path(), &[]);
@@ -559,14 +517,8 @@ fn diff_module_only_human() {
     let (printer, cap) = Printer::for_test_doc();
     let printer = printer.with_hints_enabled(true);
 
-    cmd_diff(
-        &cli,
-        &printer,
-        &cfgd::cli::startup::StartupDocument::load(&cli.config),
-        Some("diff-mod"),
-        false,
-    )
-    .unwrap();
+    cfgd::cli::RunContext::for_test(&cli, &printer, |run| cmd_diff(run, Some("diff-mod"), false))
+        .unwrap();
     drop(printer);
 
     let normalized = normalize(&cap.human(), config_dir.path(), &[]);

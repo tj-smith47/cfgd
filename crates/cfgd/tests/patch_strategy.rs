@@ -70,13 +70,8 @@ impl Fixture {
         let cli = cli_for(self.config_dir.path(), self.state_dir.path());
         let printer = test_printer();
         cfgd_core::with_test_home(self.home.path(), || {
-            cmd_apply(
-                &cli,
-                &printer,
-                &cfgd::cli::startup::StartupDocument::load(&cli.config),
-                &apply_args(),
-            )
-            .unwrap()
+            cfgd::cli::RunContext::for_test(&cli, &printer, |run| cmd_apply(run, &apply_args()))
+                .unwrap()
         });
     }
 
@@ -85,13 +80,8 @@ impl Fixture {
         let cli = cli_for(self.config_dir.path(), self.state_dir.path());
         let (printer, cap) = Printer::for_test_doc_with_format(OutputFormat::Json);
         cfgd_core::with_test_home(self.home.path(), || {
-            cmd_plan(
-                &cli,
-                &printer,
-                &cfgd::cli::startup::StartupDocument::load(&cli.config),
-                &plan_args(),
-            )
-            .unwrap()
+            cfgd::cli::RunContext::for_test(&cli, &printer, |run| cmd_plan(run, &plan_args()))
+                .unwrap()
         });
         drop(printer);
         cap.json().expect("plan doc carries a payload")["totalActions"]
@@ -206,13 +196,8 @@ fn an_unparseable_target_fails_planning_and_writes_nothing() {
     let cli = cli_for(fixture.config_dir.path(), fixture.state_dir.path());
     let printer = test_printer();
     let err = cfgd_core::with_test_home(fixture.home.path(), || {
-        cmd_apply(
-            &cli,
-            &printer,
-            &cfgd::cli::startup::StartupDocument::load(&cli.config),
-            &apply_args(),
-        )
-        .unwrap_err()
+        cfgd::cli::RunContext::for_test(&cli, &printer, |run| cmd_apply(run, &apply_args()))
+            .unwrap_err()
     });
     assert!(
         err.to_string().contains("is not valid json"),
@@ -291,13 +276,8 @@ fn a_failing_filter_leaves_the_target_untouched() {
     let cli = cli_for(fixture.config_dir.path(), fixture.state_dir.path());
     let printer = test_printer();
     let err = cfgd_core::with_test_home(fixture.home.path(), || {
-        cmd_apply(
-            &cli,
-            &printer,
-            &cfgd::cli::startup::StartupDocument::load(&cli.config),
-            &apply_args(),
-        )
-        .unwrap_err()
+        cfgd::cli::RunContext::for_test(&cli, &printer, |run| cmd_apply(run, &apply_args()))
+            .unwrap_err()
     });
     assert!(
         err.to_string().contains("nope"),
@@ -353,13 +333,8 @@ fn module_script_resolves_relative_to_the_module_dir() {
     let cli = cli_for(config_dir.path(), state_dir.path());
     let printer = test_printer();
     cfgd_core::with_test_home(home.path(), || {
-        cmd_apply(
-            &cli,
-            &printer,
-            &cfgd::cli::startup::StartupDocument::load(&cli.config),
-            &apply_args(),
-        )
-        .unwrap()
+        cfgd::cli::RunContext::for_test(&cli, &printer, |run| cmd_apply(run, &apply_args()))
+            .unwrap()
     });
 
     assert_eq!(
@@ -386,12 +361,8 @@ fn a_source_barred_from_scripts_cannot_run_its_patch_filter_from_any_surface() {
     let original = std::fs::read_to_string(&target).unwrap();
 
     let (sync_printer, _sync_cap) = Printer::for_test_doc();
-    cfgd::cli::sync::cmd_sync(
-        &cli,
-        &sync_printer,
-        &cfgd::cli::startup::StartupDocument::load(&cli.config),
-    )
-    .expect("the source must sync into the cache");
+    cfgd::cli::RunContext::for_test(&cli, &sync_printer, cfgd::cli::sync::cmd_sync)
+        .expect("the source must sync into the cache");
     drop(sync_printer);
 
     let assert_untouched = |surface: &str| {
@@ -408,13 +379,9 @@ fn a_source_barred_from_scripts_cannot_run_its_patch_filter_from_any_surface() {
 
     let (diff_printer, diff_cap) = Printer::for_test_doc();
     cfgd_core::with_test_home(home.path(), || {
-        cfgd::cli::diff::cmd_diff(
-            &cli,
-            &diff_printer,
-            &cfgd::cli::startup::StartupDocument::load(&cli.config),
-            None,
-            false,
-        )
+        cfgd::cli::RunContext::for_test(&cli, &diff_printer, |run| {
+            cfgd::cli::diff::cmd_diff(run, None, false)
+        })
         .expect("diff still renders")
     });
     drop(diff_printer);
@@ -431,13 +398,9 @@ fn a_source_barred_from_scripts_cannot_run_its_patch_filter_from_any_surface() {
 
     let (json_printer, json_cap) = Printer::for_test_doc_with_format(OutputFormat::Json);
     cfgd_core::with_test_home(home.path(), || {
-        cfgd::cli::diff::cmd_diff(
-            &cli,
-            &json_printer,
-            &cfgd::cli::startup::StartupDocument::load(&cli.config),
-            None,
-            false,
-        )
+        cfgd::cli::RunContext::for_test(&cli, &json_printer, |run| {
+            cfgd::cli::diff::cmd_diff(run, None, false)
+        })
         .expect("diff renders")
     });
     drop(json_printer);
@@ -462,13 +425,9 @@ fn a_source_barred_from_scripts_cannot_run_its_patch_filter_from_any_surface() {
 
     let (verify_printer, verify_cap) = Printer::for_test_doc();
     cfgd_core::with_test_home(home.path(), || {
-        cfgd::cli::verify::cmd_verify(
-            &cli,
-            &verify_printer,
-            &cfgd::cli::startup::StartupDocument::load(&cli.config),
-            None,
-            false,
-        )
+        cfgd::cli::RunContext::for_test(&cli, &verify_printer, |run| {
+            cfgd::cli::verify::cmd_verify(run, None, false)
+        })
         .expect("verify still renders")
     });
     drop(verify_printer);
@@ -483,27 +442,17 @@ fn a_source_barred_from_scripts_cannot_run_its_patch_filter_from_any_surface() {
         ("plan", {
             let (printer, _cap) = Printer::for_test_doc();
             cfgd_core::with_test_home(home.path(), || {
-                cmd_plan(
-                    &cli,
-                    &printer,
-                    &cfgd::cli::startup::StartupDocument::load(&cli.config),
-                    &plan_args(),
-                )
-                .err()
-                .map(|e| format!("{e:#}"))
+                cfgd::cli::RunContext::for_test(&cli, &printer, |run| cmd_plan(run, &plan_args()))
+                    .err()
+                    .map(|e| format!("{e:#}"))
             })
         }),
         ("apply", {
             let (printer, _cap) = Printer::for_test_doc();
             cfgd_core::with_test_home(home.path(), || {
-                cmd_apply(
-                    &cli,
-                    &printer,
-                    &cfgd::cli::startup::StartupDocument::load(&cli.config),
-                    &apply_args(),
-                )
-                .err()
-                .map(|e| format!("{e:#}"))
+                cfgd::cli::RunContext::for_test(&cli, &printer, |run| cmd_apply(run, &apply_args()))
+                    .err()
+                    .map(|e| format!("{e:#}"))
             })
         }),
     ] {
@@ -528,23 +477,15 @@ fn the_allow_scripts_disclosure_reaches_the_operator_at_default_verbosity() {
     let cli = cli_for(config_dir.path(), state_dir.path());
 
     let (sync_printer, _sync_cap) = Printer::for_test_doc();
-    cfgd::cli::sync::cmd_sync(
-        &cli,
-        &sync_printer,
-        &cfgd::cli::startup::StartupDocument::load(&cli.config),
-    )
-    .expect("the source must sync into the cache");
+    cfgd::cli::RunContext::for_test(&cli, &sync_printer, cfgd::cli::sync::cmd_sync)
+        .expect("the source must sync into the cache");
     drop(sync_printer);
 
     let (printer, cap) = Printer::for_test_doc();
     cfgd_core::with_test_home(home.path(), || {
-        cfgd::cli::diff::cmd_diff(
-            &cli,
-            &printer,
-            &cfgd::cli::startup::StartupDocument::load(&cli.config),
-            None,
-            false,
-        )
+        cfgd::cli::RunContext::for_test(&cli, &printer, |run| {
+            cfgd::cli::diff::cmd_diff(run, None, false)
+        })
         .expect("diff renders")
     });
     drop(printer);
@@ -573,21 +514,13 @@ fn a_sync_resolving_its_sources_still_discloses_the_scripts_they_carry() {
     let cli = cli_for(config_dir.path(), state_dir.path());
 
     let (seed_printer, _seed_cap) = Printer::for_test_doc();
-    cfgd::cli::sync::cmd_sync(
-        &cli,
-        &seed_printer,
-        &cfgd::cli::startup::StartupDocument::load(&cli.config),
-    )
-    .expect("the source must sync into the cache");
+    cfgd::cli::RunContext::for_test(&cli, &seed_printer, cfgd::cli::sync::cmd_sync)
+        .expect("the source must sync into the cache");
     drop(seed_printer);
 
     let (printer, cap) = Printer::for_test_doc();
-    cfgd::cli::sync::cmd_sync(
-        &cli,
-        &printer,
-        &cfgd::cli::startup::StartupDocument::load(&cli.config),
-    )
-    .expect("the second sync reads the cache it seeded");
+    cfgd::cli::RunContext::for_test(&cli, &printer, cfgd::cli::sync::cmd_sync)
+        .expect("the second sync reads the cache it seeded");
     drop(printer);
     let out = cap.human();
 
@@ -611,23 +544,15 @@ fn no_disclosure_is_printed_for_an_opted_in_source_that_ships_no_scripts() {
     let cli = cli_for(config_dir.path(), state_dir.path());
 
     let (sync_printer, _sync_cap) = Printer::for_test_doc();
-    cfgd::cli::sync::cmd_sync(
-        &cli,
-        &sync_printer,
-        &cfgd::cli::startup::StartupDocument::load(&cli.config),
-    )
-    .expect("the source must sync into the cache");
+    cfgd::cli::RunContext::for_test(&cli, &sync_printer, cfgd::cli::sync::cmd_sync)
+        .expect("the source must sync into the cache");
     drop(sync_printer);
 
     let (printer, cap) = Printer::for_test_doc();
     cfgd_core::with_test_home(home.path(), || {
-        cfgd::cli::diff::cmd_diff(
-            &cli,
-            &printer,
-            &cfgd::cli::startup::StartupDocument::load(&cli.config),
-            None,
-            false,
-        )
+        cfgd::cli::RunContext::for_test(&cli, &printer, |run| {
+            cfgd::cli::diff::cmd_diff(run, None, false)
+        })
         .expect("diff renders")
     });
     drop(printer);

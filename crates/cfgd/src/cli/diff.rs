@@ -87,22 +87,21 @@ fn files_by_target(
 }
 
 pub fn cmd_diff(
-    cli: &Cli,
-    printer: &Printer,
-    startup: &crate::cli::startup::StartupDocument,
+    run: &RunContext<'_>,
     module_filter: Option<&str>,
     exit_code: bool,
 ) -> anyhow::Result<()> {
-    let ctx = RunContext::new(cli, printer, startup);
-    let config_dir = ctx.config_dir();
+    let cli = run.cli();
+    let printer = run.printer();
+    let config_dir = run.config_dir();
 
     if let Some(mod_name) = module_filter {
-        return cmd_diff_module(&ctx, mod_name, exit_code);
+        return cmd_diff_module(run, mod_name, exit_code);
     }
 
     let module_cache = module_cache_dir(cli)?;
 
-    let (cfg, profile_name, local_resolved) = ctx.config_and_profile()?;
+    let (cfg, profile_name, local_resolved) = run.config_and_profile()?;
     // Drift is reported under the same owner that would be named in the plan
     // that fixes it, so the two surfaces read as one coordinate system.
     let profile_owner = Owner::profile(profile_name.to_string());
@@ -111,7 +110,7 @@ pub fn cmd_diff(
     // effective module set through the one shared resolver, so `diff` sees the
     // same source-composed desired state that `apply` writes.
     let mut desired = resolve_desired_state(
-        &ctx,
+        run,
         cfg,
         local_resolved,
         &[],
@@ -132,7 +131,7 @@ pub fn cmd_diff(
     let mut resolved = desired.resolved;
     let resolved_modules = desired.modules;
 
-    ctx.resolve_manifest_packages(
+    run.resolve_manifest_packages(
         &mut resolved.merged.packages,
         &mut resolved.merged.layer_sources,
     )?;
@@ -144,7 +143,7 @@ pub fn cmd_diff(
 
     let mut diff_payload = DiffOutput::default();
 
-    let state = ctx.state()?;
+    let state = run.state()?;
     let cfgd_installed = cfgd_installed_packages(state)?;
     let fm = CfgdFileManager::new(config_dir, &resolved)?;
     // ONE walk: the shared live-drift engine finds and records every drift row
@@ -153,7 +152,7 @@ pub fn cmd_diff(
     // below is presentation over its report; the inline hunks are re-rendered
     // only for the entries the engine already found drifted.
     let report = {
-        let pkg_cx = ctx.package_context()?;
+        let pkg_cx = run.package_context()?;
         super::live_drift::live_drift_results(
             config_dir,
             &resolved,
@@ -1354,13 +1353,9 @@ mod tests {
         cli.cache_dir = Some(tmp.path().join("cache"));
         let printer = quiet_printer();
 
-        let err = cmd_diff(
-            &cli,
-            &printer,
-            &crate::cli::startup::StartupDocument::load(&cli.config),
-            Some("cycle-a"),
-            false,
-        )
+        let err = crate::cli::RunContext::for_test(&cli, &printer, |run| {
+            cmd_diff(run, Some("cycle-a"), false)
+        })
         .unwrap_err();
         let cfgd_err = err
             .downcast_ref::<cfgd_core::errors::CfgdError>()
@@ -1437,14 +1432,7 @@ mod tests {
         cli.cache_dir = Some(tmp.path().join("cache"));
         let (printer, buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
-        cmd_diff(
-            &cli,
-            &printer,
-            &crate::cli::startup::StartupDocument::load(&cli.config),
-            None,
-            false,
-        )
-        .unwrap();
+        crate::cli::RunContext::for_test(&cli, &printer, |run| cmd_diff(run, None, false)).unwrap();
         drop(printer);
         let human = strip_ansi(&cfgd_core::test_helpers::captured_text(&buf));
         assert!(
@@ -1539,14 +1527,7 @@ mod tests {
         cli.cache_dir = Some(tmp.path().join("cache"));
         let (printer, cap) = Printer::for_test_doc();
 
-        cmd_diff(
-            &cli,
-            &printer,
-            &crate::cli::startup::StartupDocument::load(&cli.config),
-            None,
-            false,
-        )
-        .unwrap();
+        crate::cli::RunContext::for_test(&cli, &printer, |run| cmd_diff(run, None, false)).unwrap();
         drop(printer);
         let human = strip_ansi(&cap.human());
         assert!(
@@ -1636,14 +1617,7 @@ mod tests {
         drop(state);
 
         let (printer, cap) = Printer::for_test_doc();
-        cmd_diff(
-            &cli,
-            &printer,
-            &crate::cli::startup::StartupDocument::load(&cli.config),
-            None,
-            false,
-        )
-        .unwrap();
+        crate::cli::RunContext::for_test(&cli, &printer, |run| cmd_diff(run, None, false)).unwrap();
         drop(printer);
 
         let json = cap.json().expect("diff emits a data payload");
@@ -1718,13 +1692,9 @@ mod tests {
         cli.cache_dir = Some(tmp.path().join("cache"));
 
         let (printer, cap) = Printer::for_test_doc();
-        cmd_diff(
-            &cli,
-            &printer,
-            &crate::cli::startup::StartupDocument::load(&cli.config),
-            Some("env-mod"),
-            false,
-        )
+        crate::cli::RunContext::for_test(&cli, &printer, |run| {
+            cmd_diff(run, Some("env-mod"), false)
+        })
         .unwrap();
         drop(printer);
 
@@ -1742,13 +1712,9 @@ mod tests {
         assert_eq!(json["summary"]["envCheckFailed"], serde_json::json!(false));
 
         let (printer, buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-        super::super::verify::cmd_verify(
-            &cli,
-            &printer,
-            &crate::cli::startup::StartupDocument::load(&cli.config),
-            Some("env-mod"),
-            false,
-        )
+        crate::cli::RunContext::for_test(&cli, &printer, |run| {
+            super::super::verify::cmd_verify(run, Some("env-mod"), false)
+        })
         .unwrap();
         drop(printer);
         let out = cfgd_core::test_helpers::captured_text(&buf);
@@ -1849,13 +1815,9 @@ mod tests {
         // The module that owns nothing on the drifted surface stays clean:
         // PAGER is the profile's, and a scoped diff may not blame or report it.
         let (printer, cap) = Printer::for_test_doc();
-        cmd_diff(
-            &cli,
-            &printer,
-            &crate::cli::startup::StartupDocument::load(&cli.config),
-            Some("other-mod"),
-            false,
-        )
+        crate::cli::RunContext::for_test(&cli, &printer, |run| {
+            cmd_diff(run, Some("other-mod"), false)
+        })
         .unwrap();
         drop(printer);
         let json = cap.json().expect("diff emits a data payload");
@@ -1868,13 +1830,9 @@ mod tests {
 
         // The module that DOES own a missing entry reports exactly it.
         let (printer, cap) = Printer::for_test_doc();
-        cmd_diff(
-            &cli,
-            &printer,
-            &crate::cli::startup::StartupDocument::load(&cli.config),
-            Some("env-mod"),
-            false,
-        )
+        crate::cli::RunContext::for_test(&cli, &printer, |run| {
+            cmd_diff(run, Some("env-mod"), false)
+        })
         .unwrap();
         drop(printer);
         let json = cap.json().expect("diff emits a data payload");
@@ -2035,13 +1993,9 @@ mod tests {
         }
 
         let printer = cfgd_core::test_helpers::test_printer();
-        cmd_diff(
-            &cli,
-            &printer,
-            &crate::cli::startup::StartupDocument::load(&cli.config),
-            Some("env-mod"),
-            false,
-        )
+        crate::cli::RunContext::for_test(&cli, &printer, |run| {
+            cmd_diff(run, Some("env-mod"), false)
+        })
         .unwrap();
 
         let store =
@@ -2107,13 +2061,9 @@ mod tests {
         cli.cache_dir = Some(tmp.path().join("cache"));
 
         let (printer, cap) = Printer::for_test_doc();
-        cmd_diff(
-            &cli,
-            &printer,
-            &crate::cli::startup::StartupDocument::load(&cli.config),
-            Some("env-mod"),
-            false,
-        )
+        crate::cli::RunContext::for_test(&cli, &printer, |run| {
+            cmd_diff(run, Some("env-mod"), false)
+        })
         .unwrap();
         drop(printer);
         let json = cap.json().expect("diff emits a data payload");
@@ -2212,13 +2162,9 @@ mod tests {
         cli.cache_dir = Some(tmp.path().join("cache"));
         let (printer, cap) = Printer::for_test_doc();
 
-        cmd_diff(
-            &cli,
-            &printer,
-            &crate::cli::startup::StartupDocument::load(&cli.config),
-            Some("file-mod"),
-            false,
-        )
+        crate::cli::RunContext::for_test(&cli, &printer, |run| {
+            cmd_diff(run, Some("file-mod"), false)
+        })
         .expect("one module's failure must not abort another module's diff");
         drop(printer);
 

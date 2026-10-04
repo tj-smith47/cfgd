@@ -1,5 +1,5 @@
 use super::*;
-use cfgd_core::output::{Doc, Printer, Role};
+use cfgd_core::output::{Doc, Role};
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -23,15 +23,14 @@ pub struct VerifyOutput {
 }
 
 pub fn cmd_verify(
-    cli: &Cli,
-    printer: &Printer,
-    startup: &crate::cli::startup::StartupDocument,
+    run: &RunContext<'_>,
     module_filter: Option<&str>,
     exit_code: bool,
 ) -> anyhow::Result<()> {
-    let ctx = RunContext::new(cli, printer, startup);
-    let config_dir = ctx.config_dir();
-    let state = ctx.state()?;
+    let cli = run.cli();
+    let printer = run.printer();
+    let config_dir = run.config_dir();
+    let state = run.state()?;
 
     // The configuration this report was measured against, named through the
     // one header builder. A `--module` run resolves no profile, so it carries
@@ -40,12 +39,12 @@ pub fn cmd_verify(
     let (resolved, resolved_modules, mut registry, composed_sources, header_profile) =
         if let Some(mod_name) = module_filter {
             let resolved =
-                empty_resolved_profile(&[mod_name.to_string()], &ctx.active_profile_name());
+                empty_resolved_profile(&[mod_name.to_string()], &run.active_profile_name());
             let registry = build_registry();
             let platform = Platform::current();
             let mgr_map = registry.manager_map();
             let cache_base = module_cache_dir(cli)?;
-            let pkg_cx = ctx.package_context()?;
+            let pkg_cx = run.package_context()?;
             let mods = match modules::resolve_modules(
                 &[mod_name.to_string()],
                 config_dir,
@@ -80,15 +79,15 @@ pub fn cmd_verify(
                 Err(e) => return Err(e.into()),
             };
             let declared =
-                cfgd_core::reconciler::ComposedSource::from_declared(&ctx.config()?.spec.sources);
+                cfgd_core::reconciler::ComposedSource::from_declared(&run.config()?.spec.sources);
             (resolved, mods, registry, declared, None)
         } else {
-            let (cfg, profile_name, local_resolved) = ctx.config_and_profile()?;
+            let (cfg, profile_name, local_resolved) = run.config_and_profile()?;
             // Compose with sources (cache-only — read paths stay offline) and resolve
             // the effective module set through the one shared resolver, so `verify`
             // checks the same source-composed desired state that `apply` writes.
             let mut desired = resolve_desired_state(
-                &ctx,
+                run,
                 cfg,
                 local_resolved,
                 &[],
@@ -104,7 +103,7 @@ pub fn cmd_verify(
             let composed_sources = desired.sources;
             let mut resolved = desired.resolved;
             let mods = desired.modules;
-            ctx.resolve_manifest_packages(
+            run.resolve_manifest_packages(
                 &mut resolved.merged.packages,
                 &mut resolved.merged.layer_sources,
             )?;
@@ -118,7 +117,7 @@ pub fn cmd_verify(
     // the reconciler's package check and the manager-drift plan below both diff
     // against installed state, and a `--module` run resolved its chain against
     // the same listing above.
-    let pkg_cx = ctx.package_context()?;
+    let pkg_cx = run.package_context()?;
     // One spinner across all four passes, renamed per pass: they run back to
     // back with no output of their own, and a package enumeration inside the
     // first can take seconds.
@@ -450,6 +449,7 @@ pub fn build_verify_doc(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use cfgd_core::output::Printer;
 
     use super::test_support::verify_doc_for_test;
     use serial_test::serial;
@@ -504,13 +504,9 @@ mod tests {
         cli.cache_dir = Some(tmp.path().join("cache"));
         let printer = quiet_printer();
 
-        let err = cmd_verify(
-            &cli,
-            &printer,
-            &crate::cli::startup::StartupDocument::load(&cli.config),
-            Some("cycle-a"),
-            false,
-        )
+        let err = crate::cli::RunContext::for_test(&cli, &printer, |run| {
+            cmd_verify(run, Some("cycle-a"), false)
+        })
         .unwrap_err();
         let cfgd_err = err
             .downcast_ref::<cfgd_core::errors::CfgdError>()
@@ -570,13 +566,9 @@ mod tests {
         cli.cache_dir = Some(tmp.path().join("cache"));
         let printer = quiet_printer();
 
-        cmd_verify(
-            &cli,
-            &printer,
-            &crate::cli::startup::StartupDocument::load(&cli.config),
-            Some("test-mod"),
-            false,
-        )
+        crate::cli::RunContext::for_test(&cli, &printer, |run| {
+            cmd_verify(run, Some("test-mod"), false)
+        })
         .unwrap();
         let after_module = open_state_store(Some(&state_dir), cfgd_core::Scope::User).unwrap();
         let stamp_after_module = after_module.last_scan_at().unwrap();
@@ -595,14 +587,8 @@ mod tests {
             )
         );
 
-        cmd_verify(
-            &cli,
-            &printer,
-            &crate::cli::startup::StartupDocument::load(&cli.config),
-            None,
-            false,
-        )
-        .unwrap();
+        crate::cli::RunContext::for_test(&cli, &printer, |run| cmd_verify(run, None, false))
+            .unwrap();
         let stamp_after_fleet = open_state_store(Some(&state_dir), cfgd_core::Scope::User)
             .unwrap()
             .last_scan_at()
@@ -677,14 +663,8 @@ mod tests {
         cli.cache_dir = Some(tmp.path().join("cache"));
 
         let (printer, cap) = Printer::for_test_doc();
-        cmd_verify(
-            &cli,
-            &printer,
-            &crate::cli::startup::StartupDocument::load(&cli.config),
-            None,
-            false,
-        )
-        .unwrap();
+        crate::cli::RunContext::for_test(&cli, &printer, |run| cmd_verify(run, None, false))
+            .unwrap();
         drop(printer);
 
         let human = cap.human();
@@ -830,14 +810,8 @@ mod tests {
         cli.cache_dir = Some(tmp.path().join("cache"));
 
         let (printer, cap) = Printer::for_test_doc();
-        cmd_verify(
-            &cli,
-            &printer,
-            &crate::cli::startup::StartupDocument::load(&cli.config),
-            None,
-            false,
-        )
-        .unwrap();
+        crate::cli::RunContext::for_test(&cli, &printer, |run| cmd_verify(run, None, false))
+            .unwrap();
         drop(printer);
 
         let json = cap.json().expect("verify emits a data payload");
@@ -959,14 +933,8 @@ mod tests {
         };
 
         let (printer, cap) = Printer::for_test_doc();
-        cmd_verify(
-            &cli,
-            &printer,
-            &crate::cli::startup::StartupDocument::load(&cli.config),
-            None,
-            false,
-        )
-        .unwrap();
+        crate::cli::RunContext::for_test(&cli, &printer, |run| cmd_verify(run, None, false))
+            .unwrap();
         drop(printer);
         let converged = editor_row(&cap);
         assert_eq!(
@@ -980,14 +948,8 @@ mod tests {
             std::fs::write(path, content.replace(&nvim, &emacs)).unwrap();
         }
         let (printer, cap) = Printer::for_test_doc();
-        cmd_verify(
-            &cli,
-            &printer,
-            &crate::cli::startup::StartupDocument::load(&cli.config),
-            None,
-            false,
-        )
-        .unwrap();
+        crate::cli::RunContext::for_test(&cli, &printer, |run| cmd_verify(run, None, false))
+            .unwrap();
         drop(printer);
         let drifted = editor_row(&cap);
         assert_eq!(
@@ -1079,14 +1041,8 @@ mod tests {
         }
 
         let printer = quiet_printer();
-        cmd_verify(
-            &cli,
-            &printer,
-            &crate::cli::startup::StartupDocument::load(&cli.config),
-            None,
-            false,
-        )
-        .unwrap();
+        crate::cli::RunContext::for_test(&cli, &printer, |run| cmd_verify(run, None, false))
+            .unwrap();
 
         let store = open_state_store(Some(&state_dir), cfgd_core::Scope::User).unwrap();
         let rows = store.unresolved_drift().unwrap();
@@ -1184,14 +1140,8 @@ mod tests {
         }
 
         let printer = quiet_printer();
-        cmd_verify(
-            &cli,
-            &printer,
-            &crate::cli::startup::StartupDocument::load(&cli.config),
-            None,
-            false,
-        )
-        .unwrap();
+        crate::cli::RunContext::for_test(&cli, &printer, |run| cmd_verify(run, None, false))
+            .unwrap();
 
         let store = open_state_store(Some(&state_dir), cfgd_core::Scope::User).unwrap();
         let rows = store.unresolved_drift().unwrap();
@@ -1274,13 +1224,9 @@ mod tests {
         }
 
         let (printer, buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-        cmd_verify(
-            &cli,
-            &printer,
-            &crate::cli::startup::StartupDocument::load(&cli.config),
-            Some("test-mod"),
-            false,
-        )
+        crate::cli::RunContext::for_test(&cli, &printer, |run| {
+            cmd_verify(run, Some("test-mod"), false)
+        })
         .unwrap();
         drop(printer);
         // The DISPLAY half of the scope rule: the rendered report carries the

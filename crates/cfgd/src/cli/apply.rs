@@ -109,13 +109,8 @@ impl reconciler::RunExecutor for ReconcilerExecutor<'_> {
 // no-header-ok: the run header is rendered once the plan is final, by
 // `reconciler::ApplyRun`, which builds the block through the one builder;
 // printing it here would state the same four facts twice.
-pub fn cmd_apply(
-    cli: &Cli,
-    printer: &cfgd_core::output::Printer,
-    startup: &crate::cli::startup::StartupDocument,
-    args: &ApplyArgs,
-) -> anyhow::Result<()> {
-    let outcome = run_apply(cli, printer, startup, args)?;
+pub fn cmd_apply(run: &RunContext<'_>, args: &ApplyArgs) -> anyhow::Result<()> {
+    let outcome = run_apply(run, args)?;
 
     // A graceful signal abort is NOT an error, but it must NOT exit 0: exit with
     // the signal-conventional code so wrappers see the interruption. The abort
@@ -192,12 +187,8 @@ pub(super) fn refuse_with_profile_without_module(
 /// actions, so they never warrant a failure exit. Keeping the exit decision in
 /// `cmd_apply` lets in-process tests capture the rendered failure shape without
 /// `process::exit` aborting the harness.
-pub fn run_apply(
-    cli: &Cli,
-    printer: &cfgd_core::output::Printer,
-    startup: &crate::cli::startup::StartupDocument,
-    args: &ApplyArgs,
-) -> anyhow::Result<ApplyOutcome> {
+pub fn run_apply(run: &RunContext<'_>, args: &ApplyArgs) -> anyhow::Result<ApplyOutcome> {
+    let printer = run.printer();
     // Parsed before anything is read, so a misspelled `--context` is refused
     // ahead of config discovery; a replay overrides it below with the context
     // its plan was priced for.
@@ -206,13 +197,16 @@ pub fn run_apply(
     // --from: clone from a git source, or read a local config directory in
     // place; either way the run reads the document the source put there.
     let from_run;
-    let (cli, startup) = match &args.from {
+    let from_ctx;
+    let ctx = match &args.from {
         Some(from) => {
-            from_run = init::from_run(cli, from, printer)?;
-            (&from_run.0, &from_run.1)
+            from_run = init::from_run(run.cli(), from, printer)?;
+            from_ctx = RunContext::new(&from_run.0, printer, &from_run.1);
+            &from_ctx
         }
-        None => (cli, startup),
+        None => run,
     };
+    let cli = ctx.cli();
 
     let dry_run = args.dry_run;
     let yes = args.yes;
@@ -241,9 +235,7 @@ pub fn run_apply(
     let recorder = cfgd_core::ConfigInputRecorder::start();
 
     let (cfg, resolved, profile_label, config_parsed) =
-        load_config_and_profile_module_scoped(cli, printer, module_filter, with_profile)?;
-
-    let ctx = RunContext::new(cli, printer, startup);
+        load_config_and_profile_module_scoped(ctx, module_filter, with_profile)?;
 
     // Open state only after config discovery so a missing config (or an
     // unresolvable home) surfaces before any state.db is created — otherwise a
@@ -286,7 +278,7 @@ pub fn run_apply(
     // desired-state resolver every command shares, so apply and the read paths
     // compute an identical effective module set for the same config.
     let mut desired = resolve_desired_state(
-        &ctx,
+        ctx,
         &cfg,
         &resolved,
         module_filter,
@@ -491,7 +483,7 @@ pub fn run_apply(
     // fallback knows no subscription list, and a foreign config naming someone
     // else's store does not write rows into it.
     let (withheld, review) = plan_ops::withheld_for_run(
-        &ctx,
+        ctx,
         state,
         &cfg,
         plan_ops::DesiredOwnership {

@@ -25,13 +25,13 @@ pub struct DaemonUninstallOutput {
 }
 
 pub(super) fn cmd_daemon(
-    cli: &Cli,
-    printer: &Printer,
+    run: &RunContext<'_>,
     command: Option<&DaemonCommand>,
 ) -> anyhow::Result<()> {
+    let (cli, printer) = (run.cli(), run.printer());
     match command {
-        Some(DaemonCommand::Status) => return cmd_daemon_status(cli, printer),
-        Some(DaemonCommand::Install) => return cmd_daemon_install(cli, printer),
+        Some(DaemonCommand::Status) => return cmd_daemon_status(run),
+        Some(DaemonCommand::Install) => return cmd_daemon_install(run),
         Some(DaemonCommand::Uninstall) => return cmd_daemon_uninstall(cli, printer),
         Some(DaemonCommand::Service { .. }) => return cmd_daemon_service(),
         Some(DaemonCommand::Run) | None => {}
@@ -84,7 +84,9 @@ pub(super) fn cmd_daemon(
     Ok(())
 }
 
-pub fn cmd_daemon_status(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
+pub fn cmd_daemon_status(run: &RunContext<'_>) -> anyhow::Result<()> {
+    let cli = run.cli();
+    let printer = run.printer();
     let status =
         match cfgd_core::daemon::query_daemon_status(cli.runtime_dir.as_deref(), cli.scope()) {
             Ok(s) => s,
@@ -106,7 +108,7 @@ pub fn cmd_daemon_status(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
     // the config and the state store hold everything else the shared `Sources`
     // table shows. A machine with no readable config still renders the table —
     // the daemon's own rows, with the config-side columns reading `-`.
-    let (catalog, declared_sources) = configured_source_catalog(cli);
+    let (catalog, declared_sources) = configured_source_catalog(run);
     printer.emit(build_daemon_status_doc(
         status.as_ref(),
         &declared_sources,
@@ -122,12 +124,13 @@ pub fn cmd_daemon_status(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
 /// header names. Both empty when the config or the state store cannot be read:
 /// the daemon's status is still worth printing without them.
 fn configured_source_catalog(
-    cli: &Cli,
+    run: &RunContext<'_>,
 ) -> (
     Vec<SourceListEntry>,
     Vec<cfgd_core::reconciler::ComposedSource>,
 ) {
-    let Ok(cfg) = config::load_config(&cli.config) else {
+    let cli = run.cli();
+    let Ok(cfg) = run.config_unannounced() else {
         return (Vec::new(), Vec::new());
     };
     let declared = cfgd_core::reconciler::ComposedSource::from_declared(&cfg.spec.sources);
@@ -138,7 +141,7 @@ fn configured_source_catalog(
     // shared `Sources` table renders no lockfile cell.
     let lock = cfgd_core::load_sources_lockfile(&config_dir(cli)).unwrap_or_default();
     (
-        super::source::list::configured_source_entries(&cfg, &state, &lock),
+        super::source::list::configured_source_entries(cfg, &state, &lock),
         declared,
     )
 }
@@ -342,7 +345,9 @@ pub(in crate::cli) fn system_scope_root_hint(verb: &str) -> cfgd_core::output::H
     ))
 }
 
-pub(super) fn cmd_daemon_install(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
+pub(super) fn cmd_daemon_install(run: &RunContext<'_>) -> anyhow::Result<()> {
+    let cli = run.cli();
+    let printer = run.printer();
     // Runtime cfg! so the install_failed error_doc has the platform+service
     // strings available before the lib call. The success payload uses
     // compile-time #[cfg] further down because the Windows branch loads
@@ -391,13 +396,9 @@ pub(super) fn cmd_daemon_install(cli: &Cli, printer: &Printer) -> anyhow::Result
 
     #[cfg(windows)]
     let payload = {
-        let event_log_on = match cfgd_core::config::load_config(&cli.config) {
-            Ok(mut cfg) => {
-                drain_config_deprecations(printer, &mut cfg);
-                cfg.spec.daemon_effective().windows_event_log
-            }
-            Err(_) => false,
-        };
+        let event_log_on = run
+            .config()
+            .is_ok_and(|cfg| cfg.spec.daemon_effective().windows_event_log);
         DaemonInstallOutput {
             platform: "windows".to_string(),
             service: "cfgd".to_string(),
@@ -1215,7 +1216,7 @@ mod tests {
     fn cmd_daemon_status_returns_ok_when_no_daemon() {
         let cli = make_cli();
         let printer = make_printer();
-        let result = cmd_daemon_status(&cli, &printer);
+        let result = crate::cli::RunContext::for_test(&cli, &printer, cmd_daemon_status);
         result.expect("cmd_daemon_status must succeed when daemon is not running");
     }
 
@@ -1223,7 +1224,9 @@ mod tests {
     fn cmd_daemon_dispatches_status() {
         let cli = make_cli();
         let printer = make_printer();
-        let result = cmd_daemon(&cli, &printer, Some(&DaemonCommand::Status));
+        let result = crate::cli::RunContext::for_test(&cli, &printer, |run| {
+            cmd_daemon(run, Some(&DaemonCommand::Status))
+        });
         result.expect("daemon status dispatch must succeed");
     }
 
@@ -1234,7 +1237,9 @@ mod tests {
         let _home = cfgd_core::with_test_home_guard(tmp_home.path());
         let cli = make_cli();
         let printer = make_printer();
-        let result = cmd_daemon(&cli, &printer, Some(&DaemonCommand::Install));
+        let result = crate::cli::RunContext::for_test(&cli, &printer, |run| {
+            cmd_daemon(run, Some(&DaemonCommand::Install))
+        });
         result.expect("install must succeed with user-level systemd dir");
     }
 
@@ -1249,7 +1254,10 @@ mod tests {
         let _home = cfgd_core::with_test_home_guard(tmp_home.path());
         let cli = make_cli();
         let (printer, cap) = Printer::for_test_doc();
-        cmd_daemon(&cli, &printer, Some(&DaemonCommand::Install)).expect("install must succeed");
+        crate::cli::RunContext::for_test(&cli, &printer, |run| {
+            cmd_daemon(run, Some(&DaemonCommand::Install))
+        })
+        .expect("install must succeed");
         let json = cap.json().expect("install doc must carry JSON payload");
         assert_eq!(
             json["started"], false,
@@ -1264,7 +1272,9 @@ mod tests {
         let _home = cfgd_core::with_test_home_guard(tmp_home.path());
         let cli = make_cli();
         let printer = make_printer();
-        let result = cmd_daemon(&cli, &printer, Some(&DaemonCommand::Uninstall));
+        let result = crate::cli::RunContext::for_test(&cli, &printer, |run| {
+            cmd_daemon(run, Some(&DaemonCommand::Uninstall))
+        });
         result.expect("uninstall must succeed when service file is absent");
     }
 

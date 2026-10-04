@@ -1,7 +1,7 @@
 use clap::{Args, Subcommand};
 
 use cfgd_core::PathDisplayExt;
-use cfgd_core::config::{self, AiConfig};
+use cfgd_core::config::AiConfig;
 use cfgd_core::generate::{PresentYamlRequest, PresentYamlResponse};
 use cfgd_core::output::{Doc, Printer, Role};
 
@@ -11,7 +11,7 @@ use crate::ai::tools;
 use crate::generate;
 use crate::packages;
 
-use super::{Cli, MSG_RUN_APPLY, config_dir};
+use super::{MSG_RUN_APPLY, RunContext, config_dir};
 
 #[derive(Debug, Clone, Args)]
 pub struct GenerateArgs {
@@ -61,23 +61,17 @@ pub enum GenerateTarget {
     },
 }
 
-pub fn cmd_generate(
-    cli: &Cli,
-    printer: &Printer,
-    startup: &crate::cli::startup::StartupDocument,
-    args: &GenerateArgs,
-) -> anyhow::Result<()> {
+pub fn cmd_generate(run: &RunContext<'_>, args: &GenerateArgs) -> anyhow::Result<()> {
+    let cli = run.cli();
+    let printer = run.printer();
     // --scan-only short-circuits the AI conversation loop.
     if args.scan_only {
         return cmd_generate_scan_only(printer, args);
     }
 
     // 1. Load config, resolve AiConfig
-    let ai_config = match config::load_config(&cli.config) {
-        Ok(mut cfg) => {
-            crate::cli::helpers::drain_config_deprecations(printer, &mut cfg);
-            cfg.spec.ai_effective().clone()
-        }
+    let ai_config = match run.config() {
+        Ok(cfg) => cfg.spec.ai_effective().clone(),
         Err(cfgd_core::errors::CfgdError::Config(cfgd_core::errors::ConfigError::NotFound {
             ..
         })) => AiConfig::default(),
@@ -186,8 +180,7 @@ pub fn cmd_generate(
     let managers: Vec<Box<dyn cfgd_core::providers::PackageManager>> =
         packages::all_package_managers();
     let home = dirs_from_env();
-    let ctx = crate::cli::RunContext::new(cli, printer, startup);
-    let pkg_cx = ctx.package_context()?;
+    let pkg_cx = run.package_context()?;
 
     // 9. Conversation loop
     const MAX_TURNS: usize = 100;

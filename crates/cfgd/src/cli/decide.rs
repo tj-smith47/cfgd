@@ -1,7 +1,7 @@
 use super::*;
 use anyhow::Context;
 use cfgd_core::PathDisplayExt;
-use cfgd_core::output::{Doc, Printer, Role};
+use cfgd_core::output::{Doc, Role};
 use cfgd_core::state::PendingDecision;
 
 /// Bulk-resolution payload (`accept --all` or `accept --source <name>`).
@@ -50,14 +50,14 @@ pub(super) struct DecideListOutput {
 // no-header-ok: a report on the source decisions still pending, which is a
 // question about the sources rather than about what they composed to.
 pub(super) fn cmd_decide(
-    cli: &Cli,
-    printer: &Printer,
-    startup: &crate::cli::startup::StartupDocument,
+    run: &RunContext<'_>,
     action: Option<DecideAction>,
     resource: Option<&str>,
     source: Option<&str>,
     all: bool,
 ) -> anyhow::Result<()> {
+    let cli = run.cli();
+    let printer = run.printer();
     // A target without a verb is unanswerable: nothing says which way the
     // named decision(s) should go, and guessing either way resolves rows the
     // operator never asked to resolve. The bare form (no verb, no target) is
@@ -74,8 +74,7 @@ pub(super) fn cmd_decide(
         }
         None => None,
     };
-    let ctx = RunContext::new(cli, printer, startup);
-    let state = ctx.state()?;
+    let state = run.state()?;
 
     // A resolution is inherently a write, so an item `cfgd plan` classified
     // that nothing has recorded yet becomes a real row HERE, through the same
@@ -106,7 +105,7 @@ pub(super) fn cmd_decide(
         }
         _ => plan_ops::DecisionWrites::ReadOnly,
     };
-    let classification = source_classification(&ctx, state, writes);
+    let classification = source_classification(run, state, writes);
 
     // A verb with no target falls through to the same listing the bare form
     // renders: there is nothing to resolve, and showing what could be is more
@@ -152,7 +151,7 @@ pub(super) fn cmd_decide(
     // says nothing about which sources are subscribed, so the listing shows
     // everything rather than hiding a row on a guess — listing one is harmless,
     // hiding the one the operator came to answer is not.
-    let subscriptions = match config::load_config(&cli.config) {
+    let subscriptions = match run.config() {
         Ok(cfg) => reconciler::Subscriptions::known(cfg.spec.sources.iter().map(|s| &s.name)),
         Err(e) => {
             tracing::debug!("config load failed, listing every decision: {}", e);

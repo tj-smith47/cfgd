@@ -3,27 +3,25 @@ use super::*;
 // no-header-ok: same as apply — `reconciler::ApplyRun` renders the header
 // once the plan is final, so the profile label is carried down rather than
 // printed here.
-pub fn cmd_plan(
-    cli: &Cli,
-    printer: &cfgd_core::output::Printer,
-    startup: &crate::cli::startup::StartupDocument,
-    args: &PlanArgs,
-) -> anyhow::Result<()> {
+pub fn cmd_plan(run: &RunContext<'_>, args: &PlanArgs) -> anyhow::Result<()> {
+    let printer = run.printer();
     let reconcile_context = super::apply::parse_reconcile_context(&args.context)?;
 
     // --from: clone from a git source, or read a local config directory in
     // place; either way the run reads the document the source put there.
     let from_run;
-    let (cli, startup) = match &args.from {
+    let from_ctx;
+    let ctx = match &args.from {
         Some(from) => {
-            from_run = init::from_run(cli, from, printer)?;
-            (&from_run.0, &from_run.1)
+            from_run = init::from_run(run.cli(), from, printer)?;
+            from_ctx = RunContext::new(&from_run.0, printer, &from_run.1);
+            &from_ctx
         }
-        None => (cli, startup),
+        None => run,
     };
+    let cli = ctx.cli();
 
     let config_dir = config_dir(cli);
-    let ctx = RunContext::new(cli, printer, startup);
     let state = ctx.state()?;
     let module_filter: &[String] = &args.module;
     let with_profile = args.with_profile;
@@ -41,12 +39,12 @@ pub fn cmd_plan(
     // is carried down rather than printed here. An isolated run resolved no
     // profile, so it carries none and the header omits the row.
     let (cfg, resolved, profile_label, config_parsed) =
-        load_config_and_profile_module_scoped(cli, printer, module_filter, with_profile)?;
+        load_config_and_profile_module_scoped(ctx, module_filter, with_profile)?;
 
     // Compose with sources (network refresh) and resolve modules through the one
     // shared desired-state resolver — same path apply takes.
     let mut desired = resolve_desired_state(
-        &ctx,
+        ctx,
         &cfg,
         &resolved,
         module_filter,
@@ -191,7 +189,7 @@ pub fn cmd_plan(
     // listed without a row being minted for it; the row lands when `cfgd
     // decide` answers it, or once an apply/tick proceeds.
     let (withheld, _review) = plan_ops::withheld_for_run(
-        &ctx,
+        ctx,
         state,
         &cfg,
         plan_ops::DesiredOwnership {

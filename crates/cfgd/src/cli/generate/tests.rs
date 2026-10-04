@@ -1128,13 +1128,8 @@ mod cmd_generate_mockito {
             home: None,
         };
 
-        cmd_generate(
-            &cli,
-            &printer,
-            &crate::cli::startup::StartupDocument::load(&cli.config),
-            &args,
-        )
-        .expect("cmd_generate should succeed against the text-only mock");
+        crate::cli::RunContext::for_test(&cli, &printer, |run| cmd_generate(run, &args))
+            .expect("cmd_generate should succeed against the text-only mock");
 
         mock.assert();
         let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -1195,13 +1190,8 @@ mod cmd_generate_mockito {
             home: None,
         };
 
-        cmd_generate(
-            &cli,
-            &printer,
-            &crate::cli::startup::StartupDocument::load(&cli.config),
-            &args,
-        )
-        .expect("cmd_generate (module target) should succeed");
+        crate::cli::RunContext::for_test(&cli, &printer, |run| cmd_generate(run, &args))
+            .expect("cmd_generate (module target) should succeed");
         mock.assert();
     }
 
@@ -1279,13 +1269,8 @@ mod cmd_generate_mockito {
             home: None,
         };
 
-        cmd_generate(
-            &cli,
-            &printer,
-            &crate::cli::startup::StartupDocument::load(&cli.config),
-            &args,
-        )
-        .expect("two-turn conversation must complete without error");
+        crate::cli::RunContext::for_test(&cli, &printer, |run| cmd_generate(run, &args))
+            .expect("two-turn conversation must complete without error");
 
         // Both mocks fired exactly once → the loop made two API calls.
         turn1.assert();
@@ -1375,13 +1360,8 @@ mod cmd_generate_mockito {
             home: None,
         };
 
-        cmd_generate(
-            &cli,
-            &printer,
-            &crate::cli::startup::StartupDocument::load(&cli.config),
-            &args,
-        )
-        .expect("present_yaml + Accept two-turn loop must succeed");
+        crate::cli::RunContext::for_test(&cli, &printer, |run| cmd_generate(run, &args))
+            .expect("present_yaml + Accept two-turn loop must succeed");
 
         turn1.assert();
         turn2.assert();
@@ -1445,12 +1425,8 @@ mod cmd_generate_mockito {
             home: None,
         };
 
-        let result = cmd_generate(
-            &cli,
-            &printer,
-            &crate::cli::startup::StartupDocument::load(&cli.config),
-            &args,
-        );
+        let result =
+            crate::cli::RunContext::for_test(&cli, &printer, |run| cmd_generate(run, &args));
         // Either:
         //   (a) prompt_confirm returns Err → cmd_generate returns Err via `?`
         //   (b) some prompt impls return Ok(false) → "Aborted." printed + Ok
@@ -1510,13 +1486,8 @@ mod cmd_generate_mockito {
             home: None,
         };
 
-        let err = cmd_generate(
-            &cli,
-            &printer,
-            &crate::cli::startup::StartupDocument::load(&cli.config),
-            &args,
-        )
-        .expect_err("missing API key should surface as an error");
+        let err = crate::cli::RunContext::for_test(&cli, &printer, |run| cmd_generate(run, &args))
+            .expect_err("missing API key should surface as an error");
         let msg = err.to_string();
         assert!(
             msg.contains("ANTHROPIC_API_KEY"),
@@ -1644,13 +1615,8 @@ mod cmd_generate_mockito {
             home: None,
         };
 
-        cmd_generate(
-            &cli,
-            &printer,
-            &crate::cli::startup::StartupDocument::load(&cli.config),
-            &args,
-        )
-        .expect("two-turn write_module_yaml loop must succeed");
+        crate::cli::RunContext::for_test(&cli, &printer, |run| cmd_generate(run, &args))
+            .expect("two-turn write_module_yaml loop must succeed");
 
         turn1.assert();
         turn2.assert();
@@ -1708,13 +1674,8 @@ mod cmd_generate_mockito {
             home: None,
         };
 
-        cmd_generate(
-            &cli,
-            &printer,
-            &crate::cli::startup::StartupDocument::load(&cli.config),
-            &args,
-        )
-        .expect("profile-target one-turn loop must succeed");
+        crate::cli::RunContext::for_test(&cli, &printer, |run| cmd_generate(run, &args))
+            .expect("profile-target one-turn loop must succeed");
         mock.assert();
         let output = cfgd_core::test_helpers::captured_text(&buf);
         assert!(
@@ -1782,13 +1743,8 @@ mod cmd_generate_mockito {
             home: None,
         };
 
-        cmd_generate(
-            &cli,
-            &printer,
-            &crate::cli::startup::StartupDocument::load(&cli.config),
-            &args,
-        )
-        .expect("tool error path must complete; cmd_generate returns Ok even on tool error");
+        crate::cli::RunContext::for_test(&cli, &printer, |run| cmd_generate(run, &args))
+            .expect("tool error path must complete; cmd_generate returns Ok even on tool error");
         turn1.assert();
         turn2.assert();
         let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -1831,13 +1787,8 @@ mod cmd_generate_mockito {
             home: None,
         };
 
-        cmd_generate(
-            &cli,
-            &printer,
-            &crate::cli::startup::StartupDocument::load(&cli.config),
-            &args,
-        )
-        .expect("declining consent returns Ok with an 'Aborted.' doc");
+        crate::cli::RunContext::for_test(&cli, &printer, |run| cmd_generate(run, &args))
+            .expect("declining consent returns Ok with an 'Aborted.' doc");
         must_not_fire.assert();
         let output = cfgd_core::test_helpers::captured_text(&buf);
         assert!(
@@ -1972,13 +1923,8 @@ mod cmd_generate_mockito {
             home: None,
         };
 
-        cmd_generate(
-            &cli,
-            &printer,
-            &crate::cli::startup::StartupDocument::load(&cli.config),
-            &args,
-        )
-        .expect("consent + commit confirms must drive a successful end-to-end commit");
+        crate::cli::RunContext::for_test(&cli, &printer, |run| cmd_generate(run, &args))
+            .expect("consent + commit confirms must drive a successful end-to-end commit");
 
         turn1.assert();
         turn2.assert();
@@ -2057,13 +2003,8 @@ mod cmd_generate_mockito {
             home: None,
         };
 
-        cmd_generate(
-            &cli,
-            &printer,
-            &crate::cli::startup::StartupDocument::load(&cli.config),
-            &args,
-        )
-        .expect("declining commit must still return Ok and just skip the commit");
+        crate::cli::RunContext::for_test(&cli, &printer, |run| cmd_generate(run, &args))
+            .expect("declining commit must still return Ok and just skip the commit");
         turn1.assert();
         turn2.assert();
         let output = cfgd_core::test_helpers::captured_text(&buf);

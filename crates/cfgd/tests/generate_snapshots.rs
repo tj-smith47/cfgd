@@ -97,12 +97,9 @@ fn generate_scan_only_empty_home_human() {
     let cli = cli_for(home.path());
     let (printer, cap) = Printer::for_test_doc();
 
-    generate::cmd_generate(
-        &cli,
-        &printer,
-        &cfgd::cli::startup::StartupDocument::load(&cli.config),
-        &scan_only_args(home.path()),
-    )
+    cfgd::cli::RunContext::for_test(&cli, &printer, |run| {
+        generate::cmd_generate(run, &scan_only_args(home.path()))
+    })
     .unwrap();
     drop(printer);
 
@@ -123,12 +120,9 @@ fn generate_scan_only_json_shape() {
     let cli = cli_for(home.path());
     let (printer, cap) = Printer::for_test_doc_with_format(OutputFormat::Json);
 
-    generate::cmd_generate(
-        &cli,
-        &printer,
-        &cfgd::cli::startup::StartupDocument::load(&cli.config),
-        &scan_only_args(home.path()),
-    )
+    cfgd::cli::RunContext::for_test(&cli, &printer, |run| {
+        generate::cmd_generate(run, &scan_only_args(home.path()))
+    })
     .unwrap();
     drop(printer);
 

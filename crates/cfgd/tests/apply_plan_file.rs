@@ -22,13 +22,7 @@ use common::{apply_args, cli_for, plan_args, tiny_profile_setup};
 /// the very thing the refusal tests move.
 fn record_plan_file(cli: &Cli, args: &PlanArgs, dest: &Path) {
     let (printer, cap) = Printer::for_test_doc_with_format(OutputFormat::Json);
-    cmd_plan(
-        cli,
-        &printer,
-        &cfgd::cli::startup::StartupDocument::load(&cli.config),
-        args,
-    )
-    .unwrap();
+    cfgd::cli::RunContext::for_test(cli, &printer, |run| cmd_plan(run, args)).unwrap();
     drop(printer);
     let payload = cap.json().expect("plan doc carries a payload");
     std::fs::write(dest, serde_json::to_string(&payload).unwrap()).unwrap();
@@ -60,12 +54,9 @@ fn a_saved_plan_applies_the_actions_it_recorded() {
     assert!(!target.exists(), "the plan itself changes nothing");
 
     let printer = test_printer();
-    let outcome = run_apply(
-        &cli,
-        &printer,
-        &cfgd::cli::startup::StartupDocument::load(&cli.config),
-        &replay_args(&plan_file),
-    )
+    let outcome = cfgd::cli::RunContext::for_test(&cli, &printer, |run| {
+        run_apply(run, &replay_args(&plan_file))
+    })
     .unwrap();
 
     assert_eq!(outcome.status, ApplyStatus::Success);
@@ -93,12 +84,9 @@ fn a_replay_runs_the_files_own_actions_rather_than_planning_again() {
     std::fs::write(&plan_file, body).unwrap();
 
     let printer = test_printer();
-    run_apply(
-        &cli,
-        &printer,
-        &cfgd::cli::startup::StartupDocument::load(&cli.config),
-        &replay_args(&plan_file),
-    )
+    cfgd::cli::RunContext::for_test(&cli, &printer, |run| {
+        run_apply(run, &replay_args(&plan_file))
+    })
     .unwrap();
 
     assert_eq!(
@@ -129,12 +117,9 @@ fn a_saved_plan_is_refused_once_the_config_moves() {
     std::fs::write(&profile, format!("{body}# the operator edited this\n")).unwrap();
 
     let printer = test_printer();
-    let err = run_apply(
-        &cli,
-        &printer,
-        &cfgd::cli::startup::StartupDocument::load(&cli.config),
-        &replay_args(&plan_file),
-    )
+    let err = cfgd::cli::RunContext::for_test(&cli, &printer, |run| {
+        run_apply(run, &replay_args(&plan_file))
+    })
     .unwrap_err()
     .to_string();
     assert!(
@@ -167,12 +152,9 @@ fn a_saved_plan_is_refused_once_an_apply_has_run() {
     }
 
     let printer = test_printer();
-    let err = run_apply(
-        &cli,
-        &printer,
-        &cfgd::cli::startup::StartupDocument::load(&cli.config),
-        &replay_args(&plan_file),
-    )
+    let err = cfgd::cli::RunContext::for_test(&cli, &printer, |run| {
+        run_apply(run, &replay_args(&plan_file))
+    })
     .unwrap_err()
     .to_string();
     assert!(
@@ -197,12 +179,9 @@ fn a_filtered_payload_is_refused_as_a_plan_file() {
     record_plan_file(&cli, &args, &plan_file);
 
     let printer = test_printer();
-    let err = run_apply(
-        &cli,
-        &printer,
-        &cfgd::cli::startup::StartupDocument::load(&cli.config),
-        &replay_args(&plan_file),
-    )
+    let err = cfgd::cli::RunContext::for_test(&cli, &printer, |run| {
+        run_apply(run, &replay_args(&plan_file))
+    })
     .unwrap_err()
     .to_string();
     assert!(err.contains("carries no saved plan"), "{err}");
@@ -229,12 +208,9 @@ fn every_saved_plan_refusal_names_its_own_kind_on_the_wire() {
 
     let absent = state_dir.path().join("nope.json");
     let missing = payload_of(
-        &run_apply(
-            &cli,
-            &printer,
-            &cfgd::cli::startup::StartupDocument::load(&cli.config),
-            &replay_args(&absent),
-        )
+        &cfgd::cli::RunContext::for_test(&cli, &printer, |run| {
+            run_apply(run, &replay_args(&absent))
+        })
         .unwrap_err(),
     );
     assert_eq!(missing["error"], "not_found", "{missing}");
@@ -256,12 +232,9 @@ fn every_saved_plan_refusal_names_its_own_kind_on_the_wire() {
     filtered_args.only = vec!["files".to_string()];
     record_plan_file(&cli, &filtered_args, &filtered_file);
     let filtered = payload_of(
-        &run_apply(
-            &cli,
-            &printer,
-            &cfgd::cli::startup::StartupDocument::load(&cli.config),
-            &replay_args(&filtered_file),
-        )
+        &cfgd::cli::RunContext::for_test(&cli, &printer, |run| {
+            run_apply(run, &replay_args(&filtered_file))
+        })
         .unwrap_err(),
     );
     assert_eq!(filtered["error"], "no_saved_plan", "{filtered}");
@@ -275,12 +248,9 @@ fn every_saved_plan_refusal_names_its_own_kind_on_the_wire() {
             .unwrap();
     }
     let stale = payload_of(
-        &run_apply(
-            &cli,
-            &printer,
-            &cfgd::cli::startup::StartupDocument::load(&cli.config),
-            &replay_args(&plan_file),
-        )
+        &cfgd::cli::RunContext::for_test(&cli, &printer, |run| {
+            run_apply(run, &replay_args(&plan_file))
+        })
         .unwrap_err(),
     );
     assert_eq!(stale["error"], "stale", "{stale}");
@@ -312,12 +282,9 @@ fn a_plan_file_whose_phases_were_reordered_is_refused() {
     std::fs::write(&plan_file, serde_json::to_string(&payload).unwrap()).unwrap();
 
     let printer = test_printer();
-    let refusal = run_apply(
-        &cli,
-        &printer,
-        &cfgd::cli::startup::StartupDocument::load(&cli.config),
-        &replay_args(&plan_file),
-    )
+    let refusal = cfgd::cli::RunContext::for_test(&cli, &printer, |run| {
+        run_apply(run, &replay_args(&plan_file))
+    })
     .unwrap_err();
     let payload = payload_of(&refusal);
     assert_eq!(payload["error"], "not_a_cfgd_plan", "{payload}");
@@ -391,12 +358,9 @@ fn a_plan_recorded_under_another_config_is_refused() {
     let foreign = cli_for(other_dir.path(), state_dir.path());
 
     let printer = test_printer();
-    let refusal = run_apply(
-        &foreign,
-        &printer,
-        &cfgd::cli::startup::StartupDocument::load(&foreign.config),
-        &replay_args(&plan_file),
-    )
+    let refusal = cfgd::cli::RunContext::for_test(&foreign, &printer, |run| {
+        run_apply(run, &replay_args(&plan_file))
+    })
     .unwrap_err();
     let payload = payload_of(&refusal);
     assert_eq!(payload["error"], "foreign_config", "{payload}");
@@ -443,12 +407,9 @@ fn a_relative_spelling_of_the_same_config_replays_the_plan() {
         ..cli_for(config_dir.path(), state_dir.path())
     };
     let printer = test_printer();
-    let outcome = run_apply(
-        &respelled,
-        &printer,
-        &cfgd::cli::startup::StartupDocument::load(&respelled.config),
-        &replay_args(&plan_file),
-    )
+    let outcome = cfgd::cli::RunContext::for_test(&respelled, &printer, |run| {
+        run_apply(run, &replay_args(&plan_file))
+    })
     .unwrap();
 
     assert_eq!(outcome.status, ApplyStatus::Success);
@@ -466,12 +427,9 @@ fn a_replay_records_its_applies_row_under_the_profile_the_plan_was_written_for()
     record_plan_file(&cli, &plan_args(), &plan_file);
 
     let printer = test_printer();
-    run_apply(
-        &cli,
-        &printer,
-        &cfgd::cli::startup::StartupDocument::load(&cli.config),
-        &replay_args(&plan_file),
-    )
+    cfgd::cli::RunContext::for_test(&cli, &printer, |run| {
+        run_apply(run, &replay_args(&plan_file))
+    })
     .unwrap();
 
     let state = StateStore::open(&state_dir.path().join("state.db")).unwrap();
@@ -497,13 +455,7 @@ fn a_replay_runs_under_the_context_the_plan_recorded() {
     let (printer, cap) = Printer::for_test_doc_with_format(OutputFormat::Json);
     let mut replay = replay_args(&plan_file);
     replay.dry_run = true;
-    run_apply(
-        &cli,
-        &printer,
-        &cfgd::cli::startup::StartupDocument::load(&cli.config),
-        &replay,
-    )
-    .unwrap();
+    cfgd::cli::RunContext::for_test(&cli, &printer, |run| run_apply(run, &replay)).unwrap();
     drop(printer);
 
     let payload = cap.json().expect("the replay emits a payload");
@@ -521,12 +473,9 @@ fn a_missing_plan_file_is_refused() {
     let absent = state_dir.path().join("nope.json");
 
     let printer = test_printer();
-    let err = run_apply(
-        &cli,
-        &printer,
-        &cfgd::cli::startup::StartupDocument::load(&cli.config),
-        &replay_args(&absent),
-    )
+    let err = cfgd::cli::RunContext::for_test(&cli, &printer, |run| {
+        run_apply(run, &replay_args(&absent))
+    })
     .unwrap_err()
     .to_string();
     assert!(
@@ -548,12 +497,9 @@ fn a_plan_file_cfgd_cannot_read_carries_the_io_failure_on_the_wire() {
     std::fs::create_dir(&unreadable).unwrap();
 
     let printer = test_printer();
-    let refusal = run_apply(
-        &cli,
-        &printer,
-        &cfgd::cli::startup::StartupDocument::load(&cli.config),
-        &replay_args(&unreadable),
-    )
+    let refusal = cfgd::cli::RunContext::for_test(&cli, &printer, |run| {
+        run_apply(run, &replay_args(&unreadable))
+    })
     .unwrap_err();
     let payload = payload_of(&refusal);
     assert_eq!(payload["error"], "read_failed", "{payload}");
@@ -579,12 +525,9 @@ fn an_unparsable_plan_file_is_refused() {
     std::fs::write(&garbage, "{\n").unwrap();
 
     let printer = test_printer();
-    let refusal = run_apply(
-        &cli,
-        &printer,
-        &cfgd::cli::startup::StartupDocument::load(&cli.config),
-        &replay_args(&garbage),
-    )
+    let refusal = cfgd::cli::RunContext::for_test(&cli, &printer, |run| {
+        run_apply(run, &replay_args(&garbage))
+    })
     .unwrap_err();
     let payload = payload_of(&refusal);
     assert_eq!(payload["error"], "parse_failed", "{payload}");
@@ -619,12 +562,9 @@ fn a_json_document_that_is_no_plan_output_is_refused_as_one() {
         std::fs::write(&stranger, body).unwrap();
 
         let printer = test_printer();
-        let refusal = run_apply(
-            &cli,
-            &printer,
-            &cfgd::cli::startup::StartupDocument::load(&cli.config),
-            &replay_args(&stranger),
-        )
+        let refusal = cfgd::cli::RunContext::for_test(&cli, &printer, |run| {
+            run_apply(run, &replay_args(&stranger))
+        })
         .unwrap_err();
         let payload = payload_of(&refusal);
         assert_eq!(payload["error"], "parse_failed", "{payload}");
@@ -740,12 +680,9 @@ fn a_plan_saved_under_another_state_dir_is_refused() {
     let other_state = tempfile::tempdir().unwrap();
     let elsewhere = cli_for(config_dir.path(), other_state.path());
     let printer = test_printer();
-    let refusal = run_apply(
-        &elsewhere,
-        &printer,
-        &cfgd::cli::startup::StartupDocument::load(&elsewhere.config),
-        &replay_args(&plan_file),
-    )
+    let refusal = cfgd::cli::RunContext::for_test(&elsewhere, &printer, |run| {
+        run_apply(run, &replay_args(&plan_file))
+    })
     .unwrap_err();
 
     let recorded = store_id_of(state_dir.path());
@@ -787,12 +724,9 @@ fn a_store_mismatch_is_refused_by_store_even_when_the_serial_also_differs() {
     }
 
     let printer = test_printer();
-    let refusal = run_apply(
-        &elsewhere,
-        &printer,
-        &cfgd::cli::startup::StartupDocument::load(&elsewhere.config),
-        &replay_args(&plan_file),
-    )
+    let refusal = cfgd::cli::RunContext::for_test(&elsewhere, &printer, |run| {
+        run_apply(run, &replay_args(&plan_file))
+    })
     .unwrap_err();
 
     let recorded = store_id_of(state_dir.path());
@@ -835,12 +769,9 @@ fn a_plan_file_naming_no_store_is_refused_as_written_before_the_key() {
     std::fs::write(&plan_file, serde_json::to_string(&payload).unwrap()).unwrap();
 
     let printer = test_printer();
-    let refusal = run_apply(
-        &cli,
-        &printer,
-        &cfgd::cli::startup::StartupDocument::load(&cli.config),
-        &replay_args(&plan_file),
-    )
+    let refusal = cfgd::cli::RunContext::for_test(&cli, &printer, |run| {
+        run_apply(run, &replay_args(&plan_file))
+    })
     .unwrap_err();
     let opened = store_id_of(state_dir.path());
     let wire = payload_of(&refusal);
@@ -883,13 +814,10 @@ fn a_plan_replays_against_its_store_copied_to_another_directory() {
     assert_eq!(store_id_of(moved.path()), store_id_of(state_dir.path()));
 
     let printer = test_printer();
-    let outcome = run_apply(
+    let outcome = cfgd::cli::RunContext::for_test(
         &cli_for(config_dir.path(), moved.path()),
         &printer,
-        &cfgd::cli::startup::StartupDocument::load(
-            &cli_for(config_dir.path(), moved.path()).config,
-        ),
-        &replay_args(&plan_file),
+        |run| run_apply(run, &replay_args(&plan_file)),
     )
     .unwrap();
     assert_eq!(outcome.status, ApplyStatus::Success);
