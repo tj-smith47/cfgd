@@ -888,8 +888,8 @@ pub(super) mod tests {
 
         use super::super::{PushOptions, cmd_module_pull, cmd_module_push};
         use super::{
-            ManifestPuts, mock_push_registry, mock_push_registry_answering, mock_tag_without_blob,
-            write_module_yaml,
+            ManifestPuts, mock_push_registry, mock_push_registry_answering,
+            mock_push_registry_holding, mock_tag_without_blob, write_module_yaml,
         };
 
         #[test]
@@ -930,6 +930,42 @@ pub(super) mod tests {
                 meta.error_kind, "sign_failed",
                 "error kind must be sign_failed: {meta:?}"
             );
+        }
+
+        #[test]
+        #[serial]
+        fn push_sign_failure_names_the_refused_digest_in_its_error_document() {
+            let dir = tempfile::tempdir().expect("tempdir");
+            write_module_yaml(dir.path());
+            let (_server, registry, puts) = mock_push_registry_holding(None);
+            let _shim = CosignTestShim::builder()
+                .with_argv_logging(false)
+                .with_exit(1)
+                .with_stderr("cosign sign failed: unauthorized")
+                .install();
+
+            let (printer, _cap) = Printer::for_test_doc();
+            let err = cmd_module_push(
+                &printer,
+                dir.path().to_str().unwrap(),
+                &format!("{registry}/test/mod:v1"),
+                PushOptions {
+                    platform: Some("linux/arm64"),
+                    apply: false,
+                    sign: true,
+                    key: None,
+                    attest: false,
+                },
+            )
+            .expect_err("cosign sign failure must return Err");
+            drop(printer);
+
+            let (printer, cap) = Printer::for_test_doc();
+            crate::cli::error::render_cli_error(&printer, &err);
+            drop(printer);
+            let doc = cap.json().expect("the failure emits an error document");
+            assert_eq!(doc["error"], "sign_failed", "{doc}");
+            assert_eq!(doc["digest"], puts.at("v1-linux-arm64"), "{doc}");
         }
 
         #[test]
