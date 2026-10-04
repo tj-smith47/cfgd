@@ -763,3 +763,63 @@ fn a_tilde_config_under_the_home_loads_from_the_flag_and_the_env() {
         );
     }
 }
+
+/// Every directory flag, its `CFGD_*` env form and `CFGD_DAEMON_IPC_PATH`
+/// take a leading `~` as the home directory: an environment file or a quoted
+/// argument passes it with no shell to expand it. `cfgd paths` reports what
+/// the run resolved.
+#[test]
+fn every_directory_flag_and_env_expands_a_leading_tilde() {
+    const CASES: [(Option<&str>, &str, &str, &str); 5] = [
+        (
+            Some("--config-dir"),
+            cfgd_core::CFGD_CONFIG_DIR_ENV,
+            "config",
+            "dir",
+        ),
+        (
+            Some("--state-dir"),
+            cfgd_core::CFGD_STATE_DIR_ENV,
+            "state",
+            "dir",
+        ),
+        (
+            Some("--cache-dir"),
+            cfgd_core::CFGD_CACHE_DIR_ENV,
+            "cache",
+            "dir",
+        ),
+        (
+            Some("--runtime-dir"),
+            cfgd_core::CFGD_RUNTIME_DIR_ENV,
+            "runtime",
+            "dir",
+        ),
+        (
+            None,
+            cfgd_core::CFGD_DAEMON_IPC_PATH_ENV,
+            "runtime",
+            "socket",
+        ),
+    ];
+    for (flag, env, section, field) in CASES {
+        for spelling in flag.into_iter().chain([env]) {
+            let mut cmd = cfgd_bin().unwrap();
+            let expected = cfgd_core::to_posix_string(home_of(&cmd).join("tilde-dir"));
+            if spelling == env {
+                cmd.env(env, "~/tilde-dir");
+            } else {
+                cmd.args([spelling, "~/tilde-dir"]);
+            }
+            let out = cmd.args(["paths", "-o", "json"]).output().unwrap();
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            assert!(out.status.success(), "{spelling}: {stderr}");
+            let v = parse_single_json(&String::from_utf8_lossy(&out.stdout));
+            assert_eq!(
+                v[section][field].as_str(),
+                Some(expected.as_str()),
+                "{spelling}: {v}"
+            );
+        }
+    }
+}

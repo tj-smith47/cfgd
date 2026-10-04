@@ -1143,7 +1143,7 @@ pub fn plan_hash(data: &str) -> String {
 /// Default per-user state directory (SQLite state DB, backups).
 ///
 /// Resolution order:
-/// 1. `CFGD_STATE_DIR` when set (verbatim) — back-compat short-circuit, wins
+/// 1. `CFGD_STATE_DIR` when set (a leading `~` expanded) — back-compat short-circuit, wins
 ///    over everything.
 /// 2. the platform-native state location with a `cfgd` segment, honoring
 ///    `XDG_STATE_HOME`:
@@ -1166,7 +1166,7 @@ pub fn default_state_dir() -> Result<PathBuf> {
 
 /// Scope-aware state directory.
 ///
-/// Precedence (highest first): `CFGD_STATE_DIR` (verbatim), systemd's
+/// Precedence (highest first): `CFGD_STATE_DIR` (a leading `~` expanded), systemd's
 /// `$STATE_DIRECTORY`, then the scope default. [`Scope::User`] is the frozen
 /// resolution documented on [`default_state_dir`]. [`Scope::System`] is the
 /// absolute machine-wide state root (Linux `/var/lib/cfgd`, macOS
@@ -1174,7 +1174,7 @@ pub fn default_state_dir() -> Result<PathBuf> {
 /// and consults no home directory, so it never errors. Pure path logic.
 pub fn default_state_dir_for(scope: Scope) -> Result<PathBuf> {
     if let Ok(dir) = std::env::var(crate::CFGD_STATE_DIR_ENV) {
-        return Ok(PathBuf::from(dir));
+        return Ok(crate::expand_tilde(Path::new(&dir)));
     }
     if let Some(dir) = crate::systemd_dir("STATE_DIRECTORY") {
         return Ok(dir);

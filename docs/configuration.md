@@ -927,9 +927,8 @@ These are not hardcoded: they live in your cfgd.yaml and can be changed or remov
 
 cfgd expands an alias from the config document the invocation names, through any spelling of its
 location (`--config`, `CFGD_CONFIG`, `--config-dir`, `CFGD_CONFIG_DIR`, `--scope system`), so
-`CFGD_CONFIG=~/work/cfgd.yaml cfgd up` runs the `up` declared in `~/work/cfgd.yaml`. cfgd expands a
-leading `~` in `--config` or `CFGD_CONFIG` to your home directory itself, so the same value works
-from an environment file or a quoted argument, where no shell expands it.
+`CFGD_CONFIG=~/work/cfgd.yaml cfgd up` runs the `up` declared in `~/work/cfgd.yaml`. The `~` there
+works without a shell; see [Global Flags](#global-flags).
 
 ## AI Configuration
 
@@ -974,6 +973,11 @@ These flags work with any subcommand:
 | — | — | `CFGD_NO_UPDATE_CHECK` | Silence the automatic update check (see [Suppressing the automatic check](#suppressing-the-automatic-check)) |
 | — | — | `NO_UPDATE_NOTIFIER` | Same, via npm's `update-notifier` convention |
 | — | — | `DO_NOT_TRACK` | Same, via the [consoledonottrack.com](https://consoledonottrack.com) convention |
+
+cfgd expands a leading `~` in a path flag (`--config`, `--config-dir`, `--state-dir`,
+`--cache-dir`, `--runtime-dir`), in its `CFGD_*` variable and in `CFGD_DAEMON_IPC_PATH` to your
+home directory itself, so the value works from an environment file or a quoted argument, where no
+shell expands it. With no home directory to resolve, the path is used as written.
 
 Usage hints are off unless something asks for them, and the knob reaches the closing
 tutorial pointers only (the "run this next" lines). Three kinds of line ignore it and

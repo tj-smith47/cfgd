@@ -511,7 +511,7 @@ pub fn default_runtime_dir() -> Option<std::path::PathBuf> {
 
 /// Scope-aware runtime directory.
 ///
-/// Precedence (highest first): `CFGD_RUNTIME_DIR` (verbatim), systemd's
+/// Precedence (highest first): `CFGD_RUNTIME_DIR` (a leading `~` expanded), systemd's
 /// `$RUNTIME_DIRECTORY`, then the scope default. [`Scope::User`] is the frozen
 /// resolution documented on [`default_runtime_dir`]. [`Scope::System`] is the
 /// absolute machine-wide runtime root (Linux `/run/cfgd`, macOS
@@ -519,7 +519,7 @@ pub fn default_runtime_dir() -> Option<std::path::PathBuf> {
 /// and is therefore always `Some` — it needs no home directory. Pure path logic.
 pub fn default_runtime_dir_for(scope: Scope) -> Option<std::path::PathBuf> {
     if let Ok(dir) = std::env::var(crate::CFGD_RUNTIME_DIR_ENV) {
-        return Some(std::path::PathBuf::from(dir));
+        return Some(expand_tilde(std::path::Path::new(&dir)));
     }
     if let Some(dir) = systemd_dir("RUNTIME_DIRECTORY") {
         return Some(dir);
@@ -598,7 +598,7 @@ pub fn default_cache_dir() -> crate::errors::Result<std::path::PathBuf> {
 
 /// Scope-aware cache directory.
 ///
-/// Precedence (highest first): `CFGD_CACHE_DIR` (verbatim), systemd's
+/// Precedence (highest first): `CFGD_CACHE_DIR` (a leading `~` expanded), systemd's
 /// `$CACHE_DIRECTORY`, then the scope default. [`Scope::User`] is the frozen
 /// resolution documented on [`default_cache_dir`]. [`Scope::System`] is the
 /// absolute machine-wide cache root (Linux `/var/cache/cfgd`, macOS
@@ -606,7 +606,7 @@ pub fn default_cache_dir() -> crate::errors::Result<std::path::PathBuf> {
 /// home directory. Pure path logic — never touches the filesystem.
 pub fn default_cache_dir_for(scope: Scope) -> crate::errors::Result<std::path::PathBuf> {
     if let Ok(dir) = std::env::var(crate::CFGD_CACHE_DIR_ENV) {
-        return Ok(std::path::PathBuf::from(dir));
+        return Ok(expand_tilde(std::path::Path::new(&dir)));
     }
     if let Some(dir) = systemd_dir("CACHE_DIRECTORY") {
         return Ok(dir);
@@ -672,9 +672,11 @@ fn system_cache_dir() -> std::path::PathBuf {
 /// var, resolved by the CLI layer). When `None`, falls through to
 /// [`default_config_dir_for`] for the given [`Scope`] (systemd + scope default).
 /// Pure path logic — never touches the filesystem or prints.
+///
+/// A leading `~` in `over` expands to the home directory ([`expand_tilde`]).
 pub fn resolve_config_dir(over: Option<&std::path::Path>, scope: Scope) -> std::path::PathBuf {
     match over {
-        Some(p) => p.to_path_buf(),
+        Some(p) => expand_tilde(p),
         None => default_config_dir_for(scope),
     }
 }
@@ -685,12 +687,14 @@ pub fn resolve_config_dir(over: Option<&std::path::Path>, scope: Scope) -> std::
 /// given [`Scope`] (which honors the `CFGD_STATE_DIR` short-circuit, systemd's
 /// `$STATE_DIRECTORY`, and the scope default). Surfaces the same
 /// [`crate::errors::StateError`] when no home can be resolved.
+///
+/// A leading `~` in `over` expands to the home directory ([`expand_tilde`]).
 pub fn resolve_state_dir(
     over: Option<&std::path::Path>,
     scope: Scope,
 ) -> crate::errors::Result<std::path::PathBuf> {
     match over {
-        Some(p) => Ok(p.to_path_buf()),
+        Some(p) => Ok(expand_tilde(p)),
         None => crate::state::default_state_dir_for(scope),
     }
 }
@@ -699,12 +703,14 @@ pub fn resolve_state_dir(
 ///
 /// When `None`, falls through to [`default_cache_dir_for`] for the given
 /// [`Scope`] (the single cache root shared by the source and module caches).
+///
+/// A leading `~` in `over` expands to the home directory ([`expand_tilde`]).
 pub fn resolve_cache_dir(
     over: Option<&std::path::Path>,
     scope: Scope,
 ) -> crate::errors::Result<std::path::PathBuf> {
     match over {
-        Some(p) => Ok(p.to_path_buf()),
+        Some(p) => Ok(expand_tilde(p)),
         None => default_cache_dir_for(scope),
     }
 }
@@ -727,12 +733,14 @@ pub fn module_cache_root(
 /// When `None`, falls through to [`default_runtime_dir_for`] for the given
 /// [`Scope`]. `None` only in [`Scope::User`] when no home can be resolved (e.g.
 /// `HOME` unset on Unix); [`Scope::System`] is always `Some`.
+///
+/// A leading `~` in `over` expands to the home directory ([`expand_tilde`]).
 pub fn resolve_runtime_dir(
     over: Option<&std::path::Path>,
     scope: Scope,
 ) -> Option<std::path::PathBuf> {
     match over {
-        Some(p) => Some(p.to_path_buf()),
+        Some(p) => Some(expand_tilde(p)),
         None => default_runtime_dir_for(scope),
     }
 }
@@ -823,6 +831,8 @@ pub fn fold_home_in_text(text: &str) -> String {
 }
 
 /// Expand `~` and `~/...` paths to the user's home directory.
+///
+/// With no home directory to resolve, the path comes back as written.
 pub fn expand_tilde(path: &std::path::Path) -> std::path::PathBuf {
     let path_str = path.display().to_string();
     let home = home_dir_var();

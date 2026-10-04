@@ -331,7 +331,8 @@ const WINDOWS_SYSTEM_PIPE_PATH: &str = r"\\.\pipe\cfgd-system";
 /// Single source of truth shared by the server-side bind (`run_daemon_with`),
 /// the client-side connect (`connect_daemon_ipc`), and `cfgd paths`, so all
 /// agree on the socket location. Precedence:
-/// 1. `CFGD_DAEMON_IPC_PATH` — verbatim override (test harnesses, operators).
+/// 1. `CFGD_DAEMON_IPC_PATH`: the override (test harnesses, operators), a
+///    leading `~` expanded.
 /// 2. `cfgd.sock` under [`crate::resolve_runtime_dir`]`(runtime_over)`, honoring the
 ///    `--runtime-dir` flag / `CFGD_RUNTIME_DIR` env / `$XDG_RUNTIME_DIR/cfgd`
 ///    (per-user tmpfs on Linux) / `$HOME/.cache/cfgd/runtime` (Linux fallback)
@@ -352,7 +353,7 @@ const WINDOWS_SYSTEM_PIPE_PATH: &str = r"\\.\pipe\cfgd-system";
 /// consistently to both sides.
 pub fn resolve_default_ipc_path(runtime_over: Option<&Path>, scope: crate::Scope) -> PathBuf {
     if let Some(override_path) = std::env::var_os(crate::CFGD_DAEMON_IPC_PATH_ENV) {
-        return PathBuf::from(override_path);
+        return crate::expand_tilde(Path::new(&override_path));
     }
     #[cfg(unix)]
     {

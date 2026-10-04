@@ -1780,6 +1780,7 @@ effective source (`flag`/`env`/`default`) and the files cfgd owns there.
 cfgd paths                 # human-readable
 cfgd paths -o json         # structured (config/state/cache/runtime objects)
 cfgd --cache-dir /srv/c paths -o json   # source reflects the override → "flag"
+CFGD_STATE_DIR='~/state' cfgd paths    # cfgd expands the ~ to your home directory
 ```
 
 See [Configuration → File locations](configuration.md#file-locations) for the

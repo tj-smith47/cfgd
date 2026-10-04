@@ -175,6 +175,22 @@ fn main() -> anyhow::Result<()> {
     let config_is_explicit =
         matches.value_source("config") != Some(clap::parser::ValueSource::DefaultValue);
 
+    // No shell expands a `~` read from an environment file or a quoted
+    // argument. Expanded once here, every reader of these directories, the
+    // argv a service install bakes into its unit included, sees the same
+    // absolute path.
+    for dir in [
+        &mut cli.config_dir,
+        &mut cli.state_dir,
+        &mut cli.cache_dir,
+        &mut cli.runtime_dir,
+    ]
+    .into_iter()
+    .flatten()
+    {
+        *dir = cfgd_core::expand_tilde(dir);
+    }
+
     // The alias pass settled its document through the same call, so the two
     // agree on the file wherever the location was spelled.
     let scope = cli.scope();

@@ -1083,3 +1083,95 @@ fn names_the_same_path_reads_through_a_symlink_the_fold_cannot_fold() {
     );
     assert!(names_the_same_path(&through_link, &file));
 }
+
+/// Runs `resolve` with a home set and with none, and asserts the first names
+/// `tilde-dir` under that home and the second keeps `~/tilde-dir` as written.
+fn assert_expands_a_leading_tilde(site: &str, resolve: impl Fn() -> PathBuf) {
+    let dir = tempfile::tempdir().unwrap();
+    {
+        let _home = EnvVarGuard::set("HOME", dir.path().to_str().unwrap());
+        let _profile = EnvVarGuard::set("USERPROFILE", dir.path().to_str().unwrap());
+        assert_eq!(
+            to_posix_string(resolve()),
+            to_posix_string(dir.path().join("tilde-dir")),
+            "{site}: a home is set"
+        );
+    }
+    let _home = EnvVarGuard::unset("HOME");
+    let _profile = EnvVarGuard::unset("USERPROFILE");
+    assert_eq!(
+        to_posix_string(resolve()),
+        "~/tilde-dir",
+        "{site}: no home is set"
+    );
+}
+
+const TILDE_DIR: &str = "~/tilde-dir";
+
+#[test]
+#[serial_test::serial]
+fn resolve_config_dir_expands_a_leading_tilde() {
+    assert_expands_a_leading_tilde("resolve_config_dir", || {
+        resolve_config_dir(Some(Path::new(TILDE_DIR)), Scope::User)
+    });
+}
+
+#[test]
+#[serial_test::serial]
+fn resolve_state_dir_expands_a_leading_tilde() {
+    assert_expands_a_leading_tilde("resolve_state_dir", || {
+        resolve_state_dir(Some(Path::new(TILDE_DIR)), Scope::User).unwrap()
+    });
+}
+
+#[test]
+#[serial_test::serial]
+fn resolve_cache_dir_expands_a_leading_tilde() {
+    assert_expands_a_leading_tilde("resolve_cache_dir", || {
+        resolve_cache_dir(Some(Path::new(TILDE_DIR)), Scope::User).unwrap()
+    });
+}
+
+#[test]
+#[serial_test::serial]
+fn resolve_runtime_dir_expands_a_leading_tilde() {
+    assert_expands_a_leading_tilde("resolve_runtime_dir", || {
+        resolve_runtime_dir(Some(Path::new(TILDE_DIR)), Scope::User).unwrap()
+    });
+}
+
+#[test]
+#[serial_test::serial]
+fn the_state_dir_env_expands_a_leading_tilde() {
+    let _env = EnvVarGuard::set(crate::CFGD_STATE_DIR_ENV, TILDE_DIR);
+    assert_expands_a_leading_tilde(crate::CFGD_STATE_DIR_ENV, || {
+        crate::state::default_state_dir_for(Scope::User).unwrap()
+    });
+}
+
+#[test]
+#[serial_test::serial]
+fn the_cache_dir_env_expands_a_leading_tilde() {
+    let _env = EnvVarGuard::set(crate::CFGD_CACHE_DIR_ENV, TILDE_DIR);
+    assert_expands_a_leading_tilde(crate::CFGD_CACHE_DIR_ENV, || {
+        default_cache_dir_for(Scope::User).unwrap()
+    });
+}
+
+#[test]
+#[serial_test::serial]
+fn the_runtime_dir_env_expands_a_leading_tilde() {
+    let _env = EnvVarGuard::set(crate::CFGD_RUNTIME_DIR_ENV, TILDE_DIR);
+    assert_expands_a_leading_tilde(crate::CFGD_RUNTIME_DIR_ENV, || {
+        default_runtime_dir_for(Scope::User).unwrap()
+    });
+}
+
+#[test]
+#[serial_test::serial]
+fn the_daemon_ipc_path_env_expands_a_leading_tilde() {
+    let _env = EnvVarGuard::set(crate::CFGD_DAEMON_IPC_PATH_ENV, TILDE_DIR);
+    assert_expands_a_leading_tilde(crate::CFGD_DAEMON_IPC_PATH_ENV, || {
+        crate::daemon::resolve_default_ipc_path(None, Scope::User)
+    });
+}

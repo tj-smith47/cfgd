@@ -57699,3 +57699,191 @@ fn every_config_verb_call_passes_the_key_the_caller_typed() {
         offenders.join("\n")
     );
 }
+
+/// A path cfgd takes from a global flag or a `CFGD_*` variable expands a
+/// leading `~` itself, because an environment file or a quoted argument
+/// reaches it with no shell to do that.
+///
+/// The flags are every global `Cli` argument whose value parses as a
+/// `PathBuf`, read off `Cli::command()`; the variables are every
+/// `*_DIR_ENV` / `*_PATH_ENV` const in `cfgd-core/src/util/env_names.rs`.
+/// Each must have a row here, and each row's function must call
+/// `expand_tilde(` and, for a variable, name its const. A directory flag
+/// must also be one of the fields `main` expands once after the parse, so a
+/// service install bakes the absolute path into its unit.
+#[test]
+fn every_path_flag_and_path_env_expands_a_leading_tilde() {
+    use cfgd_core::test_helpers::{item_keyword, walked_file_body, workspace_root};
+    use clap::CommandFactory;
+
+    // A variable's row names the function that reads and expands it, or why
+    // it needs none.
+    enum Reader {
+        Expands(&'static str, &'static str),
+        Exempt(&'static str),
+    }
+    use Reader::{Exempt, Expands};
+
+    const FLAGS: &[(&str, &str, &str)] = &[
+        (
+            "config",
+            "crates/cfgd/src/cli/helpers.rs",
+            "settle_config_path",
+        ),
+        (
+            "config_dir",
+            "crates/cfgd-core/src/util/paths.rs",
+            "resolve_config_dir",
+        ),
+        (
+            "state_dir",
+            "crates/cfgd-core/src/util/paths.rs",
+            "resolve_state_dir",
+        ),
+        (
+            "cache_dir",
+            "crates/cfgd-core/src/util/paths.rs",
+            "resolve_cache_dir",
+        ),
+        (
+            "runtime_dir",
+            "crates/cfgd-core/src/util/paths.rs",
+            "resolve_runtime_dir",
+        ),
+    ];
+    const ENVS: &[(&str, Reader)] = &[
+        (
+            "CFGD_CONFIG_DIR_ENV",
+            Exempt("clap reads it as `--config-dir`, a flag row above"),
+        ),
+        (
+            "CFGD_STATE_DIR_ENV",
+            Expands("crates/cfgd-core/src/state/mod.rs", "default_state_dir_for"),
+        ),
+        (
+            "CFGD_CACHE_DIR_ENV",
+            Expands(
+                "crates/cfgd-core/src/util/paths.rs",
+                "default_cache_dir_for",
+            ),
+        ),
+        (
+            "CFGD_RUNTIME_DIR_ENV",
+            Expands(
+                "crates/cfgd-core/src/util/paths.rs",
+                "default_runtime_dir_for",
+            ),
+        ),
+        (
+            "CFGD_DAEMON_IPC_PATH_ENV",
+            Expands(
+                "crates/cfgd-core/src/daemon/mod.rs",
+                "resolve_default_ipc_path",
+            ),
+        ),
+        (
+            "CFGD_MODULE_DIR_ENV",
+            Exempt("cfgd sets it for a module's scripts and never reads it"),
+        ),
+        (
+            "CFGD_SERVER_DB_PATH_ENV",
+            Exempt("the device gateway's database inside the operator pod, which has no home"),
+        ),
+    ];
+    let root = workspace_root();
+    let body_of = |rel: &str, name: &str| -> Option<String> {
+        let src = walked_file_body(&root.join(rel));
+        let lines: Vec<&str> = src.lines().collect();
+        fn_body(&lines, name)
+    };
+    let expands = |rel: &str, name: &str, must_name: Option<&str>| -> Result<(), String> {
+        let body = body_of(rel, name).ok_or_else(|| format!("{rel} declares no `fn {name}`"))?;
+        if !body.contains("expand_tilde(") {
+            return Err(format!("{rel}: `fn {name}` never calls `expand_tilde(`"));
+        }
+        if let Some(constant) = must_name
+            && !body.contains(constant)
+        {
+            return Err(format!("{rel}: `fn {name}` does not read `{constant}`"));
+        }
+        Ok(())
+    };
+
+    let mut offenders = Vec::new();
+    let main_body = body_of("crates/cfgd/src/main.rs", "main").expect("main.rs declares `fn main`");
+    let mut flags_seen = 0;
+    for arg in Cli::command().get_arguments() {
+        if !arg.is_global_set()
+            || arg.get_value_parser().type_id() != std::any::TypeId::of::<std::path::PathBuf>()
+        {
+            continue;
+        }
+        flags_seen += 1;
+        let id = arg.get_id().as_str();
+        let flag = format!("--{}", id.replace('_', "-"));
+        let Some((_, rel, name)) = FLAGS.iter().find(|(row, _, _)| *row == id) else {
+            offenders.push(format!("{flag}: no row names the function that expands it"));
+            continue;
+        };
+        if let Err(e) = expands(rel, name, None) {
+            offenders.push(format!("{flag}: {e}"));
+        }
+        let expanded_in_main = [",", "]"]
+            .iter()
+            .any(|end| main_body.contains(&format!("&mut cli.{id}{end}")));
+        if *name != "settle_config_path" && !expanded_in_main {
+            offenders.push(format!(
+                "{flag}: `main` does not expand `cli.{id}` after the parse"
+            ));
+        }
+    }
+    assert!(
+        flags_seen >= FLAGS.len(),
+        "the walk found {flags_seen} path-valued global flags, fewer than the {} rows",
+        FLAGS.len()
+    );
+
+    let names = walked_file_body(&root.join("crates/cfgd-core/src/util/env_names.rs"));
+    let mut envs_seen = Vec::new();
+    for line in names.lines().filter(|l| item_keyword(l) == "const") {
+        let Some(constant) = line
+            .split(|c: char| c.is_whitespace() || c == ':')
+            .skip_while(|token| *token != "const")
+            .nth(1)
+        else {
+            continue;
+        };
+        if !(constant.ends_with("_DIR_ENV") || constant.ends_with("_PATH_ENV")) {
+            continue;
+        }
+        envs_seen.push(constant.to_string());
+        match ENVS.iter().find(|(row, _)| *row == constant) {
+            None => offenders.push(format!(
+                "{constant}: no row names the function that expands it, or why it needs none"
+            )),
+            Some((_, Expands(rel, name))) => {
+                if let Err(e) = expands(rel, name, Some(constant)) {
+                    offenders.push(format!("{constant}: {e}"));
+                }
+            }
+            Some((_, Exempt(_))) => {}
+        }
+    }
+    for (row, reader) in ENVS {
+        if !envs_seen.iter().any(|seen| seen == row) {
+            let why = match reader {
+                Expands(rel, name) => format!("read by `fn {name}` in {rel}"),
+                Exempt(why) => format!("exempt: {why}"),
+            };
+            offenders.push(format!(
+                "{row} ({why}): env_names.rs declares no such const"
+            ));
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "a path from a flag or a CFGD_* variable must expand a leading `~` through \
+         `cfgd_core::expand_tilde`:\n{}",
+        offenders.join("\n")
+    );
+}
