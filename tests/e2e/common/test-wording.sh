@@ -91,8 +91,16 @@ scan_wording() {
             # U+2014 spelled as its UTF-8 bytes, so this line holds none.
             if (index(line, "\342\200\224")) flag("prose em dash")
             if (line ~ /^#!/) { frame_flush(); next }
+            # A # inside a quoted string starts no comment, so the comment is
+            # found on a copy with each quoted string blanked to Qs of the
+            # same length, which keeps offsets equal to those in line.
+            masked = line
+            while (match(masked, /"([^"\\]|\\.)*"|\047[^\047]*\047/)) {
+                q = ""; for (k = 0; k < RLENGTH; k++) q = q "Q"
+                masked = substr(masked, 1, RSTART - 1) q substr(masked, RSTART + RLENGTH)
+            }
             comment = ""
-            if (match(line, /(^|[[:space:]])#/)) comment = substr(line, RSTART + RLENGTH)
+            if (match(masked, /(^|[[:space:]])#/)) comment = substr(line, RSTART + RLENGTH)
             if (line ~ /^[[:space:]]*#/) frame_add(comment)
             else { frame_flush(); if (comment != "") { frame_add(comment); frame_flush() } }
             if (first_person(comment)) { flag("first-person word in a comment"); next }
@@ -153,6 +161,7 @@ probe i-message fail "\"I\" in an echo message fails" '^WORDING .*/suite\.sh:2 f
 probe frame-rather-than fail "\"rather than\" in a comment fails" '^WORDING .*/suite\.sh:2 contrast frame$'
 probe frame-instead-of fail "\"instead of\" in a trailing comment fails" '^WORDING .*/suite\.sh:2 contrast frame$'
 probe frame-comma-not fail "a \", not\" frame broken across two comment lines fails at the first" '^WORDING .*/suite\.sh:2 contrast frame$'
+probe quoted-hash pass "a # inside a quoted string starts no comment"
 probe frame-hatched pass "a contrast frame on a line carrying a wording-ok hatch passes"
 
 # The census: each way a listed script can fail to reach awk fails the scan.
