@@ -1356,8 +1356,7 @@ pub fn settle_config_path(
     // root, before the `--config-dir` fold, so an explicit `--config` or
     // `--config-dir` (or their env twins) still wins.
     let config = if scope.is_system() && !config_is_explicit && config_dir.is_none() {
-        cfgd_core::config::config_document_in(&cfgd_core::resolve_config_dir(
-            None,
+        cfgd_core::config::config_document_in(&cfgd_core::default_config_dir_for(
             cfgd_core::Scope::System,
         ))
     } else {

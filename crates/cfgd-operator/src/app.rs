@@ -206,7 +206,7 @@ async fn run_operator(
             Some(client.clone()),
             backup_policies.clone(),
             metrics.clone(),
-        );
+        )?;
 
         tracing::info!("device gateway enabled");
 
@@ -432,7 +432,7 @@ async fn run_standalone_gateway() -> Result<()> {
         spawn_health_server(metrics.leader.clone(), false, true);
 
     let gateway_config =
-        runtime::build_gateway_config(None, controllers::BackupPolicyCache::default(), metrics);
+        runtime::build_gateway_config(None, controllers::BackupPolicyCache::default(), metrics)?;
 
     health_state.set_leader();
 

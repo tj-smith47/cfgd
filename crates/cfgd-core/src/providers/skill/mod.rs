@@ -329,14 +329,16 @@ const ALL_SKILL_KINDS: [SkillKind; 6] = [
 /// distinct targets never falsely contend. The path is hashed verbatim, not
 /// canonicalized, because the target need not exist yet on a fresh install.
 fn lock_for(target: &Path) -> Result<FileLockGuard> {
-    let runtime = crate::default_runtime_dir_for(crate::Scope::User).ok_or_else(|| {
-        SkillError::Lock(Box::new(
-            crate::errors::ConfigError::HomeUnresolved {
-                path: target.to_path_buf(),
-            }
-            .into(),
-        ))
-    })?;
+    let runtime = crate::default_runtime_dir_for(crate::Scope::User)
+        .map_err(|e| SkillError::Lock(Box::new(e)))?
+        .ok_or_else(|| {
+            SkillError::Lock(Box::new(
+                crate::errors::ConfigError::HomeUnresolved {
+                    path: target.to_path_buf(),
+                }
+                .into(),
+            ))
+        })?;
     let key = crate::sha256_hex(crate::to_posix_string(target).as_bytes());
     let dir = runtime.join("skill-locks").join(key);
     acquire_apply_lock(&dir).map_err(|e| SkillError::Lock(Box::new(e)).into())

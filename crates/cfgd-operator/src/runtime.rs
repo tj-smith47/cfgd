@@ -86,28 +86,32 @@ pub fn webhook_certs_present(cert_dir: &Path) -> bool {
 /// (off-cluster) mode and `Some(_)` in the normal cluster-backed path, and
 /// `backup_policies` is the slot the controllers publish their BackupPolicy
 /// cache into: a standalone gateway holds an empty one and lists for itself.
+/// Fails when `CFGD_SERVER_DB_PATH` leads with a `~` no home directory resolves.
 pub fn build_gateway_config(
     client: Option<Client>,
     backup_policies: BackupPolicyCache,
     metrics: metrics::Metrics,
-) -> GatewayConfig {
-    GatewayConfig {
+) -> cfgd_core::errors::Result<GatewayConfig> {
+    Ok(GatewayConfig {
         port: env::parse_port_env("DEVICE_GATEWAY_PORT", 8080),
-        db_path: gateway_db_path(),
+        db_path: gateway_db_path()?,
         kube_client: client,
         backup_policies,
         retention_days: env::parse_u32_env(cfgd_core::CFGD_RETENTION_DAYS_ENV, 90),
         metrics: Some(metrics),
-    }
+    })
 }
 
 /// The device gateway's database: `CFGD_SERVER_DB_PATH` with a leading `~`
-/// expanded to the home directory, or `/data/cfgd-gateway.db`.
-fn gateway_db_path() -> String {
+/// expanded to the home directory, or `/data/cfgd-gateway.db`; a `~` with no
+/// home directory to resolve it is an error.
+fn gateway_db_path() -> cfgd_core::errors::Result<String> {
     let path = cfgd_core::env_or(cfgd_core::CFGD_SERVER_DB_PATH_ENV, "/data/cfgd-gateway.db");
-    cfgd_core::expand_tilde(std::path::Path::new(&path))
-        .to_string_lossy()
-        .into_owned()
+    Ok(
+        cfgd_core::expand_tilde_strict(std::path::Path::new(&path), "gateway database")?
+            .to_string_lossy()
+            .into_owned(),
+    )
 }
 
 #[cfg(test)]
@@ -320,20 +324,29 @@ mod tests {
 
     #[test]
     #[serial]
-    fn the_gateway_db_path_expands_a_leading_tilde() {
+    fn the_gateway_db_path_expands_a_leading_tilde_and_refuses_one_with_no_home() {
         let home = tempfile::tempdir().unwrap();
         with_test_env_var(cfgd_core::CFGD_SERVER_DB_PATH_ENV, Some("~/g.db"), || {
             with_test_env_var("HOME", home.path().to_str(), || {
                 with_test_env_var("USERPROFILE", home.path().to_str(), || {
                     assert_eq!(
-                        cfgd_core::to_posix_string(gateway_db_path()),
+                        cfgd_core::to_posix_string(gateway_db_path().unwrap()),
                         cfgd_core::to_posix_string(home.path().join("g.db"))
                     );
                 });
             });
             with_test_env_var("HOME", None, || {
                 with_test_env_var("USERPROFILE", None, || {
-                    assert_eq!(gateway_db_path(), "~/g.db");
+                    let err = gateway_db_path().expect_err("a `~` with no home is refused");
+                    assert!(
+                        matches!(
+                            &err,
+                            cfgd_core::errors::CfgdError::State(
+                                cfgd_core::errors::StateError::HomeUnresolved { path, .. }
+                            ) if cfgd_core::to_posix_string(path) == "~/g.db"
+                        ),
+                        "{err}"
+                    );
                 });
             });
         });

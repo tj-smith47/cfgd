@@ -1351,7 +1351,8 @@ impl Cli {
     /// No shell expands a `~` read from an environment file or a quoted
     /// argument. Expanded here, every reader of these directories, the argv a
     /// service install bakes into its unit included, sees the same absolute
-    /// path. With no home directory to resolve, a path stays as written.
+    /// path. With no home directory to resolve, a path keeps its `~`, and the
+    /// directory resolvers refuse it ([`cfgd_core::expand_tilde_strict`]).
     pub fn expand_path_flags(&mut self) {
         for dir in [
             &mut self.config_dir,

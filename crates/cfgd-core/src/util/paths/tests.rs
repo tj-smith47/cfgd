@@ -32,7 +32,7 @@ async fn spawn_blocking_with_test_home_is_transparent_without_override() {
 #[test]
 fn resolve_config_dir_returns_override_when_some() {
     let over = PathBuf::from("/explicit/config");
-    assert_eq!(resolve_config_dir(Some(&over), Scope::User), over);
+    assert_eq!(resolve_config_dir(Some(&over), Scope::User).unwrap(), over);
 }
 
 #[test]
@@ -41,7 +41,10 @@ fn resolve_config_dir_falls_through_to_default_when_none() {
     let dir = tempfile::tempdir().unwrap();
     let _sd = EnvVarGuard::unset("CONFIGURATION_DIRECTORY");
     let _home = with_test_home_guard(dir.path());
-    assert_eq!(resolve_config_dir(None, Scope::User), default_config_dir());
+    assert_eq!(
+        resolve_config_dir(None, Scope::User).unwrap(),
+        default_config_dir()
+    );
 }
 
 #[test]
@@ -81,7 +84,10 @@ fn resolve_cache_dir_falls_through_to_default_when_none() {
 #[test]
 fn resolve_runtime_dir_returns_override_when_some() {
     let over = PathBuf::from("/explicit/runtime");
-    assert_eq!(resolve_runtime_dir(Some(&over), Scope::User), Some(over));
+    assert_eq!(
+        resolve_runtime_dir(Some(&over), Scope::User).unwrap(),
+        Some(over)
+    );
 }
 
 #[test]
@@ -92,8 +98,8 @@ fn resolve_runtime_dir_falls_through_to_default_when_none() {
     let _home = with_test_home_guard(dir.path());
     let _xdg = EnvVarGuard::set("XDG_RUNTIME_DIR", "/run/user/test");
     assert_eq!(
-        resolve_runtime_dir(None, Scope::User),
-        default_runtime_dir()
+        resolve_runtime_dir(None, Scope::User).unwrap(),
+        default_runtime_dir().unwrap()
     );
 }
 
@@ -213,7 +219,7 @@ fn resolved_dirs_resolve_threads_overrides() {
 fn default_runtime_dir_honors_cfgd_runtime_dir_env() {
     let _cfgd = EnvVarGuard::set(crate::CFGD_RUNTIME_DIR_ENV, "/verbatim/runtime/dir");
     assert_eq!(
-        default_runtime_dir(),
+        default_runtime_dir().unwrap(),
         Some(PathBuf::from("/verbatim/runtime/dir"))
     );
 }
@@ -227,7 +233,9 @@ fn default_runtime_dir_uses_xdg_runtime_dir_when_set() {
     let _cfgd = EnvVarGuard::unset(crate::CFGD_RUNTIME_DIR_ENV);
     let _sd = EnvVarGuard::unset("RUNTIME_DIRECTORY");
     let _xdg = EnvVarGuard::set("XDG_RUNTIME_DIR", "/run/user/4242");
-    let runtime = default_runtime_dir().expect("runtime dir resolves with XDG set");
+    let runtime = default_runtime_dir()
+        .unwrap()
+        .expect("runtime dir resolves with XDG set");
     assert_eq!(runtime, PathBuf::from("/run/user/4242").join("cfgd"));
 }
 
@@ -240,7 +248,9 @@ fn default_runtime_dir_falls_back_to_cache_runtime_subdir_on_linux() {
     let _sd = EnvVarGuard::unset("RUNTIME_DIRECTORY");
     let _xdg = EnvVarGuard::unset("XDG_RUNTIME_DIR");
     let _home = with_test_home_guard(dir.path());
-    let runtime = default_runtime_dir().expect("runtime dir resolves without XDG");
+    let runtime = default_runtime_dir()
+        .unwrap()
+        .expect("runtime dir resolves without XDG");
     assert!(
         runtime.ends_with("cfgd/runtime"),
         "fallback must nest under cfgd/runtime, got: {}",
@@ -579,7 +589,7 @@ fn runtime_cfgd_env_wins_over_systemd_and_system_scope() {
     let _cfgd = EnvVarGuard::set(crate::CFGD_RUNTIME_DIR_ENV, "/from/cfgd/runtime");
     let _sd = EnvVarGuard::set("RUNTIME_DIRECTORY", "/from/systemd/runtime");
     assert_eq!(
-        default_runtime_dir_for(Scope::System),
+        default_runtime_dir_for(Scope::System).unwrap(),
         Some(PathBuf::from("/from/cfgd/runtime"))
     );
 }
@@ -590,7 +600,7 @@ fn runtime_systemd_dir_wins_over_system_scope() {
     let _cfgd = EnvVarGuard::unset(crate::CFGD_RUNTIME_DIR_ENV);
     let _sd = EnvVarGuard::set("RUNTIME_DIRECTORY", "/from/systemd/runtime");
     assert_eq!(
-        default_runtime_dir_for(Scope::System),
+        default_runtime_dir_for(Scope::System).unwrap(),
         Some(PathBuf::from("/from/systemd/runtime"))
     );
 }
@@ -602,7 +612,7 @@ fn runtime_system_scope_is_run_cfgd_on_linux() {
     let _cfgd = EnvVarGuard::unset(crate::CFGD_RUNTIME_DIR_ENV);
     let _sd = EnvVarGuard::unset("RUNTIME_DIRECTORY");
     assert_eq!(
-        default_runtime_dir_for(Scope::System),
+        default_runtime_dir_for(Scope::System).unwrap(),
         Some(PathBuf::from("/run/cfgd"))
     );
 }
@@ -614,7 +624,7 @@ fn runtime_system_scope_is_library_on_macos() {
     let _cfgd = EnvVarGuard::unset(crate::CFGD_RUNTIME_DIR_ENV);
     let _sd = EnvVarGuard::unset("RUNTIME_DIRECTORY");
     assert_eq!(
-        default_runtime_dir_for(Scope::System),
+        default_runtime_dir_for(Scope::System).unwrap(),
         Some(PathBuf::from("/Library/Application Support/cfgd/runtime"))
     );
 }
@@ -624,10 +634,16 @@ fn runtime_system_scope_is_library_on_macos() {
 #[test]
 fn resolvers_override_wins_over_system_scope() {
     let over = PathBuf::from("/explicit/override");
-    assert_eq!(resolve_config_dir(Some(&over), Scope::System), over);
+    assert_eq!(
+        resolve_config_dir(Some(&over), Scope::System).unwrap(),
+        over
+    );
     assert_eq!(resolve_state_dir(Some(&over), Scope::System).unwrap(), over);
     assert_eq!(resolve_cache_dir(Some(&over), Scope::System).unwrap(), over);
-    assert_eq!(resolve_runtime_dir(Some(&over), Scope::System), Some(over));
+    assert_eq!(
+        resolve_runtime_dir(Some(&over), Scope::System).unwrap(),
+        Some(over)
+    );
 }
 
 #[test]
@@ -1085,25 +1101,31 @@ fn names_the_same_path_reads_through_a_symlink_the_fold_cannot_fold() {
 }
 
 /// Runs `resolve` with a home set and with none, and asserts the first names
-/// `tilde-dir` under that home and the second keeps `~/tilde-dir` as written.
-fn assert_expands_a_leading_tilde(site: &str, resolve: impl Fn() -> PathBuf) {
+/// `tilde-dir` under that home and the second refuses `~/tilde-dir` with
+/// `HomeUnresolved`: used as written it would name `./~/tilde-dir`.
+fn assert_expands_a_leading_tilde(
+    site: &str,
+    resolve: impl Fn() -> crate::errors::Result<PathBuf>,
+) {
     let dir = tempfile::tempdir().unwrap();
     {
         let _home = EnvVarGuard::set("HOME", dir.path().to_str().unwrap());
         let _profile = EnvVarGuard::set("USERPROFILE", dir.path().to_str().unwrap());
         assert_eq!(
-            to_posix_string(resolve()),
+            to_posix_string(resolve().unwrap_or_else(|e| panic!("{site}: {e}"))),
             to_posix_string(dir.path().join("tilde-dir")),
             "{site}: a home is set"
         );
     }
     let _home = EnvVarGuard::unset("HOME");
     let _profile = EnvVarGuard::unset("USERPROFILE");
-    assert_eq!(
-        to_posix_string(resolve()),
-        "~/tilde-dir",
-        "{site}: no home is set"
-    );
+    match resolve() {
+        Err(crate::errors::CfgdError::State(crate::errors::StateError::HomeUnresolved {
+            path,
+            ..
+        })) => assert_eq!(to_posix_string(path), TILDE_DIR, "{site}: names the path"),
+        other => panic!("{site}: no home is set, expected HomeUnresolved, got {other:?}"),
+    }
 }
 
 const TILDE_DIR: &str = "~/tilde-dir";
@@ -1120,7 +1142,7 @@ fn resolve_config_dir_expands_a_leading_tilde() {
 #[serial_test::serial]
 fn resolve_state_dir_expands_a_leading_tilde() {
     assert_expands_a_leading_tilde("resolve_state_dir", || {
-        resolve_state_dir(Some(Path::new(TILDE_DIR)), Scope::User).unwrap()
+        resolve_state_dir(Some(Path::new(TILDE_DIR)), Scope::User)
     });
 }
 
@@ -1128,7 +1150,7 @@ fn resolve_state_dir_expands_a_leading_tilde() {
 #[serial_test::serial]
 fn resolve_cache_dir_expands_a_leading_tilde() {
     assert_expands_a_leading_tilde("resolve_cache_dir", || {
-        resolve_cache_dir(Some(Path::new(TILDE_DIR)), Scope::User).unwrap()
+        resolve_cache_dir(Some(Path::new(TILDE_DIR)), Scope::User)
     });
 }
 
@@ -1136,7 +1158,7 @@ fn resolve_cache_dir_expands_a_leading_tilde() {
 #[serial_test::serial]
 fn resolve_runtime_dir_expands_a_leading_tilde() {
     assert_expands_a_leading_tilde("resolve_runtime_dir", || {
-        resolve_runtime_dir(Some(Path::new(TILDE_DIR)), Scope::User).unwrap()
+        resolve_runtime_dir(Some(Path::new(TILDE_DIR)), Scope::User).map(Option::unwrap)
     });
 }
 
@@ -1145,7 +1167,7 @@ fn resolve_runtime_dir_expands_a_leading_tilde() {
 fn the_state_dir_env_expands_a_leading_tilde() {
     let _env = EnvVarGuard::set(crate::CFGD_STATE_DIR_ENV, TILDE_DIR);
     assert_expands_a_leading_tilde(crate::CFGD_STATE_DIR_ENV, || {
-        crate::state::default_state_dir_for(Scope::User).unwrap()
+        crate::state::default_state_dir_for(Scope::User)
     });
 }
 
@@ -1154,7 +1176,7 @@ fn the_state_dir_env_expands_a_leading_tilde() {
 fn the_cache_dir_env_expands_a_leading_tilde() {
     let _env = EnvVarGuard::set(crate::CFGD_CACHE_DIR_ENV, TILDE_DIR);
     assert_expands_a_leading_tilde(crate::CFGD_CACHE_DIR_ENV, || {
-        default_cache_dir_for(Scope::User).unwrap()
+        default_cache_dir_for(Scope::User)
     });
 }
 
@@ -1163,7 +1185,7 @@ fn the_cache_dir_env_expands_a_leading_tilde() {
 fn the_runtime_dir_env_expands_a_leading_tilde() {
     let _env = EnvVarGuard::set(crate::CFGD_RUNTIME_DIR_ENV, TILDE_DIR);
     assert_expands_a_leading_tilde(crate::CFGD_RUNTIME_DIR_ENV, || {
-        default_runtime_dir_for(Scope::User).unwrap()
+        default_runtime_dir_for(Scope::User).map(Option::unwrap)
     });
 }
 

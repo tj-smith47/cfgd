@@ -643,7 +643,8 @@ pub(crate) fn connect_daemon_ipc(
     runtime_over: Option<&std::path::Path>,
     scope: crate::Scope,
 ) -> Option<IpcStream> {
-    let path = super::resolve_default_ipc_path(runtime_over, scope);
+    // A socket path no home directory resolves names no listening daemon.
+    let path = super::resolve_default_ipc_path(runtime_over, scope).ok()?;
     #[cfg(unix)]
     {
         if !path.exists() {

@@ -57277,13 +57277,15 @@ fn the_env_read_needles_follow_a_read_behind_a_derived_helper() {
 /// that must expand it and the call that does; a directory flag's row names
 /// `Cli::expand_path_flags`, which `main` must call. The variables are every
 /// `pub const` in `cfgd-core/src/util/env_names.rs`, each classified: read
-/// and expanded by a named function (whose body must call `expand_tilde(` and
-/// name the const), read by clap as a flag the flag rows cover (and bound to
+/// and expanded by a named function (whose body must call `expand_tilde_strict(`
+/// and name the const), read by clap as a flag the flag rows cover (and bound to
 /// that flag) plus the functions outside clap that read it, each settling it
 /// through `settle_config_path`, or not a path, with why. Every production
 /// function of every workspace crate that reads a path variable from the
-/// environment must be one its row names. An unclassified const, a stale row,
-/// an unnamed reader and a function missing its expansion each fail naming it.
+/// environment must be one its row names. Every flag and every expanding
+/// variable also names the test that runs it with HOME unset and asserts the
+/// refusal. An unclassified const, a stale row, an unnamed reader, a function
+/// missing its expansion and a member with no HOME-unset test each fail naming it.
 #[test]
 fn every_path_flag_and_path_env_expands_a_leading_tilde() {
     use cfgd_core::test_helpers::{item_keyword, walked_file_body, workspace_root};
@@ -57306,7 +57308,7 @@ fn every_path_flag_and_path_env_expands_a_leading_tilde() {
         (
             "config_dir",
             &[
-                (PATHS, "resolve_config_dir", "expand_tilde(p)"),
+                (PATHS, "resolve_config_dir", "expand_tilde_strict(p"),
                 (
                     SETTLE.0,
                     SETTLE.1,
@@ -57318,21 +57320,21 @@ fn every_path_flag_and_path_env_expands_a_leading_tilde() {
         (
             "state_dir",
             &[
-                (PATHS, "resolve_state_dir", "expand_tilde(p)"),
+                (PATHS, "resolve_state_dir", "expand_tilde_strict(p"),
                 (METHOD.0, METHOD.1, "&mut self.state_dir"),
             ],
         ),
         (
             "cache_dir",
             &[
-                (PATHS, "resolve_cache_dir", "expand_tilde(p)"),
+                (PATHS, "resolve_cache_dir", "expand_tilde_strict(p"),
                 (METHOD.0, METHOD.1, "&mut self.cache_dir"),
             ],
         ),
         (
             "runtime_dir",
             &[
-                (PATHS, "resolve_runtime_dir", "expand_tilde(p)"),
+                (PATHS, "resolve_runtime_dir", "expand_tilde_strict(p"),
                 (METHOD.0, METHOD.1, "&mut self.runtime_dir"),
             ],
         ),
@@ -57480,9 +57482,9 @@ fn every_path_flag_and_path_env_expands_a_leading_tilde() {
                  reads it as, or why it is not a path"
             )),
             Some((_, Expands(rel, name))) => match body_of(rel, name) {
-                Ok(body) if body.contains("expand_tilde(") && body.contains(constant) => {}
+                Ok(body) if body.contains("expand_tilde_strict(") && body.contains(constant) => {}
                 Ok(_) => offenders.push(format!(
-                    "{constant}: {rel} `fn {name}` does not read it through `expand_tilde(`"
+                    "{constant}: {rel} `fn {name}` does not read it through `expand_tilde_strict(`"
                 )),
                 Err(e) => offenders.push(format!("{constant}: {e}")),
             },
@@ -57515,6 +57517,119 @@ fn every_path_flag_and_path_env_expands_a_leading_tilde() {
     for (row, _) in ENVS {
         if !envs_seen.iter().any(|seen| seen == row) {
             offenders.push(format!("{row}: env_names.rs declares no such const"));
+        }
+    }
+
+    // With no home, a `~` that stayed literal would name `./~/...` under the
+    // working directory. Each member names the test that drives it with HOME
+    // unset; that body calls the member and asserts the refusal itself or
+    // through `assert_expands_a_leading_tilde`, whose body asserts it.
+    const PATHS_TESTS: &str = "crates/cfgd-core/src/util/paths/tests.rs";
+    const REFUSALS: &[(&str, &str, &str, &str)] = &[
+        (
+            "config",
+            "crates/cfgd/tests/cli_error_rendering.rs",
+            "a_tilde_config_with_no_home_reports_the_unset_home",
+            "\"~/cfgd.yaml\"",
+        ),
+        (
+            "config_dir",
+            PATHS_TESTS,
+            "resolve_config_dir_expands_a_leading_tilde",
+            "resolve_config_dir(",
+        ),
+        (
+            "state_dir",
+            PATHS_TESTS,
+            "resolve_state_dir_expands_a_leading_tilde",
+            "resolve_state_dir(",
+        ),
+        (
+            "cache_dir",
+            PATHS_TESTS,
+            "resolve_cache_dir_expands_a_leading_tilde",
+            "resolve_cache_dir(",
+        ),
+        (
+            "runtime_dir",
+            PATHS_TESTS,
+            "resolve_runtime_dir_expands_a_leading_tilde",
+            "resolve_runtime_dir(",
+        ),
+        (
+            "CFGD_STATE_DIR_ENV",
+            PATHS_TESTS,
+            "the_state_dir_env_expands_a_leading_tilde",
+            "default_state_dir_for(",
+        ),
+        (
+            "CFGD_CACHE_DIR_ENV",
+            PATHS_TESTS,
+            "the_cache_dir_env_expands_a_leading_tilde",
+            "default_cache_dir_for(",
+        ),
+        (
+            "CFGD_RUNTIME_DIR_ENV",
+            PATHS_TESTS,
+            "the_runtime_dir_env_expands_a_leading_tilde",
+            "default_runtime_dir_for(",
+        ),
+        (
+            "CFGD_DAEMON_IPC_PATH_ENV",
+            PATHS_TESTS,
+            "the_daemon_ipc_path_env_expands_a_leading_tilde",
+            "resolve_default_ipc_path(",
+        ),
+        (
+            "CFGD_SERVER_DB_PATH_ENV",
+            "crates/cfgd-operator/src/runtime.rs",
+            "the_gateway_db_path_expands_a_leading_tilde_and_refuses_one_with_no_home",
+            "gateway_db_path()",
+        ),
+    ];
+    match body_of(PATHS_TESTS, "assert_expands_a_leading_tilde") {
+        Ok(body)
+            if body.contains("EnvVarGuard::unset(\"HOME\")") && body.contains("HomeUnresolved") => {
+        }
+        Ok(_) => offenders.push(format!(
+            "{PATHS_TESTS} `fn assert_expands_a_leading_tilde` no longer asserts HomeUnresolved \
+             with HOME unset"
+        )),
+        Err(e) => offenders.push(e),
+    }
+    let members = FLAGS.iter().map(|(id, _)| *id).chain(
+        ENVS.iter()
+            .filter(|(_, class)| matches!(class, Expands(..)))
+            .map(|(constant, _)| *constant),
+    );
+    for member in members {
+        let Some((_, rel, test, needle)) = REFUSALS.iter().find(|(row, ..)| *row == member) else {
+            offenders.push(format!("{member}: no test drives it with HOME unset"));
+            continue;
+        };
+        match body_of(rel, test) {
+            Ok(body)
+                if body.contains(needle)
+                    && [
+                        "assert_expands_a_leading_tilde(",
+                        "HomeUnresolved",
+                        "HOME_UNRESOLVED",
+                    ]
+                    .iter()
+                    .any(|refusal| body.contains(refusal)) => {}
+            Ok(_) => offenders.push(format!(
+                "{member}: {rel} `fn {test}` does not call `{needle}` and assert the refusal"
+            )),
+            Err(e) => offenders.push(format!("{member}: {e}")),
+        }
+    }
+    for (row, ..) in REFUSALS {
+        let known = FLAGS.iter().any(|(id, _)| id == row)
+            || ENVS
+                .iter()
+                .any(|(c, class)| c == row && matches!(class, Expands(..)));
+        if !known {
+            offenders.push(format!("{row}: a refusal row for no member"));
         }
     }
 
@@ -57584,7 +57699,7 @@ fn every_path_flag_and_path_env_expands_a_leading_tilde() {
     assert!(
         offenders.is_empty(),
         "a path from a flag or a CFGD_* variable must expand a leading `~` through \
-         `cfgd_core::expand_tilde`:\n{}",
+         `cfgd_core::expand_tilde_strict`, which refuses it with no home:\n{}",
         offenders.join("\n")
     );
 }

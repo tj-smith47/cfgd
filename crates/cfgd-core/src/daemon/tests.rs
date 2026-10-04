@@ -16910,10 +16910,9 @@ spec: {}
             skip_health_server: true,
             ..Default::default()
         };
-        let ipc = overrides
-            .ipc_path
-            .clone()
-            .unwrap_or_else(|| super::super::resolve_default_ipc_path(None, overrides.scope));
+        let ipc = overrides.ipc_path.clone().unwrap_or_else(|| {
+            super::super::resolve_default_ipc_path(None, overrides.scope).unwrap()
+        });
         assert!(
             ipc.starts_with("/run/cfgd"),
             "system-scope IPC path must be under /run/cfgd, got: {}",
@@ -16934,10 +16933,9 @@ spec: {}
             skip_health_server: true,
             ..Default::default()
         };
-        let ipc = overrides
-            .ipc_path
-            .clone()
-            .unwrap_or_else(|| super::super::resolve_default_ipc_path(None, overrides.scope));
+        let ipc = overrides.ipc_path.clone().unwrap_or_else(|| {
+            super::super::resolve_default_ipc_path(None, overrides.scope).unwrap()
+        });
         assert!(
             ipc.starts_with("/Library/Application Support/cfgd/runtime"),
             "system-scope IPC path must be under the macOS runtime root, got: {}",
@@ -19548,7 +19546,7 @@ mod ipc_socket_security {
     fn resolve_default_ipc_path_env_override_wins() {
         let _g = EnvVarGuard::set(crate::CFGD_DAEMON_IPC_PATH_ENV, "/custom/cfgd.sock");
         assert_eq!(
-            resolve_default_ipc_path(None, crate::Scope::User),
+            resolve_default_ipc_path(None, crate::Scope::User).unwrap(),
             std::path::PathBuf::from("/custom/cfgd.sock")
         );
     }
@@ -19560,7 +19558,7 @@ mod ipc_socket_security {
         let _unset_override = EnvVarGuard::unset(crate::CFGD_DAEMON_IPC_PATH_ENV);
         let _xdg = EnvVarGuard::set("XDG_RUNTIME_DIR", "/tmp/test-xdg");
         assert_eq!(
-            resolve_default_ipc_path(None, crate::Scope::User),
+            resolve_default_ipc_path(None, crate::Scope::User).unwrap(),
             std::path::PathBuf::from("/tmp/test-xdg/cfgd/cfgd.sock")
         );
     }
@@ -19579,7 +19577,10 @@ mod ipc_socket_security {
             .join("cfgd")
             .join("runtime")
             .join("cfgd.sock");
-        assert_eq!(resolve_default_ipc_path(None, crate::Scope::User), expected);
+        assert_eq!(
+            resolve_default_ipc_path(None, crate::Scope::User).unwrap(),
+            expected
+        );
     }
 
     /// On Windows the named-pipe endpoint is scope-aware: a per-user daemon and
@@ -19591,8 +19592,8 @@ mod ipc_socket_security {
     #[serial_test::serial]
     fn resolve_default_ipc_path_windows_scope_selects_distinct_pipe() {
         let _unset_override = EnvVarGuard::unset(crate::CFGD_DAEMON_IPC_PATH_ENV);
-        let user = resolve_default_ipc_path(None, crate::Scope::User);
-        let system = resolve_default_ipc_path(None, crate::Scope::System);
+        let user = resolve_default_ipc_path(None, crate::Scope::User).unwrap();
+        let system = resolve_default_ipc_path(None, crate::Scope::System).unwrap();
         assert_eq!(user, std::path::PathBuf::from(r"\\.\pipe\cfgd"));
         assert_eq!(system, std::path::PathBuf::from(r"\\.\pipe\cfgd-system"));
         assert_ne!(
@@ -19615,7 +19616,10 @@ mod ipc_socket_security {
             .join("cfgd")
             .join("runtime")
             .join("cfgd.sock");
-        assert_eq!(resolve_default_ipc_path(None, crate::Scope::User), expected);
+        assert_eq!(
+            resolve_default_ipc_path(None, crate::Scope::User).unwrap(),
+            expected
+        );
     }
 
     /// Drives `run_health_server` against a tempdir socket path and asserts
@@ -20996,7 +21000,8 @@ mod tests_run_daemon_wrapper {
             },
             crate::Scope::User,
             Some(crate::config::UpdatePolicy::Manual),
-        );
+        )
+        .expect("absolute dirs resolve");
         assert_eq!(
             over.update_policy,
             Some(crate::config::UpdatePolicy::Manual),
@@ -21037,7 +21042,8 @@ mod tests_run_daemon_wrapper {
     #[test]
     fn cli_run_overrides_leave_both_dirs_to_the_defaults_when_unset() {
         use crate::daemon::cli_run_overrides;
-        let over = cli_run_overrides(DaemonDirOverrides::default(), crate::Scope::User, None);
+        let over = cli_run_overrides(DaemonDirOverrides::default(), crate::Scope::User, None)
+            .expect("the defaults resolve");
         assert!(
             over.update_policy.is_none(),
             "no flag → the version tick re-reads spec.update.policy every time"

@@ -649,6 +649,14 @@ pub enum StateError {
     #[error("cannot locate the per-user {role} directory: no home directory found")]
     HomeDirectoryUnresolved { role: &'static str },
 
+    /// A path override leads with `~` and no home directory resolves it. Used
+    /// as written it would name a directory called `~` under the working
+    /// directory, which nobody means and a later `rm -r ~` cleanup endangers.
+    #[error(
+        "cannot expand {path} for the {role}: no home directory found (HOME unset); set HOME or give an absolute path"
+    )]
+    HomeUnresolved { role: &'static str, path: PathBuf },
+
     #[error("state filesystem I/O failed at {path}: {source}")]
     FilesystemIo {
         path: PathBuf,

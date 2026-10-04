@@ -41,7 +41,7 @@ fn user_fixture() -> PathsOutput {
         runtime: RuntimePaths {
             dir: Some("/run/user/1000/cfgd".into()),
             source: DirSource::Default,
-            socket: "/run/user/1000/cfgd/cfgd.sock".into(),
+            socket: Some("/run/user/1000/cfgd/cfgd.sock".into()),
         },
     }
 }
@@ -70,7 +70,7 @@ fn system_fixture() -> PathsOutput {
         runtime: RuntimePaths {
             dir: Some("/run/cfgd".into()),
             source: DirSource::Default,
-            socket: "/run/cfgd/cfgd.sock".into(),
+            socket: Some("/run/cfgd/cfgd.sock".into()),
         },
     }
 }

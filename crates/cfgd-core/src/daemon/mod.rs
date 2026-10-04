@@ -332,7 +332,7 @@ const WINDOWS_SYSTEM_PIPE_PATH: &str = r"\\.\pipe\cfgd-system";
 /// the client-side connect (`connect_daemon_ipc`), and `cfgd paths`, so all
 /// agree on the socket location. Precedence:
 /// 1. `CFGD_DAEMON_IPC_PATH`: the override (test harnesses, operators), a
-///    leading `~` expanded.
+///    leading `~` expanded; with no home directory to resolve it, an error.
 /// 2. `cfgd.sock` under [`crate::resolve_runtime_dir`]`(runtime_over)`, honoring the
 ///    `--runtime-dir` flag / `CFGD_RUNTIME_DIR` env / `$XDG_RUNTIME_DIR/cfgd`
 ///    (per-user tmpfs on Linux) / `$HOME/.cache/cfgd/runtime` (Linux fallback)
@@ -351,15 +351,18 @@ const WINDOWS_SYSTEM_PIPE_PATH: &str = r"\\.\pipe\cfgd-system";
 /// system socket lives under `/run/cfgd`. Bind and connect agree automatically
 /// under env/default; a user passing `--runtime-dir`/`--scope system` must pass it
 /// consistently to both sides.
-pub fn resolve_default_ipc_path(runtime_over: Option<&Path>, scope: crate::Scope) -> PathBuf {
+pub fn resolve_default_ipc_path(
+    runtime_over: Option<&Path>,
+    scope: crate::Scope,
+) -> Result<PathBuf> {
     if let Some(override_path) = std::env::var_os(crate::CFGD_DAEMON_IPC_PATH_ENV) {
-        return crate::expand_tilde(Path::new(&override_path));
+        return crate::expand_tilde_strict(Path::new(&override_path), "daemon socket");
     }
     #[cfg(unix)]
     {
-        crate::resolve_runtime_dir(runtime_over, scope)
+        Ok(crate::resolve_runtime_dir(runtime_over, scope)?
             .map(|dir| dir.join(IPC_SOCKET_FILE))
-            .unwrap_or_else(|| PathBuf::from("/tmp/cfgd.sock"))
+            .unwrap_or_else(|| PathBuf::from("/tmp/cfgd.sock")))
     }
     #[cfg(windows)]
     {
@@ -368,11 +371,11 @@ pub fn resolve_default_ipc_path(runtime_over: Option<&Path>, scope: crate::Scope
         // service and a per-user daemon must resolve to distinct pipe names so a
         // user CLI never connects to the machine-wide service.
         let _ = runtime_over;
-        if scope.is_system() {
+        Ok(if scope.is_system() {
             PathBuf::from(WINDOWS_SYSTEM_PIPE_PATH)
         } else {
             PathBuf::from(WINDOWS_PIPE_PATH)
-        }
+        })
     }
 }
 /// The reconcile interval a daemon runs at when `spec.daemon.reconcile.interval`
@@ -1079,7 +1082,7 @@ pub async fn run_daemon(
         profile_override,
         printer,
         hooks,
-        cli_run_overrides(dirs, scope, update_policy),
+        cli_run_overrides(dirs, scope, update_policy)?,
         cfgd_version,
     )
     .await
@@ -1103,15 +1106,18 @@ pub(super) fn cli_run_overrides(
     dirs: DaemonDirOverrides,
     scope: crate::Scope,
     update_policy: Option<crate::config::UpdatePolicy>,
-) -> DaemonRunOverrides {
-    DaemonRunOverrides {
-        ipc_path: Some(resolve_default_ipc_path(dirs.runtime_dir.as_deref(), scope)),
+) -> Result<DaemonRunOverrides> {
+    Ok(DaemonRunOverrides {
+        ipc_path: Some(resolve_default_ipc_path(
+            dirs.runtime_dir.as_deref(),
+            scope,
+        )?),
         state_dir_override: dirs.state_dir,
         cache_dir_override: dirs.cache_dir,
         scope,
         update_policy,
         ..DaemonRunOverrides::default()
-    }
+    })
 }
 
 /// Test-shaped knobs for [`run_daemon_with`]. Production callers go through
@@ -1190,10 +1196,10 @@ pub(super) async fn run_daemon_with(
     overrides: DaemonRunOverrides,
     cfgd_version: &str,
 ) -> Result<()> {
-    let ipc_path = overrides
-        .ipc_path
-        .clone()
-        .unwrap_or_else(|| resolve_default_ipc_path(None, overrides.scope));
+    let ipc_path = match overrides.ipc_path.clone() {
+        Some(path) => path,
+        None => resolve_default_ipc_path(None, overrides.scope)?,
+    };
     // Ahead of the config work: a second daemon cannot start whatever the
     // config says, and composing sources first meant the loser printed a
     // profile's worth of warnings before finding that out.

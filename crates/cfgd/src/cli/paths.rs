@@ -106,8 +106,9 @@ pub fn config_dir_source(
 /// Structured payload for `cfgd paths -o json|yaml`. Each root reports its
 /// resolved directory, the effective source of that value, and the key files
 /// cfgd owns inside it. `runtime.dir` is `null` when no home directory is
-/// resolvable; `runtime.socket` is always present (it falls back to a
-/// platform-specific path even with no home).
+/// resolvable; `runtime.socket` falls back to a platform-specific path even
+/// with no home, and is `null` only when an override leads with a `~` that no
+/// home directory resolves.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PathsOutput {
@@ -169,8 +170,9 @@ pub struct RuntimePaths {
     /// [`cfgd_core::resolve_default_ipc_path`] so it always matches what the
     /// daemon binds: a `CFGD_DAEMON_IPC_PATH` override, else `<runtime>/cfgd.sock`,
     /// else (Unix, no home) the `/tmp/cfgd.sock` last-ditch fallback, else
-    /// (Windows) the `\\.\pipe\cfgd` named pipe.
-    pub socket: String,
+    /// (Windows) the `\\.\pipe\cfgd` named pipe. `null` when the override or
+    /// runtime dir leads with a `~` no home directory resolves.
+    pub socket: Option<String>,
 }
 
 /// Resolve the four directory roots and the key files within each into the
@@ -178,9 +180,10 @@ pub struct RuntimePaths {
 ///
 /// A discoverability command degrades gracefully: each root resolves
 /// independently, so an unresolvable state/cache root (no `$HOME` and no
-/// override) reports `null` for that root rather than failing the whole command,
-/// while the home-independent socket fallback (`/tmp/cfgd.sock` / named pipe) is
-/// still reported.
+/// override, or an override leading with a `~` no home resolves) reports `null`
+/// for that root rather than failing the whole command, while the
+/// home-independent socket fallback (`/tmp/cfgd.sock` / named pipe) is still
+/// reported.
 pub(crate) fn collect_paths_output(cli: &Cli, sources: &DirSources) -> anyhow::Result<PathsOutput> {
     let scope = cli.scope();
     // `cli.config` is the already-resolved config FILE (main.rs folds --config /
@@ -245,12 +248,13 @@ pub(crate) fn collect_paths_output(cli: &Cli, sources: &DirSources) -> anyhow::R
     // connects to (honors CFGD_DAEMON_IPC_PATH, --runtime-dir, and the /tmp and
     // named-pipe fallbacks).
     let socket = cfgd_core::resolve_default_ipc_path(cli.runtime_dir.as_deref(), scope)
-        .posix()
-        .to_string();
+        .ok()
+        .map(|s| s.posix().to_string());
 
     let runtime = RuntimePaths {
         dir: cfgd_core::resolve_runtime_dir(cli.runtime_dir.as_deref(), scope)
-            .as_ref()
+            .ok()
+            .flatten()
             .map(|d| d.posix().to_string()),
         source: sources.runtime,
         socket,
@@ -322,7 +326,7 @@ pub fn build_paths_doc(output: &PathsOutput) -> Doc {
         s.kv_block([
             ("Directory", or_unavailable(&runtime.dir)),
             ("Source", runtime.source.label().to_string()),
-            ("Socket", cfgd_core::fold_home_in_text(&runtime.socket)),
+            ("Socket", or_unavailable(&runtime.socket)),
         ])
     });
 
@@ -523,7 +527,7 @@ mod tests {
         let cli = test_cli(None, None);
         let output =
             collect_paths_output(&cli, &DirSources::all_default()).expect("collect must succeed");
-        assert_eq!(output.runtime.socket, "/custom/cfgd.sock");
+        assert_eq!(output.runtime.socket.as_deref(), Some("/custom/cfgd.sock"));
     }
 
     // Under `--config <dir>/cfgd.yaml` the reported config.dir
@@ -565,7 +569,7 @@ mod tests {
         let cli = test_cli(None, None);
         let output =
             collect_paths_output(&cli, &DirSources::all_default()).expect("collect must succeed");
-        assert_eq!(output.runtime.socket, "/tmp/cfgd.sock");
+        assert_eq!(output.runtime.socket.as_deref(), Some("/tmp/cfgd.sock"));
         assert!(output.runtime.dir.is_none(), "runtime.dir must be null");
     }
 
@@ -594,10 +598,10 @@ mod tests {
         #[cfg(unix)]
         assert_eq!(
             output.runtime.socket,
-            rt.path().join("cfgd.sock").posix().to_string()
+            Some(rt.path().join("cfgd.sock").posix().to_string())
         );
         #[cfg(windows)]
-        assert_eq!(output.runtime.socket, "//./pipe/cfgd");
+        assert_eq!(output.runtime.socket.as_deref(), Some("//./pipe/cfgd"));
         assert_eq!(output.runtime.source, DirSource::Flag);
     }
 
@@ -716,7 +720,10 @@ mod tests {
 
         assert_eq!(output.state.dir.as_deref(), Some("/var/lib/cfgd"));
         assert_eq!(output.cache.dir.as_deref(), Some("/var/cache/cfgd"));
-        assert_eq!(output.runtime.socket, "/run/cfgd/cfgd.sock");
+        assert_eq!(
+            output.runtime.socket.as_deref(),
+            Some("/run/cfgd/cfgd.sock")
+        );
     }
 
     // --- legacy_migration_eligible ---

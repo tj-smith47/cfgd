@@ -1174,7 +1174,7 @@ pub fn default_state_dir() -> Result<PathBuf> {
 /// and consults no home directory, so it never errors. Pure path logic.
 pub fn default_state_dir_for(scope: Scope) -> Result<PathBuf> {
     if let Ok(dir) = std::env::var(crate::CFGD_STATE_DIR_ENV) {
-        return Ok(crate::expand_tilde(Path::new(&dir)));
+        return crate::expand_tilde_strict(Path::new(&dir), "state directory");
     }
     if let Some(dir) = crate::systemd_dir("STATE_DIRECTORY") {
         return Ok(dir);

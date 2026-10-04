@@ -775,6 +775,48 @@ fn doctor_with_no_home_fails_the_default_config_check_on_the_unset_home() {
     assert_eq!(out.status.code(), Some(0), "{stderr}");
 }
 
+/// A directory override under `~` with no home set fails the run naming the
+/// unset home, from a flag and from its environment variable alike, and
+/// creates nothing: used as written it would name `./~/s` under the working
+/// directory.
+#[test]
+fn a_tilde_state_dir_with_no_home_fails_naming_the_unset_home() {
+    const REFUSAL: &str = "cannot expand ~/s for the state directory: no home directory found \
+                           (HOME unset)";
+    let dir = tempfile::tempdir().unwrap();
+    let config = write_config_with_spec(dir.path(), "spec: {}\n");
+    let cwd = tempfile::tempdir().unwrap();
+    let homeless = || {
+        let mut cmd = cfgd_bin().unwrap();
+        cmd.current_dir(cwd.path())
+            .env_remove("HOME")
+            .env_remove("USERPROFILE")
+            .env_remove("XDG_CONFIG_HOME")
+            .env_remove("XDG_STATE_HOME")
+            .env_remove(cfgd_core::CFGD_STATE_DIR_ENV)
+            .arg("--config")
+            .arg(&config);
+        cmd
+    };
+    let mut by_flag = homeless();
+    by_flag.args(["--state-dir", "~/s", "log"]);
+    let mut by_env = homeless();
+    by_env.env(cfgd_core::CFGD_STATE_DIR_ENV, "~/s").arg("log");
+    for (spelling, mut cmd) in [
+        ("--state-dir", by_flag),
+        (cfgd_core::CFGD_STATE_DIR_ENV, by_env),
+    ] {
+        let out = cmd.output().unwrap();
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(out.status.code(), Some(1), "{spelling}: {stderr}");
+        assert!(stderr.contains(REFUSAL), "{spelling}: {stderr:?}");
+        assert!(
+            !cwd.path().join("~").exists(),
+            "{spelling}: a `~` directory was created under the working directory"
+        );
+    }
+}
+
 /// The default config location with no home set. Linux and macOS spell it
 /// under `~`, so the run reports the unset home; Windows finds its config
 /// root through a known-folder lookup that needs no home variable, so the
