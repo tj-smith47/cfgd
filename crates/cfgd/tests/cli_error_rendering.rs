@@ -741,8 +741,9 @@ fn doctor_reports_a_tilde_config_with_no_home_as_the_unset_home() {
 /// `doctor` with no home set and no `--config` fails its config check on the
 /// unset home and exits 1: every verb reading the config fails there, so a
 /// passing verdict would let `cfgd doctor && cfgd apply` reach a broken apply.
-/// An `XDG_CONFIG_HOME` places the default path without a home, so there the
-/// missing config is the fresh-machine warning and the verdict passes.
+/// An `XDG_CONFIG_HOME` or systemd's `CONFIGURATION_DIRECTORY` places the
+/// default path without a home, so there the missing config is the
+/// fresh-machine warning and the verdict passes.
 /// Windows resolves its default config root without a home variable.
 #[cfg(not(windows))]
 #[test]
@@ -765,6 +766,22 @@ fn doctor_with_no_home_fails_the_default_config_check_on_the_unset_home() {
         .env_remove("HOME")
         .env_remove("USERPROFILE")
         .env("XDG_CONFIG_HOME", xdg.path())
+        .arg("doctor")
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let row = config_row(&stderr);
+    assert!(row.contains("not found; run `cfgd init`"), "{row:?}");
+    assert!(!row.contains(HOME_UNRESOLVED), "{row:?}");
+    assert_eq!(out.status.code(), Some(0), "{stderr}");
+
+    let systemd = tempfile::tempdir().unwrap();
+    let out = cfgd_bin()
+        .unwrap()
+        .env_remove("HOME")
+        .env_remove("USERPROFILE")
+        .env_remove("XDG_CONFIG_HOME")
+        .env("CONFIGURATION_DIRECTORY", systemd.path())
         .arg("doctor")
         .output()
         .unwrap();
