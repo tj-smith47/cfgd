@@ -56290,15 +56290,7 @@ fn every_compliance_counts_line_comes_from_the_one_builder() {
 /// the next, outside `StartupDocument::load` and not marked
 /// `// load-ok: <why>` on the line or the one above.
 fn config_reads_outside_the_startup_document(source: &str) -> Vec<String> {
-    use cfgd_core::test_helpers::{
-        calls_free_fn, carries_hatch, code_line, declaration_end, declared_fn_name, impl_owner,
-    };
-    const LOADERS: [&str; 4] = [
-        "load_config",
-        "parse_config",
-        "read_pair",
-        "read_config_document",
-    ];
+    use cfgd_core::test_helpers::{code_line, declaration_end, declared_fn_name, impl_owner};
     let raw: Vec<&str> = source.lines().collect();
     let code: Vec<String> = raw.iter().map(|line| code_line(line)).collect();
     let mut owned = vec![false; code.len()];
@@ -56311,22 +56303,65 @@ fn config_reads_outside_the_startup_document(source: &str) -> Vec<String> {
         }
     }
     let hatched = |i: usize| {
-        carries_hatch(raw[i], "load-ok") || (i > 0 && carries_hatch(raw[i - 1], "load-ok"))
+        load_ok_reason(raw[i]).is_some() || (i > 0 && load_ok_reason(raw[i - 1]).is_some())
     };
     code.iter()
         .enumerate()
         .filter(|(i, line)| {
-            let names_config = || {
-                let next = code.get(i + 1).map_or("", String::as_str);
-                format!("{line}{next}").to_lowercase().contains("config")
-            };
-            !owned[*i]
-                && (LOADERS.iter().any(|loader| calls_free_fn(line, loader))
-                    || (calls_free_fn(line, "read_to_string") && names_config()))
-                && !hatched(*i)
+            let next = code.get(i + 1).map_or("", String::as_str);
+            !owned[*i] && reads_a_config_document(line, next) && !hatched(*i)
         })
         .map(|(i, _)| format!("{}: {}", i + 1, raw[i].trim()))
         .collect()
+}
+
+/// The `cfgd_core::config` entry points that read a config document: the two
+/// that open the file and the parser both of them go through.
+const CONFIG_LOADERS: [&str; 3] = ["load_config", "read_config_document", "parse_config"];
+
+/// Whether the CODE line `line`, with `next` below it, reads a config document
+/// from disk: a call to one of [`CONFIG_LOADERS`], or a `read_to_string` whose
+/// argument names a config (`&cli.config`, `config_path`). The argument is
+/// read across both lines, so a call rustfmt broke after its paren is read
+/// whole; a `config::` path elsewhere on the lines names a module, which says
+/// nothing about the file read.
+fn reads_a_config_document(line: &str, next: &str) -> bool {
+    use cfgd_core::test_helpers::calls_free_fn;
+    if CONFIG_LOADERS
+        .iter()
+        .any(|loader| calls_free_fn(line, loader))
+    {
+        return true;
+    }
+    if !calls_free_fn(line, "read_to_string") {
+        return false;
+    }
+    let joined = format!("{line}{next}");
+    joined.match_indices("read_to_string(").any(|(at, needle)| {
+        let mut depth = 1i32;
+        let argument: String = joined[at + needle.len()..]
+            .chars()
+            .take_while(|c| {
+                match c {
+                    '(' => depth += 1,
+                    ')' => depth -= 1,
+                    _ => {}
+                }
+                depth > 0
+            })
+            .collect();
+        argument.to_lowercase().contains("config")
+    })
+}
+
+/// The reason a `// load-ok: <why>` hatch on `line` gives; `None` for a line
+/// with no hatch, or one whose hatch gives no reason.
+fn load_ok_reason(line: &str) -> Option<String> {
+    const HATCH: &str = "load-ok:";
+    let (_, why) = cfgd_core::test_helpers::carries_hatch(line, HATCH)
+        .then(|| line.split_once(HATCH))
+        .flatten()?;
+    Some(why.trim().to_string()).filter(|why| !why.is_empty())
 }
 
 /// `cfgd.yaml` is read once before dispatch: every reader there takes the
@@ -56497,22 +56532,15 @@ struct ConfigDocumentRead {
     why: Option<String>,
 }
 
-/// Every `load_config(` and `read_config_document(` call in the production
-/// code of the Rust sources under `root`, outside `startup.rs`, which holds the
-/// one read the run shares. A hatch counts on the call's line or the one above,
-/// and only with a reason after it. Line numbers are the file's own: test-only
-/// lines are skipped through the test-region mask, which blanks in place.
+/// Every read of a config document ([`reads_a_config_document`]) in the
+/// production code of the Rust sources under `root`, outside `startup.rs`,
+/// which holds the one read the run shares. A hatch counts on the call's line
+/// or the one above, and only with a reason after it. Line numbers are the
+/// file's own: test-only lines are skipped through the test-region mask, which
+/// blanks in place.
 fn config_document_reads_under(root: &Path) -> Vec<ConfigDocumentRead> {
     use cfgd_core::test_helpers::{
-        calls_free_fn, carries_hatch, code_line, floored_production_body, rust_sources_under,
-        test_region_mask, walked_file_body,
-    };
-    const HATCH: &str = "load-ok:";
-    let reason = |line: &str| {
-        let (_, why) = carries_hatch(line, HATCH)
-            .then(|| line.split_once(HATCH))
-            .flatten()?;
-        Some(why.trim().to_string()).filter(|why| !why.is_empty())
+        code_line, floored_production_body, rust_sources_under, test_region_mask, walked_file_body,
     };
     let mut reads = Vec::new();
     for file in rust_sources_under(root) {
@@ -56527,15 +56555,14 @@ fn config_document_reads_under(root: &Path) -> Vec<ConfigDocumentRead> {
         let lines: Vec<&str> = raw.lines().collect();
         let mask = test_region_mask(&raw);
         for (i, (line, test)) in lines.iter().zip(mask.lines()).enumerate() {
-            let code = code_line(line);
-            if !test.is_empty()
-                || !["load_config", "read_config_document"]
-                    .iter()
-                    .any(|loader| calls_free_fn(&code, loader))
-            {
+            let next = lines
+                .get(i + 1)
+                .map_or(String::new(), |next| code_line(next));
+            if !test.is_empty() || !reads_a_config_document(&code_line(line), &next) {
                 continue;
             }
-            let why = reason(line).or_else(|| i.checked_sub(1).and_then(|p| reason(lines[p])));
+            let why = load_ok_reason(line)
+                .or_else(|| i.checked_sub(1).and_then(|p| load_ok_reason(lines[p])));
             reads.push(ConfigDocumentRead {
                 at: format!("{rel}:{}", i + 1),
                 why,
@@ -56604,6 +56631,14 @@ fn the_cli_config_read_walk_judges_each_outcome() {
         "tested.rs",
         "fn verb() {}\n\n#[cfg(test)]\nmod tests {\n    fn t(p: &Path) {\n        let _ = load_config(p);\n    }\n}\n",
     );
+    write(
+        "parsed.rs",
+        "fn verb(text: &str, p: &Path) {\n    let _ = cfgd_core::config::parse_config(text, p);\n}\n",
+    );
+    write(
+        "text.rs",
+        "fn verb(cli: &Cli) {\n    let _ = std::fs::read_to_string(\n        &cli.config,\n    );\n    let text = std::fs::read_to_string(&module_yaml);\n    let _ = config::parse_module(&text);\n}\n",
+    );
     assert_eq!(
         config_document_reads_under(dir.path()),
         vec![
@@ -56614,6 +56649,14 @@ fn the_cli_config_read_walk_judges_each_outcome() {
             ConfigDocumentRead {
                 at: "hatched.rs:3".to_string(),
                 why: Some("a different document".to_string()),
+            },
+            ConfigDocumentRead {
+                at: "parsed.rs:2".to_string(),
+                why: None,
+            },
+            ConfigDocumentRead {
+                at: "text.rs:2".to_string(),
+                why: None,
             },
         ]
     );

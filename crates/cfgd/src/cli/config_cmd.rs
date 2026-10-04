@@ -798,6 +798,7 @@ pub(super) fn config_get_as(
             let config = match on_hand {
                 Some(doc) => doc.config(),
                 None => {
+                    // load-ok: parses the text the hatched read above took from another file
                     parsed = cfgd_core::config::parse_config(&contents, config_path).ok();
                     parsed.as_ref()
                 }

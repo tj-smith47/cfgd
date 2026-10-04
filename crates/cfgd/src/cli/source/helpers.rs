@@ -381,11 +381,13 @@ where
             .into(),
         );
     }
+    // load-ok: an edit reads the bytes it rewrites
     let contents = std::fs::read_to_string(config_path)?;
     let mut raw = config_tree(&contents, config_path)?;
     let before = raw.clone();
     f(&mut raw)?;
     let mut body = render_config_tree(&raw, config_path)?;
+    // load-ok: validates the document the edit is about to write
     let cfg = config::parse_config(&body, config_path).map_err(|e| {
         crate::cli::cli_error(
             cfgd_core::to_posix_string(config_path),
