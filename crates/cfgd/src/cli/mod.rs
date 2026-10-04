@@ -1327,6 +1327,28 @@ pub struct Cli {
 }
 
 impl Cli {
+    /// Expand a leading `~` in the directory flags (`--config-dir`,
+    /// `--state-dir`, `--cache-dir`, `--runtime-dir` and their `CFGD_*`
+    /// variables) to the home directory, once, right after the parse.
+    ///
+    /// No shell expands a `~` read from an environment file or a quoted
+    /// argument. Expanded here, every reader of these directories, the argv a
+    /// service install bakes into its unit included, sees the same absolute
+    /// path. With no home directory to resolve, a path stays as written.
+    pub fn expand_path_flags(&mut self) {
+        for dir in [
+            &mut self.config_dir,
+            &mut self.state_dir,
+            &mut self.cache_dir,
+            &mut self.runtime_dir,
+        ]
+        .into_iter()
+        .flatten()
+        {
+            *dir = cfgd_core::expand_tilde(dir);
+        }
+    }
+
     /// The daemon directory flags this invocation ran under, so an installed
     /// unit and a foreground run resolve the same directories.
     pub fn daemon_dir_overrides(&self) -> cfgd_core::daemon::DaemonDirOverrides {

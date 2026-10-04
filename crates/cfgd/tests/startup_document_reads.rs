@@ -282,3 +282,44 @@ fn config_get_of_an_undeclared_key_parses_the_document_once() {
         .collect();
     assert!(parses.is_empty(), "{verb:?}: a second parse:\n{stderr}");
 }
+
+/// A `--config-dir` or `CFGD_CONFIG_DIR` under `~` names the directory under
+/// the home in the alias pass too: `who` is declared in `~/cfg/cfgd.toml`
+/// alone, runs, and the document is read once. A pass that kept the `~`
+/// would look for `<cwd>/~/cfg`, find no TOML there, and refuse `who`.
+#[test]
+fn a_tilde_config_dir_expands_that_documents_aliases_and_reads_it_once() {
+    let home = cfgd_bin()
+        .expect("the cfgd binary builds")
+        .get_envs()
+        .find(|(var, _)| *var == "HOME")
+        .and_then(|(_, value)| value)
+        .map(std::path::PathBuf::from)
+        .expect("cfgd_bin isolates HOME");
+    std::fs::create_dir_all(home.join("cfg")).expect("mkdir");
+    std::fs::write(
+        home.join("cfg").join("cfgd.toml"),
+        "apiVersion = \"cfgd.io/v1alpha1\"\nkind = \"Config\"\n\n[metadata]\nname = \"aliases\"\n\n[spec]\nprofile = \"tilde\"\n\n[spec.aliases]\nwho = \"config get profile\"\n",
+    )
+    .expect("write config");
+    for env in [false, true] {
+        let mut cmd = cfgd_bin().expect("the cfgd binary builds");
+        cmd.env_remove("RUST_LOG").arg("-v");
+        if env {
+            cmd.env(cfgd_core::CFGD_CONFIG_DIR_ENV, "~/cfg");
+        } else {
+            cmd.args(["--config-dir", "~/cfg"]);
+        }
+        let output = cmd.arg("who").output().expect("cfgd runs");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let shape = if env {
+            cfgd_core::CFGD_CONFIG_DIR_ENV
+        } else {
+            "--config-dir"
+        };
+        assert!(output.status.success(), "{shape}: {stderr}");
+        assert_eq!(stdout.trim(), "tilde", "{shape}: {stderr}");
+        assert_reads(&["who"], &stderr, 1);
+    }
+}

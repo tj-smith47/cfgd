@@ -975,9 +975,10 @@ These flags work with any subcommand:
 | — | — | `DO_NOT_TRACK` | Same, via the [consoledonottrack.com](https://consoledonottrack.com) convention |
 
 cfgd expands a leading `~` in a path flag (`--config`, `--config-dir`, `--state-dir`,
-`--cache-dir`, `--runtime-dir`), in its `CFGD_*` variable and in `CFGD_DAEMON_IPC_PATH` to your
-home directory itself, so the value works from an environment file or a quoted argument, where no
-shell expands it. With no home directory to resolve, the path is used as written.
+`--cache-dir`, `--runtime-dir`), in its `CFGD_*` variable, in `CFGD_DAEMON_IPC_PATH` and in the
+device gateway's `CFGD_SERVER_DB_PATH` to your home directory itself, so the value works from an
+environment file or a quoted argument, where no shell expands it.
+With no home directory to resolve, the path is used as written.
 
 Usage hints are off unless something asks for them, and the knob reaches the closing
 tutorial pointers only (the "run this next" lines). Three kinds of line ignore it and

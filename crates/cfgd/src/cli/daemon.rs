@@ -697,6 +697,71 @@ mod tests {
     // Serial: this parses through the real clap `Cli`, whose globals are
     // env-bound (`CFGD_STATE_DIR` and friends). A concurrent test that sets one
     // would be read as this test's own input.
+    /// A `~` in a directory flag or its `CFGD_*` variable reaches an installed
+    /// unit as the home directory it named at install time: the argv every
+    /// unit generator bakes carries the expanded path.
+    #[test]
+    #[serial_test::serial]
+    fn an_installed_unit_carries_the_expanded_directory_flags() {
+        let home = tempfile::tempdir().unwrap();
+        let _home = cfgd_core::with_test_home_guard(home.path());
+        let expected = |dir: &str| cfgd_core::to_posix_string(home.path().join(dir));
+        let by_flag = [
+            "cfgd",
+            "--state-dir",
+            "~/s",
+            "--runtime-dir",
+            "~/r",
+            "--cache-dir",
+            "~/c",
+            "daemon",
+            "status",
+        ];
+        let mut parsed = vec![("flags", Cli::try_parse_hermetic(by_flag).unwrap())];
+        {
+            let _state =
+                cfgd_core::test_helpers::EnvVarGuard::set(cfgd_core::CFGD_STATE_DIR_ENV, "~/s");
+            let _runtime =
+                cfgd_core::test_helpers::EnvVarGuard::set(cfgd_core::CFGD_RUNTIME_DIR_ENV, "~/r");
+            let _cache =
+                cfgd_core::test_helpers::EnvVarGuard::set(cfgd_core::CFGD_CACHE_DIR_ENV, "~/c");
+            parsed.push((
+                "env",
+                Cli::try_parse_reading_env(
+                    ["cfgd", "daemon", "status"],
+                    &[
+                        cfgd_core::CFGD_STATE_DIR_ENV,
+                        cfgd_core::CFGD_RUNTIME_DIR_ENV,
+                        cfgd_core::CFGD_CACHE_DIR_ENV,
+                    ],
+                )
+                .unwrap(),
+            ));
+        }
+        for (spelling, mut cli) in parsed {
+            cli.expand_path_flags();
+            let argv = cfgd_core::daemon::service_binpath_argv(
+                std::path::Path::new("/etc/cfgd/cfgd.yaml"),
+                None,
+                false,
+                cfgd_core::Scope::User,
+                &cli.daemon_dir_overrides(),
+            );
+            for (flag, dir) in [
+                ("--state-dir", "s"),
+                ("--runtime-dir", "r"),
+                ("--cache-dir", "c"),
+            ] {
+                assert!(
+                    argv.windows(2)
+                        .any(|w| w[0] == flag && w[1] == expected(dir)),
+                    "{spelling}: {flag} is not {} in {argv:?}",
+                    expected(dir)
+                );
+            }
+        }
+    }
+
     #[test]
     #[serial_test::serial]
     fn windows_service_binpath_argv_parses_via_cli() {

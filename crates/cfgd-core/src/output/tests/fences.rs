@@ -2631,6 +2631,7 @@ const SERIAL_FLOORS: &[(&str, usize)] = &[
     ("crates/cfgd/src/cli/checkin.rs", 9),
     ("crates/cfgd/src/cli/config_migration.rs", 5),
     ("crates/cfgd/src/cli/config_schema.rs", 1),
+    ("crates/cfgd/src/cli/daemon.rs", 1),
     ("crates/cfgd/src/cli/generate/tests.rs", 15),
     ("crates/cfgd/src/cli/helpers/tests.rs", 11),
     ("crates/cfgd/src/cli/image/pack.rs", 2),

@@ -1359,6 +1359,10 @@ pub fn settle_config_path(
     config_dir: Option<&Path>,
     scope: cfgd_core::Scope,
 ) -> PathBuf {
+    // The alias pass reads the raw `--config-dir` off clap, so the `~` is
+    // expanded here, where both callers meet.
+    let config_dir = config_dir.map(cfgd_core::expand_tilde);
+    let config_dir = config_dir.as_deref();
     // Under `--scope system` only the bare default moves to the system config
     // root, before the `--config-dir` fold, so an explicit `--config` or
     // `--config-dir` (or their env twins) still wins.

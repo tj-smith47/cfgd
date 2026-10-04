@@ -93,12 +93,21 @@ pub fn build_gateway_config(
 ) -> GatewayConfig {
     GatewayConfig {
         port: env::parse_port_env("DEVICE_GATEWAY_PORT", 8080),
-        db_path: cfgd_core::env_or(cfgd_core::CFGD_SERVER_DB_PATH_ENV, "/data/cfgd-gateway.db"),
+        db_path: gateway_db_path(),
         kube_client: client,
         backup_policies,
         retention_days: env::parse_u32_env(cfgd_core::CFGD_RETENTION_DAYS_ENV, 90),
         metrics: Some(metrics),
     }
+}
+
+/// The device gateway's database: `CFGD_SERVER_DB_PATH` with a leading `~`
+/// expanded to the home directory, or `/data/cfgd-gateway.db`.
+fn gateway_db_path() -> String {
+    let path = cfgd_core::env_or(cfgd_core::CFGD_SERVER_DB_PATH_ENV, "/data/cfgd-gateway.db");
+    cfgd_core::expand_tilde(std::path::Path::new(&path))
+        .to_string_lossy()
+        .into_owned()
 }
 
 #[cfg(test)]
@@ -305,6 +314,27 @@ mod tests {
             with_test_env_var(cfgd_core::CFGD_SERVER_DB_PATH_ENV, None, || {
                 let port = env::parse_port_env("DEVICE_GATEWAY_PORT", 8080);
                 assert_eq!(port, 9999);
+            });
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn the_gateway_db_path_expands_a_leading_tilde() {
+        let home = tempfile::tempdir().unwrap();
+        with_test_env_var(cfgd_core::CFGD_SERVER_DB_PATH_ENV, Some("~/g.db"), || {
+            with_test_env_var("HOME", home.path().to_str(), || {
+                with_test_env_var("USERPROFILE", home.path().to_str(), || {
+                    assert_eq!(
+                        cfgd_core::to_posix_string(gateway_db_path()),
+                        cfgd_core::to_posix_string(home.path().join("g.db"))
+                    );
+                });
+            });
+            with_test_env_var("HOME", None, || {
+                with_test_env_var("USERPROFILE", None, || {
+                    assert_eq!(gateway_db_path(), "~/g.db");
+                });
             });
         });
     }
