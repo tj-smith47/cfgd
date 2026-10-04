@@ -56315,9 +56315,45 @@ fn config_reads_outside_the_startup_document(source: &str) -> Vec<String> {
         .collect()
 }
 
-/// The `cfgd_core::config` entry points that read a config document: the two
-/// that open the file and the parser both of them go through.
-const CONFIG_LOADERS: [&str; 3] = ["load_config", "read_config_document", "parse_config"];
+/// The `cfgd_core::config` entry points that hand back a parsed config: every
+/// free `pub` function under `cfgd-core/src/config` taking an input and whose
+/// return type names `CfgdConfig`, read off the module's own declarations so a
+/// loader added there joins the walk with no list to extend. A function taking
+/// nothing (`minimal_config`) builds a config without reading one.
+static CONFIG_LOADERS: std::sync::LazyLock<Vec<String>> = std::sync::LazyLock::new(|| {
+    use cfgd_core::test_helpers::{ItemLead, item_lead};
+    let loaders: Vec<String> = workspace_declarations(WORKSPACE_CRATES)
+        .rows_under("cfgd-core/src/config", 19)
+        .into_iter()
+        .filter(|(_, owner, code)| {
+            let signature = code.split('{').next().unwrap_or_default();
+            let returns = signature.split_once("->").map_or("", |(_, ret)| ret);
+            let takes_input = signature
+                .split_once('(')
+                .and_then(|(_, rest)| rest.split_once(')'))
+                .is_some_and(|(params, _)| !params.trim().is_empty());
+            owner.is_none()
+                && takes_input
+                && matches!(item_lead(signature).0, ItemLead::Visible)
+                && returns
+                    .split(|c: char| !(c.is_alphanumeric() || c == '_'))
+                    .any(|word| word == "CfgdConfig")
+        })
+        .map(|(name, ..)| name.clone())
+        .collect();
+    assert!(
+        !loaders.is_empty(),
+        "no `pub fn` under cfgd-core/src/config returns a `CfgdConfig`; the derivation read nothing"
+    );
+    for canary in ["load_config", "read_config_document", "parse_config"] {
+        assert!(
+            loaders.iter().any(|loader| loader == canary),
+            "the derived config loaders {loaders:?} miss `{canary}`, which reads a config \
+             document; the derivation lost a loader it must find"
+        );
+    }
+    loaders
+});
 
 /// Whether the CODE line `line`, with `next` below it, reads a config document
 /// from disk: a call to one of [`CONFIG_LOADERS`], or a `read_to_string` whose
