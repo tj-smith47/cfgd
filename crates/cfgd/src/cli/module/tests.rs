@@ -6799,7 +6799,7 @@ mod cmd_module_add_remote_local_bare {
         crate::cli::RunContext::for_test(&cli, &printer2, |run| {
             cmd_module_add_remote(run, &url, None, true, true)
         })
-        .expect("second add should noop, not error");
+        .expect("a second add of the same module is a no-op");
         drop(printer2);
 
         let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -7002,7 +7002,7 @@ mod cmd_module_add_remote_local_bare {
         let err = crate::cli::RunContext::for_test(&cli, &printer2, |run| {
             cmd_module_upgrade(run, "mymod", None, true, true)
         })
-        .expect_err("no published versions should error, not no-op");
+        .expect_err("a module with no published versions fails the add");
         let msg = err.to_string();
         assert!(
             msg.contains("No published versions") && msg.contains("mymod"),

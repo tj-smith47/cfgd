@@ -2530,7 +2530,7 @@ fn command_failure_reason_is_the_only_place_a_managers_stderr_becomes_a_message(
         ),
         (
             "sudo_refusal_hint(",
-            "a classifier inside command_failure_reason: matches sudo's refusal lines and renders a fixed hint, never the text",
+            "a classifier inside command_failure_reason: matches sudo's refusal lines and renders a fixed hint in place of the text",
         ),
     ];
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/packages");

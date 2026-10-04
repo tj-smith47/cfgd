@@ -335,8 +335,8 @@ fn attached_attestations(
 }
 
 /// The fallible half of [`pull_module`]: every step from the tag read
-/// through extraction runs under one `Result` the caller matches once, rather
-/// than an early `?` abandoning the spinner mid-pull. Answers the outcome and
+/// through extraction runs under one `Result` the caller matches once, so the
+/// spinner outlives any early `?`. Answers the outcome and
 /// the platform the pulled manifest is for, when it names one.
 fn pull_module_inner(
     agent: &ureq::Agent,
