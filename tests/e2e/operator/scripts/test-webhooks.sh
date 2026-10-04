@@ -222,7 +222,7 @@ echo "  Pod volumes: $DEBUG_VOLUMES"
 echo "  Container volumeMounts: $DEBUG_VMOUNTS"
 echo "  CSI driver: $DEBUG_CSI"
 
-# For Debug policy, the CSI volume should exist but NOT be mounted on containers
+# Under the Debug policy the CSI volume is on the pod and absent from every container's volumeMounts
 if echo "$DEBUG_CSI" | grep -qF "$CSI_DRIVER_NAME"; then
     if ! echo "$DEBUG_VMOUNTS" | grep -q "debug-mod"; then
         pass_test "OP-WH-03"

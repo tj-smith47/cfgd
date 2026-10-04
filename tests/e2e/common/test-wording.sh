@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
-# Checks the prose of every e2e script: no em dash anywhere on a line, and no
+# Checks the prose of every e2e script: no em dash anywhere on a line, no
 # first-person pronoun in a comment or in a quoted string of a begin_test,
-# pass_test, fail_test, skip_test, echo, printf or log line. The quoted
+# pass_test, fail_test, skip_test, echo, printf or log line, and no contrast
+# frame in a comment. The frames are the Contrast frames section of
+# .claude/scripts/commit-wording.txt, the list commit messages are held to, and
+# a run of whole-line comments is read as one text, so a frame broken across
+# lines is found. The quoted
 # arguments of an assert_* call are exempt, because they are CLI output the
 # case asserts verbatim; a comment after them is still read. Any other line
 # that has to hold such text carries `# wording-ok: <why>`, and the scan prints
@@ -16,9 +20,12 @@ here="$(cd "$(dirname "$0")" && pwd)"
 source "$here/census.sh"
 e2e_root="$(dirname "$here")"
 fixtures="$here/fixtures/wording"
+wording_list="$(dirname "$(dirname "$e2e_root")")/.claude/scripts/commit-wording.txt"
 scratch="$(mktemp -d)"
 trap 'rm -rf "$scratch"' EXIT
 failures=0
+frames="$scratch/contrast-frames"
+awk '/^# Contrast frames/ { on = 1; next } on && /^[[:space:]]*$/ { exit } on && !/^#/' "$wording_list" > "$frames"
 
 pass() { echo "PASS  $1"; }
 fail() {
@@ -44,9 +51,28 @@ scan_wording() {
     fi
     : > "$read"
     # shellcheck disable=SC2016  # the single-quoted text is an awk program
-    tr '\n' '\0' < "$list" | xargs -0 awk -v readlog="$read" '
-        FNR == 1 { files++; print FILENAME > readlog }
+    tr '\n' '\0' < "$list" | xargs -0 awk -v readlog="$read" -v framelist="$frames" '
+        BEGIN { while ((getline f < framelist) > 0) frame[++nframes] = f }
+        FNR == 1 { frame_flush(); files++; print FILENAME > readlog }
         function flag(what) { print "WORDING " FILENAME ":" FNR " " what; bad = 1 }
+        # A contrast frame in the comment text gathered since the last flush,
+        # reported at the line its match starts on. fo[n] is the offset in
+        # fbuf where the text of line fl[n] starts.
+        function frame_flush(   t, k, n) {
+            t = tolower(fbuf)
+            for (k = 1; fbuf != "" && k <= nframes; k++)
+                if (match(t, frame[k])) {
+                    for (n = nlines; n > 1 && fo[n] > RSTART; n--) ;
+                    print "WORDING " ffile ":" fl[n] " contrast frame"; bad = 1
+                }
+            fbuf = ""; nlines = 0
+        }
+        function frame_add(text) {
+            gsub(/[[:space:]]+/, " ", text); sub(/^ /, "", text); sub(/ $/, "", text)
+            if (fbuf == "") ffile = FILENAME
+            fl[++nlines] = FNR; fo[nlines] = length(fbuf) + 1
+            fbuf = fbuf " " text
+        }
         function first_person(text) {
             return text ~ /(^|[^A-Za-z0-9_-])([Ww]e|I)([^A-Za-z0-9_\/]|$)/
         }
@@ -64,9 +90,11 @@ scan_wording() {
             }
             # U+2014 spelled as its UTF-8 bytes, so this line holds none.
             if (index(line, "\342\200\224")) flag("prose em dash")
-            if (line ~ /^#!/) next
+            if (line ~ /^#!/) { frame_flush(); next }
             comment = ""
             if (match(line, /(^|[[:space:]])#/)) comment = substr(line, RSTART + RLENGTH)
+            if (line ~ /^[[:space:]]*#/) frame_add(comment)
+            else { frame_flush(); if (comment != "") { frame_add(comment); frame_flush() } }
             if (first_person(comment)) { flag("first-person word in a comment"); next }
             code = substr(line, 1, length(line) - length(comment))
             if (code !~ /(^|[;&|(])[[:space:]]*((if|then|else|do|!)[[:space:]]+)*(begin_test|pass_test|fail_test|skip_test|echo|printf|log)([[:space:]]|$)/) next
@@ -75,7 +103,7 @@ scan_wording() {
                 code = substr(code, RSTART + RLENGTH)
             }
         }
-        END { print "scanned " files + 0; exit bad }
+        END { frame_flush(); print "scanned " files + 0; exit bad }
     ' || rc=1
     census_unread scan_wording "$list" "$read" || rc=1
     return "$rc"
@@ -108,6 +136,12 @@ probe() {
     esac
 }
 
+if [ -s "$frames" ]; then
+    pass "the contrast frames read from commit-wording.txt ($(wc -l < "$frames" | tr -d ' ') patterns)"
+else
+    fail "no contrast frame was read from $wording_list"
+fi
+
 # The fixtures sit under common/fixtures/, which the scan skips, so each one
 # is copied to a scratch tree first.
 probe dash-comment fail "an em dash in a comment fails" '^WORDING .*/suite\.sh:2 prose em dash$'
@@ -115,6 +149,11 @@ probe dash-title fail "an em dash in a begin_test title fails" '^WORDING .*/suit
 probe dash-message fail "an em dash in a fail_test message fails" '^WORDING .*/suite\.sh:2 prose em dash$'
 probe we-comment fail "\"we\" in a comment fails" '^WORDING .*/suite\.sh:2 first-person word in a comment$'
 probe i-message fail "\"I\" in an echo message fails" '^WORDING .*/suite\.sh:2 first-person word in a message$'
+
+probe frame-rather-than fail "\"rather than\" in a comment fails" '^WORDING .*/suite\.sh:2 contrast frame$'
+probe frame-instead-of fail "\"instead of\" in a trailing comment fails" '^WORDING .*/suite\.sh:2 contrast frame$'
+probe frame-comma-not fail "a \", not\" frame broken across two comment lines fails at the first" '^WORDING .*/suite\.sh:2 contrast frame$'
+probe frame-hatched pass "a contrast frame on a line carrying a wording-ok hatch passes"
 
 # The census: each way a listed script can fail to reach awk fails the scan.
 # find and awk are stubbed through PATH, so each failure is the one named.
@@ -145,7 +184,7 @@ probe clean pass "assert_* arguments, -I flags, I/O, words holding we or I and a
 real="$(scan_wording "$e2e_root" 2>&1)" && rc=0 || rc=$?
 scanned="$(sed -n 's/^scanned //p' <<<"$real")"
 if [ "$rc" -eq 0 ] && [ "${scanned:-0}" -ge 60 ]; then
-    pass "no e2e script has a prose em dash or a first-person word ($scanned scripts)"
+    pass "no e2e script has a prose em dash, a first-person word or a contrast frame in a comment ($scanned scripts)"
     grep '^HATCH ' <<<"$real" | sed 's/^/    /' || true
 else
     fail "e2e prose (rc=$rc, ${scanned:-0} scripts scanned):"

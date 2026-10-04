@@ -945,7 +945,7 @@ wait_for_deployment cfgd-system cfgd-server 120
 # --- Step 10: Reset gateway DB for clean E2E state ---
 # Call the admin reset endpoint to wipe stale device/event data from prior runs.
 # This is safe: the endpoint is behind admin auth and only deletes data rows,
-# not the SQLite file (avoids Longhorn volume corruption from rm -f on live DB).
+# leaving the SQLite file in place (an rm -f on the live DB corrupts its Longhorn volume).
 GW_API_KEY=$(kubectl get deployment cfgd-server -n cfgd-system \
     -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="CFGD_API_KEY")].value}' 2>/dev/null || echo "")
 if [ -n "$GW_API_KEY" ]; then
@@ -966,8 +966,8 @@ fi
 # --- Step 11: Record last-green SHA per image ---
 # Reached only after every prior step succeeded (set -e). Persisting HEAD as the
 # last-green SHA here is what lets the NEXT run's image_decision skip unchanged
-# images. Best-effort writes: a ConfigMap write failure just forces a rebuild
-# next run, never a stale skip.
+# images. Best-effort writes: a ConfigMap write failure only forces a rebuild
+# on the next run, and cannot cause a stale skip.
 if [ -n "$GIT_SHA" ]; then
     echo "Recording last-green SHA ($GIT_SHA) for branch $E2E_BRANCH..."
     for img in cfgd cfgd-operator cfgd-csi function-cfgd; do

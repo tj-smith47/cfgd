@@ -124,7 +124,7 @@ else
                 GW04_PASS=false
             fi
         elif [ "$GW04_CHALLENGE_CODE" = "400" ]; then
-            # Server may be in token mode, not key mode
+            # A 400 means the server runs in token mode and refuses key enrollment
             echo "  Body: $GW04_CHALLENGE_BODY"
             echo "  Server correctly rejects key enrollment in token mode"
             pass_test "GW-04"

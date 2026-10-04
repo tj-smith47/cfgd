@@ -8,7 +8,7 @@ source "$SCRIPT_DIR/../../common/scratch-home.sh"
 source "$SCRIPT_DIR/setup-node-env.sh"
 trap 'cleanup_e2e' EXIT
 
-# Domain files are sourced, not executed
+# Domain files are sourced into this shell, which holds the helpers and the EXIT trap
 source "$SCRIPT_DIR/test-apply.sh"
 source "$SCRIPT_DIR/test-init.sh"
 source "$SCRIPT_DIR/test-sysctl.sh"

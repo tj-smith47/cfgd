@@ -1336,7 +1336,7 @@ assert_exit_code() {
 # Whether cfgd would find brew here, asking the same three questions
 # brew_available() asks in crates/cfgd/src/packages/shared/mod.rs: the
 # CFGD_BREW_BIN seam, then PATH, then the prefixes the installer uses. A brew
-# that is installed but not exported still counts, so `command -v brew` alone
+# that is installed and missing from PATH still counts, so `command -v brew` alone
 # answers this wrong.
 cfgd_finds_brew() {
     if [ -n "${CFGD_BREW_BIN:-}" ]; then

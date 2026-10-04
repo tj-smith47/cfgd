@@ -179,8 +179,8 @@ else fail_test "BK17"; fi
 
 begin_test "BK18: rollback --yes puts the sidecar copy back over the source"
 # Read both sides first: the rollback swaps them, and BK19 asserts the swap
-# back, so the expectations come from the machine rather than from a literal
-# an earlier cell happened to write.
+# back, so the expectations come from the files on the machine; a literal
+# would hold whatever an earlier cell happened to write.
 RB_COPY=$(cat "$BK_SRC.cfgd-backup")
 RB_DISPLACED=$(cat "$BK_SRC")
 SNAP_COUNT_BEFORE=$(snap_count)

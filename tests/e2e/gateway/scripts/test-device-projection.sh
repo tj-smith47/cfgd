@@ -66,8 +66,8 @@ command -v pgrep > /dev/null 2>&1 && DP_PGREP=present
 # would flip it), so the pid question comes first and the path question only
 # widens it.
 #
-# Returns 2, never 1, when pgrep cannot answer at all: a caller must not read
-# "not installed" as "gone".
+# Returns 2 when pgrep cannot answer at all, and 1 only for a daemon that is
+# gone: a caller must not read "not installed" as "gone".
 dp_daemon_alive() {
     if [ -n "$DP_DAEMON_PID" ] && kill -0 "$DP_DAEMON_PID" 2> /dev/null; then
         return 0

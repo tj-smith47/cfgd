@@ -306,7 +306,7 @@ ERR04_OUTPUT=$(exec_in_pod su -s /bin/sh nobody -c \
     "cfgd --config /etc/cfgd/cfgd.yaml apply --yes --no-color 2>&1" || true)
 echo "  Non-root apply output (first 10 lines):"
 echo "$ERR04_OUTPUT" | head -10 | sed 's/^/    /'
-# Should fail or report errors (permission denied on sysctl, etc.), not crash
+# A non-root apply reports the permission errors it hits (sysctl, for one) and exits without a panic
 if echo "$ERR04_OUTPUT" | grep -qi "permission\|denied\|error\|failed\|cannot"; then
     pass_test "BIN-ERR-04"
 else

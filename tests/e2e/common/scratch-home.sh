@@ -21,7 +21,7 @@ E2E_REAL_CONFIG_DIR="${E2E_REAL_CONFIG_DIR:-$E2E_REAL_XDG_CONFIG_HOME/cfgd}"
 export E2E_REAL_HOME E2E_REAL_XDG_CONFIG_HOME E2E_REAL_CONFIG_DIR
 
 # What the suites genuinely read out of the real home, passed through one tool
-# seam at a time rather than by inheriting the whole home. Each is set only when
+# directory at a time, so no suite inherits the whole home. Each is set only when
 # the caller has not already chosen one.
 export CARGO_HOME="${CARGO_HOME:-$E2E_REAL_HOME/.cargo}"
 export RUSTUP_HOME="${RUSTUP_HOME:-$E2E_REAL_HOME/.rustup}"
@@ -57,7 +57,7 @@ export XDG_STATE_HOME="$E2E_SCRATCH_HOME/.local/state"
 export XDG_DATA_HOME="$E2E_SCRATCH_HOME/.local/share"
 export XDG_CACHE_HOME="$E2E_SCRATCH_HOME/.cache"
 
-# Asserted, not assumed: every guard below reads $HOME, so a redirect that
+# The redirect is asserted: every guard below reads $HOME, so a redirect that
 # silently did not happen would check the real home against itself and pass.
 case "$HOME" in
     "$CLI_SCRATCH"/*) ;;
@@ -83,11 +83,10 @@ fi
 # would abort it before the two `git` lines ran, leaving a shorter digest that
 # still compares equal to itself and a guard weaker than it reads.
 #
-# `cksum` rather than a `find -printf` format: the CLI suite also runs on macOS,
+# The digest is `cksum` over the content: the CLI suite also runs on macOS,
 # whose find has no -printf, and content is what a clobber changes. `.git` is
-# walked as HEAD plus the porcelain status instead of byte-for-byte, because
-# reading the status refreshes the index's stat cache and would move a
-# byte-for-byte digest on its own.
+# read as HEAD plus the porcelain status, because reading the status refreshes
+# the index's stat cache and would move a byte-for-byte digest on its own.
 e2e_real_config_fingerprint() {
     if [ ! -e "$E2E_REAL_CONFIG_DIR" ] && [ ! -L "$E2E_REAL_CONFIG_DIR" ]; then
         printf 'absent\n'
