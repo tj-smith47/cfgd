@@ -349,6 +349,11 @@ ensure_namespace "$CSI05_NS"
 CSI05_LABELLED=true
 ensure_label namespace "$CSI05_NS" cfgd.io/inject-modules=true --overwrite || CSI05_LABELLED=false
 
+# The injector skips a module it cannot resolve, so the namespace is probed
+# with the FS-CSI-01 module: once that one injects, the API server's
+# namespace cache has the label and the pod below reaches the webhook.
+! $CSI05_LABELLED || wait_for_injection "$CSI05_NS" "csi-test-mod-${E2E_RUN_ID}:v1.0" || true
+
 # Reference a module that does not exist
 kubectl apply -n "$CSI05_NS" -f - <<EOF
 apiVersion: v1
