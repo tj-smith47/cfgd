@@ -518,7 +518,7 @@ stop_background_job() {
 # run of a pod carrying the annotation in the namespace comes back with a
 # $CSI_DRIVER_NAME volume. INJECTION_PROBE keeps what the dry run returned.
 _injects_csi() {
-    INJECTION_PROBE=$(kubectl create --dry-run=server -n "$1" \
+    INJECTION_PROBE="$(kubectl create --dry-run=server -n "$1" \
         -o jsonpath='{.spec.volumes[*].csi.driver}' -f - 2>&1 <<EOF
 apiVersion: v1
 kind: Pod
@@ -532,7 +532,7 @@ spec:
     - name: probe
       image: busybox:1.36
 EOF
-) || return 1
+)" || return 1
     [[ " $INJECTION_PROBE " == *" $CSI_DRIVER_NAME "* ]]
 }
 

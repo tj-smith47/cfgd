@@ -1315,9 +1315,10 @@ scan_run_labels() {
         { file = $2 }
         pass < 4 && $1 == "CLOSE" {
             # A quote open at the end of the line that opens a heredoc
-            # closes on its terminator line, as in a bash -c string holding
-            # the heredoc.
-            if (inq != "" || cq != "") { inq = ""; cq = ""; check_command() }
+            # closes on its terminator line when that line carries it, as in
+            # a bash -c string holding the heredoc. A "$( capture stays open
+            # until the )" on a later line.
+            if ((inq != "" && index($5, inq)) || (cq != "" && index($5, cq))) { inq = ""; cq = ""; check_command() }
             next
         }
         pass < 4 && $1 == "SH" {
@@ -1586,6 +1587,10 @@ spec:
 plant exec-apply "exec_in_pod kubectl apply -f - <<EOF" "$module_unlabelled"
 plant wrapper-other-file "apply_stdin \"T01\" <<EOF" "$module_unlabelled"
 plant captured "RESULT=\$(kubectl apply -f - 2>&1 <<EOF || true" "$module_unlabelled" "EOF"$'\n'")"
+# The capture quoted, in a function: the "$( stays open across the body and
+# the )" after the terminator closes it. The scan reads no command inside a
+# "...", so it reports the capture it cannot follow.
+plant captured-quoted "cq_f() {"$'\n'"    RESULT=\"\$(kubectl apply -f - 2>&1 <<EOF" "$module_unlabelled" "EOF"$'\n'"    )\" || return 1"$'\n'"}"
 plant continued "kubectl apply -n \"\$E2E_NAMESPACE\" \\"$'\n'"    -f - <<EOF" "$module_unlabelled"
 plant dash "kubectl apply -f - <<-EOF" $'\t'"${module_unlabelled//$'\n'/$'\n\t'}" $'\tEOF'
 plant captured-operator-kind "yaml=\$(cat <<EOF" 'apiVersion: cfgd.io/v1alpha1
@@ -2321,6 +2326,7 @@ CAPTURED captured-operator-kind.sh:2
 FILEDOC captured-other-kind.sh:1
 SITE captured.sh:1
 UNLABELLED captured.sh:2
+CAPTURED captured-quoted.sh:3
 CAPTURED captured-tag-kind.sh:2
 FILEDOC captured-to-file.sh:1
 UNPARSED captured-unparsed.sh:1

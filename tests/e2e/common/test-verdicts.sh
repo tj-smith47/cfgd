@@ -444,6 +444,17 @@ x: 1
 EOF
 )
 FIXTURE
+cat > "$reader/captured-quoted.sh" <<'FIXTURE'
+r="$(kubectl apply -f - 2>&1 <<EOF
+x: 1
+EOF
+)" || echo "failed"
+echo next
+FIXTURE
+cat > "$reader/captured-open-quote.sh" <<'FIXTURE'
+u="$(jq -r '.a
+    | .b' <<<"$d")" || true
+FIXTURE
 printf '# usage: f <<EOF\ntrue # feed <<EOF\n' > "$reader/comment.sh"
 printf 'echo "usage: cat <<EOF"\n' > "$reader/double-quoted.sh"
 cat > "$reader/arithmetic.sh" <<'FIXTURE'
@@ -464,6 +475,20 @@ CMD | backslash.sh | 1 | cat <<\EOF
 OPEN | backslash.sh | 1 | 1 | EOF | 1 | 0 | cat <<\EOF
 BODY | backslash.sh | 2 | 1 | $x
 CLOSE | backslash.sh | 3 | 1
+FILE | captured-open-quote.sh
+SH | captured-open-quote.sh | 1 | u="$(jq -r '.a
+CMD | captured-open-quote.sh | 1 | u="$(jq -r '.a
+SH | captured-open-quote.sh | 2 |     | .b' <<<"$d")" || true
+CMD | captured-open-quote.sh | 2 |     | .b' <<<"$d")" || true
+FILE | captured-quoted.sh
+SH | captured-quoted.sh | 1 | r="$(kubectl apply -f - 2>&1 <<EOF
+OPEN | captured-quoted.sh | 1 | 1 | EOF | 0 | 0 | r="$(kubectl apply -f - 2>&1 <<EOF
+BODY | captured-quoted.sh | 2 | 1 | x: 1
+CLOSE | captured-quoted.sh | 3 | 1
+SH | captured-quoted.sh | 4 | )" || echo "failed"
+CMD | captured-quoted.sh | 1 | r="$(kubectl apply -f - 2>&1 <<EOF )" || echo
+SH | captured-quoted.sh | 5 | echo next
+CMD | captured-quoted.sh | 5 | echo next
 FILE | captured.sh
 SH | captured.sh | 1 | r=$(kubectl apply -f - 2>&1 <<EOF || true
 CMD | captured.sh | 1 | r=$(kubectl apply -f - 2>&1 <<EOF || true
@@ -532,17 +557,17 @@ SH | terminator-suffix.sh | 1 | bash -c 'cat <<A
 CMD | terminator-suffix.sh | 1 | bash -c 'cat <<A
 OPEN | terminator-suffix.sh | 1 | 1 | A | 0 | 0 | bash -c 'cat <<A
 BODY | terminator-suffix.sh | 2 | 1 | x
-CLOSE | terminator-suffix.sh | 3 | 1
+CLOSE | terminator-suffix.sh | 3 | 1 | '
 SH | terminator-suffix.sh | 4 | bash -c "cat <<B
 CMD | terminator-suffix.sh | 4 | bash -c "cat <<B
 OPEN | terminator-suffix.sh | 4 | 2 | B | 0 | 0 | bash -c "cat <<B
 BODY | terminator-suffix.sh | 5 | 2 | x
-CLOSE | terminator-suffix.sh | 6 | 2
+CLOSE | terminator-suffix.sh | 6 | 2 | "
 SH | terminator-suffix.sh | 7 | v=$(cat <<C
 CMD | terminator-suffix.sh | 7 | v=$(cat <<C
 OPEN | terminator-suffix.sh | 7 | 3 | C | 0 | 0 | v=$(cat <<C
 BODY | terminator-suffix.sh | 8 | 3 | x
-CLOSE | terminator-suffix.sh | 9 | 3
+CLOSE | terminator-suffix.sh | 9 | 3 | )
 FILE | unclosed.sh
 SH | unclosed.sh | 1 | cat <<DOC
 CMD | unclosed.sh | 1 | cat <<DOC
@@ -553,7 +578,7 @@ WANT
 )"
 got_records="$(cd "$reader" && awk -f "$here/heredocs.awk" ./*.sh 2>&1 | sed 's|\./||; s|\t| \| |g')"
 if [ "$got_records" = "$want_records" ]; then
-    pass "heredocs.awk reads paired, tab-stripped, backslash, quoted, unclosed, indented-terminator, continued, captured, digit and quote- or paren-closed heredocs, and opens none for a here-string, a comment, a double-quoted string or an arithmetic shift; each command outside a body is printed once, at its first line"
+    pass "heredocs.awk reads paired, tab-stripped, backslash, quoted, unclosed, indented-terminator, continued, captured, digit and quote- or paren-closed heredocs, a quoted capture carried across its body to the line that closes it and one left open inside a quote read line by line, and opens none for a here-string, a comment, a double-quoted string or an arithmetic shift; each command outside a body is printed once, at its first line"
 else
     fail "heredocs.awk printed records that differ (< want, > got):"
     diff <(printf '%s\n' "$want_records") <(printf '%s\n' "$got_records") | grep '^[<>]' | sed 's/^/    /' || true
