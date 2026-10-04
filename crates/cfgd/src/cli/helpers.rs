@@ -402,23 +402,12 @@ pub(in crate::cli) fn drain_config_deprecations(printer: &Printer, cfg: &mut Cfg
     cfg.drain_deprecations(printer);
 }
 
-pub(in crate::cli) fn load_config_and_profile(
-    cli: &Cli,
-    printer: &Printer,
-) -> anyhow::Result<(CfgdConfig, String, ResolvedProfile)> {
-    let mut cfg = config::load_config(&cli.config)?;
-    drain_config_deprecations(printer, &mut cfg);
-    let (profile_name, resolved) = resolve_profile_for(cli, &cfg)?;
-    Ok((cfg, profile_name, resolved))
-}
-
 /// The profile in force for `cli` against an already-parsed `cfg`: the explicit
 /// `--profile`, else the config's active profile, resolved through the profiles
 /// directory with the source-delivered-profile decoration on a miss.
 ///
-/// The resolution half of [`load_config_and_profile`], factored out so the
-/// run-scoped [`RunContext::config_and_profile`] answers the same question the
-/// same way instead of restating the rule beside it.
+/// [`RunContext::config_and_profile`] resolves through here, so every surface
+/// answering "which profile is in force" applies the same rule.
 pub(in crate::cli) fn resolve_profile_for(
     cli: &Cli,
     cfg: &CfgdConfig,
@@ -1433,10 +1422,11 @@ pub(in crate::cli) fn no_config_error(_printer: &Printer, config_path: &Path) ->
 
 /// Resolve profile name from explicit name or default to active profile.
 pub(in crate::cli) fn resolve_profile_name(
-    cli: &Cli,
-    printer: &Printer,
+    run: &RunContext<'_>,
     name: Option<&str>,
 ) -> anyhow::Result<String> {
+    let cli = run.cli();
+    let printer = run.printer();
     if let Some(n) = name {
         return Ok(n.to_string());
     }
@@ -1445,8 +1435,7 @@ pub(in crate::cli) fn resolve_profile_name(
     if !config_path.exists() {
         return Err(no_config_error(printer, config_path));
     }
-    let mut cfg = config::load_config(config_path)?;
-    drain_config_deprecations(printer, &mut cfg);
+    let cfg = run.config()?;
     if let Some(ref profile_override) = cli.profile {
         Ok(profile_override.clone())
     } else {

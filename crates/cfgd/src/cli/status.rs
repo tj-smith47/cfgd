@@ -5581,12 +5581,9 @@ mod tests {
             .clone();
         let config_row = format!("Config {}", cfgd_core::to_posix_string(&cli.config));
         let created = render(&|p| {
-            crate::cli::module::cmd_module_create(
-                &cli,
-                p,
-                &crate::cli::startup::StartupDocument::load(&cli.config),
-                &header_module_create_args(),
-            )
+            crate::cli::RunContext::for_test(&cli, p, |run| {
+                crate::cli::module::cmd_module_create(run, &header_module_create_args())
+            })
             .unwrap();
         });
         let diff_isolate = render(&|p| {
@@ -7394,7 +7391,7 @@ mod tests {
     }
 
     // Minimal config + default profile YAML used by every test that exercises
-    // the load_config_and_profile path. The active profile must materialize as
+    // `RunContext::config_and_profile`. The active profile must materialize as
     // a profile file under `profiles/` for resolve_profile to succeed.
     const CONFIG_YAML: &str = "apiVersion: cfgd.io/v1alpha1\n\
                                kind: Config\n\

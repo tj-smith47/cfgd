@@ -72,7 +72,7 @@ fn profile_list_happy_human() {
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc();
 
-    cmd_profile_list(&cli, &printer).unwrap();
+    cfgd::cli::RunContext::for_test(&cli, &printer, cmd_profile_list).unwrap();
     drop(printer);
 
     let stripped = strip_ansi(&cap.human());
@@ -109,7 +109,7 @@ fn profile_list_empty_human() {
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc();
 
-    cmd_profile_list(&cli, &printer).unwrap();
+    cfgd::cli::RunContext::for_test(&cli, &printer, cmd_profile_list).unwrap();
     drop(printer);
 
     let stripped = strip_ansi(&cap.human());

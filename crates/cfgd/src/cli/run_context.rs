@@ -138,8 +138,7 @@ impl<'a> RunContext<'a> {
     }
 
     /// The run's config, the name of the profile in force, and that profile's
-    /// resolution — the reference-returning form of
-    /// [`super::helpers::load_config_and_profile`], resolved at most once.
+    /// resolution, resolved at most once per run.
     pub(in crate::cli) fn config_and_profile(
         &self,
     ) -> anyhow::Result<(&CfgdConfig, &str, &ResolvedProfile)> {

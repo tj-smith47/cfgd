@@ -1,13 +1,14 @@
 use super::*;
 use cfgd_core::PathDisplayExt;
-use cfgd_core::output::{Doc, Printer, Role, TitleLabel};
+use cfgd_core::output::{Doc, Role, TitleLabel};
 
 pub fn cmd_profile_update(
-    cli: &Cli,
-    printer: &Printer,
+    run: &RunContext<'_>,
     name: &str,
     args: &ProfileUpdateArgs,
 ) -> anyhow::Result<()> {
+    let cli = run.cli();
+    let printer = run.printer();
     let (add_inherits, remove_inherits) = cfgd_core::split_add_remove(&args.inherits);
     let (add_modules, remove_modules) = cfgd_core::split_add_remove(&args.modules);
     let (add_packages, remove_packages) = cfgd_core::split_add_remove(&args.packages);
@@ -76,13 +77,13 @@ pub fn cmd_profile_update(
             // Remote git URL — fetch, lock, and add to profile
             // Save profile first with current changes, then delegate to remote add
             crate::cli::helpers::rewrite_user_yaml(&profile_path, &doc)?;
-            module::cmd_module_add_remote(cli, printer, m, None, args.yes, args.allow_unsigned)?;
+            module::cmd_module_add_remote(run, m, None, args.yes, args.allow_unsigned)?;
             // Reload profile (remote add may have modified it)
             doc = config::load_profile(&profile_path)?;
             changes += 1;
         } else if modules::is_registry_ref(m) {
             crate::cli::helpers::rewrite_user_yaml(&profile_path, &doc)?;
-            module::cmd_module_add_from_registry(cli, printer, m, args.yes, args.allow_unsigned)?;
+            module::cmd_module_add_from_registry(run, m, args.yes, args.allow_unsigned)?;
             doc = config::load_profile(&profile_path)?;
             changes += 1;
         } else {

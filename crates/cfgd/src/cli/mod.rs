@@ -3387,25 +3387,24 @@ pub fn execute(
                 resolved,
                 show_values,
             } => profile::cmd_profile_show(
-                cli,
-                printer,
+                &run,
                 name.as_deref(),
                 *resolved,
                 InventoryDetail::of(env_value_masking(printer, *show_values), false, false),
             ),
-            ProfileCommand::List => profile::cmd_profile_list(cli, printer),
+            ProfileCommand::List => profile::cmd_profile_list(&run),
             ProfileCommand::Switch { name } => profile::cmd_profile_switch(cli, name, printer),
             ProfileCommand::Create(args) => profile::cmd_profile_create(cli, printer, args),
             ProfileCommand::Update(args) => {
-                let profile_name = resolve_profile_name(cli, printer, args.name.as_deref())?;
-                profile::cmd_profile_update(cli, printer, &profile_name, args)
+                let profile_name = resolve_profile_name(&run, args.name.as_deref())?;
+                profile::cmd_profile_update(&run, &profile_name, args)
             }
             ProfileCommand::Edit { name } => profile::cmd_profile_edit(cli, printer, name),
             ProfileCommand::Delete {
                 name,
                 yes,
                 ignore_not_found,
-            } => profile::cmd_profile_delete(cli, printer, name, *yes, *ignore_not_found),
+            } => profile::cmd_profile_delete(&run, name, *yes, *ignore_not_found),
             ProfileCommand::Validate { source } => validate::cmd_profile_validate(printer, source),
             ProfileCommand::Migrate {
                 name,
@@ -3452,7 +3451,7 @@ pub fn execute(
             },
         ),
         Command::Module { command } => match command {
-            ModuleCommand::List => module::cmd_module_list(cli, printer),
+            ModuleCommand::List => module::cmd_module_list(&run),
             ModuleCommand::Show {
                 name,
                 resolved,
@@ -3471,7 +3470,7 @@ pub fn execute(
                 ),
                 *resolved,
             ),
-            ModuleCommand::Create(args) => module::cmd_module_create(cli, printer, startup, args),
+            ModuleCommand::Create(args) => module::cmd_module_create(&run, args),
             ModuleCommand::Update(args) => module::cmd_module_update_local(cli, printer, args),
             ModuleCommand::Edit { name } => module::cmd_module_edit(cli, printer, name),
             ModuleCommand::Delete {
@@ -3485,15 +3484,8 @@ pub fn execute(
                 ref_,
                 yes,
                 allow_unsigned,
-            } => module::cmd_module_upgrade(
-                cli,
-                printer,
-                name,
-                ref_.as_deref(),
-                *yes,
-                *allow_unsigned,
-            ),
-            ModuleCommand::Search { query } => module::cmd_module_search(cli, printer, query),
+            } => module::cmd_module_upgrade(&run, name, ref_.as_deref(), *yes, *allow_unsigned),
+            ModuleCommand::Search { query } => module::cmd_module_search(&run, query),
             ModuleCommand::Registry { command } => match command {
                 ModuleRegistryCommand::Add { url, name } => {
                     module::cmd_module_registry_add(cli, printer, url, name.as_deref())
@@ -3503,9 +3495,9 @@ pub fn execute(
                     ignore_not_found,
                 } => module::cmd_module_registry_remove(cli, printer, name, *ignore_not_found),
                 ModuleRegistryCommand::Rename { name, new_name } => {
-                    module::cmd_module_registry_rename(cli, printer, name, new_name)
+                    module::cmd_module_registry_rename(&run, name, new_name)
                 }
-                ModuleRegistryCommand::List => module::cmd_module_registry_list(cli, printer),
+                ModuleRegistryCommand::List => module::cmd_module_registry_list(&run),
             },
             ModuleCommand::Export {
                 name,

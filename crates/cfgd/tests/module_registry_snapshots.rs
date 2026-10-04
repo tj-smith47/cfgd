@@ -246,7 +246,10 @@ fn module_registry_rename_happy_human() {
     module::cmd_module_registry_add(&cli, &v2a, "https://example.com/r.git", Some("old")).unwrap();
 
     let (printer, cap) = Printer::for_test_doc();
-    module::cmd_module_registry_rename(&cli, &printer, "old", "fresh").unwrap();
+    cfgd::cli::RunContext::for_test(&cli, &printer, |run| {
+        module::cmd_module_registry_rename(run, "old", "fresh")
+    })
+    .unwrap();
     drop(printer);
 
     let stripped = normalize(&strip_ansi(&cap.human()), config_dir.path());
@@ -274,7 +277,7 @@ fn module_registry_list_empty_human() {
     let (printer, cap) = Printer::for_test_doc();
     let printer = printer.with_hints_enabled(true);
 
-    module::cmd_module_registry_list(&cli, &printer).unwrap();
+    cfgd::cli::RunContext::for_test(&cli, &printer, module::cmd_module_registry_list).unwrap();
     drop(printer);
 
     let stripped = normalize(&strip_ansi(&cap.human()), config_dir.path());
@@ -299,7 +302,7 @@ fn module_registry_list_with_entries_human() {
     module::cmd_module_registry_add(&cli, &v2a, "https://example.com/b.git", Some("beta")).unwrap();
 
     let (printer, cap) = Printer::for_test_doc();
-    module::cmd_module_registry_list(&cli, &printer).unwrap();
+    cfgd::cli::RunContext::for_test(&cli, &printer, module::cmd_module_registry_list).unwrap();
     drop(printer);
 
     let stripped = normalize(&strip_ansi(&cap.human()), config_dir.path());
@@ -337,7 +340,10 @@ fn module_add_bridge_one_blank_line() {
     let (printer, cap) =
         Printer::for_test_doc_with_prompt_responses(vec![PromptAnswer::Confirm(true)]);
     let printer = printer.with_hints_enabled(true);
-    module::cmd_module_add_remote(&cli, &printer, &url, None, true, true).unwrap();
+    cfgd::cli::RunContext::for_test(&cli, &printer, |run| {
+        module::cmd_module_add_remote(run, &url, None, true, true)
+    })
+    .unwrap();
     drop(printer);
 
     let combined = cap.human();
@@ -387,7 +393,10 @@ fn module_add_happy_json() {
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) =
         Printer::for_test_doc_with_prompt_responses(vec![PromptAnswer::Confirm(true)]);
-    module::cmd_module_add_remote(&cli, &printer, &url, None, true, true).unwrap();
+    cfgd::cli::RunContext::for_test(&cli, &printer, |run| {
+        module::cmd_module_add_remote(run, &url, None, true, true)
+    })
+    .unwrap();
     drop(printer);
 
     let json = cap.json().expect("doc captured json");
@@ -416,7 +425,10 @@ fn module_add_fetch_settle_line_nests_under_the_fetch_section_header() {
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) =
         Printer::for_test_doc_with_prompt_responses(vec![PromptAnswer::Confirm(true)]);
-    module::cmd_module_add_remote(&cli, &printer, &url, None, true, true).unwrap();
+    cfgd::cli::RunContext::for_test(&cli, &printer, |run| {
+        module::cmd_module_add_remote(run, &url, None, true, true)
+    })
+    .unwrap();
     drop(printer);
 
     let human = strip_ansi(&cap.human());
@@ -452,7 +464,10 @@ fn module_add_from_registry_bridge_one_blank_line() {
     let (printer, cap) =
         Printer::for_test_doc_with_prompt_responses(vec![PromptAnswer::Confirm(true)]);
     let printer = printer.with_hints_enabled(true);
-    module::cmd_module_add_from_registry(&cli, &printer, "myreg/alpha@v1.0.0", true, true).unwrap();
+    cfgd::cli::RunContext::for_test(&cli, &printer, |run| {
+        module::cmd_module_add_from_registry(run, "myreg/alpha@v1.0.0", true, true)
+    })
+    .unwrap();
     drop(printer);
 
     let combined = cap.human();
@@ -495,7 +510,10 @@ fn module_search_no_registries_human() {
     let (printer, cap) = Printer::for_test_doc();
     let printer = printer.with_hints_enabled(true);
 
-    module::cmd_module_search(&cli, &printer, "anything").unwrap();
+    cfgd::cli::RunContext::for_test(&cli, &printer, |run| {
+        module::cmd_module_search(run, "anything")
+    })
+    .unwrap();
     drop(printer);
 
     let stripped = normalize(&strip_ansi(&cap.human()), config_dir.path());
@@ -529,7 +547,10 @@ fn module_search_happy_json() {
 
     let cli = cli_for(config_dir.path(), config_dir.path());
     let (printer, cap) = Printer::for_test_doc();
-    module::cmd_module_search(&cli, &printer, "alpha").unwrap();
+    cfgd::cli::RunContext::for_test(&cli, &printer, |run| {
+        module::cmd_module_search(run, "alpha")
+    })
+    .unwrap();
     drop(printer);
 
     let json = cap.json().expect("doc captured json");

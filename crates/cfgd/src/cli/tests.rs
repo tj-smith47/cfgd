@@ -4126,7 +4126,7 @@ fn test_printer_capture() -> (cfgd_core::output::Printer, Arc<Mutex<String>>) {
 }
 
 /// Extract JSON object or array from captured output that may contain
-/// preamble text (e.g. key_value lines from load_config_and_profile).
+/// preamble text (e.g. a deprecation notice printed ahead of the payload).
 fn extract_json(output: &str) -> serde_json::Value {
     // Find first '{' or '['
     let start = output
@@ -4246,13 +4246,8 @@ fn module_create_with_flags_produces_valid_yaml() {
         ],
         ..test_module_create_args("test-mod")
     };
-    module::cmd_module_create(
-        &cli,
-        &printer,
-        &crate::cli::startup::StartupDocument::load(&cli.config),
-        &args,
-    )
-    .unwrap();
+    crate::cli::RunContext::for_test(&cli, &printer, |run| module::cmd_module_create(run, &args))
+        .unwrap();
 
     assert!(module_yaml.exists());
 
@@ -4300,12 +4295,9 @@ fn module_create_refuses_duplicate() {
         description: Some("dup".to_string()),
         ..test_module_create_args("existing")
     };
-    let result = module::cmd_module_create(
-        &cli,
-        &printer,
-        &crate::cli::startup::StartupDocument::load(&cli.config),
-        &args,
-    );
+    let result = crate::cli::RunContext::for_test(&cli, &printer, |run| {
+        module::cmd_module_create(run, &args)
+    });
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("already exists"));
 }
@@ -4590,7 +4582,10 @@ fn profile_update_add_and_remove() {
         system: vec!["shell=/bin/zsh".to_string()],
         ..empty_profile_update_args()
     };
-    profile::cmd_profile_update(&cli, &printer, "default", &args).unwrap();
+    crate::cli::RunContext::for_test(&cli, &printer, |run| {
+        profile::cmd_profile_update(run, "default", &args)
+    })
+    .unwrap();
 
     let profile_path = dir.path().join("profiles").join("default.yaml");
     let doc = config::load_profile(&profile_path).unwrap();
@@ -4611,7 +4606,9 @@ fn profile_delete_refuses_active() {
     let cli = test_cli(dir.path());
     let printer = test_printer();
 
-    let result = profile::cmd_profile_delete(&cli, &printer, "default", true, false);
+    let result = crate::cli::RunContext::for_test(&cli, &printer, |run| {
+        profile::cmd_profile_delete(run, "default", true, false)
+    });
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("active profile"));
 }
@@ -4622,7 +4619,9 @@ fn profile_delete_refuses_when_inherited() {
     let cli = test_cli(dir.path());
     let printer = test_printer();
 
-    let result = profile::cmd_profile_delete(&cli, &printer, "default", true, false);
+    let result = crate::cli::RunContext::for_test(&cli, &printer, |run| {
+        profile::cmd_profile_delete(run, "default", true, false)
+    });
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("inherited by"));
 }
@@ -4633,7 +4632,10 @@ fn profile_delete_succeeds() {
     let cli = test_cli(dir.path());
     let printer = test_printer();
 
-    profile::cmd_profile_delete(&cli, &printer, "work", true, false).unwrap();
+    crate::cli::RunContext::for_test(&cli, &printer, |run| {
+        profile::cmd_profile_delete(run, "work", true, false)
+    })
+    .unwrap();
     assert!(!dir.path().join("profiles").join("work.yaml").exists());
 }
 
@@ -4728,8 +4730,10 @@ fn profile_delete_still_refuses_when_parseable_inheritor_exists_beside_broken_ma
 
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-    let err = profile::cmd_profile_delete(&cli, &printer, "default", true, false)
-        .expect_err("delete of an inherited profile must refuse");
+    let err = crate::cli::RunContext::for_test(&cli, &printer, |run| {
+        profile::cmd_profile_delete(run, "default", true, false)
+    })
+    .expect_err("delete of an inherited profile must refuse");
     assert!(
         err.to_string().contains("inherited by: work"),
         "refusal must name the parseable inheritor; got: {err}"
@@ -4780,7 +4784,10 @@ fn profile_delete_succeeds_despite_unrelated_ambiguous_profile() {
     let cli = test_cli(dir.path());
     let (printer, buf) = test_printer_capture();
 
-    profile::cmd_profile_delete(&cli, &printer, "work", true, false).unwrap();
+    crate::cli::RunContext::for_test(&cli, &printer, |run| {
+        profile::cmd_profile_delete(run, "work", true, false)
+    })
+    .unwrap();
 
     assert!(!pdir.join("work.yaml").exists());
     let out = cfgd_core::test_helpers::captured_text(&buf);
@@ -4837,7 +4844,10 @@ fn profile_update_inherits() {
         inherits: vec!["default".to_string()],
         ..empty_profile_update_args()
     };
-    profile::cmd_profile_update(&cli, &printer, "work", &args).unwrap();
+    crate::cli::RunContext::for_test(&cli, &printer, |run| {
+        profile::cmd_profile_update(run, "work", &args)
+    })
+    .unwrap();
 
     let doc = config::load_profile(&dir.path().join("profiles").join("work.yaml")).unwrap();
     assert!(doc.spec.inherits.contains(&"default".to_string()));
@@ -4847,7 +4857,10 @@ fn profile_update_inherits() {
         inherits: vec!["-default".to_string()],
         ..empty_profile_update_args()
     };
-    profile::cmd_profile_update(&cli, &printer, "work", &args).unwrap();
+    crate::cli::RunContext::for_test(&cli, &printer, |run| {
+        profile::cmd_profile_update(run, "work", &args)
+    })
+    .unwrap();
 
     let doc = config::load_profile(&dir.path().join("profiles").join("work.yaml")).unwrap();
     assert!(!doc.spec.inherits.contains(&"default".to_string()));
@@ -4864,7 +4877,10 @@ fn profile_update_secrets() {
         secrets: vec!["secrets/key.enc:~/.config/app/key".to_string()],
         ..empty_profile_update_args()
     };
-    profile::cmd_profile_update(&cli, &printer, "default", &args).unwrap();
+    crate::cli::RunContext::for_test(&cli, &printer, |run| {
+        profile::cmd_profile_update(run, "default", &args)
+    })
+    .unwrap();
 
     let doc = config::load_profile(&dir.path().join("profiles").join("default.yaml")).unwrap();
     assert_eq!(doc.spec.secrets.len(), 1);
@@ -4875,7 +4891,10 @@ fn profile_update_secrets() {
         secrets: vec!["-~/.config/app/key".to_string()],
         ..empty_profile_update_args()
     };
-    profile::cmd_profile_update(&cli, &printer, "default", &args).unwrap();
+    crate::cli::RunContext::for_test(&cli, &printer, |run| {
+        profile::cmd_profile_update(run, "default", &args)
+    })
+    .unwrap();
 
     let doc = config::load_profile(&dir.path().join("profiles").join("default.yaml")).unwrap();
     assert!(doc.spec.secrets.is_empty());
@@ -4896,7 +4915,10 @@ fn profile_update_scripts() {
         on_change: vec!["scripts/on-change.sh".to_string()],
         ..empty_profile_update_args()
     };
-    profile::cmd_profile_update(&cli, &printer, "default", &args).unwrap();
+    crate::cli::RunContext::for_test(&cli, &printer, |run| {
+        profile::cmd_profile_update(run, "default", &args)
+    })
+    .unwrap();
 
     let doc = config::load_profile(&dir.path().join("profiles").join("default.yaml")).unwrap();
     let scripts = doc.spec.scripts.as_ref().unwrap();
@@ -4936,7 +4958,10 @@ fn profile_update_scripts() {
         on_change: vec!["-scripts/on-change.sh".to_string()],
         ..empty_profile_update_args()
     };
-    profile::cmd_profile_update(&cli, &printer, "default", &args).unwrap();
+    crate::cli::RunContext::for_test(&cli, &printer, |run| {
+        profile::cmd_profile_update(run, "default", &args)
+    })
+    .unwrap();
 
     // Emptied of every hook, the scripts section is pruned from the file
     // rather than left behind as `scripts: {preApply: [], …}`.
@@ -5823,7 +5848,9 @@ fn find_subcommand_index_skips_value_taking_global_flags() {
 fn resolve_profile_name_explicit_takes_precedence() {
     let dir = create_test_config_dir();
     let cli = test_cli(dir.path());
-    let result = resolve_profile_name(&cli, &test_printer(), Some("my-profile"));
+    let result = crate::cli::RunContext::for_test(&cli, &test_printer(), |run| {
+        resolve_profile_name(run, Some("my-profile"))
+    });
     assert_eq!(result.unwrap(), "my-profile");
 }
 
@@ -5832,7 +5859,9 @@ fn resolve_profile_name_defaults_to_active() {
     let dir = create_test_config_dir();
     std::fs::write(dir.path().join("cfgd.yaml"), TEST_CONFIG_YAML).unwrap();
     let cli = test_cli(dir.path());
-    let result = resolve_profile_name(&cli, &test_printer(), None);
+    let result = crate::cli::RunContext::for_test(&cli, &test_printer(), |run| {
+        resolve_profile_name(run, None)
+    });
     assert_eq!(result.unwrap(), "default");
 }
 
@@ -7221,7 +7250,10 @@ fn resolve_profile_name_explicit_from_name() {
     std::fs::write(dir.path().join("cfgd.yaml"), TEST_CONFIG_YAML).unwrap();
 
     let cli = test_cli(dir.path());
-    let result = super::resolve_profile_name(&cli, &test_printer(), Some("work")).unwrap();
+    let result = crate::cli::RunContext::for_test(&cli, &test_printer(), |run| {
+        super::resolve_profile_name(run, Some("work"))
+    })
+    .unwrap();
     assert_eq!(result, "work");
 }
 
@@ -8840,8 +8872,7 @@ fn cmd_apply_with_env_vars_for_host(zsh_present: bool, expected_actions: u32) {
     }
 
     // Verify the profile was loaded with env vars by loading config+profile
-    let (_, _, resolved) =
-        super::load_config_and_profile(&cli, &cfgd_core::test_helpers::test_printer()).unwrap();
+    let (_, _, resolved) = config_and_profile_of(&cli).unwrap();
     assert!(
         resolved.merged.env.iter().any(|e| e.name == "EDITOR"),
         "resolved profile should contain EDITOR env var"
@@ -11709,7 +11740,7 @@ fn module_list_empty_config_dir() {
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
-    module::cmd_module_list(&cli, &printer).unwrap();
+    crate::cli::RunContext::for_test(&cli, &printer, module::cmd_module_list).unwrap();
     drop(printer);
 
     let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -11738,7 +11769,7 @@ fn module_list_with_modules() {
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
-    module::cmd_module_list(&cli, &printer).unwrap();
+    crate::cli::RunContext::for_test(&cli, &printer, module::cmd_module_list).unwrap();
     drop(printer);
 
     let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -11754,7 +11785,7 @@ fn module_list_no_modules_dir() {
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
-    module::cmd_module_list(&cli, &printer).unwrap();
+    crate::cli::RunContext::for_test(&cli, &printer, module::cmd_module_list).unwrap();
     drop(printer);
 
     let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -11784,7 +11815,7 @@ fn module_list_with_config_and_profile() {
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
-    module::cmd_module_list(&cli, &printer).unwrap();
+    crate::cli::RunContext::for_test(&cli, &printer, module::cmd_module_list).unwrap();
     drop(printer);
 
     let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -12037,13 +12068,8 @@ fn module_create_minimal() {
         description: Some("Minimal module".to_string()),
         ..test_module_create_args("minimal")
     };
-    module::cmd_module_create(
-        &cli,
-        &printer,
-        &crate::cli::startup::StartupDocument::load(&cli.config),
-        &args,
-    )
-    .unwrap();
+    crate::cli::RunContext::for_test(&cli, &printer, |run| module::cmd_module_create(run, &args))
+        .unwrap();
 
     let module_yaml = dir
         .path()
@@ -12071,13 +12097,8 @@ fn module_create_with_env_and_aliases() {
         aliases: vec!["ll=ls -la".to_string(), "gs=git status".to_string()],
         ..test_module_create_args("env-mod")
     };
-    module::cmd_module_create(
-        &cli,
-        &printer,
-        &crate::cli::startup::StartupDocument::load(&cli.config),
-        &args,
-    )
-    .unwrap();
+    crate::cli::RunContext::for_test(&cli, &printer, |run| module::cmd_module_create(run, &args))
+        .unwrap();
 
     let (doc, _) = module::load_module_document(dir.path(), "env-mod").unwrap();
     assert_eq!(doc.spec.env.len(), 2);
@@ -12100,13 +12121,8 @@ fn module_create_with_depends() {
         depends: vec!["base".to_string(), "core".to_string()],
         ..test_module_create_args("dep-mod")
     };
-    module::cmd_module_create(
-        &cli,
-        &printer,
-        &crate::cli::startup::StartupDocument::load(&cli.config),
-        &args,
-    )
-    .unwrap();
+    crate::cli::RunContext::for_test(&cli, &printer, |run| module::cmd_module_create(run, &args))
+        .unwrap();
 
     let (doc, _) = module::load_module_document(dir.path(), "dep-mod").unwrap();
     assert_eq!(doc.spec.depends, vec!["base", "core"]);
@@ -12122,13 +12138,8 @@ fn module_create_with_post_apply_normalizes_escapes() {
         post_apply: vec!["echo \\!done".to_string()],
         ..test_module_create_args("script-mod")
     };
-    module::cmd_module_create(
-        &cli,
-        &printer,
-        &crate::cli::startup::StartupDocument::load(&cli.config),
-        &args,
-    )
-    .unwrap();
+    crate::cli::RunContext::for_test(&cli, &printer, |run| module::cmd_module_create(run, &args))
+        .unwrap();
 
     let (doc, _) = module::load_module_document(dir.path(), "script-mod").unwrap();
     let scripts = doc.spec.scripts.unwrap();
@@ -12144,12 +12155,9 @@ fn module_create_rejects_invalid_name() {
     let printer = test_printer();
 
     let args = test_module_create_args(".bad-name");
-    let result = module::cmd_module_create(
-        &cli,
-        &printer,
-        &crate::cli::startup::StartupDocument::load(&cli.config),
-        &args,
-    );
+    let result = crate::cli::RunContext::for_test(&cli, &printer, |run| {
+        module::cmd_module_create(run, &args)
+    });
     let err = result.unwrap_err();
     let msg = err.to_string();
     assert!(
@@ -12179,12 +12187,9 @@ fn module_create_with_duplicate_file_basenames_fails() {
         ],
         ..test_module_create_args("dup-files")
     };
-    let result = module::cmd_module_create(
-        &cli,
-        &printer,
-        &crate::cli::startup::StartupDocument::load(&cli.config),
-        &args,
-    );
+    let result = crate::cli::RunContext::for_test(&cli, &printer, |run| {
+        module::cmd_module_create(run, &args)
+    });
     assert!(result.is_err());
     assert!(
         result
@@ -12784,7 +12789,7 @@ fn module_registry_list_no_config() {
     let cli = test_cli(dir.path());
     let (printer, buf) = test_printer_capture();
 
-    module::cmd_module_registry_list(&cli, &printer).unwrap();
+    crate::cli::RunContext::for_test(&cli, &printer, module::cmd_module_registry_list).unwrap();
     drop(printer);
 
     let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -12802,7 +12807,7 @@ fn module_registry_list_empty_registries() {
     let cli = test_cli(dir.path());
     let (printer, buf) = test_printer_capture();
 
-    module::cmd_module_registry_list(&cli, &printer).unwrap();
+    crate::cli::RunContext::for_test(&cli, &printer, module::cmd_module_registry_list).unwrap();
     drop(printer);
 
     let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -12836,7 +12841,7 @@ spec:
     let cli = test_cli(dir.path());
     let (printer, buf) = test_printer_capture();
 
-    module::cmd_module_registry_list(&cli, &printer).unwrap();
+    crate::cli::RunContext::for_test(&cli, &printer, module::cmd_module_registry_list).unwrap();
     drop(printer);
 
     let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -13167,7 +13172,10 @@ spec:
     let cli = test_cli(dir.path());
     let printer = test_printer();
 
-    module::cmd_module_registry_rename(&cli, &printer, "old-name", "new-name").unwrap();
+    crate::cli::RunContext::for_test(&cli, &printer, |run| {
+        module::cmd_module_registry_rename(run, "old-name", "new-name")
+    })
+    .unwrap();
 
     let cfg = config::load_config(&dir.path().join("cfgd.yaml")).unwrap();
     let registries = cfg.spec.modules.unwrap().registries;
@@ -13213,7 +13221,10 @@ spec:
     let cli = test_cli(dir.path());
     let printer = test_printer();
 
-    module::cmd_module_registry_rename(&cli, &printer, "old-reg", "new-reg").unwrap();
+    crate::cli::RunContext::for_test(&cli, &printer, |run| {
+        module::cmd_module_registry_rename(run, "old-reg", "new-reg")
+    })
+    .unwrap();
 
     // Profile should be updated
     let profile = config::load_profile(&profiles_dir.join("default.yaml")).unwrap();
@@ -13238,7 +13249,9 @@ fn module_registry_rename_not_found() {
     let cli = test_cli(dir.path());
     let printer = test_printer();
 
-    let result = module::cmd_module_registry_rename(&cli, &printer, "nonexistent", "new-name");
+    let result = crate::cli::RunContext::for_test(&cli, &printer, |run| {
+        module::cmd_module_registry_rename(run, "nonexistent", "new-name")
+    });
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("not found"));
 }
@@ -13267,7 +13280,9 @@ spec:
     let cli = test_cli(dir.path());
     let printer = test_printer();
 
-    let result = module::cmd_module_registry_rename(&cli, &printer, "alpha", "beta");
+    let result = crate::cli::RunContext::for_test(&cli, &printer, |run| {
+        module::cmd_module_registry_rename(run, "alpha", "beta")
+    });
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("already exists"));
 }
@@ -13278,7 +13293,9 @@ fn module_registry_rename_no_config() {
     let cli = test_cli(dir.path());
     let printer = test_printer();
 
-    let result = module::cmd_module_registry_rename(&cli, &printer, "old", "new");
+    let result = crate::cli::RunContext::for_test(&cli, &printer, |run| {
+        module::cmd_module_registry_rename(run, "old", "new")
+    });
     let err = result.unwrap_err();
     let msg = err.to_string();
     assert!(
@@ -13332,13 +13349,8 @@ fn module_create_with_manager_prefix_packages() {
         packages: vec!["brew:ripgrep".to_string(), "cargo:bat".to_string()],
         ..test_module_create_args("mgr-mod")
     };
-    module::cmd_module_create(
-        &cli,
-        &printer,
-        &crate::cli::startup::StartupDocument::load(&cli.config),
-        &args,
-    )
-    .unwrap();
+    crate::cli::RunContext::for_test(&cli, &printer, |run| module::cmd_module_create(run, &args))
+        .unwrap();
 
     let (doc, _) = module::load_module_document(dir.path(), "mgr-mod").unwrap();
     assert_eq!(doc.spec.packages.len(), 2);
@@ -13359,7 +13371,7 @@ fn module_list_structured_output_empty() {
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
 
-    module::cmd_module_list(&cli, &printer).unwrap();
+    crate::cli::RunContext::for_test(&cli, &printer, module::cmd_module_list).unwrap();
     drop(printer);
 
     let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -13420,7 +13432,7 @@ spec:
     let cli = test_cli(dir.path());
     let (printer, cap) = cfgd_core::output::Printer::for_test_doc();
 
-    module::cmd_module_registry_list(&cli, &printer).unwrap();
+    crate::cli::RunContext::for_test(&cli, &printer, module::cmd_module_registry_list).unwrap();
     drop(printer);
 
     let parsed = cap.json().expect("doc captured json");
@@ -13432,7 +13444,14 @@ spec:
 // Additional coverage tests — untested command handlers & helpers
 // ===================================================================
 
-// --- load_config_and_profile ---
+// --- RunContext::config_and_profile ---
+
+fn config_and_profile_of(cli: &Cli) -> anyhow::Result<(CfgdConfig, String, ResolvedProfile)> {
+    crate::cli::RunContext::for_test(cli, &cfgd_core::test_helpers::test_printer(), |run| {
+        run.config_and_profile()
+            .map(|(cfg, name, resolved)| (cfg.clone(), name.to_string(), resolved.clone()))
+    })
+}
 
 #[test]
 fn load_config_and_profile_default_profile() {
@@ -13441,7 +13460,7 @@ fn load_config_and_profile_default_profile() {
 
     let cli = test_cli(dir.path());
 
-    let result = super::load_config_and_profile(&cli, &cfgd_core::test_helpers::test_printer());
+    let result = config_and_profile_of(&cli);
     assert!(
         result.is_ok(),
         "loading config and default profile should succeed: {:?}",
@@ -13461,7 +13480,7 @@ fn load_config_and_profile_with_override() {
     let mut cli = test_cli(dir.path());
     cli.profile = Some("work".to_string());
 
-    let result = super::load_config_and_profile(&cli, &cfgd_core::test_helpers::test_printer());
+    let result = config_and_profile_of(&cli);
     assert!(
         result.is_ok(),
         "loading config with profile override should succeed: {:?}",
@@ -13479,7 +13498,7 @@ fn load_config_and_profile_missing_config_errors() {
     let dir = tempfile::tempdir().unwrap();
     let cli = test_cli(dir.path());
 
-    let result = super::load_config_and_profile(&cli, &cfgd_core::test_helpers::test_printer());
+    let result = config_and_profile_of(&cli);
     let err = result.unwrap_err();
     let msg = err.to_string();
     assert!(
@@ -13499,7 +13518,7 @@ fn load_config_and_profile_missing_profile_errors() {
 
     let cli = test_cli(dir.path());
 
-    let result = super::load_config_and_profile(&cli, &cfgd_core::test_helpers::test_printer());
+    let result = config_and_profile_of(&cli);
     let err = result.unwrap_err();
     let msg = err.to_string();
     assert!(
@@ -13535,8 +13554,7 @@ fn load_config_and_profile_active_profile_delivered_by_source_emits_wrap_hint() 
 
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
 
-    let err =
-        super::load_config_and_profile(&cli, &cfgd_core::test_helpers::test_printer()).unwrap_err();
+    let err = config_and_profile_of(&cli).unwrap_err();
 
     // Exit code survives the metadata wrap (typed ProfileNotFound → exit 6).
     assert_eq!(
@@ -13628,8 +13646,7 @@ fn load_config_and_profile_explicit_profile_delivered_by_source_emits_wrap_hint(
         ..test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()))
     };
 
-    let err =
-        super::load_config_and_profile(&cli, &cfgd_core::test_helpers::test_printer()).unwrap_err();
+    let err = config_and_profile_of(&cli).unwrap_err();
 
     assert_eq!(
         super::exit_code_for_anyhow(&err),
@@ -13711,8 +13728,7 @@ fn load_config_and_profile_plain_typo_returns_bare_not_found() {
 
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
 
-    let err =
-        super::load_config_and_profile(&cli, &cfgd_core::test_helpers::test_printer()).unwrap_err();
+    let err = config_and_profile_of(&cli).unwrap_err();
 
     assert_eq!(
         super::exit_code_for_anyhow(&err),
@@ -15804,7 +15820,10 @@ fn profile_update_add_and_remove_files() {
         )],
         ..empty_profile_update_args()
     };
-    profile::cmd_profile_update(&cli, &printer, "default", &args).unwrap();
+    crate::cli::RunContext::for_test(&cli, &printer, |run| {
+        profile::cmd_profile_update(run, "default", &args)
+    })
+    .unwrap();
 
     let doc = config::load_profile(&dir.path().join("profiles").join("default.yaml")).unwrap();
     let managed = &doc.spec.files.as_ref().unwrap().managed;
@@ -15824,7 +15843,10 @@ fn profile_update_add_and_remove_files() {
         files: vec![format!("-{}", target_path.display())],
         ..empty_profile_update_args()
     };
-    profile::cmd_profile_update(&cli, &printer, "default", &args).unwrap();
+    crate::cli::RunContext::for_test(&cli, &printer, |run| {
+        profile::cmd_profile_update(run, "default", &args)
+    })
+    .unwrap();
 
     let doc = config::load_profile(&dir.path().join("profiles").join("default.yaml")).unwrap();
     let file_count = doc
@@ -15852,7 +15874,10 @@ fn profile_update_env_add_and_remove() {
         env: vec!["CUSTOM_VAR=hello".to_string()],
         ..empty_profile_update_args()
     };
-    profile::cmd_profile_update(&cli, &printer, "default", &args).unwrap();
+    crate::cli::RunContext::for_test(&cli, &printer, |run| {
+        profile::cmd_profile_update(run, "default", &args)
+    })
+    .unwrap();
 
     let doc = config::load_profile(&dir.path().join("profiles").join("default.yaml")).unwrap();
     assert!(doc.spec.env.iter().any(|e| e.name == "CUSTOM_VAR"));
@@ -15862,7 +15887,10 @@ fn profile_update_env_add_and_remove() {
         env: vec!["-CUSTOM_VAR".to_string()],
         ..empty_profile_update_args()
     };
-    profile::cmd_profile_update(&cli, &printer, "default", &args).unwrap();
+    crate::cli::RunContext::for_test(&cli, &printer, |run| {
+        profile::cmd_profile_update(run, "default", &args)
+    })
+    .unwrap();
 
     let doc = config::load_profile(&dir.path().join("profiles").join("default.yaml")).unwrap();
     assert!(!doc.spec.env.iter().any(|e| e.name == "CUSTOM_VAR"));
@@ -15881,7 +15909,10 @@ fn profile_update_alias_add_and_remove() {
         aliases: vec!["ll=ls -la".to_string()],
         ..empty_profile_update_args()
     };
-    profile::cmd_profile_update(&cli, &printer, "default", &args).unwrap();
+    crate::cli::RunContext::for_test(&cli, &printer, |run| {
+        profile::cmd_profile_update(run, "default", &args)
+    })
+    .unwrap();
 
     let doc = config::load_profile(&dir.path().join("profiles").join("default.yaml")).unwrap();
     assert!(doc.spec.aliases.iter().any(|a| a.name == "ll"));
@@ -15891,7 +15922,10 @@ fn profile_update_alias_add_and_remove() {
         aliases: vec!["-ll".to_string()],
         ..empty_profile_update_args()
     };
-    profile::cmd_profile_update(&cli, &printer, "default", &args).unwrap();
+    crate::cli::RunContext::for_test(&cli, &printer, |run| {
+        profile::cmd_profile_update(run, "default", &args)
+    })
+    .unwrap();
 
     let doc = config::load_profile(&dir.path().join("profiles").join("default.yaml")).unwrap();
     assert!(!doc.spec.aliases.iter().any(|a| a.name == "ll"));
@@ -15910,7 +15944,10 @@ fn profile_update_modules_add_and_remove() {
         modules: vec!["neovim".to_string()],
         ..empty_profile_update_args()
     };
-    profile::cmd_profile_update(&cli, &printer, "default", &args).unwrap();
+    crate::cli::RunContext::for_test(&cli, &printer, |run| {
+        profile::cmd_profile_update(run, "default", &args)
+    })
+    .unwrap();
 
     let doc = config::load_profile(&dir.path().join("profiles").join("default.yaml")).unwrap();
     assert!(doc.spec.modules.contains(&"neovim".to_string()));
@@ -15920,7 +15957,10 @@ fn profile_update_modules_add_and_remove() {
         modules: vec!["-neovim".to_string()],
         ..empty_profile_update_args()
     };
-    profile::cmd_profile_update(&cli, &printer, "default", &args).unwrap();
+    crate::cli::RunContext::for_test(&cli, &printer, |run| {
+        profile::cmd_profile_update(run, "default", &args)
+    })
+    .unwrap();
 
     let doc = config::load_profile(&dir.path().join("profiles").join("default.yaml")).unwrap();
     assert!(!doc.spec.modules.contains(&"neovim".to_string()));
@@ -15939,7 +15979,10 @@ fn profile_update_packages_add_and_remove() {
         packages: vec!["brew:jq".to_string()],
         ..empty_profile_update_args()
     };
-    profile::cmd_profile_update(&cli, &printer, "default", &args).unwrap();
+    crate::cli::RunContext::for_test(&cli, &printer, |run| {
+        profile::cmd_profile_update(run, "default", &args)
+    })
+    .unwrap();
 
     let doc = config::load_profile(&dir.path().join("profiles").join("default.yaml")).unwrap();
     let brew = doc.spec.packages.as_ref().unwrap().brew.as_ref().unwrap();
@@ -15950,7 +15993,10 @@ fn profile_update_packages_add_and_remove() {
         packages: vec!["-brew:jq".to_string()],
         ..empty_profile_update_args()
     };
-    profile::cmd_profile_update(&cli, &printer, "default", &args).unwrap();
+    crate::cli::RunContext::for_test(&cli, &printer, |run| {
+        profile::cmd_profile_update(run, "default", &args)
+    })
+    .unwrap();
 
     // The removal emptied the brew block, which is pruned from the file
     // rather than written back as `brew: {formulae: []}`.
@@ -16054,7 +16100,10 @@ fn profile_update_on_drift_scripts() {
         on_drift: vec!["scripts/drift.sh".to_string()],
         ..empty_profile_update_args()
     };
-    profile::cmd_profile_update(&cli, &printer, "default", &args).unwrap();
+    crate::cli::RunContext::for_test(&cli, &printer, |run| {
+        profile::cmd_profile_update(run, "default", &args)
+    })
+    .unwrap();
 
     let doc = config::load_profile(&dir.path().join("profiles").join("default.yaml")).unwrap();
     let scripts = doc.spec.scripts.as_ref().unwrap();
@@ -16068,7 +16117,10 @@ fn profile_update_on_drift_scripts() {
         on_drift: vec!["-scripts/drift.sh".to_string()],
         ..empty_profile_update_args()
     };
-    profile::cmd_profile_update(&cli, &printer, "default", &args).unwrap();
+    crate::cli::RunContext::for_test(&cli, &printer, |run| {
+        profile::cmd_profile_update(run, "default", &args)
+    })
+    .unwrap();
 
     // Its only hook removed, the scripts section is pruned from the file.
     let doc = config::load_profile(&dir.path().join("profiles").join("default.yaml")).unwrap();
@@ -16574,15 +16626,14 @@ fn cmd_doctor_with_rich_config() {
     );
 }
 
-// --- load_config_and_profile ---
+// --- RunContext::config_and_profile ---
 
 #[test]
 fn load_config_and_profile_returns_correct_config() {
     let (config_dir, state_dir) = setup_test_env();
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
 
-    let (cfg, _, resolved) =
-        super::load_config_and_profile(&cli, &cfgd_core::test_helpers::test_printer()).unwrap();
+    let (cfg, _, resolved) = config_and_profile_of(&cli).unwrap();
     assert_eq!(cfg.metadata.name, "t");
     assert!(
         !resolved.merged.env.is_empty(),
@@ -16598,7 +16649,7 @@ fn load_config_and_profile_missing_profile_fails() {
         ..test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()))
     };
 
-    let result = super::load_config_and_profile(&cli, &cfgd_core::test_helpers::test_printer());
+    let result = config_and_profile_of(&cli);
     let err = result.unwrap_err();
     let msg = err.to_string();
     assert!(
@@ -23647,7 +23698,9 @@ fn cmd_module_search_no_config_fails() {
     let cli = test_cli(dir.path());
     let printer = test_printer();
 
-    let result = module::cmd_module_search(&cli, &printer, "test");
+    let result = crate::cli::RunContext::for_test(&cli, &printer, |run| {
+        module::cmd_module_search(run, "test")
+    });
     let err = result.unwrap_err();
     assert!(
         matches!(
@@ -23671,7 +23724,9 @@ fn cmd_module_search_no_registries() {
     let (printer, buf) = test_printer_capture();
 
     // Config exists but has no module registries
-    let result = module::cmd_module_search(&cli, &printer, "test");
+    let result = crate::cli::RunContext::for_test(&cli, &printer, |run| {
+        module::cmd_module_search(run, "test")
+    });
     assert!(
         result.is_ok(),
         "search with no registries should succeed: {:?}",
@@ -23695,7 +23750,8 @@ fn cmd_module_search_no_registries_structured() {
     };
     let (printer, cap) = cfgd_core::output::Printer::for_test_doc();
 
-    module::cmd_module_search(&cli, &printer, "test").unwrap();
+    crate::cli::RunContext::for_test(&cli, &printer, |run| module::cmd_module_search(run, "test"))
+        .unwrap();
     drop(printer);
 
     let parsed = cap.json().expect("doc captured json");
@@ -23795,8 +23851,9 @@ fn cmd_module_add_from_registry_no_config_fails() {
     let cli = test_cli(dir.path());
     let printer = test_printer();
 
-    let result =
-        module::cmd_module_add_from_registry(&cli, &printer, "myregistry/mymod", false, false);
+    let result = crate::cli::RunContext::for_test(&cli, &printer, |run| {
+        module::cmd_module_add_from_registry(run, "myregistry/mymod", false, false)
+    });
     let err = result.unwrap_err();
     let msg = err.to_string();
     assert!(
@@ -23811,7 +23868,9 @@ fn cmd_module_add_from_registry_invalid_ref_fails() {
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
     let printer = test_printer();
 
-    let result = module::cmd_module_add_from_registry(&cli, &printer, "no-slash", false, false);
+    let result = crate::cli::RunContext::for_test(&cli, &printer, |run| {
+        module::cmd_module_add_from_registry(run, "no-slash", false, false)
+    });
     assert!(result.is_err());
     assert!(
         result
@@ -23824,13 +23883,9 @@ fn cmd_module_add_from_registry_invalid_ref_fails() {
 #[test]
 fn cmd_module_add_from_registry_not_configured_fails() {
     let h = CliTestHarness::builder().build();
-    let result = module::cmd_module_add_from_registry(
-        &h.cli(),
-        h.printer(),
-        "myregistry/mymod@v1.0",
-        false,
-        false,
-    );
+    let result = crate::cli::RunContext::for_test(&h.cli(), h.printer(), |run| {
+        module::cmd_module_add_from_registry(run, "myregistry/mymod@v1.0", false, false)
+    });
     assert_error_contains(&result, "not configured");
 }
 
@@ -42630,18 +42685,16 @@ fn every_config_and_profile_header_row_comes_from_the_one_builder() {
 /// its own entry function, directly or through a function it calls in the same
 /// file; a verb that renders no header block carries `// no-header-ok: <why>`
 /// on its declaration or in the comment block above it.
-/// How a verb reaches the run's resolved configuration: the loader itself, its
-/// `--module` isolate, and the `RunContext` accessor that memoizes the same
-/// load for a command asking twice.
+/// How a verb reaches the run's resolved configuration: the `--module`
+/// isolate and the `RunContext` accessor that resolves the profile once per run.
 const CONFIG_LOAD_TELLS: &[&str] = &[
-    "load_config_and_profile(",
     "load_config_and_profile_module_scoped(",
     "config_and_profile()",
 ];
 
 /// The members that report on a resolved configuration without reaching the
-/// loader, so the derivation below cannot see them: `daemon status` parses the
-/// config itself (the daemon it reports on may be running under a profile this
+/// loader, so the derivation below cannot see them: `daemon status` reads the
+/// config without resolving a profile (the daemon it reports on may be running under a profile this
 /// process would resolve differently), and the two `--module` reports read
 /// their module rather than the chain.
 const HEADER_BEARING_EXTRAS: &[(&str, &str)] = &[

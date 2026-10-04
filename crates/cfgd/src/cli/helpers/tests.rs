@@ -813,7 +813,10 @@ fn resolve_profile_name_returns_explicit_name_without_reading_config() {
     // the config file need not exist.
     let tmp = tempdir().unwrap();
     let cli = make_cli(tmp.path().join("nonexistent.yaml"));
-    let name = resolve_profile_name(&cli, &quiet_printer(), Some("staging")).unwrap();
+    let name = crate::cli::RunContext::for_test(&cli, &quiet_printer(), |run| {
+        resolve_profile_name(run, Some("staging"))
+    })
+    .unwrap();
     assert_eq!(name, "staging");
 }
 
@@ -822,7 +825,10 @@ fn resolve_profile_name_errors_when_no_config_and_no_explicit_name() {
     let tmp = tempdir().unwrap();
     let config_path = tmp.path().join("nonexistent.yaml");
     let cli = make_cli(config_path.clone());
-    let err = resolve_profile_name(&cli, &quiet_printer(), None).unwrap_err();
+    let err = crate::cli::RunContext::for_test(&cli, &quiet_printer(), |run| {
+        resolve_profile_name(run, None)
+    })
+    .unwrap_err();
     let cfgd_err = err
         .downcast_ref::<cfgd_core::errors::CfgdError>()
         .expect("typed CfgdError");
@@ -848,7 +854,10 @@ fn resolve_profile_name_returns_cli_profile_override_when_set() {
     let mut cli = make_cli(config_path);
     cli.profile = Some("override-profile".to_string());
     // No explicit name passed → should fall through to cli.profile.
-    let name = resolve_profile_name(&cli, &quiet_printer(), None).unwrap();
+    let name = crate::cli::RunContext::for_test(&cli, &quiet_printer(), |run| {
+        resolve_profile_name(run, None)
+    })
+    .unwrap();
     assert_eq!(name, "override-profile");
 }
 

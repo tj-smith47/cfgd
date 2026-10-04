@@ -59,7 +59,10 @@ fn profile_update_happy_human() {
     let mut args = profile_update_args();
     args.env = vec!["EDITOR=nvim".to_string()];
 
-    cmd_profile_update(&cli, &printer, "default", &args).unwrap();
+    cfgd::cli::RunContext::for_test(&cli, &printer, |run| {
+        cmd_profile_update(run, "default", &args)
+    })
+    .unwrap();
     drop(printer);
 
     let stripped = normalize_profile_paths(&strip_ansi(&cap.human()), config_dir.path());
@@ -78,7 +81,10 @@ fn profile_update_happy_json() {
     let mut args = profile_update_args();
     args.env = vec!["EDITOR=nvim".to_string()];
 
-    cmd_profile_update(&cli, &printer, "default", &args).unwrap();
+    cfgd::cli::RunContext::for_test(&cli, &printer, |run| {
+        cmd_profile_update(run, "default", &args)
+    })
+    .unwrap();
     drop(printer);
 
     let json = cap.json().expect("doc captured json");
@@ -94,7 +100,10 @@ fn profile_update_no_changes_human() {
     let (printer, cap) = Printer::for_test_doc();
     let args = profile_update_args();
 
-    cmd_profile_update(&cli, &printer, "default", &args).unwrap();
+    cfgd::cli::RunContext::for_test(&cli, &printer, |run| {
+        cmd_profile_update(run, "default", &args)
+    })
+    .unwrap();
     drop(printer);
 
     let stripped = normalize_profile_paths(&strip_ansi(&cap.human()), config_dir.path());
@@ -112,7 +121,10 @@ fn profile_update_no_changes_json() {
     let (printer, cap) = Printer::for_test_doc();
     let args = profile_update_args();
 
-    cmd_profile_update(&cli, &printer, "default", &args).unwrap();
+    cfgd::cli::RunContext::for_test(&cli, &printer, |run| {
+        cmd_profile_update(run, "default", &args)
+    })
+    .unwrap();
     drop(printer);
 
     let json = cap.json().expect("doc captured json");
@@ -130,7 +142,10 @@ fn profile_update_add_remove_mixed_human() {
     args.modules = vec!["nvim".to_string(), "-missing".to_string()];
     args.env = vec!["-EDITOR".to_string()];
 
-    cmd_profile_update(&cli, &printer, "default", &args).unwrap();
+    cfgd::cli::RunContext::for_test(&cli, &printer, |run| {
+        cmd_profile_update(run, "default", &args)
+    })
+    .unwrap();
     drop(printer);
 
     let stripped = normalize_profile_paths(&strip_ansi(&cap.human()), config_dir.path());
@@ -145,7 +160,7 @@ fn profile_update_add_remove_mixed_human() {
 #[serial]
 fn profile_update_add_module_remote_hybrid_human() {
     // `cmd_profile_update --module <file://...>` delegates to
-    // `module::cmd_module_add_remote(cli, printer, ...)`.
+    // `cfgd::cli::RunContext::for_test(cli, printer, |run| module::cmd_module_add_remote(run, ...))`.
     // The prompt queue drives the "Add this remote module?" / signature
     // confirmations through the unified Printer surface.
     let (config_dir, state_dir) = profile_test_config_setup();
@@ -164,7 +179,10 @@ fn profile_update_add_module_remote_hybrid_human() {
     let mut args = profile_update_args();
     args.modules = vec![module_url.clone()];
 
-    cmd_profile_update(&cli, &printer, "default", &args).unwrap();
+    cfgd::cli::RunContext::for_test(&cli, &printer, |run| {
+        cmd_profile_update(run, "default", &args)
+    })
+    .unwrap();
     drop(printer);
 
     let cfg_file = config_dir.path().join("cfgd.yaml");

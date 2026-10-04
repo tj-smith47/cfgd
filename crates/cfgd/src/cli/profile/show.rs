@@ -4,7 +4,7 @@ use cfgd_core::config::{
     EnvVar, FilesSpec, ManagedFileSpec, PackagesSpec, PreferencesSpec, ProfileLayer, ProfileSpec,
     ResolvedProfile, SecretSpec, ShellAlias,
 };
-use cfgd_core::output::{Doc, KvPair, Printer};
+use cfgd_core::output::{Doc, KvPair};
 
 /// Build the `cfgd profile show` Doc.
 ///
@@ -322,17 +322,18 @@ fn package_display_rows(pkgs: &PackagesSpec) -> Vec<(String, String)> {
 }
 
 pub fn cmd_profile_show(
-    cli: &Cli,
-    printer: &Printer,
+    run: &RunContext<'_>,
     name: Option<&str>,
     resolved_view: bool,
     detail: crate::cli::InventoryDetail<'_>,
 ) -> anyhow::Result<()> {
+    let cli = run.cli();
+    let printer = run.printer();
     let declared;
-    let (profile_name, resolved) = match name {
+    let named;
+    let (profile_name, resolved): (String, &ResolvedProfile) = match name {
         Some(n) => {
-            let mut cfg = config::load_config(&cli.config)?;
-            drain_config_deprecations(printer, &mut cfg);
+            let cfg = run.config()?;
             declared = cfgd_core::reconciler::ComposedSource::from_declared(&cfg.spec.sources);
             let dir = profiles_dir(cli);
             // resolve_profile already returns a typed ProfileNotFound (→ exit 6);
@@ -367,12 +368,13 @@ pub fn cmd_profile_show(
                     e.into()
                 }
             })?;
-            (n.to_string(), resolved)
+            named = resolved;
+            (n.to_string(), &named)
         }
         None => {
-            let (cfg, active, resolved) = helpers::load_config_and_profile(cli, printer)?;
+            let (cfg, active, resolved) = run.config_and_profile()?;
             declared = cfgd_core::reconciler::ComposedSource::from_declared(&cfg.spec.sources);
-            (active, resolved)
+            (active.to_string(), resolved)
         }
     };
 
@@ -383,7 +385,7 @@ pub fn cmd_profile_show(
     let detail = detail.with_secret_envs(&secret_envs);
 
     printer.emit(build_profile_show_doc(
-        &resolved,
+        resolved,
         &profile_name,
         &cli.config,
         &declared,

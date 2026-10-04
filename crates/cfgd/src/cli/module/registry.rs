@@ -3,12 +3,13 @@ use cfgd_core::PathDisplayExt;
 use cfgd_core::output::{Doc, OwnerLabel, Printer, Role, section_guard::SectionGuard};
 
 pub fn cmd_module_add_from_registry(
-    cli: &Cli,
-    printer: &Printer,
+    run: &RunContext<'_>,
     reference: &str,
     yes: bool,
     allow_unsigned: bool,
 ) -> anyhow::Result<()> {
+    let cli = run.cli();
+    let printer = run.printer();
     let reg_ref = match modules::parse_registry_ref(reference) {
         Some(r) => r,
         None => {
@@ -28,8 +29,7 @@ pub fn cmd_module_add_from_registry(
     if !cli.config.exists() {
         return Err(no_config_error(printer, &cli.config));
     }
-    let mut cfg = config::load_config(&cli.config)?;
-    drain_config_deprecations(printer, &mut cfg);
+    let cfg = run.config()?;
 
     let registries = &cfg.spec.modules_effective().registries[..];
     let registry_entry = match registries.iter().find(|s| s.name == reg_ref.registry) {
@@ -91,24 +91,18 @@ pub fn cmd_module_add_from_registry(
         ),
     );
 
-    cmd_module_add_remote(
-        cli,
-        printer,
-        &full_url,
-        Some(&reg_ref.registry),
-        yes,
-        allow_unsigned,
-    )
+    cmd_module_add_remote(run, &full_url, Some(&reg_ref.registry), yes, allow_unsigned)
 }
 
 pub fn cmd_module_add_remote(
-    cli: &Cli,
-    printer: &Printer,
+    run: &RunContext<'_>,
     url: &str,
     source_name: Option<&str>,
     yes: bool,
     allow_unsigned: bool,
 ) -> anyhow::Result<()> {
+    let cli = run.cli();
+    let printer = run.printer();
     let config_dir = config_dir(cli);
     let cache_base = module_cache_dir(cli)?;
 
@@ -193,8 +187,7 @@ pub fn cmd_module_add_remote(
     // Check for GPG/SSH signature on the tag
     let git_src = modules::parse_git_source(url)?;
     super::enforce_signature_policy(
-        cli,
-        printer,
+        run,
         git_src.tag.as_deref(),
         &module_name,
         allow_unsigned,
@@ -239,8 +232,7 @@ pub fn cmd_module_add_remote(
     };
     let mut added_to_profile: Option<String> = None;
     if cli.config.exists() {
-        let mut cfg = config::load_config(&cli.config)?;
-        drain_config_deprecations(printer, &mut cfg);
+        let cfg = run.config()?;
         let profile_name = match cli.profile.as_deref() {
             Some(p) => p,
             None => cfg.active_profile()?,
@@ -276,13 +268,14 @@ pub fn cmd_module_add_remote(
 }
 
 pub fn cmd_module_upgrade(
-    cli: &Cli,
-    printer: &Printer,
+    run: &RunContext<'_>,
     name: &str,
     new_ref: Option<&str>,
     yes: bool,
     allow_unsigned: bool,
 ) -> anyhow::Result<()> {
+    let cli = run.cli();
+    let printer = run.printer();
     let config_dir = config_dir(cli);
     let cache_base = module_cache_dir(cli)?;
     let lib_printer = null_lib_printer(printer);
@@ -437,8 +430,7 @@ pub fn cmd_module_upgrade(
 
     // Check for signature on new ref
     super::enforce_signature_policy(
-        cli,
-        printer,
+        run,
         Some(&new_ref),
         name,
         allow_unsigned,
@@ -724,7 +716,9 @@ pub(super) fn filter_and_build_search_results(
         .collect()
 }
 
-pub fn cmd_module_search(cli: &Cli, printer: &Printer, query: &str) -> anyhow::Result<()> {
+pub fn cmd_module_search(run: &RunContext<'_>, query: &str) -> anyhow::Result<()> {
+    let cli = run.cli();
+    let printer = run.printer();
     let cache_base = module_cache_dir(cli)?;
     let lib_printer = null_lib_printer(printer);
 
@@ -732,8 +726,7 @@ pub fn cmd_module_search(cli: &Cli, printer: &Printer, query: &str) -> anyhow::R
         return Err(no_config_error(printer, &cli.config));
     }
 
-    let mut cfg = config::load_config(&cli.config)?;
-    drain_config_deprecations(printer, &mut cfg);
+    let cfg = run.config()?;
     let registries = &cfg.spec.modules_effective().registries[..];
     if registries.is_empty() {
         // The same element type a found listing serializes, so one payload shape
@@ -1059,17 +1052,17 @@ enum RegistryRemoveOutcome {
 }
 
 pub fn cmd_module_registry_rename(
-    cli: &Cli,
-    printer: &Printer,
+    run: &RunContext<'_>,
     name: &str,
     new_name: &str,
 ) -> anyhow::Result<()> {
+    let cli = run.cli();
+    let printer = run.printer();
     if !cli.config.exists() {
         return Err(no_config_error(printer, &cli.config));
     }
 
-    let mut cfg = config::load_config(&cli.config)?;
-    drain_config_deprecations(printer, &mut cfg);
+    let cfg = run.config()?;
     let registries = &cfg.spec.modules_effective().registries[..];
 
     if !registries.iter().any(|s| s.name == name) {
@@ -1177,7 +1170,9 @@ pub fn cmd_module_registry_rename(
     Ok(())
 }
 
-pub fn cmd_module_registry_list(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
+pub fn cmd_module_registry_list(run: &RunContext<'_>) -> anyhow::Result<()> {
+    let cli = run.cli();
+    let printer = run.printer();
     // An empty listing serializes the same element type a populated one does, so a
     // consumer reading the payload sees one shape whether or not a registry exists.
     let no_registries: Vec<super::RegistryListEntry> = Vec::new();
@@ -1191,8 +1186,7 @@ pub fn cmd_module_registry_list(cli: &Cli, printer: &Printer) -> anyhow::Result<
         return Ok(());
     }
 
-    let mut cfg = config::load_config(&cli.config)?;
-    drain_config_deprecations(printer, &mut cfg);
+    let cfg = run.config()?;
     let registries = &cfg.spec.modules_effective().registries[..];
     if registries.is_empty() {
         printer.emit(

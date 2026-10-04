@@ -29,12 +29,9 @@ fn module_package_ref(token: &str, native: &str) -> anyhow::Result<PackageRef> {
     Ok(pkg)
 }
 
-pub fn cmd_module_create(
-    cli: &Cli,
-    printer: &Printer,
-    startup: &crate::cli::startup::StartupDocument,
-    args: &ModuleCreateArgs,
-) -> anyhow::Result<()> {
+pub fn cmd_module_create(run: &RunContext<'_>, args: &ModuleCreateArgs) -> anyhow::Result<()> {
+    let cli = run.cli();
+    let printer = run.printer();
     let name = &args.name;
     let description = args.description.as_deref();
     let depends = &args.depends;
@@ -280,18 +277,15 @@ pub fn cmd_module_create(
     // consumers before the process exits nonzero on a failed apply.
     let mut apply_status = cfgd_core::state::ApplyStatus::Success;
     if args.apply {
-        let config_path = cfgd_core::config::config_document_in(&config_dir);
-        let mut cfg = config::load_config(&config_path)?;
-        drain_config_deprecations(printer, &mut cfg);
-        let mut registry = super::build_registry_with_config(Some(&cfg));
+        let cfg = run.config()?;
+        let mut registry = super::build_registry_with_config(Some(cfg));
         registry.set_system_config_dir(&config_dir);
-        let ctx = crate::cli::RunContext::new(cli, printer, startup);
-        let store = ctx.state()?;
+        let store = run.state()?;
 
         let platform = cfgd_core::platform::Platform::current();
         let mgr_map = registry.manager_map();
         let cache_base = module_cache_dir(cli)?;
-        let pkg_cx = ctx.package_context()?;
+        let pkg_cx = run.package_context()?;
         let mut resolved_modules = modules::resolve_modules(
             std::slice::from_ref(name),
             &config_dir,
@@ -342,9 +336,9 @@ pub fn cmd_module_create(
         // whether a profile resolved.
         let header_modules = cfgd_core::output::HeaderModule::of_isolate(&resolved_modules);
         let declared = cfgd_core::reconciler::ComposedSource::from_declared(&cfg.spec.sources);
-        let ctx = cfgd_core::reconciler::RunContext {
+        let run_ctx = cfgd_core::reconciler::RunContext {
             title: cfgd_core::reconciler::RunTitle::Apply,
-            config_path: Some(config_path.as_path()),
+            config_path: Some(cli.config.as_path()),
             profile: None,
             sources: &declared,
             modules: &header_modules,
@@ -353,10 +347,10 @@ pub fn cmd_module_create(
             subject: None,
             unit_source: None,
         };
-        let run = cfgd_core::reconciler::ApplyRun::new(ctx, &plan);
+        let apply_run = cfgd_core::reconciler::ApplyRun::new(run_ctx, &plan);
 
         if plan.total_actions() == 0 {
-            run.header(printer);
+            apply_run.header(printer);
             // `module create` exposes no scoping flag, so the verdict takes the
             // filter-less arm of the one helper that owns both spellings.
             crate::cli::plan_ops::report_plan_verdict(
@@ -387,7 +381,7 @@ pub fn cmd_module_create(
             } else {
                 cfgd_core::reconciler::Confirm::Ask("Apply these changes?")
             };
-            match run.execute(printer, confirm, &mut exec)? {
+            match apply_run.execute(printer, confirm, &mut exec)? {
                 cfgd_core::reconciler::RunDisposition::Applied { result, .. } => {
                     apply_status = result.status.clone();
                     // The rows this apply just recorded carry no hash; settle

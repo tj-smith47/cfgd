@@ -1,5 +1,5 @@
 use super::*;
-use cfgd_core::output::{Printer, Role};
+use cfgd_core::output::Role;
 
 /// Cryptographically verify a git tag signature using `git tag -v`.
 /// Returns `Ok(true)` if verified, `Ok(false)` if verification fails (bad sig),
@@ -37,32 +37,20 @@ fn verify_tag_signature_cryptographic(repo_dir: &Path, tag_name: &str) -> anyhow
 /// Loads `require_signatures` from config, checks the tag signature,
 /// and bails if policy is violated. Returns Ok(()) if allowed to proceed.
 pub(crate) fn enforce_signature_policy(
-    cli: &Cli,
-    printer: &Printer,
+    run: &RunContext<'_>,
     tag: Option<&str>,
     module_name: &str,
     allow_unsigned: bool,
     cache_base: &Path,
     repo_url: &str,
 ) -> anyhow::Result<()> {
-    // Bounded duplicate: `cmd_module_add_from_registry` already drains its own
-    // earlier load of this file, so this call re-shows the same notice there;
-    // `cmd_module_upgrade` has no other config parse in its path, so this is
-    // its sole opportunity to surface a deprecation on the user's real config.
-    let require_signatures = if cli.config.exists() {
-        match config::load_config(&cli.config) {
-            Ok(mut c) => {
-                drain_config_deprecations(printer, &mut c);
-                c.spec
-                    .modules_effective()
-                    .security_effective()
-                    .require_signatures
-            }
-            Err(_) => false,
-        }
-    } else {
-        false
-    };
+    let printer = run.printer();
+    let require_signatures = run.config().is_ok_and(|c| {
+        c.spec
+            .modules_effective()
+            .security_effective()
+            .require_signatures
+    });
 
     let Some(tag) = tag else {
         if require_signatures && !allow_unsigned {
@@ -212,8 +200,9 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let cli = make_cli_with_config(&tmp.path().join("noexist.yaml"));
         let cache = tempfile::tempdir().unwrap();
-        let result =
-            enforce_signature_policy(&cli, &printer, None, "mod", false, cache.path(), "url");
+        let result = crate::cli::RunContext::for_test(&cli, &printer, |run| {
+            enforce_signature_policy(run, None, "mod", false, cache.path(), "url")
+        });
         result.expect("no tag with require_signatures off must succeed");
     }
 
@@ -229,8 +218,10 @@ mod tests {
         let printer = test_printer();
         let cli = make_cli_with_config(&cfg_path);
         let cache = tempfile::tempdir().unwrap();
-        let err = enforce_signature_policy(&cli, &printer, None, "mod", false, cache.path(), "url")
-            .expect_err("must bail when no tag + require_signatures + !allow_unsigned");
+        let err = crate::cli::RunContext::for_test(&cli, &printer, |run| {
+            enforce_signature_policy(run, None, "mod", false, cache.path(), "url")
+        })
+        .expect_err("must bail when no tag + require_signatures + !allow_unsigned");
         assert!(
             err.to_string().contains("no tag"),
             "error must mention 'no tag': {err}"
@@ -249,8 +240,10 @@ mod tests {
         let printer = test_printer();
         let cli = make_cli_with_config(&cfg_path);
         let cache = tempfile::tempdir().unwrap();
-        enforce_signature_policy(&cli, &printer, None, "mod", true, cache.path(), "url")
-            .expect("allow_unsigned must short-circuit the bail");
+        crate::cli::RunContext::for_test(&cli, &printer, |run| {
+            enforce_signature_policy(run, None, "mod", true, cache.path(), "url")
+        })
+        .expect("allow_unsigned must short-circuit the bail");
     }
 
     #[test]
@@ -265,15 +258,9 @@ mod tests {
         let cache = make_cache_with_tag("url-lw", "v0.1.0", false);
         let printer = test_printer();
         let cli = make_cli_with_config(&cfg_path);
-        let err = enforce_signature_policy(
-            &cli,
-            &printer,
-            Some("v0.1.0"),
-            "mod",
-            false,
-            cache.path(),
-            "url-lw",
-        )
+        let err = crate::cli::RunContext::for_test(&cli, &printer, |run| {
+            enforce_signature_policy(run, Some("v0.1.0"), "mod", false, cache.path(), "url-lw")
+        })
         .expect_err("lightweight tag + require_signatures must bail");
         assert!(
             err.to_string().contains("unsigned") || err.to_string().contains("lightweight"),
@@ -287,15 +274,9 @@ mod tests {
         let printer = test_printer();
         let tmp = tempfile::tempdir().unwrap();
         let cli = make_cli_with_config(&tmp.path().join("noexist.yaml"));
-        enforce_signature_policy(
-            &cli,
-            &printer,
-            Some("v0.1.0"),
-            "mod",
-            false,
-            cache.path(),
-            "url-lw-ok",
-        )
+        crate::cli::RunContext::for_test(&cli, &printer, |run| {
+            enforce_signature_policy(run, Some("v0.1.0"), "mod", false, cache.path(), "url-lw-ok")
+        })
         .expect("lightweight tag is OK when require_signatures is off");
     }
 
@@ -316,15 +297,16 @@ mod tests {
         let printer = test_printer();
         let tmp = tempfile::tempdir().unwrap();
         let cli = make_cli_with_config(&tmp.path().join("noexist.yaml"));
-        enforce_signature_policy(
-            &cli,
-            &printer,
-            Some("no-such"),
-            "mod",
-            false,
-            cache.path(),
-            "url-no-tag",
-        )
+        crate::cli::RunContext::for_test(&cli, &printer, |run| {
+            enforce_signature_policy(
+                run,
+                Some("no-such"),
+                "mod",
+                false,
+                cache.path(),
+                "url-no-tag",
+            )
+        })
         .expect("tag-not-found should warn but not error");
     }
 
@@ -338,15 +320,16 @@ mod tests {
         let printer = test_printer();
         let tmp = tempfile::tempdir().unwrap();
         let cli = make_cli_with_config(&tmp.path().join("noexist.yaml"));
-        let result = enforce_signature_policy(
-            &cli,
-            &printer,
-            Some("v1.0.0"),
-            "mod",
-            false,
-            cache.path(),
-            "url-signed",
-        );
+        let result = crate::cli::RunContext::for_test(&cli, &printer, |run| {
+            enforce_signature_policy(
+                run,
+                Some("v1.0.0"),
+                "mod",
+                false,
+                cache.path(),
+                "url-signed",
+            )
+        });
         result.expect("signed tag without keyring must Warn but succeed");
     }
 
@@ -359,15 +342,16 @@ mod tests {
         let printer = test_printer();
         let tmp = tempfile::tempdir().unwrap();
         let cli = make_cli_with_config(&tmp.path().join("noexist.yaml"));
-        enforce_signature_policy(
-            &cli,
-            &printer,
-            Some("v0.1.0"),
-            "mod",
-            false,
-            cache.path(),
-            "url-noexist",
-        )
+        crate::cli::RunContext::for_test(&cli, &printer, |run| {
+            enforce_signature_policy(
+                run,
+                Some("v0.1.0"),
+                "mod",
+                false,
+                cache.path(),
+                "url-noexist",
+            )
+        })
         .expect("check_tag_signature err should warn but not bail");
     }
 }

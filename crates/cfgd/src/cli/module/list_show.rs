@@ -390,7 +390,9 @@ pub fn build_module_show_doc(
 
 // no-header-ok: a `<noun> list` states what is declared, and reads the
 // resolved chain only to mark which rows the active profile names.
-pub(crate) fn cmd_module_list(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
+pub(crate) fn cmd_module_list(run: &RunContext<'_>) -> anyhow::Result<()> {
+    let cli = run.cli();
+    let printer = run.printer();
     let config_dir = config_dir(cli);
     let cache_base = module_cache_dir(cli)?;
     let all_modules = modules::load_all_modules(&config_dir, &cache_base, &[], printer)?;
@@ -405,8 +407,7 @@ pub(crate) fn cmd_module_list(cli: &Cli, printer: &Printer) -> anyhow::Result<()
     }
 
     let active_modules: Vec<String> = if cli.config.exists() {
-        let (_, _, resolved) = helpers::load_config_and_profile(cli, printer)?;
-        resolved.merged.modules
+        run.config_and_profile()?.2.merged.modules.clone()
     } else {
         Vec::new()
     };

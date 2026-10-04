@@ -117,7 +117,10 @@ fn module_search_bridge_one_blank_line() {
 
     let cli = cli_for(config_dir.path(), config_dir.path());
     let (printer, cap) = Printer::for_test_doc();
-    module::cmd_module_search(&cli, &printer, "alpha").unwrap();
+    cfgd::cli::RunContext::for_test(&cli, &printer, |run| {
+        module::cmd_module_search(run, "alpha")
+    })
+    .unwrap();
     drop(printer);
 
     let combined = cap.human();
@@ -161,7 +164,10 @@ fn search_happy_human() {
 
     let cli = cli_for(config_dir.path(), config_dir.path());
     let (printer, cap) = Printer::for_test_doc();
-    module::cmd_module_search(&cli, &printer, "alpha").unwrap();
+    cfgd::cli::RunContext::for_test(&cli, &printer, |run| {
+        module::cmd_module_search(run, "alpha")
+    })
+    .unwrap();
     drop(printer);
 
     // Normalize variable paths so the golden is host-stable.
@@ -204,7 +210,10 @@ fn search_settle_line_nests_under_the_registry_owner_header() {
 
     let cli = cli_for(config_dir.path(), config_dir.path());
     let (printer, cap) = Printer::for_test_doc();
-    module::cmd_module_search(&cli, &printer, "alpha").unwrap();
+    cfgd::cli::RunContext::for_test(&cli, &printer, |run| {
+        module::cmd_module_search(run, "alpha")
+    })
+    .unwrap();
     drop(printer);
 
     let human = strip_ansi(&cap.human());

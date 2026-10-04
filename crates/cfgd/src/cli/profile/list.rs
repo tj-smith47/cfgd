@@ -1,6 +1,6 @@
 use super::*;
 use cfgd_core::PathDisplayExt;
-use cfgd_core::output::{Doc, Printer, Role, renderer::Table};
+use cfgd_core::output::{Doc, Role, renderer::Table};
 
 /// Build the `cfgd profile list` Doc from a populated entries vector + `--wide`
 /// flag. Pure; the caller assembles the entries from disk.
@@ -64,7 +64,9 @@ pub fn build_profile_list_missing_doc(profiles_dir: &Path) -> Doc {
         .with_data(&empty)
 }
 
-pub fn cmd_profile_list(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
+pub fn cmd_profile_list(run: &RunContext<'_>) -> anyhow::Result<()> {
+    let cli = run.cli();
+    let printer = run.printer();
     let profiles_dir = profiles_dir(cli);
 
     if !profiles_dir.exists() {
@@ -81,13 +83,7 @@ pub fn cmd_profile_list(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
 
     let active = match &cli.profile {
         Some(p) => Some(p.clone()),
-        None => match config::load_config(&cli.config) {
-            Ok(mut c) => {
-                drain_config_deprecations(printer, &mut c);
-                c.spec.profile
-            }
-            Err(_) => None,
-        },
+        None => run.config().ok().and_then(|c| c.spec.profile.clone()),
     };
 
     let entries: Vec<super::ProfileListEntry> = profiles
