@@ -730,6 +730,43 @@ async fn reconcile_module_with_unsigned_disallowed_and_a_rejected_signature_reco
     assert_eq!(available["message"], WITHHELD_MESSAGE);
 }
 
+/// A policy being deleted holds back nothing. Its deletion reaches the Module
+/// controller as the sweep its finalizer reconcile triggers, while the object
+/// is still cached with its deletion timestamp; a module that policy withheld
+/// must come back Available on that sweep, because no event follows the
+/// policy's final removal. The policy carries both gates (unsigned refused, a
+/// registry list the artifact is not on), so a read that still counted it
+/// through either gate fails here.
+#[tokio::test]
+async fn reconcile_module_under_a_deleting_policy_is_no_longer_withheld() {
+    let mut doomed = strict_ccp();
+    doomed.spec.security.trusted_registries = vec!["other.io".to_string()];
+    doomed.metadata.deletion_timestamp = Some(
+        k8s_openapi::apimachinery::pkg::apis::meta::v1::Time(k8s_openapi::jiff::Timestamp::now()),
+    );
+    let spec = ModuleSpec {
+        oci_artifact: Some("ghcr.io/example/mod:v1".to_string()),
+        ..Default::default()
+    };
+
+    let withheld = status_under_policies(
+        "freed-mod",
+        spec.clone(),
+        SignatureCheck::Valid,
+        vec![strict_ccp()],
+    )
+    .await;
+    assert_eq!(condition(&withheld, "Available")["status"], "False");
+
+    let status =
+        status_under_policies("freed-mod", spec, SignatureCheck::Valid, vec![doomed]).await;
+    let available = condition(&status, "Available");
+    assert_eq!(
+        available["status"], "True",
+        "a deleting policy must not withhold the module, got {available:?}"
+    );
+}
+
 #[tokio::test]
 async fn reconcile_module_with_trusted_registry_violation_records_status() {
     let spec = ModuleSpec {

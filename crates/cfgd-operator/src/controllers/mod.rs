@@ -491,12 +491,20 @@ impl ControllerStores {
         }))
     }
 
-    /// Every ClusterConfigPolicy.
-    pub(super) async fn all_cluster_config_policies(
+    /// Every ClusterConfigPolicy still in force: one carrying a deletion
+    /// timestamp is left out.
+    ///
+    /// A policy's deletion reaches the Module controller as the sweep its
+    /// finalizer removal triggers, while the object is still cached; a
+    /// deleting policy that still counted would withhold every Module through
+    /// that sweep, and no event follows its final removal to re-run them.
+    pub(super) async fn enforced_cluster_config_policies(
         &self,
     ) -> Result<Vec<Arc<ClusterConfigPolicy>>, OperatorError> {
         ready_store(&self.cluster_config_policies, "ClusterConfigPolicy").await?;
-        Ok(in_stable_order(self.cluster_config_policies.state()))
+        Ok(in_stable_order(self.cluster_config_policies.state_filter(
+            |ccp| ccp.metadata.deletion_timestamp.is_none(),
+        )))
     }
 
     /// Every Module.
@@ -620,6 +628,11 @@ pub async fn run(
     // full-object cache would hold every namespace's spec, status, annotations
     // and managedFields to answer them.
     let (ns_store, ns_writer) = reflector::store::<PartialObjectMeta<Namespace>>();
+    // A ClusterConfigPolicy's compliance counts read each namespace's labels,
+    // so a label change re-runs every policy. The gate keeps the annotation
+    // and status churn every namespace carries from sweeping them.
+    let (mut ns_labels, namespace_rx) = triggers::sweep_trigger();
+    let ns_labels_store = ns_store.clone();
     let namespace_cache = reflector(
         ns_writer,
         watcher::watcher(
@@ -628,9 +641,11 @@ pub async fn run(
         ),
     )
     .default_backoff()
-    .for_each(|event| {
+    .for_each(move |event| {
         if let Err(error) = event {
             warn!(kind = "Namespace", error = %error, "watch error");
+        } else {
+            ns_labels.observe(triggers::namespace_labels(&ns_labels_store.state()));
         }
         futures::future::ready(())
     });
@@ -646,6 +661,10 @@ pub async fn run(
     };
     let cp_store = stores.config_policies.clone();
     let bp_store = stores.backup_policies.clone();
+    let mc_store = stores.machine_configs.clone();
+    let da_store = stores.drift_alerts.clone();
+    let ccp_store = stores.cluster_config_policies.clone();
+    let ns_store = stores.namespaces.clone();
     backup_policy_cache.publish(stores.backup_policies.clone());
 
     let ctx = Arc::new(ControllerContext {
@@ -675,6 +694,16 @@ pub async fn run(
             Api::<DriftAlert>::all(client.clone()),
             crate::runtime::watch_config(),
         )
+        // A MachineConfig's ModulesResolved condition reads the Modules it
+        // names. A Module carries no finalizer, so its deletion reaches no
+        // controller but through this watch.
+        .watches(
+            Api::<Module>::all(client.clone()),
+            crate::runtime::watch_config(),
+            move |module| {
+                triggers::machine_configs_referencing(&mc_store.state(), &module.name_any())
+            },
+        )
         .run(
             reconcile_machine_config,
             make_error_policy::<MachineConfig>("machine_config"),
@@ -683,6 +712,20 @@ pub async fn run(
         .for_each(log_reconcile::<MachineConfig>("MachineConfig"));
 
     let da_controller = da_builder
+        // A DriftAlert is Resolved once its machine no longer reports
+        // DriftDetected, a condition the MachineConfig controller sets after
+        // the alert's own change, so the alert re-runs when its machine does.
+        .watches(
+            Api::<MachineConfig>::all(client.clone()),
+            crate::runtime::watch_config(),
+            move |mc| {
+                triggers::drift_alerts_naming(
+                    &da_store.state(),
+                    &mc.namespace().unwrap_or_default(),
+                    &mc.name_any(),
+                )
+            },
+        )
         .run(
             reconcile_drift_alert,
             make_error_policy::<DriftAlert>("drift_alert"),
@@ -712,15 +755,50 @@ pub async fn run(
         )
         .for_each(log_reconcile::<ConfigPolicy>("ConfigPolicy"));
 
+    // A Module's Available condition reads every policy's security block.
+    // The trigger rides this controller's own stream: a policy carries a
+    // finalizer, so its creation, every spec change and its deletion each
+    // reach a reconcile here after the cache already holds them, and the gate
+    // sweeps the Modules only when the security demands moved.
+    let (mut demands, policy_rx) = triggers::sweep_trigger();
+    let demand_store = ccp_store.clone();
+    let (ccp_mc_store, ccp_mc_ns) = (ccp_store.clone(), ns_store.clone());
     let ccp_controller = ccp_builder
+        .watches(
+            Api::<MachineConfig>::all(client.clone()),
+            crate::runtime::watch_config(),
+            move |mc| {
+                triggers::cluster_policies_reaching(
+                    &ccp_mc_store.state(),
+                    &ccp_mc_ns.state(),
+                    &mc.namespace().unwrap_or_default(),
+                )
+            },
+        )
+        .watches(
+            Api::<ConfigPolicy>::all(client.clone()),
+            crate::runtime::watch_config(),
+            move |cp| {
+                triggers::cluster_policies_reaching(
+                    &ccp_store.state(),
+                    &ns_store.state(),
+                    &cp.namespace().unwrap_or_default(),
+                )
+            },
+        )
+        .reconcile_all_on(namespace_rx)
         .run(
             reconcile_cluster_config_policy,
             make_error_policy::<ClusterConfigPolicy>("cluster_config_policy"),
             ccp_ctx,
         )
+        .inspect(move |_| {
+            demands.observe(triggers::module_security_demands(&demand_store.state()));
+        })
         .for_each(log_reconcile::<ClusterConfigPolicy>("ClusterConfigPolicy"));
 
     let mod_controller = mod_builder
+        .reconcile_all_on(policy_rx)
         .run(
             reconcile_module,
             make_error_policy::<Module>("module"),
@@ -980,6 +1058,7 @@ mod config_policy;
 mod drift_alert;
 mod machine_config;
 mod module;
+mod triggers;
 
 // Bring per-controller reconcile fns into scope so run() can wire them up.
 use backup_policy::reconcile_backup_policy;
@@ -1053,3 +1132,5 @@ mod tests_drift_alert;
 mod tests_machine_config;
 #[cfg(test)]
 mod tests_module;
+#[cfg(test)]
+mod tests_triggers;

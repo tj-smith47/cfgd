@@ -246,7 +246,7 @@ async fn withhold_unverified<'a>(
     if verdict == cfgd_crd::SIGNATURE_VERIFIED {
         return None;
     }
-    let policies = stores.all_cluster_config_policies().await.ok()?;
+    let policies = stores.enforced_cluster_config_policies().await.ok()?;
     if policies.iter().all(|ccp| ccp.spec.security.allow_unsigned) {
         return None;
     }
@@ -303,7 +303,7 @@ async fn evaluate_module_availability<'a>(
     }
 
     // Read all ClusterConfigPolicies for security constraints
-    let ccp_list = match stores.all_cluster_config_policies().await {
+    let ccp_list = match stores.enforced_cluster_config_policies().await {
         Ok(list) => list,
         Err(e) => {
             warn!(error = %e, "ClusterConfigPolicy cache unavailable for Module validation");

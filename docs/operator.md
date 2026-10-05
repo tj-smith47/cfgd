@@ -272,9 +272,11 @@ spec:
 
 The operator runs [kube-rs](https://kube.rs/) controllers that watch and reconcile each CRD type:
 
-- **MachineConfig controller**: validates specs, checks compliance against ConfigPolicy, tracks status conditions
-- **ConfigPolicy controller**: evaluates all MachineConfigs matching the target selector, reports compliant/non-compliant counts
-- **DriftAlert controller**: tracks acknowledgment and resolution state
+- **MachineConfig controller**: validates specs, checks compliance against ConfigPolicy, tracks status conditions. A Module created or deleted re-runs every MachineConfig whose `moduleRefs` name it, so `ModulesResolved` follows the Module at once
+- **ConfigPolicy controller**: evaluates all MachineConfigs matching the target selector, reports compliant/non-compliant counts. A MachineConfig change re-runs every ConfigPolicy in its namespace
+- **ClusterConfigPolicy controller**: evaluates the MachineConfigs and ConfigPolicies in every namespace its `namespaceSelector` matches, reports compliant/non-compliant counts. A MachineConfig or ConfigPolicy change re-runs the policies whose selector matches its namespace, and a namespace label change re-runs every policy
+- **Module controller**: resolves each Module's OCI artifact and signature and sets `Available` against every ClusterConfigPolicy's `security` block. Creating, changing or deleting a policy re-runs every Module as soon as the change alters an `allowUnsigned` or `trustedRegistries` value, so a Module a deleted policy withheld is served again without waiting for its next 60s reconcile
+- **DriftAlert controller**: tracks acknowledgment and resolution state. A change to the MachineConfig an alert names re-runs the alert, so it reads Resolved once its machine stops reporting `DriftDetected`
 - **BackupPolicy controller**: projects each policy's backup schedules onto every MachineConfig its selector matches, reporting rather than overriding a unit the machine pins locally or reports an owner for that no layer spells. Reconciles every 60s, retries a failed reconcile after 30s
 
 Set `WATCH_LABEL_SELECTOR` to a Kubernetes label selector to confine every controller to the `cfgd.io` objects it matches. Two operators in one cluster with disjoint selectors never reconcile the same object:

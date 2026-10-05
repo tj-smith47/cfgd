@@ -3621,7 +3621,7 @@ fn every_cfgd_io_watch_is_held_to_the_watch_label_selector() {
         ("Controller::new_with(", 1, 0),
         (".owns(", 1, 1),
         (".owns_with(", 2, 0),
-        (".watches(", 1, 2),
+        (".watches(", 1, 6),
         (".watches_with(", 2, 0),
     ];
     let mut exempt = 0;
@@ -3661,4 +3661,109 @@ fn every_cfgd_io_watch_is_held_to_the_watch_label_selector() {
         exempt, 1,
         "exactly one watch, the Namespace metadata reflector, may skip the selector"
     );
+}
+
+/// One statement of `run`, from `let <binding> = ` to the `;` that closes it
+/// at bracket depth zero, in comment- and literal-blanked code.
+fn run_statement<'a>(code: &'a str, binding: &str) -> &'a str {
+    let opener = format!("let {binding} = ");
+    let start = code
+        .find(&opener)
+        .unwrap_or_else(|| panic!("`run` has no `{opener}` statement"));
+    let mut depth = 0usize;
+    for (i, c) in code[start..].char_indices() {
+        match c {
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' => depth = depth.saturating_sub(1),
+            ';' if depth == 0 => return &code[start..start + i],
+            _ => {}
+        }
+    }
+    panic!("unclosed `{opener}` statement");
+}
+
+/// Every reconcile that reads another kind's cache is re-run by a change to
+/// that kind. A watch-driven reconcile cannot be observed without an API
+/// server, so the mappers and gates are pinned in `tests_triggers.rs` and this
+/// walk pins that `run` wires each one onto the controller whose verdict it
+/// moves:
+///
+/// - Module <- ClusterConfigPolicy: a sweep rooted on the policy controller's
+///   own output stream (no second watch), gated on the security demands.
+/// - MachineConfig <- Module: a watch, since a Module has no finalizer.
+/// - DriftAlert <- MachineConfig: a watch mapped to the alerts naming it.
+/// - ClusterConfigPolicy <- MachineConfig, ConfigPolicy: watches mapped to the
+///   policies whose selector reaches the namespace.
+/// - ClusterConfigPolicy <- Namespace: a sweep rooted on the namespace
+///   reflector, gated on labels.
+#[test]
+fn every_cross_kind_read_of_a_controller_is_wired_to_a_trigger() {
+    use cfgd_core::test_helpers::production_code_of;
+
+    let code = production_code_of(
+        &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/controllers/mod.rs"),
+    );
+    let squash = |s: &str| s.split_whitespace().collect::<String>();
+
+    let module = squash(run_statement(&code, "mod_controller"));
+    assert!(
+        module.contains(".reconcile_all_on(policy_rx)"),
+        "the Module controller must sweep on the policy trigger: {module}"
+    );
+
+    let policies = squash(run_statement(&code, "ccp_controller"));
+    for needle in [
+        ".inspect(move|_|{demands.observe(triggers::module_security_demands(&demand_store.state()));})",
+        ".reconcile_all_on(namespace_rx)",
+    ] {
+        assert!(
+            policies.contains(needle),
+            "the ClusterConfigPolicy controller lacks `{needle}`: {policies}"
+        );
+    }
+    let policy_watches = call_args(&policies, ".watches(");
+    for kind in ["Api::<MachineConfig>", "Api::<ConfigPolicy>"] {
+        let mapped = policy_watches.iter().any(|args| {
+            args[0].starts_with(kind) && args[2].contains("triggers::cluster_policies_reaching(")
+        });
+        assert!(
+            mapped,
+            "the ClusterConfigPolicy controller must watch {kind} through cluster_policies_reaching"
+        );
+    }
+
+    let machines = squash(run_statement(&code, "mc_controller"));
+    let mapped = call_args(&machines, ".watches(").iter().any(|args| {
+        args[0].starts_with("Api::<Module>")
+            && args[2].contains("triggers::machine_configs_referencing(")
+    });
+    assert!(
+        mapped,
+        "the MachineConfig controller must watch Modules through machine_configs_referencing"
+    );
+
+    let alerts = squash(run_statement(&code, "da_controller"));
+    let mapped = call_args(&alerts, ".watches(").iter().any(|args| {
+        args[0].starts_with("Api::<MachineConfig>")
+            && args[2].contains("triggers::drift_alerts_naming(")
+    });
+    assert!(
+        mapped,
+        "the DriftAlert controller must watch MachineConfigs through drift_alerts_naming"
+    );
+
+    let namespaces = squash(run_statement(&code, "namespace_cache"));
+    assert!(
+        namespaces
+            .contains("ns_labels.observe(triggers::namespace_labels(&ns_labels_store.state()))"),
+        "the namespace reflector must feed the label gate: {namespaces}"
+    );
+
+    let code = squash(&code);
+    for binding in [
+        "let(mutdemands,policy_rx)=triggers::sweep_trigger();",
+        "let(mutns_labels,namespace_rx)=triggers::sweep_trigger();",
+    ] {
+        assert!(code.contains(binding), "`run` must bind `{binding}`");
+    }
 }
