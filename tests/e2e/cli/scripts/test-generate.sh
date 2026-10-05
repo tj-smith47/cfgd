@@ -8,7 +8,7 @@ echo "=== cfgd generate tests ==="
 
 # ── GEN01: generate --help ─────────────────────────────────────────
 begin_test "GEN01: generate --help"
-run $C generate --help
+run "${C[@]}" generate --help
 if assert_ok && assert_contains "$OUTPUT" "generate"; then
     pass_test "GEN01"
 else
@@ -17,7 +17,7 @@ fi
 
 # ── GEN02: generate --scan-only ────────────────────────────────────
 begin_test "GEN02: generate --scan-only"
-run $C generate --scan-only
+run "${C[@]}" generate --scan-only
 # Scan-only should not call any AI API; verify scan-related output
 if assert_ok && assert_contains "$OUTPUT" "Scan"; then
     pass_test "GEN02"
@@ -27,7 +27,7 @@ fi
 
 # ── GEN03: generate module --help ──────────────────────────────────
 begin_test "GEN03: generate module --help"
-run $C generate module --help
+run "${C[@]}" generate module --help
 if assert_ok && assert_contains "$OUTPUT" "module"; then
     pass_test "GEN03"
 else
@@ -39,7 +39,7 @@ begin_test "GEN04: generate without ANTHROPIC_API_KEY"
 # Save and unset the key, then run generate (requires API key)
 SAVED_KEY="${ANTHROPIC_API_KEY:-}"
 unset ANTHROPIC_API_KEY 2>/dev/null || true
-run $C generate --yes
+run "${C[@]}" generate --yes
 # Restore key
 if [ -n "$SAVED_KEY" ]; then
     export ANTHROPIC_API_KEY="$SAVED_KEY"
@@ -55,7 +55,7 @@ begin_test "GEN05: generate with API key (full flow, gated)"
 if [ -z "${ANTHROPIC_API_KEY:-}" ]; then
     skip_test "GEN05" "ANTHROPIC_API_KEY not set"
 else
-    run $C generate --yes
+    run "${C[@]}" generate --yes
     if assert_ok; then
         pass_test "GEN05"
     else
@@ -68,7 +68,7 @@ begin_test "GEN06: generate --model override (gated)"
 if [ -z "${ANTHROPIC_API_KEY:-}" ]; then
     skip_test "GEN06" "ANTHROPIC_API_KEY not set"
 else
-    run $C generate --model claude-sonnet-4-20250514 --yes
+    run "${C[@]}" generate --model claude-sonnet-4-20250514 --yes
     if assert_ok; then
         pass_test "GEN06"
     else

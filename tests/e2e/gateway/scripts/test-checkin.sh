@@ -1,5 +1,6 @@
+# shellcheck shell=bash
 # Gateway checkin tests (GW-07 through GW-10, GW-18, GW-31).
-# Sourced by run-all.sh — no shebang, no set, no source, no traps, no print_summary.
+# Sourced by run-all.sh: no shebang, no set, no source, no traps, no print_summary.
 
 # =================================================================
 # GW-07: Device checkin happy path
@@ -34,14 +35,14 @@ begin_test "GW-08: Checkin with drift report"
 if [ -z "${DEVICE_API_KEY:-}" ]; then
     skip_test "GW-08" "No device enrolled (GW-02 may have failed)"
 else
-    GW08_HTTP_CODE=$(curl -s -o $GW_SCRATCH/gw08-body.txt -w "%{http_code}" \
+    GW08_HTTP_CODE=$(curl -s -o "$GW_SCRATCH/gw08-body.txt" -w "%{http_code}" \
         -X POST "${GW_URL}/api/v1/devices/${GW_DEVICE_ID}/drift" \
         -H "Authorization: Bearer ${DEVICE_API_KEY}" \
         -H "Content-Type: application/json" \
         -d '{"details":[{"field":"packages.curl","expected":"8.5.0","actual":"8.4.0"}]}' \
         2>/dev/null || echo "000")
-    GW08_BODY=$(cat $GW_SCRATCH/gw08-body.txt 2>/dev/null || echo "")
-    rm -f $GW_SCRATCH/gw08-body.txt
+    GW08_BODY=$(cat "$GW_SCRATCH/gw08-body.txt" 2>/dev/null || echo "")
+    rm -f "$GW_SCRATCH/gw08-body.txt"
 
     echo "  HTTP status: $GW08_HTTP_CODE"
     echo "  Body (first 300 chars):"
@@ -64,14 +65,14 @@ if [ -z "${DEVICE_API_KEY:-}" ]; then
     skip_test "GW-09" "No device enrolled (GW-02 may have failed)"
 else
     GW09_COMPLIANCE='{"compliant":true,"totalChecks":5,"passedChecks":5,"failedChecks":0}'
-    GW09_CHECKIN_CODE=$(curl -s -o $GW_SCRATCH/gw09-checkin.txt -w "%{http_code}" \
+    GW09_CHECKIN_CODE=$(curl -s -o "$GW_SCRATCH/gw09-checkin.txt" -w "%{http_code}" \
         -X POST "${GW_URL}/api/v1/checkin" \
         -H "Authorization: Bearer ${DEVICE_API_KEY}" \
         -H "Content-Type: application/json" \
         -d "{\"deviceId\":\"${GW_DEVICE_ID}\",\"hostname\":\"e2e-host-${E2E_RUN_ID}\",\"os\":\"linux\",\"arch\":\"x86_64\",\"configHash\":\"sha256:e2e-compliance-${E2E_RUN_ID}\",\"complianceSummary\":${GW09_COMPLIANCE}}" \
         2>/dev/null || echo "000")
-    GW09_CHECKIN_BODY=$(cat $GW_SCRATCH/gw09-checkin.txt 2>/dev/null || echo "")
-    rm -f $GW_SCRATCH/gw09-checkin.txt
+    GW09_CHECKIN_BODY=$(cat "$GW_SCRATCH/gw09-checkin.txt" 2>/dev/null || echo "")
+    rm -f "$GW_SCRATCH/gw09-checkin.txt"
 
     echo "  Checkin HTTP status: $GW09_CHECKIN_CODE"
 
@@ -80,12 +81,12 @@ else
         fail_test "GW-09" "Checkin with compliance data failed (HTTP $GW09_CHECKIN_CODE)"
     else
         # GET the device and verify compliance data is stored
-        GW09_DEVICE_CODE=$(curl -s -o $GW_SCRATCH/gw09-device.txt -w "%{http_code}" \
+        GW09_DEVICE_CODE=$(curl -s -o "$GW_SCRATCH/gw09-device.txt" -w "%{http_code}" \
             -X GET "${GW_URL}/api/v1/devices/${GW_DEVICE_ID}" \
             -H "Authorization: Bearer ${DEVICE_API_KEY}" \
             2>/dev/null || echo "000")
-        GW09_DEVICE_BODY=$(cat $GW_SCRATCH/gw09-device.txt 2>/dev/null || echo "")
-        rm -f $GW_SCRATCH/gw09-device.txt
+        GW09_DEVICE_BODY=$(cat "$GW_SCRATCH/gw09-device.txt" 2>/dev/null || echo "")
+        rm -f "$GW_SCRATCH/gw09-device.txt"
 
         echo "  GET device HTTP status: $GW09_DEVICE_CODE"
         echo "  Device body (first 500 chars):"
@@ -93,7 +94,7 @@ else
         echo ""
 
         if [ "$GW09_DEVICE_CODE" = "200" ] && echo "$GW09_DEVICE_BODY" | jq -e '.complianceSummary' >/dev/null 2>&1; then
-            # Verify the compliance data matches what we sent
+            # Verify the compliance data matches what the check-in sent
             GW09_STORED_COMPLIANT=$(echo "$GW09_DEVICE_BODY" | jq -r '.complianceSummary.compliant // empty' 2>/dev/null)
             if [ "$GW09_STORED_COMPLIANT" = "true" ]; then
                 pass_test "GW-09"
@@ -111,14 +112,14 @@ fi
 # =================================================================
 begin_test "GW-10: Checkin with invalid API key"
 
-GW10_HTTP_CODE=$(curl -s -o $GW_SCRATCH/gw10-body.txt -w "%{http_code}" \
+GW10_HTTP_CODE=$(curl -s -o "$GW_SCRATCH/gw10-body.txt" -w "%{http_code}" \
     -X POST "${GW_URL}/api/v1/checkin" \
     -H "Authorization: Bearer cfgd_dk_totally_invalid_key_value" \
     -H "Content-Type: application/json" \
     -d "{\"deviceId\":\"${GW_DEVICE_ID}\",\"hostname\":\"e2e-host-invalid\",\"os\":\"linux\",\"arch\":\"x86_64\",\"configHash\":\"sha256:invalid\"}" \
     2>/dev/null || echo "000")
-GW10_BODY=$(cat $GW_SCRATCH/gw10-body.txt 2>/dev/null || echo "")
-rm -f $GW_SCRATCH/gw10-body.txt
+GW10_BODY=$(cat "$GW_SCRATCH/gw10-body.txt" 2>/dev/null || echo "")
+rm -f "$GW_SCRATCH/gw10-body.txt"
 
 echo "  HTTP status: $GW10_HTTP_CODE"
 echo "  Body: $GW10_BODY"
@@ -128,7 +129,7 @@ case "$GW10_HTTP_CODE" in
         pass_test "GW-10"
         ;;
     200)
-        # Gateway may be in open mode (no CFGD_API_KEY set) — any Bearer token is accepted
+        # Gateway may be in open mode (no CFGD_API_KEY set): any Bearer token is accepted
         if [ -z "$ADMIN_KEY" ]; then
             skip_test "GW-10" "Gateway in open mode (no CFGD_API_KEY), cannot test auth rejection"
         else
@@ -172,14 +173,14 @@ EOF
         fail_test "GW-18" "Failed to create MachineConfig CRD"
     else
         # Checkin for this device
-        GW18_CHECKIN_CODE=$(curl -s -o $GW_SCRATCH/gw18-checkin.txt -w "%{http_code}" \
+        GW18_CHECKIN_CODE=$(curl -s -o "$GW_SCRATCH/gw18-checkin.txt" -w "%{http_code}" \
             -X POST "${GW_URL}/api/v1/checkin" \
             -H "Authorization: Bearer ${DEVICE_API_KEY}" \
             -H "Content-Type: application/json" \
             -d "{\"deviceId\":\"${GW_DEVICE_ID}\",\"hostname\":\"e2e-host-${E2E_RUN_ID}\",\"os\":\"linux\",\"arch\":\"x86_64\",\"configHash\":\"sha256:e2e-mc-test-${E2E_RUN_ID}\"}" \
             2>/dev/null || echo "000")
-        GW18_CHECKIN_BODY=$(cat $GW_SCRATCH/gw18-checkin.txt 2>/dev/null || echo "")
-        rm -f $GW_SCRATCH/gw18-checkin.txt
+        GW18_CHECKIN_BODY=$(cat "$GW_SCRATCH/gw18-checkin.txt" 2>/dev/null || echo "")
+        rm -f "$GW_SCRATCH/gw18-checkin.txt"
 
         echo "  Checkin HTTP status: $GW18_CHECKIN_CODE"
 
@@ -256,12 +257,12 @@ EOF
         # the map under an Update claim. Asserted here, the check-in below is
         # red before and green after inside one run.
         kubectl get machineconfig "${GW31_MC_NAME}" -n "${E2E_NAMESPACE}" \
-            -o json --show-managed-fields=true > $GW_SCRATCH/gw31-seeded.json 2>/dev/null || true # rc-ok: a failed read leaves the file empty, so the seeded-map and owner assertions below go red
-        GW31_SEEDED_MAP=$(jq -c '.status.packageVersions // {}' $GW_SCRATCH/gw31-seeded.json 2>/dev/null || echo "{}")
+            -o json --show-managed-fields=true > "$GW_SCRATCH/gw31-seeded.json" 2>/dev/null || true # rc-ok: a failed read leaves the file empty, so the seeded-map and owner assertions below go red
+        GW31_SEEDED_MAP=$(jq -c '.status.packageVersions // {}' "$GW_SCRATCH/gw31-seeded.json" 2>/dev/null || echo "{}")
         GW31_SEEDED_OWNERS=$(jq -r \
             '[.metadata.managedFields[] | select(.operation=="Update") | select((.fieldsV1|tostring)|contains("f:packageVersions")) | .manager] | join(",")' \
-            $GW_SCRATCH/gw31-seeded.json 2>/dev/null || echo "")
-        rm -f $GW_SCRATCH/gw31-seeded.json
+            "$GW_SCRATCH/gw31-seeded.json" 2>/dev/null || echo "")
+        rm -f "$GW_SCRATCH/gw31-seeded.json"
         GW31_SEEDED_OWNED=empty
         [ -n "$GW31_SEEDED_OWNERS" ] && GW31_SEEDED_OWNED=owned
         echo "  Seeded status.packageVersions: $GW31_SEEDED_MAP"
@@ -273,14 +274,14 @@ EOF
         assert_equals "$GW31_SEEDED_OWNED" "owned" || GW31_PASS=false
         assert_equals "$GW31_SEEDED_OWNERS" "cfgd-operator/status" || GW31_PASS=false
 
-        GW31_CHECKIN_CODE=$(curl -s -o $GW_SCRATCH/gw31-checkin.txt -w "%{http_code}" \
+        GW31_CHECKIN_CODE=$(curl -s -o "$GW_SCRATCH/gw31-checkin.txt" -w "%{http_code}" \
             -X POST "${GW_URL}/api/v1/checkin" \
             -H "Authorization: Bearer ${DEVICE_API_KEY}" \
             -H "Content-Type: application/json" \
             -d "{\"deviceId\":\"${GW_DEVICE_ID}\",\"hostname\":\"e2e-host-${E2E_RUN_ID}\",\"os\":\"linux\",\"arch\":\"x86_64\",\"configHash\":\"sha256:e2e-ssa-${E2E_RUN_ID}\",\"packageVersions\":{\"e2e/pkg\":\"1.2.3\"}}" \
             2>/dev/null || echo "000")
-        GW31_CHECKIN_BODY=$(cat $GW_SCRATCH/gw31-checkin.txt 2>/dev/null || echo "")
-        rm -f $GW_SCRATCH/gw31-checkin.txt
+        GW31_CHECKIN_BODY=$(cat "$GW_SCRATCH/gw31-checkin.txt" 2>/dev/null || echo "")
+        rm -f "$GW_SCRATCH/gw31-checkin.txt"
 
         echo "  Checkin HTTP status: $GW31_CHECKIN_CODE"
 
@@ -290,18 +291,18 @@ EOF
             # The gateway awaits the apply before it answers, so the object read
             # here already carries whatever the check-in wrote.
             kubectl get machineconfig "${GW31_MC_NAME}" -n "${E2E_NAMESPACE}" \
-                -o json --show-managed-fields=true > $GW_SCRATCH/gw31-mc.json 2>/dev/null || true # rc-ok: a failed read leaves the file empty, so the takeover assertions below go red
-            GW31_MAP=$(jq -c '.status.packageVersions // {}' $GW_SCRATCH/gw31-mc.json 2>/dev/null || echo "{}")
+                -o json --show-managed-fields=true > "$GW_SCRATCH/gw31-mc.json" 2>/dev/null || true # rc-ok: a failed read leaves the file empty, so the takeover assertions below go red
+            GW31_MAP=$(jq -c '.status.packageVersions // {}' "$GW_SCRATCH/gw31-mc.json" 2>/dev/null || echo "{}")
 
             GW31_APPLY_OP=$(kubectl get machineconfig "${GW31_MC_NAME}" -n "${E2E_NAMESPACE}" \
                 --show-managed-fields=true \
                 -o jsonpath="{.metadata.managedFields[?(@.manager==\"${GW31_MANAGER}\")].operation}" 2>/dev/null || echo "")
             GW31_APPLY_FIELDS=$(jq -c --arg m "$GW31_MANAGER" \
                 '[.metadata.managedFields[] | select(.manager==$m) | .fieldsV1] | tostring' \
-                $GW_SCRATCH/gw31-mc.json 2>/dev/null || echo "")
+                "$GW_SCRATCH/gw31-mc.json" 2>/dev/null || echo "")
             GW31_UPDATE_OWNERS=$(jq -r \
                 '[.metadata.managedFields[] | select(.operation=="Update") | select((.fieldsV1|tostring)|contains("f:packageVersions")) | .manager] | join(",")' \
-                $GW_SCRATCH/gw31-mc.json 2>/dev/null || echo "")
+                "$GW_SCRATCH/gw31-mc.json" 2>/dev/null || echo "")
 
             echo "  status.packageVersions:        $GW31_MAP"
             echo "  ${GW31_MANAGER} operation: ${GW31_APPLY_OP:-none}"
@@ -314,7 +315,7 @@ EOF
             GW31_LOG=$(kubectl logs -n cfgd-system deploy/cfgd-server --since=2m 2>&1)
             GW31_LOG_RC=$?
             GW31_LOG_READ=empty
-            [ -n "$GW31_LOG" ] && GW31_LOG_READ=read
+            [ -n "$GW31_LOG" ] && GW31_LOG_READ="read"
             GW31_CONFLICT_LOG=$(printf '%s\n' "$GW31_LOG" \
                 | grep -F "device-reported MachineConfig status was not written" \
                 | grep -F "${GW31_MC_NAME}" || true)
@@ -333,10 +334,10 @@ EOF
                 pass_test "GW-31"
             else
                 echo "  managedFields:"
-                jq -c '.metadata.managedFields' $GW_SCRATCH/gw31-mc.json 2>/dev/null | sed 's/^/    /'
+                jq -c '.metadata.managedFields' "$GW_SCRATCH/gw31-mc.json" 2>/dev/null | sed 's/^/    /'
                 fail_test "GW-31" "The checkin did not take sole ownership of status.packageVersions"
             fi
-            rm -f $GW_SCRATCH/gw31-mc.json
+            rm -f "$GW_SCRATCH/gw31-mc.json"
         fi
 
         # Cleanup: delete the MachineConfig

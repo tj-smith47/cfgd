@@ -11,7 +11,7 @@
 //! - The reconciler (`plan_packages`, `apply_packages`, ...).
 //! - `add_package` / `remove_package` profile-spec mutators.
 //! - Native-manifest parsers (Brewfile, package.json, Cargo.toml, apt list)
-//!   and `resolve_manifest_packages`.
+//!   and `resolve_manifest_packages_cached`.
 //! - The provider registry (`all_package_managers`).
 
 use std::collections::{HashMap, HashSet};
@@ -40,10 +40,10 @@ mod parsers;
 mod pipx;
 mod scoop;
 mod scripted;
-mod shared;
-mod simple;
+pub(crate) mod shared;
+pub(crate) mod simple;
 mod snap;
-mod versions;
+pub(crate) mod versions;
 mod winget;
 
 pub use brew::{BrewCaskManager, BrewManager, BrewTapManager};
@@ -57,12 +57,10 @@ pub use pipx::PipxManager;
 pub use scoop::ScoopManager;
 pub use scripted::custom_managers;
 // SimpleManager and ScriptedManager are part of the package-manager type
-// surface; they aren't named directly by callers today (constructed via
-// `all_package_managers()` / `custom_managers()`), but the re-exports keep
+// surface; callers construct them through
+// `all_package_managers()` / `custom_managers()`, and the re-exports keep
 // the types reachable at `crate::packages::SimpleManager` / `ScriptedManager`.
-#[allow(unused_imports)]
 pub use scripted::ScriptedManager;
-#[allow(unused_imports)]
 pub use simple::SimpleManager;
 pub use snap::SnapManager;
 pub use winget::WingetManager;
@@ -364,6 +362,7 @@ fn plan_packages_inner(
                 actions.push(PackageAction::Install {
                     manager: manager.name().to_string(),
                     packages: to_install,
+                    // long-line-ok: a hatch is read off its own line, so it cannot wrap
                     // batch-origin-ok: a batch action names many packages at once; each recorded row's layer is answered per package by `reconciler::apply::PackageLayers`.
                     origin: LOCAL_LAYER.to_string(),
                 });
@@ -375,6 +374,7 @@ fn plan_packages_inner(
                 actions.push(PackageAction::Uninstall {
                     manager: manager.name().to_string(),
                     packages: to_uninstall,
+                    // long-line-ok: a hatch is read off its own line, so it cannot wrap
                     // batch-origin-ok: a batch action names many packages at once; each recorded row's layer is answered per package by `reconciler::apply::PackageLayers`.
                     origin: LOCAL_LAYER.to_string(),
                 });
@@ -391,6 +391,7 @@ fn plan_packages_inner(
             actions.push(PackageAction::Install {
                 manager: manager.name().to_string(),
                 packages: desired,
+                // long-line-ok: a hatch is read off its own line, so it cannot wrap
                 // batch-origin-ok: a batch action names many packages at once; each recorded row's layer is answered per package by `reconciler::apply::PackageLayers`.
                 origin: LOCAL_LAYER.to_string(),
             });
@@ -400,6 +401,7 @@ fn plan_packages_inner(
             actions.push(PackageAction::Install {
                 manager: manager.name().to_string(),
                 packages: desired,
+                // long-line-ok: a hatch is read off its own line, so it cannot wrap
                 // batch-origin-ok: a batch action names many packages at once; each recorded row's layer is answered per package by `reconciler::apply::PackageLayers`.
                 origin: LOCAL_LAYER.to_string(),
             });
@@ -410,6 +412,7 @@ fn plan_packages_inner(
                     "'{}' not available — cannot auto-install on this platform",
                     manager.name()
                 ),
+                // long-line-ok: a hatch is read off its own line, so it cannot wrap
                 // batch-origin-ok: a skip row is keyed on the bare manager name, which no declared entry claims, so no layer delivered it.
                 origin: LOCAL_LAYER.to_string(),
             });
@@ -692,6 +695,12 @@ pub fn manager_install_script(manager: &str, packages: &[String]) -> Option<Mana
     })
 }
 
+/// The name of every data-driven system family, read off the family table.
+#[cfg(test)]
+pub(crate) fn system_family_names() -> impl Iterator<Item = &'static str> {
+    simple::SIMPLE_FAMILIES.iter().map(|(name, _)| *name)
+}
+
 /// Build the default provider registry with all workstation package managers.
 pub fn all_package_managers() -> Vec<Box<dyn PackageManager>> {
     vec![
@@ -933,7 +942,7 @@ type CachedManifest = (ManifestStamp, ParsedManifest);
 
 /// The manifest files already parsed during one run, keyed by path and kind.
 ///
-/// [`resolve_manifest_packages`] runs twice on a `status` / `diff` / `plan`
+/// [`resolve_manifest_packages_cached`] runs twice on a `status` / `diff` / `plan`
 /// invocation — once over the composed profile and once over the local-only
 /// profile the source-decision scope is classified against — and both passes
 /// read and parse the SAME Brewfile, `package.json` and `Cargo.toml` off disk.
@@ -991,22 +1000,6 @@ impl ManifestCache {
     }
 }
 
-/// Resolve manifest files referenced in package specs and merge their contents
-/// into the inline package lists. Paths are relative to `config_dir`.
-///
-/// Every parse is fresh, and the claims land in a throwaway [`LayerSources`].
-/// A caller that resolves manifests more than once in a run, or that records
-/// what it installs, reaches [`resolve_manifest_packages_cached`] with the
-/// run's [`ManifestCache`] and its own merged profile's claims instead.
-pub fn resolve_manifest_packages(packages: &mut PackagesSpec, config_dir: &Path) -> Result<()> {
-    resolve_manifest_packages_cached(
-        packages,
-        &mut LayerSources::default(),
-        config_dir,
-        &ManifestCache::default(),
-    )
-}
-
 /// Fold the names one manifest yielded into `list`, claiming each under the
 /// layer that declared the manifest in the same pass.
 ///
@@ -1028,9 +1021,10 @@ fn merge_manifest_names(
     cfgd_core::union_extend(list, names);
 }
 
-/// [`resolve_manifest_packages`], reading each manifest at most once per run
+/// Resolve manifest files referenced in package specs and merge their contents
+/// into the inline package lists, reading each manifest at most once per run
 /// and claiming every package it folds in under the layer that declared the
-/// manifest.
+/// manifest. Paths are relative to `config_dir`.
 pub fn resolve_manifest_packages_cached(
     packages: &mut PackagesSpec,
     sources: &mut LayerSources,
@@ -1124,6 +1118,10 @@ fn manifest_path(config_dir: &Path, file: &str) -> Result<PathBuf> {
     if path.exists() && cfgd_core::validate_path_within(&path, config_dir).is_err() {
         return Err(refuse("it resolves outside the config directory").into());
     }
+    // A declared Brewfile or package.json is a config input like any profile
+    // file: recorded BEFORE the `exists()` its callers ask, so a manifest that
+    // only appears later reads as a change. Absence is a stamp of its own.
+    cfgd_core::record_config_input(&path);
     Ok(path)
 }
 

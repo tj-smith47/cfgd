@@ -69,7 +69,9 @@ pub(crate) fn service_dir_flags(dirs: &DaemonDirOverrides) -> Vec<(&'static str,
 ///
 /// `dirs` is the invoking process's `--state-dir` / `--runtime-dir` /
 /// `--cache-dir`; all three are baked into the generated unit so the installed
-/// daemon resolves the same directories the operator's CLI does.
+/// daemon resolves the same directories the operator's CLI does. The
+/// invocation's `--update-policy` is not: the installed daemon checks under
+/// `spec.update.policy`, re-read on every tick.
 pub fn install_service(
     config_path: &Path,
     profile: Option<&str>,
@@ -108,11 +110,7 @@ pub fn install_service(
 #[cfg(windows)]
 fn read_event_log_flag(config_path: &Path) -> bool {
     use crate::config;
-    config::load_config(config_path)
-        .ok()
-        .and_then(|cfg| cfg.spec.daemon)
-        .map(|d| d.windows_event_log)
-        .unwrap_or(false)
+    config::load_config(config_path).is_ok_and(|cfg| cfg.spec.daemon_effective().windows_event_log)
 }
 
 /// Enable and start the just-installed service so the daemon runs immediately,

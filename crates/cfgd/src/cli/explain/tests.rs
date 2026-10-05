@@ -128,6 +128,7 @@ fn explain_resolve_field_path_leaf() {
 fn every_explain_hint_names_a_selector_that_reparses() {
     let render = |resource: &str| {
         let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
+        let printer = printer.with_hints_enabled(true);
         cmd_explain(&printer, Some(resource), false).unwrap();
         printer.flush();
         let captured = cfgd_core::test_helpers::captured_text(&buf);
@@ -324,6 +325,7 @@ fn explain_cmd_field_path_multi_child_object_shows_own_header_and_tree_stays_col
 fn every_field_list_carrying_the_mark_explains_it_once() {
     let render = |resource: &str, recursive: bool| {
         let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
+        let printer = printer.with_hints_enabled(true);
         cmd_explain(&printer, Some(resource), recursive).unwrap();
         printer.flush();
         cfgd_core::test_helpers::captured_text(&buf)
@@ -740,7 +742,7 @@ Variants
 
 Fields
   casks     <[]string> — Homebrew casks (GUI applications) to install.
-  file      <string>   — Path to a Brewfile to apply instead of (or alongside) `taps`, `formulae` and `casks`. Relative to the config root.
+  file      <string>   — Path to a Brewfile to apply in place of (or alongside) `taps`, `formulae` and `casks`. Relative to the config root.
   formulae  <[]string> — Homebrew formulae (CLI packages) to install.
   taps      <[]string> — Third-party taps to add before installing formulae/casks.
 ",
@@ -847,7 +849,7 @@ fn explain_points_every_kind_at_its_docs_page() {
     // A capture opens no hyperlink, so the row states the URL a reader can
     // copy — release-pinned, never `master`.
     let expected = format!(
-        "Docs        https://github.com/tj-smith47/cfgd/blob/v{}/docs/spec/module.md#fields",
+        "Docs        https://github.com/tj-smith47/cfgd/blob/v{}/docs/spec/module.md#fields", // space-run-ok: a rendered kv row's own column padding.
         env!("CARGO_PKG_VERSION")
     );
     assert!(
@@ -1363,7 +1365,7 @@ fn every_field_row_mark_lands_in_a_column() {
 ///   command that runs.
 ///
 /// - every object arm is a NAMED type, so the type span reads
-///   `<([]string | PackageListSpec)>` and not `<([]string | object)>`;
+///   `<([]string | PackageListSpec)>`, with no bare `object` arm;
 /// - a field's description never restates a type its own span already
 ///   shows: `Homebrew packages. Accepts a bare list or a \`BrewSpec\`
 ///   mapping.` under `<([]string | BrewSpec)>` above a `Variants` section

@@ -3484,3 +3484,388 @@ mod tests_log_reconcile {
         let _: () = futures::executor::block_on(ready);
     }
 }
+
+/// Every kind whose status carries `conditions` exposes its readiness
+/// condition as a printer column. `Module` shipped without one, so a module
+/// the operator WITHHELD over its signature verdict (`Available: False`) and
+/// a served one were the same row in `kubectl get modules` — the one surface
+/// a cluster user reaches for. The column's condition type is checked against
+/// the literals the operator's controllers write, so a column bound to a
+/// condition nothing sets would trip here too.
+#[test]
+fn every_kind_with_conditions_exposes_its_readiness_condition_as_a_column() {
+    use kube::CustomResourceExt;
+
+    use crate::crds::{ClusterConfigPolicy, ConfigPolicy, DriftAlert, MachineConfig, Module};
+
+    // A condition literal in a test would pass for one a controller writes, so
+    // only the controllers' production regions are read.
+    let controllers = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/controllers");
+    let written: String = cfgd_core::test_helpers::rust_sources_under(&controllers)
+        .into_iter()
+        .map(|path| cfgd_core::test_helpers::production_slice_of(&path))
+        .collect();
+
+    let crds = [
+        ("MachineConfig", MachineConfig::crd()),
+        ("ConfigPolicy", ConfigPolicy::crd()),
+        ("ClusterConfigPolicy", ClusterConfigPolicy::crd()),
+        ("DriftAlert", DriftAlert::crd()),
+        ("Module", Module::crd()),
+    ];
+    let mut judged = 0usize;
+    for (kind, crd) in crds {
+        let version = &crd.spec.versions[0];
+        let schema = version
+            .schema
+            .as_ref()
+            .and_then(|s| s.open_api_v3_schema.as_ref())
+            .unwrap_or_else(|| panic!("{kind} must publish a schema"));
+        let conditions = schema
+            .properties
+            .as_ref()
+            .and_then(|p| p.get("status"))
+            .and_then(|s| s.properties.as_ref())
+            .and_then(|p| p.get("conditions"));
+        if conditions.and_then(|c| c.type_.as_deref()) != Some("array") {
+            continue;
+        }
+        judged += 1;
+        let condition_types: Vec<String> = version
+            .additional_printer_columns
+            .iter()
+            .flatten()
+            .filter_map(|c| {
+                let rest = c
+                    .json_path
+                    .strip_prefix(".status.conditions[?(@.type==\"")?;
+                let (ty, _) = rest.split_once("\")].status")?;
+                Some(ty.to_string())
+            })
+            .collect();
+        assert!(
+            !condition_types.is_empty(),
+            "{kind} writes conditions but exposes none of them as a printer column"
+        );
+        for ty in condition_types {
+            assert!(
+                written.contains(&format!("\"{ty}\"")),
+                "{kind}'s printer column binds to a `{ty}` condition no controller writes"
+            );
+        }
+    }
+    assert_eq!(
+        judged, 5,
+        "every kind carries conditions; the walk reached {judged}"
+    );
+}
+
+/// The top-level arguments of each call to `opener` in `code`, split on the
+/// commas outside any bracket. `code` has its comments and literals blanked,
+/// so a bracket or comma written inside one is not read as syntax. An opener
+/// that starts with an identifier matches only at an identifier boundary, so
+/// `watcher(` finds `watcher::watcher(` and a bare `watcher(` but not
+/// `metadata_watcher(`.
+fn call_args<'a>(code: &'a str, opener: &str) -> Vec<Vec<&'a str>> {
+    let is_ident = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
+    let needs_boundary = opener.bytes().next().is_some_and(is_ident);
+    code.match_indices(opener)
+        .filter(|(start, _)| {
+            !needs_boundary || *start == 0 || !is_ident(code.as_bytes()[start - 1])
+        })
+        .map(|(start, _)| {
+            let open = start + opener.len();
+            let mut depth = 0usize;
+            let mut args = Vec::new();
+            let mut arg_start = open;
+            for (i, c) in code[open..].char_indices() {
+                let at = open + i;
+                match c {
+                    '(' | '[' | '{' => depth += 1,
+                    ')' | ']' | '}' if depth > 0 => depth -= 1,
+                    ')' => {
+                        args.push(&code[arg_start..at]);
+                        return args;
+                    }
+                    ',' if depth == 0 => {
+                        args.push(&code[arg_start..at]);
+                        arg_start = at + 1;
+                    }
+                    _ => {}
+                }
+            }
+            panic!("unclosed `{opener}` call");
+        })
+        .collect()
+}
+
+#[test]
+fn every_cfgd_io_watch_is_held_to_the_watch_label_selector() {
+    use cfgd_core::test_helpers::{production_code_of, rust_sources_under};
+
+    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let code: String = rust_sources_under(&src)
+        .iter()
+        .map(|path| production_code_of(path) + "\n")
+        .collect();
+
+    // Each opener with the position of its `watcher::Config` argument, as
+    // kube-runtime declares it, and the fewest calls the operator makes today.
+    // A floor per kind keeps a lost site of one kind from being hidden by a new
+    // site of another. The reflectors come first so a misplaced exemption is
+    // reported as such.
+    let openers = [
+        ("watcher(", 1, 2),
+        ("metadata_watcher(", 1, 0),
+        ("Controller::new(", 1, 6),
+        ("Controller::new_with(", 1, 0),
+        (".owns(", 1, 0),
+        (".owns_with(", 2, 0),
+        (".watches(", 1, 0),
+        (".watches_with(", 2, 0),
+    ];
+    let mut exempt = 0;
+    for (opener, config_at, floor) in openers {
+        let calls = call_args(&code, opener);
+        assert!(
+            calls.len() >= floor,
+            "expected at least {floor} `{opener}` calls in the operator, found {}",
+            calls.len()
+        );
+        for args in calls {
+            let config = args
+                .get(config_at)
+                .unwrap_or_else(|| panic!("`{opener}` call with no argument {config_at}: {args:?}"))
+                .trim();
+            // The Namespace metadata reflector is the one unfiltered watch:
+            // ClusterConfigPolicy matches on namespace labels the selector
+            // never names.
+            if args
+                .iter()
+                .any(|a| a.contains("PartialObjectMeta<Namespace>"))
+            {
+                exempt += 1;
+                assert_eq!(
+                    config, "WatcherConfig::default()",
+                    "the Namespace reflector is the one watch that holds the unfiltered default"
+                );
+            } else {
+                assert!(
+                    config.ends_with("runtime::watch_config()"),
+                    "`{opener}` must take runtime::watch_config() as its watcher config, got `{config}`"
+                );
+            }
+        }
+    }
+    assert_eq!(
+        exempt, 1,
+        "exactly one watch, the Namespace metadata reflector, may skip the selector"
+    );
+}
+
+/// One statement of `run`, from `let <binding> = ` to the `;` that closes it
+/// at bracket depth zero, in comment- and literal-blanked code.
+fn run_statement<'a>(code: &'a str, binding: &str) -> &'a str {
+    let opener = format!("let {binding} = ");
+    let start = code
+        .find(&opener)
+        .unwrap_or_else(|| panic!("`run` has no `{opener}` statement"));
+    let mut depth = 0usize;
+    for (i, c) in code[start..].char_indices() {
+        match c {
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' => depth = depth.saturating_sub(1),
+            ';' if depth == 0 => return &code[start..start + i],
+            _ => {}
+        }
+    }
+    panic!("unclosed `{opener}` statement");
+}
+
+/// Every reconcile that reads another kind's cache is re-run by a change to
+/// that kind. A watch-driven reconcile cannot be observed without an API
+/// server, so the gates and mappers are pinned in `tests_triggers.rs` and this
+/// walk pins that `run` wires each one, with its own store and the event's
+/// object, onto the controller whose verdict it moves:
+///
+/// - Module <- ClusterConfigPolicy: a sweep rooted on the policy controller's
+///   own output stream (no second watch), gated on the security demands.
+/// - MachineConfig <- Module: a watch gated on existence; <- DriftAlert: a
+///   watch gated on the machine the alert names, mapped to that machine and,
+///   on a retarget, to the machine it named before.
+/// - DriftAlert <- MachineConfig: a watch gated on the DriftDetected report.
+/// - ClusterConfigPolicy <- MachineConfig: a watch gated on the compliance
+///   inputs; <- ConfigPolicy: a watch gated on the generation and whether the
+///   policy is in force.
+/// - ClusterConfigPolicy <- Namespace: a sweep rooted on the namespace
+///   reflector, gated on labels.
+/// - ConfigPolicy <- MachineConfig: a watch gated on labels, generation and
+///   reported package versions; BackupPolicy <- MachineConfig: one gated on
+///   labels, generation and backup schedule owners. Both map to the policies
+///   in the machine's namespace.
+#[test]
+fn every_cross_kind_read_of_a_controller_is_wired_to_a_trigger() {
+    use cfgd_core::test_helpers::production_code_of;
+
+    let code = production_code_of(
+        &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/controllers/mod.rs"),
+    );
+    // rustfmt adds a trailing comma to an argument list it breaks across
+    // lines, so the squashed form drops it and compares one spelling.
+    let squash = |s: &str| s.split_whitespace().collect::<String>().replace(",)", ")");
+    let calls = |statement: &str, opener: &str| -> Vec<Vec<String>> {
+        call_args(statement, opener)
+            .into_iter()
+            .map(|args| args.into_iter().map(str::to_string).collect())
+            .collect()
+    };
+
+    let module = squash(run_statement(&code, "mod_controller"));
+    assert!(
+        module.contains(".reconcile_all_on(policy_rx)"),
+        "the Module controller must sweep on the policy trigger: {module}"
+    );
+
+    // (controller binding, opener, the exact squashed arguments)
+    let wired: [(&str, &str, [&str; 2]); 7] = [
+        (
+            "mc_controller",
+            ".watches_stream(",
+            [
+                "triggers::alert_watch(Api::<DriftAlert>::all(client.clone()))",
+                "triggers::machine_named_by_alert",
+            ],
+        ),
+        (
+            "mc_controller",
+            ".watches_stream(",
+            [
+                "triggers::gated_watch(Api::<Module>::all(client.clone()),triggers::existence)",
+                "move|module|triggers::machines_naming_module(&mc_store,&module)",
+            ],
+        ),
+        (
+            "da_controller",
+            ".watches_stream(",
+            [
+                "triggers::gated_watch(Api::<MachineConfig>::all(client.clone()),drift_alert::reports_drift)",
+                "move|mc|triggers::alerts_naming_machine(&da_store,&mc)",
+            ],
+        ),
+        (
+            "ccp_controller",
+            ".watches_stream(",
+            [
+                "triggers::gated_watch(Api::<MachineConfig>::all(client.clone()),triggers::compliance_inputs)",
+                "move|mc|triggers::policies_counting_machine(&ccp_mc_store,&ccp_mc_ns,&mc)",
+            ],
+        ),
+        (
+            "ccp_controller",
+            ".watches_stream(",
+            [
+                "triggers::gated_watch(Api::<ConfigPolicy>::all(client.clone()),triggers::policy_standing)",
+                "move|cp|triggers::policies_merging_config_policy(&ccp_store,&ns_store,&cp)",
+            ],
+        ),
+        (
+            "cp_controller",
+            ".watches_stream(",
+            [
+                "triggers::gated_watch(Api::<MachineConfig>::all(client.clone()),triggers::config_policy_inputs)",
+                "move|mc|triggers::config_policies_beside(&cp_store,&mc)",
+            ],
+        ),
+        (
+            "bp_controller",
+            ".watches_stream(",
+            [
+                "triggers::gated_watch(Api::<MachineConfig>::all(client.clone()),triggers::backup_inputs)",
+                "move|mc|triggers::backup_policies_beside(&bp_store,&mc)",
+            ],
+        ),
+    ];
+    for (binding, opener, [trigger, mapper]) in wired {
+        let statement = squash(run_statement(&code, binding));
+        let found = calls(&statement, opener).iter().any(|args| {
+            args.first().map(String::as_str) == Some(trigger)
+                && args.last().map(String::as_str) == Some(mapper)
+        });
+        assert!(
+            found,
+            "`{binding}` must call `{opener}{trigger}, ..., {mapper})`: {statement}"
+        );
+    }
+
+    // Every reader above reads a part of the other kind's object, so a watch
+    // that admits every write would re-run it on writes it never reads: each
+    // cross-kind watch goes through a gate, and the ungated openers are absent.
+    let squashed = squash(&code);
+    // Every trigger method kube-runtime 4.2's Controller offers but the
+    // operator does not use is refused, so a new one cannot slip in beside
+    // the gated `.watches_stream(` calls and the two `.reconcile_all_on(`
+    // sweeps pinned above.
+    for ungated in [
+        ".owns(",
+        ".owns_with(",
+        ".owns_stream(",
+        ".owns_stream_with(",
+        ".owns_shared_stream(",
+        ".owns_shared_stream_with(",
+        ".watches(",
+        ".watches_with(",
+        ".watches_stream_with(",
+        ".watches_shared_stream(",
+        ".watches_shared_stream_with(",
+        ".reconcile_on(",
+        "Controller::for_stream(",
+        "Controller::for_stream_with(",
+        "Controller::for_shared_stream(",
+        "Controller::for_shared_stream_with(",
+    ] {
+        assert!(
+            calls(&squashed, ungated).is_empty(),
+            "`run` must not open an ungated `{ungated}` watch: gate it with triggers::gated_watch"
+        );
+    }
+    assert_eq!(
+        calls(&squashed, ".watches_stream(").len(),
+        wired.len(),
+        "every `.watches_stream(` is listed above with its gate"
+    );
+    let mut sweeps: Vec<String> = calls(&squashed, ".reconcile_all_on(")
+        .into_iter()
+        .map(|args| args.join(","))
+        .collect();
+    sweeps.sort();
+    assert_eq!(
+        sweeps,
+        ["namespace_rx", "policy_rx"],
+        "a `.reconcile_all_on(` takes one of the two gated sweep triggers"
+    );
+
+    let policies = squash(run_statement(&code, "ccp_controller"));
+    for needle in [
+        ".inspect(move|_|{demands.observe(triggers::module_security_demands(&demand_store.state()));})",
+        ".reconcile_all_on(namespace_rx)",
+    ] {
+        assert!(
+            policies.contains(needle),
+            "the ClusterConfigPolicy controller lacks `{needle}`: {policies}"
+        );
+    }
+
+    let namespaces = squash(run_statement(&code, "namespace_cache"));
+    assert!(
+        namespaces.contains("Ok(event)=>ns_sweep.observe(&event)"),
+        "the namespace reflector must feed every event to the label sweep: {namespaces}"
+    );
+
+    let code = squash(&code);
+    for binding in [
+        "let(mutdemands,policy_rx)=triggers::sweep_trigger();",
+        "let(mutns_sweep,namespace_rx)=triggers::namespace_sweep();",
+    ] {
+        assert!(code.contains(binding), "`run` must bind `{binding}`");
+    }
+}

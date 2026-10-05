@@ -19,13 +19,12 @@ See `.claude/PLAN.md` for the phased plan. Do not add features outside the curre
 - `.claude/rules/shared-utils.md` — catalog of `cfgd-core/src/lib.rs` helpers; check before adding any new helper
 - `.claude/rules/structured-output-coverage.md` — `cmd_*` → `has_data_payload?` table (loads for `crates/cfgd/src/cli/**`)
 - `.claude/rules/database.md` — SQLite conventions (WAL, foreign_keys, versioned migrations)
-- `.claude/rules/style.md` — formatting, linting, naming, serde
+- `.claude/rules/style.md` — formatting, linting, naming, serde; shell-script lint (loads for `*.sh` too)
 - `.claude/rules/patterns.md` — builder, trait objects, tracing
 - `.claude/rules/testing.md` — `cargo test` gating and test placement
 - `.claude/rules/workflows.md` — GitHub Actions SSOT map + job invariants (loads for `.github/**`)
 
 ## Reference docs (load on demand)
-- `.claude/rules/shared-utils.md` — catalog of `cfgd-core/src/lib.rs` helpers; check before adding any new helper
 - `.claude/rules/module-map.md` — full crate/module layout
 - `.claude/rules/user-layer-notes.md` — how user-level hooks layer on top of project hooks
 - `docs/` — user-facing documentation (`configuration.md` has the YAML schema reference)
@@ -39,6 +38,7 @@ Primary YAML (KRM-inspired: `apiVersion`, `kind`, `metadata`, `spec`). TOML also
 - **Verb-noun subcommand pattern** is canonical. `cfgd module registry add <url>`, `cfgd source add <url>`, `cfgd module registry remove <name>`. New subcommand trees follow this shape — never invert (e.g. do NOT `cfgd module registry list-all` or `cfgd source new`).
 - **Destructive verbs take `rm` as an alias** (`Remove` accepts `rm`). `List` accepts `ls`.
 - **`--yes` / `-y` is ONE global flag on `Cli`** (`global = true`, `env = "CFGD_YES"`), accepted before or after the subcommand. A subcommand never declares its own; one that needs the value mirrors it with `#[arg(from_global)] yes: bool`. `no_subcommand_declares_its_own_yes_flag` fails until a local `--yes`/`-y` is removed.
+- **A flag `Cli` declares that clap validates against a value list accepts the spelling its stored twin serializes as.** A `case_insensitive_enum!` type spells its canonical token PascalCase (`Warn`, `All`), which is what `config get`, `explain` and the published schemas show, so `--migration-policy` and `--mask-env-values` carry `ignore_case = true`: without it the documented word is a usage error and an exported `CFGD_MIGRATION_POLICY=Prompt` ends every invocation before dispatch. `--theme` needs no fold, but not because anything serializes for it: `spec.output.theme.name` is a plain string in the document. What meets the rule there is the documented vocabulary — `Theme::PRESET_NAMES` is the lowercase list the flag shows, the published schema enumerates and `cfgd config set theme.name` refuses any other word against, with a name already in the file warned about at load. `--color` and `--scope` mirror no `spec.*` field at all. `every_enum_valued_global_flag_accepts_its_config_spelling` reads the population off `Cli::command()`, so a list written as a `ValueEnum` joins it too, and drives each folded variant's two spellings through both the flag and its env var.
 - **Global `-o` / `--output`** owns the output-format concept. Subcommand-local format flags must be named something else (e.g. `module export --as devcontainer`) to avoid shadowing.
 - **Every per-invocation presentation knob is a global flag with a `CFGD_*` env**: `--color`/`CFGD_COLOR`, `--theme`/`CFGD_THEME`, `--mask-env-values`/`CFGD_MASK_ENV_VALUES`, `-v`/`-q`, `-o`. Its persistent twin lives under `spec.output`, never at the top of `spec`. A knob that only lives in `spec.*` is a knob nobody can set for a config they do not own. A value-taking global flag is also added to `is_value_taking_flag` + `_inline` in `cli/mod.rs`; `every_value_taking_global_flag_is_skipped_by_the_subcommand_locator` fails until it is.
 - **A boolean knob that EDITS stored state comes as a `--x` / `--no-x` pair**, never a lone `--x`. A lone setter can only ever turn a knob on, so a recorded demand becomes unrevokable from the CLI; the pair is also what keeps "the caller said nothing" (leave the stored value alone) distinct from "the caller said false". The positive half `conflicts_with` the negative, both `requires` the subject being edited, and the command collapses the pair into an `Option<bool>` through `cli::paired_flag`. A knob on a CREATE verb (`source add`) stays a lone `ArgAction::SetTrue`: there is no stored value to preserve. `every_source_update_toggle_is_a_settable_unsettable_pair` walks `source update`'s real clap definition and fails until a new toggle there carries its counterpart.
@@ -49,6 +49,12 @@ Primary YAML (KRM-inspired: `apiVersion`, `kind`, `metadata`, `spec`). TOML also
 A commit subject never carries `!`, a `BREAKING CHANGE` footer or `#major` on a crate below
 1.0 unless the user asked for that commit in their own words; `task commit` refuses it, and
 the override `BREAKING_CHANGE_APPROVED=1` is the user's to set, never the agent's.
+
+Every subject is a changelog line and every body is read cold, so `task commit` and
+`task commit:quick` also refuse, with no override: a subject over 100 characters or without
+a `type(scope): ` prefix, and any non-trailer line matching `.claude/scripts/commit-wording.txt`
+(contrast frames such as "rather than" / "X, not Y", prose dashes, deferral excuses, review
+tags like `B1`, session words like `Task 7`, "we", "Claude"). Reword; never quote the phrase.
 
 ## Quality scripts
 - `.claude/scripts/audit.sh` — DRY violations, banned patterns, module boundary violations

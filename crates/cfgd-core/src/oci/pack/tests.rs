@@ -1,5 +1,12 @@
+use std::collections::HashMap;
+
 use super::*;
 use crate::oci::test_helpers::registry_from_url;
+
+/// `platform` parsed the way `--platform` is.
+fn target(platform: &str) -> OciPlatform {
+    crate::oci::parse_platform_target(platform).unwrap().into()
+}
 
 /// Create a temp directory with a couple of regular files for pack tests.
 fn create_test_pack_dir() -> tempfile::TempDir {
@@ -16,7 +23,11 @@ fn create_test_pack_dir() -> tempfile::TempDir {
 #[test]
 fn build_image_config_uses_standard_media_types_in_rootfs() {
     let diff_id = "sha256:aabbcc".to_string();
-    let config = build_image_config(&PackOptions::default(), diff_id.clone(), "linux", "amd64");
+    let config = build_image_config(
+        &PackOptions::default(),
+        diff_id.clone(),
+        &target("linux/amd64"),
+    );
     assert_eq!(config.os, "linux");
     assert_eq!(config.architecture, "amd64");
     assert_eq!(config.rootfs.fs_type, "layers");
@@ -31,7 +42,7 @@ fn build_image_config_runtime_config_populated_from_opts() {
         env: vec!["PATH=/app/bin".into()],
         ..Default::default()
     };
-    let config = build_image_config(&opts, "sha256:xx".into(), "linux", "amd64");
+    let config = build_image_config(&opts, "sha256:xx".into(), &target("linux/amd64"));
     let rc = config.config.expect("runtime config should be Some");
     assert_eq!(rc.entrypoint, Some(vec!["/app/server".into()]));
     assert_eq!(rc.env, Some(vec!["PATH=/app/bin".into()]));
@@ -43,8 +54,7 @@ fn build_image_config_no_runtime_config_when_opts_empty() {
     let config = build_image_config(
         &PackOptions::default(),
         "sha256:xx".into(),
-        "linux",
-        "amd64",
+        &target("linux/amd64"),
     );
     assert!(
         config.config.is_none(),
@@ -125,7 +135,7 @@ fn image_config_serializes_with_correct_field_names() {
         labels,
         ..Default::default()
     };
-    let config = build_image_config(&opts, "sha256:xx".into(), "linux", "arm64");
+    let config = build_image_config(&opts, "sha256:xx".into(), &target("linux/arm64"));
     let json: serde_json::Value = serde_json::to_value(&config).unwrap();
     assert_eq!(json["os"], "linux");
     assert_eq!(json["architecture"], "arm64");
@@ -261,8 +271,8 @@ fn pack_image_descriptor_digests_match_blob_bytes() {
     let (layer_gz, diff_id) = create_tar_gz_with_diff_id(dir.path()).unwrap();
     let expected_layer_digest = sha256_digest(&layer_gz);
 
-    let (os, arch) = resolve_platform(&opts).unwrap();
-    let image_config = build_image_config(&opts, diff_id, &os, &arch);
+    let platform = resolve_platform(&opts).unwrap();
+    let image_config = build_image_config(&opts, diff_id, &platform);
     let config_blob = serde_json::to_vec(&image_config).unwrap();
     let expected_config_digest = sha256_digest(&config_blob);
 
@@ -483,7 +493,7 @@ fn pack_image_manifest_push_500_returns_manifest_push_failed() {
     let artifact_ref = format!("{registry}/myorg/myimage:v1");
     let result = pack_image(dir.path(), &artifact_ref, &PackOptions::default(), None);
 
-    let err = result.err().expect("manifest PUT 500 must yield Err");
+    let err = result.expect_err("manifest PUT 500 must yield Err");
     assert!(
         matches!(err, OciError::ManifestPushFailed { .. }),
         "manifest PUT 500 must yield ManifestPushFailed, got: {err:?}"
@@ -518,7 +528,7 @@ fn pack_image_blob_upload_500_returns_blob_upload_failed() {
     let artifact_ref = format!("{registry}/myorg/myimage:v1");
     let result = pack_image(dir.path(), &artifact_ref, &PackOptions::default(), None);
 
-    let err = result.err().expect("blob POST 500 must yield Err");
+    let err = result.expect_err("blob POST 500 must yield Err");
     assert!(
         matches!(err, OciError::BlobUploadFailed { .. }),
         "blob POST 500 must yield BlobUploadFailed, got: {err:?}"
@@ -553,8 +563,7 @@ fn pack_image_manifest_uses_standard_media_types() {
     let config = build_image_config(
         &PackOptions::default(),
         "sha256:diff-id".into(),
-        "linux",
-        "amd64",
+        &target("linux/amd64"),
     );
     assert!(
         !config.rootfs.diff_ids.is_empty(),
@@ -564,11 +573,71 @@ fn pack_image_manifest_uses_standard_media_types() {
 }
 
 #[test]
+fn build_image_config_writes_the_variant_a_platform_names() {
+    let config = build_image_config(
+        &PackOptions::default(),
+        "sha256:xx".into(),
+        &target("linux/arm/v7"),
+    );
+    let json = serde_json::to_value(&config).unwrap();
+    assert_eq!(
+        (&json["os"], &json["architecture"], &json["variant"]),
+        (
+            &serde_json::json!("linux"),
+            &serde_json::json!("arm"),
+            &serde_json::json!("v7")
+        )
+    );
+    let plain = build_image_config(
+        &PackOptions::default(),
+        "sha256:xx".into(),
+        &target("linux/amd64"),
+    );
+    assert!(
+        serde_json::to_value(&plain)
+            .unwrap()
+            .get("variant")
+            .is_none(),
+        "a platform naming no variant writes no variant key"
+    );
+}
+
+/// A base index entry is picked by variant when the target names one, and
+/// by os and architecture alone, preferring an entry naming no variant, when
+/// it names none.
+#[test]
+fn base_index_entry_matches_the_variant_a_platform_names() {
+    let index: OciImageIndex = serde_json::from_value(serde_json::json!({
+        "manifests": [
+            { "digest": "sha256:v6", "platform": { "os": "linux", "architecture": "arm", "variant": "v6" } },
+            { "digest": "sha256:v7", "platform": { "os": "linux", "architecture": "arm", "variant": "v7" } },
+            { "digest": "sha256:v8", "platform": { "os": "linux", "architecture": "arm64", "variant": "v8" } },
+            { "digest": "sha256:amd", "platform": { "os": "linux", "architecture": "amd64" } },
+        ],
+    }))
+    .unwrap();
+    for (asked, picked) in [
+        ("linux/arm/v7", Some("sha256:v7")),
+        ("linux/arm", Some("sha256:v6")),
+        ("linux/arm64", Some("sha256:v8")),
+        ("linux/amd64", Some("sha256:amd")),
+        ("linux/arm/v5", None),
+        ("linux/amd64/v2", None),
+    ] {
+        assert_eq!(
+            base_index_entry(&index, &target(asked)).map(|e| e.digest.as_str()),
+            picked,
+            "asked for {asked}"
+        );
+    }
+}
+
+#[test]
 fn resolve_platform_uses_host_when_none() {
     let opts = PackOptions::default();
-    let (os, arch) = resolve_platform(&opts).unwrap();
-    assert!(!os.is_empty());
-    assert!(!arch.is_empty());
+    let platform = resolve_platform(&opts).unwrap();
+    assert!(!platform.os.is_empty());
+    assert!(!platform.architecture.is_empty());
 }
 
 #[test]
@@ -577,9 +646,10 @@ fn resolve_platform_parses_explicit_platform() {
         platform: Some("linux/arm64".into()),
         ..Default::default()
     };
-    let (os, arch) = resolve_platform(&opts).unwrap();
-    assert_eq!(os, "linux");
-    assert_eq!(arch, "arm64");
+    let platform = resolve_platform(&opts).unwrap();
+    assert_eq!(platform.os, "linux");
+    assert_eq!(platform.architecture, "arm64");
+    assert_eq!(platform.variant, None);
 }
 
 #[test]
@@ -604,6 +674,7 @@ fn base_config_with_two_layers() -> ImageConfig {
     ImageConfig {
         architecture: "amd64".to_string(),
         os: "linux".to_string(),
+        variant: None,
         created: Some("2020-01-01T00:00:00Z".to_string()),
         config: Some(ImageRuntimeConfig {
             entrypoint: Some(vec!["/base/entry".into()]),
@@ -688,13 +759,13 @@ fn build_layered_manifest_appends_new_layer_last() {
             media_type: "application/vnd.oci.image.layer.v1.tar+gzip".to_string(),
             digest: "sha256:base-layer-1".to_string(),
             size: 111,
-            annotations: HashMap::new(),
+            annotations: Annotations::new(),
         },
         OciDescriptor {
             media_type: "application/vnd.docker.image.rootfs.diff.tar.gzip".to_string(),
             digest: "sha256:base-layer-2".to_string(),
             size: 222,
-            annotations: HashMap::new(),
+            annotations: Annotations::new(),
         },
     ];
     let manifest = build_layered_manifest(
@@ -741,6 +812,7 @@ fn base_image_config_json(os: &str, arch: &str, diff_id: &str) -> Vec<u8> {
     let cfg = ImageConfig {
         architecture: arch.to_string(),
         os: os.to_string(),
+        variant: None,
         created: Some("2021-06-01T00:00:00Z".to_string()),
         config: None,
         rootfs: RootFs {
@@ -856,10 +928,9 @@ fn pack_image_base_path_layers_onto_base_via_mount() {
             true
         })
         .with_status(201)
-        .with_header(
-            "Docker-Content-Digest",
-            "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-        )
+        .with_header_from_request("Docker-Content-Digest", |req| {
+            crate::sha256_digest(req.body().expect("manifest body"))
+        })
         .create();
 
     let artifact_ref = format!("{registry}/myorg/myimage:v1");
@@ -1068,6 +1139,180 @@ fn pack_image_base_index_selects_matching_platform_manifest() {
     amd64_mock.assert();
 }
 
+/// A `--platform` naming no variant, layered onto a base whose matching
+/// entry names one, reports and writes the base's variant: the pushed
+/// config copies the base's platform, so the outcome names what was written.
+#[test]
+fn pack_image_onto_a_variant_base_reports_the_variant_its_config_carries() {
+    use std::sync::{Arc, Mutex};
+
+    let mut server = mockito::Server::new();
+    let registry = registry_from_url(&server.url());
+    let dir = create_test_pack_dir();
+
+    let arm64_manifest_digest =
+        "sha256:dddd000000000000000000000000000000000000000000000000000000000000";
+    let index = serde_json::json!({
+        "schemaVersion": 2,
+        "mediaType": MEDIA_TYPE_OCI_INDEX,
+        "manifests": [{
+            "mediaType": MEDIA_TYPE_OCI_MANIFEST,
+            "digest": arm64_manifest_digest,
+            "size": 100u64,
+            "platform": {"os": "linux", "architecture": "arm64", "variant": "v8"},
+        }],
+    });
+
+    let base_layer_digest =
+        "sha256:3333333333333333333333333333333333333333333333333333333333333333";
+    let base_config_blob = serde_json::to_vec(&ImageConfig {
+        architecture: "arm64".to_string(),
+        os: "linux".to_string(),
+        variant: Some("v8".to_string()),
+        created: Some("2021-06-01T00:00:00Z".to_string()),
+        config: None,
+        rootfs: RootFs {
+            fs_type: "layers".to_string(),
+            diff_ids: vec!["sha256:arm-diff".to_string()],
+        },
+    })
+    .expect("serialize base config");
+    let base_config_digest = sha256_digest(&base_config_blob);
+    let arm64_manifest = serde_json::json!({
+        "schemaVersion": 2,
+        "mediaType": MEDIA_TYPE_OCI_MANIFEST,
+        "config": {
+            "mediaType": MEDIA_TYPE_OCI_IMAGE_CONFIG,
+            "digest": base_config_digest,
+            "size": base_config_blob.len(),
+        },
+        "layers": [{
+            "mediaType": MEDIA_TYPE_OCI_IMAGE_LAYER,
+            "digest": base_layer_digest,
+            "size": 4096u64,
+        }],
+    });
+
+    server
+        .mock("GET", "/v2/base/variant/manifests/v1")
+        .with_status(200)
+        .with_header("Content-Type", MEDIA_TYPE_OCI_INDEX)
+        .with_body(serde_json::to_string(&index).unwrap())
+        .create();
+    server
+        .mock(
+            "GET",
+            format!("/v2/base/variant/manifests/{arm64_manifest_digest}").as_str(),
+        )
+        .with_status(200)
+        .with_body(serde_json::to_string(&arm64_manifest).unwrap())
+        .create();
+    server
+        .mock(
+            "GET",
+            format!("/v2/base/variant/blobs/{base_config_digest}").as_str(),
+        )
+        .with_status(200)
+        .with_body(base_config_blob.clone())
+        .create();
+
+    server
+        .mock(
+            "HEAD",
+            format!("/v2/myorg/myimage/blobs/{base_layer_digest}").as_str(),
+        )
+        .with_status(404)
+        .create();
+    server
+        .mock(
+            "POST",
+            mockito::Matcher::Regex(
+                r"/v2/myorg/myimage/blobs/uploads/\?mount=sha256:.*&from=base/variant".to_string(),
+            ),
+        )
+        .with_status(201)
+        .create();
+    server
+        .mock(
+            "HEAD",
+            mockito::Matcher::Regex(r"/v2/myorg/myimage/blobs/sha256:.*".to_string()),
+        )
+        .with_status(404)
+        .expect_at_least(2)
+        .create();
+    let upload_location = format!("{}/v2/myorg/myimage/blobs/uploads/upload-id", server.url());
+    server
+        .mock("POST", "/v2/myorg/myimage/blobs/uploads/")
+        .with_status(202)
+        .with_header("Location", &upload_location)
+        .expect_at_least(2)
+        .create();
+    let blob_bodies: Arc<Mutex<HashMap<String, Vec<u8>>>> = Arc::new(Mutex::new(HashMap::new()));
+    let blob_capture = Arc::clone(&blob_bodies);
+    server
+        .mock(
+            "PUT",
+            mockito::Matcher::Regex(
+                r"/v2/myorg/myimage/blobs/uploads/upload-id\?digest=sha256:.*".to_string(),
+            ),
+        )
+        .match_request(move |req| {
+            let digest = req
+                .path_and_query()
+                .split("digest=")
+                .nth(1)
+                .unwrap_or("")
+                .to_string();
+            if let Ok(body) = req.body() {
+                blob_capture
+                    .lock()
+                    .expect("blob capture lock")
+                    .insert(digest, body.clone());
+            }
+            true
+        })
+        .with_status(201)
+        .expect_at_least(2)
+        .create();
+    let manifest_body: Arc<Mutex<Option<Vec<u8>>>> = Arc::new(Mutex::new(None));
+    let manifest_capture = Arc::clone(&manifest_body);
+    server
+        .mock("PUT", "/v2/myorg/myimage/manifests/v1")
+        .match_request(move |req| {
+            if let Ok(body) = req.body() {
+                *manifest_capture.lock().expect("manifest capture lock") = Some(body.clone());
+            }
+            true
+        })
+        .with_status(201)
+        .create();
+
+    let artifact_ref = format!("{registry}/myorg/myimage:v1");
+    let opts = PackOptions {
+        platform: Some("linux/arm64".into()),
+        base: Some(format!("{registry}/base/variant:v1")),
+        ..Default::default()
+    };
+
+    let outcome = pack_image(dir.path(), &artifact_ref, &opts, None).expect("pack_image");
+    assert_eq!(outcome.platform, "linux/arm64/v8");
+
+    let manifest_bytes = manifest_body
+        .lock()
+        .expect("manifest lock")
+        .clone()
+        .expect("manifest PUT must have been captured");
+    let manifest: OciManifest =
+        serde_json::from_slice(&manifest_bytes).expect("captured manifest must parse");
+    let captured = blob_bodies.lock().expect("blob lock");
+    let config_body = captured
+        .get(&manifest.config.digest)
+        .expect("a blob PUT must carry the config digest from the manifest");
+    let pushed: serde_json::Value =
+        serde_json::from_slice(config_body).expect("pushed config must parse");
+    assert_eq!(pushed["variant"], "v8", "pushed config: {pushed}");
+}
+
 #[test]
 fn pack_image_base_index_no_matching_platform_errors() {
     let mut server = mockito::Server::new();
@@ -1101,9 +1346,7 @@ fn pack_image_base_index_no_matching_platform_errors() {
     };
 
     let result = pack_image(dir.path(), &artifact_ref, &opts, None);
-    let err = result
-        .err()
-        .expect("missing platform in index must yield Err");
+    let err = result.expect_err("missing platform in index must yield Err");
     let msg = format!("{err}");
     assert!(
         matches!(err, OciError::RequestFailed { .. }),
@@ -1113,4 +1356,129 @@ fn pack_image_base_index_no_matching_platform_errors() {
         msg.contains("no manifest for linux/arm64"),
         "error must name the missing platform: {msg}"
     );
+}
+
+/// The nine annotations every determinism pin below packs, written in an
+/// order no sort would produce. Nine keys give an unordered map one chance in
+/// `9!` of reproducing the sorted sequence the expected literal spells, so a
+/// green run cannot be a lucky hash seed; a two-key fixture is a coin flip.
+fn anti_sorted_annotations() -> Vec<(String, String)> {
+    [
+        ("zulu", "1"),
+        ("yankee", "2"),
+        ("xray", "3"),
+        ("whiskey", "4"),
+        ("victor", "5"),
+        ("uniform", "6"),
+        ("tango", "7"),
+        ("sierra", "8"),
+        (crate::OCI_ANNOTATION_CREATED, FIXED_CREATED),
+    ]
+    .into_iter()
+    .map(|(k, v)| (k.to_string(), v.to_string()))
+    .collect()
+}
+
+/// A `created` stamp the caller supplies, so the only thing left varying
+/// between two serializations is the key order under test.
+const FIXED_CREATED: &str = "2026-01-01T00:00:00Z";
+
+/// The nine annotations as the JSON object body a sorted map writes.
+fn sorted_annotations_json() -> String {
+    format!(
+        r#""{}":"{FIXED_CREATED}","sierra":"8","tango":"7","uniform":"6","victor":"5","whiskey":"4","xray":"3","yankee":"2","zulu":"1""#,
+        crate::OCI_ANNOTATION_CREATED
+    )
+}
+
+/// A packed manifest's annotations serialize in one key order, whatever order
+/// the caller built them in, so two packs of identical input produce one
+/// digest.
+///
+/// Compared against a LITERAL: two calls built from one value agree however
+/// wrongly they both order it, which makes a self-comparison green under the
+/// very regression it exists to catch. The literal spells the sorted sequence,
+/// so an unordered map fails it.
+#[test]
+fn build_image_manifest_serializes_its_annotations_in_sorted_key_order() {
+    let opts = PackOptions {
+        annotations: anti_sorted_annotations().into_iter().collect(),
+        ..Default::default()
+    };
+
+    let manifest = build_image_manifest(
+        "sha256:cfg".to_string(),
+        10,
+        "sha256:layer".to_string(),
+        20,
+        &opts,
+    );
+
+    let expected = format!(
+        r#"{{"schemaVersion":2,"mediaType":"{manifest_type}","config":{{"mediaType":"{config_type}","digest":"sha256:cfg","size":10}},"layers":[{{"mediaType":"{layer_type}","digest":"sha256:layer","size":20}}],"annotations":{{{annotations}}}}}"#,
+        manifest_type = MEDIA_TYPE_OCI_MANIFEST,
+        config_type = MEDIA_TYPE_OCI_IMAGE_CONFIG,
+        layer_type = MEDIA_TYPE_OCI_IMAGE_LAYER,
+        annotations = sorted_annotations_json(),
+    );
+    assert_eq!(serde_json::to_string(&manifest).unwrap(), expected);
+}
+
+/// The layered path carries the same contract: `cfgd module push --base` is
+/// the surface that re-pushes an unchanged directory on top of an unchanged
+/// base and must land on the digest it landed on last time.
+#[test]
+fn build_layered_manifest_serializes_its_annotations_in_sorted_key_order() {
+    let opts = PackOptions {
+        annotations: anti_sorted_annotations().into_iter().collect(),
+        ..Default::default()
+    };
+    let base_layers = [OciDescriptor {
+        media_type: MEDIA_TYPE_OCI_IMAGE_LAYER.to_string(),
+        digest: "sha256:base".to_string(),
+        size: 111,
+        annotations: Annotations::new(),
+    }];
+
+    let manifest = build_layered_manifest(
+        &base_layers,
+        "sha256:cfg".to_string(),
+        10,
+        "sha256:layer".to_string(),
+        20,
+        &opts,
+    );
+
+    let expected = format!(
+        r#"{{"schemaVersion":2,"mediaType":"{manifest_type}","config":{{"mediaType":"{config_type}","digest":"sha256:cfg","size":10}},"layers":[{{"mediaType":"{layer_type}","digest":"sha256:base","size":111}},{{"mediaType":"{layer_type}","digest":"sha256:layer","size":20}}],"annotations":{{{annotations}}}}}"#,
+        manifest_type = MEDIA_TYPE_OCI_MANIFEST,
+        config_type = MEDIA_TYPE_OCI_IMAGE_CONFIG,
+        layer_type = MEDIA_TYPE_OCI_IMAGE_LAYER,
+        annotations = sorted_annotations_json(),
+    );
+    assert_eq!(serde_json::to_string(&manifest).unwrap(), expected);
+}
+
+/// A descriptor's own annotation slot answers to the same contract.
+///
+/// Every production construction leaves it empty today and `skip_serializing_if`
+/// elides it, which is exactly why the field's ordering cannot be read off any
+/// manifest pin: an empty map serializes identically whatever its type. The
+/// descriptor is a wire shape a registry reads, so the guarantee belongs to the
+/// type whoever calls it, and it is asserted here directly.
+#[test]
+fn an_oci_descriptor_serializes_its_annotations_in_sorted_key_order() {
+    let descriptor = OciDescriptor {
+        media_type: MEDIA_TYPE_OCI_IMAGE_LAYER.to_string(),
+        digest: "sha256:layer".to_string(),
+        size: 20,
+        annotations: anti_sorted_annotations().into_iter().collect(),
+    };
+
+    let expected = format!(
+        r#"{{"mediaType":"{layer_type}","digest":"sha256:layer","size":20,"annotations":{{{annotations}}}}}"#,
+        layer_type = MEDIA_TYPE_OCI_IMAGE_LAYER,
+        annotations = sorted_annotations_json(),
+    );
+    assert_eq!(serde_json::to_string(&descriptor).unwrap(), expected);
 }

@@ -1,7 +1,9 @@
-#![allow(deprecated)] // assert_cmd 2.x cargo_bin deprecation; upgrade path is assert_cmd 3.x
-
-use assert_cmd::Command;
 use predicates::prelude::*;
+
+use assert_cmd::prelude::*;
+
+mod cfgd_binary;
+use cfgd_binary::cfgd_bin;
 
 /// Helper: create a minimal valid config directory with a profile.
 fn create_valid_config(dir: &std::path::Path) {
@@ -20,7 +22,7 @@ fn create_valid_config(dir: &std::path::Path) {
 
 #[test]
 fn help_flag_shows_usage() {
-    Command::cargo_bin("cfgd")
+    cfgd_bin()
         .unwrap()
         .arg("--help")
         .assert()
@@ -30,7 +32,7 @@ fn help_flag_shows_usage() {
 
 #[test]
 fn version_flag_shows_version() {
-    Command::cargo_bin("cfgd")
+    cfgd_bin()
         .unwrap()
         .arg("--version")
         .assert()
@@ -43,7 +45,7 @@ fn status_without_config_shows_error() {
     let dir = tempfile::tempdir().unwrap();
     let nonexistent = dir.path().join("nonexistent").join("cfgd.yaml");
 
-    Command::cargo_bin("cfgd")
+    cfgd_bin()
         .unwrap()
         .arg("status")
         .arg("--config")
@@ -57,7 +59,7 @@ fn plan_without_config_shows_error() {
     let dir = tempfile::tempdir().unwrap();
     let nonexistent = dir.path().join("nonexistent").join("cfgd.yaml");
 
-    Command::cargo_bin("cfgd")
+    cfgd_bin()
         .unwrap()
         .arg("plan")
         .arg("--config")
@@ -68,7 +70,7 @@ fn plan_without_config_shows_error() {
 
 #[test]
 fn unknown_subcommand_shows_error() {
-    Command::cargo_bin("cfgd")
+    cfgd_bin()
         .unwrap()
         .arg("nonexistent-command")
         .assert()
@@ -83,13 +85,97 @@ fn apply_dry_run_with_empty_config() {
 
     create_valid_config(config_dir);
 
-    Command::cargo_bin("cfgd")
+    cfgd_bin()
         .unwrap()
         .args(["apply", "--dry-run"])
         .arg("--config")
         .arg(config_dir.join("cfgd.yaml"))
         .assert()
         .success();
+}
+
+// --- the state store a real-binary test opens is its own ---
+
+/// The state directory `cfgd_bin()` hands this test's invocations, read off
+/// the command it builds.
+fn own_state_dir() -> std::path::PathBuf {
+    cfgd_bin()
+        .unwrap()
+        .get_envs()
+        .find(|(var, _)| *var == cfgd_core::CFGD_STATE_DIR_ENV)
+        .and_then(|(_, dir)| dir)
+        .map(std::path::PathBuf::from)
+        .expect("cfgd_bin() sets CFGD_STATE_DIR")
+}
+
+#[test]
+fn a_real_binary_run_opens_the_calling_tests_own_state_store() {
+    let dir = tempfile::tempdir().unwrap();
+    create_valid_config(dir.path());
+
+    cfgd_bin()
+        .unwrap()
+        .args(["apply", "--dry-run", "--config"])
+        .arg(dir.path().join("cfgd.yaml"))
+        .assert()
+        .success();
+
+    let store = own_state_dir().join("state.db");
+    assert!(
+        store.is_file(),
+        "a run given no --state-dir must open {}, the calling test's own store",
+        store.display()
+    );
+}
+
+#[test]
+fn apply_dry_run_waits_for_another_process_creating_the_state_store() {
+    use std::io::{BufRead, Read};
+
+    let dir = tempfile::tempdir().unwrap();
+    create_valid_config(dir.path());
+
+    // A second process creating the same fresh store holds the write lock on
+    // a database still in rollback mode; the run below starts inside that hold.
+    let holder = rusqlite::Connection::open(own_state_dir().join("state.db")).unwrap();
+    holder
+        .execute_batch("CREATE TABLE probe (x); BEGIN IMMEDIATE;")
+        .unwrap();
+
+    let mut child = cfgd_bin()
+        .unwrap()
+        .args(["apply", "--dry-run", "--config"])
+        .arg(dir.path().join("cfgd.yaml"))
+        .env("RUST_LOG", "cfgd_core::state=debug")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stderr = std::io::BufReader::new(child.stderr.take().unwrap());
+
+    // The lock is released only once the child has said it is waiting on it,
+    // so the run below is known to have met the held lock.
+    let mut seen = String::new();
+    let mut waited = false;
+    while !waited {
+        let before = seen.len();
+        if stderr.read_line(&mut seen).unwrap() == 0 {
+            break;
+        }
+        waited = seen[before..].contains(cfgd_core::state::WAL_LOCK_WAIT);
+    }
+    holder.execute_batch("COMMIT").unwrap();
+    stderr.read_to_string(&mut seen).unwrap();
+    let status = child.wait().unwrap();
+
+    assert!(
+        waited,
+        "the run never reported meeting the held lock; stderr:\n{seen}"
+    );
+    assert!(
+        status.success(),
+        "a dry-run must wait out another writer's lock; stderr:\n{seen}"
+    );
 }
 
 #[test]
@@ -100,7 +186,7 @@ fn config_dir_arg_infers_config_file() {
     create_valid_config(config_dir);
 
     // Pass the directory, not the file — cfgd should infer cfgd.yaml inside it.
-    Command::cargo_bin("cfgd")
+    cfgd_bin()
         .unwrap()
         .args(["apply", "--dry-run"])
         .arg("--config")
@@ -116,17 +202,17 @@ fn config_env_var_dir_infers_config_file() {
 
     create_valid_config(config_dir);
 
-    Command::cargo_bin("cfgd")
+    cfgd_bin()
         .unwrap()
         .args(["apply", "--dry-run"])
-        .env("CFGD_CONFIG", config_dir)
+        .env(cfgd_core::CFGD_CONFIG_ENV, config_dir)
         .assert()
         .success();
 }
 
 #[test]
 fn help_subcommand_shows_help() {
-    Command::cargo_bin("cfgd")
+    cfgd_bin()
         .unwrap()
         .arg("help")
         .assert()
@@ -136,7 +222,7 @@ fn help_subcommand_shows_help() {
 
 #[test]
 fn status_subcommand_help() {
-    Command::cargo_bin("cfgd")
+    cfgd_bin()
         .unwrap()
         .args(["status", "--help"])
         .assert()
@@ -146,7 +232,7 @@ fn status_subcommand_help() {
 
 #[test]
 fn plan_subcommand_help() {
-    Command::cargo_bin("cfgd")
+    cfgd_bin()
         .unwrap()
         .args(["plan", "--help"])
         .assert()
@@ -155,7 +241,7 @@ fn plan_subcommand_help() {
 
 #[test]
 fn apply_subcommand_help() {
-    Command::cargo_bin("cfgd")
+    cfgd_bin()
         .unwrap()
         .args(["apply", "--help"])
         .assert()
@@ -167,10 +253,10 @@ fn config_env_var_is_respected() {
     let dir = tempfile::tempdir().unwrap();
     let nonexistent = dir.path().join("via-env").join("cfgd.yaml");
 
-    Command::cargo_bin("cfgd")
+    cfgd_bin()
         .unwrap()
         .arg("status")
-        .env("CFGD_CONFIG", &nonexistent)
+        .env(cfgd_core::CFGD_CONFIG_ENV, &nonexistent)
         .assert()
         .failure();
 }
@@ -179,7 +265,7 @@ fn config_env_var_is_respected() {
 
 #[test]
 fn daemon_help() {
-    Command::cargo_bin("cfgd")
+    cfgd_bin()
         .unwrap()
         .args(["daemon", "--help"])
         .assert()
@@ -189,7 +275,7 @@ fn daemon_help() {
 
 #[test]
 fn daemon_run_help() {
-    Command::cargo_bin("cfgd")
+    cfgd_bin()
         .unwrap()
         .args(["daemon", "run", "--help"])
         .assert()
@@ -198,7 +284,7 @@ fn daemon_run_help() {
 
 #[test]
 fn daemon_install_help() {
-    Command::cargo_bin("cfgd")
+    cfgd_bin()
         .unwrap()
         .args(["daemon", "install", "--help"])
         .assert()
@@ -207,7 +293,7 @@ fn daemon_install_help() {
 
 #[test]
 fn daemon_status_help() {
-    Command::cargo_bin("cfgd")
+    cfgd_bin()
         .unwrap()
         .args(["daemon", "status", "--help"])
         .assert()
@@ -218,7 +304,7 @@ fn daemon_status_help() {
 
 #[test]
 fn module_list_help() {
-    Command::cargo_bin("cfgd")
+    cfgd_bin()
         .unwrap()
         .args(["module", "list", "--help"])
         .assert()
@@ -227,7 +313,7 @@ fn module_list_help() {
 
 #[test]
 fn module_create_help() {
-    Command::cargo_bin("cfgd")
+    cfgd_bin()
         .unwrap()
         .args(["module", "create", "--help"])
         .assert()
@@ -237,7 +323,7 @@ fn module_create_help() {
 
 #[test]
 fn module_show_help() {
-    Command::cargo_bin("cfgd")
+    cfgd_bin()
         .unwrap()
         .args(["module", "show", "--help"])
         .assert()
@@ -246,7 +332,7 @@ fn module_show_help() {
 
 #[test]
 fn module_update_help() {
-    Command::cargo_bin("cfgd")
+    cfgd_bin()
         .unwrap()
         .args(["module", "update", "--help"])
         .assert()
@@ -257,7 +343,7 @@ fn module_update_help() {
 
 #[test]
 fn upgrade_help() {
-    Command::cargo_bin("cfgd")
+    cfgd_bin()
         .unwrap()
         .args(["upgrade", "--help"])
         .assert()
@@ -269,7 +355,7 @@ fn upgrade_help() {
 
 #[test]
 fn generate_help() {
-    Command::cargo_bin("cfgd")
+    cfgd_bin()
         .unwrap()
         .args(["generate", "--help"])
         .assert()
@@ -281,7 +367,7 @@ fn generate_help() {
 
 #[test]
 fn profile_list_help() {
-    Command::cargo_bin("cfgd")
+    cfgd_bin()
         .unwrap()
         .args(["profile", "list", "--help"])
         .assert()
@@ -290,7 +376,7 @@ fn profile_list_help() {
 
 #[test]
 fn profile_show_help() {
-    Command::cargo_bin("cfgd")
+    cfgd_bin()
         .unwrap()
         .args(["profile", "show", "--help"])
         .assert()
@@ -299,7 +385,7 @@ fn profile_show_help() {
 
 #[test]
 fn profile_create_help() {
-    Command::cargo_bin("cfgd")
+    cfgd_bin()
         .unwrap()
         .args(["profile", "create", "--help"])
         .assert()
@@ -310,7 +396,7 @@ fn profile_create_help() {
 
 #[test]
 fn source_list_help() {
-    Command::cargo_bin("cfgd")
+    cfgd_bin()
         .unwrap()
         .args(["source", "list", "--help"])
         .assert()
@@ -319,7 +405,7 @@ fn source_list_help() {
 
 #[test]
 fn source_add_help() {
-    Command::cargo_bin("cfgd")
+    cfgd_bin()
         .unwrap()
         .args(["source", "add", "--help"])
         .assert()
@@ -328,7 +414,7 @@ fn source_add_help() {
 
 #[test]
 fn source_show_help() {
-    Command::cargo_bin("cfgd")
+    cfgd_bin()
         .unwrap()
         .args(["source", "show", "--help"])
         .assert()
@@ -339,7 +425,7 @@ fn source_show_help() {
 
 #[test]
 fn secret_encrypt_help() {
-    Command::cargo_bin("cfgd")
+    cfgd_bin()
         .unwrap()
         .args(["secret", "encrypt", "--help"])
         .assert()
@@ -348,7 +434,7 @@ fn secret_encrypt_help() {
 
 #[test]
 fn secret_init_help() {
-    Command::cargo_bin("cfgd")
+    cfgd_bin()
         .unwrap()
         .args(["secret", "init", "--help"])
         .assert()
@@ -359,7 +445,7 @@ fn secret_init_help() {
 
 #[test]
 fn config_show_help() {
-    Command::cargo_bin("cfgd")
+    cfgd_bin()
         .unwrap()
         .args(["config", "show", "--help"])
         .assert()
@@ -368,7 +454,7 @@ fn config_show_help() {
 
 #[test]
 fn config_get_help() {
-    Command::cargo_bin("cfgd")
+    cfgd_bin()
         .unwrap()
         .args(["config", "get", "--help"])
         .assert()
@@ -377,7 +463,7 @@ fn config_get_help() {
 
 #[test]
 fn config_set_help() {
-    Command::cargo_bin("cfgd")
+    cfgd_bin()
         .unwrap()
         .args(["config", "set", "--help"])
         .assert()
@@ -388,16 +474,12 @@ fn config_set_help() {
 
 #[test]
 fn explain_without_args_shows_overview() {
-    Command::cargo_bin("cfgd")
-        .unwrap()
-        .arg("explain")
-        .assert()
-        .success();
+    cfgd_bin().unwrap().arg("explain").assert().success();
 }
 
 #[test]
 fn explain_help() {
-    Command::cargo_bin("cfgd")
+    cfgd_bin()
         .unwrap()
         .args(["explain", "--help"])
         .assert()
@@ -408,7 +490,7 @@ fn explain_help() {
 
 #[test]
 fn compliance_help() {
-    Command::cargo_bin("cfgd")
+    cfgd_bin()
         .unwrap()
         .args(["compliance", "--help"])
         .assert()
@@ -417,7 +499,7 @@ fn compliance_help() {
 
 #[test]
 fn compliance_export_help() {
-    Command::cargo_bin("cfgd")
+    cfgd_bin()
         .unwrap()
         .args(["compliance", "export", "--help"])
         .assert()
@@ -426,7 +508,7 @@ fn compliance_export_help() {
 
 #[test]
 fn compliance_history_help() {
-    Command::cargo_bin("cfgd")
+    cfgd_bin()
         .unwrap()
         .args(["compliance", "history", "--help"])
         .assert()
@@ -437,7 +519,7 @@ fn compliance_history_help() {
 
 #[test]
 fn workflow_generate_help() {
-    Command::cargo_bin("cfgd")
+    cfgd_bin()
         .unwrap()
         .args(["workflow", "generate", "--help"])
         .assert()
@@ -448,7 +530,7 @@ fn workflow_generate_help() {
 
 #[test]
 fn completion_bash() {
-    Command::cargo_bin("cfgd")
+    cfgd_bin()
         .unwrap()
         .args(["completion", "bash"])
         .assert()
@@ -458,7 +540,7 @@ fn completion_bash() {
 
 #[test]
 fn completion_zsh() {
-    Command::cargo_bin("cfgd")
+    cfgd_bin()
         .unwrap()
         .args(["completion", "zsh"])
         .assert()
@@ -467,7 +549,7 @@ fn completion_zsh() {
 
 #[test]
 fn completion_fish() {
-    Command::cargo_bin("cfgd")
+    cfgd_bin()
         .unwrap()
         .args(["completion", "fish"])
         .assert()
@@ -478,7 +560,7 @@ fn completion_fish() {
 // against accidental removal of `alias = "completions"` in cli/mod.rs.
 #[test]
 fn completions_alias_still_works() {
-    Command::cargo_bin("cfgd")
+    cfgd_bin()
         .unwrap()
         .args(["completions", "bash"])
         .assert()
@@ -493,10 +575,10 @@ fn status_with_valid_config_succeeds() {
     let dir = tempfile::tempdir().unwrap();
     create_valid_config(dir.path());
 
-    Command::cargo_bin("cfgd")
+    cfgd_bin()
         .unwrap()
         .arg("status")
-        .env("CFGD_CONFIG", dir.path().join("cfgd.yaml"))
+        .env(cfgd_core::CFGD_CONFIG_ENV, dir.path().join("cfgd.yaml"))
         .assert()
         .success();
 }
@@ -508,10 +590,10 @@ fn plan_with_valid_config_succeeds() {
     let dir = tempfile::tempdir().unwrap();
     create_valid_config(dir.path());
 
-    Command::cargo_bin("cfgd")
+    cfgd_bin()
         .unwrap()
         .arg("plan")
-        .env("CFGD_CONFIG", dir.path().join("cfgd.yaml"))
+        .env(cfgd_core::CFGD_CONFIG_ENV, dir.path().join("cfgd.yaml"))
         .assert()
         .success();
 }
@@ -523,10 +605,10 @@ fn verify_with_valid_config_succeeds() {
     let dir = tempfile::tempdir().unwrap();
     create_valid_config(dir.path());
 
-    Command::cargo_bin("cfgd")
+    cfgd_bin()
         .unwrap()
         .arg("verify")
-        .env("CFGD_CONFIG", dir.path().join("cfgd.yaml"))
+        .env(cfgd_core::CFGD_CONFIG_ENV, dir.path().join("cfgd.yaml"))
         .assert()
         .success();
 }
@@ -572,7 +654,7 @@ fn verify_full_path_resolves_modules_and_catches_module_file_drift() {
     // Deploy it, THEN tamper: a target cfgd has never written is an unmanaged
     // file, which is a different finding with a different fix. This test is
     // about content drift in a file cfgd really owns.
-    Command::cargo_bin("cfgd")
+    cfgd_bin()
         .unwrap()
         .arg("apply")
         .arg("--module")
@@ -587,7 +669,7 @@ fn verify_full_path_resolves_modules_and_catches_module_file_drift() {
         .success();
     std::fs::write(&module_target, "tampered\n").unwrap();
 
-    let assert = Command::cargo_bin("cfgd")
+    let assert = cfgd_bin()
         .unwrap()
         .arg("verify")
         .arg("--exit-code")
@@ -650,7 +732,7 @@ fn status_module_exit_code_catches_module_file_drift() {
     // Deploy it, THEN tamper: a target cfgd has never written is an unmanaged
     // file, which is a different finding with a different fix. This test is
     // about content drift in a file cfgd really owns.
-    Command::cargo_bin("cfgd")
+    cfgd_bin()
         .unwrap()
         .arg("apply")
         .arg("--module")
@@ -670,7 +752,7 @@ fn status_module_exit_code_catches_module_file_drift() {
     // grepping human text — `!A || B` against a fixed "No drift" substring
     // passed even when the drifted pair leaked in, since the fixture's
     // human render always carries a "No drift"-shaped line somewhere.
-    let quiet = Command::cargo_bin("cfgd")
+    let quiet = cfgd_bin()
         .unwrap()
         .arg("status")
         .arg("--module")
@@ -699,7 +781,7 @@ fn status_module_exit_code_catches_module_file_drift() {
 
     // With --exit-code: the live scan runs, catches the drift, and exits 5 —
     // the same code `verify --exit-code` returns for the identical fixture.
-    let assert = Command::cargo_bin("cfgd")
+    let assert = cfgd_bin()
         .unwrap()
         .arg("status")
         .arg("--module")
@@ -728,10 +810,10 @@ fn diff_with_valid_config_succeeds() {
     let dir = tempfile::tempdir().unwrap();
     create_valid_config(dir.path());
 
-    Command::cargo_bin("cfgd")
+    cfgd_bin()
         .unwrap()
         .arg("diff")
-        .env("CFGD_CONFIG", dir.path().join("cfgd.yaml"))
+        .env(cfgd_core::CFGD_CONFIG_ENV, dir.path().join("cfgd.yaml"))
         .assert()
         .success();
 }
@@ -743,12 +825,53 @@ fn doctor_with_valid_config_succeeds() {
     let dir = tempfile::tempdir().unwrap();
     create_valid_config(dir.path());
 
-    Command::cargo_bin("cfgd")
+    cfgd_bin()
         .unwrap()
         .arg("doctor")
-        .env("CFGD_CONFIG", dir.path().join("cfgd.yaml"))
+        .env(cfgd_core::CFGD_CONFIG_ENV, dir.path().join("cfgd.yaml"))
         .assert()
         .success();
+}
+
+// --- doctor treats git as a required tool ---
+
+/// `git` is a required tool: over one valid config, a PATH holding a `git`
+/// passes the run with `"git": true`, and the same PATH without it fails the
+/// run with exit 1 and `"git": false` in the `-o json` payload.
+#[test]
+fn doctor_fails_the_run_and_reports_git_false_when_git_is_not_on_path() {
+    let dir = tempfile::tempdir().unwrap();
+    create_valid_config(dir.path());
+    for with_git in [true, false] {
+        // A PATH handed to the child alone, so what it resolves is exactly what
+        // this directory holds, whatever the host has installed.
+        let tools = tempfile::tempdir().unwrap();
+        if with_git {
+            cfgd_core::test_helpers::write_probe_tool(tools.path(), "git");
+        }
+        let out = cfgd_bin()
+            .unwrap()
+            .args(["doctor", "-o", "json"])
+            .env(cfgd_core::CFGD_CONFIG_ENV, dir.path().join("cfgd.yaml"))
+            .env("PATH", tools.path())
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let payload: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap_or_else(|e| {
+            panic!("with_git={with_git}: stdout is not one JSON value ({e}): {stdout}")
+        });
+        assert_eq!(
+            payload["git"],
+            serde_json::json!(with_git),
+            "with_git={with_git}: {payload}"
+        );
+        assert_eq!(
+            out.status.code(),
+            Some(if with_git { 0 } else { 1 }),
+            "with_git={with_git}: stderr {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
 }
 
 // --- doctor with a missing config at an explicitly-given path fails ---
@@ -760,10 +883,10 @@ fn doctor_with_missing_explicit_config_fails() {
 
     // CFGD_CONFIG is a user-supplied path: a typo here must stop
     // `cfgd doctor && cfgd apply` (exit 1), not warn-and-pass.
-    Command::cargo_bin("cfgd")
+    cfgd_bin()
         .unwrap()
         .arg("doctor")
-        .env("CFGD_CONFIG", &nonexistent)
+        .env(cfgd_core::CFGD_CONFIG_ENV, &nonexistent)
         .assert()
         .failure()
         .code(1)
@@ -772,22 +895,19 @@ fn doctor_with_missing_explicit_config_fails() {
 
 // --- doctor without config at the DEFAULT path still succeeds (fresh machine) ---
 
-// Unix-only: the default config dir honors $XDG_CONFIG_HOME/$HOME there, so the
-// test can point the DEFAULT at an empty tempdir. On Windows the default comes
-// from the Known Folders API, which env vars cannot redirect.
-#[cfg(unix)]
 #[test]
 fn doctor_without_config_at_default_path_succeeds() {
     let home = tempfile::tempdir().unwrap();
 
     // No CFGD_CONFIG / --config: the path is the derived default under an
     // empty HOME — the fresh-machine contract is Warn + exit 0.
-    Command::cargo_bin("cfgd")
+    cfgd_bin()
         .unwrap()
         .arg("doctor")
-        .env_remove("CFGD_CONFIG")
-        .env_remove("CFGD_CONFIG_DIR")
+        .env_remove(cfgd_core::CFGD_CONFIG_ENV)
+        .env_remove(cfgd_core::CFGD_CONFIG_DIR_ENV)
         .env("HOME", home.path())
+        .env("USERPROFILE", home.path())
         .env("XDG_CONFIG_HOME", home.path().join(".config"))
         .env("XDG_STATE_HOME", home.path().join(".state"))
         .env("XDG_CACHE_HOME", home.path().join(".cache"))
@@ -805,11 +925,11 @@ fn log_with_valid_config_shows_empty() {
     let state_dir = dir.path().join("state");
     std::fs::create_dir_all(&state_dir).unwrap();
 
-    Command::cargo_bin("cfgd")
+    cfgd_bin()
         .unwrap()
         .arg("log")
-        .env("CFGD_CONFIG", dir.path().join("cfgd.yaml"))
-        .env("CFGD_STATE_DIR", &state_dir)
+        .env(cfgd_core::CFGD_CONFIG_ENV, dir.path().join("cfgd.yaml"))
+        .env(cfgd_core::CFGD_STATE_DIR_ENV, &state_dir)
         .assert()
         .success();
 }
@@ -821,10 +941,10 @@ fn module_list_with_valid_config() {
     let dir = tempfile::tempdir().unwrap();
     create_valid_config(dir.path());
 
-    Command::cargo_bin("cfgd")
+    cfgd_bin()
         .unwrap()
         .args(["module", "list"])
-        .env("CFGD_CONFIG", dir.path().join("cfgd.yaml"))
+        .env(cfgd_core::CFGD_CONFIG_ENV, dir.path().join("cfgd.yaml"))
         .assert()
         .success();
 }
@@ -836,10 +956,10 @@ fn profile_list_with_valid_config() {
     let dir = tempfile::tempdir().unwrap();
     create_valid_config(dir.path());
 
-    Command::cargo_bin("cfgd")
+    cfgd_bin()
         .unwrap()
         .args(["profile", "list"])
-        .env("CFGD_CONFIG", dir.path().join("cfgd.yaml"))
+        .env(cfgd_core::CFGD_CONFIG_ENV, dir.path().join("cfgd.yaml"))
         .assert()
         .success();
 }
@@ -851,10 +971,10 @@ fn profile_show_with_valid_config() {
     let dir = tempfile::tempdir().unwrap();
     create_valid_config(dir.path());
 
-    Command::cargo_bin("cfgd")
+    cfgd_bin()
         .unwrap()
         .args(["profile", "show"])
-        .env("CFGD_CONFIG", dir.path().join("cfgd.yaml"))
+        .env(cfgd_core::CFGD_CONFIG_ENV, dir.path().join("cfgd.yaml"))
         .assert()
         .success();
 }
@@ -866,12 +986,55 @@ fn source_list_with_valid_config() {
     let dir = tempfile::tempdir().unwrap();
     create_valid_config(dir.path());
 
-    Command::cargo_bin("cfgd")
+    cfgd_bin()
         .unwrap()
         .args(["source", "list"])
-        .env("CFGD_CONFIG", dir.path().join("cfgd.yaml"))
+        .env(cfgd_core::CFGD_CONFIG_ENV, dir.path().join("cfgd.yaml"))
         .assert()
         .success();
+}
+
+/// `cfgd config migrate` is the load-time gate's own remediation, so the gate
+/// is withheld from it: under `spec.migrationPolicy: Update` the report still
+/// writes nothing, and says so. Run before the exemption existed, the gate
+/// rewrote the document and the report then announced that the document
+/// declared every field this build reads.
+#[test]
+fn config_migrate_reports_without_writing_under_an_update_policy() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = tempfile::tempdir().unwrap();
+    let path = dir.path().join("cfgd.yaml");
+    let doc = "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  \
+               profile: work\n  migrationPolicy: Update\n";
+    std::fs::write(&path, doc).unwrap();
+
+    let out = cfgd_bin()
+        .unwrap()
+        .args(["config", "migrate", "-o", "json"])
+        .arg("--config")
+        .arg(&path)
+        .arg("--state-dir")
+        .arg(state.path())
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        doc,
+        "the report writes nothing, whatever the load-time policy says"
+    );
+    let payload: serde_json::Value = serde_json::from_slice(&out).expect("the report is JSON");
+    assert_eq!(payload["written"], serde_json::Value::Bool(false));
+    let pending = payload["pendingKeys"]
+        .as_array()
+        .expect("pendingKeys is a list");
+    assert!(
+        !pending.is_empty(),
+        "the fixture is behind the schema, so the report names what it is behind by: {payload}"
+    );
 }
 
 // --- config show with valid config ---
@@ -881,10 +1044,10 @@ fn config_show_with_valid_config() {
     let dir = tempfile::tempdir().unwrap();
     create_valid_config(dir.path());
 
-    Command::cargo_bin("cfgd")
+    cfgd_bin()
         .unwrap()
         .args(["config", "show"])
-        .env("CFGD_CONFIG", dir.path().join("cfgd.yaml"))
+        .env(cfgd_core::CFGD_CONFIG_ENV, dir.path().join("cfgd.yaml"))
         .assert()
         .success();
 }
@@ -896,10 +1059,10 @@ fn status_json_output() {
     let dir = tempfile::tempdir().unwrap();
     create_valid_config(dir.path());
 
-    Command::cargo_bin("cfgd")
+    cfgd_bin()
         .unwrap()
         .args(["status", "-o", "json"])
-        .env("CFGD_CONFIG", dir.path().join("cfgd.yaml"))
+        .env(cfgd_core::CFGD_CONFIG_ENV, dir.path().join("cfgd.yaml"))
         .assert()
         .success();
 }
@@ -909,10 +1072,10 @@ fn plan_json_output() {
     let dir = tempfile::tempdir().unwrap();
     create_valid_config(dir.path());
 
-    Command::cargo_bin("cfgd")
+    cfgd_bin()
         .unwrap()
         .args(["plan", "-o", "json"])
-        .env("CFGD_CONFIG", dir.path().join("cfgd.yaml"))
+        .env(cfgd_core::CFGD_CONFIG_ENV, dir.path().join("cfgd.yaml"))
         .assert()
         .success();
 }
@@ -924,10 +1087,10 @@ fn status_yaml_output() {
     let dir = tempfile::tempdir().unwrap();
     create_valid_config(dir.path());
 
-    Command::cargo_bin("cfgd")
+    cfgd_bin()
         .unwrap()
         .args(["status", "-o", "yaml"])
-        .env("CFGD_CONFIG", dir.path().join("cfgd.yaml"))
+        .env(cfgd_core::CFGD_CONFIG_ENV, dir.path().join("cfgd.yaml"))
         .assert()
         .success();
 }
@@ -939,10 +1102,10 @@ fn verbose_flag_accepted() {
     let dir = tempfile::tempdir().unwrap();
     create_valid_config(dir.path());
 
-    Command::cargo_bin("cfgd")
+    cfgd_bin()
         .unwrap()
         .args(["--verbose", "status"])
-        .env("CFGD_CONFIG", dir.path().join("cfgd.yaml"))
+        .env(cfgd_core::CFGD_CONFIG_ENV, dir.path().join("cfgd.yaml"))
         .assert()
         .success();
 }
@@ -952,17 +1115,17 @@ fn quiet_flag_accepted() {
     let dir = tempfile::tempdir().unwrap();
     create_valid_config(dir.path());
 
-    Command::cargo_bin("cfgd")
+    cfgd_bin()
         .unwrap()
         .args(["--quiet", "status"])
-        .env("CFGD_CONFIG", dir.path().join("cfgd.yaml"))
+        .env(cfgd_core::CFGD_CONFIG_ENV, dir.path().join("cfgd.yaml"))
         .assert()
         .success();
 }
 
 #[test]
 fn verbose_and_quiet_conflict() {
-    Command::cargo_bin("cfgd")
+    cfgd_bin()
         .unwrap()
         .args(["--verbose", "--quiet", "status"])
         .assert()
@@ -977,10 +1140,10 @@ fn no_color_flag_accepted() {
     let dir = tempfile::tempdir().unwrap();
     create_valid_config(dir.path());
 
-    Command::cargo_bin("cfgd")
+    cfgd_bin()
         .unwrap()
         .args(["--no-color", "status"])
-        .env("CFGD_CONFIG", dir.path().join("cfgd.yaml"))
+        .env(cfgd_core::CFGD_CONFIG_ENV, dir.path().join("cfgd.yaml"))
         .assert()
         .success();
 }
@@ -992,10 +1155,10 @@ fn plan_with_phase_filter() {
     let dir = tempfile::tempdir().unwrap();
     create_valid_config(dir.path());
 
-    Command::cargo_bin("cfgd")
+    cfgd_bin()
         .unwrap()
         .args(["plan", "--phase", "packages"])
-        .env("CFGD_CONFIG", dir.path().join("cfgd.yaml"))
+        .env(cfgd_core::CFGD_CONFIG_ENV, dir.path().join("cfgd.yaml"))
         .assert()
         .success();
 }
@@ -1007,10 +1170,10 @@ fn apply_dry_run_with_skip_flag() {
     let dir = tempfile::tempdir().unwrap();
     create_valid_config(dir.path());
 
-    Command::cargo_bin("cfgd")
+    cfgd_bin()
         .unwrap()
         .args(["apply", "--dry-run", "--skip", "packages.brew.ripgrep"])
-        .env("CFGD_CONFIG", dir.path().join("cfgd.yaml"))
+        .env(cfgd_core::CFGD_CONFIG_ENV, dir.path().join("cfgd.yaml"))
         .assert()
         .success();
 }
@@ -1020,10 +1183,10 @@ fn apply_dry_run_with_only_flag() {
     let dir = tempfile::tempdir().unwrap();
     create_valid_config(dir.path());
 
-    Command::cargo_bin("cfgd")
+    cfgd_bin()
         .unwrap()
         .args(["apply", "--dry-run", "--only", "packages"])
-        .env("CFGD_CONFIG", dir.path().join("cfgd.yaml"))
+        .env(cfgd_core::CFGD_CONFIG_ENV, dir.path().join("cfgd.yaml"))
         .assert()
         .success();
 }
@@ -1032,7 +1195,7 @@ fn apply_dry_run_with_only_flag() {
 
 #[test]
 fn checkin_missing_server_url_fails() {
-    Command::cargo_bin("cfgd")
+    cfgd_bin()
         .unwrap()
         .arg("checkin")
         .assert()
@@ -1044,7 +1207,7 @@ fn checkin_missing_server_url_fails() {
 
 #[test]
 fn enroll_missing_server_url_fails() {
-    Command::cargo_bin("cfgd")
+    cfgd_bin()
         .unwrap()
         .arg("enroll")
         .assert()
@@ -1056,7 +1219,7 @@ fn enroll_missing_server_url_fails() {
 
 #[test]
 fn explain_module_resource() {
-    Command::cargo_bin("cfgd")
+    cfgd_bin()
         .unwrap()
         .args(["explain", "module"])
         .assert()
@@ -1065,7 +1228,7 @@ fn explain_module_resource() {
 
 #[test]
 fn explain_profile_resource() {
-    Command::cargo_bin("cfgd")
+    cfgd_bin()
         .unwrap()
         .args(["explain", "profile"])
         .assert()
@@ -1079,10 +1242,10 @@ fn sync_without_config_shows_error() {
     let dir = tempfile::tempdir().unwrap();
     let nonexistent = dir.path().join("gone").join("cfgd.yaml");
 
-    Command::cargo_bin("cfgd")
+    cfgd_bin()
         .unwrap()
         .arg("sync")
-        .env("CFGD_CONFIG", &nonexistent)
+        .env(cfgd_core::CFGD_CONFIG_ENV, &nonexistent)
         .assert()
         .failure();
 }
@@ -1092,10 +1255,10 @@ fn pull_without_config_shows_error() {
     let dir = tempfile::tempdir().unwrap();
     let nonexistent = dir.path().join("gone").join("cfgd.yaml");
 
-    Command::cargo_bin("cfgd")
+    cfgd_bin()
         .unwrap()
         .arg("pull")
-        .env("CFGD_CONFIG", &nonexistent)
+        .env(cfgd_core::CFGD_CONFIG_ENV, &nonexistent)
         .assert()
         .failure();
 }
@@ -1104,7 +1267,7 @@ fn pull_without_config_shows_error() {
 
 #[test]
 fn decide_help() {
-    Command::cargo_bin("cfgd")
+    cfgd_bin()
         .unwrap()
         .args(["decide", "--help"])
         .assert()
@@ -1115,7 +1278,7 @@ fn decide_help() {
 
 #[test]
 fn rollback_help() {
-    Command::cargo_bin("cfgd")
+    cfgd_bin()
         .unwrap()
         .args(["rollback", "--help"])
         .assert()
@@ -1126,7 +1289,7 @@ fn rollback_help() {
 
 #[test]
 fn mcp_server_help() {
-    Command::cargo_bin("cfgd")
+    cfgd_bin()
         .unwrap()
         .args(["mcp-server", "--help"])
         .assert()
@@ -1137,7 +1300,7 @@ fn mcp_server_help() {
 
 #[test]
 fn checkin_help() {
-    Command::cargo_bin("cfgd")
+    cfgd_bin()
         .unwrap()
         .args(["checkin", "--help"])
         .assert()
@@ -1148,7 +1311,7 @@ fn checkin_help() {
 
 #[test]
 fn enroll_help() {
-    Command::cargo_bin("cfgd")
+    cfgd_bin()
         .unwrap()
         .args(["enroll", "--help"])
         .assert()
@@ -1164,11 +1327,11 @@ fn log_with_limit_flag() {
     let state_dir = dir.path().join("state");
     std::fs::create_dir_all(&state_dir).unwrap();
 
-    Command::cargo_bin("cfgd")
+    cfgd_bin()
         .unwrap()
         .args(["log", "-n", "5"])
-        .env("CFGD_CONFIG", dir.path().join("cfgd.yaml"))
-        .env("CFGD_STATE_DIR", &state_dir)
+        .env(cfgd_core::CFGD_CONFIG_ENV, dir.path().join("cfgd.yaml"))
+        .env(cfgd_core::CFGD_STATE_DIR_ENV, &state_dir)
         .assert()
         .success();
 }
@@ -1180,10 +1343,10 @@ fn diff_without_config_shows_error() {
     let dir = tempfile::tempdir().unwrap();
     let nonexistent = dir.path().join("gone").join("cfgd.yaml");
 
-    Command::cargo_bin("cfgd")
+    cfgd_bin()
         .unwrap()
         .arg("diff")
-        .env("CFGD_CONFIG", &nonexistent)
+        .env(cfgd_core::CFGD_CONFIG_ENV, &nonexistent)
         .assert()
         .failure();
 }
@@ -1195,10 +1358,10 @@ fn verify_without_config_shows_error() {
     let dir = tempfile::tempdir().unwrap();
     let nonexistent = dir.path().join("gone").join("cfgd.yaml");
 
-    Command::cargo_bin("cfgd")
+    cfgd_bin()
         .unwrap()
         .arg("verify")
-        .env("CFGD_CONFIG", &nonexistent)
+        .env(cfgd_core::CFGD_CONFIG_ENV, &nonexistent)
         .assert()
         .failure();
 }
@@ -1210,10 +1373,10 @@ fn module_list_without_config_shows_warning() {
     let dir = tempfile::tempdir().unwrap();
     let nonexistent = dir.path().join("gone").join("cfgd.yaml");
 
-    Command::cargo_bin("cfgd")
+    cfgd_bin()
         .unwrap()
         .args(["module", "list"])
-        .env("CFGD_CONFIG", &nonexistent)
+        .env(cfgd_core::CFGD_CONFIG_ENV, &nonexistent)
         .assert()
         .success();
 }
@@ -1225,10 +1388,10 @@ fn profile_list_without_config_shows_warning() {
     let dir = tempfile::tempdir().unwrap();
     let nonexistent = dir.path().join("gone").join("cfgd.yaml");
 
-    Command::cargo_bin("cfgd")
+    cfgd_bin()
         .unwrap()
         .args(["profile", "list"])
-        .env("CFGD_CONFIG", &nonexistent)
+        .env(cfgd_core::CFGD_CONFIG_ENV, &nonexistent)
         .assert()
         .success();
 }
@@ -1240,10 +1403,10 @@ fn apply_dry_run_with_skip_scripts() {
     let dir = tempfile::tempdir().unwrap();
     create_valid_config(dir.path());
 
-    Command::cargo_bin("cfgd")
+    cfgd_bin()
         .unwrap()
         .args(["apply", "--dry-run", "--skip-scripts"])
-        .env("CFGD_CONFIG", dir.path().join("cfgd.yaml"))
+        .env(cfgd_core::CFGD_CONFIG_ENV, dir.path().join("cfgd.yaml"))
         .assert()
         .success();
 }
@@ -1255,10 +1418,10 @@ fn plan_with_context_reconcile() {
     let dir = tempfile::tempdir().unwrap();
     create_valid_config(dir.path());
 
-    Command::cargo_bin("cfgd")
+    cfgd_bin()
         .unwrap()
         .args(["plan", "--context", "reconcile"])
-        .env("CFGD_CONFIG", dir.path().join("cfgd.yaml"))
+        .env(cfgd_core::CFGD_CONFIG_ENV, dir.path().join("cfgd.yaml"))
         .assert()
         .success();
 }
@@ -1270,10 +1433,10 @@ fn profile_override_flag() {
     let dir = tempfile::tempdir().unwrap();
     create_valid_config(dir.path());
 
-    Command::cargo_bin("cfgd")
+    cfgd_bin()
         .unwrap()
         .args(["--profile", "base", "status"])
-        .env("CFGD_CONFIG", dir.path().join("cfgd.yaml"))
+        .env(cfgd_core::CFGD_CONFIG_ENV, dir.path().join("cfgd.yaml"))
         .assert()
         .success();
 }
@@ -1282,7 +1445,7 @@ fn profile_override_flag() {
 
 #[test]
 fn invalid_output_format_shows_error() {
-    Command::cargo_bin("cfgd")
+    cfgd_bin()
         .unwrap()
         .args(["-o", "invalid-format", "status"])
         .assert()
@@ -1299,10 +1462,10 @@ fn jsonpath_malformed_expr_is_clap_usage_error_no_panic() {
     let dir = tempfile::tempdir().unwrap();
     create_valid_config(dir.path());
 
-    let assert = Command::cargo_bin("cfgd")
+    let assert = cfgd_bin()
         .unwrap()
         .args(["profile", "list", "-o", "jsonpath={.items["])
-        .env("CFGD_CONFIG", dir.path().join("cfgd.yaml"))
+        .env(cfgd_core::CFGD_CONFIG_ENV, dir.path().join("cfgd.yaml"))
         .assert()
         .code(2)
         .stdout(predicate::str::is_empty());
@@ -1322,10 +1485,10 @@ fn template_malformed_is_clap_usage_error() {
     let dir = tempfile::tempdir().unwrap();
     create_valid_config(dir.path());
 
-    let assert = Command::cargo_bin("cfgd")
+    let assert = cfgd_bin()
         .unwrap()
         .args(["profile", "list", "-o", "template={{range}"])
-        .env("CFGD_CONFIG", dir.path().join("cfgd.yaml"))
+        .env(cfgd_core::CFGD_CONFIG_ENV, dir.path().join("cfgd.yaml"))
         .assert()
         .code(2)
         .stdout(predicate::str::is_empty());
@@ -1341,7 +1504,7 @@ fn template_file_missing_is_runtime_error_on_stderr() {
     create_valid_config(dir.path());
     let missing = dir.path().join("does-not-exist.tera");
 
-    let assert = Command::cargo_bin("cfgd")
+    let assert = cfgd_bin()
         .unwrap()
         .args([
             "profile",
@@ -1349,7 +1512,7 @@ fn template_file_missing_is_runtime_error_on_stderr() {
             "-o",
             &format!("template-file={}", missing.display()),
         ])
-        .env("CFGD_CONFIG", dir.path().join("cfgd.yaml"))
+        .env(cfgd_core::CFGD_CONFIG_ENV, dir.path().join("cfgd.yaml"))
         .assert()
         .failure()
         .stdout(predicate::str::is_empty());
@@ -1381,10 +1544,10 @@ fn json_list_emits_bare_array_and_exits_zero() {
     let dir = tempfile::tempdir().unwrap();
     create_valid_config(dir.path());
 
-    let assert = Command::cargo_bin("cfgd")
+    let assert = cfgd_bin()
         .unwrap()
         .args(["profile", "list", "-o", "json"])
-        .env("CFGD_CONFIG", dir.path().join("cfgd.yaml"))
+        .env(cfgd_core::CFGD_CONFIG_ENV, dir.path().join("cfgd.yaml"))
         .assert()
         .success();
     let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
@@ -1401,10 +1564,10 @@ fn jsonpath_bare_array_index_prints_scalar() {
     let dir = tempfile::tempdir().unwrap();
     create_valid_config(dir.path());
 
-    Command::cargo_bin("cfgd")
+    cfgd_bin()
         .unwrap()
         .args(["profile", "list", "-o", "jsonpath={[0].name}"])
-        .env("CFGD_CONFIG", dir.path().join("cfgd.yaml"))
+        .env(cfgd_core::CFGD_CONFIG_ENV, dir.path().join("cfgd.yaml"))
         .assert()
         .success()
         .stdout(predicate::str::contains("base"));
@@ -1423,7 +1586,7 @@ fn exit_code_no_config_is_3() {
     let dir = tempfile::tempdir().unwrap();
     let nonexistent = dir.path().join("nonexistent").join("cfgd.yaml");
 
-    Command::cargo_bin("cfgd")
+    cfgd_bin()
         .unwrap()
         .arg("status")
         .arg("--config")
@@ -1440,7 +1603,7 @@ fn exit_code_config_invalid_is_4() {
     // Valid YAML that fails schema validation (missing required apiVersion/kind).
     std::fs::write(&bad_config, "spec: { this is not valid cfgd: true\n").unwrap();
 
-    Command::cargo_bin("cfgd")
+    cfgd_bin()
         .unwrap()
         .arg("status")
         .arg("--config")
@@ -1456,7 +1619,7 @@ fn exit_code_success_is_0() {
     create_valid_config(dir.path());
     let state_dir = tempfile::tempdir().unwrap();
 
-    Command::cargo_bin("cfgd")
+    cfgd_bin()
         .unwrap()
         .arg("status")
         .arg("--config")
@@ -1475,7 +1638,7 @@ fn exit_code_flag_with_no_drift_is_0() {
     create_valid_config(dir.path());
     let state_dir = tempfile::tempdir().unwrap();
 
-    Command::cargo_bin("cfgd")
+    cfgd_bin()
         .unwrap()
         .arg("status")
         .arg("--exit-code")
@@ -1512,7 +1675,7 @@ fn status_exit_code_renders_live_file_drift_not_no_drift() {
     );
     std::fs::write(dir.path().join("profiles/base.yaml"), profile).unwrap();
 
-    let assert = Command::cargo_bin("cfgd")
+    let assert = cfgd_bin()
         .unwrap()
         .arg("status")
         .arg("--exit-code")
@@ -1550,7 +1713,7 @@ fn source_update_all_failed_exits_1() {
     )
     .unwrap();
 
-    let assert = Command::cargo_bin("cfgd")
+    let assert = cfgd_bin()
         .unwrap()
         .arg("source")
         .arg("update")
@@ -1589,7 +1752,7 @@ fn a_local_pull_failure_exits_1_from_both_verbs_that_pull() {
 
     for verb in [vec!["sync"], vec!["pull"]] {
         let state_dir = tempfile::tempdir().unwrap();
-        let assert = Command::cargo_bin("cfgd")
+        let assert = cfgd_bin()
             .unwrap()
             .args(&verb)
             .arg("--no-color")
@@ -1623,7 +1786,7 @@ fn exit_code_module_show_missing_is_6() {
     create_valid_config(dir.path());
     let state_dir = tempfile::tempdir().unwrap();
 
-    let assert = Command::cargo_bin("cfgd")
+    let assert = cfgd_bin()
         .unwrap()
         .args(["-o", "json", "module", "show", "nosuchmod"])
         .arg("--config")
@@ -1645,7 +1808,7 @@ fn exit_code_profile_show_missing_is_6() {
     create_valid_config(dir.path());
     let state_dir = tempfile::tempdir().unwrap();
 
-    let assert = Command::cargo_bin("cfgd")
+    let assert = cfgd_bin()
         .unwrap()
         .args(["-o", "json", "profile", "show", "nosuchprof"])
         .arg("--config")
@@ -1666,7 +1829,7 @@ fn exit_code_profile_switch_missing_is_6() {
     create_valid_config(dir.path());
     let state_dir = tempfile::tempdir().unwrap();
 
-    let assert = Command::cargo_bin("cfgd")
+    let assert = cfgd_bin()
         .unwrap()
         .args(["-o", "json", "profile", "switch", "nosuchprof"])
         .arg("--config")
@@ -1687,7 +1850,7 @@ fn exit_code_source_show_missing_is_6() {
     create_valid_config(dir.path());
     let state_dir = tempfile::tempdir().unwrap();
 
-    let assert = Command::cargo_bin("cfgd")
+    let assert = cfgd_bin()
         .unwrap()
         .args(["-o", "json", "source", "show", "nosuchsrc"])
         .arg("--config")
@@ -1710,7 +1873,7 @@ fn source_update_missing_name_zero_sources_is_6_not_found() {
     create_valid_config(dir.path());
     let state_dir = tempfile::tempdir().unwrap();
 
-    let assert = Command::cargo_bin("cfgd")
+    let assert = cfgd_bin()
         .unwrap()
         .args(["-o", "json", "source", "update", "nosuchsrc"])
         .arg("--config")
@@ -1743,7 +1906,7 @@ fn source_update_missing_name_with_other_sources_is_6_not_found() {
     )
     .unwrap();
 
-    let assert = Command::cargo_bin("cfgd")
+    let assert = cfgd_bin()
         .unwrap()
         .args(["-o", "json", "source", "update", "nosuchsrc"])
         .arg("--config")
@@ -1766,7 +1929,7 @@ fn exit_code_source_remove_missing_is_6() {
     create_valid_config(dir.path());
     let state_dir = tempfile::tempdir().unwrap();
 
-    let assert = Command::cargo_bin("cfgd")
+    let assert = cfgd_bin()
         .unwrap()
         .args(["-o", "json", "source", "remove", "nosuchsrc"])
         .arg("--config")
@@ -1787,7 +1950,7 @@ fn exit_code_profile_delete_missing_is_6() {
     create_valid_config(dir.path());
     let state_dir = tempfile::tempdir().unwrap();
 
-    let assert = Command::cargo_bin("cfgd")
+    let assert = cfgd_bin()
         .unwrap()
         .args(["-o", "json", "profile", "delete", "--yes", "nosuchprof"])
         .arg("--config")
@@ -1810,7 +1973,7 @@ fn exit_code_profile_delete_active_stays_1() {
     create_valid_config(dir.path());
     let state_dir = tempfile::tempdir().unwrap();
 
-    let assert = Command::cargo_bin("cfgd")
+    let assert = cfgd_bin()
         .unwrap()
         .args(["-o", "json", "profile", "delete", "--yes", "base"])
         .arg("--config")
@@ -1834,7 +1997,7 @@ fn exit_code_module_delete_missing_is_6() {
     create_valid_config(dir.path());
     let state_dir = tempfile::tempdir().unwrap();
 
-    let assert = Command::cargo_bin("cfgd")
+    let assert = cfgd_bin()
         .unwrap()
         .args(["-o", "json", "module", "delete", "--yes", "nosuchmod"])
         .arg("--config")
@@ -1866,7 +2029,7 @@ fn exit_code_module_registry_remove_missing_is_6() {
     )
     .unwrap();
 
-    let assert = Command::cargo_bin("cfgd")
+    let assert = cfgd_bin()
         .unwrap()
         .args(["-o", "json", "module", "registry", "remove", "nosuchreg"])
         .arg("--config")
@@ -1894,7 +2057,7 @@ fn exit_code_module_registry_rename_missing_is_6() {
     )
     .unwrap();
 
-    let assert = Command::cargo_bin("cfgd")
+    let assert = cfgd_bin()
         .unwrap()
         .args([
             "-o",
@@ -1943,7 +2106,7 @@ fn module_delete_missing_ignore_not_found_is_0() {
     let state_dir = tempfile::tempdir().unwrap();
 
     // Human: exit 0, success line on stderr.
-    let human = Command::cargo_bin("cfgd")
+    let human = cfgd_bin()
         .unwrap()
         .args([
             "module",
@@ -1965,7 +2128,7 @@ fn module_delete_missing_ignore_not_found_is_0() {
     );
 
     // JSON: exit 0, structured no-op payload on stdout.
-    let json = Command::cargo_bin("cfgd")
+    let json = cfgd_bin()
         .unwrap()
         .args([
             "-o",
@@ -1996,7 +2159,7 @@ fn module_delete_missing_without_flag_still_6() {
     create_valid_config(dir.path());
     let state_dir = tempfile::tempdir().unwrap();
 
-    let assert = Command::cargo_bin("cfgd")
+    let assert = cfgd_bin()
         .unwrap()
         .args(["-o", "json", "module", "delete", "--yes", "nosuchmod"])
         .arg("--config")
@@ -2015,7 +2178,7 @@ fn module_registry_remove_missing_ignore_not_found_is_0() {
     let dir = tempfile::tempdir().unwrap();
     config_with_registry(dir.path());
 
-    let human = Command::cargo_bin("cfgd")
+    let human = cfgd_bin()
         .unwrap()
         .args([
             "module",
@@ -2034,7 +2197,7 @@ fn module_registry_remove_missing_ignore_not_found_is_0() {
         "human no-op line, got:\n{err}"
     );
 
-    let json = Command::cargo_bin("cfgd")
+    let json = cfgd_bin()
         .unwrap()
         .args([
             "-o",
@@ -2062,7 +2225,7 @@ fn module_registry_remove_missing_without_flag_still_6() {
     let dir = tempfile::tempdir().unwrap();
     config_with_registry(dir.path());
 
-    let assert = Command::cargo_bin("cfgd")
+    let assert = cfgd_bin()
         .unwrap()
         .args(["-o", "json", "module", "registry", "remove", "nosuchreg"])
         .arg("--config")
@@ -2080,7 +2243,7 @@ fn source_remove_missing_ignore_not_found_is_0() {
     create_valid_config(dir.path());
     let state_dir = tempfile::tempdir().unwrap();
 
-    let human = Command::cargo_bin("cfgd")
+    let human = cfgd_bin()
         .unwrap()
         .args(["source", "remove", "--ignore-not-found", "nosuchsrc"])
         .arg("--config")
@@ -2095,7 +2258,7 @@ fn source_remove_missing_ignore_not_found_is_0() {
         "human no-op line, got:\n{err}"
     );
 
-    let json = Command::cargo_bin("cfgd")
+    let json = cfgd_bin()
         .unwrap()
         .args([
             "-o",
@@ -2125,7 +2288,7 @@ fn source_remove_missing_without_flag_still_6() {
     create_valid_config(dir.path());
     let state_dir = tempfile::tempdir().unwrap();
 
-    let assert = Command::cargo_bin("cfgd")
+    let assert = cfgd_bin()
         .unwrap()
         .args(["-o", "json", "source", "remove", "nosuchsrc"])
         .arg("--config")
@@ -2150,7 +2313,7 @@ fn profile_update_refuses_a_package_name_the_parser_would_reject() {
     let profile = dir.path().join("profiles/base.yaml");
     let before = std::fs::read_to_string(&profile).unwrap();
 
-    let assert = Command::cargo_bin("cfgd")
+    let assert = cfgd_bin()
         .unwrap()
         .args(["profile", "update", "base", "--package", "brew:foo&calc"])
         .arg("--config")
@@ -2177,7 +2340,7 @@ fn profile_delete_missing_ignore_not_found_is_0() {
     create_valid_config(dir.path());
     let state_dir = tempfile::tempdir().unwrap();
 
-    let human = Command::cargo_bin("cfgd")
+    let human = cfgd_bin()
         .unwrap()
         .args([
             "profile",
@@ -2198,7 +2361,7 @@ fn profile_delete_missing_ignore_not_found_is_0() {
         "human no-op line, got:\n{err}"
     );
 
-    let json = Command::cargo_bin("cfgd")
+    let json = cfgd_bin()
         .unwrap()
         .args([
             "-o",
@@ -2229,7 +2392,7 @@ fn profile_delete_missing_without_flag_still_6() {
     create_valid_config(dir.path());
     let state_dir = tempfile::tempdir().unwrap();
 
-    let assert = Command::cargo_bin("cfgd")
+    let assert = cfgd_bin()
         .unwrap()
         .args(["-o", "json", "profile", "delete", "--yes", "nosuchprof"])
         .arg("--config")
@@ -2252,7 +2415,7 @@ fn profile_delete_active_with_ignore_not_found_still_1() {
     create_valid_config(dir.path());
     let state_dir = tempfile::tempdir().unwrap();
 
-    let assert = Command::cargo_bin("cfgd")
+    let assert = cfgd_bin()
         .unwrap()
         .args([
             "-o",
@@ -2305,7 +2468,7 @@ fn module_delete_in_use_with_ignore_not_found_still_errors() {
     )
     .unwrap();
 
-    let assert = Command::cargo_bin("cfgd")
+    let assert = cfgd_bin()
         .unwrap()
         .args([
             "-o",
@@ -2367,7 +2530,7 @@ fn profile_delete_inherited_with_ignore_not_found_still_errors() {
     )
     .unwrap();
 
-    let assert = Command::cargo_bin("cfgd")
+    let assert = cfgd_bin()
         .unwrap()
         .args([
             "-o",
@@ -2400,6 +2563,9 @@ fn profile_delete_inherited_with_ignore_not_found_still_errors() {
 /// and exits 0 even when a managed file is live-drifted — the live scan is
 /// `-e`-only by design. What it must NOT do is call that a detection: this run
 /// asked the machine nothing, and the file on disk is drifted.
+///
+/// `--hints` because the pointer at the live check is a tutorial hint, and the
+/// subject here is its WORDING.
 #[test]
 fn status_plain_keeps_recorded_dashboard_despite_live_drift() {
     let dir = tempfile::tempdir().unwrap();
@@ -2419,10 +2585,11 @@ fn status_plain_keeps_recorded_dashboard_despite_live_drift() {
     );
     std::fs::write(dir.path().join("profiles/base.yaml"), profile).unwrap();
 
-    let assert = Command::cargo_bin("cfgd")
+    let assert = cfgd_bin()
         .unwrap()
         .arg("status")
         .arg("--no-color")
+        .arg("--hints")
         .arg("--config")
         .arg(dir.path().join("cfgd.yaml"))
         .arg("--state-dir")
@@ -2441,13 +2608,32 @@ fn status_plain_keeps_recorded_dashboard_despite_live_drift() {
         "nothing detected anything: the file at `deployed.conf` is drifted right \
          now and this run never looked, got:\n{out}"
     );
+
+    // The same run at the shipped default, which is hints off: the flag above
+    // is what puts the tutorial on screen, so without it the report ends on
+    // its last content line.
+    let bare = cfgd_bin()
+        .unwrap()
+        .arg("status")
+        .arg("--no-color")
+        .arg("--config")
+        .arg(dir.path().join("cfgd.yaml"))
+        .arg("--state-dir")
+        .arg(state_dir.path())
+        .assert()
+        .code(0);
+    let bare = cfgd_core::output::strip_ansi(&String::from_utf8_lossy(&bare.get_output().stderr));
+    assert!(
+        !bare.contains('→'),
+        "a default run renders no closing usage hint, got:\n{bare}"
+    );
 }
 
 /// `cfgd upgrade --help` surfaces the exit-code taxonomy in the long_about
 /// block — catches regressions where someone removes the documentation.
 #[test]
 fn upgrade_help_documents_exit_codes() {
-    Command::cargo_bin("cfgd")
+    cfgd_bin()
         .unwrap()
         .args(["upgrade", "--help"])
         .assert()
@@ -2459,7 +2645,7 @@ fn upgrade_help_documents_exit_codes() {
 /// `cfgd status --help` advertises the --exit-code flag.
 #[test]
 fn status_help_documents_exit_code_flag() {
-    Command::cargo_bin("cfgd")
+    cfgd_bin()
         .unwrap()
         .args(["status", "--help"])
         .assert()
@@ -2471,8 +2657,9 @@ fn status_help_documents_exit_code_flag() {
 /// `--yes` is ONE global flag: `cfgd --yes profile delete x`, `cfgd profile
 /// delete x --yes` and `CFGD_YES=1 cfgd profile delete x` all reach the same
 /// confirmation gate, and the env spelling still passes through `main.rs`'s
-/// boolish normalization. Engagement is proven by contrast: piped stdin cannot
-/// answer the prompt, so the same delete WITHOUT any of them is refused.
+/// boolish normalization. Engagement is proven by contrast: a null stdin is
+/// not a terminal and ends at once, so it cannot answer the prompt and the
+/// same delete WITHOUT any of them is refused.
 #[test]
 fn yes_flag_is_global_in_every_spelling() {
     let write_scratch = |dir: &std::path::Path| {
@@ -2483,16 +2670,16 @@ fn yes_flag_is_global_in_every_spelling() {
         .unwrap();
     };
     let run = |dir: &std::path::Path, before: &[&str], after: &[&str], env: Option<&str>| {
-        let mut cmd = Command::cargo_bin("cfgd").unwrap();
-        cmd.env_remove("CFGD_YES");
+        let mut cmd = cfgd_bin().unwrap();
+        cmd.env_remove(cfgd_core::CFGD_YES_ENV);
         cmd.args(before)
             .args(["profile", "delete", "scratch"])
             .args(after)
             .arg("--config")
             .arg(dir.join("cfgd.yaml"))
-            .write_stdin("");
+            .stdin(std::process::Stdio::null());
         if let Some(v) = env {
-            cmd.env("CFGD_YES", v);
+            cmd.env(cfgd_core::CFGD_YES_ENV, v);
         }
         cmd.assert()
     };
@@ -2535,13 +2722,13 @@ fn cfgd_quiet_boolish_engages_quiet() {
     create_valid_config(dir.path());
 
     let stderr_of = |env_quiet: Option<&str>, flag: bool| -> Vec<u8> {
-        let mut cmd = Command::cargo_bin("cfgd").unwrap();
+        let mut cmd = cfgd_bin().unwrap();
         cmd.arg("plan").arg("--config").arg(dir.path());
         if flag {
             cmd.arg("-q");
         }
         if let Some(v) = env_quiet {
-            cmd.env("CFGD_QUIET", v);
+            cmd.env(cfgd_core::CFGD_QUIET_ENV, v);
         }
         cmd.assert().success().get_output().stderr.clone()
     };
@@ -2584,7 +2771,7 @@ fn cfgd_verbose_boolish_on_engages_verbose() {
     create_valid_config(dir.path());
 
     let stderr_of = |env_verbose: Option<&str>, flag: bool| -> Vec<u8> {
-        let mut cmd = Command::cargo_bin("cfgd").unwrap();
+        let mut cmd = cfgd_bin().unwrap();
         cmd.args(["plan", "--module", "nope"])
             .arg("--config")
             .arg(dir.path());
@@ -2592,7 +2779,7 @@ fn cfgd_verbose_boolish_on_engages_verbose() {
             cmd.arg("-v");
         }
         if let Some(v) = env_verbose {
-            cmd.env("CFGD_VERBOSE", v);
+            cmd.env(cfgd_core::CFGD_VERBOSE_ENV, v);
         }
         cmd.assert().failure().get_output().stderr.clone()
     };
@@ -2640,7 +2827,7 @@ fn jsonpath_flag_warns_on_stderr_pure_stdout() {
     let dir = tempfile::tempdir().unwrap();
     create_valid_config(dir.path());
 
-    let out = Command::cargo_bin("cfgd")
+    let out = cfgd_bin()
         .unwrap()
         .args(["profile", "list", "--jsonpath", "{[0].name}"])
         .arg("--config")
@@ -2670,7 +2857,7 @@ fn canonical_jsonpath_output_no_deprecation_warning() {
     let dir = tempfile::tempdir().unwrap();
     create_valid_config(dir.path());
 
-    let out = Command::cargo_bin("cfgd")
+    let out = cfgd_bin()
         .unwrap()
         .args(["profile", "list", "-o", "jsonpath={[0].name}"])
         .arg("--config")
@@ -2734,7 +2921,7 @@ fn backup_run_all_clean_exits_0() {
     );
     create_backup_config(dir.path(), &backups_yaml);
 
-    Command::cargo_bin("cfgd")
+    cfgd_bin()
         .unwrap()
         .arg("backup")
         .arg("run")
@@ -2760,7 +2947,7 @@ fn backup_run_dirty_success_exits_nonzero() {
     );
     create_backup_config(dir.path(), &backups_yaml);
 
-    let assert = Command::cargo_bin("cfgd")
+    let assert = cfgd_bin()
         .unwrap()
         .arg("backup")
         .arg("run")
@@ -2790,7 +2977,7 @@ fn backup_run_failed_unit_exits_nonzero() {
     );
     create_backup_config(dir.path(), &backups_yaml);
 
-    let assert = Command::cargo_bin("cfgd")
+    let assert = cfgd_bin()
         .unwrap()
         .arg("backup")
         .arg("run")
@@ -2820,7 +3007,7 @@ fn backup_run_unknown_name_exits_6_with_hint_in_stderr() {
     );
     create_backup_config(dir.path(), &backups_yaml);
 
-    let assert = Command::cargo_bin("cfgd")
+    let assert = cfgd_bin()
         .unwrap()
         .arg("backup")
         .arg("run")
@@ -2849,7 +3036,7 @@ fn create_hint_producing_config(dir: &std::path::Path, usage_hints: Option<bool>
     std::fs::create_dir_all(dir.join("profiles")).unwrap();
     std::fs::create_dir_all(dir.join("modules/example/files")).unwrap();
     let hints_line = match usage_hints {
-        Some(v) => format!("  usageHints: {v}\n"),
+        Some(v) => format!("  output:\n    usageHints: {v}\n"),
         None => String::new(),
     };
     std::fs::write(
@@ -2882,12 +3069,88 @@ fn create_hint_producing_config(dir: &std::path::Path, usage_hints: Option<bool>
 /// call, a swapped argument order, or a wrong config path would go red here
 /// even though it would pass every unit-level pin.
 #[test]
-fn hints_render_by_default_end_to_end() {
+fn hints_are_off_by_default_end_to_end() {
     let dir = tempfile::tempdir().unwrap();
     let state_dir = tempfile::tempdir().unwrap();
     create_hint_producing_config(dir.path(), None);
 
-    let assert = Command::cargo_bin("cfgd")
+    let assert = cfgd_bin()
+        .unwrap()
+        .arg("plan")
+        .arg("--config")
+        .arg(dir.path().join("cfgd.yaml"))
+        .arg("--state-dir")
+        .arg(state_dir.path())
+        .assert()
+        .success();
+    let out = cfgd_core::output::strip_ansi(&String::from_utf8_lossy(&assert.get_output().stderr));
+    assert!(!out.contains('→'), "hint must be gone, got:\n{out}");
+    // `trim_end()` would strip any number of trailing newlines, making this
+    // check pass even with a stranded blank line, so the exact tail is
+    // compared: one closing newline and no second one, so a surviving blank
+    // (which would leave the string ending "planned\n\n") is falsifiable.
+    assert!(
+        out.ends_with("1 action planned\n") && !out.ends_with("\n\n"),
+        "the verdict line must be the last line, with no leftover blank, got:\n{out:?}"
+    );
+}
+
+/// `--hints` reaching a real command's rendered output.
+#[test]
+fn hints_flag_renders_the_hint_and_its_leading_blank_end_to_end() {
+    let dir = tempfile::tempdir().unwrap();
+    let state_dir = tempfile::tempdir().unwrap();
+    create_hint_producing_config(dir.path(), None);
+
+    let assert = cfgd_bin()
+        .unwrap()
+        .arg("--hints")
+        .arg("plan")
+        .arg("--config")
+        .arg(dir.path().join("cfgd.yaml"))
+        .arg("--state-dir")
+        .arg(state_dir.path())
+        .assert()
+        .success();
+    let out = cfgd_core::output::strip_ansi(&String::from_utf8_lossy(&assert.get_output().stderr));
+    assert!(
+        out.contains("\n\n→ Run `cfgd apply`"),
+        "--hints must render the hint behind its leading blank, got:\n{out}"
+    );
+}
+
+/// `CFGD_USAGE_HINTS=true` reaching a real command's rendered output.
+#[test]
+fn cfgd_usage_hints_env_true_renders_the_hint_end_to_end() {
+    let dir = tempfile::tempdir().unwrap();
+    let state_dir = tempfile::tempdir().unwrap();
+    create_hint_producing_config(dir.path(), None);
+
+    let assert = cfgd_bin()
+        .unwrap()
+        .env(cfgd_core::CFGD_USAGE_HINTS_ENV, "true")
+        .arg("plan")
+        .arg("--config")
+        .arg(dir.path().join("cfgd.yaml"))
+        .arg("--state-dir")
+        .arg(state_dir.path())
+        .assert()
+        .success();
+    let out = cfgd_core::output::strip_ansi(&String::from_utf8_lossy(&assert.get_output().stderr));
+    assert!(
+        out.contains("\n\n→ Run `cfgd apply`"),
+        "CFGD_USAGE_HINTS=true must render the hint behind its leading blank, got:\n{out}"
+    );
+}
+
+/// `spec.output.usageHints: true` reaching a real command's rendered output.
+#[test]
+fn spec_usage_hints_true_renders_the_hint_end_to_end() {
+    let dir = tempfile::tempdir().unwrap();
+    let state_dir = tempfile::tempdir().unwrap();
+    create_hint_producing_config(dir.path(), Some(true));
+
+    let assert = cfgd_bin()
         .unwrap()
         .arg("plan")
         .arg("--config")
@@ -2899,92 +3162,311 @@ fn hints_render_by_default_end_to_end() {
     let out = cfgd_core::output::strip_ansi(&String::from_utf8_lossy(&assert.get_output().stderr));
     assert!(
         out.contains("\n\n→ Run `cfgd apply`"),
-        "baseline must render the hint behind its leading blank, got:\n{out}"
+        "spec.output.usageHints: true must render the hint behind its leading blank, got:\n{out}"
     );
 }
 
-/// `--no-hints` reaching a real command's rendered output.
+/// The two states a lone `--no-hints` could never reach: overruling a stored
+/// `usageHints: false` for one invocation, and overruling a stored
+/// `usageHints: true` for one invocation.
 #[test]
-fn no_hints_flag_suppresses_the_hint_and_its_leading_blank_end_to_end() {
-    let dir = tempfile::tempdir().unwrap();
+fn each_half_of_the_hints_pair_outranks_the_stored_value_end_to_end() {
+    let on_over_stored_off = tempfile::tempdir().unwrap();
     let state_dir = tempfile::tempdir().unwrap();
-    create_hint_producing_config(dir.path(), None);
+    create_hint_producing_config(on_over_stored_off.path(), Some(false));
 
-    let assert = Command::cargo_bin("cfgd")
+    let assert = cfgd_bin()
+        .unwrap()
+        .arg("--hints")
+        .arg("plan")
+        .arg("--config")
+        .arg(on_over_stored_off.path().join("cfgd.yaml"))
+        .arg("--state-dir")
+        .arg(state_dir.path())
+        .assert()
+        .success();
+    let out = cfgd_core::output::strip_ansi(&String::from_utf8_lossy(&assert.get_output().stderr));
+    assert!(
+        out.contains("\n\n→ Run `cfgd apply`"),
+        "--hints must outrank a stored usageHints: false, got:\n{out}"
+    );
+
+    let off_over_stored_on = tempfile::tempdir().unwrap();
+    let state_dir = tempfile::tempdir().unwrap();
+    create_hint_producing_config(off_over_stored_on.path(), Some(true));
+
+    let assert = cfgd_bin()
         .unwrap()
         .arg("--no-hints")
         .arg("plan")
         .arg("--config")
-        .arg(dir.path().join("cfgd.yaml"))
+        .arg(off_over_stored_on.path().join("cfgd.yaml"))
         .arg("--state-dir")
         .arg(state_dir.path())
         .assert()
         .success();
     let out = cfgd_core::output::strip_ansi(&String::from_utf8_lossy(&assert.get_output().stderr));
     assert!(!out.contains('→'), "hint must be gone, got:\n{out}");
-    // `trim_end()` would strip any number of trailing newlines, making this
-    // check pass even with a stranded blank line — compare the exact tail
-    // instead: one closing newline, never two, so a surviving blank (which
-    // would leave the string ending "planned\n\n") is falsifiable.
     assert!(
         out.ends_with("1 action planned\n") && !out.ends_with("\n\n"),
         "the verdict line must be the last line, with no leftover blank, got:\n{out:?}"
     );
 }
 
-/// `CFGD_USAGE_HINTS=false` reaching a real command's rendered output.
-#[test]
-fn cfgd_usage_hints_env_suppresses_the_hint_and_its_leading_blank_end_to_end() {
-    let dir = tempfile::tempdir().unwrap();
-    let state_dir = tempfile::tempdir().unwrap();
-    create_hint_producing_config(dir.path(), None);
+/// A config carrying the same single-file profile
+/// `cfgd_test_fixtures::tiny_profile_setup` builds, for a suite that spawns
+/// the real binary.
+fn config_with_tiny_profile(dir: &std::path::Path) {
+    std::fs::create_dir_all(dir.join("files")).unwrap();
+    std::fs::write(dir.join("files/hello.txt"), "hello world").unwrap();
+    std::fs::create_dir_all(dir.join("profiles")).unwrap();
+    std::fs::write(
+        dir.join("profiles/tiny.yaml"),
+        format!(
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: tiny\nspec:\n  inherits: []\n  modules: []\n  files:\n    managed:\n      - source: files/hello.txt\n        target: {}\n        strategy: Copy\n",
+            cfgd_core::to_posix_string(dir.join("out").join("hello.txt"))
+        ),
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("cfgd.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: tiny\n",
+    )
+    .unwrap();
+}
 
-    let assert = Command::cargo_bin("cfgd")
+/// Record `cfgd plan -o json` under `state_dir` to `dest`, exactly the bytes
+/// a shell redirect would capture.
+fn record_plan_via_binary(
+    config_dir: &std::path::Path,
+    state_dir: &std::path::Path,
+    dest: &std::path::Path,
+) {
+    let out = cfgd_bin()
         .unwrap()
-        .env("CFGD_USAGE_HINTS", "false")
-        .arg("plan")
+        .args(["-o", "json", "plan"])
         .arg("--config")
-        .arg(dir.path().join("cfgd.yaml"))
+        .arg(config_dir.join("cfgd.yaml"))
         .arg("--state-dir")
-        .arg(state_dir.path())
+        .arg(state_dir)
         .assert()
         .success();
-    let out = cfgd_core::output::strip_ansi(&String::from_utf8_lossy(&assert.get_output().stderr));
-    assert!(!out.contains('→'), "hint must be gone, got:\n{out}");
-    // `trim_end()` would strip any number of trailing newlines, making this
-    // check pass even with a stranded blank line — compare the exact tail
-    // instead: one closing newline, never two, so a surviving blank (which
-    // would leave the string ending "planned\n\n") is falsifiable.
-    assert!(
-        out.ends_with("1 action planned\n") && !out.ends_with("\n\n"),
-        "the verdict line must be the last line, with no leftover blank, got:\n{out:?}"
+    std::fs::write(dest, &out.get_output().stdout).unwrap();
+}
+
+/// Run `apply --plan <file>` under `state_dir` and assert it is refused as
+/// `stale` through the real exit code and the real JSON error payload — the
+/// half no in-process pin (`apply_plan_file.rs`) checks, because those go
+/// through `render_cli_error` and never through the process the field
+/// actually exits from.
+fn assert_stale_apply_exits_1(
+    config_dir: &std::path::Path,
+    state_dir: &std::path::Path,
+    plan_file: &std::path::Path,
+) -> serde_json::Value {
+    let assert = cfgd_bin()
+        .unwrap()
+        .arg("--config")
+        .arg(config_dir.join("cfgd.yaml"))
+        .arg("--state-dir")
+        .arg(state_dir)
+        .args(["-o", "json", "apply"])
+        .arg("--plan")
+        .arg(plan_file)
+        .assert()
+        .code(1);
+    let payload: serde_json::Value =
+        serde_json::from_slice(&assert.get_output().stdout).expect("stdout carries the error doc");
+    assert_eq!(payload["error"], "stale", "{payload}");
+    payload
+}
+
+#[test]
+fn apply_plan_stale_by_store_exits_1_through_the_real_binary() {
+    let config_dir = tempfile::tempdir().unwrap();
+    config_with_tiny_profile(config_dir.path());
+    let state_a = tempfile::tempdir().unwrap();
+    let state_b = tempfile::tempdir().unwrap();
+
+    let plan_file = state_a.path().join("plan.json");
+    record_plan_via_binary(config_dir.path(), state_a.path(), &plan_file);
+
+    let id_a = store_id_of(state_a.path());
+    let id_b = store_id_of(state_b.path());
+    assert_ne!(id_a, id_b, "two state dirs, two store identities");
+
+    let payload = assert_stale_apply_exits_1(config_dir.path(), state_b.path(), &plan_file);
+    assert_eq!(
+        payload["recordedStoreId"], id_a,
+        "the plan was derived against store A: {payload}"
+    );
+    assert_eq!(
+        payload["storeId"], id_b,
+        "this run opened store B: {payload}"
     );
 }
 
-/// `spec.output.usageHints: false` reaching a real command's rendered output.
-#[test]
-fn spec_usage_hints_false_suppresses_the_hint_and_its_leading_blank_end_to_end() {
-    let dir = tempfile::tempdir().unwrap();
-    let state_dir = tempfile::tempdir().unwrap();
-    create_hint_producing_config(dir.path(), Some(false));
-
-    let assert = Command::cargo_bin("cfgd")
+/// The identity `store_id()` reads for the store under `state_dir`.
+fn store_id_of(state_dir: &std::path::Path) -> String {
+    cfgd_core::state::StateStore::open(&state_dir.join("state.db"))
         .unwrap()
-        .arg("plan")
+        .store_id()
+        .unwrap()
+}
+
+#[test]
+fn apply_plan_stale_by_serial_exits_1_through_the_real_binary() {
+    let config_dir = tempfile::tempdir().unwrap();
+    config_with_tiny_profile(config_dir.path());
+    let state_dir = tempfile::tempdir().unwrap();
+
+    let plan_file = state_dir.path().join("plan.json");
+    record_plan_via_binary(config_dir.path(), state_dir.path(), &plan_file);
+
+    // Someone applied for real in the window between the plan and the replay.
+    cfgd_bin()
+        .unwrap()
         .arg("--config")
-        .arg(dir.path().join("cfgd.yaml"))
+        .arg(config_dir.path().join("cfgd.yaml"))
         .arg("--state-dir")
         .arg(state_dir.path())
+        .args(["apply", "--yes"])
         .assert()
         .success();
-    let out = cfgd_core::output::strip_ansi(&String::from_utf8_lossy(&assert.get_output().stderr));
-    assert!(!out.contains('→'), "hint must be gone, got:\n{out}");
-    // `trim_end()` would strip any number of trailing newlines, making this
-    // check pass even with a stranded blank line — compare the exact tail
-    // instead: one closing newline, never two, so a surviving blank (which
-    // would leave the string ending "planned\n\n") is falsifiable.
+
+    let payload = assert_stale_apply_exits_1(config_dir.path(), state_dir.path(), &plan_file);
+    assert_eq!(payload["recordedSerial"], 0, "{payload}");
+    assert!(payload["serial"].as_i64().unwrap_or(0) >= 1, "{payload}");
+}
+
+/// A config carrying the two legacy theme spellings, each of which the load
+/// reports as a deprecation notice.
+const LEGACY_THEME_CONFIG: &str = "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: legacy\nspec:\n  profile: default\n  theme:\n    name: dracula\n    overrides:\n      subheader: \"#ff79c6\"\n";
+
+/// The two notices `LEGACY_THEME_CONFIG` earns, as stderr spells them.
+const LEGACY_THEME_NOTICES: [&str; 2] = [
+    "spec.theme moved to spec.output.theme",
+    "theme.overrides.subheader is no longer supported",
+];
+
+/// How many stderr lines carry each of `LEGACY_THEME_NOTICES`.
+fn legacy_notice_counts(stderr: &[u8]) -> Vec<(&'static str, usize)> {
+    let stderr = String::from_utf8_lossy(stderr);
+    LEGACY_THEME_NOTICES
+        .iter()
+        .map(|notice| {
+            (
+                *notice,
+                stderr.lines().filter(|l| l.contains(notice)).count(),
+            )
+        })
+        .collect()
+}
+
+/// `--config <file>` names the config document; `module create --apply` reads
+/// that file, and a `cfgd.yaml` beside it is a different document.
+#[test]
+fn module_create_apply_reads_the_file_the_config_flag_names() {
+    let dir = tempfile::tempdir().unwrap();
+    create_valid_config(dir.path());
+    let other = dir.path().join("other.yaml");
+    std::fs::write(
+        &other,
+        "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: other\nspec:\n  profile: base\n  theme:\n    name: dracula\n",
+    )
+    .unwrap();
+
+    let out = cfgd_bin()
+        .unwrap()
+        .arg("--config")
+        .arg(&other)
+        .args(["module", "create", "mymod", "--apply", "--description", "x"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+    // Without a terminal on stdout the human report goes to stderr.
+    let report = String::from_utf8_lossy(&out.stderr);
+    let config_row = report
+        .lines()
+        .find(|l| l.trim_start().starts_with("Config "))
+        .unwrap_or_else(|| panic!("no Config row in the apply header:\n{report}"));
     assert!(
-        out.ends_with("1 action planned\n") && !out.ends_with("\n\n"),
-        "the verdict line must be the last line, with no leftover blank, got:\n{out:?}"
+        config_row.contains("other.yaml"),
+        "the apply header names the file --config named: {config_row}"
+    );
+    assert!(
+        report.contains(LEGACY_THEME_NOTICES[0]),
+        "the notice for other.yaml's own flat theme key reaches stderr:\n{report}"
+    );
+}
+
+/// `source replace` removes and re-adds a subscription inside one run, and
+/// reports each deprecation the config earns once.
+#[test]
+fn source_replace_prints_each_config_deprecation_notice_once() {
+    let (config_dir, _state_dir) = cfgd_test_fixtures::source_test_config_setup();
+    let config = config_dir.path().join("cfgd.yaml");
+    std::fs::write(&config, LEGACY_THEME_CONFIG).unwrap();
+    let bare_root = tempfile::tempdir().unwrap();
+    let old = cfgd_test_fixtures::make_bare_source_repo(bare_root.path(), "replace-old", None);
+    let new = cfgd_test_fixtures::make_bare_source_repo(bare_root.path(), "replace-new", None);
+    let run = |args: &[&str]| {
+        cfgd_bin()
+            .unwrap()
+            .env(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1")
+            .arg("--config")
+            .arg(&config)
+            .arg("--yes")
+            .args(args)
+            .output()
+            .unwrap()
+    };
+    let old_url = cfgd_core::test_helpers::file_url(&old);
+    let new_url = cfgd_core::test_helpers::file_url(&new);
+    let added = run(&["source", "add", &old_url, "--name", "acme"]);
+    assert!(added.status.success(), "{added:?}");
+
+    let replaced = run(&["source", "replace", "acme", &new_url]);
+    assert!(replaced.status.success(), "{replaced:?}");
+    assert_eq!(
+        legacy_notice_counts(&replaced.stderr),
+        LEGACY_THEME_NOTICES.map(|n| (n, 1)).to_vec(),
+        "{}",
+        String::from_utf8_lossy(&replaced.stderr)
+    );
+}
+
+/// `profile update --module <remote>` adds the module inside the update's run,
+/// and reports each deprecation the config earns once.
+#[test]
+fn profile_update_with_a_remote_module_prints_each_config_deprecation_notice_once() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("profiles")).unwrap();
+    let config = dir.path().join("cfgd.yaml");
+    std::fs::write(&config, LEGACY_THEME_CONFIG).unwrap();
+    std::fs::write(
+        dir.path().join("profiles/default.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec: {}\n",
+    )
+    .unwrap();
+    let bare_root = tempfile::tempdir().unwrap();
+    let bare = cfgd_test_fixtures::make_bare_module_repo(bare_root.path(), "mymod", "v1.0.0");
+    let module_url = format!("{}@v1.0.0", cfgd_core::to_file_url(&bare));
+
+    let out = cfgd_bin()
+        .unwrap()
+        .env(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1")
+        .arg("--config")
+        .arg(&config)
+        .arg("--yes")
+        .args(["profile", "update", "default", "--module", &module_url])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+    assert_eq!(
+        legacy_notice_counts(&out.stderr),
+        LEGACY_THEME_NOTICES.map(|n| (n, 1)).to_vec(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
     );
 }

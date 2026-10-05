@@ -48,24 +48,21 @@ pub fn cmd_module_push(
 
     // ONE section, named for the command, holding everything the run produced:
     // what is being pushed, the push verdict (carrying the digest as its
-    // detail), the signing verdict and the CRD apply. A second section named `Push` under a `Push Module`
-    // title spends the word twice on one screen for two different things.
+    // detail), the signing verdict and the CRD apply. A second section named `Push` under a `Push
+    // Module` title spends the word twice on one screen for two different things.
     // `push_module` keeps its `&Printer` signature (it has non-CLI callers
     // too), so the section is opened and scoped here rather than threaded into
     // the library call, and `depth_inheritance` is what settles its spinner at
     // the section's depth instead of depth 0.
     let mut applied_name: Option<String> = None;
-    let (digest, resolved_platform, signed, attestation_attached) = {
+    let (digest, resolved_platform, index_digest, signed, attestation_attached) = {
         // heading-first-ok: push_module is handed this printer and narrates its
         // bar at the section's depth, so the frame reports its own wait
         let push_sec = printer.section("Push Module");
         let _inherit = printer.depth_inheritance();
         push_sec.kv_block(header);
-        let cfgd_core::oci::PushOutcome {
-            digest,
-            platform: resolved_platform,
-        } = cfgd_core::oci::push_module(dir_path, artifact, platform, Some(printer)).map_err(
-            |e| {
+        let pushed = cfgd_core::oci::push_module(dir_path, artifact, platform, Some(printer))
+            .map_err(|e| {
                 crate::cli::cli_error(
                     artifact,
                     "push_failed",
@@ -76,22 +73,39 @@ pub fn cmd_module_push(
                     // reads as "no platform" rather than "no artifact".
                     serde_json::json!({ "artifact": artifact, "dir": dir }),
                 )
-            },
-        )?;
+            })?;
         let crate::cli::helpers::SignAttestOutcome { signed, attested } =
-            crate::cli::helpers::sign_and_attest(printer, artifact, &digest, key, sign, attest)?;
+            crate::cli::helpers::sign_and_attest(
+                printer,
+                artifact,
+                &pushed.written_digests(),
+                key,
+                sign,
+                attest,
+            )?;
+        let cfgd_core::oci::PushOutcome {
+            digest,
+            platform: resolved_platform,
+            index_digest,
+        } = pushed;
 
         if apply {
             let module_yaml = std::fs::read_to_string(dir_path.join("module.yaml"))?;
-            let module_doc = cfgd_core::config::parse_module(&module_yaml)
-                .map_err(|e| anyhow::anyhow!("Failed to parse module.yaml: {e}"))?;
+            let module_doc = cfgd_core::config::parse_module(&module_yaml).map_err(|e| {
+                crate::cli::cli_error(
+                    artifact,
+                    "parse_failed",
+                    format!("Failed to parse module.yaml: {e}"),
+                    serde_json::json!({ "artifact": artifact, "dir": dir }),
+                )
+            })?;
 
             let signature = build_module_signature(printer, signed, key);
             let rt = tokio::runtime::Runtime::new()?;
             rt.block_on(apply_module_crd(printer, &module_doc, artifact, signature))?;
             applied_name = Some(module_doc.metadata.name.clone());
         }
-        (digest, resolved_platform, signed, attested)
+        (digest, resolved_platform, index_digest, signed, attested)
     };
 
     // The RESOLVED platform, never the `--platform` flag: this push stamped it
@@ -111,6 +125,7 @@ pub fn cmd_module_push(
                 "artifact": artifact,
                 "platform": resolved_platform,
                 "digest": digest,
+                "indexDigest": index_digest,
                 "signed": signed,
                 "attestation": attestation_attached,
                 "applied": applied_name,
@@ -446,6 +461,7 @@ pub fn cmd_module_pull(
     printer: &Printer,
     artifact_ref: &str,
     output: &str,
+    platform: Option<&str>,
     require_signature: bool,
     verify_attestation: bool,
     verify_opts: cfgd_core::oci::VerifyOptions<'_>,
@@ -456,6 +472,7 @@ pub fn cmd_module_pull(
     let mut module_description: Option<String> = None;
     let mut package_count: Option<usize> = None;
     let mut file_count: Option<usize> = None;
+    let pulled: cfgd_core::oci::PullOutcome;
 
     // Same shape as `cmd_module_push`: ONE section named for the command,
     // holding what is being pulled, the verifications the pull gated on, the
@@ -469,58 +486,48 @@ pub fn cmd_module_pull(
         let _inherit = printer.depth_inheritance();
         pull_sec.kv_block([("Artifact", artifact_ref), ("Output", output)]);
 
-        if require_signature {
-            // A registry round-trip with no printer of its own: narrated under
-            // the section, retiring silently into the verdict row below it.
-            printer
-                .narrate_silent("Verifying signature", |_| {
-                    cfgd_core::oci::verify_signature(artifact_ref, &verify_opts)
-                })
+        // The checks run inside the pull, against the digest of the one tag
+        // read it extracts from, so a tag moved mid-pull cannot slip an
+        // unverified document past them.
+        let checks = cfgd_core::oci::PullChecks {
+            signature: match (require_signature, verify_opts.key) {
+                (false, _) => cfgd_core::oci::SignaturePolicy::None,
+                (true, Some(path)) => cfgd_core::oci::SignaturePolicy::RequireKey { path },
+                (true, None) => cfgd_core::oci::SignaturePolicy::RequireKeyless {
+                    identity: verify_opts.identity,
+                    issuer: verify_opts.issuer,
+                },
+            },
+            attestation: verify_attestation.then_some(("slsaprovenance1", verify_opts)),
+        };
+        pulled =
+            cfgd_core::oci::pull_module(artifact_ref, output_path, checks, platform, Some(printer))
                 .map_err(|e| {
+                    let step = match &e {
+                        cfgd_core::errors::OciError::VerificationFailed { .. } => "signature",
+                        cfgd_core::errors::OciError::AttestationError { .. } => "attestation",
+                        _ => {
+                            return crate::cli::cli_error(
+                                artifact_ref,
+                                "pull_failed",
+                                e.to_string(),
+                                serde_json::json!({ "artifact": artifact_ref, "output": output }),
+                            );
+                        }
+                    };
                     crate::cli::cli_error(
                         artifact_ref,
                         "verify_failed",
                         e.to_string(),
-                        serde_json::json!({ "artifact": artifact_ref, "step": "signature" }),
+                        serde_json::json!({ "artifact": artifact_ref, "step": step }),
                     )
                 })?;
+        if require_signature {
             printer.status_simple(Role::Ok, "Verified signature");
         }
-
         if verify_attestation {
-            printer
-                .narrate_silent("Verifying SLSA provenance attestation", |_| {
-                    cfgd_core::oci::verify_attestation(
-                        artifact_ref,
-                        "slsaprovenance1",
-                        &verify_opts,
-                    )
-                })
-                .map_err(|e| {
-                    crate::cli::cli_error(
-                        artifact_ref,
-                        "verify_failed",
-                        e.to_string(),
-                        serde_json::json!({ "artifact": artifact_ref, "step": "attestation" }),
-                    )
-                })?;
             printer.status_simple(Role::Ok, "Verified SLSA provenance attestation");
         }
-
-        cfgd_core::oci::pull_module(
-            artifact_ref,
-            output_path,
-            cfgd_core::oci::SignaturePolicy::None,
-            Some(printer),
-        )
-        .map_err(|e| {
-            crate::cli::cli_error(
-                artifact_ref,
-                "pull_failed",
-                e.to_string(),
-                serde_json::json!({ "artifact": artifact_ref, "output": output }),
-            )
-        })?;
 
         if output_path.join("module.yaml").exists() {
             let contents = std::fs::read_to_string(output_path.join("module.yaml"))?;
@@ -549,6 +556,8 @@ pub fn cmd_module_pull(
             .with_data(serde_json::json!({
                 "artifact": artifact_ref,
                 "output": output,
+                "digest": pulled.digest,
+                "indexDigest": pulled.index_digest,
                 "signatureVerified": require_signature,
                 "attestationVerified": verify_attestation,
                 "moduleName": module_name,
@@ -562,7 +571,7 @@ pub fn cmd_module_pull(
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use cfgd_core::output::Printer;
     use cfgd_core::test_helpers::test_printer;
 
@@ -693,6 +702,7 @@ mod tests {
             &printer,
             &artifact,
             dir.path().to_str().unwrap(),
+            None,
             false,
             false,
             cfgd_core::oci::VerifyOptions {
@@ -719,6 +729,7 @@ mod tests {
             &printer,
             &artifact,
             dir.path().to_str().unwrap(),
+            None,
             false,
             false,
             cfgd_core::oci::VerifyOptions {
@@ -739,13 +750,147 @@ mod tests {
         );
     }
 
+    /// A mock registry whose `test/mod:v1` names a manifest whose layer blob
+    /// is missing: a pull reads the tag, runs its checks against it and then
+    /// fails fetching the layer. Answers the artifact and the manifest digest.
+    fn mock_tag_without_blob() -> (mockito::ServerGuard, String, String) {
+        let mut server = mockito::Server::new();
+        let artifact = format!("{}/test/mod:v1", server.url().trim_start_matches("http://"));
+        let manifest = serde_json::json!({
+            "schemaVersion": 2,
+            "mediaType": "application/vnd.oci.image.manifest.v1+json",
+            "layers": [{
+                "mediaType": cfgd_core::oci::MEDIA_TYPE_MODULE_LAYER,
+                "digest": format!("sha256:{}", "0".repeat(64)),
+                "size": 1,
+            }],
+        })
+        .to_string();
+        let digest = cfgd_core::sha256_digest(manifest.as_bytes());
+        server
+            .mock("GET", "/v2/test/mod/manifests/v1")
+            .with_status(200)
+            .with_body(manifest)
+            .expect(1)
+            .create();
+        (server, artifact, digest)
+    }
+
+    /// The digest of each manifest a mock registry took, by the tag it was put at.
+    #[derive(Clone, Default)]
+    pub(in crate::cli::module) struct ManifestPuts(
+        std::sync::Arc<std::sync::Mutex<Vec<(String, String)>>>,
+    );
+
+    impl ManifestPuts {
+        /// The digest of the manifest last put at `tag`.
+        pub(in crate::cli::module) fn at(&self, tag: &str) -> String {
+            let puts = self.0.lock().expect("manifest puts lock");
+            puts.iter()
+                .rev()
+                .find(|(t, _)| t == tag)
+                .map(|(_, digest)| digest.clone())
+                .unwrap_or_else(|| panic!("nothing was put at {tag}: {puts:?}"))
+        }
+    }
+
+    /// A mock registry taking a push of `test/mod:v1` while the tag is absent.
+    fn mock_push_registry() -> (mockito::ServerGuard, String) {
+        let (server, registry, _) = mock_push_registry_holding(None);
+        (server, registry)
+    }
+
+    /// A mock registry taking a push of `test/mod:v1`, whose tag holds `tag`
+    /// before the push (absent when `None`). Each manifest PUT answers the
+    /// sha256 of the bytes it took, as a conformant registry does, and records
+    /// it in the returned [`ManifestPuts`].
+    pub(in crate::cli::module) fn mock_push_registry_holding(
+        tag: Option<&serde_json::Value>,
+    ) -> (mockito::ServerGuard, String, ManifestPuts) {
+        mock_push_registry_answering(tag, None)
+    }
+
+    /// [`mock_push_registry_holding`], except that the manifest PUT at
+    /// `lying_at` answers a digest naming other bytes.
+    fn mock_push_registry_answering(
+        tag: Option<&serde_json::Value>,
+        lying_at: Option<&'static str>,
+    ) -> (mockito::ServerGuard, String, ManifestPuts) {
+        let mut server = mockito::Server::new();
+        let registry = server.url().trim_start_matches("http://").to_string();
+        let upload_location = format!("{}/v2/test/mod/blobs/uploads/up-id", server.url());
+        server
+            .mock(
+                "HEAD",
+                mockito::Matcher::Regex(r"/v2/test/mod/blobs/sha256:.*".to_string()),
+            )
+            .with_status(404)
+            .expect_at_least(2)
+            .create();
+        server
+            .mock("POST", "/v2/test/mod/blobs/uploads/")
+            .with_status(202)
+            .with_header("Location", &upload_location)
+            .expect_at_least(2)
+            .create();
+        server
+            .mock(
+                "PUT",
+                mockito::Matcher::Regex(
+                    r"/v2/test/mod/blobs/uploads/up-id\?digest=sha256:.*".to_string(),
+                ),
+            )
+            .with_status(201)
+            .expect_at_least(2)
+            .create();
+        let tag_read = server.mock("GET", "/v2/test/mod/manifests/v1");
+        match tag {
+            Some(body) => tag_read.with_status(200).with_body(body.to_string()),
+            None => tag_read.with_status(404),
+        }
+        .create();
+        let puts = ManifestPuts::default();
+        let recorded = puts.clone();
+        server
+            .mock(
+                "PUT",
+                mockito::Matcher::Regex(r"^/v2/test/mod/manifests/".to_string()),
+            )
+            .with_status(201)
+            .with_header_from_request("Docker-Content-Digest", move |req| {
+                let tag = req
+                    .path()
+                    .rsplit('/')
+                    .next()
+                    .unwrap_or_default()
+                    .to_string();
+                let digest = cfgd_core::sha256_digest(req.body().expect("manifest body"));
+                let answered = if lying_at == Some(tag.as_str()) {
+                    cfgd_core::sha256_digest(b"other bytes")
+                } else {
+                    digest.clone()
+                };
+                recorded
+                    .0
+                    .lock()
+                    .expect("manifest puts lock")
+                    .push((tag, digest));
+                answered
+            })
+            .create();
+        (server, registry, puts)
+    }
+
     mod with_cosign_shim {
         use cfgd_core::output::Printer;
         use cfgd_core::test_helpers::CosignTestShim;
         use serial_test::serial;
 
         use super::super::{PushOptions, cmd_module_pull, cmd_module_push};
-        use super::{unreachable_ref, write_module_yaml};
+        use super::{
+            ManifestPuts, mock_push_registry, mock_push_registry_answering,
+            mock_push_registry_holding, mock_tag_without_blob, write_module_yaml,
+        };
 
         #[test]
         #[serial]
@@ -753,42 +898,8 @@ mod tests {
             let dir = tempfile::tempdir().expect("tempdir");
             write_module_yaml(dir.path());
 
-            let mut server = mockito::Server::new();
-            let registry = server.url().trim_start_matches("http://").to_string();
+            let (_server, registry) = mock_push_registry();
             let artifact = format!("{}/test/mod:v1", registry);
-            let upload_location = format!("{}/v2/test/mod/blobs/uploads/up-id", server.url());
-
-            server
-                .mock(
-                    "HEAD",
-                    mockito::Matcher::Regex(r"/v2/test/mod/blobs/sha256:.*".to_string()),
-                )
-                .with_status(404)
-                .expect_at_least(2)
-                .create();
-
-            server
-                .mock("POST", "/v2/test/mod/blobs/uploads/")
-                .with_status(202)
-                .with_header("Location", &upload_location)
-                .expect_at_least(2)
-                .create();
-
-            server
-                .mock(
-                    "PUT",
-                    mockito::Matcher::Regex(
-                        r"/v2/test/mod/blobs/uploads/up-id\?digest=sha256:.*".to_string(),
-                    ),
-                )
-                .with_status(201)
-                .expect_at_least(2)
-                .create();
-
-            server
-                .mock("PUT", "/v2/test/mod/manifests/v1")
-                .with_status(201)
-                .create();
 
             let _shim = CosignTestShim::builder()
                 .with_argv_logging(false)
@@ -823,9 +934,45 @@ mod tests {
 
         #[test]
         #[serial]
+        fn push_sign_failure_names_the_refused_digest_in_its_error_document() {
+            let dir = tempfile::tempdir().expect("tempdir");
+            write_module_yaml(dir.path());
+            let (_server, registry, puts) = mock_push_registry_holding(None);
+            let _shim = CosignTestShim::builder()
+                .with_argv_logging(false)
+                .with_exit(1)
+                .with_stderr("cosign sign failed: unauthorized")
+                .install();
+
+            let (printer, _cap) = Printer::for_test_doc();
+            let err = cmd_module_push(
+                &printer,
+                dir.path().to_str().unwrap(),
+                &format!("{registry}/test/mod:v1"),
+                PushOptions {
+                    platform: Some("linux/arm64"),
+                    apply: false,
+                    sign: true,
+                    key: None,
+                    attest: false,
+                },
+            )
+            .expect_err("cosign sign failure must return Err");
+            drop(printer);
+
+            let (printer, cap) = Printer::for_test_doc();
+            crate::cli::error::render_cli_error(&printer, &err);
+            drop(printer);
+            let doc = cap.json().expect("the failure emits an error document");
+            assert_eq!(doc["error"], "sign_failed", "{doc}");
+            assert_eq!(doc["digest"], puts.at("v1-linux-arm64"), "{doc}");
+        }
+
+        #[test]
+        #[serial]
         fn pull_require_signature_emits_verify_failed_when_cosign_exits_nonzero() {
             let dir = tempfile::tempdir().expect("tempdir");
-            let artifact = unreachable_ref("test/verify-sig");
+            let (_server, artifact, _) = mock_tag_without_blob();
 
             let _shim = CosignTestShim::builder()
                 .with_argv_logging(false)
@@ -838,6 +985,7 @@ mod tests {
                 &printer,
                 &artifact,
                 dir.path().to_str().unwrap(),
+                None,
                 true,
                 false,
                 cfgd_core::oci::VerifyOptions {
@@ -862,46 +1010,6 @@ mod tests {
                 meta.extras
             );
         }
-
-        // Helper: stand up a mock OCI registry that accepts blob uploads and
-        // returns 201 on manifest PUT, so a happy-path push can complete.
-        fn mock_push_registry() -> (mockito::ServerGuard, String) {
-            let mut server = mockito::Server::new();
-            let registry = server.url().trim_start_matches("http://").to_string();
-            let upload_location = format!("{}/v2/test/mod/blobs/uploads/up-id", server.url());
-
-            server
-                .mock(
-                    "HEAD",
-                    mockito::Matcher::Regex(r"/v2/test/mod/blobs/sha256:.*".to_string()),
-                )
-                .with_status(404)
-                .expect_at_least(2)
-                .create();
-            server
-                .mock("POST", "/v2/test/mod/blobs/uploads/")
-                .with_status(202)
-                .with_header("Location", &upload_location)
-                .expect_at_least(2)
-                .create();
-            server
-                .mock(
-                    "PUT",
-                    mockito::Matcher::Regex(
-                        r"/v2/test/mod/blobs/uploads/up-id\?digest=sha256:.*".to_string(),
-                    ),
-                )
-                .with_status(201)
-                .expect_at_least(2)
-                .create();
-            server
-                .mock("PUT", "/v2/test/mod/manifests/v1")
-                .with_status(201)
-                .create();
-
-            (server, registry)
-        }
-
         /// `cmd_module_push`'s push spinner used to render at
         /// depth 0 unconditionally (a bare `printer.spinner()` call inside
         /// `push_module`, a library fn with no `SectionGuard` of its own).
@@ -1020,6 +1128,132 @@ mod tests {
             );
         }
 
+        /// A tag already listing linux/amd64, which a linux/arm64 push joins.
+        fn amd64_tag() -> serde_json::Value {
+            serde_json::json!({
+                "schemaVersion": 2,
+                "mediaType": "application/vnd.oci.image.manifest.v1+json",
+                "annotations": { cfgd_core::OCI_ANNOTATION_PLATFORM: "linux/amd64" },
+            })
+        }
+
+        /// Push linux/arm64 with `--sign --attest` to a mock registry whose tag
+        /// holds `tag` and whose manifest PUT at `lying_at` answers a digest
+        /// naming other bytes. Answers the push's result, the cosign argv (one
+        /// line per call), the registry and the digests the PUTs took.
+        fn signed_push(
+            tag: Option<&serde_json::Value>,
+            lying_at: Option<&'static str>,
+        ) -> (anyhow::Result<()>, String, String, ManifestPuts) {
+            let shim = CosignTestShim::builder()
+                .with_argv_logging(true)
+                .with_exit(0)
+                .install();
+            let dir = tempfile::tempdir().expect("tempdir");
+            write_module_yaml(dir.path());
+            let (_server, registry, puts) = mock_push_registry_answering(tag, lying_at);
+            let (printer, _cap) = Printer::for_test_doc();
+            let result = cmd_module_push(
+                &printer,
+                dir.path().to_str().unwrap(),
+                &format!("{registry}/test/mod:v1"),
+                PushOptions {
+                    platform: Some("linux/arm64"),
+                    apply: false,
+                    sign: true,
+                    key: None,
+                    attest: true,
+                },
+            );
+            (result, shim.argv_log(), registry, puts)
+        }
+
+        #[test]
+        #[serial]
+        fn push_signs_and_attests_the_index_the_tag_resolves_to_after_a_join() {
+            let (result, argv, registry, puts) = signed_push(Some(&amd64_tag()), None);
+            result.expect("signed and attested push must succeed");
+            let (index, manifest) = (puts.at("v1"), puts.at("v1-linux-arm64"));
+            assert_ne!(index, manifest, "the index and the manifest differ");
+            assert_signed_and_attested(
+                &argv,
+                &[
+                    &format!("{registry}/test/mod@{index}"),
+                    &format!("{registry}/test/mod@{manifest}"),
+                ],
+            );
+        }
+
+        #[test]
+        #[serial]
+        fn push_signs_and_attests_the_manifest_when_no_index_was_written() {
+            let (result, argv, registry, puts) = signed_push(None, None);
+            result.expect("signed and attested push must succeed");
+            assert_signed_and_attested(
+                &argv,
+                &[&format!(
+                    "{registry}/test/mod@{}",
+                    puts.at("v1-linux-arm64")
+                )],
+            );
+        }
+
+        /// The push failed with `push_failed` naming both digests of the PUT
+        /// at `tag`, and cosign never ran.
+        fn assert_refused_unsigned(
+            result: anyhow::Result<()>,
+            argv: &str,
+            puts: &ManifestPuts,
+            tag: &str,
+        ) {
+            let err = result.expect_err("a PUT answering another digest fails the push");
+            let meta = err
+                .downcast_ref::<crate::cli::CliErrorMeta>()
+                .expect("handler returns CliErrorMeta");
+            assert_eq!(meta.error_kind, "push_failed", "{err}");
+            let message = err.to_string();
+            assert!(
+                message.contains(&puts.at(tag))
+                    && message.contains(&cfgd_core::sha256_digest(b"other bytes")),
+                "the refusal names the digest sent and the digest answered: {message}"
+            );
+            assert_eq!(argv, "", "nothing the push did not write is signed");
+        }
+
+        #[test]
+        #[serial]
+        fn push_refuses_a_manifest_put_answering_another_digest_before_signing() {
+            let (result, argv, _, puts) = signed_push(None, Some("v1-linux-arm64"));
+            assert_refused_unsigned(result, &argv, &puts, "v1-linux-arm64");
+        }
+
+        #[test]
+        #[serial]
+        fn push_refuses_an_index_put_answering_another_digest_before_signing() {
+            let (result, argv, _, puts) = signed_push(Some(&amd64_tag()), Some("v1"));
+            assert_refused_unsigned(result, &argv, &puts, "v1");
+        }
+
+        /// `cosign sign` ran once per subject, in order, and then `cosign
+        /// attest` did the same.
+        fn assert_signed_and_attested(argv: &str, subjects: &[&str]) {
+            let calls: Vec<&str> = argv
+                .lines()
+                .filter(|l| l.starts_with("sign ") || l.starts_with("attest "))
+                .collect();
+            let expected: Vec<(&str, &str)> = ["sign ", "attest "]
+                .into_iter()
+                .flat_map(|verb| subjects.iter().map(move |s| (verb, *s)))
+                .collect();
+            assert_eq!(calls.len(), expected.len(), "{argv}");
+            for (call, (verb, subject)) in calls.iter().zip(&expected) {
+                assert!(
+                    call.starts_with(verb) && call.ends_with(subject),
+                    "expected `{verb}` naming {subject}: {argv}"
+                );
+            }
+        }
+
         #[test]
         #[serial]
         fn push_with_sign_success_emits_signed_true_doc() {
@@ -1062,23 +1296,23 @@ mod tests {
         #[test]
         #[serial]
         fn pull_with_signature_verify_success_emits_signature_verified_true() {
-            // Cosign shim succeeds for `verify`; the rest of the pull fails
-            // (no valid OCI server) but the signature-verification branch
-            // exits success first — verify the emitted error_doc shows the
-            // failure originated downstream of the signature step.
+            // The registry serves the tag and answers 404 for its layer blob,
+            // so the signature check passes against the tag's digest and the
+            // pull fails afterwards, fetching the layer.
             let _shim = CosignTestShim::builder()
                 .with_argv_logging(false)
                 .with_exit(0)
                 .install();
 
             let dir = tempfile::tempdir().expect("tempdir");
-            let artifact = unreachable_ref("test/verify-success");
+            let (_server, artifact, _) = mock_tag_without_blob();
 
             let (printer, _cap) = Printer::for_test_doc();
             let err = cmd_module_pull(
                 &printer,
                 &artifact,
                 dir.path().to_str().unwrap(),
+                None,
                 true,
                 false,
                 cfgd_core::oci::VerifyOptions {
@@ -1103,9 +1337,53 @@ mod tests {
 
         #[test]
         #[serial]
+        fn pull_checks_signature_and_attestation_against_the_digest_the_tag_read_answered() {
+            let shim = CosignTestShim::builder()
+                .with_argv_logging(true)
+                .with_exit(0)
+                .install();
+            let dir = tempfile::tempdir().expect("tempdir");
+            let (_server, artifact, digest) = mock_tag_without_blob();
+
+            let (printer, _cap) = Printer::for_test_doc();
+            let _ = cmd_module_pull(
+                &printer,
+                &artifact,
+                dir.path().to_str().unwrap(),
+                None,
+                true,
+                true,
+                cfgd_core::oci::VerifyOptions {
+                    key: Some("cosign.pub"),
+                    identity: None,
+                    issuer: None,
+                },
+            );
+            drop(printer);
+
+            let subject = format!("{}@{digest}", artifact.trim_end_matches(":v1"));
+            let argv = shim.argv_log();
+            let calls: Vec<&str> = argv.lines().collect();
+            assert_eq!(
+                calls.len(),
+                2,
+                "one signature and one attestation check: {argv}"
+            );
+            assert!(
+                calls[0].starts_with("verify ") && calls[0].ends_with(&subject),
+                "{argv}"
+            );
+            assert!(
+                calls[1].starts_with("verify-attestation ") && calls[1].ends_with(&subject),
+                "{argv}"
+            );
+        }
+
+        #[test]
+        #[serial]
         fn pull_verify_attestation_emits_verify_failed_when_cosign_exits_nonzero() {
             let dir = tempfile::tempdir().expect("tempdir");
-            let artifact = unreachable_ref("test/verify-attest");
+            let (_server, artifact, _) = mock_tag_without_blob();
 
             let _shim = CosignTestShim::builder()
                 .with_argv_logging(false)
@@ -1118,6 +1396,7 @@ mod tests {
                 &printer,
                 &artifact,
                 dir.path().to_str().unwrap(),
+                None,
                 false,
                 true,
                 cfgd_core::oci::VerifyOptions {
@@ -1332,7 +1611,8 @@ spec:
         #[serial_test::serial]
         fn sign_with_kms_key_reference_reads_the_public_key_from_cosign() {
             const PEM: &str = "-----BEGIN PUBLIC KEY-----\nMFk=\n-----END PUBLIC KEY-----";
-            let shim = cfgd_core::test_helpers::ToolShim::install("CFGD_COSIGN_BIN", 0, PEM, "");
+            let shim =
+                cfgd_core::test_helpers::ToolShim::install(cfgd_core::COSIGN_BIN_ENV, 0, PEM, "");
             let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
             let module_doc = parse_module(MINIMAL_MODULE_YAML).expect("parse module.yaml");
             let signature =
@@ -1371,7 +1651,7 @@ spec:
         #[serial_test::serial]
         fn sign_with_pkcs11_key_cosign_cannot_read_warns_and_fails_disallow_unsigned_admission() {
             let _shim = cfgd_core::test_helpers::ToolShim::install(
-                "CFGD_COSIGN_BIN",
+                cfgd_core::COSIGN_BIN_ENV,
                 1,
                 "",
                 "no such token",
@@ -1563,6 +1843,7 @@ spec:
             &printer,
             &artifact_ref,
             output_dir.path().to_str().unwrap(),
+            None,
             false,
             false,
             cfgd_core::oci::VerifyOptions {
@@ -1579,6 +1860,67 @@ spec:
         assert!(
             doc["output"].is_string(),
             "output field must be present: {doc}"
+        );
+        assert_eq!(
+            doc["digest"],
+            cfgd_core::sha256_digest(&serde_json::to_vec(&manifest).unwrap()),
+            "{doc}"
+        );
+        assert_eq!(
+            doc.get("indexDigest"),
+            Some(&serde_json::Value::Null),
+            "a tag naming one manifest has no index: {doc}"
+        );
+    }
+
+    #[test]
+    fn pull_of_a_platform_the_index_lacks_fails_naming_both() {
+        let mut server = mockito::Server::new();
+        let registry = server.url().trim_start_matches("http://").to_string();
+        server
+            .mock("GET", "/v2/test/mod/manifests/v1")
+            .with_status(200)
+            .with_header("Content-Type", "application/vnd.oci.image.index.v1+json")
+            .with_body(
+                serde_json::json!({
+                    "schemaVersion": 2,
+                    "mediaType": "application/vnd.oci.image.index.v1+json",
+                    "manifests": [{
+                        "mediaType": "application/vnd.oci.image.manifest.v1+json",
+                        "digest": "sha256:a1",
+                        "size": 1,
+                        "platform": { "os": "linux", "architecture": "amd64" },
+                    }],
+                })
+                .to_string(),
+            )
+            .create();
+        let output_dir = tempfile::tempdir().expect("output dir");
+        let (printer, _cap) = Printer::for_test_doc();
+
+        let err = cmd_module_pull(
+            &printer,
+            &format!("{registry}/test/mod:v1"),
+            output_dir.path().to_str().unwrap(),
+            Some("plan9/mips"),
+            false,
+            false,
+            cfgd_core::oci::VerifyOptions {
+                key: None,
+                identity: None,
+                issuer: None,
+            },
+        )
+        .expect_err("no plan9/mips entry");
+        drop(printer);
+
+        let meta = err
+            .downcast_ref::<crate::cli::CliErrorMeta>()
+            .expect("handler returns CliErrorMeta");
+        assert_eq!(meta.error_kind, "pull_failed", "{meta:?}");
+        assert!(
+            meta.message.contains("plan9/mips") && meta.message.contains("linux/amd64"),
+            "the error names the platform asked for and the ones held: {meta:?}"
         );
     }
 
@@ -1645,6 +1987,7 @@ spec:
             &printer,
             &artifact_ref,
             output_dir.path().to_str().unwrap(),
+            None,
             false,
             false,
             cfgd_core::oci::VerifyOptions {
@@ -1665,42 +2008,8 @@ spec:
         let dir = tempfile::tempdir().expect("tempdir");
         write_module_yaml(dir.path());
 
-        let mut server = mockito::Server::new();
-        let registry = server.url().trim_start_matches("http://").to_string();
+        let (_server, registry) = mock_push_registry();
         let artifact = format!("{}/test/mod:v1", registry);
-        let upload_location = format!("{}/v2/test/mod/blobs/uploads/up-id", server.url());
-
-        server
-            .mock(
-                "HEAD",
-                mockito::Matcher::Regex(r"/v2/test/mod/blobs/sha256:.*".to_string()),
-            )
-            .with_status(404)
-            .expect_at_least(2)
-            .create();
-
-        server
-            .mock("POST", "/v2/test/mod/blobs/uploads/")
-            .with_status(202)
-            .with_header("Location", &upload_location)
-            .expect_at_least(2)
-            .create();
-
-        server
-            .mock(
-                "PUT",
-                mockito::Matcher::Regex(
-                    r"/v2/test/mod/blobs/uploads/up-id\?digest=sha256:.*".to_string(),
-                ),
-            )
-            .with_status(201)
-            .expect_at_least(2)
-            .create();
-
-        server
-            .mock("PUT", "/v2/test/mod/manifests/v1")
-            .with_status(201)
-            .create();
 
         let (printer, cap) = Printer::for_test_doc();
         cmd_module_push(
@@ -1729,5 +2038,44 @@ spec:
             doc["attestation"], false,
             "attestation must be false: {doc}"
         );
+        assert_eq!(
+            doc.get("indexDigest"),
+            Some(&serde_json::Value::Null),
+            "a push that wrote no index says so: {doc}"
+        );
+    }
+
+    #[test]
+    fn push_joining_another_platform_reports_the_index_digest() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_module_yaml(dir.path());
+
+        let (_server, registry, puts) = mock_push_registry_holding(Some(&serde_json::json!({
+            "schemaVersion": 2,
+            "mediaType": "application/vnd.oci.image.manifest.v1+json",
+            "annotations": { cfgd_core::OCI_ANNOTATION_PLATFORM: "linux/amd64" },
+        })));
+        let artifact = format!("{}/test/mod:v1", registry);
+
+        let (printer, cap) = Printer::for_test_doc();
+        cmd_module_push(
+            &printer,
+            dir.path().to_str().unwrap(),
+            &artifact,
+            PushOptions {
+                platform: Some("linux/arm64"),
+                apply: false,
+                sign: false,
+                key: None,
+                attest: false,
+            },
+        )
+        .expect("push beside another platform must succeed");
+        drop(printer);
+
+        let doc = cap.json().expect("success doc must be emitted");
+        assert_eq!(doc["indexDigest"], puts.at("v1"), "{doc}");
+        assert_eq!(doc["digest"], puts.at("v1-linux-arm64"), "{doc}");
+        assert_eq!(doc["platform"], "linux/arm64", "{doc}");
     }
 }

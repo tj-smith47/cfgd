@@ -6,6 +6,7 @@ use serde::Serialize;
 
 use super::source::{clone_into, is_clonable_source, plan_from, resolve_from};
 use super::*;
+use crate::cli::startup::StartupDocument;
 
 // ─────────────────────────────────────────────────────
 // cfgd init — pure scaffolding
@@ -28,6 +29,9 @@ pub struct InitArgs<'a> {
     pub runtime_dir: Option<&'a Path>,
     pub scope: cfgd_core::Scope,
     pub on_conflict: crate::cli::OnConflict,
+    /// What this invocation brings to the migration gate, which init runs
+    /// against the config it wrote.
+    pub migration_gate: crate::cli::config_schema::GateInvocation<'a>,
 }
 
 /// Structured-output payload for `cfgd init`. Drives `-o json|yaml|jsonpath|template`.
@@ -87,11 +91,8 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
 
     // 2. Check if already initialized
     // When --from is used, resolve_from handles the "already initialized" case
-    // and the clone creates cfgd.yaml — skip this check to reach the apply step
-    if planned_dir
-        .join(cfgd_core::config::CONFIG_FILENAME)
-        .exists()
-        && !from_used
+    // and the clone creates the config document — skip this check to reach the apply step
+    if let Some(document) = super::source::held_config_document(&planned_dir).filter(|_| !from_used)
     {
         let mut row = printer.status(
             Role::Info,
@@ -104,6 +105,11 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
             row = row.detail(detail);
         }
         drop(row);
+        crate::cli::config_schema::gate_on_load(
+            printer,
+            &args.migration_gate,
+            &StartupDocument::load(&document),
+        );
         let output = InitOutput {
             target_dir: cfgd_core::to_posix_string(&planned_dir),
         };
@@ -138,32 +144,29 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
     }
     // When --from is a git source, resolve_from already cloned it above.
     // Only clone here if resolve_from didn't handle it (non-git --from or no --from).
-    // An existing cfgd.yaml means the target is already a config repo. The check above
+    // An existing config document means the target is already a config repo. The check above
     // returns early on that without `--from`; WITH `--from` control reaches
     // here, and neither branch below may run over it — `git clone` cannot write
     // into a populated directory (and the failed attempt used to take the
     // directory's contents with it), while `scaffold` would overwrite the
-    // user's cfgd.yaml with a fresh template.
-    let already_initialized = target_dir.join(cfgd_core::config::CONFIG_FILENAME).exists();
-    if let Some(url) = from.as_deref().filter(|f| is_clonable_source(f)) {
+    // user's config document with a fresh template.
+    let already_initialized = super::source::held_config_document(&target_dir).is_some();
+    let clonable = from.as_deref().filter(|f| is_clonable_source(f));
+    if let Some(url) = clonable {
         if !already_initialized && !target_dir.join(".git").exists() {
             clone_into(&target_dir, url, args.branch, printer)?;
         }
-        apply_clone_overrides(
-            &target_dir.join(cfgd_core::config::CONFIG_FILENAME),
-            args.name,
-            args.theme,
-        )?;
-    } else if already_initialized {
-        // `--from <plain path>`: the directory is the user's own config repo,
-        // so --name/--theme land as overrides on it, never as a re-scaffold.
-        apply_clone_overrides(
-            &target_dir.join(cfgd_core::config::CONFIG_FILENAME),
-            args.name,
-            args.theme,
-        )?;
-    } else {
+    } else if !already_initialized {
         scaffold(&target_dir, args.name, args.theme, printer)?;
+    }
+    // Resolved after the clone or scaffold above, because either one decides
+    // whether the directory holds a cfgd.yaml or a cfgd.toml.
+    let config_path = cfgd_core::config::config_document_in(&target_dir);
+    // `--from <plain path>` names the user's own config repo, so --name/--theme
+    // land as overrides on it, the same as on a clone. A preview leaves the
+    // document as the clone or the user left it.
+    if (clonable.is_some() || already_initialized) && !args.dry_run {
+        apply_clone_overrides(&config_path, args.name, args.theme)?;
     }
 
     // 5. Generate release workflow — only for scaffolded repos, not cloned ones.
@@ -211,13 +214,21 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
     let rethemed = args.theme.map(|t| printer.rethemed(t));
     let printer = rethemed.as_ref().unwrap_or(printer);
 
+    // The load-time gate is withheld from init because the document did not
+    // exist yet. It runs now, before the apply below reads the file, so the
+    // question a behind-schema config earns is settled during setup.
+    crate::cli::config_schema::gate_on_load(
+        printer,
+        &args.migration_gate,
+        &StartupDocument::load(&config_path),
+    );
+
     // 7. Apply if requested
     let should_apply = should_run_apply(args.apply, args.apply_profile, args.apply_modules);
     // Deferred so the structured-output anchor below still reaches `-o json`
     // consumers before the process exits nonzero on a failed apply.
     let mut apply_status = cfgd_core::state::ApplyStatus::Success;
     if should_apply {
-        let config_path = target_dir.join(cfgd_core::config::CONFIG_FILENAME);
         let profiles_dir = target_dir.join("profiles");
 
         // Module-only apply: no profile needed
@@ -238,6 +249,7 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
                 }
             }
 
+            // load-ok: re-read after this verb's write
             let mut cfg = config::load_config(&config_path)?;
             drain_config_deprecations(printer, &mut cfg);
             let mut registry = super::build_registry_with_config(Some(&cfg));
@@ -267,6 +279,7 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
                 &mgr_map,
                 Some(&pkg_cx),
                 printer,
+                &modules::refuse_floor_bootstrap,
             )?;
             let reconciler = cfgd_core::reconciler::Reconciler::new(&registry, &store)
                 .with_config_dir(&target_dir)
@@ -332,19 +345,33 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
                 if let Err(e) = cfgd_core::config::find_profile_path(&profiles_dir, name) {
                     return Err(crate::cli::profile::profile_lookup_error(e, name));
                 }
-                // Set as active profile in cfgd.yaml
-                let mut cfg = config::load_config(&config_path)?;
-                drain_config_deprecations(printer, &mut cfg);
-                cfg.spec.profile = Some(name.to_string());
-                crate::cli::helpers::rewrite_user_yaml(&config_path, &cfg)?;
-                printer
-                    .status(Role::Ok, "Set active profile")
-                    .qualifier(name);
+                // A preview plans against the named profile and leaves the
+                // document naming the one it named before.
+                if args.dry_run {
+                    // load-ok: re-read after this verb's write
+                    let mut cfg = config::load_config(&config_path)?;
+                    drain_config_deprecations(printer, &mut cfg);
+                } else {
+                    let mut cfg = crate::cli::mutate_config_yaml(&config_path, |raw| {
+                        crate::cli::config_cmd::spec_mapping_mut(raw, &config_path)?.insert(
+                            serde_yaml::Value::String("profile".into()),
+                            serde_yaml::Value::String(name.to_string()),
+                        );
+                        Ok(())
+                    })?
+                    .config;
+                    drain_config_deprecations(printer, &mut cfg);
+                    printer
+                        .status(Role::Ok, "Set active profile")
+                        .qualifier(name);
+                }
                 name.to_string()
             } else {
-                // No --apply-profile: use whatever's in cfgd.yaml, or pick interactively
+                // No --apply-profile: use whatever the config document names, or pick interactively
+                // load-ok: re-read after this verb's write
                 let mut cfg = config::load_config(&config_path)?;
                 drain_config_deprecations(printer, &mut cfg);
+                // option-section-ok: an omitted profile is asked for at the prompt
                 if let Some(ref p) = cfg.spec.profile {
                     p.clone()
                 } else {
@@ -352,6 +379,7 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
                 }
             };
 
+            // load-ok: re-read after this verb's write
             let cfg = config::load_config(&config_path)?;
             let resolved = config::resolve_profile(&profile_name, &profiles_dir)?;
             let mut registry = super::build_registry_with_config(Some(&cfg));
@@ -396,6 +424,7 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
                     &mgr_map,
                     Some(&pkg_cx),
                     printer,
+                    &modules::refuse_floor_bootstrap,
                 )?
             } else {
                 Vec::new()
@@ -472,7 +501,7 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
     if args.install_daemon {
         #[cfg(any(unix, windows))]
         {
-            let config_path = target_dir.join(cfgd_core::config::CONFIG_FILENAME);
+            // load-ok: re-read after this verb's write
             let mut cfg = config::load_config(&config_path)?;
             drain_config_deprecations(printer, &mut cfg);
             let profile = cfg.spec.profile.as_deref();
@@ -502,7 +531,13 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
                             cfgd_core::output::collapse_to_subject_line(&e),
                         ),
                     );
-                    printer.hint_commands("Install later with:", &["cfgd daemon install"]);
+                    printer.hint(
+                        cfgd_core::output::HintCommands::new(
+                            "Install later with:",
+                            ["cfgd daemon install"],
+                        )
+                        .ungated(),
+                    );
                 }
             }
         }
@@ -512,7 +547,13 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
                 Role::Warn,
                 "Daemon service installation is not supported on this platform",
             );
-            printer.hint_commands("Run the daemon directly with:", &["cfgd daemon"]);
+            printer.hint(
+                cfgd_core::output::HintCommands::new(
+                    "Run the daemon directly with:",
+                    ["cfgd daemon"],
+                )
+                .ungated(),
+            );
         }
     }
 
@@ -554,11 +595,11 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
 }
 
 /// Apply every `cfgd init` CLI override that rewrites a field of a *cloned*
-/// `cfgd.yaml`, in a single atomic read-modify-write. No-op when the cloned
-/// repo has no `cfgd.yaml` yet, or when no override flag was supplied.
+/// config document, in a single atomic read-modify-write. No-op when the cloned
+/// repo has no config document yet, or when no override flag was supplied.
 ///
 /// This is the single funnel for clone-path config overrides: any future CLI
-/// flag that overrides a field of the cloned `cfgd.yaml` MUST be applied here.
+/// flag that overrides a field of the cloned config document MUST be applied here.
 /// The scaffold (non-`--from`) path builds the file from scratch via
 /// `scaffold`, so the two branches diverge — centralizing the clone overrides
 /// here prevents a new flag from silently regressing on the clone path (the
@@ -570,7 +611,7 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
 /// / `apply_module` / `dry_run` / `yes` / `install_daemon` are behavioral and
 /// run identically on both the clone and scaffold paths; `branch` / `from` /
 /// `path` are clone mechanics, not config fields. None of them rewrite the
-/// cloned `cfgd.yaml`.
+/// cloned config document.
 fn apply_clone_overrides(
     config_path: &Path,
     name: Option<&str>,
@@ -583,19 +624,34 @@ fn apply_clone_overrides(
         return Ok(());
     }
 
-    let mut cfg = config::load_config(config_path)?;
-    if let Some(name) = name {
-        cfg.metadata.name = name.to_string();
-    }
-    if let Some(theme) = theme {
-        let mut output = cfg.spec.output.take().unwrap_or_default();
-        output.theme = Some(config::ThemeConfig {
-            name: theme.to_string(),
-            overrides: config::ThemeOverrides::default(),
-        });
-        cfg.spec.output = Some(output);
-    }
-    crate::cli::helpers::rewrite_user_yaml(config_path, &cfg)?;
+    use crate::cli::config_cmd;
+    crate::cli::mutate_config_yaml(config_path, |raw| {
+        if let Some(name) = name {
+            let (metadata, leaf) = config_cmd::walk_yaml_path_mut(raw, "metadata.name")?;
+            metadata.insert(
+                serde_yaml::Value::String(leaf),
+                serde_yaml::Value::String(name.to_string()),
+            );
+        }
+        if let Some(theme) = theme {
+            let spec = config_cmd::spec_mapping_mut(raw, config_path)?;
+            // The flag names the whole theme, so the flat spelling a document
+            // may still carry goes with the block it is replaced by, and any
+            // overrides the cloned block held are dropped with it.
+            spec.remove("theme");
+            let (output, leaf, _) = config_cmd::walk_spec_path_mut(spec, "output.theme")?;
+            let mut block = serde_yaml::Mapping::new();
+            block.insert(
+                serde_yaml::Value::String("name".into()),
+                serde_yaml::Value::String(theme.to_string()),
+            );
+            output.insert(
+                serde_yaml::Value::String(leaf),
+                serde_yaml::Value::Mapping(block),
+            );
+        }
+        Ok(())
+    })?;
     Ok(())
 }
 
@@ -698,7 +754,7 @@ pub(super) fn apply_plan(
     // that failed to resolve is absent from the plan, so naming it in the
     // header would describe work no phase below can show.
     let header_modules = cfgd_core::output::HeaderModule::of_resolved(modules);
-    let config_path = config_dir.join(cfgd_core::config::CONFIG_FILENAME);
+    let config_path = cfgd_core::config::config_document_in(config_dir);
     let title = if opts.dry_run {
         cfgd_core::reconciler::RunTitle::Plan
     } else {
@@ -804,9 +860,10 @@ pub(super) fn apply_plan(
 /// Interactively pick a profile from the profiles directory.
 pub(super) fn pick_profile(profiles_dir: &Path, printer: &Printer) -> anyhow::Result<String> {
     if !profiles_dir.is_dir() {
-        anyhow::bail!(
-            "No profiles directory found — create a profile first with: `cfgd profile create <name>`"
-        );
+        return Err(no_profile_to_pick(
+            profiles_dir,
+            "No profiles directory found — create a profile first with: `cfgd profile create <name>`",
+        ));
     }
 
     // Tolerant listing: an ambiguous profile warns and is skipped instead of
@@ -814,9 +871,10 @@ pub(super) fn pick_profile(profiles_dir: &Path, printer: &Printer) -> anyhow::Re
     let names: Vec<String> = scan_profile_names(profiles_dir, printer)?;
 
     if names.is_empty() {
-        anyhow::bail!(
-            "No profiles found — create a profile first with: `cfgd profile create <name>`"
-        );
+        return Err(no_profile_to_pick(
+            profiles_dir,
+            "No profiles found — create a profile first with: `cfgd profile create <name>`",
+        ));
     }
 
     if names.len() == 1 {
@@ -848,9 +906,24 @@ pub(super) fn pick_profile(profiles_dir: &Path, printer: &Printer) -> anyhow::Re
         return Ok(input);
     }
 
-    anyhow::bail!(
-        "Invalid selection '{}' — expected a number or profile name",
-        input
+    Err(crate::cli::cli_error(
+        &input,
+        "invalid_value",
+        format!(
+            "Invalid selection '{}' — expected a number or profile name",
+            input
+        ),
+        serde_json::json!({ "available": names }),
+    ))
+}
+
+/// The picker has no profile to offer: the directory is absent or holds none.
+fn no_profile_to_pick(profiles_dir: &Path, message: &'static str) -> anyhow::Error {
+    crate::cli::cli_error(
+        "profile",
+        "not_found",
+        message,
+        serde_json::json!({ "path": cfgd_core::to_posix_string(profiles_dir) }),
     )
 }
 
@@ -889,7 +962,7 @@ pub(super) fn ensure_dir_writable(dir: &Path) -> anyhow::Result<()> {
     }
 }
 
-pub(super) fn scaffold(
+pub(in crate::cli) fn scaffold(
     dir: &Path,
     name: Option<&str>,
     theme: Option<&str>,
@@ -921,6 +994,7 @@ spec:
   output:
     theme: {theme_value}
   fileStrategy: Symlink
+  migrationPolicy: Prompt
   aliases:
     add: "profile update --file"
     remove: "profile update --file"
@@ -932,6 +1006,7 @@ spec:
     );
     crate::cli::helpers::write_scaffold(
         cfgd_core::config::SchemaDocKind::Config,
+        // document-name-ok: the scaffold creates the document under its YAML name
         &dir.join(cfgd_core::config::CONFIG_FILENAME),
         &content,
     )?;
@@ -1036,7 +1111,9 @@ pub(super) fn check_prerequisites(printer: &Printer) -> bool {
             // Command Line Tools installer is macOS's own, and cfgd cannot
             // drive its GUI prompt.
             if cfg!(target_os = "macos") {
-                printer.hint("Install with `xcode-select --install`");
+                printer.hint(cfgd_core::output::HintCommands::unconditional(
+                    "Install with `xcode-select --install`",
+                ));
             }
             false
         }

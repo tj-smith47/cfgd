@@ -1,6 +1,18 @@
 use super::*;
 use crate::test_helpers::test_printer;
 
+/// The facts of a check-in that observed nothing beyond its identity, under
+/// this host's own name.
+fn identity_facts(config_hash: &str) -> CheckinFacts<'static> {
+    CheckinFacts {
+        hostname: crate::hostname_string(),
+        config_hash: config_hash.into(),
+        compliance: None,
+        package_versions: None,
+        backup_schedule_owners: None,
+    }
+}
+
 #[test]
 fn server_client_strips_trailing_slash() {
     let client = ServerClient::new("http://localhost:8080/", None, "node-1");
@@ -76,9 +88,10 @@ fn checkin_carries_the_declared_package_versions_and_backup_schedule_owners() {
             "dotfiles".to_string(),
             crate::config::ScheduleOwner::Local.label().to_string(),
         )])),
+        ..identity_facts("hash123")
     };
     client
-        .checkin("hash123", None, facts, &printer)
+        .checkin(facts, &printer)
         .expect("the gateway answered");
     mock.assert();
 
@@ -133,7 +146,7 @@ fn checkin_response_without_backup_schedules_projects_nothing() {
     let client = ServerClient::new(&server.url(), Some("key"), "dev-1");
     let printer = test_printer();
     let resp = client
-        .checkin("hash", None, Default::default(), &printer)
+        .checkin(identity_facts("hash"), &printer)
         .expect("the gateway answered");
     assert!(
         resp.backup_schedules.is_none(),
@@ -156,7 +169,7 @@ fn checkin_response_carries_the_cluster_owned_projection() {
     let client = ServerClient::new(&server.url(), Some("key"), "dev-1");
     let printer = test_printer();
     let resp = client
-        .checkin("hash", None, Default::default(), &printer)
+        .checkin(identity_facts("hash"), &printer)
         .expect("the gateway answered");
     let projected = resp
         .backup_schedules
@@ -255,7 +268,7 @@ fn checkin_sends_correct_payload_and_parses_response() {
 
     let client = ServerClient::new(&server.url(), Some("test-key"), "dev-1");
     let printer = test_printer();
-    let result = client.checkin("hash123", None, Default::default(), &printer);
+    let result = client.checkin(identity_facts("hash123"), &printer);
 
     assert!(result.is_ok());
     let resp = result.unwrap();
@@ -264,26 +277,157 @@ fn checkin_sends_correct_payload_and_parses_response() {
     mock.assert();
 }
 
+/// The body a real `cfgd checkin` sent for a machine with one missing managed
+/// file and one missing watched path, copied from the request the listener
+/// captured. Only the host fields are filled per machine.
+const CAPTURED_CHECKIN_BODY: &str = r#"{"deviceId":"dev-1","hostname":{HOSTNAME},"os":"{OS}","arch":"{ARCH}","configHash":"ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356","complianceSummary":{"compliant":0,"warning":1,"violation":1,"checks":[{"category":"file","name":"/root/.cache/cfgd-debug/checkin-payload/run/tmppu95r0vq/.zshrc","status":"Violation","detail":"managed file missing"},{"category":"watchPath","name":"/root/.cache/cfgd-debug/checkin-payload/run/tmppu95r0vq/watched","status":"Warning","detail":"path does not exist"}]},"packageVersions":{},"backupScheduleOwners":{}}"#;
+
+/// The check-in carries every check that did not pass, violations first, as
+/// the bytes a real check-in sent. The snapshot lists the warning first, so
+/// the order on the wire is the report's own.
 #[test]
-fn checkin_with_compliance_summary() {
+fn checkin_sends_the_non_compliant_checks_as_a_real_checkin_did() {
+    use crate::compliance::{ComplianceCheck, MachineInfo, compute_summary};
+
+    let home = "/root/.cache/cfgd-debug/checkin-payload/run/tmppu95r0vq";
+    let checks = vec![
+        ComplianceCheck {
+            category: "watchPath".into(),
+            path: Some(format!("{home}/watched")),
+            status: ComplianceStatus::Warning,
+            detail: Some("path does not exist".into()),
+            ..Default::default()
+        },
+        ComplianceCheck {
+            category: "file".into(),
+            target: Some(format!("{home}/.zshrc")),
+            status: ComplianceStatus::Violation,
+            detail: Some("managed file missing".into()),
+            ..Default::default()
+        },
+    ];
+    let snapshot = ComplianceSnapshot {
+        timestamp: "2026-09-25T00:00:00Z".into(),
+        machine: MachineInfo {
+            hostname: "ws-1".into(),
+            os: "linux".into(),
+            arch: "x86_64".into(),
+        },
+        profile: "default".into(),
+        sources: vec![],
+        summary: compute_summary(&checks),
+        checks,
+    };
+    let expected = CAPTURED_CHECKIN_BODY
+        .replace(
+            "{HOSTNAME}",
+            &serde_json::to_string(&crate::hostname_string()).unwrap(),
+        )
+        .replace("{OS}", std::env::consts::OS)
+        .replace("{ARCH}", std::env::consts::ARCH);
+
     let mut server = mockito::Server::new();
     let mock = server
         .mock("POST", "/api/v1/checkin")
+        .match_body(mockito::Matcher::Exact(expected))
         .with_status(200)
-        .with_body(r#"{"status":"ok","configChanged":true}"#)
+        .with_body(r#"{"status":"ok","configChanged":false}"#)
         .create();
-
     let client = ServerClient::new(&server.url(), Some("key"), "dev-1");
-    let printer = test_printer();
-    let summary = ComplianceSummary {
-        compliant: 5,
-        warning: 1,
-        violation: 0,
-    };
-    let result = client.checkin("hash", Some(summary), Default::default(), &printer);
-    assert!(result.is_ok());
-    assert!(result.unwrap().config_changed);
+    client
+        .checkin(
+            CheckinFacts {
+                compliance: Some(CheckinCompliance::from_snapshot(&snapshot)),
+                package_versions: Some(BTreeMap::new()),
+                backup_schedule_owners: Some(BTreeMap::new()),
+                ..identity_facts("ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356")
+            },
+            &test_printer(),
+        )
+        .expect("the gateway answered");
     mock.assert();
+}
+
+/// A machine whose checks all pass sends the counts alone, and a failing check
+/// with no detail sends no `detail` key: both are the shape a gateway that
+/// predates the list already parses.
+#[test]
+fn a_checkin_omits_an_empty_check_list_and_an_absent_detail() {
+    use crate::compliance::{ComplianceCheck, MachineInfo, compute_summary};
+
+    let snapshot = |checks: Vec<ComplianceCheck>| ComplianceSnapshot {
+        timestamp: "2026-09-25T00:00:00Z".into(),
+        machine: MachineInfo {
+            hostname: "ws-1".into(),
+            os: "linux".into(),
+            arch: "x86_64".into(),
+        },
+        profile: "default".into(),
+        sources: vec![],
+        summary: compute_summary(&checks),
+        checks,
+    };
+    let passing = snapshot(vec![ComplianceCheck {
+        category: "file".into(),
+        target: Some("/home/u/.zshrc".into()),
+        status: ComplianceStatus::Compliant,
+        ..Default::default()
+    }]);
+    assert_eq!(
+        serde_json::to_string(&CheckinCompliance::from_snapshot(&passing)).unwrap(),
+        r#"{"compliant":1,"warning":0,"violation":0}"#
+    );
+    let undetailed = snapshot(vec![ComplianceCheck {
+        category: "package".into(),
+        name: Some("jq".into()),
+        status: ComplianceStatus::Violation,
+        ..Default::default()
+    }]);
+    assert_eq!(
+        serde_json::to_string(&CheckinCompliance::from_snapshot(&undetailed)).unwrap(),
+        r#"{"compliant":0,"warning":0,"violation":1,"checks":[{"category":"package","name":"jq","status":"Violation"}]}"#
+    );
+}
+
+/// A machine failing more checks than a status can list sends the first of
+/// them, violations ahead of warnings, and counts every one.
+#[test]
+fn a_checkin_lists_at_most_the_capped_checks_and_counts_them_all() {
+    use crate::compliance::{ComplianceCheck, MachineInfo, compute_summary};
+
+    let cap = cfgd_schema::MAX_REPORTED_CHECKS;
+    let check = |i: usize, status| ComplianceCheck {
+        category: "file".into(),
+        target: Some(format!("/f{i}")),
+        status,
+        ..Default::default()
+    };
+    let checks: Vec<ComplianceCheck> = (0..cap)
+        .map(|i| check(i, ComplianceStatus::Warning))
+        .chain((0..2).map(|i| check(cap + i, ComplianceStatus::Violation)))
+        .collect();
+    let snapshot = ComplianceSnapshot {
+        timestamp: "2026-09-25T00:00:00Z".into(),
+        machine: MachineInfo {
+            hostname: "ws-1".into(),
+            os: "linux".into(),
+            arch: "x86_64".into(),
+        },
+        profile: "default".into(),
+        sources: vec![],
+        summary: compute_summary(&checks),
+        checks,
+    };
+
+    let report = CheckinCompliance::from_snapshot(&snapshot);
+    assert_eq!(report.checks.len(), cap);
+    assert_eq!((report.warning, report.violation), (cap, 2));
+    assert!(
+        report.checks[..2]
+            .iter()
+            .all(|c| c.status == ComplianceStatus::Violation),
+        "the violations are listed ahead of the warnings the cap cuts"
+    );
 }
 
 #[test]
@@ -460,7 +604,7 @@ fn checkin_server_error_returns_error() {
 
     let client = ServerClient::new(&server.url(), Some("key"), "dev-1");
     let printer = test_printer();
-    let result = client.checkin("hash", None, Default::default(), &printer);
+    let result = client.checkin(identity_facts("hash"), &printer);
     assert!(result.is_err());
     mock.assert();
 }
@@ -477,7 +621,7 @@ fn checkin_client_error_does_not_retry() {
 
     let client = ServerClient::new(&server.url(), Some("bad-key"), "dev-1");
     let printer = test_printer();
-    let result = client.checkin("hash", None, Default::default(), &printer);
+    let result = client.checkin(identity_facts("hash"), &printer);
     assert!(result.is_err());
     mock.assert();
 }
@@ -567,7 +711,7 @@ fn checkin_invalid_json_response() {
 
     let client = ServerClient::new(&server.url(), Some("key"), "dev-1");
     let printer = test_printer();
-    let result = client.checkin("hash", None, Default::default(), &printer);
+    let result = client.checkin(identity_facts("hash"), &printer);
     assert!(result.is_err());
     let err_msg = format!("{}", result.unwrap_err());
     assert!(
@@ -693,7 +837,7 @@ fn request_challenge_connection_refused() {
 fn checkin_connection_refused() {
     let client = ServerClient::new("http://127.0.0.1:1", Some("key"), "dev-1");
     let printer = test_printer();
-    let result = client.checkin("hash", None, Default::default(), &printer);
+    let result = client.checkin(identity_facts("hash"), &printer);
     assert!(result.is_err());
     let err_msg = format!("{}", result.unwrap_err());
     assert!(
@@ -757,9 +901,7 @@ fn checkin_with_desired_config_in_response() {
 
     let client = ServerClient::new(&server.url(), Some("key"), "dev-1");
     let printer = test_printer();
-    let result = client
-        .checkin("hash", None, Default::default(), &printer)
-        .unwrap();
+    let result = client.checkin(identity_facts("hash"), &printer).unwrap();
     assert!(result.config_changed);
     assert!(result.desired_config.is_some());
     mock.assert();
@@ -838,7 +980,7 @@ fn checkin_no_api_key_omits_auth_header() {
 
     let client = ServerClient::new(&server.url(), None, "dev-1");
     let printer = test_printer();
-    let result = client.checkin("hash", None, Default::default(), &printer);
+    let result = client.checkin(identity_facts("hash"), &printer);
     assert!(result.is_ok());
     mock.assert();
 }
@@ -903,7 +1045,7 @@ fn save_credential_real_path_roundtrips_through_state_dir() {
     use crate::test_helpers::EnvVarGuard;
 
     let dir = tempfile::tempdir().unwrap();
-    let _guard = EnvVarGuard::set("CFGD_STATE_DIR", dir.path().to_str().unwrap());
+    let _guard = EnvVarGuard::set(crate::CFGD_STATE_DIR_ENV, dir.path().to_str().unwrap());
 
     let cred = DeviceCredential {
         server_url: "https://cfgd.example.com".into(),
@@ -946,7 +1088,7 @@ fn load_credential_returns_none_when_absent_in_state_dir() {
     use crate::test_helpers::EnvVarGuard;
 
     let dir = tempfile::tempdir().unwrap();
-    let _guard = EnvVarGuard::set("CFGD_STATE_DIR", dir.path().to_str().unwrap());
+    let _guard = EnvVarGuard::set(crate::CFGD_STATE_DIR_ENV, dir.path().to_str().unwrap());
 
     let loaded = load_credential().expect("load_credential must not error on empty dir");
     assert!(loaded.is_none(), "no credential should be present");
@@ -1002,9 +1144,7 @@ mod bridge {
 
         let client = ServerClient::new(&server.url(), Some("key"), "dev-1");
         let (printer, cap) = Printer::for_test_doc();
-        let resp = client
-            .checkin("hash123", None, Default::default(), &printer)
-            .unwrap();
+        let resp = client.checkin(identity_facts("hash123"), &printer).unwrap();
 
         let summary = CheckinSummary {
             server_status: resp.status.clone(),
@@ -1262,4 +1402,61 @@ fn a_refusal_carries_the_gateways_own_words() {
     assert_eq!(refusal_detail("  plain text  "), "plain text");
     assert_eq!(refusal_detail(""), "");
     assert_eq!(refusal_detail(&"x".repeat(500)).chars().count(), 200);
+}
+
+/// The check-in hash digests the effective system map: stable for one desired
+/// state, moved by a system setting whether the profile or a module declares
+/// it, and left alone by a package change, which the gateway learns from
+/// `packageVersions`.
+#[test]
+fn the_checkin_hash_follows_the_effective_system_map() {
+    use crate::config::{CargoSpec, MergedProfile, PackagesSpec};
+
+    let sysctl = |value: &str| {
+        crate::config::SystemSettings::from([(
+            "sysctl".to_string(),
+            serde_yaml::from_str(&format!("net.ipv4.ip_forward: \"{value}\"")).expect("yaml"),
+        )])
+    };
+    let base = MergedProfile {
+        system: sysctl("0"),
+        ..Default::default()
+    };
+    let hash = checkin_config_hash(&base, &[]).expect("hash");
+    assert_eq!(hash, checkin_config_hash(&base, &[]).expect("hash"));
+    assert_eq!(hash.len(), 64);
+
+    let changed = MergedProfile {
+        system: sysctl("1"),
+        ..Default::default()
+    };
+    assert_ne!(
+        hash,
+        checkin_config_hash(&changed, &[]).expect("hash"),
+        "a profile's system setting moves the hash"
+    );
+
+    let mut module = crate::test_helpers::make_resolved_module("net");
+    module.system = sysctl("1");
+    assert_ne!(
+        hash,
+        checkin_config_hash(&base, std::slice::from_ref(&module)).expect("hash"),
+        "a module's system setting moves the hash"
+    );
+
+    let with_package = MergedProfile {
+        packages: PackagesSpec {
+            cargo: Some(CargoSpec {
+                file: None,
+                packages: vec!["bat".into()],
+            }),
+            ..Default::default()
+        },
+        ..base.clone()
+    };
+    assert_eq!(
+        hash,
+        checkin_config_hash(&with_package, &[]).expect("hash"),
+        "a package change moves packageVersions and leaves the hash alone"
+    );
 }

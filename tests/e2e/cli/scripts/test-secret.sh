@@ -9,19 +9,19 @@ echo "=== cfgd secret tests ==="
 # Tests extracted verbatim from run-exhaustive-tests.sh
 
 begin_test "SEC01: secret --help"
-run $C secret --help
+run "${C[@]}" secret --help
 if assert_ok && assert_contains "$OUTPUT" "encrypt" && assert_contains "$OUTPUT" "decrypt"; then
     pass_test "SEC01"
 else fail_test "SEC01"; fi
 
 begin_test "SEC02: secret init"
-run $C secret init
+run "${C[@]}" secret init
 if assert_ok; then
     pass_test "SEC02"
 else fail_test "SEC02"; fi
 
 if command -v age-keygen > /dev/null 2>&1 && command -v sops > /dev/null 2>&1; then
-    # The age key goes in the default config dir cfgd resolves — which is the
+    # The age key goes in the default config dir cfgd resolves, which is the
     # scratch home's, redirected once in common/scratch-home.sh.
     CFGD_DEFAULT_DIR="$XDG_CONFIG_HOME/cfgd"
     mkdir -p "$CFGD_DEFAULT_DIR"
@@ -40,14 +40,14 @@ SOPSEOF
     mkdir -p "$CFG/secrets"
     cp "$CFG/.sops.yaml" "$CFG/secrets/.sops.yaml"
     echo "secret_key: secret-value" > "$CFG/secrets/plaintext.yaml"
-    run $C secret encrypt "$CFG/secrets/plaintext.yaml"
+    run "${C[@]}" secret encrypt "$CFG/secrets/plaintext.yaml"
     if assert_ok; then
         pass_test "SEC03"
     else fail_test "SEC03"; fi
 
     begin_test "SEC04: secret decrypt"
     if [ -f "$CFG/secrets/plaintext.yaml" ]; then
-        run $C secret decrypt "$CFG/secrets/plaintext.yaml"
+        run "${C[@]}" secret decrypt "$CFG/secrets/plaintext.yaml"
         if assert_ok; then
             pass_test "SEC04"
         else fail_test "SEC04"; fi
@@ -63,7 +63,7 @@ fi
 
 begin_test "SEC05: secret edit (EDITOR=true)"
 if [ -f "$CFG/secrets/plaintext.yaml" ]; then
-    EDITOR=true run $C secret edit "$CFG/secrets/plaintext.yaml"
+    EDITOR=true run "${C[@]}" secret edit "$CFG/secrets/plaintext.yaml"
     if assert_ok; then
         pass_test "SEC05"
     else fail_test "SEC05"; fi

@@ -1,5 +1,4 @@
 //! Reconcile-fn tests for `controllers/backup_policy.rs`.
-#![cfg(test)]
 
 use std::collections::BTreeMap;
 use std::sync::Arc;

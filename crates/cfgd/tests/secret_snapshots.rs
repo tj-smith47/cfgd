@@ -20,7 +20,7 @@
 
 #![cfg(unix)]
 
-mod common;
+use cfgd_test_fixtures as common;
 
 use std::path::Path;
 
@@ -76,6 +76,7 @@ fn secret_init_happy_human() {
     let (config_dir, state_dir) = secret_test_setup();
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc();
+    let printer = printer.with_hints_enabled(true);
 
     secret::cmd_secret_init(&cli, &printer).expect("init should succeed");
     drop(printer);
@@ -172,8 +173,12 @@ fn secret_encrypt_happy_human() {
 
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc();
+    let printer = printer.with_hints_enabled(true);
 
-    secret::cmd_secret_encrypt(&cli, &printer, &secret_path).expect("encrypt should succeed");
+    cfgd::cli::RunContext::for_test(&cli, &printer, |run| {
+        secret::cmd_secret_encrypt(run, &secret_path)
+    })
+    .expect("encrypt should succeed");
     drop(printer);
 
     let stripped = normalize(&strip_ansi(&cap.human()), home.path(), config_dir.path());
@@ -207,7 +212,10 @@ fn secret_encrypt_happy_json() {
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc();
 
-    secret::cmd_secret_encrypt(&cli, &printer, &secret_path).expect("encrypt should succeed");
+    cfgd::cli::RunContext::for_test(&cli, &printer, |run| {
+        secret::cmd_secret_encrypt(run, &secret_path)
+    })
+    .expect("encrypt should succeed");
     drop(printer);
 
     let json = cap.json().expect("doc captured json");
@@ -233,7 +241,10 @@ fn secret_encrypt_already_encrypted_human() {
     // First encryption.
     {
         let (printer, _cap) = Printer::for_test_doc();
-        secret::cmd_secret_encrypt(&cli, &printer, &secret_path).expect("first encrypt");
+        cfgd::cli::RunContext::for_test(&cli, &printer, |run| {
+            secret::cmd_secret_encrypt(run, &secret_path)
+        })
+        .expect("first encrypt");
     }
 
     // Re-encrypt: sops returns "file already encrypted" — expect a returned
@@ -241,8 +252,10 @@ fn secret_encrypt_already_encrypted_human() {
     // across versions, so assert the role + kind shape rather than snapshot
     // the verbose message verbatim.
     let (printer, cap) = Printer::for_test_doc();
-    let err = secret::cmd_secret_encrypt(&cli, &printer, &secret_path)
-        .expect_err("re-encrypt should fail with already-encrypted");
+    let err = cfgd::cli::RunContext::for_test(&cli, &printer, |run| {
+        secret::cmd_secret_encrypt(run, &secret_path)
+    })
+    .expect_err("re-encrypt should fail with already-encrypted");
     render_cli_error(&printer, &err);
     drop(printer);
 
@@ -277,11 +290,17 @@ fn secret_decrypt_happy_human() {
     let cli = cli_for(config_dir.path(), state_dir.path());
     {
         let (printer, _cap) = Printer::for_test_doc();
-        secret::cmd_secret_encrypt(&cli, &printer, &secret_path).expect("encrypt");
+        cfgd::cli::RunContext::for_test(&cli, &printer, |run| {
+            secret::cmd_secret_encrypt(run, &secret_path)
+        })
+        .expect("encrypt");
     }
 
     let (printer, cap) = Printer::for_test_doc();
-    secret::cmd_secret_decrypt(&cli, &printer, &secret_path).expect("decrypt");
+    cfgd::cli::RunContext::for_test(&cli, &printer, |run| {
+        secret::cmd_secret_decrypt(run, &secret_path)
+    })
+    .expect("decrypt");
     drop(printer);
 
     let stripped = normalize(&strip_ansi(&cap.human()), home.path(), config_dir.path());
@@ -323,11 +342,17 @@ fn secret_decrypt_happy_json() {
     let cli = cli_for(config_dir.path(), state_dir.path());
     {
         let (printer, _cap) = Printer::for_test_doc();
-        secret::cmd_secret_encrypt(&cli, &printer, &secret_path).expect("encrypt");
+        cfgd::cli::RunContext::for_test(&cli, &printer, |run| {
+            secret::cmd_secret_encrypt(run, &secret_path)
+        })
+        .expect("encrypt");
     }
 
     let (printer, cap) = Printer::for_test_doc();
-    secret::cmd_secret_decrypt(&cli, &printer, &secret_path).expect("decrypt");
+    cfgd::cli::RunContext::for_test(&cli, &printer, |run| {
+        secret::cmd_secret_decrypt(run, &secret_path)
+    })
+    .expect("decrypt");
     drop(printer);
 
     let json = cap.json().expect("doc captured json");
@@ -354,14 +379,21 @@ fn secret_edit_happy_human() {
     let cli = cli_for(config_dir.path(), state_dir.path());
     {
         let (printer, _cap) = Printer::for_test_doc();
-        secret::cmd_secret_encrypt(&cli, &printer, &secret_path).expect("encrypt");
+        cfgd::cli::RunContext::for_test(&cli, &printer, |run| {
+            secret::cmd_secret_encrypt(run, &secret_path)
+        })
+        .expect("encrypt");
     }
 
     // EDITOR=/bin/true round-trips the decrypted file unchanged through
     // sops' edit flow.
     let _editor = EditorGuard::set("/usr/bin/true");
     let (printer, cap) = Printer::for_test_doc();
-    secret::cmd_secret_edit(&cli, &printer, &secret_path).expect("edit");
+    let printer = printer.with_hints_enabled(true);
+    cfgd::cli::RunContext::for_test(&cli, &printer, |run| {
+        secret::cmd_secret_edit(run, &secret_path)
+    })
+    .expect("edit");
     drop(printer);
 
     let stripped = normalize(&strip_ansi(&cap.human()), home.path(), config_dir.path());

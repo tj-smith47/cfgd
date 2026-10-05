@@ -96,6 +96,7 @@ pub(in crate::cli) fn rewrite_user_yaml_with_original<
 /// is never dropped either.
 fn prune_absent_sections(value: &mut serde_yaml::Value, depth: usize) {
     match value {
+        // section-write-ok: a remover; it drops only entries that hold nothing
         serde_yaml::Value::Mapping(map) => {
             for entry in map.values_mut() {
                 prune_absent_sections(entry, depth + 1);
@@ -104,6 +105,7 @@ fn prune_absent_sections(value: &mut serde_yaml::Value, depth: usize) {
                 map.retain(|_, v| !is_absent_section(v));
             }
         }
+        // section-write-ok: descends into list elements, which it never drops
         serde_yaml::Value::Sequence(seq) => {
             for entry in seq.iter_mut() {
                 prune_absent_sections(entry, depth + 1);
@@ -140,31 +142,57 @@ enum YamlStep {
 /// file declares is kept whatever its value, so a user who wrote the default
 /// out on purpose keeps it. Only scalars are candidates: a mapping or sequence
 /// is either data or already pruned as an absent section.
+///
+/// Both sides of the comparison are re-parsed from the tree as it stands, so
+/// a key already dropped in this loop cannot make the next candidate look
+/// load-bearing: comparing a candidate's round trip against the raw tree made
+/// the second of two defaulted keys survive whenever the first was pruned.
 fn prune_undeclared_defaults<T: serde::Serialize + serde::de::DeserializeOwned>(
     tree: &mut serde_yaml::Value,
     declared: &serde_yaml::Value,
 ) {
     let mut candidates = Vec::new();
-    collect_undeclared_scalars(tree, declared, &mut Vec::new(), &mut candidates);
+    collect_undeclared_scalars(
+        tree,
+        declared,
+        Sequences::Descend,
+        &mut Vec::new(),
+        &mut candidates,
+    );
     for path in candidates {
         let mut probe = tree.clone();
         remove_at(&mut probe, &path);
-        let Ok(parsed) = serde_yaml::from_value::<T>(probe) else {
+        let (Ok(with), Ok(without)) = (
+            serde_yaml::from_value::<T>(tree.clone()),
+            serde_yaml::from_value::<T>(probe),
+        ) else {
             continue;
         };
-        let Ok(mut round_trip) = serde_yaml::to_value(&parsed) else {
+        let (Ok(with), Ok(without)) = (serde_yaml::to_value(&with), serde_yaml::to_value(&without))
+        else {
             continue;
         };
-        prune_absent_sections(&mut round_trip, 0);
-        if round_trip == *tree {
+        if with == without {
             remove_at(tree, &path);
         }
     }
 }
 
+/// Whether a traversal enters a declared list. The prune DESCENDS: a scalar
+/// carrying nothing but its default inside a declared element is droppable
+/// like any other. The report SKIPS: an element of a declared list is data,
+/// and neither key walker addresses a sequence, so a path through an index
+/// would be a key no writer could ever set.
+#[derive(Clone, Copy, PartialEq)]
+enum Sequences {
+    Descend,
+    Skip,
+}
+
 fn collect_undeclared_scalars(
     tree: &serde_yaml::Value,
     declared: &serde_yaml::Value,
+    sequences: Sequences,
     path: &mut Vec<YamlStep>,
     out: &mut Vec<Vec<YamlStep>>,
 ) {
@@ -173,26 +201,23 @@ fn collect_undeclared_scalars(
             for (key, value) in map {
                 path.push(YamlStep::Key(key.clone()));
                 // The document's own top-level keys are never candidates.
-                let is_scalar = matches!(
-                    value,
-                    serde_yaml::Value::Bool(_)
-                        | serde_yaml::Value::Number(_)
-                        | serde_yaml::Value::String(_)
-                );
-                if is_scalar {
-                    if path.len() > 1 && lookup(declared, path).is_none() {
+                if is_scalar(value) {
+                    if path.len() > 1
+                        && lookup(declared, path).is_none()
+                        && !legacy_output_key_declared(declared, path)
+                    {
                         out.push(path.clone());
                     }
                 } else {
-                    collect_undeclared_scalars(value, declared, path, out);
+                    collect_undeclared_scalars(value, declared, sequences, path, out);
                 }
                 path.pop();
             }
         }
-        serde_yaml::Value::Sequence(seq) => {
+        serde_yaml::Value::Sequence(seq) if sequences == Sequences::Descend => {
             for (index, value) in seq.iter().enumerate() {
                 path.push(YamlStep::Index(index));
-                collect_undeclared_scalars(value, declared, path, out);
+                collect_undeclared_scalars(value, declared, sequences, path, out);
                 path.pop();
             }
         }
@@ -200,11 +225,152 @@ fn collect_undeclared_scalars(
     }
 }
 
+fn is_scalar(value: &serde_yaml::Value) -> bool {
+    matches!(
+        value,
+        serde_yaml::Value::Bool(_) | serde_yaml::Value::Number(_) | serde_yaml::Value::String(_)
+    )
+}
+
+/// Every scalar key `value` serializes that `declared` does not name, as
+/// dotted paths.
+///
+/// The read half of the prune above: [`prune_undeclared_defaults`] DELETES
+/// these when they carry nothing but a default, and `cfgd config migrate`
+/// MATERIALIZES them. One traversal answers both, so a field added to a config
+/// struct later cannot be seen by one and missed by the other.
+///
+/// Every key reported is one the writer that materializes it can address:
+/// [`crate::cli::config_cmd::walk_yaml_path_mut`] resolves no sequence
+/// element, so the report walks with [`Sequences::Skip`] where the prune
+/// descends, and a union's scalar arm reads as the mapping it stands for, so
+/// a theme `cfgd init` scaffolded is not reported as a key the writer would
+/// then refuse.
+pub(in crate::cli) fn undeclared_scalar_keys<T: serde::Serialize>(
+    value: &T,
+    declared: &serde_yaml::Value,
+) -> Vec<String> {
+    let Ok(tree) = serde_yaml::to_value(value) else {
+        return Vec::new();
+    };
+    undeclared_scalar_keys_in(tree, declared).0
+}
+
+/// [`undeclared_scalar_keys`] over a value already serialized to `tree`,
+/// returning the keys with the tree they were read from. A writer that
+/// materializes the keys reads each value off that same tree, so the value
+/// is serialized once for both halves.
+pub(in crate::cli) fn undeclared_scalar_keys_in(
+    mut tree: serde_yaml::Value,
+    declared: &serde_yaml::Value,
+) -> (Vec<String>, serde_yaml::Value) {
+    prune_absent_sections(&mut tree, 0);
+    let mut out = Vec::new();
+    collect_undeclared_scalars(&tree, declared, Sequences::Skip, &mut Vec::new(), &mut out);
+    let mut keys: Vec<String> = out.iter().map(|path| dotted_path(path)).collect();
+    keys.sort();
+    (keys, tree)
+}
+
+fn dotted_path(path: &[YamlStep]) -> String {
+    let mut out = String::new();
+    for step in path {
+        // A reported path is walked with [`Sequences::Skip`], so it holds
+        // mapping keys alone.
+        let YamlStep::Key(key) = step else { continue };
+        if !out.is_empty() {
+            out.push('.');
+        }
+        // A config struct serializes every mapping key as a string, so the
+        // fallback stands for a shape no cfgd document can hold.
+        out.push_str(key.as_str().unwrap_or("?"));
+    }
+    out
+}
+
+/// Where `path` lands in the declared document, or `None` where the document
+/// declares nothing there.
+///
+/// A scalar written where the schema declares a union reads as that union's
+/// mapping arm, which is [`crate::cli::config_cmd::walk_yaml_path`]'s own
+/// reading: `theme: dracula` IS `theme: {name: dracula}`, so a document
+/// scaffolded by `cfgd init` declares `spec.output.theme.name` and the key is
+/// not reported as one the file is missing.
 fn lookup<'a>(tree: &'a serde_yaml::Value, path: &[YamlStep]) -> Option<&'a serde_yaml::Value> {
-    path.iter().try_fold(tree, |node, step| match step {
-        YamlStep::Key(key) => node.as_mapping()?.get(key),
-        YamlStep::Index(index) => node.as_sequence()?.get(*index),
-    })
+    let mut node = tree;
+    for (i, step) in path.iter().enumerate() {
+        match step {
+            YamlStep::Key(key) => match node.as_mapping() {
+                Some(map) => node = map.get(key)?,
+                None => {
+                    let field = union_arm_field(node, &path[..i])?;
+                    // The arm's one field answers from the scalar itself;
+                    // every other key beneath it is absent.
+                    return (i + 1 == path.len() && key.as_str() == Some(field)).then_some(node);
+                }
+            },
+            YamlStep::Index(index) => node = node.as_sequence()?.get(*index)?,
+        }
+    }
+    Some(node)
+}
+
+/// The union field a scalar standing at `walked` stands for, or `None` where
+/// the scalar is a genuine leaf.
+///
+/// The table is the one both key walkers read, keyed relative to `spec`,
+/// while these paths are rooted at the document, so the leading `spec` comes
+/// off before asking it.
+fn union_arm_field(scalar: &serde_yaml::Value, walked: &[YamlStep]) -> Option<&'static str> {
+    if !super::config_cmd::is_union_scalar(scalar) {
+        return None;
+    }
+    let segments: Vec<&str> = walked
+        .iter()
+        .map(|step| match step {
+            YamlStep::Key(key) => key.as_str(),
+            YamlStep::Index(_) => None,
+        })
+        .collect::<Option<_>>()?;
+    let ["spec", relative @ ..] = segments.as_slice() else {
+        return None;
+    };
+    super::config_cmd::scalar_union_field(relative)
+}
+
+/// Whether `path` (rooted at the document) falls under a
+/// [`cfgd_core::config::LEGACY_OUTPUT_KEYS`] NEW spelling for which the
+/// document already declares the OLD flat key. `spec.theme` folds into
+/// `spec.output.theme` at parse time (`fold_legacy_output`), so a typed
+/// value built from a legacy-only document carries `spec.output.theme`
+/// whether or not the document itself names it — without this check that
+/// reads as a field `cfgd config migrate` should materialize, and writing it
+/// alongside a `spec.theme` the fold never clears is what put both keys on
+/// disk and made the next load report them as conflicting.
+fn legacy_output_key_declared(declared: &serde_yaml::Value, path: &[YamlStep]) -> bool {
+    let dotted = dotted_path(path);
+    cfgd_core::config::LEGACY_OUTPUT_KEYS
+        .iter()
+        .any(|(old, new)| {
+            (dotted == *new || dotted.starts_with(&format!("{new}.")))
+                && declared_flat_key(declared, old)
+        })
+}
+
+/// Whether the dot-separated flat key `old` (e.g. `spec.theme`) is a mapping
+/// key the document declares, whatever its value.
+fn declared_flat_key(declared: &serde_yaml::Value, old: &str) -> bool {
+    let mut node = declared;
+    for segment in old.split('.') {
+        let Some(next) = node
+            .as_mapping()
+            .and_then(|m| m.get(serde_yaml::Value::String(segment.to_string())))
+        else {
+            return false;
+        };
+        node = next;
+    }
+    true
 }
 
 fn remove_at(tree: &mut serde_yaml::Value, path: &[YamlStep]) {
@@ -212,9 +378,12 @@ fn remove_at(tree: &mut serde_yaml::Value, path: &[YamlStep]) {
         return;
     };
     let parent = parents.iter().try_fold(tree, |node, step| match step {
+        // section-write-ok: descends to what is removed, creating nothing
         YamlStep::Key(key) => node.as_mapping_mut()?.get_mut(key),
+        // section-write-ok: descends to what is removed, creating nothing
         YamlStep::Index(index) => node.as_sequence_mut()?.get_mut(*index),
     });
+    // section-write-ok: removes a key, and an absent parent holds none
     if let (Some(map), YamlStep::Key(key)) = (parent.and_then(|p| p.as_mapping_mut()), last) {
         map.remove(key);
     }
@@ -233,23 +402,12 @@ pub(in crate::cli) fn drain_config_deprecations(printer: &Printer, cfg: &mut Cfg
     cfg.drain_deprecations(printer);
 }
 
-pub(in crate::cli) fn load_config_and_profile(
-    cli: &Cli,
-    printer: &Printer,
-) -> anyhow::Result<(CfgdConfig, String, ResolvedProfile)> {
-    let mut cfg = config::load_config(&cli.config)?;
-    drain_config_deprecations(printer, &mut cfg);
-    let (profile_name, resolved) = resolve_profile_for(cli, &cfg)?;
-    Ok((cfg, profile_name, resolved))
-}
-
 /// The profile in force for `cli` against an already-parsed `cfg`: the explicit
 /// `--profile`, else the config's active profile, resolved through the profiles
 /// directory with the source-delivered-profile decoration on a miss.
 ///
-/// The resolution half of [`load_config_and_profile`], factored out so the
-/// run-scoped [`RunContext::config_and_profile`] answers the same question the
-/// same way instead of restating the rule beside it.
+/// [`RunContext::config_and_profile`] resolves through here, so every surface
+/// answering "which profile is in force" applies the same rule.
 pub(in crate::cli) fn resolve_profile_for(
     cli: &Cli,
     cfg: &CfgdConfig,
@@ -264,6 +422,16 @@ pub(in crate::cli) fn resolve_profile_for(
     }
 }
 
+/// The config, the profile a run applies, the resolved profile's name (none
+/// for an isolated `--module` run) and whether the config came from the
+/// document (false when an isolated run fell back to an empty config).
+pub(in crate::cli) type ModuleScopedLoad<'a> = (
+    std::borrow::Cow<'a, CfgdConfig>,
+    std::borrow::Cow<'a, ResolvedProfile>,
+    Option<String>,
+    bool,
+);
+
 /// Load config and resolve a profile, with the `--module` isolate mode
 /// shared by `cmd_apply` and `cmd_plan`: when `module_filter` names one or
 /// more modules and `with_profile` is false, the run is ISOLATED from the
@@ -273,35 +441,34 @@ pub(in crate::cli) fn resolve_profile_for(
 /// --with-profile` (or no `--module` at all) behaves exactly like a normal
 /// run: the active profile must resolve, same as `cfgd apply` with no flags.
 ///
-/// Loads (and drains) `cli.config` EXACTLY ONCE regardless of which branch
-/// is taken. The two call sites this replaces each called
-/// `load_config_and_profile` (load + drain #1), and on its `Err` re-parsed
-/// the same file a second time to build the module-only fallback (load +
-/// drain #2) — the same legacy-key deprecation notice landing on the
-/// user's terminal twice for one `apply --module x` / `plan --module x`
-/// invocation.
-pub(in crate::cli) fn load_config_and_profile_module_scoped(
-    cli: &Cli,
-    printer: &Printer,
+/// Reads (and drains) the run's config EXACTLY ONCE regardless of which
+/// branch is taken, so a legacy-key deprecation notice lands on the user's
+/// terminal once for one `apply --module x` / `plan --module x` invocation.
+pub(in crate::cli) fn load_config_and_profile_module_scoped<'a>(
+    run: &'a RunContext<'_>,
     module_filter: &[String],
     with_profile: bool,
-) -> anyhow::Result<(CfgdConfig, ResolvedProfile, Option<String>, bool)> {
+) -> anyhow::Result<ModuleScopedLoad<'a>> {
+    use std::borrow::Cow;
     if module_filter.is_empty() || with_profile {
-        let (cfg, profile_name, resolved) = load_config_and_profile(cli, printer)?;
-        return Ok((cfg, resolved, Some(profile_name), true));
+        let (cfg, profile_name, resolved) = run.config_and_profile()?;
+        return Ok((
+            Cow::Borrowed(cfg),
+            Cow::Borrowed(resolved),
+            Some(profile_name.to_string()),
+            true,
+        ));
     }
+    let cli = run.cli();
 
     // `minimal_config()` subscribes to nothing, and that fabricated empty
     // list must never reach the decision sweep: it would read as "no
     // source is subscribed any more" and delete every decision row on the
     // machine, turning "awaiting your answer" into "applies silently" with
     // nothing to recover from.
-    let (cfg, config_parsed) = match config::load_config(&cli.config) {
-        Ok(mut cfg) => {
-            drain_config_deprecations(printer, &mut cfg);
-            (cfg, true)
-        }
-        Err(_) => (config::minimal_config(), false),
+    let (cfg, config_parsed) = match run.config() {
+        Ok(cfg) => (Cow::Borrowed(cfg), true),
+        Err(_) => (Cow::Owned(config::minimal_config()), false),
     };
 
     // Isolation skips composing the profile's CONTENT, but an explicit
@@ -318,7 +485,7 @@ pub(in crate::cli) fn load_config_and_profile_module_scoped(
     }
 
     let resolved = empty_resolved_profile(module_filter, &active_profile_name(cli, Some(&cfg)));
-    Ok((cfg, resolved, None, config_parsed))
+    Ok((cfg, Cow::Owned(resolved), None, config_parsed))
 }
 
 /// Turn a bare `ProfileNotFound` into an actionable error when the requested
@@ -520,9 +687,13 @@ pub(in crate::cli) fn parse_package_flag(
         });
     };
     if prefix.is_empty() || name.is_empty() {
-        anyhow::bail!(
-            "invalid package '--package {s}' — expected <manager>[.<list>]:<name> or a bare name"
-        );
+        return Err(crate::cli::invalid_argument(
+            "--package",
+            s,
+            format!(
+                "invalid package '--package {s}' — expected <manager>[.<list>]:<name> or a bare name"
+            ),
+        ));
     }
     validate_flag_package_name(name)?;
     if let Some(path) = cfgd_core::config::package_schema_path(prefix) {
@@ -556,7 +727,8 @@ pub(in crate::cli) fn parse_package_flag(
 /// cannot be present to remove, and refusing both keeps one answer for what a
 /// package may be called.
 fn validate_flag_package_name(name: &str) -> anyhow::Result<()> {
-    cfgd_schema::validate_package_name("--package", name).map_err(|e| anyhow::anyhow!("{e}"))
+    cfgd_schema::validate_package_name("--package", name)
+        .map_err(|e| crate::cli::invalid_argument("--package", name, e.to_string()))
 }
 
 /// The `--package` tokens that WOULD remove `name` from `packages`, for a bare
@@ -609,10 +781,14 @@ fn unknown_package_prefix(
         .iter()
         .find(|p| p.slot == prefix && p.path != prefix)
     {
-        return anyhow::anyhow!(
-            "unknown package manager '{prefix}' in '--package {token}'; \
-             use {}:{name}",
-            path.path
+        return crate::cli::invalid_argument(
+            "--package",
+            token,
+            format!(
+                "unknown package manager '{prefix}' in '--package {token}'; \
+                 use {}:{name}",
+                path.path
+            ),
         );
     }
     let mut known: Vec<String> = cfgd_core::config::PACKAGE_SCHEMA_PATHS
@@ -632,23 +808,17 @@ fn unknown_package_prefix(
             .unwrap_or(prefix),
     )
     .is_some();
-    if manager_shaped {
-        anyhow::anyhow!("unknown package manager '{prefix}' in '--package {token}'; known: {known}")
+    let message = if manager_shaped {
+        format!("unknown package manager '{prefix}' in '--package {token}'; known: {known}")
     } else {
-        anyhow::anyhow!(
+        format!(
             "unknown package manager '{prefix}' in '--package {token}'; \
              did you mean {native}:{token}? (known: {known})"
         )
-    }
+    };
+    crate::cli::invalid_argument("--package", token, message)
 }
 
-/// Best-effort name of the profile a module-only command runs under: the
-/// explicit `--profile`, else the config's active profile, else `"unknown"`.
-///
-/// Module-only commands never resolve a profile, but the scripts they run
-/// (a `patch.script` filter, a lifecycle hook) still receive `CFGD_PROFILE`,
-/// so the name must be the real one wherever the config knows it. Pass `cfg`
-/// when it is already loaded to avoid a second read.
 /// The `spec.backups[]` units an apply runs unconditionally.
 ///
 /// A schedule-less unit has no timer to fire it, so every non-dry-run apply is
@@ -664,18 +834,21 @@ pub(in crate::cli) fn pending_backups(
         .collect()
 }
 
+/// Best-effort name of the profile a module-only command runs under: the
+/// explicit `--profile`, else the config's active profile, else
+/// [`cfgd_core::config::UNKNOWN_PROFILE`].
+///
+/// Module-only commands never resolve a profile, but the scripts they run
+/// (a `patch.script` filter, a lifecycle hook) still receive `CFGD_PROFILE`,
+/// so the name must be the real one wherever the config knows it. `cfg` is
+/// the run's config, `None` when it did not load.
 pub(in crate::cli) fn active_profile_name(cli: &Cli, cfg: Option<&CfgdConfig>) -> String {
     if let Some(p) = cli.profile.as_deref() {
         return p.to_string();
     }
-    let from_loaded = cfg.and_then(|c| c.active_profile().ok().map(str::to_string));
-    from_loaded
-        .or_else(|| {
-            config::load_config(&cli.config)
-                .ok()
-                .and_then(|c| c.active_profile().ok().map(str::to_string))
-        })
-        .unwrap_or_else(|| "unknown".to_string())
+    cfg.and_then(|c| c.active_profile().ok())
+        .unwrap_or(cfgd_core::config::UNKNOWN_PROFILE)
+        .to_string()
 }
 
 /// Build an empty ResolvedProfile for module-only operations that don't need
@@ -693,7 +866,7 @@ pub(in crate::cli) fn empty_resolved_profile(
         layers: vec![cfgd_core::config::ProfileLayer {
             source: cfgd_core::config::LOCAL_LAYER.to_string(),
             profile_name: profile_name.to_string(),
-            priority: 0,
+            priority: cfgd_core::config::LOCAL_LAYER_PRIORITY,
             policy: cfgd_core::config::LayerPolicy::Local,
             spec: cfgd_core::config::ProfileSpec::default(),
         }],
@@ -731,10 +904,18 @@ pub(in crate::cli) fn parse_file_spec(spec: &str) -> anyhow::Result<(PathBuf, Pa
         let target = &spec[pos + 1..];
         // Target may also start with a drive letter — handle C:\path after the separator
         if source.is_empty() {
-            anyhow::bail!("empty source in file spec: {}", spec);
+            return Err(crate::cli::invalid_argument(
+                "--file",
+                spec,
+                format!("empty source in file spec: {}", spec),
+            ));
         }
         if target.is_empty() {
-            anyhow::bail!("empty target in file spec: {}", spec);
+            return Err(crate::cli::invalid_argument(
+                "--file",
+                spec,
+                format!("empty target in file spec: {}", spec),
+            ));
         }
         Ok((
             cfgd_core::expand_tilde(Path::new(source)),
@@ -757,7 +938,12 @@ pub(in crate::cli) fn copy_files_to_dir(
     for spec in file_specs {
         let (source, target) = parse_file_spec(spec)?;
         if !source.exists() {
-            anyhow::bail!("File not found: {}", source.posix());
+            return Err(crate::cli::cli_error(
+                cfgd_core::to_posix_string(&source),
+                "not_found",
+                format!("File not found: {}", source.posix()),
+                serde_json::json!({ "flag": "--file" }),
+            ));
         }
 
         // Reject sources in system directories to prevent path traversal attacks.
@@ -788,11 +974,15 @@ pub(in crate::cli) fn copy_files_to_dir(
         ];
         for prefix in forbidden_prefixes {
             if source.starts_with(prefix) || canonical_source.starts_with(prefix) {
-                anyhow::bail!(
-                    "Refusing to import '{}': source is in system directory {}",
-                    source.posix(),
-                    prefix
-                );
+                return Err(crate::cli::invalid_argument(
+                    "--file",
+                    spec,
+                    format!(
+                        "Refusing to import '{}': source is in system directory {}",
+                        source.posix(),
+                        prefix
+                    ),
+                ));
             }
         }
         // Check /var against the canonical path only. On Linux canonical == original
@@ -800,16 +990,24 @@ pub(in crate::cli) fn copy_files_to_dir(
         // /private/var, so temp files (/var/folders/…) canonicalize to
         // /private/var/folders/… which does not start with /var — safe to allow.
         if canonical_source.starts_with("/var") {
-            anyhow::bail!(
-                "Refusing to import '{}': source is in system directory /var",
-                source.posix()
-            );
+            return Err(crate::cli::invalid_argument(
+                "--file",
+                spec,
+                format!(
+                    "Refusing to import '{}': source is in system directory /var",
+                    source.posix()
+                ),
+            ));
         }
 
         std::fs::create_dir_all(repo_dir)?;
-        let file_name = source
-            .file_name()
-            .ok_or_else(|| anyhow::anyhow!("Invalid file path: {}", source.posix()))?;
+        let file_name = source.file_name().ok_or_else(|| {
+            crate::cli::invalid_argument(
+                "--file",
+                spec,
+                format!("Invalid file path: {}", source.posix()),
+            )
+        })?;
         let dest = repo_dir.join(file_name);
         if source.is_dir() {
             cfgd_core::copy_dir_recursive(&source, &dest)?;
@@ -855,28 +1053,68 @@ pub(in crate::cli) fn add_to_gitignore(config_dir: &Path, path: &str) -> anyhow:
 
 // --- Validation helpers ---
 
-/// Validate a resource name (module or profile) for filesystem safety.
-/// Allows alphanumeric, hyphen, underscore, and dot (but not leading dot).
-pub(in crate::cli) fn validate_resource_name(name: &str, kind: &str) -> anyhow::Result<()> {
+/// One `--env KEY=VALUE` token, refused as the argument it came from.
+pub(in crate::cli) fn env_flag(token: &str) -> anyhow::Result<cfgd_core::config::EnvVar> {
+    cfgd_core::parse_env_var(token).map_err(|e| crate::cli::invalid_argument("--env", token, e))
+}
+
+/// One `--alias NAME=COMMAND` token, refused as the argument it came from.
+pub(in crate::cli) fn alias_flag(token: &str) -> anyhow::Result<cfgd_core::config::ShellAlias> {
+    cfgd_core::parse_alias(token).map_err(|e| crate::cli::invalid_argument("--alias", token, e))
+}
+
+/// One `--system KEY=VALUE` token split at its first `=`.
+pub(in crate::cli) fn system_flag(token: &str) -> anyhow::Result<(&str, &str)> {
+    token.split_once('=').ok_or_else(|| {
+        crate::cli::invalid_argument(
+            "--system",
+            token,
+            format!("Invalid system setting '{}' — expected key=value", token),
+        )
+    })
+}
+
+/// What is wrong with `name` as a resource (module or profile) name, or `None`
+/// when it is safe on a filesystem: alphanumeric, hyphen, underscore and dot,
+/// with no leading dot or hyphen.
+pub(in crate::cli) fn resource_name_problem(name: &str, kind: &str) -> Option<String> {
     if name.is_empty() {
-        anyhow::bail!("{kind} name cannot be empty");
-    }
-    if name.len() > 128 {
-        anyhow::bail!("{kind} name too long (max 128 characters)");
-    }
-    if name.starts_with('.') || name.starts_with('-') {
-        anyhow::bail!("{kind} name cannot start with '.' or '-'");
-    }
-    if !name
+        Some(format!("{kind} name cannot be empty"))
+    } else if name.len() > 128 {
+        Some(format!("{kind} name too long (max 128 characters)"))
+    } else if name.starts_with('.') || name.starts_with('-') {
+        Some(format!("{kind} name cannot start with '.' or '-'"))
+    } else if !name
         .chars()
         .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
     {
-        anyhow::bail!(
+        Some(format!(
             "{kind} name '{}' contains invalid characters — use only alphanumeric, hyphen, underscore, or dot",
             name
-        );
+        ))
+    } else {
+        None
     }
-    Ok(())
+}
+
+/// Refuse a resource name [`resource_name_problem`] finds fault with, as the
+/// argument `flag` it came from, spelled the way that command's `--help`
+/// prints it (`<NAME>` for a required positional, `[NAME]` for an optional
+/// one).
+pub(in crate::cli) fn validate_resource_name(
+    name: &str,
+    kind: &str,
+    flag: &str,
+) -> anyhow::Result<()> {
+    match resource_name_problem(name, kind) {
+        None => Ok(()),
+        Some(refusal) => Err(crate::cli::cli_error(
+            name,
+            "invalid_argument",
+            refusal,
+            serde_json::json!({ "flag": flag, "value": name, "resource": kind.to_ascii_lowercase() }),
+        )),
+    }
 }
 
 /// Best-effort workflow regeneration after a completed mutation: the
@@ -925,13 +1163,13 @@ pub(in crate::cli) fn scan_profile_names(
         // Scanned stems flow into generated-workflow grep patterns and bare
         // YAML matrix lines — an invalid on-disk name (quote, newline, …)
         // would corrupt the generated file silently, so gate it here.
-        if let Err(e) = validate_resource_name(&found.name, "profile") {
+        if let Some(problem) = resource_name_problem(&found.name, "profile") {
             printer.status_simple(
                 Role::Warn,
                 format!(
                     "Skipping profile '{}': {}",
                     found.name.escape_default(),
-                    cfgd_core::output::collapse_to_subject_line(&*e)
+                    cfgd_core::output::collapse_to_subject_line(&problem)
                 ),
             );
             continue;
@@ -986,13 +1224,13 @@ pub(in crate::cli) fn scan_module_names(
             {
                 // Same gate as scan_profile_names: raw stems end up inside
                 // generated-workflow grep patterns and YAML matrix lines.
-                if let Err(e) = validate_resource_name(n, "module") {
+                if let Some(problem) = resource_name_problem(n, "module") {
                     printer.status_simple(
                         Role::Warn,
                         format!(
                             "Skipping module '{}': {}",
                             n.escape_default(),
-                            cfgd_core::output::collapse_to_subject_line(&*e)
+                            cfgd_core::output::collapse_to_subject_line(&problem)
                         ),
                     );
                     continue;
@@ -1030,7 +1268,14 @@ pub(in crate::cli) fn open_in_editor(path: &Path, printer: &Printer) -> anyhow::
             .stdout(std::process::Stdio::inherit())
             .stderr(std::process::Stdio::inherit()),
     )
-    .map_err(|e| anyhow::anyhow!("Failed to open editor '{}': {}", editor, e))?;
+    .map_err(|e| {
+        crate::cli::cli_error(
+            &editor,
+            "edit_failed",
+            format!("Failed to open editor '{}': {}", editor, e),
+            serde_json::json!({ "path": cfgd_core::to_posix_string(path) }),
+        )
+    })?;
 
     if !status.success() {
         printer.status_simple(
@@ -1083,21 +1328,74 @@ pub(crate) fn run_state_dir(
     state_over: Option<&Path>,
     scope: cfgd_core::Scope,
 ) -> anyhow::Result<PathBuf> {
-    cfgd_core::resolve_state_dir(state_over, scope)
-        .map_err(|e| anyhow::anyhow!("cannot determine state directory: {}", e))
+    // The typed StateError stays in the chain, so the refusal's kind is its
+    // own `state` domain. A restated message would carry only its text.
+    cfgd_core::resolve_state_dir(state_over, scope).map_err(|e| {
+        let message = format!("cannot determine state directory: {e}");
+        anyhow::Error::from(e).context(message)
+    })
+}
+
+/// The absolute path of the config document an invocation names, from the
+/// `--config` value clap parsed (`CFGD_CONFIG` included), whether that value
+/// was supplied, the `--config-dir` override and the scope.
+///
+/// The startup path and the alias pass both settle the path through here, so
+/// the aliases a run expands come from the document every later reader reads.
+pub fn settle_config_path(
+    config: PathBuf,
+    config_is_explicit: bool,
+    config_dir: Option<&Path>,
+    scope: cfgd_core::Scope,
+) -> PathBuf {
+    // The alias pass reads the raw `--config-dir` off clap, so the `~` is
+    // expanded here, where both callers meet.
+    let config_dir = config_dir.map(cfgd_core::expand_tilde);
+    let config_dir = config_dir.as_deref();
+    // Under `--scope system` only the bare default moves to the system config
+    // root, before the `--config-dir` fold, so an explicit `--config` or
+    // `--config-dir` (or their env twins) still wins.
+    let config = if scope.is_system() && !config_is_explicit && config_dir.is_none() {
+        cfgd_core::config::config_document_in(&cfgd_core::default_config_dir_for(
+            cfgd_core::Scope::System,
+        ))
+    } else {
+        config
+    };
+    let config = effective_config_file(&config, config_is_explicit, config_dir);
+    // No shell expands a `~` read from an environment file or a quoted
+    // argument, so cfgd expands it itself, before the directory inference
+    // below looks at the path.
+    let config = cfgd_core::expand_tilde(&config);
+    // A directory names the document inside it. Inferred once, here, so every
+    // consumer (theme load, profiles-dir derivation, dispatch) agrees on the
+    // file, where `load_config` inferring alone would leave `config_dir()`
+    // deriving `profiles/` from the wrong parent.
+    let config = cfgd_core::config::resolve_config_path(&config);
+    // A `~` still leading here found no home directory. Joined to the working
+    // directory it would name a file nobody meant, and the loader reports the
+    // unset home only for the path as written.
+    if config.starts_with("~") {
+        return config;
+    }
+    // A relative path would otherwise reach every derivation of the config
+    // directory verbatim, and a script hook resolves against that directory
+    // while its process runs in the home directory.
+    cfgd_core::absolutize_path(&config)
 }
 
 /// Resolve the effective config-file path honoring `--config` > `--config-dir` > default.
 /// `config_is_explicit` is true when the user supplied `--config`/`CFGD_CONFIG`
 /// (not the clap default). When the config arg is the default and a `config_dir`
-/// override is present, the config file is `<config_dir>/<CONFIG_FILENAME>`.
+/// override is present, the config file is the document that directory holds
+/// ([`cfgd_core::config::config_document_in`]).
 pub fn effective_config_file(
     config_value: &Path,
     config_is_explicit: bool,
     config_dir: Option<&Path>,
 ) -> PathBuf {
     match (config_is_explicit, config_dir) {
-        (false, Some(dir)) => dir.join(cfgd_core::config::CONFIG_FILENAME),
+        (false, Some(dir)) => cfgd_core::config::config_document_in(dir),
         _ => config_value.to_path_buf(),
     }
 }
@@ -1108,7 +1406,19 @@ pub fn effective_config_file(
 /// central sink renders one consistent payload while `main.rs` still downcasts
 /// the inner `CfgdError` onto `ExitCode::NoConfig`. The returned error must be
 /// propagated (`return Err(no_config_error(printer, path))`); it emits nothing.
+///
+/// A path still leading with `~` is missing because no home directory resolved,
+/// so it is the loader's own `ConfigError::HomeUnresolved`, as every verb
+/// reading through the run reports it.
 pub(in crate::cli) fn no_config_error(_printer: &Printer, config_path: &Path) -> anyhow::Error {
+    if config_path.starts_with("~") {
+        return cfgd_core::errors::CfgdError::Config(
+            cfgd_core::errors::ConfigError::HomeUnresolved {
+                path: config_path.to_path_buf(),
+            },
+        )
+        .into();
+    }
     crate::cli::cli_error_ctx(
         cfgd_core::errors::CfgdError::Config(cfgd_core::errors::ConfigError::NotFound {
             path: config_path.to_path_buf(),
@@ -1123,10 +1433,11 @@ pub(in crate::cli) fn no_config_error(_printer: &Printer, config_path: &Path) ->
 
 /// Resolve profile name from explicit name or default to active profile.
 pub(in crate::cli) fn resolve_profile_name(
-    cli: &Cli,
-    printer: &Printer,
+    run: &RunContext<'_>,
     name: Option<&str>,
 ) -> anyhow::Result<String> {
+    let cli = run.cli();
+    let printer = run.printer();
     if let Some(n) = name {
         return Ok(n.to_string());
     }
@@ -1135,8 +1446,7 @@ pub(in crate::cli) fn resolve_profile_name(
     if !config_path.exists() {
         return Err(no_config_error(printer, config_path));
     }
-    let mut cfg = config::load_config(config_path)?;
-    drain_config_deprecations(printer, &mut cfg);
+    let cfg = run.config()?;
     if let Some(ref profile_override) = cli.profile {
         Ok(profile_override.clone())
     } else {
@@ -1148,31 +1458,41 @@ pub(in crate::cli) fn default_device_id() -> String {
     cfgd_core::hostname_string()
 }
 
+/// Write `value` at the dot-separated `path` under `root`, where `at` is how a
+/// refusal names `root` itself.
+///
+/// Every section on the way (and `root`) takes the rule
+/// [`section_mapping_mut`](super::config_cmd::section_mapping_mut) applies:
+/// absent or bare is an empty mapping, and any other shape is refused naming
+/// what it holds, so the write either lands or says why it could not.
 pub(in crate::cli) fn set_nested_yaml_value(
     root: &mut serde_yaml::Value,
     path: &str,
     value: &serde_yaml::Value,
+    config_path: &Path,
+    at: &str,
 ) -> anyhow::Result<()> {
-    let parts: Vec<&str> = path.split('.').collect();
-    let mut current = root;
-
-    for (i, part) in parts.iter().enumerate() {
-        if i == parts.len() - 1 {
-            // Last part: set the value
-            if let Some(mapping) = current.as_mapping_mut() {
-                mapping.insert(serde_yaml::Value::String(part.to_string()), value.clone());
-            }
-        } else {
-            // Intermediate part: navigate or create
-            let mapping = current
-                .as_mapping_mut()
-                .ok_or_else(|| anyhow::anyhow!("expected mapping at '{}'", part))?;
-            current = mapping
-                .entry(serde_yaml::Value::String(part.to_string()))
-                .or_insert(serde_yaml::Value::Mapping(serde_yaml::Mapping::new()));
-        }
+    use super::config_cmd::{
+        SHAPE_MAPPING, blocking_shape, section_mapping_mut, section_shape_refusal,
+    };
+    let (parents, leaf) = match path.rsplit_once('.') {
+        Some((parents, leaf)) => (Some(parents), leaf),
+        None => (None, path),
+    };
+    let mut here = at.to_string();
+    let found = blocking_shape(root);
+    let mut current = section_mapping_mut(root)
+        .ok_or_else(|| section_shape_refusal(config_path, &here, found, SHAPE_MAPPING))?;
+    for part in parents.into_iter().flat_map(|p| p.split('.')) {
+        here = format!("{here}.{part}");
+        let slot = current
+            .entry(serde_yaml::Value::String(part.to_string()))
+            .or_insert(serde_yaml::Value::Null);
+        let found = blocking_shape(slot);
+        current = section_mapping_mut(slot)
+            .ok_or_else(|| section_shape_refusal(config_path, &here, found, SHAPE_MAPPING))?;
     }
-
+    current.insert(serde_yaml::Value::String(leaf.to_string()), value.clone());
     Ok(())
 }
 
@@ -1262,7 +1582,7 @@ pub(in crate::cli) fn compose_with_sources(
 
     let cache_dir = source_cache_dir(cli)?;
     let mut mgr = SourceManager::new(&cache_dir);
-    mgr.set_allow_unsigned(cfg.spec.security.as_ref().is_some_and(|s| s.allow_unsigned));
+    mgr.set_allow_unsigned(cfg.spec.security_effective().allow_unsigned);
     mgr.set_announce_cache_skips(ctx.announce_cache_skips());
     if refresh {
         mgr.load_sources(&cfg.spec.sources, printer)?;
@@ -1428,9 +1748,48 @@ pub(in crate::cli) fn resolve_desired_state(
     printer: &Printer,
     refresh: bool,
     mode: composition::ConstraintMode,
+    confirm: &modules::FloorConfirm<'_>,
 ) -> anyhow::Result<DesiredState> {
     let composition = compose_with_sources(ctx, cfg, local_resolved, printer, refresh, mode)?;
-    resolve_desired_from_composition(ctx, cfg, composition, module_filter, with_profile, printer)
+    resolve_desired_from_composition(
+        ctx,
+        cfg,
+        composition,
+        module_filter,
+        with_profile,
+        printer,
+        confirm,
+    )
+}
+
+/// Who may answer a floor bootstrap question: `--yes` / `CFGD_YES` outright,
+/// otherwise a human at a terminal.
+///
+/// [`Printer::can_prompt`] is the ONE interactivity probe — false under
+/// `-o json` / `-o yaml` as well as off a TTY, read once at printer
+/// construction, so a capture printer answers "nobody" whatever terminal the
+/// suite ran from. A prompt that fails or is interrupted is a decline: the
+/// reader was reached, and nothing about their terminal is the problem.
+pub(in crate::cli) fn floor_bootstrap_confirm<'a>(
+    yes: bool,
+    printer: &'a Printer,
+) -> impl Fn(&modules::FloorBootstrap) -> modules::FloorAnswer + 'a {
+    move |route| {
+        if yes {
+            return modules::FloorAnswer::Yes;
+        }
+        if !printer.can_prompt() {
+            return modules::FloorAnswer::NobodyToAsk;
+        }
+        printer.status_simple(Role::Warn, route.asking_clause());
+        match printer.prompt_confirm(&format!(
+            "Provision {} via {} instead?",
+            route.package, route.via
+        )) {
+            Ok(true) => modules::FloorAnswer::Yes,
+            Ok(false) | Err(_) => modules::FloorAnswer::Declined,
+        }
+    }
 }
 
 /// The resolution half of [`resolve_desired_state`], over a composition the
@@ -1442,6 +1801,7 @@ pub(in crate::cli) fn resolve_desired_state(
 /// that question is not free: `compose_with_sources` renders the
 /// `Source Conflicts` section and records every conflict it found, so a retry
 /// prints the section twice and doubles the conflict history.
+#[allow(clippy::too_many_arguments)]
 pub(in crate::cli) fn resolve_desired_from_composition(
     ctx: &RunContext<'_>,
     cfg: &config::CfgdConfig,
@@ -1449,6 +1809,7 @@ pub(in crate::cli) fn resolve_desired_from_composition(
     module_filter: &[String],
     with_profile: bool,
     printer: &Printer,
+    confirm: &modules::FloorConfirm<'_>,
 ) -> anyhow::Result<DesiredState> {
     let cli = ctx.cli();
     let composition::CompositionResult {
@@ -1555,6 +1916,7 @@ pub(in crate::cli) fn resolve_desired_from_composition(
             &mgr_map,
             pkg_cx.as_ref(),
             printer,
+            confirm,
         )?
     };
 
@@ -1578,27 +1940,53 @@ pub(in crate::cli) struct SignAttestOutcome {
 
 /// Cosign-sign and/or attach SLSA provenance to an already-pushed OCI artifact.
 ///
-/// Shared by `cfgd module push` and `cfgd image pack`: both push an artifact,
-/// then optionally sign it and attach provenance derived from the local git
-/// `origin`/`HEAD`. Errors route through `collapse_to_subject_line` so a
-/// multi-line cosign stderr can't trip the renderer's single-line invariant.
+/// Shared by `cfgd module push`, `cfgd module build` and `cfgd image pack`:
+/// each pushes an artifact, then optionally signs it and attaches provenance
+/// derived from the local git `origin`/`HEAD`. `digests` names every document
+/// the push wrote: first what `artifact`'s tag resolves to after it, then,
+/// when that is an index, each platform manifest the push put under it,
+/// which its `<tag>-<os>-<arch>` tag resolves to. Each is signed and attested
+/// as `artifact` pinned to its digest, so the signatures land on the
+/// documents this push wrote even if another push moves a tag first. Errors
+/// route through `collapse_to_subject_line` so a multi-line cosign stderr
+/// can't trip the renderer's single-line invariant.
 pub(in crate::cli) fn sign_and_attest(
     printer: &Printer,
     artifact: &str,
-    digest: &str,
+    digests: &[&str],
     key: Option<&str>,
     sign: bool,
     attest: bool,
 ) -> anyhow::Result<SignAttestOutcome> {
+    if !sign && !attest {
+        return Ok(SignAttestOutcome {
+            signed: false,
+            attested: false,
+        });
+    }
+    let oci_ref = cfgd_core::oci::OciReference::parse(artifact).map_err(|e| {
+        cli_error(
+            artifact,
+            if sign { "sign_failed" } else { "attest_failed" },
+            cfgd_core::output::collapse_to_subject_line(&e),
+            serde_json::json!({ "artifact": artifact, "digest": digests.first() }),
+        )
+    })?;
+    let subjects: Vec<(&str, String)> = digests
+        .iter()
+        .map(|d| (*d, oci_ref.at_digest(d).to_string()))
+        .collect();
     if sign {
-        cfgd_core::oci::sign_artifact(artifact, key).map_err(|e| {
-            cli_error(
-                artifact,
-                "sign_failed",
-                cfgd_core::output::collapse_to_subject_line(&e),
-                serde_json::json!({ "artifact": artifact }),
-            )
-        })?;
+        for (digest, subject) in &subjects {
+            cfgd_core::oci::sign_artifact(subject, key).map_err(|e| {
+                cli_error(
+                    artifact,
+                    "sign_failed",
+                    cfgd_core::output::collapse_to_subject_line(&e),
+                    serde_json::json!({ "artifact": artifact, "digest": digest }),
+                )
+            })?;
+        }
         printer.status_simple(Role::Ok, "Signed artifact with cosign");
     }
 
@@ -1619,7 +2007,7 @@ pub(in crate::cli) fn sign_and_attest(
                 artifact,
                 "attest_failed",
                 cfgd_core::output::collapse_to_subject_line(&e),
-                serde_json::json!({ "artifact": artifact, "digest": digest, "step": "provenance" }),
+                serde_json::json!({ "artifact": artifact, "digest": digests.first(), "step": "provenance" }),
             )
         })?;
         // Write the predicate into a fresh temp DIR rather than a NamedTempFile:
@@ -1629,21 +2017,19 @@ pub(in crate::cli) fn sign_and_attest(
         let pred_dir = tempfile::tempdir()?;
         let pred_path = pred_dir.path().join("provenance.json");
         cfgd_core::atomic_write_str(&pred_path, &provenance)?;
-        cfgd_core::oci::attach_attestation(
-            artifact,
-            // native-ok: local predicate path for the co-located cosign subprocess
-            // absolute-path-ok: cosign opens the predicate, so it is handed the real path
-            &pred_path.display().to_string(),
-            key,
-        )
-        .map_err(|e| {
-            cli_error(
-                artifact,
-                "attest_failed",
-                cfgd_core::output::collapse_to_subject_line(&e),
-                serde_json::json!({ "artifact": artifact, "step": "attach" }),
-            )
-        })?;
+        // native-ok: local predicate path for the co-located cosign subprocess
+        // absolute-path-ok: cosign opens the predicate, so it is handed the real path
+        let predicate = pred_path.display().to_string();
+        for (digest, subject) in &subjects {
+            cfgd_core::oci::attach_attestation(subject, &predicate, key).map_err(|e| {
+                cli_error(
+                    artifact,
+                    "attest_failed",
+                    cfgd_core::output::collapse_to_subject_line(&e),
+                    serde_json::json!({ "artifact": artifact, "digest": digest, "step": "attach" }),
+                )
+            })?;
+        }
         // pred_dir must outlive attach_attestation so the subprocess can read it.
         drop(pred_dir);
         printer.status_simple(Role::Ok, "Attached SLSA provenance attestation");

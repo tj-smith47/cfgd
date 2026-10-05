@@ -36,11 +36,26 @@ pub struct ComplianceConfig {
     #[serde(default = "default_compliance_retention")]
     pub retention: String,
     /// Which surfaces a snapshot covers.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "crate::config::null_as_default")]
+    #[schemars(with = "Option<ComplianceScope>")]
     pub scope: ComplianceScope,
     /// Where and in what format a snapshot is exported.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "crate::config::null_as_default")]
+    #[schemars(with = "Option<ComplianceExport>")]
     pub export: ComplianceExport,
+}
+
+impl Default for ComplianceConfig {
+    /// The block `compliance: {}` declares.
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            interval: default_compliance_interval(),
+            retention: default_compliance_retention(),
+            scope: ComplianceScope::default(),
+            export: ComplianceExport::default(),
+        }
+    }
 }
 
 fn default_compliance_interval() -> String {

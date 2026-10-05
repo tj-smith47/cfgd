@@ -5,6 +5,20 @@ fullnameOverride: ""
 operator:
   enabled: true
   replicaCount: 1
+  # The Deployment's update strategy, rendered as given. Left empty, the chart
+  # derives it from what a replacement pod has to wait for before it is ready:
+  #   gateway off:                               RollingUpdate, maxSurge 1, maxUnavailable 0
+  #   gateway on, leader election on:            RollingUpdate, maxSurge 1, maxUnavailable 1
+  #   gateway on, leader election off, PVC on:   Recreate
+  #   gateway on, leader election off, PVC off:  RollingUpdate, maxSurge 1, maxUnavailable 0
+  # maxUnavailable 0 keeps the old pod until its replacement serves admission,
+  # so the webhook always has a backend. With leader election on, the gateway
+  # (and readiness with it) waits for the lease the old pod releases only as it
+  # terminates, so 0 would wait forever there. Without leader election every
+  # pod runs the gateway, and a second pod can never share the one SQLite
+  # ReadWriteOnce volume, so that cell stops the old pod before starting the
+  # new one and the gateway is down for the length of the roll.
+  strategy: {}
   image:
     repository: ghcr.io/tj-smith47/cfgd-operator
     # Pinned to the cfgd-operator crate's own version, which moves independently of
@@ -33,10 +47,15 @@ operator:
   affinity: {}
   # The operator reads every Module's artifact from its registry (platforms,
   # attestations, cosign signature), so it needs the same registry settings the
-  # CSI driver takes — OCI_INSECURE_REGISTRIES for a plain-HTTP registry, and
-  # any credential environment your registry needs.
+  # CSI driver takes: OCI_INSECURE_REGISTRIES for a plain-HTTP registry, and
+  # the registry login: REGISTRY_USERNAME/REGISTRY_PASSWORD, or DOCKER_CONFIG
+  # naming a directory that extraVolumes/extraVolumeMounts mount a config.json into.
   extraEnv: []
+  extraVolumes: []
+  extraVolumeMounts: []
   imagePullSecrets: []
+  # Reconcile only objects matching this label selector; empty reconciles every object.
+  watchLabelSelector: ""
   podAnnotations: {}
   podLabels: {}
   topologySpreadConstraints: []
@@ -126,6 +145,8 @@ webhook:
       kind: Issuer
   failurePolicy: Fail
   timeoutSeconds: 10
+  # Admit only objects matching this selector; empty admits every cfgd.io object.
+  objectSelector: {}
 
 # Device gateway
 deviceGateway:
@@ -146,6 +167,8 @@ deviceGateway:
 # CSI driver
 csiDriver:
   enabled: false
+  # The CSIDriver name, the kubelet plugin directory and the name the operator injects.
+  name: csi.cfgd.io
   image:
     repository: ghcr.io/tj-smith47/cfgd-csi
     # Pinned to the cfgd-csi crate's own version; see the operator image comment

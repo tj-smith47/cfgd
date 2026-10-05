@@ -194,6 +194,9 @@ pub fn applicable_here<'a, T: PlatformGated>(
 // `platforms:` field names the serde hook through this module's path.
 pub use cfgd_schema::{deserialize_platform_tags, validate_platform_tag};
 
+mod session;
+pub use session::{DisplayServer, Session};
+
 /// Whether a single `platforms:` tag admits a Linux machine.
 ///
 /// A pod is a Linux container, and at admission time the webhook knows nothing

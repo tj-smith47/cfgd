@@ -20,7 +20,7 @@ Agent: kubectl get ds -n {{ .Release.Namespace }} -l app.kubernetes.io/component
 {{- if .Values.csiDriver.enabled }}
 
 CSI Driver: kubectl get ds -n {{ .Release.Namespace }} -l app.kubernetes.io/component=csi-driver
-  Driver:   kubectl get csidriver csi.cfgd.io
+  Driver:   kubectl get csidriver {{ .Values.csiDriver.name }}
 {{- end }}
 
 Documentation: https://github.com/tj-smith47/cfgd

@@ -63,6 +63,11 @@ where
 /// default and installing it changes nothing; with one (a caller tracing a
 /// bounded operation), the blocking half's events land beside the async
 /// half's instead of silently falling through to the global default.
+///
+/// Under test, a caller holding `PATH`'s exclusive spawn window (a tool shim
+/// is installed) lends it to the worker the same way, because the caller is
+/// parked awaiting the worker: a worker waiting on the lock its own waiter
+/// owns would never run.
 pub fn spawn_blocking_with_test_home<F, R>(f: F) -> tokio::task::JoinHandle<R>
 where
     F: FnOnce() -> R + Send + 'static,
@@ -70,7 +75,11 @@ where
 {
     let test_home = test_home_override();
     let dispatcher = tracing::dispatcher::get_default(|d| d.clone());
+    #[cfg(any(test, feature = "test-helpers"))]
+    let window = crate::test_helpers::path_env_exclusive_guard_held();
     tokio::task::spawn_blocking(move || {
+        #[cfg(any(test, feature = "test-helpers"))]
+        let _window = crate::test_helpers::enter_inherited_window(window);
         let _dispatch = tracing::dispatcher::set_default(&dispatcher);
         let _guard = test_home.as_deref().map(with_test_home_guard);
         f()
@@ -124,6 +133,7 @@ impl Scope {
 /// present in a systemd-managed process, so honoring them whenever set (in any
 /// scope) routes cfgd to exactly the directory systemd provisioned.
 pub(crate) fn systemd_dir(env_var: &str) -> Option<std::path::PathBuf> {
+    // unseamed-read-ok: a systemd directory variable, which names no tool
     let raw = std::env::var_os(env_var)?;
     if raw.is_empty() {
         return None;
@@ -428,10 +438,19 @@ pub fn move_file(src: &std::path::Path, dst: &std::path::Path) -> std::io::Resul
 /// location that held both the state DB and the `sources/` cache before they
 /// moved to independent state and cache roots.
 ///
-/// Reproduced here (rather than inlined at the migration call site) so the
-/// startup migration and its tests share one definition. This is the legacy
-/// *default* only: it never honors `CFGD_STATE_DIR`/`CFGD_CACHE_DIR` (those are
-/// overrides, not the legacy default). Pure path logic — touches no filesystem.
+/// Defined here so the startup migration and its tests share one definition.
+/// This is the legacy *default* only: it never honors the `CFGD_STATE_DIR` or
+/// `CFGD_CACHE_DIR` overrides. Pure path logic; touches no filesystem.
+///
+/// Resolved from environment variables:
+/// - macOS: `~/Library/Application Support/cfgd`
+/// - Windows: `%LOCALAPPDATA%\cfgd` when that is an absolute path, else
+///   `%USERPROFILE%\AppData\Local\cfgd`
+/// - elsewhere: `$XDG_DATA_HOME/cfgd` when that is an absolute path, else
+///   `~/.local/share/cfgd`
+///
+/// The home is `HOME`, or `USERPROFILE` first on Windows: the same one every
+/// other user-scope directory derives from.
 ///
 /// Honors the [`TestHomeGuard`] thread-local override (test builds resolve a
 /// Linux-shaped `~/.local/share/cfgd` under the override home) so tests never
@@ -440,7 +459,27 @@ pub fn legacy_data_dir() -> Option<std::path::PathBuf> {
     if let Some(home) = test_home_override() {
         return Some(home.join(".local").join("share").join("cfgd"));
     }
-    Some(directories::BaseDirs::new()?.data_local_dir().join("cfgd"))
+    // `%LOCALAPPDATA%` is the environment's copy of the known folder earlier
+    // Windows builds wrote to, so a relocated folder is still found.
+    #[cfg(windows)]
+    const DATA_VAR: &str = "LOCALAPPDATA";
+    #[cfg(not(any(target_os = "macos", windows)))]
+    const DATA_VAR: &str = "XDG_DATA_HOME";
+    #[cfg(not(target_os = "macos"))]
+    if let Some(data) = std::env::var_os(DATA_VAR)
+        .map(std::path::PathBuf::from)
+        .filter(|p| p.is_absolute())
+    {
+        return Some(data.join("cfgd"));
+    }
+    let home = std::path::PathBuf::from(home_dir_var()?);
+    #[cfg(target_os = "macos")]
+    let data = home.join("Library").join("Application Support");
+    #[cfg(windows)]
+    let data = home.join("AppData").join("Local");
+    #[cfg(not(any(target_os = "macos", windows)))]
+    let data = home.join(".local").join("share");
+    Some(data.join("cfgd"))
 }
 
 /// Per-user runtime directory for short-lived sockets and pid files.
@@ -465,23 +504,30 @@ pub fn legacy_data_dir() -> Option<std::path::PathBuf> {
 ///
 /// Honors the [`TestHomeGuard`] thread-local override on every platform so
 /// tests can redirect the runtime dir without mutating process-global env
-/// state. Returns `None` only when no home directory can be resolved at all.
-pub fn default_runtime_dir() -> Option<std::path::PathBuf> {
+/// state. Returns `Ok(None)` only when no home directory can be resolved at
+/// all, and an error when `CFGD_RUNTIME_DIR` leads with a `~` that no home
+/// directory resolves ([`expand_tilde_strict`]).
+pub fn default_runtime_dir() -> crate::errors::Result<Option<std::path::PathBuf>> {
     default_runtime_dir_for(Scope::User)
 }
 
 /// Scope-aware runtime directory.
 ///
-/// Precedence (highest first): `CFGD_RUNTIME_DIR` (verbatim), systemd's
+/// Precedence (highest first): `CFGD_RUNTIME_DIR` (a leading `~` expanded), systemd's
 /// `$RUNTIME_DIRECTORY`, then the scope default. [`Scope::User`] is the frozen
 /// resolution documented on [`default_runtime_dir`]. [`Scope::System`] is the
 /// absolute machine-wide runtime root (Linux `/run/cfgd`, macOS
 /// `/Library/Application Support/cfgd/runtime`, Windows `%ProgramData%\cfgd\runtime`)
 /// and is therefore always `Some` — it needs no home directory. Pure path logic.
-pub fn default_runtime_dir_for(scope: Scope) -> Option<std::path::PathBuf> {
-    if let Ok(dir) = std::env::var("CFGD_RUNTIME_DIR") {
-        return Some(std::path::PathBuf::from(dir));
+pub fn default_runtime_dir_for(scope: Scope) -> crate::errors::Result<Option<std::path::PathBuf>> {
+    if let Ok(dir) = std::env::var(crate::CFGD_RUNTIME_DIR_ENV) {
+        return expand_tilde_strict(std::path::Path::new(&dir), "runtime directory").map(Some);
     }
+    Ok(default_runtime_dir_unexpanded(scope))
+}
+
+/// [`default_runtime_dir_for`] past the `CFGD_RUNTIME_DIR` short-circuit.
+fn default_runtime_dir_unexpanded(scope: Scope) -> Option<std::path::PathBuf> {
     if let Some(dir) = systemd_dir("RUNTIME_DIRECTORY") {
         return Some(dir);
     }
@@ -559,15 +605,15 @@ pub fn default_cache_dir() -> crate::errors::Result<std::path::PathBuf> {
 
 /// Scope-aware cache directory.
 ///
-/// Precedence (highest first): `CFGD_CACHE_DIR` (verbatim), systemd's
+/// Precedence (highest first): `CFGD_CACHE_DIR` (a leading `~` expanded), systemd's
 /// `$CACHE_DIRECTORY`, then the scope default. [`Scope::User`] is the frozen
 /// resolution documented on [`default_cache_dir`]. [`Scope::System`] is the
 /// absolute machine-wide cache root (Linux `/var/cache/cfgd`, macOS
 /// `/Library/Caches/cfgd`, Windows `%ProgramData%\cfgd\cache`) and consults no
 /// home directory. Pure path logic — never touches the filesystem.
 pub fn default_cache_dir_for(scope: Scope) -> crate::errors::Result<std::path::PathBuf> {
-    if let Ok(dir) = std::env::var("CFGD_CACHE_DIR") {
-        return Ok(std::path::PathBuf::from(dir));
+    if let Ok(dir) = std::env::var(crate::CFGD_CACHE_DIR_ENV) {
+        return expand_tilde_strict(std::path::Path::new(&dir), "cache directory");
     }
     if let Some(dir) = systemd_dir("CACHE_DIRECTORY") {
         return Ok(dir);
@@ -633,10 +679,16 @@ fn system_cache_dir() -> std::path::PathBuf {
 /// var, resolved by the CLI layer). When `None`, falls through to
 /// [`default_config_dir_for`] for the given [`Scope`] (systemd + scope default).
 /// Pure path logic — never touches the filesystem or prints.
-pub fn resolve_config_dir(over: Option<&std::path::Path>, scope: Scope) -> std::path::PathBuf {
+///
+/// A leading `~` in `over` expands to the home directory, and with no home
+/// directory to resolve it the override is refused ([`expand_tilde_strict`]).
+pub fn resolve_config_dir(
+    over: Option<&std::path::Path>,
+    scope: Scope,
+) -> crate::errors::Result<std::path::PathBuf> {
     match over {
-        Some(p) => p.to_path_buf(),
-        None => default_config_dir_for(scope),
+        Some(p) => expand_tilde_strict(p, "config directory"),
+        None => Ok(default_config_dir_for(scope)),
     }
 }
 
@@ -646,12 +698,15 @@ pub fn resolve_config_dir(over: Option<&std::path::Path>, scope: Scope) -> std::
 /// given [`Scope`] (which honors the `CFGD_STATE_DIR` short-circuit, systemd's
 /// `$STATE_DIRECTORY`, and the scope default). Surfaces the same
 /// [`crate::errors::StateError`] when no home can be resolved.
+///
+/// A leading `~` in `over` expands to the home directory, and with no home
+/// directory to resolve it the override is refused ([`expand_tilde_strict`]).
 pub fn resolve_state_dir(
     over: Option<&std::path::Path>,
     scope: Scope,
 ) -> crate::errors::Result<std::path::PathBuf> {
     match over {
-        Some(p) => Ok(p.to_path_buf()),
+        Some(p) => expand_tilde_strict(p, "state directory"),
         None => crate::state::default_state_dir_for(scope),
     }
 }
@@ -660,12 +715,15 @@ pub fn resolve_state_dir(
 ///
 /// When `None`, falls through to [`default_cache_dir_for`] for the given
 /// [`Scope`] (the single cache root shared by the source and module caches).
+///
+/// A leading `~` in `over` expands to the home directory, and with no home
+/// directory to resolve it the override is refused ([`expand_tilde_strict`]).
 pub fn resolve_cache_dir(
     over: Option<&std::path::Path>,
     scope: Scope,
 ) -> crate::errors::Result<std::path::PathBuf> {
     match over {
-        Some(p) => Ok(p.to_path_buf()),
+        Some(p) => expand_tilde_strict(p, "cache directory"),
         None => default_cache_dir_for(scope),
     }
 }
@@ -686,14 +744,17 @@ pub fn module_cache_root(
 /// Resolve the runtime directory, applying an explicit override when present.
 ///
 /// When `None`, falls through to [`default_runtime_dir_for`] for the given
-/// [`Scope`]. `None` only in [`Scope::User`] when no home can be resolved (e.g.
-/// `HOME` unset on Unix); [`Scope::System`] is always `Some`.
+/// [`Scope`]. `Ok(None)` only in [`Scope::User`] when no home can be resolved
+/// (e.g. `HOME` unset on Unix); [`Scope::System`] is always `Some`.
+///
+/// A leading `~` in `over` expands to the home directory, and with no home
+/// directory to resolve it the override is refused ([`expand_tilde_strict`]).
 pub fn resolve_runtime_dir(
     over: Option<&std::path::Path>,
     scope: Scope,
-) -> Option<std::path::PathBuf> {
+) -> crate::errors::Result<Option<std::path::PathBuf>> {
     match over {
-        Some(p) => Some(p.to_path_buf()),
+        Some(p) => expand_tilde_strict(p, "runtime directory").map(Some),
         None => default_runtime_dir_for(scope),
     }
 }
@@ -730,10 +791,10 @@ impl ResolvedDirs {
         scope: Scope,
     ) -> crate::errors::Result<Self> {
         Ok(Self {
-            config: resolve_config_dir(config_over, scope),
+            config: resolve_config_dir(config_over, scope)?,
             state: resolve_state_dir(state_over, scope)?,
             cache: resolve_cache_dir(cache_over, scope)?,
-            runtime: resolve_runtime_dir(runtime_over, scope),
+            runtime: resolve_runtime_dir(runtime_over, scope)?,
         })
     }
 
@@ -756,7 +817,6 @@ impl ResolvedDirs {
 /// caller of either must land where the other writes.
 pub(crate) const MODULE_CACHE_SEGMENT: &str = "modules";
 
-/// Expand `~` and `~/...` paths to the user's home directory.
 /// Fold every absolute path under the home directory in `text` to its `~/`
 /// spelling — the DISPLAY inverse of [`expand_tilde`], for a subject a person
 /// reads (`write ~/.cfgd.env`, `deploy ~/.config/nvim/init.lua`).
@@ -767,6 +827,11 @@ pub(crate) const MODULE_CACHE_SEGMENT: &str = "modules";
 /// absolute, the `source ~/.cfgd.env` hint beside it folded — and the absolute
 /// form is what pushed a two-target deploy row past the room its own elision
 /// respects. Folded on the POSIX spelling, so a Windows home folds too.
+///
+/// `text` must spell its paths with `/` as well: a native Windows render
+/// (`Path::display`, `to_string_lossy`) never contains the folded home, so it
+/// passes through unfolded. Render a path with `to_posix_string` or
+/// `display_posix` before handing it here.
 pub fn fold_home_in_text(text: &str) -> String {
     let Some(home) = home_dir_var() else {
         return text.to_string();
@@ -779,6 +844,10 @@ pub fn fold_home_in_text(text: &str) -> String {
     text.replace(&format!("{home}/"), "~/")
 }
 
+/// Expand `~` and `~/...` paths to the user's home directory.
+///
+/// With no home directory to resolve, the path comes back as written; a path
+/// cfgd creates or writes goes through [`expand_tilde_strict`] instead.
 pub fn expand_tilde(path: &std::path::Path) -> std::path::PathBuf {
     let path_str = path.display().to_string();
     let home = home_dir_var();
@@ -791,6 +860,25 @@ pub fn expand_tilde(path: &std::path::Path) -> std::path::PathBuf {
         }
     }
     path.to_path_buf()
+}
+
+/// [`expand_tilde`] for a path cfgd creates or writes: a leading `~` with no
+/// home directory to resolve it answers [`crate::errors::StateError::HomeUnresolved`]
+/// naming `role` (the `state directory`, the `daemon socket`).
+pub fn expand_tilde_strict(
+    path: &std::path::Path,
+    role: &'static str,
+) -> crate::errors::Result<std::path::PathBuf> {
+    let expanded = expand_tilde(path);
+    let text = expanded.display().to_string();
+    if text == "~" || text.starts_with("~/") || text.starts_with("~\\") {
+        return Err(crate::errors::StateError::HomeUnresolved {
+            role,
+            path: expanded,
+        }
+        .into());
+    }
+    Ok(expanded)
 }
 
 /// Expand `~`/`~/` segments in a colon-separated environment value to the user's
@@ -892,6 +980,24 @@ fn fold_path_case_windows(s: String) -> String {
     s.to_ascii_lowercase()
 }
 
+/// The environment variables `home_dir_var` reads the home directory from,
+/// as an unset-home message names them.
+#[cfg(not(windows))]
+pub const HOME_ENV_VARS: &str = "HOME";
+/// The environment variables `home_dir_var` reads the home directory from,
+/// as an unset-home message names them.
+#[cfg(windows)]
+pub const HOME_ENV_VARS: &str = "USERPROFILE and HOME";
+
+/// The variable an unset-home message tells the reader to set: the one
+/// `home_dir_var` reads first.
+#[cfg(not(windows))]
+pub const HOME_ENV_VAR: &str = "HOME";
+/// The variable an unset-home message tells the reader to set: the one
+/// `home_dir_var` reads first.
+#[cfg(windows)]
+pub const HOME_ENV_VAR: &str = "USERPROFILE";
+
 /// Resolve the user's home directory, consulting the test override first.
 /// Unix production path: checks HOME.
 /// Windows production path: checks USERPROFILE first, then HOME (for WSL/Git Bash contexts).
@@ -983,6 +1089,27 @@ pub fn lexically_normalized(path: &std::path::Path) -> std::path::PathBuf {
         out.push(".");
     }
     out
+}
+
+/// Whether two spellings name one file or directory.
+///
+/// Two answers, in this order, because neither alone is enough. The lexical
+/// fold ([`absolutize_path`] then [`lexically_normalized`]) equates a relative
+/// spelling, a `.` component and a `..` walking back through a component that
+/// does not exist. That last one stats nothing, so no inode question can be
+/// asked about it at all. [`is_same_inode`](crate::is_same_inode) then
+/// catches what the fold cannot: two genuinely different spellings of one
+/// path, reached through a symlink.
+///
+/// COMPARISON only. Both halves discard the spelling the caller wrote, so a
+/// slot rendering a path still renders the caller's own.
+pub fn names_the_same_path(a: &std::path::Path, b: &std::path::Path) -> bool {
+    // The fold compares `OsString`s, so on Windows two spellings differing
+    // only in the drive letter's case (`c:\cfgd` against `C:\cfgd`) or in an
+    // 8.3 short name are not equal to it, and the file-index answer is the
+    // only one that settles them.
+    lexically_normalized(&absolutize_path(a)) == lexically_normalized(&absolutize_path(b))
+        || crate::is_same_inode(a, b)
 }
 
 /// Resolve a relative path against a base directory with traversal validation.
@@ -1307,6 +1434,50 @@ pub fn to_posix_fs_key(path: impl AsRef<std::path::Path>) -> String {
     #[cfg(not(windows))]
     {
         path.as_ref().to_string_lossy().into_owned()
+    }
+}
+
+/// `serialize_with` for a path a plan file carries and a replay reopens:
+/// written with `/` on Windows, exactly as it stands on POSIX.
+///
+/// The [`to_posix_fs_key`] rule applied to serde: `\` cannot occur in a
+/// Windows filename, so the fold is lossless there, and a backslash is an
+/// ordinary POSIX filename character, so nothing is folded on POSIX. A path
+/// that is not valid UTF-8 is refused with serde's own error, as the derived
+/// impl refuses it.
+pub fn serialize_fs_path<S: serde::Serializer>(
+    path: &std::path::Path,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    let text = path
+        .to_str()
+        .ok_or_else(|| serde::ser::Error::custom("path contains invalid UTF-8 characters"))?;
+    let text = if cfg!(windows) {
+        posixify_text(text)
+    } else {
+        std::borrow::Cow::Borrowed(text)
+    };
+    serializer.serialize_str(&text)
+}
+
+/// [`serialize_fs_path`] for an optional path.
+pub fn serialize_opt_fs_path<S: serde::Serializer>(
+    path: &Option<std::path::PathBuf>,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    match path {
+        Some(path) => serializer.serialize_some(&FsPath(path)),
+        None => serializer.serialize_none(),
+    }
+}
+
+/// A borrowed path serialized through [`serialize_fs_path`], so the optional
+/// form wraps the same fold.
+struct FsPath<'a>(&'a std::path::Path);
+
+impl serde::Serialize for FsPath<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serialize_fs_path(self.0, serializer)
     }
 }
 

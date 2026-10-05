@@ -100,6 +100,7 @@ impl SysctlConfigurator {
     }
 }
 
+// long-line-ok: a hatch is read off its own line, so it cannot wrap
 // no-tool-ok: writes /proc/sys directly, so its answer turns on the kernel interface being there rather than on any binary
 impl SystemConfigurator for SysctlConfigurator {
     fn name(&self) -> &str {

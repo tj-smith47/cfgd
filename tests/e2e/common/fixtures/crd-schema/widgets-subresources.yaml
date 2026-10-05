@@ -1,0 +1,60 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: widgets.example.io
+  uid: 0d6c7a52-8f0e-4c1e-9b7e-3f2a1d5c9e10
+  resourceVersion: "4711"
+  generation: 3
+  creationTimestamp: "2026-09-01T00:00:00Z"
+  annotations:
+    argocd.argoproj.io/tracking-id: cfgd-crds:apiextensions.k8s.io/CustomResourceDefinition:crossplane-system/widgets.example.io
+    kubectl.kubernetes.io/last-applied-configuration: |
+      {"apiVersion":"apiextensions.k8s.io/v1","kind":"CustomResourceDefinition","metadata":{"name":"widgets.example.io"}}
+spec:
+  conversion:
+    strategy: None
+  group: example.io
+  names:
+    kind: Widget
+    plural: widgets
+    listKind: WidgetList
+    singular: widget
+    shortNames:
+    - wdg
+  scope: Namespaced
+  versions:
+  - name: v1alpha1
+    served: true
+    storage: true
+    additionalPrinterColumns:
+    - jsonPath: .spec.size
+      name: Size
+      type: integer
+    schema:
+      openAPIV3Schema:
+        description: A widget.
+        type: object
+        properties:
+          spec:
+            description: What the widget should be.
+            type: object
+            properties:
+              size:
+                description: How big the widget is.
+                type: integer
+              description:
+                description: A property named description, which the comparison keeps.
+                type: string
+status:
+  acceptedNames:
+    kind: Widget
+    plural: widgets
+  conditions:
+  - type: NamesAccepted
+    status: "True"
+    reason: NoConflicts
+  - type: Established
+    status: "True"
+    reason: InitialNamesAccepted
+  storedVersions:
+  - v1alpha1

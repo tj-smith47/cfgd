@@ -15,7 +15,7 @@
 //! user-facing surface is the final emit. The bridge invariant does not
 //! apply when there is no streaming surface.
 
-mod common;
+use cfgd_test_fixtures as common;
 
 use std::path::Path;
 
@@ -290,7 +290,8 @@ fn module_upgrade_no_change_human_json() {
     // short-circuit fires.
     let (config_dir, state_dir) = upgrade_test_setup();
     let _home = cfgd_core::with_test_home_guard(config_dir.path());
-    let _env = cfgd_core::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+    let _env =
+        cfgd_core::test_helpers::EnvVarGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
 
     let bare_root = tempfile::tempdir().unwrap();
     let bare = make_bare_module_repo(bare_root.path(), "upmod", "v1.0.0");
@@ -299,10 +300,16 @@ fn module_upgrade_no_change_human_json() {
     let cli = cli_for(config_dir.path(), state_dir.path());
     let v2a = test_printer();
     // Pre-load the lockfile via add_remote.
-    module::cmd_module_add_remote(&cli, &v2a, &url, None, true, true).unwrap();
+    cfgd::cli::RunContext::for_test(&cli, &v2a, |run| {
+        module::cmd_module_add_remote(run, &url, None, true, true)
+    })
+    .unwrap();
 
     let (printer, cap) = Printer::for_test_doc();
-    module::cmd_module_upgrade(&cli, &printer, "upmod", Some("v1.0.0"), true, true).unwrap();
+    cfgd::cli::RunContext::for_test(&cli, &printer, |run| {
+        module::cmd_module_upgrade(run, "upmod", Some("v1.0.0"), true, true)
+    })
+    .unwrap();
     drop(printer);
 
     let mut stripped = cfgd_core::normalize_for_snapshot(
@@ -329,7 +336,8 @@ fn module_upgrade_cancelled_human() {
     // diff path runs. Prompt declined → Cancelled Doc.
     let (config_dir, state_dir) = upgrade_test_setup();
     let _home = cfgd_core::with_test_home_guard(config_dir.path());
-    let _env = cfgd_core::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+    let _env =
+        cfgd_core::test_helpers::EnvVarGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
 
     let bare_root = tempfile::tempdir().unwrap();
     let bare = make_bare_module_repo(bare_root.path(), "upmod", "v1.0.0");
@@ -337,14 +345,20 @@ fn module_upgrade_cancelled_human() {
 
     let cli = cli_for(config_dir.path(), state_dir.path());
     let v2a = test_printer();
-    module::cmd_module_add_remote(&cli, &v2a, &url, None, true, true).unwrap();
+    cfgd::cli::RunContext::for_test(&cli, &v2a, |run| {
+        module::cmd_module_add_remote(run, &url, None, true, true)
+    })
+    .unwrap();
 
     // Push a second tag (v1.1.0) onto the bare repo with a fresh commit.
     push_second_tag(bare_root.path(), "upmod", &bare, "v1.1.0");
 
     let (printer, cap) =
         Printer::for_test_doc_with_prompt_responses(vec![PromptAnswer::Confirm(false)]);
-    module::cmd_module_upgrade(&cli, &printer, "upmod", Some("v1.1.0"), false, true).unwrap();
+    cfgd::cli::RunContext::for_test(&cli, &printer, |run| {
+        module::cmd_module_upgrade(run, "upmod", Some("v1.1.0"), false, true)
+    })
+    .unwrap();
     drop(printer);
 
     let mut stripped = cfgd_core::normalize_for_snapshot(
@@ -369,7 +383,8 @@ fn module_upgrade_cancelled_human() {
 fn module_upgrade_happy_human_json() {
     let (config_dir, state_dir) = upgrade_test_setup();
     let _home = cfgd_core::with_test_home_guard(config_dir.path());
-    let _env = cfgd_core::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+    let _env =
+        cfgd_core::test_helpers::EnvVarGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
 
     let bare_root = tempfile::tempdir().unwrap();
     let bare = make_bare_module_repo(bare_root.path(), "upmod", "v1.0.0");
@@ -377,12 +392,19 @@ fn module_upgrade_happy_human_json() {
 
     let cli = cli_for(config_dir.path(), state_dir.path());
     let v2a = test_printer();
-    module::cmd_module_add_remote(&cli, &v2a, &url, None, true, true).unwrap();
+    cfgd::cli::RunContext::for_test(&cli, &v2a, |run| {
+        module::cmd_module_add_remote(run, &url, None, true, true)
+    })
+    .unwrap();
 
     push_second_tag(bare_root.path(), "upmod", &bare, "v1.1.0");
 
     let (printer, cap) = Printer::for_test_doc();
-    module::cmd_module_upgrade(&cli, &printer, "upmod", Some("v1.1.0"), true, true).unwrap();
+    let printer = printer.with_hints_enabled(true);
+    cfgd::cli::RunContext::for_test(&cli, &printer, |run| {
+        module::cmd_module_upgrade(run, "upmod", Some("v1.1.0"), true, true)
+    })
+    .unwrap();
     drop(printer);
 
     let mut stripped = cfgd_core::normalize_for_snapshot(
@@ -444,7 +466,8 @@ fn module_upgrade_shows_real_spec_diff_human() {
     // HashSet's iteration order is not).
     let (config_dir, state_dir) = upgrade_test_setup();
     let _home = cfgd_core::with_test_home_guard(config_dir.path());
-    let _env = cfgd_core::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+    let _env =
+        cfgd_core::test_helpers::EnvVarGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
 
     let bare_root = tempfile::tempdir().unwrap();
     let bare = make_bare_module_repo_with_spec(bare_root.path(), "diffmod", "v1.0.0", SPEC_DIFF_V1);
@@ -452,13 +475,19 @@ fn module_upgrade_shows_real_spec_diff_human() {
 
     let cli = cli_for(config_dir.path(), state_dir.path());
     let v2a = test_printer();
-    module::cmd_module_add_remote(&cli, &v2a, &url, None, true, true).unwrap();
+    cfgd::cli::RunContext::for_test(&cli, &v2a, |run| {
+        module::cmd_module_add_remote(run, &url, None, true, true)
+    })
+    .unwrap();
 
     push_second_tag_with_spec(bare_root.path(), "diffmod", &bare, "v1.1.0", SPEC_DIFF_V2);
 
     let (printer, cap) =
         Printer::for_test_doc_with_prompt_responses(vec![PromptAnswer::Confirm(false)]);
-    module::cmd_module_upgrade(&cli, &printer, "diffmod", Some("v1.1.0"), false, true).unwrap();
+    cfgd::cli::RunContext::for_test(&cli, &printer, |run| {
+        module::cmd_module_upgrade(run, "diffmod", Some("v1.1.0"), false, true)
+    })
+    .unwrap();
     drop(printer);
 
     let mut stripped = cfgd_core::normalize_for_snapshot(

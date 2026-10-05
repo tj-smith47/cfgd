@@ -12,7 +12,7 @@
 //!     Quiet-mode Printer with no queued responses returns Err which
 //!     `unwrap_or(false)` maps to "do not overwrite".
 
-mod common;
+use cfgd_test_fixtures as common;
 
 use std::path::Path;
 
@@ -75,7 +75,7 @@ fn workflow_generate_happy_json() {
     let json = cap.json().expect("doc captured json");
     assert_eq!(json["profiles"], serde_json::json!(["default"]));
     assert_eq!(json["modules"], serde_json::json!(["neovim"]));
-    let path_normalized = json["path"].as_str().unwrap().replace('\\', "/");
+    let path_normalized = cfgd_core::to_posix_string(json["path"].as_str().unwrap());
     assert!(
         path_normalized.ends_with(".github/workflows/cfgd-release.yml"),
         "path key should point at the generated workflow file: {}",

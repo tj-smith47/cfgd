@@ -15,9 +15,10 @@ use std::path::{Path, PathBuf};
 use crate::config::{EnvScope, EnvVar, ShellAlias};
 
 use super::env_files::{
-    ENV_FILE_HEADER, fish_in_use, generate_env_file_content, generate_fish_env_content,
+    SHELL_COMMENT, banner, fish_in_use, generate_env_file_content, generate_fish_env_content,
     generate_powershell_env_content,
 };
+use super::verify::LayeredEnv;
 
 /// Source line shells evaluate to load the cfgd-managed env file. Uses the
 /// POSIX `.` builtin, not the `source` alias: `.profile` is read by `/bin/sh`
@@ -210,7 +211,8 @@ pub(super) fn env_targets(
     platform: EnvPlatform,
 ) -> Vec<EnvTarget> {
     let mut targets = Vec::new();
-    if content.env.is_empty() && content.aliases.is_empty() && content.path_dirs.is_empty() {
+    let (env, aliases, _) = content.merged();
+    if env.is_empty() && aliases.is_empty() && content.path_dirs.is_empty() {
         return targets;
     }
 
@@ -223,7 +225,7 @@ pub(super) fn env_targets(
 
     // Live-session refresh runs last, after the durable files are written.
     if reaches_all(scope) {
-        let vars = valid_export_pairs(content.env);
+        let vars = valid_export_pairs(env);
         if !vars.is_empty() {
             targets.push(EnvTarget::LiveSession { vars });
         }
@@ -237,36 +239,44 @@ pub(super) fn env_targets(
 /// parallel slices that must stay in the same order at each call site.
 #[derive(Clone, Copy)]
 pub(super) struct EnvContent<'a> {
-    env: &'a [EnvVar],
-    aliases: &'a [ShellAlias],
+    layered: &'a LayeredEnv,
     path_dirs: &'a [ManagerPathDir],
-    origins: &'a EnvOrigins,
 }
 
 impl<'a> EnvContent<'a> {
-    pub(super) fn new(
-        env: &'a [EnvVar],
-        aliases: &'a [ShellAlias],
-        path_dirs: &'a [ManagerPathDir],
-        origins: &'a EnvOrigins,
-    ) -> Self {
-        Self {
-            env,
-            aliases,
-            path_dirs,
-            origins,
-        }
+    /// Every declared input but `path_dirs` comes off one value: the layered
+    /// view already carries the winner set, the per-layer blocks and the owner
+    /// claims, and passing them as parallel slices is what let a call site put
+    /// one merge's winners beside another's owners.
+    pub(super) fn of(layered: &'a LayeredEnv, path_dirs: &'a [ManagerPathDir]) -> Self {
+        Self { layered, path_dirs }
+    }
+
+    /// The winner set, the aliases and the owner claims the non-block targets
+    /// (`environment.d`, the launchd agent, the live session) publish and the
+    /// `PATH` fold is priced from.
+    fn merged(&self) -> (&'a [EnvVar], &'a [ShellAlias], &'a EnvOrigins) {
+        (
+            &self.layered.merged,
+            &self.layered.merged_aliases,
+            &self.layered.origins,
+        )
     }
 }
 
-/// Which layer each merged env var and alias came from, for the provenance
-/// comment the generated shell files carry beside the line it explains.
+/// Which layer each merged env var and alias came from.
 ///
-/// Names only — a value is whatever survived the merge, and the comment says
-/// who put it there. EVERY entry names its layer: the file is the merge of N
-/// layers (profile chain, subscribed sources, modules) and so has no default
-/// owner a reader could assume, which is what an unannotated line would ask
-/// them to do.
+/// Names only — a value is whatever survived the merge, and this says who put
+/// it there. Two production readers: `LayeredEnv::assemble` places a merged
+/// entry no block declares into its claiming layer's block, and the `PATH`
+/// fold composes the one trailing comment the generated files still carry,
+/// because that assignment has as many authors as fed it and no single block
+/// header can name them. Every other line's owner is the header above it.
+///
+/// The per-entry comment half (`EnvOrigins::env_comment`,
+/// `EnvOrigins::alias_comment`) has no production caller left: it renders what
+/// a cfgd BEFORE the layered blocks wrote, which is what a migration fixture
+/// needs and nothing else does.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub(super) struct EnvOrigins(crate::config::EntryOwners);
 
@@ -287,12 +297,6 @@ impl EnvOrigins {
         );
     }
 
-    /// The trailing ` # <kind>:<name>` an env-var line carries, or an empty
-    /// string when nothing owns it.
-    pub(super) fn env_comment(&self, name: &str) -> String {
-        comment(self.0.env.get(name).map(String::as_str))
-    }
-
     /// The owner token of an env var, unwrapped — for the one line whose
     /// comment names TWO producers and so cannot be composed from a rendered
     /// comment, and for the tracking row an apply records the entry under.
@@ -303,11 +307,6 @@ impl EnvOrigins {
     /// The same for an alias.
     pub(super) fn alias_owner(&self, name: &str) -> Option<&str> {
         self.0.aliases.get(name).map(String::as_str)
-    }
-
-    /// The same for an alias line.
-    pub(super) fn alias_comment(&self, name: &str) -> String {
-        comment(self.0.aliases.get(name).map(String::as_str))
     }
 }
 
@@ -358,10 +357,11 @@ fn comment(owner: Option<&str>) -> String {
 ///
 /// The exact inverse of [`comment`] and kept beside it so the two cannot
 /// drift. Any comparison of a DEPLOYED line against a freshly rendered one
-/// folds both sides through this: a file written before owner comments
-/// existed carries none, and comparing raw would read every line in such a
-/// file as having moved. Applied symmetrically, so a value that itself ends
-/// in something comment-shaped folds the same way on both sides and still
+/// folds both sides through this: the current generator writes a comment on
+/// the folded `PATH` line alone, and a file an older cfgd wrote carries one on
+/// EVERY line, so comparing raw would read every entry in such a file as
+/// having moved. Applied symmetrically, so a value that itself ends in
+/// something comment-shaped folds the same way on both sides and still
 /// compares equal to itself.
 pub(super) fn without_owner_comment(line: &str) -> &str {
     match line.rsplit_once(" # ") {
@@ -773,7 +773,10 @@ pub fn env_target_basenames() -> Vec<String> {
         for probe in &probes {
             for scope in [EnvScope::All, EnvScope::Login, EnvScope::Interactive] {
                 for target in env_targets(
-                    EnvContent::new(&env, &aliases, &path_dirs, &origins),
+                    EnvContent::of(
+                        &crate::reconciler::LayeredEnv::for_test(&env, &aliases, &origins),
+                        &path_dirs,
+                    ),
                     scope,
                     home,
                     probe,
@@ -811,18 +814,14 @@ fn unix_targets(
     platform: EnvPlatform,
     out: &mut Vec<EnvTarget>,
 ) {
-    let EnvContent {
-        env,
-        aliases,
-        path_dirs,
-        origins,
-    } = content;
+    let EnvContent { layered, path_dirs } = content;
+    let (env, aliases, origins) = content.merged();
     // Interactive (all scopes): the cfgd-owned env file + a source line in the
     // user's interactive rc, plus fish when it's in use.
     let posix_path = primary_folded_path(env, path_dirs, origins, home, platform);
     out.push(EnvTarget::ManagedFile {
         path: primary_env_file_path(home, platform),
-        content: generate_env_file_content(env, aliases, posix_path.as_ref(), origins),
+        content: generate_env_file_content(layered, posix_path.as_ref()),
         rendered: RenderedCounts::of(env, aliases, posix_path.is_some()),
     });
     let interactive_rc = interactive_rc_for(&probe.shell, home);
@@ -834,7 +833,7 @@ fn unix_targets(
         let fish_path = fold_path_line(env, path_dirs, origins, home, platform, None);
         out.push(EnvTarget::ManagedFile {
             path: home.join(".config/fish/conf.d/cfgd-env.fish"),
-            content: generate_fish_env_content(env, aliases, fish_path.as_ref(), origins),
+            content: generate_fish_env_content(layered, fish_path.as_ref()),
             rendered: RenderedCounts::of(env, aliases, fish_path.is_some()),
         });
     }
@@ -925,17 +924,13 @@ fn windows_targets(
     probe: &EnvHostProbe,
     out: &mut Vec<EnvTarget>,
 ) {
-    let EnvContent {
-        env,
-        aliases,
-        path_dirs,
-        origins,
-    } = content;
+    let EnvContent { layered, path_dirs } = content;
+    let (env, aliases, origins) = content.merged();
     // PowerShell env file + dot-source into both profile locations.
     let ps_path = primary_folded_path(env, path_dirs, origins, home, EnvPlatform::Windows);
     out.push(EnvTarget::ManagedFile {
         path: primary_env_file_path(home, EnvPlatform::Windows),
-        content: generate_powershell_env_content(env, aliases, ps_path.as_ref(), origins),
+        content: generate_powershell_env_content(layered, ps_path.as_ref()),
         rendered: RenderedCounts::of(env, aliases, ps_path.is_some()),
     });
     for dir in ["Documents/PowerShell", "Documents/WindowsPowerShell"] {
@@ -948,7 +943,7 @@ fn windows_targets(
     if probe.git_bash_present {
         out.push(EnvTarget::ManagedFile {
             path: home.join(".cfgd.env"),
-            content: generate_env_file_content(env, aliases, ps_path.as_ref(), origins),
+            content: generate_env_file_content(layered, ps_path.as_ref()),
             rendered: RenderedCounts::of(env, aliases, ps_path.is_some()),
         });
         out.push(EnvTarget::SourceLine {
@@ -1008,9 +1003,14 @@ fn valid_export_pairs(env: &[EnvVar]) -> Vec<(String, String)> {
 /// `environment.d(5)` content: `KEY=VALUE`, one per line. **Not shell** — no
 /// `export`, no quoting; values are literal (systemd expands `${OTHER}` itself).
 pub(super) fn generate_environment_d_content(env: &[EnvVar]) -> String {
-    let mut lines = vec![ENV_FILE_HEADER.to_string()];
+    // The banner's block-free form, and no block header under it: systemd
+    // documents no last-wins for a repeated key, so this one publishes the
+    // winners the merge already decided, one line per name — and a file
+    // holding no blocks may not tell its reader to go edit one.
+    let mut lines = banner(SHELL_COMMENT, false);
     for ev in env {
         if crate::validate_env_var_name(&ev.name).is_err() {
+            // long-line-ok: a hatch is read off its own line, so it cannot wrap
             // tracing-ok: an env var the user declared under a name no shell can carry; the generated file simply omits it and no row names it
             tracing::warn!("skipping env var with unsafe name: {}", ev.name);
             continue;
@@ -1075,6 +1075,31 @@ pub fn launchd_env_plist(label: &str, vars: &BTreeMap<String, String>) -> String
         label = crate::xml_escape(label),
         script = crate::xml_escape(&setenv_script),
     )
+}
+
+#[cfg(test)]
+impl EnvPlatform {
+    /// Every variant, so a walk over the platforms takes the population from
+    /// the type; a hand list stops growing the day a variant is added.
+    /// `env_platform_all_covers_every_variant` fails to compile until a new
+    /// variant joins it.
+    pub(super) const ALL: [Self; 4] = [Self::Linux, Self::MacOs, Self::FreeBsd, Self::Windows];
+}
+
+#[cfg(test)]
+impl EnvOrigins {
+    /// The trailing ` # <kind>:<name>` an env-var line carried BEFORE the
+    /// layered blocks, or an empty string when nothing owns it. Paired with
+    /// `env_files::legacy_commented_line` to synthesise an un-upgraded
+    /// machine's file; no generator writes one.
+    pub(super) fn env_comment(&self, name: &str) -> String {
+        comment(self.0.env.get(name).map(String::as_str))
+    }
+
+    /// The same for an alias line.
+    pub(super) fn alias_comment(&self, name: &str) -> String {
+        comment(self.0.aliases.get(name).map(String::as_str))
+    }
 }
 
 #[cfg(test)]
@@ -1146,7 +1171,10 @@ mod tests {
         let origins = EnvOrigins::default();
         let probe = probe();
         env_targets(
-            EnvContent::new(&env, &[], &dirs, &origins),
+            EnvContent::of(
+                &crate::reconciler::LayeredEnv::for_test(&env, &[], &origins),
+                &dirs,
+            ),
             EnvScope::All,
             home,
             &probe,
@@ -1218,7 +1246,10 @@ mod tests {
         let dirs = dirs("C:/Users/tj");
         let origins = EnvOrigins::default();
         let targets = env_targets(
-            EnvContent::new(&env, &[], &dirs, &origins),
+            EnvContent::of(
+                &crate::reconciler::LayeredEnv::for_test(&env, &[], &origins),
+                &dirs,
+            ),
             EnvScope::All,
             home,
             &probe(),
@@ -1264,7 +1295,10 @@ mod tests {
         let dirs = dirs(&home_str);
         let origins = EnvOrigins::default();
         let targets = env_targets(
-            EnvContent::new(&env, &[], &dirs, &origins),
+            EnvContent::of(
+                &crate::reconciler::LayeredEnv::for_test(&env, &[], &origins),
+                &dirs,
+            ),
             EnvScope::All,
             home,
             &probe(),
@@ -1291,7 +1325,10 @@ mod tests {
             EnvOrigins::from_owners(&owners)
         };
         let targets = env_targets(
-            EnvContent::new(&env, &[], &dirs, &origins),
+            EnvContent::of(
+                &crate::reconciler::LayeredEnv::for_test(&env, &[], &origins),
+                &dirs,
+            ),
             EnvScope::All,
             home,
             &probe(),
@@ -1310,34 +1347,75 @@ mod tests {
         );
     }
 
-    /// Every generated file assigns each variable ONCE, whatever fed it.
+    /// Every generated file assigns each variable once per BLOCK, and `PATH`
+    /// once per file.
     ///
-    /// A file holding two `export PATH=` lines assigns one variable twice, and
-    /// every count over it then has to choose between naming written lines and
-    /// naming variables — which is how `write ~/.cfgd.env — 4 vars` came to sit
-    /// one row above `publish 3 vars to the live session`, both counting the
-    /// same file. The walk is over every dialect `env_targets` can produce on
-    /// every platform, so a sixth generator cannot quietly reintroduce the
-    /// split.
+    /// A block is one layer's own contribution, so the same name legitimately
+    /// appears in two of them — that is the inheritance the file exists to
+    /// show, and the shell's last-wins resolves it. `PATH` is the exception on
+    /// both counts: its declarations CONCATENATE into one folded line, so a
+    /// second `PATH` assignment anywhere in the file would clobber the fold.
+    ///
+    /// A file holding two `export PATH=` lines also made every count over it
+    /// choose between naming written lines and naming variables — which is how
+    /// `write ~/.cfgd.env — 4 vars` came to sit one row above `publish 3 vars
+    /// to the live session`, both counting the same file. The walk is over
+    /// every dialect `env_targets` can produce on every platform, so a sixth
+    /// generator cannot quietly reintroduce the split.
+    ///
+    /// The population is [`EnvPlatform::ALL`], the boundaries are the header
+    /// lines the generator itself composed, and every platform has to yield a
+    /// managed file of its own — one aggregate count passes on three
+    /// platforms' files while a fourth stopped producing any.
     #[test]
     fn no_generated_env_file_assigns_one_variable_twice() {
-        let cases = [
-            (EnvPlatform::Linux, Path::new("/home/tj")),
-            (EnvPlatform::MacOs, Path::new("/Users/tj")),
-            (EnvPlatform::FreeBsd, Path::new("/home/tj")),
-            (EnvPlatform::Windows, Path::new("C:/Users/tj")),
-        ];
-        let mut files_seen = 0;
-        for (platform, home) in cases {
+        for platform in EnvPlatform::ALL {
+            let home = match platform {
+                EnvPlatform::Windows => Path::new("C:/Users/tj"),
+                EnvPlatform::MacOs => Path::new("/Users/tj"),
+                EnvPlatform::Linux | EnvPlatform::FreeBsd => Path::new("/home/tj"),
+            };
             let separator = path_separator(platform);
             let env = vec![
                 ev("PATH", &format!("$HOME/.cargo/bin{separator}$PATH")),
                 ev("EDITOR", "nvim"),
             ];
             let dirs = dirs(&crate::to_posix_string(home));
-            let origins = EnvOrigins::default();
+            // Built through the real fold (`for_test` skips it), and carrying
+            // a resolved secret named `PATH`: `with_secret_envs` is the one
+            // producer that puts a `PATH` entry in a layer at all, so it is
+            // what the `path_lines` half of this pin has to be shown.
+            let layered = crate::reconciler::LayeredEnv::from_parts(
+                &crate::reconciler::Owner::profile("test").token(),
+                &env,
+                &[],
+                &[],
+            )
+            .with_secret_envs(&[(
+                "PATH".to_string(),
+                format!("/opt/secret/bin{separator}$PATH"),
+            )]);
+            // The header lines the generator wrote, asked of the composer that
+            // wrote them. Recognising a boundary in the finished text instead
+            // would read a declared value's own blank line as one and clear
+            // the block mid-way, hiding a real double assignment.
+            let headers: std::collections::HashSet<String> =
+                std::iter::once(crate::reconciler::env_files::block_header(
+                    crate::reconciler::env_files::SHELL_COMMENT,
+                    "path",
+                    None,
+                ))
+                .chain(layered.layers.iter().map(|layer| {
+                    crate::reconciler::env_files::block_header(
+                        crate::reconciler::env_files::SHELL_COMMENT,
+                        &layer.owner,
+                        layer.priority,
+                    )
+                }))
+                .collect();
+            let mut files_seen = 0;
             for target in env_targets(
-                EnvContent::new(&env, &[], &dirs, &origins),
+                EnvContent::of(&layered, &dirs),
                 EnvScope::All,
                 home,
                 &probe(),
@@ -1348,22 +1426,111 @@ mod tests {
                 };
                 files_seen += 1;
                 let mut assigned: Vec<&str> = Vec::new();
+                let mut path_lines = 0;
                 for line in content.lines() {
+                    // A block header opens a new layer's contribution, and the
+                    // names it assigns are its own.
+                    if headers.contains(line) {
+                        assigned.clear();
+                        continue;
+                    }
                     let Some(name) = assigned_variable(line) else {
                         continue;
                     };
+                    if name == "PATH" {
+                        path_lines += 1;
+                    }
                     assert!(
                         !assigned.contains(&name),
-                        "{} assigns {name} twice:\n{content}",
+                        "{} assigns {name} twice in one block:\n{content}",
                         path.display()
                     );
                     assigned.push(name);
                 }
+                assert!(
+                    path_lines <= 1,
+                    "{} assigns PATH {path_lines} times:\n{content}",
+                    path.display()
+                );
+            }
+            assert!(
+                files_seen >= 1,
+                "{platform:?} produced no managed file at all"
+            );
+        }
+    }
+
+    /// The banner states only what its own file holds.
+    ///
+    /// The two sentences about blocks tell a reader to go edit the block a
+    /// line sits under and state that blocks run low to high precedence.
+    /// `environment.d(5)` publishes the winners alone, so in that file both
+    /// sentences name something that is not there. The walk is over every
+    /// managed body `env_targets` produces on every platform: a body that
+    /// talks about blocks holds one.
+    #[test]
+    fn no_generated_env_file_describes_blocks_it_does_not_hold() {
+        let blocks_sentence = "Blocks run low to high precedence";
+        let mut bodies_seen = 0;
+        let mut talkers = 0;
+        for platform in EnvPlatform::ALL {
+            let home = match platform {
+                EnvPlatform::Windows => Path::new("C:/Users/tj"),
+                EnvPlatform::MacOs => Path::new("/Users/tj"),
+                EnvPlatform::Linux | EnvPlatform::FreeBsd => Path::new("/home/tj"),
+            };
+            let env = vec![ev("EDITOR", "nvim")];
+            let origins = EnvOrigins::default();
+            let layered = crate::reconciler::LayeredEnv::for_test(&env, &[], &origins);
+            for target in env_targets(
+                EnvContent::of(&layered, &[]),
+                EnvScope::All,
+                home,
+                &probe(),
+                platform,
+            ) {
+                let EnvTarget::ManagedFile { path, content, .. } = target else {
+                    continue;
+                };
+                bodies_seen += 1;
+                if !content.contains(blocks_sentence) {
+                    continue;
+                }
+                talkers += 1;
+                // A header the generator composed:
+                // the one layer `for_test` builds is what every block in this
+                // body is headed by.
+                let header = crate::reconciler::env_files::block_header(
+                    crate::reconciler::env_files::SHELL_COMMENT,
+                    &layered.layers[0].owner,
+                    layered.layers[0].priority,
+                );
+                assert!(
+                    content.lines().any(|line| line == header),
+                    "{} states the block sentences and holds no block:\n{content}",
+                    path.display()
+                );
             }
         }
         assert!(
-            files_seen >= 6,
-            "the walk no longer reaches every dialect — it read {files_seen} files"
+            bodies_seen >= 6 && talkers >= 3,
+            "the walk no longer reaches every dialect — {bodies_seen} bodies, {talkers} naming blocks"
+        );
+    }
+
+    /// `environment.d(5)` takes the banner's block-free form, byte for byte.
+    ///
+    /// Written out by hand: composing it through `banner` would compare
+    /// the generator against the one function it already called.
+    #[test]
+    fn the_environment_d_file_opens_on_the_block_free_banner() {
+        let content = generate_environment_d_content(&[ev("EDITOR", "nvim")]);
+        assert_eq!(
+            content,
+            "# managed by cfgd \u{2014} do not edit\n\
+             # Regenerated by every `cfgd apply`; edits made here are lost.\n\
+             EDITOR='nvim'\n",
+            "{content}"
         );
     }
 
@@ -1423,7 +1590,10 @@ mod tests {
                 // narrower scope must classify too.
                 for scope in [EnvScope::All, EnvScope::Login, EnvScope::Interactive] {
                     for target in env_targets(
-                        EnvContent::new(&env, &[], &dirs, &origins),
+                        EnvContent::of(
+                            &crate::reconciler::LayeredEnv::for_test(&env, &[], &origins),
+                            &dirs,
+                        ),
                         scope,
                         home,
                         probe,
@@ -1537,6 +1707,128 @@ mod tests {
         assert_eq!(
             rendered.vars, published,
             "the file's variables and the session publish's are one count"
+        );
+    }
+
+    /// Every generated env file either renders the layer blocks or is rostered
+    /// as a dialect that cannot carry them.
+    ///
+    /// The population is `env_target_basenames()` narrowed to the files this
+    /// engine WRITES, so a sixth generated file joins the walk with the
+    /// dialect that added it, and nothing is classified by omission: it
+    /// either carries the blocks or is named in `NO_BLOCKS`, and a `NO_BLOCKS`
+    /// name the engine has stopped writing fails here too. `environment.d`
+    /// reads `KEY=VALUE` with no documented last-wins for a repeated key, and
+    /// a LaunchAgent is XML; both publish the winners alone.
+    ///
+    /// The floor is the (platform, file) MATRIX. A floor over the set of file
+    /// names alone would let a fourth platform arm stop producing a name the
+    /// other three produce with nothing going red.
+    #[test]
+    fn every_generated_env_dialect_renders_through_the_one_block_composer() {
+        const NO_BLOCKS: [&str; 2] = ["cfgd.conf", MACOS_USER_PLIST_NAME];
+        // Which generated file each platform writes: the floor every arm is
+        // held to. A dialect that joins one platform adds a row here, and an
+        // arm that stops producing one fails on the row it left behind.
+        const MATRIX: [(&str, &str); 10] = [
+            ("FreeBsd", ".cfgd.env"),
+            ("FreeBsd", "cfgd-env.fish"),
+            ("Linux", ".cfgd.env"),
+            ("Linux", "cfgd-env.fish"),
+            ("Linux", "cfgd.conf"),
+            ("MacOs", ".cfgd.env"),
+            ("MacOs", "cfgd-env.fish"),
+            ("MacOs", MACOS_USER_PLIST_NAME),
+            ("Windows", ".cfgd-env.ps1"),
+            ("Windows", ".cfgd.env"),
+        ];
+        // The engine's own roster, less the rc files it injects a source line
+        // into. Only the blockless names are written down; which dialects must
+        // carry blocks is whatever this leaves.
+        let mut written: Vec<String> = env_target_basenames()
+            .into_iter()
+            .filter(|name| recorded_env_method(name) == ENV_VERB_WRITE)
+            .collect();
+        written.sort();
+        assert!(
+            !written.is_empty(),
+            "the engine named no generated file, so this walk would read nothing",
+        );
+        for name in NO_BLOCKS {
+            assert!(
+                written.iter().any(|known| known == name),
+                "{name} is no longer a file this engine writes: {written:?}",
+            );
+        }
+        // Every optional dialect present, so the walk reaches the fish file and
+        // the Git Bash one and reads every target it claims.
+        let probe = EnvHostProbe {
+            shell: "/bin/zsh".to_string(),
+            fish_present: true,
+            bash_profile_exists: true,
+            bash_login_exists: false,
+            git_bash_present: true,
+            zsh_present: true,
+        };
+        let mut seen: Vec<(String, String)> = Vec::new();
+        for (platform, home) in [
+            (EnvPlatform::Linux, Path::new("/home/tj")),
+            (EnvPlatform::MacOs, Path::new("/Users/tj")),
+            (EnvPlatform::FreeBsd, Path::new("/home/tj")),
+            (EnvPlatform::Windows, Path::new("C:/Users/tj")),
+        ] {
+            let (layered, path_dirs) =
+                crate::test_helpers::layered_fixture(&crate::to_posix_string(home));
+            for target in env_targets(
+                EnvContent::of(&layered, &path_dirs),
+                EnvScope::All,
+                home,
+                &probe,
+                platform,
+            ) {
+                let EnvTarget::ManagedFile { path, content, .. } = target else {
+                    continue;
+                };
+                let name = path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or_default()
+                    .to_string();
+                if NO_BLOCKS.contains(&name.as_str()) {
+                    assert!(
+                        !content.contains("\n# profile: ") && !content.contains("\n# module: "),
+                        "{name} is rostered blockless yet renders layer blocks:\n{content}",
+                    );
+                } else {
+                    assert!(
+                        content.contains("\n# profile: work (priority 1000)\n")
+                            && content.contains("\n# module: nvim\n"),
+                        "{name} renders no layer blocks:\n{content}",
+                    );
+                }
+                let row = (format!("{platform:?}"), name);
+                if !seen.contains(&row) {
+                    seen.push(row);
+                }
+            }
+        }
+        seen.sort();
+        let expected: Vec<(String, String)> = MATRIX
+            .iter()
+            .map(|(platform, name)| ((*platform).to_string(), (*name).to_string()))
+            .collect();
+        assert_eq!(
+            seen, expected,
+            "the walk read a different (platform, file) matrix than this pin's floor",
+        );
+        // And the names in that matrix are exactly the ones the engine rosters,
+        // so a sixth dialect cannot be held by a floor that never heard of it.
+        let mut names: Vec<String> = seen.into_iter().map(|(_, name)| name).collect();
+        names.sort();
+        names.dedup();
+        assert_eq!(
+            names, written,
+            "the matrix and the engine's own roster name different files",
         );
     }
 }

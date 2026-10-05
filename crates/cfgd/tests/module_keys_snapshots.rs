@@ -11,8 +11,6 @@
 //!     stream, the buffered "Key rotation complete" Doc follows with
 //!     exactly one blank line between them (one-blank-line bridge invariant).
 
-mod common;
-
 #[cfg(unix)]
 use cfgd::cli::module;
 #[cfg(unix)]
@@ -90,6 +88,7 @@ fn module_keys_list_empty_human() {
         cfgd_core::test_helpers::EnvVarGuard::set("HOME", tmp.path().to_str().unwrap());
 
     let (printer, cap) = Printer::for_test_doc();
+    let printer = printer.with_hints_enabled(true);
     module::cmd_module_keys_list(&printer, None).unwrap();
     drop(printer);
 
@@ -134,6 +133,7 @@ fn module_keys_generate_happy_human() {
     let dir_str = work.path().to_str().unwrap();
 
     let (printer, cap) = Printer::for_test_doc();
+    let printer = printer.with_hints_enabled(true);
     module::cmd_module_keys_generate(&printer, Some(dir_str)).unwrap();
     drop(printer);
 
@@ -213,6 +213,7 @@ fn module_keys_rotate_happy_human() {
 
     let dir_str = dir.to_str().unwrap();
     let (printer, cap) = Printer::for_test_doc();
+    let printer = printer.with_hints_enabled(true);
     // Empty artifacts list — exercises the path that skips OCI re-signing.
     module::cmd_module_keys_rotate(&printer, Some(dir_str), &[]).unwrap();
     drop(printer);
@@ -298,6 +299,7 @@ fn module_keys_rotate_bridge_one_blank_line() {
     let dir_str = dir.to_str().unwrap();
     let artifacts = vec!["oci.example.com/m:v1".to_string()];
     let (printer, cap) = Printer::for_test_doc();
+    let printer = printer.with_hints_enabled(true);
     module::cmd_module_keys_rotate(&printer, Some(dir_str), &artifacts).unwrap();
     drop(printer);
 

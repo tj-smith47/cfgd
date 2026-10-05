@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -14,8 +14,8 @@ use crate::providers::{
 use super::env::EnvPlanOutcome;
 use super::restore::content_hash_if_exists;
 use super::types::{
-    Action, ModuleAction, ModuleActionKind, Owner, Phase, PhaseName, Plan, ReconcileContext,
-    ScriptAction, ScriptPhase, SystemAction,
+    Action, ManagerAction, ModuleAction, ModuleActionKind, Owner, Phase, PhaseName, Plan,
+    ReconcileContext, ScriptAction, ScriptPhase, SystemAction,
 };
 
 /// Actions tagged with the phase each is routed to.
@@ -116,7 +116,7 @@ impl<'a> super::Reconciler<'a> {
     pub fn plan_observed(
         &self,
         resolved: &ResolvedProfile,
-        file_actions: Vec<FileAction>,
+        mut file_actions: Vec<FileAction>,
         pkg_actions: Vec<PackageAction>,
         module_actions: Vec<ResolvedModule>,
         context: ReconcileContext,
@@ -153,7 +153,7 @@ impl<'a> super::Reconciler<'a> {
         let profile = Owner::profile(resolved.profile_name());
 
         observe(PhaseName::PreScripts);
-        let (pre_script_actions, post_script_actions) =
+        let (mut pre_script_actions, mut post_script_actions) =
             self.plan_scripts(&resolved.merged, context);
 
         // Module work is attributed to the phase whose KIND it is, so a
@@ -196,12 +196,67 @@ impl<'a> super::Reconciler<'a> {
         // after this one, so the tools they need are collected here and
         // installed as prerequisites of the same run.
         let deferred_tools = self.deferred_tools(&resolved.merged, &module_actions);
+        // A manager this host HOLDS, below the floor its module declared or at a
+        // version nothing could read. Judged in this grammar too, and only
+        // built where one of the two folds below has something to judge: the map
+        // allocates a key per registered manager, and the overwhelmingly common
+        // plan carries neither a confirmed floor nor a held one.
+        let unmet_held = || {
+            module_actions
+                .iter()
+                .filter(|m| m.platform_skip_reason.is_none())
+                .flat_map(|m| m.held_managers.iter())
+                .filter(|h| !h.judgment.met())
+        };
+        let floor_managers = if module_actions
+            .iter()
+            .any(|m| !m.floor_bootstraps.is_empty())
+            || unmet_held().next().is_some()
+        {
+            self.registry.manager_map()
+        } else {
+            HashMap::new()
+        };
+        // A floor no available manager met, confirmed at resolution time: the
+        // manager itself joins the run's membership, and `plan_managers` mints
+        // its own cascade node. The module's entry resolved to no package at
+        // all, so nothing here has to be elided afterwards. Two modules may
+        // ask for one manager, and the run can only deliver one copy of it, so
+        // the higher floor is what the node carries: it satisfies both, where
+        // the lower one leaves the stricter module quietly short.
+        let mut floor_routes: BTreeMap<String, String> = BTreeMap::new();
+        for route in module_actions
+            .iter()
+            .flat_map(|m| m.floor_bootstraps.iter())
+        {
+            // The same dedup the effective set makes when two modules floor one
+            // package, so a floor cannot survive here and lose there: judged in
+            // the grammar of the manager being provisioned, since that is whose
+            // versions both floors are written in.
+            let kept = crate::effective::stricter_floor(
+                &floor_routes.remove(&route.package),
+                &Some(route.floor.clone()),
+                floor_managers.get(&route.package).copied(),
+            );
+            if let Some(kept) = kept {
+                floor_routes.insert(route.package.clone(), kept);
+            }
+        }
+        // The same fold over the managers already ON this host, whose floor no
+        // bootstrap can raise. One node per manager, because two modules
+        // flooring one copy of a toolchain are one fact about the machine, and
+        // the node judges the binary again at execution; a version read while
+        // the plan was being built is not trusted.
+        let held_floors =
+            super::types::fold_held_floors(unmet_held(), |name| floor_managers.get(name).copied());
+        let floor_wanted: Vec<String> = floor_routes.keys().cloned().collect();
         let mut manager_actions = super::managers::plan_managers_with_routes(
             self.registry,
             &profile_packages,
             &module_routed,
             &declared_routes,
-            &[],
+            &floor_routes,
+            &floor_wanted,
             &deferred_tools,
         );
         // A tool this plan's own cascade provisions as a MANAGER is already
@@ -219,10 +274,21 @@ impl<'a> super::Reconciler<'a> {
                 &profile_packages,
                 &module_routed,
                 &declared_routes,
-                &relied_on,
+                &floor_routes,
+                &[relied_on, floor_wanted].concat(),
                 &deferred_tools,
             );
         }
+
+        // Appended after the elision rebuild: these nodes install nothing, so
+        // no consumer of theirs can be dropped and no rebuild can retire them.
+        manager_actions.extend(held_floors.into_iter().map(|(manager, fold)| {
+            Action::Manager(ManagerAction::HeldFloor {
+                manager,
+                floor: fold.floor,
+                declared: fold.declared,
+            })
+        }));
 
         // The env file publishes where a manager's binaries live, so it has to
         // know about a manager this very run is about to provision, not only
@@ -235,11 +301,8 @@ impl<'a> super::Reconciler<'a> {
             super::env::recorded_manager_path_dirs(self.state, &resolved.merged, &module_actions),
         );
         let env_plan = self.plan_env(
-            &resolved.merged.env,
-            &resolved.merged.aliases,
-            &resolved.merged.entry_owners,
+            super::LayeredEnv::of(resolved, &module_actions),
             resolved.merged.env_scope,
-            &module_actions,
             &[], // Secret envs are not yet resolved at plan time; they are
             // injected during the apply phase after ResolveEnv actions run.
             &path_dirs,
@@ -257,7 +320,7 @@ impl<'a> super::Reconciler<'a> {
         // `dedup_module_packages` and `plan_managers` above read only
         // `InstallPackages` actions, and hooks are none.
         let EnvPlanOutcome {
-            actions: env_actions,
+            actions: mut env_actions,
             warnings,
             primary_write,
         } = env_plan;
@@ -273,41 +336,56 @@ impl<'a> super::Reconciler<'a> {
             }
         }
 
-        let package_actions = profile_packages
+        let mut package_actions = profile_packages
             .into_iter()
             .map(Action::Package)
             .collect::<Vec<_>>();
 
         observe(PhaseName::System);
-        let system_actions = self.plan_system(&resolved.merged, &module_actions)?;
+        let mut system_actions = self.plan_system(&resolved.merged, &module_actions)?;
         observe(PhaseName::Secrets);
-        let secret_actions = self.plan_secrets(&resolved.merged);
+        let mut secret_actions = self.plan_secrets(&resolved.merged);
 
-        let mut buckets: Vec<(PhaseName, Vec<Action>)> = vec![
-            // `Modules` holds only platform-gated skips — the meta phase — and
-            // is first so a "not for this host" answer precedes every step.
-            (PhaseName::Modules, Vec::new()),
-            (PhaseName::PreScripts, pre_script_actions),
-            // One phase, three cfgd-owned groups in producer-before-consumer
-            // order: `cfgd:managers` creates the binaries, `cfgd:env` publishes
-            // where they live, `cfgd:session` broadcasts. `Owner::sort_key`
-            // orders the groups; the concatenation order here is irrelevant.
-            (
-                PhaseName::Bootstrap,
-                manager_actions.into_iter().chain(env_actions).collect(),
-            ),
-            (PhaseName::Packages, package_actions),
-            // `Files` precedes `System` so a file is materialised before
-            // anything that consumes it: a unit file deployed through `files:`
-            // has to exist before `systemctl enable` names it.
-            (
-                PhaseName::Files,
-                file_actions.into_iter().map(Action::File).collect(),
-            ),
-            (PhaseName::System, system_actions),
-            (PhaseName::Secrets, secret_actions),
-            (PhaseName::PostScripts, post_script_actions),
-        ];
+        // The bucket order IS `PhaseName::EXECUTION_ORDER`, by construction: a
+        // plan FILE is read back against that const, and a debug-only check is
+        // stripped from the release binary that writes the files. The match is
+        // exhaustive, so a phase added to the enum fails to compile here and
+        // never reaches a reader in an order it does not expect. Each arm takes
+        // its actions once, the phases being distinct.
+        let mut buckets: Vec<(PhaseName, Vec<Action>)> = PhaseName::EXECUTION_ORDER
+            .into_iter()
+            .map(|name| {
+                let actions = match name {
+                    // `Modules` holds only platform-gated skips (the meta
+                    // phase) and is first so a "not for this host" answer
+                    // precedes every step.
+                    PhaseName::Modules => Vec::new(),
+                    PhaseName::PreScripts => std::mem::take(&mut pre_script_actions),
+                    // One phase, three cfgd-owned groups in
+                    // producer-before-consumer order: `cfgd:managers` creates
+                    // the binaries, `cfgd:env` publishes where they live,
+                    // `cfgd:session` broadcasts. `Owner::sort_key` orders the
+                    // groups; the concatenation order here is irrelevant.
+                    PhaseName::Bootstrap => std::mem::take(&mut manager_actions)
+                        .into_iter()
+                        .chain(std::mem::take(&mut env_actions))
+                        .collect(),
+                    PhaseName::Packages => std::mem::take(&mut package_actions),
+                    // `Files` precedes `System` so a file is materialised
+                    // before anything that consumes it: a unit file deployed
+                    // through `files:` has to exist before `systemctl enable`
+                    // names it.
+                    PhaseName::Files => std::mem::take(&mut file_actions)
+                        .into_iter()
+                        .map(Action::File)
+                        .collect(),
+                    PhaseName::System => std::mem::take(&mut system_actions),
+                    PhaseName::Secrets => std::mem::take(&mut secret_actions),
+                    PhaseName::PostScripts => std::mem::take(&mut post_script_actions),
+                };
+                (name, actions)
+            })
+            .collect();
 
         for (phase_name, action) in module_routed {
             if let Some((_, bucket)) = buckets.iter_mut().find(|(n, _)| *n == phase_name) {

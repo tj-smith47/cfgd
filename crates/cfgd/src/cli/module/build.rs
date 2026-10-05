@@ -39,7 +39,7 @@ pub fn cmd_module_build(
         .unwrap_or_else(|| vec![default_platform.as_str()]);
 
     let mut output_artifacts: Vec<String> = Vec::new();
-    let mut digest_value: Option<String> = None;
+    let mut pushed: Option<Pushed> = None;
 
     // ONE section, named for the command, holding everything the run produced:
     // what is being built, each build's verdict, the push, the digest and the
@@ -79,7 +79,7 @@ pub fn cmd_module_build(
             output_artifacts.push(cfgd_core::to_posix_string(&output_dir));
 
             if let Some(art) = artifact {
-                let cfgd_core::oci::PushOutcome { digest, .. } =
+                let outcome =
                     cfgd_core::oci::push_module(&output_dir, art, Some(targets[0]), Some(printer))
                         .map_err(|e| {
                             crate::cli::cli_error(
@@ -89,18 +89,23 @@ pub fn cmd_module_build(
                                 serde_json::json!({ "artifact": art, "target": targets[0] }),
                             )
                         })?;
-                if sign {
-                    cfgd_core::oci::sign_artifact(art, key).map_err(|e| {
-                        crate::cli::cli_error(
-                            art,
-                            "sign_failed",
-                            cfgd_core::output::collapse_to_subject_line(&e),
-                            serde_json::json!({ "artifact": art }),
-                        )
-                    })?;
-                    printer.status_simple(Role::Ok, "Signed artifact with cosign");
-                }
-                digest_value = Some(digest);
+                crate::cli::helpers::sign_and_attest(
+                    printer,
+                    art,
+                    &outcome.written_digests(),
+                    key,
+                    sign,
+                    false,
+                )?;
+                let cfgd_core::oci::PushOutcome {
+                    digest,
+                    index_digest,
+                    ..
+                } = outcome;
+                pushed = Some(Pushed::Platform {
+                    digest,
+                    index_digest,
+                });
             }
         } else {
             let mut builds: Vec<(std::path::PathBuf, String)> = Vec::new();
@@ -141,7 +146,7 @@ pub fn cmd_module_build(
                     .iter()
                     .map(|(dir, plat)| (dir.as_path(), plat.as_str()))
                     .collect();
-                let digest =
+                let outcome =
                     cfgd_core::oci::push_module_multiplatform(&build_refs, art, Some(printer))
                         .map_err(|e| {
                             crate::cli::cli_error(
@@ -151,18 +156,15 @@ pub fn cmd_module_build(
                                 serde_json::json!({ "artifact": art, "targets": &targets }),
                             )
                         })?;
-                if sign {
-                    cfgd_core::oci::sign_artifact(art, key).map_err(|e| {
-                        crate::cli::cli_error(
-                            art,
-                            "sign_failed",
-                            cfgd_core::output::collapse_to_subject_line(&e),
-                            serde_json::json!({ "artifact": art }),
-                        )
-                    })?;
-                    printer.status_simple(Role::Ok, "Signed artifact with cosign");
-                }
-                digest_value = Some(digest);
+                crate::cli::helpers::sign_and_attest(
+                    printer,
+                    art,
+                    &outcome.written_digests(),
+                    key,
+                    sign,
+                    false,
+                )?;
+                pushed = Some(Pushed::Index(outcome.index_digest));
             }
         }
     }
@@ -178,43 +180,57 @@ pub fn cmd_module_build(
         None => super::Mutation::ModuleBuilt { output: built },
     });
 
-    let mut payload = serde_json::Map::new();
-    payload.insert("dir".into(), serde_json::Value::String(dir.to_string()));
-    payload.insert(
-        "targets".into(),
-        serde_json::Value::Array(
-            targets
-                .iter()
-                .map(|t| serde_json::Value::String((*t).to_string()))
-                .collect(),
-        ),
-    );
-    payload.insert(
-        "outputArtifacts".into(),
-        serde_json::Value::Array(
-            output_artifacts
-                .iter()
-                .map(|p| serde_json::Value::String(p.clone()))
-                .collect(),
-        ),
-    );
-    if let Some(art) = artifact {
-        payload.insert(
-            "artifact".into(),
-            serde_json::Value::String(art.to_string()),
-        );
-    }
-    if let Some(d) = digest_value {
-        payload.insert("digest".into(), serde_json::Value::String(d));
-    }
-    payload.insert("signed".into(), serde_json::Value::Bool(sign));
-    printer.emit(
-        Doc::new()
-            .hint(next_step)
-            .with_data(serde_json::Value::Object(payload)),
-    );
+    let payload = build_payload(dir, &targets, &output_artifacts, artifact, pushed, sign);
+    printer.emit(Doc::new().hint(next_step).with_data(payload));
 
     Ok(())
+}
+
+/// What a `module build --push` wrote at the tag.
+enum Pushed {
+    /// One platform's manifest, and the index the tag names when the push
+    /// joined it to platforms already there.
+    Platform {
+        digest: String,
+        index_digest: Option<String>,
+    },
+    /// A multi-platform build's index.
+    Index(String),
+}
+
+/// The `-o json` payload of `module build`. A push reports `digest` and
+/// `indexDigest`: a multi-platform build's push is an index, so both name it;
+/// a single-target push writes an index only when the tag already listed
+/// another platform.
+fn build_payload(
+    dir: &str,
+    targets: &[&str],
+    output_artifacts: &[String],
+    artifact: Option<&str>,
+    pushed: Option<Pushed>,
+    signed: bool,
+) -> serde_json::Value {
+    let mut payload = serde_json::Map::new();
+    payload.insert("dir".into(), dir.into());
+    payload.insert("targets".into(), targets.into());
+    payload.insert("outputArtifacts".into(), output_artifacts.into());
+    payload.insert("signed".into(), signed.into());
+    if let Some(art) = artifact {
+        payload.insert("artifact".into(), art.into());
+    }
+    let digests = match pushed {
+        Some(Pushed::Platform {
+            digest,
+            index_digest,
+        }) => Some((digest, index_digest)),
+        Some(Pushed::Index(digest)) => Some((digest.clone(), Some(digest))),
+        None => None,
+    };
+    if let Some((digest, index_digest)) = digests {
+        payload.insert("digest".into(), digest.into());
+        payload.insert("indexDigest".into(), index_digest.into());
+    }
+    payload.into()
 }
 
 #[cfg(test)]
@@ -439,6 +455,9 @@ mod tests {
         use cfgd_core::test_helpers::CosignTestShim;
         use serial_test::serial;
 
+        #[cfg(unix)]
+        use crate::cli::module::push_pull::tests::{ManifestPuts, mock_push_registry_holding};
+
         #[test]
         #[serial]
         fn sign_fails_when_cosign_exits_nonzero_returns_sign_failed_error_meta() {
@@ -479,6 +498,120 @@ mod tests {
                 "error must be build_failed or sign_failed: {}",
                 meta.error_kind
             );
+        }
+
+        /// Build `targets` through a stand-in container runtime and push the
+        /// result with `--sign` to a mock registry whose tag holds `tag`,
+        /// answering the cosign argv (one line per call) and the registry.
+        // Unix-only: the stand-in runtime is a `/bin/sh` script.
+        #[cfg(unix)]
+        fn cosign_argv_after_signed_build(
+            targets: &str,
+            tag: Option<&serde_json::Value>,
+        ) -> (String, String, ManifestPuts) {
+            use std::os::unix::fs::PermissionsExt;
+
+            let dir = tempfile::tempdir().unwrap();
+            write_module_yaml(dir.path());
+            // `docker cp <container>:/build/. <out>` is the step that leaves the
+            // built module where `push_module` reads it; every other verb only
+            // has to succeed.
+            let runtime = dir.path().join("docker");
+            std::fs::write(
+                &runtime,
+                format!(
+                    "#!/bin/sh\nfor last; do :; done\n\
+                     if [ \"$1\" = cp ]; then cp '{}' \"$last/module.yaml\"; fi\nexit 0\n",
+                    dir.path().join("module.yaml").display()
+                ),
+            )
+            .unwrap();
+            std::fs::set_permissions(&runtime, std::fs::Permissions::from_mode(0o755)).unwrap();
+            let _runtime = cfgd_core::test_helpers::EnvVarGuard::set(
+                "CFGD_DOCKER_BIN",
+                runtime.to_str().unwrap(),
+            );
+            let shim = CosignTestShim::builder()
+                .with_argv_logging(true)
+                .with_exit(0)
+                .install();
+            let (_server, registry, puts) = mock_push_registry_holding(tag);
+
+            let (printer, _cap) = cfgd_core::output::Printer::for_test_doc();
+            cmd_module_build(
+                &printer,
+                dir.path().to_str().unwrap(),
+                Some(targets),
+                None,
+                Some(&format!("{registry}/test/mod:v1")),
+                true,
+                None,
+            )
+            .expect("signed build and push must succeed");
+            (shim.argv_log(), registry, puts)
+        }
+
+        /// `cosign sign` ran once per subject, in order.
+        #[cfg(unix)]
+        fn assert_signed(argv: &str, subjects: &[String]) {
+            let signs: Vec<&str> = argv.lines().filter(|l| l.starts_with("sign ")).collect();
+            assert_eq!(signs.len(), subjects.len(), "{argv}");
+            for (sign, subject) in signs.iter().zip(subjects) {
+                assert!(
+                    sign.ends_with(subject.as_str()),
+                    "a signature names {subject}: {argv}"
+                );
+            }
+        }
+
+        /// `artifact` pinned to the digest of the manifest the build put at `tag`.
+        #[cfg(unix)]
+        fn subject(registry: &str, puts: &ManifestPuts, tag: &str) -> String {
+            format!("{registry}/test/mod@{}", puts.at(tag))
+        }
+
+        #[cfg(unix)]
+        #[test]
+        #[serial]
+        fn build_sign_of_one_target_signs_the_manifest_it_pushed() {
+            let (argv, registry, puts) = cosign_argv_after_signed_build("linux/amd64", None);
+            assert_signed(&argv, &[subject(&registry, &puts, "v1-linux-amd64")]);
+        }
+
+        #[cfg(unix)]
+        #[test]
+        #[serial]
+        fn build_sign_of_one_target_joining_an_index_signs_the_index_and_the_manifest() {
+            let (argv, registry, puts) = cosign_argv_after_signed_build(
+                "linux/amd64",
+                Some(&serde_json::json!({
+                    "schemaVersion": 2,
+                    "mediaType": "application/vnd.oci.image.manifest.v1+json",
+                    "annotations": { cfgd_core::OCI_ANNOTATION_PLATFORM: "linux/arm64" },
+                })),
+            );
+            assert_signed(
+                &argv,
+                &[
+                    subject(&registry, &puts, "v1"),
+                    subject(&registry, &puts, "v1-linux-amd64"),
+                ],
+            );
+        }
+
+        #[cfg(unix)]
+        #[test]
+        #[serial]
+        fn build_sign_of_several_targets_signs_the_index_and_each_manifest() {
+            let (argv, registry, puts) =
+                cosign_argv_after_signed_build("linux/amd64,linux/arm64", None);
+            let subjects = [
+                subject(&registry, &puts, "v1"),
+                subject(&registry, &puts, "v1-linux-amd64"),
+                subject(&registry, &puts, "v1-linux-arm64"),
+            ];
+            assert_ne!(subjects[1], subjects[2], "the two manifests differ");
+            assert_signed(&argv, &subjects);
         }
     }
 
@@ -694,6 +827,55 @@ mod tests {
         assert!(
             err.to_string().contains("does not contain a module.yaml"),
             "expected module-yaml-missing error: {err}"
+        );
+    }
+
+    fn payload(pushed: Option<Pushed>) -> serde_json::Value {
+        build_payload(
+            "mod",
+            &["linux/amd64"],
+            &["out".to_string()],
+            Some("reg/mod:v1"),
+            pushed,
+            false,
+        )
+    }
+
+    #[test]
+    fn build_payload_of_a_push_joined_to_an_index_names_both_digests() {
+        let doc = payload(Some(Pushed::Platform {
+            digest: "sha256:a1".to_string(),
+            index_digest: Some("sha256:1d".to_string()),
+        }));
+        assert_eq!(doc["digest"], "sha256:a1");
+        assert_eq!(doc["indexDigest"], "sha256:1d");
+    }
+
+    #[test]
+    fn build_payload_of_a_push_that_wrote_no_index_has_a_null_index_digest() {
+        let doc = payload(Some(Pushed::Platform {
+            digest: "sha256:a1".to_string(),
+            index_digest: None,
+        }));
+        assert_eq!(doc["digest"], "sha256:a1");
+        assert_eq!(doc.get("indexDigest"), Some(&serde_json::Value::Null));
+    }
+
+    #[test]
+    fn build_payload_of_a_multi_platform_push_names_the_index_twice() {
+        let doc = payload(Some(Pushed::Index("sha256:1d".to_string())));
+        assert_eq!(doc["digest"], "sha256:1d");
+        assert_eq!(doc["indexDigest"], "sha256:1d");
+    }
+
+    #[test]
+    fn build_payload_without_a_push_carries_no_digests() {
+        let doc = build_payload("mod", &[], &[], None, None, false);
+        assert!(
+            doc.get("digest").is_none()
+                && doc.get("indexDigest").is_none()
+                && doc.get("artifact").is_none(),
+            "{doc}"
         );
     }
 }

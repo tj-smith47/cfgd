@@ -657,6 +657,50 @@ fn build_patches_multiple_containers() {
     assert!(patch_json.contains("/spec/containers/1/volumeMounts/-"));
 }
 
+/// The `driver` the injected CSI volume names, with `CSI_DRIVER_NAME` set to `value`.
+fn injected_driver_with_env(value: Option<&str>) -> String {
+    let pod = serde_json::json!({
+        "spec": {"containers": [{"name": "app", "image": "busybox"}]}
+    });
+    let modules = vec![(
+        "nettools".to_string(),
+        "1.0".to_string(),
+        ModuleSpec {
+            oci_artifact: Some("ghcr.io/org/nettools:1.0".to_string()),
+            ..Default::default()
+        },
+    )];
+    let mut driver = String::new();
+    cfgd_core::test_helpers::with_test_env_var("CSI_DRIVER_NAME", value, || {
+        let (patches, _skipped) = build_injection_patches(&pod, &modules);
+        let patches = serde_json::to_value(&patches).unwrap();
+        let drivers: Vec<&str> = patches
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|p| p.pointer("/value/csi/driver").and_then(|d| d.as_str()))
+            .collect();
+        assert_eq!(drivers.len(), 1, "one CSI volume expected: {patches}");
+        driver = drivers[0].to_string();
+    });
+    driver
+}
+
+#[test]
+#[serial_test::serial]
+fn build_patches_injects_default_csi_driver_name() {
+    assert_eq!(injected_driver_with_env(None), "csi.cfgd.io");
+}
+
+#[test]
+#[serial_test::serial]
+fn build_patches_injects_csi_driver_name_from_env() {
+    assert_eq!(
+        injected_driver_with_env(Some("e2e.csi.cfgd.io")),
+        "e2e.csi.cfgd.io"
+    );
+}
+
 #[test]
 fn build_patches_debug_module_volume_only() {
     let pod = serde_json::json!({
@@ -2261,17 +2305,21 @@ fn the_platform_skip_outranks_a_debug_mount_policy() {
 /// as likely to appear in a controller as in this file.
 #[test]
 fn the_env_gate_and_the_module_gate_share_one_predicate() {
-    let src = include_str!("mod.rs");
+    // unfloored-slice-ok: the whole of this one module is the subject
+    let src = cfgd_core::test_helpers::walked_file_body(
+        &cfgd_core::test_helpers::workspace_root().join("crates/cfgd-operator/src/webhook/mod.rs"),
+    );
     let root = cfgd_core::test_helpers::workspace_root().join("crates/cfgd-operator/src");
     let mut files_walked = 0usize;
     let mut tag_sites: Vec<String> = Vec::new();
     for path in cfgd_core::test_helpers::rust_sources_under(&root) {
-        // Test scaffolding carries no `#[cfg(test)]` of its own for the slice
-        // to cut at, so it is named out here instead. `test_helpers.rs` is
-        // named out for the other reason: it ships as production and holds an
-        // inline test module the slice would cut at.
-        let name = path.file_name().unwrap_or_default().to_string_lossy();
-        if name == "test_helpers.rs" || name.starts_with("tests") {
+        // Test scaffolding carries no `#[cfg(test)]` of its own for the slice to cut at, so it
+        // is named out here instead. A file built only for tests (`is_test_only_file`) is named
+        // out as well: no shipped binary compiles it, and cfgd-core's `test_helpers.rs` holds
+        // an inline test module the slice would cut at, leaving a fraction of the file behind.
+        if cfgd_core::test_helpers::is_test_only_file(&path)
+            || cfgd_core::test_helpers::is_test_source(&path)
+        {
             continue;
         }
         let production = cfgd_core::test_helpers::production_slice_of(&path);
@@ -2282,7 +2330,7 @@ fn the_env_gate_and_the_module_gate_share_one_predicate() {
             if line.contains("\"linux\"") && !line.contains("target_os") {
                 tag_sites.push(format!(
                     "{}:{}",
-                    path.strip_prefix(&root).unwrap_or(&path).display(),
+                    cfgd_core::to_posix_string(path.strip_prefix(&root).unwrap_or(&path)),
                     n + 1
                 ));
             }

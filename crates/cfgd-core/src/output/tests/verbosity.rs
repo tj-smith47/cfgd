@@ -77,14 +77,19 @@ golden_at!(verbosity, status_fail_verbose, Verbosity::Verbose, |p| {
     p.status_simple(Role::Fail, "boom");
 });
 
-// Hint × verbosity (shown at Normal+, suppressed at Quiet)
+// Hint × verbosity (shown at Normal+, suppressed at Quiet). Hints are off by
+// default, as a cfgd run renders them, so each of these asks for one: the
+// subject here is the VERBOSITY gate, which has to be reachable.
 golden_at!(verbosity, hint_quiet, Verbosity::Quiet, |p| {
+    p.renderer.set_hints_enabled(true);
     p.hint("h");
 });
 golden_at!(verbosity, hint_normal, Verbosity::Normal, |p| {
+    p.renderer.set_hints_enabled(true);
     p.hint("h");
 });
 golden_at!(verbosity, hint_verbose, Verbosity::Verbose, |p| {
+    p.renderer.set_hints_enabled(true);
     p.hint("h");
 });
 

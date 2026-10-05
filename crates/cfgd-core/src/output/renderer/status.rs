@@ -521,25 +521,6 @@ impl Renderer {
         padded_for_column(w.wrap_columns(), depth, f, column)
     }
 
-    /// Emit a Status line with no group bookkeeping: the live-column route
-    /// reaches the same shape through [`Emitting::route_status`]. Inside a
-    /// section, where `open_top_group` / `mark_top_level_group` are no-ops.
-    pub(crate) fn render_status_immediate(
-        &self,
-        w: &dyn Writer,
-        depth: usize,
-        f: &StatusFields<'_>,
-    ) {
-        if self.verbosity == Verbosity::Quiet && f.role != Role::Fail {
-            return;
-        }
-        self.emit_with(w, |e| {
-            e.flush_section_headers();
-            e.drain_buffers();
-            e.emit_status_line(depth, f, 0);
-        });
-    }
-
     /// [`compose_status_split`] against this renderer's theme — the form
     /// `live_row.rs` reaches, so a repainted row and the permanent line that
     /// replaces it lay their duration out through one composition.
@@ -893,12 +874,12 @@ mod tests {
 
     #[test]
     fn an_elapsed_time_never_occupies_its_own_line() {
-        // render_status_immediate makes its one push_line_with_trailer call
-        // for the subject and its duration together — there is no second
+        // A status outside any section makes its one push_line_undrained
+        // call for the subject and its duration together — there is no second
         // push for the "(Ns)" suffix. A duration stranded on a line of its
         // own would read as disconnected from whatever it timed.
         let (r, sink, buf) = capture();
-        r.render_status_immediate(&sink, 0, &timed("provision brew"));
+        r.render_status(&sink, 0, &timed("provision brew"));
         let out = crate::test_helpers::captured_text(&buf);
         let lines: Vec<&str> = out.lines().filter(|l| !l.trim().is_empty()).collect();
         assert_eq!(
@@ -960,7 +941,7 @@ mod tests {
         // it to the terminal edge instead was the one duration on the page in
         // a column nothing else occupied.
         let (r, sink, buf) = narrow(118);
-        r.render_status_immediate(&sink, 1, &wrapping_row());
+        r.render_status(&sink, 1, &wrapping_row());
         let out = crate::test_helpers::captured_text(&buf);
         let lines = wrapped_lines(&out);
         let last = lines.last().map(String::as_str).unwrap_or("");

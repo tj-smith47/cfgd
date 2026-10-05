@@ -15,7 +15,7 @@
 //! Goldens live under `tests/output_snapshots/source_add/`. Regenerate with:
 //!     INSTA_UPDATE=always cargo test -p cfgd --test source_add_snapshots
 
-mod common;
+use cfgd_test_fixtures as common;
 
 use std::path::Path;
 
@@ -74,7 +74,8 @@ use cfgd_core::output::test_capture::strip_spinner_duration;
 #[test]
 #[serial]
 fn source_add_happy_human() {
-    let _allow = cfgd_core::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+    let _allow =
+        cfgd_core::test_helpers::EnvVarGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
     let (config_dir, state_dir) = source_test_config_setup();
     let bare_root = tempfile::tempdir().unwrap();
     let bare = make_bare_source_repo(bare_root.path(), "team-config", None);
@@ -82,10 +83,11 @@ fn source_add_happy_human() {
 
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc();
+    let printer = printer.with_hints_enabled(true);
     let mut args = source_add_args(url);
     args.name = Some("team-config".into());
 
-    cmd_source_add(&cli, &printer, &args).unwrap();
+    cfgd::cli::RunContext::for_test(&cli, &printer, |run| cmd_source_add(run, &args)).unwrap();
     drop(printer);
 
     let stripped = normalize_paths(
@@ -101,7 +103,8 @@ fn source_add_happy_human() {
 #[test]
 #[serial]
 fn source_add_happy_json() {
-    let _allow = cfgd_core::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+    let _allow =
+        cfgd_core::test_helpers::EnvVarGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
     let (config_dir, state_dir) = source_test_config_setup();
     let bare_root = tempfile::tempdir().unwrap();
     let bare = make_bare_source_repo(bare_root.path(), "team-config", None);
@@ -112,7 +115,7 @@ fn source_add_happy_json() {
     let mut args = source_add_args(url);
     args.name = Some("team-config".into());
 
-    cmd_source_add(&cli, &printer, &args).unwrap();
+    cfgd::cli::RunContext::for_test(&cli, &printer, |run| cmd_source_add(run, &args)).unwrap();
     drop(printer);
 
     let json = cap.json().expect("doc captured json");
@@ -123,7 +126,8 @@ fn source_add_happy_json() {
 #[test]
 #[serial]
 fn source_add_already_exists_human() {
-    let _allow = cfgd_core::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+    let _allow =
+        cfgd_core::test_helpers::EnvVarGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
     let (config_dir, state_dir) = source_test_config_with_source_setup(
         "team-config",
         "https://github.com/team/config",
@@ -135,7 +139,8 @@ fn source_add_already_exists_human() {
     let mut args = source_add_args("https://github.com/team/config");
     args.name = Some("team-config".into());
 
-    let err = cmd_source_add(&cli, &printer, &args).expect_err("duplicate source must return Err");
+    let err = cfgd::cli::RunContext::for_test(&cli, &printer, |run| cmd_source_add(run, &args))
+        .expect_err("duplicate source must return Err");
     render_cli_error(&printer, &err);
     drop(printer);
 
@@ -159,7 +164,8 @@ fn source_add_clone_failure_human() {
     // Point cmd_source_add at a non-existent bare repo. SourceManager::load_source
     // fails (git can't open the URL), and cmd_source_add bails after emitting
     // the `load_failed` Doc.
-    let _allow = cfgd_core::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+    let _allow =
+        cfgd_core::test_helpers::EnvVarGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
     let (config_dir, state_dir) = source_test_config_setup();
     let bogus_root = tempfile::tempdir().unwrap();
     let bogus = bogus_root.path().join("nonexistent-bare.git");
@@ -170,8 +176,8 @@ fn source_add_clone_failure_human() {
     let mut args = source_add_args(url);
     args.name = Some("doomed-src".into());
 
-    let err =
-        cmd_source_add(&cli, &printer, &args).expect_err("cmd_source_add must fail on bogus URL");
+    let err = cfgd::cli::RunContext::for_test(&cli, &printer, |run| cmd_source_add(run, &args))
+        .expect_err("cmd_source_add must fail on bogus URL");
     render_cli_error(&printer, &err);
     drop(printer);
 
@@ -203,7 +209,8 @@ fn source_add_bridge_one_blank_line() {
     // has exactly one blank line. Hand-rolled because the Printer captures all
     // human-surface output via the test capture; only that captured surface
     // captured surface here.
-    let _allow = cfgd_core::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+    let _allow =
+        cfgd_core::test_helpers::EnvVarGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
     let (config_dir, state_dir) = source_test_config_setup();
     let bare_root = tempfile::tempdir().unwrap();
     let bare = make_bare_source_repo(bare_root.path(), "bridge-src", None);
@@ -211,10 +218,11 @@ fn source_add_bridge_one_blank_line() {
 
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc();
+    let printer = printer.with_hints_enabled(true);
     let mut args = source_add_args(url);
     args.name = Some("bridge-src".into());
 
-    cmd_source_add(&cli, &printer, &args).unwrap();
+    cfgd::cli::RunContext::for_test(&cli, &printer, |run| cmd_source_add(run, &args)).unwrap();
     drop(printer);
 
     let combined = cap.human();

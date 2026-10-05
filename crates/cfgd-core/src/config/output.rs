@@ -14,7 +14,7 @@ use super::theme::ThemeConfig;
 /// ```
 ///
 /// Each key has a per-invocation override (`--theme` / `CFGD_THEME`,
-/// `--no-hints` / `CFGD_USAGE_HINTS`, `--mask-env-values` /
+/// `--hints` / `--no-hints` / `CFGD_USAGE_HINTS`, `--mask-env-values` /
 /// `CFGD_MASK_ENV_VALUES`) that outranks what is stored here.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -27,7 +27,8 @@ pub struct OutputConfig {
     #[serde(default)]
     pub theme: Option<ThemeConfig>,
 
-    /// Whether closing `→` usage hints render. Omitted, hints render.
+    /// Whether closing `→` usage hints render. Omitted, they do not; a
+    /// refusal's remediation and a run's own instructions render either way.
     #[serde(default)]
     pub usage_hints: Option<bool>,
 
@@ -35,6 +36,31 @@ pub struct OutputConfig {
     /// every value is masked.
     #[serde(default)]
     pub mask_env_values: Option<MaskEnvValues>,
+}
+
+impl OutputConfig {
+    /// The theme block cfgd renders with: the declared block, or the
+    /// `default` preset with no overrides where the document omits it.
+    #[must_use]
+    pub fn theme_effective(&self) -> &ThemeConfig {
+        static OMITTED: std::sync::LazyLock<ThemeConfig> =
+            std::sync::LazyLock::new(ThemeConfig::default);
+        self.theme.as_ref().unwrap_or(&OMITTED)
+    }
+
+    /// Whether closing `→` usage hints render: the declared value, or `false`
+    /// where the document omits it.
+    #[must_use]
+    pub fn usage_hints_effective(&self) -> bool {
+        self.usage_hints.unwrap_or_default()
+    }
+
+    /// Which declared env values cfgd masks: the declared value, or
+    /// [`MaskEnvValues::All`] where the document omits it.
+    #[must_use]
+    pub fn mask_env_values_effective(&self) -> MaskEnvValues {
+        self.mask_env_values.unwrap_or_default()
+    }
 }
 
 /// Which declared env values cfgd masks on the surfaces that render one

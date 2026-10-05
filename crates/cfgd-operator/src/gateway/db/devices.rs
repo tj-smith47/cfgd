@@ -5,14 +5,29 @@ use super::types::{Device, DeviceStatus};
 use super::{acquire_reader, acquire_writer, spawn_blocking_db};
 use crate::gateway::errors::GatewayError;
 
+/// Parse a stored JSON column. A row that does not parse (one written by an
+/// older gateway in a shape this one no longer reads) reads as absent, and the
+/// warning says so: otherwise the device would show "not reported" with
+/// nothing in the log explaining the report it did send.
+fn stored_json<T: serde::de::DeserializeOwned>(
+    device: &str,
+    column: &str,
+    raw: Option<String>,
+) -> Option<T> {
+    serde_json::from_str(&raw?)
+        .inspect_err(|e| {
+            tracing::warn!(device, column, error = %e, "gateway: a stored device column could not be read; it reads as absent");
+        })
+        .ok()
+}
+
 fn map_device_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Device> {
-    let config_str: Option<String> = row.get(7)?;
-    let desired_config = config_str.and_then(|s| serde_json::from_str(&s).ok());
-    let compliance_str: Option<String> = row.get(8)?;
-    let compliance_summary = compliance_str.and_then(|s| serde_json::from_str(&s).ok());
+    let id: String = row.get(0)?;
+    let desired_config = stored_json(&id, "desired_config", row.get(7)?);
+    let compliance_summary = stored_json(&id, "compliance_summary", row.get(8)?);
     let status_str: String = row.get(6)?;
     Ok(Device {
-        id: row.get(0)?,
+        id,
         hostname: row.get(1)?,
         os: row.get(2)?,
         arch: row.get(3)?,
@@ -33,7 +48,7 @@ pub fn register_device_tx(
     os: &str,
     arch: &str,
     config_hash: &str,
-    compliance_summary: Option<&serde_json::Value>,
+    compliance_summary: Option<&crate::crds::DeviceCompliance>,
 ) -> Result<Device, GatewayError> {
     let now = cfgd_core::utc_now_iso8601();
     let compliance_str = compliance_summary
@@ -50,7 +65,7 @@ pub fn register_device_tx(
             last_checkin = excluded.last_checkin,
             config_hash = excluded.config_hash,
             status = excluded.status,
-            compliance_summary = excluded.compliance_summary",
+            compliance_summary = COALESCE(excluded.compliance_summary, devices.compliance_summary)",
     )?;
     stmt.execute(params![
         id,
@@ -69,7 +84,7 @@ pub fn update_checkin_tx(
     conn: &Connection,
     id: &str,
     config_hash: &str,
-    compliance_summary: Option<&serde_json::Value>,
+    compliance_summary: Option<&crate::crds::DeviceCompliance>,
 ) -> Result<(), GatewayError> {
     let now = cfgd_core::utc_now_iso8601();
     let compliance_str = compliance_summary
@@ -77,7 +92,7 @@ pub fn update_checkin_tx(
         .transpose()
         .map_err(|e| GatewayError::Internal(format!("failed to serialize compliance: {e}")))?;
     let mut stmt = conn.prepare_cached(
-        "UPDATE devices SET last_checkin = ?1, config_hash = ?2, status = ?3, compliance_summary = ?4 WHERE id = ?5",
+        "UPDATE devices SET last_checkin = ?1, config_hash = ?2, status = ?3, compliance_summary = COALESCE(?4, compliance_summary) WHERE id = ?5",
     )?;
     let rows = stmt.execute(params![
         &now,
@@ -227,7 +242,7 @@ impl ServerDb {
         os: &str,
         arch: &str,
         config_hash: &str,
-        compliance_summary: Option<&serde_json::Value>,
+        compliance_summary: Option<&crate::crds::DeviceCompliance>,
     ) -> Result<Device, GatewayError> {
         let writer = self.writer.clone();
         let metrics = self.metrics.clone();
@@ -256,7 +271,7 @@ impl ServerDb {
         &self,
         id: &str,
         config_hash: &str,
-        compliance_summary: Option<&serde_json::Value>,
+        compliance_summary: Option<&crate::crds::DeviceCompliance>,
     ) -> Result<(), GatewayError> {
         let writer = self.writer.clone();
         let metrics = self.metrics.clone();

@@ -43,7 +43,8 @@ fn accent_emits_truecolor_sgr_per_preset() {
         ("gruvbox-dark", (0xfe, 0x80, 0x19)),     // #fe8019
         ("tokyo-night", (0xff, 0x9e, 0x64)),      // #ff9e64
         ("one-dark", (0xd1, 0x9a, 0x66)),         // #d19a66
-                                                  // minimal has no hex — uses italic only. Verified separately.
+                                                  // minimal has no hex — uses italic only. Verified
+                                                  // separately.
     ];
     let _no_color = EnvVarGuard::unset("NO_COLOR");
     let _term = EnvVarGuard::set("COLORTERM", "truecolor");

@@ -2,7 +2,7 @@ use super::*;
 use crate::cli::output_types::SourcePolicyOutput;
 use cfgd_core::PathDisplayExt;
 use cfgd_core::config::{ConfigSourceDocument, PolicyItems, SourceConstraints, SourceSpec};
-use cfgd_core::output::{Doc, KvPair, Printer, Role, doc::SectionBuilder};
+use cfgd_core::output::{Doc, KvPair, Role, doc::SectionBuilder};
 
 /// Build the not-found error returned by `cmd_source_show`. The central error
 /// sink (`main.rs::render_cli_error`) renders the structured `{error, name,
@@ -56,13 +56,11 @@ pub fn build_source_show_doc(
             "Show",
             cfgd_core::output::OwnerLabel::new("source", &output.name),
         )
-        // A local source's URL is a directory: folded like every display
-        // slot, the payload keeping the absolute path.
+        // A bare local path folds under $HOME like any display path; a URL
+        // (file:// included) renders as stored, since a fold inside its
+        // scheme is a string no tool resolves back into a path.
         // acronym-ok: URL is an acronym, which Title Case keeps capitalized.
-        .kv(
-            "URL",
-            cfgd_core::fold_home_in_text(&cfgd_core::display_url(&output.url)),
-        )
+        .kv("URL", cfgd_core::display_source_origin(&output.url))
         .kv("Branch", &output.branch)
         .kv("Priority", output.priority.to_string())
         .kv(
@@ -418,14 +416,13 @@ fn append_policy_items(mut s: SectionBuilder, items: &PolicyItems) -> SectionBui
 }
 
 pub fn cmd_source_show(
-    cli: &Cli,
-    printer: &Printer,
+    run: &RunContext<'_>,
     name: &str,
     detail: crate::cli::InventoryDetail<'_>,
 ) -> anyhow::Result<()> {
-    let config_path = cli.config.clone();
-    let mut cfg = config::load_config(&config_path)?;
-    drain_config_deprecations(printer, &mut cfg);
+    let cli = run.cli();
+    let printer = run.printer();
+    let cfg = run.config()?;
 
     let source_spec = match cfg.spec.sources.iter().find(|s| s.name == name) {
         Some(spec) => spec,
@@ -450,7 +447,7 @@ pub fn cmd_source_show(
         manifest: None,
     };
 
-    let allow_unsigned = cfg.spec.security.as_ref().is_some_and(|s| s.allow_unsigned);
+    let allow_unsigned = cfg.spec.security_effective().allow_unsigned;
     let cache_dir = source_cache_dir(cli)?;
     let mut mgr = SourceManager::new(&cache_dir);
     mgr.set_allow_unsigned(allow_unsigned);
@@ -506,6 +503,47 @@ pub fn cmd_source_show(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use cfgd_core::output::Printer;
+
+    fn source_show_output(url: String) -> crate::cli::output_types::SourceShowOutput {
+        crate::cli::output_types::SourceShowOutput {
+            name: "acme".into(),
+            url,
+            branch: "main".into(),
+            priority: 100,
+            accept_recommended: false,
+            profile: None,
+            sync_interval: "5m".into(),
+            auto_apply: false,
+            pin_version: None,
+            modules: Vec::new(),
+            policy: None,
+            manifest: None,
+        }
+    }
+
+    #[test]
+    fn local_source_url_folds_home_on_the_path_not_the_file_scheme() {
+        let home = tempfile::tempdir().unwrap();
+        cfgd_core::with_test_home(home.path(), || {
+            let local = home.path().join("s7-source-a");
+            let url = cfgd_core::to_file_url(&local);
+            let output = source_show_output(url.clone());
+            let doc =
+                build_source_show_doc(&output, None, None, crate::cli::InventoryDetail::default());
+            let (printer, cap) = Printer::for_test_doc();
+            printer.emit(doc);
+            let rendered = cap.human();
+            assert!(
+                rendered.contains(&url),
+                "expected the folded scheme to keep a resolvable file:// URL, got: {rendered}"
+            );
+            assert!(
+                !rendered.contains("file://~"),
+                "home fold must not run inside the file:// authority, got: {rendered}"
+            );
+        });
+    }
 
     fn source_spec(allow_scripts: bool, require_signed_commits: bool) -> SourceSpec {
         let mut spec: SourceSpec = serde_yaml::from_str(

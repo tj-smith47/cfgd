@@ -50,22 +50,13 @@ pub(crate) fn available_width(sink: &dyn Writer, depth: usize) -> usize {
 ///
 /// The ONE formula shared by the group alignment column
 /// (`status.rs`'s `group_column`, via its `wrap_budget`) and the live repaint
-/// clamp (`line_width`, below). A group's padded subject reaches at most this
+/// clamp (`live_row.rs`). A group's padded subject reaches at most this
 /// budget, so a clamp read from any tighter formula — `available_width`'s,
 /// say, which is two columns narrower because it measures the room left AFTER
 /// the glyph — amputates the tail of the duration the padding just
 /// right-aligned.
 pub(crate) fn line_budget(cols: usize, depth: usize) -> usize {
     cols.saturating_sub(depth * 2)
-}
-
-/// `line_budget` against the sink a live repaint is drawn to, with the same
-/// fallback and floor `available_width` applies. This is the clamp for a
-/// complete composed line that must stay one physical line — a live row's own
-/// repaint — not for a wrapped body, which keeps `available_width`.
-pub(crate) fn line_width(sink: &dyn Writer, depth: usize) -> usize {
-    let cols = sink.wrap_columns().unwrap_or(FALLBACK_WIDTH);
-    line_budget(cols, depth).max(MIN_WRAP_WIDTH)
 }
 
 /// Display width of `s` in terminal columns, ignoring characters that occupy
@@ -133,8 +124,8 @@ pub(crate) fn clamp_at_token(text: &str, max: usize) -> String {
 
 /// Display width of the line's marker column — a leading one-column glyph
 /// (`✓`, `◉`, `-`, …) plus the space after it. Zero when the line does not
-/// open with one, so a plain sentence wraps flush rather than hanging off its
-/// own first word.
+/// open with one, so the continuation rows of a plain sentence start flush at
+/// column zero.
 fn marker_width(visible: &str) -> usize {
     let Some(first) = visible.split(' ').next() else {
         return 0;
@@ -744,7 +735,7 @@ mod tests {
     fn a_wrapped_row_in_a_group_with_a_column_pads_its_last_line_to_that_column() {
         // The group settled a column past where this row's last line ends, so
         // the trailer opens exactly there — where every sibling's trailing
-        // content opens — and not at `cols`.
+        // content opens. `cols` is a different column.
         let (_, unpadded_width) = wrapped_rows(None);
         let column = unpadded_width + 10;
         let (out, last_width) = wrapped_rows(Some(column));

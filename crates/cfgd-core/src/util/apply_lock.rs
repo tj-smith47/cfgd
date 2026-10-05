@@ -12,21 +12,21 @@ const LOCKS_SUBDIR: &str = "locks";
 
 /// Filename of the source-cache mutex inside the sources cache directory.
 ///
-/// Lives beside the per-source checkouts rather than in the state dir because
-/// the cache is what it guards: a cache directory carried to another machine,
+/// Lives beside the per-source checkouts, in the cache directory, because the
+/// cache is what it guards: a cache directory carried to another machine,
 /// or wiped, takes its lock with it. `validate_source_name` rejects this name,
 /// so no source's checkout can ever occupy the path.
 ///
-/// Deliberately NOT `sources.lock`: the SHA lockfile beside the user's config
-/// (`sources/lockfile.rs`) already owns that name, and two unrelated files
-/// sharing it invites the wrong one being inspected or deleted. The cache
+/// The name `sources.lock` is taken: the SHA lockfile beside the user's config
+/// (`sources/lockfile.rs`) owns it, and two unrelated files sharing one name
+/// invite the wrong one being inspected or deleted. The cache
 /// directory the file sits in already says what this lock is for.
 pub const SOURCE_CACHE_LOCK_FILENAME: &str = "cache.lock";
 
 /// High half of the byte offset `LockFileEx` locks, i.e. the lock sits one byte
 /// past 2^63 into the file.
 ///
-/// `LockFileEx` ranges are **mandatory**, not advisory: while one process holds
+/// `LockFileEx` ranges are **mandatory**: while one process holds
 /// a range exclusively, no other process may even READ those bytes. Locking
 /// byte 0 — the obvious choice, and what this did — therefore made the PID
 /// stored in the file unreadable by precisely the caller that needs it, the one
@@ -53,7 +53,7 @@ type LockFile = std::fs::File;
 /// as confidently as a correct answer, which is strictly worse than admitting
 /// the holder is unknown: nothing in the message tells the operator to distrust
 /// it. Requiring the terminator makes the record self-delimiting, so a torn
-/// read is detectable rather than plausible.
+/// read is detectable.
 const PID_RECORD_TERMINATOR: char = '\n';
 
 /// Describe whoever holds `lock_path`, for the error a refused acquire returns.
@@ -97,7 +97,7 @@ impl Drop for FileLockGuard {
         // Clear the PID so stale reads aren't confusing.
         // Lock is released when LockFile is dropped after this.
         //
-        // Through the HELD handle, never through the path. The path can name a
+        // Through the HELD handle. The path can name a
         // different file by now (the lock file removed by a user wiping the
         // cache, and re-created by the next process), and truncating THAT one
         // erases a live holder's record — or, with `fs::write`, plants an
@@ -120,15 +120,15 @@ fn held_file(lock: &LockFile) -> &std::fs::File {
 /// Record this process's PID in the locked file, through the handle that holds
 /// the lock.
 ///
-/// Addressed by handle rather than by path for the reason [`acquire_lock_at`]
-/// re-checks identity at all: a path-addressed write does not inherit the
-/// identity the re-check established, so it can land in a file this process
-/// does not hold. The write goes through a `try_clone` of the held handle (a
-/// second descriptor over the same open file description) rather than through
-/// `Flock`'s own `DerefMut`: a write through the `DerefMut` path was observed
-/// dropped on macOS ARM64, and the dup keeps the write on a plain `File` code
-/// path. Whether that avoids the dropped write there is evidence only the
-/// real-OS runs can give; the exclusion itself is unaffected either way.
+/// Addressed by handle for the reason [`acquire_lock_at`] re-checks identity at
+/// all: a path-addressed write does not inherit the identity the re-check
+/// established, so it can land in a file this process does not hold. The write
+/// goes through a `try_clone` of the held handle (a second descriptor over the
+/// same open file description): a write through `Flock`'s own `DerefMut` was
+/// observed dropped on macOS ARM64, and the dup keeps the write on a plain
+/// `File` code path. Whether that avoids the dropped write there is evidence
+/// only the real-OS runs can give; the exclusion itself is unaffected either
+/// way.
 fn record_pid(lock: &LockFile) -> errors::Result<()> {
     use std::io::{Seek, Write};
     let mut file = held_file(lock).try_clone()?;
@@ -178,8 +178,8 @@ mod blocking_witness {
     }
 
     /// Block until some thread is inside a blocking source-lock acquire.
-    /// `timeout` is a deadlock escape, never a timing assertion: the answer is
-    /// the returned bool, and a caller asserts on that.
+    /// `timeout` is a deadlock escape. The answer is the returned bool, and a
+    /// caller asserts on that.
     pub fn await_blocking_source_acquire(timeout: std::time::Duration) -> bool {
         await_blocking_source_acquires(1, timeout)
     }
@@ -188,8 +188,8 @@ mod blocking_witness {
     ///
     /// The counting form is what lets a test put two contenders in ONE window
     /// before the holder releases: released on the single-waiter signal, the
-    /// second contender may not have reached the acquire yet, and the two run
-    /// one after another instead of racing.
+    /// second contender may not have reached the acquire yet, and the two would
+    /// run one after another with no race between them.
     pub fn await_blocking_source_acquires(wanted: usize, timeout: std::time::Duration) -> bool {
         let (count, signal) = &*GATE;
         let guard = count.lock().unwrap_or_else(PoisonError::into_inner);
@@ -234,12 +234,54 @@ mod stale_injection {
 #[cfg(test)]
 pub use stale_injection::force_stale_lock_rechecks;
 
+/// Fault injection for the lock file's open, so the transient-retry arm runs
+/// on every platform without reproducing a Windows delete-pending window.
+#[cfg(test)]
+mod open_injection {
+    use std::cell::Cell;
+
+    thread_local! {
+        static FORCED: Cell<(usize, std::io::ErrorKind)> =
+            const { Cell::new((0, std::io::ErrorKind::Other)) };
+        static ATTEMPTS: Cell<usize> = const { Cell::new(0) };
+    }
+
+    /// Make the next `count` lock-file opens on THIS thread fail with `kind`
+    /// before they touch the filesystem, and restart the attempt count.
+    pub fn force_open_failures(count: usize, kind: std::io::ErrorKind) {
+        FORCED.with(|forced| forced.set((count, kind)));
+        ATTEMPTS.with(|attempts| attempts.set(0));
+    }
+
+    /// How many attempts THIS thread's transient retries (a lock-file open or
+    /// a retried directory create) have made since the last
+    /// [`force_open_failures`].
+    pub fn retry_attempts() -> usize {
+        ATTEMPTS.with(Cell::get)
+    }
+
+    pub(super) fn count_attempt() {
+        ATTEMPTS.with(|attempts| attempts.set(attempts.get() + 1));
+    }
+
+    pub(super) fn next_open() -> std::io::Result<()> {
+        FORCED.with(|forced| {
+            let (remaining, kind) = forced.get();
+            if remaining == 0 {
+                return Ok(());
+            }
+            forced.set((remaining - 1, kind));
+            Err(std::io::Error::from(kind))
+        })
+    }
+}
+
 /// What a contended acquire does about the holder.
 ///
 /// The machine-wide mutexes ([`acquire_apply_lock`], [`acquire_backup_lock`])
 /// [`Refuse`](LockWait::Refuse), so a scheduled fire colliding with a hand-run
-/// is skipped rather than queued behind it. The source-cache mutex
-/// [`Block`](LockWait::Block)s instead: its critical section is short, both
+/// is skipped. The source-cache mutex [`Block`](LockWait::Block)s: its
+/// critical section is short, both
 /// contenders want the same end state, and refusing would turn a benign
 /// overlap between `cfgd sync` and `cfgd apply` into a failed run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -252,12 +294,19 @@ enum LockWait {
     Block,
 }
 
-/// How many times an acquire re-opens a lock file that vanished, or was
-/// replaced, between the open and the lock.
+/// The attempt budget of each of the two retry loops a lock acquire runs.
+///
+/// The loops are bounded separately. [`acquire_lock_at`] re-opens a lock file
+/// that vanished, or was replaced, between the open and the lock, at most this
+/// many times. Each of those opens runs its own transient retry
+/// ([`retry_transient_open`]) with the same budget. The worst case for one
+/// acquire is therefore this number squared in opens, and about two seconds of
+/// backoff (eight full rounds of [`stale_retry_backoff`]).
 ///
 /// One retry covers the real case: somebody removed the lock file (or the
 /// directory holding it) while a contender was blocked on it. The remaining
-/// attempts exist so a repeating removal ends in an error rather than a spin.
+/// attempts make a repeating removal end in an error after a bounded number of
+/// tries.
 pub(crate) const STALE_LOCK_ATTEMPTS: usize = 8;
 
 /// How long a re-open waits before its next attempt: doubles from a few
@@ -267,8 +316,8 @@ pub(crate) const STALE_LOCK_ATTEMPTS: usize = 8;
 /// Windows delete-pending window is different: it lasts until the deleter's
 /// LAST handle closes, so back-to-back retries all land inside one window and
 /// the attempt budget buys nothing. The backoff gives that handle time to
-/// close. It is a chance, not a guarantee; a window outliving the whole budget
-/// still surfaces the real io error.
+/// close. A window outliving the whole budget still surfaces the real io
+/// error.
 fn stale_retry_backoff(attempt: usize) -> std::time::Duration {
     const BASE_MS: u64 = 4;
     const CAP_MS: u64 = 64;
@@ -284,44 +333,30 @@ fn stale_retry_backoff(attempt: usize) -> std::time::Duration {
 /// The identity re-check is what keeps a REMOVED lock file from splitting the
 /// section in two. Nothing in cfgd deletes one, but a user wiping a cache
 /// directory does, and both platforms allow it while handles are open (`flock`
-/// and `LockFileEx` lock an open FILE, not a path, and Rust's Windows opens
-/// carry `FILE_SHARE_DELETE`). A contender blocked on the removed file would
-/// otherwise wake holding an exclusive lock on an orphan nothing can open
-/// again, while the next process creates a fresh file at the same path and
-/// locks that one: two holders in one section, the interleaving the lock exists
-/// to prevent. Re-opening on a mismatch settles it — the holder is whoever
-/// holds the file the path currently names.
+/// and `LockFileEx` lock an open FILE, whatever its path later names, and
+/// Rust's Windows opens carry `FILE_SHARE_DELETE`). A contender blocked on the
+/// removed file would otherwise wake holding an exclusive lock on an orphan
+/// nothing can open again, while the next process creates a fresh file at the
+/// same path and locks that one: two holders in one section, the interleaving
+/// the lock exists to prevent. Re-opening on a mismatch settles it — the holder
+/// is whoever holds the file the path currently names.
 ///
 /// A removal takes the lock file's DIRECTORY with it as often as not, so the
-/// re-open recreates the directory too (in [`lock_file_at`]) rather than
-/// failing the contender with `ENOENT` for waiting politely.
+/// re-open recreates the directory too (in [`open_lock_file`]). A contender
+/// that waited politely then finds a directory to open into, and no `ENOENT`.
 ///
-/// Exhausting the attempts reports
-/// [`errors::StateError::LockFileUnstable`] rather than handing back a guard
-/// over a file the path no longer names: that guard would be the very
-/// double-holder state the re-check exists to prevent. Deliberately NOT the
-/// held-lock error: nobody is known to hold anything, so the caller must not
-/// be sent looking for a holder, and [`acquire_source_lock`] must not read
-/// the exhaustion as contention and announce a wait for it.
+/// Exhausting the attempts reports [`errors::StateError::LockFileUnstable`]. A
+/// guard over a file the path no longer names would be the very double-holder
+/// state the re-check exists to prevent, so none is handed back. The error is
+/// also distinct from the held-lock error: nobody is known to hold anything, so
+/// the caller must not be sent looking for a holder, and
+/// [`acquire_source_lock`] must not read the exhaustion as contention and
+/// announce a wait for it.
 fn acquire_lock_at(lock_path: &std::path::Path, wait: LockWait) -> errors::Result<FileLockGuard> {
     let mut attempt = 1;
     loop {
         let last_attempt = attempt >= STALE_LOCK_ATTEMPTS;
-        let locked = match lock_file_at(lock_path, wait) {
-            Ok(locked) => locked,
-            // The open itself lost a race with a removal: the file (or its
-            // directory) went away, or on Windows sits in the delete-pending
-            // window, which refuses opens with ERROR_ACCESS_DENIED. The
-            // backoff is what gives the retry a chance at the second case —
-            // delete-pending clears only when the deleter's last handle
-            // closes, and back-to-back attempts all land inside one window.
-            Err(e) if !last_attempt && is_transient_open_error(&e) => {
-                std::thread::sleep(stale_retry_backoff(attempt));
-                attempt += 1;
-                continue;
-            }
-            Err(e) => return Err(e),
-        };
+        let locked = lock_file_at(lock_path, wait)?;
         let current = locked_file_is_current(&locked, lock_path);
         #[cfg(test)]
         let current = current && !stale_injection::take_forced_stale();
@@ -332,8 +367,8 @@ fn acquire_lock_at(lock_path: &std::path::Path, wait: LockWait) -> errors::Resul
                 _path: lock_path.to_path_buf(),
             });
         }
-        // Dropped bare, never through `FileLockGuard`, whose drop would clear a
-        // PID record this process does not own.
+        // Dropped bare: `FileLockGuard`'s drop would clear a PID record this
+        // process does not own.
         drop(locked);
         if last_attempt {
             return Err(errors::StateError::LockFileUnstable {
@@ -346,17 +381,23 @@ fn acquire_lock_at(lock_path: &std::path::Path, wait: LockWait) -> errors::Resul
 }
 
 /// Whether an open failure is worth re-trying: the lock file or its directory
-/// was removed, or the open landed in Windows delete-pending, which reports
-/// `PermissionDenied`. The retry cannot tell delete-pending from a genuine
-/// EACCES; the backoff between attempts gives a pending delete time to finish,
-/// and a denial that outlives the budget surfaces as the io error it is.
-fn is_transient_open_error(err: &errors::CfgdError) -> bool {
-    let errors::CfgdError::Io(io) = err else {
-        return false;
-    };
+/// was removed (`NotFound`), or the open landed in a Windows delete-pending
+/// window. A delete-pending lock FILE refuses the open with `PermissionDenied`.
+/// A delete-pending DIRECTORY fails the re-create with `AlreadyExists`: its
+/// `mkdir` finds the name taken, and `create_dir_all` accepts that only when
+/// `is_dir()` holds, which it does not for a directory nothing can open.
+///
+/// The retry cannot tell delete-pending from a genuine EACCES; the backoff
+/// between attempts gives a pending delete time to finish, and a denial that
+/// outlives the budget surfaces as the io error it is. A regular file where a
+/// directory belongs never reaches this question: [`create_dir_all_once`]
+/// reports it as `NotADirectory`.
+fn is_transient_open_error(io: &std::io::Error) -> bool {
     matches!(
         io.kind(),
-        std::io::ErrorKind::NotFound | std::io::ErrorKind::PermissionDenied
+        std::io::ErrorKind::NotFound
+            | std::io::ErrorKind::PermissionDenied
+            | std::io::ErrorKind::AlreadyExists
     )
 }
 
@@ -388,17 +429,103 @@ fn lock_file_at(lock_path: &std::path::Path, wait: LockWait) -> errors::Result<L
 /// The directory matters on a RE-open: a removal that took the lock file is
 /// usually a removal of the directory holding it, and a contender that came
 /// back to find neither would fail with `ENOENT` while doing everything right.
+///
+/// The directory and the file are retried as one step, because a removal can
+/// take the directory again between the two.
 fn open_lock_file(lock_path: &std::path::Path) -> errors::Result<std::fs::File> {
-    if let Some(parent) = lock_path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let file = std::fs::OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .read(true)
-        .write(true)
-        .open(lock_path)?;
+    let file = retry_transient_open(|| {
+        #[cfg(test)]
+        open_injection::next_open()?;
+        if let Some(parent) = lock_path.parent() {
+            create_dir_all_once(parent)?;
+        }
+        std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(lock_path)
+    })?;
     Ok(file)
+}
+
+/// Run `op` until it succeeds, fails with an error [`is_transient_open_error`]
+/// rejects, or has run [`STALE_LOCK_ATTEMPTS`] times, sleeping
+/// [`stale_retry_backoff`] between attempts.
+///
+/// The backoff is what gives a retry a chance at the Windows delete-pending
+/// windows: one clears only when the deleter's last handle closes, and
+/// back-to-back attempts all land inside it.
+fn retry_transient_open<T>(mut op: impl FnMut() -> std::io::Result<T>) -> std::io::Result<T> {
+    let mut attempt = 1;
+    loop {
+        #[cfg(test)]
+        open_injection::count_attempt();
+        match op() {
+            Err(e) if attempt < STALE_LOCK_ATTEMPTS && is_transient_open_error(&e) => {
+                std::thread::sleep(stale_retry_backoff(attempt));
+                attempt += 1;
+            }
+            done => return done,
+        }
+    }
+}
+
+/// `create_dir_all`, except that a regular file, or a symlink whose target
+/// cannot be reached, standing at `dir` or at one of its ancestors fails as
+/// `NotADirectory` naming it.
+///
+/// `create_dir_all` reports either one at `dir` itself as
+/// `AlreadyExists` on every platform, and one at an ancestor as
+/// `AlreadyExists` on Windows (Unix already reports `NotADirectory` there).
+/// `AlreadyExists` is also what a Windows delete-pending directory produces,
+/// and only that case is worth waiting out. The walk up from `dir` tells them
+/// apart at the first entry it can see:
+/// - readable and a directory: nothing is in the way, so the error stays as it
+///   is and the retry may wait;
+/// - readable and anything else: a file is in the way;
+/// - unreadable, but a symlink itself: a symlink whose target cannot be
+///   reached (dangling, looping, or behind a denied component) is in the way,
+///   and the error names why;
+/// - unreadable and no symlink: a delete-pending directory (it cannot be read
+///   at all) or nothing yet, so the walk moves on to the parent.
+fn create_dir_all_once(dir: &std::path::Path) -> std::io::Result<()> {
+    let Err(e) = std::fs::create_dir_all(dir) else {
+        return Ok(());
+    };
+    if e.kind() != std::io::ErrorKind::AlreadyExists {
+        return Err(e);
+    }
+    let in_the_way = |path: &std::path::Path, what: &str| {
+        std::io::Error::new(
+            std::io::ErrorKind::NotADirectory,
+            format!("{} {what}", path.display()),
+        )
+    };
+    for ancestor in dir.ancestors() {
+        match std::fs::metadata(ancestor) {
+            Ok(meta) if meta.is_dir() => break,
+            Ok(_) => return Err(in_the_way(ancestor, "exists and is not a directory")),
+            Err(target) if std::fs::symlink_metadata(ancestor).is_ok_and(|m| m.is_symlink()) => {
+                let why =
+                    format!("is a symlink whose target is not a reachable directory ({target})");
+                return Err(in_the_way(ancestor, &why));
+            }
+            Err(_) => {}
+        }
+    }
+    Err(e)
+}
+
+/// Create `dir` and its ancestors, waiting out a Windows delete-pending
+/// directory the way a lock file's own open does.
+///
+/// For a directory a lock is about to be taken in, created before the lock: a
+/// removal racing that creation leaves the same transient state the lock's
+/// re-open retries past, and failing on it at once would refuse a run the lock
+/// would have let through.
+pub(crate) fn create_dir_all_retrying(dir: &std::path::Path) -> std::io::Result<()> {
+    retry_transient_open(|| create_dir_all_once(dir))
 }
 
 /// Whether the locked file is still the one `lock_path` names.
@@ -507,7 +634,6 @@ fn locked_file_is_current(file: &LockFile, lock_path: &std::path::Path) -> bool 
 /// holding PID when another `cfgd apply` (or the daemon's reconcile) already
 /// holds it. Released when the returned guard drops.
 pub fn acquire_apply_lock(state_dir: &std::path::Path) -> errors::Result<FileLockGuard> {
-    std::fs::create_dir_all(state_dir)?;
     acquire_lock_at(&state_dir.join(APPLY_LOCK_FILENAME), LockWait::Refuse)
 }
 
@@ -525,16 +651,15 @@ pub fn acquire_apply_lock(state_dir: &std::path::Path) -> errors::Result<FileLoc
 /// `cfgd status`) must not be refused because an apply is running, and an apply
 /// must not be refused because a `cfgd sync` is warming the cache.
 ///
-/// Blocking rather than refusing: the critical section is one clone, both
-/// contenders want the same end state, and a refusal would fail a run over an
-/// overlap that resolves itself. `on_wait` is called at most once, only when a
-/// holder is already in the section, so a caller can say so before the wait
-/// begins rather than appearing to hang.
+/// Blocking: the critical section is one clone, both contenders want the same
+/// end state, and a refusal would fail a run over an overlap that resolves
+/// itself. `on_wait` is called at most once, only when a holder is already in
+/// the section, so a caller can say so before the wait begins and the run does
+/// not look hung.
 pub fn acquire_source_lock(
     cache_dir: &std::path::Path,
     on_wait: impl FnOnce(),
 ) -> errors::Result<FileLockGuard> {
-    std::fs::create_dir_all(cache_dir)?;
     let lock_path = cache_dir.join(SOURCE_CACHE_LOCK_FILENAME);
     match acquire_lock_at(&lock_path, LockWait::Refuse) {
         Err(errors::CfgdError::State(errors::StateError::ApplyLockHeld { .. })) => {
@@ -550,30 +675,172 @@ pub fn acquire_source_lock(
 /// Acquire the exclusive lock for one `spec.backups[]` unit at
 /// `<state_dir>/locks/backup-<name>.lock`.
 ///
-/// Per-unit rather than global so two different backups still run
-/// concurrently, and taken by every surface (CLI, apply, daemon timer) with no
-/// opt-out: the backup engine's staging path is derived from the destination
-/// alone, so two runs of ONE unit share `.<name>.partial` and the second run's
-/// staging wipe lands inside the first run's in-flight tree. Retention pruning
-/// has the same shape — it reads the run list, then deletes — so a concurrent
-/// run can slip a row in between.
+/// One lock per unit, so two different backups still run concurrently. Every
+/// surface (CLI, apply, daemon timer) takes it, with no opt-out: the backup
+/// engine's staging path is derived from the destination alone, so two runs of
+/// ONE unit share `.<name>.partial` and the second run's staging wipe lands
+/// inside the first run's in-flight tree. Retention pruning has the same shape
+/// — it reads the run list, then deletes — so a concurrent run can slip a row
+/// in between.
 ///
-/// Non-blocking, like [`acquire_apply_lock`]: a held lock is reported as
-/// [`crate::errors::StateError::ApplyLockHeld`] with the holding PID rather
-/// than waited on, so a scheduled fire that collides with a hand-run is skipped
-/// instead of queued behind it.
+/// Non-blocking, like [`acquire_apply_lock`]: a held lock is reported at once
+/// as [`crate::errors::StateError::ApplyLockHeld`] with the holding PID, so a
+/// scheduled fire that collides with a hand-run is skipped.
 ///
-/// `name` is interpolated into the lock filename, so it is re-validated here
-/// rather than trusted. Every in-tree caller passes a name
-/// `config::validate_backup_specs` already accepted, but this is a `pub`
-/// cfgd-core API and a `..`, `/`, or `.` slipping through would aim the lock
-/// outside `locks/`.
+/// `name` is interpolated into the lock filename, so it is re-validated here.
+/// Every in-tree caller passes a name `config::validate_backup_specs` already
+/// accepted, but this is a `pub` cfgd-core API and a `..`, `/`, or `.` slipping
+/// through would aim the lock outside `locks/`.
 pub fn acquire_backup_lock(
     state_dir: &std::path::Path,
     name: &str,
 ) -> errors::Result<FileLockGuard> {
     crate::config::validate_backup_name(name)?;
     let dir = state_dir.join(LOCKS_SUBDIR);
-    std::fs::create_dir_all(&dir)?;
     acquire_lock_at(&dir.join(format!("backup-{name}.lock")), LockWait::Refuse)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use super::open_injection::{force_open_failures, retry_attempts};
+    use std::io::ErrorKind;
+
+    fn io(kind: ErrorKind) -> std::io::Error {
+        std::io::Error::from(kind)
+    }
+
+    #[test]
+    fn a_removed_lock_file_or_directory_is_transient() {
+        assert!(is_transient_open_error(&io(std::io::ErrorKind::NotFound)));
+    }
+
+    #[test]
+    fn a_delete_pending_lock_file_is_transient() {
+        assert!(is_transient_open_error(&io(
+            std::io::ErrorKind::PermissionDenied
+        )));
+    }
+
+    #[test]
+    fn a_delete_pending_lock_directory_is_transient() {
+        assert!(is_transient_open_error(&io(
+            std::io::ErrorKind::AlreadyExists
+        )));
+    }
+
+    #[test]
+    fn an_unrelated_open_failure_is_not_transient() {
+        assert!(!is_transient_open_error(&io(
+            std::io::ErrorKind::InvalidInput
+        )));
+    }
+
+    #[test]
+    fn an_apply_lock_acquire_succeeds_after_a_delete_pending_directory_clears() {
+        let dir = tempfile::tempdir().unwrap();
+        force_open_failures(1, ErrorKind::AlreadyExists);
+        let held = acquire_apply_lock(dir.path());
+        let attempts = retry_attempts();
+        force_open_failures(0, ErrorKind::AlreadyExists);
+        assert!(
+            held.is_ok(),
+            "one transient open failure is retried: {held:?}"
+        );
+        assert_eq!(attempts, 2);
+    }
+
+    #[test]
+    fn a_delete_pending_directory_outliving_the_budget_surfaces_as_its_io_error() {
+        let dir = tempfile::tempdir().unwrap();
+        force_open_failures(STALE_LOCK_ATTEMPTS, ErrorKind::AlreadyExists);
+        let held = acquire_apply_lock(dir.path());
+        let attempts = retry_attempts();
+        force_open_failures(0, ErrorKind::AlreadyExists);
+        match held {
+            Err(errors::CfgdError::Io(e)) => assert_eq!(e.kind(), ErrorKind::AlreadyExists),
+            other => panic!("expected the io error itself, got {other:?}"),
+        }
+        assert_eq!(attempts, STALE_LOCK_ATTEMPTS);
+    }
+
+    #[test]
+    fn a_source_lock_acquire_past_a_delete_pending_directory_never_announces_a_wait() {
+        let dir = tempfile::tempdir().unwrap();
+        force_open_failures(1, ErrorKind::AlreadyExists);
+        let announced = std::cell::Cell::new(false);
+        let held = acquire_source_lock(dir.path(), || announced.set(true));
+        force_open_failures(0, ErrorKind::AlreadyExists);
+        assert!(
+            held.is_ok(),
+            "one transient open failure is retried: {held:?}"
+        );
+        assert!(
+            !announced.get(),
+            "a transient open failure is not contention"
+        );
+    }
+
+    #[test]
+    fn a_regular_file_where_the_lock_directory_belongs_fails_at_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let state_dir = dir.path().join("state");
+        std::fs::write(&state_dir, b"").unwrap();
+        force_open_failures(0, ErrorKind::AlreadyExists);
+        let held = acquire_apply_lock(&state_dir);
+        match held {
+            Err(errors::CfgdError::Io(e)) => {
+                assert_eq!(e.kind(), ErrorKind::NotADirectory);
+                let named = state_dir.display().to_string();
+                assert!(e.to_string().contains(&named), "{e}");
+            }
+            other => panic!("expected NotADirectory, got {other:?}"),
+        }
+        assert_eq!(retry_attempts(), 1, "a regular file is never waited out");
+    }
+
+    #[test]
+    fn a_retrying_directory_create_refuses_a_regular_file_at_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("cache");
+        std::fs::write(&file, b"").unwrap();
+        force_open_failures(0, ErrorKind::AlreadyExists);
+        let err = create_dir_all_retrying(&file).unwrap_err();
+        assert_eq!(err.kind(), ErrorKind::NotADirectory);
+        assert_eq!(retry_attempts(), 1, "a regular file is never waited out");
+
+        // Only Windows reports a file at an ANCESTOR as AlreadyExists; Unix
+        // already answers NotADirectory from the mkdir itself.
+        #[cfg(windows)]
+        {
+            force_open_failures(0, ErrorKind::AlreadyExists);
+            let err = create_dir_all_retrying(&file.join("nested")).unwrap_err();
+            assert_eq!(err.kind(), ErrorKind::NotADirectory);
+            assert_eq!(retry_attempts(), 1, "a regular file is never waited out");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_dangling_symlink_where_the_lock_directory_belongs_fails_at_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let state_dir = dir.path().join("state");
+        std::os::unix::fs::symlink(dir.path().join("missing"), &state_dir).unwrap();
+        force_open_failures(0, ErrorKind::AlreadyExists);
+        match acquire_apply_lock(&state_dir) {
+            Err(errors::CfgdError::Io(e)) => {
+                assert_eq!(e.kind(), ErrorKind::NotADirectory);
+                let named = state_dir.display().to_string();
+                assert!(e.to_string().contains(&named), "{e}");
+                assert!(e.to_string().contains("not a reachable directory"), "{e}");
+            }
+            other => panic!("expected NotADirectory, got {other:?}"),
+        }
+        assert_eq!(
+            retry_attempts(),
+            1,
+            "a dangling symlink is never waited out"
+        );
+    }
 }

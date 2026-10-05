@@ -16,7 +16,7 @@
 //! Goldens live under `tests/output_snapshots/source_remove/`. Regenerate with:
 //!     INSTA_UPDATE=always cargo test -p cfgd --test source_remove_snapshots
 
-mod common;
+use cfgd_test_fixtures as common;
 
 use std::path::Path;
 
@@ -57,8 +57,12 @@ fn source_remove_happy_human() {
     );
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc();
+    let printer = printer.with_hints_enabled(true);
 
-    cmd_source_remove(&cli, &printer, "team-config", false, true, false, false).unwrap();
+    cfgd::cli::RunContext::for_test(&cli, &printer, |run| {
+        cmd_source_remove(run, "team-config", false, true, false, false)
+    })
+    .unwrap();
     drop(printer);
 
     let stripped = strip_ansi(&cap.human());
@@ -80,7 +84,10 @@ fn source_remove_happy_json() {
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc();
 
-    cmd_source_remove(&cli, &printer, "team-config", false, true, false, false).unwrap();
+    cfgd::cli::RunContext::for_test(&cli, &printer, |run| {
+        cmd_source_remove(run, "team-config", false, true, false, false)
+    })
+    .unwrap();
     drop(printer);
 
     let json = cap.json().expect("doc captured json");
@@ -99,8 +106,12 @@ fn source_remove_keep_all_human() {
     );
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc();
+    let printer = printer.with_hints_enabled(true);
 
-    cmd_source_remove(&cli, &printer, "team-config", true, false, false, false).unwrap();
+    cfgd::cli::RunContext::for_test(&cli, &printer, |run| {
+        cmd_source_remove(run, "team-config", true, false, false, false)
+    })
+    .unwrap();
     drop(printer);
 
     let stripped = strip_ansi(&cap.human());
@@ -125,7 +136,15 @@ fn source_remove_cancelled_human() {
     );
     let store = cfgd_core::state::StateStore::open(&state_dir.path().join("state.db")).unwrap();
     store
-        .upsert_managed_resource("package", "brew/curl", "team-config", Some("hash1"), None)
+        .upsert_managed_resource(
+            "package",
+            "brew/curl",
+            "package",
+            None,
+            "team-config",
+            Some("hash1"),
+            None,
+        )
         .unwrap();
 
     let cli = cli_for(config_dir.path(), state_dir.path());
@@ -133,7 +152,10 @@ fn source_remove_cancelled_human() {
         "Cancel (abort remove)".into(),
     )]);
 
-    cmd_source_remove(&cli, &printer, "team-config", false, false, false, false).unwrap();
+    cfgd::cli::RunContext::for_test(&cli, &printer, |run| {
+        cmd_source_remove(run, "team-config", false, false, false, false)
+    })
+    .unwrap();
     drop(printer);
 
     let stripped = strip_ansi(&cap.human());
@@ -163,8 +185,10 @@ fn source_remove_not_found_human() {
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc();
 
-    let err = cmd_source_remove(&cli, &printer, "missing", false, true, false, false)
-        .expect_err("missing source must return Err");
+    let err = cfgd::cli::RunContext::for_test(&cli, &printer, |run| {
+        cmd_source_remove(run, "missing", false, true, false, false)
+    })
+    .expect_err("missing source must return Err");
     render_cli_error(&printer, &err);
     drop(printer);
 
@@ -193,8 +217,10 @@ fn source_remove_conflicting_flags_human() {
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc();
 
-    let err = cmd_source_remove(&cli, &printer, "team-config", true, true, false, false)
-        .expect_err("conflicting flags must return Err");
+    let err = cfgd::cli::RunContext::for_test(&cli, &printer, |run| {
+        cmd_source_remove(run, "team-config", true, true, false, false)
+    })
+    .expect_err("conflicting flags must return Err");
     render_cli_error(&printer, &err);
     drop(printer);
 

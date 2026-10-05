@@ -2,6 +2,20 @@ use super::*;
 use cfgd_core::output::{Printer, Verbosity};
 use cfgd_core::test_helpers::test_printer as quiet_printer;
 
+/// The migration gate held off: these tests are about what init scaffolds
+/// and applies, and the gate's own run inside init is exercised against the
+/// real binary, where a state root is isolated per test.
+fn inert_migration_gate() -> crate::cli::config_schema::GateInvocation<'static> {
+    crate::cli::config_schema::GateInvocation {
+        policy_override: Some(cfgd_schema::MigrationPolicy::Ignore),
+        assume_yes: false,
+        is_daemon: false,
+        preview: false,
+        state_dir: None,
+        scope: cfgd_core::Scope::User,
+    }
+}
+
 /// Drive `cmd_init` while holding the `PATH` read guard.
 ///
 /// `cmd_init` resolves `git` from the process `PATH` and calls `exit(1)` when
@@ -540,8 +554,13 @@ fn is_clonable_source_classifies_file_urls_without_reading_the_env_gate() {
     // either way, or the answer depends on unrelated tests.
     for allow in [Some("1"), None] {
         let _guard = match allow {
-            Some(v) => cfgd_core::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", v),
-            None => cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_ALLOW_LOCAL_SOURCES"),
+            Some(v) => cfgd_core::test_helpers::EnvVarGuard::set(
+                cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV,
+                v,
+            ),
+            None => {
+                cfgd_core::test_helpers::EnvVarGuard::unset(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV)
+            }
         };
         assert!(
             is_clonable_source("file:///srv/git/config"),
@@ -655,6 +674,7 @@ fn cmd_init_scaffolds_local_directory() {
 
     let printer = quiet_printer();
     let args = InitArgs {
+        migration_gate: inert_migration_gate(),
         on_conflict: crate::cli::OnConflict::Ask,
         path: Some(target.to_str().unwrap()),
         from: None,
@@ -712,6 +732,7 @@ fn cmd_init_skips_if_already_initialized() {
 
     let printer = quiet_printer();
     let args = InitArgs {
+        migration_gate: inert_migration_gate(),
         on_conflict: crate::cli::OnConflict::Ask,
         path: Some(target.to_str().unwrap()),
         from: None,
@@ -745,6 +766,7 @@ fn cmd_init_creates_directory_if_missing() {
 
     let printer = quiet_printer();
     let args = InitArgs {
+        migration_gate: inert_migration_gate(),
         on_conflict: crate::cli::OnConflict::Ask,
         path: Some(target.to_str().unwrap()),
         from: None,
@@ -959,6 +981,7 @@ fn cmd_init_with_from_local_path() {
     let (printer, cap) = Printer::for_test_doc();
     let source_str = source.display().to_string();
     let args = InitArgs {
+        migration_gate: inert_migration_gate(),
         on_conflict: crate::cli::OnConflict::Ask,
         path: None,
         from: Some(&source_str),
@@ -1016,6 +1039,7 @@ fn cmd_init_apply_module_prices_the_package_it_installs() {
     let target_str = target.display().to_string();
     let modules = ["priced-init-mod".to_string()];
     let args = InitArgs {
+        migration_gate: inert_migration_gate(),
         on_conflict: crate::cli::OnConflict::Ask,
         path: Some(&target_str),
         from: None,
@@ -1064,10 +1088,8 @@ fn cmd_init_apply_module_leaves_a_tool_another_manager_holds_alone() {
     std::fs::create_dir_all(&module_dir).unwrap();
     std::fs::write(
         module_dir.join("module.yaml"),
-        format!(
-            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: held-init-mod\nspec:\n  packages:\n    - name: {}\n",
-            crate::cli::registry::HELD_BY_BREW
-        ),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: held-init-mod\nspec:\n  packages:\n    - name: __HELD__\n"
+            .replace("__HELD__", crate::cli::registry::HELD_BY_BREW),
     )
     .unwrap();
 
@@ -1077,6 +1099,7 @@ fn cmd_init_apply_module_leaves_a_tool_another_manager_holds_alone() {
     let target_str = target.display().to_string();
     let modules = ["held-init-mod".to_string()];
     let args = InitArgs {
+        migration_gate: inert_migration_gate(),
         on_conflict: crate::cli::OnConflict::Ask,
         path: Some(&target_str),
         from: None,
@@ -1142,6 +1165,7 @@ fn cmd_init_apply_profile_with_a_module_prices_the_package_it_installs() {
     let target_str = target.display().to_string();
     let modules = ["priced-profile-mod".to_string()];
     let args = InitArgs {
+        migration_gate: inert_migration_gate(),
         on_conflict: crate::cli::OnConflict::Ask,
         path: Some(&target_str),
         from: None,
@@ -1188,6 +1212,7 @@ fn cmd_init_apply_module_only_unknown_module_is_a_typed_not_found_error() {
     let target_str = target.display().to_string();
     let modules = ["no-such-module".to_string()];
     let args = InitArgs {
+        migration_gate: inert_migration_gate(),
         on_conflict: crate::cli::OnConflict::Ask,
         path: Some(&target_str),
         from: None,
@@ -1244,6 +1269,7 @@ fn cmd_init_apply_profile_with_unknown_module_is_a_typed_not_found_error() {
     let target_str = target.display().to_string();
     let modules = ["no-such-module".to_string()];
     let args = InitArgs {
+        migration_gate: inert_migration_gate(),
         on_conflict: crate::cli::OnConflict::Ask,
         path: Some(&target_str),
         from: None,
@@ -1321,6 +1347,7 @@ fn cmd_init_scaffold_to_new_dir() {
     let (printer, cap) = Printer::for_test_doc();
     let target_str = target.display().to_string();
     let args = InitArgs {
+        migration_gate: inert_migration_gate(),
         on_conflict: crate::cli::OnConflict::Ask,
         path: Some(&target_str),
         from: None,
@@ -1378,6 +1405,7 @@ fn cmd_init_already_initialized() {
     let (printer, cap) = Printer::for_test_doc();
     let target_str = target.display().to_string();
     let args = InitArgs {
+        migration_gate: inert_migration_gate(),
         on_conflict: crate::cli::OnConflict::Ask,
         path: Some(&target_str),
         from: None,
@@ -1414,6 +1442,7 @@ fn cmd_init_with_theme() {
     let printer = quiet_printer();
     let target_str = target.display().to_string();
     let args = InitArgs {
+        migration_gate: inert_migration_gate(),
         on_conflict: crate::cli::OnConflict::Ask,
         path: Some(&target_str),
         from: None,
@@ -1455,6 +1484,49 @@ fn resolve_from_local_path_valid() {
     let printer = quiet_printer();
     let result = resolve_from(&dir.path().display().to_string(), None, "master", &printer).unwrap();
     assert_eq!(result, dir.path());
+}
+
+/// A plain `--from` directory carrying `cfgd.toml` is a config repository
+/// the same as one carrying `cfgd.yaml`.
+#[test]
+fn resolve_from_local_path_holding_cfgd_toml_is_a_config_repo() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("cfgd.toml"),
+        "apiVersion = \"cfgd.io/v1alpha1\"\nkind = \"Config\"\n\n[metadata]\nname = \"test\"\n\n[spec]\n",
+    )
+    .unwrap();
+
+    let printer = quiet_printer();
+    let result = resolve_from(&dir.path().display().to_string(), None, "master", &printer).unwrap();
+    assert_eq!(result, dir.path());
+}
+
+/// Which document a `--from` run reads once the source is in place: a plain
+/// directory's own, a clone's under either default name, and a `--config`
+/// naming another file kept as written.
+#[test]
+fn a_from_run_reads_the_document_its_source_put_in_place() {
+    let dest = tempfile::tempdir().unwrap();
+    std::fs::write(dest.path().join("cfgd.toml"), "").unwrap();
+    let toml = dest.path().join("cfgd.toml");
+    let named_yaml = dest.path().join("cfgd.yaml");
+    let custom = dest.path().join("custom.yaml");
+    let plain = dest.path().display().to_string();
+    let clone = "https://example.invalid/you/config.git";
+
+    assert_eq!(
+        super::source::from_run_config(&plain, &named_yaml, dest.path()),
+        toml
+    );
+    assert_eq!(
+        super::source::from_run_config(clone, &named_yaml, dest.path()),
+        toml
+    );
+    assert_eq!(
+        super::source::from_run_config(clone, &custom, dest.path()),
+        custom
+    );
 }
 
 #[test]
@@ -1875,6 +1947,28 @@ fn scaffold_config_has_api_version() {
     );
 }
 
+/// The config init scaffolds is aligned to the build that scaffolded it: the
+/// migration gate init runs over it finds nothing to ask, so a new user is
+/// never asked to add fields to a file cfgd wrote a moment ago.
+#[test]
+fn scaffold_config_declares_every_field_this_build_reads() {
+    for theme in [None, Some("dracula")] {
+        let dir = tempfile::tempdir().unwrap();
+        let printer = quiet_printer();
+        scaffold(dir.path(), Some("my-cfg"), theme, &printer).unwrap();
+
+        let path = dir.path().join("cfgd.yaml");
+        let on_disk = std::fs::read_to_string(&path).unwrap();
+        let cfg = cfgd_core::config::parse_config(&on_disk, &path).unwrap();
+        let pending = crate::cli::config_schema::pending_alignment(&cfg, &on_disk, &path);
+        assert!(
+            pending.keys.is_empty(),
+            "theme {theme:?}: the scaffold leaves {:?} for the gate to ask about",
+            pending.keys
+        );
+    }
+}
+
 #[test]
 fn scaffold_readme_contains_structure_docs() {
     let dir = tempfile::tempdir().unwrap();
@@ -1907,6 +2001,7 @@ fn cmd_init_with_name_overrides_dir_name() {
     let printer = quiet_printer();
     let target_str = target.display().to_string();
     let args = InitArgs {
+        migration_gate: inert_migration_gate(),
         on_conflict: crate::cli::OnConflict::Ask,
         path: Some(&target_str),
         from: None,
@@ -1942,6 +2037,7 @@ fn cmd_init_creates_git_repo() {
     let printer = quiet_printer();
     let target_str = target.display().to_string();
     let args = InitArgs {
+        migration_gate: inert_migration_gate(),
         on_conflict: crate::cli::OnConflict::Ask,
         path: Some(&target_str),
         from: None,
@@ -1979,6 +2075,7 @@ fn cmd_init_with_theme_and_name_together() {
     let printer = quiet_printer();
     let target_str = target.display().to_string();
     let args = InitArgs {
+        migration_gate: inert_migration_gate(),
         on_conflict: crate::cli::OnConflict::Ask,
         path: Some(&target_str),
         from: None,
@@ -2151,7 +2248,7 @@ fn check_prerequisites_installs_git_through_the_tool_table() {
     // Every other manager is pinned missing first, so the shim below is the
     // only thing on this host `provision_tool` can reach.
     let _managers = cfgd_core::test_helpers::NoHostManagers::pinned_missing();
-    let shim = cfgd_core::test_helpers::ToolShim::install("CFGD_BREW_BIN", 0, "", "");
+    let shim = cfgd_core::test_helpers::ToolShim::install(crate::seams::BREW_BIN_ENV, 0, "", "");
     let _empty = cfgd_core::test_helpers::EnvVarGuard::set("PATH", "");
 
     let (printer, cap) = Printer::for_test_doc();
@@ -2302,6 +2399,7 @@ fn cmd_init_from_local_path_uses_source_dir() {
     let (printer, cap) = Printer::for_test_doc();
     let source_str = source.display().to_string();
     let args = InitArgs {
+        migration_gate: inert_migration_gate(),
         on_conflict: crate::cli::OnConflict::Ask,
         path: None,
         from: Some(&source_str),
@@ -2437,8 +2535,10 @@ fn sign_with_ssh_bails_when_ssh_keygen_unavailable() {
     // real `ssh-keygen -Y sign` blocks on a console passphrase prompt no
     // amount of stdin redirection can defeat. Mirrors the CFGD_COSIGN_BIN
     // "/nonexistent" idiom used across the module tests.
-    let _g =
-        cfgd_core::test_helpers::EnvVarGuard::set("CFGD_SSH_KEYGEN_BIN", "/nonexistent/ssh-keygen");
+    let _g = cfgd_core::test_helpers::EnvVarGuard::set(
+        cfgd_core::CFGD_SSH_KEYGEN_BIN_ENV,
+        "/nonexistent/ssh-keygen",
+    );
     let result = sign_with_ssh("test-nonce", "/nonexistent/key");
     assert!(result.is_err(), "must error when ssh-keygen is unavailable");
 }
@@ -2476,7 +2576,7 @@ fn sign_with_ssh_does_not_hang_when_key_prompts_on_stdin() {
     // seam rather than through `PATH`: the signing call runs on a worker
     // thread, and the `PATH` window is exclusive to the thread that opened it.
     let _seam = cfgd_core::test_helpers::EnvVarGuard::set(
-        "CFGD_SSH_KEYGEN_BIN",
+        cfgd_core::CFGD_SSH_KEYGEN_BIN_ENV,
         fake.to_str().expect("shim path must be valid UTF-8"),
     );
 
@@ -2499,6 +2599,7 @@ fn sign_with_ssh_does_not_hang_when_key_prompts_on_stdin() {
 #[test]
 #[serial_test::serial]
 fn sign_with_gpg_requires_gpg() {
+    let _path = cfgd_core::test_helpers::path_env_read_guard();
     if !cfgd_core::command_available("gpg") {
         let result = sign_with_gpg("test-nonce", "DEADBEEF");
         assert!(result.is_err());
@@ -2528,6 +2629,7 @@ fn sign_with_gpg_requires_gpg() {
 #[serial_test::serial]
 #[cfg(unix)]
 fn sign_with_gpg_signs_with_a_key_in_the_users_keyring() {
+    let _path = cfgd_core::test_helpers::path_env_read_guard();
     // sign_with_gpg must sign against the user's real GnuPG keyring (GNUPGHOME),
     // where the secret key actually lives. The historical bug redirected gpg to a
     // fresh empty --homedir that never held the key, so every signature failed with
@@ -2959,6 +3061,8 @@ fn apply_plan_records_module_state_for_the_modules_it_was_handed() {
     };
 
     let module = cfgd_core::modules::ResolvedModule {
+        held_managers: Vec::new(),
+        floor_bootstraps: Vec::new(),
         dep_pulled: false,
         name: "demo".to_string(),
         packages: Vec::new(),
@@ -3196,6 +3300,7 @@ fn cmd_init_from_git_source_with_explicit_target() {
     let origin_str = origin.display().to_string();
     let target_str = target.display().to_string();
     let args = InitArgs {
+        migration_gate: inert_migration_gate(),
         on_conflict: crate::cli::OnConflict::Ask,
         path: Some(&target_str),
         from: Some(&origin_str),
@@ -3263,6 +3368,7 @@ fn init_heading_commits_before_the_clone_window_paints() {
     let origin_str = origin.display().to_string();
     let target_str = target.display().to_string();
     let args = InitArgs {
+        migration_gate: inert_migration_gate(),
         on_conflict: crate::cli::OnConflict::Ask,
         path: Some(&target_str),
         from: Some(&origin_str),
@@ -3341,6 +3447,7 @@ fn cmd_init_from_git_leaves_an_already_initialized_target_intact() {
     let origin_str = origin.display().to_string();
     let target_str = target.display().to_string();
     let args = InitArgs {
+        migration_gate: inert_migration_gate(),
         on_conflict: crate::cli::OnConflict::Ask,
         path: Some(&target_str),
         from: Some(&origin_str),
@@ -3396,6 +3503,7 @@ fn cmd_init_from_plain_path_does_not_rescaffold_over_the_config_it_points_at() {
     let printer = quiet_printer();
     let source_str = source.display().to_string();
     let args = InitArgs {
+        migration_gate: inert_migration_gate(),
         on_conflict: crate::cli::OnConflict::Ask,
         path: None,
         from: Some(&source_str),
@@ -3455,6 +3563,7 @@ fn cmd_init_from_git_with_theme_override() {
     let origin_str = origin.display().to_string();
     let target_str = target.display().to_string();
     let args = InitArgs {
+        migration_gate: inert_migration_gate(),
         on_conflict: crate::cli::OnConflict::Ask,
         path: Some(&target_str),
         from: Some(&origin_str),
@@ -3516,6 +3625,7 @@ fn cmd_init_from_git_applies_name_and_theme_overrides_together() {
     let origin_str = origin.display().to_string();
     let target_str = target.display().to_string();
     let args = InitArgs {
+        migration_gate: inert_migration_gate(),
         on_conflict: crate::cli::OnConflict::Ask,
         path: Some(&target_str),
         from: Some(&origin_str),
@@ -3549,7 +3659,7 @@ fn cmd_init_from_git_applies_name_and_theme_overrides_together() {
     assert_eq!(
         cfg.spec.theme().map(|t| t.name.as_str()),
         Some("dracula"),
-        "spec.theme.name should be overridden to the --theme value"
+        "spec.output.theme.name should be overridden to the --theme value"
     );
 }
 
@@ -3919,102 +4029,115 @@ mod enroll_mockito {
     #[serial]
     fn cmd_enroll_token_path_succeeds_against_mock() {
         let tmp = tempfile::tempdir().unwrap();
-        with_test_env_var("CFGD_STATE_DIR", Some(tmp.path().to_str().unwrap()), || {
-            let mut server = mockito::Server::new();
-            let m = server
-                .mock("POST", "/api/v1/enroll")
-                .with_status(200)
-                .with_header("content-type", "application/json")
-                .with_body(enroll_response_json())
-                .create();
+        with_test_env_var(
+            cfgd_core::CFGD_STATE_DIR_ENV,
+            Some(tmp.path().to_str().unwrap()),
+            || {
+                let mut server = mockito::Server::new();
+                let m = server
+                    .mock("POST", "/api/v1/enroll")
+                    .with_status(200)
+                    .with_header("content-type", "application/json")
+                    .with_body(enroll_response_json())
+                    .create();
 
-            let (printer, cap) = Printer::for_test_doc();
-            let url = server.url();
-            let result = cmd_enroll(
-                &printer,
-                &url,
-                Some("bootstrap-token-xyz"),
-                None,
-                None,
-                Some("alice"),
-            );
-            assert!(result.is_ok(), "cmd_enroll should succeed: {result:?}");
-            m.assert();
+                let (printer, cap) = Printer::for_test_doc();
+                let url = server.url();
+                let result = cmd_enroll(
+                    &printer,
+                    &url,
+                    Some("bootstrap-token-xyz"),
+                    None,
+                    None,
+                    Some("alice"),
+                );
+                assert!(result.is_ok(), "cmd_enroll should succeed: {result:?}");
+                m.assert();
 
-            // Credential file should have been written under the tempdir.
-            let cred_path = tmp.path().join("device-credential.json");
-            assert!(
-                cred_path.exists(),
-                "credential file should be at {}",
-                cred_path.display()
-            );
-            let cred: serde_json::Value =
-                serde_json::from_str(&std::fs::read_to_string(&cred_path).unwrap()).unwrap();
-            assert_eq!(cred["apiKey"], "key-xyz-789");
-            assert_eq!(cred["username"], "alice");
+                // Credential file should have been written under the tempdir.
+                let cred_path = tmp.path().join("device-credential.json");
+                assert!(
+                    cred_path.exists(),
+                    "credential file should be at {}",
+                    cred_path.display()
+                );
+                let cred: serde_json::Value =
+                    serde_json::from_str(&std::fs::read_to_string(&cred_path).unwrap()).unwrap();
+                assert_eq!(cred["apiKey"], "key-xyz-789");
+                assert_eq!(cred["username"], "alice");
 
-            // Printer output should announce success and emit the Next
-            // Steps section heading.
-            drop(printer);
-            let captured = cap.human();
-            assert!(
-                captured.contains("Enrolled as user 'alice'"),
-                "expected success message in: {captured}"
-            );
-            assert!(
-                captured.contains("Next Steps"),
-                "expected next-steps header in: {captured}"
-            );
-        });
+                // Printer output should announce success and emit the Next
+                // Steps section heading.
+                drop(printer);
+                let captured = cap.human();
+                assert!(
+                    captured.contains("Enrolled as user 'alice'"),
+                    "expected success message in: {captured}"
+                );
+                assert!(
+                    captured.contains("Next Steps"),
+                    "expected next-steps header in: {captured}"
+                );
+            },
+        );
     }
 
     #[test]
     #[serial]
     fn cmd_enroll_token_path_fails_on_server_error() {
         let tmp = tempfile::tempdir().unwrap();
-        with_test_env_var("CFGD_STATE_DIR", Some(tmp.path().to_str().unwrap()), || {
-            let mut server = mockito::Server::new();
-            // 400 is a non-retryable client error — request_error path.
-            let _m = server
-                .mock("POST", "/api/v1/enroll")
-                .with_status(400)
-                .with_body(r#"{"error":"invalid token"}"#)
-                .create();
+        with_test_env_var(
+            cfgd_core::CFGD_STATE_DIR_ENV,
+            Some(tmp.path().to_str().unwrap()),
+            || {
+                let mut server = mockito::Server::new();
+                // 400 is a non-retryable client error — request_error path.
+                let _m = server
+                    .mock("POST", "/api/v1/enroll")
+                    .with_status(400)
+                    .with_body(r#"{"error":"invalid token"}"#)
+                    .create();
 
-            let printer = super::quiet_printer();
-            let url = server.url();
-            let result = cmd_enroll(&printer, &url, Some("bad-token"), None, None, Some("alice"));
-            assert!(result.is_err());
-            // No credential written on failure.
-            assert!(!tmp.path().join("device-credential.json").exists());
-        });
+                let printer = super::quiet_printer();
+                let url = server.url();
+                let result =
+                    cmd_enroll(&printer, &url, Some("bad-token"), None, None, Some("alice"));
+                assert!(result.is_err());
+                // No credential written on failure.
+                assert!(!tmp.path().join("device-credential.json").exists());
+            },
+        );
     }
 
     #[test]
     #[serial]
     fn cmd_enroll_key_based_rejects_server_with_token_method() {
         let tmp = tempfile::tempdir().unwrap();
-        with_test_env_var("CFGD_STATE_DIR", Some(tmp.path().to_str().unwrap()), || {
-            let mut server = mockito::Server::new();
-            // Server says it only supports token enrollment.
-            let _m = server
-                .mock("GET", "/api/v1/enroll/info")
-                .with_status(200)
-                .with_header("content-type", "application/json")
-                .with_body(r#"{"method":"token"}"#)
-                .create();
+        with_test_env_var(
+            cfgd_core::CFGD_STATE_DIR_ENV,
+            Some(tmp.path().to_str().unwrap()),
+            || {
+                let mut server = mockito::Server::new();
+                // Server says it only supports token enrollment.
+                let _m = server
+                    .mock("GET", "/api/v1/enroll/info")
+                    .with_status(200)
+                    .with_header("content-type", "application/json")
+                    .with_body(r#"{"method":"token"}"#)
+                    .create();
 
-            let printer = super::quiet_printer();
-            let url = server.url();
-            // No --token but key-based attempted: should error with a
-            // pointer to the token form.
-            let result = cmd_enroll(&printer, &url, None, None, None, Some("alice"));
-            let err = result.unwrap_err().to_string();
-            assert!(
-                err.contains("bootstrap token enrollment") || err.contains("--token"),
-                "expected token-required error, got: {err}"
-            );
-        });
+                let printer = super::quiet_printer();
+                let url = server.url();
+                // No --token but key-based attempted: should error with a
+                // pointer to the token form.
+                let result = cmd_enroll(&printer, &url, None, None, None, Some("alice"));
+                let err = result.unwrap_err().to_string();
+                assert!(
+                    err.contains("bootstrap token enrollment") || err.contains("--token"),
+                    "expected token-required error, got: {err}"
+                );
+            },
+        );
     }
 
     #[test]
@@ -4029,33 +4152,38 @@ mod enroll_mockito {
         let home_dir = tempfile::tempdir().unwrap();
         let _home_guard = cfgd_core::with_test_home_guard(home_dir.path());
 
-        with_test_env_var("CFGD_STATE_DIR", Some(tmp.path().to_str().unwrap()), || {
-            let mut server = mockito::Server::new();
-            let _m = server
-                .mock("GET", "/api/v1/enroll/info")
-                .with_status(200)
-                .with_header("content-type", "application/json")
-                .with_body(r#"{"method":"key"}"#)
-                .create();
+        with_test_env_var(
+            cfgd_core::CFGD_STATE_DIR_ENV,
+            Some(tmp.path().to_str().unwrap()),
+            || {
+                let mut server = mockito::Server::new();
+                let _m = server
+                    .mock("GET", "/api/v1/enroll/info")
+                    .with_status(200)
+                    .with_header("content-type", "application/json")
+                    .with_body(r#"{"method":"key"}"#)
+                    .create();
 
-            let printer = super::quiet_printer();
-            let url = server.url();
-            let result = cmd_enroll(&printer, &url, None, None, None, Some("alice"));
-            let err = result.unwrap_err().to_string();
-            assert!(
-                err.contains("no signing key found"),
-                "expected no-SSH-key bail, got: {err}"
-            );
-            // The message states what happened; the hint is the ONE place the
-            // re-run naming a key appears, so neither restates the other.
-            let hint = super::enroll::enroll_error_hint("no_key").expect("`no_key` carries a hint");
-            assert!(
-                hint.commands
-                    .iter()
-                    .any(|c| c.contains("--ssh-key") && c.contains("--gpg-key")),
-                "expected the hint to name both key flags, got: {hint:?}"
-            );
-        });
+                let printer = super::quiet_printer();
+                let url = server.url();
+                let result = cmd_enroll(&printer, &url, None, None, None, Some("alice"));
+                let err = result.unwrap_err().to_string();
+                assert!(
+                    err.contains("no signing key found"),
+                    "expected no-SSH-key bail, got: {err}"
+                );
+                // The message states what happened; the hint is the ONE place the
+                // re-run naming a key appears, so neither restates the other.
+                let hint =
+                    super::enroll::enroll_error_hint("no_key").expect("`no_key` carries a hint");
+                assert!(
+                    hint.commands
+                        .iter()
+                        .any(|c| c.contains("--ssh-key") && c.contains("--gpg-key")),
+                    "expected the hint to name both key flags, got: {hint:?}"
+                );
+            },
+        );
     }
 
     #[test]
@@ -4066,25 +4194,29 @@ mod enroll_mockito {
         // failed query — pins the early-fail contract before any key
         // detection / challenge plumbing runs.
         let tmp = tempfile::tempdir().unwrap();
-        with_test_env_var("CFGD_STATE_DIR", Some(tmp.path().to_str().unwrap()), || {
-            let mut server = mockito::Server::new();
-            let _m = server
-                .mock("GET", "/api/v1/enroll/info")
-                .with_status(500)
-                .with_body("internal error")
-                .create();
+        with_test_env_var(
+            cfgd_core::CFGD_STATE_DIR_ENV,
+            Some(tmp.path().to_str().unwrap()),
+            || {
+                let mut server = mockito::Server::new();
+                let _m = server
+                    .mock("GET", "/api/v1/enroll/info")
+                    .with_status(500)
+                    .with_body("internal error")
+                    .create();
 
-            let printer = super::quiet_printer();
-            let url = server.url();
-            let result = cmd_enroll(&printer, &url, None, None, None, Some("alice"));
-            let err = result.unwrap_err().to_string();
-            assert!(
-                err.contains("enrollment info") || err.contains("500"),
-                "expected enroll_info failure surfaced, got: {err}"
-            );
-            // No credential written when the pre-check fails.
-            assert!(!tmp.path().join("device-credential.json").exists());
-        });
+                let printer = super::quiet_printer();
+                let url = server.url();
+                let result = cmd_enroll(&printer, &url, None, None, None, Some("alice"));
+                let err = result.unwrap_err().to_string();
+                assert!(
+                    err.contains("enrollment info") || err.contains("500"),
+                    "expected enroll_info failure surfaced, got: {err}"
+                );
+                // No credential written when the pre-check fails.
+                assert!(!tmp.path().join("device-credential.json").exists());
+            },
+        );
     }
 
     #[test]
@@ -4101,93 +4233,98 @@ mod enroll_mockito {
         // programmatically, and snapshots the combined output for
         // regression coverage.
         let tmp = tempfile::tempdir().unwrap();
-        with_test_env_var("CFGD_STATE_DIR", Some(tmp.path().to_str().unwrap()), || {
-            let mut server = mockito::Server::new();
-            let m = server
-                .mock("POST", "/api/v1/enroll")
-                .with_status(200)
-                .with_header("content-type", "application/json")
-                .with_body(enroll_response_json())
-                .create();
+        with_test_env_var(
+            cfgd_core::CFGD_STATE_DIR_ENV,
+            Some(tmp.path().to_str().unwrap()),
+            || {
+                let mut server = mockito::Server::new();
+                let m = server
+                    .mock("POST", "/api/v1/enroll")
+                    .with_status(200)
+                    .with_header("content-type", "application/json")
+                    .with_body(enroll_response_json())
+                    .create();
 
-            let (printer, cap) = Printer::for_test_doc();
-            let url = server.url();
-            let result = cmd_enroll(
-                &printer,
-                &url,
-                Some("bootstrap-token-xyz"),
-                None,
-                None,
-                Some("alice"),
-            );
-            assert!(result.is_ok(), "cmd_enroll should succeed: {result:?}");
-            m.assert();
-            drop(printer);
-
-            let captured = strip_ansi(&cap.human());
-
-            // Sanity: streaming portion present before the buffered Doc.
-            assert!(
-                captured.contains("Token Enrollment"),
-                "missing streaming heading in:\n{captured}"
-            );
-            assert!(
-                captured.contains("Enrolled as user 'alice'"),
-                "missing streaming status line in:\n{captured}"
-            );
-            assert!(
-                captured.contains("Next Steps"),
-                "missing buffered section header in:\n{captured}"
-            );
-            assert!(
-                captured.find("Token Enrollment").unwrap() < captured.find("Next Steps").unwrap(),
-                "streaming surface must precede buffered surface in:\n{captured}"
-            );
-
-            // Bridge invariant: exactly one blank line between the last
-            // streaming line and the first buffered line. Two newlines in
-            // a row = one blank line; three or more = more than one.
-            assert!(
-                captured.contains("\n\n"),
-                "expected at least one blank line in:\n{captured}"
-            );
-            assert!(
-                !captured.contains("\n\n\n"),
-                "expected at most one blank line gap in:\n{captured}"
-            );
-
-            // Normalize the mockito-allocated server URL (a 127.0.0.1
-            // address with a random port) so the golden survives across
-            // runs / hosts. Route the credential-save path through
-            // `normalize_for_snapshot` so it posixifies on Windows before
-            // substituting (production now emits forward-slash paths on
-            // every OS via `to_posix_string`).
-            let cred_path = tmp.path().join("device-credential.json");
-            let normalized =
-                cfgd_core::normalize_for_snapshot(&captured, &[(&cred_path, "<CRED_PATH>")]);
-            let normalized = normalized.replace(&url, "<SERVER_URL>");
-            // Normalize the host-dependent device-id (default_device_id
-            // returns the running machine's hostname).
-            let device_id = cfgd_core::hostname_string();
-            let normalized = normalized.replace(&device_id, "<DEVICE_ID>");
-
-            let snap_path =
-                std::path::Path::new("tests/output_snapshots/enroll/cmd_token_flow.txt");
-            if std::env::var("INSTA_UPDATE").as_deref() == Ok("always") || !snap_path.exists() {
-                std::fs::create_dir_all(snap_path.parent().unwrap()).unwrap();
-                std::fs::write(snap_path, &normalized).unwrap();
-            } else {
-                let expected = std::fs::read_to_string(snap_path).unwrap();
-                // CRLF→LF: windows captures `\r\n`; committed snapshot is LF.
-                let actual_norm = normalized.replace("\r\n", "\n");
-                let expected_norm = expected.replace("\r\n", "\n");
-                pretty_assertions::assert_eq!(
-                    actual_norm,
-                    expected_norm,
-                    "snapshot mismatch: enroll/cmd_token_flow.txt"
+                let (printer, cap) = Printer::for_test_doc();
+                let url = server.url();
+                let result = cmd_enroll(
+                    &printer,
+                    &url,
+                    Some("bootstrap-token-xyz"),
+                    None,
+                    None,
+                    Some("alice"),
                 );
-            }
-        });
+                assert!(result.is_ok(), "cmd_enroll should succeed: {result:?}");
+                m.assert();
+                drop(printer);
+
+                let captured = strip_ansi(&cap.human());
+
+                // Sanity: streaming portion present before the buffered Doc.
+                assert!(
+                    captured.contains("Token Enrollment"),
+                    "missing streaming heading in:\n{captured}"
+                );
+                assert!(
+                    captured.contains("Enrolled as user 'alice'"),
+                    "missing streaming status line in:\n{captured}"
+                );
+                assert!(
+                    captured.contains("Next Steps"),
+                    "missing buffered section header in:\n{captured}"
+                );
+                assert!(
+                    captured.find("Token Enrollment").unwrap()
+                        < captured.find("Next Steps").unwrap(),
+                    "streaming surface must precede buffered surface in:\n{captured}"
+                );
+
+                // Bridge invariant: exactly one blank line between the last
+                // streaming line and the first buffered line. Two newlines in
+                // a row = one blank line; three or more = more than one.
+                assert!(
+                    captured.contains("\n\n"),
+                    "expected at least one blank line in:\n{captured}"
+                );
+                assert!(
+                    !captured.contains("\n\n\n"),
+                    "expected at most one blank line gap in:\n{captured}"
+                );
+
+                // Normalize the mockito-allocated server URL (a 127.0.0.1
+                // address with a random port) so the golden survives across
+                // runs / hosts. Route the credential-save path through
+                // `normalize_for_snapshot` so it posixifies on Windows before
+                // substituting (production now emits forward-slash paths on
+                // every OS via `to_posix_string`).
+                let cred_path = tmp.path().join("device-credential.json");
+                let normalized =
+                    cfgd_core::normalize_for_snapshot(&captured, &[(&cred_path, "<CRED_PATH>")]);
+                let normalized = normalized.replace(&url, "<SERVER_URL>");
+                // Normalize the host-dependent device-id (default_device_id
+                // returns the running machine's hostname).
+                let device_id = cfgd_core::hostname_string();
+                let normalized = normalized.replace(&device_id, "<DEVICE_ID>");
+
+                let snap_path =
+                    std::path::Path::new("tests/output_snapshots/enroll/cmd_token_flow.txt");
+                if std::env::var("INSTA_UPDATE").as_deref() == Ok("always") || !snap_path.exists() {
+                    std::fs::create_dir_all(snap_path.parent().unwrap()).unwrap();
+                    std::fs::write(snap_path, &normalized).unwrap();
+                } else {
+                    let expected = std::fs::read_to_string(snap_path).unwrap();
+                    // CRLF→LF: windows captures `\r\n`; committed snapshot is LF.
+                    let actual_norm = normalized.replace("\r\n", "\n");
+                    let expected_norm = expected.replace("\r\n", "\n");
+                    pretty_assertions::assert_eq!(
+                        actual_norm,
+                        expected_norm,
+                        "snapshot mismatch: enroll/cmd_token_flow.txt"
+                    );
+                }
+            },
+        );
     }
 
     /// ANSI-stripping helper local to this module — mirrors the one in
@@ -4215,43 +4352,47 @@ mod enroll_mockito {
     #[serial]
     fn cmd_enroll_token_path_persists_desired_config_when_present() {
         let tmp = tempfile::tempdir().unwrap();
-        with_test_env_var("CFGD_STATE_DIR", Some(tmp.path().to_str().unwrap()), || {
-            let mut server = mockito::Server::new();
-            // EnrollResponse with desiredConfig populated → exercises the
-            // save_pending_server_config branch in finish_enrollment.
-            let body = serde_json::json!({
-                "status": "ok",
-                "deviceId": "dev-abc-123",
-                "apiKey": "key-xyz-789",
-                "username": "alice",
-                "team": null,
-                "desiredConfig": {
-                    "apiVersion": "cfgd.io/v1alpha1",
-                    "kind": "Cfgd",
-                    "metadata": {"name": "from-server"},
-                    "spec": {}
-                }
-            })
-            .to_string();
-            let m = server
-                .mock("POST", "/api/v1/enroll")
-                .with_status(200)
-                .with_header("content-type", "application/json")
-                .with_body(body)
-                .create();
+        with_test_env_var(
+            cfgd_core::CFGD_STATE_DIR_ENV,
+            Some(tmp.path().to_str().unwrap()),
+            || {
+                let mut server = mockito::Server::new();
+                // EnrollResponse with desiredConfig populated → exercises the
+                // save_pending_server_config branch in finish_enrollment.
+                let body = serde_json::json!({
+                    "status": "ok",
+                    "deviceId": "dev-abc-123",
+                    "apiKey": "key-xyz-789",
+                    "username": "alice",
+                    "team": null,
+                    "desiredConfig": {
+                        "apiVersion": "cfgd.io/v1alpha1",
+                        "kind": "Cfgd",
+                        "metadata": {"name": "from-server"},
+                        "spec": {}
+                    }
+                })
+                .to_string();
+                let m = server
+                    .mock("POST", "/api/v1/enroll")
+                    .with_status(200)
+                    .with_header("content-type", "application/json")
+                    .with_body(body)
+                    .create();
 
-            let (printer, cap) = Printer::for_test_doc();
-            let url = server.url();
-            let result = cmd_enroll(&printer, &url, Some("token"), None, None, Some("alice"));
-            assert!(result.is_ok(), "cmd_enroll should succeed: {result:?}");
-            m.assert();
-            drop(printer);
-            let captured = cap.human();
-            assert!(
-                captured.contains("Server pushed desired config"),
-                "expected desired-config notice in: {captured}"
-            );
-        });
+                let (printer, cap) = Printer::for_test_doc();
+                let url = server.url();
+                let result = cmd_enroll(&printer, &url, Some("token"), None, None, Some("alice"));
+                assert!(result.is_ok(), "cmd_enroll should succeed: {result:?}");
+                m.assert();
+                drop(printer);
+                let captured = cap.human();
+                assert!(
+                    captured.contains("Server pushed desired config"),
+                    "expected desired-config notice in: {captured}"
+                );
+            },
+        );
     }
 
     #[test]
@@ -4360,38 +4501,42 @@ mod enroll_mockito {
         let tmp = tempfile::tempdir().unwrap();
         let blocker = tmp.path().join("blocker");
         std::fs::write(&blocker, "I am a file, not a dir").unwrap();
-        with_test_env_var("CFGD_STATE_DIR", Some(blocker.to_str().unwrap()), || {
-            let mut server = mockito::Server::new();
-            let _m = server
-                .mock("POST", "/api/v1/enroll")
-                .with_status(200)
-                .with_header("content-type", "application/json")
-                .with_body(
-                    serde_json::json!({
-                        "status": "ok",
-                        "deviceId": "dev-fail-cred",
-                        "apiKey": "key-fail-cred",
-                        "username": "charlie",
-                    })
-                    .to_string(),
-                )
-                .create();
+        with_test_env_var(
+            cfgd_core::CFGD_STATE_DIR_ENV,
+            Some(blocker.to_str().unwrap()),
+            || {
+                let mut server = mockito::Server::new();
+                let _m = server
+                    .mock("POST", "/api/v1/enroll")
+                    .with_status(200)
+                    .with_header("content-type", "application/json")
+                    .with_body(
+                        serde_json::json!({
+                            "status": "ok",
+                            "deviceId": "dev-fail-cred",
+                            "apiKey": "key-fail-cred",
+                            "username": "charlie",
+                        })
+                        .to_string(),
+                    )
+                    .create();
 
-            let (printer, cap) = Printer::for_test_doc();
-            let url = server.url();
-            let result = cmd_enroll(&printer, &url, Some("tok"), None, None, Some("charlie"));
-            drop(printer);
-            let human = cap.human();
+                let (printer, cap) = Printer::for_test_doc();
+                let url = server.url();
+                let result = cmd_enroll(&printer, &url, Some("tok"), None, None, Some("charlie"));
+                drop(printer);
+                let human = cap.human();
 
-            assert!(
-                result.is_ok(),
-                "credential-save failure must not fail cmd_enroll: {result:?}"
-            );
-            assert!(
-                human.contains("Failed to save credential") || human.contains("--api-key"),
-                "save-failure warning must appear in output: {human}"
-            );
-        });
+                assert!(
+                    result.is_ok(),
+                    "credential-save failure must not fail cmd_enroll: {result:?}"
+                );
+                assert!(
+                    human.contains("Failed to save credential") || human.contains("--api-key"),
+                    "save-failure warning must appear in output: {human}"
+                );
+            },
+        );
     }
 
     #[test]
@@ -4407,36 +4552,40 @@ mod enroll_mockito {
         let blocker = tmp.path().join("pending-server-config.json");
         std::fs::create_dir_all(&blocker).unwrap();
 
-        with_test_env_var("CFGD_STATE_DIR", Some(tmp.path().to_str().unwrap()), || {
-            let mut server = mockito::Server::new();
-            let _m = server
-                .mock("POST", "/api/v1/enroll")
-                .with_status(200)
-                .with_header("content-type", "application/json")
-                .with_body(
-                    serde_json::json!({
-                        "status": "ok",
-                        "deviceId": "dev-pdcfg",
-                        "apiKey": "key-pdcfg",
-                        "username": "dave",
-                        "desiredConfig": {"apiVersion": "cfgd.io/v1alpha1", "kind": "Cfgd"}
-                    })
-                    .to_string(),
-                )
-                .create();
+        with_test_env_var(
+            cfgd_core::CFGD_STATE_DIR_ENV,
+            Some(tmp.path().to_str().unwrap()),
+            || {
+                let mut server = mockito::Server::new();
+                let _m = server
+                    .mock("POST", "/api/v1/enroll")
+                    .with_status(200)
+                    .with_header("content-type", "application/json")
+                    .with_body(
+                        serde_json::json!({
+                            "status": "ok",
+                            "deviceId": "dev-pdcfg",
+                            "apiKey": "key-pdcfg",
+                            "username": "dave",
+                            "desiredConfig": {"apiVersion": "cfgd.io/v1alpha1", "kind": "Cfgd"}
+                        })
+                        .to_string(),
+                    )
+                    .create();
 
-            let printer = super::quiet_printer();
-            let url = server.url();
-            let result = cmd_enroll(&printer, &url, Some("tok"), None, None, Some("dave"));
-            assert!(
-                result.is_ok(),
-                "pending-config save failure must not fail cmd_enroll: {result:?}"
-            );
-            assert!(
-                tmp.path().join("device-credential.json").exists(),
-                "credential must still be written even when pending-config save fails"
-            );
-        });
+                let printer = super::quiet_printer();
+                let url = server.url();
+                let result = cmd_enroll(&printer, &url, Some("tok"), None, None, Some("dave"));
+                assert!(
+                    result.is_ok(),
+                    "pending-config save failure must not fail cmd_enroll: {result:?}"
+                );
+                assert!(
+                    tmp.path().join("device-credential.json").exists(),
+                    "credential must still be written even when pending-config save fails"
+                );
+            },
+        );
     }
 
     #[test]
@@ -4504,25 +4653,29 @@ mod enroll_mockito {
         // Port 1 is never listening — every connection attempt fails
         // immediately. cmd_enroll must propagate the network error as Err.
         let tmp = tempfile::tempdir().unwrap();
-        with_test_env_var("CFGD_STATE_DIR", Some(tmp.path().to_str().unwrap()), || {
-            let printer = super::quiet_printer();
-            let result = cmd_enroll(
-                &printer,
-                "http://127.0.0.1:1",
-                Some("any-token"),
-                None,
-                None,
-                Some("alice"),
-            );
-            assert!(
-                result.is_err(),
-                "connection-refused must surface as Err, got Ok"
-            );
-            assert!(
-                !tmp.path().join("device-credential.json").exists(),
-                "no credential must be written on connection failure"
-            );
-        });
+        with_test_env_var(
+            cfgd_core::CFGD_STATE_DIR_ENV,
+            Some(tmp.path().to_str().unwrap()),
+            || {
+                let printer = super::quiet_printer();
+                let result = cmd_enroll(
+                    &printer,
+                    "http://127.0.0.1:1",
+                    Some("any-token"),
+                    None,
+                    None,
+                    Some("alice"),
+                );
+                assert!(
+                    result.is_err(),
+                    "connection-refused must surface as Err, got Ok"
+                );
+                assert!(
+                    !tmp.path().join("device-credential.json").exists(),
+                    "no credential must be written on connection failure"
+                );
+            },
+        );
     }
 
     #[test]
@@ -4530,27 +4683,31 @@ mod enroll_mockito {
     fn cmd_enroll_token_path_gateway_500_returns_err() {
         // 500 triggers the retry loop then surfaces an error; no credential written.
         let tmp = tempfile::tempdir().unwrap();
-        with_test_env_var("CFGD_STATE_DIR", Some(tmp.path().to_str().unwrap()), || {
-            let mut server = mockito::Server::new();
-            let _m = server
-                .mock("POST", "/api/v1/enroll")
-                .with_status(500)
-                .with_body("internal server error")
-                .expect_at_least(2)
-                .create();
+        with_test_env_var(
+            cfgd_core::CFGD_STATE_DIR_ENV,
+            Some(tmp.path().to_str().unwrap()),
+            || {
+                let mut server = mockito::Server::new();
+                let _m = server
+                    .mock("POST", "/api/v1/enroll")
+                    .with_status(500)
+                    .with_body("internal server error")
+                    .expect_at_least(2)
+                    .create();
 
-            let printer = super::quiet_printer();
-            let url = server.url();
-            let result = cmd_enroll(&printer, &url, Some("tok"), None, None, Some("alice"));
-            assert!(
-                result.is_err(),
-                "gateway 500 must surface as Err, got: {result:?}"
-            );
-            assert!(
-                !tmp.path().join("device-credential.json").exists(),
-                "no credential must be written after 500 response"
-            );
-        });
+                let printer = super::quiet_printer();
+                let url = server.url();
+                let result = cmd_enroll(&printer, &url, Some("tok"), None, None, Some("alice"));
+                assert!(
+                    result.is_err(),
+                    "gateway 500 must surface as Err, got: {result:?}"
+                );
+                assert!(
+                    !tmp.path().join("device-credential.json").exists(),
+                    "no credential must be written after 500 response"
+                );
+            },
+        );
     }
 
     #[test]
@@ -4564,19 +4721,22 @@ mod enroll_mockito {
         // deterministically on every OS (a real Windows ssh-keygen would block
         // on a console passphrase prompt).
         let _kg = cfgd_core::test_helpers::EnvVarGuard::set(
-            "CFGD_SSH_KEYGEN_BIN",
+            cfgd_core::CFGD_SSH_KEYGEN_BIN_ENV,
             "/nonexistent/ssh-keygen",
         );
         let tmp = tempfile::tempdir().unwrap();
-        with_test_env_var("CFGD_STATE_DIR", Some(tmp.path().to_str().unwrap()), || {
-            let mut server = mockito::Server::new();
-            let _info = server
-                .mock("GET", "/api/v1/enroll/info")
-                .with_status(200)
-                .with_header("content-type", "application/json")
-                .with_body(r#"{"method":"key"}"#)
-                .create();
-            let _challenge = server
+        with_test_env_var(
+            cfgd_core::CFGD_STATE_DIR_ENV,
+            Some(tmp.path().to_str().unwrap()),
+            || {
+                let mut server = mockito::Server::new();
+                let _info = server
+                    .mock("GET", "/api/v1/enroll/info")
+                    .with_status(200)
+                    .with_header("content-type", "application/json")
+                    .with_body(r#"{"method":"key"}"#)
+                    .create();
+                let _challenge = server
                 .mock("POST", "/api/v1/enroll/challenge")
                 .with_status(200)
                 .with_header("content-type", "application/json")
@@ -4585,31 +4745,32 @@ mod enroll_mockito {
                 )
                 .create();
 
-            let (printer, _cap) = Printer::for_test_doc();
-            let url = server.url();
-            let result = cmd_enroll(
-                &printer,
-                &url,
-                None,
-                Some("/nonexistent/fake.pub"),
-                None,
-                Some("alice"),
-            );
+                let (printer, _cap) = Printer::for_test_doc();
+                let url = server.url();
+                let result = cmd_enroll(
+                    &printer,
+                    &url,
+                    None,
+                    Some("/nonexistent/fake.pub"),
+                    None,
+                    Some("alice"),
+                );
 
-            let err = result.expect_err("sign_with_ssh on a nonexistent key must fail");
-            let meta = err
-                .downcast_ref::<crate::cli::CliErrorMeta>()
-                .expect("signing failure returns CliErrorMeta");
-            assert_eq!(
-                meta.error_kind, "signing_failed",
-                "signing failure must carry the signing_failed kind: {meta:?}"
-            );
-            assert_eq!(
-                meta.extras["keyType"], "ssh",
-                "extras must record the SSH key type: {:?}",
-                meta.extras
-            );
-        });
+                let err = result.expect_err("sign_with_ssh on a nonexistent key must fail");
+                let meta = err
+                    .downcast_ref::<crate::cli::CliErrorMeta>()
+                    .expect("signing failure returns CliErrorMeta");
+                assert_eq!(
+                    meta.error_kind, "signing_failed",
+                    "signing failure must carry the signing_failed kind: {meta:?}"
+                );
+                assert_eq!(
+                    meta.extras["keyType"], "ssh",
+                    "extras must record the SSH key type: {:?}",
+                    meta.extras
+                );
+            },
+        );
     }
 
     #[test]
@@ -4620,17 +4781,23 @@ mod enroll_mockito {
         // found) — either way sign_with_gpg returns Err and signing_failed Doc fires.
         // Route gpg at a nonexistent binary so the signing failure is
         // deterministic regardless of whether the host has gpg installed.
-        let _gpg = cfgd_core::test_helpers::EnvVarGuard::set("CFGD_GPG_BIN", "/nonexistent/gpg");
+        let _gpg = cfgd_core::test_helpers::EnvVarGuard::set(
+            crate::seams::GPG_BIN_ENV,
+            "/nonexistent/gpg",
+        );
         let tmp = tempfile::tempdir().unwrap();
-        with_test_env_var("CFGD_STATE_DIR", Some(tmp.path().to_str().unwrap()), || {
-            let mut server = mockito::Server::new();
-            let _info = server
-                .mock("GET", "/api/v1/enroll/info")
-                .with_status(200)
-                .with_header("content-type", "application/json")
-                .with_body(r#"{"method":"key"}"#)
-                .create();
-            let _challenge = server
+        with_test_env_var(
+            cfgd_core::CFGD_STATE_DIR_ENV,
+            Some(tmp.path().to_str().unwrap()),
+            || {
+                let mut server = mockito::Server::new();
+                let _info = server
+                    .mock("GET", "/api/v1/enroll/info")
+                    .with_status(200)
+                    .with_header("content-type", "application/json")
+                    .with_body(r#"{"method":"key"}"#)
+                    .create();
+                let _challenge = server
                 .mock("POST", "/api/v1/enroll/challenge")
                 .with_status(200)
                 .with_header("content-type", "application/json")
@@ -4639,31 +4806,32 @@ mod enroll_mockito {
                 )
                 .create();
 
-            let (printer, _cap) = Printer::for_test_doc();
-            let url = server.url();
-            let result = cmd_enroll(
-                &printer,
-                &url,
-                None,
-                None,
-                Some("DEADBEEFNONEXISTENTKEYID"),
-                Some("alice"),
-            );
+                let (printer, _cap) = Printer::for_test_doc();
+                let url = server.url();
+                let result = cmd_enroll(
+                    &printer,
+                    &url,
+                    None,
+                    None,
+                    Some("DEADBEEFNONEXISTENTKEYID"),
+                    Some("alice"),
+                );
 
-            let err = result.expect_err("sign_with_gpg on a nonexistent key must fail");
-            let meta = err
-                .downcast_ref::<crate::cli::CliErrorMeta>()
-                .expect("signing failure returns CliErrorMeta");
-            assert_eq!(
-                meta.error_kind, "signing_failed",
-                "signing failure must carry the signing_failed kind: {meta:?}"
-            );
-            assert_eq!(
-                meta.extras["keyType"], "gpg",
-                "extras must record the GPG key type: {:?}",
-                meta.extras
-            );
-        });
+                let err = result.expect_err("sign_with_gpg on a nonexistent key must fail");
+                let meta = err
+                    .downcast_ref::<crate::cli::CliErrorMeta>()
+                    .expect("signing failure returns CliErrorMeta");
+                assert_eq!(
+                    meta.error_kind, "signing_failed",
+                    "signing failure must carry the signing_failed kind: {meta:?}"
+                );
+                assert_eq!(
+                    meta.extras["keyType"], "gpg",
+                    "extras must record the GPG key type: {:?}",
+                    meta.extras
+                );
+            },
+        );
     }
 
     #[test]
@@ -4673,40 +4841,45 @@ mod enroll_mockito {
         // is written and the enrollment response username (not the env value)
         // is what gets stored in the credential.
         let tmp = tempfile::tempdir().unwrap();
-        with_test_env_var("CFGD_STATE_DIR", Some(tmp.path().to_str().unwrap()), || {
-            with_test_env_var("USER", Some("env-driven-user"), || {
-                let mut server = mockito::Server::new();
-                let _m = server
-                    .mock("POST", "/api/v1/enroll")
-                    .with_status(200)
-                    .with_header("content-type", "application/json")
-                    .with_body(
-                        serde_json::json!({
-                            "status": "ok",
-                            "deviceId": "dev-env",
-                            "apiKey": "key-env",
-                            "username": "server-side-user",
-                        })
-                        .to_string(),
-                    )
-                    .create();
+        with_test_env_var(
+            cfgd_core::CFGD_STATE_DIR_ENV,
+            Some(tmp.path().to_str().unwrap()),
+            || {
+                with_test_env_var("USER", Some("env-driven-user"), || {
+                    let mut server = mockito::Server::new();
+                    let _m = server
+                        .mock("POST", "/api/v1/enroll")
+                        .with_status(200)
+                        .with_header("content-type", "application/json")
+                        .with_body(
+                            serde_json::json!({
+                                "status": "ok",
+                                "deviceId": "dev-env",
+                                "apiKey": "key-env",
+                                "username": "server-side-user",
+                            })
+                            .to_string(),
+                        )
+                        .create();
 
-                let printer = super::quiet_printer();
-                let url = server.url();
-                let result = cmd_enroll(&printer, &url, Some("tok"), None, None, None);
-                assert!(
-                    result.is_ok(),
-                    "username-from-env enrollment must succeed: {result:?}"
-                );
-                let cred_path = tmp.path().join("device-credential.json");
-                let cred: serde_json::Value =
-                    serde_json::from_str(&std::fs::read_to_string(&cred_path).unwrap()).unwrap();
-                assert_eq!(
-                    cred["username"], "server-side-user",
-                    "credential must store server-returned username: {cred}"
-                );
-            });
-        });
+                    let printer = super::quiet_printer();
+                    let url = server.url();
+                    let result = cmd_enroll(&printer, &url, Some("tok"), None, None, None);
+                    assert!(
+                        result.is_ok(),
+                        "username-from-env enrollment must succeed: {result:?}"
+                    );
+                    let cred_path = tmp.path().join("device-credential.json");
+                    let cred: serde_json::Value =
+                        serde_json::from_str(&std::fs::read_to_string(&cred_path).unwrap())
+                            .unwrap();
+                    assert_eq!(
+                        cred["username"], "server-side-user",
+                        "credential must store server-returned username: {cred}"
+                    );
+                });
+            },
+        );
     }
 
     #[test]
@@ -4715,39 +4888,43 @@ mod enroll_mockito {
         // EnrollResponse with team=null → finish_enrollment's `if let Some(ref team)`
         // arm is skipped; credential is written without a team field.
         let tmp = tempfile::tempdir().unwrap();
-        with_test_env_var("CFGD_STATE_DIR", Some(tmp.path().to_str().unwrap()), || {
-            let mut server = mockito::Server::new();
-            let _m = server
-                .mock("POST", "/api/v1/enroll")
-                .with_status(200)
-                .with_header("content-type", "application/json")
-                .with_body(
-                    serde_json::json!({
-                        "status": "ok",
-                        "deviceId": "dev-noteam",
-                        "apiKey": "key-noteam",
-                        "username": "solo",
-                    })
-                    .to_string(),
-                )
-                .create();
+        with_test_env_var(
+            cfgd_core::CFGD_STATE_DIR_ENV,
+            Some(tmp.path().to_str().unwrap()),
+            || {
+                let mut server = mockito::Server::new();
+                let _m = server
+                    .mock("POST", "/api/v1/enroll")
+                    .with_status(200)
+                    .with_header("content-type", "application/json")
+                    .with_body(
+                        serde_json::json!({
+                            "status": "ok",
+                            "deviceId": "dev-noteam",
+                            "apiKey": "key-noteam",
+                            "username": "solo",
+                        })
+                        .to_string(),
+                    )
+                    .create();
 
-            let printer = super::quiet_printer();
-            let url = server.url();
-            let result = cmd_enroll(&printer, &url, Some("tok"), None, None, Some("solo"));
-            assert!(
-                result.is_ok(),
-                "no-team enrollment must succeed: {result:?}"
-            );
-            let cred: serde_json::Value = serde_json::from_str(
-                &std::fs::read_to_string(tmp.path().join("device-credential.json")).unwrap(),
-            )
-            .unwrap();
-            assert!(
-                cred.get("team").is_none() || cred["team"].is_null(),
-                "credential team field must be absent/null when response has no team: {cred}"
-            );
-        });
+                let printer = super::quiet_printer();
+                let url = server.url();
+                let result = cmd_enroll(&printer, &url, Some("tok"), None, None, Some("solo"));
+                assert!(
+                    result.is_ok(),
+                    "no-team enrollment must succeed: {result:?}"
+                );
+                let cred: serde_json::Value = serde_json::from_str(
+                    &std::fs::read_to_string(tmp.path().join("device-credential.json")).unwrap(),
+                )
+                .unwrap();
+                assert!(
+                    cred.get("team").is_none() || cred["team"].is_null(),
+                    "credential team field must be absent/null when response has no team: {cred}"
+                );
+            },
+        );
     }
 
     #[test]
@@ -4767,19 +4944,22 @@ mod enroll_mockito {
         // detect_ssh_key still finds and names the .pub; only the signing step is
         // routed at a nonexistent ssh-keygen so it fails fast on every OS.
         let _kg = cfgd_core::test_helpers::EnvVarGuard::set(
-            "CFGD_SSH_KEYGEN_BIN",
+            cfgd_core::CFGD_SSH_KEYGEN_BIN_ENV,
             "/nonexistent/ssh-keygen",
         );
 
-        with_test_env_var("CFGD_STATE_DIR", Some(tmp.path().to_str().unwrap()), || {
-            let mut server = mockito::Server::new();
-            let _info = server
-                .mock("GET", "/api/v1/enroll/info")
-                .with_status(200)
-                .with_header("content-type", "application/json")
-                .with_body(r#"{"method":"key"}"#)
-                .create();
-            let _challenge = server
+        with_test_env_var(
+            cfgd_core::CFGD_STATE_DIR_ENV,
+            Some(tmp.path().to_str().unwrap()),
+            || {
+                let mut server = mockito::Server::new();
+                let _info = server
+                    .mock("GET", "/api/v1/enroll/info")
+                    .with_status(200)
+                    .with_header("content-type", "application/json")
+                    .with_body(r#"{"method":"key"}"#)
+                    .create();
+                let _challenge = server
                 .mock("POST", "/api/v1/enroll/challenge")
                 .with_status(200)
                 .with_header("content-type", "application/json")
@@ -4788,25 +4968,26 @@ mod enroll_mockito {
                 )
                 .create();
 
-            let (printer, cap) = Printer::for_test_doc();
-            let url = server.url();
-            let result = cmd_enroll(&printer, &url, None, None, None, Some("alice"));
-            drop(printer);
-            let human = cap.human();
+                let (printer, cap) = Printer::for_test_doc();
+                let url = server.url();
+                let result = cmd_enroll(&printer, &url, None, None, None, Some("alice"));
+                drop(printer);
+                let human = cap.human();
 
-            let err = result.expect_err("sign_with_ssh on a fake key must fail");
-            assert_eq!(
-                err.downcast_ref::<crate::cli::CliErrorMeta>()
-                    .expect("signing failure returns CliErrorMeta")
-                    .error_kind,
-                "signing_failed",
-                "auto-detect signing failure must carry the signing_failed kind"
-            );
-            assert!(
-                human.contains("id_ed25519") || human.contains("SSH"),
-                "auto-detect info line must reference the discovered key: {human}"
-            );
-        });
+                let err = result.expect_err("sign_with_ssh on a fake key must fail");
+                assert_eq!(
+                    err.downcast_ref::<crate::cli::CliErrorMeta>()
+                        .expect("signing failure returns CliErrorMeta")
+                        .error_kind,
+                    "signing_failed",
+                    "auto-detect signing failure must carry the signing_failed kind"
+                );
+                assert!(
+                    human.contains("id_ed25519") || human.contains("SSH"),
+                    "auto-detect info line must reference the discovered key: {human}"
+                );
+            },
+        );
     }
 }
 
@@ -4910,6 +5091,7 @@ mod cmd_init_from_local_bare {
 
         let printer = quiet_printer();
         let args = InitArgs {
+            migration_gate: inert_migration_gate(),
             on_conflict: crate::cli::OnConflict::Ask,
             path: Some(target.to_str().unwrap()),
             from: Some(&url),
@@ -4957,6 +5139,7 @@ mod cmd_init_from_local_bare {
 
         let printer = quiet_printer();
         let args = InitArgs {
+            migration_gate: inert_migration_gate(),
             on_conflict: crate::cli::OnConflict::Ask,
             path: Some(target.to_str().unwrap()),
             from: Some(&url),
@@ -4995,6 +5178,7 @@ mod cmd_init_from_local_bare {
 
         let printer = quiet_printer();
         let args = InitArgs {
+            migration_gate: inert_migration_gate(),
             on_conflict: crate::cli::OnConflict::Ask,
             path: Some(target.to_str().unwrap()),
             from: Some(&url),
@@ -5038,12 +5222,12 @@ mod cmd_init_apply_orchestration {
     fn with_state_dir<F: FnOnce()>(dir: &std::path::Path, f: F) {
         // SAFETY: serialized via #[serial].
         unsafe {
-            std::env::set_var("CFGD_STATE_DIR", dir);
+            std::env::set_var(cfgd_core::CFGD_STATE_DIR_ENV, dir);
         }
         f();
         // SAFETY: serialized via #[serial].
         unsafe {
-            std::env::remove_var("CFGD_STATE_DIR");
+            std::env::remove_var(cfgd_core::CFGD_STATE_DIR_ENV);
         }
     }
 
@@ -5063,6 +5247,7 @@ mod cmd_init_apply_orchestration {
         let printer = quiet_printer();
         with_state_dir(&state_dir, || {
             let args = InitArgs {
+                migration_gate: inert_migration_gate(),
                 on_conflict: crate::cli::OnConflict::Ask,
                 path: Some(target.to_str().unwrap()),
                 from: None,
@@ -5109,6 +5294,7 @@ mod cmd_init_apply_orchestration {
         with_state_dir(&state_dir, || {
             let modules = vec!["ghost-module".to_string()];
             let args = InitArgs {
+                migration_gate: inert_migration_gate(),
                 on_conflict: crate::cli::OnConflict::Ask,
                 path: Some(target.to_str().unwrap()),
                 from: None,
@@ -5160,6 +5346,7 @@ mod cmd_init_apply_orchestration {
         let printer = quiet_printer();
         with_state_dir(&state_dir, || {
             let args = InitArgs {
+                migration_gate: inert_migration_gate(),
                 on_conflict: crate::cli::OnConflict::Ask,
                 path: Some(target.to_str().unwrap()),
                 from: None,
@@ -5205,29 +5392,41 @@ mod cmd_init_apply_orchestration {
         tmp_root: &std::path::Path,
         extra_spec: &str,
     ) -> std::path::PathBuf {
+        make_bare_repo_holding(
+            tmp_root,
+            &[
+                (
+                    "cfgd.yaml",
+                    &format!(
+                        "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: cloned-cfg\nspec:\n  profile: default\n{extra_spec}"
+                    ),
+                ),
+                ("profiles/default.yaml", DEFAULT_PROFILE),
+            ],
+        )
+    }
+
+    const DEFAULT_PROFILE: &str =
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec: {}\n";
+
+    /// A bare repository whose one commit holds `files`, each a path relative
+    /// to the repository root and its contents.
+    fn make_bare_repo_holding(
+        tmp_root: &std::path::Path,
+        files: &[(&str, &str)],
+    ) -> std::path::PathBuf {
         let bare = tmp_root.join("upstream.git");
         let _bare_repo = git2::Repository::init_bare(&bare).unwrap();
 
         let src = tmp_root.join("src");
         let src_repo = git2::Repository::init(&src).unwrap();
-        std::fs::write(
-            src.join("cfgd.yaml"),
-            format!(
-                "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: cloned-cfg\nspec:\n  profile: default\n{extra_spec}"
-            ),
-        )
-        .unwrap();
-        std::fs::create_dir_all(src.join("profiles")).unwrap();
-        std::fs::write(
-            src.join("profiles").join("default.yaml"),
-            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec: {}\n",
-        )
-        .unwrap();
         let mut index = src_repo.index().unwrap();
-        index.add_path(std::path::Path::new("cfgd.yaml")).unwrap();
-        index
-            .add_path(std::path::Path::new("profiles/default.yaml"))
-            .unwrap();
+        for (path, contents) in files {
+            let file = src.join(path);
+            std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+            std::fs::write(&file, contents).unwrap();
+            index.add_path(std::path::Path::new(path)).unwrap();
+        }
         index.write().unwrap();
         let tree_id = index.write_tree().unwrap();
         let tree = src_repo.find_tree(tree_id).unwrap();
@@ -5269,6 +5468,7 @@ mod cmd_init_apply_orchestration {
         let (printer, cap) = Printer::for_test_doc();
         with_state_dir(&state_dir, || {
             let args = InitArgs {
+                migration_gate: inert_migration_gate(),
                 on_conflict: crate::cli::OnConflict::Ask,
                 path: Some(target.to_str().unwrap()),
                 from: Some(&url),
@@ -5329,6 +5529,7 @@ mod cmd_init_apply_orchestration {
         let (printer, cap) = Printer::for_test_doc();
         with_state_dir(&state_dir, || {
             let args = InitArgs {
+                migration_gate: inert_migration_gate(),
                 on_conflict: crate::cli::OnConflict::Ask,
                 path: Some(target.to_str().unwrap()),
                 from: Some(&url),
@@ -5370,7 +5571,7 @@ mod cmd_init_apply_orchestration {
         //   1. validate profiles/default.yaml exists
         //   2. write spec.profile=default into cfgd.yaml (even though the
         //      clone already has it — exercises the mutate-on-set arm)
-        //   3. run the profile-based apply (dry_run → zero-action exit)
+        //   3. run the profile-based apply (an empty profile → zero-action exit)
         let tmp = tempfile::tempdir().unwrap();
         let _home = cfgd_core::with_test_home_guard(tmp.path());
         let bare = make_bare_config_repo_with_default(tmp.path(), "");
@@ -5381,13 +5582,14 @@ mod cmd_init_apply_orchestration {
         let (printer, cap) = Printer::for_test_doc();
         with_state_dir(&state_dir, || {
             let args = InitArgs {
+                migration_gate: inert_migration_gate(),
                 on_conflict: crate::cli::OnConflict::Ask,
                 path: Some(target.to_str().unwrap()),
                 from: Some(&url),
                 branch: "master",
                 name: None,
                 apply: false,
-                dry_run: true,
+                dry_run: false,
                 yes: true,
                 install_daemon: false,
                 theme: None,
@@ -5414,6 +5616,257 @@ mod cmd_init_apply_orchestration {
         assert!(
             cfg_yaml.contains("profile: default"),
             "spec.profile should be persisted to cfgd.yaml: {cfg_yaml}"
+        );
+    }
+
+    /// A cloned repository carrying `cfgd.toml` takes every flag that writes
+    /// the config document into that file: `--name`, `--theme` and
+    /// `--apply-profile` land in the TOML document, and no `cfgd.yaml` appears
+    /// beside it.
+    #[test]
+    #[serial]
+    fn cmd_init_from_a_repo_carrying_cfgd_toml_writes_every_override_into_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let _home = cfgd_core::with_test_home_guard(tmp.path());
+        let bare = make_bare_repo_holding(
+            tmp.path(),
+            &[
+                (
+                    "cfgd.toml",
+                    "apiVersion = \"cfgd.io/v1alpha1\"\nkind = \"Config\"\n\n[metadata]\nname = \"cloned-cfg\"\n\n[spec]\nfileStrategy = \"Symlink\"\n",
+                ),
+                ("profiles/default.yaml", DEFAULT_PROFILE),
+            ],
+        );
+        let target = tmp.path().join("dst");
+        let state_dir = tmp.path().join("state");
+        let url = cfgd_core::test_helpers::file_url(&bare);
+
+        let (printer, cap) = Printer::for_test_doc();
+        with_state_dir(&state_dir, || {
+            let args = InitArgs {
+                migration_gate: inert_migration_gate(),
+                on_conflict: crate::cli::OnConflict::Ask,
+                path: Some(target.to_str().unwrap()),
+                from: Some(&url),
+                branch: "master",
+                name: Some("acme"),
+                apply: false,
+                dry_run: false,
+                yes: true,
+                install_daemon: false,
+                theme: Some("dracula"),
+                apply_profile: Some("default"),
+                apply_modules: &[],
+                cache_dir: None,
+                state_dir: None,
+                runtime_dir: None,
+                scope: cfgd_core::Scope::User,
+            };
+            cmd_init_guarded(&printer, &args).expect("init over a TOML document succeeds");
+        });
+        drop(printer);
+
+        let out = cfgd_core::output::strip_ansi(&cap.human());
+        assert!(
+            out.contains("Set active profile: default"),
+            "the profile is set on the TOML document: {out}"
+        );
+        assert!(
+            !target.join("cfgd.yaml").exists(),
+            "no cfgd.yaml is written beside the cloned cfgd.toml"
+        );
+        let document = target.join("cfgd.toml");
+        let cfg = config::load_config(&document).unwrap();
+        assert_eq!(cfg.metadata.name, "acme");
+        assert_eq!(cfg.spec.theme().map(|t| t.name.as_str()), Some("dracula"));
+        assert_eq!(cfg.spec.profile.as_deref(), Some("default"));
+    }
+
+    /// A `--from` clone under a `--config` naming an existing directory lands in
+    /// that directory, and the run reads the document the repository brought.
+    #[test]
+    #[serial]
+    fn a_from_clone_under_a_config_directory_reads_that_directorys_document() {
+        let tmp = tempfile::tempdir().unwrap();
+        let _home = cfgd_core::with_test_home_guard(tmp.path());
+        let bare = make_bare_repo_holding(
+            tmp.path(),
+            &[
+                (
+                    "cfgd.toml",
+                    "apiVersion = \"cfgd.io/v1alpha1\"\nkind = \"Config\"\n\n[metadata]\nname = \"cloned-cfg\"\n",
+                ),
+                ("profiles/default.yaml", DEFAULT_PROFILE),
+            ],
+        );
+        let config_dir = tmp.path().join("dst");
+        std::fs::create_dir(&config_dir).unwrap();
+        let url = cfgd_core::test_helpers::file_url(&bare);
+
+        let target = super::super::source::from_destination(&config_dir);
+        assert_eq!(target.as_deref(), Some(config_dir.as_path()));
+        let dest = resolve_from(&url, target.as_deref(), "master", &quiet_printer())
+            .expect("the clone lands in the named directory");
+        assert_eq!(dest, config_dir);
+        assert_eq!(
+            super::super::source::from_run_config(&url, &config_dir, &dest),
+            config_dir.join("cfgd.toml")
+        );
+    }
+
+    /// `init --apply-profile --dry-run` plans against the named profile and
+    /// leaves a cloned `cfgd.yaml` byte for byte as the clone put it: no
+    /// profile, no `--name` / `--theme` override, and no field the migration
+    /// gate would add under `--yes`.
+    #[test]
+    #[serial]
+    fn cmd_init_apply_profile_dry_run_leaves_a_cfgd_yaml_unchanged() {
+        dry_run_apply_profile_leaves_document_unchanged(
+            "cfgd.yaml",
+            "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: cloned-cfg\nspec:\n  profile: default\n",
+        );
+    }
+
+    /// The same preview over a cloned `cfgd.toml`.
+    #[test]
+    #[serial]
+    fn cmd_init_apply_profile_dry_run_leaves_a_cfgd_toml_unchanged() {
+        dry_run_apply_profile_leaves_document_unchanged(
+            "cfgd.toml",
+            "apiVersion = \"cfgd.io/v1alpha1\"\nkind = \"Config\"\n\n[metadata]\nname = \"cloned-cfg\"\n\n[spec]\nprofile = \"default\"\n",
+        );
+    }
+
+    fn dry_run_apply_profile_leaves_document_unchanged(document: &str, contents: &str) {
+        let tmp = tempfile::tempdir().unwrap();
+        let _home = cfgd_core::with_test_home_guard(tmp.path());
+        let other = DEFAULT_PROFILE.replace("name: default", "name: other");
+        let bare = make_bare_repo_holding(
+            tmp.path(),
+            &[
+                (document, contents),
+                ("profiles/default.yaml", DEFAULT_PROFILE),
+                ("profiles/other.yaml", &other),
+            ],
+        );
+        let target = tmp.path().join("dst");
+        let state_dir = tmp.path().join("state");
+        let url = cfgd_core::test_helpers::file_url(&bare);
+
+        // The gate as `cfgd --yes init --dry-run` parses to: no override, the
+        // policy the document defaults to, and `--yes` taking its prompt, so
+        // only the preview the parse derives keeps the document unwritten.
+        use crate::cli::HermeticParse;
+        let cli = crate::cli::Cli::try_parse_hermetic([
+            "cfgd",
+            "--yes",
+            "--state-dir",
+            state_dir.to_str().unwrap(),
+            "init",
+            "--dry-run",
+        ])
+        .expect("the fixture argv parses");
+        let gate = crate::cli::config_schema::GateInvocation::of(&cli, false);
+        assert!(gate.preview, "`init --dry-run` parses to a preview");
+        let (printer, cap) = Printer::for_test_doc();
+        with_state_dir(&state_dir, || {
+            let args = InitArgs {
+                migration_gate: gate,
+                on_conflict: crate::cli::OnConflict::Ask,
+                path: Some(target.to_str().unwrap()),
+                from: Some(&url),
+                branch: "master",
+                name: Some("acme"),
+                apply: false,
+                dry_run: true,
+                yes: true,
+                install_daemon: false,
+                theme: Some("dracula"),
+                apply_profile: Some("other"),
+                apply_modules: &[],
+                cache_dir: None,
+                state_dir: None,
+                runtime_dir: None,
+                scope: cfgd_core::Scope::User,
+            };
+            cmd_init_guarded(&printer, &args).expect("a dry-run init previews the profile");
+        });
+        drop(printer);
+
+        let out = cfgd_core::output::strip_ansi(&cap.human());
+        assert_eq!(
+            std::fs::read_to_string(target.join(document)).unwrap(),
+            contents,
+            "{document}: a preview leaves the config document as the clone put it"
+        );
+        assert!(
+            out.lines()
+                .any(|l| l.split_whitespace().collect::<Vec<_>>() == ["Profile", "other"]),
+            "{document}: the preview plans against the named profile: {out}"
+        );
+        assert!(
+            out.contains("this build reads"),
+            "{document}: the gate reports the fields it would add: {out}"
+        );
+        assert!(
+            !out.contains("Set active profile"),
+            "{document}: a preview announces no profile write: {out}"
+        );
+    }
+
+    /// `--apply-profile` on a clone that carries no config document refuses
+    /// with the typed missing-config error, which exits as a named thing not
+    /// found.
+    #[test]
+    #[serial]
+    fn cmd_init_apply_profile_on_a_clone_without_a_document_is_a_typed_refusal() {
+        let tmp = tempfile::tempdir().unwrap();
+        let _home = cfgd_core::with_test_home_guard(tmp.path());
+        let bare =
+            make_bare_repo_holding(tmp.path(), &[("profiles/default.yaml", DEFAULT_PROFILE)]);
+        let target = tmp.path().join("dst");
+        let state_dir = tmp.path().join("state");
+        let url = cfgd_core::test_helpers::file_url(&bare);
+
+        let printer = quiet_printer();
+        let mut outcome = None;
+        with_state_dir(&state_dir, || {
+            let args = InitArgs {
+                migration_gate: inert_migration_gate(),
+                on_conflict: crate::cli::OnConflict::Ask,
+                path: Some(target.to_str().unwrap()),
+                from: Some(&url),
+                branch: "master",
+                name: None,
+                apply: false,
+                dry_run: true,
+                yes: true,
+                install_daemon: false,
+                theme: None,
+                apply_profile: Some("default"),
+                apply_modules: &[],
+                cache_dir: None,
+                state_dir: None,
+                runtime_dir: None,
+                scope: cfgd_core::Scope::User,
+            };
+            outcome = Some(cmd_init_guarded(&printer, &args));
+        });
+        let err = outcome
+            .unwrap()
+            .expect_err("no document to set the profile on");
+        let typed = err
+            .downcast_ref::<cfgd_core::errors::CfgdError>()
+            .expect("the refusal carries a CfgdError");
+        assert!(
+            matches!(
+                typed,
+                cfgd_core::errors::CfgdError::Config(
+                    cfgd_core::errors::ConfigError::NotFound { .. }
+                )
+            ),
+            "expected ConfigError::NotFound, got: {typed}"
         );
     }
 
@@ -5478,6 +5931,7 @@ mod cmd_init_apply_orchestration {
         let (printer, cap) = Printer::for_test_doc();
         with_state_dir(&state_dir, || {
             let args = InitArgs {
+                migration_gate: inert_migration_gate(),
                 on_conflict: crate::cli::OnConflict::Ask,
                 path: Some(target.to_str().unwrap()),
                 from: Some(&url),
@@ -5573,6 +6027,7 @@ mod cmd_init_apply_orchestration {
         let (printer, cap) = Printer::for_test_doc();
         with_state_dir(&state_dir, || {
             let args = InitArgs {
+                migration_gate: inert_migration_gate(),
                 on_conflict: crate::cli::OnConflict::Ask,
                 path: Some(target.to_str().unwrap()),
                 from: Some(&url),
@@ -5662,13 +6117,13 @@ mod cmd_init_apply_orchestration {
     #[serial]
     fn cmd_init_combined_apply_profile_and_apply_module_merges_module_into_profile_plan() {
         // `--apply-profile default --apply-module extra` drives the
-        // profile-based branch (lines 162-174 in cmd_init: set spec.profile,
-        // load it) AND the apply-modules merge (lines 195-198: extend
-        // module_names with names passed in --apply-module that the profile
-        // doesn't already list). With dry_run=true, the reconciler plan
-        // bails at "Nothing to do" since the module declares nothing — what
-        // this pins is the *control flow*: profile validated + persisted
-        // + module name carried through into the plan.
+        // profile-based branch (validate the profile, plan against it) AND
+        // the apply-modules merge (extend module_names with names passed in
+        // --apply-module that the profile doesn't already list). With
+        // dry_run=true, the reconciler plan bails at "Nothing to do" since
+        // the module declares nothing — what this pins is the *control
+        // flow*: profile validated + module name carried through into the
+        // plan, with the preview writing no profile into the document.
         let tmp = tempfile::tempdir().unwrap();
         let _home = cfgd_core::with_test_home_guard(tmp.path());
         let bare = make_bare_config_repo_with_default_and_module(tmp.path(), "extra");
@@ -5680,6 +6135,7 @@ mod cmd_init_apply_orchestration {
         let modules = vec!["extra".to_string()];
         with_state_dir(&state_dir, || {
             let args = InitArgs {
+                migration_gate: inert_migration_gate(),
                 on_conflict: crate::cli::OnConflict::Ask,
                 path: Some(target.to_str().unwrap()),
                 from: Some(&url),
@@ -5703,10 +6159,10 @@ mod cmd_init_apply_orchestration {
 
         drop(printer);
         let out = cfgd_core::output::strip_ansi(&cap.human());
-        // Profile-validation arm fires.
+        // A preview writes no profile into the document.
         assert!(
-            out.contains("Set active profile: default"),
-            "combined arm should still announce profile selection: {out}"
+            !out.contains("Set active profile"),
+            "a preview announces no profile write: {out}"
         );
         // The run header carries both: the profile arm's `Profile` row and the
         // module the flag merged into it.
@@ -5743,6 +6199,7 @@ mod cmd_init_apply_orchestration {
         let modules = vec!["ghost-extra".to_string()];
         with_state_dir(&state_dir, || {
             let args = InitArgs {
+                migration_gate: inert_migration_gate(),
                 on_conflict: crate::cli::OnConflict::Ask,
                 path: Some(target.to_str().unwrap()),
                 from: Some(&url),
@@ -5795,6 +6252,7 @@ mod cmd_init_apply_orchestration {
 
         let (printer, cap) = Printer::for_test_doc();
         let args = InitArgs {
+            migration_gate: inert_migration_gate(),
             on_conflict: crate::cli::OnConflict::Ask,
             path: Some(target.to_str().unwrap()),
             from: None,
@@ -5852,6 +6310,7 @@ mod cmd_init_apply_orchestration {
 
         let (printer, cap) = Printer::for_test_doc();
         let args = InitArgs {
+            migration_gate: inert_migration_gate(),
             on_conflict: crate::cli::OnConflict::Ask,
             path: Some(target.to_str().unwrap()),
             from: None,
@@ -5918,11 +6377,11 @@ fn every_checkout_row_spells_its_revision_through_the_one_derivation() {
     for entry in std::fs::read_dir(&dir).expect("the init tree is readable") {
         let path = entry.expect("readable entry").path();
         if path.extension().and_then(|e| e.to_str()) != Some("rs")
-            || path.file_name().and_then(|f| f.to_str()) == Some("tests.rs")
+            || cfgd_core::test_helpers::is_test_source(&path)
         {
             continue;
         }
-        let body = std::fs::read_to_string(&path).expect("readable source");
+        let body = cfgd_core::test_helpers::production_slice_of(&path);
         let lines: Vec<&str> = body.lines().collect();
         for (n, line) in lines.iter().enumerate() {
             if !line.contains("checkout_facts(") || line.contains("fn checkout_facts(") {
@@ -5934,12 +6393,11 @@ fn every_checkout_row_spells_its_revision_through_the_one_derivation() {
                 .iter()
                 .rev()
                 .find_map(|l| {
-                    l.trim()
-                        .strip_prefix("fn ")
-                        .or(l.trim().strip_prefix("pub(super) fn "))
+                    cfgd_core::test_helpers::opens_function(l)
+                        .then(|| cfgd_core::test_helpers::declared_fn_name(l))
+                        .flatten()
                 })
-                .unwrap_or("")
-                .to_string();
+                .unwrap_or_default();
             if enclosing.starts_with("checkout_detail") {
                 continue;
             }
@@ -6034,5 +6492,85 @@ fn init_apply_settles_the_hash_of_every_link_deployed_row_before_it_returns() {
         module_row.last_hash.is_some(),
         "init --apply must settle the row's hash before it returns, so the daemon's \
          first tick has nothing to backfill: {module_row:?}"
+    );
+}
+
+/// The answer a reader gives init's migration prompt is the answer the next
+/// command reads: init records it against the config it wrote, and a gate
+/// reaching the same file by the directory `--config` names finds it and
+/// asks nothing.
+#[test]
+fn an_answer_given_to_inits_migration_prompt_is_the_one_the_next_command_reads() {
+    use cfgd_core::output::PromptAnswer;
+    let dir = tempfile::tempdir().unwrap();
+    let state = tempfile::tempdir().unwrap();
+    let source = dir.path().join("source");
+    std::fs::create_dir_all(&source).unwrap();
+    let behind = "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: source\nspec:\n  fileStrategy: Symlink\n";
+    std::fs::write(source.join("cfgd.yaml"), behind).unwrap();
+    let gate = crate::cli::config_schema::GateInvocation {
+        policy_override: None,
+        assume_yes: false,
+        is_daemon: false,
+        preview: false,
+        state_dir: Some(state.path()),
+        scope: cfgd_core::Scope::User,
+    };
+
+    let (printer, _said) = Printer::for_test_with_prompt_responses_at(
+        vec![PromptAnswer::Confirm(false)],
+        Verbosity::Normal,
+    );
+    let source_str = source.display().to_string();
+    let args = InitArgs {
+        migration_gate: gate,
+        on_conflict: crate::cli::OnConflict::Ask,
+        path: None,
+        from: Some(&source_str),
+        branch: "master",
+        name: None,
+        apply: false,
+        dry_run: false,
+        yes: false,
+        install_daemon: false,
+        theme: None,
+        apply_profile: None,
+        apply_modules: &[],
+        cache_dir: None,
+        state_dir: Some(state.path()),
+        runtime_dir: None,
+        scope: cfgd_core::Scope::User,
+    };
+    cmd_init_guarded(&printer, &args).unwrap();
+    assert_eq!(
+        printer.prompt_confirm("still queued?").ok(),
+        None,
+        "init asked, and was answered no"
+    );
+    assert_eq!(
+        std::fs::read_to_string(source.join("cfgd.yaml")).unwrap(),
+        behind,
+        "a no writes nothing"
+    );
+
+    let (again, _said_again) = Printer::for_test_with_prompt_responses_at(
+        vec![PromptAnswer::Confirm(true)],
+        Verbosity::Normal,
+    );
+    let next = cfgd_core::config::resolve_config_path(&source.join("."));
+    crate::cli::config_schema::gate_on_load(
+        &again,
+        &gate,
+        &crate::cli::startup::StartupDocument::load(&next),
+    );
+    assert_eq!(
+        again.prompt_confirm("still queued?").ok(),
+        Some(true),
+        "the next command read init's answer and asked nothing"
+    );
+    assert_eq!(
+        std::fs::read_to_string(source.join("cfgd.yaml")).unwrap(),
+        behind,
+        "the file is as init left it"
     );
 }

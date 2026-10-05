@@ -480,6 +480,7 @@ mod tests {
             let sink = StringSink(buf.clone());
             let r = Renderer::new(Theme::default().with_colors(colors), Verbosity::Normal);
             r.render_syntax_highlight(&sink, 0, "let x = 1;\nlet y = 2;\n", "rs", &ss);
+            // long-line-ok: a hatch is read off its own line, so it cannot wrap
             // raw-capture-ok: asserting on the presence/absence of raw ANSI escapes themselves — captured_text would strip them
             buf.lock().unwrap_or_else(|e| e.into_inner()).clone()
         };
@@ -520,6 +521,7 @@ mod tests {
             "yaml",
             &ss,
         );
+        // long-line-ok: a hatch is read off its own line, so it cannot wrap
         // raw-capture-ok: the claim is about which escapes survive, and captured_text strips exactly what this test looks for
         let out = buf.lock().unwrap_or_else(|e| e.into_inner()).clone();
         assert!(

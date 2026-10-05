@@ -23,13 +23,7 @@ pub(super) async fn reconcile_drift_alert(
     let start = std::time::Instant::now();
     let name = obj.name_any();
     let namespace = obj.namespace().unwrap_or_default();
-    let mc_name = &obj.spec.machine_config_ref.name;
-    let mc_namespace = obj
-        .spec
-        .machine_config_ref
-        .namespace
-        .as_deref()
-        .unwrap_or(&namespace);
+    let (mc_namespace, mc_name) = alert_target(&obj);
 
     info!(
         name = %name,
@@ -42,8 +36,8 @@ pub(super) async fn reconcile_drift_alert(
 
     let machines: Api<MachineConfig> = namespaced_api(&ctx.client, mc_namespace)?;
 
-    match machines.get(mc_name).await {
-        Ok(mc) => {
+    match ctx.stores.machine_config(mc_namespace, mc_name).await? {
+        Some(mc) => {
             // An owner reference without a UID is silently dropped by the
             // API server, so a missing UID must fail loudly instead.
             let mc_uid = mc.metadata.uid.clone().ok_or_else(|| {
@@ -53,23 +47,33 @@ pub(super) async fn reconcile_drift_alert(
                 ))
             })?;
 
-            let owner_ref = OwnerReference {
-                api_version: cfgd_core::API_VERSION.to_string(),
-                kind: "MachineConfig".to_string(),
-                name: mc.name_any(),
-                uid: mc_uid,
-                controller: Some(true),
-                block_owner_deletion: Some(true),
+            // Kubernetes treats an owner in another namespace as absent and
+            // garbage-collects the dependent, so an alert naming a machine
+            // elsewhere carries no owner reference; the machine's finalizer
+            // deletes it instead. A retargeted alert has its old machine's
+            // reference replaced, since an object takes one controller.
+            let wanted: Vec<OwnerReference> = if mc_namespace == namespace {
+                vec![OwnerReference {
+                    api_version: cfgd_core::API_VERSION.to_string(),
+                    kind: "MachineConfig".to_string(),
+                    name: mc.name_any(),
+                    uid: mc_uid,
+                    controller: Some(true),
+                    block_owner_deletion: Some(true),
+                }]
+            } else {
+                vec![]
             };
-
             let existing_owners = obj.metadata.owner_references.as_deref().unwrap_or(&[]);
-            let has_owner_ref = existing_owners.iter().any(|r| {
-                r.kind == "MachineConfig" && r.name == owner_ref.name && r.uid == owner_ref.uid
-            });
+            let (machine_owners, other_owners): (Vec<OwnerReference>, Vec<OwnerReference>) =
+                existing_owners
+                    .iter()
+                    .cloned()
+                    .partition(|r| r.kind == "MachineConfig");
 
-            if !has_owner_ref {
-                let mut updated_owners: Vec<OwnerReference> = existing_owners.to_vec();
-                updated_owners.push(owner_ref);
+            if machine_owners != wanted {
+                let updated_owners: Vec<OwnerReference> =
+                    other_owners.into_iter().chain(wanted).collect();
                 let patch = serde_json::json!({
                     "metadata": {
                         "ownerReferences": updated_owners
@@ -91,16 +95,7 @@ pub(super) async fn reconcile_drift_alert(
                 info!(name = %name, machine_config = %mc.name_any(), "set owner reference on DriftAlert");
             }
 
-            // Check if a DriftDetected condition already exists
-            let has_drift_condition = mc
-                .status
-                .as_ref()
-                .map(|s| {
-                    s.conditions
-                        .iter()
-                        .any(|c| c.condition_type == "DriftDetected" && c.status == "True")
-                })
-                .unwrap_or(false);
+            let has_drift_condition = reports_drift(&mc);
 
             // If MC has no drift condition and no drift details, this alert is resolved — delete it
             if !has_drift_condition && obj.spec.drift_details.is_empty() {
@@ -151,7 +146,16 @@ pub(super) async fn reconcile_drift_alert(
                 return Ok(Action::requeue(std::time::Duration::from_secs(60)));
             }
 
-            if !has_drift_condition {
+            // The machine is read from the cache, which can still predate the
+            // DriftDetected patch below when this alert's own status patch
+            // re-runs it; the alert's recorded detection is what says the drift
+            // was already reported.
+            let already_reported = obj
+                .status
+                .as_ref()
+                .is_some_and(|s| s.detected_at.is_some() && s.resolved_at.is_none());
+
+            if !has_drift_condition && !already_reported {
                 ctx.metrics
                     .drift_events_total
                     .get_or_create(&DriftLabels {
@@ -166,21 +170,14 @@ pub(super) async fn reconcile_drift_alert(
                     .as_ref()
                     .map(|s| s.conditions.as_slice())
                     .unwrap_or(&[]);
+                let (drift_status, drift_reason, drift_message) =
+                    super::machine_config::drift_detected(true, mc_name);
                 let drift_condition = build_condition(
                     mc_existing_conditions,
                     "DriftDetected",
-                    "True",
-                    "DriftActive",
-                    // The condition TYPE is the API's word; the message is what a
-                    // reader sees, and a device reports its system settings alone.
-                    &format!(
-                        "Device {} reported {}",
-                        obj.spec.device_id,
-                        cfgd_core::pluralize(
-                            obj.spec.drift_details.len(),
-                            "drifted system setting"
-                        )
-                    ),
+                    drift_status,
+                    drift_reason,
+                    &drift_message,
                     &now,
                     mc.meta().generation,
                 );
@@ -256,7 +253,7 @@ pub(super) async fn reconcile_drift_alert(
                     })?;
             }
         }
-        Err(kube::Error::Api(resp)) if resp.code == 404 => {
+        None => {
             warn!(
                 machine_config = %mc_name,
                 "driftAlert references non-existent MachineConfig"
@@ -266,11 +263,6 @@ pub(super) async fn reconcile_drift_alert(
             record_reconcile_metrics(&ctx, "drift_alert", "error", start);
             return Ok(Action::requeue(std::time::Duration::from_secs(60)));
         }
-        Err(e) => {
-            return Err(OperatorError::Reconciliation(format!(
-                "failed to get MachineConfig {mc_name}: {e}"
-            )));
-        }
     }
 
     record_reconcile_success(&ctx, "drift_alert", start);
@@ -278,12 +270,39 @@ pub(super) async fn reconcile_drift_alert(
     Ok(Action::requeue(std::time::Duration::from_secs(60)))
 }
 
+/// The `(namespace, name)` of the MachineConfig an alert reports on. A
+/// reference with no namespace names a machine in the alert's own namespace.
+///
+/// Every reader matching an alert to its machine resolves the target here, so
+/// the machine controller, this controller and the watch between them agree on
+/// which alerts belong to which machine.
+pub(super) fn alert_target(alert: &DriftAlert) -> (&str, &str) {
+    let target = &alert.spec.machine_config_ref;
+    let namespace = target
+        .namespace
+        .as_deref()
+        .or(alert.metadata.namespace.as_deref())
+        .unwrap_or_default();
+    (namespace, target.name.as_str())
+}
+
+/// Whether `mc` carries a True DriftDetected condition: the one fact about
+/// its machine's status an alert's verdict reads.
+pub(super) fn reports_drift(mc: &MachineConfig) -> bool {
+    mc.status.as_ref().is_some_and(|s| {
+        s.conditions
+            .iter()
+            .any(|c| c.condition_type == "DriftDetected" && c.status == "True")
+    })
+}
+
 /// Check whether any active DriftAlerts exist for a MachineConfig.
-/// Matches by spec.machineConfigRef.name since labels may not be set.
+/// Matches by the alert's resolved target since labels may not be set.
 ///
 /// Read from the DriftAlert watch cache the DriftAlert controller already
-/// maintains — a LIST here is a LIST per MachineConfig per reconcile sweep,
-/// which is quadratic across a fleet.
+/// maintains: a LIST here would be one per MachineConfig per reconcile sweep,
+/// quadratic across a fleet. Every namespace is read, because an
+/// alert may live outside the namespace of the machine it names.
 ///
 /// The caller must treat this single snapshot as the only view of alert state:
 /// a follow-up read to act on "no alerts" races with alert creation and can
@@ -294,8 +313,8 @@ pub(super) async fn has_active_drift_alerts(
     mc_name: &str,
 ) -> Result<bool, OperatorError> {
     Ok(stores
-        .drift_alerts_in(namespace)
+        .drift_alerts_in("")
         .await?
         .iter()
-        .any(|da| da.spec.machine_config_ref.name == mc_name))
+        .any(|da| alert_target(da) == (namespace, mc_name)))
 }

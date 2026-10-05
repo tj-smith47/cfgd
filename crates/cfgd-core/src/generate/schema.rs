@@ -199,6 +199,15 @@ spec:
   # optional, default: All
   envScope: All
 
+  # Ranked candidate lists per domain. cfgd picks the first candidate THIS session
+  # can reach (display server / SSH / WSL) and whose tool is installed, and
+  # exports it as CFGD_<DOMAIN> into the managed env file.
+  # optional, default: {}
+  preferences:
+    # optional, list of strings, most-wanted first. Candidates:
+    # wl-clipboard, xclip, xsel, pbcopy, clip.exe, osc52.
+    clipboard: [wl-clipboard, xclip, osc52]
+
   # Per-manager package declarations.
   # optional
   #
@@ -561,7 +570,7 @@ spec:
     # How binary update checks behave.
     # optional: Prompt (default), Auto, Notify, Manual
     policy: Prompt
-    channel: stable            # optional, string — release channel; unset = current stream
+    channel: stable            # optional, string, default: "stable" (or "prerelease")
     interval: 24h              # optional, string duration, default: "24h"
     skills:
       # Skill update policy; Inherit (default) follows the binary `policy` above.
@@ -662,7 +671,7 @@ spec:
   # optional
   output:
     # Whether closing usage hints render.
-    # optional, bool, default: true
+    # optional, bool, default: false
     usageHints: true
 
     # Which declared env values render masked.
@@ -716,6 +725,11 @@ spec:
   # Values: Symlink, Copy, Template, Hardlink
   fileStrategy: Symlink
 
+  # What cfgd does when this document is behind the schema the running binary reads.
+  # optional, default: Prompt
+  # Values: Prompt, Warn, Update, Ignore
+  migrationPolicy: Prompt
+
   # Security settings for source signature verification.
   # optional
   security:
@@ -725,7 +739,7 @@ spec:
     allowUnsigned: false
 
   # CLI command aliases — map of alias name to command string.
-  # Built-in defaults (add, remove) can be overridden or extended.
+  # `cfgd init` scaffolds add and remove; cfgd defines no alias of its own.
   # optional, default: {}
   aliases:
     add: "profile update --file"
@@ -764,5 +778,91 @@ mod tests {
                 "{kind:?} schema missing apiVersion"
             );
         }
+    }
+
+    /// The default the Config prose states for the `spec`-relative `key`: the
+    /// word after `default:` or the one ahead of `(default)`, in the leaf's
+    /// inline comment or the comment block directly above it. `None` when the
+    /// key is not in the prose; `Some(None)` when it is and states no default.
+    fn stated_default(key: &str) -> Option<Option<String>> {
+        let want: Vec<&str> = std::iter::once("spec").chain(key.split('.')).collect();
+        let mut path: Vec<(usize, String)> = Vec::new();
+        let mut comments: Vec<&str> = Vec::new();
+        for line in CONFIG_SCHEMA.lines() {
+            let trimmed = line.trim_start();
+            if trimmed.starts_with('#') {
+                comments.push(trimmed);
+                continue;
+            }
+            let block = std::mem::take(&mut comments);
+            let Some((name, rest)) = trimmed.split_once(':') else {
+                continue;
+            };
+            if name.starts_with('-') || name.contains(' ') {
+                continue;
+            }
+            let indent = line.len() - trimmed.len();
+            path.retain(|(at, _)| *at < indent);
+            path.push((indent, name.to_string()));
+            if path
+                .iter()
+                .map(|(_, n)| n.as_str())
+                .eq(want.iter().copied())
+            {
+                let inline = rest.split_once('#').map(|(_, c)| c);
+                let text: Vec<&str> = block.iter().copied().chain(inline).collect();
+                let text = text.join(" ");
+                let word = |w: &str| w.trim_matches(|c: char| !c.is_alphanumeric()).to_string();
+                let stated = text
+                    .split_once("default:")
+                    .and_then(|(_, after)| after.split_whitespace().next().map(word))
+                    .or_else(|| {
+                        text.split_once(" (default)")
+                            .and_then(|(before, _)| before.split_whitespace().last().map(word))
+                    });
+                return Some(stated);
+            }
+        }
+        None
+    }
+
+    /// The Config prose feeds the AI generate flow, so a leaf whose omission
+    /// production reads as a value states that value there: the one its
+    /// `_effective` accessor answers, as `OMITTED_FIELDS` records it.
+    #[test]
+    fn every_defaulted_config_leaf_states_its_omitted_value_in_the_prose() {
+        const LEAVES_FLOOR: usize = 3;
+        let empty = crate::config::ConfigSpec::default();
+        let mut leaves = 0;
+        let mut wrong = Vec::new();
+        for row in crate::test_helpers::OMITTED_FIELDS {
+            let Some(omitted) = row.omitted else { continue };
+            let expected = match omitted(&empty) {
+                serde_yaml::Value::String(s) => s,
+                serde_yaml::Value::Bool(b) => b.to_string(),
+                serde_yaml::Value::Number(n) => n.to_string(),
+                _ => continue,
+            };
+            leaves += 1;
+            match stated_default(row.key) {
+                None => wrong.push(format!("{}: not in the Config prose", row.key)),
+                Some(stated) if stated.as_deref() != Some(expected.as_str()) => {
+                    wrong.push(format!(
+                        "{}: states {stated:?}, omitted reads as {expected:?}",
+                        row.key
+                    ))
+                }
+                Some(_) => {}
+            }
+        }
+        assert!(
+            leaves >= LEAVES_FLOOR,
+            "{leaves} scalar leaves in OMITTED_FIELDS, below the floor of {LEAVES_FLOOR}"
+        );
+        assert!(
+            wrong.is_empty(),
+            "the Config prose states a default production does not read:\n{}",
+            wrong.join("\n")
+        );
     }
 }

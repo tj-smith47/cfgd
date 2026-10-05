@@ -8,7 +8,7 @@ use cfgd_core::{command_available_with_seam, tool_cmd};
 
 use super::run_provider_cmd;
 
-const OP_BIN_ENV: &str = "CFGD_OP_BIN";
+pub const OP_BIN_ENV: &str = "CFGD_OP_BIN";
 
 pub struct OnePasswordProvider;
 

@@ -2,12 +2,12 @@ use super::*;
 
 use cfgd_core::output::{Doc, OwnerLabel, Role};
 
-pub fn cmd_sync(cli: &Cli, printer: &cfgd_core::output::Printer) -> anyhow::Result<()> {
+pub fn cmd_sync(run: &RunContext<'_>) -> anyhow::Result<()> {
     // A leg that refused must not read as success to a CI `&&` chain, the same
     // reason `apply` exits nonzero on a partial run. The rows and the payload
     // are already flushed by `run_sync`, so this exits directly rather than
     // returning an error nothing new could say.
-    if sync_refused(&run_sync(cli, printer)?) {
+    if sync_refused(&run_sync(run)?) {
         cfgd_core::exit::ExitCode::Error.exit();
     }
     Ok(())
@@ -88,7 +88,9 @@ pub(super) fn resolution_failure_the_fetch_rejudges(e: &anyhow::Error) -> bool {
 /// Drive the sync and return the payload it settled, so a caller can map a
 /// refused leg onto a nonzero process exit and a test can read the outcome
 /// without the process leaving under it.
-pub fn run_sync(cli: &Cli, printer: &cfgd_core::output::Printer) -> anyhow::Result<SyncOutput> {
+pub fn run_sync(run: &RunContext<'_>) -> anyhow::Result<SyncOutput> {
+    let cli = run.cli();
+    let printer = run.printer();
     // The configuration as this command FOUND it. The body below reports what
     // the pull changed, and the plan the closing hint invites reads the new
     // set — so the header describes the starting point, exactly as `Config`
@@ -99,8 +101,8 @@ pub fn run_sync(cli: &Cli, printer: &cfgd_core::output::Printer) -> anyhow::Resu
     // does the fetching. Everything else the composition has to say — a
     // constraint violation, a conflict, the `allowScripts` disclosure — is
     // exactly what this verb is the right place to hear.
-    let ctx = RunContext::new(cli, printer).fetching_sources();
-    let (cfg, profile_name, local_resolved) = ctx.config_and_profile()?;
+    run.fetching_sources();
+    let (cfg, profile_name, local_resolved) = run.config_and_profile()?;
     // The starting point is a header FACT, never a gate on the run. This
     // resolution reads the source cache offline, and a cached checkout can be
     // unusable in exactly the way `cfgd sync` exists to repair — a refused
@@ -112,7 +114,7 @@ pub fn run_sync(cli: &Cli, printer: &cfgd_core::output::Printer) -> anyhow::Resu
     // reason is reported and the header names what it still can; the fetch
     // below is what re-judges it.
     let desired = resolve_desired_state(
-        &ctx,
+        run,
         cfg,
         local_resolved,
         &[],
@@ -120,8 +122,9 @@ pub fn run_sync(cli: &Cli, printer: &cfgd_core::output::Printer) -> anyhow::Resu
         printer,
         false,
         composition::ConstraintMode::Report,
+        &cfgd_core::modules::refuse_floor_bootstrap,
     );
-    let config_dir = ctx.config_dir().to_path_buf();
+    let config_dir = run.config_dir().to_path_buf();
     // The pull is this run's first wait, and it narrates with NOTHING else on
     // the screen: the title lands with the result, the shape every
     // long-waiting verb keeps. A config directory under no version control
@@ -250,7 +253,7 @@ pub fn run_sync(cli: &Cli, printer: &cfgd_core::output::Printer) -> anyhow::Resu
         let sources_sec = printer.section(super::source::list::SOURCES_SECTION);
         let cache_dir = source_cache_dir(cli)?;
         let mut mgr = SourceManager::new(&cache_dir);
-        mgr.set_allow_unsigned(cfg.spec.security.as_ref().is_some_and(|s| s.allow_unsigned));
+        mgr.set_allow_unsigned(cfg.spec.security_effective().allow_unsigned);
         let silent_printer = printer.at_verbosity(cfgd_core::output::Verbosity::Quiet);
         // Opened once: every open runs the full migration chain, and the loop
         // below records a fetch per source. Best-effort — the cache refreshes
@@ -450,10 +453,10 @@ pub fn run_sync(cli: &Cli, printer: &cfgd_core::output::Printer) -> anyhow::Resu
                         sp.finish_fail("Sync failed").detail(
                             "load_source reported success but the source is not in the cache",
                         );
-                        owner.hint(format!(
+                        owner.hint(cfgd_core::output::HintCommands::unconditional(format!(
                             "Discard the cached checkout and retry with `cfgd source update {}`",
                             source_spec.name
-                        ));
+                        )));
                         sync_payload.sources.push(SourceSyncOutput {
                             name: source_spec.name.clone(),
                             status: SourceOutcome::Failed,
@@ -560,7 +563,7 @@ fn sync_verdict(payload: &SyncOutput) -> (Role, &'static str, Option<String>) {
             } else {
                 "Synced"
             },
-            Some(detail.join(", ")),
+            Some(cfgd_core::join_clauses(&detail)),
         );
     }
     if total == 0 {

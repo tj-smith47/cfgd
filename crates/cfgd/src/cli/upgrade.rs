@@ -43,42 +43,57 @@ fn upgraded_doc(
     doc.with_data(serde_json::Value::Object(payload))
 }
 
+/// The refusal a failed release check returns. An exhausted GitHub rate limit
+/// is `rate_limited`, carrying the limit, its reset and the variables a token is
+/// read from, so a script can wait it out or supply one; every other failure is
+/// `check_failed`.
+fn check_failed_error(e: cfgd_core::errors::CfgdError) -> anyhow::Error {
+    use cfgd_core::errors::{CfgdError, UpgradeError};
+
+    let current = env!("CARGO_PKG_VERSION");
+    let msg = format!("Failed to check latest version: {e}");
+    if let CfgdError::Upgrade(UpgradeError::RateLimited { limit, reset_at }) = &e {
+        let [first, second] = cfgd_core::upgrade::GITHUB_TOKEN_VARS;
+        let extras = serde_json::json!({
+            "currentVersion": current,
+            "limit": limit,
+            "resetAt": reset_at,
+            "hint": format!("set {first} or {second} to a GitHub token to raise the limit"),
+        });
+        return crate::cli::cli_error_ctx(e.into(), current, "rate_limited", msg, extras);
+    }
+    crate::cli::cli_error_ctx(
+        e.into(),
+        current,
+        "check_failed",
+        msg,
+        serde_json::json!({ "currentVersion": current }),
+    )
+}
+
 // constant-payload-ok: each branch of this command IS the verification outcome
 // it reports — the up-to-date arm ran no install to verify, and the applied arm
 // is reached only after `install_update` verified the downloaded artifact.
 pub fn cmd_upgrade(
-    printer: &Printer,
-    config_path: &std::path::Path,
+    run: &crate::cli::RunContext<'_>,
     check_only: bool,
     require_cosign: bool,
 ) -> anyhow::Result<()> {
-    use cfgd_core::config;
     use cfgd_core::upgrade;
+    let printer = run.printer();
 
     // The effective update config supplies the release channel for the version
     // check and gates the user-scope skill ride-along that `install_release`
     // runs after a successful install (no second prompt).
-    let update_cfg = match config::load_config(config_path) {
-        Ok(mut c) => {
-            crate::cli::helpers::drain_config_deprecations(printer, &mut c);
-            c.spec.update.unwrap_or_default()
-        }
+    let update_cfg = match run.config() {
+        Ok(c) => c.spec.update_effective().clone(),
         Err(_) => Default::default(),
     };
-    let channel = update_cfg.channel.as_deref();
+    let channel = update_cfg.channel_effective();
 
     if check_only {
         let check = upgrade::check_latest(env!("CARGO_PKG_VERSION"), None, channel, Some(printer))
-            .map_err(|e| {
-                let msg = format!("Failed to check latest version: {e}");
-                crate::cli::cli_error_ctx(
-                    e.into(),
-                    env!("CARGO_PKG_VERSION"),
-                    "check_failed",
-                    msg,
-                    serde_json::json!({ "currentVersion": env!("CARGO_PKG_VERSION") }),
-                )
-            })?;
+            .map_err(check_failed_error)?;
 
         if check.update_available {
             printer.emit(
@@ -122,16 +137,7 @@ pub fn cmd_upgrade(
     printer.heading("Upgrade");
 
     let check = upgrade::check_latest(env!("CARGO_PKG_VERSION"), None, channel, Some(printer))
-        .map_err(|e| {
-            let msg = format!("Failed to check latest version: {e}");
-            crate::cli::cli_error_ctx(
-                e.into(),
-                env!("CARGO_PKG_VERSION"),
-                "check_failed",
-                msg,
-                serde_json::json!({ "currentVersion": env!("CARGO_PKG_VERSION") }),
-            )
-        })?;
+        .map_err(check_failed_error)?;
 
     if !check.update_available {
         printer.emit(
@@ -260,6 +266,21 @@ pub fn cmd_upgrade(
     Ok(())
 }
 
+/// The update block the startup check runs under: the startup document's
+/// `spec.update` (the default block when it declares none or did not load),
+/// with the invocation's policy over its own.
+pub(crate) fn startup_update_config(
+    doc: Option<&cfgd_core::config::CfgdConfig>,
+    override_policy: Option<cfgd_core::config::UpdatePolicy>,
+) -> cfgd_core::config::UpdateConfig {
+    // Cloned: `effective_update_config` takes the block by value to replace its
+    // `policy`, and the document it comes from is shared with the other readers.
+    let declared = doc
+        .map(|c| c.spec.update_effective().clone())
+        .unwrap_or_default();
+    cfgd_core::upgrade::effective_update_config(declared, override_policy)
+}
+
 /// Run the policy-driven self-update check at CLI startup.
 ///
 /// Cheap by construction: it returns immediately for structured-output mode
@@ -268,10 +289,18 @@ pub fn cmd_upgrade(
 /// network call — a within-interval startup makes no API request. `Manual`
 /// short-circuits inside [`cfgd_core::upgrade::run_update_check`].
 ///
+/// `override_policy` is this invocation's posture (`--update-policy` or
+/// `CFGD_UPDATE_POLICY`); when present it replaces `spec.update.policy` for the
+/// run, through [`cfgd_core::upgrade::effective_update_config`].
+///
 /// Best-effort: any error is swallowed (logged via tracing) so a self-update
 /// check never fails a normal command.
-pub fn startup_update_check(printer: &Printer, config_path: &std::path::Path, assume_yes: bool) {
-    use cfgd_core::config;
+pub fn startup_update_check(
+    printer: &Printer,
+    doc: Option<&cfgd_core::config::CfgdConfig>,
+    assume_yes: bool,
+    override_policy: Option<cfgd_core::config::UpdatePolicy>,
+) {
     use cfgd_core::upgrade::{self, UpdateCheckEffects};
 
     // Never interfere with machine-readable output.
@@ -279,10 +308,7 @@ pub fn startup_update_check(printer: &Printer, config_path: &std::path::Path, as
         return;
     }
 
-    let update_cfg = config::load_config(config_path)
-        .ok()
-        .and_then(|c| c.spec.update)
-        .unwrap_or_default();
+    let update_cfg = startup_update_config(doc, override_policy);
 
     // Cheap interval/Manual gate before constructing any effects.
     let now = cfgd_core::unix_secs_now();
@@ -330,7 +356,7 @@ pub fn startup_update_check(printer: &Printer, config_path: &std::path::Path, as
             );
         }),
         apply: Box::new(|c| apply_startup_update(printer, &update_cfg, c)),
-        record_checked: Box::new(|now| upgrade::record_check_at(env!("CARGO_PKG_VERSION"), now)),
+        record_checked: Box::new(upgrade::record_check_at),
     };
 
     let outcome = upgrade::run_update_check(&update_cfg, now, None, &mut effects);
@@ -355,8 +381,8 @@ pub fn startup_update_check(printer: &Printer, config_path: &std::path::Path, as
 /// `Printer` Doc. It returns that outcome so tests assert the decision SHAPE,
 /// not rendered text.
 ///
-/// Only [`cfgd_core::upgrade::StandaloneSkillOutcome::NoticeNeeded`] emits — exactly one consolidated
-/// notice covering both scopes. `Refreshed`/`Suppressed`/`Silent` emit nothing.
+/// Only [`cfgd_core::upgrade::StandaloneSkillOutcome::NoticeNeeded`] emits — exactly one
+/// consolidated notice covering both scopes. `Refreshed`/`Suppressed`/`Silent` emit nothing.
 fn surface_stale_skills(
     printer: &Printer,
     update_cfg: &cfgd_core::config::UpdateConfig,
@@ -364,11 +390,7 @@ fn surface_stale_skills(
 ) -> cfgd_core::upgrade::StandaloneSkillOutcome {
     use cfgd_core::upgrade::{self, StandaloneSkillOutcome};
 
-    let binary_available = outcome
-        .update
-        .as_ref()
-        .map(|u| u.update_available)
-        .unwrap_or(false);
+    let binary_available = outcome.update.as_ref().is_some_and(|u| u.update_available);
     let result = upgrade::run_standalone_skill_action(
         update_cfg,
         binary_available,
@@ -396,8 +418,8 @@ fn emit_skill_stale_notice(printer: &Printer, staleness: cfgd_core::upgrade::Ski
     );
 }
 
-/// Extract the inner [`cfgd_core::errors::UpgradeError`] from a [`cfgd_core::errors::CfgdError`] for the startup
-/// check's fetch closure, which must yield the module-level error type that
+/// Extract the inner [`cfgd_core::errors::UpgradeError`] from a [`cfgd_core::errors::CfgdError`]
+/// for the startup check's fetch closure, which must yield the module-level error type that
 /// [`cfgd_core::upgrade::run_update_check`] threads.
 fn unwrap_upgrade_err(e: cfgd_core::errors::CfgdError) -> cfgd_core::errors::UpgradeError {
     match e {
@@ -473,7 +495,24 @@ mod tests {
 
     use super::*;
 
-    const GITHUB_API_BASE_ENV: &str = "CFGD_GITHUB_API_BASE";
+    /// Run `cmd_upgrade` for a config path that does not exist, the state every
+    /// upgrade test starts from: the update policy falls back to its defaults.
+    fn upgrade_without_config(
+        printer: &Printer,
+        check_only: bool,
+        require_cosign: bool,
+    ) -> anyhow::Result<()> {
+        let cli = <crate::cli::Cli as crate::cli::HermeticParse>::try_parse_hermetic([
+            "cfgd",
+            "--config",
+            "/nonexistent/cfgd.yaml",
+            "upgrade",
+        ])
+        .expect("the upgrade argv parses");
+        crate::cli::RunContext::for_test(&cli, printer, |run| {
+            cmd_upgrade(run, check_only, require_cosign)
+        })
+    }
 
     /// Downcast a returned upgrade error to its `CliErrorMeta` so tests can pin
     /// the `error_kind` / `extras` schema the central sink now renders (the
@@ -491,7 +530,9 @@ mod tests {
     /// the production half of the file still emits it twice.
     #[test]
     fn the_success_doc_is_minted_in_exactly_one_place() {
-        let source = include_str!("upgrade.rs");
+        let source = cfgd_core::test_helpers::walked_file_body(
+            &cfgd_core::test_helpers::workspace_root().join("crates/cfgd/src/cli/upgrade.rs"),
+        );
         // Split so this test's own literals are not what it counts.
         let sentence = format!("Upgraded {}", "to {version}");
         assert_eq!(
@@ -508,8 +549,9 @@ mod tests {
         );
         // Everything above the test module: this module's own calls must not
         // stand in for the install paths' calls.
-        // unfloored-slice-ok: one compiled-in body, not a walk over files
-        let production = cfgd_core::test_helpers::production_slice(source);
+        let production = cfgd_core::test_helpers::production_slice_of(
+            &cfgd_core::test_helpers::workspace_root().join("crates/cfgd/src/cli/upgrade.rs"),
+        );
         assert_eq!(
             production.matches("printer.emit(upgraded_doc(").count(),
             2,
@@ -571,9 +613,9 @@ mod tests {
     /// its teeth there, and the source pin is what guards the call site here.
     #[test]
     fn the_installed_path_payload_takes_the_fs_key_fold() {
-        let source = include_str!("upgrade.rs");
-        // unfloored-slice-ok: one compiled-in body, not a walk over files
-        let production = cfgd_core::test_helpers::production_slice(source);
+        let production = cfgd_core::test_helpers::production_slice_of(
+            &cfgd_core::test_helpers::workspace_root().join("crates/cfgd/src/cli/upgrade.rs"),
+        );
         // Split so this test's own literals are not what it counts.
         let unconditional = format!("to_posix_{}", "string(");
         assert_eq!(
@@ -655,15 +697,10 @@ mod tests {
             .with_status(500)
             .with_body(r#"{"message": "Internal Server Error"}"#)
             .create();
-        let _guard = EnvVarGuard::set(GITHUB_API_BASE_ENV, &server.url());
+        let _guard = EnvVarGuard::set(cfgd_core::CFGD_GITHUB_API_BASE_ENV, &server.url());
 
         let (printer, _cap) = Printer::for_test_doc();
-        let result = cmd_upgrade(
-            &printer,
-            std::path::Path::new("/nonexistent/cfgd.yaml"),
-            true,
-            false,
-        );
+        let result = upgrade_without_config(&printer, true, false);
 
         let err = result.expect_err("API 500 must return Err");
         let meta = upgrade_error_meta(&err);
@@ -688,15 +725,10 @@ mod tests {
             .with_status(404)
             .with_body(r#"{"message": "Not Found"}"#)
             .create();
-        let _guard = EnvVarGuard::set(GITHUB_API_BASE_ENV, &server.url());
+        let _guard = EnvVarGuard::set(cfgd_core::CFGD_GITHUB_API_BASE_ENV, &server.url());
 
         let (printer, _cap) = Printer::for_test_doc();
-        let result = cmd_upgrade(
-            &printer,
-            std::path::Path::new("/nonexistent/cfgd.yaml"),
-            true,
-            false,
-        );
+        let result = upgrade_without_config(&printer, true, false);
 
         let err = result.expect_err("API 404 must return Err");
         assert_eq!(
@@ -704,6 +736,84 @@ mod tests {
             "check_failed",
             "error kind must be check_failed"
         );
+    }
+
+    /// Renders a `--check` against a mock answering `status` with `headers`
+    /// through the one error sink under `-o json`, and returns the payload
+    /// bytes parsed plus the exit code.
+    fn check_refusal_payload(
+        status: usize,
+        headers: &[(&str, &str)],
+    ) -> (serde_json::Value, cfgd_core::exit::ExitCode) {
+        let mut server = mockito::Server::new();
+        let mut mock = server
+            .mock("GET", "/repos/tj-smith47/cfgd/releases/latest")
+            .with_status(status)
+            .with_body(r#"{"message": "API rate limit exceeded"}"#);
+        for (name, value) in headers {
+            mock = mock.with_header(*name, value);
+        }
+        let _mock = mock.create();
+        let _guard = EnvVarGuard::set(cfgd_core::CFGD_GITHUB_API_BASE_ENV, &server.url());
+
+        let (printer, _cap) = Printer::for_test_doc();
+        let err = upgrade_without_config(&printer, true, false)
+            .expect_err("a refused check must return Err");
+        let (json, buf) = Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
+        let code = crate::cli::error::render_cli_error(&json, &err);
+        json.flush();
+        let bytes = cfgd_core::test_helpers::captured_text(&buf);
+        let payload = serde_json::from_str(bytes.trim())
+            .unwrap_or_else(|e| panic!("the payload is one JSON value ({e}): {bytes}"));
+        (payload, code)
+    }
+
+    /// An exhausted rate limit is `rate_limited` under `-o json`, carrying the
+    /// limit, its reset and the two token variables; any other refusal keeps
+    /// `check_failed`.
+    #[test]
+    #[serial]
+    fn cmd_upgrade_check_names_an_exhausted_rate_limit_in_its_payload() {
+        let exhausted = [
+            ("x-ratelimit-limit", "60"),
+            ("x-ratelimit-remaining", "0"),
+            ("x-ratelimit-reset", "1790000000"),
+        ];
+        let (payload, code) = check_refusal_payload(403, &exhausted);
+        assert_eq!(
+            payload,
+            serde_json::json!({
+                "error": "rate_limited",
+                "name": env!("CARGO_PKG_VERSION"),
+                "currentVersion": env!("CARGO_PKG_VERSION"),
+                "limit": 60,
+                "resetAt": "2026-09-21T14:13:20Z",
+                "hint": "set GITHUB_TOKEN or GH_TOKEN to a GitHub token to raise the limit",
+            })
+        );
+        assert_eq!(code, cfgd_core::exit::ExitCode::Error);
+
+        let left = [
+            ("x-ratelimit-limit", "60"),
+            ("x-ratelimit-remaining", "5"),
+            ("x-ratelimit-reset", "1790000000"),
+        ];
+        for (case, headers) in [
+            ("no rate limit headers", &[][..]),
+            ("requests left", &left[..]),
+        ] {
+            let (payload, code) = check_refusal_payload(403, headers);
+            assert_eq!(
+                payload,
+                serde_json::json!({
+                    "error": "check_failed",
+                    "name": env!("CARGO_PKG_VERSION"),
+                    "currentVersion": env!("CARGO_PKG_VERSION"),
+                }),
+                "a 403 with {case}"
+            );
+            assert_eq!(code, cfgd_core::exit::ExitCode::Error, "a 403 with {case}");
+        }
     }
 
     /// Latest version matches current → emits "up to date" Doc, returns Ok.
@@ -717,15 +827,10 @@ mod tests {
             .with_header("content-type", "application/json")
             .with_body(release_json_current_version())
             .create();
-        let _guard = EnvVarGuard::set(GITHUB_API_BASE_ENV, &server.url());
+        let _guard = EnvVarGuard::set(cfgd_core::CFGD_GITHUB_API_BASE_ENV, &server.url());
 
         let (printer, cap) = Printer::for_test_doc();
-        let result = cmd_upgrade(
-            &printer,
-            std::path::Path::new("/nonexistent/cfgd.yaml"),
-            true,
-            false,
-        );
+        let result = upgrade_without_config(&printer, true, false);
 
         assert!(
             result.is_ok(),
@@ -764,8 +869,8 @@ mod tests {
             .with_header("content-type", "application/json")
             .with_body(release_json_current_version())
             .create();
-        let _guard = EnvVarGuard::set(GITHUB_API_BASE_ENV, &server.url());
-        let _no_update_check = EnvVarGuard::set("CFGD_NO_UPDATE_CHECK", "1");
+        let _guard = EnvVarGuard::set(cfgd_core::CFGD_GITHUB_API_BASE_ENV, &server.url());
+        let _no_update_check = EnvVarGuard::set(cfgd_core::CFGD_NO_UPDATE_CHECK_ENV, "1");
         let _no_update_notifier = EnvVarGuard::set("NO_UPDATE_NOTIFIER", "1");
         let _do_not_track = EnvVarGuard::set("DO_NOT_TRACK", "1");
         assert!(
@@ -774,12 +879,7 @@ mod tests {
         );
 
         let (printer, cap) = Printer::for_test_doc();
-        let result = cmd_upgrade(
-            &printer,
-            std::path::Path::new("/nonexistent/cfgd.yaml"),
-            true,
-            false,
-        );
+        let result = upgrade_without_config(&printer, true, false);
 
         assert!(
             result.is_ok(),
@@ -806,6 +906,7 @@ mod tests {
     #[test]
     #[serial]
     fn cmd_upgrade_check_only_update_available_exits_2() {
+        let _path = cfgd_core::test_helpers::path_env_read_guard();
         let exe = match std::env::current_exe() {
             Ok(p) if p.exists() => p,
             _ => return,
@@ -845,15 +946,10 @@ mod tests {
             .with_header("content-type", "application/json")
             .with_body(r#"{"tag_name": "v9.9.9", "assets": []}"#)
             .create();
-        let _guard = EnvVarGuard::set(GITHUB_API_BASE_ENV, &server.url());
+        let _guard = EnvVarGuard::set(cfgd_core::CFGD_GITHUB_API_BASE_ENV, &server.url());
 
         let (printer, _cap) = Printer::for_test_doc();
-        let _ = cmd_upgrade(
-            &printer,
-            std::path::Path::new("/nonexistent/cfgd.yaml"),
-            true,
-            false,
-        );
+        let _ = upgrade_without_config(&printer, true, false);
     }
 
     /// GitHub returns 500 during the full upgrade flow → returns Err and emits
@@ -866,15 +962,10 @@ mod tests {
             .mock("GET", "/repos/tj-smith47/cfgd/releases/latest")
             .with_status(500)
             .create();
-        let _guard = EnvVarGuard::set(GITHUB_API_BASE_ENV, &server.url());
+        let _guard = EnvVarGuard::set(cfgd_core::CFGD_GITHUB_API_BASE_ENV, &server.url());
 
         let (printer, _cap) = Printer::for_test_doc();
-        let result = cmd_upgrade(
-            &printer,
-            std::path::Path::new("/nonexistent/cfgd.yaml"),
-            false,
-            false,
-        );
+        let result = upgrade_without_config(&printer, false, false);
 
         let err = result.expect_err("API 500 during full upgrade must return Err");
         assert_eq!(
@@ -895,15 +986,10 @@ mod tests {
             .with_header("content-type", "application/json")
             .with_body(release_json_current_version())
             .create();
-        let _guard = EnvVarGuard::set(GITHUB_API_BASE_ENV, &server.url());
+        let _guard = EnvVarGuard::set(cfgd_core::CFGD_GITHUB_API_BASE_ENV, &server.url());
 
         let (printer, cap) = Printer::for_test_doc();
-        let result = cmd_upgrade(
-            &printer,
-            std::path::Path::new("/nonexistent/cfgd.yaml"),
-            false,
-            false,
-        );
+        let result = upgrade_without_config(&printer, false, false);
 
         assert!(
             result.is_ok(),
@@ -953,15 +1039,10 @@ mod tests {
                 }"#,
             )
             .create();
-        let _guard = EnvVarGuard::set(GITHUB_API_BASE_ENV, &server.url());
+        let _guard = EnvVarGuard::set(cfgd_core::CFGD_GITHUB_API_BASE_ENV, &server.url());
 
         let (printer, _cap) = Printer::for_test_doc();
-        let result = cmd_upgrade(
-            &printer,
-            std::path::Path::new("/nonexistent/cfgd.yaml"),
-            false,
-            false,
-        );
+        let result = upgrade_without_config(&printer, false, false);
 
         let err = result.expect_err("missing platform asset must return Err");
         assert_eq!(
@@ -1014,17 +1095,12 @@ mod tests {
             .with_status(500)
             .create();
 
-        let _guard = EnvVarGuard::set(GITHUB_API_BASE_ENV, &server.url());
+        let _guard = EnvVarGuard::set(cfgd_core::CFGD_GITHUB_API_BASE_ENV, &server.url());
         let home = tempfile::tempdir().unwrap();
         let _home_guard = cfgd_core::with_test_home_guard(home.path());
 
         let (printer, _cap) = Printer::for_test_doc();
-        let result = cmd_upgrade(
-            &printer,
-            std::path::Path::new("/nonexistent/cfgd.yaml"),
-            false,
-            false,
-        );
+        let result = upgrade_without_config(&printer, false, false);
 
         let err = result.expect_err("asset download 500 must return Err");
         let meta = upgrade_error_meta(&err);
@@ -1110,17 +1186,12 @@ mod tests {
             .with_body(&checksum_body)
             .create();
 
-        let _guard = EnvVarGuard::set(GITHUB_API_BASE_ENV, &server.url());
+        let _guard = EnvVarGuard::set(cfgd_core::CFGD_GITHUB_API_BASE_ENV, &server.url());
         let home = tempfile::tempdir().unwrap();
         let _home_guard = cfgd_core::with_test_home_guard(home.path());
 
         let (printer, _cap) = Printer::for_test_doc();
-        let result = cmd_upgrade(
-            &printer,
-            std::path::Path::new("/nonexistent/cfgd.yaml"),
-            false,
-            true,
-        );
+        let result = upgrade_without_config(&printer, false, true);
 
         let err = result.expect_err("strict cosign + missing bundle must return Err");
         let meta = upgrade_error_meta(&err);
@@ -1206,7 +1277,10 @@ mod tests {
         let home = tempfile::tempdir().unwrap();
         let project = tempfile::tempdir().unwrap();
         let runtime = tempfile::tempdir().unwrap();
-        let _rt = EnvVarGuard::set("CFGD_RUNTIME_DIR", &runtime.path().to_string_lossy());
+        let _rt = EnvVarGuard::set(
+            cfgd_core::CFGD_RUNTIME_DIR_ENV,
+            &runtime.path().to_string_lossy(),
+        );
         let _cwd = CwdGuard::set(project.path()).unwrap();
 
         with_test_home(home.path(), || {
@@ -1234,7 +1308,10 @@ mod tests {
     fn wired_binary_pending_suppresses_skill_surface() {
         let home = tempfile::tempdir().unwrap();
         let runtime = tempfile::tempdir().unwrap();
-        let _rt = EnvVarGuard::set("CFGD_RUNTIME_DIR", &runtime.path().to_string_lossy());
+        let _rt = EnvVarGuard::set(
+            cfgd_core::CFGD_RUNTIME_DIR_ENV,
+            &runtime.path().to_string_lossy(),
+        );
 
         with_test_home(home.path(), || {
             seed_stale(SkillKind::Module, SkillScope::User);
@@ -1262,7 +1339,10 @@ mod tests {
         let home = tempfile::tempdir().unwrap();
         let project = tempfile::tempdir().unwrap();
         let runtime = tempfile::tempdir().unwrap();
-        let _rt = EnvVarGuard::set("CFGD_RUNTIME_DIR", &runtime.path().to_string_lossy());
+        let _rt = EnvVarGuard::set(
+            cfgd_core::CFGD_RUNTIME_DIR_ENV,
+            &runtime.path().to_string_lossy(),
+        );
         let _cwd = CwdGuard::set(project.path()).unwrap();
 
         with_test_home(home.path(), || {
@@ -1298,7 +1378,10 @@ mod tests {
     fn wired_manual_standalone_stale_is_silent() {
         let home = tempfile::tempdir().unwrap();
         let runtime = tempfile::tempdir().unwrap();
-        let _rt = EnvVarGuard::set("CFGD_RUNTIME_DIR", &runtime.path().to_string_lossy());
+        let _rt = EnvVarGuard::set(
+            cfgd_core::CFGD_RUNTIME_DIR_ENV,
+            &runtime.path().to_string_lossy(),
+        );
 
         with_test_home(home.path(), || {
             seed_stale(SkillKind::Module, SkillScope::User);

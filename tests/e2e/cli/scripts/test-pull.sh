@@ -9,7 +9,7 @@ echo "=== cfgd pull tests ==="
 # Tests extracted verbatim from run-exhaustive-tests.sh
 
 begin_test "PU01: pull"
-run $C pull
+run "${C[@]}" pull
 if assert_ok; then
     pass_test "PU01"
 else fail_test "PU01"; fi

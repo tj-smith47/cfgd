@@ -1,0 +1,1 @@
+exec_in_pod bash -c 'echo 65530 | tee /var/log/copy /proc/sys/vm/max_map_count'

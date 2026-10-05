@@ -8,7 +8,17 @@ use cfgd_core::output::{Doc, ICON_ARROW, Printer, Role};
 /// so the one route to it is resolved once here.
 fn provision_cosign(printer: &Printer) -> std::result::Result<(), String> {
     let registry = crate::cli::build_registry();
-    crate::cli::helpers::provision_tool(printer, &registry, "cosign", "CFGD_COSIGN_BIN")
+    crate::cli::helpers::provision_tool(printer, &registry, "cosign", cfgd_core::COSIGN_BIN_ENV)
+}
+
+/// cosign was provisioned but could not be started.
+fn cosign_unrunnable(e: &impl std::fmt::Display) -> anyhow::Error {
+    crate::cli::cli_error(
+        "cosign",
+        "tool_missing",
+        format!("failed to run cosign: {e}"),
+        serde_json::json!({}),
+    )
 }
 
 pub fn cmd_module_keys_generate(printer: &Printer, output_dir: Option<&str>) -> anyhow::Result<()> {
@@ -43,7 +53,7 @@ pub fn cmd_module_keys_generate(printer: &Printer, output_dir: Option<&str>) -> 
             // prompts the user and inherits the real terminal.
             .stderr(std::process::Stdio::inherit()),
     )
-    .map_err(|e| anyhow::anyhow!("failed to run cosign: {e}"))?;
+    .map_err(|e| cosign_unrunnable(&e))?;
 
     if !status.success() {
         return Err(crate::cli::cli_error(
@@ -224,7 +234,7 @@ pub fn cmd_module_keys_rotate(
             // prompts the user and inherits the real terminal.
             .stderr(std::process::Stdio::inherit()),
     )
-    .map_err(|e| anyhow::anyhow!("failed to run cosign: {e}"))?;
+    .map_err(|e| cosign_unrunnable(&e))?;
 
     if !status.success() {
         let mut restore_failures: Vec<String> = Vec::new();
@@ -405,7 +415,10 @@ mod tests {
         // manager, so every manager is pinned missing too: without it this pin
         // installs cosign on whoever runs the suite.
         let _managers = cfgd_core::test_helpers::NoHostManagers::pinned_missing();
-        let _g = EnvVarGuard::set("CFGD_COSIGN_BIN", cfgd_core::test_helpers::ABSENT_SEAM_PATH);
+        let _g = EnvVarGuard::set(
+            cfgd_core::COSIGN_BIN_ENV,
+            cfgd_core::test_helpers::ABSENT_SEAM_PATH,
+        );
         let (printer, _cap) = Printer::for_test_doc();
         let err = cmd_module_keys_generate(&printer, None).unwrap_err();
         assert!(
@@ -587,7 +600,7 @@ mod tests {
         );
         let backup_key_exists = std::fs::read_dir(tmp.path())
             .expect("read dir")
-            .filter_map(|e| e.ok())
+            .map(|entry| entry.expect("the walk must read every directory entry"))
             .any(|e| {
                 let name = e.file_name();
                 let n = name.to_string_lossy();
@@ -681,7 +694,10 @@ mod tests {
         // Every manager is pinned missing, or the absent seam sends the verb to
         // this host's own package manager to go and get cosign.
         let _managers = cfgd_core::test_helpers::NoHostManagers::pinned_missing();
-        let _g = EnvVarGuard::set("CFGD_COSIGN_BIN", cfgd_core::test_helpers::ABSENT_SEAM_PATH);
+        let _g = EnvVarGuard::set(
+            cfgd_core::COSIGN_BIN_ENV,
+            cfgd_core::test_helpers::ABSENT_SEAM_PATH,
+        );
         let tmp = tempfile::tempdir().expect("tempdir");
         let dir_str = tmp.path().to_str().expect("utf8 path");
         // Write a key so the not-found check doesn't short-circuit first.
@@ -725,7 +741,7 @@ mod tests {
         assert!(tmp.path().join("cosign.key").exists());
         let backup_pub_present = std::fs::read_dir(tmp.path())
             .unwrap()
-            .filter_map(|e| e.ok())
+            .map(|entry| entry.expect("the walk must read every directory entry"))
             .any(|e| e.file_name().to_string_lossy().starts_with("cosign.pub."));
         assert!(
             !backup_pub_present,

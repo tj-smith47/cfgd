@@ -1,0 +1,3 @@
+pub(crate) unsafe fn read_word(ptr: *const u32) -> u32 {
+    ptr.read_unaligned()
+}

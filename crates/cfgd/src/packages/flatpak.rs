@@ -257,7 +257,7 @@ mod tests {
             // two answers disagree.
             let runnable = |tool: &str| {
                 cfgd_core::command_available_with_seam(
-                    &format!("CFGD_{}_BIN", tool.to_uppercase().replace('-', "_")),
+                    &crate::packages::shared::tool_seam_var(tool),
                     tool,
                 )
             };
@@ -297,7 +297,8 @@ mod tests {
         // The seam env var is cleared for the whole test: with it set, this
         // asserts about whichever ToolShim ran last rather than about the
         // PATH probe.
-        let _seam = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_FLATPAK_BIN");
+        let _seam =
+            cfgd_core::test_helpers::EnvVarGuard::unset(&crate::seams::tool_seam_var("flatpak"));
         let _path_lock = cfgd_core::test_helpers::path_env_mutation_guard();
         let _dirs = cfgd_core::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
         let mgr = FlatpakManager;
@@ -389,12 +390,13 @@ mod tests {
         use cfgd_core::test_helpers::{ToolShim, test_package_context, test_printer, test_state};
         use serial_test::serial;
 
-        const SHIM_ENV: &str = "CFGD_FLATPAK_BIN";
+        static SHIM_ENV: std::sync::LazyLock<String> =
+            std::sync::LazyLock::new(|| crate::seams::tool_seam_var("flatpak"));
 
         #[test]
         #[serial]
         fn flatpak_install_runs_install_subcommand_per_package() {
-            let s = ToolShim::install(SHIM_ENV, 0, "", "");
+            let s = ToolShim::install(&SHIM_ENV, 0, "", "");
             let p = test_printer();
             let st = test_state();
             let cx = test_package_context(&p, &st);
@@ -419,7 +421,7 @@ mod tests {
             // `flatpak update -y org.mozilla.firefox` instead of re-running
             // `flatpak install -y org.mozilla.firefox`, which would no-op;
             // the unheld ref still installs.
-            let s = ToolShim::install(SHIM_ENV, 0, "org.mozilla.firefox\n", "");
+            let s = ToolShim::install(&SHIM_ENV, 0, "org.mozilla.firefox\n", "");
             let p = test_printer();
             let st = test_state();
             let cx = test_package_context(&p, &st);
@@ -447,7 +449,7 @@ mod tests {
         #[test]
         #[serial]
         fn flatpak_uninstall_runs_uninstall_subcommand_per_package() {
-            let s = ToolShim::install(SHIM_ENV, 0, "", "");
+            let s = ToolShim::install(&SHIM_ENV, 0, "", "");
             let p = test_printer();
             let st = test_state();
             let cx = test_package_context(&p, &st);
@@ -460,7 +462,7 @@ mod tests {
         #[test]
         #[serial]
         fn flatpak_refresh_updates_appstream_without_upgrading_apps() {
-            let s = ToolShim::install(SHIM_ENV, 0, "", "");
+            let s = ToolShim::install(&SHIM_ENV, 0, "", "");
             let p = test_printer();
             let st = test_state();
             let cx = test_package_context(&p, &st);
@@ -481,7 +483,7 @@ mod tests {
         #[serial]
         fn flatpak_installed_packages_parses_columns_application_output() {
             let stdout = "org.mozilla.firefox\norg.signal.Signal\n";
-            let _s = ToolShim::install(SHIM_ENV, 0, stdout, "");
+            let _s = ToolShim::install(&SHIM_ENV, 0, stdout, "");
             let p = test_printer();
             let st = test_state();
             let cx = test_package_context(&p, &st);
@@ -496,7 +498,7 @@ mod tests {
             // A listing read tolerates a nonzero exit (`run_pkg_query`, not
             // `run_pkg_cmd`) the same way scoop's and apk's do — a manager
             // reporting nothing installed must not abort the whole apply.
-            let _s = ToolShim::install(SHIM_ENV, 1, "", "no apps installed\n");
+            let _s = ToolShim::install(&SHIM_ENV, 1, "", "no apps installed\n");
             let p = test_printer();
             let st = test_state();
             let cx = test_package_context(&p, &st);
@@ -512,7 +514,7 @@ mod tests {
             // remote-info output uses "Version: <X.Y.Z>" lines; parse_version_field
             // is shared and returns the first match.
             let stdout = "Description: Browser\nVersion: 124.0.1\nLicense: MPL\n";
-            let s = ToolShim::install(SHIM_ENV, 0, stdout, "");
+            let s = ToolShim::install(&SHIM_ENV, 0, stdout, "");
             let v = FlatpakManager
                 .available_version("org.mozilla.firefox")
                 .expect("Ok");
@@ -527,7 +529,7 @@ mod tests {
         #[test]
         #[serial]
         fn flatpak_available_version_returns_none_on_nonzero_exit() {
-            let _s = ToolShim::install(SHIM_ENV, 1, "", "no such app on flathub");
+            let _s = ToolShim::install(&SHIM_ENV, 1, "", "no such app on flathub");
             let v = FlatpakManager
                 .available_version("nonexistent.app")
                 .expect("non-zero → Ok(None)");

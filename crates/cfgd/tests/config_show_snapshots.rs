@@ -12,7 +12,7 @@ use std::path::Path;
 
 use cfgd::cli::config_cmd::build_config_show_doc;
 use cfgd_core::config::{
-    CfgdConfig, ConfigMetadata, ConfigSpec, DaemonConfig, ModuleRegistryEntry,
+    CfgdConfig, ConfigMetadata, ConfigSpec, DaemonConfig, MigrationPolicy, ModuleRegistryEntry,
     ModuleSecurityConfig, ModulesConfig, OriginSpec, OriginType, ReconcileConfig, SecretsConfig,
     SourceSpec, SshHostKeyPolicy, SyncConfig, ThemeConfig,
 };
@@ -30,6 +30,7 @@ fn happy_config() -> CfgdConfig {
         },
         spec: ConfigSpec {
             profile: Some("base".into()),
+            migration_policy: MigrationPolicy::Prompt,
             origin: vec![
                 OriginSpec {
                     origin_type: OriginType::Git,

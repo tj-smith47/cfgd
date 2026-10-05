@@ -1,13 +1,14 @@
+# shellcheck shell=bash
 # Operator E2E tests: OCI
-# Sourced by run-all.sh — do NOT set traps or pipefail here.
+# Sourced by run-all.sh: do NOT set traps or pipefail here.
 
 echo ""
 echo "=== OCI Tests ==="
 
 # =================================================================
-# OP-OCI-01: OCI supply chain — push, pull, verify content integrity
+# OP-OCI-01: OCI supply chain: push, pull, verify content integrity
 # =================================================================
-begin_test "OP-OCI-01: OCI supply chain — push, pull, verify"
+begin_test "OP-OCI-01: OCI supply chain: push, pull, verify"
 
 # Create a test module directory
 TEST_MODULE_DIR=$(mktemp -d)
@@ -63,21 +64,22 @@ fi
 rm -rf "$TEST_MODULE_DIR" "$PULL_DIR"
 
 # Bonus: create Module CRD referencing the pushed artifact to verify controller resolves it
-# This may be rejected if ClusterConfigPolicy disallows unsigned modules — that's fine
+# This may be rejected if ClusterConfigPolicy disallows unsigned modules, which is fine
 if kubectl apply -f - 2>/dev/null <<EOF
 apiVersion: cfgd.io/v1alpha1
 kind: Module
 metadata:
   name: e2e-oci-module-${E2E_RUN_ID}
   labels:
-    cfgd.io/e2e-run: "${E2E_RUN_ID}"
+    ${E2E_RUN_LABEL_YAML}
     ${E2E_JOB_LABEL_YAML}
 spec:
   packages: []
   ociArtifact: "${OCI_REF}"
 EOF
 then
-    sleep 5
+    wait_for_k8s_field module "e2e-oci-module-${E2E_RUN_ID}" "" \
+        '{.status.conditions[?(@.type=="Available")].status}' "" 30 > /dev/null || true
     OCI_RESOLVED=$(kubectl get module "e2e-oci-module-${E2E_RUN_ID}" \
         -o jsonpath='{.status.resolvedArtifact}' 2>/dev/null || echo "")
     OCI_AVAIL=$(kubectl get module "e2e-oci-module-${E2E_RUN_ID}" \
@@ -85,5 +87,5 @@ then
     echo "  Module resolvedArtifact: ${OCI_RESOLVED:-not set}"
     echo "  Module Available: ${OCI_AVAIL:-not set}"
 else
-    echo "  (Module rejected by policy — unsigned module not allowed, which is correct behavior)"
+    echo "  (Module rejected by policy: unsigned module not allowed, which is correct behavior)"
 fi

@@ -12,6 +12,8 @@ The daemon runs as a long-lived process that watches for drift and optionally au
 
 4. **Backup timers**: runs each `spec.backups[]` entry that declares a `schedule`, on its own interval or cron. See [Declarative Backups](backups.md#daemon-scheduling).
 
+5. **Update check**: on a daily tick, runs the automatic cfgd update check (gated by `spec.update.interval`) under `spec.update.policy`, read from the config file on every tick so an edit takes effect without a restart. A foreground daemon started with `--update-policy` (or `CFGD_UPDATE_POLICY`) uses that posture instead for as long as it runs: `cfgd --update-policy manual daemon` never checks. An installed service carries neither the flag nor the installing shell's variable, so it follows the file (see [Service Management](#service-management)). See [Update behavior](configuration.md#update-behavior-specupdate).
+
 ![an edit committed on machine A landing on machine B through the daemon's sync and reconcile loops](../demo/cfgd-sync.gif)
 
 ## Architecture
@@ -94,7 +96,7 @@ $ cfgd daemon
 14:32:05  INFO daemon: starting cfgd 0.9.0
 14:32:05  INFO daemon: health endpoint at /run/user/0/cfgd/cfgd.sock
 14:32:05  INFO daemon: running — reconcile every 5s
-→ Press Ctrl+C to stop
+◉ Press Ctrl+C to stop
 14:32:10  INFO watch: config changed profiles/driftdemo.yaml
 14:32:10  INFO reconcile: drift detected in 1 resource
 
@@ -117,8 +119,10 @@ Every line the daemon logs is `HH:MM:SS  INFO <subsystem>: <sentence>` in local 
 `daemon:`, `sync:`, `reconcile:` and `watch:` the four subsystems that speak. Operands are
 spelled into the sentence rather than appended as `key=value`; the field form lives on the
 `debug!` event beside each info line, so `-v` still gives a machine-parseable stream. The
-`press Ctrl+C to stop` hint is the one piece of the startup that is not a log line: it is
-printed only when stdout is a terminal, because a service under systemd has no keyboard.
+`Press Ctrl+C to stop` row is the one piece of the startup that is not a log line: it is
+printed only when a terminal is attached, because a service under systemd has no keyboard,
+and it is a note row, so `spec.output.usageHints` cannot take away the
+only statement of how to stop a foreground run.
 
 The `tracing` lines around it are unchanged, so existing log consumers keep working; the
 tree is strictly additional. Under `driftPolicy: NotifyOnly` (or `Prompt`, which has no
@@ -376,8 +380,8 @@ and loaded with `launchctl bootstrap system`. Logs go to `/var/log/cfgd.log` and
 
 The generated service bakes `--scope system` into `ExecStart` (Linux) and `ProgramArguments`
 (macOS), so the daemon and any `cfgd --scope system <command>` admin-CLI invocations resolve
-the same roots. Any `--state-dir` / `--runtime-dir` the install itself ran under is baked in the
-same way: the installed service is a fresh process with none of the invoking shell's flags, so
+the same roots. Any `--state-dir` / `--runtime-dir` / `--cache-dir` the install itself ran under
+is baked in the same way: the installed service is a fresh process with none of the invoking shell's flags, so
 without that the daemon would write its state somewhere the CLI never looks:
 
 ```bash
@@ -385,6 +389,9 @@ sudo cfgd --scope system --state-dir /srv/cfgd/state daemon install
 # ExecStart=/usr/local/bin/cfgd --config /etc/cfgd/cfgd.yaml --scope system \
 #           --state-dir /srv/cfgd/state --quiet daemon
 ```
+
+The installed daemon checks for updates under `spec.update.policy`, re-read from the config on
+every version-check tick, so set the posture in the config.
 
 Path defaults under system scope:
 

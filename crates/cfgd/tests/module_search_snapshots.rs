@@ -13,7 +13,7 @@
 //! because the streaming-bearing surface deserves a standalone bridge
 //! anchor.
 
-mod common;
+use cfgd_test_fixtures as common;
 
 use std::path::Path;
 
@@ -107,7 +107,8 @@ fn module_search_bridge_one_blank_line() {
     // buffered table Doc must have exactly one blank line between them.
     let (config_dir, _state_dir) = search_test_setup();
     let _home = cfgd_core::with_test_home_guard(config_dir.path());
-    let _env = cfgd_core::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+    let _env =
+        cfgd_core::test_helpers::EnvVarGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
 
     let src_root = tempfile::tempdir().unwrap();
     let src = init_registry_source(src_root.path(), "alpha", "1.0.0", "Alpha module");
@@ -116,7 +117,10 @@ fn module_search_bridge_one_blank_line() {
 
     let cli = cli_for(config_dir.path(), config_dir.path());
     let (printer, cap) = Printer::for_test_doc();
-    module::cmd_module_search(&cli, &printer, "alpha").unwrap();
+    cfgd::cli::RunContext::for_test(&cli, &printer, |run| {
+        module::cmd_module_search(run, "alpha")
+    })
+    .unwrap();
     drop(printer);
 
     let combined = cap.human();
@@ -150,7 +154,8 @@ fn module_search_bridge_one_blank_line() {
 fn search_happy_human() {
     let (config_dir, _state_dir) = search_test_setup();
     let _home = cfgd_core::with_test_home_guard(config_dir.path());
-    let _env = cfgd_core::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+    let _env =
+        cfgd_core::test_helpers::EnvVarGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
 
     let src_root = tempfile::tempdir().unwrap();
     let src = init_registry_source(src_root.path(), "alpha", "1.0.0", "Alpha module");
@@ -159,7 +164,10 @@ fn search_happy_human() {
 
     let cli = cli_for(config_dir.path(), config_dir.path());
     let (printer, cap) = Printer::for_test_doc();
-    module::cmd_module_search(&cli, &printer, "alpha").unwrap();
+    cfgd::cli::RunContext::for_test(&cli, &printer, |run| {
+        module::cmd_module_search(run, "alpha")
+    })
+    .unwrap();
     drop(printer);
 
     // Normalize variable paths so the golden is host-stable.
@@ -192,7 +200,8 @@ fn search_happy_human() {
 fn search_settle_line_nests_under_the_registry_owner_header() {
     let (config_dir, _state_dir) = search_test_setup();
     let _home = cfgd_core::with_test_home_guard(config_dir.path());
-    let _env = cfgd_core::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+    let _env =
+        cfgd_core::test_helpers::EnvVarGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
 
     let src_root = tempfile::tempdir().unwrap();
     let src = init_registry_source(src_root.path(), "alpha", "1.0.0", "Alpha module");
@@ -201,7 +210,10 @@ fn search_settle_line_nests_under_the_registry_owner_header() {
 
     let cli = cli_for(config_dir.path(), config_dir.path());
     let (printer, cap) = Printer::for_test_doc();
-    module::cmd_module_search(&cli, &printer, "alpha").unwrap();
+    cfgd::cli::RunContext::for_test(&cli, &printer, |run| {
+        module::cmd_module_search(run, "alpha")
+    })
+    .unwrap();
     drop(printer);
 
     let human = strip_ansi(&cap.human());

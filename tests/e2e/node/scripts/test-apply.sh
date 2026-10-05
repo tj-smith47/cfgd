@@ -1,5 +1,6 @@
+# shellcheck shell=bash
 # Node E2E tests: Apply (binary-level)
-# Sourced by run-all.sh — do NOT set traps or pipefail here.
+# Sourced by run-all.sh: do NOT set traps or pipefail here.
 
 echo ""
 echo "=== Apply Tests ==="
@@ -126,16 +127,17 @@ else
 fi
 
 # =================================================================
-# BIN-07: Idempotency — apply again shows nothing to do
+# BIN-07: Idempotency: apply again shows nothing to do
 # =================================================================
 begin_test "BIN-07: Apply idempotency"
-OUTPUT=$(exec_in_pod cfgd --config /etc/cfgd/cfgd.yaml apply --yes --no-color 2>&1) || true
-if echo "$OUTPUT" | grep -qi "nothing to apply\|in sync\|0 configurators"; then
+RC=0
+OUTPUT=$(exec_in_pod cfgd --config /etc/cfgd/cfgd.yaml apply --yes --no-color 2>&1) || RC=$?
+# The reconciler's MSG_NOTHING_TO_DO: the apply right before this one left
+# nothing for a second run to change.
+if [ "$RC" -eq 0 ] && assert_contains "$OUTPUT" "Nothing to do — everything is up to date"; then
     pass_test "BIN-07"
 else
-    # May still apply if other configurators aren't available, which is fine
-    echo "  Note: may re-apply if non-sysctl configurators detect drift"
-    pass_test "BIN-07"
+    fail_test "BIN-07" "A second apply (exit $RC) did not report that there is nothing to do"
 fi
 
 echo ""
@@ -145,7 +147,7 @@ echo "=== Error Path Tests ==="
 # BIN-ERR-01: Read-only sysctl parameter
 # =================================================================
 begin_test "BIN-ERR-01: Read-only sysctl parameter"
-# kernel.ostype is read-only (always "Linux") — writing to it must fail gracefully.
+# kernel.ostype is read-only (always "Linux"): writing to it must fail gracefully.
 exec_in_pod bash -c 'cat > /etc/cfgd/profiles/err01-readonly-sysctl.yaml << "INNEREOF"
 apiVersion: cfgd.io/v1alpha1
 kind: Profile
@@ -300,15 +302,22 @@ exec_in_pod rm -rf /tmp/cfgd-e2e-err03 2>/dev/null || true
 # =================================================================
 begin_test "BIN-ERR-04: Insufficient permissions"
 # Run cfgd as nobody (uid 65534) to verify it handles permission errors gracefully.
+ERR04_RC=0
 ERR04_OUTPUT=$(exec_in_pod su -s /bin/sh nobody -c \
-    "cfgd --config /etc/cfgd/cfgd.yaml apply --yes --no-color 2>&1" || true)
-echo "  Non-root apply output (first 10 lines):"
+    "cfgd --config /etc/cfgd/cfgd.yaml apply --yes --no-color 2>&1") || ERR04_RC=$?
+echo "  Non-root apply exit: $ERR04_RC, output (first 10 lines):"
 echo "$ERR04_OUTPUT" | head -10 | sed 's/^/    /'
-# Should fail or report errors (permission denied on sysctl, etc.), not crash
-if echo "$ERR04_OUTPUT" | grep -qi "permission\|denied\|error\|failed\|cannot"; then
+# A non-root apply either has nothing it lacks permission for and exits 0, or
+# exits non-zero through cfgd's one error sink, which prints a line opening
+# with the fail icon (render_cli_error in crates/cfgd/src/cli/error.rs, icon
+# ICON_FAIL "✗" in crates/cfgd-core/src/output/theme.rs). An su or kubectl exec
+# failure prints its own words with no such line, so cfgd never ran.
+if echo "$ERR04_OUTPUT" | grep -q "panicked"; then
+    fail_test "BIN-ERR-04" "cfgd panicked when run as a non-root user"
+elif [ "$ERR04_RC" -eq 126 ] || [ "$ERR04_RC" -eq 127 ]; then
+    fail_test "BIN-ERR-04" "su or kubectl exec could not run cfgd as nobody (exit $ERR04_RC)"
+elif [ "$ERR04_RC" -eq 0 ] || echo "$ERR04_OUTPUT" | grep -q '^✗ '; then
     pass_test "BIN-ERR-04"
 else
-    # Even if it succeeds with nothing to do (no drift), that's fine —
-    # the point is it didn't crash
-    pass_test "BIN-ERR-04"
+    fail_test "BIN-ERR-04" "non-root apply exited $ERR04_RC with no cfgd error line; su or kubectl exec may have failed before cfgd ran"
 fi

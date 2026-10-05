@@ -119,6 +119,7 @@ impl StateStore {
         keys: &[(String, String)],
     ) -> Result<()> {
         self.conn.execute_batch(
+            // space-run-ok: a table definition's own column layout.
             "CREATE TEMP TABLE IF NOT EXISTS drift_key_set (
                  resource_type TEXT NOT NULL,
                  resource_id   TEXT NOT NULL,
@@ -385,7 +386,7 @@ impl StateStore {
         let mut stmt = self
             .conn
             .prepare(
-                "SELECT id, timestamp, resource_type, resource_id, expected, actual, resolved_by, source FROM drift_events WHERE resolved_by IS NULL AND resolved_at IS NULL ORDER BY timestamp DESC",
+                "SELECT id, timestamp, resource_type, resource_id, expected, actual, resolved_by, source FROM drift_events WHERE resolved_by IS NULL AND resolved_at IS NULL ORDER BY timestamp DESC, id DESC",
             )
             ?;
 

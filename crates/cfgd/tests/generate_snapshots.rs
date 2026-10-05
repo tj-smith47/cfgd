@@ -18,8 +18,6 @@
 //!   `settingsCaptured`, `dotfileEntries`, …). The home dir is a tempdir
 //!   so the snapshot is reproducible.
 
-mod common;
-
 use std::path::Path;
 
 use cfgd::cli::generate::{self, GenerateArgs};
@@ -57,9 +55,12 @@ fn cli_for(config_dir: &Path) -> cfgd::cli::Cli {
         quiet: true,
         output: cfgd::cli::OutputFormatArg(cfgd_core::output::OutputFormat::Table),
         list_envelope: false,
+        hints: false,
         no_hints: false,
         theme: None,
         mask_env_values: None,
+        migration_policy: None,
+        update_policy: None,
         jsonpath: None,
         yes: false,
         state_dir: None,
@@ -96,7 +97,10 @@ fn generate_scan_only_empty_home_human() {
     let cli = cli_for(home.path());
     let (printer, cap) = Printer::for_test_doc();
 
-    generate::cmd_generate(&cli, &printer, &scan_only_args(home.path())).unwrap();
+    cfgd::cli::RunContext::for_test(&cli, &printer, |run| {
+        generate::cmd_generate(run, &scan_only_args(home.path()))
+    })
+    .unwrap();
     drop(printer);
 
     let stripped = strip_ansi(&cap.human());
@@ -116,7 +120,10 @@ fn generate_scan_only_json_shape() {
     let cli = cli_for(home.path());
     let (printer, cap) = Printer::for_test_doc_with_format(OutputFormat::Json);
 
-    generate::cmd_generate(&cli, &printer, &scan_only_args(home.path())).unwrap();
+    cfgd::cli::RunContext::for_test(&cli, &printer, |run| {
+        generate::cmd_generate(run, &scan_only_args(home.path()))
+    })
+    .unwrap();
     drop(printer);
 
     let json = cap.json().expect("doc captured json");

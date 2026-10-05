@@ -487,7 +487,12 @@ mod tests {
         #[test]
         #[serial]
         fn scoop_install_batches_all_packages_into_one_spawn() {
-            let s = cfgd_core::test_helpers::ToolShim::install("CFGD_SCOOP_BIN", 0, "", "");
+            let s = cfgd_core::test_helpers::ToolShim::install(
+                &crate::seams::tool_seam_var("scoop"),
+                0,
+                "",
+                "",
+            );
             let p = test_printer();
             let st = test_state();
             let cx = test_package_context(&p, &st);
@@ -515,7 +520,7 @@ mod tests {
         #[serial]
         fn scoop_install_batch_failure_falls_back_to_per_package_attribution() {
             let s = cfgd_core::test_helpers::ToolShim::install_failing_on(
-                "CFGD_SCOOP_BIN",
+                &crate::seams::tool_seam_var("scoop"),
                 "nope",
                 "Couldn't find manifest for 'nope'",
             );

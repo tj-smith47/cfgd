@@ -8,7 +8,7 @@ use super::compliance::ComplianceConfig;
 use super::daemon::DaemonConfig;
 use super::origin::OriginSpec;
 use super::output::OutputConfig;
-use cfgd_schema::FileStrategy;
+use cfgd_schema::{FileStrategy, MigrationPolicy};
 
 use super::profile_spec::ProfileDocument;
 use super::root::{CfgdConfig, ConfigMetadata, ConfigSpec, UpdateConfig};
@@ -142,9 +142,11 @@ fn fold_legacy_output(
         LEGACY_OUTPUT_KEYS[1].0,
         LEGACY_OUTPUT_KEYS[1].1,
     );
+    // option-section-ok: folds the legacy flat key into the nested block
     if block.theme.is_none() {
         block.theme = theme;
     }
+    // option-section-ok: folds the legacy flat key into the nested block
     if block.usage_hints.is_none() {
         block.usage_hints = usage_hints;
     }
@@ -196,7 +198,60 @@ pub(super) fn warn_on_legacy_theme_keys(raw_yaml: &str) -> Vec<String> {
     messages
 }
 
-/// Reject a document whose `apiVersion` is not the version this build understands.
+/// One `apiVersion` this build can read a document written under.
+///
+/// The conversion is a table because the document kinds share one validator: a
+/// version added here is accepted by `cfgd.yaml`, a profile, a module and a
+/// ConfigSource in one edit.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ApiVersionConversion {
+    /// The version as the document spells it.
+    pub(crate) from: &'static str,
+    /// The version it is read as. Always [`crate::API_VERSION`].
+    pub(crate) to: &'static str,
+}
+
+/// Every `apiVersion` this build accepts. One entry today — the identity —
+/// because `cfgd.io/v1alpha1` is the only version cfgd has ever published;
+/// a second version adds a row plus the field rewrite it needs, and reaches
+/// every parse path through the one validator below.
+pub(crate) const API_VERSION_CONVERSIONS: &[ApiVersionConversion] = &[ApiVersionConversion {
+    from: crate::API_VERSION,
+    to: crate::API_VERSION,
+}];
+
+/// The version `found` is read as, or `None` when no entry names it.
+/// `table` is a parameter so a test can prove the route with a synthetic
+/// older version without waiting for one to ship.
+pub(crate) fn convertible_from(
+    table: &[ApiVersionConversion],
+    found: &str,
+) -> Option<&'static str> {
+    table.iter().find(|e| e.from == found).map(|e| e.to)
+}
+
+/// Every `apiVersion` in `table`, in table order, joined for a refusal to name.
+///
+/// The refusal names the whole readable set, [`crate::API_VERSION`] included:
+/// a build carrying a second conversion row accepts a document the constant
+/// does not name, and a message spelling the constant alone would call that
+/// document's version unsupported in the same breath as accepting it. `table`
+/// is a parameter for the reason [`convertible_from`]'s is, and for one more:
+/// while the shipped table is the identity alone its `from` and `to` are the
+/// same bytes, so only a synthetic table can tell a composer reading the wrong
+/// column from one reading the right one.
+///
+/// Called from the error's `Display`, so the parse path that accepts a document
+/// allocates nothing.
+pub(crate) fn readable_api_versions(table: &[ApiVersionConversion]) -> String {
+    table
+        .iter()
+        .map(|entry| entry.from)
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// Reject a document whose `apiVersion` names no row of [`API_VERSION_CONVERSIONS`].
 ///
 /// Every document parse path ([`parse_config`], [`load_profile`], `parse_module`,
 /// [`parse_config_source`]) routes through this single check so an unknown version
@@ -205,7 +260,7 @@ pub(super) fn warn_on_legacy_theme_keys(raw_yaml: &str) -> Vec<String> {
 /// the current schema. The typed variant is the matchable hook a future
 /// version-migration path plugs into.
 pub(crate) fn validate_api_version(api_version: &str) -> Result<()> {
-    if api_version != crate::API_VERSION {
+    if convertible_from(API_VERSION_CONVERSIONS, api_version).is_none() {
         return Err(ConfigError::UnsupportedApiVersion {
             found: api_version.to_string(),
         }
@@ -266,10 +321,12 @@ pub fn resolve_config_path(path: &Path) -> PathBuf {
     if !path.is_dir() {
         return path.to_path_buf();
     }
+    // document-name-ok: the resolver every other site asks
     let yaml = path.join(CONFIG_FILENAME);
     if yaml.exists() {
         return yaml;
     }
+    // document-name-ok: the resolver every other site asks
     let toml = path.join(CONFIG_FILENAME_TOML);
     if toml.exists() {
         return toml;
@@ -277,8 +334,34 @@ pub fn resolve_config_path(path: &Path) -> PathBuf {
     yaml
 }
 
+/// The config document a config directory names, whether or not the
+/// directory exists yet: [`resolve_config_path`]'s answer for a directory
+/// (`cfgd.yaml`, else `cfgd.toml`, else `cfgd.yaml`), and the
+/// [`CONFIG_FILENAME`] a new document would be written as inside a path that
+/// is not one. A caller holding a directory reaches for this, so a directory
+/// carrying a `cfgd.toml` is read through that file.
+pub fn config_document_in(dir: &Path) -> PathBuf {
+    if dir.is_dir() {
+        resolve_config_path(dir)
+    } else {
+        // document-name-ok: a directory that does not exist yet holds no document
+        dir.join(CONFIG_FILENAME)
+    }
+}
+
 /// Load and parse the root cfgd.yaml config file
 pub fn load_config(path: &Path) -> Result<CfgdConfig> {
+    read_config_document(path).map(|(config, _)| config)
+}
+
+/// [`load_config`], keeping the bytes the document was parsed from beside it.
+///
+/// For a caller that compares the parse against the text on disk (the
+/// load-time migration gate asks which keys the text leaves out) and must not
+/// read the file a second time to get them. The path resolution, the size cap
+/// and the error for a missing file are [`load_config`]'s, because it is this
+/// function.
+pub fn read_config_document(path: &Path) -> Result<(CfgdConfig, String)> {
     let resolved = resolve_config_path(path);
     let path = resolved.as_path();
     crate::record_config_input(path);
@@ -319,11 +402,13 @@ pub fn load_config(path: &Path) -> Result<CfgdConfig> {
         message: format!("failed to read {}: {}", path.posix(), e),
     })?;
 
-    parse_config(&contents, path)
+    let config = parse_config(&contents, path)?;
+    Ok((config, contents))
 }
 
 /// Parse config from string, supporting both YAML and TOML based on file extension
 pub fn parse_config(contents: &str, path: &Path) -> Result<CfgdConfig> {
+    tracing::debug!(path = %path.display(), "parsing config document"); // native-ok: log line
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("yaml");
 
     let mut deprecations = if ext != "toml" {
@@ -373,6 +458,7 @@ pub fn parse_config(contents: &str, path: &Path) -> Result<CfgdConfig> {
             ai: raw.spec.ai,
             compliance: raw.spec.compliance,
             update: raw.spec.update,
+            migration_policy: raw.spec.migration_policy,
         },
         deprecations,
         legacy_output_keys,
@@ -413,7 +499,7 @@ struct RawConfigSpec {
     file_strategy: FileStrategy,
     #[serde(default)]
     security: Option<SecurityConfig>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "crate::config::null_as_default")]
     aliases: HashMap<String, String>,
     #[serde(default)]
     ai: Option<AiConfig>,
@@ -421,6 +507,8 @@ struct RawConfigSpec {
     compliance: Option<ComplianceConfig>,
     #[serde(default)]
     update: Option<UpdateConfig>,
+    #[serde(default)]
+    migration_policy: MigrationPolicy,
     /// The pre-`spec.output` spelling of `spec.output.usageHints`, still read.
     #[serde(default)]
     usage_hints: Option<bool>,

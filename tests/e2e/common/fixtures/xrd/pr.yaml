@@ -1,0 +1,102 @@
+apiVersion: apiextensions.crossplane.io/v2
+kind: CompositeResourceDefinition
+metadata:
+  name: teamconfigs.cfgd.io
+spec:
+  group: cfgd.io
+  names:
+    kind: TeamConfig
+    plural: teamconfigs
+  scope: Namespaced
+  versions:
+  - name: v1alpha1
+    served: true
+    referenceable: true
+    schema:
+      openAPIV3Schema:
+        type: object
+        properties:
+          spec:
+            type: object
+            properties:
+              team:
+                type: string
+                description: Team identifier used to name generated resources.
+              profile:
+                type: string
+                description: Default cfgd profile for team members (overridable per member).
+              source:
+                type: object
+                description: Git repository containing the team's cfgd config source.
+                properties:
+                  url:
+                    type: string
+                  branch:
+                    type: string
+                    default: main
+                required: [url]
+              modules:
+                type: array
+                description: Modules provided by this team config.
+                items:
+                  type: object
+                  properties:
+                    name:
+                      type: string
+                      description: Module name.
+                    sourceRef:
+                      type: object
+                      description: Reference to a git repo containing the module.
+                      properties:
+                        url:
+                          type: string
+                        ref:
+                          type: string
+                      required: [url]
+                  required: [name]
+              policy:
+                type: object
+                description: Policy tiers controlling what members can override.
+                properties:
+                  required:
+                    type: object
+                    description: Items subscribers cannot override or remove.
+                    x-kubernetes-preserve-unknown-fields: true
+                  recommended:
+                    type: object
+                    description: Items subscribers get by default but can override or reject.
+                    x-kubernetes-preserve-unknown-fields: true
+                  locked:
+                    type: object
+                    description: Items subscribers cannot modify or remove under any circumstances.
+                    x-kubernetes-preserve-unknown-fields: true
+                  requiredModules:
+                    type: array
+                    description: Module names that all team members must have installed.
+                    items:
+                      type: string
+                  recommendedModules:
+                    type: array
+                    description: Module names recommended for team members.
+                    items:
+                      type: string
+              members:
+                type: array
+                description: Team members who will receive MachineConfig CRDs.
+                items:
+                  type: object
+                  properties:
+                    username:
+                      type: string
+                      description: Unique identifier for the team member.
+                    sshPublicKey:
+                      type: string
+                      description: SSH public key for device verification.
+                    profile:
+                      type: string
+                      description: Profile override for this member (defaults to team profile).
+                    hostname:
+                      type: string
+                      description: Machine hostname (filled on first check-in if empty).
+                  required: [username]
+            required: [team, members]

@@ -1,1 +1,2 @@
 crds/kustomization.yaml
+tests/

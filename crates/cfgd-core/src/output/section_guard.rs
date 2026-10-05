@@ -124,8 +124,13 @@ impl<'p> SectionGuard<'p> {
 
     pub fn hint(&self, hint: impl Into<crate::output::HintCommands>) -> &Self {
         let hint = hint.into();
-        self.renderer
-            .render_hint(self.sink.as_ref(), self.depth, &hint.text, &hint.commands);
+        self.renderer.render_hint(
+            self.sink.as_ref(),
+            self.depth,
+            &hint.text,
+            &hint.commands,
+            hint.is_gated(),
+        );
         self
     }
 
@@ -539,6 +544,7 @@ mod tests {
     /// the section header must appear before it.
     #[test]
     fn section_run_captures_command_output() {
+        let _path = crate::test_helpers::path_env_read_guard();
         let (p, buf) = Printer::for_test_at(Verbosity::Normal);
         {
             let s = p.section("Build");
@@ -572,6 +578,7 @@ mod tests {
     /// status (does NOT propagate as Err; the command itself ran).
     #[test]
     fn section_run_non_zero_exit_is_not_io_error() {
+        let _path = crate::test_helpers::path_env_read_guard();
         let (p, _buf) = Printer::for_test_at(Verbosity::Normal);
         let s = p.section("Fail");
         // `false` exits 1 on all POSIX targets.
@@ -630,6 +637,7 @@ mod tests {
             body(&s);
         }
         p.flush();
+        // long-line-ok: a hatch is read off its own line, so it cannot wrap
         // raw-capture-ok: two callers compare the RAW capture for exact colour equality/inequality (action_subject_keeps_role_style_under_default, action_status_leaves_the_glyph_on_the_role_style) — captured_text would strip the ANSI both exist to check
         let raw = buf.lock().unwrap_or_else(|e| e.into_inner()).clone();
         raw.lines().skip(1).collect::<Vec<_>>().join("\n")
@@ -765,6 +773,7 @@ mod tests {
             sec.status_simple(Role::Ok, "server status: \x1b[2Kok\x1b[31m");
         }
         p.flush();
+        // long-line-ok: a hatch is read off its own line, so it cannot wrap
         // raw-capture-ok: the claim IS that no escape survives, and captured_text strips exactly what this test looks for
         let raw = buf.lock().unwrap_or_else(|e| e.into_inner()).clone();
         assert!(
@@ -794,6 +803,7 @@ mod tests {
             owner.bullet("wrote init.lua");
         }
         p.flush();
+        // long-line-ok: a hatch is read off its own line, so it cannot wrap
         // raw-capture-ok: asserting the owner token's exact styled run reaches the renderer unrestyled — captured_text would strip the ANSI this test exists to check
         let raw = buf.lock().unwrap_or_else(|e| e.into_inner()).clone();
         assert!(
@@ -881,9 +891,10 @@ mod tests {
         {
             let s = p.section_caveats();
             let owner = s.section_owner(&crate::output::OwnerLabel::new("cfgd", "env"));
-            owner.status_simple(Role::Warn, "run `source ~/.cfgd.env`, or open a new shell");
+            owner.status_simple(Role::Warn, "reload deferred: /proc is read-only");
         }
         p.flush();
+        // long-line-ok: a hatch is read off its own line, so it cannot wrap
         // raw-capture-ok: asserting the heading's exact styled run reaches the renderer unrestyled — captured_text would strip the ANSI this test exists to check
         let raw = buf.lock().unwrap_or_else(|e| e.into_inner()).clone();
         assert!(

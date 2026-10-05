@@ -164,7 +164,7 @@ spec:
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `name` | string | Yes | | Human-readable name for this configuration (e.g. `my-workstation`). |
+| `name` | string | Yes | — | Human-readable name for this configuration (e.g. `my-workstation`). |
 
 ---
 
@@ -172,19 +172,19 @@ spec:
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `profile` | string | No | | Name of the active profile. Run `cfgd profile create <name>` to set. |
-| `origin` | object or list | No | | Remote git or server origin(s) for this config. See [spec.origin](#specorigin). |
-| `daemon` | object | No | | Daemon and reconciliation settings. See [spec.daemon](#specdaemon). |
-| `secrets` | object | No | | Secret backend configuration. See [spec.secrets](#specsecrets). |
+| `profile` | string | No | — | Name of the active profile. Run `cfgd profile create <name>` to set. |
+| `origin` | object or list | No | — | Remote git or server origin(s) for this config. See [spec.origin](#specorigin). |
+| `daemon` | object | No | — | Daemon and reconciliation settings. See [spec.daemon](#specdaemon). |
+| `secrets` | object | No | — | Secret backend configuration. See [spec.secrets](#specsecrets). |
 | `sources` | list | No | `[]` | Remote config sources to subscribe to. See [spec.sources[]](#specsources). |
-| `modules` | object | No | | Module registry and security settings. See [spec.modules](#specmodules). |
-| `security` | object | No | | Source signature verification overrides. See [spec.security](#specsecurity). |
+| `modules` | object | No | — | Module registry and security settings. See [spec.modules](#specmodules). |
+| `security` | object | No | — | Source signature verification overrides. See [spec.security](#specsecurity). |
 | `fileStrategy` | enum | No | `Symlink` | Global default file deployment strategy. See [FileStrategy](#filestrategy-values). |
 | `aliases` | map | No | `{}` | CLI aliases: map of alias name to command string. |
-| `output` | object | No | | How cfgd renders what it reports: theme, usage hints, env-value masking. See [spec.output](#specoutput). |
-| `ai` | object | No | | AI assistant configuration. See [spec.ai](#specai). |
-| `compliance` | object | No | | Continuous compliance snapshot settings. See [spec.compliance](#speccompliance). |
-| `update` | object | No | | Update policy for the cfgd binary and authored skills. See [spec.update](#specupdate). |
+| `output` | object | No | — | How cfgd renders what it reports: theme, usage hints, env-value masking. See [spec.output](#specoutput). |
+| `ai` | object | No | — | AI assistant configuration. See [spec.ai](#specai). |
+| `compliance` | object | No | — | Continuous compliance snapshot settings. See [spec.compliance](#speccompliance). |
+| `update` | object | No | — | Update policy for the cfgd binary and authored skills. See [spec.update](#specupdate). |
 
 ---
 
@@ -196,10 +196,10 @@ Can be written as a single object or as a list (first entry is the primary origi
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `type` | enum | Yes | | Origin type. See [OriginType values](#origintype-values). |
-| `url` | string | Yes | | Remote URL. For `Git`: a git clone URL. For `Server`: the device gateway base URL. |
+| `type` | enum | Yes | — | Origin type. See [OriginType values](#origintype-values). |
+| `url` | string | Yes | — | Remote URL. For `Git`: a git clone URL. For `Server`: the device gateway base URL. |
 | `branch` | string | No | `master` | Git branch to track. Only used when `type: Git`. |
-| `auth` | string | No | | SSH key path or credential reference for authenticated access. |
+| `auth` | string | No | — | SSH key path or credential reference for authenticated access. |
 | `sshStrictHostKeyChecking` | enum | No | `AcceptNew` | SSH `StrictHostKeyChecking` policy for git operations. See [SshHostKeyPolicy values](#sshhostkeypolicy-values). |
 
 #### OriginType values
@@ -246,9 +246,9 @@ Controls the long-running daemon process started with `cfgd daemon`.
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
 | `enabled` | bool | No | `false` | Whether the daemon is active. |
-| `reconcile` | object | No | | Reconciliation loop settings. See [spec.daemon.reconcile](#specdaemonreconcile). |
-| `sync` | object | No | | Git sync settings. See [spec.daemon.sync](#specdaemonsync). |
-| `notify` | object | No | | Notification settings. See [spec.daemon.notify](#specdaemonnotify). |
+| `reconcile` | object | No | — | Reconciliation loop settings. See [spec.daemon.reconcile](#specdaemonreconcile). |
+| `sync` | object | No | — | Git sync settings. See [spec.daemon.sync](#specdaemonsync). |
+| `notify` | object | No | — | Notification settings. See [spec.daemon.notify](#specdaemonnotify). |
 | `windowsEventLog` | bool | No | `false` | Mirror daemon log output into the Windows Event Log under the `cfgd` source, in addition to the file appender at `%LOCALAPPDATA%\cfgd\daemon.log`. No effect on Unix. Read by `cfgd daemon install`; changes require reinstalling the service to take effect. |
 
 ---
@@ -261,7 +261,7 @@ Controls the long-running daemon process started with `cfgd daemon`.
 | `onChange` | bool | No | `false` | Also trigger reconciliation when config files change on disk (inotify/kqueue). |
 | `autoApply` | bool | No | `false` | Apply new or changed source-recommended items automatically, through the [policy](#specdaemonreconcilepolicy) tiers. Independent of `driftPolicy`, which governs drift in items already declared. |
 | `driftPolicy` | enum | No | `NotifyOnly` | Governs what the daemon does when drift is detected. See [DriftPolicy values](#driftpolicy-values). |
-| `policy` | object | No | | Fine-grained `autoApply` policy per change category. See [spec.daemon.reconcile.policy](#specdaemonreconcilepolicy). |
+| `policy` | object | No | — | Fine-grained `autoApply` policy per change category. See [spec.daemon.reconcile.policy](#specdaemonreconcilepolicy). |
 | `patches` | list | No | `[]` | Per-module or per-profile reconcile overrides. See [spec.daemon.reconcile.patches[]](#specdaemonreconcilepatches). |
 
 #### DriftPolicy values
@@ -305,11 +305,11 @@ Precedence: Module patch > Profile patch > global reconcile settings.
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `kind` | enum | Yes | | Target kind. `Module` or `Profile`. |
-| `name` | string | No | | Name of the specific module or profile to patch. Omit to target all of that kind. |
-| `interval` | string | No | | Override reconcile interval for this target. |
-| `autoApply` | bool | No | | Override `autoApply` for this target. |
-| `driftPolicy` | enum | No | | Override `driftPolicy` for this target. See [DriftPolicy values](#driftpolicy-values). |
+| `kind` | enum | Yes | — | Target kind. `Module` or `Profile`. |
+| `name` | string | No | — | Name of the specific module or profile to patch. Omit to target all of that kind. |
+| `interval` | string | No | — | Override reconcile interval for this target. |
+| `autoApply` | bool | No | — | Override `autoApply` for this target. |
+| `driftPolicy` | enum | No | — | Override `driftPolicy` for this target. See [DriftPolicy values](#driftpolicy-values). |
 
 **Example** (disable `autoApply` for a sensitive module while enabling it everywhere else):
 ```yaml
@@ -343,7 +343,7 @@ Controls automatic git synchronisation (push/pull) in the daemon sync loop.
 |-------|------|----------|---------|-------------|
 | `drift` | bool | No | `false` | Send notifications when drift is detected. |
 | `method` | enum | No | `Desktop` | Notification delivery method. See [NotifyMethod values](#notifymethod-values). |
-| `webhookUrl` | string | No | | Webhook URL. Required when `method: Webhook`. |
+| `webhookUrl` | string | No | — | Webhook URL. Required when `method: Webhook`. |
 
 #### NotifyMethod values
 
@@ -360,7 +360,7 @@ Controls automatic git synchronisation (push/pull) in the daemon sync loop.
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
 | `backend` | string | No | `sops` | Secret backend identifier. Built-in values: `sops`, `age`. |
-| `sops` | object | No | | SOPS-specific configuration. See [spec.secrets.sops](#specsecretssops). |
+| `sops` | object | No | — | SOPS-specific configuration. See [spec.secrets.sops](#specsecretssops). |
 | `integrations` | list | No | `[]` | Additional secret integrations (1Password, Bitwarden, Vault). See [spec.secrets.integrations[]](#specsecretsintegrations). |
 
 ---
@@ -369,7 +369,7 @@ Controls automatic git synchronisation (push/pull) in the daemon sync loop.
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `ageKey` | path | No | | Path to the age private key file. Supports `~/` expansion. |
+| `ageKey` | path | No | — | Path to the age private key file. Supports `~/` expansion. |
 
 ---
 
@@ -379,8 +379,8 @@ Each entry enables an additional secret provider alongside the primary backend.
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `name` | string | Yes | | Integration identifier (e.g. `onepassword`, `bitwarden`, `vault`). |
-| *(extra fields)* | any | No | | Provider-specific configuration fields merged inline. |
+| `name` | string | Yes | — | Integration identifier (e.g. `onepassword`, `bitwarden`, `vault`). |
+| *(extra fields)* | any | No | — | Provider-specific configuration fields merged inline. |
 
 **Example:**
 ```yaml
@@ -402,10 +402,10 @@ that publishes profiles and modules. See `docs/sources.md` for the full multi-so
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `name` | string | Yes | | Short name for this source (used in status output and overrides). |
-| `origin` | object | Yes | | Where to fetch the source. Same structure as [spec.origin](#specorigin). |
-| `subscription` | object | No | | How to subscribe to this source's content. See [spec.sources[].subscription](#specsourcessubscription). |
-| `sync` | object | No | | Sync schedule and pinning. See [spec.sources[].sync](#specsourcessync). |
+| `name` | string | Yes | — | Short name for this source (used in status output and overrides). |
+| `origin` | object | Yes | — | Where to fetch the source. Same structure as [spec.origin](#specorigin). |
+| `subscription` | object | No | — | How to subscribe to this source's content. See [spec.sources[].subscription](#specsourcessubscription). |
+| `sync` | object | No | — | Sync schedule and pinning. See [spec.sources[].sync](#specsourcessync). |
 
 ---
 
@@ -413,14 +413,14 @@ that publishes profiles and modules. See `docs/sources.md` for the full multi-so
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `profile` | string | No | | Profile name from this source to activate. |
+| `profile` | string | No | — | Profile name from this source to activate. |
 | `priority` | uint | No | `500` | Merge priority. Higher values win conflicts when multiple sources provide the same key. |
 | `acceptRecommended` | bool | No | `false` | Automatically accept all items in the source's `recommended` policy tier. |
 | `optIn` | list of string | No | `[]` | Explicit list of optional item names to opt in to from this source. |
 | `allowScripts` | bool | No | `false` | Opt in to running lifecycle scripts (profile-layer and source-delivered module bodies) from this source even when the source's `constraints.noScripts` would otherwise reject them. When `false`, the source's own `noScripts` constraint governs. |
 | `requireSignedCommits` | bool | No | `false` | Demand a valid GPG or SSH signature on this source's HEAD commit. ORed with the source manifest's `spec.policy.constraints.requireSignedCommits`, so it only adds strictness: a manifest `true` is never weakened by a subscriber `false`. Set it here rather than relying on the manifest alone, because the manifest is read from inside the cached clone. `spec.security.allowUnsigned` still bypasses both. |
-| `overrides` | object | No | | Free-form YAML overrides merged on top of the source's profile after fetching. |
-| `reject` | object | No | | Free-form YAML specifying items to reject from this source's output. |
+| `overrides` | object | No | — | Free-form YAML overrides merged on top of the source's profile after fetching. |
+| `reject` | object | No | — | Free-form YAML specifying items to reject from this source's output. |
 
 ---
 
@@ -430,7 +430,7 @@ that publishes profiles and modules. See `docs/sources.md` for the full multi-so
 |-------|------|----------|---------|-------------|
 | `interval` | string | No | `1h` | How often to pull updates from this source. Duration string: `30s`, `5m`, `1h`. |
 | `autoApply` | bool | No | `false` | After a refresh that changed this source, reconcile the whole profile on that tick with the drift policy forced to `Auto`, regardless of `spec.daemon.reconcile.driftPolicy`. The source-decision gate (`spec.daemon.reconcile.autoApply`) is untouched. |
-| `pinVersion` | string | No | | Pin this source to a git ref resolved against the repo's tags or commits. Accepts a semver range (`~2`, `^1.5`, `>=1.0.0`) selecting the highest matching tag, an exact tag name, or a commit SHA (7–40 hex, immutable). Mutually exclusive with `branch`; branches are not allowed as a pin. |
+| `pinVersion` | string | No | — | Pin this source to a git ref resolved against the repo's tags or commits. Accepts a semver range (`~2`, `^1.5`, `>=1.0.0`) selecting the highest matching tag, an exact tag name, or a commit SHA (7–40 hex, immutable). Mutually exclusive with `branch`; branches are not allowed as a pin. |
 | `required` | bool | No | `false` | Fail-closed marker. When `true`, a failure to load this source (fetch, manifest, signature, or an unresolvable `pinVersion`) is fatal — apply/plan/compose abort rather than silently dropping the source. When `false`, load failures warn and continue. Use it for security or team baselines that must always be composed in. |
 
 ---
@@ -440,7 +440,7 @@ that publishes profiles and modules. See `docs/sources.md` for the full multi-so
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
 | `registries` | list | No | `[]` | Git repositories that act as module registries. See [spec.modules.registries[]](#specmodulesregistries). |
-| `security` | object | No | | Module-level signature enforcement. See [spec.modules.security](#specmodulessecurity). |
+| `security` | object | No | — | Module-level signature enforcement. See [spec.modules.security](#specmodulessecurity). |
 
 ---
 
@@ -450,8 +450,8 @@ A module registry is a git repository with modules stored under `modules/<name>/
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `name` | string | Yes | | Short alias for this registry (defaults to GitHub org name when cloned). |
-| `url` | string | Yes | | Git clone URL of the registry repository. |
+| `name` | string | Yes | — | Short alias for this registry (defaults to GitHub org name when cloned). |
+| `url` | string | Yes | — | Git clone URL of the registry repository. |
 
 **Example:**
 ```yaml
@@ -505,14 +505,14 @@ that outranks the stored value.
 spec:
   output:
     theme: dracula
-    usageHints: true
+    usageHints: true       # the opt-in: hints do not render until something asks for them
     maskEnvValues: All
 ```
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
 | `theme` | string or object | No | `default` | Output theme name or detailed theme config. See [spec.output.theme](#specoutputtheme). |
-| `usageHints` | bool | No | `true` | Whether closing `→` usage hints render. `--no-hints` / `CFGD_USAGE_HINTS` override for one invocation. |
+| `usageHints` | bool | No | `false` | Whether closing `→` usage hints render. A refusal's remediation, the next step a run closes on when it did not fully succeed, and a run's own instructions render either way. `--hints` / `--no-hints` / `CFGD_USAGE_HINTS` override for one invocation. |
 | `maskEnvValues` | enum | No | `All` | Which declared env values render masked: `All`, `Secrets` or `None`. See [MaskEnvValues values](#maskenvvalues-values). |
 
 `spec.theme` and `spec.usageHints` are the pre-`spec.output` spellings. cfgd still reads
@@ -549,8 +549,8 @@ spec:
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `name` | string | No | `default` | Built-in theme name: `default`, `dracula`, `solarized-dark`, `solarized-light`, `nord`, `monokai`, `adventure-time`, `catppuccin-mocha`, `gruvbox-dark`, `tokyo-night`, `one-dark`, or `minimal`. |
-| `overrides` | object | No | | Per-colour/icon overrides. See [spec.output.theme.overrides](#specoutputthemeoverrides). |
+| `name` | string | No | `default` | Built-in theme name: `default`, `dracula`, `solarized-dark`, `solarized-light`, `nord`, `monokai`, `adventure-time`, `catppuccin-mocha`, `gruvbox-dark`, `tokyo-night`, `one-dark`, or `minimal`. `cfgd config set theme.name` refuses any other word; one hand-written into the file renders the default palette and cfgd warns on every run. |
+| `overrides` | object | No | — | Per-colour/icon overrides. See [spec.output.theme.overrides](#specoutputthemeoverrides). |
 
 ---
 
@@ -662,7 +662,7 @@ compliance:
 
 Compliance reports the **effective** desired state (the active profile combined with the modules it pulls in), so files, packages, and system settings contributed by a module are first-class in every compliance surface (snapshot, export, diff, history) and in the checkin summary, exactly as they appear in `cfgd verify` and `cfgd diff`. Module resources are attributed to their module in the check detail. File checks are content-aware on both profile and module files.
 
-Snapshot summaries are included in device checkin payloads to the operator gateway. The fleet dashboard shows per-device compliance scores. Use `cfgd compliance` to run a snapshot on demand, `cfgd compliance history` to list past snapshots, and `cfgd compliance diff <base-id> <target-id>` to compare two recorded snapshots (history, not the live machine — that is `cfgd diff`).
+Snapshot summaries are included in device checkin payloads to the operator gateway: the counts, and the first 200 checks that did not pass with their names and details. The fleet dashboard names each device's first failing check and how many follow it, and the device's `MachineConfig.status.compliance` carries the same list. Use `cfgd compliance` to run a snapshot on demand, `cfgd compliance history` to list past snapshots, and `cfgd compliance diff <base-id> <target-id>` to compare two recorded snapshots from history (`cfgd diff` compares the live machine).
 
 **History records changes, not ticks.** The daemon collects a snapshot every interval but stores one only when its content differs from the newest stored row: the comparison is a hash of the snapshot with its collection timestamp excluded, so an unchanged machine hashes identically every time. A machine that has stopped changing therefore stops adding rows, and the newest row's timestamp is the last time something *changed*, not the last time cfgd looked. Do not read row arrival as a liveness signal: a device that is healthy and stable is indistinguishable in `compliance history` from one whose daemon has stopped. Use the daemon's own liveness surfaces for that: `cfgd daemon status`, the checkin timestamp on the gateway, or the service manager. `cfgd compliance` run by hand always stores its snapshot, because you asked for one.
 
@@ -678,7 +678,7 @@ skills (`cfgd skill update`).
 | `policy` | enum | No | `Prompt` | How update checks for the cfgd binary behave. See [UpdatePolicy values](#updatepolicy-values). |
 | `interval` | duration | No | `24h` | How often to check for updates. Duration string: `30m`, `24h`, `7d`, or a plain number of seconds. |
 | `channel` | string | No | `stable` | Release channel to track. `stable` follows the latest stable release; `prerelease` also includes prereleases. Matching is case-insensitive; an unrecognised value logs a warning and falls back to `stable`. |
-| `skills` | object | No | | Update policy for authored skills. See [spec.update.skills](#specupdateskills). |
+| `skills` | object | No | — | Update policy for authored skills. See [spec.update.skills](#specupdateskills). |
 
 #### UpdatePolicy values
 

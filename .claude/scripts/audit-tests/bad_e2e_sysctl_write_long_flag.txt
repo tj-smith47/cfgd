@@ -1,0 +1,1 @@
+exec_in_pod sysctl --write vm.max_map_count=65530 > /dev/null 2>&1 || true

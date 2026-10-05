@@ -27,18 +27,11 @@ HEALTH_URL="http://cfgd-server.cfgd-system.svc.cluster.local:8081"
 GW_API_KEY="${CFGD_E2E_API_KEY:-cfgd-e2e-admin-key}"
 echo "Device gateway URL: $SERVER_URL"
 
-# Verify device gateway is reachable from the test pod (use health endpoint — API requires auth)
+# Verify the device gateway is reachable from the test pod through the health
+# endpoint, since the API requires auth.
 echo "Verifying device gateway reachability from test pod..."
-GATEWAY_READY=false
-for i in $(seq 1 30); do
-    if exec_in_pod curl -sf "${HEALTH_URL}/readyz" > /dev/null 2>&1; then
-        GATEWAY_READY=true
-        break
-    fi
-    sleep 2
-done
-if [ "$GATEWAY_READY" = "false" ]; then
-    echo "ERROR: device gateway not reachable after 60s"
+if ! wait_for_pod_url "${HEALTH_URL}/readyz" 60; then
+    echo "ERROR: device gateway not reachable after 60s" >&2
     exit 1
 fi
 
@@ -58,6 +51,7 @@ OUTPUT=$(exec_in_pod cfgd \
     --no-color 2>&1) || RC=$?
 
 echo "  Checkin output:"
+# shellcheck disable=SC2001  # sed indents each line; an expansion cannot
 echo "$OUTPUT" | sed 's/^/    /'
 
 if [ "$RC" -eq 0 ] && assert_contains "$OUTPUT" "ok"; then
@@ -105,11 +99,12 @@ fi
 # T33: Drift reporting
 # =================================================================
 begin_test "T33: Drift reporting to device gateway"
+T33_BEFORE=$(gateway_drift_count "$DEVICE_ID" net.ipv4.ip_forward)
 # Introduce drift on a sysctl value
-ORIG_MAX=$(exec_in_pod cat /proc/sys/vm/max_map_count 2>/dev/null || echo "262144")
-exec_in_pod sysctl -w vm.max_map_count=65530 > /dev/null 2>&1 || true
+ORIG_FWD=$(exec_in_pod cat /proc/sys/net/ipv4/ip_forward 2>/dev/null || echo "1")
+exec_in_pod sysctl -w net.ipv4.ip_forward=0 > /dev/null 2>&1 || true
 
-# Checkin again — should detect and report drift
+# Checkin again: should detect and report drift
 OUTPUT=$(exec_in_pod cfgd \
     --config /etc/cfgd/cfgd.yaml \
     checkin \
@@ -121,22 +116,15 @@ echo "  Checkin with drift output:"
 echo "$OUTPUT" | head -10 | sed 's/^/    /'
 
 # Restore sysctl
-exec_in_pod sysctl -w "vm.max_map_count=$ORIG_MAX" > /dev/null 2>&1 || true
+exec_in_pod sysctl -w "net.ipv4.ip_forward=$ORIG_FWD" > /dev/null 2>&1 || true
 
-if assert_contains "$OUTPUT" "drift"; then
+T33_AFTER=$(gateway_drift_count "$DEVICE_ID" net.ipv4.ip_forward)
+echo "  Gateway drift events naming net.ipv4.ip_forward: ${T33_BEFORE:-unreadable} before, ${T33_AFTER:-unreadable} after"
+
+if [[ $T33_BEFORE =~ ^[0-9]+$ ]] && [[ $T33_AFTER =~ ^[0-9]+$ ]] && [ "$T33_AFTER" -gt "$T33_BEFORE" ]; then
     pass_test "T33"
 else
-    # Drift may have been auto-fixed by a previous apply; check server anyway
-    DRIFT_EVENTS=$(exec_in_pod curl -sf -H "Authorization: Bearer $GW_API_KEY" "${SERVER_URL}/api/v1/devices/${DEVICE_ID}/drift" 2>/dev/null || echo "[]")
-    echo "  Drift events from server:"
-    echo "$DRIFT_EVENTS" | head -c 200 | sed 's/^/    /'
-    echo ""
-
-    if [ "$DRIFT_EVENTS" != "[]" ] && [ -n "$DRIFT_EVENTS" ]; then
-        pass_test "T33"
-    else
-        fail_test "T33" "No drift reported"
-    fi
+    fail_test "T33" "The checkin reported no net.ipv4.ip_forward drift to the device gateway (events before ${T33_BEFORE:-unreadable}, after ${T33_AFTER:-unreadable})"
 fi
 
 # =================================================================
@@ -148,21 +136,23 @@ echo "  Drift events:"
 echo "$DRIFT_EVENTS" | head -c 300 | sed 's/^/    /'
 echo ""
 
-if [ "$DRIFT_EVENTS" != "[]" ] && assert_contains "$DRIFT_EVENTS" "timestamp"; then
+# T33 left an event naming net.ipv4.ip_forward, and every event in the list is
+# this device's.
+if echo "$DRIFT_EVENTS" | jq -e --arg d "$DEVICE_ID" 'length >= 1 and all(.[]; .deviceId == $d and (.id // "") != "" and (.timestamp // "") != "") and any(.[]; .details | contains("net.ipv4.ip_forward"))' >/dev/null 2>&1; then
     pass_test "T34"
 else
-    # It's possible no drift was detected if sysctl was already at desired value
-    skip_test "T34" "No drift events (sysctl may have been at desired value)"
+    fail_test "T34" "Expected this device's drift events, one naming net.ipv4.ip_forward: $(echo "$DRIFT_EVENTS" | head -c 300)"
 fi
 
 # =================================================================
 # T35: Second checkin updates last_checkin timestamp
 # =================================================================
 begin_test "T35: Checkin updates timestamp"
-BEFORE=$(exec_in_pod curl -sf -H "Authorization: Bearer $GW_API_KEY" "${SERVER_URL}/api/v1/devices/${DEVICE_ID}" 2>/dev/null \
-    | grep -o '"lastCheckin":"[^"]*"' || echo "")
+BEFORE_RC=0
+BEFORE_BODY=$(exec_in_pod curl -sf -H "Authorization: Bearer $GW_API_KEY" "${SERVER_URL}/api/v1/devices/${DEVICE_ID}" 2>&1) || BEFORE_RC=$?
+BEFORE=$(sed -n 's/.*\("lastCheckin":"[^"]*"\).*/\1/p' <<<"$BEFORE_BODY")
 
-sleep 2
+sleep 1 # sleep-ok: lastCheckin has one-second resolution, so the second checkin has to land in a later second
 
 exec_in_pod cfgd \
     --config /etc/cfgd/cfgd.yaml \
@@ -172,13 +162,16 @@ exec_in_pod cfgd \
     --device-id "$DEVICE_ID" \
     --no-color > /dev/null 2>&1 || true
 
-AFTER=$(exec_in_pod curl -sf -H "Authorization: Bearer $GW_API_KEY" "${SERVER_URL}/api/v1/devices/${DEVICE_ID}" 2>/dev/null \
-    | grep -o '"lastCheckin":"[^"]*"' || echo "")
+AFTER_RC=0
+AFTER_BODY=$(exec_in_pod curl -sf -H "Authorization: Bearer $GW_API_KEY" "${SERVER_URL}/api/v1/devices/${DEVICE_ID}" 2>&1) || AFTER_RC=$?
+AFTER=$(sed -n 's/.*\("lastCheckin":"[^"]*"\).*/\1/p' <<<"$AFTER_BODY")
 
 echo "  Before: $BEFORE"
 echo "  After:  $AFTER"
 
-if [ "$BEFORE" != "$AFTER" ] && [ -n "$AFTER" ]; then
+if [ "$BEFORE_RC" -ne 0 ] || [ "$AFTER_RC" -ne 0 ]; then
+    fail_test "T35" "Could not read the device record (curl exit before=$BEFORE_RC after=$AFTER_RC)"
+elif [ "$BEFORE" != "$AFTER" ] && [ -n "$AFTER" ]; then
     pass_test "T35"
 else
     fail_test "T35" "Timestamp did not change between checkins"
@@ -190,7 +183,7 @@ fi
 begin_test "T36: Compliance data included in checkin"
 
 # Create a config with compliance enabled
-exec_in_pod bash -c 'cat > /etc/cfgd/e2e-compliance-checkin.yaml << '"'"'INNEREOF'"'"'
+exec_in_pod bash -c 'cat > /etc/cfgd/e2e-compliance-checkin.yaml << "INNEREOF"
 apiVersion: cfgd.io/v1alpha1
 kind: Config
 metadata:
@@ -225,7 +218,6 @@ echo "  Compliance checkin output:"
 echo "$OUTPUT" | head -15 | sed 's/^/    /'
 
 # Verify the device now has complianceSummary in its API response
-sleep 1
 DEVICE_RESP=$(exec_in_pod curl -sf -H "Authorization: Bearer $GW_API_KEY" "${SERVER_URL}/api/v1/devices/${COMPLIANCE_DEVICE_ID}" 2>/dev/null || echo "{}")
 echo "  Device API response (first 400 chars):"
 echo "$DEVICE_RESP" | head -c 400 | sed 's/^/    /'

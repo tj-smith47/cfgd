@@ -97,6 +97,7 @@ pub fn public_key_of(key_ref: &str) -> Result<String, OciError> {
 }
 
 /// Options for cosign verification (signature or attestation).
+#[derive(Debug, Clone, Copy)]
 pub struct VerifyOptions<'a> {
     /// Path to cosign public key for static key verification.
     pub key: Option<&'a str>,

@@ -8,7 +8,7 @@
 //! and against a repository with no `origin`. Regenerate with:
 //!     INSTA_UPDATE=always cargo test -p cfgd --test pull_snapshots
 
-mod common;
+use cfgd_test_fixtures as common;
 
 use std::path::Path;
 
@@ -89,7 +89,7 @@ fn pull_over_a_non_repo_says_there_is_nothing_to_pull() {
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc();
 
-    cmd_pull(&cli, &printer).unwrap();
+    cfgd::cli::RunContext::for_test(&cli, &printer, cmd_pull).unwrap();
     drop(printer);
 
     let stripped = strip_ansi(&cfgd_core::normalize_for_snapshot(&cap.human(), &[]));

@@ -1,13 +1,38 @@
+# shellcheck shell=bash
 # Gateway admin tests (GW-15 through GW-17, GW-24 through GW-30).
-# Sourced by run-all.sh — no shebang, no set, no source, no traps, no print_summary.
+# Sourced by run-all.sh: no shebang, no set, no source, no traps, no print_summary.
+
+# gw_enroll_once <token> <device_id> <hostname> <body_file>: POST one
+# enrollment, leaving the response body in <body_file> and its status in
+# GW_ENROLL_CODE. Returns 1 only on HTTP 429, the per-IP limiter's answer on
+# POST /api/v1/enroll, so a wait_until over it polls through the limiter and
+# stops at any other status.
+gw_enroll_once() {
+    GW_ENROLL_CODE=$(curl -s -o "$4" -w "%{http_code}" -X POST "$GW_URL/api/v1/enroll" \
+        -H "Content-Type: application/json" \
+        -d "{\"token\":\"$1\",\"deviceId\":\"$2\",\"hostname\":\"$3\",\"os\":\"linux\",\"arch\":\"x86_64\"}" 2>/dev/null || echo "000")
+    [ "$GW_ENROLL_CODE" != "429" ]
+}
+
+# gw_enroll_post <token> <device_id> <hostname> <body_file>: enroll, polling
+# while the limiter answers 429. The limiter (burst 5, refill 5 a minute) takes
+# a token only from a request it admits, so a rejected poll costs none, and 30s
+# covers the 12s one token takes to refill. Leaves the last response body in
+# <body_file> and its status in GW_ENROLL_CODE; returns 0 on 200 or 201.
+gw_enroll_post() {
+    wait_until 30 2 "the gateway's enroll limiter to admit $2" gw_enroll_once "$@" || return 1
+    case "$GW_ENROLL_CODE" in
+        200 | 201) return 0 ;;
+        *) return 1 ;;
+    esac
+}
 
 # Helper: enroll a new device with a fresh token. Sets GW_HELPER_DEVICE_ID and
 # GW_HELPER_API_KEY in the caller's scope. Returns 0 on success.
 #
-# Retries up to 3 times on HTTP 429 (per-IP rate limit on POST /api/v1/enroll).
-# Production defaults (burst=5, refill=5/min) are tight, so back-to-back
-# enrollments across multiple test cases can hit the limiter. The retry
-# loop honors the server's `retry_after_secs` hint.
+# Back-to-back enrollments across the admin cases can exhaust the per-IP limit
+# on POST /api/v1/enroll, so the POST goes through gw_enroll_post, which polls
+# until the limiter admits it.
 gw_enroll_new_device() {
     local suffix="$1"
     local token
@@ -19,29 +44,15 @@ gw_enroll_new_device() {
 
     GW_HELPER_DEVICE_ID="e2e-admin-device-${suffix}-${E2E_RUN_ID}"
     local body_file="$GW_SCRATCH/enroll-$suffix.json"
-    local attempt code retry
-    for attempt in 1 2 3; do
-        code=$(curl -s -o "$body_file" -w "%{http_code}" -X POST "$GW_URL/api/v1/enroll" \
-            -H "Content-Type: application/json" \
-            -d "{\"token\":\"$token\",\"deviceId\":\"$GW_HELPER_DEVICE_ID\",\"hostname\":\"e2e-host-$suffix\",\"os\":\"linux\",\"arch\":\"x86_64\"}" 2>/dev/null || echo "000")
-        if [ "$code" = "200" ] || [ "$code" = "201" ]; then
-            break
-        fi
-        if [ "$code" = "429" ]; then
-            retry=$(jq -r '.retry_after_secs // 2' < "$body_file" 2>/dev/null)
-            [ -z "$retry" ] || ! [[ "$retry" =~ ^[0-9]+$ ]] && retry=2
-            echo "  Enroll attempt $attempt got 429; sleeping ${retry}s before retry"
-            sleep "$retry"
-            continue
-        fi
-        echo "  Enrollment failed for $suffix (HTTP $code): $(cat "$body_file" 2>/dev/null)"
+    if ! gw_enroll_post "$token" "$GW_HELPER_DEVICE_ID" "e2e-host-$suffix" "$body_file"; then
+        echo "  Enrollment failed for $suffix (HTTP $GW_ENROLL_CODE): $(cat "$body_file" 2>/dev/null)"
         rm -f "$body_file"
         return 1
-    done
+    fi
     GW_HELPER_API_KEY=$(jq -r '.apiKey // empty' < "$body_file" 2>/dev/null)
     rm -f "$body_file"
     if [ -z "$GW_HELPER_API_KEY" ]; then
-        echo "  Enrollment failed for $suffix after 3 attempts"
+        echo "  Enrollment for $suffix returned HTTP $GW_ENROLL_CODE with no apiKey"
         return 1
     fi
     echo "  Enrolled device $GW_HELPER_DEVICE_ID (key prefix: ${GW_HELPER_API_KEY:0:12}...)"
@@ -49,12 +60,12 @@ gw_enroll_new_device() {
 }
 
 # =================================================================
-# GW-24: Auth boundary — unauthenticated GET /api/v1/devices returns 401
+# GW-24: Auth boundary: unauthenticated GET /api/v1/devices returns 401
 # =================================================================
 begin_test "GW-24: Auth boundary (unauthenticated access)"
 
 if [ -z "$ADMIN_KEY" ]; then
-    skip_test "GW-24" "No ADMIN_KEY set — gateway in open mode, auth boundary not testable"
+    skip_test "GW-24" "No ADMIN_KEY set: gateway in open mode, auth boundary not testable"
 else
     GW24_CODE=$(curl -s -o /dev/null -w "%{http_code}" "$GW_URL/api/v1/devices" 2>/dev/null || echo "000")
     echo "  GET /api/v1/devices (no auth): HTTP $GW24_CODE"
@@ -82,10 +93,12 @@ GW25_TOKEN_ID=$(echo "$GW25_RESPONSE" | jq -r '.id // empty' 2>/dev/null)
 echo "  Response has token: $([ -n "$GW25_TOKEN" ] && echo yes || echo no)"
 echo "  Response has id: $([ -n "$GW25_TOKEN_ID" ] && echo yes || echo no)"
 
-if [ -n "$GW25_TOKEN" ] && [ -n "$GW25_TOKEN_ID" ]; then
+# The token is cfgd_bs_ and two dash-less v4 UUIDs; username and team echo the
+# request.
+if echo "$GW25_RESPONSE" | jq -e '(.id // "") != "" and (.token | test("^cfgd_bs_[0-9a-f]{64}$")) and .username == "e2e-gw25-user" and .team == "e2e-team"' >/dev/null 2>&1; then
     pass_test "GW-25"
 else
-    fail_test "GW-25" "Token create response missing token or id"
+    fail_test "GW-25" "Expected an id, a cfgd_bs_ token, username e2e-gw25-user and team e2e-team: ${GW25_RESPONSE:-no response}"
 fi
 
 # =================================================================
@@ -93,35 +106,23 @@ fi
 # =================================================================
 begin_test "GW-26: Admin token list"
 
-GW26_CODE=$(curl -s -o $GW_SCRATCH/gw26-body.txt -w "%{http_code}" "$GW_URL/api/v1/admin/tokens" \
+GW26_CODE=$(curl -s -o "$GW_SCRATCH/gw26-body.txt" -w "%{http_code}" "$GW_URL/api/v1/admin/tokens" \
     -H "$(gw_admin_auth_header)" 2>/dev/null || echo "000")
-GW26_BODY=$(cat $GW_SCRATCH/gw26-body.txt 2>/dev/null || echo "")
-rm -f $GW_SCRATCH/gw26-body.txt
+GW26_BODY=$(cat "$GW_SCRATCH/gw26-body.txt" 2>/dev/null || echo "")
+rm -f "$GW_SCRATCH/gw26-body.txt"
 
 echo "  GET /api/v1/admin/tokens: HTTP $GW26_CODE"
 
-if [ "$GW26_CODE" = "200" ]; then
-    # Verify the response is a JSON array
-    GW26_LEN=$(echo "$GW26_BODY" | jq 'length' 2>/dev/null || echo "")
-    echo "  Token count: $GW26_LEN"
-    if [ -n "$GW26_LEN" ]; then
-        # Check that at least one token has an id field (from GW-25 or setup)
-        GW26_HAS_ID=$(echo "$GW26_BODY" | jq -r '.[0].id // empty' 2>/dev/null)
-        if [ -n "$GW26_HAS_ID" ]; then
-            pass_test "GW-26"
-        else
-            # Empty list is acceptable if tokens were consumed
-            if [ "$GW26_LEN" = "0" ]; then
-                pass_test "GW-26"
-            else
-                fail_test "GW-26" "Token list entries missing id field"
-            fi
-        fi
-    else
-        fail_test "GW-26" "Response is not a valid JSON array"
-    fi
-else
+# The list returns every token row, used or not, so the one GW-25 created is
+# always in it.
+if [ "$GW26_CODE" != "200" ]; then
     fail_test "GW-26" "Expected 200, got $GW26_CODE"
+elif [ -z "$GW25_TOKEN_ID" ]; then
+    fail_test "GW-26" "GW-25 created no token, so there is no id to look for"
+elif echo "$GW26_BODY" | jq -e --arg id "$GW25_TOKEN_ID" 'any(.[]; .id == $id)' >/dev/null 2>&1; then
+    pass_test "GW-26"
+else
+    fail_test "GW-26" "Token $GW25_TOKEN_ID from GW-25 is not in the list: $GW26_BODY"
 fi
 
 # =================================================================
@@ -158,24 +159,24 @@ fi
 begin_test "GW-28: Admin user key add"
 
 GW28_USERNAME="e2e-keyuser-${E2E_RUN_ID}"
-GW28_CODE=$(curl -s -o $GW_SCRATCH/gw28-body.txt -w "%{http_code}" \
+GW28_CODE=$(curl -s -o "$GW_SCRATCH/gw28-body.txt" -w "%{http_code}" \
     -X POST "$GW_URL/api/v1/admin/users/$GW28_USERNAME/keys" \
     -H "Content-Type: application/json" \
     -H "$(gw_admin_auth_header)" \
     -d '{"keyType":"ssh","publicKey":"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGw28test e2e-test","fingerprint":"SHA256:e2eTestFingerprint28","label":"gw28-test"}' \
     2>/dev/null || echo "000")
-GW28_BODY=$(cat $GW_SCRATCH/gw28-body.txt 2>/dev/null || echo "")
-rm -f $GW_SCRATCH/gw28-body.txt
+GW28_BODY=$(cat "$GW_SCRATCH/gw28-body.txt" 2>/dev/null || echo "")
+rm -f "$GW_SCRATCH/gw28-body.txt"
 
 echo "  POST /api/v1/admin/users/$GW28_USERNAME/keys: HTTP $GW28_CODE"
 
 if [ "$GW28_CODE" = "201" ]; then
     GW28_KEY_ID=$(echo "$GW28_BODY" | jq -r '.id // empty' 2>/dev/null)
     echo "  Key ID: $GW28_KEY_ID"
-    if [ -n "$GW28_KEY_ID" ]; then
+    if echo "$GW28_BODY" | jq -e '(.id // "") != "" and .fingerprint == "SHA256:e2eTestFingerprint28" and .label == "gw28-test"' >/dev/null 2>&1; then
         pass_test "GW-28"
     else
-        fail_test "GW-28" "Response missing key id"
+        fail_test "GW-28" "Expected an id, fingerprint SHA256:e2eTestFingerprint28 and label gw28-test: $GW28_BODY"
     fi
 else
     fail_test "GW-28" "Expected 201, got $GW28_CODE"
@@ -186,11 +187,11 @@ fi
 # =================================================================
 begin_test "GW-29: Admin user key list"
 
-GW29_CODE=$(curl -s -o $GW_SCRATCH/gw29-body.txt -w "%{http_code}" \
+GW29_CODE=$(curl -s -o "$GW_SCRATCH/gw29-body.txt" -w "%{http_code}" \
     "$GW_URL/api/v1/admin/users/$GW28_USERNAME/keys" \
     -H "$(gw_admin_auth_header)" 2>/dev/null || echo "000")
-GW29_BODY=$(cat $GW_SCRATCH/gw29-body.txt 2>/dev/null || echo "")
-rm -f $GW_SCRATCH/gw29-body.txt
+GW29_BODY=$(cat "$GW_SCRATCH/gw29-body.txt" 2>/dev/null || echo "")
+rm -f "$GW_SCRATCH/gw29-body.txt"
 
 echo "  GET /api/v1/admin/users/$GW28_USERNAME/keys: HTTP $GW29_CODE"
 
@@ -247,9 +248,9 @@ if [ "$GW15_PASS" = "true" ]; then
     echo "  Pre-revoke device list: HTTP $GW15_PRE_CODE"
 
     if [ "$GW15_PRE_CODE" != "200" ]; then
-        # In open mode the key is irrelevant — all requests succeed.
+        # In open mode the key is irrelevant: all requests succeed.
         if [ -z "$ADMIN_KEY" ]; then
-            echo "  Open mode — skipping key validation"
+            echo "  Open mode: skipping key validation"
         else
             fail_test "GW-15" "Device key did not work before revocation (HTTP $GW15_PRE_CODE)"
             GW15_PASS=false
@@ -273,8 +274,8 @@ fi
 # Step 4: Verify the old device API key no longer works
 if [ "$GW15_PASS" = "true" ]; then
     if [ -z "$ADMIN_KEY" ]; then
-        # Open mode — auth is not enforced, so revocation cannot be verified via HTTP status.
-        echo "  Open mode — credential revocation stored but auth not enforced"
+        # Open mode: auth is not enforced, so revocation cannot be verified via HTTP status.
+        echo "  Open mode: credential revocation stored but auth not enforced"
         pass_test "GW-15"
     else
         GW15_POST_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
@@ -329,30 +330,13 @@ if [ "$GW16_PASS" = "true" ]; then
 fi
 
 if [ "$GW16_PASS" = "true" ]; then
-    # Same retry-on-429 shape as gw_enroll_new_device — back-to-back enrolls
-    # exhaust the per-IP bucket and the server's HTTP 429 carries a
-    # retry_after_secs hint we should honor.
+    # Back-to-back enrolls exhaust the per-IP bucket, so this goes through the
+    # same limiter-polling POST as gw_enroll_new_device.
     GW16_REENROLL_BODY="$GW_SCRATCH/gw16-reenroll.json"
-    GW16_REENROLL_CODE="000"
-    for attempt in 1 2 3; do
-        GW16_REENROLL_CODE=$(curl -s -o "$GW16_REENROLL_BODY" -w "%{http_code}" \
-            -X POST "$GW_URL/api/v1/enroll" \
-            -H "Content-Type: application/json" \
-            -d "{\"token\":\"$GW16_NEW_TOKEN\",\"deviceId\":\"$GW16_DEVICE_ID\",\"hostname\":\"e2e-host-gw16-reenroll\",\"os\":\"linux\",\"arch\":\"x86_64\"}" \
-            2>/dev/null || echo "000")
-        if [ "$GW16_REENROLL_CODE" = "200" ] || [ "$GW16_REENROLL_CODE" = "201" ]; then
-            break
-        fi
-        if [ "$GW16_REENROLL_CODE" = "429" ]; then
-            GW16_RETRY=$(jq -r '.retry_after_secs // 2' < "$GW16_REENROLL_BODY" 2>/dev/null)
-            [ -z "$GW16_RETRY" ] || ! [[ "$GW16_RETRY" =~ ^[0-9]+$ ]] && GW16_RETRY=2
-            echo "  Re-enroll attempt $attempt got 429; sleeping ${GW16_RETRY}s before retry"
-            sleep "$GW16_RETRY"
-            continue
-        fi
-        echo "  Re-enroll attempt $attempt got unexpected HTTP $GW16_REENROLL_CODE: $(cat "$GW16_REENROLL_BODY" 2>/dev/null)"
-        break
-    done
+    if ! gw_enroll_post "$GW16_NEW_TOKEN" "$GW16_DEVICE_ID" e2e-host-gw16-reenroll "$GW16_REENROLL_BODY"; then
+        echo "  Re-enroll got HTTP $GW_ENROLL_CODE: $(cat "$GW16_REENROLL_BODY" 2>/dev/null)"
+    fi
+    GW16_REENROLL_CODE=$GW_ENROLL_CODE
     GW16_NEW_KEY=$(jq -r '.apiKey // empty' < "$GW16_REENROLL_BODY" 2>/dev/null)
     rm -f "$GW16_REENROLL_BODY"
 
@@ -380,7 +364,7 @@ fi
 # Step 5: Verify old key fails
 if [ "$GW16_PASS" = "true" ]; then
     if [ -z "$ADMIN_KEY" ]; then
-        echo "  Open mode — old key rejection not verifiable via HTTP status"
+        echo "  Open mode: old key rejection not verifiable via HTTP status"
         pass_test "GW-16"
     else
         GW16_OLD_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
@@ -401,11 +385,11 @@ fi
 # =================================================================
 begin_test "GW-17: Fleet status via device list"
 
-GW17_CODE=$(curl -s -o $GW_SCRATCH/gw17-body.txt -w "%{http_code}" \
+GW17_CODE=$(curl -s -o "$GW_SCRATCH/gw17-body.txt" -w "%{http_code}" \
     "$GW_URL/api/v1/devices" \
     -H "$(gw_admin_auth_header)" 2>/dev/null || echo "000")
-GW17_BODY=$(cat $GW_SCRATCH/gw17-body.txt 2>/dev/null || echo "")
-rm -f $GW_SCRATCH/gw17-body.txt
+GW17_BODY=$(cat "$GW_SCRATCH/gw17-body.txt" 2>/dev/null || echo "")
+rm -f "$GW_SCRATCH/gw17-body.txt"
 
 echo "  GET /api/v1/devices: HTTP $GW17_CODE"
 
@@ -414,14 +398,14 @@ if [ "$GW17_CODE" = "200" ]; then
     GW17_COUNT=$(echo "$GW17_BODY" | jq 'if type == "array" then length elif .devices then (.devices | length) else 0 end' 2>/dev/null || echo "0")
     echo "  Device count: $GW17_COUNT"
 
-    # We enrolled devices in GW-15 and GW-16, plus the bootstrap device from setup.
+    # GW-15 and GW-16 enrolled devices, and setup enrolled the bootstrap device.
     # Expect at least 2 devices.
     if [ "$GW17_COUNT" -ge 2 ] 2>/dev/null; then
         pass_test "GW-17"
     else
         # Even 1 is acceptable if re-enrollment replaced the device record
         if [ "$GW17_COUNT" -ge 1 ] 2>/dev/null; then
-            echo "  Only $GW17_COUNT device(s) — re-enrollment may have replaced records"
+            echo "  Only $GW17_COUNT device(s): re-enrollment may have replaced records"
             pass_test "GW-17"
         else
             fail_test "GW-17" "Expected at least 2 devices, got $GW17_COUNT"

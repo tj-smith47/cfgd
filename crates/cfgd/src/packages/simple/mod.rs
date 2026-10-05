@@ -11,7 +11,7 @@ use std::process::Command;
 
 use cfgd_core::errors::{PackageError, Result};
 use cfgd_core::providers::{BootstrapPlan, PackageContext, PackageManager};
-use cfgd_core::{command_available, command_available_with_seam, tool_cmd};
+use cfgd_core::{command_available_with_seam, tool_cmd};
 
 use super::parsers::{
     parse_apk_lines, parse_dnf_lines, parse_pkg_lines, parse_simple_lines, parse_yum_lines,
@@ -28,47 +28,45 @@ use super::versions::{
     query_version_pkg,
 };
 
-pub(super) const APT_GET_BIN_ENV: &str = "CFGD_APT_GET_BIN";
+pub const APT_GET_BIN_ENV: &str = "CFGD_APT_GET_BIN";
 
-/// Map a SimpleManager `mgr_name` to the `CFGD_*_BIN` env-var seam that targets
-/// the SAME binary. Used so `is_available()` honors the same test-shim seam
-/// `query_version_*` honors — without this, a test that shims CFGD_DNF_BIN
-/// cannot make dnf_manager.is_available() return true on a host without real
-/// dnf on PATH. Returns None when the manager binary differs from any seamed
-/// query tool (e.g., apt's mgr_name is "apt" but the query backend is
-/// apt-cache / dpkg-query — those use their own seams in versions/mod.rs).
-fn mgr_seam_env(mgr_name: &str) -> Option<&'static str> {
-    match mgr_name {
-        "apk" => Some(APK_BIN_ENV),
-        "dnf" => Some(DNF_BIN_ENV),
-        "yum" => Some(YUM_BIN_ENV),
-        "pacman" => Some(PACMAN_BIN_ENV),
-        "zypper" => Some(ZYPPER_BIN_ENV),
-        _ => None,
-    }
+/// Every program a family spawns, paired with the `CFGD_*_BIN` seam that names
+/// its path. The one table [`cmd_with_seam`] spawns through and
+/// `is_available` probes through, so a manager answers available from the same
+/// seam its install runs from.
+pub(super) const PROGRAM_SEAMS: &[(&str, &str)] = &[
+    ("apt-cache", APT_CACHE_BIN_ENV),
+    ("apt-get", APT_GET_BIN_ENV),
+    ("apk", APK_BIN_ENV),
+    ("dnf", DNF_BIN_ENV),
+    ("yum", YUM_BIN_ENV),
+    ("pacman", PACMAN_BIN_ENV),
+    ("zypper", ZYPPER_BIN_ENV),
+    ("pkg", PKG_BIN_ENV),
+    ("dpkg-query", DPKG_QUERY_BIN_ENV),
+    ("rpm", RPM_BIN_ENV),
+];
+
+/// The seam [`PROGRAM_SEAMS`] pairs with `prog`, or `None` for a program
+/// spawned by name (`sudo`).
+pub(super) fn program_seam(prog: &str) -> Option<&'static str> {
+    PROGRAM_SEAMS
+        .iter()
+        .find(|(program, _)| *program == prog)
+        .map(|(_, env)| *env)
 }
 
-/// Build a `Command` for a package-manager binary, routing through the same
-/// `CFGD_*_BIN` seams the query helpers honor. Unknown binaries (most commonly
-/// `"sudo"`) fall through to plain `Command::new`. This is the single entry
-/// point for install / uninstall / update / list shell-outs in this module,
-/// so a test that shims CFGD_DPKG_QUERY_BIN sees its shim drive both
+/// Build a `Command` for a package-manager binary, routing through its
+/// [`PROGRAM_SEAMS`] seam. A program with no row (most commonly `"sudo"`)
+/// falls through to plain `Command::new`. This is the single entry point for
+/// every family shell-out, the version queries in `versions` included, so a
+/// test that shims CFGD_DPKG_QUERY_BIN sees its shim drive both
 /// `installed_packages` and `list_apt_with_versions`.
-fn cmd_with_seam(prog: &str) -> Command {
-    let env = match prog {
-        "apt-cache" => APT_CACHE_BIN_ENV,
-        "apt-get" => APT_GET_BIN_ENV,
-        "apk" => APK_BIN_ENV,
-        "dnf" => DNF_BIN_ENV,
-        "yum" => YUM_BIN_ENV,
-        "pacman" => PACMAN_BIN_ENV,
-        "zypper" => ZYPPER_BIN_ENV,
-        "pkg" => PKG_BIN_ENV,
-        "dpkg-query" => DPKG_QUERY_BIN_ENV,
-        "rpm" => RPM_BIN_ENV,
-        _ => return Command::new(prog),
-    };
-    tool_cmd(env, prog)
+pub(super) fn cmd_with_seam(prog: &str) -> Command {
+    match program_seam(prog) {
+        Some(env) => tool_cmd(env, prog),
+        None => Command::new(prog),
+    }
 }
 
 /// Function pointer type for `installed_packages_with_versions` overrides.
@@ -95,9 +93,15 @@ pub struct SimpleManager {
     /// When true, non-zero exit from the update command is ignored (dnf/yum
     /// check-update returns 100 when updates are available).
     pub(super) ignore_update_exit: bool,
+    /// Variables every command of the family carries, for a prompt the
+    /// family's `-y` / `--noconfirm` flag does not answer (apt's debconf and
+    /// needrestart questions, pkg(7)'s bootstrap confirmation). Empty for a
+    /// family whose flags already cover every prompt.
+    pub(super) env: &'static [(&'static str, &'static str)],
     pub(super) parse_list: fn(&str) -> HashSet<String>,
     pub(super) query_version: fn(&str, &str) -> Result<Option<String>>,
-    /// Custom availability check. When None, uses `command_available(mgr_name)`.
+    /// Custom availability check. When None, probes the seam of
+    /// [`install_program`](Self::install_program).
     pub(super) is_available_fn: Option<fn() -> bool>,
     /// Override for installed_packages_with_versions. When None, falls back to
     /// the default trait implementation (wraps installed_packages with the
@@ -117,7 +121,78 @@ pub struct SimpleManager {
 
 impl SimpleManager {
     pub(super) fn display_cmd(&self, cmd_parts: &[&str], packages: &[String]) -> String {
-        join_cmd(strip_sudo_for_exec(cmd_parts), packages)
+        join_cmd(&self.effective_argv(cmd_parts), packages)
+    }
+
+    /// The argv cfgd spawns for `cmd_parts` on this host: `sudo` dropped where
+    /// [`strip_sudo_for_exec`] drops it, the rest spelled by
+    /// [`argv_after_strip`](Self::argv_after_strip).
+    pub(super) fn effective_argv(&self, cmd_parts: &[&str]) -> Vec<String> {
+        self.argv_after_strip(strip_sudo_for_exec(cmd_parts))
+    }
+
+    /// `effective` as spawned: when it still opens on `sudo`, the family's
+    /// [`env`](Self::env) rides behind it through `env(1)`. sudo resets the
+    /// environment, and `sudo K=V` is refused without a SETENV tag most
+    /// sudoers entries lack, so `sudo env K=V` is the form every sudoers runs.
+    pub(super) fn argv_after_strip(&self, effective: &[&str]) -> Vec<String> {
+        let mut argv: Vec<String> = Vec::with_capacity(effective.len() + self.env.len() + 1);
+        match effective.split_first() {
+            Some((&"sudo", rest)) if !self.env.is_empty() => {
+                argv.push("sudo".into());
+                argv.push("env".into());
+                argv.extend(self.env.iter().map(|(k, v)| format!("{k}={v}")));
+                argv.extend(rest.iter().map(|s| s.to_string()));
+            }
+            _ => argv.extend(effective.iter().map(|s| s.to_string())),
+        }
+        argv
+    }
+
+    /// The `Command` for `cmd_parts`, the one place a family's spawn is
+    /// composed: [`effective_argv`](Self::effective_argv) routed through the
+    /// tool's `CFGD_*_BIN` seam, carrying the family's `env` itself for the
+    /// bare shape (root, or a seam) where no `sudo` stands between.
+    pub(super) fn spawn_command(&self, cmd_parts: &[&str]) -> Command {
+        let argv = self.effective_argv(cmd_parts);
+        let mut cmd = match argv.split_first() {
+            Some((prog, args)) => {
+                let mut cmd = cmd_with_seam(prog);
+                cmd.args(args);
+                cmd
+            }
+            None => Command::new("true"),
+        };
+        cmd.envs(self.env.iter().copied());
+        cmd
+    }
+
+    /// The program the family's install runs, its `sudo` wrapper set aside:
+    /// `apt-get` for apt, the family's own name for the rest.
+    pub(super) fn install_program(&self) -> &'static str {
+        self.install_cmd
+            .strip_prefix(&["sudo"])
+            .unwrap_or(self.install_cmd)
+            .first()
+            .copied()
+            .unwrap_or(self.mgr_name)
+    }
+
+    /// The program each of the family's commands spawns, its `sudo` wrapper
+    /// set aside.
+    #[cfg(test)]
+    pub(super) fn spawned_programs(&self) -> Vec<&'static str> {
+        [
+            Some(self.list_cmd),
+            Some(self.install_cmd),
+            Some(self.uninstall_cmd),
+            self.update_cmd,
+            self.upgrade_cmd,
+        ]
+        .into_iter()
+        .flatten()
+        .filter_map(|cmd| cmd.strip_prefix(&["sudo"]).unwrap_or(cmd).first().copied())
+        .collect()
     }
 
     /// The same line for a script cfgd EMITS for ANOTHER host to run
@@ -125,20 +200,28 @@ impl SimpleManager {
     /// question is what the consuming build script runs as (a container build,
     /// already root), never what this host happens to be. `display_cmd` keeps
     /// the `is_root`/seam logic because it labels what cfgd RUNS here.
+    ///
+    /// The family's `env` leads the line as shell assignments, the form a root
+    /// shell hands the variables to the one command it runs.
     pub(super) fn export_cmd(&self, cmd_parts: &[&str], packages: &[String]) -> String {
-        join_cmd(
-            cmd_parts.strip_prefix(&["sudo"]).unwrap_or(cmd_parts),
-            packages,
-        )
+        let bare = cmd_parts.strip_prefix(&["sudo"]).unwrap_or(cmd_parts);
+        let argv: Vec<String> = self
+            .env
+            .iter()
+            .map(|(k, v)| format!("{k}={v}"))
+            .chain(bare.iter().map(|s| s.to_string()))
+            .collect();
+        join_cmd(&argv, packages)
     }
 }
 
-fn join_cmd(effective: &[&str], packages: &[String]) -> String {
-    let mut parts: Vec<&str> = effective.to_vec();
-    for p in packages {
-        parts.push(p);
-    }
-    parts.join(" ")
+fn join_cmd(effective: &[String], packages: &[String]) -> String {
+    effective
+        .iter()
+        .chain(packages)
+        .map(String::as_str)
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 impl PackageManager for SimpleManager {
@@ -155,17 +238,19 @@ impl PackageManager for SimpleManager {
     }
 
     fn tool_version(&self) -> Option<String> {
-        super::shared::tool_version_from(cmd_with_seam(self.mgr_name).arg("--version"))
+        super::shared::tool_version_from(cmd_with_seam(self.install_program()).arg("--version"))
     }
 
     fn is_available(&self) -> bool {
         if let Some(f) = self.is_available_fn {
-            f()
-        } else if let Some(env) = mgr_seam_env(self.mgr_name) {
-            command_available_with_seam(env, self.mgr_name)
-        } else {
-            command_available(self.mgr_name)
+            return f();
         }
+        // The program the install spawns answers, through its own seam: apt's
+        // name is no program cfgd runs, so a PATH probe of `apt` would find a
+        // host binary no seam can pin. A program with no seam row answers
+        // unavailable, so a family added without one cannot reach this host.
+        let prog = self.install_program();
+        program_seam(prog).is_some_and(|env| command_available_with_seam(env, prog))
     }
 
     fn bootstrap_plan_given(&self, _delivered: &dyn Fn(&str) -> bool) -> Option<BootstrapPlan> {
@@ -199,13 +284,11 @@ impl PackageManager for SimpleManager {
             None => (Vec::new(), packages.to_vec()),
         };
         if !fresh.is_empty() {
-            let effective = strip_sudo_for_exec(self.install_cmd);
             let label = self.display_cmd(self.install_cmd, &fresh);
-            let (prog, args) = effective.split_first().unwrap_or((&"true", &[]));
             run_pkg_cmd_live(
                 cx,
                 self.mgr_name,
-                cmd_with_seam(prog).args(args).args(&fresh),
+                self.spawn_command(self.install_cmd).args(&fresh),
                 &label,
                 "install",
             )?;
@@ -213,10 +296,8 @@ impl PackageManager for SimpleManager {
         if let Some(upgrade_parts) = self.upgrade_cmd {
             let verb_label = self.display_cmd(upgrade_parts, &[]);
             super::shared::upgrade_each(cx, self.mgr_name, &held, &verb_label, |pkg| {
-                let effective = strip_sudo_for_exec(upgrade_parts);
-                let (prog, args) = effective.split_first().unwrap_or((&"true", &[]));
-                let mut cmd = cmd_with_seam(prog);
-                cmd.args(args).arg(pkg);
+                let mut cmd = self.spawn_command(upgrade_parts);
+                cmd.arg(pkg);
                 cmd
             })?;
         }
@@ -227,13 +308,11 @@ impl PackageManager for SimpleManager {
         if packages.is_empty() {
             return Ok(());
         }
-        let effective = strip_sudo_for_exec(self.uninstall_cmd);
         let label = self.display_cmd(self.uninstall_cmd, packages);
-        let (prog, args) = effective.split_first().unwrap_or((&"true", &[]));
         run_pkg_cmd_live(
             cx,
             self.mgr_name,
-            cmd_with_seam(prog).args(args).args(packages),
+            self.spawn_command(self.uninstall_cmd).args(packages),
             &label,
             "uninstall",
         )?;
@@ -248,12 +327,10 @@ impl PackageManager for SimpleManager {
         let Some(update_parts) = self.update_cmd else {
             return Ok(());
         };
-        let effective = strip_sudo_for_exec(update_parts);
         let label = self.display_cmd(update_parts, &[]);
-        let (prog, args) = effective.split_first().unwrap_or((&"true", &[]));
         if self.ignore_update_exit {
             // dnf/yum check-update returns 100 when updates are available
-            let _ = pkg_run(cx, cmd_with_seam(prog).args(args), &label).map_err(|e| {
+            let _ = pkg_run(cx, &mut self.spawn_command(update_parts), &label).map_err(|e| {
                 PackageError::CommandFailed {
                     manager: self.mgr_name.into(),
                     source: e,
@@ -263,7 +340,7 @@ impl PackageManager for SimpleManager {
             run_pkg_cmd_live(
                 cx,
                 self.mgr_name,
-                cmd_with_seam(prog).args(args),
+                &mut self.spawn_command(update_parts),
                 &label,
                 "update",
             )?;
@@ -322,10 +399,11 @@ impl PackageManager for SimpleManager {
     /// version clears the floor. A `pkg version -t` spawn failure there folds to
     /// `false` — "this candidate does not satisfy the floor" — which only drops
     /// this manager from consideration; a sibling candidate or `Unreadable`'s own
-    /// check-error report (via [`version_meets_minimum_checked`](Self::version_meets_minimum_checked),
-    /// which the LIVE floor check in `reconciler::package_version_floor` calls
-    /// instead) still surfaces the failure. Folding here would be wrong on the
-    /// verify path, where a spawn failure must never be reported as `Below`.
+    /// check-error report (via
+    /// [`version_meets_minimum_checked`](Self::version_meets_minimum_checked), which the LIVE floor
+    /// check in `reconciler::package_version_floor` calls instead) still surfaces the failure.
+    /// Folding here would be wrong on the verify path, where a spawn failure must never be reported
+    /// as `Below`.
     fn version_meets_minimum(&self, available: &str, min_version: &str) -> bool {
         self.version_meets_minimum_checked(available, min_version)
             .unwrap_or(false)
@@ -386,19 +464,29 @@ impl PackageManager for SimpleManager {
 
 // --- SimpleManager constructors ---
 
+/// One [`SIMPLE_FAMILIES`] row: a family name and the constructor it resolves to.
+pub(super) type FamilyRow = (&'static str, fn() -> SimpleManager);
+
+/// Every data-driven family, as `(name, constructor)`: the one table
+/// [`simple_manager`] resolves a name from and a caller iterates to reach every
+/// family. Row order is the order a mediated bootstrap tries the families in.
+pub(super) const SIMPLE_FAMILIES: &[FamilyRow] = &[
+    ("apt", apt_manager),
+    ("dnf", dnf_manager),
+    ("yum", yum_manager),
+    ("zypper", zypper_manager),
+    ("pacman", pacman_manager),
+    ("apk", apk_manager),
+    ("pkg", pkg_manager),
+];
+
 /// The `SimpleManager` a family name resolves to, for a caller that needs the
 /// family's own command spellings rather than a live provider.
 pub(super) fn simple_manager(name: &str) -> Option<SimpleManager> {
-    Some(match name {
-        "apt" => apt_manager(),
-        "dnf" => dnf_manager(),
-        "yum" => yum_manager(),
-        "apk" => apk_manager(),
-        "pacman" => pacman_manager(),
-        "zypper" => zypper_manager(),
-        "pkg" => pkg_manager(),
-        _ => return None,
-    })
+    SIMPLE_FAMILIES
+        .iter()
+        .find(|(family, _)| *family == name)
+        .map(|(_, build)| build())
 }
 
 /// The spawn that installs `pkgs` through the `name` family, composed from that
@@ -410,23 +498,56 @@ pub(super) fn simple_manager(name: &str) -> Option<SimpleManager> {
 /// name no family here holds.
 pub(super) fn family_install_command(name: &str, pkgs: &[&str]) -> Option<Command> {
     let mgr = simple_manager(name)?;
-    let effective = strip_sudo_for_exec(mgr.install_cmd);
-    let (prog, args) = effective.split_first()?;
-    let mut cmd = cmd_with_seam(prog);
-    cmd.args(args).args(pkgs);
+    let mut cmd = mgr.spawn_command(mgr.install_cmd);
+    cmd.args(pkgs);
     Some(cmd)
 }
+
+/// `-y` answers apt-get's own questions but not debconf's (a package's
+/// configuration, tzdata's region) or needrestart's service-restart menu on
+/// Ubuntu; both read these variables instead.
+pub(super) const APT_ENV: &[(&str, &str)] = &[
+    ("DEBIAN_FRONTEND", "noninteractive"),
+    ("NEEDRESTART_MODE", "a"),
+];
+
+/// pkg(7), the stub a fresh FreeBSD ships, asks before fetching pkg(8) on the
+/// first command, and `pkg update` has no `-y` to answer it.
+pub(super) const PKG_ENV: &[(&str, &str)] = &[("ASSUME_ALWAYS_YES", "yes")];
 
 pub(super) fn apt_manager() -> SimpleManager {
     SimpleManager {
         mgr_name: "apt",
         list_cmd: &["dpkg-query", "-W", "-f", "${Package}\n"],
-        install_cmd: &["sudo", "apt-get", "install", "-y"],
-        uninstall_cmd: &["sudo", "apt-get", "remove", "-y"],
+        // dpkg asks what to do with a configuration file the admin edited, a
+        // question neither `-y` nor debconf answers: confdef takes dpkg's default
+        // answer where one exists, and confold keeps the edited file where none
+        // does.
+        install_cmd: &[
+            "sudo",
+            "apt-get",
+            "install",
+            "-y",
+            "-o",
+            "Dpkg::Options::=--force-confdef",
+            "-o",
+            "Dpkg::Options::=--force-confold",
+        ],
+        uninstall_cmd: &[
+            "sudo",
+            "apt-get",
+            "remove",
+            "-y",
+            "-o",
+            "Dpkg::Options::=--force-confdef",
+            "-o",
+            "Dpkg::Options::=--force-confold",
+        ],
         update_cmd: Some(&["sudo", "apt-get", "update"]),
         upgrade_cmd: None,
         raise_verb: "install",
         ignore_update_exit: false,
+        env: APT_ENV,
         parse_list: parse_simple_lines,
         query_version: query_version_apt,
         is_available_fn: None,
@@ -449,6 +570,7 @@ pub(super) fn dnf_manager() -> SimpleManager {
         upgrade_cmd: None,
         raise_verb: "install",
         ignore_update_exit: true,
+        env: &[],
         parse_list: parse_dnf_lines,
         query_version: query_version_info,
         is_available_fn: None,
@@ -468,6 +590,7 @@ pub(super) fn yum_manager() -> SimpleManager {
         upgrade_cmd: None,
         raise_verb: "install",
         ignore_update_exit: true,
+        env: &[],
         parse_list: parse_yum_lines,
         query_version: query_version_info,
         is_available_fn: Some(|| {
@@ -490,6 +613,7 @@ pub(super) fn apk_manager() -> SimpleManager {
         upgrade_cmd: Some(&["sudo", "apk", "upgrade"]),
         raise_verb: "upgrade",
         ignore_update_exit: false,
+        env: &[],
         parse_list: parse_apk_lines,
         query_version: query_version_apk,
         is_available_fn: None,
@@ -509,6 +633,7 @@ pub(super) fn pacman_manager() -> SimpleManager {
         upgrade_cmd: None,
         raise_verb: "-S",
         ignore_update_exit: false,
+        env: &[],
         parse_list: parse_simple_lines,
         query_version: query_version_info,
         is_available_fn: None,
@@ -531,10 +656,14 @@ pub(super) fn zypper_manager() -> SimpleManager {
         ],
         install_cmd: &["sudo", "zypper", "install", "-y"],
         uninstall_cmd: &["sudo", "zypper", "remove", "-y"],
-        update_cmd: Some(&["sudo", "zypper", "refresh"]),
+        // `refresh` takes no `-y`, so the global `--non-interactive` is what
+        // keeps a new repository key's trust prompt from waiting on stdin: zypper
+        // takes the prompt's default answer instead.
+        update_cmd: Some(&["sudo", "zypper", "--non-interactive", "refresh"]),
         upgrade_cmd: None,
         raise_verb: "install",
         ignore_update_exit: false,
+        env: &[],
         parse_list: parse_zypper_lines,
         query_version: query_version_info,
         is_available_fn: None,
@@ -554,6 +683,7 @@ pub(super) fn pkg_manager() -> SimpleManager {
         upgrade_cmd: None,
         raise_verb: "install",
         ignore_update_exit: false,
+        env: PKG_ENV,
         parse_list: parse_pkg_lines,
         query_version: query_version_pkg,
         is_available_fn: None,

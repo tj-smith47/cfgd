@@ -9,7 +9,7 @@
 //! Goldens live under `tests/output_snapshots/profile_switch/`. Regenerate with:
 //!     INSTA_UPDATE=always cargo test -p cfgd --test profile_switch_snapshots
 
-mod common;
+use cfgd_test_fixtures as common;
 
 use std::path::Path;
 
@@ -45,6 +45,7 @@ fn profile_switch_happy_human() {
     let (config_dir, state_dir) = profile_test_config_setup();
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc();
+    let printer = printer.with_hints_enabled(true);
 
     cmd_profile_switch(&cli, "work", &printer).unwrap();
     drop(printer);

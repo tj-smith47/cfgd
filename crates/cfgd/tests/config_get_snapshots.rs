@@ -7,7 +7,7 @@
 //!   - `config_get/not_found.txt` — error-path Doc when the key path doesn't
 //!     resolve under `spec`.
 
-mod common;
+use cfgd_test_fixtures as common;
 
 use std::path::Path;
 
@@ -44,7 +44,10 @@ fn config_get_happy_human() {
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc();
 
-    config_cmd::cmd_config_get(&cli, &printer, "profile").unwrap();
+    cfgd::cli::RunContext::for_test(&cli, &printer, |run| {
+        config_cmd::cmd_config_get(run, "profile")
+    })
+    .unwrap();
     drop(printer);
 
     let stripped = strip_ansi(&cap.human());
@@ -57,7 +60,10 @@ fn config_get_happy_json() {
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc_with_format(OutputFormat::Json);
 
-    config_cmd::cmd_config_get(&cli, &printer, "profile").unwrap();
+    cfgd::cli::RunContext::for_test(&cli, &printer, |run| {
+        config_cmd::cmd_config_get(run, "profile")
+    })
+    .unwrap();
     drop(printer);
 
     let json = cap.json().expect("doc captured json");
@@ -74,8 +80,10 @@ fn config_get_not_found_human() {
     // one ✗ line. Drive both through the SAME printer so the golden captures any handler
     // pre-error output plus the central failure line — exactly what the user sees.
     let (printer, cap) = Printer::for_test_doc();
-    let err = config_cmd::cmd_config_get(&cli, &printer, "ghost.path")
-        .expect_err("missing key must return Err");
+    let err = cfgd::cli::RunContext::for_test(&cli, &printer, |run| {
+        config_cmd::cmd_config_get(run, "ghost.path")
+    })
+    .expect_err("missing key must return Err");
     render_cli_error(&printer, &err);
     drop(printer);
     let stripped = strip_ansi(&cap.human());

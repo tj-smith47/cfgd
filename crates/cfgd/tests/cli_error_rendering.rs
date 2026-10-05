@@ -1,5 +1,3 @@
-#![allow(deprecated)] // assert_cmd 2.x cargo_bin deprecation; upgrade path is assert_cmd 3.x
-
 //! End-to-end proof of the central CLI error sink (`render_cli_error`).
 //!
 //! These tests drive the REAL `cfgd` binary on failing commands — the only path
@@ -14,7 +12,8 @@
 //!     silent on failure, and no `✗` human line leaks onto stdout;
 //!   - the structured payload carries the expected `error` kind.
 
-use assert_cmd::Command;
+mod cfgd_binary;
+use cfgd_binary::cfgd_bin;
 
 /// Minimal valid config dir (so a command reaches its own not-found logic rather
 /// than failing earlier on missing config).
@@ -33,11 +32,7 @@ fn create_valid_config(dir: &std::path::Path) {
 }
 
 fn run(args: &[&str]) -> (String, String, Option<i32>) {
-    let out = Command::cargo_bin("cfgd")
-        .unwrap()
-        .args(args)
-        .output()
-        .unwrap();
+    let out = cfgd_bin().unwrap().args(args).output().unwrap();
     (
         String::from_utf8_lossy(&out.stdout).into_owned(),
         String::from_utf8_lossy(&out.stderr).into_owned(),
@@ -163,4 +158,836 @@ fn missing_config_json_emits_one_payload_never_silent() {
         v.get("error").is_some(),
         "structured failure payload must carry an `error` key — got {v}"
     );
+}
+
+/// The same class decision, over the real binary's dispatch: a refusal's
+/// remediation survives `CFGD_USAGE_HINTS=false`.
+///
+/// `usageHints` decides tutorial pointers; the one statement of what would let
+/// a refused command run always renders. The child's stderr is read raw — a piped
+/// child resolves `ColorChoice::Auto` to no colour, so there is nothing to
+/// strip — and the fixture declares a module, because the not-found hint names
+/// the modules that DO exist and a config declaring none carries no hint to
+/// suppress.
+#[test]
+fn a_refusal_names_its_fix_end_to_end_with_usage_hints_off() {
+    let dir = tempfile::tempdir().unwrap();
+    create_valid_config(dir.path());
+    let module_dir = dir.path().join("modules").join("git");
+    std::fs::create_dir_all(&module_dir).unwrap();
+    std::fs::write(
+        module_dir.join("module.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: git\nspec: {}\n",
+    )
+    .unwrap();
+
+    let out = cfgd_bin()
+        .unwrap()
+        .env(cfgd_core::CFGD_USAGE_HINTS_ENV, "false")
+        .args(["module", "show", "nope", "--config"])
+        .arg(dir.path().join("cfgd.yaml"))
+        .output()
+        .unwrap();
+
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(
+        out.status.code(),
+        Some(6),
+        "module show must refuse with NotFound(6), or the hint below is a tutorial `usageHints` may take away — stderr: {stderr:?}"
+    );
+    assert!(
+        stderr.contains("→ "),
+        "the refusal's remediation survives the gate: {stderr:?}"
+    );
+    assert!(
+        stderr.contains("Available modules: git"),
+        "and it still names the way out: {stderr:?}"
+    );
+}
+
+/// The `-o json` payload a refusal leaves on stdout, run against a valid
+/// config so each command reaches its own refusal past the config read.
+fn json_refusal(dir: &std::path::Path, args: &[&str]) -> serde_json::Value {
+    create_valid_config(dir);
+    json_refusal_against(&dir.join("cfgd.yaml"), args)
+}
+
+/// A refused flag value names the flag, repeats the value and, where the
+/// accepted words are a closed list, carries that list.
+#[test]
+fn an_unknown_context_names_its_flag_value_and_the_accepted_words_in_json() {
+    let dir = tempfile::tempdir().unwrap();
+    let v = json_refusal(dir.path(), &["apply", "--context", "bogus"]);
+    assert_eq!(
+        v,
+        serde_json::json!({
+            "error": "invalid_argument",
+            "name": "--context",
+            "flag": "--context",
+            "value": "bogus",
+            "valid": ["apply", "reconcile"],
+        })
+    );
+}
+
+/// An unknown `bootstrap.` selector carries the selectors that would have
+/// matched, cfgd's own groups and the managers alike.
+#[test]
+fn an_unknown_bootstrap_selector_names_the_selectors_it_accepts_in_json() {
+    let dir = tempfile::tempdir().unwrap();
+    let v = json_refusal(dir.path(), &["plan", "--phase", "bootstrap.nope"]);
+    assert_eq!(v["error"], "invalid_argument", "{v}");
+    assert_eq!(v["flag"], "--phase", "{v}");
+    assert_eq!(v["value"], "bootstrap.nope", "{v}");
+    let valid: Vec<&str> = v["valid"]
+        .as_array()
+        .unwrap_or_else(|| panic!("`valid` is a list: {v}"))
+        .iter()
+        .filter_map(serde_json::Value::as_str)
+        .collect();
+    assert!(
+        valid.contains(&"managers") && valid.contains(&"apt"),
+        "`valid` lists cfgd's groups and the managers: {v}"
+    );
+}
+
+/// `--with-profile` with no `--module` is a flag missing its partner.
+#[test]
+fn with_profile_without_a_module_is_a_missing_argument_in_json() {
+    let dir = tempfile::tempdir().unwrap();
+    let v = json_refusal(dir.path(), &["plan", "--with-profile"]);
+    assert_eq!(
+        v,
+        serde_json::json!({
+            "error": "missing_argument",
+            "name": "--with-profile",
+            "flag": "--with-profile",
+            "requires": "--module",
+        })
+    );
+}
+
+/// A secret verb handed a file that is not there names the path it looked at.
+#[test]
+fn a_secret_verb_on_a_missing_file_is_not_found_with_its_path_in_json() {
+    let dir = tempfile::tempdir().unwrap();
+    let missing = dir.path().join("absent.enc");
+    let v = json_refusal(
+        dir.path(),
+        &["secret", "encrypt", missing.to_str().unwrap()],
+    );
+    let path = cfgd_core::to_posix_string(&missing);
+    assert_eq!(
+        v,
+        serde_json::json!({ "error": "not_found", "name": &path, "path": &path })
+    );
+}
+
+/// An unknown `explain` field path names the resource it was read against and
+/// the fields available where the path stopped resolving.
+#[test]
+fn an_unknown_explain_field_path_names_the_fields_where_it_stopped_in_json() {
+    let dir = tempfile::tempdir().unwrap();
+    let v = json_refusal(dir.path(), &["explain", "profile.spec.packages.nope"]);
+    assert_eq!(v["error"], "not_found", "{v}");
+    assert_eq!(v["resource"], "profile", "{v}");
+    let available: Vec<&str> = v["available"]
+        .as_array()
+        .unwrap_or_else(|| panic!("`available` is a list: {v}"))
+        .iter()
+        .filter_map(serde_json::Value::as_str)
+        .collect();
+    assert!(
+        available.contains(&"brew") && !available.contains(&"packages"),
+        "`available` lists the children of `spec.packages`, where resolution stopped: {v}"
+    );
+}
+
+/// A retired `status` switch is a refused flag like any other: it names the
+/// switch, carries the value clap read for it and the command that replaces it.
+#[test]
+fn a_retired_status_switch_names_its_flag_value_and_replacement_in_json() {
+    let dir = tempfile::tempdir().unwrap();
+    let v = json_refusal(dir.path(), &["status", "--show-all"]);
+    assert_eq!(
+        v,
+        serde_json::json!({
+            "error": "invalid_argument",
+            "name": "--show-all",
+            "flag": "--show-all",
+            "value": "true",
+            "replacement": "cfgd status -o wide",
+        })
+    );
+}
+
+/// A resource name refused at creation names the argument, repeats the name
+/// and says which kind of resource it was for.
+#[test]
+fn a_refused_resource_name_names_its_argument_and_value_in_json() {
+    let dir = tempfile::tempdir().unwrap();
+    let v = json_refusal(dir.path(), &["module", "create", "my mod"]);
+    assert_eq!(
+        v,
+        serde_json::json!({
+            "error": "invalid_argument",
+            "name": "my mod",
+            "flag": "<NAME>",
+            "value": "my mod",
+            "resource": "module",
+        })
+    );
+}
+
+/// A config document whose `spec` is `spec_tail`, beside the default profile.
+fn write_config_with_spec(dir: &std::path::Path, spec_tail: &str) -> std::path::PathBuf {
+    create_valid_config(dir);
+    let config = dir.join("cfgd.yaml");
+    std::fs::write(
+        &config,
+        format!("apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: test\n{spec_tail}"),
+    )
+    .unwrap();
+    config
+}
+
+/// A bare `spec:` is a spec with nothing in it yet, so a verb writing under it
+/// creates the sections it writes to, as `config set` does.
+#[test]
+fn module_registry_add_writes_under_a_bare_spec() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = write_config_with_spec(dir.path(), "spec:\n");
+    let out = cfgd_bin()
+        .unwrap()
+        .args([
+            "module",
+            "registry",
+            "add",
+            "https://github.com/example/mods.git",
+        ])
+        .arg("--config")
+        .arg(&config)
+        .args(["-o", "json"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(out.status.code(), Some(0), "{stdout}");
+    let v = parse_single_json(&stdout);
+    assert_eq!(v["name"], "example", "{v}");
+
+    let written: serde_yaml::Value =
+        serde_yaml::from_str(&std::fs::read_to_string(&config).unwrap()).unwrap();
+    assert_eq!(
+        written["spec"]["modules"]["registries"][0]["url"],
+        "https://github.com/example/mods.git"
+    );
+}
+
+/// A `spec` holding something other than a mapping is refused as a document
+/// contradicting its schema, and the refusal says what the document holds.
+#[test]
+fn a_spec_that_is_not_a_mapping_is_refused_naming_what_it_holds() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = write_config_with_spec(dir.path(), "spec: 3\n");
+    let before = std::fs::read_to_string(&config).unwrap();
+    let args = [
+        "module",
+        "registry",
+        "add",
+        "https://github.com/example/mods.git",
+    ];
+
+    let v = json_refusal_against(&config, &args);
+    let path = cfgd_core::to_posix_string(&config);
+    assert_eq!(
+        v,
+        serde_json::json!({ "error": "parse_failed", "name": &path, "path": &path })
+    );
+
+    let (_, stderr, code) = run(&[&args[..], &["--config", config.to_str().unwrap()]].concat());
+    assert_eq!(code, Some(1), "{stderr}");
+    assert!(
+        stderr.contains("'spec' holds a scalar where a mapping belongs"),
+        "the refusal names what the document holds: {stderr}"
+    );
+    assert_eq!(std::fs::read_to_string(&config).unwrap(), before);
+}
+
+/// A config holding one source, `s`, whose entry ends on `subscription`.
+fn write_config_with_source(dir: &std::path::Path, subscription: &str) -> std::path::PathBuf {
+    write_config_with_spec(
+        dir,
+        &format!(
+            "spec:\n  sources:\n  - name: s\n    origin:\n      type: Git\n      url: https://example.com/x.git\n{subscription}"
+        ),
+    )
+}
+
+/// `cfgd source priority` against `config`, as its `-o json` payload and exit.
+fn source_priority_json(
+    config: &std::path::Path,
+    args: &[&str],
+) -> (serde_json::Value, Option<i32>) {
+    let out = cfgd_bin()
+        .unwrap()
+        .args(["source", "priority"])
+        .args(args)
+        .arg("--config")
+        .arg(config)
+        .args(["-o", "json"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    (parse_single_json(&stdout), out.status.code())
+}
+
+/// A source whose `subscription` is absent, bare or `null` holds the default
+/// block, so a new priority is written into it, and the file it leaves loads
+/// and reports that priority. A bare block used to be rewritten as `null` with
+/// the priority dropped, and every later command refused the file.
+#[test]
+fn source_priority_writes_into_an_absent_or_bare_subscription_and_the_file_still_loads() {
+    for (case, block) in [
+        ("absent", ""),
+        ("bare", "    subscription:\n"),
+        ("null", "    subscription: null\n"),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let config = write_config_with_source(dir.path(), block);
+
+        let (v, code) = source_priority_json(&config, &["s", "7"]);
+        assert_eq!(code, Some(0), "{case}: {v}");
+        assert_eq!(
+            v,
+            serde_json::json!({ "name": "s", "priority": 7, "previousPriority": 500 }),
+            "{case}"
+        );
+
+        let written: serde_yaml::Value =
+            serde_yaml::from_str(&std::fs::read_to_string(&config).unwrap()).unwrap();
+        assert_eq!(
+            written["spec"]["sources"][0]["subscription"]["priority"], 7,
+            "{case}: the file records the priority: {written:?}"
+        );
+
+        let (v, code) = source_priority_json(&config, &["s"]);
+        assert_eq!(code, Some(0), "{case}: the written file loads: {v}");
+        assert_eq!(
+            v,
+            serde_json::json!({ "name": "s", "priority": 7 }),
+            "{case}"
+        );
+    }
+}
+
+/// A source whose `sync` block is written `null` loads with the default block,
+/// as a bare `sync:` beside it does, so `source list` reports the source.
+#[test]
+fn a_source_whose_sync_block_is_null_loads_and_lists() {
+    for (case, block) in [("bare", "    sync:\n"), ("null", "    sync: null\n")] {
+        let dir = tempfile::tempdir().unwrap();
+        let config = write_config_with_source(dir.path(), block);
+        let out = cfgd_bin()
+            .unwrap()
+            .args(["source", "list", "--config"])
+            .arg(&config)
+            .args(["-o", "json"])
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "{case}: {stdout}{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let v = parse_single_json(&stdout);
+        assert_eq!(v[0]["name"], "s", "{case}: {v}");
+        assert_eq!(v[0]["priority"], 500, "{case}: {v}");
+    }
+}
+
+/// A config whose `spec.aliases` is written bare or `null` loads, so a
+/// command reading it runs.
+#[test]
+fn a_config_whose_aliases_are_null_loads_and_lists() {
+    for (case, block) in [("bare", "  aliases:\n"), ("null", "  aliases: null\n")] {
+        let dir = tempfile::tempdir().unwrap();
+        let config = write_config_with_source(dir.path(), block);
+        let out = cfgd_bin()
+            .unwrap()
+            .args(["source", "list", "--config"])
+            .arg(&config)
+            .args(["-o", "json"])
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "{case}: {stdout}{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(
+            parse_single_json(&stdout)[0]["name"],
+            "s",
+            "{case}: {stdout}"
+        );
+    }
+}
+
+/// An out-of-range priority given to `source priority` is refused as the
+/// `[VALUE]` positional its `--help` prints, the argument the invocation
+/// actually carried.
+#[test]
+fn an_out_of_range_source_priority_names_its_positional_in_json() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = write_config_with_source(dir.path(), "");
+    let before = std::fs::read_to_string(&config).unwrap();
+
+    let (v, code) = source_priority_json(&config, &["s", "4294967295"]);
+    assert_eq!(code, Some(1), "{v}");
+    assert_eq!(
+        v,
+        serde_json::json!({
+            "error": "invalid_argument",
+            "name": "[VALUE]",
+            "flag": "[VALUE]",
+            "value": "4294967295",
+        })
+    );
+    assert_eq!(std::fs::read_to_string(&config).unwrap(), before);
+}
+
+/// The `-o json` payload a refusal leaves on stdout, run against `config` as
+/// it stands.
+fn json_refusal_against(config: &std::path::Path, args: &[&str]) -> serde_json::Value {
+    let out = cfgd_bin()
+        .unwrap()
+        .args(args)
+        .arg("--config")
+        .arg(config)
+        .args(["-o", "json"])
+        .output()
+        .unwrap();
+    assert_ne!(out.status.code(), Some(0), "{args:?} must refuse");
+    parse_single_json(&String::from_utf8_lossy(&out.stdout))
+}
+
+/// A secret verb whose backend cannot run names the file it was asked about
+/// and why the backend cannot run.
+#[test]
+fn a_secret_verb_whose_backend_is_not_installed_is_backend_unavailable_in_json() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = write_config_with_spec(dir.path(), "spec:\n  secrets:\n    backend: sops\n");
+    let target = dir.path().join("present.yaml");
+    std::fs::write(&target, "k: v\n").unwrap();
+    // A PATH holding no executables, handed to the child alone, so sops is
+    // missing whatever the host has installed.
+    let no_tools = tempfile::tempdir().unwrap();
+
+    let out = cfgd_bin()
+        .unwrap()
+        .env("PATH", no_tools.path())
+        .args(["secret", "encrypt"])
+        .arg(&target)
+        .arg("--config")
+        .arg(&config)
+        .args(["-o", "json"])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    let path = cfgd_core::to_posix_string(&target);
+    assert_eq!(
+        parse_single_json(&String::from_utf8_lossy(&out.stdout)),
+        serde_json::json!({
+            "error": "backend_unavailable",
+            "name": &path,
+            "path": &path,
+            "detail": "sops: not installed",
+        })
+    );
+}
+
+/// A config that cannot be parsed reaches `-o json` as the `config` domain,
+/// ahead of any question about the file or the backend.
+#[test]
+fn a_secret_verb_over_an_unparseable_config_is_the_config_domain_in_json() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = write_config_with_spec(dir.path(), "spec: [\n");
+    let target = dir.path().join("present.yaml");
+    std::fs::write(&target, "k: v\n").unwrap();
+
+    let v = json_refusal_against(&config, &["secret", "encrypt", target.to_str().unwrap()]);
+    assert_eq!(v["error"], "config", "{v}");
+}
+
+/// `cfgd` with no home directory to resolve, so a `~` in the config path
+/// stays a literal `~`.
+fn run_homeless(args: &[&str]) -> (String, String, Option<i32>) {
+    let out = cfgd_bin()
+        .unwrap()
+        .env_remove("HOME")
+        .env_remove("USERPROFILE")
+        .env_remove("XDG_CONFIG_HOME")
+        .args(args)
+        .output()
+        .unwrap();
+    (
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+        out.status.code(),
+    )
+}
+
+fn home_unresolved() -> String {
+    format!(
+        "cannot resolve home directory ({} unset) to locate config at",
+        cfgd_core::HOME_ENV_VARS
+    )
+}
+
+/// A `--config` under `~` with no home set is refused as an unset home,
+/// naming the path as written, under table and json output alike.
+#[test]
+fn a_tilde_config_with_no_home_reports_the_unset_home() {
+    let (_, stderr, code) = run_homeless(&["status", "--config", "~/cfgd.yaml"]);
+    assert_eq!(
+        code,
+        Some(3),
+        "an unresolvable home exits NoConfig(3): {stderr}"
+    );
+    assert!(
+        stderr.contains(&format!("{} ~/cfgd.yaml", home_unresolved())),
+        "stderr: {stderr:?}"
+    );
+
+    let (stdout, _, code) = run_homeless(&["status", "--config", "~/cfgd.yaml", "-o", "json"]);
+    assert_eq!(
+        code,
+        Some(3),
+        "an unresolvable home exits NoConfig(3): {stdout}"
+    );
+    let v = parse_single_json(&stdout);
+    assert_eq!(v["error"], "config", "payload: {v}");
+    assert!(
+        v["message"]
+            .as_str()
+            .is_some_and(|m| m.contains(&format!("{} ~/cfgd.yaml", home_unresolved()))),
+        "payload: {v}"
+    );
+}
+
+/// The verbs that check for the config file before reading it (one caller
+/// of each family besides the `config` verbs) report a `~` path with no home
+/// set the way `status` does: the unset home, under table
+/// and json output alike.
+#[test]
+fn every_config_verb_reports_a_tilde_config_with_no_home_as_the_unset_home() {
+    let verbs: [&[&str]; 8] = [
+        &["config", "show"],
+        &["config", "get", "profile"],
+        &["config", "set", "profile", "work"],
+        &["config", "unset", "theme.name"],
+        &["config", "edit"],
+        &["config", "migrate"],
+        &["profile", "switch", "work"],
+        &["module", "registry", "remove", "community"],
+    ];
+    for verb in verbs {
+        let mut args = verb.to_vec();
+        args.extend(["--config", "~/cfgd.yaml"]);
+        let (_, stderr, code) = run_homeless(&args);
+        assert_eq!(code, Some(3), "{verb:?}: exits NoConfig(3): {stderr}");
+        assert!(
+            stderr.contains(&format!("{} ~/cfgd.yaml", home_unresolved())),
+            "{verb:?}: {stderr:?}"
+        );
+
+        args.extend(["-o", "json"]);
+        let (stdout, _, code) = run_homeless(&args);
+        assert_eq!(code, Some(3), "{verb:?}: exits NoConfig(3): {stdout}");
+        let v = parse_single_json(&stdout);
+        assert_eq!(v["error"], "config", "{verb:?}: {v}");
+        assert!(
+            v["message"]
+                .as_str()
+                .is_some_and(|m| m.contains(&format!("{} ~/cfgd.yaml", home_unresolved()))),
+            "{verb:?}: {v}"
+        );
+    }
+}
+
+/// `doctor` reports a `~` config path with no home set as the unset home on
+/// its config-file row, and never as a path that does not exist.
+#[test]
+fn doctor_reports_a_tilde_config_with_no_home_as_the_unset_home() {
+    let (_, stderr, _) = run_homeless(&["doctor", "--config", "~/cfgd.yaml"]);
+    let row = stderr
+        .lines()
+        .find(|line| line.contains("Config file"))
+        .unwrap_or_else(|| panic!("no config-file row: {stderr}"));
+    assert!(
+        row.contains(&format!("{} ~/cfgd.yaml", home_unresolved())),
+        "{row:?}"
+    );
+
+    let (stdout, _, _) = run_homeless(&["doctor", "--config", "~/cfgd.yaml", "-o", "json"]);
+    let v = parse_single_json(&stdout);
+    assert_eq!(v["config"]["valid"], false, "{v}");
+    assert!(
+        v["config"]["error"]
+            .as_str()
+            .is_some_and(|e| e.contains(&format!("{} ~/cfgd.yaml", home_unresolved()))),
+        "{v}"
+    );
+}
+
+/// `doctor` with no home set and no `--config` fails its config check on the
+/// unset home and exits 1: every verb reading the config fails there, so a
+/// passing verdict would let `cfgd doctor && cfgd apply` reach a broken apply.
+/// An `XDG_CONFIG_HOME` or systemd's `CONFIGURATION_DIRECTORY` places the
+/// default path without a home, so there the missing config is the
+/// fresh-machine warning and the verdict passes.
+/// Windows resolves its default config root without a home variable.
+#[cfg(not(windows))]
+#[test]
+fn doctor_with_no_home_fails_the_default_config_check_on_the_unset_home() {
+    let config_row = |stderr: &str| {
+        stderr
+            .lines()
+            .find(|line| line.contains("Config file"))
+            .unwrap_or_else(|| panic!("no config-file row: {stderr}"))
+            .to_string()
+    };
+    let (_, stderr, code) = run_homeless(&["doctor"]);
+    let row = config_row(&stderr);
+    assert!(row.contains(&home_unresolved()), "{row:?}");
+    assert_eq!(code, Some(1), "{stderr}");
+
+    let xdg = tempfile::tempdir().unwrap();
+    let out = cfgd_bin()
+        .unwrap()
+        .env_remove("HOME")
+        .env_remove("USERPROFILE")
+        .env("XDG_CONFIG_HOME", xdg.path())
+        .arg("doctor")
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let row = config_row(&stderr);
+    assert!(row.contains("not found; run `cfgd init`"), "{row:?}");
+    assert!(!row.contains(&home_unresolved()), "{row:?}");
+    assert_eq!(out.status.code(), Some(0), "{stderr}");
+
+    let systemd = tempfile::tempdir().unwrap();
+    let out = cfgd_bin()
+        .unwrap()
+        .env_remove("HOME")
+        .env_remove("USERPROFILE")
+        .env_remove("XDG_CONFIG_HOME")
+        .env("CONFIGURATION_DIRECTORY", systemd.path())
+        .arg("doctor")
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let row = config_row(&stderr);
+    assert!(row.contains("not found; run `cfgd init`"), "{row:?}");
+    assert!(!row.contains(&home_unresolved()), "{row:?}");
+    assert_eq!(out.status.code(), Some(0), "{stderr}");
+}
+
+/// A directory override under `~` with no home set fails the run naming the
+/// unset home, from a flag and from its environment variable alike, and
+/// creates nothing: used as written it would name `./~/s` under the working
+/// directory.
+#[test]
+fn a_tilde_state_dir_with_no_home_fails_naming_the_unset_home() {
+    let refusal = format!(
+        "cannot expand ~/s for the state directory: no home directory found ({} unset)",
+        cfgd_core::HOME_ENV_VARS
+    );
+    let dir = tempfile::tempdir().unwrap();
+    let config = write_config_with_spec(dir.path(), "spec: {}\n");
+    let cwd = tempfile::tempdir().unwrap();
+    let homeless = || {
+        let mut cmd = cfgd_bin().unwrap();
+        cmd.current_dir(cwd.path())
+            .env_remove("HOME")
+            .env_remove("USERPROFILE")
+            .env_remove("XDG_CONFIG_HOME")
+            .env_remove("XDG_STATE_HOME")
+            .env_remove(cfgd_core::CFGD_STATE_DIR_ENV)
+            .arg("--config")
+            .arg(&config);
+        cmd
+    };
+    let mut by_flag = homeless();
+    by_flag.args(["--state-dir", "~/s", "log"]);
+    let mut by_env = homeless();
+    by_env.env(cfgd_core::CFGD_STATE_DIR_ENV, "~/s").arg("log");
+    for (spelling, mut cmd) in [
+        ("--state-dir", by_flag),
+        (cfgd_core::CFGD_STATE_DIR_ENV, by_env),
+    ] {
+        let out = cmd.output().unwrap();
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(out.status.code(), Some(1), "{spelling}: {stderr}");
+        assert!(stderr.contains(&refusal), "{spelling}: {stderr:?}");
+        assert!(
+            !cwd.path().join("~").exists(),
+            "{spelling}: a `~` directory was created under the working directory"
+        );
+    }
+}
+
+/// The default config location with no home set. Linux and macOS spell it
+/// under `~`, so the run reports the unset home; Windows finds its config
+/// root through a known-folder lookup that needs no home variable, so the
+/// run reports the document that is not there.
+#[test]
+fn the_default_config_with_no_home_names_what_is_missing() {
+    let expected = if cfg!(windows) {
+        "config file not found: ".to_string()
+    } else {
+        home_unresolved()
+    };
+    for format in ["table", "json"] {
+        let (stdout, stderr, code) = run_homeless(&["status", "-o", format]);
+        assert_eq!(code, Some(3), "{format}: exits NoConfig(3): {stderr}");
+        let reported = if format == "json" {
+            let v = parse_single_json(&stdout);
+            v["message"].as_str().unwrap_or_default().to_string()
+        } else {
+            stderr
+        };
+        assert!(reported.contains(&expected), "{format}: {reported:?}");
+        assert!(
+            !reported.contains("/~/") && !reported.contains("\\~\\"),
+            "{format}: a `~` joined under another directory: {reported:?}"
+        );
+    }
+}
+
+/// The home directory a command built by `cfgd_bin()` hands the binary.
+fn home_of(cmd: &std::process::Command) -> std::path::PathBuf {
+    cmd.get_envs()
+        .find_map(|(var, value)| (var == "HOME").then_some(value).flatten())
+        .map(std::path::PathBuf::from)
+        .expect("the constructor sets HOME")
+}
+
+/// A `--config` under `~` with a home set names the file under that home, so
+/// the refusal points at it and never claims the home is unset.
+#[test]
+fn a_tilde_config_with_a_home_set_reports_the_missing_file() {
+    for format in ["table", "json"] {
+        let mut cmd = cfgd_bin().unwrap();
+        let expected = format!(
+            "config error: config file not found: {}",
+            cfgd_core::absolutize_path(&home_of(&cmd).join("cfgd.yaml")).display()
+        );
+        let out = cmd
+            .args(["status", "--config", "~/cfgd.yaml", "-o", format])
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(out.status.code(), Some(3), "{format}: {stderr}");
+        let reported = if format == "json" {
+            let v = parse_single_json(&String::from_utf8_lossy(&out.stdout));
+            v["message"].as_str().unwrap_or_default().to_string()
+        } else {
+            stderr.lines().next().unwrap_or_default().to_string()
+        };
+        assert!(reported.ends_with(&expected), "{format}: {reported:?}");
+        assert!(
+            !reported.contains(&home_unresolved()),
+            "{format}: {reported:?}"
+        );
+    }
+}
+
+/// A config under the home directory loads through a `~` spelling of its
+/// path, given as `--config` or as `CFGD_CONFIG`, as an environment file
+/// passes it with no shell to expand it.
+#[test]
+fn a_tilde_config_under_the_home_loads_from_the_flag_and_the_env() {
+    let probe = cfgd_bin().unwrap();
+    write_config_with_spec(&home_of(&probe), "spec:\n  profile: tilde-home\n");
+    let mut by_flag = cfgd_bin().unwrap();
+    by_flag.args(["config", "get", "profile", "--config", "~/cfgd.yaml"]);
+    let mut by_env = cfgd_bin().unwrap();
+    by_env
+        .env(cfgd_core::CFGD_CONFIG_ENV, "~/cfgd.yaml")
+        .args(["config", "get", "profile"]);
+    for (spelling, mut cmd) in [("--config", by_flag), (cfgd_core::CFGD_CONFIG_ENV, by_env)] {
+        let out = cmd.output().unwrap();
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(out.status.success(), "{spelling}: {stderr}");
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout).trim(),
+            "tilde-home",
+            "{spelling}: {stderr}"
+        );
+    }
+}
+
+/// Every directory flag, its `CFGD_*` env form and `CFGD_DAEMON_IPC_PATH`
+/// take a leading `~` as the home directory: an environment file or a quoted
+/// argument passes it with no shell to expand it. `cfgd paths` reports what
+/// the run resolved.
+#[test]
+fn every_directory_flag_and_env_expands_a_leading_tilde() {
+    const CASES: [(Option<&str>, &str, &str, &str); 5] = [
+        (
+            Some("--config-dir"),
+            cfgd_core::CFGD_CONFIG_DIR_ENV,
+            "config",
+            "dir",
+        ),
+        (
+            Some("--state-dir"),
+            cfgd_core::CFGD_STATE_DIR_ENV,
+            "state",
+            "dir",
+        ),
+        (
+            Some("--cache-dir"),
+            cfgd_core::CFGD_CACHE_DIR_ENV,
+            "cache",
+            "dir",
+        ),
+        (
+            Some("--runtime-dir"),
+            cfgd_core::CFGD_RUNTIME_DIR_ENV,
+            "runtime",
+            "dir",
+        ),
+        (
+            None,
+            cfgd_core::CFGD_DAEMON_IPC_PATH_ENV,
+            "runtime",
+            "socket",
+        ),
+    ];
+    for (flag, env, section, field) in CASES {
+        for spelling in flag.into_iter().chain([env]) {
+            let mut cmd = cfgd_bin().unwrap();
+            let expected = cfgd_core::to_posix_string(home_of(&cmd).join("tilde-dir"));
+            if spelling == env {
+                cmd.env(env, "~/tilde-dir");
+            } else {
+                cmd.args([spelling, "~/tilde-dir"]);
+            }
+            let out = cmd.args(["paths", "-o", "json"]).output().unwrap();
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            assert!(out.status.success(), "{spelling}: {stderr}");
+            let v = parse_single_json(&String::from_utf8_lossy(&out.stdout));
+            assert_eq!(
+                v[section][field].as_str(),
+                Some(expected.as_str()),
+                "{spelling}: {v}"
+            );
+        }
+    }
 }

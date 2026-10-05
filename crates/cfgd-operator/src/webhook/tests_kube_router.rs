@@ -4,7 +4,6 @@
 //! These cover the kube-touching branches that the stub-client tests in
 //! `tests_router.rs` skip: `enforce_module_policy` (list ClusterConfigPolicy)
 //! and `collect_policy_modules` + Module CRD GET inside `mutate-pods`.
-#![cfg(test)]
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -300,6 +299,41 @@ async fn validate_module_denies_unsigned_module_when_policy_disallows() {
     let _ = harness.finish().await;
 }
 
+/// A policy carrying a deletion timestamp binds nothing, in admission as in
+/// the Module controller, so the Module it would have refused is admitted
+/// while its finalizer still holds it in the list.
+#[tokio::test]
+async fn validate_module_admits_an_unsigned_module_under_a_deleting_strict_policy() {
+    let mut ccp = ccp_object("ccp-strict-deleting", &["ghcr.io/trusted/"], false, &[]);
+    ccp["metadata"]["deletionTimestamp"] = json!("2026-01-01T00:00:00Z");
+    ccp["metadata"]["finalizers"] = json!(["cfgd.io/test"]);
+    let (ctx, _registry, harness) = MockKubeHarness::new(vec![
+        ExpectedCall::list(cluster_config_policies_path()).returning_json(&ccp_list(vec![ccp])),
+    ]);
+
+    let (router, _metrics) = test_webhook_router_with_client(ctx.client.clone());
+
+    let response = router
+        .oneshot(post(
+            "/validate-module",
+            module_admission_review(json!({
+                "ociArtifact": "ghcr.io/myorg/img:v1",
+                "packages": [],
+            })),
+        ))
+        .await
+        .unwrap();
+    let review = parse_response(response).await;
+    let resp = review.response.unwrap();
+    assert!(
+        resp.allowed,
+        "a deleting policy must not refuse the module: {}",
+        resp.result.message
+    );
+
+    let _ = harness.finish().await;
+}
+
 #[tokio::test]
 async fn validate_module_allows_when_no_policies_present() {
     let (ctx, _registry, harness) = MockKubeHarness::new(vec![
@@ -444,6 +478,39 @@ async fn mutate_pods_uses_required_modules_from_cluster_config_policy() {
     );
 
     let _ = harness.finish().await;
+}
+
+/// The injection loop asks the same in-force question: a deleting policy's
+/// required module is not injected.
+#[tokio::test]
+async fn mutate_pods_injects_nothing_from_a_deleting_cluster_config_policy() {
+    let mut ccp = ccp_object("ccp-leaving", &[], true, &["logger"]);
+    ccp["metadata"]["deletionTimestamp"] = json!("2026-01-01T00:00:00Z");
+    ccp["metadata"]["finalizers"] = json!(["cfgd.io/test"]);
+
+    let (ctx, _registry, harness) = MockKubeHarness::new(vec![
+        ExpectedCall::list(config_policies_path(NS)).returning_json(&cp_list(vec![])),
+        ExpectedCall::get(namespace_path(NS))
+            .returning_json(&namespace_object(NS, json!({"env": "prod"}))),
+        ExpectedCall::list(cluster_config_policies_path()).returning_json(&ccp_list(vec![ccp])),
+    ]);
+
+    let (router, _metrics) = test_webhook_router_with_client(ctx.client.clone());
+
+    let response = router
+        .oneshot(post("/mutate-pods", pod_admission_review(json!({}))))
+        .await
+        .unwrap();
+    let review = parse_response(response).await;
+    let resp = review.response.expect("response present");
+    assert!(resp.allowed);
+    assert!(
+        resp.patch.is_none(),
+        "a deleting policy's required module must not be injected"
+    );
+
+    let report = harness.finish().await;
+    assert_eq!(report.captured.len(), 3, "no Module GET follows");
 }
 
 // -----------------------------------------------------------------------
@@ -683,6 +750,38 @@ async fn mutate_pods_uses_required_modules_from_namespaced_config_policy() {
     );
 
     let _ = harness.finish().await;
+}
+
+/// A deleting namespaced ConfigPolicy binds nothing either: its required module
+/// is not injected.
+#[tokio::test]
+async fn mutate_pods_injects_nothing_from_a_deleting_namespaced_config_policy() {
+    let mut cp = cp_object("cp-leaving", &["sidecar"], &[]);
+    cp["metadata"]["deletionTimestamp"] = json!("2026-01-01T00:00:00Z");
+    cp["metadata"]["finalizers"] = json!(["cfgd.io/config-policy-cleanup"]);
+
+    let (ctx, _registry, harness) = MockKubeHarness::new(vec![
+        ExpectedCall::list(config_policies_path(NS)).returning_json(&cp_list(vec![cp])),
+        ExpectedCall::get(namespace_path(NS)).returning_json(&namespace_object(NS, json!({}))),
+        ExpectedCall::list(cluster_config_policies_path()).returning_json(&ccp_list(vec![])),
+    ]);
+
+    let (router, _metrics) = test_webhook_router_with_client(ctx.client.clone());
+
+    let response = router
+        .oneshot(post("/mutate-pods", pod_admission_review(json!({}))))
+        .await
+        .expect("router responds");
+    let review = parse_response(response).await;
+    let resp = review.response.expect("response present");
+    assert!(resp.allowed);
+    assert!(
+        resp.patch.is_none(),
+        "a deleting policy's required module must not be injected"
+    );
+
+    let report = harness.finish().await;
+    assert_eq!(report.captured.len(), 3, "no Module GET follows");
 }
 
 // -----------------------------------------------------------------------

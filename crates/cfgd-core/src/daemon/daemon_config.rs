@@ -16,69 +16,24 @@ pub(crate) struct ParsedDaemonConfig {
 }
 
 pub(crate) fn parse_daemon_config(daemon_cfg: &config::DaemonConfig) -> ParsedDaemonConfig {
-    let reconcile_interval = daemon_cfg
-        .reconcile
-        .as_ref()
-        .map(|r| parse_duration_or_default(&r.interval))
-        .unwrap_or(Duration::from_secs(DEFAULT_RECONCILE_SECS));
-
-    let sync_interval = daemon_cfg
-        .sync
-        .as_ref()
-        .map(|s| parse_duration_or_default(&s.interval))
-        .unwrap_or(Duration::from_secs(DEFAULT_SYNC_SECS));
-
-    let auto_pull = daemon_cfg
-        .sync
-        .as_ref()
-        .map(|s| s.auto_pull)
-        .unwrap_or(false);
-
-    let auto_push = daemon_cfg
-        .sync
-        .as_ref()
-        .map(|s| s.auto_push)
-        .unwrap_or(false);
-
-    let on_change_reconcile = daemon_cfg
-        .reconcile
-        .as_ref()
-        .map(|r| r.on_change)
-        .unwrap_or(false);
-
-    let notify_on_drift = daemon_cfg.notify.as_ref().map(|n| n.drift).unwrap_or(false);
-
-    let notify_method = daemon_cfg
-        .notify
-        .as_ref()
-        .map(|n| n.method.clone())
-        .unwrap_or(NotifyMethod::Stdout);
-
-    let webhook_url = daemon_cfg
-        .notify
-        .as_ref()
-        .and_then(|n| n.webhook_url.clone());
-
-    let auto_apply = daemon_cfg
-        .reconcile
-        .as_ref()
-        .map(|r| r.auto_apply)
-        .unwrap_or(false);
-
+    let reconcile = daemon_cfg.reconcile_effective();
+    let sync = daemon_cfg.sync_effective();
+    let notify = daemon_cfg.notify_effective();
     ParsedDaemonConfig {
-        reconcile_interval,
-        sync_interval,
-        auto_pull,
-        auto_push,
-        on_change_reconcile,
-        notify_on_drift,
-        notify_method,
-        webhook_url,
-        auto_apply,
+        reconcile_interval: parse_duration_or_default(&reconcile.interval),
+        sync_interval: parse_duration_or_default(&sync.interval),
+        auto_pull: sync.auto_pull,
+        auto_push: sync.auto_push,
+        on_change_reconcile: reconcile.on_change,
+        notify_on_drift: notify.drift,
+        notify_method: notify.method.clone(),
+        webhook_url: notify.webhook_url.clone(),
+        auto_apply: reconcile.auto_apply,
     }
 }
 
-/// Build the list of per-module and default reconcile tasks from daemon config and resolved profile.
+/// Build the list of per-module and default reconcile tasks from daemon config and resolved
+/// profile.
 ///
 /// For each module in the resolved profile, checks if reconcile patches produce effective
 /// settings that differ from the global config. If so, creates a dedicated per-module task.
@@ -90,11 +45,7 @@ pub(crate) fn build_reconcile_tasks(
     reconcile_interval: Duration,
     auto_apply: bool,
 ) -> Vec<ReconcileTask> {
-    let reconcile_patches = daemon_cfg
-        .reconcile
-        .as_ref()
-        .map(|r| &r.patches[..])
-        .unwrap_or(&[]);
+    let reconcile_patches = &daemon_cfg.reconcile_effective().patches[..];
 
     let mut tasks: Vec<ReconcileTask> = Vec::new();
 
@@ -145,11 +96,7 @@ pub(crate) fn build_reconcile_tasks(
         entity: "__default__".to_string(),
         interval: reconcile_interval,
         auto_apply,
-        drift_policy: daemon_cfg
-            .reconcile
-            .as_ref()
-            .map(|r| r.drift_policy.clone())
-            .unwrap_or_default(),
+        drift_policy: daemon_cfg.reconcile_effective().drift_policy.clone(),
         last_reconciled: None,
     });
 

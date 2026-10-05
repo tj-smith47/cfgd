@@ -427,6 +427,47 @@ fn find_field_node<'a>(fields: &'a [FieldNode], path_parts: &[&str]) -> Option<&
     None
 }
 
+/// The shape the `Config` schema declares at a `spec`-relative path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum DeclaredShape {
+    /// An object, whether it names fields of its own (`spec.daemon`) or takes
+    /// free-form keys (`spec.aliases`).
+    Mapping,
+    /// A list (`[]object`, `[]string`).
+    Sequence,
+    /// A value: a scalar instance type, or a union no single shape describes.
+    Leaf,
+    /// The schema names no field at this path.
+    Unknown,
+}
+
+/// What the `Config` schema declares at this `spec`-relative path.
+///
+/// The config key walkers ask it about the path a value blocked their descent
+/// at, and the word it answers with is what tells a document whose shape
+/// contradicts the schema from a key that is simply not there — the two
+/// refusals a reader and a script must be able to tell apart.
+///
+/// It reads the field's declared SHAPE. A free-form map declares a mapping and
+/// names no child at all, so a child count calls `spec.aliases` a scalar leaf
+/// and lets a document holding a scalar there pass as a key nobody has set yet.
+///
+/// A scalar-or-mapping union is settled by `config_cmd::scalar_union_field`
+/// before this is asked, so the object arm is the whole answer here.
+pub(super) fn config_field_shape(path: &[&str]) -> DeclaredShape {
+    find_schema("Config")
+        .and_then(|schema| find_field_node(&schema.fields, path))
+        .map_or(DeclaredShape::Unknown, |field| {
+            if field.type_desc.starts_with("[]") {
+                DeclaredShape::Sequence
+            } else if field.type_desc == "object" {
+                DeclaredShape::Mapping
+            } else {
+                DeclaredShape::Leaf
+            }
+        })
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ExplainOutput {
@@ -930,11 +971,22 @@ pub(super) fn cmd_explain(
         build_explain_schema_doc(schema, recursive)
     } else {
         let fields = resolve_field_path(&schema.fields, field_path).ok_or_else(|| {
-            anyhow::anyhow!(
-                "Unknown field path '{}.{}'. Run `cfgd explain {}` to see available fields.",
-                resource_name,
-                field_path.join("."),
-                resource_name,
+            let asked = format!("{}.{}", resource_name, field_path.join("."));
+            let message = format!(
+                "Unknown field path '{asked}'. Run `cfgd explain {resource_name}` to see available fields."
+            );
+            // The fields at the deepest prefix that did resolve, which is where
+            // the reader's path went wrong.
+            let reached = (0..field_path.len())
+                .rev()
+                .find_map(|depth| resolve_field_path(&schema.fields, &field_path[..depth]))
+                .unwrap_or(&schema.fields);
+            let available: Vec<&str> = reached.iter().map(|f| f.name.as_str()).collect();
+            crate::cli::cli_error(
+                asked,
+                "not_found",
+                message,
+                serde_json::json!({ "resource": resource_name, "available": available }),
             )
         })?;
         build_explain_drilldown_doc(schema, field_path, fields, recursive)

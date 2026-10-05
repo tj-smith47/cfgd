@@ -58,6 +58,8 @@ spec:
               value: "{{ .Values.csiDriver.metricsPort }}"
             - name: RUST_LOG
               value: "info"
+            - name: CSI_DRIVER_NAME
+              value: {{ .Values.csiDriver.name | quote }}
             {{- with .Values.csiDriver.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
@@ -89,7 +91,7 @@ spec:
           args:
             - "--v=2"
             - "--csi-address=/csi/csi.sock"
-            - "--kubelet-registration-path=/var/lib/kubelet/plugins/csi.cfgd.io/csi.sock"
+            - "--kubelet-registration-path=/var/lib/kubelet/plugins/{{ .Values.csiDriver.name }}/csi.sock"
           volumeMounts:
             - name: plugin-dir
               mountPath: /csi
@@ -111,7 +113,7 @@ spec:
       volumes:
         - name: plugin-dir
           hostPath:
-            path: /var/lib/kubelet/plugins/csi.cfgd.io/
+            path: /var/lib/kubelet/plugins/{{ .Values.csiDriver.name }}/
             type: DirectoryOrCreate
         - name: pods-mount-dir
           hostPath:

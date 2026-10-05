@@ -3,7 +3,6 @@
 //! `reconcile_module` evaluates Module availability (against
 //! `ClusterConfigPolicy.security`) and signature verification, then
 //! patches the Module's `/status` and emits Available/Verified events.
-#![cfg(test)]
 
 use std::sync::Arc;
 
@@ -527,7 +526,10 @@ async fn a_module_declaring_no_signature_stays_unsigned() {
 /// applies. A component whose deployment takes no `extraEnv` is one nobody can
 /// point at a private or plain-HTTP registry — which is how the operator came
 /// to render a blank `PLATFORMS` column in a cluster whose CSI driver mounted
-/// the same artifact happily.
+/// the same artifact happily. `extraVolumes` / `extraVolumeMounts` carry the
+/// registry login (a `config.json` from an image pull secret that
+/// `DOCKER_CONFIG` names); an operator without them answered a registry that
+/// asks for a login with 401 and left the column blank the same way.
 #[test]
 fn every_registry_reading_component_exposes_the_same_registry_knob() {
     const TEMPLATES: &[(&str, &str)] = &[
@@ -552,18 +554,20 @@ fn every_registry_reading_component_exposes_the_same_registry_knob() {
             .expect("chart values schema must parse");
 
     for (component, template) in TEMPLATES {
-        assert!(
-            template.contains(&format!(".Values.{component}.extraEnv")),
-            "the {component} template renders no extraEnv, so its registry cannot be configured"
-        );
-        assert!(
-            !values[component]["extraEnv"].is_null(),
-            "values.yaml declares no {component}.extraEnv default"
-        );
-        assert!(
-            !schema["properties"][component]["properties"]["extraEnv"].is_null(),
-            "values.schema.json declares no {component}.extraEnv, so a chart user gets no validation"
-        );
+        for key in ["extraEnv", "extraVolumes", "extraVolumeMounts"] {
+            assert!(
+                template.contains(&format!(".Values.{component}.{key}")),
+                "the {component} template renders no {key}, so its registry cannot be configured"
+            );
+            assert!(
+                !values[component][key].is_null(),
+                "values.yaml declares no {component}.{key} default"
+            );
+            assert!(
+                !schema["properties"][component]["properties"][key].is_null(),
+                "values.schema.json declares no {component}.{key}, so a chart user gets no validation"
+            );
+        }
     }
 }
 
@@ -724,6 +728,43 @@ async fn reconcile_module_with_unsigned_disallowed_and_a_rejected_signature_reco
     assert_eq!(available["status"], "False");
     assert_eq!(available["reason"], "UnsignedNotAllowed");
     assert_eq!(available["message"], WITHHELD_MESSAGE);
+}
+
+/// A policy being deleted holds back nothing. Its deletion reaches the Module
+/// controller as the sweep its finalizer reconcile triggers, while the object
+/// is still cached with its deletion timestamp; a module that policy withheld
+/// must come back Available on that sweep, because no event follows the
+/// policy's final removal. The policy carries both gates (unsigned refused, a
+/// registry list the artifact is not on), so a read that still counted it
+/// through either gate fails here.
+#[tokio::test]
+async fn reconcile_module_under_a_deleting_policy_is_no_longer_withheld() {
+    let mut doomed = strict_ccp();
+    doomed.spec.security.trusted_registries = vec!["other.io".to_string()];
+    doomed.metadata.deletion_timestamp = Some(
+        k8s_openapi::apimachinery::pkg::apis::meta::v1::Time(k8s_openapi::jiff::Timestamp::now()),
+    );
+    let spec = ModuleSpec {
+        oci_artifact: Some("ghcr.io/example/mod:v1".to_string()),
+        ..Default::default()
+    };
+
+    let withheld = status_under_policies(
+        "freed-mod",
+        spec.clone(),
+        SignatureCheck::Valid,
+        vec![strict_ccp()],
+    )
+    .await;
+    assert_eq!(condition(&withheld, "Available")["status"], "False");
+
+    let status =
+        status_under_policies("freed-mod", spec, SignatureCheck::Valid, vec![doomed]).await;
+    let available = condition(&status, "Available");
+    assert_eq!(
+        available["status"], "True",
+        "a deleting policy must not withhold the module, got {available:?}"
+    );
 }
 
 #[tokio::test]

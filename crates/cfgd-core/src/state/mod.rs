@@ -1,7 +1,8 @@
 use std::cell::Cell;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 
 use crate::Scope;
 use crate::errors::{Result, StateError};
@@ -11,6 +12,7 @@ mod backup_runs;
 mod backups;
 mod bootstrap;
 mod compliance;
+mod config_migrations;
 mod decisions;
 mod drift;
 mod journal;
@@ -42,7 +44,49 @@ pub use types::{
 /// files (the divergence silently read an empty DB and reported "no history").
 pub const STATE_DB_FILENAME: &str = "state.db";
 
+/// How long a state store connection waits on another process's lock before
+/// a statement fails with `database is locked`.
+const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// The debug event a connection logs when another connection's write lock
+/// stops it switching the database to WAL, just before it waits for that lock.
+pub const WAL_LOCK_WAIT: &str =
+    "another connection holds the write lock; waiting for it to switch the database to WAL";
+
+/// Set `conn`'s busy timeout and switch its database to WAL journaling,
+/// waiting out another connection's write lock the way every other statement
+/// on `conn` does. A lock held past `busy_timeout` fails with `SQLITE_BUSY`,
+/// as any statement would.
+pub fn enable_wal(conn: &Connection, busy_timeout: Duration) -> rusqlite::Result<()> {
+    conn.busy_timeout(busy_timeout)?;
+    switch_to_wal(conn)
+}
+
+/// Switch `conn`'s database to WAL, waiting through whatever busy handler
+/// `conn` carries.
+///
+/// `PRAGMA journal_mode=WAL` on a database still in rollback mode reads the
+/// header and then upgrades to a write lock, and SQLite never runs the busy
+/// handler for a read-to-write upgrade: a second process creating the same
+/// fresh database gets `SQLITE_BUSY` at once, whatever the timeout says. On
+/// that error this waits for the write lock through `BEGIN IMMEDIATE`, which
+/// starts from no transaction and so does run the busy handler, releases it,
+/// and asks again. The other writer has usually converted the file by then,
+/// and the second ask finds WAL already set and writes nothing.
+fn switch_to_wal(conn: &Connection) -> rusqlite::Result<()> {
+    loop {
+        match conn.execute_batch("PRAGMA journal_mode=WAL;") {
+            Err(e) if e.sqlite_error_code() == Some(rusqlite::ErrorCode::DatabaseBusy) => {
+                tracing::debug!("{WAL_LOCK_WAIT}");
+                conn.execute_batch("BEGIN IMMEDIATE; ROLLBACK;")?;
+            }
+            done => return done,
+        }
+    }
+}
+
 const MIGRATIONS: &[&str] = &[
+    // space-run-ok: a table definition's own column layout.
     "CREATE TABLE IF NOT EXISTS applies (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         timestamp TEXT NOT NULL,
@@ -146,6 +190,7 @@ const MIGRATIONS: &[&str] = &[
 
     INSERT INTO schema_version (version) VALUES (0);",
     // Migration 2: File safety — backup store, transaction journal, module file manifest
+    // space-run-ok: a table definition's own column layout.
     "CREATE TABLE IF NOT EXISTS file_backups (
         id              INTEGER PRIMARY KEY AUTOINCREMENT,
         apply_id        INTEGER NOT NULL,
@@ -301,6 +346,7 @@ const MIGRATIONS: &[&str] = &[
     // planning and verification read instead. `path_dirs` holds a JSON array
     // because the order is load-bearing: the generated shell file is hashed and
     // compared on every reconcile tick.
+    // space-run-ok: a table definition's own column layout.
     "CREATE TABLE IF NOT EXISTS bootstrapped_managers (
         manager         TEXT PRIMARY KEY,
         path_dirs       TEXT NOT NULL,
@@ -316,6 +362,7 @@ const MIGRATIONS: &[&str] = &[
     // than the one packages were actually installed under, making them
     // invisible to `installed_packages()` — the prefix must be decided once
     // and reused by every subsequent operation, not re-negotiated on each one.
+    // space-run-ok: a table definition's own column layout.
     "CREATE TABLE IF NOT EXISTS package_manager_prefixes (
         manager     TEXT PRIMARY KEY,
         prefix      TEXT NOT NULL,
@@ -331,6 +378,7 @@ const MIGRATIONS: &[&str] = &[
     // after the migrations that shipped on master before it: the runner is
     // positional, so an element inserted mid-array is silently skipped by any
     // database already past that index.
+    // space-run-ok: a table definition's own column layout.
     "CREATE TABLE IF NOT EXISTS backup_runs (
         id                INTEGER PRIMARY KEY AUTOINCREMENT,
         name              TEXT NOT NULL,
@@ -644,6 +692,7 @@ const MIGRATIONS: &[&str] = &[
     // actually use. A check-in REPLACES the whole set, so a unit a policy
     // stopped scheduling falls back to the profile's own cadence rather than
     // running on a projection nothing renews.
+    // space-run-ok: a table definition's own column layout.
     "CREATE TABLE IF NOT EXISTS cluster_backup_schedules (
         name       TEXT PRIMARY KEY,
         schedule   TEXT NOT NULL,
@@ -676,6 +725,85 @@ const MIGRATIONS: &[&str] = &[
                   AND resource_id LIKE '%:script'
                   AND instr(resource_id, ':') = length(resource_id) - 6
                   AND instr(resource_id, '/') = 0));",
+    // Migration 28: the answer a reader gave the load-time migration prompt.
+    // Keyed on the config file, because a host may hold several (`--config`, a
+    // source checkout's own), and each is a separate document with its own
+    // answer. `offered_keys` is the question itself: an answer covers a later
+    // run only when every key that run found was already on the table when the
+    // reader said yes or no, so a release that adds a field asks about it and
+    // inherits no verdict on a different question.
+    // space-run-ok: a table definition's own column layout.
+    "CREATE TABLE IF NOT EXISTS config_migrations (
+        config_path  TEXT NOT NULL,
+        api_version  TEXT NOT NULL,
+        accepted     INTEGER NOT NULL,
+        offered_keys TEXT NOT NULL,
+        answered_at  TEXT NOT NULL,
+        PRIMARY KEY (config_path, api_version)
+    );",
+    // Migration 29: what a tracking row IS and which manager installed it.
+    // `resource_type` names the engine that wrote the row (`module`, `env`), so
+    // every reader re-derived the resource from the id's shape and one that did
+    // not (`-o json status`) reported a module's npm package as a `module`.
+    // Both columns are written at apply time from here on; the backfill below
+    // is `reconciler::recorded_resource_kind` in SQL, held equal to it by a pin
+    // over real rows. A module package row's manager stays NULL: its id never
+    // carried one. A `package` row's id is `<manager>/<package>`, so its
+    // manager is the part before the first `/`, as
+    // `state::split_package_resource_id` reads it.
+    "ALTER TABLE managed_resources ADD COLUMN kind TEXT;
+     ALTER TABLE managed_resources ADD COLUMN manager TEXT;
+     UPDATE managed_resources SET
+       kind = CASE
+         WHEN resource_type = 'module'
+              AND instr(resource_id, ':') > 0
+              AND (instr(resource_id, '/') = 0
+                   OR instr(resource_id, ':') < instr(resource_id, '/'))
+         THEN CASE
+           WHEN substr(resource_id, instr(resource_id, ':') + 1) = 'packages'
+                OR substr(resource_id, instr(resource_id, ':') + 1) GLOB 'packages:*'
+             THEN 'package'
+           WHEN substr(resource_id, instr(resource_id, ':') + 1) = 'files'
+                OR substr(resource_id, instr(resource_id, ':') + 1) GLOB 'files:*'
+             THEN 'file'
+           WHEN substr(resource_id, instr(resource_id, ':') + 1) = 'script'
+                OR substr(resource_id, instr(resource_id, ':') + 1) GLOB 'script:*'
+             THEN 'script'
+           ELSE resource_type
+         END
+         WHEN resource_type = 'env' AND resource_id = 'refresh' THEN 'env-session'
+         WHEN resource_type = 'env'
+              AND (resource_id IN ('.cfgd.env', '.cfgd-env.ps1', 'cfgd-env.fish', 'cfgd.conf',
+                                   'com.cfgd.user-environment.plist')
+                   OR resource_id GLOB '*/.cfgd.env'
+                   OR resource_id GLOB '*/.cfgd-env.ps1'
+                   OR resource_id GLOB '*/cfgd-env.fish'
+                   OR resource_id GLOB '*/cfgd.conf'
+                   OR resource_id GLOB '*/com.cfgd.user-environment.plist')
+           THEN 'env'
+         WHEN resource_type = 'env' THEN 'env-rc'
+         ELSE resource_type
+       END,
+       manager = CASE
+         WHEN resource_type = 'package'
+              AND instr(resource_id, '/') > 1
+              AND length(resource_id) > instr(resource_id, '/')
+         THEN substr(resource_id, 1, instr(resource_id, '/') - 1)
+       END;",
+    // Migration 30: the store's own identity, which a saved plan records so a
+    // replay under another `--state-dir` is refused. Minted once, here, with
+    // no input from the path: a store copied or moved to another directory
+    // is the same store and keeps it, and a fresh store gets its own. An
+    // upgraded store gains one at this migration, before any plan asks. The
+    // value is a random UUIDv4 in its canonical spelling; the guard keeps a
+    // replayed migration from minting a second row.
+    "CREATE TABLE IF NOT EXISTS store_identity (id TEXT NOT NULL);
+     INSERT INTO store_identity (id)
+     SELECT lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2))) || '-4'
+            || substr(lower(hex(randomblob(2))), 2) || '-'
+            || substr('89ab', 1 + (random() & 3), 1)
+            || substr(lower(hex(randomblob(2))), 2) || '-' || lower(hex(randomblob(6)))
+      WHERE NOT EXISTS (SELECT 1 FROM store_identity);",
 ];
 
 /// Make `cfgd_compliance_content_hash(snapshot_json, current_hash)` callable
@@ -817,7 +945,7 @@ impl StateStore {
         // `synchronous=NORMAL` is the WAL-mode counterpart of the default
         // `FULL`: a committing writer stops fsyncing the WAL on every commit and
         // syncs at checkpoints instead. It is safe precisely BECAUSE `WAL` is
-        // set on the line beside it — under WAL, `NORMAL` still cannot lose or
+        // set on the line above it — under WAL, `NORMAL` still cannot lose or
         // corrupt a committed transaction when the PROCESS dies (the WAL is
         // durable in the page cache and replayed on the next open); the window
         // it trades away is an OS crash or power loss between commit and
@@ -825,10 +953,8 @@ impl StateStore {
         // machine that just lost power mid-apply. An apply writes one row per
         // action plus a backup blob per touched file, and paying a disk sync for
         // each was the single largest fixed cost of a large apply.
-        conn.execute_batch(
-            "PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA foreign_keys=ON;",
-        )?;
-        conn.busy_timeout(std::time::Duration::from_secs(5))?;
+        enable_wal(&conn, BUSY_TIMEOUT)?;
+        conn.execute_batch("PRAGMA synchronous=NORMAL; PRAGMA foreign_keys=ON;")?;
         register_sql_functions(&conn)?;
 
         let mut store = Self {
@@ -966,6 +1092,22 @@ impl StateStore {
         Ok(())
     }
 
+    /// The identity minted for this store when it was created: a UUIDv4
+    /// string that follows the database file wherever it is copied or moved,
+    /// and that no other store shares.
+    ///
+    /// Read here, and minted by the migration alone: a store with no identity
+    /// row is [`StateError::IdentityMissing`], because a fresh id on read would
+    /// give two reads of one store two answers.
+    pub fn store_id(&self) -> Result<String> {
+        self.conn
+            .query_row("SELECT id FROM store_identity LIMIT 1", [], |row| {
+                row.get(0)
+            })
+            .optional()?
+            .ok_or_else(|| StateError::IdentityMissing.into())
+    }
+
     /// The applied-migration count, or `0` for a database that has never run
     /// one. A read failure (locked, corrupt, mid-crash file) must propagate
     /// rather than fold to `0`: several migrations are `ALTER TABLE ... ADD
@@ -1001,7 +1143,7 @@ pub fn plan_hash(data: &str) -> String {
 /// Default per-user state directory (SQLite state DB, backups).
 ///
 /// Resolution order:
-/// 1. `CFGD_STATE_DIR` when set (verbatim) — back-compat short-circuit, wins
+/// 1. `CFGD_STATE_DIR` when set (a leading `~` expanded) — back-compat short-circuit, wins
 ///    over everything.
 /// 2. the platform-native state location with a `cfgd` segment, honoring
 ///    `XDG_STATE_HOME`:
@@ -1024,15 +1166,15 @@ pub fn default_state_dir() -> Result<PathBuf> {
 
 /// Scope-aware state directory.
 ///
-/// Precedence (highest first): `CFGD_STATE_DIR` (verbatim), systemd's
+/// Precedence (highest first): `CFGD_STATE_DIR` (a leading `~` expanded), systemd's
 /// `$STATE_DIRECTORY`, then the scope default. [`Scope::User`] is the frozen
 /// resolution documented on [`default_state_dir`]. [`Scope::System`] is the
 /// absolute machine-wide state root (Linux `/var/lib/cfgd`, macOS
 /// `/Library/Application Support/cfgd/state`, Windows `%ProgramData%\cfgd\state`)
 /// and consults no home directory, so it never errors. Pure path logic.
 pub fn default_state_dir_for(scope: Scope) -> Result<PathBuf> {
-    if let Ok(dir) = std::env::var("CFGD_STATE_DIR") {
-        return Ok(PathBuf::from(dir));
+    if let Ok(dir) = std::env::var(crate::CFGD_STATE_DIR_ENV) {
+        return crate::expand_tilde_strict(Path::new(&dir), "state directory");
     }
     if let Some(dir) = crate::systemd_dir("STATE_DIRECTORY") {
         return Ok(dir);

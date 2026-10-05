@@ -1,5 +1,6 @@
+# shellcheck shell=bash
 # Node E2E tests: Kernel Modules
-# Sourced by run-all.sh — do NOT set traps or pipefail here.
+# Sourced by run-all.sh: do NOT set traps or pipefail here.
 
 echo ""
 echo "=== Kernel Module Tests ==="
@@ -8,7 +9,7 @@ echo "=== Kernel Module Tests ==="
 # KMOD-01: Kernel module loading
 # =================================================================
 begin_test "KMOD-01: Kernel module loading"
-# Unload ip_vs first to ensure we test cfgd's ability to load it
+# Unload ip_vs first so the test exercises cfgd's ability to load it
 exec_in_pod rmmod ip_vs 2>/dev/null || true
 BEFORE=$(exec_in_pod bash -c 'grep -c "^ip_vs " /proc/modules 2>/dev/null || echo 0' | tr -d '[:space:]')
 echo "  ip_vs loaded before apply: $BEFORE"

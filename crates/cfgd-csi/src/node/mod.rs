@@ -20,10 +20,50 @@ use crate::csi::v1::{
 };
 use crate::metrics::{CsiMetrics, ModuleLabels, PublishLabels, PullLabels};
 
-/// Env var holding the registry allow-list for CSI module pulls.
-/// Comma-separated list of `host[:port]` entries; `*` disables the check.
-/// Unset leaves the check disabled but emits a startup warning.
-pub const ALLOWED_REGISTRIES_ENV: &str = "CFGD_CSI_ALLOWED_REGISTRIES";
+/// Resolve `module@version` through the node cache, pulling on a miss, and
+/// record the cache's size afterwards.
+///
+/// A mount is counted once. `record` is true at NodeStageVolume, and at
+/// NodePublishVolume only when kubelet did not stage the volume (an inline
+/// ephemeral one, which is how the webhook injects modules): then the pull's
+/// duration is observed (labelled with whether the entry was cached) and a
+/// hit counted. A publish after a stage records nothing, unless the entry was
+/// evicted after the stage and it had to pull again: then it records that miss.
+fn pull_through_cache(
+    cache: &Cache,
+    metrics: &CsiMetrics,
+    module: &str,
+    version: &str,
+    oci_ref: &str,
+    record: bool,
+) -> Result<std::path::PathBuf, Status> {
+    let start = std::time::Instant::now();
+    let (source, hit) = cache
+        .get_or_pull(module, version, oci_ref)
+        .map_err(|e| Status::internal(format!("cache pull failed: {e}")))?;
+
+    if record || !hit {
+        metrics
+            .pull_duration_seconds
+            .get_or_create(&PullLabels {
+                module: module.to_string(),
+                cached: hit.to_string(),
+            })
+            .observe(start.elapsed().as_secs_f64());
+        if hit {
+            metrics
+                .cache_hits_total
+                .get_or_create(&ModuleLabels {
+                    module: module.to_string(),
+                })
+                .inc();
+        }
+    }
+    metrics
+        .cache_size_bytes
+        .set(cache.current_size_bytes() as i64);
+    Ok(source)
+}
 
 pub struct CfgdNode {
     cache: Arc<Cache>,
@@ -41,15 +81,15 @@ impl CfgdNode {
         let allowed_registries = parse_allowed_registries_from_env();
         match &allowed_registries {
             None => tracing::warn!(
-                env = ALLOWED_REGISTRIES_ENV,
+                env = cfgd_core::CFGD_CSI_ALLOWED_REGISTRIES_ENV,
                 "CSI registry allow-list is not configured — accepting any ociRef from volume context. In multi-tenant clusters set this env (comma-separated host[:port]) to restrict pulls."
             ),
             Some(list) if list.is_empty() => tracing::warn!(
-                env = ALLOWED_REGISTRIES_ENV,
+                env = cfgd_core::CFGD_CSI_ALLOWED_REGISTRIES_ENV,
                 "CSI registry allow-list is explicitly empty — all module pulls will be refused."
             ),
             Some(list) => tracing::info!(
-                env = ALLOWED_REGISTRIES_ENV,
+                env = cfgd_core::CFGD_CSI_ALLOWED_REGISTRIES_ENV,
                 count = list.len(),
                 "CSI registry allow-list active"
             ),
@@ -64,7 +104,7 @@ impl CfgdNode {
 }
 
 fn parse_allowed_registries_from_env() -> Option<Vec<String>> {
-    let raw = std::env::var(ALLOWED_REGISTRIES_ENV).ok()?;
+    let raw = std::env::var(cfgd_core::CFGD_CSI_ALLOWED_REGISTRIES_ENV).ok()?;
     let trimmed = raw.trim();
     if trimmed.is_empty() {
         return None;
@@ -145,7 +185,8 @@ fn check_registry_allowed(
         return Ok(());
     }
     Err(Status::permission_denied(format!(
-        "registry '{registry}' is not in the CSI allow-list (set {ALLOWED_REGISTRIES_ENV})"
+        "registry '{registry}' is not in the CSI allow-list (set {})",
+        cfgd_core::CFGD_CSI_ALLOWED_REGISTRIES_ENV
     )))
 }
 
@@ -180,33 +221,7 @@ impl Node for CfgdNode {
             "staging volume — pulling to cache"
         );
 
-        let start = std::time::Instant::now();
-        let cached = self.cache.get(module, version).is_some();
-        self.cache
-            .get_or_pull(module, version, &oci_ref)
-            .map_err(|e| Status::internal(format!("cache pull failed: {e}")))?;
-
-        let duration = start.elapsed().as_secs_f64();
-        self.metrics
-            .pull_duration_seconds
-            .get_or_create(&PullLabels {
-                module: module.to_string(),
-                cached: cached.to_string(),
-            })
-            .observe(duration);
-
-        if cached {
-            self.metrics
-                .cache_hits_total
-                .get_or_create(&ModuleLabels {
-                    module: module.to_string(),
-                })
-                .inc();
-        }
-
-        self.metrics
-            .cache_size_bytes
-            .set(self.cache.current_size_bytes() as i64);
+        pull_through_cache(&self.cache, &self.metrics, module, version, &oci_ref, true)?;
 
         Ok(Response::new(NodeStageVolumeResponse {}))
     }
@@ -284,7 +299,6 @@ impl Node for CfgdNode {
             "publishing volume"
         );
 
-        // Get cached content (should have been staged already, but pull if needed)
         let oci_ref = resolve_oci_ref(attrs, module, version);
         check_registry_allowed(&oci_ref, self.allowed_registries.as_deref())?;
 
@@ -297,12 +311,19 @@ impl Node for CfgdNode {
         let module = module.to_string();
         let version = version.to_string();
         let oci_ref_owned = oci_ref.clone();
+        let unstaged = req.staging_target_path.is_empty();
         let target_path_owned: std::path::PathBuf = target.to_path_buf();
+        // long-line-ok: a hatch is read off its own line, so it cannot wrap
         // spawn-blocking-ok: closure resolves no home paths (cache pull + bind mount on kubelet-supplied paths)
         tokio::task::spawn_blocking(move || {
-            let source = cache
-                .get_or_pull(&module, &version, &oci_ref_owned)
-                .map_err(|e| Status::internal(format!("cache pull failed: {e}")))?;
+            let source = pull_through_cache(
+                &cache,
+                &metrics,
+                &module,
+                &version,
+                &oci_ref_owned,
+                unstaged,
+            )?;
 
             std::fs::create_dir_all(&target_path_owned)
                 .map_err(|e| Status::internal(format!("cannot create target dir: {e}")))?;
@@ -370,6 +391,7 @@ impl Node for CfgdNode {
         // off the tokio runtime so kubelet-driven concurrency cannot starve
         // other csi workers.
         let target_path_owned: std::path::PathBuf = target_path.into();
+        // long-line-ok: a hatch is read off its own line, so it cannot wrap
         // spawn-blocking-ok: closure resolves no home paths (umount + rmdir on an explicit target path)
         tokio::task::spawn_blocking(move || -> Result<(), Status> {
             unmount(&target_path_owned)?;

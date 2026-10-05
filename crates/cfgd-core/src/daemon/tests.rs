@@ -2,6 +2,11 @@ use super::*;
 // Drift helpers are reached via fully-qualified `super::drift::` paths in
 // production; tests use the bare names (e.g. `record_file_drift_to`).
 use super::drift::*;
+// Likewise the sync handlers: `runner.rs` names them through `super::sync::`.
+use super::sync::*;
+// The launchd/systemd writers exist only on unix, and only their tests name them bare.
+#[cfg(unix)]
+use super::service::*;
 use crate::config::{AutoApplyPolicyConfig, PolicyAction};
 use crate::reconciler::{
     DecisionExclusions, DecisionScope, DeliveredItems, WithheldDecisions, action_resource_info,
@@ -377,37 +382,6 @@ fn systemd_unit_path() {
 }
 
 #[test]
-fn compute_config_hash_is_deterministic() {
-    use crate::config::{
-        CargoSpec, LayerPolicy, MergedProfile, PackagesSpec, ProfileLayer, ProfileSpec,
-        ResolvedProfile,
-    };
-    let resolved = ResolvedProfile {
-        layers: vec![ProfileLayer {
-            source: "local".into(),
-            profile_name: "test".into(),
-            priority: 1000,
-            policy: LayerPolicy::Local,
-            spec: ProfileSpec::default(),
-        }],
-        merged: MergedProfile {
-            packages: PackagesSpec {
-                cargo: Some(CargoSpec {
-                    file: None,
-                    packages: vec!["bat".into()],
-                }),
-                ..Default::default()
-            },
-            ..Default::default()
-        },
-    };
-    let hash1 = compute_config_hash(&resolved).unwrap();
-    let hash2 = compute_config_hash(&resolved).unwrap();
-    assert_eq!(hash1, hash2);
-    assert_eq!(hash1.len(), 64);
-}
-
-#[test]
 fn find_server_url_returns_none_for_git_origin() {
     use crate::config::*;
     let config = CfgdConfig {
@@ -417,6 +391,7 @@ fn find_server_url_returns_none_for_git_origin() {
             name: "test".into(),
         },
         spec: ConfigSpec {
+            migration_policy: Default::default(),
             profile: Some("default".into()),
             origin: vec![OriginSpec {
                 origin_type: OriginType::Git,
@@ -453,6 +428,7 @@ fn find_server_url_returns_url_for_server_origin() {
             name: "test".into(),
         },
         spec: ConfigSpec {
+            migration_policy: Default::default(),
             profile: Some("default".into()),
             origin: vec![OriginSpec {
                 origin_type: OriginType::Server,
@@ -486,12 +462,13 @@ fn find_server_url_returns_url_for_server_origin() {
 /// spelled the way the gateway's own `CheckinRequest` reads it: camelCase.
 #[test]
 fn checkin_payload_round_trips() {
-    let payload = CheckinPayload {
+    let payload = crate::server_client::CheckinRequest {
         device_id: "abc123".into(),
         hostname: "test-host".into(),
         os: "linux".into(),
         arch: "x86_64".into(),
         config_hash: "deadbeef".into(),
+        compliance_summary: None,
         package_versions: None,
         backup_schedule_owners: None,
     };
@@ -502,15 +479,15 @@ fn checkin_payload_round_trips() {
     assert_eq!(parsed["os"], "linux");
     assert_eq!(parsed["arch"], "x86_64");
     assert_eq!(parsed["configHash"], "deadbeef");
-    // Exactly 5 fields: a check-in that observed neither map sends the body a
-    // gateway that predates them already parses.
+    // Exactly 5 fields: a check-in that observed no compliance and neither map
+    // sends the body a gateway that predates them already parses.
     assert_eq!(parsed.as_object().unwrap().len(), 5);
 }
 
 #[test]
 fn checkin_response_deserializes() {
     let json = r#"{"status":"ok","configChanged":true,"desiredConfig":null}"#;
-    let resp: CheckinServerResponse = serde_json::from_str(json).unwrap();
+    let resp: crate::server_client::CheckinResponse = serde_json::from_str(json).unwrap();
     assert!(resp.config_changed);
     assert_eq!(resp.status, "ok");
 }
@@ -853,7 +830,7 @@ fn an_installed_item_with_no_decision_row_is_still_asked_about() {
     let store = test_state();
     let policy = AutoApplyPolicyConfig::default(); // new_recommended: Notify
     store
-        .upsert_managed_resource("package", "cargo/bat", "acme", None, None)
+        .upsert_managed_resource("package", "cargo/bat", "package", None, "acme", None, None)
         .unwrap();
     store
         .set_source_config_hash("acme", "hash-of-an-older-delivered-set")
@@ -1413,7 +1390,7 @@ fn local_profile_declaring_bat() -> crate::config::ResolvedProfile {
         layers: vec![ProfileLayer {
             source: "local".into(),
             profile_name: "default".into(),
-            priority: 1000,
+            priority: crate::config::LOCAL_LAYER_PRIORITY,
             policy: LayerPolicy::Local,
             spec: ProfileSpec {
                 packages: Some(packages.clone()),
@@ -1610,7 +1587,7 @@ fn local_profile_declaring_file(target: &str) -> crate::config::ResolvedProfile 
         layers: vec![ProfileLayer {
             source: LOCAL_LAYER.into(),
             profile_name: "default".into(),
-            priority: 1000,
+            priority: crate::config::LOCAL_LAYER_PRIORITY,
             policy: LayerPolicy::Local,
             spec: ProfileSpec {
                 files: Some(files.clone()),
@@ -1828,8 +1805,10 @@ async fn a_daemon_on_a_foreign_config_mints_no_decisions_into_the_default_store(
     let staging = tempfile::tempdir().unwrap();
     let _home = crate::with_test_home_guard(staging.path());
     let cache_root = staging.path().join("cache-root").join("cfgd");
-    let _cache =
-        crate::test_helpers::EnvVarGuard::set("CFGD_CACHE_DIR", cache_root.to_str().unwrap());
+    let _cache = crate::test_helpers::EnvVarGuard::set(
+        crate::CFGD_CACHE_DIR_ENV,
+        cache_root.to_str().unwrap(),
+    );
     stage_cached_source(
         &cache_root,
         "acme",
@@ -2114,6 +2093,120 @@ fn a_per_module_tick_keeps_the_refresh_its_own_packages_read() {
     assert!(
         !module_has_drift(&plan, "web", &registry),
         "the other module's work does not"
+    );
+}
+
+/// A held manager's floor belongs to the modules that declared it, and to no
+/// other: a tick scoped to one module must not report a shortfall another
+/// module asked about, nor lose its own because no install names the manager.
+#[test]
+fn a_per_module_tick_keeps_only_the_held_floor_its_own_module_declared() {
+    use crate::reconciler::{Action, ManagerAction, Owner, Phase, PhaseName, Plan};
+
+    let held = |manager: &str, module: &str| {
+        Action::Manager(ManagerAction::HeldFloor {
+            manager: manager.to_string(),
+            floor: "1.85".to_string(),
+            declared: vec![crate::reconciler::DeclaredFloor {
+                module: module.to_string(),
+                floor: "1.85".to_string(),
+            }],
+        })
+    };
+    let plan_of = || Plan {
+        phases: vec![Phase::from_actions(
+            PhaseName::Bootstrap,
+            &Owner::profile("default"),
+            vec![held("cargo", "rust"), held("npm", "web")],
+        )],
+        warnings: Vec::new(),
+    };
+    let registry = crate::providers::ProviderRegistry::new();
+
+    let mut plan = plan_of();
+    super::reconcile::narrow_to_module(&mut plan, "rust", &registry);
+    let managers: Vec<&str> = plan
+        .phases
+        .iter()
+        .flat_map(|p| p.actions())
+        .filter_map(|a| match a {
+            Action::Manager(node) => Some(node.manager()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        managers,
+        vec!["cargo"],
+        "the module's own floor survives a narrow no install could keep"
+    );
+
+    let mut plan = plan_of();
+    super::reconcile::narrow_to_module(&mut plan, "dotfiles", &registry);
+    assert!(
+        plan.phases.iter().flat_map(|p| p.actions()).count() == 0,
+        "a module that declared no floor reports neither of theirs"
+    );
+}
+
+/// The floor a module declared is that module's own divergence, so the tick
+/// that judged it unmet fires the module's `onDrift`. The node lives in the
+/// managers phase and names no module action, which is why it once fired
+/// nothing at all: a module could declare a floor, watch the run withhold the
+/// manager from its packages, and never hear about it from the hook it wrote
+/// for exactly that.
+#[test]
+fn a_held_floor_is_drift_for_every_module_that_declared_it() {
+    use crate::reconciler::{Action, ManagerAction, Owner, Phase, PhaseName, Plan};
+
+    let plan_of = || Plan {
+        phases: vec![Phase::from_actions(
+            PhaseName::Bootstrap,
+            &Owner::profile("default"),
+            vec![Action::Manager(ManagerAction::HeldFloor {
+                manager: "cargo".to_string(),
+                floor: "1.90".to_string(),
+                declared: vec![
+                    crate::reconciler::DeclaredFloor {
+                        module: "rust".to_string(),
+                        floor: "1.85".to_string(),
+                    },
+                    crate::reconciler::DeclaredFloor {
+                        module: "tools".to_string(),
+                        floor: "1.90".to_string(),
+                    },
+                ],
+            })],
+        )],
+        warnings: Vec::new(),
+    };
+    let registry = crate::providers::ProviderRegistry::new();
+
+    let plan = plan_of();
+    assert!(
+        module_has_drift(&plan, "rust", &registry),
+        "the full tick answers for the first module the node names"
+    );
+    assert!(
+        module_has_drift(&plan, "tools", &registry),
+        "and for the second: a floor two modules declared is both of theirs"
+    );
+    assert!(
+        !module_has_drift(&plan, "dotfiles", &registry),
+        "a module the node does not name has nothing to react to"
+    );
+
+    let mut plan = plan_of();
+    super::reconcile::narrow_to_module(&mut plan, "rust", &registry);
+    assert!(
+        module_has_drift(&plan, "rust", &registry),
+        "the module's own interval tick reports it too"
+    );
+
+    let mut plan = plan_of();
+    super::reconcile::narrow_to_module(&mut plan, "dotfiles", &registry);
+    assert!(
+        !module_has_drift(&plan, "dotfiles", &registry),
+        "an unrelated module's tick keeps nothing and so fires nothing"
     );
 }
 
@@ -2774,6 +2867,7 @@ fn unchanged_machine_collected_twice_hashes_equal_and_the_daemon_skips_the_secon
             &printer,
             &store,
             None,
+            &[],
         )
         .unwrap()
     };
@@ -2892,60 +2986,6 @@ fn compliance_timer_invalid_interval_when_enabled() {
 
     // Enabled but unparseable interval -> None (no timer)
     assert!(interval.is_none());
-}
-
-// --- compute_config_hash: different profiles produce different hashes ---
-
-#[test]
-fn compute_config_hash_differs_for_different_packages() {
-    use crate::config::{
-        CargoSpec, LayerPolicy, MergedProfile, PackagesSpec, ProfileLayer, ProfileSpec,
-        ResolvedProfile,
-    };
-
-    let resolved_a = ResolvedProfile {
-        layers: vec![ProfileLayer {
-            source: "local".into(),
-            profile_name: "a".into(),
-            priority: 1000,
-            policy: LayerPolicy::Local,
-            spec: ProfileSpec::default(),
-        }],
-        merged: MergedProfile {
-            packages: PackagesSpec {
-                cargo: Some(CargoSpec {
-                    file: None,
-                    packages: vec!["bat".into()],
-                }),
-                ..Default::default()
-            },
-            ..Default::default()
-        },
-    };
-
-    let resolved_b = ResolvedProfile {
-        layers: vec![ProfileLayer {
-            source: "local".into(),
-            profile_name: "b".into(),
-            priority: 1000,
-            policy: LayerPolicy::Local,
-            spec: ProfileSpec::default(),
-        }],
-        merged: MergedProfile {
-            packages: PackagesSpec {
-                cargo: Some(CargoSpec {
-                    file: None,
-                    packages: vec!["ripgrep".into()],
-                }),
-                ..Default::default()
-            },
-            ..Default::default()
-        },
-    };
-
-    let hash_a = compute_config_hash(&resolved_a).unwrap();
-    let hash_b = compute_config_hash(&resolved_b).unwrap();
-    assert_ne!(hash_a, hash_b);
 }
 
 // --- hash_resources edge cases ---
@@ -3172,6 +3212,7 @@ fn action_resource_info_manager_provision() {
         manager: "brew".into(),
         via: "homebrew installer".into(),
         declared: None,
+        floor: None,
         batched: vec![],
         depends_on: vec![],
     });
@@ -3561,6 +3602,7 @@ fn find_server_url_picks_server_among_multiple_origins() {
             name: "test".into(),
         },
         spec: ConfigSpec {
+            migration_policy: Default::default(),
             profile: Some("default".into()),
             origin: vec![
                 OriginSpec {
@@ -3609,6 +3651,7 @@ fn find_server_url_returns_none_for_empty_origins() {
             name: "test".into(),
         },
         spec: ConfigSpec {
+            migration_policy: Default::default(),
             profile: Some("default".into()),
             origin: vec![],
             daemon: None,
@@ -3629,7 +3672,7 @@ fn find_server_url_returns_none_for_empty_origins() {
     assert!(find_server_url(&config).is_none());
 }
 
-// --- CheckinServerResponse deserialization edge cases ---
+// --- crate::server_client::CheckinResponse deserialization edge cases ---
 
 /// The key is `desiredConfig`, the spelling the gateway's own `CheckinResponse`
 /// serializes: a body read under any other name leaves a pushed configuration
@@ -3637,7 +3680,7 @@ fn find_server_url_returns_none_for_empty_origins() {
 #[test]
 fn checkin_response_with_config_payload() {
     let json = r#"{"status":"ok","configChanged":true,"desiredConfig":{"packages":["git"]}}"#;
-    let resp: CheckinServerResponse = serde_json::from_str(json).unwrap();
+    let resp: crate::server_client::CheckinResponse = serde_json::from_str(json).unwrap();
     assert!(resp.config_changed);
     assert!(resp.desired_config.is_some());
 }
@@ -3645,7 +3688,7 @@ fn checkin_response_with_config_payload() {
 #[test]
 fn checkin_response_no_change() {
     let json = r#"{"status":"ok","configChanged":false,"desiredConfig":null}"#;
-    let resp: CheckinServerResponse = serde_json::from_str(json).unwrap();
+    let resp: crate::server_client::CheckinResponse = serde_json::from_str(json).unwrap();
     assert!(!resp.config_changed);
 }
 
@@ -3659,34 +3702,6 @@ fn parse_duration_zero_seconds() {
 #[test]
 fn parse_duration_zero_plain() {
     assert_eq!(parse_duration_or_default("0"), Duration::from_secs(0));
-}
-
-// --- compute_config_hash with empty packages ---
-
-#[test]
-fn compute_config_hash_with_empty_packages() {
-    use crate::config::{
-        LayerPolicy, MergedProfile, PackagesSpec, ProfileLayer, ProfileSpec, ResolvedProfile,
-    };
-
-    let resolved = ResolvedProfile {
-        layers: vec![ProfileLayer {
-            source: "local".into(),
-            profile_name: "empty".into(),
-            priority: 1000,
-            policy: LayerPolicy::Local,
-            spec: ProfileSpec::default(),
-        }],
-        merged: MergedProfile {
-            packages: PackagesSpec::default(),
-            ..Default::default()
-        },
-    };
-
-    let hash1 = compute_config_hash(&resolved).unwrap();
-    let hash2 = compute_config_hash(&resolved).unwrap();
-    assert_eq!(hash1, hash2, "hash should be deterministic");
-    assert_eq!(hash1.len(), 64, "hash should be a valid SHA256 hex string");
 }
 
 // --- declared_decision_paths: casks fold into brew, taps keep their own manager ---
@@ -4207,6 +4222,7 @@ fn find_server_url_picks_first_server_among_duplicates() {
             name: "test".into(),
         },
         spec: ConfigSpec {
+            migration_policy: Default::default(),
             profile: Some("default".into()),
             origin: vec![
                 OriginSpec {
@@ -4243,57 +4259,6 @@ fn find_server_url_picks_first_server_among_duplicates() {
         find_server_url(&config),
         Some("https://first-server.example.com".to_string()),
         "should return the first server origin when multiple exist"
-    );
-}
-
-// --- compute_config_hash: empty vs non-empty produces different hashes ---
-
-#[test]
-fn compute_config_hash_empty_vs_nonempty_differ() {
-    use crate::config::{
-        CargoSpec, LayerPolicy, MergedProfile, PackagesSpec, ProfileLayer, ProfileSpec,
-        ResolvedProfile,
-    };
-
-    let empty_resolved = ResolvedProfile {
-        layers: vec![ProfileLayer {
-            source: "local".into(),
-            profile_name: "empty".into(),
-            priority: 1000,
-            policy: LayerPolicy::Local,
-            spec: ProfileSpec::default(),
-        }],
-        merged: MergedProfile {
-            packages: PackagesSpec::default(),
-            ..Default::default()
-        },
-    };
-
-    let nonempty_resolved = ResolvedProfile {
-        layers: vec![ProfileLayer {
-            source: "local".into(),
-            profile_name: "nonempty".into(),
-            priority: 1000,
-            policy: LayerPolicy::Local,
-            spec: ProfileSpec::default(),
-        }],
-        merged: MergedProfile {
-            packages: PackagesSpec {
-                cargo: Some(CargoSpec {
-                    file: None,
-                    packages: vec!["bat".into()],
-                }),
-                ..Default::default()
-            },
-            ..Default::default()
-        },
-    };
-
-    let hash_empty = compute_config_hash(&empty_resolved).unwrap();
-    let hash_nonempty = compute_config_hash(&nonempty_resolved).unwrap();
-    assert_ne!(
-        hash_empty, hash_nonempty,
-        "empty and non-empty packages should produce different hashes"
     );
 }
 
@@ -4418,9 +4383,13 @@ fn no_daemon_state_write_reaches_a_source_row_by_position() {
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/daemon");
     let mut files: Vec<_> = std::fs::read_dir(&dir)
         .expect("the daemon module is checked out")
-        .filter_map(|e| e.ok().map(|e| e.path()))
+        .map(|entry| {
+            entry
+                .expect("the walk must read every directory entry")
+                .path()
+        })
         .filter(|p| p.extension().is_some_and(|x| x == "rs"))
-        .filter(|p| p.file_name().is_some_and(|n| n != "tests.rs"))
+        .filter(|p| !crate::test_helpers::is_test_source(p))
         .collect();
     files.sort();
     assert!(
@@ -4442,15 +4411,16 @@ fn no_daemon_state_write_reaches_a_source_row_by_position() {
     };
     let mut offenders = Vec::new();
     for path in &files {
-        let body = crate::test_helpers::walked_file_body(path);
+        let body = crate::test_helpers::production_slice_of(path);
         let lines: Vec<&str> = body.lines().collect();
         for (n, line) in lines.iter().enumerate() {
             if !positional_write(line) {
                 continue;
             }
-            let hatched = line.contains("// positional-source-ok:")
-                || n.checked_sub(1)
-                    .is_some_and(|p| lines[p].contains("// positional-source-ok:"));
+            let hatched = crate::test_helpers::carries_hatch(line, "// positional-source-ok:")
+                || n.checked_sub(1).is_some_and(|p| {
+                    crate::test_helpers::carries_hatch(lines[p], "// positional-source-ok:")
+                });
             if !hatched {
                 offenders.push(format!("{}:{}", path.display(), n + 1));
             }
@@ -4552,7 +4522,7 @@ fn sync_task_local_defaults() {
         auto_pull: false,
         auto_push: false,
         auto_apply: true,
-        interval: Duration::from_secs(DEFAULT_SYNC_SECS),
+        interval: Duration::from_secs(5 * 60),
         last_synced: None,
         require_signed_commits: false,
         allow_unsigned: false,
@@ -4788,7 +4758,8 @@ fn extract_source_resources_full_profile() {
     assert!(resources.contains("env.EDITOR"));
     assert!(resources.contains("env.GOPATH"));
     assert!(resources.contains("system.sysctl"));
-    // Total: 1 formula + 1 cask + 1 apt + 1 cargo + 1 pipx + 1 dnf + 1 npm + 1 file + 2 env + 1 system
+    // Total: 1 formula + 1 cask + 1 apt + 1 cargo + 1 pipx + 1 dnf + 1 npm + 1 file + 2 env + 1
+    // system
     assert_eq!(resources.len(), 11);
 }
 
@@ -4972,16 +4943,17 @@ fn daemon_status_response_deserializes_from_minimal_json() {
     assert!(parsed.update_available.is_none());
 }
 
-// --- CheckinPayload: field coverage ---
+// --- CheckinRequest: field coverage ---
 
 #[test]
 fn checkin_payload_serializes_all_fields() {
-    let payload = CheckinPayload {
+    let payload = crate::server_client::CheckinRequest {
         device_id: "sha256hex".into(),
         hostname: "myhost.local".into(),
         os: "linux".into(),
         arch: "aarch64".into(),
         config_hash: "abcd1234".into(),
+        compliance_summary: None,
         package_versions: None,
         backup_schedule_owners: None,
     };
@@ -6176,14 +6148,21 @@ fn git_auto_commit_push_fresh_repo_no_head() {
     );
 }
 
+/// A check-in's facts as a test hands them to a sender: the identity alone.
+fn sample_checkin_facts() -> crate::server_client::CheckinFacts<'static> {
+    crate::server_client::CheckinFacts {
+        hostname: "test-host".into(),
+        config_hash: "deadbeef".into(),
+        compliance: None,
+        package_versions: None,
+        backup_schedule_owners: None,
+    }
+}
+
 // --- server_checkin: mock HTTP test for config_changed=true ---
 
 #[test]
 fn server_checkin_mock_config_changed() {
-    use crate::config::{
-        LayerPolicy, MergedProfile, PackagesSpec, ProfileLayer, ProfileSpec, ResolvedProfile,
-    };
-
     let mut server = mockito::Server::new();
     let mock = server
         .mock("POST", "/api/v1/checkin")
@@ -6192,25 +6171,10 @@ fn server_checkin_mock_config_changed() {
         .with_body(r#"{"status":"ok","configChanged":true,"config":null}"#)
         .create();
 
-    let resolved = ResolvedProfile {
-        layers: vec![ProfileLayer {
-            source: "local".into(),
-            profile_name: "test".into(),
-            priority: 1000,
-            policy: LayerPolicy::Local,
-            spec: ProfileSpec::default(),
-        }],
-        merged: MergedProfile {
-            packages: PackagesSpec::default(),
-            ..Default::default()
-        },
-    };
-
     let changed = server_checkin(
-        &server.url(),
-        &resolved,
-        Default::default(),
         &test_credential(&server.url()),
+        sample_checkin_facts(),
+        &test_printer(),
     )
     .config_changed;
     assert!(changed, "server should report config changed");
@@ -6221,10 +6185,6 @@ fn server_checkin_mock_config_changed() {
 
 #[test]
 fn server_checkin_mock_no_change() {
-    use crate::config::{
-        LayerPolicy, MergedProfile, PackagesSpec, ProfileLayer, ProfileSpec, ResolvedProfile,
-    };
-
     let mut server = mockito::Server::new();
     let mock = server
         .mock("POST", "/api/v1/checkin")
@@ -6233,25 +6193,10 @@ fn server_checkin_mock_no_change() {
         .with_body(r#"{"status":"ok","configChanged":false,"config":null}"#)
         .create();
 
-    let resolved = ResolvedProfile {
-        layers: vec![ProfileLayer {
-            source: "local".into(),
-            profile_name: "test".into(),
-            priority: 1000,
-            policy: LayerPolicy::Local,
-            spec: ProfileSpec::default(),
-        }],
-        merged: MergedProfile {
-            packages: PackagesSpec::default(),
-            ..Default::default()
-        },
-    };
-
     let changed = server_checkin(
-        &server.url(),
-        &resolved,
-        Default::default(),
         &test_credential(&server.url()),
+        sample_checkin_facts(),
+        &test_printer(),
     )
     .config_changed;
     assert!(!changed, "server should report no change");
@@ -6262,39 +6207,24 @@ fn server_checkin_mock_no_change() {
 
 #[test]
 fn server_checkin_mock_server_error() {
-    use crate::config::{
-        LayerPolicy, MergedProfile, PackagesSpec, ProfileLayer, ProfileSpec, ResolvedProfile,
-    };
-
     let mut server = mockito::Server::new();
     let mock = server
         .mock("POST", "/api/v1/checkin")
         .with_status(500)
         .with_body("internal server error")
+        .expect(crate::retry::BackoffConfig::DEFAULT_TRANSIENT.max_attempts as usize)
         .create();
 
-    let resolved = ResolvedProfile {
-        layers: vec![ProfileLayer {
-            source: "local".into(),
-            profile_name: "test".into(),
-            priority: 1000,
-            policy: LayerPolicy::Local,
-            spec: ProfileSpec::default(),
-        }],
-        merged: MergedProfile {
-            packages: PackagesSpec::default(),
-            ..Default::default()
-        },
-    };
-
     let changed = server_checkin(
-        &server.url(),
-        &resolved,
-        Default::default(),
         &test_credential(&server.url()),
+        sample_checkin_facts(),
+        &test_printer(),
     )
     .config_changed;
-    assert!(!changed, "server error should return false");
+    assert!(
+        !changed,
+        "a gateway that keeps failing, after the client's retries, answers nothing"
+    );
     mock.assert();
 }
 
@@ -6302,10 +6232,6 @@ fn server_checkin_mock_server_error() {
 
 #[test]
 fn server_checkin_mock_malformed_json() {
-    use crate::config::{
-        LayerPolicy, MergedProfile, PackagesSpec, ProfileLayer, ProfileSpec, ResolvedProfile,
-    };
-
     let mut server = mockito::Server::new();
     let mock = server
         .mock("POST", "/api/v1/checkin")
@@ -6314,25 +6240,10 @@ fn server_checkin_mock_malformed_json() {
         .with_body("not json at all")
         .create();
 
-    let resolved = ResolvedProfile {
-        layers: vec![ProfileLayer {
-            source: "local".into(),
-            profile_name: "test".into(),
-            priority: 1000,
-            policy: LayerPolicy::Local,
-            spec: ProfileSpec::default(),
-        }],
-        merged: MergedProfile {
-            packages: PackagesSpec::default(),
-            ..Default::default()
-        },
-    };
-
     let changed = server_checkin(
-        &server.url(),
-        &resolved,
-        Default::default(),
         &test_credential(&server.url()),
+        sample_checkin_facts(),
+        &test_printer(),
     )
     .config_changed;
     assert!(!changed, "malformed JSON should return false");
@@ -6343,10 +6254,6 @@ fn server_checkin_mock_malformed_json() {
 
 #[test]
 fn server_checkin_mock_trailing_slash_url() {
-    use crate::config::{
-        LayerPolicy, MergedProfile, PackagesSpec, ProfileLayer, ProfileSpec, ResolvedProfile,
-    };
-
     let mut server = mockito::Server::new();
     let mock = server
         .mock("POST", "/api/v1/checkin")
@@ -6355,27 +6262,12 @@ fn server_checkin_mock_trailing_slash_url() {
         .with_body(r#"{"status":"ok","configChanged":false,"config":null}"#)
         .create();
 
-    let resolved = ResolvedProfile {
-        layers: vec![ProfileLayer {
-            source: "local".into(),
-            profile_name: "test".into(),
-            priority: 1000,
-            policy: LayerPolicy::Local,
-            spec: ProfileSpec::default(),
-        }],
-        merged: MergedProfile {
-            packages: PackagesSpec::default(),
-            ..Default::default()
-        },
-    };
-
-    // URL with trailing slash should be trimmed
+    // A credential stored with a trailing slash still posts to the one endpoint.
     let url_with_slash = format!("{}/", server.url());
     let changed = server_checkin(
-        &url_with_slash,
-        &resolved,
-        Default::default(),
-        &test_credential(&server.url()),
+        &test_credential(&url_with_slash),
+        sample_checkin_facts(),
+        &test_printer(),
     )
     .config_changed;
     assert!(!changed);
@@ -6386,11 +6278,6 @@ fn server_checkin_mock_trailing_slash_url() {
 
 #[test]
 fn server_checkin_mock_verifies_request_body() {
-    use crate::config::{
-        CargoSpec, LayerPolicy, MergedProfile, PackagesSpec, ProfileLayer, ProfileSpec,
-        ResolvedProfile,
-    };
-
     let mut server = mockito::Server::new();
     let mock = server
         .mock("POST", "/api/v1/checkin")
@@ -6400,31 +6287,10 @@ fn server_checkin_mock_verifies_request_body() {
         .with_body(r#"{"status":"ok","configChanged":false,"config":null}"#)
         .create();
 
-    let resolved = ResolvedProfile {
-        layers: vec![ProfileLayer {
-            source: "local".into(),
-            profile_name: "test".into(),
-            priority: 1000,
-            policy: LayerPolicy::Local,
-            spec: ProfileSpec::default(),
-        }],
-        merged: MergedProfile {
-            packages: PackagesSpec {
-                cargo: Some(CargoSpec {
-                    file: None,
-                    packages: vec!["bat".into()],
-                }),
-                ..Default::default()
-            },
-            ..Default::default()
-        },
-    };
-
     let changed = server_checkin(
-        &server.url(),
-        &resolved,
-        Default::default(),
         &test_credential(&server.url()),
+        sample_checkin_facts(),
+        &test_printer(),
     )
     .config_changed;
     assert!(!changed);
@@ -6444,6 +6310,7 @@ fn try_server_checkin_no_server_origin_returns_false() {
             name: "test".into(),
         },
         spec: ConfigSpec {
+            migration_policy: Default::default(),
             profile: Some("default".into()),
             origin: vec![OriginSpec {
                 origin_type: OriginType::Git,
@@ -6467,19 +6334,40 @@ fn try_server_checkin_no_server_origin_returns_false() {
         deprecations: Vec::new(),
         legacy_output_keys: Vec::new(),
     };
-    let resolved = ResolvedProfile {
-        layers: vec![ProfileLayer {
-            source: "local".into(),
-            profile_name: "test".into(),
-            priority: 1000,
-            policy: LayerPolicy::Local,
-            spec: ProfileSpec::default(),
-        }],
-        merged: MergedProfile::default(),
-    };
-
-    let changed = try_server_checkin(&config, &resolved, Default::default()).config_changed;
+    let composed = std::cell::Cell::new(false);
+    let changed = try_server_checkin(&config, &test_printer(), || {
+        composed.set(true);
+        Some(sample_checkin_facts())
+    })
+    .config_changed;
     assert!(!changed, "no server origin means no checkin");
+    assert!(
+        !composed.get(),
+        "a machine with no gateway to report to observes nothing for one"
+    );
+}
+
+/// A gateway this machine holds no credential for is a skipped check-in, and
+/// the skip is decided before the machine is observed for it.
+#[test]
+fn a_check_in_with_no_credential_composes_no_facts() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let _home = crate::with_test_home_guard(tmp.path());
+    let config: CfgdConfig = serde_yaml::from_str(
+        "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  \
+         origin:\n    - type: Server\n      url: https://gateway.example\n      branch: main\n",
+    )
+    .expect("config");
+    let composed = std::cell::Cell::new(false);
+    let outcome = try_server_checkin(&config, &test_printer(), || {
+        composed.set(true);
+        Some(sample_checkin_facts())
+    });
+    assert!(outcome.backup_schedules.is_none());
+    assert!(
+        !composed.get(),
+        "no credential means no check-in, and nothing observed for one"
+    );
 }
 
 // --- try_server_checkin: with mock server ---
@@ -6510,6 +6398,7 @@ fn try_server_checkin_with_server_origin_calls_checkin() {
             name: "test".into(),
         },
         spec: ConfigSpec {
+            migration_policy: Default::default(),
             profile: Some("default".into()),
             origin: vec![OriginSpec {
                 origin_type: OriginType::Server,
@@ -6533,18 +6422,8 @@ fn try_server_checkin_with_server_origin_calls_checkin() {
         deprecations: Vec::new(),
         legacy_output_keys: Vec::new(),
     };
-    let resolved = ResolvedProfile {
-        layers: vec![ProfileLayer {
-            source: "local".into(),
-            profile_name: "test".into(),
-            priority: 1000,
-            policy: LayerPolicy::Local,
-            spec: ProfileSpec::default(),
-        }],
-        merged: MergedProfile::default(),
-    };
-
-    let changed = try_server_checkin(&config, &resolved, Default::default()).config_changed;
+    let changed = try_server_checkin(&config, &test_printer(), || Some(sample_checkin_facts()))
+        .config_changed;
     assert!(changed, "server origin should trigger checkin");
     mock.assert();
 }
@@ -7038,12 +6917,12 @@ fn daemon_status_response_full_deserialization() {
     assert!(parsed.module_reconcile[0].auto_apply);
 }
 
-// --- CheckinServerResponse: missing config field defaults to None ---
+// --- crate::server_client::CheckinResponse: missing config field defaults to None ---
 
 #[test]
 fn checkin_response_without_config_field() {
     let json = r#"{"status":"ok","configChanged":false}"#;
-    let resp: CheckinServerResponse = serde_json::from_str(json).unwrap();
+    let resp: crate::server_client::CheckinResponse = serde_json::from_str(json).unwrap();
     // desired_config is Option<Value>, so a missing field reads as None
     assert!(!resp.config_changed);
     assert!(resp.desired_config.is_none());
@@ -7392,63 +7271,6 @@ fn source_status_camel_case_serialization() {
     assert!(
         !json.contains("Reconcile"),
         "a source row carries no reconcile stamp of its own: {json}"
-    );
-}
-
-// --- compute_config_hash: uses only packages for hash ---
-
-#[test]
-fn compute_config_hash_ignores_non_package_fields() {
-    use crate::config::{
-        EnvVar, LayerPolicy, MergedProfile, PackagesSpec, ProfileLayer, ProfileSpec,
-        ResolvedProfile,
-    };
-
-    let resolved_a = ResolvedProfile {
-        layers: vec![ProfileLayer {
-            source: "local".into(),
-            profile_name: "a".into(),
-            priority: 1000,
-            policy: LayerPolicy::Local,
-            spec: ProfileSpec::default(),
-        }],
-        merged: MergedProfile {
-            packages: PackagesSpec::default(),
-            env: vec![EnvVar {
-                name: "FOO".into(),
-                value: "bar".into(),
-                platforms: vec![],
-            }],
-            ..Default::default()
-        },
-    };
-
-    let resolved_b = ResolvedProfile {
-        layers: vec![ProfileLayer {
-            source: "local".into(),
-            profile_name: "b".into(),
-            priority: 1000,
-            policy: LayerPolicy::Local,
-            spec: ProfileSpec::default(),
-        }],
-        merged: MergedProfile {
-            packages: PackagesSpec::default(),
-            env: vec![EnvVar {
-                name: "BAZ".into(),
-                value: "qux".into(),
-                platforms: vec![],
-            }],
-            ..Default::default()
-        },
-    };
-
-    // Both have same empty packages, so hash should be the same
-    // because compute_config_hash only hashes the packages field
-    let hash_a = compute_config_hash(&resolved_a).unwrap();
-    let hash_b = compute_config_hash(&resolved_b).unwrap();
-    assert_eq!(
-        hash_a, hash_b,
-        "compute_config_hash should only hash packages, not env vars"
     );
 }
 
@@ -7931,12 +7753,12 @@ fn parse_daemon_config_defaults() {
         parsed.reconcile_interval,
         Duration::from_secs(DEFAULT_RECONCILE_SECS)
     );
-    assert_eq!(parsed.sync_interval, Duration::from_secs(DEFAULT_SYNC_SECS));
+    assert_eq!(parsed.sync_interval, Duration::from_secs(60 * 60));
     assert!(!parsed.auto_pull);
     assert!(!parsed.auto_push);
     assert!(!parsed.on_change_reconcile);
     assert!(!parsed.notify_on_drift);
-    assert!(matches!(parsed.notify_method, NotifyMethod::Stdout));
+    assert!(matches!(parsed.notify_method, NotifyMethod::Desktop));
     assert!(parsed.webhook_url.is_none());
     assert!(!parsed.auto_apply);
 }
@@ -8235,7 +8057,7 @@ fn build_reconcile_tasks_module_with_overridden_interval_gets_dedicated_task() {
         layers: vec![config::ProfileLayer {
             source: "local".to_string(),
             profile_name: "default".to_string(),
-            priority: 0,
+            priority: crate::config::LOCAL_LAYER_PRIORITY,
             policy: config::LayerPolicy::Local,
             spec: Default::default(),
         }],
@@ -8290,7 +8112,7 @@ fn build_reconcile_tasks_module_matching_global_gets_no_dedicated_task() {
         layers: vec![config::ProfileLayer {
             source: "local".to_string(),
             profile_name: "default".to_string(),
-            priority: 0,
+            priority: crate::config::LOCAL_LAYER_PRIORITY,
             policy: config::LayerPolicy::Local,
             spec: Default::default(),
         }],
@@ -8835,7 +8657,7 @@ async fn handle_reconcile_no_drift_when_no_actions() {
 #[test]
 fn every_error_only_arm_of_the_reconcile_tick_is_classified() {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/daemon/reconcile.rs");
-    let body = std::fs::read_to_string(&path).expect("the reconcile tick is checked out");
+    let body = crate::test_helpers::walked_file_body(&path);
     // callee → why its `Ok` half carries nothing a reader of the log wants.
     let classified = [
         ("watcher.watch", "Ok(())"),
@@ -8927,6 +8749,8 @@ async fn a_tick_that_refreshed_a_deployed_file_says_so_instead_of_reading_idle()
         .upsert_managed_resource(
             "file",
             &resource_id,
+            "file",
+            None,
             "local",
             Some(&crate::sha256_hex(b"as the apply deployed it")),
             None,
@@ -9995,7 +9819,7 @@ async fn handle_reconcile_runs_on_drift_scripts() {
 /// no drift and leaves both witnesses alone; the auto-applying policy PERFORMS
 /// the hook, because auto-apply answers to work rather than to drift. That
 /// witness is the proof the plan held the hook all along, so the clean store
-/// above is an answer about the hook and not about an empty plan. The module
+/// above is an answer about the hook; the plan was never empty. The module
 /// declares no packages and no files, which is what keeps its `postReconcile`
 /// hook in the plan ([`crate::reconciler::Reconciler::plan`]) and makes the
 /// hook the only thing any row here could be about.
@@ -10165,7 +9989,7 @@ async fn a_tick_over_a_module_declaring_only_hooks_records_no_drift_row() {
 /// the host already declined. A sentence stating only the drifted number names
 /// fewer rows than the reader just saw. The fixture carries one of each: a
 /// platform-gated module (annotated in the header, drawn nowhere) and a session
-/// publish no manager can perform (drawn, and not drift). Both counts are
+/// publish no manager can perform (drawn, with no drift). Both counts are
 /// asserted against the tree's actual row count, never against literals.
 #[cfg(all(unix, not(target_os = "macos")))]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -10540,8 +10364,10 @@ async fn auto_apply_tick_withholds_the_resources_awaiting_a_source_decision() {
     // not be a source whose undecided items suddenly apply.
     let cache_root = tmp.path().join("cache-root-empty").join("cfgd");
     std::fs::create_dir_all(&cache_root).unwrap();
-    let _cache =
-        crate::test_helpers::EnvVarGuard::set("CFGD_CACHE_DIR", cache_root.to_str().unwrap());
+    let _cache = crate::test_helpers::EnvVarGuard::set(
+        crate::CFGD_CACHE_DIR_ENV,
+        cache_root.to_str().unwrap(),
+    );
 
     let state_dir = tmp.path().join("state");
     std::fs::create_dir_all(&state_dir).unwrap();
@@ -10790,8 +10616,10 @@ async fn a_tick_that_cannot_record_a_decision_still_withholds_the_item() {
     let _g = crate::with_test_home_guard(tmp.path());
     let cache_root = tmp.path().join("cache-root").join("cfgd");
     std::fs::create_dir_all(&cache_root).unwrap();
-    let _cache =
-        crate::test_helpers::EnvVarGuard::set("CFGD_CACHE_DIR", cache_root.to_str().unwrap());
+    let _cache = crate::test_helpers::EnvVarGuard::set(
+        crate::CFGD_CACHE_DIR_ENV,
+        cache_root.to_str().unwrap(),
+    );
     // `acme` delivers `bat` on a recommended layer; the config sets no policy,
     // so the item falls to `newRecommended`'s `Notify` default and must be
     // asked about before it installs.
@@ -10964,8 +10792,10 @@ async fn secret_env_tick_leaks(seed_pending_decision: bool) -> Vec<PathBuf> {
     // variable, not about one the operator declared for themselves.
     let cache_root = tmp.path().join("cache-root").join("cfgd");
     std::fs::create_dir_all(&cache_root).unwrap();
-    let _cache =
-        crate::test_helpers::EnvVarGuard::set("CFGD_CACHE_DIR", cache_root.to_str().unwrap());
+    let _cache = crate::test_helpers::EnvVarGuard::set(
+        crate::CFGD_CACHE_DIR_ENV,
+        cache_root.to_str().unwrap(),
+    );
     stage_cached_source(
         &cache_root,
         "acme",
@@ -11134,10 +10964,18 @@ async fn handle_reconcile_auto_policy_prunes_tracked_dropped_package() {
     // Pre-seed: cfgd previously installed cargo/bat (tracked) and cargo/ripgrep.
     {
         let seed = StateStore::open_in_dir(&state_dir).unwrap();
-        seed.upsert_managed_resource("package", "cargo/bat", "local", None, None)
+        seed.upsert_managed_resource("package", "cargo/bat", "package", None, "local", None, None)
             .unwrap();
-        seed.upsert_managed_resource("package", "cargo/ripgrep", "local", None, None)
-            .unwrap();
+        seed.upsert_managed_resource(
+            "package",
+            "cargo/ripgrep",
+            "package",
+            None,
+            "local",
+            None,
+            None,
+        )
+        .unwrap();
     }
 
     let config_path = tmp.path().join("cfgd.yaml");
@@ -11279,10 +11117,18 @@ async fn handle_reconcile_auto_policy_gcs_stale_tracking_row() {
     {
         let seed = StateStore::open_in_dir(&state_dir).unwrap();
         // bat is installed (kept); phantom is tracked but NOT installed (stale).
-        seed.upsert_managed_resource("package", "cargo/bat", "local", None, None)
+        seed.upsert_managed_resource("package", "cargo/bat", "package", None, "local", None, None)
             .unwrap();
-        seed.upsert_managed_resource("package", "cargo/phantom", "local", None, None)
-            .unwrap();
+        seed.upsert_managed_resource(
+            "package",
+            "cargo/phantom",
+            "package",
+            None,
+            "local",
+            None,
+            None,
+        )
+        .unwrap();
     }
 
     let config_path = tmp.path().join("cfgd.yaml");
@@ -11780,12 +11626,12 @@ fn parse_daemon_config_all_defaults() {
         parsed.reconcile_interval,
         Duration::from_secs(DEFAULT_RECONCILE_SECS)
     );
-    assert_eq!(parsed.sync_interval, Duration::from_secs(DEFAULT_SYNC_SECS));
+    assert_eq!(parsed.sync_interval, Duration::from_secs(60 * 60));
     assert!(!parsed.auto_pull);
     assert!(!parsed.auto_push);
     assert!(!parsed.on_change_reconcile);
     assert!(!parsed.notify_on_drift);
-    assert!(matches!(parsed.notify_method, NotifyMethod::Stdout));
+    assert!(matches!(parsed.notify_method, NotifyMethod::Desktop));
     assert!(parsed.webhook_url.is_none());
     assert!(!parsed.auto_apply);
 }
@@ -12247,6 +12093,7 @@ fn build_webhook_payload_accepts_empty_strings() {
 // ===========================================================================
 
 /// Install the process-global journal if this process has none, and empty it.
+// long-line-ok: a hatch is read off its own line, so it cannot wrap
 // serial-group-ok: clears the one process-global journal; every declaration reading it or starting a daemon holds the group.
 fn reset_daemon_log() {
     crate::test_helpers::reset_tracing_journal();
@@ -12261,8 +12108,8 @@ fn reset_daemon_log() {
 /// reaches none of them.
 ///
 /// Its readers ask it only whether a line is there.
-/// [`crate::test_helpers::tracing_journal`] carries why an absence or a count is
-/// not this journal's to answer, and
+/// [`crate::test_helpers::tracing_journal`] carries why an absence or a count
+/// is not this journal's to answer, and
 /// `no_reader_of_the_global_daemon_journal_asserts_an_absence` walks every
 /// crate's sources for one, the journal being reachable from all of them.
 ///
@@ -12309,6 +12156,7 @@ async fn wait_for_daemon_log(needle: &str, timeout: std::time::Duration) {
             "timed out after {timeout:?} waiting for the daemon log to contain \
              {needle:?}; got: {snapshot}"
         );
+        // long-line-ok: a hatch is read off its own line, so it cannot wrap
         // sleep-ok: this loop IS the observable — a bounded deadline poll, not a fixed-duration guess
         tokio::time::sleep(std::time::Duration::from_millis(5)).await;
     }
@@ -12372,6 +12220,7 @@ fn log_capture() -> (impl tracing::Subscriber + Send + Sync, LogBuf) {
 
     let buf: LogBuf = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let subscriber = tracing_subscriber::fmt()
+        // long-line-ok: a hatch is read off its own line, so it cannot wrap
         // unfolded-writer-ok: a test capture read back as a String, not a stream anyone is looking at
         .with_writer(LogCapture(buf.clone()))
         .with_max_level(tracing::Level::INFO)
@@ -12383,6 +12232,7 @@ fn log_capture() -> (impl tracing::Subscriber + Send + Sync, LogBuf) {
 }
 
 fn captured_logs(buf: &LogBuf) -> String {
+    // long-line-ok: a hatch is read off its own line, so it cannot wrap
     // raw-capture-ok: this buf is a tracing-log Arc<Mutex<Vec<u8>>>, not a Printer::for_test* text capture — captured_text doesn't type-check against it
     let bytes = buf.lock().expect("lock").clone();
     String::from_utf8(bytes).expect("utf8 logs")
@@ -12518,6 +12368,7 @@ fn no_reader_of_the_global_daemon_journal_asserts_an_absence() {
     let mut offenders: Vec<String> = Vec::new();
     for path in crate::test_helpers::rust_sources_under(&crates_dir) {
         files += 1;
+        // unfloored-slice-ok: the journal readers judged here are tests.
         let body = crate::test_helpers::walked_file_body(&path);
         let (file_reads, file_offenders) = global_journal_reads(&body);
         reads += file_reads;
@@ -12581,6 +12432,7 @@ mod harness {
         let (printer, buf) = Printer::for_test_at(crate::output::Verbosity::Normal);
         let printer = Arc::new(printer);
         let ctx = DaemonLoopContext {
+            update_policy_override: None,
             abort: Arc::new(crate::AbortFlag::new()),
             cfgd_version: env!("CARGO_PKG_VERSION").to_string(),
             tick_cache: Arc::new(super::tick_cache::TickCache::new()),
@@ -13304,6 +13156,7 @@ spec:
             manager: "pip".to_string(),
             via: "apt".to_string(),
             declared: None,
+            floor: None,
             batched: vec!["npm".to_string()],
             depends_on: vec![],
         });
@@ -13845,6 +13698,131 @@ spec:
         );
     }
 
+    /// A daemon whose host holds cargo at a version below the floor a module
+    /// declares for it, with the listing manager offering less again — the
+    /// shape a toolchain that slipped after an apply really has.
+    struct SlippedToolchainHooks;
+
+    impl DaemonHooks for SlippedToolchainHooks {
+        fn build_registry(&self, _: &config::CfgdConfig) -> crate::providers::ProviderRegistry {
+            let mut registry = crate::providers::ProviderRegistry::new();
+            registry.add_package_manager(Box::new(
+                crate::providers::StubPackageManager::new("apt").with_package("cargo", "1.75"),
+            ));
+            registry.add_package_manager(Box::new(
+                crate::test_helpers::MockPackageManager::new("cargo").reporting_version("1.80"),
+            ));
+            registry
+        }
+
+        fn plan_files(
+            &self,
+            _: &Path,
+            _: &config::ResolvedProfile,
+        ) -> crate::errors::Result<Vec<crate::providers::FileAction>> {
+            Ok(vec![])
+        }
+
+        fn plan_packages(
+            &self,
+            _: &config::MergedProfile,
+            _: &[&dyn crate::providers::PackageManager],
+            _: &std::collections::HashSet<String>,
+            _: &crate::providers::PackageContext<'_>,
+        ) -> crate::errors::Result<Vec<crate::providers::PackageAction>> {
+            Ok(vec![])
+        }
+
+        fn extend_registry_custom_managers(
+            &self,
+            _: &mut crate::providers::ProviderRegistry,
+            _: &config::PackagesSpec,
+        ) {
+        }
+
+        fn expand_tilde(&self, path: &Path) -> PathBuf {
+            crate::expand_tilde(path)
+        }
+    }
+
+    /// A manager this host holds that has slipped below the floor a module
+    /// declares for it is a finding the tick records, beside every other
+    /// module's finding: the plan carries it as a step of its own, so the
+    /// machine still hears about the unrelated module's missing file and the
+    /// `onDrift` route still has a tick that found drift to fire on.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_tick_records_a_held_managers_floor_beside_another_modules_drift() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _g = crate::with_test_home_guard(tmp.path());
+        let config_path = tmp.path().join("cfgd.yaml");
+        std::fs::write(
+            &config_path,
+            "apiVersion: cfgd.io/v1alpha1\nkind: Cfgd\nmetadata:\n  name: t\nspec:\n  profile: default\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(tmp.path().join("profiles")).unwrap();
+        std::fs::write(
+            tmp.path().join("profiles").join("default.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  modules:\n    - rust\n    - dotfiles\n",
+        )
+        .unwrap();
+
+        let rust_dir = tmp.path().join("modules").join("rust");
+        std::fs::create_dir_all(&rust_dir).unwrap();
+        std::fs::write(
+            rust_dir.join("module.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: rust\nspec:\n  \
+             packages:\n    - name: cargo\n      minVersion: \"1.85\"\n      prefer: [apt]\n",
+        )
+        .unwrap();
+
+        let dotfiles_dir = tmp.path().join("modules").join("dotfiles");
+        std::fs::create_dir_all(&dotfiles_dir).unwrap();
+        std::fs::write(dotfiles_dir.join("app.conf"), "from the module\n").unwrap();
+        let target = tmp.path().join("deploy").join("app.conf");
+        std::fs::write(
+            dotfiles_dir.join("module.yaml"),
+            format!(
+                "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: dotfiles\nspec:\n  files:\n    - source: app.conf\n      target: {}\n      strategy: Copy\n",
+                crate::to_posix_string(&target)
+            ),
+        )
+        .unwrap();
+
+        let (mut ctx, _state, buf) = make_test_ctx(&tmp, false, false, None);
+        ctx.config_path = config_path;
+        ctx.hooks = Arc::new(SlippedToolchainHooks);
+        let mut tasks = vec![ReconcileTask {
+            entity: "__default__".to_string(),
+            interval: StdDuration::from_secs(60),
+            auto_apply: false,
+            drift_policy: config::DriftPolicy::NotifyOnly,
+            last_reconciled: None,
+        }];
+        runner::handle_reconcile_tick(&ctx, &mut tasks)
+            .await
+            .unwrap();
+
+        let store = StateStore::open_in_dir(tmp.path()).unwrap();
+        let rows = store.unresolved_drift().unwrap();
+        let mut standing: Vec<(&str, &str)> = rows
+            .iter()
+            .map(|e| (e.resource_type.as_str(), e.resource_id.as_str()))
+            .collect();
+        standing.sort_unstable();
+        let deployed_id = format!(
+            "dotfiles/{}",
+            crate::to_posix_string(&target).trim_start_matches('/')
+        );
+        assert_eq!(
+            standing,
+            vec![("module", deployed_id.as_str()), ("package", "cargo:cargo"),],
+            "the slipped toolchain is recorded as a finding of its own and the \
+             unrelated module's file is still reported: {}",
+            harness::captured_text(&buf)
+        );
+    }
+
     /// A resource awaiting a source decision leaves the plan BEFORE the
     /// complement-resolve reads it (`withhold_from_plan` runs first), so its
     /// recorded row is one the exclusions themselves must keep: the tick
@@ -14376,6 +14354,7 @@ spec:
         for _ in 0..3 {
             senders.reconcile_tx.send(()).await.unwrap();
         }
+        // long-line-ok: a hatch is read off its own line, so it cannot wrap
         // sleep-ok: no reconcile_tasks means the tick is a silent no-op — no printer/state signal exists to wait on before shutdown
         tokio::time::sleep(StdDuration::from_millis(50)).await;
         senders.shutdown_tx.send(()).unwrap();
@@ -14409,6 +14388,7 @@ spec:
         ));
         senders.sync_tx.send(()).await.unwrap();
         senders.sync_tx.send(()).await.unwrap();
+        // long-line-ok: a hatch is read off its own line, so it cannot wrap
         // sleep-ok: no sync_tasks means the tick is a silent no-op — no printer/state signal exists to wait on before shutdown
         tokio::time::sleep(StdDuration::from_millis(50)).await;
         senders.shutdown_tx.send(()).unwrap();
@@ -14440,6 +14420,7 @@ spec:
             sync_secs,
         ));
         senders.compliance_tx.send(()).await.unwrap();
+        // long-line-ok: a hatch is read off its own line, so it cannot wrap
         // sleep-ok: compliance disabled means the tick is a silent no-op — no printer/state signal exists to wait on before shutdown
         tokio::time::sleep(StdDuration::from_millis(50)).await;
         senders.shutdown_tx.send(()).unwrap();
@@ -14573,6 +14554,7 @@ spec:
         let printer = Arc::new(printer);
         let (ran_tx, ran_rx) = tokio::sync::mpsc::unbounded_channel();
         let ctx = DaemonLoopContext {
+            update_policy_override: None,
             abort: Arc::new(crate::AbortFlag::new()),
             cfgd_version: env!("CARGO_PKG_VERSION").to_string(),
             tick_cache: Arc::new(super::tick_cache::TickCache::new()),
@@ -14663,6 +14645,7 @@ spec:
         let (printer, _buf) = Printer::for_test_at(crate::output::Verbosity::Normal);
         let printer = Arc::new(printer);
         let ctx = DaemonLoopContext {
+            update_policy_override: None,
             abort: Arc::new(crate::AbortFlag::new()),
             cfgd_version: env!("CARGO_PKG_VERSION").to_string(),
             tick_cache: Arc::new(super::tick_cache::TickCache::new()),
@@ -14694,6 +14677,7 @@ spec:
             sync_secs,
         ));
         senders.compliance_tx.send(()).await.unwrap();
+        // long-line-ok: a hatch is read off its own line, so it cannot wrap
         // sleep-ok: proving the panicking handler didn't tear the loop down needs no forward signal — the assertion is that shutdown still completes cleanly
         tokio::time::sleep(StdDuration::from_millis(150)).await;
         senders.shutdown_tx.send(()).unwrap();
@@ -14768,6 +14752,7 @@ spec:
         // a panicking reconcile fires to confirm the loop's
         // continue-on-error behavior is engaged, then shutdown.
         let tmp = tempfile::TempDir::new().unwrap();
+        let _optouts = crate::test_helpers::clear_update_optouts();
         let _g = crate::with_test_home_guard(tmp.path());
         let (ctx, _state, mut ran_rx) = make_panicking_plan_files_ctx(&tmp);
         let (triggers, senders) = make_triggers();
@@ -14921,6 +14906,7 @@ spec:
             build_registry_calls: Arc::clone(&build_registry_calls),
         });
         let ctx = DaemonLoopContext {
+            update_policy_override: None,
             abort: Arc::new(crate::AbortFlag::new()),
             cfgd_version: env!("CARGO_PKG_VERSION").to_string(),
             tick_cache: Arc::new(super::tick_cache::TickCache::new()),
@@ -14999,6 +14985,7 @@ spec:
             build_registry_calls: Arc::clone(&build_registry_calls),
         });
         let ctx = DaemonLoopContext {
+            update_policy_override: None,
             abort: Arc::new(crate::AbortFlag::new()),
             cfgd_version: env!("CARGO_PKG_VERSION").to_string(),
             tick_cache: Arc::new(super::tick_cache::TickCache::new()),
@@ -15062,6 +15049,7 @@ spec:
             build_registry_calls: Arc::clone(&build_registry_calls),
         });
         let ctx = DaemonLoopContext {
+            update_policy_override: None,
             abort: Arc::new(crate::AbortFlag::new()),
             cfgd_version: env!("CARGO_PKG_VERSION").to_string(),
             tick_cache: Arc::new(super::tick_cache::TickCache::new()),
@@ -15115,6 +15103,7 @@ spec:
         let secs = Arc::new(AtomicU64::new(0));
         let (tx, mut rx) = mpsc::channel::<()>(8);
         let handle = super::super::spawn_interval_pump(secs, tx);
+        // long-line-ok: a hatch is read off its own line, so it cannot wrap
         // sleep-ok: give the runtime a chance to schedule the pump task; no observable exists for "the pump task has been polled once"
         tokio::time::sleep(StdDuration::from_millis(10)).await;
         handle.abort();
@@ -15584,8 +15573,10 @@ spec:
         let _g = crate::with_test_home_guard(tmp.path());
         let cache_root = tmp.path().join("cache-root-empty").join("cfgd");
         std::fs::create_dir_all(&cache_root).unwrap();
-        let _cache =
-            crate::test_helpers::EnvVarGuard::set("CFGD_CACHE_DIR", cache_root.to_str().unwrap());
+        let _cache = crate::test_helpers::EnvVarGuard::set(
+            crate::CFGD_CACHE_DIR_ENV,
+            cache_root.to_str().unwrap(),
+        );
 
         let work = clone_with_pending_upstream_commit(&tmp);
         let config_path = write_sync_apply_fixture(
@@ -15817,9 +15808,10 @@ spec:
 
         let setup = pre_loop(&config_path, None).expect("happy setup");
 
-        // Default reconcile + sync interval = 300s (5m)
+        // An omitted daemon block reconciles every 5m and syncs every 1h,
+        // the intervals `reconcile: {}` and `sync: {}` declare.
         assert_eq!(setup.parsed.reconcile_interval, Duration::from_secs(300));
-        assert_eq!(setup.parsed.sync_interval, Duration::from_secs(300));
+        assert_eq!(setup.parsed.sync_interval, Duration::from_secs(3600));
         assert!(!setup.parsed.auto_pull);
         assert!(!setup.parsed.auto_push);
         assert!(!setup.parsed.auto_apply);
@@ -15831,18 +15823,19 @@ spec:
         // Only the __default__ reconcile task (no module patches)
         assert_eq!(setup.reconcile_tasks.len(), 1);
         assert_eq!(setup.reconcile_tasks[0].entity, "__default__");
-        // No external sources → only the seeded "local" source status (added in run_daemon, not setup)
+        // No external sources → only the seeded "local" source status (seeded by run_daemon;
+        // setup adds none)
         // Setup itself just produces the additions, which is empty here.
         assert!(setup.initial_source_status.is_empty());
         // No files in default profile → no managed paths
         assert!(setup.managed_paths.is_empty());
         // No server origin → no startup check-in URL
         assert!(setup.server_checkin_url.is_none());
-        // Stdout notifier by default
-        assert!(matches!(setup.parsed.notify_method, NotifyMethod::Stdout));
+        // The notifier `notify: {}` declares
+        assert!(matches!(setup.parsed.notify_method, NotifyMethod::Desktop));
         // shortest_* == defaults when no per-module patches narrow them
         assert_eq!(setup.shortest_reconcile, Duration::from_secs(300));
-        assert_eq!(setup.shortest_sync, Duration::from_secs(300));
+        assert_eq!(setup.shortest_sync, Duration::from_secs(3600));
         // config_dir matches the parent of config_path
         assert_eq!(setup.config_dir, tmp.path());
     }
@@ -15988,6 +15981,76 @@ spec: {}
         );
     }
 
+    /// A tick that installed a toolchain because an environment variable was
+    /// exported is the opposite of a confirmation, so the daemon's answer is
+    /// "nobody to ask" whatever `CFGD_YES` says, and the module it could not
+    /// resolve stays out of the tick. The journal is where a machine nobody is
+    /// watching reports itself, so the route it declined is named there with
+    /// the command that would take it.
+    #[test]
+    #[serial_test::serial]
+    #[serial_test::serial(tracing_dispatcher)]
+    fn a_daemon_tick_takes_no_floor_route_even_with_cfgd_yes_exported() {
+        let _yes = crate::test_helpers::EnvVarGuard::set(crate::CFGD_YES_ENV, "1");
+        crate::test_helpers::reset_tracing_journal();
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _g = crate::with_test_home_guard(tmp.path());
+
+        let config_dir = tmp.path().join("config");
+        let module_dir = config_dir.join("modules").join("rust");
+        std::fs::create_dir_all(&module_dir).unwrap();
+        std::fs::write(
+            module_dir.join("module.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: rust\nspec:\n  \
+             packages:\n    - name: cargo\n      minVersion: \"1.85\"\n      prefer: [apt]\n",
+        )
+        .unwrap();
+
+        let resolved = ResolvedProfile {
+            layers: vec![],
+            merged: MergedProfile {
+                modules: vec!["rust".into()],
+                ..Default::default()
+            },
+        };
+
+        let mut registry = ProviderRegistry::new();
+        registry.set_package_managers(vec![
+            Box::new(
+                crate::providers::StubPackageManager::new("apt").with_package("cargo", "1.75"),
+            ),
+            Box::new(
+                crate::test_helpers::MockPackageManager::new("cargo")
+                    .unavailable()
+                    .bootstrappable_via("rustup"),
+            ),
+        ]);
+
+        let resolved_modules = resolve_daemon_modules(
+            &registry,
+            &resolved,
+            &config_dir,
+            &[],
+            None,
+            &Printer::for_test().0,
+            crate::Scope::User,
+            None,
+        );
+
+        assert!(
+            resolved_modules.is_empty(),
+            "the tick refuses the route: {resolved_modules:?}"
+        );
+        let journal = crate::test_helpers::tracing_journal();
+        assert!(
+            journal.contains("daemon: declared minVersion needs a manager bootstrap")
+                && journal.contains("package=cargo")
+                && journal.contains("via=rustup")
+                && journal.contains("WARN"),
+            "the tick names the route it declined, at warn: {journal}"
+        );
+    }
+
     #[test]
     #[serial_test::serial]
     fn resolve_daemon_modules_resolves_the_module_cache_under_the_callers_cache_dir_override() {
@@ -15996,7 +16059,8 @@ spec: {}
         // exactly like `build_pre_loop_setup` resolves a source's checkout. A
         // module whose file lives at a git URL must be fetched under the
         // CALLER's `--cache-dir`, never the ignored scope default.
-        let _guard = crate::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+        let _guard =
+            crate::test_helpers::EnvVarGuard::set(crate::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
         let tmp = tempfile::TempDir::new().unwrap();
         let _g = crate::with_test_home_guard(tmp.path());
 
@@ -16427,6 +16491,7 @@ spec: {}
     ) -> Arc<Mutex<DaemonState>> {
         let state = Arc::new(Mutex::new(DaemonState::new()));
         let notifier = Arc::new(Notifier::new(NotifyMethod::Stdout, None));
+        let _optouts = crate::test_helpers::clear_update_optouts();
         let _g = crate::with_test_home_guard(&home);
         super::super::sync::handle_version_check(cfg, &state, &notifier, env!("CARGO_PKG_VERSION"))
             .await;
@@ -16448,7 +16513,8 @@ spec: {}
             .with_body(r#"{"tag_name": "v999.0.0", "assets": []}"#)
             .create_async()
             .await;
-        let _api = crate::test_helpers::EnvVarGuard::set("CFGD_GITHUB_API_BASE", &server.url());
+        let _api =
+            crate::test_helpers::EnvVarGuard::set(crate::CFGD_GITHUB_API_BASE_ENV, &server.url());
 
         let state = drive_version_check(tmp.path().to_path_buf(), &notify_update_cfg()).await;
 
@@ -16468,7 +16534,7 @@ spec: {}
         let tmp = tempfile::TempDir::new().unwrap();
         let runtime = tempfile::TempDir::new().unwrap();
         let _rt = crate::test_helpers::EnvVarGuard::set(
-            "CFGD_RUNTIME_DIR",
+            crate::CFGD_RUNTIME_DIR_ENV,
             &runtime.path().to_string_lossy(),
         );
 
@@ -16487,7 +16553,8 @@ spec: {}
             .with_body(format!(r#"{{"tag_name": "{tag}", "assets": []}}"#))
             .create_async()
             .await;
-        let _api = crate::test_helpers::EnvVarGuard::set("CFGD_GITHUB_API_BASE", &server.url());
+        let _api =
+            crate::test_helpers::EnvVarGuard::set(crate::CFGD_GITHUB_API_BASE_ENV, &server.url());
 
         let state = drive_version_check(tmp.path().to_path_buf(), &notify_update_cfg()).await;
 
@@ -16515,7 +16582,8 @@ spec: {}
             .with_body(format!(r#"{{"tag_name": "{tag}", "assets": []}}"#))
             .create_async()
             .await;
-        let _api = crate::test_helpers::EnvVarGuard::set("CFGD_GITHUB_API_BASE", &server.url());
+        let _api =
+            crate::test_helpers::EnvVarGuard::set(crate::CFGD_GITHUB_API_BASE_ENV, &server.url());
 
         let state = drive_version_check(tmp.path().to_path_buf(), &notify_update_cfg()).await;
 
@@ -16550,7 +16618,7 @@ spec: {}
         let tmp = tempfile::TempDir::new().unwrap();
         let runtime = tempfile::TempDir::new().unwrap();
         let _rt = crate::test_helpers::EnvVarGuard::set(
-            "CFGD_RUNTIME_DIR",
+            crate::CFGD_RUNTIME_DIR_ENV,
             &runtime.path().to_string_lossy(),
         );
         {
@@ -16583,11 +16651,12 @@ spec: {}
         // a non-Manual policy, so the gate returns before any network or
         // skill-surface work and leaves both update surfaces untouched.
         let tmp = tempfile::TempDir::new().unwrap();
+        let _optouts = crate::test_helpers::clear_update_optouts();
         let _g = crate::with_test_home_guard(tmp.path());
 
         // Stamp a check "now" into the test-home version cache; with the default
         // 24h interval, the next tick is well within the window.
-        crate::upgrade::record_check_at(env!("CARGO_PKG_VERSION"), crate::unix_secs_now());
+        crate::upgrade::record_check_at(crate::unix_secs_now());
 
         // No mock server: a network call would error, proving the gate short-circuits.
         let state = Arc::new(Mutex::new(DaemonState::new()));
@@ -16609,6 +16678,135 @@ spec: {}
             st.skills_stale_notified.is_none(),
             "within-interval tick gates before the skill-stale surface"
         );
+    }
+
+    // ----- handle_version_check_tick: the invocation's posture -----
+
+    /// One daemon's version-tick world: a config file on disk, a release feed
+    /// offering v999.0.0 that expects exactly `requests` requests, every opt-out
+    /// variable cleared and the test home installed. Fields drop in order, so
+    /// the home and env guards are restored before the tempdir goes.
+    struct VersionTickRig {
+        ctx: DaemonLoopContext,
+        state: Arc<Mutex<DaemonState>>,
+        feed: mockito::Mock,
+        _home: crate::TestHomeGuard,
+        _api: crate::test_helpers::EnvVarGuard,
+        _optouts: [crate::test_helpers::EnvVarGuard; crate::upgrade::OPTOUT_VARS.len()],
+        _server: mockito::ServerGuard,
+        _tmp: tempfile::TempDir,
+    }
+
+    impl VersionTickRig {
+        async fn new(
+            declared: &str,
+            override_policy: Option<config::UpdatePolicy>,
+            requests: usize,
+        ) -> Self {
+            let tmp = tempfile::TempDir::new().unwrap();
+            let optouts = crate::test_helpers::clear_update_optouts();
+            let mut server = mockito::Server::new_async().await;
+            let feed = server
+                .mock("GET", "/repos/tj-smith47/cfgd/releases/latest")
+                .with_status(200)
+                .with_header("content-type", "application/json")
+                .with_body(r#"{"tag_name": "v999.0.0", "assets": []}"#)
+                .expect(requests)
+                .create_async()
+                .await;
+            let api = crate::test_helpers::EnvVarGuard::set(
+                crate::CFGD_GITHUB_API_BASE_ENV,
+                &server.url(),
+            );
+            let (mut ctx, state, _buf) = make_test_ctx(&tmp, false, false, None);
+            ctx.config_path = tmp.path().join("cfgd.yaml");
+            ctx.update_policy_override = override_policy;
+            let home = crate::with_test_home_guard(tmp.path());
+            let rig = Self {
+                ctx,
+                state,
+                feed,
+                _home: home,
+                _api: api,
+                _optouts: optouts,
+                _server: server,
+                _tmp: tmp,
+            };
+            rig.declare(declared);
+            rig
+        }
+
+        /// Rewrite the config so it declares `spec.update.policy: {policy}`.
+        fn declare(&self, policy: &str) {
+            std::fs::write(
+                &self.ctx.config_path,
+                format!(
+                    "apiVersion: cfgd.io/v1alpha1\nkind: Cfgd\nmetadata:\n  name: t\nspec:\n  profile: default\n  update:\n    policy: {policy}\n"
+                ),
+            )
+            .unwrap();
+        }
+
+        /// One version tick, then the update the daemon has recorded so far.
+        async fn tick(&self) -> Option<String> {
+            // optouts-held: only `new` builds a rig, and it clears them into `_optouts`.
+            runner::handle_version_check_tick(&self.ctx)
+                .await
+                .expect("a version tick never fails the loop");
+            self.state.lock().await.update_available.clone()
+        }
+    }
+
+    // current_thread so the test-home guard survives each tick's `.await`.
+    #[tokio::test(flavor = "current_thread")]
+    #[serial_test::serial]
+    async fn a_daemon_started_with_update_policy_manual_makes_no_check_whatever_its_config_says() {
+        let rig = VersionTickRig::new("Notify", Some(config::UpdatePolicy::Manual), 0).await;
+        assert_eq!(
+            rig.tick().await,
+            None,
+            "first tick: Manual flag over a Notify file records nothing"
+        );
+        assert_eq!(
+            rig.tick().await,
+            None,
+            "second tick: the flag still holds on a later tick"
+        );
+        rig.feed.assert_async().await;
+        assert!(
+            crate::upgrade::last_checked_secs().is_none(),
+            "a Manual daemon stamps no check, so it never reached the release feed"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    #[serial_test::serial]
+    async fn a_daemon_started_with_update_policy_notify_checks_over_a_manual_config() {
+        let rig = VersionTickRig::new("Manual", Some(config::UpdatePolicy::Notify), 1).await;
+        assert_eq!(
+            rig.tick().await.as_deref(),
+            Some("999.0.0"),
+            "a Notify flag over a Manual file checks and records the newer release"
+        );
+        rig.feed.assert_async().await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    #[serial_test::serial]
+    async fn a_daemon_started_without_update_policy_is_retuned_by_editing_its_config() {
+        let rig = VersionTickRig::new("Manual", None, 1).await;
+        assert_eq!(
+            rig.tick().await,
+            None,
+            "first tick: the file says Manual, nothing is checked"
+        );
+        rig.declare("Notify");
+        assert_eq!(
+            rig.tick().await.as_deref(),
+            Some("999.0.0"),
+            "second tick: the file now says Notify, and the same daemon checks and records it"
+        );
+        rig.feed.assert_async().await;
     }
 
     // ----- init_daemon_state tests -----
@@ -16635,7 +16833,7 @@ spec: {}
         // resolver returns `Err` before consulting `directories::BaseDirs`, so
         // the fallback is exercised regardless of the runner's XDG layout or a
         // systemd-launched `STATE_DIRECTORY`.
-        let _cfgd = EnvVarGuard::unset("CFGD_STATE_DIR");
+        let _cfgd = EnvVarGuard::unset(crate::CFGD_STATE_DIR_ENV);
         let _systemd = EnvVarGuard::unset("STATE_DIRECTORY");
         let _home = EnvVarGuard::unset("HOME");
         let _userprofile = EnvVarGuard::unset("USERPROFILE");
@@ -16666,7 +16864,7 @@ spec: {}
         // tier above the home-based resolution and install no test-home
         // override, so resolution always fails and the warning always fires.
         use crate::test_helpers::EnvVarGuard;
-        let _cfgd = EnvVarGuard::unset("CFGD_STATE_DIR");
+        let _cfgd = EnvVarGuard::unset(crate::CFGD_STATE_DIR_ENV);
         let _systemd = EnvVarGuard::unset("STATE_DIRECTORY");
         let _home = EnvVarGuard::unset("HOME");
         let _userprofile = EnvVarGuard::unset("USERPROFILE");
@@ -16702,8 +16900,8 @@ spec: {}
     #[serial_test::serial]
     fn run_daemon_with_system_scope_ipc_resolves_fhs() {
         use crate::test_helpers::EnvVarGuard;
-        let _ipc = EnvVarGuard::unset("CFGD_DAEMON_IPC_PATH");
-        let _runtime = EnvVarGuard::unset("CFGD_RUNTIME_DIR");
+        let _ipc = EnvVarGuard::unset(crate::CFGD_DAEMON_IPC_PATH_ENV);
+        let _runtime = EnvVarGuard::unset(crate::CFGD_RUNTIME_DIR_ENV);
         let _xdg = EnvVarGuard::unset("XDG_RUNTIME_DIR");
         let _runtime_dir = EnvVarGuard::unset("RUNTIME_DIRECTORY");
 
@@ -16712,10 +16910,9 @@ spec: {}
             skip_health_server: true,
             ..Default::default()
         };
-        let ipc = overrides
-            .ipc_path
-            .clone()
-            .unwrap_or_else(|| super::super::resolve_default_ipc_path(None, overrides.scope));
+        let ipc = overrides.ipc_path.clone().unwrap_or_else(|| {
+            super::super::resolve_default_ipc_path(None, overrides.scope).unwrap()
+        });
         assert!(
             ipc.starts_with("/run/cfgd"),
             "system-scope IPC path must be under /run/cfgd, got: {}",
@@ -16728,18 +16925,17 @@ spec: {}
     #[serial_test::serial]
     fn run_daemon_with_system_scope_ipc_resolves_application_support() {
         use crate::test_helpers::EnvVarGuard;
-        let _ipc = EnvVarGuard::unset("CFGD_DAEMON_IPC_PATH");
-        let _runtime = EnvVarGuard::unset("CFGD_RUNTIME_DIR");
+        let _ipc = EnvVarGuard::unset(crate::CFGD_DAEMON_IPC_PATH_ENV);
+        let _runtime = EnvVarGuard::unset(crate::CFGD_RUNTIME_DIR_ENV);
 
         let overrides = super::super::DaemonRunOverrides {
             scope: crate::Scope::System,
             skip_health_server: true,
             ..Default::default()
         };
-        let ipc = overrides
-            .ipc_path
-            .clone()
-            .unwrap_or_else(|| super::super::resolve_default_ipc_path(None, overrides.scope));
+        let ipc = overrides.ipc_path.clone().unwrap_or_else(|| {
+            super::super::resolve_default_ipc_path(None, overrides.scope).unwrap()
+        });
         assert!(
             ipc.starts_with("/Library/Application Support/cfgd/runtime"),
             "system-scope IPC path must be under the macOS runtime root, got: {}",
@@ -16752,7 +16948,7 @@ spec: {}
     #[serial_test::serial]
     fn init_daemon_state_with_warning_system_scope_uses_fhs_state_dir() {
         use crate::test_helpers::EnvVarGuard;
-        let _cfgd = EnvVarGuard::unset("CFGD_STATE_DIR");
+        let _cfgd = EnvVarGuard::unset(crate::CFGD_STATE_DIR_ENV);
         let _systemd = EnvVarGuard::unset("STATE_DIRECTORY");
         let _home = EnvVarGuard::unset("HOME");
         let _userprofile = EnvVarGuard::unset("USERPROFILE");
@@ -16772,7 +16968,7 @@ spec: {}
     #[serial_test::serial]
     fn init_daemon_state_with_warning_system_scope_uses_application_support_state_dir() {
         use crate::test_helpers::EnvVarGuard;
-        let _cfgd = EnvVarGuard::unset("CFGD_STATE_DIR");
+        let _cfgd = EnvVarGuard::unset(crate::CFGD_STATE_DIR_ENV);
         let _systemd = EnvVarGuard::unset("STATE_DIRECTORY");
 
         let (st, _warning) =
@@ -16790,7 +16986,7 @@ spec: {}
     #[serial_test::serial]
     fn init_daemon_state_with_warning_system_scope_uses_program_data_state_dir() {
         use crate::test_helpers::EnvVarGuard;
-        let _cfgd = EnvVarGuard::unset("CFGD_STATE_DIR");
+        let _cfgd = EnvVarGuard::unset(crate::CFGD_STATE_DIR_ENV);
 
         let expected = crate::program_data_dir().join("cfgd").join("state");
         let (st, _warning) =
@@ -16958,6 +17154,41 @@ spec: {}
         );
     }
 
+    /// The one line of the banner a reader has to act on is a note row, so
+    /// `usageHints` being off — the shipped default — cannot take it: a
+    /// foreground daemon holds the terminal until it is stopped, and the three
+    /// log lines beside it say everything except how to stop it.
+    ///
+    /// A capture printer answers `can_prompt()` false, so the branch the row
+    /// lives in is reached by pinning the printer's own terminal answer, the
+    /// same field a production printer probes once at construction. The
+    /// process's terminal stays out of it.
+    #[test]
+    fn print_startup_banner_states_the_stop_key_as_a_note_row() {
+        let (mut printer, buf) = Printer::for_test_at(crate::output::Verbosity::Normal);
+        printer.interactive_stdin = true;
+        assert!(
+            printer.can_prompt(),
+            "the fixture must reach the branch the row lives in"
+        );
+        printer.renderer.set_hints_enabled(false);
+        super::super::print_startup_banner(
+            &printer,
+            &["reconcile every 30s".to_string()],
+            "/tmp/cfgd-banner-hint-test.sock",
+            "9.9.0",
+        );
+        let out = crate::test_helpers::captured_text(&buf);
+        assert!(
+            out.contains("Press Ctrl+C to stop"),
+            "the only statement of how to stop a foreground daemon is not a tutorial: {out}"
+        );
+        assert!(
+            !out.contains('\u{2192}'),
+            "and reaches the reader as a row with no hint arrow: {out}"
+        );
+    }
+
     // ----- run_startup_checkin_blocking tests -----
 
     fn parse_minimal_cfg(yaml: &str) -> CfgdConfig {
@@ -16986,6 +17217,10 @@ spec: {}
             &cfg,
             None,
             &tokio::sync::Notify::new(),
+            &crate::test_helpers::NoopDaemonHooks,
+            &test_printer(),
+            crate::Scope::User,
+            None,
         );
     }
 
@@ -17008,6 +17243,10 @@ spec: {}
             &cfg,
             None,
             &tokio::sync::Notify::new(),
+            &crate::test_helpers::NoopDaemonHooks,
+            &test_printer(),
+            crate::Scope::User,
+            None,
         );
     }
 
@@ -17040,6 +17279,10 @@ spec: {}
             &cfg,
             None,
             &tokio::sync::Notify::new(),
+            &crate::test_helpers::NoopDaemonHooks,
+            &test_printer(),
+            crate::Scope::User,
+            None,
         );
     }
 
@@ -17059,7 +17302,7 @@ spec: {}
         // (env) outranks the thread-local override, so a concurrently mutating
         // test could redirect resolution out from under these assertions.
         let tmp = tempfile::TempDir::new().unwrap();
-        let _sd = crate::test_helpers::EnvVarGuard::unset("CFGD_STATE_DIR");
+        let _sd = crate::test_helpers::EnvVarGuard::unset(crate::CFGD_STATE_DIR_ENV);
         let _sysd = crate::test_helpers::EnvVarGuard::unset("STATE_DIRECTORY");
         let _g = crate::with_test_home_guard(tmp.path());
         let resolved_state = crate::state::default_state_dir().unwrap();
@@ -17102,6 +17345,10 @@ spec: {}
                 &cfg,
                 None,
                 &tokio::sync::Notify::new(),
+                &crate::test_helpers::NoopDaemonHooks,
+                &test_printer(),
+                crate::Scope::User,
+                None,
             );
             crate::test_home_override()
         })
@@ -17289,6 +17536,7 @@ spec: {}
             skip_startup_checkin: true,
             external_triggers: Some(triggers),
             scope: crate::Scope::User,
+            update_policy: None,
         }
     }
 
@@ -17375,6 +17623,7 @@ spec: {}
         let store = tmp.path().join(crate::state::STATE_DB_FILENAME);
         let deadline = std::time::Instant::now() + StdDuration::from_secs(5);
         while !store.exists() && std::time::Instant::now() < deadline {
+            // long-line-ok: a hatch is read off its own line, so it cannot wrap
             // sleep-ok: bounded deadline poll on a filesystem side effect, not a fixed-duration guess
             tokio::time::sleep(StdDuration::from_millis(10)).await;
         }
@@ -17423,6 +17672,7 @@ spec: {}
         ));
 
         senders.sync_tx.send(()).await.unwrap();
+        // long-line-ok: a hatch is read off its own line, so it cannot wrap
         // sleep-ok: no sync_tasks means the tick is a silent no-op — no printer/state signal exists to wait on before shutdown
         tokio::time::sleep(StdDuration::from_millis(60)).await;
         senders.shutdown_tx.send(()).unwrap();
@@ -17526,6 +17776,7 @@ spec: {}
         // a managed_paths entry — the handler tolerates unknown paths and
         // simply records into the debounce map.
         senders.file_tx.send(config_path.clone()).await.unwrap();
+        // long-line-ok: a hatch is read off its own line, so it cannot wrap
         // sleep-ok: an unmanaged path prints nothing when debounced — no signal exists to wait on before shutdown
         tokio::time::sleep(StdDuration::from_millis(80)).await;
         senders.shutdown_tx.send(()).unwrap();
@@ -17562,6 +17813,7 @@ spec: {}
         ));
 
         senders.compliance_tx.send(()).await.unwrap();
+        // long-line-ok: a hatch is read off its own line, so it cannot wrap
         // sleep-ok: without a compliance config the tick writes and prints nothing — no signal exists to wait on before shutdown
         tokio::time::sleep(StdDuration::from_millis(80)).await;
         senders.shutdown_tx.send(()).unwrap();
@@ -17597,6 +17849,7 @@ spec: {}
             skip_startup_checkin: true,
             external_triggers: Some(triggers),
             scope: crate::Scope::User,
+            update_policy: None,
         };
         let daemon = tokio::spawn(super::super::run_daemon_with(
             config_path,
@@ -17612,6 +17865,7 @@ spec: {}
         // being perfectly healthy.
         let deadline = std::time::Instant::now() + StdDuration::from_secs(5);
         while std::time::Instant::now() < deadline && !ipc_path.exists() {
+            // long-line-ok: a hatch is read off its own line, so it cannot wrap
             // sleep-ok: bounded deadline poll on a filesystem side effect, not a fixed-duration guess
             tokio::time::sleep(StdDuration::from_millis(10)).await;
         }
@@ -17658,6 +17912,7 @@ spec: {}
             skip_startup_checkin: true,
             external_triggers: Some(triggers),
             scope: crate::Scope::User,
+            update_policy: None,
         };
         let result = super::super::run_daemon_with(
             config_path,
@@ -17783,6 +18038,7 @@ spec: {}
         // concurrent test could observe / consume the signal.
         let (tx, mut rx) = mpsc::channel::<()>(8);
         let handle = super::super::spawn_sighup_pump(tx).expect("sighup pump registers");
+        // long-line-ok: a hatch is read off its own line, so it cannot wrap
         // sleep-ok: gives tokio's SIGHUP subscription a chance to wire up before the signal is raised — no observable exists for OS signal-handler registration
         tokio::time::sleep(StdDuration::from_millis(50)).await;
         // SAFETY: libc::kill against own PID is well-defined.
@@ -17901,6 +18157,7 @@ spec: {}
                 satisfied = true;
                 break;
             }
+            // long-line-ok: a hatch is read off its own line, so it cannot wrap
             // sleep-ok: bounded poll on the mock server's own matched() observable, not a fixed-duration guess
             tokio::time::sleep(StdDuration::from_millis(50)).await;
         }
@@ -17945,6 +18202,7 @@ spec: {}
             skip_startup_checkin: true,
             external_triggers: None,
             scope: crate::Scope::User,
+            update_policy: None,
         };
 
         let daemon = tokio::spawn(super::super::run_daemon_with(
@@ -18179,6 +18437,7 @@ spec: {}
             skip_startup_checkin: true,
             external_triggers: Some(triggers),
             scope: crate::Scope::User,
+            update_policy: None,
         };
         let daemon = tokio::spawn(super::super::run_daemon_with(
             config_path,
@@ -18191,6 +18450,7 @@ spec: {}
 
         wait_for_daemon_log("daemon: running", DAEMON_LOG_WAIT_CEILING).await;
         senders.reconcile_tx.send(()).await.unwrap();
+        // long-line-ok: a hatch is read off its own line, so it cannot wrap
         // sleep-ok: a clean reconcile tick logs nothing of its own — no signal exists to wait on before shutdown
         tokio::time::sleep(StdDuration::from_millis(150)).await;
         senders.shutdown_tx.send(()).unwrap();
@@ -18247,6 +18507,7 @@ spec: {}
             skip_startup_checkin: true,
             external_triggers: Some(triggers),
             scope: crate::Scope::User,
+            update_policy: None,
         };
         let daemon = tokio::spawn(super::super::run_daemon_with(
             config_path.clone(),
@@ -18738,11 +18999,11 @@ fn stage_constraint_violating_cached_source(cache_root: &Path, name: &str) {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[serial_test::serial]
-async fn handle_reconcile_compose_error_skips_tick_and_preserves_source_package() {
-    // RED before the fail-closed fix: a constraint-violating cached source made
-    // compose fall back to local-only, so the pruning reconcile uninstalled the
-    // tracked source-delivered package. GREEN after: the tick is skipped, the
-    // package survives, last_reconcile is NOT advanced, and an alert is raised.
+async fn handle_reconcile_constraint_violation_skips_tick_and_preserves_source_package() {
+    // A constraint-violating cached source once made compose fall back to
+    // local-only, so the pruning reconcile uninstalled the tracked
+    // source-delivered package. The tick is skipped instead: the package
+    // survives, last_reconcile is NOT advanced, and an alert names the violation.
     let tmp = tempfile::tempdir().unwrap();
     let _g = crate::with_test_home_guard(tmp.path());
     // The daemon resolves its source cache via `default_cache_dir_for`, which
@@ -18752,8 +19013,10 @@ async fn handle_reconcile_compose_error_skips_tick_and_preserves_source_package(
     // is honored only by the Linux `directories` backend — so pin the cache root
     // with `CFGD_CACHE_DIR` to stay correct on Linux, macOS, and Windows.
     let cache_root = tmp.path().join("cache-root").join("cfgd");
-    let _cache =
-        crate::test_helpers::EnvVarGuard::set("CFGD_CACHE_DIR", cache_root.to_str().unwrap());
+    let _cache = crate::test_helpers::EnvVarGuard::set(
+        crate::CFGD_CACHE_DIR_ENV,
+        cache_root.to_str().unwrap(),
+    );
     stage_constraint_violating_cached_source(&cache_root, "test-src");
 
     let state_dir = tmp.path().join("state");
@@ -18762,8 +19025,16 @@ async fn handle_reconcile_compose_error_skips_tick_and_preserves_source_package(
     // cfgd previously installed the source-delivered package (tracked in state).
     {
         let seed = StateStore::open_in_dir(&state_dir).unwrap();
-        seed.upsert_managed_resource("package", "cargo/source-pkg", "test-src", None, None)
-            .unwrap();
+        seed.upsert_managed_resource(
+            "package",
+            "cargo/source-pkg",
+            "package",
+            None,
+            "test-src",
+            None,
+            None,
+        )
+        .unwrap();
     }
 
     let config_path = tmp.path().join("cfgd.yaml");
@@ -18878,16 +19149,14 @@ async fn handle_reconcile_compose_error_skips_tick_and_preserves_source_package(
         );
     }
 
-    // Alert raised: the notifier captured a fail-closed skip notification whose
-    // body explains the broken source config (so an operator knows WHY and what
-    // to do). The title flags the skipped reconcile.
+    // The alert names the source and the constraint it violated, so an
+    // operator knows WHY the tick was skipped and where to look.
     let alerts = notifier.captured();
     assert!(
-        alerts
-            .iter()
-            .any(|(title, body)| title.contains("reconcile skipped")
-                && body.contains("source's cached config is broken")),
-        "a fail-closed compose error must raise an alert naming the failure; got: {alerts:?}"
+        alerts.iter().any(|(title, body)| title
+            == "cfgd: reconcile skipped — source security constraint violated"
+            && body.contains("source test-src: source 'test-src' carries a preApply script")),
+        "a constraint violation must raise an alert naming the violation; got: {alerts:?}"
     );
 }
 
@@ -18906,8 +19175,10 @@ async fn handle_reconcile_never_synced_source_reconciles_local_only() {
     // every-platform `CFGD_CACHE_DIR` short-circuit instead.
     let cache_root = tmp.path().join("cache-root-empty").join("cfgd");
     std::fs::create_dir_all(&cache_root).unwrap();
-    let _cache =
-        crate::test_helpers::EnvVarGuard::set("CFGD_CACHE_DIR", cache_root.to_str().unwrap());
+    let _cache = crate::test_helpers::EnvVarGuard::set(
+        crate::CFGD_CACHE_DIR_ENV,
+        cache_root.to_str().unwrap(),
+    );
 
     let state_dir = tmp.path().join("state");
     std::fs::create_dir_all(&state_dir).unwrap();
@@ -18954,12 +19225,13 @@ async fn handle_reconcile_never_synced_source_reconciles_local_only() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[serial_test::serial]
 async fn handle_reconcile_required_uncached_source_skips_tick_and_preserves_package() {
-    // A `sync.required: true` source with NO cache must NOT degrade to local-only
-    // (which the daemon's pruning reconcile would treat as the required source's
-    // packages being phantom drift, uninstalling them under autoApply). The
-    // compose chokepoint returns RequiredSourceUnavailable → tick SKIPPED, the
-    // tracked source-delivered package survives, last_reconcile untouched, alert
-    // raised. Parallels handle_reconcile_compose_error_skips_tick_and_preserves_source_package
+    // A `sync.required: true` source with NO cache must NOT degrade to
+    // local-only (which the daemon's pruning reconcile would treat as the
+    // required source's packages being phantom drift, uninstalling them under
+    // autoApply). The compose chokepoint returns RequiredSourceUnavailable →
+    // tick SKIPPED, the tracked source-delivered package survives,
+    // last_reconcile untouched, alert raised. Parallels
+    // handle_reconcile_constraint_violation_skips_tick_and_preserves_source_package
     // but for the cache-only fail-OPEN gap the chokepoint fix closes.
     let tmp = tempfile::tempdir().unwrap();
     let _g = crate::with_test_home_guard(tmp.path());
@@ -18971,8 +19243,10 @@ async fn handle_reconcile_required_uncached_source_skips_tick_and_preserves_pack
     // short-circuit instead.
     let cache_root = tmp.path().join("cache-root-empty").join("cfgd");
     std::fs::create_dir_all(&cache_root).unwrap();
-    let _cache =
-        crate::test_helpers::EnvVarGuard::set("CFGD_CACHE_DIR", cache_root.to_str().unwrap());
+    let _cache = crate::test_helpers::EnvVarGuard::set(
+        crate::CFGD_CACHE_DIR_ENV,
+        cache_root.to_str().unwrap(),
+    );
 
     let state_dir = tmp.path().join("state");
     std::fs::create_dir_all(&state_dir).unwrap();
@@ -18980,8 +19254,16 @@ async fn handle_reconcile_required_uncached_source_skips_tick_and_preserves_pack
     // cfgd previously installed the required source's package (tracked in state).
     {
         let seed = StateStore::open_in_dir(&state_dir).unwrap();
-        seed.upsert_managed_resource("package", "cargo/source-pkg", "req-src", None, None)
-            .unwrap();
+        seed.upsert_managed_resource(
+            "package",
+            "cargo/source-pkg",
+            "package",
+            None,
+            "req-src",
+            None,
+            None,
+        )
+        .unwrap();
     }
 
     let config_path = tmp.path().join("cfgd.yaml");
@@ -19151,8 +19433,10 @@ async fn a_tick_renotifies_a_changed_source_and_stays_silent_on_an_unchanged_one
     // only by the Linux `directories` backend, so pin the cache root with the
     // process-global, every-platform `CFGD_CACHE_DIR` short-circuit.
     let cache_root = tmp.path().join("cache-root").join("cfgd");
-    let _cache =
-        crate::test_helpers::EnvVarGuard::set("CFGD_CACHE_DIR", cache_root.to_str().unwrap());
+    let _cache = crate::test_helpers::EnvVarGuard::set(
+        crate::CFGD_CACHE_DIR_ENV,
+        cache_root.to_str().unwrap(),
+    );
     stage_cached_source(
         &cache_root,
         "acme",
@@ -19260,9 +19544,9 @@ mod ipc_socket_security {
     #[test]
     #[serial_test::serial]
     fn resolve_default_ipc_path_env_override_wins() {
-        let _g = EnvVarGuard::set("CFGD_DAEMON_IPC_PATH", "/custom/cfgd.sock");
+        let _g = EnvVarGuard::set(crate::CFGD_DAEMON_IPC_PATH_ENV, "/custom/cfgd.sock");
         assert_eq!(
-            resolve_default_ipc_path(None, crate::Scope::User),
+            resolve_default_ipc_path(None, crate::Scope::User).unwrap(),
             std::path::PathBuf::from("/custom/cfgd.sock")
         );
     }
@@ -19271,10 +19555,10 @@ mod ipc_socket_security {
     #[test]
     #[serial_test::serial]
     fn resolve_default_ipc_path_uses_xdg_runtime_dir_when_set() {
-        let _unset_override = EnvVarGuard::unset("CFGD_DAEMON_IPC_PATH");
+        let _unset_override = EnvVarGuard::unset(crate::CFGD_DAEMON_IPC_PATH_ENV);
         let _xdg = EnvVarGuard::set("XDG_RUNTIME_DIR", "/tmp/test-xdg");
         assert_eq!(
-            resolve_default_ipc_path(None, crate::Scope::User),
+            resolve_default_ipc_path(None, crate::Scope::User).unwrap(),
             std::path::PathBuf::from("/tmp/test-xdg/cfgd/cfgd.sock")
         );
     }
@@ -19283,7 +19567,7 @@ mod ipc_socket_security {
     #[test]
     #[serial_test::serial]
     fn resolve_default_ipc_path_falls_back_to_home_cache_when_xdg_unset_linux() {
-        let _unset_override = EnvVarGuard::unset("CFGD_DAEMON_IPC_PATH");
+        let _unset_override = EnvVarGuard::unset(crate::CFGD_DAEMON_IPC_PATH_ENV);
         let _unset_xdg = EnvVarGuard::unset("XDG_RUNTIME_DIR");
         let tmp = tempfile::tempdir().unwrap();
         let _home = EnvVarGuard::set("HOME", tmp.path().to_str().unwrap());
@@ -19293,7 +19577,10 @@ mod ipc_socket_security {
             .join("cfgd")
             .join("runtime")
             .join("cfgd.sock");
-        assert_eq!(resolve_default_ipc_path(None, crate::Scope::User), expected);
+        assert_eq!(
+            resolve_default_ipc_path(None, crate::Scope::User).unwrap(),
+            expected
+        );
     }
 
     /// On Windows the named-pipe endpoint is scope-aware: a per-user daemon and
@@ -19304,9 +19591,9 @@ mod ipc_socket_security {
     #[test]
     #[serial_test::serial]
     fn resolve_default_ipc_path_windows_scope_selects_distinct_pipe() {
-        let _unset_override = EnvVarGuard::unset("CFGD_DAEMON_IPC_PATH");
-        let user = resolve_default_ipc_path(None, crate::Scope::User);
-        let system = resolve_default_ipc_path(None, crate::Scope::System);
+        let _unset_override = EnvVarGuard::unset(crate::CFGD_DAEMON_IPC_PATH_ENV);
+        let user = resolve_default_ipc_path(None, crate::Scope::User).unwrap();
+        let system = resolve_default_ipc_path(None, crate::Scope::System).unwrap();
         assert_eq!(user, std::path::PathBuf::from(r"\\.\pipe\cfgd"));
         assert_eq!(system, std::path::PathBuf::from(r"\\.\pipe\cfgd-system"));
         assert_ne!(
@@ -19319,7 +19606,7 @@ mod ipc_socket_security {
     #[test]
     #[serial_test::serial]
     fn resolve_default_ipc_path_uses_application_support_on_macos() {
-        let _unset_override = EnvVarGuard::unset("CFGD_DAEMON_IPC_PATH");
+        let _unset_override = EnvVarGuard::unset(crate::CFGD_DAEMON_IPC_PATH_ENV);
         let tmp = tempfile::tempdir().unwrap();
         let _home = EnvVarGuard::set("HOME", tmp.path().to_str().unwrap());
         let expected = tmp
@@ -19329,7 +19616,10 @@ mod ipc_socket_security {
             .join("cfgd")
             .join("runtime")
             .join("cfgd.sock");
-        assert_eq!(resolve_default_ipc_path(None, crate::Scope::User), expected);
+        assert_eq!(
+            resolve_default_ipc_path(None, crate::Scope::User).unwrap(),
+            expected
+        );
     }
 
     /// Drives `run_health_server` against a tempdir socket path and asserts
@@ -19357,6 +19647,7 @@ mod ipc_socket_security {
             if sock_path.exists() {
                 break;
             }
+            // long-line-ok: a hatch is read off its own line, so it cannot wrap
             // sleep-ok: bounded poll on a filesystem side effect (the bound socket), not a fixed-duration guess
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
@@ -19414,6 +19705,7 @@ mod ipc_socket_security {
         let err = ensure_owner_private_dir(&bogus)
             .expect_err("expected refusal when parent dir cannot be made owner-private");
         let msg = format!("{err}");
+        // long-line-ok: a hatch is read off its own line, so it cannot wrap
         // unfolded-path-ok: the create refusal is worded by `ensure_owner_private_dir` against the path it was handed, which the ancestor walk's folds never reach.
         assert!(
             msg.contains(&bogus.display().to_string()),
@@ -19425,14 +19717,15 @@ mod ipc_socket_security {
     /// leaf's own kind check, and the directory it points at keeps its mode.
     ///
     /// The leaf is the one component the helper MUTATES, which is where the
-    /// walk's admission of a link component stops: the daemon runs as root under
-    /// systemd while its runtime directory can sit under a HOME an unprivileged
-    /// user owns, and a path-based chmod there would hand `0o700` to whatever
-    /// that user pointed the link at, locking another user out of their own
-    /// directory. The refusal is a sentence this module words and not the
-    /// no-follow chmod's `ELOOP`, so an operator who symlinked the runtime
-    /// directory deliberately is told what cfgd will not do rather than handed a
-    /// kernel errno about a path the walk had just approved. It holds at any uid.
+    /// walk's admission of a link component stops: the daemon runs as root
+    /// under systemd while its runtime directory can sit under a HOME an
+    /// unprivileged user owns, and a path-based chmod there would hand `0o700`
+    /// to whatever that user pointed the link at, locking another user out of
+    /// their own directory. The refusal is a sentence this module words (the
+    /// no-follow chmod's `ELOOP` never reaches it), so an operator who
+    /// symlinked the runtime directory deliberately is told what cfgd will not
+    /// do. A kernel errno about a path the walk had just approved would tell
+    /// them nothing. It holds at any uid.
     #[cfg(unix)]
     #[test]
     fn the_socket_directory_refuses_a_symlink_instead_of_chmodding_what_it_points_at() {
@@ -19469,8 +19762,8 @@ mod ipc_socket_security {
     /// operation after the refusal names the socket by path, so an account owning
     /// any ancestor can rename the directory root created and leave a link of its
     /// own in that component's place. The second arm therefore asserts the
-    /// refusal names the OFFENDING COMPONENT and not the leaf, which passes both
-    /// of the leaf's own checks.
+    /// refusal names the OFFENDING COMPONENT. The leaf passes both of its own
+    /// checks, so naming it would point at nothing wrong.
     ///
     /// Arranging a foreign owner needs the power to `chown`, so every arm here
     /// runs as root and the pin proves nothing at any other uid. That is what
@@ -19563,8 +19856,8 @@ mod ipc_socket_security {
     ///
     /// Both trees sit under the sticky temporary root the walk admits by its
     /// writability rule, which is the shape every fixture of this module builds
-    /// in. Both arms hold at any uid; the escaping arm, which needs the power to
-    /// `chown`, is the sibling
+    /// in. Both arms hold at any uid; the escaping arm, which needs the power
+    /// to `chown`, is the sibling
     /// `the_socket_directory_refuses_a_link_component_aimed_at_another_owner_as_root`.
     #[cfg(unix)]
     #[test]
@@ -19721,7 +20014,11 @@ mod ipc_socket_security {
         let mut judged = Vec::new();
         let mut undocumented = Vec::new();
         for (i, line) in lines.iter().enumerate() {
-            if !line.starts_with("pub(crate) ") && !line.starts_with("pub ") {
+            // Column 0 is the rule, whatever the lead is spelled: an indented
+            // item belongs to the block above it.
+            if line.starts_with(char::is_whitespace)
+                || crate::test_helpers::item_lead(line).0 != crate::test_helpers::ItemLead::Visible
+            {
                 continue;
             }
             judged.push(format!("{}: {}", i + 1, line));
@@ -19803,6 +20100,7 @@ mod ipc_socket_security {
                 .unwrap_or(path.as_path())
                 .display()
                 .to_string();
+            // unfloored-slice-ok: the pins judged here are tests.
             let body = crate::test_helpers::walked_file_body(&path);
             let lines = crate::test_helpers::logical_source_lines(&body);
             let mut i = 0;
@@ -19915,7 +20213,7 @@ mod ipc_socket_security {
             }
         });
 
-        let _g = EnvVarGuard::set("CFGD_DAEMON_IPC_PATH", sock_path.to_str().unwrap());
+        let _g = EnvVarGuard::set(crate::CFGD_DAEMON_IPC_PATH_ENV, sock_path.to_str().unwrap());
         let result = tokio::task::spawn_blocking(|| query_daemon_status(None, crate::Scope::User))
             .await
             .unwrap();
@@ -19949,7 +20247,10 @@ mod query_daemon_status_paths {
     fn query_daemon_status_returns_none_when_socket_path_missing() {
         let tmp = tempfile::tempdir().unwrap();
         let nonexistent = tmp.path().join("nope.sock");
-        let _g = EnvVarGuard::set("CFGD_DAEMON_IPC_PATH", nonexistent.to_str().unwrap());
+        let _g = EnvVarGuard::set(
+            crate::CFGD_DAEMON_IPC_PATH_ENV,
+            nonexistent.to_str().unwrap(),
+        );
         let result =
             query_daemon_status(None, crate::Scope::User).expect("missing socket must not error");
         assert!(
@@ -20008,7 +20309,7 @@ mod query_daemon_status_paths {
             }
         });
 
-        let _g = EnvVarGuard::set("CFGD_DAEMON_IPC_PATH", sock_path.to_str().unwrap());
+        let _g = EnvVarGuard::set(crate::CFGD_DAEMON_IPC_PATH_ENV, sock_path.to_str().unwrap());
         let result = tokio::task::spawn_blocking(|| query_daemon_status(None, crate::Scope::User))
             .await
             .unwrap();
@@ -20050,7 +20351,7 @@ mod query_daemon_status_paths {
             }
         });
 
-        let _g = EnvVarGuard::set("CFGD_DAEMON_IPC_PATH", sock_path.to_str().unwrap());
+        let _g = EnvVarGuard::set(crate::CFGD_DAEMON_IPC_PATH_ENV, sock_path.to_str().unwrap());
         let result = tokio::task::spawn_blocking(|| query_daemon_status(None, crate::Scope::User))
             .await
             .unwrap();
@@ -20096,7 +20397,7 @@ mod query_daemon_status_paths {
             }
         });
 
-        let _g = EnvVarGuard::set("CFGD_DAEMON_IPC_PATH", sock_path.to_str().unwrap());
+        let _g = EnvVarGuard::set(crate::CFGD_DAEMON_IPC_PATH_ENV, sock_path.to_str().unwrap());
         let result = tokio::task::spawn_blocking(|| query_daemon_status(None, crate::Scope::User))
             .await
             .unwrap();
@@ -20468,7 +20769,7 @@ mod handle_reconcile_extra_branches {
         // the file is removed.
         let pending_root = tempfile::tempdir().unwrap();
         let _g = crate::test_helpers::EnvVarGuard::set(
-            "CFGD_STATE_DIR",
+            crate::CFGD_STATE_DIR_ENV,
             pending_root.path().to_str().unwrap(),
         );
 
@@ -20686,7 +20987,8 @@ mod tests_run_daemon_wrapper {
     #[serial_test::serial]
     fn cli_run_overrides_carry_the_state_dir_and_runtime_dir_flags() {
         use crate::daemon::cli_run_overrides;
-        let _unset_override = crate::test_helpers::EnvVarGuard::unset("CFGD_DAEMON_IPC_PATH");
+        let _unset_override =
+            crate::test_helpers::EnvVarGuard::unset(crate::CFGD_DAEMON_IPC_PATH_ENV);
         let state = PathBuf::from("/srv/cfgd-state");
         let runtime = PathBuf::from("/srv/cfgd-run");
         let cache = PathBuf::from("/srv/cfgd-cache");
@@ -20697,6 +20999,13 @@ mod tests_run_daemon_wrapper {
                 cache_dir: Some(cache.clone()),
             },
             crate::Scope::User,
+            Some(crate::config::UpdatePolicy::Manual),
+        )
+        .expect("absolute dirs resolve");
+        assert_eq!(
+            over.update_policy,
+            Some(crate::config::UpdatePolicy::Manual),
+            "--update-policy must reach the loop, or `cfgd --update-policy manual daemon` still checks on its timer"
         );
         assert_eq!(
             over.state_dir_override.as_deref(),
@@ -20733,7 +21042,12 @@ mod tests_run_daemon_wrapper {
     #[test]
     fn cli_run_overrides_leave_both_dirs_to_the_defaults_when_unset() {
         use crate::daemon::cli_run_overrides;
-        let over = cli_run_overrides(DaemonDirOverrides::default(), crate::Scope::User);
+        let over = cli_run_overrides(DaemonDirOverrides::default(), crate::Scope::User, None)
+            .expect("the defaults resolve");
+        assert!(
+            over.update_policy.is_none(),
+            "no flag → the version tick re-reads spec.update.policy every time"
+        );
         assert!(
             over.state_dir_override.is_none(),
             "no flag → fall through to CFGD_STATE_DIR / the scope default"
@@ -20757,6 +21071,7 @@ mod tests_run_daemon_wrapper {
             printer,
             hooks,
             crate::Scope::User,
+            None,
             env!("CARGO_PKG_VERSION"),
         )
         .await;
@@ -21170,6 +21485,7 @@ mod backup_timers {
             .mock("POST", "/api/v1/checkin")
             .with_status(500)
             .with_body("gateway is restarting")
+            .expect(crate::retry::BackoffConfig::DEFAULT_TRANSIENT.max_attempts as usize)
             .create();
         crate::server_client::save_credential(&test_credential(&server.url()))
             .expect("store the device credential");
@@ -21197,18 +21513,7 @@ mod backup_timers {
             deprecations: Vec::new(),
             legacy_output_keys: Vec::new(),
         };
-        let resolved = ResolvedProfile {
-            layers: vec![ProfileLayer {
-                source: "local".into(),
-                profile_name: "test".into(),
-                priority: 1000,
-                policy: LayerPolicy::Local,
-                spec: ProfileSpec::default(),
-            }],
-            merged: MergedProfile::default(),
-        };
-
-        let outcome = try_server_checkin(&config, &resolved, Default::default());
+        let outcome = try_server_checkin(&config, &test_printer(), || Some(sample_checkin_facts()));
         mock.assert();
         assert!(
             outcome.backup_schedules.is_none(),
@@ -21264,18 +21569,7 @@ mod backup_timers {
             deprecations: Vec::new(),
             legacy_output_keys: Vec::new(),
         };
-        let resolved = ResolvedProfile {
-            layers: vec![ProfileLayer {
-                source: "local".into(),
-                profile_name: "test".into(),
-                priority: 1000,
-                policy: LayerPolicy::Local,
-                spec: ProfileSpec::default(),
-            }],
-            merged: MergedProfile::default(),
-        };
-
-        let outcome = try_server_checkin(&config, &resolved, Default::default());
+        let outcome = try_server_checkin(&config, &test_printer(), || Some(sample_checkin_facts()));
         mock.assert();
         assert!(
             !outcome.config_changed,
@@ -21330,18 +21624,7 @@ mod backup_timers {
             deprecations: Vec::new(),
             legacy_output_keys: Vec::new(),
         };
-        let resolved = ResolvedProfile {
-            layers: vec![ProfileLayer {
-                source: "local".into(),
-                profile_name: "test".into(),
-                priority: 1000,
-                policy: LayerPolicy::Local,
-                spec: ProfileSpec::default(),
-            }],
-            merged: MergedProfile::default(),
-        };
-
-        let outcome = try_server_checkin(&config, &resolved, Default::default());
+        let outcome = try_server_checkin(&config, &test_printer(), || Some(sample_checkin_facts()));
         mock.assert();
         assert!(
             outcome.backup_schedules.is_none(),
@@ -21399,18 +21682,7 @@ mod backup_timers {
             deprecations: Vec::new(),
             legacy_output_keys: Vec::new(),
         };
-        let resolved = ResolvedProfile {
-            layers: vec![ProfileLayer {
-                source: "local".into(),
-                profile_name: "test".into(),
-                priority: 1000,
-                policy: LayerPolicy::Local,
-                spec: ProfileSpec::default(),
-            }],
-            merged: MergedProfile::default(),
-        };
-
-        let outcome = try_server_checkin(&config, &resolved, Default::default());
+        let outcome = try_server_checkin(&config, &test_printer(), || Some(sample_checkin_facts()));
         mock.assert();
         assert_eq!(
             outcome.backup_schedules,
@@ -21609,7 +21881,17 @@ mod backup_timers {
         let config_path = write_gateway_config(&tmp, &server.url(), "spec: {}\n");
         let cfg = config::load_config(&config_path).expect("load the config");
         let notify = tokio::sync::Notify::new();
-        run_startup_checkin_blocking(&config_path, None, &cfg, Some(tmp.path()), &notify);
+        run_startup_checkin_blocking(
+            &config_path,
+            None,
+            &cfg,
+            Some(tmp.path()),
+            &notify,
+            &crate::test_helpers::NoopDaemonHooks,
+            &test_printer(),
+            crate::Scope::User,
+            None,
+        );
         mock.assert();
 
         let store = StateStore::open_in_dir(tmp.path()).expect("state store");
@@ -21650,7 +21932,17 @@ mod backup_timers {
         let config_path = write_gateway_config(&tmp, &server.url(), "spec: {}\n");
         let cfg = config::load_config(&config_path).expect("load the config");
         let notify = tokio::sync::Notify::new();
-        run_startup_checkin_blocking(&config_path, None, &cfg, Some(tmp.path()), &notify);
+        run_startup_checkin_blocking(
+            &config_path,
+            None,
+            &cfg,
+            Some(tmp.path()),
+            &notify,
+            &crate::test_helpers::NoopDaemonHooks,
+            &test_printer(),
+            crate::Scope::User,
+            None,
+        );
         mock.assert();
 
         assert_eq!(
@@ -21765,6 +22057,97 @@ mod backup_timers {
             body.get("backupScheduleOwners").is_some(),
             "the map the tick did observe is still reported: {body}"
         );
+    }
+
+    /// The periodic check-in reports the snapshot the daemon's own compliance
+    /// tick collected. The newest row in the store may be another profile's
+    /// `cfgd compliance` run, so it is not what goes out. It reports none while
+    /// the config this tick loaded has compliance off.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_tick_reports_the_compliance_its_own_tick_collected_only_while_enabled() {
+        use crate::compliance::{
+            ComplianceCheck, ComplianceSnapshot, ComplianceStatus, MachineInfo,
+        };
+
+        let snapshot = |detail: &str| {
+            let checks = vec![ComplianceCheck {
+                category: "file".into(),
+                target: Some("/home/u/.zshrc".into()),
+                status: ComplianceStatus::Violation,
+                detail: Some(detail.into()),
+                ..Default::default()
+            }];
+            ComplianceSnapshot {
+                timestamp: crate::utc_now_iso8601(),
+                machine: MachineInfo {
+                    hostname: "ws-1".into(),
+                    os: "linux".into(),
+                    arch: "x86_64".into(),
+                },
+                profile: "default".into(),
+                sources: vec![],
+                summary: crate::compliance::compute_summary(&checks),
+                checks,
+            }
+        };
+
+        for enabled in [true, false] {
+            let tmp = tempfile::TempDir::new().unwrap();
+            let _home = crate::with_test_home_guard(tmp.path());
+            let mut server = mockito::Server::new_async().await;
+            let posted: Arc<std::sync::Mutex<Option<serde_json::Value>>> = Arc::default();
+            let captured = Arc::clone(&posted);
+            let mock = server
+                .mock("POST", "/api/v1/checkin")
+                .match_request(move |req| {
+                    if let Ok(raw) = req.body()
+                        && let Ok(parsed) = serde_json::from_slice::<serde_json::Value>(raw)
+                    {
+                        *captured.lock().expect("the capture slot") = Some(parsed);
+                    }
+                    true
+                })
+                .with_status(200)
+                .with_header("content-type", "application/json")
+                .with_body(r#"{"status":"ok","configChanged":false}"#)
+                .create_async()
+                .await;
+            crate::server_client::save_credential(&test_credential(&server.url()))
+                .expect("store the device credential");
+
+            let (mut ctx, state, _buf) = make_test_ctx(&tmp, false, false, None);
+            ctx.config_path = write_gateway_config(&tmp, &server.url(), "spec: {}\n");
+            let mut config = std::fs::read_to_string(&ctx.config_path).expect("read the config");
+            config.push_str(&format!("  compliance:\n    enabled: {enabled}\n"));
+            std::fs::write(&ctx.config_path, config).expect("write the config");
+
+            StateStore::open_in_dir(tmp.path())
+                .expect("state store")
+                .store_compliance_snapshot(&snapshot("another profile's row"))
+                .expect("store");
+            state.lock().await.reported_compliance =
+                Some(Arc::new(snapshot("managed file missing")));
+
+            run_default_tick(&ctx).await;
+            mock.assert_async().await;
+
+            let body = posted
+                .lock()
+                .expect("the capture slot")
+                .clone()
+                .expect("the tick posted a check-in");
+            if enabled {
+                assert_eq!(
+                    body["complianceSummary"]["checks"][0]["detail"], "managed file missing",
+                    "the tick reports the snapshot its compliance tick collected: {body}"
+                );
+            } else {
+                assert!(
+                    body.get("complianceSummary").is_none(),
+                    "compliance off reports nothing, whatever is cached or stored: {body}"
+                );
+            }
+        }
     }
 
     // ----- task-set construction -----
@@ -22096,6 +22479,7 @@ mod backup_timers {
                 Instant::now() < deadline,
                 "the loop's backup timer never fired"
             );
+            // long-line-ok: a hatch is read off its own line, so it cannot wrap
             // sleep-ok: bounded deadline poll on a state-store observable, not a fixed-duration guess
             tokio::time::sleep(StdDuration::from_millis(25)).await;
         }
@@ -22566,7 +22950,7 @@ mod backup_timers {
     ) -> (PathBuf, crate::test_helpers::EnvVarGuard) {
         let cache_root = tmp.path().join(".cache").join("cfgd");
         let guard = crate::test_helpers::EnvVarGuard::set(
-            "CFGD_CACHE_DIR",
+            crate::CFGD_CACHE_DIR_ENV,
             cache_root.to_str().expect("utf-8 cache root"),
         );
         let cache = cache_root.join("sources").join("team");
@@ -23451,7 +23835,14 @@ fn write_tick_cache_config(root: &Path) -> PathBuf {
     config_path
 }
 
+// Both counts this reads are process-global ceilings a sibling pins: a test
+// holding `ConfigReuseMaxAgeGuard::always_expired` makes every tick re-derive,
+// and one holding `EnumerationMemoTtlGuard::always_expired` makes every tick
+// re-enumerate. The claim here is that NEITHER is pinned, so it joins both
+// groups — unnamed first, named alphabetically.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[serial_test::serial(enumeration_memo)]
+#[serial_test::serial(tick_cache_reuse)]
 async fn repeat_ticks_over_an_unchanged_config_derive_and_enumerate_once() {
     // Before the tick cache every tick re-read the config, re-resolved the
     // profile, rebuilt the registry and re-asked every manager what it had
@@ -23497,7 +23888,11 @@ async fn repeat_ticks_over_an_unchanged_config_derive_and_enumerate_once() {
     assert_eq!(enumerations, 1, "three ticks must enumerate cargo once");
 }
 
+// The derivation count is the tick cache's reuse ceiling read unpinned: a
+// sibling holding `ConfigReuseMaxAgeGuard`/`ModuleReuseTtlGuard` at
+// `always_expired` makes every tick re-derive.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[serial_test::serial(tick_cache_reuse)]
 async fn a_touched_profile_re_derives_exactly_once() {
     // The gate is on what the derivation READ, and the profile is one of those
     // reads even though the file the daemon was pointed at never moved.
@@ -23556,8 +23951,12 @@ async fn a_touched_profile_re_derives_exactly_once() {
     );
 }
 
+// The derivation count is the tick cache's reuse ceiling read unpinned: a
+// sibling holding `ConfigReuseMaxAgeGuard`/`ModuleReuseTtlGuard` at
+// `always_expired` makes every tick re-derive.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[serial_test::serial]
+#[serial_test::serial(tick_cache_reuse)]
 async fn a_touched_cached_source_profile_re_derives() {
     // The composed inputs are inputs too. A source's cached profile lives
     // outside the config directory entirely, and a gate that watched only the
@@ -23569,8 +23968,10 @@ async fn a_touched_cached_source_profile_re_derives() {
     // the reconcile runs on a blocking worker where the thread-local test home
     // does not reach.
     let cache_root = tmp.path().join("cache-root").join("cfgd");
-    let _cache_env =
-        crate::test_helpers::EnvVarGuard::set("CFGD_CACHE_DIR", cache_root.to_str().unwrap());
+    let _cache_env = crate::test_helpers::EnvVarGuard::set(
+        crate::CFGD_CACHE_DIR_ENV,
+        cache_root.to_str().unwrap(),
+    );
     stage_cached_source(
         &cache_root,
         "test-src",
@@ -23648,8 +24049,12 @@ async fn a_touched_cached_source_profile_re_derives() {
     );
 }
 
+// The derivation count is the tick cache's reuse ceiling read unpinned: a
+// sibling holding `ConfigReuseMaxAgeGuard`/`ModuleReuseTtlGuard` at
+// `always_expired` makes every tick re-derive.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[serial_test::serial]
+#[serial_test::serial(tick_cache_reuse)]
 async fn a_never_synced_source_is_warned_about_on_every_tick() {
     // The operator-visible half of holding a composition across ticks: the
     // source is skipped, cfgd keeps reconciling without it, and nothing about
@@ -23662,8 +24067,10 @@ async fn a_never_synced_source_is_warned_about_on_every_tick() {
     // every platform. The directory is deliberately never created — that is the
     // condition under test.
     let cache_root = tmp.path().join("cache-root").join("cfgd");
-    let _cache_env =
-        crate::test_helpers::EnvVarGuard::set("CFGD_CACHE_DIR", cache_root.to_str().unwrap());
+    let _cache_env = crate::test_helpers::EnvVarGuard::set(
+        crate::CFGD_CACHE_DIR_ENV,
+        cache_root.to_str().unwrap(),
+    );
 
     let state_dir = tmp.path().join("state");
     std::fs::create_dir_all(&state_dir).unwrap();
@@ -23731,8 +24138,12 @@ async fn a_never_synced_source_is_warned_about_on_every_tick() {
     );
 }
 
+// The derivation count is the tick cache's reuse ceiling read unpinned: a
+// sibling holding `ConfigReuseMaxAgeGuard`/`ModuleReuseTtlGuard` at
+// `always_expired` makes every tick re-derive.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[serial_test::serial]
+#[serial_test::serial(tick_cache_reuse)]
 async fn a_re_pointed_source_origin_re_derives() {
     // The origin-mismatch verdict is read out of the checkout's own git config,
     // and it is REPLAYED to the operator on every reusing tick — so the file it
@@ -23740,8 +24151,10 @@ async fn a_re_pointed_source_origin_re_derives() {
     let tmp = tempfile::tempdir().unwrap();
     let _g = crate::with_test_home_guard(tmp.path());
     let cache_root = tmp.path().join("cache-root").join("cfgd");
-    let _cache_env =
-        crate::test_helpers::EnvVarGuard::set("CFGD_CACHE_DIR", cache_root.to_str().unwrap());
+    let _cache_env = crate::test_helpers::EnvVarGuard::set(
+        crate::CFGD_CACHE_DIR_ENV,
+        cache_root.to_str().unwrap(),
+    );
     stage_cached_source(
         &cache_root,
         "test-src",
@@ -23950,6 +24363,54 @@ mod log_dialect {
         );
     }
 
+    /// A failure is a clause of the same list, so the whole line carries one
+    /// separator. The failure count used to be appended by hand with `", "`
+    /// onto a list joined with `"; "`, which made a failing tick's line read
+    /// `1 action succeeded; 1 skipped, 1 failed`: three clauses under two
+    /// separators, the inner comma inviting the last two to read as one item.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[serial_test::serial]
+    async fn a_failing_tick_logs_its_failure_as_a_clause_of_the_same_list() {
+        let (tmp, config_path, state_dir) = min_fixture();
+        let _home = crate::with_test_home_guard(tmp.path());
+        std::fs::write(
+            tmp.path().join("profiles").join("default.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  modules:\n    - mymod\n    - badmod\n",
+        )
+        .unwrap();
+        // `badmod` deploys under a path whose parent is a regular file, which
+        // no uid and no platform can create a directory over, so the tick
+        // reaches the mixed tally this line is about.
+        let blocker = tmp.path().join("blocker");
+        std::fs::write(&blocker, "not a directory\n").unwrap();
+        for (module, target) in [
+            ("mymod", tmp.path().join("app.conf")),
+            ("badmod", blocker.join("app.conf")),
+        ] {
+            let module_dir = tmp.path().join("modules").join(module);
+            std::fs::create_dir_all(&module_dir).unwrap();
+            std::fs::write(module_dir.join("app.conf"), format!("from {module}\n")).unwrap();
+            std::fs::write(
+                module_dir.join("module.yaml"),
+                format!(
+                    "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: {module}\nspec:\n  files:\n    - source: app.conf\n      target: {}\n      strategy: Copy\n",
+                    crate::to_posix_string(&target)
+                ),
+            )
+            .unwrap();
+        }
+
+        let logs = run_tick(&config_path, &state_dir, None).await;
+        assert!(
+            logs.contains("reconcile: complete — 1 action succeeded; 1 action failed"),
+            "got: {logs}"
+        );
+        assert!(
+            !logs.contains("succeeded, 1"),
+            "the failure clause joins the list; no comma appends it: {logs}"
+        );
+    }
+
     /// The log line accounts for work the tick's plan could not name too: an
     /// `onChange` hook fires on whether this very tick changed anything. Folded
     /// into `succeeded` it reported two actions for a plan of one, on the one
@@ -23997,7 +24458,7 @@ mod log_dialect {
         crate::test_helpers::assert_slots_discriminate(&slots);
         let logs = run_tick(&config_path, &state_dir, None).await;
         let expected = format!(
-            "reconcile: complete — {} actions succeeded, {} onChange hook ran after the plan",
+            "reconcile: complete — {} actions succeeded; {} onChange hook ran after the plan",
             slots[0].1, slots[1].1
         );
         assert!(logs.contains(&expected), "want {expected:?}, got: {logs}");
@@ -24110,7 +24571,7 @@ mod log_dialect {
 #[test]
 fn every_counted_clause_names_the_unit_it_counts() {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/daemon/reconcile.rs");
-    let body = std::fs::read_to_string(&path).expect("the reconcile tick is checked out");
+    let body = crate::test_helpers::walked_file_body(&path);
     // binding → the nouns it is honestly counted in.
     let classified: &[(&str, &[&str])] = &[
         ("drift_total", &["action", "resource"]),

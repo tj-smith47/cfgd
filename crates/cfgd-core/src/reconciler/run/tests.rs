@@ -84,6 +84,7 @@ fn ctx(title: RunTitle) -> RunContext<'static> {
 fn action_result(success: bool) -> ActionResult {
     ActionResult {
         origin: None,
+        manager: None,
         after_plan: None,
         phase: "files".to_string(),
         description: "file:create:/tmp/x".to_string(),
@@ -154,7 +155,12 @@ impl RunExecutor for StubExecutor {
 #[test]
 fn rollup_lines_covers_every_apply_status() {
     let cases: Vec<(ApplyStatus, usize, Vec<Role>)> = vec![
-        (ApplyStatus::Success, 1, vec![Role::Ok]),
+        // The tally below carries a failure under every status, this one
+        // included. A `Success` holding one is a tally no apply path produces,
+        // and the clause list states it: the one decomposition is what every
+        // arm reads, so a surface cannot lose an outcome by which status word
+        // happens to sit above it.
+        (ApplyStatus::Success, 2, vec![Role::Ok, Role::Fail]),
         (
             ApplyStatus::Partial,
             3,
@@ -401,23 +407,33 @@ fn abort_rollup_keeps_the_lowercase_cli_sentence() {
 fn an_abort_that_killed_an_action_names_the_failure_too() {
     // The signal reaches the child: `brew install` dies with the run. Without
     // the failure clause that action is in neither the applied count nor the
-    // not-attempted line, and the closing line reads as a clean stop.
-    let tally = RunTally {
-        after_plan: Vec::new(),
-        succeeded: 2,
-        skipped: 0,
-        not_attempted: Vec::new(),
-        failed: 1,
-        planned_total: 3,
-        status: ApplyStatus::Aborted,
-        aborted: Some(130),
-    };
-    let lines = rollup_lines(&tally, RunTitle::Apply);
-    assert_eq!(lines[0].1, "apply aborted by signal");
-    assert_eq!(
-        lines[0].2.as_deref(),
-        Some("2 of 3 actions applied, 1 failed; no partial writes")
-    );
+    // not-attempted line, and the closing line reads as a clean stop. The
+    // clause is the counted rollup's own, count and noun alike, so one run
+    // cannot be read as two.
+    for (failed, detail) in [
+        (
+            1,
+            "2 of 4 actions applied; 1 action failed; no partial writes",
+        ),
+        (
+            2,
+            "2 of 4 actions applied; 2 actions failed; no partial writes",
+        ),
+    ] {
+        let tally = RunTally {
+            after_plan: Vec::new(),
+            succeeded: 2,
+            skipped: 0,
+            not_attempted: Vec::new(),
+            failed,
+            planned_total: 4,
+            status: ApplyStatus::Aborted,
+            aborted: Some(130),
+        };
+        let lines = rollup_lines(&tally, RunTitle::Apply);
+        assert_eq!(lines[0].1, "apply aborted by signal");
+        assert_eq!(lines[0].2.as_deref(), Some(detail));
+    }
 }
 
 /// The wall total measures the RUN, so it belongs to the line that names the
@@ -776,6 +792,7 @@ fn a_pre_skipped_action_is_priced_outside_the_counted_rollup() {
     result.action_results.push(skipped_that_ran);
     result.action_results.push(ActionResult {
         origin: None,
+        manager: None,
         after_plan: None,
         phase: "bootstrap".to_string(),
         description: "env:refresh".to_string(),
@@ -806,7 +823,7 @@ fn a_pre_skipped_action_is_priced_outside_the_counted_rollup() {
     );
     assert_eq!(
         outcome_counts(&tally),
-        "2 actions succeeded, 1 skipped, 1 not attempted: no session manager"
+        "2 actions succeeded; 1 skipped; 1 not attempted: no session manager"
     );
 
     let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
@@ -842,7 +859,7 @@ fn a_pre_skipped_action_is_priced_outside_the_counted_rollup() {
     // A second reason is a second clause, not a second count; one reason twice
     // is one clause over a count of two.
     tally_with_reasons(&["a", "a", "b"], |counts| {
-        assert_eq!(counts, "2 actions succeeded, 3 not attempted: a, b");
+        assert_eq!(counts, "2 actions succeeded; 3 not attempted: a; b");
     });
 }
 
@@ -861,6 +878,7 @@ fn after_plan_result(subject: AfterPlan, state: AfterPlanState) -> ActionResult 
     let changed = state == AfterPlanState::Performed;
     ActionResult {
         origin: None,
+        manager: None,
         after_plan: Some(subject),
         phase: "bootstrap".to_string(),
         description: "env:write:/home/me/.cfgd.env".to_string(),
@@ -943,8 +961,8 @@ fn work_a_run_learned_it_had_to_do_states_itself_under_the_headers_count() {
     assert_eq!(
         outcome_counts(&tally),
         format!(
-            "{} actions succeeded, {converged} env surfaces converged after the \
-             plan, {hooks} onChange hook ran after the plan",
+            "{} actions succeeded; {converged} env surfaces converged after the \
+             plan; {hooks} onChange hook ran after the plan",
             tally.succeeded
         ),
         "the daemon's one-line account names the class too"
@@ -1143,13 +1161,14 @@ fn an_after_plan_surface_that_changed_nothing_is_skipped_and_never_converged() {
          from its success flag"
     );
     // The daemon keeps the one account the rendered rollup does, so a skip
-    // cannot read as converged on the journal line either.
+    // cannot read as converged on the journal line either, and the planned
+    // failures are a clause of that same list.
     assert_eq!(
         outcome_counts(&tally),
         format!(
-            "{succeeded} actions succeeded, {} env surfaces converged after the \
-             plan, {} env surface changed nothing after the plan, {} env surfaces \
-             failed after the plan",
+            "{succeeded} actions succeeded; {planned_failed} actions failed; {} \
+             env surfaces converged after the plan; {} env surface changed \
+             nothing after the plan; {} env surfaces failed after the plan",
             class[0].1, class[1].1, class[2].1
         )
     );
@@ -1259,7 +1278,7 @@ fn apply_result_tally_reads_the_reconcilers_planned_total() {
 
 // --- alignment ---
 
-/// The column is per REPORT, not per phase and not per owner group: one long
+/// The column is per REPORT, across phases and owner groups: one long
 /// subject in the FIRST phase moves the column the second phase pads to.
 #[test]
 fn report_align_width_spans_every_phase() {
@@ -1735,11 +1754,11 @@ fn header_omits_every_empty_row_and_skips_the_modules_phase() {
         "trigger row missing: {out:?}"
     );
     assert!(
-        out.contains("Phases   Files"),
+        out.contains("Phases   Files"), // space-run-ok: a rendered kv row's own column padding.
         "phases row must list only phases that render: {out:?}"
     );
     assert!(
-        !out.contains("Phases   Modules") && !out.contains("Modules, Files"),
+        !out.contains("Phases   Modules") && !out.contains("Modules, Files"), // space-run-ok: a rendered kv row's own column padding.
         "the Modules phase must never appear in the Phases row: {out:?}"
     );
 }
@@ -1803,12 +1822,12 @@ fn a_phases_row_states_only_what_the_invocation_did_not() {
 
     let unfiltered = header(None);
     assert!(
-        unfiltered.contains("Phases   Files, Post-Scripts"),
+        unfiltered.contains("Phases   Files, Post-Scripts"), // space-run-ok: a rendered kv row's own column padding.
         "an unfiltered run names every phase it will print: {unfiltered:?}"
     );
     let owners = header(Some(&PhaseFilter::ModuleOwners));
     assert!(
-        owners.contains("Phases   Files, Post-Scripts"),
+        owners.contains("Phases   Files, Post-Scripts"), // space-run-ok: a rendered kv row's own column padding.
         "`--phase modules` named no phase, so which ones held work is news: {owners:?}"
     );
 }
@@ -2000,12 +2019,14 @@ fn preview_bullet_styles_a_scripts_marker() {
     let (printer, buf) = Printer::for_test_with_theme_colored(theme.clone(), Verbosity::Normal);
     ApplyRun::new(ctx(RunTitle::Apply), &plan).preview(&printer);
     drop(printer);
+    // long-line-ok: a hatch is read off its own line, so it cannot wrap
     // raw-capture-ok: asserting the marker's exact styled run reaches the renderer unrestyled — captured_text would strip the ANSI this test exists to check
     let raw = buf.lock().unwrap_or_else(|e| e.into_inner()).clone();
 
     let (_, accent) = crate::output::renderer::role_glyph(&theme, Role::Accent);
     let styled_marker = accent.apply_to("run postApply script:").to_string();
     assert!(
+        // doc-comment-ok: the haystack is a styled span in captured output
         raw.contains(&styled_marker),
         "the marker must carry Role::Accent styling: {raw:?}"
     );
@@ -2042,6 +2063,7 @@ fn both_trees_paint_a_withheld_row_with_the_same_bytes() {
         let (printer, buf) = Printer::for_test_with_theme_colored(theme.clone(), Verbosity::Normal);
         render(&printer);
         drop(printer);
+        // long-line-ok: a hatch is read off its own line, so it cannot wrap
         // raw-capture-ok: the claim IS that the two renders carry the same escapes — captured_text would strip exactly what is being compared
         buf.lock().unwrap_or_else(|e| e.into_inner()).clone()
     };
@@ -2780,6 +2802,11 @@ fn every_unfinished_verdict_closes_on_the_one_next_step() {
                 )
             });
             assert!(
+                !next.is_gated(),
+                "a non-converged run's instruction is not a tutorial usageHints decides: {next:?}"
+            );
+            let next = next.text;
+            assert!(
                 next.contains('`') && next.contains("cfgd "),
                 "a closing hint names the command that comes next, in backticks: {next:?}"
             );
@@ -2914,6 +2941,7 @@ fn hero_plan(home: &std::path::Path) -> Plan {
             manager: manager.to_string(),
             via: via.to_string(),
             declared: None,
+            floor: None,
             batched: Vec::new(),
             // The hero's own edges: both brew-mediated provisions wait on brew.
             depends_on: if via == "brew" {

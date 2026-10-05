@@ -13,6 +13,7 @@ webhooks:
   {{- $fullname := include "cfgd.fullname" . }}
   {{- $namespace := .Release.Namespace }}
   {{- $failurePolicy := .Values.webhook.failurePolicy }}
+  {{- $objectSelector := .Values.webhook.objectSelector }}
   {{- $timeoutSeconds := .Values.webhook.timeoutSeconds }}
   {{- range list
     (dict "singular" "machineconfig" "plural" "machineconfigs")
@@ -27,6 +28,10 @@ webhooks:
     sideEffects: None
     failurePolicy: {{ $failurePolicy }}
     timeoutSeconds: {{ $timeoutSeconds }}
+    {{- with $objectSelector }}
+    objectSelector:
+      {{- toYaml . | nindent 6 }}
+    {{- end }}
     clientConfig:
       service:
         name: {{ $fullname }}-webhook

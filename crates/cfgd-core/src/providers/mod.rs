@@ -404,12 +404,16 @@ pub struct ActionNote {
     /// fallback is a [`Role::Warn`]; a report of work done on the side is a
     /// [`Role::Info`].
     pub role: Role,
-    /// The note is a NEXT STEP for the reader, not a report about the run —
-    /// nothing went wrong, there is simply something left to do. It renders
-    /// through `Printer::hint`, so it wears the same `→` a hint anywhere else
-    /// in the CLI does instead of a warning glyph over a sentence that warns
-    /// about nothing.
-    pub hint: bool,
+    /// Whether this note is the run's own INSTRUCTION to the reader; the other
+    /// notes report what happened. It is the one fact behind
+    /// [`is_instruction`](Self::is_instruction), which is the key
+    /// [`crate::reconciler::render_caveats`] closes a group on.
+    ///
+    /// Private, and set by [`instruction`](Self::instruction) alone. An absent
+    /// tag cannot stand in for it: every `SystemConfigurator` report reaches
+    /// [`NoteSink::report`] and is pushed untagged (its owning action line
+    /// already names the producer), so the two classes would share one key.
+    instruction: bool,
 }
 
 impl ActionNote {
@@ -419,7 +423,7 @@ impl ActionNote {
             tag: Some(tag.into()),
             message: message.into(),
             role: Role::Warn,
-            hint: false,
+            instruction: false,
         }
     }
 
@@ -429,20 +433,21 @@ impl ActionNote {
             tag: Some(tag.into()),
             message: message.into(),
             role: Role::Info,
-            hint: false,
+            instruction: false,
         }
     }
 
-    /// An untagged NEXT STEP the reader has to take once the run is over —
-    /// re-sourcing a generated env file, opening a new shell. Nothing about it
-    /// is a warning, and giving it a warning glyph is what made the closing
-    /// Caveats block read as though the apply had gone wrong.
-    pub fn next_step(message: impl Into<String>) -> Self {
+    /// An untagged INSTRUCTION the reader has to act on once the run is over —
+    /// re-sourcing a generated env file, opening a new shell. It names a file
+    /// or a machine state, so it renders as a note row under its owner and no
+    /// `usageHints` decision reaches it. It is [`Role::Info`]: nothing about it
+    /// says the apply went wrong, so [`Role::Warn`] would misstate it.
+    pub fn instruction(message: impl Into<String>) -> Self {
         Self {
             tag: None,
             message: message.into(),
             role: Role::Info,
-            hint: true,
+            instruction: true,
         }
     }
 
@@ -452,8 +457,18 @@ impl ActionNote {
             tag: None,
             message: message.into(),
             role,
-            hint: false,
+            instruction: false,
         }
+    }
+
+    /// Whether this note is the run's own instruction to the reader.
+    ///
+    /// The one question a render ordering a group's notes asks. Nothing else
+    /// answers it: an untagged note is the ordinary shape of a
+    /// `SystemConfigurator`'s report, so the tag says who spoke and nothing
+    /// about what the note is for.
+    pub fn is_instruction(&self) -> bool {
+        self.instruction
     }
 
     /// Re-tag a note with the SUBJECT of the action that produced it.
@@ -584,7 +599,7 @@ impl NoteSink {
                 tag: tag.map(str::to_string),
                 message,
                 role,
-                hint: false,
+                instruction: false,
             });
         } else {
             // Untagged once it settles: a standalone line has no action line
@@ -601,18 +616,21 @@ impl NoteSink {
         self.report_tagged(printer, role, None, message);
     }
 
-    /// The same routing for a NEXT STEP — [`ActionNote::next_step`] under a
-    /// collecting sink, a `Printer::hint` standalone — so an instruction never
-    /// goes out through [`report`](Self::report) wearing a report's glyph.
-    pub fn next_step(&self, printer: &Printer, message: impl Into<String>) {
+    /// The same routing for an INSTRUCTION — [`ActionNote::instruction`] under
+    /// a collecting sink, a note row standalone — so an instruction never goes
+    /// out through [`report`](Self::report) wearing a report's glyph.
+    pub fn instruction(&self, printer: &Printer, message: impl Into<String>) {
         let message = message.into();
         if message.trim().is_empty() {
             return;
         }
         if self.collecting {
-            self.push(ActionNote::next_step(message));
+            self.push(ActionNote::instruction(message));
         } else {
-            printer.hint(message);
+            // The same row the collecting path settles as, and the same home
+            // fold `report_tagged` applies, so a configurator's instruction
+            // reads identically on both routes.
+            printer.status_simple(Role::Info, crate::fold_home_in_text(&message));
         }
     }
 
@@ -812,9 +830,9 @@ pub trait PackageManager: Send + Sync {
     /// manager can say that a string it listed carries no comparable version —
     /// a date stamp, a git description. The floor pass reports such a package
     /// as a check that could not RUN
-    /// ([`VersionFloor::Unreadable`](crate::reconciler::VersionFloor)), never as
-    /// a floor that was missed, because a `false` from a comparator that could
-    /// not parse its input is not a verdict.
+    /// ([`VersionFloor::Unreadable`](crate::reconciler::VersionFloor)). It does
+    /// not report a missed floor, because a `false` from a comparator that
+    /// could not parse its input is not a verdict.
     fn version_comparable(&self, version: &str) -> bool {
         crate::parse_loose_version(version).is_some()
     }
@@ -850,6 +868,33 @@ pub trait PackageManager: Send + Sync {
     /// silently would report every below-floor package it holds as a false
     /// "has no upgrade verb" error and elide the raise from the plan.
     fn upgrade_verb(&self) -> Option<&'static str>;
+
+    /// The environment variables this manager's binary needs set before it can
+    /// answer for itself, beyond being on `PATH`.
+    ///
+    /// Empty (the default) for a manager whose binary is the tool. A family
+    /// whose binary is a SHIM is the exception: `~/.cargo/bin/cargo` is rustup's
+    /// shim and exits non-zero without `CARGO_HOME` / `RUSTUP_HOME`, which is
+    /// the ordinary environment of a systemd unit, so a floor judged against it
+    /// there reads as unmeasurable. The names belong to the family that needs
+    /// them so the sentence reporting that outcome cannot list a variable no
+    /// manager asked for.
+    fn home_env_vars(&self) -> &'static [&'static str] {
+        &[]
+    }
+
+    /// The command that raises THIS manager's own copy, where the copy is not
+    /// its own to raise.
+    ///
+    /// [`PackageManager::upgrade_verb`] answers for a PACKAGE the manager
+    /// holds, and reading it as the manager's own raise tells a reader to run
+    /// `cargo install cargo`: cargo's copy comes from rustup, and brew updates
+    /// itself through its own `update`, where `upgrade` raises a formula.
+    /// `None` (the default) is a manager the package verb does raise, or one
+    /// nothing cfgd can run raises at all.
+    fn own_raise(&self) -> Option<std::borrow::Cow<'static, str>> {
+        None
+    }
 
     /// Directories to add to PATH after bootstrap. Empty for managers
     /// that are already on the system PATH (apt, dnf, etc.).
@@ -1627,13 +1672,14 @@ impl<'a> SystemContext<'a> {
         self.notes.report(self.printer, role, message);
     }
 
-    /// A NEXT STEP for the reader — source a file, open a new shell — which
-    /// is an instruction, never a report, and renders as a hint. The role of
-    /// every note a configurator emits is settled on one axis: must the reader
-    /// act? A caveat or a degraded fallback is [`Role::Warn`]; a report of
-    /// work done on the side is [`Role::Info`]; an instruction is this.
-    pub fn next_step(&self, message: impl Into<String>) {
-        self.notes.next_step(self.printer, message);
+    /// An INSTRUCTION for the reader — source a file, open a new shell — which
+    /// is never a report, and renders as a note row under the owner that
+    /// produced it. The role of every note a configurator emits is settled on
+    /// one axis: must the reader act? A caveat or a degraded fallback is
+    /// [`Role::Warn`]; a report of work done on the side is [`Role::Info`]; an
+    /// instruction is this, and no `usageHints` decision reaches it.
+    pub fn instruction(&self, message: impl Into<String>) {
+        self.notes.instruction(self.printer, message);
     }
 
     /// Run a command with a live output window that collapses WITHOUT settling a
@@ -1743,10 +1789,12 @@ pub enum FileDiffKind {
     Unchanged,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub enum FileAction {
     Create {
+        #[serde(serialize_with = "crate::serialize_fs_path")]
         source: PathBuf,
+        #[serde(serialize_with = "crate::serialize_fs_path")]
         target: PathBuf,
         origin: String,
         strategy: crate::config::FileStrategy,
@@ -1755,11 +1803,13 @@ pub enum FileAction {
         /// Merge spec carried from the profile entry, set exactly when
         /// `strategy` is `Patch`. Apply re-runs it against the target's live
         /// content, so `source` is empty and `source_hash` is `None`.
-        #[serde(skip_serializing_if = "Option::is_none")]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         patch: Option<crate::config::PatchSpec>,
     },
     Update {
+        #[serde(serialize_with = "crate::serialize_fs_path")]
         source: PathBuf,
+        #[serde(serialize_with = "crate::serialize_fs_path")]
         target: PathBuf,
         diff: String,
         origin: String,
@@ -1767,14 +1817,16 @@ pub enum FileAction {
         /// SHA256 of source content at plan time (for TOCTOU verification).
         source_hash: Option<String>,
         /// See [`FileAction::Create::patch`].
-        #[serde(skip_serializing_if = "Option::is_none")]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         patch: Option<crate::config::PatchSpec>,
     },
     Delete {
+        #[serde(serialize_with = "crate::serialize_fs_path")]
         target: PathBuf,
         origin: String,
     },
     SetPermissions {
+        #[serde(serialize_with = "crate::serialize_fs_path")]
         target: PathBuf,
         mode: u32,
         origin: String,
@@ -1791,10 +1843,15 @@ pub enum FileAction {
         /// an elevated chmod at any file on the machine. The planner names the
         /// path from the resolved strategy: a probe at apply time would lose
         /// that race.
-        #[serde(skip_serializing_if = "Option::is_none")]
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            serialize_with = "crate::serialize_opt_fs_path"
+        )]
         chmod_path: Option<PathBuf>,
     },
     Skip {
+        #[serde(serialize_with = "crate::serialize_fs_path")]
         target: PathBuf,
         reason: String,
         origin: String,
@@ -1919,7 +1976,7 @@ pub struct LinkDeployedRow {
 
 // --- PackageAction ---
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub enum PackageAction {
     Install {
         manager: String,
@@ -1983,10 +2040,12 @@ pub trait SecretProvider: Send + Sync {
 
 // --- SecretAction ---
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub enum SecretAction {
     Decrypt {
+        #[serde(serialize_with = "crate::serialize_fs_path")]
         source: PathBuf,
+        #[serde(serialize_with = "crate::serialize_fs_path")]
         target: PathBuf,
         backend: String,
         origin: String,
@@ -1994,6 +2053,7 @@ pub enum SecretAction {
     Resolve {
         provider: String,
         reference: String,
+        #[serde(serialize_with = "crate::serialize_fs_path")]
         target: PathBuf,
         /// `spec.secrets[].template`: rendered around the resolved value
         /// before it is written (see [`render_secret_template`]).
@@ -3336,7 +3396,10 @@ mod tests {
         );
         assert!(
             !blocked.can_bootstrap(),
-            "and `can_bootstrap` answers from the feasible plan, so no caller              treats the manager as provisionable"
+            concat!(
+                "and `can_bootstrap` answers from the feasible plan, so no caller treats ",
+                "the manager as provisionable"
+            )
         );
     }
 
@@ -3428,34 +3491,40 @@ mod tests {
         assert_eq!(parsed.version, info.version);
     }
 
-    /// A configurator's next step reaches the reader as a HINT on both
-    /// routes: pushed as `ActionNote::next_step` under a collecting sink, and
-    /// settled through `Printer::hint` standalone — never as a `report` line
-    /// wearing a report's glyph over a sentence that reports nothing.
+    /// A configurator's instruction reaches the reader as a NOTE ROW on both
+    /// routes: pushed as `ActionNote::instruction` under a collecting sink,
+    /// and settled as an `Info` status line standalone — never as a hint the
+    /// `usageHints` gate can eat, and never wearing a report's warning glyph
+    /// over a sentence that reports nothing.
     #[test]
-    fn a_configurator_next_step_is_a_hint_on_both_routes() {
+    fn a_configurator_instruction_is_a_note_row_on_both_routes() {
         let (printer, buf) = crate::output::Printer::for_test_at(crate::output::Verbosity::Normal);
+        let printer = printer.with_hints_enabled(false);
         let sink = NoteSink::default();
         SystemContext::with_notes(&printer, &sink)
-            .next_step("Open a new shell for the updated environment");
-        SystemContext::with_notes(&printer, &sink).next_step("   ");
+            .instruction("Open a new shell for the updated environment");
+        SystemContext::with_notes(&printer, &sink).instruction("   ");
         let notes = sink.take();
-        assert_eq!(notes.len(), 1, "a blank next step is refused: {notes:?}");
+        assert_eq!(notes.len(), 1, "a blank instruction is refused: {notes:?}");
         assert_eq!(
             notes[0],
-            ActionNote::next_step("Open a new shell for the updated environment")
+            ActionNote::instruction("Open a new shell for the updated environment")
         );
         assert!(
             crate::test_helpers::captured_text(&buf).is_empty(),
-            "a collected next step settles nothing on the printer"
+            "a collected instruction settles nothing on the printer"
         );
 
-        SystemContext::new(&printer).next_step("Open a new shell");
+        SystemContext::new(&printer).instruction("Open a new shell");
         drop(printer);
         let out = crate::test_helpers::captured_text(&buf);
         assert!(
-            out.contains("→ Open a new shell"),
-            "standalone, the next step settles as a hint: {out:?}"
+            out.contains("Open a new shell"),
+            "standalone, the instruction settles on the printer: {out:?}"
+        );
+        assert!(
+            !out.contains('\u{2192}'),
+            "and as a note row the hint gate cannot suppress: {out:?}"
         );
     }
 }
@@ -3527,7 +3596,7 @@ mod installable_tools_tests {
                     let text = above.trim();
                     text.starts_with("//") || text.ends_with("\"\"),")
                 })
-                .any(|above| above.contains("no-driven-route-ok:"));
+                .any(|above| crate::test_helpers::carries_hatch(above, "no-driven-route-ok:"));
             if !marked {
                 unmarked.push(format!("{}: {}", i + 1, line.trim()));
             }

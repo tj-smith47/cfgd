@@ -1,0 +1,1 @@
+exec_in_pod bash -c 'echo 524288 > /proc/sys/fs/inotify/max_user_watches'

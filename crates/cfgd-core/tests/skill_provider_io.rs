@@ -251,7 +251,10 @@ fn project_scope_install_leaves_no_lock_file_in_project_dir() {
     let project = tempfile::tempdir().expect("project tempdir");
     let runtime = tempfile::tempdir().expect("runtime tempdir");
 
-    let _runtime_env = EnvVarGuard::set("CFGD_RUNTIME_DIR", &runtime.path().to_string_lossy());
+    let _runtime_env = EnvVarGuard::set(
+        cfgd_core::CFGD_RUNTIME_DIR_ENV,
+        &runtime.path().to_string_lossy(),
+    );
     let _cwd = CwdGuard::set(project.path()).expect("set cwd to project dir");
 
     with_test_home(home.path(), || {
@@ -300,7 +303,11 @@ fn project_scope_install_leaves_no_lock_file_in_project_dir() {
         // No stray files at all beyond AGENTS.md.
         let entries: Vec<_> = std::fs::read_dir(project.path())
             .expect("read project dir")
-            .filter_map(|e| e.ok().map(|e| e.file_name()))
+            .map(|entry| {
+                entry
+                    .expect("the walk must read every directory entry")
+                    .file_name()
+            })
             .collect();
         assert_eq!(
             entries,
@@ -369,7 +376,10 @@ fn concurrent_installs_of_different_kinds_dont_corrupt_delimiters() {
     // threads inherit this process-global env var and thus contend on the same
     // relocated lock — same target file → same hash → one lock.
     let runtime = tempfile::tempdir().expect("runtime tempdir");
-    let _runtime_env = EnvVarGuard::set("CFGD_RUNTIME_DIR", &runtime.path().to_string_lossy());
+    let _runtime_env = EnvVarGuard::set(
+        cfgd_core::CFGD_RUNTIME_DIR_ENV,
+        &runtime.path().to_string_lossy(),
+    );
 
     let begin_profile = "<!-- cfgd:skill:profile -->";
     let end_profile = "<!-- /cfgd:skill:profile -->";

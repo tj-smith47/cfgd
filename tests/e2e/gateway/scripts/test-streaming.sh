@@ -1,82 +1,62 @@
+# shellcheck shell=bash
 # Gateway SSE streaming test (GW-21).
-# Sourced by run-all.sh — no shebang, no set, no source, no traps, no print_summary.
+# Sourced by run-all.sh: no shebang, no set, no source, no traps, no print_summary.
 
 # =================================================================
 # GW-21: SSE event stream
 # =================================================================
 begin_test "GW-21: SSE event stream"
 
-GW21_TMPFILE=$(mktemp "$GW_SCRATCH/gw21-sse.XXXXXX")
-GW21_PASS=true
-
-# Step 1: Start curl SSE listener in background.
-# The auth header is needed because /api/v1/events/stream is behind auth_middleware.
-if [ -n "$ADMIN_KEY" ]; then
-    curl -sN "$GW_URL/api/v1/events/stream" \
-        -H "Authorization: Bearer $ADMIN_KEY" \
-        -H "Accept: text/event-stream" \
-        > "$GW21_TMPFILE" 2>/dev/null &
+if [ -z "${DEVICE_API_KEY:-}" ]; then
+    skip_test "GW-21" "No device enrolled (GW-02 may have failed), so no drift report can raise an event"
 else
-    curl -sN "$GW_URL/api/v1/events/stream" \
-        -H "Accept: text/event-stream" \
-        > "$GW21_TMPFILE" 2>/dev/null &
-fi
-GW21_PID=$!
-echo "  SSE listener started (PID $GW21_PID)"
+    GW21_TMPFILE=$(mktemp "$GW_SCRATCH/gw21-sse.XXXXXX")
+    GW21_HEADERS=$(mktemp "$GW_SCRATCH/gw21-sse-headers.XXXXXX")
 
-# Step 2: Wait for SSE connection to establish
-sleep 2
-
-# Step 3: Trigger an event by creating a bootstrap token (admin action that emits events)
-GW21_TRIGGER=$(curl -sf -X POST "$GW_URL/api/v1/admin/tokens" \
-    -H "Content-Type: application/json" \
-    -H "$(gw_admin_auth_header)" \
-    -d '{"username":"e2e-gw21-sse","team":"e2e-team","expiresIn":3600}' 2>/dev/null || echo "")
-echo "  Triggered event (token create): $([ -n "$GW21_TRIGGER" ] && echo ok || echo failed)"
-
-# Step 4: Wait for the event to propagate
-sleep 6
-
-# Step 5: Kill the SSE listener
-kill "$GW21_PID" 2>/dev/null || true
-wait "$GW21_PID" 2>/dev/null || true
-
-# Step 6: Check if we received any SSE data
-GW21_OUTPUT=$(cat "$GW21_TMPFILE" 2>/dev/null || echo "")
-rm -f "$GW21_TMPFILE"
-
-GW21_LINES=$(echo "$GW21_OUTPUT" | wc -l | tr -d ' ')
-echo "  SSE output lines: $GW21_LINES"
-echo "  SSE output (first 500 chars):"
-echo "$GW21_OUTPUT" | head -c 500 | sed 's/^/    /'
-echo ""
-
-if [ -n "$GW21_OUTPUT" ]; then
-    # SSE format: lines like "event: <type>\ndata: <json>\n\n" or just "data:" lines
-    # Even keep-alive comments (":") count as a valid SSE connection
-    if echo "$GW21_OUTPUT" | grep -qE '^(data:|event:|:)'; then
-        pass_test "GW-21"
-    else
-        # Got output but not SSE-formatted — still proves the connection worked.
-        # The server may not have emitted events for token creation.
-        echo "  Output received but no SSE-formatted lines found"
-        echo "  Accepting: SSE connection was established (keep-alive or other data received)"
-        pass_test "GW-21"
-    fi
-else
-    # No output at all — SSE endpoint may not emit events for admin token operations,
-    # or the broadcast channel had no subscribers at event time.
-    # Verify the endpoint at least responds (not 404/500).
-    GW21_CHECK_CODE=$(curl -s -o /dev/null -w "%{http_code}" --max-time 3 \
-        "$GW_URL/api/v1/events/stream" \
+    curl -sN -D "$GW21_HEADERS" "$GW_URL/api/v1/events/stream" \
         -H "$(gw_admin_auth_header)" \
-        -H "Accept: text/event-stream" 2>/dev/null) || true
-    echo "  SSE endpoint HTTP check: $GW21_CHECK_CODE"
+        -H "Accept: text/event-stream" \
+        > "$GW21_TMPFILE" 2>/dev/null &
+    GW21_PID=$!
+    echo "  SSE listener started (PID $GW21_PID)"
 
-    if [ "$GW21_CHECK_CODE" = "200" ]; then
-        echo "  Endpoint reachable but no events captured in window"
-        pass_test "GW-21"
+    # The stream is a broadcast with no replay, so the listener must be
+    # subscribed before the event is raised. The handler subscribes before it
+    # answers, so the response's status line means the subscription exists.
+    wait_until 10 0.2 "the SSE stream's response headers" \
+        grep -qE '^HTTP/[0-9.]+ 200' "$GW21_HEADERS" || true
+
+    # A drift report is one of the calls that broadcasts a fleet event;
+    # creating a token or reading state raises none.
+    GW21_TRIGGER_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+        -X POST "${GW_URL}/api/v1/devices/${GW_DEVICE_ID}/drift" \
+        -H "Authorization: Bearer ${DEVICE_API_KEY}" \
+        -H "Content-Type: application/json" \
+        -d '{"details":[{"field":"packages.curl","expected":"8.5.0","actual":"8.4.0"}]}' \
+        2>/dev/null || echo "000")
+    echo "  Drift report HTTP status: $GW21_TRIGGER_CODE"
+
+    # The gateway is shared across runs, so another run's drift event can
+    # arrive first; the wait is for this device's.
+    wait_until 10 0.5 "an SSE event for device ${GW_DEVICE_ID}" \
+        grep -qF "\"deviceId\":\"${GW_DEVICE_ID}\"" "$GW21_TMPFILE" || true
+
+    kill "$GW21_PID" 2>/dev/null || true
+    wait "$GW21_PID" 2>/dev/null || true
+
+    GW21_OUTPUT=$(cat "$GW21_TMPFILE" 2>/dev/null || echo "")
+    rm -f "$GW21_TMPFILE" "$GW21_HEADERS"
+    echo "  SSE output (first 500 chars):"
+    echo "$GW21_OUTPUT" | head -c 500 | sed 's/^/    /'
+    echo ""
+
+    if [ "$GW21_TRIGGER_CODE" != "201" ]; then
+        fail_test "GW-21" "Drift report returned HTTP $GW21_TRIGGER_CODE, expected 201, so no event was raised"
+    elif ! grep -E '^data:' <<<"$GW21_OUTPUT" | grep -qF "\"deviceId\":\"${GW_DEVICE_ID}\""; then
+        fail_test "GW-21" "No event for device ${GW_DEVICE_ID} arrived on the stream within 10s of its drift report"
+    elif ! grep -B1 -F "\"deviceId\":\"${GW_DEVICE_ID}\"" <<<"$GW21_OUTPUT" | grep -qx 'event: drift'; then
+        fail_test "GW-21" "The event for device ${GW_DEVICE_ID} is not an 'event: drift'"
     else
-        fail_test "GW-21" "SSE endpoint returned $GW21_CHECK_CODE, expected 200"
+        pass_test "GW-21"
     fi
 fi

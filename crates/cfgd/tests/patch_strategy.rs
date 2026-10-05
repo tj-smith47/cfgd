@@ -9,7 +9,7 @@
 //! functions, not the file manager, so the plan → apply hand-off (which carries
 //! the `patch` block through `FileAction`) is exercised too.
 
-mod common;
+use cfgd_test_fixtures as common;
 
 #[cfg(unix)]
 use std::path::Path;
@@ -70,7 +70,8 @@ impl Fixture {
         let cli = cli_for(self.config_dir.path(), self.state_dir.path());
         let printer = test_printer();
         cfgd_core::with_test_home(self.home.path(), || {
-            cmd_apply(&cli, &printer, &apply_args()).unwrap()
+            cfgd::cli::RunContext::for_test(&cli, &printer, |run| cmd_apply(run, &apply_args()))
+                .unwrap()
         });
     }
 
@@ -79,7 +80,8 @@ impl Fixture {
         let cli = cli_for(self.config_dir.path(), self.state_dir.path());
         let (printer, cap) = Printer::for_test_doc_with_format(OutputFormat::Json);
         cfgd_core::with_test_home(self.home.path(), || {
-            cmd_plan(&cli, &printer, &plan_args()).unwrap()
+            cfgd::cli::RunContext::for_test(&cli, &printer, |run| cmd_plan(run, &plan_args()))
+                .unwrap()
         });
         drop(printer);
         cap.json().expect("plan doc carries a payload")["totalActions"]
@@ -194,7 +196,8 @@ fn an_unparseable_target_fails_planning_and_writes_nothing() {
     let cli = cli_for(fixture.config_dir.path(), fixture.state_dir.path());
     let printer = test_printer();
     let err = cfgd_core::with_test_home(fixture.home.path(), || {
-        cmd_apply(&cli, &printer, &apply_args()).unwrap_err()
+        cfgd::cli::RunContext::for_test(&cli, &printer, |run| cmd_apply(run, &apply_args()))
+            .unwrap_err()
     });
     assert!(
         err.to_string().contains("is not valid json"),
@@ -273,7 +276,8 @@ fn a_failing_filter_leaves_the_target_untouched() {
     let cli = cli_for(fixture.config_dir.path(), fixture.state_dir.path());
     let printer = test_printer();
     let err = cfgd_core::with_test_home(fixture.home.path(), || {
-        cmd_apply(&cli, &printer, &apply_args()).unwrap_err()
+        cfgd::cli::RunContext::for_test(&cli, &printer, |run| cmd_apply(run, &apply_args()))
+            .unwrap_err()
     });
     assert!(
         err.to_string().contains("nope"),
@@ -329,7 +333,8 @@ fn module_script_resolves_relative_to_the_module_dir() {
     let cli = cli_for(config_dir.path(), state_dir.path());
     let printer = test_printer();
     cfgd_core::with_test_home(home.path(), || {
-        cmd_apply(&cli, &printer, &apply_args()).unwrap()
+        cfgd::cli::RunContext::for_test(&cli, &printer, |run| cmd_apply(run, &apply_args()))
+            .unwrap()
     });
 
     assert_eq!(
@@ -347,7 +352,8 @@ fn a_source_barred_from_scripts_cannot_run_its_patch_filter_from_any_surface() {
     // `diff` and `verify` evaluate every `Patch` file, and evaluating one runs
     // the filter. Report mode keeps composing so the read can still render, so
     // the block has to live in the spec itself rather than in the abort.
-    let _allow = cfgd_core::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+    let _allow =
+        cfgd_core::test_helpers::EnvVarGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
     let (_workspace, config_dir, state_dir, target, marker) =
         common::barred_patch_script_source_setup();
     let home = tempfile::tempdir().unwrap();
@@ -355,7 +361,8 @@ fn a_source_barred_from_scripts_cannot_run_its_patch_filter_from_any_surface() {
     let original = std::fs::read_to_string(&target).unwrap();
 
     let (sync_printer, _sync_cap) = Printer::for_test_doc();
-    cfgd::cli::sync::cmd_sync(&cli, &sync_printer).expect("the source must sync into the cache");
+    cfgd::cli::RunContext::for_test(&cli, &sync_printer, cfgd::cli::sync::cmd_sync)
+        .expect("the source must sync into the cache");
     drop(sync_printer);
 
     let assert_untouched = |surface: &str| {
@@ -372,7 +379,10 @@ fn a_source_barred_from_scripts_cannot_run_its_patch_filter_from_any_surface() {
 
     let (diff_printer, diff_cap) = Printer::for_test_doc();
     cfgd_core::with_test_home(home.path(), || {
-        cfgd::cli::diff::cmd_diff(&cli, &diff_printer, None, false).expect("diff still renders")
+        cfgd::cli::RunContext::for_test(&cli, &diff_printer, |run| {
+            cfgd::cli::diff::cmd_diff(run, None, false)
+        })
+        .expect("diff still renders")
     });
     drop(diff_printer);
     let diff_out = diff_cap.human();
@@ -388,7 +398,10 @@ fn a_source_barred_from_scripts_cannot_run_its_patch_filter_from_any_surface() {
 
     let (json_printer, json_cap) = Printer::for_test_doc_with_format(OutputFormat::Json);
     cfgd_core::with_test_home(home.path(), || {
-        cfgd::cli::diff::cmd_diff(&cli, &json_printer, None, false).expect("diff renders")
+        cfgd::cli::RunContext::for_test(&cli, &json_printer, |run| {
+            cfgd::cli::diff::cmd_diff(run, None, false)
+        })
+        .expect("diff renders")
     });
     drop(json_printer);
     let payload = json_cap.json().expect("diff doc carries a payload");
@@ -412,8 +425,10 @@ fn a_source_barred_from_scripts_cannot_run_its_patch_filter_from_any_surface() {
 
     let (verify_printer, verify_cap) = Printer::for_test_doc();
     cfgd_core::with_test_home(home.path(), || {
-        cfgd::cli::verify::cmd_verify(&cli, &verify_printer, None, false)
-            .expect("verify still renders")
+        cfgd::cli::RunContext::for_test(&cli, &verify_printer, |run| {
+            cfgd::cli::verify::cmd_verify(run, None, false)
+        })
+        .expect("verify still renders")
     });
     drop(verify_printer);
     let verify_out = verify_cap.human();
@@ -427,7 +442,7 @@ fn a_source_barred_from_scripts_cannot_run_its_patch_filter_from_any_surface() {
         ("plan", {
             let (printer, _cap) = Printer::for_test_doc();
             cfgd_core::with_test_home(home.path(), || {
-                cmd_plan(&cli, &printer, &plan_args())
+                cfgd::cli::RunContext::for_test(&cli, &printer, |run| cmd_plan(run, &plan_args()))
                     .err()
                     .map(|e| format!("{e:#}"))
             })
@@ -435,7 +450,7 @@ fn a_source_barred_from_scripts_cannot_run_its_patch_filter_from_any_surface() {
         ("apply", {
             let (printer, _cap) = Printer::for_test_doc();
             cfgd_core::with_test_home(home.path(), || {
-                cmd_apply(&cli, &printer, &apply_args())
+                cfgd::cli::RunContext::for_test(&cli, &printer, |run| cmd_apply(run, &apply_args()))
                     .err()
                     .map(|e| format!("{e:#}"))
             })
@@ -455,18 +470,23 @@ fn a_source_barred_from_scripts_cannot_run_its_patch_filter_from_any_surface() {
 fn the_allow_scripts_disclosure_reaches_the_operator_at_default_verbosity() {
     // The one line telling an operator that third-party code will run on their
     // machine cannot live behind `-v`.
-    let _allow = cfgd_core::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+    let _allow =
+        cfgd_core::test_helpers::EnvVarGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
     let (_workspace, config_dir, state_dir, _target) = common::opted_in_script_source_setup(true);
     let home = tempfile::tempdir().unwrap();
     let cli = cli_for(config_dir.path(), state_dir.path());
 
     let (sync_printer, _sync_cap) = Printer::for_test_doc();
-    cfgd::cli::sync::cmd_sync(&cli, &sync_printer).expect("the source must sync into the cache");
+    cfgd::cli::RunContext::for_test(&cli, &sync_printer, cfgd::cli::sync::cmd_sync)
+        .expect("the source must sync into the cache");
     drop(sync_printer);
 
     let (printer, cap) = Printer::for_test_doc();
     cfgd_core::with_test_home(home.path(), || {
-        cfgd::cli::diff::cmd_diff(&cli, &printer, None, false).expect("diff renders")
+        cfgd::cli::RunContext::for_test(&cli, &printer, |run| {
+            cfgd::cli::diff::cmd_diff(run, None, false)
+        })
+        .expect("diff renders")
     });
     drop(printer);
     let out = cap.human();
@@ -488,16 +508,19 @@ fn a_sync_resolving_its_sources_still_discloses_the_scripts_they_carry() {
     // and that resolution is the one that raises the disclosure. Only the two
     // advisories whose remedy IS `cfgd sync` are held back; everything else
     // the composition has to say still reaches the operator.
-    let _allow = cfgd_core::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+    let _allow =
+        cfgd_core::test_helpers::EnvVarGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
     let (_workspace, config_dir, state_dir, _target) = common::opted_in_script_source_setup(true);
     let cli = cli_for(config_dir.path(), state_dir.path());
 
     let (seed_printer, _seed_cap) = Printer::for_test_doc();
-    cfgd::cli::sync::cmd_sync(&cli, &seed_printer).expect("the source must sync into the cache");
+    cfgd::cli::RunContext::for_test(&cli, &seed_printer, cfgd::cli::sync::cmd_sync)
+        .expect("the source must sync into the cache");
     drop(seed_printer);
 
     let (printer, cap) = Printer::for_test_doc();
-    cfgd::cli::sync::cmd_sync(&cli, &printer).expect("the second sync reads the cache it seeded");
+    cfgd::cli::RunContext::for_test(&cli, &printer, cfgd::cli::sync::cmd_sync)
+        .expect("the second sync reads the cache it seeded");
     drop(printer);
     let out = cap.human();
 
@@ -514,18 +537,23 @@ fn a_sync_resolving_its_sources_still_discloses_the_scripts_they_carry() {
 #[test]
 #[serial_test::serial]
 fn no_disclosure_is_printed_for_an_opted_in_source_that_ships_no_scripts() {
-    let _allow = cfgd_core::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+    let _allow =
+        cfgd_core::test_helpers::EnvVarGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
     let (_workspace, config_dir, state_dir, _target) = common::opted_in_script_source_setup(false);
     let home = tempfile::tempdir().unwrap();
     let cli = cli_for(config_dir.path(), state_dir.path());
 
     let (sync_printer, _sync_cap) = Printer::for_test_doc();
-    cfgd::cli::sync::cmd_sync(&cli, &sync_printer).expect("the source must sync into the cache");
+    cfgd::cli::RunContext::for_test(&cli, &sync_printer, cfgd::cli::sync::cmd_sync)
+        .expect("the source must sync into the cache");
     drop(sync_printer);
 
     let (printer, cap) = Printer::for_test_doc();
     cfgd_core::with_test_home(home.path(), || {
-        cfgd::cli::diff::cmd_diff(&cli, &printer, None, false).expect("diff renders")
+        cfgd::cli::RunContext::for_test(&cli, &printer, |run| {
+            cfgd::cli::diff::cmd_diff(run, None, false)
+        })
+        .expect("diff renders")
     });
     drop(printer);
     let out = cap.human();

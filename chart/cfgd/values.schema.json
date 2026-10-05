@@ -16,6 +16,10 @@
           "minimum": 1,
           "description": "Number of operator replicas"
         },
+        "strategy": {
+          "type": "object",
+          "description": "Operator Deployment update strategy, rendered as given. Empty derives it: RollingUpdate with maxSurge 1 and maxUnavailable 0 when the device gateway is off, or on without leader election and without persistence; maxUnavailable 1 when the gateway and leader election are both on; Recreate when the gateway and its persistence are on without leader election"
+        },
         "image": {
           "type": "object",
           "properties": {
@@ -59,13 +63,16 @@
         "tolerations": { "type": "array" },
         "affinity": { "type": "object" },
         "extraEnv": { "type": "array", "description": "Extra environment variables for the operator container (registry settings such as OCI_INSECURE_REGISTRIES)" },
+        "extraVolumes": { "type": "array", "description": "Extra volumes to add to operator pods (a registry login's config.json)" },
+        "extraVolumeMounts": { "type": "array", "description": "Extra volume mounts to add to the operator container" },
         "imagePullSecrets": { "type": "array", "description": "Image pull secrets for operator pods" },
         "podAnnotations": { "type": "object", "description": "Annotations to add to operator pods" },
         "podLabels": { "type": "object", "description": "Labels to add to operator pods" },
         "topologySpreadConstraints": { "type": "array", "description": "Topology spread constraints for operator pods" },
         "terminationGracePeriodSeconds": { "type": "integer", "description": "Termination grace period for operator pods" },
         "livenessProbe": { "type": "object", "description": "Liveness probe configuration" },
-        "readinessProbe": { "type": "object", "description": "Readiness probe configuration" }
+        "readinessProbe": { "type": "object", "description": "Readiness probe configuration" },
+        "watchLabelSelector": { "type": "string", "description": "Reconcile only objects matching this label selector; empty reconciles every object" }
       },
       "required": ["image"]
     },
@@ -195,7 +202,8 @@
           "type": "integer",
           "minimum": 1,
           "maximum": 30
-        }
+        },
+        "objectSelector": { "type": "object", "description": "Admit only objects matching this selector; empty admits every cfgd.io object" }
       }
     },
     "deviceGateway": {
@@ -258,6 +266,7 @@
       "description": "CSI driver DaemonSet for module volume mounts",
       "properties": {
         "enabled": { "type": "boolean" },
+        "name": { "type": "string", "maxLength": 63, "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$", "description": "The CSIDriver name, the kubelet plugin directory and the name the operator injects" },
         "image": { "type": "object" },
         "cache": { "type": "object" },
         "metricsPort": { "type": "integer" },

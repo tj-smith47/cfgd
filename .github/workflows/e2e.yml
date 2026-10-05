@@ -187,9 +187,8 @@ jobs:
       - name: Install go-task
         uses: go-task/setup-task@v2
 
-      # cosign is required by test-oci-e2e.sh OCI-E2E-02/03 (and the
-      # cosign-keyed CSI scripts under test-csi.sh); without it those
-      # tests skip silently.
+      # cosign is required by test-oci-e2e.sh OCI-E2E-02/03, so
+      # setup-fullstack-env.sh stops before any case without it.
       - name: Install cosign
         uses: sigstore/cosign-installer@v3
         with:
@@ -204,29 +203,12 @@ jobs:
     runs-on: arc-cfgd
     needs: [setup]
     timeout-minutes: 20
-    # run-crossplane-tests.sh renders the CRDs with `cargo run --release --bin
-    # cfgd-gen-crds`, so this job compiles the workspace instead of riding the
-    # setup job's images — the same compile-cache layering, because a cold build
-    # is what the budget cannot absorb.
     env:
       CFGD_E2E_SETUP_DONE: "1"
       IMAGE_TAG: ${{ needs.setup.outputs.image-tag }}
-      SCCACHE_GHA_ENABLED: "true"
-      RUSTC_WRAPPER: "sccache"
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Install sccache
-        uses: mozilla-actions/sccache-action@v0.0.11
-
-      - name: Restore cargo cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          key: e2e-crossplane
 
       - name: Install go-task
         uses: go-task/setup-task@v2
@@ -270,6 +252,38 @@ jobs:
 
       - name: Run gateway tests
         run: task e2e:gateway
+
+  # ---------- Teardown: remove this run's PR install ----------
+  # Every cluster suite's labelled objects pass through the PR install's
+  # webhooks and operator, so it is removed only after all of them finish,
+  # whatever their result. A skipped setup installed nothing.
+  e2e-teardown:
+    name: "Remove PR Install"
+    runs-on: arc-cfgd
+    needs:
+      [
+        setup,
+        node-tests,
+        helm-tests,
+        server-tests,
+        operator-tests,
+        full-stack-tests,
+        crossplane-tests,
+        gateway-tests,
+      ]
+    if: always() && needs.setup.result != 'skipped'
+    timeout-minutes: 10
+    env:
+      IMAGE_TAG: ${{ needs.setup.outputs.image-tag }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Install go-task
+        uses: go-task/setup-task@v2
+
+      - name: Remove the PR install
+        run: task e2e:pr-install:down
 
   # ---------- CLI: exhaustive native tests (no k8s needed) ----------
   cli-tests:
@@ -325,6 +339,7 @@ jobs:
         crossplane-tests,
         gateway-tests,
         cli-tests,
+        e2e-teardown,
       ]
     if: always()
     steps:
@@ -340,6 +355,7 @@ jobs:
           echo "Crossplane tests:  ${{ needs.crossplane-tests.result }}"
           echo "Gateway tests:     ${{ needs.gateway-tests.result }}"
           echo "CLI tests:         ${{ needs.cli-tests.result }}"
+          echo "Teardown:          ${{ needs.e2e-teardown.result }}"
 
           FAILED=false
           # Setup is held to `success` outright — if it fails, every test job
@@ -357,7 +373,8 @@ jobs:
             "${{ needs.full-stack-tests.result }}" \
             "${{ needs.crossplane-tests.result }}" \
             "${{ needs.gateway-tests.result }}" \
-            "${{ needs.cli-tests.result }}"; do
+            "${{ needs.cli-tests.result }}" \
+            "${{ needs.e2e-teardown.result }}"; do
             # "skipped" is the cascade signal from a failed `needs:` dep
             # (setup failed → downstream skipped). The root failure surfaces
             # in its own job's red badge; the summary only escalates real

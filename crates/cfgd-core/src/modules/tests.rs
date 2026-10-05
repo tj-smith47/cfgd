@@ -18,6 +18,21 @@ use crate::test_helpers::{
 // Cross-cutting tests reach into private helpers of submodules; expose them.
 use super::git::resolve_subdir;
 
+/// The package a resolution that must not have routed produced. A test whose
+/// subject IS a bootstrap route matches the arm itself; every other one reads
+/// its package through here, so an unexpected route fails by name.
+fn package_of(resolution: PackageResolution) -> ResolvedPackage {
+    match resolution {
+        PackageResolution::Package(pkg) => *pkg,
+        PackageResolution::Bootstrap(route) => {
+            panic!("the package resolves to a manager; this one is a route: {route:?}")
+        }
+        PackageResolution::HeldByManager(held) => {
+            panic!("the package resolves to a manager; this one is held: {held:?}")
+        }
+    }
+}
+
 // --- Module loading tests ---
 
 #[test]
@@ -362,6 +377,7 @@ fn resolve_package_simple_native() {
 
     let mut result = resolve_package(&entry, "test", &platform, &managers, None)
         .unwrap()
+        .map(package_of)
         .unwrap();
     assert_eq!(result.canonical_name, "ripgrep");
     assert_eq!(result.resolved_name, "ripgrep");
@@ -395,6 +411,7 @@ fn a_bare_entry_resolves_to_the_available_manager_that_already_holds_it() {
 
     let result = resolve_package(&entry, "nvim", &platform, &managers, Some(&cx))
         .unwrap()
+        .map(package_of)
         .unwrap();
     assert_eq!(result.manager, "brew", "the manager that holds npm wins");
     assert!(
@@ -405,6 +422,7 @@ fn a_bare_entry_resolves_to_the_available_manager_that_already_holds_it() {
     // Nothing to read from: the platform default stands, as it always has.
     let unread = resolve_package(&entry, "nvim", &platform, &managers, None)
         .unwrap()
+        .map(package_of)
         .unwrap();
     assert_eq!(unread.manager, "apt");
 }
@@ -430,6 +448,7 @@ fn an_authored_prefer_list_outranks_the_manager_that_holds_the_package() {
 
     let result = resolve_package(&entry, "nvim", &platform, &managers, Some(&cx))
         .unwrap()
+        .map(package_of)
         .unwrap();
     assert_eq!(result.manager, "apt", "an authored prefer list is honoured");
     assert!(result.manager_declared);
@@ -457,6 +476,7 @@ fn a_holder_is_asked_under_its_alias_and_never_when_denied() {
     };
     let result = resolve_package(&aliased, "nvim", &platform, &managers, Some(&cx))
         .unwrap()
+        .map(package_of)
         .unwrap();
     assert_eq!(
         (result.manager.as_str(), result.resolved_name.as_str()),
@@ -469,6 +489,7 @@ fn a_holder_is_asked_under_its_alias_and_never_when_denied() {
     };
     let result = resolve_package(&denied, "nvim", &platform, &managers, Some(&cx))
         .unwrap()
+        .map(package_of)
         .unwrap();
     assert_eq!(result.manager, "apt");
 }
@@ -502,6 +523,7 @@ fn resolve_package_with_prefer_list() {
     // brew is unavailable, so snap should be tried next
     let result = resolve_package(&entry, "nvim", &platform, &managers, None)
         .unwrap()
+        .map(package_of)
         .unwrap();
     assert_eq!(result.manager, "snap");
     assert_eq!(result.resolved_name, "nvim"); // alias applied
@@ -531,6 +553,7 @@ fn resolve_package_min_version_check() {
     // apt has 0.6.1 which is < 0.9, so snap (0.10.3) should be chosen
     let result = resolve_package(&entry, "nvim", &platform, &managers, None)
         .unwrap()
+        .map(package_of)
         .unwrap();
     assert_eq!(result.manager, "snap");
     assert_eq!(result.version, Some("0.10.3".into()));
@@ -559,6 +582,7 @@ fn resolve_package_keeps_a_candidate_a_malformed_floor_could_not_judge() {
 
     let result = resolve_package(&entry, "nvim", &platform, &managers, None)
         .unwrap()
+        .map(package_of)
         .expect("the package still resolves");
     assert_eq!(result.manager, "apt");
     assert_eq!(
@@ -587,6 +611,7 @@ fn resolve_package_keeps_a_candidate_whose_manager_states_no_version() {
 
     let result = resolve_package(&entry, "nvim", &platform, &managers, None)
         .unwrap()
+        .map(package_of)
         .expect("the package still resolves");
     assert_eq!(result.manager, "quiet-mgr");
     assert_eq!(result.version, None, "nothing was proven about the offer");
@@ -616,6 +641,7 @@ fn resolve_package_prefers_a_proven_candidate_over_an_earlier_silent_one() {
 
     let result = resolve_package(&entry, "nvim", &platform, &managers, None)
         .unwrap()
+        .map(package_of)
         .expect("the package resolves");
     assert_eq!(result.manager, "loud-second");
     assert_eq!(result.version, Some("1.4.0".into()));
@@ -639,6 +665,7 @@ fn resolve_package_falls_back_to_the_silent_candidate_when_the_proven_one_is_bel
 
     let result = resolve_package(&entry, "nvim", &platform, &managers, None)
         .unwrap()
+        .map(package_of)
         .expect("the package resolves");
     assert_eq!(result.manager, "quiet-ahead");
     assert_eq!(result.version, None);
@@ -671,6 +698,575 @@ fn resolve_package_unresolvable() {
     );
 }
 
+/// A floor every available manager is proven below, for a package that names a
+/// manager this host can bootstrap, is a DECISION.
+#[test]
+fn a_floor_no_manager_meets_resolves_to_a_bootstrap_route() {
+    let apt = MockManager::new("apt").with_package("cargo", "1.75");
+    // `MockManager` hardcodes its method, and the claim below is about WHICH
+    // method the route reads, so the stand-in for the absent manager is the
+    // mock that names one. Both implement `PackageManager`, so one map holds
+    // them.
+    let cargo = crate::test_helpers::MockPackageManager::new("cargo")
+        .unavailable()
+        .bootstrappable_via("rustup");
+    let managers = make_manager_map(&[("apt", &apt), ("cargo", &cargo)]);
+    let entry = ModulePackageEntry {
+        name: "cargo".into(),
+        min_version: Some("1.85".into()),
+        prefer: vec!["apt".into()],
+        ..Default::default()
+    };
+
+    let route = match resolve_package(&entry, "nvim", &linux_ubuntu_platform(), &managers, None) {
+        Ok(Some(PackageResolution::Bootstrap(route))) => route,
+        other => panic!("a bootstrappable manager is a route: {other:?}"),
+    };
+    assert_eq!(route.package, "cargo");
+    assert_eq!(route.module, "nvim");
+    assert_eq!(
+        (route.found_in.as_str(), route.found.as_str()),
+        ("apt", "1.75")
+    );
+    assert_eq!(route.floor, "1.85");
+    assert_eq!(
+        route.via, "rustup",
+        "the route is the manager's OWN cascade"
+    );
+}
+
+/// A package that is not a manager, or one no host can bootstrap, keeps the
+/// refusal.
+#[test]
+fn a_floor_on_a_package_that_names_no_bootstrappable_manager_still_refuses() {
+    let apt = MockManager::new("apt").with_package("neovim", "0.6.1");
+    // Registered, bootstrappable and not a candidate: the only thing between
+    // this entry and a route is that `neovim` names no manager, so the claim
+    // rests on the lookup by name; the registry is not empty.
+    let cargo = crate::test_helpers::MockPackageManager::new("cargo")
+        .unavailable()
+        .bootstrappable_via("rustup");
+    let managers = make_manager_map(&[("apt", &apt), ("cargo", &cargo)]);
+    let entry = ModulePackageEntry {
+        name: "neovim".into(),
+        min_version: Some("0.9".into()),
+        prefer: vec!["apt".into()],
+        ..Default::default()
+    };
+    let err = resolve_package(&entry, "nvim", &linux_ubuntu_platform(), &managers, None)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        err.contains("every available manager offers a version below the declared minVersion 0.9"),
+        "{err}"
+    );
+}
+
+/// A manager already on this host has nothing left to bootstrap, so a floor it
+/// falls short of is a verdict about the machine. The declaration stands. The
+/// clause names the manager, the version it reports and the
+/// raise, and a reader asking what the machine looks like gets an answer for
+/// every other entry beside it.
+#[test]
+fn a_floor_a_held_manager_falls_short_of_resolves_and_names_the_raise() {
+    let cargo = crate::test_helpers::MockPackageManager::new("cargo")
+        .offering("cargo", "1.75")
+        .reporting_version("1.80")
+        .bootstrappable_via("rustup");
+    let managers = make_manager_map(&[("cargo", &cargo)]);
+    let entry = ModulePackageEntry {
+        name: "cargo".into(),
+        min_version: Some("1.85".into()),
+        prefer: vec!["cargo".into()],
+        ..Default::default()
+    };
+    let held = match resolve_package(&entry, "nvim", &linux_ubuntu_platform(), &managers, None) {
+        Ok(Some(PackageResolution::HeldByManager(held))) => held,
+        other => panic!("a held manager below its floor is reported: {other:?}"),
+    };
+    assert!(!held.judgment.met());
+    assert_eq!(
+        held.clause(managers.get("cargo").copied()),
+        "cargo 1.80 is on this host, below the declared minVersion 1.85; \
+         raise it with cargo's own upgrade",
+        "the clause says what the host actually holds and what raises it"
+    );
+}
+
+/// A held manager nothing on this host can raise is still reported, and the
+/// clause says the raise is the reader's to perform: pointing at a verb no
+/// manager declares would name a command that does not exist.
+#[test]
+fn a_held_manager_with_no_raise_verb_says_the_raise_is_by_hand() {
+    let cargo = crate::test_helpers::MockPackageManager::new("cargo")
+        .offering("cargo", "1.75")
+        .reporting_version("1.80")
+        .without_upgrade_verb();
+    let managers = make_manager_map(&[("cargo", &cargo)]);
+    let entry = ModulePackageEntry {
+        name: "cargo".into(),
+        min_version: Some("1.85".into()),
+        prefer: vec!["cargo".into()],
+        ..Default::default()
+    };
+    let held = match resolve_package(&entry, "nvim", &linux_ubuntu_platform(), &managers, None) {
+        Ok(Some(PackageResolution::HeldByManager(held))) => held,
+        other => panic!("a held manager below its floor is reported: {other:?}"),
+    };
+    assert_eq!(
+        held.clause(managers.get("cargo").copied()),
+        "cargo 1.80 is on this host, below the declared minVersion 1.85; \
+         nothing cfgd can run raises cargo, so it must be raised by hand"
+    );
+}
+
+/// The converged machine: the run provisioned cargo through rustup, so every
+/// listing still offers 1.75 while the binary on the host reports 1.90. The
+/// manager the entry names IS the delivery, so the declaration is satisfied
+/// where the listings alone would refuse it on every run after the first.
+#[test]
+fn a_floor_the_manager_this_host_already_holds_meets_resolves_as_held() {
+    let apt = MockManager::new("apt").with_package("cargo", "1.75");
+    let cargo = crate::test_helpers::MockPackageManager::new("cargo")
+        .reporting_version("1.90")
+        .bootstrappable_via("rustup");
+    let managers = make_manager_map(&[("apt", &apt), ("cargo", &cargo)]);
+    let entry = ModulePackageEntry {
+        name: "cargo".into(),
+        min_version: Some("1.85".into()),
+        prefer: vec!["apt".into()],
+        ..Default::default()
+    };
+
+    let held = match resolve_package(&entry, "rust", &linux_ubuntu_platform(), &managers, None) {
+        Ok(Some(PackageResolution::HeldByManager(held))) => held,
+        other => panic!("the manager on this host answers the floor: {other:?}"),
+    };
+    assert_eq!(held.package, "cargo");
+    assert_eq!(held.module, "rust");
+    assert_eq!(
+        held.judgment,
+        crate::modules::FloorJudgment::Met {
+            version: "1.90".into()
+        },
+        "the version is what the manager's own binary reports"
+    );
+    assert_eq!(held.floor, "1.85");
+}
+
+/// A manager whose binary states no version has answered nothing, so the
+/// verdict says so and claims no shortfall it never measured, and the
+/// clause names what a reader would look at to make the version readable.
+#[test]
+fn a_floor_a_held_manager_states_no_version_for_resolves_as_unproven() {
+    let cargo = crate::test_helpers::MockPackageManager::new("cargo").offering("cargo", "1.75");
+    let managers = make_manager_map(&[("cargo", &cargo)]);
+    let entry = ModulePackageEntry {
+        name: "cargo".into(),
+        min_version: Some("1.85".into()),
+        prefer: vec!["cargo".into()],
+        ..Default::default()
+    };
+    let held = match resolve_package(&entry, "nvim", &linux_ubuntu_platform(), &managers, None) {
+        Ok(Some(PackageResolution::HeldByManager(held))) => held,
+        other => panic!("a floor nothing could judge is reported: {other:?}"),
+    };
+    assert!(!held.judgment.met());
+    assert_eq!(
+        held.clause(managers.get("cargo").copied()),
+        "cannot judge cargo against the declared minVersion 1.85: it reports no version; \
+         check that cargo is on this process's PATH",
+        "a version nothing could read is a question that was never answered"
+    );
+}
+
+/// The held version is judged in the MANAGER's own grammar. A winget-family
+/// fourth component is a version semver refuses outright, so the shared
+/// comparer would call a converged machine short of its floor.
+#[test]
+fn a_held_managers_floor_is_judged_in_its_own_version_grammar() {
+    let held_version = "133.0.6943.98";
+    assert!(
+        !crate::version_meets_floor(held_version, "133"),
+        "the premise: the shared comparer cannot read a fourth component, so \
+         the two answers really do disagree"
+    );
+    let apt = MockManager::new("apt").with_package("choco", "1.0");
+    let choco = crate::test_helpers::MockPackageManager::new("choco")
+        .reading_its_own_version_grammar()
+        .reporting_version(held_version);
+    let managers = make_manager_map(&[("apt", &apt), ("choco", &choco)]);
+    let entry = ModulePackageEntry {
+        name: "choco".into(),
+        min_version: Some("133".into()),
+        prefer: vec!["apt".into()],
+        ..Default::default()
+    };
+
+    let held = match resolve_package(&entry, "win", &linux_ubuntu_platform(), &managers, None) {
+        Ok(Some(PackageResolution::HeldByManager(held))) => held,
+        other => panic!("the manager's own grammar clears the floor: {other:?}"),
+    };
+    assert_eq!(
+        held.judgment,
+        crate::modules::FloorJudgment::Met {
+            version: held_version.into()
+        }
+    );
+    assert_eq!(held.floor, "133");
+}
+
+/// The policy every verb that installs nothing hands the resolver refuses the
+/// route, and the refusal names it: the reader is told what would have met the
+/// floor and how to let a later run take it.
+#[test]
+fn the_refusing_policy_names_the_route_it_would_not_take() {
+    let dir = tempfile::tempdir().unwrap();
+    let module_dir = dir.path().join("modules").join("rust");
+    std::fs::create_dir_all(&module_dir).unwrap();
+    std::fs::write(
+        module_dir.join("module.yaml"),
+        r#"
+apiVersion: cfgd.io/v1alpha1
+kind: Module
+metadata:
+  name: rust
+spec:
+  packages:
+    - name: cargo
+      minVersion: "1.85"
+      prefer: [apt]
+"#,
+    )
+    .unwrap();
+
+    let apt = MockManager::new("apt").with_package("cargo", "1.75");
+    let cargo = crate::test_helpers::MockPackageManager::new("cargo")
+        .unavailable()
+        .bootstrappable_via("rustup");
+    let managers = make_manager_map(&[("apt", &apt), ("cargo", &cargo)]);
+    let cache_dir = tempfile::tempdir().unwrap();
+    let printer = test_printer();
+
+    let err = resolve_modules(
+        &["rust".into()],
+        dir.path(),
+        cache_dir.path(),
+        &[],
+        &linux_ubuntu_platform(),
+        &managers,
+        None,
+        &printer,
+        &refuse_floor_bootstrap,
+    )
+    .unwrap_err()
+    .to_string();
+    assert_eq!(
+        err,
+        "package 'cargo' in module 'rust' cannot be resolved: apt offers cargo 1.75, below \
+         the declared minVersion 1.85; cargo can be provisioned via rustup: re-run with --yes, \
+         or on a terminal"
+    );
+}
+
+/// Write one module body under `root/modules/<name>`, for a resolution fixture
+/// whose subject is which package a refusal names.
+fn write_module_packages(root: &std::path::Path, name: &str, packages: &str) {
+    let module_dir = root.join("modules").join(name);
+    std::fs::create_dir_all(&module_dir).unwrap();
+    std::fs::write(
+        module_dir.join("module.yaml"),
+        format!(
+            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: {name}\nspec:\n  packages:\n{packages}"
+        ),
+    )
+    .unwrap();
+}
+
+/// A routeable floor and a hard refusal in one module: the package nothing can
+/// answer is the one the run names, because a reader asked to approve a
+/// toolchain install for a configuration that cannot resolve anyway is being
+/// asked the wrong question.
+#[test]
+fn a_refusal_outranks_a_route_within_one_module() {
+    let dir = tempfile::tempdir().unwrap();
+    write_module_packages(
+        dir.path(),
+        "rust",
+        concat!(
+            "    - name: cargo\n      minVersion: \"1.85\"\n      prefer: [apt]\n",
+            "    - name: neovim\n      minVersion: \"0.9\"\n      prefer: [apt]\n",
+        ),
+    );
+
+    let apt = MockManager::new("apt")
+        .with_package("cargo", "1.75")
+        .with_package("neovim", "0.6.1");
+    let cargo = crate::test_helpers::MockPackageManager::new("cargo")
+        .unavailable()
+        .bootstrappable_via("rustup");
+    let managers = make_manager_map(&[("apt", &apt), ("cargo", &cargo)]);
+    let cache_dir = tempfile::tempdir().unwrap();
+    let printer = test_printer();
+
+    let err = resolve_modules(
+        &["rust".into()],
+        dir.path(),
+        cache_dir.path(),
+        &[],
+        &linux_ubuntu_platform(),
+        &managers,
+        None,
+        &printer,
+        &refuse_floor_bootstrap,
+    )
+    .unwrap_err()
+    .to_string();
+    assert_eq!(
+        err,
+        "package 'neovim' in module 'rust' cannot be resolved: every available manager offers \
+         a version below the declared minVersion 0.9"
+    );
+}
+
+/// A run can deliver one copy of a manager, so two modules flooring one package
+/// are one question: asked once, at the strictest of the two floors, naming
+/// both modules the answer rides on.
+#[test]
+fn a_run_asks_one_question_per_package_at_the_strictest_floor() {
+    let dir = tempfile::tempdir().unwrap();
+    write_module_packages(
+        dir.path(),
+        "rust",
+        "    - name: cargo\n      minVersion: \"1.80\"\n      prefer: [apt]\n",
+    );
+    write_module_packages(
+        dir.path(),
+        "tools",
+        "    - name: cargo\n      minVersion: \"1.85\"\n      prefer: [apt]\n",
+    );
+
+    let apt = MockManager::new("apt").with_package("cargo", "1.75");
+    let cargo = crate::test_helpers::MockPackageManager::new("cargo")
+        .unavailable()
+        .bootstrappable_via("rustup");
+    let managers = make_manager_map(&[("apt", &apt), ("cargo", &cargo)]);
+    let cache_dir = tempfile::tempdir().unwrap();
+    let printer = test_printer();
+
+    let asked = std::sync::Mutex::new(Vec::<FloorBootstrap>::new());
+    let resolved = resolve_modules(
+        &["rust".into(), "tools".into()],
+        dir.path(),
+        cache_dir.path(),
+        &[],
+        &linux_ubuntu_platform(),
+        &managers,
+        None,
+        &printer,
+        &|route| {
+            asked.lock().unwrap().push(route.clone());
+            FloorAnswer::Yes
+        },
+    )
+    .unwrap();
+
+    let asked = asked.into_inner().unwrap();
+    assert_eq!(asked.len(), 1, "one question per package: {asked:?}");
+    assert_eq!(
+        asked[0].floor, "1.85",
+        "the strictest floor is the one asked"
+    );
+    assert_eq!(
+        asked[0].asking_modules().collect::<Vec<_>>(),
+        vec!["rust", "tools"],
+        "the reader is owed every module the answer rides on"
+    );
+    assert_eq!(
+        asked[0].asking_clause(),
+        "apt offers cargo 1.75, below the declared minVersion 1.85 that modules \'rust\', \'tools\' ask for"
+    );
+    let routed: Vec<&str> = resolved
+        .iter()
+        .filter(|m| !m.floor_bootstraps.is_empty())
+        .map(|m| m.name.as_str())
+        .collect();
+    assert_eq!(
+        routed,
+        vec!["rust", "tools"],
+        "one yes answers for every module that asked"
+    );
+}
+
+/// The offer the one question quotes is the one belonging to the floor that
+/// won it.
+///
+/// Two modules naming one package price it against their own `prefer` lists,
+/// so each route carries the best proven-below offer ITS candidates made. A
+/// question pairing `tools`' floor with `rust`' offer would state a shortfall
+/// neither module declared: apt never offered anything against 1.85.
+#[test]
+fn the_folded_question_quotes_the_offer_of_the_floor_that_won() {
+    let dir = tempfile::tempdir().unwrap();
+    write_module_packages(
+        dir.path(),
+        "rust",
+        "    - name: cargo\n      minVersion: \"1.80\"\n      prefer: [apt]\n",
+    );
+    write_module_packages(
+        dir.path(),
+        "tools",
+        "    - name: cargo\n      minVersion: \"1.85\"\n      prefer: [snap]\n",
+    );
+
+    let apt = MockManager::new("apt").with_package("cargo", "1.75");
+    let snap = MockManager::new("snap").with_package("cargo", "1.78");
+    let cargo = crate::test_helpers::MockPackageManager::new("cargo")
+        .unavailable()
+        .bootstrappable_via("rustup");
+    let managers = make_manager_map(&[("apt", &apt), ("snap", &snap), ("cargo", &cargo)]);
+    let cache_dir = tempfile::tempdir().unwrap();
+    let printer = test_printer();
+
+    let asked = std::sync::Mutex::new(Vec::<FloorBootstrap>::new());
+    resolve_modules(
+        &["rust".into(), "tools".into()],
+        dir.path(),
+        cache_dir.path(),
+        &[],
+        &linux_ubuntu_platform(),
+        &managers,
+        None,
+        &printer,
+        &|route| {
+            asked.lock().unwrap().push(route.clone());
+            FloorAnswer::Yes
+        },
+    )
+    .unwrap();
+
+    let asked = asked.into_inner().unwrap();
+    assert_eq!(asked.len(), 1, "one question per package: {asked:?}");
+    assert_eq!(
+        asked[0].offer_clause(),
+        "snap offers cargo 1.78, below the declared minVersion 1.85",
+        "the offer moved with the floor it falls short of"
+    );
+}
+
+/// The two refusals are not one refusal: a reader who answered no has already
+/// been asked, so nothing tells them to re-run on a terminal.
+#[test]
+fn a_declined_route_reads_differently_from_one_nobody_could_be_asked_about() {
+    let dir = tempfile::tempdir().unwrap();
+    write_module_packages(
+        dir.path(),
+        "rust",
+        "    - name: cargo\n      minVersion: \"1.85\"\n      prefer: [apt]\n",
+    );
+
+    let apt = MockManager::new("apt").with_package("cargo", "1.75");
+    let cargo = crate::test_helpers::MockPackageManager::new("cargo")
+        .unavailable()
+        .bootstrappable_via("rustup");
+    let managers = make_manager_map(&[("apt", &apt), ("cargo", &cargo)]);
+    let cache_dir = tempfile::tempdir().unwrap();
+    let printer = test_printer();
+
+    let refusal = |answer: FloorAnswer| {
+        resolve_modules(
+            &["rust".into()],
+            dir.path(),
+            cache_dir.path(),
+            &[],
+            &linux_ubuntu_platform(),
+            &managers,
+            None,
+            &printer,
+            &|_| answer,
+        )
+        .unwrap_err()
+        .to_string()
+    };
+
+    assert_eq!(
+        refusal(FloorAnswer::Declined),
+        "package \'cargo\' in module \'rust\' cannot be resolved: apt offers cargo 1.75, below \
+         the declared minVersion 1.85; the rustup provision of cargo was declined"
+    );
+    assert_eq!(
+        refusal(FloorAnswer::NobodyToAsk),
+        "package \'cargo\' in module \'rust\' cannot be resolved: apt offers cargo 1.75, below \
+         the declared minVersion 1.85; cargo can be provisioned via rustup: re-run with --yes, \
+         or on a terminal"
+    );
+}
+
+/// The same order across modules: a route in the first module does not end the
+/// walk, so a later module's hard refusal is what the run reports.
+#[test]
+fn a_refusal_in_a_later_module_outranks_an_earlier_modules_route() {
+    let dir = tempfile::tempdir().unwrap();
+    write_module_packages(
+        dir.path(),
+        "rust",
+        "    - name: cargo\n      minVersion: \"1.85\"\n      prefer: [apt]\n",
+    );
+    write_module_packages(
+        dir.path(),
+        "tools",
+        "    - name: neovim\n      minVersion: \"0.9\"\n      prefer: [apt]\n",
+    );
+
+    let apt = MockManager::new("apt")
+        .with_package("cargo", "1.75")
+        .with_package("neovim", "0.6.1");
+    let cargo = crate::test_helpers::MockPackageManager::new("cargo")
+        .unavailable()
+        .bootstrappable_via("rustup");
+    let managers = make_manager_map(&[("apt", &apt), ("cargo", &cargo)]);
+    let cache_dir = tempfile::tempdir().unwrap();
+    let printer = test_printer();
+
+    let err = resolve_modules(
+        &["rust".into(), "tools".into()],
+        dir.path(),
+        cache_dir.path(),
+        &[],
+        &linux_ubuntu_platform(),
+        &managers,
+        None,
+        &printer,
+        &refuse_floor_bootstrap,
+    )
+    .unwrap_err()
+    .to_string();
+    assert_eq!(
+        err,
+        "package 'neovim' in module 'tools' cannot be resolved: every available manager offers \
+         a version below the declared minVersion 0.9"
+    );
+}
+
+/// One clause for one offer: every surface naming a route reads this, so the
+/// confirmation, the plan row and `cfgd doctor` cannot word it three ways.
+#[test]
+fn a_routes_offer_clause_names_the_manager_the_package_and_both_versions() {
+    let route = FloorBootstrap {
+        package: "cargo".into(),
+        module: "rust".into(),
+        found_in: "apt".into(),
+        found: "1.75".into(),
+        floor: "1.85".into(),
+        via: "rustup".into(),
+        also_declared_by: Vec::new(),
+    };
+    assert_eq!(
+        route.offer_clause(),
+        "apt offers cargo 1.75, below the declared minVersion 1.85"
+    );
+}
+
 #[test]
 fn resolve_package_alias_applied() {
     let apt = MockManager::new("apt").with_package("fd-find", "8.7.0");
@@ -692,6 +1288,7 @@ fn resolve_package_alias_applied() {
 
     let result = resolve_package(&entry, "test", &platform, &managers, None)
         .unwrap()
+        .map(package_of)
         .unwrap();
     assert_eq!(result.canonical_name, "fd");
     assert_eq!(result.resolved_name, "fd-find");
@@ -715,6 +1312,7 @@ fn resolve_package_records_whether_the_author_named_the_manager() {
     let resolve = |entry: ModulePackageEntry| {
         resolve_package(&entry, "test", &platform, &managers, None)
             .unwrap()
+            .map(package_of)
             .unwrap()
     };
 
@@ -776,6 +1374,7 @@ fn resolve_package_alias_winget() {
 
     let result = resolve_package(&entry, "editor", &platform, &managers, None)
         .unwrap()
+        .map(package_of)
         .unwrap();
     assert_eq!(result.canonical_name, "vscode");
     assert_eq!(result.resolved_name, "Microsoft.VisualStudioCode");
@@ -803,6 +1402,7 @@ fn resolve_package_alias_chocolatey() {
 
     let result = resolve_package(&entry, "runtime", &platform, &managers, None)
         .unwrap()
+        .map(package_of)
         .unwrap();
     assert_eq!(result.canonical_name, "node");
     assert_eq!(result.resolved_name, "nodejs.install");
@@ -830,6 +1430,7 @@ fn resolve_package_alias_scoop() {
 
     let result = resolve_package(&entry, "tools", &platform, &managers, None)
         .unwrap()
+        .map(package_of)
         .unwrap();
     assert_eq!(result.canonical_name, "ripgrep");
     assert_eq!(result.resolved_name, "rg");
@@ -1078,6 +1679,7 @@ spec:
         &managers,
         None,
         &printer,
+        &refuse_floor_bootstrap,
     )
     .unwrap();
 
@@ -1136,6 +1738,7 @@ spec:
         &managers,
         None,
         &printer,
+        &refuse_floor_bootstrap,
     )
     .unwrap();
 
@@ -1204,6 +1807,7 @@ spec:
         &managers,
         None,
         &printer,
+        &refuse_floor_bootstrap,
     )
     .unwrap();
     assert_eq!(resolved.len(), 1);
@@ -1232,6 +1836,7 @@ spec:
         &mac_managers,
         None,
         &printer,
+        &refuse_floor_bootstrap,
     )
     .unwrap();
     assert_eq!(resolved.len(), 1);
@@ -1286,6 +1891,7 @@ spec:
         &managers,
         None,
         &printer,
+        &refuse_floor_bootstrap,
     )
     .expect_err("active module depending on a skipped module must be a config error");
     let msg = format!("{err}");
@@ -1453,6 +2059,7 @@ fn resolve_package_script_manager() {
 
     let result = resolve_package(&entry, "test", &platform, &managers, None)
         .unwrap()
+        .map(package_of)
         .unwrap();
     assert_eq!(result.manager, "script");
     assert_eq!(result.canonical_name, "rustup");
@@ -1482,6 +2089,7 @@ fn resolve_package_script_fallback() {
 
     let result = resolve_package(&entry, "nvim", &platform, &managers, None)
         .unwrap()
+        .map(package_of)
         .unwrap();
     assert_eq!(result.manager, "script");
     assert_eq!(result.script, Some("scripts/install-neovim.sh".into()));
@@ -1507,6 +2115,7 @@ fn resolve_package_script_preferred_over_manager() {
 
     let result = resolve_package(&entry, "nvim", &platform, &managers, None)
         .unwrap()
+        .map(package_of)
         .unwrap();
     assert_eq!(result.manager, "script");
 }
@@ -1558,7 +2167,7 @@ fn resolve_package_platform_match_os() {
 
     let result = resolve_package(&entry, "test", &platform, &managers, None).unwrap();
     assert!(result.is_some());
-    assert_eq!(result.unwrap().manager, "apt");
+    assert_eq!(result.map(package_of).unwrap().manager, "apt");
 }
 
 #[test]
@@ -1687,7 +2296,9 @@ fn resolve_module_packages_skips_filtered() {
         origin: None,
     };
 
-    let resolved = resolve_module_packages(&module, &platform, &managers, None).unwrap();
+    let resolved = resolve_module_packages(&module, &platform, &managers, None)
+        .unwrap()
+        .0;
     // Only ripgrep should be resolved; apt-only-tool is filtered out on macOS
     assert_eq!(resolved.len(), 1);
     assert_eq!(resolved[0].canonical_name, "ripgrep");
@@ -3316,6 +3927,7 @@ fn resolve_package_deny_skips_manager() {
 
     let result = resolve_package(&entry, "test", &platform, &managers, None)
         .unwrap()
+        .map(package_of)
         .unwrap();
     // brew is denied, so apt should be used
     assert_eq!(result.manager, "apt");
@@ -3361,6 +3973,7 @@ fn resolve_package_script_manager_with_deny() {
 
     let result = resolve_package(&entry, "test", &platform, &managers, None)
         .unwrap()
+        .map(package_of)
         .unwrap();
     assert_eq!(result.manager, "script");
     assert!(result.script.is_some());
@@ -3912,7 +4525,7 @@ fn a_locked_entry_resolves_from_the_cache_with_the_remote_gone() {
     // is nothing a fetch could learn. Removing the upstream after the cache is
     // materialized turns that into a hard assertion — any transfer attempt now
     // fails loudly, so a load that still succeeds is a load that stayed local.
-    let _guard = crate::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+    let _guard = crate::test_helpers::EnvVarGuard::set(crate::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
     // Pinned shut, so the per-repository transfer window cannot be what spared
     // the load its fetch — only resolving the entry by its commit can.
     let _window = crate::test_helpers::GitRefreshWindowGuard::always_expired();
@@ -4004,6 +4617,7 @@ fn resolve_modules_loads_source_delivered_body_and_tags_origin() {
         &managers,
         None,
         &printer,
+        &refuse_floor_bootstrap,
     )
     .unwrap();
 
@@ -4055,6 +4669,7 @@ fn resolve_modules_consumer_local_shadows_source_offered() {
         &managers,
         None,
         &printer,
+        &refuse_floor_bootstrap,
     )
     .unwrap();
 
@@ -4108,6 +4723,7 @@ fn resolve_modules_higher_priority_source_wins() {
         &managers,
         None,
         &printer,
+        &refuse_floor_bootstrap,
     )
     .unwrap();
 
@@ -4149,6 +4765,7 @@ fn resolve_modules_offered_but_body_missing_names_source() {
         &managers,
         None,
         &printer,
+        &refuse_floor_bootstrap,
     )
     .expect_err("a declared-but-missing module body must error");
     let msg = err.to_string();
@@ -4185,6 +4802,7 @@ fn resolve_modules_unknown_module_is_plain_not_found() {
         &managers,
         None,
         &printer,
+        &refuse_floor_bootstrap,
     )
     .expect_err("an unknown module must be NotFound");
     let msg = err.to_string();
@@ -4221,6 +4839,7 @@ fn resolve_modules_body_present_but_not_offered_is_gated_out() {
         &managers,
         None,
         &printer,
+        &refuse_floor_bootstrap,
     )
     .expect_err("an undeclared body must not be loaded (allow-list gate)");
     let msg = err.to_string();
@@ -4300,16 +4919,28 @@ fn an_offered_body_that_has_not_arrived_is_still_a_recorded_input() {
     );
 }
 
-/// Write a source module body carrying a `preApply` lifecycle script; returns
-/// the `modules/` directory path.
-fn write_source_module_with_script(root: &Path, name: &str) -> std::path::PathBuf {
+/// Write a source module body carrying a `preApply` lifecycle script, gated to
+/// the platform tags given (an empty slice writes no `platforms:` key at all,
+/// which is a module every platform runs); returns the `modules/` directory
+/// path.
+fn write_source_module_with_script(
+    root: &Path,
+    name: &str,
+    platforms: &[&str],
+) -> std::path::PathBuf {
     let modules_dir = root.join("modules");
     let mod_dir = modules_dir.join(name);
     std::fs::create_dir_all(&mod_dir).unwrap();
+    let gate = if platforms.is_empty() {
+        String::new()
+    } else {
+        let tags: String = platforms.iter().map(|p| format!("    - {p}\n")).collect();
+        format!("  platforms:\n{tags}")
+    };
     std::fs::write(
         mod_dir.join("module.yaml"),
         format!(
-            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: {name}\nspec:\n  scripts:\n    preApply:\n      - run: \"echo hi\"\n"
+            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: {name}\nspec:\n{gate}  scripts:\n    preApply:\n      - run: \"echo hi\"\n"
         ),
     )
     .unwrap();
@@ -4333,9 +4964,14 @@ fn write_source_module_with_prefer_script(root: &Path, name: &str) -> std::path:
 }
 
 #[test]
-fn load_source_modules_rejects_script_body_when_not_permitted() {
+fn load_source_modules_loads_a_script_body_from_a_not_permitted_source() {
+    // The noScripts gate no longer runs at load time: `load_source_modules`
+    // loads every offered body unconditionally (`resolve_modules` enforces
+    // the gate afterward, over only the modules a resolution actually
+    // references — see `resolve_modules_rejects_a_referenced_script_module`
+    // and `resolve_modules_allows_an_unreferenced_script_module`).
     let source = tempfile::tempdir().unwrap();
-    let modules_dir = write_source_module_with_script(source.path(), "dev-tools");
+    let modules_dir = write_source_module_with_script(source.path(), "dev-tools", &[]);
 
     let root = SourceModuleRoot {
         source_name: "team".into(),
@@ -4346,29 +4982,17 @@ fn load_source_modules_rejects_script_body_when_not_permitted() {
     };
 
     let mut modules = std::collections::HashMap::new();
-    let err = load_source_modules(std::slice::from_ref(&root), &mut modules).unwrap_err();
-    let msg = format!("{err}");
+    load_source_modules(std::slice::from_ref(&root), &mut modules).unwrap();
     assert!(
-        matches!(
-            err,
-            CfgdError::Module(ModuleError::ScriptsNotAllowed { .. })
-        ),
-        "expected ScriptsNotAllowed, got: {msg}"
-    );
-    assert!(
-        msg.contains("team") && msg.contains("dev-tools") && msg.contains("preApply"),
-        "error must name source + module + script kind: {msg}"
-    );
-    assert!(
-        !modules.contains_key("dev-tools"),
-        "rejected body must not be inserted"
+        modules.contains_key("dev-tools"),
+        "the body loads regardless of scripts_permitted; enforcement is deferred"
     );
 }
 
 #[test]
 fn load_source_modules_allows_script_body_when_subscriber_opted_in() {
     let source = tempfile::tempdir().unwrap();
-    let modules_dir = write_source_module_with_script(source.path(), "dev-tools");
+    let modules_dir = write_source_module_with_script(source.path(), "dev-tools", &[]);
 
     let root = SourceModuleRoot {
         source_name: "team".into(),
@@ -4404,10 +5028,11 @@ fn write_source_module_with_patch_script(root: &Path, name: &str) -> std::path::
 }
 
 #[test]
-fn load_source_modules_rejects_patch_script_body_when_not_permitted() {
-    // A patch filter runs on every command that evaluates the file, read-only
-    // ones included — it is the same delivered-code surface as a lifecycle
-    // script and must be gated the same way.
+fn load_source_modules_loads_a_patch_script_body_from_a_not_permitted_source() {
+    // Same deferral as the lifecycle-script case above: the load never gates
+    // on scripts_permitted, whatever surface the body's script reaches
+    // through. `resolve_modules_rejects_a_referenced_script_module` covers
+    // the actual gate.
     let source = tempfile::tempdir().unwrap();
     let modules_dir = write_source_module_with_patch_script(source.path(), "dev-tools");
 
@@ -4420,22 +5045,10 @@ fn load_source_modules_rejects_patch_script_body_when_not_permitted() {
     };
 
     let mut modules = std::collections::HashMap::new();
-    let err = load_source_modules(std::slice::from_ref(&root), &mut modules).unwrap_err();
-    let msg = format!("{err}");
+    load_source_modules(std::slice::from_ref(&root), &mut modules).unwrap();
     assert!(
-        matches!(
-            err,
-            CfgdError::Module(ModuleError::ScriptsNotAllowed { .. })
-        ),
-        "expected ScriptsNotAllowed for a patch filter, got: {msg}"
-    );
-    assert!(
-        msg.contains("team") && msg.contains("dev-tools") && msg.contains("~/.config/app/x.ini"),
-        "error must name source + module + the patched target: {msg}"
-    );
-    assert!(
-        !modules.contains_key("dev-tools"),
-        "rejected body must not be inserted"
+        modules.contains_key("dev-tools"),
+        "the body loads regardless of scripts_permitted; enforcement is deferred"
     );
 }
 
@@ -4461,7 +5074,7 @@ fn load_source_modules_allows_patch_script_body_when_subscriber_opted_in() {
 }
 
 #[test]
-fn load_source_modules_rejects_prefer_script_package_when_not_permitted() {
+fn load_source_modules_loads_a_prefer_script_package_from_a_not_permitted_source() {
     let source = tempfile::tempdir().unwrap();
     let modules_dir = write_source_module_with_prefer_script(source.path(), "dev-tools");
 
@@ -4474,18 +5087,10 @@ fn load_source_modules_rejects_prefer_script_package_when_not_permitted() {
     };
 
     let mut modules = std::collections::HashMap::new();
-    let err = load_source_modules(std::slice::from_ref(&root), &mut modules).unwrap_err();
-    let msg = format!("{err}");
+    load_source_modules(std::slice::from_ref(&root), &mut modules).unwrap();
     assert!(
-        matches!(
-            err,
-            CfgdError::Module(ModuleError::ScriptsNotAllowed { .. })
-        ),
-        "expected ScriptsNotAllowed for prefer:[script] package, got: {msg}"
-    );
-    assert!(
-        msg.contains("customtool"),
-        "error must name the prefer:[script] package: {msg}"
+        modules.contains_key("dev-tools"),
+        "the body loads regardless of scripts_permitted; enforcement is deferred"
     );
 }
 
@@ -4497,7 +5102,7 @@ fn load_source_modules_script_gating_does_not_touch_local_modules() {
     // not-permitted source root leaves it untouched (and loads nothing else).
     let source = tempfile::tempdir().unwrap();
     // Source offers a module name that already exists locally — must be skipped.
-    let modules_dir = write_source_module_with_script(source.path(), "shared");
+    let modules_dir = write_source_module_with_script(source.path(), "shared", &[]);
 
     let root = SourceModuleRoot {
         source_name: "team".into(),
@@ -4526,6 +5131,182 @@ fn load_source_modules_script_gating_does_not_touch_local_modules() {
         modules["shared"].origin, None,
         "local module must be untouched"
     );
+}
+
+#[test]
+fn resolve_modules_rejects_a_referenced_script_module() {
+    // A source's noScripts constraint must still block a module the
+    // subscriber's own request pulls in.
+    let consumer = tempfile::tempdir().unwrap();
+    let source = tempfile::tempdir().unwrap();
+    let modules_dir = write_source_module_with_script(source.path(), "risky", &[]);
+
+    let root = SourceModuleRoot {
+        source_name: "team".into(),
+        priority: 500,
+        modules_dir,
+        offered: vec!["risky".into()],
+        scripts_permitted: false,
+    };
+
+    let managers = make_manager_map(&[]);
+    let cache_dir = tempfile::tempdir().unwrap();
+    let printer = test_printer();
+
+    let err = resolve_modules(
+        &["risky".into()],
+        consumer.path(),
+        cache_dir.path(),
+        std::slice::from_ref(&root),
+        &macos_platform(),
+        &managers,
+        None,
+        &printer,
+        &refuse_floor_bootstrap,
+    )
+    .expect_err("a referenced script module from a not-permitted source must error");
+    let msg = err.to_string();
+    assert!(
+        matches!(
+            err,
+            CfgdError::Module(ModuleError::ScriptsNotAllowed { .. })
+        ),
+        "expected ScriptsNotAllowed, got: {msg}"
+    );
+    assert!(
+        msg.contains("team") && msg.contains("risky") && msg.contains("preApply"),
+        "error must name source + module + script kind: {msg}"
+    );
+}
+
+#[test]
+fn resolve_modules_allows_an_unreferenced_script_module_beside_a_referenced_one() {
+    // The same not-permitted source offers a script module ("risky") and a
+    // plain one ("safe"). The subscriber requests only "safe" — noScripts
+    // must not fail an apply over a sibling module nothing in this
+    // resolution references.
+    let consumer = tempfile::tempdir().unwrap();
+    let source = tempfile::tempdir().unwrap();
+    let modules_dir = write_source_module(source.path(), "safe", "safepkg");
+    write_source_module_with_script(source.path(), "risky", &[]);
+
+    let root = SourceModuleRoot {
+        source_name: "team".into(),
+        priority: 500,
+        modules_dir,
+        offered: vec!["safe".into(), "risky".into()],
+        scripts_permitted: false,
+    };
+
+    let brew = MockManager::new("brew").with_package("safepkg", "1.0.0");
+    let managers = make_manager_map(&[("brew", &brew)]);
+    let cache_dir = tempfile::tempdir().unwrap();
+    let printer = test_printer();
+
+    let resolved = resolve_modules(
+        &["safe".into()],
+        consumer.path(),
+        cache_dir.path(),
+        std::slice::from_ref(&root),
+        &macos_platform(),
+        &managers,
+        None,
+        &printer,
+        &refuse_floor_bootstrap,
+    )
+    .unwrap();
+
+    assert_eq!(resolved.len(), 1, "only the referenced module resolves");
+    assert_eq!(resolved[0].name, "safe");
+}
+
+#[test]
+fn resolve_modules_allows_a_referenced_script_module_from_a_permitted_source() {
+    // A source whose subscriber permits scripts (scripts_permitted: true) must
+    // never be refused for a referenced script-bearing module — the whole
+    // ScriptsNotAllowed gate is conditioned on the source alone.
+    let consumer = tempfile::tempdir().unwrap();
+    let source = tempfile::tempdir().unwrap();
+    let modules_dir = write_source_module_with_script(source.path(), "risky", &[]);
+
+    let root = SourceModuleRoot {
+        source_name: "team".into(),
+        priority: 500,
+        modules_dir,
+        offered: vec!["risky".into()],
+        scripts_permitted: true,
+    };
+
+    let managers = make_manager_map(&[]);
+    let cache_dir = tempfile::tempdir().unwrap();
+    let printer = test_printer();
+
+    let resolved = resolve_modules(
+        &["risky".into()],
+        consumer.path(),
+        cache_dir.path(),
+        std::slice::from_ref(&root),
+        &macos_platform(),
+        &managers,
+        None,
+        &printer,
+        &refuse_floor_bootstrap,
+    )
+    .expect("a referenced script module from a permitted source must resolve");
+
+    assert_eq!(resolved.len(), 1);
+    assert_eq!(resolved[0].name, "risky");
+    // Resolving the module is only half of "allowed": a gate that resolved it
+    // and dropped the script body would pass a name-and-count assertion while
+    // the `preApply` the permission was granted for never ran.
+    assert!(
+        !resolved[0].pre_apply_scripts.is_empty(),
+        "a permitted source's script module keeps the preApply body it declared"
+    );
+    assert!(resolved[0].platform_skip_reason.is_none());
+}
+
+#[test]
+fn resolve_modules_does_not_refuse_a_referenced_script_module_the_platform_gate_skips() {
+    // Same not-permitted source as resolve_modules_rejects_a_referenced_script_module,
+    // but the script module is gated to a platform ("windows") the resolution
+    // is not running on (macos). A platform-skipped module never runs its
+    // body, so it must be excluded from the noScripts gate entirely.
+    let consumer = tempfile::tempdir().unwrap();
+    let source = tempfile::tempdir().unwrap();
+    let modules_dir = write_source_module_with_script(source.path(), "risky", &["windows"]);
+
+    let root = SourceModuleRoot {
+        source_name: "team".into(),
+        priority: 500,
+        modules_dir,
+        offered: vec!["risky".into()],
+        scripts_permitted: false,
+    };
+
+    let managers = make_manager_map(&[]);
+    let cache_dir = tempfile::tempdir().unwrap();
+    let printer = test_printer();
+
+    let resolved = resolve_modules(
+        &["risky".into()],
+        consumer.path(),
+        cache_dir.path(),
+        std::slice::from_ref(&root),
+        &macos_platform(),
+        &managers,
+        None,
+        &printer,
+        &refuse_floor_bootstrap,
+    )
+    .expect("a platform-skipped script module must not be refused by noScripts");
+
+    assert_eq!(resolved.len(), 1);
+    assert!(
+        resolved[0].platform_skip_reason.is_some(),
+        "a platform-skipped module resolves to its skip placeholder"
+    );
+    assert!(resolved[0].pre_apply_scripts.is_empty());
 }
 
 /// Write `<root>/modules/<name>/module.yaml` for a module with one package and a
@@ -4633,6 +5414,7 @@ fn enrich_not_found_names_highest_priority_offering_source() {
         &managers,
         None,
         &printer,
+        &refuse_floor_bootstrap,
     )
     .expect_err("a declared-but-missing body offered by several sources must error");
     let msg = err.to_string();
@@ -4675,6 +5457,7 @@ fn resolve_modules_source_module_depends_on_source_module() {
         &managers,
         None,
         &printer,
+        &refuse_floor_bootstrap,
     )
     .unwrap();
 
@@ -4727,6 +5510,7 @@ fn resolve_modules_source_module_depends_on_consumer_local_module() {
         &managers,
         None,
         &printer,
+        &refuse_floor_bootstrap,
     )
     .unwrap();
 
@@ -4773,6 +5557,7 @@ fn resolve_modules_source_module_with_unoffered_transitive_dep_is_missing_depend
         &managers,
         None,
         &printer,
+        &refuse_floor_bootstrap,
     )
     .expect_err("a dependent on an unoffered transitive dep must error");
     let msg = err.to_string();
@@ -5141,7 +5926,9 @@ fn a_resolution_that_renders_no_version_asks_no_manager_for_one() {
         origin: None,
     };
 
-    let resolved = resolve_module_packages(&module, &platform, &managers, None).unwrap();
+    let resolved = resolve_module_packages(&module, &platform, &managers, None)
+        .unwrap()
+        .0;
     assert_eq!(resolved.len(), 2);
     assert!(resolved.iter().all(|p| p.version.is_none()));
     assert_eq!(
@@ -5265,7 +6052,9 @@ fn resolve_module_packages_multiple_packages() {
         origin: None,
     };
 
-    let resolved = resolve_module_packages(&module, &platform, &managers, None).unwrap();
+    let resolved = resolve_module_packages(&module, &platform, &managers, None)
+        .unwrap()
+        .0;
     assert_eq!(resolved.len(), 3);
     assert_eq!(resolved[0].canonical_name, "ripgrep");
     assert_eq!(resolved[1].canonical_name, "fd");
@@ -5289,7 +6078,9 @@ fn resolve_module_packages_empty_packages() {
         origin: None,
     };
 
-    let resolved = resolve_module_packages(&module, &platform, &managers, None).unwrap();
+    let resolved = resolve_module_packages(&module, &platform, &managers, None)
+        .unwrap()
+        .0;
     assert!(
         resolved.is_empty(),
         "module with no packages should resolve to empty"
@@ -5332,7 +6123,9 @@ fn resolve_module_packages_mixed_platforms() {
         origin: None,
     };
 
-    let resolved = resolve_module_packages(&module, &platform, &managers, None).unwrap();
+    let resolved = resolve_module_packages(&module, &platform, &managers, None)
+        .unwrap()
+        .0;
     assert_eq!(
         resolved.len(),
         2,
@@ -5525,6 +6318,7 @@ fn module_resolution_keeps_a_manager_whose_bootstrap_plan_is_satisfiable() {
 
     let result = resolve_package(&entry, "test", &platform, &managers, None)
         .unwrap()
+        .map(package_of)
         .unwrap();
     assert_eq!(result.manager, "cargo");
     assert_eq!(result.canonical_name, "ripgrep");
@@ -5553,6 +6347,7 @@ fn resolve_package_skips_an_unavailable_manager_that_plans_no_bootstrap() {
 
     let result = resolve_package(&entry, "test", &platform, &managers, None)
         .unwrap()
+        .map(package_of)
         .unwrap();
     assert_eq!(result.manager, "brew");
 }
@@ -5578,6 +6373,7 @@ fn resolve_package_deny_script_still_works() {
 
     let result = resolve_package(&entry, "test", &platform, &managers, None)
         .unwrap()
+        .map(package_of)
         .unwrap();
     assert_eq!(result.manager, "script", "should fall through to script");
 }
@@ -7013,6 +7809,7 @@ spec:
         &managers,
         None,
         &test_printer(),
+        &refuse_floor_bootstrap,
     )
     .unwrap();
 

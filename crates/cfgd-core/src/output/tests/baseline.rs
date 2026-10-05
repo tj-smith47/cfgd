@@ -28,6 +28,8 @@ golden_doc!(baseline, status_ok_simple, |p, cap| {
 });
 
 golden_doc!(baseline, hint_at_normal, |p, cap| {
+    // Hints are off by default, as a cfgd run renders them.
+    p.renderer.set_hints_enabled(true);
     p.hint("run cfgd apply to apply");
 });
 

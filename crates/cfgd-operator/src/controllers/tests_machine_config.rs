@@ -1,5 +1,4 @@
 //! Reconcile-fn tests for `controllers/machine_config.rs`.
-#![cfg(test)]
 
 use std::sync::Arc;
 
@@ -91,6 +90,7 @@ async fn reconcile_machine_config_removes_finalizer_on_deletion_then_returns_awa
 
     let (ctx, _registry, harness) = MockKubeHarness::with_stores(
         vec![
+            ExpectedCall::list(DRIFT_ALERTS).returning_json(&alert_list(vec![])),
             ExpectedCall::patch(machine_config_path(NS, "mc-deleting"))
                 .with_query_contains("fieldManager=cfgd-operator")
                 .returning_json(&mc),
@@ -108,7 +108,7 @@ async fn reconcile_machine_config_removes_finalizer_on_deletion_then_returns_awa
     );
 
     let report = harness.finish().await;
-    assert_eq!(report.captured.len(), 1);
+    assert_eq!(report.captured.len(), 2);
 
     let success = ctx
         .metrics
@@ -121,7 +121,7 @@ async fn reconcile_machine_config_removes_finalizer_on_deletion_then_returns_awa
     assert_eq!(success, 1, "a deletion pass is a successful reconciliation");
 
     // Patch removes the finalizer (resulting list is empty).
-    let body = report.captured[0].body_json();
+    let body = report.captured[1].body_json();
     let finalizers = body["metadata"]["finalizers"]
         .as_array()
         .expect("finalizers array (possibly empty)");
@@ -129,6 +129,112 @@ async fn reconcile_machine_config_removes_finalizer_on_deletion_then_returns_awa
         !finalizers.iter().any(|f| f == MACHINE_CONFIG_FINALIZER),
         "finalizer must be removed in delete path: {body}"
     );
+}
+
+const DRIFT_ALERTS: &str = "/apis/cfgd.io/v1alpha1/driftalerts";
+
+fn alert_list(items: Vec<DriftAlert>) -> serde_json::Value {
+    serde_json::json!({
+        "apiVersion": "cfgd.io/v1alpha1",
+        "kind": "DriftAlertList",
+        "metadata": { "resourceVersion": "1" },
+        "items": items,
+    })
+}
+
+/// A deleted machine takes every alert that names it, in any namespace. An
+/// alert in another namespace has no owner reference for the garbage collector
+/// to follow, so without this it would outlive the machine it reports on. An
+/// alert already gone is no failure, and an alert naming another machine stays.
+#[tokio::test]
+async fn deleting_a_machine_deletes_the_alerts_that_name_it_in_every_namespace() {
+    use super::test_fixtures::drift_alert;
+    use crate::crds::DriftSeverity;
+
+    let mut mc = machine_config("mc-gone", "team-a");
+    mc.metadata.finalizers = Some(vec![MACHINE_CONFIG_FINALIZER.to_string()]);
+    mc.metadata.deletion_timestamp = Some(k8s_openapi::apimachinery::pkg::apis::meta::v1::Time(
+        k8s_openapi::jiff::Timestamp::now(),
+    ));
+
+    let own = drift_alert("own", "team-a", "mc-gone", DriftSeverity::Low);
+    let mut cross = drift_alert("cross", NS, "mc-gone", DriftSeverity::Low);
+    cross.spec.machine_config_ref.namespace = Some("team-a".to_string());
+    let mut raced = drift_alert("raced", NS, "mc-gone", DriftSeverity::Low);
+    raced.spec.machine_config_ref.namespace = Some("team-a".to_string());
+    let elsewhere = drift_alert("elsewhere", NS, "mc-gone", DriftSeverity::Low);
+    let other = drift_alert("other", "team-a", "mc-kept", DriftSeverity::Low);
+
+    let alert_path =
+        |ns: &str, name: &str| format!("/apis/cfgd.io/v1alpha1/namespaces/{ns}/driftalerts/{name}");
+    let (ctx, _registry, harness) = MockKubeHarness::with_stores(
+        vec![
+            ExpectedCall::list(DRIFT_ALERTS).returning_json(&alert_list(vec![
+                own.clone(),
+                cross.clone(),
+                raced.clone(),
+                elsewhere,
+                other,
+            ])),
+            ExpectedCall::delete(alert_path("team-a", "own")).returning_json(&own),
+            ExpectedCall::delete(alert_path(NS, "cross")).returning_json(&cross),
+            ExpectedCall::delete(alert_path(NS, "raced")).returning_404("raced"),
+            ExpectedCall::patch(machine_config_path("team-a", "mc-gone")).returning_json(&mc),
+        ],
+        empty_stores(),
+    );
+
+    let action = reconcile_machine_config(Arc::new(mc), ctx)
+        .await
+        .expect("the deletion completes");
+    assert_eq!(action, Action::await_change());
+
+    let report = harness.finish().await;
+    let deleted: Vec<&str> = report
+        .captured
+        .iter()
+        .filter(|c| c.method == http::Method::DELETE)
+        .map(|c| c.path.rsplit('/').next().unwrap_or_default())
+        .collect();
+    assert_eq!(
+        deleted,
+        ["own", "cross", "raced"],
+        "only the alerts naming team-a/mc-gone are deleted"
+    );
+}
+
+/// A failed delete keeps the finalizer, so the deletion is retried and no
+/// alert is left behind naming a machine that is gone.
+#[tokio::test]
+async fn a_failed_alert_delete_keeps_the_machine_finalizer() {
+    use super::test_fixtures::drift_alert;
+    use crate::crds::DriftSeverity;
+
+    let mut mc = machine_config("mc-gone", NS);
+    mc.metadata.finalizers = Some(vec![MACHINE_CONFIG_FINALIZER.to_string()]);
+    mc.metadata.deletion_timestamp = Some(k8s_openapi::apimachinery::pkg::apis::meta::v1::Time(
+        k8s_openapi::jiff::Timestamp::now(),
+    ));
+    let alert = drift_alert("stuck", NS, "mc-gone", DriftSeverity::Low);
+
+    let (ctx, _registry, harness) = MockKubeHarness::with_stores(
+        vec![
+            ExpectedCall::list(DRIFT_ALERTS).returning_json(&alert_list(vec![alert])),
+            ExpectedCall::delete(format!(
+                "/apis/cfgd.io/v1alpha1/namespaces/{NS}/driftalerts/stuck"
+            ))
+            .returning_server_error(500, "etcd unavailable"),
+        ],
+        empty_stores(),
+    );
+
+    let err = reconcile_machine_config(Arc::new(mc), ctx)
+        .await
+        .expect_err("the deletion is retried");
+    assert!(err.to_string().contains("stuck"), "{err}");
+
+    let report = harness.finish().await;
+    assert_eq!(report.captured.len(), 2, "no finalizer patch follows");
 }
 
 #[tokio::test]
@@ -207,8 +313,13 @@ async fn reconcile_machine_config_skips_when_generation_observed_and_no_drift() 
     mc.status = Some(MachineConfigStatus {
         last_reconciled: Some("2026-01-01T00:00:00Z".to_string()),
         backup_schedule_owners: Default::default(),
+        compliance: None,
         observed_generation: Some(7),
-        conditions: vec![],
+        conditions: vec![modules_resolved(
+            "True",
+            "AllResolved",
+            "No module references to resolve",
+        )],
         package_versions: Default::default(),
     });
 
@@ -239,6 +350,97 @@ async fn reconcile_machine_config_skips_when_generation_observed_and_no_drift() 
         success, 1,
         "a pass that found nothing to do is a reconcile that succeeded"
     );
+}
+
+/// A `ModulesResolved` condition as an earlier pass recorded it.
+fn modules_resolved(status: &str, reason: &str, message: &str) -> Condition {
+    Condition {
+        condition_type: "ModulesResolved".to_string(),
+        status: status.to_string(),
+        reason: reason.to_string(),
+        message: message.to_string(),
+        last_transition_time: "2026-01-01T00:00:00Z".to_string(),
+        observed_generation: Some(7),
+    }
+}
+
+/// A machine at its observed generation naming `nvim`, with `recorded` as its
+/// only condition.
+fn steady_machine_naming_nvim(name: &str, recorded: Condition) -> crate::crds::MachineConfig {
+    let mut mc = machine_config(name, NS);
+    mc.metadata.finalizers = Some(vec![MACHINE_CONFIG_FINALIZER.to_string()]);
+    mc.metadata.generation = Some(7);
+    mc.spec.module_refs = vec![ModuleRef {
+        name: "nvim".to_string(),
+        required: false,
+    }];
+    mc.status = Some(MachineConfigStatus {
+        last_reconciled: Some("2026-01-01T00:00:00Z".to_string()),
+        backup_schedule_owners: Default::default(),
+        compliance: None,
+        observed_generation: Some(7),
+        conditions: vec![recorded],
+        package_versions: Default::default(),
+    });
+    mc
+}
+
+/// Runs `mc` with `modules` cached and returns the ModulesResolved condition
+/// its one status patch wrote.
+async fn modules_resolved_written(
+    mc: crate::crds::MachineConfig,
+    modules: Vec<crate::crds::Module>,
+) -> serde_json::Value {
+    let name = mc.metadata.name.clone().unwrap_or_default();
+    let (ctx, _registry, harness) = MockKubeHarness::with_stores(
+        vec![
+            ExpectedCall::patch_status(format!("{}/status", machine_config_path(NS, &name)))
+                .returning_json(&mc),
+            expect_event_post(NS),
+        ],
+        ControllerStores {
+            modules: seeded_store(modules),
+            ..empty_stores()
+        },
+    );
+    reconcile_machine_config(Arc::new(mc), ctx).await.unwrap();
+    let report = harness.finish().await;
+    let body = report.captured[0].body_json();
+    body["status"]["conditions"]
+        .as_array()
+        .expect("conditions array")
+        .iter()
+        .find(|c| c["type"] == "ModulesResolved")
+        .cloned()
+        .expect("ModulesResolved written")
+}
+
+/// The Module watch re-runs a machine whose generation has not moved, so the
+/// skip must not swallow a Module that appeared since the last pass.
+#[tokio::test]
+async fn reconcile_machine_config_at_its_observed_generation_records_a_module_that_appeared() {
+    let mc = steady_machine_naming_nvim(
+        "mc-module-appeared",
+        modules_resolved("False", "ModulesNotFound", "Missing modules: nvim"),
+    );
+    let nvim = crate::crds::Module::new("nvim", Default::default());
+
+    let written = modules_resolved_written(mc, vec![nvim]).await;
+    assert_eq!(written["status"], "True", "{written}");
+    assert_eq!(written["reason"], "AllResolved", "{written}");
+}
+
+/// The other direction: a Module deleted since the last pass.
+#[tokio::test]
+async fn reconcile_machine_config_at_its_observed_generation_records_a_module_that_was_deleted() {
+    let mc = steady_machine_naming_nvim(
+        "mc-module-deleted",
+        modules_resolved("True", "AllResolved", "All module references resolved"),
+    );
+
+    let written = modules_resolved_written(mc, vec![]).await;
+    assert_eq!(written["status"], "False", "{written}");
+    assert_eq!(written["reason"], "ModulesNotFound", "{written}");
 }
 
 // -----------------------------------------------------------------------
@@ -401,6 +603,7 @@ async fn reconcile_machine_config_carries_the_policys_compliant_message_forward(
     mc.status = Some(MachineConfigStatus {
         last_reconciled: Some("2026-01-01T00:00:00Z".to_string()),
         backup_schedule_owners: Default::default(),
+        compliance: None,
         observed_generation: Some(1),
         conditions: vec![policy_written_compliant("p")],
         package_versions: Default::default(),
@@ -462,6 +665,7 @@ async fn a_drifted_policy_targeted_machine_reaches_steady_state() {
     mc.status = Some(MachineConfigStatus {
         last_reconciled: Some("2026-01-01T00:00:00Z".to_string()),
         backup_schedule_owners: Default::default(),
+        compliance: None,
         observed_generation: Some(1),
         conditions: vec![policy_written_compliant("pp-policy")],
         package_versions: Default::default(),
@@ -659,6 +863,7 @@ async fn reconcile_machine_config_preserves_existing_compliant_condition_status(
     mc.status = Some(MachineConfigStatus {
         last_reconciled: Some("2025-12-01T00:00:00Z".to_string()),
         backup_schedule_owners: Default::default(),
+        compliance: None,
         observed_generation: Some(1),
         conditions: vec![Condition {
             condition_type: "Compliant".to_string(),
@@ -744,7 +949,7 @@ async fn reconcile_machine_config_when_drift_alert_cache_is_unpopulated_returns_
 /// (unforced) apply into a conflict. A merge patch changes only what it names,
 /// so leaving both out is what preserves them.
 #[tokio::test]
-async fn reconcile_machine_config_leaves_the_device_reported_maps_to_the_gateway() {
+async fn reconcile_machine_config_leaves_the_device_reported_fields_to_the_gateway() {
     let mut mc = machine_config("mc-pinned", NS);
     mc.metadata.finalizers = Some(vec![MACHINE_CONFIG_FINALIZER.to_string()]);
     mc.status = Some(MachineConfigStatus {
@@ -760,6 +965,17 @@ async fn reconcile_machine_config_leaves_the_device_reported_maps_to_the_gateway
         package_versions: [("brew/git".to_string(), "2.45.1".to_string())]
             .into_iter()
             .collect(),
+        compliance: Some(crate::crds::DeviceCompliance {
+            compliant: 4,
+            warning: 0,
+            violation: 1,
+            checks: vec![crate::crds::DeviceComplianceCheck {
+                category: "file".to_string(),
+                name: "/home/u/.bashrc".to_string(),
+                status: crate::crds::DeviceComplianceStatus::Violation,
+                detail: Some("managed file missing".to_string()),
+            }],
+        }),
     });
 
     // Drift keeps the reconcile off the already-observed short circuit, which
@@ -794,6 +1010,10 @@ async fn reconcile_machine_config_leaves_the_device_reported_maps_to_the_gateway
     assert!(
         status.get("packageVersions").is_none(),
         "the reported versions are the gateway's field on the same terms: {status}"
+    );
+    assert!(
+        status.get("compliance").is_none(),
+        "the reported compliance is the gateway's field on the same terms: {status}"
     );
     assert!(
         status["lastReconciled"].as_str().is_some(),

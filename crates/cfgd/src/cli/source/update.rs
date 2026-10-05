@@ -93,13 +93,12 @@ impl SubscriptionEdits {
 /// Write the asked-for subscription knobs into `cfgd.yaml` and report back what
 /// the tree actually holds afterwards.
 ///
-/// The block is MINTED when it is absent, `null`, or a scalar — every
+/// The block is created when it is absent or `null` — every
 /// `SubscriptionSpec` field is `#[serde(default)]` and the rewrite path prunes
 /// an empty mapping, so a source legitimately carries no `subscription:` key at
 /// all, and a hand-written `subscription:` with no children parses to `null`.
-/// Refusing either shape failed a command that only ever asked to set a value;
-/// skipping the insert on either shape was worse, because the caller still
-/// announced a write that never happened.
+/// Any other shape is refused naming what the entry holds, since overwriting it
+/// would discard whatever the author put there.
 ///
 /// The return value is READ BACK out of the tree that is about to be written,
 /// never echoed from `asked`: the success line and the `-o json` payload may
@@ -111,19 +110,7 @@ fn write_subscription_knobs(
 ) -> anyhow::Result<Vec<(&'static str, bool)>> {
     let mut written = Vec::new();
     with_source_config(config_path, name, |source_entry| {
-        let map = source_entry
-            .as_mapping_mut()
-            .ok_or_else(|| anyhow::anyhow!("source '{name}' is not a mapping"))?;
-        let key = serde_yaml::Value::String("subscription".into());
-        if !map.get(&key).is_some_and(serde_yaml::Value::is_mapping) {
-            map.insert(key.clone(), serde_yaml::Value::Mapping(Default::default()));
-        }
-        let subscription = map
-            .get_mut(&key)
-            .and_then(serde_yaml::Value::as_mapping_mut)
-            .ok_or_else(|| {
-                anyhow::anyhow!("source '{name}' subscription block is not a mapping")
-            })?;
+        let subscription = subscription_mapping_mut(source_entry, config_path, name)?;
         for (k, v) in asked {
             subscription.insert(
                 serde_yaml::Value::String((*k).into()),
@@ -145,12 +132,11 @@ fn write_subscription_knobs(
 }
 
 pub fn cmd_source_update(
-    cli: &Cli,
-    printer: &Printer,
+    run: &RunContext<'_>,
     name: Option<&str>,
     edits: SubscriptionEdits,
 ) -> anyhow::Result<()> {
-    let error_count = run_source_update(cli, printer, name, edits)?;
+    let error_count = run_source_update(run, name, edits)?;
 
     // A scripted consumer must be able to detect that a source failed to
     // update from the exit code alone. `run_source_update` already emitted the
@@ -168,14 +154,14 @@ pub fn cmd_source_update(
 /// Core of `source update`: fetches each configured source, emits the summary
 /// Doc, and returns the number of sources that failed to update.
 pub fn run_source_update(
-    cli: &Cli,
-    printer: &Printer,
+    run: &RunContext<'_>,
     name: Option<&str>,
     edits: SubscriptionEdits,
 ) -> anyhow::Result<usize> {
+    let cli = run.cli();
+    let printer = run.printer();
     let config_path = cli.config.clone();
-    let mut cfg = config::load_config(&config_path)?;
-    drain_config_deprecations(printer, &mut cfg);
+    let cfg = run.config()?;
 
     if cfg.spec.sources.is_empty() {
         // A specific source was requested but the config has no sources: that is
@@ -204,7 +190,7 @@ pub fn run_source_update(
 
     let cache_dir = source_cache_dir(cli)?;
     let mut mgr = SourceManager::new(&cache_dir);
-    mgr.set_allow_unsigned(cfg.spec.security.as_ref().is_some_and(|s| s.allow_unsigned));
+    mgr.set_allow_unsigned(cfg.spec.security_effective().allow_unsigned);
     let state = open_state_store(cli.state_dir.as_deref(), cli.scope())?;
 
     let sources_to_update: Vec<&config::SourceSpec> = if let Some(name) = name {
@@ -499,7 +485,7 @@ pub fn run_source_update(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use clap::Parser;
+    use crate::cli::HermeticParse;
 
     /// The source entry's `subscription:` value is substituted per case, so one
     /// seed covers every shape the block can arrive in.
@@ -529,16 +515,16 @@ mod tests {
             .as_bool()
     }
 
-    /// Every shape the `subscription:` block can be in when the knob is asked
-    /// for: absent entirely (the rewrite path prunes an empty mapping), `null`
-    /// (hand-written with no children), a scalar (hand-written nonsense), and
-    /// an existing mapping. Each must write AND read the value back.
+    /// Every shape the `subscription:` block can take a knob in: absent
+    /// entirely (the rewrite path prunes an empty mapping), `null` written
+    /// either way, and an existing mapping. Each must write AND read the value
+    /// back.
     #[test]
     fn every_subscription_block_shape_is_written_and_read_back() {
         for (case, block) in [
             ("absent", ""),
-            ("null", "      subscription:\n"),
-            ("scalar", "      subscription: yes-please\n"),
+            ("bare", "      subscription:\n"),
+            ("null", "      subscription: null\n"),
             (
                 "mapping",
                 "      subscription:\n        requireSignedCommits: false\n",
@@ -564,6 +550,29 @@ mod tests {
         }
     }
 
+    /// A block holding anything but a mapping is the author's, and a knob
+    /// written over it would discard it, so the write is refused naming what
+    /// the entry holds and the file is left as it was.
+    #[test]
+    fn a_subscription_block_of_another_shape_is_refused_and_left_alone() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = seed_config(dir.path(), "      subscription: yes-please\n");
+        let before = std::fs::read_to_string(&path).expect("read config");
+
+        let err = write_subscription_knobs(&path, "acme", &[("requireSignedCommits", true)])
+            .expect_err("a scalar block takes no knob");
+
+        assert_eq!(
+            err.to_string(),
+            "'sources[acme].subscription' holds a scalar where a mapping belongs"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("read config"),
+            before,
+            "a refused write leaves the file as it was"
+        );
+    }
+
     /// A knob the invocation never named is not touched, and one it did name
     /// lands beside it rather than replacing the block.
     #[test]
@@ -584,7 +593,7 @@ mod tests {
     /// The parsed flags, through the same `paired_flag` mapping the dispatcher
     /// uses, so a rewired flag fails here rather than in a golden.
     fn edits_from_argv(argv: &[&str]) -> SubscriptionEdits {
-        let cli = Cli::try_parse_from(argv).expect("parse argv");
+        let cli = Cli::try_parse_hermetic(argv).expect("parse argv");
         match cli.command {
             Some(crate::cli::Command::Source {
                 command:
@@ -663,7 +672,7 @@ mod tests {
             vec!["cfgd", "source", "update", "--no-allow-scripts"],
         ] {
             assert!(
-                Cli::try_parse_from(&argv).is_err(),
+                Cli::try_parse_hermetic(&argv).is_err(),
                 "must be refused: {argv:?}"
             );
         }

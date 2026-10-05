@@ -1,0 +1,836 @@
+#!/usr/bin/env bash
+# Checks that no e2e case passes on an excuse: a branch that prints why the
+# thing under test did not happen ("Note: ...", "not yet ...", "acceptable")
+# and then calls pass_test has asserted nothing. Such a branch either asserts
+# what the note excuses or fails.
+#
+# Checks too that no pass_test is guarded only by existence: an if or elif
+# whose condition, or one of whose ||-alternatives, is nothing but `-n`,
+# `-s` or `!=` against an empty value ("", '', "[]", "{}" or "null"), an
+# elif that only re-reads an object with a bare `kubectl get` or
+# `k8s_exists`, or the same tests chained with && into the pass_test line.
+# A value read back is asserted by comparing it with the value the fixture
+# determines.
+#
+# Checks as well that no absence verdict rests on a read that turns its own
+# failure into empty output: a pass_test in the branch of a `-z` test, an
+# `= ""` test, a `!=` against a word or a negated condition, in the else
+# branch of a condition an empty value makes false (a grep, an `=` against a
+# word), or in a case arm that matches "", on a variable last assigned from a
+# `$(...)` whose fallback prints nothing (`|| echo`, `|| echo ""`, `|| true`,
+# `|| :`, `|| printf ""`). A read
+# that failed then passes as "nothing there"; the read's exit code, captured
+# on its own, is what tells the two apart. The fixtures under
+# common/fixtures/existence/ mark each pass_test the scan has to flag with
+# `# want-exist` (existence) or `# want-absent` (absence).
+#
+# A pass_test line carrying `# verdict-ok: <why>` is exempt from both.
+#
+# Usage: tests/e2e/common/test-verdicts.sh
+set -euo pipefail
+
+here="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=tests/e2e/common/census.sh
+source "$here/census.sh"
+e2e_root="$(dirname "$here")"
+scratch="$(mktemp -d)"
+trap 'rm -rf "$scratch"' EXIT
+failures=0
+
+pass() { echo "PASS  $1"; }
+fail() {
+    echo "FAIL  $1"
+    failures=$((failures + 1))
+}
+
+excuse='(echo|printf) .*(Note:|[Nn]ot yet|[Aa]ccepting|[Aa]cceptable|may still|which is fine|normal for)'
+
+# There are about twice this many pass_test calls under tests/e2e/, so a
+# count below it means the scan lost its files.
+min_pass_tests=330
+
+# Print file:line for each excuse echo or printf followed by pass_test before
+# its block ends (if/elif/else/fi, a case arm or esac, done, or a closing
+# brace), then a last line `scanned <files> <pass_test calls>`. Lines come from
+# heredocs.awk, so heredoc bodies are skipped: a `}` in a manifest ends no shell
+# block. A heredoc still open at the end of a file is reported, so a misread
+# terminator cannot hide the rest of the file. A file that cannot be read is
+# reported too. Exits 1 when find fails or matched no file, or when a readable
+# non-empty file never reached awk (each one is named).
+scan_excuses() {
+    local files="$scratch/scan-files" readable="$scratch/scan-readable" read="$scratch/scan-read" f
+    if ! find "$@" -name '*.sh' ! -name test-verdicts.sh \( -type f -o -type l \) > "$files"; then
+        echo "scan_excuses: find failed under $*" >&2
+        return 1
+    fi
+    if [ ! -s "$files" ]; then
+        echo "scan_excuses: no .sh file under $*" >&2
+        return 1
+    fi
+    : > "$readable"
+    while IFS= read -r f; do
+        if [ -f "$f" ] && [ -r "$f" ]; then printf '%s\n' "$f" >> "$readable"; else echo "$f: unreadable"; fi
+    done < "$files"
+    [ -s "$readable" ] || { echo "scanned 0 0"; return 0; }
+    : > "$read"
+    # shellcheck disable=SC2016 # the single-quoted text is an awk program
+    { tr '\n' '\0' < "$readable" | xargs -0 awk -f "$here/heredocs.awk" || echo "UNREADABLE"; } | awk -F '\t' -v excuse="$excuse" -v readlog="$read" '
+        function rest(n,   i, p) { p = 0; for (i = 1; i <= n; i++) p += length($i) + 1; return substr($0, p + 1) }
+        $1 == "FILE" { files++; held = ""; print $2 > readlog; next }
+        $1 == "UNREADABLE" { print "heredocs.awk could not read the scripts"; next }
+        $1 == "UNCLOSED" { print $2 ": heredoc " $4 " never closes"; next }
+        $1 != "SH" && $1 != "BODY" { next }
+        {
+            where = $2 ":" $3
+            line = ($1 == "SH") ? rest(3) : rest(4)
+        }
+        line ~ /(^|[;&|[:space:]])pass_test[[:space:]]/ { calls++ }
+        line ~ /(^|[;&|[:space:]])pass_test[[:space:]].*# verdict-ok: [^[:space:]]/ { held = ""; next }
+        $1 == "BODY" { next }
+        line ~ excuse {
+            if (line ~ /(^|[;&|[:space:]])pass_test[[:space:]]/) { print where; held = "" }
+            else { held = where }
+            next
+        }
+        line ~ /^[[:space:]]*(if|elif|else|fi|esac|done)([[:space:];]|$)/ || line ~ /^[[:space:]]*\}/ || line ~ /;;[[:space:]]*$/ { held = ""; next }
+        line ~ /(^|[;&|[:space:]])pass_test[[:space:]]/ && held != "" { print held; held = "" }
+        END { print "scanned " files + 0 " " calls + 0 }
+    '
+    census_unread scan_excuses "$readable" "$read"
+}
+
+# Print `EXIST file:line` for each pass_test guarded only by existence, then
+# `scanned <files>`. Reads the SH lines of heredocs.awk, so a heredoc body is
+# never read as code. A case inside the branch is a guard of its own, so its
+# arms are not judged by the enclosing if; an else branch is not judged.
+# Exits 1 when find fails or matched no file, or when a non-empty file find
+# listed never reached awk (each one is named).
+scan_existence() {
+    local list="$scratch/existence-files" read="$scratch/existence-read"
+    if ! find "$@" -name '*.sh' ! -path '*/common/fixtures/*' > "$list.raw"; then
+        echo "scan_existence: find failed under $*" >&2
+        return 1
+    fi
+    LC_ALL=C sort "$list.raw" > "$list"
+    if [ ! -s "$list" ]; then
+        echo "scan_existence: no .sh file under $*" >&2
+        return 1
+    fi
+    : > "$read"
+    scan_existence_files "$read" < "$list"
+    census_unread scan_existence "$list" "$read"
+}
+
+# scan_existence_files [read log]: scan_existence over the newline-separated
+# paths on stdin, with no exclusion, so the fixtures can be read. Each file
+# awk reads is written to the log.
+scan_existence_files() {
+    # shellcheck disable=SC2016  # the single-quoted text is an awk program
+    tr '\n' '\0' | { xargs -0 awk -f "$here/heredocs.awk" || echo "UNREADABLE"; } | awk -F '\t' -v readlog="${1:-/dev/null}" '
+        function rest(n,   i, p) { p = 0; for (i = 1; i <= n; i++) p += length($i) + 1; return substr($0, p + 1) }
+        function trim(s) { sub(/^[[:space:]]+/, "", s); sub(/[[:space:]]+$/, "", s); return s }
+        function exist_term(t, fallback,   op) {
+            op = "(\"[^\"]*\"|[^[:space:]\"]+)"
+            empty = "(\"\"|\047\047|\"?(\\[\\]|\\{\\}|null)\"?)"
+            t = trim(t)
+            if (t ~ ("^(\\[\\[?|test)[[:space:]]+-[ns][[:space:]]+" op "[[:space:]]*(\\]\\]?)?$")) return 1
+            if (t ~ ("^\\[\\[?[[:space:]]+" op "[[:space:]]+!=[[:space:]]+" empty "[[:space:]]*\\]\\]?$")) return 1
+            if (t ~ ("^\\[\\[?[[:space:]]+" empty "[[:space:]]+!=[[:space:]]+" op "[[:space:]]*\\]\\]?$")) return 1
+            if (fallback && t ~ /^(k8s_exists|kubectl[[:space:]]+get)[[:space:]]/ && t !~ /\|/) return 1
+            return 0
+        }
+        function weak(cond, fallback,   groups, terms, g, k, ng, nt, all) {
+            ng = split(cond, groups, /\|\|/)
+            for (g = 1; g <= ng; g++) {
+                nt = split(groups[g], terms, /&&/)
+                all = 1
+                for (k = 1; k <= nt; k++) if (!exist_term(terms[k], fallback)) all = 0
+                if (all) return 1
+            }
+            return 0
+        }
+        # soft[v] holds each variable last assigned from a read whose failure
+        # reads as empty output.
+        function soft_in(c,   v) {
+            for (v in soft) if (c ~ ("\\$\\{?" v "([^A-Za-z0-9_]|$)")) return 1
+            return 0
+        }
+        # A condition an empty value makes true: its then branch is where a
+        # failed read lands. One an empty value makes false sends a failed
+        # read to its else branch instead, and a != against a word already
+        # routes the empty value to the then branch.
+        function absent_cond(c,   v, r) {
+            for (v in soft) {
+                r = "\"?\\$\\{?" v "\\}?\"?"
+                if (c ~ ("-z[[:space:]]+" r "([[:space:]]|$)")) return 1
+                if (c ~ (r "[[:space:]]+==?[[:space:]]+(\"\"|\047\047)[[:space:]]*\\]")) return 1
+                if (c ~ (r "[[:space:]]+!=[[:space:]]+\"?[^\"[:space:]]")) return 1
+            }
+            return soft_in(c) && c ~ /^[[:space:]]*!/
+        }
+        function judge(code, raw) {
+            if (code !~ /(^|[;&|[:space:]])pass_test[[:space:]]/) return
+            if (raw ~ /(^|[;&|[:space:]])pass_test[[:space:]].*# verdict-ok: [^[:space:]]/) return
+            if (depth > 0 && kind[depth] == "if" && weakv[depth]) { print "EXIST " where; return }
+            if (depth > 0 && absv[depth]) { print "ABSENT " where; return }
+            if (match(code, /&&[[:space:]]*pass_test[[:space:]]/)) {
+                pre = substr(code, 1, RSTART - 1)
+                sub(/^.*;/, "", pre)
+                if (weak(pre, 0)) print "EXIST " where
+                else if (absent_cond(pre)) print "ABSENT " where
+            }
+        }
+        function branch(k, text,   c, after) {
+            if (match(text, /(^|[;[:space:]])then([[:space:];]|$)/)) {
+                c = substr(text, 1, RSTART)
+                after = substr(text, RSTART + RLENGTH)
+                sub(/;[[:space:]]*$/, "", c)
+                gsub(/\\[[:space:]]*/, " ", c)
+                if (k == "if") { depth++; kind[depth] = "if" }
+                if (depth > 0) {
+                    weakv[depth] = weak(c, k == "elif")
+                    absv[depth] = absent_cond(c)
+                    elsev[depth] = soft_in(c) && !absv[depth]
+                }
+                pending = ""
+                if (after ~ /[^[:space:]]/) body(after, raw)
+            } else {
+                pending = k
+                ptext = text
+            }
+        }
+        function body(code, raw) {
+            judge(code, raw)
+            if (code ~ /(^|[;[:space:]])(fi|esac)[[:space:];]*$/ && depth > 0) depth--
+        }
+        $1 == "FILE" { files++; depth = 0; pending = ""; split("", soft); print $2 > readlog; next }
+        $1 == "UNREADABLE" { print "heredocs.awk could not read the scripts"; next }
+        $1 == "CMD" {
+            c = rest(3)
+            if (match(c, /^[[:space:]]*((local|export)[[:space:]]+)?[A-Za-z_][A-Za-z0-9_]*=/)) {
+                v = substr(c, RSTART, RLENGTH - 1); sub(/^[[:space:]]*((local|export)[[:space:]]+)?/, "", v)
+                # CMD drops double-quoted text, so the fallback echo is read
+                # off the raw last line of the command, the SH record before.
+                if (c ~ /=\$\(/ && lastsh ~ /\|\|[[:space:]]*(echo([[:space:]]+(""|\047\047))?|true|:|printf[[:space:]]+(""|\047\047))[[:space:]]*\)[[:space:]]*$/) soft[v] = 1
+                else delete soft[v]
+            }
+            next
+        }
+        $1 != "SH" { next }
+        { lastsh = rest(3) }
+        {
+            where = $2 ":" $3
+            raw = rest(3)
+            code = raw
+            sub(/(^|[[:space:]])#.*$/, "", code)
+            if (pending != "") { branch(pending, ptext " " code); next }
+            if (match(code, /^[[:space:]]*(if|elif)[[:space:]]/)) {
+                k = trim(substr(code, RSTART, RLENGTH))
+                branch(k, substr(code, RSTART + RLENGTH))
+                next
+            }
+            if (code ~ /^[[:space:]]*case[[:space:]].*[[:space:]]in([[:space:]]|$)/) {
+                depth++; kind[depth] = "case"; weakv[depth] = 0; absv[depth] = 0
+                casesoft[depth] = soft_in(code)
+                next
+            }
+            # A case arm: on a soft variable, an arm that matches the empty
+            # string is where a failed read lands.
+            if (depth > 0 && kind[depth] == "case" && match(code, /^[[:space:]]*\(?("[^"]*"|\047[^\047]*\047|[^[:space:]()|"\047]+)([[:space:]]*\|[[:space:]]*("[^"]*"|\047[^\047]*\047|[^[:space:]()|"\047]+))*[[:space:]]*\)/)) {
+                arm = substr(code, RSTART, RLENGTH)
+                absv[depth] = casesoft[depth] && arm ~ /(^|[[:space:](|])(""|\047\047)[[:space:]]*[|)]/
+                body(substr(code, RSTART + RLENGTH), raw)
+                next
+            }
+            if (code ~ /^[[:space:]]*else([[:space:];]|$)/) { if (depth > 0) { weakv[depth] = 0; absv[depth] = elsev[depth] }; body(substr(code, index(code, "else") + 4), raw); next }
+            body(code, raw)
+        }
+        END { print "scanned " files + 0 }
+    '
+}
+
+report="$(scan_excuses "$e2e_root")" || fail "the excuse scan lost the scripts named above"
+strays="$(grep -v '^scanned ' <<<"$report" || true)"
+read -r _ scanned_files scanned_calls < <(grep '^scanned ' <<<"$report")
+if [ "$scanned_calls" -lt "$min_pass_tests" ]; then
+    fail "the scan read $scanned_calls pass_test calls in $scanned_files files, fewer than $min_pass_tests"
+elif [ -z "$strays" ]; then
+    pass "no e2e case calls pass_test after printing an excuse ($scanned_calls calls in $scanned_files files)"
+else
+    fail "the scan flagged these lines (an excuse followed by pass_test, or a heredoc that never closes):"
+    printf '%s\n' "$strays" | sed 's/^/    /'
+fi
+
+fixtures="$here/fixtures/existence"
+existence_want="$({
+    grep -n 'want-exist' "$fixtures"/*.sh | cut -d: -f1,2 | sed 's/^/EXIST /'
+    grep -n 'want-absent' "$fixtures"/*.sh | cut -d: -f1,2 | sed 's/^/ABSENT /'
+} | LC_ALL=C sort)"
+existence_got="$(find "$fixtures" -name '*.sh' | LC_ALL=C sort | scan_existence_files | grep -v '^scanned ' | LC_ALL=C sort)"
+if [ -n "$existence_want" ] && [ "$existence_got" = "$existence_want" ]; then
+    pass "the existence scan flags -n, [[ -n ]], test -n, -s, != against an empty string, [], {} or null, &&-chained, ||-alternative, multi-line, one-line and same-line guards and a bare kubectl get, k8s_exists or -n elif, and clears value comparisons, case arms, else branches, hatched lines, heredoc bodies and a kubectl get outside an elif, and flags -z, = \"\", negated and else-branch absence passes on a || echo \"\" read while clearing them on a read whose exit code is captured"
+else
+    fail "the existence scan on the fixtures printed (< want, > got):"
+    diff <(printf '%s\n' "$existence_want") <(printf '%s\n' "$existence_got") | grep '^[<>]' | sed 's/^/    /' || true
+fi
+
+existence="$(scan_existence "$e2e_root" 2>&1)" && existence_rc=0 || existence_rc=$?
+existence_files="$(sed -n 's/^scanned //p' <<<"$existence")"
+existence_hits="$(grep '^EXIST ' <<<"$existence" || true)"
+absence_hits="$(grep '^ABSENT ' <<<"$existence" || true)"
+if [ "$existence_rc" -ne 0 ] || [ "${existence_files:-0}" -lt 60 ]; then
+    fail "the existence scan read ${existence_files:-0} files (rc=$existence_rc):"
+    printf '%s\n' "$existence" | sed 's/^/    /'
+elif [ -n "$existence_hits" ] || [ -n "$absence_hits" ]; then
+    if [ -n "$existence_hits" ]; then
+        fail "these pass_test calls are guarded only by existence; compare the value the fixture determines, or hatch with # verdict-ok: <why>:"
+        printf '%s\n' "$existence_hits" | sed 's/^/    /'
+    fi
+    if [ -n "$absence_hits" ]; then
+        fail "these absence passes rest on a read whose failure reads as empty; capture the read's exit code and fail on a failed read, or hatch with # verdict-ok: <why>:"
+        printf '%s\n' "$absence_hits" | sed 's/^/    /'
+    fi
+else
+    pass "no e2e pass_test is guarded only by existence, and no absence pass rests on a read that hides its failure ($existence_files files)"
+fi
+
+if scan_excuses "$scratch/no-such-dir" > /dev/null 2>&1; then
+    fail "a scan of a path with no .sh file passed"
+else
+    pass "a scan of a path with no .sh file fails"
+fi
+
+# One probe file per placement. Each flagged excuse is listed with its line;
+# every other excuse in the probes must not be flagged.
+probe="$scratch/probe"
+mkdir -p "$probe"
+cat > "$probe/else.sh" <<'PROBE'
+if a; then
+    pass_test "X-01"
+else
+    echo "  Note: not emitted yet"
+    pass_test "X-01"
+fi
+PROBE
+cat > "$probe/elif.sh" <<'PROBE'
+if a; then
+    fail_test "X-02" "a"
+elif b; then
+    echo "  Accepting: close enough"
+    pass_test "X-02"
+fi
+PROBE
+cat > "$probe/function.sh" <<'PROBE'
+check() {
+    echo "  Note: skipped the check"
+    pass_test "X-03"
+}
+PROBE
+cat > "$probe/comment.sh" <<'PROBE'
+if a; then
+    echo "  this is acceptable"
+    # the pass below asserts nothing
+    pass_test "X-04"
+fi
+PROBE
+cat > "$probe/same-line.sh" <<'PROBE'
+echo "  Note: x"; pass_test "X-05"
+PROBE
+cat > "$probe/branch-ended.sh" <<'PROBE'
+if b; then
+    echo "  Accepting: it may be fine"
+else
+    pass_test "X-06"
+fi
+PROBE
+cat > "$probe/case.sh" <<'PROBE'
+case "$x" in
+    a)
+        echo "  Note: a"
+        ;;
+esac
+pass_test "X-07"
+case "$y" in
+    b) echo "  Note: b" ;;
+esac
+pass_test "X-08"
+PROBE
+cat > "$probe/loop.sh" <<'PROBE'
+while read -r l; do
+    echo "  not yet: $l"
+done < f
+pass_test "X-09"
+PROBE
+cat > "$probe/hatch.sh" <<'PROBE'
+if a; then
+    echo "  Note: the reply is the assertion"
+    pass_test "X-10" # verdict-ok: the echoed reply was compared above
+fi
+PROBE
+cat > "$probe/printf.sh" <<'PROBE'
+if a; then
+    printf '  Note: not emitted yet\n'
+    pass_test "X-11"
+fi
+PROBE
+cat > "$probe/heredoc-brace.sh" <<'PROBE'
+if a; then
+    echo "  Note: applying anyway"
+    kubectl apply -f - <<EOF
+{
+  "kind": "ConfigMap"
+}
+EOF
+    pass_test "X-12"
+fi
+PROBE
+cat > "$probe/herestring.sh" <<'PROBE'
+grep -q x <<<abc
+if a; then
+    echo "  Note: after a here-string"
+    pass_test "X-18"
+fi
+PROBE
+cat > "$probe/quoted-heredoc.sh" <<'PROBE'
+kubectl exec p -- bash -c 'cat > f << "INNEREOF"
+x: 1
+INNEREOF'
+if a; then
+    echo "  Note: after a quoted heredoc"
+    pass_test "X-19"
+fi
+PROBE
+cat > "$probe/unclosed.sh" <<'PROBE'
+# Usage: f <<'EOF' ... EOF
+cat <<DOC
+never closed
+PROBE
+cat > "$probe/backslash-heredoc.sh" <<'PROBE'
+if a; then
+    echo "  Note: applying anyway"
+    kubectl apply -f - <<\EOF
+{
+}
+EOF
+    pass_test "X-20"
+fi
+PROBE
+cat > "$probe/paired-heredoc.sh" <<'PROBE'
+if a; then
+    echo "  Note: two bodies"
+    paste /dev/fd/3 3<<A <<B
+{
+A
+}
+B
+    pass_test "X-21"
+fi
+PROBE
+printf 'if a; then\n    echo "  Note: tab-indented EOF inside"\n    cat <<EOF\n\tEOF\n}\nEOF\n    pass_test "X-22"\nfi\n' > "$probe/indented-terminator.sh"
+printf 'if a; then\n    echo "  Note: tab-stripped"\n    cat <<-EOF\n\t{\n\t}\n\tEOF\n    pass_test "X-23"\nfi\n' > "$probe/dash-heredoc.sh"
+cat > "$probe/while-body.sh" <<'PROBE'
+while read -r l; do
+    echo "  not yet: $l"
+    pass_test "X-13"
+done < f
+PROBE
+cat > "$probe/stderr.sh" <<'PROBE'
+if a; then
+    echo >&2 "  Note: on stderr"
+    pass_test "X-14"
+fi
+PROBE
+cat > "$probe/inner-loop.sh" <<'PROBE'
+if a; then
+    echo "  Note: looping"
+    for i in 1 2; do :; done
+    pass_test "X-15"
+fi
+PROBE
+cat > "$probe/hatch-elsewhere.sh" <<'PROBE'
+if a; then
+    echo "  Note: x"
+    # verdict-ok: a hatch on a comment line exempts nothing
+    pass_test "X-16"
+fi
+PROBE
+cat > "$probe/hatch-on-excuse.sh" <<'PROBE'
+if a; then
+    echo "  Note: x" # verdict-ok: a hatch on the excuse line exempts nothing
+    pass_test "X-17"
+fi
+PROBE
+cat > "$probe/strfalse.sh" <<'PROBE'
+echo "usage: cat <<EOF"
+if a; then
+    echo "  Note: x"
+    cat <<EOF
+}
+EOF
+    pass_test "X-24"
+fi
+PROBE
+cat > "$probe/trailcomment.sh" <<'PROBE'
+f # feed <<EOF
+if a; then
+    echo "  Note: x"
+    cat <<EOF
+}
+EOF
+    pass_test "X-25"
+fi
+PROBE
+cat > "$probe/digit-heredoc.sh" <<'PROBE'
+if a; then
+    echo "  Note: x"
+    cat <<1
+}
+1
+    pass_test "X-26"
+fi
+PROBE
+cat > "$probe/arithmetic.sh" <<'PROBE'
+if a; then
+    echo "  Note: x"
+    n=$(( x << y )) m=$((1<<20))
+    pass_test "X-27"
+fi
+PROBE
+cat > "$probe/bash-c-word.sh" <<'PROBE'
+if a; then
+    echo "  Note: x"
+    kubectl exec p -- bash -c 'cat > f << "INNEREOF"
+}
+INNEREOF'
+    pass_test "X-28"
+fi
+PROBE
+cat > "$probe/double-quoted-word.sh" <<'PROBE'
+if a; then
+    echo "  Note: x"
+    cat <<"EOF"
+}
+EOF
+    pass_test "X-29"
+fi
+PROBE
+cat > "$probe/inner-paren.sh" <<'PROBE'
+v="$( (echo x); echo "<<X")"
+if a; then
+    echo "  Note: x"
+    cat <<EOF
+}
+EOF
+    pass_test "X-35"
+fi
+PROBE
+cat > "$probe/sq-open-hash.sh" <<'PROBE'
+if a; then
+    echo "  Note: x"
+    bash -c 'true # x; cat <<EOF
+}
+EOF'
+    pass_test "X-36"
+fi
+PROBE
+cat > "$probe/escaped-quote.sh" <<'PROBE'
+if a; then
+    echo "  Note: x"
+    echo "a\"b" x; cat <<EOF; echo "c"
+}
+EOF
+    pass_test "X-30"
+fi
+PROBE
+cat > "$probe/quote-in-single.sh" <<'PROBE'
+if a; then
+    echo "  Note: x"
+    echo 'a"b' ; cat <<EOF ; echo "c"
+}
+EOF
+    pass_test "X-31"
+fi
+PROBE
+cat > "$probe/open-string.sh" <<'PROBE'
+if a; then
+    echo "  Note: x"
+    bash -c "cat <<\"EOF\"
+}
+EOF"
+    pass_test "X-32"
+fi
+PROBE
+cat > "$probe/hash-in-single.sh" <<'PROBE'
+if a; then
+    echo "  Note: x"
+    sed 's/ #.*//' <<EOF
+}
+EOF
+    pass_test "X-33"
+fi
+PROBE
+cat > "$probe/nested-string.sh" <<'PROBE'
+v="$(echo "<<EOF")"
+if a; then
+    echo "  Note: x"
+    cat <<EOF
+}
+EOF
+    pass_test "X-34"
+fi
+PROBE
+want="$(printf '%s\n' \
+    "$probe/bash-c-word.sh:2" \
+    "$probe/double-quoted-word.sh:2" \
+    "$probe/escaped-quote.sh:2" \
+    "$probe/inner-paren.sh:3" \
+    "$probe/sq-open-hash.sh:2" \
+    "$probe/quote-in-single.sh:2" \
+    "$probe/open-string.sh:2" \
+    "$probe/hash-in-single.sh:2" \
+    "$probe/nested-string.sh:3" \
+    "$probe/strfalse.sh:3" \
+    "$probe/trailcomment.sh:3" \
+    "$probe/digit-heredoc.sh:2" \
+    "$probe/arithmetic.sh:2" \
+    "$probe/comment.sh:2" \
+    "$probe/elif.sh:4" \
+    "$probe/else.sh:4" \
+    "$probe/function.sh:2" \
+    "$probe/same-line.sh:1" \
+    "$probe/printf.sh:2" \
+    "$probe/heredoc-brace.sh:2" \
+    "$probe/herestring.sh:3" \
+    "$probe/quoted-heredoc.sh:5" \
+    "$probe/backslash-heredoc.sh:2" \
+    "$probe/paired-heredoc.sh:2" \
+    "$probe/indented-terminator.sh:2" \
+    "$probe/dash-heredoc.sh:2" \
+    "$probe/unclosed.sh: heredoc DOC never closes" \
+    "$probe/while-body.sh:2" \
+    "$probe/stderr.sh:2" \
+    "$probe/inner-loop.sh:2" \
+    "$probe/hatch-elsewhere.sh:2" \
+    "$probe/hatch-on-excuse.sh:2" \
+    "scanned 36 37" | sort)"
+got="$(scan_excuses "$probe" | sort)"
+if [ "$got" = "$want" ]; then
+    pass "the scan flags else, elif, function, comment, same-line, printf, heredoc, after-here-string, after-quoted-heredoc, backslash, paired, indented-terminator, tab-stripped and digit-word heredoc, after-string, after-comment, arithmetic-shift, after-escaped-quote, after-single-quote, open-string, bash -c word, double-quoted word and nested-string, inner-paren, open-single-quote-hash, loop-body, stderr, inner-loop and misplaced-hatch excuses and an unclosed heredoc, clears case, loop, ended-branch and hatched ones, and counts 37 calls in 36 files"
+else
+    fail "the scan on the placement probes printed:"
+    printf '%s\n' "$got" | sed 's/^/    /'
+    echo "    want:"
+    printf '%s\n' "$want" | sed 's/^/    /'
+fi
+
+# census_probe <scan> <dir> <description> <stderr regex> [PATH dir]: the scan
+# of <dir> has to fail and print a line matching the regex, with the stubs of
+# the PATH dir first on PATH when one is given.
+census_probe() {
+    local out rc=0
+    out="$(PATH="${5:+$5:}$PATH" "$1" "$2" 2>&1)" || rc=$?
+    if [ "$rc" -ne 0 ] && grep -Eq -- "$4" <<<"$out"; then
+        pass "$3"
+    else
+        fail "$3 (scan exited $rc):"
+        printf '%s\n' "$out" | sed 's/^/    /'
+    fi
+}
+
+# The census of each scan: find and awk are stubbed through PATH, so each
+# failure is the one named and no other.
+mkdir -p "$scratch/census/two" "$scratch/census/empty" "$scratch/census/gone" "$scratch/find-fails" "$scratch/awk-drops"
+printf 'if a; then\n    pass_test "C-01"\nfi\n' > "$scratch/census/two/a.sh"
+cp "$scratch/census/two/a.sh" "$scratch/census/two/b.sh"
+cp "$scratch/census/two/a.sh" "$scratch/census/gone/a.sh"
+ln -s "$scratch/nowhere.sh" "$scratch/census/gone/gone.sh"
+printf '#!/bin/sh\nexit 1\n' > "$scratch/find-fails/find"
+# shellcheck disable=SC2016  # the $ belong to the stub script, expanded when it runs
+printf '#!/usr/bin/env bash\nif [ "$1" = -f ] && [[ "$2" == */heredocs.awk ]]; then set -- "${@:1:$#-1}"; fi\nexec %q "$@"\n' \
+    "$(command -v awk)" > "$scratch/awk-drops/awk"
+chmod +x "$scratch/find-fails/find" "$scratch/awk-drops/awk"
+census_probe scan_existence "$scratch/census/two" "an existence scan whose find fails fails" '^scan_existence: find failed under' "$scratch/find-fails"
+census_probe scan_existence "$scratch/census/empty" "an existence scan with no .sh file fails" '^scan_existence: no \.sh file under'
+census_probe scan_existence "$scratch/census/gone" "an existence scan names a script awk cannot open" '^scan_existence: .*/gone\.sh was listed and never read$'
+census_probe scan_existence "$scratch/census/two" "an existence scan names a script find listed and awk never read" '^scan_existence: .*/b\.sh was listed and never read$' "$scratch/awk-drops"
+census_probe scan_excuses "$scratch/census/two" "an excuse scan whose find fails fails" '^scan_excuses: find failed under' "$scratch/find-fails"
+census_probe scan_excuses "$scratch/census/two" "an excuse scan names a script find listed and awk never read" '^scan_excuses: .*/[ab]\.sh was listed and never read$' "$scratch/awk-drops"
+
+mkdir -p "$scratch/dangling"
+ln -s "$scratch/nowhere.sh" "$scratch/dangling/gone.sh"
+dangling="$(scan_excuses "$scratch/dangling" 2>&1 || true)"
+if grep -qxF "$scratch/dangling/gone.sh: unreadable" <<<"$dangling"; then
+    pass "a script the scan cannot read is reported"
+else
+    fail "a dangling symlink was not reported unreadable: $dangling"
+fi
+
+# heredocs.awk on one fixture per way a script opens, fills and closes a
+# heredoc, and per text that only looks like an opener. Every fixture is valid
+# shell, so the reader is judged on what bash would read. Tabs in the record
+# stream show as " | ".
+reader="$scratch/reader"
+mkdir -p "$reader"
+printf 'paste /dev/fd/3 3<<A <<B\na\nA\nb\nB\n' > "$reader/paired.sh"
+printf 'cat <<-EOF\n\tx\n\tEOF\n' > "$reader/dash.sh"
+cat > "$reader/backslash.sh" <<'FIXTURE'
+cat <<\EOF
+$x
+EOF
+FIXTURE
+printf "cat <<'EOF'\n\$x\nEOF\ncat << \"END\"\n\$y\nEND\n" > "$reader/quoted.sh"
+printf 'cat <<DOC\nnever closed\n' > "$reader/unclosed.sh"
+printf 'grep -q x <<<abc\n' > "$reader/herestring.sh"
+printf 'cat <<EOF\n\tEOF\nEOF\n' > "$reader/indented-terminator.sh"
+printf 'kubectl apply -n ns \\\n    -f - <<EOF\nx: 1\nEOF\n' > "$reader/continued.sh"
+cat > "$reader/captured.sh" <<'FIXTURE'
+r=$(kubectl apply -f - 2>&1 <<EOF || true
+x: 1
+EOF
+)
+FIXTURE
+cat > "$reader/captured-quoted.sh" <<'FIXTURE'
+r="$(kubectl apply -f - 2>&1 <<EOF
+x: 1
+EOF
+)" || echo "failed"
+echo next
+FIXTURE
+cat > "$reader/captured-open-quote.sh" <<'FIXTURE'
+u="$(jq -r '.a
+    | .b' <<<"$d")" || true
+FIXTURE
+printf '# usage: f <<EOF\ntrue # feed <<EOF\n' > "$reader/comment.sh"
+printf 'echo "usage: cat <<EOF"\n' > "$reader/double-quoted.sh"
+cat > "$reader/arithmetic.sh" <<'FIXTURE'
+n=$((a<<b))
+FIXTURE
+printf "bash -c 'cat <<A\nx\nA'\nbash -c \"cat <<B\nx\nB\"\nv=\$(cat <<C\nx\nC)\n" > "$reader/terminator-suffix.sh"
+printf 'cat <<1\nx\n1\n' > "$reader/digit.sh"
+for f in "$reader"/*.sh; do
+    bash -n "$f" 2>/dev/null || fail "reader fixture $(basename "$f") is not valid shell"
+done
+want_records="$(cat <<'WANT'
+FILE | arithmetic.sh
+SH | arithmetic.sh | 1 | n=$((a<<b))
+CMD | arithmetic.sh | 1 | n=$
+FILE | backslash.sh
+SH | backslash.sh | 1 | cat <<\EOF
+CMD | backslash.sh | 1 | cat <<\EOF
+OPEN | backslash.sh | 1 | 1 | EOF | 1 | 0 | cat <<\EOF
+BODY | backslash.sh | 2 | 1 | $x
+CLOSE | backslash.sh | 3 | 1
+FILE | captured-open-quote.sh
+SH | captured-open-quote.sh | 1 | u="$(jq -r '.a
+CMD | captured-open-quote.sh | 1 | u="$(jq -r '.a
+SH | captured-open-quote.sh | 2 |     | .b' <<<"$d")" || true
+CMD | captured-open-quote.sh | 2 |     | .b' <<<"$d")" || true
+FILE | captured-quoted.sh
+SH | captured-quoted.sh | 1 | r="$(kubectl apply -f - 2>&1 <<EOF
+OPEN | captured-quoted.sh | 1 | 1 | EOF | 0 | 0 | r="$(kubectl apply -f - 2>&1 <<EOF
+BODY | captured-quoted.sh | 2 | 1 | x: 1
+CLOSE | captured-quoted.sh | 3 | 1
+SH | captured-quoted.sh | 4 | )" || echo "failed"
+CMD | captured-quoted.sh | 1 | r="$(kubectl apply -f - 2>&1 <<EOF )" || echo
+SH | captured-quoted.sh | 5 | echo next
+CMD | captured-quoted.sh | 5 | echo next
+FILE | captured.sh
+SH | captured.sh | 1 | r=$(kubectl apply -f - 2>&1 <<EOF || true
+CMD | captured.sh | 1 | r=$(kubectl apply -f - 2>&1 <<EOF || true
+OPEN | captured.sh | 1 | 1 | EOF | 0 | 0 | r=$(kubectl apply -f - 2>&1 <<EOF || true
+BODY | captured.sh | 2 | 1 | x: 1
+CLOSE | captured.sh | 3 | 1
+SH | captured.sh | 4 | )
+CMD | captured.sh | 4 | )
+FILE | comment.sh
+SH | comment.sh | 1 | # usage: f <<EOF
+SH | comment.sh | 2 | true # feed <<EOF
+CMD | comment.sh | 2 | true
+FILE | continued.sh
+SH | continued.sh | 1 | kubectl apply -n ns \
+SH | continued.sh | 2 |     -f - <<EOF
+CMD | continued.sh | 1 | kubectl apply -n ns      -f - <<EOF
+OPEN | continued.sh | 2 | 1 | EOF | 0 | 0 | kubectl apply -n ns      -f - <<EOF
+BODY | continued.sh | 3 | 1 | x: 1
+CLOSE | continued.sh | 4 | 1
+FILE | dash.sh
+SH | dash.sh | 1 | cat <<-EOF
+CMD | dash.sh | 1 | cat <<-EOF
+OPEN | dash.sh | 1 | 1 | EOF | 0 | 1 | cat <<-EOF
+BODY | dash.sh | 2 | 1 |  | x
+CLOSE | dash.sh | 3 | 1
+FILE | digit.sh
+SH | digit.sh | 1 | cat <<1
+CMD | digit.sh | 1 | cat <<1
+OPEN | digit.sh | 1 | 1 | 1 | 0 | 0 | cat <<1
+BODY | digit.sh | 2 | 1 | x
+CLOSE | digit.sh | 3 | 1
+FILE | double-quoted.sh
+SH | double-quoted.sh | 1 | echo "usage: cat <<EOF"
+CMD | double-quoted.sh | 1 | echo
+FILE | herestring.sh
+SH | herestring.sh | 1 | grep -q x <<<abc
+CMD | herestring.sh | 1 | grep -q x <<<abc
+FILE | indented-terminator.sh
+SH | indented-terminator.sh | 1 | cat <<EOF
+CMD | indented-terminator.sh | 1 | cat <<EOF
+OPEN | indented-terminator.sh | 1 | 1 | EOF | 0 | 0 | cat <<EOF
+BODY | indented-terminator.sh | 2 | 1 |  | EOF
+CLOSE | indented-terminator.sh | 3 | 1
+FILE | paired.sh
+SH | paired.sh | 1 | paste /dev/fd/3 3<<A <<B
+CMD | paired.sh | 1 | paste /dev/fd/3 3<<A <<B
+OPEN | paired.sh | 1 | 1 | A | 0 | 0 | paste /dev/fd/3 3<<A <<B
+OPEN | paired.sh | 1 | 2 | B | 0 | 0 | paste /dev/fd/3 3<<A <<B
+BODY | paired.sh | 2 | 1 | a
+CLOSE | paired.sh | 3 | 1
+BODY | paired.sh | 4 | 2 | b
+CLOSE | paired.sh | 5 | 2
+FILE | quoted.sh
+SH | quoted.sh | 1 | cat <<'EOF'
+CMD | quoted.sh | 1 | cat <<'EOF'
+OPEN | quoted.sh | 1 | 1 | EOF | 1 | 0 | cat <<'EOF'
+BODY | quoted.sh | 2 | 1 | $x
+CLOSE | quoted.sh | 3 | 1
+SH | quoted.sh | 4 | cat << "END"
+CMD | quoted.sh | 4 | cat << "END"
+OPEN | quoted.sh | 4 | 2 | END | 1 | 0 | cat << "END"
+BODY | quoted.sh | 5 | 2 | $y
+CLOSE | quoted.sh | 6 | 2
+FILE | terminator-suffix.sh
+SH | terminator-suffix.sh | 1 | bash -c 'cat <<A
+CMD | terminator-suffix.sh | 1 | bash -c 'cat <<A
+OPEN | terminator-suffix.sh | 1 | 1 | A | 0 | 0 | bash -c 'cat <<A
+BODY | terminator-suffix.sh | 2 | 1 | x
+CLOSE | terminator-suffix.sh | 3 | 1 | '
+SH | terminator-suffix.sh | 4 | bash -c "cat <<B
+CMD | terminator-suffix.sh | 4 | bash -c "cat <<B
+OPEN | terminator-suffix.sh | 4 | 2 | B | 0 | 0 | bash -c "cat <<B
+BODY | terminator-suffix.sh | 5 | 2 | x
+CLOSE | terminator-suffix.sh | 6 | 2 | "
+SH | terminator-suffix.sh | 7 | v=$(cat <<C
+CMD | terminator-suffix.sh | 7 | v=$(cat <<C
+OPEN | terminator-suffix.sh | 7 | 3 | C | 0 | 0 | v=$(cat <<C
+BODY | terminator-suffix.sh | 8 | 3 | x
+CLOSE | terminator-suffix.sh | 9 | 3 | )
+FILE | unclosed.sh
+SH | unclosed.sh | 1 | cat <<DOC
+CMD | unclosed.sh | 1 | cat <<DOC
+OPEN | unclosed.sh | 1 | 1 | DOC | 0 | 0 | cat <<DOC
+BODY | unclosed.sh | 2 | 1 | never closed
+UNCLOSED | unclosed.sh | 1 | DOC
+WANT
+)"
+got_records="$(cd "$reader" && awk -f "$here/heredocs.awk" ./*.sh 2>&1 | sed 's|\./||; s|\t| \| |g')"
+if [ "$got_records" = "$want_records" ]; then
+    pass "heredocs.awk reads paired, tab-stripped, backslash, quoted, unclosed, indented-terminator, continued, captured, digit and quote- or paren-closed heredocs, a quoted capture carried across its body to the line that closes it and one left open inside a quote read line by line, and opens none for a here-string, a comment, a double-quoted string or an arithmetic shift; each command outside a body is printed once, at its first line"
+else
+    fail "heredocs.awk printed records that differ (< want, > got):"
+    diff <(printf '%s\n' "$want_records") <(printf '%s\n' "$got_records") | grep '^[<>]' | sed 's/^/    /' || true
+fi
+
+if [ "$failures" -ne 0 ]; then
+    echo "$failures check(s) failed"
+    exit 1
+fi
+echo "all checks passed"

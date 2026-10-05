@@ -1,5 +1,5 @@
 use super::*;
-use cfgd_core::output::{Doc, OwnerLabel, Printer, Role};
+use cfgd_core::output::{Doc, OwnerLabel, Role};
 
 /// Write a captured [`SubscriptionSpec`] back over the re-homed source's entry.
 ///
@@ -13,22 +13,20 @@ fn restore_subscription(
     name: &str,
     subscription: &config::SubscriptionSpec,
 ) -> anyhow::Result<()> {
-    let value = serde_yaml::to_value(subscription)?;
+    let block: serde_yaml::Mapping = serde_yaml::from_value(serde_yaml::to_value(subscription)?)?;
     with_source_config(config_path, name, |entry| {
-        entry
-            .as_mapping_mut()
-            .ok_or_else(|| anyhow::anyhow!("source '{name}' is not a mapping"))?
-            .insert(serde_yaml::Value::String("subscription".into()), value);
+        *subscription_mapping_mut(entry, config_path, name)? = block;
         Ok(())
     })
 }
 
 pub fn cmd_source_replace(
-    cli: &Cli,
-    printer: &Printer,
+    run: &RunContext<'_>,
     old_name: &str,
     new_url: &str,
 ) -> anyhow::Result<()> {
+    let cli = run.cli();
+    let printer = run.printer();
     // Resolved here as well as in `cmd_source_add` (resolution is idempotent) so
     // the success line and its structured payload report the URL that was
     // actually subscribed to, not the shorthand.
@@ -37,8 +35,7 @@ pub fn cmd_source_replace(
 
     // Capture old source's profile and priority before removing
     let config_path = cli.config.clone();
-    let mut old_cfg = config::load_config(&config_path)?;
-    drain_config_deprecations(printer, &mut old_cfg);
+    let old_cfg = run.config()?;
     let old_source = old_cfg.spec.sources.iter().find(|s| s.name == old_name);
     let old_profile = old_source.and_then(|s| s.subscription.profile.clone());
     let old_priority = old_source.map(|s| s.subscription.priority).unwrap_or(500);
@@ -54,12 +51,13 @@ pub fn cmd_source_replace(
     // Remove old source (keeping resources). Confirmation-free: a re-home
     // purges nothing, so there is no forget-my-edits question to ask, and a
     // replace must not stop mid-way to pose one.
-    remove::run_source_remove(cli, printer, old_name, true, false, true, false, false)?;
+    remove::run_source_remove(run, old_name, true, false, true, false, false)?;
 
+    // load-ok: re-read after this verb's write (the remove above dropped the entry)
+    let after_remove = config::load_config(&config_path)?;
     // Add new source with same name, carrying over the whole subscription
-    add::run_source_add(
-        cli,
-        printer,
+    let subscribed = add::run_source_add(
+        run,
         &SourceAddArgs {
             url: new_url.to_string(),
             name: Some(old_name.to_string()),
@@ -75,8 +73,11 @@ pub fn cmd_source_replace(
             allow_scripts: old_subscription.allow_scripts,
             yes: true,
         },
-        false,
+        || Ok(Some(&after_remove)),
     )?;
+    if let Some(doc) = subscribed {
+        printer.emit(doc);
+    }
 
     restore_subscription(&config_path, old_name, &old_subscription)?;
 

@@ -31,7 +31,7 @@ use std::path::{Path, PathBuf};
 
 use crate::PathDisplayExt;
 use crate::errors::{BackupError, Result};
-use crate::output::{Printer, collapse_to_subject_line};
+use crate::output::{Printer, Role, collapse_to_subject_line};
 use crate::reconciler::{ScriptPhase, cfgd_backup_path};
 
 use super::{BackupOperation, BackupUnit};
@@ -323,7 +323,7 @@ pub fn report_rollback(
         // The same slot a restore closes on, for the same reason: a rollback
         // displaces live data too, and the operator who regrets it needs to be
         // told where it went.
-        group.hint(super::safety_copy_hint(safety, &outcome.name));
+        group.status_simple(Role::Info, super::safety_copy_note(safety, &outcome.name));
     }
     crate::reconciler::RunTally {
         after_plan: Vec::new(),

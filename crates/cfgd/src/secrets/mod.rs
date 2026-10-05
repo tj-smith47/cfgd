@@ -9,17 +9,18 @@ use cfgd_core::errors::{Result, SecretError};
 use cfgd_core::providers::{SecretBackend, SecretCache, SecretProvider, parse_secret_reference};
 use cfgd_core::{default_config_dir, expand_tilde};
 
-mod age;
-mod bitwarden;
-mod lastpass;
-mod onepassword;
-mod sops;
-mod vault;
+pub(crate) mod age;
+pub(crate) mod bitwarden;
+pub(crate) mod lastpass;
+pub(crate) mod onepassword;
+pub(crate) mod sops;
+pub(crate) mod vault;
 
 pub use age::AgeBackend;
 pub use bitwarden::BitwardenProvider;
 pub use lastpass::LastPassProvider;
 pub use onepassword::OnePasswordProvider;
+pub(crate) use sops::SOPS_BIN_ENV;
 pub use sops::SopsBackend;
 pub use vault::VaultProvider;
 

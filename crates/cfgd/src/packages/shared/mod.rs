@@ -14,8 +14,8 @@ use cfgd_core::providers::{ActionNote, PackageContext};
 
 /// Compute the canonical env-var seam name for a package-manager binary.
 /// Pattern: `CFGD_<NAME>_BIN`, with hyphens turned into underscores so
-/// `brew-cask` maps to `CFGD_BREW_CASK_BIN`. Used by tests via ToolShim.
-pub(super) fn tool_seam_var(name: &str) -> String {
+/// `brew-cask` maps to `CFGD_BREW_CASK_BIN`.
+pub fn tool_seam_var(name: &str) -> String {
     format!("CFGD_{}_BIN", name.to_uppercase().replace('-', "_"))
 }
 
@@ -44,6 +44,9 @@ pub(super) fn canonical_ci_pkg_name(name: &str) -> String {
 /// test emptying `PATH` to mean "no manager here" then puts the host's real
 /// toolchain to work.
 pub(super) fn resolve_tool_with_fallbacks(name: &str, fallbacks: &[PathBuf]) -> Option<PathBuf> {
+    // A sibling test pins this seam under the PATH lock; the read waits it out.
+    #[cfg(test)]
+    let _seam_guard = cfgd_core::test_helpers::path_env_read_guard();
     if let Ok(custom) = std::env::var(tool_seam_var(name)) {
         let p = PathBuf::from(custom);
         return p.is_file().then_some(p);
@@ -489,11 +492,37 @@ pub(super) fn report_abandoned_step(
 pub(super) fn command_failure_reason(output: &CommandOutput) -> String {
     let reason = cfgd_core::exit_status_reason(&output.status);
     let stderr = cfgd_core::output::captured_output_detail(output.stderr.trim());
-    if stderr.is_empty() {
+    let mut message = if stderr.is_empty() {
         reason
     } else {
         format!("{reason}: {stderr}")
+    };
+    if let Some(hint) = sudo_refusal_hint(&output.stderr) {
+        message.push_str("; ");
+        message.push_str(hint);
     }
+    message
+}
+
+/// The sentence that turns sudo's refusal into the sudoers change it needs,
+/// or `None` when stderr is not sudo refusing.
+///
+/// A manager that runs as root does so through `sudo env K=V <manager>`, the
+/// one form that carries its variables (debconf's frontend, needrestart's
+/// mode) past sudo's environment reset without a SETENV tag. A sudoers rule
+/// that allows the manager alone refuses `env`, and sudo's own message names
+/// the argv without saying what to allow.
+pub(super) fn sudo_refusal_hint(stderr: &str) -> Option<&'static str> {
+    let refused = stderr.lines().any(|line| {
+        let line = line.trim_start();
+        line.starts_with("sudo:")
+            && (line.contains("is not allowed to execute")
+                || line.contains("a password is required")
+                || line.contains("a terminal is required"))
+    });
+    refused.then_some(
+        "sudo refused the command. cfgd runs a package manager as `sudo env K=V <manager>` so its variables reach the packages' own scripts; allow `env` for this user in sudoers, or give the manager's rule the SETENV tag and NOPASSWD",
+    )
 }
 
 /// Run `cmd` through a live output window, letting the CONTEXT decide whether
@@ -741,7 +770,7 @@ const LINUXBREW_PATH: &str = "/home/linuxbrew/.linuxbrew/bin/brew";
 /// Tests set this to a `cfgd_core::test_helpers::ToolShim` script path,
 /// short-circuiting the linuxbrew detection logic so install/uninstall/etc
 /// flows can be exercised without a real Homebrew installation.
-const BREW_BIN_ENV: &str = "CFGD_BREW_BIN";
+pub const BREW_BIN_ENV: &str = "CFGD_BREW_BIN";
 
 /// Check if brew is available, including linuxbrew fallback on Linux.
 ///
@@ -750,6 +779,9 @@ const BREW_BIN_ENV: &str = "CFGD_BREW_BIN";
 /// host when the file it names is absent is a seam that cannot say this host
 /// has no brew, which is exactly what a cascade test needs to say.
 pub(super) fn brew_available() -> bool {
+    // A sibling test pins this seam under the PATH lock; the read waits it out.
+    #[cfg(test)]
+    let _seam_guard = cfgd_core::test_helpers::path_env_read_guard();
     if let Ok(seam) = std::env::var(BREW_BIN_ENV) {
         return std::path::Path::new(&seam).is_file();
     }
@@ -783,15 +815,16 @@ pub(super) type SystemArm = (&'static str, &'static str);
 /// them. One table rather than a per-cascade one: which mediators a manager
 /// offers is the manager's own declaration, so a cascade that reached fewer of
 /// them only hid an arm its mediator had already named.
-const SYSTEM_MANAGER_ARMS: &[SystemArm] = &[
-    ("apt", "apt-get"),
-    ("dnf", "dnf"),
-    ("yum", "yum"),
-    ("zypper", "zypper"),
-    ("pacman", "pacman"),
-    ("apk", "apk"),
-    ("pkg", "pkg"),
-];
+///
+/// Read off the family table ([`super::simple::SIMPLE_FAMILIES`], whose row
+/// order is this order), each family paired with the program its own install
+/// runs, so an arm exists for every family and spawns what that family spawns.
+static SYSTEM_MANAGER_ARMS: std::sync::LazyLock<Vec<SystemArm>> = std::sync::LazyLock::new(|| {
+    super::simple::SIMPLE_FAMILIES
+        .iter()
+        .map(|(name, build)| (*name, build().install_program()))
+        .collect()
+});
 
 /// The arms a mediated bootstrap reaches on Windows, in the order it tries
 /// them. winget leads because it ships with Windows 10 and 11, so it is the one
@@ -824,8 +857,34 @@ pub(super) fn host_arms() -> &'static [SystemArm] {
     if cfg!(windows) {
         WINDOWS_MANAGER_ARMS
     } else {
-        SYSTEM_MANAGER_ARMS
+        &SYSTEM_MANAGER_ARMS
     }
+}
+
+/// Every tool a resolver takes from a table before handing it to a seam
+/// reader: both arm tables, whichever host this is, the pip fallback's two
+/// names, the program each command of every data-driven family spawns, and
+/// every program those families' seam table pairs with a seam (the version
+/// queries spawn `apt-cache` and `rpm`). A walk deriving the seam population
+/// reads these beside the names it finds spelled at a call.
+#[cfg(test)]
+pub(crate) fn tabled_seam_tools() -> Vec<&'static str> {
+    SYSTEM_MANAGER_ARMS
+        .iter()
+        .chain(WINDOWS_MANAGER_ARMS)
+        .map(|(_, tool)| *tool)
+        .chain(super::pipx::pip_tool_order())
+        .chain(
+            super::simple::SIMPLE_FAMILIES
+                .iter()
+                .flat_map(|(_, build)| build().spawned_programs()),
+        )
+        .chain(
+            super::simple::PROGRAM_SEAMS
+                .iter()
+                .map(|(program, _)| *program),
+        )
+        .collect()
 }
 
 /// The command an arm spawns, whichever table holds it, or `None` for a method
@@ -1159,6 +1218,9 @@ pub(super) fn parse_pip_python_version(banner: &str) -> Option<String> {
 /// brew IS, so the directories brew puts binaries in are read off the same
 /// statement rather than off a prefix the seam contradicts.
 pub(super) fn brew_path_dirs() -> Vec<String> {
+    // A sibling test pins this seam under the PATH lock; the read waits it out.
+    #[cfg(test)]
+    let _seam_guard = cfgd_core::test_helpers::path_env_read_guard();
     if let Ok(seam) = std::env::var(BREW_BIN_ENV) {
         return std::path::Path::new(&seam)
             .parent()
@@ -1261,6 +1323,9 @@ pub(super) fn brew_path() -> Option<&'static str> {
 // seam-read-ok: brew's seam answers alone, missing file included, so this
 // factory and `brew_available` judge it under the one standard.
 pub(super) fn brew_cmd() -> Command {
+    // A sibling test pins this seam under the PATH lock; the read waits it out.
+    #[cfg(test)]
+    let _seam_guard = cfgd_core::test_helpers::path_env_read_guard();
     if let Ok(custom) = std::env::var(BREW_BIN_ENV) {
         return Command::new(custom);
     }
@@ -1590,6 +1655,9 @@ pub(super) fn strip_arch_suffix(name: &str) -> String {
 /// routing through the real sudo would bypass the seam — same rationale as
 /// [`sudo_cmd_with_seam`]). Returns the effective command slice.
 pub(super) fn strip_sudo_for_exec<'a>(cmd: &'a [&'a str]) -> &'a [&'a str] {
+    // A sibling test pins this seam under the PATH lock; the read waits it out.
+    #[cfg(test)]
+    let _seam_guard = cfgd_core::test_helpers::path_env_read_guard();
     if cmd.first() == Some(&"sudo") {
         if cfgd_core::is_root() {
             return &cmd[1..];
@@ -1625,6 +1693,9 @@ pub(super) fn sudo_cmd(program: &str) -> Command {
 // seam-read-ok: this factory IS the seam reader for a tool no resolver answers
 // for, the sudo wrapper being what a resolved path would have to replace.
 pub(super) fn sudo_cmd_with_seam(program: &str) -> Command {
+    // A sibling test pins this seam under the PATH lock; the read waits it out.
+    #[cfg(test)]
+    let _seam_guard = cfgd_core::test_helpers::path_env_read_guard();
     if let Ok(custom) = std::env::var(tool_seam_var(program)) {
         let p = PathBuf::from(custom);
         return Command::new(p);

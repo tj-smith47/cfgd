@@ -1,10 +1,10 @@
 use super::*;
 use cfgd_core::PathDisplayExt;
 use cfgd_core::config::{
-    EnvVar, FilesSpec, ManagedFileSpec, PackagesSpec, ProfileLayer, ProfileSpec, ResolvedProfile,
-    SecretSpec, ShellAlias,
+    EnvVar, FilesSpec, ManagedFileSpec, PackagesSpec, PreferencesSpec, ProfileLayer, ProfileSpec,
+    ResolvedProfile, SecretSpec, ShellAlias,
 };
-use cfgd_core::output::{Doc, KvPair, Printer};
+use cfgd_core::output::{Doc, KvPair};
 
 /// Build the `cfgd profile show` Doc.
 ///
@@ -108,9 +108,9 @@ pub fn own_profile_spec(resolved: &ResolvedProfile) -> Option<&ProfileSpec> {
         .map(|layer| &layer.spec)
 }
 
-/// A profile's DECLARED inventory — Aliases, Env, Packages, Files, System,
-/// Secrets — as named blocks of kv rows, aliases leading the shell pair as
-/// they do on every surface that names both. A block with no rows is returned
+/// A profile's DECLARED inventory — Aliases, Env, Preferences, Packages,
+/// Files, System, Secrets — as named blocks of kv rows, aliases leading the
+/// shell pair as they do on every surface that names both. A block with no rows is returned
 /// empty rather than omitted, so a caller decides whether an empty block is a
 /// skipped section or an empty-state one.
 ///
@@ -128,21 +128,37 @@ pub fn profile_inventory_blocks(
     spec: Option<&ProfileSpec>,
     detail: crate::cli::InventoryDetail<'_>,
 ) -> Vec<(&'static str, Vec<KvPair>)> {
-    let Some(spec) = spec else {
-        return inventory_blocks(&[], &[], None, None, &Default::default(), &[], detail);
+    let (mut blocks, preferences) = match spec {
+        None => (
+            inventory_blocks(&[], &[], None, None, &Default::default(), &[], detail),
+            Vec::new(),
+        ),
+        Some(spec) => (
+            inventory_blocks(
+                &spec.env,
+                &spec.aliases,
+                spec.packages.as_ref(),
+                spec.files.as_ref(),
+                &spec.system,
+                &spec.secrets,
+                detail,
+            ),
+            preference_rows(&spec.preferences),
+        ),
     };
-    inventory_blocks(
-        &spec.env,
-        &spec.aliases,
-        spec.packages.as_ref(),
-        spec.files.as_ref(),
-        &spec.system,
-        &spec.secrets,
-        detail,
-    )
+    // Declared only: the `--resolved` view already lists each winner as
+    // `CFGD_<DOMAIN>` under `Env`, and a ranking there would restate a
+    // declared fact in a resolved block. It reads beside `Env` because its
+    // winners export into the same file.
+    let at = blocks
+        .iter()
+        .position(|(block, _)| *block == "Env")
+        .map_or(blocks.len(), |i| i + 1);
+    blocks.insert(at, ("Preferences", preferences));
+    blocks
 }
 
-/// The six inventory blocks over whichever set of entries the caller holds —
+/// The six shared inventory blocks over whichever set of entries the caller holds —
 /// a profile's own declaration, or the merge of its whole chain. The two views
 /// differ in what they carry, never in how a row reads.
 fn inventory_blocks(
@@ -243,6 +259,18 @@ fn inventory_blocks(
     ]
 }
 
+/// One row per declared domain, its ranking in the order the author wrote it.
+fn preference_rows(prefs: &PreferencesSpec) -> Vec<KvPair> {
+    // No `..`: a domain added to `PreferencesSpec` fails to compile here until
+    // `profile show` lists it.
+    let PreferencesSpec { clipboard } = prefs;
+    [("clipboard", clipboard)]
+        .into_iter()
+        .filter(|(_, ranked)| !ranked.is_empty())
+        .map(|(domain, ranked)| KvPair::new(domain, ranked.join(", ")))
+        .collect()
+}
+
 /// Flatten a `PackagesSpec` into `(label, value)` rows in the same order the
 /// pre-Doc handler printed them, so empty profiles produce zero rows (skipping
 /// the section entirely) without an aggregated `has_packages` flag.
@@ -294,17 +322,18 @@ fn package_display_rows(pkgs: &PackagesSpec) -> Vec<(String, String)> {
 }
 
 pub fn cmd_profile_show(
-    cli: &Cli,
-    printer: &Printer,
+    run: &RunContext<'_>,
     name: Option<&str>,
     resolved_view: bool,
     detail: crate::cli::InventoryDetail<'_>,
 ) -> anyhow::Result<()> {
+    let cli = run.cli();
+    let printer = run.printer();
     let declared;
-    let (profile_name, resolved) = match name {
+    let named;
+    let (profile_name, resolved): (String, &ResolvedProfile) = match name {
         Some(n) => {
-            let mut cfg = config::load_config(&cli.config)?;
-            drain_config_deprecations(printer, &mut cfg);
+            let cfg = run.config()?;
             declared = cfgd_core::reconciler::ComposedSource::from_declared(&cfg.spec.sources);
             let dir = profiles_dir(cli);
             // resolve_profile already returns a typed ProfileNotFound (→ exit 6);
@@ -339,12 +368,13 @@ pub fn cmd_profile_show(
                     e.into()
                 }
             })?;
-            (n.to_string(), resolved)
+            named = resolved;
+            (n.to_string(), &named)
         }
         None => {
-            let (cfg, active, resolved) = helpers::load_config_and_profile(cli, printer)?;
+            let (cfg, active, resolved) = run.config_and_profile()?;
             declared = cfgd_core::reconciler::ComposedSource::from_declared(&cfg.spec.sources);
-            (active, resolved)
+            (active.to_string(), resolved)
         }
     };
 
@@ -355,7 +385,7 @@ pub fn cmd_profile_show(
     let detail = detail.with_secret_envs(&secret_envs);
 
     printer.emit(build_profile_show_doc(
-        &resolved,
+        resolved,
         &profile_name,
         &cli.config,
         &declared,

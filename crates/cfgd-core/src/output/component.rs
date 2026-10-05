@@ -114,8 +114,13 @@ pub enum Component {
     },
     Hint {
         text: String,
-        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        #[serde(skip_serializing_if = "Vec::is_empty")]
         commands: Vec<String>,
+        /// Render-only: the class decides whether the renderer prints the row
+        /// and leaves `-o json` alone. Skipped so no `.json` golden
+        /// gains a key for a decision the payload does not make.
+        #[serde(skip)]
+        gated: bool,
     },
     Note {
         text: String,
@@ -147,7 +152,7 @@ pub enum Component {
         /// Per-cell role tags, parallel to `rows`. Skipped from JSON when all
         /// cells are plain — keeps the structured-output shape stable for
         /// consumers that don't care about presentation styling.
-        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        #[serde(skip_serializing_if = "Vec::is_empty")]
         row_roles: Vec<Vec<Option<Role>>>,
         /// Set by `Table::wrapping`: a cell too wide for its column wraps
         /// instead of truncating. Never serialized — display-only, so the
@@ -562,7 +567,11 @@ pub fn modules_header_row_for(modules: &[HeaderModule]) -> Option<KvPair> {
     if named.is_empty() && clauses.is_empty() {
         return None;
     }
-    Some(KvPair::annotated("Modules", named, clauses.join(", ")))
+    Some(KvPair::annotated(
+        "Modules",
+        named,
+        crate::join_clauses(&clauses),
+    ))
 }
 
 /// A `command_list` row: a shell command (or a `name <type>` pair) and its
@@ -634,10 +643,33 @@ impl<K: Into<String>, V: Into<String>> From<(K, V)> for CommandPair {
 /// An empty `commands` is a plain prose hint, which is why `String` and
 /// `&str` convert straight into one and every existing `hint` call site is
 /// unchanged.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HintCommands {
     pub text: String,
     pub commands: Vec<String>,
+    /// Whether `spec.output.usageHints` decides this hint. A tutorial "run X
+    /// next" is gated; an instruction the reader must act on that nothing else
+    /// on the surface states — a refusal's remediation, a non-converged run's
+    /// own instruction, a configurator's next step — is not. The class travels
+    /// on the payload because `Renderer::render_hint` is the one seam that can
+    /// suppress it.
+    ///
+    /// Private so [`Self::ungated`] is the only door: a struct literal at a
+    /// call site would let any wording opt out of the knob without passing the
+    /// composer that classifies it.
+    gated: bool,
+}
+
+// A derived `Default` yields `gated: false`, so `HintCommands { .., ..Default::default() }`
+// would mint an ungated hint nobody asked for.
+impl Default for HintCommands {
+    fn default() -> Self {
+        Self {
+            text: String::new(),
+            commands: Vec::new(),
+            gated: true,
+        }
+    }
 }
 
 impl HintCommands {
@@ -650,7 +682,35 @@ impl HintCommands {
         Self {
             text: text.into(),
             commands: commands.into_iter().map(Into::into).collect(),
+            gated: true,
         }
+    }
+
+    /// A hint no `usageHints` decision suppresses: an instruction the reader
+    /// must act on that nothing else on the surface states.
+    ///
+    /// Composers mint one where every wording they build is of that class
+    /// (`run_next_step`, `source_failure_next_step`); a
+    /// call site mints one where the wording beside it is the remediation of
+    /// the refusal it has just printed, which is the shape most of the
+    /// error paths take. [`Self::ungated`] is the only writer either way, and
+    /// `every_hint_composer_the_workspace_declares_is_classified` holds each
+    /// composer to the class it claims.
+    pub fn unconditional(text: impl Into<String>) -> Self {
+        Self::from(text.into()).ungated()
+    }
+
+    /// The same opt-out for a hint that carries commands:
+    /// `HintCommands::new(prose, cmds).ungated()`. The ONE writer of the
+    /// class, so a site cannot mint an ungated hint by spelling the struct.
+    pub fn ungated(mut self) -> Self {
+        self.gated = false;
+        self
+    }
+
+    /// Whether `spec.output.usageHints` decides this hint.
+    pub fn is_gated(&self) -> bool {
+        self.gated
     }
 }
 
@@ -659,6 +719,7 @@ impl From<String> for HintCommands {
         Self {
             text,
             commands: Vec::new(),
+            gated: true,
         }
     }
 }
@@ -718,9 +779,10 @@ mod tests {
 
     /// `icon_arrow` is themeable, so the header's inherits chain renders the
     /// theme's own glyph, not the default — actually reaching a rendered row,
-    /// not just `ConfigHeader`'s data. Siblings: `format_plan_item`'s `set`
-    /// arm is pinned by `a_preset_overriding_the_arrow_reaches_format_plan_items_set_arm`,
-    /// the settled system row by
+    /// not just `ConfigHeader`'s data. Siblings: `format_plan_item`'s `set` arm
+    /// is pinned by
+    /// `a_preset_overriding_the_arrow_reaches_format_plan_items_set_arm`, the
+    /// settled system row by
     /// `a_preset_overriding_the_arrow_reaches_the_settled_system_rows_parenthetical`.
     #[test]
     fn a_preset_overriding_the_arrow_renders_the_inherits_chain_in_its_own_glyph() {

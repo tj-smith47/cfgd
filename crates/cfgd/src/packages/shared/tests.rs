@@ -7,9 +7,7 @@ use cfgd_core::output::Printer;
 use cfgd_core::providers::{NoteSink, PackageContext};
 #[cfg(unix)]
 use cfgd_core::test_helpers::NullPackageState;
-use cfgd_core::test_helpers::{
-    code_line as code_of, declared_fn_name, fn_declarations, reaches_fn,
-};
+use cfgd_core::test_helpers::{code_line as code_of, declared_fn_name, reaches_fn};
 
 use super::*;
 
@@ -615,12 +613,12 @@ fn extract_caveats_brew_caveats_only_blank_lines() {
 #[test]
 fn sudo_cmd_builds_correct_command_structure() {
     // sudo_cmd should prepend sudo when not root, or run directly when root
-    let cmd = sudo_cmd("apt-get");
+    let cmd = sudo_cmd("snap");
     let prog = format!("{:?}", cmd.get_program());
     if cfgd_core::is_root() {
         assert!(
-            prog.contains("apt-get"),
-            "as root, program should be apt-get, got: {}",
+            prog.contains("snap"),
+            "as root, program should be snap, got: {}",
             prog
         );
     } else {
@@ -654,7 +652,7 @@ fn sudo_cmd_hands_the_program_to_sudo_off_root_and_runs_it_bare_under_root() {
 #[serial_test::serial]
 fn strip_sudo_for_exec_with_sudo_prefix() {
     // Pin the wrapped tool's seam unset so only the privilege branch decides.
-    let _g = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_APT_GET_BIN");
+    let _g = cfgd_core::test_helpers::EnvVarGuard::unset(crate::seams::APT_GET_BIN_ENV);
     let cmd: &[&str] = &["sudo", "apt-get", "install", "-y"];
     let result = strip_sudo_for_exec(cmd);
     if cfgd_core::is_root() {
@@ -671,13 +669,14 @@ fn strip_sudo_for_exec_with_sudo_prefix() {
 fn strip_sudo_for_exec_strips_when_wrapped_tool_seam_is_set() {
     // Seam set for the wrapped tool ⇒ sudo prefix dropped regardless of
     // privilege — the shim runs as the test user (see sudo_cmd_with_seam).
-    let _g = cfgd_core::test_helpers::EnvVarGuard::set("CFGD_APT_GET_BIN", "/bin/true");
+    let _g = cfgd_core::test_helpers::EnvVarGuard::set(crate::seams::APT_GET_BIN_ENV, "/bin/true");
     let cmd: &[&str] = &["sudo", "apt-get", "install", "-y"];
     assert_eq!(strip_sudo_for_exec(cmd), &["apt-get", "install", "-y"]);
 }
 
 #[test]
 fn run_pkg_cmd_install_error_maps_to_install_failed() {
+    let _path = cfgd_core::test_helpers::path_env_read_guard();
     let result = run_pkg_cmd(
         "test-mgr",
         Command::new("sh").args(["-c", "echo install-err >&2; exit 1"]),
@@ -694,6 +693,7 @@ fn run_pkg_cmd_install_error_maps_to_install_failed() {
 
 #[test]
 fn run_pkg_cmd_uninstall_error_maps_to_uninstall_failed() {
+    let _path = cfgd_core::test_helpers::path_env_read_guard();
     let result = run_pkg_cmd(
         "test-mgr",
         Command::new("sh").args(["-c", "echo rm-err >&2; exit 1"]),
@@ -710,6 +710,7 @@ fn run_pkg_cmd_uninstall_error_maps_to_uninstall_failed() {
 
 #[test]
 fn run_pkg_cmd_list_error_maps_to_list_failed() {
+    let _path = cfgd_core::test_helpers::path_env_read_guard();
     let result = run_pkg_cmd(
         "test-mgr",
         Command::new("sh").args(["-c", "echo list-err >&2; exit 1"]),
@@ -726,6 +727,7 @@ fn run_pkg_cmd_list_error_maps_to_list_failed() {
 
 #[test]
 fn run_pkg_cmd_unknown_error_kind_maps_to_install_failed() {
+    let _path = cfgd_core::test_helpers::path_env_read_guard();
     // The default match arm maps unknown error kinds to InstallFailed
     let result = run_pkg_cmd(
         "test-mgr",
@@ -744,6 +746,7 @@ fn run_pkg_cmd_unknown_error_kind_maps_to_install_failed() {
 
 #[test]
 fn run_pkg_cmd_success_returns_output() {
+    let _path = cfgd_core::test_helpers::path_env_read_guard();
     let result = run_pkg_cmd(
         "test-mgr",
         Command::new("sh").args(["-c", "echo hello"]),
@@ -756,6 +759,7 @@ fn run_pkg_cmd_success_returns_output() {
 
 #[test]
 fn run_pkg_cmd_msg_includes_prefix_in_error() {
+    let _path = cfgd_core::test_helpers::path_env_read_guard();
     let result = run_pkg_cmd_msg(
         "test-mgr",
         Command::new("sh").args(["-c", "echo detail >&2; exit 1"]),
@@ -773,6 +777,7 @@ fn run_pkg_cmd_msg_includes_prefix_in_error() {
 
 #[test]
 fn run_pkg_cmd_msg_empty_prefix_not_prepended() {
+    let _path = cfgd_core::test_helpers::path_env_read_guard();
     let result = run_pkg_cmd_msg(
         "test-mgr",
         Command::new("sh").args(["-c", "echo only-stderr >&2; exit 1"]),
@@ -791,6 +796,7 @@ fn run_pkg_cmd_msg_empty_prefix_not_prepended() {
 
 #[test]
 fn run_pkg_cmd_command_not_found_maps_to_command_failed() {
+    let _path = cfgd_core::test_helpers::path_env_read_guard();
     let result = run_pkg_cmd(
         "test-mgr",
         &mut Command::new("/nonexistent/binary/path/that/does/not/exist"),
@@ -817,7 +823,7 @@ fn brew_available_answers_from_the_seam_in_both_directions() {
     let dir = tempfile::tempdir().expect("tempdir");
 
     let _missing = cfgd_core::test_helpers::EnvVarGuard::set(
-        "CFGD_BREW_BIN",
+        crate::seams::BREW_BIN_ENV,
         cfgd_core::test_helpers::ABSENT_SEAM_PATH,
     );
     assert!(
@@ -828,7 +834,7 @@ fn brew_available_answers_from_the_seam_in_both_directions() {
     cfgd_core::test_helpers::write_probe_tool(dir.path(), "brew");
     let planted = cfgd_core::test_helpers::probe_tool_path(dir.path(), "brew");
     let _present = cfgd_core::test_helpers::EnvVarGuard::set(
-        "CFGD_BREW_BIN",
+        crate::seams::BREW_BIN_ENV,
         planted.to_str().expect("probe path is valid UTF-8"),
     );
     assert!(
@@ -872,7 +878,7 @@ fn brew_path_returns_option() {
 fn path_with_brew_adds_only_the_brew_directory_the_path_lacks() {
     // `brew_path_dirs` answers from `CFGD_BREW_BIN` when it is set, and the
     // expectation below is the platform pair, indexed by position.
-    let _no_seam = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_BREW_BIN");
+    let _no_seam = cfgd_core::test_helpers::EnvVarGuard::unset(crate::seams::BREW_BIN_ENV);
     let dirs = brew_path_dirs();
     // Declared first so it drops last, bracketing the whole PATH window.
     let _path_excl = cfgd_core::test_helpers::path_env_mutation_guard();
@@ -893,7 +899,7 @@ fn path_with_brew_adds_only_the_brew_directory_the_path_lacks() {
 fn path_with_brew_prepends_both_directories_past_a_lookalike_entry() {
     // `brew_path_dirs` answers from `CFGD_BREW_BIN` when it is set, and the
     // expectation below is the platform pair, indexed by position.
-    let _no_seam = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_BREW_BIN");
+    let _no_seam = cfgd_core::test_helpers::EnvVarGuard::unset(crate::seams::BREW_BIN_ENV);
     let dirs = brew_path_dirs();
     let lookalike = format!("{}.bak", dirs[0]);
     // Declared first so it drops last, bracketing the whole PATH window.
@@ -928,16 +934,19 @@ fn path_entries(composed: &str) -> Vec<String> {
 
 #[test]
 fn tool_seam_var_uppercases_and_underscores() {
-    assert_eq!(tool_seam_var("brew"), "CFGD_BREW_BIN");
+    assert_eq!(tool_seam_var("brew"), crate::seams::BREW_BIN_ENV);
+    // env-literal-ok: pins what the derivation composes
     assert_eq!(tool_seam_var("brew-cask"), "CFGD_BREW_CASK_BIN");
+    // env-literal-ok: pins what the derivation composes
     assert_eq!(tool_seam_var("npm"), "CFGD_NPM_BIN");
+    // env-literal-ok: pins what the derivation composes
     assert_eq!(tool_seam_var("nix-env"), "CFGD_NIX_ENV_BIN");
 }
 
 #[test]
 fn tool_seam_var_already_uppercase_is_idempotent() {
     // Already-uppercase inputs are passed through unchanged.
-    assert_eq!(tool_seam_var("BREW"), "CFGD_BREW_BIN");
+    assert_eq!(tool_seam_var("BREW"), crate::seams::BREW_BIN_ENV);
 }
 
 #[test]
@@ -1017,7 +1026,7 @@ fn brew_path_dirs_is_non_empty_on_linux_or_macos() {
     // `brew_path_dirs` answers from `CFGD_BREW_BIN` when it is set, so the
     // platform arm this pins is only reachable with the seam clear; a sibling
     // test's brew shim is a process-global that would answer in its place.
-    let _no_seam = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_BREW_BIN");
+    let _no_seam = cfgd_core::test_helpers::EnvVarGuard::unset(crate::seams::BREW_BIN_ENV);
     let dirs = brew_path_dirs();
     if cfg!(target_os = "linux") || cfg!(target_os = "macos") {
         assert!(!dirs.is_empty(), "expected brew dirs, got: {dirs:?}");
@@ -1106,7 +1115,7 @@ fn brew_path_dirs_linux_uses_linuxbrew_paths() {
     // `brew_path_dirs` answers from `CFGD_BREW_BIN` when it is set, so the
     // platform arm this pins is only reachable with the seam clear; a sibling
     // test's brew shim is a process-global that would answer in its place.
-    let _no_seam = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_BREW_BIN");
+    let _no_seam = cfgd_core::test_helpers::EnvVarGuard::unset(crate::seams::BREW_BIN_ENV);
     let dirs = brew_path_dirs();
     assert!(dirs.iter().any(|d| d.contains("linuxbrew")));
     assert!(dirs.iter().any(|d| d.ends_with("/bin")));
@@ -1170,6 +1179,7 @@ fn sudo_cmd_with_seam_falls_back_to_sudo_cmd_when_unset() {
 #[test]
 #[serial_test::serial]
 fn run_pkg_cmd_live_success_returns_command_output() {
+    let _path = cfgd_core::test_helpers::path_env_mutation_guard();
     let notes = NoteSink::default();
     let _shim =
         cfgd_core::test_helpers::ToolShim::install("CFGD_SH_BIN", 0, "hello from shim\n", "");
@@ -1191,6 +1201,7 @@ fn run_pkg_cmd_live_success_returns_command_output() {
 #[test]
 #[serial_test::serial]
 fn run_pkg_cmd_live_install_failure_maps_to_install_failed() {
+    let _path = cfgd_core::test_helpers::path_env_mutation_guard();
     let notes = NoteSink::default();
     let _shim =
         cfgd_core::test_helpers::ToolShim::install("CFGD_SH_FAIL_BIN", 1, "", "install broke\n");
@@ -1216,7 +1227,50 @@ fn run_pkg_cmd_live_install_failure_maps_to_install_failed() {
 #[cfg(unix)]
 #[test]
 #[serial_test::serial]
+fn run_pkg_cmd_live_sudo_refusal_names_the_sudoers_change() {
+    let _path = cfgd_core::test_helpers::path_env_mutation_guard();
+    let notes = NoteSink::default();
+    let _shim = cfgd_core::test_helpers::ToolShim::install(
+        "CFGD_SH_SUDO_BIN",
+        1,
+        "",
+        "sudo: sorry, user tj is not allowed to execute '/usr/bin/env DEBIAN_FRONTEND=noninteractive apt-get install -y jq' as root on box.\n",
+    );
+    let (printer, _buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    let mut cmd = std::process::Command::new(std::env::var("CFGD_SH_SUDO_BIN").unwrap());
+    let err = run_pkg_cmd_live(
+        &cx_for(&printer, &notes),
+        "apt",
+        &mut cmd,
+        "sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y jq",
+        "install",
+    )
+    .err()
+    .expect("expected Err from the sudo-refusal shim");
+    let PackageError::InstallFailed { message, .. } = &err else {
+        panic!("expected InstallFailed, got: {err:?}");
+    };
+    assert!(
+        message.contains("is not allowed to execute") && message.contains("SETENV"),
+        "the message carries sudo's own line and the sudoers change: {message}"
+    );
+}
+
+#[test]
+fn sudo_refusal_hint_is_none_for_an_ordinary_failure() {
+    assert_eq!(sudo_refusal_hint("E: Unable to locate package jq\n"), None);
+    assert_eq!(
+        sudo_refusal_hint("sudo: unable to resolve host box\nE: broken\n"),
+        None
+    );
+    assert!(sudo_refusal_hint("  sudo: a password is required\n").is_some());
+}
+
+#[cfg(unix)]
+#[test]
+#[serial_test::serial]
 fn run_pkg_cmd_live_uninstall_failure_maps_to_uninstall_failed() {
+    let _path = cfgd_core::test_helpers::path_env_mutation_guard();
     let notes = NoteSink::default();
     let _shim = cfgd_core::test_helpers::ToolShim::install(
         "CFGD_SH_UNINST_BIN",
@@ -1247,6 +1301,7 @@ fn run_pkg_cmd_live_uninstall_failure_maps_to_uninstall_failed() {
 #[test]
 #[serial_test::serial]
 fn run_pkg_cmd_live_failure_with_no_stderr_includes_exit_code() {
+    let _path = cfgd_core::test_helpers::path_env_mutation_guard();
     let notes = NoteSink::default();
     let _shim = cfgd_core::test_helpers::ToolShim::install("CFGD_SH_NOOUT_BIN", 42, "", "");
     let (printer, _buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
@@ -1272,6 +1327,7 @@ fn run_pkg_cmd_live_failure_with_no_stderr_includes_exit_code() {
 #[test]
 #[serial_test::serial]
 fn run_pkg_cmd_live_install_success_extracts_brew_caveats() {
+    let _path = cfgd_core::test_helpers::path_env_mutation_guard();
     let notes = NoteSink::default();
     let _shim = cfgd_core::test_helpers::ToolShim::install(
         "CFGD_SH_CAVEAT_BIN",
@@ -1312,6 +1368,7 @@ fn run_pkg_cmd_live_install_success_extracts_brew_caveats() {
 #[test]
 #[serial_test::serial]
 fn caller_owned_status_suppresses_the_windows_own_line() {
+    let _path = cfgd_core::test_helpers::path_env_mutation_guard();
     let _shim = cfgd_core::test_helpers::ToolShim::install("CFGD_SH_OWNER_BIN", 0, "ok\n", "");
     let bin = std::env::var("CFGD_SH_OWNER_BIN").expect("shim seam is set");
     let notes = NoteSink::default();
@@ -1360,6 +1417,7 @@ fn caller_owned_status_suppresses_the_windows_own_line() {
 #[test]
 #[serial_test::serial]
 fn caller_owned_status_suppresses_the_windows_own_line_on_failure() {
+    let _path = cfgd_core::test_helpers::path_env_mutation_guard();
     let _shim = cfgd_core::test_helpers::ToolShim::install(
         "CFGD_SH_FAIL_OWNER_BIN",
         1,
@@ -1426,6 +1484,7 @@ fn caller_owned_status_suppresses_the_windows_own_line_on_failure() {
 #[test]
 #[serial_test::serial]
 fn a_failed_caller_owned_batch_install_carries_every_cause() {
+    let _path = cfgd_core::test_helpers::path_env_mutation_guard();
     let _shim = cfgd_core::test_helpers::ToolShim::install(
         "CFGD_BATCH_FAIL_BIN",
         1,
@@ -1505,7 +1564,7 @@ fn bootstrap_via_system_manager_succeeds_with_apt_get_shim() {
     // this test into a live `sudo apt-get install` on CI runners.
     // sudo_cmd_with_seam short-circuits to the shim under any privilege.
     let _seam = cfgd_core::test_helpers::EnvVarGuard::set(
-        "CFGD_APT_GET_BIN",
+        crate::seams::APT_GET_BIN_ENV,
         shim.to_str().expect("tempdir path is valid UTF-8"),
     );
     let (printer, _buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
@@ -1592,7 +1651,7 @@ fn a_set_brew_seam_answers_alone() {
     let _probe = cfgd_core::test_helpers::ProbePath::containing(&["brew"]);
 
     let seam = cfgd_core::test_helpers::EnvVarGuard::set(
-        "CFGD_BREW_BIN",
+        crate::seams::BREW_BIN_ENV,
         "/nonexistent/cfgd-no-brew-on-this-host",
     );
     assert!(
@@ -1603,7 +1662,7 @@ fn a_set_brew_seam_answers_alone() {
 
     #[cfg(unix)]
     {
-        let _unset = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_BREW_BIN");
+        let _unset = cfgd_core::test_helpers::EnvVarGuard::unset(crate::seams::BREW_BIN_ENV);
         assert!(
             brew_available(),
             "with no seam the question falls through to the host, which is carrying a brew"
@@ -1618,10 +1677,10 @@ fn a_set_brew_seam_answers_alone() {
 #[cfg(unix)]
 fn refusal_with_no_system_tool(arms: &MediatedArms, manager_name: &str) -> String {
     let held: Vec<_> = [
-        ("apt-get", "CFGD_APT_GET_BIN"),
-        ("dnf", "CFGD_DNF_BIN"),
-        ("zypper", "CFGD_ZYPPER_BIN"),
-        ("pkg", "CFGD_PKG_BIN"),
+        ("apt-get", crate::seams::APT_GET_BIN_ENV),
+        ("dnf", crate::seams::DNF_BIN_ENV),
+        ("zypper", crate::seams::ZYPPER_BIN_ENV),
+        ("pkg", crate::seams::PKG_BIN_ENV),
     ]
     .iter()
     .map(|(tool, var)| {
@@ -1694,7 +1753,7 @@ fn the_failure_sentence_names_the_pkg_arm_of_a_manager_that_declares_a_port() {
 #[serial_test::serial]
 fn bootstrap_via_brew_then_system_succeeds_via_brew_shim() {
     let _shim = cfgd_core::test_helpers::ToolShim::install(
-        "CFGD_BREW_BIN",
+        crate::seams::BREW_BIN_ENV,
         0,
         "==> Installing ripgrep\n",
         "",
@@ -1716,8 +1775,12 @@ fn bootstrap_via_brew_then_system_succeeds_via_brew_shim() {
 #[test]
 #[serial_test::serial]
 fn bootstrap_via_brew_then_system_falls_back_when_brew_fails_and_no_system_manager() {
-    let _shim =
-        cfgd_core::test_helpers::ToolShim::install("CFGD_BREW_BIN", 1, "", "brew install failed\n");
+    let _shim = cfgd_core::test_helpers::ToolShim::install(
+        crate::seams::BREW_BIN_ENV,
+        1,
+        "",
+        "brew install failed\n",
+    );
 
     // Minimal PATH: contains sh (needed by concurrent tests) but not apt-get / dnf.
     let dir = tempfile::tempdir().unwrap();
@@ -1752,6 +1815,7 @@ fn bootstrap_via_brew_then_system_falls_back_when_brew_fails_and_no_system_manag
 #[test]
 #[serial_test::serial]
 fn run_pkg_cmd_live_unknown_error_kind_maps_to_install_failed() {
+    let _path = cfgd_core::test_helpers::path_env_mutation_guard();
     let notes = NoteSink::default();
     let _shim =
         cfgd_core::test_helpers::ToolShim::install("CFGD_SH_UPDATE_BIN", 1, "", "update broke\n");
@@ -1836,9 +1900,9 @@ fn bootstrap_via_brew_then_system_uses_apt_get_fallback_when_brew_absent() {
         "PATH",
         dir.path().to_str().expect("tempdir path is valid UTF-8"),
     );
-    let _brew_env = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_BREW_BIN");
+    let _brew_env = cfgd_core::test_helpers::EnvVarGuard::unset(crate::seams::BREW_BIN_ENV);
     let _apt_env = cfgd_core::test_helpers::EnvVarGuard::set(
-        "CFGD_APT_GET_BIN",
+        crate::seams::APT_GET_BIN_ENV,
         shim.to_str().expect("tempdir path is valid UTF-8"),
     );
     let (printer, _buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
@@ -1892,6 +1956,7 @@ fn resolve_tool_with_fallbacks_uses_path_when_command_available() {
 #[test]
 #[serial_test::serial]
 fn run_pkg_query_returns_output_even_on_nonzero_exit() {
+    let _path = cfgd_core::test_helpers::path_env_read_guard();
     // A query command (e.g. scoop `list`) may exit non-zero for a benign empty
     // result; run_pkg_query returns the captured output instead of erroring, so the
     // caller can parse stdout. Only spawn/timeout failures become CommandFailed.
@@ -1909,6 +1974,7 @@ fn run_pkg_query_returns_output_even_on_nonzero_exit() {
 #[test]
 #[serial_test::serial]
 fn run_pkg_query_maps_spawn_error_to_command_failed() {
+    let _path = cfgd_core::test_helpers::path_env_read_guard();
     let mut cmd = std::process::Command::new("/nonexistent/binary/cfgd-query-xyz");
     let err = run_pkg_query("test-mgr", &mut cmd).expect_err("spawn error must surface");
     assert!(matches!(&err, PackageError::CommandFailed { manager, .. } if manager == "test-mgr"));
@@ -1988,6 +2054,7 @@ fn windows_pkg_argv_unresolved_falls_back_to_bare_name() {
 #[test]
 #[serial_test::serial]
 fn run_pkg_cmd_live_spawn_error_maps_to_command_failed() {
+    let _path = cfgd_core::test_helpers::path_env_read_guard();
     let notes = NoteSink::default();
     let (printer, _buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
     let mut cmd = std::process::Command::new("/nonexistent/binary/cfgd-test-path-xyz");
@@ -2073,14 +2140,20 @@ const TEST_SYSTEM_MEDIATED: MediatedArms = MediatedArms {
 /// never routes a real `sudo apt-get install` at the host.
 #[cfg(unix)]
 fn apt_get_shim() -> cfgd_core::test_helpers::ToolShim {
-    cfgd_core::test_helpers::ToolShim::install("CFGD_APT_GET_BIN", 0, "apt-get: done\n", "")
+    cfgd_core::test_helpers::ToolShim::install(
+        crate::seams::APT_GET_BIN_ENV,
+        0,
+        "apt-get: done\n",
+        "",
+    )
 }
 
 #[cfg(unix)]
 #[test]
 #[serial_test::serial]
 fn a_provision_planned_via_apt_never_reaches_brew_even_when_brew_is_available() {
-    let brew = cfgd_core::test_helpers::ToolShim::install("CFGD_BREW_BIN", 0, "brew ran\n", "");
+    let brew =
+        cfgd_core::test_helpers::ToolShim::install(crate::seams::BREW_BIN_ENV, 0, "brew ran\n", "");
     let apt = apt_get_shim();
     let (printer, _buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
@@ -2100,7 +2173,8 @@ fn a_provision_planned_via_apt_never_reaches_brew_even_when_brew_is_available() 
         brew.argv_log()
     );
     assert!(
-        apt.argv_log().contains("install -y ripgrep"),
+        apt.argv_log().starts_with("install -y ")
+            && apt.argv_log().trim_end().ends_with(" ripgrep"), // tail-check-ok: newline only
         "the apt arm ran the install: {}",
         apt.argv_log()
     );
@@ -2110,10 +2184,11 @@ fn a_provision_planned_via_apt_never_reaches_brew_even_when_brew_is_available() 
 #[test]
 #[serial_test::serial]
 fn a_provision_planned_via_a_vanished_mediator_fails_naming_it_instead_of_substituting() {
-    let brew = cfgd_core::test_helpers::ToolShim::install("CFGD_BREW_BIN", 0, "brew ran\n", "");
+    let brew =
+        cfgd_core::test_helpers::ToolShim::install(crate::seams::BREW_BIN_ENV, 0, "brew ran\n", "");
     // No apt-get: neither on PATH nor behind the seam, which is exactly the
     // "the mediator went away between plan and apply" shape.
-    let _no_apt = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_APT_GET_BIN");
+    let _no_apt = cfgd_core::test_helpers::EnvVarGuard::unset(crate::seams::APT_GET_BIN_ENV);
     let dir = tempfile::tempdir().unwrap();
     std::os::unix::fs::symlink("/bin/sh", dir.path().join("sh")).unwrap();
     let _path_excl = cfgd_core::test_helpers::path_env_mutation_guard();
@@ -2148,9 +2223,9 @@ fn a_provision_planned_via_a_vanished_mediator_fails_naming_it_instead_of_substi
 #[test]
 #[serial_test::serial]
 fn a_planned_method_that_fails_is_reported_as_that_method_failing() {
-    let _no_brew = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_BREW_BIN");
+    let _no_brew = cfgd_core::test_helpers::EnvVarGuard::unset(crate::seams::BREW_BIN_ENV);
     let apt = cfgd_core::test_helpers::ToolShim::install(
-        "CFGD_APT_GET_BIN",
+        crate::seams::APT_GET_BIN_ENV,
         100,
         "",
         "E: Unable to locate package ripgrep\n",
@@ -2184,7 +2259,8 @@ fn a_planned_method_that_fails_is_reported_as_that_method_failing() {
 #[test]
 #[serial_test::serial]
 fn a_provision_planned_via_a_managers_own_fallback_skips_the_shared_cascade_entirely() {
-    let brew = cfgd_core::test_helpers::ToolShim::install("CFGD_BREW_BIN", 0, "brew ran\n", "");
+    let brew =
+        cfgd_core::test_helpers::ToolShim::install(crate::seams::BREW_BIN_ENV, 0, "brew ran\n", "");
     let apt = apt_get_shim();
     let (printer, _buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
@@ -2216,7 +2292,7 @@ fn a_provision_planned_via_a_managers_own_fallback_skips_the_shared_cascade_enti
 #[serial_test::serial]
 fn an_unplanned_bootstrap_still_cascades_brew_then_system() {
     let brew = cfgd_core::test_helpers::ToolShim::install(
-        "CFGD_BREW_BIN",
+        crate::seams::BREW_BIN_ENV,
         1,
         "",
         "Error: No available formula\n",
@@ -2298,6 +2374,7 @@ fn a_path_the_command_builder_already_chose_is_left_alone() {
 #[test]
 #[serial_test::serial]
 fn a_run_that_bootstrapped_nothing_sets_no_path_at_all() {
+    let _path = cfgd_core::test_helpers::path_env_read_guard();
     let _registry = cfgd_core::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
     let mut cmd = Command::new("apt-get");
     hand_child_bootstrapped_path(&mut cmd);
@@ -2317,7 +2394,8 @@ fn a_run_that_bootstrapped_nothing_sets_no_path_at_all() {
 #[test]
 #[serial_test::serial]
 fn a_planned_method_neither_this_cascade_nor_the_caller_can_run_fails_instead_of_deferring() {
-    let brew = cfgd_core::test_helpers::ToolShim::install("CFGD_BREW_BIN", 0, "brew ran\n", "");
+    let brew =
+        cfgd_core::test_helpers::ToolShim::install(crate::seams::BREW_BIN_ENV, 0, "brew ran\n", "");
     let apt = apt_get_shim();
     let (printer, _buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
@@ -2450,15 +2528,18 @@ fn command_failure_reason_is_the_only_place_a_managers_stderr_becomes_a_message(
             "captured_output_detail(",
             "the ONE bounded fold from a captured child's output to a rendered slot",
         ),
+        (
+            "sudo_refusal_hint(",
+            "a classifier inside command_failure_reason: matches sudo's refusal lines and renders a fixed hint in place of the text",
+        ),
     ];
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/packages");
     let mut offenders: Vec<String> = Vec::new();
     for path in cfgd_core::test_helpers::rust_sources_under(&root) {
-        if path.file_name().is_some_and(|f| f == "tests.rs") {
+        if cfgd_core::test_helpers::is_test_source(&path) {
             continue;
         }
-        let body = std::fs::read_to_string(&path)
-            .unwrap_or_else(|e| panic!("{}: the walk must read every source: {e}", path.display()));
+        let body = cfgd_core::test_helpers::production_slice_of(&path);
         for (n, line) in body.lines().enumerate() {
             if !line.contains(".stderr") {
                 continue;
@@ -2550,6 +2631,7 @@ fn a_version_probe_reaches_a_sibling_the_manager_shim_finds_through_the_bootstra
 #[test]
 #[serial_test::serial]
 fn upgrade_each_spawns_the_built_command_once_per_held_package() {
+    let _path = cfgd_core::test_helpers::path_env_mutation_guard();
     let notes = NoteSink::default();
     let _shim = cfgd_core::test_helpers::ToolShim::install("CFGD_SH_UPGRADE_BIN", 0, "", "");
     let (printer, _buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
@@ -2577,8 +2659,10 @@ fn upgrade_each_spawns_the_built_command_once_per_held_package() {
 #[test]
 #[serial_test::serial]
 fn a_provision_planned_via_pkg_installs_the_port_origin() {
-    let brew = cfgd_core::test_helpers::ToolShim::install("CFGD_BREW_BIN", 0, "brew ran\n", "");
-    let pkg = cfgd_core::test_helpers::ToolShim::install("CFGD_PKG_BIN", 0, "pkg: done\n", "");
+    let brew =
+        cfgd_core::test_helpers::ToolShim::install(crate::seams::BREW_BIN_ENV, 0, "brew ran\n", "");
+    let pkg =
+        cfgd_core::test_helpers::ToolShim::install(crate::seams::PKG_BIN_ENV, 0, "pkg: done\n", "");
     let (printer, _buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
     let installed = bootstrap_via_brew_then_system(
@@ -2610,7 +2694,8 @@ fn a_provision_planned_via_pkg_installs_the_port_origin() {
 #[test]
 #[serial_test::serial]
 fn a_manager_with_no_freebsd_port_never_reaches_the_pkg_arm() {
-    let pkg = cfgd_core::test_helpers::ToolShim::install("CFGD_PKG_BIN", 0, "pkg: done\n", "");
+    let pkg =
+        cfgd_core::test_helpers::ToolShim::install(crate::seams::PKG_BIN_ENV, 0, "pkg: done\n", "");
     let (printer, _buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
     let err = bootstrap_via_system_manager(
@@ -2656,12 +2741,12 @@ fn unhatched_seam_reading_factories(src: &str) -> Vec<(String, usize)> {
         };
         // The whole comment block above the head, so a reason too long for one
         // line still hatches the factory it was written for.
-        let hatched = line.contains("// seam-read-ok:")
+        let hatched = cfgd_core::test_helpers::carries_hatch(line, "// seam-read-ok:")
             || lines[..i]
                 .iter()
                 .rev()
                 .take_while(|l| l.trim_start().starts_with("//"))
-                .any(|l| l.contains("// seam-read-ok:"));
+                .any(|l| cfgd_core::test_helpers::carries_hatch(l, "// seam-read-ok:"));
         if hatched {
             continue;
         }
@@ -2776,7 +2861,7 @@ fn every_manager_command_factory_spawns_the_path_its_resolver_chose() {
         // A `tests.rs` is a whole test region declared from its parent, so it
         // carries no `#[cfg(test)]` of its own for the cut to find (held by
         // `cli::tests::no_tests_file_carries_a_cfg_test_attribute_of_its_own`).
-        if path.file_name().is_some_and(|f| f == "tests.rs") {
+        if cfgd_core::test_helpers::is_test_source(&path) {
             continue;
         }
         let src = cfgd_core::test_helpers::production_slice_of(&path);
@@ -2786,7 +2871,7 @@ fn every_manager_command_factory_spawns_the_path_its_resolver_chose() {
             .filter(|c| command_factory_name(c).is_some())
             .count();
         for line in src.lines() {
-            if line.contains("// seam-read-ok:") {
+            if cfgd_core::test_helpers::carries_hatch(line, "// seam-read-ok:") {
                 hatched.push(path.display().to_string());
             }
         }
@@ -2993,22 +3078,10 @@ fn test_declarations(body: &str) -> Vec<(String, Vec<String>, Vec<String>)> {
 /// site spells, which is why a trait method carries the type it is declared on:
 /// `.path_dirs(` alone names every manager's, and only brew's reads this seam.
 fn brew_path_dir_readers() -> Vec<(String, Option<String>)> {
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-    let sources: Vec<String> = cfgd_core::test_helpers::rust_sources_under(&root)
-        .into_iter()
-        // A `tests.rs` is a test region whole, carrying no `#[cfg(test)]` for
-        // the cut to read (held by
-        // `cli::tests::no_tests_file_carries_a_cfg_test_attribute_of_its_own`),
-        // and a test is not a route production takes.
-        .filter(|p| p.file_name().is_some_and(|n| n != "tests.rs"))
-        .map(|p| cfgd_core::test_helpers::production_slice_of(&p))
-        .collect();
-    assert!(!sources.is_empty(), "the derivation read no sources at all");
-    let declarations: Vec<(String, Option<String>, String)> = sources
-        .iter()
-        .flat_map(|src| fn_declarations(src))
-        .collect();
-
+    let declarations = cfgd_core::test_helpers::workspace_seam_declarations(
+        cfgd_core::test_helpers::WORKSPACE_CRATES,
+    )
+    .rows_under("cfgd/src", 139);
     cfgd_core::test_helpers::callers_reaching(
         &declarations,
         &[("brew_path_dirs".to_string(), None)],
@@ -3040,12 +3113,12 @@ fn every_test_reading_brews_path_dirs_settles_the_seam_and_serializes() {
     let mut reading = 0usize;
     for root in [crate_dir.join("src"), crate_dir.join("tests")] {
         for path in cfgd_core::test_helpers::rust_sources_under(&root) {
+            // unfloored-slice-ok: the test declarations judged here live in test regions.
             let body = cfgd_core::test_helpers::walked_file_body(&path);
             for (name, attrs, decl) in test_declarations(&body) {
-                let text = decl.join("\n");
                 // The needles are judged on the CODE, so this walk spelling them
-                // as literals is not itself a reader; the seam is judged on the
-                // raw text, where the settling call names it as one.
+                // as literals is not itself a reader, and a comment naming the
+                // seam settles nothing.
                 let code = decl
                     .iter()
                     .map(|l| code_of(l))
@@ -3061,7 +3134,7 @@ fn every_test_reading_brews_path_dirs_settles_the_seam_and_serializes() {
                 let serialized = attrs
                     .iter()
                     .any(|a| a.trim() == "#[serial_test::serial]" || a.trim() == "#[serial]");
-                let settles = text.contains("CFGD_BREW_BIN");
+                let settles = code.contains("BREW_BIN_ENV");
                 if !serialized || !settles {
                     offenders.push(format!("{}: {name}", path.display()));
                 }
@@ -3075,8 +3148,23 @@ fn every_test_reading_brews_path_dirs_settles_the_seam_and_serializes() {
     );
     assert!(
         offenders.is_empty(),
-        "a test reading brew's path directories names `CFGD_BREW_BIN` to settle the \
+        "a test reading brew's path directories names `BREW_BIN_ENV` to settle the \
          seam and carries `#[serial_test::serial]`:\n{}",
         offenders.join("\n")
+    );
+}
+
+/// The order a mediated bootstrap tries the Unix families in is a contract.
+/// The arms are read off the family table's row order, so a reordered table
+/// row reorders the bootstrap, and this list is spelled out as the expectation.
+#[test]
+fn the_unix_arms_are_tried_in_the_bootstrap_order() {
+    let order: Vec<&str> = SYSTEM_MANAGER_ARMS
+        .iter()
+        .map(|(method, _)| *method)
+        .collect();
+    assert_eq!(
+        order,
+        ["apt", "dnf", "yum", "zypper", "pacman", "apk", "pkg"]
     );
 }

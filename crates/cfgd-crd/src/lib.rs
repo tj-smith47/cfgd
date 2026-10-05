@@ -2,12 +2,11 @@
 //!
 //! This crate hosts the `cfgd.io/v1alpha1` CRD spec types (`MachineConfig`,
 //! `ConfigPolicy`, `ClusterConfigPolicy`, `DriftAlert`, `Module`,
-//! `BackupPolicy`), their
-//! `schemars`-derived JSON schemas, and the cross-field `validate()` impls used
-//! by both the admission webhook and the CLI. It sits at the bottom of the
-//! workspace dependency graph (depended on by `cfgd-core`), so it carries no
-//! Kubernetes client/runtime, no HTTP server, and no telemetry — only the
-//! schema-bearing types.
+//! `BackupPolicy`), their `schemars`-derived JSON schemas, and the cross-field
+//! `validate()` impls used by both the admission webhook and the CLI. It sits
+//! at the bottom of the workspace dependency graph (depended on by
+//! `cfgd-core`), so it carries no Kubernetes client/runtime, no HTTP server,
+//! and no telemetry — only the schema-bearing types.
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
@@ -147,6 +146,91 @@ pub struct MachineConfigStatus {
     /// cannot observe it preserves it.
     #[serde(default)]
     pub backup_schedule_owners: BTreeMap<String, String>,
+    /// The compliance the machine last reported: how many of its checks pass,
+    /// warn and fail, and every check that does not pass. Device-reported,
+    /// like `packageVersions`: absent until a check-in carries a compliance
+    /// snapshot, and a reconcile that cannot observe it preserves it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compliance: Option<DeviceCompliance>,
+}
+
+/// A machine's compliance snapshot as its check-in reports it.
+#[derive(Deserialize, Serialize, Clone, Debug, Default, PartialEq, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct DeviceCompliance {
+    /// Checks that pass.
+    pub compliant: u32,
+    /// Checks that raised a warning.
+    pub warning: u32,
+    /// Checks that fail.
+    pub violation: u32,
+    /// The checks that do not pass, violations first, then warnings: the first
+    /// 200 of them, with the counts above staying exact. An agent that
+    /// predates the list reports the counts alone.
+    // The cap is MAX_REPORTED_CHECKS, the free-text list's etcd ceiling.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[schemars(length(max = MAX_REPORTED_CHECKS))]
+    pub checks: Vec<DeviceComplianceCheck>,
+}
+
+/// The most checks a [`DeviceCompliance`] lists. Re-exported from
+/// `cfgd-schema` so the agent that trims its report and the schema that
+/// bounds it read one number.
+pub use cfgd_schema::MAX_REPORTED_CHECKS;
+
+impl DeviceCompliance {
+    /// The report's counts: `12 compliant, 1 warning, 0 violation`.
+    pub fn counts_line(&self) -> String {
+        cfgd_schema::compliance_counts_line(self.compliant, self.warning, self.violation)
+    }
+
+    /// One line for a fleet table: the first check that does not pass, with a
+    /// count of the ones after it. `None` when the report lists no check.
+    ///
+    /// The count comes from the totals, so checks past the listed ones are
+    /// still counted.
+    pub fn headline(&self) -> Option<String> {
+        let (first, rest) = self.checks.split_first()?;
+        // The counts are the device's own numbers, so no sum of them may
+        // overflow a render.
+        let more = self
+            .warning
+            .saturating_add(self.violation)
+            .saturating_sub(1)
+            .max(u32::try_from(rest.len()).unwrap_or(u32::MAX));
+        let mut line = format!("{} {}", first.category, first.name);
+        if let Some(detail) = &first.detail {
+            line.push_str(": ");
+            line.push_str(detail);
+        }
+        if more > 0 {
+            use std::fmt::Write;
+            let _ = write!(line, " (+{more} more)");
+        }
+        Some(line)
+    }
+}
+
+/// One check a machine reported as not passing.
+#[derive(Deserialize, Serialize, Clone, Debug, PartialEq, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct DeviceComplianceCheck {
+    /// What kind of thing was checked (`file`, `package`, `watchPath`, ...).
+    pub category: String,
+    /// The file, package, key or path the check is about: the name
+    /// `cfgd compliance -o json` carries for it (a file's absolute path).
+    pub name: String,
+    pub status: DeviceComplianceStatus,
+    /// Why the check did not pass, in the machine's own words.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+}
+
+/// The outcome of a check that did not pass.
+#[derive(Deserialize, Serialize, Clone, Copy, Debug, PartialEq, Eq, JsonSchema)]
+pub enum DeviceComplianceStatus {
+    Warning,
+    Violation,
 }
 
 #[derive(Deserialize, Serialize, Clone, Debug, PartialEq, JsonSchema)]
@@ -284,10 +368,10 @@ pub struct MachineConfigReference {
 /// A device's report covers its system settings alone — the answers of the
 /// system configurators its profile declares (`sysctl`, `kernelModules`,
 /// `macosDefaults`, `windowsRegistry`, ...). Packages, managed files, env vars
-/// and aliases are checked on the device by `cfgd diff` and reach the fleet only
-/// as the aggregate counts of a compliance summary, never as findings — so a
-/// device with no DriftAlert is a device whose system settings matched, not a
-/// device proven in sync.
+/// and aliases are checked on the device by `cfgd diff` and reach the fleet
+/// through its compliance summary (`MachineConfig.status.compliance`); no
+/// DriftAlert carries them, so a device with no DriftAlert is a device whose
+/// system settings matched. It is not proven in sync.
 #[derive(CustomResource, Deserialize, Serialize, Clone, Debug, JsonSchema)]
 #[kube(
     group = "cfgd.io",
@@ -648,9 +732,9 @@ pub struct ModuleSpec {
     pub mount_policy: MountPolicy,
     /// Platform tags gating the whole module on a machine reconciling it.
     /// When non-empty and the machine matches none of them, the module is
-    /// skipped entirely (it appears as a skipped action rather than
-    /// vanishing). Tags are matched against the machine's OS, distro, and
-    /// arch; use `macos` for macOS.
+    /// skipped entirely (it still appears, as a skipped action). Tags are
+    /// matched against the machine's OS, distro, and arch; use `macos` for
+    /// macOS.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub platforms: Vec<String>,
     /// Shell aliases this module contributes to the machines that apply it.
@@ -709,11 +793,10 @@ pub struct ModuleStatus {
     /// The signature verdict as ONE word (`verified` / `unverified` /
     /// `unsigned` / `unknown`), and the only field the `Signature` printer
     /// column may be bound to. `verified` is the same verdict as a raw bool,
-    /// which reads as
-    /// `true` in a column beside a `kubectl cfgd status` row saying
-    /// `(verified)` about the same module — one fact, two vocabularies. Absent
-    /// when no reconcile has written it, so the JSONPath resolves to nothing
-    /// and the cell stays blank.
+    /// which reads as `true` in a column beside a `kubectl cfgd status` row
+    /// saying `(verified)` about the same module — one fact, two vocabularies.
+    /// Absent when no reconcile has written it, so the JSONPath resolves to
+    /// nothing and the cell stays blank.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub signature: Option<String>,
     /// Digest of the cosign signature (if verified).

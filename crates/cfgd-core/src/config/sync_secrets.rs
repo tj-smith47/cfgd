@@ -30,6 +30,17 @@ pub struct SyncConfig {
     pub interval: String,
 }
 
+impl Default for SyncConfig {
+    /// The block `sync: {}` declares.
+    fn default() -> Self {
+        Self {
+            auto_push: false,
+            auto_pull: false,
+            interval: default_sync_interval(),
+        }
+    }
+}
+
 /// `spec.notify`: how the daemon reports detected drift.
 ///
 /// ```yaml
@@ -38,7 +49,7 @@ pub struct SyncConfig {
 ///   method: Webhook
 ///   webhookUrl: https://example.com/hook
 /// ```
-#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct NotifyConfig {
     /// Send a notification whenever the daemon detects drift. Default: `false`.
@@ -95,6 +106,18 @@ pub struct SecretsConfig {
     /// Named backend integrations a `${secret:<name>:<ref>}` reference can select.
     #[serde(default)]
     pub integrations: Vec<SecretIntegration>,
+}
+
+impl Default for SecretsConfig {
+    /// The block `secrets: {}` declares: the `sops` backend, reached through
+    /// sops's own key search, with no integrations.
+    fn default() -> Self {
+        Self {
+            backend: default_secrets_backend(),
+            sops: None,
+            integrations: Vec::new(),
+        }
+    }
 }
 
 fn default_secrets_backend() -> String {

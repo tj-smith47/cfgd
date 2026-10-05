@@ -152,10 +152,15 @@ pub(super) fn generate_release_workflow_yaml(
         .map(|(key, sources)| format!("{} from {}", key, sources.join(", ")))
         .collect();
     if !collisions.is_empty() {
-        anyhow::bail!(
-            "cannot generate workflow: resource names fold to the same job-output key ({}); rename one name in each colliding set so they stay distinct after '-'/'.' fold to '_'",
-            collisions.join("; ")
-        );
+        return Err(crate::cli::cli_error(
+            "workflow",
+            "validation_failed",
+            format!(
+                "cannot generate workflow: resource names fold to the same job-output key ({}); rename one name in each colliding set so they stay distinct after '-'/'.' fold to '_'",
+                collisions.join("; ")
+            ),
+            serde_json::json!({ "collisions": collisions }),
+        ));
     }
 
     let mut yaml = String::new();

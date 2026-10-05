@@ -55,7 +55,7 @@ pub fn list_user_public_keys_tx(
     username: &str,
 ) -> Result<Vec<UserPublicKey>, GatewayError> {
     let mut stmt = conn.prepare_cached(
-        "SELECT id, username, key_type, public_key, fingerprint, label, created_at FROM user_public_keys WHERE username = ?1 ORDER BY created_at DESC",
+        "SELECT id, username, key_type, public_key, fingerprint, label, created_at FROM user_public_keys WHERE username = ?1 ORDER BY created_at DESC, rowid DESC",
     )?;
     let keys = stmt
         .query_map(params![username], map_user_public_key_row)?

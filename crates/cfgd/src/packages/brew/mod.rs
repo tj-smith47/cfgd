@@ -165,6 +165,7 @@ impl PackageManager for BrewTapManager {
         None
     }
 
+    // long-line-ok: a hatch is read off its own line, so it cannot wrap
     // bootstrap-arm-ok: a sub-manager installs nothing of its own — brew provisions the one binary all three share
     fn bootstrap(&self, _cx: &cfgd_core::providers::PackageContext<'_>) -> Result<()> {
         Ok(())
@@ -246,6 +247,12 @@ impl PackageManager for BrewCaskManager {
         Some("upgrade")
     }
 
+    fn own_raise(&self) -> Option<std::borrow::Cow<'static, str>> {
+        // `brew upgrade` raises formulae; brew's own copy moves with the
+        // repository it is checked out from.
+        Some("brew update".into())
+    }
+
     fn tool_version(&self) -> Option<String> {
         super::shared::tool_version_from(brew_cmd().arg("--version"))
     }
@@ -260,6 +267,7 @@ impl PackageManager for BrewCaskManager {
         None
     }
 
+    // long-line-ok: a hatch is read off its own line, so it cannot wrap
     // bootstrap-arm-ok: a sub-manager installs nothing of its own — brew provisions the one binary all three share
     fn bootstrap(&self, _cx: &cfgd_core::providers::PackageContext<'_>) -> Result<()> {
         Ok(())
@@ -364,6 +372,12 @@ impl PackageManager for BrewManager {
 
     fn upgrade_verb(&self) -> Option<&'static str> {
         Some("upgrade")
+    }
+
+    fn own_raise(&self) -> Option<std::borrow::Cow<'static, str>> {
+        // `brew upgrade` raises formulae; brew's own copy moves with the
+        // repository it is checked out from.
+        Some("brew update".into())
     }
 
     fn tool_version(&self) -> Option<String> {

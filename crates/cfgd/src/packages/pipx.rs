@@ -107,7 +107,7 @@ pub(super) fn pipx_available() -> bool {
 // The names the pip fallback looks for, most likely first. A CPython install on
 // Windows writes `pip.exe` into its Scripts directory and no `pip3` alias, while
 // a Linux distribution ships `pip3` and often reserves `pip` for Python 2.
-fn pip_tool_order() -> [&'static str; 2] {
+pub(super) fn pip_tool_order() -> [&'static str; 2] {
     if cfg!(windows) {
         ["pip", "pip3"]
     } else {
@@ -208,6 +208,9 @@ fn find_pip() -> Option<PipRoute> {
 /// non-zero exit is that pip's failure rather than a reason to resolve a second
 /// one.
 fn seam_pip() -> Option<PipRoute> {
+    // A sibling test pins this seam under the PATH lock; the read waits it out.
+    #[cfg(test)]
+    let _seam_guard = cfgd_core::test_helpers::path_env_read_guard();
     pip_tool_order().into_iter().find_map(|tool| {
         let planted = PathBuf::from(std::env::var(tool_seam_var(tool)).ok()?);
         planted.is_file().then(|| PipRoute::direct(tool, planted))
@@ -832,13 +835,14 @@ mod tests {
         let mut held: Vec<_> = super::super::shared::host_arms()
             .iter()
             .map(|(_, tool)| {
-                let var: &'static str =
-                    Box::leak(super::super::shared::tool_seam_var(tool).into_boxed_str());
-                cfgd_core::test_helpers::EnvVarGuard::set(var, "/nonexistent/cfgd-no-system-tool")
+                cfgd_core::test_helpers::EnvVarGuard::set(
+                    &super::super::shared::tool_seam_var(tool),
+                    "/nonexistent/cfgd-no-system-tool",
+                )
             })
             .collect();
         held.push(cfgd_core::test_helpers::EnvVarGuard::set(
-            "CFGD_BREW_BIN",
+            crate::seams::BREW_BIN_ENV,
             "/nonexistent/cfgd-no-brew-on-this-host",
         ));
         held
@@ -1146,7 +1150,8 @@ mod tests {
         let _memo = cfgd_core::test_helpers::CommandPathMemoTtlGuard::always_expired();
         let _path_excl = cfgd_core::test_helpers::path_env_mutation_guard();
         let _path = cfgd_core::test_helpers::EnvVarGuard::set("PATH", "");
-        let _seam = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_PIP_BIN");
+        let _seam =
+            cfgd_core::test_helpers::EnvVarGuard::unset(&crate::seams::tool_seam_var("pip"));
         let root = tempfile::tempdir().unwrap();
         std::fs::write(root.path().join("py.exe"), "").unwrap();
         let _sysroot = cfgd_core::test_helpers::EnvVarGuard::set(
@@ -1174,7 +1179,8 @@ mod tests {
         let _memo = cfgd_core::test_helpers::CommandPathMemoTtlGuard::always_expired();
         let _path_excl = cfgd_core::test_helpers::path_env_mutation_guard();
         let _probe = cfgd_core::test_helpers::ProbePath::containing(&["pip3"]);
-        let _seam = cfgd_core::test_helpers::EnvVarGuard::set("CFGD_PIP_BIN", ABSENT);
+        let _seam =
+            cfgd_core::test_helpers::EnvVarGuard::set(&crate::seams::tool_seam_var("pip"), ABSENT);
 
         let route = find_pip().expect("the probe path carries a pip3");
         assert_eq!(route.tool, "pip3", "a seam naming no file is not a pip");
@@ -1209,12 +1215,10 @@ mod tests {
             "PATH",
             host.path().to_str().expect("utf-8 tempdir"),
         );
-        let preferred_var: &'static str =
-            Box::leak(super::tool_seam_var(preferred).into_boxed_str());
-        let other_var: &'static str = Box::leak(super::tool_seam_var(other).into_boxed_str());
-        let _preferred_seam = cfgd_core::test_helpers::EnvVarGuard::unset(preferred_var);
+        let _preferred_seam =
+            cfgd_core::test_helpers::EnvVarGuard::unset(&super::tool_seam_var(preferred));
         let _other_seam = cfgd_core::test_helpers::EnvVarGuard::set(
-            other_var,
+            &super::tool_seam_var(other),
             nominated.to_str().expect("utf-8 tempdir"),
         );
 
@@ -1259,7 +1263,8 @@ mod tests {
     #[serial_test::serial]
     fn the_launcher_route_runs_pip_as_a_module() {
         // The composition is the subject, so no planted pip may answer for it.
-        let _seam = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_PIP_BIN");
+        let _seam =
+            cfgd_core::test_helpers::EnvVarGuard::unset(&crate::seams::tool_seam_var("pip"));
         let route = PipRoute::launcher(PathBuf::from("py.exe"));
         let args: Vec<String> = route
             .command()
@@ -1288,12 +1293,13 @@ mod tests {
         };
         use serial_test::serial;
 
-        const SHIM_ENV: &str = "CFGD_PIPX_BIN";
+        static SHIM_ENV: std::sync::LazyLock<String> =
+            std::sync::LazyLock::new(|| crate::seams::tool_seam_var("pipx"));
 
         #[test]
         #[serial]
         fn pipx_install_runs_install_subcommand_per_package() {
-            let s = ToolShim::install(SHIM_ENV, 0, "", "");
+            let s = ToolShim::install(&SHIM_ENV, 0, "", "");
             let p = test_printer();
             let st = test_state();
             let cx = test_package_context(&p, &st);
@@ -1312,7 +1318,7 @@ mod tests {
         #[test]
         #[serial]
         fn pipx_uninstall_runs_uninstall_subcommand_per_package() {
-            let s = ToolShim::install(SHIM_ENV, 0, "", "");
+            let s = ToolShim::install(&SHIM_ENV, 0, "", "");
             let p = test_printer();
             let st = test_state();
             let cx = test_package_context(&p, &st);
@@ -1323,7 +1329,7 @@ mod tests {
         #[test]
         #[serial]
         fn pipx_declares_no_index_and_refreshing_upgrades_nothing() {
-            let s = ToolShim::install(SHIM_ENV, 0, "", "");
+            let s = ToolShim::install(&SHIM_ENV, 0, "", "");
             let p = test_printer();
             let st = test_state();
             let cx = test_package_context(&p, &st);
@@ -1342,7 +1348,7 @@ mod tests {
         fn pipx_installed_packages_parses_venvs_json() {
             // pipx list --json: { "venvs": { "black": { ... }, "ruff": { ... } } }
             let json = r#"{"venvs":{"black":{"metadata":{"main_package":{"package":"black","package_version":"24.1.0"}}},"ruff":{"metadata":{"main_package":{"package":"ruff","package_version":"0.2.1"}}}}}"#;
-            let _s = ToolShim::install(SHIM_ENV, 0, json, "");
+            let _s = ToolShim::install(&SHIM_ENV, 0, json, "");
             let p = test_printer();
             let st = test_state();
             let cx = test_package_context(&p, &st);
@@ -1384,7 +1390,7 @@ mod tests {
         #[serial]
         fn pipx_installed_packages_with_versions_extracts_versions() {
             let json = r#"{"venvs":{"black":{"metadata":{"main_package":{"package":"black","package_version":"24.1.0"}}}}}"#;
-            let _s = ToolShim::install(SHIM_ENV, 0, json, "");
+            let _s = ToolShim::install(&SHIM_ENV, 0, json, "");
             let p = test_printer();
             let st = test_state();
             let cx = test_package_context(&p, &st);
@@ -1403,7 +1409,7 @@ mod tests {
         #[test]
         #[serial]
         fn pipx_bootstrap_via_brew_returns_ok() {
-            let s = ToolShim::install("CFGD_BREW_BIN", 0, "", "");
+            let s = ToolShim::install(crate::seams::BREW_BIN_ENV, 0, "", "");
             let p = test_printer();
             PipxManager
                 .bootstrap(&cfgd_core::test_helpers::test_bootstrap_context(&p))

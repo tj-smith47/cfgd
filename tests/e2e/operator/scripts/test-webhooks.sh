@@ -1,13 +1,14 @@
+# shellcheck shell=bash
 # Operator E2E tests: Webhooks
-# Sourced by run-all.sh — do NOT set traps or pipefail here.
+# Sourced by run-all.sh: do NOT set traps or pipefail here.
 
 echo ""
 echo "=== Webhook Tests ==="
 
 # =================================================================
-# OP-WH-01: Validation webhooks — reject invalid specs for multiple CRDs
+# OP-WH-01: Validation webhooks: reject invalid specs for multiple CRDs
 # =================================================================
-begin_test "OP-WH-01: Validation webhooks — reject invalid specs"
+begin_test "OP-WH-01: Validation webhooks: reject invalid specs"
 
 PASS=true
 
@@ -18,7 +19,7 @@ kind: ClusterConfigPolicy
 metadata:
   name: e2e-bad-semver-${E2E_RUN_ID}
   labels:
-    cfgd.io/e2e-run: "${E2E_RUN_ID}"
+    ${E2E_RUN_LABEL_YAML}
     ${E2E_JOB_LABEL_YAML}
 spec:
   namespaceSelector: {}
@@ -37,6 +38,8 @@ kind: DriftAlert
 metadata:
   name: e2e-bad-drift
   namespace: ${E2E_NAMESPACE}
+  labels:
+    ${E2E_RUN_LABEL_YAML}
 spec:
   deviceId: ""
   machineConfigRef:
@@ -58,6 +61,8 @@ kind: MachineConfig
 metadata:
   name: e2e-bad-mc
   namespace: ${E2E_NAMESPACE}
+  labels:
+    ${E2E_RUN_LABEL_YAML}
 spec:
   hostname: ""
   profile: test
@@ -80,9 +85,9 @@ kubectl delete driftalert e2e-bad-drift -n "$E2E_NAMESPACE" --ignore-not-found 2
 kubectl delete machineconfig e2e-bad-mc -n "$E2E_NAMESPACE" --ignore-not-found 2>/dev/null || true
 
 # =================================================================
-# OP-WH-02: Mutating webhook — pod injection with CSI volumes
+# OP-WH-02: Mutating webhook: pod injection with CSI volumes
 # =================================================================
-begin_test "OP-WH-02: Mutating webhook — pod injection"
+begin_test "OP-WH-02: Mutating webhook: pod injection"
 
 # Create a namespace with the injection label
 ensure_namespace "e2e-inject-${E2E_RUN_ID}"
@@ -95,7 +100,7 @@ kind: Module
 metadata:
   name: e2e-inject-mod-${E2E_RUN_ID}
   labels:
-    cfgd.io/e2e-run: "${E2E_RUN_ID}"
+    ${E2E_RUN_LABEL_YAML}
     ${E2E_JOB_LABEL_YAML}
 spec:
   packages:
@@ -106,8 +111,9 @@ spec:
   mountPolicy: Always
 EOF
 
-# Wait for module controller to set status
-sleep 5
+# The API server matches the injector's namespaceSelector against a namespace
+# cache that trails the label write above.
+wait_for_injection "e2e-inject-${E2E_RUN_ID}" "e2e-inject-mod-${E2E_RUN_ID}:v1" || true
 
 # Create a pod with the modules annotation in the labeled namespace
 kubectl apply -n "e2e-inject-${E2E_RUN_ID}" -f - <<EOF
@@ -124,9 +130,6 @@ spec:
       command: ["sleep", "3600"]
   restartPolicy: Never
 EOF
-
-# Wait for pod to be created (webhook runs on CREATE)
-sleep 5
 
 # Check if CSI volume was injected
 POD_VOLUMES=$(kubectl get pod e2e-injected-pod -n "e2e-inject-${E2E_RUN_ID}" \
@@ -145,7 +148,7 @@ echo "  CSI driver: $CSI_DRIVER"
 
 PASS=true
 if ! echo "$CSI_DRIVER" | grep -qF "$CSI_DRIVER_NAME"; then
-    echo "  WARN: CSI volume not injected (expected driver=csi.cfgd.io)"
+    echo "  WARN: CSI volume not injected (expected driver=$CSI_DRIVER_NAME)"
     PASS=false
 fi
 if ! echo "$POD_VMOUNTS" | grep -q "cfgd-module"; then
@@ -160,9 +163,9 @@ else
 fi
 
 # =================================================================
-# OP-WH-03: Mutating webhook — mountPolicy Debug skips volumeMount
+# OP-WH-03: Mutating webhook: mountPolicy Debug skips volumeMount
 # =================================================================
-begin_test "OP-WH-03: Mutating webhook — Debug mountPolicy"
+begin_test "OP-WH-03: Mutating webhook: Debug mountPolicy"
 
 # Create a Module with mountPolicy Debug
 kubectl apply -f - <<EOF
@@ -171,15 +174,13 @@ kind: Module
 metadata:
   name: e2e-debug-mod-${E2E_RUN_ID}
   labels:
-    cfgd.io/e2e-run: "${E2E_RUN_ID}"
+    ${E2E_RUN_LABEL_YAML}
     ${E2E_JOB_LABEL_YAML}
 spec:
   packages:
     - name: strace
   mountPolicy: Debug
 EOF
-
-sleep 3
 
 # Create a ConfigPolicy with the debug module (so webhook picks it up)
 kubectl apply -n "e2e-inject-${E2E_RUN_ID}" -f - <<EOF
@@ -188,14 +189,14 @@ kind: ConfigPolicy
 metadata:
   name: e2e-debug-policy
   namespace: e2e-inject-${E2E_RUN_ID}
+  labels:
+    ${E2E_RUN_LABEL_YAML}
 spec:
   debugModules:
     - name: e2e-debug-mod-${E2E_RUN_ID}
 EOF
 
-sleep 3
-
-# Create a pod in the injection namespace (no annotation needed — policy injects)
+# Create a pod in the injection namespace (no annotation needed, as the policy injects)
 kubectl apply -n "e2e-inject-${E2E_RUN_ID}" -f - <<EOF
 apiVersion: v1
 kind: Pod
@@ -209,13 +210,12 @@ spec:
   restartPolicy: Never
 EOF
 
-sleep 5
-
 # Check: CSI volume should exist but volumeMount should NOT be on the container
 DEBUG_VOLUMES=$(kubectl get pod e2e-debug-pod -n "e2e-inject-${E2E_RUN_ID}" \
     -o jsonpath='{.spec.volumes[*].name}' 2>/dev/null || echo "")
+DEBUG_VMOUNTS_RC=0
 DEBUG_VMOUNTS=$(kubectl get pod e2e-debug-pod -n "e2e-inject-${E2E_RUN_ID}" \
-    -o jsonpath='{.spec.containers[0].volumeMounts[*].name}' 2>/dev/null || echo "")
+    -o jsonpath='{.spec.containers[0].volumeMounts[*].name}' 2>/dev/null) || DEBUG_VMOUNTS_RC=$?
 DEBUG_CSI=$(kubectl get pod e2e-debug-pod -n "e2e-inject-${E2E_RUN_ID}" \
     -o jsonpath='{.spec.volumes[?(@.csi)].csi.driver}' 2>/dev/null || echo "")
 
@@ -223,23 +223,25 @@ echo "  Pod volumes: $DEBUG_VOLUMES"
 echo "  Container volumeMounts: $DEBUG_VMOUNTS"
 echo "  CSI driver: $DEBUG_CSI"
 
-# For Debug policy, the CSI volume should exist but NOT be mounted on containers
+# Under the Debug policy the CSI volume is on the pod and absent from every container's volumeMounts
 if echo "$DEBUG_CSI" | grep -qF "$CSI_DRIVER_NAME"; then
-    if ! echo "$DEBUG_VMOUNTS" | grep -q "debug-mod"; then
+    if [ "$DEBUG_VMOUNTS_RC" -ne 0 ]; then
+        fail_test "OP-WH-03" "Could not read the container's volumeMounts (kubectl exit $DEBUG_VMOUNTS_RC)"
+    elif ! echo "$DEBUG_VMOUNTS" | grep -q "debug-mod"; then
         pass_test "OP-WH-03"
     else
         fail_test "OP-WH-03" "Debug module volumeMount was injected on container (should be skipped)"
     fi
 else
     # If no modules were injected at all, this is also acceptable if the policy
-    # controller hasn't reconciled yet — but CSI volume without mount is the goal
+    # controller hasn't reconciled yet, though a CSI volume without a mount is the goal
     skip_test "OP-WH-03" "Debug module CSI volume not injected (policy may not have been picked up)"
 fi
 
 # =================================================================
-# OP-WH-04: MachineConfig — missing hostname rejected
+# OP-WH-04: MachineConfig: missing hostname rejected
 # =================================================================
-begin_test "OP-WH-04: MachineConfig — missing hostname rejected"
+begin_test "OP-WH-04: MachineConfig: missing hostname rejected"
 
 RESULT=$(kubectl apply -n "$E2E_NAMESPACE" -f - 2>&1 <<EOF || true
 apiVersion: cfgd.io/v1alpha1
@@ -266,9 +268,9 @@ fi
 kubectl delete machineconfig "e2e-no-host-${E2E_RUN_ID}" -n "$E2E_NAMESPACE" --ignore-not-found 2>/dev/null || true
 
 # =================================================================
-# OP-WH-05: MachineConfig — invalid moduleRef format rejected
+# OP-WH-05: MachineConfig: invalid moduleRef format rejected
 # =================================================================
-begin_test "OP-WH-05: MachineConfig — invalid moduleRef format rejected"
+begin_test "OP-WH-05: MachineConfig: invalid moduleRef format rejected"
 
 RESULT=$(kubectl apply -n "$E2E_NAMESPACE" -f - 2>&1 <<EOF || true
 apiVersion: cfgd.io/v1alpha1
@@ -298,9 +300,9 @@ fi
 kubectl delete machineconfig "e2e-bad-modref-${E2E_RUN_ID}" -n "$E2E_NAMESPACE" --ignore-not-found 2>/dev/null || true
 
 # =================================================================
-# OP-WH-06: MachineConfig — valid spec accepted
+# OP-WH-06: MachineConfig: valid spec accepted
 # =================================================================
-begin_test "OP-WH-06: MachineConfig — valid spec accepted"
+begin_test "OP-WH-06: MachineConfig: valid spec accepted"
 
 RESULT=$(kubectl apply -n "$E2E_NAMESPACE" -f - 2>&1 <<EOF || true
 apiVersion: cfgd.io/v1alpha1
@@ -331,12 +333,12 @@ fi
 kubectl delete machineconfig "e2e-valid-mc-${E2E_RUN_ID}" -n "$E2E_NAMESPACE" --ignore-not-found 2>/dev/null || true
 
 # =================================================================
-# OP-WH-07: ConfigPolicy — empty targetSelector accepted
+# OP-WH-07: ConfigPolicy: empty targetSelector accepted
 # =================================================================
-begin_test "OP-WH-07: ConfigPolicy — empty targetSelector"
+begin_test "OP-WH-07: ConfigPolicy: empty targetSelector"
 
-# ConfigPolicy validation does not reject an empty targetSelector — it defaults
-# to matching nothing (same as Kubernetes LabelSelector semantics: {} matches all).
+# ConfigPolicy validation accepts an empty targetSelector, as Kubernetes
+# accepts an empty LabelSelector.
 RESULT=$(kubectl apply -n "$E2E_NAMESPACE" -f - 2>&1 <<EOF || true
 apiVersion: cfgd.io/v1alpha1
 kind: ConfigPolicy
@@ -353,24 +355,17 @@ spec:
 EOF
 )
 echo "  Result: $(echo "$RESULT" | tail -1)"
-# Empty targetSelector is accepted (matches all, like k8s LabelSelector)
 if echo "$RESULT" | grep -qE "created|configured|unchanged"; then
     pass_test "OP-WH-07"
 else
-    # Also acceptable if webhook rejects — document whichever behavior is observed
-    if assert_rejected "$RESULT" "Empty targetSelector" 2>/dev/null; then
-        echo "  Note: empty targetSelector is rejected by webhook (stricter validation)"
-        pass_test "OP-WH-07"
-    else
-        fail_test "OP-WH-07" "Unexpected result for empty targetSelector: $RESULT"
-    fi
+    fail_test "OP-WH-07" "Empty targetSelector was not accepted: $RESULT"
 fi
 kubectl delete configpolicy "e2e-empty-sel-${E2E_RUN_ID}" -n "$E2E_NAMESPACE" --ignore-not-found 2>/dev/null || true
 
 # =================================================================
-# OP-WH-08: ConfigPolicy — valid spec accepted
+# OP-WH-08: ConfigPolicy: valid spec accepted
 # =================================================================
-begin_test "OP-WH-08: ConfigPolicy — valid spec accepted"
+begin_test "OP-WH-08: ConfigPolicy: valid spec accepted"
 
 RESULT=$(kubectl apply -n "$E2E_NAMESPACE" -f - 2>&1 <<EOF || true
 apiVersion: cfgd.io/v1alpha1
@@ -401,9 +396,9 @@ fi
 kubectl delete configpolicy "e2e-valid-cp-${E2E_RUN_ID}" -n "$E2E_NAMESPACE" --ignore-not-found 2>/dev/null || true
 
 # =================================================================
-# OP-WH-09: DriftAlert — missing machineConfigRef rejected
+# OP-WH-09: DriftAlert: missing machineConfigRef rejected
 # =================================================================
-begin_test "OP-WH-09: DriftAlert — missing machineConfigRef rejected"
+begin_test "OP-WH-09: DriftAlert: missing machineConfigRef rejected"
 
 RESULT=$(kubectl apply -n "$E2E_NAMESPACE" -f - 2>&1 <<EOF || true
 apiVersion: cfgd.io/v1alpha1
@@ -434,9 +429,9 @@ fi
 kubectl delete driftalert "e2e-no-mcref-${E2E_RUN_ID}" -n "$E2E_NAMESPACE" --ignore-not-found 2>/dev/null || true
 
 # =================================================================
-# OP-WH-10: DriftAlert — valid spec accepted
+# OP-WH-10: DriftAlert: valid spec accepted
 # =================================================================
-begin_test "OP-WH-10: DriftAlert — valid spec accepted"
+begin_test "OP-WH-10: DriftAlert: valid spec accepted"
 
 RESULT=$(kubectl apply -n "$E2E_NAMESPACE" -f - 2>&1 <<EOF || true
 apiVersion: cfgd.io/v1alpha1
@@ -467,9 +462,9 @@ fi
 kubectl delete driftalert "e2e-valid-da-${E2E_RUN_ID}" -n "$E2E_NAMESPACE" --ignore-not-found 2>/dev/null || true
 
 # =================================================================
-# OP-WH-11: ClusterConfigPolicy — invalid namespaceSelector + invalid semver rejected
+# OP-WH-11: ClusterConfigPolicy: invalid namespaceSelector + invalid semver rejected
 # =================================================================
-begin_test "OP-WH-11: ClusterConfigPolicy — invalid namespaceSelector + invalid semver rejected"
+begin_test "OP-WH-11: ClusterConfigPolicy: invalid namespaceSelector + invalid semver rejected"
 
 RESULT=$(kubectl apply -f - 2>&1 <<EOF || true
 apiVersion: cfgd.io/v1alpha1
@@ -500,9 +495,9 @@ fi
 kubectl delete clusterconfigpolicy "e2e-bad-ccp-${E2E_RUN_ID}" --ignore-not-found 2>/dev/null || true
 
 # =================================================================
-# OP-WH-12: ClusterConfigPolicy — valid spec accepted
+# OP-WH-12: ClusterConfigPolicy: valid spec accepted
 # =================================================================
-begin_test "OP-WH-12: ClusterConfigPolicy — valid spec accepted"
+begin_test "OP-WH-12: ClusterConfigPolicy: valid spec accepted"
 
 RESULT=$(kubectl apply -f - 2>&1 <<EOF || true
 apiVersion: cfgd.io/v1alpha1
@@ -532,9 +527,9 @@ fi
 kubectl delete clusterconfigpolicy "e2e-valid-ccp-${E2E_RUN_ID}" --ignore-not-found 2>/dev/null || true
 
 # =================================================================
-# OP-WH-13: Module — invalid OCI reference format rejected
+# OP-WH-13: Module: invalid OCI reference format rejected
 # =================================================================
-begin_test "OP-WH-13: Module — invalid OCI reference format rejected"
+begin_test "OP-WH-13: Module: invalid OCI reference format rejected"
 
 RESULT=$(kubectl apply -f - 2>&1 <<EOF || true
 apiVersion: cfgd.io/v1alpha1
@@ -560,9 +555,9 @@ fi
 kubectl delete module "e2e-bad-oci-${E2E_RUN_ID}" --ignore-not-found 2>/dev/null || true
 
 # =================================================================
-# OP-WH-14: Module — valid spec accepted
+# OP-WH-14: Module: valid spec accepted
 # =================================================================
-begin_test "OP-WH-14: Module — valid spec accepted"
+begin_test "OP-WH-14: Module: valid spec accepted"
 
 RESULT=$(kubectl apply -f - 2>&1 <<EOF || true
 apiVersion: cfgd.io/v1alpha1
@@ -609,8 +604,6 @@ spec:
   profile: minimal
 EOF
 
-sleep 2
-
 # Verify the stored object has default fields populated
 STORED=$(kubectl get machineconfig "e2e-defaults-mc-${E2E_RUN_ID}" -n "$E2E_NAMESPACE" \
     -o json 2>/dev/null || echo "{}")
@@ -632,17 +625,19 @@ if [ "$STORED_PROFILE" != "minimal" ]; then
 fi
 
 # Check that defaulted array fields exist (packages defaults to [])
-STORED_PKGS=$(echo "$STORED" | jq -r '.spec.packages // "missing"')
+STORED_PKGS=$(echo "$STORED" | jq -c '.spec.packages // "missing"')
 echo "  Stored packages: $STORED_PKGS"
-if [ "$STORED_PKGS" = "missing" ]; then
-    echo "  Note: packages field omitted (server-side default not applied, acceptable)"
+if [ "$STORED_PKGS" != "[]" ]; then
+    echo "  WARN: packages not defaulted to [] (got $STORED_PKGS)"
+    PASS=false
 fi
 
 # Check that defaulted map fields exist (systemSettings defaults to {})
-STORED_SETTINGS=$(echo "$STORED" | jq -r '.spec.systemSettings // "missing"')
+STORED_SETTINGS=$(echo "$STORED" | jq -c '.spec.systemSettings // "missing"')
 echo "  Stored systemSettings: $STORED_SETTINGS"
-if [ "$STORED_SETTINGS" = "missing" ]; then
-    echo "  Note: systemSettings field omitted (server-side default not applied, acceptable)"
+if [ "$STORED_SETTINGS" != "{}" ]; then
+    echo "  WARN: systemSettings not defaulted to {} (got $STORED_SETTINGS)"
+    PASS=false
 fi
 
 # The resource must at minimum exist and have the required fields set

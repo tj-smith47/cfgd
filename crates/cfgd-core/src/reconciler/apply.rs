@@ -504,19 +504,13 @@ impl ActionRun {
 /// half alone when it is the only one.
 fn join_detail(first: Option<String>, second: Option<String>) -> Option<String> {
     match (first, second) {
-        (Some(a), Some(b)) => Some(format!("{a}, {b}")),
+        (Some(a), Some(b)) => Some(crate::join_clauses([a, b])),
         (a, b) => a.or(b),
     }
 }
 
 fn sidecar_detail(sidecars: &[SidecarOutcome]) -> Option<String> {
-    (!sidecars.is_empty()).then(|| {
-        sidecars
-            .iter()
-            .map(SidecarOutcome::detail)
-            .collect::<Vec<_>>()
-            .join(", ")
-    })
+    (!sidecars.is_empty()).then(|| crate::join_clauses(sidecars.iter().map(SidecarOutcome::detail)))
 }
 
 /// One finished action, as its collection point hands it over.
@@ -632,10 +626,11 @@ pub(super) fn collect_caveats(
 /// token the phase tree uses. Silent (opens nothing) when every group is
 /// empty, so a run that produced no caveats prints nothing extra.
 ///
-/// Both note slots deduplicate by MESSAGE across the whole section, the first
+/// Every note deduplicates by MESSAGE across the whole section, the first
 /// occurrence keeping it; a group left holding nothing but repeats opens no
-/// heading. A render fold only — the `-o json` payload keeps every note under
-/// its own owner.
+/// heading. A render fold over notes nothing serializes: the collected
+/// `ApplyResult.caveats` keeps every note under its own owner, and `-o json`
+/// carries no note at all.
 ///
 /// Groups render in the order given — deciding THAT order (informational
 /// groups first, `cfgd:env`'s re-source reminder last, since it is the one
@@ -644,10 +639,11 @@ pub(super) fn collect_caveats(
 /// apply`; a per-configurator snapshot bridge is the other caller, with a
 /// single group of its own.
 ///
-/// Within a group, `Role::Warn` notes render before every other role — a
-/// stable partition, so two `Warn`s (or two non-`Warn`s) keep the relative
-/// order they were collected in. Settle order among concurrent lanes is not
-/// deterministic (a fast manager can finish well before a slower one
+/// Within a group, `Role::Warn` notes render before every other role, and the
+/// run's own instruction to the reader ([`ActionNote::instruction`]) renders
+/// last of its role. Both keys sort stably, so notes sharing them keep the
+/// relative order they were collected in. Settle order among concurrent lanes
+/// is not deterministic (a fast manager can finish well before a slower one
 /// dispatched first), so a caveat's ROLE, not its arrival time, decides
 /// precedence: the reader's attention goes to what needs it before what is
 /// merely informational, and the render is reproducible for VHS/acceptance
@@ -656,12 +652,7 @@ pub fn render_caveats(printer: &Printer, groups: &[(Owner, Vec<ActionNote>)]) {
     if groups.iter().all(|(_, notes)| notes.is_empty()) {
         return;
     }
-    // A next step is what the reader does after reading everything the run had
-    // to say about itself, so it belongs at the report's FOOT — not indented
-    // inside one owner's caveat group, where it reads as a remark about that
-    // owner rather than as the run's closing instruction.
-    let mut next_steps: Vec<String> = Vec::new();
-    // Both note slots deduplicate by MESSAGE, across the whole report. A caveat
+    // Every note deduplicates by MESSAGE, across the whole report. A caveat
     // states a fact about the MACHINE — brew put its completions in one
     // directory, once — and a run that provisions a manager in
     // `Bootstrap` and uses it again in `Packages` files that one fact
@@ -669,8 +660,9 @@ pub fn render_caveats(printer: &Printer, groups: &[(Owner, Vec<ActionNote>)]) {
     // owner heading to distinguish the copies. Attributing a machine-level
     // fact to an owner is what produces the duplicate; the first occurrence
     // keeps it, so the note stays under the owner that produced it earliest
-    // and the phase order still reads top to bottom. A render fold only: the
-    // `-o json` payload keeps every note under its own owner.
+    // and the phase order still reads top to bottom. A render fold over notes
+    // nothing serializes: the collected `ApplyResult.caveats` keeps every note
+    // under its own owner, and `-o json` carries no note at all.
     //
     // The MESSAGE, never the composed body: `collect_caveats` re-tags every
     // note with the SUBJECT of the action that produced it, so two copies of
@@ -680,41 +672,38 @@ pub fn render_caveats(printer: &Printer, groups: &[(Owner, Vec<ActionNote>)]) {
     // attribution — which is exactly what it did, while the hero printed
     // `Bash completion has been installed to` twice.
     let mut reported: Vec<String> = Vec::new();
-    {
-        let mut section = None;
-        for (owner, notes) in groups {
-            for note in notes.iter().filter(|n| n.hint) {
-                if !next_steps.iter().any(|s| s == &note.message) {
-                    next_steps.push(note.message.clone());
+    let mut section = None;
+    for (owner, notes) in groups {
+        let mut reports: Vec<&ActionNote> = notes
+            .iter()
+            .filter(|n| {
+                if reported.contains(&n.message) {
+                    return false;
                 }
-            }
-            let mut reports: Vec<&ActionNote> = notes
-                .iter()
-                .filter(|n| !n.hint)
-                .filter(|n| {
-                    if reported.contains(&n.message) {
-                        return false;
-                    }
-                    reported.push(n.message.clone());
-                    true
-                })
-                .collect();
-            // Every report this group held was a repeat, so it opens no
-            // heading: an owner label over nothing reads as a group whose
-            // contents went missing.
-            if reports.is_empty() {
-                continue;
-            }
-            let section = section.get_or_insert_with(|| printer.section_caveats());
-            let group = section.section_owner(&owner.label());
-            reports.sort_by_key(|note| note.role != Role::Warn);
-            for note in reports {
-                group.status_simple(note.role, note.body());
-            }
+                reported.push(n.message.clone());
+                true
+            })
+            .collect();
+        // Every report this group held was a repeat, so it opens no heading:
+        // an owner label over nothing reads as a group whose contents went
+        // missing.
+        if reports.is_empty() {
+            continue;
         }
-    }
-    for step in next_steps {
-        printer.hint(step);
+        let section = section.get_or_insert_with(|| printer.section_caveats());
+        let group = section.section_owner(&owner.label());
+        // Warnings lead, and the run's own instruction closes the group: it has
+        // to be acted on, so it cannot sit between two reports and still read
+        // as the last thing the group says. The key is the note's own marker. A
+        // tag names the subsystem that spoke, and `NoteSink::report` pushes
+        // every `SystemConfigurator`'s report untagged because its action line
+        // already names the producer, so a key of `tag.is_none()` would rank
+        // those reports with the instruction. The sort is stable, so notes
+        // sharing both keys keep the order their actions ran in.
+        reports.sort_by_key(|note| (note.role != Role::Warn, note.is_instruction()));
+        for note in reports {
+            group.status_simple(note.role, note.body());
+        }
     }
 }
 
@@ -1021,6 +1010,7 @@ pub(super) fn merge_env_result(
         // A generated env file folds every layer at once, so no single
         // subscription delivered it.
         origin: None,
+        manager: None,
         after_plan: Some(AfterPlan::EnvSurface),
     });
 }
@@ -1300,7 +1290,7 @@ impl<'a> super::Reconciler<'a> {
         abort: &AbortFlag,
     ) -> Result<ApplyResult> {
         // Record apply up front as "in-progress" so the journal can reference it
-        let plan_hash = crate::state::plan_hash(&plan.to_hash_string());
+        let plan_hash = crate::state::plan_hash(&plan.to_hash_string()?);
         // What this run was SCOPED to, which is not always a profile: a
         // `--module` run resolves none, and the caller says so with
         // `module:<name>`. An empty string is the honest record of a scope
@@ -1535,6 +1525,7 @@ impl<'a> super::Reconciler<'a> {
                 // Taken before the dispatch opens, since `settle` below keeps
                 // writing to the list while these lanes run.
                 let unprovisioned = self.unprovisioned.borrow().clone();
+                let withheld_floors = self.withheld_floors.borrow().clone();
                 let provisioned = self.provisioned.borrow().clone();
                 let provisioned_packages = self.provisioned_packages.borrow().clone();
                 let run = super::lanes::LaneRun {
@@ -1550,6 +1541,7 @@ impl<'a> super::Reconciler<'a> {
                     plan_index_base,
                     action_depth: phase_section.as_ref().map_or(0, |s| s.depth + 1),
                     unprovisioned: &unprovisioned,
+                    withheld_floors: &withheld_floors,
                     provisioned: &provisioned,
                     provisioned_packages: &provisioned_packages,
                 };
@@ -1705,6 +1697,7 @@ impl<'a> super::Reconciler<'a> {
                                     self.state
                                         .store_file_backup(apply_id, &path_str, &file_state)
                                 {
+                                    // long-line-ok: a hatch is read off its own line, so it cannot wrap
                                     // tracing-ok: the rollback copy could not be stored; no row states it, the write it protects settles on its own
                                     tracing::warn!(
                                         "failed to store file backup for {}: {}",
@@ -1725,6 +1718,7 @@ impl<'a> super::Reconciler<'a> {
                                 }
                             }
                             Err(e) => {
+                                // long-line-ok: a hatch is read off its own line, so it cannot wrap
                                 // tracing-ok: same, one step earlier - the target could not be read at all
                                 tracing::warn!(
                                     "failed to capture file state for backup of {}: {}",
@@ -1938,11 +1932,8 @@ impl<'a> super::Reconciler<'a> {
             tracing::debug!("env surface withheld: skipping post-phase regeneration");
         } else if !secret_env_collector.is_empty() || path_dirs_changed {
             let env_plan = self.plan_env(
-                &resolved.merged.env,
-                &resolved.merged.aliases,
-                &resolved.merged.entry_owners,
+                super::LayeredEnv::of(resolved, module_actions),
                 resolved.merged.env_scope,
-                module_actions,
                 &secret_env_collector,
                 &path_dirs_now,
                 &super::env::recorded_managed_env_files(self.state),
@@ -1982,6 +1973,7 @@ impl<'a> super::Reconciler<'a> {
                                 versions: Default::default(),
                                 drift_rows: Vec::new(),
                                 origin: None,
+                                manager: None,
                                 after_plan: Some(AfterPlan::EnvSurface),
                             });
                         }
@@ -1992,11 +1984,7 @@ impl<'a> super::Reconciler<'a> {
 
         // --- onChange detection: run profile onChange scripts if anything changed ---
         let any_changed = results.iter().any(|r| r.changed);
-        let profile_name = resolved
-            .layers
-            .last()
-            .map(|l| l.profile_name.as_str())
-            .unwrap_or("unknown");
+        let profile_name = resolved.profile_name();
         // Hooks the plan could not name open their own group, the shape the repo
         // rules for unplanned work, instead of printing at the run's own depth
         // between the phase tree and the rollup. One phase over both loops: a
@@ -2097,6 +2085,7 @@ impl<'a> super::Reconciler<'a> {
                             versions: Default::default(),
                             drift_rows: Vec::new(),
                             origin: None,
+                            manager: None,
                             after_plan: Some(AfterPlan::ChangeHook),
                         });
                     }
@@ -2115,6 +2104,7 @@ impl<'a> super::Reconciler<'a> {
                             versions: Default::default(),
                             drift_rows: Vec::new(),
                             origin: None,
+                            manager: None,
                             after_plan: Some(AfterPlan::ChangeHook),
                         });
                         if !continue_on_err {
@@ -2172,6 +2162,7 @@ impl<'a> super::Reconciler<'a> {
                                 versions: Default::default(),
                                 drift_rows: Vec::new(),
                                 origin: module.origin.clone(),
+                                manager: None,
                                 after_plan: Some(AfterPlan::ChangeHook),
                             });
                         }
@@ -2194,6 +2185,7 @@ impl<'a> super::Reconciler<'a> {
                                 versions: Default::default(),
                                 drift_rows: Vec::new(),
                                 origin: module.origin.clone(),
+                                manager: None,
                                 after_plan: Some(AfterPlan::ChangeHook),
                             });
                             if !continue_on_err {
@@ -2372,7 +2364,6 @@ impl<'a> super::Reconciler<'a> {
                 self.state
                     .resolve_drift_keys(apply_id, &result.drift_rows)?;
                 for pkg in &packages {
-                    let rid = crate::state::package_resource_id(&manager, pkg);
                     match verb.as_str() {
                         "install" => {
                             // Persist the scripted uninstall command (Some only for
@@ -2385,14 +2376,18 @@ impl<'a> super::Reconciler<'a> {
                                 .find(|m| m.name() == manager)
                                 .and_then(|m| m.persisted_uninstall());
                             self.state.upsert_package_resource(
-                                &rid,
+                                &manager,
+                                pkg,
                                 package_layers.recording_layer(&manager, pkg, recording_layer),
                                 Some(apply_id),
                                 uninstall_cmd.as_deref(),
                             )?;
                         }
                         "uninstall" => {
-                            self.state.remove_managed_resource("package", &rid)?;
+                            self.state.remove_managed_resource(
+                                "package",
+                                &crate::state::package_resource_id(&manager, pkg),
+                            )?;
                         }
                         _ => {}
                     }
@@ -2467,6 +2462,12 @@ impl<'a> super::Reconciler<'a> {
             self.state.upsert_managed_resource(
                 &rtype,
                 &rid,
+                super::recorded_resource_kind(&rtype, &rid),
+                // A module package row is the only row whose id does not spell
+                // its manager. The other `package` row this writer sees is a
+                // `Skip`, which installed nothing, so it records no manager,
+                // the same as the backfill gives it.
+                result.manager.as_deref().filter(|_| rtype == "module"),
                 recording_layer,
                 None,
                 Some(apply_id),
@@ -2597,12 +2598,12 @@ impl<'a> super::Reconciler<'a> {
         resolved: &ResolvedProfile,
         modules: &[ResolvedModule],
     ) -> Vec<(&'static str, String, String)> {
-        let (env, aliases, origins) = super::verify::merge_module_env_aliases(
-            &resolved.merged.env,
-            &resolved.merged.aliases,
-            &resolved.merged.entry_owners,
-            modules,
-        );
+        let super::LayeredEnv {
+            merged: env,
+            merged_aliases: aliases,
+            origins,
+            ..
+        } = super::LayeredEnv::of(resolved, modules);
         let layers = EntryLayers::of(resolved, modules);
         let mut items = Vec::with_capacity(env.len() + aliases.len());
         for ev in &env {
@@ -2646,8 +2647,15 @@ impl<'a> super::Reconciler<'a> {
     ) -> Result<()> {
         let items = self.declared_env_items(resolved, modules);
         for (rtype, name, layer) in &items {
-            self.state
-                .upsert_managed_resource(rtype, name, layer, None, Some(apply_id))?;
+            self.state.upsert_managed_resource(
+                rtype,
+                name,
+                super::recorded_resource_kind(rtype, name),
+                None,
+                layer,
+                None,
+                Some(apply_id),
+            )?;
         }
         // Retiring a row is a claim about the WHOLE desired set: an entry this
         // run's scope never resolved is not an entry that left the config.
@@ -2734,6 +2742,7 @@ impl<'a> super::Reconciler<'a> {
                             run.script_output.as_deref(),
                         )
                     {
+                        // long-line-ok: a hatch is read off its own line, so it cannot wrap
                         // tracing-ok: the journal row could not be closed; the action's own line is settled either way
                         tracing::warn!("failed to record journal completion: {e}");
                     }
@@ -2803,6 +2812,15 @@ impl<'a> super::Reconciler<'a> {
                                 withheld.push(manager.to_string());
                             }
                         }
+                        // The same carry for a manager that IS on the machine
+                        // and is forbidden only to the modules whose floor this
+                        // node just failed: see `Reconciler::withheld_floors`.
+                        if let Some(floor) = node.withheld_floor() {
+                            let mut floors = self.withheld_floors.borrow_mut();
+                            if !floors.contains(&floor) {
+                                floors.push(floor);
+                            }
+                        }
                     }
                     (
                         desc,
@@ -2863,6 +2881,7 @@ impl<'a> super::Reconciler<'a> {
             // Off the action itself, so the layer the plan printed beside
             // this row is the layer its tracking row records.
             origin: action.origin().map(str::to_string),
+            manager: super::packages::action_manager(action).map(str::to_string),
             // The plan named this action, so the header already promised it.
             after_plan: None,
         });
@@ -3038,7 +3057,7 @@ mod detail_tests {
                 Some("unchanged".into()),
                 Some("backed up to ~/x.cfgd-backup".into())
             ),
-            Some("unchanged, backed up to ~/x.cfgd-backup".to_string())
+            Some("unchanged; backed up to ~/x.cfgd-backup".to_string())
         );
         assert_eq!(
             j(Some("unchanged".into()), None),

@@ -317,6 +317,7 @@ mod tests {
         let b = StatusBuilder::new(r, sink, 0, Role::Warn, "subject text")
             .label(Role::Secondary, "[meta]");
         drop(b);
+        // long-line-ok: a hatch is read off its own line, so it cannot wrap
         // raw-capture-ok: the reset-boundary contract below is checked against the raw SGR bytes — captured_text would strip the escapes this test exists to check
         let raw = buf.lock().unwrap_or_else(|e| e.into_inner()).clone();
         let s = strip_ansi(&raw);
@@ -413,6 +414,7 @@ mod tests {
             } else {
                 b.detail("unchanged")
             });
+            // long-line-ok: a hatch is read off its own line, so it cannot wrap
             // raw-capture-ok: the split-half byte-identity check below compares raw SGR runs — captured_text would strip the escapes this test exists to check
             buf.lock().unwrap_or_else(|e| e.into_inner()).clone()
         };

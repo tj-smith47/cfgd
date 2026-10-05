@@ -1,6 +1,4 @@
 #![cfg(unix)]
-#![allow(deprecated)] // assert_cmd 2.x cargo_bin deprecation; upgrade path is assert_cmd 3.x
-
 //! I3 regression: the finding's exact mandated matrix — {absolute, relative}
 //! `--config` × {no args, with args} — all four resolve and run.
 //!
@@ -26,9 +24,9 @@
 //! regresses.
 
 use std::path::Path;
-use std::process::Command;
 
-use assert_cmd::cargo::CommandCargoExt;
+mod cfgd_binary;
+use cfgd_binary::cfgd_bin;
 
 /// Marker file the hook script writes, directly under the config directory
 /// (the resolution base a profile script uses is the directory holding
@@ -85,7 +83,7 @@ fn run_matrix_cell(
 ) {
     let state_tmp = tempfile::tempdir().unwrap();
 
-    let output = Command::cargo_bin("cfgd")
+    let output = cfgd_bin()
         .unwrap()
         .current_dir(cwd)
         .env("HOME", home)

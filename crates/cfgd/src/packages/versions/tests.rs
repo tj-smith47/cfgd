@@ -275,7 +275,8 @@ fn apt_candidate_version_revision_only_no_epoch() {
 
 #[test]
 fn apk_policy_version_basic() {
-    // Real apk policy output: header line + indented "<version>:" + indented "lib/apk/db/installed".
+    // Real apk policy output: header line + indented "<version>:" + indented
+    // "lib/apk/db/installed".
     let stdout = "\
 busybox policy:
   1.36.1-r29:

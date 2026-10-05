@@ -116,7 +116,7 @@ fn shell_env_reminder_note(
         format!("source {shown}")
     };
 
-    Some(cfgd_core::providers::ActionNote::next_step(format!(
+    Some(cfgd_core::providers::ActionNote::instruction(format!(
         "Run `{command}`, or open a new shell"
     )))
 }
@@ -210,6 +210,7 @@ pub(in crate::cli) fn action_type_str(action: &reconciler::Action) -> &'static s
             reconciler::ManagerAction::Provision { .. } => "provision",
             reconciler::ManagerAction::Prerequisite { .. } => "prerequisite",
             reconciler::ManagerAction::Refuse { .. } => "refuse",
+            reconciler::ManagerAction::HeldFloor { .. } => "check",
         },
     }
 }
@@ -237,11 +238,13 @@ pub(in crate::cli) fn manager_action_output(
             requires,
             batched: Vec::new(),
             reason: None,
+            floor: None,
         },
         reconciler::ManagerAction::Provision {
             manager,
             via,
             batched,
+            floor,
             ..
         } => ManagerActionOutput {
             manager: manager.clone(),
@@ -250,6 +253,7 @@ pub(in crate::cli) fn manager_action_output(
             requires,
             batched: batched.clone(),
             reason: None,
+            floor: floor.clone(),
         },
         reconciler::ManagerAction::Prerequisite {
             tool, installer, ..
@@ -260,6 +264,7 @@ pub(in crate::cli) fn manager_action_output(
             requires,
             batched: Vec::new(),
             reason: None,
+            floor: None,
         },
         reconciler::ManagerAction::Refuse { manager, reason } => ManagerActionOutput {
             manager: manager.clone(),
@@ -268,6 +273,26 @@ pub(in crate::cli) fn manager_action_output(
             requires,
             batched: Vec::new(),
             reason: Some(reason.clone()),
+            floor: None,
+        },
+        reconciler::ManagerAction::HeldFloor {
+            manager,
+            floor,
+            declared,
+        } => ManagerActionOutput {
+            manager: manager.clone(),
+            state: "held".to_string(),
+            via: None,
+            requires,
+            batched: Vec::new(),
+            // The modules whose floor this node judges, in the slot that
+            // already carries why a node is in the plan: a consumer reading a
+            // failed check needs to know whose declaration asked for it.
+            reason: Some(format!(
+                "declared by {}",
+                reconciler::declared_by_clause(declared)
+            )),
+            floor: Some(floor.clone()),
         },
     })
 }
@@ -522,6 +547,11 @@ pub(in crate::cli) enum DecisionWrites<'a> {
 /// never a caller's themed [`Printer::arrow()`] — a `-o json` field is the
 /// SAME bytes under every `--theme`/preset, and a parameter here is the seam
 /// that regresses that promise.
+///
+/// `saved` is the approval contract an UNFILTERED run records (see
+/// [`SavedPlan`]); it is a parameter, which this builder never derives, so
+/// that the one question "may this run be replayed" is answered where the
+/// run's own scope is known, and every caller has to answer it.
 pub(in crate::cli) fn build_plan_output(
     plan: &reconciler::Plan,
     context_name: &str,
@@ -529,6 +559,7 @@ pub(in crate::cli) fn build_plan_output(
     pending_backups: &[String],
     withheld: &reconciler::WithheldDecisions,
     sources: &[reconciler::ComposedSource],
+    saved: Option<SavedPlan>,
 ) -> PlanOutput {
     let tree = reconciler::in_scope_tree(plan, phase_filter, reconciler::PhaseCoverage::Complete);
     let total_actions = reconciler::attempted_count(
@@ -570,7 +601,414 @@ pub(in crate::cli) fn build_plan_output(
         pending_backups: pending_backups.to_vec(),
         pending_decisions: withheld.pending.clone(),
         rejected_decisions: withheld.rejected.clone(),
+        saved_plan: saved,
     }
+}
+
+/// The approval contract this run records, or `None` where its own scope makes
+/// it unreplayable.
+///
+/// The ONE place that question is answered, for both producers: `cfgd plan` and
+/// `cfgd apply --dry-run` describe the same run in two spellings, so a clause
+/// discovered on one of them must bind the other. A run is replayable only when
+/// the payload it writes describes the whole machine:
+///
+/// - Every flag that narrows the plan disqualifies it. `--plan` refuses a
+///   filter, so a scope baked into the file would be a second answer to the
+///   question the flags already answer. `filter_active` already covers
+///   `--skip-scripts`, which leaves the module isolate to ask for separately.
+/// - A withheld source decision disqualifies it too, and no flag can recover
+///   that one because no flag caused it: `withhold_from_plan` prunes actions
+///   out of an unfiltered plan for every row this run holds back, and `cfgd
+///   decide` writes decision rows only — no config file, no `applies` row — so
+///   neither `config_inputs` nor `serial` moves when the operator answers one.
+///   A plan recorded under a pending decision would replay after the answer
+///   with the accepted resource silently missing.
+/// - A human run answers `None` before anything is computed, so it pays neither
+///   the whole-plan serialization nor the store read.
+pub(in crate::cli) fn saved_plan_for(
+    printer: &Printer,
+    plan: &reconciler::Plan,
+    state: &cfgd_core::state::StateStore,
+    filter_active: bool,
+    module_filter: &[String],
+    withheld: &reconciler::WithheldDecisions,
+    config_inputs: cfgd_core::ConfigInputs,
+) -> anyhow::Result<Option<SavedPlan>> {
+    if !printer.is_structured()
+        || filter_active
+        || !module_filter.is_empty()
+        || !withheld.is_empty()
+    {
+        return Ok(None);
+    }
+    Ok(Some(SavedPlan {
+        plan: serde_json::to_value(plan)?,
+        config_inputs,
+        serial: state.last_apply()?.map_or(0, |a| a.id),
+        store_id: state.store_id()?,
+    }))
+}
+
+/// The payload of `cfgd plan -o json`, typed for reading it back.
+///
+/// The consumer half of [`SavedPlan`], and deliberately not that type: the
+/// producer serializes the whole rendered document, and deserializing that
+/// would put every display type on the file format's contract. Only the two
+/// keys a replay needs are read — the saved context, and the approval block.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PlanFile {
+    context: String,
+    saved_plan: Option<SavedPlanIn>,
+}
+
+/// Whether a JSON document is a `cfgd plan -o json` payload at all.
+///
+/// [`PlanOutput`] serializes exactly three keys unconditionally: `context`,
+/// `phases` and `totalActions`. Only two are asked for here, because a
+/// document missing `context` never reaches this question: [`PlanFile`] reads
+/// that key as a required field, so serde's own sentence refuses such a
+/// document first. `is_plan_payload_reads_keys_the_plan_output_always_serializes`
+/// pins the unsuppressable set against the real serialization.
+///
+/// Asked only on the path that has to explain why a file carries no
+/// `savedPlan`, which is the one place the two answers differ: a plan cfgd
+/// wrote earns the explanation of which filters suppress the recording, while
+/// a stranger's JSON would be told causes that cannot apply to it.
+fn is_plan_payload(body: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(body)
+        .ok()
+        .and_then(|value| {
+            value
+                .as_object()
+                .map(|doc| doc.contains_key("phases") && doc.contains_key("totalActions"))
+        })
+        .unwrap_or(false)
+}
+
+/// The `savedPlan` block, typed for reading. Mirrors [`SavedPlan`] key for key.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SavedPlanIn {
+    plan: reconciler::Plan,
+    config_inputs: cfgd_core::ConfigInputs,
+    serial: i64,
+    /// `None` for a file written before the key existed, which is refused with
+    /// its own sentence; serde's missing-field one never reaches the reader.
+    store_id: Option<String>,
+}
+
+/// A plan file this machine has not moved past.
+pub(in crate::cli) struct LoadedPlan {
+    pub plan: reconciler::Plan,
+    /// The reconcile context the recorded run planned under, which the replay
+    /// takes in place of its own `--context`: the actions in the file were
+    /// priced for it.
+    pub context: String,
+}
+
+/// Whether a plan file's phases are ones cfgd's planner could have emitted.
+///
+/// A plan carries a SUBSEQUENCE of [`PhaseName::EXECUTION_ORDER`] — the planner
+/// fills the buckets in that order and drops the empty ones — so a list that is
+/// not one has been reordered or had a phase duplicated by hand. Neither is a
+/// stale plan: both are files cfgd did not write, and running one would execute
+/// a phase against a machine the phase before it was supposed to prepare.
+fn phases_in_execution_order(plan: &reconciler::Plan) -> bool {
+    let mut expected = PhaseName::EXECUTION_ORDER.iter();
+    plan.phases
+        .iter()
+        .all(|phase| expected.any(|name| *name == phase.name))
+}
+
+/// A refusal of the file `--plan` named, typed so a structured consumer reads
+/// which question the document failed. A bare `anyhow!` would fall back to
+/// the `internal` kind.
+///
+/// Every payload carries the file, because the path is what names the document
+/// a caller handed cfgd; `extras` adds whatever the one refusal knows on top.
+fn plan_refusal(
+    file: &std::path::Path,
+    error_kind: &str,
+    message: String,
+    extras: serde_json::Value,
+) -> anyhow::Error {
+    let mut payload = serde_json::json!({ "file": file.display_posix() });
+    if let (serde_json::Value::Object(map), serde_json::Value::Object(add)) = (&mut payload, extras)
+    {
+        map.extend(add);
+    }
+    super::cli_error("plan", error_kind, message, payload)
+}
+
+/// Read `cfgd plan -o json`'s payload back, refusing one this machine has moved
+/// past.
+///
+/// Three facts decide that, and they are the three [`saved_plan_for`] records:
+/// the state store the plan was derived against, the `applies` serial it was
+/// written against, and whether every config input the derivation read still
+/// has the stamp it had. All three are refusals — the file IS the approval, and
+/// an approval of a plan the machine has moved past approves actions nobody
+/// looked at.
+///
+/// Ahead of those two comes the question of whether the file is a plan cfgd
+/// wrote FOR THIS CONFIG: a payload carrying no `savedPlan` (its run was
+/// filtered), one whose phases are not [`PhaseName::EXECUTION_ORDER`]'s
+/// subsequence, and one whose derivation never read `config`. The per-phase
+/// half of that question (an action filed under an owner that does not own it)
+/// is `Phase`'s own `Deserialize`, and lands here as a parse error.
+///
+/// `config` is the config file this run resolved. A plan file names no config
+/// of its own, so without that question a global `--config` re-aims a replay
+/// at a second machine picture: the recorded actions run while the header, the
+/// resolved modules and the profile the `applies` row is written under all
+/// come from the other config.
+pub(in crate::cli) fn load_saved_plan(
+    path: &std::path::Path,
+    config: &std::path::Path,
+    state: &cfgd_core::state::StateStore,
+) -> anyhow::Result<LoadedPlan> {
+    let shown = path.display(); // native-ok: a human-facing error; no key is built from it
+    let body = std::fs::read_to_string(path).map_err(|e| {
+        // The two io outcomes a reader scripts differently: a path that is not
+        // there at all, and one cfgd was not allowed to open.
+        let kind = if e.kind() == std::io::ErrorKind::NotFound {
+            "not_found"
+        } else {
+            "read_failed"
+        };
+        plan_refusal(
+            path,
+            kind,
+            format!("cannot read plan file {shown}: {e}"),
+            // `read_failed` is one kind for every io failure but a missing
+            // file, so a reader telling a permission refusal from a directory
+            // has only this to read it off.
+            serde_json::json!({ "reason": e.to_string() }),
+        )
+    })?;
+    let file: PlanFile = serde_json::from_str(&body).map_err(|e| {
+        plan_refusal(
+            path,
+            "parse_failed",
+            format!("{shown} is not the payload of `cfgd plan -o json`: {e}"),
+            serde_json::json!({ "reason": e.to_string() }),
+        )
+    })?;
+
+    let Some(saved) = file.saved_plan else {
+        if !is_plan_payload(&body) {
+            return Err(plan_refusal(
+                path,
+                "parse_failed",
+                format!(
+                    "{shown} is not the payload of `cfgd plan -o json`: it does not carry both \
+                     a `phases` and a `totalActions` key, which every plan output has"
+                ),
+                // A stranger document and a malformed one share the
+                // `parse_failed` kind, so this is what a script reads to tell
+                // "well-formed JSON cfgd did not write" from "not JSON".
+                serde_json::json!({
+                    "reason": "it does not carry both a `phases` and a `totalActions` key"
+                }),
+            ));
+        }
+        return Err(plan_refusal(
+            path,
+            "no_saved_plan",
+            format!(
+                "{shown} carries no saved plan: `cfgd plan -o json` records one only for a run \
+                 describing the whole machine, so a run narrowed by --module, --only, --skip, \
+                 --phase or --skip-scripts, or one holding a source decision back, writes none"
+            ),
+            serde_json::json!({}),
+        ));
+    };
+
+    if !phases_in_execution_order(&saved.plan) {
+        let listed = saved
+            .plan
+            .phases
+            .iter()
+            .map(|p| p.name.display_name())
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Err(plan_refusal(
+            path,
+            "not_a_cfgd_plan",
+            format!(
+                "{shown} is not a plan cfgd wrote: it lists the phases {listed}, and cfgd plans \
+                 each phase at most once, in the order an apply runs them in"
+            ),
+            serde_json::json!({ "phases": listed }),
+        ));
+    }
+
+    if !saved
+        .config_inputs
+        .paths()
+        .any(|read| cfgd_core::names_the_same_path(read, config))
+    {
+        return Err(plan_refusal(
+            path,
+            "foreign_config",
+            format!(
+                "{shown} is not a plan cfgd wrote for this config: nothing its derivation read \
+                 was {config}, so the actions in it were priced against another machine picture \
+                 — run `cfgd plan -o json` under this config",
+                // native-ok: a human-facing error; no key is built from it
+                config = config.display()
+            ),
+            serde_json::json!({ "config": config.display_posix() }),
+        ));
+    }
+
+    // Asked before the serial: a serial read off another store is a number from
+    // a different sequence, so comparing it would name an apply that never ran
+    // on the store the plan came from.
+    let store_id = state.store_id()?;
+    match saved.store_id.as_deref() {
+        Some(recorded) if recorded == store_id => {}
+        Some(recorded) => {
+            return Err(plan_refusal(
+                path,
+                "stale",
+                format!(
+                    "{shown} is stale: it was derived against state store {recorded}, and this \
+                     run opened store {store_id}, so it does not describe the machine this store \
+                     records — run `cfgd plan -o json` against this store"
+                ),
+                serde_json::json!({ "storeId": store_id, "recordedStoreId": recorded }),
+            ));
+        }
+        None => {
+            return Err(plan_refusal(
+                path,
+                "stale",
+                format!(
+                    "{shown} is stale: it was written before cfgd recorded the state store a \
+                     plan was derived against (it records none, and this run opened store \
+                     {store_id}) — run `cfgd plan -o json` again"
+                ),
+                serde_json::json!({ "storeId": store_id, "recordedStoreId": null }),
+            ));
+        }
+    }
+
+    let serial = state.last_apply()?.map_or(0, |a| a.id);
+    if serial != saved.serial {
+        return Err(plan_refusal(
+            path,
+            "stale",
+            format!(
+                "{shown} is stale: apply #{serial} has run since it was written (it recorded \
+                 #{recorded}), so it no longer describes this machine — run `cfgd plan -o json` \
+                 again",
+                recorded = saved.serial
+            ),
+            serde_json::json!({ "serial": serial, "recordedSerial": saved.serial }),
+        ));
+    }
+
+    if !saved.config_inputs.unchanged() {
+        let moved_path = saved.config_inputs.first_moved();
+        let moved = moved_path.as_ref().map_or_else(
+            || "the config".to_string(),
+            |p| p.display().to_string(), // native-ok: a human-facing error; no key is built from it
+        );
+        return Err(plan_refusal(
+            path,
+            "stale",
+            format!(
+                "{shown} is stale: {moved} changed since it was written, so it no longer \
+                 describes this config — run `cfgd plan -o json` again"
+            ),
+            serde_json::json!({ "changed": moved_path.as_ref().map(|p| p.display_posix()) }),
+        ));
+    }
+
+    Ok(LoadedPlan {
+        plan: saved.plan,
+        context: file.context,
+    })
+}
+
+/// Put back the two planner inputs a plan FILE cannot carry.
+///
+/// `ResolvedPackage::manager_declared` and `min_version` are `#[serde(skip)]`
+/// — serializing either would move every stored `plan_hash` — so a package read
+/// off the wire claims no author-named manager and no floor. Both are read
+/// AFTER a plan is built: `Reconciler::package_survives_elision` asks the floor
+/// whether the copy the machine holds is new enough, and would elide an
+/// outdated one as converged. The resolution that fills them has already run on
+/// the replay path, so they are taken from it; the file's copy is not trusted.
+///
+/// A package the file names and the modules no longer resolve the same way is a
+/// REFUSAL. The config-input check above does not cover it:
+/// [`cfgd_core::modules::resolve_package`] picks a manager by what this host
+/// holds, so a package installed between the plan and the replay moves the
+/// `(manager, canonical_name)` key while every recorded input still stats
+/// identical. Keeping the file's own `min_version: None` there would let
+/// `Reconciler::package_survives_elision` elide an outdated copy as converged,
+/// which is the one outcome the floor exists to prevent.
+pub(in crate::cli) fn restore_module_planner_inputs(
+    plan: &mut reconciler::Plan,
+    modules: &[cfgd_core::modules::ResolvedModule],
+    path: &std::path::Path,
+) -> anyhow::Result<()> {
+    let shown = path.display(); // native-ok: a human-facing error; no key is built from it
+    for phase in &mut plan.phases {
+        for (_, actions) in phase.groups_mut() {
+            for action in actions {
+                let reconciler::Action::Module(m) = action else {
+                    continue;
+                };
+                let reconciler::ModuleActionKind::InstallPackages { resolved } = &mut m.kind else {
+                    continue;
+                };
+                let Some(module) = modules.iter().find(|r| r.name == m.module_name) else {
+                    return Err(plan_refusal(
+                        path,
+                        "host_moved",
+                        format!(
+                            "{shown} does not describe this host: it plans packages for module \
+                             {module}, which this run's modules no longer resolve — run \
+                             `cfgd plan -o json` again",
+                            module = m.module_name
+                        ),
+                        serde_json::json!({ "module": m.module_name }),
+                    ));
+                };
+                for pkg in resolved.iter_mut() {
+                    let Some(source) = module.packages.iter().find(|p| {
+                        p.manager == pkg.manager && p.canonical_name == pkg.canonical_name
+                    }) else {
+                        return Err(plan_refusal(
+                            path,
+                            "host_moved",
+                            format!(
+                                "{shown} does not describe this host: it plans {manager}:{name} \
+                                 for module {module}, which that module no longer resolves that \
+                                 way — run `cfgd plan -o json` again",
+                                manager = pkg.manager,
+                                name = pkg.canonical_name,
+                                module = m.module_name
+                            ),
+                            serde_json::json!({
+                                "module": m.module_name,
+                                "manager": pkg.manager,
+                                "package": pkg.canonical_name,
+                            }),
+                        ));
+                    };
+                    pkg.manager_declared = source.manager_declared;
+                    pkg.min_version.clone_from(&source.min_version);
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 /// The manager every `PackageAction` names.
@@ -744,7 +1182,10 @@ pub(in crate::cli) fn report_plan_verdict(
 /// Bundles `display_plan_preview`'s non-core arguments (everything but the
 /// plan/printer/state it acts on) so the call stays under clippy's
 /// too-many-arguments budget as fields accrue.
-#[derive(Clone, Copy)]
+///
+/// Passed by value because `saved_plan` owns the recorded action graph, which
+/// the payload builder takes whole; copying it to hand it over would double a
+/// plan-sized JSON value for nothing.
 pub(in crate::cli) struct PlanPreviewArgs<'a> {
     pub context: &'a str,
     /// How this preview was scoped, for the verdict's next step. A bare
@@ -759,13 +1200,17 @@ pub(in crate::cli) struct PlanPreviewArgs<'a> {
     /// run carries, so the block naming what is missing and the payload keys
     /// reporting it cannot describe different sets.
     pub withheld: &'a reconciler::WithheldDecisions,
+    /// The approval contract this run recorded, or `None` where its scope
+    /// makes it unreplayable. Decided by the caller, which is the only place
+    /// the run's own filters are known.
+    pub saved_plan: Option<SavedPlan>,
 }
 
 pub(in crate::cli) fn display_plan_preview(
     run: &reconciler::ApplyRun<'_>,
     plan: &reconciler::Plan,
     printer: &Printer,
-    args: &PlanPreviewArgs<'_>,
+    args: PlanPreviewArgs<'_>,
 ) {
     let PlanPreviewArgs {
         context,
@@ -774,8 +1219,9 @@ pub(in crate::cli) fn display_plan_preview(
         scope,
         pending_backups,
         withheld,
-        preview: _,
-    } = *args;
+        preview,
+        saved_plan,
+    } = args;
 
     // The run's own rows and warnings, before anything this command adds: the
     // header is what states the scope every block below is read against, and
@@ -790,6 +1236,7 @@ pub(in crate::cli) fn display_plan_preview(
         pending_backups,
         withheld,
         run.sources(),
+        saved_plan,
     );
 
     // Structured-output routing: when -o yaml/json/etc., emit the plan as the
@@ -864,7 +1311,7 @@ pub(in crate::cli) fn display_plan_preview(
         plan_output.total_actions,
         Some(scope),
         withheld.pending.len(),
-        &args.preview,
+        &preview,
     );
     // The sections naming the withheld items are up under the header; the
     // instruction for answering them closes the preview, left-aligned like
@@ -879,7 +1326,8 @@ pub(in crate::cli) fn display_plan_preview(
 ///
 /// Examples:
 ///   PackageAction::Install { manager: "brew", packages: ["ripgrep"] } → "packages.brew"
-///   SystemAction::SetValue { configurator: "sysctl", key: "net.ipv4.ip_forward" } → "system.sysctl.net.ipv4.ip_forward"
+///   SystemAction::SetValue { configurator: "sysctl", key: "net.ipv4.ip_forward" }
+///     → "system.sysctl.net.ipv4.ip_forward"
 ///   FileAction::Create { target: "/etc/foo" } → "files./etc/foo"
 ///   SecretAction::Resolve { provider: "1password" } → "secrets.1password"
 ///   ScriptAction::Run { path: "scripts/setup.sh" } → "scripts.scripts/setup.sh"
@@ -1466,9 +1914,7 @@ pub(in crate::cli) fn filter_plan(
                 // A solo provision runs the same path, so there is one rule
                 // for both and no shape where they can disagree.
                 if let reconciler::Action::Manager(
-                    ma @ reconciler::ManagerAction::Provision {
-                        via, depends_on, ..
-                    },
+                    ma @ reconciler::ManagerAction::Provision { .. },
                 ) = &action
                 {
                     let mut kept: Vec<String> = Vec::new();
@@ -1499,16 +1945,10 @@ pub(in crate::cli) fn filter_plan(
                             removals.record(member, matching_skips.first().map(|s| s.as_str()));
                         }
                     }
-                    if let Some((first, rest)) = kept.split_first() {
-                        filtered_actions.push(reconciler::Action::Manager(
-                            reconciler::ManagerAction::Provision {
-                                manager: first.clone(),
-                                via: via.clone(),
-                                declared: None,
-                                batched: rest.to_vec(),
-                                depends_on: depends_on.clone(),
-                            },
-                        ));
+                    if let Some((first, rest)) = kept.split_first()
+                        && let Some(node) = ma.provision_led_by(first, rest.to_vec())
+                    {
+                        filtered_actions.push(reconciler::Action::Manager(node));
                     }
                     continue;
                 }

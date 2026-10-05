@@ -1,15 +1,17 @@
-#![allow(deprecated)] // assert_cmd 2.x cargo_bin deprecation; upgrade path is assert_cmd 3.x
-
-use assert_cmd::Command;
 use predicates::prelude::*;
 use serde_json::Value;
+
+use assert_cmd::prelude::*;
+
+mod cfgd_binary;
+use cfgd_binary::cfgd_bin;
 
 /// `cfgd skill install --help` must list the author kinds (so the kind is
 /// discoverable) and carry an `Examples:` block (the cfgd top-level-command
 /// convention, regression-guarded by the ux-consistency audit).
 #[test]
 fn skill_help_lists_kinds_and_examples() {
-    Command::cargo_bin("cfgd")
+    cfgd_bin()
         .unwrap()
         .args(["skill", "install", "--help"])
         .assert()
@@ -21,7 +23,7 @@ fn skill_help_lists_kinds_and_examples() {
 /// (nothing to update), constrained at the clap layer via `required_unless_present`.
 #[test]
 fn skill_update_requires_kind_or_all() {
-    Command::cargo_bin("cfgd")
+    cfgd_bin()
         .unwrap()
         .args(["skill", "update"])
         .assert()
@@ -31,7 +33,7 @@ fn skill_update_requires_kind_or_all() {
 /// `cfgd skill update --all` is the coherent "update everything" request and parses.
 #[test]
 fn skill_update_all_parses() {
-    Command::cargo_bin("cfgd")
+    cfgd_bin()
         .unwrap()
         .args(["skill", "update", "--all"])
         .assert()
@@ -42,7 +44,7 @@ fn skill_update_all_parses() {
 /// via `conflicts_with`.
 #[test]
 fn skill_update_kind_and_all_conflict() {
-    Command::cargo_bin("cfgd")
+    cfgd_bin()
         .unwrap()
         .args(["skill", "update", "module", "--all"])
         .assert()
@@ -53,7 +55,7 @@ fn skill_update_kind_and_all_conflict() {
 /// destructive cfgd verb (`cfgd module rm -y`, `cfgd source rm -y`).
 #[test]
 fn skill_remove_accepts_short_yes() {
-    Command::cargo_bin("cfgd")
+    cfgd_bin()
         .unwrap()
         .args(["skill", "rm", "module", "-y"])
         .assert()
@@ -66,12 +68,12 @@ fn install_in(
     repo: &std::path::Path,
     home: &std::path::Path,
     args: &[&str],
-) -> assert_cmd::Command {
-    let mut cmd = Command::cargo_bin("cfgd").unwrap();
+) -> std::process::Command {
+    let mut cmd = cfgd_bin().unwrap();
     cmd.env("HOME", home)
         // Windows resolves the home directory from USERPROFILE first; without
-        // this the hermetic HOME is ignored and provider detection inspects the
-        // runner's real profile instead of the test fixture.
+        // this the fixture HOME is ignored and provider detection inspects the
+        // constructor's home.
         .env("USERPROFILE", home)
         .env("XDG_CONFIG_HOME", home.join(".config"))
         .current_dir(repo)
@@ -233,8 +235,12 @@ fn global_scope_skips_cursor_and_copilot_with_warning() {
 }
 
 /// Spawn `cfgd skill <subcommand...>` with a hermetic HOME and pinned CWD.
-fn skill_in(repo: &std::path::Path, home: &std::path::Path, args: &[&str]) -> assert_cmd::Command {
-    let mut cmd = Command::cargo_bin("cfgd").unwrap();
+fn skill_in(
+    repo: &std::path::Path,
+    home: &std::path::Path,
+    args: &[&str],
+) -> std::process::Command {
+    let mut cmd = cfgd_bin().unwrap();
     cmd.env("HOME", home)
         .env("XDG_CONFIG_HOME", home.join(".config"))
         .current_dir(repo)

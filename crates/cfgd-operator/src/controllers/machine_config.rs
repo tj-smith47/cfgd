@@ -1,16 +1,16 @@
 use std::sync::Arc;
 
-use kube::api::{Api, Patch, PatchParams};
+use kube::api::{Api, DeleteParams, ListParams, Patch, PatchParams};
 use kube::runtime::controller::Action;
 use kube::runtime::events::EventType;
 use kube::{Resource, ResourceExt};
 use tracing::info;
 
-use crate::crds::{MachineConfig, MachineConfigSpec, MachineConfigStatus};
+use crate::crds::{DriftAlert, MachineConfig, MachineConfigSpec, MachineConfigStatus};
 use crate::errors::OperatorError;
 use crate::metrics::DriftLabels;
 
-use super::drift_alert::has_active_drift_alerts;
+use super::drift_alert::{alert_target, has_active_drift_alerts};
 use super::module::resolve_module_refs;
 use super::{
     ControllerContext, FIELD_MANAGER_STATUS, MACHINE_CONFIG_FINALIZER, add_finalizer,
@@ -33,6 +33,7 @@ pub(super) async fn reconcile_machine_config(
 
     if obj.metadata.deletion_timestamp.is_some() && has_finalizer {
         info!(name = %name, "machineConfig being deleted, running cleanup");
+        delete_alerts_naming(&ctx.client, &namespace, &name).await?;
         remove_finalizer(&machines_api, &name, finalizers, MACHINE_CONFIG_FINALIZER).await?;
         // A deletion pass is a reconciliation that succeeded; during a
         // deletion-heavy period this counter is the only sign the controller
@@ -80,13 +81,25 @@ pub(super) async fn reconcile_machine_config(
     // Check if any DriftAlerts exist for this MachineConfig
     let has_drift = has_active_drift_alerts(&ctx.stores, &namespace, &name).await?;
 
-    // Skip if this generation is already observed, no drift, and condition already reflects that
+    // Resolve moduleRefs against Module CRDs (cluster-scoped)
+    let (modules_resolved_status, modules_resolved_reason, modules_resolved_message) =
+        resolve_module_refs(&ctx.stores, &obj.spec.module_refs).await;
+
+    // A Module created or deleted leaves this machine's generation alone, so
+    // the skip also asks whether the recorded ModulesResolved verdict is still
+    // the one the Module cache gives now.
     let generation_unchanged =
         current_generation.is_some() && current_generation == observed_generation;
     let had_drift = existing_conditions
         .iter()
         .any(|c| c.condition_type == "DriftDetected" && c.status == "True");
-    if generation_unchanged && !has_drift && !had_drift {
+    let modules_unchanged =
+        find_condition(existing_conditions, "ModulesResolved").is_some_and(|c| {
+            c.status == modules_resolved_status
+                && c.reason == modules_resolved_reason
+                && c.message == modules_resolved_message
+        });
+    if generation_unchanged && !has_drift && !had_drift && modules_unchanged {
         info!(name = %name, "already reconciled this generation, skipping");
         // A pass that concluded there is nothing to do IS a reconciliation that
         // succeeded, and it is the only signal a steady machine produces:
@@ -98,29 +111,13 @@ pub(super) async fn reconcile_machine_config(
         return Ok(Action::requeue(std::time::Duration::from_secs(60)));
     }
 
-    // Resolve moduleRefs against Module CRDs (cluster-scoped)
-    let (modules_resolved_status, modules_resolved_reason, modules_resolved_message) =
-        resolve_module_refs(&ctx.stores, &obj.spec.module_refs).await;
-
     let now = cfgd_core::utc_now_iso8601();
 
     // A DriftAlert carries the answers of a device's system CONFIGURATORS and
     // nothing else, so the absence of one is not a machine proven in sync: the
     // message says which class was reported, and the negative says which class
     // went unreported rather than claiming a clean machine.
-    let (drift_status, drift_reason, drift_message) = if has_drift {
-        (
-            "True",
-            "DriftActive",
-            format!("A device reported drifted system settings for MachineConfig {name}"),
-        )
-    } else {
-        (
-            "False",
-            "NoDrift",
-            format!("No device reported drifted system settings for MachineConfig {name}"),
-        )
-    };
+    let (drift_status, drift_reason, drift_message) = drift_detected(has_drift, &name);
 
     // Preserve existing package_versions from status: a reconcile that cannot
     // observe them must not blank the field it did not measure.
@@ -136,6 +133,10 @@ pub(super) async fn reconcile_machine_config(
     let existing_backup_schedule_owners = existing_status
         .map(|s| s.backup_schedule_owners.clone())
         .unwrap_or_default();
+
+    // And for the compliance the device last reported: only a check-in can
+    // observe it.
+    let existing_compliance = existing_status.and_then(|s| s.compliance.clone());
 
     // `Compliant` belongs to the policy controllers: its status, reason AND
     // message are all theirs, and this controller only carries them through.
@@ -200,6 +201,7 @@ pub(super) async fn reconcile_machine_config(
         ],
         package_versions: existing_package_versions,
         backup_schedule_owners: existing_backup_schedule_owners,
+        compliance: existing_compliance,
     };
 
     // Everything the reconcile observed is already recorded — write nothing and
@@ -214,15 +216,16 @@ pub(super) async fn reconcile_machine_config(
 
     desired.last_reconciled = Some(now.clone());
     let mut reported = serde_json::json!(desired);
-    // The two device-reported maps are carried in `desired` so the
+    // The device-reported fields are carried in `desired` so the
     // already-current comparison above sees the whole status, and dropped from
     // the body: they are the gateway's fields, applied server-side under its own
-    // manager, and echoing them here would move their ownership to this manager
+    // managers, and echoing them here would move their ownership to this manager
     // and turn the gateway's next apply into a conflict. A merge patch that
-    // names neither leaves both standing.
+    // names none of them leaves them all standing.
     if let Some(body) = reported.as_object_mut() {
         body.remove("packageVersions");
         body.remove("backupScheduleOwners");
+        body.remove("compliance");
     }
     let status = serde_json::json!({ "status": reported });
 
@@ -265,7 +268,7 @@ pub(super) async fn reconcile_machine_config(
             &obj.object_ref(&()),
             EventType::Warning,
             "DriftDetected",
-            format!("A device reported drifted system settings for MachineConfig {name}"),
+            drift_message,
             "DriftCheck",
         )
         .await;
@@ -287,4 +290,70 @@ pub(super) async fn reconcile_machine_config(
 pub(super) fn validate_spec(spec: &MachineConfigSpec) -> Result<(), OperatorError> {
     spec.validate()
         .map_err(|errors| OperatorError::InvalidSpec(errors.join("; ")))
+}
+
+/// The `DriftDetected` condition `(status, reason, message)` for the machine
+/// `name`. The DriftAlert controller raises the same condition when an alert
+/// first reports, and both build it here so neither rewrites the other's text.
+pub(super) fn drift_detected(has_drift: bool, name: &str) -> (&'static str, &'static str, String) {
+    if has_drift {
+        (
+            "True",
+            "DriftActive",
+            format!("A device reported drifted system settings for MachineConfig {name}"),
+        )
+    } else {
+        (
+            "False",
+            "NoDrift",
+            format!("No device reported drifted system settings for MachineConfig {name}"),
+        )
+    }
+}
+
+/// Delete every DriftAlert that names the machine `namespace/name`.
+///
+/// An alert in the machine's own namespace is also its dependent through an
+/// owner reference, but one in another namespace cannot be: Kubernetes treats
+/// a cross-namespace owner as absent. The machine's finalizer is what retires
+/// those, so an alert never outlives the machine it reports on. The list is
+/// live: an alert the cache has not seen yet would otherwise be left behind
+/// naming a machine that no longer exists. A failure keeps the finalizer, and
+/// the deletion is retried.
+async fn delete_alerts_naming(
+    client: &kube::Client,
+    namespace: &str,
+    name: &str,
+) -> Result<(), OperatorError> {
+    let mut params = ListParams::default();
+    if let Some(selector) = crate::runtime::watch_label_selector() {
+        params = params.labels(&selector);
+    }
+    let alerts = Api::<DriftAlert>::all(client.clone())
+        .list(&params)
+        .await
+        .map_err(|e| {
+            OperatorError::Reconciliation(format!(
+                "failed to list DriftAlerts naming MachineConfig {name}: {e}"
+            ))
+        })?;
+    for alert in alerts
+        .iter()
+        .filter(|a| alert_target(a) == (namespace, name))
+    {
+        let alert_name = alert.name_any();
+        let api: Api<DriftAlert> = namespaced_api(client, &alert.namespace().unwrap_or_default())?;
+        match api.delete(&alert_name, &DeleteParams::default()).await {
+            Ok(_) => {
+                info!(name = %alert_name, machine_config = %name, "deleted DriftAlert of a deleted MachineConfig")
+            }
+            Err(kube::Error::Api(e)) if e.code == 404 => {}
+            Err(e) => {
+                return Err(OperatorError::Reconciliation(format!(
+                    "failed to delete DriftAlert {alert_name} of MachineConfig {name}: {e}"
+                )));
+            }
+        }
+    }
+    Ok(())
 }

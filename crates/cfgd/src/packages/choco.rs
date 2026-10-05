@@ -610,7 +610,12 @@ Tags: git vcs dvcs
         use serial_test::serial;
 
         fn install_choco_shim(exit_code: i32, stdout: &str, stderr: &str) -> ToolShim {
-            ToolShim::install("CFGD_CHOCO_BIN", exit_code, stdout, stderr)
+            ToolShim::install(
+                &crate::seams::tool_seam_var("choco"),
+                exit_code,
+                stdout,
+                stderr,
+            )
         }
 
         #[test]
@@ -790,9 +795,9 @@ Tags: git vcs dvcs
 
         /// The chocolatey install script warns on stderr about things the user
         /// must act on (an execution policy left in place, a shell restart).
-        /// Those notes are the reason `bootstrap` takes the whole context and
-        /// not a bare printer: they belong to the caller's sink, which renders
-        /// them under the action's own status line.
+        /// Those notes are the reason `bootstrap` takes the whole context: they
+        /// belong to the caller's sink, which renders them under the action's
+        /// own status line.
         #[test]
         #[serial]
         fn bootstrap_caveats_reach_the_callers_sink() {

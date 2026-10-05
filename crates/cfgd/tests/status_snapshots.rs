@@ -29,11 +29,12 @@ use cfgd::cli::status::{
     ModuleFileStatus, ModulePackagePresence, ModulePackageStatus, ModuleStatus, ModuleStatusEntry,
     ModuleStatusView, SURFACE_ENV, SURFACE_FILES, SURFACE_PACKAGES, StatusOutput,
     build_fleet_status_doc, build_module_status_doc, build_module_status_not_found_doc,
-    managed_resource_payload,
+    fill_declared_managers, managed_resource_payload,
 };
 use cfgd_core::config::{EnvVar, ShellAlias};
 use cfgd_core::modules::{DeclaredScript, HookScripts, ModuleSurfaces};
 use cfgd_core::output::Printer;
+use cfgd_core::reconciler::recorded_resource_kind;
 use cfgd_core::state::{
     ApplyRecord, ApplyStatus, ConfigSourceRecord, DriftEvent, ManagedResource, PendingDecision,
 };
@@ -83,7 +84,7 @@ fn dev_tools_declared() -> ModuleDeclared {
 /// per-package rows a profile-level install writes, which the table groups
 /// back into one row per manager.
 fn managed_resources() -> Vec<ManagedResourceRow> {
-    managed_resource_payload(
+    let mut rows = managed_resource_payload(
         [
             ("env", "/home/user/.cfgd.env"),
             ("file", "~/.bashrc"),
@@ -101,10 +102,22 @@ fn managed_resources() -> Vec<ManagedResourceRow> {
             source: "local".into(),
             last_hash: Some("hash1".into()),
             last_applied: Some(1_715_680_800),
+            kind: Some(recorded_resource_kind(resource_type, resource_id).into()),
+            manager: (resource_type == "package")
+                .then(|| cfgd_core::state::split_package_resource_id(resource_id))
+                .flatten()
+                .map(|(manager, _)| manager.into()),
         })
         .collect(),
         Some("default"),
-    )
+    );
+    // The module rows carry no stored manager, as a store written before the
+    // manager was recorded does, so `status` names the declared one.
+    fill_declared_managers(
+        &mut rows,
+        &[("dev-tools".to_string(), dev_tools_declared())].into(),
+    );
+    rows
 }
 
 fn clean_output() -> StatusOutput {
@@ -184,6 +197,11 @@ fn env_entry_resources() -> Vec<ManagedResourceRow> {
             source: source.into(),
             last_hash: Some("hash1".into()),
             last_applied: Some(1_715_680_800),
+            kind: Some(recorded_resource_kind(resource_type, resource_id).into()),
+            manager: (resource_type == "package")
+                .then(|| cfgd_core::state::split_package_resource_id(resource_id))
+                .flatten()
+                .map(|(manager, _)| manager.into()),
         })
         .collect(),
         Some("default"),
@@ -407,11 +425,15 @@ fn per_module_output() -> ModuleStatus {
         scope: None,
         package_state: vec![
             ModulePackageStatus {
+                held: None,
+                route: None,
                 name: "neovim".into(),
                 manager: None,
                 state: ModulePackagePresence::NotScanned,
             },
             ModulePackageStatus {
+                held: None,
+                route: None,
                 name: "ripgrep".into(),
                 manager: None,
                 state: ModulePackagePresence::NotScanned,
@@ -465,11 +487,15 @@ fn per_module_scanned_output() -> ModuleStatus {
         scope: None,
         package_state: vec![
             ModulePackageStatus {
+                held: None,
+                route: None,
                 name: "neovim".into(),
                 manager: Some("brew".into()),
                 state: ModulePackagePresence::Installed,
             },
             ModulePackageStatus {
+                held: None,
+                route: None,
                 name: "ripgrep".into(),
                 manager: Some("brew".into()),
                 state: ModulePackagePresence::NotInstalled,
@@ -585,11 +611,15 @@ fn per_module_clean_scanned_output() -> ModuleStatus {
     let mut output = per_module_scanned_output();
     output.package_state = vec![
         ModulePackageStatus {
+            held: None,
+            route: None,
             name: "neovim".into(),
             manager: Some("brew".into()),
             state: ModulePackagePresence::Installed,
         },
         ModulePackageStatus {
+            held: None,
+            route: None,
             name: "ripgrep".into(),
             manager: Some("brew".into()),
             state: ModulePackagePresence::Installed,
@@ -743,6 +773,7 @@ fn status_drift_human() {
     let output = drift_output();
     let sources = declared_sources();
     let (printer, cap) = Printer::for_test_doc();
+    let printer = printer.with_hints_enabled(true);
     printer.emit(build_fleet_status_doc(
         &output,
         &cfgd_core::output::ConfigHeader {
@@ -794,6 +825,7 @@ fn status_drift_json() {
 
 fn emit_module(output: &ModuleStatus, view: ModuleStatusView, golden: &str) {
     let (printer, cap) = Printer::for_test_doc();
+    let printer = printer.with_hints_enabled(true);
     printer.emit(build_module_status_doc(output, view, NOW));
     drop(printer);
     cap.assert_human_snapshot_in(Path::new(SNAPSHOT_ROOT), golden);
@@ -957,8 +989,8 @@ fn status_per_module_renders_and_serializes_its_recorded_facts() {
     for row in [
         "Packages Hash  abc123def456",
         "Files Hash     789ghi012jkl",
-        "Commit         deadbeef1234",
-        "Integrity      sha256:cafef00d",
+        "Commit         deadbeef1234", // space-run-ok: a rendered kv row's own column padding.
+        "Integrity      sha256:cafef00d", // space-run-ok: a rendered kv row's own column padding.
     ] {
         assert!(human.contains(row), "missing row {row:?}: {human}");
     }

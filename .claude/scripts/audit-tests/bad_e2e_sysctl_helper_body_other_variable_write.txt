@@ -1,0 +1,4 @@
+sysctl_drift_case() {
+    exec_in_pod sysctl -w "$key=$drift" > /dev/null 2>&1 || true
+    exec_in_pod bash -c "echo 1 > /proc/sys/$key"
+}

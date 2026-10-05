@@ -1,5 +1,5 @@
 use super::*;
-use cfgd_core::output::{Doc, Printer, Role, renderer::Table};
+use cfgd_core::output::{Doc, Role, renderer::Table};
 use cfgd_core::state::source_status_display;
 use cfgd_core::{ABSENT, yes_no};
 
@@ -60,17 +60,11 @@ pub fn sources_table(entries: &[SourceListEntry], wide: bool, now: &str) -> Tabl
         ),
         (
             "Source",
-            // A local source's origin is a directory, folded like every
-            // display slot; the payload keeps the absolute path.
+            // A bare local path folds under $HOME; a URL (file:// included)
+            // renders as stored, userinfo stripped.
             entries
                 .iter()
-                .map(|e| {
-                    cell(
-                        e.url
-                            .as_deref()
-                            .map(|u| cfgd_core::fold_home_in_text(&cfgd_core::display_url(u))),
-                    )
-                })
+                .map(|e| cell(e.url.as_deref().map(cfgd_core::display_source_origin)))
                 .collect(),
         ),
         (
@@ -170,7 +164,9 @@ pub fn build_source_list_no_config_doc() -> Doc {
         .with_data(&empty)
 }
 
-pub fn cmd_source_list(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
+pub fn cmd_source_list(run: &RunContext<'_>) -> anyhow::Result<()> {
+    let cli = run.cli();
+    let printer = run.printer();
     let config_path = cli.config.clone();
     if !config_path.exists() {
         if printer.is_structured() {
@@ -181,8 +177,7 @@ pub fn cmd_source_list(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
         return Ok(());
     }
 
-    let mut cfg = config::load_config(&config_path)?;
-    drain_config_deprecations(printer, &mut cfg);
+    let cfg = run.config()?;
 
     let now = cfgd_core::utc_now_iso8601();
 
@@ -201,7 +196,7 @@ pub fn cmd_source_list(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
     // recorded status column. An unreadable lockfile leaves both absent rather
     // than failing a listing that does not depend on them.
     let lock = cfgd_core::load_sources_lockfile(&config_dir(cli)).unwrap_or_default();
-    let entries = configured_source_entries(&cfg, &state, &lock);
+    let entries = configured_source_entries(cfg, &state, &lock);
 
     printer.emit(build_source_list_doc(&entries, printer.is_wide(), &now));
     Ok(())
@@ -253,7 +248,7 @@ pub fn configured_source_entries(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cfgd_core::output::Verbosity;
+    use cfgd_core::output::{Printer, Verbosity};
 
     fn entry(name: &str) -> SourceListEntry {
         SourceListEntry {

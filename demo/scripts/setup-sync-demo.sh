@@ -57,12 +57,16 @@ metadata:
   name: cfgd-config
 spec:
   profile: base
+  fileStrategy: Symlink
+  migrationPolicy: Prompt
   output:
     theme: dracula
   daemon:
     enabled: true
+    windowsEventLog: false
     sync:
       autoPull: true
+      autoPush: false
       interval: 5s
     reconcile:
       interval: 30s

@@ -284,9 +284,12 @@ spec:
         color: crate::cli::ColorWhen::Auto,
         output: super::OutputFormatArg(cfgd_core::output::OutputFormat::Table),
         list_envelope: false,
+        hints: false,
         no_hints: false,
         theme: None,
         mask_env_values: None,
+        migration_policy: None,
+        update_policy: None,
         jsonpath: None,
         yes: false,
         state_dir: None,
@@ -342,9 +345,12 @@ fn test_cli(dir: &std::path::Path) -> super::Cli {
         color: crate::cli::ColorWhen::Auto,
         output: super::OutputFormatArg(cfgd_core::output::OutputFormat::Table),
         list_envelope: false,
+        hints: false,
         no_hints: false,
         theme: None,
         mask_env_values: None,
+        migration_policy: None,
+        update_policy: None,
         jsonpath: None,
         yes: false,
         state_dir: None,
@@ -418,7 +424,7 @@ fn cmd_module_list_empty() {
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
-    cmd_module_list(&cli, &printer).unwrap();
+    crate::cli::RunContext::for_test(&cli, &printer, cmd_module_list).unwrap();
     drop(printer);
 
     let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -446,7 +452,7 @@ fn cmd_module_list_shows_modules() {
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
-    cmd_module_list(&cli, &printer).unwrap();
+    crate::cli::RunContext::for_test(&cli, &printer, cmd_module_list).unwrap();
     drop(printer);
 
     let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -487,7 +493,7 @@ fn recorded_state(cli: &super::Cli) -> cfgd_core::state::StateStore {
 fn rendered_list(cli: &super::Cli) -> String {
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-    cmd_module_list(cli, &printer).unwrap();
+    crate::cli::RunContext::for_test(cli, &printer, cmd_module_list).unwrap();
     drop(printer);
     cfgd_core::test_helpers::captured_text(&buf)
 }
@@ -498,6 +504,7 @@ fn rendered_show(cli: &super::Cli, name: &str) -> String {
     cmd_module_show(
         cli,
         &printer,
+        &crate::cli::startup::StartupDocument::load(&cli.config),
         name,
         crate::cli::InventoryDetail::default(),
         false,
@@ -601,7 +608,7 @@ fn cmd_module_list_json_empty() {
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
 
-    cmd_module_list(&cli, &printer).unwrap();
+    crate::cli::RunContext::for_test(&cli, &printer, cmd_module_list).unwrap();
     drop(printer);
 
     let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -623,7 +630,7 @@ fn cmd_module_list_json_with_modules() {
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
 
-    cmd_module_list(&cli, &printer).unwrap();
+    crate::cli::RunContext::for_test(&cli, &printer, cmd_module_list).unwrap();
     drop(printer);
 
     let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -648,6 +655,7 @@ fn cmd_module_show_not_found() {
     let err = cmd_module_show(
         &cli,
         &printer,
+        &crate::cli::startup::StartupDocument::load(&cli.config),
         "ghost",
         crate::cli::InventoryDetail::default(),
         false,
@@ -677,6 +685,7 @@ fn cmd_module_show_displays_details() {
     cmd_module_show(
         &cli,
         &printer,
+        &crate::cli::startup::StartupDocument::load(&cli.config),
         "devtools",
         crate::cli::InventoryDetail::default(),
         false,
@@ -731,6 +740,7 @@ fn cmd_module_show_local_does_not_load_locked_remotes() {
     cmd_module_show(
         &cli,
         &printer,
+        &crate::cli::startup::StartupDocument::load(&cli.config),
         "local-mod",
         crate::cli::InventoryDetail::default(),
         false,
@@ -764,6 +774,7 @@ fn cmd_module_show_falls_through_to_locked_modules() {
     let err = cmd_module_show(
         &cli,
         &printer,
+        &crate::cli::startup::StartupDocument::load(&cli.config),
         "private-mod",
         crate::cli::InventoryDetail::default(),
         false,
@@ -791,6 +802,7 @@ fn cmd_module_show_with_available_hint() {
     let err = cmd_module_show(
         &cli,
         &printer,
+        &crate::cli::startup::StartupDocument::load(&cli.config),
         "missing",
         crate::cli::InventoryDetail::default(),
         false,
@@ -832,6 +844,7 @@ fn cmd_module_show_env_masking() {
     cmd_module_show(
         &cli,
         &printer,
+        &crate::cli::startup::StartupDocument::load(&cli.config),
         "secrets-mod",
         crate::cli::InventoryDetail::default(),
         false,
@@ -862,6 +875,7 @@ fn cmd_module_show_env_unmasked() {
     cmd_module_show(
         &cli,
         &printer,
+        &crate::cli::startup::StartupDocument::load(&cli.config),
         "env-mod",
         crate::cli::InventoryDetail {
             masking: crate::cli::EnvValueMasking::revealing(),
@@ -894,6 +908,7 @@ fn cmd_module_show_json_schema() {
     cmd_module_show(
         &cli,
         &printer,
+        &crate::cli::startup::StartupDocument::load(&cli.config),
         "jmod",
         crate::cli::InventoryDetail::default(),
         false,
@@ -994,7 +1009,8 @@ fn no_module_verb_respells_the_name_its_heading_already_stated() {
     quoted("create", "walkmod-new", None, &|cli, printer| {
         let mut args = make_module_create_args("walkmod-new");
         args.packages = vec!["jq".to_string()];
-        cmd_module_create(cli, printer, &args).expect("create");
+        crate::cli::RunContext::for_test(cli, printer, |run| cmd_module_create(run, &args))
+            .expect("create");
     });
     quoted("update", "walkmod", Some("walkmod"), &|cli, printer| {
         let args = super::ModuleUpdateArgs {
@@ -1090,7 +1106,7 @@ fn cmd_module_create_records_a_sub_list_packages_registered_manager() {
         packages: vec!["brew.taps:charmbracelet/tap".to_string()],
         ..make_module_create_args("tapmod")
     };
-    cmd_module_create(&cli, &printer, &args).unwrap();
+    crate::cli::RunContext::for_test(&cli, &printer, |run| cmd_module_create(run, &args)).unwrap();
 
     let (doc, _) = load_module_document(dir.path(), "tapmod").unwrap();
     assert_eq!(doc.spec.packages[0].name, "charmbracelet/tap");
@@ -1118,9 +1134,10 @@ fn module_surfaces_refuse_a_snap_classic_token() {
         packages: vec!["snap.classic:code".to_string()],
         ..make_module_create_args("classicmod")
     };
-    let err = cmd_module_create(&cli, &printer, &create)
-        .unwrap_err()
-        .to_string();
+    let err =
+        crate::cli::RunContext::for_test(&cli, &printer, |run| cmd_module_create(run, &create))
+            .unwrap_err()
+            .to_string();
     assert!(err.contains("use snap:code"), "create: got: {err}");
 
     for token in ["snap.classic:code", "-snap.classic:code"] {
@@ -1145,7 +1162,7 @@ fn cmd_module_create_refuses_the_wire_spelling_of_a_virtual_brew_manager() {
         packages: vec!["brew-tap:charmbracelet/tap".to_string()],
         ..make_module_create_args("badmod")
     };
-    let err = cmd_module_create(&cli, &printer, &args)
+    let err = crate::cli::RunContext::for_test(&cli, &printer, |run| cmd_module_create(run, &args))
         .unwrap_err()
         .to_string();
     assert!(
@@ -1520,7 +1537,7 @@ fn cmd_module_create_with_env_and_aliases() {
         aliases: vec!["ll=ls -la".to_string()],
         ..make_module_create_args("env-mod")
     };
-    cmd_module_create(&cli, &printer, &args).unwrap();
+    crate::cli::RunContext::for_test(&cli, &printer, |run| cmd_module_create(run, &args)).unwrap();
     drop(printer);
 
     let module_yaml = dir
@@ -1564,7 +1581,7 @@ fn cmd_module_create_with_depends_and_scripts() {
         post_apply: vec!["echo setup".to_string()],
         ..make_module_create_args("dep-mod")
     };
-    cmd_module_create(&cli, &printer, &args).unwrap();
+    crate::cli::RunContext::for_test(&cli, &printer, |run| cmd_module_create(run, &args)).unwrap();
 
     let (doc, _) = load_module_document(dir.path(), "dep-mod").unwrap();
     assert_eq!(doc.spec.depends, vec!["base"]);
@@ -1580,7 +1597,8 @@ fn cmd_module_create_invalid_name_fails() {
     let printer = make_printer();
 
     let args = make_module_create_args(".bad-name");
-    let err = cmd_module_create(&cli, &printer, &args).unwrap_err();
+    let err = crate::cli::RunContext::for_test(&cli, &printer, |run| cmd_module_create(run, &args))
+        .unwrap_err();
     assert!(
         err.to_string().contains("cannot start with"),
         "should reject invalid name, got: {err}"
@@ -1810,7 +1828,10 @@ fn cmd_module_registry_rename_success() {
 
     let (printer2, buf2) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-    cmd_module_registry_rename(&cli, &printer2, "old-name", "new-name").unwrap();
+    crate::cli::RunContext::for_test(&cli, &printer2, |run| {
+        cmd_module_registry_rename(run, "old-name", "new-name")
+    })
+    .unwrap();
     drop(printer2);
 
     let output = cfgd_core::test_helpers::captured_text(&buf2);
@@ -1831,7 +1852,10 @@ fn cmd_module_registry_rename_not_found_fails() {
     let cli = test_cli(dir.path());
     let printer = make_printer();
 
-    let err = cmd_module_registry_rename(&cli, &printer, "ghost", "new").unwrap_err();
+    let err = crate::cli::RunContext::for_test(&cli, &printer, |run| {
+        cmd_module_registry_rename(run, "ghost", "new")
+    })
+    .unwrap_err();
     assert!(
         err.to_string().contains("not found"),
         "should report not found, got: {err}"
@@ -1848,7 +1872,10 @@ fn cmd_module_registry_rename_target_exists_fails() {
     cmd_module_registry_add(&cli, &printer1, "https://example.com/b.git", Some("beta")).unwrap();
 
     let printer2 = make_printer();
-    let err = cmd_module_registry_rename(&cli, &printer2, "alpha", "beta").unwrap_err();
+    let err = crate::cli::RunContext::for_test(&cli, &printer2, |run| {
+        cmd_module_registry_rename(run, "alpha", "beta")
+    })
+    .unwrap_err();
     assert!(
         err.to_string().contains("already exists"),
         "should report already exists, got: {err}"
@@ -1864,7 +1891,7 @@ fn cmd_module_registry_list_empty() {
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
-    cmd_module_registry_list(&cli, &printer).unwrap();
+    crate::cli::RunContext::for_test(&cli, &printer, cmd_module_registry_list).unwrap();
     drop(printer);
 
     let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -1885,7 +1912,7 @@ fn cmd_module_registry_list_with_entries() {
 
     let (printer2, buf2) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-    cmd_module_registry_list(&cli, &printer2).unwrap();
+    crate::cli::RunContext::for_test(&cli, &printer2, cmd_module_registry_list).unwrap();
     drop(printer2);
 
     let output = cfgd_core::test_helpers::captured_text(&buf2);
@@ -1903,7 +1930,7 @@ fn cmd_module_registry_list_json() {
 
     let cli_json = test_cli_json(dir.path());
     let (printer2, cap) = cfgd_core::output::Printer::for_test_doc();
-    cmd_module_registry_list(&cli_json, &printer2).unwrap();
+    crate::cli::RunContext::for_test(&cli_json, &printer2, cmd_module_registry_list).unwrap();
     drop(printer2);
 
     let json = cap.json().expect("doc captured json");
@@ -1929,7 +1956,7 @@ fn a_credentialed_registry_url_renders_stripped_and_serializes_whole() {
 
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-    cmd_module_registry_list(&cli, &printer).unwrap();
+    crate::cli::RunContext::for_test(&cli, &printer, cmd_module_registry_list).unwrap();
     drop(printer);
     let human = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
@@ -1943,7 +1970,7 @@ fn a_credentialed_registry_url_renders_stripped_and_serializes_whole() {
 
     let cli_json = test_cli_json(dir.path());
     let (printer, cap) = cfgd_core::output::Printer::for_test_doc();
-    cmd_module_registry_list(&cli_json, &printer).unwrap();
+    crate::cli::RunContext::for_test(&cli_json, &printer, cmd_module_registry_list).unwrap();
     drop(printer);
     let json = cap.json().expect("doc captured json");
     assert_eq!(
@@ -1960,7 +1987,7 @@ fn cmd_module_registry_list_no_config() {
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
-    cmd_module_registry_list(&cli, &printer).unwrap();
+    crate::cli::RunContext::for_test(&cli, &printer, cmd_module_registry_list).unwrap();
     drop(printer);
 
     let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -1994,7 +2021,9 @@ fn cmd_module_search_no_config_fails() {
     let cli = test_cli(dir.path());
     let printer = make_printer();
 
-    let err = cmd_module_search(&cli, &printer, "test").unwrap_err();
+    let err =
+        crate::cli::RunContext::for_test(&cli, &printer, |run| cmd_module_search(run, "test"))
+            .unwrap_err();
     assert!(
         err.to_string().contains("config"),
         "should fail without config, got: {err}"
@@ -2008,7 +2037,7 @@ fn cmd_module_search_no_registries() {
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
-    cmd_module_search(&cli, &printer, "test").unwrap();
+    crate::cli::RunContext::for_test(&cli, &printer, |run| cmd_module_search(run, "test")).unwrap();
     drop(printer);
 
     let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -2024,7 +2053,7 @@ fn cmd_module_search_no_registries_json() {
     let cli = test_cli_json(dir.path());
     let (printer, cap) = cfgd_core::output::Printer::for_test_doc();
 
-    cmd_module_search(&cli, &printer, "test").unwrap();
+    crate::cli::RunContext::for_test(&cli, &printer, |run| cmd_module_search(run, "test")).unwrap();
     drop(printer);
 
     let json = cap.json().expect("doc captured json");
@@ -2051,7 +2080,7 @@ fn cmd_module_keys_generate_no_cosign_fails() {
     // A manager answers available from its own install prefix as well as from
     // PATH, so an emptied PATH alone would still leave one for cfgd to spawn.
     let _managers = cfgd_core::test_helpers::NoHostManagers::pinned_missing();
-    let _g = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_COSIGN_BIN");
+    let _g = cfgd_core::test_helpers::EnvVarGuard::unset(cfgd_core::COSIGN_BIN_ENV);
     let _path = cfgd_core::test_helpers::EnvVarGuard::set("PATH", "");
     let printer = make_printer();
     let err = cmd_module_keys_generate(&printer, None).unwrap_err();
@@ -2206,7 +2235,10 @@ fn cmd_module_registry_rename_cascades_to_profiles() {
     let yaml = serde_yaml::to_string(&pdoc).unwrap();
     std::fs::write(&profile_path, &yaml).unwrap();
 
-    cmd_module_registry_rename(&cli, &printer, "old", "fresh").unwrap();
+    crate::cli::RunContext::for_test(&cli, &printer, |run| {
+        cmd_module_registry_rename(run, "old", "fresh")
+    })
+    .unwrap();
 
     let pdoc = config::load_profile(&profile_path).unwrap();
     assert!(
@@ -2245,7 +2277,10 @@ fn cmd_module_registry_rename_cascades_to_bundle_profiles() {
     )
     .unwrap();
 
-    cmd_module_registry_rename(&cli, &printer, "old", "fresh").unwrap();
+    crate::cli::RunContext::for_test(&cli, &printer, |run| {
+        cmd_module_registry_rename(run, "old", "fresh")
+    })
+    .unwrap();
 
     let flat = config::load_profile(&flat_path).unwrap();
     assert_eq!(flat.spec.modules, vec!["fresh/flatmod".to_string()]);
@@ -2272,7 +2307,10 @@ fn cmd_module_registry_rename_warns_ambiguous_profile_not_rewritten() {
 
     let (printer2, buf2) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-    cmd_module_registry_rename(&cli, &printer2, "old", "fresh").unwrap();
+    crate::cli::RunContext::for_test(&cli, &printer2, |run| {
+        cmd_module_registry_rename(run, "old", "fresh")
+    })
+    .unwrap();
     drop(printer2);
 
     let output = cfgd_core::test_helpers::captured_text(&buf2);
@@ -2319,6 +2357,7 @@ fn cmd_module_show_json_with_lockfile_entry() {
     cmd_module_show(
         &cli,
         &printer,
+        &crate::cli::startup::StartupDocument::load(&cli.config),
         "remote-mod",
         crate::cli::InventoryDetail::default(),
         false,
@@ -2366,6 +2405,7 @@ fn cmd_module_show_table_with_lockfile_entry() {
     cmd_module_show(
         &cli,
         &printer,
+        &crate::cli::startup::StartupDocument::load(&cli.config),
         "locked-mod",
         crate::cli::InventoryDetail::default(),
         false,
@@ -2375,7 +2415,7 @@ fn cmd_module_show_table_with_lockfile_entry() {
 
     let output = cfgd_core::test_helpers::captured_text(&buf);
     assert!(
-        output.contains("Source      remote"),
+        output.contains("Source      remote"), // space-run-ok: a rendered kv row's own column padding.
         "should show a remote source, got: {output}"
     );
     assert!(
@@ -2406,6 +2446,7 @@ fn cmd_module_show_aliases() {
     cmd_module_show(
         &cli,
         &printer,
+        &crate::cli::startup::StartupDocument::load(&cli.config),
         "alias-mod",
         crate::cli::InventoryDetail::default(),
         false,
@@ -2443,6 +2484,7 @@ fn cmd_module_show_scripts() {
     cmd_module_show(
         &cli,
         &printer,
+        &crate::cli::startup::StartupDocument::load(&cli.config),
         "script-mod",
         crate::cli::InventoryDetail::default(),
         false,
@@ -2484,6 +2526,7 @@ fn cmd_module_show_files_with_git_source() {
     cmd_module_show(
         &cli,
         &printer,
+        &crate::cli::startup::StartupDocument::load(&cli.config),
         "git-file-mod",
         crate::cli::InventoryDetail::default(),
         false,
@@ -2519,7 +2562,7 @@ fn cmd_module_create_with_packages_and_sets() {
         ],
         ..make_module_create_args("pkg-set-mod")
     };
-    cmd_module_create(&cli, &printer, &args).unwrap();
+    crate::cli::RunContext::for_test(&cli, &printer, |run| cmd_module_create(run, &args)).unwrap();
     drop(printer);
 
     let (doc, _) = load_module_document(dir.path(), "pkg-set-mod").unwrap();
@@ -2558,11 +2601,13 @@ fn cmd_module_create_duplicate_name_fails() {
         description: Some("test module".to_string()),
         ..make_module_create_args("dup-mod")
     };
-    cmd_module_create(&cli, &printer, &args).unwrap();
+    crate::cli::RunContext::for_test(&cli, &printer, |run| cmd_module_create(run, &args)).unwrap();
 
     // Second create with same name should fail
     let printer2 = make_printer();
-    let err = cmd_module_create(&cli, &printer2, &args).unwrap_err();
+    let err =
+        crate::cli::RunContext::for_test(&cli, &printer2, |run| cmd_module_create(run, &args))
+            .unwrap_err();
     assert!(
         err.to_string().contains("already exists"),
         "should report already exists, got: {err}"
@@ -2581,7 +2626,7 @@ fn cmd_module_create_post_apply_scripts_escape() {
         post_apply: vec![r"echo hello \! world".to_string()],
         ..make_module_create_args("script-esc-mod")
     };
-    cmd_module_create(&cli, &printer, &args).unwrap();
+    crate::cli::RunContext::for_test(&cli, &printer, |run| cmd_module_create(run, &args)).unwrap();
 
     let (doc, _) = load_module_document(dir.path(), "script-esc-mod").unwrap();
     let scripts = doc.spec.scripts.unwrap();
@@ -2605,7 +2650,7 @@ fn cmd_module_create_with_prefixed_packages() {
         packages: vec!["brew:ripgrep".to_string(), "cargo:fd-find".to_string()],
         ..make_module_create_args("prefix-mod")
     };
-    cmd_module_create(&cli, &printer, &args).unwrap();
+    crate::cli::RunContext::for_test(&cli, &printer, |run| cmd_module_create(run, &args)).unwrap();
 
     let (doc, _) = load_module_document(dir.path(), "prefix-mod").unwrap();
     assert_eq!(doc.spec.packages[0].name, "ripgrep");
@@ -2634,7 +2679,7 @@ fn cmd_module_create_with_file_import() {
         files: vec![file_spec],
         ..make_module_create_args("file-mod")
     };
-    cmd_module_create(&cli, &printer, &args).unwrap();
+    crate::cli::RunContext::for_test(&cli, &printer, |run| cmd_module_create(run, &args)).unwrap();
     drop(printer);
 
     let (doc, _) = load_module_document(dir.path(), "file-mod").unwrap();
@@ -2681,7 +2726,8 @@ fn cmd_module_create_duplicate_file_basenames_fail() {
         ],
         ..make_module_create_args("dup-file-mod")
     };
-    let err = cmd_module_create(&cli, &printer, &args).unwrap_err();
+    let err = crate::cli::RunContext::for_test(&cli, &printer, |run| cmd_module_create(run, &args))
+        .unwrap_err();
     assert!(
         err.to_string().contains("Duplicate file basename"),
         "should report duplicate basenames, got: {err}"
@@ -2704,7 +2750,7 @@ fn cmd_module_create_private_files_gitignore() {
         private: true,
         ..make_module_create_args("priv-mod")
     };
-    cmd_module_create(&cli, &printer, &args).unwrap();
+    crate::cli::RunContext::for_test(&cli, &printer, |run| cmd_module_create(run, &args)).unwrap();
 
     let (doc, _) = load_module_document(dir.path(), "priv-mod").unwrap();
     assert!(doc.spec.files[0].private, "file should be marked private");
@@ -3295,7 +3341,7 @@ fn cmd_module_create_with_apply_and_yes_drives_full_apply_sequence() {
     args.yes = true;
     args.description = Some("noop".to_string());
 
-    cmd_module_create(&cli, &printer, &args)
+    crate::cli::RunContext::for_test(&cli, &printer, |run| cmd_module_create(run, &args))
         .expect("create-with-apply-yes (empty spec) should succeed");
     drop(printer);
 
@@ -3352,7 +3398,8 @@ fn module_create_apply_keeps_the_rows_its_scope_never_resolved() {
     let create = |args: &super::ModuleCreateArgs| {
         let (printer, _buf) =
             cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-        cmd_module_create(&cli, &printer, args).expect("create-with-apply must succeed");
+        crate::cli::RunContext::for_test(&cli, &printer, |run| cmd_module_create(run, args))
+            .expect("create-with-apply must succeed");
     };
 
     // The module whose entries the env surface then holds.
@@ -3395,7 +3442,15 @@ fn module_create_apply_keeps_the_rows_its_scope_never_resolved() {
         }
         for (rtype, id) in foreign {
             state
-                .upsert_managed_resource(rtype, id, "acme", None, None)
+                .upsert_managed_resource(
+                    rtype,
+                    id,
+                    cfgd_core::reconciler::recorded_resource_kind(rtype, id),
+                    None,
+                    "acme",
+                    None,
+                    None,
+                )
                 .expect("seed tracking row");
         }
         for (rtype, id) in foreign.iter().chain(declared.iter()) {
@@ -3499,7 +3554,8 @@ fn cmd_module_create_apply_prices_the_package_it_installs() {
     // (manager, package) for the whole process.
     args.packages = vec!["qp4-created-tool".to_string()];
 
-    cmd_module_create(&cli, &printer, &args).expect("create-with-apply must succeed");
+    crate::cli::RunContext::for_test(&cli, &printer, |run| cmd_module_create(run, &args))
+        .expect("create-with-apply must succeed");
     drop(printer);
 
     let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -3537,7 +3593,8 @@ fn cmd_module_create_interactive_drives_full_prompt_sequence_via_harness() {
     );
     let args = make_module_create_args("interactive-mod");
 
-    cmd_module_create(&cli, &printer, &args).expect("interactive create should succeed");
+    crate::cli::RunContext::for_test(&cli, &printer, |run| cmd_module_create(run, &args))
+        .expect("interactive create should succeed");
     drop(printer);
 
     // The module yaml should be written with the prompted fields.
@@ -3961,7 +4018,7 @@ fn cmd_module_list_json_active_modules() {
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
 
-    cmd_module_list(&cli, &printer).unwrap();
+    crate::cli::RunContext::for_test(&cli, &printer, cmd_module_list).unwrap();
     drop(printer);
 
     let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -4067,6 +4124,7 @@ fn cmd_module_show_resolved_renders_platform_filtered_and_resolved_packages() {
     cmd_module_show(
         &cli,
         &printer,
+        &crate::cli::startup::StartupDocument::load(&cli.config),
         "rich",
         crate::cli::InventoryDetail::default(),
         true,
@@ -4161,7 +4219,7 @@ fn cmd_module_list_table_active_modules() {
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
-    cmd_module_list(&cli, &printer).unwrap();
+    crate::cli::RunContext::for_test(&cli, &printer, cmd_module_list).unwrap();
     drop(printer);
 
     let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -4206,7 +4264,7 @@ fn cmd_module_list_with_lockfile_shows_remote() {
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
 
-    cmd_module_list(&cli, &printer).unwrap();
+    crate::cli::RunContext::for_test(&cli, &printer, cmd_module_list).unwrap();
     drop(printer);
 
     let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -4336,7 +4394,7 @@ fn cmd_module_registry_list_json_empty() {
     let cli = test_cli_json(dir.path());
     let (printer, cap) = cfgd_core::output::Printer::for_test_doc();
 
-    cmd_module_registry_list(&cli, &printer).unwrap();
+    crate::cli::RunContext::for_test(&cli, &printer, cmd_module_registry_list).unwrap();
     drop(printer);
 
     let json = cap.json().expect("doc captured json");
@@ -4352,7 +4410,7 @@ fn cmd_module_registry_list_json_no_config() {
     let cli = test_cli_json(dir.path());
     let (printer, cap) = cfgd_core::output::Printer::for_test_doc();
 
-    cmd_module_registry_list(&cli, &printer).unwrap();
+    crate::cli::RunContext::for_test(&cli, &printer, cmd_module_registry_list).unwrap();
     drop(printer);
 
     let json = cap.json().expect("doc captured json");
@@ -4495,6 +4553,7 @@ fn cmd_module_show_json_depends() {
     cmd_module_show(
         &cli,
         &printer,
+        &crate::cli::startup::StartupDocument::load(&cli.config),
         "dep-show",
         crate::cli::InventoryDetail::default(),
         false,
@@ -4599,7 +4658,7 @@ fn cmd_module_create_description_and_depends_output() {
         packages: vec!["curl".to_string()],
         ..make_module_create_args("desc-mod")
     };
-    cmd_module_create(&cli, &printer, &args).unwrap();
+    crate::cli::RunContext::for_test(&cli, &printer, |run| cmd_module_create(run, &args)).unwrap();
     drop(printer);
 
     let (doc, _) = load_module_document(dir.path(), "desc-mod").unwrap();
@@ -4634,7 +4693,7 @@ fn cmd_module_create_no_description_omits_field() {
         packages: vec!["curl".to_string()],
         ..make_module_create_args("nodesc-mod")
     };
-    cmd_module_create(&cli, &printer, &args).unwrap();
+    crate::cli::RunContext::for_test(&cli, &printer, |run| cmd_module_create(run, &args)).unwrap();
 
     let yaml = std::fs::read_to_string(
         dir.path()
@@ -4663,7 +4722,10 @@ fn cmd_module_registry_rename_no_config_fails() {
     let cli = test_cli(dir.path());
     let printer = make_printer();
 
-    let err = cmd_module_registry_rename(&cli, &printer, "old", "new").unwrap_err();
+    let err = crate::cli::RunContext::for_test(&cli, &printer, |run| {
+        cmd_module_registry_rename(run, "old", "new")
+    })
+    .unwrap_err();
     assert!(
         err.to_string().contains("cfgd.yaml"),
         "should fail without config, got: {err}"
@@ -4797,7 +4859,7 @@ fn cmd_module_keys_rotate_no_cosign_fails() {
     // A manager answers available from its own install prefix as well as from
     // PATH, so an emptied PATH alone would still leave one for cfgd to spawn.
     let _managers = cfgd_core::test_helpers::NoHostManagers::pinned_missing();
-    let _g = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_COSIGN_BIN");
+    let _g = cfgd_core::test_helpers::EnvVarGuard::unset(cfgd_core::COSIGN_BIN_ENV);
     let _path = cfgd_core::test_helpers::EnvVarGuard::set("PATH", "");
     // The key the verb would rotate: its absence is a precondition that
     // refuses ahead of the install, so a pin about the missing TOOL has to get
@@ -4826,7 +4888,7 @@ fn cmd_module_keys_rotate_no_existing_key_fails() {
     let fake = dir.path().join("cosign");
     std::fs::write(&fake, "").unwrap();
     let _g = cfgd_core::test_helpers::EnvVarGuard::set(
-        "CFGD_COSIGN_BIN",
+        cfgd_core::COSIGN_BIN_ENV,
         fake.to_str().expect("tempdir path is valid UTF-8"),
     );
     let printer = make_printer();
@@ -5196,9 +5258,10 @@ mod keys_with_fake_cosign {
         // logs every argv: the claim is that NOTHING was spawned to get a tool
         // the verb never needed.
         let _managers = cfgd_core::test_helpers::NoHostManagers::pinned_missing();
-        let shim = cfgd_core::test_helpers::ToolShim::install("CFGD_BREW_BIN", 0, "", "");
+        let shim =
+            cfgd_core::test_helpers::ToolShim::install(crate::seams::BREW_BIN_ENV, 0, "", "");
         let _seam = cfgd_core::test_helpers::EnvVarGuard::set(
-            "CFGD_COSIGN_BIN",
+            cfgd_core::COSIGN_BIN_ENV,
             cfgd_core::test_helpers::ABSENT_SEAM_PATH,
         );
         let _empty = cfgd_core::test_helpers::EnvVarGuard::set("PATH", "");
@@ -5256,7 +5319,7 @@ mod keys_with_fake_cosign {
         std::fs::set_permissions(&shim_path, perms).expect("chmod shim");
 
         let _g = cfgd_core::test_helpers::EnvVarGuard::set(
-            "CFGD_COSIGN_BIN",
+            cfgd_core::COSIGN_BIN_ENV,
             shim_path.to_str().expect("shim path utf8"),
         );
 
@@ -5771,18 +5834,21 @@ fn print_module_review_summary_shows_control_characters_on_every_row() {
     for marker in ["dep-", "pkg-", "src-", "ENV=", "al="] {
         let row = out
             .lines()
+            // doc-comment-ok: the haystack is a rendered row
             .find(|l| l.contains(marker))
             .unwrap_or_else(|| panic!("row {marker:?} missing; screen holds: {out}"));
         assert!(
             row.contains("\\x0d") && row.contains("\\x1b[2K"),
             "row {marker:?} hid what it is asking the operator to approve: {row:?}"
         );
+        // doc-comment-ok: the haystack is a rendered row
         let payload = &row[row.find(marker).unwrap_or(0)..];
         assert!(
             !payload.contains('\r'),
             "row {marker:?} carries a live carriage return: {row:?}"
         );
     }
+    // long-line-ok: a hatch is read off its own line, so it cannot wrap
     // raw-capture-ok: the claim is that no erase sequence survived anywhere on the screen, and a stripping read removes exactly what it looks for
     let raw = buf.lock().unwrap_or_else(|e| e.into_inner()).clone();
     assert!(
@@ -5813,18 +5879,21 @@ fn print_module_review_summary_shows_control_characters_in_heading_and_trailer()
     for marker in ["module:mod-", "commit-", "sha256-"] {
         let row = out
             .lines()
+            // doc-comment-ok: the haystack is a rendered row
             .find(|l| l.contains(marker))
             .unwrap_or_else(|| panic!("row {marker:?} missing; screen holds: {out}"));
         assert!(
             row.contains("\\x0d") && row.contains("\\x1b[2K"),
             "row {marker:?} hid what it is asking the operator to approve: {row:?}"
         );
+        // doc-comment-ok: the haystack is a rendered row
         let payload = &row[row.find(marker).unwrap_or(0)..];
         assert!(
             !payload.contains('\r'),
             "row {marker:?} carries a live carriage return: {row:?}"
         );
     }
+    // long-line-ok: a hatch is read off its own line, so it cannot wrap
     // raw-capture-ok: the claim is that no erase sequence survived anywhere on the screen, and a stripping read removes exactly what it looks for
     let raw = buf.lock().unwrap_or_else(|e| e.into_inner()).clone();
     assert!(
@@ -6062,6 +6131,7 @@ fn a_remote_modules_post_apply_steps_reach_the_approval_screen_through_the_compo
         "sha256:dec0",
     );
     drop(printer);
+    // long-line-ok: a hatch is read off its own line, so it cannot wrap
     // raw-capture-ok: the escapes are half of what this test claims — a stripping read removes exactly what it compares
     let raw = buf.lock().unwrap_or_else(|e| e.into_inner()).clone();
 
@@ -6172,6 +6242,7 @@ fn an_upgrade_diffs_script_changes_render_their_bodies_through_the_composer() {
     );
     super::registry::print_spec_changes(&printer, &changes);
     drop(printer);
+    // long-line-ok: a hatch is read off its own line, so it cannot wrap
     // raw-capture-ok: the escapes are half of what this test claims — a stripping read removes exactly what it compares
     let raw = buf.lock().unwrap_or_else(|e| e.into_inner()).clone();
 
@@ -6670,7 +6741,7 @@ mod cmd_module_add_remote_local_bare {
     fn cmd_module_add_remote_against_local_bare_adds_to_lockfile_and_profile() {
         let work = setup_config_dir();
         let _home = cfgd_core::with_test_home_guard(work.path());
-        let _env = EnvGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+        let _env = EnvGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
 
         let bare_root = tempfile::tempdir().unwrap();
         let bare = make_bare_with_module(bare_root.path(), "mymod", "v1.0.0");
@@ -6678,8 +6749,10 @@ mod cmd_module_add_remote_local_bare {
 
         let cli = test_cli(work.path());
         let printer = make_printer();
-        cmd_module_add_remote(&cli, &printer, &url, None, true, true)
-            .expect("cmd_module_add_remote happy path");
+        crate::cli::RunContext::for_test(&cli, &printer, |run| {
+            cmd_module_add_remote(run, &url, None, true, true)
+        })
+        .expect("cmd_module_add_remote happy path");
 
         // Lockfile created with the new module entry.
         let lockfile_path = work.path().join("modules.lock");
@@ -6708,7 +6781,7 @@ mod cmd_module_add_remote_local_bare {
     fn cmd_module_add_remote_is_idempotent_when_module_already_in_lockfile() {
         let work = setup_config_dir();
         let _home = cfgd_core::with_test_home_guard(work.path());
-        let _env = EnvGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+        let _env = EnvGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
 
         let bare_root = tempfile::tempdir().unwrap();
         let bare = make_bare_with_module(bare_root.path(), "mymod", "v1.0.0");
@@ -6716,12 +6789,17 @@ mod cmd_module_add_remote_local_bare {
 
         let cli = test_cli(work.path());
         let printer1 = make_printer();
-        cmd_module_add_remote(&cli, &printer1, &url, None, true, true).unwrap();
+        crate::cli::RunContext::for_test(&cli, &printer1, |run| {
+            cmd_module_add_remote(run, &url, None, true, true)
+        })
+        .unwrap();
         // Second invocation hits the "already in lockfile" early return.
         let (printer2, buf) =
             cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-        cmd_module_add_remote(&cli, &printer2, &url, None, true, true)
-            .expect("second add should noop, not error");
+        crate::cli::RunContext::for_test(&cli, &printer2, |run| {
+            cmd_module_add_remote(run, &url, None, true, true)
+        })
+        .expect("a second add of the same module is a no-op");
         drop(printer2);
 
         let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -6736,7 +6814,7 @@ mod cmd_module_add_remote_local_bare {
     fn cmd_module_add_remote_bails_when_local_module_with_same_name_exists() {
         let work = setup_config_dir();
         let _home = cfgd_core::with_test_home_guard(work.path());
-        let _env = EnvGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+        let _env = EnvGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
 
         // Seed a local module under <config>/modules/<name>/ so the
         // local-vs-remote name collision check fires.
@@ -6750,8 +6828,10 @@ mod cmd_module_add_remote_local_bare {
 
         let cli = test_cli(work.path());
         let printer = make_printer();
-        let err = cmd_module_add_remote(&cli, &printer, &url, None, true, true)
-            .expect_err("local-module collision should refuse to proceed");
+        let err = crate::cli::RunContext::for_test(&cli, &printer, |run| {
+            cmd_module_add_remote(run, &url, None, true, true)
+        })
+        .expect_err("local-module collision should refuse to proceed");
         let msg = err.to_string();
         assert!(
             msg.contains("Local module") && msg.contains("mymod"),
@@ -6764,7 +6844,7 @@ mod cmd_module_add_remote_local_bare {
     fn cmd_module_upgrade_against_local_bare_replaces_lockfile_entry() {
         let work = setup_config_dir();
         let _home = cfgd_core::with_test_home_guard(work.path());
-        let _env = EnvGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+        let _env = EnvGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
 
         let bare_root = tempfile::tempdir().unwrap();
         let bare = make_bare_with_module(bare_root.path(), "mymod", "v1.0.0");
@@ -6772,7 +6852,10 @@ mod cmd_module_add_remote_local_bare {
 
         let cli = test_cli(work.path());
         let printer = make_printer();
-        cmd_module_add_remote(&cli, &printer, &url_v1, None, true, true).unwrap();
+        crate::cli::RunContext::for_test(&cli, &printer, |run| {
+            cmd_module_add_remote(run, &url_v1, None, true, true)
+        })
+        .unwrap();
 
         // Capture v1 lockfile state for comparison.
         let lock_v1 = std::fs::read_to_string(work.path().join("modules.lock")).unwrap();
@@ -6783,8 +6866,10 @@ mod cmd_module_add_remote_local_bare {
         add_tag_to_bare(&src, &bare, "v2.0.0");
 
         // Upgrade to v2.0.0.
-        cmd_module_upgrade(&cli, &printer, "mymod", Some("v2.0.0"), true, true)
-            .expect("upgrade to v2.0.0 should succeed");
+        crate::cli::RunContext::for_test(&cli, &printer, |run| {
+            cmd_module_upgrade(run, "mymod", Some("v2.0.0"), true, true)
+        })
+        .expect("upgrade to v2.0.0 should succeed");
 
         let lock_v2 = std::fs::read_to_string(work.path().join("modules.lock")).unwrap();
         assert!(
@@ -6802,12 +6887,14 @@ mod cmd_module_add_remote_local_bare {
     fn cmd_module_upgrade_returns_early_when_module_not_in_lockfile() {
         let work = setup_config_dir();
         let _home = cfgd_core::with_test_home_guard(work.path());
-        let _env = EnvGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+        let _env = EnvGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
 
         let cli = test_cli(work.path());
         let printer = make_printer();
-        let err = cmd_module_upgrade(&cli, &printer, "ghost", Some("v9.9.9"), true, true)
-            .expect_err("upgrading a non-tracked module should error");
+        let err = crate::cli::RunContext::for_test(&cli, &printer, |run| {
+            cmd_module_upgrade(run, "ghost", Some("v9.9.9"), true, true)
+        })
+        .expect_err("upgrading a non-tracked module should error");
         let msg = err.to_string();
         assert!(
             msg.contains("not found") || msg.contains("ghost"),
@@ -6826,7 +6913,7 @@ mod cmd_module_add_remote_local_bare {
         // HEAD and short-circuit at "already at this version".
         let work = setup_config_dir();
         let _home = cfgd_core::with_test_home_guard(work.path());
-        let _env = EnvGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+        let _env = EnvGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
 
         let bare_root = tempfile::tempdir().unwrap();
         let bare = make_bare_with_prefixed_tag(bare_root.path(), "mymod", "1.0.0");
@@ -6834,7 +6921,10 @@ mod cmd_module_add_remote_local_bare {
 
         let cli = test_cli(work.path());
         let printer1 = make_printer();
-        cmd_module_add_remote(&cli, &printer1, &url_v1, None, true, true).unwrap();
+        crate::cli::RunContext::for_test(&cli, &printer1, |run| {
+            cmd_module_add_remote(run, &url_v1, None, true, true)
+        })
+        .unwrap();
 
         // Capture the v1 commit the lockfile pinned, then publish v2.
         let lockfile_v1 = modules::load_lockfile(&config_dir(&cli)).unwrap();
@@ -6852,8 +6942,10 @@ mod cmd_module_add_remote_local_bare {
         // No --ref: must resolve and advance to mymod/v2.0.0.
         let (printer2, buf2) =
             cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-        cmd_module_upgrade(&cli, &printer2, "mymod", None, true, true)
-            .expect("no-ref upgrade should resolve and apply the latest tag");
+        crate::cli::RunContext::for_test(&cli, &printer2, |run| {
+            cmd_module_upgrade(run, "mymod", None, true, true)
+        })
+        .expect("no-ref upgrade should resolve and apply the latest tag");
         drop(printer2);
 
         let out = cfgd_core::test_helpers::captured_text(&buf2);
@@ -6889,7 +6981,7 @@ mod cmd_module_add_remote_local_bare {
         // falling back to a branch HEAD.
         let work = setup_config_dir();
         let _home = cfgd_core::with_test_home_guard(work.path());
-        let _env = EnvGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+        let _env = EnvGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
 
         // `make_bare_with_module` tags the commit `v1.0.0` (no `mymod/` prefix),
         // so there is no `mymod/v*` version tag for "latest" to resolve.
@@ -6899,13 +6991,18 @@ mod cmd_module_add_remote_local_bare {
 
         let cli = test_cli(work.path());
         let printer1 = make_printer();
-        cmd_module_add_remote(&cli, &printer1, &url_v1, None, true, true).unwrap();
+        crate::cli::RunContext::for_test(&cli, &printer1, |run| {
+            cmd_module_add_remote(run, &url_v1, None, true, true)
+        })
+        .unwrap();
 
         let lock_before = std::fs::read_to_string(work.path().join("modules.lock")).unwrap();
 
         let printer2 = make_printer();
-        let err = cmd_module_upgrade(&cli, &printer2, "mymod", None, true, true)
-            .expect_err("no published versions should error, not no-op");
+        let err = crate::cli::RunContext::for_test(&cli, &printer2, |run| {
+            cmd_module_upgrade(run, "mymod", None, true, true)
+        })
+        .expect_err("a module with no published versions fails the add");
         let msg = err.to_string();
         assert!(
             msg.contains("No published versions") && msg.contains("mymod"),
@@ -6929,7 +7026,7 @@ mod cmd_module_add_remote_local_bare {
         // BEFORE rewriting the lockfile.
         let work = setup_config_dir();
         let _home = cfgd_core::with_test_home_guard(work.path());
-        let _env = EnvGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+        let _env = EnvGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
 
         let bare_root = tempfile::tempdir().unwrap();
         let bare = make_bare_with_module(bare_root.path(), "mymod", "v1.0.0");
@@ -6937,15 +7034,20 @@ mod cmd_module_add_remote_local_bare {
 
         let cli = test_cli(work.path());
         let printer1 = make_printer();
-        cmd_module_add_remote(&cli, &printer1, &url_v1, None, true, true).unwrap();
+        crate::cli::RunContext::for_test(&cli, &printer1, |run| {
+            cmd_module_add_remote(run, &url_v1, None, true, true)
+        })
+        .unwrap();
 
         let lock_before = std::fs::read_to_string(work.path().join("modules.lock")).unwrap();
 
         // Re-upgrade to the SAME tag — should detect the same commit and bail.
         let (printer2, buf2) =
             cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-        cmd_module_upgrade(&cli, &printer2, "mymod", Some("v1.0.0"), true, true)
-            .expect("re-upgrading to current ref should succeed (no-op)");
+        crate::cli::RunContext::for_test(&cli, &printer2, |run| {
+            cmd_module_upgrade(run, "mymod", Some("v1.0.0"), true, true)
+        })
+        .expect("re-upgrading to current ref should succeed (no-op)");
         drop(printer2);
 
         let out = cfgd_core::test_helpers::captured_text(&buf2);
@@ -6968,7 +7070,7 @@ mod cmd_module_add_remote_local_bare {
     fn cmd_module_upgrade_bails_when_target_is_a_local_module() {
         let work = setup_config_dir();
         let _home = cfgd_core::with_test_home_guard(work.path());
-        let _env = EnvGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+        let _env = EnvGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
 
         // Module exists only as a local module — no lockfile entry.
         let local_mod_yaml =
@@ -6977,8 +7079,10 @@ mod cmd_module_add_remote_local_bare {
 
         let cli = test_cli(work.path());
         let printer = make_printer();
-        let err = cmd_module_upgrade(&cli, &printer, "localmod", Some("v1"), true, true)
-            .expect_err("upgrade should refuse to touch local modules");
+        let err = crate::cli::RunContext::for_test(&cli, &printer, |run| {
+            cmd_module_upgrade(run, "localmod", Some("v1"), true, true)
+        })
+        .expect_err("upgrade should refuse to touch local modules");
         let msg = err.to_string();
         assert!(
             msg.contains("local module") || msg.contains("edit it directly"),
@@ -7112,7 +7216,7 @@ mod cmd_module_add_from_registry_local {
     fn cmd_module_add_from_registry_explicit_tag_writes_lockfile_and_profile() {
         let work = setup_config_dir();
         let _home = cfgd_core::with_test_home_guard(work.path());
-        let _env = EnvGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+        let _env = EnvGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
 
         let src_root = tempfile::tempdir().unwrap();
         let src = init_registry_source(src_root.path(), "alpha", "1.0.0", "Alpha module");
@@ -7122,8 +7226,10 @@ mod cmd_module_add_from_registry_local {
         let cli = test_cli(work.path());
         let (printer, buf) =
             cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-        cmd_module_add_from_registry(&cli, &printer, "myreg/alpha@v1.0.0", true, true)
-            .expect("explicit-tag registry add should succeed");
+        crate::cli::RunContext::for_test(&cli, &printer, |run| {
+            cmd_module_add_from_registry(run, "myreg/alpha@v1.0.0", true, true)
+        })
+        .expect("explicit-tag registry add should succeed");
         drop(printer);
 
         // The resolver should log the per-module URL it built before delegating.
@@ -7156,7 +7262,7 @@ mod cmd_module_add_from_registry_local {
     fn cmd_module_add_from_registry_no_tag_resolves_latest_version() {
         let work = setup_config_dir();
         let _home = cfgd_core::with_test_home_guard(work.path());
-        let _env = EnvGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+        let _env = EnvGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
 
         let src_root = tempfile::tempdir().unwrap();
         let src = init_registry_source(src_root.path(), "beta", "1.0.0", "Beta v1");
@@ -7168,8 +7274,10 @@ mod cmd_module_add_from_registry_local {
         let (printer, buf) =
             cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
         // No `@<tag>` — should fetch tags and pick the highest semver.
-        cmd_module_add_from_registry(&cli, &printer, "myreg/beta", true, true)
-            .expect("latest-version registry add should succeed");
+        crate::cli::RunContext::for_test(&cli, &printer, |run| {
+            cmd_module_add_from_registry(run, "myreg/beta", true, true)
+        })
+        .expect("latest-version registry add should succeed");
         drop(printer);
 
         let out = cfgd_core::test_helpers::captured_text(&buf);
@@ -7190,13 +7298,15 @@ mod cmd_module_add_from_registry_local {
     fn cmd_module_add_from_registry_unknown_registry_errors() {
         let work = setup_config_dir();
         let _home = cfgd_core::with_test_home_guard(work.path());
-        let _env = EnvGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+        let _env = EnvGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
 
         // cfgd.yaml left without any registries declared.
         let cli = test_cli(work.path());
         let printer = make_printer();
-        let err = cmd_module_add_from_registry(&cli, &printer, "ghost-reg/foo@v1.0.0", true, true)
-            .expect_err("unknown registry should error");
+        let err = crate::cli::RunContext::for_test(&cli, &printer, |run| {
+            cmd_module_add_from_registry(run, "ghost-reg/foo@v1.0.0", true, true)
+        })
+        .expect_err("unknown registry should error");
         let msg = err.to_string();
         assert!(
             msg.contains("ghost-reg") && msg.contains("registry add"),
@@ -7209,13 +7319,15 @@ mod cmd_module_add_from_registry_local {
     fn cmd_module_add_from_registry_invalid_reference_format_errors() {
         let work = setup_config_dir();
         let _home = cfgd_core::with_test_home_guard(work.path());
-        let _env = EnvGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+        let _env = EnvGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
 
         let cli = test_cli(work.path());
         let printer = make_printer();
         // No slash — `parse_registry_ref` should reject this before any I/O.
-        let err = cmd_module_add_from_registry(&cli, &printer, "noslash", true, true)
-            .expect_err("bare reference without `/` should be rejected");
+        let err = crate::cli::RunContext::for_test(&cli, &printer, |run| {
+            cmd_module_add_from_registry(run, "noslash", true, true)
+        })
+        .expect_err("bare reference without `/` should be rejected");
         let msg = err.to_string();
         assert!(
             msg.contains("registry/module"),
@@ -7228,7 +7340,7 @@ mod cmd_module_add_from_registry_local {
     fn cmd_module_add_from_registry_unknown_module_errors_when_no_tags() {
         let work = setup_config_dir();
         let _home = cfgd_core::with_test_home_guard(work.path());
-        let _env = EnvGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+        let _env = EnvGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
 
         let src_root = tempfile::tempdir().unwrap();
         let src = init_registry_source(src_root.path(), "alpha", "1.0.0", "Alpha");
@@ -7238,8 +7350,10 @@ mod cmd_module_add_from_registry_local {
         let cli = test_cli(work.path());
         let printer = make_printer();
         // Registry resolves, but `beta` has no matching tags in the source.
-        let err = cmd_module_add_from_registry(&cli, &printer, "myreg/beta", true, true)
-            .expect_err("module with no tags should error on latest lookup");
+        let err = crate::cli::RunContext::for_test(&cli, &printer, |run| {
+            cmd_module_add_from_registry(run, "myreg/beta", true, true)
+        })
+        .expect_err("module with no tags should error on latest lookup");
         let msg = err.to_string();
         assert!(
             msg.contains("No tags") && msg.contains("beta"),
@@ -7260,7 +7374,7 @@ mod cmd_module_add_from_registry_local {
     fn cmd_module_search_returns_matching_module_in_table() {
         let work = setup_config_dir();
         let _home = cfgd_core::with_test_home_guard(work.path());
-        let _env = EnvGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+        let _env = EnvGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
 
         let src_root = tempfile::tempdir().unwrap();
         let src = init_registry_source(src_root.path(), "alpha", "1.0.0", "Alpha module");
@@ -7270,7 +7384,8 @@ mod cmd_module_add_from_registry_local {
         let cli = test_cli(work.path());
         let (printer, buf) =
             cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-        cmd_module_search(&cli, &printer, "alph").expect("search should succeed");
+        crate::cli::RunContext::for_test(&cli, &printer, |run| cmd_module_search(run, "alph"))
+            .expect("search should succeed");
         drop(printer);
 
         let out = cfgd_core::test_helpers::captured_text(&buf);
@@ -7294,7 +7409,7 @@ mod cmd_module_add_from_registry_local {
     fn cmd_module_search_reports_no_matches_when_query_misses() {
         let work = setup_config_dir();
         let _home = cfgd_core::with_test_home_guard(work.path());
-        let _env = EnvGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+        let _env = EnvGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
 
         let src_root = tempfile::tempdir().unwrap();
         let src = init_registry_source(src_root.path(), "alpha", "1.0.0", "Alpha module");
@@ -7304,7 +7419,10 @@ mod cmd_module_add_from_registry_local {
         let cli = test_cli(work.path());
         let (printer, buf) =
             cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-        cmd_module_search(&cli, &printer, "no-such-name").expect("search should succeed");
+        crate::cli::RunContext::for_test(&cli, &printer, |run| {
+            cmd_module_search(run, "no-such-name")
+        })
+        .expect("search should succeed");
         drop(printer);
 
         let out = cfgd_core::test_helpers::captured_text(&buf);
@@ -7323,7 +7441,7 @@ mod cmd_module_add_from_registry_local {
     fn cmd_module_search_wide_format_includes_registry_column() {
         let work = setup_config_dir();
         let _home = cfgd_core::with_test_home_guard(work.path());
-        let _env = EnvGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+        let _env = EnvGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
 
         let src_root = tempfile::tempdir().unwrap();
         let src = init_registry_source(src_root.path(), "alpha", "1.0.0", "Alpha module");
@@ -7335,7 +7453,8 @@ mod cmd_module_add_from_registry_local {
         let (printer, cap) = cfgd_core::output::Printer::for_test_doc_with_format(
             cfgd_core::output::OutputFormat::Wide,
         );
-        cmd_module_search(&cli, &printer, "alph").expect("wide search should succeed");
+        crate::cli::RunContext::for_test(&cli, &printer, |run| cmd_module_search(run, "alph"))
+            .expect("wide search should succeed");
         drop(printer);
 
         let out = cap.human();
@@ -7358,7 +7477,7 @@ mod cmd_module_add_from_registry_local {
     fn cmd_module_search_json_emits_results_array() {
         let work = setup_config_dir();
         let _home = cfgd_core::with_test_home_guard(work.path());
-        let _env = EnvGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+        let _env = EnvGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
 
         let src_root = tempfile::tempdir().unwrap();
         let src = init_registry_source(src_root.path(), "alpha", "1.0.0", "Alpha module");
@@ -7367,7 +7486,8 @@ mod cmd_module_add_from_registry_local {
 
         let cli = test_cli_json(work.path());
         let (printer, cap) = cfgd_core::output::Printer::for_test_doc();
-        cmd_module_search(&cli, &printer, "alpha").expect("json search should succeed");
+        crate::cli::RunContext::for_test(&cli, &printer, |run| cmd_module_search(run, "alpha"))
+            .expect("json search should succeed");
         drop(printer);
 
         let json = cap.json().expect("doc captured json");
@@ -7388,7 +7508,7 @@ mod cmd_module_add_from_registry_local {
     fn cmd_module_search_unreachable_registry_emits_failure_warning() {
         let work = setup_config_dir();
         let _home = cfgd_core::with_test_home_guard(work.path());
-        let _env = EnvGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+        let _env = EnvGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
 
         // Point the registry URL at a path that doesn't exist — the
         // file:// resolver should fail to clone, the search should NOT
@@ -7401,7 +7521,7 @@ mod cmd_module_add_from_registry_local {
         let cli = test_cli(work.path());
         let (printer, buf) =
             cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-        cmd_module_search(&cli, &printer, "anything")
+        crate::cli::RunContext::for_test(&cli, &printer, |run| cmd_module_search(run, "anything"))
             .expect("search should succeed even when a registry fails");
         drop(printer);
 
@@ -7457,7 +7577,8 @@ fn cmd_module_create_interactive_imports_file_and_script_with_empty_description(
     );
 
     let args = make_module_create_args("interactive-file-mod");
-    cmd_module_create(&cli, &printer, &args).expect("interactive create should succeed");
+    crate::cli::RunContext::for_test(&cli, &printer, |run| cmd_module_create(run, &args))
+        .expect("interactive create should succeed");
     drop(printer);
 
     let (doc, _) = load_module_document(dir.path(), "interactive-file-mod").unwrap();
@@ -7516,7 +7637,7 @@ fn cmd_module_create_apply_declined_emits_applied_false_and_leaves_unapplied() {
     args.yes = false;
     args.env = vec!["CARGO_HOME_TEST=/tmp/x".to_string()];
 
-    cmd_module_create(&cli, &printer, &args)
+    crate::cli::RunContext::for_test(&cli, &printer, |run| cmd_module_create(run, &args))
         .expect("create with apply declined should still succeed");
     drop(printer);
 
@@ -7885,7 +8006,8 @@ fn cmd_module_create_success_doc_payload_fields() {
         packages: vec!["ripgrep".to_string(), "fd".to_string()],
         ..make_module_create_args("create-doc")
     };
-    cmd_module_create(&cli, &printer, &args).expect("create should succeed");
+    crate::cli::RunContext::for_test(&cli, &printer, |run| cmd_module_create(run, &args))
+        .expect("create should succeed");
     drop(printer);
 
     let json = cap.json().expect("doc captured json");
@@ -8062,7 +8184,8 @@ fn cmd_module_update_preserves_leading_comment_block() {
         description: Some("Comment keeper".to_string()),
         ..make_module_create_args("keeper")
     };
-    cmd_module_create(&cli, &printer, &create_args).unwrap();
+    crate::cli::RunContext::for_test(&cli, &printer, |run| cmd_module_create(run, &create_args))
+        .unwrap();
     let module_yaml = dir
         .path()
         .join("modules")
@@ -8284,11 +8407,8 @@ fn every_surface_naming_the_shell_pair_lists_aliases_first() {
     .unwrap();
     let ordered = cfgd_core::with_test_home(home.path(), || {
         crate::cli::diff::env_drift_ordered(cfgd_core::reconciler::env_verify_results(
-            &env,
-            &aliases,
-            &cfgd_core::config::EntryOwners::default(),
+            &cfgd_core::reconciler::LayeredEnv::from_parts("profile:test", &env, &aliases, &[]),
             cfgd_core::config::EnvScope::default(),
-            &[],
             &[],
         ))
     });
@@ -8332,11 +8452,25 @@ fn module_show_resolved_rows_states_each_of_the_three_resolutions() {
 
     let mut gated = make_pkg("mas-cli");
     gated.platforms = vec!["darwin".to_string()];
-    let mut unsatisfiable = make_pkg("ghostty");
-    unsatisfiable.prefer = vec!["brew".to_string()];
+    // The entry the golden and the reference page both show, so the bytes
+    // asserted below are the bytes those two pages promise.
+    let mut unsatisfiable = make_pkg("obscure-tool");
+    unsatisfiable.prefer = vec!["nix".to_string()];
+    unsatisfiable.min_version = Some("1.0".to_string());
+    // Gated ON for the fixture's own platform AND unsatisfiable, which is the
+    // only shape that can carry the gate twice: `declared_package_clauses`
+    // puts it inside the parenthetical, and the row used to append it again.
+    let mut gated_unsatisfiable = make_pkg("gated-tool");
+    gated_unsatisfiable.platforms = vec!["linux".to_string()];
+    gated_unsatisfiable.prefer = vec!["nix".to_string()];
 
     let spec = cfgd_core::config::ModuleSpec {
-        packages: vec![make_pkg("ripgrep"), gated, unsatisfiable],
+        packages: vec![
+            make_pkg("ripgrep"),
+            gated,
+            unsatisfiable,
+            gated_unsatisfiable,
+        ],
         ..Default::default()
     };
 
@@ -8351,7 +8485,7 @@ fn module_show_resolved_rows_states_each_of_the_three_resolutions() {
         Some(&cx),
     );
 
-    assert_eq!(rows.len(), 3, "one row per declared package: {rows:#?}");
+    assert_eq!(rows.len(), 4, "one row per declared package: {rows:#?}");
     match &rows[0] {
         super::list_show::PackageDisplay::Resolved {
             name,
@@ -8366,7 +8500,7 @@ fn module_show_resolved_rows_states_each_of_the_three_resolutions() {
                 version.as_deref(),
                 Some("14.1.0"),
                 "the row states what the manager OFFERS, which is what \
-                 `fill_available_versions` fills and not the installed copy"
+                 `fill_available_versions` fills, whatever the installed copy is"
             );
         }
         other => panic!("a package an available manager holds resolves: {other:#?}"),
@@ -8383,9 +8517,186 @@ fn module_show_resolved_rows_states_each_of_the_three_resolutions() {
     }
     match &rows[2] {
         super::list_show::PackageDisplay::Unresolved { summary, error } => {
-            assert!(summary.starts_with("ghostty"), "summary: {summary}");
+            assert_eq!(
+                summary, "obscure-tool (prefer: nix; min: 1.0)",
+                "every declared clause sits inside the ONE parenthetical, \
+                 separated as clauses"
+            );
             assert!(!error.is_empty(), "the row states why it could not resolve");
+            // A page showing this row was typed by hand once and went on
+            // promising `(prefer: nix), min: 1.0` for the two releases after
+            // the composer stopped producing it. Both copies are read here, so
+            // a shape change fails beside the code that made it.
+            let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+            let shipped = [
+                root.join("tests/output_snapshots/module_show/resolved.txt"),
+                root.join("../../docs/cli-reference.md"),
+            ];
+            for path in shipped {
+                let body = cfgd_core::test_helpers::walked_file_body(&path);
+                assert!(
+                    body.contains(summary.as_str()),
+                    "{} shows a `module show --resolved` row the composer does \
+                     not produce; it must read {summary:?}",
+                    path.display()
+                );
+                // Containment alone passes a page holding the right bytes in
+                // one block and the spelling the composer stopped producing in
+                // another, which is the state both pages were actually in.
+                assert!(
+                    !body.contains("(prefer: nix), min"),
+                    "{} still shows the comma-separated spelling no composer \
+                     produces",
+                    path.display()
+                );
+            }
         }
         other => panic!("an entry no available manager can satisfy is unresolved: {other:#?}"),
     }
+    match &rows[3] {
+        super::list_show::PackageDisplay::Unresolved { summary, .. } => {
+            assert_eq!(
+                summary, "gated-tool (platforms: linux; prefer: nix)",
+                "the gate is one of the declared clauses, so the row names it \
+                 once"
+            );
+            assert_eq!(
+                summary.matches("platforms:").count(),
+                1,
+                "an unresolved row states its platform gate exactly once: \
+                 {summary:?}"
+            );
+        }
+        other => {
+            panic!("an entry gated ON for this host but unsatisfiable is unresolved: {other:#?}")
+        }
+    }
+}
+
+/// A declared package that NAMES a manager this host already holds renders the
+/// one composer's sentence, and the row's `met` flag carries the judgment.
+///
+/// The rows a reader sees for the two answers differ only in that flag and in
+/// the clause, and both come from `HeldManager::clause`. Built by hand once,
+/// the row promised a shortfall the resolution never made: the clause is
+/// asserted here as the composer produces it, over the real resolution.
+#[test]
+fn module_show_resolved_rows_state_a_held_managers_floor_judgment() {
+    use cfgd_core::providers::PackageManager;
+    use cfgd_core::test_helpers::MockPackageManager;
+
+    let cargo = MockPackageManager::new("cargo")
+        .offering("cargo", "1.75")
+        .reporting_version("1.80");
+    let npm = MockPackageManager::new("npm").offering("npm", "9.0.0");
+    let mgr_map: std::collections::HashMap<String, &dyn PackageManager> = [
+        ("cargo".to_string(), &cargo as &dyn PackageManager),
+        ("npm".to_string(), &npm as &dyn PackageManager),
+    ]
+    .into_iter()
+    .collect();
+    let platform = cfgd_core::platform::Platform {
+        os: cfgd_core::platform::Os::Linux,
+        distro: cfgd_core::platform::Distro::Debian,
+        version: "12".to_string(),
+        arch: cfgd_core::platform::Arch::X86_64,
+    };
+
+    let mut held_short = make_pkg("cargo");
+    held_short.min_version = Some("1.85".to_string());
+    held_short.prefer = vec!["cargo".to_string()];
+    // The manager states no version at all, which is neither a pass nor a
+    // shortfall: the row carries the unproven clause and fails the flag.
+    let mut held_unproven = make_pkg("npm");
+    held_unproven.min_version = Some("10.0".to_string());
+    held_unproven.prefer = vec!["npm".to_string()];
+
+    let spec = cfgd_core::config::ModuleSpec {
+        packages: vec![held_short, held_unproven],
+        ..Default::default()
+    };
+
+    let (printer, _cap) = cfgd_core::output::Printer::for_test_doc();
+    let state = cfgd_core::state::StateStore::open_in_memory().unwrap();
+    let cx = cfgd_core::providers::PackageContext::new(&printer, &state);
+    let rows = super::list_show::module_show_resolved_rows(
+        &spec,
+        "dev-tools",
+        &platform,
+        &mgr_map,
+        Some(&cx),
+    );
+
+    let expected_short = cfgd_core::modules::HeldManager {
+        package: "cargo".into(),
+        module: "dev-tools".into(),
+        floor: "1.85".into(),
+        judgment: cfgd_core::modules::FloorJudgment::Short {
+            version: "1.80".into(),
+        },
+    }
+    .clause(Some(&cargo));
+    match &rows[0] {
+        super::list_show::PackageDisplay::Held {
+            name,
+            clause,
+            met,
+            version,
+            min_version,
+        } => {
+            assert_eq!(name, "cargo");
+            assert_eq!(clause, &expected_short);
+            assert!(!met, "a floor this host falls short of is not met");
+            assert_eq!(
+                version.as_deref(),
+                Some("1.80"),
+                "the operand the verdict was measured against rides as a field"
+            );
+            assert_eq!(
+                min_version, "1.85",
+                "and so does the floor it was measured against"
+            );
+        }
+        other => panic!("an entry naming a held manager renders its judgment: {other:#?}"),
+    }
+    match &rows[1] {
+        super::list_show::PackageDisplay::Held {
+            name,
+            clause,
+            met,
+            version,
+            min_version,
+        } => {
+            assert_eq!(name, "npm");
+            assert_eq!(
+                version.as_deref(),
+                None,
+                "a floor nothing could judge names no version"
+            );
+            assert_eq!(min_version, "10.0");
+            let unproven = cfgd_core::modules::HeldManager {
+                package: "npm".into(),
+                module: "dev-tools".into(),
+                floor: "10.0".into(),
+                judgment: cfgd_core::modules::judge_declared_floor(&npm, "npm", "10.0", None),
+            }
+            .clause(Some(&npm));
+            assert_eq!(clause, &unproven);
+            assert!(!met, "a floor nothing could judge is not met");
+        }
+        other => panic!("a floor nothing could judge is still a held row: {other:#?}"),
+    }
+
+    let wire = serde_json::to_value(&rows).expect("the rows serialize");
+    assert_eq!(wire[0]["state"], "held");
+    assert_eq!(
+        (&wire[0]["version"], &wire[0]["minVersion"]),
+        (&serde_json::json!("1.80"), &serde_json::json!("1.85")),
+        "a consumer reads both operands as fields, camelCase like every other key"
+    );
+    assert!(
+        wire[1]["version"].is_null() && wire[1]["minVersion"] == "10.0",
+        "a floor nothing could judge states the floor and a null version: {}",
+        wire[1]
+    );
 }

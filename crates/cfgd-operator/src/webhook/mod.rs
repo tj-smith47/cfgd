@@ -25,6 +25,7 @@ use tracing::{info, warn};
 // operator in the dependency graph, so non-operator consumers of `ModuleSpec`
 // (the CLI's typed CRD-construction tests) exercise the exact same predicate
 // without pulling in axum/hyper.
+use crate::controllers::policy_in_force;
 use crate::crds::{
     BackupPolicySpec, ClusterConfigPolicy, ClusterConfigPolicySpec, ConfigPolicy, ConfigPolicySpec,
     DriftAlertSpec, MachineConfigSpec, Module, ModuleSpec, MountPolicy, Validatable,
@@ -39,11 +40,14 @@ struct WebhookState {
     client: Client,
 }
 
+/// Serve admission over TLS on `listener`, calling `on_serving` once the
+/// certificates have loaded and the accept loop starts.
 pub async fn run_webhook_server(
     cert_dir: &str,
     listener: TcpListener,
     metrics: Metrics,
     client: Client,
+    on_serving: impl FnOnce(),
 ) -> Result<(), OperatorError> {
     let cert_path = Path::new(cert_dir).join("tls.crt");
     let key_path = Path::new(cert_dir).join("tls.key");
@@ -79,6 +83,7 @@ pub async fn run_webhook_server(
         .map_err(|e| OperatorError::Webhook(format!("failed to read listener address: {e}")))?;
 
     info!(addr = %local_addr, "webhook server listening");
+    on_serving();
 
     loop {
         let (stream, peer_addr) = match listener.accept().await {
@@ -190,8 +195,8 @@ fn handle_validate<S: Validatable + serde::de::DeserializeOwned + 'static>(
 
 // Liveness probe for the webhook pod. Kubernetes liveness semantics are
 // "the process is alive and serving" — accepting TCP here already proves that.
-// Intentionally does not consult `HealthState` (which gates readiness /
-// leader status) because liveness must stay green even when the operator
+// Intentionally does not consult `HealthState` (which reports readiness and
+// leadership) because liveness must stay green even when the operator
 // is voluntarily paused. Matches `health::healthz_handler`'s unconditional
 // OK response — keep in sync if that handler ever changes.
 async fn liveness_ok() -> (axum::http::StatusCode, &'static str) {
@@ -288,7 +293,7 @@ async fn enforce_module_policy(client: &Client, spec: &ModuleSpec) -> Result<(),
     let mut all_registries: Vec<String> = Vec::new();
     let mut any_disallow_unsigned = false;
 
-    for policy in &policies {
+    for policy in policies.iter().filter(|p| policy_in_force(*p)) {
         all_registries.extend(policy.spec.security.trusted_registries.clone());
         if !policy.spec.security.allow_unsigned {
             any_disallow_unsigned = true;
@@ -487,7 +492,7 @@ async fn collect_policy_modules(client: &Client, namespace: &str) -> PolicyModul
         .list(&ListParams::default())
         .await
     {
-        for policy in &policies {
+        for policy in policies.iter().filter(|p| policy_in_force(*p)) {
             for module_ref in &policy.spec.required_modules {
                 if module_ref.required && !result.required.contains(&module_ref.name) {
                     result.required.push(module_ref.name.clone());
@@ -514,7 +519,7 @@ async fn collect_policy_modules(client: &Client, namespace: &str) -> PolicyModul
         .list(&ListParams::default())
         .await
     {
-        for policy in &policies {
+        for policy in policies.iter().filter(|p| policy_in_force(*p)) {
             if !crate::controllers::matches_selector(
                 ns_labels.as_ref(),
                 &policy.spec.namespace_selector,
@@ -559,6 +564,7 @@ fn build_injection_patches<'m>(
     if modules.is_empty() {
         return (patches, Vec::new());
     }
+    let driver = cfgd_core::csi_driver_name();
 
     // Ensure /spec/volumes exists
     if !has_volumes {
@@ -622,7 +628,7 @@ fn build_injection_patches<'m>(
             value: serde_json::json!({
                 "name": vol_name,
                 "csi": {
-                    "driver": cfgd_core::CSI_DRIVER_NAME,
+                    "driver": driver,
                     "readOnly": true,
                     "volumeAttributes": vol_attrs
                 }

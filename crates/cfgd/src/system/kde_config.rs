@@ -12,8 +12,8 @@ use super::{diff_yaml_mapping, yaml_value_to_string};
 
 /// Test seams for the two KDE binaries. Named separately because a host carries
 /// one generation of each and a test drives one at a time.
-const KREADCONFIG_BIN_ENV: &str = "CFGD_KREADCONFIG_BIN";
-const KWRITECONFIG_BIN_ENV: &str = "CFGD_KWRITECONFIG_BIN";
+pub const KREADCONFIG_BIN_ENV: &str = "CFGD_KREADCONFIG_BIN";
+pub const KWRITECONFIG_BIN_ENV: &str = "CFGD_KWRITECONFIG_BIN";
 
 /// KdeConfigConfigurator — reads/writes KDE Plasma settings via `kwriteconfig5`/`kwriteconfig6`.
 ///
@@ -36,6 +36,9 @@ pub struct KdeConfigConfigurator;
 /// seam's to answer: `tool_cmd` discards the default, and probing the host for
 /// a generation the spawn will not use describes the wrong machine.
 fn seam_is_set(env_var: &str) -> bool {
+    // A sibling test pins this seam under the PATH lock; the read waits it out.
+    #[cfg(test)]
+    let _seam_guard = cfgd_core::test_helpers::path_env_read_guard();
     std::env::var_os(env_var).is_some()
 }
 

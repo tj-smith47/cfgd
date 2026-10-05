@@ -3,55 +3,48 @@ use super::*;
 // no-header-ok: same as apply — `reconciler::ApplyRun` renders the header
 // once the plan is final, so the profile label is carried down rather than
 // printed here.
-pub fn cmd_plan(
-    cli: &Cli,
-    printer: &cfgd_core::output::Printer,
-    args: &PlanArgs,
-) -> anyhow::Result<()> {
-    // Parse --context
-    let reconcile_context = match args.context.as_str() {
-        "apply" => ReconcileContext::Apply,
-        "reconcile" => ReconcileContext::Reconcile,
-        other => {
-            anyhow::bail!(
-                "Unknown context '{}'. Valid values: apply, reconcile",
-                other
-            );
-        }
-    };
+pub fn cmd_plan(run: &RunContext<'_>, args: &PlanArgs) -> anyhow::Result<()> {
+    let printer = run.printer();
+    let reconcile_context = super::apply::parse_reconcile_context(&args.context)?;
 
-    // --from: mirror cmd_apply so `plan` can be pointed at a git source or local path.
-    if let Some(from) = &args.from {
-        let target = init::from_destination(&cli.config);
-        init::resolve_from(from, target.as_deref(), "master", printer)?;
-    }
+    // --from: clone from a git source, or read a local config directory in
+    // place; either way the run reads the document the source put there.
+    let from_run;
+    let from_ctx;
+    let ctx = match &args.from {
+        Some(from) => {
+            from_run = init::from_run(run.cli(), from, printer)?;
+            from_ctx = RunContext::new(&from_run.0, printer, &from_run.1);
+            &from_ctx
+        }
+        None => run,
+    };
+    let cli = ctx.cli();
 
     let config_dir = config_dir(cli);
-    let ctx = RunContext::new(cli, printer);
     let state = ctx.state()?;
     let module_filter: &[String] = &args.module;
     let with_profile = args.with_profile;
 
-    // `--with-profile` opts a `--module` run INTO composing with the full
-    // profile; with no module named, there is nothing for it to compose
-    // with — reject rather than silently behaving like a plain `cfgd plan`.
-    if with_profile && module_filter.is_empty() {
-        anyhow::bail!(
-            "--with-profile requires --module (it composes the named module(s) with the full profile; without --module there is nothing to add)"
-        );
-    }
+    super::apply::refuse_with_profile_without_module(with_profile, module_filter)?;
+
+    // Opened around the whole derivation, config parse included:
+    // the profile chain, the module bodies, the lockfiles and the declared
+    // package manifests are all inputs a replay must re-check, and each reports
+    // itself from its own read.
+    let recorder = cfgd_core::ConfigInputRecorder::start();
 
     // Load config and profile — same pattern as cmd_apply. The header these
     // rows belong to is rendered once the plan is final, so the profile label
     // is carried down rather than printed here. An isolated run resolved no
     // profile, so it carries none and the header omits the row.
     let (cfg, resolved, profile_label, config_parsed) =
-        load_config_and_profile_module_scoped(cli, printer, module_filter, with_profile)?;
+        load_config_and_profile_module_scoped(ctx, module_filter, with_profile)?;
 
     // Compose with sources (network refresh) and resolve modules through the one
     // shared desired-state resolver — same path apply takes.
     let mut desired = resolve_desired_state(
-        &ctx,
+        ctx,
         &cfg,
         &resolved,
         module_filter,
@@ -59,6 +52,7 @@ pub fn cmd_plan(
         printer,
         true,
         composition::ConstraintMode::Enforce,
+        &floor_bootstrap_confirm(cli.yes, printer),
     )?;
     // Taken before the other fields, because a partial move out of `desired`
     // would block the `&mut self` this accessor needs.
@@ -76,6 +70,7 @@ pub fn cmd_plan(
         &mut effective_resolved.merged.packages,
         &mut effective_resolved.merged.layer_sources,
     )?;
+    let config_inputs = recorder.finish();
 
     // `PhaseArg`'s base phase is clap-validated; a selector combined with
     // `--phase modules` is the one combination `resolve_phase_filter` still
@@ -102,8 +97,7 @@ pub fn cmd_plan(
         true => cfgd_core::output::HeaderModule::of_isolate(&resolved_modules),
         false => cfgd_core::output::HeaderModule::of_resolved(&resolved_modules),
     };
-    // recorded-scope-ok: a plan writes no `applies` row, so it has no scope
-    // column to fill
+    // recorded-scope-ok: a plan writes no `applies` row, so it has no scope column to fill
     // whole-picture-ok: a plan records and retires no managed-resource row at
     // all, so it never reads the removal half the flag gates
     let reconciler = Reconciler::new(&registry, state)
@@ -195,7 +189,7 @@ pub fn cmd_plan(
     // listed without a row being minted for it; the row lands when `cfgd
     // decide` answers it, or once an apply/tick proceeds.
     let (withheld, _review) = plan_ops::withheld_for_run(
-        &ctx,
+        ctx,
         state,
         &cfg,
         plan_ops::DesiredOwnership {
@@ -251,6 +245,16 @@ pub fn cmd_plan(
         .map(|b| b.name.clone())
         .collect();
 
+    let saved_plan = plan_ops::saved_plan_for(
+        printer,
+        &plan,
+        state,
+        filter_active,
+        module_filter,
+        &withheld,
+        config_inputs,
+    )?;
+
     let profile_inherits = effective_resolved.inherits_chain();
     let run = reconciler::ApplyRun::new(
         reconciler::RunContext {
@@ -279,7 +283,7 @@ pub fn cmd_plan(
         &run,
         &plan,
         printer,
-        &PlanPreviewArgs {
+        PlanPreviewArgs {
             context: &args.context,
             preview: crate::cli::PreviewScope {
                 module: &args.module,
@@ -294,6 +298,7 @@ pub fn cmd_plan(
             scope: &scope,
             pending_backups: &pending_backups,
             withheld: &withheld,
+            saved_plan,
         },
     );
 

@@ -31,19 +31,30 @@ pub(super) fn is_clonable_source(value: &str) -> bool {
     path.join(".git").exists()
 }
 
+/// The config document `dir` holds, `cfgd.yaml` or `cfgd.toml`, when it holds one.
+pub(super) fn held_config_document(dir: &Path) -> Option<PathBuf> {
+    Some(cfgd_core::config::config_document_in(dir)).filter(|document| document.is_file())
+}
+
 /// The directory a `--from` run materialises into, read off the `--config` the
 /// caller gave: `None` when that is the default config directory, which
 /// [`resolve_from`] resolves for itself and then guards through
 /// [`refuse_occupied_default_destination`].
 ///
 /// The path is absolutized first, so a relative `--config cfgd.yaml` names the
-/// working directory rather than an empty parent. Whether the file already
-/// exists is deliberately not part of the answer: reading an existing
-/// `--config` as "no destination given" is what sent a run pointed at a
-/// scratch directory into the invoking user's own config directory instead.
+/// working directory. A `--config` naming an existing directory is that
+/// directory; any other `--config` names a document, and its parent is the
+/// destination. Whether the document already exists is deliberately not part
+/// of the answer: reading an existing `--config` as "no destination given" is
+/// what sent a run pointed at a scratch directory into the invoking user's own
+/// config directory.
 pub(crate) fn from_destination(config: &Path) -> Option<PathBuf> {
     let config = cfgd_core::absolutize_path(config);
-    let dir = config.parent()?;
+    let dir = if config.is_dir() {
+        config.as_path()
+    } else {
+        config.parent()?
+    };
     (dir != cfgd_core::default_config_dir()).then(|| dir.to_path_buf())
 }
 
@@ -66,17 +77,27 @@ pub(super) fn plan_from(from: &str, target: Option<&Path>) -> anyhow::Result<std
     }
     let path = cfgd_core::expand_tilde(Path::new(from));
     if !path.exists() {
-        anyhow::bail!("Path does not exist: {}", path.posix());
+        return Err(crate::cli::cli_error(
+            cfgd_core::to_posix_string(&path),
+            "not_found",
+            format!("Path does not exist: {}", path.posix()),
+            serde_json::json!({ "path": cfgd_core::to_posix_string(&path) }),
+        ));
     }
-    if !path.join(cfgd_core::config::CONFIG_FILENAME).exists() {
-        anyhow::bail!("No cfgd.yaml found in {}", path.posix());
+    if held_config_document(&path).is_none() {
+        return Err(crate::cli::cli_error(
+            cfgd_core::to_posix_string(&path),
+            "no_config",
+            format!("No cfgd.yaml or cfgd.toml found in {}", path.posix()),
+            serde_json::json!({ "path": cfgd_core::to_posix_string(&path) }),
+        ));
     }
     Ok(path)
 }
 
 /// Resolve a --from value to a config directory path.
 /// Git sources (URLs or local repos) are cloned to the target dir.
-/// Plain local paths are used directly (must contain cfgd.yaml).
+/// Plain local paths are used directly (must contain a cfgd.yaml or cfgd.toml).
 pub(crate) fn resolve_from(
     from: &str,
     target: Option<&Path>,
@@ -86,7 +107,7 @@ pub(crate) fn resolve_from(
     let from = &*cfgd_core::resolve_repo_reference(from);
     let dest = plan_from(from, target)?;
     if is_clonable_source(from) {
-        if !dest.join(cfgd_core::config::CONFIG_FILENAME).exists() {
+        if held_config_document(&dest).is_none() {
             std::fs::create_dir_all(&dest)?;
             clone_into(&dest, from, branch, printer)?;
         } else {
@@ -106,6 +127,45 @@ pub(crate) fn resolve_from(
     Ok(dest)
 }
 
+/// The config document a `--from` run reads once [`resolve_from`] has put the
+/// source at `dest`.
+///
+/// A plain directory is the config the reader named, so its own document is
+/// read. A clone lands where `config` points, and the repository decides
+/// whether it carries a `cfgd.yaml` or a `cfgd.toml`, so a `config` naming the
+/// destination directory, or its document by either default name, is resolved
+/// again after the clone; a `config` naming any other file is kept as written.
+pub(crate) fn from_run_config(from: &str, config: &Path, dest: &Path) -> PathBuf {
+    let from = &*cfgd_core::resolve_repo_reference(from);
+    let names_the_default_document = config.file_name().is_some_and(|name| {
+        name == cfgd_core::config::CONFIG_FILENAME
+            || name == cfgd_core::config::CONFIG_FILENAME_TOML
+    });
+    if is_clonable_source(from) && !names_the_default_document && !config.is_dir() {
+        return config.to_path_buf();
+    }
+    cfgd_core::config::config_document_in(dest)
+}
+
+/// The `Cli` and the config document a `plan --from` / `apply --from` run
+/// reads: the source resolved to its destination through [`from_destination`]
+/// and [`resolve_from`], `--config` pointed at the document it put there, and
+/// that document loaded, since the startup read could not have seen it.
+pub(crate) fn from_run(
+    cli: &crate::cli::Cli,
+    from: &str,
+    printer: &Printer,
+) -> anyhow::Result<(crate::cli::Cli, crate::cli::startup::StartupDocument)> {
+    let target = from_destination(&cli.config);
+    let dest = resolve_from(from, target.as_deref(), "master", printer)?;
+    let from_cli = crate::cli::Cli {
+        config: from_run_config(from, &cli.config, &dest),
+        ..cli.clone()
+    };
+    let document = crate::cli::startup::StartupDocument::load(&from_cli.config);
+    Ok((from_cli, document))
+}
+
 /// What the default config directory was found to hold, worded for the refusal
 /// below, or `None` when it is free for this run to write into.
 ///
@@ -116,8 +176,12 @@ fn occupied_default_destination(dest: &Path) -> Option<&'static str> {
     if std::fs::symlink_metadata(dest).is_ok_and(|meta| meta.file_type().is_symlink()) {
         return Some("it is a symlink");
     }
-    if dest.join(cfgd_core::config::CONFIG_FILENAME).exists() {
-        return Some("it already holds a cfgd.yaml");
+    if let Some(document) = held_config_document(dest) {
+        return Some(if document.extension().is_some_and(|ext| ext == "toml") {
+            "it already holds a cfgd.toml"
+        } else {
+            "it already holds a cfgd.yaml"
+        });
     }
     match std::fs::read_dir(dest) {
         Ok(mut entries) => entries.next().map(|_| "it is not empty"),
@@ -147,12 +211,10 @@ fn occupied_default_destination(dest: &Path) -> Option<&'static str> {
 /// `--config` pointed at whatever the default directory is a symlink to named
 /// it under another.
 ///
-/// Two answers, in this order. [`cfgd_core::lexically_normalized`] folds both
-/// spellings first, because a `..` walking back through a component that does
-/// not exist (`<default>/absent/../cfgd.yaml`) stats nothing, and
-/// [`cfgd_core::is_same_inode`] can only say "different" about a path it
-/// cannot open. The inode question then catches what the fold cannot: two
-/// genuinely different spellings of one directory, reached through a symlink.
+/// Both answers are [`cfgd_core::names_the_same_path`]'s, which folds the
+/// spellings before it asks the inode question: a `..` walking back through a
+/// component that does not exist (`<default>/absent/../cfgd.yaml`) stats
+/// nothing, so the inode question cannot be asked about it at all.
 /// The occupancy probe then reads the DEFAULT directory, which is the
 /// directory the refusal is about: the fold is a comparison value, so where the
 /// match came from the inode it names a path that is not that directory, and
@@ -160,10 +222,7 @@ fn occupied_default_destination(dest: &Path) -> Option<&'static str> {
 /// default holds. The message still names the path the caller wrote.
 fn refuse_occupied_default_destination(dest: &Path) -> anyhow::Result<()> {
     let default = cfgd_core::default_config_dir();
-    let folded = cfgd_core::lexically_normalized(dest);
-    if folded != cfgd_core::lexically_normalized(&default)
-        && !cfgd_core::is_same_inode(dest, &default)
-    {
+    if !cfgd_core::names_the_same_path(dest, &default) {
         return Ok(());
     }
     let Some(finding) = occupied_default_destination(&default) else {
@@ -245,6 +304,11 @@ pub(super) fn commit_detail(commit: &str) -> String {
     format!("at {commit}")
 }
 
+/// A clone of `url`, or the checkout that follows it, that did not complete.
+fn clone_refusal(url: &str, message: String) -> anyhow::Error {
+    crate::cli::cli_error(url, "clone_failed", message, serde_json::json!({}))
+}
+
 /// Clone a remote repo into the target directory.
 pub(super) fn clone_into(
     target_dir: &Path,
@@ -269,7 +333,7 @@ pub(super) fn clone_into(
     }
 
     cfgd_core::sources::git_clone_with_fallback(url, target_dir, printer)
-        .map_err(|e| anyhow::anyhow!("Clone failed: {}", e))?;
+        .map_err(|e| clone_refusal(url, format!("Clone failed: {}", e)))?;
 
     let mut row = printer.status(
         Role::Ok,
@@ -289,7 +353,7 @@ pub(super) fn clone_into(
     // git clone checks out the remote's default branch; switch when the user
     // asked for a different one.
     let repo = git2::Repository::open(target_dir)
-        .map_err(|e| anyhow::anyhow!("Failed to open cloned repo: {}", e))?;
+        .map_err(|e| clone_refusal(url, format!("Failed to open cloned repo: {}", e)))?;
     let current_branch = repo
         .head()
         .ok()
@@ -297,13 +361,20 @@ pub(super) fn clone_into(
         .unwrap_or_default();
     if current_branch != branch {
         let remote_branch = format!("origin/{}", branch);
-        let obj = repo
-            .revparse_single(&remote_branch)
-            .map_err(|_| anyhow::anyhow!("Branch '{}' not found in remote", branch))?;
+        let obj = repo.revparse_single(&remote_branch).map_err(|_| {
+            crate::cli::cli_error(
+                branch,
+                "not_found",
+                format!("Branch '{}' not found in remote", branch),
+                serde_json::json!({ "url": url }),
+            )
+        })?;
         repo.checkout_tree(&obj, None)
-            .map_err(|e| anyhow::anyhow!("Failed to checkout '{}': {}", branch, e))?;
+            .map_err(|e| clone_refusal(url, format!("Failed to checkout '{}': {}", branch, e)))?;
         repo.set_head(&format!("refs/heads/{}", branch))
-            .map_err(|e| anyhow::anyhow!("Failed to set HEAD to '{}': {}", branch, e))?;
+            .map_err(|e| {
+                clone_refusal(url, format!("Failed to set HEAD to '{}': {}", branch, e))
+            })?;
         printer
             .status(Role::Info, "Checked out branch")
             .qualifier(branch);

@@ -68,6 +68,7 @@ impl AppArmorConfigurator {
     }
 }
 
+// long-line-ok: a hatch is read off its own line, so it cannot wrap
 // no-tool-ok: the LSM has to be built into the running kernel, so installing a parser onto a kernel without AppArmor would change nothing
 impl SystemConfigurator for AppArmorConfigurator {
     fn name(&self) -> &str {

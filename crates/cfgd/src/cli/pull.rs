@@ -5,13 +5,14 @@ use cfgd_core::output::{Doc, Printer, Role};
 
 // no-header-ok: this verb reports what a git pull of the config directory
 // did; it loads the config only to refuse a run that has none.
-pub fn cmd_pull(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
+pub fn cmd_pull(run: &RunContext<'_>) -> anyhow::Result<()> {
+    let printer = run.printer();
     printer.heading("Pull");
 
-    let (_cfg, _profile_name, _resolved) = load_config_and_profile(cli, printer)?;
-    let config_dir = config_dir(cli);
+    run.config_and_profile()?;
+    let config_dir = run.config_dir();
 
-    let outcome = cfgd_core::daemon::git_pull_sync(&config_dir);
+    let outcome = cfgd_core::daemon::git_pull_sync(config_dir);
     let refused = matches!(outcome, PullOutcome::Failed(_));
     render_pull(printer, outcome);
 

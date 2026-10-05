@@ -50,8 +50,14 @@ pub fn update_image_lock_entry(path: &Path, entry: ImageLockEntry) -> anyhow::Re
 /// a tag reference + a resolved digest. Reuses `cfgd_core::oci::OciReference::parse`
 /// so registry-port colons are never mistaken for tag separators.
 pub fn pinned_reference(reference: &str, digest: &str) -> anyhow::Result<String> {
-    let parsed = cfgd_core::oci::OciReference::parse(reference)
-        .map_err(|e| anyhow::anyhow!("invalid image reference '{reference}': {e}"))?;
+    let parsed = cfgd_core::oci::OciReference::parse(reference).map_err(|e| {
+        crate::cli::cli_error(
+            reference,
+            "invalid_reference",
+            format!("invalid image reference '{reference}': {e}"),
+            serde_json::json!({}),
+        )
+    })?;
     Ok(format!(
         "{}/{}@{}",
         parsed.registry, parsed.repository, digest

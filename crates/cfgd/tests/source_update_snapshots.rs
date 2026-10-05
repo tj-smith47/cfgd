@@ -24,7 +24,7 @@
 //! Goldens live under `tests/output_snapshots/source_update/`. Regenerate with:
 //!     INSTA_UPDATE=always cargo test -p cfgd --test source_update_snapshots
 
-mod common;
+use cfgd_test_fixtures as common;
 
 use std::path::Path;
 
@@ -125,7 +125,10 @@ fn source_update_no_sources_human() {
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc();
 
-    cmd_source_update(&cli, &printer, None, Default::default()).unwrap();
+    cfgd::cli::RunContext::for_test(&cli, &printer, |run| {
+        cmd_source_update(run, None, Default::default())
+    })
+    .unwrap();
     drop(printer);
 
     let stripped = strip_ansi(&cap.human());
@@ -144,17 +147,15 @@ fn source_update_no_sources_human() {
 #[test]
 #[serial]
 fn source_update_source_failure_human() {
-    let _disallow = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_ALLOW_LOCAL_SOURCES");
+    let _disallow =
+        cfgd_core::test_helpers::EnvVarGuard::unset(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV);
     let (config_dir, state_dir) = common::unreachable_source_setup();
 
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc();
-    let errors = cfgd::cli::source::run_source_update(
-        &cli,
-        &printer,
-        Some("missing-team"),
-        Default::default(),
-    )
+    let errors = cfgd::cli::RunContext::for_test(&cli, &printer, |run| {
+        cfgd::cli::source::run_source_update(run, Some("missing-team"), Default::default())
+    })
     .expect("a fetch failure is reported, never bubbled");
     drop(printer);
     assert_eq!(errors, 1, "the failed source must be counted");
@@ -198,20 +199,22 @@ fn source_update_source_failure_human() {
 #[test]
 #[serial]
 fn source_update_failed_fetch_still_writes_the_knob_human() {
-    let _disallow = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_ALLOW_LOCAL_SOURCES");
+    let _disallow =
+        cfgd_core::test_helpers::EnvVarGuard::unset(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV);
     let (config_dir, state_dir) = common::unreachable_source_setup();
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc();
 
-    let errors = cfgd::cli::source::run_source_update(
-        &cli,
-        &printer,
-        Some("missing-team"),
-        cfgd::cli::source::SubscriptionEdits {
-            require_signed_commits: Some(true),
-            allow_scripts: None,
-        },
-    )
+    let errors = cfgd::cli::RunContext::for_test(&cli, &printer, |run| {
+        cfgd::cli::source::run_source_update(
+            run,
+            Some("missing-team"),
+            cfgd::cli::source::SubscriptionEdits {
+                require_signed_commits: Some(true),
+                allow_scripts: None,
+            },
+        )
+    })
     .expect("a fetch failure is reported, never bubbled");
     drop(printer);
     assert_eq!(errors, 1);
@@ -246,20 +249,22 @@ fn source_update_failed_fetch_still_writes_the_knob_human() {
 #[test]
 #[serial]
 fn source_update_failed_fetch_still_writes_the_knob_json() {
-    let _disallow = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_ALLOW_LOCAL_SOURCES");
+    let _disallow =
+        cfgd_core::test_helpers::EnvVarGuard::unset(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV);
     let (config_dir, state_dir) = common::unreachable_source_setup();
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc();
 
-    cfgd::cli::source::run_source_update(
-        &cli,
-        &printer,
-        Some("missing-team"),
-        cfgd::cli::source::SubscriptionEdits {
-            require_signed_commits: Some(true),
-            allow_scripts: None,
-        },
-    )
+    cfgd::cli::RunContext::for_test(&cli, &printer, |run| {
+        cfgd::cli::source::run_source_update(
+            run,
+            Some("missing-team"),
+            cfgd::cli::source::SubscriptionEdits {
+                require_signed_commits: Some(true),
+                allow_scripts: None,
+            },
+        )
+    })
     .expect("a fetch failure is reported, never bubbled");
     drop(printer);
 
@@ -281,8 +286,10 @@ fn source_update_not_found_human() {
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc();
 
-    let err = cmd_source_update(&cli, &printer, Some("missing"), Default::default())
-        .expect_err("missing source must return Err");
+    let err = cfgd::cli::RunContext::for_test(&cli, &printer, |run| {
+        cmd_source_update(run, Some("missing"), Default::default())
+    })
+    .expect_err("missing source must return Err");
     render_cli_error(&printer, &err);
     drop(printer);
 
@@ -303,7 +310,8 @@ fn source_update_not_found_human() {
 #[test]
 #[serial]
 fn source_update_happy_human() {
-    let _allow = cfgd_core::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+    let _allow =
+        cfgd_core::test_helpers::EnvVarGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
     let (config_dir, state_dir) = source_test_config_setup();
     let bare_root = tempfile::tempdir().unwrap();
     let bare = make_bare_source_repo(bare_root.path(), "upd-src", None);
@@ -313,11 +321,16 @@ fn source_update_happy_human() {
     let (add_printer, _add_cap) = Printer::for_test_doc();
     let mut args = source_add_args(url);
     args.name = Some("upd-src".into());
-    cmd_source_add(&cli, &add_printer, &args).expect("seed source");
+    cfgd::cli::RunContext::for_test(&cli, &add_printer, |run| cmd_source_add(run, &args))
+        .expect("seed source");
     drop(add_printer);
 
     let (printer, cap) = Printer::for_test_doc();
-    cmd_source_update(&cli, &printer, Some("upd-src"), Default::default()).unwrap();
+    let printer = printer.with_hints_enabled(true);
+    cfgd::cli::RunContext::for_test(&cli, &printer, |run| {
+        cmd_source_update(run, Some("upd-src"), Default::default())
+    })
+    .unwrap();
     drop(printer);
 
     let stripped = normalize_paths(
@@ -339,7 +352,8 @@ fn source_update_happy_human() {
 #[test]
 #[serial]
 fn source_update_trust_knob_hints_the_sync_that_meets_it_human() {
-    let _allow = cfgd_core::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+    let _allow =
+        cfgd_core::test_helpers::EnvVarGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
     let (config_dir, state_dir) = source_test_config_setup();
     let bare_root = tempfile::tempdir().unwrap();
     let bare = make_bare_source_repo(bare_root.path(), "trust-src", None);
@@ -349,19 +363,22 @@ fn source_update_trust_knob_hints_the_sync_that_meets_it_human() {
     let (add_printer, _add_cap) = Printer::for_test_doc();
     let mut args = source_add_args(url);
     args.name = Some("trust-src".into());
-    cmd_source_add(&cli, &add_printer, &args).expect("seed source");
+    cfgd::cli::RunContext::for_test(&cli, &add_printer, |run| cmd_source_add(run, &args))
+        .expect("seed source");
     drop(add_printer);
 
     let (printer, cap) = Printer::for_test_doc();
-    cmd_source_update(
-        &cli,
-        &printer,
-        Some("trust-src"),
-        cfgd::cli::source::SubscriptionEdits {
-            require_signed_commits: Some(true),
-            allow_scripts: None,
-        },
-    )
+    let printer = printer.with_hints_enabled(true);
+    cfgd::cli::RunContext::for_test(&cli, &printer, |run| {
+        cmd_source_update(
+            run,
+            Some("trust-src"),
+            cfgd::cli::source::SubscriptionEdits {
+                require_signed_commits: Some(true),
+                allow_scripts: None,
+            },
+        )
+    })
     .unwrap();
     drop(printer);
 
@@ -386,7 +403,8 @@ fn source_update_trust_knob_hints_the_sync_that_meets_it_human() {
 #[test]
 #[serial]
 fn source_update_happy_json() {
-    let _allow = cfgd_core::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+    let _allow =
+        cfgd_core::test_helpers::EnvVarGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
     let (config_dir, state_dir) = source_test_config_setup();
     let bare_root = tempfile::tempdir().unwrap();
     let bare = make_bare_source_repo(bare_root.path(), "upd-src", None);
@@ -396,11 +414,15 @@ fn source_update_happy_json() {
     let (add_printer, _add_cap) = Printer::for_test_doc();
     let mut args = source_add_args(url);
     args.name = Some("upd-src".into());
-    cmd_source_add(&cli, &add_printer, &args).expect("seed source");
+    cfgd::cli::RunContext::for_test(&cli, &add_printer, |run| cmd_source_add(run, &args))
+        .expect("seed source");
     drop(add_printer);
 
     let (printer, cap) = Printer::for_test_doc();
-    cmd_source_update(&cli, &printer, Some("upd-src"), Default::default()).unwrap();
+    cfgd::cli::RunContext::for_test(&cli, &printer, |run| {
+        cmd_source_update(run, Some("upd-src"), Default::default())
+    })
+    .unwrap();
     drop(printer);
 
     let json = cap.json().expect("doc captured json");
@@ -419,7 +441,8 @@ fn perm_change_fixture(
     tempfile::TempDir,
     std::path::PathBuf,
 ) {
-    let _allow = cfgd_core::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+    let _allow =
+        cfgd_core::test_helpers::EnvVarGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
     let (config_dir, state_dir) = source_test_config_setup();
     let bare_root = tempfile::tempdir().unwrap();
     let bare = make_bare_source_repo(bare_root.path(), source_name, None);
@@ -429,7 +452,8 @@ fn perm_change_fixture(
     let (add_printer, _add_cap) = Printer::for_test_doc();
     let mut args = source_add_args(url);
     args.name = Some(source_name.into());
-    cmd_source_add(&cli, &add_printer, &args).expect("seed source");
+    cfgd::cli::RunContext::for_test(&cli, &add_printer, |run| cmd_source_add(run, &args))
+        .expect("seed source");
     drop(add_printer);
 
     // Publish a v2 manifest with expanded policy. required.modules grows
@@ -445,13 +469,18 @@ fn perm_change_fixture(
 #[test]
 #[serial]
 fn source_update_accept_human() {
-    let _allow = cfgd_core::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+    let _allow =
+        cfgd_core::test_helpers::EnvVarGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
     let (config_dir, state_dir, bare_root, bare) = perm_change_fixture("accept-src");
 
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) =
         Printer::for_test_doc_with_prompt_responses(vec![PromptAnswer::Confirm(true)]);
-    cmd_source_update(&cli, &printer, Some("accept-src"), Default::default()).unwrap();
+    let printer = printer.with_hints_enabled(true);
+    cfgd::cli::RunContext::for_test(&cli, &printer, |run| {
+        cmd_source_update(run, Some("accept-src"), Default::default())
+    })
+    .unwrap();
     drop(printer);
 
     let stripped = normalize_paths(
@@ -489,13 +518,17 @@ fn source_update_accept_human() {
 #[test]
 #[serial]
 fn source_update_rejection_human() {
-    let _allow = cfgd_core::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+    let _allow =
+        cfgd_core::test_helpers::EnvVarGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
     let (config_dir, state_dir, bare_root, bare) = perm_change_fixture("reject-src");
 
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) =
         Printer::for_test_doc_with_prompt_responses(vec![PromptAnswer::Confirm(false)]);
-    cmd_source_update(&cli, &printer, Some("reject-src"), Default::default()).unwrap();
+    cfgd::cli::RunContext::for_test(&cli, &printer, |run| {
+        cmd_source_update(run, Some("reject-src"), Default::default())
+    })
+    .unwrap();
     drop(printer);
 
     let stripped = normalize_paths(
@@ -519,7 +552,8 @@ fn source_update_rejection_human() {
 #[test]
 #[serial]
 fn source_update_bridge_one_blank_line() {
-    let _allow = cfgd_core::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+    let _allow =
+        cfgd_core::test_helpers::EnvVarGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
     let (config_dir, state_dir) = source_test_config_setup();
     let bare_root = tempfile::tempdir().unwrap();
     let bare = make_bare_source_repo(bare_root.path(), "bridge-upd", None);
@@ -529,11 +563,16 @@ fn source_update_bridge_one_blank_line() {
     let (add_printer, _add_cap) = Printer::for_test_doc();
     let mut args = source_add_args(url);
     args.name = Some("bridge-upd".into());
-    cmd_source_add(&cli, &add_printer, &args).expect("seed source");
+    cfgd::cli::RunContext::for_test(&cli, &add_printer, |run| cmd_source_add(run, &args))
+        .expect("seed source");
     drop(add_printer);
 
     let (printer, cap) = Printer::for_test_doc();
-    cmd_source_update(&cli, &printer, Some("bridge-upd"), Default::default()).unwrap();
+    let printer = printer.with_hints_enabled(true);
+    cfgd::cli::RunContext::for_test(&cli, &printer, |run| {
+        cmd_source_update(run, Some("bridge-upd"), Default::default())
+    })
+    .unwrap();
     drop(printer);
 
     let combined = cap.human();

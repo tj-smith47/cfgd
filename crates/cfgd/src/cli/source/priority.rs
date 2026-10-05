@@ -1,16 +1,15 @@
 use super::*;
-use cfgd_core::config::validate_source_priority;
-use cfgd_core::output::{Doc, OwnerLabel, Printer, Role};
+use cfgd_core::output::{Doc, OwnerLabel, Role};
 
 pub fn cmd_source_priority(
-    cli: &Cli,
-    printer: &Printer,
+    run: &RunContext<'_>,
     name: &str,
     value: Option<u32>,
 ) -> anyhow::Result<()> {
+    let cli = run.cli();
+    let printer = run.printer();
     let config_path = cli.config.clone();
-    let mut cfg = config::load_config(&config_path)?;
-    drain_config_deprecations(printer, &mut cfg);
+    let cfg = run.config()?;
 
     let source = match cfg.spec.sources.iter().find(|s| s.name == name) {
         Some(s) => s,
@@ -32,20 +31,14 @@ pub fn cmd_source_priority(
 
     match value {
         Some(new_priority) => {
-            validate_source_priority(new_priority).map_err(|m| anyhow::anyhow!(m))?;
+            checked_priority(new_priority, "[VALUE]")?;
             let old_priority = source.subscription.priority;
             // Update priority in cfgd.yaml
             with_source_config(&config_path, name, |source_entry| {
-                let subscription = source_entry.get_mut("subscription").ok_or_else(|| {
-                    anyhow::anyhow!("source '{}' has no subscription block", name)
-                })?;
-
-                if let Some(mapping) = subscription.as_mapping_mut() {
-                    mapping.insert(
-                        serde_yaml::Value::String("priority".into()),
-                        serde_yaml::Value::Number(serde_yaml::Number::from(new_priority)),
-                    );
-                }
+                subscription_mapping_mut(source_entry, &config_path, name)?.insert(
+                    serde_yaml::Value::String("priority".into()),
+                    serde_yaml::Value::Number(serde_yaml::Number::from(new_priority)),
+                );
                 Ok(())
             })?;
 

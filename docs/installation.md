@@ -14,9 +14,12 @@ channels.
 brew install tj-smith47/tap/cfgd
 ```
 
-The tap also publishes the operator and CSI binaries under
-`tj-smith47/tap/cfgd-operator` and `tj-smith47/tap/cfgd-csi` for cluster-side
-installs.
+The cask installs the bash, zsh and fish completions and the man page from the
+release archive, so installing runs no `cfgd` command and a headless
+`brew install` on macOS completes without a Gatekeeper prompt.
+
+The operator and CSI driver are Linux container images installed through the
+Helm chart; see [Containers and Kubernetes](#containers-and-kubernetes).
 
 ### Install script
 
@@ -27,6 +30,12 @@ curl -fsSL https://github.com/tj-smith47/cfgd/releases/latest/download/install.s
 The script detects the OS and architecture, downloads the matching tarball,
 verifies the SHA256 + cosign signature, and drops the `cfgd` binary into
 `/usr/local/bin` (or `~/.local/bin` if `/usr/local/bin` isn't writable).
+`CFGD_INSTALL_DIR` names another directory; the script creates it when it does
+not exist yet, through `sudo` when your user cannot.
+
+```sh
+curl -fsSL https://github.com/tj-smith47/cfgd/releases/latest/download/install.sh | CFGD_INSTALL_DIR="$HOME/bin" sh
+```
 
 ### Cargo (any platform with a Rust toolchain)
 

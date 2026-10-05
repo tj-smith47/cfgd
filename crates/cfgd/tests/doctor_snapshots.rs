@@ -70,6 +70,7 @@ fn happy_fixture() -> (DoctorOutput, DoctorExtras) {
             },
         ],
         modules: vec![DoctorModuleCheck {
+            held: Vec::new(),
             name: "dotfiles".into(),
             valid: true,
             error: None,

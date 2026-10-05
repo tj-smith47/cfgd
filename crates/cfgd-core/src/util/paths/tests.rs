@@ -32,7 +32,7 @@ async fn spawn_blocking_with_test_home_is_transparent_without_override() {
 #[test]
 fn resolve_config_dir_returns_override_when_some() {
     let over = PathBuf::from("/explicit/config");
-    assert_eq!(resolve_config_dir(Some(&over), Scope::User), over);
+    assert_eq!(resolve_config_dir(Some(&over), Scope::User).unwrap(), over);
 }
 
 #[test]
@@ -41,7 +41,10 @@ fn resolve_config_dir_falls_through_to_default_when_none() {
     let dir = tempfile::tempdir().unwrap();
     let _sd = EnvVarGuard::unset("CONFIGURATION_DIRECTORY");
     let _home = with_test_home_guard(dir.path());
-    assert_eq!(resolve_config_dir(None, Scope::User), default_config_dir());
+    assert_eq!(
+        resolve_config_dir(None, Scope::User).unwrap(),
+        default_config_dir()
+    );
 }
 
 #[test]
@@ -53,7 +56,7 @@ fn resolve_state_dir_returns_override_when_some() {
 #[test]
 #[serial_test::serial]
 fn resolve_state_dir_falls_through_to_default_when_none() {
-    let _cfgd = EnvVarGuard::set("CFGD_STATE_DIR", "/from/env/state");
+    let _cfgd = EnvVarGuard::set(crate::CFGD_STATE_DIR_ENV, "/from/env/state");
     assert_eq!(
         resolve_state_dir(None, Scope::User).unwrap(),
         crate::state::default_state_dir().unwrap()
@@ -81,7 +84,10 @@ fn resolve_cache_dir_falls_through_to_default_when_none() {
 #[test]
 fn resolve_runtime_dir_returns_override_when_some() {
     let over = PathBuf::from("/explicit/runtime");
-    assert_eq!(resolve_runtime_dir(Some(&over), Scope::User), Some(over));
+    assert_eq!(
+        resolve_runtime_dir(Some(&over), Scope::User).unwrap(),
+        Some(over)
+    );
 }
 
 #[test]
@@ -92,8 +98,8 @@ fn resolve_runtime_dir_falls_through_to_default_when_none() {
     let _home = with_test_home_guard(dir.path());
     let _xdg = EnvVarGuard::set("XDG_RUNTIME_DIR", "/run/user/test");
     assert_eq!(
-        resolve_runtime_dir(None, Scope::User),
-        default_runtime_dir()
+        resolve_runtime_dir(None, Scope::User).unwrap(),
+        default_runtime_dir().unwrap()
     );
 }
 
@@ -102,7 +108,7 @@ fn resolve_runtime_dir_falls_through_to_default_when_none() {
 #[test]
 #[serial_test::serial]
 fn default_state_dir_honors_cfgd_state_dir_env() {
-    let _cfgd = EnvVarGuard::set("CFGD_STATE_DIR", "/verbatim/state/dir");
+    let _cfgd = EnvVarGuard::set(crate::CFGD_STATE_DIR_ENV, "/verbatim/state/dir");
     assert_eq!(
         crate::state::default_state_dir().unwrap(),
         PathBuf::from("/verbatim/state/dir")
@@ -114,7 +120,7 @@ fn default_state_dir_honors_cfgd_state_dir_env() {
 #[serial_test::serial]
 fn default_state_dir_honors_xdg_state_home_on_linux() {
     let dir = tempfile::tempdir().unwrap();
-    let _cfgd = EnvVarGuard::unset("CFGD_STATE_DIR");
+    let _cfgd = EnvVarGuard::unset(crate::CFGD_STATE_DIR_ENV);
     let _sd = EnvVarGuard::unset("STATE_DIRECTORY");
     let _xdg = EnvVarGuard::set("XDG_STATE_HOME", dir.path().to_str().unwrap());
     let _home = EnvVarGuard::set("HOME", dir.path().to_str().unwrap());
@@ -137,7 +143,7 @@ fn default_state_dir_honors_xdg_state_home_on_linux() {
 #[serial_test::serial]
 fn default_cache_dir_tail_is_cfgd() {
     let dir = tempfile::tempdir().unwrap();
-    let _cfgd = EnvVarGuard::unset("CFGD_CACHE_DIR");
+    let _cfgd = EnvVarGuard::unset(crate::CFGD_CACHE_DIR_ENV);
     let _sd = EnvVarGuard::unset("CACHE_DIRECTORY");
     let _home = with_test_home_guard(dir.path());
     let cache = default_cache_dir().unwrap();
@@ -156,7 +162,7 @@ fn default_cache_dir_tail_is_cfgd() {
 #[test]
 #[serial_test::serial]
 fn default_cache_dir_honors_cfgd_cache_dir_env() {
-    let _cfgd = EnvVarGuard::set("CFGD_CACHE_DIR", "/verbatim/cache/dir");
+    let _cfgd = EnvVarGuard::set(crate::CFGD_CACHE_DIR_ENV, "/verbatim/cache/dir");
     assert_eq!(
         default_cache_dir().unwrap(),
         PathBuf::from("/verbatim/cache/dir")
@@ -170,8 +176,8 @@ fn default_cache_dir_honors_cfgd_cache_dir_env() {
 fn resolved_dirs_sources_and_modules_share_one_cache_root() {
     let dir = tempfile::tempdir().unwrap();
     let _home = with_test_home_guard(dir.path());
-    let _cfgd = EnvVarGuard::unset("CFGD_STATE_DIR");
-    let _cache = EnvVarGuard::unset("CFGD_CACHE_DIR");
+    let _cfgd = EnvVarGuard::unset(crate::CFGD_STATE_DIR_ENV);
+    let _cache = EnvVarGuard::unset(crate::CFGD_CACHE_DIR_ENV);
     let _config_sd = EnvVarGuard::unset("CONFIGURATION_DIRECTORY");
     let _state_sd = EnvVarGuard::unset("STATE_DIRECTORY");
     let _cache_sd = EnvVarGuard::unset("CACHE_DIRECTORY");
@@ -211,9 +217,9 @@ fn resolved_dirs_resolve_threads_overrides() {
 #[test]
 #[serial_test::serial]
 fn default_runtime_dir_honors_cfgd_runtime_dir_env() {
-    let _cfgd = EnvVarGuard::set("CFGD_RUNTIME_DIR", "/verbatim/runtime/dir");
+    let _cfgd = EnvVarGuard::set(crate::CFGD_RUNTIME_DIR_ENV, "/verbatim/runtime/dir");
     assert_eq!(
-        default_runtime_dir(),
+        default_runtime_dir().unwrap(),
         Some(PathBuf::from("/verbatim/runtime/dir"))
     );
 }
@@ -224,10 +230,12 @@ fn default_runtime_dir_honors_cfgd_runtime_dir_env() {
 #[test]
 #[serial_test::serial]
 fn default_runtime_dir_uses_xdg_runtime_dir_when_set() {
-    let _cfgd = EnvVarGuard::unset("CFGD_RUNTIME_DIR");
+    let _cfgd = EnvVarGuard::unset(crate::CFGD_RUNTIME_DIR_ENV);
     let _sd = EnvVarGuard::unset("RUNTIME_DIRECTORY");
     let _xdg = EnvVarGuard::set("XDG_RUNTIME_DIR", "/run/user/4242");
-    let runtime = default_runtime_dir().expect("runtime dir resolves with XDG set");
+    let runtime = default_runtime_dir()
+        .unwrap()
+        .expect("runtime dir resolves with XDG set");
     assert_eq!(runtime, PathBuf::from("/run/user/4242").join("cfgd"));
 }
 
@@ -236,11 +244,13 @@ fn default_runtime_dir_uses_xdg_runtime_dir_when_set() {
 #[serial_test::serial]
 fn default_runtime_dir_falls_back_to_cache_runtime_subdir_on_linux() {
     let dir = tempfile::tempdir().unwrap();
-    let _cfgd = EnvVarGuard::unset("CFGD_RUNTIME_DIR");
+    let _cfgd = EnvVarGuard::unset(crate::CFGD_RUNTIME_DIR_ENV);
     let _sd = EnvVarGuard::unset("RUNTIME_DIRECTORY");
     let _xdg = EnvVarGuard::unset("XDG_RUNTIME_DIR");
     let _home = with_test_home_guard(dir.path());
-    let runtime = default_runtime_dir().expect("runtime dir resolves without XDG");
+    let runtime = default_runtime_dir()
+        .unwrap()
+        .expect("runtime dir resolves without XDG");
     assert!(
         runtime.ends_with("cfgd/runtime"),
         "fallback must nest under cfgd/runtime, got: {}",
@@ -287,6 +297,92 @@ fn legacy_data_dir_resolves_under_test_home() {
         legacy.ends_with(".local/share/cfgd"),
         "legacy data dir must end with .local/share/cfgd, got: {}",
         legacy.display()
+    );
+}
+
+// The binary spawned by a test sees no thread-local override, so the arms
+// below are what isolate it: each resolves from the environment's home.
+
+#[test]
+#[serial_test::serial]
+fn legacy_data_dir_is_unresolved_without_a_home_variable() {
+    let _home = EnvVarGuard::unset("HOME");
+    let _profile = EnvVarGuard::unset("USERPROFILE");
+    let _xdg = EnvVarGuard::unset("XDG_DATA_HOME");
+    let _local = EnvVarGuard::unset("LOCALAPPDATA");
+    assert_eq!(legacy_data_dir(), None);
+}
+
+#[cfg(not(any(target_os = "macos", windows)))]
+#[test]
+#[serial_test::serial]
+fn legacy_data_dir_prefers_an_absolute_xdg_data_home() {
+    let dir = tempfile::tempdir().unwrap();
+    let _home = EnvVarGuard::set("HOME", dir.path().join("home").to_str().unwrap());
+    let _xdg = EnvVarGuard::set("XDG_DATA_HOME", dir.path().join("data").to_str().unwrap());
+    assert_eq!(
+        legacy_data_dir(),
+        Some(dir.path().join("data").join("cfgd"))
+    );
+}
+
+#[cfg(not(any(target_os = "macos", windows)))]
+#[test]
+#[serial_test::serial]
+fn legacy_data_dir_falls_back_to_home_when_xdg_data_home_is_unset_or_relative() {
+    let dir = tempfile::tempdir().unwrap();
+    let _home = EnvVarGuard::set("HOME", dir.path().to_str().unwrap());
+    let expected = Some(dir.path().join(".local").join("share").join("cfgd"));
+    {
+        let _xdg = EnvVarGuard::unset("XDG_DATA_HOME");
+        assert_eq!(legacy_data_dir(), expected);
+    }
+    let _xdg = EnvVarGuard::set("XDG_DATA_HOME", "relative/data");
+    assert_eq!(legacy_data_dir(), expected);
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+#[serial_test::serial]
+fn legacy_data_dir_resolves_under_home_application_support() {
+    let dir = tempfile::tempdir().unwrap();
+    let _home = EnvVarGuard::set("HOME", dir.path().to_str().unwrap());
+    let _xdg = EnvVarGuard::set("XDG_DATA_HOME", dir.path().join("data").to_str().unwrap());
+    assert_eq!(
+        legacy_data_dir(),
+        Some(
+            dir.path()
+                .join("Library")
+                .join("Application Support")
+                .join("cfgd")
+        )
+    );
+}
+
+#[cfg(windows)]
+#[test]
+#[serial_test::serial]
+fn legacy_data_dir_prefers_an_absolute_localappdata() {
+    let dir = tempfile::tempdir().unwrap();
+    let _home = EnvVarGuard::set("USERPROFILE", dir.path().join("home").to_str().unwrap());
+    let _local = EnvVarGuard::set("LOCALAPPDATA", dir.path().join("local").to_str().unwrap());
+    assert_eq!(
+        legacy_data_dir(),
+        Some(dir.path().join("local").join("cfgd"))
+    );
+}
+
+#[cfg(windows)]
+#[test]
+#[serial_test::serial]
+fn legacy_data_dir_falls_back_to_userprofile_appdata_local_without_localappdata() {
+    let dir = tempfile::tempdir().unwrap();
+    let _home = EnvVarGuard::set("USERPROFILE", dir.path().to_str().unwrap());
+    let _local = EnvVarGuard::unset("LOCALAPPDATA");
+    let _xdg = EnvVarGuard::set("XDG_DATA_HOME", dir.path().join("data").to_str().unwrap());
+    assert_eq!(
+        legacy_data_dir(),
+        Some(dir.path().join("AppData").join("Local").join("cfgd"))
     );
 }
 
@@ -394,7 +490,7 @@ fn config_user_scope_matches_zero_arg_default() {
 #[test]
 #[serial_test::serial]
 fn state_cfgd_env_wins_over_systemd_and_system_scope() {
-    let _cfgd = EnvVarGuard::set("CFGD_STATE_DIR", "/from/cfgd/env");
+    let _cfgd = EnvVarGuard::set(crate::CFGD_STATE_DIR_ENV, "/from/cfgd/env");
     let _sd = EnvVarGuard::set("STATE_DIRECTORY", "/from/systemd");
     assert_eq!(
         crate::state::default_state_dir_for(Scope::System).unwrap(),
@@ -405,7 +501,7 @@ fn state_cfgd_env_wins_over_systemd_and_system_scope() {
 #[test]
 #[serial_test::serial]
 fn state_systemd_dir_wins_over_system_scope() {
-    let _cfgd = EnvVarGuard::unset("CFGD_STATE_DIR");
+    let _cfgd = EnvVarGuard::unset(crate::CFGD_STATE_DIR_ENV);
     let _sd = EnvVarGuard::set("STATE_DIRECTORY", "/from/systemd/state");
     assert_eq!(
         crate::state::default_state_dir_for(Scope::System).unwrap(),
@@ -417,7 +513,7 @@ fn state_systemd_dir_wins_over_system_scope() {
 #[serial_test::serial]
 #[cfg(target_os = "linux")]
 fn state_system_scope_is_var_lib_on_linux() {
-    let _cfgd = EnvVarGuard::unset("CFGD_STATE_DIR");
+    let _cfgd = EnvVarGuard::unset(crate::CFGD_STATE_DIR_ENV);
     let _sd = EnvVarGuard::unset("STATE_DIRECTORY");
     assert_eq!(
         crate::state::default_state_dir_for(Scope::System).unwrap(),
@@ -429,7 +525,7 @@ fn state_system_scope_is_var_lib_on_linux() {
 #[serial_test::serial]
 #[cfg(target_os = "macos")]
 fn state_system_scope_is_library_on_macos() {
-    let _cfgd = EnvVarGuard::unset("CFGD_STATE_DIR");
+    let _cfgd = EnvVarGuard::unset(crate::CFGD_STATE_DIR_ENV);
     let _sd = EnvVarGuard::unset("STATE_DIRECTORY");
     assert_eq!(
         crate::state::default_state_dir_for(Scope::System).unwrap(),
@@ -442,7 +538,7 @@ fn state_system_scope_is_library_on_macos() {
 #[test]
 #[serial_test::serial]
 fn cache_cfgd_env_wins_over_systemd_and_system_scope() {
-    let _cfgd = EnvVarGuard::set("CFGD_CACHE_DIR", "/from/cfgd/cache");
+    let _cfgd = EnvVarGuard::set(crate::CFGD_CACHE_DIR_ENV, "/from/cfgd/cache");
     let _sd = EnvVarGuard::set("CACHE_DIRECTORY", "/from/systemd/cache");
     assert_eq!(
         default_cache_dir_for(Scope::System).unwrap(),
@@ -453,7 +549,7 @@ fn cache_cfgd_env_wins_over_systemd_and_system_scope() {
 #[test]
 #[serial_test::serial]
 fn cache_systemd_dir_wins_over_system_scope() {
-    let _cfgd = EnvVarGuard::unset("CFGD_CACHE_DIR");
+    let _cfgd = EnvVarGuard::unset(crate::CFGD_CACHE_DIR_ENV);
     let _sd = EnvVarGuard::set("CACHE_DIRECTORY", "/from/systemd/cache");
     assert_eq!(
         default_cache_dir_for(Scope::System).unwrap(),
@@ -465,7 +561,7 @@ fn cache_systemd_dir_wins_over_system_scope() {
 #[serial_test::serial]
 #[cfg(target_os = "linux")]
 fn cache_system_scope_is_var_cache_on_linux() {
-    let _cfgd = EnvVarGuard::unset("CFGD_CACHE_DIR");
+    let _cfgd = EnvVarGuard::unset(crate::CFGD_CACHE_DIR_ENV);
     let _sd = EnvVarGuard::unset("CACHE_DIRECTORY");
     assert_eq!(
         default_cache_dir_for(Scope::System).unwrap(),
@@ -477,7 +573,7 @@ fn cache_system_scope_is_var_cache_on_linux() {
 #[serial_test::serial]
 #[cfg(target_os = "macos")]
 fn cache_system_scope_is_library_caches_on_macos() {
-    let _cfgd = EnvVarGuard::unset("CFGD_CACHE_DIR");
+    let _cfgd = EnvVarGuard::unset(crate::CFGD_CACHE_DIR_ENV);
     let _sd = EnvVarGuard::unset("CACHE_DIRECTORY");
     assert_eq!(
         default_cache_dir_for(Scope::System).unwrap(),
@@ -490,10 +586,10 @@ fn cache_system_scope_is_library_caches_on_macos() {
 #[test]
 #[serial_test::serial]
 fn runtime_cfgd_env_wins_over_systemd_and_system_scope() {
-    let _cfgd = EnvVarGuard::set("CFGD_RUNTIME_DIR", "/from/cfgd/runtime");
+    let _cfgd = EnvVarGuard::set(crate::CFGD_RUNTIME_DIR_ENV, "/from/cfgd/runtime");
     let _sd = EnvVarGuard::set("RUNTIME_DIRECTORY", "/from/systemd/runtime");
     assert_eq!(
-        default_runtime_dir_for(Scope::System),
+        default_runtime_dir_for(Scope::System).unwrap(),
         Some(PathBuf::from("/from/cfgd/runtime"))
     );
 }
@@ -501,10 +597,10 @@ fn runtime_cfgd_env_wins_over_systemd_and_system_scope() {
 #[test]
 #[serial_test::serial]
 fn runtime_systemd_dir_wins_over_system_scope() {
-    let _cfgd = EnvVarGuard::unset("CFGD_RUNTIME_DIR");
+    let _cfgd = EnvVarGuard::unset(crate::CFGD_RUNTIME_DIR_ENV);
     let _sd = EnvVarGuard::set("RUNTIME_DIRECTORY", "/from/systemd/runtime");
     assert_eq!(
-        default_runtime_dir_for(Scope::System),
+        default_runtime_dir_for(Scope::System).unwrap(),
         Some(PathBuf::from("/from/systemd/runtime"))
     );
 }
@@ -513,10 +609,10 @@ fn runtime_systemd_dir_wins_over_system_scope() {
 #[serial_test::serial]
 #[cfg(target_os = "linux")]
 fn runtime_system_scope_is_run_cfgd_on_linux() {
-    let _cfgd = EnvVarGuard::unset("CFGD_RUNTIME_DIR");
+    let _cfgd = EnvVarGuard::unset(crate::CFGD_RUNTIME_DIR_ENV);
     let _sd = EnvVarGuard::unset("RUNTIME_DIRECTORY");
     assert_eq!(
-        default_runtime_dir_for(Scope::System),
+        default_runtime_dir_for(Scope::System).unwrap(),
         Some(PathBuf::from("/run/cfgd"))
     );
 }
@@ -525,10 +621,10 @@ fn runtime_system_scope_is_run_cfgd_on_linux() {
 #[serial_test::serial]
 #[cfg(target_os = "macos")]
 fn runtime_system_scope_is_library_on_macos() {
-    let _cfgd = EnvVarGuard::unset("CFGD_RUNTIME_DIR");
+    let _cfgd = EnvVarGuard::unset(crate::CFGD_RUNTIME_DIR_ENV);
     let _sd = EnvVarGuard::unset("RUNTIME_DIRECTORY");
     assert_eq!(
-        default_runtime_dir_for(Scope::System),
+        default_runtime_dir_for(Scope::System).unwrap(),
         Some(PathBuf::from("/Library/Application Support/cfgd/runtime"))
     );
 }
@@ -538,10 +634,16 @@ fn runtime_system_scope_is_library_on_macos() {
 #[test]
 fn resolvers_override_wins_over_system_scope() {
     let over = PathBuf::from("/explicit/override");
-    assert_eq!(resolve_config_dir(Some(&over), Scope::System), over);
+    assert_eq!(
+        resolve_config_dir(Some(&over), Scope::System).unwrap(),
+        over
+    );
     assert_eq!(resolve_state_dir(Some(&over), Scope::System).unwrap(), over);
     assert_eq!(resolve_cache_dir(Some(&over), Scope::System).unwrap(), over);
-    assert_eq!(resolve_runtime_dir(Some(&over), Scope::System), Some(over));
+    assert_eq!(
+        resolve_runtime_dir(Some(&over), Scope::System).unwrap(),
+        Some(over)
+    );
 }
 
 #[test]
@@ -552,9 +654,9 @@ fn resolved_dirs_system_scope_resolves_fhs_roots() {
     let _state_sd = EnvVarGuard::unset("STATE_DIRECTORY");
     let _cache_sd = EnvVarGuard::unset("CACHE_DIRECTORY");
     let _runtime_sd = EnvVarGuard::unset("RUNTIME_DIRECTORY");
-    let _cfgd_state = EnvVarGuard::unset("CFGD_STATE_DIR");
-    let _cfgd_cache = EnvVarGuard::unset("CFGD_CACHE_DIR");
-    let _cfgd_runtime = EnvVarGuard::unset("CFGD_RUNTIME_DIR");
+    let _cfgd_state = EnvVarGuard::unset(crate::CFGD_STATE_DIR_ENV);
+    let _cfgd_cache = EnvVarGuard::unset(crate::CFGD_CACHE_DIR_ENV);
+    let _cfgd_runtime = EnvVarGuard::unset(crate::CFGD_RUNTIME_DIR_ENV);
     let dirs = ResolvedDirs::resolve(None, None, None, None, Scope::System).unwrap();
     assert_eq!(dirs.config, PathBuf::from("/etc/cfgd"));
     assert_eq!(dirs.state, PathBuf::from("/var/lib/cfgd"));
@@ -924,4 +1026,174 @@ fn lexically_normalized_keeps_every_dotdot_it_has_nothing_to_pop() {
         "the lexical fold pops a normal component and nothing else: {}",
         moved.join("; ")
     );
+}
+
+// --- names_the_same_path: the two answers, and what each one alone misses ---
+
+/// Every shape [`names_the_same_path`] has to settle, over one temp tree.
+///
+/// The two halves are asserted where each is the ONLY one that can answer:
+/// the walk-back goes through a component that does not exist, so no inode
+/// question can be asked about it at all, and the symlink is two genuinely
+/// different paths the fold cannot equate. The negatives matter as much: a
+/// side that is absent answers `false`: no panic, and a missing file is no
+/// match.
+#[test]
+fn names_the_same_path_answers_both_spellings_and_neither_stranger() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let root = dir.path();
+    let file = root.join("cfgd.yaml");
+    std::fs::write(&file, "spec: {}\n").unwrap();
+    let other = root.join("other.yaml");
+    std::fs::write(&other, "spec: {}\n").unwrap();
+
+    // One file, two spellings the fold settles on its own.
+    assert!(names_the_same_path(
+        &file,
+        &root.join(".").join("cfgd.yaml")
+    ));
+    // A walk-back through a component that is not there: nothing to stat, so
+    // the lexical fold is the only half that can answer.
+    assert!(!root.join("absent").exists());
+    assert!(names_the_same_path(
+        &file,
+        &root.join("absent").join("..").join("cfgd.yaml")
+    ));
+    // Relative spellings of one path resolve against the same working
+    // directory, so they fold together whatever that directory is.
+    assert!(names_the_same_path(
+        Path::new("a/b/cfgd.yaml"),
+        Path::new("./a/b/../b/cfgd.yaml")
+    ));
+
+    // Two files, each spelled once.
+    assert!(!names_the_same_path(&file, &other));
+    // A side that is not there is not a match, and asking costs no panic.
+    assert!(!names_the_same_path(&file, &root.join("gone.yaml")));
+    assert!(!names_the_same_path(
+        &root.join("gone.yaml"),
+        &root.join("also-gone.yaml")
+    ));
+}
+
+/// The half the fold cannot answer: one file reached through a symlinked
+/// directory is two paths that share no components, so only the inode answer
+/// equates them. Unix alone, because a Windows host refuses the link itself
+/// without Developer Mode.
+#[test]
+#[cfg(unix)]
+fn names_the_same_path_reads_through_a_symlink_the_fold_cannot_fold() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let real = dir.path().join("real");
+    std::fs::create_dir(&real).unwrap();
+    let file = real.join("cfgd.yaml");
+    std::fs::write(&file, "spec: {}\n").unwrap();
+    let link = dir.path().join("link");
+    std::os::unix::fs::symlink(&real, &link).unwrap();
+
+    let through_link = link.join("cfgd.yaml");
+    assert_ne!(
+        lexically_normalized(&through_link),
+        lexically_normalized(&file),
+        "the fold sees two different paths, which is what makes this the inode arm's case"
+    );
+    assert!(names_the_same_path(&through_link, &file));
+}
+
+/// Runs `resolve` with a home set and with none, and asserts the first names
+/// `tilde-dir` under that home and the second refuses `~/tilde-dir` with
+/// `HomeUnresolved`: used as written it would name `./~/tilde-dir`.
+fn assert_expands_a_leading_tilde(
+    site: &str,
+    resolve: impl Fn() -> crate::errors::Result<PathBuf>,
+) {
+    let dir = tempfile::tempdir().unwrap();
+    {
+        let _home = EnvVarGuard::set("HOME", dir.path().to_str().unwrap());
+        let _profile = EnvVarGuard::set("USERPROFILE", dir.path().to_str().unwrap());
+        assert_eq!(
+            to_posix_string(resolve().unwrap_or_else(|e| panic!("{site}: {e}"))),
+            to_posix_string(dir.path().join("tilde-dir")),
+            "{site}: a home is set"
+        );
+    }
+    let _home = EnvVarGuard::unset("HOME");
+    let _profile = EnvVarGuard::unset("USERPROFILE");
+    match resolve() {
+        Err(crate::errors::CfgdError::State(crate::errors::StateError::HomeUnresolved {
+            path,
+            ..
+        })) => assert_eq!(to_posix_string(path), TILDE_DIR, "{site}: names the path"),
+        other => panic!("{site}: no home is set, expected HomeUnresolved, got {other:?}"),
+    }
+}
+
+const TILDE_DIR: &str = "~/tilde-dir";
+
+#[test]
+#[serial_test::serial]
+fn resolve_config_dir_expands_a_leading_tilde() {
+    assert_expands_a_leading_tilde("resolve_config_dir", || {
+        resolve_config_dir(Some(Path::new(TILDE_DIR)), Scope::User)
+    });
+}
+
+#[test]
+#[serial_test::serial]
+fn resolve_state_dir_expands_a_leading_tilde() {
+    assert_expands_a_leading_tilde("resolve_state_dir", || {
+        resolve_state_dir(Some(Path::new(TILDE_DIR)), Scope::User)
+    });
+}
+
+#[test]
+#[serial_test::serial]
+fn resolve_cache_dir_expands_a_leading_tilde() {
+    assert_expands_a_leading_tilde("resolve_cache_dir", || {
+        resolve_cache_dir(Some(Path::new(TILDE_DIR)), Scope::User)
+    });
+}
+
+#[test]
+#[serial_test::serial]
+fn resolve_runtime_dir_expands_a_leading_tilde() {
+    assert_expands_a_leading_tilde("resolve_runtime_dir", || {
+        resolve_runtime_dir(Some(Path::new(TILDE_DIR)), Scope::User).map(Option::unwrap)
+    });
+}
+
+#[test]
+#[serial_test::serial]
+fn the_state_dir_env_expands_a_leading_tilde() {
+    let _env = EnvVarGuard::set(crate::CFGD_STATE_DIR_ENV, TILDE_DIR);
+    assert_expands_a_leading_tilde(crate::CFGD_STATE_DIR_ENV, || {
+        crate::state::default_state_dir_for(Scope::User)
+    });
+}
+
+#[test]
+#[serial_test::serial]
+fn the_cache_dir_env_expands_a_leading_tilde() {
+    let _env = EnvVarGuard::set(crate::CFGD_CACHE_DIR_ENV, TILDE_DIR);
+    assert_expands_a_leading_tilde(crate::CFGD_CACHE_DIR_ENV, || {
+        default_cache_dir_for(Scope::User)
+    });
+}
+
+#[test]
+#[serial_test::serial]
+fn the_runtime_dir_env_expands_a_leading_tilde() {
+    let _env = EnvVarGuard::set(crate::CFGD_RUNTIME_DIR_ENV, TILDE_DIR);
+    assert_expands_a_leading_tilde(crate::CFGD_RUNTIME_DIR_ENV, || {
+        default_runtime_dir_for(Scope::User).map(Option::unwrap)
+    });
+}
+
+#[test]
+#[serial_test::serial]
+fn the_daemon_ipc_path_env_expands_a_leading_tilde() {
+    let _env = EnvVarGuard::set(crate::CFGD_DAEMON_IPC_PATH_ENV, TILDE_DIR);
+    assert_expands_a_leading_tilde(crate::CFGD_DAEMON_IPC_PATH_ENV, || {
+        crate::daemon::resolve_default_ipc_path(None, Scope::User)
+    });
 }

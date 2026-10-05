@@ -238,8 +238,15 @@ pub fn command_status(
 /// Run a [`std::process::Command`] with a timeout, surfacing whether the timeout fired.
 ///
 /// On timeout the watchdog sends SIGTERM, waits [`KILL_GRACE_PERIOD`] for the
-/// child to exit cleanly, then escalates to SIGKILL (Unix) / `TerminateProcess`
-/// retry (Windows), and the returned [`CommandOutcome::timed_out`] is `true`.
+/// child to exit cleanly, then escalates to SIGKILL (Unix); on Windows the
+/// first kill already ended the child's job. The returned
+/// [`CommandOutcome::timed_out`] is `true`.
+///
+/// The child is spawned through [`spawn_sharing_terminal`]: on Unix it stays
+/// in cfgd's foreground process group, so a `sudo` password prompt or an ssh
+/// host-key question can still read the terminal, and the kill reaches the
+/// child alone. On Windows it joins a job, and the kill ends everything it
+/// started.
 ///
 /// Stdio is configured here, not by callers: stdout and stderr are piped and
 /// stdin is null, matching [`std::process::Command::output`]. `spawn` alone
@@ -260,6 +267,28 @@ pub fn command_output_with_timeout_outcome(
     cmd: &mut std::process::Command,
     timeout: std::time::Duration,
 ) -> std::io::Result<CommandOutcome> {
+    output_with_timeout(cmd, timeout, spawn_sharing_terminal)
+}
+
+/// [`command_output_with_timeout_outcome`] for a command spawned through
+/// [`spawn_tree`], so a timeout kills every process the command started along
+/// with the command itself.
+///
+/// For a shell-wrapped body (a guard, a user `run:` line) whose shell forks
+/// its last command (bash does, dash execs it): without it, the grandchild
+/// outlives the timeout holding the pipes the child was handed.
+pub fn command_tree_output_with_timeout_outcome(
+    cmd: &mut std::process::Command,
+    timeout: std::time::Duration,
+) -> std::io::Result<CommandOutcome> {
+    output_with_timeout(cmd, timeout, spawn_tree)
+}
+
+fn output_with_timeout(
+    cmd: &mut std::process::Command,
+    timeout: std::time::Duration,
+    spawn: impl FnOnce(&mut std::process::Command) -> std::io::Result<(std::process::Child, TreeKill)>,
+) -> std::io::Result<CommandOutcome> {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::mpsc;
@@ -275,9 +304,7 @@ pub fn command_output_with_timeout_outcome(
     cmd.stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
-    let (spawned, _attempts) = spawn_past_a_transient_refusal(cmd);
-    let mut child = spawned?;
-    let id = child.id();
+    let (mut child, kill) = spawn(cmd)?;
 
     let abandoned = Arc::new(AtomicBool::new(false));
     let (drained_tx, drained_rx) = mpsc::channel();
@@ -288,20 +315,27 @@ pub fn command_output_with_timeout_outcome(
     let timed_out = Arc::new(AtomicBool::new(false));
     let timed_out_watchdog = Arc::clone(&timed_out);
 
-    std::thread::spawn(move || {
-        if rx.recv_timeout(timeout).is_err() {
-            timed_out_watchdog.store(true, Ordering::SeqCst);
-            terminate_process(id);
-            // SIGTERM-trapping children can hang the wait below indefinitely.
-            // Give them a grace window to flush, then escalate.
-            if rx.recv_timeout(KILL_GRACE_PERIOD).is_err() {
-                force_kill_process(id);
-            }
+    let watchdog = std::thread::spawn(move || {
+        if rx.recv_timeout(timeout).is_ok() {
+            return;
         }
+        timed_out_watchdog.store(true, Ordering::SeqCst);
+        kill.end(KILL_GRACE_PERIOD, |bound| rx.recv_timeout(bound).is_ok());
     });
 
-    let status = child.wait();
-    let _ = tx.send(());
+    // The leader is reaped only after the watchdog is done with its group:
+    // while it is an unreaped zombie its pid cannot be reused, so the
+    // SIGKILL to `-pid` cannot reach an unrelated group that took the number.
+    let status = if exited_unreaped(&child) {
+        let _ = tx.send(());
+        let _ = watchdog.join();
+        child.wait()
+    } else {
+        let status = child.wait();
+        let _ = tx.send(());
+        let _ = watchdog.join();
+        status
+    };
     let status = status?;
 
     let deadline = std::time::Instant::now() + PIPE_DRAIN_GRACE;
@@ -387,6 +421,377 @@ pub fn command_output_with_timeout(
     command_output_with_timeout_outcome(cmd, timeout).map(|o| o.output)
 }
 
+/// Block until `child` has exited, leaving it unreaped, so its pid stays
+/// reserved until [`std::process::Child::wait`] collects it. `false` when the
+/// platform or the call cannot do that, and the caller reaps as it waits.
+#[cfg(unix)]
+fn exited_unreaped(child: &std::process::Child) -> bool {
+    waitid_exited(child, 0)
+}
+
+/// Whether `child` has exited, read by `waitid` with `WNOWAIT` plus `flags`
+/// (`WNOHANG` returns at once while it still runs), leaving it unreaped.
+#[cfg(unix)]
+fn waitid_exited(child: &std::process::Child, flags: libc::c_int) -> bool {
+    loop {
+        // SAFETY: an all-zero `siginfo_t` is a valid value of that plain C
+        // struct.
+        let mut info = unsafe { std::mem::zeroed::<libc::siginfo_t>() };
+        // SAFETY: `info` is a writable `siginfo_t` this frame owns, which
+        // `waitid` only writes and does not retain; `WNOWAIT` leaves the child
+        // waitable for the `Child::wait` that follows.
+        let rc = unsafe {
+            libc::waitid(
+                libc::P_PID,
+                child.id() as libc::id_t,
+                &mut info,
+                libc::WEXITED | libc::WNOWAIT | flags,
+            )
+        };
+        if rc == 0 {
+            // Under `WNOHANG` a child still running also returns 0; only a
+            // reported exit fills in `si_signo`, which starts zeroed.
+            return info.si_signo == libc::SIGCHLD;
+        }
+        if std::io::Error::last_os_error().kind() != std::io::ErrorKind::Interrupted {
+            return false;
+        }
+    }
+}
+
+/// Windows holds the pid for as long as the `Child`'s process handle is open,
+/// and a job is ended by its handle, so nothing needs the child unreaped.
+#[cfg(windows)]
+fn exited_unreaped(_child: &std::process::Child) -> bool {
+    false
+}
+
+/// How long [`TreeKill::end`] waits on Windows for a child whose job (or
+/// process) was just terminated to report its exit before terminating it
+/// again. Termination is final there, so the wait only covers the kernel
+/// tearing the processes down.
+#[cfg(windows)]
+const TERMINATED_EXIT_BOUND: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// Wait up to `bound` for `child` to exit, answering whether it did. The
+/// child is left unreaped, so a group kill after this still names its pid.
+#[cfg(unix)]
+pub fn exits_within(child: &std::process::Child, bound: std::time::Duration) -> bool {
+    let deadline = std::time::Instant::now() + bound;
+    loop {
+        if waitid_exited(child, libc::WNOHANG) {
+            return true;
+        }
+        let left = deadline.saturating_duration_since(std::time::Instant::now());
+        if left.is_zero() {
+            return false;
+        }
+        // sleep-ok: an exit seen without reaping raises no event to wait on.
+        std::thread::sleep(left.min(std::time::Duration::from_millis(50)));
+    }
+}
+
+/// Wait up to `bound` for `child` to exit, answering whether it did, and
+/// leave it unreaped.
+#[cfg(windows)]
+pub fn exits_within(child: &std::process::Child, bound: std::time::Duration) -> bool {
+    job::exits_within(child, bound)
+}
+
+/// How a spawned child is killed: alone, or with every process it started.
+///
+/// Returned by the spawn that made the child, so whether the child leads a
+/// tree of its own is a fact recorded when the tree was set up and never
+/// re-derived from the pid later. Moved into the watchdog thread that kills
+/// it, so it has one owner.
+pub struct TreeKill {
+    pid: u32,
+    /// The child leads its own process group (Unix), so a signal to `-pid`
+    /// reaches every process in the tree.
+    #[cfg(unix)]
+    grouped: bool,
+    /// The job every process of the tree belongs to (Windows).
+    #[cfg(windows)]
+    job: Option<job::Job>,
+}
+
+impl TreeKill {
+    /// A child killed by its own pid, for a spawn that set up no tree.
+    pub fn child_alone(pid: u32) -> Self {
+        Self {
+            pid,
+            #[cfg(unix)]
+            grouped: false,
+            #[cfg(windows)]
+            job: None,
+        }
+    }
+
+    /// Ask the tree to exit: SIGTERM to the group (or the child) on Unix;
+    /// on Windows, where nothing is catchable, the whole job ends here.
+    pub fn terminate(&self) {
+        #[cfg(unix)]
+        signal_tree(self.pid, self.grouped, nix::sys::signal::Signal::SIGTERM);
+        #[cfg(windows)]
+        match &self.job {
+            Some(job) => job.terminate(),
+            None => terminate_process(self.pid),
+        }
+    }
+
+    /// End the tree after a timeout: [`TreeKill::terminate`], then, while
+    /// the tree may still be acting on that request, up to `grace` before
+    /// [`TreeKill::force_kill`].
+    ///
+    /// On Unix the request is a SIGTERM, which the tree may catch and act on,
+    /// so it gets the grace period. A group whose leader exits early still
+    /// waits the period out and is sent SIGKILL: a descendant may ignore
+    /// SIGTERM. On Windows the terminate already ended the job (or the
+    /// child), so this returns as soon as the child has exited, and waits no
+    /// longer than a second for that.
+    ///
+    /// `exited(bound)` waits up to `bound` for the child to exit and says
+    /// whether it did, without reaping it: [`exits_within`], or the answer of
+    /// a thread that waits on the child.
+    pub fn end(
+        &self,
+        grace: std::time::Duration,
+        mut exited: impl FnMut(std::time::Duration) -> bool,
+    ) {
+        self.terminate();
+        #[cfg(windows)]
+        {
+            let _ = grace;
+            if !exited(TERMINATED_EXIT_BOUND) {
+                self.force_kill();
+            }
+        }
+        #[cfg(unix)]
+        {
+            let grace_ends = std::time::Instant::now() + grace;
+            if exited(grace) {
+                if !self.grouped {
+                    return;
+                }
+                // sleep-ok: the end of a grace period raises no event to wait on.
+                std::thread::sleep(grace_ends.saturating_duration_since(std::time::Instant::now()));
+            }
+            self.force_kill();
+        }
+    }
+
+    /// End the tree after the grace period: SIGKILL to the group (or the
+    /// child) on Unix, the same termination as [`TreeKill::terminate`] on
+    /// Windows.
+    pub fn force_kill(&self) {
+        #[cfg(unix)]
+        signal_tree(self.pid, self.grouped, nix::sys::signal::Signal::SIGKILL);
+        #[cfg(windows)]
+        self.terminate();
+    }
+}
+
+#[cfg(unix)]
+fn signal_tree(pid: u32, grouped: bool, signal: nix::sys::signal::Signal) {
+    use nix::unistd::Pid;
+    // A negative pid names the process group whose id it is: the child
+    // leads one only when `spawn_tree` made it, which `grouped` records.
+    let target = if grouped { -(pid as i32) } else { pid as i32 };
+    let _ = nix::sys::signal::kill(Pid::from_raw(target), signal);
+}
+
+/// Spawn `cmd` as the root of a process tree of its own, so a timeout or an
+/// abort ends every process the command starts: a shell body forking its
+/// last command, a script backgrounding a helper.
+///
+/// On Unix the child leads a new process group. That also takes it out of
+/// the terminal's foreground group, so a command that must read the
+/// controlling terminal (an interactive script, `sudo` prompting for a
+/// password) is spawned with [`spawn_child`] instead.
+///
+/// On Windows the child starts suspended, joins a job object, and only then
+/// runs, so nothing it starts can escape the job before the job exists. A
+/// job cfgd could not create or join (a parent job that forbids nesting)
+/// leaves the child killed alone, as [`spawn_child`] would. The job is not
+/// set to end with its last handle: a command that exits normally keeps
+/// whatever it deliberately left running, as it does on Unix, and only a
+/// kill through [`TreeKill`] ends the tree.
+pub fn spawn_tree(
+    cmd: &mut std::process::Command,
+) -> std::io::Result<(std::process::Child, TreeKill)> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0);
+        let child = spawn_child(cmd)?;
+        let kill = TreeKill {
+            pid: child.id(),
+            grouped: true,
+        };
+        Ok((child, kill))
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(windows_sys::Win32::System::Threading::CREATE_SUSPENDED);
+        let mut child = spawn_child(cmd)?;
+        let job = job::Job::adopt(&child);
+        if let Err(e) = job::resume_main_thread(child.id()) {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(e);
+        }
+        let kill = TreeKill {
+            pid: child.id(),
+            job,
+        };
+        Ok((child, kill))
+    }
+}
+
+/// Spawn a command that may prompt on the controlling terminal, together with
+/// the kill that ends it on a timeout.
+///
+/// On Unix the child stays in cfgd's own foreground process group, where a
+/// read of the terminal (`read`, a `sudo` password, pinentry) prompts; in a
+/// group of its own it would stop on SIGTTIN instead. The kill therefore
+/// reaches the child alone. On Windows console input does not depend on job
+/// membership, so the child is spawned through [`spawn_tree`] and a timeout
+/// ends everything it started.
+pub fn spawn_sharing_terminal(
+    cmd: &mut std::process::Command,
+) -> std::io::Result<(std::process::Child, TreeKill)> {
+    #[cfg(unix)]
+    {
+        let child = spawn_child(cmd)?;
+        let kill = TreeKill::child_alone(child.id());
+        Ok((child, kill))
+    }
+    #[cfg(windows)]
+    {
+        spawn_tree(cmd)
+    }
+}
+
+/// The Win32 calls behind [`spawn_tree`] and [`TreeKill`], the only `unsafe`
+/// they need.
+#[cfg(windows)]
+mod job {
+    use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE};
+
+    /// An owned job object handle, closed on drop.
+    pub(super) struct Job(HANDLE);
+
+    // SAFETY: a job handle is a kernel object reference; every call made
+    // through it (`TerminateJobObject`, `CloseHandle`) is thread-safe.
+    unsafe impl Send for Job {}
+
+    impl Job {
+        /// A new job holding `child`, or `None` when either step fails.
+        pub(super) fn adopt(child: &std::process::Child) -> Option<Self> {
+            use std::os::windows::io::AsRawHandle;
+            use windows_sys::Win32::System::JobObjects::{
+                AssignProcessToJobObject, CreateJobObjectW,
+            };
+            // SAFETY: both pointers may be null (default security, unnamed
+            // job); the result is null on failure, checked below.
+            let handle = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
+            if handle.is_null() {
+                tracing::debug!(error = %std::io::Error::last_os_error(), "cannot create a job object; the child is killed alone");
+                return None;
+            }
+            let job = Job(handle);
+            // SAFETY: `job.0` is the live handle created above, and the
+            // process handle is borrowed from `child`, which outlives the call.
+            let assigned =
+                unsafe { AssignProcessToJobObject(job.0, child.as_raw_handle() as HANDLE) };
+            if assigned == 0 {
+                tracing::debug!(error = %std::io::Error::last_os_error(), "cannot join the child to a job object; it is killed alone");
+                return None;
+            }
+            Some(job)
+        }
+
+        /// End every process in the job.
+        pub(super) fn terminate(&self) {
+            use windows_sys::Win32::System::JobObjects::TerminateJobObject;
+            // SAFETY: `self.0` is a live job handle owned by `self`.
+            unsafe { TerminateJobObject(self.0, 1) };
+        }
+    }
+
+    impl Drop for Job {
+        fn drop(&mut self) {
+            // SAFETY: `self.0` was returned by `CreateJobObjectW` and is
+            // closed exactly once, here.
+            unsafe { CloseHandle(self.0) };
+        }
+    }
+
+    /// Wait on `child`'s process handle for up to `bound`.
+    pub(super) fn exits_within(child: &std::process::Child, bound: std::time::Duration) -> bool {
+        use std::os::windows::io::AsRawHandle;
+        use windows_sys::Win32::Foundation::{HANDLE, WAIT_OBJECT_0};
+        use windows_sys::Win32::System::Threading::WaitForSingleObject;
+        let millis = u32::try_from(bound.as_millis()).unwrap_or(u32::MAX - 1);
+        // SAFETY: the process handle is borrowed from `child`, which outlives
+        // the call; the wait only reads it.
+        unsafe { WaitForSingleObject(child.as_raw_handle() as HANDLE, millis) == WAIT_OBJECT_0 }
+    }
+
+    /// Resume the one thread of a process spawned with `CREATE_SUSPENDED`.
+    ///
+    /// The standard library keeps the main thread's handle to itself, so the
+    /// thread is found by its owner in a thread snapshot.
+    pub(super) fn resume_main_thread(pid: u32) -> std::io::Result<()> {
+        use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+            CreateToolhelp32Snapshot, TH32CS_SNAPTHREAD, THREADENTRY32, Thread32First, Thread32Next,
+        };
+        use windows_sys::Win32::System::Threading::{
+            OpenThread, ResumeThread, THREAD_SUSPEND_RESUME,
+        };
+        // SAFETY: a thread snapshot takes no pointer; the result is
+        // `INVALID_HANDLE_VALUE` on failure, checked below.
+        let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) };
+        if snapshot == INVALID_HANDLE_VALUE {
+            return Err(std::io::Error::last_os_error());
+        }
+        let mut entry = THREADENTRY32 {
+            dwSize: std::mem::size_of::<THREADENTRY32>() as u32,
+            ..Default::default()
+        };
+        let mut resumed = false;
+        // SAFETY: `snapshot` is live and `entry` is a writable
+        // `THREADENTRY32` whose `dwSize` is set, as both calls require.
+        let mut more = unsafe { Thread32First(snapshot, &mut entry) } != 0;
+        while more {
+            if entry.th32OwnerProcessID == pid {
+                // SAFETY: opening a thread by id takes no pointer; the result
+                // is null on failure, checked below.
+                let thread = unsafe { OpenThread(THREAD_SUSPEND_RESUME, 0, entry.th32ThreadID) };
+                if !thread.is_null() {
+                    // SAFETY: `thread` is the live handle opened above, closed
+                    // exactly once right after.
+                    resumed |= unsafe { ResumeThread(thread) } != u32::MAX;
+                    // SAFETY: as above.
+                    unsafe { CloseHandle(thread) };
+                }
+            }
+            // SAFETY: as for `Thread32First`.
+            more = unsafe { Thread32Next(snapshot, &mut entry) } != 0;
+        }
+        // SAFETY: `snapshot` is live and closed exactly once, here.
+        unsafe { CloseHandle(snapshot) };
+        if resumed {
+            Ok(())
+        } else {
+            Err(std::io::Error::other(format!(
+                "cannot resume the suspended child (pid {pid})"
+            )))
+        }
+    }
+}
+
 /// Send a graceful termination signal to a process by PID.
 /// Unix: sends SIGTERM. Windows: calls TerminateProcess.
 #[cfg(unix)]
@@ -412,21 +817,6 @@ pub fn terminate_process(pid: u32) {
             CloseHandle(handle);
         }
     }
-}
-
-/// Send an uncatchable kill signal to a process by PID after the graceful
-/// terminate window has elapsed. Unix: SIGKILL. Windows: a second
-/// TerminateProcess call (idempotent — Windows kills are already uncatchable).
-#[cfg(unix)]
-pub fn force_kill_process(pid: u32) {
-    use nix::sys::signal::{Signal, kill};
-    use nix::unistd::Pid;
-    let _ = kill(Pid::from_raw(pid as i32), Signal::SIGKILL);
-}
-
-#[cfg(windows)]
-pub fn force_kill_process(pid: u32) {
-    terminate_process(pid);
 }
 
 /// Check if the current process is running with elevated privileges.
@@ -969,6 +1359,10 @@ pub fn require_tool(name: &str, install_hint: Option<&str>) -> std::result::Resu
 /// Pair every seam consumer with `serial_test::serial` because env-var mutation
 /// is process-global.
 pub fn tool_binary_name(env_var: &str, default: &str) -> String {
+    // A sibling test pins this seam under the PATH lock; the read waits it out.
+    // Compiled out of release builds.
+    #[cfg(any(test, feature = "test-helpers"))]
+    let _seam_guard = crate::test_helpers::path_env_read_guard();
     if env_var.is_empty() {
         return default.to_string();
     }
@@ -999,6 +1393,10 @@ pub fn require_tool_with_seam(
     default: &str,
     install_hint: Option<&str>,
 ) -> std::result::Result<(), String> {
+    // A sibling test pins this seam under the PATH lock; the read waits it out.
+    // Compiled out of release builds.
+    #[cfg(any(test, feature = "test-helpers"))]
+    let _seam_guard = crate::test_helpers::path_env_read_guard();
     if let Ok(custom) = std::env::var(env_var) {
         let p = std::path::Path::new(&custom);
         if p.is_file() {
@@ -1059,6 +1457,10 @@ pub fn reg_cmd() -> std::process::Command {
 /// points at an existing file. Use in `is_available()` checks where the
 /// caller wants a bool, not a `Result`.
 pub fn command_available_with_seam(env_var: &str, default: &str) -> bool {
+    // A sibling test pins this seam under the PATH lock; the read waits it out.
+    // Compiled out of release builds.
+    #[cfg(any(test, feature = "test-helpers"))]
+    let _seam_guard = crate::test_helpers::path_env_read_guard();
     if let Ok(custom) = std::env::var(env_var) {
         return std::path::Path::new(&custom).is_file();
     }
@@ -1604,6 +2006,7 @@ mod tests {
 
     #[test]
     fn command_output_with_timeout_succeeds() {
+        let _path = crate::test_helpers::path_env_read_guard();
         let mut cmd = std::process::Command::new("echo");
         cmd.arg("hello");
         let output =
@@ -1614,6 +2017,7 @@ mod tests {
 
     #[test]
     fn command_output_with_timeout_kills_on_exceed() {
+        let _path = crate::test_helpers::path_env_read_guard();
         let mut cmd = std::process::Command::new("sleep");
         cmd.arg("60");
         let result = command_output_with_timeout(&mut cmd, std::time::Duration::from_millis(100));
@@ -1625,10 +2029,37 @@ mod tests {
         assert!(!output.status.success());
     }
 
+    /// On Windows a timed-out command is killed with everything it started,
+    /// whatever path ran it: job membership leaves console input alone, so
+    /// nothing there needs the child killed alone. The direct child is a
+    /// `cmd` waiting on a second `cmd` that writes the marker.
+    #[cfg(windows)]
+    #[test]
+    fn a_timed_out_command_on_windows_kills_every_process_it_started() {
+        use std::os::windows::process::CommandExt;
+        let _path = crate::test_helpers::path_env_read_guard();
+        let tmp = crate::test_helpers::spaced_marker_dir();
+        let marker = tmp.path().join("grandchild-outlived-the-command");
+        let shown = marker.display();
+        crate::test_helpers::assert_a_timeout_kill_stops_the_write(
+            &marker,
+            std::time::Duration::from_secs(3),
+            |timeout| {
+                let mut cmd = std::process::Command::new("cmd");
+                cmd.raw_arg(format!(
+                    "/C cmd /C \"ping -n 3 127.0.0.1 >NUL & echo x> \"{shown}\"\" & exit 0"
+                ));
+                command_output_with_timeout_outcome(&mut cmd, timeout)
+                    .expect("cmd runs")
+                    .timed_out
+            },
+        );
+    }
+
     #[cfg(unix)]
     #[test]
-    fn force_kill_process_signals_sigkill() {
-        // Spawn a SIGTERM-trapping child, force_kill_process it, assert it exits
+    fn a_lone_force_kill_signals_sigkill() {
+        // Spawn a SIGTERM-trapping child, force-kill it alone, assert it exits
         // with SIGKILL (signal 9).
         //
         // The spawn resolves `sh` off the process-global `PATH`, so it is a
@@ -1645,7 +2076,7 @@ mod tests {
             .unwrap();
         let pid = child.id();
 
-        force_kill_process(pid);
+        TreeKill::child_alone(pid).force_kill();
 
         let status = child.wait().unwrap();
         use std::os::unix::process::ExitStatusExt;
@@ -1673,6 +2104,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn command_outcome_reports_timeout_for_hung_command() {
+        let _path = crate::test_helpers::path_env_read_guard();
         let mut cmd = std::process::Command::new("sleep");
         cmd.arg("5");
         let outcome =
@@ -1685,6 +2117,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn command_outcome_no_timeout_for_fast_command() {
+        let _path = crate::test_helpers::path_env_read_guard();
         let mut cmd = std::process::Command::new("true");
         let outcome =
             command_output_with_timeout_outcome(&mut cmd, std::time::Duration::from_secs(5))
@@ -1703,6 +2136,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn command_output_captures_both_streams_without_caller_piping() {
+        let _path = crate::test_helpers::path_env_read_guard();
         let mut cmd = std::process::Command::new("sh");
         cmd.arg("-c").arg("echo to-stdout; echo to-stderr >&2");
         let output =
@@ -1717,6 +2151,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn command_output_returns_when_descendant_holds_pipe_open() {
+        let _path = crate::test_helpers::path_env_read_guard();
         let mut cmd = std::process::Command::new("sh");
         cmd.arg("-c").arg("sleep 30 & echo $!; sleep 30");
 
@@ -1728,7 +2163,7 @@ mod tests {
 
         let orphan = stdout_lossy_trimmed(&outcome.output);
         if let Ok(pid) = orphan.parse::<u32>() {
-            force_kill_process(pid);
+            TreeKill::child_alone(pid).force_kill();
         }
 
         assert!(outcome.timed_out, "the watchdog must report the timeout");
@@ -1754,6 +2189,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn a_program_file_held_open_for_writing_is_spawned_once_the_writer_closes() {
+        let _path = crate::test_helpers::path_env_read_guard();
         let tmp = tempfile::TempDir::new().unwrap();
         let program = tmp.path().join("busy");
         std::fs::write(&program, "#!/bin/sh\nexit 0\n").unwrap();

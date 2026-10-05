@@ -1,6 +1,6 @@
 use super::*;
 use cfgd_core::config::LOCAL_LAYER;
-use cfgd_core::output::{Doc, KvPair, Printer, Role, SectionBuilder, renderer::Table};
+use cfgd_core::output::{Doc, KvPair, Role, SectionBuilder, renderer::Table};
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -128,6 +128,35 @@ pub fn managed_resource_payload(
             ManagedResourceRow { resource, owner }
         })
         .collect()
+}
+
+/// Give each module package row that recorded no manager the one its module's
+/// current declaration resolves to.
+///
+/// A row written before the store kept the manager has none, and the id never
+/// spells it. Filled once on the payload, so the table's `npm: cowsay` and
+/// `-o json`'s `manager` are one value; a row whose module the config no
+/// longer declares keeps none.
+pub fn fill_declared_managers(
+    rows: &mut [ManagedResourceRow],
+    declared: &std::collections::BTreeMap<String, ModuleDeclared>,
+) {
+    for row in rows.iter_mut() {
+        let resource = &mut row.resource;
+        if resource.manager.is_some() {
+            continue;
+        }
+        let Some((module, rest)) = module_id_parts(&resource.resource_type, &resource.resource_id)
+        else {
+            continue;
+        };
+        let Some(("packages", item)) = rest.split_once(':') else {
+            continue;
+        };
+        let manager =
+            row_manager(&module_package_names(item), declared.get(module)).map(str::to_string);
+        resource.manager = manager;
+    }
 }
 
 /// The owner token one recorded row belongs to.
@@ -567,7 +596,7 @@ fn classify_recorded_drift_for_chain(
                         .unwrap_or_default();
                 // The declared name of the resolved package whose drift id IS
                 // this row, minted through the same composer the scope was.
-                let declared = owner
+                let resolved = owner
                     .packages
                     .iter()
                     .find(|p| {
@@ -577,13 +606,35 @@ fn classify_recorded_drift_for_chain(
                             cx.managers.get(p.manager.as_str()).copied(),
                         ) == event.resource_id
                     })
-                    .map_or_else(|| event.resource_id.clone(), |p| p.canonical_name.clone());
+                    .map(|p| p.canonical_name.clone());
+                // A held manager's floor row is minted under the same package
+                // grammar with the manager on both sides, and the scope claims
+                // it there too, so it reaches this arm with no resolved
+                // package to name it: the entry the reader wrote is the
+                // manager.
+                let declared = resolved.clone().or_else(|| {
+                    owner
+                        .held_managers
+                        .iter()
+                        .find(|h| {
+                            // held-id-reader-ok: matched against a recorded row, no floor read
+                            cfgd_core::reconciler::package_entry_drift_id(
+                                &h.package,
+                                &h.package,
+                                cx.managers.get(h.package.as_str()).copied(),
+                            ) == event.resource_id
+                        })
+                        .map(|h| h.package.clone())
+                });
+                let declared = declared.unwrap_or_else(|| event.resource_id.clone());
                 // The recorded verdict seeds the same joined package state a
                 // live scan fills, so the wide inventory row for a package
                 // this report's Drift section names can never read `not
                 // scanned` beside the finding — the file rows' rule, applied
-                // to every resource kind.
-                if owner.name == cx.mod_name {
+                // to every resource kind. A held manager is on the machine and
+                // nothing installs it, so its row seeds nothing: its inventory
+                // row states the floor verdict.
+                if owner.name == cx.mod_name && resolved.is_some() {
                     scanned_packages
                         .entry(declared.clone())
                         .or_default()
@@ -695,6 +746,45 @@ pub struct ModulePackageStatus {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub manager: Option<String>,
     pub state: ModulePackagePresence,
+    /// The floor answer for an entry whose delivery IS the manager it names,
+    /// already on this host. `None` for every other row, whose state is the
+    /// whole answer.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub held: Option<HeldFloor>,
+    /// The bootstrap route a declared floor no available manager meets could
+    /// take. `None` for every row whose floor nothing has to be provisioned
+    /// for.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub route: Option<FloorRoute>,
+}
+
+/// The route a declared floor no available manager meets could take.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FloorRoute {
+    /// The whole answer in words, from the one composer every surface that
+    /// STATES a route reads. A `status` installs nothing, so the row carries
+    /// the route as a fact and the question stays with the verbs that can act
+    /// on the answer.
+    pub clause: String,
+}
+
+/// What the declared floor of a held manager came to on this host.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HeldFloor {
+    /// The whole answer in words, from the one composer every surface naming a
+    /// held manager reads.
+    pub clause: String,
+    /// Whether that answer cleared the floor. The presence state says the
+    /// manager is here, which stays true below the floor and while its version
+    /// cannot be read, so the row's own verdict is decided here.
+    pub met: bool,
+    /// The version the manager's own binary reported, `null` where the
+    /// judgment could read none. A consumer comparing the two operands reads
+    /// them as fields; the clause is the sentence for a person.
+    pub version: Option<String>,
+    pub min_version: String,
 }
 
 #[derive(Serialize)]
@@ -923,7 +1013,7 @@ fn render_module_drift_section(
 /// older cfgd still holds rows carrying it.
 pub(super) fn derivable_profile(name: &str) -> Option<&str> {
     match name.trim() {
-        "" | "unknown" => None,
+        "" | cfgd_core::config::UNKNOWN_PROFILE => None,
         name => Some(name),
     }
 }
@@ -1001,6 +1091,7 @@ pub fn build_fleet_status_doc(
                 // a preceding `kv` block.
                 let (result_word, result_role) = last.status.human_display();
                 let mut rows = vec![KvPair::role_valued("Result", result_word, result_role)];
+                // long-line-ok: a hatch is read off its own line, so it cannot wrap
                 // decision-summary-ok: the `applies` record's own summary column, not a pending decision's
                 if let Some(summary) = &last.summary {
                     // Prose, never the stored column: the wire shape is what
@@ -1267,13 +1358,16 @@ fn managed_resource_rows(
             } else {
                 cfgd_core::fold_home_in_text(&r.resource_id)
             };
-            // An `env` row's own type names all three env surfaces at once;
-            // the verb it was written under is what says which one it is.
-            let kind = if r.resource_type == ENV_RESOURCE_TYPE {
-                recorded_env_drift_type(r)
-            } else {
-                r.resource_type.as_str()
-            };
+            // The recorded kind. Only a row inserted outside the store's
+            // writers lacks one, and for an `env` row the verb it was written
+            // under then says which of the three env surfaces it is.
+            let kind = r.kind.as_deref().unwrap_or_else(|| {
+                if r.resource_type == ENV_RESOURCE_TYPE {
+                    recorded_env_drift_type(r)
+                } else {
+                    r.resource_type.as_str()
+                }
+            });
             rows.push([
                 display_type(kind).to_string(),
                 r.owner.clone(),
@@ -1289,6 +1383,7 @@ fn managed_resource_rows(
             .find(|m| m.name == module)
             .map(|m| &m.declared);
         let (surface, item) = rest.split_once(':').unwrap_or((rest, ""));
+        let kind = r.kind.as_deref().unwrap_or(surface);
         if surface == "files" {
             let manifest = detail
                 .module_files
@@ -1300,7 +1395,7 @@ fn managed_resource_rows(
                 // file with the strategy that row itself carries.
                 for rec in manifest {
                     rows.push([
-                        display_type(surface).to_string(),
+                        display_type(kind).to_string(),
                         owner.clone(),
                         cfgd_core::fold_home_in_text(&rec.file_path),
                         cfgd_core::config::FileStrategy::from_recorded(&rec.strategy)
@@ -1312,7 +1407,7 @@ fn managed_resource_rows(
                 continue;
             }
             rows.push([
-                display_type(surface).to_string(),
+                display_type(kind).to_string(),
                 owner,
                 module_files_resource(item, declared, manifest),
                 NO_DETAIL.to_string(),
@@ -1321,12 +1416,12 @@ fn managed_resource_rows(
             continue;
         }
         let resource = match surface {
-            "packages" => module_packages_resource(item, declared),
+            "packages" => module_packages_resource(item, r.manager.as_deref()),
             _ if item.is_empty() => NO_DETAIL.to_string(),
             _ => item.to_string(),
         };
         rows.push([
-            display_type(surface).to_string(),
+            display_type(kind).to_string(),
             owner,
             resource,
             NO_DETAIL.to_string(),
@@ -1601,16 +1696,16 @@ fn module_files_resource(
 /// by the manager that installs them.
 ///
 /// One recorded row is one manager's group (the planner groups them that way),
-/// but the manager itself is not part of the id — it is recovered from the
-/// resolution, and only when every name in the row agrees on one, so the row
-/// can never name a manager that installs some other part of its own list.
-fn module_packages_resource(recorded: &str, declared: Option<&ModuleDeclared>) -> String {
+/// and `manager` is the row's own: the one the apply recorded, or for an older
+/// row the one [`fill_declared_managers`] resolved, the same value `-o json`
+/// carries.
+fn module_packages_resource(recorded: &str, manager: Option<&str>) -> String {
     let names = module_package_names(recorded);
     if names.is_empty() {
         return NO_DETAIL.to_string();
     }
     let list = names.join(", ");
-    match row_manager(&names, declared) {
+    match manager {
         Some(manager) => format!("{manager}: {list}"),
         None => list,
     }
@@ -1970,7 +2065,7 @@ fn package_owner(
 /// Shell sections both ask it, so neither can read a key the way the other
 /// would not.
 ///
-/// Asked of the SHAPE and not of the file's name, which the env engine spells
+/// Asked of the SHAPE, because the file's name is one the env engine spells
 /// differently per platform and per dialect: the producer folds the path it
 /// actually probed through `to_posix_string`, so a Windows key keeps its drive
 /// and answers `is_absolute` there exactly as a POSIX key does here. Matching a
@@ -2146,14 +2241,13 @@ fn finding_owner(
 ///
 /// The owner is the one each [`ManagedResourceRow`] already carries and the
 /// module counts are the recorded tallies already on `output.modules`, so this
-/// section and the table cannot attribute one row to two owners or two
-/// counts. The verdicts
-/// pass [`cfgd_core::state::module_status_display`] the RECORDED drift
-/// verdict — whether this owner holds an unresolved recorded finding — so a
-/// row reads `Drifted`/warn exactly when its nested findings say why, over
+/// section and the table cannot attribute one row to two owners or two counts.
+/// The verdicts pass [`cfgd_core::state::module_status_display`] the RECORDED
+/// drift verdict — whether this owner holds an unresolved recorded finding — so
+/// a row reads `Drifted`/warn exactly when its nested findings say why, over
 /// the SAME one walk ([`finding_owner`] per event, never a second pass). A
-/// drifted owner's counts clause states the shortfall (`1 of 6 files`); a
-/// clean owner keeps its inventory.
+/// drifted owner's counts clause states the shortfall (`1 of 6 files`); a clean
+/// owner keeps its inventory.
 fn component_health_rows(output: &StatusOutput, profile: Option<&str>) -> ComponentHealth {
     use cfgd_core::reconciler::Owner;
     let profile_owner = profile.map(Owner::profile);
@@ -2653,12 +2747,29 @@ fn render_module_inventories(
                 // after it — one name may be declared twice under two
                 // managers, and two rows reading `neovim — not scanned` say
                 // nothing about which entry is which.
-                let detail = match (&pkg.manager, pkg.state) {
-                    (Some(m), ModulePackagePresence::Installed) => m.clone(),
-                    (Some(m), state) => format!("{} ({m})", state.label()),
-                    (None, state) => state.label().to_string(),
+                let detail = match (&pkg.held, &pkg.route, &pkg.manager, pkg.state) {
+                    // A held manager's row names what its own binary reports
+                    // against the declared floor: the manager alone would say
+                    // only that the package is itself.
+                    (Some(held), _, _, _) => held.clause.clone(),
+                    // A route names a manager this host does not have, so the
+                    // manager column states nothing and the shortfall plus the
+                    // bootstrap that would meet it is the whole row.
+                    (None, Some(route), _, _) => route.clause.clone(),
+                    (None, None, Some(m), ModulePackagePresence::Installed) => m.clone(),
+                    (None, None, Some(m), state) => format!("{} ({m})", state.label()),
+                    (None, None, None, state) => state.label().to_string(),
                 };
-                s.status_with(pkg.state.role(), &pkg.name, |f| f.detail(detail))
+                // Presence says the manager is here, which a shortfall and an
+                // unreadable version both leave true, so a held row takes its
+                // verdict from the floor answer instead. A route is a floor
+                // nothing on this host meets, so its row reads the same way.
+                let role = match (&pkg.held, &pkg.route) {
+                    (Some(held), _) if !held.met => Role::Warn,
+                    (_, Some(_)) => Role::Warn,
+                    _ => pkg.state.role(),
+                };
+                s.status_with(role, &pkg.name, |f| f.detail(detail))
             });
             // The same row the compact Drift section and `diff` render for the
             // identical check, so `--exit-code`'s Error exit is never invisible
@@ -2959,7 +3070,9 @@ pub(super) fn retired_status_flag_error(flag: &LegacyStatusFlag) -> anyhow::Erro
         *spelling,
         "invalid_argument",
         format!("{reason}; run `{replacement}` instead."),
-        serde_json::json!({ "replacement": replacement }),
+        // A retired switch carries no value of its own; `true` is how clap
+        // reads a switch that was given.
+        serde_json::json!({ "flag": spelling, "value": "true", "replacement": replacement }),
         vec![cfgd_core::output::HintCommands::new(
             "Run this instead:",
             [replacement.to_string()],
@@ -2968,22 +3081,22 @@ pub(super) fn retired_status_flag_error(flag: &LegacyStatusFlag) -> anyhow::Erro
 }
 
 pub(super) fn cmd_status(
-    cli: &Cli,
-    printer: &Printer,
+    run: &RunContext<'_>,
     module_filter: Option<&str>,
-    run: StatusRun,
+    options: StatusRun,
 ) -> anyhow::Result<()> {
+    let cli = run.cli();
+    let printer = run.printer();
     let StatusRun {
         exit_code,
         scan,
         mask_env_values,
-    } = run;
+    } = options;
     // `--exit-code` implies the live scan `--scan` names explicitly: a CI
     // gate has to reflect reality regardless of whether the caller also asked
     // to see it. `exit_code` alone still decides whether the run EXITS
     // nonzero on drift — `--scan` on its own never changes the exit code.
     let do_scan = exit_code || scan;
-    let ctx = RunContext::new(cli, printer);
     if let Some(mod_name) = module_filter {
         // `--show-values` is a request to see the declared items themselves,
         // which only the itemized view has rows for, so it implies that view
@@ -2993,7 +3106,7 @@ pub(super) fn cmd_status(
         let masking = crate::cli::EnvValueMasking::of(mask_env_values);
         // Resolved only where the answer depends on it, because a `show`-class
         // report should not load a profile to decide it has nothing to reveal.
-        let secret_envs = masking.wants_secret_envs().then(|| ctx.secret_env_names());
+        let secret_envs = masking.wants_secret_envs().then(|| run.secret_env_names());
         let masking = match secret_envs.as_ref().and_then(Option::as_ref) {
             Some(names) => masking.with_secret_envs(names),
             None => masking,
@@ -3003,11 +3116,11 @@ pub(super) fn cmd_status(
         } else {
             ModuleStatusView::Compact
         };
-        return cmd_status_module(&ctx, mod_name, exit_code, do_scan, view);
+        return cmd_status_module(run, mod_name, exit_code, do_scan, view);
     }
 
-    let (cfg, profile_name, local_resolved) = ctx.config_and_profile()?;
-    let state = ctx.state()?;
+    let (cfg, profile_name, local_resolved) = run.config_and_profile()?;
+    let state = run.state()?;
 
     let last_apply = state.last_apply()?;
     // Read before this run's own scan (if any) overwrites it: the header's
@@ -3031,7 +3144,7 @@ pub(super) fn cmd_status(
         .answerable(state.pending_decisions()?);
     // The owner the table prints is derived, so it is derived once, here, and
     // carried on the row every consumer of this run reads.
-    let resources =
+    let mut resources =
         managed_resource_payload(state.managed_resources()?, derivable_profile(profile_name));
 
     let config_dir = config_dir(cli);
@@ -3040,7 +3153,7 @@ pub(super) fn cmd_status(
     // effective module set once, so the module dashboard and the `-e` live scan
     // both reflect the same source-composed desired state that `apply` writes.
     let mut desired = resolve_desired_state(
-        &ctx,
+        run,
         cfg,
         local_resolved,
         &[],
@@ -3048,6 +3161,7 @@ pub(super) fn cmd_status(
         printer,
         false,
         composition::ConstraintMode::Report,
+        &cfgd_core::modules::refuse_floor_bootstrap,
     )?;
     // Taken ONLY for the live scan below, the one half that reads a registry: a
     // plain `cfgd status` is an offline dashboard, and building a registry it
@@ -3066,11 +3180,9 @@ pub(super) fn cmd_status(
     // ONE merge for the whole command: every recompute below asks the same
     // declaration, and building it per drift row clones the profile's env, its
     // aliases and both origin maps once per finding.
+    let layered = cfgd_core::reconciler::LayeredEnv::of(&resolved, &resolved_modules);
     let merged_env_items = cfgd_core::reconciler::MergedEnvItems::new(
-        &resolved.merged.env,
-        &resolved.merged.aliases,
-        &resolved.merged.entry_owners,
-        &resolved_modules,
+        &layered,
         &cfgd_core::reconciler::recorded_manager_path_dirs(
             state,
             &resolved.merged,
@@ -3098,7 +3210,7 @@ pub(super) fn cmd_status(
         // here and are released by the next plan/apply/tick, which does
         // enumerate.
         match plan_ops::withheld_for_run(
-            &ctx,
+            run,
             state,
             cfg,
             plan_ops::DesiredOwnership {
@@ -3130,6 +3242,7 @@ pub(super) fn cmd_status(
         .iter()
         .map(|module| (module.name.clone(), ModuleDeclared::of(module)))
         .collect();
+    fill_declared_managers(&mut resources, &declared);
     let tallies = recorded_module_tallies(&resources, &declared);
     let module_entries: Vec<ModuleStatusEntry> = resolved_modules
         .iter()
@@ -3268,13 +3381,13 @@ pub(super) fn cmd_status(
     // verdict and the exit code in agreement instead of printing "No drift
     // detected" alongside exit 5.
     if let Some(mut registry) = registry {
-        ctx.resolve_manifest_packages(
+        run.resolve_manifest_packages(
             &mut resolved.merged.packages,
             &mut resolved.merged.layer_sources,
         )?;
         registry.set_system_config_dir(&config_dir);
         let cfgd_installed = cfgd_installed_packages(state)?;
-        let pkg_cx = ctx.package_context()?;
+        let pkg_cx = run.package_context()?;
         let fm = crate::files::CfgdFileManager::new(&config_dir, &resolved)?;
         let module_cache = module_cache_dir(cli)?;
         let report = super::live_drift::live_drift_results(
@@ -3417,6 +3530,8 @@ fn join_package_state(
                     name: p.name.clone(),
                     manager: None,
                     state: ModulePackagePresence::PlatformSkipped,
+                    held: None,
+                    route: None,
                 };
             }
             // A package the Drift section names never reads `not scanned`:
@@ -3442,15 +3557,62 @@ fn join_package_state(
                     name: p.name.clone(),
                     manager: Some(manager),
                     state,
+                    held: None,
+                    route: None,
                 },
-                None => ModulePackageStatus {
-                    name: p.name.clone(),
-                    manager: modules::resolve_package(p, module_name, here, managers, installed)
-                        .ok()
-                        .flatten()
-                        .map(|resolved| resolved.manager),
-                    state: ModulePackagePresence::NotScanned,
-                },
+                None => {
+                    // A route names a manager this host does not have, so the
+                    // column states nothing, exactly as it did for the refusal
+                    // that route replaced. A HELD manager is the opposite: it
+                    // is on this host, so the row is installed and states what
+                    // its own binary reports against the declared floor.
+                    let (manager, state, held, route) =
+                        match modules::resolve_package(p, module_name, here, managers, installed) {
+                            Ok(Some(modules::PackageResolution::Package(resolved))) => (
+                                Some(resolved.manager),
+                                ModulePackagePresence::NotScanned,
+                                None,
+                                None,
+                            ),
+                            Ok(Some(modules::PackageResolution::HeldByManager(held))) => {
+                                let clause = held.clause(managers.get(&held.package).copied());
+                                (
+                                    Some(held.package.clone()),
+                                    ModulePackagePresence::Installed,
+                                    Some(HeldFloor {
+                                        clause,
+                                        met: held.judgment.met(),
+                                        version: held.judgment.version().map(str::to_string),
+                                        min_version: held.floor.clone(),
+                                    }),
+                                    None,
+                                )
+                            }
+                            // Nothing on this host delivers the declared floor,
+                            // and a route could. The row says so in the words
+                            // `doctor` and `module show --resolved` use, so a
+                            // reader who meets the floor question on one
+                            // surface meets the same sentence on the others.
+                            Ok(Some(modules::PackageResolution::Bootstrap(route))) => (
+                                None,
+                                ModulePackagePresence::NotScanned,
+                                None,
+                                Some(FloorRoute {
+                                    clause: route.provisionable_clause(),
+                                }),
+                            ),
+                            Ok(None) | Err(_) => {
+                                (None, ModulePackagePresence::NotScanned, None, None)
+                            }
+                        };
+                    ModulePackageStatus {
+                        name: p.name.clone(),
+                        manager,
+                        state,
+                        held,
+                        route,
+                    }
+                }
             }
         })
         .collect()
@@ -3570,6 +3732,7 @@ pub(super) fn cmd_status_module(
             &mgr_map,
             installed,
             printer,
+            &modules::refuse_floor_bootstrap,
         )
     };
     if do_scan {
@@ -3579,13 +3742,13 @@ pub(super) fn cmd_status_module(
         let pkg_cx = ctx.package_context()?;
         let resolved_modules = resolve_chain(Some(&pkg_cx))?;
         let resolved = empty_resolved_profile(&[mod_name.to_string()], &ctx.active_profile_name());
+        // The isolate's one layered view, read by the display recompute here
+        // and by the per-item shell check inside the scan below.
+        let layered = cfgd_core::reconciler::LayeredEnv::of(&resolved, &resolved_modules);
         // File and package rows only — the recompute is a no-op for both, but
         // `drift_event_from` takes the merge rather than deciding per row.
         let merged_env_items = cfgd_core::reconciler::MergedEnvItems::new(
-            &resolved.merged.env,
-            &resolved.merged.aliases,
-            &resolved.merged.entry_owners,
-            &resolved_modules,
+            &layered,
             &cfgd_core::reconciler::recorded_manager_path_dirs(
                 state,
                 &resolved.merged,
@@ -3743,12 +3906,7 @@ pub(super) fn cmd_status_module(
                 // recorded winner is a layer outside this chain stays out of
                 // `checked`: a scoped "clean" may not heal a claim it never
                 // re-checked.
-                let env_check = cfgd_core::reconciler::env_item_verify_results(
-                    &resolved.merged.env,
-                    &resolved.merged.aliases,
-                    &resolved.merged.entry_owners,
-                    &resolved_modules,
-                );
+                let env_check = cfgd_core::reconciler::env_item_verify_results(&layered);
                 let owners =
                     cfgd_core::reconciler::merged_entry_owners(&resolved, &resolved_modules);
                 let tokens: std::collections::HashMap<String, &str> = resolved_modules
@@ -3956,6 +4114,7 @@ pub(super) fn cmd_status_module(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cli::HermeticParse;
     use cfgd_core::output::Printer;
     use cfgd_core::output::Verbosity;
     use cfgd_core::state::{ApplyRecord, ApplyStatus};
@@ -3972,7 +4131,7 @@ mod tests {
     fn every_retired_status_flag_names_its_replacement() {
         for (n, entry) in LEGACY_STATUS_FLAGS.iter().enumerate() {
             let (spelling, reason, replacement) = entry;
-            let parsed = crate::cli::Cli::try_parse_from(["cfgd", "status", spelling])
+            let parsed = crate::cli::Cli::try_parse_hermetic(["cfgd", "status", spelling])
                 .unwrap_or_else(|e| panic!("`cfgd status {spelling}` must still parse: {e}"));
             let Some(crate::cli::Command::Status {
                 show_scripts,
@@ -4009,7 +4168,7 @@ mod tests {
                     }
                 })
                 .collect();
-            crate::cli::Cli::try_parse_from(&runnable).unwrap_or_else(|e| {
+            crate::cli::Cli::try_parse_hermetic(&runnable).unwrap_or_else(|e| {
                 panic!("the replacement `{replacement}` does not re-parse: {e}")
             });
 
@@ -4022,6 +4181,66 @@ mod tests {
         assert!(
             LEGACY_STATUS_FLAGS.len() >= 2,
             "the table has stopped holding the spellings this command retired"
+        );
+    }
+
+    /// A held manager's floor row is minted under the package grammar with the
+    /// manager on both sides (`cargo:cargo`), and the module declares no
+    /// package of that name — so the name the row prints comes from the held
+    /// entry, or a reader who wrote `cargo` is shown `cargo:cargo`. Nothing
+    /// installs a manager the host already has, so the row seeds no inventory
+    /// absence either: the package row states the floor verdict.
+    #[test]
+    fn a_recorded_held_manager_row_is_named_by_the_manager_the_module_declared() {
+        let mut module = cfgd_core::test_helpers::make_resolved_module("rust");
+        module.packages = Vec::new();
+        module.held_managers = vec![cfgd_core::modules::HeldManager {
+            package: "cargo".to_string(),
+            module: "rust".to_string(),
+            floor: "1.85".to_string(),
+            judgment: cfgd_core::modules::FloorJudgment::Short {
+                version: "1.80".to_string(),
+            },
+        }];
+        let chain = vec![module];
+        let managers = std::collections::HashMap::new();
+        let scopes = super::super::live_drift::chain_scopes(&chain, &managers);
+        let event = cfgd_core::state::DriftEvent {
+            id: 1,
+            timestamp: cfgd_core::utc_now_iso8601(),
+            resource_type: "package".to_string(),
+            resource_id: cfgd_core::reconciler::package_entry_drift_id("cargo", "cargo", None),
+            expected: Some("1.85".to_string()),
+            actual: None,
+            resolved_by: None,
+            source: cfgd_core::config::LOCAL_LAYER.to_string(),
+            want: None,
+            have: None,
+        };
+        let mut drift = Vec::new();
+        let mut drifted_ids = std::collections::HashSet::new();
+        let mut scanned_packages = std::collections::HashMap::new();
+        super::classify_recorded_drift_for_chain(
+            [event],
+            &super::ChainOwnership {
+                chain: &chain,
+                scopes: &scopes,
+                managers: &managers,
+                mod_name: "rust",
+            },
+            &mut drift,
+            &mut drifted_ids,
+            &mut scanned_packages,
+        );
+        assert_eq!(drift.len(), 1, "the module's own scope claims the row");
+        assert_eq!(
+            (drift[0].surface, drift[0].item.as_str()),
+            (super::SURFACE_PACKAGES, "cargo"),
+            "the row prints the manager the module declared; the minted id stays off it"
+        );
+        assert!(
+            scanned_packages.is_empty(),
+            "a manager this host holds is not a package an apply would install"
         );
     }
 
@@ -4108,6 +4327,20 @@ mod tests {
         );
     }
 
+    /// `rows` as `cmd_status` hands them to the table: each module package
+    /// row that recorded no manager filled from `entries`' declarations.
+    fn filled(
+        mut rows: Vec<ManagedResourceRow>,
+        entries: &[ModuleStatusEntry],
+    ) -> Vec<ManagedResourceRow> {
+        let declared = entries
+            .iter()
+            .map(|entry| (entry.name.clone(), entry.declared.clone()))
+            .collect();
+        fill_declared_managers(&mut rows, &declared);
+        rows
+    }
+
     /// A recorded row as a run carries it: the stored fact plus the owner the
     /// Owner column and `-o json` both read off the row. Under `base`;
     /// `recorded_under` is for a fixture whose rows belong to another profile.
@@ -4127,6 +4360,8 @@ mod tests {
                 source: "local".to_string(),
                 last_hash: None,
                 last_applied: None,
+                kind: None,
+                manager: None,
             }],
             profile,
         )
@@ -4343,9 +4578,7 @@ mod tests {
         let mut files = 0usize;
         let mut literals = 0usize;
         for path in cfgd_core::test_helpers::rust_sources_under(&cli_root) {
-            if path.file_name().is_some_and(|n| n == "tests.rs")
-                || path.components().any(|c| c.as_os_str() == "tests")
-            {
+            if cfgd_core::test_helpers::is_test_source(&path) {
                 continue;
             }
             files += 1;
@@ -4357,7 +4590,7 @@ mod tests {
                 if line.trim().is_empty() {
                     hatched = false;
                 }
-                if line.contains("basename-ok:") {
+                if cfgd_core::test_helpers::carries_hatch(line, "basename-ok:") {
                     hatched = true;
                 }
                 if hatched || line.trim_start().starts_with("//") {
@@ -4385,8 +4618,9 @@ mod tests {
         );
         // And the one answerer really is reached, so the walk above cannot
         // pass by this file having stopped classifying env rows at all.
-        // unfloored-slice-ok: one compiled-in body, not a walk over files
-        let production = cfgd_core::test_helpers::production_slice(include_str!("status.rs"));
+        let production = cfgd_core::test_helpers::production_slice_of(
+            &cfgd_core::test_helpers::workspace_root().join("crates/cfgd/src/cli/status.rs"),
+        );
         assert!(
             production.matches("recorded_env_method(").count() >= 2,
             "the Owner column and the erroring-check key both ask the one answerer"
@@ -4496,6 +4730,8 @@ mod tests {
                     source: "local".to_string(),
                     last_hash: None,
                     last_applied: None,
+                    kind: None,
+                    manager: None,
                 },
                 cfgd_core::state::ManagedResource {
                     resource_type: "package".to_string(),
@@ -4503,6 +4739,8 @@ mod tests {
                     source: "local".to_string(),
                     last_hash: None,
                     last_applied: None,
+                    kind: None,
+                    manager: None,
                 },
                 cfgd_core::state::ManagedResource {
                     resource_type: "file".to_string(),
@@ -4510,6 +4748,8 @@ mod tests {
                     source: "local".to_string(),
                     last_hash: None,
                     last_applied: None,
+                    kind: None,
+                    manager: None,
                 },
             ],
             Some("base"),
@@ -4642,12 +4882,16 @@ mod tests {
             package_managers: declared_managers(&[("git", "apt"), ("gcc", "apt")]),
             scripts: 9,
         };
+        let entries = [nvim_entry(declared)];
         let rows = managed_resource_rows(
-            &[
-                recorded("module", "nvim:files:6"),
-                recorded("module", "nvim:packages:git,gcc"),
-            ],
-            &[nvim_entry(declared)],
+            &filled(
+                vec![
+                    recorded("module", "nvim:files:6"),
+                    recorded("module", "nvim:packages:git,gcc"),
+                ],
+                &entries,
+            ),
+            &entries,
             &ManagedResourceDetail::default(),
         );
         let resources: Vec<&str> = rows.iter().map(|r| r[2].as_str()).collect();
@@ -4667,9 +4911,13 @@ mod tests {
             package_managers: declared_managers(&[("git", "apt"), ("neovim", "brew")]),
             ..ModuleDeclared::default()
         };
+        let entries = [nvim_entry(split)];
         let rows = managed_resource_rows(
-            &[recorded("module", "nvim:packages:neovim,git")],
-            &[nvim_entry(split)],
+            &filled(
+                vec![recorded("module", "nvim:packages:neovim,git")],
+                &entries,
+            ),
+            &entries,
             &ManagedResourceDetail::default(),
         );
         assert_eq!(rows[0][2], "git, neovim");
@@ -4717,15 +4965,15 @@ mod tests {
         // name alone, the canonical row finds nothing and renders bare.
         for recorded_names in ["gcc,pip", "build-essential,python3-pip"] {
             assert_eq!(
-                module_packages_resource(recorded_names, Some(&declared)),
-                format!("apt: {}", module_package_names(recorded_names).join(", ")),
-                "the row spells the manager for `{recorded_names}`"
+                row_manager(&module_package_names(recorded_names), Some(&declared)),
+                Some("apt"),
+                "the row resolves the manager for `{recorded_names}`"
             );
         }
         assert_eq!(
-            module_packages_resource("curl,ghost", Some(&declared)),
-            "apt: curl, ghost",
-            "a name the module no longer declares does not veto the prefix"
+            row_manager(&module_package_names("curl,ghost"), Some(&declared)),
+            Some("apt"),
+            "a name the module no longer declares does not veto the manager"
         );
     }
 
@@ -4908,7 +5156,7 @@ mod tests {
     /// from has a source to name.
     fn setup_env_with_resolved_modules() -> ResolvedModulesEnv {
         let allow_local =
-            cfgd_core::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+            cfgd_core::test_helpers::EnvVarGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
         let config_dir = tempfile::tempdir().unwrap();
         let state_dir = tempfile::tempdir().unwrap();
         let config_path = config_dir.path().join("cfgd.yaml");
@@ -5070,18 +5318,24 @@ mod tests {
         cli.cache_dir = Some(env.state_dir.path().to_path_buf());
 
         let (printer, buf) = test_printers();
-        cmd_status(&cli, &printer, None, StatusRun::default()).unwrap();
+        crate::cli::RunContext::for_test(&cli, &printer, |run| {
+            cmd_status(run, None, StatusRun::default())
+        })
+        .unwrap();
         drop(printer);
         let dashboard = cfgd_core::test_helpers::captured_text(&buf);
 
         let (printer, buf) = test_printers();
-        crate::cli::diff::cmd_diff(&cli, &printer, None, false).unwrap();
+        crate::cli::RunContext::for_test(&cli, &printer, |run| {
+            crate::cli::diff::cmd_diff(run, None, false)
+        })
+        .unwrap();
         drop(printer);
         let diff = cfgd_core::test_helpers::captured_text(&buf);
 
         // `core` is `editor`'s dependency, so it is the row's ANNOTATION, not
         // one of its names — the `Profile` row's own `inherits:` shape.
-        let expected = "Modules editor (depends: core, off-host skipped: platform not matched \
+        let expected = "Modules editor (depends: core; off-host skipped: platform not matched \
                         (requires: windows))";
         let expected = if cfg!(windows) {
             expected.replace("windows", "linux")
@@ -5117,7 +5371,10 @@ mod tests {
         cli.cache_dir = Some(env.state_dir.path().to_path_buf());
 
         let (printer, buf) = test_printers_json();
-        cmd_status(&cli, &printer, None, StatusRun::default()).unwrap();
+        crate::cli::RunContext::for_test(&cli, &printer, |run| {
+            cmd_status(run, None, StatusRun::default())
+        })
+        .unwrap();
         drop(printer);
         let payload: serde_json::Value =
             serde_json::from_str(&cfgd_core::test_helpers::captured_text(&buf))
@@ -5178,56 +5435,87 @@ mod tests {
         // paths compose cache-only, so a header derived from the composition
         // would drop its `Sources` row here and the key would be answering
         // "has this machine synced yet" rather than what the config declares.
-        let cold = render(&|p| cmd_status(&cli, p, None, StatusRun::default()).unwrap());
+        let cold = render(&|p| {
+            crate::cli::RunContext::for_test(&cli, p, |run| {
+                cmd_status(run, None, StatusRun::default())
+            })
+            .unwrap()
+        });
         assert_eq!(
             cold.len(),
             4,
             "a cold cache changes nothing about the header: {cold:?}"
         );
 
-        let status = render(&|p| cmd_status(&cli, p, None, StatusRun::default()).unwrap());
-        let diff = render(&|p| crate::cli::diff::cmd_diff(&cli, p, None, false).unwrap());
-        let sync = render(&|p| crate::cli::sync::cmd_sync(&cli, p).unwrap());
+        let status = render(&|p| {
+            crate::cli::RunContext::for_test(&cli, p, |run| {
+                cmd_status(run, None, StatusRun::default())
+            })
+            .unwrap()
+        });
+        let diff = render(&|p| {
+            crate::cli::RunContext::for_test(&cli, p, |run| {
+                crate::cli::diff::cmd_diff(run, None, false)
+            })
+            .unwrap()
+        });
+        let sync = render(&|p| {
+            crate::cli::RunContext::for_test(&cli, p, crate::cli::sync::cmd_sync).unwrap()
+        });
         // The two verbs that build a `Plan`: their header reads its module
         // gating off the plan's own `Skip` actions rather than off the
         // resolution, which is the one branch that can disagree with the five
         // surfaces above without any of them being wrong about the machine.
         let plan = render(&|p| {
-            crate::cli::plan::cmd_plan(&cli, p, &header_plan_args()).unwrap();
+            crate::cli::RunContext::for_test(&cli, p, |run| {
+                crate::cli::plan::cmd_plan(run, &header_plan_args())
+            })
+            .unwrap();
         });
         let apply = render(&|p| {
-            crate::cli::apply::run_apply(&cli, p, &header_apply_args()).unwrap();
+            crate::cli::RunContext::for_test(&cli, p, |run| {
+                crate::cli::apply::run_apply(run, &header_apply_args())
+            })
+            .unwrap();
         });
         // `spec.backups[]` is profile-declared, so a backup run reports under a
         // resolved profile exactly as an apply does.
         let backup = render(&|p| {
-            crate::cli::backup::run_backup_run(&cli, p, Some("docs")).unwrap();
+            crate::cli::RunContext::for_test(&cli, p, |run| {
+                crate::cli::backup::run_backup_run(run, Some("docs"))
+            })
+            .unwrap();
         });
         // The two verbs that put data back report under the same profile, off
         // the same resolution — and a restore is what leaves the safety copy a
         // rollback puts back, so the legs run in that order.
         let restore = render(&|p| {
-            crate::cli::backup::run_backup_restore(
-                &cli,
-                p,
-                &crate::cli::backup::RestoreArgs {
-                    name: "docs",
-                    at: None,
-                    to: None,
-                    yes: true,
-                },
-            )
+            crate::cli::RunContext::for_test(&cli, p, |run| {
+                crate::cli::backup::run_backup_restore(
+                    run,
+                    &crate::cli::backup::RestoreArgs {
+                        name: "docs",
+                        at: None,
+                        to: None,
+                        yes: true,
+                    },
+                )
+            })
             .unwrap();
         });
         let rollback = render(&|p| {
-            crate::cli::backup::run_backup_rollback(&cli, p, "docs", true).unwrap();
+            crate::cli::RunContext::for_test(&cli, p, |run| {
+                crate::cli::backup::run_backup_rollback(run, "docs", true)
+            })
+            .unwrap();
         });
 
         // The daemon's reader is another process: it renders the modules the
         // reconcile tick put on the wire and the sources its own config
         // declares, holding no composition of its own.
         let (probe, _) = test_printers();
-        let ctx = crate::cli::RunContext::new(&cli, &probe);
+        let startup = crate::cli::startup::StartupDocument::load(&cli.config);
+        let ctx = crate::cli::RunContext::new(&cli, &probe, &startup);
         let (cfg, profile_name, local_resolved) = ctx.config_and_profile().unwrap();
         let declared = cfgd_core::reconciler::ComposedSource::from_declared(&cfg.spec.sources);
         let profile_name = profile_name.to_string();
@@ -5240,6 +5528,7 @@ mod tests {
             &probe,
             false,
             cfgd_core::composition::ConstraintMode::Report,
+            &cfgd_core::modules::refuse_floor_bootstrap,
         )
         .unwrap();
         let mut response = crate::cli::daemon::placeholder_status();
@@ -5292,14 +5581,24 @@ mod tests {
             .clone();
         let config_row = format!("Config {}", cfgd_core::to_posix_string(&cli.config));
         let created = render(&|p| {
-            crate::cli::module::cmd_module_create(&cli, p, &header_module_create_args()).unwrap();
+            crate::cli::RunContext::for_test(&cli, p, |run| {
+                crate::cli::module::cmd_module_create(run, &header_module_create_args())
+            })
+            .unwrap();
         });
-        let diff_isolate =
-            render(&|p| crate::cli::diff::cmd_diff(&cli, p, Some("editor"), false).unwrap());
+        let diff_isolate = render(&|p| {
+            crate::cli::RunContext::for_test(&cli, p, |run| {
+                crate::cli::diff::cmd_diff(run, Some("editor"), false)
+            })
+            .unwrap()
+        });
         let apply_isolate = render(&|p| {
             let mut args = header_apply_args();
             args.module = vec!["editor".to_string()];
-            crate::cli::apply::run_apply(&cli, p, &args).unwrap();
+            crate::cli::RunContext::for_test(&cli, p, |run| {
+                crate::cli::apply::run_apply(run, &args)
+            })
+            .unwrap();
         });
         for (surface, rows, module) in [
             // A run the invocation named states only what its invocation did
@@ -5347,10 +5646,68 @@ mod tests {
         }
     }
 
+    /// `plan --from <dir>` and `apply --from <dir>` run against the document
+    /// that directory holds, in either format: the header names that file and
+    /// its profile, and the default config (declaring another profile) is
+    /// never read.
+    #[test]
+    #[serial_test::serial]
+    fn a_from_run_on_a_local_directory_reads_the_document_it_holds() {
+        let tmp_home = tempfile::tempdir().unwrap();
+        let _home = cfgd_core::with_test_home_guard(tmp_home.path());
+        let (_default_dir, state_dir, default_config) = setup_env();
+        let from_yaml = "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: from\nspec:\n  profile: other\n";
+        let from_toml = "apiVersion = \"cfgd.io/v1alpha1\"\nkind = \"Config\"\n\n[metadata]\nname = \"from\"\n\n[spec]\nprofile = \"other\"\n";
+        let other_profile = PROFILE_YAML.replace("name: default", "name: other");
+        for (name, body) in [("cfgd.yaml", from_yaml), ("cfgd.toml", from_toml)] {
+            let from_dir = tempfile::tempdir().unwrap();
+            let document = from_dir.path().join(name);
+            std::fs::write(&document, body).unwrap();
+            std::fs::create_dir_all(from_dir.path().join("profiles")).unwrap();
+            std::fs::write(from_dir.path().join("profiles/other.yaml"), &other_profile).unwrap();
+            let cli = test_cli_for(default_config.clone(), state_dir.path());
+            let from = Some(from_dir.path().display().to_string());
+            let plan_args = crate::cli::PlanArgs {
+                from: from.clone(),
+                ..header_plan_args()
+            };
+            let apply_args = crate::cli::ApplyArgs {
+                from,
+                ..header_apply_args()
+            };
+            let config = cfgd_core::fold_home_in_text(&cfgd_core::to_posix_string(&document));
+            for verb in ["plan", "apply"] {
+                let (printer, buf) = test_printers();
+                if verb == "plan" {
+                    crate::cli::RunContext::for_test(&cli, &printer, |run| {
+                        crate::cli::plan::cmd_plan(run, &plan_args)
+                    })
+                    .unwrap();
+                } else {
+                    crate::cli::RunContext::for_test(&cli, &printer, |run| {
+                        crate::cli::apply::run_apply(run, &apply_args)
+                    })
+                    .unwrap();
+                }
+                drop(printer);
+                let rows = rendered_header_rows(&cfgd_core::test_helpers::captured_text(&buf));
+                assert!(
+                    rows.iter().any(|row| row == &format!("Config {config}")),
+                    "{verb} --from, {name}: the header names the document the directory holds: {rows:?}"
+                );
+                assert!(
+                    rows.iter().any(|row| row == "Profile other"),
+                    "{verb} --from, {name}: the run reads that document's profile: {rows:?}"
+                );
+            }
+        }
+    }
+
     /// A preview `cfgd apply`: the same header over the same plan, without the
     /// pin having to converge a machine to read it.
     fn header_apply_args() -> crate::cli::ApplyArgs {
         crate::cli::ApplyArgs {
+            plan: None,
             on_conflict: crate::cli::OnConflict::Ask,
             from: None,
             dry_run: true,
@@ -5517,6 +5874,8 @@ mod tests {
                         source: "local".to_string(),
                         last_hash: Some("hash1".to_string()),
                         last_applied: Some(1_715_680_800),
+                        kind: None,
+                        manager: None,
                     }],
                     Some("base"),
                 ),
@@ -5531,6 +5890,8 @@ mod tests {
                 standing: Vec::new(),
             };
             let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
+            // Hints are off by default; the drift verdict's hint is asserted.
+            let printer = printer.with_hints_enabled(true);
             printer.emit(build_fleet_status_doc(
                 &output,
                 &cfgd_core::output::ConfigHeader {
@@ -6098,6 +6459,8 @@ mod tests {
             last_applied: None,
             scope: None,
             package_state: vec![ModulePackageStatus {
+                route: None,
+                held: None,
                 name: "fd".to_string(),
                 manager: Some("npm".to_string()),
                 state: ModulePackagePresence::Installed,
@@ -6158,6 +6521,202 @@ mod tests {
             editor_row,
             vec!["EDITOR", "vim"],
             "the clean env row is the kv pair `--show-values` asks for: {rendered}"
+        );
+    }
+
+    /// A package whose delivery is a manager this host already holds states
+    /// the version that manager reports and the floor it clears. Its manager
+    /// name IS the package name, so the ordinary installed row would read
+    /// `cargo — cargo` and say nothing.
+    #[test]
+    fn a_held_managers_package_row_names_the_version_and_the_floor_it_clears() {
+        let output = ModuleStatus {
+            packages_hash: None,
+            files_hash: None,
+            commit: None,
+            integrity: None,
+            name: "rust".to_string(),
+            packages: 1,
+            files: 0,
+            env: 0,
+            aliases: 0,
+            scripts: Vec::new(),
+            system: Vec::new(),
+            depends: Vec::new(),
+            declared: cfgd_core::modules::ModuleSurfaces::default(),
+            status: "installed".to_string(),
+            last_applied: None,
+            scope: None,
+            package_state: vec![ModulePackageStatus {
+                route: None,
+                held: Some(HeldFloor {
+                    clause: crate::cli::tests::held_manager_clause(
+                        crate::cli::tests::floor_met_at("1.90"),
+                    ),
+                    met: true,
+                    version: Some("1.90".to_string()),
+                    min_version: "1.85".to_string(),
+                }),
+                name: "cargo".to_string(),
+                manager: Some("cargo".to_string()),
+                state: ModulePackagePresence::Installed,
+            }],
+            deployed_files: Vec::new(),
+            drift_checked_live: true,
+            last_scan_at: None,
+            scoped_scans: Default::default(),
+            system_errors: Vec::new(),
+            standing: Vec::new(),
+            drift: Vec::new(),
+        };
+        let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
+        printer.emit(build_module_status_doc(
+            &output,
+            ModuleStatusView::Inventory {
+                masking: crate::cli::EnvValueMasking::revealing(),
+            },
+            "2026-05-14T10:05:00Z",
+        ));
+        drop(printer);
+        let rendered = cfgd_core::test_helpers::captured_text(&buf);
+        let row = rendered
+            .lines()
+            .find(|l| l.contains("cargo"))
+            .unwrap_or_else(|| panic!("the package has a row: {rendered}"));
+        assert_eq!(
+            row.trim(),
+            "✓ cargo — cargo 1.90 is on this host, at or above the declared minVersion 1.85"
+        );
+    }
+
+    /// Presence says the manager is here, which stays true below the declared
+    /// floor, so the row cannot take its verdict from presence alone: a ✓
+    /// beside a sentence saying the copy is too old contradicts itself.
+    #[test]
+    fn a_held_manager_below_its_floor_does_not_wear_the_installed_check() {
+        let output = ModuleStatus {
+            packages_hash: None,
+            files_hash: None,
+            commit: None,
+            integrity: None,
+            name: "rust".to_string(),
+            packages: 1,
+            files: 0,
+            env: 0,
+            aliases: 0,
+            scripts: Vec::new(),
+            system: Vec::new(),
+            depends: Vec::new(),
+            declared: cfgd_core::modules::ModuleSurfaces::default(),
+            status: "installed".to_string(),
+            last_applied: None,
+            scope: None,
+            package_state: vec![ModulePackageStatus {
+                route: None,
+                held: Some(HeldFloor {
+                    clause: crate::cli::tests::held_manager_clause(
+                        cfgd_core::modules::FloorJudgment::Short {
+                            version: "1.80".into(),
+                        },
+                    ),
+                    met: false,
+                    version: Some("1.80".to_string()),
+                    min_version: "1.85".to_string(),
+                }),
+                name: "cargo".to_string(),
+                manager: Some("cargo".to_string()),
+                state: ModulePackagePresence::Installed,
+            }],
+            deployed_files: Vec::new(),
+            drift_checked_live: true,
+            last_scan_at: None,
+            scoped_scans: Default::default(),
+            system_errors: Vec::new(),
+            standing: Vec::new(),
+            drift: Vec::new(),
+        };
+        let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
+        printer.emit(build_module_status_doc(
+            &output,
+            ModuleStatusView::Inventory {
+                masking: crate::cli::EnvValueMasking::revealing(),
+            },
+            "2026-05-14T10:05:00Z",
+        ));
+        drop(printer);
+        let rendered = cfgd_core::test_helpers::captured_text(&buf);
+        let row = rendered
+            .lines()
+            .find(|l| l.contains("cargo"))
+            .unwrap_or_else(|| panic!("the package has a row: {rendered}"));
+        assert_eq!(
+            row.trim(),
+            format!(
+                "⚠ cargo — {}",
+                crate::cli::tests::held_manager_clause(cfgd_core::modules::FloorJudgment::Short {
+                    version: "1.80".into()
+                })
+            )
+        );
+    }
+
+    /// A floor no available manager meets is a row this surface states, in the
+    /// words `doctor` and `module show --resolved` state it in. A blank detail
+    /// beside a bare package name told a reader the entry was simply unscanned,
+    /// which is the one thing it is not.
+    #[test]
+    fn a_floor_route_row_states_the_route_the_other_surfaces_name() {
+        let output = ModuleStatus {
+            packages_hash: None,
+            files_hash: None,
+            commit: None,
+            integrity: None,
+            name: "rust".to_string(),
+            packages: 1,
+            files: 0,
+            env: 0,
+            aliases: 0,
+            scripts: Vec::new(),
+            system: Vec::new(),
+            depends: Vec::new(),
+            declared: cfgd_core::modules::ModuleSurfaces::default(),
+            status: "installed".to_string(),
+            last_applied: None,
+            scope: None,
+            package_state: vec![ModulePackageStatus {
+                route: Some(FloorRoute {
+                    clause: crate::cli::tests::floor_route_clause(),
+                }),
+                held: None,
+                name: "cargo".to_string(),
+                manager: None,
+                state: ModulePackagePresence::NotScanned,
+            }],
+            deployed_files: Vec::new(),
+            drift_checked_live: true,
+            last_scan_at: None,
+            scoped_scans: Default::default(),
+            system_errors: Vec::new(),
+            standing: Vec::new(),
+            drift: Vec::new(),
+        };
+        let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
+        printer.emit(build_module_status_doc(
+            &output,
+            ModuleStatusView::Inventory {
+                masking: crate::cli::EnvValueMasking::revealing(),
+            },
+            "2026-05-14T10:05:00Z",
+        ));
+        drop(printer);
+        let rendered = cfgd_core::test_helpers::captured_text(&buf);
+        let row = rendered
+            .lines()
+            .find(|l| l.contains("cargo"))
+            .unwrap_or_else(|| panic!("the package has a row: {rendered}"));
+        assert_eq!(
+            row.trim(),
+            format!("⚠ cargo — {}", crate::cli::tests::floor_route_clause())
         );
     }
 
@@ -6295,7 +6854,10 @@ mod tests {
     /// The whole dashboard for a `StatusOutput`, rendered the way `cmd_status`
     /// renders it. Every clock-reading input is supplied, so a render pins.
     fn dashboard(output: &StatusOutput) -> String {
+        // Hints are off by default; this surface's closing instructions are
+        // part of what a dashboard render is read for.
         let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
+        let printer = printer.with_hints_enabled(true);
         printer.emit(build_fleet_status_doc(
             output,
             &cfgd_core::output::ConfigHeader {
@@ -6703,8 +7265,9 @@ mod tests {
     /// so a rename fails the reader rather than handing back an empty body a
     /// walk would pass over.
     fn production_fn_body(signature: &str) -> String {
-        // unfloored-slice-ok: one compiled-in body, not a walk over files
-        let source = cfgd_core::test_helpers::production_slice(include_str!("status.rs"));
+        let source = cfgd_core::test_helpers::production_slice_of(
+            &cfgd_core::test_helpers::workspace_root().join("crates/cfgd/src/cli/status.rs"),
+        );
         let start = source.find(signature).expect("the named production fn");
         let body = &source[start..];
         let end = body.find("\n}\n").expect("the fn's closing brace");
@@ -6755,9 +7318,10 @@ mod tests {
                 package_managers: declared_managers(&[("thing", manager)]),
                 ..ModuleDeclared::default()
             };
+            let entries = [nvim_entry(declared)];
             let rows = managed_resource_rows(
-                &[recorded("module", "nvim:packages:thing")],
-                &[nvim_entry(declared)],
+                &filled(vec![recorded("module", "nvim:packages:thing")], &entries),
+                &entries,
                 &ManagedResourceDetail::default(),
             );
             assert_eq!(
@@ -6774,9 +7338,10 @@ mod tests {
             package_managers: declared_managers(&[("neovim", "apt"), ("neovim", "npm")]),
             ..ModuleDeclared::default()
         };
+        let entries = [nvim_entry(both)];
         let rows = managed_resource_rows(
-            &[recorded("module", "nvim:packages:neovim")],
-            &[nvim_entry(both)],
+            &filled(vec![recorded("module", "nvim:packages:neovim")], &entries),
+            &entries,
             &ManagedResourceDetail::default(),
         );
         assert_eq!(
@@ -6826,7 +7391,7 @@ mod tests {
     }
 
     // Minimal config + default profile YAML used by every test that exercises
-    // the load_config_and_profile path. The active profile must materialize as
+    // `RunContext::config_and_profile`. The active profile must materialize as
     // a profile file under `profiles/` for resolve_profile to succeed.
     const CONFIG_YAML: &str = "apiVersion: cfgd.io/v1alpha1\n\
                                kind: Config\n\
@@ -6861,9 +7426,12 @@ mod tests {
             color: crate::cli::ColorWhen::Auto,
             output: OutputFormatArg(cfgd_core::output::OutputFormat::Table),
             list_envelope: false,
+            hints: false,
             no_hints: false,
             theme: None,
             mask_env_values: None,
+            migration_policy: None,
+            update_policy: None,
             jsonpath: None,
             yes: false,
             state_dir: Some(state_dir.to_path_buf()),
@@ -6875,8 +7443,12 @@ mod tests {
         }
     }
 
+    /// Hints ON: a printer starts with them off, as a cfgd run renders them,
+    /// and this surface's closing instructions are what most of these tests
+    /// are reading.
     fn test_printers() -> (Printer, std::sync::Arc<std::sync::Mutex<String>>) {
-        Printer::for_test_at(Verbosity::Normal)
+        let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
+        (printer.with_hints_enabled(true), buf)
     }
 
     fn test_printers_json() -> (Printer, std::sync::Arc<std::sync::Mutex<String>>) {
@@ -6962,7 +7534,10 @@ mod tests {
         let cli = test_cli_for(config_path, state_dir.path());
         let (printer, buf) = test_printers();
 
-        cmd_status(&cli, &printer, None, StatusRun::default()).unwrap();
+        crate::cli::RunContext::for_test(&cli, &printer, |run| {
+            cmd_status(run, None, StatusRun::default())
+        })
+        .unwrap();
         drop(printer);
 
         let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -6997,15 +7572,16 @@ mod tests {
 
         let cli = test_cli_for(config_path, state_dir.path());
         let (printer, buf) = test_printers();
-        cmd_status(
-            &cli,
-            &printer,
-            Some("test-mod"),
-            StatusRun {
-                mask_env_values: cfgd_core::config::MaskEnvValues::None,
-                ..StatusRun::default()
-            },
-        )
+        crate::cli::RunContext::for_test(&cli, &printer, |run| {
+            cmd_status(
+                run,
+                Some("test-mod"),
+                StatusRun {
+                    mask_env_values: cfgd_core::config::MaskEnvValues::None,
+                    ..StatusRun::default()
+                },
+            )
+        })
         .unwrap();
         drop(printer);
 
@@ -7060,19 +7636,20 @@ mod tests {
         let render = |show_values: bool| {
             let (printer, cap) =
                 Printer::for_test_doc_with_format(cfgd_core::output::OutputFormat::Wide);
-            cmd_status(
-                &cli,
-                &printer,
-                Some("test-mod"),
-                StatusRun {
-                    mask_env_values: if show_values {
-                        cfgd_core::config::MaskEnvValues::None
-                    } else {
-                        cfgd_core::config::MaskEnvValues::All
+            crate::cli::RunContext::for_test(&cli, &printer, |run| {
+                cmd_status(
+                    run,
+                    Some("test-mod"),
+                    StatusRun {
+                        mask_env_values: if show_values {
+                            cfgd_core::config::MaskEnvValues::None
+                        } else {
+                            cfgd_core::config::MaskEnvValues::All
+                        },
+                        ..StatusRun::default()
                     },
-                    ..StatusRun::default()
-                },
-            )
+                )
+            })
             .unwrap();
             drop(printer);
             cap.human()
@@ -7115,7 +7692,10 @@ mod tests {
         cli.output = super::OutputFormatArg(cfgd_core::output::OutputFormat::Wide);
         let (printer, cap) =
             Printer::for_test_doc_with_format(cfgd_core::output::OutputFormat::Wide);
-        cmd_status(&cli, &printer, Some("test-mod"), StatusRun::default()).unwrap();
+        crate::cli::RunContext::for_test(&cli, &printer, |run| {
+            cmd_status(run, Some("test-mod"), StatusRun::default())
+        })
+        .unwrap();
         drop(printer);
 
         let out = cap.human();
@@ -7136,7 +7716,10 @@ mod tests {
         let cli = test_cli_for(dir.path().join("nope.yaml"), state_dir.path());
         let (printer, _) = test_printers();
 
-        let err = cmd_status(&cli, &printer, None, StatusRun::default()).unwrap_err();
+        let err = crate::cli::RunContext::for_test(&cli, &printer, |run| {
+            cmd_status(run, None, StatusRun::default())
+        })
+        .unwrap_err();
         let msg = err.to_string().to_lowercase();
         assert!(
             msg.contains("not found") || msg.contains("nope.yaml"),
@@ -7150,7 +7733,10 @@ mod tests {
         let cli = test_cli_for(config_path, state_dir.path());
         let (printer, buf) = test_printers();
 
-        cmd_status(&cli, &printer, None, StatusRun::default()).unwrap();
+        crate::cli::RunContext::for_test(&cli, &printer, |run| {
+            cmd_status(run, None, StatusRun::default())
+        })
+        .unwrap();
         drop(printer);
 
         let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -7191,7 +7777,10 @@ mod tests {
         let cli = test_cli_for(config_path, state_dir.path());
         let (printer, buf) = test_printers();
 
-        cmd_status(&cli, &printer, None, StatusRun::default()).unwrap();
+        crate::cli::RunContext::for_test(&cli, &printer, |run| {
+            cmd_status(run, None, StatusRun::default())
+        })
+        .unwrap();
         drop(printer);
 
         let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -7230,7 +7819,10 @@ mod tests {
         let cli = test_cli_for(config_path, state_dir.path());
         let (printer, buf) = test_printers();
 
-        cmd_status(&cli, &printer, None, StatusRun::default()).unwrap();
+        crate::cli::RunContext::for_test(&cli, &printer, |run| {
+            cmd_status(run, None, StatusRun::default())
+        })
+        .unwrap();
         drop(printer);
 
         let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -7271,7 +7863,10 @@ mod tests {
         let cli = test_cli_for(config_path, state_dir.path());
         let (printer, buf) = test_printers();
 
-        cmd_status(&cli, &printer, None, StatusRun::default()).unwrap();
+        crate::cli::RunContext::for_test(&cli, &printer, |run| {
+            cmd_status(run, None, StatusRun::default())
+        })
+        .unwrap();
         drop(printer);
 
         let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -7289,13 +7884,24 @@ mod tests {
         let (_cfg_dir, state_dir, config_path) = setup_env();
         let store = open_state_store(Some(state_dir.path()), cfgd_core::Scope::User).unwrap();
         store
-            .upsert_managed_resource("file", "/etc/managed.conf", "local", Some("hashval"), None)
+            .upsert_managed_resource(
+                "file",
+                "/etc/managed.conf",
+                "file",
+                None,
+                "local",
+                Some("hashval"),
+                None,
+            )
             .unwrap();
 
         let cli = test_cli_for(config_path, state_dir.path());
         let (printer, buf) = test_printers();
 
-        cmd_status(&cli, &printer, None, StatusRun::default()).unwrap();
+        crate::cli::RunContext::for_test(&cli, &printer, |run| {
+            cmd_status(run, None, StatusRun::default())
+        })
+        .unwrap();
         drop(printer);
 
         let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -7321,13 +7927,24 @@ mod tests {
         let store = open_state_store(Some(state_dir.path()), cfgd_core::Scope::User).unwrap();
         let raw_body = " echo one\necho two\necho three";
         store
-            .upsert_managed_resource("Running script", raw_body, "local", None, None)
+            .upsert_managed_resource(
+                "Running script",
+                raw_body,
+                "Running script",
+                None,
+                "local",
+                None,
+                None,
+            )
             .unwrap();
 
         let cli = test_cli_for(config_path, state_dir.path());
         let (printer, buf) = test_printers();
 
-        cmd_status(&cli, &printer, None, StatusRun::default()).unwrap();
+        crate::cli::RunContext::for_test(&cli, &printer, |run| {
+            cmd_status(run, None, StatusRun::default())
+        })
+        .unwrap();
         drop(printer);
 
         let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -7343,13 +7960,24 @@ mod tests {
         let store = open_state_store(Some(state_dir.path()), cfgd_core::Scope::User).unwrap();
         let raw_body = " echo one\necho two\necho three";
         store
-            .upsert_managed_resource("Running script", raw_body, "local", None, None)
+            .upsert_managed_resource(
+                "Running script",
+                raw_body,
+                "Running script",
+                None,
+                "local",
+                None,
+                None,
+            )
             .unwrap();
 
         let cli = test_cli_for(config_path, state_dir.path());
         let (printer, buf) = test_printers_json();
 
-        cmd_status(&cli, &printer, None, StatusRun::default()).unwrap();
+        crate::cli::RunContext::for_test(&cli, &printer, |run| {
+            cmd_status(run, None, StatusRun::default())
+        })
+        .unwrap();
         drop(printer);
 
         let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -7358,6 +7986,160 @@ mod tests {
         assert_eq!(
             resources[0]["resourceId"], raw_body,
             "JSON payload must preserve the raw multi-line resource_id byte-identical, got: {output}"
+        );
+    }
+
+    /// The table and `-o json` name one recorded row the same way: the Type
+    /// cell is `-o json`'s `kind` in the table's words, and the manager the
+    /// Resource cell leads with is `-o json`'s `manager`. The config here
+    /// declares no module at all, so a manager the table prints can only come
+    /// from the row the store recorded.
+    #[test]
+    fn cmd_status_table_and_json_agree_on_a_rows_kind_and_manager() {
+        let (_cfg_dir, state_dir, config_path) = setup_env();
+        let store = open_state_store(Some(state_dir.path()), cfgd_core::Scope::User).unwrap();
+        store
+            .upsert_managed_resource(
+                "module",
+                "npmtest:packages:cowsay",
+                "package",
+                Some("npm"),
+                "local",
+                None,
+                None,
+            )
+            .unwrap();
+        store
+            .upsert_managed_resource(
+                ENV_RESOURCE_TYPE,
+                "/home/u/.bashrc",
+                ENV_RC_RESOURCE_TYPE,
+                None,
+                "local",
+                None,
+                None,
+            )
+            .unwrap();
+        drop(store);
+
+        let render = |json: bool| {
+            let cli = test_cli_for(config_path.clone(), state_dir.path());
+            let (printer, buf) = if json {
+                test_printers_json()
+            } else {
+                test_printers()
+            };
+            crate::cli::RunContext::for_test(&cli, &printer, |run| {
+                cmd_status(run, None, StatusRun::default())
+            })
+            .unwrap();
+            drop(printer);
+            cfgd_core::test_helpers::captured_text(&buf)
+        };
+        let table = render(false);
+        let parsed: serde_json::Value = serde_json::from_str(&render(true)).unwrap();
+        let rows = parsed["managedResources"].as_array().unwrap();
+
+        for (resource_id, resource_cell) in [
+            ("npmtest:packages:cowsay", "cowsay"),
+            ("/home/u/.bashrc", ".bashrc"),
+        ] {
+            let row = rows
+                .iter()
+                .find(|r| r["resourceId"] == resource_id)
+                .unwrap_or_else(|| panic!("`-o json` carries {resource_id}: {parsed}"));
+            let kind = row["kind"]
+                .as_str()
+                .unwrap_or_else(|| panic!("{resource_id} carries a kind: {row}"));
+            let line = table
+                .lines()
+                .find(|l| l.contains(resource_cell) && !l.contains("—"))
+                .unwrap_or_else(|| panic!("the table shows {resource_id}: {table}"));
+            assert_eq!(
+                line.split_whitespace().next(),
+                Some(display_type(kind)),
+                "the Type cell words `-o json`'s kind `{kind}`: {line}"
+            );
+            match row["manager"].as_str() {
+                Some(manager) => assert!(
+                    line.contains(&format!("{manager}: {resource_cell}")),
+                    "the Resource cell leads with `-o json`'s manager `{manager}`: {line}"
+                ),
+                None => assert!(
+                    !line.contains(&format!(": {resource_cell}")),
+                    "the table names no manager `-o json` does not: {line}"
+                ),
+            }
+        }
+        let npm = rows
+            .iter()
+            .find(|r| r["resourceId"] == "npmtest:packages:cowsay")
+            .unwrap();
+        assert_eq!(npm["kind"], "package", "{npm}");
+        assert_eq!(npm["manager"], "npm", "{npm}");
+    }
+
+    /// A module package row recorded before the store kept its manager reads
+    /// the manager the module's declaration still resolves to, and the table
+    /// and `-o json` read that ONE value: the table's prefix is never a
+    /// manager `-o json` reports as unknown.
+    #[test]
+    fn cmd_status_table_and_json_agree_on_a_declared_manager_the_store_never_recorded() {
+        let (config_dir, state_dir, config_path) = setup_env_with_module();
+        // The `script` pseudo-manager resolves on every host, so the fixture's
+        // manager does not depend on what this machine has installed.
+        std::fs::write(
+            config_dir.path().join("modules/test-mod/module.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\n\
+             kind: Module\n\
+             metadata:\n  name: test-mod\n\
+             spec:\n  packages:\n    - name: cowsay\n      prefer: [script]\n      script: \"true\"\n",
+        )
+        .unwrap();
+        let store = open_state_store(Some(state_dir.path()), cfgd_core::Scope::User).unwrap();
+        store
+            .upsert_managed_resource(
+                "module",
+                "test-mod:packages:cowsay",
+                "package",
+                None,
+                "local",
+                None,
+                None,
+            )
+            .unwrap();
+        drop(store);
+
+        let render = |json: bool| {
+            let cli = test_cli_for(config_path.clone(), state_dir.path());
+            let (printer, buf) = if json {
+                test_printers_json()
+            } else {
+                test_printers()
+            };
+            crate::cli::RunContext::for_test(&cli, &printer, |run| {
+                cmd_status(run, None, StatusRun::default())
+            })
+            .unwrap();
+            drop(printer);
+            cfgd_core::test_helpers::captured_text(&buf)
+        };
+        let table = render(false);
+        let parsed: serde_json::Value = serde_json::from_str(&render(true)).unwrap();
+        let row = parsed["managedResources"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["resourceId"] == "test-mod:packages:cowsay")
+            .unwrap_or_else(|| panic!("`-o json` carries the row: {parsed}"));
+        assert_eq!(row["manager"], "script", "{row}");
+        let line = table
+            .lines()
+            .find(|l| l.contains("cowsay") && !l.contains("—"))
+            .unwrap_or_else(|| panic!("the table shows the row: {table}"));
+        assert!(
+            line.contains("script: cowsay"),
+            "the Resource cell leads with `-o json`'s manager: {line}"
         );
     }
 
@@ -7375,7 +8157,9 @@ mod tests {
         let cli = test_cli_for(config_path, state_dir.path());
         let (printer, _) = test_printers();
 
-        let res = cmd_status(&cli, &printer, None, StatusRun::default());
+        let res = crate::cli::RunContext::for_test(&cli, &printer, |run| {
+            cmd_status(run, None, StatusRun::default())
+        });
         assert!(res.is_ok(), "exit_code=false must return Ok, got: {res:?}");
     }
 
@@ -7388,16 +8172,17 @@ mod tests {
         let cli = test_cli_for(config_path, state_dir.path());
         let (printer, _) = test_printers();
 
-        let res = cmd_status(
-            &cli,
-            &printer,
-            None,
-            StatusRun {
-                exit_code: true,
-                scan: true,
-                ..StatusRun::default()
-            },
-        );
+        let res = crate::cli::RunContext::for_test(&cli, &printer, |run| {
+            cmd_status(
+                run,
+                None,
+                StatusRun {
+                    exit_code: true,
+                    scan: true,
+                    ..StatusRun::default()
+                },
+            )
+        });
         assert!(
             res.is_ok(),
             "exit_code=true with no drift must return Ok, got: {res:?}"
@@ -7424,15 +8209,16 @@ mod tests {
         cli.output = OutputFormatArg(cfgd_core::output::OutputFormat::Json);
         let (printer, buf) = test_printers_json();
 
-        cmd_status(
-            &cli,
-            &printer,
-            None,
-            StatusRun {
-                scan: true,
-                ..StatusRun::default()
-            },
-        )
+        crate::cli::RunContext::for_test(&cli, &printer, |run| {
+            cmd_status(
+                run,
+                None,
+                StatusRun {
+                    scan: true,
+                    ..StatusRun::default()
+                },
+            )
+        })
         .unwrap();
         drop(printer);
 
@@ -7492,19 +8278,13 @@ mod tests {
             value: "vim".to_string(),
             platforms: vec![],
         }];
-        // The owners the profile-layer merge records for this profile: the
-        // generated line names its layer, so a needle rendered with no owner
-        // is a line the file never holds.
-        let declared_owners = {
-            let mut o = cfgd_core::config::EntryOwners::default();
-            o.claim("profile:default", &declared_env, &[]);
-            o
-        };
         let declared_line = cfgd_core::reconciler::MergedEnvItems::new(
-            &declared_env,
-            &[],
-            &declared_owners,
-            &[],
+            &cfgd_core::reconciler::LayeredEnv::from_parts(
+                "profile:default",
+                &declared_env,
+                &[],
+                &[],
+            ),
             &[],
         )
         .declared_line("env-var", "EDITOR")
@@ -7516,15 +8296,16 @@ mod tests {
         cli.output = OutputFormatArg(cfgd_core::output::OutputFormat::Json);
         let (printer, buf) = test_printers_json();
 
-        cmd_status(
-            &cli,
-            &printer,
-            None,
-            StatusRun {
-                scan: true,
-                ..StatusRun::default()
-            },
-        )
+        crate::cli::RunContext::for_test(&cli, &printer, |run| {
+            cmd_status(
+                run,
+                None,
+                StatusRun {
+                    scan: true,
+                    ..StatusRun::default()
+                },
+            )
+        })
         .unwrap();
         drop(printer);
 
@@ -7552,15 +8333,16 @@ mod tests {
         // up there too — a reader healing drift needs the declared value in
         // front of them, not only the terse absence word.
         let (human_printer, human_buf) = test_printers();
-        cmd_status(
-            &cli,
-            &human_printer,
-            None,
-            StatusRun {
-                scan: true,
-                ..StatusRun::default()
-            },
-        )
+        crate::cli::RunContext::for_test(&cli, &human_printer, |run| {
+            cmd_status(
+                run,
+                None,
+                StatusRun {
+                    scan: true,
+                    ..StatusRun::default()
+                },
+            )
+        })
         .unwrap();
         drop(human_printer);
         let human = cfgd_core::test_helpers::captured_text(&human_buf);
@@ -7634,19 +8416,13 @@ mod tests {
             value: "vim".to_string(),
             platforms: vec![],
         }];
-        // The owners the profile-layer merge records for this profile: the
-        // generated line names its layer, so a needle rendered with no owner
-        // is a line the file never holds.
-        let declared_owners = {
-            let mut o = cfgd_core::config::EntryOwners::default();
-            o.claim("profile:default", &declared_env, &[]);
-            o
-        };
         let declared_line = cfgd_core::reconciler::MergedEnvItems::new(
-            &declared_env,
-            &[],
-            &declared_owners,
-            &[],
+            &cfgd_core::reconciler::LayeredEnv::from_parts(
+                "profile:default",
+                &declared_env,
+                &[],
+                &[],
+            ),
             &[],
         )
         .declared_line("env-var", "EDITOR")
@@ -7658,15 +8434,16 @@ mod tests {
         let mut cli = test_cli_for(config_path, &state_dir);
         for scan in [false, true] {
             let (printer, buf) = test_printers();
-            cmd_status(
-                &cli,
-                &printer,
-                None,
-                StatusRun {
-                    scan,
-                    ..StatusRun::default()
-                },
-            )
+            crate::cli::RunContext::for_test(&cli, &printer, |run| {
+                cmd_status(
+                    run,
+                    None,
+                    StatusRun {
+                        scan,
+                        ..StatusRun::default()
+                    },
+                )
+            })
             .unwrap();
             drop(printer);
             let human = cfgd_core::test_helpers::captured_text(&buf);
@@ -7685,7 +8462,10 @@ mod tests {
         // its own row — and the recompute rides the additive pair beside them.
         cli.output = OutputFormatArg(cfgd_core::output::OutputFormat::Json);
         let (printer, buf) = test_printers_json();
-        cmd_status(&cli, &printer, None, StatusRun::default()).unwrap();
+        crate::cli::RunContext::for_test(&cli, &printer, |run| {
+            cmd_status(run, None, StatusRun::default())
+        })
+        .unwrap();
         drop(printer);
         let captured = cfgd_core::test_helpers::captured_text(&buf);
         let parsed: serde_json::Value = serde_json::from_str(captured.trim())
@@ -7742,32 +8522,26 @@ mod tests {
             value: "vim".to_string(),
             platforms: vec![],
         }];
-        // The owners the profile-layer merge records for this profile: the
-        // generated line names its layer, so a needle rendered with no owner
-        // is a line the file never holds.
-        let declared_owners = {
-            let mut o = cfgd_core::config::EntryOwners::default();
-            o.claim("profile:default", &declared_env, &[]);
-            o
-        };
         let tmp_home = tempfile::tempdir().unwrap();
         let _home = cfgd_core::with_test_home_guard(tmp_home.path());
-        let declared_line = cfgd_core::reconciler::MergedEnvItems::new(
+        let layered = cfgd_core::reconciler::LayeredEnv::from_parts(
+            "profile:default",
             &declared_env,
             &[],
-            &declared_owners,
             &[],
-            &[],
-        )
-        .declared_line("env-var", "EDITOR")
-        .expect("EDITOR renders a declared line");
+        );
+        let merged = cfgd_core::reconciler::MergedEnvItems::new(&layered, &[]);
+        let declared_line = merged
+            .declared_line("env-var", "EDITOR")
+            .expect("EDITOR renders a declared line");
         // The machine HOLDS the declared line: whatever the recorded row says,
-        // this entry is converged right now.
-        std::fs::write(
-            cfgd_core::reconciler::primary_env_file(tmp_home.path()),
-            format!("# managed by cfgd \u{2014} do not edit\n{declared_line}\n"),
-        )
-        .unwrap();
+        // this entry is converged right now. Planted from the generator, so
+        // the file is the shape a reader of it has to resolve.
+        cfgd_core::test_helpers::plant_managed_env_files(
+            &merged,
+            tmp_home.path(),
+            cfgd_core::config::EnvScope::Interactive,
+        );
 
         let state_dir = tmp.path().join("state");
         std::fs::create_dir_all(&state_dir).unwrap();
@@ -7787,15 +8561,16 @@ mod tests {
         let cli = test_cli_for(config_path.clone(), &state_dir);
         for scan in [false, true] {
             let (printer, buf) = test_printers();
-            cmd_status(
-                &cli,
-                &printer,
-                None,
-                StatusRun {
-                    scan,
-                    ..StatusRun::default()
-                },
-            )
+            crate::cli::RunContext::for_test(&cli, &printer, |run| {
+                cmd_status(
+                    run,
+                    None,
+                    StatusRun {
+                        scan,
+                        ..StatusRun::default()
+                    },
+                )
+            })
             .unwrap();
             drop(printer);
             let human = cfgd_core::test_helpers::captured_text(&buf);
@@ -7819,15 +8594,16 @@ mod tests {
             let mut cli = test_cli_for(config_path.clone(), &state_dir);
             cli.output = OutputFormatArg(cfgd_core::output::OutputFormat::Json);
             let (printer, buf) = test_printers_json();
-            cmd_status(
-                &cli,
-                &printer,
-                None,
-                StatusRun {
-                    scan,
-                    ..StatusRun::default()
-                },
-            )
+            crate::cli::RunContext::for_test(&cli, &printer, |run| {
+                cmd_status(
+                    run,
+                    None,
+                    StatusRun {
+                        scan,
+                        ..StatusRun::default()
+                    },
+                )
+            })
             .unwrap();
             drop(printer);
             let captured = cfgd_core::test_helpers::captured_text(&buf);
@@ -7904,15 +8680,16 @@ mod tests {
 
         let cli = test_cli_for(config_path.clone(), &state_dir);
         let (printer, buf) = test_printers();
-        cmd_status(
-            &cli,
-            &printer,
-            None,
-            StatusRun {
-                scan: true,
-                ..StatusRun::default()
-            },
-        )
+        crate::cli::RunContext::for_test(&cli, &printer, |run| {
+            cmd_status(
+                run,
+                None,
+                StatusRun {
+                    scan: true,
+                    ..StatusRun::default()
+                },
+            )
+        })
         .unwrap();
         drop(printer);
         let human = cfgd_core::test_helpers::captured_text(&buf);
@@ -7925,15 +8702,16 @@ mod tests {
         let mut cli = test_cli_for(config_path, &state_dir);
         cli.output = OutputFormatArg(cfgd_core::output::OutputFormat::Json);
         let (printer, buf) = test_printers_json();
-        cmd_status(
-            &cli,
-            &printer,
-            None,
-            StatusRun {
-                scan: true,
-                ..StatusRun::default()
-            },
-        )
+        crate::cli::RunContext::for_test(&cli, &printer, |run| {
+            cmd_status(
+                run,
+                None,
+                StatusRun {
+                    scan: true,
+                    ..StatusRun::default()
+                },
+            )
+        })
         .unwrap();
         drop(printer);
         let captured = cfgd_core::test_helpers::captured_text(&buf);
@@ -7980,7 +8758,10 @@ mod tests {
         cli.output = OutputFormatArg(cfgd_core::output::OutputFormat::Json);
         let (printer, buf) = test_printers_json();
 
-        cmd_status(&cli, &printer, None, StatusRun::default()).unwrap();
+        crate::cli::RunContext::for_test(&cli, &printer, |run| {
+            cmd_status(run, None, StatusRun::default())
+        })
+        .unwrap();
         drop(printer);
 
         let captured = cfgd_core::test_helpers::captured_text(&buf);
@@ -8013,7 +8794,10 @@ mod tests {
         let cli = test_cli_for(config_path, state_dir.path());
         let (printer, buf) = test_printers();
 
-        cmd_status(&cli, &printer, Some("test-mod"), StatusRun::default()).unwrap();
+        crate::cli::RunContext::for_test(&cli, &printer, |run| {
+            cmd_status(run, Some("test-mod"), StatusRun::default())
+        })
+        .unwrap();
         drop(printer);
 
         let output = cfgd_core::test_helpers::captured_text(&buf);
@@ -8042,7 +8826,11 @@ mod tests {
         let (printer, buf) = test_printers();
 
         cmd_status_module(
-            &RunContext::new(&cli, &printer),
+            &RunContext::new(
+                &cli,
+                &printer,
+                &crate::cli::startup::StartupDocument::load(&cli.config),
+            ),
             "ghost",
             false,
             false,
@@ -8073,7 +8861,11 @@ mod tests {
         let (printer, buf) = test_printers_json();
 
         cmd_status_module(
-            &RunContext::new(&cli, &printer),
+            &RunContext::new(
+                &cli,
+                &printer,
+                &crate::cli::startup::StartupDocument::load(&cli.config),
+            ),
             "ghost",
             false,
             false,
@@ -8115,7 +8907,11 @@ mod tests {
         let (printer, buf) = test_printers();
 
         cmd_status_module(
-            &RunContext::new(&cli, &printer),
+            &RunContext::new(
+                &cli,
+                &printer,
+                &crate::cli::startup::StartupDocument::load(&cli.config),
+            ),
             "test-mod",
             false,
             false,
@@ -8364,12 +9160,137 @@ mod tests {
         assert_eq!(rows[1].state, ModulePackagePresence::Installed);
     }
 
+    /// A declared package naming a manager this host holds is an installed row
+    /// carrying the one composer's sentence and the judgment behind it.
+    ///
+    /// The row states presence, which stays true below the floor, so the
+    /// verdict a reader acts on lives in `met` and the words come from
+    /// `HeldManager::clause`. Asserted against the composer over the real
+    /// resolution, because the bytes this surface shows were typed by hand
+    /// once and promised a raise the resolution never named.
+    #[test]
+    fn a_held_managers_floor_judgment_rides_on_its_status_row() {
+        let cargo = cfgd_core::test_helpers::MockPackageManager::new("cargo")
+            .offering("cargo", "1.75")
+            .reporting_version("1.80");
+        let managers: std::collections::HashMap<String, &dyn cfgd_core::providers::PackageManager> =
+            [(
+                "cargo".to_string(),
+                &cargo as &dyn cfgd_core::providers::PackageManager,
+            )]
+            .into_iter()
+            .collect();
+        let mut entry = declared_under("cargo", "cargo");
+        entry.min_version = Some("1.85".to_string());
+
+        let mut rows = join_package_state(
+            &[entry],
+            &mut std::collections::HashMap::new(),
+            Platform::current(),
+            "rust",
+            &managers,
+            None,
+        );
+
+        let expected = cfgd_core::modules::HeldManager {
+            package: "cargo".into(),
+            module: "rust".into(),
+            floor: "1.85".into(),
+            judgment: cfgd_core::modules::FloorJudgment::Short {
+                version: "1.80".into(),
+            },
+        }
+        .clause(Some(&cargo));
+        assert_eq!(rows[0].manager.as_deref(), Some("cargo"));
+        assert_eq!(rows[0].state, ModulePackagePresence::Installed);
+        let held = rows[0]
+            .held
+            .as_ref()
+            .unwrap_or_else(|| panic!("the row carries the floor answer: {:?}", rows[0].state));
+        assert_eq!(held.clause, expected);
+        assert!(
+            !held.met,
+            "a manager below its declared floor has not met it"
+        );
+        // The two operands the sentence compares also travel as fields, under
+        // the names `cfgd module show` already publishes: a consumer deciding
+        // how far short a host is should read numbers and parse no prose, and
+        // two surfaces answering one question in different shapes is the drift
+        // this half pins.
+        assert_eq!(
+            held.version.as_deref(),
+            Some("1.80"),
+            "the row states what the binary reported"
+        );
+        assert_eq!(
+            held.min_version, "1.85",
+            "and the floor it was judged against"
+        );
+        // Serialized where the documentation says to look for it: a consumer
+        // reaches these numbers down `packageState[].held`, so a rename
+        // anywhere along that path breaks the promise even while the inner
+        // struct still serializes. The route a floor nothing met would take is
+        // published beside them, down its own documented path, and is added
+        // here as a row of its own because this host holds the manager and so
+        // can never produce one.
+        let routed = ModulePackageStatus {
+            route: Some(FloorRoute {
+                clause: crate::cli::tests::floor_route_clause(),
+            }),
+            held: None,
+            name: "ripgrep".to_string(),
+            manager: None,
+            state: ModulePackagePresence::NotScanned,
+        };
+        let published = ModuleStatus {
+            packages_hash: None,
+            files_hash: None,
+            commit: None,
+            integrity: None,
+            name: "rust".to_string(),
+            packages: 2,
+            files: 0,
+            env: 0,
+            aliases: 0,
+            scripts: Vec::new(),
+            system: Vec::new(),
+            depends: Vec::new(),
+            declared: cfgd_core::modules::ModuleSurfaces::default(),
+            status: "installed".to_string(),
+            last_applied: None,
+            scope: None,
+            package_state: vec![rows.remove(0), routed],
+            deployed_files: Vec::new(),
+            drift_checked_live: true,
+            last_scan_at: None,
+            scoped_scans: Default::default(),
+            system_errors: Vec::new(),
+            standing: Vec::new(),
+            drift: Vec::new(),
+        };
+        let wire = serde_json::to_value(&published).expect("the status payload serializes");
+        assert_eq!(
+            wire["packageState"][0]["held"]["version"], "1.80",
+            "under the name module show publishes"
+        );
+        assert_eq!(
+            wire["packageState"][0]["held"]["minVersion"], "1.85",
+            "and so does the floor"
+        );
+        assert_eq!(
+            wire["packageState"][1]["route"]["clause"],
+            serde_json::Value::String(crate::cli::tests::floor_route_clause()),
+            "and a route rides under the key path the reference documents"
+        );
+    }
+
     /// A package the module's own `platforms` gate rules out is not "not
     /// scanned" — nobody was ever going to look. `cfgd module show` says
     /// `skipped (platform filter)` for the same package, and two surfaces
     /// answering one question differently is the drift this pins.
     #[test]
     fn a_platform_gated_package_reads_skipped_not_unscanned() {
+        let _pm = crate::cli::registry::PackageManagerFactoryGuard::hermetic_native();
         let tmp_home = tempfile::tempdir().unwrap();
         let _home = cfgd_core::with_test_home_guard(tmp_home.path());
         let config_dir = tempfile::tempdir().unwrap();
@@ -8392,7 +9313,11 @@ mod tests {
         let cli = test_cli_for(config_path, state_dir.path());
         let (printer, buf) = test_printers();
         cmd_status_module(
-            &RunContext::new(&cli, &printer),
+            &RunContext::new(
+                &cli,
+                &printer,
+                &crate::cli::startup::StartupDocument::load(&cli.config),
+            ),
             "test-mod",
             false,
             false,
@@ -8456,6 +9381,7 @@ mod tests {
         let cli = test_cli_for(config_path, state_dir.path());
         let (apply_printer, apply_buf) = test_printers();
         let args = crate::cli::ApplyArgs {
+            plan: None,
             on_conflict: crate::cli::OnConflict::Ask,
             from: None,
             dry_run: false,
@@ -8469,7 +9395,10 @@ mod tests {
             context: "apply".to_string(),
             shell: None,
         };
-        crate::cli::apply::cmd_apply(&cli, &apply_printer, &args).unwrap();
+        crate::cli::RunContext::for_test(&cli, &apply_printer, |run| {
+            crate::cli::apply::cmd_apply(run, &args)
+        })
+        .unwrap();
         drop(apply_printer);
         let applied = cfgd_core::test_helpers::captured_text(&apply_buf);
 
@@ -8488,7 +9417,11 @@ mod tests {
 
         let (printer, buf) = test_printers();
         cmd_status_module(
-            &RunContext::new(&cli, &printer),
+            &RunContext::new(
+                &cli,
+                &printer,
+                &crate::cli::startup::StartupDocument::load(&cli.config),
+            ),
             "test-mod",
             false,
             false,
@@ -8538,6 +9471,7 @@ mod tests {
         let cli = test_cli_for(config_path, state_dir.path());
         let (apply_printer, apply_buf) = test_printers();
         let args = crate::cli::ApplyArgs {
+            plan: None,
             on_conflict: crate::cli::OnConflict::Ask,
             from: None,
             dry_run: false,
@@ -8551,7 +9485,10 @@ mod tests {
             context: "apply".to_string(),
             shell: None,
         };
-        crate::cli::apply::cmd_apply(&cli, &apply_printer, &args).unwrap();
+        crate::cli::RunContext::for_test(&cli, &apply_printer, |run| {
+            crate::cli::apply::cmd_apply(run, &args)
+        })
+        .unwrap();
         drop(apply_printer);
         let applied = cfgd_core::test_helpers::captured_text(&apply_buf);
 
@@ -8574,7 +9511,11 @@ mod tests {
         let (printer, buf) = test_printers();
 
         cmd_status_module(
-            &RunContext::new(&cli, &printer),
+            &RunContext::new(
+                &cli,
+                &printer,
+                &crate::cli::startup::StartupDocument::load(&cli.config),
+            ),
             "test-mod",
             false,
             false,
@@ -8628,7 +9569,11 @@ mod tests {
         let (printer, buf) = test_printers();
 
         cmd_status_module(
-            &RunContext::new(&cli, &printer),
+            &RunContext::new(
+                &cli,
+                &printer,
+                &crate::cli::startup::StartupDocument::load(&cli.config),
+            ),
             "test-mod",
             false,
             false,
@@ -8684,7 +9629,11 @@ mod tests {
         let (printer, buf) = test_printers_json();
 
         cmd_status_module(
-            &RunContext::new(&cli, &printer),
+            &RunContext::new(
+                &cli,
+                &printer,
+                &crate::cli::startup::StartupDocument::load(&cli.config),
+            ),
             "test-mod",
             false,
             false,
@@ -8724,14 +9673,22 @@ mod tests {
     }
 
     fn converged_module_env() -> ConvergedModuleEnv {
-        module_env_with("same content\n", "[]")
+        module_env_with("same content\n", TEST_MOD_WITHOUT_PACKAGES)
     }
+
+    /// The `test-mod` document declaring no package, its target spelled
+    /// `__TARGET__` for [`module_env_with`] to fill.
+    const TEST_MOD_WITHOUT_PACKAGES: &str = "apiVersion: cfgd.io/v1alpha1\nkind: Module\n\
+        metadata:\n  name: test-mod\nspec:\n  packages: []\n  files:\n\
+        \x20   - source: conf\n      target: __TARGET__\n";
 
     /// `converged_module_env` with the two knobs the state-rendering tests
     /// turn: what the deployed target actually holds (content identical to the
     /// module's source converges, anything else is content drift), and the
-    /// module's declared `packages:` block.
-    fn module_env_with(target_content: &str, packages_yaml: &str) -> ConvergedModuleEnv {
+    /// whole `module.yaml`, whose `__TARGET__` names the deployed target. The
+    /// document is a complete literal so a walk reading test fixtures parses
+    /// the packages the test declares.
+    fn module_env_with(target_content: &str, module_yaml: &str) -> ConvergedModuleEnv {
         let tmp_home = tempfile::tempdir().unwrap();
         let home = cfgd_core::with_test_home_guard(tmp_home.path());
         let config_dir = tempfile::tempdir().unwrap();
@@ -8748,11 +9705,7 @@ mod tests {
         let mod_dir = config_dir.path().join("modules").join("test-mod");
         std::fs::create_dir_all(&mod_dir).unwrap();
         std::fs::write(mod_dir.join("conf"), "same content\n").unwrap();
-        let module_yaml = format!(
-            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: test-mod\nspec:\n  packages: {}\n  files:\n    - source: conf\n      target: {}\n",
-            packages_yaml,
-            cfgd_core::to_posix_string(&target)
-        );
+        let module_yaml = module_yaml.replace("__TARGET__", &cfgd_core::to_posix_string(&target));
         std::fs::write(mod_dir.join("module.yaml"), module_yaml).unwrap();
 
         ConvergedModuleEnv {
@@ -8797,13 +9750,17 @@ mod tests {
     /// own drift finding.
     #[test]
     fn cmd_status_module_drifted_file_is_never_ok_under_deployed_files() {
-        let env = module_env_with("tampered\n", "[]");
+        let env = module_env_with("tampered\n", TEST_MOD_WITHOUT_PACKAGES);
         record_deployed(&env);
 
         let cli = test_cli_for(env.config_path.clone(), env.state_dir.path());
         let (printer, buf) = test_printers();
         cmd_status_module(
-            &RunContext::new(&cli, &printer),
+            &RunContext::new(
+                &cli,
+                &printer,
+                &crate::cli::startup::StartupDocument::load(&cli.config),
+            ),
             "test-mod",
             false,
             true,
@@ -8841,7 +9798,11 @@ mod tests {
         let cli = test_cli_for(env.config_path.clone(), env.state_dir.path());
         let (printer, buf) = test_printers();
         cmd_status_module(
-            &RunContext::new(&cli, &printer),
+            &RunContext::new(
+                &cli,
+                &printer,
+                &crate::cli::startup::StartupDocument::load(&cli.config),
+            ),
             "test-mod",
             false,
             true,
@@ -8873,12 +9834,18 @@ mod tests {
     fn cmd_status_module_scan_renders_package_state_per_declared_package() {
         let env = module_env_with(
             "same content\n",
-            "\n    - name: rustup\n      prefer:\n        - script\n      script: \"true\"",
+            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: test-mod\nspec:\n\
+             \x20 packages:\n    - name: rustup\n      prefer:\n        - script\n\
+             \x20     script: \"true\"\n  files:\n    - source: conf\n      target: __TARGET__\n",
         );
         let cli = test_cli_for(env.config_path.clone(), env.state_dir.path());
         let (printer, buf) = test_printers();
         cmd_status_module(
-            &RunContext::new(&cli, &printer),
+            &RunContext::new(
+                &cli,
+                &printer,
+                &crate::cli::startup::StartupDocument::load(&cli.config),
+            ),
             "test-mod",
             false,
             true,
@@ -8916,7 +9883,11 @@ mod tests {
         let cli = test_cli_for(config_path, state_dir.path());
         let (printer, buf) = test_printers();
         cmd_status_module(
-            &RunContext::new(&cli, &printer),
+            &RunContext::new(
+                &cli,
+                &printer,
+                &crate::cli::startup::StartupDocument::load(&cli.config),
+            ),
             "test-mod",
             false,
             false,
@@ -8970,7 +9941,11 @@ mod tests {
         let cli = test_cli_for(config_path, state_dir.path());
         let (printer, buf) = test_printers();
         cmd_status_module(
-            &RunContext::new(&cli, &printer),
+            &RunContext::new(
+                &cli,
+                &printer,
+                &crate::cli::startup::StartupDocument::load(&cli.config),
+            ),
             "test-mod",
             false,
             false,
@@ -9016,7 +9991,11 @@ mod tests {
         let (printer, buf) = test_printers_json();
 
         cmd_status_module(
-            &RunContext::new(&cli, &printer),
+            &RunContext::new(
+                &cli,
+                &printer,
+                &crate::cli::startup::StartupDocument::load(&cli.config),
+            ),
             "test-mod",
             false,
             true,
@@ -9052,7 +10031,11 @@ mod tests {
         let (printer, buf) = test_printers_json();
 
         let res = cmd_status_module(
-            &RunContext::new(&cli, &printer),
+            &RunContext::new(
+                &cli,
+                &printer,
+                &crate::cli::startup::StartupDocument::load(&cli.config),
+            ),
             "test-mod",
             true,
             true,
@@ -9226,6 +10209,7 @@ mod tests {
 
         let cli = test_cli_for(config_path.clone(), state_dir.path());
         let args = crate::cli::ApplyArgs {
+            plan: None,
             on_conflict: crate::cli::OnConflict::Ask,
             from: None,
             dry_run: false,
@@ -9240,7 +10224,10 @@ mod tests {
             shell: None,
         };
         let printer = cfgd_core::test_helpers::test_printer();
-        crate::cli::apply::cmd_apply(&cli, &printer, &args).unwrap();
+        crate::cli::RunContext::for_test(&cli, &printer, |run| {
+            crate::cli::apply::cmd_apply(run, &args)
+        })
+        .unwrap();
         assert_eq!(
             std::fs::read_to_string(&target).unwrap(),
             "declared content\n",
@@ -9265,7 +10252,10 @@ mod tests {
 
         let cli = test_cli_for(config_path.clone(), state_dir.path());
         let printer = cfgd_core::test_helpers::test_printer();
-        crate::cli::diff::cmd_diff(&cli, &printer, None, false).unwrap();
+        crate::cli::RunContext::for_test(&cli, &printer, |run| {
+            crate::cli::diff::cmd_diff(run, None, false)
+        })
+        .unwrap();
 
         let store = open_state_store(Some(state_dir.path()), cfgd_core::Scope::User).unwrap();
         let rows = store.unresolved_drift().unwrap();
@@ -9276,7 +10266,10 @@ mod tests {
         );
 
         let (printer, buf) = test_printers();
-        cmd_status(&cli, &printer, None, StatusRun::default()).unwrap();
+        crate::cli::RunContext::for_test(&cli, &printer, |run| {
+            cmd_status(run, None, StatusRun::default())
+        })
+        .unwrap();
         drop(printer);
         let out = cfgd_core::test_helpers::captured_text(&buf);
         assert!(
@@ -9303,7 +10296,10 @@ mod tests {
         std::fs::write(&target, "edited out of band\n").unwrap();
         let cli = test_cli_for(config_path.clone(), state_dir.path());
         let printer = cfgd_core::test_helpers::test_printer();
-        crate::cli::diff::cmd_diff(&cli, &printer, None, false).unwrap();
+        crate::cli::RunContext::for_test(&cli, &printer, |run| {
+            crate::cli::diff::cmd_diff(run, None, false)
+        })
+        .unwrap();
         {
             let store = open_state_store(Some(state_dir.path()), cfgd_core::Scope::User).unwrap();
             assert!(
@@ -9315,7 +10311,10 @@ mod tests {
         // Heal by hand and check again: the second diff re-finds nothing,
         // which is the evidence the recorded row needs to resolve.
         std::fs::write(&target, "declared content\n").unwrap();
-        crate::cli::diff::cmd_diff(&cli, &printer, None, false).unwrap();
+        crate::cli::RunContext::for_test(&cli, &printer, |run| {
+            crate::cli::diff::cmd_diff(run, None, false)
+        })
+        .unwrap();
 
         let store = open_state_store(Some(state_dir.path()), cfgd_core::Scope::User).unwrap();
         let rows = store.unresolved_drift().unwrap();
@@ -9325,7 +10324,10 @@ mod tests {
         );
 
         let (printer, buf) = test_printers();
-        cmd_status(&cli, &printer, None, StatusRun::default()).unwrap();
+        crate::cli::RunContext::for_test(&cli, &printer, |run| {
+            cmd_status(run, None, StatusRun::default())
+        })
+        .unwrap();
         drop(printer);
         let out = cfgd_core::test_helpers::captured_text(&buf);
         assert!(
@@ -9391,7 +10393,11 @@ mod tests {
         let printer = cfgd_core::test_helpers::test_printer();
         // The module target is missing, so the scoped scan FINDS drift.
         cmd_status_module(
-            &RunContext::new(&cli, &printer),
+            &RunContext::new(
+                &cli,
+                &printer,
+                &crate::cli::startup::StartupDocument::load(&cli.config),
+            ),
             "test-mod",
             false,
             true,
@@ -9435,7 +10441,10 @@ mod tests {
         // surface (`diff --module`): its own row resolves, the out-of-scope
         // rows still stand, the stamp is still unwritten.
         std::fs::write(&module_target, "module content\n").unwrap();
-        crate::cli::diff::cmd_diff(&cli, &printer, Some("test-mod"), false).unwrap();
+        crate::cli::RunContext::for_test(&cli, &printer, |run| {
+            crate::cli::diff::cmd_diff(run, Some("test-mod"), false)
+        })
+        .unwrap();
 
         let rows = store.unresolved_drift().unwrap();
         assert!(
@@ -9508,7 +10517,11 @@ mod tests {
         let cli = test_cli_for(config_path, state_dir.path());
         let printer = cfgd_core::test_helpers::test_printer();
         cmd_status_module(
-            &RunContext::new(&cli, &printer),
+            &RunContext::new(
+                &cli,
+                &printer,
+                &crate::cli::startup::StartupDocument::load(&cli.config),
+            ),
             "test-mod",
             false,
             true,
@@ -9585,7 +10598,11 @@ mod tests {
         let cli = test_cli_for(config_path, state_dir.path());
         let printer = cfgd_core::test_helpers::test_printer();
         cmd_status_module(
-            &RunContext::new(&cli, &printer),
+            &RunContext::new(
+                &cli,
+                &printer,
+                &crate::cli::startup::StartupDocument::load(&cli.config),
+            ),
             "test-mod",
             false,
             true,
@@ -9601,7 +10618,10 @@ mod tests {
         assert_eq!(store.last_scan_at().unwrap(), None);
 
         let (printer, buf) = test_printers();
-        cmd_status(&cli, &printer, None, StatusRun::default()).unwrap();
+        crate::cli::RunContext::for_test(&cli, &printer, |run| {
+            cmd_status(run, None, StatusRun::default())
+        })
+        .unwrap();
         drop(printer);
         let rendered = cfgd_core::test_helpers::captured_text(&buf);
         assert!(
@@ -9734,7 +10754,11 @@ mod tests {
         let cli = test_cli_for(config_path, state_dir.path());
         let (printer, buf) = test_printers();
         cmd_status_module(
-            &RunContext::new(&cli, &printer),
+            &RunContext::new(
+                &cli,
+                &printer,
+                &crate::cli::startup::StartupDocument::load(&cli.config),
+            ),
             "test-mod",
             false,
             false,
@@ -9807,6 +10831,7 @@ mod tests {
     #[test]
     #[serial_test::serial]
     fn a_recorded_file_finding_marks_its_deployed_files_row_drifted() {
+        let _pm = crate::cli::registry::PackageManagerFactoryGuard::hermetic_native();
         let tmp_home = tempfile::tempdir().unwrap();
         let _home = cfgd_core::with_test_home_guard(tmp_home.path());
         let config_dir = tempfile::tempdir().unwrap();
@@ -9857,7 +10882,11 @@ mod tests {
         let cli = test_cli_for(config_path, state_dir.path());
         let (printer, buf) = test_printers();
         cmd_status_module(
-            &RunContext::new(&cli, &printer),
+            &RunContext::new(
+                &cli,
+                &printer,
+                &crate::cli::startup::StartupDocument::load(&cli.config),
+            ),
             "test-mod",
             false,
             false,
@@ -9950,7 +10979,11 @@ mod tests {
         let cli = test_cli_for(config_path, state_dir.path());
         let (printer, buf) = test_printers();
         cmd_status_module(
-            &RunContext::new(&cli, &printer),
+            &RunContext::new(
+                &cli,
+                &printer,
+                &crate::cli::startup::StartupDocument::load(&cli.config),
+            ),
             "test-mod",
             false,
             false,
@@ -9989,16 +11022,6 @@ mod tests {
         }
     }
 
-    /// The tag of a platform this host is not, for gating a declared entry
-    /// OFF the running test.
-    fn a_platform_this_host_is_not() -> &'static str {
-        if cfgd_core::platform::Platform::current().os == cfgd_core::platform::Os::Windows {
-            "linux"
-        } else {
-            "windows"
-        }
-    }
-
     /// The no-scan recorded fallback decides a recorded row's owner through
     /// the ONE predicate the scoped scans and the daemon's per-module tick
     /// ask — `row_attributable_to_module` over the chain's resolved scopes —
@@ -10013,16 +11036,29 @@ mod tests {
     /// `rsc.io/2fa`, `chocolatey` lowercases `Wget`) and a declared env var
     /// attributes by name. `-o json` agrees.
     ///
-    /// Every named manager is a probe-`PATH` stand-in, so the resolution the
-    /// scope is built from is the same on every host that can run the probe.
+    /// Every host manager is pinned missing and each named one planted at its
+    /// own seam, so the resolution the scope is built from is the same on
+    /// every host that can run the probe.
     #[test]
     #[serial_test::serial]
     #[cfg(unix)]
     fn a_no_scan_status_attributes_rows_through_the_one_ownership_predicate() {
+        use cfgd_core::test_helpers::EnvVarGuard;
         let _path_lock = cfgd_core::test_helpers::path_env_mutation_guard();
         let _dirs = cfgd_core::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
         let _fresh = cfgd_core::test_helpers::CommandPathMemoTtlGuard::always_expired();
-        let _probe = cfgd_core::test_helpers::ProbePath::containing(&["go", "choco", "brew"]);
+        let _sweep = cfgd_core::test_helpers::AvailabilityMemoTtlGuard::always_expired();
+        let _managers = cfgd_core::test_helpers::NoHostManagers::pinned_missing();
+        let planted = tempfile::tempdir().unwrap();
+        let plant = |stem: &str| {
+            let tool = cfgd_core::test_helpers::write_probe_tool(planted.path(), stem);
+            tool.to_str().expect("utf-8 tempdir").to_string()
+        };
+        let (go, choco, brew) = (plant("go"), plant("choco"), plant("brew"));
+        let _path = EnvVarGuard::set("PATH", planted.path().to_str().expect("utf-8 tempdir"));
+        let _go = EnvVarGuard::set(&crate::packages::shared::tool_seam_var("go"), &go);
+        let _choco = EnvVarGuard::set(&crate::packages::shared::tool_seam_var("choco"), &choco);
+        let _brew = EnvVarGuard::set(crate::packages::shared::BREW_BIN_ENV, &brew);
         let tmp_home = tempfile::tempdir().unwrap();
         let _home = cfgd_core::with_test_home_guard(tmp_home.path());
         let config_dir = tempfile::tempdir().unwrap();
@@ -10036,8 +11072,9 @@ mod tests {
         std::fs::create_dir_all(&mod_dir).unwrap();
         std::fs::write(
             mod_dir.join("module.yaml"),
-            format!(
-                "apiVersion: cfgd.io/v1alpha1\n\
+            // `plan9` is no OS, distro or arch cfgd targets, so the gate closes
+            // on every host the suite runs on.
+            "apiVersion: cfgd.io/v1alpha1\n\
                  kind: Module\n\
                  metadata:\n\
                  \x20 name: test-mod\n\
@@ -10053,7 +11090,7 @@ mod tests {
                  \x20   - name: rg\n\
                  \x20     prefer: [brew]\n\
                  \x20   - name: pkg-gated\n\
-                 \x20     platforms: [{}]\n\
+                 \x20     platforms: [plan9]\n\
                  \x20   - name: jq\n\
                  \x20     prefer: [brew, script]\n\
                  \x20     deny: [apt]\n\
@@ -10061,8 +11098,6 @@ mod tests {
                  \x20   - name: demo\n\
                  \x20     prefer: [script]\n\
                  \x20     script: \"true\"\n",
-                a_platform_this_host_is_not()
-            ),
         )
         .unwrap();
         {
@@ -10095,7 +11130,11 @@ mod tests {
         let cli = test_cli_for(config_path.clone(), state_dir.path());
         let (printer, buf) = test_printers();
         cmd_status_module(
-            &RunContext::new(&cli, &printer),
+            &RunContext::new(
+                &cli,
+                &printer,
+                &crate::cli::startup::StartupDocument::load(&cli.config),
+            ),
             "test-mod",
             false,
             false,
@@ -10138,7 +11177,11 @@ mod tests {
         json_cli.output = OutputFormatArg(cfgd_core::output::OutputFormat::Json);
         let (json_printer, json_buf) = test_printers_json();
         cmd_status_module(
-            &RunContext::new(&json_cli, &json_printer),
+            &RunContext::new(
+                &json_cli,
+                &json_printer,
+                &crate::cli::startup::StartupDocument::load(&json_cli.config),
+            ),
             "test-mod",
             false,
             false,
@@ -10205,7 +11248,11 @@ mod tests {
         json_cli.output = OutputFormatArg(cfgd_core::output::OutputFormat::Json);
         let (json_printer, json_buf) = test_printers_json();
         cmd_status_module(
-            &RunContext::new(&json_cli, &json_printer),
+            &RunContext::new(
+                &json_cli,
+                &json_printer,
+                &crate::cli::startup::StartupDocument::load(&json_cli.config),
+            ),
             "test-mod",
             false,
             true,
@@ -10259,8 +11306,8 @@ mod tests {
         std::fs::create_dir_all(&mod_dir).unwrap();
         std::fs::write(
             mod_dir.join("module.yaml"),
-            format!(
-                "apiVersion: cfgd.io/v1alpha1\n\
+            // `plan9` gates the entry off every host the suite runs on.
+            "apiVersion: cfgd.io/v1alpha1\n\
                  kind: Module\n\
                  metadata:\n\
                  \x20 name: test-mod\n\
@@ -10270,9 +11317,7 @@ mod tests {
                  \x20     prefer: [script]\n\
                  \x20     script: \"true\"\n\
                  \x20   - name: pkg-gated\n\
-                 \x20     platforms: [{}]\n",
-                a_platform_this_host_is_not()
-            ),
+                 \x20     platforms: [plan9]\n",
         )
         .unwrap();
         {
@@ -10295,7 +11340,11 @@ mod tests {
         json_cli.output = OutputFormatArg(cfgd_core::output::OutputFormat::Json);
         let (json_printer, json_buf) = test_printers_json();
         cmd_status_module(
-            &RunContext::new(&json_cli, &json_printer),
+            &RunContext::new(
+                &json_cli,
+                &json_printer,
+                &crate::cli::startup::StartupDocument::load(&json_cli.config),
+            ),
             "test-mod",
             false,
             true,
@@ -10326,13 +11375,21 @@ mod tests {
             .collect();
         assert!(
             drift_ids.is_empty(),
-            "a row the scan could not re-check is the store's answer, never one              of this run's own findings, got: {parsed}"
+            concat!(
+                "a row the scan could not re-check is the store's answer; this run found ",
+                "nothing of its own there, got: {}"
+            ),
+            parsed
         );
 
         let human_cli = test_cli_for(config_path, state_dir.path());
         let (human_printer, human_buf) = test_printers();
         cmd_status_module(
-            &RunContext::new(&human_cli, &human_printer),
+            &RunContext::new(
+                &human_cli,
+                &human_printer,
+                &crate::cli::startup::StartupDocument::load(&human_cli.config),
+            ),
             "test-mod",
             false,
             true,
@@ -10389,7 +11446,11 @@ mod tests {
         let cli = test_cli_for(config_path, state_dir.path());
         let (printer, buf) = test_printers();
         cmd_status_module(
-            &RunContext::new(&cli, &printer),
+            &RunContext::new(
+                &cli,
+                &printer,
+                &crate::cli::startup::StartupDocument::load(&cli.config),
+            ),
             "test-mod",
             false,
             true,
@@ -10419,28 +11480,24 @@ mod tests {
             value: "vim".to_string(),
             platforms: vec![],
         }];
-        let declared_owners = {
-            let mut o = cfgd_core::config::EntryOwners::default();
-            o.claim("module:test-mod", &declared_env, &[]);
-            o
-        };
-        let declared_line = cfgd_core::reconciler::MergedEnvItems::new(
+        let layered = cfgd_core::reconciler::LayeredEnv::from_parts(
+            "module:test-mod",
             &declared_env,
             &[],
-            &declared_owners,
             &[],
-            &[],
-        )
-        .declared_line("env-var", "EDITOR")
-        .expect("EDITOR renders a declared line");
-        std::fs::write(
-            cfgd_core::reconciler::primary_env_file(tmp_home.path()),
-            format!("# managed by cfgd \u{2014} do not edit\n{declared_line}\n"),
-        )
-        .unwrap();
+        );
+        cfgd_core::test_helpers::plant_managed_env_files(
+            &cfgd_core::reconciler::MergedEnvItems::new(&layered, &[]),
+            tmp_home.path(),
+            cfgd_core::config::EnvScope::default(),
+        );
         let printer = cfgd_core::test_helpers::test_printer();
         cmd_status_module(
-            &RunContext::new(&cli, &printer),
+            &RunContext::new(
+                &cli,
+                &printer,
+                &crate::cli::startup::StartupDocument::load(&cli.config),
+            ),
             "test-mod",
             false,
             true,

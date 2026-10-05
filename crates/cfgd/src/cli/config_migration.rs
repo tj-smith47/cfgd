@@ -598,7 +598,7 @@ mod tests {
         // Route the state dir (for pin_sentinel) and shell rc into the tempdir.
         let state_dir = tmp.path().join("state");
         std::fs::create_dir_all(&state_dir).unwrap();
-        let _state = EnvVarGuard::set("CFGD_STATE_DIR", state_dir.to_str().unwrap());
+        let _state = EnvVarGuard::set(cfgd_core::CFGD_STATE_DIR_ENV, state_dir.to_str().unwrap());
         let _shell = EnvVarGuard::set("SHELL", "/bin/zsh");
         // Ensure XDG_CONFIG_HOME is unset before the call so set_var is observable.
         let _xdg_prev = EnvVarGuard::unset("XDG_CONFIG_HOME");
@@ -644,8 +644,8 @@ mod tests {
         // don't touch the real machine.
         let state_dir = tmp.path().join("state");
         let cache_dir = tmp.path().join("cache");
-        let _state = EnvVarGuard::set("CFGD_STATE_DIR", state_dir.to_str().unwrap());
-        let _cache = EnvVarGuard::set("CFGD_CACHE_DIR", cache_dir.to_str().unwrap());
+        let _state = EnvVarGuard::set(cfgd_core::CFGD_STATE_DIR_ENV, state_dir.to_str().unwrap());
+        let _cache = EnvVarGuard::set(cfgd_core::CFGD_CACHE_DIR_ENV, cache_dir.to_str().unwrap());
 
         // The legacy dir does NOT exist — this is the clean no-op path.
         let (printer, buf) = Printer::for_test_at(Verbosity::Normal);

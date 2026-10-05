@@ -613,12 +613,27 @@ impl Printer {
         responses: Vec<PromptAnswer>,
         verbosity: Verbosity,
     ) -> (Self, Arc<Mutex<String>>) {
+        Self::for_test_with_prompt_responses_in_format(responses, verbosity, OutputFormat::Table)
+    }
+
+    /// The same capture under a chosen format, so an answer can be waiting in
+    /// a run that must not ask for it.
+    ///
+    /// [`Printer::can_prompt`] refuses a structured format ahead of every
+    /// other question it asks, and that refusal is only provable where the
+    /// other questions would have answered yes: with no queued answer the
+    /// probe is unreachable, and every claim about it holds vacuously.
+    pub fn for_test_with_prompt_responses_in_format(
+        responses: Vec<PromptAnswer>,
+        verbosity: Verbosity,
+        format: OutputFormat,
+    ) -> (Self, Arc<Mutex<String>>) {
         let buf = Arc::new(Mutex::new(String::new()));
         let p = build_test_printer(
             buf.clone(),
             Theme::default(),
             verbosity,
-            OutputFormat::Table,
+            format,
             false,
             None,
             Some(Arc::new(Mutex::new(VecDeque::from(responses)))),
@@ -989,6 +1004,7 @@ mod tests {
         };
 
         for (name, buf) in flat {
+            // long-line-ok: a hatch is read off its own line, so it cannot wrap
             // raw-capture-ok: proving where the colour DECISION was made — captured_text would strip the escapes this test exists to check
             let raw = buf.lock().unwrap_or_else(|e| e.into_inner()).clone();
             check(name, &raw);
@@ -1003,6 +1019,7 @@ mod tests {
             Printer::for_test_with_theme_colored(Theme::from_preset("dracula"), Verbosity::Normal);
         p.status_simple(Role::Ok, "wrote /etc/hosts");
         p.flush();
+        // long-line-ok: a hatch is read off its own line, so it cannot wrap
         // raw-capture-ok: proving this ONE constructor really does carry colour — captured_text would strip the escapes this test exists to check
         let raw = buf.lock().unwrap_or_else(|e| e.into_inner()).clone();
         assert!(

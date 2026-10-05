@@ -5,6 +5,7 @@ pub mod checkin;
 pub mod compliance;
 pub mod config_cmd;
 pub mod config_migration;
+pub mod config_schema;
 pub mod daemon;
 pub mod decide;
 pub mod diff;
@@ -32,6 +33,7 @@ mod run_context;
 pub mod secret;
 pub mod skill;
 pub mod source;
+pub mod startup;
 pub mod status;
 pub mod sync;
 #[cfg(test)]
@@ -42,18 +44,26 @@ pub mod verify;
 pub mod workflow;
 
 pub(in crate::cli) use cfgd_core::reconciler::DecisionContents;
+use cfgd_core::{
+    CFGD_API_KEY_ENV, CFGD_CACHE_DIR_ENV, CFGD_COLOR_ENV, CFGD_CONFIG_DIR_ENV, CFGD_CONFIG_ENV,
+    CFGD_DEVICE_ID_ENV, CFGD_ENROLL_TOKEN_ENV, CFGD_ENROLL_USERNAME_ENV, CFGD_LIST_ENVELOPE_ENV,
+    CFGD_MASK_ENV_VALUES_ENV, CFGD_MIGRATION_POLICY_ENV, CFGD_PROFILE_ENV, CFGD_QUIET_ENV,
+    CFGD_REQUIRE_COSIGN_ENV, CFGD_RUNTIME_DIR_ENV, CFGD_SCOPE_ENV, CFGD_SERVER_URL_ENV,
+    CFGD_STATE_DIR_ENV, CFGD_THEME_ENV, CFGD_UPDATE_POLICY_ENV, CFGD_USAGE_HINTS_ENV,
+    CFGD_VERBOSE_ENV, CFGD_YES_ENV,
+};
 pub use error::{
     CliErrorMeta, cli_error, cli_error_ctx, cli_error_ctx_with_hints,
     cli_error_ctx_with_hints_and_block, cli_error_with_hints, emit_not_found_ignored,
-    exit_code_for_anyhow,
+    exit_code_for_anyhow, invalid_argument, invalid_argument_among,
 };
-pub use helpers::effective_config_file;
 pub(crate) use helpers::run_state_dir;
 pub(in crate::cli) use helpers::*;
+pub use helpers::{effective_config_file, settle_config_path};
 pub(in crate::cli) use output_types::*;
 pub(in crate::cli) use plan_ops::*;
 pub(in crate::cli) use registry::*;
-pub(in crate::cli) use run_context::RunContext;
+pub use run_context::RunContext;
 #[cfg(test)]
 pub(in crate::cli) use source::{
     DEFAULT_NONINTERACTIVE_PRIORITY, add_source_to_config, build_subscription_preview_input,
@@ -66,7 +76,6 @@ pub(in crate::cli) use source::{
 };
 use workflow::{generate_release_workflow_yaml, maybe_update_workflow};
 
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use clap::{CommandFactory, Parser, Subcommand};
@@ -117,7 +126,7 @@ const MSG_NOT_A_REPOSITORY: &str = "Nothing to pull — the config directory is 
 /// `command` is the verb that just reported the refusal, so the re-run names
 /// the command the reader actually ran.
 pub(in crate::cli) fn local_pull_next_step(failure: &PullFailure, command: &str) -> HintCommands {
-    match failure.kind {
+    let hint: HintCommands = match failure.kind {
         PullFailureKind::FindRemote => {
             format!("Add the remote with `git remote add origin <url>`, then re-run `{command}`")
                 .into()
@@ -147,7 +156,10 @@ pub(in crate::cli) fn local_pull_next_step(failure: &PullFailure, command: &str)
         | PullFailureKind::Checkout => {
             format!("Inspect the config directory with `git status`, then re-run `{command}`").into()
         }
-    }
+    };
+    // Every wording here follows a refused pull, so `spec.output.usageHints`
+    // does not decide it: the reader is blocked and this is the way out.
+    hint.ungated()
 }
 
 /// What a mutating `source` or `module` verb just did, for
@@ -242,6 +254,10 @@ pub(in crate::cli) enum Mutation<'a> {
     /// rollback stays recoverable only until something else displaces that
     /// sidecar. `unit` is the `spec.backups[]` name to snapshot.
     BackupRolledBack { unit: &'a str },
+    /// `config migrate --write` materialized the fields this build's schema
+    /// carries that the document did not declare. Every one of them is a knob
+    /// the composition reads, so the edit is a composition edit.
+    ConfigMigrated,
 }
 
 /// The next step a mutating `source`, `module`, `profile`, `secret` or
@@ -268,6 +284,7 @@ pub(in crate::cli) fn success_next_step(mutation: Mutation<'_>) -> HintCommands 
         | Mutation::SourceUpdated {
             trust_changed: false,
         }
+        | Mutation::ConfigMigrated
         | Mutation::SourceRemoved
         | Mutation::SourceReplaced
         | Mutation::SourceOverridden
@@ -314,17 +331,28 @@ pub(in crate::cli) fn success_next_step(mutation: Mutation<'_>) -> HintCommands 
         }
         Mutation::RegistryAdded => "Search for modules with `cfgd module search <query>`".into(),
         Mutation::KeysGenerated { dir } => format!(
+            // gated-hint-ok: the key path is the argument of the `--key` this
+            // command names, and `module keys generate` states it in an
+            // unconditional `Private Key` row before reaching the hint.
             "Sign with `cfgd module push <dir> --artifact <ref> --sign --key {dir}/cosign.key`"
         )
         .into(),
         Mutation::KeysRotated {
             dir,
             resigned: true,
-        } => format!("Verify with `cosign verify --key {dir}/cosign.pub <artifact>`").into(),
+        } => {
+            // gated-hint-ok: the key directory is the one the reader named, or
+            // the current directory `module keys rotate` defaults to, and the
+            // path is the argument of the `cosign verify --key` this hint names.
+            format!("Verify with `cosign verify --key {dir}/cosign.pub <artifact>`").into()
+        }
         Mutation::KeysRotated {
             dir,
             resigned: false,
         } => format!(
+            // gated-hint-ok: the key directory is the one the reader named, or
+            // the current directory `module keys rotate` defaults to, and the
+            // path is the argument of the `--key` this hint names.
             "Re-sign each artifact with `cfgd module push <dir> --artifact <ref> --sign --key {dir}/cosign.key`"
         )
         .into(),
@@ -435,7 +463,7 @@ pub(in crate::cli) fn perform_preview_hint(scope: &PreviewScope<'_>) -> String {
 /// stored `true` has to survive an invocation that never mentioned the knob.
 /// clap's `conflicts_with` rejects both halves at once, so the pair can never
 /// arrive contradicting itself.
-fn paired_flag(set: bool, unset: bool) -> Option<bool> {
+pub fn paired_flag(set: bool, unset: bool) -> Option<bool> {
     match (set, unset) {
         (true, _) => Some(true),
         (_, true) => Some(false),
@@ -585,25 +613,19 @@ pub fn env_value_masking(
 }
 
 pub fn default_config_file() -> PathBuf {
-    cfgd_core::default_config_dir().join(cfgd_core::config::CONFIG_FILENAME)
-}
-
-/// No built-in aliases — all aliases come from cfgd.yaml spec.aliases.
-/// Default aliases are scaffolded by `cfgd init`.
-fn builtin_aliases() -> HashMap<String, String> {
-    HashMap::new()
+    cfgd_core::config::config_document_in(&cfgd_core::default_config_dir())
 }
 
 /// Returns true if `flag` is a global flag on `Cli` that consumes the next
 /// argv slot as its value (space form: `--flag value` or `-x value`).
 ///
 /// Mirrors the `#[arg(global = true)]` flags on the `Cli` struct that are NOT
-/// `ArgAction::Count` / `bool`. `every_value_taking_global_flag_is_skipped_by_the_subcommand_locator`
-/// walks the clap definition against this list and its inline sibling, so a
-/// new global flag that forgets them fails there rather than by reading its
-/// value as the subcommand. The short-flag-glued form (`-oVALUE`) is not
-/// covered: cfgd's docs and tests only show the space form (`-o VALUE`) and
-/// the inline-`=` form (`-o=VALUE`), both of which this scanner handles
+/// `ArgAction::Count` / `bool`.
+/// `every_value_taking_global_flag_is_skipped_by_the_subcommand_locator` walks the clap definition
+/// against this list and its inline sibling, so a new global flag that forgets them fails that
+/// test; otherwise the locator would read the flag's value as the subcommand. The
+/// short-flag-glued form (`-oVALUE`) is not covered: cfgd's docs and tests only show the space
+/// form (`-o VALUE`) and the inline-`=` form (`-o=VALUE`), both of which this scanner handles
 /// via the same helpers used for long flags — no dedicated short-flag branch.
 fn is_value_taking_flag(flag: &str) -> bool {
     matches!(
@@ -621,6 +643,8 @@ fn is_value_taking_flag(flag: &str) -> bool {
             | "--theme"
             | "--color"
             | "--mask-env-values"
+            | "--migration-policy"
+            | "--update-policy"
     )
 }
 
@@ -642,6 +666,8 @@ fn is_value_taking_flag_inline(arg: &str) -> bool {
         "--theme=",
         "--color=",
         "--mask-env-values=",
+        "--migration-policy=",
+        "--update-policy=",
     ];
     PREFIXES.iter().any(|p| arg.starts_with(p))
 }
@@ -686,8 +712,121 @@ pub(super) fn find_subcommand_index(args: &[String]) -> Option<usize> {
 /// matches an alias, and replaces it with the alias's command tokens. Any remaining
 /// arguments after the alias name are appended.
 ///
-/// Returns the potentially-expanded args.
-pub fn expand_aliases(args: Vec<String>) -> Vec<String> {
+/// Returns the potentially-expanded args, and the config document the
+/// invocation names: the one read every reader before dispatch shares, loaded
+/// whether or not an alias applies.
+pub fn expand_aliases(args: Vec<String>) -> (Vec<String>, startup::StartupDocument) {
+    expand_aliases_with(args, Cli::command())
+}
+
+/// `command` with no help or version flag at any level, so a `--help`
+/// written anywhere reads as an unknown argument the alias pass drops, where
+/// clap would stop the parse to print help.
+fn without_help(command: clap::Command) -> clap::Command {
+    command
+        .disable_help_flag(true)
+        .disable_version_flag(true)
+        .disable_help_subcommand(true)
+        .mut_subcommands(without_help)
+}
+
+/// [`expand_aliases`] against `command`, the definition the config location
+/// is parsed from.
+fn expand_aliases_with(
+    args: Vec<String>,
+    command: clap::Command,
+) -> (Vec<String>, startup::StartupDocument) {
+    let startup = startup::StartupDocument::load(&alias_pass_config_path(&args, command));
+    let expanded = expand_aliases_from(args, startup.config());
+    (expanded, startup)
+}
+
+/// The subcommand an alias token is parsed under while the alias pass reads
+/// the config location, so the arguments after it are still parsed.
+const ALIAS_SLOT: &str = "__cfgd_alias";
+
+/// The config document `args` names, read through clap's own definition of
+/// the global flags and their env bindings, and settled the way the startup
+/// path settles it.
+///
+/// The argv has not been expanded yet, so the alias token stands where clap
+/// expects a subcommand; it is parsed as a hidden one taking any arguments.
+/// A flag only the expansion's target command knows is dropped and the parse
+/// retried, so a `--config` written after it is still read.
+fn alias_pass_config_path(args: &[String], command: clap::Command) -> PathBuf {
+    let mut argv = args.to_vec();
+    if let Some(at) = find_subcommand_index(&argv)
+        && command.find_subcommand(&argv[at]).is_none()
+    {
+        argv[at] = ALIAS_SLOT.to_string();
+    }
+    let mut command = without_help(command).subcommand(
+        clap::Command::new(ALIAS_SLOT).hide(true).arg(
+            clap::Arg::new("args")
+                .num_args(0..)
+                .action(clap::ArgAction::Append),
+        ),
+    );
+    let matches = loop {
+        match command.try_get_matches_from_mut(&argv) {
+            Ok(matches) => break Some(matches),
+            Err(error) => {
+                let unknown = (error.kind() == clap::error::ErrorKind::UnknownArgument)
+                    .then(|| error.get(clap::error::ContextKind::InvalidArg))
+                    .flatten()
+                    .and_then(|value| match value {
+                        clap::error::ContextValue::String(arg) => Some(arg.clone()),
+                        _ => None,
+                    });
+                let at = unknown.and_then(|arg| {
+                    let inline = format!("{arg}=");
+                    argv.iter()
+                        .skip(1)
+                        .position(|a| *a == arg || a.starts_with(&inline))
+                        .map(|i| i + 1)
+                });
+                match at {
+                    Some(at) => {
+                        argv.remove(at);
+                    }
+                    // A malformed value or a missing required argument
+                    // still leaves the flags around it parsed.
+                    None => {
+                        break command.ignore_errors(true).try_get_matches_from(&argv).ok();
+                    }
+                }
+            }
+        }
+    };
+    let Some(matches) = matches else {
+        return settle_config_path(default_config_file(), false, None, cfgd_core::Scope::User);
+    };
+    let explicit = matches.value_source("config") != Some(clap::parser::ValueSource::DefaultValue);
+    // clap computes a derived default once per process; asking again honours
+    // a home redirected since, and names the same file in a real run.
+    let config = matches
+        .get_one::<PathBuf>("config")
+        .filter(|_| explicit)
+        .cloned()
+        .unwrap_or_else(default_config_file);
+    let scope = matches
+        .get_one::<ScopeArg>("scope_arg")
+        .copied()
+        .unwrap_or_default();
+    settle_config_path(
+        config,
+        explicit,
+        matches
+            .get_one::<PathBuf>("config_dir")
+            .map(PathBuf::as_path),
+        scope.into(),
+    )
+}
+
+fn expand_aliases_from(
+    args: Vec<String>,
+    doc: Option<&cfgd_core::config::CfgdConfig>,
+) -> Vec<String> {
     if args.len() < 2 {
         return args;
     }
@@ -699,24 +838,7 @@ pub fn expand_aliases(args: Vec<String>) -> Vec<String> {
 
     let candidate = &args[subcommand_idx];
 
-    // Try to load config to get user aliases; fall back to empty if unavailable.
-    let config_path = extract_config_path(&args);
-    let user_aliases = config_path
-        .and_then(|p| {
-            if p.exists() {
-                cfgd_core::config::load_config(&p).ok()
-            } else {
-                None
-            }
-        })
-        .map(|c| c.spec.aliases)
-        .unwrap_or_default();
-
-    // Merge: user overrides built-in
-    let mut aliases = builtin_aliases();
-    aliases.extend(user_aliases);
-
-    let expansion = match aliases.get(candidate) {
+    let expansion = match doc.and_then(|config| config.spec.aliases.get(candidate)) {
         Some(cmd) => cmd,
         None => return args,
     };
@@ -727,19 +849,6 @@ pub fn expand_aliases(args: Vec<String>) -> Vec<String> {
     result.extend(expansion.split_whitespace().map(String::from));
     result.extend_from_slice(&args[subcommand_idx + 1..]);
     result
-}
-
-/// Extract the --config path from raw args, or use the default.
-fn extract_config_path(args: &[String]) -> Option<PathBuf> {
-    for (i, arg) in args.iter().enumerate() {
-        if arg == "--config" {
-            return args.get(i + 1).map(PathBuf::from);
-        }
-        if let Some(val) = arg.strip_prefix("--config=") {
-            return Some(PathBuf::from(val));
-        }
-    }
-    Some(default_config_file())
 }
 
 /// When to colorize output, in the `auto`/`always`/`never` spelling every
@@ -781,11 +890,12 @@ pub fn resolve_color_choice(no_color: bool, color: ColorWhen) -> cfgd_core::outp
     }
 }
 
-/// Read the `spec.output.theme` block every entry point builds its printer from.
+/// Read the `spec.output.theme` block every entry point builds its printer from,
+/// off the document the process read at startup ([`startup::StartupDocument`]).
 ///
-/// Best-effort by design: a missing, unreadable or malformed config falls back
-/// to the default theme rather than failing, because a printer has to exist
-/// before there is anything to report the failure ON.
+/// Best-effort by design: a missing, unreadable or malformed config (`doc` is
+/// `None`) reads as an empty document, so the block is the `default` preset: a
+/// printer has to exist before there is anything to report the failure ON.
 ///
 /// The whole block travels, not just its name — `overrides` is a documented
 /// field, and a printer built from the preset name alone drops it. Shared by
@@ -797,89 +907,174 @@ pub fn resolve_color_choice(no_color: bool, color: ColorWhen) -> cfgd_core::outp
 /// `preset` is the `--theme` / `CFGD_THEME` override. It replaces the block's
 /// `name` and nothing else, so the flag means exactly what `cfgd config set
 /// theme.name <preset>` would have persisted: the config's `overrides` still
-/// layer on top. With no config to read it stands alone as the whole block.
+/// layer on top.
+// knob-resolver-ok: composes a whole ThemeConfig block; its default comes from theme_effective.
 pub fn resolve_theme_config(
-    config_path: &Path,
+    doc: Option<&cfgd_core::config::CfgdConfig>,
     preset: Option<&str>,
-) -> Option<cfgd_core::config::ThemeConfig> {
-    let stored = config_path
-        .exists()
-        .then(|| cfgd_core::config::load_config(config_path).ok())
-        .flatten()
-        .and_then(|c| c.spec.theme().cloned());
-    match preset {
-        None => stored,
-        Some(name) => {
-            let mut theme = stored.unwrap_or_default();
-            theme.name = name.to_string();
-            Some(theme)
-        }
+) -> cfgd_core::config::ThemeConfig {
+    let mut theme = doc
+        .map_or(&*UNREAD_SPEC, |c| &c.spec)
+        .output_effective()
+        .theme_effective()
+        .clone();
+    if let Some(name) = preset {
+        theme.name = name.to_string();
     }
+    theme
 }
 
-/// Resolve whether closing `→` usage hints render, folding `--no-hints`,
-/// `CFGD_USAGE_HINTS` and `spec.usageHints` into the one decision every
-/// entry point's printer is built from (`Printer::with_hints_enabled`).
-/// Precedence: the flag beats the env var beats the config field beats the
-/// default (hints render).
+/// The accepted preset list for a theme name no palette answers to, or `None`
+/// for one [`cfgd_core::output::Theme::preset`] resolves.
 ///
-/// Best-effort by design, mirroring [`resolve_theme_config`]: a missing,
-/// unreadable or malformed config renders hints rather than failing, because
-/// a printer has to exist before there is anything to report a load failure
-/// through.
+/// The ONE question every surface handling a written theme name asks, so the
+/// setter's refusal and the load-time warning cannot disagree about which
+/// names exist. Case-sensitive on purpose: `Theme::preset` matches the
+/// lowercase spelling alone, and `Theme::PRESET_NAMES` is the vocabulary
+/// `--theme`, the published schema and `docs/configuration.md` all show.
+pub fn unknown_theme_preset(name: &str) -> Option<String> {
+    cfgd_core::output::Theme::preset(name)
+        .is_none()
+        .then(|| cfgd_core::output::Theme::PRESET_NAMES.join(", "))
+}
+
+/// Resolve one per-invocation knob the way every other one resolves: the flag
+/// beats `env`, which beats what `stored` reads off the `spec`. `stored` reads
+/// the field's `_effective` accessor, so a document that omits the field, or
+/// no document at all, answers with the value `cfgd config get` reports.
+/// `doc` is the document the process read at startup
+/// ([`startup::StartupDocument::config`]), `None` when it did not load.
 ///
-/// `CFGD_USAGE_HINTS` is read directly here rather than bound to `--no-hints`
-/// via `#[arg(env = …)]`: the two spellings have OPPOSITE polarity (a set
-/// `--no-hints` suppresses; a set `CFGD_USAGE_HINTS=false` also suppresses,
-/// but `CFGD_USAGE_HINTS=true` does NOT set `no_hints`), and clap has no
-/// shape for negating a bool flag from a positively-named env var short of a
-/// second hidden field. Boolish spellings are accepted through the same
-/// table every other `CFGD_*` boolean env var uses.
-pub fn resolve_hints_enabled(config_path: &Path, no_hints_flag: bool) -> bool {
-    if no_hints_flag {
-        return false;
+/// The variable is read HERE: clap's `env =` binding does not see it,
+/// because that binding fills `flag` only where clap parsed an argv: every
+/// caller holding a document and no argv — a test of a knob, any future entry
+/// point resolving one before dispatch — would otherwise never see it. A knob
+/// whose flag IS bound through clap (`--mask-env-values`) loses nothing: the
+/// flag still answers first, and the read below finds the same value the
+/// binding would have.
+///
+/// A word `T` cannot read is ignored by this resolution, and so is a config
+/// that does not load: a printer has to exist before there is anything to
+/// report either through, which is [`resolve_theme_config`]'s reasoning and the
+/// reason every knob resolver is best-effort.
+///
+/// That leniency is this function's alone. Where the variable is ALSO bound to
+/// a flag through clap's `env =`, clap validates it against the flag's own
+/// value list while it parses, refusing an unreadable word there with the
+/// accepted spellings named, so none ever reaches here. `CFGD_USAGE_HINTS` is
+/// the one variable no flag binds, `--hints` and `--no-hints` having opposite
+/// polarities, so it is the one whose unreadable word this ignores in silence.
+// knob-resolver-ok: this IS the resolution every other resolver routes through.
+pub fn resolve_knob<T>(
+    doc: Option<&cfgd_core::config::CfgdConfig>,
+    flag: Option<T>,
+    env: &str,
+    stored: impl FnOnce(&cfgd_core::config::ConfigSpec) -> T,
+) -> T
+where
+    T: std::str::FromStr,
+{
+    if let Some(value) = flag {
+        return value;
     }
-    if let Ok(raw) = std::env::var("CFGD_USAGE_HINTS")
-        && let Some(canonical) = cfgd_core::canonical_bool_str(&raw)
-    {
-        return canonical == "true";
+    if let Ok(raw) = std::env::var(env) {
+        if let Ok(value) = T::from_str(&raw) {
+            return value;
+        }
+        // A boolean knob's variable is spelled the way every other `CFGD_*`
+        // boolean is (`1`, `yes`, `on`), which `bool::from_str` refuses. The
+        // fold runs SECOND so an enum that one day spells a variant `on` keeps
+        // its own reading of the word.
+        if let Some(canonical) = cfgd_core::canonical_bool_str(&raw)
+            && let Ok(value) = T::from_str(canonical)
+        {
+            return value;
+        }
     }
-    let stored = config_path
-        .exists()
-        .then(|| cfgd_core::config::load_config(config_path).ok())
-        .flatten()
-        .and_then(|c| c.spec.usage_hints());
-    stored.unwrap_or(true)
+    stored(doc.map_or(&*UNREAD_SPEC, |c| &c.spec))
+}
+
+/// What a surface that prints the document's `spec.profile` shows where the
+/// document names none.
+pub(crate) const NO_PROFILE_LABEL: &str = "(none)";
+
+/// The spec a missing or unreadable document reads as, so a resolver takes its
+/// default from the same `_effective` accessor a declared document goes through.
+static UNREAD_SPEC: std::sync::LazyLock<cfgd_core::config::ConfigSpec> =
+    std::sync::LazyLock::new(cfgd_core::config::ConfigSpec::default);
+
+/// What this invocation says the migration policy is, over whatever the
+/// document declares: `--migration-policy` first, then
+/// `CFGD_MIGRATION_POLICY`, and `None` when neither was given.
+///
+/// The env var has two readers, and which one answers depends on who built the
+/// `Cli`. In the binary clap reads it first, through the `env =
+/// "CFGD_MIGRATION_POLICY"` the flag declares, so `flag` already carries the
+/// variable's word and clap has validated it against the flag's value list — a
+/// bogus word is a usage error. The branch below answers for a `Cli` built
+/// in-process (a test, a library caller), which clap never parsed. That is the
+/// same shape `CFGD_THEME`, `CFGD_COLOR` and `CFGD_MASK_ENV_VALUES` carry
+/// beside [`resolve_knob`]'s own env read.
+///
+/// This is the one knob whose stored half is NOT read here. The load-time
+/// gate reads `spec.migrationPolicy` off the startup document it already
+/// holds to find out what is missing from the file, so the stored half
+/// travels with that document.
+pub fn migration_policy_override(flag: Option<&str>) -> Option<cfgd_schema::MigrationPolicy> {
+    use std::str::FromStr;
+    if let Some(raw) = flag {
+        return cfgd_schema::MigrationPolicy::from_str(raw).ok();
+    }
+    cfgd_schema::MigrationPolicy::from_str(&std::env::var(CFGD_MIGRATION_POLICY_ENV).ok()?).ok()
+}
+
+/// Resolve whether closing `→` usage hints render, folding the
+/// `--hints`/`--no-hints` pair, `CFGD_USAGE_HINTS` and `spec.output.usageHints`
+/// into the one decision every entry point's printer is built from
+/// (`Printer::with_hints_enabled`).
+///
+/// Only a TUTORIAL hint asks this. A refusal's remediation carries
+/// [`cfgd_core::output::HintCommands::unconditional`] and renders whatever
+/// this returns, so turning tutorials off never leaves a reader without the
+/// instruction a declined command's whole value is.
+///
+/// `CFGD_USAGE_HINTS` is read by [`resolve_knob`] and bound to neither
+/// half via `#[arg(env = …)]`: `--no-hints` has the OPPOSITE polarity to the
+/// env var, and binding the env var to `--hints` alone would let it be
+/// outranked by nothing, since clap cannot express "this env var sets that
+/// flag's negation". Boolish spellings are accepted through the same table
+/// every other `CFGD_*` boolean env var uses.
+pub fn resolve_hints_enabled(
+    doc: Option<&cfgd_core::config::CfgdConfig>,
+    hints: Option<bool>,
+) -> bool {
+    resolve_knob(doc, hints, CFGD_USAGE_HINTS_ENV, |spec| {
+        spec.output_effective().usage_hints_effective()
+    })
 }
 
 /// Resolve which declared env values this run renders masked, folding
 /// `--mask-env-values`, `CFGD_MASK_ENV_VALUES` and `spec.output.maskEnvValues`
 /// into the one decision the printer carries
-/// (`Printer::with_mask_env_values`). Precedence: the flag beats the env var
-/// beats the config field beats the default (every value masked).
+/// (`Printer::with_mask_env_values`).
 ///
-/// `CFGD_MASK_ENV_VALUES` is bound to the flag through clap's own `env`, so a
-/// word neither spelling accepts is a usage error before this runs.
+/// `CFGD_MASK_ENV_VALUES` is ALSO bound to the flag through clap's own `env`,
+/// so a word neither spelling accepts is a usage error before this runs;
+/// [`resolve_knob`]'s own read of it answers a caller that parsed no argv.
 ///
-/// Best-effort by design, mirroring [`resolve_theme_config`]: a missing,
-/// unreadable or malformed config masks rather than failing, which is also the
-/// safe direction — a config cfgd cannot read never reveals a value.
+/// A missing, unreadable or malformed config masks, which is also the safe
+/// direction — a config cfgd cannot read never reveals a value.
 pub fn resolve_mask_env_values(
-    config_path: &Path,
+    doc: Option<&cfgd_core::config::CfgdConfig>,
     flag: Option<&str>,
 ) -> cfgd_core::config::MaskEnvValues {
     use std::str::FromStr;
-    if let Some(raw) = flag
-        && let Ok(mode) = cfgd_core::config::MaskEnvValues::from_str(raw)
-    {
-        return mode;
-    }
-    config_path
-        .exists()
-        .then(|| cfgd_core::config::load_config(config_path).ok())
-        .flatten()
-        .and_then(|c| c.spec.mask_env_values())
-        .unwrap_or_default()
+    resolve_knob(
+        doc,
+        flag.and_then(|raw| cfgd_core::config::MaskEnvValues::from_str(raw).ok()),
+        CFGD_MASK_ENV_VALUES_ENV,
+        |spec| spec.output_effective().mask_env_values_effective(),
+    )
 }
 
 #[derive(Debug, Clone)]
@@ -932,7 +1127,24 @@ impl From<OutputFormatArg> for clap::builder::OsStr {
     }
 }
 
-#[derive(Parser)]
+/// Clap value parser for an `os/arch[/variant]` flag, run through
+/// [`cfgd_core::oci::parse_platform_target`] so a malformed value is a usage
+/// error before any command starts.
+fn platform_value(value: &str) -> Result<String, String> {
+    cfgd_core::oci::parse_platform_target(value)
+        .map(|_| value.to_string())
+        .map_err(|e| e.to_string())
+}
+
+/// [`platform_value`] for a comma-separated list of `os/arch[/variant]` platforms.
+fn platform_list_value(value: &str) -> Result<String, String> {
+    for platform in value.split(',') {
+        platform_value(platform)?;
+    }
+    Ok(value.to_string())
+}
+
+#[derive(Parser, Clone)]
 #[command(
     name = "cfgd",
     version,
@@ -944,7 +1156,7 @@ pub struct Cli {
     // and the generated man page: the man page is built on a release runner
     // whose $HOME differs from the user's, so a rendered default would point
     // at the runner's path. The doc comment carries the portable default.
-    #[arg(long, global = true, default_value_os_t = default_config_file(), hide_default_value = true, env = "CFGD_CONFIG")]
+    #[arg(long, global = true, default_value_os_t = default_config_file(), hide_default_value = true, env = CFGD_CONFIG_ENV)]
     pub config: PathBuf,
 
     /// Whether the config path was supplied by the user (`--config`,
@@ -959,7 +1171,7 @@ pub struct Cli {
     pub config_explicit: bool,
 
     /// Profile to use (overrides config file)
-    #[arg(long, global = true, env = "CFGD_PROFILE")]
+    #[arg(long, global = true, env = CFGD_PROFILE_ENV)]
     pub profile: Option<String>,
 
     /// Verbose output (-v = debug, -vv = trace). Also accepts CFGD_VERBOSE as an on/off flag.
@@ -968,7 +1180,7 @@ pub struct Cli {
         short,
         global = true,
         action = clap::ArgAction::Count,
-        env = "CFGD_VERBOSE",
+        env = CFGD_VERBOSE_ENV,
         conflicts_with = "quiet"
     )]
     pub verbose: u8,
@@ -978,13 +1190,13 @@ pub struct Cli {
         long,
         short,
         global = true,
-        env = "CFGD_QUIET",
+        env = CFGD_QUIET_ENV,
         conflicts_with = "verbose"
     )]
     pub quiet: bool,
 
     /// Skip confirmation prompts (answer yes to every question)
-    #[arg(long, short, global = true, env = "CFGD_YES")]
+    #[arg(long, short, global = true, env = CFGD_YES_ENV)]
     pub yes: bool,
 
     /// Disable colored output (alias for --color never)
@@ -996,17 +1208,18 @@ pub struct Cli {
         long,
         global = true,
         value_name = "WHEN",
-        env = "CFGD_COLOR",
+        env = CFGD_COLOR_ENV,
         default_value = "auto"
     )]
     pub color: ColorWhen,
 
-    /// Theme preset for this invocation (overrides spec.output.theme.name; its overrides still apply)
+    /// Theme preset for this invocation (overrides spec.output.theme.name; its overrides still
+    /// apply)
     #[arg(
         long,
         global = true,
         value_name = "NAME",
-        env = "CFGD_THEME",
+        env = CFGD_THEME_ENV,
         value_parser = clap::builder::PossibleValuesParser::new(cfgd_core::output::Theme::PRESET_NAMES)
     )]
     pub theme: Option<String>,
@@ -1016,48 +1229,94 @@ pub struct Cli {
     /// `spec.output.maskEnvValues` does the same thing persistently; this flag
     /// wins over it, and a verb's own `--show-values` is the per-verb spelling
     /// of `none`.
+    // `spec.output.maskEnvValues` serializes PascalCase, so the flag and its
+    // env var accept that spelling as well as the lowercase one this list
+    // prints. Without the fold, an exported `CFGD_MASK_ENV_VALUES=All` is a
+    // usage error on every invocation.
     #[arg(
         long = "mask-env-values",
         global = true,
         value_name = "MODE",
-        env = "CFGD_MASK_ENV_VALUES",
+        env = CFGD_MASK_ENV_VALUES_ENV,
+        ignore_case = true,
         value_parser = clap::builder::PossibleValuesParser::new(["all", "secrets", "none"])
     )]
     pub mask_env_values: Option<String>,
 
-    /// Output format: table, wide, json, yaml, name, jsonpath=EXPR, template=TMPL, template-file=PATH
+    /// What to do when cfgd.yaml is behind this build's schema: prompt (the
+    /// default), warn, update or ignore. `spec.migrationPolicy` does the same
+    /// thing persistently; this flag wins over it.
+    // `spec.migrationPolicy` serializes PascalCase, so the flag and its env
+    // var accept that spelling as well as the lowercase one this list prints.
+    #[arg(
+        long = "migration-policy",
+        global = true,
+        value_name = "POLICY",
+        env = CFGD_MIGRATION_POLICY_ENV,
+        ignore_case = true,
+        value_parser = clap::builder::PossibleValuesParser::new(["prompt", "warn", "update", "ignore"])
+    )]
+    pub migration_policy: Option<String>,
+
+    /// Update posture for this invocation: auto (apply an available update),
+    /// prompt (ask first), notify (report only) or manual (no automatic
+    /// check at all). `spec.update.policy` does the same thing persistently;
+    /// this flag wins over it. The explicit `cfgd upgrade` runs regardless of
+    /// this setting.
+    // `spec.update.policy` serializes PascalCase, so the flag and its env var
+    // accept that spelling as well as the lowercase one this list prints.
+    #[arg(
+        long = "update-policy",
+        global = true,
+        value_name = "POLICY",
+        env = CFGD_UPDATE_POLICY_ENV,
+        ignore_case = true,
+        value_parser = clap::builder::PossibleValuesParser::new(["auto", "prompt", "notify", "manual"])
+    )]
+    pub update_policy: Option<String>,
+
+    /// Output format: table, wide, json, yaml, name, jsonpath=EXPR, template=TMPL,
+    /// template-file=PATH
     #[arg(long, short = 'o', global = true, default_value = "table")]
     pub output: OutputFormatArg,
 
-    /// Wrap top-level array payloads under -o json/yaml in a KRM List envelope ({apiVersion, kind: List, items})
-    #[arg(long, global = true, env = "CFGD_LIST_ENVELOPE")]
+    /// Wrap top-level array payloads under -o json/yaml in a KRM List envelope ({apiVersion, kind:
+    /// List, items})
+    #[arg(long, global = true, env = CFGD_LIST_ENVELOPE_ENV)]
     pub list_envelope: bool,
 
-    /// Suppress closing `→` usage hints for this invocation. `CFGD_USAGE_HINTS=false`
-    /// and `spec.usageHints: false` do the same thing persistently; this flag wins
-    /// over both. No env attached here: `CFGD_USAGE_HINTS` has the OPPOSITE polarity
-    /// (it names what stays ON) and is read directly in `resolve_hints_enabled`.
+    /// Render closing `→` usage hints for this invocation. `CFGD_USAGE_HINTS=true`
+    /// and `spec.output.usageHints: true` do the same persistently; this flag wins.
+    #[arg(long = "hints", global = true, conflicts_with = "no_hints")]
+    pub hints: bool,
+
+    /// Suppress closing `→` usage hints for this invocation, over a config or
+    /// env var that turned them on. No env attached: `CFGD_USAGE_HINTS` has the
+    /// OPPOSITE polarity and is read in `resolve_hints_enabled`.
     #[arg(long = "no-hints", global = true)]
     pub no_hints: bool,
 
-    /// [DEPRECATED — use --output jsonpath=EXPR] JSONPath expression to extract from structured output
+    /// [DEPRECATED — use --output jsonpath=EXPR] JSONPath expression to extract from structured
+    /// output
     #[arg(long, global = true, hide = true)]
     pub jsonpath: Option<String>,
 
     /// Override state directory (default: $CFGD_STATE_DIR or platform data dir)
-    #[arg(long, global = true, env = "CFGD_STATE_DIR")]
+    #[arg(long, global = true, env = CFGD_STATE_DIR_ENV)]
     pub state_dir: Option<PathBuf>,
 
     /// Override config directory (default: $CFGD_CONFIG_DIR or platform config dir). --config wins.
-    #[arg(long, global = true, env = "CFGD_CONFIG_DIR")]
+    #[arg(long, global = true, env = CFGD_CONFIG_DIR_ENV)]
     pub config_dir: Option<PathBuf>,
 
-    /// Override cache directory for sources + modules (default: $CFGD_CACHE_DIR or platform cache dir)
-    #[arg(long, global = true, env = "CFGD_CACHE_DIR")]
+    /// Override cache directory for sources + modules (default: $CFGD_CACHE_DIR or platform cache
+    /// dir)
+    #[arg(long, global = true, env = CFGD_CACHE_DIR_ENV)]
     pub cache_dir: Option<PathBuf>,
 
-    /// Override runtime directory for sockets + locks (default: $CFGD_RUNTIME_DIR or platform runtime dir)
-    #[arg(long, global = true, env = "CFGD_RUNTIME_DIR")]
+    /// Override runtime directory for sockets + locks (default: $CFGD_RUNTIME_DIR or platform
+    /// runtime dir)
+    #[arg(long, global = true, env = CFGD_RUNTIME_DIR_ENV)]
     pub runtime_dir: Option<PathBuf>,
 
     /// Installation scope: `user` (per-user XDG / `~/...` roots — the default) or
@@ -1071,7 +1330,7 @@ pub struct Cli {
         value_enum,
         value_name = "SCOPE",
         default_value = "user",
-        env = "CFGD_SCOPE"
+        env = CFGD_SCOPE_ENV
     )]
     pub scope_arg: ScopeArg,
 
@@ -1085,6 +1344,29 @@ pub struct Cli {
 }
 
 impl Cli {
+    /// Expand a leading `~` in the directory flags (`--config-dir`,
+    /// `--state-dir`, `--cache-dir`, `--runtime-dir` and their `CFGD_*`
+    /// variables) to the home directory, once, right after the parse.
+    ///
+    /// No shell expands a `~` read from an environment file or a quoted
+    /// argument. Expanded here, every reader of these directories, the argv a
+    /// service install bakes into its unit included, sees the same absolute
+    /// path. With no home directory to resolve, a path keeps its `~`, and the
+    /// directory resolvers refuse it ([`cfgd_core::expand_tilde_strict`]).
+    pub fn expand_path_flags(&mut self) {
+        for dir in [
+            &mut self.config_dir,
+            &mut self.state_dir,
+            &mut self.cache_dir,
+            &mut self.runtime_dir,
+        ]
+        .into_iter()
+        .flatten()
+        {
+            *dir = cfgd_core::expand_tilde(dir);
+        }
+    }
+
     /// The daemon directory flags this invocation ran under, so an installed
     /// unit and a foreground run resolve the same directories.
     pub fn daemon_dir_overrides(&self) -> cfgd_core::daemon::DaemonDirOverrides {
@@ -1101,10 +1383,29 @@ impl Cli {
     pub fn scope(&self) -> cfgd_core::Scope {
         self.scope_arg.into()
     }
+
+    /// The update posture this invocation named through `--update-policy` or
+    /// `CFGD_UPDATE_POLICY`, or `None` when neither is set and the config's
+    /// `spec.update.policy` governs.
+    pub fn update_policy_override(&self) -> Option<cfgd_core::config::UpdatePolicy> {
+        // clap has already refused any word outside the value list, so a parse
+        // failure here cannot happen for a value that reached this field.
+        self.update_policy
+            .as_deref()
+            .and_then(|raw| raw.parse().ok())
+    }
 }
 
-#[derive(Parser)]
+#[derive(Parser, Clone)]
 pub struct ApplyArgs {
+    /// Apply the plan recorded by `cfgd plan -o json`, with no second
+    /// planning pass. The file is the approval: cfgd refuses it if the config changed
+    /// or an apply has run since it was written, and every filter is refused
+    /// with it — the file already says what this run does.
+    #[arg(long, value_name = "FILE", conflicts_with_all = [
+        "from", "phase", "skip", "only", "module", "with_profile", "skip_scripts", "context",
+    ])]
+    pub plan: Option<PathBuf>,
     /// Config source: git URL on any host, GitHub `owner/repo` shorthand, or local path
     /// to an existing config directory (an existing path wins over the shorthand)
     #[arg(long)]
@@ -1174,7 +1475,7 @@ pub enum OnConflict {
     Fail,
 }
 
-#[derive(Parser)]
+#[derive(Parser, Clone)]
 pub struct PlanArgs {
     /// Config source: git URL on any host, GitHub `owner/repo` shorthand, or local path
     /// to an existing config directory (an existing path wins over the shorthand)
@@ -1210,7 +1511,7 @@ pub struct PlanArgs {
     pub context: String,
 }
 
-#[derive(Subcommand)]
+#[derive(Subcommand, Clone)]
 pub enum Command {
     /// Initialize a new cfgd configuration repository
     #[command(
@@ -1256,7 +1557,8 @@ pub enum Command {
         #[arg(long)]
         install_daemon: bool,
 
-        /// Theme preset to write into the new config's spec.theme
+        /// Theme preset written to the config's spec.output.theme (an override on an
+        /// existing or cloned config)
         #[arg(
             long,
             value_name = "NAME",
@@ -1279,13 +1581,13 @@ pub enum Command {
 
     /// Apply the configuration (use --dry-run to preview without applying)
     #[command(
-        long_about = "Apply the active profile to this machine.\n\n--from accepts any git URL, a local path, or the GitHub shorthand `owner/repo`.\n\n--phase and --skip take a dotted `<phase>[.<selector>]` path: the whole phase,\none owner group within it, or one manager (family-collapsed, e.g. `brew` also\ncovers `brew-tap`/`brew-cask`).\n\n--module resolves and applies ONLY the named module(s) and their dependencies,\nisolated from the active profile — repeat it for several modules. Add\n--with-profile to apply the full profile PLUS the named module(s) instead.\n--only module:<name>/--skip module:<name> filter an ALREADY-composed plan by\nowner and never resolve a module of their own — pair with --module to bring an\nout-of-profile module into scope first.\n\n--on-conflict decides what happens when a managed target already holds a file\ncfgd has never written: ask (default — prompts, or backs up when nothing can be\nasked), backup, overwrite, skip, fail. A target that already holds exactly the\ndesired bytes is left alone under every policy.\n\nExamples:\n  cfgd apply\n  cfgd apply --dry-run\n  cfgd apply --phase packages --yes\n  cfgd apply --phase bootstrap.managers --yes                    # one owner group\n  cfgd apply --skip bootstrap.session                            # skip the broadcast half\n  cfgd apply --skip bootstrap.shell                              # env file only, no rc line\n  cfgd apply --skip bootstrap.brew                               # skip one manager\n  cfgd apply --module nettools                                   # nettools + deps, isolated\n  cfgd apply --module nettools --module lpass-tools              # several modules\n  cfgd apply --module nettools --with-profile                    # full profile PLUS nettools\n  cfgd apply --yes --on-conflict backup                          # copy each conflict aside\n  cfgd apply --yes --on-conflict fail                            # refuse to touch strangers\n  cfgd apply --from acme/cfgd-config --yes                       # GitHub shorthand\n  cfgd apply --from https://gitlab.example.com/acme/config.git --yes\n  cfgd apply --context reconcile"
+        long_about = "Apply the active profile to this machine.\n\n--from accepts any git URL, a local path, or the GitHub shorthand `owner/repo`.\n\n--phase and --skip take a dotted `<phase>[.<selector>]` path: the whole phase,\none owner group within it, or one manager (family-collapsed, e.g. `brew` also\ncovers `brew-tap`/`brew-cask`).\n\n--module resolves and applies ONLY the named module(s) and their dependencies,\nisolated from the active profile — repeat it for several modules. Add\n--with-profile to apply the full profile PLUS the named module(s).\n--only module:<name>/--skip module:<name> filter an ALREADY-composed plan by\nowner and never resolve a module of their own — pair with --module to bring an\nout-of-profile module into scope first.\n\n--plan replays the plan `cfgd plan -o json` recorded, with no second planning\npass: the file is the approval, so cfgd refuses it once the config it was\nderived from has changed or another apply has run since it was written.\nEvery selector is refused alongside it — the file already says what this\nrun does.\n\n--on-conflict decides what happens when a managed target already holds a file\ncfgd has never written: ask (default — prompts, or backs up when nothing can be\nasked), backup, overwrite, skip, fail. A target that already holds exactly the\ndesired bytes is left alone under every policy.\n\nExamples:\n  cfgd apply\n  cfgd apply --dry-run\n  cfgd apply --plan plan.json                                    # replay a recorded plan\n  cfgd apply --phase packages --yes\n  cfgd apply --phase bootstrap.managers --yes                    # one owner group\n  cfgd apply --skip bootstrap.session                            # skip the broadcast half\n  cfgd apply --skip bootstrap.shell                              # env file only, no rc line\n  cfgd apply --skip bootstrap.brew                               # skip one manager\n  cfgd apply --module nettools                                   # nettools + deps, isolated\n  cfgd apply --module nettools --module lpass-tools              # several modules\n  cfgd apply --module nettools --with-profile                    # full profile PLUS nettools\n  cfgd apply --yes --on-conflict backup                          # copy each conflict aside\n  cfgd apply --yes --on-conflict fail                            # refuse to touch strangers\n  cfgd apply --from acme/cfgd-config --yes                       # GitHub shorthand\n  cfgd apply --from https://gitlab.example.com/acme/config.git --yes\n  cfgd apply --context reconcile"
     )]
     Apply(ApplyArgs),
 
     /// Preview the reconciliation plan without applying
     #[command(
-        long_about = "Render the reconciliation plan without applying it.\n\n--from accepts any git URL, a local path, or the GitHub shorthand `owner/repo`.\n\n--phase and --skip take a dotted `<phase>[.<selector>]` path: the whole phase,\none owner group within it, or one manager (family-collapsed, e.g. `brew` also\ncovers `brew-tap`/`brew-cask`).\n\n--module resolves and previews ONLY the named module(s) and their dependencies,\nisolated from the active profile — repeat it for several modules. Add\n--with-profile to preview the full profile PLUS the named module(s) instead.\n\nExamples:\n  cfgd plan\n  cfgd plan --phase system\n  cfgd plan --phase bootstrap.managers                           # one owner group\n  cfgd plan --skip bootstrap.session                             # skip the broadcast half\n  cfgd plan --skip bootstrap.shell                               # env file only, no rc line\n  cfgd plan --module nettools                                    # nettools + deps, isolated\n  cfgd plan --module nettools --with-profile                     # full profile PLUS nettools\n  cfgd plan --from acme/cfgd-config                              # GitHub shorthand\n  cfgd plan --from https://gitlab.example.com/acme/config.git\n  cfgd plan --skip packages.brew --only files"
+        long_about = "Render the reconciliation plan without applying it.\n\n--from accepts any git URL, a local path, or the GitHub shorthand `owner/repo`.\n\n--phase and --skip take a dotted `<phase>[.<selector>]` path: the whole phase,\none owner group within it, or one manager (family-collapsed, e.g. `brew` also\ncovers `brew-tap`/`brew-cask`).\n\n--module resolves and previews ONLY the named module(s) and their dependencies,\nisolated from the active profile — repeat it for several modules. Add\n--with-profile to preview the full profile PLUS the named module(s).\n\nExamples:\n  cfgd plan\n  cfgd plan --phase system\n  cfgd plan --phase bootstrap.managers                           # one owner group\n  cfgd plan --skip bootstrap.session                             # skip the broadcast half\n  cfgd plan --skip bootstrap.shell                               # env file only, no rc line\n  cfgd plan --module nettools                                    # nettools + deps, isolated\n  cfgd plan --module nettools --with-profile                     # full profile PLUS nettools\n  cfgd plan --from acme/cfgd-config                              # GitHub shorthand\n  cfgd plan --from https://gitlab.example.com/acme/config.git\n  cfgd plan --skip packages.brew --only files"
     )]
     Plan(PlanArgs),
 
@@ -1437,14 +1739,15 @@ pub enum Command {
         long_about = "Check for, download, and install a newer cfgd release.\n\nWith --check, exit codes are:\n  0  already at latest version\n  1  network / IO error\n  2  update available (action needed, not an error)\n\ncfgd downloads the release archive and verifies its `<archive>.sha256`\nchecksum. When the `cosign` CLI is installed and the release attaches a\ncosign bundle, it also verifies the keyless cosign signature over that\nchecksum — proving the artifact came from cfgd's GitHub release workflow\n(Sigstore: Fulcio certificate + OIDC identity, recorded in the Rekor\ntransparency log; no public key to distribute). If cosign is missing or no\nbundle is attached, verification falls back to SHA256-only with a loud\nwarning (the human warning surfaces it, but a structured-output consumer\nmight miss it). Pass --require-cosign (or set CFGD_REQUIRE_COSIGN=1) to fail\nthe upgrade instead of falling back — recommended for unattended / CI\nupdates where a tampered GitHub asset would otherwise pass.\n\nExamples:\n  cfgd upgrade\n  cfgd upgrade --check\n  cfgd upgrade --require-cosign\n  CFGD_REQUIRE_COSIGN=1 cfgd upgrade"
     )]
     Upgrade {
-        /// Only check if an update is available (exit 0 = current, exit 2 = update available, exit 1 = error)
+        /// Only check if an update is available (exit 0 = current, exit 2 = update available, exit
+        /// 1 = error)
         #[arg(long)]
         check: bool,
 
         /// Fail the upgrade if cosign signature verification cannot be performed
         /// (missing cosign bundle, or cosign CLI not installed)
         /// instead of falling back to SHA256-only.
-        #[arg(long, env = "CFGD_REQUIRE_COSIGN")]
+        #[arg(long, env = CFGD_REQUIRE_COSIGN_ENV)]
         require_cosign: bool,
     },
 
@@ -1528,7 +1831,7 @@ pub enum Command {
 
     /// View or edit the cfgd configuration
     #[command(
-        long_about = "Show, edit, get, set, or unset config values.\n\nExamples:\n  cfgd config show\n  cfgd config ls\n  cfgd config get theme\n  cfgd config set theme dracula\n  cfgd config unset theme\n  cfgd config rm theme"
+        long_about = "Show, edit, get, set, unset, or migrate config values.\n\nExamples:\n  cfgd config show\n  cfgd config ls\n  cfgd config get theme\n  cfgd config set theme dracula\n  cfgd config unset theme\n  cfgd config rm theme\n  cfgd config migrate\n  cfgd config migrate --write"
     )]
     Config {
         #[command(subcommand)]
@@ -1559,15 +1862,15 @@ pub enum Command {
     )]
     Checkin {
         /// Device gateway URL
-        #[arg(long, env = "CFGD_SERVER_URL")]
+        #[arg(long, env = CFGD_SERVER_URL_ENV)]
         server_url: String,
 
         /// API key for authentication
-        #[arg(long, env = "CFGD_API_KEY")]
+        #[arg(long, env = CFGD_API_KEY_ENV)]
         api_key: Option<String>,
 
         /// Device identifier (defaults to hostname)
-        #[arg(long, env = "CFGD_DEVICE_ID")]
+        #[arg(long, env = CFGD_DEVICE_ID_ENV)]
         device_id: Option<String>,
     },
 
@@ -1577,11 +1880,11 @@ pub enum Command {
     )]
     Enroll {
         /// Device gateway URL
-        #[arg(long, env = "CFGD_SERVER_URL")]
+        #[arg(long, env = CFGD_SERVER_URL_ENV)]
         server_url: String,
 
         /// Bootstrap token for token-based enrollment
-        #[arg(long, env = "CFGD_ENROLL_TOKEN")]
+        #[arg(long, env = CFGD_ENROLL_TOKEN_ENV)]
         token: Option<String>,
 
         /// SSH key file for signing (default: auto-detect from agent or ~/.ssh/)
@@ -1593,7 +1896,7 @@ pub enum Command {
         gpg_key: Option<String>,
 
         /// Username to enroll as (default: current system user)
-        #[arg(long, env = "CFGD_ENROLL_USERNAME")]
+        #[arg(long, env = CFGD_ENROLL_USERNAME_ENV)]
         username: Option<String>,
     },
 
@@ -1660,7 +1963,7 @@ pub enum Command {
 }
 
 /// Subcommands for `cfgd image`.
-#[derive(Subcommand)]
+#[derive(Subcommand, Clone)]
 pub enum ImageCommand {
     /// Pack a directory into a standard OCI image and push to a registry
     #[command(
@@ -1671,8 +1974,9 @@ pub enum ImageCommand {
         dir: std::path::PathBuf,
         /// OCI artifact reference to push to (e.g. ghcr.io/myorg/myapp:v1.0.0)
         artifact: String,
-        /// Target platform in os/arch form (e.g. linux/amd64). Defaults to host platform.
-        #[arg(long)]
+        /// Target platform as os/arch or os/arch/variant (e.g. linux/amd64, linux/arm/v7).
+        /// Defaults to host platform.
+        #[arg(long, value_parser = platform_value)]
         platform: Option<String>,
         /// Image ENTRYPOINT entries (repeatable; e.g. --entrypoint /bin/sh)
         #[arg(long = "entrypoint", value_name = "ARG")]
@@ -1714,7 +2018,7 @@ pub enum ImageCommand {
     },
 }
 
-#[derive(Subcommand)]
+#[derive(Subcommand, Clone)]
 pub enum ComplianceCommand {
     /// Export compliance snapshot to file or stdout
     Export,
@@ -1738,7 +2042,7 @@ pub enum ComplianceCommand {
     },
 }
 
-#[derive(Parser)]
+#[derive(Parser, Clone)]
 pub struct SourceAddArgs {
     /// Git URL of the source, on any host — or the GitHub shorthand `owner/repo`
     pub url: String,
@@ -1790,7 +2094,7 @@ pub struct SourceAddArgs {
     pub yes: bool,
 }
 
-#[derive(Subcommand)]
+#[derive(Subcommand, Clone)]
 pub enum SourceCommand {
     /// Subscribe to a config source
     Add(Box<SourceAddArgs>),
@@ -1913,7 +2217,7 @@ pub enum SourceCommand {
     },
 }
 
-#[derive(Subcommand)]
+#[derive(Subcommand, Clone)]
 pub enum BackupCommand {
     /// Run one declarative backup, or every declared backup when name is omitted
     Run {
@@ -1979,7 +2283,7 @@ pub enum BackupCommand {
     },
 }
 
-#[derive(Subcommand)]
+#[derive(Subcommand, Clone)]
 pub enum DaemonCommand {
     /// Run daemon in foreground (default when no subcommand given)
     Run,
@@ -2002,7 +2306,7 @@ pub enum DaemonCommand {
     },
 }
 
-#[derive(Subcommand)]
+#[derive(Subcommand, Clone)]
 pub enum SecretCommand {
     /// Encrypt a file
     Encrypt {
@@ -2023,7 +2327,7 @@ pub enum SecretCommand {
     Init,
 }
 
-#[derive(Subcommand)]
+#[derive(Subcommand, Clone)]
 pub enum ConfigCommand {
     /// Show the current cfgd configuration (alias: ls)
     #[command(alias = "ls")]
@@ -2048,9 +2352,19 @@ pub enum ConfigCommand {
         /// Dotted key path to remove
         key: String,
     },
+    /// Bring cfgd.yaml up to the schema this build reads
+    #[command(
+        long_about = "Report the fields this build's schema carries that cfgd.yaml does not declare, and materialize them under --write.\n\nExamples:\n  cfgd config migrate\n  cfgd config migrate --write"
+    )]
+    Migrate {
+        /// Write the alignment to cfgd.yaml (without this, the pending
+        /// changes are reported and nothing is written)
+        #[arg(long)]
+        write: bool,
+    },
 }
 
-#[derive(Subcommand)]
+#[derive(Subcommand, Clone)]
 pub enum WorkflowCommand {
     /// Generate or regenerate GitHub Actions workflows for releases
     Generate {
@@ -2060,7 +2374,7 @@ pub enum WorkflowCommand {
     },
 }
 
-#[derive(Subcommand)]
+#[derive(Subcommand, Clone)]
 pub enum AliasCommand {
     /// Add or update an alias (alias: add)
     #[command(alias = "add")]
@@ -2086,7 +2400,7 @@ pub enum AliasCommand {
     },
 }
 
-#[derive(Parser)]
+#[derive(Parser, Clone)]
 #[allow(rustdoc::invalid_html_tags)]
 pub struct ProfileCreateArgs {
     /// Profile name
@@ -2111,7 +2425,8 @@ pub struct ProfileCreateArgs {
     /// System settings as key=value (repeatable)
     #[arg(long = "system")]
     pub system: Vec<String>,
-    /// Files to manage (repeatable). Use <path> to adopt in place, or <source>:<target> for explicit mapping.
+    /// Files to manage (repeatable). Use <path> to adopt in place, or <source>:<target> for
+    /// explicit mapping.
     #[arg(long = "file")]
     pub files: Vec<String>,
     /// Mark all --file entries as private (local-only, excluded from git).
@@ -2140,7 +2455,7 @@ pub struct ProfileCreateArgs {
     pub on_drift: Vec<String>,
 }
 
-#[derive(Parser)]
+#[derive(Parser, Clone)]
 #[allow(rustdoc::invalid_html_tags)]
 pub struct ProfileUpdateArgs {
     /// Profile name (default: active profile)
@@ -2202,7 +2517,7 @@ pub struct ProfileUpdateArgs {
     pub allow_unsigned: bool,
 }
 
-#[derive(Subcommand)]
+#[derive(Subcommand, Clone)]
 pub enum ProfileCommand {
     /// List available profiles
     #[command(alias = "ls")]
@@ -2269,7 +2584,7 @@ pub enum ProfileCommand {
     },
 }
 
-#[derive(Parser)]
+#[derive(Parser, Clone)]
 #[allow(rustdoc::invalid_html_tags)]
 pub struct ModuleCreateArgs {
     /// Module name
@@ -2284,7 +2599,8 @@ pub struct ModuleCreateArgs {
     /// platform's native manager (repeatable, e.g. --package brew.casks:firefox)
     #[arg(long = "package")]
     pub packages: Vec<String>,
-    /// Files to import (repeatable). Use <path> to adopt in place, or <source>:<target> for explicit mapping.
+    /// Files to import (repeatable). Use <path> to adopt in place, or <source>:<target> for
+    /// explicit mapping.
     #[arg(long = "file")]
     pub files: Vec<String>,
     /// Mark all --file entries as private (local-only, excluded from git).
@@ -2310,7 +2626,7 @@ pub struct ModuleCreateArgs {
     pub yes: bool,
 }
 
-#[derive(Parser)]
+#[derive(Parser, Clone)]
 #[allow(rustdoc::invalid_html_tags)]
 pub struct ModuleUpdateArgs {
     /// Module name
@@ -2347,7 +2663,7 @@ pub struct ModuleUpdateArgs {
     pub sets: Vec<String>,
 }
 
-#[derive(Subcommand)]
+#[derive(Subcommand, Clone)]
 pub enum ModuleCommand {
     /// List available modules and their status
     #[command(alias = "ls")]
@@ -2433,8 +2749,8 @@ pub enum ModuleCommand {
         /// OCI artifact reference (e.g. ghcr.io/myorg/mymodule:v1.0.0)
         #[arg(long)]
         artifact: String,
-        /// Platform annotation (default: auto-detected from OS/arch)
-        #[arg(long)]
+        /// Platform the module is built for (default: this host's OS/arch)
+        #[arg(long, value_parser = platform_value)]
         platform: Option<String>,
         /// After push, apply a Module CRD to the cluster referencing the artifact
         #[arg(long)]
@@ -2457,6 +2773,9 @@ pub enum ModuleCommand {
         /// Directory to extract the module into
         #[arg(long)]
         dir: String,
+        /// Platform to pull out of a multi-platform artifact (default: this host's OS/arch)
+        #[arg(long, value_parser = platform_value)]
+        platform: Option<String>,
         /// Require a cosign signature on the artifact
         #[arg(long)]
         require_signature: bool,
@@ -2478,7 +2797,7 @@ pub enum ModuleCommand {
         /// Path to the module directory (must contain module.yaml)
         dir: String,
         /// Target platform(s), comma-separated (e.g. linux/amd64,linux/arm64)
-        #[arg(long)]
+        #[arg(long, value_parser = platform_list_value)]
         target: Option<String>,
         /// Base container image (default: ubuntu:22.04)
         #[arg(long)]
@@ -2535,7 +2854,7 @@ pub enum ModuleKeysCommand {
 /// CRD-kind subcommand container: a verb-last noun tree currently holding only
 /// `validate`, leaving room to grow (mirrors `module`/`source`). One enum per
 /// CRD kind keeps each kind's help text and future verbs independent.
-#[derive(Subcommand)]
+#[derive(Subcommand, Clone)]
 pub enum MachineConfigCommand {
     /// Validate a MachineConfig document against the schema
     Validate {
@@ -2545,7 +2864,7 @@ pub enum MachineConfigCommand {
     },
 }
 
-#[derive(Subcommand)]
+#[derive(Subcommand, Clone)]
 pub enum ConfigPolicyCommand {
     /// Validate a ConfigPolicy document against the schema
     Validate {
@@ -2555,7 +2874,7 @@ pub enum ConfigPolicyCommand {
     },
 }
 
-#[derive(Subcommand)]
+#[derive(Subcommand, Clone)]
 pub enum ClusterConfigPolicyCommand {
     /// Validate a ClusterConfigPolicy document against the schema
     Validate {
@@ -2565,7 +2884,7 @@ pub enum ClusterConfigPolicyCommand {
     },
 }
 
-#[derive(Subcommand)]
+#[derive(Subcommand, Clone)]
 pub enum SkillCommand {
     /// Install an agent skill for one author kind across detected providers
     #[command(
@@ -2921,24 +3240,26 @@ fn resolve_phase_filter(
     let Some(selector) = selector else {
         return Ok(Some(base));
     };
+    let refuse =
+        |message: String| invalid_argument("--phase", &format!("{token}.{selector}"), message);
     let PhaseFilter::Phase(name) = base else {
-        anyhow::bail!(
+        return Err(refuse(format!(
             "`--phase modules.{selector}` is not valid: `modules` has no single phase to scope \
              a selector to — module work applies in whichever phase it landed in. Use \
              `--module {selector}` instead."
-        );
+        )));
     };
     if name != PhaseName::Bootstrap {
         if name == PhaseName::Packages {
-            anyhow::bail!(
+            return Err(refuse(format!(
                 "`--phase packages.{selector}` is not valid: package manager work lives in \
                  `bootstrap`, not `packages`. Use `--phase bootstrap.{selector}` instead."
-            );
+            )));
         }
-        anyhow::bail!(
+        return Err(refuse(format!(
             "`--phase {token}.{selector}` is not valid: `{token}` has no dotted \
              selector grammar. Selectors are only valid on `--phase bootstrap`."
-        );
+        )));
     }
     let mut legal: Vec<String> = reconciler::CFGD_GROUP_ORDER
         .iter()
@@ -2950,10 +3271,16 @@ fn resolve_phase_filter(
     // accepted it and the matcher was written to serve both.
     legal.extend(reconciler::prerequisite_selectors(registry));
     if !legal.contains(&selector) {
-        anyhow::bail!(
+        let message = format!(
             "unknown selector '{selector}' for `--phase bootstrap`: legal values are {}",
             legal.join(", ")
         );
+        return Err(invalid_argument_among(
+            "--phase",
+            &format!("{token}.{selector}"),
+            &legal,
+            message,
+        ));
     }
     Ok(Some(PhaseFilter::Selector(name, selector)))
 }
@@ -2984,7 +3311,7 @@ pub(crate) fn apply_shell_to_script_shell(s: ApplyShell) -> cfgd_core::config::S
     }
 }
 
-#[derive(Subcommand)]
+#[derive(Subcommand, Clone)]
 pub enum ModuleRegistryCommand {
     /// Add a module registry
     Add {
@@ -3020,6 +3347,7 @@ pub fn execute(
     cli: &Cli,
     printer: &cfgd_core::output::Printer,
     dir_sources: &paths::DirSources,
+    startup: &startup::StartupDocument,
 ) -> anyhow::Result<()> {
     // No subcommand: print help and exit 0. Required for package-manager
     // validators (winget, chocolatey) that smoke-test the installed binary
@@ -3034,9 +3362,10 @@ pub fn execute(
         }
         return Ok(());
     };
+    let run = RunContext::new(cli, printer, startup);
     match command {
-        Command::Apply(args) => apply::cmd_apply(cli, printer, args),
-        Command::Plan(args) => plan::cmd_plan(cli, printer, args),
+        Command::Apply(args) => apply::cmd_apply(&run, args),
+        Command::Plan(args) => plan::cmd_plan(&run, args),
         Command::Status {
             module,
             scan,
@@ -3047,8 +3376,7 @@ pub fn execute(
         } => match status::retired_status_flags(*show_scripts, *show_all) {
             Some(flag) => Err(status::retired_status_flag_error(flag)),
             None => status::cmd_status(
-                cli,
-                printer,
+                &run,
                 module.as_deref(),
                 status::StatusRun {
                     exit_code: *exit_code,
@@ -3061,9 +3389,7 @@ pub fn execute(
                 },
             ),
         },
-        Command::Diff { module, exit_code } => {
-            diff::cmd_diff(cli, printer, module.as_deref(), *exit_code)
-        }
+        Command::Diff { module, exit_code } => diff::cmd_diff(&run, module.as_deref(), *exit_code),
         Command::Log { limit, show_output } => log::cmd_log(
             printer,
             *limit,
@@ -3072,7 +3398,7 @@ pub fn execute(
             cli.scope(),
         ),
         Command::Verify { module, exit_code } => {
-            verify::cmd_verify(cli, printer, module.as_deref(), *exit_code)
+            verify::cmd_verify(&run, module.as_deref(), *exit_code)
         }
         Command::Profile { command } => match command {
             ProfileCommand::Show {
@@ -3080,25 +3406,24 @@ pub fn execute(
                 resolved,
                 show_values,
             } => profile::cmd_profile_show(
-                cli,
-                printer,
+                &run,
                 name.as_deref(),
                 *resolved,
                 InventoryDetail::of(env_value_masking(printer, *show_values), false, false),
             ),
-            ProfileCommand::List => profile::cmd_profile_list(cli, printer),
+            ProfileCommand::List => profile::cmd_profile_list(&run),
             ProfileCommand::Switch { name } => profile::cmd_profile_switch(cli, name, printer),
             ProfileCommand::Create(args) => profile::cmd_profile_create(cli, printer, args),
             ProfileCommand::Update(args) => {
-                let profile_name = resolve_profile_name(cli, printer, args.name.as_deref())?;
-                profile::cmd_profile_update(cli, printer, &profile_name, args)
+                let profile_name = resolve_profile_name(&run, args.name.as_deref())?;
+                profile::cmd_profile_update(&run, &profile_name, args)
             }
             ProfileCommand::Edit { name } => profile::cmd_profile_edit(cli, printer, name),
             ProfileCommand::Delete {
                 name,
                 yes,
                 ignore_not_found,
-            } => profile::cmd_profile_delete(cli, printer, name, *yes, *ignore_not_found),
+            } => profile::cmd_profile_delete(&run, name, *yes, *ignore_not_found),
             ProfileCommand::Validate { source } => validate::cmd_profile_validate(printer, source),
             ProfileCommand::Migrate {
                 name,
@@ -3107,7 +3432,7 @@ pub fn execute(
                 yes,
             } => profile::cmd_profile_migrate(cli, printer, name.as_deref(), *all, *dry_run, *yes),
         },
-        Command::Doctor { fix } => doctor::cmd_doctor(cli, printer, *fix),
+        Command::Doctor { fix } => doctor::cmd_doctor(&run, *fix),
         Command::Paths => paths::cmd_paths(cli, printer, dir_sources),
         Command::Init {
             path,
@@ -3141,10 +3466,11 @@ pub fn execute(
                 runtime_dir: cli.runtime_dir.as_deref(),
                 scope: cli.scope(),
                 on_conflict: *on_conflict,
+                migration_gate: config_schema::GateInvocation::of(cli, false),
             },
         ),
         Command::Module { command } => match command {
-            ModuleCommand::List => module::cmd_module_list(cli, printer),
+            ModuleCommand::List => module::cmd_module_list(&run),
             ModuleCommand::Show {
                 name,
                 resolved,
@@ -3154,6 +3480,7 @@ pub fn execute(
             } => module::cmd_module_show(
                 cli,
                 printer,
+                startup,
                 name,
                 InventoryDetail::of(
                     env_value_masking(printer, *show_values),
@@ -3162,7 +3489,7 @@ pub fn execute(
                 ),
                 *resolved,
             ),
-            ModuleCommand::Create(args) => module::cmd_module_create(cli, printer, args),
+            ModuleCommand::Create(args) => module::cmd_module_create(&run, args),
             ModuleCommand::Update(args) => module::cmd_module_update_local(cli, printer, args),
             ModuleCommand::Edit { name } => module::cmd_module_edit(cli, printer, name),
             ModuleCommand::Delete {
@@ -3176,15 +3503,8 @@ pub fn execute(
                 ref_,
                 yes,
                 allow_unsigned,
-            } => module::cmd_module_upgrade(
-                cli,
-                printer,
-                name,
-                ref_.as_deref(),
-                *yes,
-                *allow_unsigned,
-            ),
-            ModuleCommand::Search { query } => module::cmd_module_search(cli, printer, query),
+            } => module::cmd_module_upgrade(&run, name, ref_.as_deref(), *yes, *allow_unsigned),
+            ModuleCommand::Search { query } => module::cmd_module_search(&run, query),
             ModuleCommand::Registry { command } => match command {
                 ModuleRegistryCommand::Add { url, name } => {
                     module::cmd_module_registry_add(cli, printer, url, name.as_deref())
@@ -3194,9 +3514,9 @@ pub fn execute(
                     ignore_not_found,
                 } => module::cmd_module_registry_remove(cli, printer, name, *ignore_not_found),
                 ModuleRegistryCommand::Rename { name, new_name } => {
-                    module::cmd_module_registry_rename(cli, printer, name, new_name)
+                    module::cmd_module_registry_rename(&run, name, new_name)
                 }
-                ModuleRegistryCommand::List => module::cmd_module_registry_list(cli, printer),
+                ModuleRegistryCommand::List => module::cmd_module_registry_list(&run),
             },
             ModuleCommand::Export {
                 name,
@@ -3226,6 +3546,7 @@ pub fn execute(
             ModuleCommand::Pull {
                 artifact_ref,
                 dir,
+                platform,
                 require_signature,
                 verify_attestation,
                 key,
@@ -3235,6 +3556,7 @@ pub fn execute(
                 printer,
                 artifact_ref,
                 dir,
+                platform.as_deref(),
                 *require_signature,
                 *verify_attestation,
                 cfgd_core::oci::VerifyOptions {
@@ -3272,24 +3594,23 @@ pub fn execute(
             },
             ModuleCommand::Validate { source } => validate::cmd_module_validate(printer, source),
         },
-        Command::Sync => sync::cmd_sync(cli, printer),
-        Command::Pull => pull::cmd_pull(cli, printer),
-        Command::Daemon { command } => daemon::cmd_daemon(cli, printer, command.as_ref()),
+        Command::Sync => sync::cmd_sync(&run),
+        Command::Pull => pull::cmd_pull(&run),
+        Command::Daemon { command } => daemon::cmd_daemon(&run, command.as_ref()),
         Command::Secret { command } => match command {
-            SecretCommand::Encrypt { file } => secret::cmd_secret_encrypt(cli, printer, file),
-            SecretCommand::Decrypt { file } => secret::cmd_secret_decrypt(cli, printer, file),
-            SecretCommand::Edit { file } => secret::cmd_secret_edit(cli, printer, file),
+            SecretCommand::Encrypt { file } => secret::cmd_secret_encrypt(&run, file),
+            SecretCommand::Decrypt { file } => secret::cmd_secret_decrypt(&run, file),
+            SecretCommand::Edit { file } => secret::cmd_secret_edit(&run, file),
             SecretCommand::Init => secret::cmd_secret_init(cli, printer),
         },
         Command::Source { command } => match command {
-            SourceCommand::Add(args) => source::cmd_source_add(cli, printer, args),
+            SourceCommand::Add(args) => source::cmd_source_add(&run, args),
             SourceCommand::Priority { name, value } => {
-                source::cmd_source_priority(cli, printer, name, *value)
+                source::cmd_source_priority(&run, name, *value)
             }
-            SourceCommand::List => source::cmd_source_list(cli, printer),
+            SourceCommand::List => source::cmd_source_list(&run),
             SourceCommand::Show { name, show_values } => source::cmd_source_show(
-                cli,
-                printer,
+                &run,
                 name,
                 InventoryDetail::of(env_value_masking(printer, *show_values), false, false),
             ),
@@ -3300,8 +3621,7 @@ pub fn execute(
                 yes,
                 ignore_not_found,
             } => source::cmd_source_remove(
-                cli,
-                printer,
+                &run,
                 name,
                 *keep_all || (*yes && !*remove_all),
                 *remove_all,
@@ -3315,8 +3635,7 @@ pub fn execute(
                 allow_scripts,
                 no_allow_scripts,
             } => source::cmd_source_update(
-                cli,
-                printer,
+                &run,
                 name.as_deref(),
                 source::SubscriptionEdits {
                     require_signed_commits: paired_flag(
@@ -3331,9 +3650,9 @@ pub fn execute(
                 action,
                 path,
                 value,
-            } => source::cmd_source_override(cli, printer, source, *action, path, value.as_deref()),
+            } => source::cmd_source_override(&run, source, *action, path, value.as_deref()),
             SourceCommand::Replace { old_name, new_url } => {
-                source::cmd_source_replace(cli, printer, old_name, new_url)
+                source::cmd_source_replace(&run, old_name, new_url)
             }
             SourceCommand::Edit => source::cmd_source_edit(printer, &std::env::current_dir()?),
             SourceCommand::Create {
@@ -3350,13 +3669,12 @@ pub fn execute(
             SourceCommand::Validate { source } => validate::cmd_source_validate(printer, source),
         },
         Command::Backup { command } => match command {
-            BackupCommand::Run { name } => backup::cmd_backup_run(cli, printer, name.as_deref()),
+            BackupCommand::Run { name } => backup::cmd_backup_run(&run, name.as_deref()),
             BackupCommand::List { name, snapshots } => {
-                backup::cmd_backup_list(cli, printer, name.as_deref(), *snapshots)
+                backup::cmd_backup_list(&run, name.as_deref(), *snapshots)
             }
             BackupCommand::Restore { name, at, to, yes } => backup::cmd_backup_restore(
-                cli,
-                printer,
+                &run,
                 &backup::RestoreArgs {
                     name,
                     at: at.as_deref(),
@@ -3365,9 +3683,9 @@ pub fn execute(
                 },
             ),
             BackupCommand::Rollback { name, yes } => {
-                backup::cmd_backup_rollback(cli, printer, name.as_deref(), *yes)
+                backup::cmd_backup_rollback(&run, name.as_deref(), *yes)
             }
-            BackupCommand::Gc { name } => backup::cmd_backup_gc(cli, printer, name.as_deref()),
+            BackupCommand::Gc { name } => backup::cmd_backup_gc(&run, name.as_deref()),
         },
         Command::Explain {
             resource,
@@ -3413,43 +3731,39 @@ pub fn execute(
         Command::Upgrade {
             check,
             require_cosign,
-        } => upgrade::cmd_upgrade(printer, &cli.config, *check, *require_cosign),
+        } => upgrade::cmd_upgrade(&run, *check, *require_cosign),
         Command::Decide {
             action,
             resource,
             source,
             all,
-        } => decide::cmd_decide(
-            cli,
-            printer,
-            *action,
-            resource.as_deref(),
-            source.as_deref(),
-            *all,
-        ),
+        } => decide::cmd_decide(&run, *action, resource.as_deref(), source.as_deref(), *all),
         Command::Config { command } => match command {
-            ConfigCommand::Show => config_cmd::cmd_config_show(cli, printer),
+            ConfigCommand::Show => config_cmd::cmd_config_show(&run),
             ConfigCommand::Edit => config_cmd::cmd_config_edit(cli, printer),
-            ConfigCommand::Get { key } => config_cmd::cmd_config_get(cli, printer, key),
+            ConfigCommand::Get { key } => config_cmd::cmd_config_get(&run, key),
             ConfigCommand::Set { key, value } => {
                 config_cmd::cmd_config_set(cli, printer, key, value)
             }
             ConfigCommand::Unset { key } => config_cmd::cmd_config_unset(cli, printer, key),
+            ConfigCommand::Migrate { write } => config_schema::cmd_config_migrate(&run, *write),
         },
         Command::Alias { command } => {
-            // cmd_config_* peels `spec` first before walking the dotted path, so the
-            // prefix here is `aliases.` (not `spec.aliases.`) to land at spec.aliases.<name>.
+            use config_cmd::{Asked, alias_key};
             match command {
                 AliasCommand::Set { name, command: cmd } => {
-                    config_cmd::cmd_config_set(cli, printer, &format!("aliases.{name}"), cmd)
+                    let key = alias_key(name)?;
+                    config_cmd::config_set_as(cli, printer, &key, cmd, Asked::alias(name))
                 }
                 AliasCommand::Delete { name } => {
-                    config_cmd::cmd_config_unset(cli, printer, &format!("aliases.{name}"))
+                    let key = alias_key(name)?;
+                    config_cmd::config_unset_as(cli, printer, &key, Asked::alias(name))
                 }
                 AliasCommand::Show { name } => {
-                    config_cmd::cmd_config_get(cli, printer, &format!("aliases.{name}"))
+                    let key = alias_key(name)?;
+                    config_cmd::config_get_as(&run, &key, Asked::alias(name))
                 }
-                AliasCommand::List => alias::cmd_alias_list(cli, printer),
+                AliasCommand::List => alias::cmd_alias_list(&run),
             }
         }
         Command::Workflow { command } => match command {
@@ -3461,13 +3775,7 @@ pub fn execute(
             server_url,
             api_key,
             device_id,
-        } => checkin::cmd_checkin(
-            cli,
-            printer,
-            server_url,
-            api_key.as_deref(),
-            device_id.as_deref(),
-        ),
+        } => checkin::cmd_checkin(&run, server_url, api_key.as_deref(), device_id.as_deref()),
         Command::Enroll {
             server_url,
             token,
@@ -3490,7 +3798,7 @@ pub fn execute(
             clap_mangen::Man::new(Cli::command()).render(&mut std::io::stdout())?;
             Ok(())
         }
-        Command::Generate(args) => generate::cmd_generate(cli, printer, args),
+        Command::Generate(args) => generate::cmd_generate(&run, args),
         Command::Rollback { apply_id, yes } => rollback::cmd_rollback(
             printer,
             *apply_id,
@@ -3502,8 +3810,8 @@ pub fn execute(
             crate::mcp::server::run_mcp_server(&cli.config, cli.state_dir.as_deref(), cli.scope())
         }
         Command::Compliance { command } => match command {
-            None => compliance::cmd_compliance_snapshot(cli, printer),
-            Some(ComplianceCommand::Export) => compliance::cmd_compliance_export(cli, printer),
+            None => compliance::cmd_compliance_snapshot(&run),
+            Some(ComplianceCommand::Export) => compliance::cmd_compliance_export(&run),
             Some(ComplianceCommand::History { since }) => {
                 compliance::cmd_compliance_history(cli, printer, since.as_deref())
             }
@@ -3550,6 +3858,69 @@ pub fn execute(
             ),
         },
     }
+}
+
+/// Parse an argv in-process the way a test needs it: every `env =` binding
+/// the command declares is dropped first, so a variable the developer or the
+/// CI host exported (`CFGD_YES=1`, `CFGD_THEME=…`) never reaches the parse.
+///
+/// `Parser::parse_from` and `Parser::try_parse_from` read the process
+/// environment for every `env =` argument, so a test calling them passes or
+/// fails by what the shell running it exported.
+/// `every_in_process_parse_goes_through_the_hermetic_parser` fails on a direct call.
+#[cfg(any(test, feature = "test-helpers"))]
+pub trait HermeticParse: Parser {
+    /// Parse `argv` with no environment binding in force.
+    fn try_parse_hermetic<I, T>(argv: I) -> Result<Self, clap::Error>
+    where
+        I: IntoIterator<Item = T>,
+        T: Into<std::ffi::OsString> + Clone,
+    {
+        Self::try_parse_reading_env(argv, &[])
+    }
+
+    /// Parse `argv` with only the bindings for the variables in `env` in
+    /// force, for a test that exercises those variables on purpose.
+    fn try_parse_reading_env<I, T>(argv: I, env: &[&str]) -> Result<Self, clap::Error>
+    where
+        I: IntoIterator<Item = T>,
+        T: Into<std::ffi::OsString> + Clone,
+    {
+        let matches = Self::try_matches_reading_env(argv, env)?;
+        <Self as clap::FromArgMatches>::from_arg_matches(&matches)
+    }
+
+    /// The matches [`HermeticParse::try_parse_reading_env`] builds `Self`
+    /// from, for a test that reads where a value came from.
+    fn try_matches_reading_env<I, T>(argv: I, env: &[&str]) -> Result<clap::ArgMatches, clap::Error>
+    where
+        I: IntoIterator<Item = T>,
+        T: Into<std::ffi::OsString> + Clone,
+    {
+        keep_env_bindings(Self::command(), env).try_get_matches_from(argv)
+    }
+}
+
+#[cfg(any(test, feature = "test-helpers"))]
+impl<P: Parser> HermeticParse for P {}
+
+/// `cmd` with every argument's `env =` binding cleared except those naming a
+/// variable in `keep`, through every subcommand. A global argument is declared
+/// on the root and copied down only when the command is built, so clearing it
+/// at the root clears every copy.
+#[cfg(any(test, feature = "test-helpers"))]
+fn keep_env_bindings(cmd: clap::Command, keep: &[&str]) -> clap::Command {
+    cmd.mut_args(|arg| {
+        if arg
+            .get_env()
+            .is_some_and(|var| keep.iter().any(|k| var == *k))
+        {
+            arg
+        } else {
+            arg.env(None::<&str>)
+        }
+    })
+    .mut_subcommands(|sub| keep_env_bindings(sub, keep))
 }
 
 #[cfg(test)]

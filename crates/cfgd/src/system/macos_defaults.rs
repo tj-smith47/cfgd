@@ -8,7 +8,7 @@ use cfgd_core::providers::{SystemConfigurator, SystemContext, SystemDrift};
 use super::{diff_yaml_mapping, read_command_output, yaml_value_with_numeric_bools};
 
 /// Test seam for every `defaults` spawn in this configurator.
-const DEFAULTS_BIN_ENV: &str = "CFGD_DEFAULTS_BIN";
+pub const DEFAULTS_BIN_ENV: &str = "CFGD_DEFAULTS_BIN";
 
 fn defaults_cmd() -> std::process::Command {
     cfgd_core::tool_cmd(DEFAULTS_BIN_ENV, "defaults")

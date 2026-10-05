@@ -8,14 +8,15 @@ use std::time::Duration;
 use semver::Version;
 
 use crate::PathDisplayExt;
+use crate::config::STABLE_UPDATE_CHANNEL;
 use crate::errors::{Result, UpgradeError};
 use crate::output::{Printer, Role};
 
 mod check;
 mod dedup;
 pub use check::{
-    UpdateAction, UpdateCheckEffects, UpdateCheckOutcome, resolve_action, resolved_interval,
-    run_update_check, should_check, update_optout_var,
+    OPTOUT_VARS, UpdateAction, UpdateCheckEffects, UpdateCheckOutcome, effective_update_config,
+    resolve_action, resolved_interval, run_update_check, should_check, update_optout_var,
 };
 pub use dedup::{
     RideAlongOutcome, SkillStaleness, StandaloneSkillAction, StandaloneSkillOutcome,
@@ -25,7 +26,6 @@ pub use dedup::{
 };
 
 const GITHUB_API_BASE: &str = "https://api.github.com";
-const GITHUB_API_BASE_ENV: &str = "CFGD_GITHUB_API_BASE";
 const DEFAULT_REPO: &str = "tj-smith47/cfgd";
 
 /// OIDC issuer asserted by the keyless cosign signature: the GitHub Actions
@@ -54,7 +54,7 @@ const COSIGN_IDENTITY_REGEXP: &str = r"^https://github\.com/tj-smith47/cfgd/\.gi
 /// to redirect at a mockito server; production calls fall through to the
 /// real api.github.com base.
 fn github_api_base() -> String {
-    std::env::var(GITHUB_API_BASE_ENV).unwrap_or_else(|_| GITHUB_API_BASE.to_string())
+    std::env::var(crate::CFGD_GITHUB_API_BASE_ENV).unwrap_or_else(|_| GITHUB_API_BASE.to_string())
 }
 const CACHE_TTL_SECS: u64 = 86400; // 24 hours
 const CACHE_FILENAME: &str = "version-check.json";
@@ -80,14 +80,14 @@ pub struct ReleaseAsset {
     pub size: u64,
 }
 
-/// Cached version check result, persisted to disk.
+/// When the last version check ran, persisted to disk.
+///
+/// Files written before the cache held only the timestamp also carry
+/// `latestTag`, `latestVersion` and `currentVersion`; serde skips them.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct VersionCache {
     checked_at_secs: u64,
-    latest_tag: String,
-    latest_version: String,
-    current_version: String,
 }
 
 /// How the upgrade checksum file was verified. Surfaced in the structured
@@ -226,21 +226,23 @@ fn fetch_newest_release_from(
         })
 }
 
-/// Dispatch the release fetch by channel. `None`, `"stable"`, and any
+/// Dispatch the release fetch by channel. [`STABLE_UPDATE_CHANNEL`] and any
 /// unrecognized value resolve to the stable `releases/latest` path;
 /// `"prerelease"` resolves to the prerelease-inclusive list path. Matching is
-/// case-insensitive. An unrecognized non-stable channel logs a warning and
-/// falls back to stable.
+/// case-insensitive. An unrecognized channel logs a warning and falls back to
+/// stable.
 fn fetch_release_for_channel(
     api_base: &str,
     repo: &str,
-    channel: Option<&str>,
+    channel: &str,
     printer: Option<&Printer>,
 ) -> Result<ReleaseInfo> {
-    match channel.map(str::to_ascii_lowercase).as_deref() {
-        Some("prerelease") => fetch_newest_release_from(api_base, repo, printer),
-        None | Some("stable") => fetch_latest_release_from(api_base, repo, printer),
-        Some(other) => {
+    match channel.to_ascii_lowercase().as_str() {
+        "prerelease" => fetch_newest_release_from(api_base, repo, printer),
+        stable if stable == STABLE_UPDATE_CHANNEL => {
+            fetch_latest_release_from(api_base, repo, printer)
+        }
+        other => {
             tracing::warn!(
                 channel = other,
                 "unknown update channel; tracking stable releases"
@@ -282,18 +284,51 @@ fn github_get(
     }
 }
 
+/// The environment variables a GitHub token is read from, first set one wins.
+/// `GITHUB_TOKEN` leads because it is what a GitHub Actions job exports; `GH_TOKEN`
+/// is the `gh` CLI's own.
+pub const GITHUB_TOKEN_VARS: [&str; 2] = ["GITHUB_TOKEN", "GH_TOKEN"];
+
+/// The GitHub token the release queries authenticate with. An empty value
+/// counts as unset, so `GITHUB_TOKEN=` does not hide a `GH_TOKEN`.
+fn github_token() -> Option<String> {
+    GITHUB_TOKEN_VARS
+        .iter()
+        .find_map(|var| std::env::var(var).ok().filter(|token| !token.is_empty()))
+}
+
 /// The fallible half of [`github_get`]: one `Result` the caller matches once
 /// to settle the spinner, instead of an early `?` abandoning it mid-request.
 fn github_get_inner(url: &str) -> Result<String> {
     let agent = crate::http::http_agent(crate::http::HTTP_UPGRADE_TIMEOUT);
-    let mut response = agent
+    // Status-as-error off for this request only: `ureq::Error::StatusCode`
+    // carries nothing but the code, and telling an exhausted rate limit apart
+    // from any other 403 needs the response headers.
+    let mut request = agent
         .get(url)
+        .config()
+        .http_status_as_error(false)
+        .build()
         .header("Accept", "application/vnd.github+json")
-        .header("User-Agent", "cfgd-self-update")
-        .call()
-        .map_err(|e| UpgradeError::ApiError {
-            message: format!("{}", e),
-        })?;
+        .header("User-Agent", "cfgd-self-update");
+    if let Some(token) = github_token() {
+        request = request.header("Authorization", &format!("Bearer {token}"));
+    }
+    let mut response = request.call().map_err(|e| UpgradeError::ApiError {
+        message: format!("{}", e),
+    })?;
+
+    // not-a-child-ok: an HTTP response's own status code, which starts no process
+    let status = response.status().as_u16();
+    if !(200..300).contains(&status) {
+        if let Some(limited) = rate_limited(status, response.headers()) {
+            return Err(limited.into());
+        }
+        return Err(UpgradeError::ApiError {
+            message: format!("{}", ureq::Error::StatusCode(status)),
+        }
+        .into());
+    }
 
     let body: String =
         response
@@ -304,6 +339,25 @@ fn github_get_inner(url: &str) -> Result<String> {
             })?;
 
     Ok(body)
+}
+
+/// An exhausted primary rate limit, read off a refusal's headers. GitHub
+/// answers one with a 403 or a 429 whose `x-ratelimit-remaining` is 0; any
+/// other refusal, and one missing the limit or its reset, stays a plain status
+/// error because there is nothing more exact to say about it.
+fn rate_limited(status: u16, headers: &ureq::http::HeaderMap) -> Option<UpgradeError> {
+    if status != 403 && status != 429 {
+        return None;
+    }
+    let number =
+        |name: &str| -> Option<u64> { headers.get(name)?.to_str().ok()?.trim().parse().ok() };
+    if number("x-ratelimit-remaining")? != 0 {
+        return None;
+    }
+    Some(UpgradeError::RateLimited {
+        limit: number("x-ratelimit-limit")?,
+        reset_at: crate::unix_secs_to_iso8601(number("x-ratelimit-reset")?),
+    })
 }
 
 fn parse_release_json(body: &str) -> Result<ReleaseInfo> {
@@ -717,6 +771,8 @@ fn stream_chunks_to_file(
 }
 
 /// Compute the SHA256 hex digest of a file.
+// absolute-path-ok: the string handed back is a digest, and the one path render
+// fills a returned error, which keeps the path a reader can act on.
 fn sha256_file(path: &Path) -> std::result::Result<String, UpgradeError> {
     let bytes = fs::read(path).map_err(|e| UpgradeError::DownloadFailed {
         message: format!("read {}: {}", path.posix(), e),
@@ -1146,68 +1202,18 @@ pub fn cleanup_old_binary() {
     // Unix atomic_replace doesn't leave old files
 }
 
-/// Check for an update, using a 24h disk cache to avoid excessive API calls.
-///
-/// `cfgd_version` is the running binary's version (see
-/// [`parse_current_version`]). `channel` selects which release stream to track
-/// on a cache miss (see [`check_latest`]).
-pub fn check_with_cache(
-    cfgd_version: &str,
-    repo: Option<&str>,
-    channel: Option<&str>,
-    printer: Option<&Printer>,
-) -> Result<UpdateCheck> {
-    let repo = repo.unwrap_or(DEFAULT_REPO);
-    let current = parse_current_version(cfgd_version)?;
-
-    // Try reading from cache
-    if let Some(cache) = read_version_cache() {
-        let now = crate::unix_secs_now();
-
-        if now.saturating_sub(cache.checked_at_secs) < CACHE_TTL_SECS {
-            let cached_version =
-                Version::parse(&cache.latest_version).map_err(|e| UpgradeError::VersionParse {
-                    message: format!("cached version: {}", e),
-                })?;
-
-            return Ok(UpdateCheck {
-                update_available: cached_version > current,
-                current,
-                latest: cached_version,
-                release: None,
-            });
-        }
-    }
-
-    // Cache miss or expired — fall through to fresh check + update cache
-    let check = check_latest(cfgd_version, Some(repo), channel, printer)?;
-
-    let _ = write_version_cache(&VersionCache {
-        checked_at_secs: crate::unix_secs_now(),
-        latest_tag: check
-            .release
-            .as_ref()
-            .map(|r| r.tag.clone())
-            .unwrap_or_default(),
-        latest_version: check.latest.to_string(),
-        current_version: check.current.to_string(),
-    });
-
-    Ok(check)
-}
-
 /// Check for an update without using cache. Always queries the API.
 ///
 /// `cfgd_version` is the running binary's version (see
 /// [`parse_current_version`]). `channel` selects which release stream to
-/// track: `None`, `Some("stable")`, or any unrecognized value tracks stable
-/// releases (`releases/latest`, which excludes prereleases);
-/// `Some("prerelease")` tracks the newest release including prereleases.
+/// track: [`STABLE_UPDATE_CHANNEL`] or any unrecognized value tracks stable
+/// releases (`releases/latest`, which excludes prereleases); `"prerelease"`
+/// tracks the newest release including prereleases.
 /// Matching is case-insensitive.
 pub fn check_latest(
     cfgd_version: &str,
     repo: Option<&str>,
-    channel: Option<&str>,
+    channel: &str,
     printer: Option<&Printer>,
 ) -> Result<UpdateCheck> {
     let repo = repo.unwrap_or(DEFAULT_REPO);
@@ -1271,29 +1277,12 @@ pub fn last_checked_secs() -> Option<u64> {
     read_version_cache().map(|c| c.checked_at_secs)
 }
 
-/// Record that a version check ran at `now` (Unix seconds), updating only the
-/// timestamp on the persisted cache. Best-effort: a write failure is logged and
-/// swallowed so a non-writable cache dir never fails a normal command.
-///
-/// `cfgd_version` is the running binary's version (see
-/// [`parse_current_version`]). Preserves the cached version strings when a
-/// prior cache exists; otherwise it stamps the timestamp against the running
-/// version with empty latest fields (which a subsequent real check overwrites
-/// via [`check_with_cache`]).
-pub fn record_check_at(cfgd_version: &str, now: u64) {
-    let cache = match read_version_cache() {
-        Some(mut c) => {
-            c.checked_at_secs = now;
-            c
-        }
-        None => VersionCache {
-            checked_at_secs: now,
-            latest_tag: String::new(),
-            latest_version: parse_current_version(cfgd_version)
-                .map(|v| v.to_string())
-                .unwrap_or_default(),
-            current_version: cfgd_version.to_string(),
-        },
+/// Record that a version check ran at `now` (Unix seconds). Best-effort: a
+/// write failure is logged and swallowed so a non-writable cache dir never
+/// fails a normal command.
+pub fn record_check_at(now: u64) {
+    let cache = VersionCache {
+        checked_at_secs: now,
     };
     if let Err(e) = write_version_cache(&cache) {
         tracing::warn!(error = %e, "failed to record update-check timestamp");

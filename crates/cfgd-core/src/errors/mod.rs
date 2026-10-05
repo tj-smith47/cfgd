@@ -8,6 +8,8 @@ pub type Result<T> = std::result::Result<T, CfgdError>;
 
 /// Render a path list as `'a', 'b', 'c'` (posix separators) for single-line
 /// error messages that must name every candidate.
+// absolute-path-ok: the list lands in a `thiserror` message, which keeps
+// the path a reader can act on, as every other returned error does.
 fn join_quoted_posix(paths: &[PathBuf]) -> String {
     paths
         .iter()
@@ -110,22 +112,29 @@ impl CfgdError {
     }
 }
 
-#[derive(Debug, thiserror::Error)]
+// `Clone` so one load result can answer every reader of the startup
+// document; the parser errors are not `Clone`, so they are shared.
+#[derive(Debug, Clone, thiserror::Error)]
 pub enum ConfigError {
     #[error("config file not found: {path}")]
     NotFound { path: PathBuf },
 
     #[error(
-        "cannot resolve home directory (HOME unset) to locate config at {path}; set HOME or pass --config <path>"
+        "cannot resolve home directory ({vars} unset) to locate config at {path}; set {var} or pass --config <path>",
+        vars = crate::HOME_ENV_VARS,
+        var = crate::HOME_ENV_VAR
     )]
     HomeUnresolved { path: PathBuf },
 
     #[error("invalid config: {message}")]
     Invalid { message: String },
 
+    // The accepted set is read off the conversion table. A build carrying a
+    // second row accepts a version `crate::API_VERSION` does not name, and a
+    // refusal reading the constant would call it unsupported.
     #[error(
         "unsupported apiVersion {found:?}; this build supports {}",
-        crate::API_VERSION
+        crate::config::readable_api_versions(crate::config::API_VERSION_CONVERSIONS)
     )]
     UnsupportedApiVersion { found: String },
 
@@ -137,8 +146,16 @@ pub enum ConfigError {
 
     // No "in config" here: this variant renders under `CfgdError::Config`'s own
     // "config error: " prefix, and the two together said config twice.
-    #[error("key '{key}' not found")]
-    KeyNotFound { key: String },
+    #[error(
+        "key '{key}' not found{}",
+        undeclared.as_ref().map(|segment| format!(" ('{segment}' is not declared)")).unwrap_or_default()
+    )]
+    KeyNotFound {
+        key: String,
+        /// The first segment of `key` the document does not declare, where
+        /// it is shorter than `key`.
+        undeclared: Option<String>,
+    },
 
     #[error(
         "ambiguous profile '{name}': multiple forms exist ({forms}) — delete or rename one of them (the canonical form is '{name}/profile.yaml')",
@@ -147,10 +164,22 @@ pub enum ConfigError {
     AmbiguousProfile { name: String, paths: Vec<PathBuf> },
 
     #[error("yaml parse error: {0}")]
-    Yaml(#[from] serde_yaml::Error),
+    Yaml(#[source] std::sync::Arc<serde_yaml::Error>),
 
     #[error("toml parse error: {0}")]
-    Toml(#[from] toml::de::Error),
+    Toml(#[source] std::sync::Arc<toml::de::Error>),
+}
+
+impl From<serde_yaml::Error> for ConfigError {
+    fn from(error: serde_yaml::Error) -> Self {
+        Self::Yaml(std::sync::Arc::new(error))
+    }
+}
+
+impl From<toml::de::Error> for ConfigError {
+    fn from(error: toml::de::Error) -> Self {
+        Self::Toml(std::sync::Arc::new(error))
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -303,6 +332,14 @@ pub enum PackageError {
     // a declared route runs no cascade at all.
     #[error("{message}")]
     BootstrapFailed { manager: String, message: String },
+
+    // The manager IS on the machine and would run; what forbids it is the
+    // declaring module's own floor, which this run already judged unmet. The
+    // message carries the whole reason because `ManagerNotAvailable`'s recovery
+    // (run the Bootstrap phase) is the wrong advice here: no phase raises a
+    // toolchain, the operator does.
+    #[error("{message}")]
+    ManagerBelowFloor { manager: String, message: String },
 
     // The manager is not registered at all — no phase can provision a name
     // that does not exist, so this carries no phase-run guidance (unlike
@@ -595,6 +632,11 @@ pub enum StateError {
     #[error("migration failed: {message}")]
     MigrationFailed { message: String },
 
+    /// The store's `store_identity` table holds no row, which only a
+    /// hand-edited database reaches: migration 30 mints one for every store.
+    #[error("the state store carries no identity: its store_identity table is empty")]
+    IdentityMissing,
+
     #[error("state directory not writable: {path}")]
     DirectoryNotWritable { path: PathBuf },
 
@@ -609,6 +651,16 @@ pub enum StateError {
     #[error("cannot locate the per-user {role} directory: no home directory found")]
     HomeDirectoryUnresolved { role: &'static str },
 
+    /// A path override leads with `~` and no home directory resolves it. Used
+    /// as written it would name a directory called `~` under the working
+    /// directory, which nobody means and a later `rm -r ~` cleanup endangers.
+    #[error(
+        "cannot expand {path} for the {role}: no home directory found ({vars} unset); set {var} or give an absolute path",
+        vars = crate::HOME_ENV_VARS,
+        var = crate::HOME_ENV_VAR
+    )]
+    HomeUnresolved { role: &'static str, path: PathBuf },
+
     #[error("state filesystem I/O failed at {path}: {source}")]
     FilesystemIo {
         path: PathBuf,
@@ -619,6 +671,19 @@ pub enum StateError {
     #[error("state serialization failed ({context}): {source}")]
     Serialize {
         context: &'static str,
+        #[source]
+        source: serde_json::Error,
+    },
+
+    // The plan hash IS the serialization of the actions, so an action that
+    // cannot be written has no hash to contribute and no honest one to omit:
+    // dropping it would let two different plans record the same
+    // `applies.plan_hash`. The action is named the way every other reader of
+    // one names it, by its `(type, id)` pair.
+    #[error("the {rtype} action '{rid}' cannot be serialized, so the plan has no hash: {source}")]
+    PlanActionUnserializable {
+        rtype: String,
+        rid: String,
         #[source]
         source: serde_json::Error,
     },
@@ -824,6 +889,13 @@ pub enum UpgradeError {
     #[error("failed to query GitHub releases: {message}")]
     ApiError { message: String },
 
+    #[error(
+        "GitHub API rate limit of {limit} requests is used up until {reset_at}; set {} or {} to a GitHub token to raise it",
+        crate::upgrade::GITHUB_TOKEN_VARS[0],
+        crate::upgrade::GITHUB_TOKEN_VARS[1]
+    )]
+    RateLimited { limit: u64, reset_at: String },
+
     #[error("no release found for {os}/{arch}")]
     NoAsset { os: String, arch: String },
 
@@ -1001,6 +1073,32 @@ pub enum OciError {
     #[error("manifest not found: {reference}")]
     ManifestNotFound { reference: String },
 
+    #[error(
+        "cannot push a module to digest reference {reference}: a digest names one manifest \
+         and cannot be re-pointed at an index of platforms; push to a tag"
+    )]
+    PushToDigest { reference: String },
+
+    #[error(
+        "{reference} holds a manifest with no {annotation} annotation, so its platform cannot \
+         be listed in an index beside the one being pushed; delete that tag in the registry, \
+         or push to a different tag"
+    )]
+    TagPlatformUnknown {
+        reference: String,
+        annotation: String,
+    },
+
+    #[error(
+        "{reference} lists no manifest for {platform}; it holds {}",
+        if available.is_empty() { "none".to_string() } else { available.join(", ") }
+    )]
+    PlatformNotInIndex {
+        reference: String,
+        platform: String,
+        available: Vec<String>,
+    },
+
     #[error("blob not found: {digest}")]
     BlobNotFound { digest: String },
 
@@ -1035,6 +1133,33 @@ pub enum OciError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_config_unset_home_error_names_the_home_variables_this_os_reads() {
+        let message = ConfigError::HomeUnresolved {
+            path: PathBuf::from("~/cfgd.yaml"),
+        }
+        .to_string();
+        assert!(
+            message.contains(&format!("({} unset)", crate::HOME_ENV_VARS))
+                && message.contains(&format!("set {} or", crate::HOME_ENV_VAR)),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn the_directory_unset_home_error_names_the_home_variables_this_os_reads() {
+        let message = StateError::HomeUnresolved {
+            role: "state directory",
+            path: PathBuf::from("~/s"),
+        }
+        .to_string();
+        assert!(
+            message.contains(&format!("({} unset)", crate::HOME_ENV_VARS))
+                && message.contains(&format!("set {} or", crate::HOME_ENV_VAR)),
+            "{message}"
+        );
+    }
 
     /// No error a row renders opens on a category label.
     ///
@@ -1120,7 +1245,9 @@ mod tests {
             ),
         ];
 
-        let src = include_str!("mod.rs");
+        let src = crate::test_helpers::walked_file_body(
+            &crate::test_helpers::workspace_root().join("crates/cfgd-core/src/errors/mod.rs"),
+        );
         let start = src
             .find("pub enum CfgdError {")
             .expect("CfgdError is declared in this file");

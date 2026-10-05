@@ -188,6 +188,7 @@ mod tests {
     fn config_key_not_found_maps_to_not_found() {
         let err = CfgdError::Config(ConfigError::KeyNotFound {
             key: "theme.nope".into(),
+            undeclared: None,
         });
         assert_eq!(exit_code_for_error(&err), ExitCode::NotFound);
     }

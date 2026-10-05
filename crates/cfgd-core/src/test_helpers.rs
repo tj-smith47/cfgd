@@ -1266,6 +1266,7 @@ pub fn install_tracing_journal() {
     static INSTALL: std::sync::Once = std::sync::Once::new();
     INSTALL.call_once(|| {
         let subscriber = tracing_subscriber::fmt()
+            // long-line-ok: a hatch is read off its own line, so it cannot wrap
             // unfolded-writer-ok: a test capture read back as a String, not a stream anyone is looking at
             .with_writer(TracingJournalWriter)
             .with_max_level(tracing::Level::INFO)
@@ -1356,11 +1357,11 @@ pub fn captured_text(buf: &std::sync::Arc<std::sync::Mutex<String>>) -> String {
 /// `Printer::for_test()`) so it drops in as a direct replacement in fixtures
 /// that don't assert on captured output.
 ///
-/// Built from the capture constructor and not from `Printer::new`, because
-/// `new` inherits the terminal the suite was invoked from: under a pty that
-/// printer reports a live region AND a human at stdin, so a command reaching
-/// an unanswered confirmation prompt BLOCKS for the rest of the run instead of
-/// refusing. Discarding the buffer keeps the surface identical (Quiet, Table).
+/// Built from the capture constructor, because `Printer::new` inherits the
+/// terminal the suite was invoked from: under a pty that printer reports a live
+/// region AND a human at stdin, so a command reaching an unanswered
+/// confirmation prompt BLOCKS for the rest of the run where it should refuse.
+/// Discarding the buffer keeps the surface identical (Quiet, Table).
 pub fn test_printer() -> crate::output::Printer {
     crate::output::Printer::for_test().0
 }
@@ -1463,9 +1464,13 @@ pub fn blank_string_literals(line: &str) -> String {
 /// whole body that has already been through [`blank_string_literals`], or the
 /// walk reads a spelling inside a literal as a call.
 pub fn calls_free_fn(code: &str, name: &str) -> bool {
-    let needle = format!("{name}(");
+    calls_through(code, &format!("{name}("))
+}
+
+/// [`calls_free_fn`] over a prebuilt `name(` needle.
+fn calls_through(code: &str, needle: &str) -> bool {
     let mut from = 0;
-    while let Some(at) = code[from..].find(&needle) {
+    while let Some(at) = code[from..].find(needle) {
         let at = from + at;
         let before = code[..at].chars().next_back();
         if !before.is_some_and(|c| c == '.' || c.is_ascii_alphanumeric() || c == '_') {
@@ -1489,6 +1494,149 @@ pub fn code_line(line: &str) -> String {
     }
 }
 
+/// The same span of the RAW line: everything before the trailing `//` comment,
+/// with the literals still readable.
+///
+/// [`code_line`] answers where the code ends, on a copy whose literal bodies
+/// are blanked so a `//` written inside one does not cut early; that copy
+/// indexes the raw line byte for byte, so its length is the cut. Reach for this
+/// one where the tell a walk looks for is written INSIDE a literal, which
+/// [`code_line`]'s own return would have spaced out, and for [`code_line`]
+/// where a tell inside a literal must NOT count.
+#[must_use]
+pub fn code_span(line: &str) -> &str {
+    &line[..code_line(line).len()]
+}
+
+/// A whole source body as CODE, byte-for-byte: every literal body blanked
+/// (quotes kept, as [`blank_string_literals`] does per line), every `//` and
+/// `/* … */` comment blanked WHOLE (delimiters included), newlines kept, and
+/// the masking state carried across rows by `LineMask`, so a brace or a
+/// tell found on the result indexes the raw body exactly.
+///
+/// [`code_line`] answers the same question for ONE line, and that bound is
+/// what a hand-rolled brace matcher kept re-discovering: a literal or a block
+/// comment spanning rows leaves every row below the first read as code, so a
+/// `{` written inside one grows a span past its closing brace and a statement
+/// written inside one stands in for a line that runs. Both pass silently, and
+/// are found only by whoever writes the next fixture. Reach for this wherever a
+/// walk matches braces over a whole body or asks whether a span holds a call,
+/// and slice the RAW body at the positions found here.
+pub fn blank_non_code(body: &str) -> String {
+    mask_body(body, Blanked::NonCode)
+}
+
+/// The same body with its COMMENTS alone blanked, delimiters included, and
+/// every literal body left as it stands.
+///
+/// [`blank_non_code`] answers where the code is; this one answers which bytes
+/// a reader of the raw text must not see. A walk reading an argument, a
+/// message or a name AS WRITTEN needs the literals: two literals of one length
+/// are two values, and blanked they are one run of spaces. A comment is the
+/// opposite: it belongs to nothing around it, so bytes left standing inside a
+/// call are pushed into whichever argument follows and make one value written
+/// twice read as two that differ.
+pub fn blank_comments(body: &str) -> String {
+    mask_body(body, Blanked::CommentsOnly)
+}
+
+/// The same body with its LITERAL bodies alone blanked, quotes kept and every
+/// comment left as it stands: the text a hatch is read from.
+///
+/// A marker is a hatch only where a maintainer wrote it as a comment. Read off
+/// the raw body, the const or fixture string that spells a marker hatches the
+/// function holding it; read off this, [`carries_hatch`] sees comment text and
+/// code alone, and code cannot spell a marker outside a literal.
+pub fn blank_literals(body: &str) -> String {
+    mask_body(body, Blanked::LiteralsOnly)
+}
+
+/// Which bytes a masking pass writes as spaces.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Blanked {
+    /// Every literal body and every comment.
+    NonCode,
+    /// Comments alone.
+    CommentsOnly,
+    /// Literal bodies alone.
+    LiteralsOnly,
+}
+
+fn mask_body(body: &str, blanked: Blanked) -> String {
+    let mut out = body.as_bytes().to_vec();
+    let mut mask = LineMask::default();
+    let mut at = 0;
+    for row in body.split_inclusive('\n') {
+        // The terminator is excluded so the line-comment arm cannot blank it:
+        // a report reading this back by row needs the same row count.
+        let text = row
+            .strip_suffix('\n')
+            .map_or(row, |r| r.strip_suffix('\r').unwrap_or(r));
+        mask.advance_into(text, &mut out[at..at + text.len()], blanked);
+        at += row.len();
+    }
+    // Every byte written is an ASCII space and every delimiter left standing
+    // is ASCII, so the buffer is valid UTF-8 by construction.
+    String::from_utf8(out).unwrap_or_else(|_| body.to_string())
+}
+
+/// Blank `out[from..to]`, clamped to what `out` holds. An empty `out` is the
+/// state-only caller, for whom every call is a no-op.
+fn blank(out: &mut [u8], from: usize, to: usize) {
+    let to = to.min(out.len());
+    if from < to {
+        out[from..to].fill(b' ');
+    }
+}
+
+/// [`blank`] where this pass blanks literal bodies at all.
+fn blank_literal(blanked: Blanked, out: &mut [u8], from: usize, to: usize) {
+    if blanked != Blanked::CommentsOnly {
+        blank(out, from, to);
+    }
+}
+
+/// [`blank`] where this pass blanks comments at all.
+fn blank_comment(blanked: Blanked, out: &mut [u8], from: usize, to: usize) {
+    if blanked != Blanked::LiteralsOnly {
+        blank(out, from, to);
+    }
+}
+
+/// Whether a source line is a plain `//` comment: a `///` or `//!` doc comment
+/// answers false.
+///
+/// Every hatch a source-walking pin reads is maintainer text, which
+/// `critical.md` rule 8 puts in a `//` comment; a `///` block is USER text, and
+/// on a `JsonSchema` type it IS the published schema's description. A lookup
+/// that asks only `starts_with("//")` therefore accepts the reason in the one
+/// place the repo forbids writing it — and, worse, lets a rustdoc paragraph
+/// that merely QUOTES a marker while describing its rule hatch whatever item
+/// sits below it. Reach for this wherever a walk decides that a comment line
+/// carries its marker.
+pub fn is_plain_line_comment(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    trimmed.starts_with("//") && !trimmed.starts_with("///") && !trimmed.starts_with("//!")
+}
+
+/// Whether this source line carries `marker` as a HATCH — the marker written
+/// where a walk will read it; a marker merely spelled somewhere on the line
+/// does not count.
+///
+/// A hatch is written either as a comment line of its own above the subject or
+/// as a trailing comment on the subject itself, so both shapes answer true. A
+/// `///` or `//!` line does not: see [`is_plain_line_comment`] for why, and for
+/// the rustdoc lines in this tree that quote a marker while describing its
+/// rule, each of which a bare `contains` would have let hatch the item
+/// directly below it. A marker inside a string literal on a code line is data
+/// the line holds, so the literals are blanked before the lookup. Reach for this
+/// in place of `line.contains(marker)` at every site that decides whether a
+/// subject is exempt.
+pub fn carries_hatch(line: &str, marker: &str) -> bool {
+    (is_plain_line_comment(line) || !line.trim_start().starts_with("//"))
+        && blank_string_literals(line).contains(marker)
+}
+
 /// The name a function declaration on this CODE line declares, if it declares
 /// one. A generic declaration (`fn foo<T>(`) is one.
 pub fn declared_fn_name(code: &str) -> Option<String> {
@@ -1504,7 +1652,10 @@ pub fn declared_fn_name(code: &str) -> Option<String> {
 pub fn impl_owner(code: &[String], at: usize) -> Option<String> {
     (0..at).rev().find_map(|i| {
         let head = code[i].trim_start();
-        if !head.starts_with("impl ") {
+        // Read through the item's lead, so a generic `impl<'a> Type<'a>` and an
+        // `unsafe impl` are impl heads too; the bare spelling alone handed the
+        // functions of a generic impl to whichever impl above it was still open.
+        if !head.contains("impl") || item_keyword(head) != "impl" {
             return None;
         }
         let depth: i32 = code[i..at]
@@ -1532,46 +1683,131 @@ pub fn impl_owner(code: &[String], at: usize) -> Option<String> {
 /// The body is brace-balanced from the `fn` line, so a nested declaration is
 /// read as itself as well as inside its parent.
 pub fn fn_declarations(src: &str) -> Vec<(String, Option<String>, String)> {
+    declared_rows(src).into_iter().map(|(row, _)| row).collect()
+}
+
+/// One [`fn_declarations`] row and the lines of its source it spans.
+type SpannedRow = (
+    (String, Option<String>, String),
+    std::ops::RangeInclusive<usize>,
+);
+
+/// [`fn_declarations`] rows, each with the lines of `src` it spans.
+fn declared_rows(src: &str) -> Vec<SpannedRow> {
     let code: Vec<String> = src.lines().map(code_line).collect();
     let mut out = Vec::new();
     for (i, line) in code.iter().enumerate() {
         let Some(name) = declared_fn_name(line) else {
             continue;
         };
-        let mut depth = 0i32;
-        let mut opened = false;
-        let mut end = i;
-        for (n, c) in code.iter().enumerate().skip(i) {
-            depth += c.matches('{').count() as i32 - c.matches('}').count() as i32;
-            opened |= depth > 0;
-            end = n;
-            if opened && depth <= 0 {
-                break;
-            }
-        }
-        out.push((name, impl_owner(&code, i), code[i..=end].join("\n")));
+        let end = declaration_end(&code, i);
+        out.push((
+            (name, impl_owner(&code, i), code[i..=end].join("\n")),
+            i..=end,
+        ));
     }
     out
+}
+
+/// The line on which the declaration opened on line `start` of `code` closes:
+/// the first line after its first `{` where the brace depth is back to zero,
+/// or the last line when it never is.
+///
+/// `code` is CODE, one entry per source line with literals and comments
+/// blanked ([`code_line`] per line or [`blank_non_code`] over the body), so a
+/// brace inside either does not move the depth. Bounding a function by its own
+/// close keeps a declaration below it out of its body.
+pub fn declaration_end<S: AsRef<str>>(code: &[S], start: usize) -> usize {
+    let mut depth = 0i32;
+    let mut opened = false;
+    let mut end = start;
+    for (n, c) in code.iter().enumerate().skip(start) {
+        let c = c.as_ref();
+        depth += c.matches('{').count() as i32 - c.matches('}').count() as i32;
+        // A body opened and closed on one line (`fn f() {}`) never leaves
+        // depth zero, so the opening is read off the line's own `{`.
+        opened |= c.contains('{');
+        end = n;
+        if opened && depth <= 0 {
+            break;
+        }
+    }
+    end
 }
 
 /// Whether this CODE reaches the function `name` declared in `owner`'s impl.
 ///
 /// A free function is reached by a call; a method is reached by `.name(` on a
-/// value of its own type, which is why the owner has to be named as well: one
+/// value of its own type, or by the path call `Owner::name(` an associated
+/// function takes, which is why the owner has to be named as well: one
 /// `path_dirs` per manager, and only one of them reads a given seam. A
 /// derivation asking [`calls_free_fn`] alone stops at the first wrapper written
 /// as a method, and everything reaching the seam through it is never derived.
 ///
-/// The owner is matched by MENTION, not by resolving the receiver's type, so
-/// the method arm errs toward claiming a reach: a body calling `.name(` on some
-/// other value while naming the type anywhere reads as a caller. Every consumer
-/// must therefore be a superset check, where an extra name costs a wider
-/// population rather than a missed one.
+/// The owner is matched by MENTION, so the method arm errs toward claiming a
+/// reach: a body calling `.name(` on some other value while naming the type
+/// anywhere reads as a caller. Every consumer must therefore be a superset
+/// check, where an extra name costs a wider population and no missed member.
+/// A mention starts at an identifier boundary, so `InlineTable::new(` is no
+/// call of `Table::new`.
 pub fn reaches_fn(code: &str, name: &str, owner: Option<&str>) -> bool {
-    match owner {
-        None => calls_free_fn(code, name),
-        Some(ty) => code.contains(&format!(".{name}(")) && code.contains(ty),
+    Callee::new(name, owner).reached_by(code)
+}
+
+/// The call spellings reaching one declared function, built once so a fold
+/// testing every declaration against it formats nothing per body.
+struct Callee<'a> {
+    owner: Option<&'a str>,
+    free: String,
+    method: String,
+    path: String,
+    self_path: String,
+    self_method: String,
+}
+
+impl<'a> Callee<'a> {
+    fn new(name: &str, owner: Option<&'a str>) -> Self {
+        Self {
+            owner,
+            free: format!("{name}("),
+            method: format!(".{name}("),
+            path: format!("{}::{name}(", owner.unwrap_or_default()),
+            self_path: format!("Self::{name}("),
+            self_method: format!("self.{name}("),
+        }
     }
+
+    /// [`reaches_fn`]'s answer for `code`.
+    fn reached_by(&self, code: &str) -> bool {
+        match self.owner {
+            None => calls_through(code, &self.free),
+            Some(ty) => {
+                (code.contains(&self.method) && starts_at_boundary(code, ty))
+                    || starts_at_boundary(code, &self.path)
+            }
+        }
+    }
+
+    /// Whether a body declared in `caller_owner`'s impl reaches this function:
+    /// [`reaches_fn`], or, inside the same impl, the `Self::name(` and
+    /// `self.name(` calls that never spell the type out.
+    fn reached_from(&self, code: &str, caller_owner: Option<&str>) -> bool {
+        self.reached_by(code)
+            || (self.owner.is_some()
+                && caller_owner == self.owner
+                && (starts_at_boundary(code, &self.self_path)
+                    || starts_at_boundary(code, &self.self_method)))
+    }
+}
+
+/// Whether `needle` occurs in `code` with no identifier character before it.
+fn starts_at_boundary(code: &str, needle: &str) -> bool {
+    code.match_indices(needle).any(|(at, _)| {
+        !code[..at]
+            .chars()
+            .next_back()
+            .is_some_and(|c| c.is_alphanumeric() || c == '_')
+    })
 }
 
 /// Every declaration reaching one of `seeds`, folded until the set stops
@@ -1585,13 +1821,19 @@ pub fn reaches_fn(code: &str, name: &str, owner: Option<&str>) -> bool {
 /// The self-call skip compares the whole `(name, owner)` pair, because two
 /// distinct functions sharing a bare name would otherwise collapse and a
 /// genuine edge between them be dropped.
-pub fn callers_reaching(
-    declarations: &[(String, Option<String>, String)],
+///
+/// The declarations are anything borrowing a `(name, owner, body)` row, so a
+/// fold over a shared, memoised set with a few rows held out takes references
+/// to the rows it keeps and copies no body.
+pub fn callers_reaching<D: std::borrow::Borrow<(String, Option<String>, String)>>(
+    declarations: &[D],
     seeds: &[(String, Option<String>)],
 ) -> Vec<(String, Option<String>)> {
     let mut derived: Vec<(String, Option<String>)> = Vec::new();
+    let mut seen: std::collections::HashSet<(String, Option<String>)> =
+        std::collections::HashSet::new();
     for seed in seeds {
-        if !derived.contains(seed) {
+        if seen.insert(seed.clone()) {
             derived.push(seed.clone());
         }
     }
@@ -1599,14 +1841,16 @@ pub fn callers_reaching(
     while !frontier.is_empty() {
         let mut next: Vec<(String, Option<String>)> = Vec::new();
         for (name, owner) in &frontier {
-            for (caller, caller_owner, body) in declarations {
+            let callee = Callee::new(name, owner.as_deref());
+            for declaration in declarations {
+                let (caller, caller_owner, body) = declaration.borrow();
                 if (caller, caller_owner) == (name, owner)
-                    || !reaches_fn(body, name, owner.as_deref())
+                    || !callee.reached_from(body, caller_owner.as_deref())
                 {
                     continue;
                 }
                 let entry = (caller.clone(), caller_owner.clone());
-                if !derived.contains(&entry) && !next.contains(&entry) {
+                if seen.insert(entry.clone()) {
                     next.push(entry);
                 }
             }
@@ -1629,21 +1873,23 @@ pub fn callers_reaching(
 /// and a RAW literal has no escapes at all, so neither the line opening one
 /// nor any line inside it can be continued.
 ///
-/// The raw-literal scan ignores ordinary string literals, so an `r#` written
-/// inside one is read as an opener. That direction is the safe one: it can
-/// only SUPPRESS a fold — costing a walk one offender it would have caught —
-/// never join two lines that were never one.
+/// Which rows are source at all is `LineMask`'s answer: an `r#` written
+/// inside an ordinary literal or a comment is masked, so the scan stays in step
+/// with the rows below it. A scan tracking raw literals alone reads the `r"`
+/// ending a word like `"…provider"` as one, and the rows below it are glued
+/// onto the line that word sits on until the next quote closes the literal it
+/// thinks it is in.
 pub fn logical_source_lines(body: &str) -> Vec<(usize, String)> {
     let mut out: Vec<(usize, String)> = Vec::new();
     let mut continues = false;
-    let mut raw_hashes: Option<usize> = None;
+    let mut mask = LineMask::default();
     for (n, line) in body.lines().enumerate() {
-        let opened_inside_raw = raw_hashes.is_some();
-        scan_raw_literals(line, &mut raw_hashes);
+        let opened_inside_raw = mask.in_raw();
+        mask.advance(line);
         let trimmed = line.trim_end();
         let trailing = trimmed.chars().rev().take_while(|c| *c == '\\').count();
         let opens_next =
-            !opened_inside_raw && raw_hashes.is_none() && trailing % 2 == 1 && !trimmed.is_empty();
+            !opened_inside_raw && !mask.in_raw() && trailing % 2 == 1 && !trimmed.is_empty();
         let piece = if opens_next {
             &trimmed[..trimmed.len() - 1]
         } else {
@@ -1656,6 +1902,62 @@ pub fn logical_source_lines(body: &str) -> Vec<(usize, String)> {
         continues = opens_next;
     }
     out
+}
+
+/// A Rust source's lines with every literal that spans rows folded onto the
+/// row it opened on, paired with that row's 1-based number.
+///
+/// [`logical_source_lines`] joins the `\`-continued form alone, so a walk
+/// reading it still cannot see INTO a literal carrying a real newline: the
+/// rows below the opening one match no quote pair, and the literal is skipped
+/// whole. Here both forms fold, and the real newline is KEPT in the folded
+/// text, so a reader judging the body sees the same line breaks the literal
+/// prints.
+///
+/// A raw literal spanning rows is left alone, and so is every row inside one:
+/// it reproduces another file's bytes, where a quote is that fixture's text
+/// and delimits nothing. `LineMask` is what earns that claim — a quote
+/// inside an ordinary literal or a comment is not a delimiter either, and a
+/// scanner reading bytes alone takes the `r"` at the end of `"…provider"` for
+/// an opener and desynchronizes every row below it.
+pub fn folded_literal_lines(body: &str) -> Vec<(usize, String)> {
+    let mut out: Vec<(usize, String)> = Vec::new();
+    let mut mask = LineMask::default();
+    let mut continues = false;
+    for (n, text) in logical_source_lines(body) {
+        let opened_inside_raw = mask.in_raw();
+        mask.advance(&text);
+        match out.last_mut() {
+            Some((_, acc)) if continues => {
+                acc.push('\n');
+                acc.push_str(&text);
+            }
+            _ => out.push((n, text)),
+        }
+        continues = !opened_inside_raw
+            && !mask.in_raw()
+            && out
+                .last()
+                .is_some_and(|(_, acc)| leaves_a_plain_literal_open(acc));
+    }
+    out
+}
+
+/// Whether `line` opens a plain string literal it does not close, so the row
+/// below it is that same literal's continuation.
+///
+/// The BLANKED line answers it: every literal body is spaces there, so the
+/// quotes left standing are delimiters alone, an odd count leaves exactly one
+/// opener unmatched, and that opener is the last of them. A raw literal's
+/// opener carries its `r` and its hashes ahead of the quote, which is what
+/// tells the two apart.
+fn leaves_a_plain_literal_open(line: &str) -> bool {
+    let code = code_line(line);
+    if code.bytes().filter(|b| *b == b'"').count() % 2 == 0 {
+        return false;
+    }
+    code.rfind('"')
+        .is_some_and(|opener| !code[..opener].trim_end_matches('#').ends_with('r'))
 }
 
 /// A raw literal opening at `bytes[i]` (`r`, some `#`s, a `"`): its hash
@@ -1680,29 +1982,145 @@ pub(crate) fn raw_string_closes(bytes: &[u8], i: usize, open: usize) -> bool {
     bytes[i] == b'"' && bytes[i + 1..].iter().take_while(|b| **b == b'#').count() >= open
 }
 
-/// Advance the raw-literal state across one physical line: `r`, some `#`s and
-/// a `"` opens one; a `"` followed by the same number of `#`s closes it.
-fn scan_raw_literals(line: &str, hashes: &mut Option<usize>) {
-    let bytes = line.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
-        match *hashes {
-            Some(open) => {
+/// The walk's masking state across physical lines: whatever a line sits
+/// inside of that makes its text NOT source — a raw literal, an ordinary
+/// `"…"` literal (a `\`-continued one included: the escape arm keeps
+/// `in_plain` latched across the break), or a block comment.
+#[derive(Default)]
+pub(crate) struct LineMask {
+    pub(crate) raw_hashes: Option<usize>,
+    pub(crate) in_plain: bool,
+    pub(crate) comment_depth: usize,
+    /// Byte offset at which the line just advanced across stopped being
+    /// masked, when it began masked and ended one of its states.
+    pub(crate) resumed_at: Option<usize>,
+}
+
+impl LineMask {
+    /// Advance across one physical line: raw literals by the fold layer's own
+    /// open/close arithmetic, ordinary literals escape-aware (`\"` does not
+    /// close one, `\\` does not escape what follows), char literals whole
+    /// (`'"'` must not open plain-string state, while a lifetime's lone `'`
+    /// is left alone), `//` cutting the line and `/* … */` nesting across
+    /// lines.
+    pub(crate) fn advance(&mut self, line: &str) {
+        self.advance_into(line, &mut [], Blanked::NonCode);
+    }
+
+    /// [`advance`](Self::advance) blanking as it steps: every byte it passes
+    /// over as comment text (delimiters included) is written as a space in
+    /// `out`, which holds that same line's bytes, unless the caller asked for
+    /// [`Blanked::LiteralsOnly`], and so is every literal body unless the
+    /// caller asked for [`Blanked::CommentsOnly`].
+    ///
+    /// One state machine answers both questions, so a syntax the masking
+    /// knows cannot be one the blanking misses. The hand-rolled scanners this
+    /// replaced each carried a different subset of the arms, and every round
+    /// of review found the next syntax one of them had never learned. `out`
+    /// may be shorter than the line, empty included, for a caller that wants
+    /// the state alone.
+    fn advance_into(&mut self, line: &str, out: &mut [u8], blanked: Blanked) {
+        let bytes = line.as_bytes();
+        let mut i = 0;
+        self.resumed_at = None;
+        while i < bytes.len() {
+            if let Some(open) = self.raw_hashes {
                 if raw_string_closes(bytes, i, open) {
-                    *hashes = None;
+                    self.raw_hashes = None;
                     i += 1 + open;
-                    continue;
+                    self.resumed_at.get_or_insert(i);
+                } else {
+                    blank_literal(blanked, out, i, i + 1);
+                    i += 1;
                 }
+                continue;
             }
-            None => {
-                if let Some(open) = raw_string_open(bytes, i) {
-                    *hashes = Some(open);
-                    i += 2 + open;
-                    continue;
+            if self.in_plain {
+                match bytes[i] {
+                    b'\\' => {
+                        blank_literal(blanked, out, i, i + 2);
+                        i += 2;
+                    }
+                    b'"' => {
+                        self.in_plain = false;
+                        i += 1;
+                        self.resumed_at.get_or_insert(i);
+                    }
+                    _ => {
+                        blank_literal(blanked, out, i, i + 1);
+                        i += 1;
+                    }
+                }
+                continue;
+            }
+            if self.comment_depth > 0 {
+                if bytes[i] == b'*' && bytes.get(i + 1) == Some(&b'/') {
+                    self.comment_depth -= 1;
+                    blank_comment(blanked, out, i, i + 2);
+                    i += 2;
+                    if self.comment_depth == 0 {
+                        self.resumed_at.get_or_insert(i);
+                    }
+                } else if bytes[i] == b'/' && bytes.get(i + 1) == Some(&b'*') {
+                    self.comment_depth += 1;
+                    blank_comment(blanked, out, i, i + 2);
+                    i += 2;
+                } else {
+                    blank_comment(blanked, out, i, i + 1);
+                    i += 1;
+                }
+                continue;
+            }
+            match bytes[i] {
+                b'"' => {
+                    self.in_plain = true;
+                    i += 1;
+                }
+                b'\'' => {
+                    if bytes.get(i + 1) == Some(&b'\\') {
+                        // The escaped byte sits at i + 2, so the closing-quote
+                        // search starts past it: searched from i + 2, an
+                        // escaped quote (`'\''`) is its own first hit and the
+                        // scan would land on the escaped byte, short of the
+                        // literal's end.
+                        let after_escape = (i + 3).min(bytes.len());
+                        let close = bytes[after_escape..]
+                            .iter()
+                            .position(|b| *b == b'\'')
+                            .map(|p| after_escape + p);
+                        blank_literal(blanked, out, i + 1, close.unwrap_or(bytes.len()));
+                        i = close.map_or(bytes.len(), |c| c + 1);
+                    } else if bytes.get(i + 2) == Some(&b'\'') {
+                        blank_literal(blanked, out, i + 1, i + 2);
+                        i += 3;
+                    } else {
+                        i += 1;
+                    }
+                }
+                b'/' if bytes.get(i + 1) == Some(&b'/') => {
+                    blank_comment(blanked, out, i, bytes.len());
+                    return;
+                }
+                b'/' if bytes.get(i + 1) == Some(&b'*') => {
+                    self.comment_depth += 1;
+                    blank_comment(blanked, out, i, i + 2);
+                    i += 2;
+                }
+                _ => {
+                    if let Some(open) = raw_string_open(bytes, i) {
+                        self.raw_hashes = Some(open);
+                        i += 2 + open;
+                    } else {
+                        i += 1;
+                    }
                 }
             }
         }
-        i += 1;
+    }
+
+    /// Whether the line just advanced across ended inside a raw literal.
+    pub(crate) fn in_raw(&self) -> bool {
+        self.raw_hashes.is_some()
     }
 }
 
@@ -1825,7 +2243,7 @@ pub fn make_empty_resolved() -> crate::config::ResolvedProfile {
         layers: vec![crate::config::ProfileLayer {
             source: "local".to_string(),
             profile_name: "test".to_string(),
-            priority: 1000,
+            priority: crate::config::LOCAL_LAYER_PRIORITY,
             policy: crate::config::LayerPolicy::Local,
             spec: crate::config::ProfileSpec::default(),
         }],
@@ -1842,6 +2260,105 @@ pub fn test_state() -> crate::state::StateStore {
     crate::state::StateStore::open_in_memory().expect("open in-memory state store")
 }
 
+/// The env fixture the layered-env pins share: profile `base` (`PAGER=less`,
+/// alias `catn`, and a windows-only `WINONLY` no Linux host is part of the
+/// desired state of) inherited by `work` (`PAGER=bat`, `EDITOR=vi`), merged
+/// through the production `merge_layers` so the winner set and every owner
+/// claim on it are the merge's own. A hand-built `MergedProfile` is one a pin
+/// can agree with while production disagrees.
+pub fn two_layer_profile() -> crate::config::ResolvedProfile {
+    let env = |name: &str, value: &str| crate::config::EnvVar {
+        name: name.to_string(),
+        value: value.to_string(),
+        platforms: Vec::new(),
+    };
+    let alias = |name: &str, command: &str| crate::config::ShellAlias {
+        name: name.to_string(),
+        command: command.to_string(),
+        platforms: Vec::new(),
+    };
+    let layer = |name: &str,
+                 priority: u32,
+                 env: Vec<crate::config::EnvVar>,
+                 aliases: Vec<crate::config::ShellAlias>| {
+        crate::config::ProfileLayer {
+            source: crate::config::LOCAL_LAYER.to_string(),
+            profile_name: name.to_string(),
+            priority,
+            policy: crate::config::LayerPolicy::Local,
+            spec: crate::config::ProfileSpec {
+                env,
+                aliases,
+                ..Default::default()
+            },
+        }
+    };
+    let mut off_host = env("WINONLY", "1");
+    off_host.platforms = vec![gated_off_tag().to_string()];
+    let layers = vec![
+        layer(
+            "base",
+            100,
+            vec![env("PAGER", "less"), off_host],
+            vec![alias("catn", "cat -n")],
+        ),
+        layer(
+            "work",
+            1000,
+            vec![env("EDITOR", "vi"), env("PAGER", "bat")],
+            Vec::new(),
+        ),
+    ];
+    let merged = crate::config::merge_layers(&layers);
+    crate::config::ResolvedProfile { layers, merged }
+}
+
+/// The env fixture the generated-file pins share, as a [`LayeredEnv`]: the
+/// [`two_layer_profile`] chain with module `nvim` (`EDITOR=nvim`, alias `v`)
+/// folded on top, beside the brew and cargo bootstrapped directories it is
+/// priced against.
+///
+/// `home` is the file's own spelling of the home directory, so a walk over
+/// several platforms gets each one's own.
+///
+/// [`LayeredEnv`]: crate::reconciler::LayeredEnv
+pub fn layered_fixture(
+    home: &str,
+) -> (
+    crate::reconciler::LayeredEnv,
+    Vec<crate::reconciler::ManagerPathDir>,
+) {
+    let resolved = two_layer_profile();
+    let mut module = make_resolved_module("nvim");
+    module.env = vec![crate::config::EnvVar {
+        name: "EDITOR".to_string(),
+        value: "nvim".to_string(),
+        platforms: Vec::new(),
+    }];
+    module.aliases = vec![crate::config::ShellAlias {
+        name: "v".to_string(),
+        command: "nvim".to_string(),
+        platforms: Vec::new(),
+    }];
+    let layered = crate::reconciler::LayeredEnv::of(&resolved, std::slice::from_ref(&module));
+    let path_dirs = vec![
+        crate::reconciler::ManagerPathDir::new("brew", "/home/linuxbrew/.linuxbrew/bin"),
+        crate::reconciler::ManagerPathDir::new("cargo", format!("{home}/.cargo/bin")),
+    ];
+    (layered, path_dirs)
+}
+
+/// A `platforms:` tag no host running this test is part of the desired state
+/// of, so a fixture can carry an entry the merge must filter out on every
+/// platform the suite runs on.
+fn gated_off_tag() -> &'static str {
+    if cfg!(target_os = "windows") {
+        "macos"
+    } else {
+        "windows"
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Module helpers
 // ---------------------------------------------------------------------------
@@ -1852,6 +2369,8 @@ pub fn make_resolved_module(name: &str) -> crate::modules::ResolvedModule {
     crate::modules::ResolvedModule {
         dep_pulled: false,
         name: name.to_string(),
+        floor_bootstraps: Vec::new(),
+        held_managers: Vec::new(),
         packages: vec![
             crate::modules::ResolvedPackage {
                 canonical_name: "neovim".to_string(),
@@ -2118,8 +2637,9 @@ impl<'a> ShimArm<'a> {
 
 /// Write an executable stand-in for an external tool into `dir` and return the
 /// path to invoke it by. Every invocation appends its space-joined argv as one
-/// line to `<dir>/argv.log`, then the first matching [`ShimArm`] decides what
-/// the shim writes and what it exits with.
+/// line to `<dir>/argv.log` (and, on Unix, overwrites `<dir>/env.log` with the
+/// environment it was spawned with), then the first matching [`ShimArm`]
+/// decides what the shim writes and what it exits with.
 ///
 /// Two arms, one per host family, with identical observable behaviour:
 ///
@@ -2157,8 +2677,9 @@ pub fn write_tool_shim(dir: &Path, name: &str, arms: &[ShimArm<'_>]) -> std::pat
         // Single-quote-safe escaping: replace ' with '\''.
         let sq = |s: &str| s.replace('\'', "'\\''");
         let mut script = format!(
-            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\n",
-            sq(&log_path.display().to_string())
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\nenv > '{}'\n",
+            sq(&log_path.display().to_string()),
+            sq(&dir.join("env.log").display().to_string())
         );
         let mut answered = false;
         for arm in arms {
@@ -2237,11 +2758,22 @@ pub fn write_tool_shim(dir: &Path, name: &str, arms: &[ShimArm<'_>]) -> std::pat
 /// Construct with [`ToolShim::install`]. Drops the env-vars and tempdir on
 /// drop, even when a test panics — env state never leaks across tests.
 ///
+/// The seam is a process-global env var, so while it is set the shim holds
+/// [`path_env_mutation_guard`]: every guarded spawn on another thread waits,
+/// and no sibling test's manager call can run this shim and write into its
+/// log. The shim's own test spawns on its own thread, where the guard is
+/// re-entrant, and on the lane workers an apply dispatches, which inherit the
+/// window through [`enter_inherited_window`]. Any other hand-off to a thread
+/// (a raw `spawn_blocking`) waits on the lock the shim holds.
+///
 /// Cross-platform: a `/bin/sh` script on Unix, a `.cmd` batch file on Windows.
 pub struct ToolShim {
     _tmp: tempfile::TempDir,
     env_var: String,
     log_path: std::path::PathBuf,
+    // Declared last so it drops last: `Drop::drop` removes the seam first,
+    // then the guard lets the other threads' spawns back in.
+    _spawn_excl: ExclusiveEnvGuard,
 }
 
 impl ToolShim {
@@ -2281,8 +2813,9 @@ impl ToolShim {
         let tmp = tempfile::TempDir::new().expect("tempdir");
         let bin_path = write_tool_shim(tmp.path(), &format!("shim-{env_var}"), arms);
 
-        // SAFETY: callers wrap with `serial_test::serial`, so no concurrent
-        // reader observes a mid-update env state.
+        let spawn_excl = path_env_mutation_guard();
+        // SAFETY: callers wrap with `serial_test::serial`, and the guard above
+        // holds every other thread's guarded spawn out while the seam is set.
         unsafe {
             std::env::set_var(env_var, &bin_path);
         }
@@ -2291,6 +2824,7 @@ impl ToolShim {
             log_path: tmp.path().join("argv.log"),
             _tmp: tmp,
             env_var: env_var.to_string(),
+            _spawn_excl: spawn_excl,
         }
     }
 
@@ -2309,20 +2843,27 @@ impl ToolShim {
         raw
     }
 
+    /// The value `key` held in the environment of the shim's latest
+    /// invocation, `None` when it was unset there or nothing ran the shim.
+    #[cfg(unix)]
+    pub fn env_seen(&self, key: &str) -> Option<String> {
+        let env_log = self.log_path.with_file_name("env.log");
+        // absent-file-ok: a shim nothing ran recorded no environment.
+        let raw = std::fs::read_to_string(env_log).unwrap_or_default();
+        let prefix = format!("{key}=");
+        raw.lines()
+            .find_map(|l| l.strip_prefix(&prefix))
+            .map(str::to_string)
+    }
+
     /// Number of times the shim was invoked.
     pub fn invocation_count(&self) -> usize {
         self.argv_log().lines().filter(|l| !l.is_empty()).count()
     }
 
-    /// The captured argv lines that name `subject`, in order.
-    ///
-    /// The seam this shim installs is an ENV VAR, which is process-global and
-    /// carries no exclusive guard — so any test running in parallel that spawns
-    /// the same tool lands in this log too, whatever `serial_test` group the
-    /// asserting test is in (`serial` excludes only other serial tests). A
-    /// spawn-count claim is always about one subject — one registry key, one
-    /// schema, one domain — so filter to the lines naming it rather than
-    /// asserting on a log another test also writes to.
+    /// The captured argv lines that name `subject`, in order: for a test
+    /// whose one call spawns the tool several times and asserts on the
+    /// invocations about one key, schema or domain.
     pub fn argv_lines_naming(&self, subject: &str) -> Vec<String> {
         self.argv_log()
             .lines()
@@ -2510,7 +3051,8 @@ pub fn install_named_path_shims(shims: &[(&str, i32)]) -> (tempfile::TempDir, Pa
 /// Two shapes they cannot cover. Cross-thread: a thread holding the exclusive
 /// guard that waits on a helper thread which spawns (a raw `spawn_blocking`,
 /// say) deadlocks, because the helper has neither flag — keep a mutation window
-/// on one thread. And shared-then-exclusive on one thread: a read guard cannot
+/// on one thread; the helper's wait ends only at [`GATE_WAIT_BOUND`], when it
+/// panics. And shared-then-exclusive on one thread: a read guard cannot
 /// upgrade to a write guard, so [`path_env_mutation_guard`] `debug_assert!`s
 /// that no shared guard is held rather than silently allowing the mutation.
 ///
@@ -2544,6 +3086,14 @@ static PATH_ENV_LOCK: PathEnvGate = PathEnvGate {
     signal: Condvar::new(),
 };
 
+/// The longest either half of `PATH_ENV_LOCK` waits before it panics with a
+/// diagnostic naming the gate. No legitimate suite run approaches it. A
+/// silent hang points at nothing, and a waiter that never gives up keeps
+/// every thread behind it parked for the rest of the run: a reader stuck
+/// behind a writer that is waiting on that same reader panics here, the
+/// writer's thread stops waiting and drops its guard, and the gate reopens.
+const GATE_WAIT_BOUND: std::time::Duration = std::time::Duration::from_secs(300);
+
 /// The `PATH` gate's admission state and the condvar every waiter parks on.
 struct PathEnvGate {
     state: Mutex<PathEnvGateState>,
@@ -2571,6 +3121,7 @@ impl PathEnvGate {
         let mut state = self.locked();
         let me = std::thread::current().id();
         let mut queued = false;
+        let deadline = std::time::Instant::now() + GATE_WAIT_BOUND;
         while state.writer || (state.writers_waiting > 0 && state.readers == 0) {
             if !queued {
                 state.readers_waiting.push(me);
@@ -2585,10 +3136,25 @@ impl PathEnvGate {
                 // on the hottest call in the test binary.
                 self.signal.notify_all();
             }
+            let left = deadline.saturating_duration_since(std::time::Instant::now());
+            if left.is_zero() {
+                // Dequeued before the panic for the same reason the write
+                // half drops its count: `locked()` swallows the poison, and a
+                // stale entry answers a later "is this reader queued" wait.
+                if let Some(at) = state.readers_waiting.iter().position(|id| *id == me) {
+                    state.readers_waiting.swap_remove(at);
+                }
+                panic!(
+                    "PATH_ENV_LOCK: reader waited over {GATE_WAIT_BOUND:?} for the write half; \
+                     the usual cause is a writer parked on a thread that needs this read guard \
+                     (a lane worker its caller did not lend the window to)"
+                );
+            }
             state = self
                 .signal
-                .wait(state)
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+                .wait_timeout(state, left)
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .0;
         }
         if queued && let Some(at) = state.readers_waiting.iter().position(|id| *id == me) {
             state.readers_waiting.swap_remove(at);
@@ -2616,14 +3182,9 @@ impl PathEnvGate {
         // Announced before parking, so a test can observe the queued writer
         // rather than sleep a guess at when it arrives.
         self.signal.notify_all();
-        // A generous bound no legitimate suite run can approach: a silent
-        // hang points at nothing, so a writer that waits this long panics
-        // with a diagnostic naming the gate instead of leaving the suite to
-        // time out with no pointer to why.
-        const WRITER_STARVATION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
         let (next, result) = self
             .signal
-            .wait_timeout_while(state, WRITER_STARVATION_TIMEOUT, |gate| {
+            .wait_timeout_while(state, GATE_WAIT_BOUND, |gate| {
                 gate.writer || gate.readers > 0
             })
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -2635,9 +3196,9 @@ impl PathEnvGate {
             // diagnostic this panic exists to print.
             state.writers_waiting -= 1;
             panic!(
-                "PATH_ENV_LOCK: writer starved for over {:?} with {} reader(s) still \
-                 holding the gate — this is writer starvation, not a legitimate wait",
-                WRITER_STARVATION_TIMEOUT, state.readers
+                "PATH_ENV_LOCK: writer waited over {:?} with {} reader(s) still holding \
+                 the gate; the usual cause is a reader that never released",
+                GATE_WAIT_BOUND, state.readers
             );
         }
         state.writers_waiting -= 1;
@@ -2736,10 +3297,42 @@ pub fn path_env_read_guard() -> SpawnEnvGuard {
 /// with both at their default — so a helper's own [`path_env_read_guard`]
 /// genuinely blocks on `PATH_ENV_LOCK` rather than short-circuiting as a
 /// re-entrant no-op, and never unblocks if the exclusive holder is the same
-/// thread that is now waiting on the helper. Check this BEFORE spawning, so
-/// that precondition fails fast instead of hanging.
+/// thread that is now waiting on the helper. Read this BEFORE spawning and hand
+/// it to each helper's [`enter_inherited_window`].
 pub fn path_env_exclusive_guard_held() -> bool {
     SPAWN_GUARD_EXCLUSIVE.with(std::cell::Cell::get)
+}
+
+/// Run a scoped helper thread inside the exclusive window of the thread that
+/// spawned it and waits for it, when `held` (that thread's
+/// [`path_env_exclusive_guard_held`], read before the spawn) says it has one.
+///
+/// The holder is parked on the helper, so it mutates nothing while the helper
+/// runs, and every other thread stays shut out by the lock the holder still
+/// owns. The helper therefore counts as the holder: its guards are re-entrant
+/// no-ops, so none waits on a lock its own waiter holds. Take it as the
+/// helper's first statement; it releases nothing, because the holder owns
+/// the lock.
+// env-mutator-ok: sets a thread-local Cell; writes no env var.
+pub fn enter_inherited_window(held: bool) -> InheritedWindow {
+    if held {
+        SPAWN_GUARD_EXCLUSIVE.with(|f| f.set(true));
+    }
+    InheritedWindow { held }
+}
+
+/// Returned by [`enter_inherited_window`]; clears the helper thread's
+/// inherited flag on drop.
+pub struct InheritedWindow {
+    held: bool,
+}
+
+impl Drop for InheritedWindow {
+    fn drop(&mut self) {
+        if self.held {
+            SPAWN_GUARD_EXCLUSIVE.with(|f| f.set(false));
+        }
+    }
 }
 
 /// Shared read guard returned by [`path_env_read_guard`]. `None` for a
@@ -3330,18 +3923,18 @@ pub const ABSENT_SEAM_PATH: &str = "/nonexistent/cfgd-tool-that-is-not-here";
 /// availability from.
 ///
 /// Held here rather than in the `cfgd` crate because the guard below is what
-/// tests take, and the two crates compile separately. The roster is kept
-/// honest from the other side by
-/// `no_registered_manager_is_reachable_under_the_no_host_managers_guard`,
-/// which asks the real registry whether any manager is still reachable under
-/// the guard: a manager added with a seam missing from this list fails that
-/// pin on every host rather than quietly spawning a real install.
+/// tests take, and the two crates compile separately. The roster is kept honest
+/// from the other side by
+/// `no_registered_manager_is_reachable_under_the_no_host_managers_guard`, which
+/// holds it equal to the seams cfgd's managers read and then asks the real
+/// registry, with every one of their tools on `PATH`, whether any manager is
+/// still reachable under the guard: a seam missing from this list, or one no
+/// manager reads, fails that pin on every host.
 pub const MANAGER_SEAMS: &[&str] = &[
     "CFGD_APK_BIN",
     "CFGD_APT_CACHE_BIN",
     "CFGD_APT_GET_BIN",
     "CFGD_BREW_BIN",
-    "CFGD_BREW_CASK_BIN",
     "CFGD_CARGO_BIN",
     "CFGD_CHOCO_BIN",
     "CFGD_DNF_BIN",
@@ -3381,16 +3974,24 @@ pub const MANAGER_SEAMS: &[&str] = &[
 /// filled before the window answers from what the host had.
 pub struct NoHostManagers {
     _seams: Vec<EnvVarGuard>,
+    // Declared last so it drops last: the seams are restored before a guarded
+    // reader on another thread can see them.
+    _exclusive: ExclusiveEnvGuard,
 }
 
 impl NoHostManagers {
-    /// Pin every seam of [`MANAGER_SEAMS`] at [`ABSENT_SEAM_PATH`].
+    /// Pin every seam of [`MANAGER_SEAMS`] at [`ABSENT_SEAM_PATH`], holding
+    /// [`path_env_mutation_guard`] while they are pinned, so a guarded seam
+    /// read on another thread (a sibling test's real-host plan) waits until
+    /// they are restored.
     pub fn pinned_missing() -> Self {
+        let exclusive = path_env_mutation_guard();
         Self {
             _seams: MANAGER_SEAMS
                 .iter()
                 .map(|seam| EnvVarGuard::set(seam, ABSENT_SEAM_PATH))
                 .collect(),
+            _exclusive: exclusive,
         }
     }
 }
@@ -3399,32 +4000,51 @@ impl NoHostManagers {
 /// drop (or removes the var if no prior value existed). Use in tests that
 /// mutate process-global env state.
 pub struct EnvVarGuard {
-    key: &'static str,
+    key: String,
     prior: Option<String>,
 }
 
 impl EnvVarGuard {
     /// Capture the prior value of `key`, then set it to `value`.
-    pub fn set(key: &'static str, value: &str) -> Self {
+    pub fn set(key: &str, value: &str) -> Self {
         let prior = std::env::var(key).ok();
         refuse_unbracketed_path_write(key);
         // SAFETY: serial_test::serial gates execution; no concurrent reader/writer.
         unsafe {
             std::env::set_var(key, value);
         }
-        Self { key, prior }
+        Self {
+            key: key.to_string(),
+            prior,
+        }
     }
 
     /// Capture the prior value of `key`, then remove it.
-    pub fn unset(key: &'static str) -> Self {
+    pub fn unset(key: &str) -> Self {
         let prior = std::env::var(key).ok();
         refuse_unbracketed_path_write(key);
         // SAFETY: serial_test::serial gates execution; no concurrent reader/writer.
         unsafe {
             std::env::remove_var(key);
         }
-        Self { key, prior }
+        Self {
+            key: key.to_string(),
+            prior,
+        }
     }
+}
+
+/// Every automatic-update opt-out variable ([`crate::upgrade::OPTOUT_VARS`])
+/// unset for as long as the returned guards live.
+///
+/// The update check's gate reads them off the process environment, so a
+/// `DO_NOT_TRACK` exported by a developer's shell or a CI runner suppresses a
+/// check a test expects, and lets a test expecting none pass without reaching
+/// the gate it names. Every test reaching the check takes these first;
+/// `every_test_reaching_the_update_check_clears_the_opt_out_variables` fails
+/// until it does.
+pub fn clear_update_optouts() -> [EnvVarGuard; crate::upgrade::OPTOUT_VARS.len()] {
+    crate::upgrade::OPTOUT_VARS.map(EnvVarGuard::unset)
 }
 
 /// `PATH` is read by every `command_path` resolution and by every spawn, so a
@@ -3443,12 +4063,12 @@ fn refuse_unbracketed_path_write(key: &str) {
 
 impl Drop for EnvVarGuard {
     fn drop(&mut self) {
-        refuse_unbracketed_path_write(self.key);
+        refuse_unbracketed_path_write(&self.key);
         // SAFETY: serial_test::serial gates execution; no concurrent reader/writer.
         unsafe {
             match self.prior.take() {
-                Some(v) => std::env::set_var(self.key, v),
-                None => std::env::remove_var(self.key),
+                Some(v) => std::env::set_var(&self.key, v),
+                None => std::env::remove_var(&self.key),
             }
         }
     }
@@ -3609,11 +4229,16 @@ fn fake_cosign_bin_path() -> std::path::PathBuf {
 /// Cross-platform: the fake is the compiled `fake-cosign` binary, so consumers
 /// run identically on Windows, macOS, and Linux — no `#[cfg(unix)]` gate
 /// required.
+///
+/// Holds [`path_env_mutation_guard`] while installed, for the reason
+/// [`ToolShim`] does: the seam is process-global.
 pub struct CosignTestShim {
     log_path: Option<std::path::PathBuf>,
     argv_logging: bool,
     _tmp: tempfile::TempDir,
     prior: CosignEnvSnapshot,
+    // Declared last so it drops after `Drop::drop` has restored the seam.
+    _spawn_excl: ExclusiveEnvGuard,
 }
 
 /// Prior values of every env var the shim mutates, captured on install and
@@ -3666,7 +4291,7 @@ impl Drop for CosignTestShim {
         // SAFETY: callers wrap with `serial_test::serial`, so no concurrent
         // reader observes a mid-update env state.
         unsafe {
-            restore_env("CFGD_COSIGN_BIN", self.prior.bin.take());
+            restore_env(crate::COSIGN_BIN_ENV, self.prior.bin.take());
             restore_env("CFGD_FAKE_COSIGN_LOG", self.prior.log.take());
             restore_env("CFGD_FAKE_COSIGN_KEYGEN", self.prior.keygen.take());
             restore_env("CFGD_FAKE_COSIGN_STDERR", self.prior.stderr.take());
@@ -3738,15 +4363,17 @@ impl CosignTestShimBuilder {
     /// per-invocation behavior env vars (`CFGD_FAKE_COSIGN_{LOG,KEYGEN,STDERR,
     /// EXIT}`). Prior values of every mutated var are captured for restoration
     /// on drop. A tempdir holds the argv log; it is removed with the guard.
+    // long-line-ok: a hatch is read off its own line, so it cannot wrap
     // env-mutator-ok: a builder exists only through `CosignTestShim::builder`, which the roster counts.
     pub fn install(self) -> CosignTestShim {
         let bin_path = fake_cosign_bin_path();
         let tmp = tempfile::TempDir::new().expect("tempdir");
         let log_path = tmp.path().join("argv.log");
 
+        let spawn_excl = path_env_mutation_guard();
         // Capture prior values of every var the shim mutates.
         let prior = CosignEnvSnapshot {
-            bin: std::env::var_os("CFGD_COSIGN_BIN"),
+            bin: std::env::var_os(crate::COSIGN_BIN_ENV),
             log: std::env::var_os("CFGD_FAKE_COSIGN_LOG"),
             keygen: std::env::var_os("CFGD_FAKE_COSIGN_KEYGEN"),
             stderr: std::env::var_os("CFGD_FAKE_COSIGN_STDERR"),
@@ -3757,7 +4384,7 @@ impl CosignTestShimBuilder {
         // reader observes a mid-update env state. Path values stay as
         // `Path`/`OsStr` so `Command::new` receives the host-native form.
         unsafe {
-            std::env::set_var("CFGD_COSIGN_BIN", &bin_path);
+            std::env::set_var(crate::COSIGN_BIN_ENV, &bin_path);
             if self.argv_logging {
                 std::env::set_var("CFGD_FAKE_COSIGN_LOG", &log_path);
             } else {
@@ -3777,6 +4404,7 @@ impl CosignTestShimBuilder {
             argv_logging: self.argv_logging,
             _tmp: tmp,
             prior,
+            _spawn_excl: spawn_excl,
         }
     }
 }
@@ -3870,6 +4498,9 @@ pub struct MockPackageManager {
     /// the FreeBSD `pkg version -t` shape, whose comparator genuinely shells
     /// out and can fail to spawn.
     comparisons_fail: bool,
+    /// The command `own_raise()` answers with, for a family whose own copy is
+    /// raised by the tool behind its shim; its package verb cannot raise it.
+    own_raise: Option<String>,
     /// Whether `upgrade_verb()` answers `None` — a manager that cannot raise
     /// a package in place at all, so a below-floor package is a check error
     /// rather than a planned raise. `false` by default: every manager that
@@ -3883,6 +4514,10 @@ pub struct MockPackageManager {
     /// OFFERS, which is a different question from what it holds installed and
     /// is the one `fill_available_versions` asks.
     offered: std::collections::BTreeMap<String, String>,
+    /// Whether this manager reads its family's own version grammar; `false`
+    /// reads the shared loose-semver one. See
+    /// [`reading_its_own_version_grammar`](MockPackageManager::reading_its_own_version_grammar).
+    own_grammar: bool,
 }
 
 impl MockPackageManager {
@@ -3914,10 +4549,25 @@ impl MockPackageManager {
             registers_sources: false,
             versions: std::collections::BTreeMap::new(),
             comparisons_fail: false,
+            own_raise: None,
             no_upgrade_verb: false,
             listing_error: None,
             offered: std::collections::BTreeMap::new(),
+            own_grammar: false,
         }
+    }
+
+    /// The shape of every family whose versions the SHARED parser refuses and
+    /// whose own comparator reads them: an apt epoch (`1:2.30`), a cask build
+    /// (`1.2.3,4567`), a winget fourth component (`2.2.2.0`).
+    ///
+    /// This mock compares the integer runs of both operands in order, which is
+    /// enough for a claim about WHICH comparator a caller asked; a claim about
+    /// one family's real rules belongs to that family's own tests.
+    #[must_use]
+    pub fn reading_its_own_version_grammar(mut self) -> Self {
+        self.own_grammar = true;
+        self
     }
 
     /// The version this manager OFFERS for a package, for a surface that
@@ -4046,6 +4696,15 @@ impl MockPackageManager {
         self
     }
 
+    /// Answer `own_raise()` with this command, the shape of a family whose
+    /// binary is a shim (`rustup update` behind cargo). Without it a held
+    /// manager's shortfall names the package's own upgrade verb, so a pin whose
+    /// subject is a rendered raise cannot reproduce a real manager's sentence.
+    pub fn raising_itself_with(mut self, command: &str) -> Self {
+        self.own_raise = Some(command.to_string());
+        self
+    }
+
     /// Make `bootstrap()` leave this manager available, so a `Provision` node
     /// driven through a real `apply()` settles as a success instead of the
     /// `BootstrapFailed` a manager stuck `unavailable()` always yields.
@@ -4153,6 +4812,10 @@ impl crate::providers::PackageManager for MockPackageManager {
         (!self.no_upgrade_verb).then_some("upgrade")
     }
 
+    fn own_raise(&self) -> Option<std::borrow::Cow<'static, str>> {
+        self.own_raise.clone().map(std::borrow::Cow::Owned)
+    }
+
     fn is_available(&self) -> bool {
         if let Some(flag) = &self.availability {
             return flag.load(std::sync::atomic::Ordering::SeqCst);
@@ -4258,6 +4921,7 @@ impl crate::providers::PackageManager for MockPackageManager {
     ) -> crate::errors::Result<()> {
         let _in_flight = self.witness.as_ref().map(|w| w.enter());
         if let Some(delay) = self.install_delay {
+            // long-line-ok: a hatch is read off its own line, so it cannot wrap
             // sleep-ok: simulates a slow install to widen the overlap window a ConcurrencyWitness observes — the witness peak is the actual assertion, not this duration
             std::thread::sleep(delay);
         }
@@ -4310,6 +4974,31 @@ impl crate::providers::PackageManager for MockPackageManager {
         }
         Ok(self.version_meets_minimum(available, min_version))
     }
+
+    fn version_comparable(&self, version: &str) -> bool {
+        if self.own_grammar {
+            return integer_runs(version).next().is_some();
+        }
+        crate::parse_loose_version(version).is_some()
+    }
+
+    fn version_meets_minimum(&self, available: &str, min_version: &str) -> bool {
+        if self.own_grammar {
+            return integer_runs(available).ge(integer_runs(min_version));
+        }
+        crate::version_meets_floor(available, min_version)
+    }
+}
+
+/// Every run of digits in a version, in order, for
+/// [`MockPackageManager::reading_its_own_version_grammar`]. A non-digit is a
+/// separator whatever it is, which is what lets one reading stand in for three
+/// families' punctuation.
+fn integer_runs(version: &str) -> impl Iterator<Item = u64> + Clone + '_ {
+    version
+        .split(|c: char| !c.is_ascii_digit())
+        .filter(|part| !part.is_empty())
+        .filter_map(|part| part.parse::<u64>().ok())
 }
 
 // ---------------------------------------------------------------------------
@@ -4527,7 +5216,7 @@ fn parse_profile_yaml_to_resolved(yaml: &str) -> crate::config::ResolvedProfile 
     let layers = vec![crate::config::ProfileLayer {
         source: crate::config::LOCAL_LAYER.to_string(),
         profile_name: "harness-test".to_string(),
-        priority: 1000,
+        priority: crate::config::LOCAL_LAYER_PRIORITY,
         policy: crate::config::LayerPolicy::Local,
         spec,
     }];
@@ -4645,9 +5334,10 @@ pub fn hold_payload_unremovable(payload: &Path) -> UnremovablePayload {
 }
 
 /// The production region of a Rust source file a walk-style pin reads: the file
-/// with EVERY top-level inline test module removed.
+/// with EVERY test-only item [`inline_test_item_ranges`] finds removed, module
+/// or not, nested or not.
 ///
-/// A pin that scans source has to drop the file's own `#[cfg(test)]` blocks,
+/// A pin that scans source has to drop the file's own `#[cfg(test)]` items,
 /// which describe the surface rather than rendering it. What it must not drop is
 /// production code, and both cheaper spellings do: cutting at the first bare
 /// `#[cfg(test)]` blinds the walk below a mid-file `#[cfg(test)] use` import or
@@ -4658,68 +5348,547 @@ pub fn hold_payload_unremovable(payload: &Path) -> UnremovablePayload {
 ///
 /// So this is a strip, not a suffix cut: a trailing test module is only the
 /// common case, and a file may hold several inline siblings (`output/mod.rs` has
-/// six). A declaration survives — it carries no test text — and so does every
-/// line between and after the blocks.
+/// six). A `mod tests;` declaration survives — it carries no test text — and so
+/// does every line between and after the items.
 ///
 /// The shape relied on is rustfmt's, which every file in this workspace is
-/// formatted by: the attribute alone at column 0, and the module's closing `}`
-/// alone at column 0. Each anchor drops through the next such line. A platform
-/// gate stacks a second attribute (`#[cfg(test)]` / `#[cfg(unix)]` /
-/// `mod tests {`) between the marker and the `mod` line, so the scan skips
-/// every column-0 attribute line before checking for `mod ` — three daemon
-/// service files and `cli/kubectl.rs` carry exactly this shape, and without
-/// the skip their whole test module read as production text. The one way the
-/// rustfmt assumption breaks is a multi-line raw string inside a test module
-/// whose body carries a bare `}` at column 0, which would end the strip early
-/// — no such literal exists today, and `cli::tests::production_body` assumes
-/// the same shape.
+/// formatted by: the attribute alone on its line, and a braced item's closing
+/// delimiter alone at the attribute's own indent. A platform gate stacks a
+/// second attribute (`#[cfg(test)]` / `#[cfg(unix)]` / `mod tests {`) between
+/// the marker and the item, so the scan skips every attribute line before
+/// reading the item — three daemon service files and `cli/kubectl.rs` carry exactly this
+/// shape, and without the skip their whole test module read as production text.
+/// A brace written inside a string or a comment closes nothing, because
+/// [`inline_test_item_ranges`] reads the body through [`blank_non_code`].
 ///
 /// A walk over several files reads through [`production_slice_of`] instead,
 /// which owns the read and the per-file floor that keeps a re-blinding from
 /// passing quietly.
 pub fn production_slice(src: &str) -> String {
-    let mut out = String::with_capacity(src.len());
-    let mut lines = src.lines();
-    while let Some(line) = lines.next() {
-        if line == "#[cfg(test)]" {
-            let mut rest = lines.clone();
-            while rest.clone().next().is_some_and(|m| m.starts_with('#')) {
-                rest.next();
+    keep_lines(src, &line_gates(src), |gate| gate.is_none())
+}
+
+/// The text a test can drive: [`production_slice`] with every item gated to the
+/// `test-helpers` feature kept ([`Gate::TestHelpers`]), since such an item is
+/// shipped code compiled for tests to call. Only [`Gate::Test`] items are
+/// dropped.
+///
+/// A walk asking what ships reads [`production_slice`]; one asking which path a
+/// test can reach from a seam reads this, or [`production_and_seams_of`] for a
+/// file on disk.
+pub fn production_and_seams_slice(src: &str) -> String {
+    keep_lines(src, &line_gates(src), |gate| gate != Some(Gate::Test))
+}
+
+/// The lines of `src` whose gate `keep` accepts, each ended by a newline.
+fn keep_lines(src: &str, gates: &[Option<Gate>], keep: impl Fn(Option<Gate>) -> bool) -> String {
+    src.lines()
+        .zip(gates)
+        .filter(|(_, gate)| keep(**gate))
+        .fold(String::with_capacity(src.len()), |mut out, (line, _)| {
+            out.push_str(line);
+            out.push('\n');
+            out
+        })
+}
+
+/// The complement of [`production_slice`]: every line inside a test-only item
+/// kept, every other line blanked.
+///
+/// Blanked in place, so a line's number in the mask is its number in the
+/// file and a walk reporting an offender names a line its reader can open. A
+/// file's test text is therefore whatever `production_slice` drops, WHEREVER it
+/// sits and whatever item carries the marker — a walk over the mask gives the
+/// same verdict whether a `#[cfg(test)] fn` stands beside the production code it
+/// serves or inside the trailing test module.
+pub fn test_region_mask(src: &str) -> String {
+    gated_lines_in_place(src, &line_gates(src))
+}
+
+/// The lines of `src` a gate covers, every other line blanked in place.
+fn gated_lines_in_place(src: &str, gates: &[Option<Gate>]) -> String {
+    src.lines()
+        .zip(gates)
+        .fold(String::with_capacity(src.len()), |mut out, (line, gate)| {
+            if gate.is_some() {
+                out.push_str(line);
             }
-            if rest
-                .clone()
-                .next()
-                .is_some_and(|m| m.starts_with("mod ") && m.trim_end().ends_with('{'))
-            {
-                rest.next();
-                lines = rest;
-                for inner in lines.by_ref() {
-                    if inner == "}" {
-                        break;
-                    }
-                }
-                continue;
+            out.push('\n');
+            out
+        })
+}
+
+/// What a test-only item's gate builds it for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Gate {
+    /// A predicate holding only when `test` does (`test`, `all(test, unix)`):
+    /// the item is a test, or serves only the crate's own tests.
+    Test,
+    /// A predicate the `test-helpers` feature satisfies without `test`
+    /// (`any(test, feature = "test-helpers")`, `all(unix, feature =
+    /// "test-helpers")`): a seam, compiled so another crate's tests can drive
+    /// production through it.
+    TestHelpers,
+}
+
+/// The gate each line of `src` sits under, one entry per line: `None` for
+/// production text, and for a line inside both kinds (a `#[cfg(test)]` module
+/// nested in a seam) the [`Gate::Test`] that drops it from every view but the
+/// test region.
+pub fn line_gates(src: &str) -> Vec<Option<Gate>> {
+    line_gates_over(src, &blank_non_code(src))
+}
+
+/// [`line_gates`] of `src`, whose [`blank_non_code`] fold `code` the caller
+/// already holds.
+fn line_gates_over(src: &str, code: &str) -> Vec<Option<Gate>> {
+    let mut gates = vec![None; src.lines().count()];
+    for (from, to, gate) in gated_item_ranges_over(src, code) {
+        for line in &mut gates[from..to] {
+            if *line != Some(Gate::Test) {
+                *line = Some(gate);
             }
         }
-        out.push_str(line);
-        out.push('\n');
     }
-    out
+    gates
+}
+
+/// The half-open line range each test-only item occupies, attribute line
+/// through the item's own terminator: every item carrying a `#[cfg(…)]` whose
+/// predicate [`cfg_requires_test`] accepts (`test`, `all(test, unix)`,
+/// `any(test, feature = "test-helpers")`), at any indent.
+///
+/// The ONE reader of rustfmt's shape, so the production half and the test half
+/// cannot disagree about where a file's test text is:
+/// [`production_slice`] drops these ranges and [`test_region_mask`] keeps them,
+/// and the workspace memo reads the production half through
+/// [`production_slice_of`].
+///
+/// A `mod` is not the only item the marker carries. A `#[cfg(test)] fn`,
+/// `const`, `struct` or `impl` written beside the production code it serves is
+/// test text too, and so is one nested inside an `impl` or a struct field.
+/// Reading only column 0 left `DesiredState::registry_built` and 24 more
+/// functions on the production side of one walk while another walk read them as
+/// tests. The item's end is read by `gated_item_end` over a body whose literals
+/// and comments are blanked by [`blank_non_code`], so a delimiter inside either
+/// one neither opens nor closes a range; the gate itself is judged on the raw
+/// line, since `feature = "test-helpers"` is a literal the blanking spaces out.
+///
+/// An item the file never TERMINATES runs to the end of the file and is still
+/// yielded. A source truncated mid-write, or read while an editor holds it half
+/// saved, would otherwise hand its whole unclosed tail back to the production
+/// half, where a walk would judge test text as production — the failure this
+/// scan exists to prevent, arriving silently. Returning the tail as test text
+/// can only cost a walk lines it never had to read.
+///
+/// Public because MEMBERSHIP is a different question from the text either half
+/// holds: a blank line inside a test item is blank in the mask and absent from
+/// the slice, so a reader deciding membership from the mask's content reads it
+/// as production. A caller that has to partition a file by index asks here.
+pub fn inline_test_item_ranges(src: &str) -> Vec<(usize, usize)> {
+    let mut union: Vec<(usize, usize)> = Vec::new();
+    for (from, to, _) in gated_item_ranges(src) {
+        match union.last_mut() {
+            Some(last) if from < last.1 => last.1 = last.1.max(to),
+            _ => union.push((from, to)),
+        }
+    }
+    union
+}
+
+/// Every test-only item's line range, as [`inline_test_item_ranges`] reads it,
+/// with the [`Gate`] its attribute names, in the order the items start.
+///
+/// A [`Gate::Test`] item is read to its end. A [`Gate::TestHelpers`] item is
+/// read into as well, so a `#[cfg(test)]` item nested in a seam is yielded as a
+/// range of its own and the seam view drops it.
+pub fn gated_item_ranges(src: &str) -> Vec<(usize, usize, Gate)> {
+    gated_item_ranges_over(src, &blank_non_code(src))
+}
+
+/// [`gated_item_ranges`] of `src`, whose [`blank_non_code`] fold is `code`.
+fn gated_item_ranges_over(src: &str, code: &str) -> Vec<(usize, usize, Gate)> {
+    let lines: Vec<&str> = code.lines().collect();
+    let raw: Vec<&str> = src.lines().collect();
+    let mut blocks: Vec<(usize, usize, Gate)> = Vec::new();
+    let mut at = 0usize;
+    while at < lines.len() {
+        let Some(gate) = test_gate_on(raw[at], lines[at]) else {
+            at += 1;
+            continue;
+        };
+        // A platform gate stacks a second attribute between the marker and
+        // the item, and a doc comment between them is blanked to spaces by
+        // the fold above, so neither is the head this reads.
+        let mut item = at + 1;
+        while lines.get(item).is_some_and(|l| {
+            let l = l.trim_start();
+            l.starts_with('#') || l.is_empty()
+        }) {
+            item += 1;
+        }
+        let head = lines.get(item).copied().unwrap_or_default();
+        // A `mod tests;` DECLARATION carries no test text of its own — the
+        // tests live in another file — so dropping it takes the production
+        // lines below it with nothing to show for it. Its visibility is
+        // folded off first: 6 of the tree's 74 declarations are written
+        // `pub(crate) mod …;`, and reading the bare spelling alone let each
+        // of them leave the production half.
+        if item_keyword(head) == "mod" && head.trim_end().ends_with(';') {
+            at += 1;
+            continue;
+        }
+        let indent = lines[at].len() - lines[at].trim_start().len();
+        let end = gated_item_end(&lines, item, indent);
+        blocks.push((at, end, gate));
+        at = match gate {
+            Gate::Test => end,
+            Gate::TestHelpers => at + 1,
+        };
+    }
+    blocks
+}
+
+/// The gate of a line that is an outer `#[cfg(…)]` attribute building its item
+/// only for tests, `None` for any other line: the attribute read off the code
+/// line, so one written inside a literal or a comment gates nothing, and its
+/// predicate off the raw line.
+fn test_gate_on(raw: &str, code: &str) -> Option<Gate> {
+    match cfg_attribute(raw, code)? {
+        (CfgAttribute::Outer, predicate) => gate_of(predicate),
+        (CfgAttribute::Inner, _) => None,
+    }
+}
+
+/// Where a `cfg` attribute applies: `#[cfg(…)]` to the item below it,
+/// `#![cfg(…)]` to the module or file holding it.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CfgAttribute {
+    Outer,
+    Inner,
+}
+
+/// The kind and predicate of the one-line `cfg` attribute on `raw`, one source
+/// line whose literals and comments `code` blanks byte for byte; `None` for any
+/// other line. The attribute is found on `code`, so one spelled inside a
+/// literal or a comment is none, and its predicate is read off `raw`, whose
+/// `"test-helpers"` literal `code` blanks.
+fn cfg_attribute<'a>(raw: &'a str, code: &str) -> Option<(CfgAttribute, &'a str)> {
+    // `contains` is the fast search; the trims below run on the few lines it finds.
+    if !code.contains("cfg(") {
+        return None;
+    }
+    let code = code.trim_end();
+    let lead = code.trim_start();
+    let (kind, opener) = if lead.starts_with("#![cfg(") {
+        (CfgAttribute::Inner, "#![cfg(")
+    } else if lead.starts_with("#[cfg(") {
+        (CfgAttribute::Outer, "#[cfg(")
+    } else {
+        return None;
+    };
+    raw[..code.len()]
+        .trim()
+        .strip_prefix(opener)?
+        .strip_suffix(")]")
+        .map(|predicate| (kind, predicate))
+}
+
+/// The [`Gate`] a `cfg` predicate builds its item under, `None` for one some
+/// shipped build meets.
+fn gate_of(predicate: &str) -> Option<Gate> {
+    if !cfg_requires_test(predicate) {
+        None
+    } else if cfg_holds_only_under(predicate, false) {
+        Some(Gate::Test)
+    } else {
+        Some(Gate::TestHelpers)
+    }
+}
+
+/// The line after the item whose head is at `from` ends, over lines already
+/// blanked of their literals and comments, for an attribute written `indent`
+/// columns in; the end of the file for an item the file never terminates.
+///
+/// rustfmt puts a multi-line item's closing delimiter at the attribute's own
+/// indent, and a one-line item closes itself. Each shape a looser rule missed
+/// took production code with it: the gated re-export `use source::{…};` at
+/// `cli/mod.rs:57` opens and closes a brace on one line, so a scan for the next
+/// top-level `}` walked 97 lines past it and took `local_pull_next_step` out of
+/// every sweep; the `#[cfg(test)]` on a struct FIELD in `daemon/mod.rs` closes
+/// on a comma, which a brace count ran through the three methods after it.
+fn gated_item_end(lines: &[&str], from: usize, indent: usize) -> usize {
+    let brackets = |code: &str| {
+        let opens = code
+            .chars()
+            .filter(|c| matches!(c, '{' | '[' | '('))
+            .count();
+        let shuts = code
+            .chars()
+            .filter(|c| matches!(c, '}' | ']' | ')'))
+            .count();
+        (opens, shuts)
+    };
+    // A closing line is judged on what it CLOSES, whatever delimiters it
+    // holds: `});`, `}]` and `)),` all end an item as surely as a lone `}`,
+    // and matching whole lines ran a gated `Lazy::new(|| {` … `});` past its
+    // own end. The indent still has to be the attribute's own, so a delimiter
+    // closing something nested inside the item is not read as the item's.
+    let closes_at_indent = |code: &str| {
+        let trimmed = code.trim_end().trim_end_matches([';', ',']).as_bytes();
+        trimmed.len() > indent
+            && trimmed[..indent].iter().all(|b| b.is_ascii_whitespace())
+            && trimmed[indent..]
+                .iter()
+                .all(|b| matches!(b, b'}' | b']' | b')'))
+    };
+    // `<` and `>` are counted apart from the brackets above because they are
+    // what tells a wrapped struct FIELD (`captured: Mutex<` … `>,`) from a
+    // wrapped generic parameter list (`fn g<` … `>(f: F)`): both balance their
+    // brackets on every line, and only the field is over when its angle
+    // brackets shut. `->` and `=>` are cut first, their `>` closing nothing.
+    let angles = |code: &str| {
+        let code = code.replace("->", "").replace("=>", "");
+        (code.matches('<').count(), code.matches('>').count())
+    };
+    let Some(head) = lines.get(from) else {
+        return lines.len();
+    };
+    let (opens, shuts) = brackets(head);
+    if opens == shuts && (head.trim_end().ends_with([';', ',']) || head.contains('{')) {
+        // A one-line item closes on its own line — either on its terminator,
+        // or on the brace it opened and shut again, which is how rustfmt
+        // writes an empty body (`fn g() {}`).
+        return from + 1;
+    }
+    if head.contains('{') {
+        return (from..lines.len())
+            .find(|&at| closes_at_indent(lines[at]))
+            .map_or(lines.len(), |at| at + 1);
+    }
+    // A statement or field spread over several lines (a gated `static` whose
+    // TYPE wraps, a field whose type does) closes on the `;` or `,` that ends
+    // it, once every bracket AND angle bracket it opened is shut. A wrapped
+    // generic parameter list ends its line on a comma with its angle bracket
+    // still open, so the comma a one-line item closes on is not a terminator
+    // there.
+    //
+    // The comma ends a FIELD or a statement only, which is what its head
+    // `name: Type<` says: an ITEM's `where` clause shuts its last bound on a
+    // comma with every bracket and angle bracket closed, and reading that as
+    // the end hands the braced body below it to every walk as production text.
+    // `unsafe` and `default` are absent from the list because the lead reader
+    // folds them off: `unsafe fn` arrives here as `fn`.
+    let head_is_item = matches!(
+        item_keyword(head),
+        "fn" | "impl"
+            | "struct"
+            | "enum"
+            | "trait"
+            | "union"
+            | "mod"
+            | "use"
+            | "type"
+            | "static"
+            | "const"
+            | "let"
+            | "macro_rules"
+            | "async"
+            | "extern"
+    );
+    let (mut depth, mut angle) = (0i64, 0i64);
+    for (at, code) in lines.iter().enumerate().skip(from) {
+        let (opens, shuts) = brackets(code);
+        depth += opens as i64 - shuts as i64;
+        let (lt, gt) = angles(code);
+        angle += lt as i64 - gt as i64;
+        let tail = code.trim_end();
+        if closes_at_indent(code)
+            || (depth <= 0
+                && angle <= 0
+                && (tail.ends_with(';') || (tail.ends_with(',') && !head_is_item)))
+        {
+            return at + 1;
+        }
+    }
+    lines.len()
+}
+
+/// Which lead [`item_lead`] folded off a code line.
+///
+/// A reader asking whether a declaration is PUBLIC cannot ask
+/// [`strip_item_lead`], which folds `unsafe` and `default` alongside the three
+/// visibility spellings and so answers yes for a private `unsafe fn`. This is
+/// the half of the fold that question reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ItemLead {
+    /// Nothing was folded: the line carries no visibility and no qualifier.
+    Bare,
+    /// A qualifier (`unsafe`, `default`) and no visibility, so the item is
+    /// private.
+    Qualified,
+    /// A visibility spelling, whatever qualifiers stand beside it.
+    Visible,
+}
+
+/// A code line's `pub` / `pub(crate)` / `pub(in …)` / `unsafe` / `default` lead
+/// folded off, leading whitespace included, and which lead that was; the empty
+/// string for a `pub(` whose scope never closes.
+///
+/// The ONE place that lead list is spelled, in this crate or the other. Every
+/// reader asking what a line declares — the keyword, the name, whether it opens
+/// a function, whether it is public — asks past the lead, and each that spelled
+/// its own list read `pub(crate) mod tests;` as something other than a `mod`
+/// declaration, or missed `pub(in path) fn` and `unsafe fn` outright.
+pub fn item_lead(code: &str) -> (ItemLead, &str) {
+    let mut rest = code.trim_start();
+    let mut lead = ItemLead::Bare;
+    loop {
+        let end = rest
+            .find(|c: char| !(c.is_alphanumeric() || c == '_'))
+            .unwrap_or(rest.len());
+        let word = &rest[..end];
+        if !matches!(word, "pub" | "unsafe" | "default") {
+            return (lead, rest);
+        }
+        if word == "pub" {
+            lead = ItemLead::Visible;
+        } else if lead == ItemLead::Bare {
+            lead = ItemLead::Qualified;
+        }
+        rest = rest[end..].trim_start();
+        // `pub(crate)` / `pub(super)` / `pub(in path)`.
+        if let Some(tail) = rest.strip_prefix('(') {
+            match tail.find(')') {
+                Some(at) => rest = tail[at + 1..].trim_start(),
+                None => return (ItemLead::Visible, ""),
+            }
+        }
+    }
+}
+
+/// [`item_lead`]'s fold alone, for a reader that asks what the item IS.
+pub fn strip_item_lead(code: &str) -> &str {
+    item_lead(code).1
+}
+
+/// The keyword a code line declares its item with — `mod`, `fn`, `struct`,
+/// `impl`, … — read past the lead [`strip_item_lead`] folds off; the empty
+/// string for a line that opens no item.
+///
+/// A reader asking WHAT KIND of item a line declares has to ask it of the
+/// keyword. The word is taken whole, so `impl_something!(…)` is
+/// `impl_something` and never `impl`.
+pub fn item_keyword(code: &str) -> &str {
+    let rest = strip_item_lead(code);
+    let end = rest
+        .find(|c: char| !(c.is_alphanumeric() || c == '_'))
+        .unwrap_or(rest.len());
+    &rest[..end]
+}
+
+/// Whether a code line opens a FUNCTION, whatever qualifiers stand in front of
+/// it and in whatever order.
+///
+/// The cost of a missed opener is silent: the function's body folds into the
+/// PRECEDING slice, so it is judged under another function's exemptions and
+/// reported, if at all, at that function's line. An enumerated list of
+/// qualifier orderings is how `pub(super) async fn` was missed, so this
+/// consumes qualifiers one at a time instead and accepts any order — a superset
+/// of the grammar, which for a recognizer only errs toward opening a slice too
+/// eagerly. The visibility half of the list is [`strip_item_lead`]'s; `const`,
+/// `async` and `extern "abi"` are the three this adds, because they qualify a
+/// function and nothing else a walk here reads.
+pub fn opens_function(code: &str) -> bool {
+    let mut t = strip_item_lead(code);
+    loop {
+        if t.starts_with("fn ") {
+            return true;
+        }
+        if let Some(abi) = t.strip_prefix("extern ").map(str::trim_start) {
+            t = match abi.strip_prefix('"').and_then(|a| a.split_once('"')) {
+                Some((_, tail)) => tail.trim_start(),
+                None => abi,
+            };
+        } else if let Some(rest) = ["const ", "async "].iter().find_map(|q| t.strip_prefix(q)) {
+            t = rest.trim_start();
+        } else {
+            return false;
+        }
+        t = strip_item_lead(t);
+    }
+}
+
+/// Put the managed env files a CONVERGED machine holds onto `home`, taken from
+/// the generator, and hand them back.
+///
+/// The one way a CLI fixture reproduces a converged machine: a hand-written
+/// file is one block with no header, which is not the shape the planner writes
+/// and not the shape a reader of that file has to resolve. A fixture whose
+/// subject is a MISSING or hand-edited entry writes its own bytes instead —
+/// there is no converged form of the state it is about.
+pub fn plant_managed_env_files(
+    merged: &crate::reconciler::MergedEnvItems,
+    home: &Path,
+    scope: crate::config::EnvScope,
+) -> Vec<(std::path::PathBuf, String)> {
+    let planted = merged.managed_env_files(home, scope);
+    for (path, content) in &planted {
+        crate::ensure_parent_dir(path).expect("a planted env file needs its directory");
+        std::fs::write(path, content).expect("planting a managed env file");
+    }
+    assert!(
+        !planted.is_empty(),
+        "a fixture planting a converged machine must write at least one managed file"
+    );
+    planted
 }
 
 /// The whole text of a file a walk ENUMERATED, read here so the read failure
 /// cannot be separated from the population's floor.
 ///
-/// A file a walk cannot open is otherwise indistinguishable from one holding
-/// nothing: the walk judges it by no rule, reports no offender and passes having
-/// read less than its floor promised. The WHOLE-file twin of
-/// [`production_slice_of`], for a walk whose subject is a source's test region,
-/// a golden or a markdown page rather than a source's production region. A read
-/// whose absence is a legitimate state — an artifact the test itself decided not
-/// to write — stays a silent read and says so with `// absent-file-ok: <why>`.
-pub fn walked_file_body(path: &Path) -> String {
-    std::fs::read_to_string(path)
-        .unwrap_or_else(|e| panic!("{}: the walk must read every file: {e}", path.display()))
+/// A file a walk cannot open is otherwise indistinguishable from one holding nothing: the walk
+/// judges it by no rule, reports no offender and passes having read less than its floor promised.
+/// The WHOLE-file twin of [`production_slice_of`], for a walk whose subject is a source's test
+/// region, a golden or a markdown page. A read whose absence is a legitimate state — an artifact
+/// the test itself decided not to write — stays a silent read and says so with
+/// `// absent-file-ok: <why>`.
+///
+/// A Rust source of the workspace is read once per test process: every walk
+/// and every scan of it borrows that one body, so a file's text, its gates and
+/// its views all come from the same read. A fixture a test writes elsewhere may
+/// be rewritten between two reads, so it is read on every call.
+pub fn walked_file_body(path: &Path) -> std::borrow::Cow<'static, str> {
+    type Bodies = std::collections::HashMap<PathBuf, &'static str>;
+    static BODIES: std::sync::LazyLock<std::sync::Mutex<Bodies>> =
+        std::sync::LazyLock::new(Default::default);
+    let read = |path: &Path| {
+        std::fs::read_to_string(path)
+            .unwrap_or_else(|e| panic!("{}: the walk must read every file: {e}", path.display()))
+    };
+    let key = lexically_folded(path);
+    let source = key.extension().is_some_and(|ext| ext == "rs");
+    if !source || !key.starts_with(WORKSPACE_ROOT.join("crates")) {
+        return std::borrow::Cow::Owned(read(path));
+    }
+    let known = BODIES
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get(&key)
+        .copied();
+    if let Some(body) = known {
+        return std::borrow::Cow::Borrowed(body);
+    }
+    // Read outside the lock so walks on other threads keep reading; a file two
+    // threads read at once is kept once, and the other copy is dropped.
+    let body = read(path);
+    std::borrow::Cow::Borrowed(
+        BODIES
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .entry(key)
+            .or_insert_with(|| Box::leak(body.into_boxed_str())),
+    )
 }
 
 /// The production region of the Rust source at `path`, read here so the two
@@ -4729,22 +5898,161 @@ pub fn walked_file_body(path: &Path) -> String {
 /// module and nothing else, so a shorter read is a walk that went blind partway
 /// down the file. A walk over several files reads every one through this;
 /// [`production_slice`] stays the pure cut for a caller holding one body.
+///
+/// A file that holds tests alone ([`is_test_source`]) or is built only for
+/// tests ([`is_test_only_file`]) has no production region, so it slices to
+/// the empty string: a walk judging production code through here leaves it
+/// out whether or not the walk asks either predicate itself.
 pub fn production_slice_of(path: &Path) -> String {
-    let body = std::fs::read_to_string(path)
-        .unwrap_or_else(|e| panic!("{}: the walk must read every source: {e}", path.display()));
-    // unfloored-slice-ok: the floor over what this cut returned is the assert below.
-    let production = production_slice(&body);
+    sliced_views_of(path).production.clone()
+}
+
+/// The text a test can drive in the Rust source at `path`:
+/// [`production_and_seams_slice`] of it, read and floored the way
+/// [`production_slice_of`] is. A file built only for tests holds no seam
+/// either, so it reads as the empty string.
+pub fn production_and_seams_of(path: &Path) -> String {
+    sliced_views_of(path).seams.clone()
+}
+
+/// [`production_slice_of`] with its literals and comments blanked by
+/// [`blank_non_code`], line for line. The fold is the one the scan already ran
+/// over the file, so a walk judging code alone reads it here, without folding
+/// the text a second time.
+pub fn production_code_of(path: &Path) -> String {
+    sliced_views_of(path).production_code.clone()
+}
+
+/// What one scan of a Rust source yields: the body it scanned, its production
+/// view, its seam view, each view's [`blank_non_code`] fold, the gate of each
+/// of its lines and, once a walk asks for it, its test region.
+#[derive(Clone, Default)]
+struct SourceViews {
+    body: std::borrow::Cow<'static, str>,
+    gates: Vec<Option<Gate>>,
+    region: std::sync::OnceLock<String>,
+    production: String,
+    seams: String,
+    production_code: String,
+    seams_code: String,
+}
+
+/// The views of `path` [`cut_views_of`] keeps, or none for a file holding tests
+/// alone or built only for tests.
+fn sliced_views_of(path: &Path) -> std::borrow::Cow<'static, SourceViews> {
+    if is_test_source(path) || is_test_only_file(path) {
+        return std::borrow::Cow::Owned(SourceViews::default());
+    }
+    cut_views_of(path)
+}
+
+/// The text a test can drive in the Rust source at `path`, for any file: its
+/// seam view, every [`Gate::Test`] item cut wherever it sits and every
+/// [`Gate::TestHelpers`] item kept, floored the way [`production_slice_of`] is.
+/// A walk over the helpers built only for tests reads the region they ship to
+/// tests through here, where [`production_and_seams_of`] would answer that
+/// they hold none.
+pub fn test_module_cut_of(path: &Path) -> String {
+    cut_views_of(path).seams.clone()
+}
+
+/// The test region of the Rust source at `path`: the whole file where it holds
+/// tests alone or is built only for tests, and otherwise [`test_region_mask`]
+/// of it, cut once from the body and gates the one scan of the file holds. A
+/// walk over the test scope of several files reads each one here.
+pub fn test_region_of(path: &Path) -> std::borrow::Cow<'static, str> {
+    if is_test_source(path) || is_test_only_file(path) {
+        // unfloored-slice-ok: a file of tests alone is its own test region.
+        return walked_file_body(path);
+    }
+    view_of(path, |views| {
+        views
+            .region
+            .get_or_init(|| gated_lines_in_place(&views.body, &views.gates))
+            .as_str()
+    })
+}
+
+/// [`line_gates`] of the Rust source at `path`, from the one scan of it, which
+/// read the body [`walked_file_body`] returns for the same path. A file
+/// holding tests alone carries no gate of its own, so a walk judging such a
+/// file whole asks [`is_test_source`] first.
+pub fn line_gates_of(path: &Path) -> std::borrow::Cow<'static, [Option<Gate>]> {
+    view_of(path, |views| views.gates.as_slice())
+}
+
+/// One part of the views of `path`, borrowed from the per-process scan of a
+/// workspace source and copied out of the one-off scan of a fixture.
+fn view_of<T: ToOwned + ?Sized>(
+    path: &Path,
+    part: impl Fn(&SourceViews) -> &T,
+) -> std::borrow::Cow<'static, T> {
+    match cut_views_of(path) {
+        std::borrow::Cow::Borrowed(views) => std::borrow::Cow::Borrowed(part(views)),
+        std::borrow::Cow::Owned(views) => std::borrow::Cow::Owned(part(&views).to_owned()),
+    }
+}
+
+/// [`scan_views_of`] for `path`, scanned once per test process when it is a
+/// source of the workspace: the workspace memo and every walk naming a file
+/// read the same views, so a walk asking after a file the memo already read
+/// costs a lookup. A fixture a test writes elsewhere may be rewritten between
+/// two reads, so it is scanned on every call.
+fn cut_views_of(path: &Path) -> std::borrow::Cow<'static, SourceViews> {
+    type Views = std::collections::HashMap<PathBuf, &'static SourceViews>;
+    static VIEWS: std::sync::LazyLock<std::sync::Mutex<Views>> =
+        std::sync::LazyLock::new(Default::default);
+    let key = lexically_folded(path);
+    if !key.starts_with(WORKSPACE_ROOT.join("crates")) {
+        return std::borrow::Cow::Owned(scan_views_of(path));
+    }
+    let known = VIEWS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get(&key)
+        .copied();
+    if let Some(views) = known {
+        return std::borrow::Cow::Borrowed(views);
+    }
+    // Scanned outside the lock so walks on other threads keep reading; a file
+    // two threads scan at once is kept once, and the other copy is dropped.
+    let views = scan_views_of(path);
+    std::borrow::Cow::Borrowed(
+        *VIEWS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .entry(key)
+            .or_insert_with(|| Box::leak(Box::new(views))),
+    )
+}
+
+/// The views of the Rust source at `path`, the production view floored at the
+/// lines preceding the file's first test item. The seam view holds every
+/// production line, so the floor holds for it too.
+fn scan_views_of(path: &Path) -> SourceViews {
+    let body = walked_file_body(path);
+    let code = blank_non_code(&body);
+    let gates = line_gates_over(&body, &code);
+    let production = keep_lines(&body, &gates, |gate| gate.is_none());
     let before_tests = body
         .lines()
-        .position(|l| l == "#[cfg(test)]")
+        .position(|l| l.contains("#[cfg(") && attribute_gate(l).is_some())
         .unwrap_or_else(|| body.lines().count());
     let walked = production.lines().count();
     assert!(
         walked > 0 && walked >= before_tests,
-        "{}: the walk read {walked} lines of the {before_tests} that precede this file's test module",
+        "{}: the walk read {walked} lines of the {before_tests} that precede this file's first test item",
         path.display()
     );
-    production
+    SourceViews {
+        seams: keep_lines(&body, &gates, |gate| gate != Some(Gate::Test)),
+        production_code: keep_lines(&code, &gates, |gate| gate.is_none()),
+        seams_code: keep_lines(&code, &gates, |gate| gate != Some(Gate::Test)),
+        production,
+        gates,
+        body,
+        region: std::sync::OnceLock::new(),
+    }
 }
 
 /// The workspace root: the directory holding `crates/`.
@@ -4753,10 +6061,19 @@ pub fn production_slice_of(path: &Path) -> String {
 /// `<root>/crates/cfgd-core` whichever crate's test binary is running and a
 /// consumer crate's walk reaches the same root as cfgd-core's own.
 pub fn workspace_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("..")
-        .join("..")
+    WORKSPACE_ROOT.clone()
 }
+
+// Taken lexically (two `parent()` steps, no `..` component) so every path a
+// scan builds on it, or on any crate's `CARGO_MANIFEST_DIR`, starts with it
+// component for component and `is_test_source` can strip it.
+static WORKSPACE_ROOT: std::sync::LazyLock<PathBuf> = std::sync::LazyLock::new(|| {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .expect("cfgd-core sits two levels below the workspace root")
+        .to_path_buf()
+});
 
 /// Every file under `root`, at any depth, in whatever order the filesystem
 /// lists them.
@@ -4810,6 +6127,990 @@ pub fn rust_sources_under(root: &Path) -> Vec<PathBuf> {
     out
 }
 
+/// Whether `path` is a source file that holds tests alone: a `tests.rs`, a
+/// `tests_*.rs` module file, or anything under a `tests/` directory.
+///
+/// Each is compiled only under `#[cfg(test)]` (declared from its parent as
+/// `#[cfg(test)] mod tests_x;`) or as an integration test, and carries no inner
+/// `#[cfg(test)]` for `production_slice` to cut, so a scan judging production
+/// code skips the whole file. This is the one statement of that naming rule,
+/// so a test module named some other way is added here, where every scan
+/// skipping test files picks it up at once.
+///
+/// Only the components below the workspace root are judged: a checkout that
+/// itself sits under a directory named `tests` classifies the same as any
+/// other. A path outside the workspace root is judged whole.
+pub fn is_test_source(path: &Path) -> bool {
+    is_test_source_below(&WORKSPACE_ROOT, path)
+}
+
+/// [`is_test_source`] against an explicit `root` in place of the workspace
+/// root, so a test can place a workspace anywhere.
+pub fn is_test_source_below(root: &Path, path: &Path) -> bool {
+    let rel = path.strip_prefix(root).unwrap_or(path);
+    rel.file_name()
+        .and_then(|n| n.to_str())
+        .is_some_and(|n| n == "tests.rs" || (n.starts_with("tests_") && n.ends_with(".rs")))
+        || rel.components().any(|c| c.as_os_str() == "tests")
+}
+
+/// Whether `path` is a workspace source built only for tests although its name
+/// does not say so, which [`is_test_source`] answers from the name alone: a
+/// module gated to tests (`#[cfg(test)] mod x;`, `feature = "test-helpers"`,
+/// or any combination [`cfg_requires_test`] holds for, on the declaration or
+/// as the file's inner attribute), every module such a file declares, and a
+/// `[[bin]]` whose `required-features` names `test-helpers` (the `fake-cosign`
+/// fixture).
+///
+/// No shipped binary compiles such a file, and the gate sits outside it, so it
+/// carries no inner `#[cfg(test)]` for `production_slice` to cut at. A scan
+/// judging production code skips it by asking here. A production file that
+/// shares a helper's name elsewhere is then still read. The set is derived
+/// once per test process from every crate's sources and manifest (one read of
+/// each), so a module gated the same way joins it with no list to keep.
+pub fn is_test_only_file(path: &Path) -> bool {
+    static FILES: std::sync::LazyLock<std::collections::BTreeSet<PathBuf>> =
+        std::sync::LazyLock::new(|| test_only_files_below(&WORKSPACE_ROOT));
+    let folded = lexically_folded(path);
+    FILES.contains(folded.strip_prefix(&*WORKSPACE_ROOT).unwrap_or(&folded))
+}
+
+/// `path` with its `.` and `..` components folded away, since a walk rooted at
+/// `<crate>/../<sibling>` hands back paths carrying the `..`.
+fn lexically_folded(path: &Path) -> PathBuf {
+    let mut folded = PathBuf::new();
+    for part in path.components() {
+        match part {
+            std::path::Component::ParentDir => {
+                folded.pop();
+            }
+            std::path::Component::CurDir => {}
+            other => folded.push(other),
+        }
+    }
+    folded
+}
+
+/// The production text of `path` a multi-file walk reads, and the text the
+/// workspace memo declares its functions from: [`production_slice_of`], whose
+/// read fails the walk on an unreadable file and whose floor fails it on a
+/// slice shorter than the lines preceding the file's first test item.
+///
+/// A file `is_test_source` or `is_test_only_file` names has no production
+/// region, so it reads as the empty string.
+pub fn floored_production_body(path: &Path) -> String {
+    production_slice_of(path)
+}
+
+/// One crate's name and its production sources, each as its path and body.
+pub type RootSources = (String, Vec<(PathBuf, String)>);
+
+/// Every crate's production sources, keyed by the crate's own name and sorted
+/// by it, read and floored once per test process. A dozen walks judge the
+/// whole workspace, and under `cargo test` they share one process, so each
+/// reading the tree itself paid the same second of I/O and floor checks again.
+/// A file `is_test_source` names holds tests alone, and one `is_test_only_file`
+/// names is built only for tests, so neither is a production source.
+///
+/// The second half holds the [`production_and_seams_of`] text of each file
+/// whose seam view differs from its production text, from the same read and
+/// scan, for [`workspace_seam_declarations`].
+static WORKSPACE_SOURCES: std::sync::LazyLock<(Vec<RootSources>, SeamSources)> =
+    std::sync::LazyLock::new(|| {
+        let crates_dir = WORKSPACE_ROOT.join("crates");
+        let mut present: Vec<String> = std::fs::read_dir(&crates_dir)
+            .expect("the workspace's crate directory is readable")
+            .map(|entry| entry.expect("the walk must read every directory entry"))
+            .filter(|entry| entry.path().join("src").is_dir())
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .collect();
+        present.sort();
+        let mut seams = SeamSources::new();
+        let roots = present
+            .into_iter()
+            .map(|krate| {
+                let files: Vec<(PathBuf, String)> =
+                    rust_sources_under(&crates_dir.join(&krate).join("src"))
+                        .into_iter()
+                        .filter(|p| !is_test_source(p) && !is_test_only_file(p))
+                        .map(|path| {
+                            let views = sliced_views_of(&path);
+                            if views.seams != views.production {
+                                seams.insert(path.clone(), views.seams.clone());
+                            }
+                            (path, views.production.clone())
+                        })
+                        .collect();
+                (krate, files)
+            })
+            .collect();
+        (roots, seams)
+    });
+
+/// The seam view of each production source whose seam view differs from its
+/// production text.
+type SeamSources = std::collections::BTreeMap<PathBuf, String>;
+
+/// Every crate root's production sources, keyed by the crate's own name, for a
+/// walk whose population is the WHOLE workspace, in the order `roots` names
+/// them and borrowed from `WORKSPACE_SOURCES`.
+///
+/// The named set is checked against `crates/` itself, so a crate joining the
+/// workspace fails the caller's walk and never goes unread, and each root
+/// must yield at least one source — a tree read as empty is otherwise
+/// indistinguishable from one holding no offender. Both checks run per call,
+/// so the walk that fails names the root. The comparison is
+/// order-insensitive: both sides are sorted first, so a caller listing its
+/// roots in its own order is not failed with a message about a crate joining
+/// the workspace.
+pub fn production_sources_per_root(
+    roots: &[&str],
+) -> Vec<(&'static str, &'static [(PathBuf, String)])> {
+    let workspace: &'static [RootSources] = &WORKSPACE_SOURCES.0;
+    let present: Vec<&str> = workspace.iter().map(|(krate, _)| krate.as_str()).collect();
+    let mut named: Vec<&str> = roots.to_vec();
+    named.sort_unstable();
+    assert_eq!(
+        present, named,
+        "a crate joined or left the workspace, so its tree is judged by nobody"
+    );
+    roots
+        .iter()
+        .map(|krate| {
+            let (root, files) = workspace
+                .iter()
+                .find(|(present, _)| present == krate)
+                .expect("every named root is present, checked above");
+            assert!(
+                !files.is_empty(),
+                "the {krate} tree stopped contributing sources"
+            );
+            (root.as_str(), files.as_slice())
+        })
+        .collect()
+}
+
+/// What omitting one `Option` field of a config document means to the build:
+/// an `Option<…Config>` section any struct under `config/` declares, or an
+/// `Option` leaf reached from `ConfigSpec` through its sections.
+pub struct OmittedField {
+    /// The struct declaring the field, as Rust spells it.
+    pub owner: &'static str,
+    /// The field, as Rust spells it.
+    pub field: &'static str,
+    /// The `spec`-relative key `cfgd config get` addresses the section by.
+    pub key: &'static str,
+    /// The field's `<field>_effective` accessor serialized on a spec that
+    /// omits every section, or `None` for a section whose omission turns its
+    /// feature off or a leaf whose omission means nothing is set, neither of
+    /// which has an accessor.
+    pub omitted: Option<fn(&crate::config::ConfigSpec) -> serde_yaml::Value>,
+}
+
+fn section_value<T: serde::Serialize>(value: &T) -> serde_yaml::Value {
+    serde_yaml::to_value(value).unwrap_or_else(|e| panic!("a config field serializes: {e}"))
+}
+
+/// Every `Option<…Config>` section of a config document and every `Option`
+/// leaf reached from `ConfigSpec` through them, classified by what production
+/// does when it is omitted. A field is defaults-apply when a production
+/// reader substitutes a value for `None`; that reader goes through
+/// the accessor, and the accessor's omitted value is what `cfgd config get`
+/// reports. The private deserialization mirror `RawConfigSpec` is moved into
+/// `ConfigSpec` field for field and is not a row.
+///
+/// Defaults apply:
+/// - `daemon`, omitted as `daemon: {}`. Read by `build_pre_loop_setup`,
+///   `cmd_daemon_install`, `read_event_log_flag`, `reconcile_tick`,
+///   `configured_auto_apply` and `review_source_policies`.
+/// - `daemon.reconcile`, omitted as `reconcile: {}` (`5m`, `NotifyOnly`). Read
+///   by `parse_daemon_config`, `build_reconcile_tasks`, `reconcile_tick`,
+///   `configured_auto_apply` and `review_source_policies`.
+/// - `daemon.reconcile.policy`, omitted as `policy: {}`. Read by
+///   `review_source_policies`.
+/// - `daemon.sync`, omitted as `sync: {}` (no pull or push). Read by
+///   `parse_daemon_config`.
+/// - `daemon.notify`, omitted as `notify: {}` (no drift notice). Read by
+///   `parse_daemon_config`.
+/// - `output`, omitted as `output: {}`, and `output.theme`, omitted as the
+///   `default` preset. Read by `resolve_theme_config`, with or without
+///   `--theme`, which hands the block to `Theme::from_config`.
+/// - `modules`, omitted as no registries, and `modules.security`, omitted as no
+///   signature required. Read by the `module registry` verbs and the module
+///   signature check.
+/// - `security`, omitted as unsigned source content refused. Read by every
+///   source manager's unsigned-content check.
+/// - `ai`, omitted as `ai: {}`. Read by `cmd_generate`.
+/// - `compliance`, omitted as `compliance: {}` (no snapshots). Read by the
+///   compliance snapshot and export.
+/// - `update`, omitted as `update: {}`. Read by `cmd_upgrade`,
+///   `startup_update_config` and the daemon's version check.
+/// - `secrets`, omitted as `secrets: {}` (the `sops` backend). Read by the
+///   secret backend the provider registry builds.
+///
+/// - `output.usageHints`, omitted as `false`. Read by `resolve_hints_enabled`.
+/// - `output.maskEnvValues`, omitted as `All`. Read by
+///   `resolve_mask_env_values`.
+/// - `update.channel`, omitted as `STABLE_UPDATE_CHANNEL`. Read by
+///   `cmd_upgrade`, `run_update_check` and the daemon's version check.
+///
+/// Feature off, or nothing set:
+/// - `secrets.sops`: no sops settings are read.
+/// - `profile`: no profile is active.
+/// - `daemon.notify.webhookUrl`: no webhook is posted to.
+/// - `secrets.sops.ageKey`: sops searches for its key itself.
+/// - every `output.theme.overrides` slot: the preset's own value renders.
+pub const OMITTED_FIELDS: &[OmittedField] = &[
+    OmittedField {
+        owner: "ConfigSpec",
+        field: "daemon",
+        key: "daemon",
+        omitted: Some(|s| section_value(s.daemon_effective())),
+    },
+    OmittedField {
+        owner: "DaemonConfig",
+        field: "reconcile",
+        key: "daemon.reconcile",
+        omitted: Some(|s| section_value(s.daemon_effective().reconcile_effective())),
+    },
+    OmittedField {
+        owner: "ReconcileConfig",
+        field: "policy",
+        key: "daemon.reconcile.policy",
+        omitted: Some(|s| {
+            section_value(
+                s.daemon_effective()
+                    .reconcile_effective()
+                    .policy_effective(),
+            )
+        }),
+    },
+    OmittedField {
+        owner: "DaemonConfig",
+        field: "sync",
+        key: "daemon.sync",
+        omitted: Some(|s| section_value(s.daemon_effective().sync_effective())),
+    },
+    OmittedField {
+        owner: "DaemonConfig",
+        field: "notify",
+        key: "daemon.notify",
+        omitted: Some(|s| section_value(s.daemon_effective().notify_effective())),
+    },
+    OmittedField {
+        owner: "ConfigSpec",
+        field: "output",
+        key: "output",
+        omitted: Some(|s| section_value(s.output_effective())),
+    },
+    OmittedField {
+        owner: "OutputConfig",
+        field: "theme",
+        key: "output.theme",
+        omitted: Some(|s| section_value(s.output_effective().theme_effective())),
+    },
+    OmittedField {
+        owner: "ConfigSpec",
+        field: "modules",
+        key: "modules",
+        omitted: Some(|s| section_value(s.modules_effective())),
+    },
+    OmittedField {
+        owner: "ModulesConfig",
+        field: "security",
+        key: "modules.security",
+        omitted: Some(|s| section_value(s.modules_effective().security_effective())),
+    },
+    OmittedField {
+        owner: "ConfigSpec",
+        field: "security",
+        key: "security",
+        omitted: Some(|s| section_value(s.security_effective())),
+    },
+    OmittedField {
+        owner: "ConfigSpec",
+        field: "ai",
+        key: "ai",
+        omitted: Some(|s| section_value(s.ai_effective())),
+    },
+    OmittedField {
+        owner: "ConfigSpec",
+        field: "compliance",
+        key: "compliance",
+        omitted: Some(|s| section_value(s.compliance_effective())),
+    },
+    OmittedField {
+        owner: "ConfigSpec",
+        field: "update",
+        key: "update",
+        omitted: Some(|s| section_value(s.update_effective())),
+    },
+    OmittedField {
+        owner: "ConfigSpec",
+        field: "secrets",
+        key: "secrets",
+        omitted: Some(|s| section_value(s.secrets_effective())),
+    },
+    OmittedField {
+        owner: "SecretsConfig",
+        field: "sops",
+        key: "secrets.sops",
+        omitted: None,
+    },
+    OmittedField {
+        owner: "OutputConfig",
+        field: "usage_hints",
+        key: "output.usageHints",
+        omitted: Some(|s| section_value(&s.output_effective().usage_hints_effective())),
+    },
+    OmittedField {
+        owner: "OutputConfig",
+        field: "mask_env_values",
+        key: "output.maskEnvValues",
+        omitted: Some(|s| section_value(&s.output_effective().mask_env_values_effective())),
+    },
+    OmittedField {
+        owner: "UpdateConfig",
+        field: "channel",
+        key: "update.channel",
+        omitted: Some(|s| section_value(&s.update_effective().channel_effective())),
+    },
+    OmittedField {
+        owner: "ConfigSpec",
+        field: "profile",
+        key: "profile",
+        omitted: None,
+    },
+    OmittedField {
+        owner: "NotifyConfig",
+        field: "webhook_url",
+        key: "daemon.notify.webhookUrl",
+        omitted: None,
+    },
+    OmittedField {
+        owner: "SopsConfig",
+        field: "age_key",
+        key: "secrets.sops.ageKey",
+        omitted: None,
+    },
+    OmittedField {
+        owner: "ThemeOverrides",
+        field: "primary",
+        key: "output.theme.overrides.primary",
+        omitted: None,
+    },
+    OmittedField {
+        owner: "ThemeOverrides",
+        field: "header",
+        key: "output.theme.overrides.header",
+        omitted: None,
+    },
+    OmittedField {
+        owner: "ThemeOverrides",
+        field: "success",
+        key: "output.theme.overrides.success",
+        omitted: None,
+    },
+    OmittedField {
+        owner: "ThemeOverrides",
+        field: "warning",
+        key: "output.theme.overrides.warning",
+        omitted: None,
+    },
+    OmittedField {
+        owner: "ThemeOverrides",
+        field: "error",
+        key: "output.theme.overrides.error",
+        omitted: None,
+    },
+    OmittedField {
+        owner: "ThemeOverrides",
+        field: "info",
+        key: "output.theme.overrides.info",
+        omitted: None,
+    },
+    OmittedField {
+        owner: "ThemeOverrides",
+        field: "muted",
+        key: "output.theme.overrides.muted",
+        omitted: None,
+    },
+    OmittedField {
+        owner: "ThemeOverrides",
+        field: "running",
+        key: "output.theme.overrides.running",
+        omitted: None,
+    },
+    OmittedField {
+        owner: "ThemeOverrides",
+        field: "diff_add",
+        key: "output.theme.overrides.diffAdd",
+        omitted: None,
+    },
+    OmittedField {
+        owner: "ThemeOverrides",
+        field: "diff_remove",
+        key: "output.theme.overrides.diffRemove",
+        omitted: None,
+    },
+    OmittedField {
+        owner: "ThemeOverrides",
+        field: "diff_context",
+        key: "output.theme.overrides.diffContext",
+        omitted: None,
+    },
+    OmittedField {
+        owner: "ThemeOverrides",
+        field: "accent",
+        key: "output.theme.overrides.accent",
+        omitted: None,
+    },
+    OmittedField {
+        owner: "ThemeOverrides",
+        field: "secondary",
+        key: "output.theme.overrides.secondary",
+        omitted: None,
+    },
+    OmittedField {
+        owner: "ThemeOverrides",
+        field: "type_hint",
+        key: "output.theme.overrides.typeHint",
+        omitted: None,
+    },
+    OmittedField {
+        owner: "ThemeOverrides",
+        field: "icon_ok",
+        key: "output.theme.overrides.iconOk",
+        omitted: None,
+    },
+    OmittedField {
+        owner: "ThemeOverrides",
+        field: "icon_warn",
+        key: "output.theme.overrides.iconWarn",
+        omitted: None,
+    },
+    OmittedField {
+        owner: "ThemeOverrides",
+        field: "icon_fail",
+        key: "output.theme.overrides.iconFail",
+        omitted: None,
+    },
+    OmittedField {
+        owner: "ThemeOverrides",
+        field: "icon_pending",
+        key: "output.theme.overrides.iconPending",
+        omitted: None,
+    },
+    OmittedField {
+        owner: "ThemeOverrides",
+        field: "icon_running",
+        key: "output.theme.overrides.iconRunning",
+        omitted: None,
+    },
+    OmittedField {
+        owner: "ThemeOverrides",
+        field: "icon_skipped",
+        key: "output.theme.overrides.iconSkipped",
+        omitted: None,
+    },
+    OmittedField {
+        owner: "ThemeOverrides",
+        field: "icon_arrow",
+        key: "output.theme.overrides.iconArrow",
+        omitted: None,
+    },
+    OmittedField {
+        owner: "ThemeOverrides",
+        field: "icon_info",
+        key: "output.theme.overrides.iconInfo",
+        omitted: None,
+    },
+];
+
+/// Every crate of the workspace, for a walk reading all of them through
+/// [`workspace_declarations`] or [`production_sources_per_root`], which check
+/// it against `crates/` on every call.
+pub const WORKSPACE_CRATES: &[&str] = &[
+    "cfgd",
+    "cfgd-core",
+    "cfgd-crd",
+    "cfgd-csi",
+    "cfgd-operator",
+    "cfgd-schema",
+    "cfgd-test-fixtures",
+];
+
+/// Every function the workspace's production code declares, as
+/// [`fn_declarations`] rows, with the site declaring each: its crate root, its
+/// file and that file's production body, each at the row's own index.
+///
+/// The seam memo ([`workspace_seam_declarations`]) holds the same shape over
+/// the text a test can drive, where a site's body is the file's seam view.
+pub struct WorkspaceDeclarations {
+    pub sites: Vec<(&'static str, &'static Path, &'static str)>,
+    pub rows: Vec<(String, Option<String>, String)>,
+    /// Each row's gate, read off the line its declaration opens on: `None` for
+    /// a function every build ships, and [`Gate::TestHelpers`] for one only the
+    /// seam view declares.
+    pub gates: Vec<Option<Gate>>,
+    /// Each file's rows, which the initializer pushes contiguously.
+    by_file: std::collections::BTreeMap<&'static Path, std::ops::Range<usize>>,
+    /// The lines of its site's body each row spans.
+    spans: Vec<std::ops::RangeInclusive<usize>>,
+    /// Whether the site bodies are seam views.
+    seams: bool,
+}
+
+impl WorkspaceDeclarations {
+    /// The lines of its site's body the row at `row` spans, first to last.
+    pub fn span_of(&self, row: usize) -> std::ops::RangeInclusive<usize> {
+        self.spans[row].clone()
+    }
+
+    /// The row at `row`'s declaration with its literals and comments blanked
+    /// by [`blank_non_code`], cut from the fold the scan of its file already
+    /// made, so a walk judging a row's code folds nothing again.
+    pub fn code_of(&self, row: usize) -> String {
+        let views = cut_views_of(self.sites[row].1);
+        let code = if self.seams {
+            &views.seams_code
+        } else {
+            &views.production_code
+        };
+        let span = &self.spans[row];
+        code.lines()
+            .skip(*span.start())
+            .take(span.end() - span.start() + 1)
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// The rows the production source at `path` declares, spelled from
+    /// [`workspace_root`] as every site path is; empty for a file declaring no
+    /// function or one outside the workspace's production sources.
+    pub fn rows_in(&self, path: &Path) -> &[(String, Option<String>, String)] {
+        self.by_file
+            .get(path)
+            .map_or(&[], |range| &self.rows[range.clone()])
+    }
+
+    /// The rows declared in a file under `dir`, a directory of one crate's
+    /// `src` tree, spelled from `crates/` (`"cfgd-core/src/reconciler"`).
+    ///
+    /// At least `files_at_least` distinct files under `dir` must declare a
+    /// row: a directory that lost most of its sources otherwise still yields
+    /// some rows, and the walk over them judges less than it claims.
+    pub fn rows_under(
+        &self,
+        dir: &str,
+        files_at_least: usize,
+    ) -> Vec<&(String, Option<String>, String)> {
+        let dir = WORKSPACE_ROOT.join("crates").join(dir);
+        assert!(
+            dir.is_dir(),
+            "`{}` is no directory of the workspace",
+            dir.display()
+        );
+        let mut files: std::collections::BTreeSet<&Path> = std::collections::BTreeSet::new();
+        let rows: Vec<&(String, Option<String>, String)> = self
+            .sites
+            .iter()
+            .zip(&self.rows)
+            .filter(|((_, path, _), _)| path.starts_with(&dir))
+            .map(|((_, path, _), row)| {
+                files.insert(path);
+                row
+            })
+            .collect();
+        assert!(
+            files.len() >= files_at_least,
+            "`{}` declares functions in {} files, fewer than the {files_at_least} it held",
+            dir.display(),
+            files.len()
+        );
+        rows
+    }
+}
+
+/// [`WorkspaceDeclarations`] for the whole workspace, built once per test
+/// process: every walk that declares the workspace, a crate or a directory of
+/// one reads it, and declaring every function in seven crates is most of each
+/// such walk's time.
+static WORKSPACE_DECLARATIONS: std::sync::LazyLock<WorkspaceDeclarations> =
+    std::sync::LazyLock::new(|| declare_workspace(None));
+
+/// [`WorkspaceDeclarations`] over the text a test can drive, built once per
+/// test process on the first walk asking for it. A file whose seam view is its
+/// production text shares the production memo's rows, so only the files
+/// holding a seam are declared again.
+static WORKSPACE_SEAM_DECLARATIONS: std::sync::LazyLock<WorkspaceDeclarations> =
+    std::sync::LazyLock::new(|| declare_workspace(Some(&WORKSPACE_DECLARATIONS)));
+
+/// The declarations of every production source, or with `production` given,
+/// of every source's seam view, reusing `production`'s rows for a file with
+/// no seam.
+fn declare_workspace(production: Option<&'static WorkspaceDeclarations>) -> WorkspaceDeclarations {
+    let (roots, seams) = &*WORKSPACE_SOURCES;
+    let mut declared = WorkspaceDeclarations {
+        sites: Vec::new(),
+        rows: Vec::new(),
+        gates: Vec::new(),
+        by_file: std::collections::BTreeMap::new(),
+        spans: Vec::new(),
+        seams: production.is_some(),
+    };
+    for (root, files) in roots {
+        for (path, text) in files {
+            let from = declared.rows.len();
+            let seam = production.and(seams.get(path));
+            let body = seam.map_or(text.as_str(), String::as_str);
+            let rows: Vec<(SpannedRow, Option<Gate>)> = match (production, seam) {
+                (Some(memo), None) => {
+                    let range = memo
+                        .by_file
+                        .get(path.as_path())
+                        .cloned()
+                        .unwrap_or_default();
+                    memo.rows[range.clone()]
+                        .iter()
+                        .cloned()
+                        .zip(memo.spans[range].iter().cloned())
+                        .map(|row| (row, None))
+                        .collect()
+                }
+                (Some(_), Some(_)) => gated_rows(body, &seam_gates(&cut_views_of(path).gates)),
+                (None, _) => declared_rows(body)
+                    .into_iter()
+                    .map(|row| (row, None))
+                    .collect(),
+            };
+            for ((row, span), gate) in rows {
+                declared.sites.push((root.as_str(), path.as_path(), body));
+                declared.gates.push(gate);
+                declared.spans.push(span);
+                declared.rows.push(row);
+            }
+            declared
+                .by_file
+                .insert(path.as_path(), from..declared.rows.len());
+        }
+    }
+    declared
+}
+
+/// The gate of each line of a seam view, from the gates of the file it was cut
+/// from: the file's gates with every [`Gate::Test`] line dropped, as the view
+/// drops it.
+fn seam_gates(gates: &[Option<Gate>]) -> Vec<Option<Gate>> {
+    gates
+        .iter()
+        .copied()
+        .filter(|gate| *gate != Some(Gate::Test))
+        .collect()
+}
+
+/// The rows `seams`, a seam view, declares, each with the gate of the line its
+/// declaration opens on. The gate is read off the row's own place in the file,
+/// because a name and an owner do not identify a function: two arms of one
+/// function gated apart (`#[cfg(not(feature = "test-helpers"))]` and
+/// `#[cfg(feature = "test-helpers")]`) share both.
+fn gated_rows(seams: &str, gates: &[Option<Gate>]) -> Vec<(SpannedRow, Option<Gate>)> {
+    declared_rows(seams)
+        .into_iter()
+        .map(|(row, span)| {
+            let gate = gates[*span.start()];
+            ((row, span), gate)
+        })
+        .collect()
+}
+
+/// Every function the seam view of a fixture source the test wrote itself
+/// declares, as its name and the [`Gate`] the declaration sits under, read the
+/// way [`workspace_seam_declarations`] reads a workspace file.
+pub fn fixture_seam_gates(src: &'static str) -> Vec<(String, Option<Gate>)> {
+    let gates = line_gates(src);
+    let seams = keep_lines(src, &gates, |gate| gate != Some(Gate::Test));
+    gated_rows(&seams, &seam_gates(&gates))
+        .into_iter()
+        .map(|(((name, ..), _), gate)| (name, gate))
+        .collect()
+}
+
+/// Every function the production region of the one Rust source at `path`
+/// declares, as [`fn_declarations`] rows read through [`production_slice_of`]:
+/// the rows [`WorkspaceDeclarations::rows_in`] holds for a workspace file, for
+/// a test that names one file by its literal path. A walk over several files
+/// reads the memo through [`workspace_declarations`].
+pub fn file_declarations(path: &Path) -> Vec<(String, Option<String>, String)> {
+    fn_declarations(&production_slice_of(path))
+}
+
+/// Every function a fixture source the test wrote itself declares, as
+/// [`fn_declarations`] rows. The `'static` bound admits a literal and refuses a
+/// body read off disk, which [`file_declarations`] or the memo reads.
+pub fn fixture_declarations(src: &'static str) -> Vec<(String, Option<String>, String)> {
+    fn_declarations(src)
+}
+
+/// `WORKSPACE_DECLARATIONS`, after [`production_sources_per_root`] has checked
+/// `roots` against the workspace and each root's sources for this caller.
+pub fn workspace_declarations(roots: &[&str]) -> &'static WorkspaceDeclarations {
+    production_sources_per_root(roots);
+    &WORKSPACE_DECLARATIONS
+}
+
+/// `WORKSPACE_SEAM_DECLARATIONS`, checked against `roots` the way
+/// [`workspace_declarations`] is, for a walk asking which functions a test can
+/// drive: production's, and every [`Gate::TestHelpers`] seam's.
+pub fn workspace_seam_declarations(roots: &[&str]) -> &'static WorkspaceDeclarations {
+    production_sources_per_root(roots);
+    &WORKSPACE_SEAM_DECLARATIONS
+}
+
+/// Whether a `cfg` predicate (the text inside `cfg(…)`) holds only in a test
+/// build: `test`, `feature = "test-helpers"` (a feature only test builds turn
+/// on), an `all(…)` with such a member, or an `any(…)` whose every member is
+/// one. A `not(…)`, and any other atom, holds in some shipped build.
+pub fn cfg_requires_test(predicate: &str) -> bool {
+    cfg_holds_only_under(predicate, true)
+}
+
+/// Whether a `cfg` predicate holds only when `test` does, or, with
+/// `helpers_count`, when `test` or the `test-helpers` feature does.
+fn cfg_holds_only_under(predicate: &str, helpers_count: bool) -> bool {
+    let p = predicate.trim();
+    if p == "test" {
+        return true;
+    }
+    if let Some(value) = p
+        .strip_prefix("feature")
+        .and_then(|rest| rest.trim_start().strip_prefix('='))
+    {
+        return helpers_count && value.trim() == "\"test-helpers\"";
+    }
+    let call = |op: &str| {
+        p.strip_prefix(op)
+            .map(str::trim_start)
+            .and_then(|rest| rest.strip_prefix('('))
+            .and_then(|rest| rest.strip_suffix(')'))
+            .map(cfg_members)
+    };
+    if let Some(members) = call("any") {
+        return !members.is_empty()
+            && members
+                .iter()
+                .all(|m| cfg_holds_only_under(m, helpers_count));
+    }
+    if let Some(members) = call("all") {
+        return members
+            .iter()
+            .any(|m| cfg_holds_only_under(m, helpers_count));
+    }
+    false
+}
+
+/// The comma-separated members of a `cfg` combinator's argument list, split
+/// only at the top level so a nested `all(a, b)` stays one member.
+fn cfg_members(list: &str) -> Vec<&str> {
+    let (mut out, mut depth, mut quoted, mut start) = (Vec::new(), 0usize, false, 0);
+    for (at, c) in list.char_indices() {
+        match c {
+            '"' => quoted = !quoted,
+            '(' if !quoted => depth += 1,
+            ')' if !quoted => depth = depth.saturating_sub(1),
+            ',' if !quoted && depth == 0 => {
+                out.push(&list[start..at]);
+                start = at + 1;
+            }
+            _ => {}
+        }
+    }
+    out.push(&list[start..]);
+    out.into_iter().filter(|m| !m.trim().is_empty()).collect()
+}
+
+/// The [`Gate`] `line`, one raw source line, builds its item under when it is
+/// an outer `#[cfg(…)]` or inner `#![cfg(…)]` attribute written as code, as
+/// the scanner reads a gate; `None` for any other line and for a predicate
+/// some shipped build meets. The attribute is found on the line's
+/// [`code_line`], so one spelled inside a literal or a comment gates nothing,
+/// and its predicate is read off the raw line, whose `"test-helpers"` literal
+/// the fold blanks.
+pub fn attribute_gate(line: &str) -> Option<Gate> {
+    cfg_attribute(line, &code_line(line)).and_then(|(_, predicate)| gate_of(predicate))
+}
+
+/// Every `mod x;` the Rust source at `source`, whose text is `body`, declares,
+/// as the file it loads (after any `#[path = "…"]`) and whether its attributes
+/// gate it to tests.
+/// A declaration that names no file fails, since the crate could not build.
+fn declared_module_files(source: &Path, body: &str) -> Vec<(PathBuf, bool)> {
+    let lines: Vec<&str> = body.lines().collect();
+    // A crate root or `mod.rs` declares its children beside itself; any other
+    // file declares them in the directory named after it.
+    let parent = source.parent().unwrap_or(Path::new(""));
+    let stem = source.file_stem().unwrap_or_default();
+    let base = if ["lib", "main", "mod"].iter().any(|r| stem == *r)
+        || source.parent().and_then(Path::file_name) == Some("bin".as_ref())
+    {
+        parent.to_path_buf()
+    } else {
+        parent.join(stem)
+    };
+    let mut out = Vec::new();
+    for (at, line) in lines.iter().enumerate() {
+        let code = code_line(line);
+        if item_keyword(&code) != "mod" {
+            continue;
+        }
+        let Some(name) = strip_item_lead(&code)
+            .strip_prefix("mod ")
+            .and_then(|rest| rest.trim_end().strip_suffix(';'))
+        else {
+            continue;
+        };
+        let attrs: Vec<&str> = lines[..at]
+            .iter()
+            .rev()
+            .map(|l| l.trim())
+            .take_while(|l| l.starts_with("#["))
+            .collect();
+        let explicit = attrs.iter().find_map(|a| {
+            a.strip_prefix("#[path = \"")
+                .and_then(|rest| rest.strip_suffix("\"]"))
+                .map(|p| parent.join(p))
+        });
+        let file = explicit
+            .into_iter()
+            .chain([
+                base.join(format!("{name}.rs")),
+                base.join(name).join("mod.rs"),
+            ])
+            .find(|candidate| candidate.is_file())
+            .unwrap_or_else(|| {
+                panic!(
+                    "{}:{}: `mod {name};` names no file under {}",
+                    source.display(),
+                    at + 1,
+                    base.display()
+                )
+            });
+        out.push((file, attrs.iter().any(|a| attribute_gate(a).is_some())));
+    }
+    out
+}
+
+/// [`is_test_only_file`]'s set for the workspace at `root`, each path relative
+/// to `root`; files [`is_test_source_below`] already names are left out.
+///
+/// A file joins when a `[[bin]]` naming `test-helpers` in its
+/// `required-features` builds it, when its declaration or its own inner
+/// attributes carry a gate [`cfg_requires_test`] holds for, or when a file
+/// already in the set declares it: a child of a test-only module is built only
+/// when its parent is.
+pub fn test_only_files_below(root: &Path) -> std::collections::BTreeSet<PathBuf> {
+    let crates = root.join("crates");
+    let mut found: Vec<PathBuf> = Vec::new();
+    let mut crate_dirs: Vec<PathBuf> = std::fs::read_dir(&crates)
+        .unwrap_or_else(|e| {
+            panic!(
+                "{}: the walk must read every directory: {e}",
+                crates.display()
+            )
+        })
+        .map(|entry| {
+            entry
+                .unwrap_or_else(|e| {
+                    panic!("{}: the walk must read every entry: {e}", crates.display())
+                })
+                .path()
+        })
+        .filter(|dir| dir.join("Cargo.toml").is_file())
+        .collect();
+    crate_dirs.sort();
+    for dir in &crate_dirs {
+        // unfloored-slice-ok: a manifest is no Rust source.
+        let manifest: toml::Table = walked_file_body(&dir.join("Cargo.toml"))
+            .parse()
+            .unwrap_or_else(|e| panic!("{}: Cargo.toml must parse: {e}", dir.display()));
+        let package = manifest
+            .get("package")
+            .and_then(|p| p.get("name"))
+            .and_then(toml::Value::as_str);
+        let bins = manifest.get("bin").and_then(toml::Value::as_array);
+        for bin in bins.into_iter().flatten() {
+            let gated = bin
+                .get("required-features")
+                .and_then(toml::Value::as_array)
+                .is_some_and(|f| f.iter().any(|f| f.as_str() == Some("test-helpers")));
+            if !gated {
+                continue;
+            }
+            let name = bin.get("name").and_then(toml::Value::as_str).unwrap_or("");
+            // Cargo's inferred target path when the manifest gives none.
+            let file = match bin.get("path").and_then(toml::Value::as_str) {
+                Some(file) => dir.join(file),
+                None => [
+                    dir.join("src/bin").join(format!("{name}.rs")),
+                    dir.join("src/bin").join(name).join("main.rs"),
+                ]
+                .into_iter()
+                .chain((package == Some(name)).then(|| dir.join("src/main.rs")))
+                .find(|candidate| candidate.is_file())
+                .unwrap_or_else(|| {
+                    panic!(
+                        "{}: [[bin]] `{name}` resolves to no file",
+                        dir.join("Cargo.toml").display()
+                    )
+                }),
+            };
+            found.push(file);
+        }
+    }
+    let sources: Vec<PathBuf> = rust_sources_under(&crates)
+        .into_iter()
+        .filter(|source| !is_test_source_below(root, source))
+        .collect();
+    let mut declared: Vec<(PathBuf, Vec<(PathBuf, bool)>)> = Vec::new();
+    for source in &sources {
+        // unfloored-slice-ok: a gate or module declaration counts wherever it stands.
+        let body = walked_file_body(source);
+        let inner_gate = body
+            .lines()
+            .map(str::trim)
+            .take_while(|l| l.is_empty() || l.starts_with("//") || l.starts_with("#!["))
+            .any(|l| attribute_gate(l).is_some());
+        if inner_gate {
+            found.push(source.clone());
+        }
+        let children = declared_module_files(source, &body);
+        found.extend(
+            children
+                .iter()
+                .filter(|(_, gated)| *gated)
+                .map(|(f, _)| f.clone()),
+        );
+        declared.push((source.clone(), children));
+    }
+    let mut out = std::collections::BTreeSet::new();
+    while let Some(file) = found.pop() {
+        if is_test_source_below(root, &file) {
+            continue;
+        }
+        let rel = file.strip_prefix(root).unwrap_or(&file).to_path_buf();
+        if !out.insert(rel) {
+            continue;
+        }
+        let children = declared.iter().find(|(source, _)| *source == file);
+        found.extend(
+            children
+                .into_iter()
+                .flat_map(|(_, c)| c.iter().map(|(f, _)| f.clone())),
+        );
+    }
+    out
+}
+
 /// Every path-based chmod in the production sources of every crate under
 /// `crates_dir`, and the ones that do not say why following a symlink is safe.
 ///
@@ -4819,7 +7120,7 @@ pub fn rust_sources_under(root: &Path) -> Vec<PathBuf> {
 /// no walk at all. The roots are derived by reading `crates_dir` rather than
 /// listed, so a crate added to the workspace joins the population with it, and
 /// each root is a crate's `src`: a bare `crates/` root would read
-/// `cfgd/tests/common/mod.rs` as production. A `build.rs` is outside the roots
+/// `cfgd/tests/*.rs` as production. A `build.rs` is outside the roots
 /// and outside the class — it runs as the building user in its own `OUT_DIR`,
 /// never elevated inside a directory another account owns.
 ///
@@ -4836,23 +7137,22 @@ pub fn rust_sources_under(root: &Path) -> Vec<PathBuf> {
 ///
 /// What counts and what offends are deliberately different sets.
 /// [`ChmodPopulation::per_root`]'s chmod count holds EVERY chmod-shaped call
-/// the walk read,
-/// no-follow ones included, because the follow-capable sites are the ones this
-/// rule drives to zero and flooring on those alone would turn a fully converted
-/// crate into a failure. Only the two path-based spellings can be misdirected,
-/// so only they are asked the question. A chmod through a descriptor
-/// (`file.set_permissions(…)` on a handle the caller opened) cannot be pointed
-/// at a second file and is in neither set, and a `set_mode` on a `Permissions`
-/// value reaches the filesystem only through one of the calls already judged. A
-/// `.mode(0o…)` on an `OpenOptions` is outside both sets too (and outside the
-/// class): a create-with-mode that follows a planted link either writes the
-/// victim, which is `atomic_write`'s question, or creates cfgd's own file, and
-/// either way no existing file's mode moves. A
-/// COMMENT line counts for nothing either way: a doc sentence naming the
-/// primitive is documentation, not a call site, and a floor a rustdoc paragraph
-/// could hold up would let the real population shrink with the walk none the
-/// wiser. A function DECLARATION is skipped on the same grounds, and so is a
-/// tell inside a STRING LITERAL, and so is a source that IS test scaffolding.
+/// the walk read, no-follow ones included, because the follow-capable sites are
+/// the ones this rule drives to zero and flooring on those alone would turn a
+/// fully converted crate into a failure. Only the two path-based spellings can
+/// be misdirected, so only they are asked the question. A chmod through a
+/// descriptor (`file.set_permissions(…)` on a handle the caller opened) cannot
+/// be pointed at a second file and is in neither set, and a `set_mode` on a
+/// `Permissions` value reaches the filesystem only through one of the calls
+/// already judged. A `.mode(0o…)` on an `OpenOptions` is outside both sets too
+/// (and outside the class): a create-with-mode that follows a planted link
+/// either writes the victim, which is `atomic_write`'s question, or creates
+/// cfgd's own file, and either way no existing file's mode moves. A COMMENT
+/// line counts for nothing either way: a doc sentence naming the primitive is
+/// documentation with no call in it, and a floor a rustdoc paragraph could hold
+/// up would let the real population shrink with the walk none the wiser. A
+/// function DECLARATION is skipped on the same grounds, and so is a tell inside
+/// a STRING LITERAL, and so is a source that IS test scaffolding.
 pub struct ChmodPopulation {
     /// Crate `src` roots the walk read, workspace-relative.
     ///
@@ -4933,13 +7233,13 @@ pub fn path_based_chmod_population(crates_dir: &Path) -> ChmodPopulation {
         let (mut files, mut chmods) = (0usize, 0usize);
         for path in rust_sources_under(root) {
             let name = path.file_name().unwrap_or_default().to_string_lossy();
-            // Test scaffolding carries no `#[cfg(test)]` of its own for the slice
-            // to cut at, so it is named out here instead. `test_helpers.rs` is
-            // named out for the other reason: it ships as production and holds an
-            // inline test module the slice would cut at, leaving a fraction of the
-            // file behind.
+            // Test scaffolding carries no `#[cfg(test)]` of its own for the slice to cut at, so
+            // it is named out here instead. A file built only for tests (`is_test_only_file`)
+            // is named out as well: no shipped binary compiles it, and cfgd-core's
+            // `test_helpers.rs` holds an inline test module the slice would cut at, leaving a
+            // fraction of the file behind.
             if name.starts_with("tests")
-                || name == "test_helpers.rs"
+                || is_test_only_file(&path)
                 || path.parent().is_some_and(|p| p.ends_with("tests"))
             {
                 continue;
@@ -4972,7 +7272,7 @@ pub fn path_based_chmod_population(crates_dir: &Path) -> ChmodPopulation {
                 }
                 if lines[idx.saturating_sub(1)..=idx]
                     .iter()
-                    .any(|l| l.contains("follow-ok:"))
+                    .any(|l| carries_hatch(l, "follow-ok:"))
                 {
                     continue;
                 }
@@ -5090,11 +7390,265 @@ pub fn snapshot_goldens(exts: &[&str]) -> Vec<PathBuf> {
         .collect()
 }
 
+/// A directory for a timeout-kill marker whose path holds a space, so a
+/// command body that leaves the marker path unquoted cannot write it.
+pub fn spaced_marker_dir() -> tempfile::TempDir {
+    tempfile::Builder::new()
+        .prefix("tree kill ")
+        .tempdir()
+        .expect("a temp dir for the marker")
+}
+
+/// Hold a timeout kill to ending a process that writes `marker` once the kill
+/// would have happened: past the timeout and any grace period, and within
+/// `window` of the command returning.
+///
+/// `run(timeout)` runs the command under test and returns whether its timeout
+/// fired. It runs twice: with room to finish, which must write the marker (a
+/// body that can never write it would pass the second half whatever the kill
+/// did), then with a 300 ms timeout, after which the marker must stay absent
+/// for `window`.
+pub fn assert_a_timeout_kill_stops_the_write(
+    marker: &Path,
+    window: std::time::Duration,
+    run: impl Fn(std::time::Duration) -> bool,
+) {
+    assert!(
+        !run(std::time::Duration::from_secs(30)),
+        "the command timed out with room to finish"
+    );
+    assert!(
+        marker.exists(),
+        "the command never wrote {}, so a survivor could not be seen",
+        marker.display()
+    );
+    std::fs::remove_file(marker).expect("remove the control run's marker");
+
+    assert!(
+        run(std::time::Duration::from_millis(300)),
+        "the command must outlive a 300 ms timeout"
+    );
+    let deadline = std::time::Instant::now() + window;
+    while std::time::Instant::now() < deadline {
+        assert!(
+            !marker.exists(),
+            "a process the timed-out command started outlived the kill and wrote {}",
+            marker.display()
+        );
+        // sleep-ok: a write that never happens raises no event to wait on.
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    assert!(
+        !marker.exists(),
+        "a process the timed-out command started outlived the kill and wrote {}",
+        marker.display()
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Prometheus exposition
+// ---------------------------------------------------------------------------
+
+/// The name literal of every prometheus-client `register(` or
+/// `register_with_unit(` call in the production slice of the Rust source at
+/// `path` (read through [`production_slice_of`]), in source order.
+///
+/// prometheus-client appends `_total` to every counter sample, so a metrics
+/// source registers a counter under its bare name; a walk over one holds that no
+/// name returned here ends in `_total`.
+///
+/// # Panics
+///
+/// When a call's first argument is not a string literal, which the walk could
+/// not judge.
+pub fn registered_metric_names(path: &Path) -> Vec<String> {
+    let production = production_slice_of(path);
+    let mut names = Vec::new();
+    for (at, _) in production.match_indices(".register") {
+        let rest = &production[at + ".register".len()..];
+        let rest = rest.strip_prefix("_with_unit").unwrap_or(rest);
+        let Some(args) = rest.strip_prefix('(') else {
+            continue;
+        };
+        let args = args.trim_start();
+        let name = args
+            .strip_prefix('"')
+            .and_then(|lit| lit.split_once('"'))
+            .map(|(name, _)| name.to_string())
+            .unwrap_or_else(|| {
+                let call: String = args.chars().take(60).collect();
+                panic!("a register( call names its metric with no string literal: {call}")
+            });
+        names.push(name);
+    }
+    names
+}
+
+/// What an encoded registry says about its counters.
+#[derive(Debug, Default)]
+pub struct CounterSamples {
+    /// Every family a `# TYPE <name> counter` line declares, in encoded order.
+    pub families: Vec<String>,
+    /// Every line breaking the counter sample convention, with the reason.
+    pub violations: Vec<String>,
+}
+
+/// Read an encoded registry against the counter sample convention: a counter
+/// family is named `<prefix>_[a-z_]+` without a `_total` suffix and has at
+/// least one `<family>_total` sample, a bare `<family>` sample is a violation,
+/// and no line anywhere carries `_total_total`. Only a sample named `<family>`
+/// or `<family>_total` is judged as the family's, so `<family>_created` and a
+/// neighbour such as a gauge `<family>_bytes` pass untouched. A `# HELP` line
+/// of any metric ending in `..` is a violation too: prometheus-client appends
+/// a period to the registered help, so help text must not end in one.
+pub fn counter_samples(encoded: &str, prefix: &str) -> CounterSamples {
+    let mut report = CounterSamples::default();
+    let prefix = format!("{prefix}_");
+    for line in encoded.lines() {
+        if let Some(family) = line
+            .strip_prefix("# TYPE ")
+            .and_then(|rest| rest.strip_suffix(" counter"))
+        {
+            report.families.push(family.to_string());
+        }
+    }
+    for family in &report.families {
+        let bare = family.strip_prefix(&prefix).unwrap_or("");
+        if bare.is_empty() || !bare.chars().all(|c| c.is_ascii_lowercase() || c == '_') {
+            report
+                .violations
+                .push(format!("counter family {family} is not {prefix}[a-z_]+"));
+        }
+        if family.ends_with("_total") {
+            report.violations.push(format!(
+                "counter family {family} is registered with the _total prometheus-client appends"
+            ));
+        }
+    }
+    let mut sampled = vec![false; report.families.len()];
+    for line in encoded.lines() {
+        if line.starts_with("# HELP ") && line.ends_with("..") {
+            report.violations.push(format!(
+                "{line:?} ends in \"..\": prometheus-client appends the period"
+            ));
+        }
+        if line.contains("_total_total") {
+            report
+                .violations
+                .push(format!("{line:?} carries _total_total"));
+        }
+        if line.starts_with('#') {
+            continue;
+        }
+        let sample = line.split(['{', ' ']).next().unwrap_or("");
+        for (i, family) in report.families.iter().enumerate() {
+            let Some(suffix) = sample.strip_prefix(family.as_str()) else {
+                continue;
+            };
+            match suffix {
+                "_total" => sampled[i] = true,
+                "" => report.violations.push(format!(
+                    "{line:?} is a sample of counter {family}, which renders as {family}_total"
+                )),
+                _ => {}
+            }
+        }
+    }
+    for (family, seen) in report.families.iter().zip(sampled) {
+        if !seen {
+            report
+                .violations
+                .push(format!("counter family {family} has no sample"));
+        }
+    }
+    report
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::providers::FileManager;
     use secrecy::ExposeSecret;
+
+    /// Each way a counter can break the sample convention is reported, and a
+    /// family rendering `_total` once is not.
+    #[test]
+    fn counter_samples_reports_each_broken_counter_and_passes_a_sound_one() {
+        let encoded = concat!(
+            "# HELP app_hits Hits.\n",
+            "# TYPE app_hits counter\n",
+            "app_hits_total{route=\"/\"} 1\n",
+            "# TYPE app_runs_total counter\n",
+            "app_runs_total_total 3\n",
+            "# TYPE app_idle counter\n",
+            "# TYPE other_errors counter\n",
+            "other_errors_total 1\n",
+            "# TYPE app_bare counter\n",
+            "app_bare 4\n",
+            "# TYPE app_hits_bytes gauge\n",
+            "app_hits_bytes 5\n",
+            "# HELP app_depth Depth..\n",
+            "# TYPE app_depth gauge\n",
+            "app_depth 2\n",
+            "# EOF\n",
+        );
+        let report = counter_samples(encoded, "app");
+        assert_eq!(
+            report.families,
+            [
+                "app_hits",
+                "app_runs_total",
+                "app_idle",
+                "other_errors",
+                "app_bare"
+            ]
+        );
+        let joined = report.violations.join("\n");
+        for want in [
+            "counter family app_runs_total is registered with the _total",
+            "\"app_runs_total_total 3\" carries _total_total",
+            "counter family app_idle has no sample",
+            "counter family other_errors is not app_[a-z_]+",
+            "\"app_bare 4\" is a sample of counter app_bare, which renders as app_bare_total",
+            "\"# HELP app_depth Depth..\" ends in \"..\": prometheus-client appends the period",
+        ] {
+            assert!(joined.contains(want), "missing {want:?} in:\n{joined}");
+        }
+        assert!(
+            !joined.contains("app_hits"),
+            "a counter rendering _total once, and a gauge sharing its stem, are sound:\n{joined}"
+        );
+    }
+
+    /// Every register call's name literal is read, a test region is not, and a
+    /// name the walk cannot read stops it.
+    #[test]
+    fn registered_metric_names_reads_each_production_register_call() {
+        let src = concat!(
+            "fn new(r: &mut Registry) {\n",
+            "    r.register(\"hits\", \"help\", c.clone());\n",
+            "    r.register_with_unit(\n",
+            "        \"bytes\",\n",
+            "        \"help\",\n",
+            "        Unit::Bytes,\n",
+            "        g.clone(),\n",
+            "    );\n",
+            "}\n",
+            "\n",
+            "#[cfg(test)]\n",
+            "mod tests {\n",
+            "    fn t() { r.register(\"hits_total\", \"h\", c); }\n",
+            "}\n",
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let sound = dir.path().join("counters");
+        std::fs::write(&sound, src).unwrap();
+        assert_eq!(registered_metric_names(&sound), ["hits", "bytes"]);
+        let non_literal = dir.path().join("gauges");
+        std::fs::write(&non_literal, "fn f() { r.register(NAME, \"h\", c); }\n").unwrap();
+        let unreadable = std::panic::catch_unwind(|| registered_metric_names(&non_literal));
+        assert!(unreadable.is_err(), "a non-literal name must stop the walk");
+    }
 
     /// The literal shapes the blanker has to tell apart, and the
     /// byte-for-byte promise every walk reading it indexes the raw line with.
@@ -5124,6 +7678,154 @@ mod tests {
         }
     }
 
+    /// Every shape a per-line blanker reads as code once its opening row is
+    /// behind it: a row inside a raw literal, a row inside an ordinary one, a
+    /// row inside a block comment, and a line comment carrying both a brace
+    /// and a quote.
+    ///
+    /// The claim is byte-for-byte: the result is the same length as the body
+    /// and carries the same newlines, so a brace matched on it indexes the raw
+    /// body, and no `{`, `}`, `"` or `.env(` survives inside any of the four.
+    /// A function is owned by the impl it sits in, whatever lead that impl's
+    /// head carries: a generic `impl<'a>` head read as no impl at all left its
+    /// methods ownerless, or handed them to an impl above that was still open.
+    #[test]
+    fn a_functions_owner_is_the_impl_it_sits_in_generic_or_plain() {
+        let generic_then_plain = concat!(
+            "impl<'a> Wrapper<'a> {\n",
+            "    fn generic_method(&self) {}\n",
+            "}\n",
+            "impl Plain {\n",
+            "    fn plain_method(&self) {}\n",
+            "}\n",
+            "fn free() {}\n",
+        );
+        let plain_then_generic = concat!(
+            "impl Plain {\n",
+            "    fn plain_method(&self) {}\n",
+            "}\n",
+            "impl<'a> Wrapper<'a> {\n",
+            "    fn generic_method(&self) {}\n",
+            "}\n",
+            "fn free() {}\n",
+        );
+        let owned = |name: &str, owner: Option<&str>| (name.to_string(), owner.map(str::to_string));
+        let mut wrong = Vec::new();
+        for (order, src, expected) in [
+            (
+                "generic then plain",
+                generic_then_plain,
+                [
+                    owned("generic_method", Some("Wrapper")),
+                    owned("plain_method", Some("Plain")),
+                    owned("free", None),
+                ],
+            ),
+            (
+                "plain then generic",
+                plain_then_generic,
+                [
+                    owned("plain_method", Some("Plain")),
+                    owned("generic_method", Some("Wrapper")),
+                    owned("free", None),
+                ],
+            ),
+        ] {
+            let owners: Vec<(String, Option<String>)> = fixture_declarations(src)
+                .into_iter()
+                .map(|(name, owner, _)| (name, owner))
+                .collect();
+            if owners != expected {
+                wrong.push(format!("{order}: {owners:?}"));
+            }
+        }
+        assert!(
+            wrong.is_empty(),
+            "each function's owner is the impl whose body holds it, in either order: {}",
+            wrong.join("; ")
+        );
+    }
+
+    #[test]
+    fn two_arms_of_one_function_gated_apart_each_carry_their_own_gate() {
+        let rows = fixture_seam_gates(concat!(
+            "#[cfg(not(any(test, feature = \"test-helpers\")))]\n",
+            "fn resolved_home() {}\n",
+            "\n",
+            "#[cfg(any(test, feature = \"test-helpers\"))]\n",
+            "fn resolved_home() {}\n",
+            "\n",
+            "#[cfg(test)]\n",
+            "fn resolved_home() {}\n",
+            "fn shipped() {}\n",
+        ));
+        assert_eq!(
+            rows,
+            [
+                ("resolved_home".to_string(), None),
+                ("resolved_home".to_string(), Some(Gate::TestHelpers)),
+                ("shipped".to_string(), None),
+            ],
+            "a seam row's gate is its own line's, whatever else shares its name"
+        );
+    }
+
+    #[test]
+    fn blank_non_code_blanks_every_row_a_literal_or_comment_spans() {
+        let body = concat!(
+            "fn helper() {\n",
+            "    let raw = r#\"\n",
+            "cmd.env(\"X\", \"1\"); {\n",
+            "\"#;\n",
+            "    let plain = \"a { and a \\\" quote\";\n",
+            "    /* a block { comment\n",
+            "       whose second row says cmd.env(\"Y\", \"2\"); */\n",
+            "    // a line } comment with a \" quote\n",
+            "    real();\n",
+            "}\n",
+        );
+        let blanked = blank_non_code(body);
+        assert_eq!(
+            blanked.len(),
+            body.len(),
+            "a blanked body is the same length as the raw one, or a position \
+             found on it indexes the wrong byte:\n{blanked}"
+        );
+        assert_eq!(
+            blanked.matches('\n').count(),
+            body.matches('\n').count(),
+            "the row count is the same, or a line number read off the result \
+             names another line:\n{blanked}"
+        );
+        assert_eq!(
+            blanked.matches('{').count(),
+            1,
+            "only the function's own brace survives:\n{blanked}"
+        );
+        assert_eq!(
+            blanked.matches('}').count(),
+            1,
+            "only the function's own closing brace survives:\n{blanked}"
+        );
+        assert!(
+            !blanked.contains("cmd.env("),
+            "a call written inside a literal or a comment is not code:\n{blanked}"
+        );
+        assert!(
+            blanked.contains("real();"),
+            "the one line that runs is left alone:\n{blanked}"
+        );
+        // The delimiters a literal is recognised BY stay, and nothing else:
+        // the raw literal's two, the plain one's two, and neither the escaped
+        // quote inside it nor the quotes inside the comment and the raw body.
+        // A caller pairs its literals off these.
+        assert_eq!(
+            blanked.matches('"').count(),
+            4,
+            "every quote left standing is a delimiter:\n{blanked}"
+        );
+    }
+
     /// The shapes the fold has to tell apart, in one source.
     ///
     /// A raw literal is the one a naive "trailing backslash continues the
@@ -5131,8 +7833,15 @@ mod tests {
     /// that were never one, and a walk then reports a tell on a line that does
     /// not carry it. An escaped backslash is the same mistake at the end of an
     /// ordinary literal. The hashed and byte-raw forms take the hash-counting
-    /// arithmetic in `scan_raw_literals`, which the zero-hash case never
-    /// touches, so each holds a case of its own.
+    /// arithmetic in [`LineMask`], which the zero-hash case never touches, so
+    /// each holds a case of its own.
+    ///
+    /// The last two shapes are the OTHER direction: a quote that is not a
+    /// delimiter. An ordinary literal whose body ends in the letter `r`, and a
+    /// comment carrying a quoted word, each spell `r"` where a scanner reading
+    /// bytes alone sees an opener — and a row believed to sit inside a raw
+    /// literal can carry no continuation, so a real one below either shape is
+    /// dropped on the floor.
     #[test]
     fn the_continuation_fold_joins_only_a_real_continuation() {
         let body = concat!(
@@ -5146,13 +7855,19 @@ mod tests {
             "let e = br\"a byte raw ending in \\\n",
             "    and its next line\";\n",
             "let f = r##\"holds a \"# decoy and ends in \\\n",
-            "    still raw\"##;\n"
+            "    still raw\"##;\n",
+            "let g = \"a plain literal ending in provider\";\n",
+            "let h = \"a real continuation after it \\\n",
+            "    joins\";\n",
+            "//! a doc comment holding the word \"never\" and more\n",
+            "let i = \"a real continuation after that \\\n",
+            "    joins too\";\n"
         );
         let folded = logical_source_lines(body);
         assert_eq!(
             folded.len(),
-            10,
-            "only the first literal is continued: {folded:?}"
+            14,
+            "only a real continuation is joined: {folded:?}"
         );
         assert_eq!(folded[0].0, 1, "a fold reports its OPENING line");
         assert_eq!(
@@ -5190,6 +7905,19 @@ mod tests {
              so its line stands alone: {folded:?}"
         );
         assert_eq!(folded[9].0, 11, "the two-hash raw's next line is its own");
+        assert_eq!(folded[10].0, 12, "a closed plain literal stands alone");
+        assert_eq!(folded[11].0, 13);
+        assert_eq!(
+            folded[11].1, "let h = \"a real continuation after it joins\";",
+            "a plain literal whose body ends in `r` opens nothing, so the \
+             continuation below it still joins: {folded:?}"
+        );
+        assert_eq!(folded[12].0, 15, "the comment line stands alone");
+        assert_eq!(folded[13].0, 16);
+        assert_eq!(
+            folded[13].1, "let i = \"a real continuation after that joins too\";",
+            "a quote inside a comment opens nothing either: {folded:?}"
+        );
     }
 
     #[test]
@@ -5226,49 +7954,81 @@ mod tests {
     /// DECLARATION sitting beside its sibling `mod x;` lines, and the file's
     /// real content follows it. Cutting there is the blinding the helper exists
     /// to prevent, so the whole source survives.
+    ///
+    /// Each spelling is one a real file carries. A declaration is as often
+    /// written `pub(crate) mod test_support;` (6 of this tree's 74), and a
+    /// visibility lead read as part of the keyword made every one of them leave
+    /// the production half; a doc comment between the marker and the
+    /// declaration is blanked to spaces by the fold the scan reads through, so
+    /// a head taken from the line after the attribute run is a blank line,
+    /// which misses the declaration.
     #[test]
     fn production_slice_keeps_a_file_whose_test_module_is_a_mid_file_declaration() {
         let attr = format!("#[cfg({})]", "test");
-        let src = format!(
-            "mod plan;\nmod verify;\n{attr}\nmod tests;\n\
-             pub use plan::Plan;\n\
+        for declaration in [
+            "mod tests;",
+            "pub(crate) mod test_support;",
+            "pub mod test_support;",
+        ] {
+            let src = format!(
+                "mod plan;\nmod verify;\n{attr}\n{declaration}\n\
+                 pub use plan::Plan;\n\
+                 pub const RENDERED: &str = \"a literal a walk must see\";\n"
+            );
+            assert_eq!(
+                production_slice(&src),
+                src,
+                "a `{declaration}` declaration is not the end of the file, so \
+                 nothing below it may be cut away"
+            );
+        }
+        let documented = format!(
+            "mod plan;\n{attr}\n/// what the tests cover\nmod tests;\n\
              pub const RENDERED: &str = \"a literal a walk must see\";\n"
         );
         assert_eq!(
-            production_slice(&src),
-            src,
-            "a `mod tests;` declaration is not the end of the file, so nothing \
-             below it may be cut away"
+            production_slice(&documented),
+            documented,
+            "a doc comment between the marker and the declaration does not make \
+             the declaration something else"
         );
     }
 
     /// Both shapes in one file: the declaration is skipped and the search
-    /// continues to the inline block, which is where the cut lands.
+    /// continues to the inline block, which is where the cut lands. Run over
+    /// every declaration spelling, so a lead the scan cannot fold takes the
+    /// production line between the two anchors with it.
     #[test]
     fn production_slice_cuts_at_the_inline_block_past_a_mid_file_declaration() {
         let attr = format!("#[cfg({})]", "test");
-        let src = format!(
-            "mod plan;\n{attr}\nmod tests;\n\
-             pub const RENDERED: &str = \"a literal a walk must see\";\n\
-             {attr}\nmod inline_tests #OPEN#\n    fn hidden() #OPEN##CLOSE#\n#CLOSE#\n"
-        )
-        .replace("#OPEN#", "{")
-        .replace("#CLOSE#", "}");
-        let production = production_slice(&src);
-        assert!(
-            production.contains("a literal a walk must see"),
-            "the code between the declaration and the inline block must \
-             survive: {production}"
-        );
-        assert!(
-            production.contains("mod tests;"),
-            "the declaration itself is production text, not a cut point: \
-             {production}"
-        );
-        assert!(
-            !production.contains("fn hidden"),
-            "the inline test module is where the cut lands: {production}"
-        );
+        for (declaration, between) in [
+            ("mod tests;", ""),
+            ("pub(crate) mod test_support;", ""),
+            ("mod tests;", "/// what the tests cover\n"),
+        ] {
+            let src = format!(
+                "mod plan;\n{attr}\n{between}{declaration}\n\
+                 pub const RENDERED: &str = \"a literal a walk must see\";\n\
+                 {attr}\nmod inline_tests #OPEN#\n    fn hidden() #OPEN##CLOSE#\n#CLOSE#\n"
+            )
+            .replace("#OPEN#", "{")
+            .replace("#CLOSE#", "}");
+            let production = production_slice(&src);
+            assert!(
+                production.contains("a literal a walk must see"),
+                "the code between the `{declaration}` declaration and the \
+                 inline block must survive: {production}"
+            );
+            assert!(
+                production.contains(declaration),
+                "the `{declaration}` declaration itself is production text, \
+                 not a cut point: {production}"
+            );
+            assert!(
+                !production.contains("fn hidden"),
+                "the inline test module is where the cut lands: {production}"
+            );
+        }
     }
 
     /// The strip is not a suffix cut. Here the inline block comes FIRST and a
@@ -5424,6 +8184,41 @@ mod tests {
         for thread in [holder, writer, joiner] {
             thread.join().expect("thread");
         }
+    }
+
+    /// A guarded seam read on another thread waits while [`NoHostManagers`]
+    /// holds its pins, so a sibling test planning against the real host never
+    /// reads a manager pinned missing.
+    #[test]
+    #[serial_test::serial]
+    fn a_guarded_seam_read_waits_out_the_no_host_managers_pins() {
+        let seam = MANAGER_SEAMS[0];
+        let pins = NoHostManagers::pinned_missing();
+        let (read_in, read) = std::sync::mpsc::channel();
+        let reader = std::thread::spawn(move || {
+            let _guard = path_env_read_guard();
+            read_in
+                .send(std::env::var(seam).ok())
+                .expect("report the seam read");
+        });
+        assert!(
+            await_queued_path_reader(reader.thread().id(), std::time::Duration::from_secs(10)),
+            "the guarded read never queued on the pins' lock"
+        );
+        assert!(
+            read.try_recv().is_err(),
+            "a guarded read ran while the pins were held"
+        );
+        drop(pins);
+        let seen = read
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("the read runs once the pins are dropped");
+        assert_ne!(
+            seen.as_deref(),
+            Some(ABSENT_SEAM_PATH),
+            "the read saw {seam} pinned missing"
+        );
+        reader.join().expect("reader thread");
     }
 
     /// The spawn-environment guards must compose: a test that pins the working
@@ -6100,6 +8895,40 @@ mod tests {
         }
     }
 
+    /// An env-seam shim's seam is process-global, so each shim keeps every
+    /// other thread's guarded spawn out for as long as the seam is set; the
+    /// window closes again once the shim drops.
+    #[test]
+    #[serial]
+    fn every_env_seam_shim_holds_the_spawn_window_while_its_seam_is_set() {
+        assert!(
+            !path_env_exclusive_guard_held(),
+            "the test starts outside the window"
+        );
+        {
+            let _shim = ToolShim::install("CFGD_SPAWN_WINDOW_PROBE_BIN", 0, "", "");
+            assert!(
+                path_env_exclusive_guard_held(),
+                "a live ToolShim holds the window"
+            );
+        }
+        assert!(
+            !path_env_exclusive_guard_held(),
+            "a dropped ToolShim releases it"
+        );
+        {
+            let _shim = CosignTestShim::install();
+            assert!(
+                path_env_exclusive_guard_held(),
+                "a live CosignTestShim holds the window"
+            );
+        }
+        assert!(
+            !path_env_exclusive_guard_held(),
+            "a dropped CosignTestShim releases it"
+        );
+    }
+
     // -----------------------------------------------------------------------
     // CosignTestShim
     // -----------------------------------------------------------------------
@@ -6111,7 +8940,8 @@ mod tests {
         /// Run the installed shim with the given argv. Returns (exit_code,
         /// stderr_string). Reads $CFGD_COSIGN_BIN like real consumers.
         fn run_shim(args: &[&str]) -> (i32, String) {
-            let bin = std::env::var("CFGD_COSIGN_BIN").expect("CFGD_COSIGN_BIN set");
+            let _path = crate::test_helpers::path_env_read_guard();
+            let bin = std::env::var(crate::COSIGN_BIN_ENV).expect("CFGD_COSIGN_BIN set");
             let output = std::process::Command::new(&bin)
                 .args(args)
                 .output()
@@ -6127,13 +8957,13 @@ mod tests {
         fn install_sets_cosign_bin_and_drop_restores_prior() {
             // SAFETY: serial gates env mutation across tests.
             unsafe {
-                std::env::set_var("CFGD_COSIGN_BIN", "/prior/value");
+                std::env::set_var(crate::COSIGN_BIN_ENV, "/prior/value");
             }
 
             {
                 let _shim = CosignTestShim::install();
                 let observed =
-                    std::env::var("CFGD_COSIGN_BIN").expect("install sets CFGD_COSIGN_BIN");
+                    std::env::var(crate::COSIGN_BIN_ENV).expect("install sets CFGD_COSIGN_BIN");
                 assert_ne!(observed, "/prior/value", "shim must override prior value");
                 assert!(
                     std::path::Path::new(&observed).is_file(),
@@ -6142,14 +8972,14 @@ mod tests {
             }
 
             assert_eq!(
-                std::env::var("CFGD_COSIGN_BIN").ok().as_deref(),
+                std::env::var(crate::COSIGN_BIN_ENV).ok().as_deref(),
                 Some("/prior/value"),
                 "drop must restore the prior value"
             );
 
             // SAFETY: serial gates env mutation across tests.
             unsafe {
-                std::env::remove_var("CFGD_COSIGN_BIN");
+                std::env::remove_var(crate::COSIGN_BIN_ENV);
             }
         }
 
@@ -6158,17 +8988,17 @@ mod tests {
         fn install_with_no_prior_value_removes_on_drop() {
             // SAFETY: serial gates env mutation across tests.
             unsafe {
-                std::env::remove_var("CFGD_COSIGN_BIN");
+                std::env::remove_var(crate::COSIGN_BIN_ENV);
             }
-            assert!(std::env::var("CFGD_COSIGN_BIN").is_err());
+            assert!(std::env::var(crate::COSIGN_BIN_ENV).is_err());
 
             {
                 let _shim = CosignTestShim::install();
-                assert!(std::env::var("CFGD_COSIGN_BIN").is_ok());
+                assert!(std::env::var(crate::COSIGN_BIN_ENV).is_ok());
             }
 
             assert!(
-                std::env::var("CFGD_COSIGN_BIN").is_err(),
+                std::env::var(crate::COSIGN_BIN_ENV).is_err(),
                 "drop must remove when no prior value existed"
             );
         }
@@ -6217,10 +9047,11 @@ mod tests {
         #[test]
         #[serial]
         fn keygen_mode_writes_key_pair_to_cwd_on_generate_key_pair() {
+            let _path = crate::test_helpers::path_env_mutation_guard();
             let _shim = CosignTestShim::builder().with_keygen(true).install();
             let workdir = tempfile::TempDir::new().expect("workdir");
 
-            let bin = std::env::var("CFGD_COSIGN_BIN").unwrap();
+            let bin = std::env::var(crate::COSIGN_BIN_ENV).unwrap();
             let status = std::process::Command::new(&bin)
                 .arg("generate-key-pair")
                 .current_dir(workdir.path())
@@ -6249,10 +9080,11 @@ mod tests {
         #[test]
         #[serial]
         fn keygen_mode_skips_writes_for_non_generate_subcommands() {
+            let _path = crate::test_helpers::path_env_mutation_guard();
             let _shim = CosignTestShim::builder().with_keygen(true).install();
             let workdir = tempfile::TempDir::new().expect("workdir");
 
-            let bin = std::env::var("CFGD_COSIGN_BIN").unwrap();
+            let bin = std::env::var(crate::COSIGN_BIN_ENV).unwrap();
             let status = std::process::Command::new(&bin)
                 .arg("sign")
                 .arg("ghcr.io/test/x:v1")

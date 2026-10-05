@@ -146,7 +146,9 @@ pub(super) fn decode_docker_auth(auth_b64: &str) -> Option<RegistryAuth> {
 /// Run a Docker credential helper to get credentials.
 fn resolve_from_credential_helper(helper_name: &str, registry: &str) -> Option<RegistryAuth> {
     let helper_bin = format!("docker-credential-{}", helper_name);
-    let output = crate::spawn_child(
+    // A helper backed by gpg (`docker-credential-pass`) may ask for a
+    // passphrase through pinentry on the terminal.
+    let output = crate::spawn_sharing_terminal(
         std::process::Command::new(&helper_bin)
             .arg("get")
             .stdin(std::process::Stdio::piped())
@@ -154,7 +156,7 @@ fn resolve_from_credential_helper(helper_name: &str, registry: &str) -> Option<R
             .stderr(std::process::Stdio::null()),
     )
         .ok()
-        .and_then(|mut child| {
+        .and_then(|(mut child, kill)| {
             use std::io::Write;
             if let Some(ref mut stdin) = child.stdin {
                 stdin.write_all(registry.as_bytes()).ok();
@@ -166,7 +168,7 @@ fn resolve_from_credential_helper(helper_name: &str, registry: &str) -> Option<R
                 match child.try_wait() {
                     Ok(Some(_)) => return child.wait_with_output().ok(),
                     Ok(None) if start.elapsed() >= timeout => {
-                        let _ = child.kill();
+                        kill.force_kill();
                         let _ = child.wait();
                         tracing::warn!(helper = %helper_bin, "credential helper timed out after {}s", timeout.as_secs());
                         return None;

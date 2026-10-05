@@ -137,15 +137,15 @@ fn oci_manifest_serialization() {
             media_type: MEDIA_TYPE_MODULE_CONFIG.to_string(),
             digest: "sha256:abc123".to_string(),
             size: 100,
-            annotations: HashMap::new(),
+            annotations: Annotations::new(),
         },
         layers: vec![OciDescriptor {
             media_type: MEDIA_TYPE_MODULE_LAYER.to_string(),
             digest: "sha256:def456".to_string(),
             size: 2048,
-            annotations: HashMap::new(),
+            annotations: Annotations::new(),
         }],
-        annotations: HashMap::new(),
+        annotations: Annotations::new(),
     };
 
     let json = serde_json::to_string(&manifest).unwrap();
@@ -296,7 +296,7 @@ fn reference_str_digest() {
 
 #[test]
 fn oci_manifest_with_annotations_round_trips() {
-    let mut annotations = HashMap::new();
+    let mut annotations = Annotations::new();
     annotations.insert(
         crate::OCI_ANNOTATION_PLATFORM.to_string(),
         "linux/amd64".to_string(),
@@ -313,13 +313,13 @@ fn oci_manifest_with_annotations_round_trips() {
             media_type: MEDIA_TYPE_MODULE_CONFIG.to_string(),
             digest: "sha256:cfg123".to_string(),
             size: 50,
-            annotations: HashMap::new(),
+            annotations: Annotations::new(),
         },
         layers: vec![OciDescriptor {
             media_type: MEDIA_TYPE_MODULE_LAYER.to_string(),
             digest: "sha256:layer123".to_string(),
             size: 1024,
-            annotations: HashMap::new(),
+            annotations: Annotations::new(),
         }],
         annotations,
     };
@@ -352,14 +352,14 @@ fn oci_manifest_empty_annotations_skipped_in_json() {
             media_type: MEDIA_TYPE_MODULE_CONFIG.to_string(),
             digest: "sha256:cfg".to_string(),
             size: 10,
-            annotations: HashMap::new(),
+            annotations: Annotations::new(),
         },
         layers: vec![],
-        annotations: HashMap::new(),
+        annotations: Annotations::new(),
     };
 
     let json = serde_json::to_string(&manifest).unwrap();
-    // Empty HashMaps have skip_serializing_if = "HashMap::is_empty"
+    // Empty annotation maps have skip_serializing_if = "Annotations::is_empty"
     assert!(
         !json.contains("annotations"),
         "empty annotations should be skipped in serialization"
@@ -370,7 +370,7 @@ fn oci_manifest_empty_annotations_skipped_in_json() {
 
 #[test]
 fn oci_descriptor_with_annotations_round_trips() {
-    let mut anns = HashMap::new();
+    let mut anns = Annotations::new();
     anns.insert(
         "org.opencontainers.image.title".to_string(),
         "my-module".to_string(),
@@ -444,7 +444,7 @@ fn media_type_constants_are_correct() {
         "application/vnd.oci.image.manifest.v1+json"
     );
     assert_eq!(
-        push::MEDIA_TYPE_OCI_INDEX,
+        MEDIA_TYPE_OCI_INDEX,
         "application/vnd.oci.image.index.v1+json"
     );
 }
@@ -470,7 +470,7 @@ fn sha256_digest_different_inputs_different_outputs() {
 
 #[test]
 fn oci_manifest_round_trip_with_annotations() {
-    let mut annotations = HashMap::new();
+    let mut annotations = Annotations::new();
     annotations.insert(
         crate::OCI_ANNOTATION_PLATFORM.to_string(),
         "linux/amd64".to_string(),
@@ -487,13 +487,13 @@ fn oci_manifest_round_trip_with_annotations() {
             media_type: MEDIA_TYPE_MODULE_CONFIG.to_string(),
             digest: "sha256:configdigest123".to_string(),
             size: 512,
-            annotations: HashMap::new(),
+            annotations: Annotations::new(),
         },
         layers: vec![OciDescriptor {
             media_type: MEDIA_TYPE_MODULE_LAYER.to_string(),
             digest: "sha256:layer1digest".to_string(),
             size: 4096,
-            annotations: HashMap::new(),
+            annotations: Annotations::new(),
         }],
         annotations: annotations.clone(),
     };
@@ -525,10 +525,10 @@ fn oci_manifest_camel_case_keys() {
             media_type: MEDIA_TYPE_MODULE_CONFIG.to_string(),
             digest: "sha256:abc".to_string(),
             size: 100,
-            annotations: HashMap::new(),
+            annotations: Annotations::new(),
         },
         layers: vec![],
-        annotations: HashMap::new(),
+        annotations: Annotations::new(),
     };
 
     let json = serde_json::to_string(&manifest).unwrap();
@@ -606,7 +606,7 @@ fn is_insecure_registry_without_env_var() {
 #[cfg(all(unix, feature = "test-helpers"))]
 mod bridge {
     use crate::oci::archive::create_tar_gz;
-    use crate::oci::pull::{SignaturePolicy, pull_module};
+    use crate::oci::pull::{PullChecks, pull_module};
     use crate::oci::push::push_module;
     use crate::oci::test_helpers::{create_test_module_dir, registry_from_url};
     use crate::oci::{MEDIA_TYPE_MODULE_CONFIG, MEDIA_TYPE_MODULE_LAYER, MEDIA_TYPE_OCI_MANIFEST};
@@ -690,10 +690,11 @@ mod bridge {
         let artifact_ref = format!("{}/test/bridge-pull:v1", registry);
 
         let (printer, cap) = Printer::for_test_doc();
-        pull_module(
+        let outcome = pull_module(
             &artifact_ref,
             output_dir.path(),
-            SignaturePolicy::None,
+            PullChecks::default(),
+            None,
             Some(&printer),
         )
         .unwrap();
@@ -709,7 +710,8 @@ mod bridge {
         drop(printer);
 
         let raw = strip_ansi(&cap.human());
-        let url_normalized = normalize_mock_url(&raw, &server_url, &registry);
+        let url_normalized =
+            normalize_mock_url(&raw, &server_url, &registry).replace(&outcome.digest, "<DIGEST>");
         let captured = strip_spinner_duration(url_normalized);
 
         assert!(
@@ -762,6 +764,17 @@ mod bridge {
             .create();
 
         server
+            .mock("GET", "/v2/test/bridge-push/manifests/v1")
+            .with_status(404)
+            .create();
+        server
+            .mock(
+                "PUT",
+                mockito::Matcher::Regex(r"^/v2/test/bridge-push/manifests/v1-".to_string()),
+            )
+            .with_status(201)
+            .create();
+        server
             .mock("PUT", "/v2/test/bridge-push/manifests/v1")
             .with_status(201)
             .create();
@@ -810,6 +823,7 @@ fn image_config_serializes_with_correct_oci_keys() {
     let cfg = ImageConfig {
         architecture: "amd64".to_string(),
         os: "linux".to_string(),
+        variant: None,
         created: Some("2026-01-01T00:00:00Z".to_string()),
         config: Some(ImageRuntimeConfig {
             entrypoint: Some(vec!["/app/server".to_string()]),

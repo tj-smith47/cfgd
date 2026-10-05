@@ -7,11 +7,11 @@ Location    profiles/<name>/profile.yaml
 Docs        https://github.com/tj-smith47/cfgd/blob/v<VERSION>/docs/spec/profile.md#fields
 
 Fields (under spec)
-  aliases   <[]ShellAlias>
+  aliases      <[]ShellAlias>
     command    <string>   (required)
     name       <string>   (required)
     platforms  <[]string>
-  backups   <[]BackupSpec>
+  backups      <[]BackupSpec>
     destination    <string>
     name           <string>        (required)
     namePattern    <string>
@@ -48,13 +48,13 @@ Fields (under spec)
     scheduleOwner  <ScheduleOwner>
       enum: Cluster, Local
     source         <string>        (required)
-  env       <[]EnvVar>
+  env          <[]EnvVar>
     name       <string>   (required)
     platforms  <[]string>
     value      <string>   (required)
-  envScope  <EnvScope>
+  envScope     <EnvScope>
     enum: All, Login, Interactive
-  files     <FilesSpec>
+  files        <FilesSpec>
     managed      <[]ManagedFileSpec>
       encryption   <EncryptionSpec>
         backend  <string>         (required)
@@ -72,9 +72,9 @@ Fields (under spec)
         enum: Symlink, Copy, Template, Hardlink, Patch
       target       <string>         (required)
     permissions  <object>
-  inherits  <[]string>
-  modules   <[]string>
-  packages  <PackagesSpec>
+  inherits     <[]string>
+  modules      <[]string>
+  packages     <PackagesSpec>
     apk         <([]string | PackageListSpec)>
       []string
       PackageListSpec
@@ -163,7 +163,9 @@ Fields (under spec)
       []string
       PackageListSpec
         packages  <[]string>
-  scripts   <ScriptSpec>
+  preferences  <PreferencesSpec>
+    clipboard  <[]string>
+  scripts      <ScriptSpec>
     onChange       <[]ScriptEntry>
       string
       ScriptCommand
@@ -248,10 +250,10 @@ Fields (under spec)
         timeout          <string>
         unless           <string>
         workdir          <string>
-  secrets   <[]SecretSpec>
+  secrets      <[]SecretSpec>
     backend   <string>
     envs      <[]string>
     source    <string>   (required)
     target    <string>
     template  <string>
-  system    <object>
+  system       <object>

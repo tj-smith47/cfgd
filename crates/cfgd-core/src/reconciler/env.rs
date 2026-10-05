@@ -12,7 +12,7 @@ use super::env_engine::{
 use super::env_files::detect_rc_env_conflicts;
 use super::format::LIVE_SESSION_RESOURCE_ID;
 use super::types::{Action, EnvAction};
-use super::verify::merge_module_env_aliases;
+use super::verify::LayeredEnv;
 
 /// PATH directories cfgd recorded as its own for a package manager, narrowed
 /// to the managers the desired state still names and deduped.
@@ -167,10 +167,6 @@ pub(super) struct PrimaryEnvWrite {
     /// comparison can see it or say whose it was: attribution is
     /// unanswerable, and the gate fails OPEN for every deferred module.
     unclaimed_deletion: bool,
-    /// The same provenance map the desired content was rendered with, so the
-    /// per-entry lines this comparison re-renders are the lines that content
-    /// actually holds.
-    origins: super::env_engine::EnvOrigins,
     /// The same folded `PATH` assignment that content was rendered with. A
     /// declared `PATH` does not render a line of its own — it is one producer
     /// of the file's single `PATH` line — so re-rendering it without the fold
@@ -216,16 +212,13 @@ impl PrimaryEnvWrite {
         let desired: HashSet<&str> = self.desired.lines().map(without_owner_comment).collect();
         env.iter()
             .filter_map(|ev| {
-                super::env_files::primary_env_var_line(
-                    ev,
-                    self.platform,
-                    &self.origins,
-                    self.path.as_ref(),
-                )
+                super::env_files::primary_env_var_line(ev, self.platform, self.path.as_ref())
             })
-            .chain(aliases.iter().filter_map(|a| {
-                super::env_files::primary_alias_line(a, self.platform, &self.origins)
-            }))
+            .chain(
+                aliases
+                    .iter()
+                    .filter_map(|a| super::env_files::primary_alias_line(a, self.platform)),
+            )
             .any(|line| {
                 let line = without_owner_comment(&line);
                 deployed.contains(line) != desired.contains(line)
@@ -244,6 +237,12 @@ impl PrimaryEnvWrite {
 /// Only a line whose name no current layer declares at all goes unclaimed.
 /// Confined to the primary MANAGED file's content, which cfgd authors in
 /// full; user-authored rc files never pass through here.
+///
+/// A block header is scaffolding, its `(priority N)` suffix included: it is
+/// the generator's own text naming the layer the lines below it came from.
+/// No declaration renders it, so it is skipped with the banner and the
+/// blank lines. A layer that disappears takes its header with it, and the
+/// entries under it are what answer for the change.
 fn has_unclaimed_disappearing_line(
     baseline: &str,
     desired: &str,
@@ -252,8 +251,8 @@ fn has_unclaimed_disappearing_line(
     platform: EnvPlatform,
 ) -> bool {
     let desired_lines: HashSet<&str> = desired.lines().collect();
-    // Blank and comment lines are the generator's fixed scaffolding (header,
-    // trailing newline), never a declaration's rendering.
+    // Blank and comment lines are the generator's own scaffolding: the banner,
+    // each block header, the trailing newline.
     let disappeared: Vec<&str> = baseline
         .lines()
         .filter(|l| !l.is_empty() && !l.starts_with('#') && !desired_lines.contains(l))
@@ -277,31 +276,24 @@ fn has_unclaimed_disappearing_line(
 }
 
 impl<'a> super::Reconciler<'a> {
-    /// Plan env file generation from merged profile + module env vars and aliases.
-    /// The outcome's warnings are shell rc conflicts.
+    /// Plan env file generation from the layered env view of a profile and its
+    /// modules. The outcome's warnings are shell rc conflicts.
     ///
     /// A method, not a free function, because the home directory the env
     /// surfaces hang off is the reconciler's — resolved once at construction.
     /// The moment a planning entry point resolves `~` for itself, a caller that
     /// pinned a home no longer controls where the plan writes.
-    #[allow(clippy::too_many_arguments)]
     pub(super) fn plan_env(
         &self,
-        profile_env: &[crate::config::EnvVar],
-        profile_aliases: &[crate::config::ShellAlias],
-        layer_owners: &crate::config::EntryOwners,
+        layered: LayeredEnv,
         scope: EnvScope,
-        modules: &[ResolvedModule],
         secret_envs: &[(String, String)],
         path_dirs: &[ManagerPathDir],
         managed_env_ids: &[String],
     ) -> EnvPlanOutcome {
         Self::plan_env_with_home(
-            profile_env,
-            profile_aliases,
-            layer_owners,
+            layered,
             scope,
-            modules,
             secret_envs,
             path_dirs,
             managed_env_ids,
@@ -309,25 +301,20 @@ impl<'a> super::Reconciler<'a> {
         )
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub(super) fn plan_env_with_home(
-        profile_env: &[crate::config::EnvVar],
-        profile_aliases: &[crate::config::ShellAlias],
-        layer_owners: &crate::config::EntryOwners,
+        layered: LayeredEnv,
         scope: EnvScope,
-        modules: &[ResolvedModule],
         secret_envs: &[(String, String)],
         path_dirs: &[ManagerPathDir],
         managed_env_ids: &[String],
         home: &std::path::Path,
     ) -> EnvPlanOutcome {
-        let (mut merged, merged_aliases, origins) =
-            merge_module_env_aliases(profile_env, profile_aliases, layer_owners, modules);
-
-        // Append secret-backed env vars after regular envs.
-        // These are resolved secret values injected into the env file.
+        // The secret exports are a layer of their own AND winners of the merge:
+        // their values exist only once a backend has resolved them, so they
+        // reach both halves here, outside the layer merge.
+        let mut layered = layered.with_secret_envs(secret_envs);
         for (name, value) in secret_envs {
-            merged.push(crate::config::EnvVar {
+            layered.merged.push(crate::config::EnvVar {
                 name: name.clone(),
                 value: value.clone(),
                 platforms: vec![],
@@ -341,7 +328,7 @@ impl<'a> super::Reconciler<'a> {
         // lines: a profile whose only work is bootstrapping a package manager
         // has no env vars, and without the source line no shell would ever read
         // the PATH entry that makes the manager's binaries reachable.
-        if merged.is_empty() && merged_aliases.is_empty() && path_dirs.is_empty() {
+        if layered.merged.is_empty() && layered.merged_aliases.is_empty() && path_dirs.is_empty() {
             return EnvPlanOutcome {
                 actions: Self::neutralize_managed_env_files(
                     scope,
@@ -356,12 +343,18 @@ impl<'a> super::Reconciler<'a> {
         }
 
         let targets = env_targets(
-            EnvContent::new(&merged, &merged_aliases, path_dirs, &origins),
+            EnvContent::of(&layered, path_dirs),
             scope,
             home,
             &probe,
             platform,
         );
+        let LayeredEnv {
+            merged,
+            merged_aliases,
+            origins,
+            ..
+        } = &layered;
 
         // Converged surfaces are elided HERE, with the same reads
         // `apply_env_action` makes, so a plan over an unchanged machine
@@ -394,8 +387,8 @@ impl<'a> super::Reconciler<'a> {
                                 has_unclaimed_disappearing_line(
                                     b,
                                     &content,
-                                    &merged,
-                                    &merged_aliases,
+                                    merged,
+                                    merged_aliases,
                                     platform,
                                 )
                             });
@@ -404,9 +397,8 @@ impl<'a> super::Reconciler<'a> {
                                 desired: content.clone(),
                                 platform,
                                 unclaimed_deletion,
-                                origins: origins.clone(),
                                 path: super::env_engine::primary_folded_path(
-                                    &merged, path_dirs, &origins, home, platform,
+                                    merged, path_dirs, origins, home, platform,
                                 ),
                             });
                         }
@@ -428,11 +420,7 @@ impl<'a> super::Reconciler<'a> {
                     // warning describes the live rc, so it stands whether or
                     // not the source line still needs injecting.
                     if platform != EnvPlatform::Windows {
-                        warnings.extend(detect_rc_env_conflicts(
-                            &rc_path,
-                            &merged,
-                            &merged_aliases,
-                        ));
+                        warnings.extend(detect_rc_env_conflicts(&rc_path, merged, merged_aliases));
                     }
                     // Already present as the exact desired line: nothing to
                     // plan. An unreadable rc fails OPEN — the action is kept,
@@ -501,16 +489,22 @@ impl<'a> super::Reconciler<'a> {
         // The generated bodies are discarded — this call is for the target
         // PATHS, which is why one placeholder variable is enough to get past
         // the "nothing to write" gate inside `env_targets`. Every generator
-        // opens with the same header, so the emptied form of all of them is
-        // that header alone.
-        let placeholder = [crate::config::EnvVar {
-            name: "CFGD_MANAGED_ENV".to_string(),
-            value: String::new(),
-            platforms: vec![],
-        }];
-        let neutral = format!("{}\n", super::env_files::ENV_FILE_HEADER);
+        // opens with the same banner, so the emptied form of all of them is
+        // that banner alone: a file with no blocks left takes the banner's
+        // block-free form.
+        let placeholder = LayeredEnv::from_parts(
+            &crate::reconciler::Owner::profile("cfgd").token(),
+            &[crate::config::EnvVar {
+                name: crate::CFGD_MANAGED_ENV_ENV.to_string(),
+                value: String::new(),
+                platforms: vec![],
+            }],
+            &[],
+            &[],
+        );
+        let neutral = format!("{}\n", super::env_files::banner("#", false).join("\n"));
         let targets = env_targets(
-            EnvContent::new(&placeholder, &[], &[], &Default::default()),
+            EnvContent::of(&placeholder, &[]),
             scope,
             home,
             probe,
@@ -637,12 +631,12 @@ mod tests {
         }
     }
 
-    /// Upgrading a machine written before provenance comments existed: every
-    /// line grows a ` # owner` tail at once. Each old line is still claimed by
-    /// its own declaration's prefix, so the rewrite is an ordinary content
-    /// update rather than a file full of deletions cfgd refuses to own.
+    /// A generated file written before the layered blocks: every line loses
+    /// its ` # owner` tail at once. Each old line is still claimed by its own
+    /// declaration's prefix, so the rewrite is an ordinary content update. A
+    /// file full of deletions would be one cfgd refuses to own.
     #[test]
-    fn a_comment_free_baseline_upgrades_without_an_unclaimed_deletion() {
+    fn a_commented_baseline_upgrades_to_blocks_without_an_unclaimed_deletion() {
         let foo = ev("FOO", "bar");
         let catn = ShellAlias {
             name: "catn".to_string(),
@@ -661,25 +655,46 @@ mod tests {
         };
 
         for platform in [EnvPlatform::Linux, EnvPlatform::Windows] {
-            let render = |origins: &EnvOrigins| {
+            // What an older cfgd wrote: one banner line, then one commented
+            // line per entry. Rendered through the same `Dialect` so the two
+            // shapes cannot drift apart in anything but the scaffolding.
+            let legacy = |origins: &EnvOrigins| {
+                let dialect = super::super::env_files::Dialect::of(platform);
+                [
+                    super::super::env_files::ENV_FILE_HEADER.to_string(),
+                    dialect.path_line(&FoldedPath::derived(&dirs)),
+                    super::super::env_files::legacy_commented_line(
+                        &dialect.env_line(&foo).expect("a safe name"),
+                        &origins.env_comment(&foo.name),
+                    ),
+                    super::super::env_files::legacy_commented_line(
+                        &dialect.alias_line(&catn).expect("a safe name"),
+                        &origins.alias_comment(&catn.name),
+                    ),
+                    String::new(),
+                ]
+                .join("\n")
+            };
+            let blocks = || {
+                let layered = crate::reconciler::LayeredEnv::for_test(
+                    std::slice::from_ref(&foo),
+                    std::slice::from_ref(&catn),
+                    &Default::default(),
+                );
                 if platform == EnvPlatform::Windows {
                     super::super::env_files::generate_powershell_env_content(
-                        std::slice::from_ref(&foo),
-                        std::slice::from_ref(&catn),
+                        &layered,
                         Some(&FoldedPath::derived(&dirs)),
-                        origins,
                     )
                 } else {
                     super::super::env_files::generate_env_file_content(
-                        std::slice::from_ref(&foo),
-                        std::slice::from_ref(&catn),
+                        &layered,
                         Some(&FoldedPath::derived(&dirs)),
-                        origins,
                     )
                 }
             };
-            let baseline = render(&Default::default());
-            let desired = render(&owners);
+            let baseline = legacy(&owners);
+            let desired = blocks();
             assert_ne!(baseline, desired, "the upgrade must change the file");
             assert!(
                 !has_unclaimed_disappearing_line(
@@ -694,11 +709,11 @@ mod tests {
         }
     }
 
-    /// The one-time upgrade to owner comments must not read as every module's
+    /// The one-time move to layered blocks must not read as every module's
     /// contribution moving, or a converged machine runs every `onChange` hook
     /// it has once for a file whose values did not change.
     #[test]
-    fn adding_owner_comments_to_a_converged_file_moves_no_modules_entries() {
+    fn moving_a_converged_file_to_blocks_moves_no_modules_entries() {
         let foo = ev("FOO", "bar");
         let catn = ShellAlias {
             name: "catn".to_string(),
@@ -717,29 +732,49 @@ mod tests {
         };
 
         for platform in [EnvPlatform::Linux, EnvPlatform::Windows] {
-            let render = |origins: &EnvOrigins| {
+            // What an older cfgd wrote: one banner line, then one commented
+            // line per entry. Rendered through the same `Dialect` so the two
+            // shapes cannot drift apart in anything but the scaffolding.
+            let legacy = |origins: &EnvOrigins| {
+                let dialect = super::super::env_files::Dialect::of(platform);
+                [
+                    super::super::env_files::ENV_FILE_HEADER.to_string(),
+                    dialect.path_line(&FoldedPath::derived(&dirs)),
+                    super::super::env_files::legacy_commented_line(
+                        &dialect.env_line(&foo).expect("a safe name"),
+                        &origins.env_comment(&foo.name),
+                    ),
+                    super::super::env_files::legacy_commented_line(
+                        &dialect.alias_line(&catn).expect("a safe name"),
+                        &origins.alias_comment(&catn.name),
+                    ),
+                    String::new(),
+                ]
+                .join("\n")
+            };
+            let blocks = || {
+                let layered = crate::reconciler::LayeredEnv::for_test(
+                    std::slice::from_ref(&foo),
+                    std::slice::from_ref(&catn),
+                    &Default::default(),
+                );
                 if platform == EnvPlatform::Windows {
                     super::super::env_files::generate_powershell_env_content(
-                        std::slice::from_ref(&foo),
-                        std::slice::from_ref(&catn),
+                        &layered,
                         Some(&FoldedPath::derived(&dirs)),
-                        origins,
                     )
                 } else {
                     super::super::env_files::generate_env_file_content(
-                        std::slice::from_ref(&foo),
-                        std::slice::from_ref(&catn),
+                        &layered,
                         Some(&FoldedPath::derived(&dirs)),
-                        origins,
                     )
                 }
             };
             let write = PrimaryEnvWrite {
-                baseline: Some(render(&Default::default())),
-                desired: render(&owners),
+                baseline: Some(legacy(&owners)),
+                desired: blocks(),
                 platform,
                 unclaimed_deletion: false,
-                origins: owners.clone(),
                 path: Some(FoldedPath::derived(&dirs)),
             };
             assert!(
@@ -752,10 +787,8 @@ mod tests {
     fn ps(env: &[EnvVar], aliases: &[ShellAlias], path_dirs: &[ManagerPathDir]) -> String {
         let fold = (!path_dirs.is_empty()).then(|| FoldedPath::derived(path_dirs));
         super::super::env_files::generate_powershell_env_content(
-            env,
-            aliases,
+            &crate::reconciler::LayeredEnv::for_test(env, aliases, &Default::default()),
             fold.as_ref(),
-            &Default::default(),
         )
     }
 

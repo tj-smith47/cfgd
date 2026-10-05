@@ -149,8 +149,12 @@ YAML
 run init "$I09_DST" --from "$I09_SRC" --no-color
 if assert_ok; then
     # The cloned repo should be clean (no uncommitted changes)
-    DIRTY=$(cd "$I09_DST" && git status --porcelain 2>/dev/null || echo "")
-    if [ -z "$DIRTY" ]; then
+    DIRTY_RC=0
+    # stderr goes to its own file so a git warning on a clean clone does not read as a dirty path
+    DIRTY=$(cd "$I09_DST" && git status --porcelain 2>"$SCRATCH/i09-status.err") || DIRTY_RC=$?
+    if [ "$DIRTY_RC" -ne 0 ]; then
+        fail_test "I09" "git status failed in the clone (exit $DIRTY_RC): $(cat "$SCRATCH/i09-status.err")"
+    elif [ -z "$DIRTY" ]; then
         pass_test "I09"
     else
         fail_test "I09" "Cloned repo is dirty: $DIRTY"
@@ -163,7 +167,7 @@ begin_test "I10: init --from same repo twice does NOT pull"
 I10_DST="$SCRATCH/i10-dst"
 run init "$I10_DST" --from "$ISRC" --no-color
 FIRST_HEAD=$(cd "$I10_DST" && git rev-parse HEAD 2>/dev/null || echo "")
-# Run again — should detect already initialized, not re-clone or pull
+# Run again: init should find the existing checkout and leave its HEAD alone
 run init "$I10_DST" --from "$ISRC" --no-color
 SECOND_HEAD=$(cd "$I10_DST" && git rev-parse HEAD 2>/dev/null || echo "")
 if [ "$FIRST_HEAD" = "$SECOND_HEAD" ] && [ -n "$FIRST_HEAD" ]; then

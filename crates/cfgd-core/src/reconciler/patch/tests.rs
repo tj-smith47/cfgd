@@ -1319,6 +1319,8 @@ fn evaluate_patch_surfaces_an_unreadable_target() {
 /// Resolved module rooted at `dir` declaring one env var.
 fn module_at(dir: &Path) -> crate::modules::ResolvedModule {
     crate::modules::ResolvedModule {
+        held_managers: Vec::new(),
+        floor_bootstraps: Vec::new(),
         dep_pulled: false,
         name: "hosts-mod".to_string(),
         packages: Vec::new(),
@@ -1625,7 +1627,7 @@ mod unix_script {
             "env.sh",
             "#!/bin/sh\necho \"$CFGD_MODULE_NAME\"\n",
         );
-        let env = vec![("CFGD_MODULE_NAME".to_string(), "demo".to_string())];
+        let env = vec![(crate::CFGD_MODULE_NAME_ENV.to_string(), "demo".to_string())];
         let ctx = PatchContext::new(dir.path())
             .with_working_dir(dir.path())
             .with_env(&env);

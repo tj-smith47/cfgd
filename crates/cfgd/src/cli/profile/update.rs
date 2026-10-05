@@ -1,13 +1,14 @@
 use super::*;
 use cfgd_core::PathDisplayExt;
-use cfgd_core::output::{Doc, Printer, Role, TitleLabel};
+use cfgd_core::output::{Doc, Role, TitleLabel};
 
 pub fn cmd_profile_update(
-    cli: &Cli,
-    printer: &Printer,
+    run: &RunContext<'_>,
     name: &str,
     args: &ProfileUpdateArgs,
 ) -> anyhow::Result<()> {
+    let cli = run.cli();
+    let printer = run.printer();
     let (add_inherits, remove_inherits) = cfgd_core::split_add_remove(&args.inherits);
     let (add_modules, remove_modules) = cfgd_core::split_add_remove(&args.modules);
     let (add_packages, remove_packages) = cfgd_core::split_add_remove(&args.packages);
@@ -24,7 +25,7 @@ pub fn cmd_profile_update(
         cfgd_core::split_add_remove(&args.post_reconcile);
     let (add_on_change, remove_on_change) = cfgd_core::split_add_remove(&args.on_change);
     let (add_on_drift, remove_on_drift) = cfgd_core::split_add_remove(&args.on_drift);
-    validate_resource_name(name, "Profile")?;
+    validate_resource_name(name, "Profile", "[NAME]")?;
     printer.heading_title(&TitleLabel::new("Update Profile", name));
 
     let config_dir = config_dir(cli);
@@ -76,13 +77,13 @@ pub fn cmd_profile_update(
             // Remote git URL — fetch, lock, and add to profile
             // Save profile first with current changes, then delegate to remote add
             crate::cli::helpers::rewrite_user_yaml(&profile_path, &doc)?;
-            module::cmd_module_add_remote(cli, printer, m, None, args.yes, args.allow_unsigned)?;
+            module::cmd_module_add_remote(run, m, None, args.yes, args.allow_unsigned)?;
             // Reload profile (remote add may have modified it)
             doc = config::load_profile(&profile_path)?;
             changes += 1;
         } else if modules::is_registry_ref(m) {
             crate::cli::helpers::rewrite_user_yaml(&profile_path, &doc)?;
-            module::cmd_module_add_from_registry(cli, printer, m, args.yes, args.allow_unsigned)?;
+            module::cmd_module_add_from_registry(run, m, args.yes, args.allow_unsigned)?;
             doc = config::load_profile(&profile_path)?;
             changes += 1;
         } else {
@@ -222,12 +223,17 @@ pub fn cmd_profile_update(
                 Vec::new()
             };
             if !elsewhere.is_empty() {
-                anyhow::bail!(
-                    "'{}' is not in {default_mgr}, but is declared elsewhere in this \
-                     profile; use {}",
-                    pkg.name,
-                    elsewhere.join(" or ")
-                );
+                return Err(crate::cli::cli_error(
+                    &pkg.name,
+                    "not_found",
+                    format!(
+                        "'{}' is not in {default_mgr}, but is declared elsewhere in this \
+                         profile; use {}",
+                        pkg.name,
+                        elsewhere.join(" or ")
+                    ),
+                    serde_json::json!({ "manager": default_mgr, "use": elsewhere }),
+                ));
             }
             printer.status_simple(
                 Role::Warn,
@@ -310,7 +316,7 @@ pub fn cmd_profile_update(
 
     // Add env vars
     for v in &add_env {
-        let ev = cfgd_core::parse_env_var(v).map_err(|e| anyhow::anyhow!(e))?;
+        let ev = super::env_flag(v)?;
         cfgd_core::merge_env(&mut doc.spec.env, std::slice::from_ref(&ev));
         printer
             .status(Role::Ok, "Set env")
@@ -334,7 +340,7 @@ pub fn cmd_profile_update(
 
     // Add aliases
     for a in &add_aliases {
-        let alias = cfgd_core::parse_alias(a).map_err(|e| anyhow::anyhow!(e))?;
+        let alias = super::alias_flag(a)?;
         cfgd_core::merge_aliases(&mut doc.spec.aliases, std::slice::from_ref(&alias));
         printer
             .status(Role::Ok, "Set alias")
@@ -361,9 +367,7 @@ pub fn cmd_profile_update(
 
     // Add system settings
     for s in &add_system {
-        let (key, value) = s.split_once('=').ok_or_else(|| {
-            anyhow::anyhow!("Invalid system setting '{}' — expected key=value", s)
-        })?;
+        let (key, value) = super::system_flag(s)?;
         doc.spec.system.insert(
             key.to_string(),
             serde_yaml::Value::String(value.to_string()),
@@ -389,11 +393,9 @@ pub fn cmd_profile_update(
     // Add secrets
     for secret_str in &add_secrets {
         let secret = parse_secret_spec(secret_str)?;
-        // parse_secret_spec always produces a target; this branch guards an
-        // internal invariant rather than a user-facing error, so it stays as
-        // a bare bail without a structured Doc.
         let target = match secret.target.as_ref() {
             Some(t) => cfgd_core::expand_tilde(t),
+            // untyped-ok: parse_secret_spec always produces a target, so no input reaches this.
             None => anyhow::bail!("secret parsed without target"),
         };
         if doc

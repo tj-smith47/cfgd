@@ -10,9 +10,9 @@ use clap::Parser;
 
 /// cfgd Kubernetes operator — CRD-based node configuration.
 ///
-/// Configured via environment variables (e.g. `DEVICE_GATEWAY_ENABLED`,
+/// Configured via environment variables (e.g. `CSI_DRIVER_NAME`, `DEVICE_GATEWAY_ENABLED`,
 /// `DEVICE_GATEWAY_STANDALONE`, `HEALTH_PORT`, `METRICS_PORT`,
-/// `WEBHOOK_CERT_DIR`); there are no arguments beyond `--version`/`--help`.
+/// `WATCH_LABEL_SELECTOR`, `WEBHOOK_CERT_DIR`); there are no arguments beyond `--version`/`--help`.
 #[derive(Parser, Debug)]
 #[command(name = "cfgd-operator", version, about, long_about = None)]
 pub struct Args {}

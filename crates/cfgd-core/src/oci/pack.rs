@@ -4,7 +4,6 @@
 // config / layer media types so the result is mountable as a Kubernetes
 // volume.image.
 
-use std::collections::HashMap;
 use std::path::Path;
 
 use crate::errors::OciError;
@@ -13,13 +12,14 @@ use crate::sha256_digest;
 
 use super::archive::create_tar_gz_with_diff_id;
 use super::auth::RegistryAuth;
+use super::push::OciPlatform;
 use super::transport::{
     authenticated_request, ensure_blob_present, fetch_blob, resolve_pushed_digest, upload_blob,
 };
 use super::{
-    ImageConfig, ImageRuntimeConfig, MEDIA_TYPE_DOCKER_MANIFEST_LIST, MEDIA_TYPE_OCI_IMAGE_CONFIG,
-    MEDIA_TYPE_OCI_IMAGE_LAYER, MEDIA_TYPE_OCI_INDEX, MEDIA_TYPE_OCI_MANIFEST, OciDescriptor,
-    OciImageIndex, OciManifest, OciReference, RootFs,
+    Annotations, ImageConfig, ImageRuntimeConfig, MEDIA_TYPE_DOCKER_MANIFEST_LIST,
+    MEDIA_TYPE_OCI_IMAGE_CONFIG, MEDIA_TYPE_OCI_IMAGE_LAYER, MEDIA_TYPE_OCI_INDEX,
+    MEDIA_TYPE_OCI_MANIFEST, OciDescriptor, OciImageIndex, OciManifest, OciReference, RootFs,
 };
 
 /// User-supplied overrides for the packed image's runtime config and metadata.
@@ -38,8 +38,9 @@ pub struct PackOptions {
     /// OCI manifest annotations merged with the auto-generated
     /// `org.opencontainers.image.created` entry.
     pub annotations: std::collections::BTreeMap<String, String>,
-    /// Target platform in `"os/arch"` form (e.g. `"linux/amd64"`). Defaults to
-    /// the current host platform when absent.
+    /// Target platform in `"os/arch"` or `"os/arch/variant"` form (e.g.
+    /// `"linux/amd64"`, `"linux/arm/v7"`). Defaults to the current host
+    /// platform when absent.
     pub platform: Option<String>,
     /// Base image reference (e.g. `"ghcr.io/org/app:v1"`) to layer the packed
     /// directory on top of. When set, the produced image is `base + new layer`:
@@ -60,8 +61,7 @@ pub struct PackOptions {
 pub(super) fn build_image_config(
     opts: &PackOptions,
     diff_id: String,
-    os: &str,
-    arch: &str,
+    platform: &OciPlatform,
 ) -> ImageConfig {
     // Runtime config is Some only when at least one field is populated.
     let runtime_config = {
@@ -95,8 +95,9 @@ pub(super) fn build_image_config(
     };
 
     ImageConfig {
-        architecture: arch.to_string(),
-        os: os.to_string(),
+        architecture: platform.architecture.clone(),
+        os: platform.os.clone(),
+        variant: platform.variant.clone(),
         created: Some(crate::utc_now_iso8601()),
         config: runtime_config,
         rootfs: RootFs {
@@ -117,7 +118,7 @@ pub(super) fn build_image_manifest(
     layer_size: u64,
     opts: &PackOptions,
 ) -> OciManifest {
-    let mut annotations: HashMap<String, String> = opts
+    let mut annotations: Annotations = opts
         .annotations
         .iter()
         .map(|(k, v)| (k.clone(), v.clone()))
@@ -133,13 +134,13 @@ pub(super) fn build_image_manifest(
             media_type: MEDIA_TYPE_OCI_IMAGE_CONFIG.to_string(),
             digest: config_digest,
             size: config_size,
-            annotations: HashMap::new(),
+            annotations: Annotations::new(),
         },
         layers: vec![OciDescriptor {
             media_type: MEDIA_TYPE_OCI_IMAGE_LAYER.to_string(),
             digest: layer_digest,
             size: layer_size,
-            annotations: HashMap::new(),
+            annotations: Annotations::new(),
         }],
         annotations,
     }
@@ -155,7 +156,7 @@ pub(super) fn build_image_manifest(
 ///   entrypoint/cmd/working_dir/user; `env` is base ++ opts; `labels` are base
 ///   merged with opts (opts wins on key conflict).
 ///
-/// Architecture/os are kept from the base. Callers must validate that the base
+/// Architecture, os and variant are kept from the base. Callers must validate that the base
 /// platform equals the resolved pack target before invoking this.
 pub(super) fn build_layered_image_config(
     base: &ImageConfig,
@@ -217,6 +218,7 @@ pub(super) fn build_layered_image_config(
     ImageConfig {
         architecture: base.architecture.clone(),
         os: base.os.clone(),
+        variant: base.variant.clone(),
         created: Some(crate::utc_now_iso8601()),
         config: runtime_config,
         rootfs: RootFs {
@@ -238,7 +240,7 @@ pub(super) fn build_layered_manifest(
     new_layer_size: u64,
     opts: &PackOptions,
 ) -> OciManifest {
-    let mut annotations: HashMap<String, String> = opts
+    let mut annotations: Annotations = opts
         .annotations
         .iter()
         .map(|(k, v)| (k.clone(), v.clone()))
@@ -253,14 +255,14 @@ pub(super) fn build_layered_manifest(
             media_type: d.media_type.clone(),
             digest: d.digest.clone(),
             size: d.size,
-            annotations: HashMap::new(),
+            annotations: Annotations::new(),
         })
         .collect();
     layers.push(OciDescriptor {
         media_type: MEDIA_TYPE_OCI_IMAGE_LAYER.to_string(),
         digest: new_layer_digest,
         size: new_layer_size,
-        annotations: HashMap::new(),
+        annotations: Annotations::new(),
     });
 
     OciManifest {
@@ -270,7 +272,7 @@ pub(super) fn build_layered_manifest(
             media_type: MEDIA_TYPE_OCI_IMAGE_CONFIG.to_string(),
             digest: config_digest,
             size: config_size,
-            annotations: HashMap::new(),
+            annotations: Annotations::new(),
         },
         layers,
         annotations,
@@ -283,12 +285,15 @@ pub(super) fn build_layered_manifest(
 
 /// The result of a successful [`pack_image`] call.
 ///
-/// Carries the pushed manifest digest and the resolved platform so callers
-/// report ground truth rather than re-deriving the platform independently.
+/// Carries the pushed manifest digest and the resolved platform, so callers
+/// report what the pack did and never re-derive the platform themselves.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PackOutcome {
     /// OCI manifest digest (`"sha256:..."`).
     pub digest: String,
-    /// Resolved platform in `"os/arch"` form (e.g. `"linux/amd64"`).
+    /// Platform of the config the push wrote, in `"os/arch[/variant]"` form
+    /// (e.g. `"linux/amd64"`). With a base image this is the base's own
+    /// platform, so a variant the request left out is still named.
     pub platform: String,
 }
 
@@ -323,6 +328,7 @@ pub fn pack_image(
                     .detail(super::artifact_row_detail(
                         &outcome.digest,
                         &outcome.platform,
+                        None,
                     ));
             }
             tracing::debug!(
@@ -354,21 +360,20 @@ fn pack_image_inner(
     opts: &PackOptions,
 ) -> Result<PackOutcome, OciError> {
     // Resolve platform — split opts.platform or fall back to host platform.
-    let (os, arch) = resolve_platform(opts)?;
+    let platform = resolve_platform(opts)?;
 
     // Build the layer archive and compute its diff_id (sha256 of uncompressed tar).
     let (layer_gz, diff_id) = create_tar_gz_with_diff_id(dir)?;
     let layer_digest = sha256_digest(&layer_gz);
     let layer_size = layer_gz.len() as u64;
 
-    let manifest = if let Some(base_ref) = opts.base.as_deref() {
+    let (manifest, platform) = if let Some(base_ref) = opts.base.as_deref() {
         layer_onto_base(
             agent,
             base_ref,
             oci_ref,
             auth,
-            &os,
-            &arch,
+            &platform,
             &layer_gz,
             layer_digest,
             layer_size,
@@ -377,7 +382,7 @@ fn pack_image_inner(
         )?
     } else {
         // Build and serialize the image config blob.
-        let image_config = build_image_config(opts, diff_id, &os, &arch);
+        let image_config = build_image_config(opts, diff_id, &platform);
         let config_blob = serde_json::to_vec(&image_config)?;
         let config_digest = sha256_digest(&config_blob);
         let config_size = config_blob.len() as u64;
@@ -392,7 +397,10 @@ fn pack_image_inner(
         )?;
         upload_blob(agent, oci_ref, auth, &layer_gz, MEDIA_TYPE_OCI_IMAGE_LAYER)?;
 
-        build_image_manifest(config_digest, config_size, layer_digest, layer_size, opts)
+        (
+            build_image_manifest(config_digest, config_size, layer_digest, layer_size, opts),
+            platform,
+        )
     };
 
     let manifest_json = serde_json::to_vec(&manifest)?;
@@ -417,23 +425,17 @@ fn pack_image_inner(
         message: format!("{e}"),
     })?;
 
-    let manifest_digest = resolve_pushed_digest(&manifest_resp, &manifest_json);
+    let manifest_digest = resolve_pushed_digest(&manifest_resp, &manifest_json, oci_ref)?;
 
     Ok(PackOutcome {
         digest: manifest_digest,
-        platform: format!("{os}/{arch}"),
+        platform: platform.to_string(),
     })
 }
 
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
-
-/// Combined Accept header advertising every base-doc media type this can parse:
-/// OCI image manifest + OCI index + Docker manifest list.
-fn base_accept_header() -> String {
-    format!("{MEDIA_TYPE_OCI_MANIFEST}, {MEDIA_TYPE_OCI_INDEX}, {MEDIA_TYPE_DOCKER_MANIFEST_LIST}")
-}
 
 /// GET a manifest document by reference (tag or digest) from `base`.
 fn get_base_doc(
@@ -453,7 +455,7 @@ fn get_base_doc(
         "GET",
         &url,
         auth,
-        Some(&base_accept_header()),
+        Some(&super::manifest_accept()),
         None,
         None,
     )
@@ -469,13 +471,13 @@ fn get_base_doc(
 
 /// Resolve the base reference to a concrete single-platform [`OciManifest`],
 /// following an image index / manifest list when necessary to select the entry
-/// matching `(os, arch)`.
+/// for `platform`. A platform naming no variant takes the entry naming none,
+/// else the first for its os and architecture.
 fn resolve_base_manifest(
     agent: &ureq::Agent,
     base: &OciReference,
     auth: Option<&RegistryAuth>,
-    os: &str,
-    arch: &str,
+    platform: &OciPlatform,
 ) -> Result<OciManifest, OciError> {
     let body = get_base_doc(agent, base, auth, base.reference_str())?;
 
@@ -499,18 +501,9 @@ fn resolve_base_manifest(
             serde_json::from_str(&body).map_err(|e| OciError::RequestFailed {
                 message: format!("invalid base image index JSON: {e}"),
             })?;
-        let entry = index
-            .manifests
-            .iter()
-            .find(|m| {
-                m.platform
-                    .as_ref()
-                    .map(|p| p.os == os && p.architecture == arch)
-                    .unwrap_or(false)
-            })
-            .ok_or_else(|| OciError::RequestFailed {
-                message: format!("base image index has no manifest for {os}/{arch}"),
-            })?;
+        let entry = base_index_entry(&index, platform).ok_or_else(|| OciError::RequestFailed {
+            message: format!("base image index has no manifest for {platform}"),
+        })?;
         let manifest_body = get_base_doc(agent, base, auth, &entry.digest)?;
         serde_json::from_str(&manifest_body).map_err(|e| OciError::RequestFailed {
             message: format!("invalid base platform manifest JSON: {e}"),
@@ -522,9 +515,35 @@ fn resolve_base_manifest(
     }
 }
 
+/// The entry of a base image index for `platform`: the one naming its
+/// variant (or naming none, for a platform naming none), else, for a platform
+/// naming no variant, the first for its os and architecture.
+pub(super) fn base_index_entry<'a>(
+    index: &'a OciImageIndex,
+    platform: &OciPlatform,
+) -> Option<&'a super::OciIndexEntry> {
+    let os_arch = |m: &&super::OciIndexEntry| {
+        m.platform
+            .as_ref()
+            .is_some_and(|p| p.os == platform.os && p.architecture == platform.architecture)
+    };
+    index
+        .manifests
+        .iter()
+        .filter(os_arch)
+        .find(|m| m.platform.as_ref().and_then(|p| p.variant.as_ref()) == platform.variant.as_ref())
+        .or_else(|| {
+            platform
+                .variant
+                .is_none()
+                .then(|| index.manifests.iter().find(os_arch))
+                .flatten()
+        })
+}
+
 /// Pack `layer_gz` as a new top layer on top of the resolved `base_ref` image,
 /// uploading everything into the target `oci_ref` repository and returning the
-/// layered manifest ready to PUT.
+/// layered manifest ready to PUT, with the platform its config declares.
 ///
 /// Steps: resolve base manifest (following an index for `(os, arch)`) → fetch +
 /// parse base config → assert base platform matches the resolved target → build
@@ -537,18 +556,17 @@ fn layer_onto_base(
     base_ref: &str,
     oci_ref: &OciReference,
     auth: Option<&RegistryAuth>,
-    os: &str,
-    arch: &str,
+    platform: &OciPlatform,
     layer_gz: &[u8],
     layer_digest: String,
     layer_size: u64,
     diff_id: String,
     opts: &PackOptions,
-) -> Result<OciManifest, OciError> {
+) -> Result<(OciManifest, OciPlatform), OciError> {
     let base = OciReference::parse(base_ref)?;
     let base_auth = RegistryAuth::resolve(&base.registry);
 
-    let base_manifest = resolve_base_manifest(agent, &base, base_auth.as_ref(), os, arch)?;
+    let base_manifest = resolve_base_manifest(agent, &base, base_auth.as_ref(), platform)?;
 
     // Fetch + parse the base image config.
     let base_config_bytes = fetch_blob(
@@ -566,11 +584,22 @@ fn layer_onto_base(
     // pinned an explicit --platform that conflicts with the base, that is a
     // correctness error: the new layer would claim a platform the base layers
     // were not built for.
-    if base_config.os != os || base_config.architecture != arch {
+    let variant_differs = platform.variant.is_some() && base_config.variant != platform.variant;
+    // The layered config copies the base's os, architecture and variant, so
+    // this is the platform the pushed image claims, a variant the caller left
+    // unnamed included.
+    let base_platform = OciPlatform {
+        os: base_config.os.clone(),
+        architecture: base_config.architecture.clone(),
+        variant: base_config.variant.clone(),
+    };
+    if base_config.os != platform.os
+        || base_config.architecture != platform.architecture
+        || variant_differs
+    {
         return Err(OciError::RequestFailed {
             message: format!(
-                "base image platform {}/{} does not match requested {os}/{arch}",
-                base_config.os, base_config.architecture
+                "base image platform {base_platform} does not match requested {platform}"
             ),
         });
     }
@@ -604,29 +633,28 @@ fn layer_onto_base(
     )?;
     upload_blob(agent, oci_ref, auth, layer_gz, MEDIA_TYPE_OCI_IMAGE_LAYER)?;
 
-    Ok(build_layered_manifest(
+    let manifest = build_layered_manifest(
         &base_manifest.layers,
         config_digest,
         config_size,
         layer_digest,
         layer_size,
         opts,
-    ))
+    );
+    Ok((manifest, base_platform))
 }
 
-/// Resolve the (os, arch) pair from `PackOptions.platform` or the host.
-fn resolve_platform(opts: &PackOptions) -> Result<(String, String), OciError> {
-    match &opts.platform {
-        Some(p) => {
-            let (os, arch) = super::parse_platform_target(p)?;
-            Ok((os.to_string(), arch.to_string()))
-        }
+/// Resolve the target platform from `PackOptions.platform` or the host.
+fn resolve_platform(opts: &PackOptions) -> Result<OciPlatform, OciError> {
+    let host;
+    let target = match &opts.platform {
+        Some(p) => p.as_str(),
         None => {
-            let host = super::current_platform();
-            let (os, arch) = super::parse_platform_target(&host)?;
-            Ok((os.to_string(), arch.to_string()))
+            host = super::current_platform();
+            host.as_str()
         }
-    }
+    };
+    Ok(super::parse_platform_target(target)?.into())
 }
 
 // ---------------------------------------------------------------------------

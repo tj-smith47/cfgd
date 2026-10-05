@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::LazyLock;
 
 use serde::{Deserialize, Serialize};
 
@@ -8,13 +9,13 @@ use super::ai::AiConfig;
 use super::compliance::ComplianceConfig;
 use super::daemon::DaemonConfig;
 use super::origin::OriginSpec;
-use super::output::{MaskEnvValues, OutputConfig};
+use super::output::OutputConfig;
 use super::security::{ModulesConfig, SecurityConfig};
 use super::source::SourceSpec;
 use super::sync_secrets::SecretsConfig;
 use super::theme::ThemeConfig;
 use crate::errors::Result;
-use cfgd_schema::FileStrategy;
+use cfgd_schema::{FileStrategy, MigrationPolicy};
 
 // --- Root Config (cfgd.yaml) ---
 
@@ -112,14 +113,15 @@ pub struct ConfigSpec {
     pub origin: Vec<OriginSpec>,
 
     /// The background daemon that watches for drift between reconciles.
-    /// Omitted, no daemon runs and every reconcile is an explicit
-    /// `cfgd apply`.
+    /// Omitted, a daemon started with `cfgd daemon` runs every default: a
+    /// `5m` reconcile that reports drift and applies nothing, with no pull or
+    /// push.
     #[serde(default)]
     pub daemon: Option<DaemonConfig>,
 
     /// Which backend resolves a `${secret:…}` reference, and how it is
-    /// reached. Omitted, no backend is configured and a declared secret
-    /// reference fails to resolve.
+    /// reached. Omitted, the `sops` backend resolves it through sops's own
+    /// key search.
     #[serde(default)]
     pub secrets: Option<SecretsConfig>,
 
@@ -148,9 +150,10 @@ pub struct ConfigSpec {
     #[serde(default)]
     pub security: Option<SecurityConfig>,
 
-    /// CLI aliases: map of alias name → command string.
-    /// Built-in defaults (add, remove) can be overridden or extended.
-    #[serde(default)]
+    /// CLI aliases: map of alias name → command string. `cfgd init` scaffolds
+    /// `add` and `remove`; cfgd defines no alias of its own.
+    #[serde(default, deserialize_with = "crate::config::null_as_default")]
+    #[schemars(with = "Option<std::collections::HashMap<String, String>>")]
     pub aliases: HashMap<String, String>,
 
     /// AI assistant configuration: provider, model, and API key env var.
@@ -166,25 +169,120 @@ pub struct ConfigSpec {
     /// Update policy for the cfgd binary and authored skills.
     #[serde(default)]
     pub update: Option<UpdateConfig>,
+
+    /// What cfgd does when this document is behind the schema the running
+    /// binary reads. `Prompt` asks once on an interactive run; `Warn` only
+    /// reports; `Update` writes the alignment; `Ignore` says nothing.
+    #[serde(default)]
+    pub migration_policy: MigrationPolicy,
 }
 
+/// One accessor per `spec` section whose omission production reads as a
+/// value: each returns the declared block, or the block the build uses where
+/// the document omits it. A block whose omission turns its settings off
+/// (`secrets.sops`, where sops then runs its own key search) has no accessor,
+/// and its readers handle `None` themselves.
 impl ConfigSpec {
+    /// The daemon settings: the declared block, or `daemon: {}` where the
+    /// document omits it.
+    #[must_use]
+    pub fn daemon_effective(&self) -> &DaemonConfig {
+        static OMITTED: LazyLock<DaemonConfig> = LazyLock::new(DaemonConfig::default);
+        self.daemon.as_ref().unwrap_or(&OMITTED)
+    }
+
+    /// The output settings: the declared block, or `output: {}` where the
+    /// document omits it.
+    #[must_use]
+    pub fn output_effective(&self) -> &OutputConfig {
+        static OMITTED: LazyLock<OutputConfig> = LazyLock::new(OutputConfig::default);
+        self.output.as_ref().unwrap_or(&OMITTED)
+    }
+
+    /// The module settings: the declared block, or no registries and no
+    /// signature requirement where the document omits it.
+    #[must_use]
+    pub fn modules_effective(&self) -> &ModulesConfig {
+        static OMITTED: LazyLock<ModulesConfig> = LazyLock::new(ModulesConfig::default);
+        self.modules.as_ref().unwrap_or(&OMITTED)
+    }
+
+    /// The source signature settings: the declared block, or unsigned content
+    /// refused where the document omits it.
+    #[must_use]
+    pub fn security_effective(&self) -> &SecurityConfig {
+        static OMITTED: LazyLock<SecurityConfig> = LazyLock::new(SecurityConfig::default);
+        self.security.as_ref().unwrap_or(&OMITTED)
+    }
+
+    /// The AI settings `cfgd generate` runs with: the declared block, or
+    /// `ai: {}` where the document omits it.
+    #[must_use]
+    pub fn ai_effective(&self) -> &AiConfig {
+        static OMITTED: LazyLock<AiConfig> = LazyLock::new(AiConfig::default);
+        self.ai.as_ref().unwrap_or(&OMITTED)
+    }
+
+    /// The compliance settings: the declared block, or `compliance: {}` (no
+    /// snapshots taken) where the document omits it.
+    #[must_use]
+    pub fn compliance_effective(&self) -> &ComplianceConfig {
+        static OMITTED: LazyLock<ComplianceConfig> = LazyLock::new(ComplianceConfig::default);
+        self.compliance.as_ref().unwrap_or(&OMITTED)
+    }
+
+    /// The secrets settings: the declared block, or `secrets: {}` (the `sops`
+    /// backend) where the document omits it.
+    #[must_use]
+    pub fn secrets_effective(&self) -> &SecretsConfig {
+        static OMITTED: LazyLock<SecretsConfig> = LazyLock::new(SecretsConfig::default);
+        self.secrets.as_ref().unwrap_or(&OMITTED)
+    }
+
+    /// The update settings: the declared block, or `update: {}` where the
+    /// document omits it.
+    #[must_use]
+    pub fn update_effective(&self) -> &UpdateConfig {
+        static OMITTED: LazyLock<UpdateConfig> = LazyLock::new(UpdateConfig::default);
+        self.update.as_ref().unwrap_or(&OMITTED)
+    }
+
+    /// This spec with every section the build reads through an `_effective`
+    /// accessor filled in with that accessor's value, nested sections
+    /// included. `cfgd config get` answers from it, so a key under an omitted
+    /// section reports what the build uses.
+    #[must_use]
+    pub fn effective(&self) -> ConfigSpec {
+        let mut spec = self.clone();
+        let mut daemon = self.daemon_effective().clone();
+        let mut reconcile = daemon.reconcile_effective().clone();
+        reconcile.policy = Some(reconcile.policy_effective().clone());
+        daemon.sync = Some(daemon.sync_effective().clone());
+        daemon.notify = Some(daemon.notify_effective().clone());
+        daemon.reconcile = Some(reconcile);
+        spec.daemon = Some(daemon);
+        let mut output = self.output_effective().clone();
+        output.theme = Some(output.theme_effective().clone());
+        output.usage_hints = Some(output.usage_hints_effective());
+        output.mask_env_values = Some(output.mask_env_values_effective());
+        spec.output = Some(output);
+        let mut modules = self.modules_effective().clone();
+        modules.security = Some(modules.security_effective().clone());
+        spec.modules = Some(modules);
+        spec.security = Some(self.security_effective().clone());
+        spec.ai = Some(self.ai_effective().clone());
+        spec.compliance = Some(self.compliance_effective().clone());
+        let mut update = self.update_effective().clone();
+        update.channel = Some(update.channel_effective().to_string());
+        spec.update = Some(update);
+        spec.secrets = Some(self.secrets_effective().clone());
+        spec
+    }
+
     /// The theme block `spec.output.theme` declares.
     #[must_use]
     pub fn theme(&self) -> Option<&ThemeConfig> {
         self.output.as_ref().and_then(|o| o.theme.as_ref())
-    }
-
-    /// What `spec.output.usageHints` declares.
-    #[must_use]
-    pub fn usage_hints(&self) -> Option<bool> {
-        self.output.as_ref().and_then(|o| o.usage_hints)
-    }
-
-    /// What `spec.output.maskEnvValues` declares.
-    #[must_use]
-    pub fn mask_env_values(&self) -> Option<MaskEnvValues> {
-        self.output.as_ref().and_then(|o| o.mask_env_values)
     }
 }
 
@@ -269,14 +367,28 @@ pub struct UpdateConfig {
     #[serde(default = "default_update_interval")]
     pub interval: String,
 
-    /// Release channel to track (e.g. `stable`, `beta`). When unset, cfgd uses
-    /// its built-in default channel.
+    /// Release channel to track: `stable` (releases GitHub marks latest) or
+    /// `prerelease` (the newest release, prereleases included). Omitted,
+    /// `stable`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub channel: Option<String>,
 
     /// Update policy for authored skills. Defaults to inheriting `policy`.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "crate::config::null_as_default")]
+    #[schemars(with = "Option<SkillUpdateConfig>")]
     pub skills: SkillUpdateConfig,
+}
+
+/// The release channel an `update` block that names none tracks.
+pub const STABLE_UPDATE_CHANNEL: &str = "stable";
+
+impl UpdateConfig {
+    /// The release channel to track: the declared one, or
+    /// [`STABLE_UPDATE_CHANNEL`] where the document omits it.
+    #[must_use]
+    pub fn channel_effective(&self) -> &str {
+        self.channel.as_deref().unwrap_or(STABLE_UPDATE_CHANNEL)
+    }
 }
 
 impl Default for UpdateConfig {

@@ -84,6 +84,25 @@ fn is_remote_origin_url(url: &str) -> bool {
     }
 }
 
+/// Render a source's origin for a row (`source show`, `source list`): the ONE
+/// composer either surface reaches for. A URL (anything carrying a
+/// `scheme://`, `file://` included, plus an scp-like `user@host:path` remote)
+/// renders as stored, userinfo stripped by [`crate::display_url`]; a bare
+/// local filesystem path (no scheme at all) is a path like any other display
+/// slot, so it folds under `$HOME`.
+///
+/// The home fold runs on a PATH and leaves a URL alone: folding `<home>/`
+/// inside a `file://` authority produces `file://~/...`, a string no tool
+/// resolves back into a path, so a scheme ends the fold decision before it
+/// starts.
+pub fn display_source_origin(url: &str) -> String {
+    let displayed = crate::display_url(url);
+    if displayed.contains("://") || is_remote_origin_url(url) {
+        return displayed;
+    }
+    crate::fold_home_in_text(&displayed)
+}
+
 /// Cached state for a single config source.
 #[derive(Debug, Clone)]
 pub struct CachedSource {
@@ -458,7 +477,7 @@ impl SourceManager {
         // an absolute one, so accepting those left the guard naming a rule it did
         // not enforce. CFGD_ALLOW_LOCAL_SOURCES bypasses this for dev/test
         // environments only.
-        let allow_local = std::env::var("CFGD_ALLOW_LOCAL_SOURCES").is_ok();
+        let allow_local = std::env::var(crate::CFGD_ALLOW_LOCAL_SOURCES_ENV).is_ok();
         if !allow_local && !is_remote_origin_url(&spec.origin.url) {
             return Err(SourceError::GitError {
                 name: spec.name.clone(),
@@ -486,7 +505,7 @@ impl SourceManager {
         // residue: the next load reuses both, and neither says anything untrue
         // about the machine.
         let created_cache_root = !self.cache_dir.exists();
-        std::fs::create_dir_all(&self.cache_dir).map_err(|e| SourceError::CacheError {
+        crate::create_dir_all_retrying(&self.cache_dir).map_err(|e| SourceError::CacheError {
             message: format!("cannot create cache dir: {e}"),
         })?;
         if created_cache_root {
@@ -1741,6 +1760,8 @@ pub fn head_signature_accepted(name: &str, repo_dir: &Path) -> Option<bool> {
 /// The raw `git log -1 --format=%G?` code for HEAD at `repo_dir`, or the reason
 /// it could not be read. The ONE place that shells out for it, so the enforcing
 /// and the reporting reader run the same command with the same timeout.
+// absolute-path-ok: the string handed back is git's own `%G?` code, and the one
+// path render is an argv token this host resolves, already marked `native-ok`.
 fn head_signature_code(repo_dir: &Path) -> std::result::Result<String, String> {
     if !crate::command_available("git") {
         return Err(

@@ -4,12 +4,12 @@ use cfgd_core::PathDisplayExt;
 use cfgd_core::output::{Doc, Printer, Role, doc::SectionBuilder};
 use cfgd_core::providers::PackageManagerExt;
 
-pub(super) fn cmd_doctor(cli: &Cli, printer: &Printer, fix: bool) -> anyhow::Result<()> {
+pub(super) fn cmd_doctor(run: &RunContext<'_>, fix: bool) -> anyhow::Result<()> {
     // A failed verdict must fail the process so `cfgd doctor && cfgd apply`
     // stops instead of sailing into a guaranteed-broken apply. The Doc is
     // already emitted, so exit directly (mirroring cmd_profile_migrate)
     // rather than return an error the central sink would re-render.
-    if !run_doctor(cli, printer, fix)? {
+    if !run_doctor(run, fix)? {
         cfgd_core::exit::ExitCode::Error.exit();
     }
     Ok(())
@@ -22,7 +22,7 @@ pub(super) fn cmd_doctor(cli: &Cli, printer: &Printer, fix: bool) -> anyhow::Res
 /// Tools or Secrets section joins this list with it. The optional secret
 /// providers are deliberately absent: their rows say "optional", and a reader
 /// asking cfgd to repair its prerequisites did not ask for four vendor CLIs.
-const FIXABLE_TOOLS: &[(&str, &str)] = &[("git", ""), ("sops", "CFGD_SOPS_BIN")];
+const FIXABLE_TOOLS: &[(&str, &str)] = &[("git", ""), ("sops", crate::secrets::SOPS_BIN_ENV)];
 
 /// Install every tool of [`FIXABLE_TOOLS`] this host is missing, before the
 /// probes run.
@@ -62,15 +62,15 @@ fn fix_missing_tools(printer: &Printer) {
 /// Runs every doctor probe, emits the report Doc, and returns whether the
 /// verdict passed. Kept separate from the process-exit wrapper so it stays
 /// unit-testable.
-pub(crate) fn run_doctor(cli: &Cli, printer: &Printer, fix: bool) -> anyhow::Result<bool> {
+pub(crate) fn run_doctor(run: &RunContext<'_>, fix: bool) -> anyhow::Result<bool> {
+    let printer = run.printer();
     if fix {
         fix_missing_tools(printer);
     }
     // One spinner across every probe, renamed per group: doctor shells out to
     // git, sops and each package manager before it prints anything at all.
-    let (output, extras) = printer.narrate("Probing: config", |sp| {
-        collect_doctor_output(cli, printer, sp)
-    })?;
+    let (output, extras) =
+        printer.narrate("Probing: config", |sp| collect_doctor_output(run, sp))?;
     let passed = all_passed(&output);
     printer.emit(build_doctor_doc(&output, &extras));
     Ok(passed)
@@ -112,6 +112,18 @@ pub struct DoctorConfigSource {
     pub cached_path: Option<String>,
 }
 
+/// One member of a module's unresolved list, for a floor a bootstrap route
+/// could meet. Every other member of that list opens on the package it is
+/// about, so this one does too: a module declaring several packages would
+/// otherwise state an offer the reader has to guess the subject of.
+///
+/// It STATES the route and never asks about it: `doctor` checks prerequisites
+/// and installs nothing, so the row says the floor is provisionable and how,
+/// and leaves the question to the verbs that can act on the answer.
+pub(super) fn unresolved_route_row(route: &modules::FloorBootstrap) -> String {
+    format!("{}: {}", route.package, route.provisionable_clause())
+}
+
 /// Gather every doctor check into the stable JSON payload + display-only extras.
 /// The lib call to `modules::load_all_modules` takes a `Printer`.
 /// The per-module prerequisite rows, and the manager-to-modules routing the
@@ -146,6 +158,7 @@ fn build_module_routes(
                     error: Some(format!("module {}", cfgd_core::Absence::NotFound)),
                     managers: Vec::new(),
                     unresolved: Vec::new(),
+                    held: Vec::new(),
                 };
             };
             // First-seen order, which is the module's own package order: the
@@ -154,9 +167,10 @@ fn build_module_routes(
             let mut counts: std::collections::HashMap<String, usize> =
                 std::collections::HashMap::new();
             let mut unresolved: Vec<String> = Vec::new();
+            let mut held: Vec<String> = Vec::new();
             for entry in &module.spec.packages {
                 match modules::resolve_package(entry, mod_name, platform, mgr_map, cx) {
-                    Ok(Some(resolved)) => {
+                    Ok(Some(modules::PackageResolution::Package(resolved))) => {
                         let count = counts.entry(resolved.manager.clone()).or_insert(0);
                         if *count == 0 {
                             order.push(resolved.manager.clone());
@@ -166,6 +180,28 @@ fn build_module_routes(
                             .entry(resolved.manager)
                             .or_default()
                             .insert(mod_name.clone());
+                    }
+                    // A floor no available manager meets: this report states
+                    // what the host offers and how far short it falls, under
+                    // the package name every other member of this list opens
+                    // on, so a module declaring several says which one fell
+                    // short.
+                    Ok(Some(modules::PackageResolution::Bootstrap(route))) => {
+                        unresolved.push(unresolved_route_row(&route));
+                    }
+                    // The package names a manager this host already holds. At
+                    // the declared floor nothing is missing and the row states
+                    // what is here beside the managers the rest of the module
+                    // routes to; below it, or with a version nothing could
+                    // read, the same clause is a shortfall and joins the list
+                    // that fails the verdict.
+                    Ok(Some(modules::PackageResolution::HeldByManager(entry))) => {
+                        let clause = entry.clause(mgr_map.get(&entry.package).copied());
+                        if entry.judgment.met() {
+                            held.push(clause);
+                        } else {
+                            unresolved.push(clause);
+                        }
                     }
                     // Gated off this platform: the package is not declared
                     // here, so it routes nowhere and states nothing.
@@ -187,6 +223,7 @@ fn build_module_routes(
                 error: None,
                 managers,
                 unresolved,
+                held,
             }
         })
         .collect();
@@ -195,28 +232,28 @@ fn build_module_routes(
 }
 
 fn collect_doctor_output(
-    cli: &Cli,
-    printer: &Printer,
+    run: &RunContext<'_>,
     sp: &mut cfgd_core::output::Spinner<'_>,
 ) -> anyhow::Result<(DoctorOutput, DoctorExtras)> {
-    let ctx = RunContext::new(cli, printer);
-    let (config_check, loaded_cfg) = if cli.config.exists() {
-        match config::load_config(&cli.config) {
-            Ok(mut cfg) => {
-                drain_config_deprecations(printer, &mut cfg);
-                (
-                    DoctorConfigCheck {
-                        valid: true,
-                        path: cfgd_core::to_posix_string(&cli.config),
-                        name: Some(cfg.metadata.name.clone()),
-                        profile: cfg.spec.profile.clone(),
-                        error: None,
-                        legacy_output_keys: cfg.legacy_output_keys.clone(),
-                        state: DoctorConfigState::Valid,
-                    },
-                    Some(cfg),
-                )
-            }
+    let cli = run.cli();
+    let printer = run.printer();
+    // A path still leading with `~` found no home directory; the read reports
+    // that as the loader's own error, where an existence check would call the
+    // file missing.
+    let (config_check, loaded_cfg) = if cli.config.exists() || cli.config.starts_with("~") {
+        match run.config() {
+            Ok(cfg) => (
+                DoctorConfigCheck {
+                    valid: true,
+                    path: cfgd_core::to_posix_string(&cli.config),
+                    name: Some(cfg.metadata.name.clone()),
+                    profile: cfg.spec.profile.clone(),
+                    error: None,
+                    legacy_output_keys: cfg.legacy_output_keys.clone(),
+                    state: DoctorConfigState::Valid,
+                },
+                Some(cfg),
+            ),
             Err(e) => (
                 DoctorConfigCheck {
                     valid: false,
@@ -260,7 +297,6 @@ fn collect_doctor_output(
 
     let config_dir = config_dir(cli);
     let age_key_override = loaded_cfg
-        .as_ref()
         .and_then(|c| c.spec.secrets.as_ref())
         .and_then(|s| s.sops.as_ref())
         .and_then(|s| s.age_key.as_ref());
@@ -270,7 +306,7 @@ fn collect_doctor_output(
     // Resolved ONCE and read by both the package report below and the module
     // list further down: `doctor` asked the same question twice, and a profile
     // resolution walks the inheritance chain off disk each time.
-    let doctor_profile = loaded_cfg.as_ref().and_then(|cfg| {
+    let doctor_profile = loaded_cfg.and_then(|cfg| {
         let profiles_dir = profiles_dir(cli);
         let profile_name = cli.profile.as_deref().or(cfg.spec.profile.as_deref())?;
         config::resolve_profile(profile_name, &profiles_dir).ok()
@@ -281,7 +317,7 @@ fn collect_doctor_output(
         // A throwaway claim set: `doctor` reports what is declared and records
         // no row, so nothing reads the layer a manifest package arrived on.
         let mut manifest_sources = cfgd_core::config::LayerSources::default();
-        if let Err(e) = ctx.resolve_manifest_packages(&mut packages, &mut manifest_sources) {
+        if let Err(e) = run.resolve_manifest_packages(&mut packages, &mut manifest_sources) {
             // Manifest resolution failed (missing referenced file, unreadable
             // dir, parse error). Surface so the user knows the package report
             // below is computed from a partial set.
@@ -379,10 +415,10 @@ fn collect_doctor_output(
     // against the managers it declares — so resolving the module report through
     // the profile's registry would report a module package as resolvable by a
     // manager the module cannot use.
-    let modules_registry = ctx.base_registry();
+    let modules_registry = run.base_registry();
     let mgr_map = modules_registry.manager_map();
     let platform = Platform::current();
-    let doctor_cx = ctx.package_context().ok();
+    let doctor_cx = run.package_context().ok();
 
     let (module_checks, module_routes) = build_module_routes(
         &module_list,
@@ -439,7 +475,7 @@ fn collect_doctor_output(
     // failure, so a refused open is still re-attempted and still reported here
     // rather than being answered from a cached error.
     sp.set_message("Probing: state store");
-    let state_store = match ctx.state() {
+    let state_store = match run.state() {
         Ok(_) => DoctorStateStore {
             accessible: true,
             message: None,
@@ -464,8 +500,7 @@ fn collect_doctor_output(
         error: profiles_scan.as_ref().err().map(|e| e.to_string()),
     };
 
-    let config_sources: Vec<DoctorConfigSource> = if cli.config.exists()
-        && let Ok(cfg) = config::load_config(&cli.config)
+    let config_sources: Vec<DoctorConfigSource> = if let Some(cfg) = loaded_cfg
         && !cfg.spec.sources.is_empty()
     {
         let cache_dir = source_cache_dir(cli).ok();
@@ -476,6 +511,7 @@ fn collect_doctor_output(
                 let cached_path = cache_dir.as_ref().and_then(|cd| {
                     let p = cd.join(&source.name);
                     if p.exists() {
+                        // long-line-ok: a hatch is read off its own line, so it cannot wrap
                         // absolute-path-ok: the payload field; the row rendering it folds its own copy
                         Some(p.display_posix())
                     } else {
@@ -563,7 +599,8 @@ fn collect_doctor_output(
 /// Build the doctor `Doc` from a collected payload + display-only extras. Used
 /// by the live command and by snapshot tests under
 /// `tests/output_snapshots/doctor/`.
-// no-next-step: `doctor` is the diagnosis; every failing row below carries its own fix in its detail
+// no-next-step: `doctor` is the diagnosis; every failing row below carries its own fix in its
+// detail
 pub fn build_doctor_doc(output: &DoctorOutput, extras: &DoctorExtras) -> Doc {
     let mut doc = Doc::new().heading("Doctor");
 
@@ -615,7 +652,10 @@ fn build_config_section(s: SectionBuilder, cfg: &DoctorConfigCheck) -> SectionBu
             }
             pairs.push((
                 "Profile".into(),
-                cfg.profile.as_deref().unwrap_or("(none)").into(),
+                cfg.profile
+                    .as_deref()
+                    .unwrap_or(super::NO_PROFILE_LABEL)
+                    .into(),
             ));
             // facts-block-ok: the block closes this arm's section; the rows
             // below are the match's other arms, not rows after it
@@ -791,7 +831,7 @@ fn build_modules_section(s: SectionBuilder, modules: &[DoctorModuleCheck]) -> Se
             let detail = m.error.clone().unwrap_or_else(|| "invalid".into());
             return s.status_with(Role::Fail, m.name.clone(), |sf| sf.detail(detail));
         }
-        if m.managers.is_empty() && m.unresolved.is_empty() {
+        if m.managers.is_empty() && m.unresolved.is_empty() && m.held.is_empty() {
             return s.status(Role::Ok, m.name.clone());
         }
         let mut shortfalls: Vec<String> = m
@@ -800,21 +840,40 @@ fn build_modules_section(s: SectionBuilder, modules: &[DoctorModuleCheck]) -> Se
             .filter(|r| !r.available)
             .map(|r| {
                 format!(
-                    "{} missing ({} route to it)",
+                    "{} missing ({} {} to it)",
                     r.name,
-                    cfgd_core::pluralize(r.package_count, "package")
+                    cfgd_core::pluralize(r.package_count, "package"),
+                    cfgd_core::agreeing_verb(r.package_count, "route")
                 )
             })
             .collect();
         shortfalls.extend(m.unresolved.iter().cloned());
-        if shortfalls.is_empty() {
-            let names: Vec<&str> = m.managers.iter().map(|r| r.name.as_str()).collect();
-            let detail = format!("{} available", names.join(", "));
-            return s.status_with(Role::Ok, m.name.clone(), |sf| sf.detail(detail));
+        // Every clause of the module in one detail, satisfied facts first: a
+        // manager its packages route to, a manager that IS one of them, then
+        // whatever falls short. A shortfall used to take the satisfied halves
+        // away with it, so a module with one missing manager stopped saying
+        // what the rest of it had. Joined at the producer, because a held
+        // clause carries a comma of its own and the separator between members
+        // must not read as punctuation inside one.
+        let names: Vec<&str> = m
+            .managers
+            .iter()
+            .filter(|r| r.available)
+            .map(|r| r.name.as_str())
+            .collect();
+        let mut clauses = Vec::with_capacity(1 + m.held.len() + shortfalls.len());
+        if !names.is_empty() {
+            clauses.push(format!("{} available", names.join(", ")));
         }
-        s.status_with(Role::Fail, m.name.clone(), |sf| {
-            sf.detail(shortfalls.join(", "))
-        })
+        clauses.extend(m.held.iter().cloned());
+        let role = if shortfalls.is_empty() {
+            Role::Ok
+        } else {
+            Role::Fail
+        };
+        clauses.append(&mut shortfalls);
+        let detail = cfgd_core::join_clauses(&clauses);
+        s.status_with(role, m.name.clone(), |sf| sf.detail(detail))
     })
 }
 
@@ -948,6 +1007,110 @@ mod tests {
             version: None,
             origin: None,
         }
+    }
+
+    /// A module whose declared package IS a manager this host holds, with the
+    /// floor that manager's own binary answers.
+    fn holding_a_manager(
+        name: &str,
+        package: &str,
+        floor: &str,
+    ) -> cfgd_core::modules::LoadedModule {
+        let yaml = format!(
+            "packages:\n  - name: {package}\n    minVersion: \"{floor}\"\n    prefer: [{package}]\n"
+        );
+        cfgd_core::modules::LoadedModule {
+            name: name.to_string(),
+            spec: serde_yaml::from_str(&yaml).expect("a module spec of declared packages"),
+            dir: std::path::PathBuf::from("/nonexistent"),
+            version: None,
+            origin: None,
+        }
+    }
+
+    /// The row reads the ONE composer whatever the floor answer is, and a
+    /// manager below its floor is something to fix: the clause goes where every
+    /// other shortfall goes, so the module's verdict fails on it and the row
+    /// claims no satisfied fact nobody measured.
+    #[test]
+    fn a_held_manager_below_its_floor_is_a_shortfall_on_the_doctor_row() {
+        let cargo = cfgd_core::test_helpers::MockPackageManager::new("cargo")
+            .offering("cargo", "1.75")
+            .reporting_version("1.80");
+        let mgr_map: std::collections::HashMap<String, &dyn cfgd_core::providers::PackageManager> =
+            std::collections::HashMap::from([(
+                "cargo".to_string(),
+                &cargo as &dyn cfgd_core::providers::PackageManager,
+            )]);
+        let all_modules = std::collections::HashMap::from([(
+            "rust".to_string(),
+            holding_a_manager("rust", "cargo", "1.85"),
+        )]);
+
+        let (checks, _routes) = build_module_routes(
+            &["rust".to_string()],
+            &all_modules,
+            &mgr_map,
+            Platform::current(),
+            None,
+        );
+        let expected = cfgd_core::modules::HeldManager {
+            package: "cargo".into(),
+            module: "rust".into(),
+            floor: "1.85".into(),
+            judgment: cfgd_core::modules::FloorJudgment::Short {
+                version: "1.80".into(),
+            },
+        }
+        .clause(Some(&cargo));
+        assert_eq!(checks[0].unresolved, vec![expected]);
+        assert!(
+            checks[0].held.is_empty(),
+            "a floor nothing meets is no satisfied fact: {:?}",
+            checks[0].held
+        );
+    }
+
+    /// The same row at the floor is the satisfied half: the clause is the same
+    /// composer's, and it joins the facts the module states; the list its
+    /// verdict fails on stays without it.
+    #[test]
+    fn a_held_manager_at_its_floor_states_what_is_here_on_the_doctor_row() {
+        let cargo = cfgd_core::test_helpers::MockPackageManager::new("cargo")
+            .offering("cargo", "1.75")
+            .reporting_version("1.90");
+        let mgr_map: std::collections::HashMap<String, &dyn cfgd_core::providers::PackageManager> =
+            std::collections::HashMap::from([(
+                "cargo".to_string(),
+                &cargo as &dyn cfgd_core::providers::PackageManager,
+            )]);
+        let all_modules = std::collections::HashMap::from([(
+            "rust".to_string(),
+            holding_a_manager("rust", "cargo", "1.85"),
+        )]);
+
+        let (checks, _routes) = build_module_routes(
+            &["rust".to_string()],
+            &all_modules,
+            &mgr_map,
+            Platform::current(),
+            None,
+        );
+        let expected = cfgd_core::modules::HeldManager {
+            package: "cargo".into(),
+            module: "rust".into(),
+            floor: "1.85".into(),
+            judgment: cfgd_core::modules::FloorJudgment::Met {
+                version: "1.90".into(),
+            },
+        }
+        .clause(Some(&cargo));
+        assert_eq!(checks[0].held, vec![expected]);
+        assert!(
+            checks[0].unresolved.is_empty(),
+            "a met floor is nothing to fix: {:?}",
+            checks[0].unresolved
+        );
     }
 
     /// One question per manager for the whole module walk, however many

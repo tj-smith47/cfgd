@@ -40,13 +40,17 @@ helm install cfgd oci://ghcr.io/tj-smith47/charts/cfgd -n cfgd-system --create-n
 |---|---|---|
 | `installCRDs` | `true` | Install the cfgd.io CRDs with the chart |
 | `operator.replicaCount` | `1` | Operator replicas; `operator.leaderElection.enabled` (`true`) makes >1 safe |
+| `operator.watchLabelSelector` | `""` | Reconcile only objects matching this label selector; empty reconciles every object |
+| `operator.strategy` | `{}` | Operator Deployment update strategy, rendered as given. Empty derives it from `deviceGateway.enabled`, `deviceGateway.persistence.enabled` and `operator.leaderElection.enabled`; see the table in [Health and Leadership](../../docs/operator.md#health-and-leadership) |
 | `agent.serverUrl` | `""` | Device gateway URL the node agent checks in to |
 | `agent.apiKeySecret.name` | `""` | Secret holding the agent API key (key: `agent.apiKeySecret.key`, default `api-key`) |
 | `agent.reconcileInterval` | `5m` | Node agent reconcile interval |
 | `webhook.failurePolicy` | `Fail` | Validating webhook failure policy |
+| `webhook.objectSelector` | `{}` | Admit only objects matching this selector; empty admits every cfgd.io object |
 | `mutatingWebhook.failurePolicy` | `Ignore` | `Ignore` skips injection silently on webhook failure; set `Fail` to require it |
 | `deviceGateway.enrollmentMethod` | `token` | `token` (bootstrap tokens) or `key` (SSH/GPG challenge-response) |
 | `deviceGateway.persistence.enabled` | `true` | PVC for the gateway SQLite database (`deviceGateway.persistence.size`, default `1Gi`) |
+| `csiDriver.name` | `csi.cfgd.io` | The CSIDriver name, the kubelet plugin directory and the name the operator injects |
 | `csiDriver.cache.maxSizeGi` | `5` | Per-node module cache size |
 | `metrics.enabled` | `true` | Prometheus metrics endpoint; `metrics.serviceMonitor.enabled` (`false`) adds a ServiceMonitor |
 | `rbacExamples.enabled` | `false` | Install example RBAC roles for multi-tenant personas |
@@ -58,9 +62,9 @@ tolerations, security contexts).
 
 ### Registry settings
 
-Three components read module artifacts from a registry — the operator (each
+Three components read module artifacts from a registry: the operator (each
 Module's platforms, attestations and cosign signature), the CSI driver (the
-layers it mounts) and the agent (the modules it pulls) — and each takes its
+layers it mounts) and the agent (the modules it pulls). Each takes its
 registry configuration through its own `extraEnv`. Give the same settings to
 every component you enable:
 
@@ -77,8 +81,27 @@ csiDriver:
 
 `OCI_INSECURE_REGISTRIES` is a comma-separated list of registries reached over
 plain HTTP; loopback addresses are always treated that way and need no entry.
-An operator that cannot reach a Module's registry leaves the `PLATFORMS` column
-blank and reports the signature as `unknown`.
+
+A registry that asks for a login needs it on every component too. Each one reads
+`REGISTRY_USERNAME` / `REGISTRY_PASSWORD`, or the `config.json` in the directory
+`DOCKER_CONFIG` names, which `extraVolumes` / `extraVolumeMounts` mount from an
+image pull secret:
+
+```yaml
+operator:
+  extraEnv:
+    - name: DOCKER_CONFIG
+      value: /etc/cfgd/docker
+  extraVolumes:
+    - name: docker-config
+      secret: {secretName: registry-credentials, items: [{key: .dockerconfigjson, path: config.json}]}
+  extraVolumeMounts:
+    - {name: docker-config, mountPath: /etc/cfgd/docker, readOnly: true}
+```
+
+`csiDriver` and `agent` take the same three keys. An operator that cannot reach
+or log in to a Module's registry leaves the `PLATFORMS` column blank and reports
+the signature as `unknown`.
 
 Agent pods run privileged by design: host config management requires root
 access. They do not use the shared `podSecurityContext` /

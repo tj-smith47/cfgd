@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# E2E tests for: cfgd behavioral tests (edge cases, inheritance, templates, drift, conflicts, encryption, system configurators)
+# E2E tests for: cfgd behavioral tests (edge cases, inheritance, templates, drift, conflicts,
+# encryption, system configurators)
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/setup-cli-env.sh"
@@ -29,31 +30,31 @@ if assert_fail; then
 else fail_test "ERR01"; fi
 
 begin_test "ERR02: profile switch to nonexistent fails"
-run $C profile switch nonexistent-profile
+run "${C[@]}" profile switch nonexistent-profile
 if assert_fail; then
     pass_test "ERR02"
 else fail_test "ERR02"; fi
 
 begin_test "ERR03: module show nonexistent fails"
-run $C module show nonexistent-mod
+run "${C[@]}" module show nonexistent-mod
 if assert_fail; then
     pass_test "ERR03"
 else fail_test "ERR03"; fi
 
 begin_test "ERR04: source show nonexistent fails"
-run $C source show nonexistent-src
+run "${C[@]}" source show nonexistent-src
 if assert_fail; then
     pass_test "ERR04"
 else fail_test "ERR04"; fi
 
 begin_test "ERR05: profile edit nonexistent fails"
-EDITOR=true run $C profile edit nonexistent
+EDITOR=true run "${C[@]}" profile edit nonexistent
 if assert_fail; then
     pass_test "ERR05"
 else fail_test "ERR05"; fi
 
 begin_test "ERR06: module edit nonexistent fails"
-EDITOR=true run $C module edit nonexistent
+EDITOR=true run "${C[@]}" module edit nonexistent
 if assert_fail; then
     pass_test "ERR06"
 else fail_test "ERR06"; fi
@@ -72,7 +73,7 @@ spec:
   profile: work-dev
 YAML
 rm -f "$TGT/.gitconfig" "$TGT/.zshrc" "$TGT/.gitconfig-work"
-run $C apply --yes
+run "${C[@]}" apply --yes
 if [ -f "$TGT/.gitconfig" ] && [ -f "$TGT/.zshrc" ] && [ -f "$TGT/.gitconfig-work" ]; then
     pass_test "INH01"
 else fail_test "INH01" "Missing inherited files"; fi
@@ -80,7 +81,7 @@ else fail_test "INH01" "Missing inherited files"; fi
 begin_test "INH02: env override (child overrides parent)"
 # dev sets EDITOR=nvim over base's EDITOR=vim. Env values mask by default, and
 # a masked nvim reads ***vim, which the parent's vim also matches.
-run $C profile show --show-values
+run "${C[@]}" profile show --show-values
 if assert_ok && assert_contains "$OUTPUT" "nvim"; then
     pass_test "INH02"
 else fail_test "INH02"; fi
@@ -104,8 +105,8 @@ YAML
 
 begin_test "TPL01: tera template renders env vars"
 # Add a template file to the profile
-run $C profile update --file "$CFG/files/config.toml.tera:$TGT/.config.toml"
-run $C apply --yes
+run "${C[@]}" profile update --file "$CFG/files/config.toml.tera:$TGT/.config.toml"
+run "${C[@]}" apply --yes
 if [ -f "$TGT/.config.toml" ]; then
     CONTENT=$(cat "$TGT/.config.toml")
     if assert_contains "$CONTENT" "nvim"; then
@@ -120,11 +121,11 @@ fi
 # ═════════════════════════════════════════════════════
 
 begin_test "DRIFT01: verify detects drift after file modification"
-run $C apply --yes
+run "${C[@]}" apply --yes
 # Only check drift if apply deployed the managed file
 if [ -f "$TGT/.zshrc" ]; then
     echo "MODIFIED" >> "$TGT/.zshrc"
-    run $C verify
+    run "${C[@]}" verify
     # verify may return 0 or 1; either way it should run without error (exit 2+)
     if [ "$RC" -le 1 ]; then
         pass_test "DRIFT01"
@@ -134,14 +135,14 @@ else
 fi
 
 begin_test "DRIFT02: diff shows changes"
-run $C diff
+run "${C[@]}" diff
 if echo "$OUTPUT" | grep -qiE "drift|differ|changed|MODIFIED|zshrc"; then
     pass_test "DRIFT02"
 else fail_test "DRIFT02" "Diff did not show changes"; fi
 
 begin_test "DRIFT03: apply --yes fixes drift"
-run $C apply --yes
-run $C verify
+run "${C[@]}" apply --yes
+run "${C[@]}" verify
 if assert_ok; then
     pass_test "DRIFT03"
 else fail_test "DRIFT03"; fi
@@ -237,10 +238,10 @@ metadata:
 spec:
   profile: base
 YAML
-    EE="--config $EE_CFG/cfgd.yaml --state-dir $EE_STATE --no-color"
+    EE=(--config "$EE_CFG/cfgd.yaml" --state-dir "$EE_STATE" --no-color)
 
     begin_test "EE01: apply --dry-run with SOPS-encrypted file succeeds"
-    SOPS_AGE_KEY_FILE="$EE_AGE_KEY" run $EE apply --dry-run
+    SOPS_AGE_KEY_FILE="$EE_AGE_KEY" run "${EE[@]}" apply --dry-run
     if assert_ok; then
         pass_test "EE01"
     else fail_test "EE01"; fi
@@ -261,7 +262,7 @@ spec:
 YAML
 
     begin_test "EE02: apply --dry-run with unencrypted file + encryption required fails"
-    SOPS_AGE_KEY_FILE="$EE_AGE_KEY" run $EE apply --dry-run
+    SOPS_AGE_KEY_FILE="$EE_AGE_KEY" run "${EE[@]}" apply --dry-run
     if assert_fail; then
         pass_test "EE02"
     else fail_test "EE02"; fi
@@ -271,7 +272,7 @@ else
 fi
 
 # ═════════════════════════════════════════════════════
-# SECTION 44: system configurators — git (GC01)
+# SECTION 44: system configurators (git, GC01)
 # ═════════════════════════════════════════════════════
 
 if command -v git > /dev/null 2>&1; then
@@ -309,10 +310,10 @@ metadata:
 spec:
   profile: base
 YAML
-    GC="--config $GC_CFG/cfgd.yaml --state-dir $GC_STATE --no-color"
+    GC=(--config "$GC_CFG/cfgd.yaml" --state-dir "$GC_STATE" --no-color)
 
     begin_test "GC01: apply --dry-run with system.git shows git config drift"
-    GIT_CONFIG_GLOBAL="$GC_GITCONFIG" run $GC apply --dry-run
+    GIT_CONFIG_GLOBAL="$GC_GITCONFIG" run "${GC[@]}" apply --dry-run
     if assert_ok && assert_contains "$OUTPUT" "git"; then
         pass_test "GC01"
     else fail_test "GC01"; fi
@@ -353,10 +354,10 @@ metadata:
 spec:
   profile: base
 YAML
-SE="--config $SE_CFG/cfgd.yaml --state-dir $SE_STATE --no-color"
+SE=(--config "$SE_CFG/cfgd.yaml" --state-dir "$SE_STATE" --no-color)
 
 begin_test "SE01: apply --dry-run with secret envs + unavailable provider shows skip"
-run $SE apply --dry-run
+run "${SE[@]}" apply --dry-run
 if assert_ok && assert_contains "$OUTPUT" "vault"; then
     pass_test "SE01"
 else fail_test "SE01"; fi
@@ -435,10 +436,10 @@ spec:
     enabled: true
 YAML
     cp -r "$FIXTURES/files/"* "$EC_CFG/files/"
-    EC="--config $EC_CFG/cfgd.yaml --state-dir $EC_STATE --no-color"
+    EC=(--config "$EC_CFG/cfgd.yaml" --state-dir "$EC_STATE" --no-color)
 
     begin_test "EC01: source add with encryption constraint succeeds"
-    run $EC source add "$EC_SOURCE" --profile base --yes
+    run "${EC[@]}" source add "$EC_SOURCE" --profile base --yes
     if assert_ok; then
         pass_test "EC01"
     else fail_test "EC01"; fi
@@ -449,7 +450,7 @@ YAML
     cp "$EC_SOURCE/.sops.yaml" "$EC_CFG/.sops.yaml"
 
     begin_test "EC02: apply --dry-run with compliant encrypted file succeeds"
-    SOPS_AGE_KEY_FILE="$EC_AGE_KEY" run $EC apply --dry-run
+    SOPS_AGE_KEY_FILE="$EC_AGE_KEY" run "${EC[@]}" apply --dry-run
     if assert_ok; then
         pass_test "EC02"
     else fail_test "EC02"; fi
@@ -469,11 +470,11 @@ YAML
     (cd "$EC_SOURCE" && git add -A && git commit -qm "remove encryption from matching file")
 
     # Update the source so cfgd picks up the new commit
-    run $EC source update
-    # Ignore exit code — update may warn
+    run "${EC[@]}" source update
+    # Ignore exit code: update may warn
 
     begin_test "EC03: apply --dry-run with non-compliant file fails constraint"
-    SOPS_AGE_KEY_FILE="$EC_AGE_KEY" run $EC apply --dry-run
+    SOPS_AGE_KEY_FILE="$EC_AGE_KEY" run "${EC[@]}" apply --dry-run
     if assert_fail && assert_contains "$OUTPUT" "encryption"; then
         pass_test "EC03"
     else
@@ -486,10 +487,12 @@ YAML
     fi
 
     begin_test "EC04: compliance -o json includes file-encryption checks"
-    SOPS_AGE_KEY_FILE="$EC_AGE_KEY" run $EC -o json compliance
-    if assert_ok && assert_contains "$OUTPUT" "checks" && assert_contains "$OUTPUT" "summary"; then
+    SOPS_AGE_KEY_FILE="$EC_AGE_KEY" run_stdout "${EC[@]}" -o json compliance
+    EC04_CATEGORIES=$(printf '%s' "$OUTPUT" | jq -r '[.snapshot.checks[].category] | unique | join(",")' 2>/dev/null || echo unparsable)
+    echo "  categories: ${EC04_CATEGORIES:-none}"
+    if assert_ok && printf '%s' "$OUTPUT" | jq -e 'any(.snapshot.checks[]; .category == "file-encryption")' > /dev/null 2>&1; then
         pass_test "EC04"
-    else fail_test "EC04"; fi
+    else fail_test "EC04" "No file-encryption check in the compliance JSON"; fi
 else
     skip_test "EC01" "age-keygen or sops not available"
     skip_test "EC02" "age-keygen or sops not available"
@@ -585,11 +588,11 @@ if assert_fail || echo "$OUTPUT" | grep -qiE "not found|no such file|does not ex
 else fail_test "ERR08" "Expected clear missing-file error"; fi
 
 begin_test "ERR09: empty profile name rejected"
-run $C profile create ""
+run "${C[@]}" profile create ""
 if assert_fail && echo "$OUTPUT" | grep -qiE "empty|invalid|cannot"; then
     pass_test "ERR09"
 else
-    # clap may reject before our validation — any failure is acceptable
+    # clap may reject before cfgd's own validation; any failure is acceptable
     if assert_fail; then
         pass_test "ERR09"
     else
@@ -598,19 +601,19 @@ else
 fi
 
 begin_test "ERR11: unreachable source URL fails with timeout or error"
-run $C source add "https://192.0.2.1/nonexistent.git" --yes
+run "${C[@]}" source add "https://192.0.2.1/nonexistent.git" --yes
 if assert_fail; then
     pass_test "ERR11"
 else fail_test "ERR11" "Expected failure for unreachable URL"; fi
 
 begin_test "ERR12: profile update nonexistent profile fails"
-run $C profile update nonexistent-profile-xyz --package brew:vim
+run "${C[@]}" profile update nonexistent-profile-xyz --package brew:vim
 if assert_fail; then
     pass_test "ERR12"
 else fail_test "ERR12" "Expected failure for nonexistent profile"; fi
 
 begin_test "ERR13: --skip and --only combined does not crash"
-run $C apply --dry-run --skip files --only packages
+run "${C[@]}" apply --dry-run --skip files --only packages
 if [ "$RC" -le 1 ]; then
     pass_test "ERR13"
 else fail_test "ERR13" "Unexpected crash (exit $RC)"; fi

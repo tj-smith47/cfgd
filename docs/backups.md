@@ -119,9 +119,10 @@ notes-db  ~/.local/share/notes/notes.db.cfgd-backup  6h ago   8.0 KB
 `cfgd backup run [name]` runs every declared backup when `name` is omitted, or the named one.
 An unknown name is a typed error (exit code `6`, see [Exit Codes](cli-reference.md#exit-codes))
 that lists every valid name: in human mode as a `→` hint line below the failure, in `-o json`
-as the payload's `hint` field. A run whose snapshot did not complete cleanly (see
-[Run Semantics](#run-semantics)) also exits nonzero, so a script can detect it without
-parsing output.
+as the payload's `hint` field. That line is a refusal's remediation, so
+it renders whatever `spec.output.usageHints` says. A run whose snapshot did not complete
+cleanly (see [Run Semantics](#run-semantics)) also exits nonzero, so a script can detect it
+without parsing output.
 
 `cfgd backup list [name]` (alias `ls`) shows every declared backup (or the named one), how
 many snapshots it currently holds (`snapshots` in `-o json`), its last recorded run, and when the
@@ -328,7 +329,7 @@ out of apply.
 | Duration | `6h`, `30m`, `1d` | a plain period between runs, measured from the last recorded run; no wall-clock alignment |
 | Cron, 5-field | `0 3 * * *` | machine-**local** timezone, same as a crontab entry: 3am where the machine sits, not 3am UTC |
 | Cron, 6-field | `30 0 3 * * *` | leading seconds field |
-| Omitted | | the backup runs on every `cfgd apply` |
+| Omitted | — | the backup runs on every `cfgd apply` |
 
 A duration is measured from the unit's **last recorded run**, not from the daemon's start, so it
 survives restarts: a `schedule: 1d` backup on a laptop rebooted every morning still fires once a
@@ -510,7 +511,7 @@ $ cfgd daemon
 09:00:00  INFO daemon: starting cfgd 0.9.0
 09:00:00  INFO daemon: health endpoint at /home/me/.cache/cfgd/runtime/cfgd.sock
 09:00:00  INFO daemon: running — reconcile every 300s, 2 scheduled backups
-→ Press Ctrl+C to stop
+◉ Press Ctrl+C to stop
 
 Backup
   Config   ~/.config/cfgd/cfgd.yaml
@@ -592,7 +593,7 @@ Backup: notes-db
 
 backup:notes-db
   ✓ snapshot notes.db.20260908T141604Z — 55 B
-  → run `cfgd backup gc notes-db` to remove the snapshot left outside the destination ~/backups/notes by a destination change
+  ⚠ Run `cfgd backup gc notes-db` to remove the snapshot left outside the destination ~/backups/notes by a destination change
 
 ✓ Backup complete — 1 action succeeded (<0.1s wall)
 
@@ -701,7 +702,7 @@ Restore: notes-db
 
 backup:notes-db
   ✓ restore ~/.local/share/notes/notes.db from notes.db.20260813T061333Z — 8.0 KB
-  → Previous contents backed up to ~/.local/share/notes/notes.db.cfgd-backup; put them back with `cfgd backup rollback notes-db`
+  ◉ Previous contents backed up to ~/.local/share/notes/notes.db.cfgd-backup; put them back with `cfgd backup rollback notes-db`
 
 ✓ Restore complete — 1 action succeeded (0.3s wall)
 ```
@@ -778,13 +779,14 @@ staging removed      ← on every path, success or failure
   into the unit's `destination`, so it is not in `backup list`'s count, not in `--snapshots`, not
   subject to `retention`, and not a `backup_runs` row. `backup list` never reports it as the unit's
   **Last Run**, and the daemon never re-anchors **Next Run** on it, so restoring a unit does not push
-  its schedule out. Its path is reported as `safetyCopy` in `-o json` and as the `→` line in human
-  output, worded the way an adoption row words the same copy: `Previous contents backed up to
+  its schedule out. Its path is reported as `safetyCopy` in `-o json` and as a `◉` note row in
+  human output, worded the way an adoption row words the same copy: `Previous contents backed up to
   <path>`, or `Previous contents already backed up at <path>` when a sidecar already holding exactly
-  the current bytes was reused rather than written (`safetyCopyReused` in `-o json`). A sidecar
-  holding different bytes is kept and the new copy lands at a stamped `<path>.cfgd-backup.<stamp>`
-  name instead, so an older copy is never overwritten. If the copy cannot be written, the restore is **abandoned**: cfgd will not overwrite
-  data whose current contents were not captured.
+  the current bytes was reused (`safetyCopyReused` in `-o json`). A note row is a row the run
+  leaves under its owner, so `spec.output.usageHints` cannot take it away. A sidecar holding different bytes is kept and the new copy lands at a stamped
+  `<path>.cfgd-backup.<stamp>` name instead, so an older copy is never overwritten. If the copy
+  cannot be written, the restore is **abandoned**: cfgd will not overwrite data whose current
+  contents were not captured.
 - **It is skipped on the target, not on the flag.** `--to` pointing back at the source, or at a
   path inside it, overwrites exactly what a plain restore would, so it still takes one. Only a
   target genuinely outside the source (or a source that does not exist yet) skips it.
@@ -833,7 +835,7 @@ Rollback: notes-db
 
 backup:notes-db
   ✓ rollback ~/.local/share/notes/notes.db from notes.db.cfgd-backup — 8.0 KB
-  → Previous contents backed up to ~/.local/share/notes/notes.db.cfgd-backup.20260101T120000Z; put them back with `cfgd backup rollback notes-db`
+  ◉ Previous contents backed up to ~/.local/share/notes/notes.db.cfgd-backup.20260101T120000Z; put them back with `cfgd backup rollback notes-db`
 
 ✓ Rollback complete — 1 action succeeded (0.2s wall)
 

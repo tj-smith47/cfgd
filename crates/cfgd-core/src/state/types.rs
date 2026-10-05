@@ -388,6 +388,14 @@ pub struct ManagedResource {
     pub source: String,
     pub last_hash: Option<String>,
     pub last_applied: Option<i64>,
+    /// What the row is, in the resource-type words drift rows use (`package`,
+    /// `file`, `env-rc`, …); `resource_type` names only the engine that wrote
+    /// it. `None` only on a row inserted outside the store's writers.
+    pub kind: Option<String>,
+    /// The package manager that installed the row's packages; `None` for a
+    /// row that is not a package install, and for a module package row
+    /// recorded before the store kept the manager.
+    pub manager: Option<String>,
 }
 
 /// A tracked config source.
@@ -939,8 +947,9 @@ mod module_status_tests {
             ("Failed", Role::Fail)
         );
         // No check covers the module, so the word is the record's own fact.
-        // `Ok` and not `Pending`: the apply really did complete, and only the
-        // claim about the machine agreeing with it is missing.
+        // The role is `Ok`, since `Pending` would say the apply has not
+        // finished: the apply really did complete, and only the claim about
+        // the machine agreeing with it is missing.
         assert_eq!(
             module_status_display(MODULE_STATUS_INSTALLED, DriftVerdict::Unchecked),
             ("Applied", Role::Ok)

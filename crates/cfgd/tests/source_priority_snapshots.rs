@@ -9,7 +9,7 @@
 //! Goldens live under `tests/output_snapshots/source_priority/`. Regenerate with:
 //!     INSTA_UPDATE=always cargo test -p cfgd --test source_priority_snapshots
 
-mod common;
+use cfgd_test_fixtures as common;
 
 use std::path::Path;
 
@@ -50,8 +50,12 @@ fn source_priority_happy_human() {
     );
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc();
+    let printer = printer.with_hints_enabled(true);
 
-    cmd_source_priority(&cli, &printer, "team-config", Some(500)).unwrap();
+    cfgd::cli::RunContext::for_test(&cli, &printer, |run| {
+        cmd_source_priority(run, "team-config", Some(500))
+    })
+    .unwrap();
     drop(printer);
 
     let stripped = strip_ansi(&cap.human());
@@ -73,7 +77,10 @@ fn source_priority_happy_json() {
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc();
 
-    cmd_source_priority(&cli, &printer, "team-config", Some(500)).unwrap();
+    cfgd::cli::RunContext::for_test(&cli, &printer, |run| {
+        cmd_source_priority(run, "team-config", Some(500))
+    })
+    .unwrap();
     drop(printer);
 
     let json = cap.json().expect("doc captured json");
@@ -92,8 +99,12 @@ fn source_priority_view_human() {
     );
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc();
+    let printer = printer.with_hints_enabled(true);
 
-    cmd_source_priority(&cli, &printer, "team-config", None).unwrap();
+    cfgd::cli::RunContext::for_test(&cli, &printer, |run| {
+        cmd_source_priority(run, "team-config", None)
+    })
+    .unwrap();
     drop(printer);
 
     let stripped = strip_ansi(&cap.human());
@@ -115,8 +126,10 @@ fn source_priority_not_found_human() {
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc();
 
-    let err = cmd_source_priority(&cli, &printer, "missing", None)
-        .expect_err("missing source must return Err");
+    let err = cfgd::cli::RunContext::for_test(&cli, &printer, |run| {
+        cmd_source_priority(run, "missing", None)
+    })
+    .expect_err("missing source must return Err");
     render_cli_error(&printer, &err);
     drop(printer);
 

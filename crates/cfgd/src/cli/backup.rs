@@ -8,10 +8,10 @@ use cfgd_core::format_bytes;
 use cfgd_core::output::{Doc, Printer, Role, renderer::Table};
 use cfgd_core::state::BackupRunRecord;
 
-/// How a rollback copy comes to exist, read by both the empty-listing hint
-/// and the "nothing to roll back to" error: a `cfgd backup restore` or an
-/// adopting `cfgd apply` is what leaves one beside a source, never the
-/// rollback itself.
+/// How a rollback copy comes to exist, read by both the empty listing's note
+/// row and the "nothing to roll back to" error's remediation: a `cfgd backup
+/// restore` or an adopting `cfgd apply` is what leaves one beside a source.
+/// The rollback itself leaves none.
 const ROLLBACK_COPY_ORIGIN: &str = "A copy is left beside a source by `cfgd backup restore <name>`, and by any file `cfgd apply` adopts";
 
 fn backup_not_found_error(name: &str, valid: Vec<String>) -> anyhow::Error {
@@ -130,7 +130,15 @@ fn restoring_verb_state(
     let sources = cfgd_core::reconciler::ComposedSource::from_declared(&cfg.spec.sources);
     let backups = composition.resolved.merged.backups.clone();
 
-    match resolve_desired_from_composition(ctx, cfg, composition, &[], false, printer) {
+    match resolve_desired_from_composition(
+        ctx,
+        cfg,
+        composition,
+        &[],
+        false,
+        printer,
+        &cfgd_core::modules::refuse_floor_bootstrap,
+    ) {
         Ok(desired) => Ok((
             sources,
             cfgd_core::output::HeaderModule::of_resolved(&desired.modules),
@@ -311,11 +319,12 @@ pub fn build_backup_snapshot_list_doc(
 // config to find the declared units, and reports on those rows rather than
 // on the configuration they came from.
 pub fn cmd_backup_list(
-    cli: &Cli,
-    printer: &Printer,
+    run: &RunContext<'_>,
     name: Option<&str>,
     snapshots: bool,
 ) -> anyhow::Result<()> {
+    let cli = run.cli();
+    let printer = run.printer();
     // Clap's `requires = "name"` already rejects a bare `--snapshots`; this
     // covers the in-process callers (tests, MCP dispatch) that bypass it.
     if snapshots && name.is_none() {
@@ -350,14 +359,13 @@ pub fn cmd_backup_list(
         return Ok(());
     }
 
-    let ctx = RunContext::new(cli, printer);
-    let (cfg, profile_name, local_resolved) = ctx.config_and_profile()?;
+    let (cfg, profile_name, local_resolved) = run.config_and_profile()?;
     // Cache-only composition (no network refresh) and Report constraint mode:
     // listing backups is a read surface, the same class as
     // `status`/`diff`/`compliance`. `backup run` is not — it composes in
     // Enforce because it runs hooks and writes snapshots.
     let composition = compose_with_sources(
-        &ctx,
+        run,
         cfg,
         local_resolved,
         printer,
@@ -373,7 +381,7 @@ pub fn cmd_backup_list(
         Some(n) => {
             let spec = find_backup_spec(&backups, n)?;
             if snapshots {
-                return list_unit_snapshots(&ctx, spec, profile_name);
+                return list_unit_snapshots(run, spec, profile_name);
             }
             vec![spec]
         }
@@ -390,7 +398,7 @@ pub fn cmd_backup_list(
     // "never" with a warning keeps the config half of the command useful when
     // `state.db` is unreadable, matching how `resolve_backup_tasks` treats the
     // same failure.
-    let state = match ctx.state() {
+    let state = match run.state() {
         Ok(state) => Some(state),
         Err(e) => {
             printer
@@ -555,16 +563,12 @@ fn snapshot_selection_error(name: &str, e: cfgd_core::errors::BackupError) -> an
 
 // no-header-ok: the run header comes from `reconciler::ApplyRun`, which
 // this verb builds through `ApplyRun::unplanned`.
-pub fn cmd_backup_restore(
-    cli: &Cli,
-    printer: &Printer,
-    args: &RestoreArgs<'_>,
-) -> anyhow::Result<()> {
+pub fn cmd_backup_restore(run: &RunContext<'_>, args: &RestoreArgs<'_>) -> anyhow::Result<()> {
     // Same split `cmd_backup_run` uses: the payload Doc has already been
     // emitted by the time the exit code is decided, so exiting here keeps a
     // failed restore from being rendered as a SECOND top-level document that
     // no single-document `-o json` reader could parse.
-    match run_backup_restore(cli, printer, args)? {
+    match run_backup_restore(run, args)? {
         Some(outcome) if !outcome.is_clean() => cfgd_core::exit::ExitCode::Error.exit(),
         _ => Ok(()),
     }
@@ -576,18 +580,18 @@ pub fn cmd_backup_restore(
 /// Kept out of [`cmd_backup_restore`] so the body stays in-process testable
 /// (`process::exit` would abort the test binary).
 pub fn run_backup_restore(
-    cli: &Cli,
-    printer: &Printer,
+    run: &RunContext<'_>,
     args: &RestoreArgs<'_>,
 ) -> anyhow::Result<Option<cfgd_core::backup::RestoreOutcome>> {
-    let ctx = RunContext::new(cli, printer);
-    let (cfg, profile_name, local_resolved) = ctx.config_and_profile()?;
+    let cli = run.cli();
+    let printer = run.printer();
+    let (cfg, profile_name, local_resolved) = run.config_and_profile()?;
     let (sources, header_modules, backups) =
-        restoring_verb_state(&ctx, cfg, local_resolved, printer)?;
+        restoring_verb_state(run, cfg, local_resolved, printer)?;
 
     let spec = find_backup_spec(&backups, args.name)?;
 
-    let (config_dir, state, state_dir) = unit_context(&ctx)?;
+    let (config_dir, state, state_dir) = unit_context(run)?;
     let projected = cfgd_core::backup::projected_spec(spec, &recorded_projections(Some(state)));
     let unit = BackupUnit::new(&projected, &config_dir, profile_name, &state_dir);
 
@@ -600,8 +604,8 @@ pub fn run_backup_restore(
 
     // Ahead of the prompt, not after it: the operator agreeing to overwrite
     // live data is agreeing under a config and a profile, and the header is
-    // where a run states them. `run_ctx`, not a second `ctx` — `cli::RunContext`
-    // is already bound above.
+    // where a run states them. The header's context is `run_ctx` because
+    // `run` already names this verb's `cli::RunContext`.
     // The declared path as `backup list`'s Source column spells it: the run
     // header states what the unit READS, the action row what the restore
     // WRITES, so a `--to` or a followed link shows as the two disagreeing.
@@ -737,7 +741,7 @@ pub fn build_backup_rollback_list_doc(entries: &[BackupRollbackEntry], now: &str
 
     if entries.is_empty() {
         doc = doc.status(Role::Info, "Nothing to roll back");
-        doc = doc.hint(ROLLBACK_COPY_ORIGIN);
+        doc = doc.status(Role::Info, ROLLBACK_COPY_ORIGIN);
         return doc.with_data(entries);
     }
 
@@ -757,18 +761,17 @@ pub fn build_backup_rollback_list_doc(entries: &[BackupRollbackEntry], now: &str
 // no-header-ok: the run header comes from `reconciler::ApplyRun`, as it
 // does for every verb that closes on the shared rollup.
 pub fn cmd_backup_rollback(
-    cli: &Cli,
-    printer: &Printer,
+    run: &RunContext<'_>,
     name: Option<&str>,
     yes: bool,
 ) -> anyhow::Result<()> {
     let Some(name) = name else {
-        return list_rollback_copies(cli, printer);
+        return list_rollback_copies(run);
     };
     // The same split `cmd_backup_restore` uses: the payload Doc is already out
     // by the time the exit code is decided, so a failed rollback is not
     // rendered as a SECOND top-level document.
-    match run_backup_rollback(cli, printer, name, yes)? {
+    match run_backup_rollback(run, name, yes)? {
         Some(outcome) if !outcome.is_clean() => cfgd_core::exit::ExitCode::Error.exit(),
         _ => Ok(()),
     }
@@ -778,11 +781,11 @@ pub fn cmd_backup_rollback(
 ///
 /// A read surface, so it composes in `Report` alongside `backup list` rather
 /// than in the `Enforce` the two mutating verbs take.
-fn list_rollback_copies(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
-    let ctx = RunContext::new(cli, printer);
-    let (cfg, profile_name, local_resolved) = ctx.config_and_profile()?;
+fn list_rollback_copies(run: &RunContext<'_>) -> anyhow::Result<()> {
+    let printer = run.printer();
+    let (cfg, profile_name, local_resolved) = run.config_and_profile()?;
     let composition = compose_with_sources(
-        &ctx,
+        run,
         cfg,
         local_resolved,
         printer,
@@ -791,7 +794,7 @@ fn list_rollback_copies(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
     )?;
     let backups = composition.resolved.merged.backups;
 
-    let (config_dir, state, state_dir) = unit_context(&ctx)?;
+    let (config_dir, state, state_dir) = unit_context(run)?;
     let projections = recorded_projections(Some(state));
     let entries: Vec<BackupRollbackEntry> = backups
         .iter()
@@ -820,19 +823,19 @@ fn list_rollback_copies(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
 /// Kept out of [`cmd_backup_rollback`] so the body stays in-process testable
 /// (`process::exit` would abort the test binary).
 pub fn run_backup_rollback(
-    cli: &Cli,
-    printer: &Printer,
+    run: &RunContext<'_>,
     name: &str,
     yes: bool,
 ) -> anyhow::Result<Option<cfgd_core::backup::RollbackOutcome>> {
-    let ctx = RunContext::new(cli, printer);
-    let (cfg, profile_name, local_resolved) = ctx.config_and_profile()?;
+    let cli = run.cli();
+    let printer = run.printer();
+    let (cfg, profile_name, local_resolved) = run.config_and_profile()?;
     let (sources, header_modules, backups) =
-        restoring_verb_state(&ctx, cfg, local_resolved, printer)?;
+        restoring_verb_state(run, cfg, local_resolved, printer)?;
 
     let spec = find_backup_spec(&backups, name)?;
 
-    let (config_dir, state, state_dir) = unit_context(&ctx)?;
+    let (config_dir, state, state_dir) = unit_context(run)?;
     let projected = cfgd_core::backup::projected_spec(spec, &recorded_projections(Some(state)));
     let unit = BackupUnit::new(&projected, &config_dir, profile_name, &state_dir);
 
@@ -936,8 +939,8 @@ fn confirm_rollback(
 
 // no-header-ok: the run header comes from `reconciler::ApplyRun`, as it
 // does for every verb that closes on the shared rollup.
-pub fn cmd_backup_run(cli: &Cli, printer: &Printer, name: Option<&str>) -> anyhow::Result<()> {
-    let outcome = run_backup_run(cli, printer, name)?;
+pub fn cmd_backup_run(run: &RunContext<'_>, name: Option<&str>) -> anyhow::Result<()> {
+    let outcome = run_backup_run(run, name)?;
 
     // A scripted consumer must be able to detect a failed, dirty, or refused
     // backup from the exit code alone — `run_backup_run` already emitted the
@@ -985,12 +988,12 @@ impl BackupRunOutcome {
 /// error returned past it would be rendered by the central sink as a second
 /// top-level document on the same stdout.
 pub fn run_backup_run(
-    cli: &Cli,
-    printer: &Printer,
+    run: &RunContext<'_>,
     name: Option<&str>,
 ) -> anyhow::Result<BackupRunOutcome> {
-    let ctx = RunContext::new(cli, printer);
-    let (cfg, profile_name, local_resolved) = ctx.config_and_profile()?;
+    let cli = run.cli();
+    let printer = run.printer();
+    let (cfg, profile_name, local_resolved) = run.config_and_profile()?;
     // Cache-only composition (no network refresh), but Enforce constraint mode:
     // `backup run` executes user-declared hooks and writes snapshots, so it is a
     // mutating surface like apply/plan/daemon and must abort on a source
@@ -1001,7 +1004,7 @@ pub fn run_backup_run(
     // header names that profile's modules like every other run does. One
     // resolution — `resolve_desired_state` composes internally.
     let desired = resolve_desired_state(
-        &ctx,
+        run,
         cfg,
         local_resolved,
         &[],
@@ -1009,6 +1012,7 @@ pub fn run_backup_run(
         printer,
         false,
         composition::ConstraintMode::Enforce,
+        &cfgd_core::modules::refuse_floor_bootstrap,
     )?;
     let sources = desired.sources;
     let header_modules = cfgd_core::output::HeaderModule::of_resolved(&desired.modules);
@@ -1031,7 +1035,7 @@ pub fn run_backup_run(
         return Ok(BackupRunOutcome::default());
     }
 
-    let (config_dir, state, state_dir) = unit_context(&ctx)?;
+    let (config_dir, state, state_dir) = unit_context(run)?;
     let projections = recorded_projections(Some(state));
     let projected: Vec<config::BackupSpec> = targets
         .iter()
@@ -1048,8 +1052,8 @@ pub fn run_backup_run(
     let named = name.and_then(|n| targets.iter().find(|spec| spec.name == n));
     // absolute-path-ok: the run header folds its own Source row.
     let unit_source = named.map(|spec| spec.source.posix().to_string());
-    // `run_ctx`, not a second `ctx`: `cli::RunContext` (bound above) and
-    // `reconciler::RunContext` are both in scope in this module, and one name
+    // `run` names this verb's `cli::RunContext` and `reconciler::RunContext`
+    // is in scope too, so the header's context gets its own name: one name
     // for both makes the reader check which is which at every use.
     let run_ctx = cfgd_core::reconciler::RunContext {
         title: cfgd_core::reconciler::RunTitle::Backup,
@@ -1088,12 +1092,12 @@ pub fn run_backup_run(
 /// condition beside it.
 // no-header-ok: a report on the snapshot rows a destination change
 // stranded, not on the configuration those rows were declared in.
-pub fn cmd_backup_gc(cli: &Cli, printer: &Printer, name: Option<&str>) -> anyhow::Result<()> {
+pub fn cmd_backup_gc(run: &RunContext<'_>, name: Option<&str>) -> anyhow::Result<()> {
     // The payload Doc is already on stdout by the time the exit code is
     // decided, so exiting here rather than returning an error keeps a failed
     // collection from being rendered as a SECOND top-level document — the same
     // split `cmd_backup_run` takes, and why the body stays in `run_backup_gc`.
-    if run_backup_gc(cli, printer, name)?.tally().failed > 0 {
+    if run_backup_gc(run, name)?.tally().failed > 0 {
         cfgd_core::exit::ExitCode::Error.exit();
     }
     Ok(())
@@ -1107,24 +1111,24 @@ pub fn cmd_backup_gc(cli: &Cli, printer: &Printer, name: Option<&str>) -> anyhow
 /// states how many actions the run set out to do and the rollup reconciles
 /// against that same number.
 pub fn run_backup_gc(
-    cli: &Cli,
-    printer: &Printer,
+    run: &RunContext<'_>,
     name: Option<&str>,
 ) -> anyhow::Result<cfgd_core::backup::CollectOutcome> {
-    let ctx = RunContext::new(cli, printer);
-    let (cfg, profile_name, local_resolved) = ctx.config_and_profile()?;
+    let cli = run.cli();
+    let printer = run.printer();
+    let (cfg, profile_name, local_resolved) = run.config_and_profile()?;
     // Enforce, like `backup run`: gc deletes files, so it is a mutating
     // surface and a source constraint violation must abort it rather than be
     // recorded and stepped over.
     let (sources, header_modules, backups) =
-        restoring_verb_state(&ctx, cfg, local_resolved, printer)?;
+        restoring_verb_state(run, cfg, local_resolved, printer)?;
 
     let targets: Vec<&config::BackupSpec> = match name {
         Some(n) => vec![find_backup_spec(&backups, n)?],
         None => backups.iter().collect(),
     };
 
-    let (config_dir, state, state_dir) = unit_context(&ctx)?;
+    let (config_dir, state, state_dir) = unit_context(run)?;
     let projections = recorded_projections(Some(state));
     let projected: Vec<config::BackupSpec> = targets
         .iter()

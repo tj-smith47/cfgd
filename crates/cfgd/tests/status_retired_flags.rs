@@ -1,5 +1,3 @@
-#![allow(deprecated)] // assert_cmd 2.x cargo_bin deprecation; upgrade path is assert_cmd 3.x
-
 //! The retired `cfgd status` spellings, driven through the real binary.
 //!
 //! A removed flag clap no longer declares gets the bare "unexpected argument",
@@ -8,10 +6,11 @@
 //! does the job now. Only the real binary shows stderr and the exit code
 //! exactly as the script that still passes the flag sees them.
 
-use assert_cmd::Command;
+mod cfgd_binary;
+use cfgd_binary::cfgd_bin;
 
 fn refusal(flag: &str) -> (Option<i32>, String) {
-    let out = Command::cargo_bin("cfgd")
+    let out = cfgd_bin()
         .unwrap()
         .args(["status", flag])
         .output()
@@ -56,7 +55,7 @@ fn status_show_all_is_refused_with_the_wide_output_flag() {
 
 #[test]
 fn a_retired_status_flag_is_hidden_from_the_help() {
-    let out = Command::cargo_bin("cfgd")
+    let out = cfgd_bin()
         .unwrap()
         .args(["status", "--help"])
         .output()

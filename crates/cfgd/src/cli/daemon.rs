@@ -25,13 +25,13 @@ pub struct DaemonUninstallOutput {
 }
 
 pub(super) fn cmd_daemon(
-    cli: &Cli,
-    printer: &Printer,
+    run: &RunContext<'_>,
     command: Option<&DaemonCommand>,
 ) -> anyhow::Result<()> {
+    let (cli, printer) = (run.cli(), run.printer());
     match command {
-        Some(DaemonCommand::Status) => return cmd_daemon_status(cli, printer),
-        Some(DaemonCommand::Install) => return cmd_daemon_install(cli, printer),
+        Some(DaemonCommand::Status) => return cmd_daemon_status(run),
+        Some(DaemonCommand::Install) => return cmd_daemon_install(run),
         Some(DaemonCommand::Uninstall) => return cmd_daemon_uninstall(cli, printer),
         Some(DaemonCommand::Service { .. }) => return cmd_daemon_service(),
         Some(DaemonCommand::Run) | None => {}
@@ -64,6 +64,7 @@ pub(super) fn cmd_daemon(
             daemon_printer,
             hooks,
             cli.scope(),
+            cli.update_policy_override(),
             env!("CARGO_PKG_VERSION"),
         )
         .await
@@ -83,7 +84,9 @@ pub(super) fn cmd_daemon(
     Ok(())
 }
 
-pub fn cmd_daemon_status(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
+pub fn cmd_daemon_status(run: &RunContext<'_>) -> anyhow::Result<()> {
+    let cli = run.cli();
+    let printer = run.printer();
     let status =
         match cfgd_core::daemon::query_daemon_status(cli.runtime_dir.as_deref(), cli.scope()) {
             Ok(s) => s,
@@ -105,7 +108,7 @@ pub fn cmd_daemon_status(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
     // the config and the state store hold everything else the shared `Sources`
     // table shows. A machine with no readable config still renders the table —
     // the daemon's own rows, with the config-side columns reading `-`.
-    let (catalog, declared_sources) = configured_source_catalog(cli);
+    let (catalog, declared_sources) = configured_source_catalog(run);
     printer.emit(build_daemon_status_doc(
         status.as_ref(),
         &declared_sources,
@@ -121,12 +124,13 @@ pub fn cmd_daemon_status(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
 /// header names. Both empty when the config or the state store cannot be read:
 /// the daemon's status is still worth printing without them.
 fn configured_source_catalog(
-    cli: &Cli,
+    run: &RunContext<'_>,
 ) -> (
     Vec<SourceListEntry>,
     Vec<cfgd_core::reconciler::ComposedSource>,
 ) {
-    let Ok(cfg) = config::load_config(&cli.config) else {
+    let cli = run.cli();
+    let Ok(cfg) = run.config_unannounced() else {
         return (Vec::new(), Vec::new());
     };
     let declared = cfgd_core::reconciler::ComposedSource::from_declared(&cfg.spec.sources);
@@ -137,7 +141,7 @@ fn configured_source_catalog(
     // shared `Sources` table renders no lockfile cell.
     let lock = cfgd_core::load_sources_lockfile(&config_dir(cli)).unwrap_or_default();
     (
-        super::source::list::configured_source_entries(&cfg, &state, &lock),
+        super::source::list::configured_source_entries(cfg, &state, &lock),
         declared,
     )
 }
@@ -309,7 +313,41 @@ fn daemon_source_row(
     }
 }
 
-pub(super) fn cmd_daemon_install(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
+/// A system-scope service change refused before it starts, because only root
+/// can write the system service directories.
+///
+/// One refusal carrying its own remediation, so the reader sees one failure
+/// line and the command that gets past it.
+fn system_scope_needs_root(
+    error_kind: &'static str,
+    verb: &str,
+    platform: &str,
+    service: &str,
+) -> anyhow::Error {
+    crate::cli::cli_error_with_hints(
+        "cfgd",
+        error_kind,
+        format!("System-scope {verb} requires root privileges"),
+        serde_json::json!({
+            "platform": platform,
+            "service": service,
+            "reason": "insufficient_privileges",
+        }),
+        vec![system_scope_root_hint(verb)],
+    )
+}
+
+/// The way past [`system_scope_needs_root`]. Unconditional: nothing else on
+/// the surface names the command that gets the reader through.
+pub(in crate::cli) fn system_scope_root_hint(verb: &str) -> cfgd_core::output::HintCommands {
+    cfgd_core::output::HintCommands::unconditional(format!(
+        "Re-run with `sudo cfgd --scope system daemon {verb}`"
+    ))
+}
+
+pub(super) fn cmd_daemon_install(run: &RunContext<'_>) -> anyhow::Result<()> {
+    let cli = run.cli();
+    let printer = run.printer();
     // Runtime cfg! so the install_failed error_doc has the platform+service
     // strings available before the lib call. The success payload uses
     // compile-time #[cfg] further down because the Windows branch loads
@@ -325,10 +363,11 @@ pub(super) fn cmd_daemon_install(cli: &Cli, printer: &Printer) -> anyhow::Result
     let scope = cli.scope();
 
     if scope == cfgd_core::Scope::System && !cfgd_core::is_root() {
-        printer.status_simple(Role::Fail, "System-scope install requires root privileges");
-        printer.hint("Re-run with `sudo cfgd --scope system daemon install`");
-        return Err(anyhow::anyhow!(
-            "insufficient privileges for system-scope install"
+        return Err(system_scope_needs_root(
+            "install_failed",
+            "install",
+            platform,
+            service,
         ));
     }
 
@@ -357,16 +396,9 @@ pub(super) fn cmd_daemon_install(cli: &Cli, printer: &Printer) -> anyhow::Result
 
     #[cfg(windows)]
     let payload = {
-        let event_log_on = match cfgd_core::config::load_config(&cli.config) {
-            Ok(mut cfg) => {
-                drain_config_deprecations(printer, &mut cfg);
-                cfg.spec
-                    .daemon
-                    .map(|d| d.windows_event_log)
-                    .unwrap_or(false)
-            }
-            Err(_) => false,
-        };
+        let event_log_on = run
+            .config()
+            .is_ok_and(|cfg| cfg.spec.daemon_effective().windows_event_log);
         DaemonInstallOutput {
             platform: "windows".to_string(),
             service: "cfgd".to_string(),
@@ -487,13 +519,11 @@ pub(super) fn cmd_daemon_uninstall(cli: &Cli, printer: &Printer) -> anyhow::Resu
     let scope = cli.scope();
 
     if scope == cfgd_core::Scope::System && !cfgd_core::is_root() {
-        printer.status_simple(
-            Role::Fail,
-            "System-scope uninstall requires root privileges",
-        );
-        printer.hint("Re-run with `sudo cfgd --scope system daemon uninstall`");
-        return Err(anyhow::anyhow!(
-            "insufficient privileges for system-scope uninstall"
+        return Err(system_scope_needs_root(
+            "uninstall_failed",
+            "uninstall",
+            platform,
+            service,
         ));
     }
 
@@ -563,6 +593,7 @@ pub(super) fn cmd_daemon_service() -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use crate::cli::HermeticParse;
 
     /// The instant every daemon-status render in this suite ages its stamps
     /// against, so a captured age is a fact about the fixture rather than about
@@ -570,6 +601,36 @@ mod tests {
     const DAEMON_STATUS_NOW: &str = "2026-05-14T12:00:00Z";
     use super::*;
     use cfgd_core::test_helpers::test_printer as make_printer;
+
+    /// A system-scope refusal renders as one failure line plus the command that
+    /// gets past it, and reaches `-o json` under the verb's own kind with the
+    /// reason a script branches on. Built directly: the suite runs as root,
+    /// where the command never reaches the refusal.
+    #[test]
+    fn a_system_scope_refusal_renders_one_line_its_hint_and_its_reason() {
+        let err = || system_scope_needs_root("install_failed", "install", "linux", "cfgd.service");
+
+        let (printer, buf) =
+            cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+        crate::cli::error::render_cli_error(&printer, &err());
+        printer.flush();
+        let human = cfgd_core::test_helpers::captured_text(&buf);
+        assert_eq!(human.matches('✗').count(), 1, "one failure line: {human}");
+        assert!(
+            human.contains("sudo cfgd --scope system daemon install"),
+            "the refusal names the command past it: {human}"
+        );
+
+        let (printer, buf) =
+            cfgd_core::output::Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
+        crate::cli::error::render_cli_error(&printer, &err());
+        printer.flush();
+        let json: serde_json::Value =
+            serde_json::from_str(&cfgd_core::test_helpers::captured_text(&buf))
+                .expect("json payload must parse");
+        assert_eq!(json["error"], "install_failed", "{json}");
+        assert_eq!(json["reason"], "insufficient_privileges", "{json}");
+    }
 
     fn make_status(running: bool) -> cfgd_core::daemon::DaemonStatusResponse {
         cfgd_core::daemon::DaemonStatusResponse {
@@ -611,9 +672,12 @@ mod tests {
             quiet: true,
             output: crate::cli::OutputFormatArg(cfgd_core::output::OutputFormat::Table),
             list_envelope: false,
+            hints: false,
             no_hints: false,
             theme: None,
             mask_env_values: None,
+            migration_policy: None,
+            update_policy: None,
             jsonpath: None,
             yes: false,
             state_dir: None,
@@ -634,10 +698,77 @@ mod tests {
     // Serial: this parses through the real clap `Cli`, whose globals are
     // env-bound (`CFGD_STATE_DIR` and friends). A concurrent test that sets one
     // would be read as this test's own input.
+    /// A `~` in a directory flag or its `CFGD_*` variable reaches an installed
+    /// unit as the home directory it named at install time: the argv every
+    /// unit generator bakes carries the expanded path.
+    #[test]
+    #[serial_test::serial]
+    fn an_installed_unit_carries_the_expanded_directory_flags() {
+        let home = tempfile::tempdir().unwrap();
+        let _home = cfgd_core::with_test_home_guard(home.path());
+        let expected = |dir: &str| cfgd_core::to_posix_string(home.path().join(dir));
+        let by_flag = [
+            "cfgd",
+            "--state-dir",
+            "~/s",
+            "--runtime-dir",
+            "~/r",
+            "--cache-dir",
+            "~/c",
+            "daemon",
+            "status",
+        ];
+        let mut parsed = vec![("flags", Cli::try_parse_hermetic(by_flag).unwrap())];
+        {
+            let _state =
+                cfgd_core::test_helpers::EnvVarGuard::set(cfgd_core::CFGD_STATE_DIR_ENV, "~/s");
+            let _runtime =
+                cfgd_core::test_helpers::EnvVarGuard::set(cfgd_core::CFGD_RUNTIME_DIR_ENV, "~/r");
+            let _cache =
+                cfgd_core::test_helpers::EnvVarGuard::set(cfgd_core::CFGD_CACHE_DIR_ENV, "~/c");
+            parsed.push((
+                "env",
+                Cli::try_parse_reading_env(
+                    ["cfgd", "daemon", "status"],
+                    &[
+                        cfgd_core::CFGD_STATE_DIR_ENV,
+                        cfgd_core::CFGD_RUNTIME_DIR_ENV,
+                        cfgd_core::CFGD_CACHE_DIR_ENV,
+                    ],
+                )
+                .unwrap(),
+            ));
+        }
+        for (spelling, mut cli) in parsed {
+            cli.expand_path_flags();
+            let argv = cfgd_core::daemon::service_binpath_argv(
+                std::path::Path::new("/etc/cfgd/cfgd.yaml"),
+                None,
+                false,
+                cfgd_core::Scope::User,
+                &cli.daemon_dir_overrides(),
+            );
+            for (flag, dir) in [
+                ("--state-dir", "s"),
+                ("--runtime-dir", "r"),
+                ("--cache-dir", "c"),
+            ] {
+                assert!(
+                    // The binPath token keeps this host's separators, so it is
+                    // folded before the compare.
+                    argv.windows(2).any(|w| w[0] == flag
+                        && cfgd_core::to_posix_string(std::path::Path::new(&w[1]))
+                            == expected(dir)),
+                    "{spelling}: {flag} is not {} in {argv:?}",
+                    expected(dir)
+                );
+            }
+        }
+    }
+
     #[test]
     #[serial_test::serial]
     fn windows_service_binpath_argv_parses_via_cli() {
-        use clap::Parser;
         let cfg = std::path::Path::new("C:/ProgramData/cfgd/cfgd.yaml");
         let no_dirs = cfgd_core::daemon::DaemonDirOverrides::default();
         let both_dirs = cfgd_core::daemon::DaemonDirOverrides {
@@ -678,7 +809,7 @@ mod tests {
                 );
             }
             let full = std::iter::once("cfgd".to_string()).chain(argv.iter().cloned());
-            let cli = Cli::try_parse_from(full).unwrap_or_else(|e| {
+            let cli = Cli::try_parse_hermetic(full).unwrap_or_else(|e| {
                 panic!(
                     "baked service argv {argv:?} rejected by the daemon-service clap parser: {e}"
                 )
@@ -1085,7 +1216,7 @@ mod tests {
     fn cmd_daemon_status_returns_ok_when_no_daemon() {
         let cli = make_cli();
         let printer = make_printer();
-        let result = cmd_daemon_status(&cli, &printer);
+        let result = crate::cli::RunContext::for_test(&cli, &printer, cmd_daemon_status);
         result.expect("cmd_daemon_status must succeed when daemon is not running");
     }
 
@@ -1093,7 +1224,9 @@ mod tests {
     fn cmd_daemon_dispatches_status() {
         let cli = make_cli();
         let printer = make_printer();
-        let result = cmd_daemon(&cli, &printer, Some(&DaemonCommand::Status));
+        let result = crate::cli::RunContext::for_test(&cli, &printer, |run| {
+            cmd_daemon(run, Some(&DaemonCommand::Status))
+        });
         result.expect("daemon status dispatch must succeed");
     }
 
@@ -1104,7 +1237,9 @@ mod tests {
         let _home = cfgd_core::with_test_home_guard(tmp_home.path());
         let cli = make_cli();
         let printer = make_printer();
-        let result = cmd_daemon(&cli, &printer, Some(&DaemonCommand::Install));
+        let result = crate::cli::RunContext::for_test(&cli, &printer, |run| {
+            cmd_daemon(run, Some(&DaemonCommand::Install))
+        });
         result.expect("install must succeed with user-level systemd dir");
     }
 
@@ -1119,7 +1254,10 @@ mod tests {
         let _home = cfgd_core::with_test_home_guard(tmp_home.path());
         let cli = make_cli();
         let (printer, cap) = Printer::for_test_doc();
-        cmd_daemon(&cli, &printer, Some(&DaemonCommand::Install)).expect("install must succeed");
+        crate::cli::RunContext::for_test(&cli, &printer, |run| {
+            cmd_daemon(run, Some(&DaemonCommand::Install))
+        })
+        .expect("install must succeed");
         let json = cap.json().expect("install doc must carry JSON payload");
         assert_eq!(
             json["started"], false,
@@ -1134,7 +1272,9 @@ mod tests {
         let _home = cfgd_core::with_test_home_guard(tmp_home.path());
         let cli = make_cli();
         let printer = make_printer();
-        let result = cmd_daemon(&cli, &printer, Some(&DaemonCommand::Uninstall));
+        let result = crate::cli::RunContext::for_test(&cli, &printer, |run| {
+            cmd_daemon(run, Some(&DaemonCommand::Uninstall))
+        });
         result.expect("uninstall must succeed when service file is absent");
     }
 

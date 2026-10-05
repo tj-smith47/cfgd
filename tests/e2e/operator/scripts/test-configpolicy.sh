@@ -1,13 +1,14 @@
+# shellcheck shell=bash
 # Operator E2E tests: ConfigPolicy
-# Sourced by run-all.sh — do NOT set traps or pipefail here.
+# Sourced by run-all.sh: do NOT set traps or pipefail here.
 
 echo ""
 echo "=== ConfigPolicy Tests ==="
 
 # =================================================================
-# OP-CP-01: ConfigPolicy — all MachineConfigs compliant
+# OP-CP-01: ConfigPolicy: all MachineConfigs compliant
 # =================================================================
-begin_test "OP-CP-01: ConfigPolicy — compliant check"
+begin_test "OP-CP-01: ConfigPolicy: compliant check"
 
 kubectl apply -n "$E2E_NAMESPACE" -f - <<EOF
 apiVersion: cfgd.io/v1alpha1
@@ -15,6 +16,8 @@ kind: ConfigPolicy
 metadata:
   name: e2e-security-baseline
   namespace: ${E2E_NAMESPACE}
+  labels:
+    ${E2E_RUN_LABEL_YAML}
 spec:
   packages:
     - name: vim
@@ -23,33 +26,24 @@ spec:
     shell: /bin/zsh
 EOF
 
-# Wait for policy reconciliation
+# e2e-workstation-1 is the namespace's one MachineConfig, and it lists vim and
+# git and sets shell to /bin/zsh.
 echo "  Waiting for ConfigPolicy status..."
-CP_STATUS=$(wait_for_k8s_field configpolicy e2e-security-baseline "$E2E_NAMESPACE" \
-    '{.status.compliantCount}' "" 60) || true
+CP01_COUNTS=$(wait_for_k8s_field configpolicy e2e-security-baseline "$E2E_NAMESPACE" \
+    '{.status.compliantCount}/{.status.nonCompliantCount}' "1/0" 60) || true
 
-COMPLIANT=$(kubectl get configpolicy e2e-security-baseline -n "$E2E_NAMESPACE" \
-    -o jsonpath='{.status.compliantCount}' 2>/dev/null || echo "0")
-NON_COMPLIANT=$(kubectl get configpolicy e2e-security-baseline -n "$E2E_NAMESPACE" \
-    -o jsonpath='{.status.nonCompliantCount}' 2>/dev/null || echo "0")
+echo "  Compliant/non-compliant: ${CP01_COUNTS:-not set}"
 
-echo "  Compliant: $COMPLIANT, Non-compliant: $NON_COMPLIANT"
-
-if [ "${COMPLIANT:-0}" -ge 1 ] && [ "${NON_COMPLIANT:-0}" -eq 0 ]; then
+if [ "$CP01_COUNTS" = "1/0" ]; then
     pass_test "OP-CP-01"
 else
-    # If MC was compliant and counted, pass
-    if [ -n "$CP_STATUS" ]; then
-        pass_test "OP-CP-01"
-    else
-        fail_test "OP-CP-01" "ConfigPolicy status not updated"
-    fi
+    fail_test "OP-CP-01" "Expected compliant/non-compliant 1/0 for e2e-workstation-1, got ${CP01_COUNTS:-not set}"
 fi
 
 # =================================================================
-# OP-CP-02: ConfigPolicy — non-compliant MachineConfig
+# OP-CP-02: ConfigPolicy: non-compliant MachineConfig
 # =================================================================
-begin_test "OP-CP-02: ConfigPolicy — non-compliant detection"
+begin_test "OP-CP-02: ConfigPolicy: non-compliant detection"
 
 # Create a MachineConfig that's missing required packages
 kubectl apply -n "$E2E_NAMESPACE" -f - <<EOF
@@ -58,6 +52,8 @@ kind: MachineConfig
 metadata:
   name: e2e-workstation-2
   namespace: ${E2E_NAMESPACE}
+  labels:
+    ${E2E_RUN_LABEL_YAML}
 spec:
   hostname: e2e-host-2
   profile: minimal
@@ -66,39 +62,34 @@ spec:
   systemSettings: {}
 EOF
 
-# Wait for both MC and policy to re-reconcile
-sleep 5
+# e2e-workstation-2 lists neither vim nor git, so the policy counts it against
+# e2e-workstation-1's pass.
+CP02_COUNTS=$(wait_for_k8s_field configpolicy e2e-security-baseline "$E2E_NAMESPACE" \
+    '{.status.compliantCount}/{.status.nonCompliantCount}' "1/1" 65) || true
 
-# Poll until nonCompliantCount >= 1 (can't use wait_for_k8s_field since we need >= not ==)
-NON_COMPLIANT="0"
-for i in $(seq 1 60); do
-    NON_COMPLIANT=$(kubectl get configpolicy e2e-security-baseline -n "$E2E_NAMESPACE" \
-        -o jsonpath='{.status.nonCompliantCount}' 2>/dev/null || echo "0")
-    if [ "${NON_COMPLIANT:-0}" -ge 1 ] 2>/dev/null; then
-        break
-    fi
-    sleep 1
-done
-
-COMPLIANT=$(kubectl get configpolicy e2e-security-baseline -n "$E2E_NAMESPACE" \
-    -o jsonpath='{.status.compliantCount}' 2>/dev/null || echo "0")
-
-echo "  Compliant: $COMPLIANT, Non-compliant: ${NON_COMPLIANT:-0}"
+echo "  Compliant/non-compliant: ${CP02_COUNTS:-not set}"
 
 ENFORCED=$(kubectl get configpolicy e2e-security-baseline -n "$E2E_NAMESPACE" \
     -o jsonpath='{.status.conditions[?(@.type=="Enforced")].status}' 2>/dev/null || echo "")
 echo "  Enforced condition: $ENFORCED"
 
-if [ "${NON_COMPLIANT:-0}" -ge 1 ]; then
+if [ "$CP02_COUNTS" = "1/1" ]; then
     pass_test "OP-CP-02"
 else
-    fail_test "OP-CP-02" "Non-compliant MC not detected by policy"
+    fail_test "OP-CP-02" "Expected compliant/non-compliant 1/1 once e2e-workstation-2 exists, got ${CP02_COUNTS:-not set}"
 fi
 
 # =================================================================
-# OP-CP-03: ConfigPolicy — version enforcement
+# OP-CP-03: ConfigPolicy: version enforcement
 # =================================================================
 begin_test "OP-CP-03: ConfigPolicy version enforcement"
+
+# A version pin is met only by a version the machine reported, so
+# e2e-workstation-1 reports vim 9.0.1 the way a device check-in would.
+CP03_SEED_RC=0
+kubectl patch machineconfig e2e-workstation-1 -n "$E2E_NAMESPACE" --subresource=status --type=merge \
+    -p '{"status":{"packageVersions":{"apt/vim":"9.0.1"}}}' > /dev/null 2>&1 || CP03_SEED_RC=$?
+echo "  packageVersions seed rc: $CP03_SEED_RC"
 
 kubectl apply -n "$E2E_NAMESPACE" -f - <<EOF
 apiVersion: cfgd.io/v1alpha1
@@ -106,27 +97,28 @@ kind: ConfigPolicy
 metadata:
   name: e2e-version-policy
   namespace: ${E2E_NAMESPACE}
+  labels:
+    ${E2E_RUN_LABEL_YAML}
 spec:
   packages:
     - name: vim
       version: ">=9.0"
 EOF
 
-sleep 5
-
-COMPLIANT=$(wait_for_k8s_field configpolicy e2e-version-policy "$E2E_NAMESPACE" \
-    '{.status.compliantCount}' "" 20) || true
+# e2e-workstation-1's reported vim 9.0.1 meets >=9.0; e2e-workstation-2 lists
+# no vim.
+CP03_COUNTS=$(wait_for_k8s_field configpolicy e2e-version-policy "$E2E_NAMESPACE" \
+    '{.status.compliantCount}/{.status.nonCompliantCount}' "1/1" 65) || true
 
 echo "  Version policy status:"
 kubectl get configpolicy e2e-version-policy -n "$E2E_NAMESPACE" \
     -o jsonpath='{.status}' 2>/dev/null | sed 's/^/    /' || true
 echo ""
 
-# e2e-workstation-1 has vim 9.0.1 which satisfies >=9.0
-if [ -n "$COMPLIANT" ]; then
+if [ "$CP03_SEED_RC" -eq 0 ] && [ "$CP03_COUNTS" = "1/1" ]; then
     pass_test "OP-CP-03"
 else
-    fail_test "OP-CP-03" "Version policy status not updated"
+    fail_test "OP-CP-03" "Expected compliant/non-compliant 1/1 with vim 9.0.1 seeded (seed rc=${CP03_SEED_RC}), got ${CP03_COUNTS:-not set}"
 fi
 
 # =================================================================
@@ -144,6 +136,8 @@ kind: ConfigPolicy
 metadata:
   name: e2e-selector-policy
   namespace: ${E2E_NAMESPACE}
+  labels:
+    ${E2E_RUN_LABEL_YAML}
 spec:
   packages:
     - name: ripgrep
@@ -152,22 +146,18 @@ spec:
       cfgd.io/profile: dev-workstation
 EOF
 
-sleep 5
+# The selector takes e2e-workstation-1 alone, which gained ripgrep in
+# OP-MC-02; counting e2e-workstation-2 (no ripgrep) would show as a
+# non-compliant machine.
+CP04_COUNTS=$(wait_for_k8s_field configpolicy e2e-selector-policy "$E2E_NAMESPACE" \
+    '{.status.compliantCount}/{.status.nonCompliantCount}' "1/0" 65) || true
 
-COMPLIANT=$(wait_for_k8s_field configpolicy e2e-selector-policy "$E2E_NAMESPACE" \
-    '{.status.compliantCount}' "" 20) || true
+echo "  Selector policy compliant/non-compliant: ${CP04_COUNTS:-not set}"
 
-NON_COMPLIANT=$(kubectl get configpolicy e2e-selector-policy -n "$E2E_NAMESPACE" \
-    -o jsonpath='{.status.nonCompliantCount}' 2>/dev/null || echo "0")
-
-echo "  Selector policy — compliant: ${COMPLIANT:-0}, non-compliant: ${NON_COMPLIANT:-0}"
-
-# Only e2e-workstation-1 (profile=dev-workstation) should be evaluated;
-# e2e-workstation-2 (profile=minimal) should be excluded by selector
-if [ -n "$COMPLIANT" ]; then
+if [ "$CP04_COUNTS" = "1/0" ]; then
     pass_test "OP-CP-04"
 else
-    fail_test "OP-CP-04" "Selector policy status not updated"
+    fail_test "OP-CP-04" "Expected compliant/non-compliant 1/0 for the selected e2e-workstation-1 alone, got ${CP04_COUNTS:-not set}"
 fi
 
 # --- Clean up resources from MachineConfig + ConfigPolicy tests ---

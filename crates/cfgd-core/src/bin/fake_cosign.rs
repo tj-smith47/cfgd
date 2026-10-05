@@ -12,12 +12,13 @@
 //! baked into the binary. This mirrors the prior Unix-only `/bin/sh` shim
 //! byte-for-byte:
 //!
-//! | Env var                   | Effect                                                  |
-//! |---------------------------|---------------------------------------------------------|
-//! | `CFGD_FAKE_COSIGN_LOG`    | When set, append the space-joined argv + `\n` to the path (argv logging). |
-//! | `CFGD_FAKE_COSIGN_KEYGEN`| When `1`, and argv[0] is `generate-key-pair`, write fake `cosign.key`/`cosign.pub` to CWD. |
-//! | `CFGD_FAKE_COSIGN_STDERR`| Written verbatim to this process's stderr on every invocation. |
-//! | `CFGD_FAKE_COSIGN_EXIT`  | Parsed as the process exit code (default `0`).          |
+//! - `CFGD_FAKE_COSIGN_LOG`: when set, append the space-joined argv + `\n` to
+//!   the path (argv logging).
+//! - `CFGD_FAKE_COSIGN_KEYGEN`: when `1`, and argv[0] is `generate-key-pair`,
+//!   write fake `cosign.key`/`cosign.pub` to CWD.
+//! - `CFGD_FAKE_COSIGN_STDERR`: written verbatim to this process's stderr on
+//!   every invocation.
+//! - `CFGD_FAKE_COSIGN_EXIT`: parsed as the process exit code (default `0`).
 //!
 //! The binary never inspects which cosign subcommand it was handed beyond the
 //! `generate-key-pair` keygen branch — exactly like the script it replaces.

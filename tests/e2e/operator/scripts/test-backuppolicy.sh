@@ -1,5 +1,6 @@
+# shellcheck shell=bash
 # Operator E2E tests: BackupPolicy
-# Sourced by run-all.sh — do NOT set traps or pipefail here.
+# Sourced by run-all.sh: do NOT set traps or pipefail here.
 
 echo ""
 echo "=== BackupPolicy Tests ==="
@@ -15,7 +16,7 @@ kubectl label namespace "$BP_NS" "$E2E_RUN_LABEL" --overwrite 2>/dev/null || tru
 begin_test "OP-BP-01: BackupPolicy matches two machines, one pinning locally"
 
 # nuc-01 and nuc-02 carry the profile label the policy selects; nuc-03 is the
-# negative — it must not appear in the projection or in machinesMatched.
+# negative, so it must not appear in the projection or in machinesMatched.
 for BP_MC in nuc-01 nuc-02; do
     kubectl apply -f - <<EOF
 apiVersion: cfgd.io/v1alpha1
@@ -52,7 +53,7 @@ EOF
 # the patch stands in for one that reported the unit as its own. Its status is
 # read here because OP-BP-01 asserts machinesMatched and the host list, neither
 # of which the patch touches: a patch that never landed would leave OP-BP-03
-# reporting a wrong owner rather than a missing premise.
+# reporting a wrong owner where the premise is what is missing.
 BP_PIN_RC=0
 kubectl patch machineconfig nuc-02 -n "$BP_NS" --subresource=status --type=merge \
     -p '{"status":{"backupScheduleOwners":{"dotfiles":"local"}}}' > /dev/null 2>&1 || BP_PIN_RC=$?
@@ -78,16 +79,13 @@ spec:
 EOF
 
 echo "  Waiting for BackupPolicy projection..."
-BP01_ROWS=0
-BP01_DEADLINE=$((SECONDS + 120))
-while [ $SECONDS -lt $BP01_DEADLINE ]; do
+bp01_two_rows() {
     BP01_ROWS=$(kubectl get backuppolicy nightly-dotfiles -n "$BP_NS" \
         -o jsonpath='{.status.units[*].hostname}' 2>/dev/null | wc -w)
-    if [ "$BP01_ROWS" -eq 2 ]; then
-        break
-    fi
-    sleep 2
-done
+    [ "$BP01_ROWS" -eq 2 ]
+}
+BP01_ROWS=0
+wait_until 120 2 "two status.units rows on backuppolicy/nightly-dotfiles" bp01_two_rows || true
 
 BP01_MATCHED=$(kubectl get backuppolicy nightly-dotfiles -n "$BP_NS" \
     -o jsonpath='{.status.machinesMatched}' 2>/dev/null || echo "")
@@ -134,9 +132,9 @@ else
 fi
 
 # =================================================================
-# OP-BP-03: The locally-pinned machine is reported, not overridden
+# OP-BP-03: The locally-pinned machine is reported with its own pin
 # =================================================================
-begin_test "OP-BP-03: locally-pinned machine is reported, not overridden"
+begin_test "OP-BP-03: locally-pinned machine is reported with its own pin"
 
 BP03_OWNER=$(kubectl get backuppolicy nightly-dotfiles -n "$BP_NS" \
     -o jsonpath='{.status.units[?(@.hostname=="nuc-02")].owner}' 2>/dev/null || echo "")

@@ -51,13 +51,14 @@ fn cleanup_payload_dir(
 }
 
 pub fn cmd_profile_delete(
-    cli: &Cli,
-    printer: &Printer,
+    run: &RunContext<'_>,
     name: &str,
     yes: bool,
     ignore_not_found: bool,
 ) -> anyhow::Result<()> {
-    validate_resource_name(name, "Profile")?;
+    let cli = run.cli();
+    let printer = run.printer();
+    validate_resource_name(name, "Profile", "<NAME>")?;
     printer.heading_title(&TitleLabel::new("Delete Profile", name));
 
     let pdir = profiles_dir(cli);
@@ -73,14 +74,9 @@ pub fn cmd_profile_delete(
     let is_canonical = profile_path == cfgd_core::config::canonical_profile_path(&pdir, name);
 
     // Safety: refuse if active profile
-    let active_conflict = cli.config.exists()
-        && match config::load_config(&cli.config) {
-            Ok(mut cfg) => {
-                drain_config_deprecations(printer, &mut cfg);
-                cfg.spec.profile.as_deref() == Some(name)
-            }
-            Err(_) => false,
-        };
+    let active_conflict = run
+        .config()
+        .is_ok_and(|cfg| cfg.spec.profile.as_deref() == Some(name));
     if active_conflict {
         return Err(crate::cli::cli_error(
             name,

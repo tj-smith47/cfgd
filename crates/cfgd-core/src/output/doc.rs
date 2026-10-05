@@ -303,9 +303,11 @@ impl Doc {
 
     pub fn hint(mut self, hint: impl Into<crate::output::HintCommands>) -> Self {
         let hint = hint.into();
+        let gated = hint.is_gated();
         self.children.push(Component::Hint {
             text: hint.text,
             commands: hint.commands,
+            gated,
         });
         self
     }
@@ -665,9 +667,11 @@ impl SectionBuilder {
 
     pub fn hint(mut self, hint: impl Into<crate::output::HintCommands>) -> Self {
         let hint = hint.into();
+        let gated = hint.is_gated();
         self.children.push(Component::Hint {
             text: hint.text,
             commands: hint.commands,
+            gated,
         });
         self
     }

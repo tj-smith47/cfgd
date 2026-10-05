@@ -2,64 +2,86 @@
 # E2E tests for Crossplane TeamConfig composition: XRD installation,
 # MachineConfig fan-out via function-cfgd, ConfigPolicy generation,
 # and member add/remove lifecycle.
-# Prereqs: kind cluster running, cfgd CRDs installed, Crossplane installed.
+# Prereqs: cluster running with the cfgd CRDs ArgoCD applies; XP-01 installs
+# Crossplane where ArgoCD does not run it.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=tests/e2e/common/helpers.sh
 source "$SCRIPT_DIR/../../common/helpers.sh"
-MANIFESTS_DIR="$SCRIPT_DIR/../manifests"
-CROSSPLANE_DIR="$REPO_ROOT/manifests/crossplane"
 
 echo "=== Crossplane E2E Tests ==="
 
 # =================================================================
-# XP-01: Install Crossplane
+# XP-01: Crossplane is running (Helm installs it where ArgoCD does not)
 # =================================================================
 begin_test "XP-01: Crossplane installation"
-helm repo add crossplane-stable https://charts.crossplane.io/stable
-helm upgrade --install crossplane crossplane-stable/crossplane \
-    --namespace crossplane-system --create-namespace --wait --timeout 120s
+crossplane_install || exit 1
 wait_for_deployment crossplane-system crossplane 120
 pass_test "XP-01"
 
-# --- Setup: Install cfgd CRDs ---
-echo "Generating and installing cfgd CRDs..."
-CRD_YAML=$(cargo run --release --bin cfgd-gen-crds --manifest-path "$REPO_ROOT/Cargo.toml" 2>/dev/null)
-echo "$CRD_YAML" | kubectl apply -f -
-for crd in machineconfigs.cfgd.io configpolicies.cfgd.io driftalerts.cfgd.io clusterconfigpolicies.cfgd.io; do
-    kubectl wait --for=condition=established "crd/$crd" --timeout=30s 2>/dev/null || true
+# --- Setup: the cfgd CRDs ArgoCD applied ---
+echo "Checking the cfgd CRDs on the cluster..."
+check_pr_crds schemas/crds.yaml "rerun the Crossplane suite" < "$REPO_ROOT/schemas/crds.yaml" || exit 1
+
+# --- Setup: the TeamConfig XRD ArgoCD applied ---
+echo "Checking the TeamConfig XRD on the cluster..."
+check_pr_xrd || exit 1
+
+# --- Setup: this run's Function and Composition ---
+# The E2E workflow's concurrency group serializes runs, so a run-labelled
+# TeamConfig, Composition or Function present now is a leftover of a run that
+# did not tear down. A leftover TeamConfig's composed MachineConfigs would count
+# toward this run's cases, and a TeamConfig references its Composition, so the
+# TeamConfigs go first. Crossplane's package lock keys a Function on its
+# repository, so a leftover Function holds the lock node this run's Function
+# needs until its revisions are gone.
+echo "Removing TeamConfigs, Compositions and Functions left by earlier runs..."
+if ! LEFTOVER_FUNCS="$(kubectl get function -l cfgd.io/e2e-run -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}')"; then
+    echo "ERROR: could not list the run-labelled Functions of earlier runs. Read the kubectl error above, then rerun the Crossplane suite." >&2
+    exit 1
+fi
+for kind in teamconfigs composition function; do
+    scope=()
+    [ "$kind" != teamconfigs ] || scope=(-A)
+    if ! kubectl delete "$kind" "${scope[@]}" -l cfgd.io/e2e-run --ignore-not-found --wait=true --timeout=90s; then
+        echo "ERROR: the run-labelled $kind of earlier runs were not deleted within 90s. Read the kubectl error above, then rerun the Crossplane suite." >&2
+        exit 1
+    fi
 done
+# A revision's pkg.crossplane.io/package label is its Function's name, so the
+# wait covers the revisions of the Functions removed above and no other's.
+if [ -n "$LEFTOVER_FUNCS" ]; then
+    if ! FUNC_REVISIONS="$(kubectl get functionrevisions -o json | jq -r --arg names "$LEFTOVER_FUNCS" \
+        '[$names | split("\n")[] | select(. != "")] as $funcs
+         | .items[] | select((.metadata.labels["pkg.crossplane.io/package"] // "") as $pkg | any($funcs[]; . == $pkg))
+         | "functionrevision/" + .metadata.name')"; then
+        echo "ERROR: could not list the functionrevisions of earlier runs' Functions. Read the kubectl error above, then rerun the Crossplane suite." >&2
+        exit 1
+    fi
+    # A revision deleted between the list and the wait is NotFound to some
+    # kubectl versions, so a failed wait is read back before it counts.
+    # shellcheck disable=SC2086 # one revision name per word
+    if [ -n "$FUNC_REVISIONS" ] && ! kubectl wait --for=delete $FUNC_REVISIONS --timeout=120s &&
+        { ! REVISIONS_LEFT="$(kubectl get $FUNC_REVISIONS --ignore-not-found -o name)" || [ -n "$REVISIONS_LEFT" ]; }; then
+        echo "ERROR: these functionrevisions of earlier runs' Functions were not removed within 120s: $(paste -sd ' ' <<<"$FUNC_REVISIONS"). Read the kubectl error above and their finalizers, then rerun the Crossplane suite." >&2
+        exit 1
+    fi
+fi
 
-# --- Setup: Apply Crossplane XRD, Composition, and Function ---
-echo "Applying XRD, Composition, and Function..."
-kubectl apply -f "$CROSSPLANE_DIR/xrd-teamconfig.yaml"
-kubectl apply -f "$CROSSPLANE_DIR/composition.yaml"
-
-# Apply Function CR with the E2E registry image, pull secrets, and runtime config.
-# The xpkg is built by setup-cluster.sh; the DRC passes --insecure to skip mTLS.
-FUNC_IMAGE="${REGISTRY}/function-cfgd:${IMAGE_TAG:-latest}"
+# The run's Function reads ArgoCD's DeploymentRuntimeConfig, a template that a
+# second Function referencing it leaves unchanged. The xpkg is built by
+# setup-cluster.sh.
+echo "Installing $E2E_FUNCTION and $E2E_COMPOSITION..."
 kubectl apply -f - <<FUNCEOF
-apiVersion: pkg.crossplane.io/v1beta1
-kind: DeploymentRuntimeConfig
-metadata:
-  name: function-cfgd-runtime
-spec:
-  deploymentTemplate:
-    spec:
-      selector: {}
-      template:
-        spec:
-          imagePullSecrets:
-            - name: registry-credentials
-          containers:
-            - name: package-runtime
----
 apiVersion: pkg.crossplane.io/v1beta1
 kind: Function
 metadata:
-  name: function-cfgd
+  name: ${E2E_FUNCTION}
+  labels:
+    ${E2E_RUN_LABEL_YAML}
 spec:
-  package: ${FUNC_IMAGE}
+  package: $(e2e_image function-cfgd)
   packagePullPolicy: Always
   packagePullSecrets:
     - name: registry-credentials
@@ -68,83 +90,102 @@ spec:
     kind: DeploymentRuntimeConfig
     name: function-cfgd-runtime
 FUNCEOF
+RUN_COMPOSITION="$(render_run_composition)" || exit 1
+kubectl apply -f - <<<"$RUN_COMPOSITION"
 
-# Wait for function-cfgd to be installed and healthy
-echo "Waiting for function-cfgd to be healthy..."
-for i in $(seq 1 60); do
-    FUNC_HEALTHY=$(kubectl get function function-cfgd \
-        -o jsonpath='{.status.conditions[?(@.type=="Healthy")].status}' 2>/dev/null || echo "")
-    if [ "$FUNC_HEALTHY" = "True" ]; then
-        echo "  function-cfgd healthy after ${i}s"
-        break
-    fi
-    sleep 5
-done
-if [ "$FUNC_HEALTHY" != "True" ]; then
-    echo "  WARN: function-cfgd not healthy after 300s — composition tests may fail"
-    kubectl get function function-cfgd -o yaml 2>/dev/null | grep -A 10 'conditions:' || true
+echo "Waiting for $E2E_FUNCTION to be healthy..."
+if ! wait_for_k8s_field function "$E2E_FUNCTION" "" \
+    '{.status.conditions[?(@.type=="Healthy")].status}' True 300 >/dev/null; then
+    echo "ERROR: function/$E2E_FUNCTION is not Healthy after 300s: $(kubectl get function "$E2E_FUNCTION" -o jsonpath='{range .status.conditions[*]}{.type}={.status} ({.reason}: {.message}); {end}' 2>&1)" >&2
+    exit 1
 fi
 
-# Wait for XRD to be established
-echo "Waiting for TeamConfig XRD to be established..."
-for i in $(seq 1 30); do
-    XRD_READY=$(kubectl get xrd teamconfigs.cfgd.io \
-        -o jsonpath='{.status.conditions[?(@.type=="Established")].status}' 2>/dev/null || echo "")
-    if [ "$XRD_READY" = "True" ]; then
-        break
-    fi
-    sleep 2
-done
-
 # Warm up: verify the composition pipeline works end-to-end before running tests.
-# After a Function revision change, the composition engine needs time to route gRPC
-# calls to the new pod. Create a canary TeamConfig and wait for it to produce results.
+# After $E2E_FUNCTION turns Healthy, the composition engine needs time to route gRPC
+# calls to its pod. Create a canary TeamConfig and wait for it to produce results.
 echo "Verifying composition pipeline (warm-up)..."
-kubectl apply -f - <<'WARMUPEOF'
+kubectl apply -f - <<WARMUPEOF
 apiVersion: cfgd.io/v1alpha1
 kind: TeamConfig
 metadata:
   name: warmup-team
+  labels:
+    ${E2E_RUN_LABEL_YAML}
 spec:
+  crossplane:
+    compositionRef:
+      name: ${E2E_COMPOSITION}
   team: warmup-team
   profile: test
   members:
     - username: warmup
       hostname: warmup-host
 WARMUPEOF
+# xp_count <kind> <team>: XP_COUNT holds how many <kind> objects, across all
+# namespaces, have a listing line naming <team>.
+xp_count() {
+    XP_COUNT=$(kubectl get "$1" -A --no-headers 2>/dev/null | { grep -c "$2" || true; })
+}
+# shellcheck disable=SC2329  # wait_until invokes it by name
+xp_count_at_least() {
+    xp_count "$1" "$2"
+    [ "${XP_COUNT:-0}" -ge "$3" ]
+}
+# shellcheck disable=SC2329  # wait_until invokes it by name
+xp_count_is() {
+    xp_count "$1" "$2"
+    [ "${XP_COUNT:-0}" -eq "$3" ]
+}
+
 WARMUP_OK=false
-for i in $(seq 1 60); do
-    WMC=$(kubectl get mc -A --no-headers 2>/dev/null | { grep -c "warmup-team" || true; })
-    if [ "${WMC:-0}" -ge 1 ]; then
-        echo "  Composition pipeline ready after $((i*3))s"
-        WARMUP_OK=true
-        break
-    fi
-    sleep 3
-done
-kubectl delete teamconfig warmup-team --ignore-not-found 2>/dev/null || true
-sleep 5
-kubectl delete mc -l cfgd.io/team=warmup-team --ignore-not-found -A 2>/dev/null || true
-if [ "$WARMUP_OK" != "true" ]; then
-    echo "  WARN: Composition pipeline did not produce resources in warm-up — tests will likely fail"
-    # Show the composite status for debugging
-    kubectl get teamconfig warmup-team -o yaml 2>/dev/null | grep -A 10 'status:' || true
+if wait_until 180 3 "teamconfig/warmup-team to compose a MachineConfig" xp_count_at_least mc warmup-team 1; then
+    echo "  Composition pipeline ready"
+    WARMUP_OK=true
 fi
+# Every XP case after this one needs the pipeline, so a failed warm-up stops
+# the suite with the composite's conditions; warmup-team carries the run label
+# and pr-install-down.sh removes it.
+if [ "$WARMUP_OK" != "true" ]; then
+    echo "ERROR: teamconfig/warmup-team composed no MachineConfig within 180s: $(kubectl get teamconfig warmup-team -o jsonpath='{range .status.conditions[*]}{.type}={.status} ({.reason}: {.message}); {end}' 2>&1). Read function/$E2E_FUNCTION's conditions and its pod's log, then rerun the Crossplane suite." >&2
+    exit 1
+fi
+kubectl delete teamconfig warmup-team --ignore-not-found 2>/dev/null || true
+kubectl delete mc -l cfgd.io/team=warmup-team --ignore-not-found -A 2>/dev/null || true
 
 # =================================================================
 # XP-02: Create TeamConfig with 2 members
 # =================================================================
 begin_test "XP-02: TeamConfig generates MachineConfigs"
-kubectl apply -f "$MANIFESTS_DIR/teamconfig-sample.yaml"
+kubectl apply -f - <<EOF
+apiVersion: cfgd.io/v1alpha1
+kind: TeamConfig
+metadata:
+  name: test-team
+  labels:
+    ${E2E_RUN_LABEL_YAML}
+spec:
+  crossplane:
+    compositionRef:
+      name: ${E2E_COMPOSITION}
+  team: test-team
+  profile: developer
+  members:
+    - username: alice
+      hostname: dev-laptop-1
+    - username: bob
+      hostname: dev-laptop-2
+  policy:
+    required:
+      packages:
+        brew:
+          - kubectl
+          - git
+    requiredModules:
+      - corp-vpn
+EOF
 
-MC_COUNT=""
-for i in $(seq 1 30); do
-    MC_COUNT=$(kubectl get mc -A --no-headers 2>/dev/null | { grep -c "test-team" || true; })
-    if [ "${MC_COUNT:-0}" -ge 2 ]; then
-        break
-    fi
-    sleep 2
-done
+wait_until 60 2 "at least 2 mc for test-team" xp_count_at_least mc test-team 2 || true
+MC_COUNT=$XP_COUNT
 
 echo "  MachineConfig count: ${MC_COUNT:-0}"
 
@@ -159,14 +200,8 @@ fi
 # =================================================================
 begin_test "XP-03: TeamConfig generates ConfigPolicy"
 
-CP_COUNT=""
-for i in $(seq 1 15); do
-    CP_COUNT=$(kubectl get cpol -A --no-headers 2>/dev/null | { grep -c "test-team" || true; })
-    if [ "${CP_COUNT:-0}" -ge 1 ]; then
-        break
-    fi
-    sleep 2
-done
+wait_until 30 2 "at least 1 cpol for test-team" xp_count_at_least cpol test-team 1 || true
+CP_COUNT=$XP_COUNT
 
 echo "  ConfigPolicy count: ${CP_COUNT:-0}"
 
@@ -177,16 +212,21 @@ else
 fi
 
 # =================================================================
-# XP-04: Add a member — new MachineConfig appears
+# XP-04: Add a member, and a new MachineConfig appears
 # =================================================================
 begin_test "XP-04: Member addition creates MachineConfig"
 
-kubectl apply -f - <<'EOF'
+kubectl apply -f - <<EOF
 apiVersion: cfgd.io/v1alpha1
 kind: TeamConfig
 metadata:
   name: test-team
+  labels:
+    ${E2E_RUN_LABEL_YAML}
 spec:
+  crossplane:
+    compositionRef:
+      name: ${E2E_COMPOSITION}
   team: test-team
   profile: developer
   members:
@@ -206,14 +246,8 @@ spec:
       - corp-vpn
 EOF
 
-MC_COUNT=""
-for i in $(seq 1 30); do
-    MC_COUNT=$(kubectl get mc -A --no-headers 2>/dev/null | { grep -c "test-team" || true; })
-    if [ "${MC_COUNT:-0}" -ge 3 ]; then
-        break
-    fi
-    sleep 2
-done
+wait_until 60 2 "at least 3 mc for test-team" xp_count_at_least mc test-team 3 || true
+MC_COUNT=$XP_COUNT
 
 echo "  MachineConfig count after adding member: ${MC_COUNT:-0}"
 
@@ -224,16 +258,21 @@ else
 fi
 
 # =================================================================
-# XP-05: Remove a member — MachineConfig garbage-collected
+# XP-05: Remove a member, and its MachineConfig is garbage-collected
 # =================================================================
 begin_test "XP-05: Member removal garbage-collects MachineConfig"
 
-kubectl apply -f - <<'EOF'
+kubectl apply -f - <<EOF
 apiVersion: cfgd.io/v1alpha1
 kind: TeamConfig
 metadata:
   name: test-team
+  labels:
+    ${E2E_RUN_LABEL_YAML}
 spec:
+  crossplane:
+    compositionRef:
+      name: ${E2E_COMPOSITION}
   team: test-team
   profile: developer
   members:
@@ -251,14 +290,8 @@ spec:
       - corp-vpn
 EOF
 
-MC_COUNT=""
-for i in $(seq 1 40); do
-    MC_COUNT=$(kubectl get mc -A --no-headers 2>/dev/null | { grep -c "test-team" || true; })
-    if [ "${MC_COUNT:-0}" -eq 2 ]; then
-        break
-    fi
-    sleep 2
-done
+wait_until 80 2 "2 mc for test-team" xp_count_is mc test-team 2 || true
+MC_COUNT=$XP_COUNT
 
 echo "  MachineConfig count after removing member: ${MC_COUNT:-0}"
 
@@ -272,9 +305,6 @@ fi
 echo ""
 echo "Cleaning up XP-01..XP-05 resources before depth tests..."
 kubectl delete teamconfig test-team --ignore-not-found 2>/dev/null || true
-kubectl delete mc -l "cfgd.io/e2e=true" --ignore-not-found -A 2>/dev/null || true
-kubectl delete cpol -l "cfgd.io/e2e=true" --ignore-not-found -A 2>/dev/null || true
-sleep 5
 
 # =================================================================
 # XP-06: Invalid TeamConfig rejected
@@ -282,12 +312,17 @@ sleep 5
 begin_test "XP-06: Invalid TeamConfig rejected"
 
 # TeamConfig missing required 'team' and 'members' fields
-INVALID_OUTPUT=$(kubectl apply -f - 2>&1 <<'EOF' || true
+INVALID_OUTPUT=$(kubectl apply -f - 2>&1 <<EOF || true
 apiVersion: cfgd.io/v1alpha1
 kind: TeamConfig
 metadata:
   name: invalid-tc
+  labels:
+    ${E2E_RUN_LABEL_YAML}
 spec:
+  crossplane:
+    compositionRef:
+      name: ${E2E_COMPOSITION}
   profile: developer
 EOF
 )
@@ -315,7 +350,12 @@ kind: TeamConfig
 metadata:
   name: policy-team
   namespace: $XP07_NS
+  labels:
+    ${E2E_RUN_LABEL_YAML}
 spec:
+  crossplane:
+    compositionRef:
+      name: ${E2E_COMPOSITION}
   team: policy-team
   profile: base
   members:
@@ -330,14 +370,8 @@ spec:
           - git
 EOF
 
-CP_FOUND=""
-for i in $(seq 1 30); do
-    CP_FOUND=$(kubectl get cpol -A --no-headers 2>/dev/null | { grep -c "policy-team" || true; })
-    if [ "${CP_FOUND:-0}" -ge 1 ]; then
-        break
-    fi
-    sleep 2
-done
+wait_until 60 2 "at least 1 cpol for policy-team" xp_count_at_least cpol policy-team 1 || true
+CP_FOUND=$XP_COUNT
 
 echo "  ConfigPolicy count for policy-team: ${CP_FOUND:-0}"
 
@@ -358,7 +392,12 @@ kind: TeamConfig
 metadata:
   name: policy-team
   namespace: $XP07_NS
+  labels:
+    ${E2E_RUN_LABEL_YAML}
 spec:
+  crossplane:
+    compositionRef:
+      name: ${E2E_COMPOSITION}
   team: policy-team
   profile: base
   members:
@@ -375,25 +414,26 @@ spec:
           - curl
 EOF
 
-# Wait for the composition to reconcile the update
-sleep 10
+# The update has reached the composed ConfigPolicy once its required tier
+# names the module the update added.
+# shellcheck disable=SC2329  # wait_until invokes it by name
+xp08_policy_updated() {
+    kubectl get cpol -A -l cfgd.io/team=policy-team,cfgd.io/tier=required -o json 2>/dev/null | # rc-ok: pipefail makes a failed read the function's answer
+        jq -e 'any(.items[].spec.requiredModules[]?; .name == "compliance")' > /dev/null
+}
+XP08_UPDATED=false
+if wait_until 60 2 "the policy-team required ConfigPolicy to name module compliance" xp08_policy_updated; then
+    XP08_UPDATED=true
+fi
+xp_count cpol policy-team
+CP_AFTER_UPDATE=$XP_COUNT
 
-# Verify ConfigPolicy still exists after the update
-CP_AFTER_UPDATE=""
-for i in $(seq 1 20); do
-    CP_AFTER_UPDATE=$(kubectl get cpol -A --no-headers 2>/dev/null | { grep -c "policy-team" || true; })
-    if [ "${CP_AFTER_UPDATE:-0}" -ge 1 ]; then
-        break
-    fi
-    sleep 2
-done
+echo "  ConfigPolicy count after policy update: ${CP_AFTER_UPDATE:-0}, carries the added module: $XP08_UPDATED"
 
-echo "  ConfigPolicy count after policy update: ${CP_AFTER_UPDATE:-0}"
-
-if [ "${CP_AFTER_UPDATE:-0}" -ge 1 ]; then
+if [ "${CP_AFTER_UPDATE:-0}" -ge 1 ] && $XP08_UPDATED; then
     pass_test "XP-08"
 else
-    fail_test "XP-08" "Expected ConfigPolicy to persist after policy update, found ${CP_AFTER_UPDATE:-0}"
+    fail_test "XP-08" "Expected the policy-team ConfigPolicy to carry requiredModule compliance after the update, found ${CP_AFTER_UPDATE:-0} ConfigPolicies (updated: $XP08_UPDATED)"
 fi
 
 # Cleanup XP-07/XP-08
@@ -405,12 +445,17 @@ kubectl delete namespace "$XP07_NS" --ignore-not-found --wait=false 2>/dev/null 
 # =================================================================
 begin_test "XP-09: TeamConfig status reflects member count"
 
-kubectl apply -f - <<'EOF'
+kubectl apply -f - <<EOF
 apiVersion: cfgd.io/v1alpha1
 kind: TeamConfig
 metadata:
   name: status-team
+  labels:
+    ${E2E_RUN_LABEL_YAML}
 spec:
+  crossplane:
+    compositionRef:
+      name: ${E2E_COMPOSITION}
   team: status-team
   profile: developer
   members:
@@ -423,18 +468,12 @@ spec:
 EOF
 
 # Wait for MachineConfigs to appear (proves composition ran)
-MC_COUNT=""
-for i in $(seq 1 30); do
-    MC_COUNT=$(kubectl get mc -A --no-headers 2>/dev/null | { grep -c "status-team" || true; })
-    if [ "${MC_COUNT:-0}" -ge 3 ]; then
-        break
-    fi
-    sleep 2
-done
+wait_until 60 2 "at least 3 mc for status-team" xp_count_at_least mc status-team 3 || true
+MC_COUNT=$XP_COUNT
 
 echo "  MachineConfig count for status-team: ${MC_COUNT:-0}"
 
-# The composition should produce 3 MachineConfigs — one per member.
+# The composition should produce 3 MachineConfigs, one per member.
 # This proves the status/output correctly reflects the 3 members.
 if [ "${MC_COUNT:-0}" -ge 3 ]; then
     pass_test "XP-09"
@@ -443,20 +482,23 @@ else
 fi
 
 kubectl delete teamconfig status-team --ignore-not-found 2>/dev/null || true
-sleep 5
-kubectl delete mc -l "cfgd.io/e2e=true" --ignore-not-found -A 2>/dev/null || true
 
 # =================================================================
 # XP-10: MachineConfig inherits team profile
 # =================================================================
 begin_test "XP-10: MachineConfig inherits team profile"
 
-kubectl apply -f - <<'EOF'
+kubectl apply -f - <<EOF
 apiVersion: cfgd.io/v1alpha1
 kind: TeamConfig
 metadata:
   name: profile-team
+  labels:
+    ${E2E_RUN_LABEL_YAML}
 spec:
+  crossplane:
+    compositionRef:
+      name: ${E2E_COMPOSITION}
   team: profile-team
   profile: sre-oncall
   members:
@@ -465,14 +507,13 @@ spec:
 EOF
 
 # Wait for MachineConfig to appear
-MC_NAME=""
-for i in $(seq 1 30); do
+# shellcheck disable=SC2329  # wait_until invokes it by name
+xp10_mc_named() {
     MC_NAME=$(kubectl get mc -A --no-headers 2>/dev/null | grep "profile-team" | awk '{print $2}' | head -1 || true)
-    if [ -n "$MC_NAME" ]; then
-        break
-    fi
-    sleep 2
-done
+    [ -n "$MC_NAME" ]
+}
+MC_NAME=""
+wait_until 60 2 "a MachineConfig for profile-team" xp10_mc_named || true
 
 if [ -z "$MC_NAME" ]; then
     fail_test "XP-10" "No MachineConfig found for profile-team"
@@ -491,8 +532,6 @@ else
 fi
 
 kubectl delete teamconfig profile-team --ignore-not-found 2>/dev/null || true
-sleep 5
-kubectl delete mc -l "cfgd.io/e2e=true" --ignore-not-found -A 2>/dev/null || true
 
 # =================================================================
 # XP-11: Duplicate member name rejected
@@ -500,13 +539,18 @@ kubectl delete mc -l "cfgd.io/e2e=true" --ignore-not-found -A 2>/dev/null || tru
 begin_test "XP-11: Duplicate member hostname rejected"
 
 # Two members with the same hostname should cause an error or the
-# composition should deduplicate. We apply and check the outcome.
-DUP_OUTPUT=$(kubectl apply -f - 2>&1 <<'EOF' || true
+# composition should deduplicate. The case applies and checks the outcome.
+DUP_OUTPUT=$(kubectl apply -f - 2>&1 <<EOF || true
 apiVersion: cfgd.io/v1alpha1
 kind: TeamConfig
 metadata:
   name: dup-team
+  labels:
+    ${E2E_RUN_LABEL_YAML}
 spec:
+  crossplane:
+    compositionRef:
+      name: ${E2E_COMPOSITION}
   team: dup-team
   profile: developer
   members:
@@ -519,14 +563,17 @@ EOF
 
 echo "  Apply output: $DUP_OUTPUT"
 
-# If the apply succeeded, wait briefly then check MachineConfig count.
-# The composition function should either reject or produce only unique MCs.
-sleep 10
+# The composition function either rejects the members or composes them; a
+# Synced composite has applied whatever it composed.
+if ! echo "$DUP_OUTPUT" | grep -qi "error\|invalid\|denied\|rejected\|duplicate"; then
+    wait_for_k8s_field teamconfig dup-team "" \
+        '{.status.conditions[?(@.type=="Synced")].status}' "True" 60 > /dev/null || true
+fi
 DUP_MC_COUNT=$(kubectl get mc -A --no-headers 2>/dev/null | { grep -c "dup-team" || true; })
 echo "  MachineConfig count for dup-team: ${DUP_MC_COUNT:-0}"
 
 # Accept any of: (a) apply rejected, (b) dedup to 1 MC, (c) 2 MCs for 2 distinct usernames.
-# The function keys MCs by username, not hostname — same hostname for different users is valid.
+# The function keys MCs by username, so one hostname for different users is valid.
 if echo "$DUP_OUTPUT" | grep -qi "error\|invalid\|denied\|rejected\|duplicate"; then
     pass_test "XP-11"
 elif [ "${DUP_MC_COUNT:-0}" -le 2 ]; then
@@ -537,20 +584,23 @@ else
 fi
 
 kubectl delete teamconfig dup-team --ignore-not-found 2>/dev/null || true
-sleep 5
-kubectl delete mc -l "cfgd.io/e2e=true" --ignore-not-found -A 2>/dev/null || true
 
 # =================================================================
 # XP-12: TeamConfig deletion cascades
 # =================================================================
 begin_test "XP-12: TeamConfig deletion cascades to MachineConfigs and ConfigPolicy"
 
-kubectl apply -f - <<'EOF'
+kubectl apply -f - <<EOF
 apiVersion: cfgd.io/v1alpha1
 kind: TeamConfig
 metadata:
   name: cascade-team
+  labels:
+    ${E2E_RUN_LABEL_YAML}
 spec:
+  crossplane:
+    compositionRef:
+      name: ${E2E_COMPOSITION}
   team: cascade-team
   profile: developer
   members:
@@ -564,30 +614,26 @@ spec:
 EOF
 
 # Wait for composed resources to appear
-for i in $(seq 1 30); do
-    MC_COUNT=$(kubectl get mc -A --no-headers 2>/dev/null | { grep -c "cascade-team" || true; })
-    if [ "${MC_COUNT:-0}" -ge 2 ]; then
-        break
-    fi
-    sleep 2
-done
+wait_until 60 2 "at least 2 mc for cascade-team" xp_count_at_least mc cascade-team 2 || true
+MC_COUNT=$XP_COUNT
 
 echo "  MachineConfigs before deletion: ${MC_COUNT:-0}"
 
 # Now delete the TeamConfig
 kubectl delete teamconfig cascade-team --ignore-not-found --timeout=60s
 
-# Wait for cascade — composed resources should be garbage-collected
+# Wait for the cascade: composed resources should be garbage-collected
+# shellcheck disable=SC2329  # wait_until invokes it by name
+xp12_cascaded() {
+    xp_count mc cascade-team
+    MC_REMAINING=$XP_COUNT
+    xp_count cpol cascade-team
+    CP_REMAINING=$XP_COUNT
+    [ "${MC_REMAINING:-0}" -eq 0 ] && [ "${CP_REMAINING:-0}" -eq 0 ]
+}
 MC_REMAINING=""
 CP_REMAINING=""
-for i in $(seq 1 40); do
-    MC_REMAINING=$(kubectl get mc -A --no-headers 2>/dev/null | { grep -c "cascade-team" || true; })
-    CP_REMAINING=$(kubectl get cpol -A --no-headers 2>/dev/null | { grep -c "cascade-team" || true; })
-    if [ "${MC_REMAINING:-0}" -eq 0 ] && [ "${CP_REMAINING:-0}" -eq 0 ]; then
-        break
-    fi
-    sleep 2
-done
+wait_until 80 2 "cascade-team's MachineConfigs and ConfigPolicies to be collected" xp12_cascaded || true
 
 echo "  MachineConfigs after deletion: ${MC_REMAINING:-0}"
 echo "  ConfigPolicies after deletion: ${CP_REMAINING:-0}"
@@ -614,7 +660,12 @@ kind: TeamConfig
 metadata:
   name: team-alpha
   namespace: $XP13_NS_A
+  labels:
+    ${E2E_RUN_LABEL_YAML}
 spec:
+  crossplane:
+    compositionRef:
+      name: ${E2E_COMPOSITION}
   team: team-alpha
   profile: frontend
   members:
@@ -630,7 +681,12 @@ kind: TeamConfig
 metadata:
   name: team-beta
   namespace: $XP13_NS_B
+  labels:
+    ${E2E_RUN_LABEL_YAML}
 spec:
+  crossplane:
+    compositionRef:
+      name: ${E2E_COMPOSITION}
   team: team-beta
   profile: backend
   members:
@@ -643,16 +699,17 @@ spec:
 EOF
 
 # Wait for both sets of MachineConfigs
+# shellcheck disable=SC2329  # wait_until invokes it by name
+xp13_both_composed() {
+    xp_count mc team-alpha
+    MC_ALPHA=$XP_COUNT
+    xp_count mc team-beta
+    MC_BETA=$XP_COUNT
+    [ "${MC_ALPHA:-0}" -ge 2 ] && [ "${MC_BETA:-0}" -ge 3 ]
+}
 MC_ALPHA=""
 MC_BETA=""
-for i in $(seq 1 30); do
-    MC_ALPHA=$(kubectl get mc -A --no-headers 2>/dev/null | { grep -c "team-alpha" || true; })
-    MC_BETA=$(kubectl get mc -A --no-headers 2>/dev/null | { grep -c "team-beta" || true; })
-    if [ "${MC_ALPHA:-0}" -ge 2 ] && [ "${MC_BETA:-0}" -ge 3 ]; then
-        break
-    fi
-    sleep 2
-done
+wait_until 60 2 "2 team-alpha and 3 team-beta MachineConfigs" xp13_both_composed || true
 
 echo "  team-alpha MachineConfigs: ${MC_ALPHA:-0} (expected 2)"
 echo "  team-beta MachineConfigs: ${MC_BETA:-0} (expected 3)"
@@ -672,38 +729,33 @@ kubectl delete namespace "$XP13_NS_B" --ignore-not-found --wait=false 2>/dev/nul
 # =================================================================
 # XP-14: Crossplane function health
 # =================================================================
-begin_test "XP-14: function-cfgd pod running and healthy"
+begin_test "XP-14: the run's function-cfgd pod running and healthy"
 
-FUNC_STATUS=""
-for i in $(seq 1 15); do
-    FUNC_STATUS=$(kubectl get pods -A -l pkg.crossplane.io/function=function-cfgd \
+# shellcheck disable=SC2329  # wait_until invokes it by name
+xp14_func_running() {
+    FUNC_STATUS=$(kubectl get pods -A -l "pkg.crossplane.io/function=$E2E_FUNCTION" \
         -o jsonpath='{.items[0].status.phase}' 2>/dev/null || echo "")
-    if [ "$FUNC_STATUS" = "Running" ]; then
-        break
-    fi
-    sleep 2
-done
+    [ "$FUNC_STATUS" = "Running" ]
+}
+FUNC_STATUS=""
+wait_until 30 2 "the $E2E_FUNCTION pod to run" xp14_func_running || true
 
-echo "  function-cfgd pod status: ${FUNC_STATUS:-not found}"
+echo "  $E2E_FUNCTION pod status: ${FUNC_STATUS:-not found}"
 
 if [ "$FUNC_STATUS" = "Running" ]; then
-    # Also verify the Function resource is healthy/installed
-    FUNC_HEALTHY=$(kubectl get function function-cfgd \
-        -o jsonpath='{.status.conditions[?(@.type=="Healthy")].status}' 2>/dev/null || echo "")
-    FUNC_INSTALLED=$(kubectl get function function-cfgd \
-        -o jsonpath='{.status.conditions[?(@.type=="Installed")].status}' 2>/dev/null || echo "")
+    # A Running pod can still fail its package health check, so the Function's
+    # own Healthy condition is what the test title claims.
+    FUNC_HEALTHY=$(wait_for_k8s_field function "$E2E_FUNCTION" "" \
+        '{.status.conditions[?(@.type=="Healthy")].status}' True 60 || true)
     echo "  Function healthy: ${FUNC_HEALTHY:-unknown}"
-    echo "  Function installed: ${FUNC_INSTALLED:-unknown}"
 
-    if [ "$FUNC_HEALTHY" = "True" ] || [ "$FUNC_INSTALLED" = "True" ]; then
+    if [ "$FUNC_HEALTHY" = "True" ]; then
         pass_test "XP-14"
     else
-        # Pod is Running, which is the primary assertion — pass even if conditions aren't populated yet
-        echo "  Pod is Running (conditions may still be propagating)"
-        pass_test "XP-14"
+        fail_test "XP-14" "$E2E_FUNCTION pod is Running but the Function's Healthy condition is '${FUNC_HEALTHY:-unset}' after 60s: $(kubectl get function "$E2E_FUNCTION" -o jsonpath='{range .status.conditions[*]}{.type}={.status} ({.reason}: {.message}); {end}' 2>&1)"
     fi
 else
-    fail_test "XP-14" "Expected function-cfgd pod Running, got '${FUNC_STATUS:-not found}'"
+    fail_test "XP-14" "Expected $E2E_FUNCTION pod Running, got '${FUNC_STATUS:-not found}'"
 fi
 
 # --- Final cleanup ---
@@ -713,7 +765,30 @@ echo "Cleaning up test resources..."
 for ns in "$XP07_NS" "$XP13_NS_A" "$XP13_NS_B" "crossplane-e2e-${E2E_RUN_ID:-local}"; do
     kubectl delete namespace "$ns" --ignore-not-found --wait=false 2>/dev/null || true
 done
-kubectl delete teamconfig -l "cfgd.io/e2e=true" --ignore-not-found -A 2>/dev/null || true
+# A Function left behind holds the package lock node the next run's Function
+# needs, and the TeamConfigs reference the Composition, so they go first and
+# the Function and Composition are read back as gone.
+CLEANUP_FAILED=false
+if ! kubectl delete teamconfigs -A -l "$E2E_RUN_LABEL" --ignore-not-found --wait=true --timeout=90s; then
+    echo "ERROR: the TeamConfigs labelled $E2E_RUN_LABEL were not deleted within 90s. Read the kubectl error above; tests/e2e/pr-install-down.sh deletes them again." >&2
+    CLEANUP_FAILED=true
+fi
+if ! kubectl delete composition,function -l "$E2E_RUN_LABEL" --ignore-not-found --wait=true --timeout=90s; then
+    echo "ERROR: the Composition and Function labelled $E2E_RUN_LABEL were not deleted within 90s. Read the kubectl error above; tests/e2e/pr-install-down.sh deletes them again." >&2
+    CLEANUP_FAILED=true
+fi
+if ! RUN_LEFT="$(kubectl get "function/$E2E_FUNCTION" "composition/$E2E_COMPOSITION" --ignore-not-found -o name)"; then
+    echo "ERROR: could not read function/$E2E_FUNCTION and composition/$E2E_COMPOSITION to confirm they are gone." >&2
+    CLEANUP_FAILED=true
+elif [ -n "$RUN_LEFT" ]; then
+    echo "ERROR: still on the cluster after the suite's cleanup: $(echo "$RUN_LEFT" | tr '\n' ' ')" >&2
+    CLEANUP_FAILED=true
+else
+    echo "  function/$E2E_FUNCTION and composition/$E2E_COMPOSITION are gone"
+fi
 
 # --- Summary ---
-print_summary "Crossplane E2E Tests"
+SUMMARY_RC=0
+print_summary "Crossplane E2E Tests" || SUMMARY_RC=$?
+[ "$CLEANUP_FAILED" = false ] || exit 1
+exit "$SUMMARY_RC"

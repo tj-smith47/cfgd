@@ -3,12 +3,13 @@ use cfgd_core::PathDisplayExt;
 use cfgd_core::output::{Doc, OwnerLabel, Printer, Role, section_guard::SectionGuard};
 
 pub fn cmd_module_add_from_registry(
-    cli: &Cli,
-    printer: &Printer,
+    run: &RunContext<'_>,
     reference: &str,
     yes: bool,
     allow_unsigned: bool,
 ) -> anyhow::Result<()> {
+    let cli = run.cli();
+    let printer = run.printer();
     let reg_ref = match modules::parse_registry_ref(reference) {
         Some(r) => r,
         None => {
@@ -28,15 +29,9 @@ pub fn cmd_module_add_from_registry(
     if !cli.config.exists() {
         return Err(no_config_error(printer, &cli.config));
     }
-    let mut cfg = config::load_config(&cli.config)?;
-    drain_config_deprecations(printer, &mut cfg);
+    let cfg = run.config()?;
 
-    let registries = cfg
-        .spec
-        .modules
-        .as_ref()
-        .map(|m| &m.registries[..])
-        .unwrap_or(&[]);
+    let registries = &cfg.spec.modules_effective().registries[..];
     let registry_entry = match registries.iter().find(|s| s.name == reg_ref.registry) {
         Some(r) => r,
         None => {
@@ -96,24 +91,18 @@ pub fn cmd_module_add_from_registry(
         ),
     );
 
-    cmd_module_add_remote(
-        cli,
-        printer,
-        &full_url,
-        Some(&reg_ref.registry),
-        yes,
-        allow_unsigned,
-    )
+    cmd_module_add_remote(run, &full_url, Some(&reg_ref.registry), yes, allow_unsigned)
 }
 
 pub fn cmd_module_add_remote(
-    cli: &Cli,
-    printer: &Printer,
+    run: &RunContext<'_>,
     url: &str,
     source_name: Option<&str>,
     yes: bool,
     allow_unsigned: bool,
 ) -> anyhow::Result<()> {
+    let cli = run.cli();
+    let printer = run.printer();
     let config_dir = config_dir(cli);
     let cache_base = module_cache_dir(cli)?;
 
@@ -198,8 +187,7 @@ pub fn cmd_module_add_remote(
     // Check for GPG/SSH signature on the tag
     let git_src = modules::parse_git_source(url)?;
     super::enforce_signature_policy(
-        cli,
-        printer,
+        run,
         git_src.tag.as_deref(),
         &module_name,
         allow_unsigned,
@@ -244,8 +232,7 @@ pub fn cmd_module_add_remote(
     };
     let mut added_to_profile: Option<String> = None;
     if cli.config.exists() {
-        let mut cfg = config::load_config(&cli.config)?;
-        drain_config_deprecations(printer, &mut cfg);
+        let cfg = run.config()?;
         let profile_name = match cli.profile.as_deref() {
             Some(p) => p,
             None => cfg.active_profile()?,
@@ -281,13 +268,14 @@ pub fn cmd_module_add_remote(
 }
 
 pub fn cmd_module_upgrade(
-    cli: &Cli,
-    printer: &Printer,
+    run: &RunContext<'_>,
     name: &str,
     new_ref: Option<&str>,
     yes: bool,
     allow_unsigned: bool,
 ) -> anyhow::Result<()> {
+    let cli = run.cli();
+    let printer = run.printer();
     let config_dir = config_dir(cli);
     let cache_base = module_cache_dir(cli)?;
     let lib_printer = null_lib_printer(printer);
@@ -442,8 +430,7 @@ pub fn cmd_module_upgrade(
 
     // Check for signature on new ref
     super::enforce_signature_policy(
-        cli,
-        printer,
+        run,
         Some(&new_ref),
         name,
         allow_unsigned,
@@ -729,7 +716,9 @@ pub(super) fn filter_and_build_search_results(
         .collect()
 }
 
-pub fn cmd_module_search(cli: &Cli, printer: &Printer, query: &str) -> anyhow::Result<()> {
+pub fn cmd_module_search(run: &RunContext<'_>, query: &str) -> anyhow::Result<()> {
+    let cli = run.cli();
+    let printer = run.printer();
     let cache_base = module_cache_dir(cli)?;
     let lib_printer = null_lib_printer(printer);
 
@@ -737,14 +726,8 @@ pub fn cmd_module_search(cli: &Cli, printer: &Printer, query: &str) -> anyhow::R
         return Err(no_config_error(printer, &cli.config));
     }
 
-    let mut cfg = config::load_config(&cli.config)?;
-    drain_config_deprecations(printer, &mut cfg);
-    let registries = cfg
-        .spec
-        .modules
-        .as_ref()
-        .map(|m| &m.registries[..])
-        .unwrap_or(&[]);
+    let cfg = run.config()?;
+    let registries = &cfg.spec.modules_effective().registries[..];
     if registries.is_empty() {
         // The same element type a found listing serializes, so one payload shape
         // answers both outcomes.
@@ -878,32 +861,41 @@ pub fn cmd_module_registry_add(
     // `already_present` short-circuits the "added" success message after the
     // helper's write (still a harmless idempotent rewrite).
     let mut already_present = false;
-    super::mutate_config_yaml(&cli.config, true, |doc| {
-        let spec = doc
-            .get_mut("spec")
-            .ok_or_else(|| anyhow::anyhow!("config has no spec"))?;
-        if spec.get("modules").is_none() {
-            spec["modules"] = serde_yaml::Value::Mapping(serde_yaml::Mapping::new());
-        }
+    super::mutate_config_yaml(&cli.config, |doc| {
+        use crate::cli::config_cmd;
+        let spec = config_cmd::spec_mapping_mut(doc, &cli.config)?;
         let modules = spec
-            .get_mut("modules")
-            .ok_or_else(|| anyhow::anyhow!("failed to create modules section"))?;
+            .entry(serde_yaml::Value::from("modules"))
+            .or_insert(serde_yaml::Value::Null);
+        let found = config_cmd::blocking_shape(modules);
+        let modules = config_cmd::section_mapping_mut(modules).ok_or_else(|| {
+            config_cmd::section_shape_refusal(
+                &cli.config,
+                "modules",
+                found,
+                config_cmd::SHAPE_MAPPING,
+            )
+        })?;
         let registries = modules
-            .get_mut("registries")
-            .and_then(|v| v.as_sequence_mut());
-
-        if let Some(registries) = registries {
-            if registries
-                .iter()
-                .any(|s| s.get("name").and_then(|v| v.as_str()) == Some(&registry_name))
-            {
-                already_present = true;
-                return Ok(());
-            }
-            registries.push(new_entry.clone());
-        } else {
-            modules["registries"] = serde_yaml::Value::Sequence(vec![new_entry.clone()]);
+            .entry(serde_yaml::Value::from("registries"))
+            .or_insert(serde_yaml::Value::Null);
+        let found = config_cmd::blocking_shape(registries);
+        let registries = config_cmd::section_sequence_mut(registries).ok_or_else(|| {
+            config_cmd::section_shape_refusal(
+                &cli.config,
+                "modules.registries",
+                found,
+                config_cmd::SHAPE_SEQUENCE,
+            )
+        })?;
+        if registries
+            .iter()
+            .any(|s| s.get("name").and_then(|v| v.as_str()) == Some(&registry_name))
+        {
+            already_present = true;
+            return Ok(());
         }
+        registries.push(new_entry.clone());
         Ok(())
     })?;
 
@@ -953,11 +945,12 @@ pub fn cmd_module_registry_remove(
     }
 
     let mut outcome = RegistryRemoveOutcome::NoRegistries;
-    super::mutate_config_yaml(&cli.config, true, |doc| {
+    super::mutate_config_yaml(&cli.config, |doc| {
         let registries = doc
             .get_mut("spec")
             .and_then(|s| s.get_mut("modules"))
             .and_then(|m| m.get_mut("registries"))
+            // section-write-ok: a remover; an absent list is reported as holding no registries
             .and_then(|v| v.as_sequence_mut());
         match registries {
             None => outcome = RegistryRemoveOutcome::NoRegistries,
@@ -1059,23 +1052,18 @@ enum RegistryRemoveOutcome {
 }
 
 pub fn cmd_module_registry_rename(
-    cli: &Cli,
-    printer: &Printer,
+    run: &RunContext<'_>,
     name: &str,
     new_name: &str,
 ) -> anyhow::Result<()> {
+    let cli = run.cli();
+    let printer = run.printer();
     if !cli.config.exists() {
         return Err(no_config_error(printer, &cli.config));
     }
 
-    let mut cfg = config::load_config(&cli.config)?;
-    drain_config_deprecations(printer, &mut cfg);
-    let registries = cfg
-        .spec
-        .modules
-        .as_ref()
-        .map(|m| &m.registries[..])
-        .unwrap_or(&[]);
+    let cfg = run.config()?;
+    let registries = &cfg.spec.modules_effective().registries[..];
 
     if !registries.iter().any(|s| s.name == name) {
         // Carry the typed RegistryNotFound so the exit-code downcast resolves to
@@ -1103,15 +1091,17 @@ pub fn cmd_module_registry_rename(
     }
 
     // Update registry name in cfgd.yaml via the shared mutate-write helper.
-    super::mutate_config_yaml(&cli.config, true, |doc| {
+    super::mutate_config_yaml(&cli.config, |doc| {
         if let Some(registries) = doc
             .get_mut("spec")
             .and_then(|s| s.get_mut("modules"))
             .and_then(|m| m.get_mut("registries"))
+            // section-write-ok: renames an entry the typed load above already found
             .and_then(|v| v.as_sequence_mut())
         {
             for entry in registries.iter_mut() {
                 if entry.get("name").and_then(|v| v.as_str()) == Some(name) {
+                    // section-write-ok: the entry matched by name is a mapping
                     entry["name"] = serde_yaml::Value::String(new_name.to_string());
                     break;
                 }
@@ -1180,7 +1170,9 @@ pub fn cmd_module_registry_rename(
     Ok(())
 }
 
-pub fn cmd_module_registry_list(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
+pub fn cmd_module_registry_list(run: &RunContext<'_>) -> anyhow::Result<()> {
+    let cli = run.cli();
+    let printer = run.printer();
     // An empty listing serializes the same element type a populated one does, so a
     // consumer reading the payload sees one shape whether or not a registry exists.
     let no_registries: Vec<super::RegistryListEntry> = Vec::new();
@@ -1194,14 +1186,8 @@ pub fn cmd_module_registry_list(cli: &Cli, printer: &Printer) -> anyhow::Result<
         return Ok(());
     }
 
-    let mut cfg = config::load_config(&cli.config)?;
-    drain_config_deprecations(printer, &mut cfg);
-    let registries = cfg
-        .spec
-        .modules
-        .as_ref()
-        .map(|m| &m.registries[..])
-        .unwrap_or(&[]);
+    let cfg = run.config()?;
+    let registries = &cfg.spec.modules_effective().registries[..];
     if registries.is_empty() {
         printer.emit(
             Doc::new()
@@ -1345,7 +1331,7 @@ pub(super) fn ensure_module_in_profile_doc(
 /// Derived from the command's own printer rather than built fresh: a sink
 /// built from nothing re-resolves colour and theme, and a lib call that does
 /// emit — a warning survives Quiet — would answer to the terminal instead of
-/// to `--no-color` and `spec.theme`.
+/// to `--no-color` and `spec.output.theme`.
 fn null_lib_printer(printer: &Printer) -> cfgd_core::output::Printer {
     printer.at_verbosity(cfgd_core::output::Verbosity::Quiet)
 }

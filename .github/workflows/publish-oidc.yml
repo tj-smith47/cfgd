@@ -12,9 +12,9 @@ name: Publish OIDC
 #
 # release.yml's `dispatch-oidc` job invokes this after `determinism-check`
 # succeeds and polls it to a verdict, so the release run still reflects this
-# leg's result (and rolls the tags back if it fails). One call publishes all
-# five crates: anodizer topologically sorts the workspace, so cfgd-crd →
-# cfgd-core → the binary trio land in crates.io dependency order internally —
+# leg's result (and rolls the tags back if it fails). One call publishes all six
+# crates: anodizer topologically sorts the workspace, so cfgd-schema → cfgd-crd
+# → cfgd-core → the binary trio land in crates.io dependency order internally —
 # the ordering release.yml's per-crate job graph used to enforce by hand.
 #
 # The crates.io Trusted-Publisher configs must therefore name THIS file

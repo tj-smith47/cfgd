@@ -6,26 +6,9 @@ fn first_line(s: &str) -> String {
     s.lines().next().unwrap_or("").to_string()
 }
 
-/// `{ path, detail }` JSON payload shared by the secret subcommands'
-/// `backend_unavailable` error contexts.
-fn secret_path_detail(file: &Path, detail: &str) -> serde_json::Value {
-    serde_json::json!({ "path": cfgd_core::to_posix_string(file), "detail": detail })
-}
-
-pub fn cmd_secret_encrypt(cli: &Cli, printer: &Printer, file: &Path) -> anyhow::Result<()> {
-    let backend = match get_secret_backend(cli, printer, file) {
-        Ok(b) => b,
-        Err(e) => {
-            let full = format!("{}", e);
-            return Err(crate::cli::cli_error_ctx(
-                e,
-                cfgd_core::to_posix_string(file),
-                "backend_unavailable",
-                first_line(&full),
-                secret_path_detail(file, &full),
-            ));
-        }
-    };
+pub fn cmd_secret_encrypt(run: &RunContext<'_>, file: &Path) -> anyhow::Result<()> {
+    let printer = run.printer();
+    let backend = get_secret_backend(run, file)?;
     let backend_name = backend.name().to_string();
 
     if let Err(e) = backend.encrypt_file(file) {
@@ -65,20 +48,9 @@ pub fn cmd_secret_encrypt(cli: &Cli, printer: &Printer, file: &Path) -> anyhow::
     Ok(())
 }
 
-pub fn cmd_secret_decrypt(cli: &Cli, printer: &Printer, file: &Path) -> anyhow::Result<()> {
-    let backend = match get_secret_backend(cli, printer, file) {
-        Ok(b) => b,
-        Err(e) => {
-            let full = format!("{}", e);
-            return Err(crate::cli::cli_error_ctx(
-                e,
-                cfgd_core::to_posix_string(file),
-                "backend_unavailable",
-                first_line(&full),
-                secret_path_detail(file, &full),
-            ));
-        }
-    };
+pub fn cmd_secret_decrypt(run: &RunContext<'_>, file: &Path) -> anyhow::Result<()> {
+    let printer = run.printer();
+    let backend = get_secret_backend(run, file)?;
     let backend_name = backend.name().to_string();
 
     let decrypted = match backend.decrypt_file(file) {
@@ -144,20 +116,9 @@ pub fn cmd_secret_decrypt(cli: &Cli, printer: &Printer, file: &Path) -> anyhow::
     Ok(())
 }
 
-pub fn cmd_secret_edit(cli: &Cli, printer: &Printer, file: &Path) -> anyhow::Result<()> {
-    let backend = match get_secret_backend(cli, printer, file) {
-        Ok(b) => b,
-        Err(e) => {
-            let full = format!("{}", e);
-            return Err(crate::cli::cli_error_ctx(
-                e,
-                cfgd_core::to_posix_string(file),
-                "backend_unavailable",
-                first_line(&full),
-                secret_path_detail(file, &full),
-            ));
-        }
-    };
+pub fn cmd_secret_edit(run: &RunContext<'_>, file: &Path) -> anyhow::Result<()> {
+    let printer = run.printer();
+    let backend = get_secret_backend(run, file)?;
     let backend_name = backend.name().to_string();
 
     if let Err(e) = backend.edit_file(file) {

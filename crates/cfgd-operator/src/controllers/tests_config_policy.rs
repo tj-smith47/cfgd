@@ -1,5 +1,4 @@
 //! Reconcile-fn tests for `controllers/config_policy.rs`.
-#![cfg(test)]
 
 use std::sync::Arc;
 
@@ -290,6 +289,7 @@ async fn reconcile_config_policy_marks_non_compliant_when_package_version_does_n
     mc.status = Some(crate::crds::MachineConfigStatus {
         last_reconciled: Some("2026-01-01T00:00:00Z".to_string()),
         backup_schedule_owners: Default::default(),
+        compliance: None,
         observed_generation: Some(1),
         conditions: vec![],
         package_versions: [("kubectl".to_string(), "1.28.0".to_string())]
@@ -515,6 +515,7 @@ async fn reconcile_config_policy_writes_nothing_when_the_evaluation_is_unchanged
     mc.status = Some(crate::crds::MachineConfigStatus {
         last_reconciled: None,
         backup_schedule_owners: Default::default(),
+        compliance: None,
         observed_generation: Some(1),
         conditions: vec![compliant_condition("False", "steady-policy")],
         package_versions: Default::default(),
@@ -616,6 +617,156 @@ async fn reconcile_config_policy_repeated_reconciles_patch_status_once() {
     }
 }
 
+/// Caches holding these MachineConfigs and ConfigPolicies.
+fn stores_holding(
+    machine_configs: Vec<MachineConfig>,
+    policies: &[&crate::crds::ConfigPolicy],
+) -> ControllerStores {
+    ControllerStores {
+        machine_configs: seeded_store(machine_configs),
+        config_policies: seeded_store(policies.iter().map(|p| (*p).clone()).collect()),
+        ..empty_stores()
+    }
+}
+
+fn requiring(name: &str, module: &str) -> crate::crds::ConfigPolicy {
+    let mut policy = config_policy(name, NS);
+    policy.spec.required_modules = vec![ModuleRef {
+        name: module.to_string(),
+        required: true,
+    }];
+    policy
+}
+
+/// Several policies targeting one machine share its one `Compliant`
+/// condition, so each writes the verdict of all of them. The first pass
+/// writes it; every other policy's pass over the same machine then finds the
+/// identical condition and writes nothing to the machine, where a condition
+/// naming only its writer would be rewritten by each policy in turn forever.
+#[tokio::test]
+async fn policies_sharing_a_machine_write_one_verdict_and_stop() {
+    let alpha = config_policy("alpha", NS);
+    let bravo = requiring("bravo", "kubectl");
+    let charlie = requiring("charlie", "helm");
+    let all = [&alpha, &bravo, &charlie];
+    let mc = machine_config("shared", NS);
+
+    let (ctx, _registry, harness) = MockKubeHarness::with_stores(
+        vec![
+            ExpectedCall::patch_status(format!("{}/status", machine_config_path(NS, "shared")))
+                .returning_json(&mc),
+            expect_event_post(NS), // PolicyViolation
+            ExpectedCall::patch_status(format!("{}/status", config_policy_path("charlie")))
+                .returning_json(&charlie),
+            expect_event_post(NS), // Evaluated
+            expect_event_post(NS), // NonCompliantTargets
+        ],
+        stores_holding(vec![mc.clone()], &all),
+    );
+    reconcile_config_policy(Arc::new(charlie.clone()), ctx)
+        .await
+        .unwrap();
+    let first = harness.finish().await;
+    let written = first
+        .find(Method::PATCH, "/machineconfigs/shared/status")
+        .expect("the first pass writes the shared verdict")
+        .body_json();
+    let compliant = written["status"]["conditions"]
+        .as_array()
+        .expect("conditions")
+        .iter()
+        .find(|c| c["type"] == "Compliant")
+        .expect("Compliant condition")
+        .clone();
+    assert_eq!(compliant["status"], "False");
+    assert_eq!(compliant["reason"], "PolicyViolation");
+    assert_eq!(
+        compliant["message"], "Violates policies bravo, charlie",
+        "the violated policies, sorted, whichever policy wrote it"
+    );
+
+    let mut judged = mc.clone();
+    judged.status = Some(serde_json::from_value(written["status"].clone()).expect("status"));
+
+    let quiet = [
+        (
+            alpha.clone(),
+            vec![
+                ExpectedCall::patch_status(format!("{}/status", config_policy_path("alpha")))
+                    .returning_json(&alpha),
+                expect_event_post(NS), // Evaluated
+            ],
+        ),
+        (
+            bravo.clone(),
+            vec![
+                expect_event_post(NS), // PolicyViolation
+                ExpectedCall::patch_status(format!("{}/status", config_policy_path("bravo")))
+                    .returning_json(&bravo),
+                expect_event_post(NS), // Evaluated
+                expect_event_post(NS), // NonCompliantTargets
+            ],
+        ),
+    ];
+    for (policy, expected) in quiet {
+        let name = policy.name_any();
+        let (ctx, _registry, harness) =
+            MockKubeHarness::with_stores(expected, stores_holding(vec![judged.clone()], &all));
+        reconcile_config_policy(Arc::new(policy), ctx)
+            .await
+            .unwrap();
+        let report = harness.finish().await;
+        assert!(
+            report.find(Method::PATCH, "/machineconfigs/").is_none(),
+            "`{name}` finds the shared verdict already written and leaves the machine alone"
+        );
+    }
+}
+
+/// Deleting one of two policies that judge a machine hands it the verdict of
+/// the policy that remains at once.
+#[tokio::test]
+async fn deleting_a_policy_hands_the_machine_the_verdict_of_the_policies_that_remain() {
+    let alpha = config_policy("alpha", NS);
+    let mut bravo = requiring("bravo", "kubectl");
+    bravo.metadata.deletion_timestamp = Some(k8s_openapi::apimachinery::pkg::apis::meta::v1::Time(
+        k8s_openapi::jiff::Timestamp::now(),
+    ));
+
+    let mut mc = machine_config("shared", NS);
+    mc.status = Some(crate::crds::MachineConfigStatus {
+        observed_generation: Some(1),
+        conditions: vec![compliant_condition("False", "bravo")],
+        ..Default::default()
+    });
+
+    let (ctx, _registry, harness) = MockKubeHarness::with_stores(
+        vec![
+            ExpectedCall::get(machine_config_path(NS, "shared")).returning_json(&mc),
+            ExpectedCall::patch_status(format!("{}/status", machine_config_path(NS, "shared")))
+                .returning_json(&mc),
+            ExpectedCall::patch(config_policy_path("bravo")).returning_json(&bravo),
+        ],
+        stores_holding(vec![mc.clone()], &[&alpha, &bravo]),
+    );
+    reconcile_config_policy(Arc::new(bravo), ctx).await.unwrap();
+
+    let report = harness.finish().await;
+    let compliant = report
+        .find(Method::PATCH, "/machineconfigs/shared/status")
+        .expect("the machine is re-judged")
+        .body_json()["status"]["conditions"]
+        .as_array()
+        .expect("conditions")
+        .iter()
+        .find(|c| c["type"] == "Compliant")
+        .expect("Compliant condition")
+        .clone();
+    assert_eq!(compliant["status"], "True");
+    assert_eq!(compliant["reason"], "PolicyCompliant");
+    assert_eq!(compliant["message"], "Compliant with policy alpha");
+}
+
 /// A machine already recorded in `status.nonCompliantMachines` produces no new
 /// event; one that is not yet recorded does. The memory is the policy's own
 /// persisted status, so it survives an operator restart.
@@ -638,6 +789,7 @@ async fn reconcile_config_policy_emits_violation_event_only_for_newly_violating_
     known.status = Some(crate::crds::MachineConfigStatus {
         last_reconciled: None,
         backup_schedule_owners: Default::default(),
+        compliance: None,
         observed_generation: Some(1),
         conditions: vec![compliant_condition("False", "transition-policy")],
         package_versions: Default::default(),
@@ -707,6 +859,7 @@ async fn reconcile_config_policy_preserves_sibling_conditions_on_the_machine() {
     mc.status = Some(crate::crds::MachineConfigStatus {
         last_reconciled: None,
         backup_schedule_owners: Default::default(),
+        compliance: None,
         observed_generation: Some(1),
         conditions: vec![Condition {
             condition_type: "Reconciled".to_string(),
@@ -791,6 +944,7 @@ async fn reconcile_config_policy_caps_the_violator_list_but_not_the_count() {
             mc.status = Some(crate::crds::MachineConfigStatus {
                 last_reconciled: None,
                 backup_schedule_owners: Default::default(),
+                compliance: None,
                 observed_generation: Some(1),
                 conditions: vec![compliant_condition("False", "cap-policy")],
                 package_versions: Default::default(),
@@ -873,6 +1027,7 @@ async fn reconcile_config_policy_refires_violation_events_for_machines_past_the_
             mc.status = Some(crate::crds::MachineConfigStatus {
                 last_reconciled: None,
                 backup_schedule_owners: Default::default(),
+                compliance: None,
                 observed_generation: Some(1),
                 conditions: vec![compliant_condition("False", "refire-policy")],
                 package_versions: Default::default(),
@@ -999,6 +1154,7 @@ async fn reconcile_config_policy_clears_its_verdict_from_machines_on_deletion() 
     judged.status = Some(crate::crds::MachineConfigStatus {
         last_reconciled: None,
         backup_schedule_owners: Default::default(),
+        compliance: None,
         observed_generation: Some(1),
         conditions: vec![
             Condition {
@@ -1014,7 +1170,8 @@ async fn reconcile_config_policy_clears_its_verdict_from_machines_on_deletion() 
         package_versions: Default::default(),
     });
 
-    // A machine no policy ever judged has nothing to retire, so it is not written to.
+    // A machine no policy ever judged is read and has nothing to retire, so
+    // it is not written to.
     let untouched = machine_config("mc-unjudged", NS);
 
     // What the API server holds NOW: the cache copy plus a DriftDetected the
@@ -1090,12 +1247,12 @@ async fn reconcile_config_policy_clears_its_verdict_from_machines_on_deletion() 
 }
 
 /// A machine relabelled out of the selector after being judged non-compliant is
-/// no longer in the selector match at deletion time, but the policy's own
-/// `status.nonCompliantMachines` still remembers it: the clear covers the union
-/// of both, so the stale `Compliant=False` is retired anyway. A remembered
-/// machine that no longer exists is skipped without failing the deletion.
+/// no longer in the selector match at deletion time, but it still carries the
+/// verdict: the clear covers every machine in the namespace that carries one,
+/// so the stale `Compliant=False` is retired anyway. A machine the policy's
+/// status still names but the cache no longer holds is not read at all.
 #[tokio::test]
-async fn deleting_a_policy_clears_a_remembered_machine_the_selector_no_longer_matches() {
+async fn deleting_a_policy_clears_a_judged_machine_the_selector_no_longer_matches() {
     let mut policy = config_policy("recall-policy", NS);
     let mut match_labels = std::collections::BTreeMap::new();
     match_labels.insert("env".to_string(), "prod".to_string());
@@ -1124,6 +1281,7 @@ async fn deleting_a_policy_clears_a_remembered_machine_the_selector_no_longer_ma
     relabelled.status = Some(crate::crds::MachineConfigStatus {
         last_reconciled: None,
         backup_schedule_owners: Default::default(),
+        compliance: None,
         observed_generation: Some(1),
         conditions: vec![compliant_condition("False", "recall-policy")],
         package_versions: Default::default(),
@@ -1131,7 +1289,6 @@ async fn deleting_a_policy_clears_a_remembered_machine_the_selector_no_longer_ma
 
     let (ctx, _registry, harness) = MockKubeHarness::with_stores(
         vec![
-            ExpectedCall::get(machine_config_path(NS, "mc-gone")).returning_404("mc-gone"),
             ExpectedCall::get(machine_config_path(NS, "mc-relabelled")).returning_json(&relabelled),
             ExpectedCall::patch_status(format!(
                 "{}/status",
@@ -1148,19 +1305,66 @@ async fn deleting_a_policy_clears_a_remembered_machine_the_selector_no_longer_ma
         .unwrap();
 
     let report = harness.finish().await;
-    assert_eq!(report.captured.len(), 4);
+    assert_eq!(report.captured.len(), 3);
     let compliant = report
         .find(Method::PATCH, "/machineconfigs/mc-relabelled/status")
-        .expect("the remembered machine must be reset")
+        .expect("the relabelled machine must be reset")
         .body_json()["status"]["conditions"][0]
         .clone();
     assert_eq!(compliant["type"], "Compliant");
     assert_eq!(compliant["status"], "Unknown");
     assert_eq!(compliant["reason"], "NotEvaluated");
     assert_eq!(
-        report.captured[3].body_json()["metadata"]["finalizers"],
+        report.captured[2].body_json()["metadata"]["finalizers"],
         serde_json::json!([])
     );
+}
+
+/// The cache can lag the verdict this policy wrote: a machine whose cached
+/// copy shows no `Compliant` condition while the API server's copy carries
+/// one is still reset, because the live read decides and the cache does not.
+/// With no policy left in the namespace, nothing else would ever retire it.
+#[tokio::test]
+async fn deleting_a_policy_resets_a_machine_whose_cached_copy_lags_its_verdict() {
+    let mut policy = config_policy("lagged-policy", NS);
+    policy.metadata.deletion_timestamp = Some(
+        k8s_openapi::apimachinery::pkg::apis::meta::v1::Time(k8s_openapi::jiff::Timestamp::now()),
+    );
+
+    let cached = machine_config("mc-lagged", NS);
+    let mut live = cached.clone();
+    live.status = Some(crate::crds::MachineConfigStatus {
+        last_reconciled: None,
+        backup_schedule_owners: Default::default(),
+        compliance: None,
+        observed_generation: Some(1),
+        conditions: vec![compliant_condition("False", "lagged-policy")],
+        package_versions: Default::default(),
+    });
+
+    let (ctx, _registry, harness) = MockKubeHarness::with_stores(
+        vec![
+            ExpectedCall::get(machine_config_path(NS, "mc-lagged")).returning_json(&live),
+            ExpectedCall::patch_status(format!("{}/status", machine_config_path(NS, "mc-lagged")))
+                .returning_json(&live),
+            ExpectedCall::patch(config_policy_path("lagged-policy")).returning_json(&policy),
+        ],
+        stores_with(vec![cached]),
+    );
+
+    reconcile_config_policy(Arc::new(policy), ctx)
+        .await
+        .unwrap();
+
+    let report = harness.finish().await;
+    let compliant = report
+        .find(Method::PATCH, "/machineconfigs/mc-lagged/status")
+        .expect("the machine must be reset from its live copy")
+        .body_json()["status"]["conditions"][0]
+        .clone();
+    assert_eq!(compliant["type"], "Compliant");
+    assert_eq!(compliant["status"], "Unknown");
+    assert_eq!(compliant["reason"], "NotEvaluated");
 }
 
 /// One machine the API server refuses cannot strand the deleted policy: the
@@ -1178,6 +1382,7 @@ async fn a_machine_the_api_server_refuses_does_not_strand_the_deleted_policy() {
         mc.status = Some(crate::crds::MachineConfigStatus {
             last_reconciled: None,
             backup_schedule_owners: Default::default(),
+            compliance: None,
             observed_generation: Some(1),
             conditions: vec![compliant_condition("False", "refused-policy")],
             package_versions: Default::default(),
@@ -1219,6 +1424,122 @@ async fn a_machine_the_api_server_refuses_does_not_strand_the_deleted_policy() {
     );
 }
 
+fn labelled_machine(name: &str, env: &str, conditions: Vec<Condition>) -> MachineConfig {
+    let mut mc = machine_config(name, NS);
+    mc.metadata.labels = Some(std::collections::BTreeMap::from([(
+        "env".to_string(),
+        env.to_string(),
+    )]));
+    mc.status = Some(crate::crds::MachineConfigStatus {
+        last_reconciled: None,
+        backup_schedule_owners: Default::default(),
+        compliance: None,
+        observed_generation: Some(1),
+        conditions,
+        package_versions: Default::default(),
+    });
+    mc
+}
+
+fn prod_policy(name: &str) -> crate::crds::ConfigPolicy {
+    let mut policy = config_policy(name, NS);
+    policy.spec.target_selector = LabelSelector {
+        match_labels: std::collections::BTreeMap::from([("env".to_string(), "prod".to_string())]),
+        match_expressions: vec![],
+    };
+    policy
+}
+
+/// A machine relabelled out of the only policy's selector keeps the verdict it
+/// was last given until something resets it, and nothing but a policy pass
+/// can: the pass reaches every machine in the namespace carrying a verdict, so
+/// the stale `Compliant=False` goes back to the never-judged triple.
+#[tokio::test]
+async fn a_policy_pass_resets_a_machine_relabelled_out_of_every_selector() {
+    let policy = prod_policy("only-policy");
+    let relabelled = labelled_machine(
+        "mc-relabelled",
+        "dev",
+        vec![compliant_condition("False", "only-policy")],
+    );
+
+    let (ctx, _registry, harness) = MockKubeHarness::with_stores(
+        vec![
+            ExpectedCall::patch_status(format!(
+                "{}/status",
+                machine_config_path(NS, "mc-relabelled")
+            ))
+            .returning_json(&relabelled),
+            ExpectedCall::patch_status(format!("{}/status", config_policy_path("only-policy")))
+                .returning_json(&policy),
+            expect_event_post(NS),
+        ],
+        stores_with(vec![relabelled.clone()]),
+    );
+
+    reconcile_config_policy(Arc::new(policy), ctx)
+        .await
+        .unwrap();
+
+    let report = harness.finish().await;
+    let compliant = report
+        .find(Method::PATCH, "/machineconfigs/mc-relabelled/status")
+        .expect("the relabelled machine must be reset")
+        .body_json()["status"]["conditions"][0]
+        .clone();
+    assert_eq!(compliant["type"], "Compliant");
+    assert_eq!(compliant["status"], "Unknown");
+    assert_eq!(compliant["reason"], "NotEvaluated");
+    assert_eq!(compliant["message"], "Awaiting policy evaluation");
+    assert_eq!(
+        report.captured[1].body_json()["status"]["compliantCount"],
+        0,
+        "the relabelled machine is no longer counted"
+    );
+}
+
+/// A machine no policy targets that already reads the never-judged triple is
+/// in its steady state: a pass sends it nothing, so the policy's own status
+/// write and its event are the whole reconcile.
+#[tokio::test]
+async fn a_policy_pass_leaves_an_untargeted_machine_already_unknown_alone() {
+    let policy = prod_policy("steady-policy");
+    let untargeted = labelled_machine(
+        "mc-dev",
+        "dev",
+        vec![Condition {
+            condition_type: "Compliant".to_string(),
+            status: "Unknown".to_string(),
+            reason: "NotEvaluated".to_string(),
+            message: "Awaiting policy evaluation".to_string(),
+            last_transition_time: "2026-01-01T00:00:00Z".to_string(),
+            observed_generation: Some(1),
+        }],
+    );
+
+    let (ctx, _registry, harness) = MockKubeHarness::with_stores(
+        vec![
+            ExpectedCall::patch_status(format!("{}/status", config_policy_path("steady-policy")))
+                .returning_json(&policy),
+            expect_event_post(NS),
+        ],
+        stores_with(vec![untargeted]),
+    );
+
+    reconcile_config_policy(Arc::new(policy), ctx)
+        .await
+        .unwrap();
+
+    let report = harness.finish().await;
+    assert!(
+        report
+            .find(Method::PATCH, "/machineconfigs/mc-dev/status")
+            .is_none(),
+        "a machine already reading Unknown is not rewritten"
+    );
+    assert_eq!(report.captured.len(), 2);
+}
+
 /// A repeat deletion reconcile (the finalizer removal failed last time) finds
 /// the verdict already reset and writes nothing to the machine: the cleared
 /// triple is a steady state, not a new thing to patch.
@@ -1233,6 +1554,7 @@ async fn a_repeat_deletion_reconcile_does_not_rewrite_an_already_cleared_verdict
     cleared.status = Some(crate::crds::MachineConfigStatus {
         last_reconciled: None,
         backup_schedule_owners: Default::default(),
+        compliance: None,
         observed_generation: Some(1),
         conditions: vec![Condition {
             condition_type: "Compliant".to_string(),
@@ -1353,6 +1675,7 @@ async fn a_machine_whose_policy_was_deleted_reaches_steady_state() {
     mc.status = Some(crate::crds::MachineConfigStatus {
         last_reconciled: Some("2026-01-01T00:00:00Z".to_string()),
         backup_schedule_owners: Default::default(),
+        compliance: None,
         observed_generation: Some(1),
         conditions: vec![Condition {
             condition_type: "Compliant".to_string(),

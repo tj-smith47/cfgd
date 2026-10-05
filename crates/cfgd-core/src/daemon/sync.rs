@@ -33,6 +33,7 @@ pub(crate) async fn handle_sync(
                 if require_signed_commits && !allow_unsigned {
                     let src = source_name.to_string();
                     let repo = repo_path.to_path_buf();
+                    // long-line-ok: a hatch is read off its own line, so it cannot wrap
                     // spawn-blocking-ok: closure resolves no home paths (git op on an explicit repo path)
                     let verify_result = tokio::task::spawn_blocking(move || {
                         crate::sources::verify_head_signature(&src, &repo)
@@ -54,6 +55,7 @@ pub(crate) async fn handle_sync(
                             // later tick.
                             let repo = repo_path.to_path_buf();
                             let accepted = movement.from.clone();
+                            // long-line-ok: a hatch is read off its own line, so it cannot wrap
                             // spawn-blocking-ok: closure resolves no home paths (git op on an explicit repo path)
                             let rolled_back = tokio::task::spawn_blocking(move || {
                                 crate::sources::reset_checkout_to(&repo, &accepted)
@@ -185,14 +187,14 @@ pub(crate) async fn handle_version_check(
 
     tracing::info!("daemon: checking for cfgd updates");
 
-    let channel = update_cfg.channel.clone();
+    let channel = update_cfg.channel_effective().to_string();
     let version_for_check = cfgd_version.to_string();
     let check_result = crate::spawn_blocking_with_test_home(move || {
-        crate::upgrade::check_latest(&version_for_check, None, channel.as_deref(), None)
+        crate::upgrade::check_latest(&version_for_check, None, &channel, None)
     })
     .await;
 
-    crate::upgrade::record_check_at(cfgd_version, now);
+    crate::upgrade::record_check_at(now);
 
     let check = match check_result {
         Ok(Ok(c)) => c,
@@ -412,14 +414,14 @@ pub(crate) fn handle_compliance_snapshot(
     cache_dir_override: Option<&Path>,
     scope: crate::Scope,
     printer: &crate::output::Printer,
-) {
+) -> Option<crate::compliance::ComplianceSnapshot> {
     tracing::info!("daemon: running compliance snapshot");
 
     let cfg = match config::load_config(config_path) {
         Ok(c) => c,
         Err(e) => {
             tracing::error!(error = %e, "daemon: compliance config load failed");
-            return;
+            return None;
         }
     };
 
@@ -432,7 +434,7 @@ pub(crate) fn handle_compliance_snapshot(
         Some(p) => p,
         None => {
             tracing::error!("daemon: compliance has no profile configured — skipping");
-            return;
+            return None;
         }
     };
 
@@ -440,7 +442,7 @@ pub(crate) fn handle_compliance_snapshot(
         Ok(r) => r,
         Err(e) => {
             tracing::error!(error = %e, "daemon: compliance profile resolution failed");
-            return;
+            return None;
         }
     };
 
@@ -448,29 +450,50 @@ pub(crate) fn handle_compliance_snapshot(
     // same source-composed desired state every other surface does, without
     // touching the network in the compliance tick.
     //
-    // FAIL-CLOSED: a real compose error (malformed/constraint-violating cached
-    // manifest, failed signature) skips this snapshot rather than recording a
-    // degraded local-only compliance picture that would falsely report
-    // source-delivered resources as missing. Mirrors the resolve_profile arm
-    // above (error + return). A benign never-synced cache-miss is warn+skip inside
-    // the resolver, not an Err, so it still snapshots local-only.
+    // FAIL-CLOSED: a real compose error (malformed cached manifest, failed
+    // signature) skips this snapshot, since a degraded local-only picture would
+    // falsely report source-delivered resources as missing. Mirrors the
+    // resolve_profile arm above (error + return). A benign never-synced
+    // cache-miss is a warn+skip inside the resolver that returns no Err, so it
+    // still snapshots local-only.
+    //
+    // Report mode: a source that breaks a security constraint is a violation
+    // this snapshot records, the way `cfgd compliance` records it, so the
+    // machine reporting it is the one the fleet sees out of compliance.
     let printer = printer.at_verbosity(crate::output::Verbosity::Quiet);
-    let (resolved, source_module_roots) = match super::compose_daemon_desired_state(
-        &cfg,
-        &local_resolved,
-        &printer,
-        scope,
-        cache_dir_override,
-    ) {
-        Ok(composed) => (composed.resolved, composed.source_module_roots),
-        Err(e) => {
-            tracing::error!(
-                error = %e,
-                "compliance: source composition failed — skipping snapshot to avoid recording a degraded desired state"
-            );
-            return;
-        }
-    };
+    let (mut resolved, source_module_roots, constraint_violations) =
+        match super::compose_daemon_desired_state(
+            &cfg,
+            &local_resolved,
+            &printer,
+            scope,
+            cache_dir_override,
+            crate::composition::ConstraintMode::Report,
+        ) {
+            Ok(composed) => (
+                composed.resolved,
+                composed.source_module_roots,
+                composed.constraint_violations,
+            ),
+            Err(e) => {
+                tracing::error!(
+                    error = %e,
+                    "compliance: source composition failed — skipping snapshot to avoid recording a degraded desired state"
+                );
+                return None;
+            }
+        };
+
+    // A manifest that cannot be read would leave its packages out of the
+    // snapshot, which then reports them as undeclared; `cfgd compliance`
+    // refuses the same snapshot.
+    if let Err(e) = hooks.resolve_manifest_packages(&config_dir, &mut resolved.merged) {
+        tracing::error!(
+            error = %e,
+            "compliance: a package manifest could not be read — skipping snapshot"
+        );
+        return None;
+    }
 
     let mut registry = hooks.build_registry(&cfg);
     hooks.extend_registry_custom_managers(&mut registry, &resolved.merged.packages);
@@ -483,7 +506,7 @@ pub(crate) fn handle_compliance_snapshot(
             Ok(s) => s,
             Err(e) => {
                 tracing::error!(error = %e, "daemon: compliance state store error");
-                return;
+                return None;
             }
         },
         // Startup materializes the scope default, so `None` means that
@@ -494,7 +517,7 @@ pub(crate) fn handle_compliance_snapshot(
             Ok(s) => s,
             Err(e) => {
                 tracing::error!(error = %e, "daemon: compliance state store error");
-                return;
+                return None;
             }
         },
     };
@@ -541,17 +564,29 @@ pub(crate) fn handle_compliance_snapshot(
         &printer,
         &store,
         None,
+        &constraint_violations,
     ) {
         Ok(s) => s,
         Err(e) => {
             tracing::error!(error = %e, "daemon: compliance snapshot collection failed");
-            return;
+            return None;
         }
     };
 
+    persist_compliance_snapshot(&store, &snapshot, compliance_cfg);
+    Some(snapshot)
+}
+
+/// Store a collected snapshot when it differs from the newest stored one,
+/// export it when configured, and prune rows past the retention.
+fn persist_compliance_snapshot(
+    store: &StateStore,
+    snapshot: &crate::compliance::ComplianceSnapshot,
+    compliance_cfg: &config::ComplianceConfig,
+) {
     // Hash through the store's own derivation, so this comparison is against
     // the value a CLI-written row holds.
-    let hash = match crate::compliance::snapshot_content_hash(&snapshot) {
+    let hash = match crate::compliance::snapshot_content_hash(snapshot) {
         Ok((_, h)) => h,
         Err(e) => {
             tracing::error!(error = %e, "daemon: compliance snapshot serialization failed");
@@ -574,7 +609,7 @@ pub(crate) fn handle_compliance_snapshot(
     }
 
     // Store the new snapshot
-    if let Err(e) = store.store_compliance_snapshot(&snapshot) {
+    if let Err(e) = store.store_compliance_snapshot(snapshot) {
         tracing::error!(error = %e, "daemon: compliance failed to store snapshot");
         return;
     }
@@ -586,14 +621,12 @@ pub(crate) fn handle_compliance_snapshot(
         "daemon: compliance snapshot stored"
     );
     tracing::info!(
-        "daemon: compliance snapshot stored — {} compliant, {} warning, {} violation",
-        snapshot.summary.compliant,
-        snapshot.summary.warning,
-        snapshot.summary.violation
+        "daemon: compliance snapshot stored — {}",
+        snapshot.summary.counts_line()
     );
 
     // Export if configured
-    match crate::compliance::export_snapshot_to_file(&snapshot, &compliance_cfg.export) {
+    match crate::compliance::export_snapshot_to_file(snapshot, &compliance_cfg.export) {
         Ok(file_path) => {
             tracing::info!(
                 "daemon: compliance snapshot exported to {}",

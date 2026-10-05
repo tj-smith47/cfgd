@@ -1,5 +1,5 @@
 use super::*;
-use cfgd_core::output::{Doc, Printer, Role};
+use cfgd_core::output::{Doc, Role};
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -23,14 +23,14 @@ pub struct VerifyOutput {
 }
 
 pub fn cmd_verify(
-    cli: &Cli,
-    printer: &Printer,
+    run: &RunContext<'_>,
     module_filter: Option<&str>,
     exit_code: bool,
 ) -> anyhow::Result<()> {
-    let ctx = RunContext::new(cli, printer);
-    let config_dir = ctx.config_dir();
-    let state = ctx.state()?;
+    let cli = run.cli();
+    let printer = run.printer();
+    let config_dir = run.config_dir();
+    let state = run.state()?;
 
     // The configuration this report was measured against, named through the
     // one header builder. A `--module` run resolves no profile, so it carries
@@ -39,12 +39,12 @@ pub fn cmd_verify(
     let (resolved, resolved_modules, mut registry, composed_sources, header_profile) =
         if let Some(mod_name) = module_filter {
             let resolved =
-                empty_resolved_profile(&[mod_name.to_string()], &ctx.active_profile_name());
+                empty_resolved_profile(&[mod_name.to_string()], &run.active_profile_name());
             let registry = build_registry();
             let platform = Platform::current();
             let mgr_map = registry.manager_map();
             let cache_base = module_cache_dir(cli)?;
-            let pkg_cx = ctx.package_context()?;
+            let pkg_cx = run.package_context()?;
             let mods = match modules::resolve_modules(
                 &[mod_name.to_string()],
                 config_dir,
@@ -54,6 +54,7 @@ pub fn cmd_verify(
                 &mgr_map,
                 Some(&pkg_cx),
                 printer,
+                &modules::refuse_floor_bootstrap,
             ) {
                 Ok(mods) => mods,
                 // "not found" is reserved for a genuinely unknown module name and
@@ -78,15 +79,15 @@ pub fn cmd_verify(
                 Err(e) => return Err(e.into()),
             };
             let declared =
-                cfgd_core::reconciler::ComposedSource::from_declared(&ctx.config()?.spec.sources);
+                cfgd_core::reconciler::ComposedSource::from_declared(&run.config()?.spec.sources);
             (resolved, mods, registry, declared, None)
         } else {
-            let (cfg, profile_name, local_resolved) = ctx.config_and_profile()?;
+            let (cfg, profile_name, local_resolved) = run.config_and_profile()?;
             // Compose with sources (cache-only — read paths stay offline) and resolve
             // the effective module set through the one shared resolver, so `verify`
             // checks the same source-composed desired state that `apply` writes.
             let mut desired = resolve_desired_state(
-                &ctx,
+                run,
                 cfg,
                 local_resolved,
                 &[],
@@ -94,6 +95,7 @@ pub fn cmd_verify(
                 printer,
                 false,
                 composition::ConstraintMode::Report,
+                &cfgd_core::modules::refuse_floor_bootstrap,
             )?;
             // Taken before the other fields, because a partial move out of
             // `desired` would block the `&mut self` this accessor needs.
@@ -101,7 +103,7 @@ pub fn cmd_verify(
             let composed_sources = desired.sources;
             let mut resolved = desired.resolved;
             let mods = desired.modules;
-            ctx.resolve_manifest_packages(
+            run.resolve_manifest_packages(
                 &mut resolved.merged.packages,
                 &mut resolved.merged.layer_sources,
             )?;
@@ -115,7 +117,7 @@ pub fn cmd_verify(
     // the reconciler's package check and the manager-drift plan below both diff
     // against installed state, and a `--module` run resolved its chain against
     // the same listing above.
-    let pkg_cx = ctx.package_context()?;
+    let pkg_cx = run.package_context()?;
     // One spinner across all four passes, renamed per pass: they run back to
     // back with no output of their own, and a package enumeration inside the
     // first can take seconds.
@@ -260,11 +262,9 @@ pub fn cmd_verify(
     // copy, rendered below into `build_verify_doc`'s human/`-o json` output.
     // Recomputing here is exactly `diff`'s "opaque markers carry neither
     // real value" rule applied to `verify`'s own render.
+    let layered = reconciler::LayeredEnv::of(&resolved, &resolved_modules);
     let merged_env_items = reconciler::MergedEnvItems::new(
-        &resolved.merged.env,
-        &resolved.merged.aliases,
-        &resolved.merged.entry_owners,
-        &resolved_modules,
+        &layered,
         &reconciler::recorded_manager_path_dirs(state, &resolved.merged, &resolved_modules),
     );
     for r in &mut results {
@@ -449,6 +449,7 @@ pub fn build_verify_doc(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use cfgd_core::output::Printer;
 
     use super::test_support::verify_doc_for_test;
     use serial_test::serial;
@@ -503,7 +504,10 @@ mod tests {
         cli.cache_dir = Some(tmp.path().join("cache"));
         let printer = quiet_printer();
 
-        let err = cmd_verify(&cli, &printer, Some("cycle-a"), false).unwrap_err();
+        let err = crate::cli::RunContext::for_test(&cli, &printer, |run| {
+            cmd_verify(run, Some("cycle-a"), false)
+        })
+        .unwrap_err();
         let cfgd_err = err
             .downcast_ref::<cfgd_core::errors::CfgdError>()
             .unwrap_or_else(|| panic!("expected a typed CfgdError, got: {err}"));
@@ -562,7 +566,10 @@ mod tests {
         cli.cache_dir = Some(tmp.path().join("cache"));
         let printer = quiet_printer();
 
-        cmd_verify(&cli, &printer, Some("test-mod"), false).unwrap();
+        crate::cli::RunContext::for_test(&cli, &printer, |run| {
+            cmd_verify(run, Some("test-mod"), false)
+        })
+        .unwrap();
         let after_module = open_state_store(Some(&state_dir), cfgd_core::Scope::User).unwrap();
         let stamp_after_module = after_module.last_scan_at().unwrap();
         assert_eq!(
@@ -574,10 +581,14 @@ mod tests {
                 .scoped_scan_stamps()
                 .unwrap()
                 .contains_key("module:test-mod"),
-            "the module it DID check must be dated, or every verdict read off that              scan cites a check no stamp can point at"
+            concat!(
+                "the module it DID check must be dated, or every verdict read off that scan ",
+                "cites a check no stamp can point at"
+            )
         );
 
-        cmd_verify(&cli, &printer, None, false).unwrap();
+        crate::cli::RunContext::for_test(&cli, &printer, |run| cmd_verify(run, None, false))
+            .unwrap();
         let stamp_after_fleet = open_state_store(Some(&state_dir), cfgd_core::Scope::User)
             .unwrap()
             .last_scan_at()
@@ -634,19 +645,13 @@ mod tests {
             value: "vim".to_string(),
             platforms: vec![],
         }];
-        // The owners the profile-layer merge records for this profile: the
-        // generated line names its layer, so a needle rendered with no owner
-        // is a line the file never holds.
-        let declared_owners = {
-            let mut o = cfgd_core::config::EntryOwners::default();
-            o.claim("profile:default", &declared_env, &[]);
-            o
-        };
         let declared_line = cfgd_core::reconciler::MergedEnvItems::new(
-            &declared_env,
-            &[],
-            &declared_owners,
-            &[],
+            &cfgd_core::reconciler::LayeredEnv::from_parts(
+                "profile:default",
+                &declared_env,
+                &[],
+                &[],
+            ),
             &[],
         )
         .declared_line("env-var", "EDITOR")
@@ -658,7 +663,8 @@ mod tests {
         cli.cache_dir = Some(tmp.path().join("cache"));
 
         let (printer, cap) = Printer::for_test_doc();
-        cmd_verify(&cli, &printer, None, false).unwrap();
+        crate::cli::RunContext::for_test(&cli, &printer, |run| cmd_verify(run, None, false))
+            .unwrap();
         drop(printer);
 
         let human = cap.human();
@@ -685,6 +691,276 @@ mod tests {
             editor_row["expected"],
             serde_json::json!(declared_line),
             "the -o json payload must carry the declared line: {editor_row}"
+        );
+    }
+
+    /// A converged machine's `-o json` agrees with itself when its managed env
+    /// file holds SEVERAL blocks claiming one name.
+    ///
+    /// The file the generator writes is the inheritance debugger: a profile's
+    /// own `EDITOR` line stands in its block and the module's overriding one in
+    /// the block below it, and the value a shell folding the blocks in order
+    /// resolves to is the LAST of them. `cmd_verify` recomputes both operands
+    /// of every row through `display_values`, matching rows included, so a
+    /// reader taking the FIRST line that claims the name reported a converged
+    /// machine as drifted against itself — through a green workspace run, since
+    /// every other CLI fixture plants a ONE-block file. Which way a fixture
+    /// plants it follows from its subject: one reproducing convergence calls
+    /// `plant_managed_env_files` and gets whatever the generator composes,
+    /// which is one block for a fixture declaring one layer, while one whose
+    /// subject is a missing or hand-edited entry writes its own bytes, that
+    /// state having no converged form to plant.
+    #[test]
+    #[serial]
+    fn cmd_verify_reports_equal_operands_for_a_converged_multi_block_env_file() {
+        use crate::cli::helpers::tests::make_cli;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let config_path = tmp.path().join("cfgd.yaml");
+        std::fs::write(
+            &config_path,
+            "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: default\n",
+        )
+        .unwrap();
+        let profiles_dir = tmp.path().join("profiles");
+        std::fs::create_dir_all(&profiles_dir).unwrap();
+        std::fs::write(
+            profiles_dir.join("default.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  envScope: Interactive\n  modules: [test-mod]\n  env:\n    - name: EDITOR\n      value: vim\n",
+        )
+        .unwrap();
+        let mod_dir = tmp.path().join("modules").join("test-mod");
+        std::fs::create_dir_all(&mod_dir).unwrap();
+        std::fs::write(
+            mod_dir.join("module.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: test-mod\nspec:\n  env:\n    - name: EDITOR\n      value: nvim\n",
+        )
+        .unwrap();
+
+        let tmp_home = tempfile::tempdir().unwrap();
+        let _home = cfgd_core::with_test_home_guard(tmp_home.path());
+
+        // The files the planner would write for the same two layers, taken from
+        // the generator: the module's line has to stand in its own block below
+        // the profile's for the premise to hold.
+        let profile_env = vec![cfgd_core::config::EnvVar {
+            name: "EDITOR".to_string(),
+            value: "vim".to_string(),
+            platforms: vec![],
+        }];
+        let module = cfgd_core::modules::ResolvedModule {
+            held_managers: Vec::new(),
+            floor_bootstraps: Vec::new(),
+            name: "test-mod".to_string(),
+            packages: Vec::new(),
+            files: Vec::new(),
+            env: vec![cfgd_core::config::EnvVar {
+                name: "EDITOR".to_string(),
+                value: "nvim".to_string(),
+                platforms: vec![],
+            }],
+            aliases: Vec::new(),
+            system: std::collections::BTreeMap::new(),
+            pre_apply_scripts: Vec::new(),
+            post_apply_scripts: Vec::new(),
+            pre_reconcile_scripts: Vec::new(),
+            post_reconcile_scripts: Vec::new(),
+            on_change_scripts: Vec::new(),
+            on_drift_scripts: Vec::new(),
+            depends: Vec::new(),
+            dep_pulled: false,
+            dir: mod_dir.clone(),
+            platform_skip_reason: None,
+            origin: None,
+        };
+        let layered = cfgd_core::reconciler::LayeredEnv::from_parts(
+            "profile:default",
+            &profile_env,
+            &[],
+            std::slice::from_ref(&module),
+        );
+        let files = cfgd_core::test_helpers::plant_managed_env_files(
+            &cfgd_core::reconciler::MergedEnvItems::new(&layered, &[]),
+            tmp_home.path(),
+            cfgd_core::config::EnvScope::Interactive,
+        );
+        let mut claiming = 0usize;
+        for (_, content) in &files {
+            let lines: Vec<&str> = content
+                .lines()
+                .filter(|line| !line.starts_with('#') && line.contains("EDITOR"))
+                .collect();
+            claiming = claiming.max(lines.len());
+            if lines.len() > 1 {
+                assert_ne!(
+                    lines.first(),
+                    lines.last(),
+                    "the premise is two DIFFERENT lines claiming one name:\n{content}"
+                );
+            }
+        }
+        assert!(
+            claiming > 1,
+            "a profile and a module declaring one name must write two blocks claiming it"
+        );
+
+        let state_dir = tmp.path().join("state");
+        let mut cli = make_cli(config_path);
+        cli.state_dir = Some(state_dir);
+        cli.cache_dir = Some(tmp.path().join("cache"));
+
+        let (printer, cap) = Printer::for_test_doc();
+        crate::cli::RunContext::for_test(&cli, &printer, |run| cmd_verify(run, None, false))
+            .unwrap();
+        drop(printer);
+
+        let json = cap.json().expect("verify emits a data payload");
+        let results = json["results"].as_array().expect("results array");
+        let editor_row = results
+            .iter()
+            .find(|r| r["resourceType"] == "env-var" && r["resourceId"] == "EDITOR")
+            .unwrap_or_else(|| panic!("expected an EDITOR result row: {json}"));
+        assert_eq!(
+            editor_row["expected"], editor_row["actual"],
+            "a converged machine's operands must agree: {editor_row}"
+        );
+        assert_eq!(
+            editor_row["matches"],
+            serde_json::json!(true),
+            "the row itself must read as converged: {editor_row}"
+        );
+    }
+
+    /// Two tiers of ONE subscription are read the same way two owners are.
+    ///
+    /// A subscriber override rides one step above the source's own items, so
+    /// both blocks carry `source:<name>` and only their rank tells them apart.
+    /// `deployed_env_item_line` takes the LAST line claiming a name, so the
+    /// outranked tier's value standing verbatim above the winner's is never
+    /// read as what the machine holds: a converged file reports equal operands,
+    /// and a hand-edited override reports the OVERRIDE tier's line as `have`.
+    /// Nothing else exercises this shape — the sibling pin above plants a
+    /// profile and a module, which are two owners.
+    #[test]
+    #[serial]
+    fn cmd_verify_reads_the_override_tier_of_one_owners_two_blocks() {
+        use crate::cli::helpers::tests::make_cli;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let config_path = tmp.path().join("cfgd.yaml");
+        std::fs::write(
+            &config_path,
+            "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: default\n",
+        )
+        .unwrap();
+        let profiles_dir = tmp.path().join("profiles");
+        std::fs::create_dir_all(&profiles_dir).unwrap();
+        // The winner the subscription's override settled on, which is what the
+        // run resolves for itself and compares the file against.
+        std::fs::write(
+            profiles_dir.join("default.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  envScope: Interactive\n  env:\n    - name: EDITOR\n      value: nvim\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(tmp.path().join("modules")).unwrap();
+
+        let tmp_home = tempfile::tempdir().unwrap();
+        let _home = cfgd_core::with_test_home_guard(tmp_home.path());
+
+        // The file a converged machine holds for those two tiers, composed by
+        // the generator.
+        let tier = |priority: u32, value: &str| cfgd_core::config::ProfileLayer {
+            source: "team".to_string(),
+            profile_name: format!("team-{priority}"),
+            priority,
+            policy: cfgd_core::config::LayerPolicy::Required,
+            spec: cfgd_core::config::ProfileSpec {
+                env: vec![cfgd_core::config::EnvVar {
+                    name: "EDITOR".to_string(),
+                    value: value.to_string(),
+                    platforms: Vec::new(),
+                }],
+                ..Default::default()
+            },
+        };
+        let resolve = |layers: Vec<cfgd_core::config::ProfileLayer>| {
+            let merged = cfgd_core::config::merge_layers(&layers);
+            cfgd_core::config::ResolvedProfile { layers, merged }
+        };
+        // Each value's line as this host's generator composes it, so the
+        // premise reads the dialect the planted file is written in.
+        let line_of = |value: &str| {
+            let resolved = resolve(vec![tier(500, value)]);
+            let layered = cfgd_core::reconciler::LayeredEnv::of(&resolved, &[]);
+            cfgd_core::reconciler::MergedEnvItems::new(&layered, &[])
+                .declared_line("env-var", "EDITOR")
+                .expect("EDITOR renders a line")
+        };
+        let (vim, nvim, emacs) = (line_of("vim"), line_of("nvim"), line_of("emacs"));
+        let resolved = resolve(vec![tier(500, "vim"), tier(501, "nvim")]);
+        let layered = cfgd_core::reconciler::LayeredEnv::of(&resolved, &[]);
+        let files = cfgd_core::test_helpers::plant_managed_env_files(
+            &cfgd_core::reconciler::MergedEnvItems::new(&layered, &[]),
+            tmp_home.path(),
+            cfgd_core::config::EnvScope::Interactive,
+        );
+        let primary = cfgd_core::reconciler::primary_env_file(tmp_home.path());
+        let body = files
+            .iter()
+            .find(|(path, _)| path == &primary)
+            .map(|(_, body)| body.clone())
+            .unwrap_or_else(|| panic!("the generator wrote no {}", primary.display()));
+        assert!(
+            body.find(&vim)
+                .is_some_and(|at| Some(at) < body.find(&nvim)),
+            "the premise is the outranked tier's line standing ABOVE the winner's:\n{body}"
+        );
+
+        let state_dir = tmp.path().join("state");
+        let mut cli = make_cli(config_path);
+        cli.state_dir = Some(state_dir);
+        cli.cache_dir = Some(tmp.path().join("cache"));
+
+        let editor_row = |cap: &cfgd_core::output::DocCapture| {
+            let json = cap.json().expect("verify emits a data payload");
+            json["results"]
+                .as_array()
+                .expect("results array")
+                .iter()
+                .find(|r| r["resourceType"] == "env-var" && r["resourceId"] == "EDITOR")
+                .cloned()
+                .unwrap_or_else(|| panic!("expected an EDITOR result row: {json}"))
+        };
+
+        let (printer, cap) = Printer::for_test_doc();
+        crate::cli::RunContext::for_test(&cli, &printer, |run| cmd_verify(run, None, false))
+            .unwrap();
+        drop(printer);
+        let converged = editor_row(&cap);
+        assert_eq!(
+            converged["expected"], converged["actual"],
+            "a converged two-tier file must report equal operands: {converged}"
+        );
+
+        // Edit the OVERRIDE tier's line alone: the outranked `vim` line is a
+        // different line, so it stays exactly where the generator put it.
+        for (path, content) in &files {
+            std::fs::write(path, content.replace(&nvim, &emacs)).unwrap();
+        }
+        let (printer, cap) = Printer::for_test_doc();
+        crate::cli::RunContext::for_test(&cli, &printer, |run| cmd_verify(run, None, false))
+            .unwrap();
+        drop(printer);
+        let drifted = editor_row(&cap);
+        assert_eq!(
+            drifted["actual"],
+            serde_json::json!(emacs),
+            "the reader must report the override tier's line: {drifted}"
+        );
+        assert_eq!(
+            drifted["expected"],
+            serde_json::json!(nvim),
+            "the expectation is the profile's own winner: {drifted}"
         );
     }
 
@@ -765,7 +1041,8 @@ mod tests {
         }
 
         let printer = quiet_printer();
-        cmd_verify(&cli, &printer, None, false).unwrap();
+        crate::cli::RunContext::for_test(&cli, &printer, |run| cmd_verify(run, None, false))
+            .unwrap();
 
         let store = open_state_store(Some(&state_dir), cfgd_core::Scope::User).unwrap();
         let rows = store.unresolved_drift().unwrap();
@@ -813,7 +1090,7 @@ mod tests {
         use crate::cli::helpers::tests::{make_cli, quiet_printer};
 
         let _shim = cfgd_core::test_helpers::ToolShim::install(
-            "CFGD_GSETTINGS_BIN",
+            crate::seams::GSETTINGS_BIN_ENV,
             0,
             "org.gnome.cfgd key 'declared'\n",
             "",
@@ -863,7 +1140,8 @@ mod tests {
         }
 
         let printer = quiet_printer();
-        cmd_verify(&cli, &printer, None, false).unwrap();
+        crate::cli::RunContext::for_test(&cli, &printer, |run| cmd_verify(run, None, false))
+            .unwrap();
 
         let store = open_state_store(Some(&state_dir), cfgd_core::Scope::User).unwrap();
         let rows = store.unresolved_drift().unwrap();
@@ -946,7 +1224,10 @@ mod tests {
         }
 
         let (printer, buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-        cmd_verify(&cli, &printer, Some("test-mod"), false).unwrap();
+        crate::cli::RunContext::for_test(&cli, &printer, |run| {
+            cmd_verify(run, Some("test-mod"), false)
+        })
+        .unwrap();
         drop(printer);
         // The DISPLAY half of the scope rule: the rendered report carries the
         // module's own finding and none of the machine-wide env/rc rows the

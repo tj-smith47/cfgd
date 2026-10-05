@@ -30,14 +30,14 @@
       "description": "A declarative backup: snapshot `source` (a file or directory) into `destination`, retaining the newest `retention` snapshots. The shape is validated at parse time and run by the backup engine. Schedule-less backups (no `schedule`) run automatically on every `cfgd apply`; every backup — scheduled or not — can also be run directly with `cfgd backup run [name]`.",
       "properties": {
         "destination": {
-          "description": "Where snapshots are written. Defaults to `<state_dir>/backups/<name>/` when omitted — resolved by the backup engine, not at parse time, since the state dir depends on runtime scope/overrides.",
+          "description": "Where snapshots are written. Defaults to `<state_dir>/backups/<name>/` when omitted — resolved by the backup engine at run time, since the state dir depends on runtime scope/overrides.",
           "type": [
             "string",
             "null"
           ]
         },
         "name": {
-          "description": "Unique identifier for this backup within `spec.backups`, unique across the list. Keys the `destination` default, run records, and CLI selection. Becomes a directory component (`<state_dir>/backups/<name>/`) and a lock filename (`<state_dir>/locks/backup-<name>.lock`), so it must be non-empty, non-blank, a single segment (no `/` or `\\`), not a directory reference (`.`, `..`), not rooted (`/daily`, `C:/daily`), and free of `:` anywhere — a drive and NTFS data-stream separator on Windows. Windows shapes are rejected on every platform so a name written on one OS stays valid on the others.",
+          "description": "Unique identifier for this backup within `spec.backups`, unique across the list. Keys the `destination` default, run records, and CLI selection. Becomes a directory component (`<state_dir>/backups/<name>/`) and a lock filename (`<state_dir>/locks/backup-<name>.lock`), so it must be non-empty and non-blank, a single segment (no `/` or `\\`), neither a directory reference (`.`, `..`) nor rooted (`/daily`, `C:/daily`), and free of `:` anywhere — a drive and NTFS data-stream separator on Windows. Windows shapes are rejected on every platform so a name written on one OS stays valid on the others.",
           "type": "string"
         },
         "namePattern": {
@@ -63,7 +63,7 @@
         },
         "retention": {
           "default": 10,
-          "description": "Number of newest snapshots to keep for this backup; older snapshots are pruned from disk and from the run history. Must be at least 1 (`0` would keep no backups, which is a misconfiguration rather than a supported \"unlimited\" mode). Defaults to 10.",
+          "description": "Number of newest snapshots to keep for this backup; older snapshots are pruned from disk and from the run history. Must be at least 1 (`0` would keep no backups, which is a misconfiguration; there is no \"unlimited\" mode). Defaults to 10.",
           "format": "uint32",
           "minimum": 1,
           "type": "integer"
@@ -105,7 +105,7 @@
         },
         "file": {
           "default": null,
-          "description": "Path to a Brewfile to apply instead of (or alongside) `taps`, `formulae` and `casks`. Relative to the config root.",
+          "description": "Path to a Brewfile to apply in place of (or alongside) `taps`, `formulae` and `casks`. Relative to the config root.",
           "type": [
             "string",
             "null"
@@ -135,7 +135,7 @@
       "description": "The object form of `cargo`: crates to install, a `Cargo.toml` to install from, or both. A bare list of names folds into `packages`.",
       "properties": {
         "file": {
-          "description": "Path to a `Cargo.toml` whose binaries to install instead of `packages`. Relative to the config root.",
+          "description": "Path to a `Cargo.toml` whose binaries are installed in place of `packages`. Relative to the config root.",
           "type": [
             "string",
             "null"
@@ -329,7 +329,10 @@
           },
           "default": {},
           "description": "Octal permission strings (`\"0600\"`) keyed by target path, applied after deployment.",
-          "type": "object"
+          "type": [
+            "object",
+            "null"
+          ]
         }
       },
       "type": "object"
@@ -868,6 +871,21 @@
       },
       "type": "object"
     },
+    "PreferencesSpec": {
+      "additionalProperties": false,
+      "description": "`spec.preferences`: one ranked candidate list per domain. A domain joins as a sibling field; nothing about the block's shape changes.",
+      "properties": {
+        "clipboard": {
+          "default": [],
+          "description": "Clipboard mechanisms in preference order, most-wanted first. cfgd picks the first one the running session can reach and whose tool is installed, and exports it as `CFGD_CLIPBOARD`. Candidates: `wl-clipboard`, `xclip`, `xsel`, `pbcopy`, `clip.exe`, `osc52`.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
     "ScheduleOwner": {
       "description": "Which layer owns a backup unit's schedule. `Cluster` (the default) leaves the unit open to a cluster `BackupPolicy`, which may set or replace its `schedule` and `retention`. `Local` pins the unit to the machine: the policy still reports it, but projects no schedule onto it.",
       "oneOf": [
@@ -887,7 +905,7 @@
       "description": "The mapping form of a script entry: a command with a timeout, shell, guard condition or working directory.",
       "properties": {
         "continueOnError": {
-          "description": "Treat a non-zero exit as success and continue reconciliation instead of failing the run. Default: `false`.",
+          "description": "Treat a non-zero exit as success, so reconciliation continues and the run does not fail. Default: `false`.",
           "type": [
             "boolean",
             "null"
@@ -908,7 +926,7 @@
           ]
         },
         "interactive": {
-          "description": "Run the script attached to the terminal (inherited stdin/stdout/stderr, no spinner, no output capture, no idle timeout) so it can prompt the user — e.g. `echo \"press Enter when done\"; read`. Requires a TTY: when stdin is not a terminal (CI, piped input, or any daemon-run phase) the script is skipped with a warning rather than hanging on instant EOF.",
+          "description": "Run the script attached to the terminal (inherited stdin/stdout/stderr, no spinner, no output capture, no idle timeout) so it can prompt the user — e.g. `echo \"press Enter when done\"; read`. Requires a TTY: when stdin is not a terminal (CI, piped input, or any daemon-run phase) the script is skipped with a warning, so it cannot hang on instant EOF.",
           "type": "boolean"
         },
         "onlyIf": {
@@ -1212,6 +1230,20 @@
       "default": null,
       "description": "Packages this profile installs, grouped by manager."
     },
+    "preferences": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/PreferencesSpec"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": {
+        "clipboard": []
+      },
+      "description": "Ranked candidate lists per domain (`clipboard`, …). cfgd picks the first candidate the running session can reach and exports it as `CFGD_<DOMAIN>`."
+    },
     "scripts": {
       "anyOf": [
         {
@@ -1236,7 +1268,10 @@
       "additionalProperties": true,
       "default": {},
       "description": "System configurator settings (`macosDefaults`, `systemd`, `sysctl`, …), keyed by configurator name.",
-      "type": "object"
+      "type": [
+        "object",
+        "null"
+      ]
     }
   },
   "title": "ProfileSpec",

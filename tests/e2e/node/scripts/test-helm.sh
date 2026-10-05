@@ -17,11 +17,11 @@ trap 'helm uninstall cfgd -n "$E2E_NAMESPACE" 2>/dev/null || true; cleanup_e2e' 
 # T20: Helm install creates DaemonSet
 # =================================================================
 begin_test "T20: Helm install"
-helm install cfgd "$CHART_DIR" \
+helm install cfgd "$CHART_DIR" --skip-crds \
     -f "$VALUES_FILE" \
     -n "$E2E_NAMESPACE" \
-    --set "agent.image.repository=${REGISTRY}/cfgd" \
-    --set "agent.image.tag=$IMAGE_TAG" \
+    --set "agent.image.repository=$(e2e_image_repo cfgd)" \
+    --set "agent.image.tag=$(e2e_image_tag cfgd)" \
     --set agent.serverUrl=http://cfgd-server.cfgd-system.svc.cluster.local:8080 \
     --set "agent.imagePullSecrets[0].name=registry-credentials" \
     --set webhook.enabled=false \
@@ -55,23 +55,26 @@ fi
 # T22: Pod logs show daemon activity
 # =================================================================
 begin_test "T22: Pod logs show daemon activity"
-sleep 5  # let the daemon run at least one tick
 
 POD=$(kubectl get pods -n "$E2E_NAMESPACE" -l "app.kubernetes.io/name=cfgd" \
     -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
 
+# `daemon: running` is the line the daemon logs once its loop has started.
+t22_daemon_running() {
+    LOGS=$(kubectl logs "$POD" -n "$E2E_NAMESPACE" 2>/dev/null || echo "")
+    grep -q 'daemon: running' <<<"$LOGS"
+}
+
 if [ -z "$POD" ]; then
     fail_test "T22" "No pod found"
 else
-    LOGS=$(kubectl logs "$POD" -n "$E2E_NAMESPACE" --tail=50 2>&1 || echo "")
-    echo "  Pod logs (last 10 lines):"
-    echo "$LOGS" | tail -10 | sed 's/^/    /'
-
-    # The daemon should produce some output — either reconciliation or errors
-    if [ -n "$LOGS" ]; then
+    LOGS=""
+    if wait_until 60 1 "pod/$POD to log daemon: running" t22_daemon_running; then
         pass_test "T22"
     else
-        fail_test "T22" "Pod logs are empty"
+        echo "  Pod logs (last 10 lines):"
+        echo "$LOGS" | tail -10 | sed 's/^/    /'
+        fail_test "T22" "pod/$POD never logged daemon: running"
     fi
 fi
 
@@ -102,8 +105,8 @@ fi
 begin_test "T24: Helm upgrade"
 OUTPUT=$(helm upgrade cfgd "$CHART_DIR" \
     -f "$VALUES_FILE" \
-    --set "agent.image.repository=${REGISTRY}/cfgd" \
-    --set "agent.image.tag=$IMAGE_TAG" \
+    --set "agent.image.repository=$(e2e_image_repo cfgd)" \
+    --set "agent.image.tag=$(e2e_image_tag cfgd)" \
     --set agent.serverUrl=http://cfgd-server.cfgd-system.svc.cluster.local:8080 \
     --set "agent.imagePullSecrets[0].name=registry-credentials" \
     --set agent.reconcileInterval="15s" \
@@ -130,14 +133,16 @@ fi
 # T25: Helm uninstall cleans up
 # =================================================================
 begin_test "T25: Helm uninstall"
-helm uninstall cfgd -n "$E2E_NAMESPACE" 2>&1 || true
-sleep 5
+helm uninstall cfgd -n "$E2E_NAMESPACE" --wait --timeout 60s 2>&1 || true
 
 # Check that no cfgd DaemonSet remains
+DS_NAMES_RC=0
 DS_NAMES=$(kubectl get ds -n "$E2E_NAMESPACE" -l "app.kubernetes.io/name=cfgd" \
-    -o jsonpath='{.items[*].metadata.name}' 2>/dev/null || echo "")
+    -o jsonpath='{.items[*].metadata.name}' 2>/dev/null) || DS_NAMES_RC=$?
 
-if [ -z "$DS_NAMES" ]; then
+if [ "$DS_NAMES_RC" -ne 0 ]; then
+    fail_test "T25" "Could not list the daemonsets in $E2E_NAMESPACE (kubectl exit $DS_NAMES_RC)"
+elif [ -z "$DS_NAMES" ]; then
     pass_test "T25"
 else
     fail_test "T25" "DaemonSet still present after uninstall: $DS_NAMES"

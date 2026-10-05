@@ -1,9 +1,10 @@
 //! Device-facing endpoints: check-in, list, get, set-config.
 //!
 //! The check-in is the device's ONE channel to the cluster, so it carries the
-//! two facts only the device can answer — the versions it holds for the
-//! packages it declares, and which layer owns each backup unit's schedule —
-//! onto its `MachineConfig.status`, and answers with the cadences a cluster
+//! facts only the device can answer — the versions it holds for the packages
+//! it declares, which layer owns each backup unit's schedule, and its
+//! compliance with every check that did not pass — onto its
+//! `MachineConfig.status`, and answers with the cadences a cluster
 //! `BackupPolicy` owns for it. Both halves are best-effort against Kubernetes:
 //! the device's own reconcile never depends on the cluster accepting a status
 //! or having a policy to project.
@@ -18,7 +19,7 @@ use super::*;
 pub(super) async fn checkin(
     State(state): State<SharedState>,
     Extension(auth): Extension<AuthContext>,
-    Json(req): Json<CheckinRequest>,
+    Json(mut req): Json<CheckinRequest>,
 ) -> Result<impl IntoResponse, GatewayError> {
     validate_device_id(&req.device_id)?;
     validate_hostname(&req.hostname)?;
@@ -32,7 +33,10 @@ pub(super) async fn checkin(
     let os = req.os.clone();
     let arch = req.arch.clone();
     let config_hash = req.config_hash.clone();
-    let compliance = req.compliance_summary.clone();
+    // Shared between the database write and the status apply below, so the
+    // report is neither copied nor re-parsed on the way to either.
+    let compliance = req.compliance_summary.take().map(Arc::new);
+    let stored_compliance = compliance.clone();
 
     let (config_changed, desired_config) = db
         .with_write_tx(move |tx| {
@@ -56,7 +60,7 @@ pub(super) async fn checkin(
                         tx,
                         &device_id,
                         &config_hash,
-                        compliance.as_ref(),
+                        stored_compliance.as_deref(),
                     )?;
                 }
                 Err(_) => {
@@ -67,7 +71,7 @@ pub(super) async fn checkin(
                         &os,
                         &arch,
                         &config_hash,
-                        compliance.as_ref(),
+                        stored_compliance.as_deref(),
                     )?;
                 }
             }
@@ -112,7 +116,7 @@ pub(super) async fn checkin(
     let backup_schedules = match &state.kube_client {
         Some(client) => match find_machine_config_ref(client, &req.hostname).await {
             Ok(Some((namespace, name))) => {
-                report_device_status(client, &namespace, &name, &req).await;
+                report_device_status(client, &namespace, &name, &req, compliance.as_deref()).await;
                 policy_owned_schedules(&state, client, &namespace, &req.hostname).await
             }
             // No MachineConfig names this hostname: there is nothing to write a
@@ -137,24 +141,24 @@ pub(super) async fn checkin(
     ))
 }
 
-/// Apply the device-reported halves of `MachineConfig.status` onto the object
-/// the hostname resolved to, one map per write.
+/// Apply the device-reported parts of `MachineConfig.status` onto the object
+/// the hostname resolved to, one field per write.
 ///
 /// A failure is logged and nothing more: the check-in's outcome is the
 /// device's, and it does not depend on the cluster accepting a status. It is
 /// logged at `error` because the visible symptom of a refused write is a status
 /// that silently stops moving, which a reader has no other way to notice.
 ///
-/// Each map goes out under its OWN field manager, and a map the device did not
-/// observe produces no write at all. Each map is one leaf in the schema
+/// Each field goes out under its OWN field manager, and a field the device did
+/// not observe produces no write at all. Each field is one leaf in the schema
 /// (`x-kubernetes-map-type: atomic`), so the forced apply writes the applied
 /// value alone and a key the device stopped reporting is gone because the whole
-/// map was replaced. One manager owning both maps would drop the fields it
-/// stopped naming one level up and delete the whole map the device could not
-/// observe this time. `packageVersions` and
-/// `backupScheduleOwners` are facts the controller cannot see for itself, so an
-/// older agent, or one whose managers could not be queried, must not blank what
-/// the cluster still holds.
+/// field was replaced. One manager owning several fields would drop the fields
+/// it stopped naming one level up and delete the whole field the device could
+/// not observe this time. `packageVersions`, `backupScheduleOwners` and
+/// `compliance` are facts the controller cannot see for itself, so an older
+/// agent, or one whose managers could not be queried, must not blank what the
+/// cluster still holds.
 ///
 /// The applies are forced. Each manager is the sole writer of its one field, so
 /// a conflict can only be an ownership entry left by an older release, whose
@@ -165,8 +169,12 @@ async fn report_device_status(
     namespace: &str,
     name: &str,
     req: &CheckinRequest,
+    compliance: Option<&crate::crds::DeviceCompliance>,
 ) {
-    use crate::controllers::{FIELD_MANAGER_GATEWAY_BACKUPS, FIELD_MANAGER_GATEWAY_PACKAGES};
+    use crate::controllers::{
+        FIELD_MANAGER_GATEWAY_BACKUPS, FIELD_MANAGER_GATEWAY_COMPLIANCE,
+        FIELD_MANAGER_GATEWAY_PACKAGES,
+    };
 
     if let Some(ref versions) = req.package_versions {
         apply_status_map(
@@ -177,7 +185,7 @@ async fn report_device_status(
             FIELD_MANAGER_GATEWAY_PACKAGES,
             DeviceReportedStatus {
                 package_versions: Some(versions),
-                backup_schedule_owners: None,
+                ..Default::default()
             },
         )
         .await;
@@ -190,24 +198,40 @@ async fn report_device_status(
             &req.device_id,
             FIELD_MANAGER_GATEWAY_BACKUPS,
             DeviceReportedStatus {
-                package_versions: None,
                 backup_schedule_owners: Some(owners),
+                ..Default::default()
+            },
+        )
+        .await;
+    }
+    if let Some(compliance) = compliance {
+        apply_status_map(
+            client,
+            namespace,
+            name,
+            &req.device_id,
+            FIELD_MANAGER_GATEWAY_COMPLIANCE,
+            DeviceReportedStatus {
+                compliance: Some(compliance),
+                ..Default::default()
             },
         )
         .await;
     }
 }
 
-/// The status an apply carries: the one map its field manager owns, and nothing
-/// else. A field left `None` is absent from the body, which is what keeps a
-/// manager from claiming the other manager's map.
-#[derive(Debug, serde::Serialize)]
+/// The status an apply carries: the one field its field manager owns, and
+/// nothing else. A field left `None` is absent from the body, which is what
+/// keeps a manager from claiming another manager's field.
+#[derive(Debug, Default, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct DeviceReportedStatus<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     package_versions: Option<&'a BTreeMap<String, String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     backup_schedule_owners: Option<&'a BTreeMap<String, String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    compliance: Option<&'a crate::crds::DeviceCompliance>,
 }
 
 /// An apply body is a whole object, not a fragment: the API server reads the
@@ -280,6 +304,9 @@ async fn apply_status_map(
 /// is read through `ScheduleOwner`'s case-insensitive parser, the same reading
 /// the controller gives the device's own pin.
 ///
+/// A policy carrying a deletion timestamp schedules nothing, so a foreign
+/// finalizer holding it in place cannot keep its cadence on the machine.
+///
 /// Two policies naming one unit for one machine is a cluster-side conflict the
 /// gateway cannot resolve on merit, so it resolves it stably: the policy with
 /// the older `creationTimestamp` wins and the collision is logged. A stable
@@ -304,7 +331,7 @@ async fn policy_owned_schedules(
                     tracing::warn!(
                         namespace = %namespace,
                         error = %e,
-                        "failed to list BackupPolicies for a device check-in; the device is told nothing rather than that the cluster owns nothing"
+                        "failed to list BackupPolicies for a device check-in; the device is told nothing, so a failed list never reads as the cluster owning no BackupPolicy"
                     );
                     return None;
                 }
@@ -340,7 +367,10 @@ fn project_owned_schedules(
     use crate::crds::ScheduleOwner;
     use kube::ResourceExt;
 
-    let mut ordered: Vec<&Arc<crate::crds::BackupPolicy>> = policies.iter().collect();
+    let mut ordered: Vec<&Arc<crate::crds::BackupPolicy>> = policies
+        .iter()
+        .filter(|p| crate::controllers::policy_in_force(&***p))
+        .collect();
     // Name breaks a timestamp tie, so two policies created in the same second
     // still resolve to one winner on every check-in.
     ordered.sort_by_cached_key(|p| (p.creation_timestamp(), p.name_any()));

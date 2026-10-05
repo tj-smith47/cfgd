@@ -1,24 +1,18 @@
 use super::*;
 
 use cfgd_core::PathDisplayExt;
-use cfgd_core::output::Printer;
 
 // --- Provider registry, daemon hooks, state store ---
 
-/// Extract secret backend name and age key path from config.
-/// Returns ("sops", None) as defaults when no secrets config is present.
+/// Extract secret backend name and age key path from config, reading an
+/// omitted config or `secrets` block as `secrets: {}` declares it.
 pub(in crate::cli) fn secret_backend_from_config(
     cfg: Option<&CfgdConfig>,
 ) -> (String, Option<PathBuf>) {
-    if let Some(cfg) = cfg
-        && let Some(ref secrets_cfg) = cfg.spec.secrets
-    {
-        let name = secrets_cfg.backend.as_str().to_string();
-        let key = secrets_cfg.sops.as_ref().and_then(|s| s.age_key.clone());
-        (name, key)
-    } else {
-        ("sops".to_string(), None)
-    }
+    let omitted = cfgd_core::config::ConfigSpec::default();
+    let secrets = cfg.map_or(&omitted, |c| &c.spec).secrets_effective();
+    let key = secrets.sops.as_ref().and_then(|s| s.age_key.clone());
+    (secrets.backend.clone(), key)
 }
 
 pub(in crate::cli) fn build_registry() -> ProviderRegistry {
@@ -100,6 +94,19 @@ impl cfgd_core::daemon::DaemonHooks for WorkstationDaemonHooks {
         )?)))
     }
 
+    fn resolve_manifest_packages(
+        &self,
+        config_dir: &std::path::Path,
+        merged: &mut cfgd_core::config::MergedProfile,
+    ) -> cfgd_core::errors::Result<()> {
+        crate::packages::resolve_manifest_packages_cached(
+            &mut merged.packages,
+            &mut merged.layer_sources,
+            config_dir,
+            &crate::packages::ManifestCache::default(),
+        )
+    }
+
     fn expand_tilde(&self, path: &std::path::Path) -> std::path::PathBuf {
         cfgd_core::expand_tilde(path)
     }
@@ -127,17 +134,18 @@ pub(in crate::cli) fn build_registry_with_profile(
 /// Shared by the compliance/checkin CLI callers and the daemon's compliance hook
 /// so every surface content-checks identically.
 ///
-/// Reads `config_dir.join("cfgd.yaml")` — the literal default filename, NOT
-/// whatever `--config` named. `run` is the CLI caller's [`RunContext`]: when the
-/// two paths coincide (the common case — `--config` unset or pointed at the
-/// default `cfgd.yaml`) the run has already parsed that exact file, so this
-/// takes the parse it already holds instead of reading the same bytes a third
-/// time, and its deprecations were surfaced once by whoever loaded it. When they
-/// differ (a `--config` naming a non-default filename), this reads a genuinely
-/// different file whose deprecations nothing else in the invocation would ever
-/// surface, so it parses and drains here instead. The daemon's
-/// `WorkstationDaemonHooks::plan_files`/`build_file_manager` call sites pass
-/// `None` — they run on every reconcile tick, and draining there would repeat
+/// Reads the config document `config_dir` holds
+/// ([`cfgd_core::config::config_document_in`]), which a `--config` naming
+/// another file in that directory leaves where it is. `run` is the CLI
+/// caller's [`RunContext`]: when the two paths coincide (the common case —
+/// `--config` unset or pointed at the directory's document) the run has
+/// already parsed that exact file, so this takes the parse it already holds
+/// and reads no bytes a third time, and its deprecations were surfaced once by
+/// whoever loaded it. When they differ (a `--config` naming a non-default
+/// filename), this reads a genuinely different file whose deprecations nothing
+/// else in the invocation would ever surface, so it parses and drains here.
+/// The daemon's `WorkstationDaemonHooks::plan_files`/`build_file_manager` call
+/// sites pass `None` — they run on every reconcile tick, and draining there would repeat
 /// the same notice every interval for the life of the daemon process (the same
 /// reasoning documented for the daemon's other per-tick reloads).
 pub(in crate::cli) fn build_compliance_file_manager(
@@ -146,16 +154,18 @@ pub(in crate::cli) fn build_compliance_file_manager(
     run: Option<&super::RunContext<'_>>,
 ) -> cfgd_core::errors::Result<CfgdFileManager> {
     let mut fm = CfgdFileManager::new(config_dir, resolved)?;
-    let compliance_config_path = config_dir.join("cfgd.yaml");
+    let compliance_config_path = cfgd_core::config::config_document_in(config_dir);
     let mut owned;
     let cfg: &CfgdConfig = match run {
         Some(run) if compliance_config_path == run.cli().config => run.config()?,
         Some(run) => {
+            // load-ok: a different document (the compliance config)
             owned = config::load_config(&compliance_config_path)?;
             owned.drain_deprecations(run.printer());
             &owned
         }
         None => {
+            // load-ok: a different document (the compliance config)
             owned = config::load_config(&compliance_config_path)?;
             &owned
         }
@@ -305,7 +315,35 @@ impl PackageManagerFactoryGuard {
     pub(in crate::cli) fn hermetic_native_beside_a_brew_holding_a_tool() -> Self {
         Self::install(hermetic_managers_beside_a_holder)
     }
+
+    /// The hermetic set where the host's native manager offers a `cargo` below
+    /// any modern floor and the registered `cargo` manager is absent but
+    /// bootstrappable via rustup: the machine a floor bootstrap route is about,
+    /// on every runner.
+    pub(in crate::cli) fn hermetic_native_below_a_cargo_floor() -> Self {
+        Self::install(hermetic_managers_below_a_cargo_floor)
+    }
+
+    /// The same machine one run later: rustup has been taken, so `cargo` is
+    /// here and its own binary reports [`CARGO_REPORTS_ABOVE_FLOOR`] — above
+    /// the floor every listing is still short of.
+    pub(in crate::cli) fn hermetic_native_beside_a_cargo_above_the_floor() -> Self {
+        Self::install(hermetic_managers_beside_a_held_cargo)
+    }
 }
+
+/// The version the fake native manager offers for every package it is asked
+/// about under the two floor-route sets below. Under the floor
+/// `FLOOR_MODULE_YAML` declares, and under every cargo a real host ships, so
+/// the refusal is the same sentence on every runner.
+#[cfg(test)]
+pub(in crate::cli) const NATIVE_OFFERS_CARGO: &str = "1.75";
+
+/// What the fake `cargo` manager's own binary reports once this host holds it.
+/// Above `FLOOR_MODULE_YAML`'s floor, which is what makes the entry resolve as
+/// held.
+#[cfg(test)]
+pub(in crate::cli) const CARGO_REPORTS_ABOVE_FLOOR: &str = "1.90.0";
 
 /// The package the fake `brew` of
 /// [`PackageManagerFactoryGuard::hermetic_native_beside_a_brew_holding_a_tool`]
@@ -347,7 +385,50 @@ fn hermetic_managers_beside_a_holder() -> Vec<Box<dyn cfgd_core::providers::Pack
         name: "brew".to_string(),
         version: None,
         installed: &[HELD_BY_BREW],
+        available: true,
+        tool_version: None,
+        bootstrap_via: None,
     }));
+    managers
+}
+
+/// The registered `cargo` manager is REPLACED and stays registered: a floor
+/// route is looked up BY NAME in the registry's `manager_map`, which holds
+/// every registered manager whether or not this host has it.
+#[cfg(test)]
+fn hermetic_managers_below_a_cargo_floor() -> Vec<Box<dyn cfgd_core::providers::PackageManager>> {
+    hermetic_managers_with_cargo(FakeNativeManager {
+        name: "cargo".to_string(),
+        version: None,
+        installed: &[],
+        available: false,
+        tool_version: None,
+        bootstrap_via: Some("rustup"),
+    })
+}
+
+#[cfg(test)]
+fn hermetic_managers_beside_a_held_cargo() -> Vec<Box<dyn cfgd_core::providers::PackageManager>> {
+    hermetic_managers_with_cargo(FakeNativeManager {
+        name: "cargo".to_string(),
+        version: None,
+        installed: &[],
+        available: true,
+        tool_version: Some(CARGO_REPORTS_ABOVE_FLOOR),
+        bootstrap_via: None,
+    })
+}
+
+#[cfg(test)]
+fn hermetic_managers_with_cargo(
+    cargo: FakeNativeManager,
+) -> Vec<Box<dyn cfgd_core::providers::PackageManager>> {
+    let mut managers: Vec<Box<dyn cfgd_core::providers::PackageManager>> =
+        hermetic_managers_with(Some(NATIVE_OFFERS_CARGO))
+            .into_iter()
+            .filter(|m| m.name() != "cargo")
+            .collect();
+    managers.push(Box::new(cargo));
     managers
 }
 
@@ -367,6 +448,9 @@ fn hermetic_managers_with(
         name: native,
         version,
         installed: &[],
+        available: true,
+        tool_version: None,
+        bootstrap_via: None,
     }));
     managers
 }
@@ -384,6 +468,17 @@ struct FakeNativeManager {
     /// What it reports installed, for the tests whose subject is a bare entry
     /// another manager already holds.
     installed: &'static [&'static str],
+    /// Whether the host has this manager. `false` is the absent-but-registered
+    /// shape a floor's bootstrap route is offered for; every other fake is
+    /// present, which is the whole point of a hermetic native manager.
+    available: bool,
+    /// What its OWN binary reports, which is what a declared floor on a package
+    /// that names this manager is judged against. `None` for a fake nothing
+    /// asks that question of.
+    tool_version: Option<&'static str>,
+    /// The method `bootstrap_plan_given` names, or `None` for a manager
+    /// nothing on this host can provision.
+    bootstrap_via: Option<&'static str>,
 }
 
 #[cfg(test)]
@@ -395,13 +490,17 @@ impl cfgd_core::providers::PackageManager for FakeNativeManager {
         Some("upgrade")
     }
     fn is_available(&self) -> bool {
-        true
+        self.available
+    }
+    fn tool_version(&self) -> Option<String> {
+        self.tool_version.map(str::to_string)
     }
     fn bootstrap_plan_given(
         &self,
         _delivered: &dyn Fn(&str) -> bool,
     ) -> Option<cfgd_core::providers::BootstrapPlan> {
-        None
+        self.bootstrap_via
+            .map(cfgd_core::providers::BootstrapPlan::new)
     }
     fn bootstrap(
         &self,
@@ -476,23 +575,21 @@ pub(in crate::cli) fn open_state_store(
 /// Resolve the secret backend from config, check availability, and validate the file exists.
 /// Returns a registry whose `secret_backend` is guaranteed `Some`.
 pub(in crate::cli) fn resolve_secret_backend(
-    cli: &Cli,
-    printer: &Printer,
+    run: &RunContext<'_>,
     file: &Path,
 ) -> anyhow::Result<ProviderRegistry> {
+    let cli = run.cli();
     let cfg = if cli.config.exists() {
-        let mut cfg = config::load_config(&cli.config)?;
-        drain_config_deprecations(printer, &mut cfg);
-        Some(cfg)
+        Some(run.config()?)
     } else {
         None
     };
 
-    let mut registry = build_registry_with_config(cfg.as_ref());
+    let mut registry = build_registry_with_config(cfg);
 
     // Rebuild secret backend with config dir so sops can find .sops.yaml
     let cd = config_dir(cli);
-    let (backend_name, age_key_path) = secret_backend_from_config(cfg.as_ref());
+    let (backend_name, age_key_path) = secret_backend_from_config(cfg);
     registry.secret_backend = Some(secrets::build_secret_backend(
         &backend_name,
         age_key_path,
@@ -500,14 +597,22 @@ pub(in crate::cli) fn resolve_secret_backend(
     ));
 
     if !file.exists() {
-        anyhow::bail!("File not found: {}", file.posix());
+        return Err(crate::cli::cli_error(
+            cfgd_core::to_posix_string(file),
+            "not_found",
+            format!("File not found: {}", file.posix()),
+            serde_json::json!({ "path": cfgd_core::to_posix_string(file) }),
+        ));
     }
 
     match registry.secret_backend {
         Some(ref backend) if !backend.is_available() => {
-            anyhow::bail!("{}: not installed", backend.name());
+            return Err(backend_unavailable(
+                file,
+                format!("{}: not installed", backend.name()),
+            ));
         }
-        None => anyhow::bail!("No secret backend configured"),
+        None => return Err(no_secret_backend(file)),
         _ => {}
     }
 
@@ -516,14 +621,29 @@ pub(in crate::cli) fn resolve_secret_backend(
 
 /// Shorthand: resolve secret backend and extract it in one call.
 pub(in crate::cli) fn get_secret_backend(
-    cli: &Cli,
-    printer: &Printer,
+    run: &RunContext<'_>,
     file: &Path,
 ) -> anyhow::Result<Box<dyn SecretBackend>> {
-    let registry = resolve_secret_backend(cli, printer, file)?;
+    let registry = resolve_secret_backend(run, file)?;
     registry
         .secret_backend
-        .ok_or_else(|| anyhow::anyhow!("No secret backend configured"))
+        .ok_or_else(|| no_secret_backend(file))
+}
+
+/// No secret backend is configured, so nothing can read or write `file`.
+fn no_secret_backend(file: &Path) -> anyhow::Error {
+    backend_unavailable(file, "No secret backend configured")
+}
+
+/// The secret backend that would handle `file` cannot run on this machine.
+///
+/// The subject is the file the command was asked about, and `detail` repeats
+/// the reason, which is the payload every `cfgd secret` verb has carried.
+fn backend_unavailable(file: &Path, detail: impl Into<String>) -> anyhow::Error {
+    let detail = detail.into();
+    let path = cfgd_core::to_posix_string(file);
+    let extras = serde_json::json!({ "path": &path, "detail": &detail });
+    crate::cli::cli_error(path, "backend_unavailable", detail, extras)
 }
 
 #[cfg(test)]
@@ -546,9 +666,12 @@ mod tests {
             color: crate::cli::ColorWhen::Auto,
             output: crate::cli::OutputFormatArg(OutputFormat::Table),
             list_envelope: false,
+            hints: false,
             no_hints: false,
             theme: None,
             mask_env_values: None,
+            migration_policy: None,
+            update_policy: None,
             jsonpath: None,
             yes: false,
             state_dir: None,
@@ -711,7 +834,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let state = StateStore::open_in_dir(dir.path()).expect("open state");
         state
-            .upsert_package_resource("brew/ripgrep", "local", None, None)
+            .upsert_package_resource("brew", "ripgrep", "local", None, None)
             .expect("track package");
 
         let set = cfgd_installed_packages(&state).expect("collect installed");
@@ -741,10 +864,10 @@ mod tests {
         let missing = dir.path().join("absent.enc");
 
         // ProviderRegistry is not Debug, so match rather than expect_err.
-        let err = match resolve_secret_backend(
+        let err = match crate::cli::RunContext::for_test(
             &cli,
             &cfgd_core::test_helpers::test_printer(),
-            &missing,
+            |run| resolve_secret_backend(run, &missing),
         ) {
             Ok(_) => panic!("missing target file must error"),
             Err(e) => e,
@@ -762,8 +885,11 @@ mod tests {
         let missing = dir.path().join("absent.enc");
 
         // Box<dyn SecretBackend> is not Debug, so match rather than expect_err.
-        let err = match get_secret_backend(&cli, &cfgd_core::test_helpers::test_printer(), &missing)
-        {
+        let err = match crate::cli::RunContext::for_test(
+            &cli,
+            &cfgd_core::test_helpers::test_printer(),
+            |run| get_secret_backend(run, &missing),
+        ) {
             Ok(_) => panic!("missing target file must error"),
             Err(e) => e,
         };
@@ -780,7 +906,7 @@ mod tests {
             .expect("open in explicit dir");
         // Round-trip a write to prove the store at this dir is live and usable.
         state
-            .upsert_package_resource("apt/curl", "local", None, None)
+            .upsert_package_resource("apt", "curl", "local", None, None)
             .expect("write to explicit-dir store");
         let set = cfgd_installed_packages(&state).expect("read back");
         assert!(set.contains("apt/curl"));
@@ -797,7 +923,7 @@ mod tests {
     fn a_scope_system_run_resolves_the_machine_state_root_not_the_user_one() {
         let home = tempfile::tempdir().expect("tempdir");
         let _home = cfgd_core::with_test_home_guard(home.path());
-        let _cfgd = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_STATE_DIR");
+        let _cfgd = cfgd_core::test_helpers::EnvVarGuard::unset(cfgd_core::CFGD_STATE_DIR_ENV);
         let _sd = cfgd_core::test_helpers::EnvVarGuard::unset("STATE_DIRECTORY");
 
         let user = super::helpers::run_state_dir(None, cfgd_core::Scope::User)

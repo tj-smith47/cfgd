@@ -1,6 +1,4 @@
 #![cfg(unix)]
-#![allow(deprecated)] // assert_cmd 2.x cargo_bin deprecation; upgrade path is assert_cmd 3.x
-
 //! Signal-abort regression test for `cfgd apply`.
 //!
 //! SIGINT during an apply is a cooperative cancellation: the in-flight atomic
@@ -15,10 +13,11 @@
 
 use std::io::Read;
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::time::{Duration, Instant};
 
-use assert_cmd::cargo::CommandCargoExt;
+mod cfgd_binary;
+use cfgd_binary::cfgd_bin;
 
 /// Fixed name of the readiness sentinel written by the `preApply` script,
 /// relative to the config `dir`. Resolve via [`sentinel_path`].
@@ -96,7 +95,7 @@ fn apply_sigint_aborts_cleanly_releases_lock_and_exits_130() {
     let state_tmp = tempfile::tempdir().unwrap();
     let target = sleeping_apply_config(config_tmp.path());
 
-    let mut child = Command::cargo_bin("cfgd")
+    let mut child = cfgd_bin()
         .unwrap()
         .args(["apply", "--yes"])
         .arg("--config")
@@ -176,7 +175,7 @@ fn apply_sigint_aborts_cleanly_releases_lock_and_exits_130() {
         tgt
     };
 
-    let second = Command::cargo_bin("cfgd")
+    let second = cfgd_bin()
         .unwrap()
         .args(["apply", "--yes"])
         .arg("--config")
@@ -201,7 +200,7 @@ fn apply_second_sigint_force_quits_via_default_disposition() {
     let state_tmp = tempfile::tempdir().unwrap();
     let _target = sleeping_apply_config(config_tmp.path());
 
-    let mut child = Command::cargo_bin("cfgd")
+    let mut child = cfgd_bin()
         .unwrap()
         .args(["apply", "--yes"])
         .arg("--config")

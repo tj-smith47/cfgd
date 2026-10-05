@@ -335,20 +335,27 @@ fn reconcile_tick(
         // (local ⊕ sources) profile used for package/file/module planning;
         // `local_resolved` is the local-config input it composes over.
         //
-        // FAIL-CLOSED: on a real compose error (malformed/constraint-violating cached
-        // manifest, failed signature) this tick is SKIPPED — never reconcile against
-        // a substituted local-only desired state, because this is a pruning reconcile
-        // and a dropped source-delivered package/module would be UNINSTALLED under
+        // FAIL-CLOSED: on a real compose error (malformed cached manifest, failed
+        // signature) this tick is SKIPPED — never reconcile against a substituted
+        // local-only desired state, because this is a pruning reconcile and a
+        // dropped source-delivered package/module would be UNINSTALLED under
         // autoApply. Mirror the `resolve_profile` failure above: error + alert +
         // early-return, leaving the prior desired state (and last_reconcile) intact.
         // A benign never-synced cache-miss is warn+skip inside the resolver, not an
         // Err, so cache-miss still reconciles local-only.
+        //
+        // Composed in Report mode so a source security-constraint violation is
+        // collected and the derivation goes on: the tick below reconciles
+        // nothing while any stands, exactly as an Enforce composition would, and
+        // still checks in, so the gateway hears about the violation from the
+        // machine that has it.
         let composed = match super::compose_daemon_desired_state(
             &cfg,
             &local_resolved,
             printer,
             scope,
             cache_dir_override,
+            crate::composition::ConstraintMode::Report,
         ) {
                 Ok(c) => c,
                 Err(e) => {
@@ -376,6 +383,7 @@ fn reconcile_tick(
             source_module_roots: composed.source_module_roots,
             registry,
             source_advisories: composed.advisories,
+            constraint_violations: composed.constraint_violations,
         })
     });
     let Ok(derived) = derived else {
@@ -461,6 +469,51 @@ fn reconcile_tick(
     let pkg_cx = crate::providers::PackageContext::with_shared_enumerations(printer, store, {
         cache.enumerations()
     });
+    if !derived.constraint_violations.is_empty() {
+        let violations = derived
+            .constraint_violations
+            .iter()
+            .map(|v| format!("source {}: {}", v.source_name, v.detail))
+            .collect::<Vec<_>>()
+            .join("; ");
+        tracing::error!(
+            violations = %violations,
+            "reconcile: a source violates a security constraint — SKIPPING tick; the check-in still reports it"
+        );
+        notifier.notify(
+            "cfgd: reconcile skipped — source security constraint violated",
+            &format!(
+                "A configured source violates a security constraint ({violations}). Reconcile was skipped. Run `cfgd compliance` to inspect."
+            ),
+        );
+        if module_filter.is_none() {
+            let modules = super::resolve_daemon_modules(
+                registry,
+                resolved,
+                &config_dir,
+                source_module_roots,
+                Some(&pkg_cx),
+                printer,
+                scope,
+                cache_dir_override,
+            );
+            check_in_after_tick(
+                TickReport {
+                    cfg,
+                    config_dir: &config_dir,
+                    resolved,
+                    modules: &modules,
+                    registry,
+                    pkg_cx: &pkg_cx,
+                    hooks,
+                    printer,
+                },
+                state,
+                &state_dir,
+            );
+        }
+        return None;
+    }
     // Planned BEFORE the policy review because the classification consumes the
     // planner's own installed-state observation — one enumeration, threaded,
     // never a second shell-out. A planning failure therefore skips the tick
@@ -642,11 +695,10 @@ fn reconcile_tick(
     // protect and no reason to pay for the walk.
     let drift_policy = drift_policy_override.clone().unwrap_or_else(|| {
         cfg.spec
-            .daemon
-            .as_ref()
-            .and_then(|d| d.reconcile.as_ref())
-            .map(|r| r.drift_policy.clone())
-            .unwrap_or_default()
+            .daemon_effective()
+            .reconcile_effective()
+            .drift_policy
+            .clone()
     });
 
     // A tick has nobody to ask, so it settles every unmanaged target the way
@@ -1243,20 +1295,12 @@ fn reconcile_tick(
 
                         // The tally the on-screen rollup above this line was
                         // built from, so the log and the rollup cannot disagree
-                        // about how many actions succeeded. `outcome_counts` is
-                        // silent about failures — the rollup gives them their
-                        // own line — but a single-line log has no second line,
-                        // so it names them here or hides them entirely. That
-                        // failure clause is the ONLY one composed here: every
-                        // other outcome class, the after-plan work included,
+                        // about how many actions succeeded. Every outcome
+                        // class, the failures and the after-plan work included,
                         // reaches the journal through `outcome_counts`, so a
-                        // class the rollup gains is logged without an edit.
-                        let tally = result.tally();
-                        let counts = crate::reconciler::outcome_counts(&tally);
-                        Some(match tally.failed {
-                            0 => counts,
-                            failed => format!("{counts}, {failed} failed"),
-                        })
+                        // class the rollup gains is logged without an edit and
+                        // the whole line carries one separator.
+                        Some(crate::reconciler::outcome_counts(&result.tally()))
                     }
                     Err(e) => {
                         tracing::error!(error = %e, "reconcile: auto-apply failed");
@@ -1359,21 +1403,79 @@ fn reconcile_tick(
     // answer both of the questions only the device can — and it reports them as
     // OBSERVED maps, which is what lets the gateway retire a package this
     // machine uninstalled or a backup unit it stopped declaring.
-    let checkin = try_server_checkin(
-        cfg,
-        resolved,
-        crate::server_client::CheckinFacts {
-            package_versions: crate::compliance::declared_package_versions(
-                &resolved.merged,
-                resolved_modules_ref.as_slice(),
-                registry,
-                &pkg_cx,
-            ),
-            backup_schedule_owners: Some(crate::backup::declared_schedule_owners(
-                &resolved.merged.backups,
-            )),
+    check_in_after_tick(
+        TickReport {
+            cfg,
+            config_dir: &config_dir,
+            resolved,
+            modules: resolved_modules_ref.as_slice(),
+            registry,
+            pkg_cx: &pkg_cx,
+            hooks,
+            printer,
         },
+        state,
+        &state_dir,
     );
+
+    outcome
+}
+
+/// What a tick hands the check-in it closes on: the desired state it
+/// resolved and the context it observed the machine through.
+struct TickReport<'a> {
+    cfg: &'a config::CfgdConfig,
+    config_dir: &'a Path,
+    resolved: &'a ResolvedProfile,
+    modules: &'a [crate::modules::ResolvedModule],
+    registry: &'a ProviderRegistry,
+    pkg_cx: &'a crate::providers::PackageContext<'a>,
+    hooks: &'a dyn DaemonHooks,
+    printer: &'a Printer,
+}
+
+/// Check in with the gateway over what a profile-wide tick resolved, record
+/// the cadences it answered with, and consume any configuration it pushed.
+fn check_in_after_tick(report: TickReport<'_>, state: &Arc<Mutex<DaemonState>>, state_dir: &Path) {
+    let rt = tokio::runtime::Handle::current();
+    // The snapshot is the compliance tick's, reported only while compliance is
+    // on in the config this tick loaded: a machine that stopped observing it
+    // has nothing current to say.
+    let compliance_snapshot = if report.cfg.spec.compliance_effective().enabled {
+        rt.block_on(async { state.lock().await.reported_compliance.clone() })
+    } else {
+        None
+    };
+    let checkin = try_server_checkin(report.cfg, report.printer, || {
+        let mut merged = report.resolved.merged.clone();
+        let packages = match report
+            .hooks
+            .resolve_manifest_packages(report.config_dir, &mut merged)
+        {
+            Ok(()) => Some(report.pkg_cx),
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "reconcile: a package manifest could not be read — the check-in withholds package versions and compliance"
+                );
+                None
+            }
+        };
+        // A snapshot taken before the manifest broke would report packages the
+        // machine can no longer say it declares, so it goes with the versions.
+        let compliance = packages.and(compliance_snapshot.as_deref());
+        crate::server_client::CheckinFacts::collect(
+            &merged,
+            report.modules,
+            report.registry,
+            packages,
+            compliance,
+        )
+        .inspect_err(|e| {
+            tracing::warn!(error = %e, "reconcile: check-in skipped — its facts could not be composed");
+        })
+        .ok()
+    });
     if checkin.config_changed {
         tracing::info!(
             "reconcile: server reports config has changed — will reconcile on next tick"
@@ -1383,7 +1485,7 @@ fn reconcile_tick(
     // the timer set was resolved before this tick ran, so a cadence the cluster
     // just moved would otherwise wait for a restart.
     if let Some(ref projections) = checkin.backup_schedules
-        && super::checkin::record_cluster_schedules_in(Some(&state_dir), projections)
+        && super::checkin::record_cluster_schedules_in(Some(state_dir), projections)
     {
         rt.block_on(async { state.lock().await.backup_reresolve() })
             .notify_one();
@@ -1409,8 +1511,6 @@ fn reconcile_tick(
             tracing::warn!(error = %e, "daemon: failed to load pending server config");
         }
     }
-
-    outcome
 }
 
 /// Narrow a planned tick down to one module's own work.
@@ -1439,6 +1539,20 @@ pub(super) fn narrow_to_module(
     // phases too so drift recording and `reconciler.apply` only ever see the
     // filtered module's own work.
     plan.phases.retain(|p| !p.is_empty());
+    // A held manager's floor is one fact for every module that declared it, so
+    // the node survives the `is_managers()` retain above whoever asked for it.
+    // A tick scoped to one module must not report another module's shortfall:
+    // the node names the modules it judges, and that is the question asked.
+    for phase in &mut plan.phases {
+        phase.retain_actions(|action| match action {
+            crate::reconciler::Action::Manager(crate::reconciler::ManagerAction::HeldFloor {
+                declared,
+                ..
+            }) => declared.iter().any(|d| d.module == module),
+            _ => true,
+        });
+    }
+    plan.phases.retain(|p| !p.is_empty());
     crate::reconciler::prune_to_surviving_consumers(plan, registry);
 }
 
@@ -1463,6 +1577,13 @@ pub(super) fn narrow_to_module(
 /// same way: the header counts it, both trees draw it, and the tick's closing
 /// sentence names it.
 ///
+/// A [`crate::reconciler::ManagerAction::HeldFloor`] counts for every module
+/// it names. The node belongs to the managers phase and to no one module,
+/// but the floor it failed is the declaring modules' own statement
+/// about what their packages need, and the run answers it by withholding that
+/// manager from exactly those modules: that is a divergence each of them asked
+/// to hear about.
+///
 /// The caller passes the plan the tick will act on, which the reconcile loop
 /// has already pruned of every resource awaiting a source decision. A module
 /// whose only drifting resource is excluded therefore reports no drift and
@@ -1474,9 +1595,16 @@ pub(crate) fn module_has_drift(
     registry: &crate::providers::ProviderRegistry,
 ) -> bool {
     use crate::reconciler::Action;
+    use crate::reconciler::ManagerAction;
     plan.phases.iter().flat_map(|p| p.actions()).any(|a| {
-        matches!(a, Action::Module(ma) if ma.module_name == module_name)
-            && crate::reconciler::action_counts_as_drift(a, registry)
+        let names_module = match a {
+            Action::Module(ma) => ma.module_name == module_name,
+            Action::Manager(ManagerAction::HeldFloor { declared, .. }) => {
+                declared.iter().any(|d| d.module == module_name)
+            }
+            _ => false,
+        };
+        names_module && crate::reconciler::action_counts_as_drift(a, registry)
     })
 }
 

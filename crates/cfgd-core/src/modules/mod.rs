@@ -9,7 +9,7 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::config::{EnvVar, ModuleSpec, ShellAlias};
 
@@ -22,6 +22,10 @@ mod surfaces;
 
 #[cfg(any(test, feature = "test-helpers"))]
 pub(crate) use git::set_repo_refresh_ttl_override;
+// The host-INDEPENDENT half of the floor route, exported for the registry walk
+// that lives in the binary crate because only that crate builds the registry.
+// Gated so no production caller outside `resolve.rs` can reach past
+// `floor_bootstrap_route`, which is the one that asks the host question.
 pub use git::{
     GitSource, TagSignatureStatus, check_tag_signature, default_module_cache_dir,
     default_module_cache_dir_for, fetch_git_source, get_head_commit_sha, git_cache_dir,
@@ -40,9 +44,12 @@ pub use registry::{
     fetch_registry_modules, fetch_remote_module, is_registry_ref, latest_module_version,
     latest_module_version_remote, parse_registry_ref, resolve_profile_module_name,
 };
+#[cfg(any(test, feature = "test-helpers"))]
+pub use resolve::floor_bootstrap_via;
 pub use resolve::{
-    fill_available_versions, resolve_module_files, resolve_module_packages, resolve_modules,
-    resolve_package,
+    FloorAnswer, FloorBootstrap, FloorConfirm, FloorJudgment, HeldManager, PackageResolution,
+    fill_available_versions, judge_declared_floor, refuse_floor_bootstrap, resolve_module_files,
+    resolve_module_packages, resolve_modules, resolve_package,
 };
 pub(crate) use resolve::{price_package, priceable_manager};
 pub use surfaces::post_apply_change_body;
@@ -54,7 +61,7 @@ pub use surfaces::{DeclaredScript, HookScripts, ModuleSurfaces, scripts_section}
 // ---------------------------------------------------------------------------
 
 /// A package resolved to a concrete manager and name.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResolvedPackage {
     /// Canonical name from the module spec.
     pub canonical_name: String,
@@ -88,8 +95,8 @@ pub struct ResolvedPackage {
     /// `true` when the entry carries a `prefer` list (every candidate then
     /// comes from what the author wrote) or an `aliases` key for the manager
     /// resolution picked. `false` for an entry that named neither: the manager
-    /// is then cfgd's own platform default, a choice this crate made and not a
-    /// statement by anyone.
+    /// is then cfgd's own platform default, a choice this crate made that
+    /// nobody stated.
     ///
     /// Recorded HERE because the declaration is only in scope at the resolver;
     /// a second walk over the spec to re-derive it is how the two halves drift.
@@ -101,6 +108,11 @@ pub struct ResolvedPackage {
     ///
     /// Not serialized: it is a planner input, and the declaration itself is
     /// already in the module's own spec.
+    // plan-skip-ok: a plan file reads it back `false`, which `declared_manager_routes`
+    // and `Reconciler::package_survives_elision` read as cfgd's own platform default
+    // — so a run driven from a file, where no resolver filled this, must resolve
+    // the module again and leave the field untrusted. Serializing it
+    // would put it in `Plan::to_hash_string` and rewrite every stored `plan_hash`.
     #[serde(skip)]
     pub manager_declared: bool,
     /// The declared `minVersion` floor, carried through resolution.
@@ -112,16 +124,22 @@ pub struct ResolvedPackage {
     /// `neovim 0.9` under a module declaring `minVersion: 0.11` reads as
     /// converged and the gap is never named. Not serialized: it is a planner
     /// input, and the declared value is already in the module's own spec.
+    // plan-skip-ok: a plan file reads it back `None`, which the floor check inside
+    // `package_survives_elision` reads as no floor declared — the same constraint as
+    // `manager_declared` above: a file-driven run resolves the module again.
+    // Serializing it would rewrite every stored `plan_hash`.
     #[serde(skip)]
     pub min_version: Option<String>,
 }
 
 /// A file resolved to a concrete local path.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResolvedFile {
     /// Local source path (after git clone if needed).
+    #[serde(serialize_with = "crate::serialize_fs_path")]
     pub source: PathBuf,
     /// Target path on the machine.
+    #[serde(serialize_with = "crate::serialize_fs_path")]
     pub target: PathBuf,
     /// Whether the source was fetched from git.
     pub is_git_source: bool,
@@ -161,6 +179,21 @@ pub struct SourceModuleRoot {
 pub struct ResolvedModule {
     pub name: String,
     pub packages: Vec<ResolvedPackage>,
+    /// Declared floors no available manager meets, each naming the manager this
+    /// host could bootstrap to meet one. A route survives
+    /// [`resolve_modules`] only where the caller's own
+    /// [`FloorConfirm`] policy answered [`FloorAnswer::Yes`] for that package;
+    /// either refusal ends the resolution instead, so a module handed back
+    /// carrying one is a module whose route was confirmed.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub floor_bootstraps: Vec<FloorBootstrap>,
+    /// Declared floors judged against the package's OWN manager, already on
+    /// this host. Nothing is planned for one: the manager is the delivery, so
+    /// an entry whose floor is met is satisfied where it would once have been
+    /// refused, and one below its floor or with no readable version is a fact
+    /// the read surfaces report, and no command is refused over it.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub held_managers: Vec<HeldManager>,
     pub files: Vec<ResolvedFile>,
     pub env: Vec<EnvVar>,
     pub aliases: Vec<ShellAlias>,
@@ -214,6 +247,8 @@ impl ResolvedModule {
             on_change_scripts,
             name: _,
             packages: _,
+            floor_bootstraps: _,
+            held_managers: _,
             files: _,
             env: _,
             aliases: _,
@@ -250,6 +285,8 @@ impl ResolvedModule {
         ResolvedModule {
             name,
             packages: Vec::new(),
+            floor_bootstraps: Vec::new(),
+            held_managers: Vec::new(),
             files: Vec::new(),
             env: Vec::new(),
             aliases: Vec::new(),

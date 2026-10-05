@@ -1,17 +1,17 @@
 use super::*;
-use cfgd_core::output::{Doc, OwnerLabel, Printer, Role};
+use cfgd_core::output::{Doc, OwnerLabel, Role};
 
 pub fn cmd_source_override(
-    cli: &Cli,
-    printer: &Printer,
+    run: &RunContext<'_>,
     source_name: &str,
     action: SourceOverrideAction,
     path: &str,
     value: Option<&str>,
 ) -> anyhow::Result<()> {
+    let cli = run.cli();
+    let printer = run.printer();
     let config_path = cli.config.clone();
-    let mut cfg = config::load_config(&config_path)?;
-    drain_config_deprecations(printer, &mut cfg);
+    let cfg = run.config()?;
 
     // Verify source exists in config
     if !cfg.spec.sources.iter().any(|s| s.name == source_name) {
@@ -113,27 +113,18 @@ fn update_source_rejection(
     path: &str,
 ) -> anyhow::Result<()> {
     with_source_config(config_path, source_name, |source| {
-        let subscription = source
-            .as_mapping_mut()
-            .and_then(|m| {
-                m.entry(serde_yaml::Value::String("subscription".into()))
-                    .or_insert(serde_yaml::Value::Mapping(serde_yaml::Mapping::new()));
-                m.get_mut(serde_yaml::Value::String("subscription".into()))
-            })
-            .ok_or_else(|| anyhow::anyhow!("cannot access subscription"))?;
-
-        let sub_map = subscription
-            .as_mapping_mut()
-            .ok_or_else(|| anyhow::anyhow!("subscription is not a mapping"))?;
-        let reject = sub_map
+        let subscription = subscription_mapping_mut(source, config_path, source_name)?;
+        let reject = subscription
             .entry(serde_yaml::Value::String("reject".into()))
-            .or_insert(serde_yaml::Value::Mapping(serde_yaml::Mapping::new()));
-        // Replace null with empty mapping (serde serializes default Value::Null)
-        if reject.is_null() {
-            *reject = serde_yaml::Value::Mapping(serde_yaml::Mapping::new());
-        }
+            .or_insert(serde_yaml::Value::Null);
 
-        set_nested_yaml_value(reject, path, &serde_yaml::Value::Null)?;
+        set_nested_yaml_value(
+            reject,
+            path,
+            &serde_yaml::Value::Null,
+            config_path,
+            &format!("{}.reject", subscription_path(source_name)),
+        )?;
         Ok(())
     })
 }
@@ -145,25 +136,10 @@ fn update_source_override(
     value: &str,
 ) -> anyhow::Result<()> {
     with_source_config(config_path, source_name, |source| {
-        let subscription = source
-            .as_mapping_mut()
-            .and_then(|m| {
-                m.entry(serde_yaml::Value::String("subscription".into()))
-                    .or_insert(serde_yaml::Value::Mapping(serde_yaml::Mapping::new()));
-                m.get_mut(serde_yaml::Value::String("subscription".into()))
-            })
-            .ok_or_else(|| anyhow::anyhow!("cannot access subscription"))?;
-
-        let sub_map = subscription
-            .as_mapping_mut()
-            .ok_or_else(|| anyhow::anyhow!("subscription is not a mapping"))?;
-        let overrides = sub_map
+        let subscription = subscription_mapping_mut(source, config_path, source_name)?;
+        let overrides = subscription
             .entry(serde_yaml::Value::String("overrides".into()))
-            .or_insert(serde_yaml::Value::Mapping(serde_yaml::Mapping::new()));
-        // Replace null with empty mapping (serde serializes default Value::Null)
-        if overrides.is_null() {
-            *overrides = serde_yaml::Value::Mapping(serde_yaml::Mapping::new());
-        }
+            .or_insert(serde_yaml::Value::Null);
 
         // The override map deserializes as a ProfileSpec, whose serde wire names
         // are camelCase (`rename_all = "camelCase"`). The dotted path's FIRST
@@ -192,7 +168,13 @@ fn update_source_override(
             serde_yaml::from_str(value)
                 .unwrap_or_else(|_| serde_yaml::Value::String(value.to_string()))
         };
-        set_nested_yaml_value(overrides, &normalized_path, &parsed)?;
+        set_nested_yaml_value(
+            overrides,
+            &normalized_path,
+            &parsed,
+            config_path,
+            &format!("{}.overrides", subscription_path(source_name)),
+        )?;
         Ok(())
     })
 }

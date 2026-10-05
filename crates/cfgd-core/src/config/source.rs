@@ -31,10 +31,12 @@ pub struct SourceSpec {
     /// Where the source's manifest is fetched from.
     pub origin: OriginSpec,
     /// What this machine accepts from the source and how it applies.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "crate::config::null_as_default")]
+    #[schemars(with = "Option<SubscriptionSpec>")]
     pub subscription: SubscriptionSpec,
     /// How often and under what conditions the source is refreshed.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "crate::config::null_as_default")]
+    #[schemars(with = "Option<SourceSyncSpec>")]
     pub sync: SourceSyncSpec,
 }
 
@@ -83,13 +85,13 @@ pub struct SubscriptionSpec {
     pub require_signed_commits: bool,
     /// Local values to deep-merge on top of what the source delivers, applied
     /// after composition.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "serde_yaml::Value::is_null")]
     #[schemars(with = "serde_json::Value")]
     pub overrides: serde_yaml::Value,
     /// Items from the source's `recommended` tier to drop entirely rather than
     /// accept. A mapping under `packages`, `env`, `aliases`, and/or `modules`;
     /// any other top-level key is rejected as a typo.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "serde_yaml::Value::is_null")]
     #[schemars(with = "serde_json::Value")]
     pub reject: serde_yaml::Value,
 }
@@ -258,11 +260,13 @@ pub struct ConfigSourceMetadata {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ConfigSourceSpec {
     /// Profiles and modules this source publishes.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "crate::config::null_as_default")]
+    #[schemars(with = "Option<ConfigSourceProvides>")]
     pub provides: ConfigSourceProvides,
     /// Policy tiers (required/recommended/optional/locked) and constraints
     /// this source enforces on subscribers.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "crate::config::null_as_default")]
+    #[schemars(with = "Option<ConfigSourcePolicy>")]
     pub policy: ConfigSourcePolicy,
 }
 
@@ -280,7 +284,8 @@ pub struct ConfigSourceProvides {
     pub profile_details: Vec<ConfigSourceProfileEntry>,
     /// Maps a platform/distro tag (`macos`, `debian`, …) to the profile name
     /// to use on that platform.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "crate::config::null_as_default")]
+    #[schemars(with = "Option<std::collections::HashMap<String, String>>")]
     pub platform_profiles: HashMap<String, String>,
     /// Names of modules this source publishes.
     #[serde(default)]
@@ -330,19 +335,24 @@ pub struct ConfigSourceProfileEntry {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ConfigSourcePolicy {
     /// Items every subscriber receives unconditionally.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "crate::config::null_as_default")]
+    #[schemars(with = "Option<PolicyItems>")]
     pub required: PolicyItems,
     /// Items a subscriber receives when `subscription.acceptRecommended` is set.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "crate::config::null_as_default")]
+    #[schemars(with = "Option<PolicyItems>")]
     pub recommended: PolicyItems,
     /// Items a subscriber must explicitly name in `subscription.optIn` to receive.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "crate::config::null_as_default")]
+    #[schemars(with = "Option<PolicyItems>")]
     pub optional: PolicyItems,
     /// Items every subscriber receives and cannot override locally.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "crate::config::null_as_default")]
+    #[schemars(with = "Option<PolicyItems>")]
     pub locked: PolicyItems,
     /// Restrictions this source imposes on how subscribers may compose it.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "crate::config::null_as_default")]
+    #[schemars(with = "Option<SourceConstraints>")]
     pub constraints: SourceConstraints,
 }
 
@@ -469,8 +479,8 @@ pub struct PolicyItems {
     #[serde(default)]
     pub aliases: Vec<ShellAlias>,
     /// System configurator settings offered at this tier.
-    #[serde(default)]
-    #[schemars(with = "std::collections::BTreeMap<String, serde_json::Value>")]
+    #[serde(default, deserialize_with = "crate::config::null_as_default")]
+    #[schemars(with = "Option<std::collections::BTreeMap<String, serde_json::Value>>")]
     pub system: SystemSettings,
     /// Profile names this tier recommends composing in.
     #[serde(default)]
@@ -708,5 +718,87 @@ subscription:
         let spec: SubscriptionSpec =
             serde_yaml::from_str(yaml).expect("default priority path must not be broken");
         assert_eq!(spec.priority, 500);
+    }
+
+    // `overrides`/`reject` default to `Value::Null`, so without
+    // `skip_serializing_if` a saved source entry that never set either one
+    // wrote explicit `overrides: null` / `reject: null` into the user's
+    // document. `profile` and `pinVersion` are the sibling optional fields in
+    // the same struct and already carried the guard.
+    #[test]
+    fn a_saved_source_entry_with_no_overrides_or_reject_writes_neither_as_null() {
+        let spec = SourceSpec {
+            name: "team".to_string(),
+            origin: serde_yaml::from_str("type: Git\nurl: https://example.com/x.git\n").unwrap(),
+            subscription: SubscriptionSpec::default(),
+            sync: SourceSyncSpec::default(),
+        };
+        let yaml = serde_yaml::to_string(&spec).unwrap();
+        assert!(
+            !yaml.contains("overrides:"),
+            "an unset overrides must not serialize at all, got:\n{yaml}"
+        );
+        assert!(
+            !yaml.contains("reject:"),
+            "an unset reject must not serialize at all, got:\n{yaml}"
+        );
+
+        let round_tripped: SourceSpec = serde_yaml::from_str(&yaml).unwrap();
+        assert!(round_tripped.subscription.overrides.is_null());
+        assert!(round_tripped.subscription.reject.is_null());
+    }
+
+    #[test]
+    fn a_saved_source_entry_with_overrides_set_still_writes_it() {
+        let subscription = SubscriptionSpec {
+            overrides: serde_yaml::from_str("env:\n  FOO: bar\n").unwrap(),
+            ..SubscriptionSpec::default()
+        };
+        let spec = SourceSpec {
+            name: "team".to_string(),
+            origin: serde_yaml::from_str("type: Git\nurl: https://example.com/x.git\n").unwrap(),
+            subscription,
+            sync: SourceSyncSpec::default(),
+        };
+        let yaml = serde_yaml::to_string(&spec).unwrap();
+        assert!(
+            yaml.contains("overrides:"),
+            "a set overrides must still serialize, got:\n{yaml}"
+        );
+
+        let round_tripped: SourceSpec = serde_yaml::from_str(&yaml).unwrap();
+        assert!(!round_tripped.subscription.overrides.is_null());
+    }
+
+    // A document an older cfgd wrote still carries the explicit nulls, and
+    // `SubscriptionSpec` denies unknown fields — so "it obviously still
+    // parses" is an assumption until something reads one back.
+    #[test]
+    fn a_saved_source_entry_written_with_explicit_nulls_still_loads() {
+        let yaml = concat!(
+            "name: team\n",
+            "origin:\n",
+            "  type: Git\n",
+            "  url: https://example.com/x.git\n",
+            "subscription:\n",
+            "  priority: 500\n",
+            "  overrides: null\n",
+            "  reject: null\n",
+        );
+
+        let spec: SourceSpec =
+            serde_yaml::from_str(yaml).expect("a document carrying explicit nulls still loads");
+        assert_eq!(spec.name, "team");
+        assert!(spec.subscription.overrides.is_null());
+        assert!(spec.subscription.reject.is_null());
+
+        // And the load is lossless in the direction that matters: writing it
+        // back drops the nulls, so one `source update` migrates the document
+        // to the shape the writer now emits.
+        let rewritten = serde_yaml::to_string(&spec).unwrap();
+        assert!(
+            !rewritten.contains("overrides:") && !rewritten.contains("reject:"),
+            "a re-written entry must not carry the nulls it was loaded with, got:\n{rewritten}"
+        );
     }
 }

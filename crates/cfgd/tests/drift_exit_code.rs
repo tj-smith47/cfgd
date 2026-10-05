@@ -1,5 +1,3 @@
-#![allow(deprecated)] // assert_cmd 2.x cargo_bin deprecation
-
 //! Exit-code contract for every drift surface that takes `--exit-code`
 //! (`diff`, `status`, `verify`, plus the `--module` flag-scoped variants of
 //! the first two — `every_exit_code_surface_reports_an_erroring_check`
@@ -16,8 +14,10 @@
 
 use std::path::Path;
 
-use assert_cmd::Command;
 use cfgd_core::test_helpers::{ShimArm, write_tool_shim};
+
+mod cfgd_binary;
+use cfgd_binary::cfgd_bin;
 
 /// Every surface taking `--exit-code`, each spelled as the argv that arms it.
 const EXIT_CODE_SURFACES: [&[&str]; 3] = [
@@ -120,21 +120,21 @@ fn run(
     home: &Path,
     gpg: Option<&Path>,
 ) -> std::process::Output {
-    let mut cmd = Command::cargo_bin("cfgd").unwrap();
+    let mut cmd = cfgd_bin().unwrap();
     cmd.args(args)
         .arg("--config")
         .arg(config.join("cfgd.yaml"))
         .arg("--state-dir")
         .arg(state)
         .env("HOME", home)
-        // Windows resolves `~` from USERPROFILE first, so a child left holding
-        // the invoking account's profile would write to the real home.
+        // Windows resolves `~` from USERPROFILE first, so HOME alone would
+        // leave the child under the constructor's home.
         .env("USERPROFILE", home)
-        // `directories` reads Windows' known folders rather than the env, so
-        // nothing but this seam keeps a child's module cache out of the real profile.
-        .env("CFGD_CACHE_DIR", home.join("cache"));
+        // Keeps the module cache under the home this test re-points; the
+        // constructor's own cache override sits outside it.
+        .env(cfgd_core::CFGD_CACHE_DIR_ENV, home.join("cache"));
     if let Some(gpg) = gpg {
-        cmd.env("CFGD_GPG_BIN", gpg);
+        cmd.env(cfgd::seams::GPG_BIN_ENV, gpg);
     }
     cmd.output().unwrap()
 }
@@ -274,7 +274,7 @@ fn a_manager_that_cannot_be_listed_is_one_row_on_every_exit_code_surface() {
 
     for args in EXIT_CODE_SURFACES {
         let state_tmp = tempfile::tempdir().unwrap();
-        let mut cmd = Command::cargo_bin("cfgd").unwrap();
+        let mut cmd = cfgd_bin().unwrap();
         let out = cmd
             .args(args)
             .arg("--config")
@@ -283,9 +283,9 @@ fn a_manager_that_cannot_be_listed_is_one_row_on_every_exit_code_surface() {
             .arg(state_tmp.path())
             .env("HOME", home_tmp.path())
             .env("USERPROFILE", home_tmp.path())
-            .env("CFGD_CACHE_DIR", home_tmp.path().join("cache"))
-            .env("CFGD_PIPX_BIN", &pipx)
-            .env("CFGD_CARGO_BIN", &cargo)
+            .env(cfgd_core::CFGD_CACHE_DIR_ENV, home_tmp.path().join("cache"))
+            .env(cfgd::seams::tool_seam_var("pipx"), &pipx)
+            .env(cfgd::seams::tool_seam_var("cargo"), &cargo)
             .output()
             .unwrap();
         let text = format!(
@@ -338,18 +338,18 @@ fn versionless_apk(dir: &Path) -> std::path::PathBuf {
     )
 }
 
-/// One module pinning a package's version onto the versionless manager above,
-/// and a profile that resolves it.
-fn write_pinned_package_config(dir: &Path, manager: &str) {
+/// A module pinning a package's version onto the versionless `apk` above.
+const PINNED_ON_APK: &str = "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: pinned\nspec:\n  packages:\n    - name: demo\n      minVersion: \"2\"\n      prefer: [apk]\n";
+
+/// The same module pinned onto the below-floor `dnf` further down.
+#[cfg(unix)] // see `below_floor_dnf`: rpm's newline-bearing argv is unshimmable on Windows
+const PINNED_ON_DNF: &str = "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: pinned\nspec:\n  packages:\n    - name: demo\n      minVersion: \"2\"\n      prefer: [dnf]\n";
+
+/// `module` as the `pinned` module, and a profile that resolves it.
+fn write_pinned_package_config(dir: &Path, module: &str) {
     let module_dir = dir.join("modules").join("pinned");
     std::fs::create_dir_all(&module_dir).unwrap();
-    std::fs::write(
-        module_dir.join("module.yaml"),
-        format!(
-            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: pinned\nspec:\n  packages:\n    - name: demo\n      minVersion: \"2\"\n      prefer: [{manager}]\n"
-        ),
-    )
-    .unwrap();
+    std::fs::write(module_dir.join("module.yaml"), module).unwrap();
     let profiles_dir = dir.join("profiles");
     std::fs::create_dir_all(&profiles_dir).unwrap();
     std::fs::write(
@@ -371,12 +371,12 @@ fn write_pinned_package_config(dir: &Path, manager: &str) {
 fn a_pinned_package_whose_version_cannot_be_read_escalates_on_every_exit_code_surface() {
     let config_tmp = tempfile::tempdir().unwrap();
     let home_tmp = tempfile::tempdir().unwrap();
-    write_pinned_package_config(config_tmp.path(), "apk");
+    write_pinned_package_config(config_tmp.path(), PINNED_ON_APK);
     let apk = versionless_apk(config_tmp.path());
 
     for args in EXIT_CODE_SURFACES {
         let state_tmp = tempfile::tempdir().unwrap();
-        let mut cmd = Command::cargo_bin("cfgd").unwrap();
+        let mut cmd = cfgd_bin().unwrap();
         let out = cmd
             .args(args)
             .arg("--config")
@@ -385,8 +385,8 @@ fn a_pinned_package_whose_version_cannot_be_read_escalates_on_every_exit_code_su
             .arg(state_tmp.path())
             .env("HOME", home_tmp.path())
             .env("USERPROFILE", home_tmp.path())
-            .env("CFGD_CACHE_DIR", home_tmp.path().join("cache"))
-            .env("CFGD_APK_BIN", &apk)
+            .env(cfgd_core::CFGD_CACHE_DIR_ENV, home_tmp.path().join("cache"))
+            .env(cfgd::seams::APK_BIN_ENV, &apk)
             .output()
             .unwrap();
         let text = format!(
@@ -431,12 +431,12 @@ fn offerless_apk(dir: &Path) -> std::path::PathBuf {
 fn a_pinned_package_whose_manager_states_no_offer_still_resolves() {
     let config_tmp = tempfile::tempdir().unwrap();
     let home_tmp = tempfile::tempdir().unwrap();
-    write_pinned_package_config(config_tmp.path(), "apk");
+    write_pinned_package_config(config_tmp.path(), PINNED_ON_APK);
     let apk = offerless_apk(config_tmp.path());
 
     let run = |args: &[&str]| {
         let state_tmp = tempfile::tempdir().unwrap();
-        let mut cmd = Command::cargo_bin("cfgd").unwrap();
+        let mut cmd = cfgd_bin().unwrap();
         let out = cmd
             .args(args)
             .arg("--config")
@@ -445,8 +445,8 @@ fn a_pinned_package_whose_manager_states_no_offer_still_resolves() {
             .arg(state_tmp.path())
             .env("HOME", home_tmp.path())
             .env("USERPROFILE", home_tmp.path())
-            .env("CFGD_CACHE_DIR", home_tmp.path().join("cache"))
-            .env("CFGD_APK_BIN", &apk)
+            .env(cfgd_core::CFGD_CACHE_DIR_ENV, home_tmp.path().join("cache"))
+            .env(cfgd::seams::APK_BIN_ENV, &apk)
             .output()
             .unwrap();
         let text = format!(
@@ -485,19 +485,20 @@ fn a_pinned_package_whose_manager_states_no_offer_still_resolves() {
 ///
 /// The three cells built on this pair are the file's only `#[cfg(unix)]` ones,
 /// and the gate is the FIXTURE's, not the contract's: dnf's installed listing
-/// is `rpm --query --all --queryformat "%{NAME}\t%{VERSION}\n"`, whose
-/// trailing newline `std::process::Command` refuses to pass to a `.cmd` — a
-/// newline truncates a `cmd.exe` command line, and a `.cmd` is what the
-/// Windows arm of `write_tool_shim` has to be. (The `%` is not the problem;
-/// std neutralizes those.) The distro grammar this pair carries — an
+/// is `rpm --query --all --queryformat "%{NAME}\t%{VERSION}\n"`, whose trailing
+/// newline `std::process::Command` refuses to pass to a `.cmd` — a newline
+/// truncates a `cmd.exe` command line, and a `.cmd` is what the Windows arm of
+/// `write_tool_shim` has to be. (The `%` is not the problem; std neutralizes
+/// those.) The distro grammar this pair carries — an
 /// `<epoch>:<upstream>-<revision>` version compared on its upstream part — is
 /// reachable nowhere else, so the trio stays here rather than moving to a
 /// manager Windows can shim. What Windows loses is only the GRAMMAR: each of
 /// the three cells has a brew twin proving the same outcome there — the
 /// unscoped walk in
 /// `a_brew_formula_below_its_floor_exits_drift_detected_on_every_surface`, the
-/// scoped pass in `a_brew_formula_below_its_floor_is_drift_on_both_scoped_surfaces`,
-/// and the non-heal in
+/// scoped pass in
+/// `a_brew_formula_below_its_floor_is_drift_on_both_scoped_surfaces`, and the
+/// non-heal in
 /// `a_scoped_brew_run_does_not_heal_a_version_row_the_machine_still_holds`.
 #[cfg(unix)]
 fn below_floor_dnf(dir: &Path) -> (std::path::PathBuf, std::path::PathBuf) {
@@ -526,12 +527,12 @@ fn below_floor_dnf(dir: &Path) -> (std::path::PathBuf, std::path::PathBuf) {
 fn a_pinned_package_below_its_floor_exits_drift_detected_on_every_surface() {
     let config_tmp = tempfile::tempdir().unwrap();
     let home_tmp = tempfile::tempdir().unwrap();
-    write_pinned_package_config(config_tmp.path(), "dnf");
+    write_pinned_package_config(config_tmp.path(), PINNED_ON_DNF);
     let (dnf, rpm) = below_floor_dnf(config_tmp.path());
 
     for args in EXIT_CODE_SURFACES {
         let state_tmp = tempfile::tempdir().unwrap();
-        let mut cmd = Command::cargo_bin("cfgd").unwrap();
+        let mut cmd = cfgd_bin().unwrap();
         let out = cmd
             .args(args)
             .arg("--config")
@@ -540,9 +541,9 @@ fn a_pinned_package_below_its_floor_exits_drift_detected_on_every_surface() {
             .arg(state_tmp.path())
             .env("HOME", home_tmp.path())
             .env("USERPROFILE", home_tmp.path())
-            .env("CFGD_CACHE_DIR", home_tmp.path().join("cache"))
-            .env("CFGD_DNF_BIN", &dnf)
-            .env("CFGD_RPM_BIN", &rpm)
+            .env(cfgd_core::CFGD_CACHE_DIR_ENV, home_tmp.path().join("cache"))
+            .env(cfgd::seams::DNF_BIN_ENV, &dnf)
+            .env(cfgd::seams::RPM_BIN_ENV, &rpm)
             .output()
             .unwrap();
         let text = format!(
@@ -582,12 +583,12 @@ const SCOPED_PINNED_SURFACES: [&[&str]; 2] = [
 fn a_pinned_package_below_its_floor_is_drift_on_both_scoped_surfaces() {
     let config_tmp = tempfile::tempdir().unwrap();
     let home_tmp = tempfile::tempdir().unwrap();
-    write_pinned_package_config(config_tmp.path(), "dnf");
+    write_pinned_package_config(config_tmp.path(), PINNED_ON_DNF);
     let (dnf, rpm) = below_floor_dnf(config_tmp.path());
 
     for args in SCOPED_PINNED_SURFACES {
         let state_tmp = tempfile::tempdir().unwrap();
-        let mut cmd = Command::cargo_bin("cfgd").unwrap();
+        let mut cmd = cfgd_bin().unwrap();
         let out = cmd
             .args(args)
             .arg("--config")
@@ -596,9 +597,9 @@ fn a_pinned_package_below_its_floor_is_drift_on_both_scoped_surfaces() {
             .arg(state_tmp.path())
             .env("HOME", home_tmp.path())
             .env("USERPROFILE", home_tmp.path())
-            .env("CFGD_CACHE_DIR", home_tmp.path().join("cache"))
-            .env("CFGD_DNF_BIN", &dnf)
-            .env("CFGD_RPM_BIN", &rpm)
+            .env(cfgd_core::CFGD_CACHE_DIR_ENV, home_tmp.path().join("cache"))
+            .env(cfgd::seams::DNF_BIN_ENV, &dnf)
+            .env(cfgd::seams::RPM_BIN_ENV, &rpm)
             .output()
             .unwrap();
         let text = format!(
@@ -622,12 +623,12 @@ fn a_pinned_package_below_its_floor_is_drift_on_both_scoped_surfaces() {
 fn a_pinned_package_whose_version_cannot_be_read_escalates_on_both_scoped_surfaces() {
     let config_tmp = tempfile::tempdir().unwrap();
     let home_tmp = tempfile::tempdir().unwrap();
-    write_pinned_package_config(config_tmp.path(), "apk");
+    write_pinned_package_config(config_tmp.path(), PINNED_ON_APK);
     let apk = versionless_apk(config_tmp.path());
 
     for args in SCOPED_PINNED_SURFACES {
         let state_tmp = tempfile::tempdir().unwrap();
-        let mut cmd = Command::cargo_bin("cfgd").unwrap();
+        let mut cmd = cfgd_bin().unwrap();
         let out = cmd
             .args(args)
             .arg("--config")
@@ -636,8 +637,8 @@ fn a_pinned_package_whose_version_cannot_be_read_escalates_on_both_scoped_surfac
             .arg(state_tmp.path())
             .env("HOME", home_tmp.path())
             .env("USERPROFILE", home_tmp.path())
-            .env("CFGD_CACHE_DIR", home_tmp.path().join("cache"))
-            .env("CFGD_APK_BIN", &apk)
+            .env(cfgd_core::CFGD_CACHE_DIR_ENV, home_tmp.path().join("cache"))
+            .env(cfgd::seams::APK_BIN_ENV, &apk)
             .output()
             .unwrap();
         let text = format!(
@@ -667,11 +668,11 @@ fn a_scoped_run_does_not_heal_a_version_row_the_machine_still_holds() {
     let config_tmp = tempfile::tempdir().unwrap();
     let home_tmp = tempfile::tempdir().unwrap();
     let state_tmp = tempfile::tempdir().unwrap();
-    write_pinned_package_config(config_tmp.path(), "dnf");
+    write_pinned_package_config(config_tmp.path(), PINNED_ON_DNF);
     let (dnf, rpm) = below_floor_dnf(config_tmp.path());
 
     let run_one = |args: &[&str]| {
-        let mut cmd = Command::cargo_bin("cfgd").unwrap();
+        let mut cmd = cfgd_bin().unwrap();
         let out = cmd
             .args(args)
             .arg("--config")
@@ -680,9 +681,9 @@ fn a_scoped_run_does_not_heal_a_version_row_the_machine_still_holds() {
             .arg(state_tmp.path())
             .env("HOME", home_tmp.path())
             .env("USERPROFILE", home_tmp.path())
-            .env("CFGD_CACHE_DIR", home_tmp.path().join("cache"))
-            .env("CFGD_DNF_BIN", &dnf)
-            .env("CFGD_RPM_BIN", &rpm)
+            .env(cfgd_core::CFGD_CACHE_DIR_ENV, home_tmp.path().join("cache"))
+            .env(cfgd::seams::DNF_BIN_ENV, &dnf)
+            .env(cfgd::seams::RPM_BIN_ENV, &rpm)
             .output()
             .unwrap();
         let text = format!(
@@ -1135,13 +1136,17 @@ fn every_full_exit_code_surface_renders_and_prices_a_standing_row() {
         );
 
         let state = StateStore::open(&state_tmp.path().join("state.db")).unwrap();
+        // Sorted: the rows come newest first on a one-second clock, so a scan
+        // re-stamping both across a second boundary swaps them.
+        let mut unresolved = state
+            .unresolved_drift()
+            .unwrap()
+            .into_iter()
+            .map(|e| (e.resource_type, e.resource_id))
+            .collect::<Vec<_>>();
+        unresolved.sort();
         assert_eq!(
-            state
-                .unresolved_drift()
-                .unwrap()
-                .into_iter()
-                .map(|e| (e.resource_type, e.resource_id))
-                .collect::<Vec<_>>(),
+            unresolved,
             vec![
                 ("script".to_string(), "echo hook".to_string()),
                 ("script".to_string(), "echo silent".to_string()),
@@ -1214,6 +1219,7 @@ fn every_scoped_exit_code_surface_renders_and_prices_a_standing_row() {
         // is a marker no other rendered path can produce, so its presence
         // proves the STANDING ROW ITSELF made it onto the screen.
         assert!(
+            // doc-comment-ok: the haystack is rendered command output
             text.contains(STANDING_ROW_MARKER),
             "cfgd {render_args:?}: renders the row it left standing, got: {text}"
         );
@@ -1285,13 +1291,17 @@ fn every_scoped_exit_code_surface_renders_and_prices_a_standing_row() {
         );
 
         let state = StateStore::open(&state_tmp.path().join("state.db")).unwrap();
+        // Sorted: the rows come newest first on a one-second clock, so a scan
+        // re-stamping both across a second boundary swaps them.
+        let mut unresolved = state
+            .unresolved_drift()
+            .unwrap()
+            .into_iter()
+            .map(|e| (e.resource_type, e.resource_id))
+            .collect::<Vec<_>>();
+        unresolved.sort();
         assert_eq!(
-            state
-                .unresolved_drift()
-                .unwrap()
-                .into_iter()
-                .map(|e| (e.resource_type, e.resource_id))
-                .collect::<Vec<_>>(),
+            unresolved,
             vec![
                 ("module".to_string(), "envmod".to_string()),
                 ("module".to_string(), "envmod:script".to_string()),
@@ -1345,6 +1355,7 @@ fn a_module_scoped_scan_renders_and_prices_a_script_shaped_standing_row() {
     // the terse fallback a NO-operand row renders and a substring of the
     // clean "No drift detected" verdict — see the sibling test above.
     assert!(
+        // doc-comment-ok: the haystack is rendered command output
         text.contains(STANDING_ROW_MARKER),
         "cfgd {render_args:?}: renders the script-shaped row it left standing, got: {text}"
     );
@@ -1507,7 +1518,7 @@ fn a_brew_formula_clearing_its_floor_is_converged_on_every_surface() {
 
     for args in EXIT_CODE_SURFACES {
         let state_tmp = tempfile::tempdir().unwrap();
-        let mut cmd = Command::cargo_bin("cfgd").unwrap();
+        let mut cmd = cfgd_bin().unwrap();
         let out = cmd
             .args(args)
             .arg("--config")
@@ -1516,8 +1527,8 @@ fn a_brew_formula_clearing_its_floor_is_converged_on_every_surface() {
             .arg(state_tmp.path())
             .env("HOME", home_tmp.path())
             .env("USERPROFILE", home_tmp.path())
-            .env("CFGD_CACHE_DIR", home_tmp.path().join("cache"))
-            .env("CFGD_BREW_BIN", &brew)
+            .env(cfgd_core::CFGD_CACHE_DIR_ENV, home_tmp.path().join("cache"))
+            .env(cfgd::seams::BREW_BIN_ENV, &brew)
             .output()
             .unwrap();
         let text = format!(
@@ -1539,7 +1550,7 @@ fn a_brew_formula_clearing_its_floor_is_converged_on_every_surface() {
     // The same comparator decides the plan: a package the machine holds above
     // its floor is elided, so a converged machine plans nothing at all.
     let state_tmp = tempfile::tempdir().unwrap();
-    let mut cmd = Command::cargo_bin("cfgd").unwrap();
+    let mut cmd = cfgd_bin().unwrap();
     let out = cmd
         .args(["plan"])
         .arg("--config")
@@ -1548,8 +1559,8 @@ fn a_brew_formula_clearing_its_floor_is_converged_on_every_surface() {
         .arg(state_tmp.path())
         .env("HOME", home_tmp.path())
         .env("USERPROFILE", home_tmp.path())
-        .env("CFGD_CACHE_DIR", home_tmp.path().join("cache"))
-        .env("CFGD_BREW_BIN", &brew)
+        .env(cfgd_core::CFGD_CACHE_DIR_ENV, home_tmp.path().join("cache"))
+        .env(cfgd::seams::BREW_BIN_ENV, &brew)
         .output()
         .unwrap();
     let text = format!(
@@ -1582,7 +1593,7 @@ fn a_brew_formula_below_its_floor_exits_drift_detected_on_every_surface() {
 
     for args in EXIT_CODE_SURFACES {
         let state_tmp = tempfile::tempdir().unwrap();
-        let mut cmd = Command::cargo_bin("cfgd").unwrap();
+        let mut cmd = cfgd_bin().unwrap();
         let out = cmd
             .args(args)
             .arg("--config")
@@ -1591,8 +1602,8 @@ fn a_brew_formula_below_its_floor_exits_drift_detected_on_every_surface() {
             .arg(state_tmp.path())
             .env("HOME", home_tmp.path())
             .env("USERPROFILE", home_tmp.path())
-            .env("CFGD_CACHE_DIR", home_tmp.path().join("cache"))
-            .env("CFGD_BREW_BIN", &brew)
+            .env(cfgd_core::CFGD_CACHE_DIR_ENV, home_tmp.path().join("cache"))
+            .env(cfgd::seams::BREW_BIN_ENV, &brew)
             .output()
             .unwrap();
         let text = format!(
@@ -1607,7 +1618,7 @@ fn a_brew_formula_below_its_floor_exits_drift_detected_on_every_surface() {
         );
         assert!(
             !text.contains("error checking drift"),
-            "cfgd {args:?}: brew's own grammar reads `0.10.2_1`, so this is drift and not an unanswered check, got: {text}"
+            "cfgd {args:?}: brew's own grammar reads `0.10.2_1`, so this is drift on an answered check, got: {text}"
         );
         // Each surface states the one finding in its own register: `diff` and
         // `verify` print both operands, `status` the terse cause. Brew's
@@ -1637,7 +1648,7 @@ fn a_brew_formula_below_its_floor_is_drift_on_both_scoped_surfaces() {
 
     for args in SCOPED_PINNED_SURFACES {
         let state_tmp = tempfile::tempdir().unwrap();
-        let mut cmd = Command::cargo_bin("cfgd").unwrap();
+        let mut cmd = cfgd_bin().unwrap();
         let out = cmd
             .args(args)
             .arg("--config")
@@ -1646,8 +1657,8 @@ fn a_brew_formula_below_its_floor_is_drift_on_both_scoped_surfaces() {
             .arg(state_tmp.path())
             .env("HOME", home_tmp.path())
             .env("USERPROFILE", home_tmp.path())
-            .env("CFGD_CACHE_DIR", home_tmp.path().join("cache"))
-            .env("CFGD_BREW_BIN", &brew)
+            .env(cfgd_core::CFGD_CACHE_DIR_ENV, home_tmp.path().join("cache"))
+            .env(cfgd::seams::BREW_BIN_ENV, &brew)
             .output()
             .unwrap();
         let text = format!(
@@ -1662,7 +1673,7 @@ fn a_brew_formula_below_its_floor_is_drift_on_both_scoped_surfaces() {
         );
         assert!(
             !text.contains("error checking drift"),
-            "cfgd {args:?}: brew's own grammar reads `0.10.2_1`, so this is drift and not an unanswered check, got: {text}"
+            "cfgd {args:?}: brew's own grammar reads `0.10.2_1`, so this is drift on an answered check, got: {text}"
         );
         assert!(
             text.contains("neovim"),
@@ -1684,7 +1695,7 @@ fn a_scoped_brew_run_does_not_heal_a_version_row_the_machine_still_holds() {
     let brew = below_floor_brew(config_tmp.path());
 
     let run_one = |args: &[&str]| {
-        let mut cmd = Command::cargo_bin("cfgd").unwrap();
+        let mut cmd = cfgd_bin().unwrap();
         let out = cmd
             .args(args)
             .arg("--config")
@@ -1693,8 +1704,8 @@ fn a_scoped_brew_run_does_not_heal_a_version_row_the_machine_still_holds() {
             .arg(state_tmp.path())
             .env("HOME", home_tmp.path())
             .env("USERPROFILE", home_tmp.path())
-            .env("CFGD_CACHE_DIR", home_tmp.path().join("cache"))
-            .env("CFGD_BREW_BIN", &brew)
+            .env(cfgd_core::CFGD_CACHE_DIR_ENV, home_tmp.path().join("cache"))
+            .env(cfgd::seams::BREW_BIN_ENV, &brew)
             .output()
             .unwrap();
         let text = format!(

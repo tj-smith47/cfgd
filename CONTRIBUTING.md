@@ -41,6 +41,7 @@ Open a [feature request](https://github.com/tj-smith47/cfgd/issues/new?template=
 - Rust 1.94+ (install via [rustup](https://rustup.rs/))
 - `sops` (for secrets tests)
 - `age` (for encryption tests)
+- `shellcheck`, at the version pinned in `.github/actions/setup-shellcheck/action.yml` (`task shellcheck` refuses any other)
 
 ### Building
 
@@ -61,6 +62,8 @@ cargo test -p cfgd-core           # test a specific crate
 cargo fmt --check                 # check formatting
 cargo clippy -- -D warnings       # lint
 bash .claude/scripts/audit.sh     # project-specific audit
+task shellcheck                   # every tracked *.sh script
+task installer:shellcheck         # the installer rendered by `task snapshot`
 ```
 
 ### Project Structure
@@ -90,6 +93,7 @@ crates/
 - Group imports: std, external crates, internal modules (separated by blank lines)
 - `#[serde(rename_all = "camelCase")]` on config structs
 - Co-located unit tests in `#[cfg(test)] mod tests {}`
+- Shell scripts pass `task shellcheck` (settings in `.shellcheckrc`); a `# shellcheck disable=` names its reason on the same line
 
 ### Commit Messages
 

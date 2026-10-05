@@ -52,6 +52,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt()
         .with_env_filter(cfgd_core::tracing_env_filter("info"))
         .json()
+        // long-line-ok: a hatch is read off its own line, so it cannot wrap
         // unfolded-writer-ok: the JSON serializer plus C1Escaping is this line's sanitizer, and a fold would put `\xNN` inside its strings
         .with_writer(|| C1Escaping(std::io::stdout()))
         .init();
@@ -91,6 +92,7 @@ mod tests {
         let sink = capture.clone();
         let subscriber = tracing_subscriber::fmt()
             .json()
+            // long-line-ok: a hatch is read off its own line, so it cannot wrap
             // unfolded-writer-ok: the production writer under a capture, which is what this test exists to exercise
             .with_writer(move || super::C1Escaping(sink.clone()))
             .finish();

@@ -188,9 +188,9 @@ scripts:
 
 An interactive script requires a TTY. When stdin is **not** a terminal (CI,
 piped input, or any run by `cfgd daemon`, which never has a TTY), the
-script is **skipped with a warning** rather than hanging on instant EOF, and
+script is **skipped with a warning**, so it cannot hang on instant EOF, and
 reports `changed=false`. Interactive steps therefore run only during an
-attended `cfgd apply`, never under unattended reconcile.
+attended `cfgd apply`.
 
 **Process group.** The child shares cfgd's own process group instead of
 getting a new detached one, so the terminal's foreground group still

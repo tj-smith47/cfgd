@@ -27,9 +27,9 @@
 //!     the recorded path being a tempdir.
 //!   - `backup/gc_nothing.txt`             — `cfgd backup gc` on a machine that
 //!     has moved no destination.
-//!   - `backup/run_orphan_hint.txt`        — the `cfgd backup run` that moves a
+//!   - `backup/run_orphan_note.txt`        — the `cfgd backup run` that moves a
 //!     `destination:`, whose group carries the snapshot row it wrote and then
-//!     the hint naming what the move stranded.
+//!     the note row naming what the move stranded.
 //!   - `backup/rollback_no_copy.{txt,json}` — `cfgd backup rollback docs` on a
 //!     unit with no copy beside its source: the typed `no_rollback_copy` error
 //!     and its read-only-surface hint (`cfgd backup list <name>`, never the
@@ -44,7 +44,7 @@
 //!     best-effort pattern — and a backup failure never raises an
 //!     already-`Failed` apply back up to `partial`.
 
-mod common;
+use cfgd_test_fixtures as common;
 
 use std::path::Path;
 
@@ -71,7 +71,8 @@ fn backup_list_empty_human() {
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc();
 
-    cmd_backup_list(&cli, &printer, None, false).unwrap();
+    cfgd::cli::RunContext::for_test(&cli, &printer, |run| cmd_backup_list(run, None, false))
+        .unwrap();
     drop(printer);
 
     assert_snapshot!(
@@ -87,7 +88,8 @@ fn backup_list_empty_json() {
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc_with_format(cfgd_core::output::OutputFormat::Json);
 
-    cmd_backup_list(&cli, &printer, None, false).unwrap();
+    cfgd::cli::RunContext::for_test(&cli, &printer, |run| cmd_backup_list(run, None, false))
+        .unwrap();
     drop(printer);
 
     let payload = cap.json().expect("backup list doc carries a payload");
@@ -108,7 +110,8 @@ fn backup_list_populated_human() {
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc();
 
-    cmd_backup_list(&cli, &printer, None, false).unwrap();
+    cfgd::cli::RunContext::for_test(&cli, &printer, |run| cmd_backup_list(run, None, false))
+        .unwrap();
     drop(printer);
 
     // Next Run counts down to a real future clock time, so how far away it
@@ -129,7 +132,8 @@ fn backup_list_populated_json() {
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc_with_format(cfgd_core::output::OutputFormat::Json);
 
-    cmd_backup_list(&cli, &printer, None, false).unwrap();
+    cfgd::cli::RunContext::for_test(&cli, &printer, |run| cmd_backup_list(run, None, false))
+        .unwrap();
     drop(printer);
 
     let payload = cap.json().expect("backup list doc carries a payload");
@@ -200,7 +204,8 @@ fn backup_run_named_human() {
 
     // A hookless run is clean, so `cmd_backup_run` returns Ok rather than
     // taking the `ExitCode::Error.exit()` path — safe to call in-process.
-    cmd_backup_run(&cli, &printer, Some("docs")).unwrap();
+    cfgd::cli::RunContext::for_test(&cli, &printer, |run| cmd_backup_run(run, Some("docs")))
+        .unwrap();
     drop(printer);
 
     let dest_dir = state_dir.path().join("backups").join("docs");
@@ -247,7 +252,8 @@ fn backup_run_named_json() {
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc_with_format(cfgd_core::output::OutputFormat::Json);
 
-    cmd_backup_run(&cli, &printer, Some("docs")).unwrap();
+    cfgd::cli::RunContext::for_test(&cli, &printer, |run| cmd_backup_run(run, Some("docs")))
+        .unwrap();
     drop(printer);
 
     let payload = cap.json().expect("backup run doc carries a payload");
@@ -287,7 +293,8 @@ fn backup_run_named_scheduled_backup_runs_alone() {
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc_with_format(cfgd_core::output::OutputFormat::Json);
 
-    cmd_backup_run(&cli, &printer, Some("weekly")).unwrap();
+    cfgd::cli::RunContext::for_test(&cli, &printer, |run| cmd_backup_run(run, Some("weekly")))
+        .unwrap();
     drop(printer);
 
     let payload = cap.json().expect("backup run doc carries a payload");
@@ -318,7 +325,9 @@ fn backup_run_unknown_name_human_renders_hint_once() {
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, _cap) = Printer::for_test_doc();
 
-    let err = cmd_backup_run(&cli, &printer, Some("bogus")).unwrap_err();
+    let err =
+        cfgd::cli::RunContext::for_test(&cli, &printer, |run| cmd_backup_run(run, Some("bogus")))
+            .unwrap_err();
 
     // Render through the real CLI-boundary sink (`render_cli_error`) — the
     // ONLY path a user's terminal actually sees. Asserting on `{err:#}`'s raw
@@ -346,7 +355,9 @@ fn backup_run_unknown_name_json_carries_hint() {
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, _cap) = Printer::for_test_doc();
 
-    let err = cmd_backup_run(&cli, &printer, Some("bogus")).unwrap_err();
+    let err =
+        cfgd::cli::RunContext::for_test(&cli, &printer, |run| cmd_backup_run(run, Some("bogus")))
+            .unwrap_err();
 
     let (render_printer, render_cap) =
         Printer::for_test_doc_with_format(cfgd_core::output::OutputFormat::Json);
@@ -379,7 +390,7 @@ fn backup_run_all_runs_every_declared_backup_including_scheduled() {
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, _cap) = Printer::for_test_doc();
 
-    cmd_backup_run(&cli, &printer, None).unwrap();
+    cfgd::cli::RunContext::for_test(&cli, &printer, |run| cmd_backup_run(run, None)).unwrap();
 
     for name in ["docs", "weekly"] {
         let dir = state_dir.path().join("backups").join(name);
@@ -398,18 +409,22 @@ fn backup_run_aborts_on_a_source_constraint_violation_but_list_still_reports() {
     // source's own constraints must stop the run, not be recorded and run
     // anyway. `backup list` only reads, so it stays on Report and still shows
     // the inventory.
-    let _allow = cfgd_core::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+    let _allow =
+        cfgd_core::test_helpers::EnvVarGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
     let (_workspace, config_dir, state_dir, rejected_destination) =
         common::violating_backup_source_setup();
     let cli = cli_for(config_dir.path(), state_dir.path());
 
     let (sync_printer, _sync_cap) = Printer::for_test_doc();
-    cfgd::cli::sync::cmd_sync(&cli, &sync_printer).expect("the source must sync into the cache");
+    cfgd::cli::RunContext::for_test(&cli, &sync_printer, cfgd::cli::sync::cmd_sync)
+        .expect("the source must sync into the cache");
     drop(sync_printer);
 
     let (printer, _cap) = Printer::for_test_doc();
-    let err = cfgd::cli::backup::run_backup_run(&cli, &printer, None)
-        .expect_err("a source constraint violation must abort backup run");
+    let err = cfgd::cli::RunContext::for_test(&cli, &printer, |run| {
+        cfgd::cli::backup::run_backup_run(run, None)
+    })
+    .expect_err("a source constraint violation must abort backup run");
     drop(printer);
     let msg = format!("{err:#}");
     assert!(
@@ -423,7 +438,8 @@ fn backup_run_aborts_on_a_source_constraint_violation_but_list_still_reports() {
 
     let (list_printer, list_cap) =
         Printer::for_test_doc_with_format(cfgd_core::output::OutputFormat::Json);
-    cmd_backup_list(&cli, &list_printer, None, false).expect("listing stays on Report mode");
+    cfgd::cli::RunContext::for_test(&cli, &list_printer, |run| cmd_backup_list(run, None, false))
+        .expect("listing stays on Report mode");
     drop(list_printer);
     let payload = list_cap.json().expect("backup list doc carries a payload");
     assert_eq!(
@@ -451,7 +467,7 @@ fn backup_list_still_reports_the_inventory_when_the_state_store_cannot_open() {
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc();
 
-    cmd_backup_list(&cli, &printer, None, false)
+    cfgd::cli::RunContext::for_test(&cli, &printer, |run| cmd_backup_list(run, None, false))
         .expect("an unreadable state store must not fail the listing");
     drop(printer);
 
@@ -682,9 +698,11 @@ fn restored_docs(cli: &cfgd::cli::Cli, source: &Path, live: &str) {
     run_docs(cli);
     std::fs::write(source, live).unwrap();
     let (printer, _cap) = Printer::for_test_doc();
-    run_backup_restore(cli, &printer, &restore_args("docs"))
-        .unwrap()
-        .expect("a --yes restore is never declined");
+    cfgd::cli::RunContext::for_test(cli, &printer, |run| {
+        run_backup_restore(run, &restore_args("docs"))
+    })
+    .unwrap()
+    .expect("a --yes restore is never declined");
 }
 
 #[test]
@@ -699,9 +717,11 @@ fn backup_rollback_puts_back_what_the_restore_overwrote() {
     );
 
     let (printer, cap) = Printer::for_test_doc_with_format(cfgd_core::output::OutputFormat::Json);
-    let outcome = run_backup_rollback(&cli, &printer, "docs", true)
-        .unwrap()
-        .expect("a --yes rollback is never declined");
+    let outcome = cfgd::cli::RunContext::for_test(&cli, &printer, |run| {
+        run_backup_rollback(run, "docs", true)
+    })
+    .unwrap()
+    .expect("a --yes rollback is never declined");
     drop(printer);
 
     assert!(outcome.is_clean(), "outcome: {outcome:?}");
@@ -738,7 +758,7 @@ fn newest_sidecar_beside(source: &Path) -> std::path::PathBuf {
     );
     std::fs::read_dir(dir)
         .expect("read the source directory")
-        .flatten()
+        .map(|entry| entry.expect("the walk must read every directory entry"))
         .filter(|e| e.file_name().to_string_lossy().starts_with(&base))
         // Mtime AND name, the tie-break `rollback_copy` itself breaks toward
         // the stamped spelling: a filesystem with coarse timestamps can stamp
@@ -768,9 +788,11 @@ fn backup_rollback_is_its_own_inverse() {
 
     let roll = || {
         let (printer, _cap) = Printer::for_test_doc();
-        run_backup_rollback(&cli, &printer, "docs", true)
-            .unwrap()
-            .expect("a --yes rollback is never declined");
+        cfgd::cli::RunContext::for_test(&cli, &printer, |run| {
+            run_backup_rollback(run, "docs", true)
+        })
+        .unwrap()
+        .expect("a --yes rollback is never declined");
     };
     roll();
     assert_eq!(std::fs::read_to_string(&source).unwrap(), "live");
@@ -799,7 +821,9 @@ fn backup_rollback_human() {
     restored_docs(&cli, &source, "live");
 
     let (printer, cap) = Printer::for_test_doc();
-    run_backup_rollback(&cli, &printer, "docs", true).unwrap();
+    let printer = printer.with_hints_enabled(true);
+    cfgd::cli::RunContext::for_test(&cli, &printer, |run| run_backup_rollback(run, "docs", true))
+        .unwrap();
     drop(printer);
 
     let config_file = config_dir.path().join("cfgd.yaml");
@@ -889,7 +913,8 @@ fn backup_rollback_lists_only_the_units_that_have_a_copy() {
     restored_docs(&cli, &source, "live");
 
     let (printer, cap) = Printer::for_test_doc_with_format(cfgd_core::output::OutputFormat::Json);
-    cmd_backup_rollback(&cli, &printer, None, false).unwrap();
+    cfgd::cli::RunContext::for_test(&cli, &printer, |run| cmd_backup_rollback(run, None, false))
+        .unwrap();
     drop(printer);
 
     let payload = cap.json().expect("the listing carries a payload");
@@ -915,7 +940,9 @@ fn backup_rollback_listing_is_empty_when_nothing_was_displaced() {
     let cli = cli_for(config_dir.path(), state_dir.path());
 
     let (printer, cap) = Printer::for_test_doc();
-    cmd_backup_rollback(&cli, &printer, None, false).unwrap();
+    let printer = printer.with_hints_enabled(true);
+    cfgd::cli::RunContext::for_test(&cli, &printer, |run| cmd_backup_rollback(run, None, false))
+        .unwrap();
     drop(printer);
 
     assert_snapshot!(
@@ -931,7 +958,10 @@ fn backup_rollback_without_a_copy_is_a_typed_refusal() {
     let cli = cli_for(config_dir.path(), state_dir.path());
 
     let (printer, _cap) = Printer::for_test_doc();
-    let err = run_backup_rollback(&cli, &printer, "docs", true).unwrap_err();
+    let err = cfgd::cli::RunContext::for_test(&cli, &printer, |run| {
+        run_backup_rollback(run, "docs", true)
+    })
+    .unwrap_err();
     drop(printer);
 
     let meta = err
@@ -987,7 +1017,10 @@ fn backup_rollback_without_a_copy_carries_its_hint_in_json() {
     let cli = cli_for(config_dir.path(), state_dir.path());
 
     let (printer, _cap) = Printer::for_test_doc();
-    let err = run_backup_rollback(&cli, &printer, "docs", true).unwrap_err();
+    let err = cfgd::cli::RunContext::for_test(&cli, &printer, |run| {
+        run_backup_rollback(run, "docs", true)
+    })
+    .unwrap_err();
     drop(printer);
 
     let (render_printer, render_cap) =
@@ -1015,7 +1048,10 @@ fn backup_rollback_without_yes_refuses_when_no_prompt_is_available() {
     restored_docs(&cli, &source, "live");
 
     let (printer, _cap) = Printer::for_test_doc_with_format(cfgd_core::output::OutputFormat::Json);
-    let err = run_backup_rollback(&cli, &printer, "docs", false).unwrap_err();
+    let err = cfgd::cli::RunContext::for_test(&cli, &printer, |run| {
+        run_backup_rollback(run, "docs", false)
+    })
+    .unwrap_err();
     drop(printer);
 
     let meta = err
@@ -1043,7 +1079,10 @@ fn backup_rollback_declined_at_the_prompt_changes_nothing() {
     let (printer, cap) = Printer::for_test_doc_with_prompt_responses(vec![
         cfgd_core::output::PromptAnswer::Confirm(false),
     ]);
-    let declined = run_backup_rollback(&cli, &printer, "docs", false).unwrap();
+    let declined = cfgd::cli::RunContext::for_test(&cli, &printer, |run| {
+        run_backup_rollback(run, "docs", false)
+    })
+    .unwrap();
     drop(printer);
 
     assert!(
@@ -1088,7 +1127,8 @@ fn apply_runs_schedule_less_backups_even_with_an_empty_file_plan() {
     let (printer, cap) = Printer::for_test_doc();
     let args = apply_args();
 
-    let outcome = run_apply(&cli, &printer, &args).unwrap();
+    let outcome =
+        cfgd::cli::RunContext::for_test(&cli, &printer, |run| run_apply(run, &args)).unwrap();
     drop(printer);
 
     assert_eq!(
@@ -1127,7 +1167,7 @@ fn apply_json_output_carries_the_backup_run_record() {
     let (printer, cap) = Printer::for_test_doc_with_format(cfgd_core::output::OutputFormat::Json);
     let args = apply_args();
 
-    run_apply(&cli, &printer, &args).unwrap();
+    cfgd::cli::RunContext::for_test(&cli, &printer, |run| run_apply(run, &args)).unwrap();
     drop(printer);
 
     let payload = cap.json().expect("apply doc carries a payload");
@@ -1144,7 +1184,7 @@ fn apply_dry_run_skips_backups() {
     let (printer, _cap) = Printer::for_test_doc();
     let args = apply_args_dry_run();
 
-    run_apply(&cli, &printer, &args).unwrap();
+    cfgd::cli::RunContext::for_test(&cli, &printer, |run| run_apply(run, &args)).unwrap();
     drop(printer);
 
     let docs_dir = state_dir.path().join("backups").join("docs");
@@ -1171,7 +1211,8 @@ fn apply_backup_failure_does_not_block_subsequent_backups_or_apply() {
     let (printer, cap) = Printer::for_test_doc_with_format(cfgd_core::output::OutputFormat::Json);
     let args = apply_args();
 
-    let outcome = run_apply(&cli, &printer, &args).unwrap();
+    let outcome =
+        cfgd::cli::RunContext::for_test(&cli, &printer, |run| run_apply(run, &args)).unwrap();
     drop(printer);
 
     assert_eq!(
@@ -1233,7 +1274,8 @@ fn apply_failed_file_phase_stays_failed_after_a_backup_also_fails() {
     let (printer, cap) = Printer::for_test_doc_with_format(cfgd_core::output::OutputFormat::Json);
     let args = apply_args();
 
-    let outcome = run_apply(&cli, &printer, &args).unwrap();
+    let outcome =
+        cfgd::cli::RunContext::for_test(&cli, &printer, |run| run_apply(run, &args)).unwrap();
     drop(printer);
 
     assert_eq!(
@@ -1253,7 +1295,7 @@ fn apply_dry_run_human_shows_pending_backups() {
     let (printer, cap) = Printer::for_test_doc();
     let args = apply_args_dry_run();
 
-    run_apply(&cli, &printer, &args).unwrap();
+    cfgd::cli::RunContext::for_test(&cli, &printer, |run| run_apply(run, &args)).unwrap();
     drop(printer);
 
     let human = cfgd_core::output::strip_ansi(&cap.human());
@@ -1280,7 +1322,7 @@ fn backup_gc_renders_one_group_per_unit_with_an_orphan() {
 
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc();
-    cmd_backup_gc(&cli, &printer, None).unwrap();
+    cfgd::cli::RunContext::for_test(&cli, &printer, |run| cmd_backup_gc(run, None)).unwrap();
     drop(printer);
 
     assert!(
@@ -1314,7 +1356,7 @@ fn backup_gc_json_lists_what_it_collected() {
 
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc_with_format(cfgd_core::output::OutputFormat::Json);
-    cmd_backup_gc(&cli, &printer, None).unwrap();
+    cfgd::cli::RunContext::for_test(&cli, &printer, |run| cmd_backup_gc(run, None)).unwrap();
     drop(printer);
 
     let payload = cap.json().expect("backup gc doc carries a payload");
@@ -1339,7 +1381,7 @@ fn backup_gc_with_nothing_to_collect_says_so() {
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc();
 
-    cmd_backup_gc(&cli, &printer, None).unwrap();
+    cfgd::cli::RunContext::for_test(&cli, &printer, |run| cmd_backup_gc(run, None)).unwrap();
     drop(printer);
 
     let config_file = config_dir.path().join("cfgd.yaml");
@@ -1359,7 +1401,7 @@ fn backup_gc_with_nothing_to_collect_says_so() {
 }
 
 #[test]
-fn backup_run_hints_at_gc_after_the_snapshot_row_it_follows() {
+fn backup_run_names_the_stranded_snapshots_after_the_row_it_follows() {
     let config_dir = tempfile::tempdir().unwrap();
     let state_dir = tempfile::tempdir().unwrap();
     let source = config_dir.path().join("data").join("notes.txt");
@@ -1367,8 +1409,8 @@ fn backup_run_hints_at_gc_after_the_snapshot_row_it_follows() {
     std::fs::write(&source, "hello backup").unwrap();
 
     // The run that MOVED the destination is the one that discovers the rows the
-    // move stranded, so its own snapshot row and the hint about them share a
-    // group — and the hint has to come second, or it names work the reader has
+    // move stranded, so its own snapshot row and the note about them share a
+    // group — and the note has to come second, or it names work the reader has
     // not been told about yet.
     let (_, moved_run) = strand_a_snapshot(config_dir.path(), state_dir.path(), &source);
 
@@ -1385,7 +1427,7 @@ fn backup_run_hints_at_gc_after_the_snapshot_row_it_follows() {
         cfgd_core::normalize_snapshot_durations(&normalize_backup_timestamp(&normalized));
     assert_snapshot!(
         Path::new(SNAPSHOT_ROOT),
-        "backup/run_orphan_hint.txt",
+        "backup/run_orphan_note.txt",
         &normalized
     );
 }
@@ -1406,7 +1448,10 @@ fn backup_gc_opens_on_its_heading_when_a_units_history_cannot_be_read() {
     // `cmd_backup_gc` would exit the process on this run, so the body is driven
     // directly; the exit code itself is pinned against the real binary in
     // `tests/backup_exit_code.rs`.
-    let outcome = cfgd::cli::backup::run_backup_gc(&cli, &printer, None).unwrap();
+    let outcome = cfgd::cli::RunContext::for_test(&cli, &printer, |run| {
+        cfgd::cli::backup::run_backup_gc(run, None)
+    })
+    .unwrap();
     drop(printer);
 
     let human = cfgd_core::output::strip_ansi(&cap.human());
@@ -1437,7 +1482,10 @@ fn backup_gc_opens_on_its_heading_when_a_units_history_cannot_be_read() {
     assert_eq!(outcome.tally().failed, 2, "{outcome:?}");
 
     let (printer, cap) = Printer::for_test_doc_with_format(cfgd_core::output::OutputFormat::Json);
-    cfgd::cli::backup::run_backup_gc(&cli, &printer, None).unwrap();
+    cfgd::cli::RunContext::for_test(&cli, &printer, |run| {
+        cfgd::cli::backup::run_backup_gc(run, None)
+    })
+    .unwrap();
     drop(printer);
     let payload = cap.json().expect("backup gc doc carries a payload");
     assert_eq!(
@@ -1460,7 +1508,10 @@ fn backup_gc_that_cannot_remove_a_payload_reports_the_generic_failure_code() {
 
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, _cap) = Printer::for_test_doc();
-    let outcome = cfgd::cli::backup::run_backup_gc(&cli, &printer, None).unwrap();
+    let outcome = cfgd::cli::RunContext::for_test(&cli, &printer, |run| {
+        cfgd::cli::backup::run_backup_gc(run, None)
+    })
+    .unwrap();
     drop(printer);
 
     // `cmd_backup_gc` turns exactly this into an exit, and it exits the
@@ -1618,8 +1669,10 @@ fn backup_run_reports_a_busy_unit_and_still_runs_the_others() {
 
     let _held = cfgd_core::acquire_backup_lock(state_dir.path(), "docs").expect("hold docs");
 
-    let outcome = cfgd::cli::backup::run_backup_run(&cli, &printer, None)
-        .expect("a busy unit is an outcome, not an error");
+    let outcome = cfgd::cli::RunContext::for_test(&cli, &printer, |run| {
+        cfgd::cli::backup::run_backup_run(run, None)
+    })
+    .expect("a busy unit is an outcome");
     drop(printer);
 
     let skipped: Vec<&str> = outcome
@@ -1681,7 +1734,10 @@ fn backup_run_json_payload_marks_the_busy_unit_skipped() {
 
     let _held = cfgd_core::acquire_backup_lock(state_dir.path(), "docs").expect("hold docs");
 
-    cfgd::cli::backup::run_backup_run(&cli, &printer, None).expect("busy is not an error");
+    cfgd::cli::RunContext::for_test(&cli, &printer, |run| {
+        cfgd::cli::backup::run_backup_run(run, None)
+    })
+    .expect("busy is not an error");
     drop(printer);
 
     let payload = cap.json().expect("backup run doc carries a payload");
@@ -1711,7 +1767,9 @@ fn apply_skips_a_busy_backup_without_failing_the_apply() {
 
     let _held = cfgd_core::acquire_backup_lock(state_dir.path(), "docs").expect("hold docs");
 
-    let result = run_apply(&cli, &printer, &apply_args()).expect("apply must not error");
+    let result =
+        cfgd::cli::RunContext::for_test(&cli, &printer, |run| run_apply(run, &apply_args()))
+            .expect("apply must not error");
     drop(printer);
 
     let human = cfgd_core::output::strip_ansi(&cap.human());
@@ -1740,7 +1798,10 @@ fn backup_list_filters_to_the_named_unit() {
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc_with_format(cfgd_core::output::OutputFormat::Json);
 
-    cmd_backup_list(&cli, &printer, Some("docs"), false).unwrap();
+    cfgd::cli::RunContext::for_test(&cli, &printer, |run| {
+        cmd_backup_list(run, Some("docs"), false)
+    })
+    .unwrap();
     drop(printer);
 
     let payload = cap.json().expect("backup list doc carries a payload");
@@ -1755,7 +1816,10 @@ fn backup_list_unknown_name_is_a_not_found_error() {
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, _cap) = Printer::for_test_doc();
 
-    let err = cmd_backup_list(&cli, &printer, Some("bogus"), false).unwrap_err();
+    let err = cfgd::cli::RunContext::for_test(&cli, &printer, |run| {
+        cmd_backup_list(run, Some("bogus"), false)
+    })
+    .unwrap_err();
     assert_eq!(
         cfgd_core::exit::exit_code_for_error(
             err.downcast_ref::<cfgd_core::errors::CfgdError>()
@@ -1772,7 +1836,9 @@ fn backup_list_snapshots_without_a_name_is_rejected() {
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, _cap) = Printer::for_test_doc();
 
-    let err = cmd_backup_list(&cli, &printer, None, true).unwrap_err();
+    let err =
+        cfgd::cli::RunContext::for_test(&cli, &printer, |run| cmd_backup_list(run, None, true))
+            .unwrap_err();
     assert!(
         format!("{err}").contains("--snapshots"),
         "the refusal must name the flag: {err}"
@@ -1785,7 +1851,10 @@ fn backup_list_snapshots_of_a_unit_that_never_ran_is_empty() {
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc_with_format(cfgd_core::output::OutputFormat::Json);
 
-    cmd_backup_list(&cli, &printer, Some("docs"), true).unwrap();
+    cfgd::cli::RunContext::for_test(&cli, &printer, |run| {
+        cmd_backup_list(run, Some("docs"), true)
+    })
+    .unwrap();
     drop(printer);
 
     assert_eq!(
@@ -1802,7 +1871,10 @@ fn backup_list_snapshots_human() {
     run_docs(&cli);
 
     let (printer, cap) = Printer::for_test_doc();
-    cmd_backup_list(&cli, &printer, Some("docs"), true).unwrap();
+    cfgd::cli::RunContext::for_test(&cli, &printer, |run| {
+        cmd_backup_list(run, Some("docs"), true)
+    })
+    .unwrap();
     drop(printer);
 
     let normalized = normalize_backup_timestamp(&cfgd_core::output::strip_ansi(&cap.human()));
@@ -1823,7 +1895,8 @@ fn backup_list_counts_the_snapshots_a_unit_actually_holds() {
     run_docs(&cli);
 
     let (printer, cap) = Printer::for_test_doc_with_format(cfgd_core::output::OutputFormat::Json);
-    cmd_backup_list(&cli, &printer, None, false).unwrap();
+    cfgd::cli::RunContext::for_test(&cli, &printer, |run| cmd_backup_list(run, None, false))
+        .unwrap();
     drop(printer);
 
     let payload = cap.json().expect("payload");
@@ -1859,11 +1932,13 @@ fn backup_list_counts_what_a_stranded_destination_left_orphaned() {
     // orphaned row and two successful ones, a filter reading the wrong side of
     // the status answers 2 where the column must say 1.
     let (printer, _cap) = Printer::for_test_doc();
-    cmd_backup_run(&cli, &printer, Some("docs")).unwrap();
+    cfgd::cli::RunContext::for_test(&cli, &printer, |run| cmd_backup_run(run, Some("docs")))
+        .unwrap();
     drop(printer);
 
     let (printer, cap) = Printer::for_test_doc_with_format(cfgd_core::output::OutputFormat::Json);
-    cmd_backup_list(&cli, &printer, None, false).unwrap();
+    cfgd::cli::RunContext::for_test(&cli, &printer, |run| cmd_backup_list(run, None, false))
+        .unwrap();
     drop(printer);
 
     let payload = cap.json().expect("payload");
@@ -1891,7 +1966,8 @@ fn backup_list_counts_what_a_stranded_destination_left_orphaned() {
 /// than by a literal nobody can predict.
 fn docs_last_run_at(cli: &cfgd::cli::Cli) -> String {
     let (printer, cap) = Printer::for_test_doc_with_format(cfgd_core::output::OutputFormat::Json);
-    cmd_backup_list(cli, &printer, None, false).unwrap();
+    cfgd::cli::RunContext::for_test(cli, &printer, |run| cmd_backup_list(run, None, false))
+        .unwrap();
     drop(printer);
     cap.json().expect("payload")[0]["lastRunAt"]
         .as_str()
@@ -1913,9 +1989,11 @@ fn backup_list_after_a_restore_counts_only_the_requested_snapshots() {
 
     std::fs::write(&source, "clobbered").unwrap();
     let (printer, cap) = Printer::for_test_doc_with_format(cfgd_core::output::OutputFormat::Json);
-    run_backup_restore(&cli, &printer, &restore_args("docs"))
-        .unwrap()
-        .expect("a --yes restore is never declined");
+    cfgd::cli::RunContext::for_test(&cli, &printer, |run| {
+        run_backup_restore(run, &restore_args("docs"))
+    })
+    .unwrap()
+    .expect("a --yes restore is never declined");
     drop(printer);
     let restore = cap.json().expect("restore payload");
     let safety = restore["safetyCopy"]
@@ -1937,7 +2015,8 @@ fn backup_list_after_a_restore_counts_only_the_requested_snapshots() {
     );
 
     let (printer, cap) = Printer::for_test_doc_with_format(cfgd_core::output::OutputFormat::Json);
-    cmd_backup_list(&cli, &printer, None, false).unwrap();
+    cfgd::cli::RunContext::for_test(&cli, &printer, |run| cmd_backup_list(run, None, false))
+        .unwrap();
     drop(printer);
     let payload = cap.json().expect("payload");
     let docs = &payload.as_array().expect("array payload")[0];
@@ -1956,7 +2035,10 @@ fn backup_list_after_a_restore_counts_only_the_requested_snapshots() {
     );
 
     let (printer, cap) = Printer::for_test_doc_with_format(cfgd_core::output::OutputFormat::Json);
-    cmd_backup_list(&cli, &printer, Some("docs"), true).unwrap();
+    cfgd::cli::RunContext::for_test(&cli, &printer, |run| {
+        cmd_backup_list(run, Some("docs"), true)
+    })
+    .unwrap();
     drop(printer);
     let listed = cap.json().expect("payload");
     assert_eq!(
@@ -1966,7 +2048,8 @@ fn backup_list_after_a_restore_counts_only_the_requested_snapshots() {
     );
 
     let (printer, cap) = Printer::for_test_doc();
-    cmd_backup_list(&cli, &printer, None, false).unwrap();
+    cfgd::cli::RunContext::for_test(&cli, &printer, |run| cmd_backup_list(run, None, false))
+        .unwrap();
     drop(printer);
     let human = cfgd_core::output::strip_ansi(&cap.human());
     let row = human
@@ -1990,7 +2073,10 @@ fn backup_list_snapshots_json_shape() {
     run_docs(&cli);
 
     let (printer, cap) = Printer::for_test_doc_with_format(cfgd_core::output::OutputFormat::Json);
-    cmd_backup_list(&cli, &printer, Some("docs"), true).unwrap();
+    cfgd::cli::RunContext::for_test(&cli, &printer, |run| {
+        cmd_backup_list(run, Some("docs"), true)
+    })
+    .unwrap();
     drop(printer);
 
     let payload = cap.json().expect("payload");
@@ -2011,7 +2097,8 @@ fn backup_list_snapshots_json_shape() {
 /// Take one `docs` snapshot, so a restore/list test has something to act on.
 fn run_docs(cli: &cfgd::cli::Cli) {
     let (printer, _cap) = Printer::for_test_doc();
-    cmd_backup_run(cli, &printer, Some("docs")).unwrap();
+    cfgd::cli::RunContext::for_test(cli, &printer, |run| cmd_backup_run(run, Some("docs")))
+        .unwrap();
 }
 
 /// `RestoreArgs` for a `--yes` restore of the newest snapshot into the source.
@@ -2032,9 +2119,11 @@ fn backup_restore_json_shape() {
     std::fs::write(&source, "clobbered").unwrap();
 
     let (printer, cap) = Printer::for_test_doc_with_format(cfgd_core::output::OutputFormat::Json);
-    let outcome = run_backup_restore(&cli, &printer, &restore_args("docs"))
-        .unwrap()
-        .expect("a --yes restore is never declined");
+    let outcome = cfgd::cli::RunContext::for_test(&cli, &printer, |run| {
+        run_backup_restore(run, &restore_args("docs"))
+    })
+    .unwrap()
+    .expect("a --yes restore is never declined");
     drop(printer);
 
     assert!(outcome.is_clean(), "outcome: {outcome:?}");
@@ -2095,9 +2184,11 @@ fn a_restore_completes_over_a_module_whose_source_cannot_be_reached() {
 
     std::fs::write(&source, "clobbered").unwrap();
     let (printer, cap) = Printer::for_test_doc();
-    let outcome = run_backup_restore(&cli, &printer, &restore_args("docs"))
-        .unwrap()
-        .expect("a --yes restore is never declined");
+    let outcome = cfgd::cli::RunContext::for_test(&cli, &printer, |run| {
+        run_backup_restore(run, &restore_args("docs"))
+    })
+    .unwrap()
+    .expect("a --yes restore is never declined");
     drop(printer);
 
     assert!(outcome.is_clean(), "outcome: {outcome:?}");
@@ -2122,7 +2213,8 @@ fn a_restore_completes_over_a_module_whose_source_cannot_be_reached() {
     // a profile it cannot resolve is a run it cannot make.
     let (printer, _cap) = Printer::for_test_doc();
     assert!(
-        cmd_backup_run(&cli, &printer, Some("docs")).is_err(),
+        cfgd::cli::RunContext::for_test(&cli, &printer, |run| cmd_backup_run(run, Some("docs")))
+            .is_err(),
         "`cfgd backup run` must still refuse a profile it cannot resolve"
     );
 }
@@ -2135,7 +2227,8 @@ fn a_restore_completes_over_a_module_whose_source_cannot_be_reached() {
 #[test]
 #[serial_test::serial]
 fn a_restore_over_a_conflicting_source_composes_once() {
-    let _allow = cfgd_core::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+    let _allow =
+        cfgd_core::test_helpers::EnvVarGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
     let (_workspace, config_dir, state_dir, source) =
         common::backup_profile_with_conflicting_source_setup();
     let cli = cli_for(config_dir.path(), state_dir.path());
@@ -2143,7 +2236,7 @@ fn a_restore_over_a_conflicting_source_composes_once() {
     // The cache a read path composes from: a never-synced source is warned over
     // and skipped, and would compose no locked layer to conflict on.
     let (printer, _cap) = Printer::for_test_doc();
-    cfgd::cli::sync::cmd_sync(&cli, &printer).unwrap();
+    cfgd::cli::RunContext::for_test(&cli, &printer, cfgd::cli::sync::cmd_sync).unwrap();
     drop(printer);
     run_docs(&cli);
 
@@ -2156,9 +2249,11 @@ fn a_restore_over_a_conflicting_source_composes_once() {
 
     std::fs::write(&source, "clobbered").unwrap();
     let (printer, cap) = Printer::for_test_doc();
-    let outcome = run_backup_restore(&cli, &printer, &restore_args("docs"))
-        .unwrap()
-        .expect("a --yes restore is never declined");
+    let outcome = cfgd::cli::RunContext::for_test(&cli, &printer, |run| {
+        run_backup_restore(run, &restore_args("docs"))
+    })
+    .unwrap()
+    .expect("a --yes restore is never declined");
     drop(printer);
 
     assert!(outcome.is_clean(), "outcome: {outcome:?}");
@@ -2196,7 +2291,10 @@ fn backup_restore_human() {
     run_docs(&cli);
 
     let (printer, cap) = Printer::for_test_doc();
-    run_backup_restore(&cli, &printer, &restore_args("docs")).unwrap();
+    cfgd::cli::RunContext::for_test(&cli, &printer, |run| {
+        run_backup_restore(run, &restore_args("docs"))
+    })
+    .unwrap();
     drop(printer);
 
     // The restore opens with the run skeleton's header, so the config file it
@@ -2230,16 +2328,17 @@ fn backup_restore_at_unknown_snapshot_is_a_snapshot_not_found_error() {
     run_docs(&cli);
 
     let (printer, _cap) = Printer::for_test_doc();
-    let err = run_backup_restore(
-        &cli,
-        &printer,
-        &RestoreArgs {
-            name: "docs",
-            at: Some("no-such-snapshot"),
-            to: None,
-            yes: true,
-        },
-    )
+    let err = cfgd::cli::RunContext::for_test(&cli, &printer, |run| {
+        run_backup_restore(
+            run,
+            &RestoreArgs {
+                name: "docs",
+                at: Some("no-such-snapshot"),
+                to: None,
+                yes: true,
+            },
+        )
+    })
     .unwrap_err();
     let msg = err.to_string();
     assert!(
@@ -2269,16 +2368,17 @@ fn backup_restore_to_redirects_and_omits_the_safety_copy() {
 
     let elsewhere = state_dir.path().join("inspect").join("notes.txt");
     let (printer, cap) = Printer::for_test_doc_with_format(cfgd_core::output::OutputFormat::Json);
-    run_backup_restore(
-        &cli,
-        &printer,
-        &RestoreArgs {
-            name: "docs",
-            at: None,
-            to: Some(&elsewhere),
-            yes: true,
-        },
-    )
+    cfgd::cli::RunContext::for_test(&cli, &printer, |run| {
+        run_backup_restore(
+            run,
+            &RestoreArgs {
+                name: "docs",
+                at: None,
+                to: Some(&elsewhere),
+                yes: true,
+            },
+        )
+    })
     .unwrap()
     .expect("a --yes restore is never declined");
     drop(printer);
@@ -2303,7 +2403,7 @@ fn backup_restore_at_selects_an_older_snapshot_by_timestamp() {
     let cli = cli_for(config_dir.path(), state_dir.path());
 
     let (p1, _c1) = Printer::for_test_doc();
-    cmd_backup_run(&cli, &p1, Some("docs")).unwrap();
+    cfgd::cli::RunContext::for_test(&cli, &p1, |run| cmd_backup_run(run, Some("docs"))).unwrap();
     drop(p1);
     // `namePattern` stamps to the second. Both snapshots survive either way —
     // the engine suffixes a collision — but two snapshots sharing one stamp make
@@ -2312,12 +2412,15 @@ fn backup_restore_at_selects_an_older_snapshot_by_timestamp() {
     std::thread::sleep(std::time::Duration::from_millis(1100));
     std::fs::write(&source, "second generation").unwrap();
     let (p2, _c2) = Printer::for_test_doc();
-    cmd_backup_run(&cli, &p2, Some("docs")).unwrap();
+    cfgd::cli::RunContext::for_test(&cli, &p2, |run| cmd_backup_run(run, Some("docs"))).unwrap();
     drop(p2);
 
     let (list_printer, list_cap) =
         Printer::for_test_doc_with_format(cfgd_core::output::OutputFormat::Json);
-    cmd_backup_list(&cli, &list_printer, Some("docs"), true).unwrap();
+    cfgd::cli::RunContext::for_test(&cli, &list_printer, |run| {
+        cmd_backup_list(run, Some("docs"), true)
+    })
+    .unwrap();
     drop(list_printer);
     let listed = list_cap.json().expect("payload");
     let entries = listed.as_array().expect("array");
@@ -2333,16 +2436,17 @@ fn backup_restore_at_selects_an_older_snapshot_by_timestamp() {
         .to_string();
 
     let (printer, _cap) = Printer::for_test_doc();
-    let outcome = run_backup_restore(
-        &cli,
-        &printer,
-        &RestoreArgs {
-            name: "docs",
-            at: Some(&stamp),
-            to: None,
-            yes: true,
-        },
-    )
+    let outcome = cfgd::cli::RunContext::for_test(&cli, &printer, |run| {
+        run_backup_restore(
+            run,
+            &RestoreArgs {
+                name: "docs",
+                at: Some(&stamp),
+                to: None,
+                yes: true,
+            },
+        )
+    })
     .unwrap()
     .expect("restore ran");
     drop(printer);
@@ -2365,16 +2469,17 @@ fn backup_restore_unknown_snapshot_lists_the_alternatives() {
     run_docs(&cli);
 
     let (printer, _cap) = Printer::for_test_doc();
-    let err = run_backup_restore(
-        &cli,
-        &printer,
-        &RestoreArgs {
-            name: "docs",
-            at: Some("99991231T000000Z"),
-            to: None,
-            yes: true,
-        },
-    )
+    let err = cfgd::cli::RunContext::for_test(&cli, &printer, |run| {
+        run_backup_restore(
+            run,
+            &RestoreArgs {
+                name: "docs",
+                at: Some("99991231T000000Z"),
+                to: None,
+                yes: true,
+            },
+        )
+    })
     .unwrap_err();
     drop(printer);
 
@@ -2408,16 +2513,17 @@ fn backup_restore_without_yes_refuses_when_no_prompt_is_available() {
     // No seeded prompt answer and structured output: `prompt_confirm` refuses,
     // and that must surface as an ERROR, never as a silent "aborted".
     let (printer, _cap) = Printer::for_test_doc_with_format(cfgd_core::output::OutputFormat::Json);
-    let err = run_backup_restore(
-        &cli,
-        &printer,
-        &RestoreArgs {
-            name: "docs",
-            at: None,
-            to: None,
-            yes: false,
-        },
-    )
+    let err = cfgd::cli::RunContext::for_test(&cli, &printer, |run| {
+        run_backup_restore(
+            run,
+            &RestoreArgs {
+                name: "docs",
+                at: None,
+                to: None,
+                yes: false,
+            },
+        )
+    })
     .unwrap_err();
     drop(printer);
 
@@ -2450,16 +2556,17 @@ fn backup_restore_declined_at_the_prompt_changes_nothing() {
     let (printer, cap) = Printer::for_test_doc_with_prompt_responses(vec![
         cfgd_core::output::PromptAnswer::Confirm(false),
     ]);
-    let declined = run_backup_restore(
-        &cli,
-        &printer,
-        &RestoreArgs {
-            name: "docs",
-            at: None,
-            to: None,
-            yes: false,
-        },
-    )
+    let declined = cfgd::cli::RunContext::for_test(&cli, &printer, |run| {
+        run_backup_restore(
+            run,
+            &RestoreArgs {
+                name: "docs",
+                at: None,
+                to: None,
+                yes: false,
+            },
+        )
+    })
     .unwrap();
     drop(printer);
 
@@ -2538,7 +2645,8 @@ fn backup_list_shows_the_effective_cluster_schedule_under_owner_cluster() {
     }
 
     let (printer, cap) = Printer::for_test_doc();
-    cmd_backup_list(&cli, &printer, None, false).unwrap();
+    cfgd::cli::RunContext::for_test(&cli, &printer, |run| cmd_backup_list(run, None, false))
+        .unwrap();
     drop(printer);
     let human = cfgd_core::output::strip_ansi(&cap.human());
 
@@ -2568,7 +2676,8 @@ fn backup_list_shows_the_effective_cluster_schedule_under_owner_cluster() {
     );
 
     let (printer, cap) = Printer::for_test_doc_with_format(cfgd_core::output::OutputFormat::Json);
-    cmd_backup_list(&cli, &printer, None, false).unwrap();
+    cfgd::cli::RunContext::for_test(&cli, &printer, |run| cmd_backup_list(run, None, false))
+        .unwrap();
     drop(printer);
     let payload = cap.json().expect("backup list doc carries a payload");
     let unit = |name: &str| {

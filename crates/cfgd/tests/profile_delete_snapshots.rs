@@ -16,7 +16,7 @@
 //! with:
 //!     INSTA_UPDATE=always cargo test -p cfgd --test profile_delete_snapshots
 
-mod common;
+use cfgd_test_fixtures as common;
 
 use std::path::Path;
 
@@ -55,7 +55,10 @@ fn profile_delete_happy_human() {
 
     // Delete the inheritor first to avoid tripping the active-profile refusal
     // (the fixture's active profile is `default`, so `work` is safely deletable).
-    cmd_profile_delete(&cli, &printer, "work", true, false).unwrap();
+    cfgd::cli::RunContext::for_test(&cli, &printer, |run| {
+        cmd_profile_delete(run, "work", true, false)
+    })
+    .unwrap();
     drop(printer);
 
     let stripped = normalize_profile_paths(&strip_ansi(&cap.human()), config_dir.path());
@@ -72,7 +75,10 @@ fn profile_delete_happy_json() {
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc();
 
-    cmd_profile_delete(&cli, &printer, "work", true, false).unwrap();
+    cfgd::cli::RunContext::for_test(&cli, &printer, |run| {
+        cmd_profile_delete(run, "work", true, false)
+    })
+    .unwrap();
     drop(printer);
 
     let json = cap.json().expect("doc captured json");
@@ -88,7 +94,10 @@ fn profile_delete_cancelled_human() {
     let (printer, cap) =
         Printer::for_test_doc_with_prompt_responses(vec![PromptAnswer::Confirm(false)]);
 
-    cmd_profile_delete(&cli, &printer, "work", false, false).unwrap();
+    cfgd::cli::RunContext::for_test(&cli, &printer, |run| {
+        cmd_profile_delete(run, "work", false, false)
+    })
+    .unwrap();
     drop(printer);
 
     let stripped = normalize_profile_paths(&strip_ansi(&cap.human()), config_dir.path());
@@ -106,7 +115,10 @@ fn profile_delete_cancelled_json() {
     let (printer, cap) =
         Printer::for_test_doc_with_prompt_responses(vec![PromptAnswer::Confirm(false)]);
 
-    cmd_profile_delete(&cli, &printer, "work", false, false).unwrap();
+    cfgd::cli::RunContext::for_test(&cli, &printer, |run| {
+        cmd_profile_delete(run, "work", false, false)
+    })
+    .unwrap();
     drop(printer);
 
     let json = cap.json().expect("doc captured json");
@@ -122,8 +134,10 @@ fn profile_delete_active_profile_refused_human() {
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc();
 
-    let err = cmd_profile_delete(&cli, &printer, "default", true, false)
-        .expect_err("deleting the active profile must error");
+    let err = cfgd::cli::RunContext::for_test(&cli, &printer, |run| {
+        cmd_profile_delete(run, "default", true, false)
+    })
+    .expect_err("deleting the active profile must error");
     assert!(err.to_string().contains("active profile"));
     render_cli_error(&printer, &err);
     drop(printer);
@@ -151,8 +165,10 @@ fn profile_delete_inheritor_refused_human() {
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc();
 
-    let err = cmd_profile_delete(&cli, &printer, "work", true, false)
-        .expect_err("deleting an inherited profile must error");
+    let err = cfgd::cli::RunContext::for_test(&cli, &printer, |run| {
+        cmd_profile_delete(run, "work", true, false)
+    })
+    .expect_err("deleting an inherited profile must error");
     assert!(err.to_string().contains("inherited"));
     render_cli_error(&printer, &err);
     drop(printer);

@@ -15,7 +15,7 @@
 //! Goldens live under `tests/output_snapshots/source_replace/`. Regenerate with:
 //!     INSTA_UPDATE=always cargo test -p cfgd --test source_replace_snapshots
 
-mod common;
+use cfgd_test_fixtures as common;
 
 use std::path::Path;
 
@@ -71,7 +71,8 @@ use cfgd_core::output::test_capture::strip_spinner_duration;
 #[test]
 #[serial]
 fn source_replace_happy_human() {
-    let _allow = cfgd_core::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+    let _allow =
+        cfgd_core::test_helpers::EnvVarGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
     let (config_dir, state_dir) = source_test_config_setup();
     let bare_root = tempfile::tempdir().unwrap();
     let bare_old = make_bare_source_repo(bare_root.path(), "replace-old", None);
@@ -85,11 +86,16 @@ fn source_replace_happy_human() {
     let (add_printer, _add_cap) = Printer::for_test_doc();
     let mut args = source_add_args(url_old);
     args.name = Some("replace-old".into());
-    cmd_source_add(&cli, &add_printer, &args).expect("seed source");
+    cfgd::cli::RunContext::for_test(&cli, &add_printer, |run| cmd_source_add(run, &args))
+        .expect("seed source");
     drop(add_printer);
 
     let (printer, cap) = Printer::for_test_doc();
-    cmd_source_replace(&cli, &printer, "replace-old", &url_new).unwrap();
+    let printer = printer.with_hints_enabled(true);
+    cfgd::cli::RunContext::for_test(&cli, &printer, |run| {
+        cmd_source_replace(run, "replace-old", &url_new)
+    })
+    .unwrap();
     drop(printer);
 
     let stripped = normalize_bare(
@@ -138,7 +144,8 @@ fn source_replace_happy_human() {
 #[test]
 #[serial]
 fn source_replace_carries_every_subscription_field() {
-    let _allow = cfgd_core::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+    let _allow =
+        cfgd_core::test_helpers::EnvVarGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
     let (config_dir, state_dir) = source_test_config_setup();
     let bare_root = tempfile::tempdir().unwrap();
     let bare_old = make_bare_source_repo(bare_root.path(), "carry-old", None);
@@ -150,7 +157,8 @@ fn source_replace_carries_every_subscription_field() {
     let (add_printer, _add_cap) = Printer::for_test_doc();
     let mut args = source_add_args(url_old);
     args.name = Some("carry-old".into());
-    cmd_source_add(&cli, &add_printer, &args).expect("seed source");
+    cfgd::cli::RunContext::for_test(&cli, &add_printer, |run| cmd_source_add(run, &args))
+        .expect("seed source");
     drop(add_printer);
 
     // Populate every field of the subscription block on disk.
@@ -174,7 +182,10 @@ fn source_replace_carries_every_subscription_field() {
     .expect("write config");
 
     let (printer, _cap) = Printer::for_test_doc();
-    cmd_source_replace(&cli, &printer, "carry-old", &url_new).expect("replace");
+    cfgd::cli::RunContext::for_test(&cli, &printer, |run| {
+        cmd_source_replace(run, "carry-old", &url_new)
+    })
+    .expect("replace");
     drop(printer);
 
     let after: serde_yaml::Value =
@@ -199,8 +210,10 @@ fn source_replace_not_found_human() {
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc();
 
-    let err = cmd_source_replace(&cli, &printer, "missing", "https://github.com/team/new.git")
-        .expect_err("missing old source must return Err");
+    let err = cfgd::cli::RunContext::for_test(&cli, &printer, |run| {
+        cmd_source_replace(run, "missing", "https://github.com/team/new.git")
+    })
+    .expect_err("missing old source must return Err");
     render_cli_error(&printer, &err);
     drop(printer);
 

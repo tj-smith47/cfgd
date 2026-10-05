@@ -114,6 +114,12 @@ jobs:
         shell: bash
         run: task test:ci
 
+      # The installer runs under each OS's own sh (dash, macOS sh, Git Bash);
+      # its directory checks run here so every one of them executes the script.
+      - name: Installer checks
+        shell: bash
+        run: task installer:test
+
   test-thread-model:
     name: Tests (thread model)
     runs-on: ubuntu-latest
@@ -182,15 +188,22 @@ jobs:
             # npm is the subject of the real-host prefix check in `run:`, and
             # it must come from pkg here: IGNORE_OSVERSION is not exported into
             # that shell, so a pkg install attempted there is rejected.
-            pkg install -y rustup-init git task nextest gmake perl5 npm
+            # bash: the demo-script tests run the real bash scripts, and the
+            # base system has no bash. safe.directory: the synced workspace
+            # keeps the runner's uid while the tests run as root, and git
+            # refuses a repository another uid owns.
+            pkg install -y rustup-init git bash task nextest gmake perl5 npm
+            git config --global --add safe.directory '*'
             rustup-init -y --default-toolchain stable --profile minimal
           run: |
-            # The guest script's shell flags are the action's, not GitHub's, so
-            # the abort is stated here: without it a failing test leg is followed
-            # by a passing build and the whole job reports green.
+            # The guest script runs with the action's shell flags (GitHub's
+            # `bash -e` default does not apply there), so the abort is stated
+            # here: without it a failing test leg is followed by a passing
+            # build and the whole job reports green.
             set -e
             . "$HOME/.cargo/env"
             task test:ci
+            task installer:test
             # The npm prefix fallback's unit pins inject both elevation and the
             # write-probe, so only a real host proves it: a non-root user, the
             # real www/npm whose configured prefix is the root-owned
@@ -217,6 +230,30 @@ jobs:
       - name: Install ripgrep
         run: sudo apt-get update && sudo apt-get install -y ripgrep
 
+      # `task e2e:tags:check` reads YAML with mikefarah yq v4. The runner
+      # image ships one too, but it moves on the image's own schedule; this
+      # pin makes the yq the check runs under change only with this line, and
+      # a Python yq from apt would fail the check. Version and checksum move
+      # together. Recompute on a version bump:
+      #   v=<ver>; base=https://github.com/mikefarah/yq/releases/download
+      #   curl -fsSL "$base/$v/yq_linux_amd64" | sha256sum
+      - name: Install yq
+        env:
+          YQ_VERSION: v4.53.4
+          YQ_SHA256: f67d8a6a2dc2308c961f83d5ba8707fd4c7c44ad77902fef87eb3a4646cdfa2a
+        run: |
+          set -euo pipefail
+          dest="${RUNNER_TEMP}/yq-bin"
+          mkdir -p "$dest"
+          curl -fsSL --retry 5 --retry-all-errors --retry-delay 2 --connect-timeout 10 \
+            "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_amd64" \
+            -o "$dest/yq"
+          echo "${YQ_SHA256}  $dest/yq" | sha256sum -c -
+          chmod 0755 "$dest/yq"
+          # Prepended to PATH, so it shadows any yq the runner image ships.
+          echo "$dest" >> "$GITHUB_PATH"
+          "$dest/yq" --version
+
       # This job compiles nothing, but `RUSTC_WRAPPER` is set for the whole
       # workflow, so even `task audit`'s `cargo tree` needs the wrapper binary
       # on PATH or cargo cannot so much as ask rustc for its version.
@@ -238,6 +275,14 @@ jobs:
       - name: Validate audit rules
         run: task audit:test
 
+      - name: Install ShellCheck
+        uses: ./.github/actions/setup-shellcheck
+
+      # Every tracked *.sh, the population `task lint` and `task ci` check
+      # locally.
+      - name: ShellCheck
+        run: task shellcheck
+
       # Mirrors `task version-files:check` in `task ci`: a release that fails after the
       # tag never lands its bump, and the next sweep silently leaves the old literal.
       - name: Check enrolled version files via anodizer
@@ -252,6 +297,35 @@ jobs:
       # publishes. Runs here, after the action above put anodizer on PATH.
       - name: Chart image tag guard
         run: task chart:tags:check
+
+      # The operator Deployment's update strategy decides whether a roll can
+      # finish at one replica; the goldens hold each derived default and an
+      # override to what the template renders.
+      - name: Chart render goldens
+        run: task chart:test
+
+      # A suite that spells an image reference itself ignores that image's tag
+      # override; the check resolves the map and fails on any such reference.
+      # The same task drives port_forward against a stand-in kubectl and fails
+      # on a port-forward started outside it.
+      - name: E2E image tag map
+        run: task e2e:tags:check
+
+  # A demo GIF shows what the binary rendered when it was recorded, and nothing
+  # else notices when a later change moves that output.
+  demo-sync:
+    name: Demo GIFs in sync
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          # Each GIF is diffed from the commit it was recorded at, which a
+          # shallow clone does not hold.
+          fetch-depth: 0
+
+      - name: Check demo GIFs against their render inputs
+        run: bash demo/scripts/check-sync.sh
 
   msrv:
     name: MSRV check
@@ -403,3 +477,16 @@ jobs:
           args: release --snapshot --single-target --clean --dry-run
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install go-task
+        uses: go-task/setup-task@v2
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install ShellCheck
+        uses: ./.github/actions/setup-shellcheck
+
+      # The dry-run above rendered dist/install.sh from scripts/install.sh.tpl;
+      # the template itself does not parse as shell.
+      - name: ShellCheck the rendered installer
+        run: task installer:shellcheck

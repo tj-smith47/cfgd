@@ -136,19 +136,26 @@ resolve_asset() {
 # --- Install Directory ---
 
 resolve_install_dir() {
-    if [ -n "$INSTALL_DIR" ]; then
-        echo "$INSTALL_DIR"
-        return
+    local dir="$INSTALL_DIR"
+    if [ -z "$dir" ]; then
+        # Prefer /usr/local/bin if writable, otherwise ~/.local/bin
+        if [ -w /usr/local/bin ]; then
+            dir="/usr/local/bin"
+        else
+            dir="${HOME}/.local/bin"
+        fi
     fi
 
-    # Prefer /usr/local/bin if writable, otherwise ~/.local/bin
-    if [ -w /usr/local/bin ]; then
-        echo "/usr/local/bin"
-    else
-        local_bin="${HOME}/.local/bin"
-        mkdir -p "$local_bin"
-        echo "$local_bin"
+    # The install step copies into this directory, and CFGD_INSTALL_DIR may name
+    # one that does not exist yet. A directory the user cannot create takes the
+    # same sudo route the copy takes into a directory the user cannot write.
+    if [ "$DRY_RUN" != true ] && [ ! -d "$dir" ]; then
+        mkdir -p "$dir" 2>/dev/null || sudo mkdir -p "$dir" || {
+            error "Cannot create install directory ${dir}"
+            exit 1
+        }
     fi
+    echo "$dir"
 }
 
 # --- Download ---
@@ -211,7 +218,28 @@ download_and_install() {
         info "[dry-run] Would verify checksum from ${base_url}/${checksum_name}"
         info "[dry-run] Would verify cosign signature from ${base_url}/${bundle_name} (if cosign installed)"
         info "[dry-run] Would extract and install cfgd to ${dest_dir}/${bin}"
-        if [ ! -w "$dest_dir" ]; then
+        if [ ! -d "$dest_dir" ]; then
+            # The real run creates the directory as whoever can write its nearest
+            # existing parent: through sudo when that is not the user, and the
+            # copy into a directory sudo created needs sudo too. A file standing
+            # or a dangling symlink on the path makes the real run's mkdir fail,
+            # so the plan refuses the same way.
+            local parent="$dest_dir"
+            # `-e` follows a symlink, so a dangling one would read as absent and
+            # the walk would pass it; mkdir cannot create through it either.
+            while [ ! -e "$parent" ] && [ ! -L "$parent" ]; do
+                parent="$(dirname "$parent")"
+            done
+            if [ ! -d "$parent" ]; then
+                error "Cannot create install directory ${dest_dir}"
+                exit 1
+            elif [ -w "$parent" ]; then
+                info "[dry-run] Would create ${dest_dir}"
+            else
+                info "[dry-run] Would create ${dest_dir} (requires sudo)"
+                info "[dry-run] Would require sudo for ${dest_dir}"
+            fi
+        elif [ ! -w "$dest_dir" ]; then
             info "[dry-run] Would require sudo for ${dest_dir}"
         fi
         return

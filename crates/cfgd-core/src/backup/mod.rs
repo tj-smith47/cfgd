@@ -155,7 +155,7 @@ pub struct BackupRunReport {
     pub error: Option<String>,
     /// How many rows this run's retention prune re-classified
     /// [`BackupRunStatus::Orphaned`] — snapshots a `destination:` change
-    /// stranded. Display-only: it is what the closing hint counts, and
+    /// stranded. Display-only: it is what the run's own note row counts, and
     /// `cfgd backup gc` reads the rows themselves.
     pub orphaned: usize,
 }
@@ -468,11 +468,10 @@ pub fn run_backup_group(
             report.items.push(report_backup_record(printer, &record));
             report.record = Some(record);
             if report.orphaned > 0 {
-                group.hint(orphan_hint(
-                    report.orphaned,
-                    &unit.spec.name,
-                    &unit.destination_dir(),
-                ));
+                group.status_simple(
+                    Role::Warn,
+                    orphan_note(report.orphaned, &unit.spec.name, &unit.destination_dir()),
+                );
             }
         }
         Err(crate::errors::CfgdError::Backup(BackupError::Busy { holder, .. })) => {
@@ -531,15 +530,18 @@ pub(super) fn outcome_detail(error: Option<&str>, size: Option<String>) -> Optio
     }
 }
 
-/// The closing hint a restore or a rollback leaves when it displaced live
-/// data: where the previous contents went, and how to put them back.
+/// The note row a restore or a rollback leaves when it displaced live data:
+/// where the previous contents went, and how to put them back.
 ///
 /// `report_restore` and `report_rollback` are the two mutating verbs that
 /// take a safety copy, and both close on this one sentence so a wording edit
 /// cannot land in one and not the other. The verb inside `safety.detail()`
 /// is the sidecar's own — a copy that was REUSED must not read as one written
-/// this time.
-pub(super) fn safety_copy_hint(safety: &crate::reconciler::SidecarOutcome, name: &str) -> String {
+/// this time. A row, so no hint setting hides it: it names the path holding the
+/// reader's own data, which is the whole value of the run that displaced it.
+// note-row-ok: a note beside the run's rows, so it states a sentence; an
+// action row takes the lowercase imperative
+pub(super) fn safety_copy_note(safety: &crate::reconciler::SidecarOutcome, name: &str) -> String {
     format!(
         "Previous contents {}; put them back with `cfgd backup rollback {name}`",
         safety.detail()
@@ -583,8 +585,8 @@ pub fn report_backup_record(printer: &Printer, record: &BackupRunRecord) -> Back
 /// error joining, and the retention prune that follows every recorded run.
 ///
 /// Returns the row and how many rows that prune re-classified
-/// [`BackupRunStatus::Orphaned`], which the caller words as a hint once the
-/// unit's own row is on screen.
+/// [`BackupRunStatus::Orphaned`], which the caller words as a note row once
+/// the unit's own row is on screen.
 fn record_run(
     store: &StateStore,
     unit: &BackupUnit<'_>,
@@ -692,7 +694,7 @@ fn run_hooks(
     // only branch if something distinguishes them, so the operation rides
     // alongside rather than overloading the phase.
     env.push((
-        "CFGD_OPERATION".to_string(),
+        crate::CFGD_OPERATION_ENV.to_string(),
         operation.display_name().to_string(),
     ));
     let working_dir = script_default_workdir(unit.config_dir);
@@ -1243,20 +1245,27 @@ fn prune_retention(store: &StateStore, unit: &BackupUnit<'_>, printer: &Printer)
     newly_orphaned
 }
 
-/// The hint a prune that stranded rows leaves under the unit's own group:
-/// nothing about the run went wrong, so what the reader gets is the command
-/// that reclaims the bytes.
+/// The note row a prune that stranded rows leaves under the unit's own group:
+/// what the destination change left behind, and the command that reclaims the
+/// bytes.
 ///
 /// Rendered by [`run_backup_group`] rather than by the prune itself, because
 /// the prune runs under the unit's lock and the snapshot's own row is not on
-/// screen until that lock is released. It fires once, on the run that
-/// discovers them, because an orphaned row is never re-marked.
-fn orphan_hint(count: usize, name: &str, destination: &Path) -> String {
+/// screen until that lock is released. It fires once, on the run that discovers
+/// them, because an orphaned row is never re-marked. A row, so no hint setting
+/// hides it: it names a directory still holding data nothing will prune.
+///
+/// The destination folds here. The hint slot this sentence used to take folds
+/// its own text at render, while the status row it takes now folds nothing, so
+/// a declared `~/backups/notes` would otherwise read back absolute.
+// note-row-ok: a note beside the run's rows, so it states a sentence; an
+// action row takes the lowercase imperative
+fn orphan_note(count: usize, name: &str, destination: &Path) -> String {
     format!(
-        "run `cfgd backup gc {name}` to remove the {} left outside the destination {} by a \
+        "Run `cfgd backup gc {name}` to remove the {} left outside the destination {} by a \
          destination change",
         crate::plural_noun(count, "snapshot"),
-        destination.posix(),
+        crate::fold_home_in_text(&destination.posix().to_string()),
     )
 }
 

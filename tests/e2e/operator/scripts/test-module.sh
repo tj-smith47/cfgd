@@ -1,13 +1,14 @@
+# shellcheck shell=bash
 # Operator E2E tests: Module
-# Sourced by run-all.sh — do NOT set traps or pipefail here.
+# Sourced by run-all.sh: do NOT set traps or pipefail here.
 
 echo ""
 echo "=== Module Tests ==="
 
 # =================================================================
-# OP-MOD-01: Module CRD — create and verify controller sets status
+# OP-MOD-01: Module CRD: create and verify controller sets status
 # =================================================================
-begin_test "OP-MOD-01: Module CRD — controller sets status"
+begin_test "OP-MOD-01: Module CRD: controller sets status"
 
 kubectl apply -f - <<EOF
 apiVersion: cfgd.io/v1alpha1
@@ -15,7 +16,7 @@ kind: Module
 metadata:
   name: e2e-nettools-${E2E_RUN_ID}
   labels:
-    cfgd.io/e2e-run: "${E2E_RUN_ID}"
+    ${E2E_RUN_LABEL_YAML}
     ${E2E_JOB_LABEL_YAML}
 spec:
   packages:
@@ -41,33 +42,28 @@ spec:
   mountPolicy: Always
 EOF
 
-# Wait for Module controller to reconcile
+# The key passes the PEM framing check but is not a parseable key, so cosign
+# cannot run the check: Verified is Unknown/VerificationUnavailable and
+# verified is false. No policy disallows unsigned modules here, so the
+# reference stays available; one another run applies meanwhile can withhold it
+# for one requeue, which the 90s wait outlasts.
+MOD01_WANT="false Available=True/ArtifactAvailable Verified=Unknown/VerificationUnavailable"
 echo "  Waiting for Module status..."
-MOD_VERIFIED=$(wait_for_k8s_field module "e2e-nettools-${E2E_RUN_ID}" "" \
-    '{.status.verified}' "" 60) || true
+MOD01_STATUS=$(wait_for_k8s_field module "e2e-nettools-${E2E_RUN_ID}" "" \
+    '{.status.verified}{range .status.conditions[*]} {.type}={.status}/{.reason}{end}' "$MOD01_WANT" 90) || true
 
-RESOLVED=$(kubectl get module "e2e-nettools-${E2E_RUN_ID}" \
-    -o jsonpath='{.status.resolvedArtifact}' 2>/dev/null || echo "")
-AVAIL_COND=$(kubectl get module "e2e-nettools-${E2E_RUN_ID}" \
-    -o jsonpath='{.status.conditions[?(@.type=="Available")].status}' 2>/dev/null || echo "")
-VERIFIED_COND=$(kubectl get module "e2e-nettools-${E2E_RUN_ID}" \
-    -o jsonpath='{.status.conditions[?(@.type=="Verified")].status}' 2>/dev/null || echo "")
+echo "  verified and conditions: ${MOD01_STATUS:-not set}"
 
-echo "  verified: ${MOD_VERIFIED:-not set}"
-echo "  resolvedArtifact: ${RESOLVED:-not set}"
-echo "  Available condition: ${AVAIL_COND:-not set}"
-echo "  Verified condition: ${VERIFIED_COND:-not set}"
-
-if [ -n "$MOD_VERIFIED" ] && [ -n "$RESOLVED" ]; then
+if [ "$MOD01_STATUS" = "$MOD01_WANT" ]; then
     pass_test "OP-MOD-01"
 else
-    fail_test "OP-MOD-01" "Module controller did not set status fields"
+    fail_test "OP-MOD-01" "Expected '$MOD01_WANT', got '${MOD01_STATUS:-none}'"
 fi
 
 # =================================================================
-# OP-MOD-02: Module webhook — rejects invalid OCI refs and malformed PEM
+# OP-MOD-02: Module webhook: rejects invalid OCI refs and malformed PEM
 # =================================================================
-begin_test "OP-MOD-02: Module webhook — rejects invalid specs"
+begin_test "OP-MOD-02: Module webhook: rejects invalid specs"
 
 # Test 1: Invalid OCI reference (missing tag/digest)
 RESULT_INVALID_OCI=$(kubectl apply -f - 2>&1 <<EOF || true
@@ -76,7 +72,7 @@ kind: Module
 metadata:
   name: e2e-bad-oci-${E2E_RUN_ID}
   labels:
-    cfgd.io/e2e-run: "${E2E_RUN_ID}"
+    ${E2E_RUN_LABEL_YAML}
     ${E2E_JOB_LABEL_YAML}
 spec:
   packages:
@@ -93,7 +89,7 @@ kind: Module
 metadata:
   name: e2e-bad-pem-${E2E_RUN_ID}
   labels:
-    cfgd.io/e2e-run: "${E2E_RUN_ID}"
+    ${E2E_RUN_LABEL_YAML}
     ${E2E_JOB_LABEL_YAML}
 spec:
   packages:
@@ -113,7 +109,7 @@ kind: Module
 metadata:
   name: e2e-empty-pkg-${E2E_RUN_ID}
   labels:
-    cfgd.io/e2e-run: "${E2E_RUN_ID}"
+    ${E2E_RUN_LABEL_YAML}
     ${E2E_JOB_LABEL_YAML}
 spec:
   packages:

@@ -3,16 +3,24 @@ use super::*;
 pub(crate) fn parse_secret_spec(s: &str) -> anyhow::Result<config::SecretSpec> {
     // Split on last colon so provider URLs like op://vault/item:~/target work correctly
     let (source, target) = s.rsplit_once(':').ok_or_else(|| {
-        anyhow::anyhow!(
-            "Invalid secret format '{}' — expected source:target (e.g. secrets/api-key.enc:~/.config/app/key)",
-            s
+        crate::cli::invalid_argument(
+            "--secret",
+            s,
+            format!(
+                "Invalid secret format '{}' — expected source:target (e.g. secrets/api-key.enc:~/.config/app/key)",
+                s
+            ),
         )
     })?;
     if source.is_empty() || target.is_empty() {
-        anyhow::bail!(
-            "Invalid secret format '{}' — source and target cannot be empty",
-            s
-        );
+        return Err(crate::cli::invalid_argument(
+            "--secret",
+            s,
+            format!(
+                "Invalid secret format '{}' — source and target cannot be empty",
+                s
+            ),
+        ));
     }
     Ok(config::SecretSpec {
         source: source.to_string(),

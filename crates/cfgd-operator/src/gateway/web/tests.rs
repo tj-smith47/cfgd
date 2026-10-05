@@ -83,6 +83,137 @@ async fn dashboard_with_devices_shows_device_rows() {
     assert!(html.contains(r#"<div class="value">2</div>"#));
 }
 
+fn reported_compliance() -> crate::crds::DeviceCompliance {
+    crate::crds::DeviceCompliance {
+        compliant: 3,
+        warning: 1,
+        violation: 1,
+        checks: vec![
+            crate::crds::DeviceComplianceCheck {
+                category: "file".to_string(),
+                name: "/home/u/.zshrc".to_string(),
+                status: crate::crds::DeviceComplianceStatus::Violation,
+                detail: Some("managed file <missing>".to_string()),
+            },
+            crate::crds::DeviceComplianceCheck {
+                category: "watchPath".to_string(),
+                name: "/etc/cfgd/watched".to_string(),
+                status: crate::crds::DeviceComplianceStatus::Warning,
+                detail: Some("path does not exist".to_string()),
+            },
+        ],
+    }
+}
+
+/// The device table says why a machine is out of compliance: the first check
+/// that did not pass and how many follow it. An agent that predates the check
+/// list still shows its counts, and a device that never reported says so.
+#[tokio::test]
+async fn dashboard_compliance_cell_names_the_first_failing_check() {
+    let (state, _tmp) = test_state();
+    let checks = reported_compliance();
+    let counts_only = crate::crds::DeviceCompliance {
+        compliant: 7,
+        warning: 1,
+        violation: 0,
+        checks: vec![],
+    };
+    let clean = crate::crds::DeviceCompliance {
+        compliant: 9,
+        ..Default::default()
+    };
+    for (id, report) in [
+        ("dev-a", Some(&checks)),
+        ("dev-b", Some(&counts_only)),
+        ("dev-c", Some(&clean)),
+        ("dev-d", None),
+    ] {
+        state
+            .db
+            .register_device(id, id, "linux", "x86_64", "h", report)
+            .await
+            .expect("register device");
+    }
+
+    let html = dashboard(State(state)).await.expect("dashboard renders").0;
+
+    assert!(html.contains("<th>Compliance</th>"), "{html}");
+    for cell in [
+        r#"<td><span class="status offline" title="file /home/u/.zshrc: managed file &lt;missing&gt; (+1 more)">file /home/u/.zshrc: managed file &lt;missing&gt; (+1 more)</span></td>"#,
+        r#"<td><span class="status drifted" title="7 compliant, 1 warning, 0 violation">7 compliant, 1 warning, 0 violation</span></td>"#,
+        r#"<td><span class="status healthy" title="9 compliant, 0 warning, 0 violation">9 compliant, 0 warning, 0 violation</span></td>"#,
+        r#"<td><span class="muted">not reported</span></td>"#,
+    ] {
+        assert!(html.contains(cell), "missing {cell} in {html}");
+    }
+}
+
+/// A check whose detail runs long is cut short in the device table, with the
+/// whole line, escaped, as the cell's tooltip.
+#[tokio::test]
+async fn dashboard_compliance_cell_cuts_a_long_line_and_keeps_it_whole_in_the_tooltip() {
+    let (state, _tmp) = test_state();
+    let detail = format!("<{}>", "x".repeat(298));
+    let report = crate::crds::DeviceCompliance {
+        violation: 1,
+        checks: vec![crate::crds::DeviceComplianceCheck {
+            category: "env".to_string(),
+            name: "PATH".to_string(),
+            status: crate::crds::DeviceComplianceStatus::Violation,
+            detail: Some(detail.clone()),
+        }],
+        ..Default::default()
+    };
+    state
+        .db
+        .register_device("dev-l", "host-l", "linux", "x86_64", "h", Some(&report))
+        .await
+        .expect("register device");
+
+    let html = dashboard(State(state)).await.expect("dashboard renders").0;
+
+    let full = format!("env PATH: {detail}");
+    let shown: String = full.chars().take(79).chain(['…']).collect();
+    let cell = format!(
+        r#"<td><span class="status offline" title="{}">{}</span></td>"#,
+        cfgd_core::xml_escape(&full),
+        cfgd_core::xml_escape(&shown)
+    );
+    assert!(html.contains(&cell), "missing {cell} in {html}");
+}
+
+/// The device page lists every check the device reported as not passing,
+/// which is where the dashboard's "+N more" leads.
+#[tokio::test]
+async fn device_detail_lists_every_reported_failing_check() {
+    let (state, _tmp) = test_state();
+    state
+        .db
+        .register_device(
+            "dev-1",
+            "host-1",
+            "linux",
+            "x86_64",
+            "h1",
+            Some(&reported_compliance()),
+        )
+        .await
+        .expect("register device");
+
+    let html = device_detail(State(state), Path("dev-1".to_string()))
+        .await
+        .expect("device page renders")
+        .0;
+
+    for row in [
+        r#"<p><span class="status offline">Violation</span> <span class="muted">3 compliant, 1 warning, 1 violation</span></p>"#,
+        r#"<tr><td><span class="status offline">Violation</span></td><td>file</td><td><code>/home/u/.zshrc</code></td><td>managed file &lt;missing&gt;</td></tr>"#,
+        r#"<tr><td><span class="status drifted">Warning</span></td><td>watchPath</td><td><code>/etc/cfgd/watched</code></td><td>path does not exist</td></tr>"#,
+    ] {
+        assert!(html.contains(row), "missing {row} in {html}");
+    }
+}
+
 #[tokio::test]
 async fn dashboard_stat_cards_reflect_device_statuses() {
     let (state, _tmp) = test_state();
@@ -473,7 +604,7 @@ fn auth_test_app(state: SharedState) -> axum::Router {
 #[serial_test::serial]
 async fn auth_middleware_allows_when_no_api_key_set() {
     // Ensure CFGD_API_KEY is not set
-    unsafe { std::env::remove_var("CFGD_API_KEY") };
+    unsafe { std::env::remove_var(cfgd_core::CFGD_API_KEY_ENV) };
 
     let (state, _tmp) = test_state();
     let app = auth_test_app(state);
@@ -487,7 +618,7 @@ async fn auth_middleware_allows_when_no_api_key_set() {
 #[tokio::test]
 #[serial_test::serial]
 async fn auth_middleware_rejects_without_credentials_when_key_set() {
-    unsafe { std::env::set_var("CFGD_API_KEY", "test-secret-key") };
+    unsafe { std::env::set_var(cfgd_core::CFGD_API_KEY_ENV, "test-secret-key") };
 
     let (state, _tmp) = test_state();
     let app = auth_test_app(state);
@@ -497,13 +628,13 @@ async fn auth_middleware_rejects_without_credentials_when_key_set() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
 
-    unsafe { std::env::remove_var("CFGD_API_KEY") };
+    unsafe { std::env::remove_var(cfgd_core::CFGD_API_KEY_ENV) };
 }
 
 #[tokio::test]
 #[serial_test::serial]
 async fn auth_middleware_accepts_valid_bearer_token() {
-    unsafe { std::env::set_var("CFGD_API_KEY", "test-secret-key") };
+    unsafe { std::env::set_var(cfgd_core::CFGD_API_KEY_ENV, "test-secret-key") };
 
     let (state, _tmp) = test_state();
     let app = auth_test_app(state);
@@ -519,13 +650,13 @@ async fn auth_middleware_accepts_valid_bearer_token() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
 
-    unsafe { std::env::remove_var("CFGD_API_KEY") };
+    unsafe { std::env::remove_var(cfgd_core::CFGD_API_KEY_ENV) };
 }
 
 #[tokio::test]
 #[serial_test::serial]
 async fn auth_middleware_rejects_wrong_bearer_token() {
-    unsafe { std::env::set_var("CFGD_API_KEY", "test-secret-key") };
+    unsafe { std::env::set_var(cfgd_core::CFGD_API_KEY_ENV, "test-secret-key") };
 
     let (state, _tmp) = test_state();
     let app = auth_test_app(state);
@@ -541,13 +672,13 @@ async fn auth_middleware_rejects_wrong_bearer_token() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
 
-    unsafe { std::env::remove_var("CFGD_API_KEY") };
+    unsafe { std::env::remove_var(cfgd_core::CFGD_API_KEY_ENV) };
 }
 
 #[tokio::test]
 #[serial_test::serial]
 async fn auth_middleware_accepts_valid_session_cookie() {
-    unsafe { std::env::set_var("CFGD_API_KEY", "test-secret-key") };
+    unsafe { std::env::set_var(cfgd_core::CFGD_API_KEY_ENV, "test-secret-key") };
 
     let (state, _tmp) = test_state();
     state.web_sessions.insert("sess-registered", SESSION_TTL);
@@ -564,13 +695,13 @@ async fn auth_middleware_accepts_valid_session_cookie() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
 
-    unsafe { std::env::remove_var("CFGD_API_KEY") };
+    unsafe { std::env::remove_var(cfgd_core::CFGD_API_KEY_ENV) };
 }
 
 #[tokio::test]
 #[serial_test::serial]
 async fn auth_middleware_rejects_unknown_session_cookie() {
-    unsafe { std::env::set_var("CFGD_API_KEY", "test-secret-key") };
+    unsafe { std::env::set_var(cfgd_core::CFGD_API_KEY_ENV, "test-secret-key") };
 
     let (state, _tmp) = test_state();
     let app = auth_test_app(state);
@@ -586,14 +717,14 @@ async fn auth_middleware_rejects_unknown_session_cookie() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
 
-    unsafe { std::env::remove_var("CFGD_API_KEY") };
+    unsafe { std::env::remove_var(cfgd_core::CFGD_API_KEY_ENV) };
 }
 
 #[tokio::test]
 #[serial_test::serial]
 async fn auth_middleware_rejects_raw_api_key_as_session_cookie() {
     // Regression: the raw CFGD_API_KEY must NOT be accepted as a cfgd_session value.
-    unsafe { std::env::set_var("CFGD_API_KEY", "test-secret-key") };
+    unsafe { std::env::set_var(cfgd_core::CFGD_API_KEY_ENV, "test-secret-key") };
 
     let (state, _tmp) = test_state();
     let app = auth_test_app(state);
@@ -609,13 +740,13 @@ async fn auth_middleware_rejects_raw_api_key_as_session_cookie() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
 
-    unsafe { std::env::remove_var("CFGD_API_KEY") };
+    unsafe { std::env::remove_var(cfgd_core::CFGD_API_KEY_ENV) };
 }
 
 #[tokio::test]
 #[serial_test::serial]
 async fn auth_middleware_accepts_cookie_among_multiple() {
-    unsafe { std::env::set_var("CFGD_API_KEY", "test-secret-key") };
+    unsafe { std::env::set_var(cfgd_core::CFGD_API_KEY_ENV, "test-secret-key") };
 
     let (state, _tmp) = test_state();
     state.web_sessions.insert("sess-abc", SESSION_TTL);
@@ -635,13 +766,13 @@ async fn auth_middleware_accepts_cookie_among_multiple() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
 
-    unsafe { std::env::remove_var("CFGD_API_KEY") };
+    unsafe { std::env::remove_var(cfgd_core::CFGD_API_KEY_ENV) };
 }
 
 #[tokio::test]
 #[serial_test::serial]
 async fn auth_middleware_token_query_param_redirects_and_sets_cookie() {
-    unsafe { std::env::set_var("CFGD_API_KEY", "test-secret-key") };
+    unsafe { std::env::set_var(cfgd_core::CFGD_API_KEY_ENV, "test-secret-key") };
 
     let (state, _tmp) = test_state();
     let app = auth_test_app(state);
@@ -679,13 +810,13 @@ async fn auth_middleware_token_query_param_redirects_and_sets_cookie() {
     assert!(set_cookie.contains("SameSite=Strict"));
     assert!(set_cookie.contains("Max-Age=86400"));
 
-    unsafe { std::env::remove_var("CFGD_API_KEY") };
+    unsafe { std::env::remove_var(cfgd_core::CFGD_API_KEY_ENV) };
 }
 
 #[tokio::test]
 #[serial_test::serial]
 async fn auth_middleware_wrong_token_query_param_rejected() {
-    unsafe { std::env::set_var("CFGD_API_KEY", "test-secret-key") };
+    unsafe { std::env::set_var(cfgd_core::CFGD_API_KEY_ENV, "test-secret-key") };
 
     let (state, _tmp) = test_state();
     let app = auth_test_app(state);
@@ -700,7 +831,7 @@ async fn auth_middleware_wrong_token_query_param_rejected() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
 
-    unsafe { std::env::remove_var("CFGD_API_KEY") };
+    unsafe { std::env::remove_var(cfgd_core::CFGD_API_KEY_ENV) };
 }
 
 // --- COMMON_STYLES ---
@@ -726,7 +857,7 @@ async fn router_wires_routes() {
     let app = router(state.clone()).with_state(state);
 
     // Ensure CFGD_API_KEY is not set so auth middleware lets us through
-    unsafe { std::env::remove_var("CFGD_API_KEY") };
+    unsafe { std::env::remove_var(cfgd_core::CFGD_API_KEY_ENV) };
 
     // Dashboard route
     let resp = app

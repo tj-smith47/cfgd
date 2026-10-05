@@ -2,7 +2,7 @@ use super::*;
 use cfgd_core::output::{Doc, Printer, Role};
 
 pub fn cmd_profile_edit(cli: &Cli, printer: &Printer, name: &str) -> anyhow::Result<()> {
-    validate_resource_name(name, "Profile")?;
+    validate_resource_name(name, "Profile", "<NAME>")?;
     let profile_path = cfgd_core::config::find_profile_path(&profiles_dir(cli), name)
         .map_err(|e| profile_lookup_error(e, name))?;
 

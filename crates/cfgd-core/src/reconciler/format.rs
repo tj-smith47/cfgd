@@ -5,8 +5,9 @@ use crate::to_posix_string;
 
 use super::env_engine::{ENV_VERB_INJECT, ENV_VERB_WRITE};
 use super::types::{
-    Action, EnvAction, ManagerAction, ModuleAction, ModuleActionKind, OwnerGroup, ScriptAction,
-    ScriptPhase, SystemAction,
+    Action, ENV_RC_RESOURCE_TYPE, ENV_RESOURCE_TYPE, ENV_SESSION_RESOURCE_TYPE, EnvAction,
+    ManagerAction, ModuleAction, ModuleActionKind, OwnerGroup, ScriptAction, ScriptPhase,
+    SystemAction,
 };
 
 /// Resource id of the live-session env refresh. The planner and
@@ -113,12 +114,12 @@ pub const FILE_SKIP_VERB: &str = "skip";
 /// Enforced at both ends, as the family's other members are, and neither end
 /// covers what the other misses: the composition asserts it in debug builds, so
 /// a reason's actual bytes are judged however they were produced, but only on a
-/// path a debug build executes — in a release build, by nothing. The static half
-/// is `no_file_skip_reason_repeats_the_verb_its_row_already_spelled`, which
-/// judges every production mint whose reason it can read as a string literal or
-/// as a one-line `const`, and REFUSES a mint whose reason it cannot read rather
-/// than passing over it — by the RULE and not by a shape, so a local binding and
-/// a `reason` field-init shorthand are refused exactly as a `format!` is.
+/// path a debug build executes — in a release build, by nothing. The static
+/// half is `no_file_skip_reason_repeats_the_verb_its_row_already_spelled`,
+/// which judges every production mint whose reason it can read as a string
+/// literal or as a one-line `const`, and REFUSES a mint whose reason it cannot
+/// read — by the RULE, whatever the shape, so a local binding and a `reason`
+/// field-init shorthand are refused exactly as a `format!` is.
 pub fn file_skip_reason_doubling_error(reason: &str) -> Option<String> {
     let opener = reason
         .split(|c: char| !c.is_ascii_alphabetic())
@@ -272,8 +273,7 @@ pub fn format_action_description(action: &Action) -> String {
         },
         Action::Module(ma) => match &ma.kind {
             ModuleActionKind::InstallPackages { resolved } => {
-                let names: Vec<&str> = resolved.iter().map(|p| p.resolved_name.as_str()).collect();
-                format!("module:{}:packages:{}", ma.module_name, names.join(","))
+                module_packages_description(&ma.module_name, resolved)
             }
             ModuleActionKind::DeployFiles { declared_total, .. } => {
                 module_files_description(&ma.module_name, *declared_total)
@@ -620,6 +620,9 @@ pub fn format_plan_item(action: &Action, arrow: &str) -> String {
     plan_item(action, arrow)
 }
 
+// absolute-path-ok: this string is the persisted plan description and the
+// `-o json` payload as well as a row's subject; `action_display_subject`
+// folds the display copy alone.
 fn plan_item(action: &Action, arrow: &str) -> String {
     match action {
         Action::File(fa) => match fa {
@@ -834,15 +837,34 @@ fn format_manager_action_item(action: &ManagerAction) -> String {
         // the entry they wrote. Suppressed when the route's package IS the
         // manager's name — there the operand is already in the sentence, and
         // `provision cargo via brew (cargo)` says one word twice.
-        ManagerAction::Provision { via, declared, .. } => {
+        // A confirmed floor route joins the same parenthetical: a reader who
+        // answered "provision cargo via rustup instead?" for a 1.85 floor is
+        // approving a row, and a row that does not say 1.85 is not the thing
+        // they were asked about.
+        ManagerAction::Provision {
+            via,
+            declared,
+            floor,
+            ..
+        } => {
             let managers = action.provisioned_managers().join(", ");
-            match declared
+            let mut annotations: Vec<String> = Vec::new();
+            if let Some(package) = declared
                 .as_ref()
                 .map(|route| route.package.as_str())
                 .filter(|package| *package != managers)
             {
-                Some(package) => format!("provision {managers} via {via} ({package})"),
-                None => format!("provision {managers} via {via}"),
+                annotations.push(package.to_string());
+            }
+            if let Some(floor) = floor {
+                annotations.push(format!("minVersion {floor}"));
+            }
+            match annotations.is_empty() {
+                true => format!("provision {managers} via {via}"),
+                false => format!(
+                    "provision {managers} via {via} ({})",
+                    annotations.join(", ")
+                ),
             }
         }
         // The PACKAGE is what the command runs, and the tool is what the
@@ -866,6 +888,20 @@ fn format_manager_action_item(action: &ManagerAction) -> String {
         ManagerAction::Refuse { manager, reason } => {
             format!("cannot provision {manager} — {reason}")
         }
+        // The floor's own vocabulary, as a confirmed route's row states it
+        // (`provision cargo via rustup (minVersion 1.85)`), and the modules
+        // that asked for it, as a prerequisite names who needed it: the node
+        // installs nothing, so what it is FOR is the whole line. Each module
+        // carries its own number, because the checked floor is the fold and a
+        // bare name beside it claims that module wrote the folded one.
+        ManagerAction::HeldFloor {
+            manager,
+            floor,
+            declared,
+        } => format!(
+            "check {manager} against minVersion {floor} — declared by {}",
+            super::declared_by_clause(declared)
+        ),
     }
 }
 
@@ -894,6 +930,8 @@ fn module_action_item(action: &ModuleAction) -> String {
     format!("{body}{suffix}")
 }
 
+// absolute-path-ok: reached from `plan_item`, which the persisted plan
+// description reads; `action_display_subject` folds the display copy.
 fn format_module_action_body(action: &ModuleAction) -> String {
     match &action.kind {
         ModuleActionKind::InstallPackages { resolved } => {
@@ -995,6 +1033,29 @@ pub(super) fn module_files_description(module_name: &str, declared_total: usize)
     format!("module:{module_name}:files:{declared_total}")
 }
 
+/// The description of one module's package install,
+/// `module:<module>:packages:<a,b>`: the resolved names in declared order,
+/// joined by `,`.
+///
+/// The plan's action description and the executed run's description are both
+/// this string, and [`parse_resource_from_description`] splits it into the
+/// `module` tracking row `<module>:packages:<a,b>`, whose name list `cfgd
+/// status` reads back by splitting on `,`. The plan and the apply must agree
+/// byte for byte, or the apply records a row the plan never matches.
+pub(super) fn module_packages_description(
+    module: &str,
+    packages: &[crate::modules::ResolvedPackage],
+) -> String {
+    let mut id = format!("module:{module}:packages:");
+    for (i, pkg) in packages.iter().enumerate() {
+        if i > 0 {
+            id.push(',');
+        }
+        id.push_str(&pkg.resolved_name);
+    }
+    id
+}
+
 /// The module named by a [`module_files_description`], for a reader holding the
 /// recorded description alone.
 ///
@@ -1078,10 +1139,10 @@ pub fn split_module_file_resource_id(id: &str) -> Option<(&str, String)> {
 /// and the `<module>:script` / `<module>:skip` / `<module>:files:<n>` /
 /// `<module>:packages:<a,b>` tracking ids an apply records. The bare `<module>`
 /// a tick recorded before either producer agreed on a spelling is a third
-/// shape, carrying no tail at all. A module name carries neither separator — [`crate::modules::validate_module_name`] is the
-/// one refusal, and every name that becomes a key of the module map answers to
-/// it, whichever of the four sources it arrived from — so the first separator
-/// is always where the owner ends.
+/// shape, carrying no tail at all. A module name carries neither separator —
+/// [`crate::modules::validate_module_name`] is the one refusal, and every name that becomes a key
+/// of the module map answers to it, whichever of the four sources it arrived from — so the first
+/// separator is always where the owner ends.
 ///
 /// Kept beside the composers that mint those ids: the daemon reads it to
 /// attribute a row, the CLI to classify one, and a second reading in either
@@ -1113,9 +1174,38 @@ pub fn module_row_facet(resource_id: &str) -> Option<&str> {
     }
 }
 
+/// The `managed_resources.kind` token a tracking row is recorded under: the
+/// resource type the drift rows name the same resource by (`package`, `file`,
+/// `script`, `env`, `env-rc`, `env-session`), where the row's own
+/// `resource_type` names only the engine that wrote it (`module`, `env`).
+///
+/// Migration 29 backfills the column with the same rules in SQL, and a pin
+/// holds the two equal over real rows, so a row recorded before the column
+/// existed reads the kind a fresh apply would write.
+#[must_use]
+pub fn recorded_resource_kind<'a>(resource_type: &'a str, resource_id: &str) -> &'a str {
+    match resource_type {
+        "module" => match module_row_facet(resource_id)
+            .map(|facet| facet.split_once(':').map_or(facet, |(surface, _)| surface))
+        {
+            Some("packages") => "package",
+            Some("files") => "file",
+            Some("script") => "script",
+            _ => resource_type,
+        },
+        ENV_RESOURCE_TYPE if resource_id == crate::state::ENV_SESSION_RESOURCE_ID => {
+            ENV_SESSION_RESOURCE_TYPE
+        }
+        ENV_RESOURCE_TYPE if super::recorded_env_method(resource_id) == ENV_VERB_INJECT => {
+            ENV_RC_RESOURCE_TYPE
+        }
+        _ => resource_type,
+    }
+}
+
 /// Whether a `"module"` row NAMES A FILE — the `<module>/<target>` grammar
-/// [`module_file_resource_id`] mints — and not a script, a skip, or the bare
-/// legacy whole-module id.
+/// [`module_file_resource_id`] mints. A script, a skip and the bare legacy
+/// whole-module id answer false.
 ///
 /// The question a live check asks before resolving a row: only a per-file id
 /// is something a file pass can re-find, and a scan that resolves anything
@@ -1183,6 +1273,17 @@ pub fn module_scope(
                 managers.get(p.manager.as_str()).copied(),
             )
         })
+        // A held manager's floor row is one this module's own scan answers
+        // (`held_manager_version_drift`), so the scope claims it too or a
+        // scoped run that found the machine converged leaves the row standing.
+        .chain(module.held_managers.iter().map(|h| {
+            // held-id-reader-ok: a scope claims the id alone; the floor behind it stays unread
+            super::package_entry_drift_id(
+                &h.package,
+                &h.package,
+                managers.get(h.package.as_str()).copied(),
+            )
+        }))
         .collect();
     ModuleScope {
         packages,
@@ -1357,8 +1458,8 @@ pub(super) fn parse_package_description(desc: &str) -> Option<(String, String, V
 mod tests {
     use super::super::types::PREREQUISITE_NOT_IN_RUN;
     use super::super::types::{
-        Action, DeclaredProvision, EnvAction, ManagerAction, ModuleAction, ModuleActionKind,
-        SystemAction,
+        Action, DeclaredFloor, DeclaredProvision, EnvAction, ManagerAction, ModuleAction,
+        ModuleActionKind, SystemAction,
     };
     use crate::providers::PackageAction;
 
@@ -1434,10 +1535,9 @@ mod tests {
             );
         }
 
-        let types = std::fs::read_to_string(
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/reconciler/types.rs"),
-        )
-        .expect("types.rs is readable");
+        let types = crate::test_helpers::walked_file_body(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/reconciler/types.rs"),
+        );
         let body = types
             .split_once("pub fn pre_skip_reason(")
             .expect("pre_skip_reason is declared")
@@ -1545,13 +1645,12 @@ mod tests {
 
     /// No `FileAction::Skip` reason spends the verb its own row already spelled.
     ///
-    /// The one-slot member of the same family: this action composes as
-    /// `skip <target>: <reason>`, ONE string, so `pre_skip_doubling_error`'s
-    /// two-slot question cannot be asked of it (see
+    /// The one-slot member of the same family: this action composes as `skip
+    /// <target>: <reason>`, ONE string, so `pre_skip_doubling_error`'s two-slot
+    /// question cannot be asked of it (see
     /// [`super::file_skip_reason_doubling_error`], which states why) and the
-    /// golden that first rendered
-    /// `∅ skip <target>: skipped: target exists as unmanaged file` had no walk
-    /// to trip.
+    /// golden that first rendered `∅ skip <target>: skipped: target exists as
+    /// unmanaged file` had no walk to trip.
     ///
     /// The population is DERIVED rather than listed: every production mint of
     /// the `reason` field in either crate's sources, read through
@@ -1601,15 +1700,13 @@ mod tests {
             .flat_map(|root| crate::test_helpers::rust_sources_under(root))
         {
             let relative = crate::to_posix_string(path.strip_prefix(&workspace).unwrap_or(&path));
-            let name = relative.rsplit('/').next().unwrap_or(&relative);
-            // Test scaffolding carries no `#[cfg(test)]` for the slice to cut
-            // at, so it is named out rather than read as production.
-            // `test_helpers.rs` is named out for the other reason: it ships as
-            // production and holds an inline test module the slice would cut at,
+            // Test scaffolding carries no `#[cfg(test)]` for the slice to cut at, so it is
+            // named out. A file built only for tests
+            // (`is_test_only_file`) is named out as well: no shipped binary compiles it, and
+            // cfgd-core's `test_helpers.rs` holds an inline test module the slice would cut at,
             // leaving a fraction of the file behind.
-            if name.starts_with("tests")
-                || name == "test_helpers.rs"
-                || relative.contains("/tests/")
+            if crate::test_helpers::is_test_source(&path)
+                || crate::test_helpers::is_test_only_file(&path)
             {
                 continue;
             }
@@ -1957,12 +2054,17 @@ mod tests {
                 manager,
                 via,
                 declared,
+                // A version in the name's place, and still an operand: the
+                // reader approved a floor, and a row that does not state it is
+                // not the row they answered about.
+                floor,
                 batched,
                 depends_on: _,
             } => std::iter::once(manager.as_str())
                 .chain(std::iter::once(via.as_str()))
                 .chain(batched.iter().map(String::as_str))
                 .chain(declared.iter().map(|route| route.package.as_str()))
+                .chain(floor.iter().map(String::as_str))
                 .collect(),
             ManagerAction::Prerequisite {
                 tool,
@@ -1976,6 +2078,18 @@ mod tests {
                 .chain(required_by.iter().map(String::as_str))
                 .collect(),
             ManagerAction::Refuse { manager, reason } => vec![manager.as_str(), reason.as_str()],
+            ManagerAction::HeldFloor {
+                manager,
+                floor,
+                declared,
+            } => std::iter::once(manager.as_str())
+                .chain(std::iter::once(floor.as_str()))
+                .chain(
+                    declared
+                        .iter()
+                        .flat_map(|d| [d.module.as_str(), d.floor.as_str()]),
+                )
+                .collect(),
         }
     }
 
@@ -2003,6 +2117,7 @@ mod tests {
                     installer: "sentinel-via".into(),
                     package: "sentinel-package".into(),
                 }),
+                floor: None,
                 batched: Vec::new(),
                 depends_on: Vec::new(),
             },
@@ -2010,7 +2125,30 @@ mod tests {
                 manager: "sentinel-manager".into(),
                 via: "sentinel-via".into(),
                 declared: None,
+                floor: None,
                 batched: vec!["sentinel-batched".into()],
+                depends_on: Vec::new(),
+            },
+            // A confirmed floor, with and without the declared route it can
+            // ride beside: both annotations share one parenthetical, so a
+            // subject that can hold two must still name each.
+            ManagerAction::Provision {
+                manager: "sentinel-manager".into(),
+                via: "sentinel-via".into(),
+                declared: None,
+                floor: Some("sentinel-floor".into()),
+                batched: Vec::new(),
+                depends_on: Vec::new(),
+            },
+            ManagerAction::Provision {
+                manager: "sentinel-manager".into(),
+                via: "sentinel-via".into(),
+                declared: Some(DeclaredProvision {
+                    installer: "sentinel-via".into(),
+                    package: "sentinel-package".into(),
+                }),
+                floor: Some("sentinel-floor".into()),
+                batched: Vec::new(),
                 depends_on: Vec::new(),
             },
             ManagerAction::Prerequisite {
@@ -2023,6 +2161,23 @@ mod tests {
             ManagerAction::Refuse {
                 manager: "sentinel-manager".into(),
                 reason: "sentinel-reason".into(),
+            },
+            // Two modules flooring one manager are one node, so the subject
+            // accounts for both: a line naming one of them tells the other's
+            // reader the floor they declared is nobody's business.
+            ManagerAction::HeldFloor {
+                manager: "sentinel-manager".into(),
+                floor: "sentinel-floor".into(),
+                declared: vec![
+                    DeclaredFloor {
+                        module: "sentinel-module".into(),
+                        floor: "sentinel-declared-floor".into(),
+                    },
+                    DeclaredFloor {
+                        module: "sentinel-other-module".into(),
+                        floor: "sentinel-other-declared-floor".into(),
+                    },
+                ],
             },
         ];
         for action in &cases {
@@ -2048,10 +2203,48 @@ mod tests {
                 installer: "brew".into(),
                 package: "cargo".into(),
             }),
+            floor: None,
             batched: Vec::new(),
             depends_on: Vec::new(),
         });
         assert_eq!(subject, "provision cargo via brew");
+    }
+
+    /// A reader who answered "provision cargo via rustup instead?" for a 1.85
+    /// floor is approving this row, so the row states 1.85 — beside the
+    /// declared package where an entry named one, in the same parenthetical.
+    #[test]
+    fn a_confirmed_floor_rides_the_same_parenthetical_as_the_declared_package() {
+        let floored = |package: &str| ManagerAction::Provision {
+            manager: "cargo".into(),
+            via: "rustup".into(),
+            declared: Some(DeclaredProvision {
+                installer: "rustup".into(),
+                package: package.into(),
+            }),
+            floor: Some("1.85".into()),
+            batched: Vec::new(),
+            depends_on: Vec::new(),
+        };
+        assert_eq!(
+            format_manager_action_item(&floored("cargo")),
+            "provision cargo via rustup (minVersion 1.85)"
+        );
+        assert_eq!(
+            format_manager_action_item(&floored("rustc")),
+            "provision cargo via rustup (rustc, minVersion 1.85)"
+        );
+        assert_eq!(
+            format_manager_action_item(&ManagerAction::Provision {
+                manager: "cargo".into(),
+                via: "rustup".into(),
+                declared: None,
+                floor: Some("1.85".into()),
+                batched: Vec::new(),
+                depends_on: Vec::new(),
+            }),
+            "provision cargo via rustup (minVersion 1.85)"
+        );
     }
 
     #[test]

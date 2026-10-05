@@ -1,5 +1,6 @@
+# shellcheck shell=bash
 # Full-stack E2E tests: Helm Chart Lifecycle
-# Sourced by run-all.sh — do NOT set traps or pipefail here.
+# Sourced by run-all.sh: do NOT set traps or pipefail here.
 
 CHART_DIR="$REPO_ROOT/chart/cfgd"
 
@@ -15,20 +16,28 @@ for res in clusterrole clusterrolebinding; do
 done
 
 # Helper: create a dedicated namespace for a Helm test, install, and return release name.
-# Usage: helm_test_ns "01" -- sets HELM_NS="e2e-helm-01-${E2E_RUN_ID}"
+# Usage: helm_test_ns "01" -- sets HELM_NS="e2e-helm-01-${E2E_RUN_ID}" and
+# HELM_SCOPE, the flags every helm install and upgrade of cfgd-test carries.
 helm_test_ns() {
     local id="$1"
     HELM_NS="e2e-helm-${id}-${E2E_RUN_ID}"
+    # The test operator, its validating webhook and its pod injector would
+    # otherwise reconcile, admit and inject across the whole cluster, the PR
+    # install's and other runs' objects and namespaces included; a case that
+    # wants its own install to act on an object labels it
+    # cfgd.io/e2e-helm=$HELM_NS. Helm merges a map value into the chart default,
+    # so the injector's default matchExpressions is nulled for the namespace
+    # label to be its only term.
+    HELM_SCOPE=(
+        --set-string "operator.watchLabelSelector=cfgd.io/e2e-helm=${HELM_NS}"
+        --set-json "webhook.objectSelector={\"matchLabels\":{\"cfgd.io/e2e-helm\":\"${HELM_NS}\"}}"
+        --set-json "mutatingWebhook.namespaceSelector={\"matchExpressions\":null,\"matchLabels\":{\"cfgd.io/e2e-helm\":\"${HELM_NS}\"}}"
+    )
     ensure_namespace "$HELM_NS"
     kubectl label namespace "$HELM_NS" "$E2E_RUN_LABEL" --overwrite 2>/dev/null || true # rc-ok: the run tag the janitor ages leaked namespaces out by; no case asserts on it
-    # Wait for Reflector to replicate registry-credentials (needed for imagePullSecrets)
-    local deadline=$((SECONDS + 30))
-    while [ $SECONDS -lt $deadline ]; do
-        if kubectl get secret registry-credentials -n "$HELM_NS" > /dev/null 2>&1; then
-            return 0
-        fi
-        sleep 1
-    done
+    kubectl label namespace "$HELM_NS" "cfgd.io/e2e-helm=$HELM_NS" --overwrite >/dev/null ||
+        echo "  WARN: could not label namespace $HELM_NS cfgd.io/e2e-helm=$HELM_NS, so a pod injector this install enables leaves its pods alone"
+    wait_for_registry_credentials "$HELM_NS" 30 && return 0
     echo "  WARN: registry-credentials not replicated to $HELM_NS"
 }
 
@@ -46,18 +55,19 @@ helm_test_cleanup() {
 }
 
 # =================================================================
-# FS-HELM-01: Fresh install — operator + CSI running
+# FS-HELM-01: Fresh install: operator + CSI running
 # =================================================================
 begin_test "FS-HELM-01: Fresh Helm install creates operator deployment"
 
-# CSI driver is cluster-scoped (CSIDriver resource) and already installed by setup-cluster.sh.
-# A second Helm install with csiDriver.enabled=true in a different namespace will fail because
-# the CSIDriver "csi.cfgd.io" is already owned by the cfgd-csi release. Test operator only.
+# A CSIDriver is cluster-scoped, and the chart's default driver name belongs to
+# the live release, so these installs leave csiDriver off and test the operator
+# only.
 helm_test_ns "01"
-INSTALL_OUTPUT=$(helm install cfgd-test "$CHART_DIR" \
+INSTALL_OUTPUT=$(helm install cfgd-test "$CHART_DIR" --skip-crds \
     -n "$HELM_NS" \
-    --set "operator.image.repository=${REGISTRY}/cfgd-operator" \
-    --set "operator.image.tag=$IMAGE_TAG" \
+    "${HELM_SCOPE[@]}" \
+    --set "operator.image.repository=$(e2e_image_repo cfgd-operator)" \
+    --set "operator.image.tag=$(e2e_image_tag cfgd-operator)" \
     --set "operator.imagePullSecrets[0].name=registry-credentials" \
     --set operator.enabled=true \
     --set csiDriver.enabled=false \
@@ -82,15 +92,13 @@ if [ -n "$OPERATOR_DEPLOY" ]; then
     if [ "$OPERATOR_AVAIL" = "True" ]; then
         pass_test "FS-HELM-01"
     else
+        # helm install --wait has already waited for the Deployment to become
+        # ready, so a Deployment that is still not Available failed to start.
         PODS=$(kubectl get pods -n "$HELM_NS" -l app.kubernetes.io/component=operator \
-            -o jsonpath='{.items[*].status.phase}' 2>/dev/null || echo "")
-        echo "  Operator pod phases: ${PODS:-<none>}"
-        if echo "$PODS" | grep -q "Running"; then
-            echo "  Operator pod Running (not yet Available — normal for fresh install)"
-            pass_test "FS-HELM-01"
-        else
-            fail_test "FS-HELM-01" "Operator deployment exists but pod not Running"
-        fi
+            -o jsonpath='{range .items[*]}{.metadata.name}={.status.phase} {end}' 2>/dev/null || echo "")
+        echo "  Helm install output:"
+        echo "$INSTALL_OUTPUT" | head -20 | sed 's/^/    /'
+        fail_test "FS-HELM-01" "Operator deployment is not Available after helm install --wait (Available=${OPERATOR_AVAIL:-unset}); pods: ${PODS:-<none>}"
     fi
 else
     echo "  Helm install output:"
@@ -101,15 +109,16 @@ fi
 helm_test_cleanup "cfgd-test"
 
 # =================================================================
-# FS-HELM-02: Gateway enabled — gateway service exists
+# FS-HELM-02: Gateway enabled: gateway service exists
 # =================================================================
 begin_test "FS-HELM-02: Gateway enabled creates gateway service"
 
 helm_test_ns "02"
-helm install cfgd-test "$CHART_DIR" \
+helm install cfgd-test "$CHART_DIR" --skip-crds \
     -n "$HELM_NS" \
-    --set "operator.image.repository=${REGISTRY}/cfgd-operator" \
-    --set "operator.image.tag=$IMAGE_TAG" \
+    "${HELM_SCOPE[@]}" \
+    --set "operator.image.repository=$(e2e_image_repo cfgd-operator)" \
+    --set "operator.image.tag=$(e2e_image_tag cfgd-operator)" \
     --set "operator.imagePullSecrets[0].name=registry-credentials" \
     --set operator.enabled=true \
     --set deviceGateway.enabled=true \
@@ -141,15 +150,16 @@ fi
 helm_test_cleanup "cfgd-test"
 
 # =================================================================
-# FS-HELM-03: Gateway disabled — no gateway service
+# FS-HELM-03: Gateway disabled: no gateway service
 # =================================================================
 begin_test "FS-HELM-03: Gateway disabled creates no gateway service"
 
 helm_test_ns "03"
-helm install cfgd-test "$CHART_DIR" \
+helm install cfgd-test "$CHART_DIR" --skip-crds \
     -n "$HELM_NS" \
-    --set "operator.image.repository=${REGISTRY}/cfgd-operator" \
-    --set "operator.image.tag=$IMAGE_TAG" \
+    "${HELM_SCOPE[@]}" \
+    --set "operator.image.repository=$(e2e_image_repo cfgd-operator)" \
+    --set "operator.image.tag=$(e2e_image_tag cfgd-operator)" \
     --set "operator.imagePullSecrets[0].name=registry-credentials" \
     --set operator.enabled=true \
     --set deviceGateway.enabled=false \
@@ -161,20 +171,38 @@ helm install cfgd-test "$CHART_DIR" \
     --set operator.leaderElection.enabled=false \
     --wait --timeout 120s 2>&1 || true
 
+GATEWAY_SVC_RC=0
 GATEWAY_SVC=$(kubectl get svc -n "$HELM_NS" \
-    -o jsonpath='{.items[*].metadata.name}' 2>/dev/null || echo "")
+    -o jsonpath='{.items[*].metadata.name}' 2>/dev/null) || GATEWAY_SVC_RC=$?
 echo "  Services: ${GATEWAY_SVC:-<none>}"
 
-if echo "$GATEWAY_SVC" | grep -q "gateway"; then
+if [ "$GATEWAY_SVC_RC" -ne 0 ]; then
+    fail_test "FS-HELM-03" "Could not list the services in $HELM_NS (kubectl exit $GATEWAY_SVC_RC)"
+elif echo "$GATEWAY_SVC" | grep -q "gateway"; then
     fail_test "FS-HELM-03" "Gateway service found when deviceGateway.enabled=false"
 else
-    # Confirm operator deployment does NOT have gateway env
-    GW_ENV=$(kubectl get deployment -n "$HELM_NS" \
-        -l app.kubernetes.io/component=operator \
-        -o jsonpath='{.items[0].spec.template.spec.containers[0].env[?(@.name=="DEVICE_GATEWAY_ENABLED")].value}' \
-        2>/dev/null || echo "")
-    echo "  DEVICE_GATEWAY_ENABLED: ${GW_ENV:-<not set>}"
-    if [ -z "$GW_ENV" ]; then
+    # Confirm operator deployment does NOT have gateway env.
+    # The env read indexes items[0], which fails on an absent deployment, so
+    # the deployment is listed first to name that cause on its own.
+    OP_DEPLOY_RC=0
+    OP_DEPLOY=$(kubectl get deployment -n "$HELM_NS" \
+        -l app.kubernetes.io/component=operator -o name 2>/dev/null) || OP_DEPLOY_RC=$?
+    GW_ENV_RC=0
+    GW_ENV=""
+    if [ "$OP_DEPLOY_RC" -eq 0 ] && [ -n "$OP_DEPLOY" ]; then
+        GW_ENV=$(kubectl get deployment -n "$HELM_NS" \
+            -l app.kubernetes.io/component=operator \
+            -o jsonpath='{.items[0].spec.template.spec.containers[0].env[?(@.name=="DEVICE_GATEWAY_ENABLED")].value}' \
+            2>/dev/null) || GW_ENV_RC=$?
+        echo "  DEVICE_GATEWAY_ENABLED: ${GW_ENV:-<not set>}"
+    fi
+    if [ "$OP_DEPLOY_RC" -ne 0 ]; then
+        fail_test "FS-HELM-03" "Could not list the deployments in $HELM_NS (kubectl exit $OP_DEPLOY_RC)"
+    elif [ -z "$OP_DEPLOY" ]; then
+        fail_test "FS-HELM-03" "no operator deployment in $HELM_NS after helm install"
+    elif [ "$GW_ENV_RC" -ne 0 ]; then
+        fail_test "FS-HELM-03" "Could not read the operator deployment's env (kubectl exit $GW_ENV_RC)"
+    elif [ -z "$GW_ENV" ]; then
         pass_test "FS-HELM-03"
     else
         fail_test "FS-HELM-03" "DEVICE_GATEWAY_ENABLED env set when gateway disabled"
@@ -184,15 +212,16 @@ fi
 helm_test_cleanup "cfgd-test"
 
 # =================================================================
-# FS-HELM-04: CSI disabled — no CSI daemonset
+# FS-HELM-04: CSI disabled: no CSI daemonset
 # =================================================================
 begin_test "FS-HELM-04: CSI disabled creates no CSI daemonset"
 
 helm_test_ns "04"
-helm install cfgd-test "$CHART_DIR" \
+helm install cfgd-test "$CHART_DIR" --skip-crds \
     -n "$HELM_NS" \
-    --set "operator.image.repository=${REGISTRY}/cfgd-operator" \
-    --set "operator.image.tag=$IMAGE_TAG" \
+    "${HELM_SCOPE[@]}" \
+    --set "operator.image.repository=$(e2e_image_repo cfgd-operator)" \
+    --set "operator.image.tag=$(e2e_image_tag cfgd-operator)" \
     --set "operator.imagePullSecrets[0].name=registry-credentials" \
     --set operator.enabled=true \
     --set csiDriver.enabled=false \
@@ -203,12 +232,15 @@ helm install cfgd-test "$CHART_DIR" \
     --set operator.leaderElection.enabled=false \
     --wait --timeout 120s 2>&1 || true
 
+CSI_DS_RC=0
 CSI_DS=$(kubectl get daemonset -n "$HELM_NS" \
     -l app.kubernetes.io/component=csi-driver \
-    -o jsonpath='{.items[*].metadata.name}' 2>/dev/null || echo "")
+    -o jsonpath='{.items[*].metadata.name}' 2>/dev/null) || CSI_DS_RC=$?
 echo "  CSI DaemonSets: ${CSI_DS:-<none>}"
 
-if [ -z "$CSI_DS" ]; then
+if [ "$CSI_DS_RC" -ne 0 ]; then
+    fail_test "FS-HELM-04" "Could not list the daemonsets in $HELM_NS (kubectl exit $CSI_DS_RC)"
+elif [ -z "$CSI_DS" ]; then
     pass_test "FS-HELM-04"
 else
     fail_test "FS-HELM-04" "CSI daemonset found when csiDriver.enabled=false: $CSI_DS"
@@ -217,17 +249,18 @@ fi
 helm_test_cleanup "cfgd-test"
 
 # =================================================================
-# FS-HELM-05: Upgrade preserves CRDs — existing instances survive
+# FS-HELM-05: Upgrade keeps MachineConfig instances and leaves the CRDs ArgoCD applied Established
 # =================================================================
-begin_test "FS-HELM-05: Helm upgrade preserves CRDs and instances"
+begin_test "FS-HELM-05: Helm upgrade keeps instances and the CRDs ArgoCD applied"
 
 helm_test_ns "05"
 
 # Install initial release
-helm install cfgd-test "$CHART_DIR" \
+helm install cfgd-test "$CHART_DIR" --skip-crds \
     -n "$HELM_NS" \
-    --set "operator.image.repository=${REGISTRY}/cfgd-operator" \
-    --set "operator.image.tag=$IMAGE_TAG" \
+    "${HELM_SCOPE[@]}" \
+    --set "operator.image.repository=$(e2e_image_repo cfgd-operator)" \
+    --set "operator.image.tag=$(e2e_image_tag cfgd-operator)" \
     --set "operator.imagePullSecrets[0].name=registry-credentials" \
     --set operator.enabled=true \
     --set csiDriver.enabled=false \
@@ -238,7 +271,7 @@ helm install cfgd-test "$CHART_DIR" \
     --set operator.leaderElection.enabled=false \
     --wait --timeout 120s 2>&1 || true
 
-# Create a CRD instance to verify it survives the upgrade
+# Create a MachineConfig to verify it survives the upgrade
 kubectl apply -f - <<EOF
 apiVersion: cfgd.io/v1alpha1
 kind: MachineConfig
@@ -248,22 +281,25 @@ metadata:
   labels:
     ${E2E_RUN_LABEL_YAML}
     ${E2E_JOB_LABEL_YAML}
+    cfgd.io/e2e-helm: "$HELM_NS"
 spec:
   hostname: helm-upgrade-test-${E2E_RUN_ID}
   profile: default
   packages: []
 EOF
 
-# Verify the CRD instance was created
+# Verify the MachineConfig was created
 MC_BEFORE=$(kubectl get machineconfig "helm-upgrade-test-${E2E_RUN_ID}" \
     -n "$HELM_NS" -o jsonpath='{.metadata.name}' 2>/dev/null || echo "")
 echo "  MachineConfig before upgrade: ${MC_BEFORE:-<not found>}"
 
 # Perform Helm upgrade
+UPGRADE_RC=0
 UPGRADE_OUTPUT=$(helm upgrade cfgd-test "$CHART_DIR" \
     -n "$HELM_NS" \
-    --set "operator.image.repository=${REGISTRY}/cfgd-operator" \
-    --set "operator.image.tag=$IMAGE_TAG" \
+    "${HELM_SCOPE[@]}" \
+    --set "operator.image.repository=$(e2e_image_repo cfgd-operator)" \
+    --set "operator.image.tag=$(e2e_image_tag cfgd-operator)" \
     --set "operator.imagePullSecrets[0].name=registry-credentials" \
     --set operator.enabled=true \
     --set csiDriver.enabled=false \
@@ -272,9 +308,9 @@ UPGRADE_OUTPUT=$(helm upgrade cfgd-test "$CHART_DIR" \
     --set mutatingWebhook.enabled=false \
     --set agent.enabled=false \
     --set operator.leaderElection.enabled=false \
-    --wait --timeout 120s 2>&1) || true
+    --wait --timeout 120s 2>&1) || UPGRADE_RC=$?
 
-# Verify CRD instance survived the upgrade
+# Verify the MachineConfig survived the upgrade
 MC_AFTER=$(kubectl get machineconfig "helm-upgrade-test-${E2E_RUN_ID}" \
     -n "$HELM_NS" -o jsonpath='{.metadata.name}' 2>/dev/null || echo "")
 echo "  MachineConfig after upgrade: ${MC_AFTER:-<not found>}"
@@ -285,27 +321,39 @@ OPERATOR_AVAIL=$(kubectl get deployment -n "$HELM_NS" \
     -o jsonpath='{.items[0].status.conditions[?(@.type=="Available")].status}' 2>/dev/null || echo "")
 echo "  Operator available after upgrade: ${OPERATOR_AVAIL:-unknown}"
 
-if [ "$MC_BEFORE" = "helm-upgrade-test-${E2E_RUN_ID}" ] && \
-   [ "$MC_AFTER" = "helm-upgrade-test-${E2E_RUN_ID}" ]; then
-    pass_test "FS-HELM-05"
+# The release installs with --skip-crds, so the CRDs are ArgoCD's; they must
+# still match schemas/crds.yaml and be Established after the upgrade.
+CRDS_RC=0
+CRDS_REPORT=$(check_pr_crds schemas/crds.yaml "rerun the full-stack suite" < "$REPO_ROOT/schemas/crds.yaml" 2>&1) || CRDS_RC=$?
+
+if [ "$UPGRADE_RC" -ne 0 ]; then
+    fail_test "FS-HELM-05" "helm upgrade exited $UPGRADE_RC: $(echo "$UPGRADE_OUTPUT" | head -20)"
+elif [ "$MC_BEFORE" != "helm-upgrade-test-${E2E_RUN_ID}" ] || \
+   [ "$MC_AFTER" != "helm-upgrade-test-${E2E_RUN_ID}" ]; then
+    fail_test "FS-HELM-05" "MachineConfig did not survive Helm upgrade"
+elif [ "$CRDS_RC" -ne 0 ]; then
+    fail_test "FS-HELM-05" "the CRDs ArgoCD applied fail the CRD check after helm upgrade: $CRDS_REPORT"
+elif [ "$OPERATOR_AVAIL" != "True" ]; then
+    fail_test "FS-HELM-05" "Operator deployment is not Available after helm upgrade --wait (Available=${OPERATOR_AVAIL:-unset})"
 else
-    fail_test "FS-HELM-05" "CRD instance did not survive Helm upgrade"
+    pass_test "FS-HELM-05"
 fi
 
-# Clean up the CRD instance
+# Clean up the MachineConfig
 kubectl delete machineconfig "helm-upgrade-test-${E2E_RUN_ID}" -n "$HELM_NS" --ignore-not-found 2>/dev/null || true
 helm_test_cleanup "cfgd-test"
 
 # =================================================================
-# FS-HELM-06: Values override — custom replica count reflected
+# FS-HELM-06: Values override: custom replica count reflected
 # =================================================================
-begin_test "FS-HELM-06: Values override — custom replica count"
+begin_test "FS-HELM-06: Values override: custom replica count"
 
 helm_test_ns "06"
-helm install cfgd-test "$CHART_DIR" \
+helm install cfgd-test "$CHART_DIR" --skip-crds \
     -n "$HELM_NS" \
-    --set "operator.image.repository=${REGISTRY}/cfgd-operator" \
-    --set "operator.image.tag=$IMAGE_TAG" \
+    "${HELM_SCOPE[@]}" \
+    --set "operator.image.repository=$(e2e_image_repo cfgd-operator)" \
+    --set "operator.image.tag=$(e2e_image_tag cfgd-operator)" \
     --set "operator.imagePullSecrets[0].name=registry-credentials" \
     --set operator.enabled=true \
     --set operator.replicaCount=2 \
@@ -332,7 +380,7 @@ fi
 helm_test_cleanup "cfgd-test"
 
 # =================================================================
-# FS-HELM-07: Helm template validation — valid YAML
+# FS-HELM-07: Helm template validation: valid YAML
 # =================================================================
 begin_test "FS-HELM-07: Helm template produces valid YAML"
 
@@ -365,17 +413,18 @@ else
 fi
 
 # =================================================================
-# FS-HELM-08: Helm uninstall cleanup — resources removed, CRDs preserved
+# FS-HELM-08: Helm uninstall removes the release and leaves the CRDs ArgoCD applied Established
 # =================================================================
-begin_test "FS-HELM-08: Helm uninstall removes resources but preserves CRDs"
+begin_test "FS-HELM-08: Helm uninstall removes resources and leaves the CRDs ArgoCD applied"
 
 helm_test_ns "08"
 
 # Install
-helm install cfgd-test "$CHART_DIR" \
+helm install cfgd-test "$CHART_DIR" --skip-crds \
     -n "$HELM_NS" \
-    --set "operator.image.repository=${REGISTRY}/cfgd-operator" \
-    --set "operator.image.tag=$IMAGE_TAG" \
+    "${HELM_SCOPE[@]}" \
+    --set "operator.image.repository=$(e2e_image_repo cfgd-operator)" \
+    --set "operator.image.tag=$(e2e_image_tag cfgd-operator)" \
     --set "operator.imagePullSecrets[0].name=registry-credentials" \
     --set operator.enabled=true \
     --set csiDriver.enabled=false \
@@ -393,35 +442,108 @@ DEPLOY_BEFORE=$(kubectl get deployment -n "$HELM_NS" \
 echo "  Deployment before uninstall: ${DEPLOY_BEFORE:-<none>}"
 
 # Uninstall
-helm uninstall cfgd-test -n "$HELM_NS" 2>&1 || true
-sleep 5
+helm uninstall cfgd-test -n "$HELM_NS" --wait --timeout 60s 2>&1 || true
 
 # Verify deployment is gone
+DEPLOY_AFTER_RC=0
 DEPLOY_AFTER=$(kubectl get deployment -n "$HELM_NS" \
     -l app.kubernetes.io/component=operator \
-    -o jsonpath='{.items[*].metadata.name}' 2>/dev/null || echo "")
+    -o jsonpath='{.items[*].metadata.name}' 2>/dev/null) || DEPLOY_AFTER_RC=$?
 echo "  Deployment after uninstall: ${DEPLOY_AFTER:-<none>}"
 
-# Verify CRDs still exist (Helm does not delete CRDs on uninstall)
-CRDS_EXIST=true
-for crd in machineconfigs.cfgd.io configpolicies.cfgd.io modules.cfgd.io driftalerts.cfgd.io; do
-    if ! kubectl get crd "$crd" > /dev/null 2>&1; then
-        echo "  CRD missing: $crd"
-        CRDS_EXIST=false
-    fi
-done
-echo "  CRDs preserved: $CRDS_EXIST"
+# The release installs with --skip-crds, so the CRDs are ArgoCD's; they must
+# still match schemas/crds.yaml and be Established after the uninstall.
+CRDS_RC=0
+CRDS_REPORT=$(check_pr_crds schemas/crds.yaml "rerun the full-stack suite" < "$REPO_ROOT/schemas/crds.yaml" 2>&1) || CRDS_RC=$?
 
-if [ -n "$DEPLOY_BEFORE" ] && [ -z "$DEPLOY_AFTER" ] && [ "$CRDS_EXIST" = "true" ]; then
+if [ -n "$DEPLOY_BEFORE" ] && [ "$DEPLOY_AFTER_RC" -eq 0 ] && [ -z "$DEPLOY_AFTER" ] && [ "$CRDS_RC" -eq 0 ]; then
     pass_test "FS-HELM-08"
 else
     if [ -z "$DEPLOY_BEFORE" ]; then
         fail_test "FS-HELM-08" "Deployment was not created during install"
+    elif [ "$DEPLOY_AFTER_RC" -ne 0 ]; then
+        fail_test "FS-HELM-08" "Could not list the deployments after uninstall (kubectl exit $DEPLOY_AFTER_RC)"
     elif [ -n "$DEPLOY_AFTER" ]; then
         fail_test "FS-HELM-08" "Deployment still present after uninstall"
     else
-        fail_test "FS-HELM-08" "CRDs were removed after uninstall"
+        fail_test "FS-HELM-08" "the CRDs ArgoCD applied fail the CRD check after helm uninstall: $CRDS_REPORT"
     fi
 fi
 
 kubectl delete namespace "$HELM_NS" --ignore-not-found --wait=false 2>/dev/null || true
+
+# =================================================================
+# FS-HELM-09: An operator roll keeps the webhook Service backed
+# =================================================================
+begin_test "FS-HELM-09: An operator roll keeps the webhook Service backed"
+
+# A standby whose webhook serves is ready, so the replacement joins the webhook
+# Service while the old pod still holds the leader lease, and the chart's
+# derived strategy removes the old pod only after that. Every sample taken
+# during the roll must name at least one ready address. failurePolicy Ignore
+# keeps this release's cluster-scoped webhook from failing anyone else's
+# writes while it exists; the mutating pod injector is left out for the same
+# reason. A webhook configuration left by an interrupted run would block the
+# install, so it goes first.
+kubectl delete validatingwebhookconfiguration cfgd-test --ignore-not-found 2>/dev/null || true
+helm_test_ns "09"
+helm install cfgd-test "$CHART_DIR" --skip-crds \
+    -n "$HELM_NS" \
+    "${HELM_SCOPE[@]}" \
+    --set "operator.image.repository=$(e2e_image_repo cfgd-operator)" \
+    --set "operator.image.tag=$(e2e_image_tag cfgd-operator)" \
+    --set "operator.imagePullSecrets[0].name=registry-credentials" \
+    --set operator.enabled=true \
+    --set operator.leaderElection.enabled=true \
+    --set csiDriver.enabled=false \
+    --set webhook.enabled=true \
+    --set webhook.certManager.enabled=true \
+    --set webhook.failurePolicy=Ignore \
+    --set mutatingWebhook.enabled=false \
+    --set agent.enabled=false \
+    --set deviceGateway.enabled=false \
+    --wait --timeout 180s 2>&1 || true
+
+ROLL_DEPLOY=$(kubectl get deployment -n "$HELM_NS" \
+    -l app.kubernetes.io/component=operator \
+    -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
+ROLL_SVC=cfgd-test-webhook
+ROLL_SAMPLES=0
+ROLL_EMPTY=0
+ROLL_EMPTY_AT=""
+ROLL_DONE=false
+
+if [ -z "$ROLL_DEPLOY" ]; then
+    fail_test "FS-HELM-09" "No operator deployment after helm install"
+elif ! wait_for_service_endpoints "$HELM_NS" "$ROLL_SVC" 120; then
+    fail_test "FS-HELM-09" "Webhook Service never had a ready endpoint before the roll"
+elif ! kubectl rollout restart "deployment/$ROLL_DEPLOY" -n "$HELM_NS"; then
+    fail_test "FS-HELM-09" "kubectl rollout restart failed, so no roll was observed"
+else
+    ROLL_START=$SECONDS
+    ROLL_DEADLINE=$((SECONDS + 180))
+    while [ $SECONDS -lt $ROLL_DEADLINE ]; do
+        ROLL_ADDRS=$(kubectl get endpoints "$ROLL_SVC" -n "$HELM_NS" \
+            -o jsonpath='{.subsets[*].addresses[*].ip}' 2>/dev/null || echo "")
+        ROLL_SAMPLES=$((ROLL_SAMPLES + 1))
+        if [ -z "$ROLL_ADDRS" ]; then
+            ROLL_EMPTY=$((ROLL_EMPTY + 1))
+            ROLL_EMPTY_AT="${ROLL_EMPTY_AT:+$ROLL_EMPTY_AT, }#$ROLL_SAMPLES at +$((SECONDS - ROLL_START))s"
+        fi
+        if kubectl rollout status "deployment/$ROLL_DEPLOY" -n "$HELM_NS" --timeout=1s >/dev/null 2>&1; then
+            ROLL_DONE=true
+            break
+        fi
+    done
+    echo "  Roll finished: $ROLL_DONE; samples: $ROLL_SAMPLES; samples with no ready endpoint: $ROLL_EMPTY${ROLL_EMPTY_AT:+ ($ROLL_EMPTY_AT)}"
+
+    if [ "$ROLL_DONE" != "true" ]; then
+        fail_test "FS-HELM-09" "The operator roll did not finish within 180s"
+    elif [ "$ROLL_EMPTY" -ne 0 ]; then
+        fail_test "FS-HELM-09" "The webhook Service had no ready endpoint in $ROLL_EMPTY of $ROLL_SAMPLES samples during the roll: $ROLL_EMPTY_AT"
+    else
+        pass_test "FS-HELM-09"
+    fi
+fi
+
+helm_test_cleanup "cfgd-test"

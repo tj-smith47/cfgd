@@ -60,6 +60,9 @@ fn build_dockerfile(base_image: &str, packages: &[&str]) -> String {
         let pkg_list = packages.join(" ");
         let install_cmd = detect_pkg_install_cmd(base_image);
         if install_cmd.starts_with("apt-get") {
+            // `-y` does not answer debconf, so a package asking for its
+            // configuration (tzdata's region) stops the build without this.
+            lines.push("ENV DEBIAN_FRONTEND=noninteractive".to_string());
             lines.push(format!(
                 "RUN {install_cmd} {pkg_list} && rm -rf /var/lib/apt/lists/*"
             ));
@@ -289,6 +292,10 @@ mod tests {
         let df = build_dockerfile("alpine:3.18", &["curl"]);
         assert!(df.contains("apk add --no-cache"));
         assert!(!df.contains("apt-get"));
+        assert!(
+            !df.contains("DEBIAN_FRONTEND"),
+            "only an apt image carries debconf's switch"
+        );
     }
 
     #[test]
@@ -451,8 +458,14 @@ mod tests {
     #[test]
     fn build_dockerfile_ubuntu_with_packages_cleans_apt_lists() {
         let df = build_dockerfile("ubuntu:24.04", &["git", "curl", "make"]);
-        assert_eq!(df.lines().count(), 4, "FROM + RUN + WORKDIR + COPY");
+        assert_eq!(df.lines().count(), 5, "FROM + ENV + RUN + WORKDIR + COPY");
         assert!(df.starts_with("FROM ubuntu:24.04"));
+        assert_eq!(
+            df.lines().nth(1),
+            Some("ENV DEBIAN_FRONTEND=noninteractive"),
+            "debconf is silenced once, ahead of the apt RUN"
+        );
+        assert_eq!(df.matches("DEBIAN_FRONTEND").count(), 1);
         assert!(df.contains("apt-get update && apt-get install -y git curl make"));
         assert!(df.contains("rm -rf /var/lib/apt/lists/*"));
         assert!(df.contains("WORKDIR /build"));
@@ -581,7 +594,7 @@ mod tests {
         #[test]
         #[serial]
         fn build_module_passes_platform_flag() {
-            let _shim = ToolShim::install("CFGD_DOCKER_BIN", 0, "", "");
+            let _shim = ToolShim::install(crate::oci::build::DOCKER_BIN_ENV, 0, "", "");
             let dir = tempfile::tempdir().unwrap();
             std::fs::write(dir.path().join("module.yaml"), sample_module_yaml()).unwrap();
 
@@ -594,7 +607,12 @@ mod tests {
         #[test]
         #[serial]
         fn build_module_failure_propagates_error() {
-            let _shim = ToolShim::install("CFGD_DOCKER_BIN", 1, "", "build error: out of disk");
+            let _shim = ToolShim::install(
+                crate::oci::build::DOCKER_BIN_ENV,
+                1,
+                "",
+                "build error: out of disk",
+            );
             let dir = tempfile::tempdir().unwrap();
             std::fs::write(dir.path().join("module.yaml"), sample_module_yaml()).unwrap();
 
@@ -610,7 +628,7 @@ mod tests {
         #[test]
         #[serial]
         fn build_module_passes_tag_flag() {
-            let _shim = ToolShim::install("CFGD_DOCKER_BIN", 0, "", "");
+            let _shim = ToolShim::install(crate::oci::build::DOCKER_BIN_ENV, 0, "", "");
             let dir = tempfile::tempdir().unwrap();
             std::fs::write(dir.path().join("module.yaml"), sample_module_yaml()).unwrap();
 
@@ -628,10 +646,10 @@ mod tests {
         fn detect_runtime_podman_fallback() {
             // Docker shim missing (env var set to non-existent path), podman present
             let _docker_guard = crate::test_helpers::EnvVarGuard::set(
-                "CFGD_DOCKER_BIN",
+                crate::oci::build::DOCKER_BIN_ENV,
                 "/nonexistent/docker-fake",
             );
-            let _podman_shim = ToolShim::install("CFGD_PODMAN_BIN", 0, "", "");
+            let _podman_shim = ToolShim::install(crate::oci::build::PODMAN_BIN_ENV, 0, "", "");
 
             let rt = detect_container_runtime();
             assert_eq!(rt, Some("podman"));
@@ -640,8 +658,8 @@ mod tests {
         #[test]
         #[serial]
         fn detect_runtime_docker_preferred() {
-            let _docker_shim = ToolShim::install("CFGD_DOCKER_BIN", 0, "", "");
-            let _podman_shim = ToolShim::install("CFGD_PODMAN_BIN", 0, "", "");
+            let _docker_shim = ToolShim::install(crate::oci::build::DOCKER_BIN_ENV, 0, "", "");
+            let _podman_shim = ToolShim::install(crate::oci::build::PODMAN_BIN_ENV, 0, "", "");
 
             let rt = detect_container_runtime();
             assert_eq!(rt, Some("docker"));
@@ -651,11 +669,11 @@ mod tests {
         #[serial]
         fn detect_runtime_none_available() {
             let _docker_guard = crate::test_helpers::EnvVarGuard::set(
-                "CFGD_DOCKER_BIN",
+                crate::oci::build::DOCKER_BIN_ENV,
                 "/nonexistent/docker-fake",
             );
             let _podman_guard = crate::test_helpers::EnvVarGuard::set(
-                "CFGD_PODMAN_BIN",
+                crate::oci::build::PODMAN_BIN_ENV,
                 "/nonexistent/podman-fake",
             );
 

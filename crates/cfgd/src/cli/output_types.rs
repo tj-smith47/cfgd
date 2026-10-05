@@ -257,7 +257,7 @@ pub struct DiffOutput {
     /// same shape `verify` reports a resource: what was expected, what was
     /// found. An unevaluable `strategy: Patch` file lands here with the reason
     /// as its `actual`, so a blocked filter is visible to a structured consumer
-    /// and not only in the terminal.
+    /// as well as in the terminal.
     pub files: Vec<cfgd_core::providers::FileDriftResult>,
     pub packages: Vec<PackageDrift>,
     pub system: Vec<SystemDriftOutput>,
@@ -470,6 +470,33 @@ pub struct PlanOutput {
     /// omitted from the wire) when nothing this run declares was declined.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub rejected_decisions: Vec<cfgd_core::state::PendingDecision>,
+    /// What a later `cfgd apply --plan` replays, recorded by an UNFILTERED
+    /// run and absent from every other payload.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub saved_plan: Option<SavedPlan>,
+}
+
+/// What `cfgd apply --plan` replays, recorded by an UNFILTERED `cfgd plan -o json`.
+///
+/// `plan` is the reconciler's own action graph, serialized whole: `phases[]`
+/// above is the RENDERED contract a consumer reads (descriptions, targets,
+/// provenance), this is the typed one cfgd reads back. `configInputs` is every
+/// file the derivation opened with the stamp it carried, `serial` the id of the
+/// last recorded apply, and `storeId` the identity of the state store both were
+/// read from: the three facts `apply --plan` refuses on, and the only three. A
+/// filtered run records nothing here, because `--plan` refuses a
+/// filter and a payload carrying one would be a second statement of the run's
+/// scope.
+///
+/// It carries what the plan carries, the generated env file's body included, so
+/// a plan file is as sensitive as the config it was derived from.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SavedPlan {
+    pub plan: serde_json::Value,
+    pub config_inputs: cfgd_core::ConfigInputs,
+    pub serial: i64,
+    pub store_id: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -541,9 +568,11 @@ impl PlanGroupOutput {
 #[serde(rename_all = "camelCase")]
 pub struct ManagerActionOutput {
     pub manager: String,
-    /// The `state` enum is `present`|`provisioned`|`prerequisite`|`refused`.
+    /// The `state` enum is `present`|`provisioned`|`prerequisite`|`refused`|`held`.
     /// `Action::Manager` names `Refuse` as a node that must give a payload,
     /// and a state enum a refusal cannot express in would silently drop it.
+    /// `held` is the manager this host already has, whose declared floor the
+    /// apply judges against the binary.
     pub state: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub via: Option<String>,
@@ -557,10 +586,17 @@ pub struct ManagerActionOutput {
     /// `apt-get install` covering both.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub batched: Vec<String>,
-    /// Why this host cannot provision the manager. `Some` only when
-    /// `state == "refused"`.
+    /// Why this host cannot provision the manager when `state == "refused"`,
+    /// and which modules declared the floor when `state == "held"`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
+    /// The `minVersion` this node was given for, from
+    /// [`cfgd_core::reconciler::ManagerAction::Provision`]'s own field or from
+    /// the held floor the apply checks. `Some` only for those two, and omitted
+    /// from the wire otherwise, so a consumer reading a plan that asked
+    /// nothing sees exactly what it always saw.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub floor: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -631,7 +667,7 @@ pub struct DoctorConfigCheck {
     /// as `config::LEGACY_OUTPUT_KEYS` names them. Empty for a migrated
     /// config, which is what lets a consumer gate on the list rather than
     /// matching a rendered sentence.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub legacy_output_keys: Vec<String>,
     /// Typed classification driving rendering and verdict scoring. Skipped
     /// from serialization: the consumer-facing JSON field set stays frozen —
@@ -700,11 +736,17 @@ pub struct DoctorModuleCheck {
     pub error: Option<String>,
     /// The managers this module's packages resolve to on this host, in the
     /// order its package list reaches them, with whether each one is here.
-    #[serde(default)]
     pub managers: Vec<DoctorModuleManagerRoute>,
     /// One message per declared package no manager on this host can deliver.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub unresolved: Vec<String>,
+    /// One clause per declared package whose delivery is a manager this host
+    /// already holds AT the declared floor. A satisfied fact, so it never
+    /// reaches the unresolved list above and never fails the verdict; a held
+    /// manager below its floor, or one whose version cannot be read, is a
+    /// shortfall and goes in that list instead.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub held: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1182,7 +1224,7 @@ pub struct SourceShowOutput {
     /// `spec.provides.modules` allow-list (the module bodies it offers to
     /// subscribers). Empty (and omitted from the wire) when the source delivers
     /// no modules or its manifest could not be loaded.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub modules: Vec<String>,
     /// What this source enforces, combining the manifest's own
     /// `policy.constraints` with this subscriber's overrides
@@ -1191,13 +1233,13 @@ pub struct SourceShowOutput {
     /// would combine with are unknown. Omitted from the wire in that case
     /// (matches the envelope discipline of dropping empty fields), rather
     /// than serializing as a `null` a consumer has to special-case.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub policy: Option<SourcePolicyOutput>,
     /// What the source's own manifest DECLARES — the same facts the human
     /// render's `Manifest` and `Profiles` sections read. `None` when the
     /// manifest could not be loaded, and omitted from the wire in that case
     /// rather than serializing a `null` a consumer has to special-case.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub manifest: Option<SourceManifestOutput>,
 }
 
@@ -1239,7 +1281,7 @@ pub struct SourcePolicyOutput {
     /// Whether `spec.security.allowUnsigned` bypasses `require_signed_commits`
     /// for this subscriber — always `false` when the demand above is itself
     /// `false`, since there is nothing to bypass.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub signed_commits_bypassed: bool,
     /// Whether this source's lifecycle scripts run — the subscriber's
     /// `allowScripts` opt-in OR the manifest not constraining scripts at all.
@@ -1250,11 +1292,11 @@ pub struct SourcePolicyOutput {
     pub system_changes_allowed: bool,
     /// Glob patterns restricting which file targets this source may deploy
     /// to. Empty means no restriction.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub allowed_target_paths: Vec<String>,
     /// Encryption the manifest's `policy.constraints.encryption` imposes on
     /// files this source delivers. `None` when the manifest declares none.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub encryption: Option<SourceEncryptionOutput>,
 }
 
@@ -1267,9 +1309,9 @@ pub struct SourcePolicyOutput {
 pub struct SourceEncryptionOutput {
     /// Glob patterns or explicit paths that must be encrypted.
     pub required_targets: Vec<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub backend: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub mode: Option<String>,
 }
 
@@ -1883,6 +1925,7 @@ mod tests {
             pending_backups: vec![],
             pending_decisions: vec![],
             rejected_decisions: vec![],
+            saved_plan: None,
         };
         let json = serde_json::to_value(&v).unwrap();
         assert_eq!(json["context"], json!("default"));
@@ -1914,6 +1957,7 @@ mod tests {
             pending_backups: vec![],
             pending_decisions: vec![],
             rejected_decisions: vec![],
+            saved_plan: None,
         };
         let json = serde_json::to_value(&v).unwrap();
         assert_eq!(json["warnings"], json!(["missing tool"]));
@@ -1930,6 +1974,7 @@ mod tests {
             pending_backups: vec!["photos".to_string()],
             pending_decisions: vec![],
             rejected_decisions: vec![],
+            saved_plan: None,
         };
         let json = serde_json::to_value(&v).unwrap();
         assert_eq!(json["pendingBackups"], json!(["photos"]));
@@ -2049,6 +2094,7 @@ mod tests {
                 used_by_modules: 0,
             }],
             modules: vec![DoctorModuleCheck {
+                held: Vec::new(),
                 name: "shell".to_string(),
                 valid: true,
                 error: None,
@@ -2184,6 +2230,7 @@ mod tests {
     #[test]
     fn doctor_module_check_emits_its_manager_routes_and_null_error() {
         let v = DoctorModuleCheck {
+            held: Vec::new(),
             name: "git".to_string(),
             valid: true,
             error: None,
@@ -2212,6 +2259,7 @@ mod tests {
     #[test]
     fn doctor_module_check_lists_a_package_no_manager_can_deliver() {
         let v = DoctorModuleCheck {
+            held: Vec::new(),
             name: "jarvis".to_string(),
             valid: true,
             error: None,

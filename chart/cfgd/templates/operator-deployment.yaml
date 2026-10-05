@@ -9,6 +9,19 @@ metadata:
     app.kubernetes.io/component: operator
 spec:
   replicas: {{ .Values.operator.replicaCount }}
+  {{- $gateway := .Values.deviceGateway.enabled }}
+  {{- $leaderElection := .Values.operator.leaderElection.enabled }}
+  strategy:
+    {{- if .Values.operator.strategy }}
+    {{- toYaml .Values.operator.strategy | nindent 4 }}
+    {{- else if and $gateway .Values.deviceGateway.persistence.enabled (not $leaderElection) }}
+    type: Recreate
+    {{- else }}
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: {{ if and $gateway $leaderElection }}1{{ else }}0{{ end }}
+    {{- end }}
   selector:
     matchLabels:
       {{- include "cfgd.operatorSelectorLabels" . | nindent 6 }}
@@ -51,6 +64,20 @@ spec:
               value: /var/tmp/cfgd
             - name: HEALTH_PORT
               value: {{ .Values.probes.port | quote }}
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: CSI_DRIVER_NAME
+              value: {{ .Values.csiDriver.name | quote }}
+            {{- with .Values.operator.watchLabelSelector }}
+            - name: WATCH_LABEL_SELECTOR
+              value: {{ . | quote }}
+            {{- end }}
             {{- if .Values.operator.leaderElection.enabled }}
             - name: LEADER_ELECTION_ENABLED
               value: "true"
@@ -60,14 +87,6 @@ spec:
               value: {{ .Values.operator.leaderElection.renewDeadline | quote }}
             - name: LEADER_RETRY_PERIOD
               value: {{ .Values.operator.leaderElection.retryPeriod | quote }}
-            - name: POD_NAMESPACE
-              valueFrom:
-                fieldRef:
-                  fieldPath: metadata.namespace
-            - name: POD_NAME
-              valueFrom:
-                fieldRef:
-                  fieldPath: metadata.name
             {{- end }}
             {{- if .Values.metrics.enabled }}
             - name: METRICS_PORT
@@ -139,6 +158,9 @@ spec:
             - name: gateway-data
               mountPath: /data
             {{- end }}
+            {{- with .Values.operator.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
           resources:
             {{- toYaml .Values.operator.resources | nindent 12 }}
       volumes:
@@ -153,6 +175,9 @@ spec:
         - name: gateway-data
           persistentVolumeClaim:
             claimName: {{ include "cfgd.fullname" . }}-gateway-data
+        {{- end }}
+        {{- with .Values.operator.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
         {{- end }}
       {{- with .Values.operator.nodeSelector }}
       nodeSelector:

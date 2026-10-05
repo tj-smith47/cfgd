@@ -396,6 +396,8 @@ metadata:
   name: demo
 spec:
   profile: demo
+  fileStrategy: Symlink
+  migrationPolicy: Prompt
   origin:
     - type: Server
       url: "${GW_URL}"

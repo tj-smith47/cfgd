@@ -1,5 +1,3 @@
-#![allow(deprecated)] // assert_cmd 2.x cargo_bin deprecation; upgrade path is assert_cmd 3.x
-
 //! Exit-code and stdout-shape regression tests for `cfgd backup run` and
 //! `cfgd backup gc`.
 //!
@@ -11,10 +9,12 @@
 //! so a second emitted document overwrites the first instead of appending,
 //! which is precisely the failure shape under test here.
 
-mod common;
+use cfgd_test_fixtures as common;
 
-use assert_cmd::Command;
 use common::{backup_profile_setup, strand_a_snapshot};
+
+mod cfgd_binary;
+use cfgd_binary::cfgd_bin;
 
 #[test]
 fn backup_run_json_emits_exactly_one_document_when_a_unit_is_busy() {
@@ -28,7 +28,7 @@ fn backup_run_json_emits_exactly_one_document_when_a_unit_is_busy() {
     let _held =
         cfgd_core::acquire_backup_lock(state_dir.path(), "docs").expect("hold the docs lock");
 
-    let out = Command::cargo_bin("cfgd")
+    let out = cfgd_bin()
         .unwrap()
         .args(["-o", "json", "backup", "run"])
         .arg("--config")
@@ -70,7 +70,7 @@ fn backup_run_json_emits_exactly_one_document_when_a_unit_is_busy() {
 fn backup_run_exits_zero_when_every_unit_runs_clean() {
     let (config_dir, state_dir, _source) = backup_profile_setup();
 
-    let out = Command::cargo_bin("cfgd")
+    let out = cfgd_bin()
         .unwrap()
         .args(["-o", "json", "backup", "run"])
         .arg("--config")
@@ -109,7 +109,7 @@ fn backup_gc_exits_nonzero_when_a_units_history_cannot_be_read() {
         .drop_backup_runs_table()
         .expect("take the history away");
 
-    let out = Command::cargo_bin("cfgd")
+    let out = cfgd_bin()
         .unwrap()
         .args(["-o", "json", "backup", "gc"])
         .arg("--config")
@@ -148,7 +148,7 @@ fn backup_gc_exits_nonzero_when_a_recorded_payload_cannot_be_removed() {
     let (stranded, _) = strand_a_snapshot(config_dir.path(), state_dir.path(), &source);
     let held = cfgd_core::test_helpers::hold_payload_unremovable(&stranded);
 
-    let out = Command::cargo_bin("cfgd")
+    let out = cfgd_bin()
         .unwrap()
         .args(["-o", "json", "backup", "gc"])
         .arg("--config")

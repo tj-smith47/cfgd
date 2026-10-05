@@ -51,6 +51,7 @@ CFGD_TEST_NONEXISTENT_VAR_12345: "test_value"
 
 #[test]
 fn windows_reg_query_parsing_typical() {
+    // space-run-ok: a fixture reproducing `reg query`'s column-aligned output.
     let output = "\
 HKEY_CURRENT_USER\\Environment\n\
 \n\
@@ -80,6 +81,7 @@ fn windows_reg_query_parsing_blank_input() {
 
 #[test]
 fn windows_reg_query_parsing_single_var() {
+    // space-run-ok: a fixture reproducing `reg query`'s column-aligned output.
     let output = "HKEY_CURRENT_USER\\Environment\n\
                        \n\
                            JAVA_HOME    REG_SZ    C:\\Program Files\\Java\\jdk-17\n";
@@ -96,6 +98,7 @@ fn environment_configurator_available_on_linux() {
 
 #[test]
 fn parse_reg_query_output_expand_sz_type() {
+    // space-run-ok: a fixture reproducing `reg query`'s column-aligned output.
     let output = "HKEY_CURRENT_USER\\Environment\n\
                       \n\
                           Path    REG_EXPAND_SZ    %USERPROFILE%\\bin\n";
@@ -106,6 +109,7 @@ fn parse_reg_query_output_expand_sz_type() {
 
 #[test]
 fn parse_reg_query_output_mixed_types() {
+    // space-run-ok: a fixture reproducing `reg query`'s column-aligned output.
     let output = "HKEY_CURRENT_USER\\Environment\n\
                       \n\
                           EDITOR    REG_SZ    vim\n\
@@ -265,6 +269,7 @@ fn parse_export_file_skips_non_export_lines() {
 #[test]
 fn parse_reg_query_output_dword_preserved_as_raw() {
     // parse_reg_query_output uses parse_reg_line which returns raw value
+    // space-run-ok: a fixture reproducing `reg query`'s column-aligned output.
     let output = "HKEY_CURRENT_USER\\Environment\n\
                       \n\
                           Count    REG_DWORD    0x5\n";
@@ -548,6 +553,7 @@ fn write_profile_d_empty_managed_removes_file() {
 
 #[test]
 fn parse_reg_query_output_multiple_types_preserved() {
+    // space-run-ok: a fixture reproducing `reg query`'s column-aligned output.
     let output = "\
 HKEY_CURRENT_USER\\Environment\n\
 \n\
@@ -1749,21 +1755,19 @@ fn a_converged_macos_env_surface_carries_the_loader_line_and_stands_on_no_env_rc
         value: "nvim".to_string(),
         platforms: Vec::new(),
     }];
-    let mut owners = cfgd_core::config::EntryOwners::default();
-    owners.claim(
+    let layered = cfgd_core::reconciler::LayeredEnv::from_parts(
         &cfgd_core::reconciler::Owner::profile("mac").token(),
         &env,
         &[],
+        &[],
     );
-    let merged = cfgd_core::reconciler::MergedEnvItems::new(&env, &[], &owners, &[], &[]);
+    let merged = cfgd_core::reconciler::MergedEnvItems::new(&layered, &[]);
     let scope = cfgd_core::config::EnvScope::default();
     let write = |path: &std::path::Path, body: String| {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(path, body).unwrap();
     };
-    for (path, content) in merged.managed_env_files(home.path(), scope) {
-        write(&path, content);
-    }
+    cfgd_core::test_helpers::plant_managed_env_files(&merged, home.path(), scope);
     for (rc_path, line) in merged.managed_env_source_lines(home.path(), scope) {
         write(&rc_path, format!("{line}\n"));
     }
@@ -1782,7 +1786,16 @@ fn a_converged_macos_env_surface_carries_the_loader_line_and_stands_on_no_env_rc
         "the loader line lands once and a second run appends no duplicate:\n{body}"
     );
 
-    let results = cfgd_core::reconciler::env_verify_results(&env, &[], &owners, scope, &[], &[]);
+    let results = cfgd_core::reconciler::env_verify_results(
+        &cfgd_core::reconciler::LayeredEnv::from_parts(
+            &cfgd_core::reconciler::Owner::profile("mac").token(),
+            &env,
+            &[],
+            &[],
+        ),
+        scope,
+        &[],
+    );
     let rc_rows: Vec<&cfgd_core::reconciler::VerifyResult> = results
         .iter()
         .filter(|r| r.resource_type == cfgd_core::reconciler::ENV_RC_RESOURCE_TYPE)

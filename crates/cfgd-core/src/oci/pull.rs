@@ -11,9 +11,19 @@ use crate::sha256_digest;
 
 use super::archive::extract_tar_gz;
 use super::auth::RegistryAuth;
-use super::sign::{VerifyOptions, verify_signature};
+use super::sign::{VerifyOptions, verify_attestation, verify_signature};
 use super::transport::{authenticated_request, response_digest};
 use super::{MEDIA_TYPE_OCI_MANIFEST, OciManifest, OciReference};
+
+/// The result of a successful [`pull_module`] call.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PullOutcome {
+    /// Digest of the image manifest whose layer was extracted (`"sha256:..."`).
+    pub digest: String,
+    /// Digest of the index the reference resolved to, when it resolved to one
+    /// and `digest` is the entry picked out of it.
+    pub index_digest: Option<String>,
+}
 
 /// Policy for verifying a module artifact's cosign signature during pull.
 ///
@@ -21,8 +31,9 @@ use super::{MEDIA_TYPE_OCI_MANIFEST, OciManifest, OciReference};
 /// - `RequireKey { path }` — fail unless `cosign verify --key <path>` succeeds.
 /// - `RequireKeyless { identity, issuer }` — fail unless keyless verification
 ///   matches the supplied certificate identity / OIDC issuer constraints.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy, Default)]
 pub enum SignaturePolicy<'a> {
+    #[default]
     None,
     RequireKey {
         path: &'a str,
@@ -33,15 +44,23 @@ pub enum SignaturePolicy<'a> {
     },
 }
 
-impl SignaturePolicy<'_> {
-    fn requires_signature(&self) -> bool {
-        !matches!(self, SignaturePolicy::None)
-    }
+/// The cosign checks [`pull_module`] runs before it extracts anything. Both
+/// run against the digest the reference resolved to on the one read the pull
+/// takes from, so what was verified is what gets extracted even if the tag
+/// moves mid-pull.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct PullChecks<'a> {
+    /// The signature the artifact must carry.
+    pub signature: SignaturePolicy<'a>,
+    /// An attestation the artifact must carry: its predicate type (in the
+    /// vocabulary `cosign verify-attestation --type` takes) and the options
+    /// cosign verifies it with.
+    pub attestation: Option<(&'a str, VerifyOptions<'a>)>,
 }
 
 /// Pull a module from an OCI registry and extract it to `output_dir`.
 ///
-/// `signature_policy` controls cryptographic signature verification:
+/// `checks.signature` controls cryptographic signature verification:
 /// - `SignaturePolicy::None` — no verification (default).
 /// - `SignaturePolicy::RequireKey { path }` — run real `cosign verify --key`,
 ///   fail the pull if it does not succeed.
@@ -54,12 +73,21 @@ impl SignaturePolicy<'_> {
 /// who could push to the registry could trivially satisfy. The current API
 /// requires callers to supply the verifying key (or identity/issuer) so the
 /// trust decision is explicit and cryptographically enforced.
+///
+/// `checks.attestation` adds a `cosign verify-attestation` of that predicate
+/// type. A signature failure is [`OciError::VerificationFailed`] and an
+/// attestation failure [`OciError::AttestationError`], whatever stopped cosign.
+///
+/// A reference that resolves to an index pulls the entry for `platform`
+/// (this host when `None`); one that resolves to a single manifest pulls it
+/// whatever platform it names.
 pub fn pull_module(
     artifact_ref: &str,
     output_dir: &Path,
-    signature_policy: SignaturePolicy<'_>,
+    checks: PullChecks<'_>,
+    platform: Option<&str>,
     printer: Option<&Printer>,
-) -> Result<(), OciError> {
+) -> Result<PullOutcome, OciError> {
     let oci_ref = OciReference::parse(artifact_ref)?;
     let auth = RegistryAuth::resolve(&oci_ref.registry);
     let agent = crate::http::http_agent(crate::http::HTTP_OCI_TIMEOUT);
@@ -71,22 +99,30 @@ pub fn pull_module(
         &oci_ref,
         auth.as_ref(),
         output_dir,
-        &signature_policy,
-        artifact_ref,
+        &checks,
+        &platform.map_or_else(super::current_platform, String::from),
     ) {
-        Ok(()) => {
+        Ok((outcome, pulled_platform)) => {
             // Settled without the reference: the caller's header block names
             // it, and the running message above already carried it while the
             // wait was the only thing on screen.
             if let Some(s) = spinner {
-                let _ = s.finish_ok("Pulled module");
+                let detail = match pulled_platform.as_deref() {
+                    Some(p) => super::artifact_row_detail(
+                        &outcome.digest,
+                        p,
+                        outcome.index_digest.as_deref(),
+                    ),
+                    None => outcome.digest.clone(),
+                };
+                let _ = s.finish_ok("Pulled module").detail(detail);
             }
             tracing::debug!(
                 reference = %oci_ref,
                 output = %output_dir.posix(),
                 "module pulled"
             );
-            Ok(())
+            Ok(outcome)
         }
         Err(e) => {
             if let Some(s) = spinner {
@@ -157,12 +193,36 @@ fn fetch_manifest_document(
         oci_ref.api_base(),
         oci_ref.repository,
     );
-    let accept = format!(
-        "{MEDIA_TYPE_OCI_MANIFEST}, {}, {}",
-        super::MEDIA_TYPE_OCI_INDEX,
-        super::MEDIA_TYPE_DOCKER_MANIFEST_LIST
-    );
-    let resp = authenticated_request(agent, "GET", &url, auth, Some(&accept), None, None)?;
+    let resp = authenticated_request(
+        agent,
+        "GET",
+        &url,
+        auth,
+        Some(&super::manifest_accept()),
+        None,
+        None,
+    )?;
+    let ManifestDocument { digest, doc, .. } = read_manifest_document(resp)?;
+    Ok((digest, doc))
+}
+
+/// A manifest document as the registry serves it.
+pub(super) struct ManifestDocument {
+    /// The digest the registry addresses it by (see [`fetch_manifest_document`]).
+    pub(super) digest: String,
+    /// The byte length of the served body, which a descriptor pointing at it
+    /// declares as its `size`.
+    pub(super) size: u64,
+    /// The sha256 of the served body itself, which a manifest fetched by
+    /// digest must equal: the registry's header is its own claim.
+    pub(super) content_digest: String,
+    pub(super) doc: serde_json::Value,
+}
+
+/// Read a manifest GET's body into a [`ManifestDocument`].
+pub(super) fn read_manifest_document(
+    resp: ureq::http::Response<ureq::Body>,
+) -> Result<ManifestDocument, OciError> {
     let header_digest = response_digest(&resp);
     let body = resp
         .into_body()
@@ -174,17 +234,32 @@ fn fetch_manifest_document(
         serde_json::from_str(&body).map_err(|e| OciError::RequestFailed {
             message: format!("invalid manifest JSON: {e}"),
         })?;
-    Ok((
-        header_digest.unwrap_or_else(|| sha256_digest(body.as_bytes())),
+    let content_digest = sha256_digest(body.as_bytes());
+    Ok(ManifestDocument {
+        digest: header_digest.unwrap_or_else(|| content_digest.clone()),
+        size: body.len() as u64,
+        content_digest,
         doc,
-    ))
+    })
+}
+
+/// An index entry's platform as `os/arch[/variant]`, when it declares one.
+fn entry_platform(entry: &serde_json::Value) -> Option<String> {
+    let platform = entry.get("platform")?;
+    let os = platform.get("os")?.as_str()?;
+    let arch = platform.get("architecture")?.as_str()?;
+    Some(match platform.get("variant").and_then(|v| v.as_str()) {
+        Some(variant) => format!("{os}/{arch}/{variant}"),
+        None => format!("{os}/{arch}"),
+    })
 }
 
 /// The platforms a manifest document declares.
 ///
 /// The two shapes [`super::push_module`] and [`super::push_module_multiplatform`]
-/// write are both read here: an index names an `os`/`architecture` pair per
-/// entry, and a single-platform manifest carries the whole `os/arch` string in
+/// write are both read here: an index names an `os`/`architecture` pair (and a
+/// `variant` where one is declared) per entry, and a single-platform manifest
+/// carries the whole `os/arch[/variant]` string in
 /// its [`crate::OCI_ANNOTATION_PLATFORM`] annotation. An artifact declaring
 /// neither answers an empty list rather than an error — a manifest a third
 /// party pushed is a legitimate artifact that simply says nothing about its
@@ -200,12 +275,7 @@ fn declared_platforms(doc: &serde_json::Value) -> Vec<String> {
         let mut seen = std::collections::HashSet::new();
         return entries
             .iter()
-            .filter_map(|entry| {
-                let platform = entry.get("platform")?;
-                let os = platform.get("os")?.as_str()?;
-                let arch = platform.get("architecture")?.as_str()?;
-                Some(format!("{os}/{arch}"))
-            })
+            .filter_map(entry_platform)
             .filter(|p| seen.insert(p.clone()))
             .collect();
     }
@@ -271,65 +341,36 @@ fn attached_attestations(
         .collect()
 }
 
-/// The fallible half of [`pull_module`]: every step from signature
-/// verification through extraction runs under one `Result` the caller
-/// matches once, rather than an early `?` abandoning the spinner mid-pull.
+/// The fallible half of [`pull_module`]: every step from the tag read
+/// through extraction runs under one `Result` the caller matches once, so the
+/// spinner outlives any early `?`. Answers the outcome and
+/// the platform the pulled manifest is for, when it names one.
 fn pull_module_inner(
     agent: &ureq::Agent,
     oci_ref: &OciReference,
     auth: Option<&RegistryAuth>,
     output_dir: &Path,
-    signature_policy: &SignaturePolicy<'_>,
-    artifact_ref: &str,
-) -> Result<(), OciError> {
-    if signature_policy.requires_signature() {
-        let opts = match signature_policy {
-            SignaturePolicy::None => unreachable!("guarded by requires_signature()"),
-            SignaturePolicy::RequireKey { path } => VerifyOptions {
-                key: Some(path),
-                identity: None,
-                issuer: None,
-            },
-            SignaturePolicy::RequireKeyless { identity, issuer } => VerifyOptions {
-                key: None,
-                identity: *identity,
-                issuer: *issuer,
-            },
-        };
-        verify_signature(artifact_ref, &opts)?;
+    checks: &PullChecks<'_>,
+    platform: &str,
+) -> Result<(PullOutcome, Option<String>), OciError> {
+    let wanted = super::push::OciPlatform::from(super::parse_platform_target(platform)?);
+    let top = fetch_pull_document(agent, oci_ref, auth, oci_ref.reference_str(), oci_ref)?;
+    // The checks and the extraction must both be about the bytes read: a
+    // header naming a signed digest over a body naming other layers would
+    // otherwise pass cosign and extract the unsigned body.
+    if top.digest != top.content_digest {
+        return Err(OciError::RequestFailed {
+            message: format!(
+                "{oci_ref} answered with digest {} in its Docker-Content-Digest header, and the \
+                 manifest it served hashes to {}; the registry (or a proxy in front of it) served \
+                 other content than that digest names, so nothing was verified or extracted",
+                top.digest, top.content_digest
+            ),
+        });
     }
-
-    // Pull manifest
-    let manifest_url = format!(
-        "{}/{}/manifests/{}",
-        oci_ref.api_base(),
-        oci_ref.repository,
-        oci_ref.reference_str(),
-    );
-
-    let resp = authenticated_request(
-        agent,
-        "GET",
-        &manifest_url,
-        auth,
-        Some(MEDIA_TYPE_OCI_MANIFEST),
-        None,
-        None,
-    )
-    .map_err(|e| OciError::ManifestNotFound {
-        reference: format!("{}: {e}", oci_ref),
-    })?;
-
-    let manifest_body = resp
-        .into_body()
-        .read_to_string()
-        .map_err(|e| OciError::RequestFailed {
-            message: format!("cannot read manifest body: {e}"),
-        })?;
-    let manifest: OciManifest =
-        serde_json::from_str(&manifest_body).map_err(|e| OciError::RequestFailed {
-            message: format!("invalid manifest JSON: {e}"),
-        })?;
+    run_checks(checks, &oci_ref.at_digest(&top.content_digest).to_string())?;
+    let (manifest, outcome, pulled_platform) =
+        select_platform_manifest(agent, oci_ref, auth, top, &wanted)?;
 
     // Find our layer
     let layer = manifest
@@ -390,7 +431,151 @@ fn pull_module_inner(
     // Extract
     extract_tar_gz(&blob_data, output_dir)?;
 
+    Ok((outcome, pulled_platform))
+}
+
+/// Run `checks` against `subject`, typing each failure by the check it came
+/// from whatever stopped cosign, so a caller tells the two apart by variant.
+fn run_checks(checks: &PullChecks<'_>, subject: &str) -> Result<(), OciError> {
+    let opts = match checks.signature {
+        SignaturePolicy::None => None,
+        SignaturePolicy::RequireKey { path } => Some(VerifyOptions {
+            key: Some(path),
+            identity: None,
+            issuer: None,
+        }),
+        SignaturePolicy::RequireKeyless { identity, issuer } => Some(VerifyOptions {
+            key: None,
+            identity,
+            issuer,
+        }),
+    };
+    if let Some(opts) = opts {
+        verify_signature(subject, &opts).map_err(|e| match e {
+            OciError::VerificationFailed { .. } => e,
+            other => OciError::VerificationFailed {
+                reference: subject.to_string(),
+                message: other.to_string(),
+            },
+        })?;
+    }
+    if let Some((predicate_type, opts)) = &checks.attestation {
+        verify_attestation(subject, predicate_type, opts).map_err(|e| match e {
+            OciError::AttestationError { .. } => e,
+            other => OciError::AttestationError {
+                message: other.to_string(),
+            },
+        })?;
+    }
     Ok(())
+}
+
+/// GET a manifest document for a pull, naming `name` when it is missing.
+fn fetch_pull_document(
+    agent: &ureq::Agent,
+    oci_ref: &OciReference,
+    auth: Option<&RegistryAuth>,
+    reference: &str,
+    name: &OciReference,
+) -> Result<ManifestDocument, OciError> {
+    let url = format!(
+        "{}/{}/manifests/{reference}",
+        oci_ref.api_base(),
+        oci_ref.repository,
+    );
+    authenticated_request(
+        agent,
+        "GET",
+        &url,
+        auth,
+        Some(&super::manifest_accept()),
+        None,
+        None,
+    )
+    .map_err(|e| OciError::ManifestNotFound {
+        reference: format!("{name}: {e}"),
+    })
+    .and_then(read_manifest_document)
+}
+
+/// The image manifest to pull out of `top`, the document the reference
+/// resolved to: `top` itself, or its entry for `wanted` fetched by digest.
+/// Answers the digests that name it and the platform it is for, when it names one.
+fn select_platform_manifest(
+    agent: &ureq::Agent,
+    oci_ref: &OciReference,
+    auth: Option<&RegistryAuth>,
+    top: ManifestDocument,
+    wanted: &super::push::OciPlatform,
+) -> Result<(OciManifest, PullOutcome, Option<String>), OciError> {
+    let Some(entries) = top.doc.get("manifests").and_then(|m| m.as_array()) else {
+        let annotated = top
+            .doc
+            .get("annotations")
+            .and_then(|a| a.get(crate::OCI_ANNOTATION_PLATFORM))
+            .and_then(|p| p.as_str())
+            .map(String::from);
+        let outcome = PullOutcome {
+            digest: top.content_digest,
+            index_digest: None,
+        };
+        return Ok((parse_image_manifest(top.doc)?, outcome, annotated));
+    };
+
+    // A platform naming no variant takes the entry naming none, else the first
+    // entry for its os and architecture: registries list `linux/arm64/v8` for
+    // what a node and a push without a variant both call `linux/arm64`.
+    let entry = entries
+        .iter()
+        .find(|e| super::push::entry_platform_is(e, wanted))
+        .or_else(|| {
+            wanted
+                .variant
+                .is_none()
+                .then(|| {
+                    entries
+                        .iter()
+                        .find(|e| super::push::entry_os_arch_is(e, wanted))
+                })
+                .flatten()
+        });
+    let Some((entry_digest, platform)) =
+        entry.and_then(|e| Some((e.get("digest")?.as_str()?, entry_platform(e)?)))
+    else {
+        return Err(OciError::PlatformNotInIndex {
+            reference: oci_ref.to_string(),
+            platform: wanted.to_string(),
+            available: declared_platforms(&top.doc),
+        });
+    };
+
+    let picked = fetch_pull_document(
+        agent,
+        oci_ref,
+        auth,
+        entry_digest,
+        &oci_ref.at_digest(entry_digest),
+    )?;
+    if picked.content_digest != entry_digest {
+        return Err(OciError::RequestFailed {
+            message: format!(
+                "manifest digest mismatch for {platform} in {oci_ref}: the index names \
+                 {entry_digest}, the registry served {}",
+                picked.content_digest
+            ),
+        });
+    }
+    let outcome = PullOutcome {
+        digest: entry_digest.to_string(),
+        index_digest: Some(top.content_digest),
+    };
+    Ok((parse_image_manifest(picked.doc)?, outcome, Some(platform)))
+}
+
+fn parse_image_manifest(doc: serde_json::Value) -> Result<OciManifest, OciError> {
+    serde_json::from_value(doc).map_err(|e| OciError::RequestFailed {
+        message: format!("invalid manifest JSON: {e}"),
+    })
 }
 
 #[cfg(test)]
@@ -455,6 +640,476 @@ mod tests {
             facts.platforms,
             vec!["linux/arm64".to_string(), "linux/amd64".to_string()]
         );
+    }
+
+    #[test]
+    fn two_platform_pushes_to_one_tag_read_back_as_both_platforms_in_push_order() {
+        let store = crate::oci::test_helpers::ManifestStore::new("test/roundtrip");
+        let amd64 = create_test_module_dir();
+        let arm64 = create_test_module_dir();
+        let artifact = store.artifact("v1");
+
+        crate::oci::push_module(amd64.path(), &artifact, Some("linux/amd64"), None)
+            .expect("push amd64");
+        crate::oci::push_module(arm64.path(), &artifact, Some("linux/arm64"), None)
+            .expect("push arm64");
+
+        let facts = artifact_facts(&artifact).unwrap();
+        assert_eq!(
+            facts.platforms,
+            vec!["linux/amd64".to_string(), "linux/arm64".to_string()]
+        );
+    }
+
+    /// A module directory whose README says which build it is, so an
+    /// extraction shows which platform's layer was pulled.
+    fn module_dir_marked(mark: &str) -> tempfile::TempDir {
+        let dir = create_test_module_dir();
+        std::fs::write(dir.path().join("README.md"), mark).unwrap();
+        dir
+    }
+
+    fn pulled_mark(
+        artifact: &str,
+        platform: Option<&str>,
+    ) -> Result<(String, PullOutcome), OciError> {
+        let out = tempfile::tempdir().unwrap();
+        let outcome = pull_module(artifact, out.path(), PullChecks::default(), platform, None)?;
+        let mark = std::fs::read_to_string(out.path().join("README.md")).unwrap();
+        Ok((mark, outcome))
+    }
+
+    #[test]
+    fn pull_of_an_index_extracts_the_entry_for_the_requested_platform() {
+        let store = crate::oci::test_helpers::ManifestStore::new("test/pullidx");
+        let artifact = store.artifact("v1");
+        let amd = module_dir_marked("amd64 build");
+        let arm = module_dir_marked("arm64 build");
+        let amd_push =
+            crate::oci::push_module(amd.path(), &artifact, Some("linux/amd64"), None).unwrap();
+        let arm_push =
+            crate::oci::push_module(arm.path(), &artifact, Some("linux/arm64"), None).unwrap();
+        let index = arm_push
+            .index_digest
+            .clone()
+            .expect("the second push wrote an index");
+
+        let (mark, outcome) = pulled_mark(&artifact, Some("linux/arm64")).unwrap();
+        assert_eq!(mark, "arm64 build");
+        assert_eq!(
+            outcome,
+            PullOutcome {
+                digest: arm_push.digest,
+                index_digest: Some(index.clone()),
+            }
+        );
+
+        let (mark, outcome) = pulled_mark(&artifact, Some("linux/amd64")).unwrap();
+        assert_eq!(
+            mark, "amd64 build",
+            "the platform asked for overrides the host"
+        );
+        assert_eq!(outcome.digest, amd_push.digest);
+        assert_eq!(outcome.index_digest, Some(index));
+    }
+
+    /// A platform naming a variant takes that variant's entry; one naming none
+    /// takes the first entry for its os and architecture, which is how a node
+    /// asking for `linux/arm64` reads an index listing `linux/arm64/v8`.
+    #[test]
+    fn pull_of_an_index_matches_the_variant_a_platform_names() {
+        let store = crate::oci::test_helpers::ManifestStore::new("test/pullvariant");
+        let artifact = store.artifact("v1");
+        for platform in ["linux/arm/v6", "linux/arm/v7", "linux/arm64/v8"] {
+            let dir = module_dir_marked(&format!("{platform} build"));
+            crate::oci::push_module(dir.path(), &artifact, Some(platform), None).unwrap();
+        }
+
+        for (asked, built) in [
+            ("linux/arm/v7", "linux/arm/v7"),
+            ("linux/arm/v6", "linux/arm/v6"),
+            ("linux/arm64", "linux/arm64/v8"),
+            ("linux/arm", "linux/arm/v6"),
+        ] {
+            let (mark, _) = pulled_mark(&artifact, Some(asked)).unwrap();
+            assert_eq!(mark, format!("{built} build"), "asked for {asked}");
+        }
+        match pulled_mark(&artifact, Some("linux/arm/v5")) {
+            Err(OciError::PlatformNotInIndex {
+                platform,
+                available,
+                ..
+            }) => {
+                assert_eq!(platform, "linux/arm/v5");
+                assert_eq!(
+                    available,
+                    ["linux/arm/v6", "linux/arm/v7", "linux/arm64/v8"]
+                );
+            }
+            other => panic!("expected PlatformNotInIndex, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn pull_of_an_index_with_no_platform_takes_the_hosts_entry() {
+        let store = crate::oci::test_helpers::ManifestStore::new("test/pullhost");
+        let artifact = store.artifact("v1");
+        let other = module_dir_marked("other build");
+        let host = module_dir_marked("host build");
+        crate::oci::push_module(other.path(), &artifact, Some("plan9/mips"), None).unwrap();
+        crate::oci::push_module(host.path(), &artifact, None, None).unwrap();
+
+        let (mark, _) = pulled_mark(&artifact, None).unwrap();
+        assert_eq!(mark, "host build");
+    }
+
+    #[test]
+    fn pull_of_an_index_without_the_platform_names_what_it_holds() {
+        let store = crate::oci::test_helpers::ManifestStore::new("test/pullnone");
+        let artifact = store.artifact("v1");
+        for platform in ["linux/amd64", "linux/arm64"] {
+            let dir = module_dir_marked(platform);
+            crate::oci::push_module(dir.path(), &artifact, Some(platform), None).unwrap();
+        }
+
+        let err = pulled_mark(&artifact, Some("linux/s390x")).expect_err("no entry for s390x");
+        match &err {
+            OciError::PlatformNotInIndex {
+                reference,
+                platform,
+                available,
+            } => {
+                assert_eq!(reference, &artifact);
+                assert_eq!(platform, "linux/s390x");
+                assert_eq!(available, &["linux/amd64", "linux/arm64"]);
+            }
+            other => panic!("expected PlatformNotInIndex, got {other:?}"),
+        }
+        assert!(
+            err.to_string()
+                .contains("it holds linux/amd64, linux/arm64"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn pull_of_a_single_manifest_takes_it_whatever_platform_is_asked() {
+        let store = crate::oci::test_helpers::ManifestStore::new("test/pullone");
+        let artifact = store.artifact("v1");
+        let dir = module_dir_marked("only build");
+        let pushed =
+            crate::oci::push_module(dir.path(), &artifact, Some("linux/amd64"), None).unwrap();
+
+        let (mark, outcome) = pulled_mark(&artifact, Some("linux/arm64")).unwrap();
+        assert_eq!(mark, "only build");
+        assert_eq!(
+            outcome,
+            PullOutcome {
+                digest: pushed.digest,
+                index_digest: None,
+            }
+        );
+    }
+
+    #[test]
+    fn pull_refuses_a_malformed_platform_before_reading_the_tag() {
+        let store = crate::oci::test_helpers::ManifestStore::new("test/pullbad");
+        let artifact = store.artifact("v1");
+        let dir = module_dir_marked("only build");
+        crate::oci::push_module(dir.path(), &artifact, Some("linux/amd64"), None).unwrap();
+        let before = store.requests().len();
+
+        let err =
+            pulled_mark(&artifact, Some("linux")).expect_err("a platform with no arch is refused");
+        assert!(err.to_string().contains("linux"), "{err}");
+        assert_eq!(store.requests().len(), before, "nothing was requested");
+    }
+
+    #[test]
+    fn pull_refuses_an_index_entry_the_registry_serves_under_another_digest() {
+        let store = crate::oci::test_helpers::ManifestStore::new("test/pulllie");
+        let artifact = store.artifact("v1");
+        let dir = module_dir_marked("real build");
+        crate::oci::push_module(dir.path(), &artifact, Some("linux/amd64"), None).unwrap();
+        let real = store.stored("v1");
+        // The index names a digest whose stored document hashes to something else.
+        store.seed_bytes("sha256:0000", &real);
+        store.seed(
+            "v1",
+            &serde_json::json!({
+                "schemaVersion": 2,
+                "mediaType": crate::oci::MEDIA_TYPE_OCI_INDEX,
+                "manifests": [{
+                    "mediaType": MEDIA_TYPE_OCI_MANIFEST,
+                    "digest": "sha256:0000",
+                    "size": real.len(),
+                    "platform": { "os": "linux", "architecture": "amd64" },
+                }],
+            }),
+        );
+
+        let err =
+            pulled_mark(&artifact, Some("linux/amd64")).expect_err("a mismatched entry is refused");
+        assert!(
+            err.to_string().contains("manifest digest mismatch"),
+            "{err}"
+        );
+    }
+
+    /// Two platforms pushed to `v1` of a fresh store, answering the store,
+    /// the artifact and the index digest the tag resolves to.
+    fn two_platform_store(repo: &str) -> (crate::oci::test_helpers::ManifestStore, String, String) {
+        let store = crate::oci::test_helpers::ManifestStore::new(repo);
+        let artifact = store.artifact("v1");
+        let mut index = String::new();
+        for platform in ["linux/amd64", "linux/arm64"] {
+            let dir = module_dir_marked(&format!("{platform} build"));
+            let pushed =
+                crate::oci::push_module(dir.path(), &artifact, Some(platform), None).unwrap();
+            index = pushed.index_digest.unwrap_or_default();
+        }
+        (store, artifact, index)
+    }
+
+    fn keyed_checks(key: &str) -> PullChecks<'_> {
+        let opts = VerifyOptions {
+            key: Some(key),
+            identity: None,
+            issuer: None,
+        };
+        PullChecks {
+            signature: SignaturePolicy::RequireKey { path: key },
+            attestation: Some(("slsaprovenance1", opts)),
+        }
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn pull_verifies_the_digest_of_the_one_tag_read_it_extracts_from() {
+        let shim = crate::test_helpers::CosignTestShim::builder()
+            .with_argv_logging(true)
+            .with_exit(0)
+            .install();
+        let (store, artifact, index) = two_platform_store("test/pullsig");
+        let before = store.requests().len();
+        let out = tempfile::tempdir().unwrap();
+
+        let outcome = pull_module(
+            &artifact,
+            out.path(),
+            keyed_checks("cosign.pub"),
+            Some("linux/arm64"),
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(outcome.index_digest.as_deref(), Some(index.as_str()));
+        let reads: Vec<_> = store.requests()[before..]
+            .iter()
+            .filter(|r| r.as_str() == "GET v1")
+            .cloned()
+            .collect();
+        assert_eq!(reads, ["GET v1"], "the tag is read once");
+        let argv = shim.argv_log();
+        let subject = format!("{}@{index}", artifact.trim_end_matches(":v1"));
+        let checked: Vec<&str> = argv.lines().collect();
+        assert_eq!(checked.len(), 2, "{argv}");
+        assert!(
+            checked[0].starts_with("verify ") && checked[0].ends_with(&subject),
+            "{argv}"
+        );
+        assert!(
+            checked[1].starts_with("verify-attestation ") && checked[1].ends_with(&subject),
+            "{argv}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(out.path().join("README.md")).unwrap(),
+            "linux/arm64 build"
+        );
+    }
+
+    /// A tag served from mockito with `body`, plus `header` as its
+    /// `Docker-Content-Digest` when one is given.
+    fn tag_served(
+        server: &mut mockito::ServerGuard,
+        repo: &str,
+        body: &str,
+        header: Option<&str>,
+    ) -> String {
+        let mut mock = server
+            .mock("GET", format!("/v2/{repo}/manifests/v1").as_str())
+            .with_status(200)
+            .with_header("Content-Type", MEDIA_TYPE_OCI_MANIFEST)
+            .with_body(body);
+        if let Some(digest) = header {
+            mock = mock.with_header("Docker-Content-Digest", digest);
+        }
+        mock.create();
+        format!("{}/{repo}:v1", registry_from_url(&server.url()))
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn pull_refuses_a_tag_whose_digest_header_names_other_bytes_before_any_check() {
+        let shim = crate::test_helpers::CosignTestShim::builder()
+            .with_argv_logging(true)
+            .with_exit(0)
+            .install();
+        let mut server = mockito::Server::new();
+        let body = r#"{"schemaVersion":2,"layers":[]}"#;
+        let claimed = format!("sha256:{}", "b".repeat(64));
+        let artifact = tag_served(&mut server, "test/pulllie", body, Some(&claimed));
+        let out = tempfile::tempdir().unwrap();
+
+        let err = pull_module(
+            &artifact,
+            out.path(),
+            keyed_checks("cosign.pub"),
+            None,
+            None,
+        )
+        .expect_err("a header naming other bytes is refused");
+        let message = err.to_string();
+        assert!(matches!(err, OciError::RequestFailed { .. }), "{err:?}");
+        assert!(message.contains(&claimed), "{message}");
+        assert!(
+            message.contains(&sha256_digest(body.as_bytes())),
+            "{message}"
+        );
+        assert!(
+            message.contains("so nothing was verified or extracted"),
+            "the refusal says what it stopped: {message}"
+        );
+        assert_eq!(shim.argv_log(), "", "cosign never ran");
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn pull_without_a_digest_header_checks_the_digest_of_the_bytes_it_read() {
+        let shim = crate::test_helpers::CosignTestShim::builder()
+            .with_argv_logging(true)
+            .with_exit(0)
+            .install();
+        let mut server = mockito::Server::new();
+        let body = r#"{"schemaVersion":2,"layers":[]}"#;
+        let artifact = tag_served(&mut server, "test/pullnohdr", body, None);
+        let out = tempfile::tempdir().unwrap();
+
+        // No layers, so the pull fails after the checks ran.
+        let _ = pull_module(
+            &artifact,
+            out.path(),
+            keyed_checks("cosign.pub"),
+            None,
+            None,
+        );
+
+        let subject = format!(
+            "{}@{}",
+            artifact.trim_end_matches(":v1"),
+            sha256_digest(body.as_bytes())
+        );
+        let argv = shim.argv_log();
+        let calls: Vec<&str> = argv.lines().collect();
+        assert_eq!(calls.len(), 2, "{argv}");
+        assert!(calls.iter().all(|c| c.ends_with(&subject)), "{argv}");
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn pull_types_an_attestation_failure_apart_from_a_signature_failure() {
+        let _shim = crate::test_helpers::CosignTestShim::builder()
+            .with_exit(1)
+            .with_stderr("no matching attestations")
+            .install();
+        let (_store, artifact, _) = two_platform_store("test/pullatt");
+        let out = tempfile::tempdir().unwrap();
+        let checks = PullChecks {
+            signature: SignaturePolicy::None,
+            ..keyed_checks("cosign.pub")
+        };
+
+        let err = pull_module(&artifact, out.path(), checks, Some("linux/amd64"), None)
+            .expect_err("a rejected attestation stops the pull");
+        assert!(matches!(err, OciError::AttestationError { .. }), "{err:?}");
+        assert!(
+            !out.path().join("README.md").exists(),
+            "nothing is extracted"
+        );
+    }
+
+    #[test]
+    fn pull_names_the_entry_digest_an_index_points_at_when_it_is_missing() {
+        let store = crate::oci::test_helpers::ManifestStore::new("test/pullgone");
+        let artifact = store.artifact("v1");
+        let missing = format!("sha256:{}", "a".repeat(64));
+        store.seed(
+            "v1",
+            &serde_json::json!({
+                "schemaVersion": 2,
+                "mediaType": crate::oci::MEDIA_TYPE_OCI_INDEX,
+                "manifests": [{
+                    "mediaType": MEDIA_TYPE_OCI_MANIFEST,
+                    "digest": missing,
+                    "size": 1,
+                    "platform": { "os": "linux", "architecture": "amd64" },
+                }],
+            }),
+        );
+
+        let err = pulled_mark(&artifact, Some("linux/amd64")).expect_err("the entry is gone");
+        let entry = format!("{}@{missing}", artifact.trim_end_matches(":v1"));
+        match &err {
+            OciError::ManifestNotFound { reference } => {
+                assert!(reference.starts_with(&format!("{entry}: ")), "{reference}");
+            }
+            other => panic!("expected ManifestNotFound, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn pull_row_states_the_digest_platform_and_index_it_took() {
+        let (_store, artifact, index) = two_platform_store("test/pullrow");
+        let out = tempfile::tempdir().unwrap();
+        let (printer, cap) = crate::output::Printer::for_test_doc();
+        let outcome = pull_module(
+            &artifact,
+            out.path(),
+            PullChecks::default(),
+            Some("linux/amd64"),
+            Some(&printer),
+        )
+        .unwrap();
+        drop(printer);
+
+        let human = cap.human();
+        let detail =
+            crate::oci::artifact_row_detail(&outcome.digest, "linux/amd64", Some(index.as_str()));
+        assert!(human.contains(&detail), "{human}");
+    }
+
+    #[test]
+    fn pull_row_of_a_single_manifest_states_its_annotated_platform() {
+        let store = crate::oci::test_helpers::ManifestStore::new("test/pullrow1");
+        let artifact = store.artifact("v1");
+        let dir = module_dir_marked("only build");
+        let pushed =
+            crate::oci::push_module(dir.path(), &artifact, Some("plan9/mips"), None).unwrap();
+        let out = tempfile::tempdir().unwrap();
+        let (printer, cap) = crate::output::Printer::for_test_doc();
+        pull_module(
+            &artifact,
+            out.path(),
+            PullChecks::default(),
+            None,
+            Some(&printer),
+        )
+        .unwrap();
+        drop(printer);
+
+        let human = cap.human();
+        let detail = crate::oci::artifact_row_detail(&pushed.digest, "plan9/mips", None);
+        assert!(human.contains(&detail), "{human}");
     }
 
     #[test]
@@ -595,7 +1250,8 @@ mod tests {
         let result = pull_module(
             &artifact_ref,
             output_dir.path(),
-            SignaturePolicy::None,
+            PullChecks::default(),
+            None,
             None,
         );
         assert!(result.is_ok(), "pull_module failed: {:?}", result.err());
@@ -649,7 +1305,8 @@ mod tests {
         let result = pull_module(
             &artifact_ref,
             output_dir.path(),
-            SignaturePolicy::None,
+            PullChecks::default(),
+            None,
             None,
         );
         assert!(result.is_err());
@@ -669,10 +1326,17 @@ mod tests {
             .with_stderr("cosign error: signature does not match")
             .install();
 
-        let server = mockito::Server::new();
+        let mut server = mockito::Server::new();
         let registry = registry_from_url(&server.url());
         let output_dir = tempfile::tempdir().unwrap();
         let artifact_ref = format!("{}/test/sigfail:v1", registry);
+        // The signature is checked against the digest the tag read answers,
+        // so the tag is read first.
+        server
+            .mock("GET", "/v2/test/sigfail/manifests/v1")
+            .with_status(200)
+            .with_body(r#"{"schemaVersion":2,"layers":[]}"#)
+            .create();
 
         let key_dir = tempfile::tempdir().unwrap();
         let key_path = key_dir.path().join("cosign.pub");
@@ -680,7 +1344,16 @@ mod tests {
         let key_path_str = key_path.to_str().unwrap();
 
         let policy = SignaturePolicy::RequireKey { path: key_path_str };
-        let result = pull_module(&artifact_ref, output_dir.path(), policy, None);
+        let result = pull_module(
+            &artifact_ref,
+            output_dir.path(),
+            PullChecks {
+                signature: policy,
+                attestation: None,
+            },
+            None,
+            None,
+        );
         assert!(result.is_err());
         assert!(
             matches!(result, Err(OciError::VerificationFailed { .. })),
@@ -732,21 +1405,17 @@ mod tests {
         let key_path_str = key_path.to_str().unwrap();
 
         let policy = SignaturePolicy::RequireKey { path: key_path_str };
-        let result = pull_module(&artifact_ref, output_dir.path(), policy, None);
-        assert!(result.is_ok(), "pull_module failed: {:?}", result.err());
-    }
-
-    #[test]
-    fn signature_policy_requires_signature_predicate() {
-        assert!(!SignaturePolicy::None.requires_signature());
-        assert!(SignaturePolicy::RequireKey { path: "k" }.requires_signature());
-        assert!(
-            SignaturePolicy::RequireKeyless {
-                identity: Some("u@example"),
-                issuer: None,
-            }
-            .requires_signature()
+        let result = pull_module(
+            &artifact_ref,
+            output_dir.path(),
+            PullChecks {
+                signature: policy,
+                attestation: None,
+            },
+            None,
+            None,
         );
+        assert!(result.is_ok(), "pull_module failed: {:?}", result.err());
     }
 
     #[test]
@@ -765,7 +1434,8 @@ mod tests {
         let result = pull_module(
             &artifact_ref,
             output_dir.path(),
-            SignaturePolicy::None,
+            PullChecks::default(),
+            None,
             None,
         );
         assert!(matches!(result, Err(OciError::ManifestNotFound { .. })));
@@ -795,7 +1465,8 @@ mod tests {
         let result = pull_module(
             &artifact_ref,
             output_dir.path(),
-            SignaturePolicy::None,
+            PullChecks::default(),
+            None,
             Some(&printer),
         );
         drop(printer);
@@ -859,7 +1530,8 @@ mod tests {
         let result = pull_module(
             &artifact_ref,
             output_dir.path(),
-            SignaturePolicy::None,
+            PullChecks::default(),
+            None,
             None,
         );
         assert!(matches!(result, Err(OciError::BlobNotFound { .. })));
@@ -882,7 +1554,8 @@ mod tests {
         let result = pull_module(
             &artifact_ref,
             output_dir.path(),
-            SignaturePolicy::None,
+            PullChecks::default(),
+            None,
             None,
         );
         assert!(matches!(result, Err(OciError::RequestFailed { .. })));

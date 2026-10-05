@@ -310,7 +310,17 @@ async fn force_reconcile_not_found() {
 #[tokio::test(flavor = "current_thread")]
 async fn compliance_summary_stored_on_register() {
     let (db, _tmp) = test_db();
-    let summary = serde_json::json!({"compliant": 5, "warning": 1, "violation": 0});
+    let summary = crate::crds::DeviceCompliance {
+        compliant: 5,
+        warning: 1,
+        violation: 0,
+        checks: vec![crate::crds::DeviceComplianceCheck {
+            category: "watchPath".to_string(),
+            name: "/etc/cfgd/watched".to_string(),
+            status: crate::crds::DeviceComplianceStatus::Warning,
+            detail: Some("path does not exist".to_string()),
+        }],
+    };
     let device = db
         .register_device("dev-c", "ws-c", "linux", "x86_64", "hash1", Some(&summary))
         .await
@@ -325,13 +335,49 @@ async fn compliance_summary_stored_on_checkin_update() {
         .await
         .expect("register failed");
 
-    let summary = serde_json::json!({"compliant": 10, "warning": 0, "violation": 2});
+    let summary = crate::crds::DeviceCompliance {
+        compliant: 10,
+        warning: 0,
+        violation: 2,
+        checks: vec![],
+    };
     db.update_checkin("dev-c2", "hash2", Some(&summary))
         .await
         .expect("update failed");
 
     let device = db.get_device("dev-c2").await.expect("get failed");
     assert_eq!(device.config_hash, "hash2");
+    assert_eq!(device.compliance_summary, Some(summary));
+}
+
+/// A check-in carrying no report keeps the one the device sent before, on the
+/// update path and on a re-registration alike: a daemon restarted since its
+/// last compliance tick has nothing to send, and the fleet still shows what
+/// it last knew.
+#[tokio::test(flavor = "current_thread")]
+async fn a_checkin_without_compliance_keeps_the_last_report() {
+    let (db, _tmp) = test_db();
+    let summary = crate::crds::DeviceCompliance {
+        compliant: 4,
+        warning: 0,
+        violation: 1,
+        checks: vec![],
+    };
+    db.register_device("dev-k", "ws-k", "linux", "x86_64", "hash1", Some(&summary))
+        .await
+        .expect("register failed");
+
+    db.update_checkin("dev-k", "hash2", None)
+        .await
+        .expect("update failed");
+    let device = db.get_device("dev-k").await.expect("get failed");
+    assert_eq!(device.config_hash, "hash2");
+    assert_eq!(device.compliance_summary.as_ref(), Some(&summary));
+
+    let device = db
+        .register_device("dev-k", "ws-k", "linux", "x86_64", "hash3", None)
+        .await
+        .expect("re-register failed");
     assert_eq!(device.compliance_summary, Some(summary));
 }
 
@@ -1022,6 +1068,7 @@ async fn pool_timeout_surfaces_as_pool_exhausted() {
         db_hold
             .with_read_tx(move |_tx| {
                 let _ = acquired_tx.send(());
+                // long-line-ok: a hatch is read off its own line, so it cannot wrap
                 // sleep-ok: deliberately holds the reader past the pool's timeout to exercise the PoolExhausted path — the hold duration is the subject under test
                 std::thread::sleep(std::time::Duration::from_millis(400));
                 Ok(())
@@ -1087,11 +1134,13 @@ fn capture_warn_logs<F: FnOnce()>(f: F) -> String {
     let buf = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let writer = CaptureWriter(buf.clone());
     let subscriber = tracing_subscriber::fmt()
+        // long-line-ok: a hatch is read off its own line, so it cannot wrap
         // unfolded-writer-ok: a test capture read back as a String, not a stream anyone is looking at
         .with_writer(writer)
         .with_max_level(tracing::Level::WARN) // WARN+ only; DEBUG is filtered out
         .finish();
     tracing::subscriber::with_default(subscriber, f);
+    // long-line-ok: a hatch is read off its own line, so it cannot wrap
     // raw-capture-ok: this buf is a tracing-log Arc<Mutex<Vec<u8>>>, not a Printer::for_test* text capture — captured_text doesn't type-check against it
     let bytes = buf.lock().expect("lock").clone();
     String::from_utf8(bytes).expect("utf8 logs")
@@ -1228,28 +1277,38 @@ async fn with_metrics_attaches_metrics_field() {
 #[tokio::test(flavor = "current_thread")]
 #[serial_test::serial]
 async fn reader_pool_size_from_env_parses_valid_value() {
-    let _g = cfgd_core::test_helpers::EnvVarGuard::set("CFGD_GATEWAY_DB_READ_POOL_SIZE", "4");
+    let _g = cfgd_core::test_helpers::EnvVarGuard::set(
+        cfgd_core::CFGD_GATEWAY_DB_READ_POOL_SIZE_ENV,
+        "4",
+    );
     assert_eq!(super::reader_pool_size_from_env(), 4);
 }
 
 #[tokio::test(flavor = "current_thread")]
 #[serial_test::serial]
 async fn reader_pool_size_from_env_rejects_zero_falls_back_to_default() {
-    let _g = cfgd_core::test_helpers::EnvVarGuard::set("CFGD_GATEWAY_DB_READ_POOL_SIZE", "0");
+    let _g = cfgd_core::test_helpers::EnvVarGuard::set(
+        cfgd_core::CFGD_GATEWAY_DB_READ_POOL_SIZE_ENV,
+        "0",
+    );
     assert_eq!(super::reader_pool_size_from_env(), DEFAULT_READER_POOL_SIZE);
 }
 
 #[tokio::test(flavor = "current_thread")]
 #[serial_test::serial]
 async fn reader_pool_size_from_env_rejects_non_numeric_falls_back_to_default() {
-    let _g = cfgd_core::test_helpers::EnvVarGuard::set("CFGD_GATEWAY_DB_READ_POOL_SIZE", "abc");
+    let _g = cfgd_core::test_helpers::EnvVarGuard::set(
+        cfgd_core::CFGD_GATEWAY_DB_READ_POOL_SIZE_ENV,
+        "abc",
+    );
     assert_eq!(super::reader_pool_size_from_env(), DEFAULT_READER_POOL_SIZE);
 }
 
 #[tokio::test(flavor = "current_thread")]
 #[serial_test::serial]
 async fn reader_pool_size_from_env_uses_default_when_unset() {
-    let _g = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_GATEWAY_DB_READ_POOL_SIZE");
+    let _g =
+        cfgd_core::test_helpers::EnvVarGuard::unset(cfgd_core::CFGD_GATEWAY_DB_READ_POOL_SIZE_ENV);
     assert_eq!(super::reader_pool_size_from_env(), DEFAULT_READER_POOL_SIZE);
 }
 
@@ -1311,4 +1370,36 @@ async fn server_db_open_with_config_pool_size_one_no_min_idle() {
 async fn server_db_open_fails_for_invalid_path() {
     let res = ServerDb::open("/this/path/does/not/exist/db.sqlite");
     assert!(res.is_err(), "expected open to fail for invalid path");
+}
+
+/// A stored column that no longer parses reads as absent, and says which
+/// device and column it was, so a device showing "not reported" after a
+/// gateway upgrade is explained in the log.
+#[test]
+fn an_unreadable_stored_column_reads_as_absent_and_warns() {
+    let tmp = tempfile::NamedTempFile::new().expect("tempfile");
+    let path = tmp.path().to_str().expect("path").to_string();
+    drop(super::ServerDb::open(&path).expect("open"));
+    let conn = Connection::open(&path).expect("rusqlite open");
+    conn.execute(
+        "INSERT INTO devices (id, hostname, os, arch, last_checkin, config_hash, status, desired_config, compliance_summary)
+         VALUES ('dev-u', 'ws-u', 'linux', 'x86_64', 't', 'h', 'healthy', 'not json', '{\"legacy\": true}')",
+        [],
+    )
+    .expect("insert legacy row");
+
+    let mut device = None;
+    let logs = capture_warn_logs(|| {
+        device = Some(super::devices::get_device_tx(&conn, "dev-u").expect("row still reads"));
+    });
+    let device = device.expect("read ran");
+    assert!(device.desired_config.is_none());
+    assert!(device.compliance_summary.is_none());
+    for column in ["desired_config", "compliance_summary"] {
+        assert!(
+            logs.lines()
+                .any(|l| l.contains("WARN") && l.contains("dev-u") && l.contains(column)),
+            "no warning names {column}: {logs:?}"
+        );
+    }
 }

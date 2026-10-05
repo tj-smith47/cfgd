@@ -1,10 +1,11 @@
+# shellcheck shell=bash
 # Gateway device-projection tests (GW-32 through GW-36).
-# Sourced by run-all.sh — no shebang, no set, no source, no traps, no print_summary.
+# Sourced by run-all.sh: no shebang, no set, no source, no traps, no print_summary.
 #
 # The only case family that drives a REAL cfgd binary against the gateway: every
 # other gateway case speaks to the API with curl, so the halves the device owns
-# — enrolling, recording a check-in's `backupSchedules` answer, re-arming the
-# daemon's timer off it and rendering the result — were never exercised end to
+# (enrolling, recording a check-in's `backupSchedules` answer, re-arming the
+# daemon's timer off it and rendering the result) were never exercised end to
 # end on a cluster.
 
 DP_ROOT="$GW_SCRATCH/device-projection"
@@ -61,12 +62,12 @@ command -v pgrep > /dev/null 2>&1 && DP_PGREP=present
 # Whether any process of THIS run's device is still alive. Asked of the recorded
 # pid first, which is the handle this script owns, and of the config path second
 # so a daemon that outlived its recorded pid is still seen. The path match CAN
-# also catch a shell whose own argv carries "$DP_CONF" — a future `dp_cfgd ... &`
-# would flip it — so the pid question comes first and the path question only
+# also catch a shell whose own argv carries "$DP_CONF" (a future `dp_cfgd ... &`
+# would flip it), so the pid question comes first and the path question only
 # widens it.
 #
-# Returns 2, never 1, when pgrep cannot answer at all: a caller must not read
-# "not installed" as "gone".
+# Returns 2 when pgrep cannot answer at all, and 1 only for a daemon that is
+# gone: a caller must not read "not installed" as "gone".
 dp_daemon_alive() {
     if [ -n "$DP_DAEMON_PID" ] && kill -0 "$DP_DAEMON_PID" 2> /dev/null; then
         return 0
@@ -82,8 +83,8 @@ dp_daemon_alive() {
 
 # The word in the listing's Schedule Owner cell for this run's unit. Column four
 # of `cfgd backup list`, and a cron expression is exactly five fields, so the
-# owner is field eight of the unit's own row — asserted as the CELL rather than
-# as a substring of a render that also carries paths and status words.
+# owner is field eight of the unit's own row. The assertion reads that CELL, as
+# the render around it also carries paths and status words.
 dp_owner_cell() {
     dp_cfgd backup list 2>&1 | strip_sgr | awk -v unit="$DP_UNIT" '$1 == unit { print $8 }'
 }
@@ -96,21 +97,21 @@ dp_field() {
         jq -r --arg f "$1" '.[] | select(.name=="'"$DP_UNIT"'") | .[$f] // "absent"' 2>/dev/null
 }
 
-# Poll that field until it reads `want`. The suite's own waiting shape — a
-# bounded retry inside the script, the way wait_for_pod waits on a pod — because
-# what is being waited on is a controller requeue plus a daemon tick.
+dp_field_is() {
+    DP_FIELD_GOT=$(dp_field "$1")
+    [ "$DP_FIELD_GOT" = "$2" ]
+}
+
+# Poll that field until it reads `want`, then print what it last read. What is
+# being waited on is a controller requeue plus a daemon tick.
 dp_wait_field() {
-    local field="$1" want="$2" timeout="${3:-180}" got=""
-    local deadline=$((SECONDS + timeout))
-    while [ $SECONDS -lt $deadline ]; do
-        got=$(dp_field "$field")
-        if [ "$got" = "$want" ]; then
-            echo "$got"
-            return 0
-        fi
-        sleep 3
-    done
-    echo "$got"
+    local field="$1" want="$2" timeout="${3:-180}"
+    DP_FIELD_GOT=""
+    if wait_until "$timeout" 3 "$field to read '$want' in cfgd backup list" dp_field_is "$field" "$want"; then
+        echo "$DP_FIELD_GOT"
+        return 0
+    fi
+    echo "$DP_FIELD_GOT"
     return 1
 }
 
@@ -151,7 +152,8 @@ EOF
 dp_write_profile Cluster
 
 # A CI runner compiles this binary here, so the build's outcome is carried into
-# GW-32 rather than surfacing as an opaque `rc=127` from the first case to run it.
+# GW-32, where a failed build is named; the first case to run the binary would
+# only see an opaque `rc=127`.
 DP_BIN_READY=yes
 ensure_cfgd_binary || DP_BIN_READY=no
 [ -x "${CFGD_BIN:-}" ] || DP_BIN_READY=no
@@ -168,16 +170,21 @@ DP_TOKEN=$(gw_create_bootstrap_token "dp-user")
 # failing, and a skip would take GW-33..35 with it while the summary still read
 # `0 failed`.
 if [ "$DP_BIN_READY" != yes ]; then
-    fail_test "GW-32" "No cfgd binary at '${CFGD_BIN:-unset}' — the release build failed"
+    fail_test "GW-32" "No cfgd binary at '${CFGD_BIN:-unset}': the release build failed"
 elif [ -z "$DP_TOKEN" ]; then
     fail_test "GW-32" "The admin token API did not mint a bootstrap token for this case family"
 else
     GW32_PASS=true
-    GW32_OUT=$(dp_cfgd -o json enroll --server-url "$GW_URL" --token "$DP_TOKEN" 2>&1)
+    # stdout alone is the JSON document jq reads below: an advisory (say, fields
+    # this build reads that the config does not declare) goes to stderr, and
+    # merged ahead of the JSON it would leave jq nothing to parse.
+    GW32_ERR="$DP_ROOT/gw32-enroll.stderr"
+    GW32_OUT=$(dp_cfgd -o json enroll --server-url "$GW_URL" --token "$DP_TOKEN" 2> "$GW32_ERR")
     GW32_RC=$?
     echo "  enroll rc=$GW32_RC"
     echo "$GW32_OUT" | head -c 400 | sed 's/^/    /'
     echo ""
+    print_stderr_head "$GW32_ERR"
 
     GW32_CRED="$DP_STATE/device-credential.json"
     GW32_CRED_PRESENT=absent
@@ -199,7 +206,7 @@ else
     assert_equals "$GW32_CRED_URL" "$GW_URL" || GW32_PASS=false
     # The MachineConfig below is keyed on `uname -n`; if the binary ever reports
     # a different name the projection would silently never land, so the two
-    # readings are pinned equal here rather than assumed.
+    # readings are asserted equal here.
     assert_equals "$GW32_DEVICE_ID" "$DP_HOSTNAME" || GW32_PASS=false
     assert_exit_code "$GW32_LIST_RC" 0 || GW32_PASS=false
     assert_equals "$GW32_LISTED" "$DP_HOSTNAME" || GW32_PASS=false
@@ -347,16 +354,11 @@ else
     rm -f "$DP_ROOT/cfgd.sock"
     dp_spawn_daemon > "$DP_DAEMON_LOG" 2>&1 &
     DP_DAEMON_PID=$!
-    GW35_READY=timeout
-    GW35_DEADLINE=$((SECONDS + 60))
-    while [ $SECONDS -lt $GW35_DEADLINE ]; do
-        if [ -S "$DP_ROOT/cfgd.sock" ]; then
-            GW35_READY=ready
-            break
-        fi
-        kill -0 "$DP_DAEMON_PID" 2>/dev/null || { GW35_READY=exited; break; }
-        sleep 1
-    done
+    GW35_READY=ready
+    if ! wait_for_daemon_socket "$DP_ROOT/cfgd.sock" "$DP_DAEMON_PID" 60; then
+        GW35_READY=timeout
+        kill -0 "$DP_DAEMON_PID" 2>/dev/null || GW35_READY=exited
+    fi
     echo "  daemon pid=$DP_DAEMON_PID state=$GW35_READY"
 
     GW35_NEXT_BEFORE=$(dp_field nextRunAt)
@@ -407,12 +409,7 @@ else
     printf '%s\n' "$GW35_LOCAL_HUMAN" | sed 's/^/    /'
     echo "  Schedule Owner cell: ${GW35_OWNER_CELL:-none}"
 
-    kill -TERM "$DP_DAEMON_PID" 2>/dev/null
-    (sleep 5; kill -KILL "$DP_DAEMON_PID" 2>/dev/null || true) &
-    GW35_WATCHDOG=$!
-    wait "$DP_DAEMON_PID" 2>/dev/null
-    kill -KILL "$GW35_WATCHDOG" 2>/dev/null || true
-    wait "$GW35_WATCHDOG" 2>/dev/null || true
+    stop_background_job "$DP_DAEMON_PID" 5 || true
     GW35_STOPPED=running
     dp_daemon_alive
     case $? in

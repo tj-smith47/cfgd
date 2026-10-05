@@ -56,7 +56,14 @@
           "type": "boolean"
         },
         "export": {
-          "$ref": "#/definitions/ComplianceExport",
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ComplianceExport"
+            },
+            {
+              "type": "null"
+            }
+          ],
           "default": {
             "format": "Json",
             "path": "~/.local/state/cfgd/compliance/"
@@ -74,7 +81,14 @@
           "type": "string"
         },
         "scope": {
-          "$ref": "#/definitions/ComplianceScope",
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ComplianceScope"
+            },
+            {
+              "type": "null"
+            }
+          ],
           "default": {
             "files": true,
             "packages": true,
@@ -191,8 +205,11 @@
             "type": "string"
           },
           "default": {},
-          "description": "CLI aliases: map of alias name → command string. Built-in defaults (add, remove) can be overridden or extended.",
-          "type": "object"
+          "description": "CLI aliases: map of alias name → command string. `cfgd init` scaffolds `add` and `remove`; cfgd defines no alias of its own.",
+          "type": [
+            "object",
+            "null"
+          ]
         },
         "compliance": {
           "anyOf": [
@@ -216,7 +233,7 @@
             }
           ],
           "default": null,
-          "description": "The background daemon that watches for drift between reconciles. Omitted, no daemon runs and every reconcile is an explicit `cfgd apply`."
+          "description": "The background daemon that watches for drift between reconciles. Omitted, a daemon started with `cfgd daemon` runs every default: a `5m` reconcile that reports drift and applies nothing, with no pull or push."
         },
         "fileStrategy": {
           "default": "Symlink",
@@ -228,6 +245,11 @@
             "Hardlink"
           ],
           "type": "string"
+        },
+        "migrationPolicy": {
+          "$ref": "#/definitions/MigrationPolicy",
+          "default": "Prompt",
+          "description": "What cfgd does when this document is behind the schema the running binary reads. `Prompt` asks once on an interactive run; `Warn` only reports; `Update` writes the alignment; `Ignore` says nothing."
         },
         "modules": {
           "anyOf": [
@@ -279,7 +301,7 @@
             }
           ],
           "default": null,
-          "description": "Which backend resolves a `${secret:…}` reference, and how it is reached. Omitted, no backend is configured and a declared secret reference fails to resolve."
+          "description": "Which backend resolves a `${secret:…}` reference, and how it is reached. Omitted, the `sops` backend resolves it through sops's own key search."
         },
         "security": {
           "anyOf": [
@@ -405,6 +427,31 @@
         {
           "const": "None",
           "description": "Mask nothing: every declared value renders in full, as though `--show-values` had been passed to every verb that takes it.",
+          "type": "string"
+        }
+      ]
+    },
+    "MigrationPolicy": {
+      "description": "What cfgd does when the config document on disk is behind the schema this build reads: a field the binary now carries that the document never names, or an `apiVersion` an older release wrote.",
+      "oneOf": [
+        {
+          "const": "Prompt",
+          "description": "Ask once, on an interactive run, before writing anything (default).",
+          "type": "string"
+        },
+        {
+          "const": "Warn",
+          "description": "Report what is behind and write nothing. What a non-interactive run under `Prompt` does.",
+          "type": "string"
+        },
+        {
+          "const": "Update",
+          "description": "Write the alignment without asking.",
+          "type": "string"
+        },
+        {
+          "const": "Ignore",
+          "description": "Say nothing and write nothing.",
           "type": "string"
         }
       ]
@@ -557,7 +604,7 @@
     },
     "OutputConfig": {
       "additionalProperties": false,
-      "description": "`spec.output`: how cfgd renders what it reports. ```yaml spec: output: theme: dracula usageHints: true maskEnvValues: All ``` Each key has a per-invocation override (`--theme` / `CFGD_THEME`, `--no-hints` / `CFGD_USAGE_HINTS`, `--mask-env-values` / `CFGD_MASK_ENV_VALUES`) that outranks what is stored here.",
+      "description": "`spec.output`: how cfgd renders what it reports. ```yaml spec: output: theme: dracula usageHints: true maskEnvValues: All ``` Each key has a per-invocation override (`--theme` / `CFGD_THEME`, `--hints` / `--no-hints` / `CFGD_USAGE_HINTS`, `--mask-env-values` / `CFGD_MASK_ENV_VALUES`) that outranks what is stored here.",
       "properties": {
         "maskEnvValues": {
           "anyOf": [
@@ -585,7 +632,7 @@
         },
         "usageHints": {
           "default": null,
-          "description": "Whether closing `→` usage hints render. Omitted, hints render.",
+          "description": "Whether closing `→` usage hints render. Omitted, they do not; a refusal's remediation and a run's own instructions render either way.",
           "type": [
             "boolean",
             "null"
@@ -831,20 +878,32 @@
           "description": "Where the source's manifest is fetched from."
         },
         "subscription": {
-          "$ref": "#/definitions/SubscriptionSpec",
+          "anyOf": [
+            {
+              "$ref": "#/definitions/SubscriptionSpec"
+            },
+            {
+              "type": "null"
+            }
+          ],
           "default": {
             "acceptRecommended": false,
             "allowScripts": false,
             "optIn": [],
-            "overrides": null,
             "priority": 500,
-            "reject": null,
             "requireSignedCommits": false
           },
           "description": "What this machine accepts from the source and how it applies."
         },
         "sync": {
-          "$ref": "#/definitions/SourceSyncSpec",
+          "anyOf": [
+            {
+              "$ref": "#/definitions/SourceSyncSpec"
+            },
+            {
+              "type": "null"
+            }
+          ],
           "default": {
             "autoApply": false,
             "interval": "1h",
@@ -931,7 +990,6 @@
           "type": "array"
         },
         "overrides": {
-          "default": null,
           "description": "Local values to deep-merge on top of what the source delivers, applied after composition."
         },
         "priority": {
@@ -949,7 +1007,6 @@
           ]
         },
         "reject": {
-          "default": null,
           "description": "Items from the source's `recommended` tier to drop entirely rather than accept. A mapping under `packages`, `env`, `aliases`, and/or `modules`; any other top-level key is rejected as a typo."
         },
         "requireSignedCommits": {
@@ -987,11 +1044,32 @@
       "properties": {
         "name": {
           "default": "default",
-          "description": "Preset name (`default`, `dracula`, `solarized-dark`, `solarized-light`, `nord`, `monokai`, `adventure-time`, `catppuccin-mocha`, `gruvbox-dark`, `tokyo-night`, `one-dark`, `minimal`). Default: `default`.",
+          "description": "Preset name. `cfgd config set theme.name` refuses a word this field's schema does not enumerate, and one hand-written into the file renders the default palette with a warning. Default: `default`.",
+          "enum": [
+            "default",
+            "dracula",
+            "solarized-dark",
+            "solarized-light",
+            "nord",
+            "monokai",
+            "adventure-time",
+            "catppuccin-mocha",
+            "gruvbox-dark",
+            "tokyo-night",
+            "one-dark",
+            "minimal"
+          ],
           "type": "string"
         },
         "overrides": {
-          "$ref": "#/definitions/ThemeOverrides",
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ThemeOverrides"
+            },
+            {
+              "type": "null"
+            }
+          ],
           "description": "Per-color and per-icon overrides applied on top of the named preset."
         }
       },
@@ -1161,7 +1239,7 @@
       "description": "Configuration for cfgd self-update checks and authored-skill updates.",
       "properties": {
         "channel": {
-          "description": "Release channel to track (e.g. `stable`, `beta`). When unset, cfgd uses its built-in default channel.",
+          "description": "Release channel to track: `stable` (releases GitHub marks latest) or `prerelease` (the newest release, prereleases included). Omitted, `stable`.",
           "type": [
             "string",
             "null"
@@ -1178,7 +1256,14 @@
           "description": "How update checks for the cfgd binary behave. Defaults to `Prompt`."
         },
         "skills": {
-          "$ref": "#/definitions/SkillUpdateConfig",
+          "anyOf": [
+            {
+              "$ref": "#/definitions/SkillUpdateConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
           "default": {
             "policy": "Inherit"
           },

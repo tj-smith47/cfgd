@@ -4,7 +4,7 @@
 // Supports pushing/pulling module archives with custom media types,
 // registry authentication via Docker config.json, credential helpers, and env vars.
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
@@ -23,10 +23,12 @@ pub use archive::{create_tar_gz, create_tar_gz_with_diff_id, extract_tar_gz};
 pub use auth::RegistryAuth;
 pub use build::{build_module, detect_container_runtime};
 pub use pack::{PackOptions, PackOutcome, pack_image};
-pub use pull::{ArtifactFacts, SignaturePolicy, artifact_facts, pull_module};
+pub use pull::{
+    ArtifactFacts, PullChecks, PullOutcome, SignaturePolicy, artifact_facts, pull_module,
+};
 pub use push::{
-    PushOutcome, current_platform, parse_platform_target, push_module, push_module_multiplatform,
-    rust_arch_to_oci,
+    MultiPlatformPushOutcome, PlatformTarget, PushOutcome, current_platform, parse_platform_target,
+    push_module, push_module_multiplatform, rust_arch_to_oci,
 };
 pub use sign::{
     COSIGN_PREDICATE_TYPES, SignatureCheck, VerifyOptions, attach_attestation,
@@ -56,7 +58,7 @@ pub const MEDIA_TYPE_OCI_IMAGE_LAYER: &str = "application/vnd.oci.image.layer.v1
 
 /// OCI image index (multi-platform manifest list) media type. A base image may be
 /// served as an index whose `manifests` array points at per-platform image manifests.
-pub(super) const MEDIA_TYPE_OCI_INDEX: &str = "application/vnd.oci.image.index.v1+json";
+pub const MEDIA_TYPE_OCI_INDEX: &str = "application/vnd.oci.image.index.v1+json";
 
 /// Docker manifest-list media type — the Docker v2 equivalent of an OCI image index.
 /// Registries serving Docker-format multi-platform images use this type.
@@ -178,6 +180,16 @@ impl OciReference {
         })
     }
 
+    /// This repository addressed by `digest`, the form that names exactly one
+    /// document whatever a tag is later moved to.
+    pub fn at_digest(&self, digest: &str) -> OciReference {
+        OciReference {
+            registry: self.registry.clone(),
+            repository: self.repository.clone(),
+            reference: ReferenceKind::Digest(digest.to_string()),
+        }
+    }
+
     /// The tag string (or digest) used in API paths.
     pub fn reference_str(&self) -> &str {
         match &self.reference {
@@ -226,8 +238,25 @@ impl OciReference {
 /// operator reads it back off the manifest into a Module's `PLATFORMS` column
 /// whether or not a flag named it, so the detail states it unconditionally and
 /// both verbs read the same either way.
-pub(crate) fn artifact_row_detail(digest: &str, platform: &str) -> String {
-    format!("{digest} ({platform})")
+///
+/// A push that joined its platform to others under one tag also wrote an
+/// index there, and that index digest is what the tag now resolves to, so it
+/// follows the pair when there is one.
+pub(crate) fn artifact_row_detail(
+    digest: &str,
+    platform: &str,
+    index_digest: Option<&str>,
+) -> String {
+    match index_digest {
+        Some(index) => format!("{digest} ({platform}), index {index}"),
+        None => format!("{digest} ({platform})"),
+    }
+}
+
+/// The `Accept` header for a manifest read that takes whichever shape the
+/// reference holds: an OCI image manifest, an OCI index or a Docker manifest list.
+pub(super) fn manifest_accept() -> String {
+    format!("{MEDIA_TYPE_OCI_MANIFEST}, {MEDIA_TYPE_OCI_INDEX}, {MEDIA_TYPE_DOCKER_MANIFEST_LIST}")
 }
 
 /// Check if a registry is listed in `OCI_INSECURE_REGISTRIES` (comma-separated).
@@ -242,6 +271,13 @@ fn is_insecure_registry(registry: &str) -> bool {
 // OCI Manifest types (OCI Image Manifest v1)
 // ---------------------------------------------------------------------------
 
+/// The map a manifest and a descriptor hold their annotations in, declared
+/// once because the CHOICE is the contract: a registry addresses what was
+/// pushed by the digest of the bytes, so two serializations of one annotation
+/// set have to agree byte for byte, and a map that iterates by hash seed makes
+/// re-pushing an unchanged module a new digest every time.
+pub(super) type Annotations = BTreeMap<String, String>;
+
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct OciManifest {
@@ -249,8 +285,8 @@ pub(super) struct OciManifest {
     pub(super) media_type: String,
     pub(super) config: OciDescriptor,
     pub(super) layers: Vec<OciDescriptor>,
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    pub(super) annotations: HashMap<String, String>,
+    #[serde(default, skip_serializing_if = "Annotations::is_empty")]
+    pub(super) annotations: Annotations,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -259,8 +295,8 @@ pub(super) struct OciDescriptor {
     pub(super) media_type: String,
     pub(super) digest: String,
     pub(super) size: u64,
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    pub(super) annotations: HashMap<String, String>,
+    #[serde(default, skip_serializing_if = "Annotations::is_empty")]
+    pub(super) annotations: Annotations,
 }
 
 // ---------------------------------------------------------------------------
@@ -292,6 +328,8 @@ pub(super) struct OciIndexEntry {
 pub(super) struct OciPlatform {
     pub(super) os: String,
     pub(super) architecture: String,
+    #[serde(default)]
+    pub(super) variant: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -307,6 +345,9 @@ pub(super) struct OciPlatform {
 pub struct ImageConfig {
     pub architecture: String,
     pub os: String,
+    /// The CPU variant (`v7` of `linux/arm/v7`), when the platform names one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub variant: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub created: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -370,6 +411,204 @@ pub(super) mod test_helpers {
         .unwrap();
         std::fs::write(dir.path().join("README.md"), "# Test module\n").unwrap();
         dir
+    }
+
+    type Tags = std::sync::Arc<std::sync::Mutex<std::collections::BTreeMap<String, Vec<u8>>>>;
+
+    /// A mock registry for one repository that keeps what each manifest PUT
+    /// stored under its reference and under its digest, serves it back on GET
+    /// (`404` for one never stored), keeps every uploaded blob and serves it
+    /// back by digest, and records each manifest request
+    /// as `"<METHOD> <reference>"`, with the PUT's `Content-Type` appended, in
+    /// the order the registry received them.
+    pub(crate) struct ManifestStore {
+        server: mockito::ServerGuard,
+        repository: String,
+        tags: Tags,
+        blobs: Tags,
+        log: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    }
+
+    impl ManifestStore {
+        pub(crate) fn new(repository: &str) -> Self {
+            let mut server = mockito::Server::new();
+            let tags = Tags::default();
+            let log = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+            let blobs = format!("/v2/{repository}/blobs/");
+            server
+                .mock("HEAD", mockito::Matcher::Regex(format!("^{blobs}sha256:")))
+                .with_status(404)
+                .create();
+            server
+                .mock("POST", format!("{blobs}uploads/").as_str())
+                .with_status(202)
+                .with_header("Location", &format!("{}{blobs}uploads/up", server.url()))
+                .create();
+            let blob_store = Tags::default();
+            let put_blobs = blob_store.clone();
+            server
+                .mock(
+                    "PUT",
+                    mockito::Matcher::Regex(format!(r"^{blobs}uploads/up\?digest=")),
+                )
+                .with_status(201)
+                .with_body_from_request(move |req| {
+                    let digest = req
+                        .path_and_query()
+                        .rsplit_once("digest=")
+                        .map(|(_, d)| d.replace("%3A", ":"))
+                        .unwrap_or_default();
+                    put_blobs
+                        .lock()
+                        .unwrap()
+                        .insert(digest, req.body().unwrap().clone());
+                    Vec::new()
+                })
+                .create();
+            let (status_blobs, get_blobs) = (blob_store.clone(), blob_store.clone());
+            let blob_digest = |req: &mockito::Request| {
+                req.path()
+                    .rsplit_once("/blobs/")
+                    .map(|(_, d)| d.to_string())
+                    .unwrap_or_default()
+            };
+            server
+                .mock("GET", mockito::Matcher::Regex(format!("^{blobs}sha256:")))
+                .with_status_code_from_request(move |req| {
+                    if status_blobs.lock().unwrap().contains_key(&blob_digest(req)) {
+                        200
+                    } else {
+                        404
+                    }
+                })
+                .with_body_from_request(move |req| {
+                    get_blobs
+                        .lock()
+                        .unwrap()
+                        .get(&blob_digest(req))
+                        .cloned()
+                        .unwrap_or_default()
+                })
+                .create();
+
+            let manifests = format!("^/v2/{repository}/manifests/");
+            let reference = |req: &mockito::Request| {
+                req.path()
+                    .rsplit_once("/manifests/")
+                    .map(|(_, r)| r.to_string())
+                    .unwrap_or_default()
+            };
+            let (put_tags, put_log) = (tags.clone(), log.clone());
+            server
+                .mock("PUT", mockito::Matcher::Regex(manifests.clone()))
+                .with_status(201)
+                .with_body_from_request(move |req| {
+                    let content_type = req
+                        .header("content-type")
+                        .first()
+                        .and_then(|v| v.to_str().ok())
+                        .unwrap_or_default()
+                        .to_string();
+                    let r = reference(req);
+                    put_log
+                        .lock()
+                        .unwrap()
+                        .push(format!("PUT {r} {content_type}"));
+                    let body = req.body().unwrap().clone();
+                    let mut stored = put_tags.lock().unwrap();
+                    stored.insert(crate::sha256_digest(&body), body.clone());
+                    stored.insert(r, body);
+                    Vec::new()
+                })
+                .create();
+            let (status_tags, get_tags, get_log) = (tags.clone(), tags.clone(), log.clone());
+            // A registry serves an index only to a reader that accepts one, so
+            // every manifest read the store answers must name both shapes.
+            server
+                .mock("GET", mockito::Matcher::Regex(manifests))
+                .match_header(
+                    "accept",
+                    mockito::Matcher::AllOf(vec![
+                        mockito::Matcher::Regex(regex::escape(super::MEDIA_TYPE_OCI_MANIFEST)),
+                        mockito::Matcher::Regex(regex::escape(super::MEDIA_TYPE_OCI_INDEX)),
+                    ]),
+                )
+                .with_status_code_from_request(move |req| {
+                    if status_tags.lock().unwrap().contains_key(&reference(req)) {
+                        200
+                    } else {
+                        404
+                    }
+                })
+                .with_body_from_request(move |req| {
+                    let r = reference(req);
+                    get_log.lock().unwrap().push(format!("GET {r}"));
+                    get_tags
+                        .lock()
+                        .unwrap()
+                        .get(&r)
+                        .cloned()
+                        .unwrap_or_default()
+                })
+                .create();
+
+            Self {
+                server,
+                repository: repository.to_string(),
+                tags,
+                blobs: blob_store,
+                log,
+            }
+        }
+
+        /// The artifact reference naming `reference` in this repository.
+        pub(crate) fn artifact(&self, reference: &str) -> String {
+            let sep = if reference.starts_with("sha256:") {
+                '@'
+            } else {
+                ':'
+            };
+            format!(
+                "{}/{}{sep}{reference}",
+                registry_from_url(&self.server.url()),
+                self.repository
+            )
+        }
+
+        /// Store `body` under `reference` as an earlier push would have.
+        pub(crate) fn seed(&self, reference: &str, body: &serde_json::Value) -> Vec<u8> {
+            let bytes = serde_json::to_vec(body).unwrap();
+            self.seed_bytes(reference, &bytes);
+            bytes
+        }
+
+        /// Store `bytes` under `reference` verbatim.
+        pub(crate) fn seed_bytes(&self, reference: &str, bytes: &[u8]) {
+            self.tags
+                .lock()
+                .unwrap()
+                .insert(reference.to_string(), bytes.to_vec());
+        }
+
+        /// The bytes stored under `reference`.
+        pub(crate) fn stored(&self, reference: &str) -> Vec<u8> {
+            self.tags
+                .lock()
+                .unwrap()
+                .get(reference)
+                .cloned()
+                .unwrap_or_else(|| panic!("nothing stored under {reference}"))
+        }
+
+        /// Digests of every blob uploaded so far.
+        pub(crate) fn blob_digests(&self) -> Vec<String> {
+            self.blobs.lock().unwrap().keys().cloned().collect()
+        }
+
+        /// The manifest requests received so far, in order.
+        pub(crate) fn requests(&self) -> Vec<String> {
+            self.log.lock().unwrap().clone()
+        }
     }
 }
 

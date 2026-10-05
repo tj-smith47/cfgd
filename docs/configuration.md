@@ -1,8 +1,8 @@
 # Configuration
 
-cfgd config files follow a structure inspired by the [Kubernetes Resource Model](https://github.com/kubernetes/design-proposals-archive/blob/main/architecture/resource-management.md): every document has `apiVersion`, `kind`, `metadata`, and `spec` fields. This gives a consistent shape across configs, profiles, modules, and sources. TOML is also supported (use `.toml` extension).
+cfgd config files follow a structure inspired by the [Kubernetes Resource Model](https://github.com/kubernetes/design-proposals-archive/blob/main/architecture/resource-management.md): every document has `apiVersion`, `kind`, `metadata`, and `spec` fields. This gives a consistent shape across configs, profiles, modules, and sources. TOML is also supported (use `.toml` extension): a `cfgd.toml` is found wherever a `cfgd.yaml` would be, and every command that writes the config (`init`, `config set`, `config unset`, `config migrate`, `profile switch`, the `source` and `module registry` verbs, and the alignment a load writes under `migrationPolicy: Update`) writes it back as TOML in the order it declares its keys.
 
-The only supported `apiVersion` is `cfgd.io/v1alpha1`. Any other value (e.g. a future `cfgd.io/v1alpha2`) is rejected at parse time with an error naming the supported version, rather than being silently loaded under the current schema.
+Every document declares an `apiVersion`, with `cfgd.io/v1alpha1` the current one, and a document written under a version this build cannot read is rejected at parse time with an error naming the versions it can.
 
 For the complete field-by-field reference, see the [Config spec reference](spec/config.md).
 
@@ -84,7 +84,7 @@ spec:
   update:
     policy: Prompt         # cfgd binary self-update behavior (default: Prompt)
     interval: 24h          # check cadence when policy != Manual (default: 24h)
-    channel: stable        # release channel (default: cfgd's built-in channel)
+    channel: stable        # release channel: stable (default) or prerelease
     skills:
       policy: Inherit      # follows spec.update.policy unless overridden (default: Inherit)
 
@@ -116,17 +116,18 @@ spec:
 | `spec.daemon.sync.autoPull` | no | `false` | Auto-pull from remote |
 | `spec.daemon.sync.autoPush` | no | `false` | Auto-commit and push local changes |
 | `spec.daemon.notify.method` | no | `Desktop` | `Desktop`, `Stdout`, or `Webhook` |
-| `spec.update.policy` | no | `Prompt` | cfgd binary self-update behavior: `Auto`, `Prompt`, `Notify`, or `Manual` (see [Update behavior](#update-behavior-specupdate)) |
+| `spec.update.policy` | no | `Prompt` | cfgd binary self-update behavior: `Auto`, `Prompt`, `Notify`, or `Manual`. `--update-policy` / `CFGD_UPDATE_POLICY` override it for one invocation (see [Update behavior](#update-behavior-specupdate)) |
 | `spec.update.interval` | no | `24h` | Update-check cadence when `policy != Manual` (e.g. `30m`, `24h`, `7d`) |
-| `spec.update.channel` | no | — | Release channel to track (e.g. `stable`, `prerelease`); unset uses cfgd's built-in default channel |
+| `spec.update.channel` | no | `stable` | Release channel to track: `stable` or `prerelease` |
 | `spec.update.skills.policy` | no | `Inherit` | Authored-skill refresh policy: `Inherit` (follow `spec.update.policy`), `Auto`, `Prompt`, `Notify`, or `Manual` |
+| `spec.migrationPolicy` | no | `Prompt` | What cfgd does when this document is behind the schema the running binary reads: `Prompt` asks once on an interactive run, `Warn` reports only, `Update` writes the alignment, `Ignore` says nothing. `--migration-policy` / `CFGD_MIGRATION_POLICY` override for one invocation. The check is withheld from the invocations whose own subject it is (`cfgd config migrate`, `cfgd config edit`, and `cfgd config set` / `cfgd config unset` on `migrationPolicy`), so the remediation and the knob's own setters are never acted on first. `cfgd init` runs it against the config it writes, once that file is on disk and before its `--apply` step. Under a preview (`cfgd plan`, `cfgd apply --dry-run`, `cfgd profile migrate --dry-run` and `cfgd init --dry-run`) the check adds no field to the document, answering `Prompt` and `Update` the way `Warn` does. A write cfgd makes to the document (a `cfgd config set`, a `cfgd source add`, a `cfgd profile switch`) declares every field this build reads in a section the write creates, so the prompt never asks about a section cfgd itself just wrote |
 | `spec.secrets.backend` | no | `sops` | `sops` or `age` (see [secrets.md](secrets.md) for when to use which) |
-| `spec.output.theme` | no | `default` | Theme name (string) or object with `name` + `overrides`. `--theme` / `CFGD_THEME` override the name for one invocation |
+| `spec.output.theme` | no | `default` | Theme name (string) or object with `name` + `overrides`. The name is one of `default`, `dracula`, `solarized-dark`, `solarized-light`, `nord`, `monokai`, `adventure-time`, `catppuccin-mocha`, `gruvbox-dark`, `tokyo-night`, `one-dark`, `minimal`: `cfgd config set theme.name` refuses any other word, and one hand-written into the file renders the default palette with a warning. `--theme` / `CFGD_THEME` override the name for one invocation |
 | `spec.fileStrategy` | no | `Symlink` | `Symlink`, `Copy`, `Template`, or `Hardlink` (Windows: `Symlink` requires Developer Mode or elevation) |
 | `spec.aliases.<name>` | no | — | CLI command aliases (e.g. `add: "profile update --file"`) |
 | `spec.compliance` | no | — | Continuous compliance snapshot settings. Reports the effective desired state (profile + modules), and file checks are content-aware (see [spec/config.md](spec/config.md#speccompliance)) |
 | `spec.sources[].subscription.requireSignedCommits` | no | `false` | Demand a valid GPG or SSH signature on that source's HEAD commit. ORed with the source manifest's `constraints.requireSignedCommits`, so it only adds strictness (see [sources.md](sources.md#security-model)) |
-| `spec.output.usageHints` | no | `true` | Whether closing `→` usage hints render. `--no-hints` / `CFGD_USAGE_HINTS` override for one invocation (see [Global Flags](#global-flags)) |
+| `spec.output.usageHints` | no | `false` | Whether closing `→` usage hints render. A refusal's remediation, the next step a run closes on when it did not fully succeed, and a run's own instructions render either way. `--hints` / `--no-hints` / `CFGD_USAGE_HINTS` override for one invocation (see [Global Flags](#global-flags)) |
 | `spec.output.maskEnvValues` | no | `All` | Which declared env values render masked: `All`, `Secrets` (only a name some `spec.secrets[].envs` exports) or `None`. `--mask-env-values` / `CFGD_MASK_ENV_VALUES` override for one invocation; `--show-values` is the per-verb alias for `None` |
 
 The three presentation keys live under `spec.output`:
@@ -135,7 +136,7 @@ The three presentation keys live under `spec.output`:
 spec:
   output:
     theme: dracula
-    usageHints: true
+    usageHints: true       # the opt-in: hints do not render until something asks for them
     maskEnvValues: All
 ```
 
@@ -146,13 +147,16 @@ nested form and drops the flat key it read.
 
 All fields can be read and written programmatically via `cfgd config get <key>` and `cfgd config set <key> <value>`. See the [CLI reference](cli-reference.md) for details.
 
+A section the document leaves out still has the values this build uses for it, and `cfgd config get` answers them: with no `daemon` block, `cfgd config get daemon.reconcile.interval` prints `5m`. An omitted block has the values an empty one (`daemon: {}`) declares, and an omitted optional field the build fills in answers with that value: `cfgd config get update.channel` prints `stable`. Leaving `spec.secrets.sops` out leaves sops to its own key search, so `cfgd config get` refuses every key under it as missing.
+
 Enum-valued fields (e.g. `spec.fileStrategy`, `spec.daemon.reconcile.driftPolicy`, `spec.daemon.notify.method`, the profile-level `spec.envScope`, `spec.compliance.export.format`) are parsed case-insensitively: `Symlink`, `symlink`, and `SYMLINK` are all accepted. The documented PascalCase form is canonical and is what cfgd writes back.
 
 ## Update behavior (`spec.update`)
 
-cfgd can check for its own updates (it doesn't by default; `cfgd upgrade` is
-otherwise purely manual), and separately decide whether installed [authoring
-skills](skill.md) are re-rendered when cfgd moves. Both are governed by
+cfgd checks for its own updates (by default once every 24h, asking before it
+installs one; `cfgd upgrade` runs the same install on demand), and separately
+decides whether installed [authoring skills](skill.md) are re-rendered when
+cfgd moves. Both are governed by
 `spec.update`:
 
 ```yaml
@@ -165,7 +169,7 @@ spec:
   update:
     policy: Prompt         # cfgd binary self-update behavior (default: Prompt)
     interval: 24h          # check cadence when policy != Manual (default: 24h)
-    channel: stable        # release channel (default: cfgd's built-in channel)
+    channel: stable        # release channel: stable (default) or prerelease
     skills:
       policy: Inherit      # follows spec.update.policy unless overridden (default: Inherit)
 ```
@@ -175,6 +179,21 @@ binary and skill refresh. Override `spec.update.skills.policy` only to decouple
 skill refresh from the binary. "update" is the umbrella verb for keeping things
 current; "upgrade" is the specific binary-replacement action (`cfgd upgrade`),
 which `policy: Auto`/`Prompt` drives.
+
+For a single run, `--update-policy` (or `CFGD_UPDATE_POLICY`) replaces the
+posture without touching the file:
+
+```sh
+cfgd --update-policy manual status          # no update check on this command
+cfgd --update-policy notify apply           # report an available update and leave it uninstalled
+CFGD_UPDATE_POLICY=Manual cfgd profile show # the PascalCase spelling is accepted too
+CFGD_UPDATE_POLICY=manual cfgd daemon       # the daemon this starts never checks
+```
+
+Only the posture moves. `interval`, `channel` and `skills` stay whatever the
+config declares. A daemon keeps the posture it was started with for its whole
+life; one started without the flag re-reads `spec.update.policy` on every
+version tick, so editing the file retunes a running daemon.
 
 ### Update policies
 
@@ -413,6 +432,12 @@ the rest.
 > finding drift on a target that never converges. Keep the rc file under one
 > writer: put the loader line in the rc source you deploy, or leave the rc
 > file out of `files.managed` and let `spec.env` own it.
+>
+> The file that line loads is cfgd's alone. It opens with a banner saying it is
+> regenerated on every apply, and every line sits under a `# profile:` /
+> `# source:` / `# module:` / `# secrets` block header naming what to edit
+> in place of the file (see
+> [What the file looks like](profiles.md#what-the-file-looks-like)).
 
 Any `spec.env` or `spec.aliases` entry can be gated to named platforms with the
 same `platforms:` list a module and a package take; an entry gated off the
@@ -828,8 +853,8 @@ on where the config dir resides.
 ### Silent state & cache migration
 
 Earlier builds kept the state DB and the source cache together in one data dir
-(`~/.local/share/cfgd` on Linux, `~/Library/Application Support/cfgd` on macOS,
-`%LOCALAPPDATA%\cfgd` on Windows). cfgd now resolves **state** and **cache** to
+(`$XDG_DATA_HOME/cfgd`, default `~/.local/share/cfgd`, on Linux;
+`~/Library/Application Support/cfgd` on macOS; `%LOCALAPPDATA%\cfgd` on Windows). cfgd now resolves **state** and **cache** to
 their own roots (the table above). On the first run after upgrading, cfgd
 relocates that data to the new defaults automatically, with **no prompt**. Unlike the
 config dir, state and cache are app-managed (not hand-authored, not git-tracked),
@@ -900,6 +925,11 @@ Default aliases (scaffolded by `cfgd init`):
 
 These are not hardcoded: they live in your cfgd.yaml and can be changed or removed.
 
+cfgd expands an alias from the config document the invocation names, through any spelling of its
+location (`--config`, `CFGD_CONFIG`, `--config-dir`, `CFGD_CONFIG_DIR`, `--scope system`), so
+`CFGD_CONFIG=~/work/cfgd.yaml cfgd up` runs the `up` declared in `~/work/cfgd.yaml`. The `~` there
+works without a shell; see [Global Flags](#global-flags).
+
 ## AI Configuration
 
 Configure the AI provider for `cfgd generate`:
@@ -920,26 +950,49 @@ These flags work with any subcommand:
 
 | Flag | Short | Env Var | Description |
 |---|---|---|---|
-| `--config <path>` | | `CFGD_CONFIG` | Path to `cfgd.yaml` (or a directory — cfgd infers `cfgd.yaml`, then `cfgd.toml`, inside it) |
-| `--config-dir <dir>` | | `CFGD_CONFIG_DIR` | Override the config directory (`--config` wins over it) |
-| `--state-dir <dir>` | | `CFGD_STATE_DIR` | Override the state directory (`state.db`, history, `apply.lock`) |
-| `--cache-dir <dir>` | | `CFGD_CACHE_DIR` | Override the cache directory (source, module, and update-check caches) |
-| `--runtime-dir <dir>` | | `CFGD_RUNTIME_DIR` | Override the runtime directory (daemon socket, locks) |
-| `--profile <name>` | | `CFGD_PROFILE` | Override the active profile |
+| `--config <path>` | — | `CFGD_CONFIG` | Path to `cfgd.yaml` (or a directory — cfgd infers `cfgd.yaml`, then `cfgd.toml`, inside it) |
+| `--config-dir <dir>` | — | `CFGD_CONFIG_DIR` | Override the config directory, read through the `cfgd.yaml` or `cfgd.toml` it holds (`--config` wins over it) |
+| `--state-dir <dir>` | — | `CFGD_STATE_DIR` | Override the state directory (`state.db`, history, `apply.lock`) |
+| `--cache-dir <dir>` | — | `CFGD_CACHE_DIR` | Override the cache directory (source, module, and update-check caches) |
+| `--runtime-dir <dir>` | — | `CFGD_RUNTIME_DIR` | Override the runtime directory (daemon socket, locks) |
+| `--profile <name>` | — | `CFGD_PROFILE` | Override the active profile |
 | `--verbose` | `-v` | `CFGD_VERBOSE` | Show debug output (`-vv` = trace) |
 | `--quiet` | `-q` | `CFGD_QUIET` | Suppress all non-error output |
 | `--yes` | `-y` | `CFGD_YES` | Skip confirmation prompts (answer yes to every question). Accepted before or after the subcommand; what each command does under it is described on that command |
-| `--color <auto\|always\|never>` | | `CFGD_COLOR` | When to colorize terminal output. `auto` (default) follows the terminal, `NO_COLOR` and `TERM=dumb`; `always` colorizes even when stderr is not a terminal, for a pager that renders escapes (`less -R`) or a captured transcript; `never` disables it. Colour is never emitted under `-o json`/`name`/`jsonpath`/`template` whatever this says — an escape inside a payload string is corrupt data. `-o yaml` is the exception and follows this flag: its payload is syntax-highlighted when colour is on, and plain bytes under `never`, `NO_COLOR`, `TERM=dumb` or a non-terminal stdout |
-| `--no-color` | | `NO_COLOR` | Disable colored terminal output (alias for `--color never`) |
-| `--theme <name>` | | `CFGD_THEME` | Theme preset for this invocation. Replaces `spec.output.theme.name` only; `spec.output.theme.overrides` still apply on top. Unknown names are rejected at the flag with the preset list |
-| `--output <format>` | `-o` | | Output format: `table` (default), `wide`, `json`, `yaml`, `name`, `jsonpath=EXPR`, `template=TMPL`, `template-file=PATH` |
-| `--list-envelope` | | `CFGD_LIST_ENVELOPE` | Under `-o json`/`-o yaml`, wrap a top-level array in a KRM `List` envelope (`{apiVersion, kind: List, items}`) |
-| `--no-hints` | | `CFGD_USAGE_HINTS` | Suppress closing `→` usage hints for this invocation, dropping their leading blank line too. `--no-hints` outranks `CFGD_USAGE_HINTS`, which outranks `spec.output.usageHints`; all default to hints on. Note the polarity: the flag SUPPRESSES, the env var and config field name what stays ON (`CFGD_USAGE_HINTS=false` / `spec.output.usageHints: false` also suppress) |
-| `--mask-env-values <all\|secrets\|none>` | | `CFGD_MASK_ENV_VALUES` | Which declared env values render masked. `all` (default) masks every value as `***` plus its last three characters; `secrets` masks only the values a declared secret exports (every name listed in a `spec.secrets[].envs` of the resolved chain) and renders the rest in full; `none` renders them all in full. The flag outranks `CFGD_MASK_ENV_VALUES`, which outranks `spec.output.maskEnvValues`. `--show-values` is the per-verb alias for `none` and conflicts with this flag |
-| `--scope <user\|system>` | | `CFGD_SCOPE` | Installation scope: `user` (default) or `system`. `system` switches all four directory roots to system/FHS defaults (`/etc/cfgd`, `/var/lib/cfgd`, …). See [System scope](configuration.md#system-scope). |
-| | | `CFGD_NO_UPDATE_CHECK` | Silence the automatic update check (see [Suppressing the automatic check](#suppressing-the-automatic-check)) |
-| | | `NO_UPDATE_NOTIFIER` | Same, via npm's `update-notifier` convention |
-| | | `DO_NOT_TRACK` | Same, via the [consoledonottrack.com](https://consoledonottrack.com) convention |
+| `--color <auto\|always\|never>` | — | `CFGD_COLOR` | When to colorize terminal output. `auto` (default) follows the terminal, `NO_COLOR` and `TERM=dumb`; `always` colorizes even when stderr is not a terminal, for a pager that renders escapes (`less -R`) or a captured transcript; `never` disables it. Colour is never emitted under `-o json`/`name`/`jsonpath`/`template` whatever this says — an escape inside a payload string is corrupt data. `-o yaml` is the exception and follows this flag: its payload is syntax-highlighted when colour is on, and plain bytes under `never`, `NO_COLOR`, `TERM=dumb` or a non-terminal stdout |
+| `--no-color` | — | `NO_COLOR` | Disable colored terminal output (alias for `--color never`) |
+| `--theme <name>` | — | `CFGD_THEME` | Theme preset for this invocation. Replaces `spec.output.theme.name` only; `spec.output.theme.overrides` still apply on top. Unknown names are rejected at the flag with the preset list |
+| `--output <format>` | `-o` | — | Output format: `table` (default), `wide`, `json`, `yaml`, `name`, `jsonpath=EXPR`, `template=TMPL`, `template-file=PATH` |
+| `--list-envelope` | — | `CFGD_LIST_ENVELOPE` | Under `-o json`/`-o yaml`, wrap a top-level array in a KRM `List` envelope (`{apiVersion, kind: List, items}`) |
+| `--hints` | — | `CFGD_USAGE_HINTS` | Render closing `→` usage hints for this invocation. They are off until something asks for them: this flag, `CFGD_USAGE_HINTS=true`, or `spec.output.usageHints: true`. Either flag outranks `CFGD_USAGE_HINTS`, which outranks `spec.output.usageHints` |
+| `--no-hints` | — | `CFGD_USAGE_HINTS` | Suppress them again for this invocation, over a config or env var that turned them on; a suppressed hint drops its leading blank line with it. Note the polarity: the env var and the config field name what stays ON, so `CFGD_USAGE_HINTS=false` is the persistent form of this flag |
+| `--mask-env-values <all\|secrets\|none>` | — | `CFGD_MASK_ENV_VALUES` | Which declared env values render masked. `all` (default) masks every value as `***` plus its last three characters; `secrets` masks only the values a declared secret exports (every name listed in a `spec.secrets[].envs` of the resolved chain) and renders the rest in full; `none` renders them all in full. The flag outranks `CFGD_MASK_ENV_VALUES`, which outranks `spec.output.maskEnvValues`. `--show-values` is the per-verb alias for `none` and conflicts with this flag |
+| `--migration-policy <prompt\|warn\|update\|ignore>` | — | `CFGD_MIGRATION_POLICY` | What to do when `cfgd.yaml` is behind this build's schema. The flag outranks `CFGD_MIGRATION_POLICY`, which outranks `spec.migrationPolicy`; the default is `prompt`. A run with no terminal degrades `prompt` to `warn` and records no answer, and the daemon degrades both `prompt` and `update` to `warn` — it never rewrites a tracked file. `--yes` / `CFGD_YES` takes the prompt |
+| `--update-policy <auto\|prompt\|notify\|manual>` | — | `CFGD_UPDATE_POLICY` | Update posture for this invocation: `auto` applies an available update, `prompt` asks first, `notify` reports only, `manual` runs no automatic check at all. The flag outranks `CFGD_UPDATE_POLICY`, which outranks `spec.update.policy`; the default is `prompt`. Only the posture is overridden: `spec.update.interval`, `channel` and `skills` still apply. The explicit `cfgd upgrade` runs regardless of this setting; the three opt-out variables in [Suppressing the automatic check](#suppressing-the-automatic-check) silence the automatic check regardless |
+| `--scope <user\|system>` | — | `CFGD_SCOPE` | Installation scope: `user` (default) or `system`. `system` switches all four directory roots to system/FHS defaults (`/etc/cfgd`, `/var/lib/cfgd`, …). See [System scope](configuration.md#system-scope). |
+| — | — | `CFGD_NO_UPDATE_CHECK` | Silence the automatic update check (see [Suppressing the automatic check](#suppressing-the-automatic-check)) |
+| — | — | `NO_UPDATE_NOTIFIER` | Same, via npm's `update-notifier` convention |
+| — | — | `DO_NOT_TRACK` | Same, via the [consoledonottrack.com](https://consoledonottrack.com) convention |
+
+cfgd expands a leading `~` in a path flag (`--config`, `--config-dir`, `--state-dir`,
+`--cache-dir`, `--runtime-dir`), in its `CFGD_*` variable, in `CFGD_DAEMON_IPC_PATH` and in the
+device gateway's `CFGD_SERVER_DB_PATH` to your home directory itself, so the value works from an
+environment file or a quoted argument, where no shell expands it.
+With no home directory to resolve, a command that uses that directory fails naming the unset home
+(`HOME`; on Windows `USERPROFILE` and `HOME`) and creates nothing; `cfgd paths` reports it as
+unavailable. A `~` kept literally would name a directory called `~` under the working directory.
+
+Usage hints are off unless something asks for them, and the knob reaches the closing
+tutorial pointers only (the "run this next" lines). Three kinds of line ignore it and
+render whatever it says: a refusal's remediation (the way out of a command that declined
+to run, such as the valid names an unknown one is refused with), the next step a run
+closes on when it did not fully succeed ("Fix what failed, then run `cfgd apply` again",
+and the same for a pull that could not reach its remote), and a run's own instructions,
+which are note rows beside the run's other rows (the safety copy a restore left your
+previous contents in, the env file a shell has to re-source, the snapshots a changed
+`destination:` stranded). The first two are instructions the reader has to act on that
+nothing else on the surface states; the last is a fact about this machine. The transcripts
+in these docs are rendered with hints on.
 
 Boolean env vars accept shell-truthy spellings, not only `true`/`false`. The
 accept-set matches `CFGD_YES`: `1`/`y`/`yes`/`t`/`true`/`on` (case-insensitive)

@@ -139,52 +139,18 @@ fn non_pkg_manager_identity_is_unchanged() {
 }
 
 #[test]
-fn simple_manager_name_matches() {
-    let managers: Vec<SimpleManager> = vec![
-        apt_manager(),
-        dnf_manager(),
-        yum_manager(),
-        apk_manager(),
-        pacman_manager(),
-        zypper_manager(),
-        pkg_manager(),
-    ];
-    let expected_names = ["apt", "dnf", "yum", "apk", "pacman", "zypper", "pkg"];
-    for (mgr, expected) in managers.iter().zip(expected_names.iter()) {
-        assert_eq!(mgr.name(), *expected);
-    }
-}
-
-#[test]
 fn simple_manager_none_plans_a_bootstrap() {
-    let managers: Vec<SimpleManager> = vec![
-        apt_manager(),
-        dnf_manager(),
-        apk_manager(),
-        pacman_manager(),
-        zypper_manager(),
-        pkg_manager(),
-    ];
-    for mgr in &managers {
+    for (family, build) in SIMPLE_FAMILIES {
         assert!(
-            mgr.bootstrap_plan().is_none(),
-            "{} should not be bootstrappable",
-            mgr.name()
+            build().bootstrap_plan().is_none(),
+            "{family} ships with its distribution, so it plans no bootstrap"
         );
     }
 }
 
 #[test]
 fn all_simple_managers_have_list_cmd() {
-    let managers = [
-        apt_manager(),
-        dnf_manager(),
-        yum_manager(),
-        apk_manager(),
-        pacman_manager(),
-        zypper_manager(),
-        pkg_manager(),
-    ];
+    let managers: Vec<SimpleManager> = SIMPLE_FAMILIES.iter().map(|(_, build)| build()).collect();
     for mgr in &managers {
         assert!(
             !mgr.list_cmd.is_empty(),
@@ -206,15 +172,7 @@ fn all_simple_managers_have_list_cmd() {
 
 #[test]
 fn all_simple_managers_have_update_cmd() {
-    let managers = [
-        apt_manager(),
-        dnf_manager(),
-        yum_manager(),
-        apk_manager(),
-        pacman_manager(),
-        zypper_manager(),
-        pkg_manager(),
-    ];
+    let managers: Vec<SimpleManager> = SIMPLE_FAMILIES.iter().map(|(_, build)| build()).collect();
     for mgr in &managers {
         assert!(
             mgr.update_cmd.is_some(),
@@ -305,15 +263,7 @@ fn pkg_manager_install_uses_dash_y() {
 /// carries would render junk the moment a surface displays it.
 #[test]
 fn every_simple_family_names_its_raise_verb_from_its_own_command() {
-    for mgr in [
-        apt_manager(),
-        dnf_manager(),
-        yum_manager(),
-        apk_manager(),
-        pacman_manager(),
-        zypper_manager(),
-        pkg_manager(),
-    ] {
+    for mgr in SIMPLE_FAMILIES.iter().map(|(_, build)| build()) {
         let cmd = mgr.upgrade_cmd.unwrap_or(mgr.install_cmd);
         let verb = mgr
             .upgrade_verb()
@@ -334,8 +284,8 @@ fn yum_manager_yields_to_dnf_wherever_both_resolve() {
     // PATH rather than the host's: on a host carrying neither binary — every
     // CI runner cfgd builds on — a test that reads the host proves only that
     // false is false, and the yields-to-dnf rule it exists for never runs.
-    let _dnf_seam = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_DNF_BIN");
-    let _yum_seam = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_YUM_BIN");
+    let _dnf_seam = cfgd_core::test_helpers::EnvVarGuard::unset(crate::seams::DNF_BIN_ENV);
+    let _yum_seam = cfgd_core::test_helpers::EnvVarGuard::unset(crate::seams::YUM_BIN_ENV);
     let _path_lock = cfgd_core::test_helpers::path_env_mutation_guard();
     let _dirs = cfgd_core::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
     let yum = yum_manager();
@@ -355,26 +305,102 @@ fn yum_manager_yields_to_dnf_wherever_both_resolve() {
     assert!(!yum.is_available(), "no yum binary, no yum manager");
 }
 
+/// A family with no custom availability check answers from the program its
+/// install runs, found through its seam or on `PATH`: present with that
+/// program alone, absent with nothing. apt's own name is no program cfgd runs,
+/// so a host holding only an `apt` is no apt host.
 #[cfg(unix)]
 #[test]
 #[serial_test::serial]
-fn simple_manager_without_a_custom_fn_probes_its_own_name() {
-    // apk_manager carries `is_available_fn: None`, so availability falls
-    // through to a probe for the manager's own name.
-    let _seam = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_APK_BIN");
+fn every_family_without_a_custom_check_answers_from_its_install_program() {
     let _path_lock = cfgd_core::test_helpers::path_env_mutation_guard();
     let _dirs = cfgd_core::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
-    let apk = apk_manager();
-
-    {
-        let _empty = cfgd_core::test_helpers::EnvVarGuard::set("PATH", "");
-        assert!(!apk.is_available());
+    let _paths = cfgd_core::test_helpers::CommandPathMemoTtlGuard::always_expired();
+    let _avail = cfgd_core::test_helpers::AvailabilityMemoTtlGuard::always_expired();
+    let mut checked = 0;
+    let mut renamed = 0;
+    for (name, build) in SIMPLE_FAMILIES {
+        let mgr = build();
+        if mgr.is_available_fn.is_some() {
+            continue;
+        }
+        checked += 1;
+        let program = mgr.install_program();
+        let _seam = cfgd_core::test_helpers::EnvVarGuard::unset(
+            &super::super::shared::tool_seam_var(program),
+        );
+        {
+            let _probe = cfgd_core::test_helpers::ProbePath::containing(&[program]);
+            assert!(
+                mgr.is_available(),
+                "{name} with {program} on PATH is available"
+            );
+        }
+        {
+            let _empty = cfgd_core::test_helpers::EnvVarGuard::set("PATH", "");
+            assert!(!mgr.is_available(), "{name} with nothing on PATH is absent");
+        }
+        if mgr.mgr_name != program {
+            renamed += 1;
+            let _probe = cfgd_core::test_helpers::ProbePath::containing(&[mgr.mgr_name]);
+            assert!(
+                !mgr.is_available(),
+                "{name} runs {program}, so a PATH holding only `{name}` is no {name} host"
+            );
+        }
     }
-    let _probe = cfgd_core::test_helpers::ProbePath::containing(&["apk"]);
+    // Every family but yum, whose check yields to dnf; apt alone runs a program
+    // named apart from itself.
     assert!(
-        apk.is_available(),
-        "the binary this manager probes for is named `apk`"
+        checked >= 6 && renamed >= 1,
+        "walked {checked} families and {renamed} renamed programs"
     );
+}
+
+/// A family's `tool_version` reads the banner of the program its install runs,
+/// through that program's seam. Each banner is the real first line of that
+/// program's `--version`: apt-get from ubuntu:24.04, dnf5 from fedora:44, yum
+/// from centos:7, apk from alpine:3, pacman (its whole banner) from archlinux,
+/// zypper from opensuse/tumbleweed, pkg from FreeBSD 14.5.
+#[test]
+#[serial_test::serial]
+fn every_family_reads_its_tool_version_from_its_install_program() {
+    const PACMAN: &str = " .--.                  Pacman v7.1.0 - libalpm v16.0.1
+/ _.-' .-.  .-.  .-.   Copyright (C) 2006-2025 Pacman Development Team
+\\  '-. '-'  '-'  '-'   Copyright (C) 2002-2006 Judd Vinet
+ '--'
+                       This program may be freely redistributed under
+                       the terms of the GNU General Public License.";
+    let banner = |name: &str| -> (&str, &str) {
+        match name {
+            "apt" => ("apt 2.8.3 (amd64)", "2.8.3"),
+            "dnf" => ("dnf5 version 5.4.3.0", "5.4.3.0"),
+            "yum" => ("3.4.3", "3.4.3"),
+            "apk" => ("apk-tools 3.0.8-r0, compiled for x86_64.", "3.0.8-r0"),
+            "pacman" => (PACMAN, "7.1.0"),
+            "zypper" => ("zypper 1.14.101", "1.14.101"),
+            "pkg" => ("2.7.5", "2.7.5"),
+            other => panic!("{other} has no row in the banner table"),
+        }
+    };
+    let mut walked = 0;
+    for (name, build) in SIMPLE_FAMILIES {
+        let mgr = build();
+        let (stdout, version) = banner(name);
+        let seam = super::super::shared::tool_seam_var(mgr.install_program());
+        let shim = cfgd_core::test_helpers::ToolShim::install(&seam, 0, stdout, "");
+        assert_eq!(
+            mgr.tool_version().as_deref(),
+            Some(version),
+            "{name}'s version is its install program's banner"
+        );
+        assert!(
+            shim.argv_log().contains("--version"),
+            "{name} asked the program at {seam} for its version"
+        );
+        walked += 1;
+    }
+    assert!(walked >= 7, "walked {walked} families");
 }
 
 #[test]
@@ -450,26 +476,20 @@ fn simple_manager_query_version_fns_name_their_own_manager_when_the_tool_is_miss
     let _path_lock = cfgd_core::test_helpers::path_env_mutation_guard();
     let _dirs = cfgd_core::test_helpers::BootstrappedPathDirsGuard::capture_and_clear();
     let _seams: Vec<_> = [
-        "CFGD_APT_CACHE_BIN",
-        "CFGD_DNF_BIN",
-        "CFGD_APK_BIN",
-        "CFGD_PACMAN_BIN",
-        "CFGD_ZYPPER_BIN",
-        "CFGD_PKG_BIN",
+        crate::seams::APT_CACHE_BIN_ENV,
+        crate::seams::DNF_BIN_ENV,
+        crate::seams::YUM_BIN_ENV,
+        crate::seams::APK_BIN_ENV,
+        crate::seams::PACMAN_BIN_ENV,
+        crate::seams::ZYPPER_BIN_ENV,
+        crate::seams::PKG_BIN_ENV,
     ]
     .iter()
     .map(|v| cfgd_core::test_helpers::EnvVarGuard::unset(v))
     .collect();
     let _empty = cfgd_core::test_helpers::EnvVarGuard::set("PATH", "");
 
-    let managers: Vec<SimpleManager> = vec![
-        apt_manager(),
-        dnf_manager(),
-        apk_manager(),
-        pacman_manager(),
-        zypper_manager(),
-        pkg_manager(),
-    ];
+    let managers: Vec<SimpleManager> = SIMPLE_FAMILIES.iter().map(|(_, build)| build()).collect();
     for mgr in &managers {
         let err = mgr
             .available_version("nonexistent-package-12345")
@@ -722,6 +742,64 @@ mod seam_tests {
         assert!(log.contains("-y"));
     }
 
+    /// The bare shape of every apt spawn — root, or this seam — hands debconf's
+    /// and needrestart's switches to apt-get through the environment, read
+    /// back from what the shim itself was spawned with. Each spawn path is
+    /// driven: install, uninstall, the index refresh, and the mediated
+    /// bootstrap's install. pkg's bootstrap switch is read the same way.
+    #[test]
+    #[serial]
+    fn apt_and_pkg_spawns_hand_their_env_to_the_tool_on_the_bare_shape() {
+        let _clear: Vec<_> = ["DEBIAN_FRONTEND", "NEEDRESTART_MODE", "ASSUME_ALWAYS_YES"]
+            .into_iter()
+            .map(cfgd_core::test_helpers::EnvVarGuard::unset)
+            .collect();
+        let printer = test_printer();
+        let state = test_state();
+        let cx = test_package_context(&printer, &state);
+
+        let shim = ToolShim::install(APT_GET_BIN_ENV, 0, "", "");
+        let apt = apt_manager();
+        let spawns: [(&str, &dyn Fn()); 4] = [
+            ("install", &|| apt.install(&["curl".into()], &cx).unwrap()),
+            ("uninstall", &|| {
+                apt.uninstall(&["curl".into()], &cx).unwrap()
+            }),
+            ("refresh_index", &|| apt.refresh_index(&cx).unwrap()),
+            ("family_install_command", &|| {
+                let status = super::super::family_install_command("apt", &["curl"])
+                    .expect("apt composes an install")
+                    .status()
+                    .expect("the shim spawns");
+                assert!(status.success());
+            }),
+        ];
+        for (n, (path, spawn)) in spawns.into_iter().enumerate() {
+            spawn();
+            assert_eq!(
+                shim.invocation_count(),
+                n + 1,
+                "{path} spawned apt-get once"
+            );
+            assert_eq!(
+                shim.env_seen("DEBIAN_FRONTEND").as_deref(),
+                Some("noninteractive"),
+                "{path}"
+            );
+            assert_eq!(
+                shim.env_seen("NEEDRESTART_MODE").as_deref(),
+                Some("a"),
+                "{path}"
+            );
+        }
+        drop(shim);
+
+        let shim = ToolShim::install(PKG_BIN_ENV, 0, "", "");
+        pkg_manager().refresh_index(&cx).unwrap();
+        assert_eq!(shim.invocation_count(), 1);
+        assert_eq!(shim.env_seen("ASSUME_ALWAYS_YES").as_deref(), Some("yes"));
+    }
+
     #[test]
     #[serial]
     fn zypper_uninstall_invokes_zypper_remove() {
@@ -845,16 +923,16 @@ mod seam_tests {
 #[test]
 #[serial_test::serial]
 fn every_unix_family_declares_the_privilege_its_install_needs() {
-    let families = [
-        ("apt", APT_GET_BIN_ENV),
-        ("dnf", DNF_BIN_ENV),
-        ("yum", YUM_BIN_ENV),
-        ("apk", APK_BIN_ENV),
-        ("pacman", PACMAN_BIN_ENV),
-        ("zypper", ZYPPER_BIN_ENV),
-        ("pkg", PKG_BIN_ENV),
-    ];
-    for (name, _) in families {
+    let families: Vec<(&str, String)> = SIMPLE_FAMILIES
+        .iter()
+        .map(|(name, build)| {
+            (
+                *name,
+                super::super::shared::tool_seam_var(build().install_program()),
+            )
+        })
+        .collect();
+    for (name, _) in &families {
         let mgr = simple_manager(name).unwrap_or_else(|| panic!("{name} is a family"));
         for (slot, cmd) in [
             ("install_cmd", Some(mgr.install_cmd)),
@@ -877,7 +955,7 @@ fn every_unix_family_declares_the_privilege_its_install_needs() {
         .map(|(_, seam)| cfgd_core::test_helpers::EnvVarGuard::unset(seam))
         .collect();
     let root = cfgd_core::is_root();
-    for (name, _) in families {
+    for (name, _) in &families {
         let cmd = family_install_command(name, &["ripgrep"])
             .unwrap_or_else(|| panic!("{name} composes an install"));
         let program = cmd.get_program().to_string_lossy().into_owned();
@@ -892,5 +970,230 @@ fn every_unix_family_declares_the_privilege_its_install_needs() {
                 "{name} must elevate an install an ordinary user cannot perform"
             );
         }
+    }
+}
+
+/// The sudo shape of an apt command, judged on the argv left after the `sudo`
+/// strip so it holds at either uid: sudo resets the environment, so the
+/// switches ride the argv through `env(1)`. Once `sudo` is gone the argv is the
+/// declaration itself, and the Command carries the switches instead.
+#[test]
+fn apt_spells_its_noninteractive_env_through_sudo_env() {
+    let mgr = apt_manager();
+    assert_eq!(
+        join_cmd(
+            &mgr.argv_after_strip(&["sudo", "apt-get", "install", "-y"]),
+            &["curl".to_string(), "wget".to_string()],
+        ),
+        "sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get install -y curl wget"
+    );
+    assert_eq!(
+        mgr.argv_after_strip(&["apt-get", "install", "-y"]),
+        ["apt-get", "install", "-y"]
+    );
+}
+
+/// Every verb slot of every family in [`SIMPLE_FAMILIES`] spawns with the
+/// family's environment and prints exactly the argv it spawns, and every apt
+/// slot that runs dpkg answers dpkg's conffile question up front while the
+/// index refresh, which runs no dpkg, carries neither option.
+///
+/// The families come from the table `simple_manager` resolves from, and each
+/// needs a row in the environment table below, so a new family fails here until its
+/// environment is named. `SimpleManager` is destructured with no `..`, so a new
+/// field fails to compile here until it is sorted into a walked verb slot or
+/// bound to `_` with the reason it takes no part.
+#[test]
+#[serial_test::serial]
+fn every_family_verb_spawns_with_the_family_env() {
+    const CONFFILE: [&str; 4] = [
+        "-o",
+        "Dpkg::Options::=--force-confdef",
+        "-o",
+        "Dpkg::Options::=--force-confold",
+    ];
+    let apt: &[(&str, &str)] = &[
+        ("DEBIAN_FRONTEND", "noninteractive"),
+        ("NEEDRESTART_MODE", "a"),
+    ];
+    let pkg: &[(&str, &str)] = &[("ASSUME_ALWAYS_YES", "yes")];
+    let expected_env = |name: &str| -> &[(&str, &str)] {
+        match name {
+            "apt" => apt,
+            "pkg" => pkg,
+            "dnf" | "yum" | "apk" | "pacman" | "zypper" => &[],
+            other => panic!("{other} has no row in the environment table"),
+        }
+    };
+
+    let managers: Vec<SimpleManager> = SIMPLE_FAMILIES
+        .iter()
+        .map(|(family, build)| {
+            let mgr = build();
+            assert_eq!(mgr.mgr_name, *family, "a table row names its own manager");
+            let resolved = simple_manager(family).unwrap_or_else(|| panic!("{family} resolves"));
+            assert_eq!(resolved.mgr_name, *family);
+            mgr
+        })
+        .collect();
+    let _seams: Vec<_> = managers
+        .iter()
+        .map(|mgr| {
+            cfgd_core::test_helpers::EnvVarGuard::unset(&super::super::shared::tool_seam_var(
+                mgr.install_program(),
+            ))
+        })
+        .collect();
+
+    let mut apt_dpkg_slots = 0;
+    for mgr in &managers {
+        let SimpleManager {
+            mgr_name: name,
+            // Read-only listing: a query asks no question, so it runs without the family
+            // environment.
+            list_cmd: _,
+            install_cmd,
+            uninstall_cmd,
+            update_cmd,
+            upgrade_cmd,
+            raise_verb: _,
+            ignore_update_exit: _,
+            env,
+            parse_list: _,
+            query_version: _,
+            is_available_fn: _,
+            list_with_versions: _,
+            aliases_fn: _,
+            pkg_version_memo: _,
+        } = mgr;
+        let expected = expected_env(name);
+        assert_eq!(*env, expected, "{name}'s declared environment");
+        assert_eq!(
+            super::super::shared::arm_tool(name),
+            Some(mgr.install_program()),
+            "{name}'s bootstrap arm spawns the program its own install runs"
+        );
+        // (slot, argv, whether the verb runs dpkg on an apt host)
+        for (slot, parts, runs_dpkg) in [
+            ("install_cmd", Some(*install_cmd), true),
+            ("uninstall_cmd", Some(*uninstall_cmd), true),
+            ("update_cmd", *update_cmd, false),
+            ("upgrade_cmd", *upgrade_cmd, true),
+        ] {
+            let Some(parts) = parts else { continue };
+
+            let under_sudo = mgr.argv_after_strip(parts);
+            let mut want: Vec<String> = Vec::new();
+            if !expected.is_empty() {
+                want.push("sudo".into());
+                want.push("env".into());
+                want.extend(expected.iter().map(|(k, v)| format!("{k}={v}")));
+                want.extend(parts[1..].iter().map(|s| s.to_string()));
+            } else {
+                want.extend(parts.iter().map(|s| s.to_string()));
+            }
+            assert_eq!(under_sudo, want, "{name}'s {slot} under sudo");
+
+            let cmd = mgr.spawn_command(parts);
+            let envs: Vec<_> = cmd.get_envs().collect();
+            for (k, v) in expected {
+                assert!(
+                    envs.contains(&(std::ffi::OsStr::new(k), Some(std::ffi::OsStr::new(v)))),
+                    "{name}'s {slot} spawns without {k}={v}: {envs:?}"
+                );
+            }
+            let spawned: Vec<String> = std::iter::once(cmd.get_program())
+                .chain(cmd.get_args())
+                .map(|a| a.to_string_lossy().into_owned())
+                .collect();
+            assert_eq!(
+                mgr.display_cmd(parts, &[]),
+                spawned.join(" "),
+                "{name}'s {slot} label must print the argv it spawns"
+            );
+
+            if *name == "apt" {
+                let holds = parts.windows(CONFFILE.len()).any(|w| w == CONFFILE);
+                if runs_dpkg {
+                    apt_dpkg_slots += 1;
+                    assert!(
+                        holds,
+                        "apt's {slot} runs dpkg without the conffile answer: {parts:?}"
+                    );
+                } else {
+                    assert!(
+                        !parts.iter().any(|t| t.starts_with("Dpkg::Options")),
+                        "apt's {slot} runs no dpkg: {parts:?}"
+                    );
+                }
+            }
+        }
+    }
+    assert!(
+        apt_dpkg_slots >= 2,
+        "the apt dpkg walk reached {apt_dpkg_slots} slots"
+    );
+}
+
+/// `zypper refresh` takes no `-y`, so the global `--non-interactive` is the
+/// only thing between a new repository key and a trust prompt waiting on
+/// stdin. Install and remove carry `-y`, zypper's alias for the same switch.
+#[test]
+fn zypper_refresh_runs_non_interactive() {
+    let mgr = zypper_manager();
+    assert_eq!(
+        mgr.update_cmd,
+        Some(&["sudo", "zypper", "--non-interactive", "refresh"][..])
+    );
+    assert!(mgr.install_cmd.contains(&"-y") && mgr.uninstall_cmd.contains(&"-y"));
+}
+
+/// Every program a family spawns has a [`PROGRAM_SEAMS`] row, and each row's
+/// seam is the name `strip_sudo_for_exec` derives for the same program, so the
+/// availability probe, the spawn and the sudo strip read one variable. A family
+/// whose install program had no row would answer unavailable on every host.
+/// Every row names a program a family command or a version query spawns, so a
+/// row nothing reads fails too.
+#[test]
+fn every_family_program_spawns_through_its_derived_seam() {
+    for (program, env) in PROGRAM_SEAMS {
+        assert_eq!(
+            *env,
+            super::super::shared::tool_seam_var(program),
+            "{program}'s seam row names the variable its sudo strip reads"
+        );
+    }
+    let mut spawned: std::collections::BTreeSet<&str> = Default::default();
+    for (name, build) in SIMPLE_FAMILIES {
+        for program in build().spawned_programs() {
+            assert!(
+                program_seam(program).is_some(),
+                "{name} spawns {program}, which has no row in PROGRAM_SEAMS"
+            );
+            spawned.insert(program);
+        }
+    }
+    // The version queries spawn by name through `cmd_with_seam`, read off the
+    // module's code with comments dropped.
+    let versions =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/packages/versions/mod.rs");
+    let production = cfgd_core::test_helpers::blank_comments(
+        &cfgd_core::test_helpers::production_slice_of(&versions),
+    );
+    let mut queried = 0;
+    for (at, _) in production.match_indices("cmd_with_seam(\"") {
+        let rest = &production[at + "cmd_with_seam(\"".len()..];
+        if let Some(program) = rest.split('"').next() {
+            queried += 1;
+            spawned.insert(program);
+        }
+    }
+    // apt-cache, apk, pkg twice, dpkg-query and rpm.
+    assert!(queried >= 6, "read {queried} version-query spawns");
+    for (program, _) in PROGRAM_SEAMS {
+        assert!(
+            spawned.contains(program),
+            "the PROGRAM_SEAMS row for {program} names a program nothing spawns"
+        );
     }
 }

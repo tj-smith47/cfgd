@@ -1,27 +1,18 @@
 use super::*;
-use cfgd_core::output::{Doc, OwnerLabel, Printer, Role};
+use cfgd_core::output::{Doc, OwnerLabel, Role};
 
-/// Every refusal `cfgd source add` can reach before it clones anything: the two
-/// argument contradictions and a name already subscribed.
-///
-/// Gathered into one answer so the arms that never narrate share ONE title:
-/// each is worded as an error line under the run's own heading, and a heading
-/// printed per arm would be three hatches for one shape.
-fn pre_clone_refusal(
-    printer: &Printer,
-    config_path: &Path,
-    source_name: &str,
-    args: &SourceAddArgs,
-) -> anyhow::Result<Option<anyhow::Error>> {
+/// The argument contradictions `cfgd source add` refuses before it reads the
+/// config or clones anything.
+fn argument_refusal(source_name: &str, args: &SourceAddArgs) -> Option<anyhow::Error> {
     // A pin selects its own git ref (tag or commit), so an explicit branch is
     // meaningless and contradictory.
     if args.branch.is_some() && args.pin_version.is_some() {
-        return Ok(Some(crate::cli::cli_error(
+        return Some(crate::cli::cli_error(
             source_name,
             "branch_pin_conflict",
             "--branch and --pin-version are mutually exclusive; a pin selects its own ref",
             serde_json::json!({}),
-        )));
+        ));
     }
 
     // Argument-injection guard: a `-`-leading pin would be parsed as a git flag
@@ -31,45 +22,63 @@ fn pre_clone_refusal(
         .as_deref()
         .is_some_and(|p| p.trim_start().starts_with('-'))
     {
-        return Ok(Some(crate::cli::cli_error(
+        return Some(crate::cli::cli_error(
             source_name,
             "invalid_pin_version",
             "--pin-version must not start with '-' (a leading dash is reserved for git flags)",
             serde_json::json!({}),
-        )));
+        ));
     }
+    None
+}
 
-    if config_path.exists() {
-        let mut cfg = config::load_config(config_path)?;
-        drain_config_deprecations(printer, &mut cfg);
-        if cfg.spec.sources.iter().any(|s| s.name == source_name) {
-            return Ok(Some(crate::cli::cli_error(
+/// The refusal for a name `document` already subscribes.
+fn already_subscribed(document: Option<&CfgdConfig>, source_name: &str) -> Option<anyhow::Error> {
+    document
+        .is_some_and(|cfg| cfg.spec.sources.iter().any(|s| s.name == source_name))
+        .then(|| {
+            crate::cli::cli_error(
                 source_name,
                 "already_exists",
                 format!(
                     "Source '{source_name}' already exists. Use `cfgd source update` to refresh."
                 ),
                 serde_json::json!({}),
-            )));
-        }
+            )
+        })
+}
+
+pub fn cmd_source_add(run: &RunContext<'_>, args: &SourceAddArgs) -> anyhow::Result<()> {
+    let config_path = &run.cli().config;
+    let subscribed = run_source_add(run, args, || {
+        Ok(if config_path.exists() {
+            Some(run.config()?)
+        } else {
+            None
+        })
+    })?;
+    if let Some(doc) = subscribed {
+        run.printer()
+            .emit(doc.hint(super::success_next_step(super::Mutation::SourceSubscribed)));
     }
-    Ok(None)
+    Ok(())
 }
 
-pub fn cmd_source_add(cli: &Cli, printer: &Printer, args: &SourceAddArgs) -> anyhow::Result<()> {
-    run_source_add(cli, printer, args, true)
-}
-
-/// The body of `cfgd source add`. `closing` is whether this add is the whole
-/// command: a `source replace` runs one inside its own report and closes on its
-/// own verdict, so the next-step hint belongs to the caller's last line, not to
-/// a `Subscribed` row mid-screen.
-pub(super) fn run_source_add(
-    cli: &Cli,
-    printer: &Printer,
+/// The body of `cfgd source add`, up to the `Subscribed` document it closes on,
+/// which the caller emits: a `source replace` runs one inside its own report
+/// and closes on its own verdict, so only a lone add carries the next-step
+/// hint. `None` is a subscription the operator declined, whose cancellation is
+/// already printed. `read_document` yields the config the add checks the name
+/// against (`None` when there is no file yet); it is asked only after the
+/// argument refusals, so a contradiction is reported ahead of a config that
+/// does not load.
+pub(super) fn run_source_add<'d>(
+    run: &RunContext<'_>,
     args: &SourceAddArgs,
-    closing: bool,
-) -> anyhow::Result<()> {
+    read_document: impl FnOnce() -> anyhow::Result<Option<&'d CfgdConfig>>,
+) -> anyhow::Result<Option<Doc>> {
+    let cli = run.cli();
+    let printer = run.printer();
     // Resolve the reference before anything reads the URL, so the inferred name,
     // the clone, and the persisted `spec.sources[].origin` all carry one string.
     // An existing local path stays itself (and is then refused by `load_source`
@@ -90,8 +99,18 @@ pub(super) fn run_source_add(
     let source_name = name
         .map(|s| s.to_string())
         .unwrap_or_else(|| infer_source_name(url));
+    // The argument refusals come first so a contradiction is reported ahead of
+    // a config that does not load; every refusal shares the one title below.
     let config_path = cli.config.clone();
-    if let Some(refusal) = pre_clone_refusal(printer, &config_path, &source_name, args)? {
+    let mut document = None;
+    let refusal = match argument_refusal(&source_name, args) {
+        Some(refusal) => Some(refusal),
+        None => {
+            document = read_document()?;
+            already_subscribed(document, &source_name)
+        }
+    };
+    if let Some(refusal) = refusal {
         // heading-first-ok: a refusal reaching no clone narrates nothing, so
         // the title has no wait to land with — it heads the error line below it
         printer.heading_owner_prefixed("Add", &OwnerLabel::new("source", &source_name));
@@ -101,9 +120,7 @@ pub(super) fn run_source_add(
     // Clone and parse the source
     let cache_dir = source_cache_dir(cli)?;
     let mut mgr = SourceManager::new(&cache_dir);
-    let allow_unsigned = config_path.exists()
-        && config::load_config(&config_path)
-            .is_ok_and(|c| c.spec.security.as_ref().is_some_and(|s| s.allow_unsigned));
+    let allow_unsigned = document.is_some_and(|c| c.spec.security_effective().allow_unsigned);
     mgr.set_allow_unsigned(allow_unsigned);
     let mut spec = SourceManager::build_source_spec(&source_name, url, profile);
     if let Some(b) = branch {
@@ -224,7 +241,7 @@ pub(super) fn run_source_add(
 
     // Interactive priority prompt (when --priority not specified on command line)
     let resolved_priority = if let Some(p) = priority {
-        cfgd_core::config::validate_source_priority(p).map_err(|m| anyhow::anyhow!(m))?
+        checked_priority(p, "--priority")?
     } else if args.yes {
         DEFAULT_NONINTERACTIVE_PRIORITY
     } else {
@@ -233,9 +250,7 @@ pub(super) fn run_source_add(
     };
 
     // Conflict preview: check for conflicts with current config before subscribing
-    if config_path.exists()
-        && let Ok(cfg) = config::load_config(&config_path)
-    {
+    if let Some(cfg) = document {
         let pdir = config_path
             .parent()
             .unwrap_or_else(|| Path::new("."))
@@ -306,7 +321,7 @@ pub(super) fn run_source_add(
                     "cancelled": true,
                 })),
         );
-        return Ok(());
+        return Ok(None);
     }
 
     // Build the source spec with user choices
@@ -371,31 +386,26 @@ pub(super) fn run_source_add(
     // this subscription activates, under its own `profile:<name>` owner, and a
     // headingless key/value pair restating it cannot be read on its own. The
     // payload below still carries the field.
-    let mut doc = Doc::new().status(Role::Ok, "Subscribed");
-    if closing {
-        doc = doc.hint(super::success_next_step(super::Mutation::SourceSubscribed));
-    }
-    let doc = doc.with_data(serde_json::json!({
-        "name": source_name,
-        "url": url,
-        "branch": source_spec.origin.branch,
-        "commit": cached.last_commit.clone().unwrap_or_default(),
-        "profile": selected_profile,
-        "priority": resolved_priority,
-        // Additive: the same manifest object `source show` carries, so a
-        // consumer scripting a subscription reads what it subscribed TO
-        // without a second `source show` call.
-        "manifest": super::show::source_manifest_output(manifest),
-    }));
-    printer.emit(doc);
-
-    Ok(())
+    Ok(Some(Doc::new().status(Role::Ok, "Subscribed").with_data(
+        serde_json::json!({
+            "name": source_name,
+            "url": url,
+            "branch": source_spec.origin.branch,
+            "commit": cached.last_commit.clone().unwrap_or_default(),
+            "profile": selected_profile,
+            "priority": resolved_priority,
+            // Additive: the same manifest object `source show` carries, so a
+            // consumer scripting a subscription reads what it subscribed TO
+            // without a second `source show` call.
+            "manifest": super::show::source_manifest_output(manifest),
+        }),
+    )))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cfgd_core::output::OutputFormat;
+    use cfgd_core::output::{OutputFormat, Printer};
 
     fn base_args(url: &str) -> SourceAddArgs {
         SourceAddArgs {
@@ -426,9 +436,12 @@ mod tests {
             color: crate::cli::ColorWhen::Auto,
             output: crate::cli::OutputFormatArg(OutputFormat::Table),
             list_envelope: false,
+            hints: false,
             no_hints: false,
             theme: None,
             mask_env_values: None,
+            migration_policy: None,
+            update_policy: None,
             jsonpath: None,
             yes: false,
             state_dir: None,
@@ -455,8 +468,9 @@ mod tests {
         args.branch = Some("main".into());
         args.pin_version = Some("v1.0.0".into());
 
-        let err = cmd_source_add(&cli, &printer, &args)
-            .expect_err("branch + pin must be rejected before any clone");
+        let err =
+            crate::cli::RunContext::for_test(&cli, &printer, |run| cmd_source_add(run, &args))
+                .expect_err("branch + pin must be rejected before any clone");
         drop(printer);
 
         let meta = meta_of(&err);
@@ -479,8 +493,9 @@ mod tests {
         let mut args = base_args("https://example.com/acme/dev.git");
         args.pin_version = Some("--upload-pack=evil".into());
 
-        let err = cmd_source_add(&cli, &printer, &args)
-            .expect_err("dash-leading pin is an argument-injection risk and must be rejected");
+        let err =
+            crate::cli::RunContext::for_test(&cli, &printer, |run| cmd_source_add(run, &args))
+                .expect_err("dash-leading pin is an argument-injection risk and must be rejected");
         drop(printer);
 
         let meta = meta_of(&err);
@@ -501,7 +516,9 @@ mod tests {
         let mut args = base_args("https://example.com/acme/dev.git");
         args.pin_version = Some("  -x".into());
 
-        let err = cmd_source_add(&cli, &printer, &args).expect_err("whitespace+dash pin rejected");
+        let err =
+            crate::cli::RunContext::for_test(&cli, &printer, |run| cmd_source_add(run, &args))
+                .expect_err("whitespace+dash pin rejected");
         drop(printer);
 
         assert_eq!(meta_of(&err).error_kind, "invalid_pin_version");
@@ -523,8 +540,9 @@ mod tests {
 
         let args = base_args("https://example.com/acme/dev.git");
 
-        let err = cmd_source_add(&cli, &printer, &args)
-            .expect_err("re-adding an existing source name must error before clone");
+        let err =
+            crate::cli::RunContext::for_test(&cli, &printer, |run| cmd_source_add(run, &args))
+                .expect_err("re-adding an existing source name must error before clone");
         drop(printer);
 
         let meta = meta_of(&err);
@@ -558,8 +576,10 @@ mod tests {
         let cli = cli_for(config_path);
         let (printer, _cap) = Printer::for_test_doc();
 
-        let err = cmd_source_add(&cli, &printer, &base_args("acme/dev"))
-            .expect_err("shorthand for an already-subscribed repo must error before clone");
+        let err = crate::cli::RunContext::for_test(&cli, &printer, |run| {
+            cmd_source_add(run, &base_args("acme/dev"))
+        })
+        .expect_err("shorthand for an already-subscribed repo must error before clone");
         drop(printer);
 
         let meta = meta_of(&err);
@@ -618,8 +638,9 @@ mod tests {
         let mut args = base_args("acme/dev");
         args.name = Some("shorthand".into());
 
-        let err = cmd_source_add(&cli, &printer, &args)
-            .expect_err("an uncreatable source cache fails the load before any clone");
+        let err =
+            crate::cli::RunContext::for_test(&cli, &printer, |run| cmd_source_add(run, &args))
+                .expect_err("an uncreatable source cache fails the load before any clone");
         drop(printer);
 
         assert_eq!(
@@ -644,8 +665,9 @@ mod tests {
         let mut args = base_args("acme/dev");
         args.name = Some("local".into());
 
-        let err = cmd_source_add(&cli, &printer, &args)
-            .expect_err("a local path is not a valid source origin");
+        let err =
+            crate::cli::RunContext::for_test(&cli, &printer, |run| cmd_source_add(run, &args))
+                .expect_err("a local path is not a valid source origin");
         drop(printer);
 
         assert_eq!(
@@ -678,7 +700,8 @@ mod tests {
         args.name = Some("custom".into());
 
         let err =
-            cmd_source_add(&cli, &printer, &args).expect_err("duplicate explicit name must error");
+            crate::cli::RunContext::for_test(&cli, &printer, |run| cmd_source_add(run, &args))
+                .expect_err("duplicate explicit name must error");
         drop(printer);
 
         let meta = meta_of(&err);

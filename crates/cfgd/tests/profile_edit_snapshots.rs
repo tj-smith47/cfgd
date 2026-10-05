@@ -19,7 +19,7 @@
 
 #![cfg(unix)]
 
-mod common;
+use cfgd_test_fixtures as common;
 
 use std::path::Path;
 
@@ -68,6 +68,7 @@ fn profile_edit_valid_human() {
 
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc();
+    let printer = printer.with_hints_enabled(true);
     let _editor = EnvVarGuard::set("EDITOR", "/usr/bin/true");
 
     cmd_profile_edit(&cli, &printer, "default").unwrap();
@@ -161,6 +162,7 @@ fn profile_edit_validation_error_accept_retry_human() {
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) =
         Printer::for_test_doc_with_prompt_responses(vec![PromptAnswer::Confirm(true)]);
+    let printer = printer.with_hints_enabled(true);
     let _editor = EnvVarGuard::set("EDITOR", script_path.to_str().unwrap());
 
     cmd_profile_edit(&cli, &printer, "default")

@@ -80,9 +80,9 @@ spec:
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `name` | string | Yes | | Module name. Must be unique within a registry. Referenced by profiles via `spec.modules`. |
-| `description` | string | No | | Human-readable description of what this module provides. |
-| `version` | string | No | | The module's own release version, as strict semver — `MAJOR.MINOR.PATCH` with optional pre-release and build metadata. See [metadata.version](#metadataversion). |
+| `name` | string | Yes | — | Module name. Must be unique within a registry. Referenced by profiles via `spec.modules`. |
+| `description` | string | No | — | Human-readable description of what this module provides. |
+| `version` | string | No | — | The module's own release version, as strict semver — `MAJOR.MINOR.PATCH` with optional pre-release and build metadata. See [metadata.version](#metadataversion). |
 
 ---
 
@@ -131,7 +131,7 @@ cfgd module show nvim -o jsonpath='{.metadata.version}'   # → 1.4.0
 | `env` | list | No | `[]` | Environment variables to export, each optionally gated to named platforms. See [spec.env[]](#specenv). |
 | `aliases` | list | No | `[]` | Shell aliases to install, each optionally gated to named platforms. See [spec.aliases[]](#specaliases). |
 | `system` | map | No | `{}` | System configurator settings. Keys are configurator names, values are configurator-specific config. Same schema as profile `spec.system`. See [spec.system](#specsystem). |
-| `scripts` | object | No | | Lifecycle scripts. See [spec.scripts](#specscripts). |
+| `scripts` | object | No | — | Lifecycle scripts. See [spec.scripts](#specscripts). |
 
 ---
 
@@ -196,14 +196,14 @@ based on `prefer` order and platform availability.
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `name` | string | Yes | | Canonical package name. Used as the install name unless overridden by `aliases`. |
-| `minVersion` | string | No | | Minimum acceptable installed version (semver, 1-3 part). cfgd skips installation if a newer version is already present. |
-| `prefer` | list of string | No | | Ordered list of package managers to try. cfgd tries each in order and uses the first available. The special value `"script"` directs cfgd to run the `script` field. When omitted, the platform's default manager is used. |
+| `name` | string | Yes | — | Canonical package name. Used as the install name unless overridden by `aliases`. |
+| `minVersion` | string | No | — | Minimum acceptable installed version (semver, 1-3 part). cfgd skips installation if a newer version is already present. |
+| `prefer` | list of string | No | — | Ordered list of package managers to try. cfgd tries each in order and uses the first available. The special value `"script"` directs cfgd to run the `script` field. When omitted, the platform's default manager is used. |
 | `aliases` | map | No | `{}` | Per-manager name overrides. Key is the manager name, value is the package name to use with that manager. Use when a package has different names across managers. |
-| `script` | string | No | | Inline shell script or path to a script. Executed when `"script"` appears in `prefer`. |
-| `creates` | string (path) | No | | Idempotency guard for a `prefer: [script]` install: skip the script if this path already exists. `~` expands to home; a relative path resolves against the script's working directory. Ignored for manager-backed installs. |
-| `onlyIf` | string (command) | No | | Idempotency guard for a `prefer: [script]` install: run the script only if this command exits **zero**. Ignored for manager-backed installs. |
-| `unless` | string (command) | No | | Idempotency guard for a `prefer: [script]` install: run the script only if this command exits **non-zero**. Ignored for manager-backed installs. |
+| `script` | string | No | — | Inline shell script or path to a script. Executed when `"script"` appears in `prefer`. |
+| `creates` | string (path) | No | — | Idempotency guard for a `prefer: [script]` install: skip the script if this path already exists. `~` expands to home; a relative path resolves against the script's working directory. Ignored for manager-backed installs. |
+| `onlyIf` | string (command) | No | — | Idempotency guard for a `prefer: [script]` install: run the script only if this command exits **zero**. Ignored for manager-backed installs. |
+| `unless` | string (command) | No | — | Idempotency guard for a `prefer: [script]` install: run the script only if this command exits **non-zero**. Ignored for manager-backed installs. |
 | `deny` | list of string | No | `[]` | Package manager names that must not be used for this package, even if available. |
 | `platforms` | list of string | No | `[]` | Platform filter. When set, this entry is skipped on non-matching platforms. Values: OS (`linux`, `macos`), distro (`ubuntu`, `fedora`, `arch`), or architecture (`x86_64`, `aarch64`). Omit to match all platforms. |
 
@@ -286,13 +286,13 @@ same deployment strategies as profile files. Paths are resolved relative to the 
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `source` | string | Only when `strategy` is not `Patch` | | Path to the source file or directory, relative to the module directory. Also accepts a git URL with `@ref` suffix (e.g. `https://github.com/user/nvim-config.git@v2.1.0`) to clone a remote source. Not required when `strategy: Patch`. |
-| `target` | string | Yes | | Absolute destination path on the machine. Supports `~/` expansion. |
+| `source` | string | Only when `strategy` is not `Patch` | — | Path to the source file or directory, relative to the module directory. Also accepts a git URL with `@ref` suffix (e.g. `https://github.com/user/nvim-config.git@v2.1.0`) to clone a remote source. Not required when `strategy: Patch`. |
+| `target` | string | Yes | — | Absolute destination path on the machine. Supports `~/` expansion. |
 | `strategy` | enum | No | Global `fileStrategy` | Deployment strategy for this file. Overrides the global default from `cfgd.yaml`. See [FileStrategy values](#filestrategy-values). |
 | `private` | bool | No | `false` | When `true`, the source file is local-only: automatically added to `.gitignore` and silently skipped on machines where it does not exist. |
-| `encryption` | object | No | | Encryption enforcement for this file. Has `backend` (`"sops"` or `"age"`) and `mode` (`InRepo` or `Always`, default `InRepo`). Rejected with `strategy: Patch`, which has no source to enforce it on. Same semantics as profile managed-file encryption — see the encryption fields in `docs/spec/profile.md`. |
-| `permissions` | string | No | | Octal permission mode to enforce on the deployed file (e.g. `"755"`). With `strategy: Symlink` the mode is set on the source file the link points at, which is what the link resolves to. Applied after deployment; ignored on Windows (NTFS uses inherited ACLs). |
-| `patch` | object | Only when `strategy: Patch` | | Structured merge or script configuration, used only when `strategy: Patch`. Has `format` (`Ini`/`Json`/`Yaml`/`Toml`, inferred from `target`'s extension when omitted), `ensure` (keys/values to deep-merge into the target), and `script` (a script that receives the target's current content on stdin and writes the new content to stdout). Exactly one of `ensure` or `script` must be set. See [FileStrategy values](#filestrategy-values). |
+| `encryption` | object | No | — | Encryption enforcement for this file. Has `backend` (`"sops"` or `"age"`) and `mode` (`InRepo` or `Always`, default `InRepo`). Rejected with `strategy: Patch`, which has no source to enforce it on. Same semantics as profile managed-file encryption — see the encryption fields in `docs/spec/profile.md`. |
+| `permissions` | string | No | — | Octal permission mode to enforce on the deployed file (e.g. `"755"`). With `strategy: Symlink` the mode is set on the source file the link points at, which is what the link resolves to. Applied after deployment; ignored on Windows (NTFS uses inherited ACLs). |
+| `patch` | object | Only when `strategy: Patch` | — | Structured merge or script configuration, used only when `strategy: Patch`. Has `format` (`Ini`/`Json`/`Yaml`/`Toml`, inferred from `target`'s extension when omitted), `ensure` (keys/values to deep-merge into the target), and `script` (a script that receives the target's current content on stdin and writes the new content to stdout). Exactly one of `ensure` or `script` must be set. See [FileStrategy values](#filestrategy-values). |
 
 **Example:**
 ```yaml
@@ -339,8 +339,8 @@ over the profile's value.
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `name` | string | Yes | | Environment variable name. |
-| `value` | string | Yes | | Value to assign. |
+| `name` | string | Yes | — | Environment variable name. |
+| `value` | string | Yes | — | Value to assign. |
 | `platforms` | list of string | No | `[]` | Platform tags gating this entry alone. Same vocabulary as [`spec.platforms`](#specplatforms). |
 
 `platforms` is the third level of platform gating cfgd offers, below the whole module
@@ -376,8 +376,8 @@ name conflicts.
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `name` | string | Yes | | Alias name (the command you type). |
-| `command` | string | Yes | | Shell command the alias expands to. |
+| `name` | string | Yes | — | Alias name (the command you type). |
+| `command` | string | Yes | — | Shell command the alias expands to. |
 | `platforms` | list of string | No | `[]` | Platform tags gating this entry alone. Same vocabulary as [`spec.platforms`](#specplatforms). |
 
 `platforms` gates one alias, exactly as [`spec.env[]`](#specenv)'s does.
@@ -470,7 +470,7 @@ See [Lifecycle Scripts](../lifecycle-scripts.md#working-directory) for the full 
 
 Set `interactive: true` on a script entry that needs to prompt the user (for example, pausing until a manual step is done). The script runs **attached to the terminal** (inherited stdin/stdout/stderr, no spinner, no output capture) and is **not** subject to the idle timeout, because an interactive step is attended by definition.
 
-An interactive script requires a TTY. When stdin is **not** a terminal (CI, piped input, or any run by the `cfgd daemon`, which never has a TTY), the script is **skipped with a warning** rather than hanging on instant EOF, and reports `changed=false`. This is the intended daemon-safe behavior: interactive steps run only during an attended `cfgd apply`, never under unattended reconcile.
+An interactive script requires a TTY. When stdin is **not** a terminal (CI, piped input, or any run by the `cfgd daemon`, which never has a TTY), the script is **skipped with a warning**, so it cannot hang on instant EOF, and reports `changed=false`. This is the intended daemon-safe behavior: interactive steps run only during an attended `cfgd apply`.
 
 The child shares cfgd's own process group instead of getting a new detached one, so the terminal's foreground group still includes it: a Ctrl-C typed at the terminal reaches the script directly, and a raw-mode TUI or a `sudo` password prompt behaves normally. By default an interactive script has **no timeout at all**: force-killing a step that's mid-raw-mode or waiting on a password would be worse than an unbounded wait. Set `timeout:` on the entry when a step does need a ceiling; once it elapses cfgd terminates the script (SIGTERM, then SIGKILL after a grace period).
 

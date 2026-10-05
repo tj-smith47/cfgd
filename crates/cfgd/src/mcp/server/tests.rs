@@ -11,7 +11,7 @@ use super::*;
 fn the_server_serves_the_store_at_the_resolved_directory() {
     let tmp = tempfile::TempDir::new().unwrap();
     let _home = cfgd_core::with_test_home_guard(tmp.path());
-    let _cfgd = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_STATE_DIR");
+    let _cfgd = cfgd_core::test_helpers::EnvVarGuard::unset(cfgd_core::CFGD_STATE_DIR_ENV);
     let _sd = cfgd_core::test_helpers::EnvVarGuard::unset("STATE_DIRECTORY");
 
     let resolved = crate::cli::run_state_dir(None, cfgd_core::Scope::User)

@@ -28,6 +28,17 @@ cfgd manages packages across 18 package managers (Homebrew manages taps, formula
 Every family whose command above opens on `sudo` leads every command it builds
 with it. cfgd drops the `sudo` when it already runs as root.
 
+apt runs non-interactively: every `apt-get` cfgd starts carries
+`DEBIAN_FRONTEND=noninteractive` and `NEEDRESTART_MODE=a` (through
+`sudo env …` when it elevates), so a package's debconf question or
+needrestart's restart menu never stops an install. For the same reason pkg
+runs with `ASSUME_ALWAYS_YES=yes` and zypper refreshes with
+`--non-interactive`. When a package ships a new version of a configuration file
+you edited, apt keeps your edited file, and takes dpkg's default answer in
+every other case. apt and pkg elevate through `sudo env …`, so a sudoers rule that
+limits your user to specific commands must also allow `/usr/bin/env`; a rule of
+`ALL` needs nothing more.
+
 Package managers that aren't installed on the current system are silently skipped. `cfgd apply --dry-run` shows which managers will be used and which packages will be installed or removed.
 
 ## npm global-install prefix
@@ -52,11 +63,17 @@ as installed:
 The unprivileged arm is proven on a real host as well as in unit tests: CI's
 FreeBSD job runs `tests/real-host/freebsd-npm-prefix.sh` (the
 `task test:freebsd:npm-prefix` target) against the `www/npm` package, whose
-configured prefix is the root-owned `/usr/local`. The script itself needs root
-to install that package and create the test account, and it runs every `cfgd`
-invocation as the unprivileged user, asserting that a declared package's binary
-lands in `$HOME/.npm-global/bin` and that the generated env file puts that
-directory on `PATH`.
+configured prefix is the root-owned `/usr/local`. The script needs root to
+install that package and create the test account, and it runs every `cfgd`
+invocation as the unprivileged user against a module declaring `prefer: [npm]`,
+asserting that the package's binary lands in `$HOME/.npm-global/bin`, that the
+generated env file puts that directory on `PATH`, and that a second apply plans
+no work.
+
+npm's own configured prefix is untouched throughout: `npm config get prefix`
+still answers `/usr/local` for that user. cfgd passes `--prefix` on each global
+invocation and writes neither `npm_config_prefix` nor `~/.npmrc`, so nothing in
+the user's npm configuration changes.
 
 The first time the fallback is used, `cfgd apply` prints a one-time notice
 naming the fallback prefix. Nothing is asked of you: `$HOME/.npm-global` is a
@@ -468,9 +485,9 @@ packages:
       snap: nvim
 ```
 
-cfgd picks the first available manager that satisfies the version constraint, using `aliases` to map package names where they differ. A manager that cannot state what it offers is not a manager that failed the constraint: the entry resolves onto it anyway, with the floor carried to the live check below rather than ending the run.
+cfgd picks the first available manager that satisfies the version constraint, using `aliases` to map package names where they differ. A manager that cannot state what it offers has not failed the constraint: the entry resolves onto it anyway, with the floor carried to the live check below, and the run goes on. A floor no available manager can meet, on a package that names a manager cfgd can bootstrap, is a question: see the resolution algorithm in [modules.md](modules.md#resolution-algorithm).
 
-A `minVersion` is a standing declaration, not a one-time resolution check: every drift surface (`cfgd diff`, `cfgd status --scan`, `cfgd verify`, and each of their `--module` scoped forms) compares the version the manager reports INSTALLED against the floor, so a package that ages out of its constraint is drift rather than convergence. A manager that cannot state an installed version (apk, pacman, zypper and FreeBSD `pkg` list names only) makes that floor unanswerable: the surfaces report it as a check that could not run and exit `1`, never as clean. The same holds for a version stated in a form nothing can compare against (a `git-20240101` snapshot tag, say), and for the DECLARATION itself: a `minVersion` written in a form its manager cannot read (`>=1.2`, `1.2.x`) is reported as a check that could not run rather than as a package permanently below its floor. A leading `v` is not such a form: `minVersion: "v1.2.0"` is the same floor as `1.2.0`.
+A `minVersion` is a standing declaration: every drift surface (`cfgd diff`, `cfgd status --scan`, `cfgd verify`, and each of their `--module` scoped forms) compares the version the manager reports INSTALLED against the floor, so a package that ages out of its constraint is drift. A manager that cannot state an installed version (apk, pacman, zypper and FreeBSD `pkg` list names only) makes that floor unanswerable: the surfaces report it as a check that could not run and exit `1`. The same holds for a version stated in a form nothing can compare against (a `git-20240101` snapshot tag, say), and for the DECLARATION itself: a `minVersion` written in a form its manager cannot read (`>=1.2`, `1.2.x`) is reported as a check that could not run. A leading `v` is not such a form: `minVersion: "v1.2.0"` is the same floor as `1.2.0`.
 
 Distro managers do not report upstream versions: `apt` states `vim` as `2:8.2.3995-1ubuntu2`, where `2:` is dpkg's epoch and `-1ubuntu2` the distro's own packaging revision. Neither part is the software's version, so for the distro families (`apt`, `dnf`, `yum`, `apk`, `pacman`, `zypper`) cfgd compares the upstream part alone: `minVersion: "8.2"` is met by `2:8.2.3995-1ubuntu2`.
 

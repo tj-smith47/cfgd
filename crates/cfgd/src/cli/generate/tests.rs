@@ -1069,9 +1069,12 @@ mod cmd_generate_mockito {
             color: crate::cli::ColorWhen::Auto,
             output: super::super::super::OutputFormatArg(cfgd_core::output::OutputFormat::Table),
             list_envelope: false,
+            hints: false,
             no_hints: false,
             theme: None,
             mask_env_values: None,
+            migration_policy: None,
+            update_policy: None,
             jsonpath: None,
             yes: false,
             state_dir: None,
@@ -1090,7 +1093,7 @@ mod cmd_generate_mockito {
         let _api = EnvVarGuard::set("ANTHROPIC_API_KEY", "test-key-abc");
 
         let mut server = mockito::Server::new();
-        let _url = EnvVarGuard::set("CFGD_ANTHROPIC_URL", &server.url());
+        let _url = EnvVarGuard::set(cfgd_core::CFGD_ANTHROPIC_URL_ENV, &server.url());
 
         // Single API turn — text-only response with end_turn breaks the
         // loop after one iteration without spawning any tool dispatch.
@@ -1113,6 +1116,8 @@ mod cmd_generate_mockito {
 
         let cli = test_cli(tmp.path().join("cfgd.yaml"));
         let (printer, buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+        // Hints are off by default; this run's closing instruction is asserted.
+        let printer = printer.with_hints_enabled(true);
         let args = GenerateArgs {
             target: None,
             model: None,
@@ -1123,7 +1128,7 @@ mod cmd_generate_mockito {
             home: None,
         };
 
-        cmd_generate(&cli, &printer, &args)
+        crate::cli::RunContext::for_test(&cli, &printer, |run| cmd_generate(run, &args))
             .expect("cmd_generate should succeed against the text-only mock");
 
         mock.assert();
@@ -1155,7 +1160,7 @@ mod cmd_generate_mockito {
         let _api = EnvVarGuard::set("ANTHROPIC_API_KEY", "test-key-abc");
 
         let mut server = mockito::Server::new();
-        let _url = EnvVarGuard::set("CFGD_ANTHROPIC_URL", &server.url());
+        let _url = EnvVarGuard::set(cfgd_core::CFGD_ANTHROPIC_URL_ENV, &server.url());
 
         let mock = server
             .mock("POST", "/v1/messages")
@@ -1185,7 +1190,8 @@ mod cmd_generate_mockito {
             home: None,
         };
 
-        cmd_generate(&cli, &printer, &args).expect("cmd_generate (module target) should succeed");
+        crate::cli::RunContext::for_test(&cli, &printer, |run| cmd_generate(run, &args))
+            .expect("cmd_generate (module target) should succeed");
         mock.assert();
     }
 
@@ -1209,7 +1215,7 @@ mod cmd_generate_mockito {
         let _api = EnvVarGuard::set("ANTHROPIC_API_KEY", "test-key-xyz");
 
         let mut server = mockito::Server::new();
-        let _url = EnvVarGuard::set("CFGD_ANTHROPIC_URL", &server.url());
+        let _url = EnvVarGuard::set(cfgd_core::CFGD_ANTHROPIC_URL_ENV, &server.url());
 
         let turn1 = server
             .mock("POST", "/v1/messages")
@@ -1263,7 +1269,7 @@ mod cmd_generate_mockito {
             home: None,
         };
 
-        cmd_generate(&cli, &printer, &args)
+        crate::cli::RunContext::for_test(&cli, &printer, |run| cmd_generate(run, &args))
             .expect("two-turn conversation must complete without error");
 
         // Both mocks fired exactly once → the loop made two API calls.
@@ -1299,7 +1305,7 @@ mod cmd_generate_mockito {
         let _api = EnvVarGuard::set("ANTHROPIC_API_KEY", "test-key-pyaml");
 
         let mut server = mockito::Server::new();
-        let _url = EnvVarGuard::set("CFGD_ANTHROPIC_URL", &server.url());
+        let _url = EnvVarGuard::set(cfgd_core::CFGD_ANTHROPIC_URL_ENV, &server.url());
 
         let turn1 = server
             .mock("POST", "/v1/messages")
@@ -1354,7 +1360,7 @@ mod cmd_generate_mockito {
             home: None,
         };
 
-        cmd_generate(&cli, &printer, &args)
+        crate::cli::RunContext::for_test(&cli, &printer, |run| cmd_generate(run, &args))
             .expect("present_yaml + Accept two-turn loop must succeed");
 
         turn1.assert();
@@ -1378,8 +1384,8 @@ mod cmd_generate_mockito {
     #[serial]
     fn cmd_generate_aborts_when_consent_prompt_declined() {
         // Drives the consent-disclosure branch with yes=false. The
-        // Printer::for_test_at(cfgd_core::output::Verbosity::Normal) prompt_confirm returns Err in non-interactive
-        // mode (via non_interactive_err) → `let proceed = ...?` propagates
+        // Printer::for_test_at(cfgd_core::output::Verbosity::Normal) prompt_confirm returns Err in
+        // non-interactive mode (via non_interactive_err) → `let proceed = ...?` propagates
         // the Err out of cmd_generate. The user-facing contract is that the API
         // is never hit.
         let tmp = tempfile::tempdir().unwrap();
@@ -1387,7 +1393,7 @@ mod cmd_generate_mockito {
         let _api = EnvVarGuard::set("ANTHROPIC_API_KEY", "test-key-xyz");
 
         let mut server = mockito::Server::new();
-        let _url = EnvVarGuard::set("CFGD_ANTHROPIC_URL", &server.url());
+        let _url = EnvVarGuard::set(cfgd_core::CFGD_ANTHROPIC_URL_ENV, &server.url());
 
         // A mock that MUST NOT fire — if the consent path failed open and
         // an HTTP call went out, this would record a hit. This asserts below
@@ -1419,7 +1425,8 @@ mod cmd_generate_mockito {
             home: None,
         };
 
-        let result = cmd_generate(&cli, &printer, &args);
+        let result =
+            crate::cli::RunContext::for_test(&cli, &printer, |run| cmd_generate(run, &args));
         // Either:
         //   (a) prompt_confirm returns Err → cmd_generate returns Err via `?`
         //   (b) some prompt impls return Ok(false) → "Aborted." printed + Ok
@@ -1479,7 +1486,7 @@ mod cmd_generate_mockito {
             home: None,
         };
 
-        let err = cmd_generate(&cli, &printer, &args)
+        let err = crate::cli::RunContext::for_test(&cli, &printer, |run| cmd_generate(run, &args))
             .expect_err("missing API key should surface as an error");
         let msg = err.to_string();
         assert!(
@@ -1523,7 +1530,7 @@ mod cmd_generate_mockito {
             .expect("git config name must succeed");
 
         let mut server = mockito::Server::new();
-        let _url = EnvVarGuard::set("CFGD_ANTHROPIC_URL", &server.url());
+        let _url = EnvVarGuard::set(cfgd_core::CFGD_ANTHROPIC_URL_ENV, &server.url());
 
         let turn1 = server
             .mock("POST", "/v1/messages")
@@ -1583,9 +1590,12 @@ mod cmd_generate_mockito {
             color: crate::cli::ColorWhen::Auto,
             output: super::super::super::OutputFormatArg(cfgd_core::output::OutputFormat::Table),
             list_envelope: false,
+            hints: false,
             no_hints: false,
             theme: None,
             mask_env_values: None,
+            migration_policy: None,
+            update_policy: None,
             jsonpath: None,
             yes: false,
             state_dir: None,
@@ -1605,7 +1615,8 @@ mod cmd_generate_mockito {
             home: None,
         };
 
-        cmd_generate(&cli, &printer, &args).expect("two-turn write_module_yaml loop must succeed");
+        crate::cli::RunContext::for_test(&cli, &printer, |run| cmd_generate(run, &args))
+            .expect("two-turn write_module_yaml loop must succeed");
 
         turn1.assert();
         turn2.assert();
@@ -1629,7 +1640,7 @@ mod cmd_generate_mockito {
         let _api = EnvVarGuard::set("ANTHROPIC_API_KEY", "test-key-prof");
 
         let mut server = mockito::Server::new();
-        let _url = EnvVarGuard::set("CFGD_ANTHROPIC_URL", &server.url());
+        let _url = EnvVarGuard::set(cfgd_core::CFGD_ANTHROPIC_URL_ENV, &server.url());
 
         let mock = server
             .mock("POST", "/v1/messages")
@@ -1663,7 +1674,8 @@ mod cmd_generate_mockito {
             home: None,
         };
 
-        cmd_generate(&cli, &printer, &args).expect("profile-target one-turn loop must succeed");
+        crate::cli::RunContext::for_test(&cli, &printer, |run| cmd_generate(run, &args))
+            .expect("profile-target one-turn loop must succeed");
         mock.assert();
         let output = cfgd_core::test_helpers::captured_text(&buf);
         assert!(
@@ -1680,7 +1692,7 @@ mod cmd_generate_mockito {
         let _api = EnvVarGuard::set("ANTHROPIC_API_KEY", "test-key-err");
 
         let mut server = mockito::Server::new();
-        let _url = EnvVarGuard::set("CFGD_ANTHROPIC_URL", &server.url());
+        let _url = EnvVarGuard::set(cfgd_core::CFGD_ANTHROPIC_URL_ENV, &server.url());
 
         let turn1 = server
             .mock("POST", "/v1/messages")
@@ -1731,7 +1743,7 @@ mod cmd_generate_mockito {
             home: None,
         };
 
-        cmd_generate(&cli, &printer, &args)
+        crate::cli::RunContext::for_test(&cli, &printer, |run| cmd_generate(run, &args))
             .expect("tool error path must complete; cmd_generate returns Ok even on tool error");
         turn1.assert();
         turn2.assert();
@@ -1750,7 +1762,7 @@ mod cmd_generate_mockito {
         let _api = EnvVarGuard::set("ANTHROPIC_API_KEY", "test-key-abort");
 
         let mut server = mockito::Server::new();
-        let _url = EnvVarGuard::set("CFGD_ANTHROPIC_URL", &server.url());
+        let _url = EnvVarGuard::set(cfgd_core::CFGD_ANTHROPIC_URL_ENV, &server.url());
 
         let must_not_fire = server
             .mock("POST", "/v1/messages")
@@ -1775,8 +1787,8 @@ mod cmd_generate_mockito {
             home: None,
         };
 
-        cmd_generate(&cli, &printer, &args)
-            .expect("declining consent must return Ok with an 'Aborted.' doc, not Err");
+        crate::cli::RunContext::for_test(&cli, &printer, |run| cmd_generate(run, &args))
+            .expect("declining consent returns Ok with an 'Aborted.' doc");
         must_not_fire.assert();
         let output = cfgd_core::test_helpers::captured_text(&buf);
         assert!(
@@ -1820,7 +1832,7 @@ mod cmd_generate_mockito {
             .expect("git config name");
 
         let mut server = mockito::Server::new();
-        let _url = EnvVarGuard::set("CFGD_ANTHROPIC_URL", &server.url());
+        let _url = EnvVarGuard::set(cfgd_core::CFGD_ANTHROPIC_URL_ENV, &server.url());
 
         let turn1 = server
             .mock("POST", "/v1/messages")
@@ -1880,9 +1892,12 @@ mod cmd_generate_mockito {
             color: crate::cli::ColorWhen::Auto,
             output: super::super::super::OutputFormatArg(cfgd_core::output::OutputFormat::Table),
             list_envelope: false,
+            hints: false,
             no_hints: false,
             theme: None,
             mask_env_values: None,
+            migration_policy: None,
+            update_policy: None,
             jsonpath: None,
             yes: false,
             state_dir: None,
@@ -1908,7 +1923,7 @@ mod cmd_generate_mockito {
             home: None,
         };
 
-        cmd_generate(&cli, &printer, &args)
+        crate::cli::RunContext::for_test(&cli, &printer, |run| cmd_generate(run, &args))
             .expect("consent + commit confirms must drive a successful end-to-end commit");
 
         turn1.assert();
@@ -1928,7 +1943,7 @@ mod cmd_generate_mockito {
         let _api = EnvVarGuard::set("ANTHROPIC_API_KEY", "test-key-nocommit");
 
         let mut server = mockito::Server::new();
-        let _url = EnvVarGuard::set("CFGD_ANTHROPIC_URL", &server.url());
+        let _url = EnvVarGuard::set(cfgd_core::CFGD_ANTHROPIC_URL_ENV, &server.url());
 
         let turn1 = server
             .mock("POST", "/v1/messages")
@@ -1988,7 +2003,7 @@ mod cmd_generate_mockito {
             home: None,
         };
 
-        cmd_generate(&cli, &printer, &args)
+        crate::cli::RunContext::for_test(&cli, &printer, |run| cmd_generate(run, &args))
             .expect("declining commit must still return Ok and just skip the commit");
         turn1.assert();
         turn2.assert();

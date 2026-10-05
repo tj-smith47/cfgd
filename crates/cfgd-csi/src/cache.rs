@@ -5,7 +5,7 @@ use cfgd_core::PathDisplayExt;
 use crate::errors::CsiError;
 
 const LAST_ACCESS_FILE: &str = ".cfgd-last-access";
-const COMPLETE_SENTINEL: &str = ".cfgd-complete";
+pub(crate) const COMPLETE_SENTINEL: &str = ".cfgd-complete";
 
 /// Node-level LRU cache for OCI module artifacts.
 ///
@@ -19,15 +19,23 @@ const COMPLETE_SENTINEL: &str = ".cfgd-complete";
 pub struct Cache {
     root: PathBuf,
     max_bytes: u64,
+    /// The `os/arch` a pull picks out of a multi-platform index: the node's
+    /// own, since the pod the module is mounted into runs here.
+    platform: String,
 }
 
 impl Cache {
     pub fn new(root: PathBuf, max_bytes: u64) -> Result<Self, CsiError> {
         std::fs::create_dir_all(&root)?;
-        Ok(Self { root, max_bytes })
+        Ok(Self {
+            root,
+            max_bytes,
+            platform: cfgd_core::oci::current_platform(),
+        })
     }
 
-    /// Return the cache path for a module, or pull it if not cached.
+    /// Return the cache path for a module, pulling it if not cached, and
+    /// whether the entry was already there (`true` for a hit).
     ///
     /// On cache hit, updates access time for LRU tracking.
     /// On cache miss, pulls the OCI artifact to a temp dir and atomically
@@ -38,14 +46,14 @@ impl Cache {
         module: &str,
         version: &str,
         oci_ref: &str,
-    ) -> Result<PathBuf, CsiError> {
+    ) -> Result<(PathBuf, bool), CsiError> {
         let entry_dir = self.entry_path(module, version)?;
 
         if entry_dir.is_dir() && is_complete(&entry_dir) {
             if let Err(e) = touch_atime(&entry_dir) {
                 tracing::warn!(module = %module, version = %version, error = %e, "failed to update cache atime on hit; LRU ordering may be stale");
             }
-            return Ok(entry_dir);
+            return Ok((entry_dir, true));
         }
 
         // Cache miss — pull to temp dir, then atomically move into place
@@ -56,7 +64,8 @@ impl Cache {
         let pull_result = cfgd_core::oci::pull_module(
             oci_ref,
             &tmp_dir,
-            cfgd_core::oci::SignaturePolicy::None,
+            cfgd_core::oci::PullChecks::default(),
+            Some(&self.platform),
             None,
         );
         if let Err(e) = pull_result {
@@ -99,7 +108,7 @@ impl Cache {
             tracing::warn!(error = %e, "cache eviction failed");
         }
 
-        Ok(entry_dir)
+        Ok((entry_dir, false))
     }
 
     /// Return the cached path if it exists and is complete, without pulling.
@@ -607,9 +616,10 @@ mod tests {
 
         let dir = tempfile::tempdir().unwrap();
         let cache = make_cache(dir.path(), 10 * 1024 * 1024);
-        let entry = cache
+        let (entry, hit) = cache
             .get_or_pull("execmod", "1.0.0", &format!("{registry}/test/execmod:v1"))
             .expect("pull must succeed against the mock registry");
+        assert!(!hit, "a first pull must report a miss");
 
         let mode = std::fs::metadata(entry.join("bin/run.sh"))
             .unwrap()
@@ -623,6 +633,98 @@ mod tests {
     }
 
     #[test]
+    fn cache_get_or_pull_takes_the_index_entry_for_the_nodes_platform() {
+        let mut server = mockito::Server::new();
+        let registry = server
+            .url()
+            .trim_start_matches("http://")
+            .trim_end_matches('/')
+            .to_string();
+        let mut entries = Vec::new();
+        for platform in ["plan9/mips".to_string(), cfgd_core::oci::current_platform()] {
+            let src = tempfile::tempdir().unwrap();
+            std::fs::write(
+                src.path().join("module.yaml"),
+                format!("built: {platform}\n"),
+            )
+            .unwrap();
+            let layer = cfgd_core::oci::create_tar_gz(src.path()).unwrap();
+            let layer_digest = cfgd_core::sha256_digest(&layer);
+            server
+                .mock(
+                    "GET",
+                    format!("/v2/test/multi/blobs/{layer_digest}").as_str(),
+                )
+                .with_status(200)
+                .with_body(layer.clone())
+                .create();
+            let manifest = serde_json::to_vec(&serde_json::json!({
+                "schemaVersion": 2,
+                "mediaType": cfgd_core::oci::MEDIA_TYPE_OCI_MANIFEST,
+                "config": {
+                    "mediaType": cfgd_core::oci::MEDIA_TYPE_MODULE_CONFIG,
+                    "digest": "sha256:0",
+                    "size": 0,
+                },
+                "layers": [{
+                    "mediaType": cfgd_core::oci::MEDIA_TYPE_MODULE_LAYER,
+                    "digest": layer_digest,
+                    "size": layer.len(),
+                }],
+            }))
+            .unwrap();
+            let digest = cfgd_core::sha256_digest(&manifest);
+            server
+                .mock("GET", format!("/v2/test/multi/manifests/{digest}").as_str())
+                .with_status(200)
+                .with_header("Content-Type", cfgd_core::oci::MEDIA_TYPE_OCI_MANIFEST)
+                .with_body(manifest.clone())
+                .create();
+            let (os, arch) = platform.split_once('/').unwrap();
+            entries.push(serde_json::json!({
+                "mediaType": cfgd_core::oci::MEDIA_TYPE_OCI_MANIFEST,
+                "digest": digest,
+                "size": manifest.len(),
+                "platform": { "os": os, "architecture": arch },
+            }));
+        }
+        server
+            .mock("GET", "/v2/test/multi/manifests/v1")
+            .with_status(200)
+            .with_header("Content-Type", cfgd_core::oci::MEDIA_TYPE_OCI_INDEX)
+            .with_body(
+                serde_json::json!({
+                    "schemaVersion": 2,
+                    "mediaType": cfgd_core::oci::MEDIA_TYPE_OCI_INDEX,
+                    "manifests": entries,
+                })
+                .to_string(),
+            )
+            .create();
+        let artifact = format!("{registry}/test/multi:v1");
+
+        let host_dir = tempfile::tempdir().unwrap();
+        let host_cache = make_cache(host_dir.path(), 10 * 1024 * 1024);
+        let (entry, _) = host_cache.get_or_pull("multi", "1.0.0", &artifact).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(entry.join("module.yaml")).unwrap(),
+            format!("built: {}\n", cfgd_core::oci::current_platform()),
+            "a cache pulls the entry for the node it runs on"
+        );
+
+        let other_dir = tempfile::tempdir().unwrap();
+        let mut other_cache = make_cache(other_dir.path(), 10 * 1024 * 1024);
+        other_cache.platform = "plan9/mips".to_string();
+        let (entry, _) = other_cache
+            .get_or_pull("multi", "1.0.0", &artifact)
+            .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(entry.join("module.yaml")).unwrap(),
+            "built: plan9/mips\n"
+        );
+    }
+
+    #[test]
     fn cache_get_or_pull_returns_path_without_touching_oci_on_hit() {
         // get_or_pull cache-hit early-return (lines 42-47): pre-populate an
         // entry with the .cfgd-complete sentinel — get_or_pull must short-
@@ -632,9 +734,10 @@ mod tests {
         let cache = make_cache(dir.path(), 1024 * 1024);
         populate_entry(dir.path(), "preinstalled", "1.0.0", 256, 1_000);
 
-        let result = cache
+        let (result, hit) = cache
             .get_or_pull("preinstalled", "1.0.0", "not-a-real-oci-ref://garbage")
             .expect("cache-hit must NOT consult oci::pull_module");
+        assert!(hit, "a complete entry must report a hit");
 
         assert_eq!(result, dir.path().join("preinstalled").join("1.0.0"));
         assert!(

@@ -3,8 +3,6 @@
 //! `push` is captured over a mock registry, the way `image pack` is; `pull`'s
 //! happy path is exercised in cfgd-core's unit tests against mock responses.
 
-mod common;
-
 use std::path::Path;
 
 use cfgd::cli::error::render_cli_error;
@@ -67,13 +65,8 @@ fn module_push_missing_yaml_human() {
     assert_eq!(meta.error_kind, "module_yaml_missing");
 }
 
-/// The manifest digest the mock registry answers with, so the golden holds a
-/// stable `sha256:` rather than the digest of this run's timestamped manifest.
-const MANIFEST_DIGEST: &str =
-    "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
-
 /// A registry that accepts one module push: two blob uploads and one
-/// manifest, answering the digest above.
+/// manifest, answering the digest of the bytes each manifest PUT took.
 fn mock_registry() -> (mockito::ServerGuard, String) {
     let mut server = mockito::Server::new();
     let registry = server.url().trim_start_matches("http://").to_string();
@@ -104,10 +97,28 @@ fn mock_registry() -> (mockito::ServerGuard, String) {
         .with_status(201)
         .expect_at_least(2)
         .create();
+    // A push reads the tag first and also puts its manifest at the
+    // per-platform tag, whose digest is the one the push reports.
+    server
+        .mock("GET", "/v2/test/module/manifests/v1")
+        .with_status(404)
+        .create();
+    server
+        .mock(
+            "PUT",
+            mockito::Matcher::Regex(r"^/v2/test/module/manifests/v1-".to_string()),
+        )
+        .with_status(201)
+        .with_header_from_request("Docker-Content-Digest", |req| {
+            cfgd_core::sha256_digest(req.body().expect("manifest body"))
+        })
+        .create();
     server
         .mock("PUT", "/v2/test/module/manifests/v1")
         .with_status(201)
-        .with_header("Docker-Content-Digest", MANIFEST_DIGEST)
+        .with_header_from_request("Docker-Content-Digest", |req| {
+            cfgd_core::sha256_digest(req.body().expect("manifest body"))
+        })
         .create();
 
     (server, artifact)
@@ -134,6 +145,7 @@ fn module_push_pushed_human() {
     let dir_str = cfgd_core::to_posix_string(dir.path());
 
     let (printer, cap) = Printer::for_test_doc();
+    let printer = printer.with_hints_enabled(true);
     module::cmd_module_push(
         &printer,
         &dir_str,
@@ -149,11 +161,17 @@ fn module_push_pushed_human() {
     .expect("push must succeed against the mock registry");
     drop(printer);
 
+    // The manifest carries this run's timestamp, so its digest is folded.
+    let digest = cap.json().expect("push emits a data payload")["digest"]
+        .as_str()
+        .expect("payload digest")
+        .to_string();
     let normalized = cfgd_core::normalize_for_snapshot(
         &cfgd_core::normalize_snapshot_durations(&strip_ansi(&cap.human())),
         &[(dir.path(), "<DIR>")],
     )
-    .replace(&registry, "<REGISTRY>");
+    .replace(&registry, "<REGISTRY>")
+    .replace(&digest, "<DIGEST>");
     assert!(
         !normalized.contains("Digest "),
         "the digest is the push row's detail, never a kv row: {normalized}"

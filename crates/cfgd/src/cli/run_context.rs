@@ -9,6 +9,7 @@ use cfgd_core::state::StateStore;
 
 use super::helpers::{config_dir, resolve_profile_for};
 use super::registry::{build_registry, open_state_store};
+use super::startup::StartupDocument;
 use super::{Cli, packages};
 use crate::packages::ManifestCache;
 
@@ -22,21 +23,24 @@ use crate::packages::ManifestCache;
 /// run that wants it and paid once — a command that never asks for the state
 /// store still never opens one.
 ///
-/// Scoped to ONE run: each `cmd_*` builds a context at its top and drops it when
-/// it returns. Construction is pure (it copies two references and derives the
-/// config directory), so a daemon tick can hold one per tick without paying for
-/// slots that tick does not use, and nothing here can outlive the config it
-/// describes.
+/// The config is the invocation's [`StartupDocument`], read and parsed before
+/// dispatch; reading it through the context parses nothing.
+///
+/// Scoped to ONE run: `execute` builds the context and hands it to the verb,
+/// which drops it when it returns. Construction is pure (it copies three
+/// references and derives the config directory), so a daemon tick can hold one
+/// per tick without paying for slots that tick does not use, and nothing here
+/// can outlive the config it describes.
 ///
 /// Not `Sync` by construction — the cells are single-threaded. Concurrent phases
 /// receive the resolved objects (`&StateStore`, `&ProviderRegistry`), never the
 /// context.
-pub(in crate::cli) struct RunContext<'a> {
+pub struct RunContext<'a> {
     cli: &'a Cli,
     printer: &'a Printer,
     config_dir: PathBuf,
     /// `cli.config` as parsed, with its deprecation notices still intact.
-    config: OnceCell<CfgdConfig>,
+    startup: &'a StartupDocument,
     /// Whether those notices have already been surfaced. The drain is once per
     /// run and belongs to the first caller that reads the config for real —
     /// a command that only wants the active profile NAME must not print them,
@@ -50,23 +54,27 @@ pub(in crate::cli) struct RunContext<'a> {
     manifests: ManifestCache,
     /// Whether this run FETCHES the sources it composes, which decides
     /// [`Self::announce_cache_skips`].
-    fetching_sources: bool,
+    fetching_sources: Cell<bool>,
 }
 
 impl<'a> RunContext<'a> {
-    pub(in crate::cli) fn new(cli: &'a Cli, printer: &'a Printer) -> Self {
+    pub(in crate::cli) fn new(
+        cli: &'a Cli,
+        printer: &'a Printer,
+        startup: &'a StartupDocument,
+    ) -> Self {
         Self {
             cli,
             printer,
             config_dir: config_dir(cli),
-            config: OnceCell::new(),
+            startup,
             deprecations_drained: Cell::new(false),
             profile: OnceCell::new(),
             state: OnceCell::new(),
             enumerations: cfgd_core::providers::InstalledEnumerations::default(),
             base_registry: OnceCell::new(),
             manifests: ManifestCache::default(),
-            fetching_sources: false,
+            fetching_sources: Cell::new(false),
         }
     }
 
@@ -81,14 +89,13 @@ impl<'a> RunContext<'a> {
     /// progress. Nothing else the composition says is touched: a constraint
     /// violation, a conflict preview and the `allowScripts` disclosure are all
     /// facts the fetching verb is the right place to hear.
-    pub(in crate::cli) fn fetching_sources(mut self) -> Self {
-        self.fetching_sources = true;
-        self
+    pub(in crate::cli) fn fetching_sources(&self) {
+        self.fetching_sources.set(true);
     }
 
     /// Whether a source-cache skip should be announced on this run.
     pub(in crate::cli) fn announce_cache_skips(&self) -> bool {
-        !self.fetching_sources
+        !self.fetching_sources.get()
     }
 
     pub(in crate::cli) fn cli(&self) -> &'a Cli {
@@ -99,27 +106,34 @@ impl<'a> RunContext<'a> {
         self.printer
     }
 
+    /// The document this run reads its config from, for the verbs that also
+    /// need its path or the text it was parsed from.
+    pub(in crate::cli) fn startup(&self) -> &'a StartupDocument {
+        self.startup
+    }
+
     /// The directory holding `cli.config`, which relative source paths and
     /// manifest references resolve against.
     pub(in crate::cli) fn config_dir(&self) -> &Path {
         &self.config_dir
     }
 
-    /// The run's config, parsed at most once, WITHOUT surfacing its deprecation
-    /// notices. Only the callers that need nothing but a name off the config
-    /// (the active profile a module-only run stamps into `CFGD_PROFILE`) read
-    /// through here.
-    fn config_unannounced(&self) -> cfgd_core::errors::Result<&CfgdConfig> {
-        if let Some(cfg) = self.config.get() {
-            return Ok(cfg);
-        }
-        let cfg = cfgd_core::config::load_config(&self.cli.config)?;
-        Ok(self.config.get_or_init(|| cfg))
+    /// The run's config WITHOUT surfacing its deprecation notices. Only the
+    /// callers that need nothing but a name off the config (the active profile
+    /// a module-only run stamps into `CFGD_PROFILE`), and the best-effort reads
+    /// of a verb that reports on something other than the config (the daemon's
+    /// status), read through here.
+    ///
+    /// Every read reports the document as a config input, as a read from disk
+    /// would: a saved plan records what its derivation read, and the startup
+    /// read happened before the plan opened its recorder.
+    pub(in crate::cli) fn config_unannounced(&self) -> cfgd_core::errors::Result<&'a CfgdConfig> {
+        cfgd_core::record_config_input(self.startup.path());
+        self.startup.config_result()
     }
 
-    /// The run's config, parsed at most once, with its deprecation notices
-    /// surfaced exactly once.
-    pub(in crate::cli) fn config(&self) -> cfgd_core::errors::Result<&CfgdConfig> {
+    /// The run's config, with its deprecation notices surfaced exactly once.
+    pub(in crate::cli) fn config(&self) -> cfgd_core::errors::Result<&'a CfgdConfig> {
         let cfg = self.config_unannounced()?;
         if !self.deprecations_drained.replace(true) {
             for msg in &cfg.deprecations {
@@ -130,8 +144,7 @@ impl<'a> RunContext<'a> {
     }
 
     /// The run's config, the name of the profile in force, and that profile's
-    /// resolution — the reference-returning form of
-    /// [`super::helpers::load_config_and_profile`], resolved at most once.
+    /// resolution, resolved at most once per run.
     pub(in crate::cli) fn config_and_profile(
         &self,
     ) -> anyhow::Result<(&CfgdConfig, &str, &ResolvedProfile)> {
@@ -156,24 +169,10 @@ impl<'a> RunContext<'a> {
             .map(|(_, _, resolved)| resolved.secret_env_names())
     }
 
-    /// Best-effort name of the profile a module-only command runs under: the
-    /// explicit `--profile`, else the config's active profile, else
-    /// `"unknown"`.
-    ///
-    /// Module-only commands never resolve a profile, but the scripts they run
-    /// (a `patch.script` filter, a lifecycle hook) still receive
-    /// `CFGD_PROFILE`, so the name must be the real one wherever the config
-    /// knows it. Reads the run's already-parsed config when there is one, and
-    /// otherwise parses it into the same slot rather than off to the side.
+    /// [`super::helpers::active_profile_name`] over the run's config, read
+    /// from the startup document.
     pub(in crate::cli) fn active_profile_name(&self) -> String {
-        if let Some(p) = self.cli.profile.as_deref() {
-            return p.to_string();
-        }
-        self.config_unannounced()
-            .ok()
-            .and_then(|cfg| cfg.active_profile().ok())
-            .map(str::to_string)
-            .unwrap_or_else(|| "unknown".to_string())
+        super::helpers::active_profile_name(self.cli, self.config_unannounced().ok())
     }
 
     /// The run's state store, opened at most once.
@@ -237,6 +236,16 @@ impl<'a> RunContext<'a> {
     }
 }
 
+#[cfg(any(test, feature = "test-helpers"))]
+impl RunContext<'_> {
+    /// Run `verb` against a context over `cli`'s config as it stands now, read
+    /// the way the process reads it before dispatch.
+    pub fn for_test<T>(cli: &Cli, printer: &Printer, verb: impl FnOnce(&RunContext<'_>) -> T) -> T {
+        let startup = StartupDocument::load(&cli.config);
+        verb(&RunContext::new(cli, printer, &startup))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -256,9 +265,12 @@ mod tests {
             color: crate::cli::ColorWhen::Auto,
             output: crate::cli::OutputFormatArg(cfgd_core::output::OutputFormat::Table),
             list_envelope: false,
+            hints: false,
             no_hints: false,
             theme: None,
             mask_env_values: None,
+            migration_policy: None,
+            update_policy: None,
             jsonpath: None,
             yes: false,
             state_dir: None,
@@ -277,16 +289,17 @@ mod tests {
     }
 
     #[test]
-    fn the_config_is_parsed_once_per_run() {
+    fn the_run_never_rereads_the_config_from_disk() {
         let dir = tempfile::tempdir().unwrap();
         write_config(dir.path());
         let printer = test_printer();
         let cli = cli_in(dir.path());
-        let ctx = RunContext::new(&cli, &printer);
+        let startup = StartupDocument::load(&cli.config);
+        let ctx = RunContext::new(&cli, &printer, &startup);
 
         let first = ctx.config().unwrap() as *const CfgdConfig;
-        // The file is gone: a second parse could not succeed, so a second
-        // `config()` answering at all is the memo answering.
+        // The file is gone: a `config()` that still answers read nothing from
+        // disk.
         std::fs::remove_file(dir.path().join("cfgd.yaml")).unwrap();
         let second = ctx.config().unwrap() as *const CfgdConfig;
 
@@ -299,7 +312,8 @@ mod tests {
         write_config(dir.path());
         let printer = test_printer();
         let cli = cli_in(dir.path());
-        let ctx = RunContext::new(&cli, &printer);
+        let startup = StartupDocument::load(&cli.config);
+        let ctx = RunContext::new(&cli, &printer, &startup);
 
         let (_, name, resolved) = ctx.config_and_profile().unwrap();
         assert_eq!(name, "default");
@@ -319,7 +333,8 @@ mod tests {
         let printer = test_printer();
         let mut cli = cli_in(dir.path());
         cli.state_dir = Some(state_dir.clone());
-        let ctx = RunContext::new(&cli, &printer);
+        let startup = StartupDocument::load(&cli.config);
+        let ctx = RunContext::new(&cli, &printer, &startup);
 
         let first = ctx.state().unwrap() as *const StateStore;
         // A second open would re-create the directory it was told to use, so
@@ -342,7 +357,8 @@ mod tests {
         write_config(dir.path());
         let printer = test_printer();
         let cli = cli_in(dir.path());
-        let ctx = RunContext::new(&cli, &printer);
+        let startup = StartupDocument::load(&cli.config);
+        let ctx = RunContext::new(&cli, &printer, &startup);
 
         let first = ctx.base_registry() as *const ProviderRegistry;
         let second = ctx.base_registry() as *const ProviderRegistry;
@@ -365,7 +381,8 @@ mod tests {
         .unwrap();
         let (printer, buf) = cfgd_core::output::Printer::for_test();
         let cli = cli_in(dir.path());
-        let ctx = RunContext::new(&cli, &printer);
+        let startup = StartupDocument::load(&cli.config);
+        let ctx = RunContext::new(&cli, &printer, &startup);
 
         assert_eq!(ctx.active_profile_name(), "default");
         assert!(
@@ -377,5 +394,21 @@ mod tests {
         ctx.config().unwrap();
         let out = cfgd_core::test_helpers::captured_text(&buf);
         assert_eq!(out.matches("theme.overrides.subheader").count(), 1, "{out}");
+    }
+
+    /// A run's config is the startup document's own parse, by reference.
+    #[test]
+    fn the_run_reads_the_startup_document() {
+        let dir = tempfile::tempdir().unwrap();
+        write_config(dir.path());
+        let printer = test_printer();
+        let cli = cli_in(dir.path());
+        let startup = StartupDocument::load(&cli.config);
+        let ctx = RunContext::new(&cli, &printer, &startup);
+
+        assert!(std::ptr::eq(
+            ctx.config().unwrap(),
+            startup.config().unwrap()
+        ));
     }
 }

@@ -1,5 +1,6 @@
+# shellcheck shell=bash
 # Full-stack E2E tests: Drift Lifecycle
-# Sourced by run-all.sh — do NOT set traps or pipefail here.
+# Sourced by run-all.sh: do NOT set traps or pipefail here.
 
 echo ""
 echo "=== Drift Lifecycle Tests ==="
@@ -9,11 +10,13 @@ echo "=== Drift Lifecycle Tests ==="
 # =================================================================
 begin_test "FS-DRIFT-01: Drift detection and server reporting"
 
-# Introduce sysctl drift on the test pod
-ORIG=$(exec_in_pod cat /proc/sys/vm/max_map_count 2>/dev/null || echo "262144")
-exec_in_pod sysctl -w vm.max_map_count=65530 > /dev/null 2>&1 || true
+DRIFT01_BEFORE=$(gateway_drift_count "$DEVICE_1" net.ipv4.ip_forward)
 
-# Checkin — should detect and report drift
+# Introduce sysctl drift on the test pod
+ORIG=$(exec_in_pod cat /proc/sys/net/ipv4/ip_forward 2>/dev/null || echo "1")
+exec_in_pod sysctl -w net.ipv4.ip_forward=0 > /dev/null 2>&1 || true
+
+# Checkin: should detect and report drift
 OUTPUT=$(exec_in_pod cfgd \
     --config /etc/cfgd/cfgd.yaml \
     checkin \
@@ -23,19 +26,16 @@ OUTPUT=$(exec_in_pod cfgd \
     --no-color 2>&1) || true
 echo "  Checkin with drift: $OUTPUT" | head -5
 
-# Check device gateway for drift events
-DRIFT_EVENTS=$(exec_in_pod curl -sf \
-    -H "Authorization: Bearer $GW_API_KEY" \
-    "${SERVER_URL}/api/v1/devices/${DEVICE_1}/drift" 2>/dev/null || echo "[]")
-echo "  Drift events: $(echo "$DRIFT_EVENTS" | head -c 200)"
+DRIFT01_AFTER=$(gateway_drift_count "$DEVICE_1" net.ipv4.ip_forward)
+echo "  Gateway drift events naming net.ipv4.ip_forward: ${DRIFT01_BEFORE:-unreadable} before, ${DRIFT01_AFTER:-unreadable} after"
 
 # Restore
-exec_in_pod sysctl -w "vm.max_map_count=$ORIG" > /dev/null 2>&1 || true
+exec_in_pod sysctl -w "net.ipv4.ip_forward=$ORIG" > /dev/null 2>&1 || true
 
-if echo "$OUTPUT" | grep -qi "drift" || [ "$DRIFT_EVENTS" != "[]" ]; then
+if [[ $DRIFT01_BEFORE =~ ^[0-9]+$ ]] && [[ $DRIFT01_AFTER =~ ^[0-9]+$ ]] && [ "$DRIFT01_AFTER" -gt "$DRIFT01_BEFORE" ]; then
     pass_test "FS-DRIFT-01"
 else
-    fail_test "FS-DRIFT-01" "Drift not detected or reported to device gateway"
+    fail_test "FS-DRIFT-01" "The checkin reported no net.ipv4.ip_forward drift to the device gateway (events before ${DRIFT01_BEFORE:-unreadable}, after ${DRIFT01_AFTER:-unreadable})"
 fi
 
 # =================================================================
@@ -112,16 +112,15 @@ echo "  MC patch rc: ${FS04_PATCH_RC}"
 
 # Wait for MC to clear drift (controller may set status=False or remove the condition entirely)
 echo "  Waiting for drift to clear..."
-DRIFT_CLEARED=false
-for i in $(seq 1 60); do
+fs04_drift_cleared() {
     DRIFT_VAL=$(kubectl get machineconfig "mc-${DEVICE_1}" -n cfgd-system \
         -o jsonpath='{.status.conditions[?(@.type=="DriftDetected")].status}' 2>/dev/null || echo "")
-    if [ "$DRIFT_VAL" = "False" ] || [ -z "$DRIFT_VAL" ]; then
-        DRIFT_CLEARED=true
-        break
-    fi
-    sleep 1
-done
+    [ "$DRIFT_VAL" = "False" ] || [ -z "$DRIFT_VAL" ]
+}
+DRIFT_CLEARED=false
+if wait_until 60 1 "DriftDetected to clear on machineconfig/mc-${DEVICE_1}" fs04_drift_cleared; then
+    DRIFT_CLEARED=true
+fi
 
 READY_STATUS=$(kubectl get machineconfig "mc-${DEVICE_1}" -n cfgd-system \
     -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || echo "")
@@ -196,7 +195,7 @@ exec_in_pod cfgd --config /etc/cfgd/e2e-compliance-cfgd.yaml apply --yes --no-co
 # =================================================================
 begin_test "FS-DRIFT-06: compliance snapshot after device apply"
 
-OUTPUT=$(exec_in_pod cfgd --config /etc/cfgd/e2e-compliance-cfgd.yaml compliance -o json --no-color 2>&1) || true
+OUTPUT=$(pod_compliance_json /etc/cfgd/e2e-compliance-cfgd.yaml)
 if assert_contains "$OUTPUT" '"snapshot"' && assert_contains "$OUTPUT" '"checks"'; then
     pass_test "FS-DRIFT-06"
 else
@@ -206,19 +205,7 @@ fi
 # =================================================================
 begin_test "FS-DRIFT-07: compliance detects introduced drift end-to-end"
 
-exec_in_pod sysctl -w vm.max_map_count=65530 > /dev/null 2>&1 || true
-
-OUTPUT=$(exec_in_pod cfgd --config /etc/cfgd/e2e-compliance-cfgd.yaml compliance -o json --no-color 2>&1) || true
-
-if assert_contains "$OUTPUT" "Violation" || assert_contains "$OUTPUT" "violation" || \
-   assert_contains "$OUTPUT" "Warning" || assert_contains "$OUTPUT" "warning" || \
-   assert_contains "$OUTPUT" "drift" || assert_contains "$OUTPUT" "Drift"; then
-    pass_test "FS-DRIFT-07"
-else
-    fail_test "FS-DRIFT-07" "Compliance should detect sysctl drift"
-fi
-
-exec_in_pod sysctl -w vm.max_map_count=262144 > /dev/null 2>&1 || true
+sysctl_drift_case "FS-DRIFT-07" /etc/cfgd/e2e-compliance-cfgd.yaml net.ipv4.ip_forward 0 1
 
 # =================================================================
 begin_test "FS-DRIFT-08: device checkin after compliance carries state"
@@ -229,7 +216,6 @@ exec_in_pod cfgd --config /etc/cfgd/e2e-compliance-cfgd.yaml compliance --no-col
 CHECKIN_OUTPUT=$(exec_in_pod cfgd --config /etc/cfgd/cfgd.yaml checkin \
     --server-url "$SERVER_URL" --api-key "$GW_API_KEY" --device-id "$DEVICE_ID" --no-color 2>&1) && CHECKIN_RC=0 || CHECKIN_RC=$?
 
-sleep 2
 DEVICES=$(exec_in_pod curl -sf -H "Authorization: Bearer $GW_API_KEY" "${SERVER_URL}/api/v1/devices" 2>/dev/null || echo "")
 if assert_contains "$DEVICES" "$DEVICE_ID"; then
     pass_test "FS-DRIFT-08"
@@ -237,14 +223,14 @@ else
     if [ "$CHECKIN_RC" -le 1 ]; then
         pass_test "FS-DRIFT-08"
     else
-        fail_test "FS-DRIFT-08" "Device not registered after compliance+checkin (exit $CHECKIN_RC)"
+        fail_test "FS-DRIFT-08" "Device not registered after compliance+checkin (exit $CHECKIN_RC): $CHECKIN_OUTPUT"
     fi
 fi
 
 # =================================================================
 begin_test "FS-DRIFT-09: MachineConfig with compliance-relevant spec"
 
-kubectl apply -n "$E2E_NAMESPACE" -f - <<EOF
+if ! kubectl apply -n "$E2E_NAMESPACE" -f - <<EOF
 apiVersion: cfgd.io/v1alpha1
 kind: MachineConfig
 metadata:
@@ -265,8 +251,7 @@ spec:
     "vm.max_map_count": "262144"
     "net.ipv4.ip_forward": "1"
 EOF
-
-if [ $? -ne 0 ]; then
+then
     fail_test "FS-DRIFT-09" "kubectl apply failed"
 else
     if wait_for_k8s_field machineconfig "e2e-compliance-mc-${E2E_RUN_ID}" "$E2E_NAMESPACE" \
@@ -280,7 +265,7 @@ fi
 # =================================================================
 begin_test "FS-DRIFT-10: ConfigPolicy enforces compliance on MachineConfig"
 
-kubectl apply -n "$E2E_NAMESPACE" -f - <<EOF
+if ! kubectl apply -n "$E2E_NAMESPACE" -f - <<EOF
 apiVersion: cfgd.io/v1alpha1
 kind: ConfigPolicy
 metadata:
@@ -299,8 +284,7 @@ spec:
   settings:
     "net.ipv4.ip_forward": "1"
 EOF
-
-if [ $? -ne 0 ]; then
+then
     fail_test "FS-DRIFT-10" "kubectl apply failed"
 else
     if wait_for_k8s_field configpolicy "e2e-compliance-policy-${E2E_RUN_ID}" "$E2E_NAMESPACE" \
@@ -321,7 +305,7 @@ fi
 # =================================================================
 begin_test "FS-DRIFT-11: non-compliant MachineConfig detected"
 
-kubectl apply -n "$E2E_NAMESPACE" -f - <<EOF
+if ! kubectl apply -n "$E2E_NAMESPACE" -f - <<EOF
 apiVersion: cfgd.io/v1alpha1
 kind: MachineConfig
 metadata:
@@ -337,30 +321,28 @@ spec:
   packages:
     - name: curl
 EOF
-
-if [ $? -ne 0 ]; then
+then
     fail_test "FS-DRIFT-11" "kubectl apply failed"
 else
     # Wait for the policy controller to re-evaluate (watches MachineConfig changes)
     echo "  Waiting up to 30s for policy to detect non-compliance..."
-    T66_PASS=false
-    for i in $(seq 1 30); do
+    fs11_non_compliant() {
         NONCOMPLIANT=$(kubectl get configpolicy "e2e-compliance-policy-${E2E_RUN_ID}" -n "$E2E_NAMESPACE" \
             -o jsonpath='{.status.nonCompliantCount}' 2>/dev/null || echo "0")
-        if [ "$NONCOMPLIANT" -ge 1 ] 2>/dev/null; then
-            echo "  Non-compliant count: $NONCOMPLIANT (after ${i}s)"
-            T66_PASS=true
-            break
-        fi
-        sleep 1
-    done
+        [ "$NONCOMPLIANT" -ge 1 ] 2>/dev/null
+    }
+    T66_PASS=false
+    if wait_until 30 1 "e2e-compliance-policy-${E2E_RUN_ID} to count a non-compliant MachineConfig" fs11_non_compliant; then
+        echo "  Non-compliant count: $NONCOMPLIANT"
+        T66_PASS=true
+    fi
 
     if $T66_PASS; then
         pass_test "FS-DRIFT-11"
     else
         COMPLIANT=$(kubectl get configpolicy "e2e-compliance-policy-${E2E_RUN_ID}" -n "$E2E_NAMESPACE" \
             -o jsonpath='{.status.compliantCount}' 2>/dev/null || echo "")
-        echo "  Final counts — compliant: ${COMPLIANT:-0}, non-compliant: ${NONCOMPLIANT:-0}"
+        echo "  Final counts: compliant: ${COMPLIANT:-0}, non-compliant: ${NONCOMPLIANT:-0}"
         fail_test "FS-DRIFT-11" "Policy did not detect non-compliant MachineConfig within 30s"
     fi
 fi
@@ -368,7 +350,7 @@ fi
 # =================================================================
 begin_test "FS-DRIFT-12: DriftAlert propagates to MachineConfig compliance status"
 
-kubectl apply -n "$E2E_NAMESPACE" -f - <<EOF
+if ! kubectl apply -n "$E2E_NAMESPACE" -f - <<EOF
 apiVersion: cfgd.io/v1alpha1
 kind: DriftAlert
 metadata:
@@ -387,24 +369,17 @@ spec:
       expected: "262144"
       actual: "65530"
 EOF
-
-if [ $? -ne 0 ]; then
+then
     fail_test "FS-DRIFT-12" "kubectl apply failed"
 else
-    sleep 5
-    DRIFT_CONDITION=$(kubectl get machineconfig "e2e-compliance-mc-${E2E_RUN_ID}" -n "$E2E_NAMESPACE" \
-        -o jsonpath='{.status.conditions[?(@.type=="DriftDetected")].status}' 2>/dev/null || echo "")
+    DRIFT_CONDITION=$(wait_for_k8s_field machineconfig "e2e-compliance-mc-${E2E_RUN_ID}" "$E2E_NAMESPACE" \
+        '{range .status.conditions[?(@.type=="DriftDetected")]}{.status}/{.reason}{end}' "True/DriftActive" 30) || true
     echo "  DriftDetected condition: $DRIFT_CONDITION"
 
-    if [ "$DRIFT_CONDITION" = "True" ]; then
+    if [ "$DRIFT_CONDITION" = "True/DriftActive" ]; then
         pass_test "FS-DRIFT-12"
     else
-        DA_EXISTS=$(kubectl get driftalert "e2e-compliance-drift-${E2E_RUN_ID}" -n "$E2E_NAMESPACE" -o name 2>/dev/null || echo "")
-        if [ -n "$DA_EXISTS" ]; then
-            pass_test "FS-DRIFT-12"
-        else
-            fail_test "FS-DRIFT-12" "DriftAlert not created or not propagated"
-        fi
+        fail_test "FS-DRIFT-12" "Expected the MachineConfig's DriftDetected condition True/DriftActive, got '${DRIFT_CONDITION:-none}'"
     fi
 fi
 
@@ -412,23 +387,22 @@ fi
 begin_test "FS-DRIFT-13: compliance reflects state after drift resolution"
 
 kubectl delete driftalert "e2e-compliance-drift-${E2E_RUN_ID}" -n "$E2E_NAMESPACE" --ignore-not-found 2>/dev/null || true
-sleep 3
 
-DRIFT_AFTER=$(kubectl get machineconfig "e2e-compliance-mc-${E2E_RUN_ID}" -n "$E2E_NAMESPACE" \
-    -o jsonpath='{.status.conditions[?(@.type=="DriftDetected")].status}' 2>/dev/null || echo "")
+fs13_drift_cleared() {
+    DRIFT_AFTER_RC=0
+    DRIFT_AFTER=$(kubectl get machineconfig "e2e-compliance-mc-${E2E_RUN_ID}" -n "$E2E_NAMESPACE" \
+        -o jsonpath='{.status.conditions[?(@.type=="DriftDetected")].status}' 2>/dev/null) || DRIFT_AFTER_RC=$?
+    [ "$DRIFT_AFTER_RC" -eq 0 ] && [ "$DRIFT_AFTER" != "True" ]
+}
+wait_until 30 1 "DriftDetected to clear on machineconfig/e2e-compliance-mc-${E2E_RUN_ID}" fs13_drift_cleared || true
 echo "  DriftDetected after deletion: ${DRIFT_AFTER:-removed}"
 
-if [ "$DRIFT_AFTER" != "True" ]; then
+if [ "$DRIFT_AFTER_RC" -ne 0 ]; then
+    fail_test "FS-DRIFT-13" "Could not read machineconfig/e2e-compliance-mc-${E2E_RUN_ID} (kubectl exit $DRIFT_AFTER_RC)"
+elif [ "$DRIFT_AFTER" != "True" ]; then
     pass_test "FS-DRIFT-13"
 else
-    sleep 5
-    DRIFT_FINAL=$(kubectl get machineconfig "e2e-compliance-mc-${E2E_RUN_ID}" -n "$E2E_NAMESPACE" \
-        -o jsonpath='{.status.conditions[?(@.type=="DriftDetected")].status}' 2>/dev/null || echo "")
-    if [ "$DRIFT_FINAL" != "True" ]; then
-        pass_test "FS-DRIFT-13"
-    else
-        fail_test "FS-DRIFT-13" "DriftDetected condition still True after alert deletion"
-    fi
+    fail_test "FS-DRIFT-13" "DriftDetected condition still True after alert deletion"
 fi
 
 # --- Compliance cleanup ---

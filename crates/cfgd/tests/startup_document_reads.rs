@@ -1,0 +1,376 @@
+//! The alias pass and clap settle on one startup document under every
+//! spelling of the config location, and its reload count says whether clap
+//! moved it.
+//!
+//! The alias pass reads the document before the tracing subscriber exists, so
+//! `main` reports the startup document in one `loaded config document` debug
+//! line, after the last place the path can move. `reads=1` means clap settled
+//! on the file the alias pass read; each move clap or the macOS config move
+//! makes adds one. The line counts the startup document alone; a later
+//! `load_config` logs `parsing config document`, which
+//! `every_config_reading_verb_answers_from_the_startup_document` fails on, and
+//! the walks `the_pre_dispatch_path_loads_the_document_once` and
+//! `every_cli_config_read_goes_through_the_run` (`src/cli/tests.rs`) fail on a
+//! loader call in the source.
+
+mod cfgd_binary;
+use cfgd_binary::cfgd_bin;
+
+const SUMMARY_LINE: &str = "loaded config document";
+
+/// How `stderr_of` names the config document to the run.
+enum Config<'a> {
+    Default,
+    Flag(&'a std::path::Path),
+    Env(&'a std::path::Path),
+}
+
+fn stderr_of(config: Config<'_>, verb: &[&str]) -> String {
+    let mut cmd = cfgd_bin().expect("the cfgd binary builds");
+    cmd.env_remove("RUST_LOG").arg("-v");
+    match config {
+        Config::Default => {}
+        Config::Flag(path) => {
+            cmd.arg("--config").arg(path);
+        }
+        Config::Env(path) => {
+            cmd.env(cfgd_core::CFGD_CONFIG_ENV, path);
+        }
+    }
+    let output = cmd.args(verb).output().expect("cfgd runs");
+    String::from_utf8_lossy(&output.stderr).into_owned()
+}
+
+/// The config home `cfgd_bin` points this test's runs at.
+fn config_home() -> std::path::PathBuf {
+    cfgd_bin()
+        .expect("the cfgd binary builds")
+        .get_envs()
+        .find(|(var, _)| *var == "XDG_CONFIG_HOME")
+        .and_then(|(_, value)| value)
+        .map(std::path::PathBuf::from)
+        .expect("cfgd_bin isolates XDG_CONFIG_HOME")
+}
+
+fn write_fixture(dir: &std::path::Path) {
+    std::fs::create_dir_all(dir.join("profiles")).expect("mkdir profiles");
+    std::fs::write(
+        dir.join("cfgd.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: once\nspec:\n  profile: base\n",
+    )
+    .expect("write config");
+    std::fs::write(
+        dir.join("profiles/base.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: base\nspec: {}\n",
+    )
+    .expect("write profile");
+}
+
+fn assert_reads(verb: &[&str], stderr: &str, reads: u32) {
+    let lines: Vec<&str> = stderr
+        .lines()
+        .filter(|l| l.contains(SUMMARY_LINE))
+        .collect();
+    assert_eq!(lines.len(), 1, "{verb:?}: one summary line:\n{stderr}");
+    assert!(
+        lines[0].contains(&format!("reads={reads} ")) && lines[0].contains("found=true"),
+        "{verb:?}: {reads} reads, and the document found:\n{stderr}"
+    );
+}
+
+#[test]
+fn the_alias_pass_and_clap_settle_on_one_document_for_every_verb() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    write_fixture(dir.path());
+    let config = dir.path().join("cfgd.yaml");
+
+    for verb in [
+        &["status"][..],
+        &["profile", "show"][..],
+        &["config", "get", "theme.name"][..],
+    ] {
+        assert_reads(verb, &stderr_of(Config::Flag(&config), verb), 1);
+    }
+}
+
+/// A verb reads its config through the run, so the startup document is the
+/// run's only read of the file: one summary line with `reads=1`, no failed
+/// reload after it, and no `parsing config document` line, which every
+/// `load_config` logs once the tracing subscriber exists.
+#[test]
+fn every_config_reading_verb_answers_from_the_startup_document() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    write_fixture(dir.path());
+    let config = dir.path().join("cfgd.yaml");
+
+    let mut wrong = Vec::new();
+    for verb in [
+        &["status"][..],
+        &["config", "show"][..],
+        &["profile", "list"][..],
+        &["source", "list"][..],
+        &["module", "list"][..],
+        &["doctor"][..],
+    ] {
+        let stderr = stderr_of(Config::Flag(&config), verb);
+        let summary: Vec<&str> = stderr
+            .lines()
+            .filter(|l| l.contains(SUMMARY_LINE))
+            .collect();
+        let second_reads: Vec<&str> = stderr
+            .lines()
+            .skip_while(|l| !l.contains(SUMMARY_LINE))
+            .filter(|l| l.contains("config document not loaded"))
+            .chain(
+                stderr
+                    .lines()
+                    .filter(|l| l.contains("parsing config document")),
+            )
+            .collect();
+        if summary.len() != 1
+            || !summary[0].contains("reads=1 ")
+            || !summary[0].contains("found=true")
+            || !second_reads.is_empty()
+        {
+            wrong.push(format!("{verb:?}:\n{stderr}"));
+        }
+    }
+    assert!(
+        wrong.is_empty(),
+        "a verb read the config document again after startup:\n{}",
+        wrong.join("\n")
+    );
+}
+
+/// With no `--config`, the alias pass and clap both land on the default
+/// document under the isolated config home.
+#[test]
+fn a_run_without_config_settles_on_the_default_document_with_no_reload() {
+    let config_home = config_home();
+    write_fixture(&config_home.join("cfgd"));
+    assert_reads(&["status"], &stderr_of(Config::Default, &["status"]), 1);
+}
+
+/// A document named in the environment is the one the alias pass reads, so
+/// clap settles on it with no reload.
+#[test]
+fn a_config_named_only_in_the_environment_is_read_once() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    write_fixture(dir.path());
+    let config = dir.path().join("cfgd.yaml");
+    let stderr = stderr_of(Config::Env(&config), &["status"]);
+    assert_reads(&["status"], &stderr, 1);
+    assert!(
+        stderr.contains(&config.display().to_string()),
+        "the line names the document clap settled on:\n{stderr}"
+    );
+}
+
+/// A config document declaring `profile` and a `who` alias that prints it.
+fn write_alias_fixture(dir: &std::path::Path, profile: &str) {
+    std::fs::create_dir_all(dir).expect("mkdir");
+    std::fs::write(
+        dir.join("cfgd.yaml"),
+        format!(
+            "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: aliases\nspec:\n  profile: {profile}\n  aliases:\n    who: config get profile\n"
+        ),
+    )
+    .expect("write config");
+}
+
+/// Every spelling of the config location expands the aliases of the document
+/// it names: `who` is declared in that document alone, and prints its profile.
+/// The default document carries no aliases, so a pass that read it instead
+/// refuses `who` as an unknown command.
+#[test]
+fn every_spelling_of_the_config_location_expands_that_documents_aliases() {
+    let config_home = config_home();
+    write_fixture(&config_home.join("cfgd"));
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    write_alias_fixture(dir.path(), "named");
+    let x = dir.path().join("cfgd.yaml");
+    let x_flag = format!("--config={}", x.display());
+    let d = dir.path().as_os_str();
+
+    type Row<'a> = (
+        &'a str,
+        Vec<&'a std::ffi::OsStr>,
+        Option<(&'a str, &'a std::ffi::OsStr)>,
+    );
+    let rows: Vec<Row<'_>> = vec![
+        ("--config X", vec!["--config".as_ref(), x.as_os_str()], None),
+        ("--config=X", vec![x_flag.as_ref()], None),
+        (
+            "CFGD_CONFIG=X",
+            vec![],
+            Some((cfgd_core::CFGD_CONFIG_ENV, x.as_os_str())),
+        ),
+        ("--config-dir D", vec!["--config-dir".as_ref(), d], None),
+        (
+            "CFGD_CONFIG_DIR=D",
+            vec![],
+            Some((cfgd_core::CFGD_CONFIG_DIR_ENV, d)),
+        ),
+    ];
+    let mut wrong = Vec::new();
+    for (shape, args, env) in rows {
+        let mut cmd = cfgd_bin().expect("the cfgd binary builds");
+        cmd.env_remove("RUST_LOG").arg("-v").args(&args).arg("who");
+        if let Some((var, value)) = env {
+            cmd.env(var, value);
+        }
+        let output = cmd.output().expect("cfgd runs");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let summary = stderr
+            .lines()
+            .filter(|l| l.contains(SUMMARY_LINE))
+            .collect::<Vec<_>>();
+        if !output.status.success()
+            || stdout.trim() != "named"
+            || summary.len() != 1
+            || !summary[0].contains("reads=1 ")
+        {
+            wrong.push(format!("{shape}: stdout {stdout:?}\n{stderr}"));
+        }
+    }
+    assert!(
+        wrong.is_empty(),
+        "the alias did not run from the named document once:\n{}",
+        wrong.join("\n")
+    );
+}
+
+/// Under the system scope the alias pass reads the system document, the one
+/// clap settles on, so the user default's `who` stays unexpanded (clap refuses
+/// it as an unknown subcommand) and the system document is read once. The
+/// system root is the real one, left unwritten: the user default is the
+/// document a scope-blind pass would read.
+#[test]
+fn a_system_scope_run_reads_the_system_document_once() {
+    let config_home = config_home();
+    write_alias_fixture(&config_home.join("cfgd"), "fromdefault");
+    let user_default = config_home.join("cfgd").display().to_string();
+
+    type Row<'a> = (&'a str, &'a [&'a str], Option<(&'a str, &'a str)>);
+    let rows: [Row<'_>; 2] = [
+        ("--scope system", &["--scope", "system"], None),
+        (
+            "CFGD_SCOPE=system",
+            &[],
+            Some((cfgd_core::CFGD_SCOPE_ENV, "system")),
+        ),
+    ];
+    let mut wrong = Vec::new();
+    for (shape, args, env) in rows {
+        let run = |verb: &[&str]| {
+            let mut cmd = cfgd_bin().expect("the cfgd binary builds");
+            cmd.env_remove("RUST_LOG").arg("-v").args(args).args(verb);
+            if let Some((var, value)) = env {
+                cmd.env(var, value);
+            }
+            cmd.output().expect("cfgd runs")
+        };
+        let stderr =
+            String::from_utf8_lossy(&run(&["config", "get", "profile"]).stderr).into_owned();
+        let summary = stderr
+            .lines()
+            .filter(|l| l.contains(SUMMARY_LINE))
+            .collect::<Vec<_>>();
+        if summary.len() != 1
+            || !summary[0].contains("reads=1 ")
+            || summary[0].contains(&user_default)
+        {
+            wrong.push(format!(
+                "{shape}: want one read of the system document:\n{stderr}"
+            ));
+        }
+        let who = run(&["who"]);
+        let refusal = String::from_utf8_lossy(&who.stderr);
+        if who.status.success() || !refusal.contains("unrecognized subcommand 'who'") {
+            wrong.push(format!(
+                "{shape}: clap did not refuse `who`, so the user default's alias ran:\n{refusal}"
+            ));
+        }
+    }
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+}
+
+/// With no location spelled, the aliases come from the default document.
+#[test]
+fn a_run_without_config_expands_the_default_documents_aliases() {
+    let config_home = config_home();
+    write_alias_fixture(&config_home.join("cfgd"), "fromdefault");
+    let output = cfgd_bin()
+        .expect("the cfgd binary builds")
+        .arg("who")
+        .output()
+        .expect("cfgd runs");
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout).trim(),
+        "fromdefault",
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+/// `config get` of a key the document leaves out answers from the startup
+/// document's parsed config: the verb parses nothing itself. The alias pass
+/// parses the startup document before the tracing subscriber exists, so any
+/// `parsing config document` line is a second parse.
+#[test]
+fn config_get_of_an_undeclared_key_parses_the_document_once() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    write_fixture(dir.path());
+    let config = dir.path().join("cfgd.yaml");
+    let verb = &["config", "get", "daemon.reconcile.interval"][..];
+    let stderr = stderr_of(Config::Flag(&config), verb);
+    assert_reads(verb, &stderr, 1);
+    let parses: Vec<&str> = stderr
+        .lines()
+        .filter(|l| l.contains("parsing config document"))
+        .collect();
+    assert!(parses.is_empty(), "{verb:?}: a second parse:\n{stderr}");
+}
+
+/// A `--config-dir` or `CFGD_CONFIG_DIR` under `~` names the directory under
+/// the home in the alias pass too: `who` is declared in `~/cfg/cfgd.toml`
+/// alone, runs, and the document is read once. A pass that kept the `~`
+/// would look for `<cwd>/~/cfg`, find no TOML there, and refuse `who`.
+#[test]
+fn a_tilde_config_dir_expands_that_documents_aliases_and_reads_it_once() {
+    let home = cfgd_bin()
+        .expect("the cfgd binary builds")
+        .get_envs()
+        .find(|(var, _)| *var == "HOME")
+        .and_then(|(_, value)| value)
+        .map(std::path::PathBuf::from)
+        .expect("cfgd_bin isolates HOME");
+    std::fs::create_dir_all(home.join("cfg")).expect("mkdir");
+    std::fs::write(
+        home.join("cfg").join("cfgd.toml"),
+        "apiVersion = \"cfgd.io/v1alpha1\"\nkind = \"Config\"\n\n[metadata]\nname = \"aliases\"\n\n[spec]\nprofile = \"tilde\"\n\n[spec.aliases]\nwho = \"config get profile\"\n",
+    )
+    .expect("write config");
+    for env in [false, true] {
+        let mut cmd = cfgd_bin().expect("the cfgd binary builds");
+        cmd.env_remove("RUST_LOG").arg("-v");
+        if env {
+            cmd.env(cfgd_core::CFGD_CONFIG_DIR_ENV, "~/cfg");
+        } else {
+            cmd.args(["--config-dir", "~/cfg"]);
+        }
+        let output = cmd.arg("who").output().expect("cfgd runs");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let shape = if env {
+            cfgd_core::CFGD_CONFIG_DIR_ENV
+        } else {
+            "--config-dir"
+        };
+        assert!(output.status.success(), "{shape}: {stderr}");
+        assert_eq!(stdout.trim(), "tilde", "{shape}: {stderr}");
+        assert_reads(&["who"], &stderr, 1);
+    }
+}

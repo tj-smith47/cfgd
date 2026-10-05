@@ -1,5 +1,3 @@
-#![allow(deprecated)] // assert_cmd 2.x cargo_bin deprecation
-
 //! The round trip a module-file drift row has to survive: the daemon tick's
 //! own producer RECORDS it, `cfgd apply` HEALS it, and the next `cfgd status`
 //! reads a converged machine.
@@ -17,11 +15,13 @@
 
 use std::path::{Path, PathBuf};
 
-use assert_cmd::Command;
 use cfgd_core::modules::ResolvedFile;
 use cfgd_core::providers::ProviderRegistry;
 use cfgd_core::reconciler::{Action, ModuleAction, ModuleActionKind, action_drift_rows};
 use cfgd_core::state::StateStore;
+
+mod cfgd_binary;
+use cfgd_binary::cfgd_bin;
 
 /// A config dir holding one module that deploys one file to a target which
 /// does not exist yet, so the first scan finds drift.
@@ -55,20 +55,20 @@ fn module_fixture(dir: &Path) -> std::path::PathBuf {
 }
 
 fn run(args: &[&str], config: &Path, state: &Path, home: &Path) -> std::process::Output {
-    let mut cmd = Command::cargo_bin("cfgd").unwrap();
+    let mut cmd = cfgd_bin().unwrap();
     cmd.args(args)
         .arg("--config")
         .arg(config.join("cfgd.yaml"))
         .arg("--state-dir")
         .arg(state)
         .env("HOME", home)
-        // Windows resolves `~` from USERPROFILE first, so a child left holding
-        // the invoking account's profile would write to the real home.
+        // Windows resolves `~` from USERPROFILE first, so HOME alone would
+        // leave the child under the constructor's home.
         .env("USERPROFILE", home)
-        // `directories` reads Windows' known folders rather than the env, so
-        // nothing but this seam keeps a child's module cache out of the real profile.
-        .env("CFGD_CACHE_DIR", home.join("cache"))
-        .env("CFGD_COLOR", "never");
+        // Keeps the module cache under the home this test re-points; the
+        // constructor's own cache override sits outside it.
+        .env(cfgd_core::CFGD_CACHE_DIR_ENV, home.join("cache"))
+        .env(cfgd_core::CFGD_COLOR_ENV, "never");
     cmd.output().unwrap()
 }
 

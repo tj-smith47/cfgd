@@ -58,7 +58,7 @@ $ cfgd image pack ./out registry.example.com/myapp/server:v1.4.0 \
 
 | Flag | Description |
 |---|---|
-| `--platform <os/arch>` | Target platform (default: host platform, e.g. `linux/amd64`) |
+| `--platform <os/arch[/variant]>` | Target platform (default: host platform, e.g. `linux/amd64`); a variant (`linux/arm/v7`) is written to the image config and selects that variant of a `--base` index |
 | `--entrypoint <arg>` | Image entrypoint (repeatable; builds a list, e.g. `--entrypoint /app/server`) |
 | `--cmd <arg>` | Default command arguments (repeatable) |
 | `--env KEY=VALUE` | Environment variable in the image runtime config (repeatable) |
@@ -192,6 +192,10 @@ resolved digest in an image lockfile; `kubectl cfgd deploy` rewrites the mutable
 `volumes[].image.reference` tag in your manifests to that pinned digest, so you deploy the
 artifact you tested, not whatever the tag happens to point at later.
 
+The recorded digest, like the one `--sign` and `--attest` name, is the sha256 of the manifest
+bytes the pack sent. A registry whose `Docker-Content-Digest` header names another digest fails
+the pack before anything is locked or signed.
+
 ### Step 1: pack with `--lock`
 
 ```bash
@@ -274,7 +278,8 @@ cosign verify-attestation --key cosign.pub --type slsaprovenance1 \
 ```
 
 Both flags are independent and can be combined: `--sign --attest` signs the image
-manifest and attaches the provenance in one invocation.
+manifest and attaches the provenance in one invocation. Both name the image by the digest the
+push left at the tag (`registry.example.com/myapp@sha256:...`).
 
 ## Error output
 

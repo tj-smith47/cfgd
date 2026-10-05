@@ -26,6 +26,16 @@ pub use kubelet::KubeletConfigurator;
 pub use seccomp::SeccompConfigurator;
 pub use sysctl::SysctlConfigurator;
 
+/// The config file a node configurator edits: the desired spec's `configPath`,
+/// or the configurator's own `default` when the spec names none.
+fn config_path(desired: &serde_yaml::Value, default: &str) -> std::path::PathBuf {
+    desired
+        .get("configPath")
+        .and_then(|v| v.as_str())
+        .unwrap_or(default)
+        .into()
+}
+
 // The production types above are portable; the tests below read real
 // /proc, /sys and trust-store state that exists on unix alone.
 #[cfg(all(test, unix))]

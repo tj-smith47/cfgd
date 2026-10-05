@@ -142,7 +142,7 @@ impl StateStore {
     pub fn pending_decisions(&self) -> Result<Vec<PendingDecision>> {
         let mut stmt = self.conn.prepare(&format!(
             "SELECT {DECISION_COLUMNS} FROM pending_decisions
-                 WHERE resolved_at IS NULL ORDER BY created_at DESC"
+                 WHERE resolved_at IS NULL ORDER BY created_at DESC, id DESC"
         ))?;
 
         let rows = stmt
@@ -177,7 +177,7 @@ impl StateStore {
                  WHERE (resolved_at IS NULL OR resolution = 'rejected')
                    AND id = (SELECT MAX(id) FROM pending_decisions AS newer
                              WHERE newer.source = d.source AND newer.resource = d.resource)
-                 ORDER BY created_at DESC"
+                 ORDER BY created_at DESC, id DESC"
         ))?;
         let rows = stmt
             .query_map([], decision_from_row)?
@@ -247,7 +247,7 @@ impl StateStore {
     pub fn pending_decisions_for_source(&self, source: &str) -> Result<Vec<PendingDecision>> {
         let mut stmt = self.conn.prepare(&format!(
             "SELECT {DECISION_COLUMNS} FROM pending_decisions
-                 WHERE source = ?1 AND resolved_at IS NULL ORDER BY created_at DESC"
+                 WHERE source = ?1 AND resolved_at IS NULL ORDER BY created_at DESC, id DESC"
         ))?;
 
         let rows = stmt

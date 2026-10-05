@@ -23,7 +23,7 @@
 //!   - `module_update/remove_nonexistent.json` — removing absent items emits warn, changes==0.
 //!   - `module_update/add_duplicate.json` — adding already-present pkg emits info, changes==0.
 
-mod common;
+use cfgd_test_fixtures as common;
 
 use std::path::Path;
 
@@ -94,6 +94,7 @@ fn module_create_happy_human() {
     let (config_dir, state_dir) = module_test_config_setup();
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc();
+    let printer = printer.with_hints_enabled(true);
 
     let args = cfgd::cli::ModuleCreateArgs {
         name: "happy-mod".to_string(),
@@ -109,7 +110,8 @@ fn module_create_happy_human() {
         apply: false,
         yes: true,
     };
-    module::cmd_module_create(&cli, &printer, &args).unwrap();
+    cfgd::cli::RunContext::for_test(&cli, &printer, |run| module::cmd_module_create(run, &args))
+        .unwrap();
     drop(printer);
 
     let stripped = normalize(&strip_ansi(&cap.human()), config_dir.path());
@@ -131,6 +133,7 @@ fn module_create_with_apply_human() {
     let _home = cfgd_core::with_test_home_guard(config_dir.path());
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc();
+    let printer = printer.with_hints_enabled(true);
 
     let args = cfgd::cli::ModuleCreateArgs {
         name: "apply-mod".to_string(),
@@ -146,7 +149,8 @@ fn module_create_with_apply_human() {
         apply: true,
         yes: true,
     };
-    module::cmd_module_create(&cli, &printer, &args).unwrap();
+    cfgd::cli::RunContext::for_test(&cli, &printer, |run| module::cmd_module_create(run, &args))
+        .unwrap();
     drop(printer);
 
     let stripped = normalize(&strip_ansi(&cap.human()), config_dir.path());
@@ -185,7 +189,8 @@ fn module_create_happy_json() {
         apply: false,
         yes: true,
     };
-    module::cmd_module_create(&cli, &printer, &args).unwrap();
+    cfgd::cli::RunContext::for_test(&cli, &printer, |run| module::cmd_module_create(run, &args))
+        .unwrap();
     drop(printer);
 
     let json = cap.json().expect("doc captured json");
@@ -214,8 +219,10 @@ fn module_create_already_exists_human() {
         apply: false,
         yes: true,
     };
-    let err = module::cmd_module_create(&cli, &printer, &args)
-        .expect_err("duplicate module must return Err");
+    let err = cfgd::cli::RunContext::for_test(&cli, &printer, |run| {
+        module::cmd_module_create(run, &args)
+    })
+    .expect_err("duplicate module must return Err");
     render_cli_error(&printer, &err);
     drop(printer);
 
@@ -243,6 +250,7 @@ fn module_update_happy_human() {
     );
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc();
+    let printer = printer.with_hints_enabled(true);
 
     let args = cfgd::cli::ModuleUpdateArgs {
         name: "upd-mod".to_string(),
@@ -432,6 +440,7 @@ fn module_edit_valid_human() {
     write_module(config_dir.path(), "edit-mod", VALID_MODULE);
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc();
+    let printer = printer.with_hints_enabled(true);
 
     let _editor = EditorGuard::set("/usr/bin/true");
     module::cmd_module_edit(&cli, &printer, "edit-mod").unwrap();

@@ -1,7 +1,7 @@
 //! Snapshot tests for cfgd sync — local repo pull, source iteration,
 //! permission prompts, failure handling, bridge transition.
 
-mod common;
+use cfgd_test_fixtures as common;
 
 use std::path::Path;
 
@@ -88,14 +88,15 @@ fn normalize_commit_hashes(raw: &str) -> String {
 #[test]
 #[serial]
 fn sync_happy_human() {
-    let _allow = EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+    let _allow = EnvVarGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
 
     let (_workspace, config_dir, state_dir, _branch_a, _branch_b) = two_source_setup();
 
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc();
+    let printer = printer.with_hints_enabled(true);
 
-    cmd_sync(&cli, &printer).unwrap();
+    cfgd::cli::RunContext::for_test(&cli, &printer, cmd_sync).unwrap();
     drop(printer);
 
     let normalized = normalize_tempdir_paths(&cap.human(), config_dir.path());
@@ -130,7 +131,7 @@ fn sync_no_sources_human() {
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc();
 
-    cmd_sync(&cli, &printer).unwrap();
+    cfgd::cli::RunContext::for_test(&cli, &printer, cmd_sync).unwrap();
     drop(printer);
 
     let normalized = normalize_tempdir_paths(&cap.human(), config_dir.path());
@@ -149,7 +150,7 @@ fn sync_module_dependency_header_human() {
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc();
 
-    cmd_sync(&cli, &printer).unwrap();
+    cfgd::cli::RunContext::for_test(&cli, &printer, cmd_sync).unwrap();
     drop(printer);
 
     let normalized = normalize_tempdir_paths(&cap.human(), config_dir.path());
@@ -188,7 +189,7 @@ fn sync_local_pull_failure_withholds_the_synced_verdict() {
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc();
 
-    let payload = run_sync(&cli, &printer).unwrap();
+    let payload = cfgd::cli::RunContext::for_test(&cli, &printer, run_sync).unwrap();
     drop(printer);
 
     assert!(
@@ -208,7 +209,7 @@ fn sync_local_pull_failure_withholds_the_synced_verdict() {
 #[test]
 #[serial]
 fn sync_perm_changes_rejection_human() {
-    let _allow = EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+    let _allow = EnvVarGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
 
     let (_workspace, config_dir, state_dir, _branch) = permission_change_source_setup();
 
@@ -219,7 +220,7 @@ fn sync_perm_changes_rejection_human() {
         Verbosity::Normal,
     );
 
-    cmd_sync(&cli, &printer).unwrap();
+    cfgd::cli::RunContext::for_test(&cli, &printer, cmd_sync).unwrap();
     printer.flush();
     drop(printer);
 
@@ -233,7 +234,7 @@ fn sync_perm_changes_rejection_human() {
 #[test]
 #[serial]
 fn sync_perm_changes_accept_human() {
-    let _allow = EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+    let _allow = EnvVarGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
 
     let (_workspace, config_dir, state_dir, _branch) = permission_change_source_setup();
 
@@ -243,8 +244,9 @@ fn sync_perm_changes_accept_human() {
         vec![PromptAnswer::Confirm(true)],
         Verbosity::Normal,
     );
+    let printer = printer.with_hints_enabled(true);
 
-    cmd_sync(&cli, &printer).unwrap();
+    cfgd::cli::RunContext::for_test(&cli, &printer, cmd_sync).unwrap();
     printer.flush();
     drop(printer);
 
@@ -286,7 +288,7 @@ fn assert_movement_ends_differ(human: &str) {
 #[test]
 #[serial]
 fn sync_source_failure_human() {
-    let _disallow = EnvVarGuard::unset("CFGD_ALLOW_LOCAL_SOURCES");
+    let _disallow = EnvVarGuard::unset(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV);
 
     let (config_dir, state_dir) = unreachable_source_setup();
 
@@ -295,7 +297,7 @@ fn sync_source_failure_human() {
 
     // A refused source leaves `cmd_sync` exiting nonzero, which would take
     // this process with it; the render is what is under test.
-    run_sync(&cli, &printer).unwrap();
+    cfgd::cli::RunContext::for_test(&cli, &printer, run_sync).unwrap();
     drop(printer);
 
     let normalized = normalize_tempdir_paths(&cap.human(), config_dir.path());
@@ -344,12 +346,12 @@ fn a_successful_sync_records_the_fetch_so_status_stops_saying_not_yet_fetched() 
     // freshness ledger used to hear only from `source add` / `source update`,
     // so `cfgd status` right after a green sync still reported the source as
     // never fetched.
-    let _allow = EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+    let _allow = EnvVarGuard::set(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1");
     let (_workspace, config_dir, state_dir, _target) = common::opted_in_script_source_setup(false);
     let cli = cli_for(config_dir.path(), state_dir.path());
 
     let (printer, _cap) = Printer::for_test_doc();
-    cmd_sync(&cli, &printer).expect("the source must sync");
+    cfgd::cli::RunContext::for_test(&cli, &printer, cmd_sync).expect("the source must sync");
     drop(printer);
 
     let state =
@@ -442,7 +444,7 @@ fn a_successful_sync_records_the_fetch_so_status_stops_saying_not_yet_fetched() 
 #[test]
 #[serial]
 fn sync_source_failure_settles_the_spinner_exactly_once_never_via_drop() {
-    let _disallow = EnvVarGuard::unset("CFGD_ALLOW_LOCAL_SOURCES");
+    let _disallow = EnvVarGuard::unset(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV);
 
     let (config_dir, state_dir) = unreachable_source_setup();
     let cli = cli_for(config_dir.path(), state_dir.path());
@@ -450,7 +452,7 @@ fn sync_source_failure_settles_the_spinner_exactly_once_never_via_drop() {
 
     // A refused source leaves `cmd_sync` exiting nonzero, which would take
     // this process with it; the render is what is under test.
-    run_sync(&cli, &printer).unwrap();
+    cfgd::cli::RunContext::for_test(&cli, &printer, run_sync).unwrap();
     drop(printer);
 
     let out = cfgd_core::test_helpers::captured_text(&buf);
