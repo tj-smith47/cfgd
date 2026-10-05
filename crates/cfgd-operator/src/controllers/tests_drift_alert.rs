@@ -470,9 +470,6 @@ async fn reconcile_drift_alert_high_severity_emits_escalated_condition_in_status
 async fn reconcile_drift_alert_reads_and_patches_a_machine_in_another_namespace() {
     let mut alert = drift_alert("alert-cross", NS, "mc-team", DriftSeverity::Medium);
     alert.spec.machine_config_ref.namespace = Some("team-a".to_string());
-    alert
-        .owner_references_mut()
-        .push(machine_config_owner_ref("mc-team"));
 
     let mc = machine_config("mc-team", "team-a");
 
@@ -495,7 +492,91 @@ async fn reconcile_drift_alert_reads_and_patches_a_machine_in_another_namespace(
         .expect("the machine in the referenced namespace is found");
 
     let report = harness.finish().await;
-    assert_eq!(report.captured.len(), 3);
+    assert_eq!(
+        report.captured.len(),
+        3,
+        "no ownerReferences patch: Kubernetes garbage-collects a dependent whose \
+         namespaced owner lives in another namespace"
+    );
+}
+
+/// An alert in one namespace that still carries a MachineConfig owner
+/// reference into another loses it, so the garbage collector does not delete
+/// the alert. Owners of any other kind are kept.
+#[tokio::test]
+async fn reconcile_drift_alert_drops_a_machine_owner_in_another_namespace() {
+    let mut alert = drift_alert("alert-cross", NS, "mc-team", DriftSeverity::Medium);
+    alert.spec.machine_config_ref.namespace = Some("team-a".to_string());
+    let mut other = machine_config_owner_ref("keeper");
+    other.kind = "ConfigMap".to_string();
+    other.api_version = "v1".to_string();
+    other.controller = None;
+    alert
+        .owner_references_mut()
+        .extend([machine_config_owner_ref("mc-team"), other.clone()]);
+
+    let mc = machine_config("mc-team", "team-a");
+
+    let (ctx, _registry, harness) = MockKubeHarness::with_stores(
+        vec![
+            ExpectedCall::patch(drift_alert_path(NS, "alert-cross")).returning_json(&alert),
+            ExpectedCall::patch_status(format!(
+                "{}/status",
+                machine_config_path("team-a", "mc-team")
+            ))
+            .returning_json(&mc),
+            expect_event_post("team-a"),
+            ExpectedCall::patch_status(format!("{}/status", drift_alert_path(NS, "alert-cross")))
+                .returning_json(&alert),
+        ],
+        machines(vec![mc.clone()]),
+    );
+
+    reconcile_drift_alert(Arc::new(alert), ctx)
+        .await
+        .expect("the machine in the referenced namespace is found");
+
+    let report = harness.finish().await;
+    assert_eq!(
+        report.captured[0].body_json()["metadata"]["ownerReferences"],
+        serde_json::json!([other]),
+        "the cross-namespace machine owner goes and the other owner stays"
+    );
+}
+
+/// A retargeted alert's owner reference names its new machine alone: an
+/// object takes one controller reference, so the old one is replaced.
+#[tokio::test]
+async fn reconcile_drift_alert_replaces_the_owner_of_a_retargeted_alert() {
+    let mut alert = drift_alert("alert-moved", NS, "mc-new", DriftSeverity::Medium);
+    alert
+        .owner_references_mut()
+        .push(machine_config_owner_ref("mc-old"));
+    let mc = machine_config("mc-new", NS);
+
+    let (ctx, _registry, harness) = MockKubeHarness::with_stores(
+        vec![
+            ExpectedCall::patch(drift_alert_path(NS, "alert-moved")).returning_json(&alert),
+            ExpectedCall::patch_status(format!("{}/status", machine_config_path(NS, "mc-new")))
+                .returning_json(&mc),
+            expect_event_post(NS),
+            ExpectedCall::patch_status(format!("{}/status", drift_alert_path(NS, "alert-moved")))
+                .returning_json(&alert),
+        ],
+        machines(vec![mc.clone()]),
+    );
+
+    reconcile_drift_alert(Arc::new(alert), ctx)
+        .await
+        .expect("the new machine is found");
+
+    let report = harness.finish().await;
+    let owners = report.captured[0].body_json()["metadata"]["ownerReferences"].clone();
+    let owners = owners.as_array().expect("ownerReferences array");
+    assert_eq!(owners.len(), 1, "exactly one owner reference: {owners:?}");
+    assert_eq!(owners[0]["name"], "mc-new");
+    assert_eq!(owners[0]["uid"], "uid-mc-new");
+    assert_eq!(owners[0]["controller"], true);
 }
 
 /// The alert's own status patch re-runs it, and the machine cache can still

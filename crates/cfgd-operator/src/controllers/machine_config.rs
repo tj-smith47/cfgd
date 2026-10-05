@@ -1,16 +1,16 @@
 use std::sync::Arc;
 
-use kube::api::{Api, Patch, PatchParams};
+use kube::api::{Api, DeleteParams, ListParams, Patch, PatchParams};
 use kube::runtime::controller::Action;
 use kube::runtime::events::EventType;
 use kube::{Resource, ResourceExt};
 use tracing::info;
 
-use crate::crds::{MachineConfig, MachineConfigSpec, MachineConfigStatus};
+use crate::crds::{DriftAlert, MachineConfig, MachineConfigSpec, MachineConfigStatus};
 use crate::errors::OperatorError;
 use crate::metrics::DriftLabels;
 
-use super::drift_alert::has_active_drift_alerts;
+use super::drift_alert::{alert_target, has_active_drift_alerts};
 use super::module::resolve_module_refs;
 use super::{
     ControllerContext, FIELD_MANAGER_STATUS, MACHINE_CONFIG_FINALIZER, add_finalizer,
@@ -33,6 +33,7 @@ pub(super) async fn reconcile_machine_config(
 
     if obj.metadata.deletion_timestamp.is_some() && has_finalizer {
         info!(name = %name, "machineConfig being deleted, running cleanup");
+        delete_alerts_naming(&ctx.client, &namespace, &name).await?;
         remove_finalizer(&machines_api, &name, finalizers, MACHINE_CONFIG_FINALIZER).await?;
         // A deletion pass is a reconciliation that succeeded; during a
         // deletion-heavy period this counter is the only sign the controller
@@ -308,4 +309,51 @@ pub(super) fn drift_detected(has_drift: bool, name: &str) -> (&'static str, &'st
             format!("No device reported drifted system settings for MachineConfig {name}"),
         )
     }
+}
+
+/// Delete every DriftAlert that names the machine `namespace/name`.
+///
+/// An alert in the machine's own namespace is also its dependent through an
+/// owner reference, but one in another namespace cannot be: Kubernetes treats
+/// a cross-namespace owner as absent. The machine's finalizer is what retires
+/// those, so an alert never outlives the machine it reports on. The list is
+/// live: an alert the cache has not seen yet would otherwise be left behind
+/// naming a machine that no longer exists. A failure keeps the finalizer, and
+/// the deletion is retried.
+async fn delete_alerts_naming(
+    client: &kube::Client,
+    namespace: &str,
+    name: &str,
+) -> Result<(), OperatorError> {
+    let mut params = ListParams::default();
+    if let Some(selector) = crate::runtime::watch_label_selector() {
+        params = params.labels(&selector);
+    }
+    let alerts = Api::<DriftAlert>::all(client.clone())
+        .list(&params)
+        .await
+        .map_err(|e| {
+            OperatorError::Reconciliation(format!(
+                "failed to list DriftAlerts naming MachineConfig {name}: {e}"
+            ))
+        })?;
+    for alert in alerts
+        .iter()
+        .filter(|a| alert_target(a) == (namespace, name))
+    {
+        let alert_name = alert.name_any();
+        let api: Api<DriftAlert> = namespaced_api(client, &alert.namespace().unwrap_or_default())?;
+        match api.delete(&alert_name, &DeleteParams::default()).await {
+            Ok(_) => {
+                info!(name = %alert_name, machine_config = %name, "deleted DriftAlert of a deleted MachineConfig")
+            }
+            Err(kube::Error::Api(e)) if e.code == 404 => {}
+            Err(e) => {
+                return Err(OperatorError::Reconciliation(format!(
+                    "failed to delete DriftAlert {alert_name} of MachineConfig {name}: {e}"
+                )));
+            }
+        }
+    }
+    Ok(())
 }

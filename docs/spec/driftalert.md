@@ -101,6 +101,12 @@ machineConfigRef:
   namespace: team-platform
 ```
 
+Deleting the `MachineConfig` deletes every DriftAlert whose `machineConfigRef`
+names it, in any namespace. An alert in the machine's own namespace also lists
+the machine as its controller owner reference; an alert in another namespace
+lists none, because Kubernetes garbage-collects an object whose owner is in a
+different namespace.
+
 ---
 
 ### spec.driftDetails[]

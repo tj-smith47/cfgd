@@ -8,8 +8,8 @@ use kube::{Resource, ResourceExt};
 use tracing::{info, warn};
 
 use crate::crds::{
-    ClusterConfigPolicySpec, ConfigPolicy, ConfigPolicySpec, ConfigPolicyStatus, MachineConfig,
-    MachineConfigSpec, MachineConfigStatus, ModuleRef, PackageRef,
+    ClusterConfigPolicySpec, Condition, ConfigPolicy, ConfigPolicySpec, ConfigPolicyStatus,
+    MachineConfig, MachineConfigSpec, MachineConfigStatus, ModuleRef, PackageRef,
 };
 use crate::errors::OperatorError;
 use crate::metrics::PolicyLabels;
@@ -39,14 +39,7 @@ pub(super) async fn reconcile_config_policy(
 
     let machines: Api<MachineConfig> = namespaced_api(&ctx.client, &namespace)?;
 
-    // Filter MachineConfigs by target selector
-    let targeted_mcs: Vec<Arc<MachineConfig>> = ctx
-        .stores
-        .machine_configs_in(&namespace)
-        .await?
-        .into_iter()
-        .filter(|mc| matches_selector(mc.metadata.labels.as_ref(), &obj.spec.target_selector))
-        .collect();
+    let namespace_mcs: Vec<Arc<MachineConfig>> = ctx.stores.machine_configs_in(&namespace).await?;
 
     let finalizers = obj.metadata.finalizers.as_deref().unwrap_or(&[]);
     let has_finalizer = finalizers.iter().any(|f| f == CONFIG_POLICY_FINALIZER);
@@ -68,12 +61,15 @@ pub(super) async fn reconcile_config_policy(
     if obj.metadata.deletion_timestamp.is_some() {
         if has_finalizer {
             info!(name = %name, "configPolicy being deleted, clearing its verdicts");
-            clear_compliant_verdicts(
-                &machines,
-                &deletion_clear_targets(&obj, &targeted_mcs),
-                &in_force,
-            )
-            .await;
+            // Every machine carrying a verdict is re-judged, so one this
+            // policy judged and then lost to a relabel or a selector edit is
+            // retired too.
+            let judged: Vec<String> = namespace_mcs
+                .iter()
+                .filter(|mc| has_compliant_condition(mc))
+                .map(|mc| mc.name_any())
+                .collect();
+            clear_compliant_verdicts(&machines, &judged, &in_force).await;
             // The gauge loses its only writer with this reconcile, so an
             // unremoved series would export the deleted policy's last count
             // for the life of the process.
@@ -99,54 +95,41 @@ pub(super) async fn reconcile_config_policy(
 
     in_force.push(Arc::clone(&obj));
 
-    // Update each targeted MachineConfig's Compliant condition
-    let mut verdicts: Vec<MachineVerdict<'_>> = Vec::with_capacity(targeted_mcs.len());
-    for mc in &targeted_mcs {
-        let compliant = validate_policy_compliance(
-            &mc.spec,
-            mc.status.as_ref(),
-            &obj.spec.required_modules,
-            &obj.spec.packages,
-            &obj.spec.settings,
-        );
-        verdicts.push(MachineVerdict {
+    let targeted_mcs: Vec<&Arc<MachineConfig>> = namespace_mcs
+        .iter()
+        .filter(|mc| matches_selector(mc.metadata.labels.as_ref(), &obj.spec.target_selector))
+        .collect();
+    let verdicts: Vec<MachineVerdict<'_>> = targeted_mcs
+        .iter()
+        .map(|mc| MachineVerdict {
             machine: mc,
-            compliant,
-        });
-        let mc_name = mc.name_any();
-        let mc_existing_conditions = mc
+            compliant: validate_policy_compliance(
+                &mc.spec,
+                mc.status.as_ref(),
+                &obj.spec.required_modules,
+                &obj.spec.packages,
+                &obj.spec.settings,
+            ),
+        })
+        .collect();
+
+    // Every machine in the namespace, targeted or not: one that left every
+    // policy's selector still carries the verdict it was last given, and only
+    // a policy pass can reset it.
+    let now = cfgd_core::utc_now_iso8601();
+    for mc in &namespace_mcs {
+        let existing = mc
             .status
             .as_ref()
             .map(|s| s.conditions.as_slice())
             .unwrap_or(&[]);
-        let now = cfgd_core::utc_now_iso8601();
-        // Several policies can target one machine and there is one `Compliant`
-        // condition, so each policy writes the verdict of all of them: a
-        // condition naming only the writer would be rewritten by every other
-        // policy's pass in turn, forever.
-        let Some((comp_status, comp_reason, comp_message)) = compliant_verdict(mc, &in_force)
-        else {
+        let Some(condition) = shared_compliant_condition(mc, &in_force, &now) else {
             continue;
         };
-        let compliant_condition = build_condition(
-            mc_existing_conditions,
-            "Compliant",
-            comp_status,
-            comp_reason,
-            &comp_message,
-            &now,
-            mc.meta().generation,
-        );
-        // The condition is rebuilt from the object's own conditions every
-        // reconcile, so an unchanged verdict produces a byte-identical entry —
-        // patching it would be an etcd write and a watch fan-out per targeted
-        // machine per minute, forever.
-        if mc_existing_conditions.contains(&compliant_condition) {
-            continue;
-        }
+        let mc_name = mc.name_any();
         let mc_status_patch = serde_json::json!({
             "status": {
-                "conditions": upsert_condition(mc_existing_conditions, compliant_condition)
+                "conditions": upsert_condition(existing, condition)
             }
         });
         if let Err(e) = machines
@@ -317,34 +300,9 @@ pub(super) fn validate_policy_compliance(
     }
     true
 }
-/// The machines whose verdict a deleted policy must retire: the selector match
-/// at deletion time, plus every machine the policy's own status remembers as
-/// non-compliant. The memory half covers a machine relabelled out of the
-/// selector (or dropped by a `targetSelector` edit) after being judged, whose
-/// stale `Compliant=False` nothing else would ever clear. A compliant machine
-/// relabelled away is not in that memory and keeps its verdict until any policy
-/// next evaluates it: the condition records no owner, so the full set of
-/// machines ever judged is not derivable.
-fn deletion_clear_targets(policy: &ConfigPolicy, targeted: &[Arc<MachineConfig>]) -> Vec<String> {
-    let mut names: Vec<String> = targeted.iter().map(|mc| mc.name_any()).collect();
-    let remembered = policy
-        .status
-        .as_ref()
-        .map(|s| s.non_compliant_machines.as_slice())
-        .unwrap_or(&[]);
-    for key in remembered {
-        // Keys are `namespace/name` (see `machine_key`); the Api is already
-        // namespaced, so only the name half addresses the machine.
-        let mc_name = key.split_once('/').map_or(key.as_str(), |(_, n)| n);
-        if !names.iter().any(|n| n == mc_name) {
-            names.push(mc_name.to_string());
-        }
-    }
-    names
-}
-
-/// Recompute the `Compliant` condition on every machine a deleted policy had
-/// judged, from the policies that `remaining` holds.
+/// Recompute the `Compliant` condition on every machine in `names`, the ones
+/// carrying a verdict when a policy is deleted, from the policies that
+/// `remaining` holds.
 ///
 /// The policy controller owns that condition, so its deletion is the only event
 /// that can retire the verdict: the machine controller carries whatever is there
@@ -384,30 +342,9 @@ async fn clear_compliant_verdicts(
             .as_ref()
             .map(|s| s.conditions.as_slice())
             .unwrap_or(&[]);
-        // Nothing to retire, and writing one would announce an evaluation that
-        // never happened.
-        if super::find_condition(existing, "Compliant").is_none() {
+        let Some(cleared) = shared_compliant_condition(&live, remaining, &now) else {
             continue;
-        }
-        let (status, reason, message) = compliant_verdict(&live, remaining).unwrap_or_else(|| {
-            (
-                "Unknown",
-                "NotEvaluated",
-                "Awaiting policy evaluation".to_string(),
-            )
-        });
-        let cleared = build_condition(
-            existing,
-            "Compliant",
-            status,
-            reason,
-            &message,
-            &now,
-            live.meta().generation,
-        );
-        if existing.contains(&cleared) {
-            continue;
-        }
+        };
         let patch = serde_json::json!({
             "status": { "conditions": upsert_condition(existing, cleared) }
         });
@@ -472,6 +409,52 @@ fn compliant_verdict(
             format!("Violates {}", naming_policies(&violated)),
         )
     })
+}
+
+/// The `Compliant` condition every policy pass writes onto `mc`, or `None`
+/// when the machine already carries it.
+///
+/// A machine no policy in `in_force` targets is reset to the triple the
+/// machine controller synthesizes for a machine no policy has evaluated, and
+/// only when it carries a verdict to reset: writing one onto a machine that
+/// never had one would announce an evaluation that never happened. The
+/// condition is rebuilt from the machine's own conditions, so an unchanged
+/// verdict compares equal and costs no write.
+fn shared_compliant_condition(
+    mc: &MachineConfig,
+    in_force: &[Arc<ConfigPolicy>],
+    now: &str,
+) -> Option<Condition> {
+    let existing = mc
+        .status
+        .as_ref()
+        .map(|s| s.conditions.as_slice())
+        .unwrap_or(&[]);
+    let (status, reason, message) = match compliant_verdict(mc, in_force) {
+        Some(verdict) => verdict,
+        None if has_compliant_condition(mc) => (
+            "Unknown",
+            "NotEvaluated",
+            "Awaiting policy evaluation".to_string(),
+        ),
+        None => return None,
+    };
+    let condition = build_condition(
+        existing,
+        "Compliant",
+        status,
+        reason,
+        &message,
+        now,
+        mc.meta().generation,
+    );
+    (!existing.contains(&condition)).then_some(condition)
+}
+
+fn has_compliant_condition(mc: &MachineConfig) -> bool {
+    mc.status
+        .as_ref()
+        .is_some_and(|s| super::find_condition(&s.conditions, "Compliant").is_some())
 }
 
 fn naming_policies(names: &[&str]) -> String {

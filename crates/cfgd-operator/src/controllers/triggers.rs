@@ -21,7 +21,8 @@ use kube::{Api, Resource, ResourceExt};
 use serde::de::DeserializeOwned;
 
 use crate::crds::{
-    BackupPolicy, ClusterConfigPolicy, ConfigPolicy, DriftAlert, MachineConfig, Module,
+    BackupPolicy, ClusterConfigPolicy, ConfigPolicy, DriftAlert, MachineConfig,
+    MachineConfigReference, Module,
 };
 
 use super::drift_alert::alert_target;
@@ -160,7 +161,7 @@ pub(super) struct EventGate<K: Resource, S> {
 impl<K, S> EventGate<K, S>
 where
     K: Resource<DynamicType = ()>,
-    S: PartialEq,
+    S: PartialEq + Clone,
 {
     pub(super) fn new(read: fn(&K) -> S) -> Self {
         Self {
@@ -172,6 +173,12 @@ where
 
     /// The object `event` admits, if any.
     pub(super) fn admit(&mut self, event: watcher::Event<K>) -> Option<K> {
+        self.admit_moved(event).map(|(obj, _)| obj)
+    }
+
+    /// The object `event` admits, with the value `read` took off it before
+    /// when the event moved an object the gate had already seen.
+    pub(super) fn admit_moved(&mut self, event: watcher::Event<K>) -> Option<(K, Option<S>)> {
         match event {
             watcher::Event::Init => {
                 self.relisted = Some(HashMap::new());
@@ -179,11 +186,11 @@ where
             }
             watcher::Event::InitApply(obj) => {
                 let (key, now) = (ObjectRef::from_obj(&obj), (self.read)(&obj));
-                let moved = self.seen.get(&key) != Some(&now);
+                let before = self.seen.get(&key).cloned();
                 self.relisted
                     .get_or_insert_with(HashMap::new)
-                    .insert(key, now);
-                moved.then_some(obj)
+                    .insert(key, now.clone());
+                (before.as_ref() != Some(&now)).then_some((obj, before))
             }
             // An object deleted while the watch was down leaves the map here
             // with no event of its own; each reader's periodic requeue is what
@@ -196,13 +203,12 @@ where
             }
             watcher::Event::Apply(obj) => {
                 let (key, now) = (ObjectRef::from_obj(&obj), (self.read)(&obj));
-                let moved = self.seen.get(&key) != Some(&now);
-                self.seen.insert(key, now);
-                moved.then_some(obj)
+                let before = self.seen.insert(key, now.clone());
+                (before.as_ref() != Some(&now)).then_some((obj, before))
             }
             watcher::Event::Delete(obj) => {
                 self.seen.remove(&ObjectRef::from_obj(&obj));
-                Some(obj)
+                Some((obj, None))
             }
         }
     }
@@ -215,7 +221,7 @@ pub(super) fn gated<K, S>(
 ) -> impl Stream<Item = Result<K, watcher::Error>> + Send + 'static
 where
     K: Resource<DynamicType = ()> + Send + 'static,
-    S: PartialEq + Send + 'static,
+    S: PartialEq + Clone + Send + 'static,
 {
     let mut gate = EventGate::new(read);
     events.filter_map(move |event| {
@@ -235,7 +241,7 @@ pub(super) fn gated_watch<K, S>(
 ) -> impl Stream<Item = Result<K, watcher::Error>> + Send + 'static
 where
     K: Resource<DynamicType = ()> + Clone + DeserializeOwned + Debug + Send + Sync + 'static,
-    S: PartialEq + Send + 'static,
+    S: PartialEq + Clone + Send + 'static,
 {
     gated(
         watcher::watcher(api, crate::runtime::watch_config()).default_backoff(),
@@ -305,6 +311,45 @@ pub(super) fn policy_standing<K: Resource>(policy: &K) -> (Option<i64>, bool) {
 pub(super) fn alert_reach(alert: &DriftAlert) -> (String, String) {
     let (namespace, name) = alert_target(alert);
     (namespace.to_string(), name.to_string())
+}
+
+/// The DriftAlert watch a MachineConfig reruns on, gated on [`alert_reach`].
+pub(super) fn alert_watch(
+    api: Api<DriftAlert>,
+) -> impl Stream<Item = Result<DriftAlert, watcher::Error>> + Send + 'static {
+    let mut gate = EventGate::new(alert_reach);
+    watcher::watcher(api, crate::runtime::watch_config())
+        .default_backoff()
+        .flat_map(move |event| {
+            futures::stream::iter(match event {
+                Ok(event) => alert_events(&mut gate, event).into_iter().map(Ok).collect(),
+                Err(error) => vec![Err(error)],
+            })
+        })
+}
+
+/// The alerts `event` admits through `gate`. A retargeted alert comes out
+/// twice: as it is, and as a copy naming the machine it named before, so the
+/// machine it left re-runs as well and drops a DriftDetected it no longer has
+/// a reason for.
+pub(super) fn alert_events(
+    gate: &mut EventGate<DriftAlert, (String, String)>,
+    event: watcher::Event<DriftAlert>,
+) -> Vec<DriftAlert> {
+    let Some((alert, before)) = gate.admit_moved(event) else {
+        return vec![];
+    };
+    let mut admitted = Vec::with_capacity(2);
+    if let Some((namespace, name)) = before {
+        let mut left = alert.clone();
+        left.spec.machine_config_ref = MachineConfigReference {
+            name,
+            namespace: Some(namespace),
+        };
+        admitted.push(left);
+    }
+    admitted.push(alert);
+    admitted
 }
 
 /// The MachineConfig whose DriftDetected verdict `alert` takes part in.

@@ -22,10 +22,11 @@ use super::test_fixtures::{
 };
 use super::test_kube_harness::seeded_store;
 use super::triggers::{
-    EventGate, alert_reach, alerts_naming_machine, backup_inputs, backup_policies_beside,
-    compliance_inputs, config_policies_beside, config_policy_inputs, existence,
-    machine_named_by_alert, machines_naming_module, module_security_demands, namespace_sweep,
-    policies_counting_machine, policies_merging_config_policy, policy_standing, sweep_trigger,
+    EventGate, alert_events, alert_reach, alerts_naming_machine, backup_inputs,
+    backup_policies_beside, compliance_inputs, config_policies_beside, config_policy_inputs,
+    existence, machine_named_by_alert, machines_naming_module, module_security_demands,
+    namespace_sweep, policies_counting_machine, policies_merging_config_policy, policy_standing,
+    sweep_trigger,
 };
 use crate::crds::{
     ClusterConfigPolicy, ClusterConfigPolicySpec, ClusterConfigPolicyStatus, Condition,
@@ -175,7 +176,7 @@ where
     seeded_store(objects.into_iter().map(|o| (*o).clone()).collect())
 }
 
-fn admitted<K: kube::Resource<DynamicType = ()>, S: PartialEq>(
+fn admitted<K: kube::Resource<DynamicType = ()>, S: PartialEq + Clone>(
     gate: &mut EventGate<K, S>,
     event: Event<K>,
 ) -> bool {
@@ -187,7 +188,7 @@ fn admitted<K: kube::Resource<DynamicType = ()>, S: PartialEq>(
 fn listed<K, S>(read: fn(&K) -> S, obj: &K) -> EventGate<K, S>
 where
     K: kube::Resource<DynamicType = ()> + Clone,
-    S: PartialEq,
+    S: PartialEq + Clone,
 {
     let mut gate = EventGate::new(read);
     assert!(!admitted(&mut gate, Event::Init));
@@ -627,6 +628,44 @@ fn an_alert_gate_admits_a_retarget_or_deletion_and_not_another_write() {
     assert!(
         admitted(&mut gate, Event::Delete(retargeted)),
         "a deleted alert can clear its machine's drift"
+    );
+}
+
+/// A retargeted alert re-runs the machine it left as well as the one it now
+/// names: the first drops a DriftDetected it no longer has a reason for, the
+/// second gains one. Every other admitted event reaches the named machine once.
+#[test]
+fn a_retargeted_alert_reaches_the_machine_it_left_and_the_one_it_names() {
+    let alert = drift_alert("alert-1", "ns-a", "mc-1", DriftSeverity::Low);
+    let mut gate = listed(alert_reach, &alert);
+    let targets = |alerts: Vec<crate::crds::DriftAlert>| -> Vec<ObjectRef<MachineConfig>> {
+        alerts
+            .into_iter()
+            .filter_map(machine_named_by_alert)
+            .collect()
+    };
+
+    let mut status_write = alert.clone();
+    status_write.metadata.resource_version = Some("4".to_string());
+    status_write.status = Some(Default::default());
+    assert!(alert_events(&mut gate, Event::Apply(status_write.clone())).is_empty());
+
+    let mut retargeted = status_write;
+    retargeted.metadata.resource_version = Some("5".to_string());
+    retargeted.spec.machine_config_ref.name = "mc-2".to_string();
+    retargeted.spec.machine_config_ref.namespace = Some("ns-b".to_string());
+    assert_eq!(
+        targets(alert_events(&mut gate, Event::Apply(retargeted.clone()))),
+        [
+            ObjectRef::new("mc-1").within("ns-a"),
+            ObjectRef::new("mc-2").within("ns-b"),
+        ]
+    );
+
+    assert_eq!(
+        targets(alert_events(&mut gate, Event::Delete(retargeted))),
+        [ObjectRef::new("mc-2").within("ns-b")],
+        "a deletion reaches the machine the alert last named, once"
     );
 }
 

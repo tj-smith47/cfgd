@@ -1170,7 +1170,8 @@ async fn reconcile_config_policy_clears_its_verdict_from_machines_on_deletion() 
         package_versions: Default::default(),
     });
 
-    // A machine no policy ever judged has nothing to retire, so it is not written to.
+    // A machine no policy ever judged has nothing to retire, so it is not read
+    // or written to.
     let untouched = machine_config("mc-unjudged", NS);
 
     // What the API server holds NOW: the cache copy plus a DriftDetected the
@@ -1193,7 +1194,6 @@ async fn reconcile_config_policy_clears_its_verdict_from_machines_on_deletion() 
             ExpectedCall::get(machine_config_path(NS, "mc-judged")).returning_json(&judged_live),
             ExpectedCall::patch_status(format!("{}/status", machine_config_path(NS, "mc-judged")))
                 .returning_json(&judged_live),
-            ExpectedCall::get(machine_config_path(NS, "mc-unjudged")).returning_json(&untouched),
             ExpectedCall::patch(config_policy_path("doomed-policy")).returning_json(&policy),
         ],
         stores_with(vec![judged.clone(), untouched.clone()]),
@@ -1207,7 +1207,7 @@ async fn reconcile_config_policy_clears_its_verdict_from_machines_on_deletion() 
     let report = harness.finish().await;
     assert_eq!(
         report.captured.len(),
-        4,
+        3,
         "only the judged machine is written to, then the finalizer is dropped"
     );
 
@@ -1239,19 +1239,19 @@ async fn reconcile_config_policy_clears_its_verdict_from_machines_on_deletion() 
     );
 
     assert_eq!(
-        report.captured[3].body_json()["metadata"]["finalizers"],
+        report.captured[2].body_json()["metadata"]["finalizers"],
         serde_json::json!([]),
         "the finalizer is dropped only after the verdicts are cleared"
     );
 }
 
 /// A machine relabelled out of the selector after being judged non-compliant is
-/// no longer in the selector match at deletion time, but the policy's own
-/// `status.nonCompliantMachines` still remembers it: the clear covers the union
-/// of both, so the stale `Compliant=False` is retired anyway. A remembered
-/// machine that no longer exists is skipped without failing the deletion.
+/// no longer in the selector match at deletion time, but it still carries the
+/// verdict: the clear covers every machine in the namespace that carries one,
+/// so the stale `Compliant=False` is retired anyway. A machine the policy's
+/// status still names but the cache no longer holds is not read at all.
 #[tokio::test]
-async fn deleting_a_policy_clears_a_remembered_machine_the_selector_no_longer_matches() {
+async fn deleting_a_policy_clears_a_judged_machine_the_selector_no_longer_matches() {
     let mut policy = config_policy("recall-policy", NS);
     let mut match_labels = std::collections::BTreeMap::new();
     match_labels.insert("env".to_string(), "prod".to_string());
@@ -1288,7 +1288,6 @@ async fn deleting_a_policy_clears_a_remembered_machine_the_selector_no_longer_ma
 
     let (ctx, _registry, harness) = MockKubeHarness::with_stores(
         vec![
-            ExpectedCall::get(machine_config_path(NS, "mc-gone")).returning_404("mc-gone"),
             ExpectedCall::get(machine_config_path(NS, "mc-relabelled")).returning_json(&relabelled),
             ExpectedCall::patch_status(format!(
                 "{}/status",
@@ -1305,17 +1304,17 @@ async fn deleting_a_policy_clears_a_remembered_machine_the_selector_no_longer_ma
         .unwrap();
 
     let report = harness.finish().await;
-    assert_eq!(report.captured.len(), 4);
+    assert_eq!(report.captured.len(), 3);
     let compliant = report
         .find(Method::PATCH, "/machineconfigs/mc-relabelled/status")
-        .expect("the remembered machine must be reset")
+        .expect("the relabelled machine must be reset")
         .body_json()["status"]["conditions"][0]
         .clone();
     assert_eq!(compliant["type"], "Compliant");
     assert_eq!(compliant["status"], "Unknown");
     assert_eq!(compliant["reason"], "NotEvaluated");
     assert_eq!(
-        report.captured[3].body_json()["metadata"]["finalizers"],
+        report.captured[2].body_json()["metadata"]["finalizers"],
         serde_json::json!([])
     );
 }
@@ -1375,6 +1374,122 @@ async fn a_machine_the_api_server_refuses_does_not_strand_the_deleted_policy() {
         serde_json::json!([]),
         "the finalizer must come off despite the refused machine"
     );
+}
+
+fn labelled_machine(name: &str, env: &str, conditions: Vec<Condition>) -> MachineConfig {
+    let mut mc = machine_config(name, NS);
+    mc.metadata.labels = Some(std::collections::BTreeMap::from([(
+        "env".to_string(),
+        env.to_string(),
+    )]));
+    mc.status = Some(crate::crds::MachineConfigStatus {
+        last_reconciled: None,
+        backup_schedule_owners: Default::default(),
+        compliance: None,
+        observed_generation: Some(1),
+        conditions,
+        package_versions: Default::default(),
+    });
+    mc
+}
+
+fn prod_policy(name: &str) -> crate::crds::ConfigPolicy {
+    let mut policy = config_policy(name, NS);
+    policy.spec.target_selector = LabelSelector {
+        match_labels: std::collections::BTreeMap::from([("env".to_string(), "prod".to_string())]),
+        match_expressions: vec![],
+    };
+    policy
+}
+
+/// A machine relabelled out of the only policy's selector keeps the verdict it
+/// was last given until something resets it, and nothing but a policy pass
+/// can: the pass reaches every machine in the namespace carrying a verdict, so
+/// the stale `Compliant=False` goes back to the never-judged triple.
+#[tokio::test]
+async fn a_policy_pass_resets_a_machine_relabelled_out_of_every_selector() {
+    let policy = prod_policy("only-policy");
+    let relabelled = labelled_machine(
+        "mc-relabelled",
+        "dev",
+        vec![compliant_condition("False", "only-policy")],
+    );
+
+    let (ctx, _registry, harness) = MockKubeHarness::with_stores(
+        vec![
+            ExpectedCall::patch_status(format!(
+                "{}/status",
+                machine_config_path(NS, "mc-relabelled")
+            ))
+            .returning_json(&relabelled),
+            ExpectedCall::patch_status(format!("{}/status", config_policy_path("only-policy")))
+                .returning_json(&policy),
+            expect_event_post(NS),
+        ],
+        stores_with(vec![relabelled.clone()]),
+    );
+
+    reconcile_config_policy(Arc::new(policy), ctx)
+        .await
+        .unwrap();
+
+    let report = harness.finish().await;
+    let compliant = report
+        .find(Method::PATCH, "/machineconfigs/mc-relabelled/status")
+        .expect("the relabelled machine must be reset")
+        .body_json()["status"]["conditions"][0]
+        .clone();
+    assert_eq!(compliant["type"], "Compliant");
+    assert_eq!(compliant["status"], "Unknown");
+    assert_eq!(compliant["reason"], "NotEvaluated");
+    assert_eq!(compliant["message"], "Awaiting policy evaluation");
+    assert_eq!(
+        report.captured[1].body_json()["status"]["compliantCount"],
+        0,
+        "the relabelled machine is no longer counted"
+    );
+}
+
+/// A machine no policy targets that already reads the never-judged triple is
+/// in its steady state: a pass sends it nothing, so the policy's own status
+/// write and its event are the whole reconcile.
+#[tokio::test]
+async fn a_policy_pass_leaves_an_untargeted_machine_already_unknown_alone() {
+    let policy = prod_policy("steady-policy");
+    let untargeted = labelled_machine(
+        "mc-dev",
+        "dev",
+        vec![Condition {
+            condition_type: "Compliant".to_string(),
+            status: "Unknown".to_string(),
+            reason: "NotEvaluated".to_string(),
+            message: "Awaiting policy evaluation".to_string(),
+            last_transition_time: "2026-01-01T00:00:00Z".to_string(),
+            observed_generation: Some(1),
+        }],
+    );
+
+    let (ctx, _registry, harness) = MockKubeHarness::with_stores(
+        vec![
+            ExpectedCall::patch_status(format!("{}/status", config_policy_path("steady-policy")))
+                .returning_json(&policy),
+            expect_event_post(NS),
+        ],
+        stores_with(vec![untargeted]),
+    );
+
+    reconcile_config_policy(Arc::new(policy), ctx)
+        .await
+        .unwrap();
+
+    let report = harness.finish().await;
+    assert!(
+        report
+            .find(Method::PATCH, "/machineconfigs/mc-dev/status")
+            .is_none(),
+        "a machine already reading Unknown is not rewritten"
+    );
+    assert_eq!(report.captured.len(), 2);
 }
 
 /// A repeat deletion reconcile (the finalizer removal failed last time) finds

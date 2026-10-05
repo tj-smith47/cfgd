@@ -703,12 +703,10 @@ pub async fn run(
         // A MachineConfig's DriftDetected condition asks whether any alert, in
         // any namespace, names it. An owner reference cannot cross namespaces
         // and an owner watch never sees a delete, so the alert's own target
-        // routes it, and its status writes are gated away.
+        // routes it, a retarget re-runs both machines, and its status writes
+        // are gated away.
         .watches_stream(
-            triggers::gated_watch(
-                Api::<DriftAlert>::all(client.clone()),
-                triggers::alert_reach,
-            ),
+            triggers::alert_watch(Api::<DriftAlert>::all(client.clone())),
             triggers::machine_named_by_alert,
         )
         // A MachineConfig's ModulesResolved condition asks only whether each

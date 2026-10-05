@@ -47,23 +47,33 @@ pub(super) async fn reconcile_drift_alert(
                 ))
             })?;
 
-            let owner_ref = OwnerReference {
-                api_version: cfgd_core::API_VERSION.to_string(),
-                kind: "MachineConfig".to_string(),
-                name: mc.name_any(),
-                uid: mc_uid,
-                controller: Some(true),
-                block_owner_deletion: Some(true),
+            // Kubernetes treats an owner in another namespace as absent and
+            // garbage-collects the dependent, so an alert naming a machine
+            // elsewhere carries no owner reference; the machine's finalizer
+            // deletes it instead. A retargeted alert has its old machine's
+            // reference replaced, since an object takes one controller.
+            let wanted: Vec<OwnerReference> = if mc_namespace == namespace {
+                vec![OwnerReference {
+                    api_version: cfgd_core::API_VERSION.to_string(),
+                    kind: "MachineConfig".to_string(),
+                    name: mc.name_any(),
+                    uid: mc_uid,
+                    controller: Some(true),
+                    block_owner_deletion: Some(true),
+                }]
+            } else {
+                vec![]
             };
-
             let existing_owners = obj.metadata.owner_references.as_deref().unwrap_or(&[]);
-            let has_owner_ref = existing_owners.iter().any(|r| {
-                r.kind == "MachineConfig" && r.name == owner_ref.name && r.uid == owner_ref.uid
-            });
+            let (machine_owners, other_owners): (Vec<OwnerReference>, Vec<OwnerReference>) =
+                existing_owners
+                    .iter()
+                    .cloned()
+                    .partition(|r| r.kind == "MachineConfig");
 
-            if !has_owner_ref {
-                let mut updated_owners: Vec<OwnerReference> = existing_owners.to_vec();
-                updated_owners.push(owner_ref);
+            if machine_owners != wanted {
+                let updated_owners: Vec<OwnerReference> =
+                    other_owners.into_iter().chain(wanted).collect();
                 let patch = serde_json::json!({
                     "metadata": {
                         "ownerReferences": updated_owners

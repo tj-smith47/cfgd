@@ -3691,7 +3691,8 @@ fn run_statement<'a>(code: &'a str, binding: &str) -> &'a str {
 /// - Module <- ClusterConfigPolicy: a sweep rooted on the policy controller's
 ///   own output stream (no second watch), gated on the security demands.
 /// - MachineConfig <- Module: a watch gated on existence; <- DriftAlert: a
-///   watch gated on the machine the alert names, mapped to that machine.
+///   watch gated on the machine the alert names, mapped to that machine and,
+///   on a retarget, to the machine it named before.
 /// - DriftAlert <- MachineConfig: a watch gated on the DriftDetected report.
 /// - ClusterConfigPolicy <- MachineConfig: a watch gated on the compliance
 ///   inputs; <- ConfigPolicy: a watch gated on the generation and whether the
@@ -3731,7 +3732,7 @@ fn every_cross_kind_read_of_a_controller_is_wired_to_a_trigger() {
             "mc_controller",
             ".watches_stream(",
             [
-                "triggers::gated_watch(Api::<DriftAlert>::all(client.clone()),triggers::alert_reach)",
+                "triggers::alert_watch(Api::<DriftAlert>::all(client.clone()))",
                 "triggers::machine_named_by_alert",
             ],
         ),
@@ -3800,7 +3801,28 @@ fn every_cross_kind_read_of_a_controller_is_wired_to_a_trigger() {
     // that admits every write would re-run it on writes it never reads: each
     // cross-kind watch goes through a gate, and the ungated openers are absent.
     let squashed = squash(&code);
-    for ungated in [".owns(", ".owns_with(", ".watches(", ".watches_with("] {
+    // Every trigger method kube-runtime 4.2's Controller offers but the
+    // operator does not use is refused, so a new one cannot slip in beside
+    // the gated `.watches_stream(` calls and the two `.reconcile_all_on(`
+    // sweeps pinned above.
+    for ungated in [
+        ".owns(",
+        ".owns_with(",
+        ".owns_stream(",
+        ".owns_stream_with(",
+        ".owns_shared_stream(",
+        ".owns_shared_stream_with(",
+        ".watches(",
+        ".watches_with(",
+        ".watches_stream_with(",
+        ".watches_shared_stream(",
+        ".watches_shared_stream_with(",
+        ".reconcile_on(",
+        "Controller::for_stream(",
+        "Controller::for_stream_with(",
+        "Controller::for_shared_stream(",
+        "Controller::for_shared_stream_with(",
+    ] {
         assert!(
             calls(&squashed, ungated).is_empty(),
             "`run` must not open an ungated `{ungated}` watch: gate it with triggers::gated_watch"
@@ -3810,6 +3832,16 @@ fn every_cross_kind_read_of_a_controller_is_wired_to_a_trigger() {
         calls(&squashed, ".watches_stream(").len(),
         wired.len(),
         "every `.watches_stream(` is listed above with its gate"
+    );
+    let mut sweeps: Vec<String> = calls(&squashed, ".reconcile_all_on(")
+        .into_iter()
+        .map(|args| args.join(","))
+        .collect();
+    sweeps.sort();
+    assert_eq!(
+        sweeps,
+        ["namespace_rx", "policy_rx"],
+        "a `.reconcile_all_on(` takes one of the two gated sweep triggers"
     );
 
     let policies = squash(run_statement(&code, "ccp_controller"));
