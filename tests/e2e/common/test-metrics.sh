@@ -89,16 +89,22 @@ fi
 # it means the scan lost its files.
 min_scanned_files=40
 
-# scan_lines <scan> <ere> <path>...: print file:line for each line of a *.sh
-# under <path> outside helpers.sh and this file that matches <ere>, skipping
+# scan_lines <scan> <ere> <skip> <path>...: print file:line for each line of a
+# *.sh under <path> whose name is not one of the space-separated <skip> names
+# that matches <ere>, skipping
 # comments and begin_test titles, then a last line `scanned <files>`. Exits 1
 # when find fails or matched no file, or when a non-empty file find listed
 # never reached awk (each one is named, under <scan>). The pattern reaches awk
 # through the environment, so its backslashes are read as written.
 scan_lines() {
     local scan="$1" ere="$2" files="$scratch/scan-files" read="$scratch/scan-read"
-    shift 2
-    if ! find "$@" -name '*.sh' ! -name helpers.sh ! -name test-metrics.sh > "$files"; then
+    local -a skip=()
+    local name
+    for name in $3; do
+        skip+=(! -name "$name")
+    done
+    shift 3
+    if ! find "$@" -name '*.sh' "${skip[@]}" > "$files"; then
         echo "$scan: find failed under $*" >&2
         return 1
     fi
@@ -118,15 +124,19 @@ scan_lines() {
 }
 
 # A counter sample is `cfgd_<name>_total` as a whole word, or any `_total{` /
-# `_total(\{` match.
+# `_total(\{` match. helpers.sh is where the one matching spelling lives, and
+# this file holds the probes.
 scan_hand_matches() {
-    scan_lines scan_hand_matches 'cfgd_[a-z_]+_total([^a-z_]|$)|_total(\(\\\{|\\?\{)' "$@"
+    scan_lines scan_hand_matches 'cfgd_[a-z_]+_total([^a-z_]|$)|_total(\(\\\{|\\?\{)' \
+        "helpers.sh test-metrics.sh" "$@"
 }
 
 # A case pattern chaining two quoted words (`*" a "*" b "*`) cannot match a
 # space-joined list whose members share one space; has_all_words reads it.
+# helpers.sh, where list predicates live, is read too; this file is skipped for
+# its probe heredoc.
 scan_chained_cases() {
-    scan_lines scan_chained_cases ' "\*" ' "$@"
+    scan_lines scan_chained_cases ' "\*" ' test-metrics.sh "$@"
 }
 
 # Every counter read goes through the helpers, so the one sample spelling read
@@ -246,10 +256,13 @@ case " $S" in *" A=1 "*" B=2 "*) ok ;; esac
 case " $S " in *" A=1 "*) ok ;; esac
 has_all_words "$S" A=1 B=2
 PROBE
-want="$(printf '%s\n' "$scratch/chained/p.sh:1" "$scratch/chained/p.sh:2" "scanned 1")"
-got="$(scan_chained_cases "$scratch/chained")"
+cat > "$scratch/chained/helpers.sh" <<'PROBE'
+zz() { case " $1 " in *" a "*" b "*) return 0 ;; esac; }
+PROBE
+want="$(printf '%s\n' "$scratch/chained/helpers.sh:1" "$scratch/chained/p.sh:1" "$scratch/chained/p.sh:2" "scanned 2")"
+got="$(scan_chained_cases "$scratch/chained" | LC_ALL=C sort)"
 if [ "$got" = "$want" ]; then
-    pass "the chained-case scan flags literal and variable chains, and skips comments, a one-word case and has_all_words"
+    pass "the chained-case scan reads helpers.sh, flags literal and variable chains, and skips comments, a one-word case and has_all_words"
 else
     fail "the chained-case scan on the probe printed:"
     printf '%s\n' "$got" | sed 's/^/    /'

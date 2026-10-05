@@ -77,8 +77,6 @@
       values:
         - name: CSI_DRIVER_NAME
           value: "e2e.csi.cfgd.io"
-        - name: OCI_INSECURE_REGISTRIES
-          value: registry.example:5000
         - name: DOCKER_CONFIG
           value: /etc/cfgd/docker
 - kind: Deployment
@@ -90,8 +88,6 @@
           value: "e2e.csi.cfgd.io"
         - name: WATCH_LABEL_SELECTOR
           value: "cfgd.io/e2e-run=42"
-        - name: OCI_INSECURE_REGISTRIES
-          value: registry.example:5000
         - name: DOCKER_CONFIG
           value: /etc/cfgd/docker
 - kind: DaemonSet

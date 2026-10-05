@@ -62,9 +62,9 @@ tolerations, security contexts).
 
 ### Registry settings
 
-Three components read module artifacts from a registry — the operator (each
+Three components read module artifacts from a registry: the operator (each
 Module's platforms, attestations and cosign signature), the CSI driver (the
-layers it mounts) and the agent (the modules it pulls) — and each takes its
+layers it mounts) and the agent (the modules it pulls). Each takes its
 registry configuration through its own `extraEnv`. Give the same settings to
 every component you enable:
 

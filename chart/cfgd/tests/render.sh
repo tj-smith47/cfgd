@@ -66,10 +66,6 @@ cluster_scoped_args() {
         -f "$repo/tests/e2e/manifests/pr-install-values.yaml"
         --set operator.image.repository=registry.example/cfgd-operator --set operator.image.tag=pr
         --set csiDriver.image.repository=registry.example/cfgd-csi --set csiDriver.image.tag=pr
-        --set 'csiDriver.extraEnv[0].name=OCI_INSECURE_REGISTRIES' --set 'csiDriver.extraEnv[0].value=registry.example:5000'
-        --set 'csiDriver.extraEnv[1].name=DOCKER_CONFIG' --set 'csiDriver.extraEnv[1].value=/etc/cfgd/docker'
-        --set 'operator.extraEnv[0].name=OCI_INSECURE_REGISTRIES' --set 'operator.extraEnv[0].value=registry.example:5000'
-        --set 'operator.extraEnv[1].name=DOCKER_CONFIG' --set 'operator.extraEnv[1].value=/etc/cfgd/docker'
         --set-string csiDriver.name=e2e.csi.cfgd.io
         --set-string operator.watchLabelSelector=cfgd.io/e2e-run=42
         --set-json 'webhook.objectSelector={"matchLabels":{"cfgd.io/e2e-run":"42"}}'
@@ -95,7 +91,7 @@ cluster_scoped_query='[.] |
     | {"kind": .kind, "name": .metadata.name,
        "env": [.spec.template.spec.containers[] | {"container": .name,
          "values": [.env[]? | select(.name == "CSI_DRIVER_NAME" or .name == "WATCH_LABEL_SELECTOR"
-           or .name == "DOCKER_CONFIG" or .name == "OCI_INSECURE_REGISTRIES")]}
+           or .name == "DOCKER_CONFIG")]}
          | select(.values | length > 0)]}]
   + [.[] | select(.kind == "Deployment" or .kind == "DaemonSet")
     | {"kind": .kind, "name": .metadata.name,
