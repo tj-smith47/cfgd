@@ -8,6 +8,11 @@ mutatingWebhook: {failurePolicy: Fail}
 operator:
   image: {pullPolicy: Always}
   imagePullSecrets: [{name: registry-credentials}]
+  extraVolumes:
+    - name: docker-config
+      secret: {secretName: registry-credentials, items: [{key: .dockerconfigjson, path: config.json}]}
+  extraVolumeMounts:
+    - {name: docker-config, mountPath: /etc/cfgd/docker, readOnly: true}
 csiDriver:
   enabled: true
   image: {pullPolicy: Always}

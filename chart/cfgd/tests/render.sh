@@ -4,7 +4,9 @@
 #   - deployment cases: the operator Deployment's update strategy and readiness probe
 #   - cluster-scoped cases: every cluster-scoped object with its webhook selectors,
 #     the CSI plugin paths on the node, and the env that names the CSI driver and
-#     scopes the operator, since a second install beside a live release collides on these
+#     scopes the operator, since a second install beside a live release collides on these;
+#     and the registry settings and login mount the operator and CSI driver read
+#     module artifacts with
 #
 # Usage: chart/cfgd/tests/render.sh           compare against the goldens
 #        UPDATE=1 chart/cfgd/tests/render.sh  rewrite the goldens
@@ -66,6 +68,8 @@ cluster_scoped_args() {
         --set csiDriver.image.repository=registry.example/cfgd-csi --set csiDriver.image.tag=pr
         --set 'csiDriver.extraEnv[0].name=OCI_INSECURE_REGISTRIES' --set 'csiDriver.extraEnv[0].value=registry.example:5000'
         --set 'csiDriver.extraEnv[1].name=DOCKER_CONFIG' --set 'csiDriver.extraEnv[1].value=/etc/cfgd/docker'
+        --set 'operator.extraEnv[0].name=OCI_INSECURE_REGISTRIES' --set 'operator.extraEnv[0].value=registry.example:5000'
+        --set 'operator.extraEnv[1].name=DOCKER_CONFIG' --set 'operator.extraEnv[1].value=/etc/cfgd/docker'
         --set-string csiDriver.name=e2e.csi.cfgd.io
         --set-string operator.watchLabelSelector=cfgd.io/e2e-run=42
         --set-json 'webhook.objectSelector={"matchLabels":{"cfgd.io/e2e-run":"42"}}'
@@ -90,8 +94,17 @@ cluster_scoped_query='[.] |
   + [.[] | select(.kind == "Deployment" or .kind == "DaemonSet")
     | {"kind": .kind, "name": .metadata.name,
        "env": [.spec.template.spec.containers[] | {"container": .name,
-         "values": [.env[]? | select(.name == "CSI_DRIVER_NAME" or .name == "WATCH_LABEL_SELECTOR")]}
-         | select(.values | length > 0)]}]'
+         "values": [.env[]? | select(.name == "CSI_DRIVER_NAME" or .name == "WATCH_LABEL_SELECTOR"
+           or .name == "DOCKER_CONFIG" or .name == "OCI_INSECURE_REGISTRIES")]}
+         | select(.values | length > 0)]}]
+  + [.[] | select(.kind == "Deployment" or .kind == "DaemonSet")
+    | {"kind": .kind, "name": .metadata.name,
+       "registryLogin": {
+         "mounts": [.spec.template.spec.containers[] | {"container": .name,
+           "mountPath": [.volumeMounts[]? | select(.name == "docker-config") | .mountPath]}
+           | select(.mountPath | length > 0)],
+         "secret": [.spec.template.spec.volumes[] | select(.name == "docker-config") | .secret.secretName]}}
+    | select(.registryLogin.mounts | length > 0)]'
 
 for name in cluster-scoped-default cluster-scoped-e2e; do
   cluster_scoped_args "$name"

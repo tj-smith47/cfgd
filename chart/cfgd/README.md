@@ -81,8 +81,27 @@ csiDriver:
 
 `OCI_INSECURE_REGISTRIES` is a comma-separated list of registries reached over
 plain HTTP; loopback addresses are always treated that way and need no entry.
-An operator that cannot reach a Module's registry leaves the `PLATFORMS` column
-blank and reports the signature as `unknown`.
+
+A registry that asks for a login needs it on every component too. Each one reads
+`REGISTRY_USERNAME` / `REGISTRY_PASSWORD`, or the `config.json` in the directory
+`DOCKER_CONFIG` names, which `extraVolumes` / `extraVolumeMounts` mount from an
+image pull secret:
+
+```yaml
+operator:
+  extraEnv:
+    - name: DOCKER_CONFIG
+      value: /etc/cfgd/docker
+  extraVolumes:
+    - name: docker-config
+      secret: {secretName: registry-credentials, items: [{key: .dockerconfigjson, path: config.json}]}
+  extraVolumeMounts:
+    - {name: docker-config, mountPath: /etc/cfgd/docker, readOnly: true}
+```
+
+`csiDriver` and `agent` take the same three keys. An operator that cannot reach
+or log in to a Module's registry leaves the `PLATFORMS` column blank and reports
+the signature as `unknown`.
 
 Agent pods run privileged by design: host config management requires root
 access. They do not use the shared `podSecurityContext` /

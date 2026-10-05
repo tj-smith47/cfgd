@@ -48,8 +48,11 @@ operator:
   # The operator reads every Module's artifact from its registry (platforms,
   # attestations, cosign signature), so it needs the same registry settings the
   # CSI driver takes — OCI_INSECURE_REGISTRIES for a plain-HTTP registry, and
-  # any credential environment your registry needs.
+  # the registry login: REGISTRY_USERNAME/REGISTRY_PASSWORD, or DOCKER_CONFIG
+  # naming a directory that extraVolumes/extraVolumeMounts mount a config.json into.
   extraEnv: []
+  extraVolumes: []
+  extraVolumeMounts: []
   imagePullSecrets: []
   # Reconcile only objects matching this label selector; empty reconciles every object.
   watchLabelSelector: ""

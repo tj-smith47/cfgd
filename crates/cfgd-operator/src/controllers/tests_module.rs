@@ -526,7 +526,10 @@ async fn a_module_declaring_no_signature_stays_unsigned() {
 /// applies. A component whose deployment takes no `extraEnv` is one nobody can
 /// point at a private or plain-HTTP registry — which is how the operator came
 /// to render a blank `PLATFORMS` column in a cluster whose CSI driver mounted
-/// the same artifact happily.
+/// the same artifact happily. `extraVolumes` / `extraVolumeMounts` carry the
+/// registry login (a `config.json` from an image pull secret that
+/// `DOCKER_CONFIG` names); an operator without them answered a registry that
+/// asks for a login with 401 and left the column blank the same way.
 #[test]
 fn every_registry_reading_component_exposes_the_same_registry_knob() {
     const TEMPLATES: &[(&str, &str)] = &[
@@ -551,18 +554,20 @@ fn every_registry_reading_component_exposes_the_same_registry_knob() {
             .expect("chart values schema must parse");
 
     for (component, template) in TEMPLATES {
-        assert!(
-            template.contains(&format!(".Values.{component}.extraEnv")),
-            "the {component} template renders no extraEnv, so its registry cannot be configured"
-        );
-        assert!(
-            !values[component]["extraEnv"].is_null(),
-            "values.yaml declares no {component}.extraEnv default"
-        );
-        assert!(
-            !schema["properties"][component]["properties"]["extraEnv"].is_null(),
-            "values.schema.json declares no {component}.extraEnv, so a chart user gets no validation"
-        );
+        for key in ["extraEnv", "extraVolumes", "extraVolumeMounts"] {
+            assert!(
+                template.contains(&format!(".Values.{component}.{key}")),
+                "the {component} template renders no {key}, so its registry cannot be configured"
+            );
+            assert!(
+                !values[component][key].is_null(),
+                "values.yaml declares no {component}.{key} default"
+            );
+            assert!(
+                !schema["properties"][component]["properties"][key].is_null(),
+                "values.schema.json declares no {component}.{key}, so a chart user gets no validation"
+            );
+        }
     }
 }
 

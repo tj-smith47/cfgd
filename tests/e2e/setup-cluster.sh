@@ -631,6 +631,10 @@ if ! helm upgrade --install "$E2E_INSTALL_RELEASE" "$REPO_ROOT/chart/cfgd" -n "$
     --set "csiDriver.extraEnv[0].value=${REGISTRY}:5000" \
     --set "csiDriver.extraEnv[1].name=DOCKER_CONFIG" \
     --set "csiDriver.extraEnv[1].value=/etc/cfgd/docker" \
+    --set "operator.extraEnv[0].name=OCI_INSECURE_REGISTRIES" \
+    --set "operator.extraEnv[0].value=${REGISTRY}:5000" \
+    --set "operator.extraEnv[1].name=DOCKER_CONFIG" \
+    --set "operator.extraEnv[1].value=/etc/cfgd/docker" \
     --set-string "csiDriver.name=$CSI_DRIVER_NAME" \
     --set-string "operator.watchLabelSelector=cfgd.io/e2e-run=${E2E_RUN_ID}" \
     --set-json "webhook.objectSelector={\"matchLabels\":{\"cfgd.io/e2e-run\":\"${E2E_RUN_ID}\"}}" \

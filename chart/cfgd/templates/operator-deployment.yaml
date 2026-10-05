@@ -158,6 +158,9 @@ spec:
             - name: gateway-data
               mountPath: /data
             {{- end }}
+            {{- with .Values.operator.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
           resources:
             {{- toYaml .Values.operator.resources | nindent 12 }}
       volumes:
@@ -172,6 +175,9 @@ spec:
         - name: gateway-data
           persistentVolumeClaim:
             claimName: {{ include "cfgd.fullname" . }}-gateway-data
+        {{- end }}
+        {{- with .Values.operator.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
         {{- end }}
       {{- with .Values.operator.nodeSelector }}
       nodeSelector:

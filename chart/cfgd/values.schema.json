@@ -63,6 +63,8 @@
         "tolerations": { "type": "array" },
         "affinity": { "type": "object" },
         "extraEnv": { "type": "array", "description": "Extra environment variables for the operator container (registry settings such as OCI_INSECURE_REGISTRIES)" },
+        "extraVolumes": { "type": "array", "description": "Extra volumes to add to operator pods (a registry login's config.json)" },
+        "extraVolumeMounts": { "type": "array", "description": "Extra volume mounts to add to the operator container" },
         "imagePullSecrets": { "type": "array", "description": "Image pull secrets for operator pods" },
         "podAnnotations": { "type": "object", "description": "Annotations to add to operator pods" },
         "podLabels": { "type": "object", "description": "Labels to add to operator pods" },

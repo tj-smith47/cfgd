@@ -440,7 +440,7 @@ The `AVAILABLE` column is the `Available` condition: `True` when the operator se
 kubectl get module tools -o jsonpath='{.status.conditions[?(@.type=="Verified")].message}'
 ```
 
-The operator reaches the registry itself, so it needs the same registry configuration as the CSI driver: set `operator.extraEnv` (see the [chart README](../chart/cfgd/README.md#registry-settings)) with `OCI_INSECURE_REGISTRIES` for a registry served over plain HTTP. Without it the signature reads `unknown` and the `PLATFORMS` column stays blank.
+The operator reaches the registry itself, so it needs the same registry configuration as the CSI driver: set `operator.extraEnv` (see the [chart README](../chart/cfgd/README.md#registry-settings)) with `OCI_INSECURE_REGISTRIES` for a registry served over plain HTTP, and give it the registry login (`REGISTRY_USERNAME` / `REGISTRY_PASSWORD`, or `DOCKER_CONFIG` with a `config.json` mounted through `operator.extraVolumes` / `operator.extraVolumeMounts`) when the registry asks for one. Without them the signature reads `unknown` and the `PLATFORMS` column stays blank.
 
 `kubectl cfgd status` names the context and namespace it read, lists the registered modules with the same verdict vocabulary, and lists the pods in that namespace whose `cfgd.io/modules` annotation asks for modules:
 
