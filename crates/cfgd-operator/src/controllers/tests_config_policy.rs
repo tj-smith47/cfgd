@@ -1170,8 +1170,8 @@ async fn reconcile_config_policy_clears_its_verdict_from_machines_on_deletion() 
         package_versions: Default::default(),
     });
 
-    // A machine no policy ever judged has nothing to retire, so it is not read
-    // or written to.
+    // A machine no policy ever judged is read and has nothing to retire, so
+    // it is not written to.
     let untouched = machine_config("mc-unjudged", NS);
 
     // What the API server holds NOW: the cache copy plus a DriftDetected the
@@ -1194,6 +1194,7 @@ async fn reconcile_config_policy_clears_its_verdict_from_machines_on_deletion() 
             ExpectedCall::get(machine_config_path(NS, "mc-judged")).returning_json(&judged_live),
             ExpectedCall::patch_status(format!("{}/status", machine_config_path(NS, "mc-judged")))
                 .returning_json(&judged_live),
+            ExpectedCall::get(machine_config_path(NS, "mc-unjudged")).returning_json(&untouched),
             ExpectedCall::patch(config_policy_path("doomed-policy")).returning_json(&policy),
         ],
         stores_with(vec![judged.clone(), untouched.clone()]),
@@ -1207,7 +1208,7 @@ async fn reconcile_config_policy_clears_its_verdict_from_machines_on_deletion() 
     let report = harness.finish().await;
     assert_eq!(
         report.captured.len(),
-        3,
+        4,
         "only the judged machine is written to, then the finalizer is dropped"
     );
 
@@ -1239,7 +1240,7 @@ async fn reconcile_config_policy_clears_its_verdict_from_machines_on_deletion() 
     );
 
     assert_eq!(
-        report.captured[2].body_json()["metadata"]["finalizers"],
+        report.captured[3].body_json()["metadata"]["finalizers"],
         serde_json::json!([]),
         "the finalizer is dropped only after the verdicts are cleared"
     );
@@ -1317,6 +1318,53 @@ async fn deleting_a_policy_clears_a_judged_machine_the_selector_no_longer_matche
         report.captured[2].body_json()["metadata"]["finalizers"],
         serde_json::json!([])
     );
+}
+
+/// The cache can lag the verdict this policy wrote: a machine whose cached
+/// copy shows no `Compliant` condition while the API server's copy carries
+/// one is still reset, because the live read decides and the cache does not.
+/// With no policy left in the namespace, nothing else would ever retire it.
+#[tokio::test]
+async fn deleting_a_policy_resets_a_machine_whose_cached_copy_lags_its_verdict() {
+    let mut policy = config_policy("lagged-policy", NS);
+    policy.metadata.deletion_timestamp = Some(
+        k8s_openapi::apimachinery::pkg::apis::meta::v1::Time(k8s_openapi::jiff::Timestamp::now()),
+    );
+
+    let cached = machine_config("mc-lagged", NS);
+    let mut live = cached.clone();
+    live.status = Some(crate::crds::MachineConfigStatus {
+        last_reconciled: None,
+        backup_schedule_owners: Default::default(),
+        compliance: None,
+        observed_generation: Some(1),
+        conditions: vec![compliant_condition("False", "lagged-policy")],
+        package_versions: Default::default(),
+    });
+
+    let (ctx, _registry, harness) = MockKubeHarness::with_stores(
+        vec![
+            ExpectedCall::get(machine_config_path(NS, "mc-lagged")).returning_json(&live),
+            ExpectedCall::patch_status(format!("{}/status", machine_config_path(NS, "mc-lagged")))
+                .returning_json(&live),
+            ExpectedCall::patch(config_policy_path("lagged-policy")).returning_json(&policy),
+        ],
+        stores_with(vec![cached]),
+    );
+
+    reconcile_config_policy(Arc::new(policy), ctx)
+        .await
+        .unwrap();
+
+    let report = harness.finish().await;
+    let compliant = report
+        .find(Method::PATCH, "/machineconfigs/mc-lagged/status")
+        .expect("the machine must be reset from its live copy")
+        .body_json()["status"]["conditions"][0]
+        .clone();
+    assert_eq!(compliant["type"], "Compliant");
+    assert_eq!(compliant["status"], "Unknown");
+    assert_eq!(compliant["reason"], "NotEvaluated");
 }
 
 /// One machine the API server refuses cannot strand the deleted policy: the

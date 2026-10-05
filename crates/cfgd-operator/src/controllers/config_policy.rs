@@ -61,15 +61,14 @@ pub(super) async fn reconcile_config_policy(
     if obj.metadata.deletion_timestamp.is_some() {
         if has_finalizer {
             info!(name = %name, "configPolicy being deleted, clearing its verdicts");
-            // Every machine carrying a verdict is re-judged, so one this
-            // policy judged and then lost to a relabel or a selector edit is
-            // retired too.
-            let judged: Vec<String> = namespace_mcs
-                .iter()
-                .filter(|mc| has_compliant_condition(mc))
-                .map(|mc| mc.name_any())
-                .collect();
-            clear_compliant_verdicts(&machines, &judged, &in_force).await;
+            // Every machine in the namespace is re-judged from its live copy:
+            // a cached copy can lag the verdict this policy just wrote, and
+            // with no policy left to run another pass a skipped machine would
+            // keep that verdict for good. Sorted so the reads go out in one
+            // order whatever order the cache hands back.
+            let mut names: Vec<String> = namespace_mcs.iter().map(|mc| mc.name_any()).collect();
+            names.sort();
+            clear_compliant_verdicts(&machines, &names, &in_force).await;
             // The gauge loses its only writer with this reconcile, so an
             // unremoved series would export the deleted policy's last count
             // for the life of the process.
