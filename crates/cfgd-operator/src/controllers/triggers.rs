@@ -7,17 +7,25 @@
 //! a stream the operator already runs into a sweep only when what the verdict
 //! reads has changed.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
+use std::fmt::Debug;
 use std::sync::Arc;
 
 use futures::channel::mpsc;
+use futures::{Stream, StreamExt};
 use k8s_openapi::api::core::v1::Namespace;
 use kube::core::PartialObjectMeta;
-use kube::runtime::reflector::ObjectRef;
+use kube::runtime::reflector::{ObjectRef, Store};
+use kube::runtime::{WatchStreamExt, watcher};
+use kube::{Api, Resource, ResourceExt};
+use serde::de::DeserializeOwned;
 
-use crate::crds::{ClusterConfigPolicy, DriftAlert, MachineConfig};
+use crate::crds::{
+    BackupPolicy, ClusterConfigPolicy, ConfigPolicy, DriftAlert, MachineConfig, Module,
+};
 
-use super::matches_selector;
+use super::drift_alert::alert_target;
+use super::{matches_selector, policy_in_force};
 
 /// Turns a stream the operator already runs into a `reconcile_all_on` sweep,
 /// fired only when the value a verdict reads has changed since the last look.
@@ -59,7 +67,7 @@ pub(super) fn module_security_demands(
 ) -> Vec<(bool, Vec<String>)> {
     let mut demands: Vec<(bool, Vec<String>)> = policies
         .iter()
-        .filter(|p| p.metadata.deletion_timestamp.is_none())
+        .filter(|p| policy_in_force(&***p))
         .map(|p| {
             let mut registries = p.spec.security.trusted_registries.clone();
             registries.sort();
@@ -70,54 +78,249 @@ pub(super) fn module_security_demands(
     demands
 }
 
-/// What a ClusterConfigPolicy verdict reads from the Namespaces: each one's
-/// name and labels. Annotation and status changes leave it unchanged.
-pub(super) fn namespace_labels(
-    namespaces: &[Arc<PartialObjectMeta<Namespace>>],
-) -> Vec<(String, BTreeMap<String, String>)> {
-    let mut labels: Vec<_> = namespaces
-        .iter()
-        .map(|ns| {
+/// Sweeps every ClusterConfigPolicy when a namespace's labels move, which
+/// is all a policy's selector reads off a namespace.
+///
+/// Each namespace's labels are kept by name and only the event's own object is
+/// compared, so an annotation or status change costs one map lookup. A relist
+/// is compared whole once, at its end, so the initial list of N namespaces
+/// costs one sweep.
+#[derive(Debug)]
+pub(super) struct NamespaceSweep {
+    labels: HashMap<String, BTreeMap<String, String>>,
+    relisted: Option<HashMap<String, BTreeMap<String, String>>>,
+    tx: mpsc::Sender<()>,
+}
+
+/// A [`NamespaceSweep`] and the receiver the ClusterConfigPolicy controller's
+/// `reconcile_all_on` takes.
+pub(super) fn namespace_sweep() -> (NamespaceSweep, mpsc::Receiver<()>) {
+    let (tx, rx) = mpsc::channel(1);
+    (
+        NamespaceSweep {
+            labels: HashMap::new(),
+            relisted: None,
+            tx,
+        },
+        rx,
+    )
+}
+
+impl NamespaceSweep {
+    pub(super) fn observe(&mut self, event: &watcher::Event<PartialObjectMeta<Namespace>>) {
+        let entry = |ns: &PartialObjectMeta<Namespace>| {
             (
-                ns.metadata.name.clone().unwrap_or_default(),
+                ns.name_any(),
                 ns.metadata.labels.clone().unwrap_or_default(),
             )
+        };
+        let moved = match event {
+            watcher::Event::Init => {
+                self.relisted = Some(HashMap::new());
+                false
+            }
+            watcher::Event::InitApply(ns) => {
+                let (name, labels) = entry(ns);
+                self.relisted
+                    .get_or_insert_with(HashMap::new)
+                    .insert(name, labels);
+                false
+            }
+            watcher::Event::InitDone => {
+                let relisted = self.relisted.take().unwrap_or_default();
+                let moved = relisted != self.labels;
+                self.labels = relisted;
+                moved
+            }
+            watcher::Event::Apply(ns) => {
+                let (name, labels) = entry(ns);
+                let moved = self.labels.get(&name) != Some(&labels);
+                self.labels.insert(name, labels);
+                moved
+            }
+            watcher::Event::Delete(ns) => self.labels.remove(&ns.name_any()).is_some(),
+        };
+        if moved {
+            let _ = self.tx.try_send(());
+        }
+    }
+}
+
+/// Admits a watched object's event only when it can move a reader's verdict:
+/// the object is new, it was deleted, or the value `read` takes off it changed.
+///
+/// `read` names exactly what the reader reads, so the reader's own status
+/// patches and every other write it ignores reach no mapper.
+pub(super) struct EventGate<K: Resource, S> {
+    read: fn(&K) -> S,
+    seen: HashMap<ObjectRef<K>, S>,
+    relisted: Option<HashMap<ObjectRef<K>, S>>,
+}
+
+impl<K, S> EventGate<K, S>
+where
+    K: Resource<DynamicType = ()>,
+    S: PartialEq,
+{
+    pub(super) fn new(read: fn(&K) -> S) -> Self {
+        Self {
+            read,
+            seen: HashMap::new(),
+            relisted: None,
+        }
+    }
+
+    /// The object `event` admits, if any.
+    pub(super) fn admit(&mut self, event: watcher::Event<K>) -> Option<K> {
+        match event {
+            watcher::Event::Init => {
+                self.relisted = Some(HashMap::new());
+                None
+            }
+            watcher::Event::InitApply(obj) => {
+                let (key, now) = (ObjectRef::from_obj(&obj), (self.read)(&obj));
+                let moved = self.seen.get(&key) != Some(&now);
+                self.relisted
+                    .get_or_insert_with(HashMap::new)
+                    .insert(key, now);
+                moved.then_some(obj)
+            }
+            // An object deleted while the watch was down leaves the map here
+            // with no event of its own; each reader's periodic requeue is what
+            // recounts it.
+            watcher::Event::InitDone => {
+                if let Some(relisted) = self.relisted.take() {
+                    self.seen = relisted;
+                }
+                None
+            }
+            watcher::Event::Apply(obj) => {
+                let (key, now) = (ObjectRef::from_obj(&obj), (self.read)(&obj));
+                let moved = self.seen.get(&key) != Some(&now);
+                self.seen.insert(key, now);
+                moved.then_some(obj)
+            }
+            watcher::Event::Delete(obj) => {
+                self.seen.remove(&ObjectRef::from_obj(&obj));
+                Some(obj)
+            }
+        }
+    }
+}
+
+/// `events` with each event passed through an [`EventGate`] over `read`.
+pub(super) fn gated<K, S>(
+    events: impl Stream<Item = Result<watcher::Event<K>, watcher::Error>> + Send + 'static,
+    read: fn(&K) -> S,
+) -> impl Stream<Item = Result<K, watcher::Error>> + Send + 'static
+where
+    K: Resource<DynamicType = ()> + Send + 'static,
+    S: PartialEq + Send + 'static,
+{
+    let mut gate = EventGate::new(read);
+    events.filter_map(move |event| {
+        futures::future::ready(match event {
+            Ok(event) => gate.admit(event).map(Ok),
+            Err(error) => Some(Err(error)),
         })
-        .collect();
-    labels.sort();
-    labels
+    })
+}
+
+/// A label-selected watch of `api` with every event passed through an
+/// [`EventGate`] over `read`: the trigger a controller's `watches_stream`
+/// takes for a kind whose writes mostly move nothing its reader reads.
+pub(super) fn gated_watch<K, S>(
+    api: Api<K>,
+    read: fn(&K) -> S,
+) -> impl Stream<Item = Result<K, watcher::Error>> + Send + 'static
+where
+    K: Resource<DynamicType = ()> + Clone + DeserializeOwned + Debug + Send + Sync + 'static,
+    S: PartialEq + Send + 'static,
+{
+    gated(
+        watcher::watcher(api, crate::runtime::watch_config()).default_backoff(),
+        read,
+    )
+}
+
+/// Nothing: a reader that only asks whether the object exists.
+pub(super) fn existence<K>(_: &K) {}
+
+/// A `spec` change: what a reader of the object's spec alone reads.
+pub(super) fn generation<K: Resource>(obj: &K) -> Option<i64> {
+    obj.meta().generation
+}
+
+/// What a ClusterConfigPolicy's compliance count reads off a MachineConfig:
+/// its spec and the package versions the device reported.
+pub(super) fn compliance_inputs(mc: &MachineConfig) -> (Option<i64>, BTreeMap<String, String>) {
+    (
+        mc.metadata.generation,
+        mc.status
+            .as_ref()
+            .map(|s| s.package_versions.clone())
+            .unwrap_or_default(),
+    )
 }
 
 /// The MachineConfigs whose `moduleRefs` name `module`: the ones whose
 /// ModulesResolved condition a create or delete of that Module can move.
-pub(super) fn machine_configs_referencing(
-    machines: &[Arc<MachineConfig>],
-    module: &str,
+pub(super) fn machines_naming_module(
+    machines: &Store<MachineConfig>,
+    module: &Module,
 ) -> Vec<ObjectRef<MachineConfig>> {
+    let module = module.name_any();
     machines
+        .state()
         .iter()
         .filter(|mc| mc.spec.module_refs.iter().any(|r| r.name == module))
         .map(|mc| ObjectRef::from_obj(&**mc))
         .collect()
 }
 
-/// The ClusterConfigPolicies whose namespace selector reaches `namespace`: the
-/// ones whose compliance counts a MachineConfig or ConfigPolicy there can move.
+/// The ClusterConfigPolicies whose compliance count `machine` takes part in.
+pub(super) fn policies_counting_machine(
+    policies: &Store<ClusterConfigPolicy>,
+    namespaces: &Store<PartialObjectMeta<Namespace>>,
+    machine: &MachineConfig,
+) -> Vec<ObjectRef<ClusterConfigPolicy>> {
+    cluster_policies_reaching(
+        policies,
+        namespaces,
+        &machine.namespace().unwrap_or_default(),
+    )
+}
+
+/// The ClusterConfigPolicies whose requirements merge with `policy`'s.
+pub(super) fn policies_merging_config_policy(
+    policies: &Store<ClusterConfigPolicy>,
+    namespaces: &Store<PartialObjectMeta<Namespace>>,
+    policy: &ConfigPolicy,
+) -> Vec<ObjectRef<ClusterConfigPolicy>> {
+    cluster_policies_reaching(
+        policies,
+        namespaces,
+        &policy.namespace().unwrap_or_default(),
+    )
+}
+
+/// The ClusterConfigPolicies in force whose namespace selector reaches
+/// `namespace`.
 ///
 /// A namespace the cache does not hold yet is reached by every policy, so a
 /// lagging namespace cache costs extra reconciles and never a missed one.
-pub(super) fn cluster_policies_reaching(
-    policies: &[Arc<ClusterConfigPolicy>],
-    namespaces: &[Arc<PartialObjectMeta<Namespace>>],
+fn cluster_policies_reaching(
+    policies: &Store<ClusterConfigPolicy>,
+    namespaces: &Store<PartialObjectMeta<Namespace>>,
     namespace: &str,
 ) -> Vec<ObjectRef<ClusterConfigPolicy>> {
-    let known = namespaces
-        .iter()
-        .find(|ns| ns.metadata.name.as_deref() == Some(namespace));
+    let known = namespaces.get(&ObjectRef::new(namespace));
     policies
+        .state()
         .iter()
+        .filter(|p| policy_in_force(&***p))
         .filter(|p| {
-            known.is_none_or(|ns| {
+            known.as_ref().is_none_or(|ns| {
                 matches_selector(ns.metadata.labels.as_ref(), &p.spec.namespace_selector)
             })
         })
@@ -125,25 +328,48 @@ pub(super) fn cluster_policies_reaching(
         .collect()
 }
 
-/// The DriftAlerts whose `machineConfigRef` names the MachineConfig
-/// `namespace/name`: the ones whose Resolved condition reads that machine's
-/// DriftDetected condition. A reference with no namespace names a machine in
-/// the alert's own namespace.
-pub(super) fn drift_alerts_naming(
-    alerts: &[Arc<DriftAlert>],
-    namespace: &str,
-    name: &str,
+/// The DriftAlerts whose target is `machine`, resolved as the alert
+/// controller resolves it.
+pub(super) fn alerts_naming_machine(
+    alerts: &Store<DriftAlert>,
+    machine: &MachineConfig,
 ) -> Vec<ObjectRef<DriftAlert>> {
+    let target = (machine.namespace().unwrap_or_default(), machine.name_any());
     alerts
+        .state()
         .iter()
-        .filter(|da| {
-            let target = &da.spec.machine_config_ref;
-            let target_ns = target
-                .namespace
-                .as_deref()
-                .or(da.metadata.namespace.as_deref());
-            target.name == name && target_ns == Some(namespace)
-        })
+        .filter(|da| alert_target(da) == (target.0.as_str(), target.1.as_str()))
         .map(|da| ObjectRef::from_obj(&**da))
+        .collect()
+}
+
+/// The ConfigPolicies in `machine`'s namespace, any of whose selectors may
+/// target it.
+pub(super) fn config_policies_beside(
+    policies: &Store<ConfigPolicy>,
+    machine: &MachineConfig,
+) -> Vec<ObjectRef<ConfigPolicy>> {
+    in_namespace_of(policies, machine)
+}
+
+/// The BackupPolicies in `machine`'s namespace, any of which may schedule a
+/// unit the machine pins or releases in its status.
+pub(super) fn backup_policies_beside(
+    policies: &Store<BackupPolicy>,
+    machine: &MachineConfig,
+) -> Vec<ObjectRef<BackupPolicy>> {
+    in_namespace_of(policies, machine)
+}
+
+fn in_namespace_of<K>(store: &Store<K>, machine: &MachineConfig) -> Vec<ObjectRef<K>>
+where
+    K: Resource<DynamicType = ()> + Clone + 'static,
+{
+    let namespace = machine.namespace();
+    store
+        .state()
+        .iter()
+        .filter(|obj| obj.meta().namespace == namespace)
+        .map(|obj| ObjectRef::from_obj(&**obj))
         .collect()
 }

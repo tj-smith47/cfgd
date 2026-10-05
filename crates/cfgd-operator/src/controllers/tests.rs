@@ -3615,13 +3615,13 @@ fn every_cfgd_io_watch_is_held_to_the_watch_label_selector() {
     // site of another. The reflectors come first so a misplaced exemption is
     // reported as such.
     let openers = [
-        ("watcher(", 1, 0),
+        ("watcher(", 1, 2),
         ("metadata_watcher(", 1, 0),
         ("Controller::new(", 1, 6),
         ("Controller::new_with(", 1, 0),
         (".owns(", 1, 1),
         (".owns_with(", 2, 0),
-        (".watches(", 1, 6),
+        (".watches(", 1, 2),
         (".watches_with(", 2, 0),
     ];
     let mut exempt = 0;
@@ -3684,18 +3684,20 @@ fn run_statement<'a>(code: &'a str, binding: &str) -> &'a str {
 
 /// Every reconcile that reads another kind's cache is re-run by a change to
 /// that kind. A watch-driven reconcile cannot be observed without an API
-/// server, so the mappers and gates are pinned in `tests_triggers.rs` and this
-/// walk pins that `run` wires each one onto the controller whose verdict it
-/// moves:
+/// server, so the gates and mappers are pinned in `tests_triggers.rs` and this
+/// walk pins that `run` wires each one, with its own store and the event's
+/// object, onto the controller whose verdict it moves:
 ///
 /// - Module <- ClusterConfigPolicy: a sweep rooted on the policy controller's
 ///   own output stream (no second watch), gated on the security demands.
-/// - MachineConfig <- Module: a watch, since a Module has no finalizer.
-/// - DriftAlert <- MachineConfig: a watch mapped to the alerts naming it.
-/// - ClusterConfigPolicy <- MachineConfig, ConfigPolicy: watches mapped to the
-///   policies whose selector reaches the namespace.
+/// - MachineConfig <- Module: a watch gated on existence.
+/// - DriftAlert <- MachineConfig: a watch gated on the DriftDetected report.
+/// - ClusterConfigPolicy <- MachineConfig: a watch gated on the compliance
+///   inputs; <- ConfigPolicy: a watch gated on the generation.
 /// - ClusterConfigPolicy <- Namespace: a sweep rooted on the namespace
 ///   reflector, gated on labels.
+/// - ConfigPolicy, BackupPolicy <- MachineConfig: watches mapped to the
+///   policies in the machine's namespace.
 #[test]
 fn every_cross_kind_read_of_a_controller_is_wired_to_a_trigger() {
     use cfgd_core::test_helpers::production_code_of;
@@ -3703,13 +3705,84 @@ fn every_cross_kind_read_of_a_controller_is_wired_to_a_trigger() {
     let code = production_code_of(
         &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/controllers/mod.rs"),
     );
-    let squash = |s: &str| s.split_whitespace().collect::<String>();
+    // rustfmt adds a trailing comma to an argument list it breaks across
+    // lines, so the squashed form drops it and compares one spelling.
+    let squash = |s: &str| s.split_whitespace().collect::<String>().replace(",)", ")");
+    let calls = |statement: &str, opener: &str| -> Vec<Vec<String>> {
+        call_args(statement, opener)
+            .into_iter()
+            .map(|args| args.into_iter().map(str::to_string).collect())
+            .collect()
+    };
 
     let module = squash(run_statement(&code, "mod_controller"));
     assert!(
         module.contains(".reconcile_all_on(policy_rx)"),
         "the Module controller must sweep on the policy trigger: {module}"
     );
+
+    // (controller binding, opener, the exact squashed arguments)
+    let wired: [(&str, &str, [&str; 2]); 5] = [
+        (
+            "mc_controller",
+            ".watches_stream(",
+            [
+                "triggers::gated_watch(Api::<Module>::all(client.clone()),triggers::existence)",
+                "move|module|triggers::machines_naming_module(&mc_store,&module)",
+            ],
+        ),
+        (
+            "da_controller",
+            ".watches_stream(",
+            [
+                "triggers::gated_watch(Api::<MachineConfig>::all(client.clone()),drift_alert::reports_drift)",
+                "move|mc|triggers::alerts_naming_machine(&da_store,&mc)",
+            ],
+        ),
+        (
+            "ccp_controller",
+            ".watches_stream(",
+            [
+                "triggers::gated_watch(Api::<MachineConfig>::all(client.clone()),triggers::compliance_inputs)",
+                "move|mc|triggers::policies_counting_machine(&ccp_mc_store,&ccp_mc_ns,&mc)",
+            ],
+        ),
+        (
+            "ccp_controller",
+            ".watches_stream(",
+            [
+                "triggers::gated_watch(Api::<ConfigPolicy>::all(client.clone()),triggers::generation)",
+                "move|cp|triggers::policies_merging_config_policy(&ccp_store,&ns_store,&cp)",
+            ],
+        ),
+        (
+            "cp_controller",
+            ".watches(",
+            [
+                "Api::<MachineConfig>::all(client.clone())",
+                "move|mc|triggers::config_policies_beside(&cp_store,&mc)",
+            ],
+        ),
+    ];
+    let bp = (
+        "bp_controller",
+        ".watches(",
+        [
+            "Api::<MachineConfig>::all(client.clone())",
+            "move|mc|triggers::backup_policies_beside(&bp_store,&mc)",
+        ],
+    );
+    for (binding, opener, [trigger, mapper]) in wired.into_iter().chain([bp]) {
+        let statement = squash(run_statement(&code, binding));
+        let found = calls(&statement, opener).iter().any(|args| {
+            args.first().map(String::as_str) == Some(trigger)
+                && args.last().map(String::as_str) == Some(mapper)
+        });
+        assert!(
+            found,
+            "`{binding}` must call `{opener}{trigger}, ..., {mapper})`: {statement}"
+        );
+    }
 
     let policies = squash(run_statement(&code, "ccp_controller"));
     for needle in [
@@ -3721,48 +3794,17 @@ fn every_cross_kind_read_of_a_controller_is_wired_to_a_trigger() {
             "the ClusterConfigPolicy controller lacks `{needle}`: {policies}"
         );
     }
-    let policy_watches = call_args(&policies, ".watches(");
-    for kind in ["Api::<MachineConfig>", "Api::<ConfigPolicy>"] {
-        let mapped = policy_watches.iter().any(|args| {
-            args[0].starts_with(kind) && args[2].contains("triggers::cluster_policies_reaching(")
-        });
-        assert!(
-            mapped,
-            "the ClusterConfigPolicy controller must watch {kind} through cluster_policies_reaching"
-        );
-    }
-
-    let machines = squash(run_statement(&code, "mc_controller"));
-    let mapped = call_args(&machines, ".watches(").iter().any(|args| {
-        args[0].starts_with("Api::<Module>")
-            && args[2].contains("triggers::machine_configs_referencing(")
-    });
-    assert!(
-        mapped,
-        "the MachineConfig controller must watch Modules through machine_configs_referencing"
-    );
-
-    let alerts = squash(run_statement(&code, "da_controller"));
-    let mapped = call_args(&alerts, ".watches(").iter().any(|args| {
-        args[0].starts_with("Api::<MachineConfig>")
-            && args[2].contains("triggers::drift_alerts_naming(")
-    });
-    assert!(
-        mapped,
-        "the DriftAlert controller must watch MachineConfigs through drift_alerts_naming"
-    );
 
     let namespaces = squash(run_statement(&code, "namespace_cache"));
     assert!(
-        namespaces
-            .contains("ns_labels.observe(triggers::namespace_labels(&ns_labels_store.state()))"),
-        "the namespace reflector must feed the label gate: {namespaces}"
+        namespaces.contains("Ok(event)=>ns_sweep.observe(&event)"),
+        "the namespace reflector must feed every event to the label sweep: {namespaces}"
     );
 
     let code = squash(&code);
     for binding in [
         "let(mutdemands,policy_rx)=triggers::sweep_trigger();",
-        "let(mutns_labels,namespace_rx)=triggers::sweep_trigger();",
+        "let(mutns_sweep,namespace_rx)=triggers::namespace_sweep();",
     ] {
         assert!(code.contains(binding), "`run` must bind `{binding}`");
     }

@@ -132,6 +132,10 @@ async fn create_drift_alert_crd_uses_matched_machine_config_name_for_label_and_r
         "machineConfigRef must point at the matched MachineConfig name"
     );
     assert_eq!(
+        body["spec"]["machineConfigRef"]["namespace"], "default",
+        "machineConfigRef must carry the matched MachineConfig's namespace"
+    );
+    assert_eq!(
         body["metadata"]["labels"][cfgd_core::LABEL_MACHINE_CONFIG],
         "mc-prod",
         "label cfgd.io/machine-config must equal the matched MC name"
@@ -381,7 +385,10 @@ async fn find_machine_config_for_device_returns_synthetic_name_when_list_fails()
 
     assert_eq!(
         resolved,
-        format!("{HOSTNAME}-mc"),
+        MachineConfigReference {
+            name: format!("{HOSTNAME}-mc"),
+            namespace: None,
+        },
         "list errors must fall through to the synthetic `<hostname>-mc` name"
     );
 

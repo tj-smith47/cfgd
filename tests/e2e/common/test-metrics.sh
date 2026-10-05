@@ -89,13 +89,13 @@ fi
 # it means the scan lost its files.
 min_scanned_files=40
 
-# scan_lines <scan> <ere> <skip> <path>...: print file:line for each line of a
-# *.sh under <path> whose name is not one of the space-separated <skip> names
-# that matches <ere>, skipping
-# comments and begin_test titles, then a last line `scanned <files>`. Exits 1
-# when find fails or matched no file, or when a non-empty file find listed
-# never reached awk (each one is named, under <scan>). The pattern reaches awk
-# through the environment, so its backslashes are read as written.
+# scan_lines <scan> <ere> <skip> <path>...: print file:line for each line
+# matching <ere> in a *.sh under <path>, skipping files named in the
+# space-separated <skip> list, comments and begin_test titles, then a last line
+# `scanned <files>`. Exits 1 when find fails or matched no file, or when a
+# non-empty file find listed never reached awk (each one is named, under
+# <scan>). The pattern reaches awk through the environment, so its backslashes
+# are read as written.
 scan_lines() {
     local scan="$1" ere="$2" files="$scratch/scan-files" read="$scratch/scan-read"
     local -a skip=()

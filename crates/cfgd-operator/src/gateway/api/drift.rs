@@ -12,9 +12,7 @@ pub(super) async fn create_drift_alert_crd(
     details: &[DriftDetailInput],
     timestamp: &str,
 ) -> Result<(), GatewayError> {
-    use crate::crds::{
-        DriftAlert, DriftAlertSpec, DriftDetail, DriftSeverity, MachineConfigReference,
-    };
+    use crate::crds::{DriftAlert, DriftAlertSpec, DriftDetail, DriftSeverity};
     use kube::ResourceExt;
     use kube::api::{Api, PostParams};
 
@@ -30,7 +28,7 @@ pub(super) async fn create_drift_alert_crd(
     // and are cut to shape here; the drift row the caller writes keeps the id
     // the device sent.
     let device_label = k8s_value(device_id);
-    let mc_label = k8s_value(&mc_ref);
+    let mc_label = k8s_value(&mc_ref.name);
 
     let alert_name = format!(
         "drift-{}-{}",
@@ -51,10 +49,7 @@ pub(super) async fn create_drift_alert_crd(
         &alert_name,
         DriftAlertSpec {
             device_id: device_id.to_string(),
-            machine_config_ref: MachineConfigReference {
-                name: mc_ref,
-                namespace: None,
-            },
+            machine_config_ref: mc_ref,
             drift_details,
             severity: DriftSeverity::Medium,
         },
@@ -163,8 +158,11 @@ fn k8s_value(raw: &str) -> String {
     value
 }
 
-/// Find the MachineConfig CRD name that corresponds to a device hostname,
+/// The reference to the MachineConfig that corresponds to a device hostname,
 /// falling back to the synthetic `<hostname>-mc` when none is found.
+///
+/// A found machine is named with its namespace: the alert is created in the
+/// gateway's namespace, and a reference with none names a machine there.
 ///
 /// For a caller that only needs a REFERENCE to put in an object it is creating.
 /// A caller that must address the real object takes
@@ -172,12 +170,21 @@ fn k8s_value(raw: &str) -> String {
 pub(super) async fn find_machine_config_for_device(
     client: &kube::Client,
     hostname: &str,
-) -> String {
-    find_machine_config_ref(client, hostname)
+) -> crate::crds::MachineConfigReference {
+    match find_machine_config_ref(client, hostname)
         .await
         .ok()
         .flatten()
-        .map_or_else(|| format!("{}-mc", hostname), |(_, name)| name)
+    {
+        Some((namespace, name)) => crate::crds::MachineConfigReference {
+            name,
+            namespace: Some(namespace),
+        },
+        None => crate::crds::MachineConfigReference {
+            name: format!("{hostname}-mc"),
+            namespace: None,
+        },
+    }
 }
 
 /// The `(namespace, name)` of the MachineConfig whose `spec.hostname` is

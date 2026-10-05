@@ -208,7 +208,11 @@ async fn reconcile_machine_config_skips_when_generation_observed_and_no_drift() 
         backup_schedule_owners: Default::default(),
         compliance: None,
         observed_generation: Some(7),
-        conditions: vec![],
+        conditions: vec![modules_resolved(
+            "True",
+            "AllResolved",
+            "No module references to resolve",
+        )],
         package_versions: Default::default(),
     });
 
@@ -239,6 +243,97 @@ async fn reconcile_machine_config_skips_when_generation_observed_and_no_drift() 
         success, 1,
         "a pass that found nothing to do is a reconcile that succeeded"
     );
+}
+
+/// A `ModulesResolved` condition as an earlier pass recorded it.
+fn modules_resolved(status: &str, reason: &str, message: &str) -> Condition {
+    Condition {
+        condition_type: "ModulesResolved".to_string(),
+        status: status.to_string(),
+        reason: reason.to_string(),
+        message: message.to_string(),
+        last_transition_time: "2026-01-01T00:00:00Z".to_string(),
+        observed_generation: Some(7),
+    }
+}
+
+/// A machine at its observed generation naming `nvim`, with `recorded` as its
+/// only condition.
+fn steady_machine_naming_nvim(name: &str, recorded: Condition) -> crate::crds::MachineConfig {
+    let mut mc = machine_config(name, NS);
+    mc.metadata.finalizers = Some(vec![MACHINE_CONFIG_FINALIZER.to_string()]);
+    mc.metadata.generation = Some(7);
+    mc.spec.module_refs = vec![ModuleRef {
+        name: "nvim".to_string(),
+        required: false,
+    }];
+    mc.status = Some(MachineConfigStatus {
+        last_reconciled: Some("2026-01-01T00:00:00Z".to_string()),
+        backup_schedule_owners: Default::default(),
+        compliance: None,
+        observed_generation: Some(7),
+        conditions: vec![recorded],
+        package_versions: Default::default(),
+    });
+    mc
+}
+
+/// Runs `mc` with `modules` cached and returns the ModulesResolved condition
+/// its one status patch wrote.
+async fn modules_resolved_written(
+    mc: crate::crds::MachineConfig,
+    modules: Vec<crate::crds::Module>,
+) -> serde_json::Value {
+    let name = mc.metadata.name.clone().unwrap_or_default();
+    let (ctx, _registry, harness) = MockKubeHarness::with_stores(
+        vec![
+            ExpectedCall::patch_status(format!("{}/status", machine_config_path(NS, &name)))
+                .returning_json(&mc),
+            expect_event_post(NS),
+        ],
+        ControllerStores {
+            modules: seeded_store(modules),
+            ..empty_stores()
+        },
+    );
+    reconcile_machine_config(Arc::new(mc), ctx).await.unwrap();
+    let report = harness.finish().await;
+    let body = report.captured[0].body_json();
+    body["status"]["conditions"]
+        .as_array()
+        .expect("conditions array")
+        .iter()
+        .find(|c| c["type"] == "ModulesResolved")
+        .cloned()
+        .expect("ModulesResolved written")
+}
+
+/// The Module watch re-runs a machine whose generation has not moved, so the
+/// skip must not swallow a Module that appeared since the last pass.
+#[tokio::test]
+async fn reconcile_machine_config_at_its_observed_generation_records_a_module_that_appeared() {
+    let mc = steady_machine_naming_nvim(
+        "mc-module-appeared",
+        modules_resolved("False", "ModulesNotFound", "Missing modules: nvim"),
+    );
+    let nvim = crate::crds::Module::new("nvim", Default::default());
+
+    let written = modules_resolved_written(mc, vec![nvim]).await;
+    assert_eq!(written["status"], "True", "{written}");
+    assert_eq!(written["reason"], "AllResolved", "{written}");
+}
+
+/// The other direction: a Module deleted since the last pass.
+#[tokio::test]
+async fn reconcile_machine_config_at_its_observed_generation_records_a_module_that_was_deleted() {
+    let mc = steady_machine_naming_nvim(
+        "mc-module-deleted",
+        modules_resolved("True", "AllResolved", "All module references resolved"),
+    );
+
+    let written = modules_resolved_written(mc, vec![]).await;
+    assert_eq!(written["status"], "False", "{written}");
+    assert_eq!(written["reason"], "ModulesNotFound", "{written}");
 }
 
 // -----------------------------------------------------------------------

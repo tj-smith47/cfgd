@@ -25,6 +25,13 @@ use crate::metrics::ReconcileLabels;
 
 const NS: &str = "cfgd-system";
 
+fn machines(mcs: Vec<crate::crds::MachineConfig>) -> ControllerStores {
+    ControllerStores {
+        machine_configs: seeded_store(mcs),
+        ..empty_stores()
+    }
+}
+
 fn drift_alert_path(namespace: &str, name: &str) -> String {
     format!("/apis/cfgd.io/v1alpha1/namespaces/{namespace}/driftalerts/{name}")
 }
@@ -37,22 +44,23 @@ fn drift_alert_path(namespace: &str, name: &str) -> String {
 async fn reconcile_drift_alert_when_machine_config_missing_records_error_metric_and_requeues() {
     let alert = drift_alert("alert-1", NS, "missing-mc", DriftSeverity::Medium);
 
-    let (ctx, _registry, harness) = MockKubeHarness::new(vec![
-        ExpectedCall::get(machine_config_path(NS, "missing-mc")).returning_404("missing-mc"),
-    ]);
+    let (ctx, _registry, harness) = MockKubeHarness::with_stores(vec![], machines(vec![]));
 
     let action = reconcile_drift_alert(Arc::new(alert), ctx.clone())
         .await
-        .expect("404 path returns Ok with requeue, not Err");
+        .expect("a missing machine returns Ok with requeue, not Err");
 
     assert_eq!(
         action,
         Action::requeue(std::time::Duration::from_secs(60)),
-        "404 path requeues after 60s"
+        "a missing machine requeues after 60s"
     );
 
     let report = harness.finish().await;
-    assert_eq!(report.captured.len(), 1);
+    assert!(
+        report.captured.is_empty(),
+        "the machine is read from the watch cache, so a missing one costs no API call"
+    );
 
     let count = ctx
         .metrics
@@ -64,7 +72,7 @@ async fn reconcile_drift_alert_when_machine_config_missing_records_error_metric_
         .get();
     assert_eq!(
         count, 1,
-        "404-on-MC must record an error metric, not success"
+        "a missing MachineConfig must record an error metric, not success"
     );
 
     let success_count = ctx
@@ -75,28 +83,35 @@ async fn reconcile_drift_alert_when_machine_config_missing_records_error_metric_
             result: "success".to_string(),
         })
         .get();
-    assert_eq!(success_count, 0, "404 path must not record a success");
+    assert_eq!(
+        success_count, 0,
+        "a missing machine must not record a success"
+    );
 }
 
-#[tokio::test]
-async fn reconcile_drift_alert_when_machine_config_get_returns_5xx_propagates_error() {
-    let alert = drift_alert("alert-2", NS, "broken-mc", DriftSeverity::High);
+/// An unpopulated MachineConfig cache is no evidence that the machine is
+/// gone, so the reconcile errors and the controller retries it.
+#[tokio::test(start_paused = true)]
+async fn reconcile_drift_alert_errors_when_the_machine_cache_is_not_populated() {
+    let alert = drift_alert("alert-2", NS, "mc-unready", DriftSeverity::High);
+    let (machine_configs, _writer) = unready_store();
+    let stores = ControllerStores {
+        machine_configs,
+        ..empty_stores()
+    };
 
-    let (ctx, _registry, harness) = MockKubeHarness::new(vec![
-        ExpectedCall::get(machine_config_path(NS, "broken-mc"))
-            .returning_server_error(500, "kube apiserver melted"),
-    ]);
+    let (ctx, _registry, harness) = MockKubeHarness::with_stores(vec![], stores);
 
-    let result = reconcile_drift_alert(Arc::new(alert), ctx).await;
-    let err = result.expect_err("non-404 server error must propagate as Err");
-    let msg = err.to_string();
+    let err = reconcile_drift_alert(Arc::new(alert), ctx)
+        .await
+        .expect_err("an unpopulated cache must not answer");
     assert!(
-        msg.contains("failed to get MachineConfig"),
-        "error should reference the MC fetch path: {msg}"
+        err.to_string().contains("MachineConfig watch cache"),
+        "error must name the cache that was not ready: {err}"
     );
 
     let report = harness.finish().await;
-    assert_eq!(report.captured.len(), 1);
+    assert!(report.captured.is_empty());
 }
 
 #[tokio::test]
@@ -104,24 +119,25 @@ async fn reconcile_drift_alert_with_no_owner_ref_patches_owner_ref_then_drift_st
     let alert = drift_alert("alert-3", NS, "mc-1", DriftSeverity::Medium);
     let mc = machine_config("mc-1", NS);
 
-    let (ctx, _registry, harness) = MockKubeHarness::new(vec![
-        // 1. GET MachineConfig
-        ExpectedCall::get(machine_config_path(NS, "mc-1")).returning_json(&mc),
-        // 2. PATCH DriftAlert metadata to set ownerReferences
-        ExpectedCall::patch(drift_alert_path(NS, "alert-3"))
-            .with_query_contains("fieldManager=cfgd-operator")
-            .returning_json(&alert),
-        // 3. PATCH MachineConfig /status to set DriftDetected condition
-        ExpectedCall::patch_status(format!("{}/status", machine_config_path(NS, "mc-1")))
-            .with_query_contains("fieldManager=cfgd-operator%2Fstatus")
-            .returning_json(&mc),
-        // 4. POST events.k8s.io Event for DriftDetected
-        expect_event_post(NS),
-        // 5. PATCH DriftAlert /status with Resolved=False conditions
-        ExpectedCall::patch_status(format!("{}/status", drift_alert_path(NS, "alert-3")))
-            .with_query_contains("fieldManager=cfgd-operator%2Fstatus")
-            .returning_json(&alert),
-    ]);
+    let (ctx, _registry, harness) = MockKubeHarness::with_stores(
+        vec![
+            // 1. PATCH DriftAlert metadata to set ownerReferences
+            ExpectedCall::patch(drift_alert_path(NS, "alert-3"))
+                .with_query_contains("fieldManager=cfgd-operator")
+                .returning_json(&alert),
+            // 2. PATCH MachineConfig /status to set DriftDetected condition
+            ExpectedCall::patch_status(format!("{}/status", machine_config_path(NS, "mc-1")))
+                .with_query_contains("fieldManager=cfgd-operator%2Fstatus")
+                .returning_json(&mc),
+            // 3. POST events.k8s.io Event for DriftDetected
+            expect_event_post(NS),
+            // 4. PATCH DriftAlert /status with Resolved=False conditions
+            ExpectedCall::patch_status(format!("{}/status", drift_alert_path(NS, "alert-3")))
+                .with_query_contains("fieldManager=cfgd-operator%2Fstatus")
+                .returning_json(&alert),
+        ],
+        machines(vec![mc.clone()]),
+    );
 
     let action = reconcile_drift_alert(Arc::new(alert.clone()), ctx.clone())
         .await
@@ -130,10 +146,10 @@ async fn reconcile_drift_alert_with_no_owner_ref_patches_owner_ref_then_drift_st
     assert_eq!(action, Action::requeue(std::time::Duration::from_secs(60)));
 
     let report = harness.finish().await;
-    assert_eq!(report.captured.len(), 5);
+    assert_eq!(report.captured.len(), 4);
 
     // 1st patch is the owner-ref patch on the DriftAlert.
-    let owner_patch_body = report.captured[1].body_json();
+    let owner_patch_body = report.captured[0].body_json();
     let owners = &owner_patch_body["metadata"]["ownerReferences"];
     assert!(
         owners.is_array() && !owners.as_array().unwrap().is_empty(),
@@ -146,7 +162,7 @@ async fn reconcile_drift_alert_with_no_owner_ref_patches_owner_ref_then_drift_st
     assert_eq!(owners[0]["blockOwnerDeletion"], true);
 
     // 2nd patch sets MachineConfig.status.conditions[*].type=DriftDetected,status=True.
-    let mc_status_body = report.captured[2].body_json();
+    let mc_status_body = report.captured[1].body_json();
     let conditions = mc_status_body["status"]["conditions"]
         .as_array()
         .expect("status.conditions array");
@@ -181,18 +197,19 @@ async fn reconcile_drift_alert_with_existing_owner_ref_skips_owner_patch() {
 
     let mc = machine_config("mc-2", NS);
 
-    let (ctx, _registry, harness) = MockKubeHarness::new(vec![
-        // 1. GET MachineConfig
-        ExpectedCall::get(machine_config_path(NS, "mc-2")).returning_json(&mc),
-        // 2. PATCH MachineConfig /status (no owner-ref patch since it's already set)
-        ExpectedCall::patch_status(format!("{}/status", machine_config_path(NS, "mc-2")))
-            .returning_json(&mc),
-        // 3. POST event
-        expect_event_post(NS),
-        // 4. PATCH DriftAlert /status
-        ExpectedCall::patch_status(format!("{}/status", drift_alert_path(NS, "alert-4")))
-            .returning_json(&alert),
-    ]);
+    let (ctx, _registry, harness) = MockKubeHarness::with_stores(
+        vec![
+            // 1. PATCH MachineConfig /status (no owner-ref patch since it's already set)
+            ExpectedCall::patch_status(format!("{}/status", machine_config_path(NS, "mc-2")))
+                .returning_json(&mc),
+            // 2. POST event
+            expect_event_post(NS),
+            // 3. PATCH DriftAlert /status
+            ExpectedCall::patch_status(format!("{}/status", drift_alert_path(NS, "alert-4")))
+                .returning_json(&alert),
+        ],
+        machines(vec![mc.clone()]),
+    );
 
     let action = reconcile_drift_alert(Arc::new(alert), ctx)
         .await
@@ -203,7 +220,7 @@ async fn reconcile_drift_alert_with_existing_owner_ref_skips_owner_patch() {
     let report = harness.finish().await;
     assert_eq!(
         report.captured.len(),
-        4,
+        3,
         "owner-ref already present, so no owner-ref PATCH on the DriftAlert"
     );
     // No PATCH on the DriftAlert metadata path (only its /status).
@@ -253,21 +270,23 @@ async fn reconcile_drift_alert_preserves_sibling_conditions_on_the_machine() {
         package_versions: Default::default(),
     });
 
-    let (ctx, _registry, harness) = MockKubeHarness::new(vec![
-        ExpectedCall::get(machine_config_path(NS, "mc-sib")).returning_json(&mc),
-        ExpectedCall::patch_status(format!("{}/status", machine_config_path(NS, "mc-sib")))
-            .returning_json(&mc),
-        expect_event_post(NS),
-        ExpectedCall::patch_status(format!("{}/status", drift_alert_path(NS, "alert-sib")))
-            .returning_json(&alert),
-    ]);
+    let (ctx, _registry, harness) = MockKubeHarness::with_stores(
+        vec![
+            ExpectedCall::patch_status(format!("{}/status", machine_config_path(NS, "mc-sib")))
+                .returning_json(&mc),
+            expect_event_post(NS),
+            ExpectedCall::patch_status(format!("{}/status", drift_alert_path(NS, "alert-sib")))
+                .returning_json(&alert),
+        ],
+        machines(vec![mc.clone()]),
+    );
 
     reconcile_drift_alert(Arc::new(alert), ctx)
         .await
         .expect("drift is recorded on the machine");
 
     let report = harness.finish().await;
-    let types: Vec<String> = report.captured[1].body_json()["status"]["conditions"]
+    let types: Vec<String> = report.captured[0].body_json()["status"]["conditions"]
         .as_array()
         .expect("conditions")
         .iter()
@@ -294,12 +313,8 @@ async fn reconcile_drift_alert_when_drift_already_recorded_skips_drift_status_pa
     let mut mc = machine_config("mc-3", NS);
     mc.status = Some(machine_config_status_with_drift_detected());
 
-    let (ctx, _registry, harness) = MockKubeHarness::new(vec![
-        // 1. GET MachineConfig (already has DriftDetected=True)
-        ExpectedCall::get(machine_config_path(NS, "mc-3")).returning_json(&mc),
-        // No further calls — has_drift_condition is true and drift_details is non-empty,
-        // so neither the resolve-and-delete branch nor the set-drift branch fires.
-    ]);
+    let (ctx, _registry, harness) =
+        MockKubeHarness::with_stores(vec![], machines(vec![mc.clone()]));
 
     let action = reconcile_drift_alert(Arc::new(alert), ctx.clone())
         .await
@@ -308,10 +323,9 @@ async fn reconcile_drift_alert_when_drift_already_recorded_skips_drift_status_pa
     assert_eq!(action, Action::requeue(std::time::Duration::from_secs(60)));
 
     let report = harness.finish().await;
-    assert_eq!(
-        report.captured.len(),
-        1,
-        "only the GET should land — no patch, no event"
+    assert!(
+        report.captured.is_empty(),
+        "the machine is read from the cache, and nothing is written"
     );
 
     let success = ctx
@@ -340,17 +354,18 @@ async fn reconcile_drift_alert_when_resolved_deletes_alert_and_emits_event() {
     // this is the "resolve & delete" path.
     let mc = machine_config("mc-4", NS);
 
-    let (ctx, _registry, harness) = MockKubeHarness::new(vec![
-        // 1. GET MachineConfig
-        ExpectedCall::get(machine_config_path(NS, "mc-4")).returning_json(&mc),
-        // 2. PATCH DriftAlert /status with Resolved=True
-        ExpectedCall::patch_status(format!("{}/status", drift_alert_path(NS, "alert-6")))
-            .returning_json(&alert),
-        // 3. POST event for DriftResolved
-        expect_event_post(NS),
-        // 4. DELETE the resolved DriftAlert
-        ExpectedCall::delete(drift_alert_path(NS, "alert-6")).returning_json(&alert),
-    ]);
+    let (ctx, _registry, harness) = MockKubeHarness::with_stores(
+        vec![
+            // 1. PATCH DriftAlert /status with Resolved=True
+            ExpectedCall::patch_status(format!("{}/status", drift_alert_path(NS, "alert-6")))
+                .returning_json(&alert),
+            // 2. POST event for DriftResolved
+            expect_event_post(NS),
+            // 3. DELETE the resolved DriftAlert
+            ExpectedCall::delete(drift_alert_path(NS, "alert-6")).returning_json(&alert),
+        ],
+        machines(vec![mc.clone()]),
+    );
 
     let action = reconcile_drift_alert(Arc::new(alert), ctx.clone())
         .await
@@ -359,10 +374,10 @@ async fn reconcile_drift_alert_when_resolved_deletes_alert_and_emits_event() {
     assert_eq!(action, Action::requeue(std::time::Duration::from_secs(60)));
 
     let report = harness.finish().await;
-    assert_eq!(report.captured.len(), 4);
+    assert_eq!(report.captured.len(), 3);
 
     // The resolution-status patch must include Resolved=True.
-    let status_body = report.captured[1].body_json();
+    let status_body = report.captured[0].body_json();
     let conditions = status_body["status"]["conditions"]
         .as_array()
         .expect("conditions array");
@@ -390,9 +405,7 @@ async fn reconcile_drift_alert_when_machine_config_missing_uid_returns_error() {
     let mut mc = machine_config("no-uid-mc", NS);
     mc.metadata.uid = None;
 
-    let (ctx, _registry, harness) = MockKubeHarness::new(vec![
-        ExpectedCall::get(machine_config_path(NS, "no-uid-mc")).returning_json(&mc),
-    ]);
+    let (ctx, _registry, harness) = MockKubeHarness::with_stores(vec![], machines(vec![mc]));
 
     let result = reconcile_drift_alert(Arc::new(alert), ctx).await;
     let err = result.expect_err("missing UID must short-circuit");
@@ -403,7 +416,7 @@ async fn reconcile_drift_alert_when_machine_config_missing_uid_returns_error() {
     );
 
     let report = harness.finish().await;
-    assert_eq!(report.captured.len(), 1);
+    assert!(report.captured.is_empty());
 }
 
 #[tokio::test]
@@ -415,19 +428,21 @@ async fn reconcile_drift_alert_high_severity_emits_escalated_condition_in_status
 
     let mc = machine_config("mc-5", NS);
 
-    let (ctx, _registry, harness) = MockKubeHarness::new(vec![
-        ExpectedCall::get(machine_config_path(NS, "mc-5")).returning_json(&mc),
-        ExpectedCall::patch_status(format!("{}/status", machine_config_path(NS, "mc-5")))
-            .returning_json(&mc),
-        expect_event_post(NS),
-        ExpectedCall::patch_status(format!("{}/status", drift_alert_path(NS, "alert-8")))
-            .returning_json(&alert),
-    ]);
+    let (ctx, _registry, harness) = MockKubeHarness::with_stores(
+        vec![
+            ExpectedCall::patch_status(format!("{}/status", machine_config_path(NS, "mc-5")))
+                .returning_json(&mc),
+            expect_event_post(NS),
+            ExpectedCall::patch_status(format!("{}/status", drift_alert_path(NS, "alert-8")))
+                .returning_json(&alert),
+        ],
+        machines(vec![mc.clone()]),
+    );
 
     let _ = reconcile_drift_alert(Arc::new(alert), ctx).await.unwrap();
     let report = harness.finish().await;
 
-    let da_status_body = report.captured[3].body_json();
+    let da_status_body = report.captured[2].body_json();
     let conditions = da_status_body["status"]["conditions"]
         .as_array()
         .expect("conditions array");
@@ -440,6 +455,81 @@ async fn reconcile_drift_alert_high_severity_emits_escalated_condition_in_status
         "Critical severity must produce Escalated=True"
     );
     assert_eq!(escalated["reason"], "SeverityThreshold");
+}
+
+/// The gateway creates every alert in its own namespace and names the
+/// machine's namespace in the reference, so the alert reads and patches the
+/// machine there.
+#[tokio::test]
+async fn reconcile_drift_alert_reads_and_patches_a_machine_in_another_namespace() {
+    let mut alert = drift_alert("alert-cross", NS, "mc-team", DriftSeverity::Medium);
+    alert.spec.machine_config_ref.namespace = Some("team-a".to_string());
+    alert
+        .owner_references_mut()
+        .push(machine_config_owner_ref("mc-team"));
+
+    let mc = machine_config("mc-team", "team-a");
+
+    let (ctx, _registry, harness) = MockKubeHarness::with_stores(
+        vec![
+            ExpectedCall::patch_status(format!(
+                "{}/status",
+                machine_config_path("team-a", "mc-team")
+            ))
+            .returning_json(&mc),
+            expect_event_post("team-a"),
+            ExpectedCall::patch_status(format!("{}/status", drift_alert_path(NS, "alert-cross")))
+                .returning_json(&alert),
+        ],
+        machines(vec![mc.clone()]),
+    );
+
+    reconcile_drift_alert(Arc::new(alert), ctx)
+        .await
+        .expect("the machine in the referenced namespace is found");
+
+    let report = harness.finish().await;
+    assert_eq!(report.captured.len(), 3);
+}
+
+/// The alert's own status patch re-runs it, and the machine cache can still
+/// predate the DriftDetected patch that went out with it. A detection the
+/// alert already records is not reported a second time.
+#[tokio::test]
+async fn reconcile_drift_alert_does_not_report_a_detection_it_already_recorded() {
+    let mut alert = drift_alert("alert-seen", NS, "mc-6", DriftSeverity::Medium);
+    alert
+        .owner_references_mut()
+        .push(machine_config_owner_ref("mc-6"));
+    alert.status = Some(crate::crds::DriftAlertStatus {
+        detected_at: Some("2026-01-01T00:00:00Z".to_string()),
+        resolved_at: None,
+        conditions: vec![],
+    });
+
+    let mc = machine_config("mc-6", NS);
+
+    let (ctx, _registry, harness) = MockKubeHarness::with_stores(vec![], machines(vec![mc]));
+
+    reconcile_drift_alert(Arc::new(alert), ctx.clone())
+        .await
+        .expect("an already reported alert reconciles cleanly");
+
+    let report = harness.finish().await;
+    assert!(
+        report.captured.is_empty(),
+        "no machine patch, event or alert patch, got {} calls",
+        report.captured.len()
+    );
+    let drift_count = ctx
+        .metrics
+        .drift_events_total
+        .get_or_create(&crate::metrics::DriftLabels {
+            severity: format!("{:?}", DriftSeverity::Medium),
+            namespace: NS.to_string(),
+        })
+        .get();
+    assert_eq!(drift_count, 0, "the detection is counted once");
 }
 
 // -----------------------------------------------------------------------
@@ -501,7 +591,36 @@ async fn has_active_drift_alerts_ignores_alerts_in_another_namespace() {
         .expect("a populated cache answers");
     assert!(
         !active,
-        "the namespace-scoped read must not see an alert from another namespace"
+        "an alert naming no namespace names a machine in its own namespace"
+    );
+
+    let _ = harness.finish().await;
+}
+
+/// An alert in the gateway's namespace naming a machine in another one is
+/// that machine's alert, matched by the same target the alert controller and
+/// the watch resolve.
+#[tokio::test]
+async fn has_active_drift_alerts_finds_an_alert_naming_the_machine_from_another_namespace() {
+    let mut alert = drift_alert("alert-cross", "cfgd-gateway", "mc-x", DriftSeverity::Low);
+    alert.spec.machine_config_ref.namespace = Some(NS.to_string());
+    let stores = ControllerStores {
+        drift_alerts: seeded_store(vec![alert]),
+        ..empty_stores()
+    };
+
+    let (ctx, _registry, harness) = MockKubeHarness::with_stores(vec![], stores);
+
+    assert!(
+        has_active_drift_alerts(&ctx.stores, NS, "mc-x")
+            .await
+            .expect("a populated cache answers")
+    );
+    assert!(
+        !has_active_drift_alerts(&ctx.stores, "cfgd-gateway", "mc-x")
+            .await
+            .expect("a populated cache answers"),
+        "the alert's own namespace is not its machine's"
     );
 
     let _ = harness.finish().await;

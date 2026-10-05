@@ -25,6 +25,7 @@ use tracing::{info, warn};
 // operator in the dependency graph, so non-operator consumers of `ModuleSpec`
 // (the CLI's typed CRD-construction tests) exercise the exact same predicate
 // without pulling in axum/hyper.
+use crate::controllers::policy_in_force;
 use crate::crds::{
     BackupPolicySpec, ClusterConfigPolicy, ClusterConfigPolicySpec, ConfigPolicy, ConfigPolicySpec,
     DriftAlertSpec, MachineConfigSpec, Module, ModuleSpec, MountPolicy, Validatable,
@@ -292,7 +293,7 @@ async fn enforce_module_policy(client: &Client, spec: &ModuleSpec) -> Result<(),
     let mut all_registries: Vec<String> = Vec::new();
     let mut any_disallow_unsigned = false;
 
-    for policy in &policies {
+    for policy in policies.iter().filter(|p| policy_in_force(*p)) {
         all_registries.extend(policy.spec.security.trusted_registries.clone());
         if !policy.spec.security.allow_unsigned {
             any_disallow_unsigned = true;
@@ -491,7 +492,7 @@ async fn collect_policy_modules(client: &Client, namespace: &str) -> PolicyModul
         .list(&ListParams::default())
         .await
     {
-        for policy in &policies {
+        for policy in policies.iter().filter(|p| policy_in_force(*p)) {
             for module_ref in &policy.spec.required_modules {
                 if module_ref.required && !result.required.contains(&module_ref.name) {
                     result.required.push(module_ref.name.clone());
@@ -518,7 +519,7 @@ async fn collect_policy_modules(client: &Client, namespace: &str) -> PolicyModul
         .list(&ListParams::default())
         .await
     {
-        for policy in &policies {
+        for policy in policies.iter().filter(|p| policy_in_force(*p)) {
             if !crate::controllers::matches_selector(
                 ns_labels.as_ref(),
                 &policy.spec.namespace_selector,

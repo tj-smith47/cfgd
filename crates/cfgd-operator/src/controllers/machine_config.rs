@@ -80,13 +80,25 @@ pub(super) async fn reconcile_machine_config(
     // Check if any DriftAlerts exist for this MachineConfig
     let has_drift = has_active_drift_alerts(&ctx.stores, &namespace, &name).await?;
 
-    // Skip if this generation is already observed, no drift, and condition already reflects that
+    // Resolve moduleRefs against Module CRDs (cluster-scoped)
+    let (modules_resolved_status, modules_resolved_reason, modules_resolved_message) =
+        resolve_module_refs(&ctx.stores, &obj.spec.module_refs).await;
+
+    // A Module created or deleted leaves this machine's generation alone, so
+    // the skip also asks whether the recorded ModulesResolved verdict is still
+    // the one the Module cache gives now.
     let generation_unchanged =
         current_generation.is_some() && current_generation == observed_generation;
     let had_drift = existing_conditions
         .iter()
         .any(|c| c.condition_type == "DriftDetected" && c.status == "True");
-    if generation_unchanged && !has_drift && !had_drift {
+    let modules_unchanged =
+        find_condition(existing_conditions, "ModulesResolved").is_some_and(|c| {
+            c.status == modules_resolved_status
+                && c.reason == modules_resolved_reason
+                && c.message == modules_resolved_message
+        });
+    if generation_unchanged && !has_drift && !had_drift && modules_unchanged {
         info!(name = %name, "already reconciled this generation, skipping");
         // A pass that concluded there is nothing to do IS a reconciliation that
         // succeeded, and it is the only signal a steady machine produces:
@@ -97,10 +109,6 @@ pub(super) async fn reconcile_machine_config(
         record_reconcile_success(&ctx, "machine_config", start);
         return Ok(Action::requeue(std::time::Duration::from_secs(60)));
     }
-
-    // Resolve moduleRefs against Module CRDs (cluster-scoped)
-    let (modules_resolved_status, modules_resolved_reason, modules_resolved_message) =
-        resolve_module_refs(&ctx.stores, &obj.spec.module_refs).await;
 
     let now = cfgd_core::utc_now_iso8601();
 

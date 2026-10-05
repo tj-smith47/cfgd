@@ -465,6 +465,18 @@ impl ControllerStores {
         })))
     }
 
+    /// The MachineConfig `namespace/name`, or `None` when the cache holds none.
+    pub(super) async fn machine_config(
+        &self,
+        namespace: &str,
+        name: &str,
+    ) -> Result<Option<Arc<MachineConfig>>, OperatorError> {
+        ready_store(&self.machine_configs, "MachineConfig").await?;
+        Ok(self
+            .machine_configs
+            .get(&ObjectRef::new(name).within(namespace)))
+    }
+
     /// Every ConfigPolicy in `namespace`.
     pub(super) async fn config_policies_in(
         &self,
@@ -502,9 +514,9 @@ impl ControllerStores {
         &self,
     ) -> Result<Vec<Arc<ClusterConfigPolicy>>, OperatorError> {
         ready_store(&self.cluster_config_policies, "ClusterConfigPolicy").await?;
-        Ok(in_stable_order(self.cluster_config_policies.state_filter(
-            |ccp| ccp.metadata.deletion_timestamp.is_none(),
-        )))
+        Ok(in_stable_order(
+            self.cluster_config_policies.state_filter(policy_in_force),
+        ))
     }
 
     /// Every Module.
@@ -629,10 +641,9 @@ pub async fn run(
     // and managedFields to answer them.
     let (ns_store, ns_writer) = reflector::store::<PartialObjectMeta<Namespace>>();
     // A ClusterConfigPolicy's compliance counts read each namespace's labels,
-    // so a label change re-runs every policy. The gate keeps the annotation
-    // and status churn every namespace carries from sweeping them.
-    let (mut ns_labels, namespace_rx) = triggers::sweep_trigger();
-    let ns_labels_store = ns_store.clone();
+    // so a label change re-runs every policy. The sweep keeps the annotation
+    // and status churn every namespace carries from re-running them.
+    let (mut ns_sweep, namespace_rx) = triggers::namespace_sweep();
     let namespace_cache = reflector(
         ns_writer,
         watcher::watcher(
@@ -642,10 +653,9 @@ pub async fn run(
     )
     .default_backoff()
     .for_each(move |event| {
-        if let Err(error) = event {
-            warn!(kind = "Namespace", error = %error, "watch error");
-        } else {
-            ns_labels.observe(triggers::namespace_labels(&ns_labels_store.state()));
+        match event {
+            Ok(event) => ns_sweep.observe(&event),
+            Err(error) => warn!(kind = "Namespace", error = %error, "watch error"),
         }
         futures::future::ready(())
     });
@@ -694,15 +704,13 @@ pub async fn run(
             Api::<DriftAlert>::all(client.clone()),
             crate::runtime::watch_config(),
         )
-        // A MachineConfig's ModulesResolved condition reads the Modules it
-        // names. A Module carries no finalizer, so its deletion reaches no
-        // controller but through this watch.
-        .watches(
-            Api::<Module>::all(client.clone()),
-            crate::runtime::watch_config(),
-            move |module| {
-                triggers::machine_configs_referencing(&mc_store.state(), &module.name_any())
-            },
+        // A MachineConfig's ModulesResolved condition asks only whether each
+        // Module it names exists. A Module carries no finalizer, so its
+        // deletion reaches no controller but through this watch, and its
+        // status writes are gated away.
+        .watches_stream(
+            triggers::gated_watch(Api::<Module>::all(client.clone()), triggers::existence),
+            move |module| triggers::machines_naming_module(&mc_store, &module),
         )
         .run(
             reconcile_machine_config,
@@ -712,19 +720,17 @@ pub async fn run(
         .for_each(log_reconcile::<MachineConfig>("MachineConfig"));
 
     let da_controller = da_builder
-        // A DriftAlert is Resolved once its machine no longer reports
-        // DriftDetected, a condition the MachineConfig controller sets after
-        // the alert's own change, so the alert re-runs when its machine does.
-        .watches(
-            Api::<MachineConfig>::all(client.clone()),
-            crate::runtime::watch_config(),
-            move |mc| {
-                triggers::drift_alerts_naming(
-                    &da_store.state(),
-                    &mc.namespace().unwrap_or_default(),
-                    &mc.name_any(),
-                )
-            },
+        // An alert reads whether its MachineConfig exists and whether it
+        // reports DriftDetected. The watch admits a MachineConfig's arrival,
+        // its departure and a flip of that condition, so an alert created
+        // before its machine, or one left without details when the machine's
+        // drift clears, re-runs at once.
+        .watches_stream(
+            triggers::gated_watch(
+                Api::<MachineConfig>::all(client.clone()),
+                drift_alert::reports_drift,
+            ),
+            move |mc| triggers::alerts_naming_machine(&da_store, &mc),
         )
         .run(
             reconcile_drift_alert,
@@ -737,16 +743,7 @@ pub async fn run(
         .watches(
             Api::<MachineConfig>::all(client.clone()),
             crate::runtime::watch_config(),
-            move |mc| {
-                // When a MachineConfig changes, requeue all ConfigPolicies in its namespace
-                let ns = mc.namespace().unwrap_or_default();
-                cp_store
-                    .state()
-                    .into_iter()
-                    .filter(move |cp| cp.namespace().as_deref() == Some(ns.as_str()))
-                    .map(|cp| ObjectRef::from_obj(&*cp))
-                    .collect::<Vec<_>>()
-            },
+            move |mc| triggers::config_policies_beside(&cp_store, &mc),
         )
         .run(
             reconcile_config_policy,
@@ -764,27 +761,24 @@ pub async fn run(
     let demand_store = ccp_store.clone();
     let (ccp_mc_store, ccp_mc_ns) = (ccp_store.clone(), ns_store.clone());
     let ccp_controller = ccp_builder
-        .watches(
-            Api::<MachineConfig>::all(client.clone()),
-            crate::runtime::watch_config(),
-            move |mc| {
-                triggers::cluster_policies_reaching(
-                    &ccp_mc_store.state(),
-                    &ccp_mc_ns.state(),
-                    &mc.namespace().unwrap_or_default(),
-                )
-            },
+        // A policy's compliance count reads each MachineConfig's spec and the
+        // package versions its device reports; conditions and compliance
+        // summaries the other controllers and the gateway write are gated away.
+        .watches_stream(
+            triggers::gated_watch(
+                Api::<MachineConfig>::all(client.clone()),
+                triggers::compliance_inputs,
+            ),
+            move |mc| triggers::policies_counting_machine(&ccp_mc_store, &ccp_mc_ns, &mc),
         )
-        .watches(
-            Api::<ConfigPolicy>::all(client.clone()),
-            crate::runtime::watch_config(),
-            move |cp| {
-                triggers::cluster_policies_reaching(
-                    &ccp_store.state(),
-                    &ns_store.state(),
-                    &cp.namespace().unwrap_or_default(),
-                )
-            },
+        // A policy merges the requirements of the ConfigPolicies its selector
+        // reaches, all of which live in their spec.
+        .watches_stream(
+            triggers::gated_watch(
+                Api::<ConfigPolicy>::all(client.clone()),
+                triggers::generation,
+            ),
+            move |cp| triggers::policies_merging_config_policy(&ccp_store, &ns_store, &cp),
         )
         .reconcile_all_on(namespace_rx)
         .run(
@@ -807,21 +801,13 @@ pub async fn run(
         .for_each(log_reconcile::<Module>("Module"));
 
     let bp_controller = bp_builder
+        // A machine reports which of its backup units it pins locally in its
+        // own status, so a device flipping that ownership requeues every
+        // policy that could be scheduling the unit.
         .watches(
             Api::<MachineConfig>::all(client.clone()),
             crate::runtime::watch_config(),
-            move |mc| {
-                // A machine reports which of its backup units it pins locally
-                // in its own status, so a device flipping that ownership must
-                // requeue every policy that could be scheduling the unit.
-                let ns = mc.namespace().unwrap_or_default();
-                bp_store
-                    .state()
-                    .into_iter()
-                    .filter(move |bp| bp.namespace().as_deref() == Some(ns.as_str()))
-                    .map(|bp| ObjectRef::from_obj(&*bp))
-                    .collect::<Vec<_>>()
-            },
+            move |mc| triggers::backup_policies_beside(&bp_store, &mc),
         )
         .run(
             reconcile_backup_policy,
@@ -1075,6 +1061,15 @@ use config_policy::{merge_policy_requirements, validate_policy_compliance};
 use machine_config::validate_spec;
 #[cfg(test)]
 use module::evaluate_module_verification;
+
+/// Whether a policy still binds: one carrying a deletion timestamp is on its
+/// way out and binds nothing.
+///
+/// Every reader of a policy list asks this one question, so admission and the
+/// controllers cannot disagree about a policy during its deletion window.
+pub(crate) fn policy_in_force<K: kube::Resource>(policy: &K) -> bool {
+    policy.meta().deletion_timestamp.is_none()
+}
 
 // ---------------------------------------------------------------------------
 // Shared selector helper (used across config_policy and cluster_config_policy)
