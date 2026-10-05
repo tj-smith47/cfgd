@@ -1556,6 +1556,67 @@ async fn checkin_prefers_the_older_policy_when_two_name_one_unit() {
     harness.finish().await;
 }
 
+/// A policy held in its deletion window by a foreign finalizer schedules
+/// nothing: the younger policy's cadence is the one sent, although the deleting
+/// policy is older and would otherwise win.
+#[tokio::test]
+#[serial]
+async fn checkin_ignores_a_backup_policy_that_is_being_deleted() {
+    unsafe {
+        std::env::remove_var(cfgd_core::CFGD_API_KEY_ENV);
+    }
+    let unit = |schedule: &str, retention: u32| {
+        serde_json::json!({
+            "name": "dotfiles",
+            "hostname": "host-1",
+            "owner": "cluster",
+            "schedule": schedule,
+            "retention": retention,
+        })
+    };
+    let mut deleting = backup_policy(
+        "fleet",
+        "nightly",
+        "2026-01-01T00:00:00Z",
+        vec![unit("daily", 7)],
+    );
+    deleting["metadata"]["deletionTimestamp"] = serde_json::json!("2026-06-02T00:00:00Z");
+    deleting["metadata"]["finalizers"] = serde_json::json!(["example.com/hold"]);
+    let policies = vec![
+        deleting,
+        backup_policy(
+            "fleet",
+            "hourly",
+            "2026-06-01T00:00:00Z",
+            vec![unit("hourly", 3)],
+        ),
+    ];
+    let (ctx, _registry, harness) = MockKubeHarness::new(vec![
+        ExpectedCall::list("/apis/cfgd.io/v1alpha1/machineconfigs")
+            .returning_json(&machine_config_list("fleet", "workstation-1-mc", "host-1")),
+        expect_status_apply("cfgd-operator/gateway/packages"),
+        expect_status_apply("cfgd-operator/gateway/backups"),
+        ExpectedCall::list("/apis/cfgd.io/v1alpha1/namespaces/fleet/backuppolicies")
+            .returning_json(&backup_policy_list(policies)),
+    ]);
+    let (state, _tmp) = crate::gateway::test_state::test_state_with_kube(ctx.client.clone());
+    let token = enrolled_device(&state, "dev-1", "host-1").await;
+
+    let response = router_with_state(state)
+        .oneshot(post_json_with_bearer(
+            "/api/v1/checkin",
+            &token,
+            checkin_body("dev-1", "host-1"),
+        ))
+        .await
+        .unwrap();
+    let body: serde_json::Value =
+        serde_json::from_slice(&body_bytes(response).await).expect("json body");
+    assert_eq!(body["backupSchedules"]["dotfiles"]["schedule"], "hourly");
+    assert_eq!(body["backupSchedules"]["dotfiles"]["retention"], 3);
+    harness.finish().await;
+}
+
 /// A read that succeeded and found no policy scheduling this machine is an
 /// ANSWER: the field is present and empty, and the device retires the cadences
 /// it last held. Without it a machine dropped from every policy would keep

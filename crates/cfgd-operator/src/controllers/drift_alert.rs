@@ -160,21 +160,14 @@ pub(super) async fn reconcile_drift_alert(
                     .as_ref()
                     .map(|s| s.conditions.as_slice())
                     .unwrap_or(&[]);
+                let (drift_status, drift_reason, drift_message) =
+                    super::machine_config::drift_detected(true, mc_name);
                 let drift_condition = build_condition(
                     mc_existing_conditions,
                     "DriftDetected",
-                    "True",
-                    "DriftActive",
-                    // The condition TYPE is the API's word; the message is what a
-                    // reader sees, and a device reports its system settings alone.
-                    &format!(
-                        "Device {} reported {}",
-                        obj.spec.device_id,
-                        cfgd_core::pluralize(
-                            obj.spec.drift_details.len(),
-                            "drifted system setting"
-                        )
-                    ),
+                    drift_status,
+                    drift_reason,
+                    &drift_message,
                     &now,
                     mc.meta().generation,
                 );
@@ -283,7 +276,6 @@ pub(super) fn alert_target(alert: &DriftAlert) -> (&str, &str) {
     (namespace, target.name.as_str())
 }
 
-/// Check whether any active DriftAlerts exist for a MachineConfig.
 /// Whether `mc` carries a True DriftDetected condition: the one fact about
 /// its machine's status an alert's verdict reads.
 pub(super) fn reports_drift(mc: &MachineConfig) -> bool {
@@ -294,11 +286,12 @@ pub(super) fn reports_drift(mc: &MachineConfig) -> bool {
     })
 }
 
+/// Check whether any active DriftAlerts exist for a MachineConfig.
 /// Matches by the alert's resolved target since labels may not be set.
 ///
 /// Read from the DriftAlert watch cache the DriftAlert controller already
-/// maintains — a LIST here is a LIST per MachineConfig per reconcile sweep,
-/// which is quadratic across a fleet. Every namespace is read, because an
+/// maintains: a LIST here would be one per MachineConfig per reconcile sweep,
+/// quadratic across a fleet. Every namespace is read, because an
 /// alert may live outside the namespace of the machine it names.
 ///
 /// The caller must treat this single snapshot as the only view of alert state:

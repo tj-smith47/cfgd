@@ -752,6 +752,38 @@ async fn mutate_pods_uses_required_modules_from_namespaced_config_policy() {
     let _ = harness.finish().await;
 }
 
+/// A deleting namespaced ConfigPolicy binds nothing either: its required module
+/// is not injected.
+#[tokio::test]
+async fn mutate_pods_injects_nothing_from_a_deleting_namespaced_config_policy() {
+    let mut cp = cp_object("cp-leaving", &["sidecar"], &[]);
+    cp["metadata"]["deletionTimestamp"] = json!("2026-01-01T00:00:00Z");
+    cp["metadata"]["finalizers"] = json!(["cfgd.io/config-policy-cleanup"]);
+
+    let (ctx, _registry, harness) = MockKubeHarness::new(vec![
+        ExpectedCall::list(config_policies_path(NS)).returning_json(&cp_list(vec![cp])),
+        ExpectedCall::get(namespace_path(NS)).returning_json(&namespace_object(NS, json!({}))),
+        ExpectedCall::list(cluster_config_policies_path()).returning_json(&ccp_list(vec![])),
+    ]);
+
+    let (router, _metrics) = test_webhook_router_with_client(ctx.client.clone());
+
+    let response = router
+        .oneshot(post("/mutate-pods", pod_admission_review(json!({}))))
+        .await
+        .expect("router responds");
+    let review = parse_response(response).await;
+    let resp = review.response.expect("response present");
+    assert!(resp.allowed);
+    assert!(
+        resp.patch.is_none(),
+        "a deleting policy's required module must not be injected"
+    );
+
+    let report = harness.finish().await;
+    assert_eq!(report.captured.len(), 3, "no Module GET follows");
+}
+
 // -----------------------------------------------------------------------
 // mutate-pods — debug modules from CCP override Module.mountPolicy
 // (exercises lines: CCP debug_modules add to policy.debug, policy.debug

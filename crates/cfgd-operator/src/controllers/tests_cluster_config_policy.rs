@@ -223,6 +223,57 @@ async fn reconcile_cluster_config_policy_merges_namespace_policies_into_evaluati
     assert_eq!(ccp_status["status"]["nonCompliantCount"], 1);
 }
 
+/// A ConfigPolicy carrying a deletion timestamp binds nothing: its required
+/// module drops out of the merge, as it drops out of pod injection, so the
+/// machine lacking it counts as compliant.
+#[tokio::test]
+async fn reconcile_cluster_config_policy_leaves_a_deleting_namespace_policy_out_of_the_merge() {
+    let ccp_spec = crate::crds::ClusterConfigPolicySpec {
+        required_modules: vec![ModuleRef {
+            name: "kubectl".to_string(),
+            required: true,
+        }],
+        ..Default::default()
+    };
+    let ccp = cluster_config_policy_with_spec("ccp-merge", ccp_spec);
+
+    let mut ns_policy = config_policy("ns-extra", NS_A);
+    ns_policy.spec.required_modules = vec![ModuleRef {
+        name: "helm".to_string(),
+        required: true,
+    }];
+    ns_policy.metadata.deletion_timestamp = Some(
+        k8s_openapi::apimachinery::pkg::apis::meta::v1::Time(k8s_openapi::jiff::Timestamp::now()),
+    );
+
+    let mut mc = machine_config("mc1", NS_A);
+    mc.spec.module_refs = vec![ModuleRef {
+        name: "kubectl".to_string(),
+        required: true,
+    }];
+
+    let (ctx, _registry, harness) = MockKubeHarness::with_stores(
+        vec![
+            ExpectedCall::patch_status(format!("{}/status", cluster_policy_path("ccp-merge")))
+                .returning_json(&ccp),
+            expect_event_post("default"), // Evaluated
+        ],
+        stores_with(&[NS_A], vec![mc], vec![ns_policy]),
+    );
+
+    reconcile_cluster_config_policy(Arc::new(ccp), ctx)
+        .await
+        .unwrap();
+
+    let report = harness.finish().await;
+    let ccp_status = report.captured[0].body_json();
+    assert_eq!(
+        ccp_status["status"]["compliantCount"], 1,
+        "the deleting policy's helm requirement no longer counts"
+    );
+    assert_eq!(ccp_status["status"]["nonCompliantCount"], 0);
+}
+
 #[tokio::test]
 async fn reconcile_cluster_config_policy_filters_namespaces_by_namespace_selector() {
     use std::collections::BTreeMap;

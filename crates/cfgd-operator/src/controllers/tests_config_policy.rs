@@ -617,6 +617,156 @@ async fn reconcile_config_policy_repeated_reconciles_patch_status_once() {
     }
 }
 
+/// Caches holding these MachineConfigs and ConfigPolicies.
+fn stores_holding(
+    machine_configs: Vec<MachineConfig>,
+    policies: &[&crate::crds::ConfigPolicy],
+) -> ControllerStores {
+    ControllerStores {
+        machine_configs: seeded_store(machine_configs),
+        config_policies: seeded_store(policies.iter().map(|p| (*p).clone()).collect()),
+        ..empty_stores()
+    }
+}
+
+fn requiring(name: &str, module: &str) -> crate::crds::ConfigPolicy {
+    let mut policy = config_policy(name, NS);
+    policy.spec.required_modules = vec![ModuleRef {
+        name: module.to_string(),
+        required: true,
+    }];
+    policy
+}
+
+/// Several policies targeting one machine share its one `Compliant`
+/// condition, so each writes the verdict of all of them. The first pass
+/// writes it; every other policy's pass over the same machine then finds the
+/// identical condition and writes nothing to the machine, where a condition
+/// naming only its writer would be rewritten by each policy in turn forever.
+#[tokio::test]
+async fn policies_sharing_a_machine_write_one_verdict_and_stop() {
+    let alpha = config_policy("alpha", NS);
+    let bravo = requiring("bravo", "kubectl");
+    let charlie = requiring("charlie", "helm");
+    let all = [&alpha, &bravo, &charlie];
+    let mc = machine_config("shared", NS);
+
+    let (ctx, _registry, harness) = MockKubeHarness::with_stores(
+        vec![
+            ExpectedCall::patch_status(format!("{}/status", machine_config_path(NS, "shared")))
+                .returning_json(&mc),
+            expect_event_post(NS), // PolicyViolation
+            ExpectedCall::patch_status(format!("{}/status", config_policy_path("charlie")))
+                .returning_json(&charlie),
+            expect_event_post(NS), // Evaluated
+            expect_event_post(NS), // NonCompliantTargets
+        ],
+        stores_holding(vec![mc.clone()], &all),
+    );
+    reconcile_config_policy(Arc::new(charlie.clone()), ctx)
+        .await
+        .unwrap();
+    let first = harness.finish().await;
+    let written = first
+        .find(Method::PATCH, "/machineconfigs/shared/status")
+        .expect("the first pass writes the shared verdict")
+        .body_json();
+    let compliant = written["status"]["conditions"]
+        .as_array()
+        .expect("conditions")
+        .iter()
+        .find(|c| c["type"] == "Compliant")
+        .expect("Compliant condition")
+        .clone();
+    assert_eq!(compliant["status"], "False");
+    assert_eq!(compliant["reason"], "PolicyViolation");
+    assert_eq!(
+        compliant["message"], "Violates policies bravo, charlie",
+        "the violated policies, sorted, whichever policy wrote it"
+    );
+
+    let mut judged = mc.clone();
+    judged.status = Some(serde_json::from_value(written["status"].clone()).expect("status"));
+
+    let quiet = [
+        (
+            alpha.clone(),
+            vec![
+                ExpectedCall::patch_status(format!("{}/status", config_policy_path("alpha")))
+                    .returning_json(&alpha),
+                expect_event_post(NS), // Evaluated
+            ],
+        ),
+        (
+            bravo.clone(),
+            vec![
+                expect_event_post(NS), // PolicyViolation
+                ExpectedCall::patch_status(format!("{}/status", config_policy_path("bravo")))
+                    .returning_json(&bravo),
+                expect_event_post(NS), // Evaluated
+                expect_event_post(NS), // NonCompliantTargets
+            ],
+        ),
+    ];
+    for (policy, expected) in quiet {
+        let name = policy.name_any();
+        let (ctx, _registry, harness) =
+            MockKubeHarness::with_stores(expected, stores_holding(vec![judged.clone()], &all));
+        reconcile_config_policy(Arc::new(policy), ctx)
+            .await
+            .unwrap();
+        let report = harness.finish().await;
+        assert!(
+            report.find(Method::PATCH, "/machineconfigs/").is_none(),
+            "`{name}` finds the shared verdict already written and leaves the machine alone"
+        );
+    }
+}
+
+/// Deleting one of two policies that judge a machine hands it the verdict of
+/// the policy that remains at once.
+#[tokio::test]
+async fn deleting_a_policy_hands_the_machine_the_verdict_of_the_policies_that_remain() {
+    let alpha = config_policy("alpha", NS);
+    let mut bravo = requiring("bravo", "kubectl");
+    bravo.metadata.deletion_timestamp = Some(k8s_openapi::apimachinery::pkg::apis::meta::v1::Time(
+        k8s_openapi::jiff::Timestamp::now(),
+    ));
+
+    let mut mc = machine_config("shared", NS);
+    mc.status = Some(crate::crds::MachineConfigStatus {
+        observed_generation: Some(1),
+        conditions: vec![compliant_condition("False", "bravo")],
+        ..Default::default()
+    });
+
+    let (ctx, _registry, harness) = MockKubeHarness::with_stores(
+        vec![
+            ExpectedCall::get(machine_config_path(NS, "shared")).returning_json(&mc),
+            ExpectedCall::patch_status(format!("{}/status", machine_config_path(NS, "shared")))
+                .returning_json(&mc),
+            ExpectedCall::patch(config_policy_path("bravo")).returning_json(&bravo),
+        ],
+        stores_holding(vec![mc.clone()], &[&alpha, &bravo]),
+    );
+    reconcile_config_policy(Arc::new(bravo), ctx).await.unwrap();
+
+    let report = harness.finish().await;
+    let compliant = report
+        .find(Method::PATCH, "/machineconfigs/shared/status")
+        .expect("the machine is re-judged")
+        .body_json()["status"]["conditions"]
+        .as_array()
+        .expect("conditions")
+        .iter()
+        .find(|c| c["type"] == "Compliant")
+        .expect("Compliant condition")
+        .clone();
+    assert_eq!(compliant["status"], "True");
+    assert_eq!(compliant["reason"], "PolicyCompliant");
+    assert_eq!(compliant["message"], "Compliant with policy alpha");
+}
+
 /// A machine already recorded in `status.nonCompliantMachines` produces no new
 /// event; one that is not yet recorded does. The memory is the policy's own
 /// persisted status, so it survives an operator restart.

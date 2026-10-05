@@ -48,7 +48,7 @@ async fn reconcile_drift_alert_when_machine_config_missing_records_error_metric_
 
     let action = reconcile_drift_alert(Arc::new(alert), ctx.clone())
         .await
-        .expect("a missing machine returns Ok with requeue, not Err");
+        .expect("a missing machine returns Ok and requeues after 60s");
 
     assert_eq!(
         action,
@@ -72,7 +72,7 @@ async fn reconcile_drift_alert_when_machine_config_missing_records_error_metric_
         .get();
     assert_eq!(
         count, 1,
-        "a missing MachineConfig must record an error metric, not success"
+        "a missing MachineConfig records one error-labelled reconcile"
     );
 
     let success_count = ctx
@@ -172,6 +172,12 @@ async fn reconcile_drift_alert_with_no_owner_ref_patches_owner_ref_then_drift_st
         .expect("DriftDetected condition present");
     assert_eq!(drift_cond["status"], "True");
     assert_eq!(drift_cond["reason"], "DriftActive");
+    assert_eq!(
+        drift_cond["message"],
+        super::machine_config::drift_detected(true, "mc-1").2,
+        "the alert raises the condition with the text the machine controller keeps, \
+         so neither rewrites the other's"
+    );
 
     // The drift_events_total counter was bumped.
     let drift_count = ctx

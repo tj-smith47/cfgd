@@ -22,9 +22,10 @@ use super::test_fixtures::{
 };
 use super::test_kube_harness::seeded_store;
 use super::triggers::{
-    EventGate, alerts_naming_machine, backup_policies_beside, compliance_inputs,
-    config_policies_beside, existence, generation, machines_naming_module, module_security_demands,
-    namespace_sweep, policies_counting_machine, policies_merging_config_policy, sweep_trigger,
+    EventGate, alert_reach, alerts_naming_machine, backup_inputs, backup_policies_beside,
+    compliance_inputs, config_policies_beside, config_policy_inputs, existence,
+    machine_named_by_alert, machines_naming_module, module_security_demands, namespace_sweep,
+    policies_counting_machine, policies_merging_config_policy, policy_standing, sweep_trigger,
 };
 use crate::crds::{
     ClusterConfigPolicy, ClusterConfigPolicySpec, ClusterConfigPolicyStatus, Condition,
@@ -315,9 +316,9 @@ fn a_drift_gate_admits_a_machine_whose_drift_condition_flips_and_nothing_else() 
 }
 
 #[test]
-fn a_generation_gate_admits_a_config_policy_spec_change_and_not_its_status() {
+fn a_standing_gate_admits_a_config_policy_spec_change_or_deletion_start_and_not_its_status() {
     let cp = config_policy("cp-1", "ns-a");
-    let mut gate = listed(generation, &cp);
+    let mut gate = listed(policy_standing, &cp);
 
     let mut status_write = cp.clone();
     status_write.metadata.resource_version = Some("9".to_string());
@@ -325,7 +326,132 @@ fn a_generation_gate_admits_a_config_policy_spec_change_and_not_its_status() {
 
     let mut respecced = status_write;
     respecced.metadata.generation = Some(2);
+    assert!(admitted(&mut gate, Event::Apply(respecced.clone())));
+
+    // The API server sets a deletion timestamp on an object a finalizer holds
+    // without bumping its generation.
+    let mut deleting = respecced;
+    deleting.metadata.deletion_timestamp = Some(Time(k8s_openapi::jiff::Timestamp::now()));
+    assert!(
+        admitted(&mut gate, Event::Apply(deleting)),
+        "the start of a deletion takes the policy out of every merge"
+    );
+}
+
+/// A MachineConfig carrying the given labels.
+fn labelled(mc: &MachineConfig, labels: &[(&str, &str)]) -> MachineConfig {
+    let mut mc = mc.clone();
+    mc.metadata.labels = Some(
+        labels
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect(),
+    );
+    mc
+}
+
+#[test]
+fn a_config_policy_gate_admits_a_label_spec_or_package_version_change_and_not_a_condition() {
+    let mc = machine_config("mc-1", "ns-a");
+    let mut gate = listed(config_policy_inputs, &mc);
+
+    let mut judged = mc.clone();
+    judged.status = Some(MachineConfigStatus {
+        conditions: vec![condition("Compliant", "False")],
+        ..Default::default()
+    });
+    assert!(
+        !admitted(&mut gate, Event::Apply(judged.clone())),
+        "the Compliant condition a policy writes re-runs no policy"
+    );
+
+    let mut reported = judged.clone();
+    let status = reported.status.as_mut().unwrap();
+    status.compliance = Some(DeviceCompliance {
+        compliant: 3,
+        ..Default::default()
+    });
+    status
+        .backup_schedule_owners
+        .insert("dotfiles".to_string(), "local".to_string());
+    assert!(
+        !admitted(&mut gate, Event::Apply(reported.clone())),
+        "a device compliance or backup owner report moves no policy verdict"
+    );
+
+    let relabelled = labelled(&reported, &[("env", "prod")]);
+    assert!(
+        admitted(&mut gate, Event::Apply(relabelled.clone())),
+        "a label change can move the machine into or out of a targetSelector"
+    );
+
+    let mut versions = relabelled.clone();
+    versions
+        .status
+        .as_mut()
+        .unwrap()
+        .package_versions
+        .insert("brew/jq".to_string(), "1.7".to_string());
+    assert!(admitted(&mut gate, Event::Apply(versions.clone())));
+
+    let mut respecced = versions;
+    respecced.metadata.generation = Some(2);
     assert!(admitted(&mut gate, Event::Apply(respecced)));
+}
+
+#[test]
+fn a_backup_gate_admits_a_label_spec_or_owner_change_and_not_another_status_write() {
+    let mc = machine_config("mc-1", "ns-a");
+    let mut gate = listed(backup_inputs, &mc);
+
+    let mut written = mc.clone();
+    let status = written.status.get_or_insert_with(Default::default);
+    status.conditions = vec![condition("Compliant", "True")];
+    status.compliance = Some(DeviceCompliance {
+        compliant: 3,
+        ..Default::default()
+    });
+    status
+        .package_versions
+        .insert("brew/jq".to_string(), "1.7".to_string());
+    assert!(
+        !admitted(&mut gate, Event::Apply(written.clone())),
+        "a condition, compliance or package version write moves no backup schedule"
+    );
+
+    let mut pinned = written.clone();
+    pinned
+        .status
+        .as_mut()
+        .unwrap()
+        .backup_schedule_owners
+        .insert("dotfiles".to_string(), "local".to_string());
+    assert!(
+        admitted(&mut gate, Event::Apply(pinned.clone())),
+        "a device pinning a unit locally is read by the policy"
+    );
+
+    let mut released = pinned.clone();
+    released
+        .status
+        .as_mut()
+        .unwrap()
+        .backup_schedule_owners
+        .insert("dotfiles".to_string(), "cluster".to_string());
+    assert!(
+        admitted(&mut gate, Event::Apply(released.clone())),
+        "an owner flip is read by the policy"
+    );
+
+    let relabelled = labelled(&released, &[("tier", "laptop")]);
+    assert!(admitted(&mut gate, Event::Apply(relabelled.clone())));
+
+    let mut respecced = relabelled;
+    respecced.metadata.generation = Some(2);
+    assert!(
+        admitted(&mut gate, Event::Apply(respecced)),
+        "a spec change can move the hostname the policy schedules for"
+    );
 }
 
 /// A relist replays every object as `InitApply`. One the gate already holds in
@@ -334,7 +460,7 @@ fn a_generation_gate_admits_a_config_policy_spec_change_and_not_its_status() {
 #[test]
 fn a_relist_admits_only_what_moved_while_the_watch_was_down() {
     let cp = config_policy("cp-1", "ns-a");
-    let mut gate = listed(generation, &cp);
+    let mut gate = listed(policy_standing, &cp);
 
     let mut respecced = cp.clone();
     respecced.metadata.generation = Some(2);
@@ -478,6 +604,46 @@ fn a_machine_event_reaches_only_the_alerts_that_name_it() {
             &machine_config("mc-1", "ns-a")
         )),
         ["cross-ns", "own-ns"]
+    );
+}
+
+#[test]
+fn an_alert_gate_admits_a_retarget_or_deletion_and_not_another_write() {
+    let alert = drift_alert("alert-1", "ns-a", "mc-1", DriftSeverity::Low);
+    let mut gate = listed(alert_reach, &alert);
+
+    let mut status_write = alert.clone();
+    status_write.metadata.resource_version = Some("4".to_string());
+    status_write.metadata.generation = Some(2);
+    status_write.status = Some(Default::default());
+    assert!(
+        !admitted(&mut gate, Event::Apply(status_write.clone())),
+        "a status write or a spec change that keeps the target moves no machine's DriftDetected verdict"
+    );
+
+    let mut retargeted = status_write;
+    retargeted.spec.machine_config_ref.name = "mc-2".to_string();
+    assert!(admitted(&mut gate, Event::Apply(retargeted.clone())));
+    assert!(
+        admitted(&mut gate, Event::Delete(retargeted)),
+        "a deleted alert can clear its machine's drift"
+    );
+}
+
+#[test]
+fn an_alert_event_reaches_the_machine_it_names_in_any_namespace() {
+    let own_ns = drift_alert("own-ns", "ns-a", "mc-1", DriftSeverity::Low);
+    assert_eq!(
+        machine_named_by_alert(own_ns),
+        Some(ObjectRef::new("mc-1").within("ns-a"))
+    );
+
+    let mut cross_ns = drift_alert("cross-ns", "ns-b", "mc-1", DriftSeverity::Low);
+    cross_ns.spec.machine_config_ref.namespace = Some("ns-a".to_string());
+    assert_eq!(
+        machine_named_by_alert(cross_ns),
+        Some(ObjectRef::new("mc-1").within("ns-a")),
+        "an alert outside its machine's namespace reaches it, which no owner reference can"
     );
 }
 

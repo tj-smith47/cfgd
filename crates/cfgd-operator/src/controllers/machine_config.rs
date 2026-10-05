@@ -116,19 +116,7 @@ pub(super) async fn reconcile_machine_config(
     // nothing else, so the absence of one is not a machine proven in sync: the
     // message says which class was reported, and the negative says which class
     // went unreported rather than claiming a clean machine.
-    let (drift_status, drift_reason, drift_message) = if has_drift {
-        (
-            "True",
-            "DriftActive",
-            format!("A device reported drifted system settings for MachineConfig {name}"),
-        )
-    } else {
-        (
-            "False",
-            "NoDrift",
-            format!("No device reported drifted system settings for MachineConfig {name}"),
-        )
-    };
+    let (drift_status, drift_reason, drift_message) = drift_detected(has_drift, &name);
 
     // Preserve existing package_versions from status: a reconcile that cannot
     // observe them must not blank the field it did not measure.
@@ -279,7 +267,7 @@ pub(super) async fn reconcile_machine_config(
             &obj.object_ref(&()),
             EventType::Warning,
             "DriftDetected",
-            format!("A device reported drifted system settings for MachineConfig {name}"),
+            drift_message,
             "DriftCheck",
         )
         .await;
@@ -301,4 +289,23 @@ pub(super) async fn reconcile_machine_config(
 pub(super) fn validate_spec(spec: &MachineConfigSpec) -> Result<(), OperatorError> {
     spec.validate()
         .map_err(|errors| OperatorError::InvalidSpec(errors.join("; ")))
+}
+
+/// The `DriftDetected` condition `(status, reason, message)` for the machine
+/// `name`. The DriftAlert controller raises the same condition when an alert
+/// first reports, and both build it here so neither rewrites the other's text.
+pub(super) fn drift_detected(has_drift: bool, name: &str) -> (&'static str, &'static str, String) {
+    if has_drift {
+        (
+            "True",
+            "DriftActive",
+            format!("A device reported drifted system settings for MachineConfig {name}"),
+        )
+    } else {
+        (
+            "False",
+            "NoDrift",
+            format!("No device reported drifted system settings for MachineConfig {name}"),
+        )
+    }
 }

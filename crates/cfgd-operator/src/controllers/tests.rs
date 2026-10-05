@@ -3619,9 +3619,9 @@ fn every_cfgd_io_watch_is_held_to_the_watch_label_selector() {
         ("metadata_watcher(", 1, 0),
         ("Controller::new(", 1, 6),
         ("Controller::new_with(", 1, 0),
-        (".owns(", 1, 1),
+        (".owns(", 1, 0),
         (".owns_with(", 2, 0),
-        (".watches(", 1, 2),
+        (".watches(", 1, 0),
         (".watches_with(", 2, 0),
     ];
     let mut exempt = 0;
@@ -3690,14 +3690,18 @@ fn run_statement<'a>(code: &'a str, binding: &str) -> &'a str {
 ///
 /// - Module <- ClusterConfigPolicy: a sweep rooted on the policy controller's
 ///   own output stream (no second watch), gated on the security demands.
-/// - MachineConfig <- Module: a watch gated on existence.
+/// - MachineConfig <- Module: a watch gated on existence; <- DriftAlert: a
+///   watch gated on the machine the alert names, mapped to that machine.
 /// - DriftAlert <- MachineConfig: a watch gated on the DriftDetected report.
 /// - ClusterConfigPolicy <- MachineConfig: a watch gated on the compliance
-///   inputs; <- ConfigPolicy: a watch gated on the generation.
+///   inputs; <- ConfigPolicy: a watch gated on the generation and whether the
+///   policy is in force.
 /// - ClusterConfigPolicy <- Namespace: a sweep rooted on the namespace
 ///   reflector, gated on labels.
-/// - ConfigPolicy, BackupPolicy <- MachineConfig: watches mapped to the
-///   policies in the machine's namespace.
+/// - ConfigPolicy <- MachineConfig: a watch gated on labels, generation and
+///   reported package versions; BackupPolicy <- MachineConfig: one gated on
+///   labels, generation and backup schedule owners. Both map to the policies
+///   in the machine's namespace.
 #[test]
 fn every_cross_kind_read_of_a_controller_is_wired_to_a_trigger() {
     use cfgd_core::test_helpers::production_code_of;
@@ -3722,7 +3726,15 @@ fn every_cross_kind_read_of_a_controller_is_wired_to_a_trigger() {
     );
 
     // (controller binding, opener, the exact squashed arguments)
-    let wired: [(&str, &str, [&str; 2]); 5] = [
+    let wired: [(&str, &str, [&str; 2]); 7] = [
+        (
+            "mc_controller",
+            ".watches_stream(",
+            [
+                "triggers::gated_watch(Api::<DriftAlert>::all(client.clone()),triggers::alert_reach)",
+                "triggers::machine_named_by_alert",
+            ],
+        ),
         (
             "mc_controller",
             ".watches_stream(",
@@ -3751,28 +3763,28 @@ fn every_cross_kind_read_of_a_controller_is_wired_to_a_trigger() {
             "ccp_controller",
             ".watches_stream(",
             [
-                "triggers::gated_watch(Api::<ConfigPolicy>::all(client.clone()),triggers::generation)",
+                "triggers::gated_watch(Api::<ConfigPolicy>::all(client.clone()),triggers::policy_standing)",
                 "move|cp|triggers::policies_merging_config_policy(&ccp_store,&ns_store,&cp)",
             ],
         ),
         (
             "cp_controller",
-            ".watches(",
+            ".watches_stream(",
             [
-                "Api::<MachineConfig>::all(client.clone())",
+                "triggers::gated_watch(Api::<MachineConfig>::all(client.clone()),triggers::config_policy_inputs)",
                 "move|mc|triggers::config_policies_beside(&cp_store,&mc)",
             ],
         ),
+        (
+            "bp_controller",
+            ".watches_stream(",
+            [
+                "triggers::gated_watch(Api::<MachineConfig>::all(client.clone()),triggers::backup_inputs)",
+                "move|mc|triggers::backup_policies_beside(&bp_store,&mc)",
+            ],
+        ),
     ];
-    let bp = (
-        "bp_controller",
-        ".watches(",
-        [
-            "Api::<MachineConfig>::all(client.clone())",
-            "move|mc|triggers::backup_policies_beside(&bp_store,&mc)",
-        ],
-    );
-    for (binding, opener, [trigger, mapper]) in wired.into_iter().chain([bp]) {
+    for (binding, opener, [trigger, mapper]) in wired {
         let statement = squash(run_statement(&code, binding));
         let found = calls(&statement, opener).iter().any(|args| {
             args.first().map(String::as_str) == Some(trigger)
@@ -3783,6 +3795,22 @@ fn every_cross_kind_read_of_a_controller_is_wired_to_a_trigger() {
             "`{binding}` must call `{opener}{trigger}, ..., {mapper})`: {statement}"
         );
     }
+
+    // Every reader above reads a part of the other kind's object, so a watch
+    // that admits every write would re-run it on writes it never reads: each
+    // cross-kind watch goes through a gate, and the ungated openers are absent.
+    let squashed = squash(&code);
+    for ungated in [".owns(", ".owns_with(", ".watches(", ".watches_with("] {
+        assert!(
+            calls(&squashed, ungated).is_empty(),
+            "`run` must not open an ungated `{ungated}` watch: gate it with triggers::gated_watch"
+        );
+    }
+    assert_eq!(
+        calls(&squashed, ".watches_stream(").len(),
+        wired.len(),
+        "every `.watches_stream(` is listed above with its gate"
+    );
 
     let policies = squash(run_statement(&code, "ccp_controller"));
     for needle in [

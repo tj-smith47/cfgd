@@ -139,6 +139,24 @@ Follows the standard Kubernetes condition convention.
 
 ---
 
+## The machine's Compliant condition
+
+Several ConfigPolicies can target one `MachineConfig`, and the machine has one
+`Compliant` condition. Every policy writes the same verdict there, computed from
+all the ConfigPolicies in the namespace that are not being deleted and whose
+`targetSelector` matches the machine:
+
+| Verdict | `status` | `reason` | `message` |
+|---------|----------|----------|-----------|
+| Every matching policy is satisfied | `True` | `PolicyCompliant` | `Compliant with policy a` or `Compliant with policies a, b` |
+| One or more matching policies are violated | `False` | `PolicyViolation` | `Violates policy b` or `Violates policies b, c` (the violated ones only) |
+
+Names are sorted, so two policies evaluating the same machine write identical
+text and neither rewrites the other's. A policy's own `status` still counts the
+machines against that policy alone.
+
+---
+
 ## Deletion
 
 The operator adds the finalizer `cfgd.io/config-policy-cleanup` to every
@@ -147,18 +165,19 @@ targets (the `Compliant` condition of each matched `MachineConfig`), so deleting
 the policy without clearing that verdict would leave every machine reporting a
 judgement no policy makes any more.
 
-On deletion the operator resets `Compliant` to `Unknown` / `NotEvaluated` /
-"Awaiting policy evaluation" on the union of the machines the selector matches
-at deletion time and the machines named in the policy's
-`status.nonCompliantMachines`, then removes its finalizer. The memory half of
+On deletion the operator recomputes `Compliant` from the ConfigPolicies that
+remain, on the union of the machines the selector matches at deletion time and
+the machines named in the policy's `status.nonCompliantMachines`, then removes
+its finalizer. A machine another policy still targets gets that verdict at once;
+a machine no remaining policy targets is reset to `Unknown` / `NotEvaluated` /
+"Awaiting policy evaluation". The memory half of
 that union retires the stale `Compliant=False` on a machine that was relabelled
 out of the selector after being judged. The reset cannot reach every machine the
 policy ever judged: a compliant machine relabelled away is in neither set, so it
 keeps its stale `Compliant=True` until any policy next evaluates it. Each
 machine is re-read from the API server immediately before the write, so the
 reset does not revert a condition another controller wrote after the operator's
-cache was populated. A machine still targeted by another policy is re-evaluated
-by that policy on its next pass. Clearing is best effort per machine: a machine
+cache was populated. Clearing is best effort per machine: a machine
 the API server refuses is logged and skipped, so one unreachable object cannot
 strand the deleted policy.
 

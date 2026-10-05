@@ -304,6 +304,9 @@ async fn apply_status_map(
 /// is read through `ScheduleOwner`'s case-insensitive parser, the same reading
 /// the controller gives the device's own pin.
 ///
+/// A policy carrying a deletion timestamp schedules nothing, so a foreign
+/// finalizer holding it in place cannot keep its cadence on the machine.
+///
 /// Two policies naming one unit for one machine is a cluster-side conflict the
 /// gateway cannot resolve on merit, so it resolves it stably: the policy with
 /// the older `creationTimestamp` wins and the collision is logged. A stable
@@ -364,7 +367,10 @@ fn project_owned_schedules(
     use crate::crds::ScheduleOwner;
     use kube::ResourceExt;
 
-    let mut ordered: Vec<&Arc<crate::crds::BackupPolicy>> = policies.iter().collect();
+    let mut ordered: Vec<&Arc<crate::crds::BackupPolicy>> = policies
+        .iter()
+        .filter(|p| crate::controllers::policy_in_force(&***p))
+        .collect();
     // Name breaks a timestamp tie, so two policies created in the same second
     // still resolve to one winner on every check-in.
     ordered.sort_by_cached_key(|p| (p.creation_timestamp(), p.name_any()));

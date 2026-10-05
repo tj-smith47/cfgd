@@ -246,11 +246,6 @@ where
 /// Nothing: a reader that only asks whether the object exists.
 pub(super) fn existence<K>(_: &K) {}
 
-/// A `spec` change: what a reader of the object's spec alone reads.
-pub(super) fn generation<K: Resource>(obj: &K) -> Option<i64> {
-    obj.meta().generation
-}
-
 /// What a ClusterConfigPolicy's compliance count reads off a MachineConfig:
 /// its spec and the package versions the device reported.
 pub(super) fn compliance_inputs(mc: &MachineConfig) -> (Option<i64>, BTreeMap<String, String>) {
@@ -261,6 +256,61 @@ pub(super) fn compliance_inputs(mc: &MachineConfig) -> (Option<i64>, BTreeMap<St
             .map(|s| s.package_versions.clone())
             .unwrap_or_default(),
     )
+}
+
+/// What a ConfigPolicy's verdict reads off a MachineConfig: the labels its
+/// `targetSelector` matches, the spec it checks and the package versions the
+/// device reported. The `Compliant` condition the policy writes back is left
+/// out, so its own write re-runs nothing.
+pub(super) fn config_policy_inputs(
+    mc: &MachineConfig,
+) -> (
+    BTreeMap<String, String>,
+    Option<i64>,
+    BTreeMap<String, String>,
+) {
+    let (generation, package_versions) = compliance_inputs(mc);
+    (mc.labels().clone(), generation, package_versions)
+}
+
+/// What a BackupPolicy reads off a MachineConfig: the labels its selector
+/// matches, the spec holding the hostname it schedules for and the units the
+/// device reports pinning locally.
+pub(super) fn backup_inputs(
+    mc: &MachineConfig,
+) -> (
+    BTreeMap<String, String>,
+    Option<i64>,
+    BTreeMap<String, String>,
+) {
+    (
+        mc.labels().clone(),
+        mc.metadata.generation,
+        mc.status
+            .as_ref()
+            .map(|s| s.backup_schedule_owners.clone())
+            .unwrap_or_default(),
+    )
+}
+
+/// A policy's spec and whether it is in force: the start of a deletion moves
+/// the second without the API server bumping the first.
+pub(super) fn policy_standing<K: Resource>(policy: &K) -> (Option<i64>, bool) {
+    (policy.meta().generation, policy_in_force(policy))
+}
+
+/// The machine a DriftAlert names, resolved as the alert controller resolves
+/// it: with the alert's existence, all a machine's DriftDetected verdict reads
+/// off the alert.
+pub(super) fn alert_reach(alert: &DriftAlert) -> (String, String) {
+    let (namespace, name) = alert_target(alert);
+    (namespace.to_string(), name.to_string())
+}
+
+/// The MachineConfig whose DriftDetected verdict `alert` takes part in.
+pub(super) fn machine_named_by_alert(alert: DriftAlert) -> Option<ObjectRef<MachineConfig>> {
+    let (namespace, name) = alert_target(&alert);
+    Some(ObjectRef::new(name).within(namespace))
 }
 
 /// The MachineConfigs whose `moduleRefs` name `module`: the ones whose

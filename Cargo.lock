@@ -737,6 +737,7 @@ dependencies = [
  "json-patch",
  "k8s-openapi",
  "kube",
+ "kube-runtime",
  "opentelemetry",
  "opentelemetry-otlp",
  "opentelemetry_sdk",

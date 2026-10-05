@@ -484,7 +484,7 @@ impl ControllerStores {
     ) -> Result<Vec<Arc<ConfigPolicy>>, OperatorError> {
         ready_store(&self.config_policies, "ConfigPolicy").await?;
         Ok(in_stable_order(self.config_policies.state_filter(|cp| {
-            cp.metadata.namespace.as_deref() == Some(namespace)
+            cp.metadata.namespace.as_deref() == Some(namespace) && policy_in_force(cp)
         })))
     }
 
@@ -700,9 +700,16 @@ pub async fn run(
     );
 
     let mc_controller = mc_builder
-        .owns(
-            Api::<DriftAlert>::all(client.clone()),
-            crate::runtime::watch_config(),
+        // A MachineConfig's DriftDetected condition asks whether any alert, in
+        // any namespace, names it. An owner reference cannot cross namespaces
+        // and an owner watch never sees a delete, so the alert's own target
+        // routes it, and its status writes are gated away.
+        .watches_stream(
+            triggers::gated_watch(
+                Api::<DriftAlert>::all(client.clone()),
+                triggers::alert_reach,
+            ),
+            triggers::machine_named_by_alert,
         )
         // A MachineConfig's ModulesResolved condition asks only whether each
         // Module it names exists. A Module carries no finalizer, so its
@@ -723,8 +730,7 @@ pub async fn run(
         // An alert reads whether its MachineConfig exists and whether it
         // reports DriftDetected. The watch admits a MachineConfig's arrival,
         // its departure and a flip of that condition, so an alert created
-        // before its machine, or one left without details when the machine's
-        // drift clears, re-runs at once.
+        // before its machine re-runs at once.
         .watches_stream(
             triggers::gated_watch(
                 Api::<MachineConfig>::all(client.clone()),
@@ -740,9 +746,14 @@ pub async fn run(
         .for_each(log_reconcile::<DriftAlert>("DriftAlert"));
 
     let cp_controller = cp_builder
-        .watches(
-            Api::<MachineConfig>::all(client.clone()),
-            crate::runtime::watch_config(),
+        // A policy's verdict reads a machine's labels, spec and reported
+        // package versions; the Compliant condition every policy writes back
+        // is gated away, so one policy's write does not re-run the others.
+        .watches_stream(
+            triggers::gated_watch(
+                Api::<MachineConfig>::all(client.clone()),
+                triggers::config_policy_inputs,
+            ),
             move |mc| triggers::config_policies_beside(&cp_store, &mc),
         )
         .run(
@@ -771,12 +782,12 @@ pub async fn run(
             ),
             move |mc| triggers::policies_counting_machine(&ccp_mc_store, &ccp_mc_ns, &mc),
         )
-        // A policy merges the requirements of the ConfigPolicies its selector
-        // reaches, all of which live in their spec.
+        // A policy merges the requirements of the ConfigPolicies in force that
+        // its selector reaches: their spec, and whether a deletion has begun.
         .watches_stream(
             triggers::gated_watch(
                 Api::<ConfigPolicy>::all(client.clone()),
-                triggers::generation,
+                triggers::policy_standing,
             ),
             move |cp| triggers::policies_merging_config_policy(&ccp_store, &ns_store, &cp),
         )
@@ -801,12 +812,14 @@ pub async fn run(
         .for_each(log_reconcile::<Module>("Module"));
 
     let bp_controller = bp_builder
-        // A machine reports which of its backup units it pins locally in its
-        // own status, so a device flipping that ownership requeues every
-        // policy that could be scheduling the unit.
-        .watches(
-            Api::<MachineConfig>::all(client.clone()),
-            crate::runtime::watch_config(),
+        // A policy reads a machine's labels, its hostname and the backup units
+        // the device reports pinning locally. Conditions, compliance and
+        // package versions the other writers record are gated away.
+        .watches_stream(
+            triggers::gated_watch(
+                Api::<MachineConfig>::all(client.clone()),
+                triggers::backup_inputs,
+            ),
             move |mc| triggers::backup_policies_beside(&bp_store, &mc),
         )
         .run(
@@ -1065,8 +1078,9 @@ use module::evaluate_module_verification;
 /// Whether a policy still binds: one carrying a deletion timestamp is on its
 /// way out and binds nothing.
 ///
-/// Every reader of a policy list asks this one question, so admission and the
-/// controllers cannot disagree about a policy during its deletion window.
+/// Every reader of a policy list asks this one question (the controllers'
+/// caches, the admission webhook and the gateway's backup projection), so they
+/// cannot disagree about a policy during its deletion window.
 pub(crate) fn policy_in_force<K: kube::Resource>(policy: &K) -> bool {
     policy.meta().deletion_timestamp.is_none()
 }
