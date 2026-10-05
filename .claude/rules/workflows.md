@@ -61,6 +61,15 @@ single-source-of-truth wiring.
   runtime only injects `ACTIONS_ID_TOKEN_REQUEST_URL/TOKEN` into jobs that
   can mint OIDC tokens, and anodizer's secret preflight validates those on
   behalf of the MCP-registry publisher.
+- Every job that runs anodizer against the tree checks out with
+  `fetch-depth: 0`, the preflight job included. anodizer plans the versions
+  the run cuts from the tags on HEAD's history and probes each registry for
+  those versions; at depth 1 there are no tags, it plans from "(none)" and
+  probes the first crate at its Cargo.toml version, which crates.io already
+  holds with older content. Run 37383248541 failed its preflight that way
+  (`cfgd-schema-0.5.0 diverged`) while the tree was about to cut 0.6.0; the
+  same `anodizer preflight` in a full clone of the same commit probed 0.6.0
+  and reported clean.
 - crates.io Trusted Publishing (`.anodizer.yaml` cargo `auth: oidc`) runs in a
   DEDICATED `publish-oidc.yml` (`on: workflow_dispatch`); `release.yml` and
   the reusable `publish-crate.yml` cannot host it: crates.io TP rejects the `workflow_run`

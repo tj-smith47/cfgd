@@ -67,9 +67,16 @@ jobs:
       # fails even though every secret is present.
       id-token: write
     steps:
+      # Preflight plans the versions this run will cut from the tags on HEAD's
+      # history and probes each registry for THOSE. A depth-1 checkout carries
+      # no tags, so anodizer plans from "(none)" and probes the first crate at
+      # its Cargo.toml version, which crates.io already holds with older
+      # content: run 37383248541 failed on `cfgd-schema-0.5.0 diverged` while
+      # the tree was about to cut 0.6.0.
       - name: Check out repository
         uses: actions/checkout@v7
         with:
+          fetch-depth: 0
           ref: ${{ github.event.workflow_run.head_sha || inputs.ref || github.sha }}
 
       - name: Run anodizer preflight

@@ -51343,6 +51343,75 @@ fn the_local_freebsd_leg_prepares_the_guest_ci_prepares() {
     );
 }
 
+/// Every job that runs anodizer against the tree checks out with
+/// `fetch-depth: 0`. anodizer plans the versions a run cuts from the tags on
+/// HEAD's history and probes each registry for those versions. At depth 1
+/// there are no tags, so it plans from "(none)" and probes the first crate at
+/// its Cargo.toml version, which crates.io already holds with older content:
+/// release run 37383248541 failed its preflight that way
+/// (`cfgd-schema-0.5.0 diverged`) while the tree was about to cut 0.6.0.
+#[test]
+fn every_job_running_anodizer_checks_out_the_whole_history() {
+    /// Jobs that run anodizer today; the walk fails when it reads fewer.
+    const JOB_FLOOR: usize = 11;
+    let root = cfgd_core::test_helpers::workspace_root();
+    let dir = root.join(".github/workflows");
+    let mut paths: Vec<std::path::PathBuf> = std::fs::read_dir(&dir)
+        .unwrap_or_else(|e| panic!("cannot read {}: {e}", dir.display()))
+        .map(|entry| {
+            entry
+                .unwrap_or_else(|e| panic!("cannot read an entry of {}: {e}", dir.display()))
+                .path()
+        })
+        .filter(|p| p.extension().is_some_and(|x| x == "yml" || x == "yaml"))
+        .collect();
+    paths.sort();
+    let mut seen = 0;
+    let mut offenders = Vec::new();
+    for path in &paths {
+        let workflow: serde_yaml::Value = serde_yaml::from_str(&walked_file_body(path))
+            .unwrap_or_else(|e| panic!("{}: does not parse: {e}", path.display()));
+        let Some(jobs) = workflow["jobs"].as_mapping() else {
+            continue;
+        };
+        for (name, job) in jobs {
+            let Some(steps) = job["steps"].as_sequence() else {
+                continue;
+            };
+            let runs_anodizer = steps.iter().any(|s| {
+                s["uses"]
+                    .as_str()
+                    .is_some_and(|u| u.starts_with("tj-smith47/anodizer-action"))
+            });
+            if !runs_anodizer {
+                continue;
+            }
+            seen += 1;
+            let checkout = steps.iter().find(|s| {
+                s["uses"]
+                    .as_str()
+                    .is_some_and(|u| u.starts_with("actions/checkout"))
+            });
+            let job = format!("{}: job `{}`", path.display(), name.as_str().unwrap_or("?"));
+            match checkout {
+                None => offenders.push(format!("{job} runs anodizer with no checkout")),
+                Some(step) if step["with"]["fetch-depth"].as_i64() != Some(0) => {
+                    offenders.push(format!("{job} checks out without `fetch-depth: 0`"));
+                }
+                Some(_) => {}
+            }
+        }
+    }
+    assert!(
+        seen >= JOB_FLOOR,
+        "the walk read {seen} jobs running anodizer, fewer than the {JOB_FLOOR} the workflows hold"
+    );
+    assert!(
+        offenders.is_empty(),
+        "an anodizer job without the tag history: {offenders:?}"
+    );
+}
+
 /// Every demo GIF and every tape names, in `demo/recorded.txt`, the commit it
 /// was recorded at, and a check on every pull request holds each GIF to it.
 ///
