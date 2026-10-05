@@ -820,7 +820,13 @@ tasks:
       # never collects the superseded ones, so it reached 76G in a single day of test
       # cycles. Age-based sweeping cannot reach it: every run stats every artifact, so
       # nothing is ever old. Capping by SIZE evicts oldest-first until the cap holds.
-      - cargo sweep --maxsize {{.TARGET_MAXSIZE}} || true
+      # cargo-sweep 0.8 stops with "No such file or directory" at a profile directory
+      # that has no build/ (a check-only cross target leaves one) and cleans nothing.
+      - |
+        for deps in target/*/deps target/*/*/deps; do
+          [ -d "$deps" ] && mkdir -p "$(dirname "$deps")/build"
+        done
+        cargo sweep --maxsize {{.TARGET_MAXSIZE}}
       - df -h / | tail -1
 
   # --- Docker ---
