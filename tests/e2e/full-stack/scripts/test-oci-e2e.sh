@@ -298,14 +298,7 @@ EOF
     oci04_both_platforms() {
         PLATFORMS=$(kubectl get module "$OCI04_MOD" \
             -o jsonpath='{.status.availablePlatforms[*]}' 2>/dev/null || echo "")
-        case " $PLATFORMS " in
-            *" linux/amd64 "*) ;;
-            *) return 1 ;;
-        esac
-        case " $PLATFORMS " in
-            *" linux/arm64 "*) return 0 ;;
-            *) return 1 ;;
-        esac
+        has_all_words "$PLATFORMS" linux/amd64 linux/arm64
     }
     PLATFORMS=""
     echo "  Waiting for Module availablePlatforms..."

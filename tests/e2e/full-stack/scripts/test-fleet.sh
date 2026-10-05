@@ -80,10 +80,7 @@ EOF
 fleet03_settled() {
     FLEET03_CONDITIONS=$(kubectl get machineconfig "mc-${DEVICE_1}" -n cfgd-system \
         -o jsonpath='{range .status.conditions[*]}{.type}={.status}/{.reason} {end}' 2>/dev/null || echo "")
-    case " $FLEET03_CONDITIONS" in
-        *" Reconciled=True/ReconcileSuccess "*" DriftDetected=False/NoDrift "*" ModulesResolved=True/AllResolved "*) return 0 ;;
-        *) return 1 ;;
-    esac
+    has_all_words "$FLEET03_CONDITIONS" Reconciled=True/ReconcileSuccess DriftDetected=False/NoDrift ModulesResolved=True/AllResolved
 }
 FLEET03_CONDITIONS=""
 if wait_until 60 1 "mc-${DEVICE_1} to settle its conditions" fleet03_settled; then

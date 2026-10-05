@@ -47,12 +47,11 @@ if [ -n "$MC_STATUS" ]; then
     MC01_CONDITIONS=$(kubectl get machineconfig e2e-workstation-1 -n "$E2E_NAMESPACE" \
         -o jsonpath='{range .status.conditions[*]}{.type}={.status}/{.reason} {end}' 2>/dev/null || echo "")
     echo "  Conditions: ${MC01_CONDITIONS:-none}"
-    case " $MC01_CONDITIONS" in
-        *" Reconciled=True/ReconcileSuccess "*" DriftDetected=False/NoDrift "*" ModulesResolved=True/AllResolved "*)
-            pass_test "OP-MC-01" ;;
-        *)
-            fail_test "OP-MC-01" "Expected Reconciled=True/ReconcileSuccess, DriftDetected=False/NoDrift and ModulesResolved=True/AllResolved, got: ${MC01_CONDITIONS:-none}" ;;
-    esac
+    if has_all_words "$MC01_CONDITIONS" Reconciled=True/ReconcileSuccess DriftDetected=False/NoDrift ModulesResolved=True/AllResolved; then
+        pass_test "OP-MC-01"
+    else
+        fail_test "OP-MC-01" "Expected Reconciled=True/ReconcileSuccess, DriftDetected=False/NoDrift and ModulesResolved=True/AllResolved, got: ${MC01_CONDITIONS:-none}"
+    fi
 else
     fail_test "OP-MC-01" "MachineConfig status was not updated by controller"
 fi

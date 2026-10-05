@@ -379,6 +379,21 @@ run_every() {
     ) &
 }
 
+# has_all_words <list> <word>...: true when every word is a whole member of the
+# space-separated list, in any order and with other members allowed. A chained
+# `case " $list " in *" a "*" b "*)` cannot do this: adjacent members share one
+# space, so the second word never finds the space before it.
+has_all_words() {
+    local list=" $1 " word
+    shift
+    for word in "$@"; do
+        case "$list" in
+            *" $word "*) ;;
+            *) return 1 ;;
+        esac
+    done
+}
+
 # wait_until <timeout_s> <interval_s> <what> <command...>: run the command every
 # interval until it exits 0. When the timeout passes first, prints "Timed out
 # after <timeout_s>s waiting for <what>" to stderr and returns 1. The command

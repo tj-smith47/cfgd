@@ -324,6 +324,19 @@ built from the checkout render, so a sample whose name doubles the suffix is not
 `common/test-metrics.sh` (run by `task e2e:tags:check`)
 fails when a script matches a counter sample by hand.
 
+A check that needs several words of a space-joined list reads it through
+`has_all_words` in `common/helpers.sh`, which is true when each word is a whole member,
+in any order:
+
+```bash
+has_all_words "$CONDITIONS" Reconciled=True/ReconcileSuccess DriftDetected=False/NoDrift
+has_all_words "$PLATFORMS" linux/amd64 linux/arm64
+```
+
+A chained `case` pattern such as `*" a "*" b "*` never matches such a list, because
+adjacent members share their one space, so `common/test-metrics.sh` fails on one
+anywhere under `tests/e2e/`.
+
 A check for behaviour that only a newer build than the pinned release has reads
 the running component's capability first and calls `skip_test` naming the image
 (`running_image` in `common/helpers.sh`) when the release lacks it. The FS-CSI

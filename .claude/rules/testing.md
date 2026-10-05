@@ -158,7 +158,11 @@ check reads the body through `metric_sample_lines <family> <body>` or
 the sample line only (never `# HELP`/`# TYPE`) and only under `<family>_total`,
 the one name the PR-built components render (a doubled suffix is not read);
 `tests/e2e/common/test-metrics.sh` fails on a counter sample matched by hand
-anywhere under `tests/e2e/`. A `run-all.sh` whose setup starts a
+anywhere under `tests/e2e/`. A case that needs several words of a space-joined
+list (a jsonpath `{range}` of conditions, `availablePlatforms[*]`) calls
+`has_all_words <list> <word>...`: a chained `case` pattern `*" a "*" b "*`
+never matches, since adjacent members share one space, and the same script
+fails on one anywhere under `tests/e2e/`. A `run-all.sh` whose setup starts a
 port-forward installs its EXIT trap before sourcing that setup.
 `tests/e2e/common/test-port-forward.sh`, run by `task e2e:tags:check`, drives
 the helpers against a stand-in kubectl, fails on any port-forward started
