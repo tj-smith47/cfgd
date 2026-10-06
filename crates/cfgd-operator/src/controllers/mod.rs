@@ -168,42 +168,117 @@ pub struct ControllerContext {
     pub registry_backoff: RegistryBackoff,
 }
 
-/// How long a failed registry visit is remembered before another is attempted.
+/// First retry of a failed registry visit.
+const REGISTRY_RETRY_FIRST: Duration = Duration::from_secs(5);
+
+/// Ceiling of the retry schedule, and the Module controller's steady requeue.
 ///
-/// Equal to the Module controller's requeue period, so a module whose registry
-/// is unreachable costs one visit per requeue instead of one per reconcile: a
-/// status patch, an event, or any other watch event on the object triggers a
-/// reconcile, and a swallowed failure leaves nothing recorded for the next one
-/// to short-circuit on.
+/// Also how long a successful read of a TAG's facts is trusted: a tag can be
+/// pushed to again, so its platforms and attestations are re-read once per
+/// requeue, while a digest names one artifact for good and is read once.
 const REGISTRY_RETRY_AFTER: Duration = Duration::from_secs(60);
 
-/// The registry visits that failed recently, so the next reconcile inside
-/// `REGISTRY_RETRY_AFTER` answers from the failure instead of repeating it.
+/// How long `key` cools after its `failures`-th consecutive failure:
+/// [`REGISTRY_RETRY_FIRST`] doubled per failure, capped at
+/// [`REGISTRY_RETRY_AFTER`] (5, 10, 20, 40, 60, 60 seconds).
+fn retry_delay(failures: u32) -> Duration {
+    let factor = 1u32
+        .checked_shl(failures.saturating_sub(1))
+        .unwrap_or(u32::MAX);
+    REGISTRY_RETRY_FIRST
+        .saturating_mul(factor)
+        .min(REGISTRY_RETRY_AFTER)
+}
+
+/// The registry visits that failed recently, and the tags whose facts were
+/// read recently.
 ///
-/// Keyed by what was attempted AND against what, because reading an artifact's
-/// manifests and verifying its signature are two visits that can fail
-/// independently. In-memory by design: it holds no verdict, only the fact that
-/// a visit has already been paid for, so an operator restart simply retries.
+/// A failed visit is retried on a stepped schedule ([`retry_delay`]): one
+/// dropped connection costs a few seconds, while a registry that stays down
+/// settles at one visit per [`REGISTRY_RETRY_AFTER`] however many watch events
+/// arrive in between. Keyed by what was attempted AND against what, because
+/// reading an artifact's manifests and verifying its signature are two visits
+/// that can fail independently.
+///
+/// In-memory by design: it holds no verdict, only when a visit was last paid
+/// for, so an operator restart retries every failure and re-reads each tag
+/// once.
 #[derive(Clone, Default)]
-pub struct RegistryBackoff(Arc<parking_lot::Mutex<BTreeMap<String, Instant>>>);
+pub struct RegistryBackoff(Arc<parking_lot::Mutex<RegistryVisits>>);
+
+#[derive(Default)]
+struct RegistryVisits {
+    /// Per key: when it last failed, and how many times in a row.
+    failures: BTreeMap<String, (Instant, u32)>,
+    /// Per reference: when its facts were last read with a non-empty answer.
+    reads: BTreeMap<String, Instant>,
+}
+
+impl RegistryVisits {
+    fn retry_in(&self, key: &str, now: Instant) -> Option<Duration> {
+        let (failed_at, failures) = self.failures.get(key)?;
+        retry_delay(*failures)
+            .checked_sub(now.saturating_duration_since(*failed_at))
+            .filter(|left| !left.is_zero())
+    }
+}
 
 impl RegistryBackoff {
     /// Whether `key`'s last failure is still recent enough to answer for.
     fn cooling(&self, key: &str, now: Instant) -> bool {
+        self.retry_in(key, now).is_some()
+    }
+
+    /// How long until `key` may be visited again; `None` when it is not
+    /// cooling.
+    fn retry_in(&self, key: &str, now: Instant) -> Option<Duration> {
+        self.0.lock().retry_in(key, now)
+    }
+
+    /// Record that `key`'s visit failed at `now`, one more in a row.
+    fn record_failure(&self, key: String, now: Instant) {
+        let mut visits = self.0.lock();
+        let entry = visits.failures.entry(key).or_insert((now, 0));
+        *entry = (now, entry.1.saturating_add(1));
+    }
+
+    /// Forget `key`'s failures: its visit has since succeeded.
+    fn clear(&self, key: &str) {
+        self.0.lock().failures.remove(key);
+    }
+
+    /// The requeue that reaches the soonest pending retry among `keys`, or
+    /// [`REGISTRY_RETRY_AFTER`] when none of them is cooling.
+    fn next_visit(&self, keys: &[&str], now: Instant) -> Duration {
+        let visits = self.0.lock();
+        keys.iter()
+            .filter_map(|key| visits.retry_in(key, now))
+            .min()
+            .map_or(REGISTRY_RETRY_AFTER, |soonest| {
+                soonest.min(REGISTRY_RETRY_AFTER)
+            })
+    }
+
+    /// Whether `reference`'s facts were read with an answer less than
+    /// [`REGISTRY_RETRY_AFTER`] ago by this process.
+    fn read_recently(&self, reference: &str, now: Instant) -> bool {
         self.0
             .lock()
-            .get(key)
-            .is_some_and(|failed_at| now.duration_since(*failed_at) < REGISTRY_RETRY_AFTER)
+            .reads
+            .get(reference)
+            .is_some_and(|read_at| now.saturating_duration_since(*read_at) < REGISTRY_RETRY_AFTER)
     }
 
-    /// Record that `key`'s visit failed at `now`.
-    fn record_failure(&self, key: String, now: Instant) {
-        self.0.lock().insert(key, now);
-    }
-
-    /// Forget `key`'s last failure — its visit has since succeeded.
-    fn clear(&self, key: &str) {
-        self.0.lock().remove(key);
+    /// Record that `reference`'s facts were read with an answer at `now`.
+    ///
+    /// Entries past the window are dropped here, so a deleted module's
+    /// reference does not stay in memory.
+    fn record_read(&self, reference: &str, now: Instant) {
+        let mut visits = self.0.lock();
+        visits
+            .reads
+            .retain(|_, read_at| now.saturating_duration_since(*read_at) < REGISTRY_RETRY_AFTER);
+        visits.reads.insert(reference.to_string(), now);
     }
 }
 
@@ -314,10 +389,9 @@ impl ArtifactFactsReader {
     /// The production reader: what the artifact's own manifests name.
     ///
     /// A registry that cannot be reached, or an artifact that declares
-    /// nothing, answers empty — the `Platforms` column then stays blank,
-    /// which is what an unknown platform set looks like. It is not a
-    /// reconcile failure: the module is still admissible, and the next
-    /// reconcile re-reads.
+    /// nothing, answers empty. It is not a reconcile failure: the module is
+    /// still admissible, the facts already recorded for it stay, and the
+    /// read is retried on the [`RegistryBackoff`] schedule.
     #[must_use]
     pub fn from_registry() -> Self {
         Self(Arc::new(|reference| {

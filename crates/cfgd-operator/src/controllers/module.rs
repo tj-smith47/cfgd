@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::time::Instant;
 
 use kube::api::{Api, Patch, PatchParams};
 use kube::runtime::controller::Action;
@@ -11,7 +12,7 @@ use crate::crds::{
     is_valid_pem_public_key,
 };
 use crate::errors::OperatorError;
-use cfgd_core::oci::{ArtifactFacts, SignatureCheck};
+use cfgd_core::oci::{ArtifactFacts, OciReference, ReferenceKind, SignatureCheck};
 
 use super::{
     ControllerContext, ControllerStores, FIELD_MANAGER_STATUS, build_condition, emit_event,
@@ -21,7 +22,17 @@ pub(super) async fn reconcile_module(
     obj: Arc<Module>,
     ctx: Arc<ControllerContext>,
 ) -> Result<Action, OperatorError> {
-    let start = std::time::Instant::now();
+    reconcile_module_at(obj, ctx, Instant::now()).await
+}
+
+/// [`reconcile_module`] judged at `now`: every registry-visit decision of one
+/// reconcile reads this one instant.
+pub(super) async fn reconcile_module_at(
+    obj: Arc<Module>,
+    ctx: Arc<ControllerContext>,
+    now: Instant,
+) -> Result<Action, OperatorError> {
+    let start = Instant::now();
     let name = obj.name_any();
 
     info!(
@@ -38,7 +49,7 @@ pub(super) async fn reconcile_module(
         .as_ref()
         .map(|s| s.conditions.as_slice())
         .unwrap_or(&[]);
-    let now = cfgd_core::utc_now_iso8601();
+    let stamped_at = cfgd_core::utc_now_iso8601();
 
     let mut conditions = Vec::new();
 
@@ -58,6 +69,7 @@ pub(super) async fn reconcile_module(
         avail_status,
         resolved_artifact.as_deref(),
         evaluate_module_verification(&obj.spec.signature),
+        now,
     )
     .await;
     let verified = ver.status == "True";
@@ -78,7 +90,7 @@ pub(super) async fn reconcile_module(
         avail_status,
         avail_reason,
         avail_message,
-        &now,
+        &stamped_at,
         current_generation,
     ));
     conditions.push(build_condition(
@@ -87,12 +99,18 @@ pub(super) async fn reconcile_module(
         ver.status,
         ver.reason,
         &ver.condition_message(),
-        &now,
+        &stamped_at,
         current_generation,
     ));
 
     let facts =
-        resolve_artifact_facts(&ctx, &obj, avail_status, resolved_artifact.as_deref()).await;
+        resolve_artifact_facts(&ctx, &obj, avail_status, resolved_artifact.as_deref(), now).await;
+    let requeue = resolved_artifact
+        .as_deref()
+        .map_or(super::REGISTRY_RETRY_AFTER, |artifact| {
+            ctx.registry_backoff
+                .next_visit(&[&verify_key(artifact), &facts_key(artifact)], now)
+        });
     let ArtifactFacts {
         platforms: available_platforms,
         attestations,
@@ -160,16 +178,34 @@ pub(super) async fn reconcile_module(
 
     record_reconcile_success(&ctx, "module", start);
 
-    Ok(Action::requeue(super::REGISTRY_RETRY_AFTER))
+    Ok(Action::requeue(requeue))
+}
+
+/// The [`super::RegistryBackoff`] key of a signature check of `artifact`.
+fn verify_key(artifact: &str) -> String {
+    format!("verify:{artifact}")
+}
+
+/// The [`super::RegistryBackoff`] key of a facts read of `artifact`.
+fn facts_key(artifact: &str) -> String {
+    format!("facts:{artifact}")
+}
+
+/// Whether `artifact` names its content by digest, so what it declares can
+/// never change.
+fn digest_pinned(artifact: &str) -> bool {
+    OciReference::parse(artifact).is_ok_and(|r| matches!(r.reference, ReferenceKind::Digest(_)))
 }
 /// What the module's artifact declares — its platforms and its attestations —
 /// read off the OCI manifests beside it.
 ///
-/// Re-read only when nothing is recorded for the artifact the spec now names:
-/// the reconcile requeues every 60 seconds, and a registry round-trip per
-/// module per minute buys nothing while the reference is unchanged. A module
-/// with no artifact, or one whose artifact is not admissible, has no manifest
-/// to read and answers empty.
+/// A digest names one artifact for good, so facts recorded for it are reused
+/// and never re-read. A tag can be pushed to again, so facts recorded for it
+/// are reused for [`super::REGISTRY_RETRY_AFTER`] after this process last read
+/// them and then read again; an operator restart re-reads each tag once. A
+/// read that answers empty keeps the facts already recorded, and is retried on
+/// the [`super::RegistryBackoff`] schedule. A module with no artifact, or one
+/// whose artifact is not admissible, has no manifest to read and answers empty.
 ///
 /// Both facts are recovered from the previous status together, because they
 /// were read together: reusing one while re-reading the other would describe
@@ -179,6 +215,7 @@ async fn resolve_artifact_facts(
     obj: &Module,
     avail_status: &str,
     artifact: Option<&str>,
+    now: Instant,
 ) -> ArtifactFacts {
     let Some(artifact) = artifact else {
         return ArtifactFacts::default();
@@ -186,20 +223,25 @@ async fn resolve_artifact_facts(
     if avail_status != "True" {
         return ArtifactFacts::default();
     }
-    if let Some(prev) = obj.status.as_ref()
-        && prev.resolved_artifact.as_deref() == Some(artifact)
-        && !(prev.available_platforms.is_empty() && prev.attestations.is_empty())
-    {
-        return ArtifactFacts {
+    let saved = obj.status.as_ref().filter(|prev| {
+        prev.resolved_artifact.as_deref() == Some(artifact)
+            && !(prev.available_platforms.is_empty() && prev.attestations.is_empty())
+    });
+    let saved_facts = || {
+        saved.map_or_else(ArtifactFacts::default, |prev| ArtifactFacts {
             platforms: prev.available_platforms.clone(),
             attestations: prev.attestations.clone(),
-        };
+        })
+    };
+    if saved.is_some()
+        && (digest_pinned(artifact) || ctx.registry_backoff.read_recently(artifact, now))
+    {
+        return saved_facts();
     }
 
-    let key = format!("facts:{artifact}");
-    let now = std::time::Instant::now();
+    let key = facts_key(artifact);
     if ctx.registry_backoff.cooling(&key, now) {
-        return ArtifactFacts::default();
+        return saved_facts();
     }
 
     let reader = ctx.artifact_facts.clone();
@@ -215,13 +257,14 @@ async fn resolve_artifact_facts(
         };
 
     // An empty answer is what an unreachable registry and an artifact that
-    // declares nothing both look like, and neither is worth a fresh visit on
-    // the next watch event — only on the next requeue.
+    // declares nothing both look like, so it neither replaces what an earlier
+    // read found nor earns a fresh visit before its retry is due.
     if facts.platforms.is_empty() && facts.attestations.is_empty() {
         ctx.registry_backoff.record_failure(key, now);
-    } else {
-        ctx.registry_backoff.clear(&key);
+        return saved_facts();
     }
+    ctx.registry_backoff.clear(&key);
+    ctx.registry_backoff.record_read(artifact, now);
     facts
 }
 
@@ -410,15 +453,16 @@ impl ModuleVerificationResult {
 ///   event naming the reason. Never `verified`, and never `unverified`
 ///   either: nothing was learned about the signature.
 ///
-/// A registry that just failed is not visited again until
-/// [`super::REGISTRY_RETRY_AFTER`] has passed, so an unreachable registry
-/// costs one visit per requeue rather than one per watch event.
+/// A registry that just failed is not visited again until its retry on the
+/// [`super::RegistryBackoff`] schedule is due, so an unreachable registry
+/// costs one visit per retry rather than one per watch event.
 async fn verify_module_signature(
     ctx: &ControllerContext,
     obj: &Module,
     avail_status: &str,
     artifact: Option<&str>,
     config: ModuleVerificationResult,
+    now: Instant,
 ) -> ModuleVerificationResult {
     // The spec itself settled the verdict: no signature declared, or one whose
     // key cannot be used. Nothing to check against the artifact.
@@ -440,8 +484,7 @@ async fn verify_module_signature(
         );
     };
 
-    let key = format!("verify:{artifact}");
-    let now = std::time::Instant::now();
+    let key = verify_key(artifact);
     if ctx.registry_backoff.cooling(&key, now) {
         return cannot_verify(
             VERIFICATION_UNAVAILABLE,

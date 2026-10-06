@@ -8,12 +8,14 @@ use std::sync::Arc;
 
 use kube::runtime::controller::Action;
 
-use super::module::{evaluate_module_verification, reconcile_module};
+use super::module::{evaluate_module_verification, reconcile_module, reconcile_module_at};
 use super::test_kube_harness::{
     ExpectedCall, MockKubeHarness, empty_stores, expect_event_post, expect_event_series_patch,
     seeded_store,
 };
-use super::{ArtifactFactsReader, ArtifactVerifier, ControllerStores};
+use super::{
+    ArtifactFactsReader, ArtifactVerifier, ControllerStores, REGISTRY_RETRY_AFTER, RegistryBackoff,
+};
 use crate::crds::{
     ClusterConfigPolicy, ClusterConfigPolicySpec, CosignSignature, Module, ModuleSignature,
     ModuleSpec, ModuleStatus, SecurityPolicy,
@@ -285,6 +287,11 @@ async fn reconcile_module_keeps_recorded_attestations_when_the_artifact_is_uncha
         ..Default::default()
     });
 
+    // A reader that would answer differently, so a re-read is visible.
+    let (reader, visits) = counting_reader(ArtifactFacts {
+        platforms: vec!["linux/amd64".to_string()],
+        attestations: vec!["slsaprovenance1".to_string()],
+    });
     let (ctx, _registry, harness) = MockKubeHarness::with_facts(
         vec![
             ExpectedCall::patch_status(format!("{}/status", module_path("cached-attestation-mod")))
@@ -293,21 +300,25 @@ async fn reconcile_module_keeps_recorded_attestations_when_the_artifact_is_uncha
             expect_event_post("default"),
         ],
         stores_with_ccps(vec![]),
-        // A reader that would answer differently, so a re-read is visible.
-        ArtifactFactsReader::fixed(ArtifactFacts {
-            platforms: vec!["linux/amd64".to_string()],
-            attestations: vec!["slsaprovenance1".to_string()],
-        }),
+        reader,
     );
 
+    // This process read the tag a moment ago, so its recorded facts are current.
+    ctx.registry_backoff
+        .record_read("ghcr.io/example/mod:v1", std::time::Instant::now());
     reconcile_module(Arc::new(module), ctx).await.unwrap();
 
     let report = harness.finish().await;
+    assert_eq!(
+        visits.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "a tag read inside the requeue period is not read again"
+    );
     let status_body = report.captured[0].body_json();
     assert_eq!(
         status_body["status"]["attestations"],
         serde_json::json!(["spdx"]),
-        "an unchanged artifact reference must cost no registry round-trip"
+        "a tag read inside the requeue period costs no registry round-trip"
     );
     let platforms = &status_body["status"]["availablePlatforms"];
     assert!(
@@ -330,6 +341,11 @@ async fn reconcile_module_keeps_recorded_platforms_when_the_artifact_is_unchange
         ..Default::default()
     });
 
+    // A reader that would answer differently, so a re-read is visible.
+    let (reader, visits) = counting_reader(ArtifactFacts {
+        platforms: vec!["linux/amd64".to_string()],
+        ..Default::default()
+    });
     let (ctx, _registry, harness) = MockKubeHarness::with_facts(
         vec![
             ExpectedCall::patch_status(format!("{}/status", module_path("cached-platform-mod")))
@@ -338,21 +354,25 @@ async fn reconcile_module_keeps_recorded_platforms_when_the_artifact_is_unchange
             expect_event_post("default"),
         ],
         stores_with_ccps(vec![]),
-        // A reader that would answer differently, so a re-read is visible.
-        ArtifactFactsReader::fixed(ArtifactFacts {
-            platforms: vec!["linux/amd64".to_string()],
-            ..Default::default()
-        }),
+        reader,
     );
 
+    // This process read the tag a moment ago, so its recorded facts are current.
+    ctx.registry_backoff
+        .record_read("ghcr.io/example/mod:v1", std::time::Instant::now());
     reconcile_module(Arc::new(module), ctx).await.unwrap();
 
     let report = harness.finish().await;
+    assert_eq!(
+        visits.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "a tag read inside the requeue period is not read again"
+    );
     let status_body = report.captured[0].body_json();
     assert_eq!(
         status_body["status"]["availablePlatforms"],
         serde_json::json!(["linux/arm64"]),
-        "an unchanged artifact reference must cost no registry round-trip"
+        "a tag read inside the requeue period costs no registry round-trip"
     );
 }
 
@@ -577,14 +597,9 @@ fn every_registry_reading_component_exposes_the_same_registry_knob() {
 /// is remembered nowhere is a registry round-trip per event, forever.
 #[tokio::test]
 async fn a_registry_that_answered_nothing_is_not_revisited_on_the_next_reconcile() {
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::atomic::Ordering;
 
-    let visits = Arc::new(AtomicUsize::new(0));
-    let counted = Arc::clone(&visits);
-    let reader = ArtifactFactsReader(Arc::new(move |_| {
-        counted.fetch_add(1, Ordering::SeqCst);
-        ArtifactFacts::default()
-    }));
+    let (reader, visits) = counting_reader(ArtifactFacts::default());
 
     let spec = ModuleSpec {
         oci_artifact: Some("ghcr.io/example/mod:v1".to_string()),
@@ -620,6 +635,245 @@ async fn a_registry_that_answered_nothing_is_not_revisited_on_the_next_reconcile
         1,
         "a fact read that answered nothing must not be repeated within the requeue window"
     );
+}
+
+/// A failed registry visit cools for 5, 10, 20, 40 and then 60 seconds after
+/// each consecutive failure, and a success starts the count over.
+#[test]
+fn a_failed_registry_visit_is_retried_on_a_stepped_schedule() {
+    use std::time::{Duration, Instant};
+
+    let t0 = Instant::now();
+    let ms = Duration::from_millis(1);
+    let backoff = RegistryBackoff::default();
+    for (failures, secs) in [(1, 5), (2, 10), (3, 20), (4, 40), (5, 60), (6, 60)] {
+        backoff.record_failure("facts:a".to_string(), t0);
+        let delay = Duration::from_secs(secs);
+        assert_eq!(
+            backoff.retry_in("facts:a", t0),
+            Some(delay),
+            "after {failures} consecutive failures"
+        );
+        assert!(
+            backoff.cooling("facts:a", t0 + delay - ms),
+            "{failures} failures: still cooling just before {secs}s"
+        );
+        assert!(
+            !backoff.cooling("facts:a", t0 + delay),
+            "{failures} failures: no longer cooling at {secs}s"
+        );
+        assert_eq!(backoff.retry_in("facts:a", t0 + delay), None);
+    }
+    backoff.clear("facts:a");
+    assert!(
+        !backoff.cooling("facts:a", t0),
+        "a cleared key is not cooling"
+    );
+    backoff.record_failure("facts:a".to_string(), t0);
+    assert_eq!(
+        backoff.retry_in("facts:a", t0),
+        Some(Duration::from_secs(5)),
+        "the first failure after a clear counts as the first"
+    );
+}
+
+/// Two reconciles of one module, with the reader answering `answers` in turn
+/// and the second reconcile run `gap` after the first. Returns the two
+/// requeues, the two status bodies written, and how many reads were made.
+async fn two_fact_reconciles(
+    name: &str,
+    artifact: &str,
+    saved: Option<Vec<String>>,
+    answers: Vec<Vec<String>>,
+    gap: std::time::Duration,
+    seed: impl FnOnce(&RegistryBackoff, std::time::Instant),
+) -> (Action, Action, serde_json::Value, serde_json::Value, usize) {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let visits = Arc::new(AtomicUsize::new(0));
+    let counted = Arc::clone(&visits);
+    let reader = ArtifactFactsReader(Arc::new(move |_| {
+        let at = counted.fetch_add(1, Ordering::SeqCst);
+        ArtifactFacts {
+            platforms: answers.get(at).cloned().unwrap_or_default(),
+            attestations: Vec::new(),
+        }
+    }));
+    let spec = ModuleSpec {
+        oci_artifact: Some(artifact.to_string()),
+        ..Default::default()
+    };
+    let mut module = make_module(name, spec);
+    module.status = saved.map(|platforms| ModuleStatus {
+        resolved_artifact: Some(artifact.to_string()),
+        available_platforms: platforms,
+        ..Default::default()
+    });
+    let module = Arc::new(module);
+    let status_path = format!("{}/status", module_path(name));
+    let (ctx, _registry, harness) = MockKubeHarness::with_facts(
+        vec![
+            ExpectedCall::patch_status(status_path.clone()).returning_json(&*module),
+            expect_event_post("default"),
+            expect_event_post("default"),
+            ExpectedCall::patch_status(status_path).returning_json(&*module),
+            expect_event_series_patch("default"),
+            expect_event_series_patch("default"),
+        ],
+        stores_with_ccps(vec![]),
+        reader,
+    );
+    let t0 = std::time::Instant::now();
+    seed(&ctx.registry_backoff, t0);
+    let first = reconcile_module_at(Arc::clone(&module), Arc::clone(&ctx), t0)
+        .await
+        .unwrap();
+    let second = reconcile_module_at(module, ctx, t0 + gap).await.unwrap();
+    let report = harness.finish().await;
+    (
+        first,
+        second,
+        report.captured[0].body_json()["status"].clone(),
+        report.captured[3].body_json()["status"].clone(),
+        visits.load(std::sync::atomic::Ordering::SeqCst),
+    )
+}
+
+/// A reader answering `facts` for every reference, and the count of reads it
+/// served.
+fn counting_reader(
+    facts: ArtifactFacts,
+) -> (ArtifactFactsReader, Arc<std::sync::atomic::AtomicUsize>) {
+    let visits = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counted = Arc::clone(&visits);
+    let reader = ArtifactFactsReader(Arc::new(move |_| {
+        counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        facts.clone()
+    }));
+    (reader, visits)
+}
+
+fn platforms(names: &[&str]) -> Vec<String> {
+    names.iter().map(|n| (*n).to_string()).collect()
+}
+
+/// One empty answer costs five seconds: the reconcile after the first retry
+/// is due reads again and records what the registry now names.
+#[tokio::test]
+async fn an_empty_fact_read_is_retried_once_its_first_retry_is_due() {
+    let (_, _, first, second, visits) = two_fact_reconciles(
+        "retry-mod",
+        "ghcr.io/example/mod:v1",
+        None,
+        vec![vec![], platforms(&["linux/amd64"])],
+        std::time::Duration::from_secs(5),
+        |_, _| {},
+    )
+    .await;
+    assert_eq!(visits, 2, "the read is retried 5s after one failure");
+    assert_eq!(first["availablePlatforms"], serde_json::json!([]));
+    assert_eq!(
+        second["availablePlatforms"],
+        serde_json::json!(["linux/amd64"])
+    );
+}
+
+/// The requeue reaches the pending retry of a failed read, and falls back to
+/// the steady period once the read succeeds.
+#[tokio::test]
+async fn reconcile_module_requeues_at_the_pending_retry_of_a_failed_read() {
+    let (first, second, _, _, _) = two_fact_reconciles(
+        "requeue-mod",
+        "ghcr.io/example/mod:v1",
+        None,
+        vec![vec![], platforms(&["linux/amd64"])],
+        std::time::Duration::from_secs(5),
+        |_, _| {},
+    )
+    .await;
+    assert_eq!(
+        first,
+        Action::requeue(std::time::Duration::from_secs(5)),
+        "one failed read requeues at its first retry"
+    );
+    assert_eq!(
+        second,
+        Action::requeue(REGISTRY_RETRY_AFTER),
+        "a successful read requeues at the steady period"
+    );
+}
+
+/// A tag's facts are trusted for one requeue period after this process read
+/// them, then read again, so a second push to the tag is picked up.
+#[tokio::test]
+async fn a_tags_facts_are_read_again_once_the_last_read_is_a_requeue_old() {
+    let artifact = "ghcr.io/example/mod:v1";
+    let (_, _, inside, after, visits) = two_fact_reconciles(
+        "tag-mod",
+        artifact,
+        Some(platforms(&["linux/amd64"])),
+        vec![platforms(&["linux/amd64", "linux/arm64"])],
+        std::time::Duration::from_secs(30),
+        |backoff, t0| backoff.record_read(artifact, t0 - std::time::Duration::from_secs(30)),
+    )
+    .await;
+    assert_eq!(
+        inside["availablePlatforms"],
+        serde_json::json!(["linux/amd64"]),
+        "a read 30s old is reused"
+    );
+    assert_eq!(visits, 1, "a read 30s old is reused, one 60s old is not");
+    assert_eq!(
+        after["availablePlatforms"],
+        serde_json::json!(["linux/amd64", "linux/arm64"])
+    );
+}
+
+/// A digest names one artifact for good, so facts recorded for it are never
+/// read again, even by a process that has not read them itself.
+#[tokio::test]
+async fn a_digest_pinned_artifact_with_recorded_facts_is_never_read_again() {
+    let artifact = format!("ghcr.io/example/mod@sha256:{}", "a".repeat(64));
+    let (_, _, first, second, visits) = two_fact_reconciles(
+        "digest-mod",
+        &artifact,
+        Some(platforms(&["linux/amd64"])),
+        vec![platforms(&["linux/arm64"])],
+        REGISTRY_RETRY_AFTER * 2,
+        |_, _| {},
+    )
+    .await;
+    assert_eq!(visits, 0, "a digest with recorded facts is not read");
+    assert_eq!(
+        first["availablePlatforms"],
+        serde_json::json!(["linux/amd64"])
+    );
+    assert_eq!(
+        second["availablePlatforms"],
+        serde_json::json!(["linux/amd64"])
+    );
+}
+
+/// A tag refresh that answers empty keeps the platforms an earlier read found.
+#[tokio::test]
+async fn an_empty_tag_refresh_keeps_the_recorded_platforms() {
+    let (_, _, first, second, visits) = two_fact_reconciles(
+        "keep-mod",
+        "ghcr.io/example/mod:v1",
+        Some(platforms(&["linux/amd64"])),
+        vec![vec![], vec![]],
+        std::time::Duration::from_secs(5),
+        |_, _| {},
+    )
+    .await;
+    assert_eq!(visits, 2, "a tag never read by this process is read");
+    for status in [first, second] {
+        assert_eq!(
+            status["availablePlatforms"],
+            serde_json::json!(["linux/amd64"]),
+            "an empty answer keeps the recorded platforms"
+        );
+    }
 }
 
 #[tokio::test]
