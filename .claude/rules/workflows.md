@@ -176,15 +176,21 @@ single-source-of-truth wiring.
   `stamp.sh` copies it), and the check also fails a GIF not committed after its
   stamp, so a hand-written stamp is refused. The inputs are one list for every
   tape: all of `crates/` minus test code, changelogs and the test-fixtures crate
-  (embedded fixtures count), the root manifests, `chart/`, the release
-  Dockerfiles and `.dockerignore`, so every dependency, version or chart bump
-  flags all eight GIFs. A flag is cleared only by re-recording the GIF; there
-  is no allow-list. A stamped commit rewritten by a rebase, a reword, a
+  (embedded fixtures count), `demo/scripts/` minus the checker and `stamp.sh`
+  (both run after a take), the root manifests, `chart/`, the release
+  Dockerfiles and `.dockerignore`, so every dependency or chart change flags
+  all eight GIFs. The release bump commit (subject `chore(release): bump`, the
+  prefix release.yml skips on) is passed over: a path counts only when it
+  differs from the stamp and a non-bump commit touched it, since the demo
+  builds every binary and image from source and the bump moves no render.
+  Otherwise every release would leave master CI red until a re-record. A flag
+  is cleared only by re-recording the GIF; there is no allow-list. A stamped commit rewritten by a rebase, a reword, a
   rebase-merge or a squash-merge is unreachable and fails the job until the GIF
   is re-recorded. `every_demo_gif_is_stamped_and_checked` parses the workflow
   and fails if the job loses its bare `pull_request` trigger, gains `needs`,
   `if` or `continue-on-error` on the job or the step, or runs anything but the
-  script; it also fails when a file a crate embeds is not an input.
+  script, or when the script's `BUMP_SUBJECT` is not the prefix release.yml
+  skips on; it also fails when a file a crate embeds is not an input.
 - The `test-thread-model` job in ci.yml runs `task test:threads` — plain
   `cargo test --test-threads=16`, without nextest. It is not redundant with the
   `test` job: nextest runs one process per test, so each test gets its own

@@ -8,10 +8,17 @@
 # chart and release images the cluster takes install, the workspace manifests
 # and lockfile, and every file under crates/ except test code, changelogs and
 # the test-fixtures crate (fixtures and snapshots a crate embeds count; a crate
-# added later joins by existing). A dependency, version or chart bump therefore
-# flags every GIF. A change that moves nothing is flagged too, and the answer to
-# either is the same: re-record the GIF, which rewrites its stamp. There is no
-# other way to clear a flag.
+# added later joins by existing). A dependency or chart change therefore flags
+# every GIF. A change that moves nothing is flagged too, and the answer to either
+# is the same: re-record the GIF, which rewrites its stamp. There is no other way
+# to clear a flag.
+#
+# The one exception is the release bump commit (`BUMP_SUBJECT`, the subject
+# prefix release.yml skips on). It rewrites version numbers and image tags only,
+# and the demo builds every binary and image from source, so a file counts as
+# changed only when a commit other than a bump touched it. Counting the bump
+# would turn master CI red after every release until all eight GIFs were
+# re-recorded.
 set -euo pipefail
 
 cd "$(dirname "$0")/../.."
@@ -26,7 +33,11 @@ COMMON=(
     demo/Dockerfile demo/scripts .dockerignore crates Cargo.toml Cargo.lock
     chart Dockerfile.operator.release Dockerfile.csi.release
 )
+# The checker and the stamp writer run after a take and render nothing, so a
+# change to either leaves every GIF as it was.
 EXCLUDED=(
+    ':(exclude)demo/scripts/check-sync.sh'
+    ':(exclude)demo/scripts/stamp.sh'
     ':(exclude)crates/cfgd-test-fixtures'
     ':(exclude,glob)**/CHANGELOG.md'
     ':(exclude,glob)**/tests.rs'
@@ -34,6 +45,8 @@ EXCLUDED=(
     ':(exclude,glob)**/test_helpers*'
     ':(exclude,glob)**/test_helpers*/**'
 )
+BUMP_SUBJECT='^chore(release): bump'
+export LC_ALL=C
 
 failed=0
 checked=0
@@ -66,7 +79,14 @@ while read -r gif tape sha extra || [ -n "$gif" ]; do
         failed=1
         continue
     fi
-    changed="$(git diff --name-only "$sha" HEAD -- "demo/$tape" "${COMMON[@]}" "${EXCLUDED[@]}")"
+    inputs=("demo/$tape" "${COMMON[@]}" "${EXCLUDED[@]}")
+    # A path counts when it differs from the stamp and a non-bump commit since
+    # touched it. `git log` lists no files for a merge, but the commits a merge
+    # brings in are in the range and list their own.
+    changed="$(comm -12 \
+        <(git diff --name-only "$sha" HEAD -- "${inputs[@]}" | sort -u) \
+        <(git log --format= --name-only --invert-grep \
+            --grep="$BUMP_SUBJECT" "$sha..HEAD" -- "${inputs[@]}" | sed '/^$/d' | sort -u))"
     if [ -n "$changed" ]; then
         count="$(grep -c '' <<<"$changed")"
         echo "demo/$gif: recorded at $sha, $count render inputs changed since:"

@@ -51669,6 +51669,21 @@ fn every_demo_gif_is_stamped_and_checked() {
 
     // unfloored-slice-ok: a shell script has no test region to cut.
     let check = walked_file_body(&root.join(CHECK));
+    // The bump commit the check passes over is the one release.yml skips on;
+    // two spellings would let a renamed bump flag every GIF after each release.
+    let bump = check
+        .lines()
+        .find_map(|l| l.strip_prefix("BUMP_SUBJECT='^")?.strip_suffix('\''))
+        .unwrap_or_else(|| panic!("{CHECK}: no `BUMP_SUBJECT='^<prefix>'` line"));
+    let release_path = root.join(".github/workflows/release.yml");
+    // unfloored-slice-ok: a workflow file is no Rust source.
+    let release = walked_file_body(&release_path);
+    let skip = format!("!startsWith(github.event.workflow_run.head_commit.message, '{bump}')");
+    if !release.contains(&skip) {
+        offenders.push(format!(
+            "release.yml: no `{skip}`, so {CHECK} passes over a commit Release does not skip"
+        ));
+    }
     let common = shell_array(&check, "COMMON");
     let excluded = shell_array(&check, "EXCLUDED");
     assert!(
