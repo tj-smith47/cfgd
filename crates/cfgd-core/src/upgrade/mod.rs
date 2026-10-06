@@ -623,14 +623,14 @@ fn run_cosign_verify_blob(
     if let Some(cert) = cert_path {
         cmd.arg(format!("--certificate={}", cert.display()));
     }
-    let output = crate::command_output_with_timeout(
+    let output = crate::cosign_output_with_timeout(
         cmd.arg(format!("--certificate-oidc-issuer={COSIGN_OIDC_ISSUER}"))
             .arg(format!(
                 "--certificate-identity-regexp={COSIGN_IDENTITY_REGEXP}"
             ))
             .arg("--")
             .arg(checksums_path),
-        crate::COMMAND_TIMEOUT,
+        "verify-blob",
     );
 
     match output {
@@ -641,9 +641,7 @@ fn run_cosign_verify_blob(
                 message: format!("cosign verify-blob failed: {stderr}"),
             })
         }
-        Err(e) => Err(UpgradeError::DownloadFailed {
-            message: format!("cosign invocation failed: {e}"),
-        }),
+        Err(message) => Err(UpgradeError::DownloadFailed { message }),
     }
 }
 

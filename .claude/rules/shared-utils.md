@@ -560,7 +560,7 @@ The **30-second memo convention** and the exclusion a TTL guard needs are in `ut
 
 ## OCI artifacts / Sigstore
 
-- `cosign_cmd()` — the ONE cosign factory; consumers add the subcommand and flags, and run it under `command_output_with_timeout` with `COMMAND_TIMEOUT` (`no_production_cosign_spawn_runs_unbounded`; `// unbounded-cosign-ok: <why>` hatches a spawn that waits on a person).
+- `cosign_cmd()` — the ONE cosign factory; consumers add the subcommand and flags, and the function that builds the command runs it through `cosign_output_with_timeout(cmd, subcommand)`, which bounds it by `COMMAND_TIMEOUT` and names a timeout as one (`every_cosign_command_runs_under_a_bound_in_the_function_that_builds_it`; `// unbounded-cosign-ok: <why>` hatches a spawn that waits on a person).
 - `oci::COSIGN_PREDICATE_TYPES` + `oci::attestation_type_name(uri)` — the ONE fold between the WIRE vocabulary and the FLAG vocabulary for attestation types; an unknown predicate is reported verbatim.
 - `oci::artifact_facts(reference)` → `ArtifactFacts { platforms, attestations }` — the ONE registry visit answering both "what platforms" and "what attestations"; one read, so a status can never mix two visits.
 - `PushOutcome` / `PackOutcome` + `oci::artifact_row_detail(digest, platform, index_digest)` (`cfgd-core/src/oci/`) — what a push returns and how its settled row (and `pull_module`'s, for the entry it took) words it: digest plus the RESOLVED platform, stated unconditionally, then the index digest when the push wrote an index at the tag (`PushOutcome::index_digest`); a caller never re-derives the platform or serializes the `--platform` flag in its place. `no_artifact_verb_serializes_its_platform_flag_as_the_platform_it_resolved` walks the three artifact verbs.

@@ -162,6 +162,27 @@ pub fn cosign_cmd() -> std::process::Command {
     super::process::tool_cmd(COSIGN_BIN_ENV, "cosign")
 }
 
+/// Run a command [`cosign_cmd`] built under [`crate::COMMAND_TIMEOUT`].
+///
+/// `Err` is the message for the caller's own error type: the spawn failure, or
+/// for a run the bound killed, the subcommand and the bound. A killed cosign's
+/// partial stderr says nothing about why it stopped, so it is left out.
+pub fn cosign_output_with_timeout(
+    cmd: &mut std::process::Command,
+    subcommand: &str,
+) -> std::result::Result<std::process::Output, String> {
+    let timeout = super::constants::COMMAND_TIMEOUT;
+    let outcome = super::process::command_output_with_timeout_outcome(cmd, timeout)
+        .map_err(|e| format!("failed to run cosign {subcommand}: {e}"))?;
+    if outcome.timed_out {
+        return Err(format!(
+            "cosign {subcommand} timed out after {}s",
+            timeout.as_secs()
+        ));
+    }
+    Ok(outcome.output)
+}
+
 /// Verify cosign is available, honoring the `CFGD_COSIGN_BIN` test seam.
 /// Delegates to [`crate::require_tool_with_seam`] to share the env-var-override logic
 /// with every other shimmable tool in cfgd-core.

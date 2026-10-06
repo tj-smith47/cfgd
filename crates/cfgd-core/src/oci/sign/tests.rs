@@ -1044,52 +1044,283 @@ fn every_cosign_subcommand_this_module_spells_declares_the_registry_scheme() {
     );
 }
 
-/// Every production function that builds a cosign command runs it under a
-/// bound, because cosign reaches a registry, Rekor or Fulcio and a dropped
-/// connection otherwise holds the caller (a Module reconcile, a pull, an
-/// upgrade) for as long as the socket stays open. A spawn that waits on a
-/// person carries `// unbounded-cosign-ok: <why>` on its line or the one above.
-#[test]
-fn no_production_cosign_spawn_runs_unbounded() {
-    use crate::test_helpers::{calls_free_fn, carries_hatch, code_line};
+/// The runner a cosign command may be handed to: it bounds the run and names
+/// a timeout as one, where the bare timeout runners report a killed cosign as
+/// a failure with whatever partial stderr it left.
+const BOUNDED_COSIGN_RUNNERS: &[&str] = &["cosign_output_with_timeout"];
 
-    const UNBOUNDED: &[&str] = &["command_output", "command_status", "spawn_child"];
-    const UNBOUNDED_METHODS: &[&str] = &[".output()", ".status()", ".spawn()"];
-    let workspace =
-        crate::test_helpers::workspace_declarations(crate::test_helpers::WORKSPACE_CRATES);
-    let mut builders = 0;
-    let mut offenders = Vec::new();
-    for (row, (name, _, _)) in workspace.rows.iter().enumerate() {
-        let code = workspace.code_of(row);
-        if name == "cosign_cmd" || !calls_free_fn(&code, "cosign_cmd") {
+/// Functions that only add arguments to a command they borrow.
+const COSIGN_ARG_APPLIERS: &[&str] = &["apply_verify_args", "apply_registry_scheme"];
+
+/// `Command` methods that add to the command and run nothing.
+const COMMAND_BUILDERS: &[&str] = &[
+    "arg",
+    "args",
+    "env",
+    "envs",
+    "env_remove",
+    "env_clear",
+    "current_dir",
+    "stdin",
+    "stdout",
+    "stderr",
+];
+
+const UNBOUNDED_COSIGN_HATCH: &str = "// unbounded-cosign-ok:";
+
+/// The innermost call whose argument list holds byte `at` of `code`, as the
+/// called name and the byte its `(` sits at; `None` when a statement boundary
+/// comes first.
+fn enclosing_call(code: &str, at: usize) -> Option<(&str, usize)> {
+    let bytes = code.as_bytes();
+    let mut depth = 0usize;
+    for i in (0..at).rev() {
+        match bytes[i] {
+            b')' => depth += 1,
+            b'(' if depth == 0 => {
+                let head = code[..i].trim_end();
+                let start = head
+                    .rfind(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+                    .map_or(0, |p| p + 1);
+                return Some((&head[start..], i));
+            }
+            b'(' => depth -= 1,
+            b';' | b'{' | b'}' if depth == 0 => return None,
+            _ => {}
+        }
+    }
+    None
+}
+
+/// The lines (0-based in the function) where the cosign command one function
+/// builds escapes a bound: handed to anything but a bounded runner or an
+/// argument applier, returned, run through a `Command` method, or never run
+/// under a bound at all. `code` is the function's code with literals and
+/// comments blanked, `raw` the same lines as written, read for hatches.
+fn cosign_escapes(code: &str, raw: &[&str]) -> Vec<usize> {
+    use crate::test_helpers::carries_hatch;
+
+    let line_of = |at: usize| code[..at].matches('\n').count();
+    let hatched = |from: usize, to: usize| {
+        raw[from.saturating_sub(1)..=to.min(raw.len() - 1)]
+            .iter()
+            .any(|line| carries_hatch(line, UNBOUNDED_COSIGN_HATCH))
+    };
+    let is_ident = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    let allowed = |call: Option<(&str, usize)>, also: &[&str]| {
+        call.is_some_and(|(name, _)| BOUNDED_COSIGN_RUNNERS.contains(&name) || also.contains(&name))
+    };
+    let mut escapes = Vec::new();
+    let mut judge = |ok: bool, call: Option<(&str, usize)>, at: usize| {
+        let from = call.map_or(line_of(at), |(_, open)| line_of(open));
+        if !ok && !hatched(from, line_of(at)) {
+            escapes.push(line_of(at));
+        }
+    };
+
+    let mut names = Vec::new();
+    for (at, _) in code.match_indices("cosign_cmd(") {
+        if code[..at].ends_with(|c: char| is_ident(c) || c == '.') {
             continue;
         }
-        builders += 1;
-        let (_, path, body) = workspace.sites[row];
-        let span = workspace.span_of(row);
-        let raw: Vec<&str> = body.lines().collect();
-        for at in span {
-            let line = code_line(raw[at]);
-            let unbounded = UNBOUNDED.iter().any(|f| calls_free_fn(&line, f))
-                || UNBOUNDED_METHODS.iter().any(|m| line.contains(m));
-            let hatched = carries_hatch(raw[at], "// unbounded-cosign-ok:")
-                || (at > 0 && carries_hatch(raw[at - 1], "// unbounded-cosign-ok:"));
-            if unbounded && !hatched {
-                offenders.push(format!("{}:{} in `{name}`", path.display(), at + 1));
+        let statement_start = code[..at].rfind([';', '{', '}']).map_or(0, |p| p + 1);
+        let statement = code[statement_start..at].trim();
+        let binding = statement
+            .strip_prefix("let ")
+            .and_then(|rest| rest.split_once('='))
+            .filter(|(_, path)| path.trim().chars().all(|c| is_ident(c) || c == ':'))
+            .map(|(name, _)| name.trim().trim_start_matches("mut ").trim());
+        match binding {
+            Some(name) => names.push((name.to_string(), at)),
+            None => {
+                let call = enclosing_call(code, at);
+                judge(allowed(call, &[]), call, at);
             }
+        }
+    }
+    for (name, bound_at) in &names {
+        for (at, _) in code.match_indices(name.as_str()) {
+            let after = &code[at + name.len()..];
+            if at <= *bound_at
+                || code[..at].ends_with(|c: char| is_ident(c) || c == '.')
+                || after.starts_with(is_ident)
+            {
+                continue;
+            }
+            let call = enclosing_call(code, at);
+            let borrowed = code[..at].trim_end().ends_with("&mut");
+            let built_on = after.strip_prefix('.').is_some_and(|rest| {
+                COMMAND_BUILDERS
+                    .iter()
+                    .any(|m| rest.starts_with(m) && rest[m.len()..].starts_with('('))
+            });
+            let ok = if borrowed {
+                allowed(call, COSIGN_ARG_APPLIERS)
+            } else {
+                built_on && (call.is_none() || allowed(call, COSIGN_ARG_APPLIERS))
+            };
+            judge(ok, call, at);
+        }
+    }
+    for method in [".output()", ".status()", ".spawn()"] {
+        for (at, _) in code.match_indices(method) {
+            judge(false, None, at);
+        }
+    }
+    let runs_bounded = BOUNDED_COSIGN_RUNNERS
+        .iter()
+        .any(|runner| crate::test_helpers::calls_free_fn(code, runner));
+    if !runs_bounded && !raw.iter().any(|l| carries_hatch(l, UNBOUNDED_COSIGN_HATCH)) {
+        escapes.push(0);
+    }
+    escapes.sort_unstable();
+    escapes.dedup();
+    escapes
+}
+
+/// [`cosign_escapes`] over a fixture holding one function.
+fn fixture_cosign_escapes(src: &'static str) -> Vec<usize> {
+    let code = crate::test_helpers::blank_non_code(src);
+    let raw: Vec<&str> = src.lines().collect();
+    cosign_escapes(&code, &raw)
+}
+
+#[test]
+fn the_cosign_escape_reader_flags_every_way_out_of_a_bound() {
+    // Each escaping shape also runs the command under the bound once, so the
+    // escape alone is what is flagged, on the line given.
+    let escaping: &[(&str, &'static str, usize)] = &[
+        (
+            "a Printer run",
+            "fn f(printer: &Printer) {\n    let mut cmd = crate::cosign_cmd();\n    let _ = crate::cosign_output_with_timeout(&mut cmd, \"verify\");\n    printer.run(&mut cmd);\n}",
+            3,
+        ),
+        (
+            "a Printer run of a built chain",
+            "fn f(printer: &Printer) {\n    let mut cmd = crate::cosign_cmd();\n    let _ = crate::cosign_output_with_timeout(&mut cmd, \"verify\");\n    printer.run(cmd.arg(\"verify\"));\n}",
+            3,
+        ),
+        (
+            "spawn_sharing_terminal",
+            "fn f() {\n    let mut cmd = crate::cosign_cmd();\n    let _ = crate::cosign_output_with_timeout(&mut cmd, \"verify\");\n    let _ = crate::spawn_sharing_terminal(&mut cmd);\n}",
+            3,
+        ),
+        (
+            "spawn_tree",
+            "fn f() {\n    let mut cmd = crate::cosign_cmd();\n    let _ = crate::cosign_output_with_timeout(&mut cmd, \"verify\");\n    let _ = crate::spawn_tree(&mut cmd);\n}",
+            3,
+        ),
+        (
+            "a command returned to the caller",
+            "fn f() -> Command {\n    let mut cmd = crate::cosign_cmd();\n    let _ = crate::cosign_output_with_timeout(&mut cmd, \"verify\");\n    cmd\n}",
+            3,
+        ),
+        (
+            "an unbound command returned to the caller",
+            "fn f(mut c: Command) -> Command {\n    let _ = crate::cosign_output_with_timeout(&mut c, \"verify\");\n    crate::cosign_cmd()\n}",
+            2,
+        ),
+        (
+            "a Command method run",
+            "fn f() {\n    let mut cmd = crate::cosign_cmd();\n    let _ = crate::cosign_output_with_timeout(&mut cmd, \"verify\");\n    let _ = crate::cosign_cmd().arg(\"verify\").output();\n}",
+            3,
+        ),
+        (
+            "a command built and never run under a bound",
+            "fn f() {\n    let mut cmd = crate::cosign_cmd();\n    cmd.arg(\"verify\");\n}",
+            0,
+        ),
+    ];
+    for (shape, src, line) in escaping {
+        assert_eq!(
+            fixture_cosign_escapes(src),
+            vec![*line],
+            "{shape} escapes the bound on line {line}"
+        );
+    }
+
+    let bounded: &[(&str, &'static str)] = &[
+        (
+            "a borrowed command run by the bounded runner",
+            "fn f() {\n    let mut cmd = crate::cosign_cmd();\n    cmd.arg(\"verify\");\n    apply_registry_scheme(&mut cmd, r);\n    let _ = crate::cosign_output_with_timeout(&mut cmd, \"verify\");\n}",
+        ),
+        (
+            "a chain built inside the bounded runner",
+            "fn f() {\n    let mut cmd = crate::cosign_cmd();\n    let _ = crate::cosign_output_with_timeout(\n        cmd.arg(\"--\").arg(p),\n        \"verify-blob\",\n    );\n}",
+        ),
+        (
+            "a hatched spawn that waits on a person",
+            "fn f() {\n    // unbounded-cosign-ok: prompts for a password\n    let _ = crate::command_status(\n        crate::cosign_cmd().args([\"generate-key-pair\"]),\n    );\n}",
+        ),
+    ];
+    for (shape, src) in bounded {
+        assert_eq!(
+            fixture_cosign_escapes(src),
+            Vec::<usize>::new(),
+            "{shape} stays inside the bound"
+        );
+    }
+}
+
+/// Every production function that builds a cosign command runs it under a
+/// bound in that same function, because cosign reaches a registry, Rekor or
+/// Fulcio and a dropped connection otherwise holds the caller (a Module
+/// reconcile, a pull, an upgrade) for as long as the socket stays open. A
+/// spawn that waits on a person carries `// unbounded-cosign-ok: <why>` on its
+/// line or the one above the call it is handed to.
+#[test]
+fn every_cosign_command_runs_under_a_bound_in_the_function_that_builds_it() {
+    let workspace =
+        crate::test_helpers::workspace_declarations(crate::test_helpers::WORKSPACE_CRATES);
+    let mut per_crate: std::collections::BTreeMap<&str, usize> = Default::default();
+    let mut offenders = Vec::new();
+    let mut runner_bounds_itself = false;
+    for (row, (name, _, _)) in workspace.rows.iter().enumerate() {
+        let code = workspace.code_of(row);
+        let (root, path, body) = workspace.sites[row];
+        if name == "cosign_output_with_timeout" && path.ends_with("util/git.rs") {
+            runner_bounds_itself =
+                crate::test_helpers::calls_free_fn(&code, "command_output_with_timeout_outcome");
+        }
+        if name == "cosign_cmd" || !crate::test_helpers::calls_free_fn(&code, "cosign_cmd") {
+            continue;
+        }
+        *per_crate.entry(root).or_default() += 1;
+        let span = workspace.span_of(row);
+        let raw: Vec<&str> = body
+            .lines()
+            .skip(*span.start())
+            .take(span.end() - span.start() + 1)
+            .collect();
+        for line in cosign_escapes(&code, &raw) {
+            offenders.push(format!(
+                "{}:{} in `{name}`",
+                path.display(),
+                span.start() + line + 1
+            ));
         }
     }
     assert!(
         offenders.is_empty(),
-        "these run cosign with no timeout; use `command_output_with_timeout` with \
-         `COMMAND_TIMEOUT`, or hatch a spawn that waits on a person:\n{}",
+        "these cosign commands leave the function that builds them, or run with no \
+         bound; run each through `cosign_output_with_timeout`, or hatch a spawn that \
+         waits on a person:\n{}",
         offenders.join("\n")
     );
     assert!(
-        builders >= 8,
-        "only {builders} production functions build a cosign command: the walk stopped \
-         seeing its population"
+        runner_bounds_itself,
+        "`cosign_output_with_timeout` no longer runs through \
+         `command_output_with_timeout_outcome`, so the runner the walk trusts is unbounded"
     );
+    const FLOOR_PER_CRATE: [(&str, usize); 2] = [("cfgd-core", 6), ("cfgd", 2)];
+    for (root, floor) in FLOOR_PER_CRATE {
+        let seen = per_crate.get(root).copied().unwrap_or(0);
+        assert!(
+            seen >= floor,
+            "only {seen} functions in {root} build a cosign command, below {floor}: the \
+             walk stopped seeing its population"
+        );
+    }
 }
 
 // --- check_signature: a failed check is not a failed signature ---
