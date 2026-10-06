@@ -258,6 +258,7 @@ begin_test "OCI-E2E-04: Push linux/amd64 then linux/arm64 to one tag, verify Mod
 
 OCI04_MOD="oci04-multi-${E2E_RUN_ID}"
 OCI04_REF="${REGISTRY}/cfgd-e2e/oci04-multi:v1.0-${E2E_RUN_ID}"
+OCI04_SINCE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
 # Push two platform-specific artifacts, then verify the Module CRD status
 OCI04_DIR_AMD=$(mktemp -d)
@@ -306,7 +307,17 @@ EOF
         echo "  Available platforms: $PLATFORMS"
         pass_test "OCI-E2E-04"
     else
-        fail_test "OCI-E2E-04" "Expected availablePlatforms to list linux/amd64 and linux/arm64, got: ${PLATFORMS:-none}"
+        # The controller's own account of the module: its conditions, and the
+        # operator lines naming the module or the artifact it reads.
+        OCI04_CONDITIONS=$(kubectl get module "$OCI04_MOD" \
+            -o jsonpath='{range .status.conditions[*]}{.type}={.status} {.reason}: {.message}{"; "}{end}' \
+            2>/dev/null || echo "unreadable") # rc-ok: an unreadable status is reported as such
+        OCI04_LOG=$(kubectl logs -n "$E2E_INSTALL_NS" -l "$E2E_OPERATOR_PODS" --since-time="$OCI04_SINCE" --tail=-1 2>/dev/null |
+            grep -F -e "$OCI04_MOD" -e "$OCI04_REF" || true) # rc-ok: no matching line is reported as none
+        fail_test "OCI-E2E-04" "Expected availablePlatforms to list linux/amd64 and linux/arm64, got: ${PLATFORMS:-none}
+  Conditions: ${OCI04_CONDITIONS:-none}
+  Operator log naming $OCI04_MOD or $OCI04_REF since $OCI04_SINCE:
+${OCI04_LOG:-none}"
     fi
 fi
 
