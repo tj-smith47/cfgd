@@ -1274,11 +1274,17 @@ fn every_cosign_command_runs_under_a_bound_in_the_function_that_builds_it() {
         crate::test_helpers::workspace_declarations(crate::test_helpers::WORKSPACE_CRATES);
     let mut per_crate: std::collections::BTreeMap<&str, usize> = Default::default();
     let mut offenders = Vec::new();
+    let mut runner_passes_the_bound = false;
     let mut runner_bounds_itself = false;
     for (row, (name, _, _)) in workspace.rows.iter().enumerate() {
         let code = workspace.code_of(row);
         let (root, path, body) = workspace.sites[row];
         if name == "cosign_output_with_timeout" && path.ends_with("util/git.rs") {
+            runner_passes_the_bound =
+                crate::test_helpers::calls_free_fn(&code, "cosign_output_within")
+                    && code.contains("COMMAND_TIMEOUT");
+        }
+        if name == "cosign_output_within" && path.ends_with("util/git.rs") {
             runner_bounds_itself =
                 crate::test_helpers::calls_free_fn(&code, "command_output_with_timeout_outcome");
         }
@@ -1308,8 +1314,13 @@ fn every_cosign_command_runs_under_a_bound_in_the_function_that_builds_it() {
         offenders.join("\n")
     );
     assert!(
+        runner_passes_the_bound,
+        "`cosign_output_with_timeout` no longer hands `COMMAND_TIMEOUT` to \
+         `cosign_output_within`, so the runner the walk trusts has no fixed bound"
+    );
+    assert!(
         runner_bounds_itself,
-        "`cosign_output_with_timeout` no longer runs through \
+        "`cosign_output_within` no longer runs through \
          `command_output_with_timeout_outcome`, so the runner the walk trusts is unbounded"
     );
     const FLOOR_PER_CRATE: [(&str, usize); 2] = [("cfgd-core", 6), ("cfgd", 2)];
@@ -1400,4 +1411,33 @@ fn a_cosign_that_accepts_the_artifact_is_valid() {
         },
     );
     assert_eq!(check, SignatureCheck::Valid);
+}
+
+/// A cosign run the bound kills says which subcommand timed out, and
+/// `check_signature` reads that verify failure as undetermined: the signature
+/// was never judged.
+#[test]
+#[serial_test::serial]
+fn a_cosign_verify_past_its_bound_times_out_and_is_undetermined() {
+    let _shim = crate::test_helpers::CosignTestShim::builder()
+        .with_sleep(std::time::Duration::from_secs(5))
+        .install();
+    let mut cmd = crate::cosign_cmd();
+    cmd.arg("verify");
+    let message =
+        crate::cosign_output_within(&mut cmd, "verify", std::time::Duration::from_millis(100))
+            .expect_err("a run past its bound is an error");
+    assert!(
+        message.contains("cosign verify timed out after"),
+        "unexpected message: {message}"
+    );
+
+    let check = signature_check_of(Err(OciError::VerificationFailed {
+        reference: "ghcr.io/example/mod:v1".to_string(),
+        message,
+    }));
+    assert!(
+        matches!(check, SignatureCheck::Undetermined(_)),
+        "a timed-out verify is undetermined, got {check:?}"
+    );
 }

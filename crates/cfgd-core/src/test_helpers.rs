@@ -4249,6 +4249,7 @@ struct CosignEnvSnapshot {
     keygen: Option<std::ffi::OsString>,
     stderr: Option<std::ffi::OsString>,
     exit: Option<std::ffi::OsString>,
+    sleep: Option<std::ffi::OsString>,
 }
 
 impl CosignTestShim {
@@ -4259,6 +4260,7 @@ impl CosignTestShim {
             keygen: false,
             exit_code: 0,
             stderr: String::new(),
+            sleep: None,
         }
     }
 
@@ -4296,6 +4298,7 @@ impl Drop for CosignTestShim {
             restore_env("CFGD_FAKE_COSIGN_KEYGEN", self.prior.keygen.take());
             restore_env("CFGD_FAKE_COSIGN_STDERR", self.prior.stderr.take());
             restore_env("CFGD_FAKE_COSIGN_EXIT", self.prior.exit.take());
+            restore_env("CFGD_FAKE_COSIGN_SLEEP_MS", self.prior.sleep.take());
         }
     }
 }
@@ -4327,6 +4330,7 @@ pub struct CosignTestShimBuilder {
     keygen: bool,
     exit_code: i32,
     stderr: String,
+    sleep: Option<std::time::Duration>,
 }
 
 impl CosignTestShimBuilder {
@@ -4359,9 +4363,16 @@ impl CosignTestShimBuilder {
         self
     }
 
+    /// Make every invocation sleep for `duration` before it exits. Default: no
+    /// sleep.
+    pub fn with_sleep(mut self, duration: std::time::Duration) -> Self {
+        self.sleep = Some(duration);
+        self
+    }
+
     /// Point `CFGD_COSIGN_BIN` at the compiled fake-cosign binary and set the
     /// per-invocation behavior env vars (`CFGD_FAKE_COSIGN_{LOG,KEYGEN,STDERR,
-    /// EXIT}`). Prior values of every mutated var are captured for restoration
+    /// EXIT,SLEEP_MS}`). Prior values of every mutated var are captured for restoration
     /// on drop. A tempdir holds the argv log; it is removed with the guard.
     // long-line-ok: a hatch is read off its own line, so it cannot wrap
     // env-mutator-ok: a builder exists only through `CosignTestShim::builder`, which the roster counts.
@@ -4378,6 +4389,7 @@ impl CosignTestShimBuilder {
             keygen: std::env::var_os("CFGD_FAKE_COSIGN_KEYGEN"),
             stderr: std::env::var_os("CFGD_FAKE_COSIGN_STDERR"),
             exit: std::env::var_os("CFGD_FAKE_COSIGN_EXIT"),
+            sleep: std::env::var_os("CFGD_FAKE_COSIGN_SLEEP_MS"),
         };
 
         // SAFETY: callers wrap with `serial_test::serial`, so no concurrent
@@ -4397,6 +4409,12 @@ impl CosignTestShimBuilder {
             }
             std::env::set_var("CFGD_FAKE_COSIGN_STDERR", &self.stderr);
             std::env::set_var("CFGD_FAKE_COSIGN_EXIT", self.exit_code.to_string());
+            match self.sleep {
+                Some(sleep) => {
+                    std::env::set_var("CFGD_FAKE_COSIGN_SLEEP_MS", sleep.as_millis().to_string());
+                }
+                None => std::env::remove_var("CFGD_FAKE_COSIGN_SLEEP_MS"),
+            }
         }
 
         CosignTestShim {

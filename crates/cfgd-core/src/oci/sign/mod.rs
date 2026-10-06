@@ -226,7 +226,12 @@ const COSIGN_REJECTIONS: &[&str] = &[
 /// `verify_signature` itself stays the right call where any failure is fatal.
 #[must_use]
 pub fn check_signature(artifact_ref: &str, opts: &VerifyOptions<'_>) -> SignatureCheck {
-    match verify_signature(artifact_ref, opts) {
+    signature_check_of(verify_signature(artifact_ref, opts))
+}
+
+/// The [`SignatureCheck`] a [`verify_signature`] outcome stands for.
+fn signature_check_of(outcome: Result<(), OciError>) -> SignatureCheck {
+    match outcome {
         Ok(()) => SignatureCheck::Valid,
         Err(OciError::ToolNotFound { tool }) => {
             SignatureCheck::Undetermined(format!("{tool} is not installed"))

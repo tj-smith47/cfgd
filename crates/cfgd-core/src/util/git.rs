@@ -171,7 +171,15 @@ pub fn cosign_output_with_timeout(
     cmd: &mut std::process::Command,
     subcommand: &str,
 ) -> std::result::Result<std::process::Output, String> {
-    let timeout = super::constants::COMMAND_TIMEOUT;
+    cosign_output_within(cmd, subcommand, super::constants::COMMAND_TIMEOUT)
+}
+
+/// [`cosign_output_with_timeout`] under `timeout`.
+pub(crate) fn cosign_output_within(
+    cmd: &mut std::process::Command,
+    subcommand: &str,
+    timeout: std::time::Duration,
+) -> std::result::Result<std::process::Output, String> {
     let outcome = super::process::command_output_with_timeout_outcome(cmd, timeout)
         .map_err(|e| format!("failed to run cosign {subcommand}: {e}"))?;
     if outcome.timed_out {
