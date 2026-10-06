@@ -1044,6 +1044,54 @@ fn every_cosign_subcommand_this_module_spells_declares_the_registry_scheme() {
     );
 }
 
+/// Every production function that builds a cosign command runs it under a
+/// bound, because cosign reaches a registry, Rekor or Fulcio and a dropped
+/// connection otherwise holds the caller (a Module reconcile, a pull, an
+/// upgrade) for as long as the socket stays open. A spawn that waits on a
+/// person carries `// unbounded-cosign-ok: <why>` on its line or the one above.
+#[test]
+fn no_production_cosign_spawn_runs_unbounded() {
+    use crate::test_helpers::{calls_free_fn, carries_hatch, code_line};
+
+    const UNBOUNDED: &[&str] = &["command_output", "command_status", "spawn_child"];
+    const UNBOUNDED_METHODS: &[&str] = &[".output()", ".status()", ".spawn()"];
+    let workspace =
+        crate::test_helpers::workspace_declarations(crate::test_helpers::WORKSPACE_CRATES);
+    let mut builders = 0;
+    let mut offenders = Vec::new();
+    for (row, (name, _, _)) in workspace.rows.iter().enumerate() {
+        let code = workspace.code_of(row);
+        if name == "cosign_cmd" || !calls_free_fn(&code, "cosign_cmd") {
+            continue;
+        }
+        builders += 1;
+        let (_, path, body) = workspace.sites[row];
+        let span = workspace.span_of(row);
+        let raw: Vec<&str> = body.lines().collect();
+        for at in span {
+            let line = code_line(raw[at]);
+            let unbounded = UNBOUNDED.iter().any(|f| calls_free_fn(&line, f))
+                || UNBOUNDED_METHODS.iter().any(|m| line.contains(m));
+            let hatched = carries_hatch(raw[at], "// unbounded-cosign-ok:")
+                || (at > 0 && carries_hatch(raw[at - 1], "// unbounded-cosign-ok:"));
+            if unbounded && !hatched {
+                offenders.push(format!("{}:{} in `{name}`", path.display(), at + 1));
+            }
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "these run cosign with no timeout; use `command_output_with_timeout` with \
+         `COMMAND_TIMEOUT`, or hatch a spawn that waits on a person:\n{}",
+        offenders.join("\n")
+    );
+    assert!(
+        builders >= 8,
+        "only {builders} production functions build a cosign command: the walk stopped \
+         seeing its population"
+    );
+}
+
 // --- check_signature: a failed check is not a failed signature ---
 
 #[test]

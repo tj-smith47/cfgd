@@ -47,7 +47,13 @@ pub fn sign_artifact(artifact_ref: &str, key_path: Option<&str>) -> Result<(), O
     apply_registry_scheme(&mut cmd, artifact_ref);
     cmd.arg(artifact_ref);
 
-    let output = crate::command_output(&mut cmd).map_err(|e| OciError::SigningError {
+    let output = if key_path.is_some() {
+        crate::command_output_with_timeout(&mut cmd, crate::COMMAND_TIMEOUT)
+    } else {
+        // unbounded-cosign-ok: keyless signing waits on a person's OIDC login
+        crate::command_output(&mut cmd)
+    }
+    .map_err(|e| OciError::SigningError {
         message: format!("failed to run cosign: {e}"),
     })?;
 
@@ -165,10 +171,23 @@ pub fn verify_signature(artifact_ref: &str, opts: &VerifyOptions<'_>) -> Result<
     apply_registry_scheme(&mut cmd, artifact_ref);
     cmd.arg(artifact_ref);
 
-    let output = crate::command_output(&mut cmd).map_err(|e| OciError::VerificationFailed {
-        reference: artifact_ref.to_string(),
-        message: format!("failed to run cosign: {e}"),
-    })?;
+    let outcome = crate::command_output_with_timeout_outcome(&mut cmd, crate::COMMAND_TIMEOUT)
+        .map_err(|e| OciError::VerificationFailed {
+            reference: artifact_ref.to_string(),
+            message: format!("failed to run cosign: {e}"),
+        })?;
+    // A killed cosign's partial stderr is no verdict, so it is left out of the
+    // message `check_signature` classifies.
+    if outcome.timed_out {
+        return Err(OciError::VerificationFailed {
+            reference: artifact_ref.to_string(),
+            message: format!(
+                "cosign verify timed out after {}s",
+                crate::COMMAND_TIMEOUT.as_secs()
+            ),
+        });
+    }
+    let output = outcome.output;
 
     if !output.status.success() {
         return Err(OciError::VerificationFailed {
@@ -313,7 +332,13 @@ pub fn attach_attestation(
         .arg("slsaprovenance1")
         .arg(artifact_ref);
 
-    let output = crate::command_output(&mut cmd).map_err(|e| OciError::AttestationError {
+    let output = if key_path.is_some() {
+        crate::command_output_with_timeout(&mut cmd, crate::COMMAND_TIMEOUT)
+    } else {
+        // unbounded-cosign-ok: keyless attesting waits on a person's OIDC login
+        crate::command_output(&mut cmd)
+    }
+    .map_err(|e| OciError::AttestationError {
         message: format!("failed to run cosign attest: {e}"),
     })?;
 
@@ -387,9 +412,12 @@ pub fn verify_attestation(
     apply_registry_scheme(&mut cmd, artifact_ref);
     cmd.arg("--type").arg(predicate_type).arg(artifact_ref);
 
-    let output = crate::command_output(&mut cmd).map_err(|e| OciError::AttestationError {
-        message: format!("failed to run cosign verify-attestation: {e}"),
-    })?;
+    let output =
+        crate::command_output_with_timeout(&mut cmd, crate::COMMAND_TIMEOUT).map_err(|e| {
+            OciError::AttestationError {
+                message: format!("failed to run cosign verify-attestation: {e}"),
+            }
+        })?;
 
     if !output.status.success() {
         return Err(OciError::AttestationError {

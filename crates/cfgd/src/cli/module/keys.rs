@@ -43,6 +43,7 @@ pub fn cmd_module_keys_generate(printer: &Printer, output_dir: Option<&str>) -> 
     } else {
         std::process::Stdio::inherit()
     };
+    // unbounded-cosign-ok: generate-key-pair prompts for the key's password
     let status = cfgd_core::command_status(
         cfgd_core::cosign_cmd()
             .args(["generate-key-pair"])
@@ -224,6 +225,7 @@ pub fn cmd_module_keys_rotate(
     }
 
     // Generate new key pair
+    // unbounded-cosign-ok: generate-key-pair prompts for the key's password
     let status = cfgd_core::command_status(
         cfgd_core::cosign_cmd()
             .args(["generate-key-pair"])
