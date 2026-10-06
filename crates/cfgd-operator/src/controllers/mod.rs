@@ -263,6 +263,14 @@ struct Failure {
     detail: String,
 }
 
+impl Failure {
+    /// Whether the next failure of this key continues this failure's run: it
+    /// does for two requeues, the same span [`RegistryVisits::prune`] keeps it.
+    fn still_counts(&self, now: Instant) -> bool {
+        now.saturating_duration_since(self.at) < REGISTRY_RETRY_AFTER * 2
+    }
+}
+
 impl RegistryVisits {
     fn retry_in(&self, key: &str, now: Instant) -> Option<Duration> {
         let failure = self.failures.get(key)?;
@@ -286,9 +294,7 @@ impl RegistryVisits {
         // failure is kept for a second requeue: dropped at one, a registry
         // down past the ceiling would fall back to the first step each time a
         // prune landed just ahead of its retry.
-        self.failures.retain(|_, failure| {
-            now.saturating_duration_since(failure.at) < REGISTRY_RETRY_AFTER * 2
-        });
+        self.failures.retain(|_, failure| failure.still_counts(now));
         self.reads.retain(|_, (read_at, _)| {
             now.saturating_duration_since(*read_at) < REGISTRY_RETRY_AFTER
         });
@@ -321,6 +327,7 @@ impl RegistryBackoff {
         let count = visits
             .failures
             .get(&key)
+            .filter(|failure| failure.still_counts(at))
             .map_or(1, |failure| failure.count.saturating_add(1));
         visits.failures.insert(key, Failure { at, count, detail });
         visits.prune(at);

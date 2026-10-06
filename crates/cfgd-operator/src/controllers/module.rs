@@ -52,17 +52,20 @@ pub(super) async fn reconcile_module(
 
     // Determine resolved artifact (just echo the reference if valid)
     let resolved_artifact = obj.spec.oci_artifact.clone();
-    let visits = resolved_artifact.as_deref().map(VisitKeys::of);
 
     // Evaluate Verified condition. The spec's signature block is judged first
     // — a key that is not a key can be rejected without a registry visit —
     // and only a usable one is then checked against the artifact itself.
+    let config = evaluate_module_verification(&obj.spec.signature);
+    let visits = resolved_artifact
+        .as_deref()
+        .map(|artifact| VisitKeys::of(artifact, config.signature_digest.as_deref()));
     let ver = verify_module_signature(
         &ctx,
         &obj,
         avail_status,
         resolved_artifact.as_deref().zip(visits.as_ref()),
-        evaluate_module_verification(&obj.spec.signature),
+        config,
         now,
     )
     .await;
@@ -181,16 +184,20 @@ pub(super) async fn reconcile_module(
 
 /// The [`super::RegistryBackoff`] keys of the two visits one artifact costs.
 struct VisitKeys {
-    /// The signature check.
+    /// The signature check, one per artifact and verification identity.
     verify: String,
     /// The facts read.
     facts: String,
 }
 
 impl VisitKeys {
-    fn of(artifact: &str) -> Self {
+    /// `identity` is the verification identity the spec declares (the key's
+    /// fingerprint or the keyless identity), so a check one Module's key could
+    /// not settle never answers for a Module that verifies with another.
+    fn of(artifact: &str, identity: Option<&str>) -> Self {
+        let identity = identity.unwrap_or_default();
         Self {
-            verify: format!("verify:{artifact}"),
+            verify: format!("verify:{artifact}#{identity}"),
             facts: format!("facts:{artifact}"),
         }
     }

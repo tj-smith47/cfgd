@@ -758,6 +758,26 @@ fn a_failure_is_kept_until_its_retry_has_had_a_requeue_to_run() {
     );
 }
 
+/// A key whose last failure is two requeues old starts its count over even
+/// when no other visit has dropped that failure in the meantime.
+#[test]
+fn a_failure_two_requeues_old_starts_the_count_over_without_a_drop() {
+    use std::time::{Duration, Instant};
+
+    let t0 = Instant::now();
+    let backoff = RegistryBackoff::default();
+    for _ in 0..6 {
+        backoff.record_failure("facts:down".to_string(), String::new(), t0);
+    }
+    let later = t0 + Duration::from_secs(125);
+    backoff.record_failure("facts:down".to_string(), String::new(), later);
+    assert_eq!(
+        backoff.retry_in("facts:down", later),
+        Some(Duration::from_secs(5)),
+        "a failure 125s after the last one is the first of a new run"
+    );
+}
+
 /// Two reconciles of one module, with the reader answering `answers` in turn
 /// and the reconciles run `at` after the instant `seed` is handed. Returns the
 /// two requeues, the two status bodies written, and how many reads were made.
@@ -1224,6 +1244,102 @@ async fn a_cooling_signature_check_leaves_the_status_as_the_failed_visit_wrote_i
         checks.load(Ordering::SeqCst),
         1,
         "a cooling check is not run"
+    );
+}
+
+/// A signature check is cooled per artifact AND verification identity: one
+/// Module's undetermined keyless check neither answers for nor is cleared by
+/// another Module that verifies the same artifact with its own key.
+#[tokio::test]
+async fn a_cooling_signature_check_answers_only_for_its_own_verification_identity() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let keyless_spec = ModuleSpec {
+        signature: Some(ModuleSignature {
+            cosign: Some(CosignSignature {
+                keyless: true,
+                ..Default::default()
+            }),
+        }),
+        ..signed_spec()
+    };
+    let keyless_name = "keyless-unconstrained-mod";
+    let keyless = make_module(keyless_name, keyless_spec);
+    let (mut ctx, _registry, harness) = MockKubeHarness::with_registry_seams(
+        vec![
+            ExpectedCall::patch_status(format!("{}/status", module_path(keyless_name)))
+                .returning_json(&keyless),
+            expect_event_post("default"),
+            expect_event_post("default"),
+        ],
+        stores_with_ccps(vec![]),
+        ArtifactFactsReader::fixed(Default::default()),
+        ArtifactVerifier::fixed(SignatureCheck::Undetermined(
+            "keyless verification needs an identity".to_string(),
+        )),
+    );
+    let t0 = std::time::Instant::now();
+    let clock = held_clock(&mut ctx, t0);
+    reconcile_module(Arc::new(keyless), Arc::clone(&ctx))
+        .await
+        .unwrap();
+    harness.finish().await;
+
+    let keyless_key = "verify:ghcr.io/example/mod:v1#keyless:*@*";
+    let during = t0 + std::time::Duration::from_secs(1);
+    let cooling_before = ctx.registry_backoff.retry_in(keyless_key, during);
+    assert!(
+        cooling_before.is_some(),
+        "the keyless check failed, so its own key cools"
+    );
+
+    let keyed_name = "keyed-mod";
+    let keyed = make_module(keyed_name, signed_spec());
+    let checks = Arc::new(AtomicUsize::new(0));
+    let verifier = {
+        let checks = Arc::clone(&checks);
+        ArtifactVerifier(Arc::new(move |_, _| {
+            checks.fetch_add(1, Ordering::SeqCst);
+            SignatureCheck::Valid
+        }))
+    };
+    let (mut keyed_ctx, _registry, harness) = MockKubeHarness::with_registry_seams(
+        vec![
+            ExpectedCall::patch_status(format!("{}/status", module_path(keyed_name)))
+                .returning_json(&keyed),
+            expect_event_post("default"),
+            expect_event_post("default"),
+        ],
+        stores_with_ccps(vec![strict_ccp()]),
+        ArtifactFactsReader::fixed(Default::default()),
+        verifier,
+    );
+    {
+        let shared =
+            Arc::get_mut(&mut keyed_ctx).expect("a fresh harness context has no other holder");
+        shared.registry_backoff = ctx.registry_backoff.clone();
+        shared.clock = clock.clone();
+    }
+    clock.set(during);
+    reconcile_module(Arc::new(keyed), keyed_ctx).await.unwrap();
+    let status = harness.finish().await.captured[0].body_json()["status"].clone();
+
+    assert_eq!(
+        checks.load(Ordering::SeqCst),
+        1,
+        "the keyed Module's check runs inside the keyless one's cooling"
+    );
+    assert_eq!(condition(&status, "Verified")["status"], "True");
+    assert_eq!(status["signature"], cfgd_crd::SIGNATURE_VERIFIED);
+    assert_eq!(
+        condition(&status, "Available")["status"],
+        "True",
+        "a verified Module is not withheld by allowUnsigned: false"
+    );
+    assert_eq!(
+        ctx.registry_backoff.retry_in(keyless_key, during),
+        cooling_before,
+        "the keyed Module's valid check leaves the keyless failure in place"
     );
 }
 
