@@ -455,7 +455,7 @@ impl ModuleVerificationResult {
 ///
 /// A registry that just failed is not visited again until its retry on the
 /// [`super::RegistryBackoff`] schedule is due, so an unreachable registry
-/// costs one visit per retry rather than one per watch event.
+/// costs one visit per retry, however many watch events arrive meanwhile.
 async fn verify_module_signature(
     ctx: &ControllerContext,
     obj: &Module,
