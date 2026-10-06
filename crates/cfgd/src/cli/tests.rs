@@ -51412,6 +51412,103 @@ fn every_job_running_anodizer_checks_out_the_whole_history() {
     );
 }
 
+/// Every workflow job that compiles the workspace installs protoc first.
+/// cfgd-csi's build script runs prost-build, which needs the `protoc` binary,
+/// and ubuntu-latest does not carry one: release run 37405761600 failed its
+/// preflight on "Could not find `protoc`" because anodizer's preflight runs
+/// `cargo publish --dry-run` over every crate it will publish. Whether a job
+/// compiles is a fact about the anodizer verb or cargo command it runs, so the
+/// table below classifies every such job by name and the walk fails on one it
+/// has not met, so a new job is classified before it ships.
+#[test]
+fn every_job_that_compiles_the_workspace_installs_protoc() {
+    /// `(workflow file, job)` → whether the job compiles the workspace.
+    /// `anodizer tag`, `check version-files`, a `--dry-run` snapshot, the
+    /// `--merge` publish and `cargo fetch` / `cargo audit` compile nothing.
+    const COMPILES: &[(&str, &str, bool)] = &[
+        ("ci.yml", "audit", false),
+        ("ci.yml", "cargo-audit", false),
+        ("ci.yml", "msrv", true),
+        ("ci.yml", "snapshot", false),
+        ("determinism-shards.yml", "shard", true),
+        ("nightly.yml", "build", true),
+        ("nightly.yml", "publish", false),
+        ("publish-crate.yml", "publish", true),
+        ("publish-oidc.yml", "publish-oidc", true),
+        ("release.yml", "dispatch-oidc", false),
+        ("release.yml", "preflight", true),
+        ("release.yml", "rollback-trio", false),
+        ("release.yml", "tag", false),
+    ];
+    let root = cfgd_core::test_helpers::workspace_root();
+    let dir = root.join(".github/workflows");
+    let mut paths: Vec<std::path::PathBuf> = std::fs::read_dir(&dir)
+        .unwrap_or_else(|e| panic!("cannot read {}: {e}", dir.display()))
+        .map(|entry| {
+            entry
+                .unwrap_or_else(|e| panic!("cannot read an entry of {}: {e}", dir.display()))
+                .path()
+        })
+        .filter(|p| p.extension().is_some_and(|x| x == "yml" || x == "yaml"))
+        .collect();
+    paths.sort();
+    let mut seen = Vec::new();
+    let mut offenders = Vec::new();
+    for path in &paths {
+        let file = path.file_name().and_then(|f| f.to_str()).unwrap_or("?");
+        let workflow: serde_yaml::Value = serde_yaml::from_str(&walked_file_body(path))
+            .unwrap_or_else(|e| panic!("{}: does not parse: {e}", path.display()));
+        let Some(jobs) = workflow["jobs"].as_mapping() else {
+            continue;
+        };
+        for (name, job) in jobs {
+            let name = name.as_str().unwrap_or("?");
+            let Some(steps) = job["steps"].as_sequence() else {
+                continue;
+            };
+            fn uses(s: &serde_yaml::Value) -> &str {
+                s["uses"].as_str().unwrap_or("")
+            }
+            let runs_anodizer = steps
+                .iter()
+                .any(|s| uses(s).starts_with("tj-smith47/anodizer-action"));
+            let runs_cargo = steps
+                .iter()
+                .any(|s| s["run"].as_str().is_some_and(|r| r.contains("cargo ")));
+            if !runs_anodizer && !runs_cargo {
+                continue;
+            }
+            let job_id = format!("{file}: job `{name}`");
+            seen.push((file.to_string(), name.to_string()));
+            let Some((_, _, compiles)) = COMPILES.iter().find(|(f, j, _)| *f == file && *j == name)
+            else {
+                offenders.push(format!(
+                    "{job_id} runs anodizer or cargo and is not in COMPILES"
+                ));
+                continue;
+            };
+            let installs_protoc = steps.iter().any(|s| {
+                uses(s).ends_with("/setup-protoc")
+                    || (uses(s).ends_with("/setup-rust")
+                        && s["with"]["protoc"].as_str() == Some("true"))
+            });
+            if *compiles && !installs_protoc {
+                offenders.push(format!("{job_id} compiles the workspace without protoc"));
+            }
+        }
+    }
+    for (file, job, _) in COMPILES {
+        assert!(
+            seen.iter().any(|(f, j)| f == file && j == job),
+            "COMPILES names `{job}` in {file}, which the walk did not read"
+        );
+    }
+    assert!(
+        offenders.is_empty(),
+        "a compiling job without protoc: {offenders:?}"
+    );
+}
+
 /// Every demo GIF and every tape names, in `demo/recorded.txt`, the commit it
 /// was recorded at, and a check on every pull request holds each GIF to it.
 ///

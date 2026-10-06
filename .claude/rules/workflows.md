@@ -70,6 +70,13 @@ single-source-of-truth wiring.
   (`cfgd-schema-0.5.0 diverged`) while the tree was about to cut 0.6.0; the
   same `anodizer preflight` in a full clone of the same commit probed 0.6.0
   and reported clean.
+- Every job that compiles the workspace installs protoc first
+  (`./.github/actions/setup-protoc`, or `setup-rust` with `protoc: 'true'`):
+  cfgd-csi's build script runs prost-build, and ubuntu-latest carries no
+  `protoc`. The preflight job compiles too, through anodizer's
+  `cargo publish --dry-run` simulation; run 37405761600 failed there once the
+  registry probe above passed. `every_job_that_compiles_the_workspace_installs_protoc`
+  classifies every job running anodizer or cargo and fails on one it has not met.
 - crates.io Trusted Publishing (`.anodizer.yaml` cargo `auth: oidc`) runs in a
   DEDICATED `publish-oidc.yml` (`on: workflow_dispatch`); `release.yml` and
   the reusable `publish-crate.yml` cannot host it: crates.io TP rejects the `workflow_run`

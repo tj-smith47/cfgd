@@ -79,6 +79,14 @@ jobs:
           fetch-depth: 0
           ref: ${{ github.event.workflow_run.head_sha || inputs.ref || github.sha }}
 
+      # Preflight's publish simulation runs `cargo publish --dry-run` over the
+      # workspace, and cfgd-csi's build script compiles protobuf through
+      # prost-build, so the runner needs protoc like every other cargo job here.
+      # Run 37405761600 failed on "Could not find `protoc`" once the registry
+      # probe above started passing.
+      - name: Install protoc
+        uses: ./.github/actions/setup-protoc
+
       - name: Run anodizer preflight
         uses: tj-smith47/anodizer-action@v1
         with:
