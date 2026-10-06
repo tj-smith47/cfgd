@@ -22,17 +22,10 @@ pub(super) async fn reconcile_module(
     obj: Arc<Module>,
     ctx: Arc<ControllerContext>,
 ) -> Result<Action, OperatorError> {
-    reconcile_module_at(obj, ctx, Instant::now()).await
-}
-
-/// [`reconcile_module`] judged at `now`: every registry-visit decision of one
-/// reconcile reads this one instant.
-pub(super) async fn reconcile_module_at(
-    obj: Arc<Module>,
-    ctx: Arc<ControllerContext>,
-    now: Instant,
-) -> Result<Action, OperatorError> {
     let start = Instant::now();
+    // Whether a visit is due is judged once, before any visit; what a visit
+    // records is stamped when it returns.
+    let now = ctx.clock.now();
     let name = obj.name_any();
 
     info!(
@@ -59,6 +52,7 @@ pub(super) async fn reconcile_module_at(
 
     // Determine resolved artifact (just echo the reference if valid)
     let resolved_artifact = obj.spec.oci_artifact.clone();
+    let visits = resolved_artifact.as_deref().map(VisitKeys::of);
 
     // Evaluate Verified condition. The spec's signature block is judged first
     // — a key that is not a key can be rejected without a registry visit —
@@ -67,7 +61,7 @@ pub(super) async fn reconcile_module_at(
         &ctx,
         &obj,
         avail_status,
-        resolved_artifact.as_deref(),
+        resolved_artifact.as_deref().zip(visits.as_ref()),
         evaluate_module_verification(&obj.spec.signature),
         now,
     )
@@ -103,14 +97,18 @@ pub(super) async fn reconcile_module_at(
         current_generation,
     ));
 
-    let facts =
-        resolve_artifact_facts(&ctx, &obj, avail_status, resolved_artifact.as_deref(), now).await;
-    let requeue = resolved_artifact
-        .as_deref()
-        .map_or(super::REGISTRY_RETRY_AFTER, |artifact| {
-            ctx.registry_backoff
-                .next_visit(&[&verify_key(artifact), &facts_key(artifact)], now)
-        });
+    let facts = resolve_artifact_facts(
+        &ctx,
+        &obj,
+        avail_status,
+        resolved_artifact.as_deref().zip(visits.as_ref()),
+        now,
+    )
+    .await;
+    let requeue = visits.as_ref().map_or(super::REGISTRY_RETRY_AFTER, |keys| {
+        ctx.registry_backoff
+            .next_visit(&[&keys.verify, &keys.facts], ctx.clock.now())
+    });
     let ArtifactFacts {
         platforms: available_platforms,
         attestations,
@@ -181,14 +179,21 @@ pub(super) async fn reconcile_module_at(
     Ok(Action::requeue(requeue))
 }
 
-/// The [`super::RegistryBackoff`] key of a signature check of `artifact`.
-fn verify_key(artifact: &str) -> String {
-    format!("verify:{artifact}")
+/// The [`super::RegistryBackoff`] keys of the two visits one artifact costs.
+struct VisitKeys {
+    /// The signature check.
+    verify: String,
+    /// The facts read.
+    facts: String,
 }
 
-/// The [`super::RegistryBackoff`] key of a facts read of `artifact`.
-fn facts_key(artifact: &str) -> String {
-    format!("facts:{artifact}")
+impl VisitKeys {
+    fn of(artifact: &str) -> Self {
+        Self {
+            verify: format!("verify:{artifact}"),
+            facts: format!("facts:{artifact}"),
+        }
+    }
 }
 
 /// Whether `artifact` names its content by digest, so what it declares can
@@ -200,11 +205,12 @@ fn digest_pinned(artifact: &str) -> bool {
 /// read off the OCI manifests beside it.
 ///
 /// A digest names one artifact for good, so facts recorded for it are reused
-/// and never re-read. A tag can be pushed to again, so facts recorded for it
-/// are reused for [`super::REGISTRY_RETRY_AFTER`] after this process last read
-/// them and then read again; an operator restart re-reads each tag once. A
-/// read that answers empty keeps the facts already recorded, and is retried on
-/// the [`super::RegistryBackoff`] schedule. A module with no artifact, or one
+/// and never re-read. A tag can be pushed to again, so what this process last
+/// read for it answers every Module naming it for
+/// [`super::REGISTRY_RETRY_AFTER`], and the tag is then read again; an
+/// operator restart re-reads each tag once. A read that answers empty keeps
+/// the facts the Module already records, and is retried on the
+/// [`super::RegistryBackoff`] schedule. A module with no artifact, or one
 /// whose artifact is not admissible, has no manifest to read and answers empty.
 ///
 /// Both facts are recovered from the previous status together, because they
@@ -214,10 +220,10 @@ async fn resolve_artifact_facts(
     ctx: &ControllerContext,
     obj: &Module,
     avail_status: &str,
-    artifact: Option<&str>,
+    artifact: Option<(&str, &VisitKeys)>,
     now: Instant,
 ) -> ArtifactFacts {
-    let Some(artifact) = artifact else {
+    let Some((artifact, keys)) = artifact else {
         return ArtifactFacts::default();
     };
     if avail_status != "True" {
@@ -233,14 +239,13 @@ async fn resolve_artifact_facts(
             attestations: prev.attestations.clone(),
         })
     };
-    if saved.is_some()
-        && (digest_pinned(artifact) || ctx.registry_backoff.read_recently(artifact, now))
-    {
+    if saved.is_some() && digest_pinned(artifact) {
         return saved_facts();
     }
-
-    let key = facts_key(artifact);
-    if ctx.registry_backoff.cooling(&key, now) {
+    if let Some(facts) = ctx.registry_backoff.fresh_facts(artifact, now) {
+        return facts;
+    }
+    if ctx.registry_backoff.cooling(&keys.facts, now).is_some() {
         return saved_facts();
     }
 
@@ -259,12 +264,15 @@ async fn resolve_artifact_facts(
     // An empty answer is what an unreachable registry and an artifact that
     // declares nothing both look like, so it neither replaces what an earlier
     // read found nor earns a fresh visit before its retry is due.
+    let returned_at = ctx.clock.now();
     if facts.platforms.is_empty() && facts.attestations.is_empty() {
-        ctx.registry_backoff.record_failure(key, now);
+        ctx.registry_backoff
+            .record_failure(keys.facts.clone(), String::new(), returned_at);
         return saved_facts();
     }
-    ctx.registry_backoff.clear(&key);
-    ctx.registry_backoff.record_read(artifact, now);
+    ctx.registry_backoff.clear(&keys.facts);
+    ctx.registry_backoff
+        .record_read(artifact, facts.clone(), returned_at);
     facts
 }
 
@@ -456,11 +464,13 @@ impl ModuleVerificationResult {
 /// A registry that just failed is not visited again until its retry on the
 /// [`super::RegistryBackoff`] schedule is due, so an unreachable registry
 /// costs one visit per retry, however many watch events arrive meanwhile.
+/// Until then the verdict is the one that failed visit wrote, word for word,
+/// so the status holds and no event repeats it.
 async fn verify_module_signature(
     ctx: &ControllerContext,
     obj: &Module,
     avail_status: &str,
-    artifact: Option<&str>,
+    artifact: Option<(&str, &VisitKeys)>,
     config: ModuleVerificationResult,
     now: Instant,
 ) -> ModuleVerificationResult {
@@ -474,7 +484,7 @@ async fn verify_module_signature(
     };
     let name = obj.name_any();
 
-    let Some(artifact) = artifact.filter(|_| avail_status == "True") else {
+    let Some((artifact, keys)) = artifact.filter(|_| avail_status == "True") else {
         return cannot_verify(
             "NoVerifiableArtifact",
             "Module declares a signature but has no admissible artifact to verify",
@@ -484,16 +494,13 @@ async fn verify_module_signature(
         );
     };
 
-    let key = verify_key(artifact);
-    if ctx.registry_backoff.cooling(&key, now) {
+    if let Some(detail) = ctx.registry_backoff.cooling(&keys.verify, now) {
         return cannot_verify(
             VERIFICATION_UNAVAILABLE,
             CHECK_UNAVAILABLE,
             &name,
             config.signature_digest,
-            Some(
-                "the last check of this artifact failed; retrying on the next requeue".to_string(),
-            ),
+            Some(detail),
         );
     }
 
@@ -503,9 +510,10 @@ async fn verify_module_signature(
     let check =
         cfgd_core::spawn_blocking_with_test_home(move || verifier.check(&reference, &cosign)).await;
 
+    let returned_at = ctx.clock.now();
     match check {
         Ok(SignatureCheck::Valid) => {
-            ctx.registry_backoff.clear(&key);
+            ctx.registry_backoff.clear(&keys.verify);
             ModuleVerificationResult {
                 status: "True",
                 reason: "SignatureVerified",
@@ -521,7 +529,7 @@ async fn verify_module_signature(
             }
         }
         Ok(SignatureCheck::Rejected(why)) => {
-            ctx.registry_backoff.clear(&key);
+            ctx.registry_backoff.clear(&keys.verify);
             ModuleVerificationResult {
                 status: "False",
                 reason: "SignatureInvalid",
@@ -537,7 +545,8 @@ async fn verify_module_signature(
             }
         }
         Ok(SignatureCheck::Undetermined(why)) => {
-            ctx.registry_backoff.record_failure(key, now);
+            ctx.registry_backoff
+                .record_failure(keys.verify.clone(), why.clone(), returned_at);
             cannot_verify(
                 VERIFICATION_UNAVAILABLE,
                 CHECK_UNAVAILABLE,
@@ -547,13 +556,15 @@ async fn verify_module_signature(
             )
         }
         Err(e) => {
-            ctx.registry_backoff.record_failure(key, now);
+            let why = format!("the check did not complete: {e}");
+            ctx.registry_backoff
+                .record_failure(keys.verify.clone(), why.clone(), returned_at);
             cannot_verify(
                 VERIFICATION_UNAVAILABLE,
                 CHECK_UNAVAILABLE,
                 &name,
                 config.signature_digest,
-                Some(format!("the check did not complete: {e}")),
+                Some(why),
             )
         }
     }

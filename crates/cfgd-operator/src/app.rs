@@ -661,6 +661,7 @@ mod tests {
                 cfgd_core::oci::SignatureCheck::Undetermined("no verifier".to_string()),
             ),
             registry_backoff: crate::controllers::RegistryBackoff::default(),
+            clock: crate::controllers::Clock::default(),
         });
     }
 

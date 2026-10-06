@@ -8,13 +8,14 @@ use std::sync::Arc;
 
 use kube::runtime::controller::Action;
 
-use super::module::{evaluate_module_verification, reconcile_module, reconcile_module_at};
+use super::module::{evaluate_module_verification, reconcile_module};
 use super::test_kube_harness::{
     ExpectedCall, MockKubeHarness, empty_stores, expect_event_post, expect_event_series_patch,
     seeded_store,
 };
 use super::{
-    ArtifactFactsReader, ArtifactVerifier, ControllerStores, REGISTRY_RETRY_AFTER, RegistryBackoff,
+    ArtifactFactsReader, ArtifactVerifier, Clock, ControllerContext, ControllerStores,
+    REGISTRY_RETRY_AFTER, RegistryBackoff,
 };
 use crate::crds::{
     ClusterConfigPolicy, ClusterConfigPolicySpec, CosignSignature, Module, ModuleSignature,
@@ -303,9 +304,15 @@ async fn reconcile_module_keeps_recorded_attestations_when_the_artifact_is_uncha
         reader,
     );
 
-    // This process read the tag a moment ago, so its recorded facts are current.
-    ctx.registry_backoff
-        .record_read("ghcr.io/example/mod:v1", std::time::Instant::now());
+    // This process read the tag a moment ago and found what the status records.
+    ctx.registry_backoff.record_read(
+        "ghcr.io/example/mod:v1",
+        ArtifactFacts {
+            attestations: vec!["spdx".to_string()],
+            ..Default::default()
+        },
+        ctx.clock.now(),
+    );
     reconcile_module(Arc::new(module), ctx).await.unwrap();
 
     let report = harness.finish().await;
@@ -357,9 +364,15 @@ async fn reconcile_module_keeps_recorded_platforms_when_the_artifact_is_unchange
         reader,
     );
 
-    // This process read the tag a moment ago, so its recorded facts are current.
-    ctx.registry_backoff
-        .record_read("ghcr.io/example/mod:v1", std::time::Instant::now());
+    // This process read the tag a moment ago and found what the status records.
+    ctx.registry_backoff.record_read(
+        "ghcr.io/example/mod:v1",
+        ArtifactFacts {
+            platforms: vec!["linux/arm64".to_string()],
+            ..Default::default()
+        },
+        ctx.clock.now(),
+    );
     reconcile_module(Arc::new(module), ctx).await.unwrap();
 
     let report = harness.finish().await;
@@ -647,7 +660,7 @@ fn a_failed_registry_visit_is_retried_on_a_stepped_schedule() {
     let ms = Duration::from_millis(1);
     let backoff = RegistryBackoff::default();
     for (failures, secs) in [(1, 5), (2, 10), (3, 20), (4, 40), (5, 60), (6, 60)] {
-        backoff.record_failure("facts:a".to_string(), t0);
+        backoff.record_failure("facts:a".to_string(), String::new(), t0);
         let delay = Duration::from_secs(secs);
         assert_eq!(
             backoff.retry_in("facts:a", t0),
@@ -655,21 +668,21 @@ fn a_failed_registry_visit_is_retried_on_a_stepped_schedule() {
             "after {failures} consecutive failures"
         );
         assert!(
-            backoff.cooling("facts:a", t0 + delay - ms),
+            backoff.cooling("facts:a", t0 + delay - ms).is_some(),
             "{failures} failures: still cooling just before {secs}s"
         );
         assert!(
-            !backoff.cooling("facts:a", t0 + delay),
+            backoff.cooling("facts:a", t0 + delay).is_none(),
             "{failures} failures: no longer cooling at {secs}s"
         );
         assert_eq!(backoff.retry_in("facts:a", t0 + delay), None);
     }
     backoff.clear("facts:a");
     assert!(
-        !backoff.cooling("facts:a", t0),
+        backoff.cooling("facts:a", t0).is_none(),
         "a cleared key is not cooling"
     );
-    backoff.record_failure("facts:a".to_string(), t0);
+    backoff.record_failure("facts:a".to_string(), String::new(), t0);
     assert_eq!(
         backoff.retry_in("facts:a", t0),
         Some(Duration::from_secs(5)),
@@ -677,15 +690,83 @@ fn a_failed_registry_visit_is_retried_on_a_stepped_schedule() {
     );
 }
 
+/// Entries that can no longer change an answer are dropped by the next
+/// recorded visit a requeue after the last drop, and no sooner; a key quiet
+/// that long starts its count over.
+#[test]
+fn a_registry_visit_quiet_for_two_requeues_is_forgotten() {
+    use std::time::{Duration, Instant};
+
+    let t0 = Instant::now();
+    let secs = Duration::from_secs;
+    let facts = || ArtifactFacts {
+        platforms: vec!["linux/amd64".to_string()],
+        ..Default::default()
+    };
+    let backoff = RegistryBackoff::default();
+    backoff.record_failure("facts:a".to_string(), String::new(), t0);
+    backoff.record_read("r", facts(), t0);
+    backoff.record_failure("facts:e".to_string(), String::new(), t0 + secs(10));
+    assert_eq!(backoff.held(), (2, 1));
+
+    backoff.record_failure("facts:b".to_string(), String::new(), t0 + secs(125));
+    assert_eq!(
+        backoff.held(),
+        (2, 0),
+        "a failure two requeues old and a read one requeue old are dropped, a younger \
+         failure is kept"
+    );
+
+    backoff.record_failure("facts:c".to_string(), String::new(), t0 + secs(135));
+    assert_eq!(
+        backoff.held(),
+        (3, 0),
+        "a requeue has not passed since the last drop, so nothing is dropped"
+    );
+
+    backoff.record_failure("facts:a".to_string(), String::new(), t0 + secs(185));
+    assert_eq!(
+        backoff.held(),
+        (3, 0),
+        "the failure at 10s is dropped at 185s"
+    );
+    assert_eq!(
+        backoff.retry_in("facts:a", t0 + secs(185)),
+        Some(secs(5)),
+        "a key whose failure was dropped starts its count over"
+    );
+}
+
+/// A registry down past the ceiling is retried once per requeue, so a drop
+/// that runs just ahead of the retry keeps the failure count that put it there.
+#[test]
+fn a_failure_is_kept_until_its_retry_has_had_a_requeue_to_run() {
+    use std::time::{Duration, Instant};
+
+    let t0 = Instant::now();
+    let backoff = RegistryBackoff::default();
+    for _ in 0..5 {
+        backoff.record_failure("facts:down".to_string(), String::new(), t0);
+    }
+    let retry = t0 + REGISTRY_RETRY_AFTER + Duration::from_secs(1);
+    backoff.record_failure("facts:other".to_string(), String::new(), retry);
+    backoff.record_failure("facts:down".to_string(), String::new(), retry);
+    assert_eq!(
+        backoff.retry_in("facts:down", retry),
+        Some(REGISTRY_RETRY_AFTER),
+        "the sixth failure in a row cools for the ceiling"
+    );
+}
+
 /// Two reconciles of one module, with the reader answering `answers` in turn
-/// and the second reconcile run `gap` after the first. Returns the two
-/// requeues, the two status bodies written, and how many reads were made.
+/// and the reconciles run `at` after the instant `seed` is handed. Returns the
+/// two requeues, the two status bodies written, and how many reads were made.
 async fn two_fact_reconciles(
     name: &str,
     artifact: &str,
     saved: Option<Vec<String>>,
     answers: Vec<Vec<String>>,
-    gap: std::time::Duration,
+    at: [std::time::Duration; 2],
     seed: impl FnOnce(&RegistryBackoff, std::time::Instant),
 ) -> (Action, Action, serde_json::Value, serde_json::Value, usize) {
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -711,7 +792,7 @@ async fn two_fact_reconciles(
     });
     let module = Arc::new(module);
     let status_path = format!("{}/status", module_path(name));
-    let (ctx, _registry, harness) = MockKubeHarness::with_facts(
+    let (mut ctx, _registry, harness) = MockKubeHarness::with_facts(
         vec![
             ExpectedCall::patch_status(status_path.clone()).returning_json(&*module),
             expect_event_post("default"),
@@ -724,11 +805,14 @@ async fn two_fact_reconciles(
         reader,
     );
     let t0 = std::time::Instant::now();
+    let clock = held_clock(&mut ctx, t0);
     seed(&ctx.registry_backoff, t0);
-    let first = reconcile_module_at(Arc::clone(&module), Arc::clone(&ctx), t0)
+    clock.set(t0 + at[0]);
+    let first = reconcile_module(Arc::clone(&module), Arc::clone(&ctx))
         .await
         .unwrap();
-    let second = reconcile_module_at(module, ctx, t0 + gap).await.unwrap();
+    clock.set(t0 + at[1]);
+    let second = reconcile_module(module, ctx).await.unwrap();
     let report = harness.finish().await;
     (
         first,
@@ -737,6 +821,15 @@ async fn two_fact_reconciles(
         report.captured[3].body_json()["status"].clone(),
         visits.load(std::sync::atomic::Ordering::SeqCst),
     )
+}
+
+/// Give `ctx` a clock held at `at`, and hand back a handle that moves it.
+fn held_clock(ctx: &mut Arc<ControllerContext>, at: std::time::Instant) -> Clock {
+    let clock = Clock::fixed(at);
+    Arc::get_mut(ctx)
+        .expect("a fresh harness context has no other holder")
+        .clock = clock.clone();
+    clock
 }
 
 /// A reader answering `facts` for every reference, and the count of reads it
@@ -766,7 +859,7 @@ async fn an_empty_fact_read_is_retried_once_its_first_retry_is_due() {
         "ghcr.io/example/mod:v1",
         None,
         vec![vec![], platforms(&["linux/amd64"])],
-        std::time::Duration::from_secs(5),
+        [std::time::Duration::ZERO, std::time::Duration::from_secs(5)],
         |_, _| {},
     )
     .await;
@@ -787,7 +880,7 @@ async fn reconcile_module_requeues_at_the_pending_retry_of_a_failed_read() {
         "ghcr.io/example/mod:v1",
         None,
         vec![vec![], platforms(&["linux/amd64"])],
-        std::time::Duration::from_secs(5),
+        [std::time::Duration::ZERO, std::time::Duration::from_secs(5)],
         |_, _| {},
     )
     .await;
@@ -813,8 +906,20 @@ async fn a_tags_facts_are_read_again_once_the_last_read_is_a_requeue_old() {
         artifact,
         Some(platforms(&["linux/amd64"])),
         vec![platforms(&["linux/amd64", "linux/arm64"])],
-        std::time::Duration::from_secs(30),
-        |backoff, t0| backoff.record_read(artifact, t0 - std::time::Duration::from_secs(30)),
+        [
+            std::time::Duration::from_secs(30),
+            std::time::Duration::from_secs(60),
+        ],
+        |backoff, t0| {
+            backoff.record_read(
+                artifact,
+                ArtifactFacts {
+                    platforms: platforms(&["linux/amd64"]),
+                    ..Default::default()
+                },
+                t0,
+            )
+        },
     )
     .await;
     assert_eq!(
@@ -839,7 +944,7 @@ async fn a_digest_pinned_artifact_with_recorded_facts_is_never_read_again() {
         &artifact,
         Some(platforms(&["linux/amd64"])),
         vec![platforms(&["linux/arm64"])],
-        REGISTRY_RETRY_AFTER * 2,
+        [std::time::Duration::ZERO, REGISTRY_RETRY_AFTER * 2],
         |_, _| {},
     )
     .await;
@@ -862,7 +967,7 @@ async fn an_empty_tag_refresh_keeps_the_recorded_platforms() {
         "ghcr.io/example/mod:v1",
         Some(platforms(&["linux/amd64"])),
         vec![vec![], vec![]],
-        std::time::Duration::from_secs(5),
+        [std::time::Duration::ZERO, std::time::Duration::from_secs(5)],
         |_, _| {},
     )
     .await;
@@ -874,6 +979,252 @@ async fn an_empty_tag_refresh_keeps_the_recorded_platforms() {
             "an empty answer keeps the recorded platforms"
         );
     }
+}
+
+/// A tag refresh that answered empty cools, and a reconcile while it cools
+/// keeps the recorded platforms without a visit.
+#[tokio::test]
+async fn a_cooling_tag_refresh_keeps_the_recorded_platforms_without_a_visit() {
+    let (_, _, first, second, visits) = two_fact_reconciles(
+        "cooling-keep-mod",
+        "ghcr.io/example/mod:v1",
+        Some(platforms(&["linux/amd64"])),
+        vec![vec![], vec![]],
+        [std::time::Duration::ZERO, std::time::Duration::from_secs(1)],
+        |_, _| {},
+    )
+    .await;
+    assert_eq!(visits, 1, "a cooling refresh is not visited");
+    for status in [first, second] {
+        assert_eq!(
+            status["availablePlatforms"],
+            serde_json::json!(["linux/amd64"]),
+            "a cooling refresh keeps the recorded platforms"
+        );
+    }
+}
+
+/// Two Modules naming one tag take the same answer: the first reconcile's
+/// read answers the second inside the requeue period, whatever the second's
+/// own status records.
+#[tokio::test]
+async fn every_module_naming_a_tag_takes_its_last_read_inside_the_requeue_period() {
+    let artifact = "ghcr.io/example/mod:v1";
+    let (reader, visits) = counting_reader(ArtifactFacts {
+        platforms: platforms(&["linux/amd64", "linux/arm64"]),
+        ..Default::default()
+    });
+    let saved = |name: &str| {
+        let mut module = make_module(
+            name,
+            ModuleSpec {
+                oci_artifact: Some(artifact.to_string()),
+                ..Default::default()
+            },
+        );
+        module.status = Some(ModuleStatus {
+            resolved_artifact: Some(artifact.to_string()),
+            available_platforms: platforms(&["linux/amd64"]),
+            ..Default::default()
+        });
+        Arc::new(module)
+    };
+    let (a, b) = (saved("tag-reader-a"), saved("tag-reader-b"));
+    let (mut ctx, _registry, harness) = MockKubeHarness::with_facts(
+        vec![
+            ExpectedCall::patch_status(format!("{}/status", module_path("tag-reader-a")))
+                .returning_json(&*a),
+            expect_event_post("default"),
+            expect_event_post("default"),
+            ExpectedCall::patch_status(format!("{}/status", module_path("tag-reader-b")))
+                .returning_json(&*b),
+            expect_event_post("default"),
+            expect_event_post("default"),
+        ],
+        stores_with_ccps(vec![]),
+        reader,
+    );
+    let t0 = std::time::Instant::now();
+    let clock = held_clock(&mut ctx, t0);
+    reconcile_module(a, Arc::clone(&ctx)).await.unwrap();
+    clock.set(t0 + std::time::Duration::from_secs(1));
+    reconcile_module(b, ctx).await.unwrap();
+    let report = harness.finish().await;
+
+    assert_eq!(
+        visits.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "the second Module reuses the first one's read"
+    );
+    for at in [0, 3] {
+        assert_eq!(
+            report.captured[at].body_json()["status"]["availablePlatforms"],
+            serde_json::json!(["linux/amd64", "linux/arm64"]),
+            "both Modules record what the one read answered"
+        );
+    }
+}
+
+/// A failed visit is stamped when it returns, so a slow one cools for its
+/// whole first step after it ends, and the requeue reaches that retry.
+#[tokio::test]
+async fn a_slow_failed_visit_cools_for_its_first_step_after_it_returns() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let t0 = std::time::Instant::now();
+    let clock = Clock::fixed(t0);
+    let visits = Arc::new(AtomicUsize::new(0));
+    let reader = {
+        let (clock, visits) = (clock.clone(), Arc::clone(&visits));
+        ArtifactFactsReader(Arc::new(move |_| {
+            visits.fetch_add(1, Ordering::SeqCst);
+            clock.set(clock.now() + std::time::Duration::from_secs(120));
+            ArtifactFacts::default()
+        }))
+    };
+    let module = Arc::new(make_module(
+        "slow-visit-mod",
+        ModuleSpec {
+            oci_artifact: Some("ghcr.io/example/mod:v1".to_string()),
+            ..Default::default()
+        },
+    ));
+    let status_path = format!("{}/status", module_path("slow-visit-mod"));
+    let (mut ctx, _registry, harness) = MockKubeHarness::with_facts(
+        vec![
+            ExpectedCall::patch_status(status_path.clone()).returning_json(&*module),
+            expect_event_post("default"),
+            expect_event_post("default"),
+            ExpectedCall::patch_status(status_path).returning_json(&*module),
+            expect_event_series_patch("default"),
+            expect_event_series_patch("default"),
+        ],
+        stores_with_ccps(vec![]),
+        reader,
+    );
+    Arc::get_mut(&mut ctx)
+        .expect("a fresh harness context has no other holder")
+        .clock = clock.clone();
+
+    let requeue = reconcile_module(Arc::clone(&module), Arc::clone(&ctx))
+        .await
+        .unwrap();
+    clock.set(clock.now() + std::time::Duration::from_secs(1));
+    reconcile_module(module, ctx).await.unwrap();
+    harness.finish().await;
+
+    assert_eq!(
+        requeue,
+        Action::requeue(std::time::Duration::from_secs(5)),
+        "the requeue reaches the retry the failure scheduled when it returned"
+    );
+    assert_eq!(
+        visits.load(Ordering::SeqCst),
+        1,
+        "a visit that returned 1s ago is still cooling"
+    );
+}
+
+/// The requeue is measured once every visit has returned, so time a slow
+/// visit spent counts against the retries already pending.
+#[tokio::test]
+async fn the_requeue_is_measured_once_the_visits_return() {
+    let t0 = std::time::Instant::now();
+    let clock = Clock::fixed(t0);
+    let reader = {
+        let clock = clock.clone();
+        ArtifactFactsReader(Arc::new(move |_| {
+            clock.set(clock.now() + std::time::Duration::from_secs(3));
+            ArtifactFacts::default()
+        }))
+    };
+    let name = "measured-requeue-mod";
+    let module = make_module(name, signed_spec());
+    let (mut ctx, _registry, harness) = MockKubeHarness::with_registry_seams(
+        vec![
+            ExpectedCall::patch_status(format!("{}/status", module_path(name)))
+                .returning_json(&module),
+            expect_event_post("default"),
+            expect_event_post("default"),
+        ],
+        stores_with_ccps(vec![]),
+        reader,
+        ArtifactVerifier::fixed(SignatureCheck::Undetermined(
+            "registry unreachable".to_string(),
+        )),
+    );
+    Arc::get_mut(&mut ctx)
+        .expect("a fresh harness context has no other holder")
+        .clock = clock;
+    let requeue = reconcile_module(Arc::new(module), ctx).await.unwrap();
+    harness.finish().await;
+    assert_eq!(
+        requeue,
+        Action::requeue(std::time::Duration::from_secs(2)),
+        "the check failed at 0s and the read took 3s, so the check's retry is 2s away"
+    );
+}
+
+/// While a failed signature check cools, the Verified condition stays as that
+/// visit wrote it, so a reconcile in between writes no status and posts no
+/// event.
+#[tokio::test]
+async fn a_cooling_signature_check_leaves_the_status_as_the_failed_visit_wrote_it() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let name = "cooling-verify-mod";
+    let checks = Arc::new(AtomicUsize::new(0));
+    let verifier = || {
+        let checks = Arc::clone(&checks);
+        ArtifactVerifier(Arc::new(move |_, _| {
+            checks.fetch_add(1, Ordering::SeqCst);
+            SignatureCheck::Undetermined("registry unreachable".to_string())
+        }))
+    };
+    let module = make_module(name, signed_spec());
+    let (mut ctx, _registry, harness) = MockKubeHarness::with_registry_seams(
+        vec![
+            ExpectedCall::patch_status(format!("{}/status", module_path(name)))
+                .returning_json(&module),
+            expect_event_post("default"),
+            expect_event_post("default"),
+        ],
+        stores_with_ccps(vec![]),
+        ArtifactFactsReader::fixed(Default::default()),
+        verifier(),
+    );
+    let t0 = std::time::Instant::now();
+    let clock = held_clock(&mut ctx, t0);
+    reconcile_module(Arc::new(module), Arc::clone(&ctx))
+        .await
+        .unwrap();
+    let written = harness.finish().await.captured[0].body_json()["status"].clone();
+
+    // The next reconcile sees the status the failed visit wrote, as a watch
+    // event would deliver it, through a harness that expects no call at all.
+    let mut module = make_module(name, signed_spec());
+    module.status = Some(serde_json::from_value(written).expect("the written status reads back"));
+    let (mut cooling, _registry, harness) = MockKubeHarness::with_registry_seams(
+        vec![],
+        stores_with_ccps(vec![]),
+        ArtifactFactsReader::fixed(Default::default()),
+        verifier(),
+    );
+    {
+        let shared =
+            Arc::get_mut(&mut cooling).expect("a fresh harness context has no other holder");
+        shared.registry_backoff = ctx.registry_backoff.clone();
+        shared.clock = clock.clone();
+    }
+    clock.set(t0 + std::time::Duration::from_secs(1));
+    reconcile_module(Arc::new(module), cooling).await.unwrap();
+    harness.finish().await;
+
+    assert_eq!(
+        checks.load(Ordering::SeqCst),
+        1,
+        "a cooling check is not run"
+    );
 }
 
 #[tokio::test]
