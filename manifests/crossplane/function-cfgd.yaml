@@ -6,4 +6,4 @@ spec:
   # The release workflow publishes the package to ghcr at each cfgd version.
   # A package built from a checkout comes from:
   # crossplane xpkg build --package-root=function-cfgd/package --embed-runtime-image=<runtime>
-  package: ghcr.io/tj-smith47/function-cfgd:v0.11.0
+  package: ghcr.io/tj-smith47/function-cfgd:v0.12.0

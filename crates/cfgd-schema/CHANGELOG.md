@@ -1,5 +1,21 @@
 # Changelog — cfgd-schema
 
+## [0.6.0] - 2026-10-06
+
+### Features
+
+* e278bec70b6f add the MigrationPolicy config enum ([@tj-smith47](https://github.com/tj-smith47))
+
+---
+### Bug Fixes
+
+* 352c73653760 a check-in lists at most 200 failing checks, but its counts still cover every one ([@tj-smith47](https://github.com/tj-smith47))
+* 197c52a93a73 refuse a patch key no plan file can carry and fail a plan hash that cannot name an action ([@tj-smith47](https://github.com/tj-smith47))
+* 144a2ea10157 refuse a plan file that files an action under the wrong owner ([@tj-smith47](https://github.com/tj-smith47))
+* 0c477c0feb82 the fleet dashboard truncates a long compliance line and shows it in full on hover ([@tj-smith47](https://github.com/tj-smith47))
+* bd6d8b4c33f8 close a non-string patch key refusal on the remedy and read a find-shaped hatch lookup ([@tj-smith47](https://github.com/tj-smith47))
+* 077ccae4d3cc refuse a tagged patch key without offering a quoting remedy that changes what it names ([@tj-smith47](https://github.com/tj-smith47))
+
 ## [0.5.0] - 2026-09-16
 
 ### Features

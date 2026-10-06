@@ -2,6 +2,45 @@
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-10-06
+
+### Features
+
+* b9c7b6cece3e report each failing compliance check to the gateway ([@tj-smith47](https://github.com/tj-smith47))
+* c346061a2f50 ComplianceStatus::ordinal indexes its ALL list ([@tj-smith47](https://github.com/tj-smith47))
+* 0346357ce37b read the driver name from CSI_DRIVER_NAME, defaulting to csi.cfgd.io ([@tj-smith47](https://github.com/tj-smith47))
+* c5437c9a71bc reconcile only the objects WATCH_LABEL_SELECTOR names ([@tj-smith47](https://github.com/tj-smith47))
+
+---
+### Bug Fixes
+
+* cf01448655a5 the operator takes a registry login through extraVolumes and the e2e PR install sets one ([@tj-smith47](https://github.com/tj-smith47))
+* 352c73653760 a check-in lists at most 200 failing checks, but its counts still cover every one ([@tj-smith47](https://github.com/tj-smith47))
+* 032606472df2 the daemon and cfgd checkin build one check-in the same way ([@tj-smith47](https://github.com/tj-smith47))
+* 3e59b5bbdce6 the alias pass, installed units and the gateway database path expand a leading ~ ([@tj-smith47](https://github.com/tj-smith47))
+* c30a8600c3e0 every CFGD_* environment name Cli binds is one constant the whole workspace reads ([@tj-smith47](https://github.com/tj-smith47))
+* 9c8b3ccca42c read every CFGD_* env var name from one constant ([@tj-smith47](https://github.com/tj-smith47))
+* ab9385126612 update-check, gateway CORS and CSI allow-list env names join the one CFGD_* name module ([@tj-smith47](https://github.com/tj-smith47))
+* dc272fb8a8cc document CSI_DRIVER_NAME and read it only when a pod carries modules ([@tj-smith47](https://github.com/tj-smith47))
+* 48699cd69365 bump brontes to 0.7.3 and opentelemetry to 0.33 with tracing-opentelemetry 0.34 ([@tj-smith47](https://github.com/tj-smith47))
+* d84bf9a0a2e7 a check-in with an unreadable compliance report is still accepted ([@tj-smith47](https://github.com/tj-smith47))
+* 9930c0bfec6c a check-in without a compliance report keeps the report the device last sent ([@tj-smith47](https://github.com/tj-smith47))
+* 0c477c0feb82 the fleet dashboard truncates a long compliance line and shows it in full on hover ([@tj-smith47](https://github.com/tj-smith47))
+* 9d9101563057 a blank WATCH_LABEL_SELECTOR means unset, and every cfgd.io watch uses it ([@tj-smith47](https://github.com/tj-smith47))
+* 9c62c5e16ecc a deleted ConfigPolicy resets every machine its verdict reached, read live ([@tj-smith47](https://github.com/tj-smith47))
+* 477908ba28e4 a deleted MachineConfig takes its DriftAlerts and an unjudged machine reads Unknown ([@tj-smith47](https://github.com/tj-smith47))
+* fffb84b472f0 a policy, module, machine or namespace change re-runs the reconciles that read it ([@tj-smith47](https://github.com/tj-smith47))
+* a63c195cfab7 a standby whose admission webhook is serving reports ready ([@tj-smith47](https://github.com/tj-smith47))
+* 888fc85fcb97 a watch re-runs only the reconciles its change moves; a deleting policy binds nothing ([@tj-smith47](https://github.com/tj-smith47))
+* 96b525f96af6 keep a device value's comma inside its own drift clause ([@tj-smith47](https://github.com/tj-smith47))
+* 6e919cda781f policies sharing a machine write one Compliant verdict and every watch is gated ([@tj-smith47](https://github.com/tj-smith47))
+* 321bbde736c0 the chart and OLM bundle pass POD_NAME with leader election off ([@tj-smith47](https://github.com/tj-smith47))
+* 3eecced0b782 with the device gateway enabled, readiness waits for its listener to bind ([@tj-smith47](https://github.com/tj-smith47))
+* c90ced00760c register counters without a _total suffix so samples render it once ([@tj-smith47](https://github.com/tj-smith47))
+* 77745f2b616a a `~` directory override with no home fails naming the unset home and creates nothing ([@tj-smith47](https://github.com/tj-smith47))
+* c2faae78c0ae opening the state store or the gateway database waits while another process creates it ([@tj-smith47](https://github.com/tj-smith47))
+* b8403504c459 rows stamped in the same second list in one order, in the state store and the gateway ([@tj-smith47](https://github.com/tj-smith47))
+
 ## [0.9.0] - 2026-09-16
 
 ### Features
@@ -129,7 +168,8 @@
 * ac2efacbcbc3 extract cfgd-crd crate (types + validate) from operator ([@tj-smith47](https://github.com/tj-smith47))
 * d7d3bf6bc720 gen_crds render_all + file-writing, sourced from cfgd-crd ([@tj-smith47](https://github.com/tj-smith47))
 
-[Unreleased]: https://github.com/tj-smith47/cfgd/compare/operator-v0.9.0...HEAD
+[Unreleased]: https://github.com/tj-smith47/cfgd/compare/operator-v0.10.0...HEAD
+[0.10.0]: https://github.com/tj-smith47/cfgd/compare/operator-v0.9.0...operator-v0.10.0
 [0.9.0]: https://github.com/tj-smith47/cfgd/compare/operator-v0.8.0...operator-v0.9.0
 [0.8.0]: https://github.com/tj-smith47/cfgd/compare/operator-v0.7.0...operator-v0.8.0
 [0.7.0]: https://github.com/tj-smith47/cfgd/compare/operator-v0.5.1...operator-v0.7.0

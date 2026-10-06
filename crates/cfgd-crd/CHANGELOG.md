@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-10-06
+
+### Features
+
+* b9c7b6cece3e report each failing compliance check to the gateway ([@tj-smith47](https://github.com/tj-smith47))
+
+---
+### Bug Fixes
+
+* 352c73653760 a check-in lists at most 200 failing checks, but its counts still cover every one ([@tj-smith47](https://github.com/tj-smith47))
+* 44df837607e7 the fleet compliance headline renders large counts without overflowing ([@tj-smith47](https://github.com/tj-smith47))
+* 0c477c0feb82 the fleet dashboard truncates a long compliance line and shows it in full on hover ([@tj-smith47](https://github.com/tj-smith47))
+
 ## [0.7.0] - 2026-09-16
 
 ### Features
@@ -80,7 +93,8 @@
 * a2fa04aa4e4e rollback v0.5.0 [skip ci] (anodize-rollback)
 * ac2efacbcbc3 extract cfgd-crd crate (types + validate) from operator ([@tj-smith47](https://github.com/tj-smith47))
 
-[Unreleased]: https://github.com/tj-smith47/cfgd/compare/crd-v0.7.0...HEAD
+[Unreleased]: https://github.com/tj-smith47/cfgd/compare/crd-v0.8.0...HEAD
+[0.8.0]: https://github.com/tj-smith47/cfgd/compare/crd-v0.7.0...crd-v0.8.0
 [0.7.0]: https://github.com/tj-smith47/cfgd/compare/crd-v0.6.0...crd-v0.7.0
 [0.6.0]: https://github.com/tj-smith47/cfgd/compare/crd-v0.5.0...crd-v0.6.0
 [0.5.0]: https://github.com/tj-smith47/cfgd/releases/tag/crd-v0.5.0

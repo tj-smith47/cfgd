@@ -573,7 +573,7 @@ checksum = "613afe47fcd5fac7ccf1db93babcb082c5994d996f20b8b159f2ad1658eb5724"
 
 [[package]]
 name = "cfgd"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "anyhow",
  "assert_cmd",
@@ -623,7 +623,7 @@ dependencies = [
 
 [[package]]
 name = "cfgd-core"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "cfgd-core",
  "cfgd-crd",
@@ -678,7 +678,7 @@ dependencies = [
 
 [[package]]
 name = "cfgd-crd"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "cfgd-schema",
  "k8s-openapi",
@@ -693,7 +693,7 @@ dependencies = [
 
 [[package]]
 name = "cfgd-csi"
-version = "0.7.2"
+version = "0.8.0"
 dependencies = [
  "axum",
  "cfgd-core",
@@ -721,7 +721,7 @@ dependencies = [
 
 [[package]]
 name = "cfgd-operator"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -774,7 +774,7 @@ dependencies = [
 
 [[package]]
 name = "cfgd-schema"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "croner",
  "schemars",

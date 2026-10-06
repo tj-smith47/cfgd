@@ -2,6 +2,24 @@
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-10-06
+
+### Features
+
+* 0346357ce37b read the driver name from CSI_DRIVER_NAME, defaulting to csi.cfgd.io ([@tj-smith47](https://github.com/tj-smith47))
+
+---
+### Bug Fixes
+
+* ab9385126612 update-check, gateway CORS and CSI allow-list env names join the one CFGD_* name module ([@tj-smith47](https://github.com/tj-smith47))
+* 871a692d9e3f count a cache hit on the publish path too, where inline ephemeral volumes are mounted ([@tj-smith47](https://github.com/tj-smith47))
+* 3c3ec5f6bb1b count a cache hit once per mount: at stage when staged, at publish when inline ([@tj-smith47](https://github.com/tj-smith47))
+* dc272fb8a8cc document CSI_DRIVER_NAME and read it only when a pod carries modules ([@tj-smith47](https://github.com/tj-smith47))
+* 8c33e1329cbe drop the trailing period prometheus-client already adds to the cache-hits help ([@tj-smith47](https://github.com/tj-smith47))
+* 17ed8806c140 module pull takes its platform out of an OCI index, and every module push joins the tag ([@tj-smith47](https://github.com/tj-smith47))
+* 5f46e7eee779 module sign and pull checks name the digest at the tag, and --platform is checked at parse ([@tj-smith47](https://github.com/tj-smith47))
+* c90ced00760c register counters without a _total suffix so samples render it once ([@tj-smith47](https://github.com/tj-smith47))
+
 ## [0.7.2] - 2026-09-16
 
 ### Bug Fixes
@@ -31,7 +49,8 @@
 
 * f1ab9eb25ba2 drop now-derivable anodizer config (auto-derived from Cargo.toml) (TJ Smith)
 
-[Unreleased]: https://github.com/tj-smith47/cfgd/compare/csi-v0.7.2...HEAD
+[Unreleased]: https://github.com/tj-smith47/cfgd/compare/csi-v0.8.0...HEAD
+[0.8.0]: https://github.com/tj-smith47/cfgd/compare/csi-v0.7.2...csi-v0.8.0
 [0.7.2]: https://github.com/tj-smith47/cfgd/compare/csi-v0.7.1...csi-v0.7.2
 [0.7.1]: https://github.com/tj-smith47/cfgd/compare/csi-v0.7.0...csi-v0.7.1
 [0.7.0]: https://github.com/tj-smith47/cfgd/compare/csi-v0.5.0...csi-v0.7.0

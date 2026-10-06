@@ -1,6 +1,6 @@
 [package]
 name = "cfgd-operator"
-version = "0.9.0"
+version = "0.10.0"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -26,8 +26,8 @@ path = "src/bin/gen-crds.rs"
 [dependencies]
 serde_yaml = "0.9"
 clap = { version = "4", features = ["derive"] }
-cfgd-core = { path = "../cfgd-core", version = "0.10.0" }
-cfgd-crd = { path = "../cfgd-crd", version = "0.7.0" }
+cfgd-core = { path = "../cfgd-core", version = "0.11.0" }
+cfgd-crd = { path = "../cfgd-crd", version = "0.8.0" }
 kube = { version = "4.0", features = ["runtime", "derive", "client", "admission"] }
 # watches_stream: a gated trigger stream that still sees deletes (controllers/triggers.rs gated_watch)
 kube-runtime = { version = "4.2", default-features = false, features = ["unstable-runtime-stream-control"] }
@@ -72,7 +72,7 @@ opentelemetry-otlp = { version = "0.33", features = ["grpc-tonic", "trace"] }
 tracing-opentelemetry = "0.34"
 
 [dev-dependencies]
-cfgd-core = { path = "../cfgd-core", version = "0.10.0", features = ["test-helpers"] }
+cfgd-core = { path = "../cfgd-core", version = "0.11.0", features = ["test-helpers"] }
 serial_test = "4"
 tower-test = "0.4"
 http = "1"
