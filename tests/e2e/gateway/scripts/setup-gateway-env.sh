@@ -75,7 +75,7 @@ gw_create_bootstrap_token() {
 }
 
 # --- Create bootstrap token for enrollment tests ---
-GW_DEVICE_ID="e2e-device-${E2E_RUN_ID}"
+gateway_device GW_DEVICE_ID "e2e-device-${E2E_RUN_ID}"
 # `|| true` because this file runs under `set -e` and a refused mint is a warning
 # here: the cases that need a token check for one themselves.
 BOOTSTRAP_TOKEN=$(gw_create_bootstrap_token "e2e-user" || true)

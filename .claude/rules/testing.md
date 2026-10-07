@@ -271,6 +271,21 @@ apiVersion or standing for a whole document, a body line continued with `\`,
 a script that sets `E2E_RUN_LABEL_YAML` itself. `tests/e2e/README.md` lists
 every rule.
 
+## An e2e device id comes from `gateway_device`
+
+The release gateway labels each DriftAlert it creates `cfgd.io/device-id=<id>` and
+gives it no run label, so the run label cannot clean it up. Every device id a
+gateway, node or full-stack script sends to the gateway (a `--device-id` argument,
+a `"deviceId"` JSON key, the id argument of `gw_enroll_once` / `gw_enroll_post`) is
+a variable set only by `gateway_device <var> <id>` in `tests/e2e/common/helpers.sh`,
+and `cleanup_e2e` deletes the alerts of every id it recorded. The helper refuses an
+id that is not already a label value of at most 63 characters or does not start with
+`e2e-` or `fullstack-device-`, the prefixes the cluster janitor reaps by. An id is
+`<stem>-${E2E_RUN_ID}`; a case that needs a fresh device per invocation adds
+`$(date +%s)` or `$$` before the run id. `tests/e2e/common/test-pr-install.sh`
+(`task e2e:tags:check`) fails on any other sent value, and on a relay its list
+names that no script defines.
+
 ## A test never inherits its terminal shape from the ambient one
 
 `cargo test` from a pipe and `script -qec "cargo test" /dev/null` (a real pty)

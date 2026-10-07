@@ -10,7 +10,7 @@ echo "=== Fleet Tests ==="
 # =================================================================
 begin_test "FS-FLEET-01: Device 1 checkin"
 
-DEVICE_1="fullstack-device-1-${E2E_RUN_ID}"
+gateway_device DEVICE_1 "fullstack-device-1-${E2E_RUN_ID}"
 OUTPUT=$(exec_in_pod cfgd \
     --config /etc/cfgd/cfgd.yaml \
     checkin \
@@ -33,7 +33,7 @@ fi
 # =================================================================
 begin_test "FS-FLEET-02: Device 2 checkin (multi-device)"
 
-DEVICE_2="fullstack-device-2-${E2E_RUN_ID}"
+gateway_device DEVICE_2 "fullstack-device-2-${E2E_RUN_ID}"
 OUTPUT=$(exec_in_pod cfgd \
     --config /etc/cfgd/cfgd.yaml \
     checkin \

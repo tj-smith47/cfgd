@@ -227,6 +227,31 @@ cannot read (a script, say) is skipped. Every TeamConfig heredoc names the run's
 Composition (see below). No suite applies a manifest by path; the crossplane suite's
 Composition reaches `kubectl apply -f -` on a here-string from `render_run_composition`.
 
+## Device ids sent to the device gateway
+
+The release gateway in `cfgd-system` creates a DriftAlert for a device that reports
+drift, labelled `cfgd.io/device-id=<id>` and carrying no run label. Every device id
+the gateway, node and full-stack suites send is set through `gateway_device` in
+`common/helpers.sh`, which records it, and `cleanup_e2e` deletes the alerts of every
+recorded id:
+
+```bash
+gateway_device DEVICE_1 "fullstack-device-1-${E2E_RUN_ID}"
+# cleanup_e2e:
+#   kubectl delete driftalert -n cfgd-system -l "cfgd.io/device-id in (fullstack-device-1-<run>,...)"
+```
+
+`gateway_device` refuses an id that is not already a label value (lowercase letters,
+digits and `-`, at most 63 characters, ending in a letter or digit) or that does not
+start with `e2e-` or `fullstack-device-`, the prefixes the cluster janitor reaps a
+leaked alert by. An id is run-scoped (`<stem>-${E2E_RUN_ID}`); a case that needs a
+fresh device on every invocation adds `$(date +%s)` or `$$` before the run id.
+`test-pr-install.sh` fails on a `--device-id` argument or a `"deviceId"` JSON key
+under `gateway/`, `node/` or `full-stack/` whose value is not one variable that only
+`gateway_device` calls assign. A function that sends a positional argument as the id
+(`gw_enroll_once`, `gw_enroll_post`) is listed in the check as a relay, and its call
+sites are held to the same rule.
+
 ## Components ArgoCD owns
 
 On the shared cluster ArgoCD deploys the live operator, the device gateway and the

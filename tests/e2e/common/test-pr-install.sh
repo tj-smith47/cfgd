@@ -36,6 +36,8 @@
 #     full-stack and gateway suites call it
 #   - every ERROR line an e2e script prints goes to stderr
 #   - no full-stack case calls skip_test
+#   - every device id the gateway, node and full-stack suites send to the
+#     release gateway comes from gateway_device
 #   - every full-stack helm install and upgrade scopes its operator, validating
 #     webhook and pod injector to its own namespace through HELM_SCOPE, an
 #     array of exactly the three flags that no line appends to or rewrites,
@@ -3374,6 +3376,169 @@ else
     else
         fail "pr-install-down.sh deletes [$(paste -sd ' ' <<<"$down_plurals")], want every plural in schemas/crds.yaml and the TeamConfig XRD [$(paste -sd ' ' <<<"$crd_plurals")]"
     fi
+fi
+
+# The DriftAlerts the release gateway creates for a device carry no run label,
+# so cleanup_e2e deletes them by the ids gateway_device recorded, and an id
+# sent any other way leaks its alerts. scan_device_ids <relays> FILE... prints
+# `DEVICEID file:line <value>` for each id a line sends (a --device-id
+# argument, a "deviceId" JSON key, or the argument a relay is called with)
+# whose value is not one variable that only gateway_device calls in the same
+# directory assign, and `RELAY <name>` for a relay no file defines. <relays>
+# lists, as name:position, the functions that send a positional argument as the
+# id; that positional is judged at their call sites, and a call inside a relay
+# forwards it. Fails only when a file cannot be read.
+# shellcheck disable=SC2016 # an awk program; the $ fields belong to awk
+scan_device_ids() {
+    local relays="$1" f
+    shift
+    for f in "$@"; do
+        [ -r "$f" ] || {
+            echo "UNREADABLE $f" >&2
+            return 1
+        }
+    done
+    awk -v relays="$relays" '
+        function judge(v) {
+            if (v ~ /^\$[1-9]$/ && (fn in pos) && pos[fn] == substr(v, 2)) return
+            name = ""
+            if (v ~ "^\\$\\{" ident "\\}$") name = substr(v, 3, length(v) - 3)
+            else if (v ~ "^\\$" ident "$") name = substr(v, 2)
+            if (name == "" || !((dir, name) in minted) || ((dir, name) in plain))
+                printf "DEVICEID %s:%d %s\n", FILENAME, FNR, v
+        }
+        function unquote(t) {
+            if (substr(t, 1, 1) == "\"") return substr(t, 2, length(t) - 2)
+            sub(/[);|&].*$/, "", t)
+            return t
+        }
+        # nth_arg(s, k): the k-th shell word of s, double quotes kept whole.
+        function nth_arg(s, k,    i, c, w, q, count) {
+            w = ""; q = 0; count = 0
+            for (i = 1; i <= length(s) + 1; i++) {
+                c = substr(s, i, 1)
+                if (c == "\"") q = !q
+                if ((c == "" || c ~ /[[:space:]]/) && !q) {
+                    if (w != "" && ++count == k) return w
+                    w = ""
+                } else w = w c
+            }
+            return ""
+        }
+        BEGIN {
+            n = split(relays, r, " ")
+            for (i = 1; i <= n; i++) { split(r[i], p, ":"); pos[p[1]] = p[2] }
+            ident = "[A-Za-z_][A-Za-z0-9_]*"
+        }
+        FNR == 1 { fn = ""; dir = FILENAME; sub(/[^\/]*$/, "", dir) }
+        /^[[:space:]]*#/ { next }
+        match($0, "^[[:space:]]*" ident "\\(\\)") {
+            d = substr($0, RSTART, RLENGTH - 2)
+            sub(/^[[:space:]]*/, "", d)
+            if (pass == 2) fn = d
+            else defined[d] = 1
+        }
+        /^}/ { fn = "" }
+        pass != 2 {
+            if (match($0, "gateway_device[[:space:]]+" ident)) {
+                v = substr($0, RSTART, RLENGTH)
+                sub(/^gateway_device[[:space:]]+/, "", v)
+                minted[dir, v] = 1
+            }
+            rest = $0
+            while (match(rest, "(^|[^A-Za-z0-9_${])" ident "=")) {
+                v = substr(rest, RSTART, RLENGTH - 1)
+                sub(/^[^A-Za-z_]/, "", v)
+                plain[dir, v] = 1
+                rest = substr(rest, RSTART + RLENGTH)
+            }
+            next
+        }
+        {
+            rest = $0
+            while (match(rest, /--device-id[ =]+("[^"]*"|[^ ]+)/)) {
+                t = substr(rest, RSTART, RLENGTH)
+                sub(/^--device-id[ =]+/, "", t)
+                judge(unquote(t))
+                rest = substr(rest, RSTART + RLENGTH)
+            }
+            rest = $0
+            while (match(rest, /\\?"deviceId\\?"[[:space:]]*:[[:space:]]*\\?"[^"]*"/)) {
+                t = substr(rest, RSTART, RLENGTH)
+                sub(/^\\?"deviceId\\?"[[:space:]]*:[[:space:]]*\\?"/, "", t)
+                sub(/"$/, "", t)
+                sub(/\\$/, "", t)
+                judge(t)
+                rest = substr(rest, RSTART + RLENGTH)
+            }
+            if (fn in pos) next
+            for (rl in pos) {
+                if (match($0, "(^|[^A-Za-z0-9_])" rl "[[:space:]]"))
+                    judge(unquote(nth_arg(substr($0, RSTART + RLENGTH), pos[rl])))
+            }
+        }
+        END { for (rl in pos) if (!(rl in defined)) printf "RELAY %s\n", rl }
+    ' "$@" pass=2 "$@"
+}
+# shellcheck disable=SC2016 # the inner script expands its own variables
+expect_kubectl "cleanup_e2e deletes the DriftAlerts of each device id gateway_device recorded, once each, also after helpers.sh is sourced again" \
+    'gateway_device A e2e-a-42; gateway_device B fullstack-device-b-42; gateway_device C "$A"; source "$1/common/helpers.sh"; [ "$C" = e2e-a-42 ] && cleanup_e2e' \
+    "delete driftalert -n cfgd-system -l cfgd.io/device-id in (e2e-a-42,fullstack-device-b-42) --ignore-not-found"
+: > "$log"
+in_helpers cleanup_e2e GITHUB_RUN_ID=42 >/dev/null 2>&1
+if grep -q driftalert "$log"; then
+    fail "cleanup_e2e with no device recorded called kubectl on DriftAlerts: $(grep driftalert "$log")"
+else
+    pass "cleanup_e2e with no device recorded leaves DriftAlerts alone"
+fi
+for refused in E2E-upper-42 e2e_under-42 dev-42 e2e-trailing- "e2e-$(printf 'x%.0s' {1..60})"; do
+    # shellcheck disable=SC2016 # the inner script expands its own variables
+    refused_out="$(in_helpers 'rc=0; gateway_device ID "$REFUSED" || rc=$?; echo "rc=$rc ID=${ID-unset} n=${#E2E_GATEWAY_DEVICES[@]}"' GITHUB_RUN_ID=42 REFUSED="$refused" 2>&1)"
+    if [[ "$refused_out" == "ERROR: gateway device id '$refused' "*$'\n'"rc=1 ID=unset n=0" ]]; then
+        pass "gateway_device refuses $refused, sets nothing and records nothing"
+    else
+        fail "gateway_device $refused printed [$refused_out], want an ERROR line and rc=1 ID=unset n=0"
+    fi
+done
+device_fixture_relays="relay_once:2 relay_post:2"
+device_got="$(cd "$here/fixtures/device-ids" && scan_device_ids "$device_fixture_relays" good.bash bad.bash other/uses.bash)" ||
+    device_got="(the scan failed)"
+# shellcheck disable=SC2016 # the scan prints the fixture's variable references as written
+device_want='DEVICEID bad.bash:6 literal-device
+DEVICEID bad.bash:7 $PLAIN_ID
+DEVICEID bad.bash:8 $REASSIGNED_ID
+DEVICEID bad.bash:9 ${GOOD_ID}-suffix
+DEVICEID bad.bash:10 e2e-literal
+DEVICEID bad.bash:11 $1
+DEVICEID bad.bash:12 e2e-literal
+DEVICEID bad.bash:13 $PLAIN_ID
+DEVICEID other/uses.bash:2 $GOOD_ID'
+if [ "$device_got" = "$device_want" ]; then
+    pass "the device-id scan reports each id sent from a literal, a plain assignment, a variable also assigned by hand, a longer word, a stray positional, a relay call or a variable another directory sets, and stays quiet on gateway_device variables, relays, jq paths and comments"
+else
+    fail "the device-id scan printed [$device_got], want [$device_want]"
+fi
+device_stale="$(cd "$here/fixtures/device-ids" && scan_device_ids "$device_fixture_relays relay_gone:1" good.bash)" ||
+    device_stale="(the scan failed)"
+if [ "$device_stale" = "RELAY relay_gone" ]; then
+    pass "the device-id scan names a relay no scanned file defines"
+else
+    fail "the device-id scan over an undefined relay printed [$device_stale], want [RELAY relay_gone]"
+fi
+if scan_device_ids "$device_fixture_relays" "$here/fixtures/device-ids/absent.bash" >/dev/null 2>&1; then
+    fail "the device-id scan passed over a file it could not read"
+else
+    pass "the device-id scan fails over a file it cannot read"
+fi
+mapfile -t gateway_client_scripts < <(git -C "$repo_root" ls-files 'tests/e2e/gateway/*.sh' 'tests/e2e/node/*.sh' 'tests/e2e/full-stack/*.sh')
+if [ "${#gateway_client_scripts[@]}" -eq 0 ]; then
+    fail "git ls-files matched no gateway, node or full-stack script, so the device-id scan read nothing"
+elif ! device_found="$(cd "$repo_root" && scan_device_ids "gw_enroll_once:2 gw_enroll_post:2" "${gateway_client_scripts[@]}")"; then
+    fail "the device-id scan could not read the gateway, node and full-stack suites"
+elif [ -z "$device_found" ]; then
+    pass "every device id the gateway, node and full-stack suites send comes from gateway_device (${#gateway_client_scripts[@]} scripts)"
+else
+    fail "a device id reaches the gateway without gateway_device, so cleanup_e2e cannot delete its DriftAlerts: [$device_found]"
 fi
 
 if [ "$failures" -gt 0 ]; then

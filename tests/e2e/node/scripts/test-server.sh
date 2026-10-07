@@ -35,7 +35,7 @@ if ! wait_for_pod_url "${HEALTH_URL}/readyz" 60; then
     exit 1
 fi
 
-DEVICE_ID="e2e-test-$(date +%s)"
+gateway_device DEVICE_ID "e2e-test-$(date +%s)-${E2E_RUN_ID}"
 
 # =================================================================
 # T30: cfgd checkin succeeds
@@ -203,7 +203,7 @@ INNEREOF'
 exec_in_pod bash -c 'ls /etc/cfgd/profiles/*.yaml > /dev/null 2>&1' || \
     cp_to_pod "$FIXTURES/profiles/k8s-worker-minimal.yaml" /etc/cfgd/profiles/k8s-worker-minimal.yaml 2>/dev/null || true
 
-COMPLIANCE_DEVICE_ID="e2e-compliance-$(date +%s)"
+gateway_device COMPLIANCE_DEVICE_ID "e2e-compliance-node-$(date +%s)-${E2E_RUN_ID}"
 
 RC=0
 OUTPUT=$(exec_in_pod cfgd \

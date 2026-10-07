@@ -210,7 +210,7 @@ sysctl_drift_case "FS-DRIFT-07" /etc/cfgd/e2e-compliance-cfgd.yaml net.ipv4.ip_f
 # =================================================================
 begin_test "FS-DRIFT-08: device checkin after compliance carries state"
 
-DEVICE_ID="e2e-compliance-$(date +%s)"
+gateway_device DEVICE_ID "e2e-compliance-$(date +%s)-${E2E_RUN_ID}"
 
 exec_in_pod cfgd --config /etc/cfgd/e2e-compliance-cfgd.yaml compliance --no-color > /dev/null 2>&1 || true
 CHECKIN_OUTPUT=$(exec_in_pod cfgd --config /etc/cfgd/cfgd.yaml checkin \
@@ -220,11 +220,7 @@ DEVICES=$(exec_in_pod curl -sf -H "Authorization: Bearer $GW_API_KEY" "${SERVER_
 if assert_contains "$DEVICES" "$DEVICE_ID"; then
     pass_test "FS-DRIFT-08"
 else
-    if [ "$CHECKIN_RC" -le 1 ]; then
-        pass_test "FS-DRIFT-08"
-    else
-        fail_test "FS-DRIFT-08" "Device not registered after compliance+checkin (exit $CHECKIN_RC): $CHECKIN_OUTPUT"
-    fi
+    fail_test "FS-DRIFT-08" "Device not registered after compliance+checkin (exit $CHECKIN_RC): $CHECKIN_OUTPUT"
 fi
 
 # =================================================================

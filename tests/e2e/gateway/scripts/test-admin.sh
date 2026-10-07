@@ -36,13 +36,13 @@ gw_enroll_post() {
 gw_enroll_new_device() {
     local suffix="$1"
     local token
+    gateway_device GW_HELPER_DEVICE_ID "e2e-admin-device-${suffix}-${E2E_RUN_ID}" || return 1
     token=$(gw_create_bootstrap_token "e2e-admin-$suffix")
     if [ -z "$token" ]; then
         echo "  Failed to create bootstrap token for $suffix"
         return 1
     fi
 
-    GW_HELPER_DEVICE_ID="e2e-admin-device-${suffix}-${E2E_RUN_ID}"
     local body_file="$GW_SCRATCH/enroll-$suffix.json"
     if ! gw_enroll_post "$token" "$GW_HELPER_DEVICE_ID" "e2e-host-$suffix" "$body_file"; then
         echo "  Enrollment failed for $suffix (HTTP $GW_ENROLL_CODE): $(cat "$body_file" 2>/dev/null)"
@@ -304,7 +304,7 @@ if ! gw_enroll_new_device "gw16"; then
     GW16_PASS=false
 fi
 
-GW16_DEVICE_ID="$GW_HELPER_DEVICE_ID"
+gateway_device GW16_DEVICE_ID "$GW_HELPER_DEVICE_ID"
 GW16_OLD_KEY="$GW_HELPER_API_KEY"
 
 # Step 2: Revoke its credential

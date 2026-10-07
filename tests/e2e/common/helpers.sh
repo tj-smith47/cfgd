@@ -324,6 +324,29 @@ create_e2e_namespace() {
         echo "  WARN: registry-credentials not replicated to $E2E_NAMESPACE (Reflector may not be running)"
 }
 
+# The device ids this job sends to the release gateway. The DriftAlerts the
+# gateway creates for them carry no run label, so cleanup_e2e deletes them by
+# their cfgd.io/device-id label. Re-sourcing this file keeps the list.
+[[ -v E2E_GATEWAY_DEVICES ]] || E2E_GATEWAY_DEVICES=()
+
+# gateway_device <var> <id>: set <var> to <id> and record the id for
+# cleanup_e2e. The gateway labels an alert with the id cut to a label value,
+# so an id that is not already one would escape the selector; the cluster
+# janitor reaps a leaked alert by the e2e- and fullstack-device- prefixes.
+# Refuses any other id.
+gateway_device() {
+    local var="$1" id="$2" seen
+    if ! [[ $id =~ ^(e2e-|fullstack-device-)([a-z0-9-]*[a-z0-9])?$ ]] || [ "${#id}" -gt 63 ]; then
+        echo "ERROR: gateway device id '$id' is not a label value of at most 63 characters starting with e2e- or fullstack-device-" >&2
+        return 1
+    fi
+    printf -v "$var" '%s' "$id"
+    for seen in "${E2E_GATEWAY_DEVICES[@]}"; do
+        [ "$seen" != "$id" ] || return 0
+    done
+    E2E_GATEWAY_DEVICES+=("$id")
+}
+
 cleanup_e2e() {
     echo "Cleaning up E2E resources for run $E2E_RUN_ID..."
 
@@ -344,6 +367,12 @@ cleanup_e2e() {
     for kind in module clusterconfigpolicy; do
         kubectl delete "$kind" -l "$E2E_JOB_LABEL" --ignore-not-found 2>/dev/null || true
     done
+
+    if [ "${#E2E_GATEWAY_DEVICES[@]}" -gt 0 ]; then
+        local device_ids
+        device_ids="$(IFS=,; echo "${E2E_GATEWAY_DEVICES[*]}")"
+        kubectl delete driftalert -n "$CFGD_NAMESPACE" -l "cfgd.io/device-id in ($device_ids)" --ignore-not-found 2>/dev/null || true
+    fi
 
     # Last: the scratch root holds this run's $HOME, and every kubectl above
     # resolves its discovery cache under it. It is removed here when
