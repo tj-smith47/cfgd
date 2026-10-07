@@ -15,3 +15,17 @@ relay_post() {
     wait_until 30 2 "the relay to admit $2" relay_once "$@"
 }
 relay_post "$TOKEN" "$GOOD_ID" host "$BODY_FILE"
+curl -X POST "$URL/api/v1/devices/${GOOD_ID}/drift" -d "$BODY"
+cat > "$SERVER_CONF" <<EOF
+spec:
+  origin:
+    - type: Server
+EOF
+cat > "$LOCAL_CONF" <<EOF
+spec:
+  profile: local
+EOF
+cfgd --config "$LOCAL_CONF" daemon --no-color &
+cfgd --config "$SERVER_CONF" checkin \
+    --device-id "$GOOD_ID"
+cfgd --config "$SERVER_CONF" daemon & # device-id-ok: the fixture daemon has nothing to report

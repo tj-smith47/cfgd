@@ -860,7 +860,7 @@ spec:
 INNEREOF"
 
     # Start daemon (it does a server checkin at startup and on each reconcile)
-    exec_in_pod bash -c 'sysctl -w fs.inotify.max_user_instances=512 fs.inotify.max_user_watches=524288 > /dev/null 2>&1; nohup cfgd --config /etc/cfgd/e2e-daemon17-cfgd.yaml daemon --no-color > /tmp/daemon17.log 2>&1 &'
+    exec_in_pod bash -c 'sysctl -w fs.inotify.max_user_instances=512 fs.inotify.max_user_watches=524288 > /dev/null 2>&1; nohup cfgd --config /etc/cfgd/e2e-daemon17-cfgd.yaml daemon --no-color > /tmp/daemon17.log 2>&1 &' # device-id-ok: a daemon check-in sends no drift report, and the pod holds no device credential, so the daemon skips the check-in
     DAEMON_PID=$(exec_in_pod bash -c 'pgrep -f "cfgd.*e2e-daemon17-cfgd" | head -1 || echo ""')
     echo "  Daemon PID: $DAEMON_PID"
 

@@ -274,17 +274,30 @@ every rule.
 ## An e2e device id comes from `gateway_device`
 
 The release gateway labels each DriftAlert it creates `cfgd.io/device-id=<id>` and
-gives it no run label, so the run label cannot clean it up. Every device id a
-gateway, node or full-stack script sends to the gateway (a `--device-id` argument,
-a `"deviceId"` JSON key, the id argument of `gw_enroll_once` / `gw_enroll_post`) is
-a variable set only by `gateway_device <var> <id>` in `tests/e2e/common/helpers.sh`,
-and `cleanup_e2e` deletes the alerts of every id it recorded. The helper refuses an
-id that is not already a label value of at most 63 characters or does not start with
-`e2e-` or `fullstack-device-`, the prefixes the cluster janitor reaps by. An id is
-`<stem>-${E2E_RUN_ID}`; a case that needs a fresh device per invocation adds
-`$(date +%s)` or `$$` before the run id. `tests/e2e/common/test-pr-install.sh`
-(`task e2e:tags:check`) fails on any other sent value, and on a relay its list
-names that no script defines.
+gives it no run label, so the run label cannot clean it up. `gateway_device <var> <id>`
+in `tests/e2e/common/helpers.sh` sets the variable and records the id, and
+`cleanup_e2e` deletes the alerts of every recorded id; a failed delete prints a
+`WARN:` line on stderr naming the ids and the teardown goes on. The helper refuses an
+id that is not already a label value of at most 63 characters (lowercase letters,
+digits and `-`, ending in a letter or digit, with at least one character after the
+prefix) or does not start with `e2e-` or `fullstack-device-`, the prefixes the
+cluster janitor reaps by. An id is `<stem>-${E2E_RUN_ID}`; a case that needs a fresh
+device per invocation adds `$(date +%s)` or `$$` before the run id.
+
+`tests/e2e/common/test-pr-install.sh` (`task e2e:tags:check`) reads every tracked
+`*.sh` under `tests/e2e/gateway/`, `node/` and `full-stack/` and fails on:
+
+- a `--device-id` argument, a `"deviceId"` JSON key, the `<id>` of a
+  `/api/v1/devices/<id>/drift` URL, or the id argument at a call of a relay its
+  list names (`gw_enroll_once`, `gw_enroll_post`), whose value is not exactly
+  `$VAR` or `${VAR}` with `VAR` set by `gateway_device` in the same directory and
+  by nothing else there (`NAME=`, `read`, `mapfile`, `readarray`, `printf -v`,
+  `for NAME in`, `local` and `declare` all count);
+- a `cfgd` `checkin`, `enroll` or `daemon` command line aimed at a gateway, by
+  `--server-url` or by a `--config` path a script writes with a heredoc holding a
+  `type: Server` origin, that passes no `--device-id` and carries no
+  `# device-id-ok: <why>` on the command line;
+- a relay its list names that no scanned script defines.
 
 ## A test never inherits its terminal shape from the ambient one
 

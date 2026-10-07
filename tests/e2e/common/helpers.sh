@@ -336,7 +336,7 @@ create_e2e_namespace() {
 # Refuses any other id.
 gateway_device() {
     local var="$1" id="$2" seen
-    if ! [[ $id =~ ^(e2e-|fullstack-device-)([a-z0-9-]*[a-z0-9])?$ ]] || [ "${#id}" -gt 63 ]; then
+    if ! [[ $id =~ ^(e2e-|fullstack-device-)[a-z0-9-]*[a-z0-9]$ ]] || [ "${#id}" -gt 63 ]; then
         echo "ERROR: gateway device id '$id' is not a label value of at most 63 characters starting with e2e- or fullstack-device-" >&2
         return 1
     fi
@@ -369,9 +369,11 @@ cleanup_e2e() {
     done
 
     if [ "${#E2E_GATEWAY_DEVICES[@]}" -gt 0 ]; then
-        local device_ids
+        local device_ids delete_err
         device_ids="$(IFS=,; echo "${E2E_GATEWAY_DEVICES[*]}")"
-        kubectl delete driftalert -n "$CFGD_NAMESPACE" -l "cfgd.io/device-id in ($device_ids)" --ignore-not-found 2>/dev/null || true
+        if ! delete_err="$(kubectl delete driftalert -n "$CFGD_NAMESPACE" -l "cfgd.io/device-id in ($device_ids)" --ignore-not-found 2>&1 >/dev/null)"; then
+            echo "WARN: could not delete the DriftAlerts of $device_ids: $delete_err" >&2
+        fi
     fi
 
     # Last: the scratch root holds this run's $HOME, and every kubectl above

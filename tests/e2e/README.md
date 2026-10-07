@@ -242,15 +242,32 @@ gateway_device DEVICE_1 "fullstack-device-1-${E2E_RUN_ID}"
 ```
 
 `gateway_device` refuses an id that is not already a label value (lowercase letters,
-digits and `-`, at most 63 characters, ending in a letter or digit) or that does not
-start with `e2e-` or `fullstack-device-`, the prefixes the cluster janitor reaps a
-leaked alert by. An id is run-scoped (`<stem>-${E2E_RUN_ID}`); a case that needs a
-fresh device on every invocation adds `$(date +%s)` or `$$` before the run id.
-`test-pr-install.sh` fails on a `--device-id` argument or a `"deviceId"` JSON key
-under `gateway/`, `node/` or `full-stack/` whose value is not one variable that only
-`gateway_device` calls assign. A function that sends a positional argument as the id
-(`gw_enroll_once`, `gw_enroll_post`) is listed in the check as a relay, and its call
-sites are held to the same rule.
+digits and `-`, at most 63 characters, ending in a letter or digit, with at least one
+character after the prefix) or that does not start with `e2e-` or `fullstack-device-`,
+the prefixes the cluster janitor reaps a leaked alert by. An id is run-scoped
+(`<stem>-${E2E_RUN_ID}`); a case that needs a fresh device on every invocation adds
+`$(date +%s)` or `$$` before the run id. When the delete fails, `cleanup_e2e` prints
+`WARN: could not delete the DriftAlerts of <ids>: <kubectl stderr>` and finishes the
+teardown.
+
+`test-pr-install.sh` reads every tracked `*.sh` under `gateway/`, `node/` and
+`full-stack/` and fails on:
+
+- a `--device-id` argument, a `"deviceId"` JSON key, the `<id>` of a
+  `/api/v1/devices/<id>/drift` URL, or the id argument at a call of `gw_enroll_once`
+  or `gw_enroll_post` (the relays the check lists), whose value is not exactly
+  `$VAR` or `${VAR}` with `VAR` set by `gateway_device` in the same directory and by
+  nothing else there (`NAME=`, `read`, `mapfile`, `readarray`, `printf -v`,
+  `for NAME in`, `local` and `declare` all count);
+- a `cfgd` `checkin`, `enroll` or `daemon` command line aimed at a gateway, by
+  `--server-url` or by a `--config` path a script writes with a heredoc holding a
+  `type: Server` origin, that passes no `--device-id` and carries no
+  `# device-id-ok: <why>`:
+
+  ```bash
+  GW33_CHECKIN=$(dp_cfgd checkin --server-url "$GW_URL" 2>&1) # device-id-ok: the dp_write_profile profile declares only backups, so the checkin has no system setting drift to report
+  ```
+- a relay the check lists that no scanned script defines.
 
 ## Components ArgoCD owns
 
