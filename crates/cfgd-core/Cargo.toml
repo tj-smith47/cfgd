@@ -207,6 +207,6 @@ regex = "1"
 # through every binding that carries it; `span-locations` gives each call node
 # its line. Dev-only: the shipped graph reaches syn through zvariant_utils
 # without `visit` or `span-locations`, so neither feature enters a binary.
-syn = { version = "2", features = ["full", "visit"] }
+syn = { version = "3", features = ["full", "visit"] }
 proc-macro2 = { version = "1", features = ["span-locations"] }
 
