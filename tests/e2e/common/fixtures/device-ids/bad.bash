@@ -31,3 +31,4 @@ cfgd checkin --device-id "$MAP_ID"
 cfgd checkin --device-id "$PRINTF_ID"
 cfgd checkin --device-id "$FOR_ID"
 cfgd checkin --device-id "$LOCAL_ID"
+CFGD_SERVER_URL="$URL" cfgd checkin --no-color

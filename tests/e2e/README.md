@@ -259,10 +259,12 @@ teardown.
   `$VAR` or `${VAR}` with `VAR` set by `gateway_device` in the same directory and by
   nothing else there (`NAME=`, `read`, `mapfile`, `readarray`, `printf -v`,
   `for NAME in`, `local` and `declare` all count);
-- a `cfgd` `checkin`, `enroll` or `daemon` command line aimed at a gateway, by
-  `--server-url` or by a `--config` path a script writes with a heredoc holding a
-  `type: Server` origin, that passes no `--device-id` and carries no
-  `# device-id-ok: <why>`:
+- a `cfgd` `checkin` or `enroll` command line (both always reach a gateway, and
+  `CFGD_SERVER_URL` can name it with no flag), or a `cfgd` `daemon` command line
+  aimed at a gateway by `--server-url` or by a `--config` path a script writes
+  with a heredoc holding a `type: Server` origin, that passes no `--device-id`
+  and carries no `# device-id-ok: <why>`. A quoted string holding whitespace (a
+  test title, a header) is not read as a command word:
 
   ```bash
   GW33_CHECKIN=$(dp_cfgd checkin --server-url "$GW_URL" 2>&1) # device-id-ok: the dp_write_profile profile declares only backups, so the checkin has no system setting drift to report

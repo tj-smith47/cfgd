@@ -29,3 +29,5 @@ cfgd --config "$LOCAL_CONF" daemon --no-color &
 cfgd --config "$SERVER_CONF" checkin \
     --device-id "$GOOD_ID"
 cfgd --config "$SERVER_CONF" daemon & # device-id-ok: the fixture daemon has nothing to report
+fail_test "GW-32" "cfgd enroll did not finish"
+curl -H "Authorization: Bearer cfgd_dk_x" "$URL/api/v1/checkin"

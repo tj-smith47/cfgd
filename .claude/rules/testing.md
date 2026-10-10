@@ -293,10 +293,12 @@ device per invocation adds `$(date +%s)` or `$$` before the run id.
   `$VAR` or `${VAR}` with `VAR` set by `gateway_device` in the same directory and
   by nothing else there (`NAME=`, `read`, `mapfile`, `readarray`, `printf -v`,
   `for NAME in`, `local` and `declare` all count);
-- a `cfgd` `checkin`, `enroll` or `daemon` command line aimed at a gateway, by
-  `--server-url` or by a `--config` path a script writes with a heredoc holding a
-  `type: Server` origin, that passes no `--device-id` and carries no
-  `# device-id-ok: <why>` on the command line;
+- a `cfgd` `checkin` or `enroll` command line (both always reach a gateway, and
+  `CFGD_SERVER_URL` can name it with no flag), or a `cfgd` `daemon` command line
+  aimed at a gateway by `--server-url` or by a `--config` path a script writes
+  with a heredoc holding a `type: Server` origin, that passes no `--device-id`
+  and carries no `# device-id-ok: <why>` on the command line. A quoted string
+  holding whitespace (a test title, a header) is not read as a command word;
 - a relay its list names that no scanned script defines.
 
 ## A test never inherits its terminal shape from the ambient one

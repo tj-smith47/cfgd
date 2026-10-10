@@ -3387,8 +3387,8 @@ fi
 # URL, or the argument a relay is called with) whose value is not one variable
 # that only gateway_device calls in the same directory assign (`NAME=`, read,
 # mapfile, readarray, printf -v, for and local or declare all assign);
-# `SENDER file:line` for a cfgd checkin, enroll or daemon aimed at a gateway by
-# --server-url or by a --config a script writes with a Server origin that
+# `SENDER file:line` for a cfgd checkin or enroll, or a daemon aimed at a gateway
+# by --server-url or by a --config a script writes with a Server origin, that
 # passes no --device-id and carries no `# device-id-ok: <why>`; and
 # `RELAY <name>` for a relay no file defines. <relays> lists, as name:position,
 # the functions that send a positional argument as the id; that positional is
@@ -3428,13 +3428,24 @@ scan_device_ids() {
                 if (w[i] ~ "^" ident "$") plain[dir, w[i]] = 1
             }
         }
-        # judge_sender(L, ln): a cfgd checkin, enroll or daemon aimed at a
+        # judge_sender(L, ln): a cfgd checkin or enroll, or a daemon aimed at a
         # gateway (by --server-url or a --config a script writes with a Server
-        # origin) lets the binary pick its device id unless it passes one.
-        function judge_sender(L, ln,    c, aimed) {
-            if (index(tolower(L), "cfgd") == 0) return
-            if (L !~ /(^|[^A-Za-z0-9_-])(checkin|enroll|daemon)([^A-Za-z0-9_-]|$)/) return
-            aimed = (L ~ /--server-url/)
+        # origin), lets the binary pick its device id unless it passes one.
+        # checkin and enroll need no aim test: both require a server URL, which
+        # CFGD_SERVER_URL can supply with no flag on the line.
+        # A quoted string holding whitespace is a message or a header, never a
+        # command word, so it is blanked before the subcommand is looked for:
+        # `begin_test "GW-32: cfgd enroll ..."` and a `cfgd_dk_` bearer token
+        # are not senders.
+        function judge_sender(L, ln,    c, aimed, s, q, n, i) {
+            gsub(/\\"/, "", L)
+            n = split(L, q, "\"")
+            s = q[1]
+            for (i = 2; i <= n; i++)
+                s = s ((i % 2 == 0 && q[i] ~ /[[:space:]]/) ? "\"\"" : (i % 2 == 0 ? "\"" q[i] "\"" : q[i]))
+            if (index(tolower(s), "cfgd") == 0) return
+            if (s !~ /(^|[[:space:](])(checkin|enroll|daemon)([[:space:]);|&]|$)/) return
+            aimed = (s ~ /(^|[[:space:](])(checkin|enroll)([[:space:]);|&]|$)/ || L ~ /--server-url/)
             if (!aimed && match(L, /--config[ =]+("[^"]*"|[^ ]+)/)) {
                 c = substr(L, RSTART, RLENGTH)
                 sub(/^--config[ =]+/, "", c)
@@ -3600,6 +3611,7 @@ DEVICEID bad.bash:30 $MAP_ID
 DEVICEID bad.bash:31 $PRINTF_ID
 DEVICEID bad.bash:32 $FOR_ID
 DEVICEID bad.bash:33 $LOCAL_ID
+SENDER bad.bash:34
 DEVICEID other/uses.bash:2 $GOOD_ID'
 if [ "$device_got" = "$device_want" ]; then
     pass "the device-id scan reports each id sent from a literal, a plain assignment, a variable also assigned by hand, a longer word, a stray positional, a relay call, a drift URL, a variable another directory sets or one read, mapfile, printf -v, for or local reassigns, and each unhatched checkin, enroll or daemon aimed at a gateway with no --device-id, and stays quiet on gateway_device variables, relays, jq paths, comments, a hatched or local-config daemon and a continued checkin that passes one"
