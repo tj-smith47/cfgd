@@ -182,26 +182,43 @@ fi
 # =================================================================
 begin_test "T36: Compliance data included in checkin"
 
-# Create a config with compliance enabled
+# A config whose run yields three distinct, non-zero counts and a non-empty
+# list of failing checks: two declared files whose targets are missing
+# (violations), three watch paths that exist (compliant) and one that does not
+# (a warning).
 exec_in_pod bash -c 'cat > /etc/cfgd/e2e-compliance-checkin.yaml << "INNEREOF"
 apiVersion: cfgd.io/v1alpha1
 kind: Config
 metadata:
   name: e2e-compliance-checkin
 spec:
-  profile: k8s-worker-minimal
+  profile: e2e-compliance-checkin
   compliance:
     enabled: true
     scope:
       files: true
       packages: false
-      system: true
+      system: false
       secrets: false
+      watchPaths:
+        - /etc
+        - /usr
+        - /var
+        - /etc/cfgd-e2e-t36/watched-missing
 INNEREOF'
-
-# Copy profiles for this config (reuse existing profiles)
-exec_in_pod bash -c 'ls /etc/cfgd/profiles/*.yaml > /dev/null 2>&1' || \
-    cp_to_pod "$FIXTURES/profiles/k8s-worker-minimal.yaml" /etc/cfgd/profiles/k8s-worker-minimal.yaml 2>/dev/null || true
+exec_in_pod bash -c 'cat > /etc/cfgd/profiles/e2e-compliance-checkin.yaml << "INNEREOF"
+apiVersion: cfgd.io/v1alpha1
+kind: Profile
+metadata:
+  name: e2e-compliance-checkin
+spec:
+  files:
+    managed:
+      - source: files/t36-a.conf
+        target: /etc/cfgd-e2e-t36/missing-a.conf
+      - source: files/t36-b.conf
+        target: /etc/cfgd-e2e-t36/missing-b.conf
+INNEREOF'
 
 gateway_device COMPLIANCE_DEVICE_ID "e2e-compliance-node-$(date +%s)-${E2E_RUN_ID}"
 
@@ -217,26 +234,33 @@ OUTPUT=$(exec_in_pod cfgd \
 echo "  Compliance checkin output:"
 echo "$OUTPUT" | head -15 | sed 's/^/    /'
 
-# Verify the device now has complianceSummary in its API response
 DEVICE_RESP=$(exec_in_pod curl -sf -H "Authorization: Bearer $GW_API_KEY" "${SERVER_URL}/api/v1/devices/${COMPLIANCE_DEVICE_ID}" 2>/dev/null || echo "{}")
-echo "  Device API response (first 400 chars):"
-echo "$DEVICE_RESP" | head -c 400 | sed 's/^/    /'
-echo ""
+GOT=$(echo "$DEVICE_RESP" | jq -c '.complianceSummary' 2>/dev/null || echo "")
 
-# The counts the pod's own compliance run reports are the ones the checkin must carry.
-WANT_COUNTS=$(pod_compliance_json /etc/cfgd/e2e-compliance-checkin.yaml | jq -c '.snapshot.summary | [.compliant, .warning, .violation]' 2>/dev/null || echo "")
-GOT_COUNTS=$(echo "$DEVICE_RESP" | jq -c '.complianceSummary | [.compliant, .warning, .violation]' 2>/dev/null || echo "")
-echo "  compliant/warning/violation: stored=$GOT_COUNTS pod=$WANT_COUNTS"
+# The summary the check-in must carry, built from the pod's own compliance run
+# by the rule CheckinCompliance::from_snapshot applies: the counts, then the
+# violations followed by the warnings, cut at MAX_REPORTED_CHECKS, each named
+# by ComplianceCheck::subject_name (target, name, key or path).
+MAX_CHECKS=$(sed -n 's/^pub const MAX_REPORTED_CHECKS: usize = \([0-9][0-9]*\);$/\1/p' "$REPO_ROOT/crates/cfgd-schema/src/lib.rs")
+WANT=$(pod_compliance_json /etc/cfgd/e2e-compliance-checkin.yaml | jq -c --argjson max "${MAX_CHECKS:-null}" '
+    .snapshot
+    | ([(.checks[] | select(.status == "Violation")), (.checks[] | select(.status == "Warning"))][:$max]
+       | map({category, name: (.target // .name // .key // .path // "(unknown)"), status}
+             + (if .detail == null then {} else {detail} end))) as $checks
+    | {compliant: .summary.compliant, warning: .summary.warning, violation: .summary.violation}
+      + (if ($checks | length) > 0 then {checks: $checks} else {} end)' 2>/dev/null || echo "")
+echo "  stored: $GOT"
+echo "  want:   $WANT"
 
-if [ "$RC" -eq 0 ] && [ -n "$WANT_COUNTS" ] \
-    && echo "$DEVICE_RESP" | jq -e --argjson w "$WANT_COUNTS" '.complianceSummary | [.compliant, .warning, .violation] | . == $w and all(.[]; type == "number")' >/dev/null 2>&1; then
+if [ "$RC" -eq 0 ] && [ -n "$MAX_CHECKS" ] && [ -n "$WANT" ] \
+    && echo "$WANT" | jq -e '[.compliant, .warning, .violation] as [$c, $w, $v] | all($c, $w, $v; type == "number" and . > 0) and $c != $w and $w != $v and $c != $v' >/dev/null 2>&1 \
+    && echo "$DEVICE_RESP" | jq -e --argjson want "$WANT" '.complianceSummary == $want' >/dev/null 2>&1; then
     pass_test "T36"
 else
-    fail_test "T36" "Stored compliance counts $GOT_COUNTS differ from the pod's compliance run, $WANT_COUNTS (exit: $RC)"
+    fail_test "T36" "Stored complianceSummary differs from the pod's compliance run, or that run's counts are not three distinct non-zero numbers (exit: $RC, MAX_REPORTED_CHECKS: ${MAX_CHECKS:-unread})"
 fi
 
-# Cleanup the compliance config
-exec_in_pod rm -f /etc/cfgd/e2e-compliance-checkin.yaml 2>/dev/null || true
+exec_in_pod rm -f /etc/cfgd/e2e-compliance-checkin.yaml /etc/cfgd/profiles/e2e-compliance-checkin.yaml 2>/dev/null || true
 
 # --- Summary ---
 print_summary "Device Gateway Integration Tests"
