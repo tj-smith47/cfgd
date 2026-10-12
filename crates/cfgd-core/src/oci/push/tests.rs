@@ -461,6 +461,11 @@ fn push_module_registry_failure_finishes_spinner_as_fail() {
     let registry = registry_from_url(&server.url());
     let module_dir = create_test_module_dir();
 
+    // The tag holds nothing yet, so the push goes on to the upload that fails.
+    server
+        .mock("GET", "/v2/test/failpush/manifests/v1")
+        .with_status(404)
+        .create();
     server
         .mock(
             "HEAD",
@@ -468,10 +473,11 @@ fn push_module_registry_failure_finishes_spinner_as_fail() {
         )
         .with_status(500)
         .create();
-    server
+    let upload_post = server
         .mock("POST", "/v2/test/failpush/blobs/uploads/")
         .with_status(500)
         .with_body(r#"{"errors":[{"code":"DENIED","message":"quota exceeded"}]}"#)
+        .expect_at_least(1)
         .create();
 
     let (printer, buf) = crate::output::Printer::for_test();
@@ -482,6 +488,7 @@ fn push_module_registry_failure_finishes_spinner_as_fail() {
         Some("linux/amd64"),
         Some(&printer),
     );
+    upload_post.assert();
     assert!(result.is_err(), "500 from registry must surface as Err");
     printer.flush();
 
@@ -639,16 +646,18 @@ fn push_module_multiplatform_index_failure_finishes_spinner_as_fail() {
         .mock("PUT", "/v2/test/failmulti/manifests/multi-tag-linux-amd64")
         .with_status(201)
         .create();
-    server
+    let index_put = server
         .mock("PUT", "/v2/test/failmulti/manifests/multi-tag")
         .with_status(500)
         .with_body(r#"{"errors":[{"code":"DENIED","message":"insufficient storage"}]}"#)
+        .expect(1)
         .create();
 
     let (printer, buf) = crate::output::Printer::for_test();
     let artifact_ref = format!("{}/test/failmulti:multi-tag", registry);
     let builds: Vec<(&std::path::Path, &str)> = vec![(amd64_dir.path(), "linux/amd64")];
     let result = push_module_multiplatform(&builds, &artifact_ref, Some(&printer));
+    index_put.assert();
     assert!(result.is_err(), "index 500 must surface as Err");
     printer.flush();
 

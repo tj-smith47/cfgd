@@ -12,7 +12,7 @@ use crate::sha256_digest;
 use super::archive::extract_tar_gz;
 use super::auth::RegistryAuth;
 use super::sign::{VerifyOptions, verify_attestation, verify_signature};
-use super::transport::{authenticated_request_if_present, response_digest};
+use super::transport::{Missing, authenticated_request_if_present, get_present, response_digest};
 use super::{MEDIA_TYPE_OCI_MANIFEST, OciManifest, OciReference};
 
 /// The result of a successful [`pull_module`] call.
@@ -189,16 +189,13 @@ fn fetch_manifest_document(
         oci_ref.api_base(),
         oci_ref.repository,
     );
-    let resp = authenticated_request_if_present(
+    let resp = get_present(
         agent,
-        "GET",
         &url,
         auth,
         Some(&super::manifest_accept()),
-    )?
-    .ok_or_else(|| OciError::ManifestNotFound {
-        reference: oci_ref.to_string(),
-    })?;
+        Missing::Manifest(oci_ref),
+    )?;
     let ManifestDocument { digest, doc, .. } = read_manifest_document(resp)?;
     Ok((digest, doc))
 }
@@ -383,16 +380,13 @@ fn pull_module_inner(
         layer.digest,
     );
 
-    let resp = authenticated_request_if_present(
+    let resp = get_present(
         agent,
-        "GET",
         &blob_url,
         auth,
         Some("application/octet-stream"),
-    )?
-    .ok_or_else(|| OciError::BlobNotFound {
-        digest: layer.digest.clone(),
-    })?;
+        Missing::Blob(&layer.digest),
+    )?;
 
     // Read blob data (cap at 512 MB to prevent OOM from malicious manifests)
     const MAX_BLOB_SIZE: u64 = 512 * 1024 * 1024;
@@ -476,16 +470,13 @@ fn fetch_pull_document(
         oci_ref.api_base(),
         oci_ref.repository,
     );
-    let resp = authenticated_request_if_present(
+    let resp = get_present(
         agent,
-        "GET",
         &url,
         auth,
         Some(&super::manifest_accept()),
-    )?
-    .ok_or_else(|| OciError::ManifestNotFound {
-        reference: name.to_string(),
-    })?;
+        Missing::Manifest(name),
+    )?;
     read_manifest_document(resp)
 }
 
@@ -1209,13 +1200,15 @@ mod tests {
             .with_header("Docker-Content-Digest", "sha256:c0ffee")
             .with_body(serde_json::json!({ "schemaVersion": 2, "layers": [] }).to_string())
             .create();
-        server
+        let att = server
             .mock("GET", "/v2/test/attfail/manifests/sha256-c0ffee.att")
             .with_status(500)
+            .expect(1)
             .create();
 
         let err = artifact_facts(&format!("{registry}/test/attfail:v1"))
             .expect_err("a 500 is not the answer \"no attestation\"");
+        att.assert();
         assert!(matches!(err, OciError::RequestFailed { .. }), "{err:?}");
     }
 
@@ -1234,12 +1227,15 @@ mod tests {
     /// The pull error for a tag whose manifest GET answers `status`.
     fn pull_with_manifest_status(status: usize) -> OciError {
         let mut server = mockito::Server::new();
-        server
+        let manifest = server
             .mock("GET", "/v2/test/statusmod/manifests/v1")
             .with_status(status)
+            .expect(1)
             .create();
-        pull_plain(&registry_from_url(&server.url()), "test/statusmod")
-            .expect_err("the manifest is not served")
+        let err = pull_plain(&registry_from_url(&server.url()), "test/statusmod")
+            .expect_err("the manifest is not served");
+        manifest.assert();
+        err
     }
 
     #[test]
@@ -1278,16 +1274,18 @@ mod tests {
             .with_status(200)
             .with_body(manifest.to_string())
             .create();
-        server
+        let layer = server
             .mock(
                 "GET",
                 mockito::Matcher::Regex(r"/v2/test/layerfail/blobs/sha256:.*".to_string()),
             )
             .with_status(500)
+            .expect(1)
             .create();
 
         let err = pull_plain(&registry_from_url(&server.url()), "test/layerfail")
             .expect_err("the layer is not served");
+        layer.assert();
         assert!(matches!(err, OciError::RequestFailed { .. }), "{err:?}");
     }
 

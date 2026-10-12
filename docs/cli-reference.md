@@ -2339,8 +2339,9 @@ before any check runs.
 
 Only a registry's own `404` reports something missing: `manifest not found` for the tag or index
 entry, `blob not found` for a layer. A registry that cannot be reached or answers with any other
-HTTP error fails with `registry request failed`, and one that refuses the credential fails with
-`registry authentication failed`; both carry the cause.
+HTTP error fails with `registry request failed`. One that refuses the credential (a 401 or 403,
+before or after a token exchange) fails with `registry authentication failed`. Both carry the
+cause.
 
 ```sh
 cfgd module pull ghcr.io/me/my-module:1.0.0 --dir out --platform linux/arm64 -o json

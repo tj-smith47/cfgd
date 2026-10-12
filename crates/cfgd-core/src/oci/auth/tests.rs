@@ -896,18 +896,20 @@ fn get_bearer_token_handles_failed_http_call() {
 fn get_bearer_token_names_the_registry_when_the_token_endpoint_refuses() {
     let mut server = mockito::Server::new();
     let www_auth = format!(r#"Bearer realm="{}/token",service="svc""#, server.url());
-    server
+    let token = server
         .mock(
             "GET",
             mockito::Matcher::Regex(r"/token\?service=.*".to_string()),
         )
         .with_status(403)
+        .expect(1)
         .create();
     let agent = ureq::Agent::config_builder()
         .timeout_global(Some(std::time::Duration::from_secs(10)))
         .build()
         .new_agent();
     let result = get_bearer_token(&agent, &www_auth, None, "reg.example");
+    token.assert();
     assert!(
         matches!(&result, Err(OciError::AuthFailed { registry, .. }) if registry == "reg.example"),
         "{result:?}"

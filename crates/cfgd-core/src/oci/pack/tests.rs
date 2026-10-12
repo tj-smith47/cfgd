@@ -485,13 +485,15 @@ fn pack_image_manifest_push_500_returns_manifest_push_failed() {
         .create();
 
     // Manifest PUT fails server-side.
-    server
+    let manifest_put = server
         .mock("PUT", "/v2/myorg/myimage/manifests/v1")
         .with_status(500)
+        .expect(1)
         .create();
 
     let artifact_ref = format!("{registry}/myorg/myimage:v1");
     let result = pack_image(dir.path(), &artifact_ref, &PackOptions::default(), None);
+    manifest_put.assert();
 
     let err = result.expect_err("manifest PUT 500 must yield Err");
     assert!(
@@ -519,7 +521,7 @@ fn pack_image_blob_upload_500_returns_blob_upload_failed() {
         .create();
 
     // POST to initiate upload fails server-side.
-    server
+    let upload_post = server
         .mock("POST", "/v2/myorg/myimage/blobs/uploads/")
         .with_status(500)
         .expect_at_least(1)
@@ -527,6 +529,7 @@ fn pack_image_blob_upload_500_returns_blob_upload_failed() {
 
     let artifact_ref = format!("{registry}/myorg/myimage:v1");
     let result = pack_image(dir.path(), &artifact_ref, &PackOptions::default(), None);
+    upload_post.assert();
 
     let err = result.expect_err("blob POST 500 must yield Err");
     assert!(

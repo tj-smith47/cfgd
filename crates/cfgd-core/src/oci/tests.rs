@@ -880,33 +880,153 @@ fn image_config_serializes_with_correct_oci_keys() {
     assert!(rt_config.user.is_none());
 }
 
-/// Only a registry's own `404` is "not found": every production construction of
-/// `ManifestNotFound` or `BlobNotFound` under `oci/` is the `None` arm of
-/// `authenticated_request_if_present`, spelled `.ok_or_else(||` on its own
-/// line. One built inside a `map_err` turns an unreachable registry, a `500`
-/// or a refused credential into a missing artifact.
+/// Only a registry's own `404` is "not found": `transport::get_present` is the
+/// one function in the workspace's production code that builds
+/// `ManifestNotFound` or `BlobNotFound`, in any spelling (`OciError::`,
+/// `Self::`, a glob import, inside a macro); importing either under another
+/// name counts as a construction. A construction anywhere else could
+/// answer "missing" for an unreachable registry, a `500` or a refused
+/// credential. Each production file is parsed whole with its test-gated items
+/// skipped, so a file that does not parse fails the walk, and the expected map names the file and function holding the
+/// constructions, so a renamed or unread file fails by name.
 #[test]
-fn only_a_registry_404_constructs_a_not_found_error() {
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/oci");
-    let mut seen = 0;
-    let mut offenders = Vec::new();
-    for path in crate::test_helpers::rust_sources_under(&root) {
-        let code = crate::test_helpers::production_code_of(&path);
-        for (n, line) in code.lines().enumerate() {
-            if !(line.contains("OciError::ManifestNotFound {")
-                || line.contains("OciError::BlobNotFound {"))
-            {
-                continue;
-            }
-            seen += 1;
-            if !line.contains(".ok_or_else(||") {
-                offenders.push(format!("{}:{}: {}", path.display(), n + 1, line.trim()));
+fn only_get_present_builds_a_not_found_error() {
+    use std::collections::BTreeMap;
+    use syn::visit::Visit;
+
+    const VARIANTS: [&str; 2] = ["ManifestNotFound", "BlobNotFound"];
+
+    struct Builds {
+        file: String,
+        function: Vec<String>,
+        found: BTreeMap<String, usize>,
+    }
+    impl Builds {
+        fn record(&mut self) {
+            let function = self.function.last().map_or("<no fn>", String::as_str);
+            *self
+                .found
+                .entry(format!("{} in fn {function}", self.file))
+                .or_default() += 1;
+        }
+        fn scan_tokens(&mut self, tokens: proc_macro2::TokenStream) {
+            let mut previous_named_a_variant = false;
+            for tree in tokens {
+                if let proc_macro2::TokenTree::Group(group) = &tree {
+                    if previous_named_a_variant
+                        && group.delimiter() == proc_macro2::Delimiter::Brace
+                    {
+                        self.record();
+                    }
+                    self.scan_tokens(group.stream());
+                }
+                previous_named_a_variant = matches!(
+                    &tree,
+                    proc_macro2::TokenTree::Ident(ident) if VARIANTS.iter().any(|v| ident == v)
+                );
             }
         }
     }
-    assert!(
-        seen >= 5,
-        "the walk found {seen} constructions, so it went blind"
+    /// An item compiled only into test builds, which ships nothing.
+    fn test_gated(attrs: &[syn::Attribute]) -> bool {
+        attrs.iter().any(|attr| {
+            attr.path().is_ident("cfg")
+                && attr.meta.require_list().is_ok_and(|list| {
+                    crate::test_helpers::cfg_requires_test(&list.tokens.to_string())
+                })
+        })
+    }
+    impl<'ast> Visit<'ast> for Builds {
+        fn visit_item_mod(&mut self, item: &'ast syn::ItemMod) {
+            if !test_gated(&item.attrs) {
+                syn::visit::visit_item_mod(self, item);
+            }
+        }
+        fn visit_item_impl(&mut self, item: &'ast syn::ItemImpl) {
+            if !test_gated(&item.attrs) {
+                syn::visit::visit_item_impl(self, item);
+            }
+        }
+        fn visit_item_fn(&mut self, item: &'ast syn::ItemFn) {
+            if test_gated(&item.attrs) {
+                return;
+            }
+            self.function.push(item.sig.ident.to_string());
+            syn::visit::visit_item_fn(self, item);
+            self.function.pop();
+        }
+        fn visit_impl_item_fn(&mut self, item: &'ast syn::ImplItemFn) {
+            if test_gated(&item.attrs) {
+                return;
+            }
+            self.function.push(item.sig.ident.to_string());
+            syn::visit::visit_impl_item_fn(self, item);
+            self.function.pop();
+        }
+        fn visit_trait_item_fn(&mut self, item: &'ast syn::TraitItemFn) {
+            self.function.push(item.sig.ident.to_string());
+            syn::visit::visit_trait_item_fn(self, item);
+            self.function.pop();
+        }
+        fn visit_expr_struct(&mut self, expr: &'ast syn::ExprStruct) {
+            if expr
+                .path
+                .segments
+                .last()
+                .is_some_and(|segment| VARIANTS.iter().any(|v| segment.ident == v))
+            {
+                self.record();
+            }
+            syn::visit::visit_expr_struct(self, expr);
+        }
+        fn visit_use_rename(&mut self, rename: &'ast syn::UseRename) {
+            // A variant imported under another name is constructed under that
+            // name, where neither check above can see it.
+            if VARIANTS.iter().any(|v| rename.ident == v) {
+                self.record();
+            }
+        }
+        fn visit_macro(&mut self, mac: &'ast syn::Macro) {
+            self.scan_tokens(mac.tokens.clone());
+        }
+    }
+
+    let root = crate::test_helpers::workspace_root();
+    let mut builds = Builds {
+        file: String::new(),
+        function: Vec::new(),
+        found: BTreeMap::new(),
+    };
+    for (_, files) in
+        crate::test_helpers::production_sources_per_root(crate::test_helpers::WORKSPACE_CRATES)
+    {
+        // A file holding tests alone has an empty production view.
+        for (path, _) in files
+            .iter()
+            .filter(|(_, production)| !production.is_empty())
+        {
+            let rel = path.strip_prefix(&root).unwrap_or(path);
+            builds.file = rel.to_string_lossy().replace('\\', "/");
+            let body = crate::test_helpers::walked_file_body(path);
+            let file = syn::parse_file(&body)
+                .unwrap_or_else(|e| panic!("{}: does not parse: {e}", builds.file));
+            builds.visit_file(&file);
+        }
+    }
+    proc_macro2::extra::invalidate_current_thread_spans();
+
+    let expected = BTreeMap::from([(
+        "crates/cfgd-core/src/oci/transport.rs in fn get_present".to_string(),
+        2,
+    )]);
+    let stray: Vec<_> = builds
+        .found
+        .iter()
+        .filter(|(at, _)| !expected.contains_key(*at))
+        .collect();
+    assert!(stray.is_empty(), "built outside get_present: {stray:?}");
+    assert_eq!(
+        builds.found, expected,
+        "get_present no longer builds each variant once"
     );
-    assert!(offenders.is_empty(), "{offenders:#?}");
 }
