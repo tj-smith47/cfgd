@@ -223,11 +223,16 @@ echo "  Device API response (first 400 chars):"
 echo "$DEVICE_RESP" | head -c 400 | sed 's/^/    /'
 echo ""
 
-if [ "$RC" -eq 0 ] \
-    && echo "$DEVICE_RESP" | jq -e '.complianceSummary | (.compliant | type) == "number" and (.warning | type) == "number" and (.violation | type) == "number"' >/dev/null 2>&1; then
+# The counts the pod's own compliance run reports are the ones the checkin must carry.
+WANT_COUNTS=$(pod_compliance_json /etc/cfgd/e2e-compliance-checkin.yaml | jq -c '.snapshot.summary | [.compliant, .warning, .violation]' 2>/dev/null || echo "")
+GOT_COUNTS=$(echo "$DEVICE_RESP" | jq -c '.complianceSummary | [.compliant, .warning, .violation]' 2>/dev/null || echo "")
+echo "  compliant/warning/violation: stored=$GOT_COUNTS pod=$WANT_COUNTS"
+
+if [ "$RC" -eq 0 ] && [ -n "$WANT_COUNTS" ] \
+    && echo "$DEVICE_RESP" | jq -e --argjson w "$WANT_COUNTS" '.complianceSummary | [.compliant, .warning, .violation] | . == $w and all(.[]; type == "number")' >/dev/null 2>&1; then
     pass_test "T36"
 else
-    fail_test "T36" "Device API response carries no complianceSummary with numeric compliant, warning and violation counts (exit: $RC)"
+    fail_test "T36" "Stored compliance counts $GOT_COUNTS differ from the pod's compliance run, $WANT_COUNTS (exit: $RC)"
 fi
 
 # Cleanup the compliance config
