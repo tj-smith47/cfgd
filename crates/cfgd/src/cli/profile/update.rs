@@ -109,62 +109,54 @@ pub fn cmd_profile_update(
             let module_file_targets =
                 collect_module_file_targets(m, &config_dir, cli.cache_dir.as_deref(), cli.scope());
 
-            // Clean up lockfile entry and cache if this was a remote module
+            // The module's cached tree stays: its deployed links may still
+            // point into it, and the next apply's sweep removes it once
+            // nothing does.
             let mut lockfile = modules::load_lockfile(&config_dir)?;
-            let removed_entry = lockfile.modules.iter().find(|e| e.name == *m).cloned();
+            let before_lock = lockfile.modules.len();
             lockfile.modules.retain(|e| e.name != *m);
-            if let Some(entry) = removed_entry {
+            if lockfile.modules.len() < before_lock {
                 modules::save_lockfile(&config_dir, &lockfile)?;
                 printer.status_simple(Role::Info, format!("Removed '{}' from modules.lock", m));
-                if let Ok(git_src) = modules::parse_git_source(&entry.url) {
-                    let cache_base = module_cache_dir(cli).unwrap_or_default();
-                    let cache_dir = modules::git_cache_dir(&cache_base, &git_src.repo_url);
-                    if cache_dir.exists() {
-                        if let Err(e) = std::fs::remove_dir_all(&cache_dir) {
-                            printer
-                                .status(Role::Warn, "Failed to clean cache")
-                                .qualifier(cfgd_core::output::collapse_to_subject_line(&e));
-                        } else {
-                            printer.status_simple(Role::Info, "Cleaned cached checkout");
-                        }
-                    }
-                }
             }
             // Clean module state and deployed files from DB
             if let Ok(state) = open_state_store(cli.state_dir.as_deref(), cli.scope()) {
                 // Query file manifest for deployed files
-                if let Ok(manifest) = state.module_deployed_files(m) {
-                    if !manifest.is_empty() {
-                        {
-                            let deployed_sec = printer.section(format!(
-                                "Module '{}' deployed {}",
-                                m,
-                                cfgd_core::pluralize(manifest.len(), "file")
-                            ));
-                            for f in &manifest {
-                                deployed_sec.bullet(f.file_path.clone());
-                            }
-                        }
-
-                        let should_clean = printer
-                            .prompt_confirm(
-                                "Remove deployed files? Backups will be restored where available.",
-                            )
-                            .unwrap_or(false);
-
-                        if should_clean {
-                            let cleanup_sec = printer.section("Rollback");
-                            let paths: Vec<&str> =
-                                manifest.iter().map(|f| f.file_path.as_str()).collect();
-                            restore_or_remove_deployed_files(&paths, &state, &cleanup_sec, printer);
+                if let Ok(manifest) = state.module_deployed_files(m)
+                    && !manifest.is_empty()
+                {
+                    {
+                        let deployed_sec = printer.section(format!(
+                            "Module '{}' deployed {}",
+                            m,
+                            cfgd_core::pluralize(manifest.len(), "file")
+                        ));
+                        for f in &manifest {
+                            deployed_sec.bullet(f.file_path.clone());
                         }
                     }
-                    if let Err(e) = state.delete_module_files(m) {
-                        printer.status_simple(
-                            Role::Warn,
-                            format!("Rollback: failed to clean module files for {}: {}", m, e),
-                        );
+
+                    let should_clean = printer
+                        .prompt_confirm(
+                            "Remove deployed files? Backups will be restored where available.",
+                        )
+                        .unwrap_or(false);
+
+                    if should_clean {
+                        let cleanup_sec = printer.section("Rollback");
+                        let paths: Vec<&str> =
+                            manifest.iter().map(|f| f.file_path.as_str()).collect();
+                        restore_or_remove_deployed_files(&paths, &state, &cleanup_sec, printer);
+                        if let Err(e) = state.delete_module_files(m) {
+                            printer.status_simple(
+                                Role::Warn,
+                                format!("Rollback: failed to clean module files for {}: {}", m, e),
+                            );
+                        }
                     }
+                    // A declined removal leaves the files in place, and their
+                    // manifest rows are what keeps the cached tree a link
+                    // points into until the link is gone.
                 }
 
                 if let Err(e) = state.remove_module_state(m) {

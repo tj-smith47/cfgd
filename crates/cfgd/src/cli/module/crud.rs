@@ -349,8 +349,30 @@ pub fn cmd_module_create(run: &RunContext<'_>, args: &ModuleCreateArgs) -> anyho
         };
         let apply_run = cfgd_core::reconciler::ApplyRun::new(run_ctx, &plan);
 
+        // Same requirement as `cfgd init --apply-module`: the apply records
+        // module state from this slice, and regenerates the env files from
+        // the PATH directories of a manager it bootstrapped mid-run.
+        //
+        // see helpers::run_state_dir — honor --state-dir so this lock
+        // mutually-excludes against `cfgd apply` and the daemon.
+        let abort = cfgd_core::AbortFlag::new();
+        let mut exec = crate::cli::apply::ReconcilerExecutor::unscoped(
+            &reconciler,
+            &resolved,
+            &config_dir,
+            &resolved_modules,
+            &abort,
+            run_state_dir(cli.state_dir.as_deref(), cli.scope())?,
+            cfgd_core::reconciler::owns_decision_store(
+                &cli.config,
+                cli.state_dir.is_some(),
+                cli.scope(),
+            )
+            .then_some(cache_base.as_path()),
+            &cfg.spec.modules_effective().registries,
+        );
         if plan.total_actions() == 0 {
-            apply_run.header(printer);
+            apply_run.converged(printer, &exec);
             // `module create` exposes no scoping flag, so the verdict takes the
             // filter-less arm of the one helper that owns both spellings.
             crate::cli::plan_ops::report_plan_verdict(
@@ -361,21 +383,6 @@ pub fn cmd_module_create(run: &RunContext<'_>, args: &ModuleCreateArgs) -> anyho
                 &crate::cli::PreviewScope::unscoped(),
             );
         } else {
-            // Same requirement as `cfgd init --apply-module`: the apply records
-            // module state from this slice, and regenerates the env files from
-            // the PATH directories of a manager it bootstrapped mid-run.
-            //
-            // see helpers::run_state_dir — honor --state-dir so this lock
-            // mutually-excludes against `cfgd apply` and the daemon.
-            let abort = cfgd_core::AbortFlag::new();
-            let mut exec = crate::cli::apply::ReconcilerExecutor::unscoped(
-                &reconciler,
-                &resolved,
-                &config_dir,
-                &resolved_modules,
-                &abort,
-                run_state_dir(cli.state_dir.as_deref(), cli.scope())?,
-            );
             let confirm = if args.yes {
                 cfgd_core::reconciler::Confirm::Skip
             } else {

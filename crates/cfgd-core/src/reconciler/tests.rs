@@ -28815,6 +28815,10 @@ struct ReconcilerExecutor<'a> {
 }
 
 impl crate::reconciler::RunExecutor for ReconcilerExecutor<'_> {
+    fn module_checkouts(&self) -> crate::reconciler::ModuleCheckouts<'_> {
+        crate::reconciler::ModuleCheckouts::NotOwned
+    }
+
     fn apply(&mut self, plan: &Plan, printer: &Printer) -> Result<ApplyResult> {
         self.reconciler.apply(
             plan,

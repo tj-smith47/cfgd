@@ -199,9 +199,22 @@ struct TickExecutor<'a> {
     config_dir: &'a Path,
     modules: &'a [crate::modules::ResolvedModule],
     abort: &'a crate::AbortFlag,
+    /// The module cache root the tick resolved its modules under.
+    module_cache: &'a Path,
+    registries: &'a [crate::config::ModuleRegistryEntry],
 }
 
 impl crate::reconciler::RunExecutor for TickExecutor<'_> {
+    fn module_checkouts(&self) -> crate::reconciler::ModuleCheckouts<'_> {
+        crate::reconciler::ModuleCheckouts::Sweep(crate::reconciler::ModuleCache {
+            state: self.reconciler.state_store(),
+            config_dir: self.config_dir,
+            root: self.module_cache,
+            modules: self.modules,
+            registries: self.registries,
+        })
+    }
+
     fn apply(
         &mut self,
         plan: &crate::reconciler::Plan,
@@ -708,12 +721,12 @@ fn reconcile_tick(
     // process got there first. Only an APPLYING tick sweeps: a report-only tick
     // displaces nothing, so a sidecar it took would be a copy of a file nobody
     // was about to overwrite.
+    // The same root `resolve_daemon_modules` resolved the plan's own modules
+    // from — a tick given `--cache-dir` symlinks its module files there, and
+    // answering from the per-user default instead would read every one of
+    // them as a stranger's file on this tick alone.
+    let module_cache = super::tick_module_cache(&config_dir, scope, cache_dir_override);
     let reconciler = if matches!(drift_policy, config::DriftPolicy::Auto) {
-        // The same root `resolve_daemon_modules` resolved the plan's own
-        // modules from — a tick given `--cache-dir` symlinks its module files
-        // there, and answering from the per-user default instead would read
-        // every one of them as a stranger's file on this tick alone.
-        let module_cache = super::tick_module_cache(&config_dir, scope, cache_dir_override);
         match crate::reconciler::sweep_unmanaged_file_targets(
             &mut plan,
             &config_dir,
@@ -1146,7 +1159,21 @@ fn reconcile_tick(
         config::DriftPolicy::Auto => work_total > 0,
         config::DriftPolicy::NotifyOnly | config::DriftPolicy::Prompt => drift_total > 0,
     };
+    let mut exec = TickExecutor {
+        reconciler: &reconciler,
+        resolved,
+        config_dir: &config_dir,
+        modules: &resolved_modules_ref,
+        abort,
+        module_cache: &module_cache,
+        registries: &cfg.spec.modules_effective().registries,
+    };
     let outcome = if !acts {
+        // A converged tick renders no header, so it takes the sweep alone; a
+        // reporting policy applies nothing and leaves the cache to `cfgd apply`.
+        if matches!(drift_policy, config::DriftPolicy::Auto) {
+            crate::reconciler::settle_converged(&exec);
+        }
         Some("nothing to do".to_string())
     } else {
         // The rows every arm below prints above its own body: a tick reports
@@ -1177,13 +1204,6 @@ fn reconcile_tick(
                     "reconcile: drift policy is Auto — applying actions"
                 );
                 let run = crate::reconciler::ApplyRun::new(run_ctx(), &plan);
-                let mut exec = TickExecutor {
-                    reconciler: &reconciler,
-                    resolved,
-                    config_dir: &config_dir,
-                    modules: &resolved_modules_ref,
-                    abort,
-                };
                 match run
                     .execute(printer, crate::reconciler::Confirm::Skip, &mut exec)
                     .map(|disposition| match disposition {

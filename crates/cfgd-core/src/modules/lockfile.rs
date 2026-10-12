@@ -9,10 +9,7 @@ use crate::config::{ModuleLockEntry, ModuleLockfile};
 use crate::errors::{ConfigError, ModuleError, Result};
 use crate::output::Role;
 
-use super::git::{
-    GitSource, fetch_git_source, git_checkout_dir, parse_git_source, remove_pinned_checkout,
-    resolve_subdir,
-};
+use super::git::{GitSource, fetch_git_source, git_checkout_dir, parse_git_source, resolve_subdir};
 use super::loader::{load_module, load_modules};
 use super::{LoadedModule, SourceModuleRoot};
 
@@ -199,29 +196,15 @@ pub fn load_locked_modules(
 }
 
 /// The directory [`load_locked_modules`] loads a locked entry from: the tree of
-/// its locked ref, then its subdir.
+/// its locked commit, then its subdir.
 pub fn locked_module_dir(entry: &ModuleLockEntry, cache_base: &Path) -> Result<PathBuf> {
     let git_src = parse_git_source(&entry.url)?;
     resolve_subdir(
-        git_checkout_dir(cache_base, &git_src.repo_url, Some(&locked_ref(entry))),
+        git_checkout_dir(cache_base, &git_src.repo_url, Some(&locked_ref(entry)))?,
         &entry.subdir,
         &entry.name,
         &entry.url,
     )
-}
-
-/// Remove the trees a locked entry was materialized in: the one
-/// [`load_locked_modules`] reads at its locked commit, and the one
-/// `cfgd module add` / `cfgd module upgrade` fetched its pinned ref into.
-///
-/// For the entry a lockfile no longer names. A tree another source still asks
-/// for is exported again from the clone on its next resolve, with no transfer.
-pub fn release_lock_entry_checkouts(entry: &ModuleLockEntry, cache_base: &Path) -> Result<()> {
-    let git_src = parse_git_source(&entry.url)?;
-    for requested in [locked_ref(entry), entry.pinned_ref.clone()] {
-        remove_pinned_checkout(cache_base, &git_src.repo_url, &requested)?;
-    }
-    Ok(())
 }
 
 /// The ref a locked entry is checked out at: its recorded commit when the lock

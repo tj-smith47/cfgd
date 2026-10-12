@@ -460,14 +460,6 @@ pub fn cmd_module_upgrade(
         subdir: old_entry.subdir.clone(),
     };
     modules::save_lockfile(&config_dir, &lockfile)?;
-    if let Err(e) = modules::release_lock_entry_checkouts(&old_entry, &cache_base) {
-        printer
-            .status(
-                Role::Warn,
-                "Failed to clean the previous version's checkout",
-            )
-            .qualifier(cfgd_core::output::collapse_to_subject_line(&e));
-    }
 
     printer.emit(
         Doc::new()

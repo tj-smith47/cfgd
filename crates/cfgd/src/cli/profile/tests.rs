@@ -3686,7 +3686,7 @@ mod profile_update_module_cleanup {
 
     #[test]
     #[serial]
-    fn remove_remote_module_cleans_lockfile_entry_and_cache_dir() {
+    fn remove_remote_module_drops_its_lockfile_entry_and_keeps_its_cached_clone() {
         let tmp = tempfile::tempdir().unwrap();
         let _home = cfgd_core::with_test_home_guard(tmp.path());
 
@@ -3694,17 +3694,16 @@ mod profile_update_module_cleanup {
         let state_dir = tmp.path().join("state");
 
         // Seed modules.lock with a remote entry. parse_git_source treats
-        // `https://...@<tag>` as repo_url + tag, so the cleanup branch
-        // computes git_cache_dir(<cache_base>, "https://github.com/x/y.git").
+        // `https://...@<tag>` as repo_url + tag, so its clone lives at
+        // git_cache_dir(<cache_base>, "https://github.com/x/y.git").
         let lock_yaml = "modules:\n  - name: ghmod\n    url: https://github.com/x/y.git@v1.0.0\n    pinnedRef: v1.0.0\n    commit: deadbeef\n    integrity: sha256:0\n";
         std::fs::write(config_dir.path().join("modules.lock"), lock_yaml).unwrap();
 
         let cli = cli_with_state_dir(config_dir.path(), &state_dir);
 
-        // Pre-create the cache dir at the location the cleanup branch will
-        // compute. Using the same primitives the production code uses
-        // means future hashing-scheme changes don't silently bypass the
-        // assertion.
+        // Pre-create the clone at the location the production code
+        // computes, through the same primitives, so a change to the hashing
+        // scheme cannot make the assertion below pass vacuously.
         let cache_base = module_cache_dir(&cli).unwrap();
         let cache_dir =
             cfgd_core::modules::git_cache_dir(&cache_base, "https://github.com/x/y.git");
@@ -3728,11 +3727,12 @@ mod profile_update_module_cleanup {
             "lockfile should drop the removed entry: {lock_after}"
         );
 
-        // Cache dir was wiped.
+        // Links the module deployed may still point into the clone, so the
+        // removal leaves it to the next apply's sweep.
         assert!(
-            !cache_dir.exists(),
-            "cache dir for removed module should be gone: {}",
-            cache_dir.display()
+            cache_dir.join("HEAD").exists(),
+            "`profile update` removes no clone; the next apply's sweep removes it once \
+             nothing references it"
         );
 
         // Profile no longer lists the module.
@@ -3751,8 +3751,8 @@ mod profile_update_module_cleanup {
             "should announce lockfile removal: {out}"
         );
         assert!(
-            out.contains("Cleaned cached checkout"),
-            "should announce cache cleanup: {out}"
+            !out.contains("cache"),
+            "nothing is said about a cache this command leaves alone: {out}"
         );
         assert!(
             out.contains("Removed module: ghmod"),
@@ -3762,7 +3762,7 @@ mod profile_update_module_cleanup {
 
     #[test]
     #[serial]
-    fn remove_module_with_deployed_files_lists_them_and_clears_state() {
+    fn remove_module_with_deployed_files_lists_them_and_keeps_their_records_when_declined() {
         let tmp = tempfile::tempdir().unwrap();
         let _home = cfgd_core::with_test_home_guard(tmp.path());
 
@@ -3791,6 +3791,9 @@ mod profile_update_module_cleanup {
                 apply_id,
             )
             .unwrap();
+        store
+            .upsert_module_state("statemod", None, "", "", None, "installed")
+            .unwrap();
         drop(store);
 
         let cli = cli_with_state_dir(config_dir.path(), &state_dir);
@@ -3818,13 +3821,25 @@ mod profile_update_module_cleanup {
             "should list the deployed file path: {out}"
         );
 
-        // After the removal, both module_deployed_files and the module
-        // state row should be cleared.
+        // The declined removal leaves the files in place, so their records
+        // stay for the checkout sweep to read; the module state row goes.
         let store2 = cfgd_core::state::StateStore::open(&state_dir.join("state.db")).unwrap();
         let remaining = store2.module_deployed_files("statemod").unwrap();
+        assert_eq!(
+            remaining
+                .iter()
+                .map(|row| row.file_path.as_str())
+                .collect::<Vec<_>>(),
+            vec!["/tmp/cfgd-test/deployed-file.conf"],
+            "a file left in place keeps its manifest record"
+        );
         assert!(
-            remaining.is_empty(),
-            "delete_module_files should wipe the manifest"
+            store2
+                .module_states()
+                .unwrap()
+                .iter()
+                .all(|row| row.module_name != "statemod"),
+            "the removed module is no longer recorded as applied"
         );
     }
 
@@ -3936,6 +3951,14 @@ mod profile_update_module_cleanup {
             !deployed_path.exists(),
             "should_clean=true + no backup → file must be removed: {}",
             deployed_path.display()
+        );
+        let store = cfgd_core::state::StateStore::open(&state_dir.join("state.db")).unwrap();
+        assert!(
+            store
+                .module_deployed_files("noBackupMod")
+                .unwrap()
+                .is_empty(),
+            "the records of the files the removal took away are dropped"
         );
         let out = cfgd_core::test_helpers::captured_text(&buf);
         assert!(

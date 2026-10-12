@@ -687,6 +687,52 @@ pub fn folded_temp_root(root: &Path) -> PathBuf {
     })
 }
 
+/// Set the modification time of the directory at `dir` to `when`, on every
+/// OS: opening a directory for a time change takes flags of its own on
+/// Windows.
+pub fn set_dir_modified(dir: &Path, when: std::time::SystemTime) {
+    #[cfg(windows)]
+    let handle = {
+        use std::os::windows::fs::OpenOptionsExt;
+        // FILE_FLAG_BACKUP_SEMANTICS is what lets Windows open a directory,
+        // and FILE_WRITE_ATTRIBUTES is the right a time needs.
+        std::fs::OpenOptions::new()
+            .access_mode(0x0100)
+            .custom_flags(0x0200_0000)
+            .open(dir)
+    };
+    #[cfg(not(windows))]
+    let handle = std::fs::File::open(dir);
+    if let Err(e) = handle.and_then(|handle| handle.set_modified(when)) {
+        panic!(
+            "cannot set the modification time of {}: {e}",
+            crate::to_posix_string(dir)
+        );
+    }
+}
+
+/// Plant two module cache entries under the module cache root `root` that no
+/// config this test writes refers to, both last touched before the in-use
+/// window: a registry's clone, and a pinned checkout inside another clone (the
+/// tree a lock entry of some other config would name). Returns
+/// `(registry_clone, pinned_tree)`; a sweep removes both, and a run that owns
+/// no sweep leaves both in place.
+pub fn plant_unread_module_trees(root: &Path) -> (PathBuf, PathBuf) {
+    let long_ago = std::time::SystemTime::now() - crate::modules::IN_USE_WINDOW * 2;
+    let registry_clone =
+        crate::modules::git_cache_dir(root, "https://example.invalid/registry.git");
+    std::fs::create_dir_all(registry_clone.join(".git")).unwrap();
+    std::fs::write(registry_clone.join("module.yaml"), "x").unwrap();
+    set_dir_modified(&registry_clone, long_ago);
+    let locked_clone = crate::modules::git_cache_dir(root, "https://example.invalid/locked.git");
+    let pinned_tree = crate::modules::pinned_checkout_in(&locked_clone, &"c0ffee12".repeat(5));
+    std::fs::create_dir_all(&pinned_tree).unwrap();
+    std::fs::write(pinned_tree.join("module.yaml"), "x").unwrap();
+    set_dir_modified(&pinned_tree, long_ago);
+    set_dir_modified(&locked_clone, long_ago);
+    (registry_clone, pinned_tree)
+}
+
 /// Shared snapshot-golden assertion for output snapshot tests.
 ///
 /// `base.join(name)` is the golden file. With `INSTA_UPDATE=always` (or when

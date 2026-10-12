@@ -333,6 +333,7 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
                     on_conflict: args.on_conflict,
                     default_strategy: registry.default_file_strategy,
                     module_cache: &cache_base,
+                    registries: &cfg.spec.modules_effective().registries,
                 },
                 printer,
             )?;
@@ -491,6 +492,7 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
                     on_conflict: args.on_conflict,
                     default_strategy: registry.default_file_strategy,
                     module_cache: &cache_base,
+                    registries: &cfg.spec.modules_effective().registries,
                 },
                 printer,
             )?;
@@ -706,6 +708,9 @@ pub(super) struct ApplyPlanOpts<'a> {
     /// The run's own resolved module cache root, for the conflict pass's
     /// judgment of whether a target is cfgd's own deployed symlink.
     pub module_cache: &'a Path,
+    /// `spec.modules.registries` of the scaffolded config, whose clones the
+    /// post-apply sweep keeps.
+    pub registries: &'a [cfgd_core::config::ModuleRegistryEntry],
 }
 
 /// Run the scaffolded configuration through the one run skeleton: header,
@@ -774,8 +779,32 @@ pub(super) fn apply_plan(
     let run = cfgd_core::reconciler::ApplyRun::new(ctx, plan);
 
     let total = plan.total_actions();
+    let abort = cfgd_core::AbortFlag::new();
+    // The resolved modules have to survive planning and reach the apply: it is
+    // what records module state, and what lets the post-phase env regeneration
+    // see the PATH directories of a manager this very run bootstrapped. Handing
+    // it an empty slice made `cfgd init --apply-module` leave both undone.
+    //
+    // see helpers::run_state_dir — honor --state-dir so init --apply
+    // mutually-excludes against `cfgd apply` and the daemon.
+    let mut exec = crate::cli::apply::ReconcilerExecutor::unscoped(
+        &reconciler,
+        resolved,
+        config_dir,
+        modules,
+        &abort,
+        run_state_dir(opts.state_dir, opts.scope)?,
+        (!opts.dry_run
+            && cfgd_core::reconciler::owns_decision_store(
+                &config_path,
+                opts.state_dir.is_some(),
+                opts.scope,
+            ))
+        .then_some(opts.module_cache),
+        opts.registries,
+    );
     if total == 0 {
-        run.header(printer);
+        run.converged(printer, &exec);
         // `init` scaffolds no scoping flag, so the verdict takes the
         // filter-less arm of the one helper that owns both spellings.
         crate::cli::plan_ops::report_plan_verdict(
@@ -806,22 +835,6 @@ pub(super) fn apply_plan(
         return Ok(cfgd_core::state::ApplyStatus::Success);
     }
 
-    let abort = cfgd_core::AbortFlag::new();
-    // The resolved modules have to survive planning and reach the apply: it is
-    // what records module state, and what lets the post-phase env regeneration
-    // see the PATH directories of a manager this very run bootstrapped. Handing
-    // it an empty slice made `cfgd init --apply-module` leave both undone.
-    //
-    // see helpers::run_state_dir — honor --state-dir so init --apply
-    // mutually-excludes against `cfgd apply` and the daemon.
-    let mut exec = crate::cli::apply::ReconcilerExecutor::unscoped(
-        &reconciler,
-        resolved,
-        config_dir,
-        modules,
-        &abort,
-        run_state_dir(opts.state_dir, opts.scope)?,
-    );
     let confirm = if opts.yes {
         cfgd_core::reconciler::Confirm::Skip
     } else {

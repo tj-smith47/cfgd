@@ -2146,6 +2146,7 @@ fn apply_plan_empty_plan_reports_nothing_to_do() {
             on_conflict: crate::cli::OnConflict::Ask,
             default_strategy: cfgd_core::config::FileStrategy::Symlink,
             module_cache: dir.path(),
+            registries: &[],
         },
         &printer,
     );
@@ -2159,6 +2160,67 @@ fn apply_plan_empty_plan_reports_nothing_to_do() {
         output.contains(cfgd_core::reconciler::MSG_NOTHING_TO_DO),
         "should report the shared nothing-to-do verdict for an empty plan, got: {output}"
     );
+}
+
+/// `cfgd init --apply` sweeps the module cache only when the config it
+/// scaffolded owns this machine's state store, as `cfgd apply` does. A config
+/// in another directory with no `--state-dir` does not list what the machine's
+/// own config reads, so a stale registry clone and a pinned tree another
+/// config's lock names both stay; with `--state-dir` the same run removes them.
+/// A dry run removes nothing even when its config owns the store.
+#[test]
+fn init_apply_sweeps_the_module_cache_only_for_a_config_that_owns_the_store() {
+    for (owns, dry_run) in [(false, false), (true, false), (true, true)] {
+        let swept = owns && !dry_run;
+        let dir = tempfile::tempdir().unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        let (registry_clone, pinned_tree) =
+            cfgd_core::test_helpers::plant_unread_module_trees(cache.path());
+        let (printer, _cap) = Printer::for_test_doc();
+        let registry = super::build_registry_with_config(None);
+        let store = super::open_state_store(Some(dir.path()), cfgd_core::Scope::User).unwrap();
+        let reconciler = cfgd_core::reconciler::Reconciler::new(&registry, &store);
+        let resolved = config::ResolvedProfile {
+            layers: Vec::new(),
+            merged: config::MergedProfile::default(),
+        };
+        let mut plan = cfgd_core::reconciler::Plan {
+            phases: Vec::new(),
+            warnings: Vec::new(),
+        };
+        apply_plan(
+            &mut plan,
+            reconciler,
+            &resolved,
+            &[],
+            dir.path(),
+            ApplyPlanOpts {
+                sources: &[],
+                dry_run,
+                yes: true,
+                state_dir: owns.then_some(dir.path()),
+                scope: cfgd_core::Scope::User,
+                profile: None,
+                state: &store,
+                on_conflict: crate::cli::OnConflict::Ask,
+                default_strategy: cfgd_core::config::FileStrategy::Symlink,
+                module_cache: cache.path(),
+                registries: &[],
+            },
+            &printer,
+        )
+        .unwrap();
+        assert_eq!(
+            registry_clone.exists(),
+            !swept,
+            "owns the store: {owns}, dry run: {dry_run}; the stale registry clone"
+        );
+        assert_eq!(
+            pinned_tree.exists(),
+            !swept,
+            "owns the store: {owns}, dry run: {dry_run}; the pinned tree nothing here reads"
+        );
+    }
 }
 
 // ─── ensure_dir_writable — nonexistent path early return ─────
@@ -2815,6 +2877,7 @@ fn init_apply_copies_an_unmanaged_target_aside_before_writing_it() {
             on_conflict: crate::cli::OnConflict::Ask,
             default_strategy: cfgd_core::config::FileStrategy::Symlink,
             module_cache: dir.path(),
+            registries: &[],
         },
         &printer,
     )
@@ -2880,6 +2943,7 @@ fn init_dry_run_never_copies_anything_aside() {
             on_conflict: crate::cli::OnConflict::Ask,
             default_strategy: cfgd_core::config::FileStrategy::Symlink,
             module_cache: dir.path(),
+            registries: &[],
         },
         &printer,
     )
@@ -2943,6 +3007,7 @@ fn apply_plan_prompt_declined_branch_prints_skipped_and_returns_ok() {
             on_conflict: crate::cli::OnConflict::Ask,
             default_strategy: cfgd_core::config::FileStrategy::Symlink,
             module_cache: dir.path(),
+            registries: &[],
         },
         &printer,
     );
@@ -3019,6 +3084,7 @@ fn apply_plan_with_prompt_confirmed_proceeds_to_apply_path() {
             on_conflict: crate::cli::OnConflict::Ask,
             default_strategy: cfgd_core::config::FileStrategy::Symlink,
             module_cache: dir.path(),
+            registries: &[],
         },
         &printer,
     );
@@ -3116,6 +3182,7 @@ fn apply_plan_records_module_state_for_the_modules_it_was_handed() {
             on_conflict: crate::cli::OnConflict::Ask,
             default_strategy: cfgd_core::config::FileStrategy::Symlink,
             module_cache: dir.path(),
+            registries: &[],
         },
         &printer,
     );
@@ -3190,6 +3257,7 @@ fn apply_plan_with_prompt_declined_emits_skipped_and_returns_early() {
             on_conflict: crate::cli::OnConflict::Ask,
             default_strategy: cfgd_core::config::FileStrategy::Symlink,
             module_cache: dir.path(),
+            registries: &[],
         },
         &printer,
     );
@@ -3256,6 +3324,7 @@ fn apply_plan_dry_run_skips_apply() {
             on_conflict: crate::cli::OnConflict::Ask,
             default_strategy: cfgd_core::config::FileStrategy::Symlink,
             module_cache: dir.path(),
+            registries: &[],
         },
         &printer,
     );
@@ -6477,6 +6546,7 @@ fn init_apply_settles_the_hash_of_every_link_deployed_row_before_it_returns() {
             on_conflict: crate::cli::OnConflict::Ask,
             default_strategy: cfgd_core::config::FileStrategy::Symlink,
             module_cache: dir.path(),
+            registries: &[],
         },
         &printer,
     )

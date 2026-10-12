@@ -138,6 +138,10 @@ impl StubExecutor {
 }
 
 impl RunExecutor for StubExecutor {
+    fn module_checkouts(&self) -> crate::reconciler::ModuleCheckouts<'_> {
+        crate::reconciler::ModuleCheckouts::NotOwned
+    }
+
     fn apply(&mut self, _plan: &Plan, _printer: &Printer) -> Result<ApplyResult> {
         self.calls += 1;
         Ok(self
@@ -2449,6 +2453,127 @@ fn execute_on_a_preview_only_run_renders_the_tree_and_executes_nothing() {
         !out.contains("Apply complete") && !out.contains("Plan complete"),
         "a preview-only run has no rollup: {out:?}"
     );
+}
+
+/// A `StubExecutor` whose run owns a module cache holding one clone nothing
+/// reads, last touched before [`crate::modules::IN_USE_WINDOW`].
+struct SweepingExecutor {
+    stub: StubExecutor,
+    state: crate::state::StateStore,
+    config: tempfile::TempDir,
+    cache: tempfile::TempDir,
+    clone: PathBuf,
+}
+
+impl SweepingExecutor {
+    fn new(result: ApplyResult) -> Self {
+        let cache = tempfile::tempdir().unwrap();
+        let clone = crate::modules::git_cache_dir(cache.path(), "https://example.invalid/old.git");
+        std::fs::create_dir_all(&clone).unwrap();
+        std::fs::write(clone.join("module.yaml"), "x").unwrap();
+        crate::test_helpers::set_dir_modified(
+            &clone,
+            std::time::SystemTime::now() - crate::modules::IN_USE_WINDOW * 2,
+        );
+        Self {
+            stub: StubExecutor::new(result),
+            state: crate::state::StateStore::open_in_memory().unwrap(),
+            config: tempfile::tempdir().unwrap(),
+            cache,
+            clone,
+        }
+    }
+}
+
+impl RunExecutor for SweepingExecutor {
+    fn module_checkouts(&self) -> crate::reconciler::ModuleCheckouts<'_> {
+        crate::reconciler::ModuleCheckouts::Sweep(crate::reconciler::ModuleCache {
+            state: &self.state,
+            config_dir: self.config.path(),
+            root: self.cache.path(),
+            modules: &[],
+            registries: &[],
+        })
+    }
+
+    fn apply(&mut self, plan: &Plan, printer: &Printer) -> Result<ApplyResult> {
+        self.stub.apply(plan, printer)
+    }
+}
+
+/// The sweep is part of `execute` and of `ApplyRun::converged`, so no caller
+/// can apply a plan and skip it: a run in which every action succeeded removes
+/// the clone nothing reads, and so does a run that found nothing to do, whose
+/// header renders through the same call.
+#[test]
+fn an_executed_apply_with_no_failure_sweeps_the_module_cache() {
+    let plan = plan_of(vec![phase(PhaseName::Files, vec![create("/tmp/one")])]);
+    let mut exec = SweepingExecutor::new(apply_result(1, 0, ApplyStatus::Success, 1));
+    let (printer, _buf) = Printer::for_test_at(Verbosity::Normal);
+    let disposition = ApplyRun::new(ctx(RunTitle::Apply), &plan)
+        .execute(&printer, Confirm::Skip, &mut exec)
+        .unwrap();
+    assert!(matches!(disposition, RunDisposition::Applied { .. }));
+    assert!(
+        !exec.clone.exists(),
+        "an applied run sweeps the clone nothing reads"
+    );
+
+    let empty = plan_of(vec![]);
+    let converged = SweepingExecutor::new(apply_result(0, 0, ApplyStatus::Success, 0));
+    let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
+    ApplyRun::new(ctx(RunTitle::Apply), &empty).converged(&printer, &converged);
+    drop(printer);
+    let out = crate::test_helpers::captured_text(&buf);
+    assert!(
+        out.contains("Profile") && out.contains("work"),
+        "the converged run renders its header: {out:?}"
+    );
+    assert!(
+        !converged.clone.exists(),
+        "a run with nothing to do sweeps it too"
+    );
+}
+
+/// A run that failed an action, was aborted, only previewed or was declined
+/// removes nothing, so a retry finds every checkout it was reading.
+#[test]
+fn a_failed_aborted_previewed_or_declined_run_sweeps_nothing() {
+    let plan = plan_of(vec![phase(PhaseName::Files, vec![create("/tmp/one")])]);
+    let mut aborted = apply_result(0, 0, ApplyStatus::Aborted, 1);
+    aborted.aborted = Some(130);
+    for (case, result) in [
+        ("failed", apply_result(0, 1, ApplyStatus::Failed, 1)),
+        ("aborted", aborted),
+    ] {
+        let mut exec = SweepingExecutor::new(result);
+        let (printer, _buf) = Printer::for_test_at(Verbosity::Normal);
+        ApplyRun::new(ctx(RunTitle::Apply), &plan)
+            .execute(&printer, Confirm::Skip, &mut exec)
+            .unwrap();
+        assert_eq!(exec.stub.calls, 1, "{case}");
+        assert!(exec.clone.is_dir(), "a {case} run keeps the clone");
+    }
+
+    let mut exec = SweepingExecutor::new(apply_result(1, 0, ApplyStatus::Success, 1));
+    let (printer, _buf) = Printer::for_test_at(Verbosity::Normal);
+    let previewed = ApplyRun::new(ctx(RunTitle::Plan), &plan)
+        .preview_only()
+        .execute(&printer, Confirm::Skip, &mut exec)
+        .unwrap();
+    assert!(matches!(previewed, RunDisposition::Previewed));
+    assert!(exec.clone.is_dir(), "a preview keeps the clone");
+
+    let mut exec = SweepingExecutor::new(apply_result(1, 0, ApplyStatus::Success, 1));
+    let (printer, _buf) = Printer::for_test_with_prompt_responses_at(
+        vec![PromptAnswer::Confirm(false)],
+        Verbosity::Normal,
+    );
+    let declined = ApplyRun::new(ctx(RunTitle::Apply), &plan)
+        .execute(&printer, Confirm::Ask("Apply these changes?"), &mut exec)
+        .unwrap();
+    assert!(matches!(declined, RunDisposition::Declined));
+    assert!(exec.clone.is_dir(), "a declined run keeps the clone");
 }
 
 /// The `plan: None` arm: a backups run with no units has nothing to do, and no

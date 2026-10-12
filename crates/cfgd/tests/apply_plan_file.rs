@@ -1132,7 +1132,7 @@ fn pinned_checkout(state_dir: &Path, url: &str, requested_ref: &str) -> std::pat
     let cache_base =
         cfgd_core::module_cache_root(Some(&state_dir.join("cache")), cfgd_core::Scope::User)
             .unwrap();
-    cfgd_core::modules::git_checkout_dir(&cache_base, url, Some(requested_ref))
+    cfgd_core::modules::git_checkout_dir(&cache_base, url, Some(requested_ref)).unwrap()
 }
 
 #[test]

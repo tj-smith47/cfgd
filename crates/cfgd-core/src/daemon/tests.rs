@@ -9560,6 +9560,109 @@ async fn handle_reconcile_auto_policy_with_drift_invokes_apply_success() {
     );
 }
 
+/// Plans nothing, so an Auto tick under it finds the machine converged.
+struct ConvergedHooks;
+
+impl DaemonHooks for ConvergedHooks {
+    fn build_registry(&self, _: &CfgdConfig) -> ProviderRegistry {
+        ProviderRegistry::new()
+    }
+    fn plan_files(&self, _: &Path, _: &ResolvedProfile) -> crate::errors::Result<Vec<FileAction>> {
+        Ok(vec![])
+    }
+    fn plan_packages(
+        &self,
+        _: &MergedProfile,
+        _: &[&dyn PackageManager],
+        _: &std::collections::HashSet<String>,
+        _: &PackageContext<'_>,
+    ) -> crate::errors::Result<Vec<PackageAction>> {
+        Ok(vec![])
+    }
+    fn extend_registry_custom_managers(&self, _: &mut ProviderRegistry, _: &config::PackagesSpec) {}
+    fn expand_tilde(&self, path: &Path) -> PathBuf {
+        crate::expand_tilde(path)
+    }
+}
+
+/// Run one Auto tick under `hooks` against a `--cache-dir` whose module cache
+/// holds two clones last touched before the in-use window: one of the
+/// registry the config names and one of a registry it no longer names.
+/// Returns `(registry clone kept, dropped clone kept)`.
+async fn auto_tick_over_two_stale_clones(hooks: impl DaemonHooks + 'static) -> (bool, bool) {
+    let tmp = tempfile::tempdir().unwrap();
+    let _g = crate::with_test_home_guard(tmp.path());
+    let state_dir = tmp.path().join("state");
+    std::fs::create_dir_all(&state_dir).unwrap();
+    let config_path = tmp.path().join("cfgd.yaml");
+    std::fs::write(
+        &config_path,
+        "apiVersion: cfgd.io/v1alpha1\nkind: CfgdConfig\nmetadata:\n  name: test\nspec:\n  profile: default\n  modules:\n    registries:\n      - name: kept\n        url: https://example.invalid/kept.git\n  daemon:\n    enabled: true\n    reconcile:\n      interval: 60s\n      autoApply: true\n      driftPolicy: Auto\n",
+    )
+    .unwrap();
+    let profiles_dir = tmp.path().join("profiles");
+    std::fs::create_dir_all(&profiles_dir).unwrap();
+    std::fs::write(
+        profiles_dir.join("default.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec: {}\n",
+    )
+    .unwrap();
+
+    let cache_over = tmp.path().join("cache");
+    let root = crate::module_cache_root(Some(&cache_over), crate::Scope::User).unwrap();
+    let stale_clone = |url: &str| {
+        let clone = crate::modules::git_cache_dir(&root, url);
+        std::fs::create_dir_all(&clone).unwrap();
+        std::fs::write(clone.join("module.yaml"), "x").unwrap();
+        crate::test_helpers::set_dir_modified(
+            &clone,
+            std::time::SystemTime::now() - crate::modules::IN_USE_WINDOW * 2,
+        );
+        clone
+    };
+    let kept = stale_clone("https://example.invalid/kept.git");
+    let dropped = stale_clone("https://example.invalid/dropped.git");
+
+    let state = Arc::new(Mutex::new(DaemonState::new()));
+    let notifier = Arc::new(Notifier::new(NotifyMethod::Stdout, None));
+    let sd = state_dir.clone();
+    crate::spawn_blocking_with_test_home(move || {
+        let printer = test_printer();
+        let mut ctx = quiet_reconcile_ctx(&state, &notifier, false, &hooks, &sd, &printer);
+        ctx.cache_dir_override = Some(&cache_over);
+        handle_reconcile(&config_path, None, ctx);
+    })
+    .await
+    .unwrap();
+    (kept.is_dir(), dropped.exists())
+}
+
+/// The daemon's Auto tick applies through `ApplyRun::execute`, so the module
+/// checkouts its apply stops reading are swept there, keeping the clone of
+/// every registry the config still names.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_auto_tick_that_applies_sweeps_the_module_cache() {
+    let src = tempfile::tempdir().unwrap();
+    let source = src.path().join("src.txt");
+    std::fs::write(&source, "hello").unwrap();
+    let hooks = DriftingFileHooks {
+        source,
+        target: src.path().join("dst.txt"),
+    };
+    assert_eq!(auto_tick_over_two_stale_clones(hooks).await, (true, false));
+}
+
+/// A converged Auto tick plans nothing and never reaches `execute`; it
+/// settles through `settle_converged`, so a machine the daemon keeps current
+/// still loses the checkouts nothing reads.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_converged_auto_tick_sweeps_the_module_cache() {
+    assert_eq!(
+        auto_tick_over_two_stale_clones(ConvergedHooks).await,
+        (true, false)
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn handle_reconcile_auto_apply_honors_a_raised_abort_flag() {
     // `systemctl stop cfgd` mid-auto-apply must stop the reconcile the way it
@@ -23609,6 +23712,10 @@ mod backup_timers {
     struct NoopExecutor;
 
     impl crate::reconciler::RunExecutor for NoopExecutor {
+        fn module_checkouts(&self) -> crate::reconciler::ModuleCheckouts<'_> {
+            crate::reconciler::ModuleCheckouts::NotOwned
+        }
+
         fn apply(
             &mut self,
             _plan: &crate::reconciler::Plan,

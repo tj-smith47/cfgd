@@ -3365,6 +3365,53 @@ fn cmd_module_create_with_apply_and_yes_drives_full_apply_sequence() {
     );
 }
 
+/// `cfgd module create --apply` sweeps the module cache only when its config
+/// owns this machine's state store, as `cfgd apply` does. A `--config` outside
+/// the default config directory with no `--state-dir` does not list what the
+/// machine's own config reads, so a stale registry clone and a pinned tree
+/// another config's lock names both stay; with `--state-dir` the same run
+/// removes them.
+#[test]
+#[serial_test::serial]
+fn module_create_apply_sweeps_the_module_cache_only_for_a_config_that_owns_the_store() {
+    for owns in [false, true] {
+        let dir = setup_config_dir();
+        let _home = cfgd_core::with_test_home_guard(dir.path());
+        let cli = super::Cli {
+            state_dir: owns.then(|| dir.path().join("state")),
+            cache_dir: Some(dir.path().join("cache")),
+            ..test_cli(dir.path())
+        };
+        std::fs::write(
+            dir.path().join("cfgd.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: default\n",
+        )
+        .unwrap();
+        let root = cfgd_core::module_cache_root(cli.cache_dir.as_deref(), cli.scope()).unwrap();
+        let (registry_clone, pinned_tree) =
+            cfgd_core::test_helpers::plant_unread_module_trees(&root);
+
+        let (printer, _buf) =
+            cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+        let mut args = make_module_create_args("sweep-gate-mod");
+        args.apply = true;
+        args.yes = true;
+        args.description = Some("noop".to_string());
+        crate::cli::RunContext::for_test(&cli, &printer, |run| cmd_module_create(run, &args))
+            .expect("an empty module applies with nothing to do");
+        assert_eq!(
+            registry_clone.exists(),
+            !owns,
+            "owns the store: {owns}; the stale registry clone"
+        );
+        assert_eq!(
+            pinned_tree.exists(),
+            !owns,
+            "owns the store: {owns}; the pinned tree nothing here reads"
+        );
+    }
+}
+
 /// `cfgd module create --apply` leaves alone the rows its scope never resolved.
 ///
 /// The run resolves no profile at all: its desired set is the module the
@@ -6863,7 +6910,8 @@ mod cmd_module_add_remote_local_bare {
 
         let cache_base = crate::cli::module_cache_dir(&cli).unwrap();
         let repo_url = cfgd_core::to_file_url(&bare);
-        let checkout = |r: &str| modules::git_checkout_dir(&cache_base, &repo_url, Some(r));
+        let checkout =
+            |r: &str| modules::git_checkout_dir(&cache_base, &repo_url, Some(r)).unwrap();
         assert!(checkout("v1.0.0").is_dir(), "the add checked out v1.0.0");
 
         // Push v2 to the bare repo.
@@ -6886,12 +6934,21 @@ mod cmd_module_add_remote_local_bare {
             "lockfile should advance past v1.0.0: {lock_v2}"
         );
         assert!(
-            !checkout("v1.0.0").exists(),
-            "the upgrade released the checkout of the version it replaced"
+            checkout("v1.0.0").is_dir(),
+            "links deployed from v1.0.0 still read its tree until the next apply"
         );
         assert!(
             checkout("v2.0.0").is_dir(),
             "the upgrade checked out v2.0.0"
+        );
+
+        let mut loaded = std::collections::HashMap::new();
+        modules::load_locked_modules(work.path(), &cache_base, &mut loaded, &printer)
+            .expect("the upgraded lockfile loads");
+        assert_eq!(
+            loaded.get("mymod").map(|m| m.dir.clone()),
+            Some(checkout("v2.0.0")),
+            "the upgraded entry loads from v2.0.0's tree"
         );
     }
 

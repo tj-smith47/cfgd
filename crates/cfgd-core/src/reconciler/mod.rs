@@ -52,7 +52,11 @@ pub use env_engine::{
     with_env_host_probe_override_guard,
 };
 pub use env_files::inject_rc_source_line;
-pub use files::{LinkDeployedDigest, RefreshedHashes, link_deployed_digest};
+#[cfg(test)]
+pub(crate) use files::sweep_unread_module_checkouts;
+pub use files::{
+    LinkDeployedDigest, ModuleCache, ModuleCheckouts, RefreshedHashes, link_deployed_digest,
+};
 pub(crate) use format::debug_assert_system_key_undoubled;
 pub use format::{
     DisplaySubject, ModuleScope, action_display_subject, action_display_subject_within,
@@ -79,6 +83,7 @@ pub use pending::{
     source_delivered_profile, title_cased_tier, undecidable_source_batches, withhold_from_plan,
 };
 pub use restore::{RestoreOutcome, restore_file_from_backup};
+pub(crate) use run::settle_converged;
 pub use run::{
     ApplyRun, BACKUPS_PHASE_LABEL, CHANGE_HOOKS_PHASE_LABEL, ComposedSource, Confirm,
     HOOKS_PHASE_LABEL, MSG_NOTHING_TO_DO, PhaseCoverage, PseudoPhase, RunContext, RunDisposition,
@@ -278,6 +283,11 @@ impl<'a> Reconciler<'a> {
     /// reconciler (`init --apply`) refreshes exactly what `apply` does.
     pub fn file_manager(&self) -> Option<&dyn crate::providers::FileManager> {
         self.registry.file_manager.as_deref()
+    }
+
+    /// The state store this run records into.
+    pub fn state_store(&self) -> &'a StateStore {
+        self.state
     }
 
     pub fn new(registry: &'a ProviderRegistry, state: &'a StateStore) -> Self {

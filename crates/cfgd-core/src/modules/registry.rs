@@ -179,6 +179,7 @@ pub fn fetch_registry_modules(
     } else {
         clone_repo(&cache_dir, &git_src, &registry.name, printer)?;
     }
+    super::git::mark_clone_in_use(&cache_dir);
 
     let modules_dir = crate::declared_modules_dir(&cache_dir);
     if !modules_dir.is_dir() {
