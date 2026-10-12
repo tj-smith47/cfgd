@@ -21,7 +21,7 @@ echo "Removing the PR install $E2E_INSTALL_RELEASE in $E2E_INSTALL_NS..."
 # release is gone they would stay Terminating.
 for kinds in machineconfigs,configpolicies,driftalerts,backuppolicies clusterconfigpolicies,modules; do
     if ! kubectl delete "$kinds" -A -l "$E2E_RUN_LABEL" --wait=true --timeout=90s; then
-        echo "ERROR: the $kinds labelled $E2E_RUN_LABEL were not deleted within 90s. Read the kubectl error above and the operator's log (kubectl logs -n $E2E_INSTALL_NS deploy/$E2E_OPERATOR_DEPLOY)." >&2
+        echo "ERROR: the $kinds labelled $E2E_RUN_LABEL were not deleted within 90s. Read the kubectl error above and the operator's log (kubectl logs -n $E2E_INSTALL_NS -l $E2E_OPERATOR_PODS --prefix --tail=-1)." >&2
         failed+=("delete $kinds")
     fi
 done

@@ -975,8 +975,8 @@ fi
 
 echo ""
 echo "=== E2E Setup Complete ==="
-echo "  Operator:  $(kubectl get pods -n cfgd-system -l app=cfgd-operator -o jsonpath='{.items[0].status.phase}' 2>/dev/null || echo 'unknown')"
-echo "  Gateway:   $(kubectl get pods -n cfgd-system -l app=cfgd-server -o jsonpath='{.items[0].status.phase}' 2>/dev/null || echo 'unknown')"
+echo "  Operator:  $(kubectl get pods -n cfgd-system -l app=cfgd-operator -o jsonpath='{.items[*].status.phase}' 2>/dev/null || echo 'unknown')"
+echo "  Gateway:   $(kubectl get pods -n cfgd-system -l app=cfgd-server -o jsonpath='{.items[*].status.phase}' 2>/dev/null || echo 'unknown')"
 echo "  CSI:       $(kubectl get ds -n cfgd-system -l app.kubernetes.io/component=csi-driver -o jsonpath='{.items[0].status.numberReady}' 2>/dev/null || echo 'N/A') ready"
 echo "  Running:   operator $(running_image deployment cfgd-operator cfgd-operator)"
 echo "             gateway $(running_image deployment cfgd-server cfgd-operator)"

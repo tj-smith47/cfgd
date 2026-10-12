@@ -508,10 +508,12 @@ ROLL_DEPLOY=$(kubectl get deployment -n "$HELM_NS" \
     -l app.kubernetes.io/component=operator \
     -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
 ROLL_SVC=cfgd-test-webhook
-ROLL_SAMPLES=0
-ROLL_EMPTY=0
-ROLL_EMPTY_AT=""
 ROLL_DONE=false
+
+# shellcheck disable=SC2329  # watch_endpoints_until invokes it by name
+roll_finished() {
+    kubectl rollout status "deployment/$ROLL_DEPLOY" -n "$HELM_NS" --timeout=1s >/dev/null 2>&1
+}
 
 if [ -z "$ROLL_DEPLOY" ]; then
     fail_test "FS-HELM-09" "No operator deployment after helm install"
@@ -520,27 +522,17 @@ elif ! wait_for_service_endpoints "$HELM_NS" "$ROLL_SVC" 120; then
 elif ! kubectl rollout restart "deployment/$ROLL_DEPLOY" -n "$HELM_NS"; then
     fail_test "FS-HELM-09" "kubectl rollout restart failed, so no roll was observed"
 else
-    ROLL_START=$SECONDS
-    ROLL_DEADLINE=$((SECONDS + 180))
-    while [ $SECONDS -lt $ROLL_DEADLINE ]; do
-        ROLL_ADDRS=$(kubectl get endpoints "$ROLL_SVC" -n "$HELM_NS" \
-            -o jsonpath='{.subsets[*].addresses[*].ip}' 2>/dev/null || echo "")
-        ROLL_SAMPLES=$((ROLL_SAMPLES + 1))
-        if [ -z "$ROLL_ADDRS" ]; then
-            ROLL_EMPTY=$((ROLL_EMPTY + 1))
-            ROLL_EMPTY_AT="${ROLL_EMPTY_AT:+$ROLL_EMPTY_AT, }#$ROLL_SAMPLES at +$((SECONDS - ROLL_START))s"
-        fi
-        if kubectl rollout status "deployment/$ROLL_DEPLOY" -n "$HELM_NS" --timeout=1s >/dev/null 2>&1; then
-            ROLL_DONE=true
-            break
-        fi
-    done
-    echo "  Roll finished: $ROLL_DONE; samples: $ROLL_SAMPLES; samples with no ready endpoint: $ROLL_EMPTY${ROLL_EMPTY_AT:+ ($ROLL_EMPTY_AT)}"
+    if watch_endpoints_until 180 "$HELM_NS" "$ROLL_SVC" roll_finished; then
+        ROLL_DONE=true
+    fi
+    echo "  Roll finished: $ROLL_DONE; samples: $ENDPOINT_SAMPLES; samples with no ready endpoint: $ENDPOINT_EMPTY${ENDPOINT_EMPTY_AT:+ ($ENDPOINT_EMPTY_AT)}; unread: $ENDPOINT_UNREAD"
 
     if [ "$ROLL_DONE" != "true" ]; then
         fail_test "FS-HELM-09" "The operator roll did not finish within 180s"
-    elif [ "$ROLL_EMPTY" -ne 0 ]; then
-        fail_test "FS-HELM-09" "The webhook Service had no ready endpoint in $ROLL_EMPTY of $ROLL_SAMPLES samples during the roll: $ROLL_EMPTY_AT"
+    elif [ "$ENDPOINT_SAMPLES" -eq 0 ]; then
+        fail_test "FS-HELM-09" "kubectl read the webhook Service's endpoints in none of $ENDPOINT_UNREAD attempts during the roll"
+    elif [ "$ENDPOINT_EMPTY" -ne 0 ]; then
+        fail_test "FS-HELM-09" "The webhook Service had no ready endpoint in $ENDPOINT_EMPTY of $ENDPOINT_SAMPLES samples during the roll: $ENDPOINT_EMPTY_AT"
     else
         pass_test "FS-HELM-09"
     fi

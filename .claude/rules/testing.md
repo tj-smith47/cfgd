@@ -178,6 +178,25 @@ the helpers against a stand-in kubectl, fails on any port-forward started
 outside them (a line continued from the one before and `"$KUBECTL"` included),
 and fails on a runner that sources such a setup before its trap.
 
+## The PR install's operator runs a standby, so no e2e read picks one pod by index
+
+The operator, full-stack and other jobs of one run share the PR install, and its
+webhook (`failurePolicy: Fail`) admits every job's writes. OP-LC-03 deletes the leader,
+so `tests/e2e/manifests/pr-install-values.yaml` sets `operator.replicaCount: 2`: the
+standby serves admission and stays an endpoint of `$E2E_WEBHOOK_SVC` while the leader
+is replaced. OP-LC-03 fails when any endpoint sample taken between the delete and the
+replacement's readiness has no ready address (`watch_endpoints_until` in
+`common/helpers.sh`, which FS-HELM-09 uses for its roll), when the deleted pod's UID is
+still listed, or when the lease never moves to another live pod.
+
+With two pods, `.items[0]` answers for whichever pod the API server lists first. A
+case about the operator's health reads every pod (`{.items[*]...}`, one line per pod,
+`kubectl logs -l "$E2E_OPERATOR_PODS"`, `wait_for_pod`, which waits for every pod it
+selects); a case about what the controllers did reads the leader (`operator_leader_pod`).
+`tests/e2e/common/test-pr-install.sh` (`task e2e:tags:check`) fails on any tracked
+`tests/e2e/**/*.sh` kubectl command that gets pods by an operator selector and reads
+`.items[N]`; a sorted slice such as `.items[-1:]` passes.
+
 ## An e2e metrics check drives the event, then scrapes the pod that did it
 
 prometheus-client encodes no `# HELP`, `# TYPE` or sample line for a family

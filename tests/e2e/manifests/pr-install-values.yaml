@@ -5,7 +5,10 @@ networkPolicy: {enabled: false}
 metrics: {serviceMonitor: {enabled: false}}
 webhook: {failurePolicy: Fail}
 mutatingWebhook: {failurePolicy: Fail}
+# Other jobs of the run apply through this install's webhook while OP-LC-03
+# deletes the leader; the standby keeps the webhook Service an endpoint.
 operator:
+  replicaCount: 2
   image: {pullPolicy: Always}
   imagePullSecrets: [{name: registry-credentials}]
   extraVolumes:

@@ -140,41 +140,71 @@ fi
 # =================================================================
 # OP-LC-03: Graceful shutdown recovery
 # =================================================================
-begin_test "OP-LC-03: Graceful shutdown recovery"
+begin_test "OP-LC-03: Leader pod deletion: the standby takes the lease and the webhook stays served"
 
-# Get current operator pod name
-OLD_POD=$(kubectl get pods -n "$E2E_INSTALL_NS" -l "$E2E_OPERATOR_PODS" \
-    -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
+# The other jobs of the run apply through this install's webhook while this
+# case runs, so the leader goes while the standby keeps serving admission. A
+# pod name can be reused, so the UID is what tells the deleted pod apart. The
+# lease names the deleted pod until it expires (15s by default), so the new
+# holder is read up to E2E_LEASE_TRIES times, 5s apart, after the roll.
+LC03_TRIES="${E2E_LEASE_TRIES:-6}"
+LC03_REPLICAS=""
+LC03_UIDS=""
+LC03_LEADER=""
+LC03_UID=""
+LC03_NEW_LEADER=""
 
-OLD_UID=""
-[ -z "$OLD_POD" ] || OLD_UID=$(kubectl get pod "$OLD_POD" -n "$E2E_INSTALL_NS" \
-    -o jsonpath='{.metadata.uid}' 2>/dev/null || echo "")
+# lc03_all_ready: the Deployment asks for a standby and every replica it asks
+# for is ready. LC03_REPLICAS keeps "<asked> <ready>" as read.
+lc03_all_ready() {
+    local asked ready
+    LC03_REPLICAS="$(kubectl get deployment "$E2E_OPERATOR_DEPLOY" -n "$E2E_INSTALL_NS" \
+        -o jsonpath='{.spec.replicas} {.status.readyReplicas}' 2>&1)" || return 1
+    read -r asked ready <<<"$LC03_REPLICAS"
+    [[ ${asked:-} =~ ^[0-9]+$ ]] && [ "$asked" -ge 2 ] && [ "${ready:-0}" = "$asked" ]
+}
+# shellcheck disable=SC2329  # watch_endpoints_until invokes it by name
+lc03_replaced() {
+    LC03_UIDS="$(kubectl get pods -n "$E2E_INSTALL_NS" -l "$E2E_OPERATOR_PODS" \
+        -o jsonpath='{.items[*].metadata.uid}' 2>&1)" || return 1
+    ! has_all_words "$LC03_UIDS" "$LC03_UID" && lc03_all_ready
+}
+# shellcheck disable=SC2329  # retry_tries invokes it by name
+lc03_new_leader() {
+    LC03_NEW_LEADER="$(operator_leader_pod)" && [ "$LC03_NEW_LEADER" != "$LC03_LEADER" ]
+}
 
-echo "  Current operator pod: ${OLD_POD:-unknown} (uid ${OLD_UID:-unknown})"
-
-if [ -z "$OLD_POD" ] || [ -z "$OLD_UID" ]; then
-    fail_test "OP-LC-03" "No operator pod found"
+if ! [[ $LC03_TRIES =~ ^[1-9][0-9]*$ ]]; then
+    fail_test "OP-LC-03" "E2E_LEASE_TRIES must be a positive integer, got '$LC03_TRIES'"
+elif ! wait_until 120 2 "every replica of $E2E_OPERATOR_DEPLOY, two or more, to be ready" lc03_all_ready; then
+    fail_test "OP-LC-03" "deployment/$E2E_OPERATOR_DEPLOY never had a ready standby to keep the webhook served (spec.replicas and readyReplicas: ${LC03_REPLICAS:-unread})"
+elif ! LC03_LEADER="$(operator_leader_pod)"; then
+    fail_test "OP-LC-03" "$LC03_LEADER"
+elif ! LC03_UID="$(kubectl get pod "$LC03_LEADER" -n "$E2E_INSTALL_NS" -o jsonpath='{.metadata.uid}' 2>&1)" || [ -z "$LC03_UID" ]; then
+    fail_test "OP-LC-03" "Could not read the uid of leader pod/$LC03_LEADER: ${LC03_UID:-empty}"
+elif ! kubectl delete pod "$LC03_LEADER" -n "$E2E_INSTALL_NS" --wait=false; then
+    fail_test "OP-LC-03" "Could not delete leader pod/$LC03_LEADER (kubectl output above)"
 else
-    # Delete the pod
-    kubectl delete pod "$OLD_POD" -n "$E2E_INSTALL_NS" --wait=false --ignore-not-found 2>/dev/null
+    echo "  Deleted leader pod/$LC03_LEADER (uid $LC03_UID); waiting for its replacement..."
+    LC03_ROLLED=false
+    if watch_endpoints_until 120 "$E2E_INSTALL_NS" "$E2E_WEBHOOK_SVC" lc03_replaced; then
+        LC03_ROLLED=true
+    fi
+    echo "  Replaced: $LC03_ROLLED; pod uids: ${LC03_UIDS:-unread}; samples: $ENDPOINT_SAMPLES; samples with no ready endpoint: $ENDPOINT_EMPTY${ENDPOINT_EMPTY_AT:+ ($ENDPOINT_EMPTY_AT)}; unread: $ENDPOINT_UNREAD"
+    LC03_LED=false
+    if $LC03_ROLLED && retry_tries "$LC03_TRIES" 5 lc03_new_leader; then
+        LC03_LED=true
+    fi
+    echo "  Lease holder after the roll: ${LC03_NEW_LEADER:-unread}"
 
-    # Wait for the deployment to become available again
-    echo "  Waiting for operator deployment to recover..."
-    wait_for_deployment "$E2E_INSTALL_NS" "$E2E_OPERATOR_DEPLOY" 120
-
-    # A pod name can be reused, so the UID is what tells a replacement apart.
-    NEW_POD=$(kubectl get pods -n "$E2E_INSTALL_NS" -l "$E2E_OPERATOR_PODS" \
-        -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
-    NEW_UID=""
-    [ -z "$NEW_POD" ] || NEW_UID=$(kubectl get pod "$NEW_POD" -n "$E2E_INSTALL_NS" \
-        -o jsonpath='{.metadata.uid}' 2>/dev/null || echo "")
-
-    echo "  New operator pod: ${NEW_POD:-unknown} (uid ${NEW_UID:-unknown})"
-
-    if [ -z "$NEW_UID" ]; then
-        fail_test "OP-LC-03" "Operator pod did not recover after deletion"
-    elif [ "$NEW_UID" = "$OLD_UID" ]; then
-        fail_test "OP-LC-03" "Operator pod $NEW_POD still has the deleted pod's uid $OLD_UID"
+    if [ "$ENDPOINT_SAMPLES" -eq 0 ]; then
+        fail_test "OP-LC-03" "kubectl read the endpoints of $E2E_WEBHOOK_SVC in none of $ENDPOINT_UNREAD attempts after the delete"
+    elif [ "$ENDPOINT_EMPTY" -ne 0 ]; then
+        fail_test "OP-LC-03" "Service $E2E_WEBHOOK_SVC had no ready endpoint in $ENDPOINT_EMPTY of $ENDPOINT_SAMPLES samples after the leader was deleted: $ENDPOINT_EMPTY_AT"
+    elif ! $LC03_ROLLED; then
+        fail_test "OP-LC-03" "Within 120s the operator pods (uids: ${LC03_UIDS:-unread}) still held $LC03_UID or not every replica was ready (spec.replicas and readyReplicas: ${LC03_REPLICAS:-unread})"
+    elif ! $LC03_LED; then
+        fail_test "OP-LC-03" "After $LC03_TRIES reads the lease named no live operator pod other than the deleted pod/$LC03_LEADER: $LC03_NEW_LEADER"
     else
         pass_test "OP-LC-03"
     fi
@@ -352,8 +382,8 @@ else
     kubectl get machineconfig "e2e-lc-mc-${E2E_RUN_ID}" -n "$E2E_NAMESPACE" \
         -o jsonpath='{.status}' 2>&1 | sed 's/^/    /' || true
     echo ""
-    echo "  Operator logs (drift-related, last 40):"
-    kubectl logs -n "$E2E_INSTALL_NS" deployment/"$E2E_OPERATOR_DEPLOY" --tail=300 2>/dev/null \
+    echo "  Operator logs of every pod (drift-related, last 40):"
+    kubectl logs -n "$E2E_INSTALL_NS" -l "$E2E_OPERATOR_PODS" --prefix --tail=300 2>/dev/null \
         | grep -iE "drift|e2e-lc-drift-${E2E_RUN_ID}|e2e-lc-mc-${E2E_RUN_ID}" \
         | tail -40 | sed 's/^/    /' || true
     fail_test "OP-LC-06" "Expected DriftAlert conditions '$LC06_WANT' and MC DriftDetected True/DriftActive, got '${DA_STATUS:-none}' and '${MC_DRIFT:-none}'"

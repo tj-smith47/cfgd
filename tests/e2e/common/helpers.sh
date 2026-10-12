@@ -600,25 +600,34 @@ wait_for_injection() {
 
 # --- K8s helpers ---
 
+# wait_for_pod <namespace> <selector> [timeout_s, default 120]: wait until the
+# selector matches at least one pod and every pod it matches is Running. A
+# Deployment with a standby or a DaemonSet selects several, and the first in
+# the list says nothing about the others.
 wait_for_pod() {
     local namespace="$1"
     local label="$2"
     local timeout="${3:-120}"
 
-    echo "  Waiting for pod $label in $namespace (timeout: ${timeout}s)..."
+    echo "  Waiting for pods $label in $namespace (timeout: ${timeout}s)..."
     local deadline=$((SECONDS + timeout))
     while [ $SECONDS -lt $deadline ]; do
-        local status
+        local status phase running=0 others=0
+        local -a phases
         status=$(kubectl get pods -n "$namespace" -l "$label" \
-            -o jsonpath='{.items[0].status.phase}' 2>/dev/null || echo "")
-        if [ "$status" = "Running" ]; then
-            echo "  Pod is Running"
+            -o jsonpath='{.items[*].status.phase}' 2>/dev/null || echo "")
+        read -ra phases <<<"$status"
+        for phase in "${phases[@]}"; do
+            if [ "$phase" = "Running" ]; then running=$((running + 1)); else others=$((others + 1)); fi
+        done
+        if [ "$running" -gt 0 ] && [ "$others" -eq 0 ]; then
+            echo "  Every pod is Running ($running)"
             return 0
         fi
         sleep 2
     done
     {
-        echo "  Timed out after ${timeout}s waiting for a Running pod $label in $namespace; pods there:"
+        echo "  Timed out after ${timeout}s waiting for every pod $label in $namespace to be Running; pods there:"
         kubectl get pods -n "$namespace" -l "$label" -o wide 2>&1 || true
     } >&2
     return 1
@@ -1222,6 +1231,38 @@ wait_for_service_endpoints() {
         echo "  ERROR: Service $namespace/$service has no ready endpoints after ${timeout}s"
         kubectl get endpoints "$service" -n "$namespace" -o yaml 2>&1 | head -20 || true
     } >&2
+    return 1
+}
+
+# watch_endpoints_until <timeout_s> <namespace> <service> <command...>: read the
+# Service's ready addresses, then run the command, until the command exits 0.
+# Nothing paces the reads but the command itself, so an outage of a second
+# shows up in the samples. ENDPOINT_SAMPLES counts the reads that returned,
+# ENDPOINT_EMPTY those with no ready address, ENDPOINT_EMPTY_AT when each of
+# those came (#<sample> at +<s>s) and ENDPOINT_UNREAD the reads kubectl failed.
+# Returns 1 without a message when the timeout passes first, since the caller's
+# verdict names what the command waited for.
+watch_endpoints_until() {
+    local timeout="$1" namespace="$2" service="$3"
+    shift 3
+    local start=$SECONDS deadline=$((SECONDS + timeout)) addrs
+    ENDPOINT_SAMPLES=0
+    ENDPOINT_EMPTY=0
+    ENDPOINT_EMPTY_AT=""
+    ENDPOINT_UNREAD=0
+    while [ $SECONDS -lt $deadline ]; do
+        if addrs=$(kubectl get endpoints "$service" -n "$namespace" \
+            -o jsonpath='{.subsets[*].addresses[*].ip}' 2>/dev/null); then
+            ENDPOINT_SAMPLES=$((ENDPOINT_SAMPLES + 1))
+            if [ -z "$addrs" ]; then
+                ENDPOINT_EMPTY=$((ENDPOINT_EMPTY + 1))
+                ENDPOINT_EMPTY_AT="${ENDPOINT_EMPTY_AT:+$ENDPOINT_EMPTY_AT, }#$ENDPOINT_SAMPLES at +$((SECONDS - start))s"
+            fi
+        else
+            ENDPOINT_UNREAD=$((ENDPOINT_UNREAD + 1))
+        fi
+        "$@" && return 0
+    done
     return 1
 }
 
