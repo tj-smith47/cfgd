@@ -64,7 +64,8 @@ begin_test "GW-09: Checkin with compliance data"
 if [ -z "${DEVICE_API_KEY:-}" ]; then
     skip_test "GW-09" "No device enrolled (GW-02 may have failed)"
 else
-    GW09_COMPLIANCE='{"compliant":true,"totalChecks":5,"passedChecks":5,"failedChecks":0}'
+    # Distinct counts, so the read-back shows which field each one was stored under.
+    GW09_COMPLIANCE='{"compliant":3,"warning":1,"violation":2}'
     GW09_CHECKIN_CODE=$(curl -s -o "$GW_SCRATCH/gw09-checkin.txt" -w "%{http_code}" \
         -X POST "${GW_URL}/api/v1/checkin" \
         -H "Authorization: Bearer ${DEVICE_API_KEY}" \
@@ -93,13 +94,12 @@ else
         echo "$GW09_DEVICE_BODY" | head -c 500 | sed 's/^/    /'
         echo ""
 
-        if [ "$GW09_DEVICE_CODE" = "200" ] && echo "$GW09_DEVICE_BODY" | jq -e '.complianceSummary' >/dev/null 2>&1; then
-            # Verify the compliance data matches what the check-in sent
-            GW09_STORED_COMPLIANT=$(echo "$GW09_DEVICE_BODY" | jq -r '.complianceSummary.compliant // empty' 2>/dev/null)
-            if [ "$GW09_STORED_COMPLIANT" = "true" ]; then
+        if [ "$GW09_DEVICE_CODE" = "200" ] && echo "$GW09_DEVICE_BODY" | jq -e '.complianceSummary != null' >/dev/null 2>&1; then
+            GW09_STORED=$(echo "$GW09_DEVICE_BODY" | jq -r '.complianceSummary | "\(.compliant)/\(.warning)/\(.violation)"' 2>/dev/null)
+            if [ "$GW09_STORED" = "3/1/2" ]; then
                 pass_test "GW-09"
             else
-                fail_test "GW-09" "Compliance data stored but 'compliant' field mismatch (got: $GW09_STORED_COMPLIANT)"
+                fail_test "GW-09" "Stored compliance counts compliant/warning/violation are $GW09_STORED, want 3/1/2"
             fi
         else
             fail_test "GW-09" "Device response missing complianceSummary (HTTP $GW09_DEVICE_CODE)"

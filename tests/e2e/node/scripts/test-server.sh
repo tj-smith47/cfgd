@@ -224,12 +224,10 @@ echo "$DEVICE_RESP" | head -c 400 | sed 's/^/    /'
 echo ""
 
 if [ "$RC" -eq 0 ] \
-    && assert_contains "$DEVICE_RESP" "complianceSummary" \
-    && assert_contains "$DEVICE_RESP" "compliant" \
-    && assert_contains "$DEVICE_RESP" "violation"; then
+    && echo "$DEVICE_RESP" | jq -e '.complianceSummary | (.compliant | type) == "number" and (.warning | type) == "number" and (.violation | type) == "number"' >/dev/null 2>&1; then
     pass_test "T36"
 else
-    fail_test "T36" "Compliance summary not found in device API response (exit: $RC)"
+    fail_test "T36" "Device API response carries no complianceSummary with numeric compliant, warning and violation counts (exit: $RC)"
 fi
 
 # Cleanup the compliance config
