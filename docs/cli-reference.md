@@ -2337,6 +2337,11 @@ on the one read the pull extracts from, before anything is extracted. That diges
 the bytes read; a registry whose `Docker-Content-Digest` header names another digest is refused
 before any check runs.
 
+Only a registry's own `404` reports something missing: `manifest not found` for the tag or index
+entry, `blob not found` for a layer. A registry that cannot be reached or answers with any other
+HTTP error fails with `registry request failed`, and one that refuses the credential fails with
+`registry authentication failed`; both carry the cause.
+
 ```sh
 cfgd module pull ghcr.io/me/my-module:1.0.0 --dir out --platform linux/arm64 -o json
 ```

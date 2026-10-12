@@ -401,6 +401,20 @@ pub(super) mod test_helpers {
             .to_string()
     }
 
+    /// Answer `404` for every cosign attestation tag in `repository`, as a
+    /// registry holding an artifact nobody attested does.
+    pub(crate) fn serve_no_attestations(server: &mut mockito::ServerGuard, repository: &str) {
+        server
+            .mock(
+                "GET",
+                mockito::Matcher::Regex(format!(
+                    r"^/v2/{repository}/manifests/sha256-[0-9a-f]+\.att$"
+                )),
+            )
+            .with_status(404)
+            .create();
+    }
+
     /// Helper: create a module directory with a valid module.yaml for push tests.
     pub(crate) fn create_test_module_dir() -> tempfile::TempDir {
         let dir = tempfile::tempdir().unwrap();
@@ -491,6 +505,7 @@ pub(super) mod test_helpers {
                 })
                 .create();
 
+            serve_no_attestations(&mut server, repository);
             let manifests = format!("^/v2/{repository}/manifests/");
             let reference = |req: &mockito::Request| {
                 req.path()

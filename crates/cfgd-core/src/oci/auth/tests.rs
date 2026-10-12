@@ -370,7 +370,7 @@ fn get_bearer_token_parses_www_authenticate() {
         .build()
         .new_agent();
 
-    let result = get_bearer_token(&agent, &www_auth, None);
+    let result = get_bearer_token(&agent, &www_auth, None, "reg.example");
     assert!(
         result.is_ok(),
         "get_bearer_token failed: {:?}",
@@ -399,7 +399,7 @@ fn get_bearer_token_uses_access_token_field() {
         .build()
         .new_agent();
 
-    let result = get_bearer_token(&agent, &www_auth, None);
+    let result = get_bearer_token(&agent, &www_auth, None, "reg.example");
     assert!(result.is_ok());
     assert_eq!(result.unwrap(), "alt-token-456");
 }
@@ -407,11 +407,10 @@ fn get_bearer_token_uses_access_token_field() {
 #[test]
 fn get_bearer_token_fails_without_realm() {
     let agent = ureq::Agent::config_builder().build().new_agent();
-    let result = get_bearer_token(&agent, "Bearer service=\"svc\"", None);
-    assert!(result.is_err());
+    let result = get_bearer_token(&agent, "Bearer service=\"svc\"", None, "reg.example");
     assert!(
-        matches!(result, Err(OciError::AuthFailed { .. })),
-        "expected AuthFailed variant"
+        matches!(&result, Err(OciError::AuthFailed { registry, .. }) if registry == "reg.example"),
+        "{result:?}"
     );
 }
 
@@ -436,7 +435,7 @@ fn get_bearer_token_fails_on_non_json_token_response() {
         .build()
         .new_agent();
 
-    let result = get_bearer_token(&agent, &www_auth, None);
+    let result = get_bearer_token(&agent, &www_auth, None, "reg.example");
     assert!(matches!(result, Err(OciError::AuthFailed { .. })));
 }
 
@@ -469,7 +468,7 @@ fn get_bearer_token_sends_basic_auth_when_provided() {
         .build()
         .new_agent();
 
-    let result = get_bearer_token(&agent, &www_auth, Some(&auth));
+    let result = get_bearer_token(&agent, &www_auth, Some(&auth), "reg.example");
     assert!(result.is_ok());
     assert_eq!(result.unwrap(), "authed-token");
 }
@@ -872,7 +871,7 @@ fn get_bearer_token_response_with_no_token_returns_auth_failed() {
         .timeout_global(Some(std::time::Duration::from_secs(10)))
         .build()
         .new_agent();
-    let result = get_bearer_token(&agent, &www_auth, None);
+    let result = get_bearer_token(&agent, &www_auth, None, "reg.example");
     assert!(matches!(result, Err(OciError::AuthFailed { .. })));
     let msg = format!("{:?}", result.err().unwrap());
     assert!(msg.contains("no token"), "must mention no token: {msg}");
@@ -886,8 +885,33 @@ fn get_bearer_token_handles_failed_http_call() {
         .timeout_global(Some(std::time::Duration::from_millis(500)))
         .build()
         .new_agent();
-    let result = get_bearer_token(&agent, www_auth, None);
-    assert!(matches!(result, Err(OciError::AuthFailed { .. })));
+    let result = get_bearer_token(&agent, www_auth, None, "reg.example");
+    assert!(
+        matches!(&result, Err(OciError::RequestFailed { message }) if message.contains("reg.example")),
+        "{result:?}"
+    );
+}
+
+#[test]
+fn get_bearer_token_names_the_registry_when_the_token_endpoint_refuses() {
+    let mut server = mockito::Server::new();
+    let www_auth = format!(r#"Bearer realm="{}/token",service="svc""#, server.url());
+    server
+        .mock(
+            "GET",
+            mockito::Matcher::Regex(r"/token\?service=.*".to_string()),
+        )
+        .with_status(403)
+        .create();
+    let agent = ureq::Agent::config_builder()
+        .timeout_global(Some(std::time::Duration::from_secs(10)))
+        .build()
+        .new_agent();
+    let result = get_bearer_token(&agent, &www_auth, None, "reg.example");
+    assert!(
+        matches!(&result, Err(OciError::AuthFailed { registry, .. }) if registry == "reg.example"),
+        "{result:?}"
+    );
 }
 
 // --- resolve_from_credential_helper (docker-credential-<helper> shim) ---

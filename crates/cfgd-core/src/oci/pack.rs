@@ -14,7 +14,8 @@ use super::archive::create_tar_gz_with_diff_id;
 use super::auth::RegistryAuth;
 use super::push::OciPlatform;
 use super::transport::{
-    authenticated_request, ensure_blob_present, fetch_blob, resolve_pushed_digest, upload_blob,
+    authenticated_request, authenticated_request_if_present, ensure_blob_present, fetch_blob,
+    resolve_pushed_digest, upload_blob,
 };
 use super::{
     Annotations, ImageConfig, ImageRuntimeConfig, MEDIA_TYPE_DOCKER_MANIFEST_LIST,
@@ -450,17 +451,15 @@ fn get_base_doc(
         base.repository,
         reference
     );
-    let resp = authenticated_request(
+    let resp = authenticated_request_if_present(
         agent,
         "GET",
         &url,
         auth,
         Some(&super::manifest_accept()),
-        None,
-        None,
-    )
-    .map_err(|e| OciError::ManifestNotFound {
-        reference: format!("{base}: {e}"),
+    )?
+    .ok_or_else(|| OciError::ManifestNotFound {
+        reference: base.to_string(),
     })?;
     resp.into_body()
         .read_to_string()

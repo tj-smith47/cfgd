@@ -10,6 +10,8 @@ use cfgd::cli::module;
 use cfgd_core::assert_snapshot_golden as assert_snapshot;
 use cfgd_core::output::Printer;
 
+mod cfgd_binary;
+
 const SNAPSHOT_ROOT: &str = "tests/output_snapshots";
 
 fn strip_ansi(s: &str) -> String {
@@ -180,5 +182,28 @@ fn module_push_pushed_human() {
         Path::new(SNAPSHOT_ROOT),
         "module_push/pushed.txt",
         &normalized,
+    );
+}
+
+/// A registry nothing answers for is a failed request: only a registry's own
+/// 404 says the manifest is missing.
+#[test]
+fn module_pull_reports_an_unreachable_registry_as_a_request_failure() {
+    let out = tempfile::tempdir().unwrap();
+    let output = cfgd_binary::cfgd_bin()
+        .unwrap()
+        .args(["module", "pull", "127.0.0.1:1/x/y:v1", "--dir"])
+        .arg(out.path())
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(1), "{stderr}");
+    assert!(
+        !stderr.contains("manifest not found"),
+        "an unreachable registry reported as a missing manifest:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("registry request failed"),
+        "no request failure named:\n{stderr}"
     );
 }

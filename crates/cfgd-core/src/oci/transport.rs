@@ -200,7 +200,7 @@ fn authorized_response(
             });
         }
 
-        let token = get_bearer_token(agent, &www_auth, auth)?;
+        let token = get_bearer_token(agent, &www_auth, auth, url)?;
 
         // Retry with bearer token
         let resp2 = run_request(
@@ -359,17 +359,15 @@ pub(super) fn fetch_blob(
         digest
     );
 
-    let resp = authenticated_request(
+    let resp = authenticated_request_if_present(
         agent,
         "GET",
         &blob_url,
         auth,
         Some("application/octet-stream"),
-        None,
-        None,
-    )
-    .map_err(|e| OciError::BlobNotFound {
-        digest: format!("{digest}: {e}"),
+    )?
+    .ok_or_else(|| OciError::BlobNotFound {
+        digest: digest.to_string(),
     })?;
 
     let mut data = Vec::new();
@@ -885,5 +883,54 @@ mod tests {
         let url = "http://127.0.0.1:1/v2/test/repo/tags/list";
         let result = authenticated_request(&agent, "GET", url, None, None, None, None);
         assert!(matches!(result, Err(OciError::RequestFailed { .. })));
+    }
+
+    fn fetch_blob_from(registry: &str) -> Result<Vec<u8>, OciError> {
+        let agent = ureq::Agent::config_builder()
+            .timeout_global(Some(std::time::Duration::from_secs(10)))
+            .build()
+            .new_agent();
+        let oci_ref = OciReference {
+            registry: registry.to_string(),
+            repository: "test/blobmod".to_string(),
+            reference: ReferenceKind::Tag("v1".to_string()),
+        };
+        fetch_blob(&agent, &oci_ref, None, "sha256:abc")
+    }
+
+    fn fetch_blob_answered(status: usize) -> OciError {
+        let mut server = mockito::Server::new();
+        server
+            .mock("GET", "/v2/test/blobmod/blobs/sha256:abc")
+            .with_status(status)
+            .create();
+        fetch_blob_from(&registry_from_url(&server.url())).expect_err("the blob is not served")
+    }
+
+    #[test]
+    fn fetch_blob_names_the_digest_only_when_the_registry_answers_404() {
+        let err = fetch_blob_answered(404);
+        assert!(
+            matches!(&err, OciError::BlobNotFound { digest } if digest == "sha256:abc"),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn fetch_blob_reports_an_unreachable_registry_as_a_request_failure() {
+        let err = fetch_blob_from("127.0.0.1:1").expect_err("nothing listens there");
+        assert!(matches!(err, OciError::RequestFailed { .. }), "{err:?}");
+    }
+
+    #[test]
+    fn fetch_blob_reports_a_registry_500_as_a_request_failure() {
+        let err = fetch_blob_answered(500);
+        assert!(matches!(err, OciError::RequestFailed { .. }), "{err:?}");
+    }
+
+    #[test]
+    fn fetch_blob_reports_a_refused_credential_as_an_auth_failure() {
+        let err = fetch_blob_answered(401);
+        assert!(matches!(err, OciError::AuthFailed { .. }), "{err:?}");
     }
 }

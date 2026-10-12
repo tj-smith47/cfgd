@@ -879,3 +879,34 @@ fn image_config_serializes_with_correct_oci_keys() {
     assert!(rt_config.cmd.is_none());
     assert!(rt_config.user.is_none());
 }
+
+/// Only a registry's own `404` is "not found": every production construction of
+/// `ManifestNotFound` or `BlobNotFound` under `oci/` is the `None` arm of
+/// `authenticated_request_if_present`, spelled `.ok_or_else(||` on its own
+/// line. One built inside a `map_err` turns an unreachable registry, a `500`
+/// or a refused credential into a missing artifact.
+#[test]
+fn only_a_registry_404_constructs_a_not_found_error() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/oci");
+    let mut seen = 0;
+    let mut offenders = Vec::new();
+    for path in crate::test_helpers::rust_sources_under(&root) {
+        let code = crate::test_helpers::production_code_of(&path);
+        for (n, line) in code.lines().enumerate() {
+            if !(line.contains("OciError::ManifestNotFound {")
+                || line.contains("OciError::BlobNotFound {"))
+            {
+                continue;
+            }
+            seen += 1;
+            if !line.contains(".ok_or_else(||") {
+                offenders.push(format!("{}:{}: {}", path.display(), n + 1, line.trim()));
+            }
+        }
+    }
+    assert!(
+        seen >= 5,
+        "the walk found {seen} constructions, so it went blind"
+    );
+    assert!(offenders.is_empty(), "{offenders:#?}");
+}

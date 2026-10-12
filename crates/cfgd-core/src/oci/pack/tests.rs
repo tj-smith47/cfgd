@@ -1482,3 +1482,31 @@ fn an_oci_descriptor_serializes_its_annotations_in_sorted_key_order() {
     );
     assert_eq!(serde_json::to_string(&descriptor).unwrap(), expected);
 }
+
+fn resolve_base_from(registry: &str) -> Result<OciManifest, OciError> {
+    let base = crate::oci::OciReference::parse(&format!("{registry}/test/basemod:v1")).unwrap();
+    let agent = crate::http::http_agent(crate::http::HTTP_OCI_TIMEOUT);
+    resolve_base_manifest(&agent, &base, None, &target("linux/amd64"))
+}
+
+#[test]
+fn a_base_image_the_registry_answers_404_for_is_a_missing_manifest() {
+    let mut server = mockito::Server::new();
+    let registry = registry_from_url(&server.url());
+    server
+        .mock("GET", "/v2/test/basemod/manifests/v1")
+        .with_status(404)
+        .create();
+    let err = resolve_base_from(&registry).expect_err("the base is not served");
+    let expected = format!("{registry}/test/basemod:v1");
+    assert!(
+        matches!(&err, OciError::ManifestNotFound { reference } if *reference == expected),
+        "{err:?}"
+    );
+}
+
+#[test]
+fn an_unreachable_base_registry_is_a_request_failure() {
+    let err = resolve_base_from("127.0.0.1:1").expect_err("nothing listens");
+    assert!(matches!(err, OciError::RequestFailed { .. }), "{err:?}");
+}

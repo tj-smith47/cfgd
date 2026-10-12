@@ -208,10 +208,16 @@ fn resolve_from_credential_helper(helper_name: &str, registry: &str) -> Option<R
 
 /// Attempt to get a bearer token for the given registry+repository scope.
 /// Registries return a 401 with a Www-Authenticate header pointing to a token endpoint.
+///
+/// `registry` names the request the challenge answered, in every error. A
+/// token endpoint that answers with an HTTP error status is
+/// [`OciError::AuthFailed`]; one that cannot be reached at all is
+/// [`OciError::RequestFailed`].
 pub(super) fn get_bearer_token(
     agent: &ureq::Agent,
     www_authenticate: &str,
     auth: Option<&RegistryAuth>,
+    registry: &str,
 ) -> Result<String, OciError> {
     // Parse: Bearer realm="...",service="...",scope="..."
     let realm = extract_auth_param(www_authenticate, "realm");
@@ -219,7 +225,7 @@ pub(super) fn get_bearer_token(
     let scope = extract_auth_param(www_authenticate, "scope");
 
     let realm = realm.ok_or_else(|| OciError::AuthFailed {
-        registry: String::new(),
+        registry: registry.to_string(),
         message: format!("missing realm in Www-Authenticate header: {www_authenticate}"),
     })?;
 
@@ -240,9 +246,14 @@ pub(super) fn get_bearer_token(
         req = req.header("Authorization", &cred.basic_auth_header());
     }
 
-    let mut resp = req.call().map_err(|e| OciError::AuthFailed {
-        registry: String::new(),
-        message: format!("token request failed: {e}"),
+    let mut resp = req.call().map_err(|e| match e {
+        ureq::Error::StatusCode(_) => OciError::AuthFailed {
+            registry: registry.to_string(),
+            message: format!("token request failed: {e}"),
+        },
+        e => OciError::RequestFailed {
+            message: format!("token request for {registry} failed: {e}"),
+        },
     })?;
 
     #[derive(Deserialize)]
@@ -254,20 +265,19 @@ pub(super) fn get_bearer_token(
     let body_str = resp
         .body_mut()
         .read_to_string()
-        .map_err(|e| OciError::AuthFailed {
-            registry: String::new(),
-            message: format!("cannot read token response body: {e}"),
+        .map_err(|e| OciError::RequestFailed {
+            message: format!("cannot read the token response for {registry}: {e}"),
         })?;
     let body: TokenResponse =
         serde_json::from_str(&body_str).map_err(|e| OciError::AuthFailed {
-            registry: String::new(),
+            registry: registry.to_string(),
             message: format!("invalid token response JSON: {e}"),
         })?;
 
     body.token
         .or(body.access_token)
         .ok_or_else(|| OciError::AuthFailed {
-            registry: String::new(),
+            registry: registry.to_string(),
             message: "no token in response".to_string(),
         })
 }
