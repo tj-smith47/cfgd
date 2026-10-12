@@ -20,7 +20,7 @@ pub fn cmd_pull(run: &RunContext<'_>) -> anyhow::Result<()> {
     // commands answer a refused pull with the same exit code; a wrapper
     // chaining on `cfgd pull &&` must not read a refusal as a completed pull.
     if refused {
-        cfgd_core::exit::ExitCode::Error.exit();
+        return Err(crate::cli::reported_exit(cfgd_core::exit::ExitCode::Error));
     }
     Ok(())
 }

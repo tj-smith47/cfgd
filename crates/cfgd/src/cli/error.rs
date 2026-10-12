@@ -42,6 +42,31 @@ impl std::fmt::Display for CliErrorMeta {
 
 impl std::error::Error for CliErrorMeta {}
 
+/// A command that already reported its outcome and only needs the process to
+/// end with `code`: its rows and its payload are out, so [`crate::cli::finish_run`]
+/// renders nothing for it and exits with the code. A verb returns it, and does
+/// not end the process itself, so every exit passes the recording of the run's
+/// held migration answer first.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReportedExit(pub i32);
+
+impl std::fmt::Display for ReportedExit {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "the command reported its outcome and exits with code {}",
+            self.0
+        )
+    }
+}
+
+impl std::error::Error for ReportedExit {}
+
+/// The `Err` a command returns once it has reported a failed outcome itself.
+pub fn reported_exit(code: impl Into<i32>) -> anyhow::Error {
+    ReportedExit(code.into()).into()
+}
+
 fn meta(
     name: impl Into<String>,
     error_kind: impl Into<String>,

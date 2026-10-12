@@ -202,8 +202,7 @@ fn backup_run_named_human() {
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc();
 
-    // A hookless run is clean, so `cmd_backup_run` returns Ok rather than
-    // taking the `ExitCode::Error.exit()` path — safe to call in-process.
+    // A hookless run is clean, so `cmd_backup_run` returns Ok.
     cfgd::cli::RunContext::for_test(&cli, &printer, |run| cmd_backup_run(run, Some("docs")))
         .unwrap();
     drop(printer);
@@ -318,9 +317,8 @@ fn backup_run_named_scheduled_backup_runs_alone() {
 
 #[test]
 fn backup_run_unknown_name_human_renders_hint_once() {
-    // An unknown name never reaches `cmd_backup_run`'s
-    // `ExitCode::Error.exit()` branch — `run_backup_run`'s `?` propagates the
-    // typed error immediately, so this is safe to assert in-process.
+    // An unknown name never reaches `cmd_backup_run`'s reported-exit
+    // branch: `run_backup_run`'s `?` propagates the typed error immediately.
     let (config_dir, state_dir, _source) = backup_profile_setup();
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, _cap) = Printer::for_test_doc();
@@ -1660,9 +1658,8 @@ fn backup_run_reports_a_busy_unit_and_still_runs_the_others() {
     // The engine allows one writer per unit. `backup run` with no name must not
     // abandon the rest of the set over one unit another process holds — but the
     // command still exits nonzero, because a run the user asked for did not
-    // happen. Driven through `run_backup_run` because the nonzero exit is a
-    // `process::exit` in `cmd_backup_run`, which would take the test binary
-    // with it.
+    // happen. Driven through `run_backup_run`, which hands back the outcome
+    // the nonzero exit is decided from.
     let (config_dir, state_dir, _source) = backup_profile_setup();
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc();

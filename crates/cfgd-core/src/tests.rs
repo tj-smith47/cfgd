@@ -2072,22 +2072,6 @@ fn posixify_os_error_text_handles_mixed_libgit2_and_std_markers() {
 }
 
 #[test]
-fn from_user_input_folds_backslashes() {
-    assert_eq!(
-        from_user_input("C:\\Users\\foo").unwrap(),
-        std::path::PathBuf::from("C:/Users/foo")
-    );
-}
-
-#[test]
-fn from_user_input_passthrough_for_posix_input() {
-    assert_eq!(
-        from_user_input("/etc/cfgd.yaml").unwrap(),
-        std::path::PathBuf::from("/etc/cfgd.yaml")
-    );
-}
-
-#[test]
 fn path_display_ext_display_posix_unix_passthrough() {
     let p = std::path::Path::new("/home/foo/bar");
     // On Unix this is identical to .display().to_string(). On Windows the

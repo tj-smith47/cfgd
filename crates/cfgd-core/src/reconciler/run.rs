@@ -1829,8 +1829,8 @@ pub fn render_apply_result(
     printer: &Printer,
     elapsed: Option<Duration>,
 ) -> ApplyStatus {
-    // run-header-ok: a view over the rollup, not a run — the header belongs to
-    // whoever owns the run this result came out of.
+    // run-header-ok: a view over the rollup of a run already over; the header
+    // belongs to whoever owns the run this result came out of.
     render_run_rollup(&result.tally(), title, printer, elapsed)
 }
 

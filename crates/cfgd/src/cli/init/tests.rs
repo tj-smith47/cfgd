@@ -11,6 +11,7 @@ fn inert_migration_gate() -> crate::cli::config_schema::GateInvocation<'static> 
         assume_yes: false,
         is_daemon: false,
         preview: false,
+        diagnostic: false,
         state_dir: None,
         scope: cfgd_core::Scope::User,
     }
@@ -26,7 +27,11 @@ fn inert_migration_gate() -> crate::cli::config_schema::GateInvocation<'static> 
 /// here for that reason.
 fn cmd_init_guarded(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
     let _path = cfgd_core::test_helpers::path_env_read_guard();
-    cmd_init(printer, args)
+    // No document: these tests drive init alone, and the answer `main`
+    // would record after it is the gate's own subject elsewhere.
+    let nowhere = tempfile::tempdir().unwrap();
+    let startup = crate::cli::startup::StartupDocument::load(&nowhere.path().join("cfgd.yaml"));
+    cmd_init(printer, &startup, args)
 }
 
 // `cmd_init` gates on `command_available("git")` and calls `ExitCode::Error.exit()`
@@ -6565,11 +6570,86 @@ fn init_apply_settles_the_hash_of_every_link_deployed_row_before_it_returns() {
     );
 }
 
+/// With no home, the answer a reader gives init's migration prompt is handed
+/// to the run's own document, where `cli::finish_run` records it once `execute` returns.
+/// Kept on init's private copy, it would be dropped with that copy.
+#[test]
+// Unsets HOME, which the prompt arm asks about.
+#[serial_test::serial]
+fn a_homeless_answer_to_inits_migration_prompt_moves_to_the_runs_document() {
+    use cfgd_core::output::PromptAnswer;
+    use cfgd_core::test_helpers::EnvVarGuard;
+    let _home = EnvVarGuard::unset("HOME");
+    let _profile = EnvVarGuard::unset("USERPROFILE");
+    let dir = tempfile::tempdir().unwrap();
+    let state = tempfile::tempdir().unwrap();
+    let source = dir.path().join("source");
+    std::fs::create_dir_all(&source).unwrap();
+    let behind = "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: source\nspec:\n  fileStrategy: Symlink\n";
+    std::fs::write(source.join("cfgd.yaml"), behind).unwrap();
+    let gate = crate::cli::config_schema::GateInvocation {
+        policy_override: None,
+        assume_yes: false,
+        is_daemon: false,
+        preview: false,
+        diagnostic: false,
+        state_dir: Some(state.path()),
+        scope: cfgd_core::Scope::User,
+    };
+    let (printer, _said) = Printer::for_test_with_prompt_responses_at(
+        vec![PromptAnswer::Confirm(false)],
+        Verbosity::Normal,
+    );
+    let source_str = source.display().to_string();
+    let args = InitArgs {
+        migration_gate: gate,
+        on_conflict: crate::cli::OnConflict::Ask,
+        path: None,
+        from: Some(&source_str),
+        branch: "master",
+        name: None,
+        apply: false,
+        dry_run: false,
+        yes: false,
+        install_daemon: false,
+        theme: None,
+        apply_profile: None,
+        apply_modules: &[],
+        cache_dir: None,
+        state_dir: Some(state.path()),
+        runtime_dir: None,
+        scope: cfgd_core::Scope::User,
+    };
+    let run_document = crate::cli::startup::StartupDocument::load(&dir.path().join("cfgd.yaml"));
+    {
+        let _path = cfgd_core::test_helpers::path_env_read_guard();
+        cmd_init(&printer, &run_document, &args).unwrap();
+    }
+    assert_eq!(
+        printer.prompt_confirm("still queued?").ok(),
+        None,
+        "init asked, and was answered no"
+    );
+    assert!(
+        run_document.take_migration_answer().is_some(),
+        "the answer waits on the run's document"
+    );
+    assert!(
+        !state
+            .path()
+            .join(cfgd_core::state::STATE_DB_FILENAME)
+            .exists(),
+        "nothing was recorded while init ran"
+    );
+}
+
 /// The answer a reader gives init's migration prompt is the answer the next
 /// command reads: init records it against the config it wrote, and a gate
 /// reaching the same file by the directory `--config` names finds it and
 /// asks nothing.
 #[test]
+// The prompt arm asks whether a home resolves, and a serial test unsets HOME.
+#[serial_test::serial]
 fn an_answer_given_to_inits_migration_prompt_is_the_one_the_next_command_reads() {
     use cfgd_core::output::PromptAnswer;
     let dir = tempfile::tempdir().unwrap();
@@ -6583,6 +6663,7 @@ fn an_answer_given_to_inits_migration_prompt_is_the_one_the_next_command_reads()
         assume_yes: false,
         is_daemon: false,
         preview: false,
+        diagnostic: false,
         state_dir: Some(state.path()),
         scope: cfgd_core::Scope::User,
     };

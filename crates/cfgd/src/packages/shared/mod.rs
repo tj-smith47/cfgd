@@ -75,7 +75,7 @@ pub(super) fn windows_pkg_argv(name: &str, resolved: Option<&std::path::Path>) -
     let Some(path) = resolved else {
         return vec![name.to_string()];
     };
-    let p = path.to_string_lossy().into_owned(); // native-ok: Windows CreateProcess argv (backslash path), not a cross-OS key
+    let p = path.to_string_lossy().into_owned(); // native-ok: Windows CreateProcess argv, which takes the backslash path
     let ext = path
         .extension()
         .and_then(|e| e.to_str())
@@ -1125,6 +1125,8 @@ pub(super) fn planned_method_failed(
 /// bootstrap plan declares no directory rather than an unusable one.
 pub(super) fn home_relative_dir(rel: &str) -> Option<std::path::PathBuf> {
     // home-optional-ok: a bootstrap plan with no home declares no directory
+    // home-refusal-ok: the installer answers this path at run time; with no home the plan
+    // declares no PATH directory, and a failure is reported on its install action
     cfgd_core::expand_tilde(std::path::Path::new(rel), "installer directory").ok()
 }
 
@@ -1355,7 +1357,7 @@ pub(super) fn brew_cmd() -> Command {
 
 /// Detect the user who owns the brew installation.
 fn brew_owner() -> Option<String> {
-    // own-path-ok: stat is coreutils, not a manager this run could have bootstrapped
+    // own-path-ok: stat ships with coreutils, which no run bootstraps
     let output = cfgd_core::command_output(
         Command::new("stat")
             .args(["-c", "%U", LINUXBREW_PATH])

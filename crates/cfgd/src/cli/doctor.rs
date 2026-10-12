@@ -7,10 +7,10 @@ use cfgd_core::providers::PackageManagerExt;
 pub(super) fn cmd_doctor(run: &RunContext<'_>, fix: bool) -> anyhow::Result<()> {
     // A failed verdict must fail the process so `cfgd doctor && cfgd apply`
     // stops instead of sailing into a guaranteed-broken apply. The Doc is
-    // already emitted, so exit directly (mirroring cmd_profile_migrate)
-    // rather than return an error the central sink would re-render.
+    // already emitted, so the exit renders nothing new (mirroring
+    // cmd_profile_migrate).
     if !run_doctor(run, fix)? {
-        cfgd_core::exit::ExitCode::Error.exit();
+        return Err(crate::cli::reported_exit(cfgd_core::exit::ExitCode::Error));
     }
     Ok(())
 }
@@ -685,7 +685,7 @@ fn build_config_section(s: SectionBuilder, cfg: &DoctorConfigCheck) -> SectionBu
                     .into(),
             ));
             // facts-block-ok: the block closes this arm's section; the rows
-            // below are the match's other arms, not rows after it
+            // below belong to the match's other arms
             s = s.kv_block(pairs);
             for old in &cfg.legacy_output_keys {
                 let new = cfgd_core::config::LEGACY_OUTPUT_KEYS
@@ -925,7 +925,7 @@ fn build_profiles_section(
     profiles: &[DoctorProfileLayoutCheck],
 ) -> SectionBuilder {
     if profiles.iter().all(|p| !p.legacy && p.error.is_none()) {
-        // verdict-row-ok: a layout verdict, not an act cfgd performed
+        // verdict-row-ok: a layout verdict on what cfgd found
         return s.status(Role::Ok, "All profiles use the canonical bundle layout");
     }
     profiles.iter().fold(s, |s, p| {

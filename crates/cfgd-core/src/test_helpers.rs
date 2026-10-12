@@ -1155,7 +1155,7 @@ impl BareGitRepo {
     /// handle is dropped first; if the removal is still refused, the
     /// repository is broken in place (HEAD, config, refs) until it stops
     /// answering. Query methods (`has_tag`, `tags`, …) panic after this.
-    // env-mutator-ok: deletes a fixture repo; its `drop(…)` is `std::mem::drop`, not a guard's.
+    // env-mutator-ok: deletes a fixture repo; `drop(…)` is `std::mem::drop` and drops no guard.
     pub fn remove_upstream(&mut self) {
         drop(self.bare_repo.take());
         if std::fs::remove_dir_all(&self.bare_path).is_ok() {
@@ -1313,7 +1313,7 @@ pub fn install_tracing_journal() {
     INSTALL.call_once(|| {
         let subscriber = tracing_subscriber::fmt()
             // long-line-ok: a hatch is read off its own line, so it cannot wrap
-            // unfolded-writer-ok: a test capture read back as a String, not a stream anyone is looking at
+            // unfolded-writer-ok: a test capture read back as a String that nobody watches
             .with_writer(TracingJournalWriter)
             .with_max_level(tracing::Level::INFO)
             .with_ansi(false)
@@ -3426,7 +3426,7 @@ impl Drop for SpawnEnvGuard {
 /// avoids — it would let a `PATH`/cwd mutation run while the in-flight spawn
 /// this lock exists to protect is still resolving its program. Take the
 /// exclusive guard first, or not inside a spawn.
-// env-mutator-ok: takes cfgd's PATH lock; it guards a caller's write, never performs one.
+// env-mutator-ok: takes cfgd's PATH lock; it guards a caller's write and makes none.
 pub fn path_env_mutation_guard() -> ExclusiveEnvGuard {
     debug_assert!(
         SPAWN_GUARD_DEPTH.with(std::cell::Cell::get) == 0,
@@ -5021,7 +5021,7 @@ impl crate::providers::PackageManager for MockPackageManager {
         let _in_flight = self.witness.as_ref().map(|w| w.enter());
         if let Some(delay) = self.install_delay {
             // long-line-ok: a hatch is read off its own line, so it cannot wrap
-            // sleep-ok: simulates a slow install to widen the overlap window a ConcurrencyWitness observes — the witness peak is the actual assertion, not this duration
+            // sleep-ok: simulates a slow install to widen the overlap window a ConcurrencyWitness observes; the test asserts the witness peak
             std::thread::sleep(delay);
         }
         self.install_calls.lock().unwrap().push(packages.to_vec());
@@ -5328,7 +5328,7 @@ fn parse_profile_yaml_to_resolved(yaml: &str) -> crate::config::ResolvedProfile 
 /// `cfgd-version` to `0.0.1` so `list` flags it stale (stamp != running). The
 /// whole-file claude provider carries the stamp on a `cfgd-version:` frontmatter
 /// line, so a line rewrite faithfully reproduces an old install.
-// env-mutator-ok: writes a skill file; its `install(…)` is `SkillProvider`'s, not a shim's.
+// env-mutator-ok: writes a skill file through `SkillProvider::install`, which writes no shim.
 pub fn seed_stale_skill(
     kind: crate::generate::SkillKind,
     scope: crate::providers::skill::SkillScope,

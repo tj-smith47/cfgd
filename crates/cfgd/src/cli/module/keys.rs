@@ -105,9 +105,11 @@ pub fn cmd_module_keys_generate(printer: &Printer, output_dir: Option<&str>) -> 
 /// to by default are probed, current directory first.
 fn key_pair_locations(dir: Option<&str>) -> cfgd_core::errors::Result<Vec<std::path::PathBuf>> {
     Ok(match dir {
+        // home-refusal-ok: `module keys` alone reads it; no apply or plan path reaches it
         Some(d) => vec![cfgd_core::expand_tilde(Path::new(d), KEY_DIR_ROLE)?],
         None => vec![
             std::path::PathBuf::from("."),
+            // home-refusal-ok: `module keys` alone reads it; no apply or plan path reaches it
             cfgd_core::expand_tilde(Path::new("~/.cfgd"), KEY_DIR_ROLE)?,
         ],
     })

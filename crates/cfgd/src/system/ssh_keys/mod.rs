@@ -227,6 +227,14 @@ impl SystemConfigurator for SshKeysConfigurator {
         Some("ssh-keygen")
     }
 
+    fn home_refusal(&self, desired: &serde_yaml::Value) -> Option<cfgd_core::errors::StateError> {
+        // A malformed entry is the diff's to report.
+        Self::parse_desired(desired)
+            .ok()?
+            .iter()
+            .find_map(|spec| cfgd_core::home_refusal_of(spec.resolved_path()))
+    }
+
     fn current_state(&self) -> Result<serde_yaml::Value> {
         // Return empty sequence — state is computed on demand during diff
         Ok(serde_yaml::Value::Sequence(Vec::new()))

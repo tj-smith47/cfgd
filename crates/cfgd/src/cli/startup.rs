@@ -1,9 +1,12 @@
 //! The config document every reader before dispatch shares.
 
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 use cfgd_core::config::CfgdConfig;
 use cfgd_core::errors::{CfgdError, ConfigError};
+
+use super::config_schema::HeldMigrationAnswer;
 
 /// The config document as it stood when the process started, read and parsed
 /// once and handed to every reader of the invocation: the alias pass, the
@@ -19,6 +22,9 @@ pub struct StartupDocument {
     path: PathBuf,
     loaded: cfgd_core::errors::Result<(CfgdConfig, String)>,
     reads: u32,
+    /// The migration prompt's answer, given with no home directory resolved
+    /// and waiting for the run to open its state store.
+    held_answer: Mutex<Option<HeldMigrationAnswer>>,
 }
 
 impl StartupDocument {
@@ -35,6 +41,7 @@ impl StartupDocument {
             path,
             loaded,
             reads: 1,
+            held_answer: Mutex::new(None),
         }
     }
 
@@ -74,6 +81,19 @@ impl StartupDocument {
     /// The resolved path of the document.
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    /// Keep the migration prompt's answer for [`Self::take_migration_answer`].
+    pub(in crate::cli) fn hold_migration_answer(&self, answer: HeldMigrationAnswer) {
+        *self.held_answer.lock().unwrap_or_else(|e| e.into_inner()) = Some(answer);
+    }
+
+    /// The answer [`Self::hold_migration_answer`] kept, handed out once.
+    pub(in crate::cli) fn take_migration_answer(&self) -> Option<HeldMigrationAnswer> {
+        self.held_answer
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()
     }
 
     /// How many times this document was read from disk: 1, plus one for each
@@ -175,6 +195,7 @@ mod tests {
             path: PathBuf::from("cfgd.yaml"),
             loaded: Err(CfgdError::Io(std::io::Error::other("disk gone"))),
             reads: 1,
+            held_answer: Mutex::new(None),
         };
         let error = document.config_result().unwrap_err();
         assert_eq!(

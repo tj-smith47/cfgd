@@ -207,8 +207,8 @@ fn full_check_cannot_refind(
         // legacy-id-ok: a BARE `<module>` is the whole-module row a tick
         // recorded before per-file rows became the one grammar; that nothing
         // mints one now is what `every_module_drift_id_names_the_file_it_stands_for`
-        // enforces, and it is kept rather than healed because this check never
-        // looked at whatever it stood for.
+        // enforces. It is kept as it is because this check never looked at
+        // whatever it stood for.
         "module" => !cfgd_core::reconciler::module_row_names_a_file(&e.resource_id),
         // legacy-id-ok: a comma-joined `<mgr>:<a>,<b>` is the batch spelling a
         // tick recorded before `action_drift_rows` became the one producer;
@@ -216,7 +216,7 @@ fn full_check_cannot_refind(
         // `every_core_minted_package_drift_id_comes_from_its_composer` enforces,
         // and the per-package identities that replaced it carry no comma
         // (FreeBSD `pkg`'s `-1.2.0,1` suffix is stripped by
-        // `package_identity`). A bare id names a manager, not a package.
+        // `package_identity`). A bare id names a manager and no package.
         "package" => e.resource_id.contains(',') || !e.resource_id.contains(':'),
         "system" => !evaluated_system.iter().any(|c| {
             e.resource_id
@@ -2332,7 +2332,7 @@ mod tests {
         // no machine carries, so no host's PATH can satisfy the cascade.
         // A manager the plan cannot self-heal (no path to its prerequisite
         // tool) must still register as drift, distinguishable from the
-        // provisionable case by its reason rather than being silently dropped.
+        // provisionable case by its reason; it is never silently dropped.
         let dir = tempfile::tempdir().unwrap();
         let resolved = resolved_no_files();
 

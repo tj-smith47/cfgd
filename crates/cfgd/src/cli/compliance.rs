@@ -6,14 +6,17 @@ use cfgd_core::state::ComplianceHistoryRow;
 
 /// Collect a compliance snapshot, hash it, and store in the state store.
 /// Shared setup used by both `cmd_compliance_snapshot` and `cmd_compliance_export`.
-pub(super) fn collect_and_store_compliance_snapshot<'a>(
-    ctx: &'a RunContext<'_>,
-) -> anyhow::Result<(&'a CfgdConfig, ComplianceSnapshot)> {
+pub(super) fn collect_and_store_compliance_snapshot(
+    ctx: &RunContext<'_>,
+) -> anyhow::Result<ComplianceSnapshot> {
     let printer = ctx.printer();
     let (cfg, profile_name, local_resolved) = ctx.config_and_profile()?;
     let config_dir = ctx.config_dir();
 
     let quiet_printer = printer.at_verbosity(cfgd_core::output::Verbosity::Quiet);
+    // With no home, the store stays closed until every check that expands a
+    // `~` has run: the resolution reads it read-only and records nothing.
+    let store_hold = ctx.hold_store_while_homeless();
     let mut inputs = ComplianceInputs::of_config(ctx, cfg, local_resolved, &quiet_printer)?;
     // A snapshot missing a manifest's packages would report them as undeclared.
     if let Some(e) = inputs.take_manifest_error() {
@@ -24,7 +27,6 @@ pub(super) fn collect_and_store_compliance_snapshot<'a>(
 
     let sources: Vec<String> = cfg.spec.sources.iter().map(|s| s.name.clone()).collect();
 
-    let state = ctx.state()?;
     // Narrated through the OWNING printer, not `quiet_printer`: the quiet one
     // exists to keep the collection's own chatter out of the snapshot run, and
     // routing the wait through it would suppress the wait too — while a real
@@ -37,14 +39,14 @@ pub(super) fn collect_and_store_compliance_snapshot<'a>(
             &scope,
             &sources,
             &quiet_printer,
-            state,
+            move || store_hold.release(),
             None,
         )
     })?;
 
-    state.store_compliance_snapshot(&snapshot)?;
+    ctx.state()?.store_compliance_snapshot(&snapshot)?;
 
-    Ok((cfg, snapshot))
+    Ok(snapshot)
 }
 
 /// The desired state a compliance snapshot is collected against: the
@@ -121,38 +123,47 @@ impl ComplianceInputs {
     }
 
     /// Collect a snapshot against this desired state, with the resolution's
-    /// source-constraint violations reported as `Violation` checks.
+    /// source-constraint violations reported as `Violation` checks. `state`
+    /// opens the store, and is called only once every check that expands a
+    /// `~` against the home has run: a collection the home refuses opens none.
     #[allow(clippy::too_many_arguments)]
-    pub(super) fn collect(
+    pub(super) fn collect<'s>(
         &self,
         profile_name: &str,
         config_dir: &std::path::Path,
         scope: &cfgd_core::config::ComplianceScope,
         sources: &[String],
         printer: &Printer,
-        state: &cfgd_core::state::StateStore,
+        state: impl FnOnce() -> anyhow::Result<&'s cfgd_core::state::StateStore>,
         system_diffs: Option<&[cfgd_core::compliance::SystemDiff]>,
-    ) -> cfgd_core::errors::Result<ComplianceSnapshot> {
-        cfgd_core::compliance::collect_snapshot(
+    ) -> anyhow::Result<ComplianceSnapshot> {
+        let storeless = cfgd_core::compliance::StorelessChecks::collect(
             profile_name,
             &self.resolved.merged,
             &self.modules,
             config_dir,
             &self.registry,
             scope,
+            system_diffs,
+        )?;
+        Ok(storeless.finish(
+            profile_name,
+            &self.resolved.merged,
+            &self.modules,
+            &self.registry,
+            scope,
             sources,
             printer,
-            state,
-            system_diffs,
+            state()?,
             &self.constraint_violations,
-        )
+        )?)
     }
 }
 
 /// Build a snapshot and emit a compliance summary Doc.
 pub(super) fn cmd_compliance_snapshot(run: &RunContext<'_>) -> anyhow::Result<()> {
     let printer = run.printer();
-    let (_cfg, snapshot) = collect_and_store_compliance_snapshot(run)?;
+    let snapshot = collect_and_store_compliance_snapshot(run)?;
     printer.emit(build_compliance_summary_doc(
         &snapshot,
         &cfgd_core::utc_now_iso8601(),
@@ -166,11 +177,13 @@ pub(super) fn cmd_compliance_snapshot(run: &RunContext<'_>) -> anyhow::Result<()
 // verb beside it is the one that reports on a resolved configuration.
 pub(super) fn cmd_compliance_export(run: &RunContext<'_>) -> anyhow::Result<()> {
     let printer = run.printer();
-    let (cfg, snapshot) = collect_and_store_compliance_snapshot(run)?;
+    // The export directory is resolved against the home before the snapshot
+    // is stored, so an export the home refuses records no snapshot row.
+    let export = run.config()?.spec.compliance_effective().export.clone();
+    let export_dir = cfgd_core::compliance::export_dir(&export)?;
+    let snapshot = collect_and_store_compliance_snapshot(run)?;
 
-    let export = cfg.spec.compliance_effective().export.clone();
-
-    let export_path = cfgd_core::compliance::export_snapshot_to_file(&snapshot, &export)?;
+    let export_path = cfgd_core::compliance::export_snapshot_into(&snapshot, &export, &export_dir)?;
     printer.emit(build_compliance_export_doc(&snapshot, &export_path));
     Ok(())
 }
@@ -359,7 +372,7 @@ pub fn build_compliance_diff_doc(
         ]);
 
     if diff.added.is_empty() && diff.removed.is_empty() && diff.changed.is_empty() {
-        // verdict-row-ok: a comparison verdict, not an act cfgd performed
+        // verdict-row-ok: a comparison verdict on what cfgd found
         doc = doc.status(Role::Ok, "No differences between snapshots");
     } else {
         doc = doc.section_if_nonempty("Added", &diff.added, |s, items| {

@@ -382,10 +382,10 @@ pub fn cmd_skill_install(
     };
     printer.emit(doc.with_data(&payload));
 
-    // Emit-then-exit: a hard exit avoids re-entering the error sink (which would
-    // double-emit the Doc under `-o json`). Skips never count as failure.
+    // Emit-then-exit: the exit renders nothing, so the Doc is not emitted a
+    // second time under `-o json`. Skips never count as failure.
     if any_targeted_failure {
-        cfgd_core::exit::ExitCode::Error.exit();
+        return Err(crate::cli::reported_exit(cfgd_core::exit::ExitCode::Error));
     }
     Ok(())
 }
@@ -568,7 +568,7 @@ pub fn cmd_skill_remove(
     printer.emit(doc.with_data(&payload));
 
     if any_failure {
-        cfgd_core::exit::ExitCode::Error.exit();
+        return Err(crate::cli::reported_exit(cfgd_core::exit::ExitCode::Error));
     }
     Ok(())
 }
@@ -666,7 +666,7 @@ pub fn cmd_skill_update(
     printer.emit(doc.with_data(&payload));
 
     if any_failure {
-        cfgd_core::exit::ExitCode::Error.exit();
+        return Err(crate::cli::reported_exit(cfgd_core::exit::ExitCode::Error));
     }
     Ok(())
 }

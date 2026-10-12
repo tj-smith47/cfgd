@@ -21,6 +21,14 @@ impl SystemConfigurator for LaunchAgentConfigurator {
         cfg!(target_os = "macos")
     }
 
+    fn home_refusal(&self, desired: &serde_yaml::Value) -> Option<cfgd_core::errors::StateError> {
+        desired
+            .as_sequence()?
+            .iter()
+            .filter_map(|agent| agent.get("name").and_then(|v| v.as_str()))
+            .find_map(|name| cfgd_core::home_refusal_of(launch_agent_plist_path(name)))
+    }
+
     fn current_state(&self) -> Result<serde_yaml::Value> {
         Ok(serde_yaml::Value::Sequence(Vec::new()))
     }

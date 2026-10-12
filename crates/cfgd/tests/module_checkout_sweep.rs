@@ -4,8 +4,8 @@
 //! until the next apply replaces them. That apply then removes every tree no
 //! lock entry and no deployed link reads any more.
 //!
-//! The verbs run as the real binary, because `apply` ends in
-//! `std::process::exit`.
+//! The verbs run as the real binary, because `apply`'s exit code is set in
+//! `main`, which no in-process call reaches.
 
 use std::path::{Path, PathBuf};
 

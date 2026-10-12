@@ -12175,7 +12175,7 @@ async fn wait_for_daemon_log(needle: &str, timeout: std::time::Duration) {
              {needle:?}; got: {snapshot}"
         );
         // long-line-ok: a hatch is read off its own line, so it cannot wrap
-        // sleep-ok: this loop IS the observable — a bounded deadline poll, not a fixed-duration guess
+        // sleep-ok: this loop IS the observable: a bounded deadline poll that ends the moment its condition holds
         tokio::time::sleep(std::time::Duration::from_millis(5)).await;
     }
 }
@@ -12239,7 +12239,7 @@ fn log_capture() -> (impl tracing::Subscriber + Send + Sync, LogBuf) {
     let buf: LogBuf = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let subscriber = tracing_subscriber::fmt()
         // long-line-ok: a hatch is read off its own line, so it cannot wrap
-        // unfolded-writer-ok: a test capture read back as a String, not a stream anyone is looking at
+        // unfolded-writer-ok: a test capture read back as a String that nobody watches
         .with_writer(LogCapture(buf.clone()))
         .with_max_level(tracing::Level::INFO)
         // Styled field names would put escape sequences between `holder`
@@ -12251,7 +12251,7 @@ fn log_capture() -> (impl tracing::Subscriber + Send + Sync, LogBuf) {
 
 fn captured_logs(buf: &LogBuf) -> String {
     // long-line-ok: a hatch is read off its own line, so it cannot wrap
-    // raw-capture-ok: this buf is a tracing-log Arc<Mutex<Vec<u8>>>, not a Printer::for_test* text capture — captured_text doesn't type-check against it
+    // raw-capture-ok: this buf is a tracing-log Arc<Mutex<Vec<u8>>>, and captured_text type-checks only against a Printer::for_test* capture
     let bytes = buf.lock().expect("lock").clone();
     String::from_utf8(bytes).expect("utf8 logs")
 }
@@ -17642,7 +17642,7 @@ spec: {}
         let deadline = std::time::Instant::now() + StdDuration::from_secs(5);
         while !store.exists() && std::time::Instant::now() < deadline {
             // long-line-ok: a hatch is read off its own line, so it cannot wrap
-            // sleep-ok: bounded deadline poll on a filesystem side effect, not a fixed-duration guess
+            // sleep-ok: bounded deadline poll on a filesystem side effect; it ends the moment its condition holds
             tokio::time::sleep(StdDuration::from_millis(10)).await;
         }
         senders.shutdown_tx.send(()).unwrap();
@@ -17884,7 +17884,7 @@ spec: {}
         let deadline = std::time::Instant::now() + StdDuration::from_secs(5);
         while std::time::Instant::now() < deadline && !ipc_path.exists() {
             // long-line-ok: a hatch is read off its own line, so it cannot wrap
-            // sleep-ok: bounded deadline poll on a filesystem side effect, not a fixed-duration guess
+            // sleep-ok: bounded deadline poll on a filesystem side effect; it ends the moment its condition holds
             tokio::time::sleep(StdDuration::from_millis(10)).await;
         }
         assert!(
@@ -18176,7 +18176,7 @@ spec: {}
                 break;
             }
             // long-line-ok: a hatch is read off its own line, so it cannot wrap
-            // sleep-ok: bounded poll on the mock server's own matched() observable, not a fixed-duration guess
+            // sleep-ok: bounded poll on the mock server's own matched() observable; it ends the moment its condition holds
             tokio::time::sleep(StdDuration::from_millis(50)).await;
         }
         assert!(
@@ -19634,7 +19634,7 @@ mod ipc_socket_security {
                 break;
             }
             // long-line-ok: a hatch is read off its own line, so it cannot wrap
-            // sleep-ok: bounded poll on a filesystem side effect (the bound socket), not a fixed-duration guess
+            // sleep-ok: bounded poll on a filesystem side effect (the bound socket); it ends the moment its condition holds
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
         assert!(
@@ -22427,7 +22427,7 @@ mod backup_timers {
                 "the loop's backup timer never fired"
             );
             // long-line-ok: a hatch is read off its own line, so it cannot wrap
-            // sleep-ok: bounded deadline poll on a state-store observable, not a fixed-duration guess
+            // sleep-ok: bounded deadline poll on a state-store observable; it ends the moment its condition holds
             tokio::time::sleep(StdDuration::from_millis(25)).await;
         }
 

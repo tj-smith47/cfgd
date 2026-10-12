@@ -415,7 +415,7 @@ impl PackageManager for BrewManager {
 
         if cfg!(target_os = "linux") && cfgd_core::is_root() {
             // Linuxbrew-as-root: create linuxbrew user, install as that user
-            // own-path-ok: useradd is the host's, not a manager this run bootstraps
+            // own-path-ok: useradd ships with the host, and no run bootstraps it
             let user_status = cfgd_core::command_status(Command::new("useradd").args([
                 "--system",
                 "--create-home",

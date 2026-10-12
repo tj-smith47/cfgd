@@ -117,7 +117,9 @@ pub fn cmd_upgrade(
             // "Action needed, not an error" — reserves Error (1) for
             // actual failures so scripts can distinguish `--check`
             // results from network/IO errors.
-            cfgd_core::exit::ExitCode::UpdateAvailable.exit();
+            return Err(crate::cli::reported_exit(
+                cfgd_core::exit::ExitCode::UpdateAvailable,
+            ));
         } else {
             printer.emit(
                 Doc::new()
@@ -896,49 +898,11 @@ mod tests {
         _mock.assert();
     }
 
-    /// `--check` with an available update: subprocess test because cmd_upgrade calls
-    /// process::exit(2) before returning. The parent spawns the test binary with a
-    /// sentinel env var; the child body only executes when that var is set so the
-    /// regular test runner skips it.
-    ///
-    /// Skipped when the test binary path is not directly executable (e.g. under
-    /// cargo-llvm-cov which wraps the binary with a loader shim).
+    /// `--check` with an available update hands back exit code 2
+    /// (UpdateAvailable) for `main` to exit with, after the report is emitted.
     #[test]
     #[serial]
     fn cmd_upgrade_check_only_update_available_exits_2() {
-        let _path = cfgd_core::test_helpers::path_env_read_guard();
-        let exe = match std::env::current_exe() {
-            Ok(p) if p.exists() => p,
-            _ => return,
-        };
-        let status = std::process::Command::new(&exe)
-            .args([
-                "--test-threads=1",
-                "--nocapture",
-                "cmd_upgrade_check_only_update_available_child",
-            ])
-            .env("CFGD_TEST_UPDATE_AVAILABLE_CHILD", "1")
-            .status();
-        let status = match status {
-            Ok(s) => s,
-            Err(_) => return,
-        };
-        assert_eq!(
-            status.code(),
-            Some(2),
-            "upgrade --check with a newer release must exit with code 2 (UpdateAvailable)"
-        );
-    }
-
-    /// Child body for `cmd_upgrade_check_only_update_available_exits_2`.
-    /// Guarded by `CFGD_TEST_UPDATE_AVAILABLE_CHILD=1` so the regular test
-    /// runner skips it; only the subprocess spawned by the parent activates it.
-    #[test]
-    #[serial]
-    fn cmd_upgrade_check_only_update_available_child() {
-        if std::env::var("CFGD_TEST_UPDATE_AVAILABLE_CHILD").as_deref() != Ok("1") {
-            return;
-        }
         let mut server = mockito::Server::new();
         let _mock = server
             .mock("GET", "/repos/tj-smith47/cfgd/releases/latest")
@@ -948,8 +912,19 @@ mod tests {
             .create();
         let _guard = EnvVarGuard::set(cfgd_core::CFGD_GITHUB_API_BASE_ENV, &server.url());
 
-        let (printer, _cap) = Printer::for_test_doc();
-        let _ = upgrade_without_config(&printer, true, false);
+        let (printer, cap) = Printer::for_test_doc();
+        let err = upgrade_without_config(&printer, true, false)
+            .expect_err("a newer release must ask for the UpdateAvailable exit");
+        assert_eq!(
+            err.downcast_ref::<crate::cli::error::ReportedExit>(),
+            Some(&crate::cli::error::ReportedExit(2)),
+            "upgrade --check with a newer release must exit with code 2: {err:?}"
+        );
+        assert!(
+            cap.json().is_some(),
+            "the check report must be emitted before the exit"
+        );
+        _mock.assert();
     }
 
     /// GitHub returns 500 during the full upgrade flow → returns Err and emits

@@ -413,6 +413,8 @@ pub(crate) fn emit_structured(
             true
         }
         OutputFormat::TemplateFile(path) => {
+            // home-refusal-ok: the `-o` template, read when the result renders; the run's own work
+            // never reads it
             let path = match crate::expand_tilde(path, "template file") {
                 Ok(path) => path,
                 Err(e) => {

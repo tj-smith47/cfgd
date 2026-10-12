@@ -194,7 +194,7 @@ fn cancelled_doc(name: &str, managed_count: usize) -> Doc {
 #[allow(clippy::too_many_arguments)]
 // no-header-ok: this verb removes a subscription and reports what happened to
 // the rows it owned; the composition its Keep arm reads is a lookup of one
-// declaration, not a configuration this report measures anything against.
+// declaration, and this report measures nothing against it.
 pub fn cmd_source_remove(
     run: &RunContext<'_>,
     name: &str,

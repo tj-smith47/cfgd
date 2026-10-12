@@ -53,15 +53,16 @@ const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 pub const WAL_LOCK_WAIT: &str =
     "another connection holds the write lock; waiting for it to switch the database to WAL";
 
-/// The SQLite URI opening `path` with `immutable=1`: absolute, folded to `/`,
-/// with the three characters a URI path cannot carry bare percent-encoded.
-fn immutable_uri(path: &Path) -> String {
+/// The SQLite URI opening `path` with the query `query`: absolute, folded to
+/// `/`, with the three characters a URI path cannot carry bare
+/// percent-encoded.
+fn sqlite_uri(path: &Path, query: &str) -> String {
     let url = crate::to_file_url(crate::absolutize_path(path));
     let encoded = url
         .replace('%', "%25")
         .replace('?', "%3f")
         .replace('#', "%23");
-    format!("{encoded}?immutable=1")
+    format!("{encoded}?{query}")
 }
 
 /// Set `conn`'s busy timeout and switch its database to WAL journaling,
@@ -964,24 +965,30 @@ impl StateStore {
     /// locking would otherwise make.
     /// A store with a `-wal` file is opened read-only through the ordinary
     /// locking, because the log may hold committed rows the database file
-    /// does not, and its sidecar files already exist.
+    /// does not. When its `-shm` file is missing, the open sets
+    /// `readonly_shm=1`, which keeps SQLite from creating that file: the open
+    /// then fails, and the store is left exactly as it was found.
     ///
     /// # Errors
     ///
     /// A database error when `path` names no file, a file that is not a
-    /// SQLite database, or one this process cannot read.
+    /// SQLite database, one this process cannot read, or a `-wal` store whose
+    /// `-shm` file is missing.
     pub fn open_read_only(path: &Path) -> Result<Self> {
         let flags =
             rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX;
-        let mut wal = path.as_os_str().to_owned();
-        wal.push("-wal");
-        let conn = if Path::new(&wal).exists() {
+        let sidecar = |suffix: &str| {
+            let mut name = path.as_os_str().to_owned();
+            name.push(suffix);
+            Path::new(&name).exists()
+        };
+        let uri_flags = flags | rusqlite::OpenFlags::SQLITE_OPEN_URI;
+        let conn = if !sidecar("-wal") {
+            Connection::open_with_flags(sqlite_uri(path, "immutable=1"), uri_flags)?
+        } else if sidecar("-shm") {
             Connection::open_with_flags(path, flags)?
         } else {
-            Connection::open_with_flags(
-                immutable_uri(path),
-                flags | rusqlite::OpenFlags::SQLITE_OPEN_URI,
-            )?
+            Connection::open_with_flags(sqlite_uri(path, "readonly_shm=1"), uri_flags)?
         };
         conn.busy_timeout(BUSY_TIMEOUT)?;
         // A path naming a file that is not a database opens anyway; the first
@@ -1163,6 +1170,16 @@ impl StateStore {
             .ok_or_else(|| StateError::IdentityMissing.into())
     }
 
+    /// Whether every migration this build carries has run on this store.
+    ///
+    /// A store an older cfgd wrote and nothing has opened for writing since
+    /// is behind, and lacks the tables the later migrations create: a reader
+    /// holding it through [`Self::open_read_only`] asks here before it reads
+    /// one of them.
+    pub fn schema_is_current(&self) -> Result<bool> {
+        Ok(self.schema_version()? >= MIGRATIONS.len())
+    }
+
     /// The applied-migration count, or `0` for a database that has never run
     /// one. A read failure (locked, corrupt, mid-crash file) must propagate
     /// rather than fold to `0`: several migrations are `ALTER TABLE ... ADD
@@ -1232,6 +1249,8 @@ pub fn default_state_dir() -> Result<PathBuf> {
 /// and consults no home directory, so it never errors. Pure path logic.
 pub fn default_state_dir_for(scope: Scope) -> Result<PathBuf> {
     if let Ok(dir) = std::env::var(crate::CFGD_STATE_DIR_ENV) {
+        // home-refusal-ok: cfgd's own state directory, where a `~` with no home refuses the run
+        // before it opens a store or plans
         return crate::expand_tilde(Path::new(&dir), "state directory");
     }
     if let Some(dir) = crate::systemd_dir("STATE_DIRECTORY") {

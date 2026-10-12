@@ -348,6 +348,35 @@ fn main() -> anyhow::Result<()> {
         "loaded config document"
     );
 
+    // gate-boundary: an exit above this line runs before the migration gate
+    // and holds no answer; one below it goes through `cli::finish_run`.
+
+    // Every outcome of the run is handed to `finish_run`, so nothing between
+    // the gate and it can return early or exit around it.
+    let result = gated_run(
+        &cli,
+        &printer,
+        &dir_sources,
+        &startup,
+        is_daemon,
+        assume_yes,
+    );
+    cli::finish_run(&printer, &cli, &startup, result);
+
+    Ok(())
+}
+
+/// The run after the migration gate, everything whose outcome
+/// [`cli::finish_run`] records and exits on: the gate itself, the startup
+/// update check and the verb.
+fn gated_run(
+    cli: &cli::Cli,
+    printer: &cfgd_core::output::Printer,
+    dir_sources: &cli::paths::DirSources,
+    startup: &cli::startup::StartupDocument,
+    is_daemon: bool,
+    assume_yes: bool,
+) -> anyhow::Result<()> {
     // The load-time migration gate, reached once per invocation, after the
     // config path has settled and before dispatch. It is withheld from the
     // verbs whose own subject is the migration question, and from `cfgd init`,
@@ -358,9 +387,9 @@ fn main() -> anyhow::Result<()> {
     // startup document.
     if cli::config_schema::gate_exempt(cli.command.as_ref()).is_none() {
         cli::config_schema::gate_on_load(
-            &printer,
-            &cli::config_schema::GateInvocation::of(&cli, is_daemon),
-            &startup,
+            printer,
+            &cli::config_schema::GateInvocation::of(cli, is_daemon),
+            startup,
         );
     }
 
@@ -381,28 +410,14 @@ fn main() -> anyhow::Result<()> {
         // Only the override is resolved here; the stored half comes off the
         // startup document.
         cli::upgrade::startup_update_check(
-            &printer,
+            printer,
             startup.config(),
             assume_yes,
             cli.update_policy_override(),
         );
     }
 
-    if let Err(e) = cli::execute(&cli, &printer, &dir_sources, &startup) {
-        cli::error::render_cli_error(&printer, &e).exit();
-    }
-
-    // A data-dependent structured-output failure (template render/context error,
-    // or an unreadable template-file) is reported on stderr by `emit` but cannot
-    // make `execute` return `Err` without rippling through 175 `emit` call
-    // sites. The Printer records it; surface it as a non-zero exit so a `-o`
-    // consumer never sees exit 0 over a polluted/empty data channel. The message
-    // already went to stderr — do not print again.
-    if printer.had_output_error() {
-        cfgd_core::exit::ExitCode::Error.exit();
-    }
-
-    Ok(())
+    cli::execute(cli, printer, dir_sources, startup)
 }
 
 #[cfg(test)]

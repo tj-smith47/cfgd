@@ -117,8 +117,8 @@ fn missing_config_human_emits_one_fail_line_and_init_hint() {
 
     let (stdout, stderr, code) = run(&["status", "--config", nonexistent.to_str().unwrap()]);
 
-    // Exit 3 = NoConfig — proves cli_error_ctx's exit-code preservation survives the
-    // real `std::process::exit`, end to end, not just at the unit level.
+    // Exit 3 = NoConfig: cli_error_ctx's exit code survives to the real process
+    // exit, end to end, beyond the unit level.
     assert_eq!(code, Some(3), "missing config must exit NoConfig(3)");
     assert_eq!(
         stderr.matches('✗').count(),
@@ -1070,10 +1070,22 @@ fn files_under_isolated_root(
 fn doctor_on_a_fresh_home_writes_no_file_anywhere() {
     let probe = cfgd_bin().unwrap();
     create_valid_config(&home_of(&probe).join(".config").join("cfgd"));
+    let root = home_of(&probe).parent().unwrap().to_path_buf();
+    let cases = [&["doctor"][..], &["doctor", "-o", "json"][..]];
+    // Each case gets a state directory of its own, since every spawn in one
+    // test shares the isolated one. They sit under the walked root, so a
+    // store either case creates still shows.
+    for case in 0..cases.len() {
+        std::fs::create_dir_all(root.join(format!("state-{case}"))).unwrap();
+    }
     let before = files_under_isolated_root(&probe);
 
-    for args in [&["doctor"][..], &["doctor", "-o", "json"][..]] {
+    for (case, args) in cases.into_iter().enumerate() {
         let mut cmd = cfgd_bin().unwrap();
+        cmd.env(
+            cfgd_core::CFGD_STATE_DIR_ENV,
+            root.join(format!("state-{case}")),
+        );
         for var in cfgd_core::upgrade::OPTOUT_VARS {
             cmd.env_remove(var);
         }
@@ -1120,6 +1132,483 @@ fn doctor_opens_a_closed_wal_store_without_recreating_its_sidecars() {
             sidecar.display()
         );
     }
+}
+
+/// The state directory's three store files and its mtime, which moves with
+/// any file created or removed in it.
+type StoreSnapshot = ([Option<Vec<u8>>; 3], std::time::SystemTime);
+
+fn store_snapshot(state_dir: &std::path::Path) -> StoreSnapshot {
+    (
+        ["state.db", "state.db-wal", "state.db-shm"].map(|f| read_store_file(&state_dir.join(f))),
+        std::fs::metadata(state_dir).unwrap().modified().unwrap(),
+    )
+}
+
+/// The bytes of the store file at `path`, or `None` when there is none.
+///
+/// On Unix a child process reads it. Closing a descriptor drops every POSIX
+/// lock its process holds on the file, so a read here would drop the lock a
+/// store held open by this process keeps on its `-shm`, and the next
+/// connection, finding no other holder, would rebuild that file.
+fn read_store_file(path: &std::path::Path) -> Option<Vec<u8>> {
+    if !path.exists() {
+        return None;
+    }
+    #[cfg(unix)]
+    {
+        let _path = cfgd_core::test_helpers::path_env_read_guard();
+        let out = std::process::Command::new("cat")
+            .arg(path)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "cat {}", path.display());
+        Some(out.stdout)
+    }
+    #[cfg(not(unix))]
+    {
+        Some(std::fs::read(path).unwrap())
+    }
+}
+
+/// `doctor` against a config behind the schema reports the fields it lacks
+/// and writes nothing, under every policy a run can bring: `--yes`,
+/// `CFGD_YES`, `--migration-policy update`, and a prompt with no terminal to
+/// ask on. The config keeps its bytes; no store is created; an existing store
+/// an older cfgd left keeps its bytes, its sidecars and its schema version,
+/// open or closed.
+#[test]
+fn doctor_against_a_behind_config_writes_neither_the_config_nor_the_store() {
+    let runs: [(&str, &[&str], bool); 4] = [
+        ("--yes", &["--yes", "doctor"], false),
+        (cfgd_core::CFGD_YES_ENV, &["doctor"], true),
+        ("update", &["--migration-policy", "update", "doctor"], false),
+        ("prompt", &["doctor"], false),
+    ];
+    for store in ["none", "closed", "open"] {
+        for (name, args, yes_env) in runs {
+            let case = format!("{name} over store {store}");
+            let mut cmd = cfgd_bin().unwrap();
+            let config_dir = home_of(&cmd).join(".config").join("cfgd");
+            create_valid_config(&config_dir);
+            let config = config_dir.join("cfgd.yaml");
+            let document = std::fs::read(&config).unwrap();
+            // Each case gets a state directory of its own, since every spawn
+            // in one test shares the isolated one.
+            let state = tempfile::tempdir().unwrap();
+            let db = state.path().join("state.db");
+            let held = (store != "none").then(|| schema_27_store(&db));
+            let held = held.filter(|_| store == "open");
+            let before = store_snapshot(state.path());
+
+            cmd.env(cfgd_core::CFGD_STATE_DIR_ENV, state.path())
+                .arg("--config")
+                .arg(&config)
+                .args(args);
+            if yes_env {
+                cmd.env(cfgd_core::CFGD_YES_ENV, "1");
+            }
+            let out = cmd.output().unwrap();
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            assert!(
+                stderr.contains("This config does not declare 2 fields this build reads"),
+                "{case}: {stderr}"
+            );
+            assert_eq!(
+                std::fs::read(&config).unwrap(),
+                document,
+                "{case}: {stderr}"
+            );
+            let after = store_snapshot(state.path());
+            // The files alone: doctor probes the directory for write access,
+            // which moves its mtime and leaves nothing behind.
+            assert!(
+                before.0 == after.0,
+                "{case}: doctor changed the store: {stderr}"
+            );
+            drop(held);
+            if store != "none" {
+                assert_eq!(schema_version_of(&db), 27, "{case}");
+            }
+        }
+    }
+}
+
+/// A store copied with its `-wal` file and without its `-shm` file cannot be
+/// read without creating the `-shm`. With no home, `apply` refuses naming the
+/// store, `doctor` reports it unavailable, and neither creates the file.
+#[test]
+fn a_wal_store_missing_its_shm_is_refused_with_no_home_and_left_without_one() {
+    for args in [&["apply", "--yes"][..], &["doctor"]] {
+        let live = tempfile::tempdir().unwrap();
+        let writer = cfgd_core::state::StateStore::open(&live.path().join("state.db")).unwrap();
+        writer
+            .record_bootstrapped_path_dirs("brew", &["/opt/brew/bin".to_string()])
+            .unwrap();
+        // Each case gets a state directory of its own, since every spawn in
+        // one test shares the isolated one.
+        let state = tempfile::tempdir().unwrap();
+        for name in ["state.db", "state.db-wal"] {
+            // Read and written, since a copy of a file another handle holds
+            // open for writing is a sharing violation on Windows.
+            let bytes = std::fs::read(live.path().join(name)).unwrap();
+            std::fs::write(state.path().join(name), bytes).unwrap();
+        }
+        drop(writer);
+        let before = store_snapshot(state.path());
+
+        let mut cmd = cfgd_bin().unwrap();
+        let config_dir = home_of(&cmd).join(".config").join("cfgd");
+        create_valid_config(&config_dir);
+        let out = cmd
+            .env_remove("HOME")
+            .env_remove("USERPROFILE")
+            .env(cfgd_core::CFGD_STATE_DIR_ENV, state.path())
+            .arg("--config")
+            .arg(config_dir.join("cfgd.yaml"))
+            .args(args)
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert_ne!(out.status.code(), Some(0), "{args:?}: {stderr}");
+        if args[0] == "apply" {
+            assert!(
+                stderr.contains("state.db without writing to it"),
+                "{args:?}: {stderr}"
+            );
+        } else {
+            assert!(
+                stderr.contains("State store: unavailable"),
+                "{args:?}: {stderr}"
+            );
+        }
+        let after = store_snapshot(state.path());
+        assert!(before.0 == after.0, "{args:?}: the run changed the store");
+        // `doctor` probes the directory for write access, which moves its
+        // mtime and leaves nothing behind, so only `apply` is held to it.
+        if args[0] == "apply" {
+            assert_eq!(
+                before.1, after.1,
+                "{args:?}: the run created a file: {stderr}"
+            );
+        }
+    }
+}
+
+/// Run `cmd` on a pseudo-terminal, which is its controlling terminal and its
+/// stdin, stdout and stderr, typing `answer` once `prompt` appears in what
+/// it writes. Returns the exit code and everything it wrote.
+#[cfg(unix)]
+fn run_on_a_terminal(
+    mut cmd: std::process::Command,
+    prompt: &str,
+    answer: &[u8],
+) -> (Option<i32>, String) {
+    use std::io::{Read, Write};
+    use std::os::fd::{FromRawFd, OwnedFd};
+    use std::os::unix::process::CommandExt;
+    use std::sync::{Arc, Mutex};
+
+    let (mut master, mut slave) = (0, 0);
+    // SAFETY: openpty writes two new descriptors into the integers it is
+    // handed; the null pointers ask for no name and the default settings.
+    let opened = unsafe {
+        libc::openpty(
+            &mut master,
+            &mut slave,
+            std::ptr::null_mut(),
+            // `*mut` coerces to the `*const` Linux declares and is what macOS
+            // declares, so one spelling compiles on both.
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        )
+    };
+    assert_eq!(opened, 0, "openpty: {}", std::io::Error::last_os_error());
+    // A child another test spawns meanwhile would otherwise inherit the
+    // terminal end and hold it open, and the reader below would wait for that
+    // child too.
+    for fd in [master, slave] {
+        // SAFETY: fcntl on a descriptor this function owns.
+        unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) };
+    }
+    // SAFETY: both descriptors were just opened and nothing else owns them.
+    let (mut master, slave) = unsafe {
+        (
+            std::fs::File::from_raw_fd(master),
+            OwnedFd::from_raw_fd(slave),
+        )
+    };
+    cmd.stdin(slave.try_clone().unwrap())
+        .stdout(slave.try_clone().unwrap())
+        .stderr(slave);
+    // SAFETY: setsid and ioctl are async-signal-safe, and the closure touches
+    // nothing but the child's own session and descriptor 0.
+    unsafe {
+        cmd.pre_exec(|| {
+            if libc::setsid() == -1 || libc::ioctl(0, libc::TIOCSCTTY as _, 0) == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    let mut child = cmd.spawn().unwrap();
+    // The parent's copies of the terminal end close here, so the reader sees
+    // the end of output once the child exits.
+    drop(cmd);
+
+    let written = Arc::new(Mutex::new(Vec::new()));
+    let reader = {
+        let written = Arc::clone(&written);
+        let mut master = master.try_clone().unwrap();
+        std::thread::spawn(move || {
+            let mut chunk = [0u8; 4096];
+            while let Ok(n @ 1..) = master.read(&mut chunk) {
+                written.lock().unwrap().extend_from_slice(&chunk[..n]);
+            }
+        })
+    };
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    loop {
+        let text = String::from_utf8_lossy(&written.lock().unwrap()).into_owned();
+        if text.contains(prompt) {
+            // The prompt is drawn as it starts reading keys; the pause lets
+            // it finish that before the answer arrives.
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            master.write_all(answer).unwrap();
+            break;
+        }
+        if std::time::Instant::now() > deadline || child.try_wait().unwrap().is_some() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    let status = child.wait().unwrap();
+    reader.join().unwrap();
+    let text = String::from_utf8_lossy(&written.lock().unwrap()).into_owned();
+    (status.code(), text)
+}
+
+/// With no home, a run whose desired state writes under `~/` refuses. Asked
+/// the migration prompt on a terminal first and answered no, it still
+/// records nothing: no store is created, and an existing one keeps its
+/// bytes, its sidecars and its schema version, because a run refused for
+/// want of the home drops the answer it was given.
+#[cfg(unix)]
+#[test]
+fn a_homeless_run_answering_the_migration_prompt_and_refused_records_nothing() {
+    for store in ["none", "older closed", "current open"] {
+        let mut cmd = cfgd_bin().unwrap();
+        let config_dir = home_of(&cmd).join(".config").join("cfgd");
+        create_valid_config(&config_dir);
+        std::fs::write(
+            config_dir.join("profiles/base.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: base\nspec:\n  env:\n    - name: EDITOR\n      value: vim\n",
+        )
+        .unwrap();
+        let config = config_dir.join("cfgd.yaml");
+        let document = std::fs::read(&config).unwrap();
+        // Each case gets a state directory of its own, since every spawn in
+        // one test shares the isolated one.
+        let state = tempfile::tempdir().unwrap();
+        let db = state.path().join("state.db");
+        let held = match store {
+            "older closed" => {
+                drop(schema_27_store(&db));
+                None
+            }
+            "current open" => Some(cfgd_core::state::StateStore::open(&db).unwrap()),
+            _ => None,
+        };
+        let version = (store != "none").then(|| schema_version_of(&db));
+        let before = store_snapshot(state.path());
+
+        cmd.env_remove("HOME")
+            .env_remove("USERPROFILE")
+            .env(cfgd_core::CFGD_STATE_DIR_ENV, state.path())
+            .arg("--config")
+            .arg(&config)
+            .arg("apply");
+        let (code, text) = run_on_a_terminal(cmd, MIGRATION_PROMPT, b"n\r");
+        assert!(text.contains(MIGRATION_PROMPT), "{store}: {text}");
+        assert_eq!(code, Some(1), "{store}: {text}");
+        assert!(
+            text.contains("cannot write the managed env file"),
+            "{store}: {text}"
+        );
+        assert_eq!(std::fs::read(&config).unwrap(), document, "{store}: {text}");
+        let after = store_snapshot(state.path());
+        assert!(
+            before.0 == after.0,
+            "{store}: the refused run changed the store"
+        );
+        assert_eq!(before.1, after.1, "{store}: the refused run created a file");
+        drop(held);
+        if store == "none" {
+            assert!(!db.exists(), "{store}: the refused run left a store");
+        } else {
+            assert_eq!(Some(schema_version_of(&db)), version, "{store}");
+        }
+    }
+}
+
+/// The question the migration gate asks of a config behind by the two fields
+/// [`create_valid_config`] leaves out.
+#[cfg(unix)]
+const MIGRATION_PROMPT: &str = "Add 2 fields this build reads";
+
+/// Run `args` with no home against `config` and the state root `state` on a
+/// terminal, answering no if the migration prompt is asked.
+#[cfg(unix)]
+fn run_homeless_on_a_terminal(
+    config: &std::path::Path,
+    state: &std::path::Path,
+    args: &[&str],
+) -> (Option<i32>, String) {
+    let mut cmd = cfgd_bin().unwrap();
+    cmd.env_remove("HOME")
+        .env_remove("USERPROFILE")
+        .env(cfgd_core::CFGD_STATE_DIR_ENV, state)
+        .arg("--config")
+        .arg(config)
+        .args(args);
+    run_on_a_terminal(cmd, MIGRATION_PROMPT, b"n\r")
+}
+
+/// With no home, a verb that succeeds without the run's own store handle
+/// (`log` opens the store itself) records the answer it was given: the next
+/// run is not asked again.
+#[cfg(unix)]
+#[test]
+fn a_homeless_run_that_succeeds_records_its_migration_answer() {
+    let dir = tempfile::tempdir().unwrap();
+    create_valid_config(dir.path());
+    let config = dir.path().join("cfgd.yaml");
+    let state = tempfile::tempdir().unwrap();
+
+    let (code, text) = run_homeless_on_a_terminal(&config, state.path(), &["log"]);
+    assert!(text.contains(MIGRATION_PROMPT), "{text}");
+    assert_eq!(code, Some(0), "{text}");
+
+    let (code, text) = run_homeless_on_a_terminal(&config, state.path(), &["log"]);
+    assert_eq!(code, Some(0), "{text}");
+    assert!(
+        !text.contains(MIGRATION_PROMPT),
+        "the recorded answer was not read: {text}"
+    );
+}
+
+/// With no home, a verb refused for want of it records nothing: no store is
+/// created, and the next run is asked again. `status`, `diff` and `verify`
+/// all need the home for their env check, whatever the profile declares.
+#[cfg(unix)]
+#[test]
+fn a_homeless_run_refused_for_the_home_records_no_migration_answer() {
+    for verb in ["status", "diff", "verify"] {
+        let dir = tempfile::tempdir().unwrap();
+        create_valid_config(dir.path());
+        let config = dir.path().join("cfgd.yaml");
+        let state = tempfile::tempdir().unwrap();
+
+        let (code, text) = run_homeless_on_a_terminal(&config, state.path(), &[verb]);
+        assert!(text.contains(MIGRATION_PROMPT), "{verb}: {text}");
+        assert_eq!(code, Some(1), "{verb}: {text}");
+        assert!(text.contains("no home directory found"), "{verb}: {text}");
+        assert!(
+            !state.path().join("state.db").exists(),
+            "{verb}: the refused run left a store: {text}"
+        );
+
+        let (code, text) = run_homeless_on_a_terminal(&config, state.path(), &["log"]);
+        assert_eq!(code, Some(0), "{verb}: {text}");
+        assert!(
+            text.contains(MIGRATION_PROMPT),
+            "{verb}: the refused run's answer was recorded: {text}"
+        );
+    }
+}
+
+/// With no home, an `apply` that fails for a reason other than the home (a
+/// profile that does not exist, refused before the store opens and with no
+/// source conflict to record) still records the answer it was given.
+#[cfg(unix)]
+#[test]
+fn a_homeless_apply_failing_for_another_reason_records_its_migration_answer() {
+    let dir = tempfile::tempdir().unwrap();
+    create_valid_config(dir.path());
+    std::fs::remove_file(dir.path().join("profiles/base.yaml")).unwrap();
+    let config = dir.path().join("cfgd.yaml");
+    let state = tempfile::tempdir().unwrap();
+
+    let (code, text) = run_homeless_on_a_terminal(&config, state.path(), &["apply"]);
+    assert!(text.contains(MIGRATION_PROMPT), "{text}");
+    assert_eq!(code, Some(6), "exits NotFound(6): {text}");
+    assert!(text.contains("profile not found: base"), "{text}");
+
+    let (code, text) = run_homeless_on_a_terminal(&config, state.path(), &["log"]);
+    assert_eq!(code, Some(0), "{text}");
+    assert!(
+        !text.contains(MIGRATION_PROMPT),
+        "the recorded answer was not read: {text}"
+    );
+}
+
+/// With no home, `cfgd init` over a directory already holding a config asks
+/// the migration question of that config and records the answer: the next
+/// run over it is not asked again.
+#[cfg(unix)]
+#[test]
+fn a_homeless_init_over_an_existing_config_records_its_migration_answer() {
+    let dir = tempfile::tempdir().unwrap();
+    create_valid_config(dir.path());
+    let config = dir.path().join("cfgd.yaml");
+    let state = tempfile::tempdir().unwrap();
+    let target = dir.path().to_str().unwrap();
+
+    let (code, text) = run_homeless_on_a_terminal(&config, state.path(), &["init", target]);
+    assert!(text.contains("Already initialized"), "{text}");
+    assert!(text.contains(MIGRATION_PROMPT), "{text}");
+    assert_eq!(code, Some(0), "{text}");
+
+    let (code, text) = run_homeless_on_a_terminal(&config, state.path(), &["log"]);
+    assert_eq!(code, Some(0), "{text}");
+    assert!(
+        !text.contains(MIGRATION_PROMPT),
+        "the recorded answer was not read: {text}"
+    );
+}
+
+/// With no home, a verb that reports its own failure and exits nonzero (a
+/// `pull` whose origin does not exist) still records the answer it was given:
+/// the exit passes through the one recording before the process ends.
+#[cfg(unix)]
+#[test]
+fn a_homeless_pull_that_fails_records_its_migration_answer() {
+    let dir = tempfile::tempdir().unwrap();
+    create_valid_config(dir.path());
+    for args in [
+        &["init", "-q"][..],
+        &["remote", "add", "origin", "/nonexistent/repo.git"],
+    ] {
+        let status = cfgd_core::git_cmd_local()
+            .current_dir(dir.path())
+            .args(args)
+            .status()
+            .unwrap();
+        assert!(status.success(), "git {args:?}");
+    }
+    let config = dir.path().join("cfgd.yaml");
+    let state = tempfile::tempdir().unwrap();
+
+    let (code, text) = run_homeless_on_a_terminal(&config, state.path(), &["pull"]);
+    assert!(text.contains(MIGRATION_PROMPT), "{text}");
+    assert_eq!(code, Some(1), "{text}");
+
+    let (code, text) = run_homeless_on_a_terminal(&config, state.path(), &["log"]);
+    assert_eq!(code, Some(0), "{text}");
+    assert!(
+        !text.contains(MIGRATION_PROMPT),
+        "the recorded answer was not read: {text}"
+    );
 }
 
 /// With no home, and the config, state store and cache all placed by `XDG_*`,
@@ -1298,22 +1787,28 @@ fn doctor_refuses_home_work_a_cached_source_delivers_with_no_home() {
 #[test]
 fn a_homeless_run_refuses_home_work_a_source_it_fetches_delivers_and_writes_no_store() {
     for verb in [&["apply", "--yes"][..], &["plan"]] {
-        let (_workspace, config_dir, _state) = cfgd_test_fixtures::local_source_setup("", |_| {
+        let (_workspace, config_dir, state) = cfgd_test_fixtures::local_source_setup("", |_| {
             (
                 "apiVersion: cfgd.io/v1alpha1\nkind: ConfigSource\nmetadata:\n  name: acme\n  version: \"1.0.0\"\nspec:\n  provides:\n    profiles:\n      - default\n".to_string(),
                 "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  files:\n    managed:\n      - source: acmerc\n        target: ~/.acmerc\n".to_string(),
             )
         });
         let mut cmd = cfgd_bin().unwrap();
+        // Each arm gets a state and a cache directory of its own, since every
+        // spawn in one test shares the isolated ones: the plan arm has to
+        // fetch a source no earlier arm left in the cache.
         cmd.env_remove("HOME")
             .env_remove("USERPROFILE")
             .env(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1")
+            .env(cfgd_core::CFGD_STATE_DIR_ENV, state.path().join("state"))
+            .env(cfgd_core::CFGD_CACHE_DIR_ENV, state.path().join("cache"))
             .arg("--config")
             .arg(config_dir.path().join("cfgd.yaml"))
             .args(verb)
             .args(["-o", "json"]);
         let state_dir = env_path(&cmd, cfgd_core::CFGD_STATE_DIR_ENV);
         let cache_dir = env_path(&cmd, cfgd_core::CFGD_CACHE_DIR_ENV);
+        assert!(!cache_dir.exists(), "{verb:?}: the cache is not fresh");
         let out = cmd.output().unwrap();
         let stderr = String::from_utf8_lossy(&out.stderr);
         assert_eq!(out.status.code(), Some(1), "{verb:?}: {stderr}");
@@ -1419,11 +1914,48 @@ fn a_homeless_run_that_fails_after_composing_records_the_source_conflict() {
     }
 }
 
-/// A store a run with a home left behind records a manager `PATH` entry, which
+/// A state store as cfgd 0.11 left it at `db`: schema version 27, before
+/// the migration-answer table (migration 28), the tracking rows' `kind` and
+/// `manager` columns (29) and the store's identity (30), with one manager
+/// `PATH` entry recorded. Built from a current store by undoing those three
+/// migrations through rusqlite, so a writable open replays them and moves
+/// the version. The connection comes back open, holding the `-wal` and
+/// `-shm` sidecars until the caller drops it.
+fn schema_27_store(db: &std::path::Path) -> rusqlite::Connection {
+    drop(cfgd_core::state::StateStore::open(db).unwrap());
+    let conn = rusqlite::Connection::open(db).unwrap();
+    conn.execute_batch(
+        "DROP TABLE config_migrations;
+         DROP TABLE store_identity;
+         ALTER TABLE managed_resources DROP COLUMN kind;
+         ALTER TABLE managed_resources DROP COLUMN manager;
+         UPDATE schema_version SET version = 27;
+         INSERT INTO bootstrapped_managers (manager, path_dirs, bootstrapped_at)
+         VALUES ('brew', '[\"/opt/brew/bin\"]', '2026-01-01T00:00:00Z');",
+    )
+    .unwrap();
+    // A read after the last write leaves a reader's mark in the `-shm` at the
+    // log's end, where the next reader looks for one, so that reader finds it
+    // and writes no mark of its own.
+    conn.query_row("SELECT count(*) FROM schema_version", [], |_| Ok(()))
+        .unwrap();
+    conn
+}
+
+/// The `schema_version` row of the store at `db`, read without a cfgd open.
+fn schema_version_of(db: &std::path::Path) -> i64 {
+    rusqlite::Connection::open_with_flags(db, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .unwrap()
+        .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
+        .unwrap()
+}
+
+/// A store an older cfgd left behind records a manager `PATH` entry, which
 /// lives in the managed env file. With no home, `apply` and `plan` read that
 /// record without opening the store for writing and refuse naming the env
 /// file, leaving the store's bytes, its `-wal` and `-shm` sidecars and its
 /// schema version as they were, whether those sidecars are open or closed.
+/// The store is behind the schema, so a writable open would migrate it.
 #[test]
 fn a_homeless_run_over_a_recorded_path_entry_refuses_and_leaves_the_store_as_it_was() {
     for sidecars_open in [false, true] {
@@ -1432,24 +1964,12 @@ fn a_homeless_run_over_a_recorded_path_entry_refuses_and_leaves_the_store_as_it_
             let mut cmd = cfgd_bin().unwrap();
             let config_dir = home_of(&cmd).join(".config").join("cfgd");
             create_valid_config(&config_dir);
-            let state_dir = env_path(&cmd, cfgd_core::CFGD_STATE_DIR_ENV);
-            std::fs::create_dir_all(&state_dir).unwrap();
-            let store = cfgd_core::state::StateStore::open(&state_dir.join("state.db")).unwrap();
-            store
-                .record_bootstrapped_path_dirs("brew", &["/opt/brew/bin".to_string()])
-                .unwrap();
-            let schema_version = || {
-                rusqlite::Connection::open_with_flags(
-                    state_dir.join("state.db"),
-                    rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
-                )
-                .unwrap()
-                .query_row("SELECT version FROM schema_version", [], |row| {
-                    row.get::<_, i64>(0)
-                })
-                .unwrap()
-            };
-            let version = schema_version();
+            // Each case gets a state directory of its own, since every spawn
+            // in one test shares the isolated one.
+            let state = tempfile::tempdir().unwrap();
+            let state_dir = state.path().to_path_buf();
+            cmd.env(cfgd_core::CFGD_STATE_DIR_ENV, &state_dir);
+            let store = schema_27_store(&state_dir.join("state.db"));
             let held = sidecars_open.then_some(store);
             let files = ["state.db", "state.db-wal", "state.db-shm"];
             // The directory's mtime moves with any file created or removed in it,
@@ -1457,7 +1977,7 @@ fn a_homeless_run_over_a_recorded_path_entry_refuses_and_leaves_the_store_as_it_
             // still shows.
             let snapshot = || {
                 (
-                    files.map(|f| std::fs::read(state_dir.join(f)).ok()),
+                    files.map(|f| read_store_file(&state_dir.join(f))),
                     std::fs::metadata(&state_dir).unwrap().modified().unwrap(),
                 )
             };
@@ -1489,7 +2009,11 @@ fn a_homeless_run_over_a_recorded_path_entry_refuses_and_leaves_the_store_as_it_
                 "{case}: the refused run created or removed a file beside the store"
             );
             drop(held);
-            assert_eq!(schema_version(), version, "{case}");
+            assert_eq!(
+                schema_version_of(&state_dir.join("state.db")),
+                27,
+                "{case}: the refused run migrated the store"
+            );
         }
     }
 }
@@ -1529,19 +2053,27 @@ fn a_homeless_plan_records_the_source_conflict_it_composed_before_its_store_open
 }
 
 /// `apply --plan` with no home reads the saved plan's store without opening it
-/// for writing. Over the store the plan was derived against, which records a
-/// manager `PATH` entry, the replay refuses naming the managed env file and
-/// leaves the store's files as they were; with no store on disk the plan is
-/// stale and no store is created.
+/// for writing, and leaves the store's files as they were in every case:
+///
+/// - over the store the plan was derived against, which records a manager
+///   `PATH` entry, the replay refuses naming the managed env file;
+/// - with no store on disk there is nothing to check the plan against, and the
+///   replay refuses for the missing home without creating one;
+/// - over a store an older cfgd wrote, which carries no identity, the plan is
+///   stale, as it is for a run with a home once the migration mints a new one.
 #[test]
 fn a_homeless_replay_reads_its_store_without_opening_it_for_writing() {
-    for store_on_disk in [true, false] {
+    for case in ["derived", "no store", "older store"] {
         let mut with_home = cfgd_bin().unwrap();
         let config = home_of(&with_home).join(".config").join("cfgd");
         create_valid_config(&config);
         let config = config.join("cfgd.yaml");
-        let state_dir = env_path(&with_home, cfgd_core::CFGD_STATE_DIR_ENV);
+        // Each case gets a state directory of its own, since every spawn in
+        // one test shares the isolated one.
+        let state = tempfile::tempdir().unwrap();
+        let state_dir = state.path().join("state");
         std::fs::create_dir_all(&state_dir).unwrap();
+        with_home.env(cfgd_core::CFGD_STATE_DIR_ENV, &state_dir);
         cfgd_core::state::StateStore::open(&state_dir.join("state.db"))
             .unwrap()
             .record_bootstrapped_path_dirs("brew", &["/opt/brew/bin".to_string()])
@@ -1553,59 +2085,83 @@ fn a_homeless_replay_reads_its_store_without_opening_it_for_writing() {
             .output()
             .unwrap();
         let stderr = String::from_utf8_lossy(&out.stderr);
-        assert_eq!(out.status.code(), Some(0), "{stderr}");
-        let plan_file = state_dir.parent().unwrap().join("plan.json");
+        assert_eq!(out.status.code(), Some(0), "{case}: {stderr}");
+        let plan_file = state.path().join("plan.json");
         std::fs::write(&plan_file, &out.stdout).unwrap();
         let files = ["state.db", "state.db-wal", "state.db-shm"];
-        if !store_on_disk {
+        if case != "derived" {
             for file in files {
                 let _ = std::fs::remove_file(state_dir.join(file));
             }
         }
+        if case == "older store" {
+            drop(schema_27_store(&state_dir.join("state.db")));
+        }
         // The directory's mtime moves with any file created or removed in it.
         let snapshot = || {
             (
-                files.map(|f| std::fs::read(state_dir.join(f)).ok()),
+                files.map(|f| read_store_file(&state_dir.join(f))),
                 std::fs::metadata(&state_dir).unwrap().modified().unwrap(),
             )
         };
         let before = snapshot();
 
-        let mut replay = cfgd_bin().unwrap();
-        let out = replay
-            .env_remove("HOME")
-            .env_remove("USERPROFILE")
-            .env(cfgd_core::CFGD_STATE_DIR_ENV, &state_dir)
-            .arg("--config")
-            .arg(&config)
-            .args(["apply", "--yes", "-o", "json", "--plan"])
-            .arg(&plan_file)
-            .output()
-            .unwrap();
+        let replay = |format: &str| {
+            cfgd_bin()
+                .unwrap()
+                .env_remove("HOME")
+                .env_remove("USERPROFILE")
+                .env(cfgd_core::CFGD_STATE_DIR_ENV, &state_dir)
+                .arg("--config")
+                .arg(&config)
+                .args(["apply", "--yes", "-o", format, "--plan"])
+                .arg(&plan_file)
+                .output()
+                .unwrap()
+        };
+        let out = replay("json");
         let stderr = String::from_utf8_lossy(&out.stderr);
         let v = parse_single_json(&String::from_utf8_lossy(&out.stdout));
-        assert_ne!(out.status.code(), Some(0), "{store_on_disk}: {stderr}");
-        if store_on_disk {
-            assert!(
+        assert_ne!(out.status.code(), Some(0), "{case}: {stderr}");
+        // A refusal of the plan file carries its sentence in the human
+        // rendering alone.
+        let human = replay("table");
+        let human = String::from_utf8_lossy(&human.stderr);
+        match case {
+            "derived" => assert!(
                 v["message"]
                     .as_str()
                     .is_some_and(|m| m.contains("cannot write the managed env file")),
                 "{v}"
-            );
-        } else {
-            assert_eq!(v["error"], "stale", "{v}");
+            ),
+            "no store" => {
+                assert_eq!(v["error"], "home_unresolved", "{v}");
+                assert_eq!(v["name"], "plan", "{v}");
+                assert!(v["file"].is_string(), "{v}");
+                assert!(
+                    human.contains("there is no state store to check it against")
+                        && human.contains("no home directory found"),
+                    "{human}"
+                );
+            }
+            _ => {
+                assert_eq!(v["error"], "stale", "{v}");
+                assert!(v["storeId"].is_null(), "{v}");
+                assert!(v["recordedStoreId"].is_string(), "{v}");
+                assert!(human.contains("written by an older cfgd"), "{human}");
+            }
         }
         let after = snapshot();
         for ((file, before), after) in files.iter().zip(&before.0).zip(&after.0) {
-            assert!(
-                before == after,
-                "{store_on_disk}: the replay changed {file}"
-            );
+            assert!(before == after, "{case}: the replay changed {file}");
         }
         assert_eq!(
             before.1, after.1,
-            "{store_on_disk}: the replay created or removed a file beside the store"
+            "{case}: the replay created or removed a file beside the store"
         );
+        if case == "older store" {
+            assert_eq!(schema_version_of(&state_dir.join("state.db")), 27, "{case}");
+        }
     }
 }
 
@@ -1889,4 +2445,812 @@ fn every_directory_flag_and_env_expands_a_leading_tilde() {
             );
         }
     }
+}
+
+/// The verbs the homeless store population leaves out, each with the reason
+/// the fixture cannot drive it. A row named here with no reason, or a name no
+/// longer in the clap tree, fails the pin.
+const HOMELESS_STORE_SKIPS: &[(&str, &str)] = &[
+    (
+        "daemon",
+        "runs the daemon until signalled, so no exit is observed",
+    ),
+    ("daemon run", "runs until signalled, so no exit is observed"),
+    (
+        "daemon install",
+        "installs a service on the host running the tests",
+    ),
+    (
+        "daemon uninstall",
+        "removes a service from the host running the tests",
+    ),
+    ("checkin", "needs a running device gateway"),
+    ("enroll", "needs a running device gateway"),
+    (
+        "upgrade",
+        "asks GitHub for the latest release over the network",
+    ),
+    ("module push", "pushes to an OCI registry over the network"),
+    ("module pull", "pulls from an OCI registry over the network"),
+    ("generate module", "asks an AI provider over the network"),
+    ("generate profile", "asks an AI provider over the network"),
+];
+
+/// The arguments a row runs with, past its path: a value for every argument
+/// clap requires, naming what the fixture declares where a verb takes a name.
+const HOMELESS_STORE_ARGS: &[(&str, &[&str])] = &[
+    ("secret encrypt", &["secret.yaml"]),
+    ("secret decrypt", &["secret.yaml"]),
+    ("secret edit", &["secret.yaml"]),
+    ("profile switch", &["default"]),
+    ("profile create", &["extra"]),
+    ("profile edit", &["default"]),
+    ("profile delete", &["default"]),
+    ("profile validate", &["profiles/default.yaml"]),
+    ("module show", &["tools"]),
+    (
+        "module create",
+        &["extra", "--env", "A=b", "--alias", "ll=ls"],
+    ),
+    ("module update", &["tools"]),
+    ("module edit", &["tools"]),
+    ("module delete", &["tools"]),
+    ("module upgrade", &["tools"]),
+    ("module search", &["tools"]),
+    (
+        "module registry add",
+        &["https://example.invalid/registry.git"],
+    ),
+    ("module registry remove", &["registry"]),
+    ("module registry rename", &["registry", "renamed"]),
+    ("module export", &["--as", "devcontainer", "tools"]),
+    ("module build", &["modules/tools"]),
+    ("module validate", &["modules/tools/module.yaml"]),
+    ("source add", &["https://example.invalid/source.git"]),
+    ("source show", &["acme"]),
+    ("source remove", &["acme"]),
+    ("source override", &["acme", "reject", "packages.brew"]),
+    ("source priority", &["acme", "100"]),
+    (
+        "source replace",
+        &["acme", "https://example.invalid/source.git"],
+    ),
+    ("source validate", &["."]),
+    ("backup run", &["notes"]),
+    ("backup restore", &["notes"]),
+    ("backup gc", &["notes"]),
+    ("backup rollback", &["notes"]),
+    ("machineconfig validate", &["cfgd.yaml"]),
+    ("configpolicy validate", &["cfgd.yaml"]),
+    ("clusterconfigpolicy validate", &["cfgd.yaml"]),
+    ("skill install", &["claude"]),
+    ("skill remove", &["claude"]),
+    ("config get", &["profile"]),
+    ("config set", &["profile", "default"]),
+    ("config unset", &["theme.name"]),
+    ("alias set", &["hi", "status"]),
+    ("alias show", &["hi"]),
+    ("alias delete", &["hi"]),
+    ("completion", &["bash"]),
+    ("rollback", &["1"]),
+    ("compliance diff", &["1", "2"]),
+    ("image pack", &["modules/tools", "artifact.tar"]),
+    ("decide", &["accept", "x"]),
+];
+
+/// Every command path clap can run: each leaf, and each command with
+/// subcommands that runs bare too (`cfgd compliance`).
+fn runnable_paths(cmd: &clap::Command, path: &[String], out: &mut Vec<Vec<String>>) {
+    let subs: Vec<&clap::Command> = cmd
+        .get_subcommands()
+        .filter(|sub| sub.get_name() != "help")
+        .collect();
+    if !path.is_empty() && (subs.is_empty() || !cmd.is_subcommand_required_set()) {
+        out.push(path.to_vec());
+    }
+    for sub in subs {
+        let mut next = path.to_vec();
+        next.push(sub.get_name().to_string());
+        runnable_paths(sub, &next, out);
+    }
+}
+
+/// The command at `path` under `root`.
+fn command_at<'c>(root: &'c clap::Command, path: &[String]) -> &'c clap::Command {
+    path.iter().fold(root, |cmd, name| {
+        cmd.find_subcommand(name)
+            .unwrap_or_else(|| panic!("no subcommand {name} in {path:?}"))
+    })
+}
+
+/// A config that declares `~/` work in every slot a verb reads: in the
+/// profile a file target, an env var, an alias and a secret target; a backup
+/// destination and a backup source; a module with an env var and an alias,
+/// and one with a file target; a compliance watch path; and a source whose profile targets a
+/// file under the home. Returns the workspace (owning the source's bare repo),
+/// the config dir and a root for the state and cache directories.
+fn homeless_population_fixture() -> (tempfile::TempDir, tempfile::TempDir, tempfile::TempDir) {
+    let (workspace, config_dir, root) = cfgd_test_fixtures::local_source_setup("", |_| {
+        (
+            "apiVersion: cfgd.io/v1alpha1\nkind: ConfigSource\nmetadata:\n  name: acme\n  version: \"1.0.0\"\nspec:\n  provides:\n    profiles:\n      - default\n".to_string(),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  files:\n    managed:\n      - source: acmerc\n        target: ~/.acmerc\n".to_string(),
+        )
+    });
+    let dir = config_dir.path();
+    let data = dir.join("data");
+    std::fs::create_dir_all(&data).unwrap();
+    std::fs::write(data.join("notes.txt"), "notes\n").unwrap();
+    std::fs::create_dir_all(dir.join("files")).unwrap();
+    std::fs::write(dir.join("files/gitconfig"), "[user]\n").unwrap();
+    std::fs::write(dir.join("files/token"), "token\n").unwrap();
+    std::fs::write(
+        dir.join("profiles/default.yaml"),
+        format!(
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  modules: [tools]\n  env:\n    - name: EDITOR\n      value: vim\n  aliases:\n    - name: gs\n      command: git status\n  files:\n    managed:\n      - source: files/gitconfig\n        target: ~/.gitconfig\n  secrets:\n    - source: files/token\n      target: ~/.token\n  backups:\n    - name: notes\n      source: {}\n      destination: ~/bk\n    - name: dotfiles\n      source: ~/dotfiles\n      destination: {}\n",
+            cfgd_core::to_posix_string(&data),
+            cfgd_core::to_posix_string(dir.join("bk"))
+        ),
+    )
+    .unwrap();
+    std::fs::create_dir_all(dir.join("modules/tools")).unwrap();
+    std::fs::write(
+        dir.join("modules/tools/module.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: tools\nspec:\n  env:\n    - name: PAGER\n      value: less\n  aliases:\n    - name: ll\n      command: ls -l\n",
+    )
+    .unwrap();
+    // Kept out of the profile: resolving a module expands its file targets,
+    // so a profile naming it would be refused at resolution and never reach
+    // the home check that follows it.
+    std::fs::create_dir_all(dir.join("modules/dots")).unwrap();
+    std::fs::write(
+        dir.join("modules/dots/module.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: dots\nspec:\n  files:\n    - source: dotsrc\n      target: ~/.dotsrc\n",
+    )
+    .unwrap();
+    std::fs::write(dir.join("modules/dots/dotsrc"), "dots\n").unwrap();
+    let mut config = std::fs::read_to_string(dir.join("cfgd.yaml")).unwrap();
+    config.push_str(
+        "  compliance:\n    enabled: true\n    scope:\n      watchPaths:\n        - ~/watched\n",
+    );
+    std::fs::write(dir.join("cfgd.yaml"), config).unwrap();
+    (workspace, config_dir, root)
+}
+
+/// Stands in a row's arguments for the fixture's config directory, which each
+/// run creates afresh.
+const HOMELESS_CONFIG_DIR: &str = "{config-dir}";
+
+/// The fixture value an apply flag that takes one is given, by the noun its
+/// long name ends in: the module and the profile the fixture declares.
+const HOMELESS_APPLY_VALUES: &[(&str, &str)] = &[("module", "tools"), ("profile", "default")];
+
+/// What one homeless run of a row left: whether it was refused for the home,
+/// the state store before and after it, and the bytes of the fixture's
+/// managed file ([`LONE_MANAGED_TARGET`]) before and after it.
+struct HomelessRun {
+    refused: bool,
+    before: [Option<Vec<u8>>; 3],
+    after: [Option<Vec<u8>>; 3],
+    managed: [Option<Vec<u8>>; 2],
+    output: String,
+}
+
+/// The file every [`lone_slot_fixture`] manages at an absolute target under
+/// its config dir, holding [`LONE_MANAGED_BYTES`] until an action rewrites it.
+const LONE_MANAGED_TARGET: &str = "managed/.rc";
+
+/// What [`LONE_MANAGED_TARGET`] holds before a run, which differs from the
+/// source the profile deploys there.
+const LONE_MANAGED_BYTES: &str = "precious\n";
+
+/// A fixture for [`run_homeless_row`]: the workspace it keeps alive, the
+/// config dir and a root for the state and cache directories.
+type HomelessFixture = fn() -> (tempfile::TempDir, tempfile::TempDir, tempfile::TempDir);
+
+/// A config whose only `~/` work is `slot`, written into the profile's spec
+/// or, for a top-level `spec` key, into `cfgd.yaml`, beside a module `plain`
+/// that declares no home work at all. The profile also manages
+/// [`LONE_MANAGED_TARGET`] at an absolute path, so an action that ran shows
+/// in its bytes; a `profile_slot` opening with a `- source:` list item joins
+/// that `files.managed` list.
+fn lone_slot_fixture(
+    profile_slot: &str,
+    config_slot: &str,
+) -> (tempfile::TempDir, tempfile::TempDir, tempfile::TempDir) {
+    let workspace = tempfile::tempdir().unwrap();
+    let config_dir = tempfile::tempdir().unwrap();
+    let root = tempfile::tempdir().unwrap();
+    let dir = config_dir.path();
+    std::fs::create_dir_all(dir.join("profiles")).unwrap();
+    std::fs::create_dir_all(dir.join("files")).unwrap();
+    std::fs::write(dir.join("files/token"), "token\n").unwrap();
+    std::fs::write(dir.join("files/rc"), "deployed\n").unwrap();
+    let managed = dir.join(LONE_MANAGED_TARGET);
+    std::fs::create_dir_all(managed.parent().unwrap()).unwrap();
+    std::fs::write(&managed, LONE_MANAGED_BYTES).unwrap();
+    std::fs::write(
+        dir.join("cfgd.yaml"),
+        format!(
+            "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: lone\nspec:\n  profile: default\n{config_slot}"
+        ),
+    )
+    .unwrap();
+    let posix_dir = cfgd_core::to_posix_string(dir);
+    let slot = profile_slot.replace("{dir}", &posix_dir);
+    std::fs::write(
+        dir.join("profiles/default.yaml"),
+        format!(
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  modules: [plain]\n  files:\n    managed:\n      - source: files/rc\n        target: {posix_dir}/{LONE_MANAGED_TARGET}\n{slot}"
+        ),
+    )
+    .unwrap();
+    std::fs::create_dir_all(dir.join("modules/plain")).unwrap();
+    std::fs::write(
+        dir.join("modules/plain/module.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: plain\nspec: {}\n",
+    )
+    .unwrap();
+    (workspace, config_dir, root)
+}
+
+/// The rows of the lone-slot population pin: a fixture whose only `~/` work
+/// is one slot of [`HOME_REFUSAL_SLOTS`], named by that slot, with the verb
+/// that must refuse it. A slot asked under more than one hook names the hook
+/// in parentheses after it. `no slot` declares nothing under `~/`.
+///
+/// [`HOME_REFUSAL_SLOTS`]: cfgd_core::reconciler::HOME_REFUSAL_SLOTS
+const LONE_SLOTS: &[(&str, &str, HomelessFixture)] = &[
+    ("file target", "apply", || {
+        lone_slot_fixture("      - source: files/rc\n        target: ~/.rc\n", "")
+    }),
+    ("secret target", "apply", || {
+        lone_slot_fixture(
+            "  secrets:\n    - source: files/token\n      target: ~/.token\n",
+            "",
+        )
+    }),
+    ("backup source", "apply", || {
+        lone_slot_fixture(
+            "  backups:\n    - name: dotfiles\n      source: ~/dotfiles\n      destination: {dir}/bk\n",
+            "",
+        )
+    }),
+    ("backup destination", "apply", || {
+        lone_slot_fixture(
+            "  backups:\n    - name: dotfiles\n      source: {dir}/files\n      destination: ~/bk\n",
+            "",
+        )
+    }),
+    ("script workdir (postApply)", "apply", || {
+        lone_slot_fixture(
+            "  scripts:\n    postApply:\n      - run: \"true\"\n        workdir: ~/x\n",
+            "",
+        )
+    }),
+    ("script workdir (preApply)", "apply", || {
+        lone_slot_fixture(
+            "  scripts:\n    preApply:\n      - run: \"true\"\n        workdir: ~/x\n",
+            "",
+        )
+    }),
+    ("creates guard", "apply", || {
+        lone_slot_fixture(
+            "  scripts:\n    postApply:\n      - run: \"true\"\n        creates: ~/x\n",
+            "",
+        )
+    }),
+    ("env var", "apply", || {
+        lone_slot_fixture("  env:\n    - name: TOOLS\n      value: ~/bin\n", "")
+    }),
+    ("age key", "apply", || {
+        lone_slot_fixture(
+            "  secrets:\n    - source: files/token\n      target: {dir}/out/token\n",
+            "  secrets:\n    backend: sops\n    sops:\n      ageKey: ~/age-key.txt\n",
+        )
+    }),
+    ("SSH key", "apply", || {
+        lone_slot_fixture("  system:\n    sshKeys:\n      - name: k\n", "")
+    }),
+    ("systemd unit file", "apply", || {
+        lone_slot_fixture(
+            "  system:\n    systemdUnits:\n      - name: x.service\n        unitFile: ~/x.service\n",
+            "",
+        )
+    }),
+    ("KDE config file", "apply", || {
+        lone_slot_fixture(
+            "  system:\n    kdeConfig:\n      ~/kdeglobals:\n        General:\n          Name: v\n",
+            "",
+        )
+    }),
+    ("launch agent", "apply", || {
+        lone_slot_fixture(
+            "  system:\n    launchAgents:\n      - name: com.example.agent\n        program: /bin/true\n",
+            "",
+        )
+    }),
+    ("compliance watch path", "compliance", || {
+        lone_slot_fixture(
+            "",
+            "  compliance:\n    enabled: true\n    scope:\n      watchPaths:\n        - ~/watched\n",
+        )
+    }),
+    ("compliance export directory", "compliance export", || {
+        lone_slot_fixture(
+            "",
+            "  compliance:\n    enabled: true\n    export:\n      path: ~/out\n",
+        )
+    }),
+    ("no slot", "", || lone_slot_fixture("", "")),
+];
+
+/// Whether this host runs the configurator a [`LONE_SLOTS`] row declares, so
+/// its refusal is asked: `systemdUnits` needs `systemctl`, and `launchAgents`
+/// runs on macOS alone.
+fn host_asks(slot: &str) -> bool {
+    match slot {
+        "systemd unit file" => cfgd_core::systemctl_available(),
+        "launch agent" => cfg!(target_os = "macos"),
+        _ => true,
+    }
+}
+
+/// Run `args` with no home over a fresh `fixture`, with a closed store
+/// already in the state dir when `with_store` is set.
+fn run_homeless_row(fixture: HomelessFixture, args: &[String], with_store: bool) -> HomelessRun {
+    let (_workspace, config_dir, root) = fixture();
+    let state = root.path().join("state");
+    std::fs::create_dir_all(&state).unwrap();
+    if with_store {
+        drop(cfgd_core::state::StateStore::open(&state.join("state.db")).unwrap());
+    }
+    let before = store_snapshot(&state).0;
+    let managed = config_dir.path().join(LONE_MANAGED_TARGET);
+    let managed_before = std::fs::read(&managed).ok();
+    let mut cmd = cfgd_bin().unwrap();
+    cmd.current_dir(config_dir.path())
+        .env_remove("HOME")
+        .env_remove("USERPROFILE")
+        .env(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1")
+        .env(cfgd_core::CFGD_STATE_DIR_ENV, &state)
+        .env(cfgd_core::CFGD_CACHE_DIR_ENV, root.path().join("cache"))
+        .env("EDITOR", "true")
+        .env("VISUAL", "true")
+        .stdin(std::process::Stdio::null())
+        .arg("--config")
+        .arg(config_dir.path().join("cfgd.yaml"))
+        .args(["--yes", "-o", "json"])
+        .args(args.iter().map(|arg| {
+            arg.replace(
+                HOMELESS_CONFIG_DIR,
+                &cfgd_core::to_posix_string(config_dir.path()),
+            )
+        }));
+    let out = assert_cmd::Command::from_std(cmd)
+        .timeout(std::time::Duration::from_secs(120))
+        .output()
+        .unwrap();
+    let output = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    // The run's own verdict names the home: the `-o json` error envelope on
+    // stdout, or a failure line on stderr. A payload that reports a home
+    // failure as one leg of a run that did its other work (`sync`'s
+    // `configResolutionError`) is no refusal.
+    let names_home = |text: &str| {
+        text.contains("no home directory found")
+            || text.contains("cannot resolve home directory")
+            || text.contains("home_unresolved")
+    };
+    let envelope = serde_json::from_slice::<serde_json::Value>(&out.stdout)
+        .ok()
+        .filter(|v| v.get("error").is_some())
+        .map(|v| v.to_string());
+    let refused = out.status.code().is_some_and(|code| code != 0)
+        && (envelope.as_deref().is_some_and(names_home)
+            || names_home(&String::from_utf8_lossy(&out.stderr)));
+    HomelessRun {
+        refused,
+        before,
+        after: store_snapshot(&state).0,
+        managed: [managed_before, std::fs::read(&managed).ok()],
+        output,
+    }
+}
+
+/// A run refused for want of a home leaves the state store as it found it:
+/// no `state.db` where there was none, and the bytes of one that existed
+/// unchanged. The rows are every command path clap can run, plus the flag
+/// variants that reach a store by another road (`--module`, `--scan`, a named
+/// backup listing), each run once over no store and once over an existing
+/// one, under one fixture declaring `~/` work in every slot a verb reads. A
+/// new verb joins the population by being compiled; one the fixture cannot
+/// drive is named in [`HOMELESS_STORE_SKIPS`] with its reason.
+#[test]
+fn every_verb_refused_for_no_home_leaves_the_state_store_as_it_found_it() {
+    use clap::CommandFactory;
+    let root = cfgd::Cli::command();
+    let mut paths = Vec::new();
+    runnable_paths(&root, &[], &mut paths);
+    let names: Vec<String> = paths.iter().map(|p| p.join(" ")).collect();
+
+    for (name, reason) in HOMELESS_STORE_SKIPS {
+        assert!(
+            !reason.trim().is_empty(),
+            "{name}: a skip carries its reason"
+        );
+        assert!(
+            names.contains(&name.to_string()),
+            "{name}: the skip names a path the clap tree has no longer"
+        );
+    }
+    for (name, _) in HOMELESS_STORE_ARGS {
+        assert!(
+            names.contains(&name.to_string()),
+            "{name}: arguments for a path not in the clap tree"
+        );
+    }
+    let skipped = |name: &str| HOMELESS_STORE_SKIPS.iter().any(|(n, _)| *n == name);
+    let args_of = |name: &str| {
+        HOMELESS_STORE_ARGS
+            .iter()
+            .find(|(n, _)| *n == name)
+            .map(|(_, args)| *args)
+    };
+
+    let mut rows: Vec<Vec<String>> = Vec::new();
+    let mut unrunnable = Vec::new();
+    for (path, name) in paths.iter().zip(&names) {
+        if skipped(name) {
+            continue;
+        }
+        let needs_args = command_at(&root, path)
+            .get_arguments()
+            .any(|arg| arg.is_required_set());
+        let extra = args_of(name);
+        if needs_args && extra.is_none() {
+            unrunnable.push(name.clone());
+            continue;
+        }
+        let mut row = path.clone();
+        row.extend(extra.unwrap_or_default().iter().map(|a| a.to_string()));
+        rows.push(row);
+    }
+    assert!(
+        unrunnable.is_empty(),
+        "give these rows their required arguments in HOMELESS_STORE_ARGS, or a reason in \
+         HOMELESS_STORE_SKIPS:\n{}",
+        unrunnable.join("\n")
+    );
+    // A path scoped to one module reaches its store by another road, so every
+    // path clap gives a `--module` runs scoped to each fixture module too, with
+    // `--scan` where it takes one.
+    let mut scoped = 0;
+    for (path, name) in paths.iter().zip(&names) {
+        let cmd = command_at(&root, path);
+        let takes = |long: &str| cmd.get_arguments().any(|arg| arg.get_long() == Some(long));
+        if skipped(name) || !takes("module") {
+            continue;
+        }
+        for module in ["tools", "dots"] {
+            let mut row = path.clone();
+            row.extend(["--module".to_string(), module.to_string()]);
+            if takes("scan") {
+                let mut scan = row.clone();
+                scan.push("--scan".to_string());
+                rows.push(scan);
+            }
+            rows.push(row);
+        }
+        scoped += 1;
+    }
+    assert!(scoped >= 3, "only {scoped} paths take `--module`");
+    // A flag that switches a verb into applying what it built (`--apply`,
+    // `--apply-module`, `--apply-profile`) opens the store by the road the
+    // plan takes, so every such flag clap gives runs as a row of its own. A
+    // path that also takes `--from` reads the fixture's config through it.
+    let mut apply_rows: Vec<String> = Vec::new();
+    for (path, name) in paths.iter().zip(&names) {
+        let cmd = command_at(&root, path);
+        if skipped(name) {
+            continue;
+        }
+        let mut base = path.clone();
+        base.extend(
+            args_of(name)
+                .unwrap_or_default()
+                .iter()
+                .map(|a| a.to_string()),
+        );
+        if cmd
+            .get_arguments()
+            .any(|arg| arg.get_long() == Some("from"))
+        {
+            base.extend(["--from".to_string(), HOMELESS_CONFIG_DIR.to_string()]);
+        }
+        for arg in cmd.get_arguments() {
+            let Some(long) = arg.get_long().filter(|long| long.starts_with("apply")) else {
+                continue;
+            };
+            let mut row = base.clone();
+            row.push(format!("--{long}"));
+            if arg.get_action().takes_values() {
+                let value = HOMELESS_APPLY_VALUES
+                    .iter()
+                    .find(|(noun, _)| long.ends_with(noun))
+                    .map(|(_, value)| *value)
+                    .unwrap_or_else(|| {
+                        panic!("{name} --{long}: give it a fixture value in HOMELESS_APPLY_VALUES")
+                    });
+                row.push(value.to_string());
+            }
+            apply_rows.push(row.join(" "));
+            rows.push(row);
+        }
+    }
+    assert!(
+        apply_rows.len() >= 4,
+        "only {} apply rows: {apply_rows:?}",
+        apply_rows.len()
+    );
+    for variant in [
+        &["backup", "list", "notes"][..],
+        &["backup", "list", "notes", "--snapshots"],
+        &["backup", "run"],
+        &["backup", "gc"],
+        &["backup", "rollback"],
+    ] {
+        let path: Vec<String> = variant
+            .iter()
+            .take_while(|a| !a.starts_with('-') && *a != &"tools" && *a != &"notes")
+            .map(|a| a.to_string())
+            .collect();
+        assert!(
+            names.contains(&path.join(" ")),
+            "{variant:?}: not in the clap tree"
+        );
+        rows.push(variant.iter().map(|a| a.to_string()).collect());
+    }
+
+    for bare in ["compliance", "compliance export"] {
+        assert!(
+            rows.iter().any(|row| row.join(" ") == bare),
+            "`{bare}` is not a row"
+        );
+    }
+
+    let threads = std::thread::available_parallelism().map_or(4, |n| n.get().min(8));
+    let chunk = rows.len().div_ceil(threads);
+    let results: Vec<(String, bool, HomelessRun)> = std::thread::scope(|scope| {
+        rows.chunks(chunk)
+            .map(|rows| {
+                scope.spawn(move || {
+                    let mut done = Vec::new();
+                    for row in rows {
+                        for with_store in [false, true] {
+                            done.push((
+                                row.join(" "),
+                                with_store,
+                                run_homeless_row(homeless_population_fixture, row, with_store),
+                            ));
+                        }
+                    }
+                    done
+                })
+            })
+            .collect::<Vec<_>>()
+            .into_iter()
+            .flat_map(|handle| handle.join().unwrap())
+            .collect()
+    });
+
+    let refusals = results.iter().filter(|(_, _, run)| run.refused).count();
+    // Every apply row plans over `~/` work, so one that is not refused never
+    // reached its apply path and proves nothing about it.
+    let unreached: Vec<String> = results
+        .iter()
+        .filter(|(row, _, run)| apply_rows.contains(row) && !run.refused)
+        .map(|(row, with_store, run)| {
+            let tail: String = run
+                .output
+                .lines()
+                .rev()
+                .take(4)
+                .collect::<Vec<_>>()
+                .join(" | ");
+            format!("{row} (store: {with_store}): {tail}")
+        })
+        .collect();
+    assert!(
+        unreached.is_empty(),
+        "these apply rows were not refused for the home:\n{}",
+        unreached.join("\n")
+    );
+    assert!(
+        refusals >= 20,
+        "only {refusals} runs were refused for the home, so the fixture reaches no home work"
+    );
+    let changed: Vec<String> = results
+        .iter()
+        .filter(|(_, _, run)| run.refused && run.before != run.after)
+        .map(|(row, with_store, run)| {
+            let store = if *with_store {
+                "existing store"
+            } else {
+                "no store"
+            };
+            let tail: String = run
+                .output
+                .lines()
+                .rev()
+                .take(4)
+                .collect::<Vec<_>>()
+                .join(" | ");
+            format!("{row} ({store}): {tail}")
+        })
+        .collect();
+    assert!(
+        changed.is_empty(),
+        "a run refused for the home changed the state store:\n{}",
+        changed.join("\n")
+    );
+}
+
+/// A run refused for want of a home leaves the state store as it found it
+/// and runs no action when the refusal comes from ONE `~/` slot, so each
+/// slot's own road to the store is exercised where no other slot refuses
+/// first. Each fixture in [`LONE_SLOTS`] runs every verb that reads it, over
+/// no store and over an existing one, and the verb each row names is asserted
+/// refused, so the pin cannot pass by never reaching the slot. The rows are
+/// the slots of [`HOME_REFUSAL_SLOTS`], which the `expand_tilde` walk derives
+/// from every production expansion, so a new slot fails here until it has a
+/// row.
+///
+/// [`HOME_REFUSAL_SLOTS`]: cfgd_core::reconciler::HOME_REFUSAL_SLOTS
+#[test]
+fn every_lone_home_slot_refusal_leaves_the_state_store_as_it_found_it() {
+    use cfgd_core::reconciler::HomeQuestioner;
+    const VERBS: &[&[&str]] = &[
+        &["apply"],
+        &["plan"],
+        &["diff"],
+        &["status", "--scan"],
+        &["verify"],
+        &["compliance"],
+        &["compliance", "export"],
+        &["backup", "run"],
+        &["diff", "--module", "plain"],
+        &["status", "--module", "plain", "--scan"],
+    ];
+    // The module verbs fold the env file's `PATH` line against the home on
+    // every chain, so every row refuses them.
+    const MODULE_VERBS: &[&str] = &["diff --module plain", "status --module plain --scan"];
+    let slot_of = |name: &str| name.split(" (").next().unwrap_or(name).to_string();
+    let mut questioner_of = std::collections::BTreeMap::new();
+    for (role, slot, questioner) in cfgd_core::reconciler::HOME_REFUSAL_SLOTS {
+        let first = *questioner_of.entry(slot.to_string()).or_insert(*questioner);
+        assert_eq!(
+            first, *questioner,
+            "every role filling the slot `{slot}` is asked by one questioner (`{role}`)"
+        );
+    }
+    let rows: std::collections::BTreeSet<String> = LONE_SLOTS
+        .iter()
+        .map(|(name, _, _)| slot_of(name))
+        .filter(|slot| slot != "no slot")
+        .collect();
+    assert_eq!(
+        rows,
+        questioner_of.keys().cloned().collect(),
+        "LONE_SLOTS holds a row for exactly the slots HOME_REFUSAL_SLOTS names"
+    );
+    // Each row's verbs are its questioner's: `unresolved_home_refusal` is
+    // asked by `apply` and `plan` alike, the compliance check by the
+    // `compliance` verb that reads the slot.
+    let mut must_refuse = Vec::new();
+    for (name, verb, _) in LONE_SLOTS {
+        let Some(questioner) = questioner_of.get(&slot_of(name)) else {
+            continue;
+        };
+        let own: Vec<&str> = match questioner {
+            HomeQuestioner::UnresolvedHomeRefusal => vec!["apply", "plan"],
+            HomeQuestioner::Compliance => vec![*verb],
+        };
+        assert!(
+            own.contains(verb)
+                && (*questioner != HomeQuestioner::Compliance || verb.starts_with("compliance")),
+            "the `{name}` row names `{verb}`, a verb its questioner {questioner:?} does not ask"
+        );
+        if host_asks(&slot_of(name)) {
+            must_refuse.extend(
+                own.into_iter()
+                    .chain(MODULE_VERBS.iter().copied())
+                    .map(|verb| format!("{name}: {verb}")),
+            );
+        }
+    }
+    let jobs: Vec<(&str, HomelessFixture, Vec<String>)> = LONE_SLOTS
+        .iter()
+        .flat_map(|(slot, _, fixture)| {
+            VERBS.iter().map(move |verb| {
+                (
+                    *slot,
+                    *fixture,
+                    verb.iter().map(|a| a.to_string()).collect(),
+                )
+            })
+        })
+        .collect();
+    let threads = std::thread::available_parallelism().map_or(4, |n| n.get().min(8));
+    let chunk = jobs.len().div_ceil(threads);
+    let results: Vec<(String, bool, HomelessRun)> = std::thread::scope(|scope| {
+        jobs.chunks(chunk)
+            .map(|jobs| {
+                scope.spawn(move || {
+                    let mut done = Vec::new();
+                    for (slot, fixture, row) in jobs {
+                        for with_store in [false, true] {
+                            done.push((
+                                format!("{slot}: {}", row.join(" ")),
+                                with_store,
+                                run_homeless_row(*fixture, row, with_store),
+                            ));
+                        }
+                    }
+                    done
+                })
+            })
+            .collect::<Vec<_>>()
+            .into_iter()
+            .flat_map(|handle| handle.join().unwrap())
+            .collect()
+    });
+    let describe = |row: &str, with_store: bool, run: &HomelessRun| {
+        let tail: String = run
+            .output
+            .lines()
+            .rev()
+            .take(4)
+            .collect::<Vec<_>>()
+            .join(" | ");
+        format!("{row} (existing store: {with_store}): {tail}")
+    };
+    // A row that must refuse is judged on all three facts whether or not its
+    // output names the home: an action that failed at run time for the home
+    // names it too, and only an untouched store and managed file tell that
+    // run apart from a refusal before any action ran.
+    let mut failures = Vec::new();
+    for (row, with_store, run) in &results {
+        let must = must_refuse.contains(row);
+        if must && !run.refused {
+            failures.push(format!(
+                "never reached the slot it exists for: {}",
+                describe(row, *with_store, run)
+            ));
+        }
+        if !(must || run.refused) {
+            continue;
+        }
+        if run.before != run.after {
+            failures.push(format!(
+                "changed the state store: {}",
+                describe(row, *with_store, run)
+            ));
+        }
+        if run.managed[0].as_deref() != Some(LONE_MANAGED_BYTES.as_bytes())
+            || run.managed[0] != run.managed[1]
+        {
+            failures.push(format!(
+                "ran an action, rewriting {LONE_MANAGED_TARGET}: {}",
+                describe(row, *with_store, run)
+            ));
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "a homeless run over one slot did not refuse before any action ran:\n{}",
+        failures.join("\n")
+    );
 }

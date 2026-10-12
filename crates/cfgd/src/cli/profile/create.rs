@@ -307,7 +307,7 @@ pub fn cmd_profile_create(
             doc.spec.inherits.join(", "),
         ));
     }
-    // header-row-ok: a profile just scaffolded, not one resolved — the verdict
+    // header-row-ok: a profile just scaffolded and never resolved; the verdict
     // row above names the file, nothing has been composed, and the modules are
     // the list this command wrote.
     rows.extend(cfgd_core::output::config_header_rows(

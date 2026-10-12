@@ -1,9 +1,9 @@
 //! Exit-code and stdout-shape regression tests for `cfgd backup run` and
 //! `cfgd backup gc`.
 //!
-//! Both verbs end in `std::process::exit` when a unit failed, was dirty, was
-//! refused, or could not be asked about at all, so these drive the real binary
-//! — an in-process call would take the test harness down with it. Running the
+//! Both verbs exit nonzero when a unit failed, was dirty, was refused, or
+//! could not be asked about at all, and `main` sets that code, so these drive
+//! the real binary. Running the
 //! real binary is also the only way to see stdout exactly as a scripted
 //! consumer does: the in-process `Doc` capture keeps a single `Option<Value>`,
 //! so a second emitted document overwrites the first instead of appending,
@@ -102,7 +102,7 @@ fn backup_run_exits_zero_when_every_unit_runs_clean() {
 fn backup_gc_exits_nonzero_when_a_units_history_cannot_be_read() {
     // A unit nothing could be asked about is a failure of the run, and the
     // failure has to reach a scripted caller: the real binary is the only way
-    // to see the code, `cmd_backup_gc` ending in `std::process::exit`.
+    // to see the code, which `main` sets.
     let (config_dir, state_dir, _source) = backup_profile_setup();
     cfgd_core::state::StateStore::open_in_dir(state_dir.path())
         .expect("state store")

@@ -305,6 +305,8 @@ pub fn detect_git_head() -> Option<String> {
 /// [`StateError::HomeUnresolved`](crate::errors::StateError::HomeUnresolved)
 /// when `value` starts with `~` and no home directory is set.
 pub fn resolve_repo_reference(value: &str) -> crate::errors::Result<std::borrow::Cow<'_, str>> {
+    // home-refusal-ok: a `--from` or source URL argument, resolved before the verb clones, writes
+    // or plans anything
     let path = super::paths::expand_tilde(std::path::Path::new(value), "repository reference")?;
     if std::fs::symlink_metadata(&path).is_ok() {
         return Ok(std::borrow::Cow::Borrowed(value));

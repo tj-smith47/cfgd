@@ -126,7 +126,7 @@ impl<'a> super::Reconciler<'a> {
                 Some(self.state),
                 &resolved.merged,
                 module_actions.iter().map(super::ModuleHomeUse::from),
-                self.registry.secret_backend.as_deref(),
+                Some(self.registry),
             )
         {
             return Err(refusal.into());

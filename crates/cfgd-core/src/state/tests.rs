@@ -4650,6 +4650,58 @@ fn open_pins_wal_and_normal_synchronous() {
     assert_eq!(synchronous, 1);
 }
 
+/// A store copied with its `-wal` file and without its `-shm` file: SQLite's
+/// ordinary read-only open creates the missing `-shm`, so the open refuses
+/// the store and leaves every file as it found it.
+#[test]
+fn a_read_only_open_creates_no_shm_beside_a_wal_that_lacks_one() {
+    let live = tempfile::tempdir().unwrap();
+    let writer = StateStore::open(&live.path().join(STATE_DB_FILENAME)).unwrap();
+    writer
+        .conn
+        .execute_batch("CREATE TABLE probe (x); INSERT INTO probe VALUES (1);")
+        .unwrap();
+    let copy = tempfile::tempdir().unwrap();
+    for name in [
+        STATE_DB_FILENAME.to_string(),
+        format!("{STATE_DB_FILENAME}-wal"),
+    ] {
+        // Read and written, since a copy of a file another handle holds open
+        // for writing is a sharing violation on Windows.
+        let bytes = std::fs::read(live.path().join(&name)).unwrap();
+        std::fs::write(copy.path().join(&name), bytes).unwrap();
+    }
+    let db = copy.path().join(STATE_DB_FILENAME);
+    let shm = copy.path().join(format!("{STATE_DB_FILENAME}-shm"));
+
+    assert!(StateStore::open_read_only(&db).is_err());
+    assert!(
+        !shm.exists(),
+        "the read-only open created {}",
+        shm.display()
+    );
+
+    drop(writer);
+}
+
+#[test]
+fn a_store_behind_the_current_schema_is_not_current() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join(STATE_DB_FILENAME);
+    let store = StateStore::open(&path).unwrap();
+    assert!(store.schema_is_current().unwrap());
+    store
+        .conn
+        .execute("UPDATE schema_version SET version = 27", [])
+        .unwrap();
+    assert!(
+        !StateStore::open_read_only(&path)
+            .unwrap()
+            .schema_is_current()
+            .unwrap()
+    );
+}
+
 /// A second connection on a database still in rollback mode, holding its
 /// write lock: the state a fresh `state.db` is in while another process is
 /// creating it.

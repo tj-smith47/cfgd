@@ -387,8 +387,8 @@ fn the_folding_writer_fence_recognizes_every_spelling() {
         // The hatch, on the construction line, on the writer's line, and on
         // the line above either.
         "    // unfolded-writer-ok: the JSON serializer is the sanitizer here\n    tracing_subscriber::fmt().json().init();",
-        "    fmt::layer()\n        .with_writer(Mutex::new(file)) // unfolded-writer-ok: a log file, not a terminal",
-        "    fmt::layer()\n        // unfolded-writer-ok: a log file, not a terminal\n        .with_writer(Mutex::new(file));",
+        "    fmt::layer()\n        .with_writer(Mutex::new(file)) // unfolded-writer-ok: a log file, which no terminal shows",
+        "    fmt::layer()\n        // unfolded-writer-ok: a log file, which no terminal shows\n        .with_writer(Mutex::new(file));",
         // The constructor named inside a string literal is a name, not a call.
         "    let s = \"tracing_subscriber::fmt()\";",
         // A `with_writer` this file never sees the construction of is still
@@ -2686,6 +2686,7 @@ const SERIAL_FLOORS: &[(&str, usize)] = &[
     ("crates/cfgd/src/system/node/tests.rs", 9),
     ("crates/cfgd/src/system/shell.rs", 14),
     ("crates/cfgd/src/system/systemd_unit.rs", 7),
+    ("crates/cfgd/src/system/tests.rs", 1),
     ("crates/cfgd/src/system/windows_registry.rs", 3),
     ("crates/cfgd/src/system/xfconf.rs", 4),
     ("crates/cfgd/tests/apply_snapshots.rs", 2),
@@ -9452,10 +9453,9 @@ fn the_floor_sentence_matcher_reads_a_literal_and_not_a_comment() {
 fn every_raw_spawn_in_test_code_holds_the_path_gate() {
     const HATCH: &str = "raw-spawn-ok:";
     const HATCH_CEILING: usize = 2;
-    const FLOORS: [(&str, usize); 15] = [
+    const FLOORS: [(&str, usize); 14] = [
         ("crates/cfgd/src/cli/init/tests.rs", 3),
         ("crates/cfgd/src/cli/tests.rs", 3),
-        ("crates/cfgd/src/cli/upgrade.rs", 1),
         ("crates/cfgd/src/packages/shared/tests.rs", 30),
         ("crates/cfgd/src/system/gpg_keys/tests.rs", 2),
         ("crates/cfgd/src/system/tests.rs", 5),

@@ -77,17 +77,36 @@ pub(in crate::cli) fn recorded_projections(
 /// The store is the RUN's, borrowed rather than opened here: every caller has
 /// already built a context to resolve its config through, and a second open of
 /// the same DB in the same command is exactly what that context exists to stop.
-fn unit_context<'a>(
+/// `store_hold`, taken before the verb resolves its config, keeps it closed
+/// with no home (the resolution reads it read-only and records nothing) until
+/// every unit in `specs`, the units the caller binds, has its paths expanded
+/// ([`expand_unit_paths`]).
+fn unit_context<'a, 's>(
     ctx: &'a RunContext<'_>,
+    store_hold: super::run_context::StoreHold<'a, '_>,
+    specs: impl IntoIterator<Item = &'s config::BackupSpec>,
     // list-status-ok: the store this borrows is the run's own, and for the
     // listing it answers exactly one question — the recorded history each
     // declared unit has.
 ) -> anyhow::Result<(PathBuf, &'a cfgd_core::state::StateStore, PathBuf)> {
     let cli = ctx.cli();
     let config_dir = config_dir(cli);
-    let state = ctx.state()?;
     let state_dir = cfgd_core::resolve_state_dir(cli.state_dir.as_deref(), cli.scope())?;
+    expand_unit_paths(specs)?;
+    let state = store_hold.release()?;
     Ok((config_dir, state, state_dir))
+}
+
+/// Expand the paths every unit in `specs` declares against the home, the way
+/// binding the unit does, before a verb opens its state store: a verb the home
+/// refuses then leaves the store as it found it.
+fn expand_unit_paths<'s>(
+    specs: impl IntoIterator<Item = &'s config::BackupSpec>,
+) -> anyhow::Result<()> {
+    for spec in specs {
+        BackupUnit::declared_paths(spec)?;
+    }
+    Ok(())
 }
 
 /// What `cfgd backup restore` / `cfgd backup rollback` report under: the
@@ -316,8 +335,7 @@ pub fn build_backup_snapshot_list_doc(
 }
 
 // no-header-ok: a listing of the snapshots the history recorded. It reads
-// config to find the declared units, and reports on those rows rather than
-// on the configuration they came from.
+// config to find the declared units, and reports on those rows alone.
 pub fn cmd_backup_list(
     run: &RunContext<'_>,
     name: Option<&str>,
@@ -360,6 +378,7 @@ pub fn cmd_backup_list(
     }
 
     let (cfg, profile_name, local_resolved) = run.config_and_profile()?;
+    let store_hold = run.hold_store_while_homeless();
     // Cache-only composition (no network refresh) and Report constraint mode:
     // listing backups is a read surface, the same class as
     // `status`/`diff`/`compliance`. `backup run` is not — it composes in
@@ -381,7 +400,7 @@ pub fn cmd_backup_list(
         Some(n) => {
             let spec = find_backup_spec(&backups, n)?;
             if snapshots {
-                return list_unit_snapshots(run, spec, profile_name);
+                return list_unit_snapshots(run, store_hold, spec, profile_name);
             }
             vec![spec]
         }
@@ -397,8 +416,10 @@ pub fn cmd_backup_list(
     // declared units come from config, which loaded fine. Degrading to
     // "never" with a warning keeps the config half of the command useful when
     // `state.db` is unreadable, matching how `resolve_backup_tasks` treats the
-    // same failure.
-    let state = match run.state() {
+    // same failure. A unit whose paths the home cannot expand refuses the
+    // listing before the store opens, so the refused run leaves it as it was.
+    expand_unit_paths(selected.iter().copied())?;
+    let state = match store_hold.release() {
         Ok(state) => Some(state),
         Err(e) => {
             printer
@@ -498,12 +519,13 @@ pub fn cmd_backup_list(
 /// Unlike the inventory, this cannot degrade when the state store is
 /// unreadable: the run records ARE the snapshot list — there is no config half
 /// left to render — so a store failure is the command's failure.
-fn list_unit_snapshots(
-    ctx: &RunContext<'_>,
+fn list_unit_snapshots<'a>(
+    ctx: &'a RunContext<'_>,
+    store_hold: super::run_context::StoreHold<'a, '_>,
     spec: &config::BackupSpec,
     profile_name: &str,
 ) -> anyhow::Result<()> {
-    let (config_dir, state, state_dir) = unit_context(ctx)?;
+    let (config_dir, state, state_dir) = unit_context(ctx, store_hold, [spec])?;
     let projected = cfgd_core::backup::projected_spec(spec, &recorded_projections(Some(state)));
     let unit = BackupUnit::new(&projected, &config_dir, profile_name, &state_dir)?;
 
@@ -567,11 +589,13 @@ fn snapshot_selection_error(name: &str, e: cfgd_core::errors::BackupError) -> an
 // this verb builds through `ApplyRun::unplanned`.
 pub fn cmd_backup_restore(run: &RunContext<'_>, args: &RestoreArgs<'_>) -> anyhow::Result<()> {
     // Same split `cmd_backup_run` uses: the payload Doc has already been
-    // emitted by the time the exit code is decided, so exiting here keeps a
-    // failed restore from being rendered as a SECOND top-level document that
-    // no single-document `-o json` reader could parse.
+    // emitted by the time the exit code is decided, so the exit renders
+    // nothing and a failed restore is not rendered as a SECOND top-level
+    // document that no single-document `-o json` reader could parse.
     match run_backup_restore(run, args)? {
-        Some(outcome) if !outcome.is_clean() => cfgd_core::exit::ExitCode::Error.exit(),
+        Some(outcome) if !outcome.is_clean() => {
+            Err(crate::cli::reported_exit(cfgd_core::exit::ExitCode::Error))
+        }
         _ => Ok(()),
     }
 }
@@ -579,8 +603,8 @@ pub fn cmd_backup_restore(run: &RunContext<'_>, args: &RestoreArgs<'_>) -> anyho
 /// Core of `backup restore`. `Ok(None)` means the operator declined at the
 /// confirmation prompt — nothing ran, and that is a success, not a failure.
 ///
-/// Kept out of [`cmd_backup_restore`] so the body stays in-process testable
-/// (`process::exit` would abort the test binary).
+/// Kept out of [`cmd_backup_restore`], which turns an unclean outcome into its
+/// nonzero exit, so a test reads the outcome itself.
 pub fn run_backup_restore(
     run: &RunContext<'_>,
     args: &RestoreArgs<'_>,
@@ -588,12 +612,13 @@ pub fn run_backup_restore(
     let cli = run.cli();
     let printer = run.printer();
     let (cfg, profile_name, local_resolved) = run.config_and_profile()?;
+    let store_hold = run.hold_store_while_homeless();
     let (sources, header_modules, backups) =
         restoring_verb_state(run, cfg, local_resolved, printer)?;
 
     let spec = find_backup_spec(&backups, args.name)?;
 
-    let (config_dir, state, state_dir) = unit_context(run)?;
+    let (config_dir, state, state_dir) = unit_context(run, store_hold, [spec])?;
     let projected = cfgd_core::backup::projected_spec(spec, &recorded_projections(Some(state)));
     let unit = BackupUnit::new(&projected, &config_dir, profile_name, &state_dir)?;
 
@@ -774,7 +799,9 @@ pub fn cmd_backup_rollback(
     // by the time the exit code is decided, so a failed rollback is not
     // rendered as a SECOND top-level document.
     match run_backup_rollback(run, name, yes)? {
-        Some(outcome) if !outcome.is_clean() => cfgd_core::exit::ExitCode::Error.exit(),
+        Some(outcome) if !outcome.is_clean() => {
+            Err(crate::cli::reported_exit(cfgd_core::exit::ExitCode::Error))
+        }
         _ => Ok(()),
     }
 }
@@ -786,6 +813,7 @@ pub fn cmd_backup_rollback(
 fn list_rollback_copies(run: &RunContext<'_>) -> anyhow::Result<()> {
     let printer = run.printer();
     let (cfg, profile_name, local_resolved) = run.config_and_profile()?;
+    let store_hold = run.hold_store_while_homeless();
     let composition = compose_with_sources(
         run,
         cfg,
@@ -796,7 +824,7 @@ fn list_rollback_copies(run: &RunContext<'_>) -> anyhow::Result<()> {
     )?;
     let backups = composition.resolved.merged.backups;
 
-    let (config_dir, state, state_dir) = unit_context(run)?;
+    let (config_dir, state, state_dir) = unit_context(run, store_hold, &backups)?;
     let projections = recorded_projections(Some(state));
     let mut entries: Vec<BackupRollbackEntry> = Vec::new();
     for spec in &backups {
@@ -822,8 +850,8 @@ fn list_rollback_copies(run: &RunContext<'_>) -> anyhow::Result<()> {
 /// Core of `backup rollback <name>`. `Ok(None)` means the operator declined at
 /// the confirmation prompt — nothing ran, and that is a success.
 ///
-/// Kept out of [`cmd_backup_rollback`] so the body stays in-process testable
-/// (`process::exit` would abort the test binary).
+/// Kept out of [`cmd_backup_rollback`], which turns an unclean outcome into its
+/// nonzero exit, so a test reads the outcome itself.
 pub fn run_backup_rollback(
     run: &RunContext<'_>,
     name: &str,
@@ -832,12 +860,13 @@ pub fn run_backup_rollback(
     let cli = run.cli();
     let printer = run.printer();
     let (cfg, profile_name, local_resolved) = run.config_and_profile()?;
+    let store_hold = run.hold_store_while_homeless();
     let (sources, header_modules, backups) =
         restoring_verb_state(run, cfg, local_resolved, printer)?;
 
     let spec = find_backup_spec(&backups, name)?;
 
-    let (config_dir, state, state_dir) = unit_context(run)?;
+    let (config_dir, state, state_dir) = unit_context(run, store_hold, [spec])?;
     let projected = cfgd_core::backup::projected_spec(spec, &recorded_projections(Some(state)));
     let unit = BackupUnit::new(&projected, &config_dir, profile_name, &state_dir)?;
 
@@ -946,14 +975,12 @@ pub fn cmd_backup_run(run: &RunContext<'_>, name: Option<&str>) -> anyhow::Resul
 
     // A scripted consumer must be able to detect a failed, dirty, or refused
     // backup from the exit code alone — `run_backup_run` already emitted the
-    // per-unit status lines and the summary Doc; exit nonzero directly here
-    // (mirroring `cmd_source_update`) so the failure isn't re-rendered as a
-    // SECOND top-level document after the payload, which would leave
-    // `-o json` stdout unparseable by any single-document reader. Kept out of
-    // the core so the body stays in-process testable (`process::exit` would
-    // abort the test binary).
+    // per-unit status lines and the summary Doc, so the nonzero exit renders
+    // nothing (mirroring `cmd_source_update`): a SECOND top-level document
+    // after the payload would leave `-o json` stdout unparseable by any
+    // single-document reader.
     if !outcome.fully_clean() {
-        cfgd_core::exit::ExitCode::Error.exit();
+        return Err(crate::cli::reported_exit(cfgd_core::exit::ExitCode::Error));
     }
 
     Ok(())
@@ -996,6 +1023,7 @@ pub fn run_backup_run(
     let cli = run.cli();
     let printer = run.printer();
     let (cfg, profile_name, local_resolved) = run.config_and_profile()?;
+    let store_hold = run.hold_store_while_homeless();
     // Cache-only composition (no network refresh), but Enforce constraint mode:
     // `backup run` executes user-declared hooks and writes snapshots, so it is a
     // mutating surface like apply/plan/daemon and must abort on a source
@@ -1037,7 +1065,7 @@ pub fn run_backup_run(
         return Ok(BackupRunOutcome::default());
     }
 
-    let (config_dir, state, state_dir) = unit_context(run)?;
+    let (config_dir, state, state_dir) = unit_context(run, store_hold, targets.iter().copied())?;
     let projections = recorded_projections(Some(state));
     let projected: Vec<config::BackupSpec> = targets
         .iter()
@@ -1093,14 +1121,14 @@ pub fn run_backup_run(
 /// it reaches the exit through the run's own tally rather than a second
 /// condition beside it.
 // no-header-ok: a report on the snapshot rows a destination change
-// stranded, not on the configuration those rows were declared in.
+// stranded; the configuration those rows were declared in is out of its view.
 pub fn cmd_backup_gc(run: &RunContext<'_>, name: Option<&str>) -> anyhow::Result<()> {
     // The payload Doc is already on stdout by the time the exit code is
-    // decided, so exiting here rather than returning an error keeps a failed
-    // collection from being rendered as a SECOND top-level document — the same
-    // split `cmd_backup_run` takes, and why the body stays in `run_backup_gc`.
+    // decided, so the exit renders nothing and a failed collection is not
+    // rendered as a SECOND top-level document — the same split
+    // `cmd_backup_run` takes.
     if run_backup_gc(run, name)?.tally().failed > 0 {
-        cfgd_core::exit::ExitCode::Error.exit();
+        return Err(crate::cli::reported_exit(cfgd_core::exit::ExitCode::Error));
     }
     Ok(())
 }
@@ -1119,6 +1147,7 @@ pub fn run_backup_gc(
     let cli = run.cli();
     let printer = run.printer();
     let (cfg, profile_name, local_resolved) = run.config_and_profile()?;
+    let store_hold = run.hold_store_while_homeless();
     // Enforce, like `backup run`: gc deletes files, so it is a mutating
     // surface and a source constraint violation must abort it rather than be
     // recorded and stepped over.
@@ -1130,7 +1159,7 @@ pub fn run_backup_gc(
         None => backups.iter().collect(),
     };
 
-    let (config_dir, state, state_dir) = unit_context(run)?;
+    let (config_dir, state, state_dir) = unit_context(run, store_hold, targets.iter().copied())?;
     let projections = recorded_projections(Some(state));
     let projected: Vec<config::BackupSpec> = targets
         .iter()

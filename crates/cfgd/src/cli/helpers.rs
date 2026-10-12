@@ -831,7 +831,7 @@ pub(in crate::cli) fn pending_backups(
     merged
         .backups
         .iter()
-        .filter(|b| b.schedule.is_none())
+        .filter(|b| cfgd_core::backup::runs_with_apply(b))
         .collect()
 }
 
@@ -919,10 +919,12 @@ pub(in crate::cli) fn parse_file_spec(spec: &str) -> anyhow::Result<(PathBuf, Pa
             ));
         }
         Ok((
+            // home-refusal-ok: a create verb's `--file` argument; no apply or plan path reaches it
             cfgd_core::expand_tilde(Path::new(source), "--file source")?,
             cfgd_core::expand_tilde(Path::new(target), cfgd_core::FILE_TARGET_ROLE)?,
         ))
     } else {
+        // home-refusal-ok: a create verb's `--file` argument; no apply or plan path reaches it
         let expanded = cfgd_core::expand_tilde(Path::new(spec), "--file source")?;
         Ok((expanded.clone(), expanded))
     }
@@ -1342,6 +1344,8 @@ pub(crate) fn run_state_dir(
 /// wrote (`ConfigError::HomeUnresolved`).
 fn keep_tilde_without_home(path: &Path) -> PathBuf {
     // home-optional-ok: config discovery refuses the kept `~` with ConfigError::HomeUnresolved
+    // home-refusal-ok: config discovery refuses the kept `~` before the verb loads or plans
+    // anything
     cfgd_core::expand_tilde(path, "config document").unwrap_or_else(|_| path.to_path_buf())
 }
 
@@ -1853,7 +1857,7 @@ pub(in crate::cli) fn unresolved_home_before_run(
     }
 
     let platform = Platform::current();
-    home_refusal_with_config_backend(
+    home_refusal_with_config_providers(
         cfg,
         state,
         profile,
@@ -1863,46 +1867,47 @@ pub(in crate::cli) fn unresolved_home_before_run(
     )
 }
 
-/// The refusal a run over `desired`, the state it resolved and fetched,
-/// meets for want of a home directory, or `None` when a home resolves or
-/// nothing in it writes under one.
+/// The refusal a run over `profile` and the `modules` it resolved and
+/// fetched meets for want of a home directory, or `None` when a home
+/// resolves or nothing in them writes under one.
 ///
-/// `apply` and `plan` ask it between the resolution and the state store's
-/// open ([`super::run_context::StoreHold::open`]), so every source and
-/// locked module the run fetched counts, whether or not the cache held it
-/// before. `state` is the recorded store read without opening it for
-/// writing, so the manager `PATH` entries it recorded count too.
+/// `apply`, `plan`, `module create --apply` and `init --apply` ask it between
+/// the resolution and the state store's open
+/// ([`super::run_context::StoreHold::open_for`]), so every source and locked
+/// module the run fetched counts, whether or not the cache held it before.
+/// `state` is the recorded store read without opening it for writing, so the
+/// manager `PATH` entries it recorded count too.
 pub(in crate::cli) fn unresolved_home_after_resolution(
     cfg: &config::CfgdConfig,
-    desired: &DesiredState,
+    profile: &cfgd_core::config::MergedProfile,
+    modules: &[cfgd_core::modules::ResolvedModule],
     state: Option<&StateStore>,
 ) -> Option<cfgd_core::errors::StateError> {
     // home-optional-ok: the question asked is what a missing home refuses
     if cfgd_core::home_dir().is_ok() {
         return None;
     }
-    home_refusal_with_config_backend(
+    home_refusal_with_config_providers(
         cfg,
         state,
-        &desired.resolved.merged,
-        desired
-            .modules
+        profile,
+        modules
             .iter()
             .map(cfgd_core::reconciler::ModuleHomeUse::from),
     )
 }
 
-/// [`cfgd_core::reconciler::unresolved_home_refusal`] with the secret backend
-/// `cfg` names, whose decrypt key may itself live under the home.
-fn home_refusal_with_config_backend<'m>(
+/// [`cfgd_core::reconciler::unresolved_home_refusal`] with the providers `cfg`
+/// builds: the secret backend, whose decrypt key may itself live under the
+/// home, and the system configurators, whose paths may.
+fn home_refusal_with_config_providers<'m>(
     cfg: &config::CfgdConfig,
     state: Option<&StateStore>,
     profile: &cfgd_core::config::MergedProfile,
     modules: impl IntoIterator<Item = cfgd_core::reconciler::ModuleHomeUse<'m>>,
 ) -> Option<cfgd_core::errors::StateError> {
-    let (backend_name, age_key_path) = secret_backend_from_config(Some(cfg));
-    let backend = secrets::build_secret_backend(&backend_name, age_key_path, None);
-    cfgd_core::reconciler::unresolved_home_refusal(state, profile, modules, Some(backend.as_ref()))
+    let registry = super::registry::build_registry_with_config(Some(cfg));
+    cfgd_core::reconciler::unresolved_home_refusal(state, profile, modules, Some(&registry))
 }
 
 /// Who may answer a floor bootstrap question: `--yes` / `CFGD_YES` outright,

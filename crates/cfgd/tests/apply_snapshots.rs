@@ -458,9 +458,8 @@ fn apply_with_failures_human() {
     let (printer, cap) = Printer::for_test_doc();
     let args = apply_args();
 
-    // `run_apply` renders the failure shape and returns the status without the
-    // `process::exit` that `cmd_apply` performs on a partial apply — that exit
-    // would abort the in-process snapshot capture (it is covered by the
+    // `run_apply` renders the failure shape and returns the status that
+    // `cmd_apply` turns into its nonzero exit (the exit code is covered by the
     // subprocess test in `apply_exit_code.rs`).
     let outcome =
         cfgd::cli::RunContext::for_test(&cli, &printer, |run| run_apply(run, &args)).unwrap();

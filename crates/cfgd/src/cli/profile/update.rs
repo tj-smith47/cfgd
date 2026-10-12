@@ -438,7 +438,7 @@ pub fn cmd_profile_update(
     // Add/remove script hooks. The order is the one `ScriptSpec::hooks` reports
     // (pinned by `profile_update_adds_script_hooks_in_the_hook_sets_order`).
     // hook-table-ok: each label is the serde spelling of the field the accessor
-    // on the line below it reaches, not a hook table this screen owns.
+    // on the line below it reaches; this screen owns no hook table.
     changes += update_script_list(
         &mut doc.spec.scripts,
         &add_pre_apply,

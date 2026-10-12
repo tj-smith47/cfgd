@@ -30,6 +30,10 @@ pub fn cmd_verify(
     let cli = run.cli();
     let printer = run.printer();
     let config_dir = run.config_dir();
+    // The live env check below folds the `PATH` line against the home, so a
+    // run with none is refused here, before the state store opens and leaves
+    // a `state.db` behind for a run that read nothing from it.
+    cfgd_core::home_dir()?;
     let state = run.state()?;
 
     // The configuration this report was measured against, named through the
@@ -312,7 +316,7 @@ pub fn cmd_verify(
     ));
 
     if exit_code && let Some(code) = verify_exit_code(&output) {
-        code.exit();
+        return Err(crate::cli::reported_exit(code));
     }
     Ok(())
 }
@@ -367,8 +371,8 @@ pub fn build_verify_doc(
         .heading("Verify")
         .kv_rows(cfgd_core::output::config_header_rows(header));
 
-    // drift-chain-ok: whether the report has anything at all to RENDER, not
-    // whether the run stands on drift — `any_drift` is that question.
+    // drift-chain-ok: whether the report has anything at all to RENDER;
+    // `any_drift` answers whether the run stands on drift.
     if output.results.is_empty() && output.system_errors.is_empty() && output.standing.is_empty() {
         doc = doc.status(Role::Info, "No managed resources to verify");
         return doc.with_data(output.clone());
@@ -411,7 +415,7 @@ pub fn build_verify_doc(
     let has_drift = output.any_drift() || output.check_failed();
     doc = if !has_drift {
         doc.status(
-            // verdict-row-ok: a match verdict, not an act cfgd performed
+            // verdict-row-ok: a match verdict on what cfgd found
             Role::Ok,
             format!(
                 "All {} {} desired state",

@@ -94,14 +94,14 @@ impl SysctlConfigurator {
             content.push_str(&format!("{} = {}\n", k, v));
         }
 
-        // user-scope-ok: read by sysctl as root at boot, never by a user session
+        // user-scope-ok: read by sysctl as root at boot, outside any user session
         cfgd_core::atomic_write_str(&conf_path, &content)?;
         Ok(())
     }
 }
 
 // long-line-ok: a hatch is read off its own line, so it cannot wrap
-// no-tool-ok: writes /proc/sys directly, so its answer turns on the kernel interface being there rather than on any binary
+// no-tool-ok: writes /proc/sys directly, so its answer turns on the kernel interface being there; it runs no binary
 impl SystemConfigurator for SysctlConfigurator {
     fn name(&self) -> &str {
         "sysctl"

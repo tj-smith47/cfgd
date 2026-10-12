@@ -845,7 +845,7 @@ impl SourceManager {
         );
         cmd.args([
             "-C",
-            // absolute-path-ok: git argv, not a display slot
+            // absolute-path-ok: git argv, which takes the absolute path
             &source_dir.display().to_string(),
             "fetch",
             "origin",
@@ -944,7 +944,7 @@ impl SourceManager {
             &spec.origin.branch,
             "--end-of-options",
             &spec.origin.url,
-            // absolute-path-ok: the clone destination in git argv, not a display slot
+            // absolute-path-ok: the clone destination in git argv, which takes the absolute path
             &source_dir.display().to_string(),
         ]);
 
@@ -2126,7 +2126,7 @@ pub fn git_clone_with_fallback(
 
     // Try git CLI first with live progress output.
     let mut cmd = crate::git_cmd_safe(Some(url), None);
-    // absolute-path-ok: the clone destination in git argv, not a display slot
+    // absolute-path-ok: the clone destination in git argv, which takes the absolute path
     let target_arg = target.display().to_string();
     let mut args = vec!["clone"];
     // Depth is a transfer-size guard for remotes, the same split the libgit2

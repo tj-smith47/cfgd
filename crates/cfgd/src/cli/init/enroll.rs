@@ -355,6 +355,7 @@ pub(super) fn next_steps_lines() -> &'static [(&'static str, &'static str)] {
 // ─────────────────────────────────────────────────────
 
 pub(super) fn detect_ssh_key(printer: &Printer) -> cfgd_core::errors::Result<Option<String>> {
+    // home-refusal-ok: `enroll` alone reads it; no apply or plan path reaches it
     let ssh_dir = cfgd_core::expand_tilde(Path::new("~/.ssh"), "SSH key directory")?;
 
     // Try SSH agent first — when the agent has identities loaded, prefer

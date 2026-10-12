@@ -24,8 +24,8 @@ pub(crate) fn generate_launchd_plist(
     // refuses to parse, and the service silently never loads.
     //
     // native-ok: every path below renders as an argv token this host's own
-    // binary receives back from launchd, so it must carry this host's
-    // separators rather than being folded to `/`.
+    // binary receives back from launchd, so it carries this host's own
+    // separators.
     let mut args = vec![
         format!(
             "<string>{}</string>",
@@ -164,13 +164,13 @@ pub(crate) fn launchd_bootstrap_argv(
         vec![
             "bootstrap".to_string(),
             "system".to_string(),
-            plist_path.display().to_string(), // absolute-path-ok: launchctl argv, not a display slot
+            plist_path.display().to_string(), // absolute-path-ok: launchctl argv, which takes the absolute path
         ]
     } else {
         vec![
             "bootstrap".to_string(),
             format!("gui/{uid}"),
-            plist_path.display().to_string(), // absolute-path-ok: launchctl argv, not a display slot
+            plist_path.display().to_string(), // absolute-path-ok: launchctl argv, which takes the absolute path
         ]
     }
 }
@@ -306,13 +306,13 @@ pub(crate) fn launchd_bootout_argv(
         vec![
             "bootout".to_string(),
             "system".to_string(),
-            plist_path.display().to_string(), // absolute-path-ok: launchctl argv, not a display slot
+            plist_path.display().to_string(), // absolute-path-ok: launchctl argv, which takes the absolute path
         ]
     } else {
         vec![
             "bootout".to_string(),
             format!("gui/{uid}"),
-            plist_path.display().to_string(), // absolute-path-ok: launchctl argv, not a display slot
+            plist_path.display().to_string(), // absolute-path-ok: launchctl argv, which takes the absolute path
         ]
     }
 }

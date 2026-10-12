@@ -561,7 +561,7 @@ mod tests {
         let t = Table::new(["Name", "Age"]).row(["Bob", "1000"]);
         r.render_table(&sink, 0, &t);
         // long-line-ok: a hatch is read off its own line, so it cannot wrap
-        // raw-capture-ok: asserting the header row's SGR spans stop at each cell rather than spanning the inter-column gap — captured_text would strip the ANSI this test exists to check
+        // raw-capture-ok: asserting the header row's SGR spans stop at each cell and leave the inter-column gap bare; captured_text would strip the ANSI this test exists to check
         let raw = buf.lock().unwrap_or_else(|e| e.into_inner()).clone();
         let expected = format!(
             "{}  {}",

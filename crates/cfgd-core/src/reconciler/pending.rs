@@ -63,7 +63,7 @@ pub fn declared_decision_fingerprints(merged: &MergedProfile) -> BTreeMap<String
         };
         for pkg in config::desired_packages_for_spec(&manager, pkgs) {
             resources.insert(
-                // composed-id-ok: a decision fingerprint key, not a system identity
+                // composed-id-ok: a decision fingerprint key, which names no system resource
                 format!("packages.{}.{}", decision_manager, pkg),
                 entry_fingerprint(&pkg),
             );
@@ -1751,6 +1751,8 @@ pub fn owns_decision_store(
 /// `/tmp`, a stow-managed `~/.config`) still matches its own default. With no
 /// home there is no default directory, so no config is the machine's own.
 fn is_machines_own_config(config_path: &Path, scope: crate::Scope) -> Result<bool> {
+    // home-refusal-ok: the run's own `--config` path, which config discovery refuses with no home
+    // before a plan asks this
     let named = crate::expand_tilde(config_path, "config file")?;
     if !named
         .file_name()

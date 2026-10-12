@@ -83,6 +83,15 @@ fn user_config_path(file: &str) -> Result<PathBuf> {
 
 const KDE_FILE_ROLE: &str = "KDE config file";
 
+/// The groups of one declared file, when any of them declares a key: the files
+/// `diff` reads.
+fn declared_groups(groups: &serde_yaml::Value) -> Option<&serde_yaml::Mapping> {
+    groups.as_mapping().filter(|m| {
+        m.values()
+            .any(|keys| keys.as_mapping().is_some_and(|k| !k.is_empty()))
+    })
+}
+
 /// The system-wide half of the KConfig cascade (`$XDG_CONFIG_DIRS`, `/etc/xdg`
 /// when unset) for one file name.
 fn system_config_paths(file: &str) -> Vec<PathBuf> {
@@ -209,6 +218,15 @@ impl SystemConfigurator for KdeConfigConfigurator {
             || cfgd_core::command_available("kwriteconfig5")
     }
 
+    fn home_refusal(&self, desired: &serde_yaml::Value) -> Option<cfgd_core::errors::StateError> {
+        desired
+            .as_mapping()?
+            .iter()
+            .filter(|(_, groups)| declared_groups(groups).is_some())
+            .filter_map(|(file, _)| file.as_str())
+            .find_map(|file| cfgd_core::home_refusal_of(user_config_path(file)))
+    }
+
     fn required_tool(&self) -> Option<&'static str> {
         // The v6 binary alone: a host with neither copy gets the current
         // generation installed, and one already holding v5 answers available
@@ -232,19 +250,13 @@ impl SystemConfigurator for KdeConfigConfigurator {
                 Some(f) => f,
                 None => continue,
             };
-            let groups_map = match groups.as_mapping() {
-                // A file whose groups declare no keys has nothing to compare,
-                // so reading its rc file (and its whole XDG cascade) answers a
-                // question nobody asked. Unlike the sibling configurators' own
-                // guards this one saves file I/O rather than a spawn, so no
-                // shim can observe it.
-                Some(m)
-                    if m.values()
-                        .any(|keys| keys.as_mapping().is_some_and(|k| !k.is_empty())) =>
-                {
-                    m
-                }
-                _ => continue,
+            // A file whose groups declare no keys has nothing to compare, so
+            // reading its rc file (and its whole XDG cascade) answers a
+            // question nobody asked. This guard saves file I/O, where the
+            // sibling configurators' guards save a spawn, so no shim can
+            // observe it.
+            let Some(groups_map) = declared_groups(groups) else {
+                continue;
             };
             // One read of the rc file for every group and key declared under
             // it, instead of one `kreadconfig` spawn per key.

@@ -197,6 +197,8 @@ pub fn default_config_dir() -> crate::errors::Result<std::path::PathBuf> {
 /// [`StateError::HomeUnresolved`](crate::errors::StateError::HomeUnresolved)
 /// when the scope's directory lies under a home no variable names.
 pub fn default_config_dir_for(scope: Scope) -> crate::errors::Result<std::path::PathBuf> {
+    // home-refusal-ok: cfgd's own config directory, where a `~` with no home refuses the run before
+    // it loads a config
     expand_tilde(&default_config_dir_spelling(scope), "config directory")
 }
 
@@ -574,6 +576,8 @@ pub fn default_runtime_dir() -> crate::errors::Result<Option<std::path::PathBuf>
 /// and is therefore always `Some` — it needs no home directory. Pure path logic.
 pub fn default_runtime_dir_for(scope: Scope) -> crate::errors::Result<Option<std::path::PathBuf>> {
     if let Ok(dir) = std::env::var(crate::CFGD_RUNTIME_DIR_ENV) {
+        // home-refusal-ok: cfgd's own runtime directory, which the daemon, its clients and `cfgd
+        // paths` resolve; no apply or plan reads it
         return expand_tilde(std::path::Path::new(&dir), "runtime directory").map(Some);
     }
     Ok(default_runtime_dir_unexpanded(scope))
@@ -668,6 +672,8 @@ pub fn default_cache_dir() -> crate::errors::Result<std::path::PathBuf> {
 /// home directory. Pure path logic — never touches the filesystem.
 pub fn default_cache_dir_for(scope: Scope) -> crate::errors::Result<std::path::PathBuf> {
     if let Ok(dir) = std::env::var(crate::CFGD_CACHE_DIR_ENV) {
+        // home-refusal-ok: cfgd's own cache directory, where a `~` with no home refuses the run
+        // before it opens a store or plans
         return expand_tilde(std::path::Path::new(&dir), "cache directory");
     }
     if let Some(dir) = systemd_dir("CACHE_DIRECTORY") {
@@ -746,6 +752,8 @@ pub fn resolve_config_dir(
     scope: Scope,
 ) -> crate::errors::Result<std::path::PathBuf> {
     match over {
+        // home-refusal-ok: cfgd's own config directory, where a `~` with no home refuses the run
+        // before it loads a config
         Some(p) => expand_tilde(p, "config directory"),
         None => default_config_dir_for(scope),
     }
@@ -765,6 +773,8 @@ pub fn resolve_state_dir(
     scope: Scope,
 ) -> crate::errors::Result<std::path::PathBuf> {
     match over {
+        // home-refusal-ok: cfgd's own state directory, where a `~` with no home refuses the run
+        // before it opens a store or plans
         Some(p) => expand_tilde(p, "state directory"),
         None => crate::state::default_state_dir_for(scope),
     }
@@ -782,6 +792,8 @@ pub fn resolve_cache_dir(
     scope: Scope,
 ) -> crate::errors::Result<std::path::PathBuf> {
     match over {
+        // home-refusal-ok: cfgd's own cache directory, where a `~` with no home refuses the run
+        // before it opens a store or plans
         Some(p) => expand_tilde(p, "cache directory"),
         None => default_cache_dir_for(scope),
     }
@@ -813,6 +825,8 @@ pub fn resolve_runtime_dir(
     scope: Scope,
 ) -> crate::errors::Result<Option<std::path::PathBuf>> {
     match over {
+        // home-refusal-ok: cfgd's own runtime directory, which the daemon, its clients and `cfgd
+        // paths` resolve; no apply or plan reads it
         Some(p) => expand_tilde(p, "runtime directory").map(Some),
         None => default_runtime_dir_for(scope),
     }
@@ -908,6 +922,23 @@ pub const FILE_TARGET_ROLE: &str = "file target";
 
 /// The `role` a declared secret target names in [`expand_tilde`]'s refusal.
 pub const SECRET_TARGET_ROLE: &str = "secret target";
+
+/// The refusal a path resolution such as [`expand_tilde`] returned, or `None`
+/// when it resolved or failed for another reason: the shape a "would this
+/// refuse for want of a home" question asks of the resolution it shares with
+/// the code that later uses the path.
+pub fn home_refusal_of<T>(resolved: crate::errors::Result<T>) -> Option<crate::errors::StateError> {
+    match resolved {
+        Err(crate::errors::CfgdError::State(e)) => Some(e),
+        _ => None,
+    }
+}
+
+/// The `role` a lifecycle script's `workdir:` names in [`expand_tilde`]'s refusal.
+pub const SCRIPT_WORKDIR_ROLE: &str = "script workdir";
+
+/// The `role` a script's `creates:` guard names in [`expand_tilde`]'s refusal.
+pub const CREATES_GUARD_ROLE: &str = "creates guard";
 
 /// Expand a leading `~` (`~`, `~/...`, `~\...`) to the user's home directory;
 /// any other path comes back as written.
@@ -1819,24 +1850,6 @@ pub fn posixify_os_error_text(s: &str) -> std::borrow::Cow<'_, str> {
         rest = &after_open[digits_end + 1..];
     }
     std::borrow::Cow::Owned(out)
-}
-
-/// User-input path tolerance: accept `C:\foo`, `C:/foo`, `~/foo`, `./foo`.
-/// Folds `\` → `/` and expands a leading `~` via [`expand_tilde`]. Use when
-/// loading config fields where a Linux author may write `/` and a Windows
-/// author may write `\` for the same logical location.
-///
-/// # Errors
-///
-/// [`StateError::HomeUnresolved`](crate::errors::StateError::HomeUnresolved)
-/// for a leading `~` no home directory resolves.
-pub fn from_user_input(s: &str) -> crate::errors::Result<std::path::PathBuf> {
-    let folded = if s.contains('\\') {
-        s.replace('\\', "/")
-    } else {
-        s.to_string()
-    };
-    expand_tilde(std::path::Path::new(&folded), "configured path")
 }
 
 /// Display-only extension for human-facing path output. On Windows, folds

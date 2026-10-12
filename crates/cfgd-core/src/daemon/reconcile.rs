@@ -1781,7 +1781,7 @@ pub(super) fn tick_cannot_refind(
                 .is_some_and(|rest| rest.starts_with('.')),
             _ => false,
         }),
-        // script-literal-ok: resource TYPES, not manager names
+        // script-literal-ok: these are resource TYPES, and none names a manager
         "file"
         | "secret"
         | "script"

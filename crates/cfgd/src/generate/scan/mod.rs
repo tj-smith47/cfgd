@@ -612,6 +612,7 @@ pub fn scan_system_settings() -> Result<SystemSettingsResult, CfgdError> {
 
     // macOS: list launch agents
     {
+        // home-refusal-ok: `generate` alone reads it; no apply or plan path reaches it
         let agents_dir = cfgd_core::expand_tilde(
             std::path::Path::new("~/Library/LaunchAgents"),
             "launch agents directory",

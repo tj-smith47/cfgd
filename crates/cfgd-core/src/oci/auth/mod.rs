@@ -86,6 +86,7 @@ pub(super) fn docker_config_path() -> crate::errors::Result<std::path::PathBuf> 
     if let Ok(dir) = std::env::var(super::DOCKER_CONFIG_ENV) {
         return Ok(std::path::PathBuf::from(dir).join("config.json"));
     }
+    // home-refusal-ok: its one caller reads no home as no Docker config and pulls anonymously
     crate::expand_tilde(
         std::path::Path::new("~/.docker/config.json"),
         "Docker config file",

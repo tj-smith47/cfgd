@@ -242,7 +242,7 @@ Banned anywhere under `crates/cfgd-core/src/{config,modules,sources}/` — the t
 The gate enforces this on the DOMAIN — every non-test `.rs` under those directories — never on a function-name shape. Escape hatch for a genuinely internal diagnostic, mirroring `native-ok:`:
 
 ```rust
-tracing::warn!("cache miss for {}", key); // tracing-ok: internal cache-timing diagnostic, not user-facing
+tracing::warn!("cache miss for {}", key); // tracing-ok: internal cache-timing diagnostic, read under RUST_LOG alone
 ```
 
 The marker counts only inside a comment, only with a reason, inherited only from the line or the line above. **Disqualified from the hatch regardless**: any message describing the user's own config, a key they wrote, or anything that changes what they should do next. "Internal" means the entire audience is someone already reading `RUST_LOG`.

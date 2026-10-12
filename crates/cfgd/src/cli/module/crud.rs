@@ -280,7 +280,9 @@ pub fn cmd_module_create(run: &RunContext<'_>, args: &ModuleCreateArgs) -> anyho
         let cfg = run.config()?;
         let mut registry = super::build_registry_with_config(Some(cfg));
         registry.set_system_config_dir(&config_dir);
-        let store = run.state()?;
+        // Held so that with no home the store is only read until the module
+        // resolved below says the run may write under it.
+        let store_hold = run.hold_store_while_homeless();
 
         let platform = cfgd_core::platform::Platform::current();
         let mgr_map = registry.manager_map();
@@ -301,6 +303,7 @@ pub fn cmd_module_create(run: &RunContext<'_>, args: &ModuleCreateArgs) -> anyho
             layers: Vec::new(),
             merged: config::MergedProfile::default(),
         };
+        let store = store_hold.open_for(cfg, &resolved.merged, &resolved_modules)?;
 
         let reconciler = cfgd_core::reconciler::Reconciler::new(&registry, store)
             .with_config_dir(&config_dir)
@@ -433,14 +436,15 @@ pub fn cmd_module_create(run: &RunContext<'_>, args: &ModuleCreateArgs) -> anyho
     })));
 
     // Same contract as `cfgd apply`: an apply that ran and lost actions must not
-    // report success. Exiting directly (rather than returning an error) keeps
-    // render_cli_error from double-printing a failure line after the per-action
+    // report success. The exit renders no failure line after the per-action
     // report above.
     if matches!(
         apply_status,
         cfgd_core::state::ApplyStatus::Partial | cfgd_core::state::ApplyStatus::Failed
     ) {
-        cfgd_core::exit::ExitCode::ApplyFailed.exit();
+        return Err(crate::cli::reported_exit(
+            cfgd_core::exit::ExitCode::ApplyFailed,
+        ));
     }
 
     Ok(())
@@ -872,7 +876,7 @@ pub fn cmd_module_edit(cli: &Cli, printer: &Printer, name: &str) -> anyhow::Resu
     if valid {
         printer.emit(
             Doc::new()
-                // verdict-row-ok: a validation verdict, not an act cfgd performed
+                // verdict-row-ok: a validation verdict on what cfgd found
                 .status(Role::Ok, format!("Module '{}' is valid", name))
                 .hint(super::success_next_step(super::Mutation::ModuleUpdated))
                 .with_data(serde_json::json!({

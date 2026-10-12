@@ -6,7 +6,6 @@ use serde::Serialize;
 
 use super::source::{clone_into, is_clonable_source, plan_from, resolve_from};
 use super::*;
-use crate::cli::startup::StartupDocument;
 
 /// The role a no-home refusal names for `init`'s positional path.
 const INIT_PATH_ROLE: &str = "init directory";
@@ -44,7 +43,11 @@ pub(crate) struct InitOutput {
 }
 
 /// Scaffold a new cfgd configuration repository.
-pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
+pub fn cmd_init(
+    printer: &Printer,
+    startup: &crate::cli::startup::StartupDocument,
+    args: &InitArgs<'_>,
+) -> anyhow::Result<()> {
     // `section` (not `heading`) so every line this phase prints — the
     // prerequisite check, the clone/scaffold narration, the final
     // "Initialized at" — indents under it like every other phase heading.
@@ -61,7 +64,7 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
     // would be written after the output it introduces.
     //
     // heading-first-ok: committing the header IS what puts the clone's window
-    // under it rather than over the title
+    // under the title
     init_section.commit_header();
     let init_depth = printer.depth_inheritance();
 
@@ -83,6 +86,8 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
     };
     let explicit_path = args
         .path
+        // home-refusal-ok: `init`'s destination argument, refused before the verb writes or plans
+        // anything
         .map(|p| cfgd_core::expand_tilde(Path::new(p), INIT_PATH_ROLE))
         .transpose()?;
     // Where this run would materialise, and every refusal that answer earns,
@@ -90,7 +95,7 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
     // work: an install is the one thing this verb cannot take back, and a run
     // that was always going to refuse must refuse first.
     // positional-destination-ok: `init` takes its destination as a positional
-    // argument, not off `--config`, so there is no `--config` to read it from.
+    // argument, so there is no `--config` to read it from.
     let planned_dir = match from.as_deref() {
         Some(from) => plan_from(from, explicit_path.as_deref())?,
         None => match explicit_path.clone() {
@@ -115,10 +120,11 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
             row = row.detail(detail);
         }
         drop(row);
-        crate::cli::config_schema::gate_on_load(
+        crate::cli::config_schema::gate_document_for_run(
             printer,
             &args.migration_gate,
-            &StartupDocument::load(&document),
+            &document,
+            startup,
         );
         let output = InitOutput {
             target_dir: cfgd_core::to_posix_string(&planned_dir),
@@ -133,17 +139,17 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
         // git is a hard prerequisite: without it init scaffolds nothing, so it must exit
         // non-zero rather than let a chained `cfgd init && cfgd apply` proceed on a false
         // success. check_prerequisites has already printed the error and install hint, so
-        // exit directly instead of returning an Err that the CLI boundary would re-render.
+        // the exit renders nothing new.
         let output = InitOutput {
             target_dir: args.path.unwrap_or("").to_string(),
         };
         printer.emit(Doc::new().with_data(&output));
-        cfgd_core::exit::ExitCode::Error.exit();
+        return Err(crate::cli::reported_exit(cfgd_core::exit::ExitCode::Error));
     }
 
     let target_dir = match from.as_deref() {
         // positional-destination-ok: `init` takes its destination as a positional
-        // argument, not off `--config`, so there is no `--config` to read it from.
+        // argument, so there is no `--config` to read it from.
         Some(from) => resolve_from(from, explicit_path.as_deref(), args.branch, printer)?,
         None => planned_dir,
     };
@@ -227,10 +233,11 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
     // The load-time gate is withheld from init because the document did not
     // exist yet. It runs now, before the apply below reads the file, so the
     // question a behind-schema config earns is settled during setup.
-    crate::cli::config_schema::gate_on_load(
+    crate::cli::config_schema::gate_document_for_run(
         printer,
         &args.migration_gate,
-        &StartupDocument::load(&config_path),
+        &config_path,
+        startup,
     );
 
     // 7. Apply if requested
@@ -264,7 +271,8 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
             drain_config_deprecations(printer, &mut cfg);
             let mut registry = super::build_registry_with_config(Some(&cfg));
             registry.set_system_config_dir(&target_dir);
-            let store = super::open_state_store(args.state_dir, args.scope)?;
+            let store_hold =
+                super::run_context::DetachedStoreHold::new(args.state_dir, args.scope)?;
             let module_apply_sources =
                 cfgd_core::reconciler::ComposedSource::from_declared(&cfg.spec.sources);
 
@@ -276,10 +284,11 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
 
             let platform = cfgd_core::platform::Platform::current();
             let mgr_map = registry.manager_map();
+            let held_state = store_hold.package_state();
             // own-context-ok: `cmd_init` takes no `&Cli`, so there is no
             // `RunContext` to ask for the run's context; this arm builds
             // exactly one.
-            let pkg_cx = cfgd_core::providers::PackageContext::new(printer, &store);
+            let pkg_cx = cfgd_core::providers::PackageContext::new(printer, held_state);
             let mut resolved_modules = modules::resolve_modules(
                 args.apply_modules,
                 &target_dir,
@@ -291,7 +300,8 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
                 printer,
                 &modules::refuse_floor_bootstrap,
             )?;
-            let reconciler = cfgd_core::reconciler::Reconciler::new(&registry, &store)
+            let store = store_hold.open_for(&cfg, &resolved.merged, &resolved_modules)?;
+            let reconciler = cfgd_core::reconciler::Reconciler::new(&registry, store)
                 .with_config_dir(&target_dir)
                 .diffing_installed(&pkg_cx)
                 // The run is scoped to the modules named on the command line
@@ -339,7 +349,7 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
                     state_dir: args.state_dir,
                     scope: args.scope,
                     profile: None,
-                    state: &store,
+                    state: store,
                     on_conflict: args.on_conflict,
                     default_strategy: registry.default_file_strategy,
                     module_cache: &cache_base,
@@ -395,7 +405,8 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
             let resolved = config::resolve_profile(&profile_name, &profiles_dir)?;
             let mut registry = super::build_registry_with_config(Some(&cfg));
             registry.set_system_config_dir(&target_dir);
-            let store = super::open_state_store(args.state_dir, args.scope)?;
+            let store_hold =
+                super::run_context::DetachedStoreHold::new(args.state_dir, args.scope)?;
 
             // Resolve modules (profile modules + any --apply-module additions)
             let mut module_names = resolved.merged.modules.clone();
@@ -405,10 +416,11 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
                 }
             }
 
+            let held_state = store_hold.package_state();
             // own-context-ok: `cmd_init` takes no `&Cli`, so there is no
             // `RunContext` to ask for the run's context; this arm builds
             // exactly one.
-            let pkg_cx = cfgd_core::providers::PackageContext::new(printer, &store);
+            let pkg_cx = cfgd_core::providers::PackageContext::new(printer, held_state);
             let cache_base = module_cache_dir_for(args.cache_dir, args.scope)?;
             let mut resolved_modules = if !module_names.is_empty() {
                 let platform = cfgd_core::platform::Platform::current();
@@ -463,9 +475,10 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
 
             registry.file_manager = Some(Box::new(fm));
 
+            let store = store_hold.open_for(&cfg, &resolved.merged, &resolved_modules)?;
             // recorded-scope-ok: this arm resolved a real profile, so the
             // recorded scope is the profile name the reconciler already reads
-            let reconciler = cfgd_core::reconciler::Reconciler::new(&registry, &store)
+            let reconciler = cfgd_core::reconciler::Reconciler::new(&registry, store)
                 .with_config_dir(&target_dir)
                 .diffing_installed(&pkg_cx)
                 // This arm resolved a real profile and named no module, so the
@@ -498,7 +511,7 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
                     state_dir: args.state_dir,
                     scope: args.scope,
                     profile: Some(&profile_name),
-                    state: &store,
+                    state: store,
                     on_conflict: args.on_conflict,
                     default_strategy: registry.default_file_strategy,
                     module_cache: &cache_base,
@@ -593,14 +606,15 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
 
     // Same contract as `cfgd apply`: an apply that ran and lost actions must not
     // report success, or a one-command bootstrap ends on a shell prompt with
-    // exit 0 and half a machine. Exiting directly (rather than returning an
-    // error) keeps render_cli_error from double-printing a failure line after
-    // the per-action report above.
+    // exit 0 and half a machine. The exit renders no failure line after the
+    // per-action report above.
     if matches!(
         apply_status,
         cfgd_core::state::ApplyStatus::Partial | cfgd_core::state::ApplyStatus::Failed
     ) {
-        cfgd_core::exit::ExitCode::ApplyFailed.exit();
+        return Err(crate::cli::reported_exit(
+            cfgd_core::exit::ExitCode::ApplyFailed,
+        ));
     }
 
     Ok(())

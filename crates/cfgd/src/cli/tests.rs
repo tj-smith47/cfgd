@@ -44073,7 +44073,7 @@ fn every_run_under_a_resolved_profile_names_its_sources_and_modules() {
 /// it is not in a report addressed to whoever ran the command — the same
 /// reason `-o json` keeps the absolute path. So `fold_home_in_text` never
 /// reaches a `tracing::` argument, and a journal line naming a path under
-/// home carries `// native-ok: journal line, not a display slot` beside the
+/// home carries `// native-ok: a journal line, read by people` beside the
 /// folded rows it will be read next to. The daemon's startup banner spelled
 /// its socket absolutely eight lines above a folded `Config` row with no rule
 /// deciding which was right.
@@ -48193,9 +48193,11 @@ const PROVISIONING_VERB_CALLS: &[ProvisioningVerb] = &[
     ProvisioningVerb::always("cmd_module_keys_generate"),
     ProvisioningVerb::always("cmd_module_keys_rotate"),
     ProvisioningVerb::always("fix_missing_tools"),
-    // The binary's own entry point, which reaches the dispatcher below it. No
-    // test in this crate can call it, so it widens the population by nothing;
-    // it is here because the derivation names it and the roster is a superset.
+    // The binary's entry point and the gated run it hands to `finish_run`,
+    // both reaching the dispatcher below them. No test in this crate can call
+    // either, so they widen the population by nothing; they are here because
+    // the derivation names them and the roster is a superset.
+    ProvisioningVerb::always("gated_run"),
     ProvisioningVerb::always("main"),
     ProvisioningVerb::always("provision_cosign"),
     ProvisioningVerb::always("provision_tool"),
@@ -53627,13 +53629,14 @@ fn no_walk_bearing_source_scans_syntax_by_hand() {
 /// boundary added later joins it by being compiled.
 ///
 /// The gate runs once per process: in `main.rs`, above every boundary under
-/// `cli/`, for every verb but `cfgd init`, and inside `cmd_init` for init,
-/// which withholds it at load time because the document it answers about is
-/// the one init is about to write. The claim this test holds is that nothing
-/// else under `cli/` opens a path into it and that `main.rs` withholds init,
-/// which together make the two calls the whole population and never both in
-/// one run. The daemon is inside the `main.rs` call: `cfgd-core` cannot reach a
-/// function of this crate, so the policy it runs under is folded by
+/// `cli/`, for every verb but `cfgd init`, and for init inside `cmd_init`
+/// through `config_schema::gate_document_for_run`, which withholds it at load
+/// time because the document it answers about is the one init is about to
+/// write. The claim this test holds is that nothing else under `cli/` opens a
+/// path into it and that `main.rs` withholds init, which together make the
+/// two calls the whole population and never both in one run. The daemon is
+/// inside the `main.rs` call: `cfgd-core` cannot reach a function of this
+/// crate, so the policy it runs under is folded by
 /// `is_daemon` — once, inside `gate_on_load`, which is the only site holding
 /// both the override and the stored policy the fold applies to.
 #[test]
@@ -53654,8 +53657,9 @@ fn every_config_load_site_answers_the_migration_policy() {
         .collect();
     assert_eq!(
         direct,
-        ["cmd_init"],
-        "the gate runs above every command boundary, and init is the one verb that runs it itself"
+        ["gate_document_for_run"],
+        "the gate runs above every command boundary; a verb gating another document goes \
+         through `gate_document_for_run`, which hands its answer to the run"
     );
     let init = workspace_root().join("crates/cfgd/src/cli/init/cmd_init.rs");
     let (_, _, init_body) = file_declarations(&init)
@@ -53668,7 +53672,7 @@ fn every_config_load_site_answers_the_migration_policy() {
     // Two calls: the `Already initialized` return, and the one after the
     // clone or scaffold. Both have to come before the apply reads the file.
     let gates: Vec<usize> = init_body
-        .match_indices("gate_on_load(")
+        .match_indices("gate_document_for_run(")
         .map(|(at, _)| at)
         .collect();
     assert_eq!(
@@ -56935,9 +56939,14 @@ fn reads_a_config_document(line: &str, next: &str) -> bool {
 /// The reason a `// load-ok: <why>` hatch on `line` gives; `None` for a line
 /// with no hatch, or one whose hatch gives no reason.
 fn load_ok_reason(line: &str) -> Option<String> {
-    const HATCH: &str = "load-ok:";
-    let (_, why) = cfgd_core::test_helpers::carries_hatch(line, HATCH)
-        .then(|| line.split_once(HATCH))
+    hatch_reason(line, "load-ok:")
+}
+
+/// The reason a `// <marker> <why>` hatch on `line` gives, if the line carries
+/// that hatch with a reason.
+fn hatch_reason(line: &str, marker: &str) -> Option<String> {
+    let (_, why) = cfgd_core::test_helpers::carries_hatch(line, marker)
+        .then(|| line.split_once(marker))
         .flatten()?;
     Some(why.trim().to_string()).filter(|why| !why.is_empty())
 }
@@ -56980,7 +56989,7 @@ fn the_pre_dispatch_path_loads_the_document_once() {
     let expected: std::collections::BTreeMap<&str, usize> = [
         ("cli/mod.rs", 1),
         ("cli/plugin/mod.rs", 1),
-        ("cli/init/cmd_init.rs", 2),
+        ("cli/config_schema.rs", 1),
         ("cli/init/source.rs", 1),
         ("cli/startup.rs", 1),
     ]
@@ -57180,6 +57189,279 @@ fn every_cli_config_read_goes_through_the_run() {
          `// load-ok: <why>`:\n{}\n\nthe marked reads:\n{}",
         bare.join("\n"),
         hatches.join("\n")
+    );
+}
+
+/// A migration answer the load-time gate held for want of a home is taken off
+/// its document in two places only, both in `config_schema.rs`: the one
+/// recording `cli::finish_run` runs, which drops the answer when the home
+/// refused the run, and `gate_document_for_run`'s handoff of another
+/// document's answer to the run's own. The gate itself runs over the run's
+/// startup document in `main`, or over another document inside that handoff;
+/// a gate anywhere else would hold an answer nothing records.
+#[test]
+fn a_held_migration_answer_is_taken_only_by_the_one_recording_and_the_gate_handoff() {
+    use cfgd_core::test_helpers::{
+        calls_free_fn, code_line, file_declarations, rust_sources_under,
+    };
+    let root = cfgd_core::test_helpers::workspace_root().join("crates/cfgd/src");
+    let mut takers = Vec::new();
+    let mut gates = Vec::new();
+    for path in rust_sources_under(&root) {
+        let rel = cfgd_core::to_posix_string(path.strip_prefix(&root).expect("under the root"));
+        for (name, _, body) in file_declarations(&path) {
+            let code: String = body.lines().map(|line| code_line(line) + "\n").collect();
+            if code.contains(".take_migration_answer(") {
+                takers.push(format!("{rel}::{name}"));
+            }
+            if name != "gate_on_load" && calls_free_fn(&code, "gate_on_load") {
+                gates.push(format!("{rel}::{name}"));
+            }
+        }
+    }
+    takers.sort();
+    gates.sort();
+    assert_eq!(
+        takers,
+        [
+            "cli/config_schema.rs::gate_document_for_run",
+            "cli/config_schema.rs::record_held_answer_after_run",
+        ],
+        "record a held migration answer through `config_schema::record_held_answer_after_run`, \
+         or hand it to the run through `config_schema::gate_document_for_run`"
+    );
+    assert_eq!(
+        gates,
+        [
+            "cli/config_schema.rs::gate_document_for_run",
+            "main.rs::gated_run"
+        ],
+        "gate a document other than the run's startup document through \
+         `config_schema::gate_document_for_run`, which hands its answer to the run"
+    );
+}
+
+/// One call that ends the process, found by [`process_exits_under`]: where it
+/// sits, the function it sits in, and the reason its `// exit-ok: <why>` hatch
+/// gives (`None` when unmarked).
+#[derive(Debug, PartialEq)]
+struct ProcessExit {
+    at: String,
+    function: Option<String>,
+    why: Option<String>,
+}
+
+/// The functions that end the process: `std::process::exit` and
+/// `ExitCode::exit`, `std::process::abort`, and `libc::_exit`.
+const PROCESS_ENDERS: [&str; 3] = ["exit", "abort", "_exit"];
+
+/// The marker in `main.rs` above which an exit runs before the migration gate.
+const GATE_BOUNDARY: &str = "// gate-boundary:";
+
+/// Whether a CODE line can end the process: a `.exit(` call (`ExitCode::exit`,
+/// the rendered error's `exit`); a path naming an ender, called or bound as a
+/// function pointer (`std::process::exit(`, `let f = process::abort;`); a bare
+/// call of one; or a `use` that imports one, which is how an alias
+/// (`use std::process::exit as quit;`) reaches a call no other shape names. A
+/// function named `exit` being declared is not a call.
+fn ends_the_process(code: &str) -> bool {
+    let ident = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    // `name` as a whole word that is the item itself, so the module in
+    // `cfgd_core::exit::ExitCode` is not the function `exit`.
+    let item_at = |at: usize, name: &str| {
+        let rest = &code[at + name.len()..];
+        !code[..at].ends_with(ident) && !rest.starts_with(ident) && !rest.starts_with("::")
+    };
+    let names_item = |name: &str, after_path: bool| {
+        code.match_indices(name)
+            .any(|(at, _)| item_at(at, name) && (!after_path || code[..at].ends_with("::")))
+    };
+    let imports_ender = code.trim_start().starts_with("use ")
+        && PROCESS_ENDERS.iter().any(|name| names_item(name, false));
+    code.contains(".exit(")
+        || imports_ender
+        || PROCESS_ENDERS.iter().any(|name| {
+            names_item(name, true)
+                || (cfgd_core::test_helpers::calls_free_fn(code, name)
+                    && !code.contains(&format!("fn {name}(")))
+        })
+}
+
+/// Every call that ends the process in the production code under `root`.
+fn process_exits_under(root: &Path) -> Vec<ProcessExit> {
+    use cfgd_core::test_helpers::{
+        code_line, declared_fn_name, floored_production_body, opens_function, rust_sources_under,
+        test_region_mask, walked_file_body,
+    };
+    let mut exits = Vec::new();
+    for file in rust_sources_under(root) {
+        let rel = cfgd_core::to_posix_string(file.strip_prefix(root).unwrap_or(&file));
+        if floored_production_body(&file).is_empty() {
+            continue;
+        }
+        // unfloored-slice-ok: the mask blanks test regions in place, so line numbers stay true.
+        let raw = walked_file_body(&file);
+        let lines: Vec<&str> = raw.lines().collect();
+        let mask = test_region_mask(&raw);
+        let mut function = None;
+        // `main.rs` runs the migration gate: what it runs above the boundary
+        // holds no answer to record.
+        let mut before_gate = rel == "main.rs";
+        for (i, (line, test)) in lines.iter().zip(mask.lines()).enumerate() {
+            let code = code_line(line);
+            if opens_function(&code) {
+                function = declared_fn_name(&code);
+            }
+            if before_gate && line.trim_start().starts_with(GATE_BOUNDARY) {
+                before_gate = false;
+            }
+            if before_gate || !test.is_empty() || !ends_the_process(&code) {
+                continue;
+            }
+            let why = hatch_reason(line, "exit-ok:").or_else(|| {
+                i.checked_sub(1)
+                    .and_then(|p| hatch_reason(lines[p], "exit-ok:"))
+            });
+            exits.push(ProcessExit {
+                at: format!("{rel}:{}", i + 1),
+                function: function.clone(),
+                why,
+            });
+        }
+    }
+    exits
+}
+
+/// A verb never ends the process itself: it returns `cli::reported_exit(code)`
+/// and `cli::finish_run` exits, after recording the migration answer the run
+/// holds. An exit anywhere else in `crates/cfgd/src` would skip that
+/// recording, so the only exits are `finish_run`'s, those in `main.rs` above
+/// its `// gate-boundary:` marker, and a site marked `// exit-ok: <why>`,
+/// which runs before the gate and holds no answer.
+#[test]
+fn every_process_exit_after_the_gate_passes_through_finish_run() {
+    let root = cfgd_core::test_helpers::workspace_root().join("crates/cfgd/src");
+    let main = cfgd_core::test_helpers::production_slice_of(&root.join("main.rs"));
+    let boundary = main
+        .lines()
+        .position(|line| line.trim_start().starts_with(GATE_BOUNDARY))
+        .expect("main.rs marks where its migration gate begins with `// gate-boundary:`");
+    let gate = main
+        .lines()
+        .position(|line| cfgd_core::test_helpers::calls_free_fn(line, "gate_on_load"))
+        .expect("main.rs runs the migration gate");
+    assert!(
+        boundary < gate,
+        "main.rs's `// gate-boundary:` (line {}) sits below its gate (line {}), so an exit \
+         after the gate is exempt",
+        boundary + 1,
+        gate + 1
+    );
+    let exits = process_exits_under(&root);
+    assert!(
+        exits
+            .iter()
+            .any(|e| e.at.starts_with("cli/mod.rs:") && e.function.as_deref() == Some("finish_run")),
+        "the walk found no exit in `finish_run`, so it proves nothing: {exits:?}"
+    );
+    assert!(
+        exits.iter().any(|e| e.why.is_some()),
+        "the walk found none of the marked exits, so it proves nothing: {exits:?}"
+    );
+    let bare: Vec<String> = exits
+        .iter()
+        .filter(|e| {
+            e.why.is_none()
+                && !(e.at.starts_with("cli/mod.rs:") && e.function.as_deref() == Some("finish_run"))
+        })
+        .map(|e| format!("{} (in {})", e.at, e.function.as_deref().unwrap_or("?")))
+        .collect();
+    let marked: Vec<String> = exits
+        .iter()
+        .filter_map(|e| Some(format!("{}: {}", e.at, e.why.as_deref()?)))
+        .collect();
+    assert!(
+        bare.is_empty(),
+        "return `cli::reported_exit(code)` so `finish_run` records the held answer \
+         before exiting, or mark a pre-gate site `// exit-ok: <why>`:\n{}\n\nthe marked exits:\n{}",
+        bare.join("\n"),
+        marked.join("\n")
+    );
+}
+
+/// The walk behind the pin above, one fixture per outcome: each call shape is
+/// found with its function, a hatch above or on the line gives its reason, a
+/// declaration, a method merely named like an ender and a call in a test module
+/// are skipped, and `main.rs` is judged only below its `// gate-boundary:`.
+#[test]
+fn the_process_exit_walk_judges_each_outcome() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::write(
+        dir.path().join("a.rs"),
+        "fn method() {\n    ExitCode::Error.exit();\n}\n\
+         fn path() {\n    // exit-ok: before the gate\n    std::process::exit(1);\n}\n\
+         fn bare() {\n    exit(2); // exit-ok: no answer held\n}\n\
+         fn exit(code: i32) {}\n\
+         fn quiet() {\n    let code = render.exit_code();\n    handle.abort();\n}\n\
+         #[cfg(test)]\nmod tests {\n    fn t() {\n        std::process::exit(0);\n    }\n}\n",
+    )
+    .expect("write fixture");
+    std::fs::write(
+        dir.path().join("b.rs"),
+        "use std::process::exit as quit;\n\
+         use std::process::{self, exit as leave};\n\
+         fn pointer() {\n    let end: fn(i32) -> ! = std::process::exit;\n}\n\
+         fn aborts() {\n    std::process::abort();\n}\n\
+         fn raw() {\n    unsafe { libc::_exit(3) };\n}\n\
+         use std::process::ExitStatus;\n\
+         use cfgd_core::exit::ExitCode;\n",
+    )
+    .expect("write fixture");
+    std::fs::write(
+        dir.path().join("main.rs"),
+        "fn main() {\n    e.exit();\n    // gate-boundary: below runs after the gate\n    gate_on_load();\n    ExitCode::Error.exit();\n}\n",
+    )
+    .expect("write fixture");
+    let at = |at: &str, function: Option<&str>| ProcessExit {
+        at: at.to_string(),
+        function: function.map(str::to_string),
+        why: None,
+    };
+    let mut found = process_exits_under(dir.path());
+    found.retain(|e| !e.at.starts_with("a.rs:"));
+    assert_eq!(
+        found,
+        vec![
+            at("b.rs:1", None),
+            at("b.rs:2", None),
+            at("b.rs:4", Some("pointer")),
+            at("b.rs:7", Some("aborts")),
+            at("b.rs:10", Some("raw")),
+            at("main.rs:5", Some("main")),
+        ]
+    );
+    assert_eq!(
+        process_exits_under(dir.path())
+            .into_iter()
+            .filter(|e| e.at.starts_with("a.rs:"))
+            .collect::<Vec<_>>(),
+        vec![
+            ProcessExit {
+                at: "a.rs:2".to_string(),
+                function: Some("method".to_string()),
+                why: None,
+            },
+            ProcessExit {
+                at: "a.rs:6".to_string(),
+                function: Some("path".to_string()),
+                why: Some("before the gate".to_string()),
+            },
+            ProcessExit {
+                at: "a.rs:9".to_string(),
+                function: Some("bare".to_string()),
+                why: Some("no answer held".to_string()),
+            },
+        ]
     );
 }
 
@@ -58442,6 +58724,39 @@ fn home_refusal_population(sources: &[&std::path::Path]) -> std::collections::BT
     }
 }
 
+/// The role an `expand_tilde(path, role)` call passes, read off the text
+/// between its parentheses (`raw`, and `code`, its [`blank_non_code`] twin):
+/// the value of a string literal, or of the `const` it names.
+///
+/// [`blank_non_code`]: cfgd_core::test_helpers::blank_non_code
+fn expansion_role(
+    raw: &str,
+    code: &str,
+    consts: &std::collections::BTreeMap<String, String>,
+) -> Option<String> {
+    let mut depth = 0i32;
+    let (comma, _) = code.char_indices().find(|&(_, c)| {
+        match c {
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' => depth -= 1,
+            ',' if depth == 0 => return true,
+            _ => {}
+        }
+        false
+    })?;
+    let (raw, code) = (&raw[comma + 1..], &code[comma + 1..]);
+    if let [value] = string_literal_values(raw, code).as_slice() {
+        return Some(value.clone());
+    }
+    let name = code
+        .trim()
+        .trim_end_matches(',')
+        .trim()
+        .rsplit("::")
+        .next()?;
+    consts.get(name).cloned()
+}
+
 /// With no home directory, no path cfgd uses spells a literal `~`, and no
 /// root cfgd writes under falls back to a second location.
 ///
@@ -58459,9 +58774,18 @@ fn home_refusal_population(sources: &[&std::path::Path]) -> std::collections::BT
 /// home genuinely means "no such location" (a probe, a display cell, a config
 /// path left for discovery to refuse) carries `// home-optional-ok: <why>` on
 /// the call's line or in the comment run above its statement.
+///
+/// The same calls derive the home-refusal slots: every `expand_tilde(path,
+/// role)` passes its role as a literal or a `const`, and each role either
+/// names a question through
+/// [`HOME_REFUSAL_SLOTS`](cfgd_core::reconciler::HOME_REFUSAL_SLOTS), whose
+/// slots the store population pin runs one by one, or carries
+/// `// home-refusal-ok: <why>` saying why no question asks it before the run
+/// writes. A table row no call passes is stale.
 #[test]
 fn no_production_caller_drops_a_home_refusal_for_a_fallback() {
     const HATCH: &str = "home-optional-ok:";
+    const ROLE_HATCH: &str = "home-refusal-ok:";
     const DROPPED: &[&str] = &[
         ".ok()",
         ".unwrap_or",
@@ -58514,6 +58838,13 @@ fn no_production_caller_drops_a_home_refusal_for_a_fallback() {
          longer follows a wrapper it must find"
     );
     let calls_of: Vec<String> = population.iter().map(|name| format!("{name}(")).collect();
+    let consts = str_consts(per_root.iter().flat_map(|(_, files)| files.iter()));
+    let slot_roles: std::collections::BTreeSet<&str> = cfgd_core::reconciler::HOME_REFUSAL_SLOTS
+        .iter()
+        .map(|(role, _, _)| *role)
+        .collect();
+    let mut roles_seen = std::collections::BTreeSet::new();
+    let mut unmapped = Vec::new();
     let mut offenders = Vec::new();
     let mut short = Vec::new();
     let mut hatched = 0usize;
@@ -58523,14 +58854,14 @@ fn no_production_caller_drops_a_home_refusal_for_a_fallback() {
             let rel = path.to_string_lossy().replace('\\', "/");
             let code = cfgd_core::test_helpers::blank_non_code(production);
             let raw: Vec<&str> = production.lines().collect();
-            let hatch_covers = |line: usize| -> bool {
-                if cfgd_core::test_helpers::carries_hatch(raw[line], HATCH) {
+            let hatch_covers = |line: usize, hatch: &str| -> bool {
+                if cfgd_core::test_helpers::carries_hatch(raw[line], hatch) {
                     return true;
                 }
                 for above in raw[..line].iter().rev() {
                     let trimmed = above.trim();
                     if trimmed.starts_with("//") {
-                        if cfgd_core::test_helpers::carries_hatch(above, HATCH) {
+                        if cfgd_core::test_helpers::carries_hatch(above, hatch) {
                             return true;
                         }
                         continue;
@@ -58538,7 +58869,7 @@ fn no_production_caller_drops_a_home_refusal_for_a_fallback() {
                     if trimmed.is_empty() || trimmed.ends_with([';', '{', '}', ',']) {
                         return false;
                     }
-                    if cfgd_core::test_helpers::carries_hatch(above, HATCH) {
+                    if cfgd_core::test_helpers::carries_hatch(above, hatch) {
                         return true;
                     }
                 }
@@ -58574,6 +58905,24 @@ fn no_production_caller_drops_a_home_refusal_for_a_fallback() {
                 let Some(close) = close else {
                     continue;
                 };
+                if call == "expand_tilde(" {
+                    let line = head.matches('\n').count();
+                    match expansion_role(&production[open..close], &code[open..close], &consts) {
+                        Some(role) => {
+                            if !slot_roles.contains(role.as_str())
+                                && !hatch_covers(line, ROLE_HATCH)
+                            {
+                                unmapped.push(format!("{rel}:{}: `{role}`", line + 1));
+                            }
+                            roles_seen.insert(role);
+                        }
+                        None => unmapped.push(format!(
+                            "{rel}:{}: a role spelled neither as a literal nor as a `const`: {}",
+                            line + 1,
+                            raw[line].trim()
+                        )),
+                    }
+                }
                 let tail: String = code[close + 1..]
                     .chars()
                     .filter(|c| !c.is_whitespace())
@@ -58587,7 +58936,7 @@ fn no_production_caller_drops_a_home_refusal_for_a_fallback() {
                     continue;
                 }
                 let line = head.matches('\n').count();
-                if hatch_covers(line) {
+                if hatch_covers(line, HATCH) {
                     hatched += 1;
                     continue;
                 }
@@ -58619,6 +58968,21 @@ fn no_production_caller_drops_a_home_refusal_for_a_fallback() {
     assert!(
         hatched >= 1,
         "no hatched call was found, so the walk no longer reads the comments it judges"
+    );
+    let stale: Vec<&&str> = slot_roles
+        .iter()
+        .filter(|role| !roles_seen.contains(**role))
+        .collect();
+    assert!(
+        stale.is_empty(),
+        "HOME_REFUSAL_SLOTS names roles no production `expand_tilde` call passes: {stale:?}"
+    );
+    assert!(
+        unmapped.is_empty(),
+        "an `expand_tilde` role neither names a home-refusal slot in HOME_REFUSAL_SLOTS (with \
+         its fixture in the store population pin's LONE_SLOTS) nor carries \
+         `// {ROLE_HATCH} <why no question asks it before the run writes>`:\n{}",
+        unmapped.join("\n")
     );
     assert!(
         offenders.is_empty(),

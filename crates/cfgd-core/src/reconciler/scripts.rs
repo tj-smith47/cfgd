@@ -316,7 +316,7 @@ fn resolve_script_workdir(
             .find(|(k, _)| k == name)
             .map(|(_, v)| v.clone())
     });
-    crate::expand_tilde(std::path::Path::new(&expanded), "script workdir")
+    crate::expand_tilde(std::path::Path::new(&expanded), crate::SCRIPT_WORKDIR_ROLE)
 }
 
 /// What one [`execute_script`] invocation renders as its status subject.
@@ -1346,7 +1346,7 @@ fn resolve_creates_path(
     path: &str,
     working_dir: &std::path::Path,
 ) -> crate::errors::Result<std::path::PathBuf> {
-    let expanded = crate::expand_tilde(std::path::Path::new(path), "creates guard")?;
+    let expanded = crate::expand_tilde(std::path::Path::new(path), crate::CREATES_GUARD_ROLE)?;
     Ok(if expanded.is_relative() {
         working_dir.join(expanded)
     } else {

@@ -421,7 +421,7 @@ pub(crate) fn init_windows_logging() {
 
     let file_layer = tracing_subscriber::fmt::layer()
         // long-line-ok: a hatch is read off its own line, so it cannot wrap
-        // unfolded-writer-ok: a log FILE the service writes under its own state dir, never a terminal
+        // unfolded-writer-ok: a log FILE the service writes under its own state dir, which no terminal shows
         .with_writer(std::sync::Mutex::new(file))
         .with_ansi(false)
         .with_target(false);

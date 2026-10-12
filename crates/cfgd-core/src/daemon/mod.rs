@@ -358,6 +358,8 @@ pub fn resolve_default_ipc_path(
     scope: crate::Scope,
 ) -> Result<PathBuf> {
     if let Some(override_path) = std::env::var_os(crate::CFGD_DAEMON_IPC_PATH_ENV) {
+        // home-refusal-ok: the daemon's socket: the daemon refuses it at start and a client probe
+        // reads no home as no daemon
         return crate::expand_tilde(Path::new(&override_path), "daemon socket");
     }
     #[cfg(unix)]
@@ -1635,7 +1637,7 @@ pub(super) fn print_startup_banner(
     cfgd_version: &str,
 ) {
     tracing::info!("daemon: starting cfgd {cfgd_version}");
-    tracing::info!("daemon: health endpoint at {ipc_path}"); // native-ok: journal line, not a display slot
+    tracing::info!("daemon: health endpoint at {ipc_path}"); // native-ok: a journal line, read by people
     tracing::info!("daemon: running — {}", intervals.join(", "));
     if printer.can_prompt() {
         // terminal-row-ok: a terminal answered, so there is a reader for it

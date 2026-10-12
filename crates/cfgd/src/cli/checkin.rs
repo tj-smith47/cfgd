@@ -74,7 +74,7 @@ pub fn cmd_checkin(
                 &compliance_cfg.scope,
                 &[],
                 printer,
-                checkin_state,
+                || Ok(checkin_state),
                 Some(system_diffs.get_or_init(diff_system)),
             ) {
                 Ok(snapshot) => {
@@ -658,7 +658,7 @@ spec:
         let cli = test_cli_for(root, state_dir.path());
 
         let (quiet, _) = Printer::for_test_doc();
-        let (_, collected) =
+        let collected =
             super::super::compliance::collect_and_store_compliance_snapshot(&RunContext::new(
                 &cli,
                 &quiet,

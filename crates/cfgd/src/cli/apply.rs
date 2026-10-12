@@ -140,18 +140,20 @@ pub fn cmd_apply(run: &RunContext<'_>, args: &ApplyArgs) -> anyhow::Result<()> {
     // the signal-conventional code so wrappers see the interruption. The abort
     // message + structured payload are already flushed by `run_apply`.
     if let Some(code) = outcome.aborted_code {
-        std::process::exit(code as i32);
+        return Err(crate::cli::reported_exit(code));
     }
 
     // A partial or total apply failure must surface as a nonzero exit so CI `&&`
     // chains and the daemon don't treat a broken apply as success. The structured
-    // payload is already flushed by `run_apply`; exit directly (mirrors
-    // status/diff/upgrade) so render_cli_error doesn't double-print a failure line.
+    // payload is already flushed by `run_apply`, so the exit renders no second
+    // failure line (mirrors status/diff/upgrade).
     if matches!(
         outcome.status,
         cfgd_core::state::ApplyStatus::Partial | cfgd_core::state::ApplyStatus::Failed
     ) {
-        cfgd_core::exit::ExitCode::ApplyFailed.exit();
+        return Err(crate::cli::reported_exit(
+            cfgd_core::exit::ExitCode::ApplyFailed,
+        ));
     }
 
     Ok(())
@@ -208,9 +210,8 @@ pub(super) fn refuse_with_profile_without_module(
 ///
 /// Non-apply terminal paths (dry-run, aborted-confirmation, nothing-to-do)
 /// report [`cfgd_core::state::ApplyStatus::Success`] with no abort code — they did not run
-/// actions, so they never warrant a failure exit. Keeping the exit decision in
-/// `cmd_apply` lets in-process tests capture the rendered failure shape without
-/// `process::exit` aborting the harness.
+/// actions, so they never warrant a failure exit. The exit decision stays in
+/// `cmd_apply`, so a test reads the outcome itself.
 pub fn run_apply(run: &RunContext<'_>, args: &ApplyArgs) -> anyhow::Result<ApplyOutcome> {
     let printer = run.printer();
     // Parsed before anything is read, so a misspelled `--context` is refused

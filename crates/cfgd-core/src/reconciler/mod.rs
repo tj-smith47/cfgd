@@ -41,7 +41,10 @@ pub use adopt::{
 pub use apply::{
     action_matches_phase_filter, action_produced_detail, render_caveats, widest_produced_detail,
 };
-pub use env::{ModuleHomeUse, recorded_manager_path_dirs, unresolved_home_refusal};
+pub use env::{
+    HOME_REFUSAL_SLOTS, HomeQuestioner, ModuleHomeUse, recorded_manager_path_dirs,
+    unresolved_home_refusal,
+};
 pub use env_engine::{
     ENV_VERB_INJECT, ENV_VERB_WRITE, MACOS_SYSTEM_ENV_SOURCE_LINE, ManagerPathDir,
     interactive_rc_path, launchd_env_plist, recorded_env_method,

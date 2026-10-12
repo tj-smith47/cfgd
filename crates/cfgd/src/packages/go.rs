@@ -101,6 +101,8 @@ pub(super) fn go_bin_dir() -> Result<PathBuf> {
 fn fallback_go_bin_dir() -> Result<PathBuf> {
     let gopath = match std::env::var("GOPATH") {
         Ok(gopath) => PathBuf::from(gopath),
+        // home-refusal-ok: the toolchain answers this path at run time (no GOBIN or GOPATH);
+        // a failure is reported on its install action
         Err(_) => cfgd_core::expand_tilde(std::path::Path::new("~/go"), "Go binary directory")?,
     };
     Ok(gopath.join("bin"))

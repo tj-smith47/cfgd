@@ -26349,7 +26349,7 @@ fn a_lane_worker_blocks_behind_an_exclusively_held_path_lock() {
         .with_modules(modules)
         .run(move || {
             // long-line-ok: a hatch is read off its own line, so it cannot wrap
-            // sleep-ok: correctness here comes from the still-held write guard, not the duration — this only gives a correctly-guarded worker room to reach and block on it
+            // sleep-ok: correctness here comes from the still-held write guard; the duration only gives a correctly-guarded worker room to reach and block on it
             std::thread::sleep(std::time::Duration::from_millis(150));
             assert!(
                 dispatch_log(&drive_log).is_empty(),
@@ -35600,6 +35600,38 @@ fn a_desired_state_asks_for_a_home_exactly_when_it_writes_under_one() {
         Some(crate::errors::StateError::EnvHomeUnresolved { .. })
     ));
 
+    let backup = |yaml: &str| {
+        let mut resolved = make_empty_resolved();
+        resolved
+            .merged
+            .backups
+            .push(serde_yaml::from_str(yaml).unwrap());
+        super::unresolved_home_refusal(None, &resolved.merged, [], None)
+    };
+    assert!(
+        matches!(
+            backup("name: dots\nsource: ~/dotfiles\ndestination: /srv/bk"),
+            Some(crate::errors::StateError::HomeUnresolved { .. })
+        ),
+        "a backup `apply` snapshots expands its `~` source"
+    );
+    assert!(
+        matches!(
+            backup("name: dots\nsource: /srv/dotfiles\ndestination: ~/bk"),
+            Some(crate::errors::StateError::HomeUnresolved { .. })
+        ),
+        "a backup `apply` snapshots expands its `~` destination"
+    );
+    assert!(
+        backup("name: dots\nsource: ~/dotfiles\ndestination: /srv/bk\nschedule: \"0 3 * * *\"")
+            .is_none(),
+        "a scheduled backup is the daemon's, and `apply` never expands it"
+    );
+    assert!(
+        backup("name: dots\nsource: /srv/dotfiles\ndestination: /srv/bk").is_none(),
+        "absolute backup paths need no home"
+    );
+
     let mut module_env = make_resolved_module("tools");
     module_env.env.push(env_var("EDITOR"));
     assert!(matches!(
@@ -35663,16 +35695,13 @@ fn a_secret_decrypted_with_a_key_under_the_missing_home_refuses() {
         backend: None,
         envs: None,
     };
+    let mut homeless_key = ProviderRegistry::new();
+    homeless_key.secret_backend = Some(Box::new(HomelessKeyTestBackend));
     let mut decrypted = make_empty_resolved();
     decrypted.merged.secrets.push(secret("secrets/token.enc"));
     assert!(
         matches!(
-            super::unresolved_home_refusal(
-                None,
-                &decrypted.merged,
-                [],
-                Some(&HomelessKeyTestBackend)
-            ),
+            super::unresolved_home_refusal(None, &decrypted.merged, [], Some(&homeless_key)),
             Some(crate::errors::StateError::HomeUnresolved {
                 role: "age key",
                 ..
@@ -35691,14 +35720,243 @@ fn a_secret_decrypted_with_a_key_under_the_missing_home_refuses() {
         .secrets
         .push(secret("vault://secret/data/github#token"));
     assert!(
+        super::unresolved_home_refusal(None, &resolved_by_provider.merged, [], Some(&homeless_key))
+            .is_none(),
+        "a provider reference never reaches the backend's key"
+    );
+}
+
+fn script(yaml: &str) -> crate::config::ScriptEntry {
+    serde_yaml::from_str(yaml).unwrap()
+}
+
+#[test]
+#[serial_test::serial]
+fn a_script_the_apply_runs_refuses_a_home_workdir_or_creates_guard() {
+    let _env = no_home_env();
+    let refusal_of = |resolved: &ResolvedProfile, modules: &[ResolvedModule]| {
         super::unresolved_home_refusal(
             None,
-            &resolved_by_provider.merged,
-            [],
-            Some(&HomelessKeyTestBackend)
+            &resolved.merged,
+            modules.iter().map(super::ModuleHomeUse::from),
+            None,
         )
-        .is_none(),
-        "a provider reference never reaches the backend's key"
+    };
+    let role_of = |refusal| match refusal {
+        Some(crate::errors::StateError::HomeUnresolved { role, .. }) => Some(role),
+        _ => None,
+    };
+    type Hook = fn(&mut crate::config::ScriptSpec) -> &mut Vec<crate::config::ScriptEntry>;
+    let apply_hooks: [(&str, Hook); 3] = [
+        ("preApply", |s| &mut s.pre_apply),
+        ("postApply", |s| &mut s.post_apply),
+        ("onChange", |s| &mut s.on_change),
+    ];
+    for (hook, entries) in apply_hooks {
+        for (field, role) in [
+            ("workdir", crate::SCRIPT_WORKDIR_ROLE),
+            ("creates", crate::CREATES_GUARD_ROLE),
+        ] {
+            let entry = script(&format!("run: \"true\"\n{field}: ~/x"));
+            let mut profile = make_empty_resolved();
+            entries(&mut profile.merged.scripts).push(entry.clone());
+            assert_eq!(
+                role_of(refusal_of(&profile, &[])),
+                Some(role),
+                "a profile {hook} entry's `~` {field}"
+            );
+            let mut module = make_resolved_module("tools");
+            match hook {
+                "preApply" => module.pre_apply_scripts.push(entry),
+                "postApply" => module.post_apply_scripts.push(entry),
+                _ => module.on_change_scripts.push(entry),
+            }
+            assert_eq!(
+                role_of(refusal_of(&make_empty_resolved(), &[module])),
+                Some(role),
+                "a module {hook} entry's `~` {field}"
+            );
+        }
+    }
+
+    let mut reconcile_only = make_empty_resolved();
+    for entries in [
+        &mut reconcile_only.merged.scripts.pre_reconcile,
+        &mut reconcile_only.merged.scripts.post_reconcile,
+        &mut reconcile_only.merged.scripts.on_drift,
+    ] {
+        entries.push(script("run: \"true\"\nworkdir: ~/x"));
+    }
+    assert!(
+        refusal_of(&reconcile_only, &[]).is_none(),
+        "an apply never runs a reconcile hook"
+    );
+    let mut settled = make_empty_resolved();
+    settled.merged.scripts.post_apply.extend([
+        script("\"true\""),
+        script("run: \"true\"\nworkdir: /srv\ncreates: /srv/done"),
+    ]);
+    assert!(
+        refusal_of(&settled, &[]).is_none(),
+        "a bare entry and absolute paths need no home"
+    );
+
+    let mut installs = make_resolved_module("tools");
+    installs.packages.push(crate::modules::ResolvedPackage {
+        canonical_name: "thing".into(),
+        resolved_name: "thing".into(),
+        manager: crate::SCRIPT_SENTINEL.into(),
+        manager_declared: true,
+        version: None,
+        script: Some("true".into()),
+        creates: Some("~/.local/bin/thing".into()),
+        only_if: None,
+        unless: None,
+        min_version: None,
+    });
+    assert_eq!(
+        role_of(refusal_of(&make_empty_resolved(), &[installs])),
+        Some(crate::CREATES_GUARD_ROLE),
+        "a module package's install script checks its `creates` guard"
+    );
+}
+
+/// A module read off disk counts a package's install `creates:` guard
+/// whenever `script` is one of the managers it prefers, wherever it stands
+/// in the list, since which entry resolution settles on depends on the host.
+#[test]
+fn an_unresolved_module_counts_the_creates_guard_of_any_package_preferring_its_script() {
+    let platform = crate::platform::Platform::current();
+    let loaded = |prefer: &str| {
+        crate::modules::LoadedModule {
+        version: None,
+        name: "tools".into(),
+        spec: serde_yaml::from_str(&format!(
+            "packages:\n  - name: thing\n    prefer: {prefer}\n    script: \"true\"\n    creates: ~/.local/bin/thing\n"
+        ))
+        .unwrap(),
+        dir: std::path::PathBuf::from("/fake/tools"),
+        origin: None,
+    }
+    };
+    for prefer in ["[script]", "[brew, script]", "[apt, brew, script]"] {
+        let module = loaded(prefer);
+        assert_eq!(
+            super::ModuleHomeUse::of_loaded(&module, platform).install_creates,
+            vec!["~/.local/bin/thing"],
+            "prefer: {prefer}"
+        );
+    }
+    let module = loaded("[brew, apt]");
+    assert!(
+        super::ModuleHomeUse::of_loaded(&module, platform)
+            .install_creates
+            .is_empty(),
+        "a package that never prefers its script installs through a manager"
+    );
+}
+
+/// A configurator whose declared paths sit under the missing home.
+struct HomelessPathConfigurator {
+    available: bool,
+    tool: Option<&'static str>,
+}
+
+impl crate::providers::SystemConfigurator for HomelessPathConfigurator {
+    fn name(&self) -> &str {
+        "homelessPaths"
+    }
+    fn is_available(&self) -> bool {
+        self.available
+    }
+    fn required_tool(&self) -> Option<&'static str> {
+        self.tool
+    }
+    fn current_state(&self) -> Result<serde_yaml::Value> {
+        Ok(serde_yaml::Value::Null)
+    }
+    fn diff(&self, _desired: &serde_yaml::Value) -> Result<Vec<crate::providers::SystemDrift>> {
+        Ok(Vec::new())
+    }
+    fn apply(
+        &self,
+        _desired: &serde_yaml::Value,
+        _cx: &crate::providers::SystemContext<'_>,
+    ) -> Result<()> {
+        Ok(())
+    }
+    fn home_refusal(&self, desired: &serde_yaml::Value) -> Option<crate::errors::StateError> {
+        crate::home_refusal_of(crate::expand_tilde(
+            std::path::Path::new(desired.as_str()?),
+            "test path",
+        ))
+    }
+}
+
+#[test]
+#[serial_test::serial]
+fn a_system_configurator_the_run_drives_refuses_its_home_paths() {
+    let _env = no_home_env();
+    let registry_of = |available: bool, tool: Option<&'static str>| {
+        let mut registry = ProviderRegistry::new();
+        registry.add_system_configurator(Box::new(HomelessPathConfigurator { available, tool }));
+        registry
+    };
+    let mut profile = make_empty_resolved();
+    profile
+        .merged
+        .system
+        .insert("homelessPaths".into(), serde_yaml::Value::from("~/x"));
+    let refuses =
+        |registry: &ProviderRegistry, resolved: &ResolvedProfile, modules: &[ResolvedModule]| {
+            matches!(
+                super::unresolved_home_refusal(
+                    None,
+                    &resolved.merged,
+                    modules.iter().map(super::ModuleHomeUse::from),
+                    Some(registry),
+                ),
+                Some(crate::errors::StateError::HomeUnresolved {
+                    role: "test path",
+                    ..
+                })
+            )
+        };
+    assert!(
+        refuses(&registry_of(true, None), &profile, &[]),
+        "an available configurator"
+    );
+    assert!(
+        refuses(&registry_of(false, Some("tool")), &profile, &[]),
+        "a configurator whose tool the bootstrap installs first"
+    );
+    assert!(
+        !refuses(&registry_of(false, None), &profile, &[]),
+        "a configurator this host can never run plans a skip"
+    );
+    let mut module = make_resolved_module("tools");
+    module
+        .system
+        .insert("homelessPaths".into(), serde_yaml::Value::from("~/x"));
+    assert!(
+        refuses(
+            &registry_of(true, None),
+            &make_empty_resolved(),
+            &[module.clone()]
+        ),
+        "a module's own settings"
+    );
+    let mut absolute = make_empty_resolved();
+    absolute
+        .merged
+        .system
+        .insert("homelessPaths".into(), serde_yaml::Value::from("~/x"));
+    module
+        .system
+        .insert("homelessPaths".into(), serde_yaml::Value::from("/srv/x"));
+    assert!(
+        !refuses(&registry_of(true, None), &absolute, &[module]),
+        "a module value overrides the profile's the way the planner merges them"
     );
 }
 

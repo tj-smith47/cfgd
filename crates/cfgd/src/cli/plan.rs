@@ -1,8 +1,8 @@
 use super::*;
 
 // no-header-ok: same as apply — `reconciler::ApplyRun` renders the header
-// once the plan is final, so the profile label is carried down rather than
-// printed here.
+// once the plan is final, so the profile label is carried down to it and
+// printed there.
 pub fn cmd_plan(run: &RunContext<'_>, args: &PlanArgs) -> anyhow::Result<()> {
     let printer = run.printer();
     let reconcile_context = super::apply::parse_reconcile_context(&args.context)?;

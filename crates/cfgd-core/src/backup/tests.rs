@@ -1810,7 +1810,7 @@ fn a_concurrent_run_of_one_unit_is_refused_and_the_in_flight_snapshot_stays_whol
             std::time::Instant::now() < deadline,
             "the first run's preBackup hook never started"
         );
-        // sleep-ok: bounded deadline poll on a filesystem side effect, not a fixed-duration guess
+        // sleep-ok: bounded deadline poll on a filesystem side effect; it ends once the file shows
         std::thread::sleep(std::time::Duration::from_millis(20));
     }
 

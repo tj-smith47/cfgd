@@ -1021,8 +1021,8 @@ pub fn resolve_modules(
         .iter()
         .map(|r| resolve_profile_module_name(r).to_string())
         .collect();
-    // tracing-ok: internal resolution-set diagnostic, not user-facing — nothing
-    // else prints the requested module set before dependency order is walked
+    // tracing-ok: internal resolution-set diagnostic, read under RUST_LOG alone;
+    // nothing else prints the requested module set before dependency order is walked
     tracing::debug!(names = ?resolved_names, "resolving modules");
 
     let order = resolve_dependency_order(&resolved_names, &all_modules)

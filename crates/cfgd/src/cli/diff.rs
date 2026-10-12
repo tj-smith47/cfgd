@@ -102,6 +102,10 @@ pub fn cmd_diff(
     let module_cache = module_cache_dir(cli)?;
 
     let (cfg, profile_name, local_resolved) = run.config_and_profile()?;
+    // The live env check below folds the `PATH` line against the home, so a
+    // run with none is refused here, before the state store opens and leaves
+    // a `state.db` behind for a run that read nothing from it.
+    cfgd_core::home_dir()?;
     // Drift is reported under the same owner that would be named in the plan
     // that fixes it, so the two surfaces read as one coordinate system.
     let profile_owner = Owner::profile(profile_name.to_string());
@@ -432,7 +436,7 @@ pub fn cmd_diff(
     printer.emit(build_diff_doc(&diff_payload, DiffScope::Machine));
 
     if exit_code && let Some(code) = diff_exit_code(&diff_payload.summary) {
-        code.exit();
+        return Err(crate::cli::reported_exit(code));
     }
 
     Ok(())
@@ -551,6 +555,10 @@ fn cmd_diff_module(ctx: &RunContext<'_>, mod_name: &str, exit_code: bool) -> any
     let platform = Platform::current();
     let mgr_map = registry.manager_map();
     let cache_base = module_cache_dir(cli)?;
+    // With no home, the store stays closed until the env check below has
+    // asked the home its question: the package queries before it read the
+    // store read-only and record nothing.
+    let store_hold = ctx.hold_store_while_homeless();
     let pkg_cx = ctx.package_context()?;
     // The module resolution can clone a git-sourced module: it is this path's
     // first wait, and the title lands after it, not over it.
@@ -607,7 +615,19 @@ fn cmd_diff_module(ctx: &RunContext<'_>, mod_name: &str, exit_code: bool) -> any
         &cfgd_core::output::HeaderModule::of_isolate(&resolved_modules),
     )?;
 
-    let state = ctx.state()?;
+    let resolved = empty_resolved_profile(&[mod_name.to_string()], &ctx.active_profile_name());
+    // The isolate's own layered view, built once for both halves of the Shell
+    // section: the per-item check and the display recompute read one merge.
+    // The check reads the managed env file under the home whenever the chain
+    // declares env or aliases, so it runs before the store opens: a diff the
+    // home refuses leaves the store as it found it.
+    let layered = cfgd_core::reconciler::LayeredEnv::of(&resolved, &resolved_modules);
+    let check = cfgd_core::reconciler::env_item_verify_results(&layered)?;
+    // The display recompute folds its `PATH` line against the home on every
+    // chain, so it asks before the store opens too. `path_dirs` feeds only
+    // that line, which the scoped check never renders a row for.
+    let merged_env_items = cfgd_core::reconciler::MergedEnvItems::new(&layered, &[])?;
+    let state = store_hold.release()?;
 
     let mut diff_payload = DiffOutput::default();
     // The scoped record's two halves (module doc in `live_drift`): every key
@@ -619,7 +639,6 @@ fn cmd_diff_module(ctx: &RunContext<'_>, mod_name: &str, exit_code: bool) -> any
     let mut findings: Vec<cfgd_core::reconciler::VerifyResult> = Vec::new();
     let mut has_file_diff = false;
     let mut has_pkg_drift = false;
-    let resolved = empty_resolved_profile(&[mod_name.to_string()], &ctx.active_profile_name());
 
     {
         // Mirror the full `cmd_diff` path: the `Files` heading, one
@@ -751,11 +770,6 @@ fn cmd_diff_module(ctx: &RunContext<'_>, mod_name: &str, exit_code: bool) -> any
         // lines and the folded `PATH` line stay the machine-wide walk's — the
         // whole profile's shared artifacts, which one module's fragment can
         // neither vouch for nor blame.
-        // The isolate's own layered view, built once for both halves of this
-        // section: the per-item check and the display recompute below read one
-        // merge.
-        let layered = cfgd_core::reconciler::LayeredEnv::of(&resolved, &resolved_modules);
-        let check = cfgd_core::reconciler::env_item_verify_results(&layered)?;
         // The ONE ownership answer, asked once for the whole block: which
         // layer's declaration each checked name belongs to — the same fold
         // the isolate's merge just applied.
@@ -789,9 +803,6 @@ fn cmd_diff_module(ctx: &RunContext<'_>, mod_name: &str, exit_code: bool) -> any
         }
         let results = env_drift_ordered(owned);
         {
-            // `path_dirs` feeds only the folded `PATH` line, which the scoped
-            // check never renders a row for.
-            let merged_env_items = cfgd_core::reconciler::MergedEnvItems::new(&layered, &[])?;
             // One pass: every finding lands in exactly one bucket — the
             // fold's recorded winner when that token names a chain module,
             // else the module under report (the only module the caller asked
@@ -919,7 +930,7 @@ fn cmd_diff_module(ctx: &RunContext<'_>, mod_name: &str, exit_code: bool) -> any
     printer.emit(build_diff_doc(&diff_payload, DiffScope::Module(mod_name)));
 
     if exit_code && let Some(code) = diff_exit_code(&diff_payload.summary) {
-        code.exit();
+        return Err(crate::cli::reported_exit(code));
     }
 
     Ok(())

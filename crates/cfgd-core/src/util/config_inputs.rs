@@ -97,8 +97,9 @@ fn record_into_frames(path: &Path, unreadable: bool) {
 
 /// Report that `path` is an input of the derivation in flight.
 ///
-/// A no-op when nothing is recording, which is every path but the daemon's
-/// tick derivation. Call it BEFORE the read (and before any existence check),
+/// A no-op when nothing is recording. Two derivations record: the daemon's
+/// tick derivation, and the saved plan `cfgd plan` and `cfgd apply
+/// --dry-run` write. Call it BEFORE the read (and before any existence check),
 /// so a file rewritten between the stamp and the read reads as changed on the
 /// next comparison.
 pub fn record_config_input(path: &Path) {
@@ -129,7 +130,7 @@ pub fn record_config_input_tree(path: &Path) {
 
 fn record_unreadable(path: &Path, error: &std::io::Error) {
     tracing::warn!(
-        path = %path.display(), // native-ok: journal line, not a key
+        path = %path.display(), // native-ok: a journal line, read by people
         error = %error,
         "cannot read a directory input; a saved plan or cached derivation over it reads as stale"
     );

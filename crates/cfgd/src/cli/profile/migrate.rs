@@ -107,11 +107,10 @@ pub fn cmd_profile_migrate(
 ) -> anyhow::Result<()> {
     let failed = run_profile_migrate(cli, printer, name, all, dry_run, yes)?;
     // A scripted consumer must detect per-profile failures from the exit code
-    // alone; the summary Doc is already emitted, so exit directly (mirroring
-    // cmd_source_update) instead of returning an error the central sink would
-    // re-render. Kept out of the core so the body stays unit-testable.
+    // alone; the summary Doc is already emitted, so the exit renders nothing
+    // new (mirroring cmd_source_update).
     if failed > 0 {
-        cfgd_core::exit::ExitCode::Error.exit();
+        return Err(crate::cli::reported_exit(cfgd_core::exit::ExitCode::Error));
     }
     Ok(())
 }

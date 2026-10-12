@@ -108,6 +108,7 @@ pub fn build_gateway_config(
 fn gateway_db_path() -> cfgd_core::errors::Result<String> {
     let path = cfgd_core::env_or(cfgd_core::CFGD_SERVER_DB_PATH_ENV, "/data/cfgd-gateway.db");
     Ok(
+        // home-refusal-ok: the operator's gateway database; no apply or plan path reaches it
         cfgd_core::expand_tilde(std::path::Path::new(&path), "gateway database")?
             .to_string_lossy()
             .into_owned(),

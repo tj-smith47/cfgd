@@ -2878,8 +2878,8 @@ fn canonical_jsonpath_output_no_deprecation_warning() {
 // ---------------------------------------------------------------------------
 // `cfgd backup run` exit-code coverage.
 //
-// `cmd_backup_run`'s `ExitCode::Error.exit()` (a direct `process::exit`) can
-// only be exercised out-of-process — see `crates/cfgd/tests/backup_snapshots.rs`
+// `cmd_backup_run`'s nonzero exit is set in `main` from the `ReportedExit` it
+// returns, so the code is seen out-of-process — see `crates/cfgd/tests/backup_snapshots.rs`
 // for the in-process capture tests that cover the clean/output-shape side.
 // ---------------------------------------------------------------------------
 

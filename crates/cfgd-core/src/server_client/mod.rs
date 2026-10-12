@@ -631,7 +631,7 @@ impl ServerClient {
         let body = DriftReport { details };
         let body_json = serde_json::to_string(&body).map_err(|e| {
             CfgdError::Io(std::io::Error::other(format!(
-                // fleet-drift-ok: an internal serialization failure, not a claim
+                // fleet-drift-ok: an internal serialization failure, which claims no drift
                 "failed to serialize drift report: {}",
                 e
             )))

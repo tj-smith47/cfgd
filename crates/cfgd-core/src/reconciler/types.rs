@@ -2162,11 +2162,11 @@ pub(crate) fn action_resource_info(action: &Action) -> (String, String) {
         Action::Package(pa) => match pa {
             PackageAction::Install {
                 manager, packages, ..
-            // composed-id-ok: the ACTION's identity, not a drift row.
+            // composed-id-ok: the identity of the ACTION itself; drift rows key apart.
             } => ("package".to_string(), package_batch_action_id(manager, packages)),
             PackageAction::Uninstall {
                 manager, packages, ..
-            // composed-id-ok: the ACTION's identity, not a drift row.
+            // composed-id-ok: the identity of the ACTION itself; drift rows key apart.
             } => ("package".to_string(), package_batch_action_id(manager, packages)),
             // A Skip row names the bare manager whose whole block was withheld,
             // so a live check can never resolve it as healed.
@@ -2208,7 +2208,7 @@ pub(crate) fn action_resource_info(action: &Action) -> (String, String) {
                 }
             }
         }
-        // composed-id-ok: the ACTION's identity, not a drift row.
+        // composed-id-ok: the identity of the ACTION itself; drift rows key apart.
         Action::Module(ma) => ("module".to_string(), ma.module_name.clone()),
         Action::Env(ea) => {
             use crate::reconciler::EnvAction;

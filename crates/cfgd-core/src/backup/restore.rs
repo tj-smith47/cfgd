@@ -208,6 +208,7 @@ impl RestoreTarget {
 /// when `to` starts with `~` and no home directory is set.
 pub fn restore_target(unit: &BackupUnit<'_>, to: Option<&Path>) -> Result<RestoreTarget> {
     let requested = match to {
+        // home-refusal-ok: `backup restore` alone reads it; no apply or plan path reaches it
         Some(path) => crate::expand_tilde(path, "restore target")?,
         None => unit.source(),
     };

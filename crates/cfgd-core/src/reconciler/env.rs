@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use crate::config::{EnvScope, MergedProfile};
+use crate::config::{EnvScope, MergedProfile, ScriptEntry, ScriptSpec};
 use crate::errors::Result;
 use crate::modules::ResolvedModule;
 use crate::output::Printer;
@@ -54,11 +54,18 @@ pub fn recorded_manager_path_dirs(
     collect_recorded_path_dirs(state, Some(&named))
 }
 
-/// What one module asks of the home directory: the file targets it declares
-/// and whether it declares any env var or alias.
+/// What one module asks of the home directory: the file targets it declares,
+/// whether it declares any env var or alias, the script entries an apply runs
+/// for it, the `creates:` guards of its script installs and its system
+/// configurator settings.
 pub struct ModuleHomeUse<'a> {
     pub targets: Vec<&'a std::path::Path>,
     pub declares_env: bool,
+    /// Its `preApply`, `postApply` and `onChange` entries, the hooks an apply runs.
+    pub scripts: Vec<&'a ScriptEntry>,
+    /// The `creates:` guard of each package it installs with its own script.
+    pub install_creates: Vec<&'a str>,
+    pub system: Option<&'a crate::config::SystemSettings>,
 }
 
 impl<'a> From<&'a ResolvedModule> for ModuleHomeUse<'a> {
@@ -66,6 +73,18 @@ impl<'a> From<&'a ResolvedModule> for ModuleHomeUse<'a> {
         Self {
             targets: module.files.iter().map(|f| f.target.as_path()).collect(),
             declares_env: !module.env.is_empty() || !module.aliases.is_empty(),
+            scripts: module
+                .pre_apply_scripts
+                .iter()
+                .chain(&module.post_apply_scripts)
+                .chain(&module.on_change_scripts)
+                .collect(),
+            install_creates: module
+                .packages
+                .iter()
+                .filter_map(|p| p.creates.as_deref())
+                .collect(),
+            system: Some(&module.system),
         }
     }
 }
@@ -73,7 +92,12 @@ impl<'a> From<&'a ResolvedModule> for ModuleHomeUse<'a> {
 impl<'a> ModuleHomeUse<'a> {
     /// The same view of a module read off disk and not yet resolved, judged
     /// on `platform` the way resolution judges it: a gated-off module asks
-    /// nothing, and only the env entries and aliases applicable here count.
+    /// nothing, and only the env entries, aliases and packages applicable
+    /// here count. A package counts its `creates:` guard when `script` is
+    /// anywhere in its `prefer` list: which entry resolution settles on turns
+    /// on the managers the host has, and a homeless run refused for a guard
+    /// its script never reads loses nothing, where one that runs the script
+    /// stops half way through its plan.
     pub fn of_loaded(
         module: &'a crate::modules::LoadedModule,
         platform: &crate::platform::Platform,
@@ -83,6 +107,9 @@ impl<'a> ModuleHomeUse<'a> {
             return Self {
                 targets: Vec::new(),
                 declares_env: false,
+                scripts: Vec::new(),
+                install_creates: Vec::new(),
+                system: None,
             };
         }
         Self {
@@ -96,23 +123,98 @@ impl<'a> ModuleHomeUse<'a> {
                 || applicable_here(&module.spec.aliases, platform)
                     .next()
                     .is_some(),
+            scripts: module
+                .spec
+                .scripts
+                .iter()
+                .flat_map(apply_hook_entries)
+                .collect(),
+            install_creates: module
+                .spec
+                .packages
+                .iter()
+                .filter(|p| p.applies_to(platform))
+                .filter(|p| p.prefer.iter().any(|m| m == crate::SCRIPT_SENTINEL))
+                .filter_map(|p| p.creates.as_deref())
+                .collect(),
+            system: Some(&module.spec.system),
         }
     }
 }
+
+/// The entries of the hooks an apply runs: `preApply`, `postApply` and
+/// `onChange`.
+fn apply_hook_entries(spec: &ScriptSpec) -> impl Iterator<Item = &ScriptEntry> {
+    spec.pre_apply
+        .iter()
+        .chain(&spec.post_apply)
+        .chain(&spec.on_change)
+}
+
+/// Which question refuses a [`HOME_REFUSAL_SLOTS`] role up front.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HomeQuestioner {
+    /// [`unresolved_home_refusal`], which `apply`, `plan` and `init --apply`
+    /// ask before they open the state store.
+    UnresolvedHomeRefusal,
+    /// The check `compliance` and `compliance export` run before they open
+    /// the state store.
+    Compliance,
+}
+
+/// The roles [`expand_tilde`](crate::expand_tilde) names on a path a homeless
+/// run refuses before it writes anything, each paired with the slot it fills
+/// and the [`HomeQuestioner`] that asks it. The slot is the name of the
+/// population pin's fixture that proves the refusal leaves the store as it
+/// found it. Every other role carries `// home-refusal-ok: <why>` at its call
+/// site, naming why no question asks it up front.
+pub const HOME_REFUSAL_SLOTS: &[(&str, &str, HomeQuestioner)] = &{
+    use HomeQuestioner::{Compliance, UnresolvedHomeRefusal as Run};
+    [
+        (crate::FILE_TARGET_ROLE, "file target", Run),
+        ("decision path", "file target", Run),
+        (crate::SECRET_TARGET_ROLE, "secret target", Run),
+        ("backup source", "backup source", Run),
+        ("backup destination", "backup destination", Run),
+        (crate::SCRIPT_WORKDIR_ROLE, "script workdir", Run),
+        (crate::CREATES_GUARD_ROLE, "creates guard", Run),
+        ("env value", "env var", Run),
+        ("age key", "age key", Run),
+        ("SSH key path", "SSH key", Run),
+        ("systemd unit file", "systemd unit file", Run),
+        ("KDE config file", "KDE config file", Run),
+        ("launch agent plist", "launch agent", Run),
+        ("watch path", "compliance watch path", Compliance),
+        (
+            "compliance export directory",
+            "compliance export directory",
+            Compliance,
+        ),
+    ]
+};
 
 /// The refusal a run over this desired state meets when no home directory
 /// resolves, or `None` when nothing it declares writes under one.
 ///
 /// A declared file or secret target leading with `~` refuses as
-/// [`StateError::HomeUnresolved`], and so does a secret the run decrypts with
-/// a `backend` whose key needs the missing home
-/// ([`SecretBackend::home_refusal`]). Env vars, aliases, secret env exports and
-/// a recorded manager `PATH` entry refuse as [`StateError::EnvHomeUnresolved`],
-/// because they live in the managed env file. The plan, `apply` and `plan`
-/// before they open the state store, and `doctor` all ask it, so `doctor`
-/// fails its verdict exactly when a run refuses.
+/// [`StateError::HomeUnresolved`]. So do a `~` source or destination of a
+/// backup unit `apply` snapshots, a `~` `workdir:` or `creates:` guard on a
+/// script the apply runs (a profile or module `preApply`, `postApply` or
+/// `onChange` entry, or a module package's install script), a path a system
+/// configurator the run drives reads under `~`
+/// ([`SystemConfigurator::home_refusal`]), and a secret the run decrypts with
+/// a secret backend whose key needs the missing home
+/// ([`SecretBackend::home_refusal`]). The configurators asked are those this
+/// host can run or whose tool the run can install first. Env vars, aliases,
+/// secret env exports and a recorded manager `PATH` entry refuse as
+/// [`StateError::EnvHomeUnresolved`], because they live in the managed env
+/// file. The plan, `apply` and `plan` before they open the state store, and
+/// `doctor` all ask it, so `doctor` fails its verdict exactly when a run
+/// refuses. [`HOME_REFUSAL_SLOTS`] names each of its questions by the role
+/// the path's expansion carries.
 ///
 /// [`SecretBackend::home_refusal`]: crate::providers::SecretBackend::home_refusal
+/// [`SystemConfigurator::home_refusal`]: crate::providers::SystemConfigurator::home_refusal
 ///
 /// [`StateError::HomeUnresolved`]: crate::errors::StateError::HomeUnresolved
 /// [`StateError::EnvHomeUnresolved`]: crate::errors::StateError::EnvHomeUnresolved
@@ -120,7 +222,7 @@ pub fn unresolved_home_refusal<'a>(
     state: Option<&StateStore>,
     profile: &MergedProfile,
     modules: impl IntoIterator<Item = ModuleHomeUse<'a>>,
-    backend: Option<&dyn crate::providers::SecretBackend>,
+    registry: Option<&crate::providers::ProviderRegistry>,
 ) -> Option<crate::errors::StateError> {
     let modules: Vec<ModuleHomeUse<'a>> = modules.into_iter().collect();
     let declared_target = profile
@@ -130,19 +232,88 @@ pub fn unresolved_home_refusal<'a>(
         .map(|f| f.target.as_path())
         .chain(profile.secrets.iter().filter_map(|s| s.target.as_deref()))
         .chain(modules.iter().flat_map(|m| m.targets.iter().copied()))
-        .find_map(|t| match crate::expand_tilde(t, crate::FILE_TARGET_ROLE) {
-            Err(crate::errors::CfgdError::State(e)) => Some(e),
-            _ => None,
-        });
+        .find_map(|t| crate::home_refusal_of(crate::expand_tilde(t, crate::FILE_TARGET_ROLE)));
     if declared_target.is_some() {
         return declared_target;
+    }
+    // A unit `apply` snapshots expands its source and destination when it is
+    // bound, after the store has opened.
+    let backup_path = profile
+        .backups
+        .iter()
+        .filter(|spec| crate::backup::runs_with_apply(spec))
+        .find_map(|spec| crate::home_refusal_of(crate::backup::BackupUnit::declared_paths(spec)));
+    if backup_path.is_some() {
+        return backup_path;
+    }
+    // A script resolves its `workdir:` and `creates:` when it runs, in the
+    // middle of the apply.
+    let script_path = apply_hook_entries(&profile.scripts)
+        .chain(modules.iter().flat_map(|m| m.scripts.iter().copied()))
+        .find_map(|entry| {
+            let ScriptEntry::Full(command) = entry else {
+                return None;
+            };
+            let workdir = command.workdir.as_deref().and_then(|raw| {
+                crate::home_refusal_of(crate::expand_tilde(
+                    std::path::Path::new(raw),
+                    crate::SCRIPT_WORKDIR_ROLE,
+                ))
+            });
+            workdir.or_else(|| {
+                command.creates.as_deref().and_then(|raw| {
+                    crate::home_refusal_of(crate::expand_tilde(
+                        std::path::Path::new(raw),
+                        crate::CREATES_GUARD_ROLE,
+                    ))
+                })
+            })
+        })
+        .or_else(|| {
+            modules
+                .iter()
+                .flat_map(|m| m.install_creates.iter())
+                .find_map(|raw| {
+                    crate::home_refusal_of(crate::expand_tilde(
+                        std::path::Path::new(raw),
+                        crate::CREATES_GUARD_ROLE,
+                    ))
+                })
+        });
+    if script_path.is_some() {
+        return script_path;
+    }
+    if let Some(registry) = registry {
+        let mut system = profile.system.clone();
+        for module_system in modules.iter().filter_map(|m| m.system) {
+            for (key, value) in module_system {
+                crate::deep_merge_yaml(
+                    system.entry(key.clone()).or_insert(serde_yaml::Value::Null),
+                    value,
+                );
+            }
+        }
+        // The planner configures an unavailable configurator in this run when
+        // the bootstrap installs its tool first.
+        let configured = registry
+            .system_configurators()
+            .iter()
+            .filter(|c| c.required_tool().is_some() || c.is_available())
+            .find_map(|c| c.home_refusal(system.get(c.name())?));
+        if configured.is_some() {
+            return configured;
+        }
     }
     // The planner's own split: a source naming no provider is a file the
     // backend decrypts, and only one with a target is planned at all.
     let decrypts = profile.secrets.iter().any(|s| {
         s.target.is_some() && crate::providers::parse_secret_reference(&s.source).is_none()
     });
-    if decrypts && let Some(refusal) = backend.and_then(|b| b.home_refusal()) {
+    if decrypts
+        && let Some(refusal) = registry
+            .and_then(|r| r.secret_backend.as_deref())
+            .and_then(|b| b.home_refusal())
+    {
         return Some(refusal);
     }
     let writes_env_file = !profile.env.is_empty()

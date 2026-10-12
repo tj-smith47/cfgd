@@ -39,6 +39,8 @@ impl SkillProvider for CodexProvider {
                     .is_some_and(|d| d.join(relative_agents_path()).exists())
                     || command_available("codex")
             }
+            // home-refusal-ok: the skill verbs alone install skills; no apply or plan path reaches
+            // it
             SkillScope::User => expand_tilde(Path::new("~/.codex"), SKILL_ROLE)?.exists(),
         };
         Ok(Detection::present(found))
@@ -49,6 +51,8 @@ impl SkillProvider for CodexProvider {
             SkillScope::Project => Ok(std::env::current_dir()
                 .ok()
                 .map(|d| d.join(relative_agents_path()))),
+            // home-refusal-ok: the skill verbs alone install skills; no apply or plan path reaches
+            // it
             SkillScope::User => expand_tilde(Path::new("~/.codex/AGENTS.md"), SKILL_ROLE).map(Some),
         }
     }

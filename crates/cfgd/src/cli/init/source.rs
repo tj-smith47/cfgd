@@ -27,6 +27,8 @@ pub(super) fn is_clonable_source(value: &str) -> cfgd_core::errors::Result<bool>
     {
         return Ok(true);
     }
+    // home-refusal-ok: a `--from` argument, refused before the verb clones, writes or plans
+    // anything
     let path = cfgd_core::expand_tilde(Path::new(value), FROM_ROLE)?;
     Ok(path.join(".git").exists())
 }
@@ -54,6 +56,8 @@ pub(super) fn held_config_document(dir: &Path) -> Option<PathBuf> {
 pub(crate) fn from_destination(config: &Path) -> cfgd_core::errors::Result<Option<PathBuf>> {
     // A `--config` still spelled with `~` found no home; absolutized, it would
     // name a `~` directory under the working directory.
+    // home-refusal-ok: the `--config` destination of a `--from` verb, refused before it writes
+    // anything
     let config = cfgd_core::absolutize_path(&cfgd_core::expand_tilde(config, "config document")?);
     let dir = if config.is_dir() {
         config.as_path()
@@ -87,6 +91,8 @@ pub(super) fn plan_from(from: &str, target: Option<&Path>) -> anyhow::Result<std
         refuse_occupied_default_destination(&dest)?;
         return Ok(dest);
     }
+    // home-refusal-ok: a `--from` argument, refused before the verb clones, writes or plans
+    // anything
     let path = cfgd_core::expand_tilde(Path::new(from), FROM_ROLE)?;
     if !path.exists() {
         return Err(crate::cli::cli_error(

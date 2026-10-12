@@ -65,11 +65,14 @@ fn parse_unit_files(dump: &str) -> HashMap<String, String> {
     map
 }
 
+/// The `role` a declared `unitFile` names when its `~` does not expand.
+const UNIT_FILE_ROLE: &str = "systemd unit file";
+
 impl SystemdUnitConfigurator {
     /// Resolve a configured `unitFile` to the path cfgd should read it from:
     /// tilde-expanded, then resolved against the config dir when one is set.
     fn resolve_unit_file(&self, unit_file: &str) -> Result<PathBuf> {
-        let expanded = cfgd_core::expand_tilde(Path::new(unit_file), "systemd unit file")?;
+        let expanded = cfgd_core::expand_tilde(Path::new(unit_file), UNIT_FILE_ROLE)?;
         let resolved = match &self.config_dir {
             Some(dir) => cfgd_core::resolve_relative_path(&expanded, dir).unwrap_or(expanded),
             None => expanded,
@@ -93,6 +96,20 @@ impl SystemConfigurator for SystemdUnitConfigurator {
 
     fn set_config_dir(&mut self, config_dir: &Path) {
         self.config_dir = Some(config_dir.to_path_buf());
+    }
+
+    fn home_refusal(&self, desired: &serde_yaml::Value) -> Option<cfgd_core::errors::StateError> {
+        desired
+            .as_sequence()?
+            .iter()
+            .filter(|unit| unit.get("name").and_then(|v| v.as_str()).is_some())
+            .filter_map(|unit| unit.get("unitFile").and_then(|v| v.as_str()))
+            .find_map(|unit_file| {
+                cfgd_core::home_refusal_of(cfgd_core::expand_tilde(
+                    Path::new(unit_file),
+                    UNIT_FILE_ROLE,
+                ))
+            })
     }
 
     fn current_state(&self) -> Result<serde_yaml::Value> {

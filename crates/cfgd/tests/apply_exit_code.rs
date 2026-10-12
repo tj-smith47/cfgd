@@ -4,9 +4,8 @@
 //! (`ExitCode::ApplyFailed` == 7) so CI `&&` chains and the daemon don't
 //! treat a broken apply as success. A fully-successful apply must exit 0.
 //!
-//! These run the real binary via `assert_cmd` because `cmd_apply` ends in
-//! `std::process::exit` on failure — calling it in-process would kill the
-//! test harness.
+//! These run the real binary because `cmd_apply`'s failure exit code is set
+//! in `main`, which no in-process call reaches.
 
 use std::path::Path;
 

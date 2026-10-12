@@ -1021,7 +1021,7 @@ fn a_floor_survives_the_saved_plan_file_and_still_fails_a_short_delivery() {
     let file = tmp.path().join("plan.json");
     std::fs::write(&file, serde_json::to_string(&payload).unwrap()).unwrap();
 
-    let loaded = load_saved_plan(&file, &config, &state).expect("the file reads back");
+    let loaded = load_saved_plan(&file, &config, Some(&state)).expect("the file reads back");
     let nodes = provision_nodes(&loaded.plan);
     assert!(
         matches!(

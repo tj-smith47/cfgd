@@ -288,7 +288,7 @@ pub(super) fn run_source_add<'d>(
                     if lines.is_empty() {
                         // Role::Ok marks the conflict-check step as having passed cleanly
                         // (consistent with other clean-state preview steps).
-                        // verdict-row-ok: a comparison verdict, not an act cfgd performed
+                        // verdict-row-ok: a comparison verdict on what cfgd found
                         printer.status_simple(Role::Ok, "No conflicts with current config");
                     } else {
                         let conflicts_sec = printer.section("Conflicts with Current Config");

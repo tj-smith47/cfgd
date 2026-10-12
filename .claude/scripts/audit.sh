@@ -1413,14 +1413,14 @@ fi
 # production code. Tests are excluded because some snapshot-mask helpers
 # legitimately fold the `sha256-` separator etc.; the gate would over-fire on
 # them. Production paths must use `cfgd_core::to_posix_string` / `posixify_text`
-# / `from_user_input` instead.
+# instead.
 if w5=$(rg --type rust -n "replace\('\\\\\\\\', \"/\"\)" \
       "${CFGD_AUDIT_PATH:-crates/}" \
       --glob '!crates/cfgd-core/src/util/paths.rs' \
       --glob '!**/tests.rs' \
       --glob '!**/tests/**' \
       2>/dev/null) && [ -n "$w5" ]; then
-  log_error "Wave 5 violation: inline backslash fold in production (use cfgd_core::to_posix_string / posixify_text / from_user_input):"
+  log_error "Wave 5 violation: inline backslash fold in production (use cfgd_core::to_posix_string / posixify_text):"
   echo "$w5"
 fi
 

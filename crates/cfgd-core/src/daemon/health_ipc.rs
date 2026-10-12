@@ -851,7 +851,7 @@ mod tests {
         let mut waited = 0;
         while socket_mode(&sock) != Some(0o600) && waited < 200 {
             // long-line-ok: a hatch is read off its own line, so it cannot wrap
-            // sleep-ok: bounded poll on a filesystem permission side effect, not a fixed-duration guess
+            // sleep-ok: bounded poll on a filesystem permission side effect; it ends the moment its condition holds
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
             waited += 1;
         }
@@ -924,7 +924,7 @@ mod tests {
         let mut got_response = None;
         for _ in 0..50 {
             // long-line-ok: a hatch is read off its own line, so it cannot wrap
-            // sleep-ok: bounded retry loop on the socket's own connect result, not a fixed-duration guess
+            // sleep-ok: bounded retry loop on the socket's own connect result; it ends the moment a connect succeeds
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
             let Ok(mut client) = UnixStream::connect(&sock).await else {
                 continue;

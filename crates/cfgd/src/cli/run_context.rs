@@ -60,10 +60,150 @@ pub struct RunContext<'a> {
     /// the resolved desired state says the store may open.
     store_held: Cell<bool>,
     /// The recorded state a package query reads while the store is held.
-    held_view: OnceCell<RecordNothing<StateStore>>,
+    held_view: OnceCell<HeldView>,
     /// Source conflicts composed while the store was held, recorded once it
     /// opens.
     held_conflicts: RefCell<Vec<cfgd_core::composition::ConflictResolution>>,
+}
+
+/// The store a held run reads, and why an existing one could not be read.
+struct HeldView {
+    records: RecordNothing<StateStore>,
+    /// The read-only open's error for a `state.db` that exists. The home
+    /// check cannot count what such a store recorded, so the run refuses
+    /// with it before any writable open.
+    unreadable: Option<String>,
+}
+
+impl HeldView {
+    /// The `state.db` under the run's state directory opened read-only, or
+    /// nothing when there is none (or no directory resolves).
+    fn read(state_dir: Option<&Path>, scope: cfgd_core::Scope) -> Self {
+        let db = super::helpers::run_state_dir(state_dir, scope)
+            .ok()
+            .map(|dir| dir.join(cfgd_core::state::STATE_DB_FILENAME))
+            .filter(|db| db.exists());
+        match db.map(|db| (StateStore::open_read_only(&db), db)) {
+            None => Self {
+                records: RecordNothing(None),
+                unreadable: None,
+            },
+            Some((Ok(store), _)) => Self {
+                records: RecordNothing(Some(store)),
+                unreadable: None,
+            },
+            Some((Err(e), db)) => Self {
+                records: RecordNothing(None),
+                unreadable: Some(format!(
+                    "cannot read {} without writing to it: {e}",
+                    db.display() // native-ok: an error message, read by people
+                )),
+            },
+        }
+    }
+
+    /// The refusal for an existing `state.db` this view could not read
+    /// without writing to it.
+    fn readable(&self) -> anyhow::Result<()> {
+        match &self.unreadable {
+            Some(message) => Err(cfgd_core::errors::CfgdError::from(
+                cfgd_core::errors::StateError::Database(message.clone()),
+            )
+            .into()),
+            None => Ok(()),
+        }
+    }
+}
+
+/// The state store a verb with no [`RunContext`] keeps closed while it
+/// resolves with no home: the hold [`RunContext::hold_store_while_homeless`]
+/// takes, for `cfgd init`, which runs before its config exists.
+///
+/// With a home the store opens at once and the hold is inert. With none,
+/// package queries read an existing `state.db` read-only and record nothing,
+/// and [`Self::open_for`] opens the store only once the resolved profile and
+/// modules ask nothing a missing home refuses.
+pub(in crate::cli) struct DetachedStoreHold<'d> {
+    state_dir: Option<&'d Path>,
+    scope: cfgd_core::Scope,
+    store: DetachedStore,
+}
+
+enum DetachedStore {
+    Open(StateStore),
+    Held {
+        view: HeldView,
+        opened: OnceCell<StateStore>,
+    },
+}
+
+impl<'d> DetachedStoreHold<'d> {
+    /// Hold the store under `state_dir` / `scope` when no home resolves, and
+    /// open it now otherwise.
+    ///
+    /// # Errors
+    ///
+    /// The store failing to open for a run with a home.
+    pub(in crate::cli) fn new(
+        state_dir: Option<&'d Path>,
+        scope: cfgd_core::Scope,
+    ) -> anyhow::Result<Self> {
+        // home-optional-ok: the hold exists for the run with no home
+        let store = if cfgd_core::home_dir().is_err() {
+            DetachedStore::Held {
+                view: HeldView::read(state_dir, scope),
+                opened: OnceCell::new(),
+            }
+        } else {
+            DetachedStore::Open(open_state_store(state_dir, scope)?)
+        };
+        Ok(Self {
+            state_dir,
+            scope,
+            store,
+        })
+    }
+
+    /// The store a package query reads while the run resolves.
+    pub(in crate::cli) fn package_state(&self) -> &dyn cfgd_core::providers::PackageStateStore {
+        match &self.store {
+            DetachedStore::Open(state) => state,
+            DetachedStore::Held { view, .. } => &view.records,
+        }
+    }
+
+    /// The run's state store once `profile` and `modules` resolved and ask
+    /// nothing a missing home refuses.
+    ///
+    /// # Errors
+    ///
+    /// The home refusal, a `state.db` the hold could not read without
+    /// writing to it, or the store failing to open.
+    pub(in crate::cli) fn open_for(
+        &self,
+        cfg: &CfgdConfig,
+        profile: &cfgd_core::config::MergedProfile,
+        modules: &[cfgd_core::modules::ResolvedModule],
+    ) -> anyhow::Result<&StateStore> {
+        let (view, opened) = match &self.store {
+            DetachedStore::Open(state) => return Ok(state),
+            DetachedStore::Held { view, opened } => (view, opened),
+        };
+        if let Some(state) = opened.get() {
+            return Ok(state);
+        }
+        view.readable()?;
+        if let Some(refusal) = super::helpers::unresolved_home_after_resolution(
+            cfg,
+            profile,
+            modules,
+            view.records.0.as_ref(),
+        ) {
+            return Err(cfgd_core::errors::CfgdError::from(refusal).into());
+        }
+        let state = open_state_store(self.state_dir, self.scope)?;
+        Ok(opened.get_or_init(|| state))
+    }
 }
 
 /// The state a package query reads when nothing may be recorded: what the
@@ -97,28 +237,22 @@ impl<S: Borrow<StateStore>> cfgd_core::providers::PackageStateStore for RecordNo
 /// `state.db` behind.
 pub(in crate::cli) struct StoreHold<'r, 'a> {
     run: &'r RunContext<'a>,
-    /// The empty store a held run reads when none is on disk.
-    empty: OnceCell<StateStore>,
 }
 
 impl<'r, 'a> StoreHold<'r, 'a> {
     /// The recorded state a run reads before it may write: the store on disk
-    /// opened read-only while the hold is on, an empty in-memory one when
-    /// there is none, and the run's own store once nothing is held.
-    pub(in crate::cli) fn recorded_state(&self) -> anyhow::Result<&StateStore> {
+    /// opened read-only while the hold is on, and the run's own store once
+    /// nothing is held. `None` is a held run with no `state.db`.
+    ///
+    /// # Errors
+    ///
+    /// A `state.db` the hold cannot read without writing to it.
+    pub(in crate::cli) fn recorded_state(&self) -> anyhow::Result<Option<&StateStore>> {
         if !self.run.store_held.get() {
-            return self.run.state();
+            return self.run.state().map(Some);
         }
-        if let Some(store) = self.run.held_store() {
-            return Ok(store);
-        }
-        match self.empty.get() {
-            Some(store) => Ok(store),
-            None => {
-                let store = StateStore::open_in_memory()?;
-                Ok(self.empty.get_or_init(|| store))
-            }
-        }
+        self.run.held_readable()?;
+        Ok(self.run.held_store())
     }
 
     /// Open the run's state store once `desired` resolved and asks nothing a
@@ -147,20 +281,61 @@ impl<'r, 'a> StoreHold<'r, 'a> {
                 return Err(e);
             }
         };
-        if let Some(refusal) =
-            super::helpers::unresolved_home_after_resolution(cfg, &desired, run.held_store())
-        {
+        let state = self.open_for(cfg, &desired.resolved.merged, &desired.modules)?;
+        Ok((desired, state))
+    }
+
+    /// Open the run's state store once `profile` and the `modules` a verb
+    /// resolved ask nothing a missing home refuses, recording the source
+    /// conflicts its composition kept. [`Self::open`] over a verb that
+    /// resolves no whole desired state (`module create --apply`).
+    ///
+    /// # Errors
+    ///
+    /// The home refusal, a `state.db` the hold could not read without
+    /// writing to it, or the store failing to open.
+    pub(in crate::cli) fn open_for(
+        self,
+        cfg: &CfgdConfig,
+        profile: &cfgd_core::config::MergedProfile,
+        modules: &[cfgd_core::modules::ResolvedModule],
+    ) -> anyhow::Result<&'r StateStore> {
+        let run = self.run;
+        run.held_readable()?;
+        if let Some(refusal) = super::helpers::unresolved_home_after_resolution(
+            cfg,
+            profile,
+            modules,
+            run.held_store(),
+        ) {
             return Err(cfgd_core::errors::CfgdError::from(refusal).into());
         }
+        self.release()
+    }
+
+    /// Open the run's state store once the verb has put every question it has
+    /// to the home, recording the source conflicts its composition kept. A
+    /// verb whose home work is narrower than its whole desired state (one
+    /// module's env, a backup unit's paths, a compliance check's targets) asks
+    /// its own questions and releases the hold here, where
+    /// [`Self::open`] asks the whole resolution's.
+    ///
+    /// # Errors
+    ///
+    /// A `state.db` the hold could not read without writing to it, or the
+    /// store failing to open.
+    pub(in crate::cli) fn release(self) -> anyhow::Result<&'r StateStore> {
+        let run = self.run;
+        run.held_readable()?;
         drop(self);
         let state = run.state()?;
         record_conflicts(state, &run.held_conflicts.take());
-        Ok((desired, state))
+        Ok(state)
     }
 }
 
 /// Whether `e` is a refusal for want of a home directory.
-fn is_unresolved_home(e: &anyhow::Error) -> bool {
+pub(in crate::cli) fn is_unresolved_home(e: &anyhow::Error) -> bool {
     use cfgd_core::errors::{CfgdError, ConfigError, StateError};
     let home_state = |s: &StateError| {
         matches!(
@@ -371,10 +546,7 @@ impl<'a> RunContext<'a> {
         // home-optional-ok: the hold exists for the run with no home
         let homeless = cfgd_core::home_dir().is_err();
         self.store_held.set(homeless && self.state.get().is_none());
-        StoreHold {
-            run: self,
-            empty: OnceCell::new(),
-        }
+        StoreHold { run: self }
     }
 
     /// Record `conflicts` in the run's state store, or keep them for
@@ -394,16 +566,9 @@ impl<'a> RunContext<'a> {
 
     /// The recorded state while the store is held: an existing `state.db`
     /// opened read-only, which neither migrates it nor creates a file.
-    fn held_view(&self) -> &RecordNothing<StateStore> {
-        self.held_view.get_or_init(|| {
-            RecordNothing(
-                super::helpers::run_state_dir(self.cli.state_dir.as_deref(), self.cli.scope())
-                    .ok()
-                    .map(|dir| dir.join(cfgd_core::state::STATE_DB_FILENAME))
-                    .filter(|db| db.exists())
-                    .and_then(|db| StateStore::open_read_only(&db).ok()),
-            )
-        })
+    fn held_view(&self) -> &HeldView {
+        self.held_view
+            .get_or_init(|| HeldView::read(self.cli.state_dir.as_deref(), self.cli.scope()))
     }
 
     /// The store [`Self::held_view`] read, while the hold is on and a
@@ -412,7 +577,16 @@ impl<'a> RunContext<'a> {
         if !self.store_held.get() {
             return None;
         }
-        self.held_view().0.as_ref()
+        self.held_view().records.0.as_ref()
+    }
+
+    /// The refusal for a held run whose existing `state.db` could not be read
+    /// without writing to it.
+    fn held_readable(&self) -> anyhow::Result<()> {
+        if self.store_held.get() {
+            self.held_view().readable()?;
+        }
+        Ok(())
     }
 
     /// A package context over this run's installed-state memo and `state`,
@@ -440,7 +614,7 @@ impl<'a> RunContext<'a> {
         &self,
     ) -> anyhow::Result<cfgd_core::providers::PackageContext<'_>> {
         if self.store_held.get() {
-            return Ok(self.package_context_over(self.held_view()));
+            return Ok(self.package_context_over(&self.held_view().records));
         }
         let state = self.state()?;
         Ok(

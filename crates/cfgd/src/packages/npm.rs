@@ -214,7 +214,7 @@ fn persisted_npm_prefix_decision_with(
     let prefix = PathBuf::from(prefix);
     if !is_writable(&prefix) {
         tracing::debug!(
-            prefix = %prefix.display(), // native-ok: log line, not a persisted key
+            prefix = %prefix.display(), // native-ok: a log line, read by people
             "persisted npm prefix is no longer writable; discarding cached decision"
         );
         return None;
@@ -225,7 +225,7 @@ fn persisted_npm_prefix_decision_with(
         && is_writable(&configured)
     {
         tracing::debug!(
-            prefix = %configured.display(), // native-ok: log line, not a persisted key
+            prefix = %configured.display(), // native-ok: a log line, read by people
             "npm's configured prefix is writable again; discarding fallback decision"
         );
         return None;
@@ -493,6 +493,8 @@ pub(super) fn npm_prefix_holds_packages(prefix: &Path) -> bool {
 /// this location without conjuring it into existence; see
 /// [`ensure_npm_fallback_prefix`] for the install-only creation step.
 pub(super) fn npm_fallback_prefix() -> Result<PathBuf> {
+    // home-refusal-ok: npm answers this path at run time (its own prefix is not writable);
+    // a failure is reported on its install action
     cfgd_core::expand_tilde(Path::new("~/.npm-global"), "npm fallback prefix")
 }
 

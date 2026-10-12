@@ -140,12 +140,10 @@ pub fn cmd_source_update(
 
     // A scripted consumer must be able to detect that a source failed to
     // update from the exit code alone. `run_source_update` already emitted the
-    // summary Doc; exit nonzero directly here (mirroring cmd_status's
-    // --exit-code path) so the failure isn't re-rendered as a second error
-    // line by the central sink. Kept out of the core so the body above stays
-    // unit-testable in-process (process::exit would abort the test binary).
+    // summary Doc, so the nonzero exit renders no second error line
+    // (mirroring cmd_status's --exit-code path).
     if error_count > 0 {
-        cfgd_core::exit::ExitCode::Error.exit();
+        return Err(crate::cli::reported_exit(cfgd_core::exit::ExitCode::Error));
     }
 
     Ok(())

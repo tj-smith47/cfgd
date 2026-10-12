@@ -1463,12 +1463,27 @@ same shape as `stateStore`.
 
 With no home directory set, the `Home directory` row fails when the profile (composed with every
 source already in the cache, since `doctor` fetches nothing), or a module it reaches, declares
-work under `~/`: an env var or alias, a `~/` file or secret target, a secret decrypted with an age
-key under `~/`, or a package manager `PATH` entry cfgd recorded. `apply` and `plan` fetch their
-sources and resolve their modules first, so a source the cache did not hold yet counts too, and
-refuse that work before they open the state store, writing nothing in its place. An existing
+work under `~/`:
+
+- an env var or alias
+- a `~/` file or secret target
+- a `~/` source or destination of a backup unit with no `schedule` (one `apply` snapshots)
+- a `~/` `workdir` or `creates` guard on a `preApply`, `postApply` or `onChange` script, or on
+  a module package's install script
+- a `~/` path a system configurator this host runs reads: an `sshKeys` key (one with no `path`
+  defaults to `~/.ssh/`), a `systemdUnits` `unitFile`, a `kdeConfig` file (a bare name lives
+  under `~/.config` when `XDG_CONFIG_HOME` is unset), or any `launchAgents` entry on macOS
+- a secret decrypted with an age key under `~/`
+- a package manager `PATH` entry cfgd recorded
+
+`apply`, `plan` and `init --apply` fetch their sources and resolve their modules first, so a
+source the cache did not hold yet counts too, and refuse that work before they open the state
+store or run any action, writing nothing in its place. An existing
 store is only read until then (`apply --plan` checks its saved plan against it the same way), so
-a refused run neither migrates it nor recreates its `-wal` and `-shm` files. The verdict fails
+a refused run neither migrates it nor recreates its `-wal` and `-shm` files. A replay with no
+`state.db` has no store to check its plan against and is refused for the missing home; a store
+cfgd cannot read without writing to it (a `-wal` file with no `-shm` beside it) refuses the run
+naming that store, and `doctor` reports it on the `State store` row. The verdict fails
 with them. With nothing declared there, the row is informational and the verdict passes.
 `-o json` reports it as `home`:
 
@@ -1480,6 +1495,14 @@ with them. With nothing declared there, the row is informational and the verdict
 ```
 
 `refusal` is `null` when a home is set or nothing declared needs one.
+
+The other commands that need the home for part of their work settle it before they open the
+state store too: `status`, `diff` and `verify`, `diff --module` and `status --module --scan`
+(the module's env vars), `compliance` and `compliance export` (the file, secret and watch-path
+targets, and the export directory), every `backup` verb (each unit's source and
+destination), and `module create --apply` and `init --apply` / `--apply-profile` /
+`--apply-module` (the plan they apply). A run they refuse for want of the home creates no `state.db`, and leaves an
+existing one as it was.
 
 An age key configured under `~/` (`spec.secrets.sops.ageKey`) has no location with no home set.
 The `age key` row then reads `no location` with the refusal as its detail: `✗` when a declared
@@ -2996,8 +3019,14 @@ and `cfgd init --dry-run`) adds no field to the document either, answering
 plan was recorded by a preview (`cfgd plan` or `cfgd apply --dry-run`), and a
 preview never migrates, so an alignment written ahead of the replay would make it
 refuse its own plan as stale. The next
-plain `cfgd apply` writes the fields. Every write the check makes prints the
-fields it added.
+plain `cfgd apply` writes the fields. `cfgd doctor` reports the fields under
+every policy but `Ignore` (`Prompt`, `Warn` and `Update`) and writes nothing: it asks nothing, records no answer and leaves
+the document as it is. Every write the check makes prints the fields it added.
+
+With no home directory, the answer is read from an existing store without
+opening it for writing, and recorded once the command has run, whether it
+succeeded or failed for another reason. A command refused for want of the home
+records nothing, so it asks again next time.
 
 Four invocations are withheld from that load-time check, because the migration
 question is their own subject: this verb, `cfgd config edit`, and
@@ -3282,7 +3311,7 @@ domain instead: `config`, `file`, `package`, `secret`, `system`, `state`,
 | `encryption_failed` | The secret backend could not encrypt the file. |
 | `filename_required` | `kubectl cfgd` was given no `-f`/`--filename`. |
 | `foreign_config` | The `--plan` file was not written for this config. |
-| `home_unresolved` | `cfgd generate` was given no `--home` and no home directory resolves (`HOME` unset, or `USERPROFILE` and `HOME` on Windows); `name` is `--home`. |
+| `home_unresolved` | No home directory resolves (`HOME` unset, or `USERPROFILE` and `HOME` on Windows): `cfgd generate` was given no `--home` (`name` is `--home`), or a `--plan` replay has no state store to check the plan against (`name` is `plan`). |
 | `host_moved` | The `--plan` file describes a different host. |
 | `in_use` | The module named for deletion is referenced by a profile. |
 | `inherited` | The profile named for deletion is inherited by another profile. |

@@ -1135,13 +1135,13 @@ fn capture_warn_logs<F: FnOnce()>(f: F) -> String {
     let writer = CaptureWriter(buf.clone());
     let subscriber = tracing_subscriber::fmt()
         // long-line-ok: a hatch is read off its own line, so it cannot wrap
-        // unfolded-writer-ok: a test capture read back as a String, not a stream anyone is looking at
+        // unfolded-writer-ok: a test capture read back as a String that nobody watches
         .with_writer(writer)
         .with_max_level(tracing::Level::WARN) // WARN+ only; DEBUG is filtered out
         .finish();
     tracing::subscriber::with_default(subscriber, f);
     // long-line-ok: a hatch is read off its own line, so it cannot wrap
-    // raw-capture-ok: this buf is a tracing-log Arc<Mutex<Vec<u8>>>, not a Printer::for_test* text capture — captured_text doesn't type-check against it
+    // raw-capture-ok: this buf is a tracing-log Arc<Mutex<Vec<u8>>>, and captured_text type-checks only against a Printer::for_test* capture
     let bytes = buf.lock().expect("lock").clone();
     String::from_utf8(bytes).expect("utf8 logs")
 }

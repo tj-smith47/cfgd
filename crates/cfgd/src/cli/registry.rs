@@ -561,9 +561,8 @@ pub(in crate::cli) fn open_state_store(
     state_dir: Option<&Path>,
     scope: cfgd_core::Scope,
 ) -> anyhow::Result<StateStore> {
-    Ok(StateStore::open_in_dir(&super::helpers::run_state_dir(
-        state_dir, scope,
-    )?)?)
+    let dir = super::helpers::run_state_dir(state_dir, scope)?;
+    Ok(StateStore::open_in_dir(&dir)?)
 }
 
 // --- Secret backend resolution ---
