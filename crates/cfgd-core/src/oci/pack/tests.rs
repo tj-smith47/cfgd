@@ -174,7 +174,9 @@ fn image_manifest_serializes_camelcase() {
 // -----------------------------------------------------------------------
 
 #[test]
+#[serial_test::serial]
 fn pack_image_pushes_standard_oci_image() {
+    let _registry_env = crate::test_helpers::isolate_registry_host_env();
     let mut server = mockito::Server::new();
     let registry = registry_from_url(&server.url());
     let dir = create_test_pack_dir();
@@ -241,7 +243,9 @@ fn pack_image_pushes_standard_oci_image() {
 }
 
 #[test]
+#[serial_test::serial]
 fn pack_image_propagates_invalid_reference_error() {
+    let _registry_env = crate::test_helpers::isolate_registry_host_env();
     let dir = create_test_pack_dir();
     let result = pack_image(dir.path(), "", &PackOptions::default(), None);
     assert!(
@@ -314,7 +318,9 @@ fn pack_image_descriptor_digests_match_blob_bytes() {
 }
 
 #[test]
+#[serial_test::serial]
 fn pack_image_wire_bytes_hash_to_manifest_descriptor_digests() {
+    let _registry_env = crate::test_helpers::isolate_registry_host_env();
     // Strongest double-hash proof: capture the ACTUAL bytes pushed over the
     // wire for each blob PUT and for the manifest PUT, then assert that
     // sha256(captured config body) == config.digest in the pushed manifest
@@ -449,7 +455,9 @@ fn pack_image_wire_bytes_hash_to_manifest_descriptor_digests() {
 }
 
 #[test]
+#[serial_test::serial]
 fn pack_image_manifest_push_500_returns_manifest_push_failed() {
+    let _registry_env = crate::test_helpers::isolate_registry_host_env();
     // Blob uploads succeed; the manifest PUT returns 500. pack_image must
     // surface that as OciError::ManifestPushFailed, not a generic error.
     let mut server = mockito::Server::new();
@@ -503,7 +511,9 @@ fn pack_image_manifest_push_500_returns_manifest_push_failed() {
 }
 
 #[test]
+#[serial_test::serial]
 fn pack_image_blob_upload_500_returns_blob_upload_failed() {
+    let _registry_env = crate::test_helpers::isolate_registry_host_env();
     // The first blob upload (config) fails its POST initiation with 500.
     // upload_blob maps that to OciError::BlobUploadFailed, which pack_image
     // propagates without ever reaching the manifest PUT.
@@ -827,7 +837,9 @@ fn base_image_config_json(os: &str, arch: &str, diff_id: &str) -> Vec<u8> {
 }
 
 #[test]
+#[serial_test::serial]
 fn pack_image_base_path_layers_onto_base_via_mount() {
+    let _registry_env = crate::test_helpers::isolate_registry_host_env();
     use std::sync::{Arc, Mutex};
 
     let mut server = mockito::Server::new();
@@ -979,7 +991,9 @@ fn pack_image_base_path_layers_onto_base_via_mount() {
 }
 
 #[test]
+#[serial_test::serial]
 fn pack_image_base_index_selects_matching_platform_manifest() {
+    let _registry_env = crate::test_helpers::isolate_registry_host_env();
     use std::sync::{Arc, Mutex};
 
     let mut server = mockito::Server::new();
@@ -1146,7 +1160,9 @@ fn pack_image_base_index_selects_matching_platform_manifest() {
 /// entry names one, reports and writes the base's variant: the pushed
 /// config copies the base's platform, so the outcome names what was written.
 #[test]
+#[serial_test::serial]
 fn pack_image_onto_a_variant_base_reports_the_variant_its_config_carries() {
+    let _registry_env = crate::test_helpers::isolate_registry_host_env();
     use std::sync::{Arc, Mutex};
 
     let mut server = mockito::Server::new();
@@ -1317,7 +1333,9 @@ fn pack_image_onto_a_variant_base_reports_the_variant_its_config_carries() {
 }
 
 #[test]
+#[serial_test::serial]
 fn pack_image_base_index_no_matching_platform_errors() {
+    let _registry_env = crate::test_helpers::isolate_registry_host_env();
     let mut server = mockito::Server::new();
     let registry = registry_from_url(&server.url());
     let dir = create_test_pack_dir();

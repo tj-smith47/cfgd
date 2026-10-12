@@ -33,7 +33,9 @@ fn strip_ansi(s: &str) -> String {
 }
 
 #[test]
+#[serial_test::serial]
 fn module_push_missing_yaml_human() {
+    let _registry_env = cfgd_core::test_helpers::isolate_registry_host_env();
     let dir = tempfile::tempdir().unwrap();
     let (printer, cap) = Printer::for_test_doc();
 
@@ -140,7 +142,9 @@ fn pushable_module() -> tempfile::TempDir {
 /// sits between the header block and the closing hint, so a `--sign` run
 /// reads as two verdicts in a row rather than a verdict, a fact, a verdict.
 #[test]
+#[serial_test::serial]
 fn module_push_pushed_human() {
+    let _registry_env = cfgd_core::test_helpers::isolate_registry_host_env();
     let dir = pushable_module();
     let (server, artifact) = mock_registry();
     let registry = server.url().trim_start_matches("http://").to_string();

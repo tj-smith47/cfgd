@@ -39,8 +39,8 @@ impl RegistryAuth {
     pub fn resolve(registry: &str) -> Option<Self> {
         // 1. Environment variables
         if let (Ok(user), Ok(pass)) = (
-            std::env::var("REGISTRY_USERNAME"),
-            std::env::var("REGISTRY_PASSWORD"),
+            std::env::var(super::REGISTRY_USERNAME_ENV),
+            std::env::var(super::REGISTRY_PASSWORD_ENV),
         ) && !user.is_empty()
             && !pass.is_empty()
         {
@@ -83,7 +83,7 @@ impl RegistryAuth {
 }
 
 pub(super) fn docker_config_path() -> crate::errors::Result<std::path::PathBuf> {
-    if let Ok(dir) = std::env::var("DOCKER_CONFIG") {
+    if let Ok(dir) = std::env::var(super::DOCKER_CONFIG_ENV) {
         return Ok(std::path::PathBuf::from(dir).join("config.json"));
     }
     crate::expand_tilde(

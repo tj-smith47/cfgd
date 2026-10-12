@@ -4089,6 +4089,41 @@ pub fn clear_update_optouts() -> [EnvVarGuard; crate::upgrade::OPTOUT_VARS.len()
     crate::upgrade::OPTOUT_VARS.map(EnvVarGuard::unset)
 }
 
+/// Every variable the registry client reads ([`crate::oci::REGISTRY_HOST_ENV`])
+/// unset, and `DOCKER_CONFIG` then pointed at an empty directory, for as long
+/// as the returned value lives.
+///
+/// The client resolves the credential each request carries from the process
+/// environment, falling back to `~/.docker/config.json`, so a credential or a
+/// Docker config a developer's shell or a CI runner exports changes what a
+/// mock registry receives. `DOCKER_CONFIG` names an empty directory, since an
+/// unset one sends the client to the home's own Docker config. Every test
+/// reaching a registry read takes this first and runs under
+/// `#[serial_test::serial]`; `every_test_reaching_a_registry_read_isolates_the_registry_host_env`
+/// fails until it does.
+pub fn isolate_registry_host_env() -> RegistryHostEnv {
+    let docker_config = tempfile::tempdir().expect("create an empty Docker config directory");
+    let unset = crate::oci::REGISTRY_HOST_ENV.map(EnvVarGuard::unset);
+    let docker = EnvVarGuard::set(
+        crate::oci::DOCKER_CONFIG_ENV,
+        &docker_config.path().to_string_lossy(),
+    );
+    RegistryHostEnv {
+        _docker: docker,
+        _unset: unset,
+        _docker_config: docker_config,
+    }
+}
+
+/// What [`isolate_registry_host_env`] holds. The `DOCKER_CONFIG` guard drops
+/// first, restoring the value the unset guards then restore in turn, and the
+/// empty directory outlives both.
+pub struct RegistryHostEnv {
+    _docker: EnvVarGuard,
+    _unset: [EnvVarGuard; crate::oci::REGISTRY_HOST_ENV.len()],
+    _docker_config: tempfile::TempDir,
+}
+
 /// `PATH` is read by every `command_path` resolution and by every spawn, so a
 /// write to it is only sound inside the window [`path_env_mutation_guard`]
 /// holds: the guard is what blocks a concurrent reader, and declaring it AFTER

@@ -1468,14 +1468,17 @@ fn update_check_entries() -> Vec<(String, Option<String>)> {
 const OPTOUT_HATCH: &str = "optouts-held:";
 
 /// The function openers in `region` whose function reaches one of `entries` or
-/// sends [`LOOP_VERSION_TICK`] without also calling `clear_update_optouts` or
-/// carrying [`OPTOUT_HATCH`] in a comment, as 0-based line numbers, and how
-/// many functions reached the check at all. Calls are read off `region` with
-/// its comments and literals blanked, and a function runs from its opener to
-/// its own closing brace.
-fn update_check_callers_without_optout_clear(
+/// spells one of `tells` without also calling the free function `guard` or
+/// carrying `hatch` in a comment, as 0-based line numbers, and how many
+/// functions reached an entry at all. Calls are read off `region` with its
+/// comments and literals blanked, and a function runs from its opener to its
+/// own closing brace.
+fn entry_callers_without_guard(
     region: &str,
     entries: &[(String, Option<String>)],
+    tells: &[&str],
+    guard: &str,
+    hatch: &str,
 ) -> (usize, Vec<usize>) {
     let code = blank_non_code(region);
     let lines: Vec<&str> = code.lines().collect();
@@ -1493,17 +1496,14 @@ fn update_check_callers_without_optout_clear(
             Some(name) => segment.replacen(&format!("fn {name}"), "fn", 1),
             None => segment,
         };
-        let reaches = segment.contains(LOOP_VERSION_TICK)
+        let reaches = tells.iter().any(|tell| segment.contains(tell))
             || entries.iter().any(|(name, owner)| {
                 cfgd_core::test_helpers::reaches_fn(&segment, name, owner.as_deref())
             });
         if reaches {
             judged += 1;
-            let hatched = commented[from..=to]
-                .iter()
-                .any(|l| carries_hatch(l, OPTOUT_HATCH));
-            if !hatched && !cfgd_core::test_helpers::calls_free_fn(&segment, "clear_update_optouts")
-            {
+            let hatched = commented[from..=to].iter().any(|l| carries_hatch(l, hatch));
+            if !hatched && !cfgd_core::test_helpers::calls_free_fn(&segment, guard) {
                 offenders.push(from);
             }
         }
@@ -1528,7 +1528,13 @@ fn every_test_reaching_the_update_check_clears_the_opt_out_variables() {
     let mut offenders: Vec<String> = Vec::new();
     for path in cfgd_core::test_helpers::rust_sources_under(&crates_dir) {
         let region = cfgd_core::test_helpers::test_region_of(&path);
-        let (found, missing) = update_check_callers_without_optout_clear(&region, &entries);
+        let (found, missing) = entry_callers_without_guard(
+            &region,
+            &entries,
+            &[LOOP_VERSION_TICK],
+            "clear_update_optouts",
+            OPTOUT_HATCH,
+        );
         judged += found;
         let label = cfgd_core::to_posix_string(path.strip_prefix(&crates_dir).unwrap_or(&path));
         for n in missing {
@@ -1572,8 +1578,13 @@ fn the_update_check_walk_reads_an_offence_it_plants_itself() {
                 // optouts-held: a comment below the function hatches nothing above it\n\
                 fn after() {}\n\
                 fn looped() {\n    senders.version_check_tx.send(());\n}\n";
-    let (judged, offenders) =
-        update_check_callers_without_optout_clear(code, &[("should_check".to_string(), None)]);
+    let (judged, offenders) = entry_callers_without_guard(
+        code,
+        &[("should_check".to_string(), None)],
+        &[LOOP_VERSION_TICK],
+        "clear_update_optouts",
+        OPTOUT_HATCH,
+    );
     assert_eq!(
         judged, 6,
         "five functions call the gate and one sends the loop a version tick; \
@@ -1583,6 +1594,99 @@ fn the_update_check_walk_reads_an_offence_it_plants_itself() {
         offenders,
         vec![0, 14, 18, 23],
         "an offence is a function that neither clears nor says why in a comment of its own"
+    );
+}
+
+/// What a function reaching a registry read under isolation it does not take
+/// itself (a fixture whose constructor took it) says for itself.
+const REGISTRY_ENV_HATCH: &str = "registry-env-held:";
+
+/// Every production function through which a test reaches a registry read
+/// that resolves its credential off the host: each function of the registry
+/// client (`cfgd-core/src/oci/`) reaching `RegistryAuth::resolve`, folded until
+/// the set stops growing, and each function anywhere in the workspace that
+/// calls one of those directly (a verb, the CSI cache, the operator's reader).
+///
+/// The fold stays inside the client: carried on past its callers it follows
+/// every verb up to `cli::execute` and `main`, and every dispatch test of every
+/// verb would be judged by a read its verb never makes. A test reaching the
+/// client through a longer chain drives the real binary, which `cfgd_bin()`
+/// isolates through the same list.
+fn registry_read_entries() -> Vec<(String, Option<String>)> {
+    let declarations = workspace_seam_declarations(WORKSPACE_CRATES);
+    let seeds = [("resolve".to_string(), Some("RegistryAuth".to_string()))];
+    let client = cfgd_core::test_helpers::callers_reaching(
+        &declarations.rows_under("cfgd-core/src/oci", 9),
+        &seeds,
+    );
+    assert!(
+        client.len() > seeds.len(),
+        "nothing in the registry client reaches `RegistryAuth::resolve`; the seed names nothing"
+    );
+    let mut entries = client.clone();
+    for (name, owner, code) in &declarations.rows {
+        if client
+            .iter()
+            .any(|(n, o)| cfgd_core::test_helpers::reaches_fn(code, n, o.as_deref()))
+        {
+            entries.push((name.clone(), owner.clone()));
+        }
+    }
+    entries.sort();
+    entries.dedup();
+    entries
+}
+
+/// Every test function that reaches a registry read isolates the variables the
+/// registry client reads first, through
+/// `cfgd_core::test_helpers::isolate_registry_host_env`.
+///
+/// The client takes the credential each request carries from
+/// `REGISTRY_USERNAME`/`REGISTRY_PASSWORD` or the Docker config `DOCKER_CONFIG`
+/// names, so on a machine exporting either a mock registry receives a header
+/// the test never sent, and a pin matching the request's `authorization`
+/// fails for a reason that is no part of its claim. The judged unit is a
+/// function whose own body reaches one of [`registry_read_entries`], so a
+/// driver that isolates carries every test calling it. Judged over every
+/// crate's test regions, with a floor on the functions found.
+#[test]
+fn every_test_reaching_a_registry_read_isolates_the_registry_host_env() {
+    let entries = registry_read_entries();
+    let crates_dir = cfgd_core::test_helpers::workspace_root().join("crates");
+    let mut judged = 0usize;
+    let mut offenders: Vec<String> = Vec::new();
+    for path in cfgd_core::test_helpers::rust_sources_under(&crates_dir) {
+        let region = cfgd_core::test_helpers::test_region_of(&path);
+        let (found, missing) = entry_callers_without_guard(
+            &region,
+            &entries,
+            &[],
+            "isolate_registry_host_env",
+            REGISTRY_ENV_HATCH,
+        );
+        judged += found;
+        let label = cfgd_core::to_posix_string(path.strip_prefix(&crates_dir).unwrap_or(&path));
+        for n in missing {
+            offenders.push(format!(
+                "{label}:{}: {}",
+                n + 1,
+                region.lines().nth(n).unwrap_or("").trim()
+            ));
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "a test reaching a registry read takes \
+         `cfgd_core::test_helpers::isolate_registry_host_env()` first, or says which guard it \
+         runs under with `// {REGISTRY_ENV_HATCH} <why>`; otherwise an exported credential or \
+         Docker config reaches its requests ({} entries reach the read: {entries:?}):\n{}",
+        entries.len(),
+        offenders.join("\n")
+    );
+    assert!(
+        judged >= 128,
+        "the walk found {judged} test functions reaching a registry read, under the 128 the \
+         workspace holds; it has gone blind"
     );
 }
 
@@ -23709,7 +23813,9 @@ fn cmd_module_search_no_registries_structured() {
 }
 
 #[test]
+#[serial_test::serial]
 fn cmd_module_build_no_module_yaml_fails() {
+    let _registry_env = cfgd_core::test_helpers::isolate_registry_host_env();
     let dir = tempfile::tempdir().unwrap();
     let printer = test_printer();
 
@@ -52485,7 +52591,11 @@ fn binary_spawn_tells(body: &str) -> Vec<&'static str> {
 /// are set by one loop over the constant this pin compiles in, so a variable
 /// added there is set by the constructor with no second list to keep in step.
 /// Every `CFGD_*` the test process inherited is removed before any of that,
-/// so a developer's exported `CFGD_CONFIG_DIR` or `CFGD_YES` reaches no spawn.
+/// so a developer's exported `CFGD_CONFIG_DIR` or `CFGD_YES` reaches no spawn,
+/// and so is every variable the registry client reads, by a loop over
+/// `cfgd_core::oci::REGISTRY_HOST_ENV`, the list the client's own reads are
+/// held to; `DOCKER_CONFIG` is then pointed at an empty directory, so neither an
+/// exported credential nor the developer's Docker config reaches a request.
 /// The files calling the constructor are floored, so the population cannot go
 /// dark while the constructor stays.
 #[test]
@@ -52501,13 +52611,19 @@ fn every_integration_test_spawns_the_binary_through_the_one_isolating_constructo
     // taken out of both sides so a wrap does not read as a missing line.
     // `eq_ignore_ascii_case(` is required because Windows folds the case of
     // an environment name, so a case-sensitive match lets `cfgd_yes` through.
-    const SWEEP: [&str; 5] = [
+    const SWEEP: [&str; 7] = [
         "for (var, _) in std::env::vars_os() {",
         "eq_ignore_ascii_case(",
         "cmd.env_remove(var);",
         "for var in REMOVED_ENV {",
         "cmd.env_remove(var);",
+        REGISTRY_SWEEP,
+        "cmd.env_remove(var);",
     ];
+    // The registry client's own list, read by the constructor, so a variable
+    // the client starts reading is removed from every spawn with no second
+    // list to keep in step.
+    const REGISTRY_SWEEP: &str = "for var in cfgd_core::oci::REGISTRY_HOST_ENV {";
     const INHERITED_PREFIX: &str = "CFGD_";
     const ISOLATING: [&str; 3] = [
         "for (var, path) in ISOLATED_ENV {",
@@ -52558,6 +52674,7 @@ fn every_integration_test_spawns_the_binary_through_the_one_isolating_constructo
         cfgd_core::CFGD_STATE_DIR_ENV,
         cfgd_core::CFGD_CACHE_DIR_ENV,
         cfgd_core::CFGD_RUNTIME_DIR_ENV,
+        cfgd_core::oci::DOCKER_CONFIG_ENV,
     ] {
         assert!(
             ISOLATED_ENV.iter().any(|(var, _)| *var == required),
@@ -52699,6 +52816,16 @@ fn every_integration_test_spawns_the_binary_through_the_one_isolating_constructo
         {
             offenders.push(format!(
                 "{name} — `cfgd_bin` removes the inherited `{INHERITED_PREFIX}*` after setting variables"
+            ));
+        }
+        // Run after `ISOLATED_ENV`, the sweep would take back the empty
+        // `DOCKER_CONFIG` the list points every spawn at.
+        if squeezed
+            .find(&squeeze(REGISTRY_SWEEP))
+            .is_some_and(|at| at > first_env)
+        {
+            offenders.push(format!(
+                "{name} — `cfgd_bin` removes the registry client's variables after setting variables"
             ));
         }
         let spawns: usize = BINARY_SPAWN_TELLS

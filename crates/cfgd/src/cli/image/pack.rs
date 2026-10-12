@@ -196,7 +196,9 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn cmd_image_pack_nonexistent_dir_errors() {
+        let _registry_env = cfgd_core::test_helpers::isolate_registry_host_env();
         let printer = test_printer();
         let err = cmd_image_pack(
             &printer,
@@ -214,7 +216,9 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn cmd_image_pack_nonexistent_dir_error_kind_is_not_found() {
+        let _registry_env = cfgd_core::test_helpers::isolate_registry_host_env();
         let (printer, _cap) = Printer::for_test_doc();
         let err = cmd_image_pack(
             &printer,
@@ -240,7 +244,9 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn cmd_image_pack_path_is_file_error_kind_is_invalid() {
+        let _registry_env = cfgd_core::test_helpers::isolate_registry_host_env();
         // A path that exists but is a regular file (not a directory) must hit
         // the !is_dir() branch and surface error kind "invalid".
         let file = tempfile::NamedTempFile::new().expect("tempfile");
@@ -269,7 +275,9 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn cmd_image_pack_bad_annotation_error_kind_is_invalid_annotation() {
+        let _registry_env = cfgd_core::test_helpers::isolate_registry_host_env();
         let dir = tempfile::tempdir().expect("tempdir");
         let (printer, _cap) = Printer::for_test_doc();
         let err = cmd_image_pack(
@@ -299,7 +307,9 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn cmd_image_pack_bad_label_errors() {
+        let _registry_env = cfgd_core::test_helpers::isolate_registry_host_env();
         let dir = tempfile::tempdir().expect("tempdir");
         let printer = test_printer();
         let err = cmd_image_pack(
@@ -324,7 +334,9 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn cmd_image_pack_bad_label_error_kind_is_invalid_label() {
+        let _registry_env = cfgd_core::test_helpers::isolate_registry_host_env();
         let dir = tempfile::tempdir().expect("tempdir");
         let (printer, _cap) = Printer::for_test_doc();
         let err = cmd_image_pack(
@@ -356,7 +368,9 @@ mod tests {
         use super::no_opts;
 
         #[test]
+        #[serial_test::serial]
         fn cmd_image_pack_success_emits_doc_payload() {
+            let _registry_env = cfgd_core::test_helpers::isolate_registry_host_env();
             let dir = tempfile::tempdir().expect("tempdir");
             std::fs::write(dir.path().join("config.yaml"), "key: value\n")
                 .expect("write config file");
@@ -433,7 +447,9 @@ mod tests {
         }
 
         #[test]
+        #[serial_test::serial]
         fn cmd_image_pack_with_lock_writes_pinned_entry() {
+            let _registry_env = cfgd_core::test_helpers::isolate_registry_host_env();
             let dir = tempfile::tempdir().expect("tempdir");
             std::fs::write(dir.path().join("config.yaml"), "key: value\n")
                 .expect("write config file");
@@ -597,6 +613,7 @@ mod tests {
         #[test]
         #[serial]
         fn cmd_image_pack_refuses_a_manifest_digest_naming_other_bytes_before_lock_and_sign() {
+            let _registry_env = cfgd_core::test_helpers::isolate_registry_host_env();
             let shim = CosignTestShim::builder()
                 .with_argv_logging(true)
                 .with_exit(0)
@@ -644,6 +661,7 @@ mod tests {
         #[test]
         #[serial]
         fn cmd_image_pack_sign_success_emits_signed_true_doc() {
+            let _registry_env = cfgd_core::test_helpers::isolate_registry_host_env();
             // Cosign shim exits 0; the pack happy path then signs successfully
             // and the emitted JSON doc must record signed=true.
             let _shim = CosignTestShim::builder()
@@ -679,6 +697,7 @@ mod tests {
         #[test]
         #[serial]
         fn cmd_image_pack_attest_success_emits_attested_true_doc() {
+            let _registry_env = cfgd_core::test_helpers::isolate_registry_host_env();
             // Cosign shim exits 0; the pack happy path then attests successfully
             // and the emitted JSON doc must record attested=true.
             let _shim = CosignTestShim::builder()

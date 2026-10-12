@@ -116,7 +116,9 @@ fn pushed_digest(cap: &DocCapture) -> String {
 }
 
 #[test]
+#[serial_test::serial]
 fn image_pack_human() {
+    let _registry_env = cfgd_core::test_helpers::isolate_registry_host_env();
     let dir = packable_dir();
     let (server, artifact) = mock_registry();
     let registry = server.url().trim_start_matches("http://").to_string();
@@ -133,7 +135,9 @@ fn image_pack_human() {
 }
 
 #[test]
+#[serial_test::serial]
 fn image_pack_with_lock_human() {
+    let _registry_env = cfgd_core::test_helpers::isolate_registry_host_env();
     let dir = packable_dir();
     let lock_dir = tempfile::tempdir().expect("lock tempdir");
     let lock_path = lock_dir.path().join("cfgd-images.lock");
@@ -181,6 +185,7 @@ fn image_pack_with_lock_human() {
 #[test]
 #[serial_test::serial]
 fn image_pack_signed_human() {
+    let _registry_env = cfgd_core::test_helpers::isolate_registry_host_env();
     let _cosign = cfgd_core::test_helpers::CosignTestShim::install();
     let dir = packable_dir();
     let (server, artifact) = mock_registry();
@@ -201,7 +206,9 @@ fn image_pack_signed_human() {
 }
 
 #[test]
+#[serial_test::serial]
 fn image_pack_json() {
+    let _registry_env = cfgd_core::test_helpers::isolate_registry_host_env();
     let dir = packable_dir();
     let (server, artifact) = mock_registry();
     let registry = server.url().trim_start_matches("http://").to_string();

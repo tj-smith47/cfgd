@@ -42,7 +42,9 @@ fn strip_ansi(s: &str) -> String {
 }
 
 #[test]
+#[serial_test::serial]
 fn module_build_missing_yaml_human() {
+    let _registry_env = cfgd_core::test_helpers::isolate_registry_host_env();
     let dir = tempfile::tempdir().unwrap();
 
     let (printer, cap) = Printer::for_test_doc();

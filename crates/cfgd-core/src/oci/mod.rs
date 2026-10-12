@@ -259,9 +259,28 @@ pub(super) fn manifest_accept() -> String {
     format!("{MEDIA_TYPE_OCI_MANIFEST}, {MEDIA_TYPE_OCI_INDEX}, {MEDIA_TYPE_DOCKER_MANIFEST_LIST}")
 }
 
+/// The variable naming registries cfgd reaches over plain HTTP (comma-separated).
+pub const OCI_INSECURE_REGISTRIES_ENV: &str = "OCI_INSECURE_REGISTRIES";
+/// The username half of the credential cfgd sends every registry.
+pub const REGISTRY_USERNAME_ENV: &str = "REGISTRY_USERNAME";
+/// The password half of the credential cfgd sends every registry.
+pub const REGISTRY_PASSWORD_ENV: &str = "REGISTRY_PASSWORD";
+/// The directory cfgd reads the Docker `config.json` from, in place of `~/.docker`.
+pub const DOCKER_CONFIG_ENV: &str = "DOCKER_CONFIG";
+
+/// Every environment variable the registry client reads: which registries
+/// take plain HTTP and which credential each request carries. Each is a fact
+/// about the host the client runs on.
+pub const REGISTRY_HOST_ENV: [&str; 4] = [
+    OCI_INSECURE_REGISTRIES_ENV,
+    REGISTRY_USERNAME_ENV,
+    REGISTRY_PASSWORD_ENV,
+    DOCKER_CONFIG_ENV,
+];
+
 /// Check if a registry is listed in `OCI_INSECURE_REGISTRIES` (comma-separated).
 fn is_insecure_registry(registry: &str) -> bool {
-    std::env::var("OCI_INSECURE_REGISTRIES")
+    std::env::var(OCI_INSECURE_REGISTRIES_ENV)
         .unwrap_or_default()
         .split(',')
         .any(|r| r.trim() == registry)

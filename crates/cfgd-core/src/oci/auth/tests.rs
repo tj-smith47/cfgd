@@ -83,6 +83,7 @@ fn base64_empty() {
 #[test]
 #[serial]
 fn registry_auth_from_env() {
+    let _registry_env = crate::test_helpers::isolate_registry_host_env();
     // Save and restore env
     let old_user = std::env::var("REGISTRY_USERNAME").ok();
     let old_pass = std::env::var("REGISTRY_PASSWORD").ok();
@@ -772,6 +773,7 @@ fn decode_docker_auth_with_token_password() {
 #[test]
 #[serial]
 fn registry_auth_resolve_reads_docker_config_file() {
+    let _registry_env = crate::test_helpers::isolate_registry_host_env();
     use crate::test_helpers::EnvVarGuard;
     // Unset env vars so the file-based path is the only one that can match.
     let _user = EnvVarGuard::unset("REGISTRY_USERNAME");
@@ -793,6 +795,7 @@ fn registry_auth_resolve_reads_docker_config_file() {
 #[test]
 #[serial]
 fn registry_auth_resolve_returns_none_when_no_match_in_config() {
+    let _registry_env = crate::test_helpers::isolate_registry_host_env();
     use crate::test_helpers::EnvVarGuard;
     let _user = EnvVarGuard::unset("REGISTRY_USERNAME");
     let _pass = EnvVarGuard::unset("REGISTRY_PASSWORD");
@@ -815,6 +818,7 @@ fn registry_auth_resolve_returns_none_when_no_match_in_config() {
 #[test]
 #[serial]
 fn registry_auth_resolve_returns_none_when_env_vars_empty() {
+    let _registry_env = crate::test_helpers::isolate_registry_host_env();
     use crate::test_helpers::EnvVarGuard;
     // Both vars present but empty must not satisfy the resolution.
     let _user = EnvVarGuard::set("REGISTRY_USERNAME", "");
@@ -833,6 +837,7 @@ fn registry_auth_resolve_returns_none_when_env_vars_empty() {
 #[test]
 #[serial]
 fn registry_auth_resolve_credential_helper_branch_invokes_helper() {
+    let _registry_env = crate::test_helpers::isolate_registry_host_env();
     use crate::test_helpers::EnvVarGuard;
     let _user = EnvVarGuard::unset("REGISTRY_USERNAME");
     let _pass = EnvVarGuard::unset("REGISTRY_PASSWORD");
@@ -1011,6 +1016,7 @@ fn credential_helper_invalid_json_returns_none() {
 #[test]
 #[serial]
 fn resolve_uses_cred_helper_when_config_names_it() {
+    let _registry_env = crate::test_helpers::isolate_registry_host_env();
     use crate::test_helpers::{EnvVarGuard, install_named_path_shim};
     // End-to-end: env empty, docker config.json has no direct auth but names a
     // credHelper for the registry; resolution must spawn the helper and return

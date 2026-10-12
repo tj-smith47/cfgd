@@ -301,7 +301,9 @@ fn push_module_inner_rejects_missing_module_yaml() {
 // --- push_module (top-level wrapper) ---
 
 #[test]
+#[serial_test::serial]
 fn push_module_top_level_parses_ref_and_returns_manifest_digest() {
+    let _registry_env = crate::test_helpers::isolate_registry_host_env();
     // Drives the wrapper: parse the artifact_ref string,
     // resolve auth (which is None for this 127.0.0.1 mock registry), build
     // the http agent, then delegate to push_module_inner. Asserts the
@@ -376,7 +378,9 @@ fn push_module_top_level_parses_ref_and_returns_manifest_digest() {
 /// With no `--platform`, the annotation written and the platform reported are
 /// one resolution of this host — the caller has no second derivation to make.
 #[test]
+#[serial_test::serial]
 fn push_module_with_no_platform_reports_the_host_platform_it_annotated() {
+    let _registry_env = crate::test_helpers::isolate_registry_host_env();
     let mut server = mockito::Server::new();
     let registry = registry_from_url(&server.url());
     let module_dir = create_test_module_dir();
@@ -440,7 +444,9 @@ fn push_module_with_no_platform_reports_the_host_platform_it_annotated() {
 }
 
 #[test]
+#[serial_test::serial]
 fn push_module_top_level_propagates_invalid_reference_err() {
+    let _registry_env = crate::test_helpers::isolate_registry_host_env();
     // OciReference::parse rejects the empty string — the wrapper must surface
     // the parse Err before doing any I/O. Tempdir is a placeholder; nothing
     // is dialed.
@@ -453,7 +459,9 @@ fn push_module_top_level_propagates_invalid_reference_err() {
 }
 
 #[test]
+#[serial_test::serial]
 fn push_module_registry_failure_finishes_spinner_as_fail() {
+    let _registry_env = crate::test_helpers::isolate_registry_host_env();
     // Drives the error arm: when push_module_inner
     // errors, the spinner must close with Role::Fail rather than being
     // dropped (which would render as an unmarked Info line instead).
@@ -502,7 +510,9 @@ fn push_module_registry_failure_finishes_spinner_as_fail() {
 // --- push_module_multiplatform (mockito) ---
 
 #[test]
+#[serial_test::serial]
 fn push_module_multiplatform_pushes_index_with_per_platform_manifests() {
+    let _registry_env = crate::test_helpers::isolate_registry_host_env();
     // Drives push_module_multiplatform: iterate two
     // (build_dir, platform) pairs, push each as its own platform-tagged
     // manifest via push_module_inner, then push the OCI index manifest list
@@ -595,7 +605,9 @@ fn push_module_multiplatform_pushes_index_with_per_platform_manifests() {
 }
 
 #[test]
+#[serial_test::serial]
 fn push_module_multiplatform_propagates_invalid_platform_target_err() {
+    let _registry_env = crate::test_helpers::isolate_registry_host_env();
     // A "linuxamd64" entry has no `/` so parse_platform_target returns
     // BuildError. The Err must surface from push_module_multiplatform
     // before any blob is uploaded.
@@ -609,7 +621,9 @@ fn push_module_multiplatform_propagates_invalid_platform_target_err() {
 }
 
 #[test]
+#[serial_test::serial]
 fn push_module_multiplatform_index_failure_finishes_spinner_as_fail() {
+    let _registry_env = crate::test_helpers::isolate_registry_host_env();
     // Same finish_fail contract as push_module, but for the index-push
     // failure branch of push_module_multiplatform: the
     // per-platform manifests succeed but the index PUT 500s.
@@ -828,7 +842,9 @@ fn json_of(bytes: &[u8]) -> serde_json::Value {
 }
 
 #[test]
+#[serial_test::serial]
 fn platform_push_to_an_absent_tag_puts_the_one_manifest_at_the_tag() {
+    let _registry_env = crate::test_helpers::isolate_registry_host_env();
     let store = crate::oci::test_helpers::ManifestStore::new("test/acc");
     let module_dir = create_test_module_dir();
 
@@ -859,7 +875,9 @@ fn platform_push_to_an_absent_tag_puts_the_one_manifest_at_the_tag() {
 }
 
 #[test]
+#[serial_test::serial]
 fn platform_push_beside_another_platforms_manifest_puts_an_index_of_both() {
+    let _registry_env = crate::test_helpers::isolate_registry_host_env();
     let store = crate::oci::test_helpers::ManifestStore::new("test/acc");
     let earlier = store.seed("v1", &earlier_manifest(Some("linux/amd64")));
     let module_dir = create_test_module_dir();
@@ -914,7 +932,9 @@ fn platform_push_beside_another_platforms_manifest_puts_an_index_of_both() {
 /// `linux/arm/v6` beside it, each entry carrying its OCI `variant`, and the
 /// new manifest's annotation carries the whole string.
 #[test]
+#[serial_test::serial]
 fn platform_push_of_a_variant_joins_beside_another_variant_of_its_arch() {
+    let _registry_env = crate::test_helpers::isolate_registry_host_env();
     let store = crate::oci::test_helpers::ManifestStore::new("test/acc");
     store.seed("v1", &earlier_manifest(Some("linux/arm/v6")));
     let module_dir = create_test_module_dir();
@@ -955,7 +975,9 @@ fn platform_push_of_a_variant_joins_beside_another_variant_of_its_arch() {
 }
 
 #[test]
+#[serial_test::serial]
 fn platform_push_of_a_variant_into_an_index_appends_beside_another_variant_of_its_arch() {
+    let _registry_env = crate::test_helpers::isolate_registry_host_env();
     let store = crate::oci::test_helpers::ManifestStore::new("test/acc");
     let v6 = serde_json::json!({
         "mediaType": MEDIA_TYPE_OCI_MANIFEST,
@@ -997,7 +1019,9 @@ fn platform_push_of_a_variant_into_an_index_appends_beside_another_variant_of_it
 }
 
 #[test]
+#[serial_test::serial]
 fn platform_push_over_the_same_platforms_manifest_replaces_it() {
+    let _registry_env = crate::test_helpers::isolate_registry_host_env();
     let store = crate::oci::test_helpers::ManifestStore::new("test/acc");
     store.seed("v1", &earlier_manifest(Some("linux/arm64")));
     let module_dir = create_test_module_dir();
@@ -1023,7 +1047,9 @@ fn platform_push_over_the_same_platforms_manifest_replaces_it() {
 }
 
 #[test]
+#[serial_test::serial]
 fn platform_push_to_an_index_replaces_its_platforms_entry_in_place() {
+    let _registry_env = crate::test_helpers::isolate_registry_host_env();
     let store = crate::oci::test_helpers::ManifestStore::new("test/acc");
     let attestation = serde_json::json!({
         "mediaType": MEDIA_TYPE_OCI_MANIFEST,
@@ -1101,7 +1127,9 @@ fn platform_push_to_an_index_replaces_its_platforms_entry_in_place() {
 }
 
 #[test]
+#[serial_test::serial]
 fn platform_push_to_an_index_without_its_platform_appends_an_entry() {
+    let _registry_env = crate::test_helpers::isolate_registry_host_env();
     let store = crate::oci::test_helpers::ManifestStore::new("test/acc");
     let amd64 = serde_json::json!({
         "mediaType": MEDIA_TYPE_OCI_MANIFEST,
@@ -1143,7 +1171,9 @@ fn platform_push_to_an_index_without_its_platform_appends_an_entry() {
 }
 
 #[test]
+#[serial_test::serial]
 fn platform_push_beside_a_manifest_naming_no_platform_is_refused_and_leaves_the_tag() {
+    let _registry_env = crate::test_helpers::isolate_registry_host_env();
     let store = crate::oci::test_helpers::ManifestStore::new("test/acc");
     let earlier = store.seed("v1", &earlier_manifest(None));
     let module_dir = create_test_module_dir();
@@ -1179,7 +1209,9 @@ fn platform_push_beside_a_manifest_naming_no_platform_is_refused_and_leaves_the_
 }
 
 #[test]
+#[serial_test::serial]
 fn platform_push_to_a_digest_reference_is_refused_before_any_request() {
+    let _registry_env = crate::test_helpers::isolate_registry_host_env();
     let store = crate::oci::test_helpers::ManifestStore::new("test/acc");
     let module_dir = create_test_module_dir();
     let artifact = store.artifact("sha256:0123456789abcdef");
@@ -1195,7 +1227,9 @@ fn platform_push_to_a_digest_reference_is_refused_before_any_request() {
 }
 
 #[test]
+#[serial_test::serial]
 fn multiplatform_push_to_a_digest_reference_is_refused_before_any_request() {
+    let _registry_env = crate::test_helpers::isolate_registry_host_env();
     let store = crate::oci::test_helpers::ManifestStore::new("test/acc");
     let amd64 = create_test_module_dir();
     let arm64 = create_test_module_dir();
@@ -1223,7 +1257,9 @@ fn multiplatform_push_to_a_digest_reference_is_refused_before_any_request() {
 /// A push given no platform names this host, and joins the tag like any
 /// other platform: both verbs behave the same.
 #[test]
+#[serial_test::serial]
 fn push_without_a_platform_joins_as_the_host_platform() {
+    let _registry_env = crate::test_helpers::isolate_registry_host_env();
     let store = crate::oci::test_helpers::ManifestStore::new("test/acc");
     let earlier = store.seed("v1", &earlier_manifest(Some("plan9/mips")));
     let module_dir = create_test_module_dir();
@@ -1291,7 +1327,9 @@ fn written_digests_name_the_tag_document_first_then_each_manifest_under_it() {
 }
 
 #[test]
+#[serial_test::serial]
 fn the_push_row_names_the_index_only_when_one_was_written() {
+    let _registry_env = crate::test_helpers::isolate_registry_host_env();
     let store = crate::oci::test_helpers::ManifestStore::new("test/acc");
     let module_dir = create_test_module_dir();
     let (printer, cap) = crate::output::Printer::for_test_doc();
@@ -1364,6 +1402,7 @@ fn blob_upload_mocks(
 /// A tag read failing with `status` stops the push before any blob or
 /// manifest is written.
 fn assert_tag_read_failure_writes_nothing(status: usize) {
+    let _registry_env = crate::test_helpers::isolate_registry_host_env();
     let mut server = mockito::Server::new();
     let registry = registry_from_url(&server.url());
     let repo = "test/tagfail";
@@ -1403,7 +1442,9 @@ fn assert_tag_read_failure_writes_nothing(status: usize) {
 /// The join lists the tag's manifest under the digest its GET named, so a
 /// header naming other bytes than the body stops the push before any write.
 #[test]
+#[serial_test::serial]
 fn push_refuses_a_tag_whose_digest_header_names_other_bytes_before_any_upload() {
+    let _registry_env = crate::test_helpers::isolate_registry_host_env();
     let mut server = mockito::Server::new();
     let registry = registry_from_url(&server.url());
     let repo = "test/taglie";
@@ -1452,17 +1493,21 @@ fn push_refuses_a_tag_whose_digest_header_names_other_bytes_before_any_upload() 
 }
 
 #[test]
+#[serial_test::serial]
 fn push_fails_without_writing_when_the_tag_read_is_a_server_error() {
     assert_tag_read_failure_writes_nothing(500);
 }
 
 #[test]
+#[serial_test::serial]
 fn push_fails_without_writing_when_the_tag_read_is_forbidden() {
     assert_tag_read_failure_writes_nothing(403);
 }
 
 #[test]
+#[serial_test::serial]
 fn push_answers_a_bearer_challenge_on_the_tag_read_and_takes_an_absent_tag() {
+    let _registry_env = crate::test_helpers::isolate_registry_host_env();
     let mut server = mockito::Server::new();
     let registry = registry_from_url(&server.url());
     let repo = "test/tagauth";

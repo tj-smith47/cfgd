@@ -600,7 +600,9 @@ pub(super) mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn push_errors_when_module_yaml_missing() {
+        let _registry_env = cfgd_core::test_helpers::isolate_registry_host_env();
         let dir = tempfile::tempdir().expect("tempdir");
         let printer = test_printer();
 
@@ -619,7 +621,9 @@ pub(super) mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn push_error_meta_kind_is_module_yaml_missing() {
+        let _registry_env = cfgd_core::test_helpers::isolate_registry_host_env();
         let dir = tempfile::tempdir().expect("tempdir");
         let (printer, _cap) = Printer::for_test_doc();
 
@@ -647,7 +651,9 @@ pub(super) mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn push_errors_when_registry_unreachable() {
+        let _registry_env = cfgd_core::test_helpers::isolate_registry_host_env();
         let dir = tempfile::tempdir().expect("tempdir");
         write_module_yaml(dir.path());
         let artifact = unreachable_ref("test/push-unreachable");
@@ -668,7 +674,9 @@ pub(super) mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn push_error_meta_kind_is_push_failed() {
+        let _registry_env = cfgd_core::test_helpers::isolate_registry_host_env();
         let dir = tempfile::tempdir().expect("tempdir");
         write_module_yaml(dir.path());
         let artifact = unreachable_ref("test/push-doc");
@@ -693,7 +701,9 @@ pub(super) mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn pull_errors_when_registry_unreachable() {
+        let _registry_env = cfgd_core::test_helpers::isolate_registry_host_env();
         let dir = tempfile::tempdir().expect("tempdir");
         let artifact = unreachable_ref("test/pull-unreachable");
         let printer = test_printer();
@@ -720,7 +730,9 @@ pub(super) mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn pull_error_meta_kind_is_pull_failed() {
+        let _registry_env = cfgd_core::test_helpers::isolate_registry_host_env();
         let dir = tempfile::tempdir().expect("tempdir");
         let artifact = unreachable_ref("test/pull-doc");
         let (printer, _cap) = Printer::for_test_doc();
@@ -895,6 +907,7 @@ pub(super) mod tests {
         #[test]
         #[serial]
         fn push_sign_flag_emits_sign_failed_when_cosign_exits_nonzero() {
+            let _registry_env = cfgd_core::test_helpers::isolate_registry_host_env();
             let dir = tempfile::tempdir().expect("tempdir");
             write_module_yaml(dir.path());
 
@@ -935,6 +948,7 @@ pub(super) mod tests {
         #[test]
         #[serial]
         fn push_sign_failure_names_the_refused_digest_in_its_error_document() {
+            let _registry_env = cfgd_core::test_helpers::isolate_registry_host_env();
             let dir = tempfile::tempdir().expect("tempdir");
             write_module_yaml(dir.path());
             let (_server, registry, puts) = mock_push_registry_holding(None);
@@ -971,6 +985,7 @@ pub(super) mod tests {
         #[test]
         #[serial]
         fn pull_require_signature_emits_verify_failed_when_cosign_exits_nonzero() {
+            let _registry_env = cfgd_core::test_helpers::isolate_registry_host_env();
             let dir = tempfile::tempdir().expect("tempdir");
             let (_server, artifact, _) = mock_tag_without_blob();
 
@@ -1020,6 +1035,7 @@ pub(super) mod tests {
         #[test]
         #[serial]
         fn push_settle_line_nests_under_the_push_section_header() {
+            let _registry_env = cfgd_core::test_helpers::isolate_registry_host_env();
             let dir = tempfile::tempdir().expect("tempdir");
             write_module_yaml(dir.path());
             let (_server, registry) = mock_push_registry();
@@ -1054,6 +1070,7 @@ pub(super) mod tests {
         #[test]
         #[serial]
         fn push_states_a_named_platform_once_in_the_settled_row() {
+            let _registry_env = cfgd_core::test_helpers::isolate_registry_host_env();
             // Mock a successful push (no sign / attest) to reach the
             // happy-path doc emit and the settled row's detail.
             let dir = tempfile::tempdir().expect("tempdir");
@@ -1099,6 +1116,7 @@ pub(super) mod tests {
         #[test]
         #[serial]
         fn push_without_a_platform_flag_reports_the_host_platform_in_both_renders() {
+            let _registry_env = cfgd_core::test_helpers::isolate_registry_host_env();
             let dir = tempfile::tempdir().expect("tempdir");
             write_module_yaml(dir.path());
             let (_server, registry) = mock_push_registry();
@@ -1145,6 +1163,7 @@ pub(super) mod tests {
             tag: Option<&serde_json::Value>,
             lying_at: Option<&'static str>,
         ) -> (anyhow::Result<()>, String, String, ManifestPuts) {
+            let _registry_env = cfgd_core::test_helpers::isolate_registry_host_env();
             let shim = CosignTestShim::builder()
                 .with_argv_logging(true)
                 .with_exit(0)
@@ -1257,6 +1276,7 @@ pub(super) mod tests {
         #[test]
         #[serial]
         fn push_with_sign_success_emits_signed_true_doc() {
+            let _registry_env = cfgd_core::test_helpers::isolate_registry_host_env();
             // Cosign shim succeeds (exit 0); push happy path; verify the
             // emitted JSON doc records signed=true.
             let _shim = CosignTestShim::builder()
@@ -1296,6 +1316,7 @@ pub(super) mod tests {
         #[test]
         #[serial]
         fn pull_with_signature_verify_success_emits_signature_verified_true() {
+            let _registry_env = cfgd_core::test_helpers::isolate_registry_host_env();
             // The registry serves the tag and answers 404 for its layer blob,
             // so the signature check passes against the tag's digest and the
             // pull fails afterwards, fetching the layer.
@@ -1338,6 +1359,7 @@ pub(super) mod tests {
         #[test]
         #[serial]
         fn pull_checks_signature_and_attestation_against_the_digest_the_tag_read_answered() {
+            let _registry_env = cfgd_core::test_helpers::isolate_registry_host_env();
             let shim = CosignTestShim::builder()
                 .with_argv_logging(true)
                 .with_exit(0)
@@ -1382,6 +1404,7 @@ pub(super) mod tests {
         #[test]
         #[serial]
         fn pull_verify_attestation_emits_verify_failed_when_cosign_exits_nonzero() {
+            let _registry_env = cfgd_core::test_helpers::isolate_registry_host_env();
             let dir = tempfile::tempdir().expect("tempdir");
             let (_server, artifact, _) = mock_tag_without_blob();
 
@@ -1791,7 +1814,9 @@ spec:
     }
 
     #[test]
+    #[serial_test::serial]
     fn pull_happy_path_emits_doc_with_artifact_and_output() {
+        let _registry_env = cfgd_core::test_helpers::isolate_registry_host_env();
         let mut server = mockito::Server::new();
         let registry = server.url().trim_start_matches("http://").to_string();
 
@@ -1874,7 +1899,9 @@ spec:
     }
 
     #[test]
+    #[serial_test::serial]
     fn pull_of_a_platform_the_index_lacks_fails_naming_both() {
+        let _registry_env = cfgd_core::test_helpers::isolate_registry_host_env();
         let mut server = mockito::Server::new();
         let registry = server.url().trim_start_matches("http://").to_string();
         server
@@ -1934,7 +1961,9 @@ spec:
     /// level deeper than the section header instead of sitting flush with it,
     /// matching push's shape exactly.
     #[test]
+    #[serial_test::serial]
     fn pull_settle_line_nests_under_the_pull_section_header() {
+        let _registry_env = cfgd_core::test_helpers::isolate_registry_host_env();
         let mut server = mockito::Server::new();
         let registry = server.url().trim_start_matches("http://").to_string();
 
@@ -2004,7 +2033,9 @@ spec:
     }
 
     #[test]
+    #[serial_test::serial]
     fn push_happy_path_emits_doc_with_digest() {
+        let _registry_env = cfgd_core::test_helpers::isolate_registry_host_env();
         let dir = tempfile::tempdir().expect("tempdir");
         write_module_yaml(dir.path());
 
@@ -2046,7 +2077,9 @@ spec:
     }
 
     #[test]
+    #[serial_test::serial]
     fn push_joining_another_platform_reports_the_index_digest() {
+        let _registry_env = cfgd_core::test_helpers::isolate_registry_host_env();
         let dir = tempfile::tempdir().expect("tempdir");
         write_module_yaml(dir.path());
 

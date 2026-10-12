@@ -2094,7 +2094,9 @@ fn cmd_module_keys_generate_no_cosign_fails() {
 // ─── cmd_module_push / pull — precondition errors ───────────
 
 #[test]
+#[serial_test::serial]
 fn cmd_module_push_no_module_yaml_fails() {
+    let _registry_env = cfgd_core::test_helpers::isolate_registry_host_env();
     let dir = tempfile::tempdir().unwrap();
     let printer = make_printer();
 
@@ -2119,7 +2121,9 @@ fn cmd_module_push_no_module_yaml_fails() {
 }
 
 #[test]
+#[serial_test::serial]
 fn cmd_module_build_no_module_yaml_fails() {
+    let _registry_env = cfgd_core::test_helpers::isolate_registry_host_env();
     let dir = tempfile::tempdir().unwrap();
     let printer = make_printer();
 
