@@ -230,6 +230,7 @@ pub(crate) fn start_systemd_service(printer: &Printer, scope: crate::Scope) -> R
     let runtime_dir = if scope == crate::Scope::User {
         let fallback =
             std::path::PathBuf::from(format!("/run/user/{}", nix::unistd::geteuid().as_raw()));
+        // xdg-ok: the user bus systemctl --user reaches, set or derived as systemd does
         match resolve_runtime_dir(std::env::var("XDG_RUNTIME_DIR").ok().as_deref(), &fallback) {
             RuntimeDirPlan::AlreadySet => None,
             RuntimeDirPlan::Derived(dir) => {

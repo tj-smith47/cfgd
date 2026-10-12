@@ -855,6 +855,42 @@ fn doctor_and_apply_both_refuse_a_state_store_with_no_home() {
     assert_eq!(out.status.code(), Some(1), "{stderr}");
 }
 
+/// With no home, an absolute `XDG_STATE_HOME` places the state store the way
+/// an absolute `XDG_CONFIG_HOME` places the config, so `doctor` passes, `apply`
+/// runs, and the store it opens is `$XDG_STATE_HOME/cfgd/state.db`. Windows is
+/// left out for the reason the test above gives.
+#[cfg(not(windows))]
+#[test]
+fn doctor_and_apply_both_place_the_state_store_under_xdg_state_home_with_no_home() {
+    let xdg = tempfile::tempdir().unwrap();
+    let config_home = xdg.path().join("config");
+    let state_home = xdg.path().join("state");
+    create_valid_config(&config_home.join("cfgd"));
+    let homeless = |args: &[&str]| {
+        cfgd_bin()
+            .unwrap()
+            .env_remove("HOME")
+            .env_remove("USERPROFILE")
+            .env_remove(cfgd_core::CFGD_STATE_DIR_ENV)
+            .env("XDG_CONFIG_HOME", &config_home)
+            .env("XDG_STATE_HOME", &state_home)
+            .args(args)
+            .output()
+            .unwrap()
+    };
+
+    let out = homeless(&["doctor"]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("✓ State store: accessible"), "{stderr}");
+    assert_eq!(out.status.code(), Some(0), "{stderr}");
+
+    let out = homeless(&["apply", "--yes"]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(0), "{stderr}");
+    let db = state_home.join("cfgd").join("state.db");
+    assert!(db.is_file(), "no state store at {}: {stderr}", db.display());
+}
+
 /// A directory override under `~` with no home set fails the run naming the
 /// unset home, from a flag and from its environment variable alike, and
 /// creates nothing: used as written it would name `./~/s` under the working

@@ -198,7 +198,7 @@ pub fn default_config_dir_for(scope: Scope) -> std::path::PathBuf {
     if let Some(home) = test_home_override() {
         return home.join(".config").join("cfgd");
     }
-    if let Some(dir) = xdg_config_home_cfgd() {
+    if let Some(dir) = xdg_home_cfgd("XDG_CONFIG_HOME") {
         return dir;
     }
     #[cfg(target_os = "macos")]
@@ -218,9 +218,16 @@ pub fn default_config_dir_for(scope: Scope) -> std::path::PathBuf {
     }
     #[cfg(windows)]
     {
-        directories::BaseDirs::new()
+        // No home: keep a literal `~` so config discovery answers the same
+        // `HomeUnresolved` it does on Unix.
+        user_base_dirs()
             .map(|b| b.config_dir().join("cfgd"))
-            .unwrap_or_else(|| std::path::PathBuf::from(r"C:\ProgramData\cfgd"))
+            .unwrap_or_else(|| {
+                std::path::PathBuf::from("~")
+                    .join("AppData")
+                    .join("Roaming")
+                    .join("cfgd")
+            })
     }
 }
 
@@ -256,17 +263,36 @@ pub(crate) fn program_data_dir() -> std::path::PathBuf {
         .unwrap_or_else(|| std::path::PathBuf::from(r"C:\ProgramData"))
 }
 
-/// `$XDG_CONFIG_HOME/cfgd` when the variable is a non-empty, absolute path;
-/// `None` otherwise (the spec treats empty/relative values as unset). Honored on
-/// every platform so an explicit `XDG_CONFIG_HOME` works on macOS and Windows
-/// too, not only Linux.
-fn xdg_config_home_cfgd() -> Option<std::path::PathBuf> {
-    let raw = std::env::var_os("XDG_CONFIG_HOME")?;
-    let path = std::path::PathBuf::from(raw);
-    if path.as_os_str().is_empty() || !path.is_absolute() {
-        return None;
-    }
-    Some(path.join("cfgd"))
+/// `$<var>/cfgd` when the environment variable `var` (an XDG base directory
+/// such as `XDG_STATE_HOME`, or Windows `LOCALAPPDATA`) holds a non-empty,
+/// absolute path; `None` otherwise, because the XDG Base Directory spec treats
+/// an empty or relative value as unset.
+///
+/// Every per-user directory cfgd resolves from such a variable reads it through
+/// here, so a relative value is ignored the same way for config, state, cache,
+/// data and runtime.
+///
+/// ```text
+/// XDG_STATE_HOME=/srv/state   xdg_home_cfgd("XDG_STATE_HOME") == Some("/srv/state/cfgd")
+/// XDG_STATE_HOME=state        xdg_home_cfgd("XDG_STATE_HOME") == None
+/// XDG_STATE_HOME=             xdg_home_cfgd("XDG_STATE_HOME") == None
+/// ```
+pub fn xdg_home_cfgd(var: &str) -> Option<std::path::PathBuf> {
+    let path = std::path::PathBuf::from(std::env::var_os(var)?);
+    (!path.as_os_str().is_empty() && path.is_absolute()).then(|| path.join("cfgd"))
+}
+
+/// `directories::BaseDirs` for this user, or `None` when [`home_dir_var`]
+/// resolves no home.
+///
+/// With `HOME` (Unix) or `USERPROFILE` and `HOME` (Windows) unset, `directories`
+/// still finds a home through the passwd database or the Windows known-folder
+/// API, which config discovery and `~` expansion cannot see. Gating on
+/// [`home_dir_var`] keeps every per-user directory on the same home, so a run
+/// that cannot place its config cannot quietly place its state somewhere else.
+pub(crate) fn user_base_dirs() -> Option<directories::BaseDirs> {
+    home_dir_var()?;
+    directories::BaseDirs::new()
 }
 
 /// Resolve the macOS config directory.
@@ -466,11 +492,8 @@ pub fn legacy_data_dir() -> Option<std::path::PathBuf> {
     #[cfg(not(any(target_os = "macos", windows)))]
     const DATA_VAR: &str = "XDG_DATA_HOME";
     #[cfg(not(target_os = "macos"))]
-    if let Some(data) = std::env::var_os(DATA_VAR)
-        .map(std::path::PathBuf::from)
-        .filter(|p| p.is_absolute())
-    {
-        return Some(data.join("cfgd"));
+    if let Some(data) = xdg_home_cfgd(DATA_VAR) {
+        return Some(data);
     }
     let home = std::path::PathBuf::from(home_dir_var()?);
     #[cfg(target_os = "macos")]
@@ -485,7 +508,8 @@ pub fn legacy_data_dir() -> Option<std::path::PathBuf> {
 /// Per-user runtime directory for short-lived sockets and pid files.
 ///
 /// Resolution order:
-/// - Linux: `$XDG_RUNTIME_DIR/cfgd` if set, else `$HOME/.cache/cfgd/runtime`.
+/// - Linux: `$XDG_RUNTIME_DIR/cfgd` when that is an absolute path, else
+///   `$HOME/.cache/cfgd/runtime`.
 ///   The base `$XDG_RUNTIME_DIR` is owner-private by spec; the cache fallback
 ///   nests under a `runtime/` subdir of the cache root so the socket/lock never
 ///   land directly in the cache root (where module/source caches live).
@@ -540,11 +564,8 @@ fn default_runtime_dir_unexpanded(scope: Scope) -> Option<std::path::PathBuf> {
         // systems — prefer it. Test override of HOME does not shadow it
         // because tests that need a deterministic socket path point
         // XDG_RUNTIME_DIR at a tempdir directly.
-        if let Some(xdg) = std::env::var_os("XDG_RUNTIME_DIR") {
-            let xdg = std::path::PathBuf::from(xdg);
-            if !xdg.as_os_str().is_empty() {
-                return Some(xdg.join("cfgd"));
-            }
+        if let Some(dir) = xdg_home_cfgd("XDG_RUNTIME_DIR") {
+            return Some(dir);
         }
         let home = home_dir_var()?;
         Some(
@@ -570,7 +591,7 @@ fn default_runtime_dir_unexpanded(scope: Scope) -> Option<std::path::PathBuf> {
         if let Some(home) = test_home_override() {
             return Some(home.join("AppData").join("Local").join("cfgd"));
         }
-        directories::BaseDirs::new().map(|b| b.data_local_dir().join("cfgd"))
+        user_base_dirs().map(|b| b.data_local_dir().join("cfgd"))
     }
     #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
     {
@@ -596,9 +617,14 @@ fn default_runtime_dir_unexpanded(scope: Scope) -> Option<std::path::PathBuf> {
 /// `CFGD_CACHE_DIR` short-circuits all resolution when set, so the env form
 /// works at every call site (including non-CLI ones and the daemon).
 ///
+/// With no home directory (`HOME` unset, or both `USERPROFILE` and `HOME` on
+/// Windows), an absolute `$XDG_CACHE_HOME` places the root at
+/// `$XDG_CACHE_HOME/cfgd` on every platform, the same fallback the state
+/// directory takes; with neither, resolution errors.
+///
 /// Honors the [`TestHomeGuard`] thread-local override (test builds resolve a
 /// Linux-shaped `~/.cache/cfgd` under the override home) so tests never write
-/// to the real cache. Errors only when no home directory can be resolved.
+/// to the real cache.
 pub fn default_cache_dir() -> crate::errors::Result<std::path::PathBuf> {
     default_cache_dir_for(Scope::User)
 }
@@ -624,9 +650,13 @@ pub fn default_cache_dir_for(scope: Scope) -> crate::errors::Result<std::path::P
     if let Some(home) = test_home_override() {
         return Ok(home.join(".cache").join("cfgd"));
     }
-    let base = directories::BaseDirs::new()
-        .ok_or(crate::errors::StateError::HomeDirectoryUnresolved { role: "cache" })?;
-    Ok(base.cache_dir().join("cfgd"))
+    match user_base_dirs() {
+        Some(base) => Ok(base.cache_dir().join("cfgd")),
+        // With no home, an absolute `XDG_CACHE_HOME` is the one placement
+        // the environment still gives, on every platform.
+        None => xdg_home_cfgd("XDG_CACHE_HOME")
+            .ok_or(crate::errors::StateError::HomeDirectoryUnresolved { role: "cache" }.into()),
+    }
 }
 
 /// The machine-wide runtime root: Linux `/run/cfgd`, macOS
@@ -1005,15 +1035,15 @@ pub(crate) fn home_dir_var() -> Option<String> {
     if let Some(home) = test_home_override() {
         return Some(home.to_string_lossy().into_owned());
     }
+    // An empty value is unset: `~/x` would otherwise expand to the root `/x`.
+    let set = |var: &str| std::env::var(var).ok().filter(|v| !v.is_empty());
     #[cfg(unix)]
     {
-        std::env::var("HOME").ok()
+        set("HOME")
     }
     #[cfg(windows)]
     {
-        std::env::var("USERPROFILE")
-            .or_else(|_| std::env::var("HOME"))
-            .ok()
+        set("USERPROFILE").or_else(|| set("HOME"))
     }
 }
 

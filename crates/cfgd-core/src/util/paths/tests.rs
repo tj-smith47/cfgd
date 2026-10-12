@@ -137,6 +137,62 @@ fn default_state_dir_honors_xdg_state_home_on_linux() {
     );
 }
 
+/// Clears every tier above the home-derived state default, so the answer
+/// comes from the home (or its absence) and `XDG_STATE_HOME` alone.
+fn homeless_state_env() -> [EnvVarGuard; 4] {
+    [
+        EnvVarGuard::unset(crate::CFGD_STATE_DIR_ENV),
+        EnvVarGuard::unset("STATE_DIRECTORY"),
+        EnvVarGuard::unset("HOME"),
+        EnvVarGuard::unset("USERPROFILE"),
+    ]
+}
+
+fn is_home_unresolved(err: &crate::errors::CfgdError, want: &str) -> bool {
+    matches!(
+        err,
+        crate::errors::CfgdError::State(crate::errors::StateError::HomeDirectoryUnresolved { role })
+            if *role == want
+    )
+}
+
+#[test]
+#[serial_test::serial]
+fn default_state_dir_without_a_home_resolves_under_an_absolute_xdg_state_home() {
+    let dir = tempfile::tempdir().unwrap();
+    let _env = homeless_state_env();
+    let _xdg = EnvVarGuard::set("XDG_STATE_HOME", dir.path().to_str().unwrap());
+    assert_eq!(
+        crate::state::default_state_dir().unwrap(),
+        dir.path().join("cfgd")
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn default_state_dir_without_a_home_ignores_an_empty_or_relative_xdg_state_home() {
+    let _env = homeless_state_env();
+    for value in ["", "relative/state"] {
+        let _xdg = EnvVarGuard::set("XDG_STATE_HOME", value);
+        let err = crate::state::default_state_dir().unwrap_err();
+        assert!(
+            is_home_unresolved(&err, "state"),
+            "XDG_STATE_HOME={value:?} must leave the state dir unresolved, got: {err}"
+        );
+    }
+}
+
+#[test]
+#[serial_test::serial]
+fn an_empty_home_variable_counts_as_no_home() {
+    let _env = homeless_state_env();
+    let _xdg = EnvVarGuard::unset("XDG_STATE_HOME");
+    let _home = EnvVarGuard::set("HOME", "");
+    assert_eq!(home_dir_var(), None);
+    let err = crate::state::default_state_dir().unwrap_err();
+    assert!(is_home_unresolved(&err, "state"), "got: {err}");
+}
+
 // --- default_cache_dir: single root, tail = cfgd ---
 
 #[test]
@@ -166,6 +222,83 @@ fn default_cache_dir_honors_cfgd_cache_dir_env() {
     assert_eq!(
         default_cache_dir().unwrap(),
         PathBuf::from("/verbatim/cache/dir")
+    );
+}
+
+fn homeless_cache_env() -> [EnvVarGuard; 4] {
+    [
+        EnvVarGuard::unset(crate::CFGD_CACHE_DIR_ENV),
+        EnvVarGuard::unset("CACHE_DIRECTORY"),
+        EnvVarGuard::unset("HOME"),
+        EnvVarGuard::unset("USERPROFILE"),
+    ]
+}
+
+/// `directories` would find a home through the passwd database (or the
+/// Windows known-folder API) here; the cache follows `home_dir_var` instead,
+/// as the state directory does.
+#[test]
+#[serial_test::serial]
+fn default_cache_dir_without_a_home_or_xdg_cache_home_is_unresolved() {
+    let _env = homeless_cache_env();
+    for value in [None, Some(""), Some("relative/cache")] {
+        let _xdg = match value {
+            Some(v) => EnvVarGuard::set("XDG_CACHE_HOME", v),
+            None => EnvVarGuard::unset("XDG_CACHE_HOME"),
+        };
+        let err = default_cache_dir().unwrap_err();
+        assert!(
+            is_home_unresolved(&err, "cache"),
+            "XDG_CACHE_HOME={value:?} must leave the cache dir unresolved, got: {err}"
+        );
+    }
+}
+
+#[test]
+#[serial_test::serial]
+fn default_cache_dir_without_a_home_resolves_under_an_absolute_xdg_cache_home() {
+    let dir = tempfile::tempdir().unwrap();
+    let _env = homeless_cache_env();
+    let _xdg = EnvVarGuard::set("XDG_CACHE_HOME", dir.path().to_str().unwrap());
+    assert_eq!(default_cache_dir().unwrap(), dir.path().join("cfgd"));
+}
+
+/// With no home the default config path keeps a literal `~`, which config
+/// discovery reports as `HomeUnresolved`, on every platform.
+#[test]
+#[serial_test::serial]
+fn default_config_dir_without_a_home_keeps_a_literal_tilde() {
+    let _cfg = EnvVarGuard::unset("CONFIGURATION_DIRECTORY");
+    let _xdg = EnvVarGuard::unset("XDG_CONFIG_HOME");
+    let _home = EnvVarGuard::unset("HOME");
+    let _profile = EnvVarGuard::unset("USERPROFILE");
+    let dir = default_config_dir();
+    assert!(dir.starts_with("~"), "got: {}", dir.display());
+}
+
+#[test]
+#[serial_test::serial]
+fn default_runtime_dir_without_a_home_is_none() {
+    let _rt = EnvVarGuard::unset(crate::CFGD_RUNTIME_DIR_ENV);
+    let _sd = EnvVarGuard::unset("RUNTIME_DIRECTORY");
+    let _xdg = EnvVarGuard::unset("XDG_RUNTIME_DIR");
+    let _home = EnvVarGuard::unset("HOME");
+    let _profile = EnvVarGuard::unset("USERPROFILE");
+    assert_eq!(default_runtime_dir().unwrap(), None);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+#[serial_test::serial]
+fn default_runtime_dir_ignores_a_relative_xdg_runtime_dir() {
+    let dir = tempfile::tempdir().unwrap();
+    let _rt = EnvVarGuard::unset(crate::CFGD_RUNTIME_DIR_ENV);
+    let _sd = EnvVarGuard::unset("RUNTIME_DIRECTORY");
+    let _xdg = EnvVarGuard::set("XDG_RUNTIME_DIR", "relative/run");
+    let _home = EnvVarGuard::set("HOME", dir.path().to_str().unwrap());
+    assert_eq!(
+        default_runtime_dir().unwrap(),
+        Some(dir.path().join(".cache").join("cfgd").join("runtime"))
     );
 }
 
@@ -1196,4 +1329,98 @@ fn the_daemon_ipc_path_env_expands_a_leading_tilde() {
     assert_expands_a_leading_tilde(crate::CFGD_DAEMON_IPC_PATH_ENV, || {
         crate::daemon::resolve_default_ipc_path(None, Scope::User)
     });
+}
+
+/// Every per-user directory derives from the one home [`home_dir_var`]
+/// resolves, or from an absolute XDG variable read through [`xdg_home_cfgd`].
+///
+/// `directories::BaseDirs::new` finds a home through the passwd database (or
+/// the Windows known-folder API) when `HOME` is unset, so a call outside
+/// [`user_base_dirs`] places one directory on a home the others cannot see;
+/// that is how the cache once resolved where the state store refused. A direct
+/// read of an XDG base-directory variable skips the spec's absolute-path rule.
+/// A read that mirrors another program's own lookup (KConfig's, systemd's user
+/// bus) carries `// xdg-ok: <why>`.
+#[test]
+fn every_per_user_directory_derives_from_the_one_home() {
+    use crate::test_helpers::{
+        carries_hatch, code_span, production_slice_of, rust_sources_under, workspace_root,
+    };
+
+    const HELPER_FILE: &str = "crates/cfgd-core/src/util/paths.rs";
+    const HOME_FINDERS: &[&str] = &["BaseDirs::new", "UserDirs::new", "ProjectDirs::from"];
+    const XDG_VARS: &[&str] = &[
+        "XDG_CONFIG_HOME",
+        "XDG_STATE_HOME",
+        "XDG_CACHE_HOME",
+        "XDG_DATA_HOME",
+        "XDG_RUNTIME_DIR",
+    ];
+
+    let workspace = workspace_root();
+    let mut finders: Vec<String> = Vec::new();
+    let mut xdg_reads: Vec<String> = Vec::new();
+    let crates_dir = workspace.join("crates");
+    let mut roots: Vec<PathBuf> = std::fs::read_dir(&crates_dir)
+        .unwrap_or_else(|e| panic!("{}: {e}", crates_dir.display()))
+        .map(|entry| entry.unwrap().path().join("src"))
+        .filter(|src| src.is_dir())
+        .collect();
+    roots.sort();
+    assert!(
+        roots.len() >= 7,
+        "the walk must cover every crate, found {roots:?}"
+    );
+    for root in roots {
+        for path in rust_sources_under(&root) {
+            let relative = crate::to_posix_string(path.strip_prefix(&workspace).unwrap_or(&path));
+            let slice = production_slice_of(&path);
+            let rows: Vec<&str> = slice.lines().collect();
+            for (n, line) in rows.iter().enumerate() {
+                let code = code_span(line);
+                if HOME_FINDERS.iter().any(|f| code.contains(f)) {
+                    finders.push(format!("{relative}:{}", n + 1));
+                }
+                let reads_env = code.contains("env::var(") || code.contains("env::var_os(");
+                let hatched = carries_hatch(line, "xdg-ok:")
+                    || n.checked_sub(1)
+                        .is_some_and(|p| carries_hatch(rows[p], "xdg-ok:"));
+                if reads_env
+                    && !hatched
+                    && XDG_VARS.iter().any(|v| code.contains(&format!("\"{v}\"")))
+                {
+                    xdg_reads.push(format!("{relative}:{}: {}", n + 1, line.trim()));
+                }
+            }
+        }
+    }
+
+    assert!(
+        xdg_reads.is_empty(),
+        "XDG base-directory reads outside `xdg_home_cfgd`: {xdg_reads:?}"
+    );
+
+    let helper = production_slice_of(&workspace.join(HELPER_FILE));
+    let rows: Vec<&str> = helper.lines().collect();
+    let opens = rows
+        .iter()
+        .position(|l| l.starts_with("pub(crate) fn user_base_dirs("))
+        .unwrap_or_else(|| panic!("{HELPER_FILE}: no `fn user_base_dirs(`"));
+    let closes = opens
+        + rows[opens..]
+            .iter()
+            .position(|l| *l == "}")
+            .unwrap_or_else(|| panic!("{HELPER_FILE}: `user_base_dirs` never closes"));
+    let inside: Vec<String> = (opens + 1..=closes + 1)
+        .map(|n| format!("{HELPER_FILE}:{n}"))
+        .collect();
+    assert_eq!(
+        finders.len(),
+        1,
+        "home lookups outside `user_base_dirs`: {finders:?}"
+    );
+    assert!(
+        inside.contains(&finders[0]),
+        "the one home lookup sits outside `user_base_dirs`: {finders:?}"
+    );
 }

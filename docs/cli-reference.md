@@ -1829,7 +1829,13 @@ CFGD_STATE_DIR='~/state' cfgd paths    # cfgd expands the ~ to your home directo
 ```
 
 See [Configuration → File locations](configuration.md#file-locations) for the
-per-platform defaults and the override precedence.
+per-platform defaults and the override precedence. On a machine with no home
+directory, an absolute `XDG_STATE_HOME` or `XDG_CACHE_HOME` still places the state
+or cache root, on every platform:
+
+```sh
+env -u HOME XDG_CONFIG_HOME=/srv/cfgd/config XDG_STATE_HOME=/srv/cfgd/state cfgd paths
+```
 
 ### Package tokens
 

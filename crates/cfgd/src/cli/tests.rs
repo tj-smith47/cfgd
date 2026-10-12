@@ -7598,6 +7598,7 @@ fn run_apply_home_unset_errors_and_creates_no_state() {
     let _home = EnvVarGuard::unset("HOME");
     let _xdg_cfg = EnvVarGuard::unset("XDG_CONFIG_HOME");
     let _xdg_data = EnvVarGuard::unset("XDG_DATA_HOME");
+    let _xdg_state = EnvVarGuard::unset("XDG_STATE_HOME");
     let _state_env = EnvVarGuard::unset(cfgd_core::CFGD_STATE_DIR_ENV);
 
     // The default config path keeps a literal `~` once home cannot be resolved.

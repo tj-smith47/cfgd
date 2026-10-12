@@ -73,6 +73,7 @@ fn user_config_path(file: &str) -> Option<PathBuf> {
     if path.is_absolute() {
         return Some(path);
     }
+    // xdg-ok: KConfig's own lookup, which takes any non-empty value
     let base = match std::env::var("XDG_CONFIG_HOME") {
         Ok(dir) if !dir.trim().is_empty() => PathBuf::from(dir),
         _ => cfgd_core::expand_tilde(std::path::Path::new("~/.config")),

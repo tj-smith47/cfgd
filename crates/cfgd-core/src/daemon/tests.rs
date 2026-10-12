@@ -16940,6 +16940,7 @@ spec: {}
         let _systemd = EnvVarGuard::unset("STATE_DIRECTORY");
         let _home = EnvVarGuard::unset("HOME");
         let _userprofile = EnvVarGuard::unset("USERPROFILE");
+        let _xdg_state = EnvVarGuard::unset("XDG_STATE_HOME");
 
         // The fallback yields a state with no store_path (the /drift endpoint
         // then returns empty events).
@@ -16971,6 +16972,7 @@ spec: {}
         let _systemd = EnvVarGuard::unset("STATE_DIRECTORY");
         let _home = EnvVarGuard::unset("HOME");
         let _userprofile = EnvVarGuard::unset("USERPROFILE");
+        let _xdg_state = EnvVarGuard::unset("XDG_STATE_HOME");
 
         let (st, warning) = super::super::init_daemon_state_with_warning(None, crate::Scope::User);
         let msg = warning.expect("resolve failure must surface an operator-facing warning");
@@ -17055,6 +17057,7 @@ spec: {}
         let _systemd = EnvVarGuard::unset("STATE_DIRECTORY");
         let _home = EnvVarGuard::unset("HOME");
         let _userprofile = EnvVarGuard::unset("USERPROFILE");
+        let _xdg_state = EnvVarGuard::unset("XDG_STATE_HOME");
 
         let (st, _warning) =
             super::super::init_daemon_state_with_warning(None, crate::Scope::System);

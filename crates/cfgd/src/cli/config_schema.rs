@@ -1198,6 +1198,7 @@ mod tests {
         let _systemd = EnvVarGuard::unset("STATE_DIRECTORY");
         let _home = EnvVarGuard::unset("HOME");
         let _profile = EnvVarGuard::unset("USERPROFILE");
+        let _xdg_state = EnvVarGuard::unset("XDG_STATE_HOME");
 
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("cfgd.yaml");

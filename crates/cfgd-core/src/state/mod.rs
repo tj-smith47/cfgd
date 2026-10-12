@@ -1154,8 +1154,11 @@ pub fn plan_hash(data: &str) -> String {
 ///      Windows `%LOCALAPPDATA%\cfgd\state`).
 ///
 /// Resolves home through the same policy config discovery uses (HOME on Unix,
-/// USERPROFILE/HOME on Windows) so an unset HOME fails uniformly instead of
-/// creating an orphan state.db beside a config error.
+/// USERPROFILE/HOME on Windows). With no home, an absolute `$XDG_STATE_HOME`
+/// places the directory at `$XDG_STATE_HOME/cfgd` on every platform, as an
+/// absolute `$XDG_CONFIG_HOME` places the config; with neither, resolution
+/// errors, so an unset HOME never creates an orphan state.db beside a config
+/// error.
 ///
 /// Honors the [`crate::TestHomeGuard`] thread-local override (test builds
 /// resolve a Linux-shaped `~/.local/state/cfgd` under the override home) so
@@ -1185,14 +1188,10 @@ pub fn default_state_dir_for(scope: Scope) -> Result<PathBuf> {
     if let Some(home) = crate::test_home_override() {
         return Ok(home.join(".local").join("state").join("cfgd"));
     }
-    // `directories` would otherwise fall back to the passwd database when HOME
-    // is unset, resolving a home that config discovery cannot — the two
-    // subsystems must agree.
-    if crate::home_dir_var().is_none() {
-        return Err(StateError::HomeDirectoryUnresolved { role: "state" }.into());
-    }
-    let base = directories::BaseDirs::new()
-        .ok_or(StateError::HomeDirectoryUnresolved { role: "state" })?;
+    let Some(base) = crate::user_base_dirs() else {
+        return crate::xdg_home_cfgd("XDG_STATE_HOME")
+            .ok_or(StateError::HomeDirectoryUnresolved { role: "state" }.into());
+    };
     Ok(match base.state_dir() {
         Some(state) => state.join("cfgd"),
         None => base.data_local_dir().join("cfgd").join("state"),

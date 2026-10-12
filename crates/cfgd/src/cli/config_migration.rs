@@ -50,7 +50,7 @@ pub fn maybe_migrate_macos_config(
     if !cfg!(target_os = "macos") {
         return None;
     }
-    if explicit_config || std::env::var_os("XDG_CONFIG_HOME").is_some() || assume_yes {
+    if explicit_config || cfgd_core::xdg_home_cfgd("XDG_CONFIG_HOME").is_some() || assume_yes {
         return None;
     }
     // A prior "keep" recorded the user's choice; don't re-prompt in shells whose

@@ -677,7 +677,7 @@ below), and `cfgd paths` prints the resolved values on any host.
 | **Config** (`cfgd.yaml`, `profiles/`, `files/`, `modules.lock`) | `$XDG_CONFIG_HOME/cfgd` if set, else the platform default below |
 | **State** (`state.db`, history, drift, apply journal, `apply.lock`, compliance exports, device credential, backups) | platform-native state dir — Linux `$XDG_STATE_HOME/cfgd` or `~/.local/state/cfgd`, macOS `~/Library/Application Support/cfgd/state`, Windows `%LOCALAPPDATA%\cfgd\state` |
 | **Cache** (source cache, module cache) | platform-native cache dir — Linux `$XDG_CACHE_HOME/cfgd` or `~/.cache/cfgd`, macOS `~/Library/Caches/cfgd`, Windows `%LOCALAPPDATA%\cfgd`. Sources live under `<cache>/sources`, modules under `<cache>/modules`. |
-| **Runtime** (daemon socket, pid files) | Linux `$XDG_RUNTIME_DIR/cfgd` (else `~/.cache/cfgd/runtime`), macOS `~/Library/Application Support/cfgd/runtime`, Windows `%LOCALAPPDATA%\cfgd` |
+| **Runtime** (daemon socket, pid files) | Linux `$XDG_RUNTIME_DIR/cfgd` when that is an absolute path (else `~/.cache/cfgd/runtime`), macOS `~/Library/Application Support/cfgd/runtime`, Windows `%LOCALAPPDATA%\cfgd` |
 
 The **config** platform default per OS (used only when `XDG_CONFIG_HOME` is
 unset):
@@ -693,6 +693,20 @@ when it is set to a non-empty, absolute path; an empty or relative value is
 ignored per the XDG Base Directory spec. Setting `XDG_CONFIG_HOME` relocates the
 config dir on any platform, and is the supported way to keep config under
 `~/.config` on macOS.
+
+The same rule places the other user-scope roots on a machine with no home
+directory (`HOME` unset, or both `USERPROFILE` and `HOME` on Windows): an
+absolute `XDG_STATE_HOME` puts state at `$XDG_STATE_HOME/cfgd`, and an absolute
+`XDG_CACHE_HOME` puts the cache at `$XDG_CACHE_HOME/cfgd`, on every platform.
+An empty or relative value is ignored there too, and a root with neither a
+home nor its XDG variable is unresolved: `cfgd apply` refuses to start and
+`cfgd doctor` fails its state-store check. With a home directory set, macOS and
+Windows keep their native state and cache locations from the table above.
+
+```sh
+env -u HOME XDG_CONFIG_HOME=/srv/cfgd/config XDG_STATE_HOME=/srv/cfgd/state cfgd apply
+# state lands in /srv/cfgd/state/cfgd/state.db
+```
 
 ### System scope
 
