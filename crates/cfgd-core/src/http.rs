@@ -47,10 +47,11 @@ pub const HTTP_WEBHOOK_TIMEOUT: Duration = Duration::from_secs(10);
 /// `Arc`), so handing out a clone costs a refcount bump.
 ///
 /// Keyed by the timeout because that is the only per-call configuration cfgd
-/// varies; the five named constants above are the whole key space in practice.
-/// A caller that ever needs a genuinely different agent shape (a proxy of its
-/// own, a client certificate) must build its own rather than widen this key, since two
-/// agents differing in anything but timeout are not interchangeable.
+/// varies; production uses the five named constants above, and a test passes
+/// whatever timeout it needs. Every agent is built in this file, so a caller
+/// needing a different agent shape (a proxy of its own, a client certificate)
+/// gets a second builder here with a key of its own: two agents differing in
+/// anything but timeout are not interchangeable.
 pub fn http_agent(timeout: Duration) -> ureq::Agent {
     use std::collections::HashMap;
     use std::sync::{Mutex, OnceLock};
