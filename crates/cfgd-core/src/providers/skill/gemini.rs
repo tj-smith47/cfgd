@@ -33,8 +33,9 @@ impl SkillProvider for GeminiProvider {
                 .ok()
                 .is_some_and(|d| d.join(".gemini").exists()),
             SkillScope::User => {
-                // home-refusal-ok: the skill verbs alone install skills; no apply or plan path
-                // reaches it
+                // home-refusal-ok: a skill verb, the startup update check and the daemon's
+                // update pass reach it; each reports a failure as a skipped refresh, and no
+                // apply or plan refuses for it
                 expand_tilde(Path::new("~/.gemini"), SKILL_ROLE)?.exists()
                     || command_available("gemini")
             }
@@ -48,8 +49,9 @@ impl SkillProvider for GeminiProvider {
             SkillScope::Project => Ok(std::env::current_dir()
                 .ok()
                 .map(|d| d.join(relative_command_path(token)))),
-            // home-refusal-ok: the skill verbs alone install skills; no apply or plan path reaches
-            // it
+            // home-refusal-ok: a skill verb, the startup update check and the daemon's
+            // update pass reach it; each reports a failure as a skipped refresh, and no
+            // apply or plan refuses for it
             SkillScope::User => expand_tilde(
                 &Path::new("~/.gemini/commands").join(format!("cfgd-{token}.toml")),
                 SKILL_ROLE,

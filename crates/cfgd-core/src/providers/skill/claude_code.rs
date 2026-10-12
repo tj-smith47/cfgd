@@ -30,8 +30,9 @@ impl SkillProvider for ClaudeCodeProvider {
             SkillScope::Project => std::env::current_dir()
                 .ok()
                 .is_some_and(|d| d.join(".claude").exists()),
-            // home-refusal-ok: the skill verbs alone install skills; no apply or plan path reaches
-            // it
+            // home-refusal-ok: a skill verb, the startup update check and the daemon's
+            // update pass reach it; each reports a failure as a skipped refresh, and no
+            // apply or plan refuses for it
             SkillScope::User => expand_tilde(Path::new("~/.claude"), SKILL_ROLE)?.exists(),
         };
         Ok(Detection::present(found))
@@ -41,8 +42,9 @@ impl SkillProvider for ClaudeCodeProvider {
         let relative = relative_skill_path(kind.command_token());
         match scope {
             SkillScope::Project => Ok(std::env::current_dir().ok().map(|d| d.join(relative))),
-            // home-refusal-ok: the skill verbs alone install skills; no apply or plan path reaches
-            // it
+            // home-refusal-ok: a skill verb, the startup update check and the daemon's
+            // update pass reach it; each reports a failure as a skipped refresh, and no
+            // apply or plan refuses for it
             SkillScope::User => expand_tilde(&Path::new("~").join(relative), SKILL_ROLE).map(Some),
         }
     }
