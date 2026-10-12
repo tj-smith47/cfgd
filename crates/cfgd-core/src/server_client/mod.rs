@@ -702,7 +702,7 @@ impl ServerClient {
     /// Query the server's enrollment method (token or key).
     pub fn enroll_info(&self) -> Result<EnrollInfoResponse> {
         let url = format!("{}/api/v1/enroll/info", self.base_url);
-        let mut resp = ureq::get(&url).call().map_err(|e| {
+        let mut resp = self.agent().get(&url).call().map_err(|e| {
             CfgdError::Io(std::io::Error::new(
                 std::io::ErrorKind::ConnectionRefused,
                 format!("failed to query enrollment info: {}", e),
