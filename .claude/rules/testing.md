@@ -194,8 +194,12 @@ case about the operator's health reads every pod (`{.items[*]...}`, one line per
 `kubectl logs -l "$E2E_OPERATOR_PODS"`, `wait_for_pod`, which waits for every pod it
 selects); a case about what the controllers did reads the leader (`operator_leader_pod`).
 `tests/e2e/common/test-pr-install.sh` (`task e2e:tags:check`) fails on any tracked
-`tests/e2e/**/*.sh` kubectl command that gets pods by an operator selector and reads
-`.items[N]`; a sorted slice such as `.items[-1:]` passes.
+`tests/e2e/**/*.sh` command (`kubectl` or `$KUBECTL`) that gets pods by an operator
+selector and picks one of them: `.items[N]`, a slice `.items[A:B]`, or `first` after
+`.items`. Once a command keeps that list's `-o json` output in a variable or a file,
+every later command in the file that runs no kubectl of its own is held to the same
+rule, so a second-step `jq '.items[0]' <<<"$json"` fails too. A slice passes only when
+the command, or the capture it reads, carries `--sort-by`.
 
 ## An e2e metrics check drives the event, then scrapes the pod that did it
 

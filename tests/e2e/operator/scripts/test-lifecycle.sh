@@ -138,7 +138,7 @@ else
 fi
 
 # =================================================================
-# OP-LC-03: Graceful shutdown recovery
+# OP-LC-03: Leader pod deletion
 # =================================================================
 begin_test "OP-LC-03: Leader pod deletion: the standby takes the lease and the webhook stays served"
 
@@ -210,20 +210,13 @@ else
     fi
 fi
 
-# Wait for webhook endpoints to be available after OP-LC-03 pod restart.
-# The deployment becomes Available before the new pod registers webhook
-# endpoints, so kubectl apply can fail with "no endpoints available".
-echo "  Waiting for webhook readiness after pod restart..."
-kubectl wait --for=condition=Ready pod -l "$E2E_OPERATOR_PODS" \
-    -n "$E2E_INSTALL_NS" --timeout=60s 2>/dev/null || true
-wait_for_service_endpoints "$E2E_INSTALL_NS" "$E2E_WEBHOOK_SVC" 60 || true
-
 # =================================================================
 # OP-LC-04: MachineConfig reconcile loop
 # =================================================================
 begin_test "OP-LC-04: MachineConfig reconcile loop"
 
-# Retry apply: the webhook endpoint may still be registering after the OP-LC-03 restart
+# The apply goes through the webhook, which has no endpoint while a failed
+# OP-LC-03 leaves the operator coming back, so it is retried.
 lc04_apply() {
     kubectl apply -n "$E2E_NAMESPACE" -f - <<EOF 2>/dev/null && return 0
 apiVersion: cfgd.io/v1alpha1
@@ -444,11 +437,11 @@ fi
 # =================================================================
 begin_test "OP-LC-08: Health probes"
 
-# Wait for operator to be fully ready (OP-LC-03 restarts the pod)
+# OP-LC-03 replaced the leader, so the newest pod may still be starting.
 kubectl wait --for=condition=available deployment/"$E2E_OPERATOR_DEPLOY" \
-    -n "$E2E_INSTALL_NS" --timeout=60s 2>/dev/null || true
+    -n "$E2E_INSTALL_NS" --timeout=60s 2>/dev/null || true # rc-ok: the /readyz wait below judges the pod this case probes
 kubectl wait --for=condition=Ready pod -l "$E2E_OPERATOR_PODS" \
-    -n "$E2E_INSTALL_NS" --timeout=60s 2>/dev/null || true
+    -n "$E2E_INSTALL_NS" --timeout=60s 2>/dev/null || true # rc-ok: the /readyz wait below judges the pod this case probes
 
 # Get the newest running operator pod for port-forward
 LC08_POD=$(kubectl get pods -n "$E2E_INSTALL_NS" -l "$E2E_OPERATOR_PODS" \
@@ -462,8 +455,9 @@ else
     LC08_PF_PID=$(port_forward "$E2E_INSTALL_NS" "pod/$LC08_POD" "$LC08_LOCAL_PORT" 8081) || LC08_PF_PID=""
 
     HEALTHZ_CODE=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "http://localhost:$LC08_LOCAL_PORT/healthz" 2>/dev/null) || HEALTHZ_CODE="000"
-    # The pod OP-LC-03 restarted answers 503 on /readyz until its first
-    # reconcile completes, so the case waits for 200 before judging it.
+    # The newest pod is OP-LC-03's replacement, which answers 503 on /readyz
+    # until its webhook has loaded its certificates, so the case waits for 200
+    # before judging it.
     lc08_ready() {
         READYZ_CODE=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "http://localhost:$LC08_LOCAL_PORT/readyz" 2>/dev/null) || READYZ_CODE="000"
         [ "$READYZ_CODE" = "200" ]

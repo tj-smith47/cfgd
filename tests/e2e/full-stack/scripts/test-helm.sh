@@ -509,10 +509,13 @@ ROLL_DEPLOY=$(kubectl get deployment -n "$HELM_NS" \
     -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
 ROLL_SVC=cfgd-test-webhook
 ROLL_DONE=false
+ROLL_STATUS=""
 
+# ROLL_STATUS keeps the last attempt's output, so a kubectl error that never
+# clears is named in the verdict.
 # shellcheck disable=SC2329  # watch_endpoints_until invokes it by name
 roll_finished() {
-    kubectl rollout status "deployment/$ROLL_DEPLOY" -n "$HELM_NS" --timeout=1s >/dev/null 2>&1
+    ROLL_STATUS="$(kubectl rollout status "deployment/$ROLL_DEPLOY" -n "$HELM_NS" --timeout=1s 2>&1)"
 }
 
 if [ -z "$ROLL_DEPLOY" ]; then
@@ -528,7 +531,7 @@ else
     echo "  Roll finished: $ROLL_DONE; samples: $ENDPOINT_SAMPLES; samples with no ready endpoint: $ENDPOINT_EMPTY${ENDPOINT_EMPTY_AT:+ ($ENDPOINT_EMPTY_AT)}; unread: $ENDPOINT_UNREAD"
 
     if [ "$ROLL_DONE" != "true" ]; then
-        fail_test "FS-HELM-09" "The operator roll did not finish within 180s"
+        fail_test "FS-HELM-09" "The operator roll did not finish within 180s; last rollout status: ${ROLL_STATUS:-no output}"
     elif [ "$ENDPOINT_SAMPLES" -eq 0 ]; then
         fail_test "FS-HELM-09" "kubectl read the webhook Service's endpoints in none of $ENDPOINT_UNREAD attempts during the roll"
     elif [ "$ENDPOINT_EMPTY" -ne 0 ]; then

@@ -104,14 +104,16 @@ come from the names above, and OP-PR-01 fails unless `$E2E_OPERATOR_DEPLOY` runs
 a ready endpoint when OP-LC-03 deletes the leader while other jobs apply through it.
 OP-LC-03 samples `$E2E_WEBHOOK_SVC`'s endpoints from the delete until the replacement is
 ready and fails on a sample with none, on the deleted pod's UID still listed, and on a
-lease that never moves to another live pod. The error cases read every operator pod,
-and `test-pr-install.sh` fails on a script that reads `.items[N]` of the operator pods. The full-stack suite runs against the PR install too: its
-setup waits for `$E2E_OPERATOR_DEPLOY`, the endpoints of `$E2E_WEBHOOK_SVC` and
-`$E2E_CSI_DS`, and stops when the CSI driver is not ready or `cosign` is missing. No
-full-stack case calls `skip_test`, and `test-pr-install.sh` fails on one under
-`full-stack/`. The FS-CSI cases find the driver pods by `$E2E_CSI_PODS` in `$E2E_INSTALL_NS` and the
-injected volume by `$CSI_DRIVER_NAME`. `test-pr-install.sh` fails on a tracked `*.sh`
-under `operator/` or `full-stack/` that names a release target by hand:
+lease that never moves to another live pod. The error cases read every operator pod, and
+`test-pr-install.sh` fails on a script that picks one operator pod by index, by an
+unsorted slice or by `first`, on the kubectl line or later from its captured JSON. The
+full-stack suite runs against the PR install too: its setup waits for
+`$E2E_OPERATOR_DEPLOY`, the endpoints of `$E2E_WEBHOOK_SVC` and `$E2E_CSI_DS`, and stops
+when the CSI driver is not ready or `cosign` is missing. No full-stack case calls
+`skip_test`, and `test-pr-install.sh` fails on one under `full-stack/`. The FS-CSI cases
+find the driver pods by `$E2E_CSI_PODS` in `$E2E_INSTALL_NS` and the injected volume by
+`$CSI_DRIVER_NAME`. `test-pr-install.sh` fails on a tracked `*.sh` under `operator/` or
+`full-stack/` that names a release target by hand:
 
 - `cfgd-system` or `$CFGD_NAMESPACE` / `${CFGD_NAMESPACE}`
 - `app=cfgd-operator` or `app.kubernetes.io/name=cfgd-operator`

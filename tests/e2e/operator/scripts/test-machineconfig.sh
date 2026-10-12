@@ -302,7 +302,8 @@ kubectl delete machineconfig "e2e-ephemeral-mc-${E2E_RUN_ID}" -n "$E2E_NAMESPACE
 # =================================================================
 begin_test "OP-ERR-04: Rapid create/delete: no reconcile panic"
 
-# A pod read before and after the race that restarted in between crashed.
+# A pod read before and after the race that restarted in between crashed, and
+# one read before that is gone after was replaced, which hides its restarts.
 ERR04_BEFORE_RC=0
 ERR04_BEFORE="$(operator_pod_states)" || ERR04_BEFORE_RC=$?
 
@@ -339,6 +340,8 @@ ERR04_RUNNING=false
 if operators_running; then ERR04_RUNNING=true; fi
 ERR04_RESTARTED="$(BEFORE="$ERR04_BEFORE" awk 'BEGIN { n = split(ENVIRON["BEFORE"], b, "\n"); for (i = 1; i <= n; i++) { split(b[i], f, " "); if (f[1] != "") was[f[1]] = f[3] } }
     ($1 in was) && $3 > was[$1] { printf "%s%s %s->%s", sep, $1, was[$1], $3; sep = ", " }' <<<"$OPERATOR_STATES")"
+ERR04_MISSING="$(AFTER="$OPERATOR_STATES" awk 'BEGIN { n = split(ENVIRON["AFTER"], a, "\n"); for (i = 1; i <= n; i++) { split(a[i], f, " "); if (f[1] != "") now[f[1]] = 1 } }
+    $1 != "" && !($1 in now) { printf "%s%s", sep, $1; sep = ", " }' <<<"$ERR04_BEFORE")"
 echo "  Operator pods before (name phase restarts waiting): $(tr '\n' ';' <<<"$ERR04_BEFORE")"
 echo "  Operator pods after: $(tr '\n' ';' <<<"$OPERATOR_STATES")"
 
@@ -346,6 +349,8 @@ if [ "$ERR04_BEFORE_RC" -ne 0 ] || [ -z "$ERR04_BEFORE" ]; then
     fail_test "OP-ERR-04" "Could not read the operator pods before the race, so a restart during it cannot be told apart: ${ERR04_BEFORE:-no operator pod}"
 elif ! $ERR04_RUNNING; then
     fail_test "OP-ERR-04" "Not every operator pod is Running and out of CrashLoopBackOff after rapid create/delete: ${OPERATOR_STATES:-no operator pod}"
+elif [ -n "$ERR04_MISSING" ]; then
+    fail_test "OP-ERR-04" "Operator pods listed before rapid create/delete are gone after it, so their restarts cannot be read: $ERR04_MISSING"
 elif [ -n "$ERR04_RESTARTED" ]; then
     fail_test "OP-ERR-04" "Operator pods restarted during rapid create/delete (restarts before->after): $ERR04_RESTARTED"
 else

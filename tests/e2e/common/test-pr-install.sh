@@ -52,8 +52,9 @@
 #     namespace in that order, runs every step after an object delete, a
 #     release lookup or the uninstall fails and then exits 1, and treats a
 #     release that is not installed as removed
-#   - no e2e script reads one index (`.items[N]`) of the operator pod list,
-#     since the PR install runs a leader and a standby
+#   - no e2e script picks one pod out of the operator pod list (an index, an
+#     unsorted slice or first), directly or from its captured JSON, since the
+#     PR install runs a leader and a standby
 # kubectl is a stub on PATH, so nothing reaches a cluster; the CRD check's stub
 # hands YAML reading to the real kubectl, which reads it offline.
 #
@@ -3643,30 +3644,49 @@ else
     fail "a device id reaches the gateway without gateway_device, or a checkin, enroll or daemon lets the binary pick it with no device-id-ok reason, so cleanup_e2e cannot delete its DriftAlerts: [$device_found]"
 fi
 
-# The PR install runs its operator with a standby, so a read of one index of
-# the operator pod list (`.items[0]`) answers for whichever pod the API server
+# The PR install runs its operator with a standby, so a read that picks one
+# pod out of the operator pod list answers for whichever pod the API server
 # lists there: a crash or a restart on the other goes unseen, and after a roll
 # the survivor passes for the replacement. scan_operator_item_reads FILE...:
-# file:line of each kubectl command, its backslash-continued lines joined, that
-# gets pods by an operator selector ($E2E_OPERATOR_PODS, app=cfgd-operator or
-# app.kubernetes.io/component=operator) and reads `.items[N]`. A slice such as
-# `.items[-1:]` after a sort picks its pod on purpose and passes. Comment lines
-# are skipped. Fails when a file was listed and never read.
+# file:line of each command, its backslash-continued lines joined, that picks
+# one pod: `.items[N]`, a slice `.items[A:B]`, or `first` after `.items`. A
+# kubectl (or $KUBECTL) command that gets pods by an operator selector
+# ($E2E_OPERATOR_PODS, app=cfgd-operator or app.kubernetes.io/component=operator)
+# is read on its own line. Once such a command keeps its `-o json` output (in a
+# variable or a file, with no pipe), every later command in the file that runs
+# no kubectl of its own is read too, since that JSON can be indexed in a second
+# step. A slice passes only on a command, or after a capture, that carries
+# --sort-by, which picks its pod on purpose. Comment lines are skipped. Fails
+# when a file was listed and never read.
 scan_operator_item_reads() {
     local listed="$scratch/operator-items.listed" read="$scratch/operator-items.read"
     printf '%s\n' "$@" > "$listed"
     : > "$read"
     # shellcheck disable=SC2016  # an awk program; the $ fields belong to awk
     awk -v readlog="$read" '
-        FNR == 1 { print FILENAME > readlog; cmd = "" }
+        function picks(c, sorted) {
+            return c ~ /\.items\[-?[0-9]+\]/ ||
+                (c ~ /\.items\[-?[0-9]*:-?[0-9]*\]/ && !sorted) ||
+                c ~ /\.items.*(^|[^[:alnum:]_])first([^[:alnum:]_]|$)/
+        }
+        FNR == 1 { print FILENAME > readlog; cmd = ""; captured = 0; capture_sorted = 0 }
         cmd == "" && /^[[:space:]]*#/ { next }
         {
             if (cmd == "") start = FNR
             cmd = cmd " " $0
             if ($0 ~ /\\$/) next
-            if (cmd ~ /kubectl/ && cmd ~ /get[[:space:]]+(pods?|po)([[:space:]]|$)/ &&
-                cmd ~ /E2E_OPERATOR_PODS|app=cfgd-operator|component=operator/ &&
-                cmd ~ /\.items\[-?[0-9]+\]/) print FILENAME ":" start
+            operator_get = cmd ~ /kubectl|KUBECTL/ && cmd ~ /get[[:space:]]+(pods?|po)([[:space:]]|$)/ &&
+                cmd ~ /E2E_OPERATOR_PODS|app=cfgd-operator|component=operator/
+            sorted = cmd ~ /--sort-by/
+            if (operator_get && picks(cmd, sorted)) print FILENAME ":" start
+            else if (captured && cmd !~ /kubectl|KUBECTL/ && picks(cmd, capture_sorted)) print FILENAME ":" start
+            kept = cmd
+            gsub(/[0-9]?>[[:space:]]*\/dev\/null|[0-9]?>&[0-9]|\|\|/, "", kept)
+            if (operator_get && cmd ~ /(-o|--output)[[:space:]=]*["\047]?json([^[:alnum:]_]|$)/ &&
+                kept !~ /\|/ && (cmd ~ /=["]?\$\(/ || kept ~ />/)) {
+                captured = 1
+                capture_sorted = sorted
+            }
             cmd = ""
         }
     ' "$@" 2>/dev/null || true # rc-ok: a file awk could not open is caught by census_unread below
@@ -3674,13 +3694,9 @@ scan_operator_item_reads() {
 }
 items_got="$(cd "$here/fixtures/operator-pods" && scan_operator_item_reads reads.bash)" ||
     items_got="(the scan failed)"
-items_want="reads.bash:1
-reads.bash:2
-reads.bash:4
-reads.bash:5
-reads.bash:6"
+items_want="$(printf 'reads.bash:%s\n' 1 2 4 5 6 17 18 19 20 21 24 25 27)"
 if [ "$items_got" = "$items_want" ]; then
-    pass "the operator item-read scan reports a .items[N] read of the operator pods by any operator selector, on one line, continued or through jq, and stays quiet on comments, .items[*], a sorted slice, other pods, Deployments and a command that reads no items"
+    pass "the operator item-read scan reports an index, an unsorted slice or a first of the operator pods by any operator selector, through kubectl or \$KUBECTL, on one line, continued, through jq, or from a captured -o json read later in the file, and stays quiet on comments, .items[*], a sorted slice, a jq sort over every pod, other pods, Deployments and a command that reads no items"
 else
     fail "the operator item-read scan printed [$items_got], want [$items_want]"
 fi
@@ -3695,9 +3711,9 @@ if [ "${#operator_item_scripts[@]}" -lt 60 ]; then
 elif ! operator_items_found="$(cd "$repo_root" && scan_operator_item_reads "${operator_item_scripts[@]}")"; then
     fail "the operator item-read scan could not read every e2e script"
 elif [ -z "$operator_items_found" ]; then
-    pass "no e2e script reads one index of the operator pod list (${#operator_item_scripts[@]} scripts)"
+    pass "no e2e script picks one pod out of the operator pod list (${#operator_item_scripts[@]} scripts)"
 else
-    fail "an e2e script reads .items[N] of the operator pods, which run a leader and a standby; read every pod ({.items[*]...} or one line per pod) or the leader (operator_leader_pod): [$operator_items_found]"
+    fail "an e2e script picks one operator pod (an index, an unsorted slice or first), and the operator runs a leader and a standby; read every pod ({.items[*]...} or one line per pod) or the leader (operator_leader_pod): [$operator_items_found]"
 fi
 
 if [ "$failures" -gt 0 ]; then
