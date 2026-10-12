@@ -12,8 +12,8 @@
 
 use cfgd::cli::output_types::{
     DoctorConfigCheck, DoctorConfigState, DoctorConfiguratorCheck, DoctorManagerCheck,
-    DoctorModuleCheck, DoctorOutput, DoctorProviderCheck, DoctorSecretsCheck, LogOutput,
-    PlanActionOutput, PlanGroupOutput, PlanOutput, PlanPhaseOutput,
+    DoctorModuleCheck, DoctorOutput, DoctorProviderCheck, DoctorSecretsCheck, DoctorStateStore,
+    LogOutput, PlanActionOutput, PlanGroupOutput, PlanOutput, PlanPhaseOutput,
 };
 use cfgd_core::output::{Doc, OutputFormat, Printer};
 use cfgd_core::reconciler::Owner;
@@ -78,6 +78,10 @@ fn doctor_output_roundtrips_through_emit() {
             available: true,
         }],
         profiles: Vec::new(),
+        state_store: DoctorStateStore {
+            accessible: true,
+            message: None,
+        },
     };
 
     let actual = emit_and_parse(&payload);

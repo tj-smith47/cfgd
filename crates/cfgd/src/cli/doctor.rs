@@ -78,24 +78,17 @@ pub(crate) fn run_doctor(run: &RunContext<'_>, fix: bool) -> anyhow::Result<bool
 
 /// Display-only doctor results that are not part of the stable JSON payload.
 ///
-/// The `DoctorOutput` schema is consumer-facing and frozen; this struct carries
-/// the human-section sources (state-store health, profiles dir, config sources)
-/// so the human Doc keeps parity with the prior output without altering the
-/// `-o json` shape.
+/// The `DoctorOutput` schema is consumer-facing and changes additively only;
+/// this struct carries the human-section sources (profiles dir, config
+/// sources) that the `-o json` shape does not.
 #[derive(Default)]
 pub struct DoctorExtras {
-    pub state_store: Option<DoctorStateStore>,
     pub profiles_dir: Option<DoctorProfilesDir>,
     pub config_sources: Vec<DoctorConfigSource>,
     /// The env var currently suppressing the automatic update check
     /// (`CFGD_NO_UPDATE_CHECK` / `NO_UPDATE_NOTIFIER` / `DO_NOT_TRACK`), or
     /// `None` when no opt-out is active.
     pub update_optout: Option<&'static str>,
-}
-
-pub struct DoctorStateStore {
-    pub accessible: bool,
-    pub message: Option<String>,
 }
 
 pub struct DoctorProfilesDir {
@@ -584,10 +577,10 @@ fn collect_doctor_output(
         modules: module_checks,
         system_configurators: configurator_checks,
         profiles: profile_layouts,
+        state_store,
     };
 
     let extras = DoctorExtras {
-        state_store: Some(state_store),
         profiles_dir: Some(profiles_dir_extra),
         config_sources,
         update_optout: cfgd_core::upgrade::update_optout_var(),
@@ -619,7 +612,9 @@ pub fn build_doctor_doc(output: &DoctorOutput, extras: &DoctorExtras) -> Doc {
     // they are cfgd's own state store, profiles directory and update behaviour
     // on this machine. `Environment` is spoken for too; it reads as the `spec.env`
     // surface, which doctor equally does not check.
-    doc = doc.section("Installation", |s| build_installation_section(s, extras));
+    doc = doc.section("Installation", |s| {
+        build_installation_section(s, &output.state_store, extras)
+    });
     doc = doc.section_if_nonempty(
         super::source::list::SOURCES_SECTION,
         &extras.config_sources,
@@ -904,18 +899,23 @@ fn build_profiles_section(
 }
 
 // no-next-step: the row's detail names the directory cfgd could not use
-fn build_installation_section(mut s: SectionBuilder, extras: &DoctorExtras) -> SectionBuilder {
-    if let Some(ss) = extras.state_store.as_ref() {
-        s = if ss.accessible {
-            // name-row-ok: an inventory row naming what was checked
-            s.status(Role::Ok, "State store: accessible")
-        } else {
-            let detail = ss.message.clone().unwrap_or_else(|| "unavailable".into());
-            s.status_with(Role::Warn, "State store: unavailable", |sf| {
-                sf.detail(detail)
-            })
-        };
-    }
+fn build_installation_section(
+    s: SectionBuilder,
+    state_store: &DoctorStateStore,
+    extras: &DoctorExtras,
+) -> SectionBuilder {
+    let mut s = if state_store.accessible {
+        // name-row-ok: an inventory row naming what was checked
+        s.status(Role::Ok, "State store: accessible")
+    } else {
+        let detail = state_store
+            .message
+            .clone()
+            .unwrap_or_else(|| "unavailable".into());
+        s.status_with(Role::Fail, "State store: unavailable", |sf| {
+            sf.detail(detail)
+        })
+    };
     if let Some(pd) = extras.profiles_dir.as_ref() {
         s = if let Some(err) = pd.error.as_deref() {
             s.status_with(Role::Fail, "Profiles directory", |sf| {
@@ -975,6 +975,9 @@ fn all_passed(output: &DoctorOutput) -> bool {
         // Legacy layout is a Warn (supported); only errored profile checks
         // (ambiguous forms, unscannable dir) fail the verdict.
         && output.profiles.iter().all(|p| p.error.is_none())
+        // `apply` opens this same store before it does anything, so a store
+        // that cannot open is a run that cannot start.
+        && output.state_store.accessible
 }
 
 /// A config missing at the DEFAULT path is a fresh-machine state (rendered as

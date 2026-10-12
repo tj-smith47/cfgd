@@ -1428,6 +1428,20 @@ systemd's `CONFIGURATION_DIRECTORY` under a service), the config check fails wit
 `cannot resolve home directory (HOME unset)` and so does the verdict, since every verb that reads
 the config fails the same way there.
 
+A state store that cannot be opened also fails the verdict, because `apply` opens the same store
+before it does anything else. The store is the one `--state-dir`, `CFGD_STATE_DIR` or `--scope`
+names, or the default state directory, and the row reads `✗ State store: unavailable` with the
+open error as its detail. `-o json` carries the same check as `stateStore`:
+
+```json
+"stateStore": {
+  "accessible": false,
+  "message": "cannot determine state directory: state error: cannot locate the per-user state directory: no home directory found"
+}
+```
+
+`message` is `null` when the store opened.
+
 ### `cfgd log`
 
 Show apply history from the state store.

@@ -56,6 +56,10 @@
     "sopsConfigPath": "/home/test/.config/cfgd/.sops.yaml",
     "sopsVersion": "3.8.1"
   },
+  "stateStore": {
+    "accessible": true,
+    "message": null
+  },
   "systemConfigurators": [
     {
       "available": true,

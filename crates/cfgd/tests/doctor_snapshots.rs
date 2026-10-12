@@ -9,13 +9,11 @@
 
 use std::path::Path;
 
-use cfgd::cli::doctor::{
-    DoctorConfigSource, DoctorExtras, DoctorProfilesDir, DoctorStateStore, build_doctor_doc,
-};
+use cfgd::cli::doctor::{DoctorConfigSource, DoctorExtras, DoctorProfilesDir, build_doctor_doc};
 use cfgd::cli::output_types::{
     DoctorConfigCheck, DoctorConfigState, DoctorConfiguratorCheck, DoctorManagerCheck,
     DoctorModuleCheck, DoctorModuleManagerRoute, DoctorOutput, DoctorProviderCheck,
-    DoctorSecretsCheck,
+    DoctorSecretsCheck, DoctorStateStore,
 };
 use cfgd_core::output::Printer;
 
@@ -86,12 +84,12 @@ fn happy_fixture() -> (DoctorOutput, DoctorExtras) {
             available: true,
         }],
         profiles: Vec::new(),
-    };
-    let extras = DoctorExtras {
-        state_store: Some(DoctorStateStore {
+        state_store: DoctorStateStore {
             accessible: true,
             message: None,
-        }),
+        },
+    };
+    let extras = DoctorExtras {
         profiles_dir: Some(DoctorProfilesDir {
             path: "/home/test/.config/cfgd/profiles".into(),
             exists: true,
@@ -162,12 +160,12 @@ fn bare_fixture() -> (DoctorOutput, DoctorExtras) {
         modules: vec![],
         system_configurators: vec![],
         profiles: Vec::new(),
-    };
-    let extras = DoctorExtras {
-        state_store: Some(DoctorStateStore {
+        state_store: DoctorStateStore {
             accessible: true,
             message: None,
-        }),
+        },
+    };
+    let extras = DoctorExtras {
         profiles_dir: Some(DoctorProfilesDir {
             path: "/home/test/.config/cfgd/profiles".into(),
             exists: true,

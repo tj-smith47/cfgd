@@ -29101,6 +29101,10 @@ fn base_doctor_output() -> super::output_types::DoctorOutput {
         modules: vec![],
         system_configurators: vec![],
         profiles: vec![],
+        state_store: super::output_types::DoctorStateStore {
+            accessible: true,
+            message: None,
+        },
     }
 }
 
@@ -29164,6 +29168,27 @@ fn build_doctor_doc_git_missing_emits_fail_status() {
     assert!(
         text.contains("Some checks failed"),
         "all_passed should be false when git missing, got: {text}"
+    );
+}
+
+/// `apply` opens the state store before it does anything, so a store that
+/// cannot open is a failed check and a failed verdict.
+#[test]
+fn build_doctor_doc_state_store_unavailable_emits_fail() {
+    let mut output = base_doctor_output();
+    output.state_store = super::output_types::DoctorStateStore {
+        accessible: false,
+        message: Some("no home directory found".into()),
+    };
+    let extras = super::doctor::DoctorExtras::default();
+    let text = emit_doc(&output, &extras);
+    assert!(
+        text.contains("✗ State store: unavailable — no home directory found"),
+        "the row must be a Fail naming the open error, got: {text}"
+    );
+    assert!(
+        text.contains("Some checks failed"),
+        "all_passed should be false when the state store cannot open, got: {text}"
     );
 }
 
@@ -29708,29 +29733,9 @@ fn build_doctor_doc_module_missing_a_manager_names_it_and_what_routes_to_it() {
 }
 
 #[test]
-fn build_doctor_doc_system_state_store_inaccessible_emits_warn() {
-    let output = base_doctor_output();
-    let extras = super::doctor::DoctorExtras {
-        state_store: Some(super::doctor::DoctorStateStore {
-            accessible: false,
-            message: Some("database locked".into()),
-        }),
-        profiles_dir: None,
-        config_sources: vec![],
-        update_optout: None,
-    };
-    let text = emit_doc(&output, &extras);
-    assert!(
-        text.contains("State store: unavailable") && text.contains("database locked"),
-        "should warn about inaccessible state store with message, got: {text}"
-    );
-}
-
-#[test]
 fn build_doctor_doc_system_profiles_dir_missing_emits_warn() {
     let output = base_doctor_output();
     let extras = super::doctor::DoctorExtras {
-        state_store: None,
         profiles_dir: Some(super::doctor::DoctorProfilesDir {
             path: "/etc/cfgd/profiles".into(),
             exists: false,
@@ -29751,7 +29756,6 @@ fn build_doctor_doc_system_profiles_dir_missing_emits_warn() {
 fn build_doctor_doc_update_optout_active_names_the_variable() {
     let output = base_doctor_output();
     let extras = super::doctor::DoctorExtras {
-        state_store: None,
         profiles_dir: None,
         config_sources: vec![],
         update_optout: Some("DO_NOT_TRACK"),
@@ -29767,7 +29771,6 @@ fn build_doctor_doc_update_optout_active_names_the_variable() {
 fn build_doctor_doc_no_update_optout_emits_nothing() {
     let output = base_doctor_output();
     let extras = super::doctor::DoctorExtras {
-        state_store: None,
         profiles_dir: None,
         config_sources: vec![],
         update_optout: None,
@@ -29783,7 +29786,6 @@ fn build_doctor_doc_no_update_optout_emits_nothing() {
 fn build_doctor_doc_source_cached_emits_ok() {
     let output = base_doctor_output();
     let extras = super::doctor::DoctorExtras {
-        state_store: None,
         profiles_dir: None,
         config_sources: vec![super::doctor::DoctorConfigSource {
             name: "team-config".into(),
@@ -34031,7 +34033,6 @@ fn build_doctor_doc_unscannable_profiles_dir_fails() {
         error: Some("failed to read /etc/cfgd/profiles: permission denied".into()),
     }];
     let extras = super::doctor::DoctorExtras {
-        state_store: None,
         profiles_dir: Some(super::doctor::DoctorProfilesDir {
             path: "/etc/cfgd/profiles".into(),
             exists: true,

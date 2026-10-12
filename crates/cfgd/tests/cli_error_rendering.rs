@@ -748,7 +748,10 @@ fn doctor_reports_a_tilde_config_with_no_home_as_the_unset_home() {
 /// passing verdict would let `cfgd doctor && cfgd apply` reach a broken apply.
 /// An `XDG_CONFIG_HOME` or systemd's `CONFIGURATION_DIRECTORY` places the
 /// default path without a home, so there the missing config is the
-/// fresh-machine warning and the verdict passes.
+/// fresh-machine warning and the verdict passes. Those two arms pass only
+/// because `cfgd_bin()` points `CFGD_STATE_DIR` at the test's own directory:
+/// the verdict also needs the state store, which with no home opens nowhere
+/// else (`doctor_and_apply_both_refuse_a_state_store_with_no_home`).
 /// Windows resolves its default config root without a home variable.
 #[cfg(not(windows))]
 #[test]
@@ -795,6 +798,61 @@ fn doctor_with_no_home_fails_the_default_config_check_on_the_unset_home() {
     assert!(row.contains("not found; run `cfgd init`"), "{row:?}");
     assert!(!row.contains(&home_unresolved()), "{row:?}");
     assert_eq!(out.status.code(), Some(0), "{stderr}");
+}
+
+/// A machine with no home, no `CFGD_STATE_DIR` and no `XDG_STATE_HOME`
+/// has nowhere to keep its state store, so `apply` refuses before it does
+/// anything. `doctor` opens the same store, so it fails its verdict there too,
+/// on a Fail row naming why and on `stateStore` in its `-o json` payload: a
+/// passing doctor would let `cfgd doctor && cfgd apply` reach that refusal.
+/// The config itself resolves through `XDG_CONFIG_HOME`, so the store is the
+/// only thing wrong. Windows reads its home from `USERPROFILE`, which a
+/// spawned binary cannot do without.
+#[cfg(not(windows))]
+#[test]
+fn doctor_and_apply_both_refuse_a_state_store_with_no_home() {
+    let xdg = tempfile::tempdir().unwrap();
+    create_valid_config(&xdg.path().join("cfgd"));
+    let homeless = |args: &[&str]| {
+        cfgd_bin()
+            .unwrap()
+            .env_remove("HOME")
+            .env_remove("USERPROFILE")
+            .env_remove(cfgd_core::CFGD_STATE_DIR_ENV)
+            .env_remove("XDG_STATE_HOME")
+            .env("XDG_CONFIG_HOME", xdg.path())
+            .args(args)
+            .output()
+            .unwrap()
+    };
+
+    let out = homeless(&["doctor"]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let row = stderr
+        .lines()
+        .find(|line| line.contains("State store"))
+        .unwrap_or_else(|| panic!("no state-store row: {stderr}"));
+    assert!(
+        row.contains("✗ State store: unavailable") && row.contains("no home directory found"),
+        "{row:?}"
+    );
+    assert_eq!(out.status.code(), Some(1), "{stderr}");
+
+    let out = homeless(&["doctor", "-o", "json"]);
+    let v = parse_single_json(&String::from_utf8_lossy(&out.stdout));
+    assert_eq!(v["stateStore"]["accessible"], false, "{v}");
+    assert!(
+        v["stateStore"]["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("no home directory found")),
+        "{v}"
+    );
+    assert_eq!(out.status.code(), Some(1), "{v}");
+
+    let out = homeless(&["apply", "--yes"]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("no home directory found"), "{stderr}");
+    assert_eq!(out.status.code(), Some(1), "{stderr}");
 }
 
 /// A directory override under `~` with no home set fails the run naming the

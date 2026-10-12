@@ -641,6 +641,17 @@ pub struct DoctorOutput {
     pub modules: Vec<DoctorModuleCheck>,
     pub system_configurators: Vec<DoctorConfiguratorCheck>,
     pub profiles: Vec<DoctorProfileLayoutCheck>,
+    pub state_store: DoctorStateStore,
+}
+
+/// Whether the state store this run's `--state-dir` / `--scope` names could be
+/// opened. `apply` refuses to start without it, so an inaccessible store fails
+/// the doctor verdict; `message` carries the open error in that case.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DoctorStateStore {
+    pub accessible: bool,
+    pub message: Option<String>,
 }
 
 /// Per-profile layout-form check: canonical bundle (`profiles/<name>/profile.yaml`)
@@ -2111,6 +2122,10 @@ mod tests {
                 path: Some("/etc/cfgd/profiles/work.yaml".to_string()),
                 error: None,
             }],
+            state_store: DoctorStateStore {
+                accessible: false,
+                message: Some("no home directory found".to_string()),
+            },
         };
         let json = serde_json::to_value(&v).unwrap();
         assert_eq!(json["config"]["valid"], json!(true));
@@ -2121,6 +2136,11 @@ mod tests {
         assert_eq!(json["systemConfigurators"][0]["name"], json!("systemd"));
         assert_eq!(json["profiles"][0]["name"], json!("work"));
         assert_eq!(json["profiles"][0]["legacy"], json!(true));
+        assert_eq!(json["stateStore"]["accessible"], json!(false));
+        assert_eq!(
+            json["stateStore"]["message"],
+            json!("no home directory found")
+        );
     }
 
     #[test]
