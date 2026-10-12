@@ -1313,6 +1313,34 @@ pod_compliance_json() {
     print_stderr_head "$err" >&2
 }
 
+# checkin_compliance_want <config>: prints, as compact JSON, the
+# complianceSummary the gateway must store after a `cfgd checkin` against
+# config $1, built from the test pod's own compliance run by the rule
+# CheckinCompliance::from_snapshot applies: the three counts, then the
+# violations followed by the warnings, cut at the MachineConfig CRD's
+# status.compliance.checks maxItems, each named by ComplianceCheck::subject_name
+# (target, name, key or path); `checks` is left out when none failed. The cap
+# is read from schemas/crds.yaml, which schemars generates from
+# MAX_REPORTED_CHECKS; crd_docs_json reads it because the e2e runner image has
+# no yq. Prints nothing and returns 1 when the cap is not an integer or the
+# run yields no snapshot.
+checkin_compliance_want() {
+    local max
+    max="$(crd_docs_json < "$REPO_ROOT/schemas/crds.yaml" | jq -r 'select(.spec.names.plural == "machineconfigs")
+        | .spec.versions[0].schema.openAPIV3Schema.properties.status.properties.compliance.properties.checks.maxItems')" || max=""
+    if ! [[ "$max" =~ ^[0-9]+$ ]]; then
+        echo "ERROR: the MachineConfig CRD in schemas/crds.yaml gave '${max}' as status.compliance.checks maxItems, which is not an integer." >&2
+        return 1
+    fi
+    pod_compliance_json "$1" | jq -ce --argjson max "$max" '
+        .snapshot
+        | ([(.checks[] | select(.status == "Violation")), (.checks[] | select(.status == "Warning"))][:$max]
+           | map({category, name: (.target // .name // .key // .path // "(unknown)"), status}
+                 + (if .detail == null then {} else {detail} end))) as $checks
+        | {compliant: .summary.compliant, warning: .summary.warning, violation: .summary.violation}
+          + (if ($checks | length) > 0 then {checks: $checks} else {} end)'
+}
+
 # The compliance status of one sysctl key ($2) in a `compliance -o json`
 # document ($1). A drifted key is a `system` row of its own keyed
 # `sysctl.<key>`. A key that is not drifted has no row of its own, so it takes

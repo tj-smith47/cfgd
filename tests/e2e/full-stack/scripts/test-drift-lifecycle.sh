@@ -212,18 +212,19 @@ begin_test "FS-DRIFT-08: device checkin after compliance carries state"
 
 gateway_device DEVICE_ID "e2e-compliance-$(date +%s)-${E2E_RUN_ID}"
 
-WANT_COUNTS=$(pod_compliance_json /etc/cfgd/e2e-compliance-cfgd.yaml | jq -c '.snapshot.summary | [.compliant, .warning, .violation]' 2>/dev/null || echo "")
+WANT=$(checkin_compliance_want /etc/cfgd/e2e-compliance-cfgd.yaml) || WANT=""
 CHECKIN_OUTPUT=$(exec_in_pod cfgd --config /etc/cfgd/e2e-compliance-cfgd.yaml checkin \
     --server-url "$SERVER_URL" --api-key "$GW_API_KEY" --device-id "$DEVICE_ID" --no-color 2>&1) && CHECKIN_RC=0 || CHECKIN_RC=$?
 
 DEVICE_RESP=$(exec_in_pod curl -sf -H "Authorization: Bearer $GW_API_KEY" "${SERVER_URL}/api/v1/devices/${DEVICE_ID}" 2>/dev/null || echo "")
-GOT_COUNTS=$(echo "$DEVICE_RESP" | jq -c '.complianceSummary | [.compliant, .warning, .violation]' 2>/dev/null || echo "")
-echo "  compliant/warning/violation: stored=$GOT_COUNTS pod=$WANT_COUNTS"
-if [ "$CHECKIN_RC" -eq 0 ] && [ -n "$WANT_COUNTS" ] \
-    && echo "$DEVICE_RESP" | jq -e --argjson w "$WANT_COUNTS" '.complianceSummary | [.compliant, .warning, .violation] | . == $w and all(.[]; type == "number")' >/dev/null 2>&1; then
+GOT=$(echo "$DEVICE_RESP" | jq -c '.complianceSummary' 2>/dev/null || echo "")
+echo "  stored: $GOT"
+echo "  want:   $WANT"
+if [ "$CHECKIN_RC" -eq 0 ] && [ -n "$WANT" ] \
+    && echo "$DEVICE_RESP" | jq -e --argjson want "$WANT" '.complianceSummary == $want' >/dev/null 2>&1; then
     pass_test "FS-DRIFT-08"
 else
-    fail_test "FS-DRIFT-08" "Stored compliance counts $GOT_COUNTS differ from the pod's compliance run, $WANT_COUNTS (exit $CHECKIN_RC): $CHECKIN_OUTPUT"
+    fail_test "FS-DRIFT-08" "Stored complianceSummary $GOT differs from the pod's compliance run, $WANT (exit $CHECKIN_RC): $CHECKIN_OUTPUT"
 fi
 
 # =================================================================

@@ -237,27 +237,16 @@ echo "$OUTPUT" | head -15 | sed 's/^/    /'
 DEVICE_RESP=$(exec_in_pod curl -sf -H "Authorization: Bearer $GW_API_KEY" "${SERVER_URL}/api/v1/devices/${COMPLIANCE_DEVICE_ID}" 2>/dev/null || echo "{}")
 GOT=$(echo "$DEVICE_RESP" | jq -c '.complianceSummary' 2>/dev/null || echo "")
 
-# The summary the check-in must carry, built from the pod's own compliance run
-# by the rule CheckinCompliance::from_snapshot applies: the counts, then the
-# violations followed by the warnings, cut at MAX_REPORTED_CHECKS, each named
-# by ComplianceCheck::subject_name (target, name, key or path).
-MAX_CHECKS=$(sed -n 's/^pub const MAX_REPORTED_CHECKS: usize = \([0-9][0-9]*\);$/\1/p' "$REPO_ROOT/crates/cfgd-schema/src/lib.rs")
-WANT=$(pod_compliance_json /etc/cfgd/e2e-compliance-checkin.yaml | jq -c --argjson max "${MAX_CHECKS:-null}" '
-    .snapshot
-    | ([(.checks[] | select(.status == "Violation")), (.checks[] | select(.status == "Warning"))][:$max]
-       | map({category, name: (.target // .name // .key // .path // "(unknown)"), status}
-             + (if .detail == null then {} else {detail} end))) as $checks
-    | {compliant: .summary.compliant, warning: .summary.warning, violation: .summary.violation}
-      + (if ($checks | length) > 0 then {checks: $checks} else {} end)' 2>/dev/null || echo "")
+WANT=$(checkin_compliance_want /etc/cfgd/e2e-compliance-checkin.yaml) || WANT=""
 echo "  stored: $GOT"
 echo "  want:   $WANT"
 
-if [ "$RC" -eq 0 ] && [ -n "$MAX_CHECKS" ] && [ -n "$WANT" ] \
+if [ "$RC" -eq 0 ] && [ -n "$WANT" ] \
     && echo "$WANT" | jq -e '[.compliant, .warning, .violation] as [$c, $w, $v] | all($c, $w, $v; type == "number" and . > 0) and $c != $w and $w != $v and $c != $v' >/dev/null 2>&1 \
     && echo "$DEVICE_RESP" | jq -e --argjson want "$WANT" '.complianceSummary == $want' >/dev/null 2>&1; then
     pass_test "T36"
 else
-    fail_test "T36" "Stored complianceSummary differs from the pod's compliance run, or that run's counts are not three distinct non-zero numbers (exit: $RC, MAX_REPORTED_CHECKS: ${MAX_CHECKS:-unread})"
+    fail_test "T36" "Stored complianceSummary differs from the pod's compliance run, or that run's counts are not three distinct non-zero numbers (exit: $RC)"
 fi
 
 exec_in_pod rm -f /etc/cfgd/e2e-compliance-checkin.yaml /etc/cfgd/profiles/e2e-compliance-checkin.yaml 2>/dev/null || true
