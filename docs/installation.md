@@ -16,7 +16,9 @@ brew install tj-smith47/tap/cfgd
 
 The cask installs the bash, zsh and fish completions and the man page from the
 release archive, so installing runs no `cfgd` command and a headless
-`brew install` on macOS completes without a Gatekeeper prompt.
+`brew install` on macOS completes without a Gatekeeper prompt. The macOS binary
+is not notarized, so the cask clears its `com.apple.quarantine` attribute after
+install; the first `cfgd` run, headless or not, then starts without a dialog.
 
 The operator and CSI driver are Linux container images installed through the
 Helm chart; see [Containers and Kubernetes](#containers-and-kubernetes).

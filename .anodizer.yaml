@@ -1228,6 +1228,16 @@ homebrew_casks:
     # the path is relative to the unpacked cask artifact.
     manpages:
       - man/man1/cfgd.1
+    # The binary is ad-hoc signed and not notarized, so a quarantined copy waits
+    # on a Gatekeeper dialog at its first run and a headless caller hangs. The
+    # owner chose to clear the quarantine attribute on install (2026-10-10)
+    # because notarization is unavailable.
+    hooks:
+      post:
+        install: |
+          system_command "/usr/bin/xattr",
+                         args: ["-d", "com.apple.quarantine", "#{staged_path}/cfgd"],
+                         must_succeed: false
     caveats: |
       Run `cfgd init` to scaffold a config in your repo.
     dependencies:
