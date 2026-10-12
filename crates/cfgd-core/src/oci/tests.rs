@@ -887,8 +887,9 @@ fn image_config_serializes_with_correct_oci_keys() {
 /// name counts as a construction. A construction anywhere else could
 /// answer "missing" for an unreachable registry, a `500` or a refused
 /// credential. Each production file is parsed whole with its test-gated items
-/// skipped, so a file that does not parse fails the walk, and the expected map names the file and function holding the
-/// constructions, so a renamed or unread file fails by name.
+/// skipped, so a file that does not parse fails the walk, and the expected map
+/// names the file and function holding the constructions, so a renamed or
+/// unread file fails by name.
 #[test]
 fn only_get_present_builds_a_not_found_error() {
     use std::collections::BTreeMap;
