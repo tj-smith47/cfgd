@@ -698,6 +698,11 @@ fn reconcile_tick(
     ) {
         Ok(p) => p,
         Err(e) => {
+            if let crate::errors::CfgdError::State(refusal) = &e
+                && warn_home_refusal(refusal)
+            {
+                return None;
+            }
             tracing::error!(error = %e, "reconcile: plan generation failed");
             return None;
         }
@@ -737,6 +742,22 @@ fn reconcile_tick(
             .drift_policy
             .clone()
     });
+
+    // Which hooks the tick runs turns on its drift policy and its module scope,
+    // neither of which the plan sees, so the home question for them is asked
+    // here, before the tick writes anything: a notify-only tick runs no
+    // onChange hook and must keep reporting drift whatever that hook names.
+    if let Some(refusal) = crate::reconciler::script_home_refusal(tick_hooks(
+        &plan,
+        &resolved.merged.scripts,
+        resolved_modules_ref.as_slice(),
+        module_filter,
+        matches!(drift_policy, config::DriftPolicy::Auto),
+        registry,
+    )) && warn_home_refusal(&refusal)
+    {
+        return None;
+    }
 
     // A tick has nobody to ask, so it settles every unmanaged target the way
     // `--yes` does: keep a copy. Without this pass the daemon displaced a
@@ -1564,6 +1585,92 @@ fn check_in_after_tick(report: TickReport<'_>, state: &Arc<Mutex<DaemonState>>, 
             tracing::warn!(error = %e, "daemon: failed to load pending server config");
         }
     }
+}
+
+/// The slot a home refusal names: the [`HOME_REFUSAL_SLOTS`] slot of the
+/// role a `~` path was expanded for, or the managed env file. `None` for
+/// any other state error.
+///
+/// [`HOME_REFUSAL_SLOTS`]: crate::reconciler::HOME_REFUSAL_SLOTS
+fn home_refusal_slot(error: &crate::errors::StateError) -> Option<&'static str> {
+    match error {
+        crate::errors::StateError::HomeUnresolved { role, .. } => Some(
+            crate::reconciler::HOME_REFUSAL_SLOTS
+                .iter()
+                .find(|(r, _, _)| r == role)
+                .map_or(*role, |(_, slot, _)| *slot),
+        ),
+        crate::errors::StateError::EnvHomeUnresolved { .. } => Some("managed env file"),
+        _ => None,
+    }
+}
+
+/// Log `error` as the refusal of a tick no home directory can run, returning
+/// whether it was one. A homeless tick meets the same refusal every interval
+/// until a home resolves, so it is a standing configuration fault logged once
+/// per tick at warn.
+fn warn_home_refusal(error: &crate::errors::StateError) -> bool {
+    let Some(slot) = home_refusal_slot(error) else {
+        return false;
+    };
+    tracing::warn!(
+        slot,
+        error = %error,
+        "reconcile: tick refused, no home directory resolves a path it would use"
+    );
+    true
+}
+
+/// The hook entries a reconcile tick over `plan` runs.
+///
+/// A drifted tick runs the `onDrift` hooks of every module with drift in the
+/// plan, and the profile's own when it is not scoped to one module. Only an
+/// applying tick (`applies`, the `Auto` drift policy) with work to do runs the
+/// plan's script actions and the `onChange` hooks: the profile's, and those
+/// of every module the plan holds an action for. A per-module tick's plan is
+/// already narrowed to its module, so another module's hooks never appear.
+fn tick_hooks<'a>(
+    plan: &'a crate::reconciler::Plan,
+    profile: &'a crate::config::ScriptSpec,
+    modules: &'a [crate::modules::ResolvedModule],
+    module_filter: Option<&str>,
+    applies: bool,
+    registry: &crate::providers::ProviderRegistry,
+) -> Vec<&'a crate::config::ScriptEntry> {
+    use crate::reconciler::{Action, ModuleActionKind, ScriptAction};
+    let actions = || plan.phases.iter().flat_map(|p| p.actions());
+    let mut hooks = Vec::new();
+    if actions().any(|a| crate::reconciler::action_counts_as_drift(a, registry)) {
+        if module_filter.is_none() {
+            hooks.extend(&profile.on_drift);
+        }
+        hooks.extend(
+            modules
+                .iter()
+                .filter(|m| module_has_drift(plan, &m.name, registry))
+                .flat_map(|m| &m.on_drift_scripts),
+        );
+    }
+    if applies && plan.total_actions() > 0 {
+        hooks.extend(actions().filter_map(|a| match a {
+            Action::Script(ScriptAction::Run { entry, .. }) => Some(entry),
+            Action::Module(m) => match &m.kind {
+                ModuleActionKind::RunScript { script, .. } => Some(script),
+                _ => None,
+            },
+            _ => None,
+        }));
+        hooks.extend(&profile.on_change);
+        hooks.extend(
+            modules
+                .iter()
+                .filter(|m| {
+                    actions().any(|a| matches!(a, Action::Module(ma) if ma.module_name == m.name))
+                })
+                .flat_map(|m| &m.on_change_scripts),
+        );
+    }
+    hooks
 }
 
 /// Narrow a planned tick down to one module's own work.

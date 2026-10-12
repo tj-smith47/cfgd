@@ -166,6 +166,24 @@ The heading is styled as a phase even though no plan holds it, so hook work read
 part of the same tree: an apply's `onChange` hooks open a `Change Hooks` group the same
 way. An `onDrift` failure renders as a warning, never as a run failure.
 
+With no home directory set, a tick checks every hook it will run before it runs any of
+them, and a `~/` `workdir` or `creates` guard on one of those stops the tick, as does the rest
+of the `~/` work `apply` refuses for. Which hooks a tick runs depends on its drift policy and
+its scope:
+
+- `onDrift` hooks run when the tick finds drift: every drifted module's, and the profile's
+  on a whole-profile tick.
+- `preReconcile`, `postReconcile` and `onChange` hooks run only under `driftPolicy: Auto`, so
+  a `NotifyOnly` or `Prompt` tick never checks them and keeps reporting drift.
+- A per-module tick checks only that module's hooks (plus the profile's `onChange`, which an
+  applying tick runs whenever anything changed).
+
+A stopped tick runs nothing, records no drift, and logs one `warn` line naming the slot:
+
+```
+WARN cfgd_core::daemon::reconcile: reconcile: tick refused, no home directory resolves a path it would use slot="script workdir" error=cannot expand ~/x for the script workdir: no home directory found (HOME unset); set HOME or give an absolute path
+```
+
 ## Drift Accounting
 
 The `driftCount` reported by `cfgd daemon status` is the **current** number of managed targets diverging from desired state, not a lifetime total. It rises when targets drift and returns to `0` once everything is healed or clean:

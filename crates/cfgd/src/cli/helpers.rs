@@ -1907,7 +1907,13 @@ fn home_refusal_with_config_providers<'m>(
     modules: impl IntoIterator<Item = cfgd_core::reconciler::ModuleHomeUse<'m>>,
 ) -> Option<cfgd_core::errors::StateError> {
     let registry = super::registry::build_registry_with_config(Some(cfg));
-    cfgd_core::reconciler::unresolved_home_refusal(state, profile, modules, Some(&registry))
+    cfgd_core::reconciler::unresolved_home_refusal(
+        state,
+        profile,
+        cfgd_core::reconciler::ReconcileContext::Apply,
+        modules,
+        Some(&registry),
+    )
 }
 
 /// Who may answer a floor bootstrap question: `--yes` / `CFGD_YES` outright,

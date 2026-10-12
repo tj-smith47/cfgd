@@ -35556,7 +35556,14 @@ fn a_desired_state_asks_for_a_home_exactly_when_it_writes_under_one() {
     let state = test_state();
     let empty = make_empty_resolved();
     assert!(
-        super::unresolved_home_refusal(Some(&state), &empty.merged, [], None).is_none(),
+        super::unresolved_home_refusal(
+            Some(&state),
+            &empty.merged,
+            super::ReconcileContext::Apply,
+            [],
+            None
+        )
+        .is_none(),
         "nothing declared under `~/` needs no home"
     );
 
@@ -35567,7 +35574,13 @@ fn a_desired_state_asks_for_a_home_exactly_when_it_writes_under_one() {
         .managed
         .push(serde_yaml::from_str("source: files/gitconfig\ntarget: ~/.gitconfig").unwrap());
     assert!(matches!(
-        super::unresolved_home_refusal(None, &with_target.merged, [], None),
+        super::unresolved_home_refusal(
+            None,
+            &with_target.merged,
+            super::ReconcileContext::Apply,
+            [],
+            None
+        ),
         Some(crate::errors::StateError::HomeUnresolved { .. })
     ));
 
@@ -35576,6 +35589,7 @@ fn a_desired_state_asks_for_a_home_exactly_when_it_writes_under_one() {
         super::unresolved_home_refusal(
             None,
             &empty.merged,
+            super::ReconcileContext::Apply,
             [super::ModuleHomeUse::from(&module)],
             None
         ),
@@ -35586,6 +35600,7 @@ fn a_desired_state_asks_for_a_home_exactly_when_it_writes_under_one() {
         super::unresolved_home_refusal(
             None,
             &empty.merged,
+            super::ReconcileContext::Apply,
             [super::ModuleHomeUse::from(&absolute)],
             None
         )
@@ -35596,7 +35611,13 @@ fn a_desired_state_asks_for_a_home_exactly_when_it_writes_under_one() {
     let mut with_env = make_empty_resolved();
     with_env.merged.env.push(env_var("EDITOR"));
     assert!(matches!(
-        super::unresolved_home_refusal(None, &with_env.merged, [], None),
+        super::unresolved_home_refusal(
+            None,
+            &with_env.merged,
+            super::ReconcileContext::Apply,
+            [],
+            None
+        ),
         Some(crate::errors::StateError::EnvHomeUnresolved { .. })
     ));
 
@@ -35606,7 +35627,13 @@ fn a_desired_state_asks_for_a_home_exactly_when_it_writes_under_one() {
             .merged
             .backups
             .push(serde_yaml::from_str(yaml).unwrap());
-        super::unresolved_home_refusal(None, &resolved.merged, [], None)
+        super::unresolved_home_refusal(
+            None,
+            &resolved.merged,
+            super::ReconcileContext::Apply,
+            [],
+            None,
+        )
     };
     assert!(
         matches!(
@@ -35638,6 +35665,7 @@ fn a_desired_state_asks_for_a_home_exactly_when_it_writes_under_one() {
         super::unresolved_home_refusal(
             None,
             &empty.merged,
+            super::ReconcileContext::Apply,
             [super::ModuleHomeUse::from(&module_env)],
             None
         ),
@@ -35649,7 +35677,13 @@ fn a_desired_state_asks_for_a_home_exactly_when_it_writes_under_one() {
         .unwrap();
     assert!(
         matches!(
-            super::unresolved_home_refusal(Some(&state), &empty.merged, [], None),
+            super::unresolved_home_refusal(
+                Some(&state),
+                &empty.merged,
+                super::ReconcileContext::Apply,
+                [],
+                None
+            ),
             Some(crate::errors::StateError::EnvHomeUnresolved { .. })
         ),
         "a recorded manager PATH entry lives in the env file too"
@@ -35701,7 +35735,13 @@ fn a_secret_decrypted_with_a_key_under_the_missing_home_refuses() {
     decrypted.merged.secrets.push(secret("secrets/token.enc"));
     assert!(
         matches!(
-            super::unresolved_home_refusal(None, &decrypted.merged, [], Some(&homeless_key)),
+            super::unresolved_home_refusal(
+                None,
+                &decrypted.merged,
+                super::ReconcileContext::Apply,
+                [],
+                Some(&homeless_key)
+            ),
             Some(crate::errors::StateError::HomeUnresolved {
                 role: "age key",
                 ..
@@ -35710,7 +35750,14 @@ fn a_secret_decrypted_with_a_key_under_the_missing_home_refuses() {
         "a decryption reads the key the backend cannot place"
     );
     assert!(
-        super::unresolved_home_refusal(None, &decrypted.merged, [], None).is_none(),
+        super::unresolved_home_refusal(
+            None,
+            &decrypted.merged,
+            super::ReconcileContext::Apply,
+            [],
+            None
+        )
+        .is_none(),
         "with no backend nothing is decrypted"
     );
 
@@ -35720,8 +35767,14 @@ fn a_secret_decrypted_with_a_key_under_the_missing_home_refuses() {
         .secrets
         .push(secret("vault://secret/data/github#token"));
     assert!(
-        super::unresolved_home_refusal(None, &resolved_by_provider.merged, [], Some(&homeless_key))
-            .is_none(),
+        super::unresolved_home_refusal(
+            None,
+            &resolved_by_provider.merged,
+            super::ReconcileContext::Apply,
+            [],
+            Some(&homeless_key)
+        )
+        .is_none(),
         "a provider reference never reaches the backend's key"
     );
 }
@@ -35738,6 +35791,7 @@ fn a_script_the_apply_runs_refuses_a_home_workdir_or_creates_guard() {
         super::unresolved_home_refusal(
             None,
             &resolved.merged,
+            super::ReconcileContext::Apply,
             modules.iter().map(super::ModuleHomeUse::from),
             None,
         )
@@ -35818,6 +35872,69 @@ fn a_script_the_apply_runs_refuses_a_home_workdir_or_creates_guard() {
         role_of(refusal_of(&make_empty_resolved(), &[installs])),
         Some(crate::CREATES_GUARD_ROLE),
         "a module package's install script checks its `creates` guard"
+    );
+}
+
+/// The plan a daemon reconcile tick builds asks no hook: which of them the
+/// tick runs turns on its drift policy and module scope, so the tick asks
+/// [`super::script_home_refusal`] of those itself. Its other questions stand,
+/// a module package's install `creates:` guard among them.
+#[test]
+#[serial_test::serial]
+fn a_reconcile_plan_asks_no_hook_the_home_question() {
+    let _env = no_home_env();
+    let refusal_of = |resolved: &ResolvedProfile, modules: &[ResolvedModule]| {
+        super::unresolved_home_refusal(
+            None,
+            &resolved.merged,
+            super::ReconcileContext::Reconcile,
+            modules.iter().map(super::ModuleHomeUse::from),
+            None,
+        )
+    };
+    type Hook = fn(&mut crate::config::ScriptSpec) -> &mut Vec<crate::config::ScriptEntry>;
+    type ModuleHook = fn(&mut ResolvedModule) -> &mut Vec<crate::config::ScriptEntry>;
+    let hooks: [(Hook, ModuleHook); 6] = [
+        (|s| &mut s.pre_apply, |m| &mut m.pre_apply_scripts),
+        (|s| &mut s.post_apply, |m| &mut m.post_apply_scripts),
+        (|s| &mut s.pre_reconcile, |m| &mut m.pre_reconcile_scripts),
+        (|s| &mut s.post_reconcile, |m| &mut m.post_reconcile_scripts),
+        (|s| &mut s.on_drift, |m| &mut m.on_drift_scripts),
+        (|s| &mut s.on_change, |m| &mut m.on_change_scripts),
+    ];
+    let mut profile = make_empty_resolved();
+    let mut module = make_resolved_module("tools");
+    for field in ["workdir", "creates"] {
+        let entry = script(&format!("run: \"true\"\n{field}: ~/x"));
+        for (profile_entries, module_entries) in hooks {
+            profile_entries(&mut profile.merged.scripts).push(entry.clone());
+            module_entries(&mut module).push(entry.clone());
+        }
+    }
+    assert!(
+        refusal_of(&profile, std::slice::from_ref(&module)).is_none(),
+        "a reconcile plan asks no hook"
+    );
+
+    module.packages.push(crate::modules::ResolvedPackage {
+        canonical_name: "thing".into(),
+        resolved_name: "thing".into(),
+        manager: crate::SCRIPT_SENTINEL.into(),
+        manager_declared: true,
+        version: None,
+        script: Some("true".into()),
+        creates: Some("~/.local/bin/thing".into()),
+        only_if: None,
+        unless: None,
+        min_version: None,
+    });
+    assert!(
+        matches!(
+            refusal_of(&profile, &[module]),
+            Some(crate::errors::StateError::HomeUnresolved { role, .. })
+                if role == crate::CREATES_GUARD_ROLE
+        ),
+        "a reconcile plan still asks a module package's install guard"
     );
 }
 
@@ -35913,6 +36030,7 @@ fn a_system_configurator_the_run_drives_refuses_its_home_paths() {
                 super::unresolved_home_refusal(
                     None,
                     &resolved.merged,
+                    super::ReconcileContext::Apply,
                     modules.iter().map(super::ModuleHomeUse::from),
                     Some(registry),
                 ),

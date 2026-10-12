@@ -125,6 +125,7 @@ impl<'a> super::Reconciler<'a> {
             && let Some(refusal) = super::unresolved_home_refusal(
                 Some(self.state),
                 &resolved.merged,
+                context,
                 module_actions.iter().map(super::ModuleHomeUse::from),
                 Some(self.registry),
             )

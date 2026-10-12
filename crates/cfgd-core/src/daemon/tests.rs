@@ -9846,6 +9846,230 @@ async fn handle_reconcile_runs_on_drift_scripts() {
     );
 }
 
+/// Run one tick with no home directory over `dir`, whose config carries
+/// `drift_policy` and whose `default` profile's spec is `profile_spec`, and
+/// return the tick's log lines. Each of `modules` is a module name beside the
+/// spec of its `module.yaml`, read from `dir/modules`.
+async fn homeless_tick<H: DaemonHooks + Send + 'static>(
+    dir: &Path,
+    drift_policy: &str,
+    profile_spec: &str,
+    modules: &[(&str, &str)],
+    hooks: H,
+    module_filter: Option<&'static str>,
+) -> String {
+    let _home = [
+        crate::test_helpers::EnvVarGuard::set("HOME", ""),
+        crate::test_helpers::EnvVarGuard::set("USERPROFILE", ""),
+    ];
+    let state_dir = dir.join("state");
+    let cache_dir = dir.join("cache");
+    std::fs::create_dir_all(&state_dir).unwrap();
+    std::fs::create_dir_all(&cache_dir).unwrap();
+    let config_path = dir.join("cfgd.yaml");
+    std::fs::write(
+        &config_path,
+        format!(
+            "apiVersion: cfgd.io/v1alpha1\nkind: CfgdConfig\nmetadata:\n  name: test\nspec:\n  profile: default\n  daemon:\n    enabled: true\n    reconcile:\n      interval: 60s\n      autoApply: false\n      driftPolicy: {drift_policy}\n"
+        ),
+    )
+    .unwrap();
+    let profiles_dir = dir.join("profiles");
+    std::fs::create_dir_all(&profiles_dir).unwrap();
+    std::fs::write(
+        profiles_dir.join("default.yaml"),
+        format!(
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n{profile_spec}"
+        ),
+    )
+    .unwrap();
+    for (name, spec) in modules {
+        let mod_dir = dir.join("modules").join(name);
+        std::fs::create_dir_all(&mod_dir).unwrap();
+        std::fs::write(
+            mod_dir.join("module.yaml"),
+            format!(
+                "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: {name}\nspec:\n{spec}"
+            ),
+        )
+        .unwrap();
+    }
+
+    let state = Arc::new(Mutex::new(DaemonState::new()));
+    let notifier = Arc::new(Notifier::new(NotifyMethod::Stdout, None));
+    crate::spawn_blocking_with_test_home(move || {
+        let printer = test_printer();
+        let mut ctx = quiet_reconcile_ctx(&state, &notifier, false, &hooks, &state_dir, &printer);
+        ctx.cache_dir_override = Some(&cache_dir);
+        ctx.module_filter = module_filter;
+        capture_run_logs(|| {
+            handle_reconcile(&config_path, None, ctx);
+        })
+    })
+    .await
+    .unwrap()
+}
+
+/// A tool shim in its own directory under `dir`, and the `argv.log` witness
+/// it writes when it runs.
+fn hook_shim(dir: &Path, name: &str) -> (PathBuf, PathBuf) {
+    let shim_dir = dir.join(name);
+    std::fs::create_dir_all(&shim_dir).unwrap();
+    (
+        crate::test_helpers::write_tool_shim(&shim_dir, name, &[]),
+        shim_dir.join("argv.log"),
+    )
+}
+
+/// The rows a tick left standing in `dir`'s state store.
+fn standing_drift(dir: &Path) -> Vec<crate::state::DriftEvent> {
+    StateStore::open_in_dir(&dir.join("state"))
+        .unwrap()
+        .unresolved_drift()
+        .unwrap()
+}
+
+/// A homeless tick asks the home question of every hook it would run before
+/// it runs any of them. The profile's `onDrift` entry works in `~/x`, the
+/// tick finds drift, and its policy auto-applies: with no home the tick logs
+/// one refusal at `warn` naming the slot, and stops with nothing run. Neither
+/// hook's witness appears, the drifted file is never written, and the store
+/// holds no drift row.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[serial_test::serial]
+async fn a_homeless_tick_refuses_before_any_hook_runs() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (drift_shim, drift_witness) = hook_shim(tmp.path(), "on-drift");
+    let (reconcile_shim, reconcile_witness) = hook_shim(tmp.path(), "post-reconcile");
+    let target = tmp.path().join("target.txt");
+    let source = tmp.path().join("source.txt");
+    std::fs::write(&source, "content").unwrap();
+    // Each shim is named by its NATIVE path inside a single-quoted YAML
+    // scalar, the shape `a_tick_over_a_module_declaring_only_hooks_records_no_drift_row`
+    // explains: both hosts' shells run it.
+    let logs = homeless_tick(
+        tmp.path(),
+        "Auto",
+        &format!(
+            "  scripts:\n    postReconcile:\n      - '\"{}\"'\n    onDrift:\n      - run: '\"{}\"'\n        workdir: ~/x\n",
+            reconcile_shim.display(), // native-ok: a command line the host's own shell parses
+            drift_shim.display(), // native-ok: a command line the host's own shell parses
+        ),
+        &[],
+        DriftingFileHooks {
+            source,
+            target: target.clone(),
+        },
+        None,
+    )
+    .await;
+
+    let refusals: Vec<&str> = logs
+        .lines()
+        .filter(|l| l.contains("reconcile: tick refused"))
+        .collect();
+    assert_eq!(refusals.len(), 1, "the tick logs its refusal once: {logs}");
+    assert!(
+        refusals[0].contains("WARN") && refusals[0].contains("slot=\"script workdir\""),
+        "at warn, naming the slot: {logs}"
+    );
+    assert!(!drift_witness.exists(), "the onDrift hook never ran");
+    assert!(!reconcile_witness.exists(), "nor the postReconcile hook");
+    assert!(!target.exists(), "and no action was applied");
+    let standing = standing_drift(tmp.path());
+    assert!(
+        standing.is_empty(),
+        "the tick records no drift row: {standing:?}"
+    );
+}
+
+/// A tick that only reports runs no `onChange` or `postReconcile` hook, so a
+/// `~` path in one asks it nothing. Homeless under `NotifyOnly`, with both
+/// hooks working in `~/x`, the tick logs no refusal, reports and records the
+/// drift it finds, and runs neither hook.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[serial_test::serial]
+async fn a_homeless_notify_only_tick_reports_drift_past_a_home_hook_it_never_runs() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (change_shim, change_witness) = hook_shim(tmp.path(), "on-change");
+    let (reconcile_shim, reconcile_witness) = hook_shim(tmp.path(), "post-reconcile");
+    let target = tmp.path().join("target.txt");
+    let source = tmp.path().join("source.txt");
+    std::fs::write(&source, "content").unwrap();
+    let logs = homeless_tick(
+        tmp.path(),
+        "NotifyOnly",
+        &format!(
+            "  scripts:\n    postReconcile:\n      - run: '\"{}\"'\n        workdir: ~/x\n    onChange:\n      - run: '\"{}\"'\n        workdir: ~/x\n",
+            reconcile_shim.display(), // native-ok: a command line the host's own shell parses
+            change_shim.display(), // native-ok: a command line the host's own shell parses
+        ),
+        &[],
+        DriftingFileHooks {
+            source,
+            target: target.clone(),
+        },
+        None,
+    )
+    .await;
+
+    assert!(
+        !logs.contains("reconcile: tick refused"),
+        "a hook the tick never runs refuses nothing: {logs}"
+    );
+    assert!(
+        logs.contains("drift detected in 1 resource"),
+        "the tick reports its drift: {logs}"
+    );
+    assert!(!standing_drift(tmp.path()).is_empty(), "and records it");
+    assert!(!change_witness.exists(), "the onChange hook never ran");
+    assert!(!reconcile_witness.exists(), "nor the postReconcile hook");
+    assert!(!target.exists(), "and nothing was applied");
+}
+
+/// A per-module tick runs only its own module's hooks, so another module's
+/// `~` hook asks it nothing. Homeless, auto-applying, scoped to module `a`
+/// while module `b`'s `postReconcile` and `onChange` hooks work in `~/x`, the
+/// tick logs no refusal and runs `a`'s `postReconcile` hook, and neither of
+/// `b`'s.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[serial_test::serial]
+async fn a_homeless_per_module_tick_runs_past_another_modules_home_hook() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (a_shim, a_witness) = hook_shim(tmp.path(), "a-post-reconcile");
+    let (b_shim, b_witness) = hook_shim(tmp.path(), "b-post-reconcile");
+    let (b_change_shim, b_change_witness) = hook_shim(tmp.path(), "b-on-change");
+    let a_spec = format!(
+        "  scripts:\n    postReconcile:\n      - '\"{}\"'\n",
+        a_shim.display(), // native-ok: a command line the host's own shell parses
+    );
+    let b_spec = format!(
+        "  scripts:\n    postReconcile:\n      - run: '\"{}\"'\n        workdir: ~/x\n    onChange:\n      - run: '\"{}\"'\n        workdir: ~/x\n",
+        b_shim.display(), // native-ok: a command line the host's own shell parses
+        b_change_shim.display(), // native-ok: a command line the host's own shell parses
+    );
+    let logs = homeless_tick(
+        tmp.path(),
+        "Auto",
+        "  modules:\n    - a\n    - b\n",
+        &[("a", &a_spec), ("b", &b_spec)],
+        EmptyPlanHooks,
+        Some("a"),
+    )
+    .await;
+
+    assert!(
+        !logs.contains("reconcile: tick refused"),
+        "another module's hook refuses nothing: {logs}"
+    );
+    assert!(
+        a_witness.exists(),
+        "the tick runs its own module's hook: {logs}"
+    );
+    assert!(!b_witness.exists(), "and none of the other module's");
+    assert!(!b_change_witness.exists(), "onChange included");
+}
+
 /// A module whose whole declaration is lifecycle hooks reports no drift, records
 /// no row, and fires no `onDrift` script.
 ///

@@ -43,7 +43,7 @@ pub use apply::{
 };
 pub use env::{
     HOME_REFUSAL_SLOTS, HomeQuestioner, ModuleHomeUse, recorded_manager_path_dirs,
-    unresolved_home_refusal,
+    script_home_refusal, unresolved_home_refusal,
 };
 pub use env_engine::{
     ENV_VERB_INJECT, ENV_VERB_WRITE, MACOS_SYSTEM_ENV_SOURCE_LINE, ManagerPathDir,

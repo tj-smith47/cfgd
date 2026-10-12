@@ -11,7 +11,7 @@ use super::env_engine::{
 };
 use super::env_files::detect_rc_env_conflicts;
 use super::format::LIVE_SESSION_RESOURCE_ID;
-use super::types::{Action, EnvAction};
+use super::types::{Action, EnvAction, ReconcileContext};
 use super::verify::LayeredEnv;
 
 /// PATH directories cfgd recorded as its own for a package manager, narrowed
@@ -62,7 +62,7 @@ pub struct ModuleHomeUse<'a> {
     pub targets: Vec<&'a std::path::Path>,
     pub declares_env: bool,
     /// Its `preApply`, `postApply` and `onChange` entries, the hooks an apply runs.
-    pub scripts: Vec<&'a ScriptEntry>,
+    pub apply_scripts: Vec<&'a ScriptEntry>,
     /// The `creates:` guard of each package it installs with its own script.
     pub install_creates: Vec<&'a str>,
     pub system: Option<&'a crate::config::SystemSettings>,
@@ -73,7 +73,7 @@ impl<'a> From<&'a ResolvedModule> for ModuleHomeUse<'a> {
         Self {
             targets: module.files.iter().map(|f| f.target.as_path()).collect(),
             declares_env: !module.env.is_empty() || !module.aliases.is_empty(),
-            scripts: module
+            apply_scripts: module
                 .pre_apply_scripts
                 .iter()
                 .chain(&module.post_apply_scripts)
@@ -107,7 +107,7 @@ impl<'a> ModuleHomeUse<'a> {
             return Self {
                 targets: Vec::new(),
                 declares_env: false,
-                scripts: Vec::new(),
+                apply_scripts: Vec::new(),
                 install_creates: Vec::new(),
                 system: None,
             };
@@ -123,7 +123,7 @@ impl<'a> ModuleHomeUse<'a> {
                 || applicable_here(&module.spec.aliases, platform)
                     .next()
                     .is_some(),
-            scripts: module
+            apply_scripts: module
                 .spec
                 .scripts
                 .iter()
@@ -151,11 +151,42 @@ fn apply_hook_entries(spec: &ScriptSpec) -> impl Iterator<Item = &ScriptEntry> {
         .chain(&spec.on_change)
 }
 
+/// The refusal the first of `entries` with a `~` `workdir:` or `creates:`
+/// guard meets when no home directory resolves, or `None` when none needs
+/// one. A script resolves both paths when it runs, so a caller asks this of
+/// the hooks it is about to run before it runs any of them: the apply through
+/// [`unresolved_home_refusal`], a daemon reconcile tick over the hooks its
+/// drift policy and module scope will run.
+pub fn script_home_refusal<'a>(
+    entries: impl IntoIterator<Item = &'a ScriptEntry>,
+) -> Option<crate::errors::StateError> {
+    entries.into_iter().find_map(|entry| {
+        let ScriptEntry::Full(command) = entry else {
+            return None;
+        };
+        let workdir = command.workdir.as_deref().and_then(|raw| {
+            crate::home_refusal_of(crate::expand_tilde(
+                std::path::Path::new(raw),
+                crate::SCRIPT_WORKDIR_ROLE,
+            ))
+        });
+        workdir.or_else(|| {
+            command.creates.as_deref().and_then(|raw| {
+                crate::home_refusal_of(crate::expand_tilde(
+                    std::path::Path::new(raw),
+                    crate::CREATES_GUARD_ROLE,
+                ))
+            })
+        })
+    })
+}
+
 /// Which question refuses a [`HOME_REFUSAL_SLOTS`] role up front.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HomeQuestioner {
     /// [`unresolved_home_refusal`], which `apply`, `plan` and `init --apply`
-    /// ask before they open the state store.
+    /// ask before they open the state store. A daemon reconcile tick asks
+    /// [`script_home_refusal`] of the hooks it will run.
     UnresolvedHomeRefusal,
     /// The check `compliance` and `compliance export` run before they open
     /// the state store.
@@ -210,8 +241,11 @@ pub const HOME_REFUSAL_SLOTS: &[(&str, &str, HomeQuestioner)] = &{
 /// [`StateError::EnvHomeUnresolved`], because they live in the managed env
 /// file. The plan, `apply` and `plan` before they open the state store, and
 /// `doctor` all ask it, so `doctor` fails its verdict exactly when a run
-/// refuses. [`HOME_REFUSAL_SLOTS`] names each of its questions by the role
-/// the path's expansion carries.
+/// refuses. In [`ReconcileContext::Reconcile`] it asks no hook: which hooks a
+/// daemon tick runs turns on its drift policy and module scope, which the plan
+/// cannot see, so the tick asks [`script_home_refusal`] of them itself.
+/// [`HOME_REFUSAL_SLOTS`] names each of its questions by the role the path's
+/// expansion carries.
 ///
 /// [`SecretBackend::home_refusal`]: crate::providers::SecretBackend::home_refusal
 /// [`SystemConfigurator::home_refusal`]: crate::providers::SystemConfigurator::home_refusal
@@ -221,6 +255,7 @@ pub const HOME_REFUSAL_SLOTS: &[(&str, &str, HomeQuestioner)] = &{
 pub fn unresolved_home_refusal<'a>(
     state: Option<&StateStore>,
     profile: &MergedProfile,
+    context: ReconcileContext,
     modules: impl IntoIterator<Item = ModuleHomeUse<'a>>,
     registry: Option<&crate::providers::ProviderRegistry>,
 ) -> Option<crate::errors::StateError> {
@@ -248,38 +283,23 @@ pub fn unresolved_home_refusal<'a>(
     }
     // A script resolves its `workdir:` and `creates:` when it runs, in the
     // middle of the apply.
-    let script_path = apply_hook_entries(&profile.scripts)
-        .chain(modules.iter().flat_map(|m| m.scripts.iter().copied()))
-        .find_map(|entry| {
-            let ScriptEntry::Full(command) = entry else {
-                return None;
-            };
-            let workdir = command.workdir.as_deref().and_then(|raw| {
+    let hooks: Vec<&ScriptEntry> = match context {
+        ReconcileContext::Apply => apply_hook_entries(&profile.scripts)
+            .chain(modules.iter().flat_map(|m| m.apply_scripts.iter().copied()))
+            .collect(),
+        ReconcileContext::Reconcile => Vec::new(),
+    };
+    let script_path = script_home_refusal(hooks).or_else(|| {
+        modules
+            .iter()
+            .flat_map(|m| m.install_creates.iter())
+            .find_map(|raw| {
                 crate::home_refusal_of(crate::expand_tilde(
                     std::path::Path::new(raw),
-                    crate::SCRIPT_WORKDIR_ROLE,
+                    crate::CREATES_GUARD_ROLE,
                 ))
-            });
-            workdir.or_else(|| {
-                command.creates.as_deref().and_then(|raw| {
-                    crate::home_refusal_of(crate::expand_tilde(
-                        std::path::Path::new(raw),
-                        crate::CREATES_GUARD_ROLE,
-                    ))
-                })
             })
-        })
-        .or_else(|| {
-            modules
-                .iter()
-                .flat_map(|m| m.install_creates.iter())
-                .find_map(|raw| {
-                    crate::home_refusal_of(crate::expand_tilde(
-                        std::path::Path::new(raw),
-                        crate::CREATES_GUARD_ROLE,
-                    ))
-                })
-        });
+    });
     if script_path.is_some() {
         return script_path;
     }
