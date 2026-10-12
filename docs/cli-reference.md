@@ -411,6 +411,10 @@ The last is what a global `--config` beside `--plan` runs into: a plan file name
 config of its own, so without that question the recorded actions would run against a
 second machine picture.
 
+A replay never writes the fields a config document behind this build's schema leaves
+undeclared: under `Prompt` and `Update` it reports them the way `Warn` does, and the
+next plain `cfgd apply` writes them (see [`cfgd config migrate`](#cfgd-config-migrate)).
+
 ```console
 $ cfgd apply --config /etc/cfgd/other.yaml --plan plan.json
 ✗ plan.json is not a plan cfgd wrote for this config: nothing its derivation read was /etc/cfgd/other.yaml, so the actions in it were priced against another machine picture — run `cfgd plan -o json` under this config
@@ -2917,7 +2921,11 @@ again, because the question changed. A run with no terminal reports instead and
 records no answer, and the daemon does the same: it never rewrites a tracked file.
 A preview (`cfgd plan`, `cfgd apply --dry-run`, `cfgd profile migrate --dry-run`
 and `cfgd init --dry-run`) adds no field to the document either, answering
-`Prompt` and `Update` the way `Warn` does. Every write the check makes prints the
+`Prompt` and `Update` the way `Warn` does. So does `cfgd apply --plan`: the saved
+plan was recorded by a preview (`cfgd plan` or `cfgd apply --dry-run`), and a
+preview never migrates, so an alignment written ahead of the replay would make it
+refuse its own plan as stale. The next
+plain `cfgd apply` writes the fields. Every write the check makes prints the
 fields it added.
 
 Four invocations are withheld from that load-time check, because the migration

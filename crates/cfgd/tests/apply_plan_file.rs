@@ -868,10 +868,6 @@ fn cfgd_at(config_dir: &Path, state_dir: &Path, args: &[&str]) -> std::process::
         .arg(config_dir.join("cfgd.yaml"))
         .arg("--state-dir")
         .arg(state_dir)
-        // The fixture's config leaves fields undeclared, and a `--yes` run
-        // would otherwise align it in place: a write to the config document
-        // that is not the source edit each pin makes.
-        .args(["--migration-policy", "ignore"])
         // A module git source in these fixtures is a local `file://` repository,
         // and its checkout lands in a cache the test can find and edit.
         .env(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1")
@@ -879,6 +875,72 @@ fn cfgd_at(config_dir: &Path, state_dir: &Path, args: &[&str]) -> std::process::
         .args(args)
         .output()
         .unwrap()
+}
+
+/// The tiny profile's config, which declares none of the fields this build
+/// defaults, under `policy`, replayed with `--yes` from a plan recorded before
+/// any alignment: the replay runs, and the document keeps the bytes the plan
+/// was derived from.
+fn assert_replay_leaves_a_behind_config_alone(policy: &str) {
+    let (config_dir, state_dir, target) = tiny_profile_setup();
+    let config = config_dir.path().join("cfgd.yaml");
+    std::fs::write(
+        &config,
+        format!(
+            "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: tiny\n  migrationPolicy: {policy}\n"
+        ),
+    )
+    .unwrap();
+    let before = std::fs::read(&config).unwrap();
+    let plan_file = binary_plan_file(config_dir.path(), state_dir.path(), &["-o", "json", "plan"]);
+    assert_eq!(
+        std::fs::read(&config).unwrap(),
+        before,
+        "{policy}: `cfgd plan` leaves the config alone"
+    );
+
+    let out = cfgd_at(
+        config_dir.path(),
+        state_dir.path(),
+        &["--yes", "apply", "--plan", plan_file.to_str().unwrap()],
+    );
+    let (stdout, stderr) = (
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{policy}: the replay runs its own plan: stdout {stdout} stderr {stderr}"
+    );
+    assert!(
+        !stdout.contains("stale") && !stderr.contains("stale"),
+        "{policy}: the replay is not refused as stale: stdout {stdout} stderr {stderr}"
+    );
+    assert!(
+        !stdout.contains("Added") && !stderr.contains("Added"),
+        "{policy}: the replay adds no field: stdout {stdout} stderr {stderr}"
+    );
+    assert_eq!(
+        std::fs::read(&config).unwrap(),
+        before,
+        "{policy}: the replay leaves the config document byte-identical"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&target).unwrap(),
+        "hello world",
+        "{policy}: the recorded file action ran"
+    );
+}
+
+#[test]
+fn apply_plan_after_upgrade_does_not_migrate_and_does_not_refuse_its_own_plan() {
+    assert_replay_leaves_a_behind_config_alone("Update");
+}
+
+#[test]
+fn apply_plan_under_prompt_with_yes_does_not_migrate_and_does_not_refuse_its_own_plan() {
+    assert_replay_leaves_a_behind_config_alone("Prompt");
 }
 
 /// Record `producer`'s `-o json` stdout as a plan file in the state directory,

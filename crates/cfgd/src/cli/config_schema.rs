@@ -119,8 +119,9 @@ pub struct GateInvocation<'a> {
     /// `--yes` / `CFGD_YES`.
     pub assume_yes: bool,
     pub is_daemon: bool,
-    /// A preview ([`is_preview`]), which writes nothing, so the gate answers
-    /// `Prompt` and `Update` as `Warn`, the way it does for the daemon.
+    /// A preview or a saved-plan replay ([`is_preview`]), which leaves the
+    /// config document unchanged, so the gate answers `Prompt` and `Update`
+    /// as `Warn`, the way it does for the daemon.
     pub preview: bool,
     /// `--state-dir`, where a prompt's answer is held.
     pub state_dir: Option<&'a Path>,
@@ -141,19 +142,24 @@ impl<'a> GateInvocation<'a> {
     }
 }
 
-/// Whether `command` is a preview: a run that shows what it would do and
-/// changes nothing. `cfgd plan` always is; `apply`, `init` and `profile
-/// migrate` are under `--dry-run`. A preview that let the gate write would
-/// change the document it promised to leave alone, so the gate folds for it
-/// the way it folds for the daemon.
+/// Whether `command` leaves the config document as it found it: a preview,
+/// which shows what it would do and changes nothing, or a saved-plan replay.
+/// `cfgd plan` always is; `apply`, `init` and `profile migrate` are under
+/// `--dry-run`, and `apply` is under `--plan` too. A preview that let the gate
+/// write would change the document it promised to leave alone. A replay
+/// executes a plan a preview recorded (`cfgd plan` or `cfgd apply --dry-run`),
+/// and a preview never migrates, so an alignment written first would make the
+/// replay refuse its own plan as stale. The gate folds for both the way it
+/// folds for the daemon: the `Warn` report still prints, and the next plain
+/// `apply` migrates.
 ///
-/// Every verb carrying a `--dry-run` flag belongs here, which
-/// `every_dry_run_verb_runs_the_migration_gate_as_a_preview` holds against
+/// Every verb carrying a `--dry-run` or `--plan` flag belongs here, which
+/// `every_preview_or_replay_verb_runs_the_migration_gate_as_a_preview` holds against
 /// clap's own command tree.
 pub fn is_preview(command: Option<&Command>) -> bool {
     match command {
         Some(Command::Plan(_)) => true,
-        Some(Command::Apply(args)) => args.dry_run,
+        Some(Command::Apply(args)) => args.dry_run || args.plan.is_some(),
         Some(Command::Init { dry_run, .. }) => *dry_run,
         Some(Command::Profile {
             command: ProfileCommand::Migrate { dry_run, .. },
@@ -1342,11 +1348,11 @@ mod tests {
 
     /// Every verb clap offers says whether it is a preview, against a
     /// hand-written expectation: a top-level verb added later fails this walk
-    /// until it is classified, and so does a `--dry-run` flag added at any
-    /// depth. A verb taking `--dry-run` is read twice, since the flag is what
-    /// decides it.
+    /// until it is classified, and so does a `--dry-run` or `--plan` flag added
+    /// at any depth. A verb taking one of those is read with and without it,
+    /// since the flag is what decides it.
     #[test]
-    fn every_dry_run_verb_runs_the_migration_gate_as_a_preview() {
+    fn every_preview_or_replay_verb_runs_the_migration_gate_as_a_preview() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("cfgd.yaml");
         // (the clap path, the argv, whether the gate runs as a preview)
@@ -1355,6 +1361,7 @@ mod tests {
             ("init", &["init", "--dry-run"], true),
             ("apply", &["apply"], false),
             ("apply", &["apply", "--dry-run"], true),
+            ("apply", &["apply", "--plan", "plan.json"], true),
             ("plan", &["plan"], true),
             ("status", &["status"], false),
             ("diff", &["diff"], false),
@@ -1440,43 +1447,44 @@ mod tests {
             );
         }
 
-        // Every verb at any depth taking `--dry-run`, named by its clap path.
-        fn dry_run_verbs(cmd: &clap::Command, prefix: &str, out: &mut Vec<String>) {
+        // Every verb at any depth taking `--{long}`, named by its clap path.
+        fn verbs_taking(cmd: &clap::Command, long: &str, prefix: &str, out: &mut Vec<String>) {
             for sub in cmd.get_subcommands() {
                 let name = if prefix.is_empty() {
                     sub.get_name().to_string()
                 } else {
                     format!("{prefix} {}", sub.get_name())
                 };
-                if sub
-                    .get_arguments()
-                    .any(|arg| arg.get_long() == Some("dry-run"))
-                {
+                if sub.get_arguments().any(|arg| arg.get_long() == Some(long)) {
                     out.push(name.clone());
                 }
-                dry_run_verbs(sub, &name, out);
+                verbs_taking(sub, long, &name, out);
             }
         }
-        let mut dry_run = Vec::new();
-        dry_run_verbs(&command, "", &mut dry_run);
-        assert!(
-            dry_run.len() >= 3,
-            "the walk found only {} verbs taking --dry-run: {dry_run:?}",
-            dry_run.len()
-        );
-        for name in &dry_run {
-            let (with, without) = (
-                cases
-                    .iter()
-                    .any(|(case, argv, want)| case == name && argv.contains(&"--dry-run") && *want),
-                cases.iter().any(|(case, argv, want)| {
-                    case == name && !argv.contains(&"--dry-run") && !want
-                }),
-            );
+        // (the flag, the fewest verbs the walk must find)
+        for (long, at_least) in [("dry-run", 3), ("plan", 1)] {
+            let flag = format!("--{long}");
+            let mut verbs = Vec::new();
+            verbs_taking(&command, long, "", &mut verbs);
             assert!(
-                with && without,
-                "`cfgd {name}` takes --dry-run: classify it with and without the flag"
+                verbs.len() >= at_least,
+                "the walk found only {} verbs taking {flag}: {verbs:?}",
+                verbs.len()
             );
+            for name in &verbs {
+                let (with, without) = (
+                    cases.iter().any(|(case, argv, want)| {
+                        case == name && argv.contains(&flag.as_str()) && *want
+                    }),
+                    cases.iter().any(|(case, argv, want)| {
+                        case == name && !argv.contains(&flag.as_str()) && !want
+                    }),
+                );
+                assert!(
+                    with && without,
+                    "`cfgd {name}` takes {flag}: classify it with and without the flag"
+                );
+            }
         }
 
         for (name, argv, preview) in cases {
