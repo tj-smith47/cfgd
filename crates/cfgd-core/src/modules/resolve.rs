@@ -915,7 +915,7 @@ pub fn resolve_module_files(
 
             resolved.push(ResolvedFile {
                 source: local_path,
-                target: crate::expand_tilde(Path::new(&entry.target)),
+                target: crate::expand_tilde(Path::new(&entry.target), crate::FILE_TARGET_ROLE)?,
                 is_git_source: true,
                 strategy: entry.strategy,
                 encryption: entry.encryption.clone(),
@@ -929,7 +929,7 @@ pub fn resolve_module_files(
             // `source.exists()` branch would read as a deployable payload.
             resolved.push(ResolvedFile {
                 source: PathBuf::new(),
-                target: crate::expand_tilde(Path::new(&entry.target)),
+                target: crate::expand_tilde(Path::new(&entry.target), crate::FILE_TARGET_ROLE)?,
                 is_git_source: false,
                 strategy: entry.strategy,
                 encryption: entry.encryption.clone(),
@@ -979,7 +979,7 @@ pub fn resolve_module_files(
             }
             resolved.push(ResolvedFile {
                 source,
-                target: crate::expand_tilde(Path::new(&entry.target)),
+                target: crate::expand_tilde(Path::new(&entry.target), crate::FILE_TARGET_ROLE)?,
                 is_git_source: false,
                 strategy: entry.strategy,
                 encryption: entry.encryption.clone(),

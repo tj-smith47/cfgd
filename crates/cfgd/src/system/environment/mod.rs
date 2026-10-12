@@ -226,17 +226,17 @@ impl EnvironmentConfigurator {
 
     // --- macOS ---
 
-    fn macos_env_sh_path() -> std::path::PathBuf {
-        cfgd_core::default_config_dir().join("env.sh")
+    fn macos_env_sh_path() -> Result<std::path::PathBuf> {
+        Ok(cfgd_core::default_config_dir()?.join("env.sh"))
     }
 
     fn macos_plist_path() -> std::path::PathBuf {
         Path::new(MACOS_LAUNCHDAEMONS_DIR).join(MACOS_LAUNCHD_PLIST_NAME)
     }
 
-    fn macos_current_vars() -> BTreeMap<String, String> {
-        let env_sh = Self::macos_env_sh_path();
-        Self::parse_export_file(&env_sh.to_string_lossy())
+    fn macos_current_vars() -> Result<BTreeMap<String, String>> {
+        let env_sh = Self::macos_env_sh_path()?;
+        Ok(Self::parse_export_file(&env_sh.to_string_lossy()))
     }
 
     /// Load `~/.config/cfgd/env.sh` from the user's interactive rc, through the
@@ -246,8 +246,8 @@ impl EnvironmentConfigurator {
     /// instruction to paste one by hand leaves the machine unconverged until
     /// somebody does, and the engine's merge is what keeps a second run from
     /// appending a duplicate.
-    fn macos_inject_rc_source_line(cx: &SystemContext<'_>) {
-        let home = cfgd_core::expand_tilde(Path::new("~"));
+    fn macos_inject_rc_source_line(cx: &SystemContext<'_>) -> Result<()> {
+        let home = cfgd_core::home_dir()?;
         let rc = cfgd_core::reconciler::interactive_rc_path(&home);
         match cfgd_core::reconciler::inject_rc_source_line(
             &rc,
@@ -264,11 +264,12 @@ impl EnvironmentConfigurator {
                 ),
             ),
         }
+        Ok(())
     }
 
     /// Write `~/.config/cfgd/env.sh` — users source this from their shell rc.
     fn macos_write_env_sh(managed: &BTreeMap<String, String>) -> Result<()> {
-        let env_sh = Self::macos_env_sh_path();
+        let env_sh = Self::macos_env_sh_path()?;
         if let Some(parent) = env_sh.parent() {
             std::fs::create_dir_all(parent).map_err(cfgd_core::errors::CfgdError::Io)?;
         }
@@ -398,7 +399,7 @@ impl SystemConfigurator for EnvironmentConfigurator {
         let vars = if cfg!(windows) {
             Self::windows_current_vars()
         } else if cfg!(target_os = "macos") {
-            Self::macos_current_vars()
+            Self::macos_current_vars()?
         } else {
             Self::linux_current_vars()
         };
@@ -417,7 +418,7 @@ impl SystemConfigurator for EnvironmentConfigurator {
         let current_vars = if cfg!(windows) {
             Self::windows_current_vars()
         } else if cfg!(target_os = "macos") {
-            Self::macos_current_vars()
+            Self::macos_current_vars()?
         } else {
             Self::linux_current_vars()
         };
@@ -475,9 +476,9 @@ impl SystemConfigurator for EnvironmentConfigurator {
                 Ok(()) => {
                     cx.report(
                         Role::Info,
-                        format!("Updated {}", Self::macos_env_sh_path().posix()),
+                        format!("Updated {}", Self::macos_env_sh_path()?.posix()),
                     );
-                    Self::macos_inject_rc_source_line(cx);
+                    Self::macos_inject_rc_source_line(cx)?;
                 }
                 Err(e) => {
                     cx.report(

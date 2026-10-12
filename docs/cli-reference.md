@@ -1442,6 +1442,50 @@ open error as its detail. `-o json` carries the same check as `stateStore`:
 
 `message` is `null` when the store opened.
 
+`doctor` opens an existing store read-only, and creates no store and no file beside one. On a machine no `apply` has run
+on, the row reads `✓ State store: not created yet` with `` `cfgd apply` creates it `` as its
+detail, and the verdict passes. `-o json` adds `"created": false` to `stateStore` in that case
+only:
+
+```json
+"stateStore": {
+  "accessible": true,
+  "message": null,
+  "created": false
+}
+```
+
+The module cache is checked the same way, because `apply` and `plan` resolve it before they
+open the state store: a cache with nowhere to go (`CFGD_CACHE_DIR`, `XDG_CACHE_HOME` and the
+home directory all unset) refuses the run before any `state.db` is created, and fails the
+verdict on a `✗ Cache directory: unavailable` row. `-o json` carries it as `cacheDir`, in the
+same shape as `stateStore`.
+
+With no home directory set, the `Home directory` row fails when the profile (composed with every
+source already in the cache, since `doctor` fetches nothing), or a module it reaches, declares
+work under `~/`: an env var or alias, a `~/` file or secret target, a secret decrypted with an age
+key under `~/`, or a package manager `PATH` entry cfgd recorded. `apply` and `plan` fetch their
+sources and resolve their modules first, so a source the cache did not hold yet counts too, and
+refuse that work before they open the state store, writing nothing in its place. An existing
+store is only read until then (`apply --plan` checks its saved plan against it the same way), so
+a refused run neither migrates it nor recreates its `-wal` and `-shm` files. The verdict fails
+with them. With nothing declared there, the row is informational and the verdict passes.
+`-o json` reports it as `home`:
+
+```json
+"home": {
+  "resolved": false,
+  "refusal": "cannot write the managed env file ~/.cfgd.env: no home directory found (HOME unset); set HOME"
+}
+```
+
+`refusal` is `null` when a home is set or nothing declared needs one.
+
+An age key configured under `~/` (`spec.secrets.sops.ageKey`) has no location with no home set.
+The `age key` row then reads `no location` with the refusal as its detail: `✗` when a declared
+secret decrypts with it, `⚠` otherwise. `-o json` carries the refusal as `secrets.ageKeyError`,
+which is absent when the key path resolves.
+
 ### `cfgd log`
 
 Show apply history from the state store.
@@ -1834,7 +1878,8 @@ directory, an absolute `XDG_STATE_HOME` or `XDG_CACHE_HOME` still places the sta
 or cache root, on every platform:
 
 ```sh
-env -u HOME XDG_CONFIG_HOME=/srv/cfgd/config XDG_STATE_HOME=/srv/cfgd/state cfgd paths
+env -u HOME XDG_CONFIG_HOME=/srv/cfgd/config XDG_STATE_HOME=/srv/cfgd/state \
+  XDG_CACHE_HOME=/srv/cfgd/cache cfgd paths
 ```
 
 ### Package tokens
@@ -3231,6 +3276,7 @@ domain instead: `config`, `file`, `package`, `secret`, `system`, `state`,
 | `encryption_failed` | The secret backend could not encrypt the file. |
 | `filename_required` | `kubectl cfgd` was given no `-f`/`--filename`. |
 | `foreign_config` | The `--plan` file was not written for this config. |
+| `home_unresolved` | `cfgd generate` was given no `--home` and no home directory resolves (`HOME` unset, or `USERPROFILE` and `HOME` on Windows); `name` is `--home`. |
 | `host_moved` | The `--plan` file describes a different host. |
 | `in_use` | The module named for deletion is referenced by a profile. |
 | `inherited` | The profile named for deletion is inherited by another profile. |

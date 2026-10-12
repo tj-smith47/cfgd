@@ -200,6 +200,7 @@ pub(crate) fn collect_paths_output(cli: &Cli, sources: &DirSources) -> anyhow::R
         file: cli.config.posix().to_string(),
     };
 
+    // home-optional-ok: a display cell; `cfgd paths` reports a root with no location as absent
     let state_dir = cfgd_core::resolve_state_dir(cli.state_dir.as_deref(), scope).ok();
     let state = StatePaths {
         dir: state_dir.as_ref().map(|d| d.posix().to_string()),

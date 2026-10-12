@@ -58,34 +58,6 @@ fn generate_target_profile() {
 }
 
 #[test]
-fn dirs_from_env_returns_path() {
-    let path = dirs_from_env();
-    assert!(!path.as_os_str().is_empty());
-}
-
-// --- dirs_from_env behavior ---
-
-#[test]
-fn dirs_from_env_uses_home_env() {
-    // HOME is typically set in test environments
-    let home = std::env::var_os("HOME");
-    let result = dirs_from_env();
-    if let Some(h) = home {
-        assert_eq!(
-            result,
-            std::path::PathBuf::from(h),
-            "should use HOME env var"
-        );
-    } else {
-        assert_eq!(
-            result,
-            std::path::PathBuf::from("/tmp"),
-            "should fall back to /tmp when HOME is not set"
-        );
-    }
-}
-
-#[test]
 fn target_label_returns_full_for_none() {
     assert_eq!(target_label(&None), "full");
 }
@@ -106,16 +78,40 @@ fn target_label_returns_profile_slug() {
     assert_eq!(target_label(&t), "profile/work-laptop");
 }
 
+fn generate_args(home: Option<&str>) -> GenerateArgs {
+    GenerateArgs {
+        target: None,
+        model: None,
+        provider: None,
+        yes: false,
+        scan_only: false,
+        shell: None,
+        home: home.map(str::to_string),
+    }
+}
+
+#[test]
+fn scan_home_takes_the_home_flag_first() {
+    assert_eq!(
+        scan_home(&generate_args(Some("/srv/u"))).unwrap(),
+        std::path::PathBuf::from("/srv/u")
+    );
+}
+
+#[test]
+fn scan_home_reads_the_one_home() {
+    let dir = tempfile::tempdir().unwrap();
+    let _home = cfgd_core::with_test_home_guard(dir.path());
+    assert_eq!(scan_home(&generate_args(None)).unwrap(), dir.path());
+}
+
 #[test]
 #[serial]
-fn dirs_from_env_fallback_to_tmp_when_home_unset() {
-    let _guard = EnvVarGuard::unset("HOME");
-    let result = dirs_from_env();
-    assert_eq!(
-        result,
-        std::path::PathBuf::from("/tmp"),
-        "dirs_from_env should fall back to /tmp when $HOME is unset"
-    );
+fn scan_home_refuses_with_no_home_and_no_flag() {
+    let _home = EnvVarGuard::set("HOME", "");
+    let _profile = EnvVarGuard::set("USERPROFILE", "");
+    let err = scan_home(&generate_args(None)).unwrap_err().to_string();
+    assert!(err.contains("no home directory found"), "{err}");
 }
 
 #[test]
@@ -426,15 +422,12 @@ fn cmd_generate_scan_only_exports_count_in_payload() {
 
 #[test]
 #[serial]
-fn dirs_from_env_with_home_set_returns_that_path() {
+fn scan_home_reads_the_home_variable_when_no_test_home_is_installed() {
     let dir = tempfile::tempdir().unwrap();
-    let _guard = EnvVarGuard::set("HOME", dir.path().to_str().unwrap());
-    let result = dirs_from_env();
-    assert_eq!(
-        result,
-        dir.path(),
-        "dirs_from_env must return the $HOME value when it is explicitly set"
-    );
+    let home = dir.path().to_str().unwrap();
+    let _home = EnvVarGuard::set("HOME", home);
+    let _profile = EnvVarGuard::set("USERPROFILE", home);
+    assert_eq!(scan_home(&generate_args(None)).unwrap(), dir.path());
 }
 
 #[test]

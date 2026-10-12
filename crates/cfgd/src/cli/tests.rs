@@ -25037,41 +25037,6 @@ fn workstation_daemon_hooks_build_registry_returns_populated_registry() {
 }
 
 #[test]
-fn workstation_daemon_hooks_expand_tilde() {
-    use cfgd_core::daemon::DaemonHooks;
-    // Thread-local test home: the ambient HOME var is a race in the threaded
-    // suite (any test holding an EnvVarGuard over HOME can unset it mid-call).
-    let tmp_home = tempfile::tempdir().unwrap();
-    let _home = cfgd_core::with_test_home_guard(tmp_home.path());
-    let hooks = super::WorkstationDaemonHooks;
-    let expanded = hooks.expand_tilde(std::path::Path::new("~/test/file"));
-    // Should not start with ~ after expansion
-    assert!(
-        !expanded.to_string_lossy().starts_with('~'),
-        "expand_tilde should expand ~ to home directory, got: {}",
-        expanded.display()
-    );
-    // Should end with the path suffix
-    assert!(
-        expanded.to_string_lossy().ends_with("test/file"),
-        "expand_tilde should preserve path suffix, got: {}",
-        expanded.display()
-    );
-}
-
-#[test]
-fn workstation_daemon_hooks_expand_tilde_absolute_unchanged() {
-    use cfgd_core::daemon::DaemonHooks;
-    let hooks = super::WorkstationDaemonHooks;
-    let abs = std::path::Path::new("/absolute/path");
-    let expanded = hooks.expand_tilde(abs);
-    assert_eq!(
-        expanded, abs,
-        "expand_tilde should not modify absolute paths"
-    );
-}
-
-#[test]
 fn workstation_daemon_hooks_plan_files_empty_profile() {
     use cfgd_core::daemon::DaemonHooks;
     let hooks = super::WorkstationDaemonHooks;
@@ -29094,6 +29059,8 @@ fn base_doctor_output() -> super::output_types::DoctorOutput {
             sops_version: Some("3.8.0".into()),
             age_key_exists: true,
             age_key_path: Some("/home/user/.config/cfgd/keys/age.key".into()),
+            age_key_error: None,
+            age_key_blocks_run: false,
             sops_config_exists: true,
             sops_config_path: Some("/etc/.sops.yaml".into()),
             providers: vec![],
@@ -29102,9 +29069,19 @@ fn base_doctor_output() -> super::output_types::DoctorOutput {
         modules: vec![],
         system_configurators: vec![],
         profiles: vec![],
-        state_store: super::output_types::DoctorStateStore {
+        state_store: super::output_types::DoctorRootCheck {
             accessible: true,
             message: None,
+            created: None,
+        },
+        cache_dir: super::output_types::DoctorRootCheck {
+            accessible: true,
+            message: None,
+            created: None,
+        },
+        home: super::output_types::DoctorHomeCheck {
+            resolved: true,
+            refusal: None,
         },
     }
 }
@@ -29177,9 +29154,10 @@ fn build_doctor_doc_git_missing_emits_fail_status() {
 #[test]
 fn build_doctor_doc_state_store_unavailable_emits_fail() {
     let mut output = base_doctor_output();
-    output.state_store = super::output_types::DoctorStateStore {
+    output.state_store = super::output_types::DoctorRootCheck {
         accessible: false,
         message: Some("no home directory found".into()),
+        created: None,
     };
     let extras = super::doctor::DoctorExtras::default();
     let text = emit_doc(&output, &extras);
@@ -29191,6 +29169,66 @@ fn build_doctor_doc_state_store_unavailable_emits_fail() {
         text.contains("Some checks failed"),
         "all_passed should be false when the state store cannot open, got: {text}"
     );
+}
+
+/// A machine no `apply` has run on has no store yet. `apply` creates it, so the
+/// row passes and says so, and the verdict holds.
+#[test]
+fn build_doctor_doc_state_store_not_created_passes_and_says_apply_creates_it() {
+    let mut output = base_doctor_output();
+    output.state_store = super::output_types::DoctorRootCheck::not_created();
+    let text = emit_doc(&output, &super::doctor::DoctorExtras::default());
+    assert!(
+        text.contains("✓ State store: not created yet — `cfgd apply` creates it"),
+        "the row must pass and name what creates the store, got: {text}"
+    );
+    assert!(
+        !text.contains("Some checks failed"),
+        "a store not created yet must not fail the verdict, got: {text}"
+    );
+}
+
+/// `apply` resolves the cache before it opens the state store, so a cache with
+/// nowhere to go is a failed check and a failed verdict.
+#[test]
+fn build_doctor_doc_cache_unavailable_emits_fail() {
+    let mut output = base_doctor_output();
+    output.cache_dir = super::output_types::DoctorRootCheck {
+        accessible: false,
+        message: Some("no home directory found".into()),
+        created: None,
+    };
+    let text = emit_doc(&output, &super::doctor::DoctorExtras::default());
+    assert!(
+        text.contains("✗ Cache directory: unavailable — no home directory found"),
+        "the row must be a Fail naming why, got: {text}"
+    );
+    assert!(text.contains("Some checks failed"), "got: {text}");
+}
+
+/// With no home, the row fails the verdict exactly when the desired state
+/// writes under one, and is informational when nothing declared does.
+#[test]
+fn build_doctor_doc_home_row_fails_only_when_declared_work_needs_a_home() {
+    let mut output = base_doctor_output();
+    output.home = super::output_types::DoctorHomeCheck {
+        resolved: false,
+        refusal: Some("cannot write the managed env file ~/.cfgd.env".into()),
+    };
+    let text = emit_doc(&output, &super::doctor::DoctorExtras::default());
+    assert!(
+        text.contains("✗ Home directory: unset — cannot write the managed env file ~/.cfgd.env"),
+        "got: {text}"
+    );
+    assert!(text.contains("Some checks failed"), "got: {text}");
+
+    output.home.refusal = None;
+    let text = emit_doc(&output, &super::doctor::DoctorExtras::default());
+    assert!(
+        text.contains("◉ Home directory: unset — nothing declared writes under it"),
+        "got: {text}"
+    );
+    assert!(text.contains("Passed every check"), "got: {text}");
 }
 
 #[test]
@@ -35335,7 +35373,7 @@ fn an_apply_naming_the_default_config_still_sweeps_dead_decision_rows() {
     // spelling would turn the sweep off for every installed deployment.
     let staging = tempfile::tempdir().unwrap();
     let _home = cfgd_core::with_test_home_guard(staging.path());
-    let config_root = cfgd_core::default_config_dir();
+    let config_root = cfgd_core::default_config_dir().unwrap();
     std::fs::create_dir_all(config_root.join("profiles")).unwrap();
     std::fs::write(
         config_root.join("cfgd.yaml"),
@@ -40919,6 +40957,7 @@ const UNCONDITIONAL_HINT_CALL_SITES: &[(&str, &str)] = &[
         "stop_systemd_service",
     ),
     ("cfgd/src/cli/error.rs", "render_cli_error"),
+    ("cfgd/src/cli/generate/mod.rs", "scan_home"),
     ("cfgd/src/cli/init/cmd_init.rs", "check_prerequisites"),
     ("cfgd/src/cli/init/cmd_init.rs", "cmd_init"),
     ("cfgd/src/cli/profile/migrate.rs", "run_profile_migrate"),
@@ -44101,7 +44140,8 @@ fn no_production_site_hand_rolls_the_same_path_comparison() {
 
 /// Two owners split the whole population of `"modules"` joins. A module
 /// CACHE root — materialized git sources — is `module_cache_root`
-/// (`util/paths.rs`) plus, for the daemon's fallback, `daemon::tick_module_cache`.
+/// (`util/paths.rs`), which the daemon's ticks reach through
+/// `daemon::tick_module_cache`.
 /// A DECLARED `modules/` directory under a config root — a config dir, a
 /// source checkout or a generated repo alike — is `declared_modules_dir`
 /// (`modules/loader.rs`), which owns the one literal join the walk exempts by
@@ -44125,7 +44165,6 @@ fn no_production_site_joins_the_module_cache_segment_by_hand() {
             if cfgd_core::test_helpers::is_test_source(&path)
                 || cfgd_core::test_helpers::is_test_only_file(&path)
                 || path.ends_with("util/paths.rs")
-                || path.ends_with("daemon/mod.rs")
                 || path.ends_with("modules/loader.rs")
             {
                 continue;
@@ -48402,7 +48441,7 @@ fn no_registered_manager_is_reachable_under_the_guard_on_a_host_holding_an_nvm_n
     cfgd_core::test_helpers::write_probe_tool(&nvm_bin, "npm");
     let _home = cfgd_core::with_test_home_guard(home.path());
     assert!(
-        cfgd_core::expand_tilde(std::path::Path::new("~")) == home.path(),
+        cfgd_core::expand_tilde(std::path::Path::new("~"), "test").unwrap() == home.path(),
         "the planted home is the one cfgd resolves"
     );
 
@@ -57488,7 +57527,7 @@ fn the_env_read_needles_follow_a_read_behind_a_derived_helper() {
 /// that must expand it and the call that does; a directory flag's row names
 /// `Cli::expand_path_flags`, which `main` must call. The variables are every
 /// `pub const` in `cfgd-core/src/util/env_names.rs`, each classified: read
-/// and expanded by a named function (whose body must call `expand_tilde_strict(`
+/// and expanded by a named function (whose body must call `expand_tilde(`
 /// and name the const), read by clap as a flag the flag rows cover (and bound to
 /// that flag) plus the functions outside clap that read it, each settling it
 /// through `settle_config_path`, or not a path, with why. Every production
@@ -57515,15 +57554,18 @@ fn every_path_flag_and_path_env_expands_a_leading_tilde() {
     // A site is (file, function, the text its body must contain).
     type Site = (&'static str, &'static str, &'static str);
     const FLAGS: &[(&str, &[Site])] = &[
-        ("config", &[(SETTLE.0, SETTLE.1, "expand_tilde(&config)")]),
+        (
+            "config",
+            &[(SETTLE.0, SETTLE.1, "keep_tilde_without_home(&config)")],
+        ),
         (
             "config_dir",
             &[
-                (PATHS, "resolve_config_dir", "expand_tilde_strict(p"),
+                (PATHS, "resolve_config_dir", "expand_tilde(p"),
                 (
                     SETTLE.0,
                     SETTLE.1,
-                    "config_dir.map(cfgd_core::expand_tilde)",
+                    "config_dir.map(keep_tilde_without_home)",
                 ),
                 (METHOD.0, METHOD.1, "&mut self.config_dir"),
             ],
@@ -57531,21 +57573,21 @@ fn every_path_flag_and_path_env_expands_a_leading_tilde() {
         (
             "state_dir",
             &[
-                (PATHS, "resolve_state_dir", "expand_tilde_strict(p"),
+                (PATHS, "resolve_state_dir", "expand_tilde(p"),
                 (METHOD.0, METHOD.1, "&mut self.state_dir"),
             ],
         ),
         (
             "cache_dir",
             &[
-                (PATHS, "resolve_cache_dir", "expand_tilde_strict(p"),
+                (PATHS, "resolve_cache_dir", "expand_tilde(p"),
                 (METHOD.0, METHOD.1, "&mut self.cache_dir"),
             ],
         ),
         (
             "runtime_dir",
             &[
-                (PATHS, "resolve_runtime_dir", "expand_tilde_strict(p"),
+                (PATHS, "resolve_runtime_dir", "expand_tilde(p"),
                 (METHOD.0, METHOD.1, "&mut self.runtime_dir"),
             ],
         ),
@@ -57643,6 +57685,17 @@ fn every_path_flag_and_path_env_expands_a_leading_tilde() {
     };
     let mut offenders = Vec::new();
 
+    // A config path keeps its `~` with no home so config discovery refuses it
+    // under its own error; the keeper still has to try the expansion first.
+    const KEEP_TILDE: &str = "keep_tilde_without_home(";
+    match body_of(SETTLE.0, "keep_tilde_without_home") {
+        Ok(body) if body.contains("expand_tilde(") => {}
+        Ok(_) => offenders.push(format!(
+            "{} `fn keep_tilde_without_home` never expands",
+            SETTLE.0
+        )),
+        Err(e) => offenders.push(e),
+    }
     let main = body_of("crates/cfgd/src/main.rs", "main").expect("main.rs declares `fn main`");
     if !main.contains("cli.expand_path_flags()") {
         offenders.push("`main` never calls `cli.expand_path_flags()`".to_string());
@@ -57664,7 +57717,9 @@ fn every_path_flag_and_path_env_expands_a_leading_tilde() {
         };
         for (rel, name, needle) in *sites {
             match body_of(rel, name) {
-                Ok(body) if body.contains(needle) && body.contains("expand_tilde") => {}
+                Ok(body)
+                    if body.contains(needle)
+                        && (body.contains("expand_tilde") || body.contains(KEEP_TILDE)) => {}
                 Ok(_) => offenders.push(format!("{flag}: {rel} `fn {name}` lacks `{needle}`")),
                 Err(e) => offenders.push(format!("{flag}: {e}")),
             }
@@ -57693,9 +57748,9 @@ fn every_path_flag_and_path_env_expands_a_leading_tilde() {
                  reads it as, or why it is not a path"
             )),
             Some((_, Expands(rel, name))) => match body_of(rel, name) {
-                Ok(body) if body.contains("expand_tilde_strict(") && body.contains(constant) => {}
+                Ok(body) if body.contains("expand_tilde(") && body.contains(constant) => {}
                 Ok(_) => offenders.push(format!(
-                    "{constant}: {rel} `fn {name}` does not read it through `expand_tilde_strict(`"
+                    "{constant}: {rel} `fn {name}` does not read it through `expand_tilde(`"
                 )),
                 Err(e) => offenders.push(format!("{constant}: {e}")),
             },
@@ -57910,7 +57965,429 @@ fn every_path_flag_and_path_env_expands_a_leading_tilde() {
     assert!(
         offenders.is_empty(),
         "a path from a flag or a CFGD_* variable must expand a leading `~` through \
-         `cfgd_core::expand_tilde_strict`, which refuses it with no home:\n{}",
+         `cfgd_core::expand_tilde`, which refuses it with no home:\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// The functions whose only way to fail is a missing home directory, read off
+/// the workspace's syntax trees: a function returning `Result` that builds one
+/// of the home refusals itself, and, to a fixpoint, one whose every `?` and
+/// every returned value either hands on such a function's result or builds
+/// the refusal. A function with any other way to fail is not one of them, so
+/// dropping its error drops more than a missing home.
+fn home_refusal_population(sources: &[&std::path::Path]) -> std::collections::BTreeSet<String> {
+    use syn::visit::Visit;
+    const REFUSALS: &[&str] = &[
+        "HomeUnresolved",
+        "HomeUnset",
+        "HomeDirectoryUnresolved",
+        "EnvHomeUnresolved",
+    ];
+
+    // An item compiled only for tests ships nowhere, so it is no member.
+    fn test_gated(attrs: &[syn::Attribute]) -> bool {
+        attrs.iter().any(|a| {
+            a.path().is_ident("cfg")
+                && a.meta.require_list().is_ok_and(|l| {
+                    l.tokens
+                        .clone()
+                        .into_iter()
+                        .any(|t| matches!(t, proc_macro2::TokenTree::Ident(i) if i == "test"))
+                })
+        })
+    }
+    struct Functions(Vec<(String, syn::ReturnType, syn::Block)>);
+    impl<'ast> Visit<'ast> for Functions {
+        fn visit_item_mod(&mut self, m: &'ast syn::ItemMod) {
+            if !test_gated(&m.attrs) {
+                syn::visit::visit_item_mod(self, m);
+            }
+        }
+        fn visit_item_impl(&mut self, i: &'ast syn::ItemImpl) {
+            if !test_gated(&i.attrs) {
+                syn::visit::visit_item_impl(self, i);
+            }
+        }
+        fn visit_item_fn(&mut self, f: &'ast syn::ItemFn) {
+            if test_gated(&f.attrs) {
+                return;
+            }
+            self.0.push((
+                f.sig.ident.to_string(),
+                f.sig.output.clone(),
+                (*f.block).clone(),
+            ));
+            syn::visit::visit_item_fn(self, f);
+        }
+        fn visit_impl_item_fn(&mut self, f: &'ast syn::ImplItemFn) {
+            if test_gated(&f.attrs) {
+                return;
+            }
+            self.0.push((
+                format!("::{}", f.sig.ident),
+                f.sig.output.clone(),
+                f.block.clone(),
+            ));
+            syn::visit::visit_impl_item_fn(self, f);
+        }
+    }
+
+    struct NamesRefusal(bool);
+    impl<'ast> Visit<'ast> for NamesRefusal {
+        fn visit_path(&mut self, p: &'ast syn::Path) {
+            self.0 |= p
+                .segments
+                .iter()
+                .any(|s| REFUSALS.iter().any(|r| s.ident == r));
+            syn::visit::visit_path(self, p);
+        }
+    }
+    let builds_refusal = |args: &mut dyn Iterator<Item = &syn::Expr>| {
+        let mut found = NamesRefusal(false);
+        args.for_each(|a| found.visit_expr(a));
+        found.0
+    };
+
+    #[derive(PartialEq)]
+    enum Failure {
+        None,
+        Home,
+        Other,
+    }
+    fn tail(block: &syn::Block) -> Option<&syn::Expr> {
+        match block.stmts.last() {
+            Some(syn::Stmt::Expr(e, None)) => Some(e),
+            _ => None,
+        }
+    }
+    fn returned(
+        e: &syn::Expr,
+        members: &std::collections::BTreeSet<String>,
+        builds: &dyn Fn(&mut dyn Iterator<Item = &syn::Expr>) -> bool,
+        out: &mut Vec<Failure>,
+    ) {
+        let home_or_other = |yes: bool| if yes { Failure::Home } else { Failure::Other };
+        match e {
+            syn::Expr::Call(c) => {
+                let syn::Expr::Path(p) = &*c.func else {
+                    return out.push(Failure::Other);
+                };
+                let segments: Vec<String> = p
+                    .path
+                    .segments
+                    .iter()
+                    .map(|s| s.ident.to_string())
+                    .collect();
+                let Some(last) = segments.last() else {
+                    return out.push(Failure::Other);
+                };
+                // `Type::f` and `Self::f` name an associated function, which
+                // the population keys apart from a free function `f`.
+                let associated = segments.len() > 1
+                    && segments[segments.len() - 2].starts_with(|c: char| c.is_ascii_uppercase());
+                let key = if associated {
+                    format!("::{last}")
+                } else {
+                    last.clone()
+                };
+                out.push(match last.as_str() {
+                    "Ok" => Failure::None,
+                    "Err" => home_or_other(builds(&mut c.args.iter())),
+                    _ if members.contains(&key) => Failure::Home,
+                    _ => Failure::Other,
+                });
+            }
+            syn::Expr::MethodCall(m) => match m.method.to_string().as_str() {
+                "map" | "into" => returned(&m.receiver, members, builds, out),
+                "ok_or" | "ok_or_else" | "map_err" => {
+                    out.push(home_or_other(builds(&mut m.args.iter())))
+                }
+                name if members.contains(&format!("::{name}")) => out.push(Failure::Home),
+                _ => out.push(Failure::Other),
+            },
+            syn::Expr::If(i) => {
+                if let Some(t) = tail(&i.then_branch) {
+                    returned(t, members, builds, out);
+                }
+                if let Some((_, other)) = &i.else_branch {
+                    returned(other, members, builds, out);
+                }
+            }
+            syn::Expr::Match(m) => m
+                .arms
+                .iter()
+                .for_each(|arm| returned(&arm.body, members, builds, out)),
+            syn::Expr::Block(b) => {
+                if let Some(t) = tail(&b.block) {
+                    returned(t, members, builds, out);
+                }
+            }
+            syn::Expr::Paren(p) => returned(&p.expr, members, builds, out),
+            // Both are judged where they occur: the visitor reads every `?`
+            // and every `return` in the body.
+            syn::Expr::Return(_) | syn::Expr::Try(_) => {}
+            _ => out.push(Failure::Other),
+        }
+    }
+
+    struct Exits<'m> {
+        members: &'m std::collections::BTreeSet<String>,
+        builds: &'m dyn Fn(&mut dyn Iterator<Item = &syn::Expr>) -> bool,
+        out: Vec<Failure>,
+    }
+    impl<'ast> Visit<'ast> for Exits<'_> {
+        fn visit_expr_closure(&mut self, _: &'ast syn::ExprClosure) {}
+        fn visit_item(&mut self, _: &'ast syn::Item) {}
+        fn visit_expr_try(&mut self, t: &'ast syn::ExprTry) {
+            returned(&t.expr, self.members, self.builds, &mut self.out);
+            syn::visit::visit_expr_try(self, t);
+        }
+        fn visit_expr_return(&mut self, r: &'ast syn::ExprReturn) {
+            if let Some(e) = &r.expr {
+                returned(e, self.members, self.builds, &mut self.out);
+            }
+            syn::visit::visit_expr_return(self, r);
+        }
+    }
+
+    let mut functions = Functions(Vec::new());
+    for path in sources {
+        // unfloored-slice-ok: syn parses whole items; test-gated ones are skipped by attribute.
+        let body = cfgd_core::test_helpers::walked_file_body(path);
+        let file = syn::parse_file(&body)
+            .unwrap_or_else(|e| panic!("{}: no longer parses: {e}", path.display()));
+        functions.visit_file(&file);
+    }
+    let returns_result = |output: &syn::ReturnType| match output {
+        syn::ReturnType::Type(_, ty) => match &**ty {
+            syn::Type::Path(p) => p.path.segments.last().is_some_and(|s| s.ident == "Result"),
+            _ => false,
+        },
+        syn::ReturnType::Default => false,
+    };
+    // A call is bound by its name and whether it names an associated function,
+    // so a name joins only when every function of that kind spelling it
+    // qualifies: `new` or `resolve` names many functions that fail for other
+    // reasons.
+    let mut members = std::collections::BTreeSet::new();
+    loop {
+        let mut disqualified = std::collections::BTreeSet::new();
+        let mut qualified = std::collections::BTreeSet::new();
+        for (name, output, block) in &functions.0 {
+            let mut exits = Exits {
+                members: &members,
+                builds: &builds_refusal,
+                out: Vec::new(),
+            };
+            exits.visit_block(block);
+            if let Some(t) = tail(block) {
+                returned(t, &members, &builds_refusal, &mut exits.out);
+            }
+            if returns_result(output)
+                && exits.out.contains(&Failure::Home)
+                && !exits.out.contains(&Failure::Other)
+            {
+                qualified.insert(name.clone());
+            } else {
+                disqualified.insert(name.clone());
+            }
+        }
+        let grown: std::collections::BTreeSet<String> =
+            qualified.difference(&disqualified).cloned().collect();
+        if grown == members {
+            return members
+                .into_iter()
+                .map(|key| key.trim_start_matches("::").to_string())
+                .collect();
+        }
+        members = grown;
+    }
+}
+
+/// With no home directory, no path cfgd uses spells a literal `~`, and no
+/// root cfgd writes under falls back to a second location.
+///
+/// Every function whose only failure is a missing home
+/// ([`home_refusal_population`]: `expand_tilde`, `home_dir`, the
+/// `default_*_dir` and `resolve_*_dir` resolvers, `module_cache_root`, the
+/// daemon's `tick_module_cache` and every wrapper of theirs) hands that
+/// refusal on at each production call: a `~/` file target read as a relative
+/// path would be written under the working directory, and a cache root
+/// swapped for a directory beside the config is a second cache nobody else
+/// reads. A call whose result is dropped for a fallback (`.ok()`,
+/// `.unwrap_or*`, `.is_ok()`, `.is_err()`, `.unwrap()`, `.expect(`,
+/// `if let Ok(`) is a second, lossy answer, and so is a hand-rolled
+/// `replacen('~', ...)` outside `util/paths.rs`. A caller for which a missing
+/// home genuinely means "no such location" (a probe, a display cell, a config
+/// path left for discovery to refuse) carries `// home-optional-ok: <why>` on
+/// the call's line or in the comment run above its statement.
+#[test]
+fn no_production_caller_drops_a_home_refusal_for_a_fallback() {
+    const HATCH: &str = "home-optional-ok:";
+    const DROPPED: &[&str] = &[
+        ".ok()",
+        ".unwrap_or",
+        ".is_ok()",
+        ".is_err()",
+        ".unwrap()",
+        ".expect(",
+    ];
+    const BOUND_ON_OK: &[&str] = &["if let Ok(", "let Ok(", "while let Ok("];
+    const HAND_ROLLED: &[&str] = &["replacen('~'", "replacen(\"~\""];
+    const PATHS: &str = "util/paths.rs";
+    // The wrappers the population must keep finding, so a derivation that
+    // stops following one cannot pass on a shrunken set.
+    const KNOWN_MEMBERS: &[&str] = &[
+        "expand_tilde",
+        "home_dir",
+        "default_config_dir",
+        "default_cache_dir",
+        "module_cache_root",
+        "tick_module_cache",
+    ];
+    // The calls each root holds today, floored so a walk reading the wrong
+    // tree cannot pass on an empty population.
+    const WALK_ROOTS: &[(&str, usize)] = &[
+        ("cfgd", 152),
+        ("cfgd-core", 109),
+        ("cfgd-crd", 0),
+        ("cfgd-csi", 0),
+        ("cfgd-operator", 4),
+        ("cfgd-schema", 0),
+        ("cfgd-test-fixtures", 0),
+    ];
+    let root_names: Vec<&str> = WALK_ROOTS.iter().map(|(k, _)| *k).collect();
+    let per_root = production_sources_per_root(&root_names);
+    let population = home_refusal_population(
+        &per_root
+            .iter()
+            .flat_map(|(_, files)| files.iter())
+            .filter(|(_, production)| !production.trim().is_empty())
+            .map(|(path, _)| path.as_path())
+            .collect::<Vec<_>>(),
+    );
+    let lost: Vec<&&str> = KNOWN_MEMBERS
+        .iter()
+        .filter(|m| !population.contains(**m))
+        .collect();
+    assert!(
+        lost.is_empty(),
+        "the home-refusal population {population:?} lost {lost:?}, so the derivation no \
+         longer follows a wrapper it must find"
+    );
+    let calls_of: Vec<String> = population.iter().map(|name| format!("{name}(")).collect();
+    let mut offenders = Vec::new();
+    let mut short = Vec::new();
+    let mut hatched = 0usize;
+    for ((root, files), (_, floor)) in per_root.into_iter().zip(WALK_ROOTS) {
+        let mut calls = 0usize;
+        for (path, production) in files {
+            let rel = path.to_string_lossy().replace('\\', "/");
+            let code = cfgd_core::test_helpers::blank_non_code(production);
+            let raw: Vec<&str> = production.lines().collect();
+            let hatch_covers = |line: usize| -> bool {
+                if cfgd_core::test_helpers::carries_hatch(raw[line], HATCH) {
+                    return true;
+                }
+                for above in raw[..line].iter().rev() {
+                    let trimmed = above.trim();
+                    if trimmed.starts_with("//") {
+                        if cfgd_core::test_helpers::carries_hatch(above, HATCH) {
+                            return true;
+                        }
+                        continue;
+                    }
+                    if trimmed.is_empty() || trimmed.ends_with([';', '{', '}', ',']) {
+                        return false;
+                    }
+                    if cfgd_core::test_helpers::carries_hatch(above, HATCH) {
+                        return true;
+                    }
+                }
+                false
+            };
+            for (at, call) in calls_of
+                .iter()
+                .flat_map(|call| code.match_indices(call.as_str()))
+            {
+                let head = &code[..at];
+                if head.trim_end().ends_with("fn")
+                    || head.ends_with(|c: char| c.is_alphanumeric() || c == '_')
+                {
+                    continue;
+                }
+                calls += 1;
+                let open = at + call.len();
+                let mut depth = 1usize;
+                let mut close = None;
+                for (i, c) in code[open..].char_indices() {
+                    match c {
+                        '(' => depth += 1,
+                        ')' => {
+                            depth -= 1;
+                            if depth == 0 {
+                                close = Some(open + i);
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                let Some(close) = close else {
+                    continue;
+                };
+                let tail: String = code[close + 1..]
+                    .chars()
+                    .filter(|c| !c.is_whitespace())
+                    .take(16)
+                    .collect();
+                let line_start = head.rfind('\n').map_or(0, |n| n + 1);
+                let statement_head = &code[line_start..at];
+                let dropped = DROPPED.iter().any(|d| tail.starts_with(d))
+                    || BOUND_ON_OK.iter().any(|b| statement_head.contains(b));
+                if !dropped {
+                    continue;
+                }
+                let line = head.matches('\n').count();
+                if hatch_covers(line) {
+                    hatched += 1;
+                    continue;
+                }
+                offenders.push(format!("{rel}:{}: {}", line + 1, raw[line].trim()));
+            }
+            if !rel.ends_with(PATHS) {
+                for (n, line) in raw.iter().enumerate() {
+                    if line.trim_start().starts_with("//") {
+                        continue;
+                    }
+                    if HAND_ROLLED.iter().any(|h| line.contains(h)) {
+                        offenders.push(format!(
+                            "{rel}:{}: a hand-rolled `~` expansion: {}",
+                            n + 1,
+                            line.trim()
+                        ));
+                    }
+                }
+            }
+        }
+        if calls < *floor {
+            short.push(format!("{root}: {calls} under a floor of {floor}"));
+        }
+    }
+    assert!(
+        short.is_empty(),
+        "the walk no longer reaches every tree's calls into the population: {short:?}"
+    );
+    assert!(
+        hatched >= 1,
+        "no hatched call was found, so the walk no longer reads the comments it judges"
+    );
+    assert!(
+        offenders.is_empty(),
+        "a call to a function whose only failure is a missing home hands its refusal on with \
+         `?` (or carries `// {HATCH} <why>` where a missing home means no such location); \
+         the population is {population:?}:\n{}",
         offenders.join("\n")
     );
 }

@@ -651,6 +651,14 @@ pub enum StateError {
     #[error("cannot locate the per-user {role} directory: no home directory found")]
     HomeDirectoryUnresolved { role: &'static str },
 
+    /// No home directory is set, and the work asked for runs in it.
+    #[error(
+        "no home directory found ({vars} unset); set {var}",
+        vars = crate::HOME_ENV_VARS,
+        var = crate::HOME_ENV_VAR
+    )]
+    HomeUnset,
+
     /// A path override leads with `~` and no home directory resolves it. Used
     /// as written it would name a directory called `~` under the working
     /// directory, which nobody means and a later `rm -r ~` cleanup endangers.
@@ -660,6 +668,17 @@ pub enum StateError {
         var = crate::HOME_ENV_VAR
     )]
     HomeUnresolved { role: &'static str, path: PathBuf },
+
+    /// The run declares env vars, aliases or a manager `PATH` entry, and no
+    /// home directory resolves the managed env file they are written to.
+    /// Planned anyway, the file would land at `path` under the working
+    /// directory, where no shell reads it.
+    #[error(
+        "cannot write the managed env file {path}: no home directory found ({vars} unset); set {var}",
+        vars = crate::HOME_ENV_VARS,
+        var = crate::HOME_ENV_VAR
+    )]
+    EnvHomeUnresolved { path: PathBuf },
 
     #[error("state filesystem I/O failed at {path}: {source}")]
     FilesystemIo {

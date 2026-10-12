@@ -5,7 +5,6 @@ use std::sync::Arc;
 use crate::PathDisplayExt;
 use crate::config::{LOCAL_LAYER, MergedProfile, ResolvedProfile};
 use crate::errors::Result;
-use crate::expand_tilde;
 use crate::modules::ResolvedModule;
 use crate::providers::{
     FileAction, PackageAction, PackageManager, PackageManagerExt, SecretAction,
@@ -122,6 +121,17 @@ impl<'a> super::Reconciler<'a> {
         context: ReconcileContext,
         observe: &mut dyn FnMut(PhaseName),
     ) -> Result<Plan> {
+        if self.home.is_none()
+            && let Some(refusal) = super::unresolved_home_refusal(
+                Some(self.state),
+                &resolved.merged,
+                module_actions.iter().map(super::ModuleHomeUse::from),
+                self.registry.secret_backend.as_deref(),
+            )
+        {
+            return Err(refusal.into());
+        }
+
         // Conflict detection: check for multiple sources targeting the same path
         observe(PhaseName::Files);
         Self::detect_file_conflicts(&file_actions, &module_actions)?;
@@ -163,7 +173,7 @@ impl<'a> super::Reconciler<'a> {
         // installed before packages that need them.
         observe(PhaseName::Modules);
         let (mut module_routed, env_gated_hooks) =
-            self.plan_modules(&module_actions, resolved.profile_name(), context);
+            self.plan_modules(&module_actions, resolved.profile_name(), context)?;
 
         // Cross-scope package dedup: a (manager, resolved_name) declared in both a
         // module and the profile (or in two modules) installs once. Module installs
@@ -307,7 +317,7 @@ impl<'a> super::Reconciler<'a> {
             // injected during the apply phase after ResolveEnv actions run.
             &path_dirs,
             &super::env::recorded_managed_env_files(self.state),
-        );
+        )?;
 
         // The env-gated hooks deferred by `plan_modules`: a module's hooks
         // revive off the env surface only when its OWN env/alias entries
@@ -325,12 +335,13 @@ impl<'a> super::Reconciler<'a> {
             primary_write,
         } = env_plan;
         for (module_name, hooks) in env_gated_hooks {
-            let revive = primary_write.as_ref().is_some_and(|w| {
-                module_actions
-                    .iter()
-                    .find(|m| m.name == module_name)
-                    .is_none_or(|m| w.module_env_moved(&m.env, &m.aliases))
-            });
+            let revive = match primary_write.as_ref() {
+                None => false,
+                Some(w) => match module_actions.iter().find(|m| m.name == module_name) {
+                    None => true,
+                    Some(m) => w.module_env_moved(&m.env, &m.aliases)?,
+                },
+            };
             if revive {
                 module_routed.extend(hooks);
             }
@@ -344,7 +355,7 @@ impl<'a> super::Reconciler<'a> {
         observe(PhaseName::System);
         let mut system_actions = self.plan_system(&resolved.merged, &module_actions)?;
         observe(PhaseName::Secrets);
-        let mut secret_actions = self.plan_secrets(&resolved.merged);
+        let mut secret_actions = self.plan_secrets(&resolved.merged)?;
 
         // The bucket order IS `PhaseName::EXECUTION_ORDER`, by construction: a
         // plan FILE is read back against that const, and a debug-only check is
@@ -445,7 +456,7 @@ impl<'a> super::Reconciler<'a> {
         // Collect from module file deploy actions
         for module in modules {
             for file in &module.files {
-                let target = expand_tilde(&file.target);
+                let target = file.target.clone();
                 let hash = content_hash_if_exists(&file.source);
                 let label = format!("module:{}", module.name);
                 if let Some((existing_label, existing_hash)) = targets.get(&target) {
@@ -659,7 +670,7 @@ impl<'a> super::Reconciler<'a> {
         Ok(actions)
     }
 
-    pub(super) fn plan_secrets(&self, profile: &MergedProfile) -> Vec<Action> {
+    pub(super) fn plan_secrets(&self, profile: &MergedProfile) -> Result<Vec<Action>> {
         let mut actions = Vec::new();
 
         // "Will this run be able to decrypt", not "can it right now": a
@@ -702,7 +713,7 @@ impl<'a> super::Reconciler<'a> {
                         actions.push(Action::Secret(SecretAction::Resolve {
                             provider: provider_name.to_string(),
                             reference: reference.to_string(),
-                            target: crate::expand_tilde(target),
+                            target: crate::expand_tilde(target, crate::SECRET_TARGET_ROLE)?,
                             template: secret.template.clone(),
                             origin: origin.clone(),
                         }));
@@ -771,7 +782,8 @@ impl<'a> super::Reconciler<'a> {
                     target: secret
                         .target
                         .as_deref()
-                        .map(crate::expand_tilde)
+                        .map(|t| crate::expand_tilde(t, crate::SECRET_TARGET_ROLE))
+                        .transpose()?
                         .unwrap_or_default(),
                     backend: backend_name,
                     origin: origin.clone(),
@@ -809,7 +821,7 @@ impl<'a> super::Reconciler<'a> {
             }
         }
 
-        actions
+        Ok(actions)
     }
 
     fn plan_scripts(
@@ -888,7 +900,7 @@ impl<'a> super::Reconciler<'a> {
         modules: &[ResolvedModule],
         profile_name: &str,
         context: ReconcileContext,
-    ) -> (RoutedActions, Vec<(String, RoutedActions)>) {
+    ) -> Result<(RoutedActions, Vec<(String, RoutedActions)>)> {
         let mut actions = Vec::new();
         let mut env_gated_hooks = Vec::new();
 
@@ -1106,35 +1118,38 @@ impl<'a> super::Reconciler<'a> {
                     // caller holding the config dir can complete. Built once
                     // per module, and only when a Patch entry exists to ask
                     // about — the binding snapshots the script env eagerly.
-                    let binding = self.config_dir.as_deref().and_then(|dir| {
-                        module
-                            .files
-                            .iter()
-                            .any(|f| {
-                                f.strategy.unwrap_or(self.registry.default_file_strategy)
-                                    == crate::config::FileStrategy::Patch
-                            })
-                            .then(|| {
-                                super::patch::PatchBinding::module(
-                                    dir,
-                                    profile_name,
-                                    context,
-                                    module,
-                                )
-                            })
-                    });
+                    let binding = self
+                        .config_dir
+                        .as_deref()
+                        .and_then(|dir| {
+                            module
+                                .files
+                                .iter()
+                                .any(|f| {
+                                    f.strategy.unwrap_or(self.registry.default_file_strategy)
+                                        == crate::config::FileStrategy::Patch
+                                })
+                                .then(|| {
+                                    super::patch::PatchBinding::module(
+                                        dir,
+                                        profile_name,
+                                        context,
+                                        module,
+                                    )
+                                })
+                        })
+                        .transpose()?;
                     let declared_total = module.files.len();
                     let files: Vec<crate::modules::ResolvedFile> = module
                         .files
                         .iter()
                         .filter_map(|file| {
-                            let target = expand_tilde(&file.target);
                             let strategy =
                                 file.strategy.unwrap_or(self.registry.default_file_strategy);
-                            (!(recorded.contains(&crate::to_posix_fs_key(&target))
+                            (!(recorded.contains(&crate::to_posix_fs_key(&file.target))
                                 && super::modules::planned_file_converged(
                                     file,
-                                    &target,
+                                    &file.target,
                                     strategy,
                                     binding.as_ref(),
                                 )))
@@ -1224,7 +1239,7 @@ impl<'a> super::Reconciler<'a> {
             }
         }
 
-        (actions, env_gated_hooks)
+        Ok((actions, env_gated_hooks))
     }
 
     /// Drop the entries `mgr` already reports installed, leaving the ones a

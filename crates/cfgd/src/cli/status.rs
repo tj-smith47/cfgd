@@ -1496,13 +1496,16 @@ fn recorded_row_method(
         return cfgd_core::reconciler::recorded_env_method(&r.resource_id).to_string();
     }
     if r.resource_type == "file" {
-        return detail
-            .strategies
-            .for_declared_target(&cfgd_core::expand_tilde(std::path::Path::new(
-                &r.resource_id,
-            )))
-            .map_or(NO_DETAIL, |s| s.method_label())
-            .to_string();
+        // home-optional-ok: a recorded id that names no resolvable path
+        // declares no target, and the cell shows none.
+        return cfgd_core::expand_tilde(
+            std::path::Path::new(&r.resource_id),
+            cfgd_core::FILE_TARGET_ROLE,
+        )
+        .ok()
+        .and_then(|target| detail.strategies.for_declared_target(&target))
+        .map_or(NO_DETAIL, |s| s.method_label())
+        .to_string();
     }
     NO_DETAIL.to_string()
 }
@@ -3188,7 +3191,7 @@ pub(super) fn cmd_status(
             &resolved.merged,
             &resolved_modules,
         ),
-    );
+    )?;
 
     // The plan withholds items no run has recorded a row for yet; a dashboard
     // that hides them contradicts the plan it summarizes. Same classification
@@ -3298,7 +3301,7 @@ pub(super) fn cmd_status(
             &resolved_modules,
             &config_dir,
             cfg.spec.file_strategy,
-        )
+        )?
     } else {
         cfgd_core::effective::FileStrategies::with_default(cfg.spec.file_strategy)
     };
@@ -3339,13 +3342,20 @@ pub(super) fn cmd_status(
     // below clears this vector and refills it from its own findings, so any
     // work spent on the recorded rows here would be discarded unrendered.
     if !do_scan {
+        let recomputed = output
+            .drift
+            .iter()
+            .map(|event| {
+                if cfgd_core::output::is_shell_drift_kind(&event.resource_type) {
+                    merged_env_items.display_values(&event.resource_type, &event.resource_id)
+                } else {
+                    Ok(None)
+                }
+            })
+            .collect::<cfgd_core::errors::Result<Vec<_>>>()?;
+        let mut recomputed = recomputed.into_iter();
         output.drift.retain_mut(|event| {
-            if !cfgd_core::output::is_shell_drift_kind(&event.resource_type) {
-                return true;
-            }
-            let Some((want, have)) =
-                merged_env_items.display_values(&event.resource_type, &event.resource_id)
-            else {
+            let Some((want, have)) = recomputed.next().flatten() else {
                 return true;
             };
             // The recompute just read the machine: a row whose declared line
@@ -3427,7 +3437,7 @@ pub(super) fn cmd_status(
         for r in &drift {
             output
                 .drift
-                .push(super::live_drift::drift_event_from(r, &merged_env_items));
+                .push(super::live_drift::drift_event_from(r, &merged_env_items)?);
         }
         output.standing = report
             .standing
@@ -3754,7 +3764,7 @@ pub(super) fn cmd_status_module(
                 &resolved.merged,
                 &resolved_modules,
             ),
-        );
+        )?;
         let fm = CfgdFileManager::new(config_dir, &resolved)?;
         // One spinner across this module's live scan, narrated per pass.
         printer.narrate(
@@ -3789,7 +3799,7 @@ pub(super) fn cmd_status_module(
                             .map(|(m, target)| (m.to_string(), target))
                             .unwrap_or_else(|| (mod_name.to_string(), r.resource_id.clone()));
                     drift.push(ModuleDrift {
-                        event: super::live_drift::drift_event_from(&r, &merged_env_items),
+                        event: super::live_drift::drift_event_from(&r, &merged_env_items)?,
                         owner,
                         surface: SURFACE_FILES,
                         item,
@@ -3849,7 +3859,7 @@ pub(super) fn cmd_status_module(
                                 event: super::live_drift::drift_event_from(
                                     &finding,
                                     &merged_env_items,
-                                ),
+                                )?,
                                 // The module whose resolution declared this
                                 // package, which is not always the one under
                                 // report: a dependency's missing package is
@@ -3875,7 +3885,7 @@ pub(super) fn cmd_status_module(
                                     event: super::live_drift::drift_event_from(
                                         row,
                                         &merged_env_items,
-                                    ),
+                                    )?,
                                     owner: resolved_module.name.clone(),
                                     surface: SURFACE_PACKAGES,
                                     item: pkg.resolved_name.clone(),
@@ -3906,7 +3916,7 @@ pub(super) fn cmd_status_module(
                 // recorded winner is a layer outside this chain stays out of
                 // `checked`: a scoped "clean" may not heal a claim it never
                 // re-checked.
-                let env_check = cfgd_core::reconciler::env_item_verify_results(&layered);
+                let env_check = cfgd_core::reconciler::env_item_verify_results(&layered)?;
                 let owners =
                     cfgd_core::reconciler::merged_entry_owners(&resolved, &resolved_modules);
                 let tokens: std::collections::HashMap<String, &str> = resolved_modules
@@ -3933,7 +3943,7 @@ pub(super) fn cmd_status_module(
                         continue;
                     }
                     drift.push(ModuleDrift {
-                        event: super::live_drift::drift_event_from(&r, &merged_env_items),
+                        event: super::live_drift::drift_event_from(&r, &merged_env_items)?,
                         owner: owner_module.to_string(),
                         surface: if r.resource_type == "alias" {
                             SURFACE_ALIASES
@@ -4565,7 +4575,7 @@ mod tests {
         // `env_targets` rather than re-typed here. Matched per PATH SEGMENT and
         // exactly, so neither `spec.profile` nor a bare `profile` reads as
         // `~/.profile`.
-        let basename_tells = cfgd_core::reconciler::env_target_basenames();
+        let basename_tells = cfgd_core::reconciler::env_target_basenames().unwrap();
         assert!(
             basename_tells.len() >= 10,
             "the env engine no longer offers its target names: {basename_tells:?}"
@@ -8287,7 +8297,9 @@ mod tests {
             ),
             &[],
         )
+        .unwrap()
         .declared_line("env-var", "EDITOR")
+        .unwrap()
         .expect("EDITOR renders a declared line");
 
         let state_dir = tmp.path().join("state");
@@ -8425,7 +8437,9 @@ mod tests {
             ),
             &[],
         )
+        .unwrap()
         .declared_line("env-var", "EDITOR")
+        .unwrap()
         .expect("EDITOR renders a declared line");
 
         let expected_detail =
@@ -8530,9 +8544,10 @@ mod tests {
             &[],
             &[],
         );
-        let merged = cfgd_core::reconciler::MergedEnvItems::new(&layered, &[]);
+        let merged = cfgd_core::reconciler::MergedEnvItems::new(&layered, &[]).unwrap();
         let declared_line = merged
             .declared_line("env-var", "EDITOR")
+            .unwrap()
             .expect("EDITOR renders a declared line");
         // The machine HOLDS the declared line: whatever the recorded row says,
         // this entry is converged right now. Planted from the generator, so
@@ -11487,7 +11502,7 @@ mod tests {
             &[],
         );
         cfgd_core::test_helpers::plant_managed_env_files(
-            &cfgd_core::reconciler::MergedEnvItems::new(&layered, &[]),
+            &cfgd_core::reconciler::MergedEnvItems::new(&layered, &[]).unwrap(),
             tmp_home.path(),
             cfgd_core::config::EnvScope::default(),
         );

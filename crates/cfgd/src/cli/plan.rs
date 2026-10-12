@@ -22,7 +22,6 @@ pub fn cmd_plan(run: &RunContext<'_>, args: &PlanArgs) -> anyhow::Result<()> {
     let cli = ctx.cli();
 
     let config_dir = config_dir(cli);
-    let state = ctx.state()?;
     let module_filter: &[String] = &args.module;
     let with_profile = args.with_profile;
 
@@ -43,16 +42,20 @@ pub fn cmd_plan(run: &RunContext<'_>, args: &PlanArgs) -> anyhow::Result<()> {
 
     // Compose with sources (network refresh) and resolve modules through the one
     // shared desired-state resolver — same path apply takes.
-    let mut desired = resolve_desired_state(
-        ctx,
+    let store_hold = ctx.hold_store_while_homeless();
+    let (mut desired, state) = store_hold.open(
         &cfg,
-        &resolved,
-        module_filter,
-        with_profile,
-        printer,
-        true,
-        composition::ConstraintMode::Enforce,
-        &floor_bootstrap_confirm(cli.yes, printer),
+        resolve_desired_state(
+            ctx,
+            &cfg,
+            &resolved,
+            module_filter,
+            with_profile,
+            printer,
+            true,
+            composition::ConstraintMode::Enforce,
+            &floor_bootstrap_confirm(cli.yes, printer),
+        ),
     )?;
     // Taken before the other fields, because a partial move out of `desired`
     // would block the `&mut self` this accessor needs.
@@ -206,7 +209,7 @@ pub fn cmd_plan(run: &RunContext<'_>, args: &PlanArgs) -> anyhow::Result<()> {
     // recorded drift, so the carrier's ids have no reader here.
     let _ = reconciler::withhold_from_plan(
         &mut plan,
-        &reconciler::DecisionExclusions::from_withheld(&withheld),
+        &reconciler::DecisionExclusions::from_withheld(&withheld)?,
         &registry,
     );
 
@@ -278,7 +281,7 @@ pub fn cmd_plan(run: &RunContext<'_>, args: &PlanArgs) -> anyhow::Result<()> {
         &cli.config,
         cli.state_dir.is_some(),
         cli.scope(),
-    ))
+    )?)
     .preview_only();
 
     display_plan_preview(

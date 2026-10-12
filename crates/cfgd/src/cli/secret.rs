@@ -163,7 +163,7 @@ pub fn cmd_secret_init(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
     let config_dir = config_dir(cli);
 
     let sops_config_pre = config_dir.join(".sops.yaml");
-    let default_dir = cfgd_core::default_config_dir();
+    let default_dir = cfgd_core::default_config_dir()?;
     let age_key_pre = default_dir.join("age-key.txt");
     let already_initialized = age_key_pre.exists() && sops_config_pre.exists();
 

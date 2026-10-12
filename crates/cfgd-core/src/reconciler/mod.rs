@@ -41,7 +41,7 @@ pub use adopt::{
 pub use apply::{
     action_matches_phase_filter, action_produced_detail, render_caveats, widest_produced_detail,
 };
-pub use env::recorded_manager_path_dirs;
+pub use env::{ModuleHomeUse, recorded_manager_path_dirs, unresolved_home_refusal};
 pub use env_engine::{
     ENV_VERB_INJECT, ENV_VERB_WRITE, MACOS_SYSTEM_ENV_SOURCE_LINE, ManagerPathDir,
     interactive_rc_path, launchd_env_plist, recorded_env_method,
@@ -164,7 +164,11 @@ pub struct Reconciler<'a> {
     /// for itself would be a second, unobservable way to reach a real home
     /// directory — including from an apply that only meant to exercise
     /// something else.
-    home: PathBuf,
+    ///
+    /// `None` when no home resolves: a plan then refuses any work aimed at a
+    /// `~/` path, because the literal `~` it would otherwise carry names a
+    /// directory under the working directory.
+    home: Option<PathBuf>,
     /// Whether the env surface is withheld for this run.
     ///
     /// The env surface is generated as a unit — one file naming every declared
@@ -417,7 +421,7 @@ impl<'a> Reconciler<'a> {
         Self {
             registry,
             state,
-            home: home.into(),
+            home: Some(home.into()),
             withhold_env_surface: false,
             withheld_rows: None,
             secrets: crate::providers::SecretCache::new(),
@@ -445,8 +449,10 @@ pub fn primary_env_file(home: &Path) -> PathBuf {
 }
 
 #[cfg(not(any(test, feature = "test-helpers")))]
-fn resolved_home() -> PathBuf {
-    crate::expand_tilde(std::path::Path::new("~"))
+fn resolved_home() -> Option<PathBuf> {
+    // home-optional-ok: a reconciler with no home refuses exactly the work that
+    // needs one, at plan time
+    crate::home_dir().ok()
 }
 
 /// Under any test build an unguarded reconciler gets a sandbox instead of the
@@ -469,9 +475,16 @@ fn resolved_home() -> PathBuf {
 /// normal dependency (`cfgd-test-fixtures`, `publish = false`) is left out of
 /// the workspace `default-members`, so under resolver 2 no shipped binary can
 /// compile this arm.
+///
+/// A process with no home at all keeps `None`, as production does: that arm
+/// writes nothing, so a real-binary test of the no-home refusal reaches it.
 #[cfg(any(test, feature = "test-helpers"))]
-fn resolved_home() -> PathBuf {
-    crate::test_home_override().unwrap_or_else(unguarded_test_home)
+fn resolved_home() -> Option<PathBuf> {
+    match crate::test_home_override() {
+        Some(home) => Some(home),
+        // home-optional-ok: the test arm of the same Option the production arm returns
+        None => crate::home_dir().ok().map(|_| unguarded_test_home()),
+    }
 }
 
 /// A throwaway home directory unique to the calling thread.

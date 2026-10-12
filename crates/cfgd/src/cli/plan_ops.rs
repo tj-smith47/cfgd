@@ -440,9 +440,9 @@ pub(in crate::cli) fn withheld_for_run(
     ctx.resolve_manifest_packages(&mut local.packages, &mut local.layer_sources)?;
 
     let scope = if config_parsed {
-        reconciler::DecisionScope::new(cfg.spec.sources.iter().map(|s| s.name.as_str()), &local)
+        reconciler::DecisionScope::new(cfg.spec.sources.iter().map(|s| s.name.as_str()), &local)?
     } else {
-        reconciler::DecisionScope::unverified(&local)
+        reconciler::DecisionScope::unverified(&local)?
     };
 
     // Fail-CLOSED on both reads: a run that cannot tell a decided resource from
@@ -473,7 +473,7 @@ pub(in crate::cli) fn withheld_for_run(
     }
     let withheld = reconciler::WithheldDecisions::read(state, &scope)?
         .with_policy_declined(review.declined.clone())
-        .with_unrecorded(&review.to_mint, &scope)
+        .with_unrecorded(&review.to_mint, &scope)?
         .with_undecidable(review.undecidable.clone())
         .with_auto_accepted(&review.auto_accepted);
     // Resolved AFTER the folds above, so an unrecorded row this run classified

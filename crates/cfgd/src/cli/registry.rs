@@ -107,10 +107,6 @@ impl cfgd_core::daemon::DaemonHooks for WorkstationDaemonHooks {
         )
     }
 
-    fn expand_tilde(&self, path: &std::path::Path) -> std::path::PathBuf {
-        cfgd_core::expand_tilde(path)
-    }
-
     fn prune_orphaned_packages(
         &self,
         orphans: &[cfgd_core::providers::OrphanedPackage],

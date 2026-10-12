@@ -1,5 +1,6 @@
 use super::*;
 use crate::test_helpers::EnvVarGuard;
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 // --- spawn_blocking_with_test_home: override round-trips onto the worker ---
@@ -43,7 +44,7 @@ fn resolve_config_dir_falls_through_to_default_when_none() {
     let _home = with_test_home_guard(dir.path());
     assert_eq!(
         resolve_config_dir(None, Scope::User).unwrap(),
-        default_config_dir()
+        default_config_dir().unwrap()
     );
 }
 
@@ -263,17 +264,26 @@ fn default_cache_dir_without_a_home_resolves_under_an_absolute_xdg_cache_home() 
     assert_eq!(default_cache_dir().unwrap(), dir.path().join("cfgd"));
 }
 
-/// With no home the default config path keeps a literal `~`, which config
-/// discovery reports as `HomeUnresolved`, on every platform.
+/// With no home the default config directory is refused as `HomeUnresolved`,
+/// on every platform, while the spelling a `--config` default shows keeps the `~`.
 #[test]
 #[serial_test::serial]
-fn default_config_dir_without_a_home_keeps_a_literal_tilde() {
+fn default_config_dir_without_a_home_is_refused() {
     let _cfg = EnvVarGuard::unset("CONFIGURATION_DIRECTORY");
     let _xdg = EnvVarGuard::unset("XDG_CONFIG_HOME");
     let _home = EnvVarGuard::unset("HOME");
     let _profile = EnvVarGuard::unset("USERPROFILE");
-    let dir = default_config_dir();
-    assert!(dir.starts_with("~"), "got: {}", dir.display());
+    match default_config_dir() {
+        Err(crate::errors::CfgdError::State(crate::errors::StateError::HomeUnresolved {
+            role,
+            path,
+        })) => {
+            assert_eq!(role, "config directory");
+            assert!(path.starts_with("~"), "got: {}", path.display());
+        }
+        other => panic!("expected HomeUnresolved, got {other:?}"),
+    }
+    assert!(default_config_dir_spelling(Scope::User).starts_with("~"));
 }
 
 #[test]
@@ -567,7 +577,7 @@ fn systemd_dir_none_when_unset_or_empty() {
 fn config_systemd_dir_wins_over_system_scope() {
     let _sd = EnvVarGuard::set("CONFIGURATION_DIRECTORY", "/run/systemd/cfgd-config");
     assert_eq!(
-        default_config_dir_for(Scope::System),
+        default_config_dir_for(Scope::System).unwrap(),
         PathBuf::from("/run/systemd/cfgd-config")
     );
 }
@@ -578,7 +588,7 @@ fn config_systemd_dir_wins_over_system_scope() {
 fn config_system_scope_is_etc_on_linux() {
     let _sd = EnvVarGuard::unset("CONFIGURATION_DIRECTORY");
     assert_eq!(
-        default_config_dir_for(Scope::System),
+        default_config_dir_for(Scope::System).unwrap(),
         PathBuf::from("/etc/cfgd")
     );
 }
@@ -589,7 +599,7 @@ fn config_system_scope_is_etc_on_linux() {
 fn config_system_scope_is_library_on_macos() {
     let _sd = EnvVarGuard::unset("CONFIGURATION_DIRECTORY");
     assert_eq!(
-        default_config_dir_for(Scope::System),
+        default_config_dir_for(Scope::System).unwrap(),
         PathBuf::from("/Library/Application Support/cfgd")
     );
 }
@@ -599,7 +609,7 @@ fn config_system_scope_is_library_on_macos() {
 #[cfg(windows)]
 fn config_system_scope_under_program_data_on_windows() {
     let _sd = EnvVarGuard::unset("CONFIGURATION_DIRECTORY");
-    let resolved = default_config_dir_for(Scope::System);
+    let resolved = default_config_dir_for(Scope::System).unwrap();
     assert!(
         resolved.ends_with("cfgd"),
         "tail must be cfgd, got: {}",
@@ -614,8 +624,15 @@ fn config_user_scope_matches_zero_arg_default() {
     let dir = tempfile::tempdir().unwrap();
     let _sd = EnvVarGuard::unset("CONFIGURATION_DIRECTORY");
     let _home = with_test_home_guard(dir.path());
-    assert_eq!(default_config_dir_for(Scope::User), default_config_dir());
-    assert!(default_config_dir_for(Scope::User).starts_with(dir.path()));
+    assert_eq!(
+        default_config_dir_for(Scope::User).unwrap(),
+        default_config_dir().unwrap()
+    );
+    assert!(
+        default_config_dir_for(Scope::User)
+            .unwrap()
+            .starts_with(dir.path())
+    );
 }
 
 // --- STATE: precedence matrix ---
@@ -1078,7 +1095,7 @@ fn fold_path_case_windows_folds_two_spellings_of_one_directory_to_one() {
 fn normalize_path_entry_leaves_case_alone_off_windows() {
     let home = std::path::Path::new("/home/u");
     assert_eq!(
-        super::normalize_path_entry("/opt/Tools", home),
+        super::normalize_path_entry("/opt/Tools", Some(home)),
         "/opt/Tools"
     );
 }
@@ -1334,32 +1351,60 @@ fn the_daemon_ipc_path_env_expands_a_leading_tilde() {
 /// Every per-user directory derives from the one home [`home_dir_var`]
 /// resolves, or from an absolute XDG variable read through [`xdg_home_cfgd`].
 ///
-/// `directories::BaseDirs::new` finds a home through the passwd database (or
-/// the Windows known-folder API) when `HOME` is unset, so a call outside
-/// [`user_base_dirs`] places one directory on a home the others cannot see;
-/// that is how the cache once resolved where the state store refused. A direct
-/// read of an XDG base-directory variable skips the spec's absolute-path rule.
-/// A read that mirrors another program's own lookup (KConfig's, systemd's user
-/// bus) carries `// xdg-ok: <why>`.
+/// The walk flags every string literal naming a home variable (`"HOME"`,
+/// `"USERPROFILE"`, `"XDG_<X>_HOME"`, `"XDG_RUNTIME_DIR"`) in production code
+/// outside the resolver: `util/paths.rs` and the state directory's own
+/// resolution. A raw read of one skips the empty-value rule, the Windows
+/// `USERPROFILE` order or the XDG absolute-path rule, which is how an empty
+/// `HOME` once named a path relative to the working directory. A literal that
+/// mirrors another program's own lookup (KConfig's, systemd's user bus) or is
+/// text written for a shell to read carries `// home-env-ok: <why>` on its line
+/// or the line above. Calls that find a home with no variable at all
+/// (`std::env::home_dir`, `BaseDirs::new` and its siblings) are clippy's
+/// `disallowed-methods` in `clippy.toml`, and the walk holds that lint's one
+/// allow on `user_base_dirs`.
 #[test]
 fn every_per_user_directory_derives_from_the_one_home() {
     use crate::test_helpers::{
-        carries_hatch, code_span, production_slice_of, rust_sources_under, workspace_root,
+        carries_hatch, line_gates_of, production_code_of, production_slice_of, rust_sources_under,
+        workspace_root,
     };
 
-    const HELPER_FILE: &str = "crates/cfgd-core/src/util/paths.rs";
-    const HOME_FINDERS: &[&str] = &["BaseDirs::new", "UserDirs::new", "ProjectDirs::from"];
-    const XDG_VARS: &[&str] = &[
-        "XDG_CONFIG_HOME",
-        "XDG_STATE_HOME",
-        "XDG_CACHE_HOME",
-        "XDG_DATA_HOME",
-        "XDG_RUNTIME_DIR",
-    ];
+    const RESOLVER_FILE: &str = "crates/cfgd-core/src/util/paths.rs";
+    const STATE_FILE: &str = "crates/cfgd-core/src/state/mod.rs";
+    const STATE_RESOLVER: &str = "pub fn default_state_dir_for(";
+    let is_home_var = |name: &str| {
+        name == "HOME"
+            || name == "USERPROFILE"
+            || name == "XDG_RUNTIME_DIR"
+            || name
+                .strip_prefix("XDG_")
+                .and_then(|rest| rest.strip_suffix("_HOME"))
+                .is_some_and(|mid| !mid.is_empty() && mid.bytes().all(|b| b.is_ascii_uppercase()))
+    };
+    // Every whole string literal on a production line whose text names a
+    // home variable. The code view keeps a literal's quotes at their raw byte
+    // offsets and blanks its body, so a quote pair there with only blanks
+    // between is one literal, and a quote inside a comment is no quote at all.
+    let home_literals = |raw: &str, code: &str| -> Vec<String> {
+        assert_eq!(
+            raw.len(),
+            code.len(),
+            "the code view no longer indexes the raw line: {raw:?}"
+        );
+        let quotes: Vec<usize> = code.match_indices('"').map(|(i, _)| i).collect();
+        quotes
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .filter(|[open, close]| code[open + 1..*close].trim().is_empty())
+            .map(|[open, close]| &raw[open + 1..*close])
+            .filter(|name| is_home_var(name))
+            .map(str::to_string)
+            .collect()
+    };
 
     let workspace = workspace_root();
-    let mut finders: Vec<String> = Vec::new();
-    let mut xdg_reads: Vec<String> = Vec::new();
     let crates_dir = workspace.join("crates");
     let mut roots: Vec<PathBuf> = std::fs::read_dir(&crates_dir)
         .unwrap_or_else(|e| panic!("{}: {e}", crates_dir.display()))
@@ -1371,56 +1416,119 @@ fn every_per_user_directory_derives_from_the_one_home() {
         roots.len() >= 7,
         "the walk must cover every crate, found {roots:?}"
     );
+
+    let mut offenders: Vec<String> = Vec::new();
+    let mut resolver_names: BTreeSet<String> = BTreeSet::new();
+    let mut state_names: BTreeSet<String> = BTreeSet::new();
+    let mut allows: Vec<String> = Vec::new();
     for root in roots {
         for path in rust_sources_under(&root) {
             let relative = crate::to_posix_string(path.strip_prefix(&workspace).unwrap_or(&path));
             let slice = production_slice_of(&path);
-            let rows: Vec<&str> = slice.lines().collect();
-            for (n, line) in rows.iter().enumerate() {
-                let code = code_span(line);
-                if HOME_FINDERS.iter().any(|f| code.contains(f)) {
-                    finders.push(format!("{relative}:{}", n + 1));
+            let code = production_code_of(&path);
+            let gates = line_gates_of(&path);
+            let raw_rows: Vec<&str> = slice.lines().collect();
+            let code_rows: Vec<&str> = code.lines().collect();
+            // Both views keep each production line at its own index, test
+            // lines blanked and the trailing test region cut, so `n + 1` is the
+            // line number in the file itself.
+            assert!(
+                raw_rows.len() == code_rows.len() && raw_rows.len() <= gates.len(),
+                "{relative}: the views no longer index the file's lines \
+                 ({} raw, {} code, {} gates)",
+                raw_rows.len(),
+                code_rows.len(),
+                gates.len()
+            );
+            let state_span = (relative == STATE_FILE).then(|| {
+                let opens = code_rows
+                    .iter()
+                    .position(|l| l.starts_with(STATE_RESOLVER))
+                    .unwrap_or_else(|| panic!("{STATE_FILE}: no `{STATE_RESOLVER}`"));
+                let closes = opens
+                    + code_rows[opens..]
+                        .iter()
+                        .position(|l| *l == "}")
+                        .unwrap_or_else(|| panic!("{STATE_FILE}: `{STATE_RESOLVER}` never closes"));
+                opens..=closes
+            });
+            for (n, (raw, code)) in raw_rows.iter().zip(&code_rows).enumerate() {
+                if gates[n].is_some() {
+                    continue;
                 }
-                let reads_env = code.contains("env::var(") || code.contains("env::var_os(");
-                let hatched = carries_hatch(line, "xdg-ok:")
-                    || n.checked_sub(1)
-                        .is_some_and(|p| carries_hatch(rows[p], "xdg-ok:"));
-                if reads_env
-                    && !hatched
-                    && XDG_VARS.iter().any(|v| code.contains(&format!("\"{v}\"")))
-                {
-                    xdg_reads.push(format!("{relative}:{}: {}", n + 1, line.trim()));
+                if code.contains("allow(clippy::disallowed_methods)") {
+                    allows.push(format!("{relative}:{}", n + 1));
+                }
+                for name in home_literals(raw, code) {
+                    if relative == RESOLVER_FILE {
+                        resolver_names.insert(name);
+                        continue;
+                    }
+                    if state_span.as_ref().is_some_and(|span| span.contains(&n)) {
+                        state_names.insert(name);
+                        continue;
+                    }
+                    let hatched = carries_hatch(raw, "home-env-ok:")
+                        || n.checked_sub(1)
+                            .is_some_and(|p| carries_hatch(raw_rows[p], "home-env-ok:"));
+                    if !hatched {
+                        offenders.push(format!("{relative}:{}: \"{name}\": {}", n + 1, raw.trim()));
+                    }
                 }
             }
         }
     }
 
+    for name in ["HOME", "USERPROFILE", "XDG_CONFIG_HOME", "XDG_CACHE_HOME"] {
+        assert!(
+            resolver_names.contains(name),
+            "the walk no longer sees `\"{name}\"` in {RESOLVER_FILE}, so it proves nothing: \
+             {resolver_names:?}"
+        );
+    }
     assert!(
-        xdg_reads.is_empty(),
-        "XDG base-directory reads outside `xdg_home_cfgd`: {xdg_reads:?}"
+        state_names.contains("XDG_STATE_HOME"),
+        "the walk no longer sees `XDG_STATE_HOME` in `{STATE_RESOLVER}`"
+    );
+    assert!(
+        offenders.is_empty(),
+        "home variables named outside the resolver: {offenders:#?}"
     );
 
-    let helper = production_slice_of(&workspace.join(HELPER_FILE));
-    let rows: Vec<&str> = helper.lines().collect();
-    let opens = rows
-        .iter()
-        .position(|l| l.starts_with("pub(crate) fn user_base_dirs("))
-        .unwrap_or_else(|| panic!("{HELPER_FILE}: no `fn user_base_dirs(`"));
-    let closes = opens
-        + rows[opens..]
-            .iter()
-            .position(|l| *l == "}")
-            .unwrap_or_else(|| panic!("{HELPER_FILE}: `user_base_dirs` never closes"));
-    let inside: Vec<String> = (opens + 1..=closes + 1)
-        .map(|n| format!("{HELPER_FILE}:{n}"))
-        .collect();
     assert_eq!(
-        finders.len(),
+        allows.len(),
         1,
-        "home lookups outside `user_base_dirs`: {finders:?}"
+        "`disallowed_methods` allowed outside `user_base_dirs`: {allows:?}"
     );
+    let resolver = production_code_of(&workspace.join(RESOLVER_FILE));
+    let rows: Vec<&str> = resolver.lines().collect();
+    let at = allows[0]
+        .strip_prefix(&format!("{RESOLVER_FILE}:"))
+        .and_then(|n| n.parse::<usize>().ok())
+        .unwrap_or_else(|| panic!("the one allow sits outside {RESOLVER_FILE}: {allows:?}"));
     assert!(
-        inside.contains(&finders[0]),
-        "the one home lookup sits outside `user_base_dirs`: {finders:?}"
+        rows.get(at)
+            .is_some_and(|l| l.starts_with("pub(crate) fn user_base_dirs(")),
+        "the one `disallowed_methods` allow is not on `user_base_dirs`: {allows:?}"
     );
+}
+
+/// The calls that find a home with no variable at all stay banned by clippy,
+/// so `user_base_dirs` stays their one caller.
+#[test]
+fn clippy_bans_every_home_finder_the_resolver_does_not_gate() {
+    let path = crate::test_helpers::workspace_root().join("clippy.toml");
+    let clippy =
+        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+    for call in [
+        "std::env::home_dir",
+        "directories::BaseDirs::new",
+        "directories::UserDirs::new",
+        "directories::ProjectDirs::from",
+    ] {
+        assert!(
+            clippy.contains(&format!("path = \"{call}\"")),
+            "clippy.toml no longer bans `{call}`"
+        );
+    }
 }

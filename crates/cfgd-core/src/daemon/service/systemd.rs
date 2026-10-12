@@ -127,8 +127,7 @@ pub(crate) fn install_systemd_service(
     let unit_dir = if scope == crate::Scope::System {
         std::path::PathBuf::from(SYSTEMD_SYSTEM_DIR)
     } else {
-        let home = crate::expand_tilde(Path::new("~"));
-        home.join(SYSTEMD_USER_DIR)
+        crate::home_dir()?.join(SYSTEMD_USER_DIR)
     };
     std::fs::create_dir_all(&unit_dir).map_err(|e| DaemonError::ServiceInstallFailed {
         message: format!("create systemd unit dir: {}", e),
@@ -230,7 +229,7 @@ pub(crate) fn start_systemd_service(printer: &Printer, scope: crate::Scope) -> R
     let runtime_dir = if scope == crate::Scope::User {
         let fallback =
             std::path::PathBuf::from(format!("/run/user/{}", nix::unistd::geteuid().as_raw()));
-        // xdg-ok: the user bus systemctl --user reaches, set or derived as systemd does
+        // home-env-ok: the user bus systemctl --user reaches, set or derived as systemd does
         match resolve_runtime_dir(std::env::var("XDG_RUNTIME_DIR").ok().as_deref(), &fallback) {
             RuntimeDirPlan::AlreadySet => None,
             RuntimeDirPlan::Derived(dir) => {
@@ -267,6 +266,7 @@ pub(crate) fn start_systemd_service(printer: &Printer, scope: crate::Scope) -> R
         let mut cmd = crate::systemctl_cmd();
         cmd.args(&args);
         if let Some(dir) = &runtime_dir {
+            // home-env-ok: the user bus handed to systemctl --user, derived above as systemd does
             cmd.env("XDG_RUNTIME_DIR", dir);
         }
         match crate::command_output_with_timeout(&mut cmd, crate::COMMAND_TIMEOUT) {
@@ -390,8 +390,9 @@ pub(crate) fn uninstall_systemd_service(printer: &Printer, scope: crate::Scope) 
     let unit_path = if scope == crate::Scope::System {
         std::path::PathBuf::from(SYSTEMD_SYSTEM_DIR).join("cfgd.service")
     } else {
-        let home = crate::expand_tilde(Path::new("~"));
-        home.join(SYSTEMD_USER_DIR).join("cfgd.service")
+        crate::home_dir()?
+            .join(SYSTEMD_USER_DIR)
+            .join("cfgd.service")
     };
 
     // Stop+disable BEFORE removing the unit file so systemd can act on a unit it

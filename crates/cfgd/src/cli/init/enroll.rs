@@ -158,7 +158,7 @@ pub(crate) fn cmd_enroll(
     } else if let Some(ssh_path) = ssh_key {
         (KeyType::Ssh, ssh_path.to_string())
     } else {
-        match detect_ssh_key(printer) {
+        match detect_ssh_key(printer)? {
             Some(path) => (KeyType::Ssh, path),
             None => {
                 return Err(build_enroll_error(
@@ -354,8 +354,8 @@ pub(super) fn next_steps_lines() -> &'static [(&'static str, &'static str)] {
 // SSH/GPG signing helpers
 // ─────────────────────────────────────────────────────
 
-pub(super) fn detect_ssh_key(printer: &Printer) -> Option<String> {
-    let ssh_dir = cfgd_core::expand_tilde(Path::new("~/.ssh"));
+pub(super) fn detect_ssh_key(printer: &Printer) -> cfgd_core::errors::Result<Option<String>> {
+    let ssh_dir = cfgd_core::expand_tilde(Path::new("~/.ssh"), "SSH key directory")?;
 
     // Try SSH agent first — when the agent has identities loaded, prefer
     // disk keys (matching agent semantics is impractical without the
@@ -379,7 +379,7 @@ pub(super) fn detect_ssh_key(printer: &Printer) -> Option<String> {
                     cfgd_core::fold_home_in_text(&key.display_posix())
                 ),
             );
-            return Some(key.to_string_lossy().to_string());
+            return Ok(Some(key.to_string_lossy().to_string()));
         }
     }
 
@@ -388,10 +388,10 @@ pub(super) fn detect_ssh_key(printer: &Printer) -> Option<String> {
         printer
             .status(Role::Info, "Using SSH key")
             .qualifier(cfgd_core::fold_home_in_text(&key.display_posix()));
-        return Some(key.to_string_lossy().to_string());
+        return Ok(Some(key.to_string_lossy().to_string()));
     }
 
-    None
+    Ok(None)
 }
 
 /// Scan `ssh_dir` for the first available key in priority order

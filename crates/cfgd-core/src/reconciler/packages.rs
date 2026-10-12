@@ -876,7 +876,7 @@ impl<'x> PackageExec<'x> {
                                 path_dirs: mcx.path_dirs,
                             },
                             module_env,
-                        );
+                        )?;
                         // Build a Full entry so the package's idempotency
                         // guards run through the same guard-evaluation path
                         // as lifecycle scripts (creates → onlyIf → unless);

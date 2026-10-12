@@ -3659,7 +3659,9 @@ fn shell_env_reminder_names_the_written_env_file() {
     let _shell = cfgd_core::test_helpers::EnvVarGuard::unset("SHELL");
     let tmp = tempfile::tempdir().unwrap();
     let (out, home) = cfgd_core::with_test_home(tmp.path(), || {
-        let home = cfgd_core::to_posix_string(cfgd_core::expand_tilde(std::path::Path::new("~")));
+        let home = cfgd_core::to_posix_string(
+            cfgd_core::expand_tilde(std::path::Path::new("~"), "test").unwrap(),
+        );
         let result = env_apply_result(&[
             format!("env:write:{home}/.cfgd.env").as_str(),
             "env:inject:/home/u/.bashrc:skipped",

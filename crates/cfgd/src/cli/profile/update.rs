@@ -107,7 +107,7 @@ pub fn cmd_profile_update(
         if doc.spec.modules.len() < before {
             // Collect module file targets before cleanup for backup restore prompts
             let module_file_targets =
-                collect_module_file_targets(m, &config_dir, cli.cache_dir.as_deref(), cli.scope());
+                collect_module_file_targets(m, &config_dir, cli.cache_dir.as_deref(), cli.scope())?;
 
             // The module's cached tree stays: its deployed links may still
             // point into it, and the next apply's sweep removes it once
@@ -273,19 +273,20 @@ pub fn cmd_profile_update(
 
     // Remove files
     for target in &remove_files {
-        let expanded = cfgd_core::expand_tilde(&PathBuf::from(target));
+        let expanded =
+            cfgd_core::expand_tilde(&PathBuf::from(target), cfgd_core::FILE_TARGET_ROLE)?;
         if let Some(ref mut files) = doc.spec.files {
             let before = files.managed.len();
             let mut removed_source = None;
-            files.managed.retain(|f| {
-                let f_target = cfgd_core::expand_tilde(&f.target);
-                if f_target == expanded {
+            let mut kept = Vec::with_capacity(before);
+            for f in std::mem::take(&mut files.managed) {
+                if cfgd_core::expand_tilde(&f.target, cfgd_core::FILE_TARGET_ROLE)? == expanded {
                     removed_source = Some(f.source.clone());
-                    false
                 } else {
-                    true
+                    kept.push(f);
                 }
-            });
+            }
+            files.managed = kept;
             if files.managed.len() < before {
                 if let Some(ref source) = removed_source {
                     let source_path = config_dir.join(source);
@@ -386,16 +387,12 @@ pub fn cmd_profile_update(
     for secret_str in &add_secrets {
         let secret = parse_secret_spec(secret_str)?;
         let target = match secret.target.as_ref() {
-            Some(t) => cfgd_core::expand_tilde(t),
+            Some(t) => cfgd_core::expand_tilde(t, cfgd_core::SECRET_TARGET_ROLE)?,
             // untyped-ok: parse_secret_spec always produces a target, so no input reaches this.
             None => anyhow::bail!("secret parsed without target"),
         };
-        if doc
-            .spec
-            .secrets
-            .iter()
-            .any(|s| s.target.as_ref().map(|t| cfgd_core::expand_tilde(t)) == Some(target.clone()))
-        {
+        let declared_targets = declared_secret_targets(&doc.spec.secrets)?;
+        if declared_targets.contains(&Some(target.clone())) {
             printer.status_simple(
                 Role::Warn,
                 format!(
@@ -417,11 +414,14 @@ pub fn cmd_profile_update(
 
     // Remove secrets
     for target_str in &remove_secrets {
-        let target = cfgd_core::expand_tilde(&PathBuf::from(target_str));
+        let target =
+            cfgd_core::expand_tilde(&PathBuf::from(target_str), cfgd_core::SECRET_TARGET_ROLE)?;
         let before = doc.spec.secrets.len();
-        doc.spec.secrets.retain(|s| {
-            s.target.as_ref().map(|t| cfgd_core::expand_tilde(t)) != Some(target.clone())
-        });
+        let declared_targets = declared_secret_targets(&doc.spec.secrets)?;
+        let mut declared = declared_targets.into_iter();
+        doc.spec
+            .secrets
+            .retain(|_| declared.next().flatten().as_ref() != Some(&target));
         if doc.spec.secrets.len() < before {
             printer
                 .status(Role::Ok, "Removed secret")
@@ -523,4 +523,18 @@ pub fn cmd_profile_update(
     );
 
     Ok(())
+}
+
+fn declared_secret_targets(
+    secrets: &[config::SecretSpec],
+) -> cfgd_core::errors::Result<Vec<Option<PathBuf>>> {
+    secrets
+        .iter()
+        .map(|s| {
+            s.target
+                .as_ref()
+                .map(|t| cfgd_core::expand_tilde(t, cfgd_core::SECRET_TARGET_ROLE))
+                .transpose()
+        })
+        .collect()
 }

@@ -1124,9 +1124,8 @@ pub(super) fn planned_method_failed(
 /// resolves — a literal `~` handed to a PATH entry names nothing, so a
 /// bootstrap plan declares no directory rather than an unusable one.
 pub(super) fn home_relative_dir(rel: &str) -> Option<std::path::PathBuf> {
-    let rel = std::path::Path::new(rel);
-    let expanded = cfgd_core::expand_tilde(rel);
-    (expanded != rel).then_some(expanded)
+    // home-optional-ok: a bootstrap plan with no home declares no directory
+    cfgd_core::expand_tilde(std::path::Path::new(rel), "installer directory").ok()
 }
 
 /// The directory `pip install --user <tool>` writes console scripts into, or

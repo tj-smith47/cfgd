@@ -612,7 +612,10 @@ pub fn scan_system_settings() -> Result<SystemSettingsResult, CfgdError> {
 
     // macOS: list launch agents
     {
-        let agents_dir = cfgd_core::expand_tilde(std::path::Path::new("~/Library/LaunchAgents"));
+        let agents_dir = cfgd_core::expand_tilde(
+            std::path::Path::new("~/Library/LaunchAgents"),
+            "launch agents directory",
+        )?;
         if agents_dir.exists()
             && let Ok(dir_entries) = std::fs::read_dir(&agents_dir)
         {

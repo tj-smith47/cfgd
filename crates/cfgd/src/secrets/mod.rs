@@ -9,6 +9,12 @@ use cfgd_core::errors::{Result, SecretError};
 use cfgd_core::providers::{SecretBackend, SecretCache, SecretProvider, parse_secret_reference};
 use cfgd_core::{default_config_dir, expand_tilde};
 
+/// The role a no-home refusal names for the age key path.
+pub(crate) const AGE_KEY_ROLE: &str = "age key";
+
+/// The age key cfgd generates and reads when the config names none.
+const DEFAULT_AGE_KEY_FILE: &str = "age-key.txt";
+
 pub(crate) mod age;
 pub(crate) mod bitwarden;
 pub(crate) mod lastpass;
@@ -192,13 +198,13 @@ fn resolve_single_ref(
 
 /// Generate age identity and .sops.yaml for initial setup.
 pub fn init_age_key(config_dir: &Path) -> Result<PathBuf> {
-    let cfgd_config_dir = default_config_dir();
+    let cfgd_config_dir = default_config_dir()?;
     std::fs::create_dir_all(&cfgd_config_dir).map_err(|e| SecretError::EncryptionFailed {
         path: cfgd_config_dir.clone(),
         message: format!("failed to create config directory: {}", e),
     })?;
 
-    let key_path = cfgd_config_dir.join("age-key.txt");
+    let key_path = cfgd_config_dir.join(DEFAULT_AGE_KEY_FILE);
 
     if !key_path.exists() {
         let output = cfgd_core::command_output(
@@ -268,6 +274,9 @@ pub struct SecretsHealthCheck {
     pub sops_version: Option<String>,
     pub age_key_exists: bool,
     pub age_key_path: Option<PathBuf>,
+    /// Why the age key has no location: the home directory its path needs
+    /// does not resolve.
+    pub age_key_error: Option<String>,
     pub sops_config_exists: bool,
     pub sops_config_path: Option<PathBuf>,
     pub providers: Vec<(String, bool)>,
@@ -289,10 +298,17 @@ pub fn check_secrets_health(
         _ => (false, None),
     };
 
-    let age_key_path = age_key_override
-        .map(expand_tilde)
-        .unwrap_or_else(|| default_config_dir().join("age-key.txt"));
-    let age_key_exists = age_key_path.exists();
+    let (age_key_path, age_key_error) = match resolve_age_key_path(age_key_override) {
+        Ok(path) => (Some(path), None),
+        Err(_) => {
+            let refusal = cfgd_core::errors::StateError::HomeUnresolved {
+                role: AGE_KEY_ROLE,
+                path: HomelessKeyBackend::spelling(age_key_override),
+            };
+            (None, Some(refusal.to_string()))
+        }
+    };
+    let age_key_exists = age_key_path.as_ref().is_some_and(|p| p.exists());
 
     let sops_config_path = config_dir.join(".sops.yaml");
     let sops_config_exists = sops_config_path.exists();
@@ -308,7 +324,8 @@ pub fn check_secrets_health(
         sops_available,
         sops_version,
         age_key_exists,
-        age_key_path: Some(age_key_path),
+        age_key_path,
+        age_key_error,
         sops_config_exists,
         sops_config_path: Some(sops_config_path),
         providers,
@@ -321,9 +338,16 @@ pub fn build_secret_backend(
     age_key_path: Option<PathBuf>,
     config_dir: Option<&Path>,
 ) -> Box<dyn SecretBackend> {
-    let key_path = age_key_path
-        .map(|p| expand_tilde(&p))
-        .unwrap_or_else(|| default_config_dir().join("age-key.txt"));
+    let key_path = match resolve_age_key_path(age_key_path.as_deref()) {
+        Ok(path) => path,
+        // `resolve_age_key_path` refuses only a home that does not resolve.
+        Err(_) => {
+            return Box::new(HomelessKeyBackend {
+                name: backend_name.to_string(),
+                spelled: HomelessKeyBackend::spelling(age_key_path.as_deref()),
+            });
+        }
+    };
 
     match backend_name {
         "age" => Box::new(AgeBackend::new(key_path)),
@@ -334,6 +358,71 @@ pub fn build_secret_backend(
                 None => Box::new(backend),
             }
         }
+    }
+}
+
+/// The age key a secret backend reads: the declared path, or the default key
+/// under the config directory.
+fn resolve_age_key_path(declared: Option<&Path>) -> Result<PathBuf> {
+    match declared {
+        Some(path) => expand_tilde(path, AGE_KEY_ROLE),
+        None => Ok(default_config_dir()?.join(DEFAULT_AGE_KEY_FILE)),
+    }
+}
+
+/// The backend a run holds when its age key path needs a home directory that
+/// does not resolve. Building it succeeds, so a run that never touches a secret
+/// is unaffected; every operation refuses naming the key path.
+struct HomelessKeyBackend {
+    name: String,
+    spelled: PathBuf,
+}
+
+impl HomelessKeyBackend {
+    /// The key path as the config spells it: the declared path, or the
+    /// default key under the default config directory.
+    fn spelling(declared: Option<&Path>) -> PathBuf {
+        declared.map_or_else(
+            || {
+                cfgd_core::default_config_dir_spelling(cfgd_core::Scope::User)
+                    .join(DEFAULT_AGE_KEY_FILE)
+            },
+            Path::to_path_buf,
+        )
+    }
+
+    fn refusal(&self) -> cfgd_core::errors::StateError {
+        cfgd_core::errors::StateError::HomeUnresolved {
+            role: AGE_KEY_ROLE,
+            path: self.spelled.clone(),
+        }
+    }
+}
+
+// no-tool-ok: a missing home directory is what disables it, and no install supplies one
+impl SecretBackend for HomelessKeyBackend {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn is_available(&self) -> bool {
+        false
+    }
+
+    fn encrypt_file(&self, _path: &Path) -> Result<()> {
+        Err(self.refusal().into())
+    }
+
+    fn decrypt_file(&self, _path: &Path) -> Result<SecretString> {
+        Err(self.refusal().into())
+    }
+
+    fn edit_file(&self, _path: &Path) -> Result<()> {
+        Err(self.refusal().into())
+    }
+
+    fn home_refusal(&self) -> Option<cfgd_core::errors::StateError> {
+        Some(self.refusal())
     }
 }
 

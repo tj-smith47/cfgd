@@ -9,6 +9,7 @@
 
 use std::path::{Path, PathBuf};
 
+use super::SKILL_ROLE;
 use super::{
     Detection, ManagedSection, RenderedSkill, SkillProvider, SkillScope, render_skill_body,
 };
@@ -30,7 +31,7 @@ impl SkillProvider for CodexProvider {
         "codex"
     }
 
-    fn detect(&self, scope: SkillScope) -> Detection {
+    fn detect(&self, scope: SkillScope) -> Result<Detection> {
         let found = match scope {
             SkillScope::Project => {
                 std::env::current_dir()
@@ -38,15 +39,17 @@ impl SkillProvider for CodexProvider {
                     .is_some_and(|d| d.join(relative_agents_path()).exists())
                     || command_available("codex")
             }
-            SkillScope::User => expand_tilde(Path::new("~/.codex")).exists(),
+            SkillScope::User => expand_tilde(Path::new("~/.codex"), SKILL_ROLE)?.exists(),
         };
-        Detection::present(found)
+        Ok(Detection::present(found))
     }
 
-    fn target_path(&self, _kind: SkillKind, scope: SkillScope) -> Option<PathBuf> {
+    fn target_path(&self, _kind: SkillKind, scope: SkillScope) -> Result<Option<PathBuf>> {
         match scope {
-            SkillScope::Project => Some(std::env::current_dir().ok()?.join(relative_agents_path())),
-            SkillScope::User => Some(expand_tilde(Path::new("~/.codex/AGENTS.md"))),
+            SkillScope::Project => Ok(std::env::current_dir()
+                .ok()
+                .map(|d| d.join(relative_agents_path()))),
+            SkillScope::User => expand_tilde(Path::new("~/.codex/AGENTS.md"), SKILL_ROLE).map(Some),
         }
     }
 
@@ -112,6 +115,7 @@ mod tests {
         crate::with_test_home(home.path(), || {
             let target = CodexProvider
                 .target_path(SkillKind::Module, SkillScope::User)
+                .unwrap()
                 .expect("user scope always has a target");
             assert!(target.is_absolute(), "target must be absolute: {target:?}");
             assert!(target.starts_with(home.path()));
@@ -125,12 +129,15 @@ mod tests {
         let home = tempfile::tempdir().expect("tempdir");
         crate::with_test_home(home.path(), || {
             assert_eq!(
-                CodexProvider.detect(SkillScope::User),
+                CodexProvider.detect(SkillScope::User).unwrap(),
                 Detection::Absent,
                 "no ~/.codex yet"
             );
             std::fs::create_dir_all(home.path().join(".codex")).expect("create ~/.codex");
-            assert_eq!(CodexProvider.detect(SkillScope::User), Detection::Present);
+            assert_eq!(
+                CodexProvider.detect(SkillScope::User).unwrap(),
+                Detection::Present
+            );
         });
     }
 }

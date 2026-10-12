@@ -95,6 +95,22 @@ pub(crate) fn generate_launchd_plist(
     )
 }
 
+/// The directory the service's plist lives in: `/Library/LaunchDaemons` for
+/// the system scope, `~/Library/LaunchAgents` for the user scope.
+#[cfg(unix)]
+fn launchd_plist_dir(scope: crate::Scope) -> Result<std::path::PathBuf> {
+    Ok(match scope {
+        crate::Scope::System => std::path::PathBuf::from(LAUNCHD_DAEMONS_DIR),
+        crate::Scope::User => crate::home_dir()?.join(LAUNCHD_AGENTS_DIR),
+    })
+}
+
+/// The service's plist path under [`launchd_plist_dir`].
+#[cfg(unix)]
+fn launchd_plist_path(scope: crate::Scope) -> Result<std::path::PathBuf> {
+    Ok(launchd_plist_dir(scope)?.join(format!("{LAUNCHD_LABEL}.plist")))
+}
+
 #[cfg(unix)]
 pub(crate) fn install_launchd_service(
     binary: &Path,
@@ -103,16 +119,14 @@ pub(crate) fn install_launchd_service(
     scope: crate::Scope,
     dirs: &DaemonDirOverrides,
 ) -> Result<()> {
-    let home = crate::expand_tilde(Path::new("~"));
-    let (plist_dir, plist_path) = if scope == crate::Scope::System {
-        let dir = std::path::PathBuf::from(LAUNCHD_DAEMONS_DIR);
-        let path = dir.join(format!("{}.plist", LAUNCHD_LABEL));
-        (dir, path)
-    } else {
-        let dir = home.join(LAUNCHD_AGENTS_DIR);
-        let path = dir.join(format!("{}.plist", LAUNCHD_LABEL));
-        (dir, path)
+    // The system plist names no per-user path, so a system install reads no
+    // home and needs none set.
+    let home = match scope {
+        crate::Scope::System => std::path::PathBuf::new(),
+        crate::Scope::User => crate::home_dir()?,
     };
+    let plist_path = launchd_plist_path(scope)?;
+    let plist_dir = launchd_plist_dir(scope)?;
 
     std::fs::create_dir_all(&plist_dir).map_err(|e| DaemonError::ServiceInstallFailed {
         message: format!("create LaunchAgents/LaunchDaemons dir: {}", e),
@@ -199,13 +213,7 @@ pub(crate) fn start_launchd_service(printer: &Printer, scope: crate::Scope) -> R
         return Ok(false);
     }
 
-    let home = crate::expand_tilde(Path::new("~"));
-    let plist_path = if scope == crate::Scope::System {
-        std::path::PathBuf::from(LAUNCHD_DAEMONS_DIR).join(format!("{}.plist", LAUNCHD_LABEL))
-    } else {
-        home.join(LAUNCHD_AGENTS_DIR)
-            .join(format!("{}.plist", LAUNCHD_LABEL))
-    };
+    let plist_path = launchd_plist_path(scope)?;
     let uid = nix::unistd::getuid().as_raw();
 
     let bootstrap = launchd_bootstrap_argv(uid, &plist_path, scope);
@@ -315,7 +323,7 @@ pub(crate) fn launchd_bootout_argv(
 /// surfaced as a warning rather than aborting the uninstall flow. Must run
 /// while the plist still exists (before removal).
 #[cfg(unix)]
-pub(crate) fn stop_launchd_service(printer: &Printer, scope: crate::Scope) {
+pub(crate) fn stop_launchd_service(printer: &Printer, scope: crate::Scope, plist_path: &Path) {
     // A test with a scoped HOME override must never run a real `launchctl`
     // against the runner's session. The argv builder (`launchd_bootout_argv`)
     // carries command-construction coverage; skip the side-effecting call here.
@@ -346,16 +354,9 @@ pub(crate) fn stop_launchd_service(printer: &Printer, scope: crate::Scope) {
         return;
     }
 
-    let home = crate::expand_tilde(Path::new("~"));
-    let plist_path = if scope == crate::Scope::System {
-        std::path::PathBuf::from(LAUNCHD_DAEMONS_DIR).join(format!("{}.plist", LAUNCHD_LABEL))
-    } else {
-        home.join(LAUNCHD_AGENTS_DIR)
-            .join(format!("{}.plist", LAUNCHD_LABEL))
-    };
     let uid = nix::unistd::getuid().as_raw();
 
-    let bootout = launchd_bootout_argv(uid, &plist_path, scope);
+    let bootout = launchd_bootout_argv(uid, plist_path, scope);
     let mut cmd = std::process::Command::new("launchctl");
     cmd.args(&bootout);
     match crate::command_output_with_timeout(&mut cmd, crate::COMMAND_TIMEOUT) {
@@ -384,17 +385,11 @@ pub(crate) fn stop_launchd_service(printer: &Printer, scope: crate::Scope) {
 
 #[cfg(unix)]
 pub(crate) fn uninstall_launchd_service(printer: &Printer, scope: crate::Scope) -> Result<()> {
-    let home = crate::expand_tilde(Path::new("~"));
-    let plist_path = if scope == crate::Scope::System {
-        std::path::PathBuf::from(LAUNCHD_DAEMONS_DIR).join(format!("{}.plist", LAUNCHD_LABEL))
-    } else {
-        home.join(LAUNCHD_AGENTS_DIR)
-            .join(format!("{}.plist", LAUNCHD_LABEL))
-    };
+    let plist_path = launchd_plist_path(scope)?;
 
     // Bootout BEFORE removing the plist so launchd can unload the agent/daemon it
     // still knows about — otherwise the running daemon is orphaned.
-    stop_launchd_service(printer, scope);
+    stop_launchd_service(printer, scope, &plist_path);
 
     if plist_path.exists() {
         std::fs::remove_file(&plist_path).map_err(|e| DaemonError::ServiceInstallFailed {

@@ -24,7 +24,7 @@ impl SkillProvider for CopilotProvider {
         "copilot"
     }
 
-    fn detect(&self, scope: SkillScope) -> Detection {
+    fn detect(&self, scope: SkillScope) -> Result<Detection> {
         let found = match scope {
             // `.github/` is the project-local marker; pure fs check, no shell-out.
             SkillScope::Project => std::env::current_dir()
@@ -33,23 +33,21 @@ impl SkillProvider for CopilotProvider {
             // Copilot prompt files are an IDE/project primitive only — there is no
             // user-global location to install into.
             SkillScope::User => {
-                return Detection::Unsupported(
+                return Ok(Detection::Unsupported(
                     "copilot prompt files are project-only (.github/prompts); no user-scope primitive"
                         .to_string(),
-                );
+                ));
             }
         };
-        Detection::present(found)
+        Ok(Detection::present(found))
     }
 
-    fn target_path(&self, kind: SkillKind, scope: SkillScope) -> Option<PathBuf> {
+    fn target_path(&self, kind: SkillKind, scope: SkillScope) -> Result<Option<PathBuf>> {
         match scope {
-            SkillScope::Project => Some(
-                std::env::current_dir()
-                    .ok()?
-                    .join(relative_prompt_path(kind.command_token())),
-            ),
-            SkillScope::User => None,
+            SkillScope::Project => Ok(std::env::current_dir()
+                .ok()
+                .map(|d| d.join(relative_prompt_path(kind.command_token())))),
+            SkillScope::User => Ok(None),
         }
     }
 
@@ -96,12 +94,13 @@ mod tests {
     #[test]
     fn copilot_user_scope_is_unsupported() {
         assert!(matches!(
-            CopilotProvider.detect(SkillScope::User),
+            CopilotProvider.detect(SkillScope::User).unwrap(),
             Detection::Unsupported(_)
         ));
         assert!(
             CopilotProvider
                 .target_path(SkillKind::Module, SkillScope::User)
+                .unwrap()
                 .is_none()
         );
     }

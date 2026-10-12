@@ -43,7 +43,7 @@ fn make_resolved_profile(env: Vec<EnvVar>, files: FilesSpec) -> ResolvedProfile 
 fn expand_tilde_with_home() {
     // Verify expand_tilde resolves ~/... to $HOME/... without mutating env vars
     // (mutating HOME in parallel tests can corrupt other tests).
-    let result = expand_tilde(Path::new("~/.config/test"));
+    let result = expand_tilde(Path::new("~/.config/test"), "test").unwrap();
     #[cfg(unix)]
     let home = std::env::var("HOME").expect("HOME must be set");
     #[cfg(windows)]
@@ -55,7 +55,7 @@ fn expand_tilde_with_home() {
 
 #[test]
 fn expand_tilde_absolute_path_unchanged() {
-    let result = expand_tilde(Path::new("/etc/config"));
+    let result = expand_tilde(Path::new("/etc/config"), "test").unwrap();
     assert_eq!(result, PathBuf::from("/etc/config"));
 }
 

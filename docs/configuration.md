@@ -699,13 +699,25 @@ directory (`HOME` unset, or both `USERPROFILE` and `HOME` on Windows): an
 absolute `XDG_STATE_HOME` puts state at `$XDG_STATE_HOME/cfgd`, and an absolute
 `XDG_CACHE_HOME` puts the cache at `$XDG_CACHE_HOME/cfgd`, on every platform.
 An empty or relative value is ignored there too, and a root with neither a
-home nor its XDG variable is unresolved: `cfgd apply` refuses to start and
-`cfgd doctor` fails its state-store check. With a home directory set, macOS and
-Windows keep their native state and cache locations from the table above.
+home nor its XDG variable is unresolved: `cfgd apply` refuses to start before it
+creates anything, and `cfgd doctor` fails that root's check. With no home, a
+profile, source or module declaring work under `~/` (an env var, an alias, a
+`~/` file or secret target, a secret decrypted with an age key whose path
+needs the home, or a package manager `PATH` entry an earlier run recorded) is
+refused too, since there is nowhere to put it. `cfgd apply` (a saved-plan
+replay included) and `cfgd plan` judge that work once they have fetched their
+sources and resolved their modules, and refuse it before they open the state
+store for writing, so a refused run leaves no `state.db` behind and leaves an
+existing one as it found it. `cfgd doctor` fails its `Home
+directory` check for the same work, judged over the sources already in the
+cache. With a home directory set,
+macOS and Windows keep their native state and cache locations from the table
+above.
 
 ```sh
-env -u HOME XDG_CONFIG_HOME=/srv/cfgd/config XDG_STATE_HOME=/srv/cfgd/state cfgd apply
-# state lands in /srv/cfgd/state/cfgd/state.db
+env -u HOME XDG_CONFIG_HOME=/srv/cfgd/config XDG_STATE_HOME=/srv/cfgd/state \
+  XDG_CACHE_HOME=/srv/cfgd/cache cfgd apply
+# state lands in /srv/cfgd/state/cfgd/state.db, the module cache in /srv/cfgd/cache/cfgd
 ```
 
 ### System scope

@@ -486,7 +486,7 @@ fn docker_config_path_uses_env() {
         std::env::set_var("DOCKER_CONFIG", tmp.path().to_str().unwrap());
     }
 
-    let path = docker_config_path();
+    let path = docker_config_path().unwrap();
     assert_eq!(path, tmp.path().join("config.json"));
 
     unsafe {

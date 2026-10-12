@@ -110,33 +110,42 @@ impl Dialect {
     ///
     /// The line carries no provenance of its own: the block header above it
     /// names the layer that declared it, for every line under that header.
-    pub(super) fn env_line(&self, ev: &crate::config::EnvVar) -> Option<String> {
+    ///
+    /// # Errors
+    ///
+    /// [`StateError::HomeUnresolved`](crate::errors::StateError::HomeUnresolved)
+    /// when the value carries a `~` segment and no home directory is set.
+    pub(super) fn env_line(
+        &self,
+        ev: &crate::config::EnvVar,
+    ) -> crate::errors::Result<Option<String>> {
         if crate::validate_env_var_name(&ev.name).is_err() {
-            return None;
+            return Ok(None);
         }
         // Every dialect quotes the value literally (fish single quotes suppress
         // tilde expansion, PowerShell performs none at all), so a surviving `~`
         // would reach the shell as a directory of that name.
-        let value = crate::expand_env_value_tilde(&ev.value);
-        Some(match self {
-            Dialect::Posix => format!("export {}={}", ev.name, crate::posix_double_quoted(&value)),
+        let value = crate::expand_env_value_tilde(&ev.value)?;
+        Ok(Some(self.assignment(&ev.name, &value)))
+    }
+
+    /// The assignment of `value`, as written, to the variable `name`.
+    fn assignment(&self, name: &str, value: &str) -> String {
+        match self {
+            Dialect::Posix => format!("export {}={}", name, crate::posix_double_quoted(value)),
             // Single-quoted to prevent fish command substitution via `()`.
             // (A `$VAR` in a fish single-quoted value is a separate gap.)
-            Dialect::Fish => format!("set -gx {} {}", ev.name, crate::fish_single_quoted(&value)),
+            Dialect::Fish => format!("set -gx {} {}", name, crate::fish_single_quoted(value)),
             // A value naming other env vars is double-quoted so those
             // references still resolve, with subexpressions neutralized.
-            Dialect::PowerShell if value.contains("$env:") => format!(
-                "$env:{} = {}",
-                ev.name,
-                crate::powershell_double_quoted(&value)
-            ),
+            Dialect::PowerShell if value.contains("$env:") => {
+                format!("$env:{} = {}", name, crate::powershell_double_quoted(value))
+            }
             // Single quotes prevent all PowerShell interpolation.
-            Dialect::PowerShell => format!(
-                "$env:{} = {}",
-                ev.name,
-                crate::powershell_single_quoted(&value)
-            ),
-        })
+            Dialect::PowerShell => {
+                format!("$env:{} = {}", name, crate::powershell_single_quoted(value))
+            }
+        }
     }
 
     /// The alias counterpart of [`Dialect::env_line`].
@@ -230,7 +239,7 @@ fn compose_blocks(
     dialect: Dialect,
     layered: &super::verify::LayeredEnv,
     path: Option<&super::env_engine::FoldedPath>,
-) -> Vec<EnvFileBlock> {
+) -> crate::errors::Result<Vec<EnvFileBlock>> {
     let mut blocks: Vec<EnvFileBlock> = Vec::with_capacity(layered.layers.len() + 1);
     if let Some(path) = path {
         // Ahead of the user's own exports so a `spec.env` value may reference a
@@ -250,7 +259,7 @@ fn compose_blocks(
             if ev.name == "PATH" {
                 continue;
             }
-            let Some(line) = dialect.env_line(ev) else {
+            let Some(line) = dialect.env_line(ev)? else {
                 // long-line-ok: a hatch is read off its own line, so it cannot wrap
                 // tracing-ok: an env var the user declared under a name no shell can carry; the generated file simply omits it and no row names it
                 tracing::warn!("skipping env var with unsafe name: {}", ev.name);
@@ -277,7 +286,7 @@ fn compose_blocks(
             lines,
         });
     }
-    blocks
+    Ok(blocks)
 }
 
 /// The finished file: the banner, then each block headed and spaced.
@@ -305,10 +314,10 @@ fn generate_content(
     dialect: Dialect,
     layered: &super::verify::LayeredEnv,
     path: Option<&super::env_engine::FoldedPath>,
-) -> String {
-    let blocks = compose_blocks(dialect, layered, path);
+) -> crate::errors::Result<String> {
+    let blocks = compose_blocks(dialect, layered, path)?;
     let layer_blocks = blocks.len() - usize::from(path.is_some());
-    render_blocks(blocks, layer_blocks)
+    Ok(render_blocks(blocks, layer_blocks))
 }
 
 /// One layer's entries as its block renders them: sorted by name, and one line
@@ -333,7 +342,7 @@ fn block_entries<T>(entries: &[T], name: impl Fn(&T) -> &String) -> Vec<&T> {
 pub(super) fn generate_env_file_content(
     layered: &super::verify::LayeredEnv,
     path: Option<&super::env_engine::FoldedPath>,
-) -> String {
+) -> crate::errors::Result<String> {
     generate_content(Dialect::Posix, layered, path)
 }
 
@@ -342,7 +351,7 @@ pub(super) fn generate_env_file_content(
 pub(super) fn generate_fish_env_content(
     layered: &super::verify::LayeredEnv,
     path: Option<&super::env_engine::FoldedPath>,
-) -> String {
+) -> crate::errors::Result<String> {
     generate_content(Dialect::Fish, layered, path)
 }
 
@@ -351,7 +360,7 @@ pub(super) fn generate_fish_env_content(
 pub(super) fn generate_powershell_env_content(
     layered: &super::verify::LayeredEnv,
     path: Option<&super::env_engine::FoldedPath>,
-) -> String {
+) -> crate::errors::Result<String> {
     generate_content(Dialect::PowerShell, layered, path)
 }
 
@@ -379,13 +388,13 @@ pub(super) fn primary_env_var_line(
     ev: &crate::config::EnvVar,
     platform: super::env_engine::EnvPlatform,
     path: Option<&super::env_engine::FoldedPath>,
-) -> Option<String> {
+) -> crate::errors::Result<Option<String>> {
     let dialect = Dialect::of(platform);
     // `PATH` has one line however many producers fed it, and the fold writes
     // it — a declaration alone renders nothing.
     match (ev.name.as_str(), path) {
-        ("PATH", Some(path)) => Some(dialect.path_line(path)),
-        ("PATH", None) => None,
+        ("PATH", Some(path)) => Ok(Some(dialect.path_line(path))),
+        ("PATH", None) => Ok(None),
         _ => dialect.env_line(ev),
     }
 }
@@ -439,15 +448,9 @@ pub(super) fn env_var_line_prefix(
         return path_dirs_line_prefix(platform);
     }
     let line = |value: &str| {
-        primary_env_var_line(
-            &crate::config::EnvVar {
-                name: name.to_string(),
-                value: value.to_string(),
-                platforms: vec![],
-            },
-            platform,
-            None,
-        )
+        crate::validate_env_var_name(name)
+            .is_ok()
+            .then(|| Dialect::of(platform).assignment(name, value))
     };
     stable_line_prefix(line("0cfgdsentinel"), line("1cfgdsentinel"))
 }
@@ -860,7 +863,7 @@ pub(super) fn generate_blocks(
     dialect: Dialect,
     layered: &super::verify::LayeredEnv,
     path: Option<&super::env_engine::FoldedPath>,
-) -> Vec<EnvFileBlock> {
+) -> crate::errors::Result<Vec<EnvFileBlock>> {
     compose_blocks(dialect, layered, path)
 }
 
@@ -1082,7 +1085,8 @@ mod tests {
                         &Default::default(),
                     ),
                     None,
-                ),
+                )
+                .unwrap(),
                 case.env_line,
                 case.value,
                 "bash",
@@ -1095,7 +1099,8 @@ mod tests {
                         &Default::default(),
                     ),
                     None,
-                ),
+                )
+                .unwrap(),
                 case.alias_line,
                 case.value,
                 "bash",
@@ -1114,7 +1119,8 @@ mod tests {
                         &Default::default(),
                     ),
                     None,
-                ),
+                )
+                .unwrap(),
                 case.env_line,
                 case.value,
                 "fish",
@@ -1127,7 +1133,8 @@ mod tests {
                         &Default::default(),
                     ),
                     None,
-                ),
+                )
+                .unwrap(),
                 case.alias_line,
                 case.value,
                 "fish",
@@ -1146,7 +1153,8 @@ mod tests {
                         &Default::default(),
                     ),
                     None,
-                ),
+                )
+                .unwrap(),
                 case.env_line,
                 case.value,
                 "powershell",
@@ -1159,7 +1167,8 @@ mod tests {
                         &Default::default(),
                     ),
                     None,
-                ),
+                )
+                .unwrap(),
                 case.alias_line,
                 case.value,
                 "powershell",
@@ -1184,11 +1193,13 @@ mod tests {
             std::path::Path::new("/home/tj"),
             EnvPlatform::Linux,
             None,
-        );
+        )
+        .unwrap();
         let content = super::generate_fish_env_content(
             &crate::reconciler::LayeredEnv::for_test(&env, &[], &Default::default()),
             fold.as_ref(),
-        );
+        )
+        .unwrap();
         assert!(
             content.contains("set -gx PATH 'a\\\\' 'b'"),
             "trailing backslash escaped out of its quotes: {content}"
@@ -1200,7 +1211,8 @@ mod tests {
         let content = super::generate_fish_env_content(
             &crate::reconciler::LayeredEnv::for_test(&[], &[], &Default::default()),
             Some(&FoldedPath::derived(&[ManagerPathDir::unowned("/opt/a\\")])),
-        );
+        )
+        .unwrap();
         assert!(
             content.contains("set -gx PATH '/opt/a\\\\' $PATH"),
             "trailing backslash escaped out of its quotes: {content}"
@@ -1219,7 +1231,8 @@ mod tests {
         let content = super::generate_powershell_env_content(
             &crate::reconciler::LayeredEnv::for_test(&env, &[], &Default::default()),
             None,
-        );
+        )
+        .unwrap();
         assert!(
             content.contains("$env:V = \"$env:PATH;`$(Write-Output pwned)\""),
             "subexpression survived: {content}"
@@ -1233,7 +1246,8 @@ mod tests {
             Some(&FoldedPath::derived(&[ManagerPathDir::unowned(
                 "C:/a$(Write-Output x)",
             )])),
-        );
+        )
+        .unwrap();
         assert!(
             content.contains("$env:PATH = \"C:/a`$(Write-Output x);$env:PATH\""),
             "subexpression survived: {content}"
@@ -1248,7 +1262,8 @@ mod tests {
         let content = super::generate_powershell_env_content(
             &crate::reconciler::LayeredEnv::for_test(&[], &aliases, &Default::default()),
             None,
-        );
+        )
+        .unwrap();
         assert!(
             content.contains(
                 "function q { & ([scriptblock]::Create('Write-Output benign }; \
@@ -1268,7 +1283,8 @@ mod tests {
         let content = super::generate_powershell_env_content(
             &crate::reconciler::LayeredEnv::for_test(&[], &aliases, &Default::default()),
             None,
-        );
+        )
+        .unwrap();
         assert!(
             content.contains(
                 "function q { & ([scriptblock]::Create('Write-Output ''hi there'' @args')) @args }"
@@ -1290,7 +1306,8 @@ mod tests {
         let content = super::generate_env_file_content(
             &crate::reconciler::LayeredEnv::for_test(&env, &[], &Default::default()),
             None,
-        );
+        )
+        .unwrap();
         assert!(
             content.contains("export V=\"/opt/bin:$PATH:\\$(id)\""),
             "unexpected quoting: {content}"
@@ -1308,7 +1325,8 @@ mod tests {
                 ManagerPathDir::unowned("/opt/$(id)/bin"),
                 ManagerPathDir::unowned("/opt/a\"b/bin"),
             ])),
-        );
+        )
+        .unwrap();
         assert!(
             content.contains("export PATH=\"/opt/\\$(id)/bin:/opt/a\\\"b/bin:$PATH\""),
             "unexpected quoting: {content}"
@@ -1356,7 +1374,8 @@ mod tests {
                     platform,
                     None,
                 )
-                .unwrap();
+                .unwrap()
+                .expect("a safe name renders");
                 assert!(
                     line.starts_with(&prefix),
                     "{prefix:?} must prefix {line:?} ({platform:?})"
@@ -1411,15 +1430,18 @@ mod tests {
             super::generate_env_file_content(
                 &crate::reconciler::LayeredEnv::for_test(&[], &[], &Default::default()),
                 Some(&FoldedPath::derived(&dirs)),
-            ),
+            )
+            .unwrap(),
             super::generate_fish_env_content(
                 &crate::reconciler::LayeredEnv::for_test(&[], &[], &Default::default()),
                 Some(&FoldedPath::derived(&dirs)),
-            ),
+            )
+            .unwrap(),
             super::generate_powershell_env_content(
                 &crate::reconciler::LayeredEnv::for_test(&[], &[], &Default::default()),
                 Some(&FoldedPath::derived(&dirs)),
-            ),
+            )
+            .unwrap(),
         ] {
             let path_line = generated_body(&content);
             assert!(
@@ -1445,11 +1467,13 @@ mod tests {
                     &crate::reconciler::LayeredEnv::for_test(&[], &[], &Default::default()),
                     Some(&FoldedPath::derived(&dirs)),
                 )
+                .unwrap()
             } else {
                 super::generate_env_file_content(
                     &crate::reconciler::LayeredEnv::for_test(&[], &[], &Default::default()),
                     Some(&FoldedPath::derived(&dirs)),
                 )
+                .unwrap()
             };
             let path_line = generated_body(&content);
             let prefix = super::path_dirs_line_prefix(platform).unwrap();
@@ -1471,7 +1495,8 @@ mod tests {
             Some(&FoldedPath::derived(&[ManagerPathDir::unowned(
                 "/opt/homebrew/bin",
             )])),
-        );
+        )
+        .unwrap();
         let prefix = super::path_dirs_line_prefix(EnvPlatform::Linux).unwrap();
         assert!(
             generated_body(&unix).starts_with(&prefix),
@@ -1484,7 +1509,8 @@ mod tests {
             Some(&FoldedPath::derived(&[ManagerPathDir::unowned(
                 "C:/tools/bin",
             )])),
-        );
+        )
+        .unwrap();
         let prefix = super::path_dirs_line_prefix(EnvPlatform::Windows).unwrap();
         assert!(
             generated_body(&ps).starts_with(&prefix),
@@ -1549,7 +1575,7 @@ mod tests {
         let legs = [
             (
                 super::Dialect::Posix,
-                super::generate_env_file_content as fn(_, _) -> String,
+                super::generate_env_file_content as fn(_, _) -> crate::errors::Result<String>,
                 vec![EnvPlatform::Linux, EnvPlatform::MacOs, EnvPlatform::FreeBsd],
             ),
             (
@@ -1578,7 +1604,7 @@ mod tests {
             "every EnvPlatform variant is driven through its dialect's display helpers",
         );
         for (dialect, whole, platforms) in legs {
-            let body = whole(&layered, None);
+            let body = whole(&layered, None).unwrap();
             let lines: Vec<&str> = body
                 .lines()
                 .filter(|l| !l.is_empty() && !l.starts_with('#'))
@@ -1586,7 +1612,11 @@ mod tests {
             assert_eq!(
                 lines,
                 vec![
-                    dialect.env_line(&ev).expect("a safe name renders").as_str(),
+                    dialect
+                        .env_line(&ev)
+                        .unwrap()
+                        .expect("a safe name renders")
+                        .as_str(),
                     dialect
                         .alias_line(&alias)
                         .expect("a safe name renders")
@@ -1596,8 +1626,8 @@ mod tests {
             );
             for platform in platforms {
                 assert_eq!(
-                    super::primary_env_var_line(&ev, platform, None),
-                    dialect.env_line(&ev),
+                    super::primary_env_var_line(&ev, platform, None).unwrap(),
+                    dialect.env_line(&ev).unwrap(),
                     "{platform:?}'s env display helper reports a line the renderer does not write",
                 );
                 assert_eq!(

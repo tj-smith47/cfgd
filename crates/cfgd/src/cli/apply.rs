@@ -262,16 +262,16 @@ pub fn run_apply(run: &RunContext<'_>, args: &ApplyArgs) -> anyhow::Result<Apply
     let (cfg, resolved, profile_label, config_parsed) =
         load_config_and_profile_module_scoped(ctx, module_filter, with_profile)?;
 
-    // Open state only after config discovery so a missing config (or an
-    // unresolvable home) surfaces before any state.db is created — otherwise a
-    // NoConfig exit would leave an orphan state directory behind.
-    let state = ctx.state()?;
+    // Held from here so that with no home the store is only read until the
+    // resolution below says the run may write under it.
+    let store_hold = ctx.hold_store_while_homeless();
 
     // The file IS the approval, so it is read before any of the work it
     // approves: a plan the machine has moved past is refused here, ahead of
-    // the source fetch and the module resolution below.
+    // the module resolution below.
     let (saved_plan, saved_context) = match args.plan.as_deref() {
         Some(path) => {
+            let state = store_hold.recorded_state()?;
             let loaded = plan_ops::load_saved_plan(path, &cli.config, state)?;
             (Some((loaded.plan, path)), Some(loaded.context))
         }
@@ -302,16 +302,19 @@ pub fn run_apply(run: &RunContext<'_>, args: &ApplyArgs) -> anyhow::Result<Apply
     // Compose with sources (network refresh) and resolve modules through the one
     // desired-state resolver every command shares, so apply and the read paths
     // compute an identical effective module set for the same config.
-    let mut desired = resolve_desired_state(
-        ctx,
+    let (mut desired, state) = store_hold.open(
         &cfg,
-        &resolved,
-        module_filter,
-        with_profile,
-        printer,
-        !replaying,
-        composition::ConstraintMode::Enforce,
-        &*floor_confirm,
+        resolve_desired_state(
+            ctx,
+            &cfg,
+            &resolved,
+            module_filter,
+            with_profile,
+            printer,
+            !replaying,
+            composition::ConstraintMode::Enforce,
+            &*floor_confirm,
+        ),
     )?;
     // Taken before the other fields, because a partial move out of `desired`
     // would block the `&mut self` this accessor needs.
@@ -488,7 +491,7 @@ pub fn run_apply(run: &RunContext<'_>, args: &ApplyArgs) -> anyhow::Result<Apply
     // machine's own config. Withholding is unaffected — the gate below still
     // refuses rows this run has no source for.
     let owns_the_store =
-        reconciler::owns_decision_store(&cli.config, cli.state_dir.is_some(), cli.scope());
+        reconciler::owns_decision_store(&cli.config, cli.state_dir.is_some(), cli.scope())?;
     let store_writes = !dry_run && config_parsed && owns_the_store;
     if store_writes {
         let subscribed: Vec<String> = cfg.spec.sources.iter().map(|s| s.name.clone()).collect();
@@ -518,7 +521,7 @@ pub fn run_apply(run: &RunContext<'_>, args: &ApplyArgs) -> anyhow::Result<Apply
         plan_ops::DecisionWrites::ReadOnly,
         &actual_packages,
     )?;
-    let exclusions = reconciler::DecisionExclusions::from_withheld(&withheld);
+    let exclusions = reconciler::DecisionExclusions::from_withheld(&withheld)?;
     let reconciler = Reconciler::new(&registry, state)
         .with_config_dir(&config_dir)
         .withholding_env_surface(exclusions.withholds_env_surface())
@@ -703,7 +706,7 @@ pub fn run_apply(run: &RunContext<'_>, args: &ApplyArgs) -> anyhow::Result<Apply
             &resolved_modules,
             &config_dir,
             registry.default_file_strategy,
-        ),
+        )?,
     )?);
 
     // Self-heal the package-tracking table on a full unscoped apply, BEFORE the
@@ -757,10 +760,12 @@ pub fn run_apply(run: &RunContext<'_>, args: &ApplyArgs) -> anyhow::Result<Apply
     let backup_units: Vec<cfgd_core::backup::BackupUnit<'_>> = projected_backup_specs
         .iter()
         .map(|spec| {
-            cfgd_core::backup::BackupUnit::new(spec, &config_dir, &backup_profile, &state_dir)
-                .with_abort(&abort)
+            Ok(
+                cfgd_core::backup::BackupUnit::new(spec, &config_dir, &backup_profile, &state_dir)?
+                    .with_abort(&abort),
+            )
         })
-        .collect();
+        .collect::<cfgd_core::errors::Result<_>>()?;
 
     let run = reconciler::ApplyRun::new(run_ctx(reconciler::RunTitle::Apply), &plan)
         .with_filter(phase_filter.as_ref())

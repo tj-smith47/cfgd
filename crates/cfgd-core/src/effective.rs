@@ -376,20 +376,24 @@ impl FileStrategies {
 /// module-contributed file is as visible in it as a profile one. The FIRST
 /// declaration of a target wins, matching [`effective_files`]'s order: profile
 /// entries precede module ones.
-#[must_use]
+///
+/// # Errors
+///
+/// [`StateError::HomeUnresolved`](crate::errors::StateError::HomeUnresolved)
+/// for a `~` target no home directory resolves.
 pub fn effective_file_strategies(
     profile: &MergedProfile,
     modules: &[ResolvedModule],
     config_dir: &Path,
     default: crate::config::FileStrategy,
-) -> FileStrategies {
+) -> crate::errors::Result<FileStrategies> {
     let mut by_target = std::collections::HashMap::new();
     for file in effective_files(profile, modules, config_dir) {
         by_target
-            .entry(crate::expand_tilde(&file.target))
+            .entry(crate::expand_tilde(&file.target, crate::FILE_TARGET_ROLE)?)
             .or_insert(file.strategy.unwrap_or(default));
     }
-    FileStrategies { by_target, default }
+    Ok(FileStrategies { by_target, default })
 }
 
 fn profile_file(spec: &ManagedFileSpec, config_dir: &Path) -> EffectiveFile {
@@ -835,7 +839,8 @@ mod tests {
         m.files = vec![bare_module];
 
         let strategies =
-            effective_file_strategies(&profile, &[m], Path::new("/cfg"), FileStrategy::Patch);
+            effective_file_strategies(&profile, &[m], Path::new("/cfg"), FileStrategy::Patch)
+                .unwrap();
 
         assert_eq!(
             strategies.for_target(Path::new("/home/u/.gitconfig")),

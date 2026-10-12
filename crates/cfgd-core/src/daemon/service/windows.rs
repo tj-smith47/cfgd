@@ -67,7 +67,7 @@ pub(crate) struct ServiceLaunch {
 /// install bakes in and the service never reads back fails on the Linux CI
 /// host.
 #[cfg(any(windows, test))]
-pub(crate) fn parse_service_argv(args: &[String]) -> ServiceLaunch {
+pub(crate) fn parse_service_argv(args: &[String]) -> crate::errors::Result<ServiceLaunch> {
     let mut config_path: Option<PathBuf> = None;
     let mut profile_override: Option<String> = None;
     let mut scope = crate::Scope::User;
@@ -89,13 +89,16 @@ pub(crate) fn parse_service_argv(args: &[String]) -> ServiceLaunch {
         }
         i += 2;
     }
-    ServiceLaunch {
-        config_path: config_path
-            .unwrap_or_else(|| crate::config::config_document_in(&crate::default_config_dir())),
+    let config_path = match config_path {
+        Some(path) => path,
+        None => crate::config::config_document_in(&crate::default_config_dir()?),
+    };
+    Ok(ServiceLaunch {
+        config_path,
         profile_override,
         scope,
         dirs,
-    }
+    })
 }
 
 /// The binPath string `sc.exe create` stores: `binary`, then each
@@ -393,9 +396,14 @@ pub(crate) fn init_windows_logging() {
     use tracing_subscriber::layer::SubscriberExt;
     use tracing_subscriber::util::SubscriberInitExt;
 
-    let log_dir = std::env::var("LOCALAPPDATA")
-        .map(|d| PathBuf::from(d).join("cfgd"))
-        .unwrap_or_else(|_| crate::default_config_dir());
+    let log_dir = match std::env::var("LOCALAPPDATA") {
+        Ok(d) => PathBuf::from(d).join("cfgd"),
+        Err(_) => match crate::default_config_dir() {
+            Ok(dir) => dir,
+            // No home to log under either: same outcome as an unopenable log file below.
+            Err(_) => return,
+        },
+    };
 
     let _ = std::fs::create_dir_all(&log_dir);
     let log_path = log_dir.join("daemon.log");
@@ -468,7 +476,7 @@ pub(crate) fn windows_service_main() -> std::result::Result<(), Box<dyn std::err
         profile_override,
         scope,
         dirs,
-    } = parse_service_argv(&std::env::args().collect::<Vec<_>>());
+    } = parse_service_argv(&std::env::args().collect::<Vec<_>>())?;
 
     // Retrieve hooks stored by run_as_windows_service
     let hooks = SERVICE_HOOKS
@@ -566,7 +574,7 @@ mod tests {
         };
         let argv = service_binpath_argv(&config, Some("srv"), true, crate::Scope::System, &dirs);
         let args: Vec<String> = std::iter::once("cfgd".to_string()).chain(argv).collect();
-        let launch = parse_service_argv(&args);
+        let launch = parse_service_argv(&args).unwrap();
         assert_eq!(launch.config_path, config, "--config");
         assert_eq!(launch.profile_override.as_deref(), Some("srv"), "--profile");
         assert_eq!(launch.scope, crate::Scope::System, "--scope system");
@@ -626,7 +634,7 @@ mod tests {
             argv[..],
             "every token splits back as written: {line}"
         );
-        let launch = parse_service_argv(&split);
+        let launch = parse_service_argv(&split).unwrap();
         assert_eq!(launch.config_path, config, "--config");
         assert_eq!(
             launch.profile_override.as_deref(),

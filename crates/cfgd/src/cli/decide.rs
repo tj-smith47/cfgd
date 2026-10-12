@@ -99,7 +99,7 @@ pub(super) fn cmd_decide(
                 &cli.config,
                 cli.state_dir.is_some(),
                 cli.scope(),
-            ) =>
+            )? =>
         {
             plan_ops::DecisionWrites::Mint(t)
         }

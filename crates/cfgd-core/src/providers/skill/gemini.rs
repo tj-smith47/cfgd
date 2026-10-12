@@ -7,6 +7,7 @@
 
 use std::path::{Path, PathBuf};
 
+use super::SKILL_ROLE;
 use super::{Detection, RenderedSkill, SkillProvider, SkillScope, render_skill_body};
 use crate::errors::Result;
 use crate::generate::{SkillKind, SkillModel};
@@ -26,29 +27,30 @@ impl SkillProvider for GeminiProvider {
         "gemini"
     }
 
-    fn detect(&self, scope: SkillScope) -> Detection {
+    fn detect(&self, scope: SkillScope) -> Result<Detection> {
         let found = match scope {
             SkillScope::Project => std::env::current_dir()
                 .ok()
                 .is_some_and(|d| d.join(".gemini").exists()),
             SkillScope::User => {
-                expand_tilde(Path::new("~/.gemini")).exists() || command_available("gemini")
+                expand_tilde(Path::new("~/.gemini"), SKILL_ROLE)?.exists()
+                    || command_available("gemini")
             }
         };
-        Detection::present(found)
+        Ok(Detection::present(found))
     }
 
-    fn target_path(&self, kind: SkillKind, scope: SkillScope) -> Option<PathBuf> {
+    fn target_path(&self, kind: SkillKind, scope: SkillScope) -> Result<Option<PathBuf>> {
         let token = kind.command_token();
         match scope {
-            SkillScope::Project => Some(
-                std::env::current_dir()
-                    .ok()?
-                    .join(relative_command_path(token)),
-            ),
-            SkillScope::User => Some(expand_tilde(
+            SkillScope::Project => Ok(std::env::current_dir()
+                .ok()
+                .map(|d| d.join(relative_command_path(token)))),
+            SkillScope::User => expand_tilde(
                 &Path::new("~/.gemini/commands").join(format!("cfgd-{token}.toml")),
-            )),
+                SKILL_ROLE,
+            )
+            .map(Some),
         }
     }
 
@@ -153,6 +155,7 @@ mod tests {
         crate::with_test_home(home.path(), || {
             let target = GeminiProvider
                 .target_path(SkillKind::Module, SkillScope::User)
+                .unwrap()
                 .expect("user scope always has a target");
             assert!(target.is_absolute(), "target must be absolute: {target:?}");
             assert!(target.starts_with(home.path()));
@@ -173,13 +176,16 @@ mod tests {
                 // binary and the no-directory arm never runs.
                 let _empty = crate::test_helpers::EnvVarGuard::set("PATH", "");
                 assert_eq!(
-                    GeminiProvider.detect(SkillScope::User),
+                    GeminiProvider.detect(SkillScope::User).unwrap(),
                     Detection::Absent,
                     "no ~/.gemini and no gemini on PATH"
                 );
             }
             std::fs::create_dir_all(home.path().join(".gemini")).expect("create ~/.gemini");
-            assert_eq!(GeminiProvider.detect(SkillScope::User), Detection::Present);
+            assert_eq!(
+                GeminiProvider.detect(SkillScope::User).unwrap(),
+                Detection::Present
+            );
         });
     }
 }

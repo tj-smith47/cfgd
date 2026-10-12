@@ -24,6 +24,8 @@ Modules
 
 Installation
   ✓ State store: accessible
+  ✓ Cache directory: accessible
+  ✓ Home directory: found
   ✓ Profiles directory: /home/test/.config/cfgd/profiles (2 profiles)
 
 ✗ Some checks failed — see above

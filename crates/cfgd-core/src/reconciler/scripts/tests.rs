@@ -31,7 +31,8 @@ fn module_env_vars_propagated_to_script_env() {
             path_dirs: &[],
         },
         &module_env,
-    );
+    )
+    .unwrap();
 
     let lookup =
         |key: &str| -> Option<&str> { env.iter().find(|(k, _)| k == key).map(|(_, v)| v.as_str()) };
@@ -70,7 +71,8 @@ fn module_env_values_expand_dollar_refs() {
             path_dirs: &[],
         },
         &module_env,
-    );
+    )
+    .unwrap();
     let lookup = |key: &str| env.iter().find(|(k, _)| k == key).map(|(_, v)| v.as_str());
     assert_eq!(lookup("PATH"), Some("/custom/bin:/opt/base"));
     assert_eq!(lookup("BAR"), Some("/x/y"));
@@ -101,7 +103,8 @@ fn module_env_values_expand_leading_tilde() {
                 path_dirs: &[],
             },
             &module_env,
-        );
+        )
+        .unwrap();
         let lookup = |key: &str| env.iter().find(|(k, _)| k == key).map(|(_, v)| v.as_str());
         // Env-file/injected values fold home to posix (the production contract):
         // build the expectation through the same central API so Windows matches.
@@ -575,7 +578,8 @@ fn module_env_path_expands_against_bootstrapped_dirs() {
             path_dirs: &["/home/linuxbrew/.linuxbrew/bin".to_string()],
         },
         &module_env,
-    );
+    )
+    .unwrap();
     assert_eq!(
         path_of(&env),
         Some(joined(&["/mod/bin", "/home/linuxbrew/.linuxbrew/bin", "/usr/bin"]).as_str())
@@ -604,7 +608,8 @@ fn empty_module_env_matches_base_build_script_env() {
             path_dirs: &[],
         },
         &[],
-    );
+    )
+    .unwrap();
     assert_eq!(base, with_empty);
 }
 
@@ -1281,15 +1286,15 @@ fn guard_combined_one_blocks_skips() {
 #[test]
 fn creates_path_resolution() {
     let tmp = tempfile::tempdir().unwrap();
-    let rel = resolve_creates_path("sub/file", tmp.path());
+    let rel = resolve_creates_path("sub/file", tmp.path()).unwrap();
     assert_eq!(rel, tmp.path().join("sub/file"));
 
-    let abs = resolve_creates_path("/etc/hosts", tmp.path());
+    let abs = resolve_creates_path("/etc/hosts", tmp.path()).unwrap();
     assert_eq!(abs, std::path::PathBuf::from("/etc/hosts"));
 
     let home = tempfile::tempdir().unwrap();
     crate::with_test_home(home.path(), || {
-        let tilde = resolve_creates_path("~/thing", tmp.path());
+        let tilde = resolve_creates_path("~/thing", tmp.path()).unwrap();
         assert_eq!(tilde, home.path().join("thing"));
     });
 }
@@ -2245,22 +2250,22 @@ fn resolve_script_workdir_expands_vars_then_tilde() {
 
         // $VAR present in env → expands to its value.
         assert_eq!(
-            resolve_script_workdir("$DEPLOY/cfg", &env),
+            resolve_script_workdir("$DEPLOY/cfg", &env).unwrap(),
             std::path::PathBuf::from("/srv/app/cfg")
         );
         // ${VAR} braced form too.
         assert_eq!(
-            resolve_script_workdir("${DEPLOY}", &env),
+            resolve_script_workdir("${DEPLOY}", &env).unwrap(),
             std::path::PathBuf::from("/srv/app")
         );
         // Leading ~ expands to home.
         assert_eq!(
-            resolve_script_workdir("~/sub", &env),
+            resolve_script_workdir("~/sub", &env).unwrap(),
             home.path().join("sub")
         );
         // Unset reference expands to empty (shell-like).
         assert_eq!(
-            resolve_script_workdir("/a/${NOPE}/b", &env),
+            resolve_script_workdir("/a/${NOPE}/b", &env).unwrap(),
             std::path::PathBuf::from("/a//b")
         );
     });

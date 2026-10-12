@@ -968,7 +968,7 @@ fn a_declaration_naming_no_ambient_path_is_taken_at_its_word() {
 
 #[test]
 fn one_directory_written_two_ways_lands_on_path_once() {
-    let home = crate::expand_tilde(std::path::Path::new("~"));
+    let home = crate::expand_tilde(std::path::Path::new("~"), "test").unwrap();
     let literal = format!("{}/.cargo/bin", crate::to_posix_string(&home));
     // The host's own separator, because a Windows home is `C:/Users/...` and
     // splitting that on `:` reads one directory as two entries — the exact
@@ -1301,7 +1301,7 @@ fn dir_size_skips_symlinks_instead_of_following_them() {
 
 #[test]
 fn expand_tilde_with_home() {
-    let result = expand_tilde(std::path::Path::new("~/test"));
+    let result = expand_tilde(std::path::Path::new("~/test"), "test").unwrap();
     let home = home_dir_var().expect("home directory must be available in test");
     let expected = std::path::PathBuf::from(home).join("test");
     assert_eq!(result, expected);
@@ -1309,7 +1309,7 @@ fn expand_tilde_with_home() {
 
 #[test]
 fn expand_tilde_absolute_unchanged() {
-    let result = expand_tilde(std::path::Path::new("/absolute/path"));
+    let result = expand_tilde(std::path::Path::new("/absolute/path"), "test").unwrap();
     assert_eq!(result, std::path::PathBuf::from("/absolute/path"));
 }
 
@@ -1324,7 +1324,7 @@ fn with_test_home_scopes_override_and_restores() {
 
     let expanded = with_test_home(&fake_home, || {
         // While scoped, `~` resolves to the tempdir.
-        expand_tilde(std::path::Path::new("~/sub/file"))
+        expand_tilde(std::path::Path::new("~/sub/file"), "test").unwrap()
     });
     assert_eq!(expanded, fake_home.join("sub").join("file"));
 
@@ -1373,7 +1373,7 @@ fn with_test_home_nests_correctly() {
 fn default_config_dir_follows_override() {
     let tmp = tempfile::tempdir().unwrap();
     let fake_home = tmp.path().to_path_buf();
-    let observed = with_test_home(&fake_home, default_config_dir);
+    let observed = with_test_home(&fake_home, default_config_dir).unwrap();
     assert_eq!(observed, fake_home.join(".config").join("cfgd"));
 }
 
@@ -1383,7 +1383,7 @@ fn default_config_dir_honors_absolute_xdg_config_home() {
     let tmp = tempfile::tempdir().unwrap();
     let xdg = tmp.path().join("xdg-config");
     crate::test_helpers::with_test_env_var("XDG_CONFIG_HOME", Some(&xdg.to_string_lossy()), || {
-        assert_eq!(default_config_dir(), xdg.join("cfgd"));
+        assert_eq!(default_config_dir().unwrap(), xdg.join("cfgd"));
     });
 }
 
@@ -1393,7 +1393,7 @@ fn default_config_dir_ignores_empty_xdg_config_home() {
     // XDG spec: an empty XDG_CONFIG_HOME is treated as unset, never as the
     // current directory — a relative `cfgd` path would corrupt discovery.
     crate::test_helpers::with_test_env_var("XDG_CONFIG_HOME", Some(""), || {
-        let dir = default_config_dir();
+        let dir = default_config_dir().unwrap();
         assert_ne!(dir, std::path::PathBuf::from("cfgd"));
         assert!(
             dir.ends_with("cfgd"),
@@ -1409,7 +1409,7 @@ fn default_config_dir_ignores_relative_xdg_config_home() {
     // A relative XDG_CONFIG_HOME is non-conforming and must be ignored, not
     // joined (which would yield a relative, CWD-dependent config path).
     crate::test_helpers::with_test_env_var("XDG_CONFIG_HOME", Some("relative/cfg"), || {
-        let dir = default_config_dir();
+        let dir = default_config_dir().unwrap();
         assert_ne!(dir, std::path::PathBuf::from("relative/cfg").join("cfgd"));
         assert!(dir.ends_with("cfgd"));
     });
@@ -2074,7 +2074,7 @@ fn posixify_os_error_text_handles_mixed_libgit2_and_std_markers() {
 #[test]
 fn from_user_input_folds_backslashes() {
     assert_eq!(
-        from_user_input("C:\\Users\\foo"),
+        from_user_input("C:\\Users\\foo").unwrap(),
         std::path::PathBuf::from("C:/Users/foo")
     );
 }
@@ -2082,7 +2082,7 @@ fn from_user_input_folds_backslashes() {
 #[test]
 fn from_user_input_passthrough_for_posix_input() {
     assert_eq!(
-        from_user_input("/etc/cfgd.yaml"),
+        from_user_input("/etc/cfgd.yaml").unwrap(),
         std::path::PathBuf::from("/etc/cfgd.yaml")
     );
 }

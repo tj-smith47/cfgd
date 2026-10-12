@@ -1696,9 +1696,6 @@ spec:
             super::super::registry::WorkstationDaemonHooks
                 .resolve_manifest_packages(config_dir, merged)
         }
-        fn expand_tilde(&self, path: &std::path::Path) -> std::path::PathBuf {
-            super::super::registry::WorkstationDaemonHooks.expand_tilde(path)
-        }
         fn prune_orphaned_packages(
             &self,
             orphans: &[cfgd_core::providers::OrphanedPackage],

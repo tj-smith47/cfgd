@@ -54,6 +54,110 @@ pub fn recorded_manager_path_dirs(
     collect_recorded_path_dirs(state, Some(&named))
 }
 
+/// What one module asks of the home directory: the file targets it declares
+/// and whether it declares any env var or alias.
+pub struct ModuleHomeUse<'a> {
+    pub targets: Vec<&'a std::path::Path>,
+    pub declares_env: bool,
+}
+
+impl<'a> From<&'a ResolvedModule> for ModuleHomeUse<'a> {
+    fn from(module: &'a ResolvedModule) -> Self {
+        Self {
+            targets: module.files.iter().map(|f| f.target.as_path()).collect(),
+            declares_env: !module.env.is_empty() || !module.aliases.is_empty(),
+        }
+    }
+}
+
+impl<'a> ModuleHomeUse<'a> {
+    /// The same view of a module read off disk and not yet resolved, judged
+    /// on `platform` the way resolution judges it: a gated-off module asks
+    /// nothing, and only the env entries and aliases applicable here count.
+    pub fn of_loaded(
+        module: &'a crate::modules::LoadedModule,
+        platform: &crate::platform::Platform,
+    ) -> Self {
+        use crate::platform::{PlatformGated, applicable_here};
+        if !module.spec.applies_to(platform) {
+            return Self {
+                targets: Vec::new(),
+                declares_env: false,
+            };
+        }
+        Self {
+            targets: module
+                .spec
+                .files
+                .iter()
+                .map(|f| std::path::Path::new(f.target.as_str()))
+                .collect(),
+            declares_env: applicable_here(&module.spec.env, platform).next().is_some()
+                || applicable_here(&module.spec.aliases, platform)
+                    .next()
+                    .is_some(),
+        }
+    }
+}
+
+/// The refusal a run over this desired state meets when no home directory
+/// resolves, or `None` when nothing it declares writes under one.
+///
+/// A declared file or secret target leading with `~` refuses as
+/// [`StateError::HomeUnresolved`], and so does a secret the run decrypts with
+/// a `backend` whose key needs the missing home
+/// ([`SecretBackend::home_refusal`]). Env vars, aliases, secret env exports and
+/// a recorded manager `PATH` entry refuse as [`StateError::EnvHomeUnresolved`],
+/// because they live in the managed env file. The plan, `apply` and `plan`
+/// before they open the state store, and `doctor` all ask it, so `doctor`
+/// fails its verdict exactly when a run refuses.
+///
+/// [`SecretBackend::home_refusal`]: crate::providers::SecretBackend::home_refusal
+///
+/// [`StateError::HomeUnresolved`]: crate::errors::StateError::HomeUnresolved
+/// [`StateError::EnvHomeUnresolved`]: crate::errors::StateError::EnvHomeUnresolved
+pub fn unresolved_home_refusal<'a>(
+    state: Option<&StateStore>,
+    profile: &MergedProfile,
+    modules: impl IntoIterator<Item = ModuleHomeUse<'a>>,
+    backend: Option<&dyn crate::providers::SecretBackend>,
+) -> Option<crate::errors::StateError> {
+    let modules: Vec<ModuleHomeUse<'a>> = modules.into_iter().collect();
+    let declared_target = profile
+        .files
+        .managed
+        .iter()
+        .map(|f| f.target.as_path())
+        .chain(profile.secrets.iter().filter_map(|s| s.target.as_deref()))
+        .chain(modules.iter().flat_map(|m| m.targets.iter().copied()))
+        .find_map(|t| match crate::expand_tilde(t, crate::FILE_TARGET_ROLE) {
+            Err(crate::errors::CfgdError::State(e)) => Some(e),
+            _ => None,
+        });
+    if declared_target.is_some() {
+        return declared_target;
+    }
+    // The planner's own split: a source naming no provider is a file the
+    // backend decrypts, and only one with a target is planned at all.
+    let decrypts = profile.secrets.iter().any(|s| {
+        s.target.is_some() && crate::providers::parse_secret_reference(&s.source).is_none()
+    });
+    if decrypts && let Some(refusal) = backend.and_then(|b| b.home_refusal()) {
+        return Some(refusal);
+    }
+    let writes_env_file = !profile.env.is_empty()
+        || !profile.aliases.is_empty()
+        || modules.iter().any(|m| m.declares_env)
+        || profile
+            .secrets
+            .iter()
+            .any(|s| s.envs.as_ref().is_some_and(|e| !e.is_empty()))
+        || state.is_some_and(|state| !all_recorded_path_dirs(state).is_empty());
+    writes_env_file.then(|| crate::errors::StateError::EnvHomeUnresolved {
+        path: super::primary_env_file(std::path::Path::new("~")),
+    })
+}
+
 /// The env-surface resource ids cfgd's own state records it manages.
 ///
 /// The gate on emptying a generated env file: a file carrying cfgd's header is
@@ -190,17 +294,17 @@ impl PrimaryEnvWrite {
         &self,
         env: &[crate::config::EnvVar],
         aliases: &[crate::config::ShellAlias],
-    ) -> bool {
+    ) -> crate::errors::Result<bool> {
         // A deleted declaration is invisible to the per-entry comparison
         // below (it iterates only CURRENT entries), so an unclaimed
         // disappearing line makes the whole attribution unanswerable and
         // every asking module revives — same fail-open as the unreadable
         // baseline.
         if self.unclaimed_deletion {
-            return true;
+            return Ok(true);
         }
         let Some(baseline) = &self.baseline else {
-            return true;
+            return Ok(true);
         };
         // Compared WITHOUT the trailing owner comment on any of the three
         // sides: a baseline written before owner comments existed carries
@@ -210,10 +314,13 @@ impl PrimaryEnvWrite {
         use super::env_engine::without_owner_comment;
         let deployed: HashSet<&str> = baseline.lines().map(without_owner_comment).collect();
         let desired: HashSet<&str> = self.desired.lines().map(without_owner_comment).collect();
-        env.iter()
-            .filter_map(|ev| {
-                super::env_files::primary_env_var_line(ev, self.platform, self.path.as_ref())
-            })
+        let env_lines = env
+            .iter()
+            .map(|ev| super::env_files::primary_env_var_line(ev, self.platform, self.path.as_ref()))
+            .collect::<crate::errors::Result<Vec<_>>>()?;
+        Ok(env_lines
+            .into_iter()
+            .flatten()
             .chain(
                 aliases
                     .iter()
@@ -222,7 +329,7 @@ impl PrimaryEnvWrite {
             .any(|line| {
                 let line = without_owner_comment(&line);
                 deployed.contains(line) != desired.contains(line)
-            })
+            }))
     }
 }
 
@@ -290,14 +397,34 @@ impl<'a> super::Reconciler<'a> {
         secret_envs: &[(String, String)],
         path_dirs: &[ManagerPathDir],
         managed_env_ids: &[String],
-    ) -> EnvPlanOutcome {
+    ) -> crate::errors::Result<EnvPlanOutcome> {
+        let Some(home) = self.home.as_deref() else {
+            // With no home the managed env files cannot be located, so there
+            // is nothing to neutralize either; only a run that would WRITE one
+            // has to refuse.
+            if layered.merged.is_empty()
+                && layered.merged_aliases.is_empty()
+                && path_dirs.is_empty()
+                && secret_envs.is_empty()
+            {
+                return Ok(EnvPlanOutcome {
+                    actions: Vec::new(),
+                    warnings: Vec::new(),
+                    primary_write: None,
+                });
+            }
+            return Err(crate::errors::StateError::EnvHomeUnresolved {
+                path: super::primary_env_file(std::path::Path::new("~")),
+            }
+            .into());
+        };
         Self::plan_env_with_home(
             layered,
             scope,
             secret_envs,
             path_dirs,
             managed_env_ids,
-            &self.home,
+            home,
         )
     }
 
@@ -308,7 +435,7 @@ impl<'a> super::Reconciler<'a> {
         path_dirs: &[ManagerPathDir],
         managed_env_ids: &[String],
         home: &std::path::Path,
-    ) -> EnvPlanOutcome {
+    ) -> crate::errors::Result<EnvPlanOutcome> {
         // The secret exports are a layer of their own AND winners of the merge:
         // their values exist only once a backend has resolved them, so they
         // reach both halves here, outside the layer merge.
@@ -329,17 +456,17 @@ impl<'a> super::Reconciler<'a> {
         // has no env vars, and without the source line no shell would ever read
         // the PATH entry that makes the manager's binaries reachable.
         if layered.merged.is_empty() && layered.merged_aliases.is_empty() && path_dirs.is_empty() {
-            return EnvPlanOutcome {
+            return Ok(EnvPlanOutcome {
                 actions: Self::neutralize_managed_env_files(
                     scope,
                     home,
                     &probe,
                     platform,
                     managed_env_ids,
-                ),
+                )?,
                 warnings: Vec::new(),
                 primary_write: None,
-            };
+            });
         }
 
         let targets = env_targets(
@@ -348,7 +475,7 @@ impl<'a> super::Reconciler<'a> {
             home,
             &probe,
             platform,
-        );
+        )?;
         let LayeredEnv {
             merged,
             merged_aliases,
@@ -399,7 +526,7 @@ impl<'a> super::Reconciler<'a> {
                                 unclaimed_deletion,
                                 path: super::env_engine::primary_folded_path(
                                     merged, path_dirs, origins, home, platform,
-                                ),
+                                )?,
                             });
                         }
                     }
@@ -448,11 +575,11 @@ impl<'a> super::Reconciler<'a> {
             actions.push(Action::Env(EnvAction::RefreshLiveSession { vars }));
         }
 
-        EnvPlanOutcome {
+        Ok(EnvPlanOutcome {
             actions,
             warnings,
             primary_write,
-        }
+        })
     }
 
     /// Reduce every cfgd-generated env file that still exists to its header,
@@ -485,7 +612,7 @@ impl<'a> super::Reconciler<'a> {
         probe: &EnvHostProbe,
         platform: EnvPlatform,
         managed_env_ids: &[String],
-    ) -> Vec<Action> {
+    ) -> crate::errors::Result<Vec<Action>> {
         // The generated bodies are discarded — this call is for the target
         // PATHS, which is why one placeholder variable is enough to get past
         // the "nothing to write" gate inside `env_targets`. Every generator
@@ -509,7 +636,7 @@ impl<'a> super::Reconciler<'a> {
             home,
             probe,
             platform,
-        );
+        )?;
         let rc_paths: HashSet<String> = targets
             .iter()
             .filter_map(|target| match target {
@@ -517,7 +644,7 @@ impl<'a> super::Reconciler<'a> {
                 _ => None,
             })
             .collect();
-        targets
+        Ok(targets
             .into_iter()
             .filter_map(|target| match target {
                 EnvTarget::ManagedFile { path, .. } => Some(path),
@@ -544,7 +671,7 @@ impl<'a> super::Reconciler<'a> {
                     aliases: 0,
                 })
             })
-            .collect()
+            .collect())
     }
 
     pub(super) fn apply_env_action(
@@ -664,7 +791,7 @@ mod tests {
                     super::super::env_files::ENV_FILE_HEADER.to_string(),
                     dialect.path_line(&FoldedPath::derived(&dirs)),
                     super::super::env_files::legacy_commented_line(
-                        &dialect.env_line(&foo).expect("a safe name"),
+                        &dialect.env_line(&foo).unwrap().expect("a safe name"),
                         &origins.env_comment(&foo.name),
                     ),
                     super::super::env_files::legacy_commented_line(
@@ -686,11 +813,13 @@ mod tests {
                         &layered,
                         Some(&FoldedPath::derived(&dirs)),
                     )
+                    .unwrap()
                 } else {
                     super::super::env_files::generate_env_file_content(
                         &layered,
                         Some(&FoldedPath::derived(&dirs)),
                     )
+                    .unwrap()
                 }
             };
             let baseline = legacy(&owners);
@@ -741,7 +870,7 @@ mod tests {
                     super::super::env_files::ENV_FILE_HEADER.to_string(),
                     dialect.path_line(&FoldedPath::derived(&dirs)),
                     super::super::env_files::legacy_commented_line(
-                        &dialect.env_line(&foo).expect("a safe name"),
+                        &dialect.env_line(&foo).unwrap().expect("a safe name"),
                         &origins.env_comment(&foo.name),
                     ),
                     super::super::env_files::legacy_commented_line(
@@ -763,11 +892,13 @@ mod tests {
                         &layered,
                         Some(&FoldedPath::derived(&dirs)),
                     )
+                    .unwrap()
                 } else {
                     super::super::env_files::generate_env_file_content(
                         &layered,
                         Some(&FoldedPath::derived(&dirs)),
                     )
+                    .unwrap()
                 }
             };
             let write = PrimaryEnvWrite {
@@ -778,7 +909,9 @@ mod tests {
                 path: Some(FoldedPath::derived(&dirs)),
             };
             assert!(
-                !write.module_env_moved(std::slice::from_ref(&foo), std::slice::from_ref(&catn)),
+                !write
+                    .module_env_moved(std::slice::from_ref(&foo), std::slice::from_ref(&catn))
+                    .unwrap(),
                 "a comment-only rewrite moves nothing on {platform:?}"
             );
         }
@@ -790,6 +923,7 @@ mod tests {
             &crate::reconciler::LayeredEnv::for_test(env, aliases, &Default::default()),
             fold.as_ref(),
         )
+        .unwrap()
     }
 
     // The reconciler-level gate tests run under the host's own

@@ -8,6 +8,9 @@ use super::source::{clone_into, is_clonable_source, plan_from, resolve_from};
 use super::*;
 use crate::cli::startup::StartupDocument;
 
+/// The role a no-home refusal names for `init`'s positional path.
+const INIT_PATH_ROLE: &str = "init directory";
+
 // ─────────────────────────────────────────────────────
 // cfgd init — pure scaffolding
 // ─────────────────────────────────────────────────────
@@ -68,13 +71,20 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
     // and the classification further down judge the same string.
     let from = args
         .from
-        .map(|f| cfgd_core::resolve_repo_reference(f).into_owned());
+        .map(|f| cfgd_core::resolve_repo_reference(f).map(|r| r.into_owned()))
+        .transpose()?;
     let from_used = from.is_some();
     // A clonable `--from` names the directory itself, on the clone row or the
     // `Already initialized` one `resolve_from` prints; the closing row below
     // is for the run that scaffolded, not a restatement of the row above it.
-    let destination_named_by_clone = from.as_deref().is_some_and(is_clonable_source);
-    let explicit_path = args.path.map(|p| cfgd_core::expand_tilde(Path::new(p)));
+    let destination_named_by_clone = match from.as_deref() {
+        Some(from) => is_clonable_source(from)?,
+        None => false,
+    };
+    let explicit_path = args
+        .path
+        .map(|p| cfgd_core::expand_tilde(Path::new(p), INIT_PATH_ROLE))
+        .transpose()?;
     // Where this run would materialise, and every refusal that answer earns,
     // settled before the prerequisite check below puts a package manager to
     // work: an install is the one thing this verb cannot take back, and a run
@@ -83,8 +93,8 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
     // argument, not off `--config`, so there is no `--config` to read it from.
     let planned_dir = match from.as_deref() {
         Some(from) => plan_from(from, explicit_path.as_deref())?,
-        None => match args.path {
-            Some(p) => cfgd_core::expand_tilde(Path::new(p)),
+        None => match explicit_path.clone() {
+            Some(p) => p,
             None => std::env::current_dir()?,
         },
     };
@@ -151,7 +161,7 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
     // directory's contents with it), while `scaffold` would overwrite the
     // user's config document with a fresh template.
     let already_initialized = super::source::held_config_document(&target_dir).is_some();
-    let clonable = from.as_deref().filter(|f| is_clonable_source(f));
+    let clonable = from.as_deref().filter(|_| destination_named_by_clone);
     if let Some(url) = clonable {
         if !already_initialized && !target_dir.join(".git").exists() {
             clone_into(&target_dir, url, args.branch, printer)?;
@@ -750,7 +760,7 @@ pub(super) fn apply_plan(
                 modules,
                 config_dir,
                 opts.default_strategy,
-            ),
+            )?,
         )?)
     };
     let plan = &*plan;
@@ -799,7 +809,7 @@ pub(super) fn apply_plan(
                 &config_path,
                 opts.state_dir.is_some(),
                 opts.scope,
-            ))
+            )?)
         .then_some(opts.module_cache),
         opts.registries,
     );

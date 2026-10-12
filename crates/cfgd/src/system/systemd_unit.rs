@@ -68,15 +68,15 @@ fn parse_unit_files(dump: &str) -> HashMap<String, String> {
 impl SystemdUnitConfigurator {
     /// Resolve a configured `unitFile` to the path cfgd should read it from:
     /// tilde-expanded, then resolved against the config dir when one is set.
-    fn resolve_unit_file(&self, unit_file: &str) -> PathBuf {
-        let expanded = cfgd_core::expand_tilde(Path::new(unit_file));
+    fn resolve_unit_file(&self, unit_file: &str) -> Result<PathBuf> {
+        let expanded = cfgd_core::expand_tilde(Path::new(unit_file), "systemd unit file")?;
         let resolved = match &self.config_dir {
             Some(dir) => cfgd_core::resolve_relative_path(&expanded, dir).unwrap_or(expanded),
             None => expanded,
         };
         // The diff a plan carries was taken against these bytes.
         cfgd_core::record_config_input(&resolved);
-        resolved
+        Ok(resolved)
     }
 }
 
@@ -146,7 +146,7 @@ impl SystemConfigurator for SystemdUnitConfigurator {
             }
 
             if let Some(unit_file) = unit.get("unitFile").and_then(|v| v.as_str()) {
-                let source = self.resolve_unit_file(unit_file);
+                let source = self.resolve_unit_file(unit_file)?;
                 let dest = format!("/etc/systemd/system/{}", name);
                 let dest_path = std::path::Path::new(&dest);
                 if !dest_path.exists() {
@@ -190,7 +190,7 @@ impl SystemConfigurator for SystemdUnitConfigurator {
 
             // Copy unit file if specified
             if let Some(unit_file) = unit.get("unitFile").and_then(|v| v.as_str()) {
-                let source = self.resolve_unit_file(unit_file);
+                let source = self.resolve_unit_file(unit_file)?;
                 let dest = format!("/etc/systemd/system/{}", name);
                 let dest_path = Path::new(&dest);
                 cx.report(
@@ -285,7 +285,7 @@ mod tests {
         su.set_config_dir(dir.path());
 
         let rec = cfgd_core::ConfigInputRecorder::start();
-        su.resolve_unit_file("my.service");
+        su.resolve_unit_file("my.service").unwrap();
         let inputs = rec.finish();
 
         assert_eq!(inputs.paths().collect::<Vec<_>>(), [unit.as_path()]);
@@ -296,18 +296,18 @@ mod tests {
         let mut su = SystemdUnitConfigurator::default();
         // No config dir → relative path is left process-CWD-relative (legacy behavior).
         assert_eq!(
-            su.resolve_unit_file("my.service"),
+            su.resolve_unit_file("my.service").unwrap(),
             PathBuf::from("my.service")
         );
         // With a config dir → a relative unitFile resolves against it, not the CWD.
         su.set_config_dir(Path::new("/etc/cfgd"));
         assert_eq!(
-            su.resolve_unit_file("my.service"),
+            su.resolve_unit_file("my.service").unwrap(),
             PathBuf::from("/etc/cfgd/my.service")
         );
         // Absolute paths are preserved regardless of config dir.
         assert_eq!(
-            su.resolve_unit_file("/abs/x.service"),
+            su.resolve_unit_file("/abs/x.service").unwrap(),
             PathBuf::from("/abs/x.service")
         );
     }

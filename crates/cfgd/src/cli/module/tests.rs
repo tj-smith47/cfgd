@@ -8476,11 +8476,14 @@ fn every_surface_naming_the_shell_pair_lists_aliases_first() {
     )
     .unwrap();
     let ordered = cfgd_core::with_test_home(home.path(), || {
-        crate::cli::diff::env_drift_ordered(cfgd_core::reconciler::env_verify_results(
-            &cfgd_core::reconciler::LayeredEnv::from_parts("profile:test", &env, &aliases, &[]),
-            cfgd_core::config::EnvScope::default(),
-            &[],
-        ))
+        crate::cli::diff::env_drift_ordered(
+            cfgd_core::reconciler::env_verify_results(
+                &cfgd_core::reconciler::LayeredEnv::from_parts("profile:test", &env, &aliases, &[]),
+                cfgd_core::config::EnvScope::default(),
+                &[],
+            )
+            .unwrap(),
+        )
     });
     let row_of = |item: &str| {
         ordered

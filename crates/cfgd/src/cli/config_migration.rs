@@ -24,6 +24,7 @@ const FISH_XDG_LINE: &str = r#"set -gx XDG_CONFIG_HOME "$HOME/.config""#;
 /// Substring marking an existing `XDG_CONFIG_HOME` assignment, so a second
 /// (possibly conflicting) one is never appended regardless of the exact
 /// syntax the user already used.
+// home-env-ok: the name written into the user's shell rc, read back via xdg_home_cfgd
 const XDG_VAR_MARKER: &str = "XDG_CONFIG_HOME";
 
 /// Sentinel filename recording that the user chose "keep ~/.config" on the macOS
@@ -50,7 +51,7 @@ pub fn maybe_migrate_macos_config(
     if !cfg!(target_os = "macos") {
         return None;
     }
-    if explicit_config || cfgd_core::xdg_home_cfgd("XDG_CONFIG_HOME").is_some() || assume_yes {
+    if explicit_config || cfgd_core::xdg_home_cfgd(XDG_VAR_MARKER).is_some() || assume_yes {
         return None;
     }
     // A prior "keep" recorded the user's choice; don't re-prompt in shells whose
@@ -59,7 +60,8 @@ pub fn maybe_migrate_macos_config(
         return None;
     }
 
-    let home = PathBuf::from(std::env::var_os("HOME")?);
+    // home-optional-ok: with no home there is no legacy ~/.config directory to move
+    let home = cfgd_core::home_dir().ok()?;
     let (legacy, native) = cfgd_core::macos_legacy_config_migration(&home)?;
 
     let move_opt = format!(
@@ -128,7 +130,7 @@ fn keep_at_dotconfig(printer: &Printer, home: &Path) {
     // sources (the `mcp` tokio arm and `Printer::run`) are unreachable before
     // this point, so there is no concurrent getenv to race.
     unsafe {
-        std::env::set_var("XDG_CONFIG_HOME", &xdg);
+        std::env::set_var(XDG_VAR_MARKER, &xdg);
     }
     match persist_xdg_pin(home) {
         Ok(Some(rc)) => printer.status_simple(
@@ -162,6 +164,8 @@ fn keep_at_dotconfig(printer: &Printer, home: &Path) {
 /// Sentinel marking that the user chose "keep ~/.config" — lives in the state
 /// dir (machine-local, never part of the git-synced config).
 fn pin_sentinel() -> Option<PathBuf> {
+    // home-optional-ok: the prompt it answers needs a home, so no state dir
+    // means no prompt to remember
     cfgd_core::state::default_state_dir()
         .ok()
         .map(|d| d.join(MACOS_CONFIG_PINNED_SENTINEL))
@@ -254,9 +258,13 @@ pub fn migrate_legacy_data_dirs(printer: &Printer) {
     let Some(legacy) = cfgd_core::legacy_data_dir() else {
         return;
     };
+    // home-optional-ok: the legacy directory resolved, so the new roots can
+    // only fail on an unusable XDG override, which the run's own state open
+    // reports
     let Ok(new_state) = cfgd_core::state::default_state_dir() else {
         return;
     };
+    // home-optional-ok: the same, for the cache root the run's own cache resolution reports
     let Ok(new_sources) = cfgd_core::default_cache_dir().map(|c| c.join("sources")) else {
         return;
     };

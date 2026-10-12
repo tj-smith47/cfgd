@@ -1,5 +1,4 @@
 use super::constants::GIT_NETWORK_TIMEOUT;
-use super::paths::home_dir_var;
 use super::process::{
     command_output_with_timeout, command_path, exit_status_reason, stderr_lossy_trimmed,
     stdout_lossy_trimmed,
@@ -300,12 +299,17 @@ pub fn detect_git_head() -> Option<String> {
 ///
 /// Resolution is idempotent — an expanded URL is neither a path nor a
 /// shorthand — so a caller may resolve a value that has already been resolved.
-pub fn resolve_repo_reference(value: &str) -> std::borrow::Cow<'_, str> {
-    let path = super::paths::expand_tilde(std::path::Path::new(value));
+///
+/// # Errors
+///
+/// [`StateError::HomeUnresolved`](crate::errors::StateError::HomeUnresolved)
+/// when `value` starts with `~` and no home directory is set.
+pub fn resolve_repo_reference(value: &str) -> crate::errors::Result<std::borrow::Cow<'_, str>> {
+    let path = super::paths::expand_tilde(std::path::Path::new(value), "repository reference")?;
     if std::fs::symlink_metadata(&path).is_ok() {
-        return std::borrow::Cow::Borrowed(value);
+        return Ok(std::borrow::Cow::Borrowed(value));
     }
-    expand_github_shorthand(value)
+    Ok(expand_github_shorthand(value))
 }
 
 /// Expand a GitHub `owner/repo` shorthand into a full HTTPS clone URL.
@@ -394,13 +398,15 @@ pub fn git_ssh_credentials(
         if let Ok(cred) = git2::Cred::ssh_key_from_agent(username) {
             return Ok(cred);
         }
-        let home = home_dir_var().unwrap_or_default();
-        for key_name in &["id_ed25519", "id_rsa", "id_ecdsa"] {
-            let key_path = std::path::Path::new(&home).join(".ssh").join(key_name);
-            if key_path.exists()
-                && let Ok(cred) = git2::Cred::ssh_key(username, None, &key_path, None)
-            {
-                return Ok(cred);
+        // home-optional-ok: a credential probe; with no home there are no ~/.ssh keys to offer
+        if let Ok(ssh) = crate::home_dir().map(|home| home.join(".ssh")) {
+            for key_name in ["id_ed25519", "id_rsa", "id_ecdsa"] {
+                let key_path = ssh.join(key_name);
+                if key_path.exists()
+                    && let Ok(cred) = git2::Cred::ssh_key(username, None, &key_path, None)
+                {
+                    return Ok(cred);
+                }
             }
         }
     }
@@ -1054,7 +1060,7 @@ mod tests {
             let dir = tempfile::tempdir().expect("tempdir");
             let _cwd = CwdGuard::set(dir.path()).expect("cwd guard");
             assert_eq!(
-                resolve_repo_reference("acme/config"),
+                resolve_repo_reference("acme/config").unwrap(),
                 "https://github.com/acme/config.git"
             );
         }
@@ -1066,7 +1072,7 @@ mod tests {
             let _cwd = CwdGuard::set(dir.path()).expect("cwd guard");
             fs::create_dir_all(dir.path().join("acme").join("config")).expect("create nested dir");
             assert_eq!(
-                resolve_repo_reference("acme/config"),
+                resolve_repo_reference("acme/config").unwrap(),
                 "acme/config",
                 "a relative path that exists must never become a GitHub URL"
             );
@@ -1078,7 +1084,7 @@ mod tests {
             let nested = dir.path().join("acme").join("config");
             fs::create_dir_all(&nested).expect("create nested dir");
             let as_written = nested.to_string_lossy().into_owned();
-            assert_eq!(resolve_repo_reference(&as_written), as_written);
+            assert_eq!(resolve_repo_reference(&as_written).unwrap(), as_written);
         }
 
         #[cfg(unix)]
@@ -1091,7 +1097,7 @@ mod tests {
             std::os::unix::fs::symlink("nowhere", dir.path().join("acme").join("config"))
                 .expect("plant dangling symlink");
             assert_eq!(
-                resolve_repo_reference("acme/config"),
+                resolve_repo_reference("acme/config").unwrap(),
                 "acme/config",
                 "a broken link is still an entry the user named; expanding it answers a \
                  local name with a remote repository"
@@ -1105,7 +1111,11 @@ mod tests {
                 "git@github.com:acme/config.git",
                 "gitlab.com/acme/config",
             ] {
-                assert_eq!(resolve_repo_reference(value), value, "value: {value}");
+                assert_eq!(
+                    resolve_repo_reference(value).unwrap(),
+                    value,
+                    "value: {value}"
+                );
             }
         }
 
@@ -1114,14 +1124,14 @@ mod tests {
         fn resolution_is_idempotent() {
             let dir = tempfile::tempdir().expect("tempdir");
             let _cwd = CwdGuard::set(dir.path()).expect("cwd guard");
-            let once = resolve_repo_reference("acme/config").into_owned();
-            assert_eq!(resolve_repo_reference(&once), once);
+            let once = resolve_repo_reference("acme/config").unwrap().into_owned();
+            assert_eq!(resolve_repo_reference(&once).unwrap(), once);
         }
 
         #[test]
         fn pass_through_does_not_allocate() {
             assert!(matches!(
-                resolve_repo_reference("https://github.com/acme/config.git"),
+                resolve_repo_reference("https://github.com/acme/config.git").unwrap(),
                 std::borrow::Cow::Borrowed(_)
             ));
         }

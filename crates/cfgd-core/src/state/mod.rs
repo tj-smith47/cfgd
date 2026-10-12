@@ -53,6 +53,17 @@ const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 pub const WAL_LOCK_WAIT: &str =
     "another connection holds the write lock; waiting for it to switch the database to WAL";
 
+/// The SQLite URI opening `path` with `immutable=1`: absolute, folded to `/`,
+/// with the three characters a URI path cannot carry bare percent-encoded.
+fn immutable_uri(path: &Path) -> String {
+    let url = crate::to_file_url(crate::absolutize_path(path));
+    let encoded = url
+        .replace('%', "%25")
+        .replace('?', "%3f")
+        .replace('#', "%23");
+    format!("{encoded}?immutable=1")
+}
+
 /// Set `conn`'s busy timeout and switch its database to WAL journaling,
 /// waiting out another connection's write lock the way every other statement
 /// on `conn` does. A lock held past `busy_timeout` fails with `SQLITE_BUSY`,
@@ -939,6 +950,50 @@ impl StateStore {
         Self::open(&dir.join(STATE_DB_FILENAME))
     }
 
+    /// Open the existing store at `path` for reading, creating and migrating
+    /// nothing.
+    ///
+    /// For a caller that diagnoses the store without changing it (`cfgd
+    /// doctor`): a store that is not there stays absent, one behind the
+    /// current schema is read as it is, and no file appears beside it. Every
+    /// write through the returned handle fails.
+    ///
+    /// A WAL-mode store with no `-wal` file had no open writer when it was
+    /// looked at, so it is opened `immutable`, which reads the database file
+    /// alone and creates neither the `-shm` nor the `-wal` file SQLite's
+    /// locking would otherwise make.
+    /// A store with a `-wal` file is opened read-only through the ordinary
+    /// locking, because the log may hold committed rows the database file
+    /// does not, and its sidecar files already exist.
+    ///
+    /// # Errors
+    ///
+    /// A database error when `path` names no file, a file that is not a
+    /// SQLite database, or one this process cannot read.
+    pub fn open_read_only(path: &Path) -> Result<Self> {
+        let flags =
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX;
+        let mut wal = path.as_os_str().to_owned();
+        wal.push("-wal");
+        let conn = if Path::new(&wal).exists() {
+            Connection::open_with_flags(path, flags)?
+        } else {
+            Connection::open_with_flags(
+                immutable_uri(path),
+                flags | rusqlite::OpenFlags::SQLITE_OPEN_URI,
+            )?
+        };
+        conn.busy_timeout(BUSY_TIMEOUT)?;
+        // A path naming a file that is not a database opens anyway; the first
+        // read is what refuses it.
+        conn.query_row("SELECT count(*) FROM sqlite_master", [], |_| Ok(()))?;
+        register_sql_functions(&conn)?;
+        Ok(Self {
+            conn,
+            in_transaction: Cell::new(false),
+        })
+    }
+
     /// Open or create a state store at the given path.
     pub fn open(path: &Path) -> Result<Self> {
         let conn = Connection::open(path)?;
@@ -1177,7 +1232,7 @@ pub fn default_state_dir() -> Result<PathBuf> {
 /// and consults no home directory, so it never errors. Pure path logic.
 pub fn default_state_dir_for(scope: Scope) -> Result<PathBuf> {
     if let Ok(dir) = std::env::var(crate::CFGD_STATE_DIR_ENV) {
-        return crate::expand_tilde_strict(Path::new(&dir), "state directory");
+        return crate::expand_tilde(Path::new(&dir), "state directory");
     }
     if let Some(dir) = crate::systemd_dir("STATE_DIRECTORY") {
         return Ok(dir);

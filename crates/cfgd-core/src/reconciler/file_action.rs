@@ -54,7 +54,7 @@ pub(super) fn apply_file_action_direct(
                         config_dir,
                         profile_name,
                         ReconcileContext::Reconcile,
-                    );
+                    )?;
                     let patched = evaluate_patch(spec, target, &binding.context())?.patched;
                     crate::atomic_write_merged(target, &patched)?;
                 }

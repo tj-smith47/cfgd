@@ -324,7 +324,7 @@ pub fn cmd_skill_install(
         }
 
         // Named or auto: detection decides each provider's fate.
-        let detection = provider.detect(scope);
+        let detection = provider.detect(scope)?;
         let targeted = explicit || force || detection == Detection::Present;
 
         match detection {

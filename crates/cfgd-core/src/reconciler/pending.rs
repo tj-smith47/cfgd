@@ -10,7 +10,7 @@
 //! same plan shape, so no path can execute an item another path withholds.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use crate::config::{
     self, AutoApplyPolicyConfig, CfgdConfig, LOCAL_LAYER, LayerPolicy, MergedProfile, PolicyAction,
@@ -373,16 +373,16 @@ pub fn local_profile(resolved: &ResolvedProfile) -> MergedProfile {
 /// too — comparing raw strings would admit a decision the operator's own
 /// declaration should have refused, and the exclusion would then match (and
 /// remove) that very declaration's action. No other prefix carries a path.
-fn normalized_decision_path(path: &str) -> String {
-    match path.strip_prefix("files.") {
+fn normalized_decision_path(path: &str) -> Result<String> {
+    Ok(match path.strip_prefix("files.") {
         Some(target) if !target.is_empty() => {
             format!(
                 "files.{}",
-                to_posix_string(crate::expand_tilde(Path::new(target)))
+                to_posix_string(crate::expand_tilde(Path::new(target), "decision path")?)
             )
         }
         _ => path.to_string(),
-    }
+    })
 }
 
 /// Which sources a run knows the subscriber still has.
@@ -458,27 +458,36 @@ pub struct DecisionScope {
 impl DecisionScope {
     /// Build the scope from the currently subscribed source names and the
     /// [`local_profile`] saying what the operator declares.
-    pub fn new<I, S>(subscribed: I, local: &MergedProfile) -> Self
+    ///
+    /// # Errors
+    ///
+    /// [`StateError::HomeUnresolved`](crate::errors::StateError::HomeUnresolved)
+    /// when a declared `files.~/...` path meets no home directory.
+    pub fn new<I, S>(subscribed: I, local: &MergedProfile) -> Result<Self>
     where
         I: IntoIterator<Item = S>,
         S: Into<String>,
     {
-        Self {
+        Ok(Self {
             subscribed: Subscriptions::known(subscribed),
-            local: Self::local_paths(local),
-        }
+            local: Self::local_paths(local)?,
+        })
     }
 
     /// The scope for a run that could not read its config, and so cannot say
     /// which sources are still subscribed. Fail-closed: every row withholds.
-    pub fn unverified(local: &MergedProfile) -> Self {
-        Self {
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::new`].
+    pub fn unverified(local: &MergedProfile) -> Result<Self> {
+        Ok(Self {
             subscribed: Subscriptions::Unverified,
-            local: Self::local_paths(local),
-        }
+            local: Self::local_paths(local)?,
+        })
     }
 
-    fn local_paths(local: &MergedProfile) -> HashSet<String> {
+    fn local_paths(local: &MergedProfile) -> Result<HashSet<String>> {
         declared_decision_paths(local)
             .iter()
             .map(|p| normalized_decision_path(p))
@@ -486,8 +495,14 @@ impl DecisionScope {
     }
 
     /// Whether a decision raised by `source` over `resource` still withholds it.
-    pub fn withholds(&self, source: &str, resource: &str) -> bool {
-        self.subscribed.answers(source) && !self.local.contains(&normalized_decision_path(resource))
+    ///
+    /// # Errors
+    ///
+    /// [`StateError::HomeUnresolved`](crate::errors::StateError::HomeUnresolved)
+    /// when `resource` is a `files.~/...` path and no home directory is set.
+    pub fn withholds(&self, source: &str, resource: &str) -> Result<bool> {
+        Ok(self.subscribed.answers(source)
+            && !self.local.contains(&normalized_decision_path(resource)?))
     }
 }
 
@@ -528,7 +543,7 @@ impl WithheldDecisions {
     pub fn read(store: &StateStore, scope: &DecisionScope) -> Result<Self> {
         let mut out = Self::default();
         for decision in store.withheld_decisions()? {
-            if !scope.withholds(&decision.source, &decision.resource) {
+            if !scope.withholds(&decision.source, &decision.resource)? {
                 continue;
             }
             if decision.resolved_at.is_some() {
@@ -600,9 +615,17 @@ impl WithheldDecisions {
         self
     }
 
-    pub fn with_unrecorded(mut self, mints: &[DecisionMint], scope: &DecisionScope) -> Self {
+    ///
+    /// # Errors
+    ///
+    /// As [`DecisionScope::withholds`].
+    pub fn with_unrecorded(
+        mut self,
+        mints: &[DecisionMint],
+        scope: &DecisionScope,
+    ) -> Result<Self> {
         for mint in mints {
-            if !scope.withholds(&mint.source, &mint.resource) {
+            if !scope.withholds(&mint.source, &mint.resource)? {
                 continue;
             }
             let already_read = self
@@ -615,7 +638,7 @@ impl WithheldDecisions {
             }
             self.pending.push(mint.as_row());
         }
-        self
+        Ok(self)
     }
 
     /// Release the rows this run's classification auto-accepted.
@@ -1708,36 +1731,37 @@ pub fn mint_decisions(store: &StateStore, review: &SourcePolicyReview) -> Vec<(S
 ///
 /// Withholding is unaffected either way — a row whose source this run does not
 /// subscribe to is inert through [`Subscriptions`], swept or not.
+///
+/// # Errors
+///
+/// [`StateError::HomeUnresolved`](crate::errors::StateError::HomeUnresolved)
+/// when `config_path` leads with `~` and no home directory is set.
 pub fn owns_decision_store(
     config_path: &Path,
     has_state_dir_override: bool,
     scope: crate::Scope,
-) -> bool {
-    has_state_dir_override || is_machines_own_config(config_path, scope)
+) -> Result<bool> {
+    Ok(has_state_dir_override || is_machines_own_config(config_path, scope)?)
 }
 
 /// Whether `config_path` names the machine's own config for a run at `scope`:
 /// a discovery-named config file (`cfgd.yaml` / `cfgd.toml`) sitting in that
-/// scope's default config directory. Falls back to canonical comparison so a
-/// symlinked config root (macOS `/tmp`, a stow-managed `~/.config`) still
-/// matches its own default.
-fn is_machines_own_config(config_path: &Path, scope: crate::Scope) -> bool {
-    let named = crate::expand_tilde(config_path);
+/// scope's default config directory, compared through
+/// [`crate::named_default_config_dir`] so a symlinked config root (macOS
+/// `/tmp`, a stow-managed `~/.config`) still matches its own default. With no
+/// home there is no default directory, so no config is the machine's own.
+fn is_machines_own_config(config_path: &Path, scope: crate::Scope) -> Result<bool> {
+    let named = crate::expand_tilde(config_path, "config file")?;
     if !named
         .file_name()
         .is_some_and(|name| name == config::CONFIG_FILENAME || name == config::CONFIG_FILENAME_TOML)
     {
-        return false;
+        return Ok(false);
     }
     let Some(parent) = named.parent() else {
-        return false;
+        return Ok(false);
     };
-    let default_dir = crate::default_config_dir_for(scope);
-    parent == default_dir
-        || matches!(
-            (parent.canonicalize(), default_dir.canonicalize()),
-            (Ok(a), Ok(b)) if a == b
-        )
+    Ok(crate::named_default_config_dir(parent, scope).is_some())
 }
 
 /// Hash a resource set so a source's delivered items can be compared against
@@ -1920,16 +1944,17 @@ pub struct DecisionExclusions {
 impl DecisionExclusions {
     /// Translate pending decision paths into the action vocabulary.
     ///
-    /// `expand` is the caller's `~` expansion — the daemon passes the same
-    /// injectable one its planning hooks use, so a test that redirects home
-    /// redirects this too. The id-producing sides (`modules/resolve.rs`,
-    /// `files/plan.rs`) still call the free `expand_tilde`; the two are
-    /// identical in production, and a hooks impl that expanded differently
-    /// would stop this set matching the ids those sites mint.
-    pub fn from_decision_paths<I, E>(paths: I, expand: E) -> Self
+    /// A `files.` path's `~` is expanded through [`crate::expand_tilde`], the
+    /// one `files/plan.rs` and `modules/resolve.rs` mint their targets with,
+    /// so this set matches the ids those sites produce.
+    ///
+    /// # Errors
+    ///
+    /// [`StateError::HomeUnresolved`](crate::errors::StateError::HomeUnresolved)
+    /// for a `files.~/...` path when no home directory is set.
+    pub fn from_decision_paths<I>(paths: I) -> Result<Self>
     where
         I: IntoIterator<Item = String>,
-        E: Fn(&Path) -> PathBuf,
     {
         let mut out = Self::default();
         for path in paths {
@@ -1946,7 +1971,10 @@ impl DecisionExclusions {
                     unmatched("names no file");
                     continue;
                 }
-                out.files.insert(to_posix_string(expand(Path::new(target))));
+                out.files.insert(to_posix_string(crate::expand_tilde(
+                    Path::new(target),
+                    "decision path",
+                )?));
             } else if let Some(rest) = path.strip_prefix("packages.") {
                 match rest.split_once('.') {
                     Some((manager, package)) if !manager.is_empty() && !package.is_empty() => {
@@ -1973,7 +2001,7 @@ impl DecisionExclusions {
                 unmatched("is in no known resource vocabulary");
             }
         }
-        out
+        Ok(out)
     }
 
     /// Every withholding decision, in the action vocabulary.
@@ -1984,23 +2012,18 @@ impl DecisionExclusions {
     /// takes the same [`WithheldDecisions`] the preview renders, so the rows
     /// naming what is missing and the rows removing it are one list.
     ///
-    /// `~` is expanded through the free [`crate::expand_tilde`] — the same one
-    /// `files/plan.rs` and `modules/resolve.rs` mint their targets with, and
-    /// the one a test home guard redirects.
-    pub fn from_withheld(withheld: &WithheldDecisions) -> Self {
-        Self::from_withheld_with(withheld, crate::expand_tilde)
-    }
-
-    /// [`Self::from_withheld`] with the caller's own `~` expansion — the
-    /// daemon passes its hooks' injectable one. Also the ONE place the
-    /// undecidable batches enter the exclusion set: their manager names never
-    /// fit a decision path, so they ride the [`WithheldDecisions`] value
-    /// directly and fold into the package map (and the warning list) here.
-    pub fn from_withheld_with<E>(withheld: &WithheldDecisions, expand: E) -> Self
-    where
-        E: Fn(&Path) -> PathBuf,
-    {
-        let mut out = Self::from_decision_paths(withheld.resource_paths(), expand);
+    /// `~` is expanded as [`Self::from_decision_paths`] expands it.
+    ///
+    /// Also the ONE place the undecidable batches enter the exclusion set:
+    /// their manager names never fit a decision path, so they ride the
+    /// [`WithheldDecisions`] value directly and fold into the package map (and
+    /// the warning list) here.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::from_decision_paths`].
+    pub fn from_withheld(withheld: &WithheldDecisions) -> Result<Self> {
+        let mut out = Self::from_decision_paths(withheld.resource_paths())?;
         for batch in &withheld.undecidable {
             out.packages
                 .entry(batch.manager.clone())
@@ -2008,7 +2031,7 @@ impl DecisionExclusions {
                 .extend(batch.packages.iter().cloned());
             out.warnings.push(batch.warning());
         }
-        out
+        Ok(out)
     }
 
     pub fn is_empty(&self) -> bool {

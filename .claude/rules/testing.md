@@ -29,7 +29,9 @@ A test that installs `with_test_home_guard` gets the home it asked for. A test
 that installs nothing gets a throwaway directory unique to its own thread,
 named `cfgd-unguarded-test-home-<pid>-<n>` under the system temp dir. That
 directory is only named and never created: anything appearing there is a test that writes
-env surfaces and should install a guard.
+env surfaces and should install a guard. A process with no home set at all (a
+real-binary test that removes `HOME` and `USERPROFILE`) gets no home from either
+arm, so the plan's no-home refusal is reachable under test as it is in production.
 
 That fallback is the RECONCILER's alone. The env CHECK
 (`env_verify_results`, and the `~/`-fold every report path passes through)

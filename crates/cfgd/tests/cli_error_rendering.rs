@@ -749,11 +749,11 @@ fn doctor_reports_a_tilde_config_with_no_home_as_the_unset_home() {
 /// An `XDG_CONFIG_HOME` or systemd's `CONFIGURATION_DIRECTORY` places the
 /// default path without a home, so there the missing config is the
 /// fresh-machine warning and the verdict passes. Those two arms pass only
-/// because `cfgd_bin()` points `CFGD_STATE_DIR` at the test's own directory:
-/// the verdict also needs the state store, which with no home opens nowhere
-/// else (`doctor_and_apply_both_refuse_a_state_store_with_no_home`).
-/// Windows resolves its default config root without a home variable.
-#[cfg(not(windows))]
+/// because `cfgd_bin()` points `CFGD_STATE_DIR` and `CFGD_CACHE_DIR` at the
+/// test's own directory: the verdict also needs the state store and the cache,
+/// which with no home resolve nowhere else
+/// (`doctor_and_apply_both_refuse_a_state_store_with_no_home`). Every OS takes
+/// its default config root from the same home, Windows included.
 #[test]
 fn doctor_with_no_home_fails_the_default_config_check_on_the_unset_home() {
     let config_row = |stderr: &str| {
@@ -806,9 +806,7 @@ fn doctor_with_no_home_fails_the_default_config_check_on_the_unset_home() {
 /// on a Fail row naming why and on `stateStore` in its `-o json` payload: a
 /// passing doctor would let `cfgd doctor && cfgd apply` reach that refusal.
 /// The config itself resolves through `XDG_CONFIG_HOME`, so the store is the
-/// only thing wrong. Windows reads its home from `USERPROFILE`, which a
-/// spawned binary cannot do without.
-#[cfg(not(windows))]
+/// only thing wrong.
 #[test]
 fn doctor_and_apply_both_refuse_a_state_store_with_no_home() {
     let xdg = tempfile::tempdir().unwrap();
@@ -855,13 +853,97 @@ fn doctor_and_apply_both_refuse_a_state_store_with_no_home() {
     assert_eq!(out.status.code(), Some(1), "{stderr}");
 }
 
-/// With no home, an absolute `XDG_STATE_HOME` places the state store the way
-/// an absolute `XDG_CONFIG_HOME` places the config, so `doctor` passes, `apply`
-/// runs, and the store it opens is `$XDG_STATE_HOME/cfgd/state.db`. Windows is
-/// left out for the reason the test above gives.
-#[cfg(not(windows))]
+/// With no home, an absolute `XDG_STATE_HOME` places the state store and an
+/// absolute `XDG_CACHE_HOME` the cache, the way an absolute `XDG_CONFIG_HOME`
+/// places the config, so `doctor` passes without creating the store, `apply`
+/// runs and creates it at `$XDG_STATE_HOME/cfgd/state.db`, and a second
+/// `doctor` opens that store. `CFGD_CACHE_DIR` is removed because it outranks
+/// `XDG_CACHE_HOME` and `cfgd_bin()` sets it.
 #[test]
 fn doctor_and_apply_both_place_the_state_store_under_xdg_state_home_with_no_home() {
+    let xdg = tempfile::tempdir().unwrap();
+    let config_home = xdg.path().join("config");
+    let state_home = xdg.path().join("state");
+    let cache_home = xdg.path().join("cache");
+    create_valid_config(&config_home.join("cfgd"));
+    let homeless = |args: &[&str]| {
+        cfgd_bin()
+            .unwrap()
+            .env_remove("HOME")
+            .env_remove("USERPROFILE")
+            .env_remove(cfgd_core::CFGD_STATE_DIR_ENV)
+            .env_remove(cfgd_core::CFGD_CACHE_DIR_ENV)
+            .env("XDG_CONFIG_HOME", &config_home)
+            .env("XDG_STATE_HOME", &state_home)
+            .env("XDG_CACHE_HOME", &cache_home)
+            .args(args)
+            .output()
+            .unwrap()
+    };
+
+    let db = state_home.join("cfgd").join("state.db");
+    let out = homeless(&["doctor"]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("✓ State store: not created yet"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("✓ Cache directory: accessible"), "{stderr}");
+    assert_eq!(out.status.code(), Some(0), "{stderr}");
+    assert!(!db.exists(), "doctor created {}", db.display());
+
+    let out = homeless(&["apply", "--yes"]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(0), "{stderr}");
+    assert!(db.is_file(), "no state store at {}: {stderr}", db.display());
+
+    let out = homeless(&["doctor"]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("✓ State store: accessible"), "{stderr}");
+    assert_eq!(out.status.code(), Some(0), "{stderr}");
+}
+
+/// With no home and no `XDG_CONFIG_HOME` there is no default config directory,
+/// so a `--config` naming an absolute file is not the machine's own config and
+/// nothing about it needs the home. `apply` and `plan` of an empty profile both
+/// run, and `doctor` gives the same verdict, with the state store and cache
+/// placed by `XDG_STATE_HOME` and `XDG_CACHE_HOME`.
+#[test]
+fn an_explicit_config_with_no_home_and_no_default_config_dir_runs() {
+    let xdg = tempfile::tempdir().unwrap();
+    let config_dir = xdg.path().join("elsewhere");
+    create_valid_config(&config_dir);
+    let config = config_dir.join("cfgd.yaml");
+    let homeless = |args: &[&str]| {
+        cfgd_bin()
+            .unwrap()
+            .env_remove("HOME")
+            .env_remove("USERPROFILE")
+            .env_remove("XDG_CONFIG_HOME")
+            .env_remove(cfgd_core::CFGD_STATE_DIR_ENV)
+            .env_remove(cfgd_core::CFGD_CACHE_DIR_ENV)
+            .env("XDG_STATE_HOME", xdg.path().join("state"))
+            .env("XDG_CACHE_HOME", xdg.path().join("cache"))
+            .arg("--config")
+            .arg(&config)
+            .args(args)
+            .output()
+            .unwrap()
+    };
+    for verb in [&["doctor"][..], &["plan"][..], &["apply", "--yes"][..]] {
+        let out = homeless(verb);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(out.status.code(), Some(0), "{verb:?}: {stderr}");
+    }
+}
+
+/// With no home, an absolute `XDG_STATE_HOME` and no `XDG_CACHE_HOME`, the
+/// state store has a place and the module cache has none. `doctor` fails its
+/// verdict on the Cache row without creating the store, and `apply` and `plan`
+/// refuse before opening it, so no run leaves a `state.db` behind for a later
+/// one to find.
+#[test]
+fn doctor_apply_and_plan_refuse_a_cache_with_no_home_before_creating_state() {
     let xdg = tempfile::tempdir().unwrap();
     let config_home = xdg.path().join("config");
     let state_home = xdg.path().join("state");
@@ -872,23 +954,747 @@ fn doctor_and_apply_both_place_the_state_store_under_xdg_state_home_with_no_home
             .env_remove("HOME")
             .env_remove("USERPROFILE")
             .env_remove(cfgd_core::CFGD_STATE_DIR_ENV)
+            .env_remove(cfgd_core::CFGD_CACHE_DIR_ENV)
+            .env_remove("XDG_CACHE_HOME")
             .env("XDG_CONFIG_HOME", &config_home)
             .env("XDG_STATE_HOME", &state_home)
             .args(args)
             .output()
             .unwrap()
     };
+    let refusal = "cannot locate the per-user cache directory: no home directory found";
 
+    let db = state_home.join("cfgd").join("state.db");
     let out = homeless(&["doctor"]);
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(stderr.contains("✓ State store: accessible"), "{stderr}");
-    assert_eq!(out.status.code(), Some(0), "{stderr}");
+    let row = stderr
+        .lines()
+        .find(|line| line.contains("Cache directory"))
+        .unwrap_or_else(|| panic!("no cache row: {stderr}"));
+    assert!(row.contains("✗ Cache directory: unavailable"), "{row:?}");
+    assert!(stderr.contains(refusal), "{stderr}");
+    assert_eq!(out.status.code(), Some(1), "{stderr}");
 
-    let out = homeless(&["apply", "--yes"]);
+    let out = homeless(&["doctor", "-o", "json"]);
+    let v = parse_single_json(&String::from_utf8_lossy(&out.stdout));
+    assert_eq!(v["cacheDir"]["accessible"], false, "{v}");
+    assert!(
+        v["cacheDir"]["message"]
+            .as_str()
+            .is_some_and(|m| m.contains(refusal)),
+        "{v}"
+    );
+    assert_eq!(out.status.code(), Some(1), "{v}");
+    assert!(
+        !db.exists(),
+        "doctor left a state store at {}",
+        db.display()
+    );
+
+    for verb in [&["apply", "--yes"][..], &["plan"][..]] {
+        let out = homeless(verb);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert_ne!(out.status.code(), Some(0), "{verb:?}: {stderr}");
+        assert!(stderr.contains(refusal), "{verb:?}: {stderr}");
+        assert!(
+            !db.exists(),
+            "{verb:?}: the refusal left a state store at {}",
+            db.display()
+        );
+    }
+}
+
+/// `doctor` is a diagnostic: on a machine no `apply` has run on, the state
+/// store row passes as not created yet (the first `apply` creates it), and the
+/// run leaves no `state.db` behind, under table and json output alike.
+#[test]
+fn doctor_on_a_fresh_home_reports_the_store_not_created_and_creates_none() {
+    let root = tempfile::tempdir().unwrap();
+    let state_dir = root.path().join("state");
+    let doctor = |args: &[&str]| {
+        cfgd_bin()
+            .unwrap()
+            .env(cfgd_core::CFGD_STATE_DIR_ENV, &state_dir)
+            .args(args)
+            .output()
+            .unwrap()
+    };
+    let db = state_dir.join("state.db");
+
+    let out = doctor(&["doctor"]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let row = stderr
+        .lines()
+        .find(|line| line.contains("State store"))
+        .unwrap_or_else(|| panic!("no state store row: {stderr}"));
+    assert!(row.contains("✓ State store: not created yet"), "{row:?}");
+    assert!(row.contains("`cfgd apply` creates it"), "{row:?}");
+    assert!(!db.exists(), "doctor created {}: {stderr}", db.display());
+
+    let out = doctor(&["doctor", "-o", "json"]);
+    let v = parse_single_json(&String::from_utf8_lossy(&out.stdout));
+    assert_eq!(v["stateStore"]["accessible"], true, "{v}");
+    assert_eq!(v["stateStore"]["created"], false, "{v}");
+    assert!(!db.exists(), "doctor -o json created {}", db.display());
+}
+
+/// Every file under the directory `cfgd_bin()` roots the command's home, XDG
+/// and `CFGD_*` directories in, relative to it.
+fn files_under_isolated_root(
+    cmd: &std::process::Command,
+) -> std::collections::BTreeSet<std::path::PathBuf> {
+    let root = home_of(cmd).parent().unwrap().to_path_buf();
+    let mut found = std::collections::BTreeSet::new();
+    let mut stack = vec![root.clone()];
+    while let Some(dir) = stack.pop() {
+        let entries = std::fs::read_dir(&dir)
+            .unwrap_or_else(|e| panic!("cannot list {}: {e}", dir.display()));
+        for entry in entries {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                stack.push(path);
+            } else {
+                found.insert(path.strip_prefix(&root).unwrap().to_path_buf());
+            }
+        }
+    }
+    found
+}
+
+/// `doctor` on a home no `cfgd` has run under writes no file anywhere under the
+/// home, XDG or `CFGD_*` directories the run resolves: no state store, no
+/// update check timestamp and no cache entry. The update check is left on,
+/// with every opt-out variable the host may export removed, and pointed at a
+/// port nothing listens on, since a failed check records its timestamp too.
+#[test]
+fn doctor_on_a_fresh_home_writes_no_file_anywhere() {
+    let probe = cfgd_bin().unwrap();
+    create_valid_config(&home_of(&probe).join(".config").join("cfgd"));
+    let before = files_under_isolated_root(&probe);
+
+    for args in [&["doctor"][..], &["doctor", "-o", "json"][..]] {
+        let mut cmd = cfgd_bin().unwrap();
+        for var in cfgd_core::upgrade::OPTOUT_VARS {
+            cmd.env_remove(var);
+        }
+        cmd.env(cfgd_core::CFGD_GITHUB_API_BASE_ENV, "http://127.0.0.1:1");
+        let out = cmd.args(args).output().unwrap();
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let after = files_under_isolated_root(&cmd);
+        let written: Vec<_> = after.difference(&before).collect();
+        assert!(written.is_empty(), "{args:?} wrote {written:?}: {stderr}");
+    }
+}
+
+/// A store whose `-wal` and `-shm` sidecars are gone (a clean close removes
+/// both) is opened by `doctor` without bringing either back.
+#[test]
+fn doctor_opens_a_closed_wal_store_without_recreating_its_sidecars() {
+    let mut apply = cfgd_bin().unwrap();
+    create_valid_config(&home_of(&apply).join(".config").join("cfgd"));
+    let out = apply.args(["apply", "--yes"]).output().unwrap();
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let state_dir = env_path(&apply, cfgd_core::CFGD_STATE_DIR_ENV);
+    let db = state_dir.join("state.db");
+    assert!(db.is_file(), "apply created no store at {}", db.display());
+    let sidecars = [
+        state_dir.join("state.db-wal"),
+        state_dir.join("state.db-shm"),
+    ];
+    for sidecar in &sidecars {
+        let _ = std::fs::remove_file(sidecar);
+    }
+
+    let out = cfgd_bin().unwrap().arg("doctor").output().unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("✓ State store: accessible"), "{stderr}");
+    for sidecar in &sidecars {
+        assert!(
+            !sidecar.exists(),
+            "doctor recreated {}: {stderr}",
+            sidecar.display()
+        );
+    }
+}
+
+/// With no home, and the config, state store and cache all placed by `XDG_*`,
+/// a desired state that writes under `~/` (an env var, a `~/` file target, a
+/// module's env var or file) has nowhere to put it. `doctor` fails its Home
+/// row and verdict, and `apply` refuses naming what needs the home before it
+/// opens the state store, writing nothing under the working directory (where a
+/// literal `~` would otherwise land), no `state.db` and no cache.
+#[test]
+fn doctor_and_apply_refuse_home_work_with_no_home_and_write_nothing_under_the_cwd() {
+    let cases = [
+        (
+            "profile file",
+            "spec:\n  files:\n    managed:\n      - source: files/gitconfig\n        target: ~/.gitconfig\n",
+            "for the file target",
+        ),
+        (
+            "profile env",
+            "spec:\n  env:\n    - name: EDITOR\n      value: vim\n",
+            "cannot write the managed env file",
+        ),
+        (
+            "module env",
+            "spec:\n  modules: [tools]\n",
+            "cannot write the managed env file",
+        ),
+        (
+            "module file",
+            "spec:\n  modules: [dots]\n",
+            "for the file target",
+        ),
+    ];
+    for (case, profile_spec, refusal) in cases {
+        let xdg = tempfile::tempdir().unwrap();
+        let cwd = tempfile::tempdir().unwrap();
+        let config_dir = xdg.path().join("config").join("cfgd");
+        create_valid_config(&config_dir);
+        std::fs::write(
+            config_dir.join("profiles/base.yaml"),
+            format!(
+                "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: base\n{profile_spec}"
+            ),
+        )
+        .unwrap();
+        std::fs::create_dir_all(config_dir.join("files")).unwrap();
+        std::fs::write(config_dir.join("files/gitconfig"), "[user]\n").unwrap();
+        std::fs::create_dir_all(config_dir.join("modules/tools")).unwrap();
+        std::fs::write(
+            config_dir.join("modules/tools/module.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: tools\nspec:\n  env:\n    - name: EDITOR\n      value: vim\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(config_dir.join("modules/dots")).unwrap();
+        std::fs::write(config_dir.join("modules/dots/init.lua"), "-- init\n").unwrap();
+        std::fs::write(
+            config_dir.join("modules/dots/module.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: dots\nspec:\n  files:\n    - source: init.lua\n      target: ~/.config/nvim/init.lua\n",
+        )
+        .unwrap();
+        let homeless = |args: &[&str]| {
+            cfgd_bin()
+                .unwrap()
+                .current_dir(cwd.path())
+                .env_remove("HOME")
+                .env_remove("USERPROFILE")
+                .env_remove(cfgd_core::CFGD_STATE_DIR_ENV)
+                .env_remove(cfgd_core::CFGD_CACHE_DIR_ENV)
+                .env("XDG_CONFIG_HOME", xdg.path().join("config"))
+                .env("XDG_STATE_HOME", xdg.path().join("state"))
+                .env("XDG_CACHE_HOME", xdg.path().join("cache"))
+                .args(args)
+                .output()
+                .unwrap()
+        };
+
+        let out = homeless(&["apply", "--yes"]);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let created: Vec<_> = std::fs::read_dir(cwd.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert!(
+            created.is_empty(),
+            "{case}: apply created {created:?} under the working directory: {stderr}"
+        );
+        assert_ne!(out.status.code(), Some(0), "{case}: {stderr}");
+        assert!(stderr.contains(refusal), "{case}: {stderr}");
+        let db = xdg.path().join("state").join("cfgd").join("state.db");
+        assert!(
+            !db.exists(),
+            "{case}: the refusal left a state store at {}",
+            db.display()
+        );
+        let cache = xdg.path().join("cache");
+        assert!(
+            !cache.exists(),
+            "{case}: the refusal wrote under {}",
+            cache.display()
+        );
+
+        let out = homeless(&["doctor"]);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let row = stderr
+            .lines()
+            .find(|line| line.contains("Home directory"))
+            .unwrap_or_else(|| panic!("{case}: no home row: {stderr}"));
+        assert!(row.contains("✗ Home directory: unset"), "{case}: {row:?}");
+        assert!(stderr.contains(refusal), "{case}: {stderr}");
+        assert_eq!(out.status.code(), Some(1), "{case}: {stderr}");
+
+        let out = homeless(&["doctor", "-o", "json"]);
+        let v = parse_single_json(&String::from_utf8_lossy(&out.stdout));
+        assert_eq!(v["home"]["resolved"], false, "{case}: {v}");
+        assert!(
+            v["home"]["refusal"]
+                .as_str()
+                .is_some_and(|m| m.contains(refusal)),
+            "{case}: {v}"
+        );
+    }
+}
+
+/// A source's profile declaring an env var is home work the local config never
+/// spells. With the source already in the cache, `doctor` composes it the way
+/// `apply` does, so with no home its Home row and verdict fail naming the env
+/// file, and `apply` refuses the same way.
+#[test]
+fn doctor_refuses_home_work_a_cached_source_delivers_with_no_home() {
+    let (_workspace, config_dir, _state) = cfgd_test_fixtures::local_source_setup("", |_| {
+        (
+            "apiVersion: cfgd.io/v1alpha1\nkind: ConfigSource\nmetadata:\n  name: acme\n  version: \"1.0.0\"\nspec:\n  provides:\n    profiles:\n      - default\n".to_string(),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  env:\n    - name: ACME_EDITOR\n      value: vim\n".to_string(),
+        )
+    });
+    let config = config_dir.path().join("cfgd.yaml");
+    let cmd = |homeless: bool| {
+        let mut cmd = cfgd_bin().unwrap();
+        if homeless {
+            cmd.env_remove("HOME").env_remove("USERPROFILE");
+        }
+        cmd.env(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1")
+            .arg("--config")
+            .arg(&config);
+        cmd
+    };
+    let out = cmd(false).arg("sync").output().unwrap();
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let refusal = "cannot write the managed env file";
+    let out = cmd(true).arg("doctor").output().unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let row = stderr
+        .lines()
+        .find(|line| line.contains("Home directory"))
+        .unwrap_or_else(|| panic!("no home row: {stderr}"));
+    assert!(row.contains("✗ Home directory: unset"), "{row:?}");
+    assert!(stderr.contains(refusal), "{stderr}");
+    assert_eq!(out.status.code(), Some(1), "{stderr}");
+
+    let out = cmd(true).args(["apply", "--yes"]).output().unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_ne!(out.status.code(), Some(0), "{stderr}");
+    assert!(stderr.contains(refusal), "{stderr}");
+}
+
+/// A source the cache has never held is fetched by `apply` and `plan`
+/// themselves, so the `~/` file its profile declares is known only once the
+/// fetch is done. With no home, each resolves first and judges that file
+/// before it opens the state store: the run refuses and no `state.db` is left
+/// behind.
+#[test]
+fn a_homeless_run_refuses_home_work_a_source_it_fetches_delivers_and_writes_no_store() {
+    for verb in [&["apply", "--yes"][..], &["plan"]] {
+        let (_workspace, config_dir, _state) = cfgd_test_fixtures::local_source_setup("", |_| {
+            (
+                "apiVersion: cfgd.io/v1alpha1\nkind: ConfigSource\nmetadata:\n  name: acme\n  version: \"1.0.0\"\nspec:\n  provides:\n    profiles:\n      - default\n".to_string(),
+                "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  files:\n    managed:\n      - source: acmerc\n        target: ~/.acmerc\n".to_string(),
+            )
+        });
+        let mut cmd = cfgd_bin().unwrap();
+        cmd.env_remove("HOME")
+            .env_remove("USERPROFILE")
+            .env(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1")
+            .arg("--config")
+            .arg(config_dir.path().join("cfgd.yaml"))
+            .args(verb)
+            .args(["-o", "json"]);
+        let state_dir = env_path(&cmd, cfgd_core::CFGD_STATE_DIR_ENV);
+        let cache_dir = env_path(&cmd, cfgd_core::CFGD_CACHE_DIR_ENV);
+        let out = cmd.output().unwrap();
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(out.status.code(), Some(1), "{verb:?}: {stderr}");
+        let v = parse_single_json(&String::from_utf8_lossy(&out.stdout));
+        assert_eq!(v["error"], "state", "{verb:?}: {v}");
+        assert!(
+            v["message"]
+                .as_str()
+                .is_some_and(|m| m.contains("~/.acmerc")),
+            "{verb:?}: {v}"
+        );
+        let db = state_dir.join("state.db");
+        assert!(!db.exists(), "{verb:?} left {}", db.display());
+        let sources = cache_dir.join("sources");
+        let mut cached = Vec::new();
+        collect_files(&cache_dir, &mut cached);
+        assert!(
+            cached.contains(&sources.join("acme").join("cfgd-source.yaml")),
+            "{verb:?} fetched no checkout: {cached:?}"
+        );
+        let stray: Vec<_> = cached.iter().filter(|f| !f.starts_with(&sources)).collect();
+        assert!(
+            stray.is_empty(),
+            "{verb:?} wrote beside its fetch: {stray:?}"
+        );
+    }
+}
+
+/// Every file under `dir`, recursively; a directory that cannot be read
+/// fails the test naming it.
+fn collect_files(dir: &std::path::Path, found: &mut Vec<std::path::PathBuf>) {
+    let entries = std::fs::read_dir(dir).unwrap_or_else(|e| panic!("{}: {e}", dir.display()));
+    for entry in entries {
+        let path = entry.unwrap().path();
+        if path.is_dir() {
+            collect_files(&path, found);
+        } else {
+            found.push(path);
+        }
+    }
+}
+
+/// A homeless run that fails for a reason other than the missing home, here a
+/// module the profile names and nothing provides, still records the source
+/// conflict its composition found, the way a run with a home records it while
+/// it composes. One the resolution refuses for want of a home, here a module's
+/// `~/` file target, writes no store.
+#[test]
+fn a_homeless_run_that_fails_after_composing_records_the_source_conflict() {
+    for (module, failure, records) in [
+        ("nowhere", "module not found: nowhere", true),
+        ("dots", "for the file target", false),
+    ] {
+        let (_workspace, config_dir, state) = cfgd_test_fixtures::local_source_setup(
+            "",
+            |workspace| {
+                let target = cfgd_core::to_posix_string(workspace.join("out").join("acmerc"));
+                (
+                    format!(
+                        "apiVersion: cfgd.io/v1alpha1\nkind: ConfigSource\nmetadata:\n  name: acme\n  version: \"1.0.0\"\nspec:\n  provides:\n    profiles:\n      - default\n  policy:\n    locked:\n      files:\n        - source: acmerc\n          target: {target}\n"
+                    ),
+                    format!(
+                        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  modules: [{module}]\n"
+                    ),
+                )
+            },
+        );
+        let config_dir = config_dir.path();
+        std::fs::write(config_dir.join("acmerc"), "level = high\n").unwrap();
+        std::fs::create_dir_all(config_dir.join("modules/dots")).unwrap();
+        std::fs::write(config_dir.join("modules/dots/init.lua"), "-- init\n").unwrap();
+        std::fs::write(
+            config_dir.join("modules/dots/module.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: dots\nspec:\n  files:\n    - source: init.lua\n      target: ~/.config/nvim/init.lua\n",
+        )
+        .unwrap();
+        let mut plan = cfgd_bin().unwrap();
+        plan.env_remove("HOME")
+            .env_remove("USERPROFILE")
+            .env(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1")
+            // Each case gets a state directory of its own, since every spawn in
+            // one test shares the isolated one.
+            .env(cfgd_core::CFGD_STATE_DIR_ENV, state.path())
+            .arg("--config")
+            .arg(config_dir.join("cfgd.yaml"))
+            .arg("plan");
+        let db = env_path(&plan, cfgd_core::CFGD_STATE_DIR_ENV).join("state.db");
+        let out = plan.output().unwrap();
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert_ne!(out.status.code(), Some(0), "{module}: {stderr}");
+        assert!(stderr.contains(failure), "{module}: {stderr}");
+        if records {
+            let store = cfgd_core::state::StateStore::open_read_only(&db)
+                .unwrap_or_else(|e| panic!("no store recorded the conflict ({e}): {stderr}"));
+            assert_eq!(store.source_conflict_count().unwrap(), 1, "{stderr}");
+        } else {
+            assert!(
+                !db.exists(),
+                "{module}: the refusal left {}: {stderr}",
+                db.display()
+            );
+        }
+    }
+}
+
+/// A store a run with a home left behind records a manager `PATH` entry, which
+/// lives in the managed env file. With no home, `apply` and `plan` read that
+/// record without opening the store for writing and refuse naming the env
+/// file, leaving the store's bytes, its `-wal` and `-shm` sidecars and its
+/// schema version as they were, whether those sidecars are open or closed.
+#[test]
+fn a_homeless_run_over_a_recorded_path_entry_refuses_and_leaves_the_store_as_it_was() {
+    for sidecars_open in [false, true] {
+        for verb in [&["apply", "--yes"][..], &["plan"]] {
+            let case = format!("{verb:?} with sidecars open: {sidecars_open}");
+            let mut cmd = cfgd_bin().unwrap();
+            let config_dir = home_of(&cmd).join(".config").join("cfgd");
+            create_valid_config(&config_dir);
+            let state_dir = env_path(&cmd, cfgd_core::CFGD_STATE_DIR_ENV);
+            std::fs::create_dir_all(&state_dir).unwrap();
+            let store = cfgd_core::state::StateStore::open(&state_dir.join("state.db")).unwrap();
+            store
+                .record_bootstrapped_path_dirs("brew", &["/opt/brew/bin".to_string()])
+                .unwrap();
+            let schema_version = || {
+                rusqlite::Connection::open_with_flags(
+                    state_dir.join("state.db"),
+                    rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+                )
+                .unwrap()
+                .query_row("SELECT version FROM schema_version", [], |row| {
+                    row.get::<_, i64>(0)
+                })
+                .unwrap()
+            };
+            let version = schema_version();
+            let held = sidecars_open.then_some(store);
+            let files = ["state.db", "state.db-wal", "state.db-shm"];
+            // The directory's mtime moves with any file created or removed in it,
+            // so a `-wal` a writable open makes and a clean close removes again
+            // still shows.
+            let snapshot = || {
+                (
+                    files.map(|f| std::fs::read(state_dir.join(f)).ok()),
+                    std::fs::metadata(&state_dir).unwrap().modified().unwrap(),
+                )
+            };
+            let before = snapshot();
+            assert_eq!(
+                before.0[1].is_some(),
+                sidecars_open,
+                "{case}: the fixture's -wal"
+            );
+
+            cmd.env_remove("HOME")
+                .env_remove("USERPROFILE")
+                .arg("--config")
+                .arg(config_dir.join("cfgd.yaml"))
+                .args(verb);
+            let out = cmd.output().unwrap();
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            assert_eq!(out.status.code(), Some(1), "{case}: {stderr}");
+            assert!(
+                stderr.contains("cannot write the managed env file"),
+                "{case}: {stderr}"
+            );
+            let after = snapshot();
+            for ((file, before), after) in files.iter().zip(&before.0).zip(&after.0) {
+                assert!(before == after, "{case}: the refused run changed {file}");
+            }
+            assert_eq!(
+                before.1, after.1,
+                "{case}: the refused run created or removed a file beside the store"
+            );
+            drop(held);
+            assert_eq!(schema_version(), version, "{case}");
+        }
+    }
+}
+
+/// With no home, `plan` composes a source it fetches before its state store
+/// opens; the conflict that composition finds is recorded once the store opens,
+/// the way a run with a home records it.
+#[test]
+fn a_homeless_plan_records_the_source_conflict_it_composed_before_its_store_opened() {
+    let (_workspace, config_dir, _state) = cfgd_test_fixtures::local_source_setup(
+        "",
+        |workspace| {
+            let target = cfgd_core::to_posix_string(workspace.join("out").join("acmerc"));
+            (
+            format!(
+                "apiVersion: cfgd.io/v1alpha1\nkind: ConfigSource\nmetadata:\n  name: acme\n  version: \"1.0.0\"\nspec:\n  provides:\n    profiles:\n      - default\n  policy:\n    locked:\n      files:\n        - source: acmerc\n          target: {target}\n"
+            ),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec: {}\n".to_string(),
+        )
+        },
+    );
+    std::fs::write(config_dir.path().join("acmerc"), "level = high\n").unwrap();
+    let mut plan = cfgd_bin().unwrap();
+    plan.env_remove("HOME")
+        .env_remove("USERPROFILE")
+        .env(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1")
+        .arg("--config")
+        .arg(config_dir.path().join("cfgd.yaml"))
+        .arg("plan");
+    let state_dir = env_path(&plan, cfgd_core::CFGD_STATE_DIR_ENV);
+    let out = plan.output().unwrap();
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert_eq!(out.status.code(), Some(0), "{stderr}");
-    let db = state_home.join("cfgd").join("state.db");
-    assert!(db.is_file(), "no state store at {}: {stderr}", db.display());
+    assert!(stderr.contains("Source Conflicts"), "{stderr}");
+    let store = cfgd_core::state::StateStore::open_read_only(&state_dir.join("state.db")).unwrap();
+    assert_eq!(store.source_conflict_count().unwrap(), 1, "{stderr}");
+}
+
+/// `apply --plan` with no home reads the saved plan's store without opening it
+/// for writing. Over the store the plan was derived against, which records a
+/// manager `PATH` entry, the replay refuses naming the managed env file and
+/// leaves the store's files as they were; with no store on disk the plan is
+/// stale and no store is created.
+#[test]
+fn a_homeless_replay_reads_its_store_without_opening_it_for_writing() {
+    for store_on_disk in [true, false] {
+        let mut with_home = cfgd_bin().unwrap();
+        let config = home_of(&with_home).join(".config").join("cfgd");
+        create_valid_config(&config);
+        let config = config.join("cfgd.yaml");
+        let state_dir = env_path(&with_home, cfgd_core::CFGD_STATE_DIR_ENV);
+        std::fs::create_dir_all(&state_dir).unwrap();
+        cfgd_core::state::StateStore::open(&state_dir.join("state.db"))
+            .unwrap()
+            .record_bootstrapped_path_dirs("brew", &["/opt/brew/bin".to_string()])
+            .unwrap();
+        let out = with_home
+            .arg("--config")
+            .arg(&config)
+            .args(["plan", "-o", "json"])
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(out.status.code(), Some(0), "{stderr}");
+        let plan_file = state_dir.parent().unwrap().join("plan.json");
+        std::fs::write(&plan_file, &out.stdout).unwrap();
+        let files = ["state.db", "state.db-wal", "state.db-shm"];
+        if !store_on_disk {
+            for file in files {
+                let _ = std::fs::remove_file(state_dir.join(file));
+            }
+        }
+        // The directory's mtime moves with any file created or removed in it.
+        let snapshot = || {
+            (
+                files.map(|f| std::fs::read(state_dir.join(f)).ok()),
+                std::fs::metadata(&state_dir).unwrap().modified().unwrap(),
+            )
+        };
+        let before = snapshot();
+
+        let mut replay = cfgd_bin().unwrap();
+        let out = replay
+            .env_remove("HOME")
+            .env_remove("USERPROFILE")
+            .env(cfgd_core::CFGD_STATE_DIR_ENV, &state_dir)
+            .arg("--config")
+            .arg(&config)
+            .args(["apply", "--yes", "-o", "json", "--plan"])
+            .arg(&plan_file)
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let v = parse_single_json(&String::from_utf8_lossy(&out.stdout));
+        assert_ne!(out.status.code(), Some(0), "{store_on_disk}: {stderr}");
+        if store_on_disk {
+            assert!(
+                v["message"]
+                    .as_str()
+                    .is_some_and(|m| m.contains("cannot write the managed env file")),
+                "{v}"
+            );
+        } else {
+            assert_eq!(v["error"], "stale", "{v}");
+        }
+        let after = snapshot();
+        for ((file, before), after) in files.iter().zip(&before.0).zip(&after.0) {
+            assert!(
+                before == after,
+                "{store_on_disk}: the replay changed {file}"
+            );
+        }
+        assert_eq!(
+            before.1, after.1,
+            "{store_on_disk}: the replay created or removed a file beside the store"
+        );
+    }
+}
+
+/// With no home an age key declared under `~/` has nowhere to resolve. A
+/// profile decrypting a secret needs that key, so `doctor` fails the age key row
+/// and its verdict and `apply` refuses before opening the state store; with no
+/// secret declared the same row only warns and the run passes.
+#[test]
+fn a_homeless_run_names_the_age_key_it_cannot_locate() {
+    for (case, profile_spec) in [
+        (
+            "decrypting",
+            "spec:\n  secrets:\n    - source: secrets/token.enc\n      target: TARGET\n",
+        ),
+        ("no secrets", "spec: {}\n"),
+    ] {
+        let decrypts = case == "decrypting";
+        let xdg = tempfile::tempdir().unwrap();
+        let config_dir = xdg.path().join("config").join("cfgd");
+        create_valid_config(&config_dir);
+        std::fs::write(
+            config_dir.join("cfgd.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: test\nspec:\n  profile: base\n  secrets:\n    sops:\n      ageKey: ~/.age/key.txt\n",
+        )
+        .unwrap();
+        let target = cfgd_core::to_posix_string(xdg.path().join("token"));
+        std::fs::write(
+            config_dir.join("profiles/base.yaml"),
+            format!(
+                "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: base\n{}",
+                profile_spec.replace("TARGET", &target)
+            ),
+        )
+        .unwrap();
+        std::fs::create_dir_all(config_dir.join("secrets")).unwrap();
+        std::fs::write(config_dir.join("secrets/token.enc"), "sops: {}\n").unwrap();
+        let homeless = |args: &[&str]| {
+            cfgd_bin()
+                .unwrap()
+                .env_remove("HOME")
+                .env_remove("USERPROFILE")
+                .env_remove(cfgd_core::CFGD_STATE_DIR_ENV)
+                .env_remove(cfgd_core::CFGD_CACHE_DIR_ENV)
+                .env("XDG_CONFIG_HOME", xdg.path().join("config"))
+                .env("XDG_STATE_HOME", xdg.path().join("state"))
+                .env("XDG_CACHE_HOME", xdg.path().join("cache"))
+                .args(args)
+                .output()
+                .unwrap()
+        };
+        let refusal = "for the age key: no home directory found";
+
+        let out = homeless(&["doctor"]);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let row = stderr
+            .lines()
+            .find(|line| line.contains("age key"))
+            .unwrap_or_else(|| panic!("{case}: no age key row: {stderr}"));
+        let glyph = if decrypts {
+            "✗ age key"
+        } else {
+            "⚠ age key"
+        };
+        assert!(row.contains(glyph), "{case}: {row:?}");
+        assert!(stderr.contains(refusal), "{case}: {stderr}");
+        assert_eq!(
+            out.status.code(),
+            Some(if decrypts { 1 } else { 0 }),
+            "{case}: {stderr}"
+        );
+
+        let out = homeless(&["doctor", "-o", "json"]);
+        let v = parse_single_json(&String::from_utf8_lossy(&out.stdout));
+        assert!(
+            v["secrets"]["ageKeyError"]
+                .as_str()
+                .is_some_and(|m| m.contains(refusal)),
+            "{case}: {v}"
+        );
+
+        if decrypts {
+            let out = homeless(&["apply", "--yes"]);
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            assert_ne!(out.status.code(), Some(0), "{case}: {stderr}");
+            assert!(stderr.contains(refusal), "{case}: {stderr}");
+            let db = xdg.path().join("state").join("cfgd").join("state.db");
+            assert!(!db.exists(), "{case}: the refusal left {}", db.display());
+        }
+    }
 }
 
 /// A directory override under `~` with no home set fails the run naming the
@@ -935,17 +1741,11 @@ fn a_tilde_state_dir_with_no_home_fails_naming_the_unset_home() {
     }
 }
 
-/// The default config location with no home set. Linux and macOS spell it
-/// under `~`, so the run reports the unset home; Windows finds its config
-/// root through a known-folder lookup that needs no home variable, so the
-/// run reports the document that is not there.
+/// The default config location with no home set. Every OS, Windows included,
+/// derives it from the one home, so the run reports the unset home.
 #[test]
 fn the_default_config_with_no_home_names_what_is_missing() {
-    let expected = if cfg!(windows) {
-        "config file not found: ".to_string()
-    } else {
-        home_unresolved()
-    };
+    let expected = home_unresolved();
     for format in ["table", "json"] {
         let (stdout, stderr, code) = run_homeless(&["status", "-o", format]);
         assert_eq!(code, Some(3), "{format}: exits NoConfig(3): {stderr}");
@@ -965,10 +1765,15 @@ fn the_default_config_with_no_home_names_what_is_missing() {
 
 /// The home directory a command built by `cfgd_bin()` hands the binary.
 fn home_of(cmd: &std::process::Command) -> std::path::PathBuf {
+    env_path(cmd, "HOME")
+}
+
+/// The directory `cmd` sets `var` to, which the constructor always sets.
+fn env_path(cmd: &std::process::Command, var: &str) -> std::path::PathBuf {
     cmd.get_envs()
-        .find_map(|(var, value)| (var == "HOME").then_some(value).flatten())
+        .find_map(|(name, value)| (name == var).then_some(value).flatten())
         .map(std::path::PathBuf::from)
-        .expect("the constructor sets HOME")
+        .unwrap_or_else(|| panic!("the constructor sets {var}"))
 }
 
 /// A `--config` under `~` with a home set names the file under that home, so

@@ -68,18 +68,20 @@ fn read_kde_value(file: &str, group: &str, key: &str) -> String {
 
 /// Resolve a `--file` value the way KConfig does: an absolute path stands, a
 /// bare name lives under `$XDG_CONFIG_HOME` (`~/.config` when unset).
-fn user_config_path(file: &str) -> Option<PathBuf> {
-    let path = cfgd_core::expand_tilde(std::path::Path::new(file));
+fn user_config_path(file: &str) -> Result<PathBuf> {
+    let path = cfgd_core::expand_tilde(std::path::Path::new(file), KDE_FILE_ROLE)?;
     if path.is_absolute() {
-        return Some(path);
+        return Ok(path);
     }
-    // xdg-ok: KConfig's own lookup, which takes any non-empty value
+    // home-env-ok: KConfig's own lookup, which takes any non-empty value
     let base = match std::env::var("XDG_CONFIG_HOME") {
         Ok(dir) if !dir.trim().is_empty() => PathBuf::from(dir),
-        _ => cfgd_core::expand_tilde(std::path::Path::new("~/.config")),
+        _ => cfgd_core::expand_tilde(std::path::Path::new("~/.config"), KDE_FILE_ROLE)?,
     };
-    Some(base.join(path))
+    Ok(base.join(path))
 }
+
+const KDE_FILE_ROLE: &str = "KDE config file";
 
 /// The system-wide half of the KConfig cascade (`$XDG_CONFIG_DIRS`, `/etc/xdg`
 /// when unset) for one file name.
@@ -133,19 +135,17 @@ fn entry_key(group: &str, key: &str) -> String {
     format!("{group}\u{1}{key}")
 }
 
-fn snapshot_rc_file(file: &str) -> RcSnapshot {
+fn snapshot_rc_file(file: &str) -> Result<RcSnapshot> {
     let immutable_anywhere = system_config_paths(file).iter().any(|path| {
         std::fs::read_to_string(path)
             .map(|body| body.contains("[$i]"))
             .unwrap_or(false)
     });
-    let body = user_config_path(file)
-        .and_then(|path| std::fs::read_to_string(path).ok())
-        .unwrap_or_default();
-    RcSnapshot {
+    let body = std::fs::read_to_string(user_config_path(file)?).unwrap_or_default();
+    Ok(RcSnapshot {
         entries: parse_rc(&body),
         trusted: !immutable_anywhere,
-    }
+    })
 }
 
 fn parse_rc(body: &str) -> HashMap<String, String> {
@@ -248,7 +248,7 @@ impl SystemConfigurator for KdeConfigConfigurator {
             };
             // One read of the rc file for every group and key declared under
             // it, instead of one `kreadconfig` spawn per key.
-            let snapshot = snapshot_rc_file(file);
+            let snapshot = snapshot_rc_file(file)?;
             for (group_key, keys) in groups_map {
                 let group = match group_key.as_str() {
                     Some(g) => g,

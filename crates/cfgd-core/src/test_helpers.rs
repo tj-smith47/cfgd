@@ -163,7 +163,7 @@ impl crate::providers::FileManager for MockFileManager {
 
         // Mirror production (`CfgdFileManager::file_drift_one`): tilde-expand the
         // target and report it POSIX-normalized so tests see the same shape.
-        let target_path = crate::expand_tilde(target);
+        let target_path = crate::expand_tilde(target, crate::FILE_TARGET_ROLE)?;
         let target_id = crate::PathDisplayExt::display_posix(&target_path);
         if !source.exists() {
             return Ok(FileDriftResult {
@@ -2241,10 +2241,6 @@ impl crate::daemon::DaemonHooks for NoopDaemonHooks {
         _: &mut crate::providers::ProviderRegistry,
         _: &crate::config::PackagesSpec,
     ) {
-    }
-
-    fn expand_tilde(&self, path: &std::path::Path) -> PathBuf {
-        crate::expand_tilde(path)
     }
 }
 
@@ -5896,7 +5892,9 @@ pub fn plant_managed_env_files(
     home: &Path,
     scope: crate::config::EnvScope,
 ) -> Vec<(std::path::PathBuf, String)> {
-    let planted = merged.managed_env_files(home, scope);
+    let planted = merged
+        .managed_env_files(home, scope)
+        .expect("the fixture's env renders");
     for (path, content) in &planted {
         crate::ensure_parent_dir(path).expect("a planted env file needs its directory");
         std::fs::write(path, content).expect("planting a managed env file");

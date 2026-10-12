@@ -39,8 +39,9 @@ fn go_fallbacks() -> Vec<PathBuf> {
         PathBuf::from("/usr/local/go/bin/go"),
         PathBuf::from("/usr/local/bin/go"),
     ];
-    if let Some(home) = std::env::var_os("HOME") {
-        fallbacks.push(PathBuf::from(home).join("go/bin/go"));
+    // home-optional-ok: a probe; with no home there is no ~/go/bin to look in
+    if let Ok(home) = cfgd_core::home_dir() {
+        fallbacks.push(home.join("go/bin/go"));
     }
     fallbacks
 }
@@ -73,7 +74,7 @@ pub(super) fn go_cmd() -> Command {
 /// `$GOPATH/bin`, then `~/go/bin`: the query then scans a directory that may
 /// be the wrong one, but reporting nothing installed is the same answer a
 /// missing directory already gives.
-pub(super) fn go_bin_dir() -> PathBuf {
+pub(super) fn go_bin_dir() -> Result<PathBuf> {
     let reported = run_pkg_query("go", go_cmd().args(["env", "GOBIN", "GOPATH"]))
         .ok()
         .filter(|output| output.status.success())
@@ -87,23 +88,22 @@ pub(super) fn go_bin_dir() -> PathBuf {
         });
     let (gobin, gopath) = reported.unwrap_or_default();
     if !gobin.is_empty() {
-        return PathBuf::from(gobin);
+        return Ok(PathBuf::from(gobin));
     }
     if !gopath.is_empty() {
-        return PathBuf::from(gopath).join("bin");
+        return Ok(PathBuf::from(gopath).join("bin"));
     }
     fallback_go_bin_dir()
 }
 
 /// `$GOPATH/bin`, or `~/go/bin` — the location Go documents as the default,
 /// used only when the toolchain itself could not be asked.
-fn fallback_go_bin_dir() -> PathBuf {
-    let gopath = std::env::var("GOPATH").ok().unwrap_or_else(|| {
-        cfgd_core::expand_tilde(std::path::Path::new("~/go"))
-            .to_string_lossy()
-            .to_string()
-    });
-    PathBuf::from(gopath).join("bin")
+fn fallback_go_bin_dir() -> Result<PathBuf> {
+    let gopath = match std::env::var("GOPATH") {
+        Ok(gopath) => PathBuf::from(gopath),
+        Err(_) => cfgd_core::expand_tilde(std::path::Path::new("~/go"), "Go binary directory")?,
+    };
+    Ok(gopath.join("bin"))
 }
 
 impl PackageManager for GoInstallManager {
@@ -164,7 +164,7 @@ impl PackageManager for GoInstallManager {
         &self,
         _cx: &cfgd_core::providers::PackageContext<'_>,
     ) -> Result<HashSet<String>> {
-        Ok(scan_go_bin_dir(&go_bin_dir()))
+        Ok(scan_go_bin_dir(&go_bin_dir()?))
     }
 
     /// `go install` leaves no listing of its own — the binary directory is
@@ -176,7 +176,7 @@ impl PackageManager for GoInstallManager {
         &self,
         _cx: &cfgd_core::providers::PackageContext<'_>,
     ) -> Result<Vec<cfgd_core::providers::PackageInfo>> {
-        let bin_dir = go_bin_dir();
+        let bin_dir = go_bin_dir()?;
         let mut names: Vec<String> = scan_go_bin_dir(&bin_dir).into_iter().collect();
         if names.is_empty() {
             return Ok(Vec::new());
@@ -237,7 +237,7 @@ impl PackageManager for GoInstallManager {
     ) -> Result<()> {
         // Go has no uninstall command; remove the binaries from wherever
         // `go install` put them.
-        let bin_dir = go_bin_dir();
+        let bin_dir = go_bin_dir()?;
         for pkg in packages {
             // Derive the binary name from the module path (idempotent if `pkg`
             // is already a bare binary name from the prune path), then re-validate

@@ -1235,6 +1235,7 @@ fn cache_dir() -> Option<PathBuf> {
     // sandboxed run that redirects the cache via env would otherwise fall
     // through to a `ProjectDirs` lookup that can fail to resolve a home,
     // surfacing a spurious "cannot determine cache directory" warning.
+    // home-optional-ok: with no cache location the check runs uncached and records nothing
     crate::default_cache_dir_for(crate::Scope::User).ok()
 }
 

@@ -1,7 +1,6 @@
 use crate::PathDisplayExt;
 use crate::config::{ResolvedProfile, ScriptShell};
 use crate::errors::Result;
-use crate::expand_tilde;
 use crate::modules::ResolvedModule;
 use crate::output::Printer;
 
@@ -339,7 +338,7 @@ impl<'a> super::Reconciler<'a> {
             } => {
                 let mut deployed_any = false;
                 for file in files {
-                    let target = expand_tilde(&file.target);
+                    let target = file.target.clone();
 
                     // Use the per-file strategy override if set, otherwise
                     // fall back to the global file-strategy from cfgd.yaml (default: symlink).
@@ -374,7 +373,7 @@ impl<'a> super::Reconciler<'a> {
                                 resolved.profile_name(),
                                 context,
                             ),
-                        };
+                        }?;
                         Some(
                             super::patch::evaluate_patch(spec, &target, &binding.context())?
                                 .patched,
@@ -504,7 +503,7 @@ impl<'a> super::Reconciler<'a> {
                     let declared: Vec<String> = m
                         .files
                         .iter()
-                        .map(|f| crate::to_posix_fs_key(expand_tilde(&f.target)))
+                        .map(|f| crate::to_posix_fs_key(&f.target))
                         .collect();
                     self.state
                         .prune_module_files_except(&action.module_name, &declared)?;
@@ -531,7 +530,7 @@ impl<'a> super::Reconciler<'a> {
                         path_dirs: &super::all_recorded_path_dirs(self.state),
                     },
                     module_env,
-                );
+                )?;
 
                 let source = module_dir.as_deref().unwrap_or(config_dir);
                 let working = script_default_workdir(config_dir);

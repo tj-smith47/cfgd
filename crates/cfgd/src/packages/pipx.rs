@@ -60,8 +60,8 @@ fn pipx_method<'a>(cx: &'a cfgd_core::providers::PackageContext<'_>) -> &'a str 
 }
 
 fn pipx_fallbacks() -> Vec<PathBuf> {
-    let mut fallbacks: Vec<PathBuf> = std::env::var_os("HOME")
-        .map(|h| pipx_fallbacks_for_home(std::path::Path::new(&h)))
+    let mut fallbacks: Vec<PathBuf> = cfgd_core::home_dir()
+        .map(|h| pipx_fallbacks_for_home(&h))
         .unwrap_or_default();
     if cfg!(windows) {
         fallbacks.extend(windows_user_pipx_candidates());

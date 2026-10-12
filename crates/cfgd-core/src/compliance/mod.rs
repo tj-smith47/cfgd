@@ -201,7 +201,7 @@ pub fn collect_snapshot(
             modules,
             config_dir,
             registry,
-        ));
+        )?);
     }
     if scope.packages {
         checks.extend(collect_package_checks(profile, modules, registry, &cx)?);
@@ -213,10 +213,10 @@ pub fn collect_snapshot(
         }
     }
     if scope.secrets {
-        checks.extend(collect_secret_checks(profile));
+        checks.extend(collect_secret_checks(profile)?);
     }
     for watch_path in &scope.watch_paths {
-        checks.extend(collect_watch_path_checks(watch_path));
+        checks.extend(collect_watch_path_checks(watch_path)?);
     }
     for manager_name in &scope.watch_package_managers {
         checks.extend(collect_watched_package_manager_checks(
@@ -365,7 +365,7 @@ pub fn export_snapshot_to_file(
     snapshot: &ComplianceSnapshot,
     export: &ComplianceExport,
 ) -> Result<PathBuf> {
-    let export_dir = crate::expand_tilde(Path::new(&export.path));
+    let export_dir = crate::expand_tilde(Path::new(&export.path), "compliance export directory")?;
     std::fs::create_dir_all(&export_dir)?;
 
     let timestamp_safe = crate::iso8601_to_filename_safe(&snapshot.timestamp);
@@ -417,7 +417,7 @@ pub fn collect_file_checks(
     modules: &[ResolvedModule],
     config_dir: &Path,
     registry: &ProviderRegistry,
-) -> Vec<ComplianceCheck> {
+) -> Result<Vec<ComplianceCheck>> {
     let mut checks = Vec::new();
     // The RESOLVED strategy for every declared target, so an entry that names
     // none is judged against the profile-wide default here exactly as it is on
@@ -427,10 +427,10 @@ pub fn collect_file_checks(
         modules,
         config_dir,
         registry.default_file_strategy,
-    );
+    )?;
 
     for file in effective_files(profile, modules, config_dir) {
-        let target = crate::expand_tilde(&file.target);
+        let target = crate::expand_tilde(&file.target, crate::FILE_TARGET_ROLE)?;
         let exists = target.exists();
         let suffix = origin_suffix(&file.origin);
 
@@ -617,7 +617,7 @@ pub fn collect_file_checks(
         }
     }
 
-    checks
+    Ok(checks)
 }
 
 // ---------------------------------------------------------------------------
@@ -1015,7 +1015,7 @@ pub fn collect_system_checks(
 
 /// Check secrets: for secrets with file targets, verify the target file exists
 /// and check its permissions. NEVER reads or logs secret values.
-pub fn collect_secret_checks(profile: &MergedProfile) -> Vec<ComplianceCheck> {
+pub fn collect_secret_checks(profile: &MergedProfile) -> Result<Vec<ComplianceCheck>> {
     let mut checks = Vec::new();
 
     for secret in &profile.secrets {
@@ -1024,7 +1024,7 @@ pub fn collect_secret_checks(profile: &MergedProfile) -> Vec<ComplianceCheck> {
             continue;
         };
 
-        let target = crate::expand_tilde(target_path);
+        let target = crate::expand_tilde(target_path, crate::SECRET_TARGET_ROLE)?;
         if target.exists() {
             checks.push(ComplianceCheck {
                 category: "secret".into(),
@@ -1044,7 +1044,7 @@ pub fn collect_secret_checks(profile: &MergedProfile) -> Vec<ComplianceCheck> {
         }
     }
 
-    checks
+    Ok(checks)
 }
 
 // ---------------------------------------------------------------------------
@@ -1052,9 +1052,12 @@ pub fn collect_secret_checks(profile: &MergedProfile) -> Vec<ComplianceCheck> {
 // ---------------------------------------------------------------------------
 
 /// Stat a watch path and report basic info.
-fn collect_watch_path_checks(path_str: &str) -> Vec<ComplianceCheck> {
-    let path = crate::expand_tilde(Path::new(path_str));
+fn collect_watch_path_checks(path_str: &str) -> Result<Vec<ComplianceCheck>> {
+    let path = crate::expand_tilde(Path::new(path_str), "watch path")?;
+    Ok(watch_path_checks(&path))
+}
 
+fn watch_path_checks(path: &Path) -> Vec<ComplianceCheck> {
     if !path.exists() {
         return vec![ComplianceCheck {
             category: "watchPath".into(),

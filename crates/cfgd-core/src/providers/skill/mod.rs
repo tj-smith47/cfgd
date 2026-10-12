@@ -169,11 +169,11 @@ pub trait SkillProvider: Send + Sync {
 
     /// Probe whether this provider's agent is present at `scope`. Never shells
     /// out (filesystem + PATH lookup only).
-    fn detect(&self, scope: SkillScope) -> Detection;
+    fn detect(&self, scope: SkillScope) -> Result<Detection>;
 
     /// The absolute target path for a kind at a scope, or `None` when the
     /// provider has no primitive at that scope.
-    fn target_path(&self, kind: SkillKind, scope: SkillScope) -> Option<PathBuf>;
+    fn target_path(&self, kind: SkillKind, scope: SkillScope) -> Result<Option<PathBuf>>;
 
     /// Render a model to this provider's native file format. Pure: no I/O.
     ///
@@ -195,7 +195,7 @@ pub trait SkillProvider: Send + Sync {
     /// cfgd-managed block while preserving every surrounding byte.
     fn install(&self, model: &SkillModel, scope: SkillScope) -> Result<PathBuf> {
         let target = self
-            .target_path(model.kind, scope)
+            .target_path(model.kind, scope)?
             .ok_or_else(|| SkillError::Detect {
                 provider: self.id().to_string(),
                 message: format!("no target path for {} at {scope:?}", model.kind.as_str()),
@@ -234,7 +234,7 @@ pub trait SkillProvider: Send + Sync {
         scope: SkillScope,
         cfgd_version: &str,
     ) -> Result<Option<PathBuf>> {
-        let Some(target) = self.target_path(kind, scope) else {
+        let Some(target) = self.target_path(kind, scope)? else {
             return Ok(None);
         };
         let rendered = self.render(&crate::generate::skill_model_for(kind, cfgd_version), scope)?;
@@ -275,7 +275,7 @@ pub trait SkillProvider: Send + Sync {
         let running = cfgd_version;
         let mut out = Vec::new();
         for kind in ALL_SKILL_KINDS {
-            let Some(target) = self.target_path(kind, scope) else {
+            let Some(target) = self.target_path(kind, scope)? else {
                 continue;
             };
             let rendered =
@@ -307,6 +307,9 @@ pub trait SkillProvider: Send + Sync {
         Ok(out)
     }
 }
+
+/// What a user-scope target is called when no home directory resolves it.
+pub(super) const SKILL_ROLE: &str = "user-scope skill";
 
 /// Every author-facing kind a skill can teach, in stable order.
 const ALL_SKILL_KINDS: [SkillKind; 6] = [

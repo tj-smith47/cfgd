@@ -612,8 +612,12 @@ pub fn env_value_masking(
     }
 }
 
+/// The `--config` default as a user would write it: with no home directory it
+/// keeps its `~`, which config discovery refuses as `ConfigError::HomeUnresolved`.
 pub fn default_config_file() -> PathBuf {
-    cfgd_core::config::config_document_in(&cfgd_core::default_config_dir())
+    cfgd_core::config::config_document_in(&cfgd_core::default_config_dir_spelling(
+        cfgd_core::Scope::User,
+    ))
 }
 
 /// Returns true if `flag` is a global flag on `Cli` that consumes the next
@@ -1352,7 +1356,7 @@ impl Cli {
     /// argument. Expanded here, every reader of these directories, the argv a
     /// service install bakes into its unit included, sees the same absolute
     /// path. With no home directory to resolve, a path keeps its `~`, and the
-    /// directory resolvers refuse it ([`cfgd_core::expand_tilde_strict`]).
+    /// directory resolvers refuse it ([`cfgd_core::expand_tilde`]).
     pub fn expand_path_flags(&mut self) {
         for dir in [
             &mut self.config_dir,
@@ -1363,7 +1367,11 @@ impl Cli {
         .into_iter()
         .flatten()
         {
-            *dir = cfgd_core::expand_tilde(dir);
+            // home-optional-ok: with no home the `~` stays, and the resolver
+            // reading the directory refuses it under its own role.
+            if let Ok(expanded) = cfgd_core::expand_tilde(dir, "directory flag") {
+                *dir = expanded;
+            }
         }
     }
 

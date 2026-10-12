@@ -258,10 +258,15 @@ pub(crate) fn build_script_env(ctx: &ScriptEnvContext<'_>) -> Vec<(String, Strin
 /// Extends `build_script_env` with the module's declared `spec.env` vars.
 /// CFGD_* names in `spec.env` are silently dropped: runtime-injected metadata
 /// must not be shadowed by user-supplied values.
+///
+/// # Errors
+///
+/// [`StateError::HomeUnresolved`](crate::errors::StateError::HomeUnresolved)
+/// for a declared value with a `~` segment and no home directory set.
 pub(crate) fn build_module_script_env(
     ctx: &ScriptEnvContext<'_>,
     module_env: &[crate::config::EnvVar],
-) -> Vec<(String, String)> {
+) -> crate::errors::Result<Vec<(String, String)>> {
     let mut env = build_script_env(ctx);
     // Expand `$VAR`/`${VAR}` in each declared value before injecting it into the
     // process environment: no shell is present here to do it, so a literal
@@ -277,12 +282,12 @@ pub(crate) fn build_module_script_env(
         // Expand a leading `~` to home BEFORE `$VAR`/`${VAR}`: like the managed
         // env files, a literal `~/.local/bin` injected straight into the child
         // process environment would never be expanded (no shell is present).
-        let tilded = crate::expand_env_value_tilde(&ev.value);
+        let tilded = crate::expand_env_value_tilde(&ev.value)?;
         let value = crate::expand_env_vars(&tilded, &|name| resolved.get(name).cloned());
         resolved.insert(ev.name.clone(), value.clone());
         env.push((ev.name.clone(), value));
     }
-    env
+    Ok(env)
 }
 
 /// Default working directory for a lifecycle script: the user's home directory.
@@ -301,14 +306,17 @@ pub(crate) fn script_default_workdir(config_dir: &std::path::Path) -> std::path:
 
 /// Resolve a `workdir:` value: expand `$VAR`/`${VAR}` against the script
 /// environment, then a leading `~` to the user's home directory.
-fn resolve_script_workdir(raw: &str, env_vars: &[(String, String)]) -> std::path::PathBuf {
+fn resolve_script_workdir(
+    raw: &str,
+    env_vars: &[(String, String)],
+) -> crate::errors::Result<std::path::PathBuf> {
     let expanded = crate::expand_env_vars(raw, &|name| {
         env_vars
             .iter()
             .find(|(k, _)| k == name)
             .map(|(_, v)| v.clone())
     });
-    crate::expand_tilde(std::path::Path::new(&expanded))
+    crate::expand_tilde(std::path::Path::new(&expanded), "script workdir")
 }
 
 /// What one [`execute_script`] invocation renders as its status subject.
@@ -646,7 +654,7 @@ fn execute_script_inner(
     let workdir_override = match entry {
         ScriptEntry::Full(ScriptCommand {
             workdir: Some(w), ..
-        }) => Some(resolve_script_workdir(w, env_vars)),
+        }) => Some(resolve_script_workdir(w, env_vars)?),
         _ => None,
     };
     let working_dir = workdir_override.as_deref().unwrap_or(working_dir);
@@ -680,7 +688,7 @@ fn execute_script_inner(
         let guard_shell = shell_override.unwrap_or(*shell);
 
         if let Some(path) = creates {
-            let resolved_creates = resolve_creates_path(path, working_dir);
+            let resolved_creates = resolve_creates_path(path, working_dir)?;
             if resolved_creates.exists() {
                 st.status(
                     Role::Skipped,
@@ -1318,14 +1326,14 @@ fn build_inline_command(
 }
 
 /// Resolve the `~/.cfgd.env` preamble path for bash/zsh inline commands.
-/// Returns the expanded path only when it exists; `None` for other shells or
-/// when the env file is absent.
+/// Returns the path only when it exists; `None` for other shells, and when the
+/// env file is absent. With no home directory set cfgd never wrote one, so that
+/// is an absent file too.
 fn cfgd_env_path_for(shell: ScriptShell) -> Option<std::path::PathBuf> {
     match shell {
-        ScriptShell::Bash | ScriptShell::Zsh => {
-            let p = crate::expand_tilde(std::path::Path::new("~/.cfgd.env"));
-            if p.exists() { Some(p) } else { None }
-        }
+        ScriptShell::Bash | ScriptShell::Zsh => crate::home_dir_var()
+            .map(|home| std::path::PathBuf::from(home).join(".cfgd.env"))
+            .filter(|p| p.exists()),
         _ => None,
     }
 }
@@ -1334,13 +1342,16 @@ fn cfgd_env_path_for(shell: ScriptShell) -> Option<std::path::PathBuf> {
 ///
 /// A leading `~` expands to the home directory; a relative path resolves
 /// against the script's `working_dir`. Absolute paths are used verbatim.
-fn resolve_creates_path(path: &str, working_dir: &std::path::Path) -> std::path::PathBuf {
-    let expanded = crate::expand_tilde(std::path::Path::new(path));
-    if expanded.is_relative() {
+fn resolve_creates_path(
+    path: &str,
+    working_dir: &std::path::Path,
+) -> crate::errors::Result<std::path::PathBuf> {
+    let expanded = crate::expand_tilde(std::path::Path::new(path), "creates guard")?;
+    Ok(if expanded.is_relative() {
         working_dir.join(expanded)
     } else {
         expanded
-    }
+    })
 }
 
 /// Run an `onlyIf` / `unless` guard command and report whether it succeeded

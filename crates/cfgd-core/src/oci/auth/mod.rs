@@ -51,8 +51,10 @@ impl RegistryAuth {
         }
 
         // 2. Docker config.json
-        let config_path = docker_config_path();
-        if let Ok(contents) = std::fs::read_to_string(&config_path)
+        // home-optional-ok: with no home there is no per-user Docker config to
+        // read, and the lookup moves on to anonymous access.
+        if let Ok(config_path) = docker_config_path()
+            && let Ok(contents) = std::fs::read_to_string(&config_path)
             && let Ok(config) = serde_json::from_str::<DockerConfig>(&contents)
         {
             // Try direct auth entry
@@ -80,11 +82,14 @@ impl RegistryAuth {
     }
 }
 
-pub(super) fn docker_config_path() -> std::path::PathBuf {
+pub(super) fn docker_config_path() -> crate::errors::Result<std::path::PathBuf> {
     if let Ok(dir) = std::env::var("DOCKER_CONFIG") {
-        return std::path::PathBuf::from(dir).join("config.json");
+        return Ok(std::path::PathBuf::from(dir).join("config.json"));
     }
-    crate::expand_tilde(std::path::Path::new("~/.docker/config.json"))
+    crate::expand_tilde(
+        std::path::Path::new("~/.docker/config.json"),
+        "Docker config file",
+    )
 }
 
 /// Try to find credentials in the Docker config auths map.

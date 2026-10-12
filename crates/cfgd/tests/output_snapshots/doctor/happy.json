@@ -1,4 +1,8 @@
 {
+  "cacheDir": {
+    "accessible": true,
+    "message": null
+  },
   "config": {
     "error": null,
     "name": "test-host",
@@ -7,6 +11,10 @@
     "valid": true
   },
   "git": true,
+  "home": {
+    "refusal": null,
+    "resolved": true
+  },
   "modules": [
     {
       "error": null,

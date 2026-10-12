@@ -345,7 +345,7 @@ pub fn sweep_unmanaged_file_targets(
                     let module_name = ma.module_name.clone();
                     let mut j = 0;
                     while j < files.len() {
-                        let file_target = crate::expand_tilde(&files[j].target);
+                        let file_target = files[j].target.clone();
                         let strategy = strategies.for_target(&file_target);
                         let desired = module_file_desired_hash(&files[j], strategy);
                         if !adopts_in_place(strategy)

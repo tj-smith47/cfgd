@@ -20,16 +20,19 @@ use cfgd_core::output::{HintCommands, Printer, Role};
 /// be opened as a path anyway, so classifying it by an env var no `--from`
 /// caller sets would only make the answer depend on whatever else the process
 /// has done.
-pub(super) fn is_clonable_source(value: &str) -> bool {
+pub(super) fn is_clonable_source(value: &str) -> cfgd_core::errors::Result<bool> {
     if cfgd_core::modules::is_git_source(value)
         || value.starts_with("file://")
         || value.ends_with(".git")
     {
-        return true;
+        return Ok(true);
     }
-    let path = cfgd_core::expand_tilde(Path::new(value));
-    path.join(".git").exists()
+    let path = cfgd_core::expand_tilde(Path::new(value), FROM_ROLE)?;
+    Ok(path.join(".git").exists())
 }
+
+/// The role a no-home refusal names for a `--from` path.
+const FROM_ROLE: &str = "--from source";
 
 /// The config document `dir` holds, `cfgd.yaml` or `cfgd.toml`, when it holds one.
 pub(super) fn held_config_document(dir: &Path) -> Option<PathBuf> {
@@ -48,14 +51,23 @@ pub(super) fn held_config_document(dir: &Path) -> Option<PathBuf> {
 /// of the answer: reading an existing `--config` as "no destination given" is
 /// what sent a run pointed at a scratch directory into the invoking user's own
 /// config directory.
-pub(crate) fn from_destination(config: &Path) -> Option<PathBuf> {
-    let config = cfgd_core::absolutize_path(config);
+pub(crate) fn from_destination(config: &Path) -> cfgd_core::errors::Result<Option<PathBuf>> {
+    // A `--config` still spelled with `~` found no home; absolutized, it would
+    // name a `~` directory under the working directory.
+    let config = cfgd_core::absolutize_path(&cfgd_core::expand_tilde(config, "config document")?);
     let dir = if config.is_dir() {
         config.as_path()
     } else {
-        config.parent()?
+        let Some(parent) = config.parent() else {
+            return Ok(None);
+        };
+        parent
     };
-    (dir != cfgd_core::default_config_dir()).then(|| dir.to_path_buf())
+    Ok(
+        cfgd_core::named_default_config_dir(dir, cfgd_core::Scope::User)
+            .is_none()
+            .then(|| dir.to_path_buf()),
+    )
 }
 
 /// Where a `--from` value will materialise, and every refusal that answer
@@ -66,16 +78,16 @@ pub(crate) fn from_destination(config: &Path) -> Option<PathBuf> {
 /// git for a clone that will never happen. A caller that goes on to clone
 /// calls `resolve_from`, which asks this again and gets the same answer.
 pub(super) fn plan_from(from: &str, target: Option<&Path>) -> anyhow::Result<std::path::PathBuf> {
-    let from = &*cfgd_core::resolve_repo_reference(from);
-    if is_clonable_source(from) {
+    let from = &*cfgd_core::resolve_repo_reference(from)?;
+    if is_clonable_source(from)? {
         let dest = match target {
             Some(path) => path.to_path_buf(),
-            None => cfgd_core::default_config_dir(),
+            None => cfgd_core::default_config_dir()?,
         };
         refuse_occupied_default_destination(&dest)?;
         return Ok(dest);
     }
-    let path = cfgd_core::expand_tilde(Path::new(from));
+    let path = cfgd_core::expand_tilde(Path::new(from), FROM_ROLE)?;
     if !path.exists() {
         return Err(crate::cli::cli_error(
             cfgd_core::to_posix_string(&path),
@@ -104,9 +116,9 @@ pub(crate) fn resolve_from(
     branch: &str,
     printer: &Printer,
 ) -> anyhow::Result<std::path::PathBuf> {
-    let from = &*cfgd_core::resolve_repo_reference(from);
+    let from = &*cfgd_core::resolve_repo_reference(from)?;
     let dest = plan_from(from, target)?;
-    if is_clonable_source(from) {
+    if is_clonable_source(from)? {
         if held_config_document(&dest).is_none() {
             std::fs::create_dir_all(&dest)?;
             clone_into(&dest, from, branch, printer)?;
@@ -135,16 +147,20 @@ pub(crate) fn resolve_from(
 /// whether it carries a `cfgd.yaml` or a `cfgd.toml`, so a `config` naming the
 /// destination directory, or its document by either default name, is resolved
 /// again after the clone; a `config` naming any other file is kept as written.
-pub(crate) fn from_run_config(from: &str, config: &Path, dest: &Path) -> PathBuf {
-    let from = &*cfgd_core::resolve_repo_reference(from);
+pub(crate) fn from_run_config(
+    from: &str,
+    config: &Path,
+    dest: &Path,
+) -> cfgd_core::errors::Result<PathBuf> {
+    let from = &*cfgd_core::resolve_repo_reference(from)?;
     let names_the_default_document = config.file_name().is_some_and(|name| {
         name == cfgd_core::config::CONFIG_FILENAME
             || name == cfgd_core::config::CONFIG_FILENAME_TOML
     });
-    if is_clonable_source(from) && !names_the_default_document && !config.is_dir() {
-        return config.to_path_buf();
+    if is_clonable_source(from)? && !names_the_default_document && !config.is_dir() {
+        return Ok(config.to_path_buf());
     }
-    cfgd_core::config::config_document_in(dest)
+    Ok(cfgd_core::config::config_document_in(dest))
 }
 
 /// The `Cli` and the config document a `plan --from` / `apply --from` run
@@ -156,10 +172,10 @@ pub(crate) fn from_run(
     from: &str,
     printer: &Printer,
 ) -> anyhow::Result<(crate::cli::Cli, crate::cli::startup::StartupDocument)> {
-    let target = from_destination(&cli.config);
+    let target = from_destination(&cli.config)?;
     let dest = resolve_from(from, target.as_deref(), "master", printer)?;
     let from_cli = crate::cli::Cli {
-        config: from_run_config(from, &cli.config, &dest),
+        config: from_run_config(from, &cli.config, &dest)?,
         ..cli.clone()
     };
     let document = crate::cli::startup::StartupDocument::load(&from_cli.config);
@@ -221,10 +237,9 @@ fn occupied_default_destination(dest: &Path) -> Option<&'static str> {
 /// probing it answered about the caller's spelling instead of about what the
 /// default holds. The message still names the path the caller wrote.
 fn refuse_occupied_default_destination(dest: &Path) -> anyhow::Result<()> {
-    let default = cfgd_core::default_config_dir();
-    if !cfgd_core::names_the_same_path(dest, &default) {
+    let Some(default) = cfgd_core::named_default_config_dir(dest, cfgd_core::Scope::User) else {
         return Ok(());
-    }
+    };
     let Some(finding) = occupied_default_destination(&default) else {
         return Ok(());
     };

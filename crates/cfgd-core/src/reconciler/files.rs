@@ -117,7 +117,7 @@ impl<'a> super::Reconciler<'a> {
                 if !matches!(strategy, FileStrategy::Symlink | FileStrategy::Hardlink) {
                     continue;
                 }
-                let target = crate::expand_tilde(&file.target);
+                let target = file.target.clone();
                 // A Hardlink directory is deployed as a copy, and the
                 // convergence predicate already answers false for it.
                 if !super::modules::planned_file_converged(file, &target, strategy, None) {

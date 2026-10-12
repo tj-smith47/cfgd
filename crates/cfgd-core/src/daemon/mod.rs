@@ -140,9 +140,6 @@ pub trait DaemonHooks: Send + Sync {
         Ok(())
     }
 
-    /// Expand tilde (~) to home directory in a path.
-    fn expand_tilde(&self, path: &Path) -> PathBuf;
-
     /// Run persisted uninstall scripts for orphaned custom-manager packages and
     /// return the `(manager, package)` rows successfully removed, for the caller to
     /// GC. Default no-op for hooks that don't manage scripted packages.
@@ -157,17 +154,16 @@ pub trait DaemonHooks: Send + Sync {
 
 /// The module cache root a tick deploys into and judges ownership against.
 ///
-/// The `--cache-dir`-aware root every daemon tick resolves modules from; the
-/// fallback is what a daemon with no writable cache dir has always used.
-/// [`resolve_daemon_modules`] and `reconcile::reconcile_tick`'s unmanaged-file
-/// sweep both call this instead of re-deriving the same root by hand, or a
-/// re-rooted cache dir and the sweep's own idea of it drift apart.
+/// The `--cache-dir`-aware root every daemon tick resolves modules from, and
+/// the same root `cfgd apply` refuses to start without: a root that does not
+/// resolve is refused here too, so the tick that asked skips. [`resolve_daemon_modules`]
+/// and `reconcile::reconcile_tick`'s unmanaged-file sweep both call this, so a
+/// re-rooted cache dir and the sweep's own idea of it cannot drift apart.
 pub(super) fn tick_module_cache(
-    config_dir: &Path,
     scope: crate::Scope,
     over: Option<&Path>,
-) -> PathBuf {
-    crate::module_cache_root(over, scope).unwrap_or_else(|_| config_dir.join(".module-cache"))
+) -> crate::errors::Result<PathBuf> {
+    crate::module_cache_root(over, scope)
 }
 
 /// Resolve a profile's modules for a daemon tick.
@@ -193,7 +189,13 @@ pub(crate) fn resolve_daemon_modules(
     }
     let platform = crate::platform::Platform::current();
     let mgr_map = registry.manager_map();
-    let cache_base = tick_module_cache(config_dir, scope, cache_dir_override);
+    let cache_base = match tick_module_cache(scope, cache_dir_override) {
+        Ok(root) => root,
+        Err(e) => {
+            tracing::warn!(error = %e, "daemon: module resolution failed");
+            return Vec::new();
+        }
+    };
     match crate::modules::resolve_modules(
         &resolved.merged.modules,
         config_dir,
@@ -356,7 +358,7 @@ pub fn resolve_default_ipc_path(
     scope: crate::Scope,
 ) -> Result<PathBuf> {
     if let Some(override_path) = std::env::var_os(crate::CFGD_DAEMON_IPC_PATH_ENV) {
-        return crate::expand_tilde_strict(Path::new(&override_path), "daemon socket");
+        return crate::expand_tilde(Path::new(&override_path), "daemon socket");
     }
     #[cfg(unix)]
     {
@@ -864,7 +866,6 @@ pub(super) struct PreLoopSetup {
 pub(super) fn build_pre_loop_setup(
     config_path: &Path,
     profile_override: Option<&str>,
-    hooks: &dyn DaemonHooks,
     scope: crate::Scope,
     printer: &Printer,
     state_dir: Option<&Path>,
@@ -913,7 +914,7 @@ pub(super) fn build_pre_loop_setup(
     let initial_source_status = build_initial_source_status(&cfg.spec.sources, &source_cache_dir);
     let local_head_commit = crate::sources::SourceManager::head_commit(&config_dir);
 
-    let managed_paths = discover_managed_paths(config_path, profile_override, hooks);
+    let managed_paths = discover_managed_paths(config_path, profile_override);
 
     let (profiles_dir, profile_name) = profile_context(config_path, &cfg, profile_override);
     let resolved_profile_name = profile_name.to_string();
@@ -1008,7 +1009,6 @@ pub async fn run_compliance_and_reconcile_ticks(
     let mut setup = build_pre_loop_setup(
         config_path,
         None,
-        hooks.as_ref(),
         scope,
         &printer,
         Some(state_dir),
@@ -1215,13 +1215,12 @@ pub(super) async fn run_daemon_with(
     let explicit_state_dir = overrides.state_dir_override.is_some();
     let resolved_state_dir: Option<PathBuf> = match overrides.state_dir_override {
         Some(ref d) => Some(d.clone()),
-        None => crate::state::default_state_dir_for(overrides.scope).ok(),
+        None => Some(crate::state::default_state_dir_for(overrides.scope)?),
     };
 
     let setup = build_pre_loop_setup(
         &config_path,
         profile_override.as_deref(),
-        &*hooks,
         overrides.scope,
         &printer,
         resolved_state_dir.as_deref(),

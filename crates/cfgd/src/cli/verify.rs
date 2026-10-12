@@ -266,10 +266,10 @@ pub fn cmd_verify(
     let merged_env_items = reconciler::MergedEnvItems::new(
         &layered,
         &reconciler::recorded_manager_path_dirs(state, &resolved.merged, &resolved_modules),
-    );
+    )?;
     for r in &mut results {
         if let Some((expected, actual)) =
-            merged_env_items.display_values(&r.resource_type, &r.resource_id)
+            merged_env_items.display_values(&r.resource_type, &r.resource_id)?
         {
             r.expected = expected;
             r.actual = actual;
@@ -654,7 +654,9 @@ mod tests {
             ),
             &[],
         )
+        .unwrap()
         .declared_line("env-var", "EDITOR")
+        .unwrap()
         .expect("EDITOR renders a declared line");
 
         let state_dir = tmp.path().join("state");
@@ -780,7 +782,7 @@ mod tests {
             std::slice::from_ref(&module),
         );
         let files = cfgd_core::test_helpers::plant_managed_env_files(
-            &cfgd_core::reconciler::MergedEnvItems::new(&layered, &[]),
+            &cfgd_core::reconciler::MergedEnvItems::new(&layered, &[]).unwrap(),
             tmp_home.path(),
             cfgd_core::config::EnvScope::Interactive,
         );
@@ -893,14 +895,16 @@ mod tests {
             let resolved = resolve(vec![tier(500, value)]);
             let layered = cfgd_core::reconciler::LayeredEnv::of(&resolved, &[]);
             cfgd_core::reconciler::MergedEnvItems::new(&layered, &[])
+                .unwrap()
                 .declared_line("env-var", "EDITOR")
+                .unwrap()
                 .expect("EDITOR renders a line")
         };
         let (vim, nvim, emacs) = (line_of("vim"), line_of("nvim"), line_of("emacs"));
         let resolved = resolve(vec![tier(500, "vim"), tier(501, "nvim")]);
         let layered = cfgd_core::reconciler::LayeredEnv::of(&resolved, &[]);
         let files = cfgd_core::test_helpers::plant_managed_env_files(
-            &cfgd_core::reconciler::MergedEnvItems::new(&layered, &[]),
+            &cfgd_core::reconciler::MergedEnvItems::new(&layered, &[]).unwrap(),
             tmp_home.path(),
             cfgd_core::config::EnvScope::Interactive,
         );

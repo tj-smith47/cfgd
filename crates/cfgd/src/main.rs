@@ -366,12 +366,16 @@ fn main() -> anyhow::Result<()> {
 
     // Policy-driven self-update check (interval-gated, cheap when within
     // interval). Skipped for the daemon (its own loop runs the check), for
-    // `upgrade` itself (which checks explicitly), and when no subcommand was
-    // given (bare `cfgd` / `--version`). `startup_update_check` additionally
+    // `upgrade` itself (which checks explicitly), for `doctor` (a diagnostic
+    // that writes nothing; its own row reports the check's status), and when
+    // no subcommand was given (bare `cfgd` / `--version`). `startup_update_check` additionally
     // short-circuits under structured output and `Manual` policy.
     let skip_startup_check = matches!(
         cli.command,
-        Some(cli::Command::Daemon { .. }) | Some(cli::Command::Upgrade { .. }) | None
+        Some(cli::Command::Daemon { .. })
+            | Some(cli::Command::Upgrade { .. })
+            | Some(cli::Command::Doctor { .. })
+            | None
     );
     if !skip_startup_check {
         // Only the override is resolved here; the stored half comes off the

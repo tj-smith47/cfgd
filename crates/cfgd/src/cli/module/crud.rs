@@ -367,7 +367,7 @@ pub fn cmd_module_create(run: &RunContext<'_>, args: &ModuleCreateArgs) -> anyho
                 &cli.config,
                 cli.state_dir.is_some(),
                 cli.scope(),
-            )
+            )?
             .then_some(cache_base.as_path()),
             &cfg.spec.modules_effective().registries,
         );
@@ -637,20 +637,23 @@ pub fn cmd_module_update_local(
 
     // Remove files
     for target in &remove_files {
-        let expanded = cfgd_core::expand_tilde(&PathBuf::from(target));
+        let expanded =
+            cfgd_core::expand_tilde(&PathBuf::from(target), cfgd_core::FILE_TARGET_ROLE)?;
         // The two spellings are compared, so both fold.
         let target_str = cfgd_core::to_posix_string(&expanded);
         let before = doc.spec.files.len();
         let mut removed_source = None;
-        doc.spec.files.retain(|f| {
-            let f_target = cfgd_core::expand_tilde(&PathBuf::from(&f.target));
+        let mut kept = Vec::with_capacity(before);
+        for f in std::mem::take(&mut doc.spec.files) {
+            let f_target =
+                cfgd_core::expand_tilde(&PathBuf::from(&f.target), cfgd_core::FILE_TARGET_ROLE)?;
             if cfgd_core::to_posix_string(&f_target) == target_str || f.target == *target {
                 removed_source = Some(f.source.clone());
-                false
             } else {
-                true
+                kept.push(f);
             }
-        });
+        }
+        doc.spec.files = kept;
         if doc.spec.files.len() < before {
             // Clean up the source file
             if let Some(ref source) = removed_source {
@@ -967,7 +970,10 @@ pub fn cmd_module_delete(
             // everything is being removed.
             let purge_sec = printer.section("Purging Files");
             for file_entry in &doc.spec.files {
-                let target = cfgd_core::expand_tilde(std::path::Path::new(&file_entry.target));
+                let target = cfgd_core::expand_tilde(
+                    std::path::Path::new(&file_entry.target),
+                    cfgd_core::FILE_TARGET_ROLE,
+                )?;
                 if target.is_symlink() || target.exists() {
                     if target.is_dir() && !target.is_symlink() {
                         std::fs::remove_dir_all(&target)?;
@@ -991,7 +997,10 @@ pub fn cmd_module_delete(
             // symlinks the original location back. Delete reverses that.
             let restore_sec = printer.section("Restoring Files");
             for file_entry in &doc.spec.files {
-                let target = cfgd_core::expand_tilde(std::path::Path::new(&file_entry.target));
+                let target = cfgd_core::expand_tilde(
+                    std::path::Path::new(&file_entry.target),
+                    cfgd_core::FILE_TARGET_ROLE,
+                )?;
                 let source = module_dir.join(&file_entry.source);
 
                 if let Ok(link_dest) = std::fs::read_link(&target)

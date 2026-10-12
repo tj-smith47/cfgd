@@ -39,7 +39,7 @@ impl SystemConfigurator for LaunchAgentConfigurator {
                 None => continue,
             };
 
-            let plist_path = launch_agent_plist_path(name);
+            let plist_path = launch_agent_plist_path(name)?;
             let program = agent.get("program").and_then(|v| v.as_str()).unwrap_or("");
             let run_at_load = agent
                 .get("runAtLoad")
@@ -96,7 +96,7 @@ impl SystemConfigurator for LaunchAgentConfigurator {
                 .unwrap_or_default();
 
             let plist_content = generate_launch_agent_plist(name, program, &args, run_at_load);
-            let plist_path = launch_agent_plist_path(name);
+            let plist_path = launch_agent_plist_path(name)?;
 
             cx.report(
                 Role::Info,
@@ -135,10 +135,11 @@ impl SystemConfigurator for LaunchAgentConfigurator {
     }
 }
 
-fn launch_agent_plist_path(name: &str) -> std::path::PathBuf {
-    cfgd_core::expand_tilde(Path::new("~"))
-        .join("Library/LaunchAgents")
-        .join(format!("{}.plist", name))
+fn launch_agent_plist_path(name: &str) -> Result<std::path::PathBuf> {
+    Ok(
+        cfgd_core::expand_tilde(Path::new("~/Library/LaunchAgents"), "launch agent plist")?
+            .join(format!("{}.plist", name)),
+    )
 }
 
 fn generate_launch_agent_plist(
@@ -397,7 +398,7 @@ mod tests {
 
     #[test]
     fn launch_agent_plist_path_contains_label() {
-        let path = launch_agent_plist_path("com.cfgd.test");
+        let path = launch_agent_plist_path("com.cfgd.test").unwrap();
         let path_str = path.display().to_string();
         assert!(
             path_str.contains("Library/LaunchAgents"),

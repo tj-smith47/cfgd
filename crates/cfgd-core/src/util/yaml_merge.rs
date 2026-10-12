@@ -86,7 +86,7 @@ pub fn fold_env_layer(base: &mut Vec<config::EnvVar>, overlay: &[config::EnvVar]
         return;
     }
 
-    let home = crate::expand_tilde(std::path::Path::new("~"));
+    let home = crate::home_dir_var().map(std::path::PathBuf::from);
     let mut inherited: Option<String> = None;
 
     let split_at_reference = |value: &str, inherited: &mut Option<String>| {
@@ -119,7 +119,7 @@ pub fn fold_env_layer(base: &mut Vec<config::EnvVar>, overlay: &[config::EnvVar]
     let mut parts: Vec<String> = Vec::new();
     let take =
         |parts: &mut Vec<String>, seen: &mut std::collections::HashSet<String>, segment: &str| {
-            if seen.insert(crate::normalize_path_entry(segment, &home)) {
+            if seen.insert(crate::normalize_path_entry(segment, home.as_deref())) {
                 parts.push(segment.to_string());
             }
         };

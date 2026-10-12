@@ -2023,6 +2023,12 @@ pub trait SecretBackend: Send + Sync {
     fn encrypt_file(&self, path: &Path) -> Result<()>;
     fn decrypt_file(&self, path: &Path) -> Result<SecretString>;
     fn edit_file(&self, path: &Path) -> Result<()>;
+    /// The refusal every operation meets because the key this backend reads
+    /// lives under a home directory that does not resolve, or `None` when the
+    /// key has a location.
+    fn home_refusal(&self) -> Option<crate::errors::StateError> {
+        None
+    }
 }
 
 // --- SecretProvider trait ---
