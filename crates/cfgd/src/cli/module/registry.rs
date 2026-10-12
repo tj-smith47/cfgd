@@ -453,7 +453,7 @@ pub fn cmd_module_upgrade(
     // Update lockfile entry
     lockfile.modules[entry_idx] = cfgd_core::config::ModuleLockEntry {
         name: name.to_string(),
-        url: old_entry.url.clone(),
+        url: compute_lock_url(&format!("{}@{new_ref}", old_git_src.repo_url), &new_src),
         pinned_ref: new_ref.clone(),
         commit: new_commit.clone(),
         integrity: new_integrity.clone(),

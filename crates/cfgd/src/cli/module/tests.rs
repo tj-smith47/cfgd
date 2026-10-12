@@ -6882,7 +6882,7 @@ mod cmd_module_add_remote_local_bare {
             "lockfile should now pin v2.0.0: {lock_v2}"
         );
         assert!(
-            !lock_v2.contains("v1.0.0") || lock_v2.matches("v2.0.0").count() >= 1,
+            !lock_v2.contains("v1.0.0"),
             "lockfile should advance past v1.0.0: {lock_v2}"
         );
         assert!(
