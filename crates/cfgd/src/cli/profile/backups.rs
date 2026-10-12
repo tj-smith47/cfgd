@@ -25,17 +25,15 @@ pub(crate) fn collect_module_file_targets(
     if let Ok(cache_base) = module_cache_dir_for(cache_over, scope) {
         let lockfile = modules::load_lockfile(config_dir).unwrap_or_default();
         if let Some(entry) = lockfile.modules.iter().find(|e| e.name == module_name)
-            && let Ok(git_src) = modules::parse_git_source(&entry.url)
+            && let Ok(module_dir) = modules::locked_module_dir(entry, &cache_base)
+            && let Ok(loaded) = modules::load_module(&module_dir)
         {
-            let cache_dir = modules::git_cache_dir(&cache_base, &git_src.repo_url);
-            if let Ok(loaded) = modules::load_module(&cache_dir) {
-                return loaded
-                    .spec
-                    .files
-                    .iter()
-                    .map(|f| cfgd_core::expand_tilde(&PathBuf::from(&f.target)))
-                    .collect();
-            }
+            return loaded
+                .spec
+                .files
+                .iter()
+                .map(|f| cfgd_core::expand_tilde(&PathBuf::from(&f.target)))
+                .collect();
         }
     }
 

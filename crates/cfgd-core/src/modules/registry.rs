@@ -9,7 +9,7 @@ use crate::errors::{ModuleError, Result};
 
 use super::LoadedModule;
 use super::git::{
-    GitSource, clone_repo, fetch_existing_repo, fetch_git_source, get_head_commit_sha,
+    GitSource, checked_out_commit, clone_repo, fetch_existing_repo, fetch_git_source,
     git_cache_dir, is_git_source, open_repo, parse_git_source,
 };
 use super::loader::load_module;
@@ -106,9 +106,7 @@ pub fn fetch_remote_module(
 
     let local_path = fetch_git_source(&git_src, cache_base, "remote", printer)?;
 
-    // The repo root is the cache dir (before subdir), needed for the commit hash
-    let repo_dir = git_cache_dir(cache_base, &git_src.repo_url);
-    let commit = get_head_commit_sha(&repo_dir)?;
+    let commit = checked_out_commit(cache_base, &git_src)?;
 
     // Load the module from the fetched path
     let module = load_module(&local_path)?;

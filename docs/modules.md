@@ -507,6 +507,8 @@ files:
 
 Git sources are cached in `~/.cache/cfgd/modules/` (Linux; under the cache dir on every platform, see `configuration.md`) and updated on `cfgd apply` or daemon sync.
 
+Each repository is cloned once, and the clone follows the default branch for sources that name no ref. Each pinned tag, branch or commit gets a checkout of its own inside that clone, so two sources pinning different refs of one repository each deploy their own ref's files. Removing a locked module from a profile (`cfgd profile update <profile> --module -<name>`) deletes the clone and every checkout in it; `cfgd module upgrade` deletes the checkout of the version it replaced.
+
 cfgd honors your local git configuration when cloning and fetching, so
 `url.<base>.insteadOf` rewrite rules, `http.proxy`, and similar settings apply.
 For example, a global rule that rewrites SSH URLs to HTTPS will be respected:

@@ -6861,6 +6861,11 @@ mod cmd_module_add_remote_local_bare {
         let lock_v1 = std::fs::read_to_string(work.path().join("modules.lock")).unwrap();
         assert!(lock_v1.contains("v1.0.0"));
 
+        let cache_base = crate::cli::module_cache_dir(&cli).unwrap();
+        let repo_url = cfgd_core::to_file_url(&bare);
+        let checkout = |r: &str| modules::git_checkout_dir(&cache_base, &repo_url, Some(r));
+        assert!(checkout("v1.0.0").is_dir(), "the add checked out v1.0.0");
+
         // Push v2 to the bare repo.
         let src = bare_root.path().join("src");
         add_tag_to_bare(&src, &bare, "v2.0.0");
@@ -6879,6 +6884,14 @@ mod cmd_module_add_remote_local_bare {
         assert!(
             !lock_v2.contains("v1.0.0") || lock_v2.matches("v2.0.0").count() >= 1,
             "lockfile should advance past v1.0.0: {lock_v2}"
+        );
+        assert!(
+            !checkout("v1.0.0").exists(),
+            "the upgrade released the checkout of the version it replaced"
+        );
+        assert!(
+            checkout("v2.0.0").is_dir(),
+            "the upgrade checked out v2.0.0"
         );
     }
 

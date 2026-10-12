@@ -380,20 +380,25 @@ $ cfgd apply --plan plan.json
 ✗ plan.json is stale: /home/you/.config/cfgd/profiles/tiny.yaml changed since it was written, so it no longer describes this config — run `cfgd plan -o json` again
 ```
 
+Under `-o json` this refusal carries the `stale` kind and the file as `changed`. When
+the refusal is over a directory cfgd could not list (below), `changed` names that
+directory and `"unreadable": true` sits beside it; the key is absent otherwise.
+
 The stamped files are every file the derivation read:
 
 - the config document, every profile and module document, both lockfiles and every
   declared package manifest (a `Brewfile`, a `package.json`)
 - every managed-file source, templates and encrypted sources included, whatever its
-  strategy; a directory source is stamped with every file beneath it, so an edit to a
-  nested file alone refuses the replay
-- every module file source, local or from a module's git checkout (the checked-out
-  files; git's own `.git` directory is not stamped)
+  strategy
+- every module file source, local or from a module's git checkout
 - every secret source the plan decrypts
 - every systemd `unitFile` the plan installs
 - every script file a patch names in its `run`, and every script file a lifecycle hook
   (`preApply`, `postApply`, `preReconcile`, `postReconcile`), the profile's or a
   module's, names in its `run`
+
+A directory source is stamped with every file beneath it except a `.git` entry and
+what lies under it, so an edit to a nested file alone refuses the replay.
 
 A directory beneath a stamped source that cfgd could not list when the plan was written
 refuses the replay too, naming that directory: nothing beneath it was stamped, so cfgd

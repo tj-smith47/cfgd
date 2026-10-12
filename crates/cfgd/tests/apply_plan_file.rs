@@ -1043,90 +1043,105 @@ fn a_dry_run_plan_is_refused_once_a_managed_source_changes() {
     assert!(!target.exists(), "a refused replay writes nothing");
 }
 
-/// A `tools` module whose two `files:` entries come from one local repository
-/// pinned by tag: the whole checkout, and its `docs` subdirectory. Returns the
-/// repository's temp dir and both targets.
-fn pinned_git_module_setup(
-    config_dir: &Path,
-) -> (tempfile::TempDir, std::path::PathBuf, std::path::PathBuf) {
+/// A local repository whose first commit holds `README.md`, followed by one
+/// commit per `(tag, page)` that writes `page` to `docs/index.md` and tags it.
+/// Returns the repository's temp dir and its `file://` URL.
+fn tagged_docs_repo(pages: &[(&str, &str)]) -> (tempfile::TempDir, String) {
     let repo_dir = tempfile::tempdir().unwrap();
     let repo = git2::Repository::init(repo_dir.path()).unwrap();
+    let sig = git2::Signature::now("t", "t@example.com").unwrap();
     std::fs::create_dir_all(repo_dir.path().join("docs")).unwrap();
     std::fs::write(repo_dir.path().join("README.md"), "hi").unwrap();
-    std::fs::write(repo_dir.path().join("docs").join("index.md"), "# docs").unwrap();
-    let mut index = repo.index().unwrap();
-    index.add_path(Path::new("README.md")).unwrap();
-    index.add_path(Path::new("docs/index.md")).unwrap();
-    index.write().unwrap();
-    let tree = repo.find_tree(index.write_tree().unwrap()).unwrap();
-    let sig = git2::Signature::now("t", "t@example.com").unwrap();
-    let commit = repo
-        .commit(Some("HEAD"), &sig, &sig, "initial", &tree, &[])
-        .unwrap();
-    repo.tag_lightweight("v1.0", repo.find_commit(commit).unwrap().as_object(), false)
-        .unwrap();
-
+    let mut parent: Option<git2::Oid> = None;
+    for (i, (tag, page)) in std::iter::once(("", ""))
+        .chain(pages.iter().copied())
+        .enumerate()
+    {
+        let mut index = repo.index().unwrap();
+        if i == 0 {
+            index.add_path(Path::new("README.md")).unwrap();
+        } else {
+            std::fs::write(repo_dir.path().join("docs").join("index.md"), page).unwrap();
+            index.add_path(Path::new("docs/index.md")).unwrap();
+        }
+        index.write().unwrap();
+        let tree = repo.find_tree(index.write_tree().unwrap()).unwrap();
+        let parents: Vec<git2::Commit> = parent
+            .iter()
+            .map(|id| repo.find_commit(*id).unwrap())
+            .collect();
+        let parent_refs: Vec<&git2::Commit> = parents.iter().collect();
+        let id = repo
+            .commit(Some("HEAD"), &sig, &sig, "commit", &tree, &parent_refs)
+            .unwrap();
+        if !tag.is_empty() {
+            repo.tag_lightweight(tag, repo.find_commit(id).unwrap().as_object(), false)
+                .unwrap();
+        }
+        parent = Some(id);
+    }
     let url = cfgd_core::to_file_url(repo_dir.path());
-    let whole = config_dir.join("out").join("dots");
-    let docs = config_dir.join("out").join("docs");
+    (repo_dir, url)
+}
+
+/// Writes a `tools` module whose `files:` entries are `(source, target)`, and
+/// a `tiny` profile that enables it.
+fn write_tools_module(config_dir: &Path, entries: &[(String, &Path)]) {
     let module_dir = config_dir.join("modules").join("tools");
     std::fs::create_dir_all(&module_dir).unwrap();
-    let module = format!(
-        "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: tools\nspec:\n  files:\n    - source: {url}@v1.0\n      target: {}\n    - source: {url}//docs@v1.0\n      target: {}\n",
-        cfgd_core::to_posix_string(&whole),
-        cfgd_core::to_posix_string(&docs)
+    let mut module = String::from(
+        "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: tools\nspec:\n  files:\n",
     );
+    for (source, target) in entries {
+        module.push_str(&format!(
+            "    - source: {source}\n      target: {}\n",
+            cfgd_core::to_posix_string(target)
+        ));
+    }
     std::fs::write(module_dir.join("module.yaml"), module).unwrap();
     let profile = "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: tiny\nspec:\n  modules:\n    - tools\n";
     std::fs::write(config_dir.join("profiles").join("tiny.yaml"), profile).unwrap();
-    (repo_dir, whole, docs)
 }
 
-/// The one file named `name` under `root`, found by walking it.
-fn find_file(root: &Path, name: &str) -> std::path::PathBuf {
-    let mut found = Vec::new();
-    let mut pending = vec![root.to_path_buf()];
-    while let Some(dir) = pending.pop() {
-        for entry in std::fs::read_dir(&dir).unwrap() {
-            let path = entry.unwrap().path();
-            if path.file_name().is_some_and(|n| n == ".git") {
-                continue;
-            }
-            if path.is_dir() {
-                pending.push(path);
-            } else if path.ends_with(name) {
-                found.push(path);
-            }
-        }
-    }
-    assert_eq!(
-        found.len(),
-        1,
-        "exactly one {name} under {}: {found:?}",
-        root.display()
+/// A `tools` module whose two `files:` entries come from one local repository
+/// pinned by tag: the whole checkout, and its `docs` subdirectory. Returns the
+/// repository's temp dir, its URL and both targets.
+fn pinned_git_module_setup(
+    config_dir: &Path,
+) -> (
+    tempfile::TempDir,
+    String,
+    std::path::PathBuf,
+    std::path::PathBuf,
+) {
+    let (repo_dir, url) = tagged_docs_repo(&[("v1.0", "# docs")]);
+    let whole = config_dir.join("out").join("dots");
+    let docs = config_dir.join("out").join("docs");
+    write_tools_module(
+        config_dir,
+        &[
+            (format!("{url}@v1.0"), &whole),
+            (format!("{url}//docs@v1.0"), &docs),
+        ],
     );
-    found.remove(0)
+    (repo_dir, url, whole, docs)
+}
+
+/// Where the run that `cfgd_at` starts checks out `requested_ref` of `url`.
+fn pinned_checkout(state_dir: &Path, url: &str, requested_ref: &str) -> std::path::PathBuf {
+    let cache_base =
+        cfgd_core::module_cache_root(Some(&state_dir.join("cache")), cfgd_core::Scope::User)
+            .unwrap();
+    cfgd_core::modules::git_checkout_dir(&cache_base, url, Some(requested_ref))
 }
 
 #[test]
 fn a_saved_plan_over_two_file_entries_from_one_pinned_repository_replays() {
     let (config_dir, state_dir, _) = tiny_profile_setup();
-    let (_repo, whole, docs) = pinned_git_module_setup(config_dir.path());
+    let (_repo, _, whole, docs) = pinned_git_module_setup(config_dir.path());
     let plan_file = binary_plan_file(config_dir.path(), state_dir.path(), &["-o", "json", "plan"]);
 
-    let plan = plan_file.to_str().unwrap();
-    let out = cfgd_at(
-        config_dir.path(),
-        state_dir.path(),
-        &["--yes", "-o", "json", "apply", "--plan", plan],
-    );
-    assert_eq!(
-        out.status.code(),
-        Some(0),
-        "the replay runs: stdout {} stderr {}",
-        String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr)
-    );
+    assert_replay_succeeds(config_dir.path(), state_dir.path(), &plan_file);
     assert!(
         whole.join("README.md").exists(),
         "the checkout entry deployed"
@@ -1138,12 +1153,61 @@ fn a_saved_plan_over_two_file_entries_from_one_pinned_repository_replays() {
 }
 
 #[test]
-fn a_saved_plan_is_refused_once_a_git_sourced_module_file_changes_in_the_cache() {
+fn a_saved_plan_over_two_pinned_refs_of_one_repository_replays_each_refs_bytes() {
     let (config_dir, state_dir, _) = tiny_profile_setup();
-    let (_repo, whole, docs) = pinned_git_module_setup(config_dir.path());
+    let (_repo, url) = tagged_docs_repo(&[("v1.0", "# docs"), ("v2.0", "# docs, version two")]);
+    let v1 = config_dir.path().join("out").join("v1");
+    let v2 = config_dir.path().join("out").join("v2");
+    write_tools_module(
+        config_dir.path(),
+        &[
+            (format!("{url}//docs@v1.0"), &v1),
+            (format!("{url}//docs@v2.0"), &v2),
+        ],
+    );
     let plan_file = binary_plan_file(config_dir.path(), state_dir.path(), &["-o", "json", "plan"]);
 
-    let cached = find_file(&state_dir.path().join("cache"), "index.md");
+    assert_replay_succeeds(config_dir.path(), state_dir.path(), &plan_file);
+    let page = |dir: &Path| {
+        let text = std::fs::read_to_string(dir.join("index.md")).unwrap();
+        cfgd_core::normalize_line_endings(&text).into_owned()
+    };
+    assert_eq!(page(&v1), "# docs", "the v1.0 target holds v1.0's page");
+    assert_eq!(page(&v2), "# docs, version two");
+}
+
+/// Replays `plan_file` through the real binary and fails unless it exits 0.
+fn assert_replay_succeeds(config_dir: &Path, state_dir: &Path, plan_file: &Path) {
+    let out = cfgd_at(
+        config_dir,
+        state_dir,
+        &[
+            "--yes",
+            "-o",
+            "json",
+            "apply",
+            "--plan",
+            plan_file.to_str().unwrap(),
+        ],
+    );
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "the replay runs: stdout {} stderr {}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
+fn a_saved_plan_is_refused_once_a_git_sourced_module_file_changes_in_the_cache() {
+    let (config_dir, state_dir, _) = tiny_profile_setup();
+    let (_repo, url, whole, docs) = pinned_git_module_setup(config_dir.path());
+    let plan_file = binary_plan_file(config_dir.path(), state_dir.path(), &["-o", "json", "plan"]);
+
+    let cached = pinned_checkout(state_dir.path(), &url, "v1.0")
+        .join("docs")
+        .join("index.md");
     std::fs::write(&cached, "# docs, edited in the cache").unwrap();
 
     assert_replay_refused_as_stale(config_dir.path(), state_dir.path(), &plan_file, &cached);

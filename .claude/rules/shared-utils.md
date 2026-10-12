@@ -556,6 +556,8 @@ The **30-second memo convention** and the exclusion a TTL guard needs are in `ut
 - `detect_git_remote()` / `detect_git_head()` — the CWD repo's origin URL and HEAD SHA; use for artifact provenance; nothing re-derives them.
 - `git_ssh_credentials(url, username, allowed)` — the git2 credential callback (SSH agent + HTTPS helper).
 - `fetch_git_source(git_src, cache_base, module_name, printer)` (`modules/git.rs`) — the ONE materialization of a module's git source; its two short-circuits must never be re-derived at a call site.
+- `git_checkout_dir(cache_base, repo_url, requested_ref)` / `checked_out_commit(cache_base, git_src)` (`modules/git.rs`) — where a git source's files are read (the URL-keyed clone for an unpinned source, a per-ref checkout inside it for a pinned one) and the commit that tree holds. `git_cache_dir` names the clone alone; reading a pinned source's files or HEAD from it reads another ref's bytes.
+- `locked_module_dir(entry, cache_base)` / `release_lock_entry_checkouts(entry, cache_base)` (`modules/lockfile.rs`) — the directory a lock entry loads from, and the removal of every checkout it was materialized in; a lock entry's tree is never composed from `git_cache_dir`.
 - `is_git_source(value)` (`modules/git.rs`) — the ONE git-URL predicate, pure and scheme-based, deliberately never probing the filesystem. `is_clonable_source` layers `--from`'s extra arms and leaves it unwidened.
 
 ## OCI artifacts / Sigstore

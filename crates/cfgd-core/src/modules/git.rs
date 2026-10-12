@@ -22,6 +22,14 @@ pub struct GitSource {
     pub subdir: Option<String>,
 }
 
+impl GitSource {
+    /// The ref this source asks for: its tag, else its `?ref=`. `None` follows
+    /// the repository's default branch.
+    pub fn requested_ref(&self) -> Option<&str> {
+        self.tag.as_deref().or(self.git_ref.as_deref())
+    }
+}
+
 /// Check whether a source string is a git URL (not a local path).
 ///
 /// The single git-URL predicate for the whole workspace: module file sources,
@@ -139,11 +147,97 @@ pub fn parse_git_source(source: &str) -> Result<GitSource> {
     })
 }
 
-/// Compute the cache directory for a git source URL.
-/// Uses SHA-256 hash of the repo URL for uniqueness.
+/// The cached clone of a git repository, named by the SHA-256 of its URL.
+///
+/// It holds the repository's objects, tags and remote-tracking branches, and its
+/// working tree is the checkout an unpinned source follows. A source naming a
+/// ref reads its files from [`git_checkout_dir`].
 pub fn git_cache_dir(cache_base: &Path, repo_url: &str) -> PathBuf {
     let hash = crate::sha256_hex(repo_url.as_bytes());
     cache_base.join(&hash[..32])
+}
+
+/// Where cfgd keeps the trees it exports out of a clone, one per requested ref.
+const PINNED_CHECKOUTS_DIR: &str = "cfgd-checkouts";
+
+/// The directory a source's files are read from: the clone's own working tree
+/// for `requested_ref: None`, and otherwise a tree of its own for that ref.
+///
+/// Each ref gets its own directory because a module may take files from one
+/// repository at two refs, and one working tree holds one ref's bytes at a
+/// time. The trees sit inside the clone's `.git`, out of its working tree, so
+/// removing the clone removes them too.
+pub fn git_checkout_dir(cache_base: &Path, repo_url: &str, requested_ref: Option<&str>) -> PathBuf {
+    let clone = git_cache_dir(cache_base, repo_url);
+    match requested_ref {
+        None => clone,
+        Some(ref_name) => pinned_checkout_in(&clone, ref_name),
+    }
+}
+
+/// A pinned ref's slot holds its exported tree and the commit that tree was
+/// exported from. The two land together, by one rename of the whole slot.
+const SLOT_TREE: &str = "tree";
+const SLOT_COMMIT: &str = "commit";
+
+fn pinned_checkout_in(clone: &Path, ref_name: &str) -> PathBuf {
+    let hash = crate::sha256_hex(ref_name.as_bytes());
+    clone
+        .join(".git")
+        .join(PINNED_CHECKOUTS_DIR)
+        .join(&hash[..32])
+        .join(SLOT_TREE)
+}
+
+/// The record beside a pinned tree naming the commit the tree was exported from.
+fn pinned_checkout_marker(checkout: &Path) -> PathBuf {
+    checkout.with_file_name(SLOT_COMMIT)
+}
+
+/// The commit a source's files were materialized from by [`fetch_git_source`]:
+/// the clone's HEAD for an unpinned source, the commit its ref resolved to
+/// otherwise.
+pub fn checked_out_commit(cache_base: &Path, git_src: &GitSource) -> Result<String> {
+    let checkout = git_checkout_dir(cache_base, &git_src.repo_url, git_src.requested_ref());
+    if git_src.requested_ref().is_none() {
+        return get_head_commit_sha(&checkout);
+    }
+    let marker = pinned_checkout_marker(&checkout);
+    std::fs::read_to_string(&marker)
+        .map(|s| s.trim().to_string())
+        .map_err(|e| {
+            ModuleError::GitFetchFailed {
+                module: git_src.repo_url.clone(),
+                url: git_src.repo_url.clone(),
+                message: format!(
+                    "cannot read {}: {e}",
+                    crate::fold_home_in_text(&crate::to_posix_string(&marker))
+                ),
+            }
+            .into()
+        })
+}
+
+/// Remove the tree exported for `requested_ref` of `repo_url`, and its commit
+/// record. Nothing to remove is not an error.
+pub fn remove_pinned_checkout(
+    cache_base: &Path,
+    repo_url: &str,
+    requested_ref: &str,
+) -> std::io::Result<()> {
+    let checkout = git_checkout_dir(cache_base, repo_url, Some(requested_ref));
+    match checkout.parent() {
+        Some(slot) => absent_ok(std::fs::remove_dir_all(slot)),
+        None => Ok(()),
+    }
+}
+
+/// A removal whose target was already gone succeeded.
+fn absent_ok(removal: std::io::Result<()>) -> std::io::Result<()> {
+    match removal {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        other => other,
+    }
 }
 
 /// Default cache directory for module git sources: `<cache-root>/modules` under
@@ -227,9 +321,9 @@ pub fn fetch_git_source(
         clone_repo(&cache_dir, git_src, module_name, printer)?;
     }
 
-    checkout_ref(&cache_dir, git_src, module_name)?;
+    let checkout = checkout_ref(&cache_dir, git_src, module_name)?;
 
-    resolve_subdir(cache_dir, &git_src.subdir, module_name, &git_src.repo_url)
+    resolve_subdir(checkout, &git_src.subdir, module_name, &git_src.repo_url)
 }
 
 /// Whether the cached checkout can already answer `git_src`'s requested ref
@@ -255,7 +349,7 @@ pub fn fetch_git_source(
 /// immutable — the one shape where skipping the fetch could change what lands in
 /// the working tree.
 fn cache_answers_pinned_ref(repo_path: &Path, git_src: &GitSource) -> bool {
-    let Some(ref_name) = git_src.tag.as_deref().or(git_src.git_ref.as_deref()) else {
+    let Some(ref_name) = git_src.requested_ref() else {
         return false;
     };
     if !is_full_object_id(ref_name) {
@@ -338,7 +432,7 @@ fn resolve_ref_object<'r>(
 /// decides, and inside it the checkout advances only as far as the last
 /// transfer reached.
 fn cache_resolves_ref(repo_path: &Path, git_src: &GitSource) -> bool {
-    let Some(ref_name) = git_src.tag.as_deref().or(git_src.git_ref.as_deref()) else {
+    let Some(ref_name) = git_src.requested_ref() else {
         return true;
     };
     let Ok(repo) = git2::Repository::open(repo_path) else {
@@ -712,9 +806,9 @@ fn advance_to_default_branch(
 
 /// Put the working tree on `commit`, discarding whatever is in it.
 ///
-/// The one checkout in this module: both the pinned and the unpinned paths land
-/// here, so a module's files are replaced the same way whichever named the
-/// commit. `label` is what the caller asked for, and names the failure.
+/// Only an unpinned source moves the clone's working tree; a pinned one is
+/// exported to a tree of its own by `export_commit`. `label` is what the caller
+/// asked for, and names the failure.
 fn detach_and_checkout(
     repo: &git2::Repository,
     commit: git2::Oid,
@@ -739,13 +833,20 @@ fn detach_and_checkout(
     Ok(())
 }
 
-fn checkout_ref(repo_path: &Path, git_src: &GitSource, module_name: &str) -> Result<()> {
+/// Materialize `git_src`'s files out of the clone at `repo_path` and return the
+/// directory holding them.
+///
+/// An unpinned source advances the clone's own working tree. A source naming a
+/// ref is exported to [`git_checkout_dir`]'s tree for that ref, and the clone's
+/// working tree is left alone. The tree is rewritten only when the ref resolves
+/// to a commit other than the one it was exported from, so two entries naming
+/// one ref share it and an entry naming another ref never writes into it.
+fn checkout_ref(repo_path: &Path, git_src: &GitSource, module_name: &str) -> Result<PathBuf> {
     let repo = open_repo(repo_path, module_name, &git_src.repo_url)?;
 
-    let target_ref = git_src.tag.as_deref().or(git_src.git_ref.as_deref());
-
-    let Some(ref_name) = target_ref else {
-        return advance_to_default_branch(&repo, git_src, module_name);
+    let Some(ref_name) = git_src.requested_ref() else {
+        advance_to_default_branch(&repo, git_src, module_name)?;
+        return Ok(repo_path.to_path_buf());
     };
 
     // Try as a tag first, then as a branch
@@ -764,7 +865,91 @@ fn checkout_ref(repo_path: &Path, git_src: &GitSource, module_name: &str) -> Res
             message: format!("ref '{ref_name}' does not point to a commit: {e}"),
         })?;
 
-    detach_and_checkout(&repo, commit.id(), ref_name, git_src, module_name)
+    export_commit(&repo, &commit, &pinned_checkout_in(repo_path, ref_name)).map_err(|message| {
+        ModuleError::GitFetchFailed {
+            module: module_name.to_string(),
+            url: git_src.repo_url.clone(),
+            message: format!("cannot check out '{ref_name}': {message}"),
+        }
+        .into()
+    })
+}
+
+/// Write `commit`'s tree to the pinned tree `dest`, unless its slot already
+/// holds that commit.
+///
+/// The whole slot (tree and commit record) is built in a directory unique to
+/// this call and renamed into place, so the final path only ever shows a
+/// complete slot. A rename onto an existing slot fails: when that slot already
+/// records `commit`, another run won the race and its tree is used; when it
+/// records an older commit, it is moved aside and the rename is tried again.
+fn export_commit(
+    repo: &git2::Repository,
+    commit: &git2::Commit<'_>,
+    dest: &Path,
+) -> std::result::Result<PathBuf, String> {
+    let id = commit.id().to_string();
+    let io = |what: &str, path: &Path, e: std::io::Error| {
+        format!(
+            "{what} {}: {e}",
+            crate::fold_home_in_text(&crate::to_posix_string(path))
+        )
+    };
+    let holds_commit = || {
+        dest.is_dir()
+            && std::fs::read_to_string(pinned_checkout_marker(dest))
+                .is_ok_and(|recorded| recorded.trim() == id)
+    };
+    if holds_commit() {
+        return Ok(dest.to_path_buf());
+    }
+    let (Some(slot), Some(slots)) = (dest.parent(), dest.parent().and_then(Path::parent)) else {
+        return Err(format!(
+            "{} has no slot directory",
+            crate::fold_home_in_text(&crate::to_posix_string(dest))
+        ));
+    };
+    std::fs::create_dir_all(slots).map_err(|e| io("cannot create", slots, e))?;
+
+    let staging_dir = tempfile::Builder::new()
+        .prefix(".export-")
+        .tempdir_in(slots)
+        .map_err(|e| io("cannot create a staging directory in", slots, e))?;
+    let staging = staging_dir.path();
+    let mut checkout = git2::build::CheckoutBuilder::new();
+    checkout
+        .target_dir(&staging.join(SLOT_TREE))
+        .update_index(false)
+        .force();
+    repo.checkout_tree(commit.as_object(), Some(&mut checkout))
+        .map_err(|e| e.to_string())?;
+    let record = staging.join(SLOT_COMMIT);
+    std::fs::write(&record, &id).map_err(|e| io("cannot write", &record, e))?;
+
+    let mut last = None;
+    for _ in 0..4 {
+        match std::fs::rename(staging, slot) {
+            Ok(()) => return Ok(dest.to_path_buf()),
+            Err(_) if holds_commit() => return Ok(dest.to_path_buf()),
+            Err(e) => last = Some(e),
+        }
+        if slot.exists() {
+            let aside = tempfile::Builder::new()
+                .prefix(".stale-")
+                .tempdir_in(slots)
+                .map_err(|e| io("cannot create a directory in", slots, e))?;
+            // Another run may have moved or replaced the slot in the meantime;
+            // the next rename attempt decides either way.
+            let _ = std::fs::rename(slot, aside.path().join(SLOT_TREE));
+        }
+    }
+    Err(match last {
+        Some(e) => io("cannot move into", slot, e),
+        None => format!(
+            "cannot move into {}",
+            crate::fold_home_in_text(&crate::to_posix_string(slot))
+        ),
+    })
 }
 
 /// Get the HEAD commit SHA from a git repo.
@@ -1537,7 +1722,11 @@ mod tests {
         assert_eq!(pinned.tag.as_deref(), Some(sha.as_str()));
         let again = fetch_git_source(&pinned, cache_base.path(), "pinned", &printer)
             .expect("a pinned SHA the cache already holds must resolve without the remote");
-        assert_eq!(again, path);
+        assert_ne!(again, path, "a pinned ref reads its own checkout");
+        assert_eq!(
+            again,
+            git_checkout_dir(cache_base.path(), &plain.repo_url, Some(&sha))
+        );
         assert_eq!(std::fs::read_to_string(again.join("a.txt")).unwrap(), "v1");
     }
 
@@ -1824,6 +2013,97 @@ mod tests {
             map.contains_key("https://example.invalid/ceiling-one-too-many.git"),
             "the entry that reached the ceiling must be the one kept"
         );
+    }
+
+    // --- export_commit: the pinned slot lands whole ---
+
+    fn commit_one_file(repo: &git2::Repository, content: &str) -> git2::Oid {
+        let workdir = repo.workdir().unwrap().to_path_buf();
+        std::fs::write(workdir.join("payload.txt"), content).unwrap();
+        let mut index = repo.index().unwrap();
+        index.add_path(Path::new("payload.txt")).unwrap();
+        index.write().unwrap();
+        let tree = repo.find_tree(index.write_tree().unwrap()).unwrap();
+        let sig = git2::Signature::now("Test", "test@example.com").unwrap();
+        let parents: Vec<git2::Commit<'_>> = repo
+            .head()
+            .ok()
+            .and_then(|h| h.peel_to_commit().ok())
+            .into_iter()
+            .collect();
+        let parent_refs: Vec<&git2::Commit<'_>> = parents.iter().collect();
+        repo.commit(Some("HEAD"), &sig, &sig, content, &tree, &parent_refs)
+            .unwrap()
+    }
+
+    fn assert_slot_holds(dest: &Path, commit: git2::Oid, content: &str) {
+        let read = std::fs::read_to_string(dest.join("payload.txt")).unwrap();
+        assert_eq!(
+            crate::normalize_line_endings(&read),
+            content,
+            "the exported tree holds another commit's bytes"
+        );
+        let recorded = std::fs::read_to_string(pinned_checkout_marker(dest)).unwrap();
+        assert_eq!(recorded.trim(), commit.to_string());
+        let leftovers: Vec<String> = std::fs::read_dir(dest.parent().unwrap().parent().unwrap())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .filter(|n| n.starts_with('.'))
+            .collect();
+        assert!(leftovers.is_empty(), "staging left behind: {leftovers:?}");
+    }
+
+    #[test]
+    fn concurrent_exports_of_one_ref_each_end_on_a_whole_tree() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = git2::Repository::init(dir.path()).unwrap();
+        let commit = commit_one_file(&repo, "pinned bytes\n");
+        const RUNS: usize = 8;
+        for round in 0..6 {
+            let dest = pinned_checkout_in(dir.path(), &format!("v{round}"));
+            let barrier = std::sync::Barrier::new(RUNS);
+            let results: Vec<_> = std::thread::scope(|s| {
+                let handles: Vec<_> = (0..RUNS)
+                    .map(|_| {
+                        s.spawn(|| {
+                            let repo = git2::Repository::open(dir.path()).unwrap();
+                            let commit = repo.find_commit(commit).unwrap();
+                            barrier.wait();
+                            let landed = export_commit(&repo, &commit, &dest);
+                            // Each run reads the tree it was handed while the
+                            // others may still be landing theirs.
+                            let read = landed.as_ref().ok().map(|p| {
+                                crate::normalize_line_endings(
+                                    &std::fs::read_to_string(p.join("payload.txt")).unwrap(),
+                                )
+                                .into_owned()
+                            });
+                            (landed, read)
+                        })
+                    })
+                    .collect();
+                handles.into_iter().map(|h| h.join().unwrap()).collect()
+            });
+            for (landed, read) in results {
+                assert_eq!(landed.as_deref(), Ok(dest.as_path()), "round {round}");
+                assert_eq!(read.as_deref(), Some("pinned bytes\n"), "round {round}");
+            }
+            assert_slot_holds(&dest, commit, "pinned bytes\n");
+        }
+    }
+
+    #[test]
+    fn an_export_after_the_ref_moved_replaces_the_older_slot() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = git2::Repository::init(dir.path()).unwrap();
+        let first = commit_one_file(&repo, "first\n");
+        let dest = pinned_checkout_in(dir.path(), "main");
+        export_commit(&repo, &repo.find_commit(first).unwrap(), &dest).unwrap();
+        assert_slot_holds(&dest, first, "first\n");
+
+        let second = commit_one_file(&repo, "second\n");
+        export_commit(&repo, &repo.find_commit(second).unwrap(), &dest).unwrap();
+        assert_slot_holds(&dest, second, "second\n");
     }
 
     // --- checkout_ref: ref that does not peel to a commit ---

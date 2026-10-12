@@ -2450,7 +2450,8 @@ fn verify_lockfile_integrity_success() {
     // Build a fake lock entry that points to an "http" URL whose SHA hash
     // maps to a predictable cache dir
     let url = "https://example.com/fake.git@v1.0";
-    let expected_cache_dir = git_cache_dir(dir.path(), "https://example.com/fake.git");
+    let expected_cache_dir =
+        git_checkout_dir(dir.path(), "https://example.com/fake.git", Some("v1.0"));
     // Create content in the expected cache dir
     std::fs::create_dir_all(&expected_cache_dir).unwrap();
     std::fs::write(expected_cache_dir.join("module.yaml"), "test content\n").unwrap();
@@ -2487,7 +2488,7 @@ fn verify_lockfile_integrity_success() {
 fn verify_lockfile_integrity_mismatch() {
     let dir = tempfile::tempdir().unwrap();
     let url = "https://example.com/mod.git@v1.0";
-    let cache_dir = git_cache_dir(dir.path(), "https://example.com/mod.git");
+    let cache_dir = git_checkout_dir(dir.path(), "https://example.com/mod.git", Some("v1.0"));
     std::fs::create_dir_all(&cache_dir).unwrap();
     std::fs::write(cache_dir.join("module.yaml"), "tampered\n").unwrap();
 
@@ -6571,7 +6572,11 @@ fn hash_module_contents_streams_a_file_larger_than_its_read_buffer() {
 fn verify_lockfile_integrity_with_subdir() {
     let cache_base = tempfile::tempdir().unwrap();
     let url = "https://example.com/multi.git@v1.0";
-    let cache_dir = git_cache_dir(cache_base.path(), "https://example.com/multi.git");
+    let cache_dir = git_checkout_dir(
+        cache_base.path(),
+        "https://example.com/multi.git",
+        Some("v1.0"),
+    );
     let subdir_path = cache_dir.join("nvim");
     std::fs::create_dir_all(&subdir_path).unwrap();
     std::fs::write(subdir_path.join("module.yaml"), "test content\n").unwrap();
@@ -6751,8 +6756,10 @@ fn dependency_order_exceeds_module_count_limit() {
 
 mod git_fixture_tests {
     use super::super::git::{
-        TagSignatureStatus, check_tag_signature, fetch_git_source, get_head_commit_sha, open_repo,
+        TagSignatureStatus, check_tag_signature, checked_out_commit, fetch_git_source,
+        get_head_commit_sha, git_cache_dir, git_checkout_dir, open_repo, parse_git_source,
     };
+    use crate::config::ModuleLockEntry;
     use crate::modules::GitSource;
     use crate::output::Printer;
     use std::path::Path;
@@ -7039,11 +7046,14 @@ mod git_fixture_tests {
         };
 
         let dest = fetch_git_source(&git_src, cache.path(), "mymod", &printer).unwrap();
-        let cloned_head = get_head_commit_sha(&dest).unwrap();
         assert_eq!(
-            cloned_head,
+            checked_out_commit(cache.path(), &git_src).unwrap(),
             first_commit.to_string(),
-            "tag should pin HEAD to the tagged commit, not the branch tip"
+            "tag should pin the checkout to the tagged commit, not the branch tip"
+        );
+        assert!(
+            !dest.join("later.txt").exists(),
+            "the tagged checkout must not hold a file committed after the tag"
         );
     }
 
@@ -7177,6 +7187,134 @@ mod git_fixture_tests {
         );
     }
 
+    /// A repository tagged `v1.0` and `v2.0`, each tag holding its own
+    /// `docs/index.md`; the default branch's tip is `v2.0`.
+    fn repo_with_two_doc_tags(dir: &Path) -> git2::Repository {
+        let (repo, _) = init_repo_with_commit(dir);
+        for (tag, page) in [("v1.0", "# docs"), ("v2.0", "# docs, version two, longer")] {
+            let id = add_commit(&repo, "docs/index.md", page);
+            let commit = repo.find_commit(id).unwrap();
+            repo.tag_lightweight(tag, commit.as_object(), false)
+                .unwrap();
+        }
+        repo
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn two_pinned_refs_of_one_repository_each_read_their_own_bytes() {
+        crate::test_helpers::with_test_env_var(
+            crate::CFGD_ALLOW_LOCAL_SOURCES_ENV,
+            Some("1"),
+            || {
+                let _window = crate::test_helpers::GitRefreshWindowGuard::always_expired();
+                let src = tempfile::tempdir().unwrap();
+                repo_with_two_doc_tags(src.path());
+                let mut module = module_with_two_pinned_git_files(src.path());
+                let url = file_url(src.path());
+                module.spec.files[0].source = format!("{url}//docs@v1.0");
+                module.spec.files[1].source = format!("{url}//docs@v2.0");
+                let cache = tempfile::tempdir().unwrap();
+                let (printer, _) = Printer::for_test();
+
+                let rec = crate::ConfigInputRecorder::start();
+                let resolved =
+                    crate::modules::resolve_module_files(&module, cache.path(), &printer).unwrap();
+                let inputs = rec.finish();
+
+                assert!(
+                    inputs.unchanged(),
+                    "checking out v2.0 moved a file stamped for v1.0: {:?}",
+                    inputs.first_moved()
+                );
+                let page = |i: usize| {
+                    let text =
+                        std::fs::read_to_string(resolved[i].source.join("index.md")).unwrap();
+                    crate::normalize_line_endings(&text).into_owned()
+                };
+                assert_eq!(page(0), "# docs", "the v1.0 entry reads the v1.0 bytes");
+                assert_eq!(page(1), "# docs, version two, longer");
+            },
+        );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn a_pinned_entry_never_reads_the_working_tree_of_a_url_keyed_clone() {
+        crate::test_helpers::with_test_env_var(
+            crate::CFGD_ALLOW_LOCAL_SOURCES_ENV,
+            Some("1"),
+            || {
+                let _window = crate::test_helpers::GitRefreshWindowGuard::always_expired();
+                let src = tempfile::tempdir().unwrap();
+                repo_with_two_doc_tags(src.path());
+                let url = file_url(src.path());
+                let cache = tempfile::tempdir().unwrap();
+                // The layout 0.12.0 left behind: a clone keyed by URL alone,
+                // its working tree at the default branch's tip.
+                let clone_dir = git_cache_dir(cache.path(), &url);
+                git2::Repository::clone(&url, &clone_dir).unwrap();
+                let (printer, _) = Printer::for_test();
+
+                let pinned = parse_git_source(&format!("{url}//docs@v1.0")).unwrap();
+                let dest = fetch_git_source(&pinned, cache.path(), "docs", &printer).unwrap();
+
+                let dest_page = std::fs::read_to_string(dest.join("index.md")).unwrap();
+                assert_eq!(crate::normalize_line_endings(&dest_page), "# docs");
+                let clone_page = std::fs::read_to_string(clone_dir.join("docs/index.md")).unwrap();
+                assert_eq!(
+                    crate::normalize_line_endings(&clone_page),
+                    "# docs, version two, longer",
+                    "a pinned fetch leaves the clone's own working tree where it was"
+                );
+            },
+        );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn releasing_a_lock_entry_removes_the_checkouts_of_both_its_refs() {
+        crate::test_helpers::with_test_env_var(
+            crate::CFGD_ALLOW_LOCAL_SOURCES_ENV,
+            Some("1"),
+            || {
+                let src = tempfile::tempdir().unwrap();
+                repo_with_two_doc_tags(src.path());
+                let url = file_url(src.path());
+                let cache = tempfile::tempdir().unwrap();
+                let (printer, _) = Printer::for_test();
+                let by_tag = parse_git_source(&format!("{url}@v1.0")).unwrap();
+                fetch_git_source(&by_tag, cache.path(), "docs", &printer).unwrap();
+                let commit = checked_out_commit(cache.path(), &by_tag).unwrap();
+                let by_commit = parse_git_source(&format!("{url}@{commit}")).unwrap();
+                fetch_git_source(&by_commit, cache.path(), "docs", &printer).unwrap();
+
+                let entry = ModuleLockEntry {
+                    name: "docs".into(),
+                    url: format!("{url}@v1.0"),
+                    pinned_ref: "v1.0".into(),
+                    commit: commit.clone(),
+                    integrity: String::new(),
+                    subdir: None,
+                };
+                crate::modules::release_lock_entry_checkouts(&entry, cache.path()).unwrap();
+
+                for r in ["v1.0", commit.as_str()] {
+                    let tree = git_checkout_dir(cache.path(), &url, Some(r));
+                    assert!(!tree.exists(), "{r}'s checkout was left behind");
+                    assert!(
+                        !tree.parent().unwrap().exists(),
+                        "{r}'s slot (its commit record) was left behind"
+                    );
+                }
+                assert!(
+                    git_cache_dir(cache.path(), &url).join(".git").is_dir(),
+                    "the clone itself stays for the next fetch"
+                );
+            },
+        );
+    }
+
     #[test]
     fn fetch_git_source_errors_with_module_name_when_tag_is_unknown() {
         // Unknown tag → checkout_ref's revparse chain exhausts, giving
@@ -7252,11 +7390,14 @@ mod git_fixture_tests {
         };
 
         let dest = fetch_git_source(&git_src, cache.path(), "mymod", &printer).unwrap();
-        let cloned_head = get_head_commit_sha(&dest).unwrap();
         assert_eq!(
-            cloned_head,
+            checked_out_commit(cache.path(), &git_src).unwrap(),
             first_commit.to_string(),
-            "git_ref=topic should land HEAD on the topic-branch tip (first commit)"
+            "git_ref=topic should check out the topic-branch tip (first commit)"
+        );
+        assert!(
+            !dest.join("advance.txt").exists(),
+            "the topic checkout must not hold a file committed only on master"
         );
     }
 
