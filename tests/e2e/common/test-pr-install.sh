@@ -3433,8 +3433,8 @@ scan_device_ids() {
         # origin), lets the binary pick its device id unless it passes one.
         # checkin and enroll need no aim test: both require a server URL, which
         # CFGD_SERVER_URL can supply with no flag on the line.
-        # A quoted string holding whitespace is a message or a header, never a
-        # command word, so it is blanked before the subcommand is looked for:
+        # A quoted string holding whitespace is a message or a header, which
+        # holds no command word, so it is blanked before the subcommand is looked for:
         # `begin_test "GW-32: cfgd enroll ..."` and a `cfgd_dk_` bearer token
         # are not senders.
         function judge_sender(L, ln,    c, aimed, s, q, n, i) {
