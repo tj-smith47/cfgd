@@ -191,10 +191,7 @@ fn push_module_inner_uploads_blobs_and_manifest() {
         .with_status(201)
         .create();
 
-    let agent = ureq::Agent::config_builder()
-        .timeout_global(Some(std::time::Duration::from_secs(10)))
-        .build()
-        .new_agent();
+    let agent = crate::http::http_agent(std::time::Duration::from_secs(10));
 
     let result = push_module_inner(&agent, module_dir.path(), &oci_ref, None, "linux/amd64");
     assert!(
@@ -272,10 +269,7 @@ fn push_module_inner_writes_its_manifest_annotations_in_sorted_key_order() {
         .match_body(mockito::Matcher::Regex(ordered))
         .create();
 
-    let agent = ureq::Agent::config_builder()
-        .timeout_global(Some(std::time::Duration::from_secs(10)))
-        .build()
-        .new_agent();
+    let agent = crate::http::http_agent(std::time::Duration::from_secs(10));
 
     push_module_inner(&agent, module_dir.path(), &oci_ref, None, "linux/amd64")
         .expect("the ordered push must succeed");
@@ -293,7 +287,7 @@ fn push_module_inner_rejects_missing_module_yaml() {
         reference: ReferenceKind::Tag("v1".to_string()),
     };
 
-    let agent = ureq::Agent::config_builder().build().new_agent();
+    let agent = crate::http::http_agent(std::time::Duration::from_secs(10));
     let result = push_module_inner(&agent, dir.path(), &oci_ref, None, "linux/amd64");
     assert!(matches!(result, Err(OciError::ModuleYamlNotFound { .. })));
 }
@@ -1504,10 +1498,14 @@ fn push_fails_without_writing_when_the_tag_read_is_forbidden() {
     assert_tag_read_failure_writes_nothing(403);
 }
 
+/// The push also runs with a proxy that answers nothing exported, because a
+/// test build's agent reads no proxy: a developer or a CI runner behind a proxy
+/// gets the same verdict.
 #[test]
 #[serial_test::serial]
 fn push_answers_a_bearer_challenge_on_the_tag_read_and_takes_an_absent_tag() {
     let _registry_env = crate::test_helpers::isolate_registry_host_env();
+    let _proxy = crate::test_helpers::EnvVarGuard::set("HTTP_PROXY", "http://127.0.0.1:1");
     let mut server = mockito::Server::new();
     let registry = registry_from_url(&server.url());
     let repo = "test/tagauth";

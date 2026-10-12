@@ -5,7 +5,7 @@ paths: ["crates/**/*.rs"]
 
 - `cargo test` must pass before any phase is considered complete.
 - Unit tests for pure logic (config parsing, diffing, template rendering). Co-located in `#[cfg(test)] mod tests {}` within each module.
-- Integration tests in `tests/`. Every one that runs the real binary spawns it through `cfgd_binary::cfgd_bin()` (`crates/cfgd/tests/cfgd_binary/mod.rs`), which opts out of the update check, removes every inherited `CFGD_*` and systemd `*_DIRECTORY` variable and every variable the registry client reads (`cfgd_core::oci::REGISTRY_HOST_ENV`), and points every variable in `cfgd_binary/isolated_env.rs` and the working directory into the test's own temp dir. No test spells `cargo_bin(`, `cargo_bin!(`, `cargo_bin_cmd!(`, `Command::new("cfgd"` or `CARGO_BIN_EXE_cfgd` itself; `every_integration_test_spawns_the_binary_through_the_one_isolating_constructor` fails until it calls the constructor.
+- Integration tests in `tests/`. Every one that runs the real binary spawns it through `cfgd_binary::cfgd_bin()` (`crates/cfgd/tests/cfgd_binary/mod.rs`), which opts out of the update check, removes every inherited `CFGD_*` and systemd `*_DIRECTORY` variable and every variable a registry request reads (`cfgd_core::oci::registry_request_env()`: the client's credential and plain-HTTP variables and the agent's proxy variables), and points every variable in `cfgd_binary/isolated_env.rs` and the working directory into the test's own temp dir. No test spells `cargo_bin(`, `cargo_bin!(`, `cargo_bin_cmd!(`, `Command::new("cfgd"` or `CARGO_BIN_EXE_cfgd` itself; `every_integration_test_spawns_the_binary_through_the_one_isolating_constructor` fails until it calls the constructor.
 - Package manager tests use mock trait implementations and make no real system calls.
 - Use `tempfile` for any test that touches the filesystem.
 
@@ -71,7 +71,7 @@ The Rust integration tests under `crates/cfgd/tests/` have the same need and
 one constructor for it: `cfgd_binary::cfgd_bin()` removes every `CFGD_*` the
 test process inherited (matched case-insensitively, as Windows names them) and
 the four systemd `*_DIRECTORY` variables `REMOVED_ENV` lists, and every
-`cfgd_core::oci::REGISTRY_HOST_ENV` variable the registry client reads, then builds every
+`cfgd_core::oci::registry_request_env()` variable a registry request reads, then builds every
 real-binary command with `HOME`, `USERPROFILE`, the four `XDG_*_HOME`
 directories, `XDG_RUNTIME_DIR`, `LOCALAPPDATA`, `DOCKER_CONFIG`, `CFGD_STATE_DIR`,
 `CFGD_CACHE_DIR` and `CFGD_RUNTIME_DIR` (the list in
@@ -89,8 +89,8 @@ which outranks it.
 
 An in-process test that reaches a registry read takes
 `cfgd_core::test_helpers::isolate_registry_host_env()` first, which unsets the
-same list and points `DOCKER_CONFIG` at an empty directory, so an exported
-credential never reaches a mock registry's requests
+same list and points `DOCKER_CONFIG` at an empty directory, so neither an
+exported credential nor a proxy reaches a mock registry's requests
 (`every_test_reaching_a_registry_read_isolates_the_registry_host_env`).
 
 An in-process test parses an argv through `cli::HermeticParse`

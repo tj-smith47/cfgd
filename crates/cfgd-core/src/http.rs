@@ -48,8 +48,8 @@ pub const HTTP_WEBHOOK_TIMEOUT: Duration = Duration::from_secs(10);
 ///
 /// Keyed by the timeout because that is the only per-call configuration cfgd
 /// varies; the five named constants above are the whole key space in practice.
-/// A caller that ever needs a genuinely different agent shape (a proxy, a
-/// client certificate) must build its own rather than widen this key, since two
+/// A caller that ever needs a genuinely different agent shape (a proxy of its
+/// own, a client certificate) must build its own rather than widen this key, since two
 /// agents differing in anything but timeout are not interchangeable.
 pub fn http_agent(timeout: Duration) -> ureq::Agent {
     use std::collections::HashMap;
@@ -88,8 +88,45 @@ fn build_agent(timeout: Duration) -> ureq::Agent {
     record_build(timeout);
     ureq::Agent::config_builder()
         .timeout_global(Some(timeout))
+        .proxy(agent_proxy())
         .build()
         .into()
+}
+
+/// Every environment variable the HTTP agent reads to choose a proxy, in the
+/// order ureq 3.3's `Proxy::try_from_env` asks: the first of the six proxy
+/// variables that holds a usable URI wins, and `NO_PROXY` / `no_proxy` name the
+/// hosts that bypass it. Nothing else in the agent reads the environment.
+pub const PROXY_ENV: [&str; 8] = [
+    "ALL_PROXY",
+    "all_proxy",
+    "HTTPS_PROXY",
+    "https_proxy",
+    "HTTP_PROXY",
+    "http_proxy",
+    "NO_PROXY",
+    "no_proxy",
+];
+
+/// The proxy the host's environment names through [`PROXY_ENV`], or `None`
+/// when no variable there names one. The one place cfgd reads a proxy.
+pub fn proxy_from_env() -> Option<ureq::Proxy> {
+    ureq::Proxy::try_from_env()
+}
+
+/// The proxy every agent this process builds routes through.
+#[cfg(not(any(test, feature = "test-helpers")))]
+fn agent_proxy() -> Option<ureq::Proxy> {
+    proxy_from_env()
+}
+
+/// A test build routes no agent through a proxy. Agents are shared per process,
+/// so one built while a host proxy was exported would carry it into every later
+/// test whatever that test's own environment holds, and a mock registry on
+/// loopback would then be reached through the proxy or not at all.
+#[cfg(any(test, feature = "test-helpers"))]
+fn agent_proxy() -> Option<ureq::Proxy> {
+    None
 }
 
 /// How many agents this process has actually built for `timeout`.
@@ -130,6 +167,124 @@ mod tests {
         assert_eq!(HTTP_WEBHOOK_TIMEOUT, Duration::from_secs(10));
         // AI timeout must be positive — the original bug was "no timeout"
         assert!(HTTP_AI_TIMEOUT > Duration::ZERO);
+    }
+
+    /// Each proxy variable [`PROXY_ENV`] lists is one [`proxy_from_env`]
+    /// reads, and each `NO_PROXY` spelling exempts the host it names, so the
+    /// list `cfgd_bin()` and `isolate_registry_host_env` scrub is the list the
+    /// agent reads.
+    #[test]
+    #[serial_test::serial]
+    fn proxy_from_env_reads_every_variable_proxy_env_lists() {
+        let _clear = PROXY_ENV.map(crate::test_helpers::EnvVarGuard::unset);
+        let (proxies, exemptions) = PROXY_ENV.split_at(6);
+        for (n, name) in proxies.iter().enumerate() {
+            let port = 4100 + n;
+            let _set =
+                crate::test_helpers::EnvVarGuard::set(name, &format!("http://127.0.0.1:{port}"));
+            let proxy =
+                proxy_from_env().unwrap_or_else(|| panic!("{name} set, yet no proxy was read"));
+            assert_eq!(
+                proxy.port(),
+                port as u16,
+                "{name} was not the variable read"
+            );
+        }
+        for name in exemptions {
+            let _proxy =
+                crate::test_helpers::EnvVarGuard::set("HTTP_PROXY", "http://127.0.0.1:4200");
+            let _exempt = crate::test_helpers::EnvVarGuard::set(name, "registry.example");
+            let proxy = proxy_from_env().expect("HTTP_PROXY set, yet no proxy was read");
+            let exempt: ureq::http::Uri = "http://registry.example/v2/".parse().expect("uri");
+            let routed: ureq::http::Uri = "http://other.example/v2/".parse().expect("uri");
+            assert!(
+                proxy.is_no_proxy(&exempt),
+                "{name} did not exempt the host it names"
+            );
+            assert!(
+                !proxy.is_no_proxy(&routed),
+                "{name} exempted a host it does not name"
+            );
+        }
+    }
+
+    /// An agent a test build makes reaches a loopback server directly while a
+    /// proxy that answers nothing is exported, so a developer or a CI runner
+    /// behind a proxy runs every mock-registry test the same way.
+    #[test]
+    #[serial_test::serial]
+    fn a_test_built_agent_ignores_an_exported_proxy() {
+        let _clear = PROXY_ENV.map(crate::test_helpers::EnvVarGuard::unset);
+        let _proxy = crate::test_helpers::EnvVarGuard::set("HTTP_PROXY", "http://127.0.0.1:1");
+        let mut server = mockito::Server::new();
+        let reached = server
+            .mock("GET", "/v2/")
+            .with_status(200)
+            .expect(1)
+            .create();
+        let agent = build_agent(Duration::from_millis(7719));
+        let response = agent.get(format!("{}/v2/", server.url())).call();
+        assert!(
+            response.is_ok(),
+            "the request went through the proxy: {response:?}"
+        );
+        reached.assert();
+    }
+
+    /// Every `ureq` agent in the workspace, a test's included, is built by
+    /// [`build_agent`], so none reads the host's proxy under a test build and
+    /// none goes without a timeout in production. A spelling that builds an
+    /// agent anywhere else fails here; `http.rs`'s own one is the walk's proof
+    /// that it reads code.
+    #[test]
+    fn every_agent_is_built_in_http_rs() {
+        const TELLS: [&str; 12] = [
+            "Agent::config_builder(",
+            "Agent::new_with_",
+            ".new_agent(",
+            "ureq::get(",
+            "ureq::post(",
+            "ureq::put(",
+            "ureq::delete(",
+            "ureq::head(",
+            "ureq::patch(",
+            "ureq::options(",
+            "ureq::trace(",
+            "ureq::run(",
+        ];
+        let root = crate::test_helpers::workspace_root();
+        let own = root.join("crates/cfgd-core/src/http.rs");
+        let mut own_builds = 0usize;
+        let mut files = 0usize;
+        let mut offenders = Vec::new();
+        for path in crate::test_helpers::rust_sources_under(&root.join("crates")) {
+            files += 1;
+            // unfloored-slice-ok: an agent built anywhere, tests included, is the subject.
+            let body = crate::test_helpers::walked_file_body(&path);
+            let code = crate::test_helpers::blank_non_code(&body);
+            for (i, line) in code.lines().enumerate() {
+                for tell in TELLS.iter().filter(|tell| line.contains(**tell)) {
+                    if path == own {
+                        own_builds += 1;
+                    } else {
+                        offenders.push(format!("{}:{}: {tell}", path.display(), i + 1));
+                    }
+                }
+            }
+        }
+        assert!(
+            files >= 500,
+            "the walk read {files} files; it has gone blind"
+        );
+        assert_eq!(
+            own_builds, 1,
+            "build_agent is the one place an agent is built"
+        );
+        assert!(
+            offenders.is_empty(),
+            "an agent is built outside http.rs; take `http_agent(timeout)`:\n{}",
+            offenders.join("\n")
+        );
     }
 
     #[test]

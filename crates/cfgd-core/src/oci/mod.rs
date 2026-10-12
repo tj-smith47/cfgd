@@ -268,15 +268,24 @@ pub const REGISTRY_PASSWORD_ENV: &str = "REGISTRY_PASSWORD";
 /// The directory cfgd reads the Docker `config.json` from, in place of `~/.docker`.
 pub const DOCKER_CONFIG_ENV: &str = "DOCKER_CONFIG";
 
-/// Every environment variable the registry client reads: which registries
-/// take plain HTTP and which credential each request carries. Each is a fact
-/// about the host the client runs on.
+/// Every environment variable the registry client's own code reads: which
+/// registries take plain HTTP and which credential each request carries. The
+/// HTTP agent under it reads [`crate::http::PROXY_ENV`] as well, and
+/// [`registry_request_env`] is the two together.
 pub const REGISTRY_HOST_ENV: [&str; 4] = [
     OCI_INSECURE_REGISTRIES_ENV,
     REGISTRY_USERNAME_ENV,
     REGISTRY_PASSWORD_ENV,
     DOCKER_CONFIG_ENV,
 ];
+
+/// Every environment variable a registry request reads, each a fact about the
+/// host it runs on: [`REGISTRY_HOST_ENV`] followed by the HTTP agent's
+/// [`crate::http::PROXY_ENV`]. A test that must not inherit the host's
+/// registry setup removes every one of them.
+pub fn registry_request_env() -> impl Iterator<Item = &'static str> {
+    REGISTRY_HOST_ENV.into_iter().chain(crate::http::PROXY_ENV)
+}
 
 /// Check if a registry is listed in `OCI_INSECURE_REGISTRIES` (comma-separated).
 fn is_insecure_registry(registry: &str) -> bool {

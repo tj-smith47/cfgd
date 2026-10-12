@@ -1468,15 +1468,15 @@ fn update_check_entries() -> Vec<(String, Option<String>)> {
 const OPTOUT_HATCH: &str = "optouts-held:";
 
 /// The function openers in `region` whose function reaches one of `entries` or
-/// spells one of `tells` without also calling the free function `guard` or
-/// carrying `hatch` in a comment, as 0-based line numbers, and how many
-/// functions reached an entry at all. Calls are read off `region` with its
-/// comments and literals blanked, and a function runs from its opener to its
-/// own closing brace.
+/// spells every member of one of `tells`' groups without also calling the free
+/// function `guard` or carrying `hatch` in a comment, as 0-based line numbers,
+/// and how many functions reached an entry at all. Calls are read off `region`
+/// with its comments and literals blanked, and a function runs from its opener
+/// to its own closing brace.
 fn entry_callers_without_guard(
     region: &str,
     entries: &[(String, Option<String>)],
-    tells: &[&str],
+    tells: &[Vec<String>],
     guard: &str,
     hatch: &str,
 ) -> (usize, Vec<usize>) {
@@ -1496,7 +1496,9 @@ fn entry_callers_without_guard(
             Some(name) => segment.replacen(&format!("fn {name}"), "fn", 1),
             None => segment,
         };
-        let reaches = tells.iter().any(|tell| segment.contains(tell))
+        let reaches = tells
+            .iter()
+            .any(|group| group.iter().all(|tell| segment.contains(tell.as_str())))
             || entries.iter().any(|(name, owner)| {
                 cfgd_core::test_helpers::reaches_fn(&segment, name, owner.as_deref())
             });
@@ -1531,7 +1533,7 @@ fn every_test_reaching_the_update_check_clears_the_opt_out_variables() {
         let (found, missing) = entry_callers_without_guard(
             &region,
             &entries,
-            &[LOOP_VERSION_TICK],
+            &[vec![LOOP_VERSION_TICK.to_string()]],
             "clear_update_optouts",
             OPTOUT_HATCH,
         );
@@ -1581,7 +1583,7 @@ fn the_update_check_walk_reads_an_offence_it_plants_itself() {
     let (judged, offenders) = entry_callers_without_guard(
         code,
         &[("should_check".to_string(), None)],
-        &[LOOP_VERSION_TICK],
+        &[vec![LOOP_VERSION_TICK.to_string()]],
         "clear_update_optouts",
         OPTOUT_HATCH,
     );
@@ -1632,9 +1634,63 @@ fn registry_read_entries() -> Vec<(String, Option<String>)> {
             entries.push((name.clone(), owner.clone()));
         }
     }
+    for name in REGISTRY_VERB_METHODS {
+        assert!(
+            declarations
+                .rows
+                .iter()
+                .any(|(declared, _, _)| declared == name),
+            "nothing in the workspace declares `{name}`; the registry walk's table names nothing"
+        );
+    }
+    entries.push((REGISTRY_VERB_FN.to_string(), None));
     entries.sort();
     entries.dedup();
     entries
+}
+
+/// The methods through which a test reaches a registry read without spelling
+/// the type that owns them: the CSI cache's pull and the two CSI node calls
+/// that run it, and the CSI node's free function pulling through the cache. A
+/// method is matched on its name alone, so a test calling an unrelated method
+/// of the same name is judged too and says why it reads no registry with
+/// `// registry-env-held: <why>`.
+const REGISTRY_VERB_METHODS: [&str; 4] = [
+    "get_or_pull",
+    "node_stage_volume",
+    "node_publish_volume",
+    REGISTRY_VERB_FN,
+];
+
+/// The CSI node's free function pulling a module through the cache.
+const REGISTRY_VERB_FN: &str = "pull_through_cache";
+
+/// The CLI verbs whose dispatch reads a registry, as argv words.
+const REGISTRY_VERBS: [&[&str]; 4] = [
+    &["module", "pull"],
+    &["module", "push"],
+    &["module", "build"],
+    &["image", "pack"],
+];
+
+/// The spellings that reach a registry read through a verb, each group judged
+/// as all-of: a call to one of [`REGISTRY_VERB_METHODS`] on any receiver, and
+/// `execute(` in a function that builds one of [`REGISTRY_VERBS`]' `Command`
+/// variants. The fold in [`registry_read_entries`] stops at the client's
+/// direct callers, so a test driving a verb through its method or through the
+/// CLI dispatcher is found here instead.
+fn registry_read_tells() -> Vec<Vec<String>> {
+    let methods = REGISTRY_VERB_METHODS
+        .iter()
+        .filter(|name| **name != REGISTRY_VERB_FN)
+        .flat_map(|name| [vec![format!(".{name}(")], vec![format!("::{name}(")]]);
+    let verbs = REGISTRY_VERBS.iter().map(|argv| {
+        let variant = verb_variant_paths(argv)
+            .pop()
+            .unwrap_or_else(|| panic!("{argv:?} names no variant"));
+        vec!["execute(".to_string(), variant]
+    });
+    methods.chain(verbs).collect()
 }
 
 /// Every test function that reaches a registry read isolates the variables the
@@ -1652,6 +1708,7 @@ fn registry_read_entries() -> Vec<(String, Option<String>)> {
 #[test]
 fn every_test_reaching_a_registry_read_isolates_the_registry_host_env() {
     let entries = registry_read_entries();
+    let tells = registry_read_tells();
     let crates_dir = cfgd_core::test_helpers::workspace_root().join("crates");
     let mut judged = 0usize;
     let mut offenders: Vec<String> = Vec::new();
@@ -1660,7 +1717,7 @@ fn every_test_reaching_a_registry_read_isolates_the_registry_host_env() {
         let (found, missing) = entry_callers_without_guard(
             &region,
             &entries,
-            &[],
+            &tells,
             "isolate_registry_host_env",
             REGISTRY_ENV_HATCH,
         );
@@ -1684,9 +1741,53 @@ fn every_test_reaching_a_registry_read_isolates_the_registry_host_env() {
         offenders.join("\n")
     );
     assert!(
-        judged >= 128,
-        "the walk found {judged} test functions reaching a registry read, under the 128 the \
+        judged >= 148,
+        "the walk found {judged} test functions reaching a registry read, under the 148 the \
          workspace holds; it has gone blind"
+    );
+}
+
+/// The registry walk's verb tells judge a function by its own body: a CSI
+/// method called on any receiver or through a path, and `execute(` beside a
+/// registry verb's variant, each reach a registry read; isolating first or
+/// saying why in a comment clears one, and a verb that reads no registry is
+/// none of the walk's business.
+#[test]
+fn the_registry_walk_reads_an_offence_it_plants_itself() {
+    let code = "fn bare_cache() {\n    cache.get_or_pull(&oci_ref, policy);\n}\n\
+                fn isolated_cache() {\n    let _r = isolate_registry_host_env();\n    \
+                cache.get_or_pull(&oci_ref, policy);\n}\n\
+                fn hatched_node() {\n    // registry-env-held: the rig isolated it\n    \
+                svc.node_stage_volume(request);\n}\n\
+                fn pathed_node() {\n    Node::node_publish_volume(&svc, request);\n}\n\
+                fn dispatched() {\n    let c = Command::Module { command: ModuleCommand::Pull { \
+                reference } };\n    super::execute(c);\n}\n\
+                fn packed() {\n    execute(Command::Image { command: ImageCommand::Pack { dir } });\n}\n\
+                fn listed() {\n    super::execute(Command::Module { command: ModuleCommand::List });\n}\n\
+                fn built_only() {\n    let c = ModuleCommand::Build { dir };\n}\n";
+    let (judged, offenders) = entry_callers_without_guard(
+        code,
+        &[],
+        &registry_read_tells(),
+        "isolate_registry_host_env",
+        REGISTRY_ENV_HATCH,
+    );
+    let lines: Vec<&str> = code.lines().collect();
+    let named: Vec<&str> = offenders.iter().map(|n| lines[*n]).collect();
+    assert_eq!(
+        judged, 6,
+        "four CSI calls and two registry dispatches are judged; `List` reads no registry and \
+         `Build` is never dispatched"
+    );
+    assert_eq!(
+        named,
+        [
+            "fn bare_cache() {",
+            "fn pathed_node() {",
+            "fn dispatched() {",
+            "fn packed() {"
+        ],
+        "an offence is a function that neither isolates nor says why in a comment of its own"
     );
 }
 
@@ -26919,6 +27020,16 @@ fn seam_value(
 /// so a subcommand whose variant stops matching its name fails here, and the
 /// walk never looks for a path no test can build.
 fn resolving_verb_variants() -> Vec<Vec<String>> {
+    PACKAGE_RESOLVING_VERBS
+        .iter()
+        .map(|verb| verb_variant_paths(verb.argv))
+        .collect()
+}
+
+/// The `Command` variant path each argv word selects, from the top
+/// (`Command::Module`) down (`ModuleCommand::Pull`), read off clap's tree and
+/// checked against the enums `cli/mod.rs` declares.
+fn verb_variant_paths(argv: &[&str]) -> Vec<String> {
     use clap::CommandFactory;
     let cli = Cli::command();
     let declared =
@@ -26934,38 +27045,32 @@ fn resolving_verb_variants() -> Vec<Vec<String>> {
             })
             .collect()
     };
-    PACKAGE_RESOLVING_VERBS
-        .iter()
-        .map(|verb| {
-            let mut command = &cli;
-            let mut parent = "Command".to_string();
-            let mut paths = Vec::new();
-            for word in verb.argv {
-                command = command
-                    .find_subcommand(word)
-                    .unwrap_or_else(|| panic!("{:?}: `{word}` is no subcommand", verb.argv));
-                let variant = pascal(command.get_name());
-                let enum_body = declared
-                    .split_once(&format!("pub enum {parent} {{"))
-                    .and_then(|(_, rest)| rest.split_once("\n}\n"))
-                    .map(|(body, _)| body)
-                    .unwrap_or_else(|| panic!("cli/mod.rs declares no `pub enum {parent}`"));
-                assert!(
-                    enum_body.lines().any(|l| {
-                        let l = l.trim_start();
-                        l.starts_with(&format!("{variant} {{"))
-                            || l.starts_with(&format!("{variant},"))
-                            || l.starts_with(&format!("{variant}("))
-                    }),
-                    "`{parent}` declares no `{variant}` for `{word}` in {:?}",
-                    verb.argv
-                );
-                paths.push(format!("{parent}::{variant}"));
-                parent = format!("{variant}Command");
-            }
-            paths
-        })
-        .collect()
+    let mut command = &cli;
+    let mut parent = "Command".to_string();
+    let mut paths = Vec::new();
+    for word in argv {
+        command = command
+            .find_subcommand(word)
+            .unwrap_or_else(|| panic!("{argv:?}: `{word}` is no subcommand"));
+        let variant = pascal(command.get_name());
+        let enum_body = declared
+            .split_once(&format!("pub enum {parent} {{"))
+            .and_then(|(_, rest)| rest.split_once("\n}\n"))
+            .map(|(body, _)| body)
+            .unwrap_or_else(|| panic!("cli/mod.rs declares no `pub enum {parent}`"));
+        assert!(
+            enum_body.lines().any(|l| {
+                let l = l.trim_start();
+                l.starts_with(&format!("{variant} {{"))
+                    || l.starts_with(&format!("{variant},"))
+                    || l.starts_with(&format!("{variant}("))
+            }),
+            "`{parent}` declares no `{variant}` for `{word}` in {argv:?}"
+        );
+        paths.push(format!("{parent}::{variant}"));
+        parent = format!("{variant}Command");
+    }
+    paths
 }
 
 /// The gate tag a fixture writes for an entry no host resolves.
@@ -33506,6 +33611,7 @@ fn execute_module_export_dispatch() {
 
 #[test]
 fn execute_module_push_dispatch() {
+    // registry-env-held: the missing module directory fails the push before any registry read.
     let h = CliTestHarness::builder().build();
     let cli = h.cli_with_command(Command::Module {
         command: ModuleCommand::Push {
@@ -33532,7 +33638,9 @@ fn execute_module_push_dispatch() {
 }
 
 #[test]
+#[serial_test::serial]
 fn execute_module_pull_dispatch() {
+    let _registry_env = cfgd_core::test_helpers::isolate_registry_host_env();
     let h = CliTestHarness::builder().build();
     let out_dir = tempfile::tempdir().unwrap();
     let cli = h.cli_with_command(Command::Module {
@@ -33669,6 +33777,7 @@ fn every_platform_flag_refuses_a_value_without_an_arch_at_parse_time() {
 
 #[test]
 fn execute_module_build_dispatch() {
+    // registry-env-held: the missing module directory fails the build before any registry read.
     let h = CliTestHarness::builder().build();
     let cli = h.cli_with_command(Command::Module {
         command: ModuleCommand::Build {
@@ -52592,10 +52701,11 @@ fn binary_spawn_tells(body: &str) -> Vec<&'static str> {
 /// added there is set by the constructor with no second list to keep in step.
 /// Every `CFGD_*` the test process inherited is removed before any of that,
 /// so a developer's exported `CFGD_CONFIG_DIR` or `CFGD_YES` reaches no spawn,
-/// and so is every variable the registry client reads, by a loop over
-/// `cfgd_core::oci::REGISTRY_HOST_ENV`, the list the client's own reads are
-/// held to; `DOCKER_CONFIG` is then pointed at an empty directory, so neither an
-/// exported credential nor the developer's Docker config reaches a request.
+/// and so is every variable a registry request reads, by a loop over
+/// `cfgd_core::oci::registry_request_env()`, the list the client's own reads
+/// and the HTTP agent's proxy reads are held to; `DOCKER_CONFIG` is then
+/// pointed at an empty directory, so neither an exported credential, a proxy
+/// nor the developer's Docker config reaches a request.
 /// The files calling the constructor are floored, so the population cannot go
 /// dark while the constructor stays.
 #[test]
@@ -52620,10 +52730,10 @@ fn every_integration_test_spawns_the_binary_through_the_one_isolating_constructo
         REGISTRY_SWEEP,
         "cmd.env_remove(var);",
     ];
-    // The registry client's own list, read by the constructor, so a variable
-    // the client starts reading is removed from every spawn with no second
-    // list to keep in step.
-    const REGISTRY_SWEEP: &str = "for var in cfgd_core::oci::REGISTRY_HOST_ENV {";
+    // The registry request's own list, read by the constructor, so a variable
+    // the client or its HTTP agent starts reading is removed from every spawn
+    // with no second list to keep in step.
+    const REGISTRY_SWEEP: &str = "for var in cfgd_core::oci::registry_request_env() {";
     const INHERITED_PREFIX: &str = "CFGD_";
     const ISOLATING: [&str; 3] = [
         "for (var, path) in ISOLATED_ENV {",

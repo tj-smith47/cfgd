@@ -993,7 +993,10 @@ use crate::test_helpers::CosignTestShim;
 #[serial_test::serial]
 fn a_registry_cfgd_reads_over_http_is_named_to_cosign_as_insecure() {
     let _path = crate::test_helpers::path_env_read_guard();
-    let _env = EnvVarGuard::set("OCI_INSECURE_REGISTRIES", "kind-registry:5000");
+    let _env = EnvVarGuard::set(
+        crate::oci::OCI_INSECURE_REGISTRIES_ENV,
+        "kind-registry:5000",
+    );
     let mut cmd = std::process::Command::new("echo");
     apply_registry_scheme(&mut cmd, "kind-registry:5000/demo/tools:v1");
     let args: Vec<_> = cmd.get_args().map(|a| a.to_str().unwrap_or("")).collect();
@@ -1004,7 +1007,7 @@ fn a_registry_cfgd_reads_over_http_is_named_to_cosign_as_insecure() {
 #[serial_test::serial]
 fn a_tls_registry_is_not_downgraded_for_cosign() {
     let _path = crate::test_helpers::path_env_read_guard();
-    let _env = EnvVarGuard::unset("OCI_INSECURE_REGISTRIES");
+    let _env = EnvVarGuard::unset(crate::oci::OCI_INSECURE_REGISTRIES_ENV);
     let mut cmd = std::process::Command::new("echo");
     apply_registry_scheme(&mut cmd, "ghcr.io/acme/tools:v1");
     assert_eq!(cmd.get_args().count(), 0);

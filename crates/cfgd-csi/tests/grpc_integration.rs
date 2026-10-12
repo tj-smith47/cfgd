@@ -159,6 +159,7 @@ async fn node_get_info() {
 
 #[tokio::test]
 async fn node_publish_volume_missing_module_returns_invalid_argument() {
+    // registry-env-held: request validation refuses it before the cache pulls.
     let tmp = tempfile::tempdir().unwrap();
     let channel = start_server(&tmp).await;
     let mut client = cfgd_csi::csi::v1::node_client::NodeClient::new(channel);

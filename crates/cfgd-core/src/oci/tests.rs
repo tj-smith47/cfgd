@@ -167,12 +167,12 @@ fn oci_manifest_serialization() {
 #[serial]
 fn insecure_registry_env_var() {
     // Save and restore env var to avoid affecting other tests
-    let prev = std::env::var("OCI_INSECURE_REGISTRIES").ok();
+    let prev = std::env::var(crate::oci::OCI_INSECURE_REGISTRIES_ENV).ok();
 
     // SAFETY: test is single-threaded for this env var; save/restore brackets usage
     unsafe {
         std::env::set_var(
-            "OCI_INSECURE_REGISTRIES",
+            crate::oci::OCI_INSECURE_REGISTRIES_ENV,
             "myregistry:5000,other.local:8080",
         );
     }
@@ -191,8 +191,8 @@ fn insecure_registry_env_var() {
     // Restore
     unsafe {
         match prev {
-            Some(v) => std::env::set_var("OCI_INSECURE_REGISTRIES", v),
-            None => std::env::remove_var("OCI_INSECURE_REGISTRIES"),
+            Some(v) => std::env::set_var(crate::oci::OCI_INSECURE_REGISTRIES_ENV, v),
+            None => std::env::remove_var(crate::oci::OCI_INSECURE_REGISTRIES_ENV),
         }
     }
 }
@@ -588,9 +588,9 @@ fn reference_str_returns_tag_or_digest() {
 #[serial]
 fn is_insecure_registry_without_env_var() {
     // When OCI_INSECURE_REGISTRIES is not set (or empty), nothing is insecure
-    let prev = std::env::var("OCI_INSECURE_REGISTRIES").ok();
+    let prev = std::env::var(crate::oci::OCI_INSECURE_REGISTRIES_ENV).ok();
     unsafe {
-        std::env::remove_var("OCI_INSECURE_REGISTRIES");
+        std::env::remove_var(crate::oci::OCI_INSECURE_REGISTRIES_ENV);
     }
     assert!(!is_insecure_registry("localhost:5000"));
     assert!(!is_insecure_registry("ghcr.io"));
@@ -598,7 +598,7 @@ fn is_insecure_registry_without_env_var() {
     // Restore
     unsafe {
         if let Some(v) = prev {
-            std::env::set_var("OCI_INSECURE_REGISTRIES", v);
+            std::env::set_var(crate::oci::OCI_INSECURE_REGISTRIES_ENV, v);
         }
     }
 }
@@ -1038,26 +1038,32 @@ fn only_get_present_builds_a_not_found_error() {
     );
 }
 
-/// Every environment variable the registry client reads is named by a const
-/// in [`REGISTRY_HOST_ENV`], and every name there is read.
+/// Every environment variable a registry request reads is named on
+/// [`registry_request_env`], and every name there is read.
 ///
 /// The list is what `cfgd_bin()` removes from every spawn and what
 /// `test_helpers::isolate_registry_host_env` unsets for an in-process test, so
 /// a read the list does not name is a host input that reaches a test's
 /// requests, and a name the list holds but nothing reads is a scrub that
-/// guards nothing. Each production file under `oci/` is parsed whole with its
+/// guards nothing. Each production file under `oci/`, and `http.rs`, which
+/// builds the agent every request goes through, is parsed whole with its
 /// test-gated items skipped, so a file that does not parse fails the walk. A
 /// read is a call to `var`, `var_os`, `vars`, `vars_os` or `env_or`; its
-/// argument must be a path to a `const` declared under `oci/`, whose value is
-/// read off the same parse, and `vars`/`vars_os` take no name to check. The
-/// container-runtime seams `build.rs` reads through `tool_cmd` are `CFGD_*`
-/// names, which `cfgd_bin()` already removes as a class.
+/// argument must be a path to a `const` declared in a walked file, whose value
+/// is read off the same parse, and `vars`/`vars_os` take no name to check.
+/// ureq reads the proxy variables itself, so the one call to
+/// `Proxy::try_from_env` counts as reading every name on
+/// [`crate::http::PROXY_ENV`]; `proxy_from_env_reads_every_variable_proxy_env_lists`
+/// holds that list to what ureq reads. The container-runtime seams `build.rs`
+/// reads through `tool_cmd` are `CFGD_*` names, which `cfgd_bin()` already
+/// removes as a class.
 #[test]
 fn every_variable_the_registry_client_reads_is_a_registry_host_variable() {
     use std::collections::{BTreeMap, BTreeSet};
     use syn::visit::Visit;
 
     const READERS: [&str; 5] = ["var", "var_os", "vars", "vars_os", "env_or"];
+    const PROXY_READER: [&str; 2] = ["Proxy", "try_from_env"];
 
     #[derive(Default)]
     struct Reads {
@@ -1065,6 +1071,7 @@ fn every_variable_the_registry_client_reads_is_a_registry_host_variable() {
         consts: BTreeMap<String, String>,
         named: Vec<(String, String)>,
         unnamed: Vec<String>,
+        proxy_reads: Vec<String>,
     }
     impl<'ast> Visit<'ast> for Reads {
         fn visit_item_mod(&mut self, item: &'ast syn::ItemMod) {
@@ -1093,6 +1100,17 @@ fn every_variable_the_registry_client_reads_is_a_registry_host_variable() {
             syn::visit::visit_item_const(self, item);
         }
         fn visit_expr_call(&mut self, call: &'ast syn::ExprCall) {
+            if let syn::Expr::Path(func) = &*call.func {
+                let segments: Vec<String> = func
+                    .path
+                    .segments
+                    .iter()
+                    .map(|s| s.ident.to_string())
+                    .collect();
+                if segments.ends_with(&PROXY_READER.map(String::from)) {
+                    self.proxy_reads.push(self.file.clone());
+                }
+            }
             if let syn::Expr::Path(func) = &*call.func
                 && let Some(reader) = func.path.segments.last()
                 && READERS.iter().any(|r| reader.ident == r)
@@ -1124,15 +1142,15 @@ fn every_variable_the_registry_client_reads_is_a_registry_host_variable() {
 
     let root = crate::test_helpers::workspace_root();
     let oci_dir = root.join("crates/cfgd-core/src/oci");
+    let http_file = root.join("crates/cfgd-core/src/http.rs");
     let mut reads = Reads::default();
     let mut files = 0usize;
     for (_, sources) in
         crate::test_helpers::production_sources_per_root(crate::test_helpers::WORKSPACE_CRATES)
     {
-        for (path, _) in sources
-            .iter()
-            .filter(|(path, production)| path.starts_with(&oci_dir) && !production.is_empty())
-        {
+        for (path, _) in sources.iter().filter(|(path, production)| {
+            (path.starts_with(&oci_dir) || *path == http_file) && !production.is_empty()
+        }) {
             files += 1;
             let rel = path.strip_prefix(&root).unwrap_or(path);
             reads.file = rel.to_string_lossy().replace('\\', "/");
@@ -1143,32 +1161,86 @@ fn every_variable_the_registry_client_reads_is_a_registry_host_variable() {
         }
     }
     proc_macro2::extra::invalidate_current_thread_spans();
-    // 9 = archive, auth, build, mod, pack, pull, push, sign and transport.
+    // 10 = archive, auth, build, mod, pack, pull, push, sign and transport,
+    // and http.rs.
     assert!(
-        files >= 9,
-        "the walk read {files} production files under {}; it has gone blind",
-        oci_dir.display()
+        files >= 10,
+        "the walk read {files} production files under {} and {}; it has gone blind",
+        oci_dir.display(),
+        http_file.display()
+    );
+    assert_eq!(
+        reads.proxy_reads,
+        ["crates/cfgd-core/src/http.rs"],
+        "the agent's proxy is read through the one `Proxy::try_from_env` call in http.rs"
     );
 
     assert!(
         reads.unnamed.is_empty(),
-        "a registry client read names its variable through a const in REGISTRY_HOST_ENV: {:?}",
+        "a registry request's read names its variable through a const on registry_request_env: {:?}",
         reads.unnamed
     );
-    let listed: BTreeSet<&str> = REGISTRY_HOST_ENV.into_iter().collect();
-    let mut read = BTreeSet::new();
+    let listed: BTreeSet<&str> = registry_request_env().collect();
+    let mut read: BTreeSet<&str> = reads
+        .proxy_reads
+        .iter()
+        .flat_map(|_| crate::http::PROXY_ENV)
+        .collect();
+    for name in &read {
+        assert!(
+            listed.contains(name),
+            "http.rs: the agent reads {name}, which registry_request_env does not list"
+        );
+    }
     for (file, ident) in &reads.named {
         let value = reads.consts.get(ident).unwrap_or_else(|| {
-            panic!("{file}: reads `{ident}`, which names no string const under oci/")
+            panic!("{file}: reads `{ident}`, which names no string const in a walked file")
         });
         assert!(
             listed.contains(value.as_str()),
-            "{file}: reads {value}, which REGISTRY_HOST_ENV does not list"
+            "{file}: reads {value}, which registry_request_env does not list"
         );
         read.insert(value.as_str());
     }
     assert_eq!(
         read, listed,
-        "REGISTRY_HOST_ENV lists a variable the registry client does not read"
+        "registry_request_env lists a variable no registry request reads"
+    );
+}
+
+/// Every registry host variable is spelled once, by its `*_ENV` const in
+/// `oci/mod.rs`; a test setting, unsetting or reading one names the const, so
+/// a renamed variable leaves no test guarding the old name.
+#[test]
+fn every_registry_host_variable_is_spelled_by_its_const_alone() {
+    let root = crate::test_helpers::workspace_root();
+    let home = root.join("crates/cfgd-core/src/oci/mod.rs");
+    let mut files = 0usize;
+    let mut offenders = Vec::new();
+    for path in crate::test_helpers::rust_sources_under(&root.join("crates")) {
+        files += 1;
+        if path == home {
+            continue;
+        }
+        // unfloored-slice-ok: a spelling anywhere, tests included, is the subject.
+        let body = crate::test_helpers::walked_file_body(&path);
+        let code = crate::test_helpers::blank_comments(&body);
+        for name in REGISTRY_HOST_ENV {
+            let literal = format!("\"{name}\"");
+            for (i, line) in code.lines().enumerate() {
+                if line.contains(&literal) {
+                    offenders.push(format!("{}:{}: {literal}", path.display(), i + 1));
+                }
+            }
+        }
+    }
+    assert!(
+        files >= 500,
+        "the walk read {files} files; it has gone blind"
+    );
+    assert!(
+        offenders.is_empty(),
+        "a registry host variable is spelled as a literal; name its `*_ENV` const:\n{}",
+        offenders.join("\n")
     );
 }

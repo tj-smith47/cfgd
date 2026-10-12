@@ -534,10 +534,7 @@ mod tests {
             .with_status(201)
             .create();
 
-        let agent = ureq::Agent::config_builder()
-            .timeout_global(Some(std::time::Duration::from_secs(10)))
-            .build()
-            .new_agent();
+        let agent = crate::http::http_agent(std::time::Duration::from_secs(10));
 
         let result = upload_blob(&agent, &oci_ref, None, data, "application/octet-stream");
         assert!(result.is_ok(), "upload_blob failed: {:?}", result.err());
@@ -571,10 +568,7 @@ mod tests {
             .with_status(200)
             .create();
 
-        let agent = ureq::Agent::config_builder()
-            .timeout_global(Some(std::time::Duration::from_secs(10)))
-            .build()
-            .new_agent();
+        let agent = crate::http::http_agent(std::time::Duration::from_secs(10));
 
         let result = upload_blob(&agent, &oci_ref, None, data, "application/octet-stream");
         assert!(result.is_ok());
@@ -624,10 +618,7 @@ mod tests {
             .with_status(201)
             .create();
 
-        let agent = ureq::Agent::config_builder()
-            .timeout_global(Some(std::time::Duration::from_secs(10)))
-            .build()
-            .new_agent();
+        let agent = crate::http::http_agent(std::time::Duration::from_secs(10));
 
         let result = upload_blob(&agent, &oci_ref, None, data, "application/octet-stream");
         assert!(
@@ -673,10 +664,7 @@ mod tests {
             .with_body("manifest content")
             .create();
 
-        let agent = ureq::Agent::config_builder()
-            .timeout_global(Some(std::time::Duration::from_secs(10)))
-            .build()
-            .new_agent();
+        let agent = crate::http::http_agent(std::time::Duration::from_secs(10));
 
         let url = format!("{}/v2/test/repo/manifests/v1", server.url());
         let result = authenticated_request(&agent, "GET", &url, None, None, None, None);
@@ -698,10 +686,7 @@ mod tests {
             .with_header("Www-Authenticate", "Basic realm=\"test\"")
             .create();
 
-        let agent = ureq::Agent::config_builder()
-            .timeout_global(Some(std::time::Duration::from_secs(10)))
-            .build()
-            .new_agent();
+        let agent = crate::http::http_agent(std::time::Duration::from_secs(10));
 
         let url = format!("{}/v2/test/repo/manifests/v1", server.url());
         let result = authenticated_request(&agent, "GET", &url, None, None, None, None);
@@ -727,10 +712,7 @@ mod tests {
             .with_body("{}")
             .create();
 
-        let agent = ureq::Agent::config_builder()
-            .timeout_global(Some(std::time::Duration::from_secs(10)))
-            .build()
-            .new_agent();
+        let agent = crate::http::http_agent(std::time::Duration::from_secs(10));
 
         let url = format!("{}/v2/test/repo/tags/list", server.url());
         let result = authenticated_request(&agent, "GET", &url, Some(&auth), None, None, None);
@@ -750,10 +732,7 @@ mod tests {
             .with_status(201)
             .create();
 
-        let agent = ureq::Agent::config_builder()
-            .timeout_global(Some(std::time::Duration::from_secs(10)))
-            .build()
-            .new_agent();
+        let agent = crate::http::http_agent(std::time::Duration::from_secs(10));
 
         let url = format!("{}/v2/test/repo/manifests/v1", server.url());
         let result = authenticated_request(
@@ -778,10 +757,7 @@ mod tests {
             m = m.with_header(*k, v);
         }
         m.create();
-        let agent = ureq::Agent::config_builder()
-            .timeout_global(Some(std::time::Duration::from_secs(10)))
-            .build()
-            .new_agent();
+        let agent = crate::http::http_agent(std::time::Duration::from_secs(10));
         let url = format!("{}/v2/test/repo/manifests/v1", server.url());
         authenticated_request(&agent, "PUT", &url, None, None, None, Some(b"x"))
             .expect("PUT should succeed")
@@ -853,10 +829,7 @@ mod tests {
             .expect(1)
             .create();
 
-        let agent = ureq::Agent::config_builder()
-            .timeout_global(Some(std::time::Duration::from_secs(10)))
-            .build()
-            .new_agent();
+        let agent = crate::http::http_agent(std::time::Duration::from_secs(10));
 
         let url = format!("{}/v2/test/repo/tags/list", server.url());
         let result = authenticated_request(&agent, "GET", &url, None, None, None, None);
@@ -876,10 +849,7 @@ mod tests {
             )
             .create();
 
-        let agent = ureq::Agent::config_builder()
-            .timeout_global(Some(std::time::Duration::from_secs(10)))
-            .build()
-            .new_agent();
+        let agent = crate::http::http_agent(std::time::Duration::from_secs(10));
 
         let url = format!("{}/v2/test/repo/blobs/uploads/", server.url());
         let result = authenticated_request(&agent, "POST", &url, None, None, None, Some(&[]));
@@ -901,10 +871,7 @@ mod tests {
             .with_body("upstream registry unreachable")
             .create();
 
-        let agent = ureq::Agent::config_builder()
-            .timeout_global(Some(std::time::Duration::from_secs(10)))
-            .build()
-            .new_agent();
+        let agent = crate::http::http_agent(std::time::Duration::from_secs(10));
 
         let url = format!("{}/v2/test/repo/tags/list", server.url());
         let result = authenticated_request(&agent, "GET", &url, None, None, None, None);
@@ -919,10 +886,7 @@ mod tests {
     fn authenticated_request_returns_request_failed_on_unreachable_host() {
         // Pointing the agent at a closed port triggers the catch-all
         // `Err(e) => Err(OciError::RequestFailed { ... })` arm.
-        let agent = ureq::Agent::config_builder()
-            .timeout_global(Some(std::time::Duration::from_millis(250)))
-            .build()
-            .new_agent();
+        let agent = crate::http::http_agent(std::time::Duration::from_millis(250));
 
         // 127.0.0.1:1 is reserved/unused; the connection refuses immediately.
         let url = "http://127.0.0.1:1/v2/test/repo/tags/list";
@@ -931,10 +895,7 @@ mod tests {
     }
 
     fn fetch_blob_from(registry: &str) -> Result<Vec<u8>, OciError> {
-        let agent = ureq::Agent::config_builder()
-            .timeout_global(Some(std::time::Duration::from_secs(10)))
-            .build()
-            .new_agent();
+        let agent = crate::http::http_agent(std::time::Duration::from_secs(10));
         let oci_ref = OciReference {
             registry: registry.to_string(),
             repository: "test/blobmod".to_string(),

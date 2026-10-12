@@ -4089,21 +4089,25 @@ pub fn clear_update_optouts() -> [EnvVarGuard; crate::upgrade::OPTOUT_VARS.len()
     crate::upgrade::OPTOUT_VARS.map(EnvVarGuard::unset)
 }
 
-/// Every variable the registry client reads ([`crate::oci::REGISTRY_HOST_ENV`])
-/// unset, and `DOCKER_CONFIG` then pointed at an empty directory, for as long
-/// as the returned value lives.
+/// Every variable a registry request reads
+/// ([`crate::oci::registry_request_env`]: the client's credential and
+/// plain-HTTP variables and the HTTP agent's proxy variables) unset, and
+/// `DOCKER_CONFIG` then pointed at an empty directory, for as long as the
+/// returned value lives.
 ///
 /// The client resolves the credential each request carries from the process
-/// environment, falling back to `~/.docker/config.json`, so a credential or a
-/// Docker config a developer's shell or a CI runner exports changes what a
-/// mock registry receives. `DOCKER_CONFIG` names an empty directory, since an
+/// environment, falling back to `~/.docker/config.json`, so a credential, a
+/// Docker config or a proxy a developer's shell or a CI runner exports changes
+/// what a mock registry receives. `DOCKER_CONFIG` names an empty directory, since an
 /// unset one sends the client to the home's own Docker config. Every test
 /// reaching a registry read takes this first and runs under
 /// `#[serial_test::serial]`; `every_test_reaching_a_registry_read_isolates_the_registry_host_env`
 /// fails until it does.
 pub fn isolate_registry_host_env() -> RegistryHostEnv {
     let docker_config = tempfile::tempdir().expect("create an empty Docker config directory");
-    let unset = crate::oci::REGISTRY_HOST_ENV.map(EnvVarGuard::unset);
+    let unset = crate::oci::registry_request_env()
+        .map(EnvVarGuard::unset)
+        .collect();
     let docker = EnvVarGuard::set(
         crate::oci::DOCKER_CONFIG_ENV,
         &docker_config.path().to_string_lossy(),
@@ -4120,7 +4124,7 @@ pub fn isolate_registry_host_env() -> RegistryHostEnv {
 /// empty directory outlives both.
 pub struct RegistryHostEnv {
     _docker: EnvVarGuard,
-    _unset: [EnvVarGuard; crate::oci::REGISTRY_HOST_ENV.len()],
+    _unset: Vec<EnvVarGuard>,
     _docker_config: tempfile::TempDir,
 }
 

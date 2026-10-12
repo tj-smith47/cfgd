@@ -32,9 +32,10 @@ thread_local! {
 /// is no part of what any of these pins claims.
 ///
 /// Every `CFGD_*` variable the test process inherited is removed, and so is
-/// every variable in `REMOVED_ENV` and every variable the registry client
-/// reads (`cfgd_core::oci::REGISTRY_HOST_ENV`), so an exported registry
-/// credential or Docker config never reaches a request a pin judges; then every
+/// every variable in `REMOVED_ENV` and every variable a registry request
+/// reads (`cfgd_core::oci::registry_request_env()`), so an exported registry
+/// credential, proxy or Docker config never reaches a request a pin judges;
+/// then every
 /// variable in `ISOLATED_ENV` and the working directory point into the
 /// calling test's own directory. Every test process in a run shares one
 /// `HOME` and starts in the crate's checkout, so a `cfgd` left to resolve its
@@ -60,7 +61,7 @@ pub fn cfgd_bin() -> Result<Command, CargoError> {
     for var in REMOVED_ENV {
         cmd.env_remove(var);
     }
-    for var in cfgd_core::oci::REGISTRY_HOST_ENV {
+    for var in cfgd_core::oci::registry_request_env() {
         cmd.env_remove(var);
     }
     cmd.env(cfgd_core::CFGD_NO_UPDATE_CHECK_ENV, "1");
