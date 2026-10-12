@@ -2759,3 +2759,22 @@ fn script_status_status_after_open_window_emits_one_line() {
         "the window was finished explicitly via status(), not dropped: {out}"
     );
 }
+
+#[test]
+fn a_script_file_a_run_string_names_is_stamped_as_a_config_input() {
+    let dir = tempfile::tempdir().unwrap();
+    let script = dir.path().join("filter.sh");
+    std::fs::write(&script, "#!/bin/sh\ncat\n").unwrap();
+
+    let rec = crate::ConfigInputRecorder::start();
+    // The leading-token arm: a patch filter names its script with arguments.
+    resolve_run_target("filter.sh --strict", dir.path(), ScriptShell::Auto);
+    resolve_run_target("echo inline", dir.path(), ScriptShell::Auto);
+    let inputs = rec.finish();
+
+    assert_eq!(
+        inputs.paths().collect::<Vec<_>>(),
+        [crate::absolutize_path(&script).as_path()],
+        "the named script file is stamped and an inline body stamps nothing"
+    );
+}

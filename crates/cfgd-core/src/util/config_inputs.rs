@@ -14,6 +14,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -26,8 +27,24 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 /// stamps a fresh mtime.
 type InputStamp = (Option<SystemTime>, u64);
 
-/// One input path and the stamp it carried when the derivation read it.
-type Entry = (PathBuf, Option<InputStamp>);
+/// One input path, the stamp it carried when the derivation read it, and
+/// whether the walk that reached it could not read what lies beneath it.
+#[derive(Debug, Clone)]
+struct Entry {
+    path: PathBuf,
+    stamp: Option<InputStamp>,
+    /// A directory the walk could not list, or an entry whose type it could
+    /// not read. What lies beneath it went unstamped, so a later edit there
+    /// would read as nothing having moved; such an entry reads as moved on
+    /// every comparison, which costs a re-plan and nothing worse.
+    unreadable: bool,
+}
+
+impl Entry {
+    fn moved(&self) -> bool {
+        self.unreadable || stamp_of(&self.path) != self.stamp
+    }
+}
 
 fn stamp_of(path: &Path) -> Option<InputStamp> {
     std::fs::metadata(path)
@@ -35,20 +52,37 @@ fn stamp_of(path: &Path) -> Option<InputStamp> {
         .map(|meta| (meta.modified().ok(), meta.len()))
 }
 
+/// One recorder's inputs in the order they were first read, plus an index on
+/// the path so a repeat read is found without a scan of the whole list.
+#[derive(Default)]
+struct Frame {
+    entries: Vec<Entry>,
+    index: HashMap<PathBuf, usize>,
+}
+
+impl Frame {
+    fn record(&mut self, path: &Path, stamp: Option<InputStamp>, unreadable: bool) {
+        if let Some(&at) = self.index.get(path) {
+            self.entries[at].unreadable |= unreadable;
+            return;
+        }
+        self.index.insert(path.to_path_buf(), self.entries.len());
+        self.entries.push(Entry {
+            path: path.to_path_buf(),
+            stamp,
+            unreadable,
+        });
+    }
+}
+
 thread_local! {
     /// Every recorder currently collecting on this thread. A read reports to
     /// all of them, so a nested derivation cannot swallow an outer one's
     /// inputs.
-    static FRAMES: RefCell<Vec<Vec<Entry>>> = const { RefCell::new(Vec::new()) };
+    static FRAMES: RefCell<Vec<Frame>> = const { RefCell::new(Vec::new()) };
 }
 
-/// Report that `path` is an input of the derivation in flight.
-///
-/// A no-op when nothing is recording, which is every path but the daemon's
-/// tick derivation. Call it BEFORE the read (and before any existence check),
-/// so a file rewritten between the stamp and the read is seen as changed on the
-/// next comparison instead of being recorded as already-current.
-pub fn record_config_input(path: &Path) {
+fn record_into_frames(path: &Path, unreadable: bool) {
     FRAMES.with(|frames| {
         let mut frames = frames.borrow_mut();
         if frames.is_empty() {
@@ -56,12 +90,86 @@ pub fn record_config_input(path: &Path) {
         }
         let stamp = stamp_of(path);
         for frame in frames.iter_mut() {
-            if frame.iter().any(|(p, _)| p == path) {
-                continue;
-            }
-            frame.push((path.to_path_buf(), stamp));
+            frame.record(path, stamp, unreadable);
         }
     });
+}
+
+/// Report that `path` is an input of the derivation in flight.
+///
+/// A no-op when nothing is recording, which is every path but the daemon's
+/// tick derivation. Call it BEFORE the read (and before any existence check),
+/// so a file rewritten between the stamp and the read reads as changed on the
+/// next comparison.
+pub fn record_config_input(path: &Path) {
+    record_into_frames(path, false);
+}
+
+/// Stamps `path` and, when it is a directory, every entry beneath it.
+///
+/// A directory's own mtime moves when an entry is added, removed or renamed.
+/// An edit to a nested file's content leaves it as it was, so a directory
+/// source stamped alone would read unchanged after that edit. Every entry is
+/// stamped in name order, so two derivations over one tree record one list.
+/// A symlinked directory inside the tree is stamped as a link and not
+/// followed, which keeps a link cycle from walking forever. An entry named
+/// `.git` is left out with everything under it. A directory the walk cannot
+/// list, or an entry whose type it cannot read, is recorded as an input that
+/// reads as moved on every comparison. Walks nothing when no recorder is open
+/// on this thread.
+pub fn record_config_input_tree(path: &Path) {
+    record_config_input(path);
+    if FRAMES.with(|frames| frames.borrow().is_empty()) {
+        return;
+    }
+    if std::fs::metadata(path).is_ok_and(|meta| meta.is_dir()) {
+        record_dir_entries(path);
+    }
+}
+
+fn record_unreadable(path: &Path, error: &std::io::Error) {
+    tracing::warn!(
+        path = %path.display(), // native-ok: journal line, not a key
+        error = %error,
+        "cannot read a directory input; a saved plan or cached derivation over it reads as stale"
+    );
+    record_into_frames(path, true);
+}
+
+fn record_dir_entries(dir: &Path) {
+    let listing = match std::fs::read_dir(dir) {
+        Ok(listing) => listing,
+        Err(e) => {
+            record_unreadable(dir, &e);
+            return;
+        }
+    };
+    let mut entries = Vec::new();
+    for entry in listing {
+        match entry {
+            Ok(entry) => entries.push(entry),
+            // The failed entry has no name to record, so the directory that
+            // holds it stands in for it; its readable siblings are still walked.
+            Err(e) => record_unreadable(dir, &e),
+        }
+    }
+    entries.sort_by_key(|entry| entry.file_name());
+    for entry in entries {
+        // Git's own bookkeeping, which a checkout or fetch rewrites while the
+        // derivation is still running: a second module file entry from the
+        // same repository moves it after the first entry stamped it. The
+        // working-tree files beside it are the content.
+        if entry.file_name() == ".git" {
+            continue;
+        }
+        let path = entry.path();
+        record_config_input(&path);
+        match entry.file_type() {
+            Ok(kind) if kind.is_dir() => record_dir_entries(&path),
+            Ok(_) => {}
+            Err(e) => record_unreadable(&path, &e),
+        }
+    }
 }
 
 /// One recorded input as a plan file carries it.
@@ -89,6 +197,11 @@ pub struct ConfigInput {
     /// state of its own and survives the wire as one.
     #[serde(default)]
     pub present: bool,
+    /// Whether the derivation could not read beneath this input (a directory
+    /// it could not list, an entry whose type it could not read). Such an
+    /// input reads as moved on every comparison.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub unreadable: bool,
 }
 
 /// The inputs one derivation read, and the stamps they carried.
@@ -103,19 +216,26 @@ impl From<ConfigInputs> for Vec<ConfigInput> {
         inputs
             .entries
             .into_iter()
-            .map(|(path, stamp)| ConfigInput {
-                path: crate::to_posix_fs_key(&path),
-                // A `SystemTime` before the epoch has no nanosecond count to
-                // carry, and one past 2554 outruns `u64`; either reads back as
-                // "no modification time", the same state a host reporting none
-                // produces.
-                mtime: stamp
-                    .and_then(|(at, _)| at)
-                    .and_then(|at| at.duration_since(UNIX_EPOCH).ok())
-                    .and_then(|since| u64::try_from(since.as_nanos()).ok()),
-                size: stamp.map(|(_, len)| len).unwrap_or_default(),
-                present: stamp.is_some(),
-            })
+            .map(
+                |Entry {
+                     path,
+                     stamp,
+                     unreadable,
+                 }| ConfigInput {
+                    path: crate::to_posix_fs_key(&path),
+                    // A `SystemTime` before the epoch has no nanosecond count to
+                    // carry, and one past 2554 outruns `u64`; either reads back as
+                    // "no modification time", the same state a host reporting none
+                    // produces.
+                    mtime: stamp
+                        .and_then(|(at, _)| at)
+                        .and_then(|at| at.duration_since(UNIX_EPOCH).ok())
+                        .and_then(|since| u64::try_from(since.as_nanos()).ok()),
+                    size: stamp.map(|(_, len)| len).unwrap_or_default(),
+                    present: stamp.is_some(),
+                    unreadable,
+                },
+            )
             .collect()
     }
 }
@@ -134,7 +254,11 @@ impl From<Vec<ConfigInput>> for ConfigInputs {
                             input.size,
                         )
                     });
-                    (PathBuf::from(input.path), stamp)
+                    Entry {
+                        path: PathBuf::from(input.path),
+                        stamp,
+                        unreadable: input.unreadable,
+                    }
                 })
                 .collect(),
         }
@@ -148,11 +272,7 @@ impl ConfigInputs {
     /// nothing this recorder saw, and the one thing a reuse decision must never
     /// do is answer "nothing moved" about a set it does not have.
     pub fn unchanged(&self) -> bool {
-        !self.entries.is_empty()
-            && self
-                .entries
-                .iter()
-                .all(|(path, stamp)| stamp_of(path) == *stamp)
+        !self.entries.is_empty() && self.entries.iter().all(|entry| !entry.moved())
     }
 
     /// The first recorded input that no longer carries the stamp it was read
@@ -163,8 +283,17 @@ impl ConfigInputs {
     pub fn first_moved(&self) -> Option<&Path> {
         self.entries
             .iter()
-            .find(|(path, stamp)| stamp_of(path) != *stamp)
-            .map(|(path, _)| path.as_path())
+            .find(|entry| entry.moved())
+            .map(|entry| entry.path.as_path())
+    }
+
+    /// The first recorded input the derivation could not read beneath, for a
+    /// caller wording why a set reads as moved when no stamp did.
+    pub fn first_unreadable(&self) -> Option<&Path> {
+        self.entries
+            .iter()
+            .find(|entry| entry.unreadable)
+            .map(|entry| entry.path.as_path())
     }
 
     /// How many distinct paths the derivation read.
@@ -178,7 +307,7 @@ impl ConfigInputs {
 
     /// The recorded paths, in the order they were first read.
     pub fn paths(&self) -> impl Iterator<Item = &Path> {
-        self.entries.iter().map(|(path, _)| path.as_path())
+        self.entries.iter().map(|entry| entry.path.as_path())
     }
 }
 
@@ -193,15 +322,17 @@ pub struct ConfigInputRecorder {
 impl ConfigInputRecorder {
     /// Begin recording on this thread.
     pub fn start() -> Self {
-        FRAMES.with(|frames| frames.borrow_mut().push(Vec::new()));
+        FRAMES.with(|frames| frames.borrow_mut().push(Frame::default()));
         Self { finished: false }
     }
 
     /// Stop recording and take what was collected.
     pub fn finish(mut self) -> ConfigInputs {
         self.finished = true;
-        let entries = FRAMES.with(|frames| frames.borrow_mut().pop().unwrap_or_default());
-        ConfigInputs { entries }
+        let frame = FRAMES.with(|frames| frames.borrow_mut().pop().unwrap_or_default());
+        ConfigInputs {
+            entries: frame.entries,
+        }
     }
 }
 
@@ -338,6 +469,96 @@ mod tests {
         std::fs::write(&path, "aa").unwrap();
         assert!(!back.unchanged());
         assert_eq!(back.first_moved(), Some(path.as_path()));
+    }
+
+    #[test]
+    fn record_config_input_tree_stamps_nested_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let tree = dir.path().join("tree");
+        let nested = tree.join("a").join("b.txt");
+        std::fs::create_dir_all(nested.parent().unwrap()).unwrap();
+        std::fs::write(&nested, "b").unwrap();
+
+        let rec = ConfigInputRecorder::start();
+        record_config_input_tree(&tree);
+        let inputs = rec.finish();
+
+        assert_eq!(
+            inputs.paths().collect::<Vec<_>>(),
+            [tree.as_path(), &tree.join("a"), nested.as_path()],
+            "the root, then every entry beneath it in name order"
+        );
+        std::fs::write(&nested, "bb").unwrap();
+        assert_eq!(
+            inputs.first_moved(),
+            Some(nested.as_path()),
+            "an edit to a nested file moves neither directory, so the file's own stamp must"
+        );
+    }
+
+    #[test]
+    fn a_git_directory_inside_a_tree_is_not_stamped() {
+        let dir = tempfile::tempdir().unwrap();
+        let tree = dir.path().join("checkout");
+        let tracked = tree.join("init.lua");
+        std::fs::create_dir_all(tree.join(".git").join("refs")).unwrap();
+        std::fs::write(tree.join(".git").join("HEAD"), "ref: refs/heads/main").unwrap();
+        std::fs::write(&tracked, "-- v1").unwrap();
+
+        let rec = ConfigInputRecorder::start();
+        record_config_input_tree(&tree);
+        let inputs = rec.finish();
+
+        assert_eq!(
+            inputs.paths().collect::<Vec<_>>(),
+            [tree.as_path(), tracked.as_path()],
+            "the checkout and its working-tree file, and nothing under `.git`"
+        );
+        std::fs::write(tree.join(".git").join("HEAD"), "ref: refs/heads/other").unwrap();
+        assert!(
+            inputs.unchanged(),
+            "a rewrite of git's bookkeeping is no edit to the content"
+        );
+    }
+
+    #[test]
+    fn a_directory_the_walk_cannot_list_reads_as_moved_and_is_named() {
+        let dir = tempfile::tempdir().unwrap();
+        let gone = dir.path().join("removed-between-stat-and-listing");
+
+        let rec = ConfigInputRecorder::start();
+        record_dir_entries(&gone);
+        let inputs = rec.finish();
+
+        assert!(
+            !inputs.unchanged(),
+            "nothing beneath an unlistable directory was stamped, so the set cannot read unchanged"
+        );
+        assert_eq!(inputs.first_moved(), Some(gone.as_path()));
+        assert_eq!(inputs.first_unreadable(), Some(gone.as_path()));
+
+        let wire = serde_json::to_string(&inputs).unwrap();
+        let back: ConfigInputs = serde_json::from_str(&wire).unwrap();
+        assert_eq!(
+            back.first_unreadable(),
+            Some(gone.as_path()),
+            "the unreadable state crosses the wire: {wire}"
+        );
+        assert!(!back.unchanged());
+    }
+
+    #[test]
+    fn a_readable_input_set_writes_no_unreadable_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cfgd.yaml");
+        std::fs::write(&path, "a").unwrap();
+        let rec = ConfigInputRecorder::start();
+        record_config_input(&path);
+        let wire = serde_json::to_string(&rec.finish()).unwrap();
+        assert!(
+            !wire.contains("unreadable"),
+            "a plan whose inputs were all read keeps the bytes it had before the key existed: {wire}"
+        );
     }
 
     #[test]

@@ -1160,6 +1160,10 @@ pub fn resolve_managed_file_source(
     if resolved.exists() && validate_path_within(&resolved, config_dir).is_err() {
         return None;
     }
+    // A saved plan replays these bytes without reading them again, so every
+    // resolved source is an input of the derivation, a directory's whole tree
+    // included.
+    crate::record_config_input_tree(&resolved);
     Some(resolved)
 }
 

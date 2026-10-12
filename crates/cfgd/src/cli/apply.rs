@@ -227,12 +227,13 @@ pub fn run_apply(run: &RunContext<'_>, args: &ApplyArgs) -> anyhow::Result<Apply
     // here. An isolated run resolved no profile, so it carries none and the
     // header omits the row.
     //
-    // Opened around the whole derivation, config parse included:
-    // the profile chain, the module bodies, the lockfiles and the declared
-    // package manifests are all inputs a replay must re-check, and each reports
-    // itself from its own read. A run that is not a dry run records nothing, so
-    // the frame costs it one `stat` per file it was going to open anyway.
-    let recorder = cfgd_core::ConfigInputRecorder::start();
+    // Opened for a dry run alone, around the whole derivation from the config
+    // parse to the end of planning: the documents, lockfiles and package
+    // manifests, and every file, secret, unit and script source the planners
+    // read, are inputs a replay of the saved plan must re-check, and each
+    // reports itself from its own read. A run that applies records no saved
+    // plan, so it opens no frame and walks no directory source.
+    let recorder = dry_run.then(cfgd_core::ConfigInputRecorder::start);
 
     let (cfg, resolved, profile_label, config_parsed) =
         load_config_and_profile_module_scoped(ctx, module_filter, with_profile)?;
@@ -306,7 +307,6 @@ pub fn run_apply(run: &RunContext<'_>, args: &ApplyArgs) -> anyhow::Result<Apply
         &mut effective_resolved.merged.packages,
         &mut effective_resolved.merged.layer_sources,
     )?;
-    let config_inputs = recorder.finish();
 
     // `PhaseArg`'s base phase is clap-validated; a selector combined with
     // `--phase modules` is the one combination `resolve_phase_filter` still
@@ -543,6 +543,11 @@ pub fn run_apply(run: &RunContext<'_>, args: &ApplyArgs) -> anyhow::Result<Apply
             )
         })?,
     };
+    // Closed only once planning is done: the file, secret, system and script
+    // planners read their own sources, and each stamps what it read.
+    let config_inputs = recorder
+        .map(cfgd_core::ConfigInputRecorder::finish)
+        .unwrap_or_default();
     // Snapshot BEFORE `withhold_from_plan` and every filter below prunes the
     // plan: a module is converged only when the RECONCILER found nothing to
     // do, never when a filter emptied a plan that still held real work.

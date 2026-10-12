@@ -753,6 +753,19 @@ impl<'a> super::Reconciler<'a> {
                     .unwrap_or("sops")
                     .to_string();
 
+                // Resolved the way `apply_secret_action` resolves it, so the
+                // stamped file is the one the decrypt will read.
+                let source = std::path::Path::new(&secret.source);
+                match self.config_dir.as_deref() {
+                    Some(dir) => {
+                        if let Ok(path) = crate::resolve_relative_path(source, dir) {
+                            crate::record_config_input(&path);
+                        }
+                    }
+                    None if source.is_absolute() => crate::record_config_input(source),
+                    None => {}
+                }
+
                 actions.push(Action::Secret(SecretAction::Decrypt {
                     source: PathBuf::from(&secret.source),
                     target: secret
@@ -828,6 +841,14 @@ impl<'a> super::Reconciler<'a> {
                 .recording_layer("script", entry.run_str(), LOCAL_LAYER)
                 .to_string()
         };
+
+        // Execution resolves a `run` path against the config dir; with none
+        // wired, nothing here names a file this derivation could stamp.
+        if let Some(dir) = self.config_dir.as_deref() {
+            for entry in pre_entries.iter().chain(post_entries) {
+                super::scripts::record_script_input(entry.run_str(), dir);
+            }
+        }
 
         let pre_actions = pre_entries
             .iter()
@@ -1174,6 +1195,8 @@ impl<'a> super::Reconciler<'a> {
                 scripts
                     .iter()
                     .map(|script| {
+                        // Execution resolves a hook's `run` against its module's directory.
+                        super::scripts::record_script_input(script.run_str(), &module.dir);
                         routed(
                             module,
                             ModuleActionKind::RunScript {

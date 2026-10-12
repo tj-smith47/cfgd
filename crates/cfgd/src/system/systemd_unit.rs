@@ -70,10 +70,13 @@ impl SystemdUnitConfigurator {
     /// tilde-expanded, then resolved against the config dir when one is set.
     fn resolve_unit_file(&self, unit_file: &str) -> PathBuf {
         let expanded = cfgd_core::expand_tilde(Path::new(unit_file));
-        match &self.config_dir {
+        let resolved = match &self.config_dir {
             Some(dir) => cfgd_core::resolve_relative_path(&expanded, dir).unwrap_or(expanded),
             None => expanded,
-        }
+        };
+        // The diff a plan carries was taken against these bytes.
+        cfgd_core::record_config_input(&resolved);
+        resolved
     }
 }
 
@@ -272,6 +275,21 @@ impl SystemConfigurator for SystemdUnitConfigurator {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_unit_file_a_plan_diffs_against_is_stamped_as_a_config_input() {
+        let dir = tempfile::tempdir().unwrap();
+        let unit = dir.path().join("my.service");
+        std::fs::write(&unit, "[Unit]\n").unwrap();
+        let mut su = SystemdUnitConfigurator::default();
+        su.set_config_dir(dir.path());
+
+        let rec = cfgd_core::ConfigInputRecorder::start();
+        su.resolve_unit_file("my.service");
+        let inputs = rec.finish();
+
+        assert_eq!(inputs.paths().collect::<Vec<_>>(), [unit.as_path()]);
+    }
 
     #[test]
     fn resolve_unit_file_resolves_relative_against_config_dir() {

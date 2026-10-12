@@ -70,7 +70,6 @@ pub fn cmd_plan(run: &RunContext<'_>, args: &PlanArgs) -> anyhow::Result<()> {
         &mut effective_resolved.merged.packages,
         &mut effective_resolved.merged.layer_sources,
     )?;
-    let config_inputs = recorder.finish();
 
     // `PhaseArg`'s base phase is clap-validated; a selector combined with
     // `--phase modules` is the one combination `resolve_phase_filter` still
@@ -180,6 +179,9 @@ pub fn cmd_plan(run: &RunContext<'_>, args: &PlanArgs) -> anyhow::Result<()> {
             )?;
             Ok((dry_run_fm, actual_packages, plan))
         })?;
+    // Closed only once planning is done: the file, secret, system and script
+    // planners read their own sources, and each stamps what it read.
+    let config_inputs = recorder.finish();
 
     // A resource awaiting (or declined by) a source decision is not this run's
     // to plan. Pruned before the scope snapshot below, so the preview, the

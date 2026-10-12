@@ -120,9 +120,19 @@ fn resolve_existing_script(
     // depend on the shell's own `cwd` (`working_dir`), so the value this
     // function hands back has to be absolute on its own rather than resting
     // on every caller always passing an already-absolute `script_dir`.
-    resolved
+    let file = resolved
         .is_file()
-        .then(|| crate::absolutize_path(&resolved))
+        .then(|| crate::absolutize_path(&resolved))?;
+    // A plan that names this script replays it from the file on disk, so the
+    // file is an input of the derivation.
+    crate::record_config_input(&file);
+    Some(file)
+}
+
+/// Stamps the script file a lifecycle `run` entry names, resolved the way
+/// execution resolves it against `script_dir`; an inline body stamps nothing.
+pub(crate) fn record_script_input(run_str: &str, script_dir: &std::path::Path) {
+    resolve_run_target(run_str, script_dir, ScriptShell::Auto);
 }
 
 /// Render `resolved` as a single word for substitution into an inline

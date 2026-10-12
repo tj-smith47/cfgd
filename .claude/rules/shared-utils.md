@@ -601,9 +601,11 @@ The **30-second memo convention** and the exclusion a TTL guard needs are in `ut
 ## Config inputs (what a derivation READ)
 
 - `record_config_input(path)` — the ONE report that a file or listing was consulted while deriving typed config, called from the READ sites so a caller never GUESSES the file set.
+- `record_config_input_tree(path)` — `record_config_input` over a path and, for a directory, every entry beneath it less any `.git`; reach for it wherever a derivation reads a source that may be a directory, whose own mtime does not move on a nested edit. A directory it cannot list is recorded as an input that reads as moved. `record_config_input_tree_stamps_nested_files`.
 - `ConfigInputRecorder::start()` / `.finish()` — the RAII frame; frames nest, so an inner recorder does not steal an outer one's entries.
 - `ConfigInputs::unchanged()` — re-stat every entry. An EMPTY set answers `false`.
 - `ConfigInputs::first_moved()` — the first entry whose stamp moved, for a caller WORDING which file changed; `unchanged()` stays the verdict, because an empty set has no mover and is still not unchanged.
+- `ConfigInputs::first_unreadable()` — the first entry the derivation could not read beneath, which reads as moved on every comparison; a caller wording a refusal asks it before `first_moved()`.
 - `ConfigInput` (`util/config_inputs.rs`) — the wire form `ConfigInputs` serializes as, so a plan file can carry what its derivation read: a `to_posix_fs_key` path that is also reopened, an epoch-nanosecond `mtime`, and `present` carrying absence as a state of its own.
 - `daemon::tick_cache::TickCache` — the daemon's holder built on the above, and the shape a second long-lived holder reaches for, so no new fingerprint scheme is minted.
 

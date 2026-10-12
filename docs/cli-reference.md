@@ -380,6 +380,25 @@ $ cfgd apply --plan plan.json
 ✗ plan.json is stale: /home/you/.config/cfgd/profiles/tiny.yaml changed since it was written, so it no longer describes this config — run `cfgd plan -o json` again
 ```
 
+The stamped files are every file the derivation read:
+
+- the config document, every profile and module document, both lockfiles and every
+  declared package manifest (a `Brewfile`, a `package.json`)
+- every managed-file source, templates and encrypted sources included, whatever its
+  strategy; a directory source is stamped with every file beneath it, so an edit to a
+  nested file alone refuses the replay
+- every module file source, local or from a module's git checkout (the checked-out
+  files; git's own `.git` directory is not stamped)
+- every secret source the plan decrypts
+- every systemd `unitFile` the plan installs
+- every script file a patch names in its `run`, and every script file a lifecycle hook
+  (`preApply`, `postApply`, `preReconcile`, `postReconcile`), the profile's or a
+  module's, names in its `run`
+
+A directory beneath a stamped source that cfgd could not list when the plan was written
+refuses the replay too, naming that directory: nothing beneath it was stamped, so cfgd
+cannot tell whether it changed.
+
 Three shapes are refused ahead of those: a payload carrying no `savedPlan` (its run
 was filtered, or held a source decision back), one whose phases were reordered or
 duplicated by hand, and one whose derivation never read the config this run resolved.

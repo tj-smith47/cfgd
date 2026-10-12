@@ -35312,3 +35312,85 @@ fn an_apply_records_each_row_under_the_layer_that_delivered_it() {
         "nothing the source delivered is also claimed by the operator: {local:?}"
     );
 }
+
+#[test]
+fn a_decrypted_secret_source_is_stamped_as_a_config_input() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("secrets").join("token.enc");
+    std::fs::create_dir_all(source.parent().unwrap()).unwrap();
+    std::fs::write(&source, "ENC[...]").unwrap();
+    let state = test_state();
+    let mut registry = ProviderRegistry::new();
+    registry.secret_backend = Some(Box::new(MockSecretBackend::new("sops")));
+    let reconciler = Reconciler::new(&registry, &state).with_config_dir(dir.path());
+    let mut profile = MergedProfile::default();
+    profile.secrets.push(crate::config::SecretSpec {
+        source: "secrets/token.enc".to_string(),
+        target: Some(dir.path().join("out")),
+        template: None,
+        backend: None,
+        envs: None,
+    });
+
+    let rec = crate::ConfigInputRecorder::start();
+    let actions = reconciler.plan_secrets(&profile);
+    let inputs = rec.finish();
+
+    assert!(
+        matches!(&actions[..], [Action::Secret(SecretAction::Decrypt { .. })]),
+        "the fixture plans one decrypt: {actions:?}"
+    );
+    assert_eq!(inputs.paths().collect::<Vec<_>>(), [source.as_path()]);
+}
+
+#[test]
+fn every_lifecycle_script_file_a_plan_names_is_stamped_as_a_config_input() {
+    let dir = tempfile::tempdir().unwrap();
+    let config_dir = dir.path().join("config");
+    let module_dir = dir.path().join("module");
+    let pre = config_dir.join("scripts").join("pre.sh");
+    let hook = module_dir.join("hook.sh");
+    for file in [&pre, &hook] {
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(file, "#!/bin/sh\n").unwrap();
+    }
+    let state = test_state();
+    let registry = ProviderRegistry::new();
+    let reconciler = Reconciler::new(&registry, &state).with_config_dir(&config_dir);
+    let mut resolved = make_empty_resolved();
+    resolved.merged.scripts.pre_apply = vec![ScriptEntry::Simple("scripts/pre.sh".to_string())];
+    let mut module = resolved_module_with_package("tools", "jq", "apt");
+    module.dir = module_dir.clone();
+    module.pre_apply_scripts = vec![ScriptEntry::Simple("hook.sh".to_string())];
+
+    let rec = crate::ConfigInputRecorder::start();
+    let plan = reconciler
+        .plan(
+            &resolved,
+            Vec::new(),
+            Vec::new(),
+            vec![module],
+            ReconcileContext::Apply,
+        )
+        .unwrap();
+    let inputs = rec.finish();
+
+    assert!(
+        plan.phases
+            .iter()
+            .flat_map(|p| p.actions())
+            .any(|a| matches!(
+                a,
+                Action::Module(m) if matches!(m.kind, ModuleActionKind::RunScript { .. })
+            )),
+        "the fixture plans the module's hook"
+    );
+    let stamped: Vec<&Path> = inputs.paths().collect();
+    for script in [&pre, &hook] {
+        assert!(
+            stamped.contains(&crate::absolutize_path(script).as_path()),
+            "{} is stamped: {stamped:?}",
+            script.display()
+        );
+    }
+}

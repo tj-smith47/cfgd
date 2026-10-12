@@ -911,6 +911,7 @@ pub fn resolve_module_files(
         if is_git_source(&entry.source) {
             let git_src = parse_git_source(&entry.source)?;
             let local_path = fetch_git_source(&git_src, cache_base, &module.name, printer)?;
+            crate::record_config_input_tree(&local_path);
 
             resolved.push(ResolvedFile {
                 source: local_path,
@@ -964,6 +965,9 @@ pub fn resolve_module_files(
                 }
                 .into());
             }
+            // Stamped ahead of the `private` skip below: a private source that
+            // appears later changes what this resolution yields.
+            crate::record_config_input_tree(&source);
             // `private` marks the source local-only: on a machine where it
             // does not exist the entry resolves to nothing, so no downstream
             // consumer has to know the flag existed. An absent NON-private

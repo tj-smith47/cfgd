@@ -7075,6 +7075,108 @@ mod git_fixture_tests {
         assert!(dest.join("index.md").exists());
     }
 
+    /// A module whose two `files:` entries come from one repository pinned by
+    /// tag: the whole checkout, and its `docs` subdirectory. The second entry's
+    /// fetch checks the pinned ref out again inside the same derivation.
+    fn module_with_two_pinned_git_files(src: &Path) -> crate::modules::LoadedModule {
+        use crate::config::{ModuleFileEntry, ModuleSpec};
+        use crate::modules::LoadedModule;
+        let entry = |source: String, target: &str| ModuleFileEntry {
+            patch: None,
+            source,
+            target: target.into(),
+            strategy: None,
+            private: false,
+            encryption: None,
+            permissions: None,
+        };
+        let url = file_url(src);
+        LoadedModule {
+            version: None,
+            name: "dots".into(),
+            spec: ModuleSpec {
+                files: vec![
+                    entry(format!("{url}@v1.0"), "/home/user/.dots"),
+                    entry(format!("{url}//docs@v1.0"), "/home/user/.docs"),
+                ],
+                ..Default::default()
+            },
+            dir: src.to_path_buf(),
+            origin: None,
+        }
+    }
+
+    fn tagged_repo_with_docs(dir: &Path) {
+        let (repo, _) = init_repo_with_commit(dir);
+        let docs = add_commit(&repo, "docs/index.md", "# docs");
+        let commit = repo.find_commit(docs).unwrap();
+        repo.tag_lightweight("v1.0", commit.as_object(), false)
+            .unwrap();
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn two_file_entries_from_one_pinned_repository_leave_the_derivation_unchanged() {
+        crate::test_helpers::with_test_env_var(
+            crate::CFGD_ALLOW_LOCAL_SOURCES_ENV,
+            Some("1"),
+            || {
+                let _window = crate::test_helpers::GitRefreshWindowGuard::always_expired();
+                let src = tempfile::tempdir().unwrap();
+                tagged_repo_with_docs(src.path());
+                let module = module_with_two_pinned_git_files(src.path());
+                let cache = tempfile::tempdir().unwrap();
+                let (printer, _) = Printer::for_test();
+
+                let rec = crate::ConfigInputRecorder::start();
+                let resolved =
+                    crate::modules::resolve_module_files(&module, cache.path(), &printer).unwrap();
+                let inputs = rec.finish();
+
+                let readme = resolved[0].source.join("README.md");
+                assert!(
+                    inputs.paths().any(|p| p == readme),
+                    "a tracked working-tree file of the checkout is stamped: {:?}",
+                    inputs.paths().collect::<Vec<_>>()
+                );
+                assert!(
+                    inputs.unchanged(),
+                    "the second entry's checkout of the same ref moved a stamped input: {:?}",
+                    inputs.first_moved()
+                );
+            },
+        );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn an_edit_to_a_git_sourced_module_file_moves_the_derivation() {
+        crate::test_helpers::with_test_env_var(
+            crate::CFGD_ALLOW_LOCAL_SOURCES_ENV,
+            Some("1"),
+            || {
+                let src = tempfile::tempdir().unwrap();
+                tagged_repo_with_docs(src.path());
+                let module = module_with_two_pinned_git_files(src.path());
+                let cache = tempfile::tempdir().unwrap();
+                let (printer, _) = Printer::for_test();
+
+                let rec = crate::ConfigInputRecorder::start();
+                let resolved =
+                    crate::modules::resolve_module_files(&module, cache.path(), &printer).unwrap();
+                let inputs = rec.finish();
+
+                let page = resolved[1].source.join("index.md");
+                std::fs::write(&page, "# docs, edited in the cache").unwrap();
+                assert_eq!(
+                    inputs.first_moved(),
+                    Some(page.as_path()),
+                    "an edit to a checked-out file the plan deploys moves its stamp"
+                );
+            },
+        );
+    }
+
     #[test]
     fn fetch_git_source_errors_with_module_name_when_tag_is_unknown() {
         // Unknown tag → checkout_ref's revparse chain exhausts, giving

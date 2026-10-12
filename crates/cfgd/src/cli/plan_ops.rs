@@ -912,6 +912,19 @@ pub(in crate::cli) fn load_saved_plan(
     }
 
     if !saved.config_inputs.unchanged() {
+        if let Some(unread) = saved.config_inputs.first_unreadable() {
+            let unread_shown = unread.display(); // native-ok: a human-facing error; no key is built from it
+            return Err(plan_refusal(
+                path,
+                "stale",
+                format!(
+                    "{shown} is stale: {unread_shown} could not be read when it was written, so \
+                     cfgd cannot tell whether anything beneath it changed — run `cfgd plan -o \
+                     json` again"
+                ),
+                serde_json::json!({ "changed": unread.display_posix(), "unreadable": true }),
+            ));
+        }
         let moved_path = saved.config_inputs.first_moved();
         let moved = moved_path.as_ref().map_or_else(
             || "the config".to_string(),
