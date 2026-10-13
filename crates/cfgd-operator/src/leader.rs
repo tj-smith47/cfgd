@@ -152,10 +152,10 @@ impl LeaderElection {
 
                     let field_manager = self.field_manager();
                     let params = if free {
-                        // Any free lease is forced, not only one whose
-                        // holder differs: forcing is what strips the previous
-                        // owner's field manager off `spec.*`, and the previous
-                        // owner is not always another pod. A Lease minted by a
+                        // Every free lease is forced, including one whose
+                        // last holder was this identity: forcing is what strips
+                        // the previous owner's field manager off `spec.*`, and
+                        // the previous owner is not always another pod. A Lease minted by a
                         // plain create carries the API server's inferred
                         // `unknown` manager, and a pod that comes back under
                         // its own former identity would otherwise conflict with
