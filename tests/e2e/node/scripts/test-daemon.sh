@@ -829,18 +829,40 @@ begin_test "DAEMON-17: Daemon checkin with gateway"
 
 SERVER_URL="$E2E_GATEWAY_URL"
 GW_API_KEY="$E2E_GATEWAY_API_KEY"
+gateway_device DAEMON17_DEVICE_ID "e2e-daemon17-${E2E_RUN_ID}"
 
-# Check if device gateway is reachable (enrollment discovery needs no auth)
-GATEWAY_REACHABLE=false
-if wait_for_pod_url "${SERVER_URL}/api/v1/enroll/info" 20; then
-    GATEWAY_REACHABLE=true
-fi
+# daemon17_checked_in: true once the gateway's record of the device carries a
+# config hash a check-in wrote. Enrollment registers the device with the hash
+# `pending-enrollment`, so a listed device alone proves no check-in.
+daemon17_checked_in() {
+    local hash
+    hash="$(exec_in_pod curl -sf -H "Authorization: Bearer $GW_API_KEY" \
+        "${SERVER_URL}/api/v1/devices/${DAEMON17_DEVICE_ID}" 2>/dev/null | jq -r '.configHash // empty' 2>/dev/null)" || return 1
+    [ -n "$hash" ] && [ "$hash" != "pending-enrollment" ]
+}
 
-if [ "$GATEWAY_REACHABLE" = "false" ]; then
-    skip_test "DAEMON-17" "Device gateway not reachable"
+DAEMON17_CRED=""
+if ! wait_for_pod_url "${SERVER_URL}/api/v1/enroll/info" 20; then
+    fail_test "DAEMON-17" "The PR install's gateway at $SERVER_URL did not answer /api/v1/enroll/info from pod/$TEST_POD within 20s"
+elif ! DAEMON17_TOKEN="$(exec_in_pod curl -sf -X POST "${SERVER_URL}/api/v1/admin/tokens" \
+    -H "Content-Type: application/json" -H "Authorization: Bearer $GW_API_KEY" \
+    -d '{"username":"e2e-daemon17","team":"e2e-team","expiresIn":3600}' 2>/dev/null | jq -r '.token // empty')" ||
+    [ -z "$DAEMON17_TOKEN" ]; then
+    fail_test "DAEMON-17" "The gateway at $SERVER_URL refused to mint a bootstrap token with the install's admin key"
 else
-    # Create daemon config with server origin
-    exec_in_pod bash -c "cat > /etc/cfgd/e2e-daemon17-cfgd.yaml << INNEREOF
+    # cfgd enroll names the device after the host, so it runs in a UTS
+    # namespace of its own whose hostname is the gateway_device id.
+    DAEMON17_ENROLL_RC=0
+    # shellcheck disable=SC2016  # the program runs in the pod's sh, which expands $1-$3
+    DAEMON17_ENROLL=$(exec_in_pod unshare --uts sh -c 'hostname "$1" && exec cfgd enroll --server-url "$2" --token "$3" --no-color' _ "$DAEMON17_DEVICE_ID" "$SERVER_URL" "$DAEMON17_TOKEN" 2>&1) || DAEMON17_ENROLL_RC=$? # device-id-ok: the enroll's hostname is DAEMON17_DEVICE_ID, which gateway_device set
+    echo "  Enroll output:"
+    printf '%s\n' "$DAEMON17_ENROLL" | sed 's/^/    /'
+    DAEMON17_CRED=$(sed -n 's/.*Saved credential to //p' <<<"$DAEMON17_ENROLL" | head -1)
+
+    if [ "$DAEMON17_ENROLL_RC" -ne 0 ] || [ -z "$DAEMON17_CRED" ]; then
+        fail_test "DAEMON-17" "cfgd enroll against $SERVER_URL as $DAEMON17_DEVICE_ID exited $DAEMON17_ENROLL_RC and saved no credential"
+    else
+        exec_in_pod bash -c "cat > /etc/cfgd/e2e-daemon17-cfgd.yaml << INNEREOF
 apiVersion: cfgd.io/v1alpha1
 kind: Config
 metadata:
@@ -858,40 +880,39 @@ spec:
       driftPolicy: NotifyOnly
 INNEREOF"
 
-    # Start daemon (it does a server checkin at startup and on each reconcile)
-    exec_in_pod bash -c 'sysctl -w fs.inotify.max_user_instances=512 fs.inotify.max_user_watches=524288 > /dev/null 2>&1; nohup cfgd --config /etc/cfgd/e2e-daemon17-cfgd.yaml daemon --no-color > /tmp/daemon17.log 2>&1 &' # device-id-ok: a daemon check-in sends no drift report, and the pod holds no device credential, so the daemon skips the check-in
-    DAEMON_PID=$(exec_in_pod bash -c 'pgrep -f "cfgd.*e2e-daemon17-cfgd" | head -1 || echo ""')
-    echo "  Daemon PID: $DAEMON_PID"
+        # Start daemon (it does a server checkin at startup and on each reconcile)
+        exec_in_pod bash -c 'sysctl -w fs.inotify.max_user_instances=512 fs.inotify.max_user_watches=524288 > /dev/null 2>&1; nohup cfgd --config /etc/cfgd/e2e-daemon17-cfgd.yaml daemon --no-color > /tmp/daemon17.log 2>&1 &' # device-id-ok: the daemon checks in under the credential the enroll above saved for DAEMON17_DEVICE_ID
+        DAEMON_PID=$(exec_in_pod bash -c 'pgrep -f "cfgd.*e2e-daemon17-cfgd" | head -1 || echo ""')
+        echo "  Daemon PID: $DAEMON_PID"
 
-    if [ -z "$DAEMON_PID" ]; then
-        fail_test "DAEMON-17" "Daemon did not start"
-    else
-        # A reconcile tick checks in with the server origin, or says why it skipped.
-        echo "  Waiting up to 30s for the daemon's check-in attempt..."
-        wait_for_pod_log /tmp/daemon17.log 'daemon: (checking in with|no device credential for this gateway)' 30 || true
-
-        stop_pod_process "$DAEMON_PID" || true
-
-        DAEMON_LOG=$(exec_in_pod cat /tmp/daemon17.log 2>/dev/null || echo "")
-        echo "  Daemon logs (last 15 lines):"
-        echo "$DAEMON_LOG" | tail -15 | sed 's/^/    /'
-
-        # The tick's check-in line names the gateway it is aimed at, or the
-        # gateway records the device.
-        DEVICES=$(exec_in_pod curl -sf -H "Authorization: Bearer $GW_API_KEY" "${SERVER_URL}/api/v1/devices" 2>/dev/null || echo "[]")
-        DAEMON17_CHECKIN=$(grep -E 'daemon: (checking in with|no device credential for this gateway)' <<<"$DAEMON_LOG" | grep -F "$SERVER_URL" || true)
-        echo "  Check-in line naming $SERVER_URL: ${DAEMON17_CHECKIN:-none}"
-
-        if grep -qF "url=$SERVER_URL" <<<"$DAEMON17_CHECKIN" || grep -qF "checking in with $SERVER_URL" <<<"$DAEMON17_CHECKIN"; then
-            pass_test "DAEMON-17"
-        elif echo "$DEVICES" | grep -q "e2e-daemon17"; then
-            pass_test "DAEMON-17"
+        if [ -z "$DAEMON_PID" ]; then
+            fail_test "DAEMON-17" "Daemon did not start"
         else
-            fail_test "DAEMON-17" "No daemon check-in line naming $SERVER_URL, and the gateway lists no e2e-daemon17 device"
+            echo "  Waiting up to 30s for the daemon's check-in to complete..."
+            wait_for_pod_log /tmp/daemon17.log 'daemon: (server check-in succeeded|server check-in failed|no device credential for this gateway)' 30 || true
+
+            stop_pod_process "$DAEMON_PID" || true
+
+            DAEMON_LOG=$(exec_in_pod cat /tmp/daemon17.log 2>/dev/null || echo "")
+            echo "  Daemon logs (last 15 lines):"
+            echo "$DAEMON_LOG" | tail -15 | sed 's/^/    /'
+
+            if grep -qF "daemon: checking in with $SERVER_URL" <<<"$DAEMON_LOG" &&
+                grep -qF "daemon: server check-in succeeded" <<<"$DAEMON_LOG"; then
+                pass_test "DAEMON-17"
+            elif daemon17_checked_in; then
+                pass_test "DAEMON-17"
+            else
+                fail_test "DAEMON-17" "The daemon logged no completed check-in with $SERVER_URL, and the gateway holds no check-in from $DAEMON17_DEVICE_ID"
+            fi
         fi
     fi
-    exec_in_pod rm -f /tmp/daemon17.log /etc/cfgd/e2e-daemon17-cfgd.yaml 2>/dev/null || true
 fi
+if [ -n "$DAEMON17_CRED" ]; then
+    # shellcheck disable=SC2016  # the program runs in the pod's bash, which expands $1 and $HOME
+    exec_in_pod bash -c 'rm -f "${1/#\~/$HOME}"' _ "$DAEMON17_CRED" 2>/dev/null || true
+fi
+exec_in_pod rm -f /tmp/daemon17.log /etc/cfgd/e2e-daemon17-cfgd.yaml 2>/dev/null || true
 
 # =================================================================
 # DAEMON-18: Daemon graceful stop (SIGTERM)

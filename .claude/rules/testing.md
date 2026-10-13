@@ -326,9 +326,10 @@ every rule.
 
 ## An e2e device id comes from `gateway_device`
 
-The release gateway labels each DriftAlert it creates `cfgd.io/device-id=<id>` and
-gives it no run label, so the run label cannot clean it up. `gateway_device <var> <id>`
-in `tests/e2e/common/helpers.sh` sets the variable and records the id, and
+The PR install's device gateway, in `$E2E_INSTALL_NS`, labels each DriftAlert it
+creates `cfgd.io/device-id=<id>` and gives it no run label, so the run label cannot
+clean it up. `gateway_device <var> <id>` in `tests/e2e/common/helpers.sh` sets the
+variable and records the id, and
 `cleanup_e2e` deletes the alerts of every recorded id; a failed delete prints a
 `WARN:` line on stderr naming the ids and the teardown goes on. The helper refuses an
 id that is not already a label value of at most 63 characters (lowercase letters,

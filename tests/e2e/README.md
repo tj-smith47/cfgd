@@ -16,7 +16,7 @@ on PATH, and its setup stops without it.
 | `RELEASE_REGISTRY` | unset | Registry an image whose tag override is set is pulled from (`function-cfgd` is copied from it into `REGISTRY`); unset, that image comes from `REGISTRY` |
 | `IMAGE_TAG` | `e2e-<short HEAD sha>` | Tag of every image that has no override below |
 | `CFGD_IMAGE_TAG` | `IMAGE_TAG` | Tag of `cfgd` (agent, test pod) |
-| `OPERATOR_IMAGE_TAG` | `IMAGE_TAG` | Tag of `cfgd-operator` (the PR install's operator; the device gateway where setup deploys it) |
+| `OPERATOR_IMAGE_TAG` | `IMAGE_TAG` | Tag of `cfgd-operator` (the PR install's operator and its device gateway) |
 | `CSI_IMAGE_TAG` | `IMAGE_TAG` | Tag of `cfgd-csi` (the PR install's CSI node plugin) |
 | `FUNCTION_IMAGE_TAG` | `IMAGE_TAG` | Tag of `function-cfgd` (Crossplane function) |
 
@@ -206,6 +206,9 @@ applies where ArgoCD does not run it, so the scan does not read it. `helpers.sh`
 the release webhook configurations once, as `$E2E_RELEASE_VALIDATING_WEBHOOK` and
 `$E2E_RELEASE_MUTATING_WEBHOOK`, for setup and the check below.
 
+`test-pr-install.sh` also fails when `setup-cluster.sh` names `cfgd-server`: no suite reads the
+release's device gateway, so setup neither deploys nor waits for it.
+
 Setup scopes the release's webhooks away from run-labelled objects and namespaces
 (`cfgd.io/e2e-run DoesNotExist`), and a setup run from a branch without that scoping
 re-applies them unscoped. The operator, full-stack and gateway suites call
@@ -383,10 +386,10 @@ device gateway included, and CSI image run in the PR install instead: Helm relea
 `$E2E_INSTALL_RELEASE` in
 `$E2E_INSTALL_NS`, with CSI driver `e2e.csi.cfgd.io`, scoped to the objects and
 namespaces that carry the run label. `setup-cluster.sh` prints the image each live
-component and each PR install workload runs, and warns when `OPERATOR_IMAGE_TAG` is
-set while ArgoCD owns the gateway, which the override then does not reach. When
-`CFGD_DEPLOY_MANIFESTS` names a tree that `task deploy:operator` applied, that tree
-owns the operator and gateway Deployments, and setup warns the same way.
+component and each PR install workload runs. When `CFGD_DEPLOY_MANIFESTS` names a
+tree that `task deploy:operator` applied, that tree owns the operator Deployment, and
+setup restarts it to pull a rebuilt image. No suite reads the release's device
+gateway, so setup neither deploys nor waits for it.
 
 ArgoCD owns the Crossplane objects in
 `/db/manifests/k3s/namespaces/crossplane-system/` too: `Function/function-cfgd`, pinned

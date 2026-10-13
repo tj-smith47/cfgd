@@ -80,7 +80,7 @@ GW_API_KEY="$E2E_GATEWAY_API_KEY"
 export GW_API_KEY
 echo "Device gateway URL: $SERVER_URL"
 
-# Wait for gateway reachability from test pod (use the health endpoint, as the API requires auth)
+# Wait for gateway reachability from test pod (the enrollment info endpoint, which needs no auth)
 echo "Waiting for device gateway..."
 if ! wait_for_pod_url "${SERVER_URL}/api/v1/enroll/info" 120; then
     echo "ERROR: Device gateway not reachable after 120s" >&2

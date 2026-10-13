@@ -20,16 +20,8 @@ for img in cfgd cfgd-operator cfgd-csi function-cfgd; do
     echo "  $(e2e_image "$img")"
 done
 
-# Where something other than setup owns a component's spec, a tag override for
-# it cannot take effect there, so setup says so.
-warn_override_unused() {
-    local image="$1" owner="$2" kind="$3" name="$4" container="$5"
-    e2e_override_unused_warning "$image" "$owner" "$kind/$name" \
-        "$(running_image "$kind" "$name" "$container")"
-}
-
-# --- Step 1: Verify cluster access ---
-# Stale-resource cleanup (former Step 0) moved to the async cfgd-e2e-janitor
+# --- Verify cluster access ---
+# Stale-resource cleanup moved to the async cfgd-e2e-janitor
 # CronJob in cfgd-system: it deletes aged cfgd-e2e-* namespaces, cfgd-test
 # RBAC, and orphaned CRD instances off the GHA critical path. See
 # /db/manifests/k3s/namespaces/cfgd-system/e2e-cleanup-cronjob.yaml.
@@ -39,14 +31,14 @@ kubectl cluster-info >/dev/null 2>&1 || {
     exit 1
 }
 
-# --- Step 1b: Pre-flight permission checks ---
+# --- Pre-flight permission checks ---
 # RBAC is managed by ArgoCD (see /db/manifests/k3s/namespaces/cfgd-system/e2e-rbac.yaml).
 # This script only verifies the runner SA has what it needs; it does NOT apply RBAC.
 ensure_namespace cfgd-system
 
-# --- Step 1c: Serialize on shared cluster state via a coordination Lease ---
+# --- Serialize on shared cluster state via a coordination Lease ---
 # Two near-simultaneous setups mutate the same cluster-scoped state (CRDs,
-# webhooks, the singleton operator/server deployments, the PR install's
+# webhooks, the singleton operator deployment, the PR install's
 # CSIDriver). A coordination.k8s.io/Lease named cfgd-e2e-setup serializes
 # them: the holder identity is GITHUB_RUN_ID and a background renewer advances
 # renewTime every third of the duration. If the holder dies, renewTime stops
@@ -252,7 +244,7 @@ if [ "$PREFLIGHT_OK" = "false" ]; then
 fi
 echo "  All pre-flight checks passed"
 
-# --- Step 2: Extract cfgd-gen-crds binary from the operator's build stage ---
+# --- Extract cfgd-gen-crds binary from the operator's build stage ---
 # Dockerfile.operator now compiles cfgd-operator AND cfgd-gen-crds in a
 # single `cargo build` pass; the `crds` stage exposes just the gen-crds
 # binary. Buildx extracts it into the local filesystem, which populates the
@@ -266,7 +258,7 @@ mapfile -t _crds_cache < <(buildcache_args cfgd-operator)
 crds_args+=("${_crds_cache[@]}")
 docker "${crds_args[@]}" "$REPO_ROOT"
 
-# --- Step 3: Build and push images ---
+# --- Build and push images ---
 # Pre-pull base images so the Dockerfile `FROM`s hit the local cache. If
 # docker.io rate-limits this runner (HTTP 429), fall back to mirror.gcr.io and retag
 # under the bare name so `FROM debian:bookworm-slim` resolves locally.
@@ -527,9 +519,9 @@ if [ "$FUNCTION_DECISION" = "build" ]; then
     e2e_push xpkg "$FUNCTION_IMAGE" -f "$XPKG_OUT"
 fi
 
-# (Namespace and RBAC already created in Step 1b above)
+# (Namespace and RBAC already created by the pre-flight permission checks above)
 
-# --- Step 4: Check the PR's CRDs against the cluster's ---
+# --- Check the PR's CRDs against the cluster's ---
 echo "Comparing the PR's CRDs with the cluster's..."
 CRD_YAML=$("$REPO_ROOT/target/release/cfgd-gen-crds")
 if [ -z "$CRD_YAML" ]; then
@@ -538,11 +530,11 @@ if [ -z "$CRD_YAML" ]; then
 fi
 printf '%s\n' "$CRD_YAML" | check_pr_crds || exit 1
 
-# --- Step 5: Apply cert-manager webhook TLS ---
+# --- Apply cert-manager webhook TLS ---
 echo "Applying webhook TLS (cert-manager)..."
 kubectl apply -f "$SCRIPT_DIR/manifests/e2e-webhook-tls.yaml"
 
-# --- Step 6: Install the PR's operator and CSI driver ---
+# --- Install the PR's operator and CSI driver ---
 # The live release in cfgd-system runs whatever its owner pins, so this run's
 # operator and CSI images are installed as a second release beside it. That
 # release watches, validates and injects only for objects and namespaces that
@@ -689,11 +681,11 @@ fi
 echo "  PR operator runs $pr_operator_image"
 echo "  PR CSI driver runs $pr_csi_image"
 
-# --- Step 7: Update operator image ---
+# --- Update operator image ---
 echo "Updating operator image..."
-# ArgoCD owns the shared cluster's operator and gateway Deployments and runs
-# the release /db/manifests pins, reverting anything applied here, so nothing
-# this run builds reaches them and a restart would only re-pull that release.
+# ArgoCD owns the shared cluster's operator Deployment and runs the release
+# /db/manifests pins, reverting anything applied here, so nothing this run
+# builds reaches it and a restart would only re-pull that release.
 ARGOCD_MANAGED=false
 argocd_rc=0
 argocd_owner deployment cfgd-operator cfgd-system "rerun setup" || argocd_rc=$?
@@ -704,43 +696,31 @@ case "$argocd_rc" in
 esac
 
 if [ "$ARGOCD_MANAGED" = "true" ]; then
-    for deploy in cfgd-operator cfgd-server; do
-        echo "  deployment/$deploy is managed by ArgoCD and runs $(running_image deployment "$deploy" cfgd-operator)"
-    done
-    warn_override_unused cfgd-operator ArgoCD deployment cfgd-server cfgd-operator
+    echo "  deployment/cfgd-operator is managed by ArgoCD and runs $(running_image deployment cfgd-operator cfgd-operator)"
 elif [ -n "${CFGD_DEPLOY_MANIFESTS:-}" ] && [ -d "$CFGD_DEPLOY_MANIFESTS" ]; then
-    # A tree `task deploy:operator` applied owns these Deployments, so setup
-    # leaves their spec alone. They name the :latest tag this run pushes, and a
-    # restart is what makes them pull a rebuilt image. Skipping it when the
+    # A tree `task deploy:operator` applied owns this Deployment, so setup
+    # leaves its spec alone. It names the :latest tag this run pushes, and a
+    # restart is what makes it pull a rebuilt image. Skipping it when the
     # image was not rebuilt is the bulk of the no-source-change time saving.
-    warn_override_unused cfgd-operator "the tree at $CFGD_DEPLOY_MANIFESTS" \
-        deployment cfgd-server cfgd-operator
     if [ "${IMAGE_BUILT[cfgd-operator]:-true}" != "true" ]; then
-        echo "  cfgd-operator image unchanged: skipping operator/server rollout restart"
-    else
-    echo "  Deployments applied from $CFGD_DEPLOY_MANIFESTS: restarting to pull :latest..."
-
-    for deploy in cfgd-operator cfgd-server; do
-        if kubectl get deployment "$deploy" -n cfgd-system >/dev/null 2>&1; then
-            kubectl rollout restart "deployment/$deploy" -n cfgd-system 2>/dev/null || true
-            # Wait for old pods to terminate (handles RWO PVC conflicts)
-            kubectl rollout status "deployment/$deploy" -n cfgd-system --timeout=120s 2>/dev/null || {
-                echo "  Rollout stuck for $deploy: deleting old pods to release PVC..."
-                kubectl delete pods -n cfgd-system -l "app=$deploy" --ignore-not-found --grace-period=5 --wait=false 2>/dev/null || true
-                kubectl rollout status "deployment/$deploy" -n cfgd-system --timeout=120s 2>/dev/null || true
-            }
-        fi
-    done
+        echo "  cfgd-operator image unchanged: skipping operator rollout restart"
+    elif kubectl get deployment cfgd-operator -n cfgd-system >/dev/null 2>&1; then
+        echo "  Deployment applied from $CFGD_DEPLOY_MANIFESTS: restarting to pull :latest..."
+        kubectl rollout restart deployment/cfgd-operator -n cfgd-system 2>/dev/null || true
+        # Wait for old pods to terminate (handles RWO PVC conflicts)
+        kubectl rollout status deployment/cfgd-operator -n cfgd-system --timeout=120s 2>/dev/null || {
+            echo "  Rollout stuck for cfgd-operator: deleting old pods to release PVC..."
+            kubectl delete pods -n cfgd-system -l app=cfgd-operator --ignore-not-found --grace-period=5 --wait=false 2>/dev/null || true
+            kubectl rollout status deployment/cfgd-operator -n cfgd-system --timeout=120s 2>/dev/null || true
+        }
     fi
 else
     echo "  Applying E2E manifests..."
     sed "s|IMAGE_PLACEHOLDER|$(e2e_image cfgd-operator)|g" \
         "$SCRIPT_DIR/operator/manifests/operator-deployment.yaml" | kubectl apply -f -
-    sed "s|IMAGE_PLACEHOLDER|$(e2e_image cfgd-operator)|g" \
-        "$SCRIPT_DIR/node/manifests/cfgd-server.yaml" | kubectl apply -f -
 fi
 
-# --- Step 8: Apply webhook configurations ---
+# --- Apply webhook configurations ---
 # The release's webhooks leave every object and namespace carrying a run label
 # to that run's install. Setup can only keep that scoping on objects it owns: an
 # object ArgoCD tracks gets reverted on the next sync, so setup stops there.
@@ -949,12 +929,11 @@ WEBHOOKEOF
 kubectl apply -f "$WEBHOOK_FILE"
 rm -f "$WEBHOOK_FILE"
 
-# --- Step 9: Wait for all components ---
+# --- Wait for all components ---
 echo "Waiting for components..."
 wait_for_deployment cfgd-system cfgd-operator 120
-wait_for_deployment cfgd-system cfgd-server 120
 
-# --- Step 10: Record last-green SHA per image ---
+# --- Record last-green SHA per image ---
 # Reached only after every prior step succeeded (set -e). Persisting HEAD as the
 # last-green SHA here is what lets the NEXT run's image_decision skip unchanged
 # images. Best-effort writes: a ConfigMap write failure only forces a rebuild
@@ -971,10 +950,8 @@ fi
 echo ""
 echo "=== E2E Setup Complete ==="
 echo "  Operator:  $(kubectl get pods -n cfgd-system -l app=cfgd-operator -o jsonpath='{.items[*].status.phase}' 2>/dev/null || echo 'unknown')"
-echo "  Gateway:   $(kubectl get pods -n cfgd-system -l app=cfgd-server -o jsonpath='{.items[*].status.phase}' 2>/dev/null || echo 'unknown')"
 echo "  CSI:       $(kubectl get ds -n cfgd-system -l app.kubernetes.io/component=csi-driver -o jsonpath='{.items[0].status.numberReady}' 2>/dev/null || echo 'N/A') ready"
 echo "  Running:   operator $(running_image deployment cfgd-operator cfgd-operator)"
-echo "             gateway $(running_image deployment cfgd-server cfgd-operator)"
 echo "             csi $(running_image daemonset cfgd-csi-csi cfgd-csi)"
 echo "  PR:        $E2E_INSTALL_RELEASE in $E2E_INSTALL_NS, CSI driver $CSI_DRIVER_NAME"
 echo "             operator $(running_image deployment "$E2E_OPERATOR_DEPLOY" operator "$E2E_INSTALL_NS")"

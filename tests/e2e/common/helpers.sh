@@ -61,17 +61,6 @@ e2e_image_overridden() {
     [ -n "${!var:-}" ]
 }
 
-# The warning setup prints when an override is set for a component whose spec
-# another owner controls: <image> <owner> <object> <image the object runs>.
-# Prints nothing when the image has no override, or when the object already
-# runs the overridden reference, since the override then took effect.
-e2e_override_unused_warning() {
-    local image="$1" owner="$2" object="$3" running="$4"
-    if e2e_image_overridden "$image" && [ "$running" != "$(e2e_image "$image")" ]; then
-        echo "  WARN: $(e2e_image_override_var "$image") is set, but $owner owns $object, which runs $running; the override does not reach it"
-    fi
-}
-
 # Crossplane keys its package lock by repository, and ArgoCD's function-cfgd
 # already installs from the release registry, so a run's Function installed from
 # that repository never turns Healthy. Setup copies a released function-cfgd into
@@ -202,7 +191,7 @@ export E2E_OPERATOR_PODS="app.kubernetes.io/instance=$E2E_INSTALL_RELEASE,app.ku
 export E2E_CSI_PODS="app.kubernetes.io/instance=$E2E_INSTALL_RELEASE,app.kubernetes.io/component=csi-driver"
 # The install's device gateway. Its Service selects only the operator pod that
 # holds the lease and carries the gateway leader label, so a suite reaches the
-# gateway through these names and never through the release's cfgd-server.
+# gateway through these names alone.
 # Setup passes the port and the admin key to helm.
 export E2E_GATEWAY_SVC="$E2E_INSTALL_RELEASE-gateway"
 export E2E_GATEWAY_PORT=8080

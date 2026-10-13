@@ -482,7 +482,6 @@ mod tests {
         for anchor in [
             "chart/cfgd/templates/operator-deployment.yaml",
             "tests/e2e/operator/manifests/operator-deployment.yaml",
-            "tests/e2e/node/manifests/cfgd-server.yaml",
             "ecosystem/olm/manifests/cfgd-operator.clusterserviceversion.yaml",
         ] {
             assert!(

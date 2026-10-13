@@ -38,8 +38,8 @@
 #   - every ERROR line an e2e script prints goes to stderr
 #   - no full-stack case calls skip_test
 #   - every device id the gateway, node and full-stack suites send to the
-#     release gateway comes from gateway_device, and cleanup_e2e deletes the
-#     DriftAlerts of each one it recorded
+#     install's gateway in $E2E_INSTALL_NS comes from gateway_device, and
+#     cleanup_e2e deletes the DriftAlerts of each one it recorded
 #   - every full-stack helm install and upgrade scopes its operator, validating
 #     webhook and pod injector to its own namespace through HELM_SCOPE, an
 #     array of exactly the three flags that no line appends to or rewrites,
@@ -2927,7 +2927,8 @@ release_target+='|\$\{?CFGD_NAMESPACE([^[:alnum:]_]|$)'
 release_target+='|app(\.kubernetes\.io/name)?='"$q"'cfgd-operator([^[:alnum:]-]|$)'
 release_target+='|(^|[^[:alnum:]_.-])(deploy|deployments?(\.apps)?|endpoints|ep|svc|services?)[/ ]+'"$q"'cfgd-operator([^[:alnum:]-]|$)'
 release_target+='|cfgd-(validating|mutating)-webhooks|csi\.cfgd\.io'
-release_target+='|(^|[^[:alnum:]_.-])cfgd-server([^[:alnum:]-]|$)'
+release_gateway='(^|[^[:alnum:]_.-])cfgd-server([^[:alnum:]-]|$)'
+release_target+="|$release_gateway"
 # scan_release_targets FILE...: file:line:text of each line naming one.
 scan_release_targets() {
     local rc=0
@@ -3016,6 +3017,17 @@ for suite in "${release_target_suites[@]}"; do
         fail "the $suite suite drives the PR install; use \$E2E_INSTALL_NS, \$E2E_OPERATOR_PODS, \$E2E_OPERATOR_DEPLOY, \$E2E_WEBHOOK_SVC, \$E2E_GATEWAY_SVC, \$E2E_GATEWAY_URL, \$E2E_CSI_DS, \$E2E_CSI_PODS, \$E2E_VALIDATING_WEBHOOK, \$E2E_MUTATING_WEBHOOK or \$CSI_DRIVER_NAME from helpers.sh. A line that names the release on purpose goes in common/release-targets-kept.tsv with its reason; a kept entry that matches no line is removed or updated. [$release_verdict]"
     fi
 done
+# Setup reads the release operator, its webhooks and its CSI driver on purpose,
+# but no suite reads the release's device gateway, so a setup that deploys,
+# restarts or waits for it fails every PR on a release the run does not test.
+setup_script="$repo_root/tests/e2e/setup-cluster.sh"
+setup_gateway_rc=0
+setup_gateway="$(grep -HnE "$release_gateway" "$setup_script")" || setup_gateway_rc=$?
+case "$setup_gateway_rc" in
+    1) pass "setup-cluster.sh never names the release gateway cfgd-server, so a broken release gateway cannot fail a PR's setup" ;;
+    0) fail "setup-cluster.sh names the release gateway cfgd-server, which no suite reads; drop it from setup [$setup_gateway]" ;;
+    *) fail "the release gateway scan could not read $setup_script" ;;
+esac
 # The gateway's Service name, port, in-cluster URL, leader label and admin key
 # are spelled once, in helpers.sh, and setup hands the port and key to helm, so
 # a suite that spells one by hand drifts from the install it drives.
@@ -3644,12 +3656,13 @@ else
     fi
 fi
 
-# The DriftAlerts the release gateway creates for a device carry no run label,
-# so cleanup_e2e deletes them by the ids gateway_device recorded, and an id
-# sent any other way leaks its alerts. scan_device_ids <relays> FILE... prints
-# `DEVICEID file:line <value>` for each id a line sends (a --device-id
-# argument, a "deviceId" JSON key, the <id> of a /api/v1/devices/<id>/drift
-# URL, or the argument a relay is called with) whose value is not one variable
+# The DriftAlerts the install's gateway in $E2E_INSTALL_NS creates for a
+# device carry no run label, so cleanup_e2e deletes them by the ids
+# gateway_device recorded, and an id sent any other way leaks its alerts.
+# scan_device_ids <relays> FILE... prints `DEVICEID file:line <value>` for
+# each id a line sends (a --device-id argument, a "deviceId" JSON key, the
+# <id> of a /api/v1/devices/<id>/drift URL, or the argument a relay is called
+# with) whose value is not one variable
 # that only gateway_device calls in the same directory assign (`NAME=`, read,
 # mapfile, readarray, printf -v, for and local or declare all assign);
 # `SENDER file:line` for a cfgd checkin or enroll, or a daemon aimed at a gateway
