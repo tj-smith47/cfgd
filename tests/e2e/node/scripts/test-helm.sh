@@ -17,7 +17,8 @@ trap 'helm uninstall cfgd -n "$E2E_NAMESPACE" 2>/dev/null || true; cleanup_e2e' 
 # T20: Helm install creates DaemonSet
 # =================================================================
 begin_test "T20: Helm install"
-helm install cfgd "$CHART_DIR" --skip-crds \
+INSTALL_RC=0
+INSTALL_OUTPUT=$(helm install cfgd "$CHART_DIR" --skip-crds \
     -f "$VALUES_FILE" \
     -n "$E2E_NAMESPACE" \
     --set "agent.image.repository=$(e2e_image_repo cfgd)" \
@@ -28,12 +29,14 @@ helm install cfgd "$CHART_DIR" --skip-crds \
     --set webhook.certManager.enabled=false \
     --set mutatingWebhook.enabled=false \
     --set operator.enabled=false \
-    --wait --timeout 120s 2>&1 || true
+    --wait --timeout 120s 2>&1) || INSTALL_RC=$?
 
 DS_STATUS=$(kubectl get ds -n "$E2E_NAMESPACE" -o jsonpath='{.items[*].metadata.name}' 2>/dev/null || echo "")
 echo "  DaemonSets: $DS_STATUS"
 
-if echo "$DS_STATUS" | grep -q "cfgd"; then
+if ! helm_ok "T20" "$INSTALL_RC" "$INSTALL_OUTPUT"; then
+    kubectl get all -n "$E2E_NAMESPACE" 2>/dev/null || true
+elif echo "$DS_STATUS" | grep -q "cfgd"; then
     pass_test "T20"
 else
     fail_test "T20" "DaemonSet not found after helm install"
@@ -103,6 +106,7 @@ fi
 # T24: Helm upgrade succeeds
 # =================================================================
 begin_test "T24: Helm upgrade"
+UPGRADE_RC=0
 OUTPUT=$(helm upgrade cfgd "$CHART_DIR" \
     -f "$VALUES_FILE" \
     --set "agent.image.repository=$(e2e_image_repo cfgd)" \
@@ -115,17 +119,19 @@ OUTPUT=$(helm upgrade cfgd "$CHART_DIR" \
     --set mutatingWebhook.enabled=false \
     --set operator.enabled=false \
     -n "$E2E_NAMESPACE" \
-    --wait --timeout 120s 2>&1) || true
+    --wait --timeout 120s 2>&1) || UPGRADE_RC=$?
 
-if echo "$OUTPUT" | grep -qi "has been upgraded\|STATUS: deployed"; then
-    pass_test "T24"
-else
-    # Helm may not print "upgraded" in all versions; check status instead
-    STATUS=$(helm status cfgd -n "$E2E_NAMESPACE" 2>/dev/null | grep STATUS || echo "")
-    if echo "$STATUS" | grep -qi "deployed"; then
+if helm_ok "T24" "$UPGRADE_RC" "$OUTPUT"; then
+    if echo "$OUTPUT" | grep -qi "has been upgraded\|STATUS: deployed"; then
         pass_test "T24"
     else
-        fail_test "T24" "Helm upgrade did not succeed"
+        # Helm may not print "upgraded" in all versions; check status instead
+        STATUS=$(helm status cfgd -n "$E2E_NAMESPACE" 2>/dev/null | grep STATUS || echo "")
+        if echo "$STATUS" | grep -qi "deployed"; then
+            pass_test "T24"
+        else
+            fail_test "T24" "Helm upgrade did not succeed"
+        fi
     fi
 fi
 
@@ -133,19 +139,22 @@ fi
 # T25: Helm uninstall cleans up
 # =================================================================
 begin_test "T25: Helm uninstall"
-helm uninstall cfgd -n "$E2E_NAMESPACE" --wait --timeout 60s 2>&1 || true
+UNINSTALL_RC=0
+UNINSTALL_OUTPUT=$(helm uninstall cfgd -n "$E2E_NAMESPACE" --wait --timeout 60s 2>&1) || UNINSTALL_RC=$?
 
 # Check that no cfgd DaemonSet remains
 DS_NAMES_RC=0
 DS_NAMES=$(kubectl get ds -n "$E2E_NAMESPACE" -l "app.kubernetes.io/name=cfgd" \
     -o jsonpath='{.items[*].metadata.name}' 2>/dev/null) || DS_NAMES_RC=$?
 
-if [ "$DS_NAMES_RC" -ne 0 ]; then
-    fail_test "T25" "Could not list the daemonsets in $E2E_NAMESPACE (kubectl exit $DS_NAMES_RC)"
-elif [ -z "$DS_NAMES" ]; then
-    pass_test "T25"
-else
-    fail_test "T25" "DaemonSet still present after uninstall: $DS_NAMES"
+if helm_ok "T25" "$UNINSTALL_RC" "$UNINSTALL_OUTPUT"; then
+    if [ "$DS_NAMES_RC" -ne 0 ]; then
+        fail_test "T25" "Could not list the daemonsets in $E2E_NAMESPACE (kubectl exit $DS_NAMES_RC)"
+    elif [ -z "$DS_NAMES" ]; then
+        pass_test "T25"
+    else
+        fail_test "T25" "DaemonSet still present after uninstall: $DS_NAMES"
+    fi
 fi
 
 # --- Summary ---

@@ -1547,6 +1547,16 @@ assert_equals() {
     return 1
 }
 
+# helm_ok <case id> <helm exit status> <helm output>: 0 when the case's helm
+# command exited 0; otherwise fails the case with the exit status and helm's
+# output and returns 1, since a case reading the objects a failed --wait left
+# behind would judge a release that never came up.
+helm_ok() {
+    [ "$2" -eq 0 ] && return 0
+    fail_test "$1" "helm exited $2: $(echo "$3" | head -20)"
+    return 1
+}
+
 # Print the head of a command's captured stderr ($1), indented, so a case that
 # kept stderr out of the document it parses still shows it for diagnosis.
 print_stderr_head() {

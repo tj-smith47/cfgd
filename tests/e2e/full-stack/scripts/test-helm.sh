@@ -54,16 +54,6 @@ helm_test_cleanup() {
     kubectl delete namespace "$HELM_NS" --ignore-not-found --wait=false 2>/dev/null || true
 }
 
-# helm_install_ok <case id> <helm exit status> <helm output>: 0 when the
-# case's helm install exited 0; otherwise fails the case with the exit status
-# and helm's output and returns 1, since a case reading the objects a failed
-# --wait left behind would judge a release that never came up.
-helm_install_ok() {
-    [ "$2" -eq 0 ] && return 0
-    fail_test "$1" "the release install exited $2: $(echo "$3" | head -20)"
-    return 1
-}
-
 # gateway_has_one_leader <namespace> <service>: 0 when the Service exists and,
 # within 60s, has exactly one ready endpoint, and that endpoint's pod carries
 # $E2E_GATEWAY_LEADER_LABEL=true. Otherwise 1, with the reason in
@@ -126,7 +116,7 @@ INSTALL_OUTPUT=$(helm install cfgd-test "$CHART_DIR" --skip-crds \
     --set agent.enabled=false \
     --set operator.leaderElection.enabled=false \
     --wait --timeout 120s 2>&1) || INSTALL_RC=$?
-if helm_install_ok "FS-HELM-01" "$INSTALL_RC" "$INSTALL_OUTPUT"; then
+if helm_ok "FS-HELM-01" "$INSTALL_RC" "$INSTALL_OUTPUT"; then
     OPERATOR_DEPLOY=$(kubectl get deployment -n "$HELM_NS" \
         -l app.kubernetes.io/component=operator \
         -o jsonpath='{.items[*].metadata.name}' 2>/dev/null || echo "")
@@ -178,7 +168,7 @@ INSTALL_OUTPUT=$(helm install cfgd-test "$CHART_DIR" --skip-crds \
     --set csiDriver.enabled=false \
     --set operator.leaderElection.enabled=false \
     --wait --timeout 120s 2>&1) || INSTALL_RC=$?
-if helm_install_ok "FS-HELM-02" "$INSTALL_RC" "$INSTALL_OUTPUT"; then
+if helm_ok "FS-HELM-02" "$INSTALL_RC" "$INSTALL_OUTPUT"; then
     GW_ENV_RC=0
     GW_ENV=$(kubectl get deployment cfgd-test-operator -n "$HELM_NS" \
         -o jsonpath='{.spec.template.spec.containers[?(@.name=="operator")].env[?(@.name=="DEVICE_GATEWAY_ENABLED")].value}') ||
@@ -220,7 +210,7 @@ INSTALL_OUTPUT=$(helm install cfgd-test "$CHART_DIR" --skip-crds \
     --set csiDriver.enabled=false \
     --set operator.leaderElection.enabled=false \
     --wait --timeout 120s 2>&1) || INSTALL_RC=$?
-if helm_install_ok "FS-HELM-03" "$INSTALL_RC" "$INSTALL_OUTPUT"; then
+if helm_ok "FS-HELM-03" "$INSTALL_RC" "$INSTALL_OUTPUT"; then
     GATEWAY_SVC_RC=0
     GATEWAY_SVC=$(kubectl get svc -n "$HELM_NS" \
         -o jsonpath='{.items[*].metadata.name}' 2>/dev/null) || GATEWAY_SVC_RC=$?
@@ -283,7 +273,7 @@ INSTALL_OUTPUT=$(helm install cfgd-test "$CHART_DIR" --skip-crds \
     --set agent.enabled=false \
     --set operator.leaderElection.enabled=false \
     --wait --timeout 120s 2>&1) || INSTALL_RC=$?
-if helm_install_ok "FS-HELM-04" "$INSTALL_RC" "$INSTALL_OUTPUT"; then
+if helm_ok "FS-HELM-04" "$INSTALL_RC" "$INSTALL_OUTPUT"; then
     CSI_DS_RC=0
     CSI_DS=$(kubectl get daemonset -n "$HELM_NS" \
         -l app.kubernetes.io/component=csi-driver \
@@ -324,7 +314,7 @@ INSTALL_OUTPUT=$(helm install cfgd-test "$CHART_DIR" --skip-crds \
     --set agent.enabled=false \
     --set operator.leaderElection.enabled=false \
     --wait --timeout 120s 2>&1) || INSTALL_RC=$?
-if helm_install_ok "FS-HELM-05" "$INSTALL_RC" "$INSTALL_OUTPUT"; then
+if helm_ok "FS-HELM-05" "$INSTALL_RC" "$INSTALL_OUTPUT"; then
     # Create a MachineConfig to verify it survives the upgrade
     kubectl apply -f - <<EOF
 apiVersion: cfgd.io/v1alpha1
@@ -422,7 +412,7 @@ INSTALL_OUTPUT=$(helm install cfgd-test "$CHART_DIR" --skip-crds \
     --set deviceGateway.enabled=false \
     --set operator.leaderElection.enabled=false \
     --wait --timeout 120s 2>&1) || INSTALL_RC=$?
-if helm_install_ok "FS-HELM-06" "$INSTALL_RC" "$INSTALL_OUTPUT"; then
+if helm_ok "FS-HELM-06" "$INSTALL_RC" "$INSTALL_OUTPUT"; then
     REPLICAS=$(kubectl get deployment -n "$HELM_NS" \
         -l app.kubernetes.io/component=operator \
         -o jsonpath='{.items[0].spec.replicas}' 2>/dev/null || echo "")
@@ -442,6 +432,7 @@ helm_test_cleanup "cfgd-test"
 # =================================================================
 begin_test "FS-HELM-07: Helm template produces valid YAML"
 
+TEMPLATE_RC=0
 TEMPLATE_OUTPUT=$(helm template cfgd-test "$CHART_DIR" \
     --set operator.enabled=true \
     --set csiDriver.enabled=true \
@@ -449,16 +440,15 @@ TEMPLATE_OUTPUT=$(helm template cfgd-test "$CHART_DIR" \
     --set webhook.enabled=false \
     --set webhook.certManager.enabled=false \
     --set mutatingWebhook.enabled=false \
-    --set deviceGateway.enabled=true 2>&1)
-TEMPLATE_RC=$?
+    --set deviceGateway.enabled=true 2>&1) || TEMPLATE_RC=$?
 
 if [ $TEMPLATE_RC -ne 0 ]; then
     fail_test "FS-HELM-07" "helm template failed with exit code $TEMPLATE_RC"
     echo "  Output: $(echo "$TEMPLATE_OUTPUT" | head -10)"
 else
     # Validate via dry-run (no cluster mutation)
-    DRYRUN_OUTPUT=$(echo "$TEMPLATE_OUTPUT" | kubectl apply --dry-run=client -f - 2>&1)
-    DRYRUN_RC=$?
+    DRYRUN_RC=0
+    DRYRUN_OUTPUT=$(echo "$TEMPLATE_OUTPUT" | kubectl apply --dry-run=client -f - 2>&1) || DRYRUN_RC=$?
     echo "  Template lines: $(echo "$TEMPLATE_OUTPUT" | wc -l)"
     echo "  Dry-run exit code: $DRYRUN_RC"
 
@@ -493,7 +483,7 @@ INSTALL_OUTPUT=$(helm install cfgd-test "$CHART_DIR" --skip-crds \
     --set agent.enabled=false \
     --set operator.leaderElection.enabled=false \
     --wait --timeout 120s 2>&1) || INSTALL_RC=$?
-if helm_install_ok "FS-HELM-08" "$INSTALL_RC" "$INSTALL_OUTPUT"; then
+if helm_ok "FS-HELM-08" "$INSTALL_RC" "$INSTALL_OUTPUT"; then
     # Verify deployment exists before uninstall
     DEPLOY_BEFORE=$(kubectl get deployment -n "$HELM_NS" \
         -l app.kubernetes.io/component=operator \
@@ -566,7 +556,7 @@ INSTALL_OUTPUT=$(helm install cfgd-test "$CHART_DIR" --skip-crds \
     --set agent.enabled=false \
     --set deviceGateway.enabled=false \
     --wait --timeout 180s 2>&1) || INSTALL_RC=$?
-if helm_install_ok "FS-HELM-09" "$INSTALL_RC" "$INSTALL_OUTPUT"; then
+if helm_ok "FS-HELM-09" "$INSTALL_RC" "$INSTALL_OUTPUT"; then
     ROLL_DEPLOY=$(kubectl get deployment -n "$HELM_NS" \
         -l app.kubernetes.io/component=operator \
         -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
