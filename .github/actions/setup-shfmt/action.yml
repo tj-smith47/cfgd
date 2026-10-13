@@ -10,7 +10,8 @@ description: "Download a pinned shfmt release and verify it against a known SHA2
 # the cross-check. Recompute on a version bump:
 #   v=<ver>; base=https://github.com/mvdan/sh/releases/download
 #   curl -fsSL "$base/$v/shfmt_${v}_linux_amd64" | sha256sum
-#   gh api "repos/mvdan/sh/releases/tags/$v" -q '.assets[] | select(.name | endswith("linux_amd64")) | .digest'
+#   gh api "repos/mvdan/sh/releases/tags/$v" \
+#     -q '.assets[] | select(.name | endswith("linux_amd64")) | .digest'
 inputs:
   version:
     description: "shfmt version to install (with leading 'v')."
