@@ -141,6 +141,7 @@ expect_var E2E_CSI_PODS "app.kubernetes.io/instance=cfgd-e2e-42,app.kubernetes.i
 expect_var E2E_GATEWAY_SVC cfgd-e2e-42-gateway
 expect_var E2E_GATEWAY_PORT 8080
 expect_var E2E_GATEWAY_URL http://cfgd-e2e-42-gateway.cfgd-e2e-42-sys.svc.cluster.local:8080
+expect_var E2E_GATEWAY_LEADER_LABEL cfgd.io/gateway-leader
 expect_var E2E_GATEWAY_LEADER_PODS "app.kubernetes.io/instance=cfgd-e2e-42,app.kubernetes.io/component=operator,cfgd.io/gateway-leader=true"
 expect_var E2E_GATEWAY_API_KEY cfgd-e2e-admin-key
 expect_var CSI_DRIVER_NAME e2e.csi.cfgd.io
@@ -3063,7 +3064,7 @@ elif ! gateway_bypass_hits="$(cd "$repo_root" && scan_gateway_bypass "${gateway_
 elif [ -z "$gateway_bypass_hits" ]; then
     pass "every suite reaches the PR install's gateway through helpers.sh (${#gateway_suite_scripts[@]} scripts)"
 else
-    fail "a suite spells the gateway by hand; use \$E2E_GATEWAY_URL, \$E2E_GATEWAY_SVC, \$E2E_GATEWAY_PORT, \$E2E_GATEWAY_LEADER_PODS and \$E2E_GATEWAY_API_KEY from helpers.sh: [$gateway_bypass_hits]"
+    fail "a suite spells the gateway by hand; use \$E2E_GATEWAY_URL, \$E2E_GATEWAY_SVC, \$E2E_GATEWAY_PORT, \$E2E_GATEWAY_LEADER_LABEL, \$E2E_GATEWAY_LEADER_PODS and \$E2E_GATEWAY_API_KEY from helpers.sh: [$gateway_bypass_hits]"
 fi
 
 unscanned_kept="$(grep -vE "^tests/e2e/($(IFS='|'; echo "${release_target_suites[*]}"))/" <<<"$release_target_kept" || true)" # rc-ok: no entry outside the scanned suites is the passing outcome

@@ -196,7 +196,10 @@ export E2E_CSI_PODS="app.kubernetes.io/instance=$E2E_INSTALL_RELEASE,app.kuberne
 export E2E_GATEWAY_SVC="$E2E_INSTALL_RELEASE-gateway"
 export E2E_GATEWAY_PORT=8080
 export E2E_GATEWAY_URL="http://$E2E_GATEWAY_SVC.$E2E_INSTALL_NS.svc.cluster.local:$E2E_GATEWAY_PORT"
-export E2E_GATEWAY_LEADER_PODS="$E2E_OPERATOR_PODS,cfgd.io/gateway-leader=true"
+# The operator sets this label to true on the one pod whose gateway serves
+# (leader::GATEWAY_LEADER_LABEL in cfgd-operator).
+export E2E_GATEWAY_LEADER_LABEL=cfgd.io/gateway-leader
+export E2E_GATEWAY_LEADER_PODS="$E2E_OPERATOR_PODS,$E2E_GATEWAY_LEADER_LABEL=true"
 export E2E_GATEWAY_API_KEY="${CFGD_E2E_API_KEY:-cfgd-e2e-admin-key}"
 # The Crossplane suite's own Function and Composition, beside ArgoCD's
 # function-cfgd and teamconfig-to-machineconfigs.

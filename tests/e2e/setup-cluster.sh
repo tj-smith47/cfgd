@@ -660,7 +660,7 @@ done
 # the gateway Service has an endpoint only once the lease holder's gateway
 # accepts and labels its pod.
 if ! wait_for_service_endpoints "$E2E_INSTALL_NS" "$E2E_GATEWAY_SVC" 120; then
-    echo "ERROR: service/$E2E_GATEWAY_SVC in $E2E_INSTALL_NS has no endpoint after 120s, so no operator pod carries cfgd.io/gateway-leader=true. Read the lease holder's log (kubectl logs -n $E2E_INSTALL_NS -l $E2E_OPERATOR_PODS --prefix --tail=50), fix the cause and rerun setup." >&2
+    echo "ERROR: service/$E2E_GATEWAY_SVC in $E2E_INSTALL_NS has no endpoint after 120s, so no operator pod carries $E2E_GATEWAY_LEADER_LABEL=true. Read the lease holder's log (kubectl logs -n $E2E_INSTALL_NS -l $E2E_OPERATOR_PODS --prefix --tail=50), fix the cause and rerun setup." >&2
     exit 1
 fi
 if ! wait_for_daemonset "$E2E_INSTALL_NS" "$E2E_CSI_DS" 120; then
