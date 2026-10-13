@@ -331,8 +331,8 @@ E2E_GATEWAY_API_KEY=${CFGD_E2E_API_KEY:-cfgd-e2e-admin-key}
 
 `test-pr-install.sh` fails on a tracked `*.sh` under those four suites that spells an
 in-cluster `svc.cluster.local` URL, the gateway Service from `$E2E_INSTALL_RELEASE`, or
-the `cfgd.io/gateway-leader` label by hand, and fails when a `E2E_GATEWAY_*` name
-`helpers.sh` exports is missing from the block above. The fleet and drift cases put their
+the `cfgd.io/gateway-leader` label by hand, and fails when an `E2E_GATEWAY_*` name
+`helpers.sh` exports is not listed anywhere in this README. The fleet and drift cases put their
 MachineConfigs, ConfigPolicy and DriftAlert in `$E2E_INSTALL_NS`.
 
 ## Device ids sent to the device gateway
