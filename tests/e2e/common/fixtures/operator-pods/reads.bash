@@ -61,3 +61,15 @@ kubectl get pods -l "$E2E_OPERATOR_PODS" -o json &> "$SCRATCH/b.json"
 jq '.items[0]' "$SCRATCH/b.json"
 { kubectl get pods -l "$E2E_OPERATOR_PODS" -o json; } | jq '.items[0]'
 kubectl get pods -l "$E2E_OPERATOR_PODS" -o json | if jq -e '.items[0]' >/dev/null; then :; fi
+H=$( (kubectl get pods -l "$E2E_OPERATOR_PODS" -o json) )
+jq '.items[0]' <<<"$H"
+B=$( { kubectl get pods -l "$E2E_OPERATOR_PODS" -o json; } )
+jq '.items[0]' <<<"$B"
+echo x | while read -r l; do
+    kubectl get pods -l "$E2E_OPERATOR_PODS" -o jsonpath='{.items[0].x}'
+done
+C=$(kubectl get pods -l "$E2E_OPERATOR_PODS" -o json | jq '.')
+jq '.items[0]' <<<"$C"
+kubectl get pods -l "$E2E_OPERATOR_PODS" -o json | {
+    jq '.items[0]'
+}

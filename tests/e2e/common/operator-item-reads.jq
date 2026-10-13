@@ -51,7 +51,7 @@ def is_pipeline:
 def units:
   if is_pipeline then
     [stages] as $s
-    | {offset: .Pos.Offset, line: .Pos.Line, stages: $s},
+    | {offset: .Pos.Offset, end: .End.Offset, line: .Pos.Line, stages: $s},
       ($s[] | (.Cmd, .Redirs) | .[]? | units)
   elif type == "object" or type == "array" then .[] | units
   else empty end;
@@ -82,10 +82,14 @@ def capture_call:
   | select(($w | operator_get) and ($w | json_output))
   | {sorted: ($w | any(.[]; test("--sort-by")))};
 
-# The first command of an && or || list, which is what a capture like
-# NAME=$(kubectl ... -o json || echo "") keeps when it succeeds.
+# The first simple command a $(...) runs: the left of an &&, || or pipe, and
+# the first statement of a brace group or subshell. A capture like
+# NAME=$(kubectl ... -o json || echo "") or NAME=$( (kubectl ... -o json) )
+# keeps that command's JSON when it succeeds.
 def first_command:
-  if .Cmd.Type == "BinaryCmd" and (.Cmd.Op == "&&" or .Cmd.Op == "||") then .Cmd.X | first_command else . end;
+  if .Cmd.Type == "BinaryCmd" then .Cmd.X | first_command
+  elif .Cmd.Type == "Block" or .Cmd.Type == "Subshell" then .Cmd.Stmts[0] // {} | first_command
+  else . end;
 
 def captures:
   [ ..
@@ -129,5 +133,12 @@ captures as $caps
         | select($cap != null and ($text | picks($cap.sorted)))
       end
   ]
-| unique_by(.line)[]
+# A unit that holds another reported unit (a pipeline whose loop or group
+# stage runs its own pick) is dropped, so each pick is named once, on the
+# line of the innermost command that makes it.
+| . as $found
+| map(. as $outer
+    | select(any($found[];
+        .offset >= $outer.offset and .end <= $outer.end and (.offset != $outer.offset or .end != $outer.end)) | not))
+| sort_by(.offset)[]
 | "\($file):\(.line)"
