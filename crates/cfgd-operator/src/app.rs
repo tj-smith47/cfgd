@@ -276,6 +276,13 @@ const LABEL_CLEAR_ATTEMPT: std::time::Duration = std::time::Duration::from_secs(
 /// The pause between two attempts to clear the gateway leader label.
 const LABEL_CLEAR_RETRY: std::time::Duration = std::time::Duration::from_millis(500);
 
+/// How long handing the leader lease over on a termination signal may wait
+/// on the API server.
+const LEASE_RELEASE_ATTEMPT: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// How long in-flight reconciliations get to finish once a run is stopping.
+const SHUTDOWN_GRACE: std::time::Duration = std::time::Duration::from_secs(2);
+
 /// Clear the gateway leader label, one bounded attempt after another, until
 /// the API server accepts the clear.
 async fn clear_label_until_accepted(label: &GatewayLeaderLabel) {
@@ -367,10 +374,18 @@ async fn serve_until_stopped<E: std::fmt::Display>(
             }
             release_gateway_traffic_beside(gateway_label, async {
                 shutdown_drain().await;
-                if let Some(lease) = lease
-                    && let Err(e) = lease.release().await
-                {
-                    tracing::warn!(error = %e, "releasing the leader lease failed; a standby takes it once it expires");
+                if let Some(lease) = lease {
+                    match tokio::time::timeout(LEASE_RELEASE_ATTEMPT, lease.release()).await {
+                        Ok(Ok(())) => {}
+                        Ok(Err(e)) => {
+                            tracing::warn!(error = %e, "releasing the leader lease failed; a standby takes it once it expires");
+                        }
+                        Err(_) => {
+                            tracing::warn!(
+                                "releasing the leader lease timed out; a standby takes it once it expires"
+                            );
+                        }
+                    }
                 }
             })
             .await;
@@ -384,8 +399,11 @@ async fn serve_until_stopped<E: std::fmt::Display>(
 }
 
 async fn shutdown_drain() {
-    tracing::info!("draining in-flight reconciliations (2s grace)...");
-    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    tracing::info!(
+        "draining in-flight reconciliations ({}s grace)...",
+        SHUTDOWN_GRACE.as_secs()
+    );
+    tokio::time::sleep(SHUTDOWN_GRACE).await;
     if let Some(provider) = OTEL_PROVIDER.get()
         && let Err(e) = provider.shutdown()
     {
@@ -827,51 +845,68 @@ mod tests {
         );
     }
 
+    /// An API server answer carrying `value` as its JSON body.
+    fn ok_json(value: &serde_json::Value) -> http::Response<kube::client::Body> {
+        http::Response::builder()
+            .status(200)
+            .body(kube::client::Body::from(
+                serde_json::to_vec(value).expect("json body"),
+            ))
+            .expect("response")
+    }
+
     /// A clear attempt the API server never answers is given up at its bound
-    /// and tried again, and the next attempt, which the API server answers,
-    /// clears the label before the shutdown beside it ends.
+    /// and tried again after the retry pause; the attempt the API server
+    /// answers is the last one sent.
     #[tokio::test(start_paused = true)]
     async fn a_label_clear_that_times_out_is_retried_until_the_api_server_answers() {
         let (service, mut handle) =
             mock::pair::<http::Request<kube::client::Body>, http::Response<kube::client::Body>>();
         let label =
             GatewayLeaderLabel::new(Client::new(service, "default"), LABEL_NS, LABEL_POD.into());
+        let (stop_tx, stop_rx) = tokio::sync::oneshot::channel();
+        let started = tokio::time::Instant::now();
         let api_server = tokio::spawn(async move {
-            let (first, unanswered) = handle.next_request().await.expect("the first clear");
+            let (first, _unanswered) = handle.next_request().await.expect("the first clear");
             let (second, respond) = handle.next_request().await.expect("the retried clear");
-            respond.send_response(
-                http::Response::builder()
-                    .status(200)
-                    .body(kube::client::Body::from(
-                        serde_json::to_vec(&label_pod_json()).expect("pod json"),
-                    ))
-                    .expect("response"),
-            );
-            drop(unanswered);
+            let retried_after = started.elapsed();
+            respond.send_response(ok_json(&label_pod_json()));
+            let after_success =
+                tokio::time::timeout(Duration::from_secs(10), handle.next_request()).await;
+            let _ = stop_tx.send(7);
             (
                 first.uri().path().to_owned(),
                 second.uri().path().to_owned(),
+                retried_after,
+                matches!(after_success, Ok(Some(_))),
             )
         });
-        let shutdown_started = tokio::time::Instant::now();
 
-        let stopped = release_gateway_traffic_beside(Some(&label), async {
-            // sleep-ok: the shutdown under test, which outlasts the retried clear
-            tokio::time::sleep(Duration::from_secs(60)).await;
-            7
-        })
-        .await;
+        let stopped = tokio::time::timeout(
+            Duration::from_secs(60),
+            release_gateway_traffic_beside(Some(&label), async {
+                stop_rx.await.expect("the API server stops the shutdown")
+            }),
+        )
+        .await
+        .expect("the shutdown must end once the API server stops it");
 
         assert_eq!(stopped, 7, "the shutdown's own value comes back");
-        let (first, second) = tokio::time::timeout(Duration::from_secs(60), api_server)
-            .await
-            .expect("the clear must be tried again once its first attempt times out")
-            .expect("api server task");
+        let (first, second, retried_after, cleared_again) =
+            tokio::time::timeout(Duration::from_secs(60), api_server)
+                .await
+                .expect("the clear must be tried again once its first attempt times out")
+                .expect("api server task");
         assert_eq!(first, label_pod_path());
         assert_eq!(second, label_pod_path());
+        assert_eq!(
+            retried_after,
+            LABEL_CLEAR_ATTEMPT + LABEL_CLEAR_RETRY,
+            "the retry follows the first attempt's bound and the pause after it"
+        );
         assert!(
-            shutdown_started.elapsed() >= LABEL_CLEAR_ATTEMPT,
-            "the retry follows the first attempt's bound"
+            !cleared_again,
+            "a clear the API server accepted must not be sent again"
         );
     }
 
@@ -1005,7 +1040,10 @@ mod tests {
             result.is_ok(),
             "a lost lease is a clean stop, got {result:?}"
         );
-        let (path, operator_running) = seen_rx.await.expect("a lost lease must clear the label");
+        let (path, operator_running) = tokio::time::timeout(Duration::from_secs(5), seen_rx)
+            .await
+            .expect("a lost lease must clear the label")
+            .expect("the API server reports the clear");
         assert_eq!(path, label_pod_path());
         assert!(
             !operator_running,
@@ -1048,12 +1086,8 @@ mod tests {
         format!("/apis/coordination.k8s.io/v1/namespaces/{LABEL_NS}/leases/cfgd-operator-leader")
     }
 
-    /// A termination signal stops the gateway and clears its label, then,
-    /// once in-flight work has drained, hands the lease over so a standby
-    /// takes it at once.
-    #[tokio::test(start_paused = true)]
-    async fn a_signal_clears_the_gateway_label_then_releases_the_lease() {
-        let held = serde_json::json!({
+    fn held_lease_json() -> serde_json::Value {
+        serde_json::json!({
             "apiVersion": "coordination.k8s.io/v1",
             "kind": "Lease",
             "metadata": {
@@ -1062,39 +1096,129 @@ mod tests {
                 "resourceVersion": "7",
             },
             "spec": { "holderIdentity": LABEL_POD, "leaseDurationSeconds": 15 },
-        });
-        let (ctx, _reg, harness) = MockKubeHarness::new(vec![
-            ExpectedCall::patch(label_pod_path()).returning_json(&label_pod_json()),
-            ExpectedCall::get(lease_path()).returning_json(&held),
-            ExpectedCall::patch(lease_path()).returning_json(&held),
-        ]);
-        let label = GatewayLeaderLabel::new(ctx.client.clone(), LABEL_NS, LABEL_POD.into());
-        let lease =
-            leader::LeaderElection::new(ctx.client.clone(), LABEL_NS.into(), LABEL_POD.into());
-        let (operator, _alive) = running_operator();
+        })
+    }
 
-        let result = serve_until_stopped(
-            operator,
-            std::future::pending(),
-            std::future::ready(Ok::<(), errors::OperatorError>(())),
-            &CancellationToken::new(),
-            Some(&label),
-            Some(&lease),
+    /// A termination signal drops the operator, and with it the gateway,
+    /// before the label clear is sent, then, once in-flight work has drained,
+    /// hands the lease over so a standby takes it at once.
+    #[tokio::test(start_paused = true)]
+    async fn a_signal_stops_the_gateway_then_clears_its_label_then_releases_the_lease() {
+        let (service, mut handle) =
+            mock::pair::<http::Request<kube::client::Body>, http::Response<kube::client::Body>>();
+        let client = Client::new(service, "default");
+        let label = GatewayLeaderLabel::new(client.clone(), LABEL_NS, LABEL_POD.into());
+        let lease = leader::LeaderElection::new(client, LABEL_NS.into(), LABEL_POD.into());
+        let (operator, alive) = running_operator();
+        let api_server = tokio::spawn(async move {
+            let (clear, respond) = handle.next_request().await.expect("the label clear");
+            let operator_running = alive.load(std::sync::atomic::Ordering::SeqCst);
+            let clear = (clear.method().clone(), clear.uri().path().to_owned());
+            respond.send_response(ok_json(&label_pod_json()));
+            let (read, respond) = handle.next_request().await.expect("the lease read");
+            let read = (read.method().clone(), read.uri().path().to_owned());
+            respond.send_response(ok_json(&held_lease_json()));
+            let (release, respond) = handle.next_request().await.expect("the lease release");
+            let (parts, body) = release.into_parts();
+            let body = http_body_util::BodyExt::collect(body)
+                .await
+                .expect("release body")
+                .to_bytes();
+            respond.send_response(ok_json(&held_lease_json()));
+            (
+                operator_running,
+                clear,
+                read,
+                (parts.method, parts.uri.path().to_owned()),
+                serde_json::from_slice::<serde_json::Value>(&body).expect("release json"),
+            )
+        });
+
+        let result = tokio::time::timeout(
+            Duration::from_secs(30),
+            serve_until_stopped(
+                operator,
+                std::future::pending(),
+                std::future::ready(Ok::<(), errors::OperatorError>(())),
+                &CancellationToken::new(),
+                Some(&label),
+                Some(&lease),
+            ),
         )
-        .await;
+        .await
+        .expect("a signal must end the run");
 
         assert!(result.is_ok(), "a signal is a clean stop, got {result:?}");
-        let report = harness.finish().await;
+        let (operator_running, clear, read, release, release_body) =
+            tokio::time::timeout(Duration::from_secs(5), api_server)
+                .await
+                .expect("a signal must clear the label and release the lease")
+                .expect("api server task");
         assert_eq!(
-            report.captured[0].body_json(),
-            label_patch(serde_json::Value::Null),
+            clear,
+            (http::Method::PATCH, label_pod_path()),
             "the label is cleared first"
         );
+        assert!(
+            !operator_running,
+            "the operator, and its gateway, must be stopped before the label clear is sent"
+        );
+        assert_eq!(read, (http::Method::GET, lease_path()));
+        assert_eq!(release, (http::Method::PATCH, lease_path()));
         assert_eq!(
-            report.captured[2].body_json()["spec"]["holderIdentity"],
+            release_body["spec"]["holderIdentity"],
             serde_json::Value::Null,
             "then the lease is released"
         );
+    }
+
+    /// A lease release the API server never answers is given up at its bound,
+    /// so a signal ends the run with the lease left to expire on its own.
+    #[tokio::test(start_paused = true)]
+    async fn a_lease_release_the_api_server_never_answers_is_given_up_at_its_bound() {
+        let (service, mut handle) =
+            mock::pair::<http::Request<kube::client::Body>, http::Response<kube::client::Body>>();
+        let lease = leader::LeaderElection::new(
+            Client::new(service, "default"),
+            LABEL_NS.into(),
+            LABEL_POD.into(),
+        );
+        let (seen_tx, seen_rx) = tokio::sync::oneshot::channel();
+        let api_server = tokio::spawn(async move {
+            // Holding the response open is an API server that never answers.
+            let (request, _unanswered) = handle.next_request().await.expect("the lease read");
+            let _ = seen_tx.send(request.uri().path().to_owned());
+            std::future::pending::<()>().await;
+        });
+        let (operator, _alive) = running_operator();
+        let started = tokio::time::Instant::now();
+
+        let result = tokio::time::timeout(
+            Duration::from_secs(60),
+            serve_until_stopped(
+                operator,
+                std::future::pending(),
+                std::future::ready(Ok::<(), errors::OperatorError>(())),
+                &CancellationToken::new(),
+                None,
+                Some(&lease),
+            ),
+        )
+        .await
+        .expect("an unanswered lease release must not hold the exit up");
+
+        assert!(result.is_ok(), "a signal is a clean stop, got {result:?}");
+        assert_eq!(
+            started.elapsed(),
+            SHUTDOWN_GRACE + LEASE_RELEASE_ATTEMPT,
+            "the release is given up at its bound once the drain ends"
+        );
+        let path = tokio::time::timeout(Duration::from_secs(5), seen_rx)
+            .await
+            .expect("a signal must try to release the lease")
+            .expect("the API server reports the read");
+        assert_eq!(path, lease_path());
+        api_server.abort();
     }
 
     /// Verify `ControllerContext` can be constructed (sanity check that the
