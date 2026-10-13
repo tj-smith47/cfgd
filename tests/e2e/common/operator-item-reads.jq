@@ -34,8 +34,8 @@ def own_stmts:
   elif type == "array" then .[] | own_stmts
   else empty end;
 
-# One word list per command the stage runs.
-def stage_calls: [own_stmts | stmt_words];
+# One word list per command the stage runs, with where that command starts.
+def stage_calls: [own_stmts | {offset: .Pos.Offset, words: stmt_words}];
 
 def stages:
   if .Cmd.Type == "BinaryCmd" and (.Cmd.Op == "|" or .Cmd.Op == "|&")
@@ -123,23 +123,29 @@ captures as $caps
 | [ units
     | . as $unit
     | [.stages[] | stage_calls[]] as $calls
-    | [$calls[][]] as $words
+    | [$calls[].words[]] as $words
     | ($words | join(" ")) as $text
-    | [$calls[] | select(operator_get)] as $gets
+    | [$calls[].words | select(operator_get)] as $gets
     | if ($gets | length) > 0 then
-        select($text | picks($gets | any(.[][]; test("--sort-by"))))
+        ($gets | any(.[][]; test("--sort-by"))) as $sorted
+        | select($text | picks($sorted))
+        | $unit + {calls: $calls, sorted: $sorted}
       elif ($text | kubectl_word) then empty
       else
         read_capture($caps; $unit; $words) as $cap
         | select($cap != null and ($text | picks($cap.sorted)))
+        | $unit + {calls: $calls, sorted: $cap.sorted}
       end
   ]
-# A unit that holds another reported unit (a pipeline whose loop or group
-# stage runs its own pick) is dropped, so each pick is named once, on the
-# line of the innermost command that makes it.
+# A pick is named on the line of the command whose words make it. A unit that
+# holds other reported units is judged again on the commands left once theirs
+# are set aside, and is dropped when those make no pick: it was reported only
+# for what it contains, which is already named on its own line.
 | . as $found
 | map(. as $outer
-    | select(any($found[];
-        .offset >= $outer.offset and .end <= $outer.end and (.offset != $outer.offset or .end != $outer.end)) | not))
+    | [$found[] | select(.offset >= $outer.offset and .end <= $outer.end and (.offset != $outer.offset or .end != $outer.end))] as $inner
+    | select(($inner | length) == 0 or
+        ([$outer.calls[] | . as $c | select(any($inner[]; $c.offset >= .offset and $c.offset < .end) | not) | .words[]]
+         | join(" ") | picks($outer.sorted))))
 | sort_by(.offset)[]
 | "\($file):\(.line)"

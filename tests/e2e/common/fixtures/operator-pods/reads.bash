@@ -74,3 +74,13 @@ kubectl get pods -l "$E2E_OPERATOR_PODS" -o json | {
     jq '.items[0]'
 }
 kubectl get pods -l "$E2E_OPERATOR_PODS" -o jsonpath='{.items[0].x}'; kubectl get pods -l "$E2E_OPERATOR_PODS" -o jsonpath='{.items[1].x}'
+kubectl get pods -l "$E2E_OPERATOR_PODS" -o jsonpath='{.items[0].x}' | while read -r l; do
+    kubectl get pods -l "$E2E_OPERATOR_PODS" -o jsonpath='{.items[1].x}'
+done
+kubectl get pods -l "$E2E_OPERATOR_PODS" -o json | jq '.items[0]' | while read -r l; do
+    echo "$(kubectl get pods -l "$E2E_OPERATOR_PODS" -o jsonpath='{.items[1].x}')"
+done
+kubectl get pods -l "$E2E_OPERATOR_PODS" -o json | {
+    jq '.items[0]'
+    kubectl get pods -l "$E2E_OPERATOR_PODS" -o jsonpath='{.items[1].x}'
+}

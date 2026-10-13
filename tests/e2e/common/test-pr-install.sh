@@ -4092,9 +4092,9 @@ fi
 # app=cfgd-operator or app.kubernetes.io/component=operator) is read with every
 # stage of its pipeline, and a stage that is a brace group, a subshell, a loop
 # or a conditional brings the commands inside it, so a jsonpath on the kubectl
-# and a jq after a pipe both count. A pick is named once, on the line of the
-# innermost command that makes it, so a loop stage that runs its own pick is
-# named on that pick's line. Once such a kubectl keeps its `-o json` output in
+# and a jq after a pipe both count. A pick is named on the line of the command
+# whose words make it; a compound reported only for what it contains is not
+# named itself. Once such a kubectl keeps its `-o json` output in
 # a variable (NAME="$(...)", the kubectl being the first command the $(...)
 # runs, through an && or || list and a brace group or subshell, with no pipe
 # after it) or, alone in its pipeline, in a file (>, >>, >|, &> or &>> PATH),
@@ -4133,11 +4133,11 @@ else
     items_got="$(cd "$here/fixtures/operator-pods" && scan_operator_item_reads reads.bash 2>"$scratch/operator-items.stderr")" ||
         items_got="(the scan failed: $(cat "$scratch/operator-items.stderr"))"
     items_stderr="$(cat "$scratch/operator-items.stderr")"
-    items_want="$(printf 'reads.bash:%s\n' 1 2 4 5 6 17 18 19 20 21 24 25 27 30 33 34 35 36 37 43 44 45 47 48 49 51 53 54 55 57 59 61 62 63 65 67 69 73 76 76)"
+    items_want="$(printf 'reads.bash:%s\n' 1 2 4 5 6 17 18 19 20 21 24 25 27 30 33 34 35 36 37 43 44 45 47 48 49 51 53 54 55 57 59 61 62 63 65 67 69 73 76 76 77 78 80 81 83 85)"
     if [ -n "$items_stderr" ]; then
         fail "the operator item-read scan wrote [$items_stderr] on stderr over a fixture that parses"
     elif [ "$items_got" = "$items_want" ]; then
-        pass "the operator item-read scan reports an index, an unsorted slice or a first of the operator pods by any operator selector, through kubectl or \$KUBECTL, on one line, continued, through jq, inside a \$(...) nested in quotes, spread over two lines, in a parameter default or a <(...), in a brace group, subshell, function, if, for or while, naming a pick in a loop stage on its own line once and each of two picks on one line, or from a captured -o json variable (kept through ||, 2>/dev/null, a brace group or a subshell) or file (> or &>) read later in the file, and stays quiet on comments, a heredoc body, the capture itself, a read of a variable that piped the pod list through jq, a while loop over the pods, a jq sort before .[0], a pick from another capture, .items[*], a sorted slice, a jq sort over every pod, other pods, Deployments and a command that reads no items"
+        pass "the operator item-read scan reports an index, an unsorted slice or a first of the operator pods by any operator selector, through kubectl or \$KUBECTL, on one line, continued, through jq, inside a \$(...) nested in quotes, spread over two lines, in a parameter default or a <(...), in a brace group, subshell, function, if, for or while, naming a pick in a loop stage on its own line once, each of two picks on one line and both a pick a kubectl or its jq stage makes and one in the loop or group it pipes into, or from a captured -o json variable (kept through ||, 2>/dev/null, a brace group or a subshell) or file (> or &>) read later in the file, and stays quiet on comments, a heredoc body, the capture itself, a read of a variable that piped the pod list through jq, a while loop over the pods, a jq sort before .[0], a pick from another capture, .items[*], a sorted slice, a jq sort over every pod, other pods, Deployments and a command that reads no items"
     else
         fail "the operator item-read scan printed [$items_got], want [$items_want]"
     fi
