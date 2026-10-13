@@ -3660,12 +3660,10 @@ fi
 # only on a command, or after a capture, that carries --sort-by, which picks its
 # pod on purpose. A command runs on past a line that ends with a backslash or
 # inside an open quote, so a jq program spread over lines is one command.
-# A quote still open at the end of the file, or after OPERATOR_SCAN_QUOTE_WINDOW
-# lines when that is set above 0, prints `file:line: unbalanced quote; scanning
-# the remainder per line` on stderr, naming the line that opened it, and those
-# lines are scanned again one command per line, so no line goes unread. The
-# window is off by default: a quoted awk or jq program longer than any window
-# is still one command, read whole. Comment lines are skipped. Fails when a file was listed and
+# A quote still open at the end of the file prints `file:line: unbalanced
+# quote; scanning the remainder per line` on stderr, naming the line that
+# opened it, and those lines are scanned again one command per line, so no line
+# goes unread. Comment lines are skipped. Fails when a file was listed and
 # never read.
 scan_operator_item_reads() {
     local listed="$scratch/operator-items.listed" read="$scratch/operator-items.read"
@@ -3674,7 +3672,7 @@ scan_operator_item_reads() {
     : > "$read"
     : > "$warned"
     # shellcheck disable=SC2016  # an awk program; the $ fields belong to awk
-    awk -v readlog="$read" -v warnlog="$warned" -v window="${OPERATOR_SCAN_QUOTE_WINDOW:-0}" '
+    awk -v readlog="$read" -v warnlog="$warned" '
         function picks(c, sorted) {
             return c ~ /\.items\[-?[0-9]+\]/ ||
                 (c ~ /\.items\[-?[0-9]*:-?[0-9]*\]/ && !sorted) ||
@@ -3766,11 +3764,7 @@ scan_operator_item_reads() {
             if (cmd == "") { start = FNR; nbuf = 0 }
             cmd = cmd " " $0
             buf[++nbuf] = $0
-            if (open_quote(cmd)) {
-                if (window + 0 > 0 && nbuf >= window + 0) { replay(); cmd = "" }
-                next
-            }
-            if ($0 ~ /\\$/) next
+            if (open_quote(cmd) || $0 ~ /\\$/) next
             judge(cmd, start)
             cmd = ""
         }
@@ -3789,14 +3783,6 @@ elif [ "$items_got" = "$items_want" ]; then
     pass "the operator item-read scan reports an index, an unsorted slice or a first of the operator pods by any operator selector, through kubectl or \$KUBECTL, on one line, continued, through jq, or from a captured -o json variable or file read later in the file, still reports a read after a quote it cannot close, warning on the line that opened it, and stays quiet on comments, a pick from another capture, .items[*], a sorted slice, a jq sort over every pod, other pods, Deployments and a command that reads no items"
 else
     fail "the operator item-read scan printed [$items_got], want [$items_want]"
-fi
-items_windowed="$(cd "$here/fixtures/operator-pods" && OPERATOR_SCAN_QUOTE_WINDOW=1 scan_operator_item_reads reads.bash 2>&1)" ||
-    items_windowed="(the scan failed)"
-if [ "$items_windowed" = "$items_want
-reads.bash:35: unbalanced quote; scanning the remainder per line" ]; then
-    pass "the operator item-read scan with OPERATOR_SCAN_QUOTE_WINDOW=1 gives up on the open quote at its first line and reports the same reads"
-else
-    fail "the operator item-read scan with OPERATOR_SCAN_QUOTE_WINDOW=1 printed [$items_windowed], want [$items_want] and then the warning for reads.bash:35"
 fi
 if scan_operator_item_reads "$here/fixtures/operator-pods/absent.bash" >/dev/null 2>&1; then
     fail "the operator item-read scan passed over a file it could not read"
