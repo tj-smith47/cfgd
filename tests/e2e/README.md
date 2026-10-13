@@ -146,19 +146,32 @@ still deleting, and stops when it outlasts that.
 `e2e-teardown` job runs it after all of them, and `task e2e` runs it last. It deletes
 the run's MachineConfigs, ConfigPolicies, DriftAlerts, BackupPolicies,
 ClusterConfigPolicies and Modules (`-l "$E2E_RUN_LABEL"`) while the run's operator
-still clears their finalizers, then uninstalls `$E2E_INSTALL_RELEASE` (the device
+still clears their finalizers. It then deletes every other namespace labelled
+`$E2E_RUN_LABEL` (the suites' own, which their EXIT traps delete without waiting) and waits
+up to 180s until none is left. It is the one step that waits for them: a pod that mounts
+the install's `$CSI_DRIVER_NAME` volume finishes deleting only after the kubelet asks the
+running driver to unmount it, so removing the driver first leaves the pod and its
+namespace Terminating. When the wait times out, it names each namespace and each pod left
+in it with the CSI drivers its volumes use, and exits 1 with the install still there; a
+rerun finishes the teardown once they are gone. When no `$CSI_DRIVER_NAME` CSIDriver is
+registered at that point (an earlier teardown removed it first), it says so:
+`task e2e:setup` registers the driver again, the kubelet unmounts those volumes within a few
+minutes and the namespaces finish deleting, and `task e2e:pr-install:down` then removes
+that new install. The teardown never force-deletes a pod. After the wait it uninstalls
+`$E2E_INSTALL_RELEASE` (the device
 gateway's Service, Role and RoleBinding with it) and deletes `$E2E_INSTALL_NS`, where
 the gateway's DriftAlerts and emptyDir store live, without waiting. It then reads back that `$CSI_DRIVER_NAME` no longer
 belongs to the install and that both webhook configurations are gone, and prints the
 namespace's phase. A release that is not installed counts as removed when its namespace
 is still there. It first looks for every object it removes or reads back: the release,
 the namespace (one already Terminating counts as gone), every object labelled
-`$E2E_RUN_LABEL`, cluster-scoped ones included, both webhook configurations, the
+`$E2E_RUN_LABEL`, cluster-scoped ones and the suites' namespaces included, both webhook configurations, the
 Function, the Composition and a CSIDriver the install still owns. A rerun after a partly
 failed teardown removes what is left. When none is left, it prints what it looked for
 and exits 1 without touching anything; `GITHUB_RUN_ID=<run id> bash
 tests/e2e/pr-install-down.sh` removes another run's install. Every step runs when one
-before it fails, and the script exits 1 naming each failed step.
+before it fails, apart from the install removal after a timed-out namespace wait, and the
+script exits 1 naming each failed step.
 
 One PR install runs at a time, since every install registers the same CSIDriver. When
 setup finds another run's install, it reads that namespace's `cfgd.io/e2e-run` label

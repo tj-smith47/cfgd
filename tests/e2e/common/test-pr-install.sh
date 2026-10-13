@@ -3407,6 +3407,7 @@ fi
 down_bin="$here/fixtures/pr-install-down/bin"
 down_case() {
     : > "$scratch/down.calls"
+    rm -f "$scratch/down.calls.nsreads"
     local rc=0
     env -u GITHUB_RUN_ID -u CFGD_NAMESPACE PATH="$down_bin:$PATH" GITHUB_RUN_ID=42 \
         DOWN_LOG="$scratch/down.calls" REGISTRY=r.example CLI_SCRATCH="$scratch" "$@" \
@@ -3415,16 +3416,20 @@ down_case() {
 }
 down_labelled="get machineconfigs,configpolicies,driftalerts,backuppolicies,clusterconfigpolicies,modules,teamconfigs,composition,function -A -l cfgd.io/e2e-run=42 -o name"
 down_named="get validatingwebhookconfiguration/cfgd-e2e-42 mutatingwebhookconfiguration/cfgd-e2e-42-pod-injector function/function-cfgd-42 composition/teamconfig-to-machineconfigs-42 --ignore-not-found -o name"
+down_run_ns="get namespaces -l cfgd.io/e2e-run=42 --field-selector metadata.name!=cfgd-e2e-42-sys -o name"
 down_reads="kubectl get namespace cfgd-e2e-42-sys --ignore-not-found -o jsonpath={.status.phase}
 helm list -n cfgd-e2e-42-sys -a -q --filter ^cfgd-e2e-42\$
 kubectl $down_labelled
+kubectl $down_run_ns
 kubectl $down_named
 kubectl get csidriver e2e.csi.cfgd.io --ignore-not-found -o jsonpath={.metadata.annotations.meta\\.helm\\.sh/release-namespace}"
 down_objects="$down_reads
 kubectl delete machineconfigs,configpolicies,driftalerts,backuppolicies -A -l cfgd.io/e2e-run=42 --wait=true --timeout=90s
 kubectl delete clusterconfigpolicies,modules -A -l cfgd.io/e2e-run=42 --wait=true --timeout=90s
 kubectl delete teamconfigs -A -l cfgd.io/e2e-run=42 --wait=true --timeout=90s
-kubectl delete composition,function -A -l cfgd.io/e2e-run=42 --wait=true --timeout=90s"
+kubectl delete composition,function -A -l cfgd.io/e2e-run=42 --wait=true --timeout=90s
+kubectl delete namespaces -l cfgd.io/e2e-run=42 --field-selector metadata.name!=cfgd-e2e-42-sys --wait=false
+kubectl $down_run_ns"
 down_rest="kubectl delete namespace cfgd-e2e-42-sys --ignore-not-found --wait=false
 kubectl get csidriver e2e.csi.cfgd.io --ignore-not-found -o jsonpath={.metadata.annotations.meta\\.helm\\.sh/release-namespace}
 kubectl $down_named
@@ -3481,7 +3486,7 @@ expect_down "pr-install-down.sh treats a release that is not installed as remove
 $down_rest" "^  release cfgd-e2e-42 is not installed in cfgd-e2e-42-sys; nothing to uninstall$" \
     DOWN_RELEASE=absent
 expect_down "pr-install-down.sh exits 1 naming every object and the run id it looked for when none is left, and touches nothing" \
-    1 "$down_reads" "^ERROR: no PR install to remove for run 42 (from GITHUB_RUN_ID): no Helm release cfgd-e2e-42, namespace cfgd-e2e-42-sys absent, no machineconfigs,configpolicies,driftalerts,backuppolicies,clusterconfigpolicies,modules,teamconfigs,composition,function labelled cfgd.io/e2e-run=42, none of validatingwebhookconfiguration/cfgd-e2e-42 mutatingwebhookconfiguration/cfgd-e2e-42-pod-injector function/function-cfgd-42 composition/teamconfig-to-machineconfigs-42, and csidriver/e2e.csi.cfgd.io is not this install's\.$" \
+    1 "$down_reads" "^ERROR: no PR install to remove for run 42 (from GITHUB_RUN_ID): no Helm release cfgd-e2e-42, namespace cfgd-e2e-42-sys absent, no machineconfigs,configpolicies,driftalerts,backuppolicies,clusterconfigpolicies,modules,teamconfigs,composition,function or other namespace labelled cfgd.io/e2e-run=42, none of validatingwebhookconfiguration/cfgd-e2e-42 mutatingwebhookconfiguration/cfgd-e2e-42-pod-injector function/function-cfgd-42 composition/teamconfig-to-machineconfigs-42, and csidriver/e2e.csi.cfgd.io is not this install's\.$" \
     DOWN_RELEASE=absent DOWN_NAMESPACE=absent
 expect_down "pr-install-down.sh exits 1 when an earlier teardown left only a Terminating namespace" \
     1 "$down_reads" "^ERROR: no PR install to remove for run 42 (from GITHUB_RUN_ID): no Helm release cfgd-e2e-42, namespace cfgd-e2e-42-sys Terminating," \
@@ -3505,8 +3510,8 @@ expect_down "pr-install-down.sh exits 1 touching nothing when the CSIDriver belo
 # reads the objects the first named lookup did, so nothing the teardown removes
 # is missing from its nothing-to-remove verdict.
 down_case >/dev/null
-lookup_kinds="$(sed -n 's/^kubectl get \([^ ]*\) -A -l cfgd.io\/e2e-run=42 -o name$/\1/p' "$scratch/down.calls" | tr ',' '\n' | sort)"
-delete_kinds="$(sed -n 's/^kubectl delete \([^ ]*\) .*-l cfgd.io\/e2e-run=42 .*/\1/p' "$scratch/down.calls" | tr ',' '\n' | sort)"
+lookup_kinds="$(sed -n 's/^kubectl get \([^ ]*\) \(-A \)\{0,1\}-l cfgd.io\/e2e-run=42 .*-o name$/\1/p' "$scratch/down.calls" | tr ',' '\n' | sort -u)"
+delete_kinds="$(sed -n 's/^kubectl delete \([^ ]*\) .*-l cfgd.io\/e2e-run=42 .*/\1/p' "$scratch/down.calls" | tr ',' '\n' | sort -u)"
 named_reads="$(grep -c "^kubectl get [a-z]*/" "$scratch/down.calls" || true)" # rc-ok: a count of 0 is judged below
 named_distinct="$(grep "^kubectl get [a-z]*/" "$scratch/down.calls" | sort -u | wc -l)"
 if [ -n "$lookup_kinds" ] && [ "$lookup_kinds" = "$delete_kinds" ] && [ "$named_reads" = 2 ] && [ "$named_distinct" = 1 ]; then
@@ -3586,6 +3591,39 @@ expect_down "pr-install-down.sh skips the uninstall when it cannot list the rele
     1 "$down_objects
 $down_rest" "^ERROR: the PR install teardown failed at: find release$" \
     "DOWN_FAIL=list *"
+# The suites' namespaces go before the install: the uninstall that removes the
+# CSI driver is issued only once the wait reads none of them left, here on its
+# second read. When the wait times out, the teardown names each pod left with
+# its CSI drivers and exits 1 with the install still there, and when no
+# CSIDriver is registered (today's leftovers of an earlier teardown) it says
+# how a running driver unmounts them.
+down_wait_left="kubectl $down_run_ns"
+down_pods="kubectl get pods -n e2e-inject-42 -o jsonpath={range .items[*]}{\"  \"}{.metadata.namespace}{\"/\"}{.metadata.name}{\" \"}{.status.phase}{\" csi: \"}{.spec.volumes[*].csi.driver}{\"\\n\"}{end}"
+down_csi_read="kubectl get csidriver e2e.csi.cfgd.io --ignore-not-found -o jsonpath={.metadata.annotations.meta\\.helm\\.sh/release-namespace}"
+down_pod_line="  e2e-inject-42/e2e-debug-pod Running csi: e2e.csi.cfgd.io"
+expect_down "pr-install-down.sh deletes the run's namespaces and uninstalls the release only after the wait reads none of them left" \
+    0 "$down_objects
+$down_wait_left
+$down_uninstall
+$down_rest" "^Removed the PR install cfgd-e2e-42$" \
+    DOWN_RUN_NS=namespace/e2e-inject-42 DOWN_RUN_NS_READS=2 RUN_NS_TIMEOUT=30
+for want in "^ERROR: these namespaces labelled cfgd.io/e2e-run=42 are still there after 0s: e2e-inject-42\. " \
+    "^$down_pod_line$" "^  csidriver/e2e.csi.cfgd.io from cfgd-e2e-42-sys is registered, so its driver can unmount their volumes, and this install stays" \
+    "^ERROR: the PR install teardown failed at: run namespaces left$"; do
+    expect_down "pr-install-down.sh exits 1 keeping the install when the run's namespaces outlast the wait: $want" \
+        1 "$down_objects
+$down_pods
+$down_csi_read" "$want" \
+        DOWN_RUN_NS=namespace/e2e-inject-42 RUN_NS_TIMEOUT=0 "DOWN_PODS=$down_pod_line" "DOWN_PRINT=get csidriver *" DOWN_PRINT_OUT=cfgd-e2e-42-sys
+done
+for want in "^$down_pod_line$" "^  No csidriver/e2e.csi.cfgd.io is registered, so the kubelet cannot unmount" \
+    "^  Run task e2e:setup: once its driver runs, the kubelet unmounts them" "^ERROR: the PR install teardown failed at: run namespaces left$"; do
+    expect_down "pr-install-down.sh names the remedy when only the run's namespaces are left and no CSIDriver is registered: $want" \
+        1 "$down_objects
+$down_pods
+$down_csi_read" "$want" \
+        DOWN_RELEASE=absent DOWN_NAMESPACE=absent DOWN_RUN_NS=namespace/e2e-inject-42 RUN_NS_TIMEOUT=0 "DOWN_PODS=$down_pod_line"
+done
 # reclaim_stale_install against the same stubs, from a run-42 process: the
 # owner namespace's label and heartbeat come from DOWN_PRINT_OUT. A stale owner's
 # install is removed by a child pr-install-down.sh that names every object from
