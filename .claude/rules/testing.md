@@ -193,13 +193,18 @@ With two pods, `.items[0]` answers for whichever pod the API server lists first.
 case about the operator's health reads every pod (`{.items[*]...}`, one line per pod,
 `kubectl logs -l "$E2E_OPERATOR_PODS"`, `wait_for_pod`, which waits for every pod it
 selects); a case about what the controllers did reads the leader (`operator_leader_pod`).
+An e2e script reads the operator pods in one command, `kubectl get pods -l
+"$E2E_OPERATOR_PODS" -o jsonpath='{...}'` or `kubectl get pods -l
+"$E2E_OPERATOR_PODS" -o json | jq '...'`, and that one-line read is the grammar the
+operator-pods scan checks.
 `tests/e2e/common/test-pr-install.sh` (`task e2e:tags:check`) fails on any tracked
 `tests/e2e/**/*.sh` command (`kubectl` or `$KUBECTL`) that gets pods by an operator
-selector and picks one of them: `.items[N]`, a slice `.items[A:B]`, or `first` after
-`.items`. Once a command keeps that list's `-o json` output in a variable or a file,
-every later command in the file that runs no kubectl of its own is held to the same
-rule, so a second-step `jq '.items[0]' <<<"$json"` fails too. A slice passes only when
-the command, or the capture it reads, carries `--sort-by`.
+selector and picks one of them: `.items[N]`, a slice `.items[A:B]`, or jq `first` of
+the list. Once a command keeps that list's `-o json` output in a variable
+(`NAME="$(...)"`) or a file (`> PATH`), every later command in the file that reads that
+variable or path is held to the same rule, so a second-step
+`jq '.items[0]' <<<"$json"` fails too. A slice passes only when the command, or the
+capture it reads, carries `--sort-by`.
 
 ## An e2e metrics check drives the event, then scrapes the pod that did it
 

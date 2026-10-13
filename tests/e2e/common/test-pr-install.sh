@@ -3644,20 +3644,23 @@ else
     fail "a device id reaches the gateway without gateway_device, or a checkin, enroll or daemon lets the binary pick it with no device-id-ok reason, so cleanup_e2e cannot delete its DriftAlerts: [$device_found]"
 fi
 
-# The PR install runs its operator with a standby, so a read that picks one
-# pod out of the operator pod list answers for whichever pod the API server
-# lists there: a crash or a restart on the other goes unseen, and after a roll
-# the survivor passes for the replacement. scan_operator_item_reads FILE...:
-# file:line of each command, its backslash-continued lines joined, that picks
-# one pod: `.items[N]`, a slice `.items[A:B]`, or `first` after `.items`. A
-# kubectl (or $KUBECTL) command that gets pods by an operator selector
-# ($E2E_OPERATOR_PODS, app=cfgd-operator or app.kubernetes.io/component=operator)
-# is read on its own line. Once such a command keeps its `-o json` output (in a
-# variable or a file, with no pipe), every later command in the file that runs
-# no kubectl of its own is read too, since that JSON can be indexed in a second
-# step. A slice passes only on a command, or after a capture, that carries
-# --sort-by, which picks its pod on purpose. Comment lines are skipped. Fails
-# when a file was listed and never read.
+# The PR install runs its operator with a standby, so a read that picks one pod
+# out of the operator pod list answers for whichever pod the API server lists
+# there: a crash or a restart on the other goes unseen, and after a roll the
+# survivor passes for the replacement. scan_operator_item_reads FILE...:
+# file:line of each command that picks one pod: `.items[N]`, a slice
+# `.items[A:B]`, or jq `first` of the list (`.items | first`, after a sort_by or
+# over `[.items[] ...]`, or `first(.items)`). A kubectl (or $KUBECTL) command
+# that gets pods by an operator selector ($E2E_OPERATOR_PODS, app=cfgd-operator
+# or app.kubernetes.io/component=operator) is read on its own line. Once such a
+# command keeps its `-o json` output, with no pipe, in a variable
+# (NAME="$(...)") or a file (> PATH), every later command in the file that runs
+# no kubectl of its own and reads that variable ($NAME or ${NAME}) or that path
+# is read too, since that JSON can be indexed in a second step. A slice passes
+# only on a command, or after a capture, that carries --sort-by, which picks its
+# pod on purpose. A command runs on past a line that ends with a backslash or
+# inside an open quote, so a jq program spread over lines is one command.
+# Comment lines are skipped. Fails when a file was listed and never read.
 scan_operator_item_reads() {
     local listed="$scratch/operator-items.listed" read="$scratch/operator-items.read"
     printf '%s\n' "$@" > "$listed"
@@ -3667,25 +3670,61 @@ scan_operator_item_reads() {
         function picks(c, sorted) {
             return c ~ /\.items\[-?[0-9]+\]/ ||
                 (c ~ /\.items\[-?[0-9]*:-?[0-9]*\]/ && !sorted) ||
-                c ~ /\.items.*(^|[^[:alnum:]_])first([^[:alnum:]_]|$)/
+                c ~ /\.items(\[\])?([[:space:]]*\|[[:space:]]*sort_by\([^)]*\))?[[:space:]]*\|[[:space:]]*first([^[:alnum:]_]|$)/ ||
+                c ~ /\[[[:space:]]*\.items\[\][^]]*\][[:space:]]*\|[[:space:]]*first([^[:alnum:]_]|$)/ ||
+                c ~ /(^|[^[:alnum:]_])first\([[:space:]]*\.items/
         }
-        FNR == 1 { print FILENAME > readlog; cmd = ""; captured = 0; capture_sorted = 0 }
+        # reads_capture(c): the sorted flag of the first capture c reads, or -1.
+        function reads_capture(c,    name) {
+            for (name in var_caps)
+                if (c ~ ("\\$\\{?" name "([^[:alnum:]_]|$)")) return var_caps[name]
+            for (name in file_caps)
+                if (index(c, name)) return file_caps[name]
+            return -1
+        }
+        # open_quote(c): 1 when c ends inside a single- or double-quoted string.
+        # A # that starts a word outside quotes ends the scan as a comment.
+        function open_quote(c,    i, ch, q, prev) {
+            q = ""
+            prev = " "
+            for (i = 1; i <= length(c); i++) {
+                ch = substr(c, i, 1)
+                if (q == "\047") { if (ch == "\047") q = "" }
+                else if (q == "\"") {
+                    if (ch == "\\") i++
+                    else if (ch == "\"") q = ""
+                } else if (ch == "\\") i++
+                else if (ch == "\047" || ch == "\"") q = ch
+                else if (ch == "#" && prev ~ /[[:space:];]/) break
+                prev = ch
+            }
+            return q != ""
+        }
+        FNR == 1 { print FILENAME > readlog; cmd = ""; split("", var_caps); split("", file_caps) }
         cmd == "" && /^[[:space:]]*#/ { next }
         {
             if (cmd == "") start = FNR
             cmd = cmd " " $0
-            if ($0 ~ /\\$/) next
+            if ($0 ~ /\\$/ || open_quote(cmd)) next
             operator_get = cmd ~ /kubectl|KUBECTL/ && cmd ~ /get[[:space:]]+(pods?|po)([[:space:]]|$)/ &&
                 cmd ~ /E2E_OPERATOR_PODS|app=cfgd-operator|component=operator/
             sorted = cmd ~ /--sort-by/
             if (operator_get && picks(cmd, sorted)) print FILENAME ":" start
-            else if (captured && cmd !~ /kubectl|KUBECTL/ && picks(cmd, capture_sorted)) print FILENAME ":" start
+            else if (cmd !~ /kubectl|KUBECTL/ && (bound = reads_capture(cmd)) >= 0 && picks(cmd, bound))
+                print FILENAME ":" start
             kept = cmd
             gsub(/[0-9]?>[[:space:]]*\/dev\/null|[0-9]?>&[0-9]|\|\|/, "", kept)
             if (operator_get && cmd ~ /(-o|--output)[[:space:]=]*["\047]?json([^[:alnum:]_]|$)/ &&
-                kept !~ /\|/ && (cmd ~ /=["]?\$\(/ || kept ~ />/)) {
-                captured = 1
-                capture_sorted = sorted
+                kept !~ /\|/) {
+                if (match(cmd, /[A-Za-z_][A-Za-z0-9_]*=["]?\$\(/)) {
+                    name = substr(cmd, RSTART, RLENGTH)
+                    sub(/=.*/, "", name)
+                    var_caps[name] = sorted
+                } else if (match(kept, />[[:space:]]*[^[:space:];|&)]+/)) {
+                    name = substr(kept, RSTART + 1, RLENGTH - 1)
+                    gsub(/^[[:space:]]+|["\047]/, "", name)
+                    file_caps[name] = sorted
+                }
             }
             cmd = ""
         }
@@ -3694,9 +3733,9 @@ scan_operator_item_reads() {
 }
 items_got="$(cd "$here/fixtures/operator-pods" && scan_operator_item_reads reads.bash)" ||
     items_got="(the scan failed)"
-items_want="$(printf 'reads.bash:%s\n' 1 2 4 5 6 17 18 19 20 21 24 25 27)"
+items_want="$(printf 'reads.bash:%s\n' 1 2 4 5 6 17 18 19 20 21 24 25 27 30 33 34)"
 if [ "$items_got" = "$items_want" ]; then
-    pass "the operator item-read scan reports an index, an unsorted slice or a first of the operator pods by any operator selector, through kubectl or \$KUBECTL, on one line, continued, through jq, or from a captured -o json read later in the file, and stays quiet on comments, .items[*], a sorted slice, a jq sort over every pod, other pods, Deployments and a command that reads no items"
+    pass "the operator item-read scan reports an index, an unsorted slice or a first of the operator pods by any operator selector, through kubectl or \$KUBECTL, on one line, continued, through jq, or from a captured -o json variable or file read later in the file, and stays quiet on comments, a pick from another capture, .items[*], a sorted slice, a jq sort over every pod, other pods, Deployments and a command that reads no items"
 else
     fail "the operator item-read scan printed [$items_got], want [$items_want]"
 fi
