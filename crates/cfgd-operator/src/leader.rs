@@ -155,13 +155,13 @@ impl LeaderElection {
                         // Every free lease is forced, including one whose
                         // last holder was this identity: forcing is what strips
                         // the previous owner's field manager off `spec.*`, and
-                        // the previous owner is not always another pod. A Lease minted by a
-                        // plain create carries the API server's inferred
-                        // `unknown` manager, and a pod that comes back under
-                        // its own former identity would otherwise conflict with
-                        // that stale ownership on every attempt, forever.
-                        // Nothing holds a free lease, so there is nobody to
-                        // take it from.
+                        // the previous owner is not always another pod. A
+                        // Lease minted by a plain create carries the API
+                        // server's inferred `unknown` manager, and a pod that
+                        // comes back under its own former identity would
+                        // otherwise conflict with that stale ownership on every
+                        // attempt, forever. Nothing holds a free lease, so
+                        // there is nobody to take it from.
                         PatchParams::apply(&field_manager).force()
                     } else {
                         // Self-renewal: the fields are already owned; a plain
@@ -274,9 +274,9 @@ impl LeaderElection {
             }
         }
 
-        // Renewing inside this future, and not on a task of its own, is what
-        // stops it the moment the caller drops the run: a renewal racing a
-        // shutdown's release would otherwise take the lease straight back.
+        // Renewal runs inside this future so it stops the moment the caller
+        // drops the run; a renewal racing a shutdown's release would otherwise
+        // take the lease straight back.
         let renewing = async {
             self.keep_renewing(&shutdown).await;
             std::future::pending::<()>().await;
@@ -1172,6 +1172,46 @@ mod tests {
             3,
             "renewals at 5s, 7s and 9s, then the deadline"
         );
+    }
+
+    /// A renewal the API server never answers is cut off at the renew
+    /// deadline, so a hung API server cannot keep this pod acting as holder
+    /// past it.
+    #[tokio::test(start_paused = true)]
+    async fn a_renewal_the_api_server_never_answers_gives_the_lease_up_at_the_renew_deadline() {
+        let (service, mut handle) = tower_test::mock::pair::<
+            http::Request<kube::client::Body>,
+            http::Response<kube::client::Body>,
+        >();
+        let api_server = tokio::spawn(async move {
+            // Holding the response open is an API server that never answers.
+            let (_request, _unanswered) = handle.next_request().await.expect("the renewal");
+            std::future::pending::<()>().await;
+        });
+        let mut le = LeaderElection::new(
+            kube::Client::new(service, "default"),
+            TEST_NS.into(),
+            TEST_ID.into(),
+        );
+        le.lease_duration_secs = 15;
+        le.renew_deadline_secs = 10;
+        let lost = CancellationToken::new();
+
+        let started = tokio::time::Instant::now();
+        tokio::time::timeout(Duration::from_secs(60), le.keep_renewing(&lost))
+            .await
+            .expect("a hung renewal must not hold the renewal loop past its deadline");
+
+        assert!(
+            lost.is_cancelled(),
+            "a lease nobody renewed must count as lost"
+        );
+        assert_eq!(
+            started.elapsed(),
+            Duration::from_secs(10),
+            "the lease must count as lost exactly at the renew deadline"
+        );
+        api_server.abort();
     }
 
     /// A renewal that succeeds starts the renew deadline over.
