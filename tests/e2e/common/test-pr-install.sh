@@ -3338,11 +3338,10 @@ down_objects="$down_reads
 kubectl delete machineconfigs,configpolicies,driftalerts,backuppolicies -A -l cfgd.io/e2e-run=42 --wait=true --timeout=90s
 kubectl delete clusterconfigpolicies,modules -A -l cfgd.io/e2e-run=42 --wait=true --timeout=90s
 kubectl delete teamconfigs -A -l cfgd.io/e2e-run=42 --wait=true --timeout=90s
-kubectl delete composition,function -l cfgd.io/e2e-run=42 --wait=true --timeout=90s"
+kubectl delete composition,function -A -l cfgd.io/e2e-run=42 --wait=true --timeout=90s"
 down_rest="kubectl delete namespace cfgd-e2e-42-sys --ignore-not-found --wait=false
 kubectl get csidriver e2e.csi.cfgd.io --ignore-not-found -o jsonpath={.metadata.annotations.meta\\.helm\\.sh/release-namespace}
-kubectl get validatingwebhookconfiguration/cfgd-e2e-42 mutatingwebhookconfiguration/cfgd-e2e-42-pod-injector --ignore-not-found -o name
-kubectl get function/function-cfgd-42 composition/teamconfig-to-machineconfigs-42 --ignore-not-found -o name
+kubectl $down_named
 kubectl get namespace cfgd-e2e-42-sys --ignore-not-found -o jsonpath={.status.phase}"
 down_uninstall="helm uninstall cfgd-e2e-42 -n cfgd-e2e-42-sys --wait --timeout=120s"
 # expect_down <label> <want rc> <want calls> <want output pattern> [VAR=value...]
@@ -3376,27 +3375,27 @@ expect_down "pr-install-down.sh runs every later step after the Composition and 
 $down_uninstall
 $down_rest" "^ERROR: the PR install teardown failed at: delete composition,function$" \
     "DOWN_FAIL=delete composition,function *"
-expect_down "pr-install-down.sh exits 1 when it cannot read back the run's Function and Composition" \
+expect_down "pr-install-down.sh runs every step when it cannot read the run's webhook configurations, Function and Composition, then exits 1 naming both reads" \
     1 "$down_objects
 $down_uninstall
-$down_rest" "^ERROR: the PR install teardown failed at: read function$" \
-    "DOWN_FAIL=get function/*"
+$down_rest" "^ERROR: the PR install teardown failed at: find named objects, read named objects$" \
+    "DOWN_FAIL=$down_named"
 expect_down "pr-install-down.sh exits 1 when the run's Function is still there" \
     1 "$down_objects
 $down_uninstall
 $down_rest" "^ERROR: the PR install teardown failed at: function left$" \
-    "DOWN_PRINT=get function/*" "DOWN_PRINT_OUT=function.pkg.crossplane.io/function-cfgd-42"
+    "DOWN_PRINT=$down_named" "DOWN_PRINT_OUT=function.pkg.crossplane.io/function-cfgd-42"
 expect_down "pr-install-down.sh exits 1 when the run's Composition is still there" \
     1 "$down_objects
 $down_uninstall
 $down_rest" "^ERROR: the PR install teardown failed at: composition left$" \
-    "DOWN_PRINT=get function/*" "DOWN_PRINT_OUT=composition.apiextensions.crossplane.io/teamconfig-to-machineconfigs-42"
+    "DOWN_PRINT=$down_named" "DOWN_PRINT_OUT=composition.apiextensions.crossplane.io/teamconfig-to-machineconfigs-42"
 expect_down "pr-install-down.sh treats a release that is not installed as removed and still deletes the namespace" \
     0 "$down_objects
 $down_rest" "^  release cfgd-e2e-42 is not installed in cfgd-e2e-42-sys; nothing to uninstall$" \
     DOWN_RELEASE=absent
 expect_down "pr-install-down.sh exits 1 naming every object and the run id it looked for when none is left, and touches nothing" \
-    1 "$down_reads" "^ERROR: no PR install to remove for run 42 (from GITHUB_RUN_ID): no Helm release cfgd-e2e-42, namespace cfgd-e2e-42-sys absent, no object labelled cfgd.io/e2e-run=42, no webhook configuration cfgd-e2e-42 or cfgd-e2e-42-pod-injector, no function/function-cfgd-42 or composition/teamconfig-to-machineconfigs-42, and csidriver/e2e.csi.cfgd.io is not this install's\.$" \
+    1 "$down_reads" "^ERROR: no PR install to remove for run 42 (from GITHUB_RUN_ID): no Helm release cfgd-e2e-42, namespace cfgd-e2e-42-sys absent, no machineconfigs,configpolicies,driftalerts,backuppolicies,clusterconfigpolicies,modules,teamconfigs,composition,function labelled cfgd.io/e2e-run=42, none of validatingwebhookconfiguration/cfgd-e2e-42 mutatingwebhookconfiguration/cfgd-e2e-42-pod-injector function/function-cfgd-42 composition/teamconfig-to-machineconfigs-42, and csidriver/e2e.csi.cfgd.io is not this install's\.$" \
     DOWN_RELEASE=absent DOWN_NAMESPACE=absent
 expect_down "pr-install-down.sh exits 1 when an earlier teardown left only a Terminating namespace" \
     1 "$down_reads" "^ERROR: no PR install to remove for run 42 (from GITHUB_RUN_ID): no Helm release cfgd-e2e-42, namespace cfgd-e2e-42-sys Terminating," \
@@ -3405,10 +3404,30 @@ expect_down "pr-install-down.sh reruns after a partly failed teardown that left 
     0 "$down_objects
 $down_rest" "^Removed the PR install cfgd-e2e-42$" \
     DOWN_RELEASE=absent DOWN_NAMESPACE=Terminating "DOWN_PRINT=$down_labelled" "DOWN_PRINT_OUT=function.pkg.crossplane.io/function-cfgd-42"
-expect_down "pr-install-down.sh reruns when only the run's webhook configuration is left and exits 0 once the read-back finds it gone" \
-    0 "$down_objects
-$down_rest" "^Removed the PR install cfgd-e2e-42$" \
+expect_down "pr-install-down.sh reruns when only the run's webhook configuration is left, runs every step and exits 1 naming it" \
+    1 "$down_objects
+$down_rest" "^ERROR: the PR install teardown failed at: validatingwebhookconfiguration left$" \
     DOWN_RELEASE=absent DOWN_NAMESPACE=absent "DOWN_PRINT=$down_named" "DOWN_PRINT_OUT=validatingwebhookconfiguration.admissionregistration.k8s.io/cfgd-e2e-42"
+expect_down "pr-install-down.sh reruns when only a CSIDriver this install owns is left, runs every step and exits 1 naming it" \
+    1 "$down_objects
+$down_rest" "^ERROR: the PR install teardown failed at: csidriver left$" \
+    DOWN_RELEASE=absent DOWN_NAMESPACE=absent "DOWN_PRINT=get csidriver *" "DOWN_PRINT_OUT=cfgd-e2e-42-sys"
+expect_down "pr-install-down.sh exits 1 touching nothing when the CSIDriver belongs to another install" \
+    1 "$down_reads" "^ERROR: no PR install to remove for run 42" \
+    DOWN_RELEASE=absent DOWN_NAMESPACE=absent "DOWN_PRINT=get csidriver *" "DOWN_PRINT_OUT=cfgd-e2e-7-sys"
+# Every kind a delete names is one the first lookup lists, and the read-back
+# reads the objects the first named lookup did, so nothing the teardown removes
+# is missing from its nothing-to-remove verdict.
+down_case >/dev/null
+lookup_kinds="$(sed -n 's/^kubectl get \([^ ]*\) -A -l cfgd.io\/e2e-run=42 -o name$/\1/p' "$scratch/down.calls" | tr ',' '\n' | sort)"
+delete_kinds="$(sed -n 's/^kubectl delete \([^ ]*\) .*-l cfgd.io\/e2e-run=42 .*/\1/p' "$scratch/down.calls" | tr ',' '\n' | sort)"
+named_reads="$(grep -c "^kubectl get [a-z]*/" "$scratch/down.calls" || true)" # rc-ok: a count of 0 is judged below
+named_distinct="$(grep "^kubectl get [a-z]*/" "$scratch/down.calls" | sort -u | wc -l)"
+if [ -n "$lookup_kinds" ] && [ "$lookup_kinds" = "$delete_kinds" ] && [ "$named_reads" = 2 ] && [ "$named_distinct" = 1 ]; then
+    pass "pr-install-down.sh looks up first every kind it deletes ($(wc -l <<<"$delete_kinds") kinds) and reads back the named objects it looked up"
+else
+    fail "pr-install-down.sh lookup kinds [$(paste -sd ' ' <<<"$lookup_kinds")], delete kinds [$(paste -sd ' ' <<<"$delete_kinds")], named reads $named_reads ($named_distinct distinct); want the same kinds and two identical named reads"
+fi
 # A local teardown with no setup record names the file it looked in.
 missing_record_out="$(env -u GITHUB_RUN_ID -u CFGD_NAMESPACE PATH="$down_bin:$PATH" DOWN_LOG="$scratch/down.calls" \
     REGISTRY=r.example CLI_SCRATCH="$scratch" E2E_LOCAL_RUN_ID_FILE="$scratch/no-such-record" DOWN_RELEASE=absent DOWN_NAMESPACE=absent \
@@ -3530,6 +3549,8 @@ if ! crd_plurals="$(yq -N '.spec.names.plural' "$repo_root/schemas/crds.yaml" "$
     fail "yq could not read the plurals from schemas/crds.yaml and manifests/crossplane/xrd-teamconfig.yaml"
 else
     down_plurals="$(sed -n 's/^kubectl delete \([^ ]*\) -A -l cfgd.io\/e2e-run=42 .*/\1/p' "$scratch/down.calls" | tr ',' '\n' | sort)"
+    # Composition and Function are the Crossplane suite's own, outside cfgd.io.
+    down_plurals="$(grep -vx 'composition\|function' <<<"$down_plurals" || true)" # rc-ok: an empty list is judged below
     if [ "$down_plurals" = "$crd_plurals" ]; then
         pass "pr-install-down.sh deletes the run's objects of every kind schemas/crds.yaml and the TeamConfig XRD declare ($(wc -l <<<"$crd_plurals") kinds)"
     else
