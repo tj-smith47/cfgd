@@ -31,7 +31,7 @@ spec:
   env:
     - name: NETTOOLS_VERSION
       value: "1.0.0"
-  ociArtifact: "${REGISTRY}/cfgd-e2e/nettools:v1.0"
+  ociArtifact: "$(e2e_scratch_ref "nettools:v1.0")"
   signature:
     cosign:
       publicKey: |

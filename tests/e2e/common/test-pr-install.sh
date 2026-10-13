@@ -2192,7 +2192,7 @@ run "${C[@]}" apply --yes
 exec_in_pod cfgd --config "$c" apply --yes
 cfgd --config "$c" apply -f x.yaml
 helm upgrade --install r chart -f values.yaml
-crossplane xpkg push "$img" -f "$xpkg"
+e2e_push xpkg "$img" -f "$xpkg"
 kubectl create namespace ns
 echo "  kubectl apply -f - < $f failed" | tee -a log
 yaml=$(cat)

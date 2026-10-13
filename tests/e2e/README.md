@@ -12,7 +12,8 @@ on PATH, and its setup stops without it.
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `REGISTRY` | required | Registry every image is pulled from and pushed to |
+| `REGISTRY` | `registry.jarvispro.io` under `task`; required when a script runs directly | Registry setup pushes every image it builds to, and every suite pushes its scratch OCI artifacts to |
+| `RELEASE_REGISTRY` | unset | Registry an image whose tag override is set is pulled from; unset, that image comes from `REGISTRY` |
 | `IMAGE_TAG` | `e2e-<short HEAD sha>` | Tag of every image that has no override below |
 | `CFGD_IMAGE_TAG` | `IMAGE_TAG` | Tag of `cfgd` (agent, test pod) |
 | `OPERATOR_IMAGE_TAG` | `IMAGE_TAG` | Tag of `cfgd-operator` (the PR install's operator; the device gateway where setup deploys it) |
@@ -22,30 +23,38 @@ on PATH, and its setup stops without it.
 A release tags each image at its own crate's version, so a released set needs the
 per-image overrides. `function-cfgd` is tagged with the cfgd version behind a `v`
 prefix, which the other three images do not carry. To run the suites against the
-images one release published:
+images one release published, leave `REGISTRY` at its default and name the release
+registry:
 
 ```bash
-export REGISTRY=ghcr.io/tj-smith47
-export CFGD_IMAGE_TAG=0.11.0 OPERATOR_IMAGE_TAG=0.9.0 CSI_IMAGE_TAG=0.7.2
-export FUNCTION_IMAGE_TAG=v0.11.0
-task e2e:operator
+export RELEASE_REGISTRY=ghcr.io/tj-smith47
+export CFGD_IMAGE_TAG=0.12.0 OPERATOR_IMAGE_TAG=0.10.0 CSI_IMAGE_TAG=0.8.0
+export FUNCTION_IMAGE_TAG=v0.12.0
+task e2e
 ```
 
 An overridden image is used as it is: setup never builds, pushes or retags it, and
-stops with an error naming the reference when the registry does not hold it.
+stops with an error naming the reference when the registry does not hold it. The
+suites' scratch artifacts (`cfgd module push` targets) still go to `REGISTRY`, so a
+run needs no write access to the release registry.
 
-Every image reference the scripts compose comes from three functions in
-`common/helpers.sh`:
+Every push goes through `e2e_push`, which refuses a reference outside `REGISTRY`.
+
+Every registry reference the scripts compose comes from four functions in
+`common/helpers.sh`. With the released set above:
 
 ```bash
-e2e_image cfgd-csi        # ghcr.io/tj-smith47/cfgd-csi:0.7.2
-e2e_image_repo cfgd-csi   # ghcr.io/tj-smith47/cfgd-csi
-e2e_image_tag cfgd-csi    # 0.7.2
+e2e_image cfgd-csi                    # ghcr.io/tj-smith47/cfgd-csi:0.8.0
+e2e_image_repo cfgd-csi               # ghcr.io/tj-smith47/cfgd-csi
+e2e_image_tag cfgd-csi                # 0.8.0
+e2e_scratch_ref "oci01:v1.0-$E2E_RUN_ID"  # $REGISTRY/cfgd-e2e/oci01:v1.0-<run id>
 ```
 
 `task e2e:tags:check` runs `common/test-image-tags.sh`, which needs no cluster: it
-resolves each image under every override and fails when a script under `tests/e2e/`
-spells `IMAGE_TAG` or a first-party image reference itself.
+resolves each image under every override, with and without `RELEASE_REGISTRY`,
+drives `e2e_push` against a stand-in docker and crossplane, and fails when a script
+under `tests/e2e/` spells `IMAGE_TAG`, `RELEASE_REGISTRY`, a path under `$REGISTRY`,
+a `docker push` or a `crossplane xpkg push` itself.
 
 ## The PR install
 

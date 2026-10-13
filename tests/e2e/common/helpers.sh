@@ -72,14 +72,52 @@ e2e_override_unused_warning() {
     fi
 }
 
+# REGISTRY is where setup pushes every image it builds and where the suites push
+# their scratch artifacts. RELEASE_REGISTRY, when set, is where an image whose
+# tag is overridden is pulled from, so a released set is tested where it was
+# published while nothing the run writes leaves REGISTRY.
 e2e_image_repo() {
-    printf '%s/%s\n' "$REGISTRY" "$1"
+    local var registry="$REGISTRY"
+    var="$(e2e_image_override_var "$1")" || return 1
+    if [ -n "${RELEASE_REGISTRY:-}" ] && [ -n "${!var:-}" ]; then
+        registry="$RELEASE_REGISTRY"
+    fi
+    printf '%s/%s\n' "$registry" "$1"
 }
 
 e2e_image() {
     local tag
     tag="$(e2e_image_tag "$1")" || return 1
     printf '%s:%s\n' "$(e2e_image_repo "$1")" "$tag"
+}
+
+# A scratch OCI artifact the suites push and read back: <name>:<tag> under
+# REGISTRY's cfgd-e2e path.
+e2e_scratch_ref() {
+    printf '%s/cfgd-e2e/%s\n' "$REGISTRY" "$1"
+}
+
+# Pushes <ref> with docker or the Crossplane CLI (extra arguments follow the
+# ref), refusing any ref outside REGISTRY so a run never writes to the registry
+# a released set comes from.
+e2e_push() {
+    local tool="$1" ref="$2"
+    shift 2
+    case "$ref" in
+        "$REGISTRY"/*) ;;
+        *)
+            echo "ERROR: refusing to push $ref: pushes go to $REGISTRY only" >&2
+            return 1
+            ;;
+    esac
+    case "$tool" in
+        docker) docker push "$ref" "$@" ;;
+        xpkg) crossplane xpkg push "$ref" "$@" ;;
+        *)
+            echo "e2e_push: unknown tool '$tool'" >&2
+            return 1
+            ;;
+    esac
 }
 E2E_NAMESPACE="${E2E_NAMESPACE:-cfgd-e2e-${GITHUB_RUN_ID:-$(date +%s)-$$}}"
 # A local run takes its id from HEAD when setup starts, and setup records it in

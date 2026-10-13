@@ -440,7 +440,7 @@ build_and_push() {
             if [ "$retag_latest" = "true" ]; then
                 docker pull "$ref" >/dev/null 2>&1 || true
                 docker tag "$ref" "$latest" 2>/dev/null || true
-                docker push "$latest" 2>/dev/null || true
+                e2e_push docker "$latest" 2>/dev/null || true
             fi
             IMAGE_BUILT[$image]="false"
             return 0
@@ -450,10 +450,10 @@ build_and_push() {
 
     echo "  BUILD ${image}..."
     build_image "$dockerfile" "$ref" "$context" "$scope"
-    docker push "$ref"
+    e2e_push docker "$ref"
     if [ "$retag_latest" = "true" ]; then
         docker tag "$ref" "$latest"
-        docker push "$latest"
+        e2e_push docker "$latest"
     fi
     IMAGE_BUILT[$image]="true"
 }
@@ -481,7 +481,7 @@ else
     echo "  BUILD function-cfgd..."
     build_image "$REPO_ROOT/function-cfgd/Dockerfile" \
         "$FUNCTION_IMAGE" "$REPO_ROOT/function-cfgd" function-cfgd
-    docker push "$FUNCTION_IMAGE"
+    e2e_push docker "$FUNCTION_IMAGE"
     FUNCTION_DECISION="build"
 fi
 
@@ -527,7 +527,7 @@ if [ "$FUNCTION_DECISION" = "build" ]; then
         --package-root="$REPO_ROOT/function-cfgd/package" \
         --embed-runtime-image="$FUNCTION_IMAGE" \
         -o "$XPKG_OUT"
-    crossplane xpkg push "$FUNCTION_IMAGE" -f "$XPKG_OUT"
+    e2e_push xpkg "$FUNCTION_IMAGE" -f "$XPKG_OUT"
 fi
 
 # (Namespace and RBAC already created in Step 1b above)

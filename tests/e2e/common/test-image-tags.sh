@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Checks the e2e image tag map in helpers.sh without a cluster: each image's
-# reference resolves to IMAGE_TAG unless its own override is set, and no suite
-# composes a first-party image reference outside the helpers.
+# reference resolves to IMAGE_TAG unless its own override is set, an overridden
+# image comes from RELEASE_REGISTRY when that is set, every push stays on
+# REGISTRY, and no suite composes a registry reference or pushes outside the
+# helpers.
 #
 # Usage: tests/e2e/common/test-image-tags.sh
 set -euo pipefail
@@ -61,6 +63,63 @@ expect "released set" cfgd "$registry/cfgd:0.11.0" "${released[@]}"
 expect "released set" cfgd-operator "$registry/cfgd-operator:0.9.0" "${released[@]}"
 expect "released set" cfgd-csi "$registry/cfgd-csi:0.7.2" "${released[@]}"
 expect "released set" function-cfgd "$registry/function-cfgd:v0.11.0" "${released[@]}"
+
+# RELEASE_REGISTRY moves only an overridden image: a released image is pulled
+# from where it was published, while an image setup builds stays on REGISTRY.
+release="release.test/owner"
+for image in "${images[@]}"; do
+    expect "RELEASE_REGISTRY, overridden" "$image" "$release/$image:0.1.0" \
+        "RELEASE_REGISTRY=$release" "${override_of[$image]}=0.1.0"
+    expect "RELEASE_REGISTRY, not overridden" "$image" "$registry/$image:base" \
+        "RELEASE_REGISTRY=$release"
+    expect "RELEASE_REGISTRY empty, overridden" "$image" "$registry/$image:0.1.0" \
+        "RELEASE_REGISTRY=" "${override_of[$image]}=0.1.0"
+done
+expect "released set from RELEASE_REGISTRY" cfgd-csi "$release/cfgd-csi:0.7.2" \
+    "RELEASE_REGISTRY=$release" "${released[@]}"
+
+# shellcheck disable=SC2016 # the inner script expands its own positional args
+in_helpers() {
+    env -u CFGD_IMAGE_TAG -u OPERATOR_IMAGE_TAG -u CSI_IMAGE_TAG -u FUNCTION_IMAGE_TAG \
+        REGISTRY="$registry" IMAGE_TAG=base CLI_SCRATCH="$scratch" RELEASE_REGISTRY="$release" "${released[@]}" \
+        PATH="$scratch/bin:$PATH" bash -c 'source "$1/common/helpers.sh"; shift; "$@"' _ "$e2e_root" "$@" 2>&1
+}
+
+check() {
+    local label="$1" got="$2" want="$3"
+    if [ "$got" = "$want" ]; then
+        echo "PASS  $label"
+    else
+        echo "FAIL  $label: got '$got' (want '$want')"
+        failures=$((failures + 1))
+    fi
+}
+
+# A scratch artifact is written by the run, so it stays on REGISTRY even while a
+# released set is pulled from RELEASE_REGISTRY.
+check "scratch ref stays on REGISTRY under RELEASE_REGISTRY" \
+    "$(in_helpers e2e_scratch_ref mod:v1)" "$registry/cfgd-e2e/mod:v1"
+
+# e2e_push hands a ref under REGISTRY to the tool and refuses any other one,
+# an overridden image's RELEASE_REGISTRY reference included, without running it.
+mkdir -p "$scratch/bin"
+# shellcheck disable=SC2016 # the stand-in expands its own $0 and $*
+printf '#!/usr/bin/env bash\necho "$(basename "$0") $*" >>"%s/push.log"\n' "$scratch" >"$scratch/bin/docker"
+cp "$scratch/bin/docker" "$scratch/bin/crossplane"
+chmod +x "$scratch/bin/docker" "$scratch/bin/crossplane"
+in_helpers e2e_push docker "$registry/cfgd:base" >/dev/null
+in_helpers e2e_push xpkg "$registry/function-cfgd:base" -f pkg.xpkg >/dev/null
+check "e2e_push runs the tool for refs under REGISTRY" "$(cat "$scratch/push.log")" \
+    "docker push $registry/cfgd:base
+crossplane xpkg push $registry/function-cfgd:base -f pkg.xpkg"
+for ref in "$release/cfgd-operator:0.9.0" "$registry.evil/cfgd:x" "ghcr.io/other/cfgd:x"; do
+    if out="$(in_helpers e2e_push docker "$ref")"; then
+        check "e2e_push refuses $ref" "pushed: $out" "refused"
+    else
+        check "e2e_push refuses $ref" "$(grep -c 'refusing to push' <<<"$out")" 1
+    fi
+done
+check "a refused push runs no tool" "$(wc -l <"$scratch/push.log")" 2
 
 # shellcheck disable=SC2016 # the inner script expands its own positional args
 overridden() {
@@ -134,16 +193,18 @@ else
     echo "PASS  unknown image: refused"
 fi
 
-# A reference composed by hand would ignore its override, so the helpers are
-# the only place a first-party image or IMAGE_TAG may be spelled. grep exits 1
+# A reference composed by hand would ignore its override or push past the
+# REGISTRY guard, so the helpers are the only place IMAGE_TAG, RELEASE_REGISTRY,
+# a path under REGISTRY or a docker or xpkg push may be spelled. grep exits 1
 # for no match and 2 for an error; an error must fail the check, since an empty
 # result would otherwise read as a clean tree.
 scan_strays() {
     local out rc=0 line
     out="$(grep -rnE \
         --include='*.sh' --include='*.yaml' --include='*.yml' --include='*.tera' --include='*.json' \
-        -e 'IMAGE_TAG|REGISTRY_PLACEHOLDER' \
-        -e '\$\{?REGISTRY[^}/"]*\}?"?/(cfgd|cfgd-operator|cfgd-csi|function-cfgd)([^-a-zA-Z0-9]|$)' \
+        -e 'IMAGE_TAG|REGISTRY_PLACEHOLDER|RELEASE_REGISTRY' \
+        -e '\$\{?REGISTRY[^}/"]*\}?"?/' \
+        -e '(docker|xpkg) push' \
         "$1" 2>&1)" || rc=$?
     if [ "$rc" -gt 1 ]; then
         printf 'grep exited %s: %s\n' "$rc" "$out" >&2
@@ -171,7 +232,7 @@ else
 fi
 
 # Each spelling the scan exists to catch, one fixture file apiece, must be
-# reported; an OCI module path that merely starts with cfgd must not be.
+# reported; a scratch artifact composed through e2e_scratch_ref must not be.
 fixtures="$scratch/stray-fixtures"
 mkdir -p "$fixtures"
 # shellcheck disable=SC2016 # fixtures hold the literal text a script would contain
@@ -183,12 +244,16 @@ declare -A stray_fixture=(
     [line-end.yaml]='repository: $REGISTRY/function-cfgd'
     [tag.json]='{"tag": "$IMAGE_TAG"}'
     [placeholder.yaml]='image: REGISTRY_PLACEHOLDER/cfgd:x'
+    [module-artifact.sh]='ref="${REGISTRY}/cfgd-e2e/module:v1"'
+    [release.sh]='echo "$RELEASE_REGISTRY"'
+    [docker-push.sh]='docker push "$ref"'
+    [xpkg-push.sh]='crossplane xpkg push "$ref" -f x.xpkg'
 )
 for name in "${!stray_fixture[@]}"; do
     printf '%s\n' "${stray_fixture[$name]}" > "$fixtures/$name"
 done
 # shellcheck disable=SC2016 # fixtures hold the literal text a script would contain
-printf '%s\n' 'ref="${REGISTRY}/cfgd-e2e/module:v1"' > "$fixtures/module-artifact.sh"
+printf '%s\n' 'ref="$(e2e_scratch_ref "module:v1")"' > "$fixtures/scratch-ref.sh"
 if found="$(scan_strays "$fixtures")"; then
     for name in "${!stray_fixture[@]}"; do
         if grep -qF -- "$fixtures/$name:" <<<"$found"; then
@@ -198,11 +263,11 @@ if found="$(scan_strays "$fixtures")"; then
             failures=$((failures + 1))
         fi
     done
-    if grep -qF -- "$fixtures/module-artifact.sh:" <<<"$found"; then
-        echo "FAIL  scan reports an OCI module artifact under \$REGISTRY/cfgd-e2e"
+    if grep -qF -- "$fixtures/scratch-ref.sh:" <<<"$found"; then
+        echo "FAIL  scan reports a scratch artifact composed through e2e_scratch_ref"
         failures=$((failures + 1))
     else
-        echo "PASS  scan passes an OCI module artifact under \$REGISTRY/cfgd-e2e"
+        echo "PASS  scan passes a scratch artifact composed through e2e_scratch_ref"
     fi
 else
     echo "FAIL  the image reference scan could not read its fixtures"

@@ -401,7 +401,7 @@ spec:
   files:
     - source: bin/check.sh
       target: bin/check.sh
-  ociArtifact: "${REGISTRY}/cfgd-e2e/lc-module:v1.0"
+  ociArtifact: "$(e2e_scratch_ref "lc-module:v1.0")"
 EOF
 ) && LC07_CREATE_RC=0 || LC07_CREATE_RC=$?
 
