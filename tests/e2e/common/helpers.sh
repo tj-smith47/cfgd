@@ -172,14 +172,18 @@ stop_heartbeat() {
 # reclaim_stale_install <owner namespace>: the PR install in <owner namespace>
 # holds what this run's install needs. When its run's heartbeat is at least
 # HEARTBEAT_STALE_SECONDS old, that run is dead, so its install is removed with
-# pr-install-down.sh under its own run id and this returns 0. A fresh, missing
-# or unreadable heartbeat, or a namespace without a run label, returns 1 after
-# naming the owner.
+# pr-install-down.sh under its own run id and this returns 0. A fresh, future,
+# missing or unreadable heartbeat, a namespace without a run label, or one gone
+# by the time it is read, returns 1 after naming the owner.
 reclaim_stale_install() {
     local owner_ns="$1" meta owner_run heartbeat age
-    if ! meta=$(kubectl get namespace "$owner_ns" \
+    if ! meta=$(kubectl get namespace "$owner_ns" --ignore-not-found \
         -o jsonpath='{.metadata.labels.cfgd\.io/e2e-run}|{.metadata.annotations.cfgd\.io/heartbeat}'); then
         echo "ERROR: could not read the run label and heartbeat of namespace $owner_ns, which holds the PR install. Check that the runner can get namespaces, then rerun setup." >&2
+        return 1
+    fi
+    if [ -z "$meta" ]; then
+        echo "ERROR: namespace $owner_ns, which held the PR install, finished deleting while setup read it; rerun setup." >&2
         return 1
     fi
     IFS='|' read -r owner_run heartbeat <<<"$meta"
@@ -197,7 +201,15 @@ reclaim_stale_install() {
         } >&2
         return 1
     fi
-    age=$(($(date -u +%s) - heartbeat))
+    # 10# keeps a leading zero from reading as octal.
+    age=$(($(date -u +%s) - 10#$heartbeat))
+    if [ "$age" -lt 0 ]; then
+        {
+            echo "ERROR: the PR install belongs to run $owner_run in $owner_ns, whose heartbeat is $((-age))s in the future (clock skew?), so setup takes that run as alive; one PR install runs at a time."
+            echo "  Rerun setup once that run has finished, or once its heartbeat is ${HEARTBEAT_STALE_SECONDS}s old and setup removes its install."
+        } >&2
+        return 1
+    fi
     if [ "$age" -lt "$HEARTBEAT_STALE_SECONDS" ]; then
         {
             echo "ERROR: the PR install belongs to run $owner_run in $owner_ns, whose heartbeat is ${age}s old (under ${HEARTBEAT_STALE_SECONDS}s); one PR install runs at a time."

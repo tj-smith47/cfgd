@@ -4,7 +4,8 @@ The suites under `tests/e2e/` run against a real Kubernetes cluster. `task e2e:s
 (`setup-cluster.sh`) builds and pushes the images, then deploys what the suites need;
 each `task e2e:<suite>` target runs one suite. `task e2e:pr-install:down`
 (`pr-install-down.sh`) removes what setup installed for the run, and `task e2e` runs it
-last whatever setup's and the suites' result. The full-stack suite also needs `cosign`
+last whatever setup's and the suites' result. `task e2e:heartbeat:age`
+(`age-heartbeat.sh`) makes the run read as dead to the next setup (see The PR install). The full-stack suite also needs `cosign`
 on PATH, and its setup stops without it.
 
 ## Environment
@@ -96,9 +97,12 @@ still clears their finalizers, then uninstalls `$E2E_INSTALL_RELEASE` and delete
 `$E2E_INSTALL_NS` without waiting. It then reads back that `$CSI_DRIVER_NAME` no longer
 belongs to the install and that both webhook configurations are gone, and prints the
 namespace's phase. A release that is not installed counts as removed when its namespace
-is still there. When neither exists (a namespace already Terminating counts as gone),
-it prints the release, namespace and run id it looked for and exits 1 without touching
-anything; `GITHUB_RUN_ID=<run id> bash
+is still there. It first looks for every object it removes or reads back: the release,
+the namespace (one already Terminating counts as gone), every object labelled
+`$E2E_RUN_LABEL`, cluster-scoped ones included, both webhook configurations, the
+Function, the Composition and a CSIDriver the install still owns. A rerun after a partly
+failed teardown removes what is left. When none is left, it prints what it looked for
+and exits 1 without touching anything; `GITHUB_RUN_ID=<run id> bash
 tests/e2e/pr-install-down.sh` removes another run's install. Every step runs when one
 before it fails, and the script exits 1 naming each failed step.
 
@@ -107,7 +111,17 @@ setup finds another run's install, it reads that namespace's `cfgd.io/e2e-run` l
 and `cfgd.io/heartbeat`. A heartbeat `HEARTBEAT_STALE_SECONDS` (900, the janitor's value)
 or more old means that run is dead, and `reclaim_stale_install` removes its install with
 `GITHUB_RUN_ID=<owner> pr-install-down.sh` before setup continues. A fresher heartbeat
-stops setup, naming the owner and the heartbeat's age.
+stops setup, naming the owner and the heartbeat's age. `task e2e:heartbeat:age`
+(`age-heartbeat.sh`) sets the current run's heartbeat on every namespace it labels to
+`HEARTBEAT_STALE_SECONDS` ago, which makes that run's install one the next setup takes
+over:
+
+```bash
+task e2e:setup                           # run local-<sha>
+task e2e:heartbeat:age                   # local-<sha> now reads as dead
+GITHUB_RUN_ID=other task e2e:setup       # removes local-<sha>'s install, installs other's
+GITHUB_RUN_ID=other task e2e:pr-install:down
+```
 `test-pr-install.sh` runs it against the stubs in `common/fixtures/pr-install-down/bin/`.
 
 The operator suite runs against the PR install: its pods, Deployment, leader lease

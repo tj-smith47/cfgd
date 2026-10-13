@@ -56,6 +56,9 @@
 #     Terminating namespace counting as gone
 #   - a local run id is the one setup recorded, setup mints a fresh one from
 #     HEAD, and GITHUB_RUN_ID wins over both
+#   - pr-install-down.sh removes what a partly failed teardown left, a lone
+#     cluster-scoped object included, and names the record path a local run
+#     without one looked in; age-heartbeat.sh ages the run's heartbeat
 #   - reclaim_stale_install removes an install whose run's heartbeat is
 #     HEARTBEAT_STALE_SECONDS old through a pr-install-down.sh that names every
 #     object from that run's id and leaves the caller's scratch root alone, and
@@ -3324,8 +3327,13 @@ down_case() {
         bash "$e2e_root/pr-install-down.sh" </dev/null 2>&1 || rc=$?
     echo "rc=$rc"
 }
+down_labelled="get machineconfigs,configpolicies,driftalerts,backuppolicies,clusterconfigpolicies,modules,teamconfigs,composition,function -A -l cfgd.io/e2e-run=42 -o name"
+down_named="get validatingwebhookconfiguration/cfgd-e2e-42 mutatingwebhookconfiguration/cfgd-e2e-42-pod-injector function/function-cfgd-42 composition/teamconfig-to-machineconfigs-42 --ignore-not-found -o name"
 down_reads="kubectl get namespace cfgd-e2e-42-sys --ignore-not-found -o jsonpath={.status.phase}
-helm list -n cfgd-e2e-42-sys -a -q --filter ^cfgd-e2e-42\$"
+helm list -n cfgd-e2e-42-sys -a -q --filter ^cfgd-e2e-42\$
+kubectl $down_labelled
+kubectl $down_named
+kubectl get csidriver e2e.csi.cfgd.io --ignore-not-found -o jsonpath={.metadata.annotations.meta\\.helm\\.sh/release-namespace}"
 down_objects="$down_reads
 kubectl delete machineconfigs,configpolicies,driftalerts,backuppolicies -A -l cfgd.io/e2e-run=42 --wait=true --timeout=90s
 kubectl delete clusterconfigpolicies,modules -A -l cfgd.io/e2e-run=42 --wait=true --timeout=90s
@@ -3387,12 +3395,30 @@ expect_down "pr-install-down.sh treats a release that is not installed as remove
     0 "$down_objects
 $down_rest" "^  release cfgd-e2e-42 is not installed in cfgd-e2e-42-sys; nothing to uninstall$" \
     DOWN_RELEASE=absent
-expect_down "pr-install-down.sh exits 1 naming the release, namespace and run id it looked for when it finds neither, and touches nothing" \
-    1 "$down_reads" "^ERROR: no PR install to remove: no Helm release cfgd-e2e-42 and namespace cfgd-e2e-42-sys absent for run 42 (from GITHUB_RUN_ID)\.$" \
+expect_down "pr-install-down.sh exits 1 naming every object and the run id it looked for when none is left, and touches nothing" \
+    1 "$down_reads" "^ERROR: no PR install to remove for run 42 (from GITHUB_RUN_ID): no Helm release cfgd-e2e-42, namespace cfgd-e2e-42-sys absent, no object labelled cfgd.io/e2e-run=42, no webhook configuration cfgd-e2e-42 or cfgd-e2e-42-pod-injector, no function/function-cfgd-42 or composition/teamconfig-to-machineconfigs-42, and csidriver/e2e.csi.cfgd.io is not this install's\.$" \
     DOWN_RELEASE=absent DOWN_NAMESPACE=absent
 expect_down "pr-install-down.sh exits 1 when an earlier teardown left only a Terminating namespace" \
-    1 "$down_reads" "^ERROR: no PR install to remove: no Helm release cfgd-e2e-42 and namespace cfgd-e2e-42-sys Terminating for run 42" \
+    1 "$down_reads" "^ERROR: no PR install to remove for run 42 (from GITHUB_RUN_ID): no Helm release cfgd-e2e-42, namespace cfgd-e2e-42-sys Terminating," \
     DOWN_RELEASE=absent DOWN_NAMESPACE=Terminating
+expect_down "pr-install-down.sh reruns after a partly failed teardown that left only a run-labelled cluster-scoped Function, deletes it and exits 0" \
+    0 "$down_objects
+$down_rest" "^Removed the PR install cfgd-e2e-42$" \
+    DOWN_RELEASE=absent DOWN_NAMESPACE=Terminating "DOWN_PRINT=$down_labelled" "DOWN_PRINT_OUT=function.pkg.crossplane.io/function-cfgd-42"
+expect_down "pr-install-down.sh reruns when only the run's webhook configuration is left and exits 0 once the read-back finds it gone" \
+    0 "$down_objects
+$down_rest" "^Removed the PR install cfgd-e2e-42$" \
+    DOWN_RELEASE=absent DOWN_NAMESPACE=absent "DOWN_PRINT=$down_named" "DOWN_PRINT_OUT=validatingwebhookconfiguration.admissionregistration.k8s.io/cfgd-e2e-42"
+# A local teardown with no setup record names the file it looked in.
+missing_record_out="$(env -u GITHUB_RUN_ID -u CFGD_NAMESPACE PATH="$down_bin:$PATH" DOWN_LOG="$scratch/down.calls" \
+    REGISTRY=r.example CLI_SCRATCH="$scratch" E2E_LOCAL_RUN_ID_FILE="$scratch/no-such-record" DOWN_RELEASE=absent DOWN_NAMESPACE=absent \
+    bash "$e2e_root/pr-install-down.sh" </dev/null 2>&1)" && missing_record_rc=0 || missing_record_rc=$?
+if [ "$missing_record_rc" = 1 ] &&
+    grep -qF "for run local-$sha (from HEAD; no setup record in $scratch/no-such-record)" <<<"$missing_record_out"; then
+    pass "pr-install-down.sh with no setup record names the record path it looked in"
+else
+    fail "pr-install-down.sh with no setup record: rc=$missing_record_rc, output [$missing_record_out], want rc=1 and the run local-$sha from HEAD with the path $scratch/no-such-record"
+fi
 expect_down "pr-install-down.sh uninstalls a release whose namespace lookup finds nothing" \
     0 "$down_objects
 $down_uninstall
@@ -3417,8 +3443,8 @@ $down_rest" "^ERROR: the PR install teardown failed at: find release$" \
 # install is removed by a child pr-install-down.sh that names every object from
 # the owner's run id alone and leaves this process's scratch root in place.
 # reclaim_case <label|heartbeat> [VAR=value...] prints the output, then
-# `rc=<status>`.
-reclaim_get="kubectl get namespace cfgd-e2e-7-sys -o jsonpath={.metadata.labels.cfgd\\.io/e2e-run}|{.metadata.annotations.cfgd\\.io/heartbeat}"
+# `rc=<status>`, or `rc=aborted with <status>` when the shell itself died.
+reclaim_get="kubectl get namespace cfgd-e2e-7-sys --ignore-not-found -o jsonpath={.metadata.labels.cfgd\\.io/e2e-run}|{.metadata.annotations.cfgd\\.io/heartbeat}"
 reclaim_case() {
     local meta="$1"
     shift
@@ -3426,7 +3452,7 @@ reclaim_case() {
     mkdir -p "$scratch/owned"
     in_helpers 'reclaim_stale_install cfgd-e2e-7-sys && echo rc=0 || echo "rc=$?"' \
         GITHUB_RUN_ID=42 PATH="$down_bin:$PATH" DOWN_LOG="$scratch/down.calls" E2E_SCRATCH_OWNED="$scratch/owned" \
-        "DOWN_PRINT=get namespace cfgd-e2e-7-sys -o jsonpath=*" "DOWN_PRINT_OUT=$meta" "$@" 2>&1
+        "DOWN_PRINT=get namespace cfgd-e2e-7-sys --ignore-not-found -o jsonpath={.metadata*" "DOWN_PRINT_OUT=$meta" "$@" 2>&1 || echo "rc=aborted with $?"
 }
 # expect_reclaim <label> <owner meta> <want rc> <want calls> <want output pattern> [VAR=value...]
 expect_reclaim() {
@@ -3448,7 +3474,9 @@ down_7="${down_7//42/7}"
 expect_reclaim "reclaim_stale_install removes a run whose heartbeat is HEARTBEAT_STALE_SECONDS old through pr-install-down.sh under that run's id" \
     "7|$((now - 900))" 0 "$reclaim_get
 $down_7" "^Removed the PR install cfgd-e2e-7$"
-if grep -q 42 "$scratch/down.calls"; then
+if [ ! -s "$scratch/down.calls" ]; then
+    fail "the child pr-install-down.sh check saw no calls at all"
+elif grep -q 42 "$scratch/down.calls"; then
     fail "the child pr-install-down.sh named this run (42) in: $(grep 42 "$scratch/down.calls" | paste -sd ';')"
 else
     pass "the child pr-install-down.sh names no object of the run that called it"
@@ -3459,10 +3487,41 @@ expect_reclaim "reclaim_stale_install refuses an owner namespace without a run l
     "|1" 1 "$reclaim_get" "^ERROR: namespace cfgd-e2e-7-sys holds the PR install and carries no cfgd.io/e2e-run label"
 expect_reclaim "reclaim_stale_install refuses an owner without a readable heartbeat" \
     "7|" 1 "$reclaim_get" "^ERROR: the PR install of run 7 in cfgd-e2e-7-sys has no readable cfgd.io/heartbeat"
+expect_reclaim "reclaim_stale_install reads a heartbeat with a leading zero as decimal and removes that stale run" \
+    "7|0900" 0 "$reclaim_get
+$down_7" "^Removed the PR install cfgd-e2e-7$"
+expect_reclaim "reclaim_stale_install refuses a heartbeat in the future, naming the clock skew" \
+    "7|$((now + 300))" 1 "$reclaim_get" "^ERROR: the PR install belongs to run 7 in cfgd-e2e-7-sys, whose heartbeat is [0-9]*s in the future (clock skew?)"
+expect_reclaim "reclaim_stale_install exits 1 when the owner namespace is gone by the time it reads it" \
+    "" 1 "$reclaim_get" "^ERROR: namespace cfgd-e2e-7-sys, which held the PR install, finished deleting while setup read it; rerun setup\.$"
 expect_reclaim "reclaim_stale_install exits 1 when the removal fails" \
     "7|1" 1 "$reclaim_get
 ${down_reads//42/7}" "^ERROR: could not remove the PR install of dead run 7" \
     DOWN_RELEASE=absent DOWN_NAMESPACE=absent
+# age-heartbeat.sh sets the run's heartbeat to HEARTBEAT_STALE_SECONDS ago on
+# every namespace the run labels, and stops when none carries the label.
+age_case() {
+    : > "$scratch/down.calls"
+    env -u GITHUB_RUN_ID -u CFGD_NAMESPACE PATH="$down_bin:$PATH" GITHUB_RUN_ID=42 \
+        DOWN_LOG="$scratch/down.calls" REGISTRY=r.example CLI_SCRATCH="$scratch" "$@" \
+        bash "$e2e_root/age-heartbeat.sh" </dev/null 2>&1 && echo rc=0 || echo "rc=$?"
+}
+before="$(date -u +%s)"
+age_out="$(age_case "DOWN_PRINT=get namespaces -l cfgd.io/e2e-run=42 -o name" "DOWN_PRINT_OUT=namespace/cfgd-e2e-42-sys")"
+after="$(date -u +%s)"
+aged="$(sed -n 's/^kubectl annotate namespace -l cfgd.io\/e2e-run=42 cfgd.io\/heartbeat=\([0-9]*\) --overwrite$/\1/p' "$scratch/down.calls")"
+if grep -qx 'rc=0' <<<"$age_out" && [ -n "$aged" ] && [ "$aged" -ge $((before - 900)) ] && [ "$aged" -le $((after - 900)) ]; then
+    pass "age-heartbeat.sh sets the run's heartbeat to 900s ago on every namespace it labels"
+else
+    fail "age-heartbeat.sh: got [$age_out] with calls [$(cat "$scratch/down.calls")], want rc=0 and an annotate to between $((before - 900)) and $((after - 900))"
+fi
+age_out="$(age_case)"
+if grep -qx 'rc=1' <<<"$age_out" && grep -q '^ERROR: no namespace carries cfgd.io/e2e-run=42' <<<"$age_out" &&
+    ! grep -q annotate "$scratch/down.calls"; then
+    pass "age-heartbeat.sh stops when no namespace carries the run label, annotating nothing"
+else
+    fail "age-heartbeat.sh with no labelled namespace: got [$age_out] with calls [$(cat "$scratch/down.calls")]"
+fi
 # Every cfgd.io kind the cluster serves can hold a run-labelled object, so the
 # teardown's delete lists name each plural schemas/crds.yaml and the TeamConfig
 # XRD declare.
