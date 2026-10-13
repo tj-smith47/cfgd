@@ -16,7 +16,7 @@ def text:
   elif has("Parts") then [.Parts[]? | text] | join("")
   else "" end;
 
-# A heredoc body is data handed to a command, never words of the command.
+# A heredoc body is data the command receives on stdin, so its text is skipped.
 def redir_words: [.Redirs[]? | .Word | text];
 
 def stage_words:
