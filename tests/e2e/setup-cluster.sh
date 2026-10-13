@@ -257,26 +257,6 @@ echo "  All pre-flight checks passed"
 # single `cargo build` pass; the `crds` stage exposes just the gen-crds
 # binary. Buildx extracts it into the local filesystem, which populates the
 # layer cache that the subsequent runtime build reuses (no second compile).
-# Registry-backed buildx cache flags for one image scope, or nothing when
-# caching is disabled (local runs). Emitted onto a buildx arg array via mapfile.
-# `type=registry` (a `:buildcache` tag beside the image in ghcr) replaces
-# `type=gha`: GitHub's Actions cache is a 10GB/repo LRU pool, and three
-# mode=max image caches evict one another between runs, so every push
-# recompiled the cargo-chef dependency layer from cold and overran the setup
-# timeout. The registry cache has no LRU eviction, so an unchanged dependency
-# layer restores across runs and the build stays warm.
-buildcache_args() {
-    [ "${SCCACHE_GHA_ENABLED:-}" = "true" ] || return 0
-    local ref
-    ref="$(e2e_image_repo "$1"):buildcache"
-    # ignore-error: the cache export is an optimization, and a registry-side
-    # blob rejection during it aborts an otherwise-successful build, which
-    # fails setup, which cascades every E2E suite to "skipped" without a
-    # single test having run. A cold next build is the correct penalty.
-    printf '%s\n' "--cache-from" "type=registry,ref=${ref}" \
-                  "--cache-to" "type=registry,ref=${ref},mode=max,ignore-error=true"
-}
-
 echo "Extracting cfgd-gen-crds from Dockerfile.operator..."
 mkdir -p "$REPO_ROOT/target/release"
 crds_args=(buildx build --target crds
@@ -409,13 +389,21 @@ use_overridden_image() {
     local ref source
     ref="$(e2e_image "$1")"
     if e2e_image_copied_from_release "$1"; then
-        source="$(e2e_release_image "$1")"
+        source="$(e2e_image_repo --release "$1"):$(e2e_image_tag "$1")"
         if ! docker manifest inspect "$source" >/dev/null 2>&1; then
             echo "ERROR: $source is not in the registry. Its tag comes from an override, so setup copies it as it is and never builds it." >&2
             exit 1
         fi
-        echo "  COPY ${1}: $source -> $ref (Crossplane installs one Function per package repository, and ArgoCD's installs from $(dirname "$source"))"
+        echo "  COPY ${1}: $source -> $ref (Crossplane installs one Function per package repository, and the release repository is the one ArgoCD's Function installs from)"
         e2e_push copy "$ref" "$source"
+        local want got
+        want="$(docker buildx imagetools inspect --format '{{.Manifest.Digest}}' "$source")"
+        got="$(docker buildx imagetools inspect --format '{{.Manifest.Digest}}' "$ref")"
+        if [ -z "$want" ] || [ "$want" != "$got" ]; then
+            echo "ERROR: the copy of $source at $ref has digest '${got}', want '${want}'" >&2
+            exit 1
+        fi
+        echo "  COPY ${1}: $ref carries $source's digest $want"
     fi
     if ! docker manifest inspect "$ref" >/dev/null 2>&1; then
         echo "ERROR: $ref is not in the registry. Its tag comes from an override, so setup uses it as it is and never builds it." >&2

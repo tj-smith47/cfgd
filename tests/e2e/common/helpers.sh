@@ -25,7 +25,7 @@ NC='\033[0m'
 
 # --- Pod helpers (replaces KIND node helpers) ---
 
-REGISTRY="${REGISTRY:?E2E_REGISTRY must be set (e.g. export REGISTRY=your.registry.io)}"
+REGISTRY="${REGISTRY:?REGISTRY must be set (e.g. export REGISTRY=your.registry.io)}"
 IMAGE_TAG="${IMAGE_TAG:-e2e-$(git -C "$REPO_ROOT" rev-parse --short HEAD 2>/dev/null || echo latest)}"
 
 # Each crate releases at its own version and its image is tagged with it, so
@@ -84,21 +84,21 @@ e2e_image_copied_from_release() {
 # their scratch artifacts. RELEASE_REGISTRY, when set, is where an image whose
 # tag is overridden is pulled from, so a released set is tested where it was
 # published while nothing the run writes leaves REGISTRY.
+# `e2e_image_repo --release <image>` names the image's repository under
+# RELEASE_REGISTRY, the source setup copies function-cfgd from.
 e2e_image_repo() {
-    local var registry="$REGISTRY"
+    local var registry="$REGISTRY" release=false
+    if [ "$1" = --release ]; then
+        release=true
+        shift
+    fi
     var="$(e2e_image_override_var "$1")" || return 1
-    if [ -n "${RELEASE_REGISTRY:-}" ] && [ -n "${!var:-}" ] && ! e2e_image_copied_from_release "$1"; then
+    if [ "$release" = true ]; then
+        registry="${RELEASE_REGISTRY:?RELEASE_REGISTRY is not set}"
+    elif [ -n "${RELEASE_REGISTRY:-}" ] && [ -n "${!var:-}" ] && ! e2e_image_copied_from_release "$1"; then
         registry="$RELEASE_REGISTRY"
     fi
     printf '%s/%s\n' "$registry" "$1"
-}
-
-# The released reference setup copies an image from when
-# e2e_image_copied_from_release holds for it.
-e2e_release_image() {
-    local tag
-    tag="$(e2e_image_tag "$1")" || return 1
-    printf '%s/%s:%s\n' "${RELEASE_REGISTRY:?RELEASE_REGISTRY is not set}" "$1" "$tag"
 }
 
 e2e_image() {
@@ -111,6 +111,28 @@ e2e_image() {
 # REGISTRY's cfgd-e2e path.
 e2e_scratch_ref() {
     printf '%s/cfgd-e2e/%s\n' "$REGISTRY" "$1"
+}
+
+# Registry-backed buildx cache flags for one image scope, or nothing when
+# caching is disabled (local runs). Emitted onto a buildx arg array via mapfile.
+# `type=registry` (a `:buildcache` tag under REGISTRY) replaces
+# `type=gha`: GitHub's Actions cache is a 10GB/repo LRU pool, and three
+# mode=max image caches evict one another between runs, so every push
+# recompiled the cargo-chef dependency layer from cold and overran the setup
+# timeout. The registry cache has no LRU eviction, so an unchanged dependency
+# layer restores across runs and the build stays warm.
+buildcache_args() {
+    [ "${SCCACHE_GHA_ENABLED:-}" = "true" ] || return 0
+    local ref
+    # The cache is a scratch artifact the run writes, so it is composed under
+    # REGISTRY whatever registry the image itself comes from.
+    ref="$(e2e_scratch_ref "$1:buildcache")"
+    # ignore-error: the cache export is an optimization, and a registry-side
+    # blob rejection during it aborts an otherwise-successful build, which
+    # fails setup, which cascades every E2E suite to "skipped" without a
+    # single test having run. A cold next build is the correct penalty.
+    printf '%s\n' "--cache-from" "type=registry,ref=${ref}" \
+                  "--cache-to" "type=registry,ref=${ref},mode=max,ignore-error=true"
 }
 
 # Pushes <ref> with docker, the Crossplane CLI, or a registry-to-registry copy

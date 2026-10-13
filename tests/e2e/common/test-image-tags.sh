@@ -2,8 +2,8 @@
 # Checks the e2e image tag map in helpers.sh without a cluster: each image's
 # reference resolves to IMAGE_TAG unless its own override is set, an overridden
 # image comes from RELEASE_REGISTRY when that is set, every push stays on
-# REGISTRY, and no suite composes a registry reference or pushes outside the
-# helpers.
+# REGISTRY (the buildx cache included), and no suite composes a registry
+# reference or pushes outside the functions in helpers.sh that own it.
 #
 # Usage: tests/e2e/common/test-image-tags.sh
 set -euo pipefail
@@ -71,9 +71,9 @@ release="release.test/owner"
 # installs one Function per package repository and ArgoCD's holds the release one.
 for image in "${images[@]}"; do
     if [ "$image" = function-cfgd ]; then from="$registry"; else from="$release"; fi
-    expect "RELEASE_REGISTRY, overridden" "$image" "$from/$image:0.1.0" \
+    expect "RELEASE_REGISTRY set, image overridden" "$image" "$from/$image:0.1.0" \
         "RELEASE_REGISTRY=$release" "${override_of[$image]}=0.1.0"
-    expect "RELEASE_REGISTRY, not overridden" "$image" "$registry/$image:base" \
+    expect "RELEASE_REGISTRY set, image with no override" "$image" "$registry/$image:base" \
         "RELEASE_REGISTRY=$release"
     expect "RELEASE_REGISTRY empty, overridden" "$image" "$registry/$image:0.1.0" \
         "RELEASE_REGISTRY=" "${override_of[$image]}=0.1.0"
@@ -110,15 +110,41 @@ for image in "${images[@]}"; do
     if [ "$image" = function-cfgd ]; then want=copied; else want=pulled; fi
     check "with RELEASE_REGISTRY and the released set, $image is $want" "$got" "$want"
 done
-check "function-cfgd is copied from its released reference" \
-    "$(in_helpers e2e_release_image function-cfgd)" "$release/function-cfgd:v0.11.0"
+check "function-cfgd is copied from its repository under RELEASE_REGISTRY" \
+    "$(in_helpers e2e_image_repo --release function-cfgd)" "$release/function-cfgd"
 # shellcheck disable=SC2016 # the inner script expands its own positional args
-if out="$(env -u FUNCTION_IMAGE_TAG REGISTRY="$registry" CLI_SCRATCH="$scratch" RELEASE_REGISTRY="$release" \
-    bash -c 'source "$1/common/helpers.sh"; e2e_image_copied_from_release function-cfgd' _ "$e2e_root" 2>&1)"; then
-    check "function-cfgd with no override is not copied" "copied: $out" "pulled"
+if env REGISTRY="$registry" RELEASE_REGISTRY= CLI_SCRATCH="$scratch" \
+    bash -c 'source "$1/common/helpers.sh"; e2e_image_repo --release cfgd' _ "$e2e_root" >/dev/null 2>&1; then
+    got=composed
 else
-    check "function-cfgd with no override is not copied" pulled pulled
+    got=refused
 fi
+check "the release repository needs RELEASE_REGISTRY" "$got" refused
+
+# The same command with and without FUNCTION_IMAGE_TAG, so a failure that has
+# nothing to do with the override cannot pass for "not copied".
+# shellcheck disable=SC2016 # the inner script expands its own positional args
+copied_with() {
+    if env -u CFGD_IMAGE_TAG -u OPERATOR_IMAGE_TAG -u CSI_IMAGE_TAG -u FUNCTION_IMAGE_TAG \
+        REGISTRY="$registry" IMAGE_TAG=base CLI_SCRATCH="$scratch" RELEASE_REGISTRY="$release" "$@" \
+        bash -c 'source "$1/common/helpers.sh"; e2e_image_copied_from_release function-cfgd' _ "$e2e_root" >/dev/null 2>&1; then
+        echo copied
+    else
+        echo pulled
+    fi
+}
+check "function-cfgd with an override is copied" "$(copied_with FUNCTION_IMAGE_TAG=v1)" copied
+check "function-cfgd with no override is not copied" "$(copied_with)" pulled
+
+# The buildx cache is written by the run, so its ref is a scratch artifact on
+# REGISTRY for every image, a released one under RELEASE_REGISTRY included.
+for image in "${images[@]}"; do
+    check "buildcache refs for $image stay on REGISTRY" \
+        "$(SCCACHE_GHA_ENABLED=true in_helpers buildcache_args "$image" | grep -o 'ref=[^,]*' | sort -u)" \
+        "ref=$registry/cfgd-e2e/$image:buildcache"
+done
+check "buildcache flags are off without SCCACHE_GHA_ENABLED" \
+    "$(SCCACHE_GHA_ENABLED='' in_helpers buildcache_args cfgd)" ""
 
 # e2e_push hands a ref under REGISTRY to the tool and refuses any other one,
 # an overridden image's RELEASE_REGISTRY reference included, without running it.
@@ -217,16 +243,17 @@ fi
 
 # A reference composed by hand would ignore its override or push past the
 # REGISTRY guard, so the helpers are the only place IMAGE_TAG, RELEASE_REGISTRY,
-# a path under REGISTRY, a docker or xpkg push or an image copy may be spelled. grep exits 1
-# for no match and 2 for an error; an error must fail the check, since an empty
-# result would otherwise read as a clean tree.
+# a path under REGISTRY, a push (docker, xpkg, an image copy, buildx --push or
+# a --cache-to export) may be spelled. grep exits 1 for no match and 2 for an
+# error; an error must fail the check, since an empty result would otherwise
+# read as a clean tree.
 scan_strays() {
-    local out rc=0 line
+    local out rc=0 line helpers
     out="$(grep -rnE \
         --include='*.sh' --include='*.yaml' --include='*.yml' --include='*.tera' --include='*.json' \
         -e 'IMAGE_TAG|REGISTRY_PLACEHOLDER|RELEASE_REGISTRY' \
         -e '\$\{?REGISTRY[^}/"]*\}?"?/' \
-        -e '(docker|xpkg) push|imagetools create' \
+        -e '(docker|xpkg) push|imagetools create|--push([^-a-z]|$)|--cache-to|type=registry' \
         "$1" 2>&1)" || rc=$?
     if [ "$rc" -gt 1 ]; then
         printf 'grep exited %s: %s\n' "$rc" "$out" >&2
@@ -238,6 +265,41 @@ scan_strays() {
             *) printf '%s\n' "$line" ;;
         esac
     done <<<"$out"
+    while IFS= read -r helpers; do
+        scan_helpers "$helpers"
+    done < <(find "$1" -path '*/common/helpers.sh' -type f)
+}
+
+# helpers.sh is judged one function at a time: each spelling is allowed only in
+# the functions that own it, so a second composer or push added there is
+# reported like one in a suite. `-` is the file's top level, where IMAGE_TAG
+# gets its default. e2e_push may spell a path under REGISTRY only as the case
+# pattern its guard matches refs against: a match composes no reference, while
+# any other spelling of that path there would.
+scan_helpers() {
+    awk -v file="$1" '
+        function allowed(owners,    n, i, a) {
+            n = split(owners, a, " ")
+            for (i = 1; i <= n; i++) if (a[i] == fn) return 1
+            return 0
+        }
+        BEGIN { fn = "-" }
+        /^[A-Za-z_][A-Za-z_0-9]*\(\) \{/ { fn = $1; sub(/\(\).*/, "", fn) }
+        /^}/ { fn = "-"; next }
+        /^[[:space:]]*#/ { next }
+        {
+            bad = 0
+            if ($0 ~ /REGISTRY_PLACEHOLDER/) bad = 1
+            if ($0 ~ /RELEASE_REGISTRY/ && !allowed("e2e_image_repo e2e_image_copied_from_release")) bad = 1
+            if ($0 ~ /IMAGE_TAG/ && $0 !~ /RELEASE_REGISTRY/ && !allowed("- e2e_image_override_var e2e_image_tag")) bad = 1
+            if ($0 ~ /[$][{]?REGISTRY[^}\/"]*[}]?"?\// && !allowed("e2e_image_repo e2e_scratch_ref") \
+                && !(fn == "e2e_push" && $0 ~ /^[[:space:]]*"[$]REGISTRY"\/[*]\)/)) bad = 1
+            if ($0 ~ /%s\// && !allowed("e2e_image_repo e2e_scratch_ref")) bad = 1
+            if ($0 ~ /(docker|xpkg) push|imagetools create|--push([^-a-z]|$)/ && !allowed("e2e_push")) bad = 1
+            if ($0 ~ /--cache-to|type=registry/ && !allowed("buildcache_args")) bad = 1
+            if (bad) print file ":" NR ":" $0
+        }
+    ' "$1"
 }
 
 if stray="$(scan_strays "$e2e_root")"; then
@@ -271,6 +333,8 @@ declare -A stray_fixture=(
     [docker-push.sh]='docker push "$ref"'
     [xpkg-push.sh]='crossplane xpkg push "$ref" -f x.xpkg'
     [copy.sh]='docker buildx imagetools create --tag "$ref" "$src"'
+    [cache-to.sh]='docker buildx build --cache-to "type=registry,ref=$ref" .'
+    [buildx-push.sh]='docker buildx build --push -t "$ref" .'
 )
 for name in "${!stray_fixture[@]}"; do
     printf '%s\n' "${stray_fixture[$name]}" > "$fixtures/$name"
@@ -295,6 +359,42 @@ if found="$(scan_strays "$fixtures")"; then
 else
     echo "FAIL  the image reference scan could not read its fixtures"
     failures=$((failures + 1))
+fi
+
+# A helpers.sh is scanned per function: the composers and e2e_push keep their
+# spellings, and the same spellings in any other function are reported.
+mkdir -p "$fixtures/common"
+# shellcheck disable=SC2016 # the fixture holds the literal text helpers.sh would contain
+printf '%s\n' \
+    'e2e_image_repo() {' \
+    '    printf "%s/%s\n" "$RELEASE_REGISTRY" "$1"' \
+    '}' \
+    'e2e_push() {' \
+    '    case "$2" in' \
+    '        "$REGISTRY"/*) ;;' \
+    '    esac' \
+    '    docker push "$2" "$REGISTRY/extra:x"' \
+    '}' \
+    'buildcache_args() {' \
+    '    echo "--cache-to" "type=registry,ref=$(e2e_scratch_ref x)"' \
+    '}' \
+    'rogue_repo() {' \
+    '    printf "%s/%s\n" "$RELEASE_REGISTRY" "$1"' \
+    '}' \
+    'rogue_path() {' \
+    '    echo "$REGISTRY/cfgd:x"' \
+    '}' \
+    'rogue_push() {' \
+    '    docker push "$1"' \
+    '}' \
+    'rogue_cache() {' \
+    '    echo "--cache-to type=registry,ref=$1"' \
+    '}' >"$fixtures/common/helpers.sh"
+if found="$(scan_helpers "$fixtures/common/helpers.sh")"; then
+    check "helpers scan reports each rogue function, the path e2e_push composes, and no owner" \
+        "$(cut -d: -f2 <<<"$found" | tr '\n' ' ')" "8 14 17 20 23 "
+else
+    check "helpers scan runs" failed ran
 fi
 
 if scan_strays "$scratch/no-such-dir" >/dev/null 2>&1; then

@@ -42,13 +42,23 @@ no write access to the release registry.
 `RELEASE_REGISTRY`. Crossplane keeps one package per repository in its lock, and
 ArgoCD's `function-cfgd` Function already installs from the release repository, so
 setup copies the released package into `REGISTRY` unchanged
-(`docker buildx imagetools create`) and the run's Function installs the copy:
+(`docker buildx imagetools create`) and the run's Function installs the copy. Setup
+then compares the manifest digest of the source and the copy and stops, naming both,
+when they differ:
 
 ```bash
-  COPY function-cfgd: ghcr.io/tj-smith47/function-cfgd:v0.12.0 -> registry.jarvispro.io/function-cfgd:v0.12.0 (Crossplane installs one Function per package repository, and ArgoCD's installs from ghcr.io/tj-smith47)
+  COPY function-cfgd: ghcr.io/tj-smith47/function-cfgd:v0.12.0 -> registry.jarvispro.io/function-cfgd:v0.12.0 (Crossplane installs one Function per package repository, and the release repository is the one ArgoCD's Function installs from)
+#1 [internal] pushing registry.jarvispro.io/function-cfgd
+#1 0.000 copying sha256:c7f822de652d2b1b389cdc1f00315dd02531899aa6f5bdab08c630d0902ccf92 from ghcr.io/tj-smith47/function-cfgd:v0.12.0 to registry.jarvispro.io/function-cfgd
+#1 0.000 copying sha256:96ec9c0cec75e52a8cd7db09e9b6df8fc36b275340da8f0448f767cb1bcf2472 from ghcr.io/tj-smith47/function-cfgd:v0.12.0 to registry.jarvispro.io/function-cfgd
+#1 0.660 pushing sha256:5eef719e1bf813739274c53fd8746c38c36bc3f5b0903cd6c920582efc9d1847 to registry.jarvispro.io/function-cfgd:v0.12.0
+#1 DONE 0.7s
+  COPY function-cfgd: registry.jarvispro.io/function-cfgd:v0.12.0 carries ghcr.io/tj-smith47/function-cfgd:v0.12.0's digest sha256:5eef719e1bf813739274c53fd8746c38c36bc3f5b0903cd6c920582efc9d1847
 ```
 
-Every push goes through `e2e_push`, which refuses a reference outside `REGISTRY`.
+Every push goes through `e2e_push`, which refuses a reference outside `REGISTRY`. The
+buildx layer cache CI writes (`--cache-to`) is a scratch artifact too, at
+`$REGISTRY/cfgd-e2e/<image>:buildcache`.
 
 Every registry reference the scripts compose comes from the functions in
 `common/helpers.sh`. With the released set above:
@@ -56,6 +66,7 @@ Every registry reference the scripts compose comes from the functions in
 ```bash
 e2e_image cfgd-csi                    # ghcr.io/tj-smith47/cfgd-csi:0.8.0
 e2e_image_repo cfgd-csi               # ghcr.io/tj-smith47/cfgd-csi
+e2e_image_repo --release function-cfgd  # ghcr.io/tj-smith47/function-cfgd (the copy's source)
 e2e_image_tag cfgd-csi                # 0.8.0
 e2e_image function-cfgd               # registry.jarvispro.io/function-cfgd:v0.12.0 (the copy)
 e2e_scratch_ref "oci01:v1.0-$E2E_RUN_ID"  # $REGISTRY/cfgd-e2e/oci01:v1.0-<run id>
@@ -63,9 +74,17 @@ e2e_scratch_ref "oci01:v1.0-$E2E_RUN_ID"  # $REGISTRY/cfgd-e2e/oci01:v1.0-<run i
 
 `task e2e:tags:check` runs `common/test-image-tags.sh`, which needs no cluster: it
 resolves each image under every override, with and without `RELEASE_REGISTRY`,
-drives `e2e_push` against a stand-in docker and crossplane, and fails when a script
-under `tests/e2e/` spells `IMAGE_TAG`, `RELEASE_REGISTRY`, a path under `$REGISTRY`,
-a `docker push`, a `crossplane xpkg push` or an image copy itself.
+drives `e2e_push` against a stand-in docker and crossplane, checks that every
+buildcache ref is under `REGISTRY`, and fails when a script under `tests/e2e/` spells
+any of these itself:
+
+- `IMAGE_TAG`, `RELEASE_REGISTRY` or a path under `$REGISTRY`
+- a `docker push`, a `crossplane xpkg push` or an image copy
+- a `docker buildx build --push` or a `--cache-to` export
+
+`common/helpers.sh` is held to the same list one function at a time: only
+`e2e_image_repo` and `e2e_scratch_ref` compose a registry path, only `e2e_push` pushes,
+and only `buildcache_args` spells the cache export.
 
 ## The PR install
 
