@@ -798,6 +798,55 @@ wait_for_deployment() {
         -n "$namespace" --timeout="${timeout}s"
 }
 
+# restart_deployment <namespace> <name> [timeout_s, default 120]: roll the
+# Deployment so its pods pull what its image tag names now, and return 0 only
+# once the roll is observed done: `.status.observedGeneration` has reached
+# `.metadata.generation` and `.status.updatedReplicas` equals `.spec.replicas`.
+# A roll that does not finish in time gets the selector's pods deleted (an old
+# pod can hold a ReadWriteOnce volume the new one waits on) and one more wait.
+# Every failed step prints an ERROR naming it, with kubectl's own error left on
+# stderr, and returns 1. Available alone would pass on the old pods.
+restart_deployment() {
+    local namespace="$1" name="$2" timeout="${3:-120}" selector
+    if ! kubectl rollout restart "deployment/$name" -n "$namespace"; then
+        echo "ERROR: kubectl rollout restart deployment/$name in $namespace failed (kubectl's error is above), so its pods still run the image they pulled before." >&2
+        return 1
+    fi
+    if ! kubectl rollout status "deployment/$name" -n "$namespace" --timeout="${timeout}s"; then
+        echo "  Rollout of $name did not finish in ${timeout}s: deleting its pods to release a ReadWriteOnce volume..."
+        if ! selector="$(kubectl get deployment "$name" -n "$namespace" -o json |
+            jq -er '.spec.selector.matchLabels | to_entries | map("\(.key)=\(.value)") | join(",") | select(. != "")')"; then
+            echo "ERROR: could not read the matchLabels selector of deployment/$name in $namespace, so its stuck pods cannot be deleted." >&2
+            return 1
+        fi
+        if ! kubectl delete pods -n "$namespace" -l "$selector" --ignore-not-found --grace-period=5 --wait=false; then
+            echo "ERROR: could not delete the pods $selector in $namespace (kubectl's error is above), so the roll of $name stays stuck." >&2
+            return 1
+        fi
+        if ! kubectl rollout status "deployment/$name" -n "$namespace" --timeout="${timeout}s"; then
+            echo "ERROR: the roll of deployment/$name in $namespace did not finish in ${timeout}s after its pods were deleted. Read kubectl describe deployment/$name -n $namespace and its pods' events." >&2
+            return 1
+        fi
+    fi
+    deployment_rolled "$namespace" "$name"
+}
+
+# deployment_rolled <namespace> <name>: 0 when the Deployment controller has
+# observed the newest spec and every replica it asks for runs that template.
+# Otherwise prints an ERROR with the four numbers it read and returns 1.
+deployment_rolled() {
+    local namespace="$1" name="$2" deploy_json
+    if ! deploy_json="$(kubectl get deployment "$name" -n "$namespace" -o json)"; then
+        echo "ERROR: could not read deployment/$name in $namespace (kubectl's error is above)." >&2
+        return 1
+    fi
+    if ! jq -e '(.status.observedGeneration // 0) >= .metadata.generation
+        and (.status.updatedReplicas // 0) == (.spec.replicas // 1)' <<<"$deploy_json" >/dev/null; then
+        echo "ERROR: deployment/$name in $namespace has not rolled: $(jq -r '"generation \(.metadata.generation), observedGeneration \(.status.observedGeneration // "unset"), spec.replicas \(.spec.replicas // 1), updatedReplicas \(.status.updatedReplicas // 0)"' <<<"$deploy_json" 2>&1)." >&2
+        return 1
+    fi
+}
+
 wait_for_daemonset() {
     local namespace="$1"
     local name="$2"

@@ -706,13 +706,7 @@ elif [ -n "${CFGD_DEPLOY_MANIFESTS:-}" ] && [ -d "$CFGD_DEPLOY_MANIFESTS" ]; the
         echo "  cfgd-operator image unchanged: skipping operator rollout restart"
     elif kubectl get deployment cfgd-operator -n cfgd-system >/dev/null 2>&1; then
         echo "  Deployment applied from $CFGD_DEPLOY_MANIFESTS: restarting to pull :latest..."
-        kubectl rollout restart deployment/cfgd-operator -n cfgd-system 2>/dev/null || true
-        # Wait for old pods to terminate (handles RWO PVC conflicts)
-        kubectl rollout status deployment/cfgd-operator -n cfgd-system --timeout=120s 2>/dev/null || {
-            echo "  Rollout stuck for cfgd-operator: deleting old pods to release PVC..."
-            kubectl delete pods -n cfgd-system -l app=cfgd-operator --ignore-not-found --grace-period=5 --wait=false 2>/dev/null || true
-            kubectl rollout status deployment/cfgd-operator -n cfgd-system --timeout=120s 2>/dev/null || true
-        }
+        restart_deployment cfgd-system cfgd-operator 120 || exit 1
     fi
 else
     echo "  Applying E2E manifests..."
