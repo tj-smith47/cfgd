@@ -70,6 +70,9 @@
 #   - no e2e script picks one pod out of the operator pod list (an index, an
 #     unsorted slice or first), directly or from its captured JSON, since the
 #     PR install runs a leader and a standby
+#   - every e2e.yml job whose suite deletes operator pods runs after every
+#     job whose suite talks to the install's gateway, which runs in the leader
+#     pod
 # kubectl is a stub on PATH, so nothing reaches a cluster; the CRD check's stub
 # hands YAML reading to the real kubectl, which reads it offline.
 #
@@ -4073,6 +4076,137 @@ elif [ -z "$operator_items_found" ]; then
     pass "no e2e script picks one pod out of the operator pod list (${#operator_item_scripts[@]} scripts)"
 else
     fail "an e2e script picks one operator pod (an index, an unsorted slice or first), and the operator runs a leader and a standby; read every pod ({.items[*]...} or one line per pod) or the leader (operator_leader_pod): [$operator_items_found]"
+fi
+
+# OP-LC-03 deletes the operator leader, and the device gateway runs in the
+# leader pod, so a job that deletes operator pods runs after every job whose
+# suite talks to the install's gateway. job_order_problems <workflow>
+# <taskfile> <repo root> reads the job graph with job-graph.awk, follows each
+# job's `task e2e:*` target to the scripts it runs (a run-all.sh to the files
+# it sources beside it), and prints one line per pair the graph leaves
+# concurrent. It prints `NO_DELETER` or `NO_GATEWAY_JOB` when it finds no job
+# of that kind, so a parse that sees nothing cannot pass.
+# shellcheck disable=SC2016 # awk programs; the $ fields belong to awk
+job_order_problems() {
+    local workflow="$1" taskfile="$2" root="$3" graph
+    graph="$(awk -f "$here/job-graph.awk" "$workflow")" || { echo "UNREADABLE $workflow"; return 0; }
+    local -A job_needs=() job_scripts=()
+    local job needs tasks task script dir sourced
+    while IFS=$'\t' read -r job needs tasks; do
+        job_needs[$job]="$needs"
+        job_scripts[$job]=""
+        for task in $tasks; do
+            while IFS= read -r script; do
+                [ -n "$script" ] || continue
+                job_scripts[$job]+=" $script"
+                [ "${script##*/}" = run-all.sh ] || continue
+                dir="${script%/*}"
+                while IFS= read -r sourced; do
+                    job_scripts[$job]+=" $dir/$sourced"
+                done < <(sed -n 's|^[[:space:]]*source "\$SCRIPT_DIR/\([^/"]*\)".*|\1|p' "$root/$script")
+            done < <(awk -v target="  $task:" '
+                $0 == target { on = 1; next }
+                on && /^  [^ ]/ { on = 0 }
+                on && /^[ \t]+- bash[ \t]/ { sub(/^[ \t]+- bash[ \t]+/, ""); sub(/[ \t].*/, ""); print }
+            ' "$taskfile")
+        done
+    done <<<"$graph"
+
+    local -a deleters=() talkers=() scripts=()
+    local hit
+    for job in "${!job_scripts[@]}"; do
+        read -ra scripts <<<"${job_scripts[$job]}"
+        for script in "${scripts[@]}"; do
+            if [ ! -r "$root/$script" ]; then
+                echo "UNREADABLE $script (run by $job)"
+                continue
+            fi
+            hit="$(grep -nE '^[^#]*(kubectl|\$\{?KUBECTL\}?)[^|;&#]*(delete[[:space:]]+pods?|rollout[[:space:]]+restart)[^|;&#]*\$\{?E2E_(INSTALL_NS|OPERATOR_DEPLOY)' "$root/$script" | head -n1 | cut -d: -f1)" || true
+            [ -n "$hit" ] && deleters+=("$job $script:$hit")
+            grep -qE '^[^#]*E2E_GATEWAY_' "$root/$script" && talkers+=("$job")
+        done
+    done
+    [ "${#deleters[@]}" -gt 0 ] || echo "NO_DELETER"
+    [ "${#talkers[@]}" -gt 0 ] || echo "NO_GATEWAY_JOB"
+
+    local entry deleter where talker seen next n
+    local -a frontier=() unique_talkers=()
+    for entry in "${deleters[@]}"; do
+        deleter="${entry%% *}"
+        where="${entry#* }"
+        seen=" "
+        read -ra frontier <<<"${job_needs[$deleter]}"
+        while [ "${#frontier[@]}" -gt 0 ]; do
+            next=""
+            for n in "${frontier[@]}"; do
+                case "$seen" in *" $n "*) continue ;; esac
+                seen+="$n "
+                next+=" ${job_needs[$n]:-}"
+            done
+            read -ra frontier <<<"$next"
+        done
+        mapfile -t unique_talkers < <(printf '%s\n' "${talkers[@]}" | sort -u)
+        for talker in "${unique_talkers[@]}"; do
+            [ "$talker" = "$deleter" ] && continue
+            case "$seen" in *" $talker "*) ;; *) echo "$deleter deletes operator pods ($where) and does not run after $talker, which talks to the install's gateway" ;; esac
+        done
+    done | sort -u
+}
+
+workflow="$repo_root/.github/workflows/e2e.yml"
+taskfile="$repo_root/Taskfile.yml"
+job_order="$(job_order_problems "$workflow" "$taskfile" "$repo_root")"
+if [ -z "$job_order" ]; then
+    pass "every e2e job that deletes operator pods runs after every job that talks to the install's gateway"
+else
+    fail "e2e.yml lets a job delete operator pods while another talks to the install's gateway, which runs in the leader pod; add the gateway job to the deleting job's needs: [$job_order]"
+fi
+
+# The same check over copies of e2e.yml: the deleting job's needs dropped to
+# setup, written as a block list, and reaching node-tests only through
+# server-tests.
+mkdir -p "$scratch/job-graph"
+awk '
+    /^  operator-tests:/ { job = 1 }
+    /^  [A-Za-z0-9_-]+:[ \t]*$/ && !/^  operator-tests:/ { job = 0 }
+    job && /^    needs:/ { print "    needs: [setup]"; skip = 1; next }
+    skip && /^      / { next }
+    { skip = 0; print }
+' "$workflow" > "$scratch/job-graph/setup-only.yml"
+got="$(job_order_problems "$scratch/job-graph/setup-only.yml" "$taskfile" "$repo_root" | sed 's/ (.*) / /')"
+want="$(printf 'operator-tests deletes operator pods and does not run after %s, which talks to the install'"'"'s gateway\n' full-stack-tests gateway-tests helm-tests node-tests server-tests)"
+if [ "$got" = "$want" ]; then
+    pass "the job order check names each gateway job a pod-deleting job does not wait for"
+else
+    fail "the job order check over a pod-deleting job that needs only setup printed [$got], want [$want]"
+fi
+awk '
+    /^  operator-tests:/ { job = 1 }
+    /^  [A-Za-z0-9_-]+:[ \t]*$/ && !/^  operator-tests:/ { job = 0 }
+    job && /^    needs:/ { print "    needs:"; print "      - setup"; print "      - server-tests # node-tests through this one"; print "      - gateway-tests"; print "      - full-stack-tests"; print "      - helm-tests"; skip = 1; next }
+    skip && /^      / { next }
+    { skip = 0; print }
+' "$workflow" > "$scratch/job-graph/block-transitive.yml"
+got="$(job_order_problems "$scratch/job-graph/block-transitive.yml" "$taskfile" "$repo_root")"
+if [ -z "$got" ]; then
+    pass "the job order check reads a block needs list and follows needs through another job"
+else
+    fail "the job order check over a block needs list reaching node-tests through server-tests printed [$got]"
+fi
+sed '/^      - helm-tests$/d' "$scratch/job-graph/block-transitive.yml" > "$scratch/job-graph/block-missing.yml"
+got="$(job_order_problems "$scratch/job-graph/block-missing.yml" "$taskfile" "$repo_root" | sed 's/ (.*) / /')"
+want="operator-tests deletes operator pods and does not run after helm-tests, which talks to the install's gateway"
+if [ "$got" = "$want" ]; then
+    pass "the job order check names the one gateway job a block needs list leaves out"
+else
+    fail "the job order check over a block needs list without helm-tests printed [$got], want [$want]"
+fi
+printf 'jobs:\n  lone:\n    runs-on: x\n' > "$scratch/job-graph/empty.yml"
+got="$(job_order_problems "$scratch/job-graph/empty.yml" "$taskfile" "$repo_root")"
+if [ "$got" = "$(printf 'NO_DELETER\nNO_GATEWAY_JOB')" ]; then
+    pass "the job order check fails a workflow in which it finds no pod-deleting job and no gateway job"
+else
+    fail "the job order check over a workflow with no suite jobs printed [$got], want NO_DELETER and NO_GATEWAY_JOB"
 fi
 
 if [ "$failures" -gt 0 ]; then

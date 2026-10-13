@@ -359,6 +359,17 @@ single-source-of-truth wiring.
   next run's setup refuses it until its heartbeat is stale. The suite jobs keep
   `task e2e:<suite>`: a failed go-task install there fails that suite and
   leaves nothing behind.
+- A job in e2e.yml whose suite deletes operator pods runs after every job
+  whose suite talks to the PR install's device gateway, through its `needs:`
+  directly or through another job. The gateway runs in the operator leader
+  pod, so OP-LC-03's leader delete would otherwise break a gateway case
+  running beside it. `operator-tests` therefore needs `gateway-tests`,
+  `full-stack-tests`, `node-tests`, `server-tests` and `helm-tests`, and runs
+  whatever they concluded (`!cancelled()` with a successful setup).
+  `tests/e2e/common/test-pr-install.sh` (`task e2e:tags:check`) reads the job
+  graph with `tests/e2e/common/job-graph.awk`, follows each job's `task e2e:*`
+  target to its scripts, and fails on a deleting job that does not wait for a
+  gateway job.
 - Self-hosted runner labels for actionlint live in `.github/actionlint.yaml`.
 - Any job that `uses: ./.github/actions/...` MUST have a checkout step
   before it (the local action file only exists on the runner after

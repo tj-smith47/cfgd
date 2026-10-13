@@ -117,10 +117,23 @@ jobs:
         run: task e2e:node:server
 
   # ---------- Operator tests ----------
+  # OP-LC-03 deletes the operator leader, and the gateway runs in the leader
+  # pod, so this job waits for every job that talks to the install's gateway.
+  # It runs whatever those jobs concluded, since only a failed setup leaves
+  # nothing to test.
   operator-tests:
     name: "Operator Tests"
     runs-on: arc-cfgd
-    needs: [setup]
+    needs:
+      [
+        setup,
+        gateway-tests,
+        full-stack-tests,
+        node-tests,
+        server-tests,
+        helm-tests,
+      ]
+    if: ${{ !cancelled() && needs.setup.result == 'success' }}
     timeout-minutes: 20
     # test-oci.sh drives a real cfgd binary, so this job cargo-builds the
     # release cfgd through ensure_cfgd_binary instead of riding the setup job's
