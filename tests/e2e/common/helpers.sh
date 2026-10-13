@@ -82,9 +82,26 @@ e2e_image() {
     printf '%s:%s\n' "$(e2e_image_repo "$1")" "$tag"
 }
 E2E_NAMESPACE="${E2E_NAMESPACE:-cfgd-e2e-${GITHUB_RUN_ID:-$(date +%s)-$$}}"
-# A local run id comes from the checkout, so the setup process and each suite
-# process name the same PR install.
-E2E_RUN_ID="${GITHUB_RUN_ID:-local-$(git -C "$REPO_ROOT" rev-parse --short HEAD 2>/dev/null || echo dev)}"
+# A local run takes its id from HEAD when setup starts, and setup records it in
+# this git-ignored file. Every later process (each suite, the teardown) reads
+# it back, so a commit between setup and teardown still names the install setup
+# made. setup-cluster.sh sets E2E_NEW_LOCAL_RUN, unexported, to mint a fresh id.
+E2E_LOCAL_RUN_ID_FILE="${E2E_LOCAL_RUN_ID_FILE:-$REPO_ROOT/.cache/e2e/local-run-id}"
+if [ -n "${GITHUB_RUN_ID:-}" ]; then
+    E2E_RUN_ID="$GITHUB_RUN_ID"
+    E2E_RUN_ID_SOURCE="GITHUB_RUN_ID"
+elif [ -z "${E2E_NEW_LOCAL_RUN:-}" ] && [ -s "$E2E_LOCAL_RUN_ID_FILE" ]; then
+    E2E_RUN_ID="$(<"$E2E_LOCAL_RUN_ID_FILE")"
+    E2E_RUN_ID_SOURCE="recorded by setup in $E2E_LOCAL_RUN_ID_FILE"
+else
+    E2E_RUN_ID="local-$(git -C "$REPO_ROOT" rev-parse --short HEAD 2>/dev/null || echo dev)"
+    if [ -n "${E2E_NEW_LOCAL_RUN:-}" ]; then
+        E2E_RUN_ID_SOURCE="HEAD, recorded in $E2E_LOCAL_RUN_ID_FILE"
+    else
+        E2E_RUN_ID_SOURCE="HEAD; no setup record in $E2E_LOCAL_RUN_ID_FILE"
+    fi
+fi
+export E2E_RUN_ID_SOURCE
 E2E_RUN_LABEL="cfgd.io/e2e-run=$E2E_RUN_ID"
 # Job-specific label for cluster-scoped resources (prevents parallel job cleanup races)
 E2E_JOB_LABEL="cfgd.io/e2e-job=$E2E_NAMESPACE"
@@ -116,9 +133,14 @@ export E2E_RELEASE_MUTATING_WEBHOOK="cfgd-mutating-webhooks"
 
 TEST_POD=""
 
-# Heartbeat refresh interval. Must be well under the janitor's freshness window
-# (HEARTBEAT_STALE_SECONDS=900s in e2e-cleanup-cronjob.yaml) so that even a
-# missed beat or two never lets a live run's namespace look stale to the reaper.
+# A heartbeat this old means its run is dead. The janitor reaps by the same
+# value: HEARTBEAT_STALE_SECONDS in
+# /db/manifests/k3s/namespaces/cfgd-system/e2e-cleanup-cronjob.yaml.
+HEARTBEAT_STALE_SECONDS=900
+
+# Heartbeat refresh interval. Must be well under HEARTBEAT_STALE_SECONDS so
+# that even a missed beat or two never lets a live run's namespace look stale
+# to the reaper.
 HEARTBEAT_INTERVAL_SECONDS="${HEARTBEAT_INTERVAL_SECONDS:-120}"
 HEARTBEAT_PID=""
 
@@ -145,6 +167,52 @@ start_heartbeat() {
 stop_heartbeat() {
     [ -n "$HEARTBEAT_PID" ] && kill "$HEARTBEAT_PID" 2>/dev/null || true
     HEARTBEAT_PID=""
+}
+
+# reclaim_stale_install <owner namespace>: the PR install in <owner namespace>
+# holds what this run's install needs. When its run's heartbeat is at least
+# HEARTBEAT_STALE_SECONDS old, that run is dead, so its install is removed with
+# pr-install-down.sh under its own run id and this returns 0. A fresh, missing
+# or unreadable heartbeat, or a namespace without a run label, returns 1 after
+# naming the owner.
+reclaim_stale_install() {
+    local owner_ns="$1" meta owner_run heartbeat age
+    if ! meta=$(kubectl get namespace "$owner_ns" \
+        -o jsonpath='{.metadata.labels.cfgd\.io/e2e-run}|{.metadata.annotations.cfgd\.io/heartbeat}'); then
+        echo "ERROR: could not read the run label and heartbeat of namespace $owner_ns, which holds the PR install. Check that the runner can get namespaces, then rerun setup." >&2
+        return 1
+    fi
+    IFS='|' read -r owner_run heartbeat <<<"$meta"
+    if [ -z "$owner_run" ]; then
+        {
+            echo "ERROR: namespace $owner_ns holds the PR install and carries no cfgd.io/e2e-run label, so its run cannot be named."
+            echo "  Remove that install by hand (helm uninstall -n $owner_ns, then kubectl delete namespace $owner_ns) and rerun setup."
+        } >&2
+        return 1
+    fi
+    if ! [[ "$heartbeat" =~ ^[0-9]+$ ]]; then
+        {
+            echo "ERROR: the PR install of run $owner_run in $owner_ns has no readable cfgd.io/heartbeat ('$heartbeat'), so setup cannot tell whether that run is alive."
+            echo "  If it is dead, remove its install (GITHUB_RUN_ID=$owner_run bash tests/e2e/pr-install-down.sh) and rerun setup."
+        } >&2
+        return 1
+    fi
+    age=$(($(date -u +%s) - heartbeat))
+    if [ "$age" -lt "$HEARTBEAT_STALE_SECONDS" ]; then
+        {
+            echo "ERROR: the PR install belongs to run $owner_run in $owner_ns, whose heartbeat is ${age}s old (under ${HEARTBEAT_STALE_SECONDS}s); one PR install runs at a time."
+            echo "  Rerun setup once that run has finished, or once its heartbeat is ${HEARTBEAT_STALE_SECONDS}s old and setup removes its install."
+        } >&2
+        return 1
+    fi
+    echo "  run $owner_run's heartbeat in $owner_ns is ${age}s old (${HEARTBEAT_STALE_SECONDS}s or more), so that run is dead; removing its PR install"
+    # The child sources helpers.sh afresh, so every run-derived name comes from
+    # the GITHUB_RUN_ID given here. Its EXIT trap removes the scratch root named
+    # in E2E_SCRATCH_OWNED, which is this process's own, so it is unset.
+    if ! env -u E2E_SCRATCH_OWNED GITHUB_RUN_ID="$owner_run" bash "$E2E_ROOT/pr-install-down.sh"; then
+        echo "ERROR: could not remove the PR install of dead run $owner_run. Read the teardown's errors above, then rerun setup." >&2
+        return 1
+    fi
 }
 
 # Deploy the privileged test pod and wait for it to be Running.

@@ -263,7 +263,13 @@ upgrade or array that does not.
 (the `e2e-teardown` job in e2e.yml, the `defer` in `task e2e`): the run-labelled
 cfgd.io objects first, while the run's operator can still clear their finalizers,
 then the Helm release, then `$E2E_INSTALL_NS`, with each step run after a failed
-one and the script exiting 1 at the end. Its delete lists name every plural
+one and the script exiting 1 at the end. It exits 1 naming what it looked for when
+neither the release nor the namespace exists. CI runs it with `bash`, never through
+go-task, since a tool install that fails there leaks the install. A local run id is
+recorded by setup in `.cache/e2e/local-run-id` and read back by every later process.
+Setup removes another run's install through `reclaim_stale_install` once that run's
+heartbeat is `HEARTBEAT_STALE_SECONDS` old (one constant in `helpers.sh`, equal to the
+janitor's), and refuses while it is fresher. Its delete lists name every plural
 `schemas/crds.yaml` declares; `test-pr-install.sh` drives it against stub kubectl
 and helm and fails when a CRD's plural is missing from them.
 The Crossplane suite writes nothing ArgoCD tracks in `crossplane-system`: it checks

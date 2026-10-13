@@ -2,7 +2,8 @@
 # Records each call in $DOWN_LOG and exits 1 on one whose arguments match a
 # glob in $DOWN_FAIL (patterns separated by |). A call whose arguments match
 # the glob $DOWN_PRINT prints $DOWN_PRINT_OUT, as for objects still there;
-# every other get prints nothing, as for objects that are gone.
+# every other get prints nothing, as for objects that are gone, except that a
+# namespace lookup by name finds it unless $DOWN_NAMESPACE is absent.
 echo "kubectl $*" >> "$DOWN_LOG"
 IFS='|' read -ra fail_patterns <<<"${DOWN_FAIL:-}"
 for pattern in "${fail_patterns[@]}"; do
@@ -12,5 +13,8 @@ done
 # shellcheck disable=SC2053 # the pattern is meant to glob
 if [ -n "${DOWN_PRINT:-}" ] && [[ "$*" == $DOWN_PRINT ]]; then
     printf '%s\n' "$DOWN_PRINT_OUT"
+fi
+if [[ "$*" == "get namespace "*" --ignore-not-found -o name" ]] && [ "${DOWN_NAMESPACE:-}" != absent ]; then
+    echo "namespace/$3"
 fi
 exit 0

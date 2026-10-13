@@ -50,9 +50,12 @@ spells `IMAGE_TAG` or a first-party image reference itself.
 
 Each run installs its own operator and CSI driver beside the live release, using
 `manifests/pr-install-values.yaml`. Every name it uses comes from the run id in
-`common/helpers.sh`. The run id is `GITHUB_RUN_ID` in CI and `local-<short HEAD sha>`
-on a workstation, so the setup process and every suite process of one checkout
-agree on it. For run 42:
+`common/helpers.sh`. The run id is `GITHUB_RUN_ID` in CI. On a workstation, setup takes
+`local-<short HEAD sha>` and, once no other run's install stands in its way, records it
+in `.cache/e2e/local-run-id` (git-ignored), and
+every later suite and teardown process reads it back, so a commit between setup and
+teardown still names the install setup made. Setup prints the run id and where it came
+from. For run 42:
 
 ```bash
 E2E_INSTALL_RELEASE     # cfgd-e2e-42 (the Helm release)
@@ -92,8 +95,18 @@ ClusterConfigPolicies and Modules (`-l "$E2E_RUN_LABEL"`) while the run's operat
 still clears their finalizers, then uninstalls `$E2E_INSTALL_RELEASE` and deletes
 `$E2E_INSTALL_NS` without waiting. It then reads back that `$CSI_DRIVER_NAME` no longer
 belongs to the install and that both webhook configurations are gone, and prints the
-namespace's phase. A release that is not installed counts as removed. Every step runs
-when one before it fails, and the script exits 1 naming each failed step.
+namespace's phase. A release that is not installed counts as removed when its namespace
+is still there. When neither exists, it prints the release, namespace and run id it
+looked for and exits 1 without touching anything; `GITHUB_RUN_ID=<run id> bash
+tests/e2e/pr-install-down.sh` removes another run's install. Every step runs when one
+before it fails, and the script exits 1 naming each failed step.
+
+One PR install runs at a time, since every install registers the same CSIDriver. When
+setup finds another run's install, it reads that namespace's `cfgd.io/e2e-run` label
+and `cfgd.io/heartbeat`. A heartbeat `HEARTBEAT_STALE_SECONDS` (900, the janitor's value)
+or more old means that run is dead, and `reclaim_stale_install` removes its install with
+`GITHUB_RUN_ID=<owner> pr-install-down.sh` before setup continues. A fresher heartbeat
+stops setup, naming the owner and the heartbeat's age.
 `test-pr-install.sh` runs it against the stubs in `common/fixtures/pr-install-down/bin/`.
 
 The operator suite runs against the PR install: its pods, Deployment, leader lease

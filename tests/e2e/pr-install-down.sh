@@ -4,7 +4,12 @@
 # Function, then the Helm release, then its namespace. Every step runs
 # even when one before it failed, and the script exits 1 when any failed.
 #
+# The run id comes from helpers.sh: GITHUB_RUN_ID when set, else the id a
+# local setup recorded. When neither the run's release nor its namespace
+# exists, it prints what it looked for and exits 1 without touching anything.
+#
 # Usage: tests/e2e/pr-install-down.sh
+#        GITHUB_RUN_ID=<run id> tests/e2e/pr-install-down.sh
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -14,7 +19,28 @@ trap '[ -z "${E2E_SCRATCH_OWNED:-}" ] || rm -rf "$E2E_SCRATCH_OWNED"' EXIT
 
 failed=()
 
-echo "Removing the PR install $E2E_INSTALL_RELEASE in $E2E_INSTALL_NS..."
+echo "Removing the PR install $E2E_INSTALL_RELEASE in $E2E_INSTALL_NS (run $E2E_RUN_ID, from $E2E_RUN_ID_SOURCE)..."
+
+# A setup that failed before its helm install leaves the namespace and no
+# release, which still has objects to remove.
+if ! ns_found=$(kubectl get namespace "$E2E_INSTALL_NS" --ignore-not-found -o name); then
+    echo "ERROR: could not read namespace $E2E_INSTALL_NS. Read the kubectl error above, then rerun this teardown." >&2
+    failed+=("find namespace")
+fi
+release_listed=true
+if ! release_found=$(helm list -n "$E2E_INSTALL_NS" -a -q --filter "^${E2E_INSTALL_RELEASE}\$"); then
+    echo "ERROR: could not list the Helm releases in $E2E_INSTALL_NS. Check that the runner can read secrets there, then rerun this teardown." >&2
+    failed+=("find release")
+    release_listed=false
+fi
+if [ "${#failed[@]}" -eq 0 ] && [ -z "$ns_found" ] && [ -z "$release_found" ]; then
+    {
+        echo "ERROR: no PR install to remove: no Helm release $E2E_INSTALL_RELEASE and no namespace $E2E_INSTALL_NS for run $E2E_RUN_ID (from $E2E_RUN_ID_SOURCE)."
+        echo "  The run ids of the installs on the cluster: kubectl get namespaces -l cfgd.io/e2e-run -L cfgd.io/e2e-run"
+        echo "  Remove one with: GITHUB_RUN_ID=<run id> bash tests/e2e/pr-install-down.sh"
+    } >&2
+    exit 1
+fi
 
 # The run's operator holds a finalizer on the objects it reconciles and is the
 # only thing that clears it, so they are deleted while it still runs; once the
@@ -36,16 +62,13 @@ if ! kubectl delete composition,function -l "$E2E_RUN_LABEL" --wait=true --timeo
     failed+=("delete composition,function")
 fi
 
-# A setup that failed before its helm install leaves no release, which is
-# already the state this step wants.
-if ! release_found=$(helm list -n "$E2E_INSTALL_NS" -a -q --filter "^${E2E_INSTALL_RELEASE}\$"); then
-    echo "ERROR: could not list the Helm releases in $E2E_INSTALL_NS. Check that the runner can read secrets there, then rerun this teardown." >&2
-    failed+=("find release")
-elif [ -z "$release_found" ]; then
-    echo "  release $E2E_INSTALL_RELEASE is not installed in $E2E_INSTALL_NS; nothing to uninstall"
-elif ! helm uninstall "$E2E_INSTALL_RELEASE" -n "$E2E_INSTALL_NS" --wait --timeout=120s; then
-    echo "ERROR: helm uninstall $E2E_INSTALL_RELEASE in $E2E_INSTALL_NS failed. Read the Helm error above, then rerun this teardown." >&2
-    failed+=("helm uninstall")
+if [ "$release_listed" = true ]; then
+    if [ -z "$release_found" ]; then
+        echo "  release $E2E_INSTALL_RELEASE is not installed in $E2E_INSTALL_NS; nothing to uninstall"
+    elif ! helm uninstall "$E2E_INSTALL_RELEASE" -n "$E2E_INSTALL_NS" --wait --timeout=120s; then
+        echo "ERROR: helm uninstall $E2E_INSTALL_RELEASE in $E2E_INSTALL_NS failed. Read the Helm error above, then rerun this teardown." >&2
+        failed+=("helm uninstall")
+    fi
 fi
 
 if ! kubectl delete namespace "$E2E_INSTALL_NS" --ignore-not-found --wait=false; then

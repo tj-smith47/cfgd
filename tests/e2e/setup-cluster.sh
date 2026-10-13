@@ -6,10 +6,14 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+# A local setup mints its run id from HEAD; see E2E_LOCAL_RUN_ID_FILE in
+# helpers.sh.
+E2E_NEW_LOCAL_RUN=1
 # shellcheck source=tests/e2e/common/helpers.sh
 source "$SCRIPT_DIR/common/helpers.sh"
 
 echo "=== cfgd E2E Setup ==="
+echo "Run id: $E2E_RUN_ID ($E2E_RUN_ID_SOURCE)"
 echo "Registry: $REGISTRY"
 echo "Image references (ArgoCD-owned components run the release their manifests pin):"
 for img in cfgd cfgd-operator cfgd-csi function-cfgd; do
@@ -550,7 +554,8 @@ echo "Installing the PR operator and CSI driver ($E2E_INSTALL_RELEASE in $E2E_IN
 
 # Every run's install registers the same CSIDriver name, and Helm's
 # release-namespace annotation says whose it is. An owner whose namespace is
-# gone died without uninstalling, so its CSIDriver is removed.
+# gone died without uninstalling, so its CSIDriver is removed; an owner whose
+# heartbeat is stale is dead, so its whole install is removed.
 if ! csi_driver_obj=$(kubectl get csidriver "$CSI_DRIVER_NAME" --ignore-not-found -o name); then
     echo "ERROR: could not read csidriver/$CSI_DRIVER_NAME. Check that the runner can get csidrivers, then rerun setup." >&2
     exit 1
@@ -579,18 +584,23 @@ if [ -n "$csi_driver_obj" ]; then
             exit 1
         fi
         if [ -n "$csi_owner_ns_phase" ]; then
-            {
-                echo "ERROR: $CSI_DRIVER_NAME belongs to the live install in $csi_owner_ns; one PR install runs at a time"
-                echo "  Rerun setup once that run has finished. If that run is dead, delete namespace $csi_owner_ns and csidriver/$CSI_DRIVER_NAME first."
-            } >&2
-            exit 1
-        fi
-        echo "  csidriver/$CSI_DRIVER_NAME was left by an install in $csi_owner_ns, which no longer exists; deleting it"
-        if ! kubectl delete csidriver "$CSI_DRIVER_NAME"; then
-            echo "ERROR: could not delete the leftover csidriver/$CSI_DRIVER_NAME. Delete it by hand and rerun setup." >&2
-            exit 1
+            reclaim_stale_install "$csi_owner_ns" || exit 1
+        else
+            echo "  csidriver/$CSI_DRIVER_NAME was left by an install in $csi_owner_ns, which no longer exists; deleting it"
+            if ! kubectl delete csidriver "$CSI_DRIVER_NAME"; then
+                echo "ERROR: could not delete the leftover csidriver/$CSI_DRIVER_NAME. Delete it by hand and rerun setup." >&2
+                exit 1
+            fi
         fi
     fi
+fi
+
+# A local run's id is recorded once no other install stands in its way, so a
+# setup refused above leaves the record naming the install still on the
+# cluster, which the teardown then removes.
+if [ -z "${GITHUB_RUN_ID:-}" ]; then
+    mkdir -p "$(dirname "$E2E_LOCAL_RUN_ID_FILE")"
+    printf '%s\n' "$E2E_RUN_ID" > "$E2E_LOCAL_RUN_ID_FILE"
 fi
 
 # The subshell lets the namespace helper act on the install namespace without

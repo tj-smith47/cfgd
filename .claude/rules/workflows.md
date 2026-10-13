@@ -353,6 +353,12 @@ single-source-of-truth wiring.
   determinism-shards.yml and the two publish workflows run no `cargo` step at
   all: anodizer-action owns those builds, and a determinism rebuild must start
   from a clean `target/` by definition.
+- e2e.yml's `e2e-teardown` job runs `bash tests/e2e/pr-install-down.sh`
+  with no go-task step, as e2e-setup.yml runs `setup-cluster.sh`: a tool
+  install that times out there leaves the PR install on the cluster, and the
+  next run's setup refuses it until its heartbeat is stale. The suite jobs keep
+  `task e2e:<suite>`: a failed go-task install there fails that suite and
+  leaves nothing behind.
 - Self-hosted runner labels for actionlint live in `.github/actionlint.yaml`.
 - Any job that `uses: ./.github/actions/...` MUST have a checkout step
   before it (the local action file only exists on the runner after

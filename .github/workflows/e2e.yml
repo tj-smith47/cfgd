@@ -279,11 +279,11 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v7
 
-      - name: Install go-task
-        uses: go-task/setup-task@v2
-
+      # The script runs directly, as the setup job runs setup-cluster.sh: a
+      # tool install that times out here leaves the install on the cluster,
+      # where it blocks the next run's setup.
       - name: Remove the PR install
-        run: task e2e:pr-install:down
+        run: bash tests/e2e/pr-install-down.sh
 
   # ---------- CLI: exhaustive native tests (no k8s needed) ----------
   cli-tests:
