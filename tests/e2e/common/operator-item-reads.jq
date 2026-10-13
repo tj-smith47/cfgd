@@ -86,7 +86,7 @@ def capture_call:
 # the first statement of a brace group or subshell. A capture like
 # NAME=$(kubectl ... -o json || echo "") or NAME=$( (kubectl ... -o json) )
 # keeps that command's JSON when it succeeds. A pipe stops the walk: what
-# reaches NAME is then the last stage's output, no longer the pod list.
+# reaches NAME is then the last stage's output, so the pod list is gone.
 def first_command:
   if .Cmd.Type == "BinaryCmd" and (.Cmd.Op == "&&" or .Cmd.Op == "||") then .Cmd.X | first_command
   elif .Cmd.Type == "Block" or .Cmd.Type == "Subshell" then .Cmd.Stmts[0] // {} | first_command
