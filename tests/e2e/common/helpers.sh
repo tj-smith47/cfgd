@@ -61,6 +61,60 @@ e2e_image_overridden() {
     [ -n "${!var:-}" ]
 }
 
+# shellcheck source=tests/e2e/common/chart-pins.sh
+source "$E2E_ROOT/common/chart-pins.sh"
+
+# semver_below <a> <b>: 0 when a is a lower semver than b, 1 when it is not, 2
+# when either is not `[v]MAJOR.MINOR.PATCH[-pre]`. A pre-release sorts below its
+# release.
+semver_below() {
+    local re='^v?([0-9]+)\.([0-9]+)\.([0-9]+)(-([0-9A-Za-z.-]+))?$' i
+    local -a a b
+    [[ $1 =~ $re ]] || return 2
+    a=("${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}" "${BASH_REMATCH[5]}")
+    [[ $2 =~ $re ]] || return 2
+    b=("${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}" "${BASH_REMATCH[5]}")
+    for i in 0 1 2; do
+        if ((10#${a[i]} < 10#${b[i]})); then return 0; fi
+        if ((10#${a[i]} > 10#${b[i]})); then return 1; fi
+    done
+    [ -n "${a[3]}" ] && [ "${a[3]}" != "${b[3]}" ] || return 1
+    [ -z "${b[3]}" ] || [ "$(printf '%s\n%s\n' "${a[3]}" "${b[3]}" | sort -V | head -n 1)" = "${a[3]}" ]
+}
+
+# The chart's templates and the PR install's values assume what the images it
+# pins ship (the gateway leader label, for one), so an older override cannot
+# pass setup and is refused before setup writes anything. Every first-party
+# image the chart pins is checked; an override that is not a semver (latest, a
+# sha, a PR tag) cannot be ordered and passes. A pin that cannot be read or
+# ordered refuses, since passing it would skip the check unseen.
+e2e_refuse_overrides_below_chart_pins() {
+    local chart="${1:-$REPO_ROOT/chart/cfgd}" refs ref image pin var tag rc shown refused=0
+    shown="${chart#"$REPO_ROOT"/}"
+    if ! refs="$(chart_image_pins "$chart")"; then
+        echo "ERROR: could not read the image tags $shown pins, so no image override can be checked against them. Run helm template on the chart, fix the error and rerun setup." >&2
+        return 1
+    fi
+    for ref in $refs; do
+        image="${ref##*/}"
+        pin="${image##*:}"
+        image="${image%%:*}"
+        var="$(e2e_image_override_var "$image")" || return 1
+        e2e_image_overridden "$image" || continue
+        tag="${!var}"
+        rc=0
+        semver_below "$pin" "$pin" || rc=$?
+        if [ "$rc" -eq 2 ]; then
+            echo "ERROR: $shown pins $image at '$pin', which is not a semver, so $var=$tag cannot be checked against it. Fix the pin and rerun setup." >&2
+            refused=1
+        elif semver_below "$tag" "$pin"; then
+            echo "ERROR: $var=$tag is older than the $image this chart requires ($pin, $shown). Use that tag or newer, or run the suites from the chart release that shipped $tag." >&2
+            refused=1
+        fi
+    done
+    return "$refused"
+}
+
 # Crossplane keys its package lock by repository, and ArgoCD's function-cfgd
 # already installs from the release registry, so a run's Function installed from
 # that repository never turns Healthy. Setup copies a released function-cfgd into

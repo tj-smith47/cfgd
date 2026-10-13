@@ -2,7 +2,8 @@
 # Checks the e2e image tag map in helpers.sh without a cluster: each image's
 # reference resolves to IMAGE_TAG unless its own override is set, an overridden
 # image comes from RELEASE_REGISTRY when that is set, every push stays on
-# REGISTRY (the buildx cache included), and no suite composes a registry
+# REGISTRY (the buildx cache included), setup refuses an override older than
+# the tag chart/cfgd pins for its image, and no suite composes a registry
 # reference or pushes outside the functions in helpers.sh that own it.
 #
 # Usage: tests/e2e/common/test-image-tags.sh
@@ -203,6 +204,104 @@ if resolve not-an-image >/dev/null 2>&1; then
 else
     echo "PASS  unknown image: refused"
 fi
+
+# The override gate setup runs before any cluster write. Every image the chart
+# pins comes from the chart itself, so an image the chart gains is checked
+# without this list changing.
+# shellcheck disable=SC2016 # the inner script expands its own positional args
+gate() {
+    local chart="$1"; shift
+    env -u CFGD_IMAGE_TAG -u OPERATOR_IMAGE_TAG -u CSI_IMAGE_TAG -u FUNCTION_IMAGE_TAG \
+        REGISTRY="$registry" IMAGE_TAG=base CLI_SCRATCH="$scratch" "$@" \
+        bash -c 'source "$1/common/helpers.sh"; e2e_refuse_overrides_below_chart_pins "$2"' _ "$e2e_root" "$chart" 2>&1
+}
+
+# expect_gate <label> <chart> <want: pass|refuse> <message fragment> [VAR=tag...]
+expect_gate() {
+    local label="$1" chart="$2" want="$3" fragment="$4" out rc=0
+    shift 4
+    out="$(gate "$chart" "$@")" || rc=$?
+    if [ "$want" = pass ] && [ "$rc" -eq 0 ] && [ -z "$out" ]; then
+        echo "PASS  gate $label: passes"
+    elif [ "$want" = refuse ] && [ "$rc" -eq 1 ] && grep -qF -- "$fragment" <<<"$out"; then
+        echo "PASS  gate $label: refused"
+    else
+        echo "FAIL  gate $label: rc $rc, output '$out' (want $want, fragment '$fragment')"
+        failures=$((failures + 1))
+    fi
+}
+
+chart="$(dirname "$(dirname "$e2e_root")")/chart/cfgd"
+# shellcheck disable=SC2016 # the inner script expands its own positional args
+if ! pins="$(REGISTRY="$registry" CLI_SCRATCH="$scratch" bash -c 'source "$1/common/helpers.sh"; chart_image_pins "$2"' _ "$e2e_root" "$chart")"; then
+    echo "FAIL  chart_image_pins could not read $chart"
+    failures=$((failures + 1))
+    pins=""
+fi
+for want_image in cfgd cfgd-operator cfgd-csi; do
+    if grep -q "/$want_image:" <<<"$pins"; then
+        echo "PASS  the chart pins $want_image"
+    else
+        echo "FAIL  the chart pin reader misses $want_image: '$pins'"
+        failures=$((failures + 1))
+    fi
+done
+expect_gate "with no override" "$chart" pass ""
+for ref in $pins; do
+    image="${ref##*/}"
+    pin="${image##*:}"
+    image="${image%%:*}"
+    var="${override_of[$image]:-}"
+    if [ -z "$var" ]; then
+        echo "FAIL  the chart pins $image, which has no override in this check"
+        failures=$((failures + 1))
+        continue
+    fi
+    IFS=. read -r major minor patch <<<"${pin%%-*}"
+    expect_gate "$var=0.0.1 under pin $pin" "$chart" refuse \
+        "ERROR: $var=0.0.1 is older than the $image this chart requires ($pin, " "$var=0.0.1"
+    expect_gate "$var=$pin-rc.1 under pin $pin" "$chart" refuse "$var=$pin-rc.1 is older" "$var=$pin-rc.1"
+    expect_gate "$var at its pin" "$chart" pass "" "$var=$pin"
+    expect_gate "$var at v-prefixed pin" "$chart" pass "" "$var=v$pin"
+    expect_gate "$var a patch above its pin" "$chart" pass "" "$var=$major.$minor.$((patch + 1))"
+    expect_gate "$var a major above its pin" "$chart" pass "" "$var=$((major + 1)).0.0"
+    for loose in latest e2e-5c4978a35 pr-301 sha-deadbeef; do
+        expect_gate "$var=$loose (not a semver)" "$chart" pass "" "$var=$loose"
+    done
+done
+# The gate names each refused override.
+for var in OPERATOR_IMAGE_TAG CSI_IMAGE_TAG; do
+    expect_gate "two old overrides name $var" "$chart" refuse "$var=0.0.1 is older" \
+        OPERATOR_IMAGE_TAG=0.0.1 CSI_IMAGE_TAG=0.0.1
+done
+# The image the chart does not pin has no floor.
+expect_gate "FUNCTION_IMAGE_TAG=v0.0.1 (no chart pin)" "$chart" pass "" FUNCTION_IMAGE_TAG=v0.0.1
+
+# A pin that cannot be read must refuse: a chart that does not render, and a
+# pin that is not a semver.
+expect_gate "chart that does not render" "$scratch/no-such-chart" refuse "could not read the image tags" \
+    OPERATOR_IMAGE_TAG=0.10.0
+cp -r "$chart" "$scratch/latest-pin-chart"
+sed -i '/repository: ghcr.io\/tj-smith47\/cfgd-operator$/,/^ *tag:/ s/^\( *\)tag: "[^"]*"/\1tag: "latest"/' \
+    "$scratch/latest-pin-chart/values.yaml"
+expect_gate "non-semver pin" "$scratch/latest-pin-chart" refuse "pins cfgd-operator at 'latest', which is not a semver" \
+    OPERATOR_IMAGE_TAG=0.10.0
+expect_gate "non-semver pin of an image with no override" "$scratch/latest-pin-chart" pass ""
+
+# semver_below's ordering, pre-releases and its refusal of non-semvers.
+# shellcheck disable=SC2016 # the inner script expands its own positional args
+below() {
+    local rc=0
+    REGISTRY="$registry" CLI_SCRATCH="$scratch" bash -c 'source "$1/common/helpers.sh"; semver_below "$2" "$3"' \
+        _ "$e2e_root" "$1" "$2" || rc=$?
+    echo "$rc"
+}
+for row in "0.9.9 0.10.0 0" "0.10.0 0.10.0 1" "0.10.1 0.10.0 1" "1.0.0 0.99.99 1" "v0.10.0 0.10.1 0" \
+    "0.10.1-rc.1 0.10.1 0" "0.10.1 0.10.1-rc.1 1" "0.10.1-rc.9 0.10.1-rc.10 0" "0.10.1-rc.10 0.10.1-rc.9 1" \
+    "0.08.0 0.8.1 0" "latest 0.10.0 2" "0.10.0 latest 2" "0.10 0.10.0 2"; do
+    read -r a b want <<<"$row"
+    check "semver_below $a $b" "$(below "$a" "$b")" "$want"
+done
 
 # A reference composed by hand would ignore its override or push past the
 # REGISTRY guard, so the helpers are the only place IMAGE_TAG, RELEASE_REGISTRY,

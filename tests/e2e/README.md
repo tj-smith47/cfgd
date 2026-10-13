@@ -22,15 +22,29 @@ on PATH, and its setup stops without it.
 
 A release tags each image at its own crate's version, so a released set needs the
 per-image overrides. `function-cfgd` is tagged with the cfgd version behind a `v`
-prefix, which the other three images do not carry. To run the suites against the
-images one release published, leave `REGISTRY` at its default and name the release
-registry:
+prefix, which the other three images do not carry.
+
+Each override must be at or above the tag `chart/cfgd/values.yaml` pins for that
+image (`cfgd` is pinned by the chart's `appVersion`); setup refuses an older one
+before it writes anything to the cluster, because the chart's templates and the
+PR install's values rely on what the pinned images ship. An override that is not a
+semver (`latest`, a commit sha, a PR tag) cannot be ordered and is not checked, and
+`function-cfgd` has no pin in the chart. The set a chart release pins is the set
+its suites are proven against, so to run the suites against the images one release
+published, check out that release, leave `REGISTRY` at its default and name the
+release registry with the release's own pins:
 
 ```bash
 export RELEASE_REGISTRY=ghcr.io/tj-smith47
 export CFGD_IMAGE_TAG=0.12.0 OPERATOR_IMAGE_TAG=0.10.0 CSI_IMAGE_TAG=0.8.0
 export FUNCTION_IMAGE_TAG=v0.12.0
 task e2e
+```
+
+An override older than the pin stops setup with an error naming the pin:
+
+```text
+ERROR: OPERATOR_IMAGE_TAG=0.9.0 is older than the cfgd-operator this chart requires (0.10.0, chart/cfgd). Use that tag or newer, or run the suites from the chart release that shipped 0.9.0.
 ```
 
 An overridden image is used as it is: setup never builds or retags it, and stops
