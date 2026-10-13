@@ -271,12 +271,13 @@ install that fails there leaks the install. A local run id is recorded by setup 
 run's install through `reclaim_stale_install` once that run's heartbeat is
 `HEARTBEAT_STALE_SECONDS` old (one constant in `helpers.sh`, equal to the janitor's),
 and refuses while it is fresher; `task e2e:heartbeat:age` ages the current run's
-heartbeat to that value to exercise it on the cluster. The teardown spells what it owns
-once, as `delete_groups` (run-labelled kinds) and `named_objects` (cluster-scoped objects
-by name), and every lookup, delete and read-back reads those arrays;
-`test-pr-install.sh` fails when a delete names a kind the first lookup lacks. Its delete lists name every plural
-`schemas/crds.yaml` declares; `test-pr-install.sh` drives it against stub kubectl
-and helm and fails when a CRD's plural is missing from them.
+heartbeat to that value to exercise it on the cluster. The teardown spells what it
+owns once, as `delete_groups` (run-labelled kinds, each with its failure hint) and
+`named_objects` (cluster-scoped objects by name), and every lookup, delete, hint and
+read-back reads those arrays; `test-pr-install.sh` fails when a delete names a kind
+the first lookup lacks or a kind is spelled outside the declaration. Its delete lists
+name every plural `schemas/crds.yaml` declares; `test-pr-install.sh` drives it against
+stub kubectl and helm and fails when a CRD's plural is missing from them.
 The Crossplane suite writes nothing ArgoCD tracks in `crossplane-system`: it checks
 the XRD with `check_pr_xrd`, installs `$E2E_FUNCTION` from `e2e_image function-cfgd`
 and `$E2E_COMPOSITION` from `render_run_composition`, every TeamConfig carries

@@ -24,12 +24,18 @@ failed=()
 echo "Removing the PR install $E2E_INSTALL_RELEASE in $E2E_INSTALL_NS (run $E2E_RUN_ID, from $E2E_RUN_ID_SOURCE)..."
 
 # What the run owns, each spelled once here: the run-labelled kinds in delete
-# order, cluster-scoped ones included, and the cluster-scoped objects the
-# uninstall removes by name. Every lookup, delete and read-back below reads
-# these. A TeamConfig composite references the run's Composition, so
-# teamconfigs comes before composition,function.
-delete_groups=("machineconfigs,configpolicies,driftalerts,backuppolicies" "clusterconfigpolicies,modules" "teamconfigs" "composition,function")
-labelled_kinds="$(IFS=,; echo "${delete_groups[*]}")"
+# order, cluster-scoped ones included, each group as <kinds>|<what to read when
+# its delete fails> ("operator" stands for the run's operator log), and the
+# cluster-scoped objects the uninstall removes by name. Every lookup, delete
+# and read-back below reads these. A TeamConfig composite references the run's
+# Composition, so the TeamConfig group comes before the Composition's.
+delete_groups=(
+    "machineconfigs,configpolicies,driftalerts,backuppolicies|operator"
+    "clusterconfigpolicies,modules|operator"
+    "teamconfigs|the composites' status.conditions"
+    "composition,function|the Function's status.conditions"
+)
+labelled_kinds="$(for group in "${delete_groups[@]}"; do printf '%s\n' "${group%%|*}"; done | paste -sd ,)"
 named_objects=("validatingwebhookconfiguration/$E2E_VALIDATING_WEBHOOK" "mutatingwebhookconfiguration/$E2E_MUTATING_WEBHOOK"
     "function/$E2E_FUNCTION" "composition/$E2E_COMPOSITION")
 
@@ -77,13 +83,13 @@ fi
 # The run's operator holds a finalizer on the objects it reconciles and is the
 # only thing that clears it, so they are deleted while it still runs; once the
 # release is gone they would stay Terminating.
-for kinds in "${delete_groups[@]}"; do
+for group in "${delete_groups[@]}"; do
+    kinds="${group%%|*}"
+    hint="${group#*|}"
+    if [ "$hint" = operator ]; then
+        hint="the operator's log (kubectl logs -n $E2E_INSTALL_NS -l $E2E_OPERATOR_PODS --prefix --tail=-1)"
+    fi
     if ! kubectl delete "$kinds" -A -l "$E2E_RUN_LABEL" --wait=true --timeout=90s; then
-        case "$kinds" in
-            teamconfigs) hint="the composites' status.conditions" ;;
-            composition,function) hint="the Function's status.conditions" ;;
-            *) hint="the operator's log (kubectl logs -n $E2E_INSTALL_NS -l $E2E_OPERATOR_PODS --prefix --tail=-1)" ;;
-        esac
         echo "ERROR: the $kinds labelled $E2E_RUN_LABEL were not deleted within 90s. Read the kubectl error above and $hint." >&2
         failed+=("delete $kinds")
     fi

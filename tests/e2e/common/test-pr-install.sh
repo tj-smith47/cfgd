@@ -3428,6 +3428,49 @@ if [ -n "$lookup_kinds" ] && [ "$lookup_kinds" = "$delete_kinds" ] && [ "$named_
 else
     fail "pr-install-down.sh lookup kinds [$(paste -sd ' ' <<<"$lookup_kinds")], delete kinds [$(paste -sd ' ' <<<"$delete_kinds")], named reads $named_reads ($named_distinct distinct); want the same kinds and two identical named reads"
 fi
+# A kind the declaration lists, spelled again anywhere else in the script (a
+# hint, a delete, a comment) is a second list the lookup cannot see. A kind
+# followed by / names one object, which named_objects owns.
+# scan_kind_spellings FILE prints `HANDLIST file:line` for each such spelling.
+# shellcheck disable=SC2016 # an awk program; the $ fields belong to awk
+scan_kind_spellings() {
+    awk '
+        FNR == NR {
+            if ($0 ~ /^delete_groups=\($/) { decl = 1; next }
+            if (decl && $0 ~ /^\)$/) { decl = 0; next }
+            if (decl && match($0, /"[^"|]*\|/)) {
+                n = split(substr($0, RSTART + 1, RLENGTH - 2), ks, ",")
+                for (i = 1; i <= n; i++) kinds[ks[i]] = 1
+                declared[FNR] = 1
+            }
+            next
+        }
+        !(FNR in declared) {
+            for (k in kinds) {
+                line = $0
+                while (match(line, "(^|[^A-Za-z0-9_])" k "([^A-Za-z0-9_/]|$)")) {
+                    printf "HANDLIST %s:%d %s\n", FILENAME, FNR, k
+                    line = substr(line, RSTART + RLENGTH)
+                }
+            }
+        }
+    ' "$1" "$1"
+}
+handlist="$(scan_kind_spellings "$e2e_root/pr-install-down.sh")"
+declared_kinds="$(awk '/^delete_groups=\($/{d=1;next} d&&/^\)$/{d=0} d' "$e2e_root/pr-install-down.sh" | grep -c '|' || true)" # rc-ok: a count of 0 is judged below
+if [ "$declared_kinds" -lt 4 ]; then
+    fail "the kind-spelling scan found $declared_kinds delete groups in pr-install-down.sh's delete_groups declaration, want 4 or more"
+elif [ -n "$handlist" ]; then
+    fail "pr-install-down.sh spells a declared kind outside delete_groups: $(paste -sd ';' <<<"$handlist")"
+else
+    pass "pr-install-down.sh spells each of its $declared_kinds delete groups' kinds only in delete_groups"
+fi
+printf '%s\n' 'delete_groups=(' '    "teamconfigs|hint"' ')' 'echo "the teamconfigs left"' 'kubectl get function/x' > "$scratch/handlist.sh"
+if [ "$(scan_kind_spellings "$scratch/handlist.sh")" = "HANDLIST $scratch/handlist.sh:4 teamconfigs" ]; then
+    pass "the kind-spelling scan reports a hand spelling and passes over a declared one"
+else
+    fail "the kind-spelling scan on its fixture printed [$(scan_kind_spellings "$scratch/handlist.sh")], want one HANDLIST at line 4"
+fi
 # A local teardown with no setup record names the file it looked in.
 missing_record_out="$(env -u GITHUB_RUN_ID -u CFGD_NAMESPACE PATH="$down_bin:$PATH" DOWN_LOG="$scratch/down.calls" \
     REGISTRY=r.example CLI_SCRATCH="$scratch" E2E_LOCAL_RUN_ID_FILE="$scratch/no-such-record" DOWN_RELEASE=absent DOWN_NAMESPACE=absent \
