@@ -99,7 +99,11 @@ e2e_refuse_overrides_below_chart_pins() {
         image="${ref##*/}"
         pin="${image##*:}"
         image="${image%%:*}"
-        var="$(e2e_image_override_var "$image")" || return 1
+        if ! var="$(e2e_image_override_var "$image" 2>/dev/null)"; then
+            echo "ERROR: $shown pins $image, which has no override variable in e2e_image_override_var, so setup cannot tell whether the run overrides it. Add one and rerun setup." >&2
+            refused=1
+            continue
+        fi
         e2e_image_overridden "$image" || continue
         tag="${!var}"
         rc=0
@@ -108,7 +112,7 @@ e2e_refuse_overrides_below_chart_pins() {
             echo "ERROR: $shown pins $image at '$pin', which is not a semver, so $var=$tag cannot be checked against it. Fix the pin and rerun setup." >&2
             refused=1
         elif semver_below "$tag" "$pin"; then
-            echo "ERROR: $var=$tag is older than the $image this chart requires ($pin, $shown). Use that tag or newer, or run the suites from the chart release that shipped $tag." >&2
+            echo "ERROR: $var=$tag is older than the $image this chart requires ($pin, $shown). Use that tag or newer, or run the suites from a checkout of the release tag that shipped $tag (tests/e2e/README.md)." >&2
             refused=1
         fi
     done

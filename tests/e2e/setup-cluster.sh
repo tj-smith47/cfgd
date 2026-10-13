@@ -634,7 +634,17 @@ if ! helm upgrade --install "$E2E_INSTALL_RELEASE" "$REPO_ROOT/chart/cfgd" -n "$
     --set-json "webhook.objectSelector={\"matchLabels\":{\"cfgd.io/e2e-run\":\"${E2E_RUN_ID}\"}}" \
     --set-json "mutatingWebhook.namespaceSelector={\"matchExpressions\":[{\"key\":\"cfgd.io/inject-modules\",\"operator\":\"In\",\"values\":[\"true\"]},{\"key\":\"cfgd.io/e2e-run\",\"operator\":\"In\",\"values\":[\"${E2E_RUN_ID}\"]}]}" \
     --wait --timeout=180s; then
-    echo "ERROR: helm upgrade --install $E2E_INSTALL_RELEASE in $E2E_INSTALL_NS failed. Read the Helm error above and the pods in $E2E_INSTALL_NS (kubectl get pods -n $E2E_INSTALL_NS), fix the cause and rerun setup." >&2
+    # A released operator at the chart's pin can still predate templates HEAD
+    # changed since that release, so the message names both the image the
+    # Deployment runs and the pin for either cause.
+    pr_operator_image="$(running_image deployment "$E2E_OPERATOR_DEPLOY" operator "$E2E_INSTALL_NS")"
+    operator_pin="$(chart_image_pins "$REPO_ROOT/chart/cfgd" 2>/dev/null | sed -n 's|.*/cfgd-operator:||p')" || true
+    {
+        echo "ERROR: helm upgrade --install $E2E_INSTALL_RELEASE in $E2E_INSTALL_NS failed."
+        echo "  deployment/$E2E_OPERATOR_DEPLOY runs $pr_operator_image; chart/cfgd pins cfgd-operator ${operator_pin:-(unreadable)}."
+        echo "  A released operator, the pinned one included, ships only what its release tag holds, and this chart can need more. For a released image, run the suites from a checkout of the release tag that shipped it (tests/e2e/README.md), or drop the operator's tag override so setup builds this checkout."
+        echo "  For an image built from this checkout, read the Helm error above and the pods in $E2E_INSTALL_NS (kubectl get pods -n $E2E_INSTALL_NS), fix the cause and rerun setup."
+    } >&2
     exit 1
 fi
 

@@ -27,14 +27,19 @@ prefix, which the other three images do not carry.
 Each override must be at or above the tag `chart/cfgd/values.yaml` pins for that
 image (`cfgd` is pinned by the chart's `appVersion`); setup refuses an older one
 before it writes anything to the cluster, because the chart's templates and the
-PR install's values rely on what the pinned images ship. An override that is not a
-semver (`latest`, a commit sha, a PR tag) cannot be ordered and is not checked, and
-`function-cfgd` has no pin in the chart. The set a chart release pins is the set
-its suites are proven against, so to run the suites against the images one release
-published, check out that release, leave `REGISTRY` at its default and name the
-release registry with the release's own pins:
+PR install's values rely on what the pinned images ship. Every image the chart
+renders from `ghcr.io/tj-smith47` is checked. An override that is not a semver
+(`latest`, a commit sha, a PR tag) cannot be ordered and is not checked, and
+`function-cfgd` has no pin in the chart.
+
+A release cut tags every crate it releases on one commit (`v0.12.0`,
+`operator-v0.10.0` and `csi-v0.8.0` name the same commit), and the chart there pins
+exactly the images that cut published. To run the suites against those images,
+check out one of the cut's tags, leave `REGISTRY` at its default and name the
+release registry with that commit's pins:
 
 ```bash
+git checkout v0.12.0
 export RELEASE_REGISTRY=ghcr.io/tj-smith47
 export CFGD_IMAGE_TAG=0.12.0 OPERATOR_IMAGE_TAG=0.10.0 CSI_IMAGE_TAG=0.8.0
 export FUNCTION_IMAGE_TAG=v0.12.0
@@ -44,8 +49,12 @@ task e2e
 An override older than the pin stops setup with an error naming the pin:
 
 ```text
-ERROR: OPERATOR_IMAGE_TAG=0.9.0 is older than the cfgd-operator this chart requires (0.10.0, chart/cfgd). Use that tag or newer, or run the suites from the chart release that shipped 0.9.0.
+ERROR: OPERATOR_IMAGE_TAG=0.9.0 is older than the cfgd-operator this chart requires (0.10.0, chart/cfgd). Use that tag or newer, or run the suites from a checkout of the release tag that shipped 0.9.0 (tests/e2e/README.md).
 ```
+
+A released image at the pin passes that check, but a later checkout's chart can
+need what only a later release ships. When the PR install then fails, setup's
+error names the operator image the Deployment runs and the chart's pin.
 
 An overridden image is used as it is: setup never builds or retags it, and stops
 with an error naming the reference when the registry does not hold it. The suites'

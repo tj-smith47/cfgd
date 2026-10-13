@@ -288,6 +288,41 @@ expect_gate "non-semver pin" "$scratch/latest-pin-chart" refuse "pins cfgd-opera
     OPERATOR_IMAGE_TAG=0.10.0
 expect_gate "non-semver pin of an image with no override" "$scratch/latest-pin-chart" pass ""
 
+# The reader takes every image under the ghcr.io/tj-smith47 owner, whatever its
+# name, and nothing under another owner.
+probe_chart() {
+    local dir="$scratch/$1"; shift
+    cp -r "$chart" "$dir"
+    printf '%s\n' "$@" >"$dir/templates/zz-probe.yaml"
+    printf '%s\n' "$dir"
+}
+# shellcheck disable=SC2016 # the inner script expands its own positional args
+pins_of() {
+    REGISTRY="$registry" CLI_SCRATCH="$scratch" bash -c 'source "$1/common/helpers.sh"; chart_image_pins "$2"' \
+        _ "$e2e_root" "$1" 2>&1
+}
+fn_chart="$(probe_chart fn-chart 'probe:' '  image: "ghcr.io/tj-smith47/function-cfgd:0.12.0"')"
+check "the reader lists a first-party image outside the cfgd names" \
+    "$(pins_of "$fn_chart" | grep -c '^ghcr.io/tj-smith47/function-cfgd:0.12.0$')" 1
+expect_gate "FUNCTION_IMAGE_TAG=v0.0.1 under a function-cfgd pin" "$fn_chart" refuse \
+    "FUNCTION_IMAGE_TAG=v0.0.1 is older than the function-cfgd this chart requires (0.12.0, " FUNCTION_IMAGE_TAG=v0.0.1
+expect_gate "FUNCTION_IMAGE_TAG=v0.12.0 at a function-cfgd pin" "$fn_chart" pass "" FUNCTION_IMAGE_TAG=v0.12.0
+other_chart="$(probe_chart other-chart 'probe:' '  image: "ghcr.io/other-owner/thing:9.9.9"' \
+    '  sidecar: "docker.io/tj-smith47/thing:9.9.9"' '  more:' '    image: docker.io/tj-smith47/thing:9.9.9')"
+check "the reader leaves out images of another owner" "$(pins_of "$other_chart" | grep -c 'thing')" 0
+expect_gate "images of another owner are not gated" "$other_chart" pass "" OPERATOR_IMAGE_TAG=0.10.0
+new_chart="$(probe_chart new-chart 'probe:' '  image: "ghcr.io/tj-smith47/newthing:1.0.0"')"
+expect_gate "a first-party image with no override variable" "$new_chart" refuse \
+    "pins newthing, which has no override variable"
+# A component whose template no longer renders under the reader's flags would
+# take its pin out of the check unseen.
+unrendered_chart="$(probe_chart unrendered-chart)"
+rm "$unrendered_chart/templates/csi-daemonset.yaml"
+check "the reader refuses a values.yaml repository the chart does not render" \
+    "$(pins_of "$unrendered_chart" | grep -c 'names ghcr.io/tj-smith47/cfgd-csi, which the chart does not render')" 1
+expect_gate "a values.yaml repository the chart does not render" "$unrendered_chart" refuse \
+    "could not read the image tags"
+
 # semver_below's ordering, pre-releases and its refusal of non-semvers.
 # shellcheck disable=SC2016 # the inner script expands its own positional args
 below() {
