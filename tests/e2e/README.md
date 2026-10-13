@@ -13,7 +13,7 @@ on PATH, and its setup stops without it.
 | Variable | Default | Meaning |
 |---|---|---|
 | `REGISTRY` | `registry.jarvispro.io` under `task`; required when a script runs directly | Registry setup pushes every image it builds to, and every suite pushes its scratch OCI artifacts to |
-| `RELEASE_REGISTRY` | unset | Registry an image whose tag override is set is pulled from; unset, that image comes from `REGISTRY` |
+| `RELEASE_REGISTRY` | unset | Registry an image whose tag override is set is pulled from (`function-cfgd` is copied from it into `REGISTRY`); unset, that image comes from `REGISTRY` |
 | `IMAGE_TAG` | `e2e-<short HEAD sha>` | Tag of every image that has no override below |
 | `CFGD_IMAGE_TAG` | `IMAGE_TAG` | Tag of `cfgd` (agent, test pod) |
 | `OPERATOR_IMAGE_TAG` | `IMAGE_TAG` | Tag of `cfgd-operator` (the PR install's operator; the device gateway where setup deploys it) |
@@ -33,20 +33,31 @@ export FUNCTION_IMAGE_TAG=v0.12.0
 task e2e
 ```
 
-An overridden image is used as it is: setup never builds, pushes or retags it, and
-stops with an error naming the reference when the registry does not hold it. The
-suites' scratch artifacts (`cfgd module push` targets) still go to `REGISTRY`, so a
-run needs no write access to the release registry.
+An overridden image is used as it is: setup never builds or retags it, and stops
+with an error naming the reference when the registry does not hold it. The suites'
+scratch artifacts (`cfgd module push` targets) still go to `REGISTRY`, so a run needs
+no write access to the release registry.
+
+`function-cfgd` is the one overridden image a run does not pull from
+`RELEASE_REGISTRY`. Crossplane keeps one package per repository in its lock, and
+ArgoCD's `function-cfgd` Function already installs from the release repository, so
+setup copies the released package into `REGISTRY` unchanged
+(`docker buildx imagetools create`) and the run's Function installs the copy:
+
+```bash
+  COPY function-cfgd: ghcr.io/tj-smith47/function-cfgd:v0.12.0 -> registry.jarvispro.io/function-cfgd:v0.12.0 (Crossplane installs one Function per package repository, and ArgoCD's installs from ghcr.io/tj-smith47)
+```
 
 Every push goes through `e2e_push`, which refuses a reference outside `REGISTRY`.
 
-Every registry reference the scripts compose comes from four functions in
+Every registry reference the scripts compose comes from the functions in
 `common/helpers.sh`. With the released set above:
 
 ```bash
 e2e_image cfgd-csi                    # ghcr.io/tj-smith47/cfgd-csi:0.8.0
 e2e_image_repo cfgd-csi               # ghcr.io/tj-smith47/cfgd-csi
 e2e_image_tag cfgd-csi                # 0.8.0
+e2e_image function-cfgd               # registry.jarvispro.io/function-cfgd:v0.12.0 (the copy)
 e2e_scratch_ref "oci01:v1.0-$E2E_RUN_ID"  # $REGISTRY/cfgd-e2e/oci01:v1.0-<run id>
 ```
 
@@ -54,7 +65,7 @@ e2e_scratch_ref "oci01:v1.0-$E2E_RUN_ID"  # $REGISTRY/cfgd-e2e/oci01:v1.0-<run i
 resolves each image under every override, with and without `RELEASE_REGISTRY`,
 drives `e2e_push` against a stand-in docker and crossplane, and fails when a script
 under `tests/e2e/` spells `IMAGE_TAG`, `RELEASE_REGISTRY`, a path under `$REGISTRY`,
-a `docker push` or a `crossplane xpkg push` itself.
+a `docker push`, a `crossplane xpkg push` or an image copy itself.
 
 ## The PR install
 

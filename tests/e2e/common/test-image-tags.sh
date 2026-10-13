@@ -67,8 +67,11 @@ expect "released set" function-cfgd "$registry/function-cfgd:v0.11.0" "${release
 # RELEASE_REGISTRY moves only an overridden image: a released image is pulled
 # from where it was published, while an image setup builds stays on REGISTRY.
 release="release.test/owner"
+# function-cfgd is the exception: setup copies it into REGISTRY, since Crossplane
+# installs one Function per package repository and ArgoCD's holds the release one.
 for image in "${images[@]}"; do
-    expect "RELEASE_REGISTRY, overridden" "$image" "$release/$image:0.1.0" \
+    if [ "$image" = function-cfgd ]; then from="$registry"; else from="$release"; fi
+    expect "RELEASE_REGISTRY, overridden" "$image" "$from/$image:0.1.0" \
         "RELEASE_REGISTRY=$release" "${override_of[$image]}=0.1.0"
     expect "RELEASE_REGISTRY, not overridden" "$image" "$registry/$image:base" \
         "RELEASE_REGISTRY=$release"
@@ -100,6 +103,23 @@ check() {
 check "scratch ref stays on REGISTRY under RELEASE_REGISTRY" \
     "$(in_helpers e2e_scratch_ref mod:v1)" "$registry/cfgd-e2e/mod:v1"
 
+# Only an overridden function-cfgd under RELEASE_REGISTRY is copied, and the copy
+# comes from its released reference.
+for image in "${images[@]}"; do
+    if in_helpers e2e_image_copied_from_release "$image" >/dev/null; then got=copied; else got=pulled; fi
+    if [ "$image" = function-cfgd ]; then want=copied; else want=pulled; fi
+    check "with RELEASE_REGISTRY and the released set, $image is $want" "$got" "$want"
+done
+check "function-cfgd is copied from its released reference" \
+    "$(in_helpers e2e_release_image function-cfgd)" "$release/function-cfgd:v0.11.0"
+# shellcheck disable=SC2016 # the inner script expands its own positional args
+if out="$(env -u FUNCTION_IMAGE_TAG REGISTRY="$registry" CLI_SCRATCH="$scratch" RELEASE_REGISTRY="$release" \
+    bash -c 'source "$1/common/helpers.sh"; e2e_image_copied_from_release function-cfgd' _ "$e2e_root" 2>&1)"; then
+    check "function-cfgd with no override is not copied" "copied: $out" "pulled"
+else
+    check "function-cfgd with no override is not copied" pulled pulled
+fi
+
 # e2e_push hands a ref under REGISTRY to the tool and refuses any other one,
 # an overridden image's RELEASE_REGISTRY reference included, without running it.
 mkdir -p "$scratch/bin"
@@ -109,9 +129,11 @@ cp "$scratch/bin/docker" "$scratch/bin/crossplane"
 chmod +x "$scratch/bin/docker" "$scratch/bin/crossplane"
 in_helpers e2e_push docker "$registry/cfgd:base" >/dev/null
 in_helpers e2e_push xpkg "$registry/function-cfgd:base" -f pkg.xpkg >/dev/null
+in_helpers e2e_push copy "$registry/function-cfgd:v1" "$release/function-cfgd:v1" >/dev/null
 check "e2e_push runs the tool for refs under REGISTRY" "$(cat "$scratch/push.log")" \
     "docker push $registry/cfgd:base
-crossplane xpkg push $registry/function-cfgd:base -f pkg.xpkg"
+crossplane xpkg push $registry/function-cfgd:base -f pkg.xpkg
+docker buildx imagetools create --tag $registry/function-cfgd:v1 $release/function-cfgd:v1"
 for ref in "$release/cfgd-operator:0.9.0" "$registry.evil/cfgd:x" "ghcr.io/other/cfgd:x"; do
     if out="$(in_helpers e2e_push docker "$ref")"; then
         check "e2e_push refuses $ref" "pushed: $out" "refused"
@@ -119,7 +141,7 @@ for ref in "$release/cfgd-operator:0.9.0" "$registry.evil/cfgd:x" "ghcr.io/other
         check "e2e_push refuses $ref" "$(grep -c 'refusing to push' <<<"$out")" 1
     fi
 done
-check "a refused push runs no tool" "$(wc -l <"$scratch/push.log")" 2
+check "a refused push runs no tool" "$(wc -l <"$scratch/push.log")" 3
 
 # shellcheck disable=SC2016 # the inner script expands its own positional args
 overridden() {
@@ -195,7 +217,7 @@ fi
 
 # A reference composed by hand would ignore its override or push past the
 # REGISTRY guard, so the helpers are the only place IMAGE_TAG, RELEASE_REGISTRY,
-# a path under REGISTRY or a docker or xpkg push may be spelled. grep exits 1
+# a path under REGISTRY, a docker or xpkg push or an image copy may be spelled. grep exits 1
 # for no match and 2 for an error; an error must fail the check, since an empty
 # result would otherwise read as a clean tree.
 scan_strays() {
@@ -204,7 +226,7 @@ scan_strays() {
         --include='*.sh' --include='*.yaml' --include='*.yml' --include='*.tera' --include='*.json' \
         -e 'IMAGE_TAG|REGISTRY_PLACEHOLDER|RELEASE_REGISTRY' \
         -e '\$\{?REGISTRY[^}/"]*\}?"?/' \
-        -e '(docker|xpkg) push' \
+        -e '(docker|xpkg) push|imagetools create' \
         "$1" 2>&1)" || rc=$?
     if [ "$rc" -gt 1 ]; then
         printf 'grep exited %s: %s\n' "$rc" "$out" >&2
@@ -248,6 +270,7 @@ declare -A stray_fixture=(
     [release.sh]='echo "$RELEASE_REGISTRY"'
     [docker-push.sh]='docker push "$ref"'
     [xpkg-push.sh]='crossplane xpkg push "$ref" -f x.xpkg'
+    [copy.sh]='docker buildx imagetools create --tag "$ref" "$src"'
 )
 for name in "${!stray_fixture[@]}"; do
     printf '%s\n' "${stray_fixture[$name]}" > "$fixtures/$name"

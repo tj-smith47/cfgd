@@ -72,6 +72,14 @@ e2e_override_unused_warning() {
     fi
 }
 
+# Crossplane keys its package lock by repository, and ArgoCD's function-cfgd
+# already installs from the release registry, so a run's Function installed from
+# that repository never turns Healthy. Setup copies a released function-cfgd into
+# REGISTRY and the run installs the copy.
+e2e_image_copied_from_release() {
+    [ "$1" = function-cfgd ] && [ -n "${RELEASE_REGISTRY:-}" ] && e2e_image_overridden "$1"
+}
+
 # REGISTRY is where setup pushes every image it builds and where the suites push
 # their scratch artifacts. RELEASE_REGISTRY, when set, is where an image whose
 # tag is overridden is pulled from, so a released set is tested where it was
@@ -79,10 +87,18 @@ e2e_override_unused_warning() {
 e2e_image_repo() {
     local var registry="$REGISTRY"
     var="$(e2e_image_override_var "$1")" || return 1
-    if [ -n "${RELEASE_REGISTRY:-}" ] && [ -n "${!var:-}" ]; then
+    if [ -n "${RELEASE_REGISTRY:-}" ] && [ -n "${!var:-}" ] && ! e2e_image_copied_from_release "$1"; then
         registry="$RELEASE_REGISTRY"
     fi
     printf '%s/%s\n' "$registry" "$1"
+}
+
+# The released reference setup copies an image from when
+# e2e_image_copied_from_release holds for it.
+e2e_release_image() {
+    local tag
+    tag="$(e2e_image_tag "$1")" || return 1
+    printf '%s/%s:%s\n' "${RELEASE_REGISTRY:?RELEASE_REGISTRY is not set}" "$1" "$tag"
 }
 
 e2e_image() {
@@ -97,9 +113,10 @@ e2e_scratch_ref() {
     printf '%s/cfgd-e2e/%s\n' "$REGISTRY" "$1"
 }
 
-# Pushes <ref> with docker or the Crossplane CLI (extra arguments follow the
-# ref), refusing any ref outside REGISTRY so a run never writes to the registry
-# a released set comes from.
+# Pushes <ref> with docker, the Crossplane CLI, or a registry-to-registry copy
+# (`e2e_push copy <ref> <source>`); extra arguments follow the ref. Any ref
+# outside REGISTRY is refused, so a run never writes to the registry a released
+# set comes from.
 e2e_push() {
     local tool="$1" ref="$2"
     shift 2
@@ -113,6 +130,7 @@ e2e_push() {
     case "$tool" in
         docker) docker push "$ref" "$@" ;;
         xpkg) crossplane xpkg push "$ref" "$@" ;;
+        copy) docker buildx imagetools create --tag "$ref" "$@" ;;
         *)
             echo "e2e_push: unknown tool '$tool'" >&2
             return 1

@@ -406,8 +406,17 @@ declare -A IMAGE_BUILT
 # stops when the registry does not hold it, since a deploy of that reference
 # could not pull.
 use_overridden_image() {
-    local ref
+    local ref source
     ref="$(e2e_image "$1")"
+    if e2e_image_copied_from_release "$1"; then
+        source="$(e2e_release_image "$1")"
+        if ! docker manifest inspect "$source" >/dev/null 2>&1; then
+            echo "ERROR: $source is not in the registry. Its tag comes from an override, so setup copies it as it is and never builds it." >&2
+            exit 1
+        fi
+        echo "  COPY ${1}: $source -> $ref (Crossplane installs one Function per package repository, and ArgoCD's installs from $(dirname "$source"))"
+        e2e_push copy "$ref" "$source"
+    fi
     if ! docker manifest inspect "$ref" >/dev/null 2>&1; then
         echo "ERROR: $ref is not in the registry. Its tag comes from an override, so setup uses it as it is and never builds it." >&2
         exit 1
