@@ -82,12 +82,13 @@ def capture_call:
   | select(($w | operator_get) and ($w | json_output))
   | {sorted: ($w | any(.[]; test("--sort-by")))};
 
-# The first simple command a $(...) runs: the left of an &&, || or pipe, and
+# The first simple command a $(...) runs: the left of an && or || list, and
 # the first statement of a brace group or subshell. A capture like
 # NAME=$(kubectl ... -o json || echo "") or NAME=$( (kubectl ... -o json) )
-# keeps that command's JSON when it succeeds.
+# keeps that command's JSON when it succeeds. A pipe stops the walk: what
+# reaches NAME is then the last stage's output, no longer the pod list.
 def first_command:
-  if .Cmd.Type == "BinaryCmd" then .Cmd.X | first_command
+  if .Cmd.Type == "BinaryCmd" and (.Cmd.Op == "&&" or .Cmd.Op == "||") then .Cmd.X | first_command
   elif .Cmd.Type == "Block" or .Cmd.Type == "Subshell" then .Cmd.Stmts[0] // {} | first_command
   else . end;
 

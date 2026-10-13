@@ -73,3 +73,4 @@ jq '.items[0]' <<<"$C"
 kubectl get pods -l "$E2E_OPERATOR_PODS" -o json | {
     jq '.items[0]'
 }
+kubectl get pods -l "$E2E_OPERATOR_PODS" -o jsonpath='{.items[0].x}'; kubectl get pods -l "$E2E_OPERATOR_PODS" -o jsonpath='{.items[1].x}'
