@@ -3660,13 +3660,21 @@ fi
 # only on a command, or after a capture, that carries --sort-by, which picks its
 # pod on purpose. A command runs on past a line that ends with a backslash or
 # inside an open quote, so a jq program spread over lines is one command.
-# Comment lines are skipped. Fails when a file was listed and never read.
+# A quote still open at the end of the file, or after OPERATOR_SCAN_QUOTE_WINDOW
+# lines when that is set above 0, prints `file:line: unbalanced quote; scanning
+# the remainder per line` on stderr, naming the line that opened it, and those
+# lines are scanned again one command per line, so no line goes unread. The
+# window is off by default: a quoted awk or jq program longer than any window
+# is still one command, read whole. Comment lines are skipped. Fails when a file was listed and
+# never read.
 scan_operator_item_reads() {
     local listed="$scratch/operator-items.listed" read="$scratch/operator-items.read"
+    local warned="$scratch/operator-items.warned"
     printf '%s\n' "$@" > "$listed"
     : > "$read"
+    : > "$warned"
     # shellcheck disable=SC2016  # an awk program; the $ fields belong to awk
-    awk -v readlog="$read" '
+    awk -v readlog="$read" -v warnlog="$warned" -v window="${OPERATOR_SCAN_QUOTE_WINDOW:-0}" '
         function picks(c, sorted) {
             return c ~ /\.items\[-?[0-9]+\]/ ||
                 (c ~ /\.items\[-?[0-9]*:-?[0-9]*\]/ && !sorted) ||
@@ -3700,24 +3708,21 @@ scan_operator_item_reads() {
             }
             return q != ""
         }
-        FNR == 1 { print FILENAME > readlog; cmd = ""; split("", var_caps); split("", file_caps) }
-        cmd == "" && /^[[:space:]]*#/ { next }
-        {
-            if (cmd == "") start = FNR
-            cmd = cmd " " $0
-            if ($0 ~ /\\$/ || open_quote(cmd)) next
-            operator_get = cmd ~ /kubectl|KUBECTL/ && cmd ~ /get[[:space:]]+(pods?|po)([[:space:]]|$)/ &&
-                cmd ~ /E2E_OPERATOR_PODS|app=cfgd-operator|component=operator/
-            sorted = cmd ~ /--sort-by/
-            if (operator_get && picks(cmd, sorted)) print FILENAME ":" start
-            else if (cmd !~ /kubectl|KUBECTL/ && (bound = reads_capture(cmd)) >= 0 && picks(cmd, bound))
-                print FILENAME ":" start
-            kept = cmd
+        # judge(c, at): print file:at when the command c picks one operator
+        # pod, and record a capture c makes.
+        function judge(c, at,    operator_get, sorted, bound, kept, name) {
+            operator_get = c ~ /kubectl|KUBECTL/ && c ~ /get[[:space:]]+(pods?|po)([[:space:]]|$)/ &&
+                c ~ /E2E_OPERATOR_PODS|app=cfgd-operator|component=operator/
+            sorted = c ~ /--sort-by/
+            if (operator_get && picks(c, sorted)) print file ":" at
+            else if (c !~ /kubectl|KUBECTL/ && (bound = reads_capture(c)) >= 0 && picks(c, bound))
+                print file ":" at
+            kept = c
             gsub(/[0-9]?>[[:space:]]*\/dev\/null|[0-9]?>&[0-9]|\|\|/, "", kept)
-            if (operator_get && cmd ~ /(-o|--output)[[:space:]=]*["\047]?json([^[:alnum:]_]|$)/ &&
+            if (operator_get && c ~ /(-o|--output)[[:space:]=]*["\047]?json([^[:alnum:]_]|$)/ &&
                 kept !~ /\|/) {
-                if (match(cmd, /[A-Za-z_][A-Za-z0-9_]*=["]?\$\(/)) {
-                    name = substr(cmd, RSTART, RLENGTH)
+                if (match(c, /[A-Za-z_][A-Za-z0-9_]*=["]?\$\(/)) {
+                    name = substr(c, RSTART, RLENGTH)
                     sub(/=.*/, "", name)
                     var_caps[name] = sorted
                 } else if (match(kept, />[[:space:]]*[^[:space:];|&)]+/)) {
@@ -3726,18 +3731,72 @@ scan_operator_item_reads() {
                     file_caps[name] = sorted
                 }
             }
+        }
+        # replay(): warn that the command from line start never closed its
+        # quote, then judge each of its buffered lines as a command of its own,
+        # joining only backslash continuations.
+        function replay(    k, c, at) {
+            print file ":" start ": unbalanced quote; scanning the remainder per line" > warnlog
+            c = ""
+            for (k = 1; k <= nbuf; k++) {
+                if (c == "" && buf[k] ~ /^[[:space:]]*#/) continue
+                if (c == "") at = start + k - 1
+                c = c " " buf[k]
+                if (buf[k] ~ /\\$/ && k < nbuf) continue
+                judge(c, at)
+                c = ""
+            }
+        }
+        # flush(): finish the command a file ends inside.
+        function flush() {
+            if (cmd == "") return
+            if (open_quote(cmd)) replay()
+            else judge(cmd, start)
             cmd = ""
         }
+        FNR == 1 {
+            flush()
+            file = FILENAME
+            print FILENAME > readlog
+            split("", var_caps)
+            split("", file_caps)
+        }
+        cmd == "" && /^[[:space:]]*#/ { next }
+        {
+            if (cmd == "") { start = FNR; nbuf = 0 }
+            cmd = cmd " " $0
+            buf[++nbuf] = $0
+            if (open_quote(cmd)) {
+                if (window + 0 > 0 && nbuf >= window + 0) { replay(); cmd = "" }
+                next
+            }
+            if ($0 ~ /\\$/) next
+            judge(cmd, start)
+            cmd = ""
+        }
+        END { flush() }
     ' "$@" 2>/dev/null || true # rc-ok: a file awk could not open is caught by census_unread below
+    if [ -s "$warned" ]; then cat "$warned" >&2; fi
     census_unread scan_operator_item_reads "$listed" "$read"
 }
-items_got="$(cd "$here/fixtures/operator-pods" && scan_operator_item_reads reads.bash)" ||
+items_got="$(cd "$here/fixtures/operator-pods" && scan_operator_item_reads reads.bash 2>"$scratch/operator-items.stderr")" ||
     items_got="(the scan failed)"
-items_want="$(printf 'reads.bash:%s\n' 1 2 4 5 6 17 18 19 20 21 24 25 27 30 33 34)"
-if [ "$items_got" = "$items_want" ]; then
-    pass "the operator item-read scan reports an index, an unsorted slice or a first of the operator pods by any operator selector, through kubectl or \$KUBECTL, on one line, continued, through jq, or from a captured -o json variable or file read later in the file, and stays quiet on comments, a pick from another capture, .items[*], a sorted slice, a jq sort over every pod, other pods, Deployments and a command that reads no items"
+items_warned="$(cat "$scratch/operator-items.stderr")"
+items_want="$(printf 'reads.bash:%s\n' 1 2 4 5 6 17 18 19 20 21 24 25 27 30 33 34 36)"
+if [ "$items_warned" != "reads.bash:35: unbalanced quote; scanning the remainder per line" ]; then
+    fail "the operator item-read scan warned [$items_warned], want [reads.bash:35: unbalanced quote; scanning the remainder per line]"
+elif [ "$items_got" = "$items_want" ]; then
+    pass "the operator item-read scan reports an index, an unsorted slice or a first of the operator pods by any operator selector, through kubectl or \$KUBECTL, on one line, continued, through jq, or from a captured -o json variable or file read later in the file, still reports a read after a quote it cannot close, warning on the line that opened it, and stays quiet on comments, a pick from another capture, .items[*], a sorted slice, a jq sort over every pod, other pods, Deployments and a command that reads no items"
 else
     fail "the operator item-read scan printed [$items_got], want [$items_want]"
+fi
+items_windowed="$(cd "$here/fixtures/operator-pods" && OPERATOR_SCAN_QUOTE_WINDOW=1 scan_operator_item_reads reads.bash 2>&1)" ||
+    items_windowed="(the scan failed)"
+if [ "$items_windowed" = "$items_want
+reads.bash:35: unbalanced quote; scanning the remainder per line" ]; then
+    pass "the operator item-read scan with OPERATOR_SCAN_QUOTE_WINDOW=1 gives up on the open quote at its first line and reports the same reads"
+else
+    fail "the operator item-read scan with OPERATOR_SCAN_QUOTE_WINDOW=1 printed [$items_windowed], want [$items_want] and then the warning for reads.bash:35"
 fi
 if scan_operator_item_reads "$here/fixtures/operator-pods/absent.bash" >/dev/null 2>&1; then
     fail "the operator item-read scan passed over a file it could not read"
