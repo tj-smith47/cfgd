@@ -30,7 +30,7 @@ helm install cfgd oci://ghcr.io/tj-smith47/charts/cfgd -n cfgd-system --create-n
 | `operator.enabled` | `true` | CRD controllers + admission webhooks |
 | `agent.enabled` | `false` | Node agent DaemonSet (`cfgd daemon` on every node) |
 | `csiDriver.enabled` | `false` | CSI driver for pod module injection |
-| `deviceGateway.enabled` | `false` | Device enrollment + fleet management. The gateway runs on the leader lease holder alone: a pod that loses the lease stops serving it at `operator.leaderElection.renewDeadline` and clears its `cfgd.io/gateway-leader` label as soon as the API server answers, and a new holder serves alone from the moment it labels itself |
+| `deviceGateway.enabled` | `false` | Device enrollment + fleet management. The gateway runs on the leader lease holder: a pod that loses the lease stops accepting gateway connections once `operator.leaderElection.renewDeadline` has passed since its last successful renewal, and its `cfgd.io/gateway-leader` label is cleared by the first attempt the API server accepts, retried 500ms after each failed attempt until then or until the process exits, and again when the container starts |
 | `webhook.enabled` | `true` | Validating admission webhooks |
 | `mutatingWebhook.enabled` | `true` | Pod module injection webhook |
 
