@@ -1,13 +1,16 @@
 # job-graph.awk reads a GitHub Actions workflow and prints one line per job:
 #
-#   <job id> TAB <needs, space separated> TAB <go-task targets its run: lines name, space separated>
+#   <job id> US <needs, space separated> US <go-task targets its run: lines name, space separated>
 #
+# US is the ASCII unit separator (\037). A reader splits on it with
+# IFS=$'\x1f', which keeps an empty field: a tab is IFS whitespace, so a job
+# with no needs would have its targets read as its needs.
 # It reads the shapes e2e.yml writes: job ids at two spaces under `jobs:`,
 # `needs: x`, `needs: [a, b]`, and a needs list continued over several lines
 # in flow (`[` ... `]`) or block (`- a`) form. A line it cannot place inside a
 # needs list it is reading ends the list.
 function flush() {
-    if (job != "") printf "%s\t%s\t%s\n", job, needs, tasks
+    if (job != "") printf "%s\037%s\037%s\n", job, needs, tasks
     job = ""; needs = ""; tasks = ""; in_needs = 0; flow = 0
 }
 function add_needs(text,    n, parts, i, word) {

@@ -4092,7 +4092,7 @@ job_order_problems() {
     graph="$(awk -f "$here/job-graph.awk" "$workflow")" || { echo "UNREADABLE $workflow"; return 0; }
     local -A job_needs=() job_scripts=()
     local job needs tasks task script dir sourced
-    while IFS=$'\t' read -r job needs tasks; do
+    while IFS=$'\x1f' read -r job needs tasks; do
         job_needs[$job]="$needs"
         job_scripts[$job]=""
         for task in $tasks; do
@@ -4174,7 +4174,14 @@ awk '
     { skip = 0; print }
 ' "$workflow" > "$scratch/job-graph/setup-only.yml"
 got="$(job_order_problems "$scratch/job-graph/setup-only.yml" "$taskfile" "$repo_root" | sed 's/ (.*) / /')"
-want="$(printf 'operator-tests deletes operator pods and does not run after %s, which talks to the install'"'"'s gateway\n' full-stack-tests gateway-tests helm-tests node-tests server-tests)"
+# The want is built in a loop because the operator item-read scan reads quotes
+# with no command substitution nesting, and a printf format inside "$(...)"
+# holding an apostrophe leaves the rest of this file read line by line.
+nl=$'\n'
+want=""
+for talker in full-stack-tests gateway-tests helm-tests node-tests server-tests; do
+    want+="${want:+$nl}operator-tests deletes operator pods and does not run after $talker, which talks to the install's gateway"
+done
 if [ "$got" = "$want" ]; then
     pass "the job order check names each gateway job a pod-deleting job does not wait for"
 else
@@ -4200,6 +4207,26 @@ if [ "$got" = "$want" ]; then
     pass "the job order check names the one gateway job a block needs list leaves out"
 else
     fail "the job order check over a block needs list without helm-tests printed [$got], want [$want]"
+fi
+# A job with no needs keeps its targets in their own field: cli-tests has no
+# needs, and a needs-less copy of the gateway job is a gateway job the
+# pod-deleting job does not wait for.
+cli_graph="$(awk -f "$here/job-graph.awk" "$workflow" | grep "^cli-tests"$'\x1f')" || true
+if [ "$cli_graph" = "cli-tests"$'\x1f'$'\x1f'"e2e:cli" ]; then
+    pass "the job graph reads cli-tests with no needs and its e2e:cli target"
+else
+    fail "the job graph read cli-tests as [$(printf '%s' "$cli_graph" | tr '\037' '|')], want [cli-tests||e2e:cli]"
+fi
+{
+    cat "$workflow"
+    printf '  gateway-again:\n    runs-on: x\n    steps:\n      - name: Gateway suite\n        run: task e2e:gateway\n'
+} > "$scratch/job-graph/needs-less-gateway.yml"
+got="$(job_order_problems "$scratch/job-graph/needs-less-gateway.yml" "$taskfile" "$repo_root" | sed 's/ (.*) / /')"
+want="operator-tests deletes operator pods and does not run after gateway-again, which talks to the install's gateway"
+if [ "$got" = "$want" ]; then
+    pass "the job order check names a gateway job that has no needs"
+else
+    fail "the job order check over a needs-less gateway job printed [$got], want [$want]"
 fi
 printf 'jobs:\n  lone:\n    runs-on: x\n' > "$scratch/job-graph/empty.yml"
 got="$(job_order_problems "$scratch/job-graph/empty.yml" "$taskfile" "$repo_root")"
