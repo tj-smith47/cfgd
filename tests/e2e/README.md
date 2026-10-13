@@ -322,14 +322,17 @@ operator suites reach the gateway through these names alone:
 
 ```bash
 E2E_GATEWAY_SVC=$E2E_INSTALL_RELEASE-gateway
+E2E_GATEWAY_PORT=8080
 E2E_GATEWAY_URL=http://$E2E_GATEWAY_SVC.$E2E_INSTALL_NS.svc.cluster.local:$E2E_GATEWAY_PORT
-E2E_GATEWAY_LEADER_PODS=$E2E_OPERATOR_PODS,cfgd.io/gateway-leader=true
+E2E_GATEWAY_LEADER_LABEL=cfgd.io/gateway-leader
+E2E_GATEWAY_LEADER_PODS=$E2E_OPERATOR_PODS,$E2E_GATEWAY_LEADER_LABEL=true
 E2E_GATEWAY_API_KEY=${CFGD_E2E_API_KEY:-cfgd-e2e-admin-key}
 ```
 
 `test-pr-install.sh` fails on a tracked `*.sh` under those four suites that spells an
 in-cluster `svc.cluster.local` URL, the gateway Service from `$E2E_INSTALL_RELEASE`, or
-the `cfgd.io/gateway-leader` label by hand. The fleet and drift cases put their
+the `cfgd.io/gateway-leader` label by hand, and fails when a `E2E_GATEWAY_*` name
+`helpers.sh` exports is missing from the block above. The fleet and drift cases put their
 MachineConfigs, ConfigPolicy and DriftAlert in `$E2E_INSTALL_NS`.
 
 ## Device ids sent to the device gateway

@@ -3066,6 +3066,33 @@ elif [ -z "$gateway_bypass_hits" ]; then
 else
     fail "a suite spells the gateway by hand; use \$E2E_GATEWAY_URL, \$E2E_GATEWAY_SVC, \$E2E_GATEWAY_PORT, \$E2E_GATEWAY_LEADER_LABEL, \$E2E_GATEWAY_LEADER_PODS and \$E2E_GATEWAY_API_KEY from helpers.sh: [$gateway_bypass_hits]"
 fi
+# The README lists the gateway names a suite takes from helpers.sh, so a name
+# helpers.sh exports and the README leaves out sends a suite author to the
+# literal the scan above rejects.
+# undocumented_gateway_names HELPERS README: each exported E2E_GATEWAY_* name
+# with no `NAME=` line in README; returns 2 when either file cannot be read.
+undocumented_gateway_names() {
+    local names documented
+    names="$(grep -oE '^export E2E_GATEWAY_[A-Z_]+=' "$1")" || return 2
+    documented="$(cat "$2")" || return 2
+    names="$(sed -E 's/^export //; s/=$//' <<<"$names")"
+    while IFS= read -r name; do
+        grep -qE "^$name=" <<<"$documented" || echo "$name"
+    done <<<"$names"
+}
+gw_doc_red="$(undocumented_gateway_names <(printf 'export E2E_GATEWAY_SVC=x\nexport E2E_GATEWAY_PORT=1\n') <(printf 'E2E_GATEWAY_SVC=x\n'))"
+if [ "$gw_doc_red" = "E2E_GATEWAY_PORT" ] && ! undocumented_gateway_names "$here/fixtures/gateway-bypass/absent.bash" /dev/null >/dev/null; then
+    pass "the gateway-names check reports an exported name the README leaves out and fails over a file it cannot read"
+else
+    fail "the gateway-names check printed [$gw_doc_red] for a README missing E2E_GATEWAY_PORT, or passed over an unreadable file"
+fi
+if ! gw_undocumented="$(undocumented_gateway_names "$repo_root/tests/e2e/common/helpers.sh" "$repo_root/tests/e2e/README.md")"; then
+    fail "the gateway-names check could not read helpers.sh or tests/e2e/README.md"
+elif [ -n "$gw_undocumented" ]; then
+    fail "tests/e2e/README.md lists no NAME= line for these E2E_GATEWAY_* names helpers.sh exports: [$(paste -sd" " <<<"$gw_undocumented")]; add each to its gateway block"
+else
+    pass "tests/e2e/README.md lists every E2E_GATEWAY_* name helpers.sh exports"
+fi
 
 unscanned_kept="$(grep -vE "^tests/e2e/($(IFS='|'; echo "${release_target_suites[*]}"))/" <<<"$release_target_kept" || true)" # rc-ok: no entry outside the scanned suites is the passing outcome
 if [ -n "$unscanned_kept" ]; then
