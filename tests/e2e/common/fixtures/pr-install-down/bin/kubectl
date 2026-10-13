@@ -5,8 +5,9 @@
 # every other get prints nothing, as for objects that are gone, except a
 # namespace phase read, which prints $DOWN_NAMESPACE (default Active; absent
 # prints nothing), a list of the run's namespaces, which prints $DOWN_RUN_NS
-# on each of its first $DOWN_RUN_NS_READS reads (default every read), and a
-# pod list, which prints $DOWN_PODS.
+# on each of its first $DOWN_RUN_NS_READS reads (default every read), a list
+# of CSI node-plugin pods, which prints $DOWN_CSI_PODS, and any other pod list,
+# which prints $DOWN_PODS.
 echo "kubectl $*" >> "$DOWN_LOG"
 IFS='|' read -ra fail_patterns <<<"${DOWN_FAIL:-}"
 for pattern in "${fail_patterns[@]}"; do
@@ -28,7 +29,9 @@ if [ -n "${DOWN_RUN_NS:-}" ] && [[ "$*" == "get namespaces -l "*" -o name" ]]; t
         printf '%s\n' "$DOWN_RUN_NS"
     fi
 fi
-if [ -n "${DOWN_PODS:-}" ] && [[ "$*" == "get pods -n "* ]]; then
+if [[ "$*" == "get pods -n "*" -l app.kubernetes.io/component=csi-driver "* ]]; then
+    if [ -n "${DOWN_CSI_PODS:-}" ]; then printf '%s\n' "$DOWN_CSI_PODS"; fi
+elif [ -n "${DOWN_PODS:-}" ] && [[ "$*" == "get pods -n "* ]]; then
     printf '%s\n' "$DOWN_PODS"
 fi
 exit 0

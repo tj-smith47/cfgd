@@ -1,0 +1,114 @@
+# Reads the syntax tree `shfmt --to-json` prints for one script and prints the
+# line of each command that picks one operator pod, per the contract above
+# scan_operator_item_reads in test-pr-install.sh. A unit is one pipeline (a
+# lone command is a pipeline of one stage); a $(...) inside it is a unit of its
+# own, so a command substitution nested to any depth is judged where it runs.
+
+# The text of a word with its quotes removed. A command substitution is opaque
+# here because its commands are judged as units of their own.
+def text:
+  if type != "object" then ""
+  elif .Type == "Lit" or .Type == "SglQuoted" then .Value
+  elif .Type == "DblQuoted" then [.Parts[]? | text] | join("")
+  elif .Type == "ParamExp" then "$" + (.Param.Value // "")
+  elif .Type == "CmdSubst" then "$(...)"
+  elif .Type == "ProcSubst" then "<(...)"
+  elif has("Parts") then [.Parts[]? | text] | join("")
+  else "" end;
+
+# A heredoc body is data handed to a command, never words of the command.
+def redir_words: [.Redirs[]? | .Word | text];
+
+def stage_words:
+  if .Cmd.Type == "CallExpr" then
+    [.Cmd.Assigns[]? | .Value | text] + [.Cmd.Args[]? | text] + redir_words
+  else redir_words end;
+
+def stages:
+  if .Cmd.Type == "BinaryCmd" and (.Cmd.Op == "|" or .Cmd.Op == "|&")
+  then (.Cmd.X | stages), (.Cmd.Y | stages)
+  else . end;
+
+def is_pipeline:
+  type == "object" and (.Cmd | type) == "object" and
+  (.Cmd.Type == "CallExpr" or (.Cmd.Type == "BinaryCmd" and (.Cmd.Op == "|" or .Cmd.Op == "|&")));
+
+# Every pipeline in document order, each stage's children searched for the
+# pipelines nested inside it.
+def units:
+  if is_pipeline then
+    [stages] as $s
+    | {offset: .Pos.Offset, line: .Pos.Line, stages: $s},
+      ($s[] | (.Cmd, .Redirs) | .[]? | units)
+  elif type == "object" or type == "array" then .[] | units
+  else empty end;
+
+def picks($sorted):
+  test("\\.items\\[-?[0-9]+\\]") or
+  (test("\\.items\\[-?[0-9]*:-?[0-9]*\\]") and ($sorted | not)) or
+  test("\\.items(\\[\\])?(\\s*\\|\\s*sort_by\\([^)]*\\))?\\s*\\|\\s*first([^A-Za-z0-9_]|$)") or
+  test("\\[\\s*\\.items\\[\\][^\\]]*\\]\\s*\\|\\s*first([^A-Za-z0-9_]|$)") or
+  test("(^|[^A-Za-z0-9_])first\\(\\s*\\.items");
+
+def kubectl_word: test("kubectl|KUBECTL");
+
+# True when the words run kubectl get pods by an operator selector.
+def operator_get:
+  . as $w
+  | any(.[]; kubectl_word) and
+    any(range(0; length - 1); $w[.] == "get" and ($w[. + 1] | IN("pod", "pods", "po"))) and
+    any(.[]; test("E2E_OPERATOR_PODS|app=cfgd-operator|component=operator"));
+
+def json_output: join(" ") | test("(-o|--output)[\\s=]*json([^A-Za-z0-9_]|$)");
+
+# The kubectl call a lone-stage statement makes when it keeps the operator
+# pods as JSON, with whether it sorted them.
+def capture_call:
+  select(is_pipeline and .Cmd.Type == "CallExpr")
+  | stage_words as $w
+  | select(($w | operator_get) and ($w | json_output))
+  | {sorted: ($w | any(.[]; test("--sort-by")))};
+
+def captures:
+  [ ..
+    | objects
+    | (select(has("Name") and has("Value") and (.Value | type) == "object")
+       | {kind: "var", name: .Name.Value, offset: .Pos.Offset} as $cap
+       | (.Value.Parts | if length == 1 and .[0].Type == "DblQuoted" then .[0].Parts else . end)
+       | select(length == 1 and .[0].Type == "CmdSubst" and (.[0].Stmts | length) == 1)
+       | .[0].Stmts[0] | capture_call
+       | $cap + .),
+      (select(is_pipeline and .Cmd.Type == "CallExpr")
+       | [.Redirs[]? | select((.Op == ">" or .Op == ">>" or .Op == ">|") and ((.N.Value // "1") == "1")) | .Word | text] as $paths
+       | select(($paths | length) > 0)
+       | {kind: "file", name: $paths[0], offset: .Pos.Offset} as $cap
+       | capture_call
+       | $cap + .)
+  ];
+
+# The capture a unit reads with the latest one recorded before it, if any.
+def read_capture($caps; $unit; $words):
+  [ $caps[]
+    | select(.offset < $unit.offset)
+    | .name as $name
+    | select(
+        (.kind == "var" and any($unit.stages[] | .. | objects; .Type == "ParamExp" and .Param.Value == $name)) or
+        (.kind == "file" and any($words[]; contains($name))))
+  ] | last;
+
+captures as $caps
+| [ units
+    | . as $unit
+    | [.stages[] | stage_words | .[]] as $words
+    | ($words | join(" ")) as $text
+    | [.stages[] | select(.Cmd.Type == "CallExpr") | stage_words | select(operator_get)] as $gets
+    | if ($gets | length) > 0 then
+        select($text | picks($gets | any(.[] | .[]; test("--sort-by"))))
+      elif ($text | kubectl_word) then empty
+      else
+        read_capture($caps; $unit; $words) as $cap
+        | select($cap != null and ($text | picks($cap.sorted)))
+      end
+  ]
+| sort_by(.offset)[]
+| "\($file):\(.line)"

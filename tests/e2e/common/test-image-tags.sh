@@ -418,20 +418,20 @@ fixtures="$scratch/stray-fixtures"
 mkdir -p "$fixtures"
 # shellcheck disable=SC2016 # fixtures hold the literal text a script would contain
 declare -A stray_fixture=(
-    [braced.sh]='ref="${REGISTRY}/cfgd:x"'
-    [bare.yml]='image: $REGISTRY/cfgd-operator:x'
-    [quoted.sh]='ref="$REGISTRY"/cfgd-operator:x'
-    [defaulted.tera]='image: ${REGISTRY:-r}/cfgd-csi:x'
-    [line-end.yaml]='repository: $REGISTRY/function-cfgd'
-    [tag.json]='{"tag": "$IMAGE_TAG"}'
-    [placeholder.yaml]='image: REGISTRY_PLACEHOLDER/cfgd:x'
-    [module-artifact.sh]='ref="${REGISTRY}/cfgd-e2e/module:v1"'
-    [release.sh]='echo "$RELEASE_REGISTRY"'
-    [docker-push.sh]='docker push "$ref"'
-    [xpkg-push.sh]='crossplane xpkg push "$ref" -f x.xpkg'
-    [copy.sh]='docker buildx imagetools create --tag "$ref" "$src"'
-    [cache-to.sh]='docker buildx build --cache-to "type=registry,ref=$ref" .'
-    [buildx-push.sh]='docker buildx build --push -t "$ref" .'
+    ["braced.sh"]='ref="${REGISTRY}/cfgd:x"'
+    ["bare.yml"]='image: $REGISTRY/cfgd-operator:x'
+    ["quoted.sh"]='ref="$REGISTRY"/cfgd-operator:x'
+    ["defaulted.tera"]='image: ${REGISTRY:-r}/cfgd-csi:x'
+    ["line-end.yaml"]='repository: $REGISTRY/function-cfgd'
+    ["tag.json"]='{"tag": "$IMAGE_TAG"}'
+    ["placeholder.yaml"]='image: REGISTRY_PLACEHOLDER/cfgd:x'
+    ["module-artifact.sh"]='ref="${REGISTRY}/cfgd-e2e/module:v1"'
+    ["release.sh"]='echo "$RELEASE_REGISTRY"'
+    ["docker-push.sh"]='docker push "$ref"'
+    ["xpkg-push.sh"]='crossplane xpkg push "$ref" -f x.xpkg'
+    ["copy.sh"]='docker buildx imagetools create --tag "$ref" "$src"'
+    ["cache-to.sh"]='docker buildx build --cache-to "type=registry,ref=$ref" .'
+    ["buildx-push.sh"]='docker buildx build --push -t "$ref" .'
 )
 for name in "${!stray_fixture[@]}"; do
     printf '%s\n' "${stray_fixture[$name]}" > "$fixtures/$name"

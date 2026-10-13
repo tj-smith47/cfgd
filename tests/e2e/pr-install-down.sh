@@ -52,6 +52,30 @@ csidriver_owner() {
         -o jsonpath='{.metadata.annotations.meta\.helm\.sh/release-namespace}'
 }
 
+# report_csi_node_plugin OWNER_NS: says whether the CSIDriver OWNER_NS
+# registered can unmount the stuck pods' volumes, and how to get there. The
+# CSIDriver object outlives its node plugin: a kept install whose namespace
+# the janitor is deleting has no DaemonSet left, and its CSIDriver stays
+# registered until that namespace is gone.
+report_csi_node_plugin() {
+    local owner="$1" plugins phase
+    if ! plugins=$(kubectl get pods -n "$owner" -l app.kubernetes.io/component=csi-driver \
+        --field-selector status.phase=Running -o name); then
+        echo "  Could not read the node-plugin pods of csidriver/$CSI_DRIVER_NAME in $owner. Read the kubectl error above, then rerun this teardown." >&2
+    elif [ -n "$plugins" ]; then
+        echo "  csidriver/$CSI_DRIVER_NAME from $owner is registered and its node plugin runs there (Running node-plugin pods: $(wc -l <<<"$plugins")), so it can unmount their volumes, and this install stays until they are gone. Read each pod's events (kubectl describe pod -n <namespace> <pod>), then rerun this teardown." >&2
+    elif ! phase=$(kubectl get namespace "$owner" --ignore-not-found -o jsonpath='{.status.phase}'); then
+        echo "  csidriver/$CSI_DRIVER_NAME from $owner is registered and no node-plugin pod of it is Running there, and namespace $owner could not be read. Read the kubectl error above, then rerun this teardown." >&2
+    elif [ "$phase" = Terminating ] || [ -z "$phase" ]; then
+        {
+            echo "  csidriver/$CSI_DRIVER_NAME from $owner is registered, but namespace $owner is ${phase:-gone} and no node-plugin pod of it is Running, so the kubelet cannot unmount a $CSI_DRIVER_NAME volume and a pod above that uses one stays Terminating."
+            echo "  Once namespace $owner is gone, run task e2e:setup: it deletes the CSIDriver $owner left and installs a driver that runs, the kubelet unmounts them within a few minutes and the namespaces finish deleting (kubectl get namespaces -l $E2E_RUN_LABEL). Then task e2e:pr-install:down removes that install."
+        } >&2
+    else
+        echo "  csidriver/$CSI_DRIVER_NAME from $owner is registered, but no node-plugin pod of it is Running in $owner, so the kubelet cannot unmount a $CSI_DRIVER_NAME volume yet. Read those pods (kubectl get pods -n $owner -l app.kubernetes.io/component=csi-driver) and their events, then rerun this teardown once one runs." >&2
+    fi
+}
+
 # run_namespaces_gone: 0 when none of the run's namespaces is left; leaves the
 # names it read in run_ns_left.
 run_namespaces_gone() {
@@ -132,7 +156,7 @@ if ! wait_until "$RUN_NS_TIMEOUT" 5 "the namespaces labelled $E2E_RUN_LABEL to b
         if ! csi_owner_ns=$(csidriver_owner); then
             echo "  Could not read csidriver/$CSI_DRIVER_NAME. Read the kubectl error above, then rerun this teardown." >&2
         elif [ -n "$csi_owner_ns" ]; then
-            echo "  csidriver/$CSI_DRIVER_NAME from $csi_owner_ns is registered, so its driver can unmount their volumes, and this install stays until they are gone. Read each pod's events (kubectl describe pod -n <namespace> <pod>), then rerun this teardown." >&2
+            report_csi_node_plugin "$csi_owner_ns"
         else
             {
                 echo "  No csidriver/$CSI_DRIVER_NAME is registered, so the kubelet cannot unmount a $CSI_DRIVER_NAME volume and a pod above that uses one stays Terminating."

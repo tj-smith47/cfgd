@@ -3209,7 +3209,7 @@ else
     pass "the Helm scope scan fails over a file it cannot read"
 fi
 # Eight installs and FS-HELM-05's upgrade.
-declare -A helm_scope_floors=([tests/e2e/full-stack/scripts/test-helm.sh]=9)
+declare -A helm_scope_floors=(["tests/e2e/full-stack/scripts/test-helm.sh"]=9)
 for scope_file in "${!helm_scope_floors[@]}"; do
     if ! git -C "$repo_root" ls-files --error-unmatch "$scope_file" >/dev/null 2>&1; then
         fail "$scope_file is not tracked, so the Helm scope scan cannot hold it to its floor"
@@ -3595,12 +3595,15 @@ $down_rest" "^ERROR: the PR install teardown failed at: find release$" \
 # CSI driver is issued only once the wait reads none of them left, here on its
 # second read. When the wait times out, the teardown names each pod left with
 # its CSI drivers and exits 1 with the install still there, and when no
-# CSIDriver is registered (today's leftovers of an earlier teardown) it says
+# CSIDriver is registered (today's leftovers of an earlier teardown), or one is
+# registered from a Terminating namespace with no node plugin running, it says
 # how a running driver unmounts them.
 down_wait_left="kubectl $down_run_ns"
 down_pods="kubectl get pods -n e2e-inject-42 -o jsonpath={range .items[*]}{\"  \"}{.metadata.namespace}{\"/\"}{.metadata.name}{\" \"}{.status.phase}{\" csi: \"}{.spec.volumes[*].csi.driver}{\"\\n\"}{end}"
 down_csi_read="kubectl get csidriver e2e.csi.cfgd.io --ignore-not-found -o jsonpath={.metadata.annotations.meta\\.helm\\.sh/release-namespace}"
 down_pod_line="  e2e-inject-42/e2e-debug-pod Running csi: e2e.csi.cfgd.io"
+down_plugin_read="kubectl get pods -n cfgd-e2e-42-sys -l app.kubernetes.io/component=csi-driver --field-selector status.phase=Running -o name"
+down_owner_phase="kubectl get namespace cfgd-e2e-42-sys --ignore-not-found -o jsonpath={.status.phase}"
 expect_down "pr-install-down.sh deletes the run's namespaces and uninstalls the release only after the wait reads none of them left" \
     0 "$down_objects
 $down_wait_left
@@ -3608,13 +3611,28 @@ $down_uninstall
 $down_rest" "^Removed the PR install cfgd-e2e-42$" \
     DOWN_RUN_NS=namespace/e2e-inject-42 DOWN_RUN_NS_READS=2 RUN_NS_TIMEOUT=30
 for want in "^ERROR: these namespaces labelled cfgd.io/e2e-run=42 are still there after 0s: e2e-inject-42\. " \
-    "^$down_pod_line$" "^  csidriver/e2e.csi.cfgd.io from cfgd-e2e-42-sys is registered, so its driver can unmount their volumes, and this install stays" \
+    "^$down_pod_line$" "^  csidriver/e2e.csi.cfgd.io from cfgd-e2e-42-sys is registered and its node plugin runs there (Running node-plugin pods: 1), so it can unmount their volumes, and this install stays" \
     "^ERROR: the PR install teardown failed at: run namespaces left$"; do
     expect_down "pr-install-down.sh exits 1 keeping the install when the run's namespaces outlast the wait: $want" \
         1 "$down_objects
 $down_pods
-$down_csi_read" "$want" \
-        DOWN_RUN_NS=namespace/e2e-inject-42 RUN_NS_TIMEOUT=0 "DOWN_PODS=$down_pod_line" "DOWN_PRINT=get csidriver *" DOWN_PRINT_OUT=cfgd-e2e-42-sys
+$down_csi_read
+$down_plugin_read" "$want" \
+        DOWN_RUN_NS=namespace/e2e-inject-42 RUN_NS_TIMEOUT=0 "DOWN_PODS=$down_pod_line" "DOWN_PRINT=get csidriver *" DOWN_PRINT_OUT=cfgd-e2e-42-sys \
+        DOWN_CSI_PODS=pod/cfgd-e2e-42-csi-x7k2p
+done
+for want in "^$down_pod_line$" \
+    "^  csidriver/e2e.csi.cfgd.io from cfgd-e2e-42-sys is registered, but namespace cfgd-e2e-42-sys is Terminating and no node-plugin pod of it is Running, so the kubelet cannot unmount" \
+    "^  Once namespace cfgd-e2e-42-sys is gone, run task e2e:setup: it deletes the CSIDriver cfgd-e2e-42-sys left" \
+    "^ERROR: the PR install teardown failed at: run namespaces left$"; do
+    expect_down "pr-install-down.sh names the remedy when the run's namespaces outlast the wait and the CSIDriver's namespace is Terminating with no node plugin running: $want" \
+        1 "$down_objects
+$down_pods
+$down_csi_read
+$down_plugin_read
+$down_owner_phase" "$want" \
+        DOWN_NAMESPACE=Terminating DOWN_RUN_NS=namespace/e2e-inject-42 RUN_NS_TIMEOUT=0 "DOWN_PODS=$down_pod_line" \
+        "DOWN_PRINT=get csidriver *" DOWN_PRINT_OUT=cfgd-e2e-42-sys
 done
 for want in "^$down_pod_line$" "^  No csidriver/e2e.csi.cfgd.io is registered, so the kubelet cannot unmount" \
     "^  Run task e2e:setup: once its driver runs, the kubelet unmounts them" "^ERROR: the PR install teardown failed at: run namespaces left$"; do
@@ -3994,154 +4012,82 @@ fi
 # survivor passes for the replacement. scan_operator_item_reads FILE...:
 # file:line of each command that picks one pod: `.items[N]`, a slice
 # `.items[A:B]`, or jq `first` of the list (`.items | first`, after a sort_by or
-# over `[.items[] ...]`, or `first(.items)`). A kubectl (or $KUBECTL) command
-# that gets pods by an operator selector ($E2E_OPERATOR_PODS, app=cfgd-operator
-# or app.kubernetes.io/component=operator) is read on its own line. Once such a
-# command keeps its `-o json` output, with no pipe, in a variable
-# (NAME="$(...)") or a file (> PATH), every later command in the file that runs
-# no kubectl of its own and reads that variable ($NAME or ${NAME}) or that path
-# is read too, since that JSON can be indexed in a second step. A slice passes
-# only on a command, or after a capture, that carries --sort-by, which picks its
-# pod on purpose. A command runs on past a line that ends with a backslash or
-# inside an open quote, so a jq program spread over lines is one command.
-# A quote still open at the end of the file prints `file:line: unbalanced
-# quote; scanning the remainder per line` on stderr, naming the line that
-# opened it, and those lines are scanned again one command per line, so no line
-# goes unread. Comment lines are skipped. Fails when a file was listed and
+# over `[.items[] ...]`, or `first(.items)`). Each file is parsed with
+# `shfmt --to-json` and the syntax tree is read by operator-item-reads.jq, so a
+# command is what bash runs: a pipeline spread over lines is one command, a
+# $(...) nested to any depth inside quotes is a command of its own, reported on
+# the line it starts, and a comment or a heredoc body is never a command. A
+# kubectl (or $KUBECTL) get of pods by an operator selector ($E2E_OPERATOR_PODS,
+# app=cfgd-operator or app.kubernetes.io/component=operator) is read with every
+# stage of its pipeline, so a jsonpath on the kubectl and a jq after a pipe
+# both count. Once such a kubectl keeps its `-o json` output, alone in its
+# pipeline, in a variable (NAME="$(...)") or a file (> PATH), every later
+# command in the file that runs no kubectl of its own and reads that variable
+# ($NAME or ${NAME}) or that path is read too, since that JSON can be indexed in
+# a second step. A slice passes only on a command, or after a capture, that
+# carries --sort-by, which picks its pod on purpose. Fails naming the file and
+# shfmt's error when a file does not parse, and when a file was listed and
 # never read.
 scan_operator_item_reads() {
     local listed="$scratch/operator-items.listed" read="$scratch/operator-items.read"
-    local warned="$scratch/operator-items.warned"
+    local tree="$scratch/operator-items.json" err="$scratch/operator-items.err"
+    local file rc=0
     printf '%s\n' "$@" > "$listed"
     : > "$read"
-    : > "$warned"
-    # shellcheck disable=SC2016  # an awk program; the $ fields belong to awk
-    awk -v readlog="$read" -v warnlog="$warned" '
-        function picks(c, sorted) {
-            return c ~ /\.items\[-?[0-9]+\]/ ||
-                (c ~ /\.items\[-?[0-9]*:-?[0-9]*\]/ && !sorted) ||
-                c ~ /\.items(\[\])?([[:space:]]*\|[[:space:]]*sort_by\([^)]*\))?[[:space:]]*\|[[:space:]]*first([^[:alnum:]_]|$)/ ||
-                c ~ /\[[[:space:]]*\.items\[\][^]]*\][[:space:]]*\|[[:space:]]*first([^[:alnum:]_]|$)/ ||
-                c ~ /(^|[^[:alnum:]_])first\([[:space:]]*\.items/
+    for file in "$@"; do
+        [ -r "$file" ] || continue
+        echo "$file" >> "$read"
+        if ! shfmt -ln bash --to-json < "$file" > "$tree" 2> "$err"; then
+            echo "scan_operator_item_reads: shfmt cannot parse $file: $(cat "$err")" >&2
+            rc=1
+            continue
+        fi
+        jq -r --arg file "$file" -f "$here/operator-item-reads.jq" "$tree" || {
+            echo "scan_operator_item_reads: jq could not read the syntax tree of $file" >&2
+            rc=1
         }
-        # reads_capture(c): the sorted flag of the first capture c reads, or -1.
-        function reads_capture(c,    name) {
-            for (name in var_caps)
-                if (c ~ ("\\$\\{?" name "([^[:alnum:]_]|$)")) return var_caps[name]
-            for (name in file_caps)
-                if (index(c, name)) return file_caps[name]
-            return -1
-        }
-        # open_quote(c): 1 when c ends inside a single- or double-quoted string.
-        # A # that starts a word outside quotes ends the scan as a comment.
-        function open_quote(c,    i, ch, q, prev) {
-            q = ""
-            prev = " "
-            for (i = 1; i <= length(c); i++) {
-                ch = substr(c, i, 1)
-                if (q == "\047") { if (ch == "\047") q = "" }
-                else if (q == "\"") {
-                    if (ch == "\\") i++
-                    else if (ch == "\"") q = ""
-                } else if (ch == "\\") i++
-                else if (ch == "\047" || ch == "\"") q = ch
-                else if (ch == "#" && prev ~ /[[:space:];]/) break
-                prev = ch
-            }
-            return q != ""
-        }
-        # judge(c, at): print file:at when the command c picks one operator
-        # pod, and record a capture c makes.
-        function judge(c, at,    operator_get, sorted, bound, kept, name) {
-            operator_get = c ~ /kubectl|KUBECTL/ && c ~ /get[[:space:]]+(pods?|po)([[:space:]]|$)/ &&
-                c ~ /E2E_OPERATOR_PODS|app=cfgd-operator|component=operator/
-            sorted = c ~ /--sort-by/
-            if (operator_get && picks(c, sorted)) print file ":" at
-            else if (c !~ /kubectl|KUBECTL/ && (bound = reads_capture(c)) >= 0 && picks(c, bound))
-                print file ":" at
-            kept = c
-            gsub(/[0-9]?>[[:space:]]*\/dev\/null|[0-9]?>&[0-9]|\|\|/, "", kept)
-            if (operator_get && c ~ /(-o|--output)[[:space:]=]*["\047]?json([^[:alnum:]_]|$)/ &&
-                kept !~ /\|/) {
-                if (match(c, /[A-Za-z_][A-Za-z0-9_]*=["]?\$\(/)) {
-                    name = substr(c, RSTART, RLENGTH)
-                    sub(/=.*/, "", name)
-                    var_caps[name] = sorted
-                } else if (match(kept, />[[:space:]]*[^[:space:];|&)]+/)) {
-                    name = substr(kept, RSTART + 1, RLENGTH - 1)
-                    gsub(/^[[:space:]]+|["\047]/, "", name)
-                    file_caps[name] = sorted
-                }
-            }
-        }
-        # replay(): warn that the command from line start never closed its
-        # quote, then judge each of its buffered lines as a command of its own,
-        # joining only backslash continuations.
-        function replay(    k, c, at) {
-            print file ":" start ": unbalanced quote; scanning the remainder per line" > warnlog
-            c = ""
-            for (k = 1; k <= nbuf; k++) {
-                if (c == "" && buf[k] ~ /^[[:space:]]*#/) continue
-                if (c == "") at = start + k - 1
-                c = c " " buf[k]
-                if (buf[k] ~ /\\$/ && k < nbuf) continue
-                judge(c, at)
-                c = ""
-            }
-        }
-        # flush(): finish the command a file ends inside.
-        function flush() {
-            if (cmd == "") return
-            if (open_quote(cmd)) replay()
-            else judge(cmd, start)
-            cmd = ""
-        }
-        FNR == 1 {
-            flush()
-            file = FILENAME
-            print FILENAME > readlog
-            split("", var_caps)
-            split("", file_caps)
-        }
-        cmd == "" && /^[[:space:]]*#/ { next }
-        {
-            if (cmd == "") { start = FNR; nbuf = 0 }
-            cmd = cmd " " $0
-            buf[++nbuf] = $0
-            if (open_quote(cmd) || $0 ~ /\\$/) next
-            judge(cmd, start)
-            cmd = ""
-        }
-        END { flush() }
-    ' "$@" 2>/dev/null || true # rc-ok: a file awk could not open is caught by census_unread below
-    if [ -s "$warned" ]; then cat "$warned" >&2; fi
-    census_unread scan_operator_item_reads "$listed" "$read"
+    done
+    census_unread scan_operator_item_reads "$listed" "$read" || rc=1
+    return "$rc"
 }
-items_got="$(cd "$here/fixtures/operator-pods" && scan_operator_item_reads reads.bash 2>"$scratch/operator-items.stderr")" ||
-    items_got="(the scan failed)"
-items_warned="$(cat "$scratch/operator-items.stderr")"
-items_want="$(printf 'reads.bash:%s\n' 1 2 4 5 6 17 18 19 20 21 24 25 27 30 33 34 36)"
-if [ "$items_warned" != "reads.bash:35: unbalanced quote; scanning the remainder per line" ]; then
-    fail "the operator item-read scan warned [$items_warned], want [reads.bash:35: unbalanced quote; scanning the remainder per line]"
-elif [ "$items_got" = "$items_want" ]; then
-    pass "the operator item-read scan reports an index, an unsorted slice or a first of the operator pods by any operator selector, through kubectl or \$KUBECTL, on one line, continued, through jq, or from a captured -o json variable or file read later in the file, still reports a read after a quote it cannot close, warning on the line that opened it, and stays quiet on comments, a pick from another capture, .items[*], a sorted slice, a jq sort over every pod, other pods, Deployments and a command that reads no items"
+if ! command -v shfmt >/dev/null; then
+    fail "the operator item-read scan needs shfmt on PATH (the version .github/actions/setup-shfmt pins); its cases did not run"
 else
-    fail "the operator item-read scan printed [$items_got], want [$items_want]"
-fi
-if scan_operator_item_reads "$here/fixtures/operator-pods/absent.bash" >/dev/null 2>&1; then
-    fail "the operator item-read scan passed over a file it could not read"
-else
-    pass "the operator item-read scan fails over a file it cannot read"
-fi
-mapfile -t operator_item_scripts < <(git -C "$repo_root" ls-files 'tests/e2e/*.sh' ':!tests/e2e/common/fixtures/*')
-if [ "${#operator_item_scripts[@]}" -lt 60 ]; then
-    fail "git ls-files 'tests/e2e/*.sh' matched ${#operator_item_scripts[@]} scripts outside the fixtures, fewer than the floor of 60, so the operator item-read scan missed part of the suites"
-elif ! operator_items_found="$(cd "$repo_root" && scan_operator_item_reads "${operator_item_scripts[@]}")"; then
-    fail "the operator item-read scan could not read every e2e script"
-elif [ -z "$operator_items_found" ]; then
-    pass "no e2e script picks one pod out of the operator pod list (${#operator_item_scripts[@]} scripts)"
-else
-    fail "an e2e script picks one operator pod (an index, an unsorted slice or first), and the operator runs a leader and a standby; read every pod ({.items[*]...} or one line per pod) or the leader (operator_leader_pod): [$operator_items_found]"
+    items_got="$(cd "$here/fixtures/operator-pods" && scan_operator_item_reads reads.bash 2>"$scratch/operator-items.stderr")" ||
+        items_got="(the scan failed: $(cat "$scratch/operator-items.stderr"))"
+    items_stderr="$(cat "$scratch/operator-items.stderr")"
+    items_want="$(printf 'reads.bash:%s\n' 1 2 4 5 6 17 18 19 20 21 24 25 27 30 33 34 35 36 37)"
+    if [ -n "$items_stderr" ]; then
+        fail "the operator item-read scan wrote [$items_stderr] on stderr over a fixture that parses"
+    elif [ "$items_got" = "$items_want" ]; then
+        pass "the operator item-read scan reports an index, an unsorted slice or a first of the operator pods by any operator selector, through kubectl or \$KUBECTL, on one line, continued, through jq, inside a \$(...) nested in quotes or spread over two lines, or from a captured -o json variable or file read later in the file, and stays quiet on comments, a heredoc body, a pick from another capture, .items[*], a sorted slice, a jq sort over every pod, other pods, Deployments and a command that reads no items"
+    else
+        fail "the operator item-read scan printed [$items_got], want [$items_want]"
+    fi
+    # shellcheck disable=SC2016  # shfmt's own message quotes the $( it found unclosed
+    items_broken_want='scan_operator_item_reads: shfmt cannot parse unparsable.bash: 1:7: reached EOF without matching `$(` with `)`'
+    if items_broken="$(cd "$here/fixtures/operator-pods" && scan_operator_item_reads reads.bash unparsable.bash 2>&1 >/dev/null)"; then
+        fail "the operator item-read scan passed over a file shfmt cannot parse"
+    elif [ "$items_broken" = "$items_broken_want" ]; then
+        pass "the operator item-read scan fails over a file shfmt cannot parse, naming the file and shfmt's error"
+    else
+        fail "the operator item-read scan over a file shfmt cannot parse wrote [$items_broken], want the file named with shfmt's error"
+    fi
+    if scan_operator_item_reads "$here/fixtures/operator-pods/absent.bash" >/dev/null 2>&1; then
+        fail "the operator item-read scan passed over a file it could not read"
+    else
+        pass "the operator item-read scan fails over a file it cannot read"
+    fi
+    mapfile -t operator_item_scripts < <(git -C "$repo_root" ls-files 'tests/e2e/*.sh' ':!tests/e2e/common/fixtures/*')
+    if [ "${#operator_item_scripts[@]}" -lt 60 ]; then
+        fail "git ls-files 'tests/e2e/*.sh' matched ${#operator_item_scripts[@]} scripts outside the fixtures, fewer than the floor of 60, so the operator item-read scan missed part of the suites"
+    elif ! operator_items_found="$(cd "$repo_root" && scan_operator_item_reads "${operator_item_scripts[@]}" 2>"$scratch/operator-items.stderr")"; then
+        fail "the operator item-read scan could not read every e2e script: $(cat "$scratch/operator-items.stderr")"
+    elif [ -z "$operator_items_found" ]; then
+        pass "no e2e script picks one pod out of the operator pod list (${#operator_item_scripts[@]} scripts)"
+    else
+        fail "an e2e script picks one operator pod (an index, an unsorted slice or first), and the operator runs a leader and a standby; read every pod ({.items[*]...} or one line per pod) or the leader (operator_leader_pod): [$operator_items_found]"
+    fi
 fi
 
 # OP-LC-03 deletes the operator leader, and the device gateway runs in the

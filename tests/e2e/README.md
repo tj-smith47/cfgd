@@ -33,8 +33,10 @@ renders from `ghcr.io/tj-smith47` is checked. An override that is not a semver
 `function-cfgd` has no pin in the chart.
 
 A release cut tags every crate it releases on one commit (`v0.12.0`,
-`operator-v0.10.0` and `csi-v0.8.0` name the same commit), and the chart there pins
-exactly the images that cut published. To run the suites against those images,
+`operator-v0.10.0` and `csi-v0.8.0` name the same commit), and the chart there pins,
+for every image, the version current at that cut, whether that cut published it or an
+earlier one did (a cut that releases only some crates leaves the other pins at their
+earlier versions). To run the suites against those images,
 check out one of the cut's tags, leave `REGISTRY` at its default and name the
 release registry with that commit's pins:
 
@@ -162,11 +164,20 @@ the install's `$CSI_DRIVER_NAME` volume finishes deleting only after the kubelet
 running driver to unmount it, so removing the driver first leaves the pod and its
 namespace Terminating. When the wait times out, it names each namespace and each pod left
 in it with the CSI drivers its volumes use, and exits 1 with the install still there; a
-rerun finishes the teardown once they are gone. When no `$CSI_DRIVER_NAME` CSIDriver is
-registered at that point (an earlier teardown removed it first), it says so:
-`task e2e:setup` registers the driver again, the kubelet unmounts those volumes within a few
-minutes and the namespaces finish deleting, and `task e2e:pr-install:down` then removes
-that new install. The teardown never force-deletes a pod. After the wait it uninstalls
+rerun finishes the teardown once they are gone. In CI nothing reruns it: the next run's
+setup refuses the kept install until its heartbeat is 900s (`HEARTBEAT_STALE_SECONDS`)
+old, then `reclaim_stale_install` removes it through this script (see the reclaim
+paragraph below), and the janitor in `/db/manifests/k3s` deletes its namespaces once they
+are 3600s old with no fresh heartbeat. The driver counts as serving only when the
+`$CSI_DRIVER_NAME` CSIDriver is registered and a node-plugin pod of the install that
+registered it is Running, and the message says which state it found. When no CSIDriver is
+registered (an earlier teardown removed it first), `task e2e:setup` registers the driver
+again, the kubelet unmounts those volumes within a few minutes and the namespaces finish
+deleting, and `task e2e:pr-install:down` then removes that new install. When one is
+registered from a namespace that is Terminating or gone, with no node plugin Running, the
+same remedy applies once that namespace is gone: setup deletes the CSIDriver it left.
+When its namespace is Active and no node-plugin pod runs, the message points at those
+pods. The teardown never force-deletes a pod. After the wait it uninstalls
 `$E2E_INSTALL_RELEASE` (the device
 gateway's Service, Role and RoleBinding with it) and deletes `$E2E_INSTALL_NS`, where
 the gateway's DriftAlerts and emptyDir store live, without waiting. It then reads back that `$CSI_DRIVER_NAME` no longer

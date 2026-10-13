@@ -32,5 +32,10 @@ kubectl get pods -n "$E2E_INSTALL_NS" -l "$E2E_OPERATOR_PODS" -o json > "$SCRATC
 jq -r '.items[0].metadata.name' "$SCRATCH/other.json"
 jq -r '.items[0].metadata.name' "$SCRATCH/op.json"
 jq -r '.items | sort_by(.metadata.creationTimestamp) | first | .metadata.name' <<<"$J"
-echo "an unbalanced quote
+echo "$(kubectl get pods -n "$E2E_INSTALL_NS" -l "$E2E_OPERATOR_PODS" -o jsonpath='{.items[0].metadata.name}' | tr -d "'")"
 kubectl get pods -n "$E2E_INSTALL_NS" -l "$E2E_OPERATOR_PODS" -o jsonpath='{.items[0].metadata.name}'
+POD="$(printf '%s' "$(kubectl get pods -n "$E2E_INSTALL_NS" -l "$E2E_OPERATOR_PODS" -o json |
+    jq -r '.items[0].metadata.name')")"
+cat <<'EOF'
+kubectl get pods -n "$E2E_INSTALL_NS" -l "$E2E_OPERATOR_PODS" -o jsonpath='{.items[0].metadata.name}'
+EOF
