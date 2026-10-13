@@ -47,7 +47,7 @@ echo "Gateway reachable at $GW_URL (lease holder pod/$GW_LEADER_POD)"
 ADMIN_KEY=$(kubectl get deployment "$E2E_OPERATOR_DEPLOY" -n "$E2E_INSTALL_NS" \
     -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="CFGD_API_KEY")].value}')
 if [ "$ADMIN_KEY" != "$E2E_GATEWAY_API_KEY" ]; then
-    echo "ERROR: deployment/$E2E_OPERATOR_DEPLOY sets CFGD_API_KEY to [${ADMIN_KEY}], not the key setup passes as deviceGateway.apiKey; rerun setup" >&2
+    echo "ERROR: deployment/$E2E_OPERATOR_DEPLOY sets CFGD_API_KEY to [${ADMIN_KEY}] while setup passed deviceGateway.apiKey=[${E2E_GATEWAY_API_KEY}]; rerun setup" >&2
     exit 1
 fi
 

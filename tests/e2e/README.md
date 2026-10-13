@@ -340,7 +340,8 @@ recorded id:
 ```bash
 gateway_device DEVICE_1 "fullstack-device-1-${E2E_RUN_ID}"
 # cleanup_e2e:
-#   kubectl delete driftalert -n "$E2E_INSTALL_NS" -l "cfgd.io/device-id in (fullstack-device-1-<run>,...)"
+#   kubectl delete driftalert -n "$E2E_INSTALL_NS" \
+#     -l "cfgd.io/device-id in (fullstack-device-1-<run>,...)"
 ```
 
 `gateway_device` refuses an id that is not already a label value (lowercase letters,
