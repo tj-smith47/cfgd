@@ -52,7 +52,8 @@
 #     namespace in that order, runs every step after an object delete, a
 #     release lookup or the uninstall fails and then exits 1, and treats a
 #     release that is not installed as removed, and exits 1 naming what it
-#     looked for when neither the release nor its namespace exists
+#     looked for when neither the release nor its namespace exists, a
+#     Terminating namespace counting as gone
 #   - a local run id is the one setup recorded, setup mints a fresh one from
 #     HEAD, and GITHUB_RUN_ID wins over both
 #   - reclaim_stale_install removes an install whose run's heartbeat is
@@ -3323,7 +3324,7 @@ down_case() {
         bash "$e2e_root/pr-install-down.sh" </dev/null 2>&1 || rc=$?
     echo "rc=$rc"
 }
-down_reads="kubectl get namespace cfgd-e2e-42-sys --ignore-not-found -o name
+down_reads="kubectl get namespace cfgd-e2e-42-sys --ignore-not-found -o jsonpath={.status.phase}
 helm list -n cfgd-e2e-42-sys -a -q --filter ^cfgd-e2e-42\$"
 down_objects="$down_reads
 kubectl delete machineconfigs,configpolicies,driftalerts,backuppolicies -A -l cfgd.io/e2e-run=42 --wait=true --timeout=90s
@@ -3387,18 +3388,21 @@ expect_down "pr-install-down.sh treats a release that is not installed as remove
 $down_rest" "^  release cfgd-e2e-42 is not installed in cfgd-e2e-42-sys; nothing to uninstall$" \
     DOWN_RELEASE=absent
 expect_down "pr-install-down.sh exits 1 naming the release, namespace and run id it looked for when it finds neither, and touches nothing" \
-    1 "$down_reads" "^ERROR: no PR install to remove: no Helm release cfgd-e2e-42 and no namespace cfgd-e2e-42-sys for run 42 (from GITHUB_RUN_ID)\.$" \
+    1 "$down_reads" "^ERROR: no PR install to remove: no Helm release cfgd-e2e-42 and namespace cfgd-e2e-42-sys absent for run 42 (from GITHUB_RUN_ID)\.$" \
     DOWN_RELEASE=absent DOWN_NAMESPACE=absent
+expect_down "pr-install-down.sh exits 1 when an earlier teardown left only a Terminating namespace" \
+    1 "$down_reads" "^ERROR: no PR install to remove: no Helm release cfgd-e2e-42 and namespace cfgd-e2e-42-sys Terminating for run 42" \
+    DOWN_RELEASE=absent DOWN_NAMESPACE=Terminating
 expect_down "pr-install-down.sh uninstalls a release whose namespace lookup finds nothing" \
     0 "$down_objects
 $down_uninstall
 $down_rest" "^Removed the PR install cfgd-e2e-42$" \
     DOWN_NAMESPACE=absent
-expect_down "pr-install-down.sh runs every step after it cannot read the namespace, then exits 1 naming it" \
+expect_down "pr-install-down.sh runs every step after it cannot read the namespace, then exits 1 naming both reads" \
     1 "$down_objects
 $down_uninstall
-$down_rest" "^ERROR: the PR install teardown failed at: find namespace$" \
-    "DOWN_FAIL=get namespace cfgd-e2e-42-sys --ignore-not-found -o name"
+$down_rest" "^ERROR: the PR install teardown failed at: find namespace, read namespace$" \
+    "DOWN_FAIL=get namespace cfgd-e2e-42-sys --ignore-not-found -o jsonpath=*"
 expect_down "pr-install-down.sh deletes the namespace and reads back after a failed helm uninstall, then exits 1 naming it" \
     1 "$down_objects
 $down_uninstall

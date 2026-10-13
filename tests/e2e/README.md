@@ -96,8 +96,9 @@ still clears their finalizers, then uninstalls `$E2E_INSTALL_RELEASE` and delete
 `$E2E_INSTALL_NS` without waiting. It then reads back that `$CSI_DRIVER_NAME` no longer
 belongs to the install and that both webhook configurations are gone, and prints the
 namespace's phase. A release that is not installed counts as removed when its namespace
-is still there. When neither exists, it prints the release, namespace and run id it
-looked for and exits 1 without touching anything; `GITHUB_RUN_ID=<run id> bash
+is still there. When neither exists (a namespace already Terminating counts as gone),
+it prints the release, namespace and run id it looked for and exits 1 without touching
+anything; `GITHUB_RUN_ID=<run id> bash
 tests/e2e/pr-install-down.sh` removes another run's install. Every step runs when one
 before it fails, and the script exits 1 naming each failed step.
 

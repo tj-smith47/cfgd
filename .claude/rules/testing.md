@@ -264,7 +264,7 @@ upgrade or array that does not.
 cfgd.io objects first, while the run's operator can still clear their finalizers,
 then the Helm release, then `$E2E_INSTALL_NS`, with each step run after a failed
 one and the script exiting 1 at the end. It exits 1 naming what it looked for when
-neither the release nor the namespace exists. CI runs it with `bash`, never through
+neither the release nor the namespace exists, a Terminating namespace counting as gone. CI runs it with `bash`, never through
 go-task, since a tool install that fails there leaks the install. A local run id is
 recorded by setup in `.cache/e2e/local-run-id` and read back by every later process.
 Setup removes another run's install through `reclaim_stale_install` once that run's

@@ -6,7 +6,8 @@
 #
 # The run id comes from helpers.sh: GITHUB_RUN_ID when set, else the id a
 # local setup recorded. When neither the run's release nor its namespace
-# exists, it prints what it looked for and exits 1 without touching anything.
+# exists, a Terminating namespace counting as gone, it prints what it looked
+# for and exits 1 without touching anything.
 #
 # Usage: tests/e2e/pr-install-down.sh
 #        GITHUB_RUN_ID=<run id> tests/e2e/pr-install-down.sh
@@ -22,8 +23,9 @@ failed=()
 echo "Removing the PR install $E2E_INSTALL_RELEASE in $E2E_INSTALL_NS (run $E2E_RUN_ID, from $E2E_RUN_ID_SOURCE)..."
 
 # A setup that failed before its helm install leaves the namespace and no
-# release, which still has objects to remove.
-if ! ns_found=$(kubectl get namespace "$E2E_INSTALL_NS" --ignore-not-found -o name); then
+# release, which still has objects to remove. A namespace already Terminating
+# is an earlier teardown's, with nothing left for this one to start.
+if ! ns_start_phase=$(kubectl get namespace "$E2E_INSTALL_NS" --ignore-not-found -o jsonpath='{.status.phase}'); then
     echo "ERROR: could not read namespace $E2E_INSTALL_NS. Read the kubectl error above, then rerun this teardown." >&2
     failed+=("find namespace")
 fi
@@ -33,9 +35,9 @@ if ! release_found=$(helm list -n "$E2E_INSTALL_NS" -a -q --filter "^${E2E_INSTA
     failed+=("find release")
     release_listed=false
 fi
-if [ "${#failed[@]}" -eq 0 ] && [ -z "$ns_found" ] && [ -z "$release_found" ]; then
+if [ "${#failed[@]}" -eq 0 ] && [ -z "$release_found" ] && { [ -z "$ns_start_phase" ] || [ "$ns_start_phase" = Terminating ]; }; then
     {
-        echo "ERROR: no PR install to remove: no Helm release $E2E_INSTALL_RELEASE and no namespace $E2E_INSTALL_NS for run $E2E_RUN_ID (from $E2E_RUN_ID_SOURCE)."
+        echo "ERROR: no PR install to remove: no Helm release $E2E_INSTALL_RELEASE and namespace $E2E_INSTALL_NS ${ns_start_phase:-absent} for run $E2E_RUN_ID (from $E2E_RUN_ID_SOURCE)."
         echo "  The run ids of the installs on the cluster: kubectl get namespaces -l cfgd.io/e2e-run -L cfgd.io/e2e-run"
         echo "  Remove one with: GITHUB_RUN_ID=<run id> bash tests/e2e/pr-install-down.sh"
     } >&2
