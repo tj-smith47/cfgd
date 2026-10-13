@@ -19,10 +19,23 @@ def text:
 # A heredoc body is data the command receives on stdin, so its text is skipped.
 def redir_words: [.Redirs[]? | .Word | text];
 
-def stage_words:
-  if .Cmd.Type == "CallExpr" then
-    [.Cmd.Assigns[]? | .Value | text] + [.Cmd.Args[]? | text] + redir_words
-  else redir_words end;
+def stmt_words:
+  (if .Cmd.Type == "CallExpr" then [.Cmd.Assigns[]? | .Value | text] + [.Cmd.Args[]? | text] else [] end)
+  + redir_words;
+
+# Every statement a stage runs itself, the stage first: a brace group, a
+# subshell, a loop or a conditional contributes the statements inside it. A
+# $(...) or <(...) stays out because its commands are units of their own, and
+# a heredoc body stays out because it is data.
+def own_stmts:
+  if type == "object" then
+    if .Type == "CmdSubst" or .Type == "ProcSubst" then empty
+    else (select(has("Cmd")), (to_entries[] | select(.key != "Hdoc") | .value | own_stmts)) end
+  elif type == "array" then .[] | own_stmts
+  else empty end;
+
+# One word list per command the stage runs.
+def stage_calls: [own_stmts | stmt_words];
 
 def stages:
   if .Cmd.Type == "BinaryCmd" and (.Cmd.Op == "|" or .Cmd.Op == "|&")
@@ -65,9 +78,14 @@ def json_output: join(" ") | test("(-o|--output)[\\s=]*json([^A-Za-z0-9_]|$)");
 # pods as JSON, with whether it sorted them.
 def capture_call:
   select(is_pipeline and .Cmd.Type == "CallExpr")
-  | stage_words as $w
+  | stmt_words as $w
   | select(($w | operator_get) and ($w | json_output))
   | {sorted: ($w | any(.[]; test("--sort-by")))};
+
+# The first command of an && or || list, which is what a capture like
+# NAME=$(kubectl ... -o json || echo "") keeps when it succeeds.
+def first_command:
+  if .Cmd.Type == "BinaryCmd" and (.Cmd.Op == "&&" or .Cmd.Op == "||") then .Cmd.X | first_command else . end;
 
 def captures:
   [ ..
@@ -75,11 +93,11 @@ def captures:
     | (select(has("Name") and has("Value") and (.Value | type) == "object")
        | {kind: "var", name: .Name.Value, offset: .Pos.Offset} as $cap
        | (.Value.Parts | if length == 1 and .[0].Type == "DblQuoted" then .[0].Parts else . end)
-       | select(length == 1 and .[0].Type == "CmdSubst" and (.[0].Stmts | length) == 1)
-       | .[0].Stmts[0] | capture_call
+       | select(length == 1 and .[0].Type == "CmdSubst" and (.[0].Stmts | length) >= 1)
+       | .[0].Stmts[0] | first_command | capture_call
        | $cap + .),
       (select(is_pipeline and .Cmd.Type == "CallExpr")
-       | [.Redirs[]? | select((.Op == ">" or .Op == ">>" or .Op == ">|") and ((.N.Value // "1") == "1")) | .Word | text] as $paths
+       | [.Redirs[]? | select((.Op | IN(">", ">>", ">|", "&>", "&>>")) and ((.N.Value // "1") == "1")) | .Word | text] as $paths
        | select(($paths | length) > 0)
        | {kind: "file", name: $paths[0], offset: .Pos.Offset} as $cap
        | capture_call
@@ -99,16 +117,17 @@ def read_capture($caps; $unit; $words):
 captures as $caps
 | [ units
     | . as $unit
-    | [.stages[] | stage_words | .[]] as $words
+    | [.stages[] | stage_calls[]] as $calls
+    | [$calls[][]] as $words
     | ($words | join(" ")) as $text
-    | [.stages[] | select(.Cmd.Type == "CallExpr") | stage_words | select(operator_get)] as $gets
+    | [$calls[] | select(operator_get)] as $gets
     | if ($gets | length) > 0 then
-        select($text | picks($gets | any(.[] | .[]; test("--sort-by"))))
+        select($text | picks($gets | any(.[][]; test("--sort-by"))))
       elif ($text | kubectl_word) then empty
       else
         read_capture($caps; $unit; $words) as $cap
         | select($cap != null and ($text | picks($cap.sorted)))
       end
   ]
-| sort_by(.offset)[]
+| unique_by(.line)[]
 | "\($file):\(.line)"

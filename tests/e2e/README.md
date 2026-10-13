@@ -193,8 +193,10 @@ tests/e2e/pr-install-down.sh` removes another run's install. Every step runs whe
 before it fails, apart from the install removal after a timed-out namespace wait, and the
 script exits 1 naming each failed step.
 
-One PR install runs at a time, since every install registers the same CSIDriver. When
-setup finds another run's install, it reads that namespace's `cfgd.io/e2e-run` label
+One PR install runs at a time, since every install registers the same CSIDriver. Setup
+reads the namespace that CSIDriver's Helm annotation names: when it is gone, setup deletes
+the CSIDriver whatever run left it, this run's id included; when it is Terminating, setup
+stops until it is gone. When setup finds another run's install, it reads that namespace's `cfgd.io/e2e-run` label
 and `cfgd.io/heartbeat`. A heartbeat `HEARTBEAT_STALE_SECONDS` (900, the janitor's value)
 or more old means that run is dead, and `reclaim_stale_install` removes its install with
 `GITHUB_RUN_ID=<owner> pr-install-down.sh` before setup continues. A fresher heartbeat

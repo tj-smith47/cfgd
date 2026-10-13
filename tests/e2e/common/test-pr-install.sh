@@ -3634,6 +3634,38 @@ $down_owner_phase" "$want" \
         DOWN_NAMESPACE=Terminating DOWN_RUN_NS=namespace/e2e-inject-42 RUN_NS_TIMEOUT=0 "DOWN_PODS=$down_pod_line" \
         "DOWN_PRINT=get csidriver *" DOWN_PRINT_OUT=cfgd-e2e-42-sys
 done
+# expect_csi_arm <label> <want line> <owner> <calls after the CSIDriver read>
+# [VAR=value...]: one more state report_csi_node_plugin tells apart, reached
+# when the run's namespaces outlast the wait and csidriver/e2e.csi.cfgd.io
+# belongs to <owner>.
+expect_csi_arm() {
+    local label="$1" want="$2" owner="$3" calls="$4"
+    shift 4
+    expect_down "pr-install-down.sh, when the run's namespaces outlast the wait, $label" \
+        1 "$down_objects
+$down_pods
+$down_csi_read
+$calls" "$want" \
+        DOWN_RUN_NS=namespace/e2e-inject-42 RUN_NS_TIMEOUT=0 "DOWN_PODS=$down_pod_line" \
+        "DOWN_PRINT=get csidriver *" "DOWN_PRINT_OUT=$owner" "$@"
+}
+down_plugin_read_7="kubectl get pods -n cfgd-e2e-7-sys -l app.kubernetes.io/component=csi-driver --field-selector status.phase=Running -o name"
+down_owner_phase_7="kubectl get namespace cfgd-e2e-7-sys --ignore-not-found -o jsonpath={.status.phase}"
+expect_csi_arm "names the CSIDriver's namespace gone and the setup remedy" \
+    "^  csidriver/e2e.csi.cfgd.io from cfgd-e2e-42-sys is registered, but namespace cfgd-e2e-42-sys is gone and no node-plugin pod of it is Running" \
+    cfgd-e2e-42-sys "$down_plugin_read
+$down_owner_phase" DOWN_NAMESPACE=absent
+expect_csi_arm "points at the node-plugin pods when the CSIDriver's namespace is Active and none of them runs" \
+    "^  csidriver/e2e.csi.cfgd.io from cfgd-e2e-42-sys is registered, but no node-plugin pod of it is Running in cfgd-e2e-42-sys, so the kubelet cannot unmount" \
+    cfgd-e2e-42-sys "$down_plugin_read
+$down_owner_phase"
+expect_csi_arm "says it could not read the node-plugin pods" \
+    "^  Could not read the node-plugin pods of csidriver/e2e.csi.cfgd.io in cfgd-e2e-42-sys\. " \
+    cfgd-e2e-42-sys "$down_plugin_read" "DOWN_FAIL=get pods -n cfgd-e2e-42-sys -l app.kubernetes.io/component=csi-driver *"
+expect_csi_arm "says it could not read the namespace of another install's CSIDriver with no node plugin running" \
+    "^  csidriver/e2e.csi.cfgd.io from cfgd-e2e-7-sys is registered and no node-plugin pod of it is Running there, and namespace cfgd-e2e-7-sys could not be read\. " \
+    cfgd-e2e-7-sys "$down_plugin_read_7
+$down_owner_phase_7" "DOWN_FAIL=get namespace cfgd-e2e-7-sys *"
 for want in "^$down_pod_line$" "^  No csidriver/e2e.csi.cfgd.io is registered, so the kubelet cannot unmount" \
     "^  Run task e2e:setup: once its driver runs, the kubelet unmounts them" "^ERROR: the PR install teardown failed at: run namespaces left$"; do
     expect_down "pr-install-down.sh names the remedy when only the run's namespaces are left and no CSIDriver is registered: $want" \
@@ -3642,6 +3674,45 @@ $down_pods
 $down_csi_read" "$want" \
         DOWN_RELEASE=absent DOWN_NAMESPACE=absent DOWN_RUN_NS=namespace/e2e-inject-42 RUN_NS_TIMEOUT=0 "DOWN_PODS=$down_pod_line"
 done
+# claim_csidriver against the same stubs, from a run-42 process. Both
+# csidriver reads print DOWN_PRINT_OUT, the owner's namespace, so the object
+# exists and names that owner; DOWN_NAMESPACE is that namespace's phase.
+claim_reads="kubectl get csidriver e2e.csi.cfgd.io --ignore-not-found -o name
+kubectl get csidriver e2e.csi.cfgd.io -o jsonpath={.metadata.annotations.meta\\.helm\\.sh/release-namespace}"
+# expect_claim <label> <want rc> <want calls> <want output pattern> [VAR=value...]
+expect_claim() {
+    local label="$1" want_rc="$2" want_calls="$3" want_out="$4" out
+    shift 4
+    : > "$scratch/down.calls"
+    out="$(in_helpers 'claim_csidriver && echo rc=0 || echo "rc=$?"' \
+        GITHUB_RUN_ID=42 PATH="$down_bin:$PATH" DOWN_LOG="$scratch/down.calls" "DOWN_PRINT=get csidriver *" "$@" 2>&1)"
+    if [ "$(sed -n 's/^rc=//p' <<<"$out")" = "$want_rc" ] && [ "$(cat "$scratch/down.calls")" = "$want_calls" ] &&
+        grep -q -- "$want_out" <<<"$out"; then
+        pass "$label"
+    else
+        fail "$label: got [$out] with calls [$(cat "$scratch/down.calls")], want rc=$want_rc, calls [$want_calls] and a line matching [$want_out]"
+    fi
+}
+expect_claim "claim_csidriver deletes a CSIDriver this run's own install left once its namespace is gone" \
+    0 "$claim_reads
+kubectl get namespace cfgd-e2e-42-sys --ignore-not-found -o jsonpath={.status.phase}
+kubectl delete csidriver e2e.csi.cfgd.io" "was left by an install in cfgd-e2e-42-sys, which no longer exists; deleting it$" \
+    DOWN_PRINT_OUT=cfgd-e2e-42-sys DOWN_NAMESPACE=absent
+expect_claim "claim_csidriver stops setup while this run's own install namespace is still Terminating" \
+    1 "$claim_reads
+kubectl get namespace cfgd-e2e-42-sys --ignore-not-found -o jsonpath={.status.phase}" \
+    "^ERROR: namespace cfgd-e2e-42-sys, which owns csidriver/e2e.csi.cfgd.io, is being deleted; rerun setup once it is gone$" \
+    DOWN_PRINT_OUT=cfgd-e2e-42-sys DOWN_NAMESPACE=Terminating
+expect_claim "claim_csidriver keeps the CSIDriver of this run's own live install for the Helm upgrade" \
+    0 "$claim_reads
+kubectl get namespace cfgd-e2e-42-sys --ignore-not-found -o jsonpath={.status.phase}" "^rc=0$" \
+    DOWN_PRINT_OUT=cfgd-e2e-42-sys
+expect_claim "claim_csidriver deletes a CSIDriver another run's install left once its namespace is gone" \
+    0 "$claim_reads
+kubectl get namespace cfgd-e2e-7-sys --ignore-not-found -o jsonpath={.status.phase}
+kubectl delete csidriver e2e.csi.cfgd.io" "was left by an install in cfgd-e2e-7-sys, which no longer exists; deleting it$" \
+    DOWN_PRINT_OUT=cfgd-e2e-7-sys DOWN_NAMESPACE=absent
+
 # reclaim_stale_install against the same stubs, from a run-42 process: the
 # owner namespace's label and heartbeat come from DOWN_PRINT_OUT. A stale owner's
 # install is removed by a child pr-install-down.sh that names every object from
@@ -4019,9 +4090,11 @@ fi
 # the line it starts, and a comment or a heredoc body is never a command. A
 # kubectl (or $KUBECTL) get of pods by an operator selector ($E2E_OPERATOR_PODS,
 # app=cfgd-operator or app.kubernetes.io/component=operator) is read with every
-# stage of its pipeline, so a jsonpath on the kubectl and a jq after a pipe
-# both count. Once such a kubectl keeps its `-o json` output, alone in its
-# pipeline, in a variable (NAME="$(...)") or a file (> PATH), every later
+# stage of its pipeline, and a stage that is a brace group, a subshell, a loop
+# or a conditional brings the commands inside it, so a jsonpath on the kubectl
+# and a jq after a pipe both count. Once such a kubectl keeps its `-o json`
+# output, alone in its pipeline, in a variable (NAME="$(...)", the kubectl
+# first in an && or || list there) or a file (>, >>, >|, &> or &>> PATH), every later
 # command in the file that runs no kubectl of its own and reads that variable
 # ($NAME or ${NAME}) or that path is read too, since that JSON can be indexed in
 # a second step. A slice passes only on a command, or after a capture, that
@@ -4056,11 +4129,11 @@ else
     items_got="$(cd "$here/fixtures/operator-pods" && scan_operator_item_reads reads.bash 2>"$scratch/operator-items.stderr")" ||
         items_got="(the scan failed: $(cat "$scratch/operator-items.stderr"))"
     items_stderr="$(cat "$scratch/operator-items.stderr")"
-    items_want="$(printf 'reads.bash:%s\n' 1 2 4 5 6 17 18 19 20 21 24 25 27 30 33 34 35 36 37)"
+    items_want="$(printf 'reads.bash:%s\n' 1 2 4 5 6 17 18 19 20 21 24 25 27 30 33 34 35 36 37 43 44 45 47 48 49 51 53 54 55 57 59 61 62 63)"
     if [ -n "$items_stderr" ]; then
         fail "the operator item-read scan wrote [$items_stderr] on stderr over a fixture that parses"
     elif [ "$items_got" = "$items_want" ]; then
-        pass "the operator item-read scan reports an index, an unsorted slice or a first of the operator pods by any operator selector, through kubectl or \$KUBECTL, on one line, continued, through jq, inside a \$(...) nested in quotes or spread over two lines, or from a captured -o json variable or file read later in the file, and stays quiet on comments, a heredoc body, a pick from another capture, .items[*], a sorted slice, a jq sort over every pod, other pods, Deployments and a command that reads no items"
+        pass "the operator item-read scan reports an index, an unsorted slice or a first of the operator pods by any operator selector, through kubectl or \$KUBECTL, on one line, continued, through jq, inside a \$(...) nested in quotes, spread over two lines, in a parameter default or a <(...), in a brace group, subshell, function, if, for or while, or from a captured -o json variable (kept through || or 2>/dev/null) or file (> or &>) read later in the file, and stays quiet on comments, a heredoc body, the capture itself, a while loop over the pods, a jq sort before .[0], a pick from another capture, .items[*], a sorted slice, a jq sort over every pod, other pods, Deployments and a command that reads no items"
     else
         fail "the operator item-read scan printed [$items_got], want [$items_want]"
     fi
@@ -4186,14 +4259,8 @@ awk '
     { skip = 0; print }
 ' "$workflow" > "$scratch/job-graph/setup-only.yml"
 got="$(job_order_problems "$scratch/job-graph/setup-only.yml" "$taskfile" "$repo_root" | sed 's/ (.*) / /')"
-# The want is built in a loop because the operator item-read scan reads quotes
-# with no command substitution nesting, and a printf format inside "$(...)"
-# holding an apostrophe leaves the rest of this file read line by line.
-nl=$'\n'
-want=""
-for talker in full-stack-tests gateway-tests helm-tests node-tests server-tests; do
-    want+="${want:+$nl}operator-tests deletes operator pods and does not run after $talker, which talks to the install's gateway"
-done
+want="$(printf "operator-tests deletes operator pods and does not run after %s, which talks to the install's gateway\n" \
+    full-stack-tests gateway-tests helm-tests node-tests server-tests)"
 if [ "$got" = "$want" ]; then
     pass "the job order check names each gateway job a pod-deleting job does not wait for"
 else

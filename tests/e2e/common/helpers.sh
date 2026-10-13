@@ -306,6 +306,53 @@ stop_heartbeat() {
     HEARTBEAT_PID=""
 }
 
+# claim_csidriver: clears the way for this install's CSIDriver, which every
+# run's install registers under the same name; Helm's release-namespace
+# annotation says whose it is. An owner namespace that is gone died without
+# uninstalling, whatever its run id, so its CSIDriver is deleted; one still
+# Terminating refuses setup until it is gone; a live one of another run goes
+# to reclaim_stale_install. A live owner that is this install's namespace is
+# left for the Helm upgrade to keep. Returns 1 when setup must stop.
+claim_csidriver() {
+    local driver owner phase
+    if ! driver=$(kubectl get csidriver "$CSI_DRIVER_NAME" --ignore-not-found -o name); then
+        echo "ERROR: could not read csidriver/$CSI_DRIVER_NAME. Check that the runner can get csidrivers, then rerun setup." >&2
+        return 1
+    fi
+    [ -n "$driver" ] || return 0
+    if ! owner=$(kubectl get csidriver "$CSI_DRIVER_NAME" \
+        -o jsonpath='{.metadata.annotations.meta\.helm\.sh/release-namespace}'); then
+        echo "ERROR: could not read the Helm owner of csidriver/$CSI_DRIVER_NAME. Check that the runner can get csidrivers, then rerun setup." >&2
+        return 1
+    fi
+    if [ -z "$owner" ]; then
+        {
+            echo "ERROR: csidriver/$CSI_DRIVER_NAME exists and no Helm release owns it, so the PR install cannot take it over."
+            echo "  Delete it (kubectl delete csidriver $CSI_DRIVER_NAME) and rerun setup."
+        } >&2
+        return 1
+    fi
+    if ! phase=$(kubectl get namespace "$owner" --ignore-not-found -o jsonpath='{.status.phase}'); then
+        echo "ERROR: could not check whether namespace $owner, which owns csidriver/$CSI_DRIVER_NAME, still exists. Check that the runner can get namespaces, then rerun setup." >&2
+        return 1
+    fi
+    if [ "$phase" = Terminating ]; then
+        echo "ERROR: namespace $owner, which owns csidriver/$CSI_DRIVER_NAME, is being deleted; rerun setup once it is gone" >&2
+        return 1
+    fi
+    if [ -z "$phase" ]; then
+        echo "  csidriver/$CSI_DRIVER_NAME was left by an install in $owner, which no longer exists; deleting it"
+        if ! kubectl delete csidriver "$CSI_DRIVER_NAME"; then
+            echo "ERROR: could not delete the leftover csidriver/$CSI_DRIVER_NAME. Delete it by hand and rerun setup." >&2
+            return 1
+        fi
+        return 0
+    fi
+    if [ "$owner" != "$E2E_INSTALL_NS" ]; then
+        reclaim_stale_install "$owner" || return 1
+    fi
+}
+
 # reclaim_stale_install <owner namespace>: the PR install in <owner namespace>
 # holds what this run's install needs. When its run's heartbeat is at least
 # HEARTBEAT_STALE_SECONDS old, that run is dead, so its install is removed with

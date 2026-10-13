@@ -542,48 +542,9 @@ kubectl apply -f "$SCRIPT_DIR/manifests/e2e-webhook-tls.yaml"
 # carry this run's label, and registers its own CSIDriver.
 echo "Installing the PR operator and CSI driver ($E2E_INSTALL_RELEASE in $E2E_INSTALL_NS)..."
 
-# Every run's install registers the same CSIDriver name, and Helm's
-# release-namespace annotation says whose it is. An owner whose namespace is
-# gone died without uninstalling, so its CSIDriver is removed; an owner whose
-# heartbeat is stale is dead, so its whole install is removed.
-if ! csi_driver_obj=$(kubectl get csidriver "$CSI_DRIVER_NAME" --ignore-not-found -o name); then
-    echo "ERROR: could not read csidriver/$CSI_DRIVER_NAME. Check that the runner can get csidrivers, then rerun setup." >&2
-    exit 1
-fi
-if [ -n "$csi_driver_obj" ]; then
-    if ! csi_owner_ns=$(kubectl get csidriver "$CSI_DRIVER_NAME" \
-        -o jsonpath='{.metadata.annotations.meta\.helm\.sh/release-namespace}'); then
-        echo "ERROR: could not read the Helm owner of csidriver/$CSI_DRIVER_NAME. Check that the runner can get csidrivers, then rerun setup." >&2
-        exit 1
-    fi
-    if [ -z "$csi_owner_ns" ]; then
-        {
-            echo "ERROR: csidriver/$CSI_DRIVER_NAME exists and no Helm release owns it, so the PR install cannot take it over."
-            echo "  Delete it (kubectl delete csidriver $CSI_DRIVER_NAME) and rerun setup."
-        } >&2
-        exit 1
-    fi
-    if [ "$csi_owner_ns" != "$E2E_INSTALL_NS" ]; then
-        if ! csi_owner_ns_phase=$(kubectl get namespace "$csi_owner_ns" --ignore-not-found \
-            -o jsonpath='{.status.phase}'); then
-            echo "ERROR: could not check whether namespace $csi_owner_ns, which owns csidriver/$CSI_DRIVER_NAME, still exists. Check that the runner can get namespaces, then rerun setup." >&2
-            exit 1
-        fi
-        if [ "$csi_owner_ns_phase" = "Terminating" ]; then
-            echo "ERROR: namespace $csi_owner_ns, which owns csidriver/$CSI_DRIVER_NAME, is being deleted; rerun setup once it is gone" >&2
-            exit 1
-        fi
-        if [ -n "$csi_owner_ns_phase" ]; then
-            reclaim_stale_install "$csi_owner_ns" || exit 1
-        else
-            echo "  csidriver/$CSI_DRIVER_NAME was left by an install in $csi_owner_ns, which no longer exists; deleting it"
-            if ! kubectl delete csidriver "$CSI_DRIVER_NAME"; then
-                echo "ERROR: could not delete the leftover csidriver/$CSI_DRIVER_NAME. Delete it by hand and rerun setup." >&2
-                exit 1
-            fi
-        fi
-    fi
-fi
+# Every run's install registers the same CSIDriver name, so one an earlier
+# install left, under this run's id or another, is cleared first.
+if ! claim_csidriver; then exit 1; fi
 
 # A local run's id is recorded once no other install stands in its way, so a
 # setup refused above leaves the record naming the install still on the

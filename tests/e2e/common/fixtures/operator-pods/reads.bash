@@ -39,3 +39,25 @@ POD="$(printf '%s' "$(kubectl get pods -n "$E2E_INSTALL_NS" -l "$E2E_OPERATOR_PO
 cat <<'EOF'
 kubectl get pods -n "$E2E_INSTALL_NS" -l "$E2E_OPERATOR_PODS" -o jsonpath='{.items[0].metadata.name}'
 EOF
+Q=$(kubectl get pods -l app=cfgd-operator -o json || true)
+jq -r '.items[0].metadata.name' <<<"$Q"
+kubectl get pods -l "$E2E_OPERATOR_PODS" -o json | { jq -r '.items[0].metadata.name'; }
+kubectl get pods -l "$E2E_OPERATOR_PODS" -o json | (jq -r '.items[0].metadata.name')
+kubectl get pods -l "$E2E_OPERATOR_PODS" -o json | while read -r l; do echo "$l"; done
+f() { kubectl get pods -l "$E2E_OPERATOR_PODS" -o jsonpath='{.items[0].metadata.name}'; }
+if x=$(kubectl get pods -l "$E2E_OPERATOR_PODS" -o json | jq -r '.items[0].x'); then :; fi
+for i in 1; do kubectl get pods -l "$E2E_OPERATOR_PODS" -o jsonpath='{.items[0].x}' && echo; done
+local K="$(kubectl get pods -l "$E2E_OPERATOR_PODS" -o json 2>/dev/null)"
+jq '.items[0]' <<<"$K"
+kubectl get pods -l "$E2E_OPERATOR_PODS" -o json > "${SCRATCH}/a.json" || true
+jq '.items[0]' "$SCRATCH/a.json"
+P=$(echo "${X:-$(kubectl get pods -l "$E2E_OPERATOR_PODS" -o jsonpath='{.items[0].x}')}")
+kubectl get pods -l "$E2E_OPERATOR_PODS" -o json |& jq '.items[0]'
+kubectl get pods -l "$E2E_OPERATOR_PODS" -o json | jq '[.items[]] | sort_by(.x) | .[0]'
+mapfile -t L < <(kubectl get pods -l "$E2E_OPERATOR_PODS" -o jsonpath='{.items[0].x}')
+R=$(kubectl get pods -n "$NS" -l "$E2E_OPERATOR_PODS" -o json 2>/dev/null || echo "")
+jq -r '.items[0].metadata.name' <<<"$R"
+kubectl get pods -l "$E2E_OPERATOR_PODS" -o json &> "$SCRATCH/b.json"
+jq '.items[0]' "$SCRATCH/b.json"
+{ kubectl get pods -l "$E2E_OPERATOR_PODS" -o json; } | jq '.items[0]'
+kubectl get pods -l "$E2E_OPERATOR_PODS" -o json | if jq -e '.items[0]' >/dev/null; then :; fi
