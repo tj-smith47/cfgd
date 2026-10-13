@@ -309,6 +309,8 @@ Readiness and leadership are separate signals. Only the lease holder runs the co
 
 The device gateway runs only on the pod running the controllers, so readiness does not wait for it. Once its listener accepts, the operator labels its own pod `cfgd.io/gateway-leader: "true"`, and the chart's gateway Service selects that label, so gateway requests reach the lease holder alone. The label comes off when the pod shuts down or loses the lease (before the gateway stops), and again when its container starts, so a restarted container never keeps it from an earlier run. The chart grants the operator `patch` on pods through a Role in the release namespace for this.
 
+A pod that stops on a signal also gives the lease up once in-flight work has drained, so a standby takes it on its next attempt (`operator.leaderElection.retryPeriod`, `2s`) and does not wait out the lease duration. A holder that cannot renew stops serving once `operator.leaderElection.renewDeadline` (`10s`) has passed since its last renewal, while the lease (`operator.leaderElection.leaseDuration`, `15s`) still has time to run, so two pods never serve the gateway at once.
+
 ```sh
 $ kubectl -n cfgd-system get pods -l cfgd.io/gateway-leader=true
 NAME                             READY   STATUS    RESTARTS   AGE

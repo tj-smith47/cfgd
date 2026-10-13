@@ -91,15 +91,19 @@ impl LeaderElection {
                     true
                 };
 
-                if expired || current_holder == self.identity {
+                // A holder that shut down cleanly gave the lease up by
+                // clearing `holderIdentity`, so nobody holds it.
+                let free = expired || current_holder.is_empty();
+
+                if free || current_holder == self.identity {
                     let now_str = rfc3339_micros(now)?;
-                    // An expired lease is a fresh acquisition even when this pod
+                    // A free lease is a fresh acquisition even when this pod
                     // is its own former holder: the lease genuinely lapsed, and a
                     // lapse that leaves `acquireTime` and `leaseTransitions`
                     // untouched is invisible in `kubectl get lease -o yaml`,
                     // which is the only record anyone reads to find out that
                     // leadership dropped.
-                    let acquire_time = if expired {
+                    let acquire_time = if free {
                         Some(now_str.clone())
                     } else {
                         spec.and_then(|s| s.acquire_time.as_ref())
@@ -122,7 +126,7 @@ impl LeaderElection {
                         .metadata
                         .resource_version
                         .as_deref()
-                        .filter(|_| expired)
+                        .filter(|_| free)
                         && let Some(map) = metadata.as_object_mut()
                     {
                         map.insert("resourceVersion".into(), serde_json::Value::from(rv));
@@ -138,7 +142,7 @@ impl LeaderElection {
                             "leaseDurationSeconds": self.lease_duration_secs,
                             "renewTime": now_str,
                             "acquireTime": acquire_time,
-                            "leaseTransitions": if expired {
+                            "leaseTransitions": if free {
                                 transitions + 1
                             } else {
                                 transitions
@@ -147,8 +151,8 @@ impl LeaderElection {
                     });
 
                     let field_manager = self.field_manager();
-                    let params = if expired {
-                        // Any expired lease is forced, not only one whose
+                    let params = if free {
+                        // Any free lease is forced, not only one whose
                         // holder differs: forcing is what strips the previous
                         // owner's field manager off `spec.*`, and the previous
                         // owner is not always another pod. A Lease minted by a
@@ -156,7 +160,7 @@ impl LeaderElection {
                         // `unknown` manager, and a pod that comes back under
                         // its own former identity would otherwise conflict with
                         // that stale ownership on every attempt, forever.
-                        // Nothing holds an expired lease, so there is nobody to
+                        // Nothing holds a free lease, so there is nobody to
                         // take it from.
                         PatchParams::apply(&field_manager).force()
                     } else {
@@ -223,8 +227,8 @@ impl LeaderElection {
                     // The loser of a two-pod race on the same 404 is a follower,
                     // not a failure: the same condition the GET-exists arm above
                     // answers with Ok(false). Returned as an error instead, it
-                    // counts toward the renewal task's consecutive_failures and
-                    // seven of them cancel the shutdown token.
+                    // reads as an API failure, and a renewal would retry it
+                    // until the renew deadline where it should stop at once.
                     Err(kube::Error::Api(ref e)) if e.code == 409 => {
                         tracing::warn!(
                             identity = %self.identity,
@@ -270,63 +274,94 @@ impl LeaderElection {
             }
         }
 
-        // Clone existing config fields instead of re-reading env vars
-        let renewal_client = self.client.clone();
-        let renewal_ns = self.namespace.clone();
-        let renewal_identity = self.identity.clone();
-        let renewal_lease_duration = self.lease_duration_secs;
-        let renewal_renew_deadline = self.renew_deadline_secs;
-        let renewal_retry_period = self.retry_period_secs;
+        // Renewing inside this future, and not on a task of its own, is what
+        // stops it the moment the caller drops the run: a renewal racing a
+        // shutdown's release would otherwise take the lease straight back.
+        let renewing = async {
+            self.keep_renewing(&shutdown).await;
+            std::future::pending::<()>().await;
+        };
+        tokio::select! {
+            result = on_started() => result,
+            () = renewing => Ok(()),
+        }
+    }
 
+    /// Renew the lease until it is lost, then cancel `lost`. The lease is
+    /// lost when another pod holds it, or when no renewal has succeeded for
+    /// the renew deadline: this pod then stops acting as holder while the
+    /// lease still has `lease_duration - renew_deadline` to run, so it is
+    /// never acting beside a standby that took the lease over.
+    async fn keep_renewing(&self, lost: &CancellationToken) {
+        let renew_deadline = Duration::from_secs(self.renew_deadline_secs);
         let renew_interval = Duration::from_secs(std::cmp::max(1, self.renew_deadline_secs / 2));
-        let renewal_shutdown = shutdown.clone();
+        let retry_period = Duration::from_secs(std::cmp::max(1, self.retry_period_secs));
+        let mut last_renewed = tokio::time::Instant::now();
+        let mut wait = renew_interval;
 
-        tokio::spawn(async move {
-            let renewal = LeaderElection {
-                client: renewal_client,
-                namespace: renewal_ns,
-                identity: renewal_identity,
-                lease_duration_secs: renewal_lease_duration,
-                renew_deadline_secs: renewal_renew_deadline,
-                retry_period_secs: renewal_retry_period,
-            };
-
-            let max_failures =
-                (renewal.lease_duration_secs as u64) / std::cmp::max(1, renewal.retry_period_secs);
-            let mut consecutive_failures: u64 = 0;
-
-            loop {
-                tokio::time::sleep(renew_interval).await;
-                match renewal.try_acquire().await {
-                    Ok(true) => {
-                        tracing::debug!("leader lease renewed");
-                        consecutive_failures = 0;
-                    }
-                    Ok(false) => {
-                        tracing::error!(
-                            "lost leader lease — another instance took over, shutting down"
-                        );
-                        renewal_shutdown.cancel();
-                        return;
-                    }
-                    Err(e) => {
-                        consecutive_failures += 1;
-                        tracing::warn!(
-                            error = %e,
-                            consecutive = consecutive_failures,
-                            "leader lease renewal failed"
-                        );
-                        if consecutive_failures >= max_failures {
-                            tracing::error!("too many consecutive renewal failures, shutting down");
-                            renewal_shutdown.cancel();
-                            return;
-                        }
-                    }
+        loop {
+            let deadline = last_renewed + renew_deadline;
+            tokio::time::sleep_until(std::cmp::min(tokio::time::Instant::now() + wait, deadline))
+                .await;
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if remaining.is_zero() {
+                tracing::error!(
+                    renew_deadline_secs = self.renew_deadline_secs,
+                    "leader lease not renewed within its renew deadline, shutting down"
+                );
+                lost.cancel();
+                return;
+            }
+            match tokio::time::timeout(remaining, self.try_acquire()).await {
+                Ok(Ok(true)) => {
+                    tracing::debug!("leader lease renewed");
+                    last_renewed = tokio::time::Instant::now();
+                    wait = renew_interval;
+                }
+                Ok(Ok(false)) => {
+                    tracing::error!(
+                        "lost leader lease — another instance took over, shutting down"
+                    );
+                    lost.cancel();
+                    return;
+                }
+                Ok(Err(e)) => {
+                    tracing::warn!(error = %e, "leader lease renewal failed");
+                    wait = retry_period;
+                }
+                Err(_) => {
+                    tracing::warn!("leader lease renewal timed out");
+                    wait = retry_period;
                 }
             }
-        });
+        }
+    }
 
-        on_started().await
+    /// Give the lease up so a standby takes it on its next attempt, without
+    /// waiting out the lease duration. Leaves a lease another pod holds
+    /// alone; the write is conditional on the version read, so a lease that
+    /// changed hands in between is left alone too.
+    pub async fn release(&self) -> Result<(), OperatorError> {
+        let leases: Api<Lease> = Api::namespaced(self.client.clone(), &self.namespace);
+        let lease = leases.get(LEASE_NAME).await?;
+        let holder = lease
+            .spec
+            .as_ref()
+            .and_then(|s| s.holder_identity.as_deref());
+        if holder != Some(self.identity.as_str()) {
+            return Ok(());
+        }
+        // A one-second duration lets a standby still running an operator
+        // that only knows expiry take the lease within a second as well.
+        let body = serde_json::json!({
+            "metadata": { "resourceVersion": lease.metadata.resource_version },
+            "spec": { "holderIdentity": null, "leaseDurationSeconds": 1 }
+        });
+        leases
+            .patch(LEASE_NAME, &PatchParams::default(), &Patch::Merge(&body))
+            .await?;
+        tracing::info!(identity = %self.identity, "leader lease released");
+        Ok(())
     }
 }
 
@@ -449,8 +484,8 @@ mod tests {
     }
 
     /// The loser of a two-pod race on the same 404 is a follower, not a
-    /// failure. Returned as an `Err` it counts toward the renewal task's
-    /// consecutive-failure budget, and enough of them cancel the shutdown token.
+    /// failure. Returned as an `Err` it reads as an API failure, and a
+    /// renewal would retry it until the renew deadline.
     #[tokio::test]
     async fn a_conflict_creating_the_lease_is_not_acquired_rather_than_an_error() {
         let (ctx, _reg, harness) = MockKubeHarness::new(vec![
@@ -1099,6 +1134,147 @@ mod tests {
 
         assert!(result.is_ok(), "run returned Err: {result:?}");
         let _ = harness.finish().await;
+    }
+
+    /// A holder that cannot renew stops acting as holder once the renew
+    /// deadline has passed since its last renewal, while the lease still has
+    /// time to run, so no standby can take the lease over while it still
+    /// serves.
+    #[tokio::test(start_paused = true)]
+    async fn renewals_that_keep_failing_give_the_lease_up_at_the_renew_deadline() {
+        let (ctx, _reg, harness) = MockKubeHarness::new(vec![
+            ExpectedCall::get(lease_path()).returning_server_error(500, "etcd fell over"),
+            ExpectedCall::get(lease_path()).returning_server_error(500, "etcd fell over"),
+            ExpectedCall::get(lease_path()).returning_server_error(500, "etcd fell over"),
+        ]);
+        let mut le = LeaderElection::new(ctx.client.clone(), TEST_NS.into(), TEST_ID.into());
+        le.lease_duration_secs = 15;
+        le.renew_deadline_secs = 10;
+        le.retry_period_secs = 2;
+        let lost = CancellationToken::new();
+
+        let started = tokio::time::Instant::now();
+        le.keep_renewing(&lost).await;
+
+        assert!(
+            lost.is_cancelled(),
+            "a lease nobody renewed must count as lost"
+        );
+        assert_eq!(
+            started.elapsed(),
+            Duration::from_secs(10),
+            "the lease must count as lost exactly at the renew deadline, inside the \
+             15s lease duration"
+        );
+        let report = harness.finish().await;
+        assert_eq!(
+            report.captured.len(),
+            3,
+            "renewals at 5s, 7s and 9s, then the deadline"
+        );
+    }
+
+    /// A renewal that succeeds starts the renew deadline over.
+    #[tokio::test(start_paused = true)]
+    async fn a_successful_renewal_starts_the_renew_deadline_over() {
+        let (ctx, _reg, harness) = MockKubeHarness::new(vec![
+            ExpectedCall::get(lease_path()).returning_json(&lease_json(TEST_ID, 15, 0)),
+            ExpectedCall::patch(lease_path()).returning_json(&lease_json(TEST_ID, 15, 0)),
+            ExpectedCall::get(lease_path()).returning_server_error(500, "etcd fell over"),
+            ExpectedCall::get(lease_path()).returning_server_error(500, "etcd fell over"),
+            ExpectedCall::get(lease_path()).returning_server_error(500, "etcd fell over"),
+        ]);
+        let mut le = LeaderElection::new(ctx.client.clone(), TEST_NS.into(), TEST_ID.into());
+        le.renew_deadline_secs = 10;
+        le.retry_period_secs = 2;
+        let lost = CancellationToken::new();
+
+        let started = tokio::time::Instant::now();
+        le.keep_renewing(&lost).await;
+
+        assert!(lost.is_cancelled());
+        assert_eq!(started.elapsed(), Duration::from_secs(15));
+        harness.finish().await;
+    }
+
+    /// A lease another pod took over ends the renewal at once.
+    #[tokio::test(start_paused = true)]
+    async fn a_lease_another_pod_holds_is_lost_at_the_next_renewal() {
+        let (ctx, _reg, harness) = MockKubeHarness::new(vec![
+            ExpectedCall::get(lease_path()).returning_json(&lease_json("other-holder", 15, 0)),
+        ]);
+        let le = LeaderElection::new(ctx.client.clone(), TEST_NS.into(), TEST_ID.into());
+        let lost = CancellationToken::new();
+
+        le.keep_renewing(&lost).await;
+
+        assert!(lost.is_cancelled());
+        harness.finish().await;
+    }
+
+    /// Releasing the lease this pod holds clears its holder, on the condition
+    /// that the lease is still the version read.
+    #[tokio::test]
+    async fn releasing_a_held_lease_clears_its_holder_at_the_version_read() {
+        let mut held = lease_json(TEST_ID, 15, 0);
+        held["metadata"]["resourceVersion"] = "42".into();
+        let (ctx, _reg, harness) = MockKubeHarness::new(vec![
+            ExpectedCall::get(lease_path()).returning_json(&held),
+            ExpectedCall::patch(lease_path()).returning_json(&held),
+        ]);
+        let le = LeaderElection::new(ctx.client.clone(), TEST_NS.into(), TEST_ID.into());
+
+        le.release()
+            .await
+            .expect("releasing a held lease must succeed");
+
+        let report = harness.finish().await;
+        let patch = &report.captured[1];
+        assert_eq!(
+            patch.body_json(),
+            serde_json::json!({
+                "metadata": { "resourceVersion": "42" },
+                "spec": { "holderIdentity": null, "leaseDurationSeconds": 1 }
+            })
+        );
+    }
+
+    /// A lease another pod holds is never released by this one.
+    #[tokio::test]
+    async fn releasing_a_lease_another_pod_holds_writes_nothing() {
+        let (ctx, _reg, harness) = MockKubeHarness::new(vec![
+            ExpectedCall::get(lease_path()).returning_json(&lease_json("other-holder", 15, 0)),
+        ]);
+        let le = LeaderElection::new(ctx.client.clone(), TEST_NS.into(), TEST_ID.into());
+
+        le.release()
+            .await
+            .expect("a lease held elsewhere is left alone");
+
+        assert_eq!(harness.finish().await.captured.len(), 1);
+    }
+
+    /// A released lease, its holder cleared and its duration still running,
+    /// is taken over at once as a fresh acquisition.
+    #[tokio::test]
+    async fn a_released_lease_is_taken_over_before_it_expires() {
+        let mut released = lease_json(TEST_ID, 15, 0);
+        released["spec"]["holderIdentity"] = serde_json::Value::Null;
+        let (ctx, _reg, harness) = MockKubeHarness::new(vec![
+            ExpectedCall::get(lease_path()).returning_json(&released),
+            ExpectedCall::patch(lease_path())
+                .with_query_contains("force=true")
+                .returning_json(&lease_json("new-holder", 15, 0)),
+        ]);
+        let le = LeaderElection::new(ctx.client.clone(), TEST_NS.into(), "new-holder".into());
+
+        assert!(le.try_acquire().await.expect("a released lease is free"));
+
+        let report = harness.finish().await;
+        assert_eq!(
+            report.captured[1].body_json()["spec"]["holderIdentity"],
+            "new-holder"
+        );
     }
 
     fn pod_path() -> String {

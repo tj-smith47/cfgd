@@ -189,8 +189,8 @@ fn spawn_metrics_server() -> (tokio::task::JoinHandle<()>, metrics::Metrics) {
 async fn run_operator(
     client: Client,
     metrics: metrics::Metrics,
-    gateway_label: Option<GatewayLeaderLabel>,
-) -> Result<()> {
+    gateway_label: Option<&GatewayLeaderLabel>,
+) -> Result<(), errors::OperatorError> {
     let gateway_enabled = runtime::is_gateway_enabled();
 
     if gateway_enabled {
@@ -201,7 +201,8 @@ async fn run_operator(
             Some(client.clone()),
             backup_policies.clone(),
             metrics.clone(),
-        )?;
+        )
+        .map_err(|e| errors::OperatorError::Gateway(e.to_string()))?;
 
         tracing::info!("device gateway enabled");
 
@@ -226,11 +227,11 @@ async fn run_operator(
                 let _ = listening_tx.send(());
             })
             .await
-            .map_err(|e| anyhow::anyhow!("{}", e))
+            .map_err(|e| errors::OperatorError::Gateway(e.to_string()))
         };
         let route_once_listening = async {
             if listening_rx.await.is_ok()
-                && let Some(label) = &gateway_label
+                && let Some(label) = gateway_label
             {
                 label.set().await?;
                 tracing::info!(
@@ -246,6 +247,26 @@ async fn run_operator(
     }
 
     Ok(())
+}
+
+/// The handle through which this pod routes gateway traffic to itself, with
+/// any label a previous container in the same pod left behind already
+/// cleared. `None` when the gateway is off or the pod's name is unknown.
+async fn gateway_leader_label(
+    client: Client,
+    namespace: &str,
+    pod: Option<String>,
+    gateway_enabled: bool,
+) -> Result<Option<GatewayLeaderLabel>, errors::OperatorError> {
+    let Some(pod) = pod.filter(|_| gateway_enabled) else {
+        return Ok(None);
+    };
+    let label = GatewayLeaderLabel::new(client, namespace, pod);
+    // A container restarted inside the same pod keeps the label its last run
+    // set, while another pod may hold the lease by now; this run sets it
+    // again only once it serves the gateway.
+    label.clear().await?;
+    Ok(Some(label))
 }
 
 /// Take this pod out of the gateway Service. A failure is logged and the
@@ -267,6 +288,48 @@ async fn release_gateway_traffic_after<T>(
     let stopped = stop.await;
     release_gateway_traffic(gateway_label).await;
     stopped
+}
+
+/// Drive `operator` until it, an `ancillary` server, the termination
+/// `signal` or a lost lease (`lease_lost`) ends the run, taking this pod out
+/// of the gateway Service on every one of those exits. A signal also hands
+/// the lease over once in-flight work has drained, so a standby takes it
+/// without waiting out the lease duration.
+async fn serve_until_stopped<E: std::fmt::Display>(
+    operator: impl std::future::Future<Output = Result<(), errors::OperatorError>>,
+    ancillary: impl std::future::Future<Output = Result<(), errors::OperatorError>>,
+    signal: impl std::future::Future<Output = Result<(), E>>,
+    lease_lost: &CancellationToken,
+    gateway_label: Option<&GatewayLeaderLabel>,
+    lease: Option<&leader::LeaderElection>,
+) -> Result<(), errors::OperatorError> {
+    let exited = tokio::select! {
+        result = operator => {
+            if let Err(e) = &result {
+                tracing::error!(error = %e, "operator exited with error");
+            }
+            result
+        },
+        result = ancillary => result,
+        result = release_gateway_traffic_after(signal, gateway_label) => {
+            if let Err(e) = result {
+                tracing::warn!(error = %e, "{SIGNAL_SETUP_FAILED_MSG}");
+            }
+            shutdown_drain().await;
+            if let Some(lease) = lease
+                && let Err(e) = lease.release().await
+            {
+                tracing::warn!(error = %e, "releasing the leader lease failed; a standby takes it once it expires");
+            }
+            return Ok(());
+        },
+        () = release_gateway_traffic_after(lease_lost.cancelled(), gateway_label) => {
+            shutdown_drain().await;
+            return Ok(());
+        },
+    };
+    release_gateway_traffic(gateway_label).await;
+    exited
 }
 
 async fn shutdown_drain() {
@@ -311,14 +374,13 @@ pub async fn run() -> Result<()> {
     let health_state = health::HealthState::new(metrics.leader.clone(), webhook_enabled);
     let mut health_handle = spawn_health_server(health_state.clone());
 
-    let gateway_label = runtime::pod_name()
-        .filter(|_| runtime::is_gateway_enabled())
-        .map(|pod| GatewayLeaderLabel::new(client.clone(), &runtime::leader_namespace(), pod));
-    if let Some(label) = &gateway_label {
-        // A container restarted inside the same pod keeps the label its last
-        // run set; this run sets it again only once it serves the gateway.
-        label.clear().await?;
-    }
+    let gateway_label = gateway_leader_label(
+        client.clone(),
+        &runtime::leader_namespace(),
+        runtime::pod_name(),
+        runtime::is_gateway_enabled(),
+    )
+    .await?;
 
     let mut webhook_handle: Option<tokio::task::JoinHandle<()>> = None;
     if webhook_enabled {
@@ -356,44 +418,60 @@ pub async fn run() -> Result<()> {
 
     let shutdown = CancellationToken::new();
 
+    let lease = leader_enabled.then(|| {
+        let namespace = runtime::leader_namespace();
+        let identity = runtime::leader_identity();
+        tracing::info!(
+            namespace = %namespace,
+            identity = %identity,
+            "leader election enabled"
+        );
+        leader::LeaderElection::new(client.clone(), namespace, identity)
+    });
+
     let operator_future = async {
-        if leader_enabled {
-            let namespace = runtime::leader_namespace();
-            let identity = runtime::leader_identity();
-
-            tracing::info!(
-                namespace = %namespace,
-                identity = %identity,
-                "leader election enabled"
-            );
-
-            let le = leader::LeaderElection::new(client.clone(), namespace, identity);
+        if let Some(le) = &lease {
             le.run(shutdown.clone(), || async {
                 health_state.set_leader();
-                run_operator(client, metrics, gateway_label.clone())
-                    .await
-                    .map_err(|e| errors::OperatorError::Leader(format!("Operator run failed: {e}")))
+                run_operator(client, metrics, gateway_label.as_ref()).await
             })
             .await
-            .map_err(|e| anyhow::anyhow!("{}", e))?;
         } else {
             health_state.set_leader();
-            run_operator(client, metrics, gateway_label.clone()).await?;
+            run_operator(client, metrics, gateway_label.as_ref()).await
         }
-
-        Ok::<(), anyhow::Error>(())
     };
 
-    let webhook_exit_future = async {
+    let webhook_exit = async {
         match webhook_handle.as_mut() {
-            Some(h) => match h.await {
+            Some(h) => h.await,
+            None => std::future::pending().await,
+        }
+    };
+    let ancillary_future = async {
+        tokio::select! {
+            result = &mut health_handle => {
+                if let Err(e) = result {
+                    tracing::error!(error = %e, "health server task panicked");
+                }
+                Ok(())
+            },
+            result = &mut metrics_handle => {
+                if let Err(e) = result {
+                    tracing::error!(error = %e, "metrics server task panicked");
+                }
+                Ok(())
+            },
+            result = webhook_exit => match result {
                 Ok(()) => {
                     tracing::error!(
                         "webhook server exited unexpectedly (returned Ok) — \
                          admission control is no longer being enforced; failing operator \
                          so Kubernetes can restart it"
                     );
-                    anyhow::bail!("webhook server exited unexpectedly")
+                    Err(errors::OperatorError::Webhook(
+                        "webhook server exited unexpectedly".into(),
+                    ))
                 }
                 Err(e) => {
                     tracing::error!(
@@ -401,68 +479,31 @@ pub async fn run() -> Result<()> {
                         "webhook server task panicked — admission control offline; \
                          failing operator so Kubernetes can restart it"
                     );
-                    anyhow::bail!("webhook server task panicked: {e}")
+                    Err(errors::OperatorError::Webhook(format!(
+                        "webhook server task panicked: {e}"
+                    )))
                 }
             },
-            None => std::future::pending::<Result<()>>().await,
         }
     };
 
-    let mut webhook_exit_err: Option<anyhow::Error> = None;
-    let mut operator_err: Option<anyhow::Error> = None;
-    let mut gateway_traffic_released = false;
-    tokio::select! {
-        result = operator_future => {
-            if let Err(e) = result {
-                tracing::error!(error = %e, "operator exited with error");
-                operator_err = Some(e);
-            }
-        },
-        result = &mut health_handle => {
-            if let Err(e) = result {
-                tracing::error!(error = %e, "health server task panicked");
-            }
-        },
-        result = &mut metrics_handle => {
-            if let Err(e) = result {
-                tracing::error!(error = %e, "metrics server task panicked");
-            }
-        },
-        result = webhook_exit_future => {
-            if let Err(e) = result {
-                webhook_exit_err = Some(e);
-            }
-        },
-        result = release_gateway_traffic_after(shutdown_signal(), gateway_label.as_ref()) => {
-            gateway_traffic_released = true;
-            if let Err(e) = result {
-                tracing::warn!(error = %e, "{SIGNAL_SETUP_FAILED_MSG}");
-            }
-            shutdown_drain().await;
-        },
-        _ = release_gateway_traffic_after(shutdown.cancelled(), gateway_label.as_ref()) => {
-            gateway_traffic_released = true;
-            shutdown_drain().await;
-        },
-    }
+    let result = serve_until_stopped(
+        operator_future,
+        ancillary_future,
+        shutdown_signal(),
+        &shutdown,
+        gateway_label.as_ref(),
+        lease.as_ref(),
+    )
+    .await;
 
-    if !gateway_traffic_released {
-        release_gateway_traffic(gateway_label.as_ref()).await;
-    }
     health_handle.abort();
     metrics_handle.abort();
     if let Some(h) = webhook_handle {
         h.abort();
     }
 
-    if let Some(e) = operator_err {
-        return Err(e);
-    }
-    if let Some(e) = webhook_exit_err {
-        return Err(e);
-    }
-
-    Ok(())
+    Ok(result?)
 }
 
 /// Run ONLY the device gateway with no Kubernetes client (off-cluster mode).
@@ -658,7 +699,7 @@ mod tests {
     async fn run_gateway_with_label(
         expected: Vec<ExpectedCall>,
     ) -> (
-        Result<Result<()>, tokio::time::error::Elapsed>,
+        Result<Result<(), errors::OperatorError>, tokio::time::error::Elapsed>,
         crate::controllers::test_kube_harness::HarnessReport,
     ) {
         let (client, m, _registry) = test_client_and_metrics();
@@ -666,7 +707,7 @@ mod tests {
         let label = GatewayLeaderLabel::new(ctx.client.clone(), LABEL_NS, LABEL_POD.into());
         let result = tokio::time::timeout(
             Duration::from_millis(400),
-            run_operator(client, m, Some(label)),
+            run_operator(client, m, Some(&label)),
         )
         .await;
         (result, harness.finish().await)
@@ -767,6 +808,243 @@ mod tests {
 
         assert_eq!(stopped, 7);
         harness.finish().await;
+    }
+
+    /// With the gateway on, the pod's label is cleared before anything else
+    /// runs: a container restarted in the same pod after another pod took
+    /// the lease would otherwise leave two pods selected by the gateway
+    /// Service.
+    #[tokio::test]
+    async fn a_gateway_pod_clears_its_leader_label_before_serving() {
+        let (ctx, _reg, harness) = MockKubeHarness::new(vec![
+            ExpectedCall::patch(label_pod_path()).returning_json(&label_pod_json()),
+        ]);
+
+        let label =
+            gateway_leader_label(ctx.client.clone(), LABEL_NS, Some(LABEL_POD.into()), true)
+                .await
+                .expect("a clear the API server accepts must succeed");
+
+        assert!(label.is_some(), "a gateway pod must get a label handle");
+        let report = harness.finish().await;
+        assert_eq!(report.captured.len(), 1);
+        assert_eq!(
+            report.captured[0].body_json(),
+            label_patch(serde_json::Value::Null)
+        );
+    }
+
+    /// With the gateway off there is no label to route by, and nothing is
+    /// written.
+    #[tokio::test]
+    async fn a_pod_without_the_gateway_has_no_leader_label() {
+        let (ctx, _reg, harness) = MockKubeHarness::new(vec![]);
+
+        let label =
+            gateway_leader_label(ctx.client.clone(), LABEL_NS, Some(LABEL_POD.into()), false)
+                .await
+                .expect("nothing to write");
+
+        assert!(label.is_none());
+        assert!(harness.finish().await.captured.is_empty());
+    }
+
+    /// A process that does not know its pod cannot label it.
+    #[tokio::test]
+    async fn a_process_that_does_not_know_its_pod_has_no_leader_label() {
+        let (ctx, _reg, harness) = MockKubeHarness::new(vec![]);
+
+        let label = gateway_leader_label(ctx.client.clone(), LABEL_NS, None, true)
+            .await
+            .expect("nothing to write");
+
+        assert!(label.is_none());
+        assert!(harness.finish().await.captured.is_empty());
+    }
+
+    /// A refused startup clear ends the start: the pod could still carry a
+    /// label from its last run while another pod serves the gateway.
+    #[tokio::test]
+    async fn a_refused_startup_clear_of_the_leader_label_is_an_error() {
+        let (ctx, _reg, harness) = MockKubeHarness::new(vec![
+            ExpectedCall::patch(label_pod_path()).returning_server_error(403, "forbidden"),
+        ]);
+
+        let result =
+            gateway_leader_label(ctx.client.clone(), LABEL_NS, Some(LABEL_POD.into()), true).await;
+
+        assert!(result.is_err(), "a refused clear must end the start");
+        harness.finish().await;
+    }
+
+    /// Clears `alive` when the future holding it is dropped.
+    struct AliveWhileHeld(Arc<std::sync::atomic::AtomicBool>);
+
+    impl Drop for AliveWhileHeld {
+        fn drop(&mut self) {
+            self.0.store(false, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
+    /// An operator that runs until it is dropped, and the flag that says
+    /// whether it still runs.
+    fn running_operator() -> (
+        impl std::future::Future<Output = Result<(), errors::OperatorError>>,
+        Arc<std::sync::atomic::AtomicBool>,
+    ) {
+        let alive = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let held = AliveWhileHeld(alive.clone());
+        let operator = async move {
+            let _held = held;
+            std::future::pending::<Result<(), errors::OperatorError>>().await
+        };
+        (operator, alive)
+    }
+
+    /// A lease lost while the operator runs takes the pod out of the gateway
+    /// Service while the operator, and with it the gateway, still runs.
+    #[tokio::test(start_paused = true)]
+    async fn a_lost_lease_clears_the_gateway_label_while_the_operator_still_runs() {
+        use http_body_util::BodyExt;
+
+        let (service, mut handle) =
+            mock::pair::<http::Request<kube::client::Body>, http::Response<kube::client::Body>>();
+        let label =
+            GatewayLeaderLabel::new(Client::new(service, "default"), LABEL_NS, LABEL_POD.into());
+        let (operator, alive) = running_operator();
+        let api_server = tokio::spawn(async move {
+            let (request, respond) = handle.next_request().await.expect("the label clear");
+            let operator_running = alive.load(std::sync::atomic::Ordering::SeqCst);
+            let path = request.uri().path().to_owned();
+            let body = request
+                .into_body()
+                .collect()
+                .await
+                .expect("request body")
+                .to_bytes();
+            respond.send_response(
+                http::Response::builder()
+                    .status(200)
+                    .body(kube::client::Body::from(
+                        serde_json::to_vec(&label_pod_json()).expect("pod json"),
+                    ))
+                    .expect("response"),
+            );
+            (path, body, operator_running)
+        });
+        let lease_lost = CancellationToken::new();
+        lease_lost.cancel();
+
+        let result = serve_until_stopped(
+            operator,
+            std::future::pending(),
+            std::future::pending::<Result<(), errors::OperatorError>>(),
+            &lease_lost,
+            Some(&label),
+            None,
+        )
+        .await;
+
+        assert!(
+            result.is_ok(),
+            "a lost lease is a clean stop, got {result:?}"
+        );
+        let (path, body, operator_running) =
+            tokio::time::timeout(Duration::from_secs(5), api_server)
+                .await
+                .expect("a lost lease must clear the gateway label")
+                .expect("api server task");
+        assert_eq!(path, label_pod_path());
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&body).expect("patch json"),
+            label_patch(serde_json::Value::Null)
+        );
+        assert!(
+            operator_running,
+            "the label must be cleared while the operator, and its gateway, still runs"
+        );
+    }
+
+    /// An operator that fails takes the pod out of the gateway Service, and
+    /// its error is what the run returns.
+    #[tokio::test]
+    async fn a_failed_operator_clears_the_gateway_label_and_returns_its_error() {
+        let (ctx, _reg, harness) = MockKubeHarness::new(vec![
+            ExpectedCall::patch(label_pod_path()).returning_json(&label_pod_json()),
+        ]);
+        let label = GatewayLeaderLabel::new(ctx.client.clone(), LABEL_NS, LABEL_POD.into());
+
+        let result = serve_until_stopped(
+            std::future::ready(Err(errors::OperatorError::Gateway("listener gone".into()))),
+            std::future::pending(),
+            std::future::pending::<Result<(), errors::OperatorError>>(),
+            &CancellationToken::new(),
+            Some(&label),
+            None,
+        )
+        .await;
+
+        assert!(
+            matches!(&result, Err(errors::OperatorError::Gateway(m)) if m == "listener gone"),
+            "the operator's own error must come back, got {result:?}"
+        );
+        let report = harness.finish().await;
+        let patch = report
+            .find(http::Method::PATCH, &label_pod_path())
+            .expect("a failed operator must clear the gateway label");
+        assert_eq!(patch.body_json(), label_patch(serde_json::Value::Null));
+    }
+
+    fn lease_path() -> String {
+        format!("/apis/coordination.k8s.io/v1/namespaces/{LABEL_NS}/leases/cfgd-operator-leader")
+    }
+
+    /// A termination signal clears the gateway label, then, once in-flight
+    /// work has drained, hands the lease over so a standby takes it at once.
+    #[tokio::test(start_paused = true)]
+    async fn a_signal_clears_the_gateway_label_then_releases_the_lease() {
+        let held = serde_json::json!({
+            "apiVersion": "coordination.k8s.io/v1",
+            "kind": "Lease",
+            "metadata": {
+                "name": "cfgd-operator-leader",
+                "namespace": LABEL_NS,
+                "resourceVersion": "7",
+            },
+            "spec": { "holderIdentity": LABEL_POD, "leaseDurationSeconds": 15 },
+        });
+        let (ctx, _reg, harness) = MockKubeHarness::new(vec![
+            ExpectedCall::patch(label_pod_path()).returning_json(&label_pod_json()),
+            ExpectedCall::get(lease_path()).returning_json(&held),
+            ExpectedCall::patch(lease_path()).returning_json(&held),
+        ]);
+        let label = GatewayLeaderLabel::new(ctx.client.clone(), LABEL_NS, LABEL_POD.into());
+        let lease =
+            leader::LeaderElection::new(ctx.client.clone(), LABEL_NS.into(), LABEL_POD.into());
+        let (operator, _alive) = running_operator();
+
+        let result = serve_until_stopped(
+            operator,
+            std::future::pending(),
+            std::future::ready(Ok::<(), errors::OperatorError>(())),
+            &CancellationToken::new(),
+            Some(&label),
+            Some(&lease),
+        )
+        .await;
+
+        assert!(result.is_ok(), "a signal is a clean stop, got {result:?}");
+        let report = harness.finish().await;
+        assert_eq!(
+            report.captured[0].body_json(),
+            label_patch(serde_json::Value::Null),
+            "the label is cleared first"
+        );
+        assert_eq!(
+            report.captured[2].body_json()["spec"]["holderIdentity"],
+            serde_json::Value::Null,
+            "then the lease is released"
+        );
     }
 
     /// Verify `ControllerContext` can be constructed (sanity check that the

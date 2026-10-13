@@ -22,4 +22,7 @@ pub enum OperatorError {
 
     #[error("Metrics server error: {0}")]
     Metrics(String),
+
+    #[error("Device gateway error: {0}")]
+    Gateway(String),
 }
