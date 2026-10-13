@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Checks without a cluster that:
 #   - helpers.sh names the PR-owned install (its release, namespace, workloads,
-#     pod selectors, webhook configurations, webhook certificate and CSI driver)
+#     pod selectors, webhook configurations, webhook certificate, CSI driver
+#     and device gateway)
 #     and the Crossplane suite's Function and Composition from one run id
 #   - a local run id is the same in every process of one checkout
 #   - ensure_namespace and running_image address the namespaces they are given
@@ -43,9 +44,12 @@
 #     webhook and pod injector to its own namespace through HELM_SCOPE, an
 #     array of exactly the three flags that no line appends to or rewrites,
 #     and overrides none of its keys
-#   - no operator or full-stack suite script names the release's operator,
-#     namespace, webhooks or CSI driver by hand, outside the full-stack
-#     suite's kept gateway lines
+#   - no operator, full-stack, gateway or node suite script names the
+#     release's operator, gateway, namespace, webhooks or CSI driver by hand,
+#     outside the lines release-targets-kept.tsv lists
+#   - those suites reach the PR install's gateway only through the
+#     E2E_GATEWAY_* names helpers.sh sets: no in-cluster URL, gateway Service
+#     name or gateway leader label spelled by hand
 #   - pr-install-down.sh deletes the run's objects of every kind
 #     schemas/crds.yaml and the TeamConfig XRD declare, then the run's
 #     Composition and Function, uninstalls the release and deletes its
@@ -110,7 +114,7 @@ log="$scratch/kubectl.calls"
 # shellcheck disable=SC2016 # the inner script expands its own positional args
 in_helpers() {
     local script="$1"; shift
-    env -u GITHUB_RUN_ID -u CFGD_NAMESPACE PATH="$scratch/bin:$PATH" KUBECTL_LOG="$log" \
+    env -u GITHUB_RUN_ID -u CFGD_NAMESPACE -u CFGD_E2E_API_KEY PATH="$scratch/bin:$PATH" KUBECTL_LOG="$log" \
         REGISTRY=r.example CLI_SCRATCH="$scratch" "$@" \
         bash -c 'source "$1/common/helpers.sh"; eval "$2"' _ "$e2e_root" "$script"
 }
@@ -131,6 +135,11 @@ expect_var E2E_VALIDATING_WEBHOOK cfgd-e2e-42
 expect_var E2E_MUTATING_WEBHOOK cfgd-e2e-42-pod-injector
 expect_var E2E_OPERATOR_PODS "app.kubernetes.io/instance=cfgd-e2e-42,app.kubernetes.io/component=operator"
 expect_var E2E_CSI_PODS "app.kubernetes.io/instance=cfgd-e2e-42,app.kubernetes.io/component=csi-driver"
+expect_var E2E_GATEWAY_SVC cfgd-e2e-42-gateway
+expect_var E2E_GATEWAY_PORT 8080
+expect_var E2E_GATEWAY_URL http://cfgd-e2e-42-gateway.cfgd-e2e-42-sys.svc.cluster.local:8080
+expect_var E2E_GATEWAY_LEADER_PODS "app.kubernetes.io/instance=cfgd-e2e-42,app.kubernetes.io/component=operator,cfgd.io/gateway-leader=true"
+expect_var E2E_GATEWAY_API_KEY cfgd-e2e-admin-key
 expect_var CSI_DRIVER_NAME e2e.csi.cfgd.io
 expect_var E2E_FUNCTION function-cfgd-42
 expect_var E2E_COMPOSITION teamconfig-to-machineconfigs-42
@@ -2905,8 +2914,8 @@ else
     fail "an ERROR on stdout is lost where stdout is captured; add >&2 to: [${stdout_errors:-the scan failed}]"
 fi
 
-# A release target spelled by hand in the operator or full-stack suite reaches
-# the live release. helpers.sh names this run's install. The scan reads each
+# A release target spelled by hand in a suite that drives the PR install
+# reaches the live release. helpers.sh names this run's install. The scan reads each
 # suite's tracked *.sh files only: the YAML under operator/manifests/ is the
 # release operator's own definition, which setup applies where ArgoCD does not
 # run it.
@@ -2918,6 +2927,7 @@ release_target+='|\$\{?CFGD_NAMESPACE([^[:alnum:]_]|$)'
 release_target+='|app(\.kubernetes\.io/name)?='"$q"'cfgd-operator([^[:alnum:]-]|$)'
 release_target+='|(^|[^[:alnum:]_.-])(deploy|deployments?(\.apps)?|endpoints|ep|svc|services?)[/ ]+'"$q"'cfgd-operator([^[:alnum:]-]|$)'
 release_target+='|cfgd-(validating|mutating)-webhooks|csi\.cfgd\.io'
+release_target+='|(^|[^[:alnum:]_.-])cfgd-server([^[:alnum:]-]|$)'
 # scan_release_targets FILE...: file:line:text of each line naming one.
 scan_release_targets() {
     local rc=0
@@ -2926,9 +2936,9 @@ scan_release_targets() {
 }
 targets_got="$(cd "$here/fixtures/release-targets" && scan_release_targets spelled.bash clean.bash | cut -d: -f1,2)" ||
     targets_got="(the scan failed)"
-targets_want="$(seq -f 'spelled.bash:%g' 1 26)"
+targets_want="$(seq -f 'spelled.bash:%g' 1 28)"
 if [ "$targets_got" = "$targets_want" ]; then
-    pass "the release-target scan reports the release namespace, CFGD_NAMESPACE, both operator label selectors, every kubectl spelling of the operator Deployment, Endpoints and Service, bare or quoted, the webhook configurations and the CSI driver, in code, comments and heredocs, and stays quiet on the PR install's names, the leader lease, longer names that start the same and other cfgd.io names"
+    pass "the release-target scan reports the release namespace, CFGD_NAMESPACE, both operator label selectors, every kubectl spelling of the operator Deployment, Endpoints and Service, bare or quoted, the webhook configurations, the CSI driver and the release gateway cfgd-server, in code, comments and heredocs, and stays quiet on the PR install's names, the leader lease, longer names that start the same and other cfgd.io names"
 else
     fail "the release-target scan printed [$targets_got], want [$targets_want]"
 fi
@@ -2976,19 +2986,17 @@ else
 fi
 
 # release-targets-kept.tsv lists the lines that name a release target on
-# purpose, one row per line, each with its reason.
+# purpose, one row per line, each with its reason. A list with no row is valid.
 kept_rc=0
 release_target_kept="$(grep -v -e '^#' -e '^$' "$here/release-targets-kept.tsv")" || kept_rc=$?
-if [ "$kept_rc" -eq 1 ]; then
-    fail "no entries in $here/release-targets-kept.tsv"
-elif [ "$kept_rc" -gt 1 ]; then
+if [ "$kept_rc" -gt 1 ]; then
     fail "could not read $here/release-targets-kept.tsv"
 fi
 
 # Each suite that drives the PR install has a floor of scripts; a pathspec
 # that matches fewer fails the check.
-release_target_suites=(operator full-stack)
-declare -A release_target_floors=([operator]=12 [full-stack]=10)
+release_target_suites=(operator full-stack gateway node)
+declare -A release_target_floors=([operator]=12 [full-stack]=10 [gateway]=10 [node]=11)
 for suite in "${release_target_suites[@]}"; do
     if [ -z "${release_target_floors[$suite]:-}" ]; then
         fail "release_target_floors has no floor for the $suite suite"
@@ -3005,9 +3013,44 @@ for suite in "${release_target_suites[@]}"; do
     elif [ -z "$release_verdict" ]; then
         pass "no $suite suite script names a release target by hand outside its kept list (${#suite_scripts[@]} scripts)"
     else
-        fail "the $suite suite drives the PR install; use \$E2E_INSTALL_NS, \$E2E_OPERATOR_PODS, \$E2E_OPERATOR_DEPLOY, \$E2E_WEBHOOK_SVC, \$E2E_CSI_DS, \$E2E_CSI_PODS, \$E2E_VALIDATING_WEBHOOK, \$E2E_MUTATING_WEBHOOK or \$CSI_DRIVER_NAME from helpers.sh. A line that names the release on purpose goes in common/release-targets-kept.tsv with its reason; a kept entry that matches no line is removed or updated. [$release_verdict]"
+        fail "the $suite suite drives the PR install; use \$E2E_INSTALL_NS, \$E2E_OPERATOR_PODS, \$E2E_OPERATOR_DEPLOY, \$E2E_WEBHOOK_SVC, \$E2E_GATEWAY_SVC, \$E2E_GATEWAY_URL, \$E2E_CSI_DS, \$E2E_CSI_PODS, \$E2E_VALIDATING_WEBHOOK, \$E2E_MUTATING_WEBHOOK or \$CSI_DRIVER_NAME from helpers.sh. A line that names the release on purpose goes in common/release-targets-kept.tsv with its reason; a kept entry that matches no line is removed or updated. [$release_verdict]"
     fi
 done
+# The gateway's Service name, port, in-cluster URL, leader label and admin key
+# are spelled once, in helpers.sh, and setup hands the port and key to helm, so
+# a suite that spells one by hand drifts from the install it drives.
+# scan_gateway_bypass FILE...: file:line:text of each line that does.
+gateway_bypass='svc\.cluster\.local|\$\{?E2E_INSTALL_RELEASE\}?-gateway([^[:alnum:]-]|$)|cfgd\.io/gateway-leader'
+scan_gateway_bypass() {
+    local rc=0
+    grep -HnE "$gateway_bypass" "$@" || rc=$?
+    [ "$rc" -le 1 ]
+}
+bypass_got="$(cd "$here/fixtures/gateway-bypass" && scan_gateway_bypass spelled.bash clean.bash | cut -d: -f1,2)" ||
+    bypass_got="(the scan failed)"
+if [ "$bypass_got" = "$(seq -f 'spelled.bash:%g' 1 5)" ]; then
+    pass "the gateway scan reports an in-cluster URL, the gateway Service spelled from the release name, bare or braced, and the leader label, in code and comments, and stays quiet on the helpers.sh names and longer names that start the same"
+else
+    fail "the gateway scan printed [$bypass_got], want spelled.bash:1 to spelled.bash:5"
+fi
+if scan_gateway_bypass "$here/fixtures/gateway-bypass/absent.bash" >/dev/null 2>&1; then
+    fail "the gateway scan passed over a file it could not read"
+else
+    pass "the gateway scan fails over a file it cannot read"
+fi
+mapfile -t gateway_suite_scripts < <(for suite in "${release_target_suites[@]}"; do git -C "$repo_root" ls-files "tests/e2e/$suite/*.sh"; done)
+gateway_suite_floor=0
+for suite in "${release_target_suites[@]}"; do gateway_suite_floor=$((gateway_suite_floor + release_target_floors[$suite])); done
+if [ "${#gateway_suite_scripts[@]}" -lt "$gateway_suite_floor" ]; then
+    fail "the operator, full-stack, gateway and node suites matched ${#gateway_suite_scripts[@]} scripts, fewer than their floors' sum of $gateway_suite_floor, so the gateway scan missed part of them"
+elif ! gateway_bypass_hits="$(cd "$repo_root" && scan_gateway_bypass "${gateway_suite_scripts[@]}")"; then
+    fail "the gateway scan could not read the suites"
+elif [ -z "$gateway_bypass_hits" ]; then
+    pass "every suite reaches the PR install's gateway through helpers.sh (${#gateway_suite_scripts[@]} scripts)"
+else
+    fail "a suite spells the gateway by hand; use \$E2E_GATEWAY_URL, \$E2E_GATEWAY_SVC, \$E2E_GATEWAY_PORT, \$E2E_GATEWAY_LEADER_PODS and \$E2E_GATEWAY_API_KEY from helpers.sh: [$gateway_bypass_hits]"
+fi
+
 unscanned_kept="$(grep -vE "^tests/e2e/($(IFS='|'; echo "${release_target_suites[*]}"))/" <<<"$release_target_kept" || true)" # rc-ok: no entry outside the scanned suites is the passing outcome
 if [ -n "$unscanned_kept" ]; then
     fail "release-targets-kept.tsv lists lines of a file the release-target scan does not read, so they can never go stale; remove them: [$unscanned_kept]"
@@ -3786,9 +3829,9 @@ scan_device_ids() {
     ' "$@" pass=2 "$@"
 }
 # shellcheck disable=SC2016 # the inner script expands its own variables
-expect_kubectl "cleanup_e2e deletes the DriftAlerts of each device id gateway_device recorded, once each, also after helpers.sh is sourced again" \
+expect_kubectl "cleanup_e2e deletes from the install namespace the DriftAlerts of each device id gateway_device recorded, once each, also after helpers.sh is sourced again" \
     'gateway_device A e2e-a-42; gateway_device B fullstack-device-b-42; gateway_device C "$A"; source "$1/common/helpers.sh"; [ "$C" = e2e-a-42 ] && cleanup_e2e' \
-    "delete driftalert -n cfgd-system -l cfgd.io/device-id in (e2e-a-42,fullstack-device-b-42) --ignore-not-found"
+    "delete driftalert -n cfgd-e2e-42-sys -l cfgd.io/device-id in (e2e-a-42,fullstack-device-b-42) --ignore-not-found"
 : > "$log"
 in_helpers cleanup_e2e GITHUB_RUN_ID=42 >/dev/null 2>&1
 if grep -q driftalert "$log"; then

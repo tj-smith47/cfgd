@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# Removes this run's PR install of the operator and CSI driver: the run's
-# cfgd.io objects, the Crossplane suite's TeamConfigs, Composition and
-# Function, then the Helm release, then its namespace. Every step runs
-# even when one before it failed, and the script exits 1 when any failed.
+# Removes this run's PR install of the operator, its device gateway and the
+# CSI driver: the run's cfgd.io objects, the Crossplane suite's TeamConfigs,
+# Composition and Function, then the Helm release, then its namespace. Every
+# step runs even when one before it failed, and the script exits 1 when any
+# failed.
 #
 # The run id comes from helpers.sh: GITHUB_RUN_ID when set, else the id a
 # local setup recorded. When neither the run's release nor its namespace

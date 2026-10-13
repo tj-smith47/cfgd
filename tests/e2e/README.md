@@ -132,8 +132,9 @@ still deleting, and stops when it outlasts that.
 `e2e-teardown` job runs it after all of them, and `task e2e` runs it last. It deletes
 the run's MachineConfigs, ConfigPolicies, DriftAlerts, BackupPolicies,
 ClusterConfigPolicies and Modules (`-l "$E2E_RUN_LABEL"`) while the run's operator
-still clears their finalizers, then uninstalls `$E2E_INSTALL_RELEASE` and deletes
-`$E2E_INSTALL_NS` without waiting. It then reads back that `$CSI_DRIVER_NAME` no longer
+still clears their finalizers, then uninstalls `$E2E_INSTALL_RELEASE` (the device
+gateway's Service, Role and RoleBinding with it) and deletes `$E2E_INSTALL_NS`, where
+the gateway's DriftAlerts and emptyDir store live, without waiting. It then reads back that `$CSI_DRIVER_NAME` no longer
 belongs to the install and that both webhook configurations are gone, and prints the
 namespace's phase. A release that is not installed counts as removed when its namespace
 is still there. It first looks for every object it removes or reads back: the release,
@@ -171,16 +172,21 @@ come from the names above, and OP-PR-01 fails unless `$E2E_OPERATOR_DEPLOY` runs
 a ready endpoint when OP-LC-03 deletes the leader while other jobs apply through it.
 OP-LC-03 samples `$E2E_WEBHOOK_SVC`'s endpoints from the delete until the replacement is
 ready and fails on a sample with none, on the deleted pod's UID still listed, and on a
-lease that never moves to another live pod. The error cases read every operator pod, and
+lease that never moves to another live pod. After the roll it fails unless the new
+lease holder is the one pod labelled `cfgd.io/gateway-leader=true`, the gateway
+Service's one ready address is that pod's IP, and the gateway's unauthenticated
+`GET /api/v1/enroll/info` through `svc/$E2E_GATEWAY_SVC` answers 200 with an enrollment
+method. The error cases read every operator pod, and
 `test-pr-install.sh` fails on a script that picks one operator pod by index, by an
 unsorted slice or by `first`, on the kubectl line or later from its captured JSON. The
 full-stack suite runs against the PR install too: its setup waits for
-`$E2E_OPERATOR_DEPLOY`, the endpoints of `$E2E_WEBHOOK_SVC` and `$E2E_CSI_DS`, and stops
+`$E2E_OPERATOR_DEPLOY`, the endpoints of `$E2E_WEBHOOK_SVC` and `$E2E_GATEWAY_SVC`, and
+`$E2E_CSI_DS`, and stops
 when the CSI driver is not ready or `cosign` is missing. No full-stack case calls
 `skip_test`, and `test-pr-install.sh` fails on one under `full-stack/`. The FS-CSI cases
 find the driver pods by `$E2E_CSI_PODS` in `$E2E_INSTALL_NS` and the injected volume by
-`$CSI_DRIVER_NAME`. `test-pr-install.sh` fails on a tracked `*.sh` under `operator/` or
-`full-stack/` that names a release target by hand:
+`$CSI_DRIVER_NAME`. `test-pr-install.sh` fails on a tracked `*.sh` under `operator/`,
+`full-stack/`, `gateway/` or `node/` that names a release target by hand:
 
 - `cfgd-system` or `$CFGD_NAMESPACE` / `${CFGD_NAMESPACE}`
 - `app=cfgd-operator` or `app.kubernetes.io/name=cfgd-operator`
@@ -188,15 +194,13 @@ find the driver pods by `$E2E_CSI_PODS` in `$E2E_INSTALL_NS` and the injected vo
   `deployment.apps`, `deployments.apps`, `endpoints`, `ep`, `svc`, `service` or
   `services`, joined by `/` or spaces
 - `cfgd-validating-webhooks`, `cfgd-mutating-webhooks` or `csi.cfgd.io`
+- `cfgd-server`, the release's device gateway
 
 A longer name that starts the same (`cfgd-systemd`, `cfgd-operator-leader`) passes.
-The full-stack suite names `cfgd-system` on purpose in two places, listed by file and
-line text in `common/release-targets-kept.tsv`: the device gateway `cfgd-server`,
-which the PR install does not replace, and the MachineConfigs, ConfigPolicy and
-DriftAlert of the fleet and drift cases, which live where the gateway works and reach
-the PR operator through the run label. Each row clears one line, so a text kept on
-three lines of a file has three rows; a further line with that text fails, as does a
-row no line uses. Each suite has a floor of scripts the scan must read. The
+A line that names a release target on purpose is listed by file and line text in
+`common/release-targets-kept.tsv` with its reason; no line needs one today. Each row
+clears one line, so a text kept on three lines of a file has three rows; a further line
+with that text fails, as does a row no line uses. Each suite has a floor of scripts the scan must read. The
 YAML under `operator/manifests/` is the release operator's own definition, which setup
 applies where ArgoCD does not run it, so the scan does not read it. `helpers.sh` names
 the release webhook configurations once, as `$E2E_RELEASE_VALIDATING_WEBHOOK` and
@@ -302,10 +306,33 @@ cannot read (a script, say) is skipped. Every TeamConfig heredoc names the run's
 Composition (see below). No suite applies a manifest by path; the crossplane suite's
 Composition reaches `kubectl apply -f -` on a here-string from `render_run_composition`.
 
+## The PR install's device gateway
+
+The PR install runs the device gateway in its operator pods
+(`deviceGateway.enabled: true` in `manifests/pr-install-values.yaml`, with its store on
+an emptyDir, since the chart keeps a persistent store to one replica). The lease holder
+labels its pod `cfgd.io/gateway-leader=true` once its gateway accepts, and the gateway
+Service selects that label, so the standby stays a webhook endpoint and gateway traffic
+reaches the lease holder only. Setup passes the port and admin key from `helpers.sh` to
+Helm and waits for the gateway Service's endpoint. The gateway, node, full-stack and
+operator suites reach the gateway through these names alone:
+
+```bash
+E2E_GATEWAY_SVC=$E2E_INSTALL_RELEASE-gateway
+E2E_GATEWAY_URL=http://$E2E_GATEWAY_SVC.$E2E_INSTALL_NS.svc.cluster.local:$E2E_GATEWAY_PORT
+E2E_GATEWAY_LEADER_PODS=$E2E_OPERATOR_PODS,cfgd.io/gateway-leader=true
+E2E_GATEWAY_API_KEY=${CFGD_E2E_API_KEY:-cfgd-e2e-admin-key}
+```
+
+`test-pr-install.sh` fails on a tracked `*.sh` under those four suites that spells an
+in-cluster `svc.cluster.local` URL, the gateway Service from `$E2E_INSTALL_RELEASE`, or
+the `cfgd.io/gateway-leader` label by hand. The fleet and drift cases put their
+MachineConfigs, ConfigPolicy and DriftAlert in `$E2E_INSTALL_NS`.
+
 ## Device ids sent to the device gateway
 
-The release gateway in `cfgd-system` creates a DriftAlert for a device that reports
-drift, labelled `cfgd.io/device-id=<id>` and carrying no run label. Every device id
+The gateway creates a DriftAlert in its own namespace, `$E2E_INSTALL_NS`, for a device
+that reports drift, labelled `cfgd.io/device-id=<id>` and carrying no run label. Every device id
 the gateway, node and full-stack suites send is set through `gateway_device` in
 `common/helpers.sh`, which records it, and `cleanup_e2e` deletes the alerts of every
 recorded id:
@@ -313,7 +340,7 @@ recorded id:
 ```bash
 gateway_device DEVICE_1 "fullstack-device-1-${E2E_RUN_ID}"
 # cleanup_e2e:
-#   kubectl delete driftalert -n cfgd-system -l "cfgd.io/device-id in (fullstack-device-1-<run>,...)"
+#   kubectl delete driftalert -n "$E2E_INSTALL_NS" -l "cfgd.io/device-id in (fullstack-device-1-<run>,...)"
 ```
 
 `gateway_device` refuses an id that is not already a label value (lowercase letters,
@@ -350,8 +377,9 @@ teardown.
 
 On the shared cluster ArgoCD deploys the live operator, the device gateway and the
 CSI node plugin from `/db/manifests/k3s/namespaces/cfgd-system/`, so those run the
-release the manifests pin, whatever this run built. This run's operator and CSI
-images run in the PR install instead: Helm release `$E2E_INSTALL_RELEASE` in
+release the manifests pin, whatever this run built. This run's operator image, its
+device gateway included, and CSI image run in the PR install instead: Helm release
+`$E2E_INSTALL_RELEASE` in
 `$E2E_INSTALL_NS`, with CSI driver `e2e.csi.cfgd.io`, scoped to the objects and
 namespaces that carry the run label. `setup-cluster.sh` prints the image each live
 component and each PR install workload runs, and warns when `OPERATOR_IMAGE_TAG` is

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Shared setup for gateway E2E tests.
 # Sourced by run-all.sh BEFORE domain test files.
-# Verifies gateway deployment, creates ephemeral namespace,
-# port-forwards to gateway, extracts admin key, creates bootstrap token.
+# Waits for the PR install's gateway, creates ephemeral namespace,
+# port-forwards to gateway, reads admin key, creates bootstrap token.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -15,36 +15,40 @@ require_release_webhooks_scoped || exit 1
 
 echo "=== cfgd Gateway E2E Tests ==="
 
-# --- Verify gateway deployment is running ---
-echo "Verifying gateway deployment..."
-kubectl wait --for=condition=available deployment/cfgd-server \
-    -n cfgd-system --timeout=60s
-echo "Gateway deployment is running"
+# --- Verify the install's gateway is serving ---
+echo "Verifying the gateway of $E2E_INSTALL_RELEASE..."
+wait_for_service_endpoints "$E2E_INSTALL_NS" "$E2E_GATEWAY_SVC" 60
+echo "Gateway Service has its lease holder as endpoint"
 
 # --- Create ephemeral namespace ---
 create_e2e_namespace
 
 # --- Port-forward to gateway ---
+# The API goes through the Service; the probe port is the lease holder's own,
+# since the gateway Service publishes only the gateway port.
 GW_PORT=18080
 GW_HEALTH_PORT=18081
 echo "Port-forwarding to gateway on localhost:$GW_PORT..."
-PF_PID=$(port_forward cfgd-system svc/cfgd-server "$GW_PORT" 8080)
-PF_HEALTH_PID=$(port_forward cfgd-system svc/cfgd-server "$GW_HEALTH_PORT" 8081)
+GW_LEADER_POD=$(kubectl get pods -n "$E2E_INSTALL_NS" -l "$E2E_GATEWAY_LEADER_PODS" \
+    -o jsonpath='{.items[*].metadata.name}')
+if [ -z "$GW_LEADER_POD" ] || [ "$GW_LEADER_POD" != "${GW_LEADER_POD%% *}" ]; then
+    echo "ERROR: want exactly one pod labelled $E2E_GATEWAY_LEADER_PODS in $E2E_INSTALL_NS, found [${GW_LEADER_POD}]" >&2
+    exit 1
+fi
+PF_PID=$(port_forward "$E2E_INSTALL_NS" "svc/$E2E_GATEWAY_SVC" "$GW_PORT" "$E2E_GATEWAY_PORT")
+PF_HEALTH_PID=$(port_forward "$E2E_INSTALL_NS" "pod/$GW_LEADER_POD" "$GW_HEALTH_PORT" 8081)
 GW_URL="http://localhost:$GW_PORT"
 
-# Wait for gateway to be reachable via port-forward (use health endpoint: API requires auth)
-wait_for_url "http://localhost:$GW_HEALTH_PORT/readyz" 30
+wait_for_url "$GW_URL/api/v1/enroll/info" 30
 
-echo "Gateway reachable at $GW_URL"
+echo "Gateway reachable at $GW_URL (lease holder pod/$GW_LEADER_POD)"
 
-# --- Extract admin API key from deployment env var ---
-ADMIN_KEY=$(kubectl get deployment cfgd-server -n cfgd-system \
-    -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="CFGD_API_KEY")].value}' 2>/dev/null || echo "")
-
-if [ -z "$ADMIN_KEY" ]; then
-    # CFGD_API_KEY not set on deployment: gateway runs in open mode (all requests are admin)
-    echo "WARN: CFGD_API_KEY not set on deployment, gateway in open mode"
-    ADMIN_KEY=""
+# --- Admin API key: the one setup gave the install ---
+ADMIN_KEY=$(kubectl get deployment "$E2E_OPERATOR_DEPLOY" -n "$E2E_INSTALL_NS" \
+    -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="CFGD_API_KEY")].value}')
+if [ "$ADMIN_KEY" != "$E2E_GATEWAY_API_KEY" ]; then
+    echo "ERROR: deployment/$E2E_OPERATOR_DEPLOY sets CFGD_API_KEY to [${ADMIN_KEY}], not the key setup passes as deviceGateway.apiKey; rerun setup" >&2
+    exit 1
 fi
 
 # --- Admin-API helpers, defined here because this file sources first ---
@@ -87,7 +91,7 @@ else
 fi
 
 # --- Export environment for domain test files ---
-export GW_URL GW_PORT GW_HEALTH_PORT PF_PID PF_HEALTH_PID ADMIN_KEY BOOTSTRAP_TOKEN GW_DEVICE_ID
+export GW_URL GW_PORT GW_HEALTH_PORT GW_LEADER_POD PF_PID PF_HEALTH_PID ADMIN_KEY BOOTSTRAP_TOKEN GW_DEVICE_ID
 
 echo "Gateway URL: $GW_URL"
 echo "Bootstrap token available: $([ -n "$BOOTSTRAP_TOKEN" ] && echo yes || echo no)"

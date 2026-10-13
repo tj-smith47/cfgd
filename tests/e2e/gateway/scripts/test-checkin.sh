@@ -310,7 +310,7 @@ EOF
             # check-in succeed, so a silent 409 shows up here and nowhere else.
             # The read is asserted on its own: an empty log and a log that could
             # not be read look alike, and only one of them is a passing test.
-            GW31_LOG=$(kubectl logs -n cfgd-system deploy/cfgd-server --since=2m 2>&1)
+            GW31_LOG=$(kubectl logs -n "$E2E_INSTALL_NS" -l "$E2E_GATEWAY_LEADER_PODS" --since=2m --tail=-1 2>&1)
             GW31_LOG_RC=$?
             GW31_LOG_READ=empty
             [ -n "$GW31_LOG" ] && GW31_LOG_READ="read"

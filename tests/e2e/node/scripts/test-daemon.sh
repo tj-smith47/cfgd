@@ -827,13 +827,12 @@ exec_in_pod rm -f /etc/cfgd/profiles/k8s-worker-ondrift.yaml 2>/dev/null || true
 # =================================================================
 begin_test "DAEMON-17: Daemon checkin with gateway"
 
-SERVER_URL="http://cfgd-server.cfgd-system.svc.cluster.local:8080"
-HEALTH_URL="http://cfgd-server.cfgd-system.svc.cluster.local:8081"
-GW_API_KEY="${CFGD_E2E_API_KEY:-cfgd-e2e-admin-key}"
+SERVER_URL="$E2E_GATEWAY_URL"
+GW_API_KEY="$E2E_GATEWAY_API_KEY"
 
-# Check if device gateway is reachable (use health endpoint, as the API requires auth)
+# Check if device gateway is reachable (enrollment discovery needs no auth)
 GATEWAY_REACHABLE=false
-if wait_for_pod_url "${HEALTH_URL}/readyz" 20; then
+if wait_for_pod_url "${SERVER_URL}/api/v1/enroll/info" 20; then
     GATEWAY_REACHABLE=true
 fi
 
@@ -877,16 +876,18 @@ INNEREOF"
         echo "  Daemon logs (last 15 lines):"
         echo "$DAEMON_LOG" | tail -15 | sed 's/^/    /'
 
-        # Verify daemon attempted to contact the gateway
-        # The daemon logs checkin activity or the server records the device
+        # The tick's check-in line names the gateway it is aimed at, or the
+        # gateway records the device.
         DEVICES=$(exec_in_pod curl -sf -H "Authorization: Bearer $GW_API_KEY" "${SERVER_URL}/api/v1/devices" 2>/dev/null || echo "[]")
+        DAEMON17_CHECKIN=$(grep -E 'daemon: (checking in with|no device credential for this gateway)' <<<"$DAEMON_LOG" | grep -F "$SERVER_URL" || true)
+        echo "  Check-in line naming $SERVER_URL: ${DAEMON17_CHECKIN:-none}"
 
-        if echo "$DAEMON_LOG" | grep -q "checkin\|server"; then
+        if grep -qF "url=$SERVER_URL" <<<"$DAEMON17_CHECKIN" || grep -qF "checking in with $SERVER_URL" <<<"$DAEMON17_CHECKIN"; then
             pass_test "DAEMON-17"
         elif echo "$DEVICES" | grep -q "e2e-daemon17"; then
             pass_test "DAEMON-17"
         else
-            fail_test "DAEMON-17" "No evidence of daemon checkin with gateway"
+            fail_test "DAEMON-17" "No daemon check-in line naming $SERVER_URL, and the gateway lists no e2e-daemon17 device"
         fi
     fi
     exec_in_pod rm -f /tmp/daemon17.log /etc/cfgd/e2e-daemon17-cfgd.yaml 2>/dev/null || true

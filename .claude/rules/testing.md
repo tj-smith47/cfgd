@@ -237,16 +237,20 @@ other than `e2e_image cfgd-operator`, the full-stack setup stops when
 `$E2E_CSI_DS` is not ready or `cosign` is missing so no full-stack case calls
 `skip_test` (the test fails on one), and
 `tests/e2e/common/test-pr-install.sh` fails on a tracked `*.sh` under
-`tests/e2e/operator/` or `tests/e2e/full-stack/` that spells by hand `cfgd-system`, `$CFGD_NAMESPACE`,
+`tests/e2e/operator/`, `full-stack/`, `gateway/` or `node/` that spells by hand
+`cfgd-system`, `$CFGD_NAMESPACE`,
 the `app=` or `app.kubernetes.io/name=` selector for `cfgd-operator`,
 `cfgd-operator` after any kubectl spelling of a Deployment, Endpoints or
 Service (`deploy`, `deployments.apps`, `ep`, `svc`, ...), either release
-webhook configuration, or `csi.cfgd.io`. A full-stack line that names the
-release gateway `cfgd-server`, or the fleet and drift objects that live beside
-it in `cfgd-system`, is listed by file and text in
+webhook configuration, `csi.cfgd.io`, or the release gateway `cfgd-server`. A
+line that names a release target on purpose is listed by file and text in
 `tests/e2e/common/release-targets-kept.tsv` with its reason, one row per line
 it clears; a further line with the same text fails, and so does a row no line
-uses. `tests/e2e/README.md` lists the spellings. A suite that applies
+uses. Those suites reach the PR install's own device gateway only through
+`$E2E_GATEWAY_URL`, `$E2E_GATEWAY_SVC`, `$E2E_GATEWAY_PORT`,
+`$E2E_GATEWAY_LEADER_PODS` and `$E2E_GATEWAY_API_KEY` from `helpers.sh`; the
+same check fails on a `svc.cluster.local` URL, a gateway Service built from
+`$E2E_INSTALL_RELEASE`, or the `cfgd.io/gateway-leader` label spelled by hand. `tests/e2e/README.md` lists the spellings. A suite that applies
 run-labelled objects calls `require_release_webhooks_scoped` in its setup, which
 stops the suite when the release's webhooks are not scoped away from them.
 Every `helm install` and `helm upgrade` in the full-stack suite passes

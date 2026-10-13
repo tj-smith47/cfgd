@@ -140,19 +140,25 @@ fi
 # =================================================================
 # OP-LC-03: Leader pod deletion
 # =================================================================
-begin_test "OP-LC-03: Leader pod deletion: the standby takes the lease and the webhook stays served"
+begin_test "OP-LC-03: Leader pod deletion: the standby takes the lease, the webhook stays served and the gateway follows the lease"
 
 # The other jobs of the run apply through this install's webhook while this
 # case runs, so the leader goes while the standby keeps serving admission. A
 # pod name can be reused, so the UID is what tells the deleted pod apart. The
 # lease names the deleted pod until it expires (15s by default), so the new
-# holder is read up to E2E_LEASE_TRIES times, 5s apart, after the roll.
+# holder is read up to E2E_LEASE_TRIES times, 5s apart, after the roll. The
+# new holder labels its pod for the gateway Service once its gateway accepts,
+# so the label and the Service's endpoint are read the same way after it.
 LC03_TRIES="${E2E_LEASE_TRIES:-6}"
 LC03_REPLICAS=""
 LC03_UIDS=""
 LC03_LEADER=""
 LC03_UID=""
 LC03_NEW_LEADER=""
+LC03_LABELLED=""
+LC03_GW_ENDPOINTS=""
+LC03_GW_ANSWER=""
+LC03_GW_PORT=18091
 
 # lc03_all_ready: the Deployment asks for a standby and every replica it asks
 # for is ready. LC03_REPLICAS keeps "<asked> <ready>" as read.
@@ -172,6 +178,32 @@ lc03_replaced() {
 # shellcheck disable=SC2329  # retry_tries invokes it by name
 lc03_new_leader() {
     LC03_NEW_LEADER="$(operator_leader_pod)" && [ "$LC03_NEW_LEADER" != "$LC03_LEADER" ]
+}
+# lc03_gateway_on_new_leader: the new lease holder is the one pod carrying the
+# gateway leader label, and the gateway Service's one ready address is its IP.
+# shellcheck disable=SC2329  # retry_tries invokes it by name
+lc03_gateway_on_new_leader() {
+    local leader_ip
+    LC03_LABELLED="$(kubectl get pods -n "$E2E_INSTALL_NS" -l "$E2E_GATEWAY_LEADER_PODS" \
+        -o jsonpath='{.items[*].metadata.name}' 2>&1)" || return 1
+    # stderr carries the API server's Endpoints deprecation warning.
+    LC03_GW_ENDPOINTS="$(kubectl get endpoints "$E2E_GATEWAY_SVC" -n "$E2E_INSTALL_NS" \
+        -o jsonpath='{.subsets[*].addresses[*].ip}' 2>/dev/null)" || return 1
+    leader_ip="$(kubectl get pod "$LC03_NEW_LEADER" -n "$E2E_INSTALL_NS" -o jsonpath='{.status.podIP}' 2>&1)" || return 1
+    [ "$LC03_LABELLED" = "$LC03_NEW_LEADER" ] && [ -n "$leader_ip" ] && [ "$LC03_GW_ENDPOINTS" = "$leader_ip" ]
+}
+# lc03_gateway_answers: the gateway's unauthenticated enrollment discovery,
+# asked through the gateway Service, names an enrollment method.
+# LC03_GW_ANSWER keeps the body or the failure.
+lc03_gateway_answers() {
+    local pf_pid
+    if ! pf_pid=$(port_forward "$E2E_INSTALL_NS" "svc/$E2E_GATEWAY_SVC" "$LC03_GW_PORT" "$E2E_GATEWAY_PORT"); then
+        LC03_GW_ANSWER="svc/$E2E_GATEWAY_SVC could not be forwarded to localhost"
+        return 1
+    fi
+    LC03_GW_ANSWER="$(curl -sS -w ' HTTP %{http_code}' "http://localhost:$LC03_GW_PORT/api/v1/enroll/info" 2>&1)"
+    stop_port_forward "$pf_pid"
+    [[ $LC03_GW_ANSWER == '{"method":"'*'} HTTP 200' ]]
 }
 
 if ! [[ $LC03_TRIES =~ ^[1-9][0-9]*$ ]]; then
@@ -196,6 +228,16 @@ else
         LC03_LED=true
     fi
     echo "  Lease holder after the roll: ${LC03_NEW_LEADER:-unread}"
+    LC03_GW_ROUTED=false
+    if $LC03_LED && retry_tries "$LC03_TRIES" 5 lc03_gateway_on_new_leader; then
+        LC03_GW_ROUTED=true
+    fi
+    echo "  Pods labelled for the gateway: ${LC03_LABELLED:-none}; gateway Service addresses: ${LC03_GW_ENDPOINTS:-none}"
+    LC03_GW_SERVED=false
+    if $LC03_GW_ROUTED && lc03_gateway_answers; then
+        LC03_GW_SERVED=true
+    fi
+    echo "  GET /api/v1/enroll/info through svc/$E2E_GATEWAY_SVC: ${LC03_GW_ANSWER:-not asked}"
 
     if [ "$ENDPOINT_SAMPLES" -eq 0 ]; then
         fail_test "OP-LC-03" "kubectl read the endpoints of $E2E_WEBHOOK_SVC in none of $ENDPOINT_UNREAD attempts after the delete"
@@ -205,6 +247,10 @@ else
         fail_test "OP-LC-03" "Within 120s the operator pods (uids: ${LC03_UIDS:-unread}) still held $LC03_UID or not every replica was ready (spec.replicas and readyReplicas: ${LC03_REPLICAS:-unread})"
     elif ! $LC03_LED; then
         fail_test "OP-LC-03" "After $LC03_TRIES reads the lease named no live operator pod other than the deleted pod/$LC03_LEADER: $LC03_NEW_LEADER"
+    elif ! $LC03_GW_ROUTED; then
+        fail_test "OP-LC-03" "After $LC03_TRIES reads the pods labelled $E2E_GATEWAY_LEADER_PODS were [${LC03_LABELLED}] and svc/$E2E_GATEWAY_SVC addressed [${LC03_GW_ENDPOINTS}], want only the new lease holder pod/$LC03_NEW_LEADER"
+    elif ! $LC03_GW_SERVED; then
+        fail_test "OP-LC-03" "GET /api/v1/enroll/info through svc/$E2E_GATEWAY_SVC to the new lease holder's gateway got [${LC03_GW_ANSWER}], want a JSON enrollment method and HTTP 200"
     else
         pass_test "OP-LC-03"
     fi

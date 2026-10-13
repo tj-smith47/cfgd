@@ -11,3 +11,5 @@ kubectl get pods -l app=cfgd-operator-canary
 kubectl get pods -l app.kubernetes.io/name=cfgd-operator-canary
 echo step cfgd-operator
 kubectl get mysvc/cfgd-operator
+kubectl get deployment cfgd-server-canary
+wait_for_service_endpoints "$E2E_INSTALL_NS" "$E2E_GATEWAY_SVC" 60

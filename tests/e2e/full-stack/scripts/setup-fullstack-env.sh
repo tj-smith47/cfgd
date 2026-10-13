@@ -21,12 +21,11 @@ require_release_webhooks_scoped || exit 1
 # --- Verify infrastructure ---
 echo "Verifying persistent infrastructure..."
 kubectl wait --for=condition=available deployment/"$E2E_OPERATOR_DEPLOY" -n "$E2E_INSTALL_NS" --timeout=120s
-kubectl wait --for=condition=available deployment/cfgd-server -n cfgd-system --timeout=120s
 # Deployment Available can flip True before Service Endpoints repopulate during
 # a rolling update, which makes admission webhook calls fail transiently with
 # "no endpoints available for service". Block on real endpoints.
 wait_for_service_endpoints "$E2E_INSTALL_NS" "$E2E_WEBHOOK_SVC" 120
-wait_for_service_endpoints cfgd-system cfgd-server 120
+wait_for_service_endpoints "$E2E_INSTALL_NS" "$E2E_GATEWAY_SVC" 120
 wait_for_daemonset "$E2E_INSTALL_NS" "$E2E_CSI_DS" 120 || { echo "ERROR: PR CSI driver not ready" >&2; exit 1; }
 echo "All persistent components running"
 
@@ -51,8 +50,8 @@ cleanup_fullstack() {
     kubectl delete module "oci05-digest-${E2E_RUN_ID}" --ignore-not-found 2>/dev/null || true
     kubectl delete module "oci06-auth-${E2E_RUN_ID}" --ignore-not-found 2>/dev/null || true
     kubectl delete clusterconfigpolicy "oci03-no-unsigned-${E2E_RUN_ID}" --ignore-not-found 2>/dev/null || true
-    # Clean up namespaced CRDs in test and cfgd-system namespaces
-    for ns in "$E2E_NAMESPACE" cfgd-system; do
+    # Clean up namespaced CRDs in the test and install namespaces
+    for ns in "$E2E_NAMESPACE" "$E2E_INSTALL_NS"; do
         for kind in machineconfig configpolicy driftalert; do
             kubectl delete "$kind" -l "$E2E_RUN_LABEL" -n "$ns" --ignore-not-found 2>/dev/null || true
         done
@@ -76,15 +75,14 @@ ensure_cfgd_binary
 KUBECTL_CFGD="/tmp/kubectl-cfgd"
 ln -sf "$CFGD_BIN" "$KUBECTL_CFGD"
 
-SERVER_URL="http://cfgd-server.cfgd-system.svc.cluster.local:8080"
-GW_API_KEY="${CFGD_E2E_API_KEY:-cfgd-e2e-admin-key}"
+SERVER_URL="$E2E_GATEWAY_URL"
+GW_API_KEY="$E2E_GATEWAY_API_KEY"
 export GW_API_KEY
-HEALTH_URL="http://cfgd-server.cfgd-system.svc.cluster.local:8081"
 echo "Device gateway URL: $SERVER_URL"
 
 # Wait for gateway reachability from test pod (use the health endpoint, as the API requires auth)
 echo "Waiting for device gateway..."
-if ! wait_for_pod_url "${HEALTH_URL}/readyz" 120; then
+if ! wait_for_pod_url "${SERVER_URL}/api/v1/enroll/info" 120; then
     echo "ERROR: Device gateway not reachable after 120s" >&2
     exit 1
 fi

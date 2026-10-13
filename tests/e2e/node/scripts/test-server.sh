@@ -21,16 +21,15 @@ for f in "$FIXTURES/profiles/"*.yaml; do
     cp_to_pod "$f" "/etc/cfgd/profiles/$(basename "$f")"
 done
 
-SERVER_URL="http://cfgd-server.cfgd-system.svc.cluster.local:8080"
-HEALTH_URL="http://cfgd-server.cfgd-system.svc.cluster.local:8081"
-# Admin API key must match CFGD_API_KEY on the server deployment
-GW_API_KEY="${CFGD_E2E_API_KEY:-cfgd-e2e-admin-key}"
+SERVER_URL="$E2E_GATEWAY_URL"
+GW_API_KEY="$E2E_GATEWAY_API_KEY"
 echo "Device gateway URL: $SERVER_URL"
 
-# Verify the device gateway is reachable from the test pod through the health
-# endpoint, since the API requires auth.
+# Verify the device gateway is reachable from the test pod through its
+# unauthenticated enrollment discovery route, since the rest of the API
+# requires auth.
 echo "Verifying device gateway reachability from test pod..."
-if ! wait_for_pod_url "${HEALTH_URL}/readyz" 60; then
+if ! wait_for_pod_url "${SERVER_URL}/api/v1/enroll/info" 60; then
     echo "ERROR: device gateway not reachable after 60s" >&2
     exit 1
 fi

@@ -635,6 +635,8 @@ if ! helm upgrade --install "$E2E_INSTALL_RELEASE" "$REPO_ROOT/chart/cfgd" -n "$
     --set "csiDriver.image.repository=$(e2e_image_repo cfgd-csi)" \
     --set "csiDriver.image.tag=$(e2e_image_tag cfgd-csi)" \
     --set-string "csiDriver.name=$CSI_DRIVER_NAME" \
+    --set "deviceGateway.port=$E2E_GATEWAY_PORT" \
+    --set-string "deviceGateway.apiKey=$E2E_GATEWAY_API_KEY" \
     --set-string "operator.watchLabelSelector=cfgd.io/e2e-run=${E2E_RUN_ID}" \
     --set-json "webhook.objectSelector={\"matchLabels\":{\"cfgd.io/e2e-run\":\"${E2E_RUN_ID}\"}}" \
     --set-json "mutatingWebhook.namespaceSelector={\"matchExpressions\":[{\"key\":\"cfgd.io/inject-modules\",\"operator\":\"In\",\"values\":[\"true\"]},{\"key\":\"cfgd.io/e2e-run\",\"operator\":\"In\",\"values\":[\"${E2E_RUN_ID}\"]}]}" \
@@ -662,6 +664,13 @@ for pr_webhook in "validatingwebhookconfiguration/$E2E_VALIDATING_WEBHOOK" \
     fi
 done
 
+# Helm waits for ready operator pods, and readiness leaves the gateway out, so
+# the gateway Service has an endpoint only once the lease holder's gateway
+# accepts and labels its pod.
+if ! wait_for_service_endpoints "$E2E_INSTALL_NS" "$E2E_GATEWAY_SVC" 120; then
+    echo "ERROR: service/$E2E_GATEWAY_SVC in $E2E_INSTALL_NS has no endpoint after 120s, so no operator pod carries cfgd.io/gateway-leader=true. Read the lease holder's log (kubectl logs -n $E2E_INSTALL_NS -l $E2E_OPERATOR_PODS --prefix --tail=50), fix the cause and rerun setup." >&2
+    exit 1
+fi
 if ! wait_for_daemonset "$E2E_INSTALL_NS" "$E2E_CSI_DS" 120; then
     echo "ERROR: daemonset/$E2E_CSI_DS in $E2E_INSTALL_NS is not ready after 120s. Read the description above, fix the cause and rerun setup." >&2
     exit 1
@@ -945,28 +954,7 @@ echo "Waiting for components..."
 wait_for_deployment cfgd-system cfgd-operator 120
 wait_for_deployment cfgd-system cfgd-server 120
 
-# --- Step 10: Reset gateway DB for clean E2E state ---
-# Call the admin reset endpoint to wipe stale device/event data from prior runs.
-# This is safe: the endpoint is behind admin auth and only deletes data rows,
-# leaving the SQLite file in place (an rm -f on the live DB corrupts its Longhorn volume).
-GW_API_KEY=$(kubectl get deployment cfgd-server -n cfgd-system \
-    -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="CFGD_API_KEY")].value}' 2>/dev/null || echo "")
-if [ -n "$GW_API_KEY" ]; then
-    # Port-forward to gateway, reset, then clean up
-    RESET_RESP=""
-    if PF_PID=$(port_forward cfgd-system svc/cfgd-server 18099 8080); then
-        RESET_RESP=$(curl -sf -X POST "http://localhost:18099/api/v1/admin/reset" \
-            -H "Authorization: Bearer $GW_API_KEY" 2>/dev/null || echo "")
-        stop_port_forward "$PF_PID"
-    fi
-    if [ -n "$RESET_RESP" ]; then
-        echo "  Gateway DB reset: $RESET_RESP"
-    else
-        echo "  WARN: Gateway DB reset failed (endpoint may not exist yet)"
-    fi
-fi
-
-# --- Step 11: Record last-green SHA per image ---
+# --- Step 10: Record last-green SHA per image ---
 # Reached only after every prior step succeeded (set -e). Persisting HEAD as the
 # last-green SHA here is what lets the NEXT run's image_decision skip unchanged
 # images. Best-effort writes: a ConfigMap write failure only forces a rebuild

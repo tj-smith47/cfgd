@@ -55,12 +55,12 @@ fi
 # =================================================================
 begin_test "FS-FLEET-03: MachineConfig for fleet device"
 
-kubectl apply -n cfgd-system -f - <<EOF
+kubectl apply -n "$E2E_INSTALL_NS" -f - <<EOF
 apiVersion: cfgd.io/v1alpha1
 kind: MachineConfig
 metadata:
   name: mc-${DEVICE_1}
-  namespace: cfgd-system
+  namespace: ${E2E_INSTALL_NS}
   labels:
     ${E2E_RUN_LABEL_YAML}
 spec:
@@ -78,7 +78,7 @@ EOF
 # A fresh MachineConfig with no DriftAlert and no moduleRefs: the controller's
 # first pass settles all three of its conditions, as in OP-MC-01.
 fleet03_settled() {
-    FLEET03_CONDITIONS=$(kubectl get machineconfig "mc-${DEVICE_1}" -n cfgd-system \
+    FLEET03_CONDITIONS=$(kubectl get machineconfig "mc-${DEVICE_1}" -n "$E2E_INSTALL_NS" \
         -o jsonpath='{range .status.conditions[*]}{.type}={.status}/{.reason} {end}' 2>/dev/null || echo "")
     has_all_words "$FLEET03_CONDITIONS" Reconciled=True/ReconcileSuccess DriftDetected=False/NoDrift ModulesResolved=True/AllResolved
 }
@@ -96,12 +96,12 @@ fi
 begin_test "FS-FLEET-04: ConfigPolicy fleet enforcement"
 
 # Create MC for device 2 (compliant)
-kubectl apply -n cfgd-system -f - <<EOF
+kubectl apply -n "$E2E_INSTALL_NS" -f - <<EOF
 apiVersion: cfgd.io/v1alpha1
 kind: MachineConfig
 metadata:
   name: mc-${DEVICE_2}
-  namespace: cfgd-system
+  namespace: ${E2E_INSTALL_NS}
   labels:
     ${E2E_RUN_LABEL_YAML}
 spec:
@@ -115,12 +115,12 @@ spec:
 EOF
 
 # Create fleet-wide policy
-kubectl apply -n cfgd-system -f - <<EOF
+kubectl apply -n "$E2E_INSTALL_NS" -f - <<EOF
 apiVersion: cfgd.io/v1alpha1
 kind: ConfigPolicy
 metadata:
   name: fleet-baseline-${E2E_RUN_ID}
-  namespace: cfgd-system
+  namespace: ${E2E_INSTALL_NS}
   labels:
     ${E2E_RUN_LABEL_YAML}
 spec:
@@ -131,10 +131,10 @@ spec:
     "net.ipv4.ip_forward": "1"
 EOF
 
-COMPLIANT=$(wait_for_k8s_field configpolicy "fleet-baseline-${E2E_RUN_ID}" cfgd-system \
+COMPLIANT=$(wait_for_k8s_field configpolicy "fleet-baseline-${E2E_RUN_ID}" "$E2E_INSTALL_NS" \
     '{.status.compliantCount}' "" 65) || true
 
-NON_COMPLIANT=$(kubectl get configpolicy "fleet-baseline-${E2E_RUN_ID}" -n cfgd-system \
+NON_COMPLIANT=$(kubectl get configpolicy "fleet-baseline-${E2E_RUN_ID}" -n "$E2E_INSTALL_NS" \
     -o jsonpath='{.status.nonCompliantCount}' 2>/dev/null || echo "0")
 
 echo "  Fleet policy: compliant: ${COMPLIANT:-0}, non-compliant: ${NON_COMPLIANT:-0}"

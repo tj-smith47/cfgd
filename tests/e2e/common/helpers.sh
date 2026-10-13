@@ -200,6 +200,15 @@ export E2E_VALIDATING_WEBHOOK="$E2E_INSTALL_RELEASE"
 export E2E_MUTATING_WEBHOOK="$E2E_INSTALL_RELEASE-pod-injector"
 export E2E_OPERATOR_PODS="app.kubernetes.io/instance=$E2E_INSTALL_RELEASE,app.kubernetes.io/component=operator"
 export E2E_CSI_PODS="app.kubernetes.io/instance=$E2E_INSTALL_RELEASE,app.kubernetes.io/component=csi-driver"
+# The install's device gateway. Its Service selects only the operator pod that
+# holds the lease and carries the gateway leader label, so a suite reaches the
+# gateway through these names and never through the release's cfgd-server.
+# Setup passes the port and the admin key to helm.
+export E2E_GATEWAY_SVC="$E2E_INSTALL_RELEASE-gateway"
+export E2E_GATEWAY_PORT=8080
+export E2E_GATEWAY_URL="http://$E2E_GATEWAY_SVC.$E2E_INSTALL_NS.svc.cluster.local:$E2E_GATEWAY_PORT"
+export E2E_GATEWAY_LEADER_PODS="$E2E_OPERATOR_PODS,cfgd.io/gateway-leader=true"
+export E2E_GATEWAY_API_KEY="${CFGD_E2E_API_KEY:-cfgd-e2e-admin-key}"
 # The Crossplane suite's own Function and Composition, beside ArgoCD's
 # function-cfgd and teamconfig-to-machineconfigs.
 export E2E_FUNCTION="function-cfgd-$E2E_RUN_ID"
@@ -482,9 +491,10 @@ create_e2e_namespace() {
         echo "  WARN: registry-credentials not replicated to $E2E_NAMESPACE (Reflector may not be running)"
 }
 
-# The device ids this job sends to the release gateway. The DriftAlerts the
-# gateway creates for them carry no run label, so cleanup_e2e deletes them by
-# their cfgd.io/device-id label. Re-sourcing this file keeps the list.
+# The device ids this job sends to the install's gateway. The DriftAlerts the
+# gateway creates for them in its own namespace carry no run label, so
+# cleanup_e2e deletes them by their cfgd.io/device-id label. Re-sourcing this
+# file keeps the list.
 [[ -v E2E_GATEWAY_DEVICES ]] || E2E_GATEWAY_DEVICES=()
 
 # gateway_device <var> <id>: set <var> to <id> and record the id for
@@ -529,7 +539,7 @@ cleanup_e2e() {
     if [ "${#E2E_GATEWAY_DEVICES[@]}" -gt 0 ]; then
         local device_ids delete_err
         device_ids="$(IFS=,; echo "${E2E_GATEWAY_DEVICES[*]}")"
-        if ! delete_err="$(kubectl delete driftalert -n "$CFGD_NAMESPACE" -l "cfgd.io/device-id in ($device_ids)" --ignore-not-found 2>&1 >/dev/null)"; then
+        if ! delete_err="$(kubectl delete driftalert -n "$E2E_INSTALL_NS" -l "cfgd.io/device-id in ($device_ids)" --ignore-not-found 2>&1 >/dev/null)"; then
             echo "WARN: could not delete the DriftAlerts of $device_ids: $delete_err" >&2
         fi
     fi
@@ -1298,8 +1308,8 @@ EOF
 # Earlier checkins leave events behind, so a case compares the count before
 # and after the checkin it drives.
 gateway_drift_count() {
-    exec_in_pod curl -sf -H "Authorization: Bearer $GW_API_KEY" \
-        "${SERVER_URL}/api/v1/devices/$1/drift" 2>/dev/null \
+    exec_in_pod curl -sf -H "Authorization: Bearer $E2E_GATEWAY_API_KEY" \
+        "${E2E_GATEWAY_URL}/api/v1/devices/$1/drift" 2>/dev/null \
         | jq --arg f "$2" '[.[] | select(.details | contains($f))] | length' 2>/dev/null
 }
 
