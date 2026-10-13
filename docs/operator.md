@@ -307,9 +307,21 @@ The probe server listens on `HEALTH_PORT` (default `8081`) and answers three pat
 
 Readiness and leadership are separate signals. Only the lease holder runs the controllers, but every pod whose webhook is serving answers admission. A standby is therefore ready and stays an endpoint of the webhook Service: during a roll the replacement pod turns ready as soon as its webhook serves, joins the Service while the old pod still holds the lease, and admission (`failurePolicy: Fail`) always has a backend.
 
-The device gateway runs only on the pod running the controllers, so readiness does not wait for it. Once its listener accepts, the operator labels its own pod `cfgd.io/gateway-leader: "true"`, and the chart's gateway Service selects that label, so gateway requests reach the lease holder alone. The label comes off when the pod shuts down or loses the lease (before the gateway stops), and again when its container starts, so a restarted container never keeps it from an earlier run. The chart grants the operator `patch` on pods through a Role in the release namespace for this.
+The device gateway runs only on the pod running the controllers, so readiness does not wait for it. Once its listener accepts, the operator labels its own pod `cfgd.io/gateway-leader: "true"`, and the chart's gateway Service selects that label, so gateway requests reach the lease holder alone. The label comes off when the pod shuts down or loses the lease (before the gateway stops), and again when its container starts, so a restarted container never keeps it from an earlier run. The chart grants the operator `patch` on pods through a Role in the release namespace for this. With `serviceAccount.create: false` the chart renders no RBAC, so the ServiceAccount you supply needs that grant itself while the gateway is on: an operator that cannot clear the label at startup exits, and its webhook goes down with it.
 
-A pod that stops on a signal also gives the lease up once in-flight work has drained, so a standby takes it on its next attempt (`operator.leaderElection.retryPeriod`, `2s`) and does not wait out the lease duration. A holder that cannot renew stops serving once `operator.leaderElection.renewDeadline` (`10s`) has passed since its last renewal, while the lease (`operator.leaderElection.leaseDuration`, `15s`) still has time to run, so two pods never serve the gateway at once.
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: cfgd-operator-gateway
+  namespace: cfgd-system
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["patch"]
+```
+
+A pod that stops on a signal also gives the lease up once in-flight work has drained, so a standby takes it on its next attempt (`operator.leaderElection.retryPeriod`, `2s`) and does not wait out the lease duration. A holder that cannot renew stops serving once `operator.leaderElection.renewDeadline` (`10s`) has passed since its last renewal, while the lease (`operator.leaderElection.leaseDuration`, `15s`) still has time to run, so two pods never serve the gateway at once. The chart refuses `deviceGateway.enabled` with `operator.leaderElection.enabled: false` and `operator.replicaCount` above 1: with no lease every replica would serve the gateway from its own database.
 
 ```sh
 $ kubectl -n cfgd-system get pods -l cfgd.io/gateway-leader=true

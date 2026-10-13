@@ -1,4 +1,7 @@
 {{- if .Values.operator.enabled }}
+{{- if and .Values.deviceGateway.enabled (not .Values.operator.leaderElection.enabled) (gt (int .Values.operator.replicaCount) 1) }}
+{{- fail "deviceGateway.enabled with operator.replicaCount above 1 needs operator.leaderElection.enabled: without a lease every replica serves the gateway from its own database and the gateway Service spreads devices across them" }}
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:

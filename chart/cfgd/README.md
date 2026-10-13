@@ -39,7 +39,7 @@ helm install cfgd oci://ghcr.io/tj-smith47/charts/cfgd -n cfgd-system --create-n
 | Value | Default | Description |
 |---|---|---|
 | `installCRDs` | `true` | Install the cfgd.io CRDs with the chart |
-| `operator.replicaCount` | `1` | Operator replicas; `operator.leaderElection.enabled` (`true`) makes >1 safe |
+| `operator.replicaCount` | `1` | Operator replicas; `operator.leaderElection.enabled` (`true`) makes >1 safe, and the chart refuses >1 with `deviceGateway.enabled` while it is off |
 | `operator.watchLabelSelector` | `""` | Reconcile only objects matching this label selector; empty reconciles every object |
 | `operator.strategy` | `{}` | Operator Deployment update strategy, rendered as given. Empty derives it from `deviceGateway.enabled`, `deviceGateway.persistence.enabled` and `operator.leaderElection.enabled`; see the table in [Health and Leadership](../../docs/operator.md#health-and-leadership) |
 | `agent.serverUrl` | `""` | Device gateway URL the node agent checks in to |

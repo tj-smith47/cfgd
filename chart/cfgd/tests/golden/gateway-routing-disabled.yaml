@@ -1,0 +1,9 @@
+- kind: Service
+  name: cfgd-webhook
+  selector:
+    app.kubernetes.io/name: cfgd
+    app.kubernetes.io/instance: cfgd
+    app.kubernetes.io/component: operator
+- kind: Deployment
+  name: cfgd-operator
+  gatewayData: []

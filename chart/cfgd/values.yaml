@@ -128,7 +128,11 @@ agent:
 # Install CRDs
 installCRDs: true
 
-# Service account (shared)
+# Service account (shared). With create: false the chart renders none of the
+# operator's RBAC, so the account named here needs those grants from you,
+# including, when deviceGateway.enabled, `patch` on pods in the release
+# namespace: the operator labels its own pod for the gateway Service and does
+# not start when it cannot.
 serviceAccount:
   create: true
   name: ""

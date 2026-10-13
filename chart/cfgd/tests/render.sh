@@ -3,7 +3,9 @@
 # the golden file of the same name:
 #   - deployment cases: the operator Deployment's update strategy and readiness probe
 #   - gateway routing cases: the gateway and webhook Service selectors, the Role and
-#     RoleBinding that let the operator label its own pod, and the gateway's data volume
+#     RoleBinding that let the operator label its own pod, and the gateway's data volume,
+#     with the gateway on and off
+#   - refused cases: value combinations the chart fails on, and the message it fails with
 #   - cluster-scoped cases: every cluster-scoped object with its webhook selectors,
 #     the CSI plugin paths on the node, and the env that names the CSI driver and
 #     scopes the operator, since a second install beside a live release collides on these;
@@ -68,6 +70,7 @@ gateway_routing_query='[.] |
        "gatewayData": [.spec.template.spec.volumes[] | select(.name == "gateway-data")]}]'
 
 gateway_routing_cases=(
+  "gateway-routing-disabled|"
   "gateway-routing-ephemeral|--set deviceGateway.enabled=true --set deviceGateway.persistence.enabled=false --set operator.replicaCount=2"
   "gateway-routing-persistent|--set deviceGateway.enabled=true"
 )
@@ -77,6 +80,30 @@ for entry in "${gateway_routing_cases[@]}"; do
   read -r -a args <<< "${entry#*|}"
   rendered="$(helm template cfgd "$chart" --namespace cfgd-system "${args[@]}" | yq ea "$gateway_routing_query")"
   check "$name" "$rendered"
+done
+
+# Value combinations the chart refuses to render, with the message it refuses
+# them with.
+# name|message|helm arguments
+refused_cases=(
+  "gateway-replicas-without-leader-election|deviceGateway.enabled with operator.replicaCount above 1 needs operator.leaderElection.enabled|--set deviceGateway.enabled=true --set deviceGateway.persistence.enabled=false --set operator.leaderElection.enabled=false --set operator.replicaCount=2"
+)
+
+for entry in "${refused_cases[@]}"; do
+  name="${entry%%|*}"
+  rest="${entry#*|}"
+  message="${rest%%|*}"
+  read -r -a args <<< "${rest#*|}"
+  if output="$(helm template cfgd "$chart" "${args[@]}" 2>&1)"; then
+    echo "FAILED   $name: rendered, expected the chart to refuse with: $message"
+    failed=1
+  elif grep -qF -- "$message" <<< "$output"; then
+    echo "OK       $name"
+  else
+    echo "FAILED   $name: refused without the expected message: $message"
+    printf '%s\n' "$output"
+    failed=1
+  fi
 done
 
 # The e2e case carries JSON values, which a whitespace-split string cannot hold,
