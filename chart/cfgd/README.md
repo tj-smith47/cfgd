@@ -49,7 +49,7 @@ helm install cfgd oci://ghcr.io/tj-smith47/charts/cfgd -n cfgd-system --create-n
 | `webhook.objectSelector` | `{}` | Admit only objects matching this selector; empty admits every cfgd.io object |
 | `mutatingWebhook.failurePolicy` | `Ignore` | `Ignore` skips injection silently on webhook failure; set `Fail` to require it |
 | `deviceGateway.enrollmentMethod` | `token` | `token` (bootstrap tokens) or `key` (SSH/GPG challenge-response) |
-| `deviceGateway.persistence.enabled` | `true` | PVC for the gateway SQLite database (`deviceGateway.persistence.size`, default `1Gi`) |
+| `deviceGateway.persistence.enabled` | `true` | PVC for the gateway SQLite database (`deviceGateway.persistence.size`, default `1Gi`); needs `operator.replicaCount: 1`. Off, the database is an `emptyDir` and a new lease holder starts with an empty one |
 | `csiDriver.name` | `csi.cfgd.io` | The CSIDriver name, the kubelet plugin directory and the name the operator injects |
 | `csiDriver.cache.maxSizeGi` | `5` | Per-node module cache size |
 | `metrics.enabled` | `true` | Prometheus metrics endpoint; `metrics.serviceMonitor.enabled` (`false`) adds a ServiceMonitor |

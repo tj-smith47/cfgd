@@ -1,6 +1,7 @@
 use std::time::Duration;
 
 use k8s_openapi::api::coordination::v1::Lease;
+use k8s_openapi::api::core::v1::Pod;
 use k8s_openapi::jiff::{SignedDuration, Timestamp};
 use kube::Client;
 use kube::api::{Api, Patch, PatchParams};
@@ -326,6 +327,48 @@ impl LeaderElection {
         });
 
         on_started().await
+    }
+}
+
+/// The label an operator pod carries while its device gateway serves. The
+/// chart's gateway Service selects on it, so gateway traffic reaches only the
+/// lease holder while every replica whose webhook serves stays an endpoint of
+/// the webhook Service.
+pub const GATEWAY_LEADER_LABEL: &str = "cfgd.io/gateway-leader";
+
+/// The operator's own pod, through which it sets and clears
+/// [`GATEWAY_LEADER_LABEL`].
+#[derive(Clone)]
+pub struct GatewayLeaderLabel {
+    pods: Api<Pod>,
+    pod: String,
+}
+
+impl GatewayLeaderLabel {
+    pub fn new(client: Client, namespace: &str, pod: String) -> Self {
+        Self {
+            pods: Api::namespaced(client, namespace),
+            pod,
+        }
+    }
+
+    /// Route gateway traffic to this pod.
+    pub async fn set(&self) -> Result<(), OperatorError> {
+        self.patch(serde_json::Value::from("true")).await
+    }
+
+    /// Stop routing gateway traffic to this pod. Clearing a label the pod
+    /// does not carry succeeds.
+    pub async fn clear(&self) -> Result<(), OperatorError> {
+        self.patch(serde_json::Value::Null).await
+    }
+
+    async fn patch(&self, value: serde_json::Value) -> Result<(), OperatorError> {
+        let body = serde_json::json!({ "metadata": { "labels": { GATEWAY_LEADER_LABEL: value } } });
+        self.pods
+            .patch(&self.pod, &PatchParams::default(), &Patch::Merge(&body))
+            .await?;
+        Ok(())
     }
 }
 
@@ -1056,5 +1099,76 @@ mod tests {
 
         assert!(result.is_ok(), "run returned Err: {result:?}");
         let _ = harness.finish().await;
+    }
+
+    fn pod_path() -> String {
+        format!("/api/v1/namespaces/{TEST_NS}/pods/{TEST_ID}")
+    }
+
+    fn pod_json() -> serde_json::Value {
+        serde_json::json!({
+            "apiVersion": "v1",
+            "kind": "Pod",
+            "metadata": { "name": TEST_ID, "namespace": TEST_NS },
+        })
+    }
+
+    /// The label the gateway Service selects is written onto this pod alone,
+    /// as a merge patch that leaves every other label in place.
+    #[tokio::test]
+    async fn setting_the_gateway_leader_label_patches_this_pod_to_true() {
+        let (ctx, _reg, harness) = MockKubeHarness::new(vec![
+            ExpectedCall::patch(pod_path()).returning_json(&pod_json()),
+        ]);
+        GatewayLeaderLabel::new(ctx.client.clone(), TEST_NS, TEST_ID.into())
+            .set()
+            .await
+            .expect("set must succeed against an accepting API server");
+
+        let report = harness.finish().await;
+        let patch = report
+            .find(Method::PATCH, &pod_path())
+            .expect("the pod must be patched");
+        assert_eq!(
+            patch.body_json(),
+            serde_json::json!({ "metadata": { "labels": { GATEWAY_LEADER_LABEL: "true" } } })
+        );
+    }
+
+    /// Clearing sends `null`, which a merge patch reads as "remove the key".
+    #[tokio::test]
+    async fn clearing_the_gateway_leader_label_patches_it_to_null() {
+        let (ctx, _reg, harness) = MockKubeHarness::new(vec![
+            ExpectedCall::patch(pod_path()).returning_json(&pod_json()),
+        ]);
+        GatewayLeaderLabel::new(ctx.client.clone(), TEST_NS, TEST_ID.into())
+            .clear()
+            .await
+            .expect("clear must succeed against an accepting API server");
+
+        let report = harness.finish().await;
+        let patch = report
+            .find(Method::PATCH, &pod_path())
+            .expect("the pod must be patched");
+        assert_eq!(
+            patch.body_json(),
+            serde_json::json!({ "metadata": { "labels": { GATEWAY_LEADER_LABEL: null } } })
+        );
+    }
+
+    /// A refused patch (no RBAC on pods) is an error the caller sees.
+    #[tokio::test]
+    async fn a_refused_gateway_leader_label_patch_is_an_error() {
+        let (ctx, _reg, harness) = MockKubeHarness::new(vec![
+            ExpectedCall::patch(pod_path()).returning_server_error(403, "forbidden"),
+        ]);
+        let result = GatewayLeaderLabel::new(ctx.client.clone(), TEST_NS, TEST_ID.into())
+            .set()
+            .await;
+        assert!(
+            matches!(result, Err(OperatorError::KubeError(_))),
+            "got {result:?}"
+        );
+        harness.finish().await;
     }
 }

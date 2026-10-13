@@ -13,6 +13,9 @@ spec:
       targetPort: gateway
       protocol: TCP
       name: http-gateway
+  # Only the lease holder carries the leader label, set once its gateway
+  # accepts; standbys stay webhook endpoints without receiving gateway traffic.
   selector:
     {{- include "cfgd.operatorSelectorLabels" . | nindent 4 }}
+    cfgd.io/gateway-leader: "true"
 {{- end }}

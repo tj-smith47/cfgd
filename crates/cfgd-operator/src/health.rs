@@ -7,13 +7,14 @@ use crate::errors::OperatorError;
 
 /// The two signals the probe server reports.
 ///
-/// Readiness says every listener the pod's Services route to is accepting:
-/// the admission webhook when the pod has webhook certificates, and the device
-/// gateway when it is enabled. Leadership says this pod runs the controllers.
-/// A standby answers admission as well as the leader does, so the webhook
-/// alone never waits on the lease; the gateway starts only once this pod runs
-/// the controllers, so with leader election on, a standby's gateway (and with
-/// it readiness) waits on the lease.
+/// Readiness says every listener the pod's Services route to is accepting.
+/// For an operator pod that is the admission webhook when the pod has webhook
+/// certificates; the device gateway plays no part, because the gateway Service
+/// selects only the pod carrying [`crate::leader::GATEWAY_LEADER_LABEL`], which
+/// the lease holder sets once its gateway accepts. A standby therefore answers
+/// admission and stays ready while the leader alone serves the gateway. A
+/// standalone gateway serves nothing else, so its readiness is the gateway's.
+/// Leadership says this pod runs the controllers.
 #[derive(Clone)]
 pub struct HealthState(Arc<Signals>);
 
@@ -43,9 +44,19 @@ impl Listener {
 }
 
 impl HealthState {
-    /// `leader_gauge` mirrors leadership into the metrics registry;
-    /// `webhook` and `gateway` name the listeners readiness waits for.
-    pub fn new(leader_gauge: Gauge, webhook: bool, gateway: bool) -> Self {
+    /// An operator pod's signals. `leader_gauge` mirrors leadership into the
+    /// metrics registry; `webhook` says readiness waits for the admission
+    /// webhook.
+    pub fn new(leader_gauge: Gauge, webhook: bool) -> Self {
+        Self::with_listeners(leader_gauge, webhook, false)
+    }
+
+    /// A standalone gateway's signals: readiness waits for the gateway alone.
+    pub fn gateway_only(leader_gauge: Gauge) -> Self {
+        Self::with_listeners(leader_gauge, false, true)
+    }
+
+    fn with_listeners(leader_gauge: Gauge, webhook: bool, gateway: bool) -> Self {
         Self(Arc::new(Signals {
             webhook: Listener::new(webhook),
             gateway: Listener::new(gateway),
@@ -156,30 +167,31 @@ mod tests {
         (get(state, "/readyz").await, get(state, "/leaderz").await)
     }
 
-    fn state(webhook: bool, gateway: bool) -> (HealthState, Gauge) {
+    fn state(webhook: bool) -> (HealthState, Gauge) {
         let gauge = Gauge::default();
-        (HealthState::new(gauge.clone(), webhook, gateway), gauge)
+        (HealthState::new(gauge.clone(), webhook), gauge)
     }
 
     const DOWN: StatusCode = StatusCode::SERVICE_UNAVAILABLE;
 
     #[tokio::test]
     async fn healthz_returns_ok() {
-        assert_eq!(get(&state(true, true).0, "/healthz").await, StatusCode::OK);
+        assert_eq!(get(&state(true).0, "/healthz").await, StatusCode::OK);
     }
 
     #[tokio::test]
     async fn a_starting_pod_is_neither_ready_nor_leader() {
-        let (state, _) = state(true, false);
+        let (state, _) = state(true);
         assert_eq!(probes(&state).await, (DOWN, DOWN));
     }
 
     /// A standby serving admission is an endpoint of the webhook Service, so a
     /// roll never leaves the webhook with no backend while the old pod still
-    /// holds the lease.
+    /// holds the lease. The gateway never holds it back: a standby runs no
+    /// gateway, and the gateway Service routes by label to the lease holder.
     #[tokio::test]
     async fn a_serving_standby_is_ready_and_reports_standby() {
-        let (state, gauge) = state(true, false);
+        let (state, gauge) = state(true);
         state.set_webhook_serving();
         assert_eq!(probes(&state).await, (StatusCode::OK, DOWN));
         assert_eq!(gauge.get(), 0);
@@ -187,7 +199,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_serving_leader_is_ready_and_reports_leader() {
-        let (state, gauge) = state(true, false);
+        let (state, gauge) = state(true);
         state.set_webhook_serving();
         state.set_leader();
         assert_eq!(probes(&state).await, (StatusCode::OK, StatusCode::OK));
@@ -198,29 +210,17 @@ mod tests {
     /// serves, admission sent to it would fail.
     #[tokio::test]
     async fn a_leader_whose_webhook_is_not_serving_is_not_ready() {
-        let (state, _) = state(true, false);
+        let (state, _) = state(true);
         state.set_leader();
         assert_eq!(probes(&state).await, (DOWN, StatusCode::OK));
     }
 
-    /// A pod with the gateway enabled is ready only once the gateway accepts,
-    /// whatever the webhook and the lease say: until then a gateway Service
-    /// would send requests to a port nothing listens on.
+    /// A standalone gateway is ready only once the gateway accepts: until then
+    /// a Service in front of it would send requests to a port nothing listens on.
     #[tokio::test]
-    async fn readiness_waits_for_the_gateway_listener() {
-        let (state, _) = state(true, true);
-        state.set_webhook_serving();
-        state.set_leader();
-        assert_eq!(probes(&state).await, (DOWN, StatusCode::OK));
-        state.set_gateway_serving();
-        assert_eq!(probes(&state).await, (StatusCode::OK, StatusCode::OK));
-    }
-
-    /// A gateway pod with no webhook certificates turns ready on the gateway
-    /// alone.
-    #[tokio::test]
-    async fn a_gateway_without_a_webhook_is_ready_once_the_gateway_accepts() {
-        let (state, _) = state(false, true);
+    async fn a_standalone_gateway_is_ready_once_the_gateway_accepts() {
+        let gauge = Gauge::default();
+        let state = HealthState::gateway_only(gauge);
         assert_eq!(probes(&state).await, (DOWN, DOWN));
         state.set_gateway_serving();
         assert_eq!(probes(&state).await, (StatusCode::OK, DOWN));
@@ -230,7 +230,7 @@ mod tests {
     /// no Service routes to, so it is ready from the start.
     #[tokio::test]
     async fn a_pod_with_no_listener_is_ready_at_once() {
-        let (state, _) = state(false, false);
+        let (state, _) = state(false);
         assert_eq!(probes(&state).await, (StatusCode::OK, DOWN));
     }
 }

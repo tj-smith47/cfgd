@@ -15,6 +15,7 @@ use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
 use crate::crds::{ClusterConfigPolicy, ConfigPolicy, DriftAlert, MachineConfig, Module};
+use crate::leader::GatewayLeaderLabel;
 use crate::{controllers, env, errors, gateway, health, leader, metrics, runtime, webhook};
 
 static OTEL_PROVIDER: std::sync::OnceLock<opentelemetry_sdk::trace::SdkTracerProvider> =
@@ -145,28 +146,18 @@ fn log_crd_info() {
     );
 }
 
-/// Spawn the health-probe server on `HEALTH_PORT` (default 8081) and return its
-/// task handle plus the shared `HealthState`. `webhook` and `gateway` name the
-/// listeners readiness waits for; each reports itself once it accepts, and the
-/// caller reports the lease via `HealthState::set_leader`.
-fn spawn_health_server(
-    leader_gauge: prometheus_client::metrics::gauge::Gauge,
-    webhook: bool,
-    gateway: bool,
-) -> (tokio::task::JoinHandle<()>, health::HealthState) {
-    let health_state = health::HealthState::new(leader_gauge, webhook, gateway);
+/// Spawn the health-probe server on `HEALTH_PORT` (default 8081) serving
+/// `health_state`, and return its task handle. Each listener reports itself
+/// once it accepts, and the caller reports the lease via
+/// `HealthState::set_leader`.
+fn spawn_health_server(health_state: health::HealthState) -> tokio::task::JoinHandle<()> {
     let health_port = env::parse_port_env("HEALTH_PORT", 8081);
 
-    let handle = tokio::spawn({
-        let hs = health_state.clone();
-        async move {
-            if let Err(e) = health::run_probe_server(health_port, hs).await {
-                tracing::error!(error = %e, "health server failed");
-            }
+    tokio::spawn(async move {
+        if let Err(e) = health::run_probe_server(health_port, health_state).await {
+            tracing::error!(error = %e, "health server failed");
         }
-    });
-
-    (handle, health_state)
+    })
 }
 
 /// Spawn the Prometheus metrics server on `METRICS_PORT` (default 8443) and
@@ -191,10 +182,14 @@ fn spawn_metrics_server() -> (tokio::task::JoinHandle<()>, metrics::Metrics) {
     (handle, metrics)
 }
 
+/// Run the controllers, and the device gateway when it is enabled. Once the
+/// gateway accepts, `gateway_label` (when this process knows its pod) routes
+/// the gateway Service to this pod; a failed label write ends the run, since
+/// the gateway would otherwise serve with no Service routing to it.
 async fn run_operator(
     client: Client,
     metrics: metrics::Metrics,
-    health_state: health::HealthState,
+    gateway_label: Option<GatewayLeaderLabel>,
 ) -> Result<()> {
     let gateway_enabled = runtime::is_gateway_enabled();
 
@@ -224,14 +219,54 @@ async fn run_operator(
             }
         });
 
-        gateway::start_gateway(gateway_config, || health_state.set_gateway_serving())
+        let (listening_tx, listening_rx) = tokio::sync::oneshot::channel();
+        let serve = async {
+            gateway::start_gateway(gateway_config, move || {
+                // The receiver is gone only when the run is already ending.
+                let _ = listening_tx.send(());
+            })
             .await
-            .map_err(|e| anyhow::anyhow!("{}", e))?;
+            .map_err(|e| anyhow::anyhow!("{}", e))
+        };
+        let route_once_listening = async {
+            if listening_rx.await.is_ok()
+                && let Some(label) = &gateway_label
+            {
+                label.set().await?;
+                tracing::info!(
+                    label = leader::GATEWAY_LEADER_LABEL,
+                    "device gateway serving; gateway Service now routes to this pod"
+                );
+            }
+            Ok(())
+        };
+        tokio::try_join!(serve, route_once_listening)?;
     } else {
         controllers::run(client, metrics, controllers::BackupPolicyCache::default()).await?;
     }
 
     Ok(())
+}
+
+/// Take this pod out of the gateway Service. A failure is logged and the
+/// shutdown goes on: the next start of this pod clears the label again.
+async fn release_gateway_traffic(gateway_label: Option<&GatewayLeaderLabel>) {
+    if let Some(label) = gateway_label
+        && let Err(e) = label.clear().await
+    {
+        tracing::warn!(error = %e, label = leader::GATEWAY_LEADER_LABEL, "clearing the gateway leader label failed");
+    }
+}
+
+/// Wait for `stop`, then take this pod out of the gateway Service while the
+/// gateway, which runs until the caller drops it, still serves.
+async fn release_gateway_traffic_after<T>(
+    stop: impl std::future::Future<Output = T>,
+    gateway_label: Option<&GatewayLeaderLabel>,
+) -> T {
+    let stopped = stop.await;
+    release_gateway_traffic(gateway_label).await;
+    stopped
 }
 
 async fn shutdown_drain() {
@@ -273,11 +308,17 @@ pub async fn run() -> Result<()> {
     let webhook_enabled = runtime::webhook_certs_present(Path::new(&cert_dir));
 
     let (mut metrics_handle, metrics) = spawn_metrics_server();
-    let (mut health_handle, health_state) = spawn_health_server(
-        metrics.leader.clone(),
-        webhook_enabled,
-        runtime::is_gateway_enabled(),
-    );
+    let health_state = health::HealthState::new(metrics.leader.clone(), webhook_enabled);
+    let mut health_handle = spawn_health_server(health_state.clone());
+
+    let gateway_label = runtime::pod_name()
+        .filter(|_| runtime::is_gateway_enabled())
+        .map(|pod| GatewayLeaderLabel::new(client.clone(), &runtime::leader_namespace(), pod));
+    if let Some(label) = &gateway_label {
+        // A container restarted inside the same pod keeps the label its last
+        // run set; this run sets it again only once it serves the gateway.
+        label.clear().await?;
+    }
 
     let mut webhook_handle: Option<tokio::task::JoinHandle<()>> = None;
     if webhook_enabled {
@@ -329,7 +370,7 @@ pub async fn run() -> Result<()> {
             let le = leader::LeaderElection::new(client.clone(), namespace, identity);
             le.run(shutdown.clone(), || async {
                 health_state.set_leader();
-                run_operator(client, metrics, health_state.clone())
+                run_operator(client, metrics, gateway_label.clone())
                     .await
                     .map_err(|e| errors::OperatorError::Leader(format!("Operator run failed: {e}")))
             })
@@ -337,7 +378,7 @@ pub async fn run() -> Result<()> {
             .map_err(|e| anyhow::anyhow!("{}", e))?;
         } else {
             health_state.set_leader();
-            run_operator(client, metrics, health_state.clone()).await?;
+            run_operator(client, metrics, gateway_label.clone()).await?;
         }
 
         Ok::<(), anyhow::Error>(())
@@ -368,11 +409,13 @@ pub async fn run() -> Result<()> {
     };
 
     let mut webhook_exit_err: Option<anyhow::Error> = None;
+    let mut operator_err: Option<anyhow::Error> = None;
+    let mut gateway_traffic_released = false;
     tokio::select! {
         result = operator_future => {
             if let Err(e) = result {
                 tracing::error!(error = %e, "operator exited with error");
-                return Err(e);
+                operator_err = Some(e);
             }
         },
         result = &mut health_handle => {
@@ -390,23 +433,31 @@ pub async fn run() -> Result<()> {
                 webhook_exit_err = Some(e);
             }
         },
-        result = shutdown_signal() => {
+        result = release_gateway_traffic_after(shutdown_signal(), gateway_label.as_ref()) => {
+            gateway_traffic_released = true;
             if let Err(e) = result {
                 tracing::warn!(error = %e, "{SIGNAL_SETUP_FAILED_MSG}");
             }
             shutdown_drain().await;
         },
-        _ = shutdown.cancelled() => {
+        _ = release_gateway_traffic_after(shutdown.cancelled(), gateway_label.as_ref()) => {
+            gateway_traffic_released = true;
             shutdown_drain().await;
         },
     }
 
+    if !gateway_traffic_released {
+        release_gateway_traffic(gateway_label.as_ref()).await;
+    }
     health_handle.abort();
     metrics_handle.abort();
     if let Some(h) = webhook_handle {
         h.abort();
     }
 
+    if let Some(e) = operator_err {
+        return Err(e);
+    }
     if let Some(e) = webhook_exit_err {
         return Err(e);
     }
@@ -428,8 +479,8 @@ async fn run_standalone_gateway() -> Result<()> {
     );
 
     let (mut metrics_handle, metrics) = spawn_metrics_server();
-    let (mut health_handle, health_state) =
-        spawn_health_server(metrics.leader.clone(), false, true);
+    let health_state = health::HealthState::gateway_only(metrics.leader.clone());
+    let mut health_handle = spawn_health_server(health_state.clone());
 
     let gateway_config =
         runtime::build_gateway_config(None, controllers::BackupPolicyCache::default(), metrics)?;
@@ -484,6 +535,7 @@ mod tests {
 
     use super::*;
     use crate::controllers::ControllerContext;
+    use crate::controllers::test_kube_harness::{ExpectedCall, MockKubeHarness};
 
     fn test_client_and_metrics() -> (Client, metrics::Metrics, Registry) {
         let (mock_service, _handle) =
@@ -556,13 +608,12 @@ mod tests {
         let _g = EnvVarGuard::unset("DEVICE_GATEWAY_ENABLED");
         let (client, m, _registry) = test_client_and_metrics();
 
-        let health = health::HealthState::new(Default::default(), false, false);
         let result =
-            tokio::time::timeout(Duration::from_millis(400), run_operator(client, m, health)).await;
+            tokio::time::timeout(Duration::from_millis(400), run_operator(client, m, None)).await;
 
         // The mock service handle is dropped, so kube watchers will error out
         // quickly and controllers::run returns an error. Either a timeout
-        // (if controllers::run blocks on the watcher) or an Err from
+        // (if controllers::run blocks on the watch loop) or an Err from
         // controllers::run is acceptable — both prove the function body ran.
         match result {
             Ok(Ok(())) => {}
@@ -571,71 +622,151 @@ mod tests {
         }
     }
 
-    /// `run_operator` with gateway enabled spawns controllers and starts the
-    /// gateway. With a mock client and no real DB path available the gateway
-    /// will fail quickly; the timeout bounds the test.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    #[serial]
-    async fn run_operator_gateway_enabled_enters_gateway_branch() {
-        let _g1 = EnvVarGuard::set("DEVICE_GATEWAY_ENABLED", "true");
-        // Use a non-conflicting port and a tempfile DB path.
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let db_path = tmp.path().join("test-gateway.db");
-        let _g2 = EnvVarGuard::set(
-            cfgd_core::CFGD_SERVER_DB_PATH_ENV,
-            db_path.to_str().expect("valid utf8"),
-        );
-        // Let the OS pick a free port to never clash with other tests.
-        let _g3 = EnvVarGuard::set("DEVICE_GATEWAY_PORT", "0");
+    const LABEL_NS: &str = "cfgd-system";
+    const LABEL_POD: &str = "cfgd-operator-0";
 
+    fn label_pod_path() -> String {
+        format!("/api/v1/namespaces/{LABEL_NS}/pods/{LABEL_POD}")
+    }
+
+    fn label_pod_json() -> serde_json::Value {
+        serde_json::json!({
+            "apiVersion": "v1",
+            "kind": "Pod",
+            "metadata": { "name": LABEL_POD, "namespace": LABEL_NS },
+        })
+    }
+
+    fn label_patch(value: serde_json::Value) -> serde_json::Value {
+        serde_json::json!({ "metadata": { "labels": { leader::GATEWAY_LEADER_LABEL: value } } })
+    }
+
+    /// Turn the in-cluster gateway on, with its database at `db_path` and an
+    /// OS-picked port.
+    fn gateway_env(db_path: &str) -> [EnvVarGuard; 3] {
+        [
+            EnvVarGuard::set("DEVICE_GATEWAY_ENABLED", "true"),
+            EnvVarGuard::set(cfgd_core::CFGD_SERVER_DB_PATH_ENV, db_path),
+            EnvVarGuard::set("DEVICE_GATEWAY_PORT", "0"),
+        ]
+    }
+
+    /// Run `run_operator` with the gateway on for 400 ms, its label written
+    /// through a harness answering `expected`, and hand back both outcomes.
+    /// The controllers get their own client, so their watches never reach
+    /// the harness queue.
+    async fn run_gateway_with_label(
+        expected: Vec<ExpectedCall>,
+    ) -> (
+        Result<Result<()>, tokio::time::error::Elapsed>,
+        crate::controllers::test_kube_harness::HarnessReport,
+    ) {
         let (client, m, _registry) = test_client_and_metrics();
-        let health = health::HealthState::new(Default::default(), false, true);
-
+        let (ctx, _reg, harness) = MockKubeHarness::new(expected);
+        let label = GatewayLeaderLabel::new(ctx.client.clone(), LABEL_NS, LABEL_POD.into());
         let result = tokio::time::timeout(
             Duration::from_millis(400),
-            run_operator(client, m, health.clone()),
+            run_operator(client, m, Some(label)),
         )
+        .await;
+        (result, harness.finish().await)
+    }
+
+    /// Once the gateway accepts on its bound listener, the pod is labelled so
+    /// the gateway Service routes to it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[serial]
+    async fn a_gateway_that_binds_labels_its_pod_for_the_gateway_service() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let db_path = tmp.path().join("test-gateway.db");
+        let _env = gateway_env(db_path.to_str().expect("valid utf8"));
+
+        let (result, report) = run_gateway_with_label(vec![
+            ExpectedCall::patch(label_pod_path()).returning_json(&label_pod_json()),
+        ])
         .await;
 
         assert!(
             result.is_err(),
             "the gateway must be blocked in its accept loop, got {result:?}"
         );
-        assert!(
-            health.is_ready(),
-            "a gateway accepting on its bound listener must have marked the pod ready"
-        );
+        let patch = report
+            .find(http::Method::PATCH, &label_pod_path())
+            .expect("a serving gateway must label its pod");
+        assert_eq!(patch.body_json(), label_patch("true".into()));
     }
 
-    /// A gateway that never binds (its database cannot open) leaves the pod
-    /// unready, so no Service routes gateway requests to it.
+    /// A gateway that never binds (its database cannot open) never labels its
+    /// pod, so the gateway Service never routes to a port nothing listens on.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     #[serial]
-    async fn run_operator_gateway_that_never_binds_leaves_the_pod_unready() {
-        let _g1 = EnvVarGuard::set("DEVICE_GATEWAY_ENABLED", "true");
-        let _g2 = EnvVarGuard::set(
-            cfgd_core::CFGD_SERVER_DB_PATH_ENV,
-            "/proc/cfgd-this-path-cannot-exist/gateway.db",
-        );
-        let _g3 = EnvVarGuard::set("DEVICE_GATEWAY_PORT", "0");
+    async fn a_gateway_that_never_binds_leaves_its_pod_unlabelled() {
+        let _env = gateway_env("/proc/cfgd-this-path-cannot-exist/gateway.db");
 
-        let (client, m, _registry) = test_client_and_metrics();
-        let health = health::HealthState::new(Default::default(), false, true);
-
-        let result = tokio::time::timeout(
-            Duration::from_millis(400),
-            run_operator(client, m, health.clone()),
-        )
-        .await;
+        let (result, report) = run_gateway_with_label(vec![]).await;
 
         assert!(
             matches!(result, Ok(Err(_))),
             "a gateway whose database cannot open must fail, got {result:?}"
         );
         assert!(
-            !health.is_ready(),
-            "a gateway that never bound its listener must not mark the pod ready"
+            report.captured.is_empty(),
+            "a gateway that never bound must not label its pod"
         );
+    }
+
+    /// A gateway whose label write is refused ends the run: it would serve
+    /// with no Service routing to it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[serial]
+    async fn a_refused_gateway_label_ends_the_run() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let db_path = tmp.path().join("test-gateway.db");
+        let _env = gateway_env(db_path.to_str().expect("valid utf8"));
+
+        let (result, _report) = run_gateway_with_label(vec![
+            ExpectedCall::patch(label_pod_path()).returning_server_error(403, "forbidden"),
+        ])
+        .await;
+
+        assert!(
+            matches!(result, Ok(Err(_))),
+            "a refused label write must end the run, got {result:?}"
+        );
+    }
+
+    /// The stop a shutdown waits on is followed by the label clear before
+    /// control returns to the caller, which is what drops the gateway; the
+    /// stop's own value comes back unchanged.
+    #[tokio::test]
+    async fn a_shutdown_clears_the_gateway_label_before_returning() {
+        let (ctx, _reg, harness) = MockKubeHarness::new(vec![
+            ExpectedCall::patch(label_pod_path()).returning_json(&label_pod_json()),
+        ]);
+        let label = GatewayLeaderLabel::new(ctx.client.clone(), LABEL_NS, LABEL_POD.into());
+
+        let stopped = release_gateway_traffic_after(std::future::ready(7), Some(&label)).await;
+
+        assert_eq!(stopped, 7);
+        let report = harness.finish().await;
+        let patch = report
+            .find(http::Method::PATCH, &label_pod_path())
+            .expect("a shutdown must clear the gateway label");
+        assert_eq!(patch.body_json(), label_patch(serde_json::Value::Null));
+    }
+
+    /// A clear the API server refuses does not hold the shutdown up.
+    #[tokio::test]
+    async fn a_refused_clear_on_shutdown_still_returns() {
+        let (ctx, _reg, harness) = MockKubeHarness::new(vec![
+            ExpectedCall::patch(label_pod_path()).returning_server_error(500, "boom"),
+        ]);
+        let label = GatewayLeaderLabel::new(ctx.client.clone(), LABEL_NS, LABEL_POD.into());
+
+        let stopped = release_gateway_traffic_after(std::future::ready(7), Some(&label)).await;
+
+        assert_eq!(stopped, 7);
+        harness.finish().await;
     }
 
     /// Verify `ControllerContext` can be constructed (sanity check that the

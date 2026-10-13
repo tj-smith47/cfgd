@@ -65,12 +65,18 @@ pub fn watch_config() -> WatcherConfig {
     }
 }
 
+/// This operator's own pod name, read from `POD_NAME` (the chart sets it
+/// through the downward API). `None` outside a pod.
+pub fn pod_name() -> Option<String> {
+    std::env::var("POD_NAME").ok()
+}
+
 /// The identity string this operator instance uses for leader election.
 /// Reads `POD_NAME`; falls back to a per-process random UUID. Two instances
 /// without `POD_NAME` set will get different identities, which is the
 /// correct behaviour for development.
 pub fn leader_identity() -> String {
-    std::env::var("POD_NAME").unwrap_or_else(|_| Uuid::new_v4().to_string())
+    pod_name().unwrap_or_else(|| Uuid::new_v4().to_string())
 }
 
 /// `true` iff `cert_dir/tls.crt` exists. Used to decide whether to start

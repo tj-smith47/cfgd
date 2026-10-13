@@ -48,4 +48,37 @@ subjects:
   - kind: ServiceAccount
     name: {{ include "cfgd.serviceAccountName" . }}
     namespace: {{ .Release.Namespace }}
+{{- if .Values.deviceGateway.enabled }}
+---
+# The operator labels its own pod while it serves the device gateway, which is
+# what the gateway Service selects. The pod lives in the release namespace, so
+# the grant stays a Role there.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "cfgd.fullname" . }}-operator-gateway
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "cfgd.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "cfgd.fullname" . }}-operator-gateway
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "cfgd.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "cfgd.fullname" . }}-operator-gateway
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "cfgd.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}
 {{- end }}

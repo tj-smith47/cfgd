@@ -130,7 +130,7 @@ async fn run_webhook_server_serves_healthz_over_tls() {
     let metrics = fresh_metrics();
     let client = stub_kube_client();
     let cert_dir = dir.path().to_string_lossy().into_owned();
-    let health = HealthState::new(Default::default(), true, false);
+    let health = HealthState::new(Default::default(), true);
     let serving = health.clone();
 
     let server = tokio::spawn(async move {
@@ -320,7 +320,7 @@ async fn run_webhook_server_errors_when_cert_file_missing() {
     let metrics = fresh_metrics();
     let client = stub_kube_client();
 
-    let health = HealthState::new(Default::default(), true, false);
+    let health = HealthState::new(Default::default(), true);
     let serving = health.clone();
 
     let result = run_webhook_server(
