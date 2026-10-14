@@ -28,14 +28,17 @@ on:
 permissions:
   contents: read
 
-# Repo-global, not per-ref: the suites share one real cluster. Namespaces are
-# run-scoped, but the CRDs, the cfgd-system operator/webhook/server and the CSI
-# release are singletons. setup-cluster.sh's Lease only serializes setup against
-# setup — it is released when that job exits, so a second run's setup would
-# redeploy those singletons underneath a first run's still-executing tests.
-# cancel-in-progress stays false so a concurrent run queues instead of killing
-# the run holding the cluster; the cost is that a newer queued run supersedes an
-# older queued one, which surfaces as a cancelled run rather than a false green.
+# The group is repo-wide because the suites share one real cluster. Namespaces
+# are run-scoped, but setup also writes cluster singletons: the release's
+# webhook configurations and webhook Service in cfgd-system, the cfgd-system
+# operator Deployment on a cluster ArgoCD does not manage, and the CSIDriver
+# every PR install registers under one name. setup-cluster.sh's Lease only
+# serializes setup against setup and is released when that job exits, so a
+# second run's setup would reapply those cfgd-system objects underneath a first
+# run's still-executing tests and stop at the first run's live CSIDriver.
+# cancel-in-progress stays false so a concurrent run queues and the run holding
+# the cluster keeps it; the cost is that a newer queued run supersedes an older
+# queued one, which shows up as a cancelled run.
 concurrency:
   group: e2e-${{ github.repository }}
   cancel-in-progress: false
@@ -285,7 +288,9 @@ jobs:
         gateway-tests,
       ]
     if: always() && needs.setup.result != 'skipped'
-    timeout-minutes: 10
+    # pr-install-down.sh can wait 660s (four 90s deletes, the 180s run-namespace
+    # wait, the 120s helm uninstall); recheck this when one of those waits changes.
+    timeout-minutes: 15
     env:
       IMAGE_TAG: ${{ needs.setup.outputs.image-tag }}
     steps:

@@ -359,7 +359,11 @@ single-source-of-truth wiring.
   install that times out there leaves the PR install on the cluster, and the
   next run's setup refuses it until its heartbeat is stale. The suite jobs keep
   `task e2e:<suite>`: a failed go-task install there fails that suite and
-  leaves nothing behind.
+  leaves nothing behind. The teardown job's `timeout-minutes` (15) covers the
+  script's worst case of 660s (four `--timeout=90s` deletes, the 180s
+  `RUN_NS_TIMEOUT` wait and `helm uninstall --timeout=120s`) plus checkout and
+  reads: a job killed mid-teardown leaks the install. A change to one of those
+  waits rechecks the budget.
 - A job in e2e.yml whose suite deletes operator pods runs after every job
   whose suite talks to the PR install's device gateway, through its `needs:`
   directly or through another job. The gateway runs in the operator leader
