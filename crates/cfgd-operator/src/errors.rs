@@ -1,6 +1,7 @@
 use thiserror::Error;
 
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum OperatorError {
     #[error("Kubernetes API error: {0}")]
     KubeError(#[from] kube::Error),
