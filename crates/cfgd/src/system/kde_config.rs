@@ -69,6 +69,12 @@ fn read_kde_value(file: &str, group: &str, key: &str) -> String {
 /// Resolve a `--file` value the way KConfig does: an absolute path stands, a
 /// bare name lives under `$XDG_CONFIG_HOME` (`~/.config` when unset).
 fn user_config_path(file: &str) -> Result<PathBuf> {
+    // Judged on the raw string: `Path::is_absolute` reads `/srv/kdeglobals` as
+    // relative on Windows (no drive), which would send a rooted path under the
+    // user's config directory and refuse it on a host with no home.
+    if cfgd_schema::path_is_rooted(file).is_some() {
+        return Ok(PathBuf::from(file));
+    }
     let path = cfgd_core::expand_tilde(std::path::Path::new(file), KDE_FILE_ROLE)?;
     if path.is_absolute() {
         return Ok(path);
@@ -95,7 +101,7 @@ fn declared_groups(groups: &serde_yaml::Value) -> Option<&serde_yaml::Mapping> {
 /// The system-wide half of the KConfig cascade (`$XDG_CONFIG_DIRS`, `/etc/xdg`
 /// when unset) for one file name.
 fn system_config_paths(file: &str) -> Vec<PathBuf> {
-    if std::path::Path::new(file).is_absolute() {
+    if cfgd_schema::path_is_rooted(file).is_some() || file.starts_with('~') {
         return Vec::new();
     }
     let dirs = match std::env::var("XDG_CONFIG_DIRS") {
@@ -389,6 +395,27 @@ mod tests {
         \n\
         [General][Sub]\n\
         Nested=deep\n";
+
+    #[test]
+    fn a_rooted_file_stands_on_every_host_and_joins_no_cascade_directory() {
+        for file in [
+            "/srv/kdeglobals",
+            r"C:\Users\jane\kdeglobals",
+            r"\\share\kdeglobals",
+        ] {
+            assert_eq!(
+                user_config_path(file)
+                    .ok()
+                    .map(|p| p.to_string_lossy().into_owned()),
+                Some(file.to_string()),
+                "{file} is rooted, so KConfig reads it where it stands"
+            );
+            assert!(
+                system_config_paths(file).is_empty(),
+                "{file} is rooted, so no XDG_CONFIG_DIRS entry is joined to it"
+            );
+        }
+    }
 
     #[test]
     fn parsed_entries_answer_exactly_what_kreadconfig_answers() {
