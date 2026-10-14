@@ -147,9 +147,10 @@ jobs:
           # merge validates shard contexts against its own selection, so the
           # two must agree.
           #
-          # A nightly's product is the single rolling prerelease `nightly:`
-          # configures — every other publisher belongs to a real release, and
-          # the merge leg's preflight validates and probes the credentials of
+          # A nightly's product is the prerelease `nightly:` configures (the
+          # newest three per track survive its retention sweep). Every other
+          # publisher belongs to a real release, and the merge leg's preflight
+          # validates and probes the credentials of
           # whatever is selected, so an unscoped run demands
           # CHOCOLATEY_API_KEY/AUR_SSH_KEY that a nightly has no business
           # holding. `--publishers` is a whitelist rather than a

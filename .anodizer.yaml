@@ -58,33 +58,16 @@ tag:
   release_branches:
     - master
   initial_version: "0.5.0"
-  # Release artifacts are built from whatever the tag points at, so a tag that
-  # misses the bump commit, or whose crate manifest carries another version,
-  # would publish a release that misstates its own source. The hook fires once
-  # per new tag, and a mismatch fails `anodizer tag` before the release jobs
-  # that follow it run. resolve-tag maps the tag family to its crate path from
-  # this file, so a new crate needs no edit here.
+  # These hooks fire after the bump commit and tags are already on origin, and
+  # the tag job has no rollback: a failing hook would fail the job, skip every
+  # release job behind it and leave live tags with no release until someone
+  # runs `anodizer tag rollback` by hand. So the hook only records what was
+  # tagged on the run page and never fails. The summary variable exists only
+  # inside a GitHub Actions job, so local runs skip it.
   tag_post_hooks:
     - cmd: |
-        set -eu
-        tag="$ANODIZER_CURRENT_TAG"
-        want="{{ Version }}"
-        tagged=$(git rev-parse "$tag^{commit}")
-        head=$(git rev-parse HEAD)
-        if [ "$tagged" != "$head" ]; then
-          echo "tag_post_hooks: $tag points at $tagged but HEAD is $head" >&2
-          exit 1
-        fi
-        path=$(${ANODIZER_BIN:-anodizer} resolve-tag "$tag" | sed -n 's/^path=//p')
-        if [ -z "$path" ]; then
-          echo "tag_post_hooks: $tag resolves to no crate in .anodizer.yaml" >&2
-          exit 1
-        fi
-        have=$(git show "$tag:$path/Cargo.toml" | sed -n 's/^version = "\(.*\)"$/\1/p' | head -n 1)
-        if [ "$have" != "$want" ]; then
-          echo "tag_post_hooks: $tag names $want but $path/Cargo.toml at the tag says '$have'" >&2
-          exit 1
-        fi
+        printf -- '- anodizer tag created `%s` (version %s)\n' "{{ Tag }}" "{{ Version }}" >> "$GITHUB_STEP_SUMMARY" || true
+      if: "{{ Env.GITHUB_STEP_SUMMARY }}"
 
 metadata:
   # homepage / license / maintainers are derived from [workspace.package]
@@ -176,11 +159,14 @@ upx:
       - x86_64-unknown-linux-gnu
       - x86_64-apple-darwin
       - x86_64-pc-windows-msvc
-  # --brute tries every method and filter, which multiplies UPX time several
-  # times over, so it covers one target only: aarch64 Linux, the smallest
-  # output of the four (10.8 MB linux-arm64 archive in v0.12.0) and so the
-  # cheapest to brute-force inside the release job's wall clock.
+  # --brute costs far more than --best: on the 50 MB x86_64 cfgd binary
+  # `--best --lzma` took 37.7 s while `--brute` was still running after 1000 s.
+  # The determinism shard packs every binary at least twice and the nightly
+  # linux shard has a 60-minute limit, so brute covers one binary on one
+  # target: cfgd on aarch64 Linux, the smallest of the four cfgd outputs
+  # (10.8 MB linux-arm64 archive in v0.12.0).
   - id: brute
+    ids: [cfgd]
     enabled: true
     binary: upx
     args:
@@ -189,6 +175,17 @@ upx:
     compress: "9"
     lzma: true
     brute: true
+    targets:
+      - aarch64-unknown-linux-gnu
+  - id: aarch64-linux
+    ids: [cfgd-operator, cfgd-csi]
+    enabled: true
+    binary: upx
+    args:
+      - "--best"
+      - "--lzma"
+    compress: "9"
+    lzma: true
     targets:
       - aarch64-unknown-linux-gnu
 
@@ -221,7 +218,8 @@ on_error:
     - cmd: |
         {
           printf '### anodizer release failed: %s\n\n' "$ANODIZER_TAG"
-          printf '```\n%s\n```\n\n' "$ANODIZER_ERROR"
+          printf '%s\n' "$ANODIZER_ERROR" | sed 's/^/    /'
+          printf '\n'
           printf 'Top-level entries in dist/:\n\n```\n'
           ls -1A dist 2>/dev/null || echo '(dist/ was never created)'
           printf '```\n'
@@ -360,15 +358,6 @@ workspaces:
             no_default_features: false
             targets:
               - x86_64-unknown-linux-musl
-            # crt-static is already rustc's default on musl targets, so this
-            # leaves the binary unchanged. It is stated because the nfpm packages
-            # depend on it: if that default ever changes upstream, the
-            # deb/rpm/apk would ship a libc-linked binary to the old distros
-            # with no change in this file to show for it.
-            overrides:
-              - targets: ["*-linux-musl"]
-                env:
-                  - "RUSTFLAGS=-C target-feature=+crt-static"
         archives:
           # gnu only: the musl build is package-only (nfpm), never a standalone
           # tarball, so binstall/homebrew/install.sh asset names never gain a musl
@@ -427,12 +416,7 @@ workspaces:
           mode: keep-existing
           target_commitish: "{{ .Commit }}"
           discussion_category_name: "Announcements"
-          # A draft carrying this release's name (notes a maintainer wrote
-          # ahead of the tag, or one an interrupted run left) is published in
-          # place, and `mode: keep-existing` keeps its body.
-          # replace_existing_draft would delete that draft first, and anodizer
-          # refuses the two set together.
-          use_existing_draft: true
+          replace_existing_draft: true
           replace_existing_artifacts: true
           name_template: "{{ ProjectName }} {{ Tag }}"
           header: |
@@ -524,11 +508,6 @@ workspaces:
             package_source_url: "https://github.com/tj-smith47/cfgd/tree/{{ .Tag }}/crates/cfgd"
             docs_url: "https://github.com/tj-smith47/cfgd/blob/{{ .Tag }}/docs/configuration.md"
             bug_tracker_url: "https://github.com/tj-smith47/cfgd/issues"
-            # The compound SPDX license gives anodizer no single file to derive
-            # <licenseUrl> from, and the nuspec carries no other license field,
-            # so without this the package ships no license metadata at all.
-            # LICENSE states the dual license; the tag pins the text this
-            # version shipped under.
             license_url: "https://github.com/tj-smith47/cfgd/blob/{{ .Tag }}/LICENSE"
             release_notes: "https://github.com/tj-smith47/cfgd/releases/tag/{{ .Tag }}"
             icon_url: "https://raw.githubusercontent.com/tj-smith47/cfgd/master/.github/gear.svg"
