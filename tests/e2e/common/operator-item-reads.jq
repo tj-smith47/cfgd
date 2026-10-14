@@ -34,8 +34,17 @@ def own_stmts:
   elif type == "array" then .[] | own_stmts
   else empty end;
 
+# The names a word expands. The walk stops at a $(...) or <(...): its commands
+# are units of their own, so an expansion inside one is that unit's read.
+def param_names:
+  if type == "object" then
+    if .Type == "CmdSubst" or .Type == "ProcSubst" then empty
+    else (select(.Type == "ParamExp") | .Param.Value), (to_entries[] | .value | param_names) end
+  elif type == "array" then .[] | param_names
+  else empty end;
+
 # One word list per command the stage runs, with where that command starts.
-def stmt_params: [(if .Cmd.Type == "CallExpr" then (.Cmd.Assigns[]?, .Cmd.Args[]?) else empty end), (.Redirs[]? | .Word) | .. | objects | select(.Type == "ParamExp") | .Param.Value];
+def stmt_params: [(if .Cmd.Type == "CallExpr" then (.Cmd.Assigns[]?, .Cmd.Args[]?) else empty end), (.Redirs[]? | .Word) | param_names];
 def stage_calls: [own_stmts | {offset: .Pos.Offset, words: stmt_words, params: stmt_params}];
 
 def stages:

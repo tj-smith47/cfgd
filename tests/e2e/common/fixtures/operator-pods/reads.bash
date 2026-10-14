@@ -108,3 +108,7 @@ done
 # a jq variable spelled like a capture is no read of it: quiet
 pods="$(kubectl get pods -l "$E2E_OPERATOR_PODS" -o json)"
 jq --argjson pods '[1]' '.items[0] | $pods' deployments.json
+# a capture read only inside a $(...) or <(...) the picking command holds: quiet
+pods="$(kubectl get pods -l "$E2E_OPERATOR_PODS" -o json)"
+jq --arg n "$(jq -r '.items | length' <<<"$pods")" '.items[0]' deployments.json
+jq '.items[0]' deployments.json <(jq -r '.items | length' <<<"$pods")
