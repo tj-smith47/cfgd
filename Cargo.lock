@@ -610,7 +610,7 @@ dependencies = [
  "sha2 0.11.0",
  "signal-hook 0.4.4",
  "similar 3.2.0",
- "syn 2.0.117",
+ "syn 3.0.1",
  "tempfile",
  "tera",
  "tokio",

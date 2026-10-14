@@ -95,7 +95,7 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 pretty_assertions = "1"
 # Test-only: a source walk reads each function's syntax tree to find the
 # population of functions whose only failure is a missing home directory.
-syn = { version = "2", features = ["full", "visit"] }
+syn = { version = "3", features = ["full", "visit"] }
 proc-macro2 = "1"
 tower = { version = "0.5", features = ["util"] }
 http = "1"

@@ -4714,6 +4714,21 @@ impl<'ast> syn::visit::Visit<'ast> for PatNames {
         self.0.push(pat.ident.to_string());
         syn::visit::visit_pat_ident(self, pat);
     }
+
+    fn visit_pat_guard(&mut self, pat: &'ast syn::PatGuard) {
+        // a guard's `if` expression binds nothing in the arm; only its pattern does
+        self.visit_pat(&pat.pat);
+    }
+}
+
+/// The `if` expressions of every guard a pattern carries, outermost first.
+struct PatGuards<'ast>(Vec<&'ast syn::Expr>);
+
+impl<'ast> syn::visit::Visit<'ast> for PatGuards<'ast> {
+    fn visit_pat_guard(&mut self, pat: &'ast syn::PatGuard) {
+        self.0.push(&pat.guard);
+        self.visit_pat(&pat.pat);
+    }
 }
 
 /// A function's parameter bindings in order, and whether it takes `self`.
@@ -5148,7 +5163,9 @@ impl<'ast> syn::visit::Visit<'ast> for Builder {
         for arm in &expr.arms {
             self.scoped(|builder| {
                 builder.declare(&arm.pat, vec![reads.clone()]);
-                if let Some((_, guard)) = &arm.guard {
+                let mut guards = PatGuards(Vec::new());
+                syn::visit::Visit::visit_pat(&mut guards, &arm.pat);
+                for guard in guards.0 {
                     builder.visit_expr(guard);
                 }
                 builder.visit_expr(&arm.body);
@@ -10945,6 +10962,7 @@ impl<'f> DefaultingReads<'f> {
             }
             syn::Pat::Reference(r) => self.bind(&r.pat, ty),
             syn::Pat::Paren(p) => self.bind(&p.pat, ty),
+            syn::Pat::Guard(g) => self.bind(&g.pat, ty),
             syn::Pat::Or(or) => {
                 for case in &or.cases {
                     self.bind(case, ty.clone());
