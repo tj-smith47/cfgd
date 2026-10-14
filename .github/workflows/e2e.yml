@@ -36,8 +36,9 @@ permissions:
 # Service in cfgd-system and the cfgd-system operator Deployment on a cluster
 # ArgoCD does not manage. setup-cluster.sh's Lease only serializes setup
 # against setup and is released when that job exits, so a second run's setup
-# would reissue the webhook CA underneath a first run's still-executing tests,
-# then be refused at the first run's live CSIDriver and go red.
+# would reapply the webhook TLS manifest underneath a first run's
+# still-executing tests (a changed copy reissues the CA), then be refused at
+# the first run's live CSIDriver and go red.
 # cancel-in-progress stays false so a concurrent run queues and the run holding
 # the cluster keeps it; the cost is that a newer queued run supersedes an older
 # queued one, which shows up as a cancelled run.
