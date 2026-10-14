@@ -29,13 +29,15 @@ permissions:
   contents: read
 
 # The group is repo-wide because the suites share one real cluster. Namespaces
-# are run-scoped, but setup also writes cluster singletons: the release's
-# webhook configurations and webhook Service in cfgd-system, the cfgd-system
-# operator Deployment on a cluster ArgoCD does not manage, and the CSIDriver
-# every PR install registers under one name. setup-cluster.sh's Lease only
-# serializes setup against setup and is released when that job exits, so a
-# second run's setup would reapply those cfgd-system objects underneath a first
-# run's still-executing tests and stop at the first run's live CSIDriver.
+# are run-scoped, but setup also writes cluster singletons, in this order: the
+# webhook TLS Issuer and Certificate in cfgd-system (the CA the release
+# webhooks trust), then the CSIDriver every PR install registers under one
+# name, and past that point the release's webhook configurations and webhook
+# Service in cfgd-system and the cfgd-system operator Deployment on a cluster
+# ArgoCD does not manage. setup-cluster.sh's Lease only serializes setup
+# against setup and is released when that job exits, so a second run's setup
+# would reissue the webhook CA underneath a first run's still-executing tests,
+# then be refused at the first run's live CSIDriver and go red.
 # cancel-in-progress stays false so a concurrent run queues and the run holding
 # the cluster keeps it; the cost is that a newer queued run supersedes an older
 # queued one, which shows up as a cancelled run.
