@@ -129,23 +129,29 @@ captures as $caps
     | if ($gets | length) > 0 then
         ($gets | any(.[][]; test("--sort-by"))) as $sorted
         | select($text | picks($sorted))
-        | $unit + {calls: $calls, sorted: $sorted}
+        | $unit + {calls: $calls, sorted: $sorted, cap: null}
       elif ($text | kubectl_word) then empty
       else
         read_capture($caps; $unit; $words) as $cap
         | select($cap != null and ($text | picks($cap.sorted)))
-        | $unit + {calls: $calls, sorted: $cap.sorted}
+        | $unit + {calls: $calls, sorted: $cap.sorted, cap: $cap}
       end
   ]
 # A pick is named on the line of the command whose words make it. A unit that
 # holds other reported units is judged again on the commands left once theirs
-# are set aside, and is dropped when those make no pick: it was reported only
-# for what it contains, which is already named on its own line.
+# are set aside, and is kept only when those still get the operator pods (or
+# read the capture it was reported for) and pick one. Otherwise it was reported
+# only for what it contains, which is already named on its own line: a jq pick
+# beside a held kubectl, with no get of its own, reads some other input.
 | . as $found
 | map(. as $outer
     | [$found[] | select(.offset >= $outer.offset and .end <= $outer.end and (.offset != $outer.offset or .end != $outer.end))] as $inner
+    | [$outer.calls[] | . as $c | select(any($inner[]; $c.offset >= .offset and $c.offset < .end) | not) | .words] as $left
     | select(($inner | length) == 0 or
-        ([$outer.calls[] | . as $c | select(any($inner[]; $c.offset >= .offset and $c.offset < .end) | not) | .words[]]
-         | join(" ") | picks($outer.sorted))))
+        ((any($left[]; operator_get) or
+          ($outer.cap != null and any($left[][];
+            if $outer.cap.kind == "var" then test("\\$" + $outer.cap.name + "([^A-Za-z0-9_]|$)")
+            else contains($outer.cap.name) end)))
+         and ([$left[][]] | join(" ") | picks($outer.sorted)))))
 | sort_by(.offset)[]
 | "\($file):\(.line)"

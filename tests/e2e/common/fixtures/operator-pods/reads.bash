@@ -84,3 +84,7 @@ kubectl get pods -l "$E2E_OPERATOR_PODS" -o json | {
     jq '.items[0]'
     kubectl get pods -l "$E2E_OPERATOR_PODS" -o jsonpath='{.items[1].x}'
 }
+echo x | while read -r l; do
+    kubectl get pods -l "$E2E_OPERATOR_PODS" -o jsonpath='{.items[0].x}'
+    jq '.items[1]' <<<"$deployments"
+done
