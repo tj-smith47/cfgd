@@ -258,7 +258,7 @@ Notes:
   `--certificate-identity-regexp` pins the signer to cfgd's three signing
   workflows, each on its legitimate ref: `publish-crate.yml` on `master` (the
   per-crate leg that signs stable assets), `release.yml` on a `v*` tag (the
-  orchestrator), and `nightly.yml` on `master` (the rolling prerelease). A
+  orchestrator), and `nightly.yml` on `master` (the nightly prereleases). A
   publisher-compromise attacker cannot mint a passing signature without
   running one of those exact workflows on its canonical ref in cfgd's own
   repository; replacing the binary and its `.sha256` on a mirror, or signing
