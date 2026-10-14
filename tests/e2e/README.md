@@ -36,15 +36,20 @@ A release cut tags every crate it releases on one commit (`v0.12.0`,
 `operator-v0.10.0` and `csi-v0.8.0` name the same commit), and the chart there pins,
 for every image, the version current at that cut, whether that cut published it or an
 earlier one did (a cut that releases only some crates leaves the other pins at their
-earlier versions). To run the suites against those images,
-check out one of the cut's tags, leave `REGISTRY` at its default and name the
-release registry with that commit's pins:
+earlier versions). To run the suites against those images, check out one of the
+cut's tags, leave `REGISTRY` at its default and name the release registry with that
+commit's pins (`appVersion` in `chart/cfgd/Chart.yaml` for `cfgd`, the image tags in
+`chart/cfgd/values.yaml` for the others).
+
+`RELEASE_REGISTRY` first ships in the cut after `v0.12.0`, so this recipe needs that
+cut or a later one. For an older cut, follow the recipe in that checkout's own
+`tests/e2e/README.md`.
 
 ```bash
-git checkout v0.12.0
+git checkout <one of the cut's tags>
 export RELEASE_REGISTRY=ghcr.io/tj-smith47
-export CFGD_IMAGE_TAG=0.12.0 OPERATOR_IMAGE_TAG=0.10.0 CSI_IMAGE_TAG=0.8.0
-export FUNCTION_IMAGE_TAG=v0.12.0
+export CFGD_IMAGE_TAG=<cfgd pin> OPERATOR_IMAGE_TAG=<operator pin> CSI_IMAGE_TAG=<csi pin>
+export FUNCTION_IMAGE_TAG=v<cfgd pin>
 task e2e
 ```
 
