@@ -170,14 +170,14 @@ pub struct ControllerContext {
 }
 
 /// First retry of a failed registry visit.
-const REGISTRY_RETRY_FIRST: Duration = Duration::from_secs(5);
+pub const REGISTRY_RETRY_FIRST: Duration = Duration::from_secs(5);
 
 /// Ceiling of the retry schedule, and the Module controller's steady requeue.
 ///
 /// Also how long a successful read of a TAG's facts is trusted: a tag can be
 /// pushed to again, so its platforms and attestations are re-read once per
 /// requeue, while a digest names one artifact for good and is read once.
-const REGISTRY_RETRY_AFTER: Duration = Duration::from_secs(60);
+pub const REGISTRY_RETRY_AFTER: Duration = Duration::from_secs(60);
 
 /// How long `key` cools after its `failures`-th consecutive failure:
 /// [`REGISTRY_RETRY_FIRST`] doubled per failure, capped at
@@ -222,7 +222,7 @@ impl Clock {
 /// The registry visits that failed recently, and the facts recent reads of
 /// each tag answered.
 ///
-/// A failed visit is retried on a stepped schedule ([`retry_delay`]): one
+/// A failed visit is retried on a stepped schedule (`retry_delay`): one
 /// dropped connection costs a few seconds, while a registry that stays down
 /// settles at one visit per [`REGISTRY_RETRY_AFTER`] however many watch events
 /// arrive in between. Keyed by what was attempted AND against what, because
