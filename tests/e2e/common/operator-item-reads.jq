@@ -35,7 +35,8 @@ def own_stmts:
   else empty end;
 
 # One word list per command the stage runs, with where that command starts.
-def stage_calls: [own_stmts | {offset: .Pos.Offset, words: stmt_words}];
+def stmt_params: [(if .Cmd.Type == "CallExpr" then (.Cmd.Assigns[]?, .Cmd.Args[]?) else empty end), (.Redirs[]? | .Word) | .. | objects | select(.Type == "ParamExp") | .Param.Value];
+def stage_calls: [own_stmts | {offset: .Pos.Offset, words: stmt_words, params: stmt_params}];
 
 def stages:
   if .Cmd.Type == "BinaryCmd" and (.Cmd.Op == "|" or .Cmd.Op == "|&")
@@ -110,12 +111,14 @@ def captures:
   ];
 
 # The capture a command list reads with the latest one recorded before $offset, if any.
-def read_capture($caps; $offset; $words):
+# A variable is read by a $NAME or ${NAME} expansion in the command; text inside
+# single quotes, such as a jq variable spelled like the capture, is not one.
+def read_capture($caps; $offset; $words; $params):
   [ $caps[]
     | select(.offset < $offset)
     | .name as $name
     | select(
-        (.kind == "var" and any($words[]; test("\\$" + $name + "([^A-Za-z0-9_]|$)"))) or
+        (.kind == "var" and any($params[]; . == $name)) or
         (.kind == "file" and any($words[]; contains($name))))
   ] | last;
 
@@ -132,7 +135,7 @@ def judge($calls; $caps; $offset):
       | true
     elif ($text | kubectl_word) then empty
     else
-      read_capture($caps; $offset; $words) as $cap
+      read_capture($caps; $offset; $words; [$calls[].params[]]) as $cap
       | select($cap != null and ($text | picks($cap.sorted)))
       | true
     end;

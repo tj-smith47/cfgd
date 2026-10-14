@@ -105,3 +105,6 @@ kubectl get pods -l "$E2E_OPERATOR_PODS" -o json > b.json
 jq '.items[0]' a.json | while read -r l; do
     jq '.items[1]' b.json
 done
+# a jq variable spelled like a capture is no read of it: quiet
+pods="$(kubectl get pods -l "$E2E_OPERATOR_PODS" -o json)"
+jq --argjson pods '[1]' '.items[0] | $pods' deployments.json

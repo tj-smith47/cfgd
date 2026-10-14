@@ -4099,8 +4099,8 @@ fi
 # runs, through an && or || list and a brace group or subshell, with no pipe
 # after it) or, alone in its pipeline, in a file (>, >>, >|, &> or &>> PATH),
 # so the raw document reaches it, every later command in the file that runs no
-# kubectl of its own and reads that variable
-# ($NAME or ${NAME}) or that path is read too, since that JSON can be indexed in
+# kubectl of its own and expands that variable
+# ($NAME or ${NAME}, outside single quotes) or names that path is read too, since that JSON can be indexed in
 # a second step. A slice passes only on a command, or after a capture, that
 # carries --sort-by, which picks its pod on purpose. Fails naming the file and
 # shfmt's error when a file does not parse, and when a file was listed and
@@ -4137,7 +4137,7 @@ else
     if [ -n "$items_stderr" ]; then
         fail "the operator item-read scan wrote [$items_stderr] on stderr over a fixture that parses"
     elif [ "$items_got" = "$items_want" ]; then
-        pass "the operator item-read scan reports an index, an unsorted slice or a first of the operator pods by any operator selector, through kubectl or \$KUBECTL, on one line, continued, through jq, inside a \$(...) nested in quotes, spread over two lines, in a parameter default or a <(...), in a brace group, subshell, function, if, for or while, naming a pick in a loop stage on its own line once, each of two picks on one line and both a pick a kubectl or its jq stage makes and one in the loop or group it pipes into, or from a captured -o json variable (kept through ||, 2>/dev/null, a brace group or a subshell) or file (> or &>) read later in the file, including a loop's first stage that picks from one capture beside a held kubectl pick or a held read of another capture, and stays quiet on comments, a heredoc body, the capture itself, a read of a variable that piped the pod list through jq, a while loop over the pods, a loop fed by echo whose jq picks beside a picking kubectl, a jq sort before .[0], a pick from another capture, .items[*], a sorted slice, a jq sort over every pod, other pods, Deployments and a command that reads no items"
+        pass "the operator item-read scan reports an index, an unsorted slice or a first of the operator pods by any operator selector, through kubectl or \$KUBECTL, on one line, continued, through jq, inside a \$(...) nested in quotes, spread over two lines, in a parameter default or a <(...), in a brace group, subshell, function, if, for or while, naming a pick in a loop stage on its own line once, each of two picks on one line and both a pick a kubectl or its jq stage makes and one in the loop or group it pipes into, or from a captured -o json variable (kept through ||, 2>/dev/null, a brace group or a subshell) or file (> or &>) read later in the file, including a loop's first stage that picks from one capture beside a held kubectl pick or a held read of another capture, and stays quiet on comments, a heredoc body, the capture itself, a read of a variable that piped the pod list through jq, a jq variable spelled like a capture, a while loop over the pods, a loop fed by echo whose jq picks beside a picking kubectl, a jq sort before .[0], a pick from another capture, .items[*], a sorted slice, a jq sort over every pod, other pods, Deployments and a command that reads no items"
     else
         fail "the operator item-read scan printed [$items_got], want [$items_want]"
     fi
