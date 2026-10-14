@@ -109,49 +109,48 @@ def captures:
        | $cap + .)
   ];
 
-# The capture a unit reads with the latest one recorded before it, if any.
-def read_capture($caps; $unit; $words):
+# The capture a command list reads with the latest one recorded before $offset, if any.
+def read_capture($caps; $offset; $words):
   [ $caps[]
-    | select(.offset < $unit.offset)
+    | select(.offset < $offset)
     | .name as $name
     | select(
-        (.kind == "var" and any($unit.stages[] | .. | objects; .Type == "ParamExp" and .Param.Value == $name)) or
+        (.kind == "var" and any($words[]; test("\\$" + $name + "([^A-Za-z0-9_]|$)"))) or
         (.kind == "file" and any($words[]; contains($name))))
   ] | last;
 
+# True when a command list starting at $offset is reported on its own: it
+# gets the operator pods, or reads a capture of them, and its words pick one.
+# Empty when it is not.
+def judge($calls; $caps; $offset):
+  [$calls[].words[]] as $words
+  | ($words | join(" ")) as $text
+  | [$calls[].words | select(operator_get)] as $gets
+  | if ($gets | length) > 0 then
+      ($gets | any(.[][]; test("--sort-by"))) as $sorted
+      | select($text | picks($sorted))
+      | true
+    elif ($text | kubectl_word) then empty
+    else
+      read_capture($caps; $offset; $words) as $cap
+      | select($cap != null and ($text | picks($cap.sorted)))
+      | true
+    end;
+
 captures as $caps
-| [ units
-    | . as $unit
+| [ units | . as $unit
     | [.stages[] | stage_calls[]] as $calls
-    | [$calls[].words[]] as $words
-    | ($words | join(" ")) as $text
-    | [$calls[].words | select(operator_get)] as $gets
-    | if ($gets | length) > 0 then
-        ($gets | any(.[][]; test("--sort-by"))) as $sorted
-        | select($text | picks($sorted))
-        | $unit + {calls: $calls, sorted: $sorted, cap: null}
-      elif ($text | kubectl_word) then empty
-      else
-        read_capture($caps; $unit; $words) as $cap
-        | select($cap != null and ($text | picks($cap.sorted)))
-        | $unit + {calls: $calls, sorted: $cap.sorted, cap: $cap}
-      end
-  ]
+    | judge($calls; $caps; $unit.offset)
+    | $unit + {calls: $calls} ]
 # A pick is named on the line of the command whose words make it. A unit that
-# holds other reported units is judged again on the commands left once theirs
-# are set aside, and is kept only when those still get the operator pods (or
-# read the capture it was reported for) and pick one. Otherwise it was reported
-# only for what it contains, which is already named on its own line: a jq pick
-# beside a held kubectl, with no get of its own, reads some other input.
+# holds other reported units is kept only when the commands left to it, once
+# theirs are set aside, would be reported on their own: an operator get or a
+# read of an operator capture, plus a pick. Otherwise it was reported only for
+# what it contains, which is already named on its own line.
 | . as $found
 | map(. as $outer
     | [$found[] | select(.offset >= $outer.offset and .end <= $outer.end and (.offset != $outer.offset or .end != $outer.end))] as $inner
-    | [$outer.calls[] | . as $c | select(any($inner[]; $c.offset >= .offset and $c.offset < .end) | not) | .words] as $left
-    | select(($inner | length) == 0 or
-        ((any($left[]; operator_get) or
-          ($outer.cap != null and any($left[][];
-            if $outer.cap.kind == "var" then test("\\$" + $outer.cap.name + "([^A-Za-z0-9_]|$)")
-            else contains($outer.cap.name) end)))
-         and ([$left[][]] | join(" ") | picks($outer.sorted)))))
+    | [$outer.calls[] | . as $c | select(any($inner[]; $c.offset >= .offset and $c.offset < .end) | not)] as $left
+    | select(($inner | length) == 0 or ([judge($left; $caps; $outer.offset)] | length) > 0))
 | sort_by(.offset)[]
 | "\($file):\(.line)"

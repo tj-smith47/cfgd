@@ -88,3 +88,20 @@ echo x | while read -r l; do
     kubectl get pods -l "$E2E_OPERATOR_PODS" -o jsonpath='{.items[0].x}'
     jq '.items[1]' <<<"$deployments"
 done
+# an outer whose first stage picks from an operator capture, holding a picking kubectl: both named
+pods="$(kubectl get pods -l "$E2E_OPERATOR_PODS" -o json)"
+jq '.items[0]' <<<"$pods" | while read -r l; do
+    kubectl get pods -l "$E2E_OPERATOR_PODS" -o jsonpath='{.items[1].x}'
+done
+# an outer reading one operator capture, holding a jq that reads another: both named
+pods="$(kubectl get pods -l "$E2E_OPERATOR_PODS" -o json)"
+other="$(kubectl get pods -l "$E2E_OPERATOR_PODS" -o json)"
+jq '.items[0]' <<<"$pods" | while read -r l; do
+    jq '.items[1]' <<<"$other"
+done
+# the second shape with file captures: both named
+kubectl get pods -l "$E2E_OPERATOR_PODS" -o json > a.json
+kubectl get pods -l "$E2E_OPERATOR_PODS" -o json > b.json
+jq '.items[0]' a.json | while read -r l; do
+    jq '.items[1]' b.json
+done
