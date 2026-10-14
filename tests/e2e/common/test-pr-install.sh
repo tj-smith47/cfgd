@@ -4099,9 +4099,9 @@ fi
 # runs, through an && or || list and a brace group or subshell, with no pipe
 # after it) or, alone in its pipeline, in a file (>, >>, >|, &> or &>> PATH),
 # so the raw document reaches it, every later command in the file that runs no
-# kubectl of its own and expands that variable
-# ($NAME or ${NAME}, outside single quotes) or names that path is read too, since that JSON can be indexed in
-# a second step. A slice passes only on a command, or after a capture, that
+# kubectl of its own and expands that variable ($NAME or ${NAME}, outside
+# single quotes) or names that path is read too, since that JSON can be
+# indexed in a second step. A slice passes only on a command, or after a capture, that
 # carries --sort-by, which picks its pod on purpose. Fails naming the file and
 # shfmt's error when a file does not parse, and when a file was listed and
 # never read.
