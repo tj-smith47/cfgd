@@ -625,7 +625,7 @@ dependencies = [
 
 [[package]]
 name = "cfgd-core"
-version = "0.11.0"
+version = "0.11.1"
 dependencies = [
  "cfgd-core",
  "cfgd-crd",
@@ -723,7 +723,7 @@ dependencies = [
 
 [[package]]
 name = "cfgd-operator"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "anyhow",
  "axum",

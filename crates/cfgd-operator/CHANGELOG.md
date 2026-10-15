@@ -2,6 +2,23 @@
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-10-15
+
+### Bug Fixes
+
+* ff69591a15eb a homeless run leaves the state store and migration answer as found, script ~ slots too ([@tj-smith47](https://github.com/tj-smith47))
+* 4a7a71544e76 a homeless run refuses its ~ work before the state store opens, and doctor creates none ([@tj-smith47](https://github.com/tj-smith47))
+* c2590bce1635 Modules on one tag share its last read; a cooling signature check rewrites no status ([@tj-smith47](https://github.com/tj-smith47))
+* 43f8c64f88e1 a signature check cools per key or identity; a stale failure count restarts at 5s ([@tj-smith47](https://github.com/tj-smith47))
+* 5c57c4b9b992 give up a leader lease release the API server does not answer within 3s ([@tj-smith47](https://github.com/tj-smith47))
+* 047825f92c77 publish the registry retry constants the RegistryBackoff docs link to ([@tj-smith47](https://github.com/tj-smith47))
+* 653ca70e177c retry a failed registry visit after 5s doubling to 60s, re-read tag facts each 60s ([@tj-smith47](https://github.com/tj-smith47))
+* 05f2adc37fbc route device gateway traffic to the lease holder and keep the standby webhook-ready ([@tj-smith47](https://github.com/tj-smith47))
+* 421d6a346605 say which free leases the lease acquire forces ([@tj-smith47](https://github.com/tj-smith47))
+* 8078dcc583b6 stop serving at the renew deadline and release the lease on shutdown ([@tj-smith47](https://github.com/tj-smith47))
+* 8970b290e2d1 stop the gateway before clearing its label when the lease is lost or a signal arrives ([@tj-smith47](https://github.com/tj-smith47))
+* 956ed4f55e8c mark OperatorError non-exhaustive so a new variant stays additive #minor ([@tj-smith47](https://github.com/tj-smith47))
+
 ## [0.10.0] - 2026-10-06
 
 ### Features
@@ -168,7 +185,8 @@
 * ac2efacbcbc3 extract cfgd-crd crate (types + validate) from operator ([@tj-smith47](https://github.com/tj-smith47))
 * d7d3bf6bc720 gen_crds render_all + file-writing, sourced from cfgd-crd ([@tj-smith47](https://github.com/tj-smith47))
 
-[Unreleased]: https://github.com/tj-smith47/cfgd/compare/operator-v0.10.0...HEAD
+[Unreleased]: https://github.com/tj-smith47/cfgd/compare/operator-v0.11.0...HEAD
+[0.11.0]: https://github.com/tj-smith47/cfgd/compare/operator-v0.10.0...operator-v0.11.0
 [0.10.0]: https://github.com/tj-smith47/cfgd/compare/operator-v0.9.0...operator-v0.10.0
 [0.9.0]: https://github.com/tj-smith47/cfgd/compare/operator-v0.8.0...operator-v0.9.0
 [0.8.0]: https://github.com/tj-smith47/cfgd/compare/operator-v0.7.0...operator-v0.8.0

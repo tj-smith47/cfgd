@@ -385,14 +385,14 @@ lookup, that field degrades gracefully (`not connected` / `not deployed` /
 $ kubectl cfgd version
 Client        0.12.0
 Server (k8s)  1.31
-Operator      0.10.0
+Operator      0.11.0
 CSI           0.8.0
 
 $ kubectl cfgd version --namespace cfgd-system -o json
 {
   "version": "0.12.0",
   "kubectl": "1.31",
-  "operator": "0.10.0",
+  "operator": "0.11.0",
   "csi": "0.8.0",
   "cfgd": "0.12.0"
 }

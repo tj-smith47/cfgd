@@ -28,7 +28,7 @@ operator:
     # rewritten with it. Anything but a comment between `repository:` and `tag:`
     # stops the anchor matching, and the audit job's `check version-files` fails.
     # `task chart:tags:check` catches a pin nobody pushed.
-    tag: "0.10.0"
+    tag: "0.11.0"
     pullPolicy: IfNotPresent
   resources:
     limits:

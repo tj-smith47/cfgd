@@ -2,6 +2,23 @@
 
 ## [Unreleased]
 
+## [0.11.1] - 2026-10-15
+
+### Bug Fixes
+
+* ff69591a15eb a homeless run leaves the state store and migration answer as found, script ~ slots too ([@tj-smith47](https://github.com/tj-smith47))
+* 6d3bd6104430 refuse a saved plan once any file its derivation read has changed, git module files too ([@tj-smith47](https://github.com/tj-smith47))
+* 15b825a3a048 a cosign sign, attest, verify or public-key run that hits its 2m bound says it timed out ([@tj-smith47](https://github.com/tj-smith47))
+* 4a7a71544e76 a homeless run refuses its ~ work before the state store opens, and doctor creates none ([@tj-smith47](https://github.com/tj-smith47))
+* 2257d1dae3f3 cosign verify, verify-attestation, verify-blob and keyed sign or attest time out at 2m ([@tj-smith47](https://github.com/tj-smith47))
+* 30c47bedcc6b resolve state and cache dirs from absolute XDG paths when HOME is unset ([@tj-smith47](https://github.com/tj-smith47))
+* 49c0b8e2eae2 a homeless tick keeps reporting drift and refuses only the ~ hooks it would run ([@tj-smith47](https://github.com/tj-smith47))
+* df201c17ba02 every apply removes the module checkouts and clones nothing reads, sparing any in use ([@tj-smith47](https://github.com/tj-smith47))
+* ca7758a67620 give each pinned git ref of a module file source its own checkout ([@tj-smith47](https://github.com/tj-smith47))
+* 3494d15b7a97 only a registry 404 reports a missing manifest or blob ([@tj-smith47](https://github.com/tj-smith47))
+* d5687c5b9ee3 report a credential the registry refuses as an authentication failure ([@tj-smith47](https://github.com/tj-smith47))
+* ea32b244f2af enrollment info requests time out like every other gateway call ([@tj-smith47](https://github.com/tj-smith47))
+
 ## [0.11.0] - 2026-10-06
 
 ### Features
@@ -837,7 +854,8 @@
 * b3a2b1383c79 drop orphaned OciError::SignatureRequired variant (TJ Smith)
 * 1dc200e1e6d6 pin client to real release manifest (ground-truth contract test) (TJ Smith)
 
-[Unreleased]: https://github.com/tj-smith47/cfgd/compare/core-v0.11.0...HEAD
+[Unreleased]: https://github.com/tj-smith47/cfgd/compare/core-v0.11.1...HEAD
+[0.11.1]: https://github.com/tj-smith47/cfgd/compare/core-v0.11.0...core-v0.11.1
 [0.11.0]: https://github.com/tj-smith47/cfgd/compare/core-v0.10.0...core-v0.11.0
 [0.10.0]: https://github.com/tj-smith47/cfgd/compare/core-v0.9.0...core-v0.10.0
 [0.9.0]: https://github.com/tj-smith47/cfgd/compare/core-v0.8.0...core-v0.9.0

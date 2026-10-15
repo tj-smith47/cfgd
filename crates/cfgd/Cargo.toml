@@ -21,7 +21,7 @@ name = "cfgd"
 path = "src/main.rs"
 
 [dependencies]
-cfgd-core = { path = "../cfgd-core", version = "0.11.0" }
+cfgd-core = { path = "../cfgd-core", version = "0.11.1" }
 cfgd-schema = { path = "../cfgd-schema", version = "0.6.0" }
 clap = { version = "4", features = ["derive", "env"] }
 clap_complete = "4"
@@ -81,7 +81,7 @@ test-helpers = []
 cfgd = { path = ".", features = ["test-helpers"] }
 assert_cmd = "2"
 predicates = "3"
-cfgd-core = { path = "../cfgd-core", version = "0.11.0", features = ["test-helpers"] }
+cfgd-core = { path = "../cfgd-core", version = "0.11.1", features = ["test-helpers"] }
 serial_test = "4"
 mockito = "1"
 # Test-only: build `UpdateCheck` fixtures (its public `current`/`latest` fields
