@@ -242,6 +242,15 @@ fi
 grep -q "Could not find a cfgd release in the releases of o/r" "$scratch/stderr" \
     || fail "only other crates' releases: stderr does not name the repository: $(cat "$scratch/stderr")"
 
+# A failed request (offline, rate limited, a server error) is reported as a
+# failed fetch, so it never reads as a repository with no cfgd release.
+if got="$(VERSION=latest REPO=o/r sh -c '. "$1"; fetch_stdout() { return 22; }; resolve_version; printf "%s\n" "$VERSION"' \
+    sh "$scratch/resolve-version.sh" 2> "$scratch/stderr")"; then
+    fail "a failed fetch: resolve_version succeeded, choosing '$got'"
+fi
+grep -q "Could not fetch the releases of o/r" "$scratch/stderr" \
+    || fail "a failed fetch: stderr does not name the fetch failure: $(cat "$scratch/stderr")"
+
 if [ "$failures" -ne 0 ]; then
     printf '%d installer check(s) failed\n' "$failures" >&2
     exit 1

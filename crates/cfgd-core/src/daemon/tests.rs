@@ -16724,10 +16724,7 @@ spec: {}
         let mut server = mockito::Server::new_async().await;
         let _mock = server
             .mock("GET", "/repos/tj-smith47/cfgd/releases")
-            .match_query(mockito::Matcher::UrlEncoded(
-                "per_page".into(),
-                "100".into(),
-            ))
+            .match_query(crate::upgrade::per_page_100())
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(r#"[{"tag_name": "v999.0.0", "assets": []}]"#)
@@ -16768,10 +16765,7 @@ spec: {}
         let mut server = mockito::Server::new_async().await;
         let _mock = server
             .mock("GET", "/repos/tj-smith47/cfgd/releases")
-            .match_query(mockito::Matcher::UrlEncoded(
-                "per_page".into(),
-                "100".into(),
-            ))
+            .match_query(crate::upgrade::per_page_100())
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(format!(r#"[{{"tag_name": "{tag}", "assets": []}}]"#))
@@ -16801,10 +16795,7 @@ spec: {}
         let mut server = mockito::Server::new_async().await;
         let _mock = server
             .mock("GET", "/repos/tj-smith47/cfgd/releases")
-            .match_query(mockito::Matcher::UrlEncoded(
-                "per_page".into(),
-                "100".into(),
-            ))
+            .match_query(crate::upgrade::per_page_100())
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(format!(r#"[{{"tag_name": "{tag}", "assets": []}}]"#))
@@ -16936,10 +16927,7 @@ spec: {}
             let mut server = mockito::Server::new_async().await;
             let feed = server
                 .mock("GET", "/repos/tj-smith47/cfgd/releases")
-                .match_query(mockito::Matcher::UrlEncoded(
-                    "per_page".into(),
-                    "100".into(),
-                ))
+                .match_query(crate::upgrade::per_page_100())
                 .with_status(200)
                 .with_header("content-type", "application/json")
                 .with_body(r#"[{"tag_name": "v999.0.0", "assets": []}]"#)

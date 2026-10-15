@@ -43,7 +43,10 @@ const COSIGN_OIDC_ISSUER: &str = "https://token.actions.githubusercontent.com";
 /// * `nightly.yml@refs/heads/master` — signs the rolling `vnightly`
 ///   prerelease. Neither update channel selects that tag, since it carries no
 ///   version to compare, so self-update never verifies a nightly asset
-///   against this arm.
+///   against this arm. The arm stays because docs/installation.md and
+///   docs/releasing.md embed this regexp for a manual `cosign verify-blob` of
+///   a nightly asset, which `cosign_identity_regexp_docs_match_const` keeps
+///   in step with this constant.
 ///
 /// The per-workflow ref pin is the security win over a bare repo-level pin: a
 /// signature minted by any other workflow in this repo (e.g. `ci.yml`), by any
@@ -181,9 +184,8 @@ pub fn fetch_latest_release(repo: &str, printer: Option<&Printer>) -> Result<Rel
 /// The repository publishes several crates, each under its own tag shape
 /// (`v0.12.0` for cfgd, `operator-v0.11.0`, `csi-v0.8.0`, and the rolling
 /// `vnightly` / `operator-vnightly`), and the release GitHub flags as latest
-/// is whichever crate released last. cfgd's own tags are `v<semver>` or a bare
-/// `<semver>`: every other shape fails [`Version::parse`] once
-/// [`strip_tag_prefix`] has removed the one leading `v`, so it is skipped.
+/// can be another crate's. An entry whose tag [`tag_version`] rejects is
+/// skipped.
 /// Drafts are always skipped. With `include_prereleases` false, entries GitHub
 /// marks `prerelease` and versions carrying a semver pre-release identifier are
 /// skipped too. The highest remaining version wins; none left is an
@@ -194,6 +196,10 @@ fn fetch_release_list_from(
     include_prereleases: bool,
     printer: Option<&Printer>,
 ) -> Result<ReleaseInfo> {
+    // First page only: each cfgd release adds about three entries (cfgd,
+    // operator, csi), so cfgd's newest release sits near the top. Paginating
+    // would only matter if other crates published 100 releases between two of
+    // cfgd's.
     let url = format!("{}/repos/{}/releases?per_page=100", api_base, repo);
     let (start_label, finish_label) = if include_prereleases {
         (
@@ -220,19 +226,29 @@ fn fetch_release_list_from(
     })?;
 
     let flag = |elem: &serde_json::Value, name: &str| elem[name].as_bool().unwrap_or(false);
-    arr.iter()
+    // Only the tag is parsed while choosing, so the assets of the entries that
+    // lose are never collected.
+    let winner = arr
+        .iter()
         .filter(|elem| !flag(elem, "draft"))
         .filter(|elem| include_prereleases || !flag(elem, "prerelease"))
-        .filter_map(|elem| parse_one_release(elem).ok())
-        .filter(|release| include_prereleases || release.version.pre.is_empty())
-        .max_by(|a, b| a.version.cmp(&b.version))
+        .filter_map(|elem| Some((tag_version(elem["tag_name"].as_str()?).ok()?, elem)))
+        .filter(|(version, _)| include_prereleases || version.pre.is_empty())
+        .max_by(|(a, _), (b, _)| a.cmp(b))
         .ok_or_else(|| {
             let kind = if include_prereleases { "" } else { "stable " };
             UpgradeError::ApiError {
                 message: format!("no {kind}cfgd release found in the releases of {repo}"),
             }
-            .into()
-        })
+        })?;
+    parse_one_release(winner.1)
+}
+
+/// The version a release tag names. Only cfgd's own tag shapes parse
+/// (`v<semver>` or a bare `<semver>`): any other crate's tag (`operator-v…`,
+/// `csi-v…`) or a rolling one (`vnightly`) is an error.
+fn tag_version(tag: &str) -> std::result::Result<Version, semver::Error> {
+    Version::parse(strip_tag_prefix(tag))
 }
 
 /// Dispatch the release fetch by channel. [`STABLE_UPDATE_CHANNEL`] and any
@@ -369,8 +385,7 @@ fn rate_limited(status: u16, headers: &ureq::http::HeaderMap) -> Option<UpgradeE
 }
 
 /// Parse a single GitHub release object (`{tag_name, assets}`) into a
-/// [`ReleaseInfo`]. A tag that is not cfgd's own shape (`v<semver>` or a bare
-/// `<semver>`) is a `VersionParse` error, which the list selection skips.
+/// [`ReleaseInfo`]. A tag [`tag_version`] rejects is a `VersionParse` error.
 fn parse_one_release(json: &serde_json::Value) -> Result<ReleaseInfo> {
     let tag = json["tag_name"]
         .as_str()
@@ -379,8 +394,7 @@ fn parse_one_release(json: &serde_json::Value) -> Result<ReleaseInfo> {
         })?
         .to_string();
 
-    let version_str = strip_tag_prefix(&tag);
-    let version = Version::parse(version_str).map_err(|e| UpgradeError::VersionParse {
+    let version = tag_version(&tag).map_err(|e| UpgradeError::VersionParse {
         message: format!("cannot parse release version '{}': {}", tag, e),
     })?;
 
@@ -1300,6 +1314,12 @@ pub fn invalidate_cache() {
 /// Duration for the daemon's version check timer.
 pub fn version_check_interval() -> Duration {
     Duration::from_secs(CACHE_TTL_SECS)
+}
+
+/// The query string every releases-list request carries, for a mock to match.
+#[cfg(test)]
+pub(crate) fn per_page_100() -> mockito::Matcher {
+    mockito::Matcher::UrlEncoded("per_page".into(), "100".into())
 }
 
 #[cfg(test)]

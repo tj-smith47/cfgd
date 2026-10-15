@@ -7,11 +7,6 @@ fn parse_release_json(body: &str) -> Result<ReleaseInfo> {
     parse_one_release(&json)
 }
 
-/// The query string every releases-list request carries.
-fn per_page_100() -> mockito::Matcher {
-    mockito::Matcher::UrlEncoded("per_page".into(), "100".into())
-}
-
 #[test]
 fn current_version_is_valid_semver() {
     let v = parse_current_version(env!("CARGO_PKG_VERSION"))
@@ -3829,6 +3824,40 @@ mod api_base_env_shim {
         assert_eq!(selected_tag(&result), Some("v0.12.0"));
     }
 
+    /// GitHub lists releases newest first, so a backport published after a
+    /// higher release comes first; the stable channel still takes the higher.
+    #[test]
+    #[serial]
+    fn channel_stable_selects_the_highest_version_whatever_the_list_order() {
+        let result = check_against_list(
+            r#"[
+                {"tag_name": "v0.11.5", "prerelease": false, "assets": []},
+                {"tag_name": "v0.12.0", "prerelease": false, "assets": []}
+            ]"#,
+            "stable",
+        )
+        .expect("stable channel should select from the list");
+        assert_eq!(selected_tag(&result), Some("v0.12.0"));
+    }
+
+    /// v0.13.0-rc.1, v0.13.0 and v0.13.0-rc.2 published in that order: the
+    /// prerelease channel takes v0.13.0, which semver orders above both
+    /// release candidates, even though rc.2 is the newest entry.
+    #[test]
+    #[serial]
+    fn channel_prerelease_selects_the_highest_version_whatever_the_list_order() {
+        let result = check_against_list(
+            r#"[
+                {"tag_name": "v0.13.0-rc.2", "prerelease": true, "assets": []},
+                {"tag_name": "v0.13.0", "prerelease": false, "assets": []},
+                {"tag_name": "v0.13.0-rc.1", "prerelease": true, "assets": []}
+            ]"#,
+            "prerelease",
+        )
+        .expect("prerelease channel should select from the list");
+        assert_eq!(selected_tag(&result), Some("v0.13.0"));
+    }
+
     /// A draft is skipped by both channels.
     #[test]
     #[serial]
@@ -4429,4 +4458,45 @@ fn download_with_progress_bar_success_writes_all_bytes_and_settles_silently() {
         "success settles the bar silently, with no status line of its own: {out}"
     );
     assert_eq!(std::fs::read(tmp.path()).unwrap(), body);
+}
+
+/// The download URLs in the README, the docs and the installer's usage text
+/// (`releases/latest/download/...`) resolve against the release GitHub flags
+/// as latest, so only the cfgd crate's release may take that flag: every
+/// other crate's release block in `.anodizer.yaml` sets `make_latest: false`.
+#[test]
+fn only_the_cfgd_release_may_be_flagged_latest() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.anodizer.yaml");
+    let text = std::fs::read_to_string(&path).expect(".anodizer.yaml");
+    let doc: serde_yaml::Value = serde_yaml::from_str(&text).expect(".anodizer.yaml parses");
+    let workspaces = doc["workspaces"]
+        .as_sequence()
+        .expect(".anodizer.yaml lists workspaces");
+    let mut cfgd_seen = false;
+    let mut siblings = Vec::new();
+    for krate in workspaces
+        .iter()
+        .filter_map(|ws| ws["crates"].as_sequence())
+        .flatten()
+    {
+        let name = krate["name"].as_str().expect("every crate has a name");
+        let Some(release) = krate.get("release") else {
+            continue;
+        };
+        if name == "cfgd" {
+            cfgd_seen = true;
+            continue;
+        }
+        assert_eq!(
+            release["make_latest"].as_bool(),
+            Some(false),
+            "crate {name}'s release block must set `make_latest: false`"
+        );
+        siblings.push(name.to_string());
+    }
+    assert!(cfgd_seen, "the cfgd crate's release block was not found");
+    assert!(
+        !siblings.is_empty(),
+        "no other crate's release block was found; the walk read nothing"
+    );
 }

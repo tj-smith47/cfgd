@@ -683,6 +683,17 @@ mod tests {
         format!("{}.sha256", platform_asset_name(version))
     }
 
+    /// A mock of the releases-list request cfgd's update check sends: the
+    /// list path with its `per_page=100` query. The caller adds the answer.
+    fn releases_list_mock(server: &mut mockito::ServerGuard) -> mockito::Mock {
+        server
+            .mock("GET", "/repos/tj-smith47/cfgd/releases")
+            .match_query(mockito::Matcher::UrlEncoded(
+                "per_page".into(),
+                "100".into(),
+            ))
+    }
+
     fn releases_json_current_version() -> String {
         let tag = current_version_tag();
         format!(r#"[{{"tag_name": "{tag}", "assets": []}}]"#)
@@ -694,12 +705,7 @@ mod tests {
     #[serial]
     fn cmd_upgrade_check_only_api_error_500() {
         let mut server = mockito::Server::new();
-        let _mock = server
-            .mock("GET", "/repos/tj-smith47/cfgd/releases")
-            .match_query(mockito::Matcher::UrlEncoded(
-                "per_page".into(),
-                "100".into(),
-            ))
+        let _mock = releases_list_mock(&mut server)
             .with_status(500)
             .with_body(r#"{"message": "Internal Server Error"}"#)
             .create();
@@ -726,12 +732,7 @@ mod tests {
     #[serial]
     fn cmd_upgrade_check_only_api_error_404() {
         let mut server = mockito::Server::new();
-        let _mock = server
-            .mock("GET", "/repos/tj-smith47/cfgd/releases")
-            .match_query(mockito::Matcher::UrlEncoded(
-                "per_page".into(),
-                "100".into(),
-            ))
+        let _mock = releases_list_mock(&mut server)
             .with_status(404)
             .with_body(r#"{"message": "Not Found"}"#)
             .create();
@@ -756,12 +757,7 @@ mod tests {
         headers: &[(&str, &str)],
     ) -> (serde_json::Value, cfgd_core::exit::ExitCode) {
         let mut server = mockito::Server::new();
-        let mut mock = server
-            .mock("GET", "/repos/tj-smith47/cfgd/releases")
-            .match_query(mockito::Matcher::UrlEncoded(
-                "per_page".into(),
-                "100".into(),
-            ))
+        let mut mock = releases_list_mock(&mut server)
             .with_status(status)
             .with_body(r#"{"message": "API rate limit exceeded"}"#);
         for (name, value) in headers {
@@ -835,12 +831,7 @@ mod tests {
     #[serial]
     fn cmd_upgrade_check_only_up_to_date() {
         let mut server = mockito::Server::new();
-        let _mock = server
-            .mock("GET", "/repos/tj-smith47/cfgd/releases")
-            .match_query(mockito::Matcher::UrlEncoded(
-                "per_page".into(),
-                "100".into(),
-            ))
+        let _mock = releases_list_mock(&mut server)
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(releases_json_current_version())
@@ -881,12 +872,7 @@ mod tests {
     #[serial]
     fn cmd_upgrade_check_only_ignores_optout_vars() {
         let mut server = mockito::Server::new();
-        let _mock = server
-            .mock("GET", "/repos/tj-smith47/cfgd/releases")
-            .match_query(mockito::Matcher::UrlEncoded(
-                "per_page".into(),
-                "100".into(),
-            ))
+        let _mock = releases_list_mock(&mut server)
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(releases_json_current_version())
@@ -924,12 +910,7 @@ mod tests {
     #[serial]
     fn cmd_upgrade_check_only_update_available_exits_2() {
         let mut server = mockito::Server::new();
-        let _mock = server
-            .mock("GET", "/repos/tj-smith47/cfgd/releases")
-            .match_query(mockito::Matcher::UrlEncoded(
-                "per_page".into(),
-                "100".into(),
-            ))
+        let _mock = releases_list_mock(&mut server)
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(r#"[{"tag_name": "v9.9.9", "assets": []}]"#)
@@ -957,14 +938,7 @@ mod tests {
     #[serial]
     fn cmd_upgrade_full_check_api_error() {
         let mut server = mockito::Server::new();
-        let _mock = server
-            .mock("GET", "/repos/tj-smith47/cfgd/releases")
-            .match_query(mockito::Matcher::UrlEncoded(
-                "per_page".into(),
-                "100".into(),
-            ))
-            .with_status(500)
-            .create();
+        let _mock = releases_list_mock(&mut server).with_status(500).create();
         let _guard = EnvVarGuard::set(cfgd_core::CFGD_GITHUB_API_BASE_ENV, &server.url());
 
         let (printer, _cap) = Printer::for_test_doc();
@@ -983,12 +957,7 @@ mod tests {
     #[serial]
     fn cmd_upgrade_full_already_latest() {
         let mut server = mockito::Server::new();
-        let _mock = server
-            .mock("GET", "/repos/tj-smith47/cfgd/releases")
-            .match_query(mockito::Matcher::UrlEncoded(
-                "per_page".into(),
-                "100".into(),
-            ))
+        let _mock = releases_list_mock(&mut server)
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(releases_json_current_version())
@@ -1029,12 +998,7 @@ mod tests {
     #[serial]
     fn cmd_upgrade_full_no_platform_asset() {
         let mut server = mockito::Server::new();
-        let _mock = server
-            .mock("GET", "/repos/tj-smith47/cfgd/releases")
-            .match_query(mockito::Matcher::UrlEncoded(
-                "per_page".into(),
-                "100".into(),
-            ))
+        let _mock = releases_list_mock(&mut server)
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(
@@ -1093,12 +1057,7 @@ mod tests {
             url = server.url()
         );
 
-        let _release_mock = server
-            .mock("GET", "/repos/tj-smith47/cfgd/releases")
-            .match_query(mockito::Matcher::UrlEncoded(
-                "per_page".into(),
-                "100".into(),
-            ))
+        let _release_mock = releases_list_mock(&mut server)
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(release_body)
@@ -1182,12 +1141,7 @@ mod tests {
             archive_size = archive_body.len(),
             checksum_size = checksum_body.len()
         );
-        let _release_mock = server
-            .mock("GET", "/repos/tj-smith47/cfgd/releases")
-            .match_query(mockito::Matcher::UrlEncoded(
-                "per_page".into(),
-                "100".into(),
-            ))
+        let _release_mock = releases_list_mock(&mut server)
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(release_body)

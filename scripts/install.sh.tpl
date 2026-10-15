@@ -166,7 +166,15 @@ resolve_version() {
         # rolling *vnightly tags), so GitHub's latest release may be another
         # crate's. The list comes newest first; the first plain vX.Y.Z tag is
         # cfgd's newest stable release, and drafts are invisible without a token.
-        VERSION=$(fetch_stdout "https://api.github.com/repos/${REPO}/releases?per_page=100" \
+        # First page only: each cfgd release adds about three entries, so
+        # paginating would only matter if other crates published 100 releases
+        # between two of cfgd's.
+        local releases
+        releases=$(fetch_stdout "https://api.github.com/repos/${REPO}/releases?per_page=100") || {
+            error "Could not fetch the releases of ${REPO}"
+            exit 1
+        }
+        VERSION=$(printf '%s\n' "$releases" \
             | tr ',' '\n' | grep '"tag_name"' | sed 's/.*"tag_name": *"//;s/".*//' \
             | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -1)
 
