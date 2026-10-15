@@ -142,7 +142,7 @@ pub struct ResolvedFile {
     #[serde(serialize_with = "crate::serialize_fs_path")]
     pub source: PathBuf,
     /// Target path on the machine, with a leading `~` already expanded by
-    /// [`resolve_module_files`](crate::modules::resolve_module_files), so no
+    /// [`resolve_module_files`], so no
     /// reader expands it again.
     #[serde(serialize_with = "crate::serialize_fs_path")]
     pub target: PathBuf,

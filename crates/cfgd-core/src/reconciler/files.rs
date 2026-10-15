@@ -323,7 +323,7 @@ pub struct ModuleCache<'a> {
 /// which no action failed. Every [`super::RunExecutor`] answers it.
 pub enum ModuleCheckouts<'a> {
     /// Remove the checkouts and clones under the cache that nothing reads any
-    /// more (see [`sweep_unread_module_checkouts`]).
+    /// more (see `sweep_unread_module_checkouts`).
     Sweep(ModuleCache<'a>),
     /// Remove nothing. The run's config is not the one this machine's state
     /// store belongs to, or it parsed no config at all, so its lockfile and

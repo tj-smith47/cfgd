@@ -176,7 +176,7 @@ pub(crate) const IN_USE_WINDOW: std::time::Duration = std::time::Duration::from_
 /// The trees are keyed by commit, so every ref naming one commit reads one
 /// tree, a ref that moves reads a new tree, and a tree once written never
 /// changes. They sit inside the clone's `.git`, out of its working tree, so
-/// removing the clone removes them too. [`sweep_pinned_checkouts`] removes the
+/// removing the clone removes them too. `sweep_pinned_checkouts` removes the
 /// trees nothing reads any more.
 ///
 /// A full object id that no tag or branch of the clone shadows names its own
