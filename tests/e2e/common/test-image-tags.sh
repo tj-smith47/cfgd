@@ -277,15 +277,24 @@ done
 # The image the chart does not pin has no floor.
 expect_gate "FUNCTION_IMAGE_TAG=v0.0.1 (no chart pin)" "$chart" pass "" FUNCTION_IMAGE_TAG=v0.0.1
 
+# The override under test stays at the chart's own operator pin, so every
+# refusal below is the chart's and never the override's; the pin moves with
+# each operator release.
+operator_pin="$(grep -o '/cfgd-operator:[^[:space:]]*' <<<"$pins" | head -1)"
+operator_pin="${operator_pin##*:}"
+if [ -z "$operator_pin" ]; then
+    echo "FAIL  the chart pin reader gave no cfgd-operator pin to run the chart refusals at"
+    failures=$((failures + 1))
+fi
 # A pin that cannot be read must refuse: a chart that does not render, and a
 # pin that is not a semver.
 expect_gate "chart that does not render" "$scratch/no-such-chart" refuse "could not read the image tags" \
-    OPERATOR_IMAGE_TAG=0.10.0
+    "OPERATOR_IMAGE_TAG=$operator_pin"
 cp -r "$chart" "$scratch/latest-pin-chart"
 sed -i '/repository: ghcr.io\/tj-smith47\/cfgd-operator$/,/^ *tag:/ s/^\( *\)tag: "[^"]*"/\1tag: "latest"/' \
     "$scratch/latest-pin-chart/values.yaml"
 expect_gate "non-semver pin" "$scratch/latest-pin-chart" refuse "pins cfgd-operator at 'latest', which is not a semver" \
-    OPERATOR_IMAGE_TAG=0.10.0
+    "OPERATOR_IMAGE_TAG=$operator_pin"
 expect_gate "non-semver pin of an image with no override" "$scratch/latest-pin-chart" pass ""
 
 # The reader takes every image under the ghcr.io/tj-smith47 owner, whatever its
@@ -310,7 +319,7 @@ expect_gate "FUNCTION_IMAGE_TAG=v0.12.0 at a function-cfgd pin" "$fn_chart" pass
 other_chart="$(probe_chart other-chart 'probe:' '  image: "ghcr.io/other-owner/thing:9.9.9"' \
     '  sidecar: "docker.io/tj-smith47/thing:9.9.9"' '  more:' '    image: docker.io/tj-smith47/thing:9.9.9')"
 check "the reader leaves out images of another owner" "$(pins_of "$other_chart" | grep -c 'thing')" 0
-expect_gate "images of another owner are not gated" "$other_chart" pass "" OPERATOR_IMAGE_TAG=0.10.0
+expect_gate "images of another owner are not gated" "$other_chart" pass "" "OPERATOR_IMAGE_TAG=$operator_pin"
 new_chart="$(probe_chart new-chart 'probe:' '  image: "ghcr.io/tj-smith47/newthing:1.0.0"')"
 expect_gate "a first-party image with no override variable" "$new_chart" refuse \
     "pins newthing, which has no override variable"
