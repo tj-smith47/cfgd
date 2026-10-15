@@ -683,9 +683,9 @@ mod tests {
         format!("{}.sha256", platform_asset_name(version))
     }
 
-    fn release_json_current_version() -> String {
+    fn releases_json_current_version() -> String {
         let tag = current_version_tag();
-        format!(r#"{{"tag_name": "{tag}", "assets": []}}"#)
+        format!(r#"[{{"tag_name": "{tag}", "assets": []}}]"#)
     }
 
     /// GitHub returns a 500 during `--check` → function returns Err and emits
@@ -695,7 +695,11 @@ mod tests {
     fn cmd_upgrade_check_only_api_error_500() {
         let mut server = mockito::Server::new();
         let _mock = server
-            .mock("GET", "/repos/tj-smith47/cfgd/releases/latest")
+            .mock("GET", "/repos/tj-smith47/cfgd/releases")
+            .match_query(mockito::Matcher::UrlEncoded(
+                "per_page".into(),
+                "100".into(),
+            ))
             .with_status(500)
             .with_body(r#"{"message": "Internal Server Error"}"#)
             .create();
@@ -723,7 +727,11 @@ mod tests {
     fn cmd_upgrade_check_only_api_error_404() {
         let mut server = mockito::Server::new();
         let _mock = server
-            .mock("GET", "/repos/tj-smith47/cfgd/releases/latest")
+            .mock("GET", "/repos/tj-smith47/cfgd/releases")
+            .match_query(mockito::Matcher::UrlEncoded(
+                "per_page".into(),
+                "100".into(),
+            ))
             .with_status(404)
             .with_body(r#"{"message": "Not Found"}"#)
             .create();
@@ -749,7 +757,11 @@ mod tests {
     ) -> (serde_json::Value, cfgd_core::exit::ExitCode) {
         let mut server = mockito::Server::new();
         let mut mock = server
-            .mock("GET", "/repos/tj-smith47/cfgd/releases/latest")
+            .mock("GET", "/repos/tj-smith47/cfgd/releases")
+            .match_query(mockito::Matcher::UrlEncoded(
+                "per_page".into(),
+                "100".into(),
+            ))
             .with_status(status)
             .with_body(r#"{"message": "API rate limit exceeded"}"#);
         for (name, value) in headers {
@@ -824,10 +836,14 @@ mod tests {
     fn cmd_upgrade_check_only_up_to_date() {
         let mut server = mockito::Server::new();
         let _mock = server
-            .mock("GET", "/repos/tj-smith47/cfgd/releases/latest")
+            .mock("GET", "/repos/tj-smith47/cfgd/releases")
+            .match_query(mockito::Matcher::UrlEncoded(
+                "per_page".into(),
+                "100".into(),
+            ))
             .with_status(200)
             .with_header("content-type", "application/json")
-            .with_body(release_json_current_version())
+            .with_body(releases_json_current_version())
             .create();
         let _guard = EnvVarGuard::set(cfgd_core::CFGD_GITHUB_API_BASE_ENV, &server.url());
 
@@ -866,10 +882,14 @@ mod tests {
     fn cmd_upgrade_check_only_ignores_optout_vars() {
         let mut server = mockito::Server::new();
         let _mock = server
-            .mock("GET", "/repos/tj-smith47/cfgd/releases/latest")
+            .mock("GET", "/repos/tj-smith47/cfgd/releases")
+            .match_query(mockito::Matcher::UrlEncoded(
+                "per_page".into(),
+                "100".into(),
+            ))
             .with_status(200)
             .with_header("content-type", "application/json")
-            .with_body(release_json_current_version())
+            .with_body(releases_json_current_version())
             .create();
         let _guard = EnvVarGuard::set(cfgd_core::CFGD_GITHUB_API_BASE_ENV, &server.url());
         let _no_update_check = EnvVarGuard::set(cfgd_core::CFGD_NO_UPDATE_CHECK_ENV, "1");
@@ -905,10 +925,14 @@ mod tests {
     fn cmd_upgrade_check_only_update_available_exits_2() {
         let mut server = mockito::Server::new();
         let _mock = server
-            .mock("GET", "/repos/tj-smith47/cfgd/releases/latest")
+            .mock("GET", "/repos/tj-smith47/cfgd/releases")
+            .match_query(mockito::Matcher::UrlEncoded(
+                "per_page".into(),
+                "100".into(),
+            ))
             .with_status(200)
             .with_header("content-type", "application/json")
-            .with_body(r#"{"tag_name": "v9.9.9", "assets": []}"#)
+            .with_body(r#"[{"tag_name": "v9.9.9", "assets": []}]"#)
             .create();
         let _guard = EnvVarGuard::set(cfgd_core::CFGD_GITHUB_API_BASE_ENV, &server.url());
 
@@ -934,7 +958,11 @@ mod tests {
     fn cmd_upgrade_full_check_api_error() {
         let mut server = mockito::Server::new();
         let _mock = server
-            .mock("GET", "/repos/tj-smith47/cfgd/releases/latest")
+            .mock("GET", "/repos/tj-smith47/cfgd/releases")
+            .match_query(mockito::Matcher::UrlEncoded(
+                "per_page".into(),
+                "100".into(),
+            ))
             .with_status(500)
             .create();
         let _guard = EnvVarGuard::set(cfgd_core::CFGD_GITHUB_API_BASE_ENV, &server.url());
@@ -956,10 +984,14 @@ mod tests {
     fn cmd_upgrade_full_already_latest() {
         let mut server = mockito::Server::new();
         let _mock = server
-            .mock("GET", "/repos/tj-smith47/cfgd/releases/latest")
+            .mock("GET", "/repos/tj-smith47/cfgd/releases")
+            .match_query(mockito::Matcher::UrlEncoded(
+                "per_page".into(),
+                "100".into(),
+            ))
             .with_status(200)
             .with_header("content-type", "application/json")
-            .with_body(release_json_current_version())
+            .with_body(releases_json_current_version())
             .create();
         let _guard = EnvVarGuard::set(cfgd_core::CFGD_GITHUB_API_BASE_ENV, &server.url());
 
@@ -998,11 +1030,15 @@ mod tests {
     fn cmd_upgrade_full_no_platform_asset() {
         let mut server = mockito::Server::new();
         let _mock = server
-            .mock("GET", "/repos/tj-smith47/cfgd/releases/latest")
+            .mock("GET", "/repos/tj-smith47/cfgd/releases")
+            .match_query(mockito::Matcher::UrlEncoded(
+                "per_page".into(),
+                "100".into(),
+            ))
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(
-                r#"{
+                r#"[{
                     "tag_name": "v9.9.9",
                     "assets": [
                         {
@@ -1011,7 +1047,7 @@ mod tests {
                             "size": 1024
                         }
                     ]
-                }"#,
+                }]"#,
             )
             .create();
         let _guard = EnvVarGuard::set(cfgd_core::CFGD_GITHUB_API_BASE_ENV, &server.url());
@@ -1039,7 +1075,7 @@ mod tests {
         let mut server = mockito::Server::new();
 
         let release_body = format!(
-            r#"{{
+            r#"[{{
                 "tag_name": "v{version}",
                 "assets": [
                     {{
@@ -1053,12 +1089,16 @@ mod tests {
                         "size": 64
                     }}
                 ]
-            }}"#,
+            }}]"#,
             url = server.url()
         );
 
         let _release_mock = server
-            .mock("GET", "/repos/tj-smith47/cfgd/releases/latest")
+            .mock("GET", "/repos/tj-smith47/cfgd/releases")
+            .match_query(mockito::Matcher::UrlEncoded(
+                "per_page".into(),
+                "100".into(),
+            ))
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(release_body)
@@ -1123,7 +1163,7 @@ mod tests {
 
         let mut server = mockito::Server::new();
         let release_body = format!(
-            r#"{{
+            r#"[{{
                 "tag_name": "v{version}",
                 "assets": [
                     {{
@@ -1137,13 +1177,17 @@ mod tests {
                         "size": {checksum_size}
                     }}
                 ]
-            }}"#,
+            }}]"#,
             url = server.url(),
             archive_size = archive_body.len(),
             checksum_size = checksum_body.len()
         );
         let _release_mock = server
-            .mock("GET", "/repos/tj-smith47/cfgd/releases/latest")
+            .mock("GET", "/repos/tj-smith47/cfgd/releases")
+            .match_query(mockito::Matcher::UrlEncoded(
+                "per_page".into(),
+                "100".into(),
+            ))
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(release_body)

@@ -16723,10 +16723,14 @@ spec: {}
         let tmp = tempfile::TempDir::new().unwrap();
         let mut server = mockito::Server::new_async().await;
         let _mock = server
-            .mock("GET", "/repos/tj-smith47/cfgd/releases/latest")
+            .mock("GET", "/repos/tj-smith47/cfgd/releases")
+            .match_query(mockito::Matcher::UrlEncoded(
+                "per_page".into(),
+                "100".into(),
+            ))
             .with_status(200)
             .with_header("content-type", "application/json")
-            .with_body(r#"{"tag_name": "v999.0.0", "assets": []}"#)
+            .with_body(r#"[{"tag_name": "v999.0.0", "assets": []}]"#)
             .create_async()
             .await;
         let _api =
@@ -16763,10 +16767,14 @@ spec: {}
         let tag = format!("v{}", env!("CARGO_PKG_VERSION"));
         let mut server = mockito::Server::new_async().await;
         let _mock = server
-            .mock("GET", "/repos/tj-smith47/cfgd/releases/latest")
+            .mock("GET", "/repos/tj-smith47/cfgd/releases")
+            .match_query(mockito::Matcher::UrlEncoded(
+                "per_page".into(),
+                "100".into(),
+            ))
             .with_status(200)
             .with_header("content-type", "application/json")
-            .with_body(format!(r#"{{"tag_name": "{tag}", "assets": []}}"#))
+            .with_body(format!(r#"[{{"tag_name": "{tag}", "assets": []}}]"#))
             .create_async()
             .await;
         let _api =
@@ -16792,10 +16800,14 @@ spec: {}
         let tag = format!("v{}", env!("CARGO_PKG_VERSION"));
         let mut server = mockito::Server::new_async().await;
         let _mock = server
-            .mock("GET", "/repos/tj-smith47/cfgd/releases/latest")
+            .mock("GET", "/repos/tj-smith47/cfgd/releases")
+            .match_query(mockito::Matcher::UrlEncoded(
+                "per_page".into(),
+                "100".into(),
+            ))
             .with_status(200)
             .with_header("content-type", "application/json")
-            .with_body(format!(r#"{{"tag_name": "{tag}", "assets": []}}"#))
+            .with_body(format!(r#"[{{"tag_name": "{tag}", "assets": []}}]"#))
             .create_async()
             .await;
         let _api =
@@ -16923,10 +16935,14 @@ spec: {}
             let optouts = crate::test_helpers::clear_update_optouts();
             let mut server = mockito::Server::new_async().await;
             let feed = server
-                .mock("GET", "/repos/tj-smith47/cfgd/releases/latest")
+                .mock("GET", "/repos/tj-smith47/cfgd/releases")
+                .match_query(mockito::Matcher::UrlEncoded(
+                    "per_page".into(),
+                    "100".into(),
+                ))
                 .with_status(200)
                 .with_header("content-type", "application/json")
-                .with_body(r#"{"tag_name": "v999.0.0", "assets": []}"#)
+                .with_body(r#"[{"tag_name": "v999.0.0", "assets": []}]"#)
                 .expect(requests)
                 .create_async()
                 .await;

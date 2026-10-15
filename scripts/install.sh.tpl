@@ -162,11 +162,16 @@ resolve_install_dir() {
 
 resolve_version() {
     if [ "$VERSION" = "latest" ]; then
-        VERSION=$(fetch_stdout "https://api.github.com/repos/${REPO}/releases/latest" \
-            | grep '"tag_name"' | head -1 | sed 's/.*"tag_name": *"//;s/".*//')
+        # The repository releases several crates (operator-v*, csi-v*, the
+        # rolling *vnightly tags), so GitHub's latest release may be another
+        # crate's. The list comes newest first; the first plain vX.Y.Z tag is
+        # cfgd's newest stable release, and drafts are invisible without a token.
+        VERSION=$(fetch_stdout "https://api.github.com/repos/${REPO}/releases?per_page=100" \
+            | tr ',' '\n' | grep '"tag_name"' | sed 's/.*"tag_name": *"//;s/".*//' \
+            | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -1)
 
         if [ -z "$VERSION" ]; then
-            error "Could not determine latest version from GitHub"
+            error "Could not find a cfgd release in the releases of ${REPO}"
             exit 1
         fi
     fi

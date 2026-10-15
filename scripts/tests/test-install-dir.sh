@@ -1,7 +1,8 @@
 #!/bin/sh
-# Checks the installer's install-directory choice without downloading anything:
-# resolve_install_dir is lifted out of scripts/install.sh.tpl and run against
-# scratch directories, one case per way the directory can be chosen.
+# Checks the installer's install-directory choice and its `latest` version
+# lookup without downloading anything: resolve_install_dir and resolve_version
+# are lifted out of scripts/install.sh.tpl and run against scratch directories
+# and fixture release lists, one case per way each can resolve.
 #
 # Usage: scripts/tests/test-install-dir.sh
 set -eu
@@ -178,8 +179,71 @@ else
     printf 'skip: the sudo plan case needs a user a 555 directory refuses (root and Windows write through it)\n'
 fi
 
+# CFGD_VERSION=latest reads the releases list, whose newest entry can belong to
+# another crate in the repository. fetch_stdout is stubbed to print a fixture
+# list, in GitHub's own pretty-printed and in a minified layout.
+printf '%s\n%s\n' "$(function_body error)" "$(function_body resolve_version)" > "$scratch/resolve-version.sh"
+resolve_latest() {
+    sh -c '. "$1"; fixture="$2"; fetch_stdout() { cat "$fixture"; }; resolve_version; printf "%s\n" "$VERSION"' \
+        sh "$scratch/resolve-version.sh" "$1"
+}
+cat > "$scratch/releases.json" <<'JSON'
+[
+  {
+    "tag_name": "operator-v0.11.0",
+    "prerelease": false,
+    "assets": []
+  },
+  {
+    "tag_name": "v0.13.0-rc.1",
+    "prerelease": true,
+    "assets": []
+  },
+  {
+    "tag_name": "v0.12.0",
+    "prerelease": false,
+    "assets": [{"name": "cfgd-0.12.0-linux-amd64.tar.gz"}]
+  },
+  {
+    "tag_name": "csi-v0.8.0",
+    "prerelease": false,
+    "assets": []
+  },
+  {
+    "tag_name": "v0.11.0",
+    "prerelease": false,
+    "assets": []
+  }
+]
+JSON
+got="$(VERSION=latest REPO=o/r resolve_latest "$scratch/releases.json")" || fail "the latest cfgd release: resolve_version failed"
+[ "$got" = v0.12.0 ] || fail "the latest cfgd release: chose '$got', want 'v0.12.0'"
+tr -d ' \n' < "$scratch/releases.json" > "$scratch/releases-min.json"
+got="$(VERSION=latest REPO=o/r resolve_latest "$scratch/releases-min.json")" || fail "the latest cfgd release, minified: resolve_version failed"
+[ "$got" = v0.12.0 ] || fail "the latest cfgd release, minified: chose '$got', want 'v0.12.0'"
+
+# A version named outright is used as it is, with no request.
+got="$(VERSION=v0.9.0 REPO=o/r resolve_latest /nonexistent)" || fail "a named version: resolve_version failed"
+[ "$got" = v0.9.0 ] || fail "a named version: resolved to '$got', want 'v0.9.0'"
+
+# A list holding only other crates' releases stops the installer with an error
+# naming the repository.
+cat > "$scratch/siblings.json" <<'JSON'
+[
+  {"tag_name": "operator-v0.11.0", "assets": []},
+  {"tag_name": "csi-vnightly", "assets": []},
+  {"tag_name": "vnightly", "assets": []},
+  {"tag_name": "csi-v0.8.0", "assets": []}
+]
+JSON
+if got="$(VERSION=latest REPO=o/r resolve_latest "$scratch/siblings.json" 2> "$scratch/stderr")"; then
+    fail "only other crates' releases: resolve_version succeeded, choosing '$got'"
+fi
+grep -q "Could not find a cfgd release in the releases of o/r" "$scratch/stderr" \
+    || fail "only other crates' releases: stderr does not name the repository: $(cat "$scratch/stderr")"
+
 if [ "$failures" -ne 0 ]; then
-    printf '%d install directory check(s) failed\n' "$failures" >&2
+    printf '%d installer check(s) failed\n' "$failures" >&2
     exit 1
 fi
-printf 'install directory checks passed\n'
+printf 'installer checks passed\n'

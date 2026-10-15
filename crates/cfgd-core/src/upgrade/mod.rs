@@ -40,8 +40,10 @@ const COSIGN_OIDC_ISSUER: &str = "https://token.actions.githubusercontent.com";
 ///   `release.yml` invokes; the real signer of every published stable asset.
 /// * `release.yml@refs/tags/v*` — the release orchestrator, pinned to version
 ///   tags in case a future asset is signed there directly.
-/// * `nightly.yml@refs/heads/master` — signs the rolling `nightly` prerelease
-///   that the prerelease channel's endpoint can list.
+/// * `nightly.yml@refs/heads/master` — signs the rolling `vnightly`
+///   prerelease. Neither update channel selects that tag, since it carries no
+///   version to compare, so self-update never verifies a nightly asset
+///   against this arm.
 ///
 /// The per-workflow ref pin is the security win over a bare repo-level pin: a
 /// signature minted by any other workflow in this repo (e.g. `ci.yml`), by any
@@ -156,7 +158,7 @@ pub struct UpdateCheck {
 /// `env!("CARGO_PKG_VERSION")`).
 ///
 /// cfgd-core's own crate version is not a valid substitute: the crates version
-/// independently, and an upgrade check comparing GitHub's latest release
+/// independently, and an upgrade check comparing cfgd's latest release
 /// against the *library's* version mis-reports the binary as outdated (or
 /// current) the moment the two drift.
 pub fn parse_current_version(cfgd_version: &str) -> std::result::Result<Version, UpgradeError> {
@@ -165,45 +167,47 @@ pub fn parse_current_version(cfgd_version: &str) -> std::result::Result<Version,
     })
 }
 
-/// Query the GitHub Releases API for the latest release.
+/// Query the GitHub Releases API for cfgd's latest stable release.
+///
+/// Reads the releases list and picks the highest cfgd version that is neither
+/// a draft nor a prerelease; see [`fetch_release_list_from`].
 pub fn fetch_latest_release(repo: &str, printer: Option<&Printer>) -> Result<ReleaseInfo> {
-    fetch_latest_release_from(&github_api_base(), repo, printer)
+    fetch_release_list_from(&github_api_base(), repo, false, printer)
 }
 
-/// Query a releases API for the latest *stable* release (testable with custom
-/// base URL). Hits `releases/latest`, which GitHub defines to exclude
-/// prereleases and drafts.
-fn fetch_latest_release_from(
+/// Query a releases API for cfgd's newest release (testable with custom base
+/// URL). Reads the LIST endpoint, `releases?per_page=100`, newest first.
+///
+/// The repository publishes several crates, each under its own tag shape
+/// (`v0.12.0` for cfgd, `operator-v0.11.0`, `csi-v0.8.0`, and the rolling
+/// `vnightly` / `operator-vnightly`), and the release GitHub flags as latest
+/// is whichever crate released last. cfgd's own tags are `v<semver>` or a bare
+/// `<semver>`: every other shape fails [`Version::parse`] once
+/// [`strip_tag_prefix`] has removed the one leading `v`, so it is skipped.
+/// Drafts are always skipped. With `include_prereleases` false, entries GitHub
+/// marks `prerelease` and versions carrying a semver pre-release identifier are
+/// skipped too. The highest remaining version wins; none left is an
+/// `ApiError` naming the repository.
+fn fetch_release_list_from(
     api_base: &str,
     repo: &str,
+    include_prereleases: bool,
     printer: Option<&Printer>,
 ) -> Result<ReleaseInfo> {
-    let url = format!("{}/repos/{}/releases/latest", api_base, repo);
+    let url = format!("{}/repos/{}/releases?per_page=100", api_base, repo);
+    let (start_label, finish_label) = if include_prereleases {
+        (
+            "Checking for newest release (incl. prereleases)",
+            "Checked newest release",
+        )
+    } else {
+        ("Checking for latest release", "Checked latest release")
+    };
     let body = github_get(
         &url,
         printer,
-        "Checking for latest release",
-        "Checked latest release",
-        "Failed to fetch release information",
-    )?;
-    parse_release_json(&body)
-}
-
-/// Query a releases API for the newest release *including prereleases*
-/// (testable with custom base URL). Hits the `releases` LIST endpoint and
-/// returns the entry with the highest semver version. Tags that don't parse as
-/// semver are skipped; if no parseable release exists, returns an `ApiError`.
-fn fetch_newest_release_from(
-    api_base: &str,
-    repo: &str,
-    printer: Option<&Printer>,
-) -> Result<ReleaseInfo> {
-    let url = format!("{}/repos/{}/releases", api_base, repo);
-    let body = github_get(
-        &url,
-        printer,
-        "Checking for newest release (incl. prereleases)",
-        "Checked newest release",
+        start_label,
+        finish_label,
         "Failed to fetch release information",
     )?;
 
@@ -215,41 +219,45 @@ fn fetch_newest_release_from(
         message: "releases list response was not a JSON array".into(),
     })?;
 
+    let flag = |elem: &serde_json::Value, name: &str| elem[name].as_bool().unwrap_or(false);
     arr.iter()
+        .filter(|elem| !flag(elem, "draft"))
+        .filter(|elem| include_prereleases || !flag(elem, "prerelease"))
         .filter_map(|elem| parse_one_release(elem).ok())
+        .filter(|release| include_prereleases || release.version.pre.is_empty())
         .max_by(|a, b| a.version.cmp(&b.version))
         .ok_or_else(|| {
+            let kind = if include_prereleases { "" } else { "stable " };
             UpgradeError::ApiError {
-                message: "no parseable release found in releases list".into(),
+                message: format!("no {kind}cfgd release found in the releases of {repo}"),
             }
             .into()
         })
 }
 
 /// Dispatch the release fetch by channel. [`STABLE_UPDATE_CHANNEL`] and any
-/// unrecognized value resolve to the stable `releases/latest` path;
-/// `"prerelease"` resolves to the prerelease-inclusive list path. Matching is
-/// case-insensitive. An unrecognized channel logs a warning and falls back to
-/// stable.
+/// unrecognized value select the highest stable cfgd release from the releases
+/// list; `"prerelease"` selects the highest cfgd release including
+/// prereleases. Matching is case-insensitive. An unrecognized channel logs a
+/// warning and falls back to stable.
 fn fetch_release_for_channel(
     api_base: &str,
     repo: &str,
     channel: &str,
     printer: Option<&Printer>,
 ) -> Result<ReleaseInfo> {
-    match channel.to_ascii_lowercase().as_str() {
-        "prerelease" => fetch_newest_release_from(api_base, repo, printer),
-        stable if stable == STABLE_UPDATE_CHANNEL => {
-            fetch_latest_release_from(api_base, repo, printer)
-        }
+    let include_prereleases = match channel.to_ascii_lowercase().as_str() {
+        "prerelease" => true,
+        stable if stable == STABLE_UPDATE_CHANNEL => false,
         other => {
             tracing::warn!(
                 channel = other,
                 "unknown update channel; tracking stable releases"
             );
-            fetch_latest_release_from(api_base, repo, printer)
+            false
         }
-    }
+    };
+    fetch_release_list_from(api_base, repo, include_prereleases, printer)
 }
 
 /// Issue the GitHub GET with the upgrade agent + headers, surfacing the spinner
@@ -360,17 +368,9 @@ fn rate_limited(status: u16, headers: &ureq::http::HeaderMap) -> Option<UpgradeE
     })
 }
 
-fn parse_release_json(body: &str) -> Result<ReleaseInfo> {
-    let json: serde_json::Value =
-        serde_json::from_str(body).map_err(|e| UpgradeError::ApiError {
-            message: format!("invalid JSON: {}", e),
-        })?;
-    parse_one_release(&json)
-}
-
 /// Parse a single GitHub release object (`{tag_name, assets}`) into a
-/// [`ReleaseInfo`], shared by the single-object (`releases/latest`) and
-/// list-element (`releases`) parse paths.
+/// [`ReleaseInfo`]. A tag that is not cfgd's own shape (`v<semver>` or a bare
+/// `<semver>`) is a `VersionParse` error, which the list selection skips.
 fn parse_one_release(json: &serde_json::Value) -> Result<ReleaseInfo> {
     let tag = json["tag_name"]
         .as_str()
@@ -1205,9 +1205,10 @@ pub fn cleanup_old_binary() {
 ///
 /// `cfgd_version` is the running binary's version (see
 /// [`parse_current_version`]). `channel` selects which release stream to
-/// track: [`STABLE_UPDATE_CHANNEL`] or any unrecognized value tracks stable
-/// releases (`releases/latest`, which excludes prereleases); `"prerelease"`
-/// tracks the newest release including prereleases.
+/// track: [`STABLE_UPDATE_CHANNEL`] or any unrecognized value tracks the
+/// highest stable cfgd release in the repository's releases list (drafts,
+/// prereleases and other crates' tags skipped); `"prerelease"` tracks the
+/// highest cfgd release including prereleases.
 /// Matching is case-insensitive.
 pub fn check_latest(
     cfgd_version: &str,

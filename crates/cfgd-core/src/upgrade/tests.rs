@@ -1,5 +1,17 @@
 use super::*;
 
+/// One release object from a fixture, parsed the way each entry of the
+/// releases list is.
+fn parse_release_json(body: &str) -> Result<ReleaseInfo> {
+    let json: serde_json::Value = serde_json::from_str(body).expect("fixture is valid JSON");
+    parse_one_release(&json)
+}
+
+/// The query string every releases-list request carries.
+fn per_page_100() -> mockito::Matcher {
+    mockito::Matcher::UrlEncoded("per_page".into(), "100".into())
+}
+
 #[test]
 fn current_version_is_valid_semver() {
     let v = parse_current_version(env!("CARGO_PKG_VERSION"))
@@ -891,17 +903,18 @@ fn cleanup_old_binary_does_not_panic() {
     cleanup_old_binary();
 }
 
-// --- fetch_latest_release_from with mockito ---
+// --- fetch_release_list_from (stable) with mockito ---
 
 #[test]
-fn fetch_latest_release_from_parses_github_response() {
+fn fetch_stable_release_parses_github_response() {
     let mut server = mockito::Server::new();
     let mock = server
-        .mock("GET", "/repos/test/repo/releases/latest")
+        .mock("GET", "/repos/test/repo/releases")
+.match_query(per_page_100())
         .with_status(200)
         .with_header("content-type", "application/json")
         .with_body(
-            r#"{
+            r#"[{
                     "tag_name": "v1.2.3",
                     "assets": [
                         {
@@ -915,11 +928,11 @@ fn fetch_latest_release_from_parses_github_response() {
                             "size": 512
                         }
                     ]
-                }"#,
+                }]"#,
         )
         .create();
 
-    let result = fetch_latest_release_from(&server.url(), "test/repo", None);
+    let result = fetch_release_list_from(&server.url(), "test/repo", false, None);
     mock.assert();
 
     let release = result.unwrap();
@@ -932,15 +945,16 @@ fn fetch_latest_release_from_parses_github_response() {
 }
 
 #[test]
-fn fetch_latest_release_from_handles_api_error() {
+fn fetch_stable_release_handles_api_error() {
     let mut server = mockito::Server::new();
     let mock = server
-        .mock("GET", "/repos/test/repo/releases/latest")
+        .mock("GET", "/repos/test/repo/releases")
+        .match_query(per_page_100())
         .with_status(404)
         .with_body(r#"{"message": "Not Found"}"#)
         .create();
 
-    let result = fetch_latest_release_from(&server.url(), "test/repo", None);
+    let result = fetch_release_list_from(&server.url(), "test/repo", false, None);
     mock.assert();
 
     assert!(result.is_err());
@@ -954,45 +968,52 @@ fn fetch_latest_release_from_handles_api_error() {
 }
 
 #[test]
-fn fetch_latest_release_from_handles_invalid_json() {
+fn fetch_stable_release_handles_invalid_json() {
     let mut server = mockito::Server::new();
     let mock = server
-        .mock("GET", "/repos/test/repo/releases/latest")
+        .mock("GET", "/repos/test/repo/releases")
+        .match_query(per_page_100())
         .with_status(200)
         .with_body("this is not json")
         .create();
 
-    let result = fetch_latest_release_from(&server.url(), "test/repo", None);
+    let result = fetch_release_list_from(&server.url(), "test/repo", false, None);
     mock.assert();
 
     assert!(result.is_err());
 }
 
 #[test]
-fn fetch_latest_release_from_handles_missing_tag_name() {
+fn fetch_stable_release_handles_missing_tag_name() {
     let mut server = mockito::Server::new();
     let mock = server
-        .mock("GET", "/repos/test/repo/releases/latest")
+        .mock("GET", "/repos/test/repo/releases")
+        .match_query(per_page_100())
         .with_status(200)
-        .with_body(r#"{"name": "Release", "assets": []}"#)
+        .with_body(r#"[{"name": "Release", "assets": []}]"#)
         .create();
 
-    let result = fetch_latest_release_from(&server.url(), "test/repo", None);
+    let result = fetch_release_list_from(&server.url(), "test/repo", false, None);
     mock.assert();
 
-    assert!(result.is_err());
+    let msg = result.unwrap_err().to_string();
+    assert!(
+        msg.contains("no stable cfgd release found in the releases of test/repo"),
+        "an entry without a tag is skipped, leaving nothing to select: {msg}"
+    );
 }
 
 #[test]
-fn fetch_latest_release_from_handles_no_assets() {
+fn fetch_stable_release_handles_no_assets() {
     let mut server = mockito::Server::new();
     let mock = server
-        .mock("GET", "/repos/test/repo/releases/latest")
+        .mock("GET", "/repos/test/repo/releases")
+        .match_query(per_page_100())
         .with_status(200)
-        .with_body(r#"{"tag_name": "v2.0.0"}"#)
+        .with_body(r#"[{"tag_name": "v2.0.0"}]"#)
         .create();
 
-    let result = fetch_latest_release_from(&server.url(), "test/repo", None);
+    let result = fetch_release_list_from(&server.url(), "test/repo", false, None);
     mock.assert();
 
     let release = result.unwrap();
@@ -1001,15 +1022,16 @@ fn fetch_latest_release_from_handles_no_assets() {
 }
 
 #[test]
-fn fetch_latest_release_from_handles_tag_without_v_prefix() {
+fn fetch_stable_release_handles_tag_without_v_prefix() {
     let mut server = mockito::Server::new();
     let mock = server
-        .mock("GET", "/repos/test/repo/releases/latest")
+        .mock("GET", "/repos/test/repo/releases")
+        .match_query(per_page_100())
         .with_status(200)
-        .with_body(r#"{"tag_name": "3.0.1", "assets": []}"#)
+        .with_body(r#"[{"tag_name": "3.0.1", "assets": []}]"#)
         .create();
 
-    let result = fetch_latest_release_from(&server.url(), "test/repo", None);
+    let result = fetch_release_list_from(&server.url(), "test/repo", false, None);
     mock.assert();
 
     let release = result.unwrap();
@@ -1018,15 +1040,16 @@ fn fetch_latest_release_from_handles_tag_without_v_prefix() {
 }
 
 #[test]
-fn fetch_latest_release_from_handles_prerelease_version() {
+fn fetch_newest_release_handles_prerelease_version() {
     let mut server = mockito::Server::new();
     let mock = server
-        .mock("GET", "/repos/test/repo/releases/latest")
+        .mock("GET", "/repos/test/repo/releases")
+        .match_query(per_page_100())
         .with_status(200)
-        .with_body(r#"{"tag_name": "v4.0.0-beta.1", "assets": []}"#)
+        .with_body(r#"[{"tag_name": "v4.0.0-beta.1", "assets": []}]"#)
         .create();
 
-    let result = fetch_latest_release_from(&server.url(), "test/repo", None);
+    let result = fetch_release_list_from(&server.url(), "test/repo", true, None);
     mock.assert();
 
     let release = result.unwrap();
@@ -1058,15 +1081,16 @@ fn query_with(
         .collect();
     let mut server = mockito::Server::new();
     let mut mock = server
-        .mock("GET", "/repos/test/repo/releases/latest")
+        .mock("GET", "/repos/test/repo/releases")
+        .match_query(per_page_100())
         .match_header("authorization", expect_auth)
         .with_status(status)
-        .with_body(r#"{"tag_name": "v1.0.0", "assets": []}"#);
+        .with_body(r#"[{"tag_name": "v1.0.0", "assets": []}]"#);
     for (name, value) in headers {
         mock = mock.with_header(*name, value);
     }
     let mock = mock.create();
-    let result = fetch_latest_release_from(&server.url(), "test/repo", None);
+    let result = fetch_release_list_from(&server.url(), "test/repo", false, None);
     mock.assert();
     result
 }
@@ -1273,19 +1297,20 @@ fn download_to_file_drives_spinner_branch_when_printer_present_without_content_l
     assert_eq!(std::fs::read(&dest).unwrap(), body);
 }
 
-// --- fetch_latest_release_from: with printer drives spinner branch ---
+// --- fetch_release_list_from: with printer drives spinner branch ---
 
 #[test]
-fn fetch_latest_release_from_with_printer_drives_spinner_branch() {
-    // Exercises the (Some(printer), spinner) path inside fetch_latest_release_from
+fn fetch_stable_release_with_printer_drives_spinner_branch() {
+    // Exercises the (Some(printer), spinner) path inside fetch_release_list_from
     // (lines 87, 103-104 of mod.rs). The spinner is created and finished.
     let mut server = mockito::Server::new();
     let mock = server
-        .mock("GET", "/repos/test/repo/releases/latest")
+        .mock("GET", "/repos/test/repo/releases")
+        .match_query(per_page_100())
         .with_status(200)
         .with_header("content-type", "application/json")
         .with_body(
-            r#"{
+            r#"[{
                 "tag_name": "v7.0.0",
                 "assets": [
                     {
@@ -1294,12 +1319,12 @@ fn fetch_latest_release_from_with_printer_drives_spinner_branch() {
                         "size": 1024
                     }
                 ]
-            }"#,
+            }]"#,
         )
         .create();
 
     let printer = crate::test_helpers::test_printer();
-    let result = fetch_latest_release_from(&server.url(), "test/repo", Some(&printer));
+    let result = fetch_release_list_from(&server.url(), "test/repo", false, Some(&printer));
     mock.assert();
 
     let release = result.expect("should parse with printer present");
@@ -1308,19 +1333,20 @@ fn fetch_latest_release_from_with_printer_drives_spinner_branch() {
 }
 
 #[test]
-fn fetch_latest_release_from_with_printer_on_error_still_returns_err() {
+fn fetch_stable_release_with_printer_on_error_still_returns_err() {
     // Printer present when the API returns an error status — `github_get`
     // settles the spinner itself via `finish_fail` before propagating the
     // error, so this exercises the error path with printer != None.
     let mut server = mockito::Server::new();
     let mock = server
-        .mock("GET", "/repos/test/repo/releases/latest")
+        .mock("GET", "/repos/test/repo/releases")
+        .match_query(per_page_100())
         .with_status(502)
         .with_body("Bad Gateway")
         .create();
 
     let printer = crate::test_helpers::test_printer();
-    let result = fetch_latest_release_from(&server.url(), "test/repo", Some(&printer));
+    let result = fetch_release_list_from(&server.url(), "test/repo", false, Some(&printer));
     mock.assert();
 
     assert!(
@@ -1337,16 +1363,17 @@ fn fetch_latest_release_from_with_printer_on_error_still_returns_err() {
 /// spinner; it now matches its inner result exactly once and always settles
 /// via `finish_fail`, never via Drop.
 #[test]
-fn fetch_latest_release_from_failure_settles_via_finish_fail_not_drop() {
+fn fetch_stable_release_failure_settles_via_finish_fail_not_drop() {
     let mut server = mockito::Server::new();
     let mock = server
-        .mock("GET", "/repos/test/repo/releases/latest")
+        .mock("GET", "/repos/test/repo/releases")
+        .match_query(per_page_100())
         .with_status(502)
         .with_body("Bad Gateway")
         .create();
 
     let (printer, buf) = crate::output::Printer::for_test_live_scrollback();
-    let result = fetch_latest_release_from(&server.url(), "test/repo", Some(&printer));
+    let result = fetch_release_list_from(&server.url(), "test/repo", false, Some(&printer));
     drop(printer);
     mock.assert();
 
@@ -1875,31 +1902,33 @@ fn sha256_file_nonexistent_returns_error() {
     assert!(result.is_err(), "nonexistent file should error");
 }
 
-// --- fetch_latest_release_from: additional error scenarios ---
+// --- fetch_release_list_from: additional error scenarios ---
 
 #[test]
-fn fetch_latest_release_from_handles_server_error() {
+fn fetch_stable_release_handles_server_error() {
     let mut server = mockito::Server::new();
     let mock = server
-        .mock("GET", "/repos/test/repo/releases/latest")
+        .mock("GET", "/repos/test/repo/releases")
+        .match_query(per_page_100())
         .with_status(500)
         .with_body("Internal Server Error")
         .create();
 
-    let result = fetch_latest_release_from(&server.url(), "test/repo", None);
+    let result = fetch_release_list_from(&server.url(), "test/repo", false, None);
     mock.assert();
 
     assert!(result.is_err());
 }
 
 #[test]
-fn fetch_latest_release_from_with_many_assets() {
+fn fetch_stable_release_with_many_assets() {
     let mut server = mockito::Server::new();
     let mock = server
-        .mock("GET", "/repos/test/repo/releases/latest")
+        .mock("GET", "/repos/test/repo/releases")
+.match_query(per_page_100())
         .with_status(200)
         .with_body(
-            r#"{
+            r#"[{
                     "tag_name": "v5.0.0",
                     "assets": [
                         {"name": "cfgd-5.0.0-linux-x86_64.tar.gz", "browser_download_url": "https://dl/linux-x64", "size": 10000},
@@ -1909,11 +1938,11 @@ fn fetch_latest_release_from_with_many_assets() {
                         {"name": "cfgd-5.0.0-windows-x86_64.zip", "browser_download_url": "https://dl/windows-x64", "size": 12000},
                         {"name": "cfgd-5.0.0-checksums.txt", "browser_download_url": "https://dl/checksums", "size": 512}
                     ]
-                }"#,
+                }]"#,
         )
         .create();
 
-    let result = fetch_latest_release_from(&server.url(), "test/repo", None);
+    let result = fetch_release_list_from(&server.url(), "test/repo", false, None);
     mock.assert();
 
     let release = result.unwrap();
@@ -3313,9 +3342,9 @@ mod download_and_install_to {
 }
 
 // --- UpgradeError::ApiError pinning ---
-// `fetch_latest_release_from` produces ApiError when the GitHub Releases API
+// `fetch_release_list_from` produces ApiError when the GitHub Releases API
 // (1) fails the HTTP call, (2) returns a body that is not valid JSON, or
-// (3) returns JSON without a `tag_name`. Each branch gets a dedicated test
+// (3) lists no release cfgd can select. Each branch gets a dedicated test
 // asserting via `matches!` so a future variant rename or signature change
 // trips the test rather than silently reshaping the upgrade-error surface.
 
@@ -3323,12 +3352,13 @@ mod download_and_install_to {
 fn fetch_latest_release_api_error_on_http_500() {
     let mut server = mockito::Server::new();
     let _m = server
-        .mock("GET", "/repos/tj-smith47/cfgd/releases/latest")
+        .mock("GET", "/repos/tj-smith47/cfgd/releases")
+        .match_query(per_page_100())
         .with_status(500)
         .with_body("upstream blew up")
         .create();
 
-    let err = fetch_latest_release_from(&server.url(), "tj-smith47/cfgd", None).unwrap_err();
+    let err = fetch_release_list_from(&server.url(), "tj-smith47/cfgd", false, None).unwrap_err();
     let inner = match err {
         crate::errors::CfgdError::Upgrade(u) => u,
         other => panic!("expected CfgdError::Upgrade, got: {other:?}"),
@@ -3345,12 +3375,13 @@ fn fetch_latest_release_api_error_on_http_500() {
 fn fetch_latest_release_api_error_on_invalid_json_body() {
     let mut server = mockito::Server::new();
     let _m = server
-        .mock("GET", "/repos/tj-smith47/cfgd/releases/latest")
+        .mock("GET", "/repos/tj-smith47/cfgd/releases")
+        .match_query(per_page_100())
         .with_status(200)
         .with_body("not json at all { [ }")
         .create();
 
-    let err = fetch_latest_release_from(&server.url(), "tj-smith47/cfgd", None).unwrap_err();
+    let err = fetch_release_list_from(&server.url(), "tj-smith47/cfgd", false, None).unwrap_err();
     let inner = match err {
         crate::errors::CfgdError::Upgrade(u) => u,
         other => panic!("expected CfgdError::Upgrade, got: {other:?}"),
@@ -3573,8 +3604,8 @@ fn parse_release_json_empty_tag_name_fails_version_parse() {
 // check_latest through the CFGD_GITHUB_API_BASE env shim.
 // fetch_latest_release internally calls github_api_base() which reads the
 // env var; setting it to a mockito URL redirects the entire production path
-// (check_latest → fetch_latest_release → API) without
-// needing fetch_latest_release_from at the test boundary.
+// (check_latest → fetch_release_for_channel → API) without
+// needing fetch_release_list_from at the test boundary.
 //
 // Tests must be #[serial] because the env var is process-global.
 // ---------------------------------------------------------------------------
@@ -3586,14 +3617,15 @@ mod api_base_env_shim {
 
     fn mock_release_response(server: &mut mockito::ServerGuard) -> mockito::Mock {
         server
-            .mock("GET", "/repos/test/repo/releases/latest")
+            .mock("GET", "/repos/test/repo/releases")
+            .match_query(per_page_100())
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(
-                r#"{
+                r#"[{
                     "tag_name": "v999.0.0",
                     "assets": []
-                }"#,
+                }]"#,
             )
             .create()
     }
@@ -3601,8 +3633,8 @@ mod api_base_env_shim {
     #[test]
     #[serial]
     fn check_latest_uses_env_shim_to_redirect_api_call() {
-        // check_latest(repo, None) goes through fetch_latest_release →
-        // fetch_latest_release_from(github_api_base(), ...). Setting the env
+        // check_latest(repo, None) goes through fetch_release_for_channel →
+        // fetch_release_list_from(github_api_base(), ...). Setting the env
         // var redirects the whole chain to mockito, covering lines 718-730.
         let mut server = mockito::Server::new();
         let mock = mock_release_response(&mut server);
@@ -3637,10 +3669,11 @@ mod api_base_env_shim {
         // ("tj-smith47/cfgd").
         let mut server = mockito::Server::new();
         let mock = server
-            .mock("GET", "/repos/tj-smith47/cfgd/releases/latest")
+            .mock("GET", "/repos/tj-smith47/cfgd/releases")
+            .match_query(per_page_100())
             .with_status(200)
             .with_header("content-type", "application/json")
-            .with_body(r#"{"tag_name": "v777.0.0", "assets": []}"#)
+            .with_body(r#"[{"tag_name": "v777.0.0", "assets": []}]"#)
             .create();
         let _env = EnvVarGuard::set(crate::CFGD_GITHUB_API_BASE_ENV, &server.url());
 
@@ -3663,10 +3696,11 @@ mod api_base_env_shim {
         // path through the public API.
         let mut server = mockito::Server::new();
         let mock = server
-            .mock("GET", "/repos/tj-smith47/cfgd/releases/latest")
+            .mock("GET", "/repos/tj-smith47/cfgd/releases")
+            .match_query(per_page_100())
             .with_status(200)
             .with_header("content-type", "application/json")
-            .with_body(r#"{"tag_name": "v555.0.0", "assets": []}"#)
+            .with_body(r#"[{"tag_name": "v555.0.0", "assets": []}]"#)
             .create();
         let _env = EnvVarGuard::set(crate::CFGD_GITHUB_API_BASE_ENV, &server.url());
 
@@ -3676,156 +3710,182 @@ mod api_base_env_shim {
         assert_eq!(result.version, Version::new(555, 0, 0));
     }
 
-    /// `channel: prerelease` hits the `releases` LIST endpoint and selects the
-    /// entry with the highest semver version — here the prerelease `v9.9.1-rc.1`
-    /// over the stable `v9.9.0` that also appears in the list.
-    #[test]
-    #[serial]
-    fn channel_prerelease_selects_highest_version_from_list() {
+    /// Runs `check_latest` on `channel` against a mock releases list answering
+    /// `body`, asserting the list was requested exactly once.
+    fn check_against_list(body: &str, channel: &str) -> Result<UpdateCheck> {
         let mut server = mockito::Server::new();
         let list_mock = server
             .mock("GET", "/repos/test/repo/releases")
+            .match_query(per_page_100())
             .with_status(200)
             .with_header("content-type", "application/json")
-            .with_body(
-                r#"[
-                    {"tag_name": "v9.9.1-rc.1", "assets": []},
-                    {"tag_name": "v9.9.0", "assets": []}
-                ]"#,
-            )
+            .with_body(body)
             .expect(1)
             .create();
-        let latest_mock = server
-            .mock("GET", "/repos/test/repo/releases/latest")
-            .with_status(200)
-            .with_body(r#"{"tag_name": "v9.9.0", "assets": []}"#)
-            .expect(0)
-            .create();
         let _env = EnvVarGuard::set(crate::CFGD_GITHUB_API_BASE_ENV, &server.url());
-
-        let result = check_latest(
-            env!("CARGO_PKG_VERSION"),
-            Some("test/repo"),
-            "prerelease",
-            None,
-        )
-        .expect("prerelease channel should hit the list endpoint");
+        let result = check_latest(env!("CARGO_PKG_VERSION"), Some("test/repo"), channel, None);
         list_mock.assert();
-        latest_mock.assert();
+        result
+    }
 
-        assert_eq!(
-            result.release.as_ref().map(|r| r.tag.as_str()),
-            Some("v9.9.1-rc.1"),
-            "prerelease channel must select the highest version in the list"
-        );
+    fn selected_tag(check: &UpdateCheck) -> Option<&str> {
+        check.release.as_ref().map(|r| r.tag.as_str())
+    }
+
+    /// A list mixing a GitHub-flagged prerelease with a stable release.
+    const RC_AND_STABLE: &str = r#"[
+        {"tag_name": "v0.13.0-rc.1", "prerelease": true, "assets": []},
+        {"tag_name": "v0.12.0", "prerelease": false, "assets": []}
+    ]"#;
+
+    /// `channel: prerelease` selects the entry with the highest semver version,
+    /// a prerelease included.
+    #[test]
+    #[serial]
+    fn channel_prerelease_selects_highest_version_from_list() {
+        let result = check_against_list(RC_AND_STABLE, "prerelease")
+            .expect("prerelease channel should select from the list");
+        assert_eq!(selected_tag(&result), Some("v0.13.0-rc.1"));
         assert_eq!(
             result.latest,
-            Version::parse("9.9.1-rc.1").unwrap(),
+            Version::parse("0.13.0-rc.1").unwrap(),
             "prerelease semver must include the prerelease identifier"
         );
     }
 
-    /// `channel: stable` hits `releases/latest` (excludes prereleases) and never
-    /// touches the LIST endpoint.
+    /// `channel: stable` skips the prerelease the same list leads with.
     #[test]
     #[serial]
-    fn channel_stable_uses_releases_latest_endpoint() {
-        let mut server = mockito::Server::new();
-        let latest_mock = server
-            .mock("GET", "/repos/test/repo/releases/latest")
-            .with_status(200)
-            .with_header("content-type", "application/json")
-            .with_body(r#"{"tag_name": "v9.9.0", "assets": []}"#)
-            .expect(1)
-            .create();
-        let list_mock = server
-            .mock("GET", "/repos/test/repo/releases")
-            .with_status(200)
-            .with_body(r#"[{"tag_name": "v9.9.1-rc.1", "assets": []}]"#)
-            .expect(0)
-            .create();
-        let _env = EnvVarGuard::set(crate::CFGD_GITHUB_API_BASE_ENV, &server.url());
-
-        let result = check_latest(env!("CARGO_PKG_VERSION"), Some("test/repo"), "stable", None)
-            .expect("stable channel should hit releases/latest");
-        latest_mock.assert();
-        list_mock.assert();
-        assert_eq!(
-            result.release.as_ref().map(|r| r.tag.as_str()),
-            Some("v9.9.0")
-        );
+    fn channel_stable_skips_prereleases_in_the_list() {
+        let result = check_against_list(RC_AND_STABLE, "stable")
+            .expect("stable channel should select from the list");
+        assert_eq!(selected_tag(&result), Some("v0.12.0"));
     }
 
-    /// The channel an `update` block that names none tracks hits
-    /// `releases/latest` only.
+    /// GitHub's `prerelease` flag alone excludes an entry from the stable
+    /// channel, whatever its tag says.
     #[test]
     #[serial]
-    fn channel_an_update_block_omits_uses_releases_latest_endpoint() {
-        let mut server = mockito::Server::new();
-        let latest_mock = server
-            .mock("GET", "/repos/test/repo/releases/latest")
-            .with_status(200)
-            .with_header("content-type", "application/json")
-            .with_body(r#"{"tag_name": "v9.9.0", "assets": []}"#)
-            .expect(1)
-            .create();
-        let list_mock = server
-            .mock("GET", "/repos/test/repo/releases")
-            .with_status(200)
-            .with_body(r#"[{"tag_name": "v9.9.1-rc.1", "assets": []}]"#)
-            .expect(0)
-            .create();
-        let _env = EnvVarGuard::set(crate::CFGD_GITHUB_API_BASE_ENV, &server.url());
-
-        let result = check_latest(
-            env!("CARGO_PKG_VERSION"),
-            Some("test/repo"),
-            crate::config::UpdateConfig::default().channel_effective(),
-            None,
+    fn channel_stable_skips_a_flagged_prerelease_with_a_plain_version() {
+        let result = check_against_list(
+            r#"[
+                {"tag_name": "v0.13.0", "prerelease": true, "assets": []},
+                {"tag_name": "v0.12.0", "prerelease": false, "assets": []}
+            ]"#,
+            "stable",
         )
-        .expect("the omitted channel should hit releases/latest");
-        latest_mock.assert();
-        list_mock.assert();
-        assert_eq!(
-            result.release.as_ref().map(|r| r.tag.as_str()),
-            Some("v9.9.0")
-        );
+        .expect("stable channel should select from the list");
+        assert_eq!(selected_tag(&result), Some("v0.12.0"));
     }
 
-    /// An unrecognized channel falls back to stable (`releases/latest`) without
-    /// erroring, and does not touch the LIST endpoint.
+    /// A semver pre-release identifier alone excludes an entry from the stable
+    /// channel, even when GitHub does not flag it.
+    #[test]
+    #[serial]
+    fn channel_stable_skips_an_unflagged_prerelease_version() {
+        let result = check_against_list(
+            r#"[
+                {"tag_name": "v0.13.0-rc.1", "prerelease": false, "assets": []},
+                {"tag_name": "v0.12.0", "prerelease": false, "assets": []}
+            ]"#,
+            "stable",
+        )
+        .expect("stable channel should select from the list");
+        assert_eq!(selected_tag(&result), Some("v0.12.0"));
+    }
+
+    /// Other crates' releases in the same repository never stand in for cfgd's,
+    /// even when one is the newest release GitHub lists.
+    #[test]
+    #[serial]
+    fn channel_stable_skips_other_crates_releases() {
+        let result = check_against_list(
+            r#"[
+                {"tag_name": "operator-v0.11.0", "prerelease": false, "assets": []},
+                {"tag_name": "v0.12.0", "prerelease": false, "assets": []},
+                {"tag_name": "csi-v0.8.0", "prerelease": false, "assets": []}
+            ]"#,
+            "stable",
+        )
+        .expect("stable channel should select cfgd's own release");
+        assert_eq!(selected_tag(&result), Some("v0.12.0"));
+    }
+
+    /// The prerelease channel skips other crates' releases and the rolling
+    /// nightly tags too.
+    #[test]
+    #[serial]
+    fn channel_prerelease_skips_other_crates_and_nightly_releases() {
+        let result = check_against_list(
+            r#"[
+                {"tag_name": "operator-vnightly", "prerelease": true, "assets": []},
+                {"tag_name": "vnightly", "prerelease": true, "assets": []},
+                {"tag_name": "operator-v0.13.0", "prerelease": false, "assets": []},
+                {"tag_name": "v0.12.0", "prerelease": false, "assets": []}
+            ]"#,
+            "prerelease",
+        )
+        .expect("prerelease channel should select cfgd's own release");
+        assert_eq!(selected_tag(&result), Some("v0.12.0"));
+    }
+
+    /// A draft is skipped by both channels.
+    #[test]
+    #[serial]
+    fn every_channel_skips_drafts() {
+        let body = r#"[
+            {"tag_name": "v9.9.9", "draft": true, "prerelease": false, "assets": []},
+            {"tag_name": "v0.12.0", "prerelease": false, "assets": []}
+        ]"#;
+        for channel in [crate::config::STABLE_UPDATE_CHANNEL, "prerelease"] {
+            let result = check_against_list(body, channel)
+                .unwrap_or_else(|e| panic!("{channel}: should select from the list: {e}"));
+            assert_eq!(selected_tag(&result), Some("v0.12.0"), "{channel}");
+        }
+    }
+
+    /// A list holding only other crates' releases is an ApiError naming the
+    /// repository.
+    #[test]
+    #[serial]
+    fn channel_stable_errors_naming_the_repo_when_only_other_crates_released() {
+        let err = check_against_list(
+            r#"[
+                {"tag_name": "operator-v0.11.0", "prerelease": false, "assets": []},
+                {"tag_name": "csi-vnightly", "prerelease": true, "assets": []},
+                {"tag_name": "csi-v0.8.0", "prerelease": false, "assets": []}
+            ]"#,
+            "stable",
+        )
+        .expect_err("no cfgd release is listed");
+        match err {
+            crate::errors::CfgdError::Upgrade(UpgradeError::ApiError { message }) => assert_eq!(
+                message,
+                "no stable cfgd release found in the releases of test/repo"
+            ),
+            other => panic!("expected an ApiError, got: {other:?}"),
+        }
+    }
+
+    /// The channel an `update` block that names none tracks is stable.
+    #[test]
+    #[serial]
+    fn channel_an_update_block_omits_tracks_stable_releases() {
+        let result = check_against_list(
+            RC_AND_STABLE,
+            crate::config::UpdateConfig::default().channel_effective(),
+        )
+        .expect("the omitted channel should select from the list");
+        assert_eq!(selected_tag(&result), Some("v0.12.0"));
+    }
+
+    /// An unrecognized channel falls back to stable without erroring.
     #[test]
     #[serial]
     fn channel_unknown_falls_back_to_stable() {
-        let mut server = mockito::Server::new();
-        let latest_mock = server
-            .mock("GET", "/repos/test/repo/releases/latest")
-            .with_status(200)
-            .with_header("content-type", "application/json")
-            .with_body(r#"{"tag_name": "v9.9.0", "assets": []}"#)
-            .expect(1)
-            .create();
-        let list_mock = server
-            .mock("GET", "/repos/test/repo/releases")
-            .with_status(200)
-            .with_body(r#"[{"tag_name": "v9.9.1-rc.1", "assets": []}]"#)
-            .expect(0)
-            .create();
-        let _env = EnvVarGuard::set(crate::CFGD_GITHUB_API_BASE_ENV, &server.url());
-
-        let result = check_latest(
-            env!("CARGO_PKG_VERSION"),
-            Some("test/repo"),
-            "nightly",
-            None,
-        )
-        .expect("unknown channel must fall back to stable, never error");
-        latest_mock.assert();
-        list_mock.assert();
-        assert_eq!(
-            result.release.as_ref().map(|r| r.tag.as_str()),
-            Some("v9.9.0")
-        );
+        let result = check_against_list(RC_AND_STABLE, "nightly")
+            .expect("an unknown channel falls back to stable");
+        assert_eq!(selected_tag(&result), Some("v0.12.0"));
     }
 
     /// Prerelease list whose body is not valid JSON surfaces the `invalid JSON`
@@ -3833,22 +3893,8 @@ mod api_base_env_shim {
     #[test]
     #[serial]
     fn channel_prerelease_invalid_json_errors() {
-        let mut server = mockito::Server::new();
-        let _list_mock = server
-            .mock("GET", "/repos/test/repo/releases")
-            .with_status(200)
-            .with_header("content-type", "application/json")
-            .with_body("not json")
-            .create();
-        let _env = EnvVarGuard::set(crate::CFGD_GITHUB_API_BASE_ENV, &server.url());
-
-        let err = check_latest(
-            env!("CARGO_PKG_VERSION"),
-            Some("test/repo"),
-            "prerelease",
-            None,
-        )
-        .expect_err("invalid JSON body must surface as an error");
+        let err = check_against_list("not json", "prerelease")
+            .expect_err("invalid JSON body must surface as an error");
         let msg = err.to_string();
         assert!(
             msg.contains("invalid JSON"),
@@ -3861,22 +3907,8 @@ mod api_base_env_shim {
     #[test]
     #[serial]
     fn channel_prerelease_non_array_body_errors() {
-        let mut server = mockito::Server::new();
-        let _list_mock = server
-            .mock("GET", "/repos/test/repo/releases")
-            .with_status(200)
-            .with_header("content-type", "application/json")
-            .with_body("{}")
-            .create();
-        let _env = EnvVarGuard::set(crate::CFGD_GITHUB_API_BASE_ENV, &server.url());
-
-        let err = check_latest(
-            env!("CARGO_PKG_VERSION"),
-            Some("test/repo"),
-            "prerelease",
-            None,
-        )
-        .expect_err("a JSON object is not a releases array");
+        let err = check_against_list("{}", "prerelease")
+            .expect_err("a JSON object is not a releases array");
         let msg = err.to_string();
         assert!(
             msg.contains("releases list response was not a JSON array"),
@@ -3884,58 +3916,32 @@ mod api_base_env_shim {
         );
     }
 
-    /// An empty releases array has no parseable release → the "no parseable
-    /// release" ApiError.
+    /// An empty releases array leaves no release to select.
     #[test]
     #[serial]
     fn channel_prerelease_empty_array_errors() {
-        let mut server = mockito::Server::new();
-        let _list_mock = server
-            .mock("GET", "/repos/test/repo/releases")
-            .with_status(200)
-            .with_header("content-type", "application/json")
-            .with_body("[]")
-            .create();
-        let _env = EnvVarGuard::set(crate::CFGD_GITHUB_API_BASE_ENV, &server.url());
-
-        let err = check_latest(
-            env!("CARGO_PKG_VERSION"),
-            Some("test/repo"),
-            "prerelease",
-            None,
-        )
-        .expect_err("an empty releases array yields no parseable release");
+        let err = check_against_list("[]", "prerelease")
+            .expect_err("an empty releases array yields no release");
         let msg = err.to_string();
         assert!(
-            msg.contains("no parseable release found"),
-            "empty array must yield the no-parseable-release error, got: {msg}"
+            msg.contains("no cfgd release found in the releases of test/repo"),
+            "empty array must yield the no-release error, got: {msg}"
         );
     }
 
-    /// Every element has an unparseable tag, so the `filter_map(...).ok()` skips
-    /// them all → the same "no parseable release" ApiError as an empty array.
+    /// Every element has a tag that is not cfgd's shape, so all are skipped →
+    /// the same error as an empty array.
     #[test]
     #[serial]
     fn channel_prerelease_all_unparseable_tags_errors() {
-        let mut server = mockito::Server::new();
-        let _list_mock = server
-            .mock("GET", "/repos/test/repo/releases")
-            .with_status(200)
-            .with_header("content-type", "application/json")
-            .with_body(r#"[{"tag_name": "not-a-version", "assets": []}]"#)
-            .create();
-        let _env = EnvVarGuard::set(crate::CFGD_GITHUB_API_BASE_ENV, &server.url());
-
-        let err = check_latest(
-            env!("CARGO_PKG_VERSION"),
-            Some("test/repo"),
+        let err = check_against_list(
+            r#"[{"tag_name": "not-a-version", "assets": []}]"#,
             "prerelease",
-            None,
         )
         .expect_err("all-unparseable tags leave no selectable release");
         let msg = err.to_string();
         assert!(
-            msg.contains("no parseable release found"),
+            msg.contains("no cfgd release found in the releases of test/repo"),
             "unparseable tags must be skipped, leaving no release, got: {msg}"
         );
     }

@@ -367,9 +367,9 @@ pub struct UpdateConfig {
     #[serde(default = "default_update_interval")]
     pub interval: String,
 
-    /// Release channel to track: `stable` (releases GitHub marks latest) or
-    /// `prerelease` (the newest release, prereleases included). Omitted,
-    /// `stable`.
+    /// Release channel to track: `stable` (the highest cfgd release that is
+    /// neither a draft nor a prerelease) or `prerelease` (the highest cfgd
+    /// release that is not a draft). Omitted, `stable`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub channel: Option<String>,
 

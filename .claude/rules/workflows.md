@@ -140,7 +140,7 @@ single-source-of-truth wiring.
   passing build and the leg reports green on red tests.
 - Every test leg (the ubuntu/macos/windows `test` matrix and the FreeBSD
   guest) runs `task installer:test` after `task test:ci`:
-  `scripts/tests/test-install-dir.sh` lifts `resolve_install_dir` out of
+  `scripts/tests/test-install-dir.sh` lifts `resolve_install_dir` and `resolve_version` out of
   `scripts/install.sh.tpl` and runs it under that OS's own `sh`, the shell a
   `curl | sh` install runs there. `task ci` and `task test:freebsd` run it
   too. `every_host_script_proof_is_reachable_from_ci` fails when a script

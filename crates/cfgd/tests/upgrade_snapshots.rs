@@ -64,20 +64,24 @@ fn strip_ansi(s: &str) -> String {
     out
 }
 
-/// Build a mock GitHub Releases endpoint that reports v0.0.1 — older than
-/// the compiled `CARGO_PKG_VERSION` — so `update_available` is false and
-/// the up-to-date branch fires (no exit()).
+/// Build a mock GitHub releases list whose only cfgd release is v0.0.1
+/// (older than the compiled `CARGO_PKG_VERSION`), so `update_available` is
+/// false and the up-to-date branch fires (no exit()).
 fn mock_older_release_server() -> mockito::ServerGuard {
     let mut server = mockito::Server::new();
     let _ = server
-        .mock("GET", mockito::Matcher::Any)
+        .mock("GET", "/repos/tj-smith47/cfgd/releases")
+        .match_query(mockito::Matcher::UrlEncoded(
+            "per_page".into(),
+            "100".into(),
+        ))
         .with_status(200)
         .with_header("content-type", "application/json")
         .with_body(
-            r#"{
+            r#"[{
                 "tag_name": "v0.0.1",
                 "assets": []
-            }"#,
+            }]"#,
         )
         .create();
     server

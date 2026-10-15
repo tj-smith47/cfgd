@@ -1239,7 +1239,7 @@
       "description": "Configuration for cfgd self-update checks and authored-skill updates.",
       "properties": {
         "channel": {
-          "description": "Release channel to track: `stable` (releases GitHub marks latest) or `prerelease` (the newest release, prereleases included). Omitted, `stable`.",
+          "description": "Release channel to track: `stable` (the highest cfgd release that is neither a draft nor a prerelease) or `prerelease` (the highest cfgd release that is not a draft). Omitted, `stable`.",
           "type": [
             "string",
             "null"
