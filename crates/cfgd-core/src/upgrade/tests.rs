@@ -2165,10 +2165,7 @@ mod cosign_verify_blob {
     // drifting from the const (the v0.5.0 breakage shipped exactly that way).
     #[test]
     fn cosign_identity_regexp_docs_match_const() {
-        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../..")
-            .canonicalize()
-            .expect("workspace root");
+        let root = crate::test_helpers::workspace_root();
         for doc in [
             "docs/installation.md",
             "docs/releasing.md",
@@ -4466,7 +4463,7 @@ fn download_with_progress_bar_success_writes_all_bytes_and_settles_silently() {
 /// other crate's release block in `.anodizer.yaml` sets `make_latest: false`.
 #[test]
 fn only_the_cfgd_release_may_be_flagged_latest() {
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.anodizer.yaml");
+    let path = crate::test_helpers::workspace_root().join(".anodizer.yaml");
     let text = std::fs::read_to_string(&path).expect(".anodizer.yaml");
     let doc: serde_yaml::Value = serde_yaml::from_str(&text).expect(".anodizer.yaml parses");
     let workspaces = doc["workspaces"]
